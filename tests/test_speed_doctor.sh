@@ -332,6 +332,33 @@ check(floored["selection"] == [] and floored["why_none"].startswith("110 min/day
       and [0, "", False, "Without the harness ≈ 40 % faster"] in floored["menu"],
       "an empty pick while minutes are recoverable names them; the floor rows count and show red in the menu beside "
       "the time block: %s · %s" % (floored["why_none"], floored["head"]))
+refused = dict(copy.deepcopy(gaps), floors=gaps["floors"][2:3] + [
+    {"class": "refusal", "label": "gate refusal recovery", "floor_min_day": 0, "actual_min_day": 12.0,
+     "recoverable_min_day": 12.0, "chat_min_day": 8.0, "worker_min_day": 4.0},
+    {"class": "hooks", "label": "hooks", "floor_min_day": 0, "actual_min_day": 40.0,
+     "recoverable_min_day": 40.0, "chat_min_day": 40.0, "worker_min_day": 0.0}],
+    refusal_cost={"by_gate_min_day": {"review-flow-gate.sh": 9.0, "write": 0.4}},
+    hooks_by_hook_min_day={"hooks/cd-guard.sh": 18.5, "stop/stop-dispatch.sh": 6.0, "hooks/quick.sh": 0.1})
+saved_env, saved = dict(os.environ), module.time_budget.section
+os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-refusal"))
+module.time_budget.section = lambda now, write: copy.deepcopy(refused)
+gated = module.collect(False, HI)
+module.time_budget.section = saved
+os.environ.clear()
+os.environ.update(saved_env)
+rows = {p["id"]: p for p in gated["problems"] if p["id"].startswith("opportunity:")}
+check(gated.get("status") != "error" and rows["opportunity:refusal/review-flow-gate.sh"]["opportunity"]["recoverable_min_day"] == 9.0
+      and rows["opportunity:refusal/review-flow-gate.sh"]["opportunity"]["hook"] == "review-flow-gate.sh"
+      and rows["opportunity:time/refusal"]["opportunity"]["recoverable_min_day"] == 3.0
+      and rows["opportunity:time/refusal"]["opportunity"]["worker_min_day"] == 1.0
+      and rows["opportunity:hooks/cd-guard.sh"]["opportunity"]["recoverable_min_day"] == 18.5
+      and rows["opportunity:stop/stop-dispatch.sh"]["opportunity"]["target"] == "stop/stop-dispatch.sh"
+      and "opportunity:refusal/write" not in rows and "opportunity:hooks/quick.sh" not in rows
+      and module.time_budget.improvement_class("opportunity", "opportunity:stop/stop-dispatch.sh") == "stop"
+      and "opportunity:refusal/review-flow-gate.sh" in gated["selection"],
+      "a refusal gap over the worth line ranks through the collector; each gate and hook over it is its own row at "
+      "its own minutes, and only the rest of its class stays a time row: %s" % sorted(
+          (k, v["opportunity"]["recoverable_min_day"]) for k, v in rows.items() if "time/" in k or "/" in k[12:]))
 check(all(p["opportunity"]["quality"] == "equivalent" and module.OUTPUT_PROOF in p["opportunity"]["proof"]
           for p in backlog), "every ranked lever is equivalent and its proof demands output equivalence on the replay")
 for bad in ({"component": "chat/x", "lever": "switch Opus to Sonnet", "quality": "equivalent"},

@@ -119,11 +119,12 @@ recovery_events = {"c": [call(100, "denied1", "recover1"), call(110, "denied2", 
                          ["t", D0 + 290, "recover3", D0 + 1000]]}
 recovery_events["c"][-1][6] = "h"
 cost = T.refusal_cost(D0, D0 + 86400, recovery_events)
-check(cost["seconds"] == 357 and cost["by_gate_s"] == {"cap": 300, "write": 28, "relay": 29}
+check(cost["seconds"] == 348 and cost["by_gate_s"] == {"cap": 300, "write": 19, "relay": 29}
       and cost["measured"] == 4 and cost["unmeasured_by_gate"] == {"legacy": 1},
-      "session/time refusal links need no call ID, skip known denied retries and other sessions, cap and name missing calls: %s" % cost)
+      "session/time refusal links need no call ID, skip known denied retries and other sessions, cap and name missing "
+      "calls, and charge a window two denials share once: %s" % cost)
 check(cost["chat_s"] == 348, "overlapping retries are charged once in the wall partition")
-check(T.refusal_cost(D0 + 115, D0 + 125, recovery_events)["seconds"] == 10,
+check(T.refusal_cost(D0 + 115, D0 + 125, recovery_events)["seconds"] == 5,
       "recovery intervals are clipped at both reporting window boundaries")
 for row in recovery_events["t"]:
     row.extend(["n", [0, 0, 0], 0, [], [], {"gen": row[3] - row[1]}, {}, []])
@@ -147,12 +148,12 @@ lines(transcript, [
 extra = {"c": [call(499, "blocked4", "recover4"), call(504, "blocked5", "recover4"),
                call(520, "accepted4", "recover4")]}
 extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
-check(extra_cost["by_gate_s"] == {"worker-limit-gate.sh": 20, "review-flow-gate.sh": 15}
+check(extra_cost["by_gate_s"] == {"worker-limit-gate.sh": 5, "review-flow-gate.sh": 15}
       and extra_cost["chat_s"] == 20 and extra_cost["count"] == 2,
       "native transcript denials count per hook, exclude denied c rows, and ignore ordinary errors and quoted text")
 lines(fixture, [{"at": D0 + 499, "sid": "recover4-full", "gate": "worker-limit", "decision": "denied"}])
 extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
-check(extra_cost["count"] == 2 and extra_cost["by_gate_s"] == {"worker-limit": 21, "review-flow-gate.sh": 15},
+check(extra_cost["count"] == 2 and extra_cost["by_gate_s"] == {"worker-limit": 6, "review-flow-gate.sh": 15},
       "a transcript denial enriches its journal row without charging it twice")
 profile = os.path.join(work, "home", ".claude-profiles", "fixture", "projects", "fixture",
                        "recover4-full", "subagents", "agent-fixture.jsonl")
@@ -167,11 +168,30 @@ lines(profile, [
         {"type": "tool_result", "tool_use_id": "blocked7", "is_error": True,
          "content": "PreToolUse:Bash hook error: Unnamed denial"}]}}])
 extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
-check(extra_cost["count"] == 4 and extra_cost["by_gate_s"]["cd-guard.sh"] == 12
-      and extra_cost["by_gate_s"]["unknown-hook"] == 11,
+check(extra_cost["count"] == 4 and extra_cost["by_gate_s"]["cd-guard.sh"] == 1
+      and extra_cost["by_gate_s"]["unknown-hook"] == 11 and extra_cost["seconds"] == extra_cost["chat_s"] == 21,
       "profile subagent transcripts use the parent session, deduplicate copied calls and retain unnamed hooks")
 os.unlink(profile)
 os.unlink(transcript)
+blocks = os.path.join(work, "home", ".claude", "projects", "fixture", "recover5-full.jsonl")
+stop = {"timestamp": iso(D0 + 600), "uuid": "stop-1", "attachment": {
+    "type": "hook_blocking_error", "hookEvent": "Stop", "hookName": "Stop",
+    "blockingError": {"blockingError": "[~/.claude/hooks/ask-span-drill.sh]: write the reading line"}}}
+lines(blocks, [stop, stop,
+               {"timestamp": iso(D0 + 640), "uuid": "post-1", "attachment": {
+                   "type": "hook_blocking_error", "hookEvent": "PostToolUse", "hookName": "PostToolUse:Bash",
+                   "blockingError": "commit journal: files left owned by nobody"}},
+               {"timestamp": iso(D0 + 645), "uuid": "pre-1", "attachment": {
+                   "type": "hook_blocking_error", "hookEvent": "PreToolUse", "blockingError": "[x.sh]: counted as a tool result"}},
+               {"timestamp": iso(D0 + 700), "uuid": "stop-2", "attachment": {
+                   "type": "hook_blocking_error", "hookEvent": "Stop", "blockingError": {"blockingError": "rewrite"}}}])
+blocked = T.refusal_cost(D0 + 590, D0 + 1200, {"c": [call(650, "after-post", "recover5"), call(1100, "late", "recover5")],
+                                                 "t": [["t", D0 + 590, "recover5", D0 + 620]]})
+check(blocked["by_gate_s"] == {"ask-span-drill.sh": 20, "unknown-posttooluse-hook": 10} and blocked["count"] == 3
+      and blocked["unmeasured_by_gate"] == {"unknown-stop-hook": 1} and blocked["chat_s"] == 30,
+      "a Stop block recovers until its turn ends, a PostToolUse block until the next call, a copied block counts once, "
+      "and a block with no turn and no call within the cap stays unmeasured: %s" % blocked)
+os.unlink(blocks)
 T.gates_path = old_gates
 baseline = T.budget(D0, D0 + 86400, recovery_events)
 check(sum(charged["seconds"].values()) == sum(baseline["seconds"].values()),

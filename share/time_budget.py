@@ -47,6 +47,9 @@ TURN_AWAY = ("dark", "ask")
 WAIT_CLASSES = ("lock", "poll")
 GATE_REFUSALS = ("denied", "relay-refused")
 REFUSAL_CAP_S = 300
+# A gate's recovery seconds a day swing to 0 and back on unchanged code (p5 of mean(3 days)/mean(5 before) is 0 over
+# the events of 2026-10-01..09), so only a gate that cost nothing for a week after the night proves.
+REFUSAL_PROOF_RATIO, REFUSAL_PROOF_DAYS = 0.0, 7
 BAND_DAYS = 7
 BAND_RATIO = 2.0
 BAND_MIN_S = 15 * 60
@@ -61,10 +64,11 @@ IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE
 # (unit, samples a side needs, the after/before ratio proving it, the gain's daily unit, units in one of it): the
 # ratio is p5 of median(N)/median(the samples before) on unchanged code over the journals of 2026-09-29..10-07, so a
 # lower ratio is no noise.
-UNITS = {"suite_run": ("CPU-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_RATIO, "CPU-min/day", 60.0),
+UNITS = {"suite_run": ("wall-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_RATIO, "suite-min/day", 60.0),
          "hooks": ("ms/call", 50, 0.55, "min/day", 60000.0), "stop": ("ms/call", 50, 0.55, "min/day", 60000.0),
          "suite_wait": ("s/wait", 20, 0.4, "min/day", 60.0), "slot": ("s/wait", 20, 0.4, "min/day", 60.0),
-         "locks": ("s/wait", 20, 0.4, "min/day", 60.0)}
+         "locks": ("s/wait", 20, 0.4, "min/day", 60.0), "refusal": ("s/day", REFUSAL_PROOF_DAYS, REFUSAL_PROOF_RATIO, "min/day", 60.0)}
+UNIT_STAT = {"suite_run": min, "refusal": statistics.mean}
 MEASURERS = ("bin/harness-doctor", "bin/speed-doctor", "share/suite_audit.py", "share/time_budget.py")
 WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("workers", "review-cells"), "locks": WAIT_CLASSES}
 UNIT_BEFORE_DAYS = 7
@@ -234,7 +238,8 @@ def refusal_rows(lo, hi):
         try:
             with open(path, errors="replace") as handle:
                 for line in handle:
-                    if "PreToolUse:" not in line or "hook error:" not in line:
+                    blocking = '"hook_blocking_error"' in line
+                    if not blocking and ("PreToolUse:" not in line or "hook error:" not in line):
                         continue
                     try:
                         entry = json.loads(line)
@@ -242,6 +247,20 @@ def refusal_rows(lo, hi):
                     except (ValueError, KeyError, TypeError):
                         continue
                     if not lo <= at < hi:
+                        continue
+                    item = entry.get("attachment") if blocking else None
+                    if isinstance(item, dict) and item.get("type") == "hook_blocking_error":
+                        event = str(item.get("hookEvent") or "")
+                        key = entry.get("uuid") or (sid, at, event)
+                        if event == "PreToolUse" or key in seen:
+                            continue
+                        seen.add(key)
+                        error = item.get("blockingError")
+                        text = error.get("blockingError") if isinstance(error, dict) else error
+                        match = re.match(r"\[([^\]]+)\]", text if isinstance(text, str) else "")
+                        rows.append({"at": at, "sid": sid, "tool_use_id": "", "decision": "blocked", "event": event,
+                                     "gate": os.path.basename(match[1]) if match else
+                                     "unknown-%s-hook" % (event.lower() or "blocking")})
                         continue
                     content = (entry.get("message") or {}).get("content")
                     if not isinstance(content, list):
@@ -274,32 +293,41 @@ def refusal_rows(lo, hi):
     return rows
 
 
-def refusal_cost(lo, hi, events):
-    rows = refusal_rows(lo - REFUSAL_CAP_S, hi)
-    calls = collections.defaultdict(list)
+def refusal_cost(lo, hi, events, rows=None):
+    """Recovery from each refusal (a PreToolUse denial, a Stop or PostToolUse block) to the session's next accepted
+    call, else the end of the owner turn it fell in, capped; the next refusal of the session ends it too, so a window
+    several gates deny in is charged once, split between them."""
+    rows = refusal_rows(lo - REFUSAL_CAP_S, hi) if rows is None else rows
+    calls, turns, refused = collections.defaultdict(list), collections.defaultdict(list), collections.defaultdict(set)
     for c in events.get("c", ()):
         calls[str(c[8])[:8]].append(c)
+    for t in events.get("t", ()):
+        turns[str(t[2])[:8]].append(t)
     denied = {(str(r.get("sid") or "")[:8], str(r.get("tool_use_id") or "")[-10:]) for r in rows}
+    for r in rows:
+        refused[str(r.get("sid") or "")[:8]].add(num(r.get("at")) or 0)
     by, missing, spans, seen = collections.Counter(), collections.Counter(), collections.defaultdict(list), set()
     measured = 0
-    for r in rows:
+    for r in sorted(rows, key=lambda r: (num(r.get("at")) or 0, str(r.get("gate") or ""))):
         gate, at = r.get("gate") or "unknown", num(r.get("at")) or 0
         sid = str(r.get("sid") or "")[:8]
-        following = [c for c in calls[sid] if c[1] > at and (sid, c[7]) not in denied]
-        if not sid or not following:
+        following = [c for c in calls[sid] if at < c[1] <= at + REFUSAL_CAP_S and (sid, c[7]) not in denied]
+        c = min(following, key=lambda c: c[1]) if following else None
+        turn = next((t[3] for t in turns[sid] if t[1] <= at < t[3]), None)
+        ends = [x for x in (c[1] if c else None, turn) if x is not None]
+        if not sid or not ends:
             if lo <= at < hi:
                 missing[gate] += 1
             continue
-        c = min(following, key=lambda c: c[1])
-        key = (sid, at, gate)
-        if key in seen:
+        if (sid, at) in seen:
             continue
-        seen.add(key)
-        span = clip([(at, min(c[1], at + REFUSAL_CAP_S))], lo, hi)
+        seen.add((sid, at))
+        ends += [a for a in refused[sid] if a > at] + [at + REFUSAL_CAP_S]
+        span = clip([(at, min(ends))], lo, hi)
         by[gate] += length(span)
-        spans[(c[6], sid)].extend(span)
+        spans[(c[6] if c else "t", sid)].extend(span)
         measured += 1
-    return {"seconds": sum(by.values()), "by_gate_s": dict(by.most_common(5)), "measured": measured,
+    return {"seconds": sum(by.values()), "by_gate_s": dict(by.most_common()), "measured": measured,
             "count": sum(lo <= r["at"] < hi for r in rows),
             "unmeasured_by_gate": dict(missing), "cap_s": REFUSAL_CAP_S,
             "chat_s": sum(length(union(v)) for (kind, _), v in spans.items() if kind != "w"),
@@ -396,14 +424,16 @@ def budget(lo, hi, events=None):
     total["tools"] -= total["locks"]
     workers["locks"] = min(sum(s for s, worker in paid if worker), workers["tools"], total["locks"])
     workers["tools"] -= workers["locks"]
-    hooks_by = collections.Counter()
+    hooks_by, by_hook = collections.Counter(), collections.Counter()
     for h in events.get("h", ()):
         if lo <= h[1] < hi:
             hooks_by[h[3] + (":" + h[6] if h[6] else "")] += h[5] / 1000.0
+            by_hook["%s/%s" % ("stop" if h[3] == "Stop" else "hooks", hook_key(str(h[4])))] += h[5] / 1000.0
     return {"lo": lo, "hi": hi, "seconds": {k: round(total[k], 1) for k, _, _ in CLASSES},
             "chat_s": round(sum(chats.values()), 1), "worker_s": round(sum(workers.values()), 1),
             "worker": {k: round(v, 1) for k, v in workers.items() if v}, "runs": len(runs), "jobs": jobs,
-            "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)}, "refusals": recovery["count"], "refusal_cost": recovery}
+            "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)},
+            "hooks_by_hook": {k: round(v, 1) for k, v in by_hook.most_common(20)}, "refusals": recovery["count"], "refusal_cost": recovery}
 
 
 def shares(b):
@@ -650,6 +680,7 @@ def document(now, hours=24.0, write=True):
            "bench_min": round(b["worker"].get("bench", 0) / 60.0, 1),
            "harness_min": round(harness / 60.0, 1), "harness_share": round(share, 3), "classes": rows,
            "hooks_by_min": {k: round(v / 60.0, 1) for k, v in b["hooks_by"].items()}, "refusals": b["refusals"],
+           "hooks_by_hook_min_day": {k: round(v / 60.0 / (hours / 24), 2) for k, v in b["hooks_by_hook"].items()},
            "worker_runs": b["runs"], "band_days": covered, "holes": holes(b, med),
            "levers": levers(events, lo, now), "problems_by_day": problem_trend(now)}
     recovery = b["refusal_cost"]
@@ -809,6 +840,8 @@ def improvement_class(rule, pid):
         return key if key in FLOORS else None
     if ident.startswith(("chat/hooks", "hooks/")):
         return "hooks"
+    if ident.startswith(("stop/", "refusal/")):
+        return ident.split("/", 1)[0]
     if ident.startswith(("chat/tests", "tests/", "test-health/")) or rule.startswith("test_") or rule == suite_audit.RULE:
         return "suite_run"
     return "suite_wait" if ident.startswith("chat/queue") else None
@@ -859,15 +892,22 @@ def unit_names(item):
     named = set()
     for ident in item.get("ids") or ():
         if item["class"] == "suite_run":
-            found = re.fullmatch(r"(?:test_\w+|%s):([\w.-]+):([\w.-]+)|opportunity:tests/([\w.-]+)/([\w.-]+)"
-                                 % suite_audit.RULE, str(ident))
+            found = re.fullmatch(r"(?:test_\w+|%s):([\w.-]+):([\w.-]+)|opportunity:(?:tests|test-health/[\w-]+)/"
+                                 r"([\w.-]+)/(.+)" % suite_audit.RULE, str(ident))
             if found:
                 named.add("%s/%s" % (found.group(1) or found.group(3), found.group(2) or found.group(4)))
-        elif item["class"] in ("hooks", "stop"):
-            found = re.fullmatch(r"\w+:hooks/(.+)", str(ident))
+        elif item["class"] in ("hooks", "stop", "refusal"):
+            found = re.fullmatch(r"\w+:(?:hooks|stop|refusal)/(.+)", str(ident))
             if found:
                 named.add(found.group(1))
     return named
+
+
+def counted(item):
+    """A test-health fix that cuts runs or reorders them (retests, serial runs, flaky reruns, the suites a file pulls)
+    leaves a run's wall as it was: only the class's day totals can prove it."""
+    return item["class"] == "suite_run" and any(re.match(
+        r"opportunity:test-health/(?:retests|serial|flaky|fan-out)(?:/|$)", str(i)) for i in item.get("ids") or ())
 
 
 def hook_key(command):
@@ -926,10 +966,19 @@ def saved_min_day(item, landed, now):
 
 def unit_samples(item, lo, hi):
     """{key: [values]} of the class's natural unit in [lo, hi): per suite (repo/label), per hook (its script's base
-    name and arguments), per wait class."""
+    name and arguments), per gate (its recovery seconds in each whole day back from hi, 0 on a day it refused nothing,
+    so fewer refusals prove as well as faster recoveries), per wait class."""
     if item["class"] == "suite_run":
         return suite_audit.samples(suites_path(), lo, hi)
     out = collections.defaultdict(list)
+    if item["class"] == "refusal":
+        rows, events, days = refusal_rows(lo - REFUSAL_CAP_S, hi), event_rows(lo, hi, ("c", "t")), []
+        while hi - 86400 * (len(days) + 1) >= lo:
+            end = hi - 86400 * len(days)
+            days.append(refusal_cost(end - 86400, end, events, rows)["by_gate_s"])
+        for gate in set(unit_names(item)).union(*days) if days else ():
+            out[gate] = [d.get(gate, 0.0) for d in reversed(days)]
+        return out
     if item["class"] in ("hooks", "stop"):
         for h in event_rows(lo, hi, ("h",)).get("h", ()):
             if len(h) > 5 and lo <= h[1] < hi and num(h[5]) is not None and (h[3] == "Stop") == (item["class"] == "stop"):
@@ -956,12 +1005,13 @@ def unit_gone(item, named, after, need, ended, now):
 
 def unit_proof(item, started, ended, now):
     """A landed improvement whose class has a natural unit, proven from the journals once N samples follow the night:
-    the medians per key (the keys its ids name, else every suite, hook script or wait class) before the night and
-    after it, weighted by the samples after it, so a changed mix of suites or hooks reads as no gain. A proven gain
-    sums, over the keys proven on their own, the key's delta times its daily exposure since the night. No sample
-    before the night keeps the day totals; a named unit that no longer exists is `gone`."""
+    the medians per key (the keys its ids name, else every suite, hook script, gate's day or wait class; a suite's
+    fastest run, as contention swamps its median wall) before the night and after it, weighted by the samples after it,
+    so a changed mix of suites or hooks reads as no gain. A proven gain sums, over the keys proven on their own, the
+    key's delta times its daily exposure since the night. No sample or a zero median before the night, or a fix that
+    cuts runs (`counted`), keeps the day totals; a named unit that no longer exists is `gone`."""
     unit = UNITS.get(item["class"])
-    if not unit:
+    if not unit or counted(item):
         return None
     label, need, ratio, daily, scale = unit
     named = unit_names(item)
@@ -971,7 +1021,9 @@ def unit_proof(item, started, ended, now):
         if unit_gone(item, named, after, need, ended, now):
             return {"proven": False, "gone": True, "text": "%s no longer exists" % ", ".join(sorted(named))}
         before, after = ({k: v for k, v in d.items() if k in named} for d in (before, after))
-    if not any(before.values()):
+    stat = UNIT_STAT.get(item["class"], statistics.median)
+    before = {k: v for k, v in before.items() if v and stat(v) > 0}
+    if not before:
         return None
     keys = [k for k, v in after.items() if len(v) >= need and before.get(k)]
     if not keys:
@@ -979,13 +1031,12 @@ def unit_proof(item, started, ended, now):
             label, max((len(v) for v in after.values()), default=0), need)}
     weight = {k: len(after[k]) for k in keys}
     total = float(sum(weight.values()))
-    was = sum(weight[k] * statistics.median(before[k]) for k in keys) / total
-    now_ = sum(weight[k] * statistics.median(after[k]) for k in keys) / total
+    was = sum(weight[k] * stat(before[k]) for k in keys) / total
+    now_ = sum(weight[k] * stat(after[k]) for k in keys) / total
     proven = now_ <= ratio * was
     days = max(1.0, (now - ended) / 86400.0)
-    gain = round(sum((statistics.median(before[k]) - statistics.median(after[k])) * weight[k] for k in keys
-                     if statistics.median(after[k]) <= ratio * statistics.median(before[k])) / days / scale,
-                 1) if proven else 0.0
+    gain = round(sum((stat(before[k]) - stat(after[k])) * weight[k] for k in keys
+                     if stat(after[k]) <= ratio * stat(before[k])) / days / scale, 1) if proven else 0.0
     span = "%s → %s %s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label)
     return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total), "span": span,
             "gain": gain, "daily": daily,

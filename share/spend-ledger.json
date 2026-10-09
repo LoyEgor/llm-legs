@@ -18,6 +18,7 @@
    "audited_at": "2026-10-08T03:17:55+03:00",
    "by": "feat/suite-audit-instruction-gate",
    "cpu_run": 46.3,
+   "wall_run": 28.4,
    "cpu_min_day": 69.72,
    "sources": {
     "llm-legs/tests/instruction_gate_harness.sh": "8c221c5b4f21b43b2247d00dafb1cf9a9c7345d0",
@@ -121,6 +122,7 @@
    "audited_at": "2026-10-08T04:01:43+03:00",
    "by": "feat/suite-audit-worker-pick",
    "cpu_run": 78.9,
+   "wall_run": 61.0,
    "cpu_min_day": 52.53,
    "sources": {
     "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
@@ -135,6 +137,7 @@
    "audited_at": "2026-10-08T03:50:09+03:00",
    "by": "feat/suite-audit-night-run",
    "cpu_run": 80.1,
+   "wall_run": 66.0,
    "cpu_min_day": 39.85,
    "sources": {
     "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
@@ -164,6 +167,7 @@
    "audited_at": "2026-10-09T08:26:15+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-consistency-20261009T024801Z-5da3",
    "cpu_run": 24.8,
+   "wall_run": 98.8,
    "cpu_min_day": 58.27,
    "sources": {
     "llm-legs/tests/lib/suite-journal.sh": "ae3e1243f0942b305024d91a0ddcad3f87da24ab",

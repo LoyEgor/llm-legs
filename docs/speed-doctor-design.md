@@ -145,7 +145,11 @@ outside) is the parent of its parts, never ranked: floor share = model over the 
 counts each minute once (`<chat> min + <worker> w-min/day`). The 7-day band only names sudden regressions as holes. A class gap ≥ 0.5 min/day adds to the best-ranked opportunity whose fix
 `time_budget.improvement_class` scores against that class (hooks and Stop → chat/hooks, suites → chat/tests, suite wait →
 chat/queue), else it is `opportunity:time/<class>` (`TIME_LEVERS`); recoverable minutes set the score, so the night takes
-the biggest gap even when nothing regressed, and an empty pick names them in `why_none`.
+the biggest gap even when nothing regressed, and an empty pick names them in `why_none`. Gate refusal recovery (a
+PreToolUse denial, a Stop or PostToolUse block, to the session's next accepted call or the turn's end, the next refusal
+splitting a shared window) and hook time come apart per gate and per hook: each ≥ 0.5 min/day is
+`opportunity:refusal/<gate>`, `:hooks/<hook>` or `:stop/<hook>` at its own minutes (`unit_rows`), and only the rest of
+the class gap goes on as above.
 **Floor rows** (rule `time_floor`, counted, ledger states as regressions): `time_floor:<class>` more than `FLOOR_ROW_MIN_DAY` (30)
 over its floor in the last day, `:full-runs` when every-suite runs a chat or a worker started (the night's run and
 Egor's terminal carry no session) take as many minutes, named by chat, `:workers-active` when the last night's wall is as

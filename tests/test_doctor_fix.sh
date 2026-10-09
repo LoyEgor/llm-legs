@@ -1121,7 +1121,7 @@ env "${speed_env[@]}" bash "$FIX" launch harness --night n14 >"$WORK/out" 2>"$WO
 assert jqe --arg m "$L/tests/test_mid.sh" 'map(select(.[0] | startswith("speed-"))) == [["speed-suite-audit-llm-legs-test-mid", ["suite_audit:llm-legs:test_mid", [$m]]]]' <(speed_runs)
 brief=$(grep -F speed-suite-audit "$WORK/out" | cut -f2)
 assert [ "$(head -n1 "$brief")" = 'STRONG: yes' ]
-for step in '1. What each check guards' '2. Where the CPU goes' 'Never shorten a sleep or a timeout a race check depends on' \
+for step in '1. What each check guards' '2. Where the wall goes' 'Never shorten a sleep or a timeout a race check depends on' \
   'assert count unchanged' 'every mutation still red' 'kept (the suite is fine: a normal outcome)' 'bin/speed-doctor --suite-audit'; do
   assert grep -qF "$step" "$brief"
 done

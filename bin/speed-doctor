@@ -7,6 +7,7 @@ journals under ${SPEED_DOCTOR_DIR:-~/.cache/speed-doctor}, and lays its result i
 
 import argparse
 import bisect
+import collections
 import glob
 import hashlib
 import importlib.machinery
@@ -796,21 +797,48 @@ def per_day(total, worker=0.0):
     return " + ".join(parts + (["%s w-min" % fmt(worker)] if worker else [])) + "/day"
 
 
+def unit_rows(budget, taken):
+    """Each gate's refusal recovery and each hook's own time over the worth line, its own row at its own minutes, so
+    the night sees which hook slows or redoes the work; an id another rule already prices keeps that row."""
+    out = []
+    found = [("refusal/" + gate, om) for gate, om in ((budget.get("refusal_cost") or {}).get("by_gate_min_day") or {}).items()]
+    for target, om in sorted(found + list((budget.get("hooks_by_hook_min_day") or {}).items())):
+        family, _, key = target.partition("/")
+        if om < LIMITS["worth_om_day"] or "opportunity:" + target in taken:
+            continue
+        fields = dict(opportunity_fields(om, dict(TIME_LEVERS[family], component=target, hook=key)), target=target,
+                      own_price=True)
+        out.append({"id": "opportunity:" + target, "rule": "opportunity", "state": "watch",
+                    "fact": "%s · %s · %s · %s" % (time_budget.LABEL[family], key, per_day(om), fields["levers"][0]),
+                    "value": om, "limit": LIMITS["worth_om_day"], "unit": "min/day", "window_h": 24, "exposure": None,
+                    "count": None, "first_seen": None, "last_seen": None, "evidence": [], "ledger": None, "group": "time",
+                    "opportunity": fields})
+    return out
+
+
 def with_time(opportunities, budget):
-    """A class over its floor adds its gap to the best-ranked opportunity already pricing it (the class
-    time_budget.improvement_class scores its fix against), else it becomes its own time opportunity. Recoverable minutes set the score, so the biggest gap is the one the night takes.
+    """A class over its floor, less what its gate and hook rows (unit_rows) already price, adds its gap to the
+    best-ranked opportunity already pricing it (the class time_budget.improvement_class scores its fix against), else
+    it becomes its own time opportunity. Recoverable minutes set the score, so the biggest gap is the one the night takes.
     The suites-running gap is net of what test-health opportunities already recover: one minute is offered once."""
     out = sorted(opportunities, key=rank_key)
     offered = sum(o["opportunity"]["recoverable_min_day"] for o in out if o["id"].startswith(TEST_HEALTH_ID))
+    units = unit_rows(budget, {o["id"] for o in out})
+    named = collections.Counter()
+    for o in units:
+        named[time_budget.improvement_class(o["rule"], o["id"])] += o["opportunity"]["recoverable_min_day"]
+    out += units
     for key, label, actual, gap, floor, worker in time_gaps(budget):
-        if key == "suite_run" and offered:
-            left = max(0.0, gap - offered)
-            gap, worker = round(left, 2), round(worker * left / gap, 2) if gap else 0.0
+        for taken in (offered if key == "suite_run" else 0.0, named[key]):
+            if taken:
+                left = max(0.0, gap - taken)
+                gap, worker = round(left, 2), round(worker * left / gap, 2) if gap else 0.0
         if gap < LIMITS["worth_om_day"]:
             continue
         # chat/hooks prices the Stop leaf too (CHAT_LEAVES), though its fix is scored against hooks alone.
         family = "hooks" if key == "stop" else key
         owner = next((o for o in out if not o["opportunity"]["needs_egor"] and not o["id"].startswith(TEST_HEALTH_ID)
+                      and not o["opportunity"].get("own_price")
                       and time_budget.improvement_class(o["rule"], o["id"]) == family), None)
         if owner:
             f = owner["opportunity"]
@@ -1003,7 +1031,7 @@ def judge_digest(ledger):
         digest.update(handle.read())
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
     digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SLICE_LEVER, NO_SLICE_LEVER, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
-                              TIME_LEVERS, spend.SHARE_RISE, spend.LEAVES, suite_audit.CPU_RISE, suite_audit.JUMP_S,
+                              TIME_LEVERS, spend.SHARE_RISE, spend.LEAVES, suite_audit.WALL_RISE, suite_audit.JUMP_S,
                               suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.FLOORS,
                               time_budget.FLOOR_ROW_MIN_DAY, TEST_HEALTH_LEVERS, test_health.LINES, test_health.BAND,
                               test_health.IDLE_RATIO, test_health.IDLE_MIN_S, test_health.DEAD_D],

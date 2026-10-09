@@ -2,9 +2,9 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/suite_audit.py, the Suite audits block of the Harness doctor, and time_budget's per-unit proof, off a fixture
 # repository and run-suites journal: pricing over every runner, the due rules (never, a source
-# blob, 1.5x CPU a run, a rise between commits naming its commit, a new heavy suite, a split that is not new), the
+# blob, 2x wall a run, a rise between commits naming its commit, a new heavy suite, a split that is not new), the
 # night's queue, a kept audit closing it with its proof, the restate a night close reads, the Harness menu block and
-# a night improvement proven per unit (suite CPU a run, hook ms a call) once N samples follow it. Fixture directories
+# a night improvement proven per unit (suite wall a run, hook ms a call, gate recovery s a day; test health by its suite or file) once N samples follow it. Fixture directories
 # only.
 set -u
 
@@ -126,9 +126,9 @@ check(found["alpha/test_mid"]["cpu_min_day"] == round(200 / 7 / 60.0, 2) and fou
       " and its CPU a run reads passing runs: %s %s" % (found["alpha/test_mid"], out["head"]))
 due = {p["suite"]["component"]: p for p in out["problems"]}
 heavy = due["alpha/test_heavy"]["suite"]
-check(heavy["at_once"] and heavy["due"] == "CPU a run ×2.5 (40 → 100 s) since %s «heavy waits a minute»" % dear[:7]
+check(heavy["at_once"] and heavy["due"] == "wall a run ×2.5 (40 → 100 s) since %s «heavy waits a minute»" % dear[:7]
       and heavy["commit"] == "%s «heavy waits a minute»" % dear[:7],
-      "a rise of 1.5x and 30 s between commits is due at once and names the commit that changed the suite: %s" % heavy)
+      "a wall rise of 2x and 30 s between commits is due at once and names the commit that changed the suite: %s" % heavy)
 check(due["alpha/test_new"]["suite"]["at_once"]
       and due["alpha/test_new"]["suite"]["due"].startswith("new suite at ×30.0 the median suite a run, added in %s"
                                                             % new[:7])
@@ -154,9 +154,10 @@ recorded = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/tes
                               "night-x", [], NOW)
 stored = json.load(open(os.environ["SPEND_LEDGER"]))["rows"]
 check(stored == [recorded] and recorded["id"] == "suite:alpha/test_mid" and recorded["cpu_run"] == 20
+      and recorded["wall_run"] == 20
       and recorded["verdict"] == "kept" and sorted(recorded["sources"]) == [
           "alpha/tests/helper.sh", "alpha/tests/lib/common.sh", "alpha/tests/test_mid.sh"],
-      "an audit lands in Spend's ledger with its CPU a run and each source's blob: %s" % recorded)
+      "an audit lands in Spend's ledger with its wall and CPU a run and each source's blob: %s" % recorded)
 again = collect()
 check("alpha/test_mid" not in {p["suite"]["component"] for p in again["problems"]}
       and again["proofs"]["alpha/test_mid"]["runs"] == 0
@@ -173,24 +174,24 @@ for name, text in (("helper.sh", "helper changed\n"),):
 check({p["suite"]["component"]: p["suite"]["due"] for p in collect()["problems"]}.get("alpha/test_mid")
       == "source changed", "an audited suite whose tests/ helper changed is due again")
 write("tests/helper.sh", "helper\n")
-ledger([dict(recorded, cpu_run=20 / 1.5)])
+ledger([dict(recorded, wall_run=20 / 2.0)])
 rose = {p["suite"]["component"]: p for p in collect()["problems"]}.get("alpha/test_mid")
-check(rose and rose["suite"]["due"] == "CPU a run ×1.5 since audit"
-      and suite_audit.restate([rose], {"suite:alpha/test_mid": dict(recorded, cpu_run=20 / 1.5)}) == [rose],
-      "CPU a run at 1.5x the audit's is due again, and the audit it rose over does not settle it for a night close")
+check(rose and rose["suite"]["due"] == "wall a run ×2.0 since audit"
+      and suite_audit.restate([rose], {"suite:alpha/test_mid": dict(recorded, wall_run=20 / 2.0)}) == [rose],
+      "wall a run at 2x the audit's is due again, and the audit it rose over does not settle it for a night close")
 dropped = dict(recorded, sources=dict(recorded["sources"], **{"alpha/tests/gone.sh": "0" * 40}))
 ledger([dropped])
 gone = {p["suite"]["component"]: p for p in collect()["problems"]}.get("alpha/test_mid")
 check(gone and gone["suite"]["due"] == "source changed" and suite_audit.restate([gone], {"suite:alpha/test_mid": dropped})
       == [gone], "a source the audit recorded and the suite no longer has is a change the old audit does not settle")
-ledger([dict(recorded, cpu_run=20 / 1.4)])
-check("alpha/test_mid" not in {p["suite"]["component"] for p in collect()["problems"]}, "1.4x is not due")
+ledger([dict(recorded, wall_run=20 / 1.9)])
+check("alpha/test_mid" not in {p["suite"]["component"] for p in collect()["problems"]}, "1.9x is not due")
 ledger([recorded])
 later = [row(NOW + 60 + i, {"test_mid": cpu(8)}, split) for i in range(5)]
 save(journal + later)
 proof = collect(NOW + 600)["proofs"]["alpha/test_mid"]
-check(proof["proven"] and suite_audit.proof_text(proof) == "CPU-s a run 20 → 8.0 (×0.40, 5 runs) · proven",
-      "an audit is proven once 5 runs after it read 0.75x or less of its CPU a run: %s" % proof)
+check(proof["proven"] and suite_audit.proof_text(proof) == "wall-s a run 20 → 8.0 (×0.40, 5 runs) · proven",
+      "an audit is proven once the fastest of 5 runs after it reads 0.65x or less of its wall a run: %s" % proof)
 save(journal + [row(NOW - 3 * 86400 + i, {"test_mid": cpu(250)}, cheap, worker=True) for i in range(30)]
      + [row(NOW - 3600 + i, {"test_mid": cpu(40)}, split) for i in range(suite_audit.RECENT_RUNS)])
 cut = collect()
@@ -199,7 +200,7 @@ check("workers 33 %" in cut["head"], "the workers' share prices their runs at th
       "divides, so runs before a cut never read over 100 %%: %s" % cut["head"])
 recorded = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "split", "night-x", [],
                               NOW)
-check(mid["p50"] == 40 and recorded["cpu_run"] == 40 and mid["cpu_min_day"] == round(40 * 60 / 7 / 60.0, 2),
+check(mid["p50"] == 40 and recorded["cpu_run"] == recorded["wall_run"] == 40 and mid["cpu_min_day"] == round(40 * 60 / 7 / 60.0, 2),
       "CPU a run reads the last %d passing runs and CPU-min/day prices the window's runs at it, so a suite cut or split "
       "days ago is queued and audited at its new cost: %s %s" % (suite_audit.RECENT_RUNS, mid, recorded))
 
@@ -217,7 +218,7 @@ lines = h.menu_text(document).splitlines()
 check(document["problem_count"] == 0 and all(p["group"] == "Suite audits" and p["speed"] for p in document["problems"])
       and "0\t\t\tSuite audits: watch · %s" % section["head"] in lines
       and section["head"].startswith("9 due · 4 wall-min/day, 4 CPU-min/day over 9 suites · workers 1 % · next: alpha/test_heavy")
-      and "1\t\t\t   2.0 wall-min/day ·   2.0 CPU-min/day ·   70 CPU-s a run · alpha/test_heavy · audit due: %s"
+      and "1\t\t\t   2.0 wall-min/day ·   2.0 CPU-min/day ·   40 wall-s a run · alpha/test_heavy · audit due: %s"
       % heavy["due"] in lines,
       "Harness lays Suite audits beside Spend: watch rows counted nowhere, its block: %s" % lines[2:6])
 
@@ -226,25 +227,25 @@ item = {"ref": "night-x", "ids": ["test_slow:alpha:test_mid"], "class": time_bud
 night = {"started": NOW - 30, "ended": NOW, "hours": 0.0, "improvements": [item]}
 save(journal + later[:4])
 check(item["class"] == "suite_run" and time_budget.roi_lines([night], NOW + 600)[0]
-      == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · CPU-s/run: 4 of 5 since",
+      == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · wall-s/run: 4 of 5 since",
       "a suite improvement waits for 5 runs after the night, not a full day")
 save(journal + later[:4] + [row(NOW + 120 + i, {"test_mid": cpu(1, rc=1)}, split) for i in range(5)])
-check(time_budget.roi_lines([night], NOW + 600)[0] == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · CPU-s/run: 4 of 5 since",
+check(time_budget.roi_lines([night], NOW + 600)[0] == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · wall-s/run: 4 of 5 since",
       "failed runs stop early and are no proof sample: cheap failures after a night never prove it")
 save(journal + later)
 check(time_budget.roi_lines([night], NOW + 600)
-      == ["roi · night-x · alpha/test_mid · 1.5M · +3/-9 · 20 → 8.0 CPU-s/run · proven · 1.0 CPU-min/day",
-          "roi · night: improvements 1.5M · gained 0.0 min/day · 1.0 CPU-min/day · 1 proven per unit",
-          "roi · last 1 nights: improvements 1.5M · gained 0.0 min/day · 1.0 CPU-min/day · 1 proven per unit"],
+      == ["roi · night-x · alpha/test_mid · 1.5M · +3/-9 · 20 → 8.0 wall-s/run · proven · 1.0 suite-min/day",
+          "roi · night: improvements 1.5M · gained 0.0 min/day · 1.0 suite-min/day · 1 proven per unit",
+          "roi · last 1 nights: improvements 1.5M · gained 0.0 min/day · 1.0 suite-min/day · 1 proven per unit"],
       "with 5 runs after it the night's roi line reads its per-unit before → after, and its gain in the unit's own "
-      "daily measure: 12 CPU-s a run × 5 runs in the first day: %s" % time_budget.roi_lines([night], NOW + 600))
+      "daily measure: 12 wall-s a run × 5 runs in the first day: %s" % time_budget.roi_lines([night], NOW + 600))
 remeasured = dict(item, files=[["alpha", "share/suite_audit.py"], ["alpha", "tests/test_heavy.sh"]])
 check(time_budget.roi_lines([dict(night, improvements=[remeasured])], NOW + 600)
-      == ["roi · night-x · alpha/test_mid · 1.5M · +3/-9 lines · 20 → 8.0 CPU-s/run · measurement fix",
+      == ["roi · night-x · alpha/test_mid · 1.5M · +3/-9 lines · 20 → 8.0 wall-s/run · measurement fix",
           "roi · night: improvements 1.5M · gained 0.0 min/day · 1 measurement fix",
           "roi · last 1 nights: improvements 1.5M · gained 0.0 min/day · nothing measured yet"]
       and time_budget.roi_lines([dict(night, improvements=[dict(remeasured, files=[["alpha", "tests/test_mid.sh"]])])],
-                                NOW + 600)[0].endswith("proven · 1.0 CPU-min/day"),
+                                NOW + 600)[0].endswith("proven · 1.0 suite-min/day"),
       "a suite's drop is a measurement fix unless the fix touched that suite's own code")
 gone = dict(item, ids=["suite_audit:alpha:test_gone"])
 check(time_budget.unit_proof(gone, NOW - 30, NOW, NOW + 600)["gone"]
@@ -284,8 +285,44 @@ check(shown["text"] == "600 → 90 ms/call · proven · 0.8 min/day" and shown["
       "a hook improvement reads ms a call per script (Stop hooks apart, only the hooks its ids name) from 50 calls "
       "after it, its gain each key's ms saved × calls a day; a named hook absent a full day is gone; a class with no "
       "unit, or no sample of it before the night, keeps the day totals: %s" % shown)
+flat = [{"wall": w, "cpu": 20.0, "head": h, "end": NOW + i, "ok": True}
+        for i, (w, h) in enumerate([(40.0, "a")] * 6 + [(100.0, "b")] * 6)]
+check(suite_audit.jump(flat) and suite_audit.jump(flat)["before"] == 40 and suite_audit.proof(
+    {"history": [dict(f, wall=30.0) for f in flat[:5]]},
+    {"audited_at": datetime.datetime.fromtimestamp(NOW - 1).astimezone().isoformat(), "wall_run": 100.0,
+     "cpu_run": 20.0})["proven"],
+      "a suite whose wall rises or falls at flat CPU is due and proven by its wall")
+save(journal + later)
+idle = dict(item, ids=["opportunity:test-health/idle/alpha/test_mid"])
+fan = dict(item, ids=["opportunity:test-health/fan-out/alpha/share/x.sh"], files=[["alpha", "share/x.sh"]])
+check(time_budget.unit_names(idle) == {"alpha/test_mid"} and time_budget.unit_names(fan) == {"alpha/share/x.sh"}
+      and time_budget.roi_lines([dict(night, improvements=[idle])], NOW + 600)[0]
+      == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · 20 → 8.0 wall-s/run · proven · 1.0 suite-min/day"
+      and time_budget.unit_proof(fan, NOW - 30, NOW, NOW + 600) is None
+      and time_budget.unit_proof(dict(item, ids=["opportunity:test-health/retests"]), NOW - 30, NOW, NOW + 600) is None
+      and time_budget.roi_lines([dict(night, improvements=[fan])], NOW + 600)[0]
+      == "roi · night-x · alpha/share/x.sh · 1.5M · +3/-9 lines · pending a full day",
+      "a test health fix is proven on the suite it names, and one that cuts runs (retests, a file's fan-out) on the "
+      "class's day totals, the file named: %s" % time_budget.roi_lines([dict(night, improvements=[idle, fan])], NOW + 600))
+gates = []
+for start, gate in ((NOW - 30 - 7 * 86400, "g.sh"), (NOW - 30 - 7 * 86400, "other.sh"), (NOW + 60, "other.sh")):
+    gates += [{"at": start + (k + 0.5) * 86400, "sid": "%s%03d" % (gate[:5], k), "gate": gate, "tool_use_id": ""} for k in range(7)]
+calls = [["c", g["at"] + 30, "~", "Bash", 0, 1, "c", "ok%d" % i, g["sid"], 1] for i, g in enumerate(gates)]
+for c in calls:
+    with open(os.path.join(events, time_budget.local_day(c[1]) + ".jsonl"), "a") as handle:
+        handle.write(json.dumps(c, separators=(",", ":")) + "\n")
+time_budget.refusal_rows = lambda lo, hi: [dict(g) for g in gates if lo <= g["at"] < hi]
+week = NOW + 7 * 86400 + 120
+fixed = time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/g.sh"]}, NOW - 30, NOW, week)
+still = time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/other.sh"]}, NOW - 30, NOW, week)
+check(time_budget.improvement_class("opportunity", "opportunity:refusal/g.sh") == "refusal"
+      and fixed["text"] == "30 → 0.0 s/day · proven · 0.5 min/day" and still["proven"] is False
+      and time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/g.sh"]}, NOW - 30, NOW,
+                                 NOW + 3 * 86400)["proven"] is None,
+      "a gate's refusal fix is proven by its recovery seconds a day, a silent day counting 0, a week after the night: "
+      "%s %s" % (fixed, still))
 print(count[0])
 EOF
 ) || { printf 'FAIL: the Suite audits block misjudged its fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; Suite audits price every suite over every runner, judge audits due by never/source blob/1.5x CPU a run, a rise between commits or a new heavy suite at once naming its commit (a split is not new), queue the night, close a kept audit with its proof, settle it for a night close, lay their block in Harness; a night improvement is proven per unit (suite CPU a run, hook ms a call) once N samples follow it\n' "$asserts"
+printf 'PASS: %s asserts; Suite audits price every suite over every runner, judge audits due by never/source blob/2x wall a run, a rise between commits or a new heavy suite at once naming its commit (a split is not new), queue the night, close a kept audit with its proof, settle it for a night close, lay their block in Harness; a night improvement is proven per unit (suite wall a run, hook ms a call, gate recovery s a day; test health by its suite or file) once N samples follow it\n' "$asserts"

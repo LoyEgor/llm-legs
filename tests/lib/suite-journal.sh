@@ -75,8 +75,10 @@ suite_journal_git() { # checkout -> suite_journal_head, and suite_journal_root: 
   return 0
 }
 
-suite_journal_content() {
+suite_journal_content() { # repo [since-ms] -> suite_journal_tree, '' once a file changed after since
   suite_journal_tree=$(
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
+    PATH=${suite_journal_path:-$PATH}
     (cd "$1" && git ls-files -z --cached --others --exclude-standard 2>/dev/null && printf '\0') |
     python3 -S -c '
 import hashlib
@@ -86,15 +88,19 @@ import sys
 
 try:
     os.chdir(sys.argv[1])
+    since = float(sys.argv[2]) / 1000 if len(sys.argv) > 2 and sys.argv[2] else None
     paths = sys.stdin.buffer.read()
     if not paths.endswith(b"\0"):
         raise OSError("not a git tree")
     tree = hashlib.sha256()
     for path in sorted(set(paths.split(b"\0")) - {b""}):
         try:
-            mode = os.lstat(path).st_mode
+            info = os.lstat(path)
         except FileNotFoundError:
             continue
+        mode = info.st_mode
+        if since is not None and info.st_mtime > since:
+            raise OSError("changed during the run")
         if stat.S_ISLNK(mode):
             kind, data = b"link", os.readlink(path)
         elif stat.S_ISREG(mode):
@@ -107,7 +113,7 @@ try:
     print(tree.hexdigest()[:16])
 except OSError:
     pass
-' "$1"
+' "$1" "${2:-}"
   ) || suite_journal_tree=''
 }
 
@@ -233,7 +239,7 @@ suite_journal_session=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_LAUNCHER_SESSION:-}}
 suite_journal_run=${WORKER_RUN_ID:-}
 suite_journal_signal='' suite_journal_exit=''
 suite_journal_git "$suite_journal_repo"
-suite_journal_content "$suite_journal_repo"
+suite_journal_path=$PATH
 
 suite_journal_end() { # exit-code -> returns it
   [ -z "${suite_journal_done:-}" ] && [ "${BASHPID:-$$}" = "$$" ] || return "$1"
@@ -250,6 +256,7 @@ suite_journal_end() { # exit-code -> returns it
   suite_journal_secs secs "$(( ended - suite_journal_began ))"
   suite_journal_suites=''
   suite_journal_suite "$name" "$rc" "$secs" "$cpu" '' "${suite_shard_ran:+\"shards\":$suite_shard_ran}"
+  suite_journal_content "$suite_journal_repo" "$suite_journal_began"
   suite_journal_secs began "$suite_journal_began"
   suite_journal_secs ended "$ended"
   suite_journal_row direct "$$" "$began" "$began" "$ended" "$suite_journal_repo" "$suite_journal_root" \
