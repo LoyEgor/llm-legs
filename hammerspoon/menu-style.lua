@@ -5,18 +5,19 @@ local M = {}
 M.RED = { red = 0.9, green = 0.25, blue = 0.2 }
 M.DIM_RED = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
 M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }
-M.DIM = { list = "System", name = "tertiaryLabelColor" }
+M.DIM_GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 0.55 }
+M.DIM ={ list = "System", name = "tertiaryLabelColor" }
 M.MONO = { name = "Menlo", size = 13 }
 
 -- A disabled NSMenu row re-tints a custom text colour (dark green turns grey-green, red pales, a dim
--- red dims twice). Measured on the light theme: each input in a disabled row renders as its colour
--- at DIM_RED's alpha in an enabled row.
+-- red dims twice). Measured on the light theme: each input in a disabled row renders as its DIM_
+-- colour in an enabled row. DIM needs none: a disabled row already draws it at its enabled look.
 local INACTIVE_GREEN = { red = 0.17, green = 0.73, blue = 0.36 }
 local INACTIVE_RED = { red = 0.92, green = 0.17, blue = 0.08 }
 
 function M.tone(color, inactive)
   if not inactive then return color end
-  if color == M.GREEN then return INACTIVE_GREEN end
+  if color == M.GREEN or color == M.DIM_GREEN then return INACTIVE_GREEN end
   if color == M.RED or color == M.DIM_RED then return INACTIVE_RED end
   return color
 end
@@ -44,7 +45,7 @@ local function inactiveTitle(title)
   for _, run in ipairs(title:asTable()) do
     local shown = type(run) == "table" and run.attributes and run.attributes.color
     if type(shown) == "table" then
-      for _, color in ipairs({ M.RED, M.DIM_RED, M.GREEN }) do
+      for _, color in ipairs({ M.RED, M.DIM_RED, M.GREEN, M.DIM_GREEN }) do
         if same(shown, color) then
           out = out:setStyle({ color = M.tone(color, true) }, run.starts, run.ends)
           break

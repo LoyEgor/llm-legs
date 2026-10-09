@@ -325,7 +325,7 @@ local function rawInDisabled(menu)
     if item.disabled and type(item.title) ~= "string" then
       for _, run in ipairs(item.title:asTable()) do
         local shown = type(run) == "table" and run.attributes and run.attributes.color
-        for _, raw in ipairs({ palette.RED, palette.DIM_RED, palette.GREEN }) do
+        for _, raw in ipairs({ palette.RED, palette.DIM_RED, palette.GREEN, palette.DIM_GREEN }) do
           if shown and sameColor(shown, raw) then return text(item.title) end
         end
       end

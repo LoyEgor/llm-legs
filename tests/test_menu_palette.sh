@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # hammerspoon/menu-style.lua is the only palette: no other menu module builds a colour, and every
-# palette is exactly PALETTE, each colour opaque or at DIM_RED's alpha. A disabled row takes the
-# calibrated colours of M.tone(color, true): every module with disabled rows passes its tree through
-# M.mono, which retones them, and a module whose titles skip that walk (M.toned) sends every RED,
-# DIM_RED and GREEN through tone(). GREEN goes through tone() everywhere.
+# palette is exactly PALETTE: RED and GREEN opaque, DIM_RED and DIM_GREEN each at one shared alpha,
+# and the only other colour literals are the calibrated INACTIVE_ ones. A disabled row takes those
+# through M.tone(color, true): every module with disabled rows passes its tree through M.mono, which
+# retones them, and a module whose titles skip that walk (M.toned) sends every RED and DIM_RED through
+# tone(). GREEN and DIM_GREEN go through tone() everywhere.
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -17,7 +18,7 @@ import sys
 
 style_path, *modules = sys.argv[1:]
 HOME = "take the colour from hammerspoon/menu-style.lua"
-PALETTE = {"RED", "DIM_RED", "GREEN", "DIM"}
+PALETTE = {"RED", "DIM_RED", "GREEN", "DIM_GREEN", "DIM"}
 COLOR = [
     (re.compile(r"\b(red|green|blue|hue|saturation|brightness|white)\s*=\s*[-+]?[0-9.]"), "a colour component"),
     (re.compile(r"\balpha\s*="), "an alpha"),
@@ -59,7 +60,7 @@ for path in modules:
         for pattern, what in COLOR:
             if pattern.search(body):
                 problems.append(f"{path}:{number}: {what} outside menu-style.lua ({body.strip()}); {HOME}")
-        if raw(body, ["GREEN"]):
+        if raw(body, ["GREEN", "DIM_GREEN"]):
             problems.append(f"{path}:{number}: a raw GREEN ({body.strip()}); pass it through menu-style.lua"
                             " tone(GREEN, inactive) so a disabled row gets the calibrated green")
         if skips and raw(body, ["RED", "DIM_RED"]):
@@ -89,6 +90,14 @@ if not problems:
     dim_alpha = float(palette["DIM_RED"].get("alpha", 1))
     if "alpha" in palette["RED"] or rgb(palette["DIM_RED"]) != rgb(palette["RED"]) or dim_alpha >= 1:
         problems.append("menu-style.lua: RED must be opaque and DIM_RED be RED at an alpha below 1")
+    if (rgb(palette["DIM_GREEN"]) != rgb(palette["GREEN"])
+            or float(palette["DIM_GREEN"].get("alpha", 1)) != dim_alpha):
+        problems.append("menu-style.lua: DIM_GREEN must be GREEN at DIM_RED's alpha")
+    for number, line in enumerate(style.splitlines(), 1):
+        if re.search(r"\{\s*red\s*=", line) and not re.match(
+                r"(M\.(%s)|local INACTIVE_(GREEN|RED)) = \{" % "|".join(PALETTE), line):
+            problems.append(f"menu-style.lua:{number}: a colour outside the palette and its calibrated INACTIVE_"
+                            f" values ({line.strip()}); a new look is Egor's call and is measured on the real menu")
     for name, fields in palette.items():
         alpha = float(fields.get("alpha", 1))
         if "list" not in fields and alpha not in (1.0, dim_alpha):
@@ -127,4 +136,14 @@ case "$added" in *"Egor's call"*) ;; *) fail "an invented palette colour passed:
 sed 's/^M.GREEN = .*/M.GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 0.3 }/' "$ROOT/hammerspoon/menu-style.lua" >"$WORK/menu-style.lua"
 shade=$(check "$WORK/menu-style.lua")
 case "$shade" in *"GREEN's alpha 0.3"*) ;; *) fail "an invented alpha passed: $shade" ;; esac
+sed 's/^M.DIM_GREEN = .*/M.DIM_GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 0.3 }/' "$ROOT/hammerspoon/menu-style.lua" >"$WORK/menu-style.lua"
+shade=$(check "$WORK/menu-style.lua")
+case "$shade" in *"DIM_GREEN must be GREEN at DIM_RED's alpha"*) ;; *) fail "a DIM_GREEN off DIM_RED's alpha passed: $shade" ;; esac
+{ cat "$ROOT/hammerspoon/menu-style.lua"; printf 'local SOFT_RED = { red = 0.95, green = 0.4, blue = 0.35 }\n'; } >"$WORK/menu-style.lua"
+stray=$(check "$WORK/menu-style.lua")
+case "$stray" in *"a colour outside the palette and its calibrated INACTIVE_"*) ;; *) fail "an uncalibrated colour in menu-style.lua passed: $stray" ;; esac
+printf 'local g = { color = style.DIM_GREEN }\nlocal h = style.tone(style.DIM_GREEN, false)\n' >"$WORK/dimgreen.lua"
+dimgreen=$(check "$ROOT/hammerspoon/menu-style.lua" "$WORK/dimgreen.lua")
+case "$dimgreen" in *"dimgreen.lua:1: a raw GREEN"*) ;; *) fail "a raw DIM_GREEN outside tone() passed: $dimgreen" ;; esac
+case "$dimgreen" in *"dimgreen.lua:2:"*) fail "DIM_GREEN through tone() was rejected: $dimgreen" ;; esac
 echo "OK: menu-style.lua is the only palette"
