@@ -5591,6 +5591,37 @@
       "reviewed_by": "night fixer harness-tests-20261009T024814Z-377e",
       "note": "The family charges its slowest part, test_review_bench (fastest quintile 78 s; lifecycle 58, panels 64, rounds 45). A 0.5 s stack sample put ~36 % of its wall in brief.seal_overlay_clone: every vendor cell seals the same fixture commits with ~10 git runs (2.9 s a seal at load 220). Fixed: the harness seals each (repo, commit) once through the real function and hands every later cell an APFS clone copy (0.08 s, clean status, same HEAD); direct rb.seal_overlay_clone calls (the lifecycle and rounds sealing tests) stay unmemoized. The part passed in 285 s at load 220 against 600 s+ before.",
       "handoff": null
+    },
+    {
+      "id": "speed-media-wait-real-runs",
+      "title": "Speed's chat/media slice counted every Bash call that named a media script, so edits, greps, syntax checks and test runs read as media waits",
+      "match": {
+        "rule": "opportunity",
+        "ident": "chat/media"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T07:15:00+03:00",
+          "by": "night fixer harness-speed-chat-media-20261009T024749Z-0b86",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the media layer and the g phase spans under the old MEDIA_TOOL regex vs media_tool, per unique Bash command",
+            "data": "1885 unique chat Bash commands of 2026-10-02..09 naming a media script, all profiles; legs.jsonl spans joined by time",
+            "result": "227 runs kept, 3 runs newly caught (a quoted $S/bin/media-run, scripts written by cat > x.sh and run); 1130 mentions leave media; of those, 6 overlapped a real leg: 2 suite runs, 1 mutation batch, 3 bash simple.sh runs of a script an earlier call wrote (the one known miss)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "2026-10-09: chat/media read 1.13 OM/d (opportunity watch, generic slice lever). Attended rows joined to their calls: 1.22 min/day, of which 0.28 were calls that only named a media script (a python edit plus bash -n bin/codex-image took 139 s at load; greps; commit messages; mutation runs), now tool or test time; 0.94 remain, all real runs. Of those, vendor render (the model's time: ElevenLabs/AI Studio speech, gemini-listen, codex render) is the floor. Local parts, priced: browser launch + page load inside attended turns ~10 s/day (codex web p50 3.7 + 7.2 s a leg, gemini flow 7.5 + 3.2 s; a sequential chatgpt-web status loop over 7 accounts 44 s once), cut Chrome reuse across calls saves ~5 s x 2/day, costs two browser engines (share/chatgpt_web.py, share/gemini_web.py) plus idle Chromes held on a machine at load 260; media-run's own pre/post overhead 0.5 + 1.1 s a call (integer-second leg stamps) x ~6 attended calls/day, cut not worth it. Not media waits but seen: four codex web legs of 2026-10-04/06 waited ~560 s past their last save on takes that never rendered (no image after 600s, vendor-side; unattended). Known miss: a script written in one Bash call and run in a later one (bash simple.sh) is no media wait.",
+      "handoff": null,
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-speed-chat-media-20261009T024749Z-0b86"
     }
   ],
   "blind_spots": [
