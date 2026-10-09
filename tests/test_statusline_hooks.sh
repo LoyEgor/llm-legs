@@ -4015,7 +4015,7 @@ wp_run() { # run-id launcher state-json meta-json
   printf '%s\n' "$2" > "$WP_RUNS/$1/launcher"; printf '%s\n' "$3" > "$WP_RUNS/$1/state.json"
   printf '%s\n' "$4" > "$WP_RUNS/$1/meta.json"
 }
-wp_run codex-7-7-live wp-sess "{\"phase\": \"wait\", \"started_epoch\": $((wp_now - 600))}" \
+wp_run codex-7-7-live wp-sess "{\"phase\": \"wait\", \"round_id\": null, \"started_epoch\": $((wp_now - 600))}" \
   "{\n  \"pid\": 2000,\n  \"cli_pid\": 2001,\n  \"pid_started_at\": $((wp_now - 180))\n}"
 printf 'acc · astra · high\n' > "$WP_RUNS/codex-7-7-live/tag"; printf 'Fix the parser\n' > "$WP_RUNS/codex-7-7-live/title"
 printf '184321\n' > "$WP_RUNS/codex-7-7-live/tokens"

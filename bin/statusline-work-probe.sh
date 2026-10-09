@@ -299,7 +299,7 @@ slurp() { # var file
 agent_records=""
 re_started='"started_epoch": *([0-9]+)' re_started_at='"started_at": *([0-9]+)' re_phase='"phase": *"([a-z_-]*)"'
 re_key='^[A-Z][A-Z0-9_-]*:([[:space:]]|$)' re_resume='^(RESUME|ATTACH)[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$'
-re_light='"light": *"([a-z]+)"' re_round='"round_id": *"?([A-Za-z0-9_-]+)'
+re_light='"light": *"([a-z]+)"' re_round='"round_id": *"([A-Za-z0-9_-]+)"'
 for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
   IFS=$'\037' read -r run live waited <<< "$worker_run"
   dir="$runs_root/$run"
