@@ -77,19 +77,19 @@ def units(entry):
     for pattern in entry["globs"]:
         found.update(os.path.normpath(p) for p in glob.glob(expand(pattern), include_hidden=True))
     excluded = [expand(p) if p.startswith(("~", "/", "$")) else p for p in entry.get("exclude") or ()]
-    kept = [p for p in found if not any(fnmatch.fnmatch(p, x) for x in excluded)]
-    if entry.get("type") == "file":
-        kept = [p for p in kept if not os.path.isdir(p) or os.path.islink(p)]
-    elif entry.get("type") == "dir":
-        kept = [p for p in kept if os.path.isdir(p) and not os.path.islink(p) and owned(p)]
+    wanted = {"file": (stat.S_IFREG,), "dir": (stat.S_IFDIR,)}.get(entry.get("type"),
+                                                                     (stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK))
+    kept = []
+    for path in found:
+        if any(fnmatch.fnmatch(path, x) for x in excluded):
+            continue
+        try:
+            info = os.lstat(path)
+        except OSError:
+            continue
+        if stat.S_IFMT(info.st_mode) in wanted and (not entry.get("type") or info.st_uid == os.getuid()):
+            kept.append(path)
     return outermost(kept)
-
-
-def owned(path):
-    try:
-        return os.lstat(path).st_uid == os.getuid()
-    except OSError:
-        return False
 
 
 def unit_stats(path):
@@ -100,7 +100,7 @@ def unit_stats(path):
     except OSError:
         return None
     row = {"path": path, "bytes": info.st_blocks * 512, "size": info.st_size, "files": 0, "newest": info.st_mtime,
-           "dir": stat.S_ISDIR(info.st_mode)}
+           "dir": stat.S_ISDIR(info.st_mode), "reg": stat.S_ISREG(info.st_mode)}
     if not row["dir"]:
         row["files"] = 1
         return row
@@ -147,7 +147,7 @@ def doomed(entry, rows, now, slack=False):
         return out
     if key == "tail_mb":
         limit = value * MB * (SLACK["tail_mb"] if slack else 1)
-        return [(r, "truncate") for r in rows if not r["dir"] and r["size"] > limit]
+        return [(r, "truncate") for r in rows if r["reg"] and r["size"] > limit]
     return []
 
 
@@ -206,8 +206,9 @@ def unregistered(sizes, roots, depth, claims, ignores, min_kb, grow_kb_day, floo
     """(reported, scan) over du sizes in KB. A directory 1..depth below its root is covered when it lies in a store
     unit, or in an ignore match that its root does not lie inside. Its residual is its size minus every covered or
     already-reported part below it (and every other root inside it); it is reported when the residual reaches min_kb or
-    grew by grow_kb_day a day against `old` ({path: [kb, residual]}, old_days back). `claims` maps each store unit to its
-    bytes; `scan` keeps [kb, residual] of every uncovered directory of floor_kb or more for the next comparison."""
+    grew by grow_kb_day a day against `old` ({path: [kb, residual]}, old_days back). A root's own loose files are judged
+    the same way as `<root>/*`: its size minus every directory and claimed file directly in it. `claims` maps each store
+    unit to its bytes; `scan` keeps [kb, residual] of every uncovered directory of floor_kb or more for the next comparison."""
     roots = [r for r in roots if r in sizes]
     ignored = set(ignores)
     units = outermost(claims)
@@ -240,10 +241,17 @@ def unregistered(sizes, roots, depth, claims, ignores, min_kb, grow_kb_day, floo
         return False
 
     candidates = []
+    loose = {root: sizes[root] for root in roots}
     for path, kb in sizes.items():
         root = root_of(path, roots)
+        if parent(path) in loose:
+            loose[parent(path)] -= kb
         if root and 1 <= depth_below(path, root) <= depth and not covered(path, root):
             candidates.append((path, kb))
+    for path, size in claims.items():
+        if path not in sizes and parent(path) in loose:
+            loose[parent(path)] -= size // KB
+    candidates += [(root + "/*", max(0, kb)) for root, kb in loose.items()]
     reported, scan = [], {}
     for path, kb in sorted(candidates, key=lambda c: (-c[0].count("/"), c[0])):
         residual = max(0, kb - acc.get(path, 0))

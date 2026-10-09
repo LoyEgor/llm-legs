@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """log-sweep: removes what each `sweep` store of share/log-stores.json is past its criterion: units untouched for
-`days`, beyond `keep_newest` or `max_mb` (oldest first), and truncates files to their last `tail_mb`. A directory some
-process holds open (its cwd or an open file inside) is skipped. `--dry-run` prints what it would remove with sizes. One
+`days`, beyond `keep_newest` or `max_mb` (oldest first), and truncates files to their last `tail_mb`. A unit some
+process holds open (an open file or bound socket, a cwd or either inside a directory) is skipped; sockets, FIFOs and
+devices are never units. `--dry-run` prints what it would remove with sizes. One
 summary line per run goes to ~/.cache/log-sweep/sweeps.jsonl, capped. Run daily by `system-doctor logstores`."""
 
 import argparse
@@ -27,19 +28,24 @@ def state_dir():
 
 
 def open_paths():
-    """Every path a process of this user holds open or works in, from one lsof call."""
+    """Every path a process of this user holds open, works in or binds a socket at, and every directory above one, as
+    realpaths, from one lsof call."""
     command = os.environ.get("LOG_SWEEP_LSOF") or "/usr/sbin/lsof"
     try:
         out = subprocess.run([command, "-n", "-P", "-w", "-u", str(os.getuid()), "-F", "n"], capture_output=True,
                              text=True, timeout=120).stdout
     except (OSError, subprocess.SubprocessError):
         return None
-    return {line[1:] for line in out.splitlines() if line.startswith("n/")}
+    held = set()
+    for path in {os.path.realpath(line[1:]) for line in out.splitlines() if line.startswith("n/")}:
+        while path not in held and path != "/":
+            held.add(path)
+            path = os.path.dirname(path)
+    return held
 
 
 def held(path, paths):
-    prefix = path + "/"
-    return any(p == path or p.startswith(prefix) for p in paths)
+    return os.path.realpath(path) in paths
 
 
 def glob_base(pattern):
@@ -107,7 +113,7 @@ def sweep(registry, now, dry_run, only=None, say=print):
         bases = [glob_base(p) for p in entry["globs"]]
         done = [0, 0]
         for row, action in log_stores.doomed(entry, log_stores.measure(entry), now):
-            if action == "delete" and row["dir"]:
+            if action == "delete":
                 if paths is None:
                     paths = open_paths()
                 if paths is None or held(row["path"], paths):

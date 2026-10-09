@@ -1581,6 +1581,7 @@ def logstores(now=None):
                 with contextlib.suppress(OSError):
                     os.remove(path)
     row.update({"stores": stores, "total_bytes": sum(s["bytes"] for s in stores),
+                "unread": [s["name"] for s in stores if s["readers"] == [] and s["bytes"]],
                 "unregistered": [{"path": tilde(r["path"]), "mb": round(r["kb"] / 1024),
                                   "residual_mb": round(r["residual_kb"] / 1024),
                                   "grow_mb_day": round(r["grow_kb_day"] / 1024) if r["grow_kb_day"] is not None else None}
@@ -2151,9 +2152,13 @@ def criterion_words(store):
         key, "%s") % value
 
 
+def bounded(store):
+    return store["cleaner"] == "cap" or store["cleaner"] != "keep" and bool(store.get("criterion"))
+
+
 def judge_logstores(judge, rows):
     """A store holding units past its criterion plus slack (its cleaner is broken), a failed sweep, a log store no
-    program reads, the total of all log stores growing log_growth_gib_day a day over 7 days and still growing, and each
+    program reads and nothing deletes, the total of all log stores growing log_growth_gib_day a day over 7 days and still growing, and each
     directory the du fallback names."""
     now = judge.now
     rows = [r for r in rows if r.get("stores") is not None]
@@ -2177,11 +2182,11 @@ def judge_logstores(judge, rows):
                                  "excerpt": "%d units, %.2f GB in all" % (store["units"], store["bytes"] / 1e9)}],
                   found=store_cause(store))
     for store in latest["stores"]:
-        if store.get("readers") != [] or not store.get("bytes"):
+        if store.get("readers") != [] or not store.get("bytes") or bounded(store):
             continue
-        judge.add("log-unread", store["name"], "%s: %.2f GB in %d files written by %s, read by nobody; kept %s" % (
-            store["name"], store["bytes"] / 1e9, store["files"], store.get("writer") or "?",
-            criterion_words(store) if store.get("criterion") else "by its %s cleaner" % store["cleaner"]),
+        judge.add("log-unread", store["name"], "%s: %.2f GB in %d files written by %s, read by nobody and never deleted "
+                  "(cleaner %s)" % (store["name"], store["bytes"] / 1e9, store["files"], store.get("writer") or "?",
+                                   store["cleaner"]),
             store["bytes"], 0, "bytes", 24, store["units"], store["units"], store.get("oldest_s"), latest["t"],
             [{"at": iso_time(latest["t"]), "ref": "logstores:%s" % store["name"], "account": None,
               "excerpt": "readers [] in share/log-stores.json"}])
@@ -2224,7 +2229,8 @@ def logstores_view(rows):
                         round((latest["t"] - s["oldest_s"]) / DAY_S, 1) if s.get("oldest_s") else None, s["cleaner"],
                         criterion_words(s) if s.get("criterion") else None, s.get("over_units"),
                         s.get("readers")] for s in stores],
-            "unregistered": latest.get("unregistered"), "sweep": latest.get("sweep"), "scan": latest.get("scan")}
+            "unregistered": latest.get("unregistered"), "unread": latest.get("unread"), "sweep": latest.get("sweep"),
+            "scan": latest.get("scan")}
 
 
 def judge_collectors(judge, rows, launches, harvests, censuses, logs=()):

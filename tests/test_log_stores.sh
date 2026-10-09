@@ -8,7 +8,8 @@ set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(mktemp -d)
 WORK=$(cd -P "$WORK" && pwd)
-trap 'rm -rf "$WORK"' EXIT
+TMPW=$(mktemp -d /private/tmp/test-log-stores.XXXXXX)
+trap 'rm -rf "$WORK" "$TMPW"' EXIT
 mkdir -p "$WORK/home" "$WORK/bin" "$WORK/state"
 export HOME="$WORK/home" LOG_SWEEP_DIR="$WORK/sweep" LOG_STORES_REGISTRY="$WORK/registry.json" TMPDIR="$WORK/tmpdir"
 export SYSTEM_DOCTOR_DIR="$WORK/state" DOCTORS_DIR="$WORK/doctors" SYSTEM_DOCTOR_LEDGER="$WORK/ledger.json"
@@ -18,16 +19,17 @@ printf '#!/bin/bash\ncat "%s/open-paths" 2>/dev/null\n' "$WORK" >"$WORK/bin/lsof
 printf '#!/bin/bash\nawk -F"\\t" -v top="${@: -1}" '"'"'$2 == top || index($2, top "/") == 1'"'"' "%s/du-lines"\n' "$WORK" >"$WORK/bin/du"
 chmod +x "$WORK/bin/lsof" "$WORK/bin/du"
 
-python3 - "$ROOT" "$WORK" <<'PY'
+python3 - "$ROOT" "$WORK" "$TMPW" <<'PY'
 import importlib.machinery
 import importlib.util
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
 
-root, work = sys.argv[1], sys.argv[2]
+root, work, tmpw = sys.argv[1], sys.argv[2], sys.argv[3]
 home = os.path.join(work, "home")
 sys.path.insert(0, os.path.join(root, "share"))
 import log_stores as ls  # noqa: E402
@@ -121,6 +123,17 @@ os.symlink(os.path.join(home, "logs", "s1"), os.path.join(home, "logs", "link"))
 check(sorted(os.path.basename(r["path"]) for r in ls.measure({"name": "d", "globs": ["~/logs/*"], "type": "dir", "cleaner": "keep"}))
       == ["keep", "s1", "s2", "s3"], "type dir keeps directories, never a loose file or a symlink")
 os.remove(os.path.join(home, "logs", "link"))
+os.makedirs(os.path.join(tmpw, "bridge"))
+bridge = socket.socket(socket.AF_UNIX)
+bridge.bind(os.path.join(tmpw, "bridge", "1.sock"))
+os.mkfifo(os.path.join(tmpw, "bridge", "fifo"))
+os.symlink(os.path.join(home, "logs", "top.jsonl"), os.path.join(tmpw, "bridge", "link"))
+with open(os.path.join(tmpw, "bridge", "loose.txt"), "w") as handle:
+    handle.write("x")
+check([os.path.basename(r["path"]) for r in ls.measure({"name": "f", "globs": [tmpw + "/bridge/*"], "type": "file", "cleaner": "keep"})]
+      == ["loose.txt"], "type file keeps regular files only, never a socket, FIFO or symlink")
+check(sorted(os.path.basename(r["path"]) for r in ls.measure({"name": "a", "globs": [tmpw + "/bridge/*"], "cleaner": "keep"}))
+      == ["link", "loose.txt"], "no store takes a socket or FIFO as a unit")
 check(rows["s1"]["files"] == 2 and rows["s1"]["newest"] >= now - DAY - 5 and rows["s1"]["bytes"] > 0,
       "a directory unit ages by the newest mtime inside it")
 gone = sorted(os.path.basename(r["path"]) for r, action in ls.doomed(entry, list(rows.values()), now))
@@ -168,9 +181,9 @@ _reported, old = ls.unregistered(sizes, roots, 3, claims, ignores, 200 * K, 50 *
 old[H + "/e"] = [30 * K, 30 * K]
 reported, scan = ls.unregistered(sizes, roots, 3, claims, ignores, 200 * K, 50 * K, 10 * K, old, 1.0)
 names = {r["path"][len(H):]: r for r in reported}
-check(set(names) == {"/a", "/.cache/d", "/L/Caches/app", "/e", "/f/g"},
+check(set(names) == {"/a", "/.cache/d", "/.cache/*", "/L/Caches/app", "/e", "/f/g"},
       "reported: an uncovered 300 MB dir, one under a nested root, one under an ignored parent's own root, a growing one, "
-      "the deepest big one: %s" % sorted(names))
+      "the deepest big one, a root's 350 MB of loose files: %s" % sorted(names))
 check(names["/e"]["grow_kb_day"] == 70 * K and names["/e"]["residual_kb"] == 100 * K,
       "growth is the residual's change a day against the previous scan")
 check(H + "/f" not in [r["path"] for r in reported] and scan[H + "/f"] == [450 * K, 150 * K],
@@ -190,6 +203,16 @@ apps = ls.app_claims({"stores": [{"name": "b", "kind": "app", "globs": ["~/appbi
                      {H + "/appbin/cache": 700})
 check(apps == {H + "/appbin/tool-1": os.lstat(H + "/appbin/tool-1").st_blocks * 512, H + "/appbin/cache": 700 * K},
       "app units are claimed, log units not: a file du never lists by its own size, a listed dir by du's: %s" % apps)
+R = "/r"
+loose, _scan = ls.unregistered({R: 500 * K, R + "/d": 100 * K, R + "/d/e": 60 * K}, [R], 3, {R + "/f.log": 50 * K * K, R + "/d/x": 9 * K * K},
+                               [], 200 * K, 50 * K, 10 * K)
+check([(r["path"], r["residual_kb"]) for r in loose] == [(R + "/*", 350 * K)],
+      "a root's loose files are judged as <root>/*: its size minus its dirs and claimed files: %s" % loose)
+small, scan = ls.unregistered({R: 500 * K, R + "/d": 400 * K}, [R], 3, {R + "/d": 400 * K * K}, [], 200 * K, 50 * K, 10 * K)
+grown, _scan = ls.unregistered({R: 500 * K, R + "/d": 400 * K}, [R], 3, {R + "/d": 400 * K * K}, [], 200 * K, 50 * K, 10 * K,
+                               {R + "/*": [40 * K, 40 * K]}, 1.0)
+check(small == [] and scan[R + "/*"] == [100 * K, 100 * K] and [r["grow_kb_day"] for r in grown] == [60 * K],
+      "loose files under min_mb stay unreported, kept for the next scan, and reported when they grow")
 check(ls.parse_du("12\t/a/b/\nbad\n7\t/c\n") == {"/a/b": 12, "/c": 7}, "du lines parse")
 
 # ---- log-sweep: dry run, then the real sweep
@@ -236,6 +259,35 @@ for i in range(40):
     sweep_mod.record({"t": i, "pad": "x" * 100})
 text = open(os.path.join(work, "sweep", "sweeps.jsonl")).read()
 check(len(text) <= 2000 and '"t":39' in text and '"units":4' not in text, "the record is capped, oldest lines go first")
+check(home.startswith("/private/var/"), "the suite's home is a /private/var realpath: %s" % home)
+for rel in ("bridge/1.sock", "bridge/fifo", "bridge/link", "bridge/loose.txt"):
+    os.utime(os.path.join(tmpw, rel), (now - 20 * DAY, now - 20 * DAY), follow_symlinks=False)
+for rel in ("vheld/d1/a.txt", "vheld/d2/a.txt"):
+    put(rel, 100, 20)
+for rel in ("vheld/d1", "vheld/d2"):
+    age(rel, 20)
+os.makedirs(os.path.join(tmpw, "sheld", "d1"))
+for rel in ("sheld/old.log", "sheld/free.log", "sheld/d1/a.txt", "sheld/d1"):
+    path = os.path.join(tmpw, rel)
+    if not os.path.isdir(path):
+        open(path, "w").close()
+    os.utime(path, (now - 20 * DAY, now - 20 * DAY))
+registry([{"name": "bridge", "globs": [tmpw + "/bridge/*"], "type": "file", "cleaner": "sweep", "days": 7},
+          {"name": "vheld", "globs": [home[len("/private"):] + "/vheld/*"], "cleaner": "sweep", "days": 7},
+          {"name": "sheld", "globs": [tmpw + "/sheld/*"], "cleaner": "sweep", "days": 7}])
+alias = tmpw[len("/private"):]
+with open(os.path.join(work, "open-paths"), "w") as handle:
+    handle.write("p1\nn%s/vheld/d1/a.txt\nn%s/sheld/old.log\nn%s/sheld/d1/a.txt\nn%s/bridge/1.sock\n" % (home, alias, alias, alias))
+dry = subprocess.run([os.path.join(root, "bin", "log-sweep"), "--dry-run"], capture_output=True, text=True)
+check("bridge/loose.txt" in dry.stdout and "1.sock" not in dry.stdout and "fifo" not in dry.stdout and "/link" not in dry.stdout,
+      "the dry run lists the old regular file, never the socket, FIFO or symlink: %s" % dry.stdout)
+held_run = json.loads(subprocess.run([os.path.join(root, "bin", "log-sweep"), "--json"], capture_output=True, text=True).stdout)
+check(sorted(os.listdir(os.path.join(tmpw, "bridge"))) == ["1.sock", "fifo", "link"] and os.path.exists(os.path.join(home, "logs/top.jsonl")),
+      "the sweep never deletes a socket, a FIFO or a symlink's target")
+check(os.path.exists(os.path.join(home, "vheld/d1")) and not os.path.exists(os.path.join(home, "vheld/d2")),
+      "a /var/... unit is held by lsof's /private/var/... spelling")
+check(sorted(os.listdir(os.path.join(tmpw, "sheld"))) == ["d1", "old.log"] and held_run["skipped_open"] == 3,
+      "a /private/tmp/... file or dir is held by lsof's /tmp/... spelling: %s" % held_run)
 
 # ---- system-doctor logstores collector and judge
 loader = importlib.machinery.SourceFileLoader("system_doctor", os.path.join(root, "bin", "system-doctor"))
@@ -250,10 +302,12 @@ registry([{"name": "s", "globs": ["~/logs/*"], "exclude": ["*/keep", "*.jsonl"],
            "writer": "worker-run", "owner": "own"},
           {"name": "v", "globs": ["~/vers/*"], "cleaner": "self", "keep_newest": 2, "writer": "Vendor", "owner": "third-party"},
           {"name": "u", "globs": ["~/unread/*"], "cleaner": "sweep", "days": 7, "readers": [], "writer": "Vendor"},
+          {"name": "uk", "globs": ["~/kept/*"], "cleaner": "keep", "readers": [], "writer": "Vendor"},
           {"name": "a", "kind": "app", "globs": ["~/appdata/*"], "cleaner": "keep"}],
          ignore=[{"glob": "~/ignored", "why": "test"}],
          scan={"roots": ["~", "~/cache"], "depth": 3, "min_mb": 200, "grow_mb_day": 50, "floor_mb": 10, "budget_s": 60})
 put("unread/trace.jsonl", 100, 1)
+put("kept/trace.jsonl", 100, 1)
 put("appdata/vm/disk.img", 5000)
 with open(os.path.join(work, "du-lines"), "w") as handle:
     handle.write("".join("%d\t%s\n" % (kb, path) for path, kb in (
@@ -263,7 +317,8 @@ row = m.logstores(now)
 stores = {s["name"]: s for s in row["stores"]}
 check(row.get("sweep", {}).get("errors") == 0 and stores["s"]["over_units"] == 2 and stores["v"]["over_units"] == 2,
       "the collector sweeps, then measures every store: %s" % row)
-check(set(stores) == {"s", "v", "u"} and row["total_bytes"] == sum(s["bytes"] for s in stores.values()),
+check(row["unread"] == ["u", "uk"], "the row lists every unread store, bounded or not: %s" % row.get("unread"))
+check(set(stores) == {"s", "v", "u", "uk"} and row["total_bytes"] == sum(s["bytes"] for s in stores.values()),
       "an app store is neither measured nor counted in the total: %s" % sorted(stores))
 check([u["path"] for u in row["unregistered"]] == ["~/cache/stray"] and row["scan"]["cut"] == [],
       "the fallback names the uncovered 300 MB dir as ~/…, never the ignored one or an app store's: %s" % row["unregistered"])
@@ -273,10 +328,10 @@ judge = m.Judge(later, None)
 logs = m.tick_rows(now - 9 * DAY, later, "logstores")
 m.judge_logstores(judge, logs)
 found = {p["id"]: p for p in judge.problems}
-check(set(found) == {"log-store:s", "log-store:v", "log-unread:u", "unregistered-store:~/cache/stray"},
+check(set(found) == {"log-store:s", "log-store:v", "log-unread:uk", "unregistered-store:~/cache/stray"},
       "problems: %s" % sorted(found))
-check("read by nobody" in found["log-unread:u"]["fact"] and "7 days" in found["log-unread:u"]["fact"]
-      and found["log-unread:u"]["cause"] is None, "a log with no reader is its own problem: %s" % found["log-unread:u"])
+check("read by nobody and never deleted" in found["log-unread:uk"]["fact"] and found["log-unread:uk"]["cause"] is None,
+      "a log no one reads and nothing deletes is its own problem, a swept one is not: %s" % found["log-unread:uk"])
 check(found["log-store:s"]["cause"]["name"] == "worker-run" and found["log-store:s"]["cause"]["owner"] == "own"
       and "60 days" in found["log-store:s"]["fact"], "a broken self cleaner names its writer: %s" % found["log-store:s"])
 check(found["log-store:v"]["cause"]["fix_target"] is False and "newest 2" in found["log-store:v"]["fact"],

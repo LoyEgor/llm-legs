@@ -197,14 +197,18 @@ new. Writers stay free: no format or location standard, we only measure and clea
   its own and it accumulates: the only kind the doctor counts) or `app` (app data, binaries, browser profiles,
   outputs: listed so the fallback skips it, never measured). A log store lists its `readers`, found by grepping our
   repos, or `[]`. Logs token-map reads keep 30 days (it shows 4 weeks); session scratch and top-level tmp sandboxes
-  (`"type": "dir"`, own directories only) 7 days idle; unread logs the shortest that still serves debugging.
+  (`"type": "dir"`, own directories only) and loose /tmp files (`"type": "file"`, own regular files only) 7 days
+  idle; unread logs the shortest that still serves debugging. A socket, FIFO or device is never a unit; a unit some
+  process holds open (lsof, compared as realpaths: lsof prints `/private/var/…` and bound sockets as `/tmp/…`) is
+  never swept.
   `ignore` lists what is clearly not an LLM log, each with a reason; nothing is ignored silently.
 - **Collector** `logstores`, daily after 04:00 (or after 36 h), detached like the others: `bin/log-sweep` (every
   `sweep` store, any kind), then every log store's bytes, files, units and oldest unit, and what lies past its
   criterion plus slack (2 days, 1 unit, 25 %, 2× the tail). Rows in `logstores/<day>.jsonl` (90 days).
 - **Fallback** for unregistered writers: one `du -k -x` per top scan root, deep enough to reach 3 levels below every
   root inside it. A directory 1–3 levels below its root that no store unit or ignore entry covers is judged on its
-  residual (its size minus covered, nested-root and already-reported parts below it): reported at 200 MB, or at
+  residual (its size minus covered, nested-root and already-reported parts below it), and each root's own loose files
+  as `<root>/*` (its size minus its directories and claimed files): reported at 200 MB, or at
   50 MB/day of residual growth against the newest scan 20 h–8 days old (`logscan/<day>.json`, 14 days). Measured
   2026-10-09 at load ~100: du 166 s wall (64 cpu-s) over 163k directories, stores 31 s, sweep 18 s; budget 600 s,
   a cut du reads blind.
@@ -214,7 +218,7 @@ new. Writers stay free: no format or location standard, we only measure and clea
 | `log-store` | a store holds units past its criterion plus slack, or log-sweep failed (cause: log-sweep, or the `self` writer) | — |
 | `log-growth` | the total of all stores grew ≥ 1 GiB/day over ≥ 5 days of the newest 7 and grew in the last day | ≥ 3 GiB/day |
 | `unregistered-store` | a directory the fallback names (key: its path), report-only | — |
-| `log-unread` | a log store with `readers: []` holding bytes: written, read by nobody (no cause; the fix is a reader or less writing) | — |
+| `log-unread` | a log store with `readers: []` holding bytes and nothing deleting it (cleaner `keep`, or no criterion and not `cap`): written, read by nobody, unbounded (no cause; the fix is a reader, a criterion or less writing); every unread store, bounded or not, stays listed in the row's `unread` | — |
 
 `log-growth` threshold: with every big store under a criterion the total plateaus; 1 GiB/day sits under the biggest
 single inflow measured (tmp session scratch, ~1.3 GB/day) and above a retention-limited store's daily swing; re-tune
