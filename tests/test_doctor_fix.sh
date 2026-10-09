@@ -1152,6 +1152,7 @@ jq '.problems += [
   {id: "suite_audit:unpriced", rule: "suite_audit", state: "new", speed: true},
   {id: "hook_p50:small", rule: "hook_p50", state: "new", expected_min_day: 4.99},
   {id: "regression:small", rule: "regression", state: "new", speed: true, expected_min_day: 4.99},
+  {id: "regression:quiet", rule: "regression", state: "quiet", expected_min_day: 4.99},
   {id: "regression:enough", rule: "regression", state: "new", speed: true, expected_min_day: 5},
   {id: "repair:alone", rule: "regression", state: "new", speed: true, class: "measurement fix"},
   {id: "repair:needed", rule: "regression", state: "new", speed: true, class: "measurement fix", blind_for: ["regression:enough"]},
