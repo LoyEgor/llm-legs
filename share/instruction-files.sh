@@ -34,6 +34,13 @@ _instruction_emit() {
   printf '%s\n' "$p"
 }
 _instruction_emit_paths() { LC_ALL=C tr '\n\t\000' '??\n'; }
+# ${text//pattern/replacement} into var, byte-wise: under a UTF-8 locale bash runs it in time
+# quadratic in the text, seconds on a script body. Only for ASCII patterns, which no multibyte
+# character contains, so the answer is the same.
+instruction_sub_bytes() { # var text pattern [replacement]
+  local LC_ALL=C
+  printf -v "$1" '%s' "${2//$3/${4-}}"
+}
 _instruction_nl='
 '
 _instruction_tab='	'
@@ -843,12 +850,16 @@ instruction_interp_var_write_re() { # → ERE matching an interpreter that write
   printf '%s%s' "$_INSTRUCTION_IW" "$(instruction_interp_var_construct_re)"
 }
 
-instruction_interp_var_name() { # one construct of instruction_interp_var_construct_re → its variable
+instruction_interp_var_name() { # one construct of instruction_interp_var_construct_re [var] → its variable
   local s="[[:space:]]*" id="([\$]?$_INSTRUCTION_ID)"
   local perl="^open\([^(),]*,$s$_INSTRUCTION_MODE$s,$s([\$]$_INSTRUCTION_ID)" call="^(File\.write|Path)\($s$id"
   local py="^open\($s(file$s=$s)?$id" node="File(Sync)?\($s$id" method="^[^A-Za-z_0-9.]?$id\."
-  [[ $1 =~ $perl ]] || [[ $1 =~ $call ]] || [[ $1 =~ $py ]] || [[ $1 =~ $node ]] || [[ $1 =~ $method ]] || return 1
-  printf '%s' "${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+  # Each glob only skips a regex that cannot match: bash compiles a regex on every [[ =~ ]].
+  { [[ $1 == 'open('* ]] && { [[ $1 =~ $perl ]] || [[ $1 =~ $py ]]; }; } ||
+    { [[ $1 == 'File.write('* || $1 == 'Path('* ]] && [[ $1 =~ $call ]]; } ||
+    { [[ $1 == *'File('* || $1 == *'FileSync('* ]] && [[ $1 =~ $node ]]; } ||
+    [[ $1 =~ $method ]] || return 1
+  printf ${2:+-v "$2"} '%s' "${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
 }
 
 instruction_interp_var_assign_re() { # variable names-alternation → ERE matching it assigned one of the names
@@ -866,13 +877,13 @@ instruction_interp_dir_construct_re() { # [trunc] → ERE matching ONE write thr
   printf '%s' "(open\($s(file$s=$s)?$j$s,([^()]*,)?$s(mode$s=$s)?$mode|open\([^(),]*,$s$mode$s,$s$j|$node\($s$j$s,|File\.write\($s$j$s,|Path\($s$id$s,[^()]*\)$s\.(write_text|write_bytes|open\($s$mode)|\($s$j\)$s\.(write_text|write_bytes|open\($s$mode))"
 }
 
-instruction_interp_dir_join() { # one construct of the rule above → VARIABLE<TAB>SEPARATOR<TAB>JOINED
+instruction_interp_dir_join() { # one construct of the rule above [var] → VARIABLE<TAB>SEPARATOR<TAB>JOINED
   local s="[[:space:]]*" id="([\$]?$_INSTRUCTION_ID)" rest
   local pathargs="^Path\($s$id$s,$s([^()]*)\)" perl="^open\([^(),]*,$s$_INSTRUCTION_MODE$s,$s(.*)$"
   local kw="^${s}file$s=$s(.*)$" join="^([A-Za-z_]+\.)*join\($s$id$s,$s([^()]*)\)"
   local path="^Path\($s$id$s\)$s/$s([^(),]*)" div="^$id$s/$s([^(),]*)" cat="^$id$s[+.]$s([^(),]*)"
   if [[ $1 =~ $pathargs ]]; then
-    printf '%s\t/\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
+    printf ${2:+-v "$2"} '%s\t/\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
   fi
   if [[ $1 =~ $perl ]]; then
     rest=${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}
@@ -882,9 +893,9 @@ instruction_interp_dir_join() { # one construct of the rule above → VARIABLE<T
     rest=${rest#"${rest%%[![:space:]]*}"}
   fi
   if [[ $rest =~ $join ]] || [[ $rest =~ $path ]] || [[ $rest =~ $div ]]; then
-    printf '%s\t/\t%s' "${BASH_REMATCH[${#BASH_REMATCH[@]}-2]}" "${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+    printf ${2:+-v "$2"} '%s\t/\t%s' "${BASH_REMATCH[${#BASH_REMATCH[@]}-2]}" "${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
   elif [[ $rest =~ $cat ]]; then
-    printf '%s\t+\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    printf ${2:+-v "$2"} '%s\t+\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
   else
     return 1
   fi
@@ -905,7 +916,8 @@ instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
   local cwd=${2:-$PWD} seg w interp op assigns=$'\n' skip
   local -a words
   while IFS= read -r -d '' seg; do
-    read -ra words <<< "${seg//$'\n'/ }"
+    instruction_sub_bytes seg "$seg" $'\n' ' '
+    read -ra words <<< "$seg"
     interp='' op='' skip=''
     for w in ${words[@]+"${words[@]}"}; do
       w=${w//[\"\']/}
@@ -1648,31 +1660,51 @@ _instruction_spellings() {
   esac
 }
 
-_instruction_spell_all() {
-  local home=$1 cwd=$2 p real
-  while IFS= read -r p; do
-    _instruction_spellings "$p" "$home" "$cwd"
-    real=$(realpath "$p" 2>/dev/null) || continue
-    [ "$real" = "$p" ] || _instruction_spellings "$real" "$home" "$cwd"
+# Each path is resolved once for every cwd, by one realpath for the whole set when every path
+# resolves to exactly one line; otherwise one call per path, as the line count cannot be aligned.
+_instruction_spell_all() { # home cwd... ← paths on stdin
+  local home=$1 p i n resolved count cwd
+  local -a paths=() reals=() ok=()
+  shift
+  [ "$#" -gt 0 ] || set -- ''
+  while IFS= read -r p; do paths+=("$p"); done
+  n=${#paths[@]}
+  [ "$n" -gt 0 ] || return 0
+  if resolved=$(realpath -q -- "${paths[@]}" 2>/dev/null) && count=${resolved//[!$'\n']/} &&
+      [ $((${#count} + 1)) -eq "$n" ]; then
+    while IFS= read -r p; do reals+=("$p"); ok+=(1); done <<<"$resolved"
+  else
+    for p in "${paths[@]}"; do
+      if p=$(realpath "$p" 2>/dev/null); then reals+=("$p"); ok+=(1); else reals+=(''); ok+=(''); fi
+    done
+  fi
+  for cwd; do
+    for ((i = 0; i < n; i++)); do
+      _instruction_spellings "${paths[i]}" "$home" "$cwd"
+      [ -n "${ok[i]}" ] || continue
+      [ "${reals[i]}" = "${paths[i]}" ] || _instruction_spellings "${reals[i]}" "$home" "$cwd"
+    done
   done
 }
 
-# $4, when given, is the command text: a path none of whose spellings can stand in it is skipped
+# $3, when given, is the command text: a path none of whose spellings can stand in it is skipped
 # before the realpath its spellings cost, which is what keeps a set of hundreds affordable ahead of
 # every Bash call. Every spelling ends in the file's own name unless the file is itself a link.
-instruction_all_paths() {
-  local home=${1:-$HOME} cwd=${2:-} root=${3:-} text=${4:-} p
+instruction_all_paths() { # home root text cwd...
+  local home=${1:-$HOME} root=${2:-} text=${3:-} p
+  shift 3
   instruction_guarded_paths "$home" "$root" | while IFS= read -r p; do
     if [ -n "$text" ] && [ ! -L "$p" ]; then
       case "$text" in *"${p##*/}"*) ;; *) continue ;; esac
     fi
     printf '%s\n' "$p"
-  done | _instruction_spell_all "$home" "$cwd"
+  done | _instruction_spell_all "$home" "$@"
 }
 
-instruction_all_dirs() {
-  local home=${1:-$HOME} cwd=${2:-}
-  instruction_guarded_dirs "$home" | _instruction_spell_all "$home" "$cwd"
+instruction_all_dirs() { # home cwd...
+  local home=${1:-$HOME}
+  shift
+  instruction_guarded_dirs "$home" | _instruction_spell_all "$home" "$@"
 }
 
 # `git apply` and `git stash pop|apply` write files their command text never names. What they
@@ -1684,8 +1716,11 @@ instruction_git_landing() { # command cwd → absolute paths, one per line
   local -a words
   case "$cmd" in *git*) ;; *) return 0 ;; esac
   while IFS= read -r -d '' seg; do
+    instruction_sub_bytes seg "$seg" "[\"']"
+    case "$seg" in *git*|*cd*) ;; *) continue ;; esac
+    instruction_sub_bytes seg "$seg" $'[\n()<>]' ' '
     words=()
-    read -r -a words <<<"$(printf '%s' "$seg" | tr -d "\"'" | tr '\n()<>' '     ')"
+    read -r -a words <<<"$seg"
     if [ "${words[0]:-}" = cd ]; then
       sh_cwd=$(cd "$sh_cwd" 2>/dev/null && cd "${words[1]:-$HOME}" 2>/dev/null && pwd) || sh_cwd=$cwd
       continue
@@ -1704,7 +1739,6 @@ instruction_git_landing() { # command cwd → absolute paths, one per line
       esac
     done
     sub=${words[$i]:-}
-    top=$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null) || top=$gcwd
     case "$sub" in
       apply)
         ro='' real='' dir='' strip=1 next=''
@@ -1720,12 +1754,14 @@ instruction_git_landing() { # command cwd → absolute paths, one per line
         done
         [ -n "$ro" ] && [ -z "$real" ] && continue
         case "$strip" in ''|*[!0-9]*) strip=1 ;; esac
+        top=$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null) || top=$gcwd
         apply="$apply$top/$dir"$'\n'
         gcwds="$gcwds$gcwd"$'\n'
         strips="$strips$strip"$'\n'
         ;;
       stash)
         case "${words[$((i + 1))]:-}" in pop|apply) ;; *) continue ;; esac
+        top=$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null) || top=$gcwd
         ref=''
         for w in "${words[@]:$((i + 2))}"; do
           case "$w" in -*) ;; *) ref=$w; break ;; esac
@@ -1938,22 +1974,27 @@ _instruction_is_note() {
   return 1
 }
 
-instruction_watch_state() {
-  printf '%s' "${INSTRUCTION_WATCH_STATE:-$HOME/.cache/claude-instruction-watch}"
+# The optional [var] of these three takes the answer without the subshell a $(…) costs.
+instruction_watch_state() { # [var]
+  printf ${1:+-v "$1"} '%s' "${INSTRUCTION_WATCH_STATE:-$HOME/.cache/claude-instruction-watch}"
 }
 
 # A session id that cannot name a file gets one per CALLER (the parent is the CLI that runs every
 # hook of one session), never a name every such caller shares and never one per call.
-instruction_sid_name() { # session
+instruction_sid_name() { # session [var]
   case "$1" in
-    ''|*[!A-Za-z0-9._-]*) printf 'unknown-%s' "$PPID" ;;
-    *) printf '%s' "$1" ;;
+    ''|*[!A-Za-z0-9._-]*) printf ${2:+-v "$2"} 'unknown-%s' "$PPID" ;;
+    *) printf ${2:+-v "$2"} '%s' "$1" ;;
   esac
 }
 
-instruction_now() {
+instruction_now() { # [var]
   if [ -n "${EPOCHREALTIME:-}" ]; then
-    printf '%s' "${EPOCHREALTIME/,/.}"
+    printf ${1:+-v "$1"} '%s' "${EPOCHREALTIME/,/.}"
+    return 0
+  fi
+  if [ -n "${1:-}" ]; then
+    printf -v "$1" '%s' "$(perl -MTime::HiRes=time -e 'printf "%.6f", time' 2>/dev/null || date +%s)"
     return 0
   fi
   perl -MTime::HiRes=time -e 'printf "%.6f", time' 2>/dev/null || date +%s
@@ -2003,11 +2044,12 @@ instruction_baseline_wait() { # pending-file
 instruction_inflight_mark() { # session tool_use_id tool cwd [agent_id]
   local dir now id=${2:-} cwd=${4:--} agent=${5:--} name
   INSTRUCTION_INFLIGHT_FILE=''
-  dir="$(instruction_watch_state)/inflight"
-  name=$(instruction_sid_name "$1")
+  instruction_watch_state dir
+  dir+=/inflight
+  instruction_sid_name "$1" name
   instruction_baseline_wait "${dir%/inflight}/pending-$name"
   [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 1
-  now=$(instruction_now)
+  instruction_now now
   [ -n "$id" ] || id="${now%%.*}-$$"
   id=${id//[^A-Za-z0-9._-]/_}
   cwd=${cwd//$'\n'/ }
@@ -2025,17 +2067,21 @@ instruction_inflight_clear() {
 # mark, and the tripwire's check takes it and skips: the command text is read once, by the gate, and
 # a check nobody vouched for runs in full.
 instruction_readonly_note() { # session tool_use_id
-  local dir
+  local dir name
   [ -n "${2:-}" ] || return 0
-  dir="$(instruction_watch_state)/readonly"
+  instruction_watch_state dir
+  dir+=/readonly
   [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 0
-  : >"$dir/$(instruction_sid_name "$1")@${2//[^A-Za-z0-9._-]/_}" 2>/dev/null
+  instruction_sid_name "$1" name
+  : >"$dir/$name@${2//[^A-Za-z0-9._-]/_}" 2>/dev/null
   return 0
 }
 instruction_readonly_take() { # session tool_use_id
-  local f
+  local f name
   [ -n "${2:-}" ] || return 1
-  f="$(instruction_watch_state)/readonly/$(instruction_sid_name "$1")@${2//[^A-Za-z0-9._-]/_}"
+  instruction_watch_state f
+  instruction_sid_name "$1" name
+  f+="/readonly/$name@${2//[^A-Za-z0-9._-]/_}"
   [ -e "$f" ] || return 1
   rm -f "$f" 2>/dev/null
   return 0

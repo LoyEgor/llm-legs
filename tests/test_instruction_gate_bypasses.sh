@@ -242,6 +242,28 @@ assert_eq deny "$(decision "cd $WORK && cd ~/.claude/docs && echo x >> review-ti
 assert_eq deny "$(decision "cd ~/.claude/docs && echo x >> review-tiers.md && cd $WORK")"
 assert_eq deny "$(decision "cd $WORK; ls; (cd ~/.claude/docs && echo x >> review-tiers.md)")"
 
+echo "== write gate: its processes are per call, never per cwd, per git segment or per write construct"
+printf '%s\n' 'realpath() { printf "realpath\n" >>"$FORKS"; command realpath "$@"; }' \
+  'git() { printf "git\n" >>"$FORKS"; command git "$@"; }' \
+  'grep() { printf "grep\n" >>"$FORKS"; command grep "$@"; }' \
+  'tr() { printf "tr\n" >>"$FORKS"; command tr "$@"; }' >"$WORK/gate-forks.sh"
+gate_forks() { # command → the fork counts, one line per kind
+  : >"$WORK/forks"
+  bash_payload "$1" | BASH_ENV="$WORK/gate-forks.sh" FORKS="$WORK/forks" bash "$WRITE_GATE" >/dev/null 2>&1
+  sort "$WORK/forks" | uniq -c
+}
+py_writes() { # count
+  local i
+  printf "python3 - <<'PY'\np='%s/out.txt'\n" "$WORK"
+  for ((i = 0; i < $1; i++)); do printf "open(p,'w').write('docs/x.md')\n"; done
+  printf 'PY'
+}
+assert_eq "$(gate_forks "cat notes.md > $WORK/out.txt")" \
+  "$(gate_forks "cd $WORK && cd $HOME && cd /tmp && cat notes.md > $WORK/out.txt")"
+assert_eq "$(gate_forks "git status; echo x > $WORK/o.md")" \
+  "$(gate_forks "git status; git log -1; git diff --stat; git show -s; git branch; echo x > $WORK/o.md")"
+assert_eq "$(gate_forks "$(py_writes 3)")" "$(gate_forks "$(py_writes 40)")"
+
 echo "== bloat gate: a missing library denies and leaves a fault the doctor reads"
 FG="$WORK/fault-gate"
 mkdir -p "$FG/bin" "$FG/share"

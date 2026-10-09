@@ -127,7 +127,8 @@ fi
 # (`CLAUDE.m\d`), and the volume folds letter case, so none of those is a reason to leave early.
 # `git apply` and `git stash pop` name no destination at all.
 case "$command" in *"\$'"*) ;; *)
-  case "${haystack//[\\\"\']/}" in
+  instruction_sub_bytes bare "$haystack" "[\\\\\"']"
+  case "$bare" in
     *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*git*apply*|*git*stash*) ;;
     *) exit 0 ;;
   esac ;;
@@ -149,13 +150,13 @@ alternation=''
 while IFS= read -r path; do
   case "$haystack" in *"$path"*) ;; *) continue ;; esac
   alternation="${alternation:+$alternation|}$(instruction_ere_escape "$path")"
-done < <(for here in "${spell_cwds[@]}"; do instruction_all_paths "$HOME" "$here" '' "$haystack"; done)
+done < <(instruction_all_paths "$HOME" '' "$haystack" "${spell_cwds[@]}")
 
 dir_alternation=''
 while IFS= read -r path; do
   case "$haystack" in *"$path"/*) ;; *) continue ;; esac
   dir_alternation="${dir_alternation:+$dir_alternation|}$(instruction_ere_escape "$path")"
-done < <(for here in "${spell_cwds[@]}"; do instruction_all_dirs "$HOME" "$here"; done)
+done < <(instruction_all_dirs "$HOME" "${spell_cwds[@]}")
 # Matched by name as well as by path: there is no list of every repository, and a project's
 # own CLAUDE.md or MEMORY.md costs the same per read as the global one.
 by_name="([^[:space:];|&'\"]*/)?${INSTRUCTION_GUARDED_BASENAMES}"
@@ -190,7 +191,7 @@ case "$command" in *'|'*)
   flat=$(printf '%s' "$command" | instruction_shell_scan mask 2>/dev/null)
   [ -n "$flat" ] || flat=$command ;;
 esac
-flat=${flat//$'\n'/ }
+instruction_sub_bytes flat "$flat" $'\n' ' '
 # The interpreter shapes are the shared module's, asked here and by the tripwire alike
 # (`instruction_interp_write_re`): the parse below can only say an interpreter NAMED the file, and
 # a second spelling of what makes that a write is a one-liner one door denies and the other never
@@ -309,18 +310,44 @@ var_trunc=$(instruction_interp_var_construct_re trunc)
 dir_cons=$(instruction_interp_dir_construct_re)
 dir_trunc=$(instruction_interp_dir_construct_re trunc)
 literal_re="^${_INSTRUCTION_Q}([^\"'\\\\]*)${_INSTRUCTION_Q}\$"
-# Only an assignment inside the write's own invocation binds it.
-bound_at() { # text variable offset
-  local from=0 start bind bound=''
-  [ -n "$interp_starts" ] || interp_starts=$(printf '%s' "$1" | grep -Eob "$_INSTRUCTION_INTERP" | cut -d: -f1)
-  for start in $interp_starts; do [ "$start" -le "$3" ] && from=$start; done
-  while IFS=: read -r bind _; do
-    [ "$bind" -ge "$from" ] && [ "$bind" -lt "$3" ] && bound=$bind
-  done < <(printf '%s' "$1" | grep -Eiob "$(instruction_interp_var_bind_re "$2")")
-  [ -n "$bound" ] && printf '%s' "$bound"
+# Only an assignment inside the write's own invocation binds it. Every grep below reads the whole
+# text, so each runs once per text or per variable, never once per construct: a script of
+# thousands of writes made that minutes of greps.
+bound_at() { # variable offset → bound, of the caller's $text
+  local from=0 start bind i
+  bound=''
+  [ -n "$interp_starts" ] || interp_starts=$(printf '%s' "$text" | grep -Eob "$_INSTRUCTION_INTERP" | cut -d: -f1)
+  for start in $interp_starts; do [ "$start" -le "$2" ] && from=$start; done
+  for ((i = 0; i < ${#bind_vars[@]}; i++)); do [ "${bind_vars[i]}" = "$1" ] && break; done
+  if [ "$i" -eq "${#bind_vars[@]}" ]; then
+    bind_vars+=("$1")
+    bind_offsets+=("$(printf '%s' "$text" | grep -Eiob "$(instruction_interp_var_bind_re "$1")" | cut -d: -f1)")
+  fi
+  for bind in ${bind_offsets[i]}; do
+    [ "$bind" -ge "$from" ] && [ "$bind" -lt "$2" ] && bound=$bind
+  done
+  [ -n "$bound" ]
+}
+assigns_of() { # variable names → assigns, of the caller's $text
+  local i
+  for ((i = 0; i < ${#assign_vars[@]}; i++)); do [ "${assign_vars[i]}" = "$1" ] && break; done
+  if [ "$i" -eq "${#assign_vars[@]}" ]; then
+    assign_vars+=("$1")
+    assign_rows+=("$(printf '%s' "$text" | grep -Eiob "$(instruction_interp_var_assign_re "$1" "$2")")")
+  fi
+  assigns=${assign_rows[i]}
+}
+constructs_of() { # text construct-re trunc-re → cons_at, cons_text, cons_trunc (by line number)
+  local at construct n
+  cons_at=() cons_text=() cons_trunc=()
+  while IFS=: read -r at construct; do
+    cons_at+=("$at") cons_text+=("$construct")
+  done < <(printf '%s' "$1" | grep -Eiob "$2")
+  [ "${#cons_at[@]}" -gt 0 ] || return 0
+  while IFS= read -r n; do cons_trunc[n]=1; done < <(printf '%s\n' "${cons_text[@]}" | grep -Ein "$3" | cut -d: -f1)
 }
 judge_interp() { # program text
-  local text=$1 construct name mode var at bound bind assigned sep joined row dir
+  local text=$1 construct name mode var at bind assigned sep joined row dir k
   if printf '%s' "$text" | grep -Eiq "${interp_write}"; then
     while IFS= read -r construct; do
       [ -n "$construct" ] || continue
@@ -330,27 +357,36 @@ judge_interp() { # program text
       judge_row "$name" "$mode" && return 0
     done < <(printf '%s' "$text" | grep -Eio "$interp_cons")
   fi
-  interp_starts=''
+  interp_starts='' bind_vars=() bind_offsets=() assign_vars=() assign_rows=()
   if printf '%s' "$text" | grep -Eiq "$_INSTRUCTION_IW$var_cons"; then
-    while IFS=: read -r at construct; do
-      var=$(instruction_interp_var_name "$construct") || continue
-      bound=$(bound_at "$text" "$var" "$at") || continue
+    constructs_of "$text" "$var_cons" "$var_trunc"
+    for ((k = 0; k < ${#cons_at[@]}; k++)); do
+      at=${cons_at[k]} construct=${cons_text[k]}
+      instruction_interp_var_name "$construct" var || continue
+      assigns_of "$var" "$TARGET"
+      [ -n "$assigns" ] || continue
+      bound_at "$var" "$at" || continue
       mode=append
-      printf '%s' "$construct" | grep -Eiq "$var_trunc" && mode=trunc
+      [ -z "${cons_trunc[k + 1]:-}" ] || mode=trunc
       while IFS=: read -r bind assigned; do
         [ "$bind" = "$bound" ] || continue
         name=$(name_in "$assigned") || continue
         judge_row "$name" "$mode" && return 0
-      done < <(printf '%s' "$text" | grep -Eiob "$(instruction_interp_var_assign_re "$var" "$TARGET")")
-    done < <(printf '%s' "$text" | grep -Eiob "$var_cons")
+      done <<< "$assigns"
+    done
   fi
+  assign_vars=() assign_rows=()
   if printf '%s' "$text" | grep -Eiq "$_INSTRUCTION_IW$dir_cons"; then
-    while IFS=: read -r at construct; do
-      row=$(instruction_interp_dir_join "$construct") || continue
+    constructs_of "$text" "$dir_cons" "$dir_trunc"
+    for ((k = 0; k < ${#cons_at[@]}; k++)); do
+      at=${cons_at[k]} construct=${cons_text[k]}
+      instruction_interp_dir_join "$construct" row || continue
       IFS=$'\t' read -r var sep joined <<< "$row"
-      bound=$(bound_at "$text" "$var" "$at") || continue
+      assigns_of "$var" "$DIR_TARGET"
+      [ -n "$assigns" ] || continue
+      bound_at "$var" "$at" || continue
       mode=append
-      printf '%s' "$construct" | grep -Eiq "$dir_trunc" && mode=trunc
+      [ -z "${cons_trunc[k + 1]:-}" ] || mode=trunc
       while IFS=: read -r bind assigned; do
         [ "$bind" = "$bound" ] || continue
         dir=${assigned#*=}; dir="${dir#*[\"\']}"; dir="${dir%%[\"\'\\]*}"
@@ -361,8 +397,8 @@ judge_interp() { # program text
         else
           judge_row "${dir%/}/*.md" "$mode" && { hit=$dir; return 0; }
         fi
-      done < <(printf '%s' "$text" | grep -Eiob "$(instruction_interp_var_assign_re "$var" "$DIR_TARGET")")
-    done < <(printf '%s' "$text" | grep -Eiob "$dir_cons")
+      done <<< "$assigns"
+    done
   fi
   return 1
 }
