@@ -4492,10 +4492,12 @@ wait_clock() {
 wait_progress() { # directory run-id stream
   local directory="$1" vendor account workdir started transcript='' stamp size row now prefix tokens out='' force=false began
   [ -n "$WAIT_STAMP" ] || force=true
+  account=$WAIT_ACCOUNT
   { IFS= read -r WAIT_VENDOR; IFS= read -r WAIT_ACCOUNT; IFS= read -r WAIT_WORKDIR; IFS= read -r WAIT_STARTED
     IFS= read -r WAIT_PID; IFS= read -r WAIT_PID_STARTED; IFS= read -r WAIT_ATTEMPT_STARTED; } \
     < <(jq -r '.vendor, .account, .workdir, (.pid_started_at // .started_at // 0), (.pid // ""), (.pid_started_at // ""),
         ([.started_at, .slot_at] | map(numbers) | max // 0)' "$directory/meta.json" 2>/dev/null)
+  [ "$WAIT_ACCOUNT" = "$account" ] || WAIT_TRANSCRIPT=''
   vendor=$WAIT_VENDOR account=$WAIT_ACCOUNT workdir=$WAIT_WORKDIR started=$WAIT_STARTED
   wait_clock
   [ "$force" = true ] || [ "$vendor" = claudeb ] || [ "$WAIT_CLOCK" -ge "$WAIT_ROWS_NEXT" ] ||
@@ -4551,7 +4553,7 @@ wait_progress() { # directory run-id stream
 
 wait_run() {
   [ "$#" -ge 1 ] || usage
-  local run_id="$1" max='' stream=false directory wait_started now waited remaining sleep_for ticks pid
+  local run_id="$1" max='' stream=false directory wait_started now waited remaining sleep_for ticks pid account
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4601,15 +4603,22 @@ wait_run() {
   done
 }
 
+# Not run_live: an overdue run's supervisor may still be alive, and stop must end it. Only a record
+# without pid_started_at, whose pid may be recycled, needs run_live's overdue cutoff.
+supervisor_stoppable() { # directory
+  [ ! -e "$1/exit_code" ] && supervisor_running "$1" "$(jq -r '.pid // 0' "$1/meta.json" 2>/dev/null)" &&
+    { jq -e '.pid_started_at != null' "$1/meta.json" >/dev/null 2>&1 || ! run_overdue "$1"; }
+}
+
 # A TaskStop of a background wait ends only the wait: the run is detached so a new wait can adopt it.
 stop_command() {
   [ "$#" -eq 1 ] || usage
   local directory ticks=0
   directory=$(run_path "$1")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
-  if run_live "$directory"; then
+  if supervisor_stoppable "$directory"; then
     kill -TERM "$(jq -r '.pid' "$directory/meta.json")" 2>/dev/null
-    while run_live "$directory" && [ "$ticks" -lt 300 ]; do sleep 0.1; ticks=$((ticks + 1)); done
+    while supervisor_stoppable "$directory" && [ "$ticks" -lt 300 ]; do sleep 0.1; ticks=$((ticks + 1)); done
   fi
   wait_run "$1" --max 0
 }

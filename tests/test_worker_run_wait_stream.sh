@@ -120,6 +120,27 @@ printf '0\n' >"$CRUN/exit_code"
 wait "$waiter"
 kill "$live" 2>/dev/null
 assert [ "$(grep -c '^find .*-name \*abc123\*' "$CALLS")" = 1 ]
+# A reroute to the next account mid-wait streams the new account's session, not the walled one's.
+rm -f "$CRUN/exit_code" "$CRUN/tokens"
+sleep 300 &
+live=$!
+jq -c --argjson p "$live" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at = $t | .account = "main"' "$CRUN/meta.json" >"$WORK/m" &&
+  mv "$WORK/m" "$CRUN/meta.json"
+printf 'session id: abc123\n' >"$CRUN/err"
+jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" '.timestamp = $ts' "$HOME/.codex/sessions/2026/rollout-abc123.jsonl" >"$WORK/m" &&
+  mv "$WORK/m" "$HOME/.codex/sessions/2026/rollout-abc123.jsonl"
+WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
+waiter=$!
+await '$ ls'
+mkdir -p "$HOME/.codex-profiles/next/sessions"
+jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" '{timestamp:$ts,payload:{type:"function_call",name:"exec_command",arguments:"{\"cmd\":\"pwd\"}"}}' \
+  >"$HOME/.codex-profiles/next/sessions/rollout-def456.jsonl"
+printf 'session id: def456\n' >"$CRUN/err"
+jq -c '.walled_accounts = ["main"] | .account = "next"' "$CRUN/meta.json" >"$WORK/m" && mv "$WORK/m" "$CRUN/meta.json"
+await '$ pwd'
+printf '0\n' >"$CRUN/exit_code"
+wait "$waiter"
+kill "$live" 2>/dev/null
 # `stop` TERMs the run's supervisor and answers with the run's end, not with its wait still running.
 rm -f "$RUN/exit_code"
 bash -c 'trap "printf \"143\n\" >\"$1/exit_code\"; exit 0" TERM; while :; do sleep 0.1; done' _ "$RUN" &
@@ -131,6 +152,15 @@ kill -9 "$live" 2>/dev/null
 assert [ 143 = "$(cat "$RUN/exit_code" 2>/dev/null)" ]
 assert [ 0 = "$(grep -c '^STATUS: running' <<<"$out")" ]
 assert [ 1 = "$(grep -c '^STATUS: ' <<<"$out")" ]
+# ... past its overdue limit too, while its supervisor still lives.
+rm -f "$RUN/exit_code"
+bash -c 'trap "printf \"143\n\" >\"$1/exit_code\"; exit 0" TERM; while :; do sleep 0.1; done' _ "$RUN" &
+live=$!
+jq -c --argjson p "$live" --argjson t "$(date +%s)" \
+  '.pid = $p | .pid_started_at = $t | .started_at = 1000' "$RUN/meta.json" >"$WORK/m" && mv "$WORK/m" "$RUN/meta.json"
+"$RUNNER" stop "$ID" >/dev/null 2>&1
+kill -9 "$live" 2>/dev/null
+assert [ 143 = "$(cat "$RUN/exit_code" 2>/dev/null)" ]
 # Every vendor streams its messages and its read-only tools, not only what it changed.
 vendor_run() { # id vendor
   mkdir -p "$WORKER_RUN_DIR/$1"
