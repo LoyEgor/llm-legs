@@ -4563,17 +4563,17 @@ wait_run() {
   wait_started=$(date +%s)
   write_run_state "$directory" wait
   while :; do
-    wait_progress "$directory" "$run_id" "$stream"
     if [ -f "$directory/exit_code" ]; then
-      WAIT_STAMP=''; wait_progress "$directory" "$run_id" "$stream"
+      wait_progress "$directory" "$run_id" "$stream"
       wait_poll_lag "$directory" "$run_id" "$wait_started"; run_state_terminal "$directory"; terminal_report "$directory"; return 0
     fi
+    wait_progress "$directory" "$run_id" "$stream"
     pid=$(jq -r '.pid' "$directory/meta.json")
     # pid 0 is the pre-launch placeholder, and a probe of it would answer for our own
     # process group and report a never-started run as alive.
     if ! supervisor_running "$directory" "$pid" || run_overdue "$directory"; then
       sleep 0.1
-      WAIT_STAMP=''; wait_progress "$directory" "$run_id" "$stream"
+      wait_progress "$directory" "$run_id" "$stream"
       if [ -f "$directory/exit_code" ]; then
         run_state_terminal "$directory"
         terminal_report "$directory"
@@ -4588,10 +4588,12 @@ wait_run() {
     if [ "$waited" -ge "$max" ]; then running_report "$directory"; return 0; fi
     remaining=$((max - waited))
     sleep_for=$WAIT_POLL; [ "$remaining" -ge "$sleep_for" ] || sleep_for=$remaining
-    ticks=$((sleep_for * 5))
-    while [ "$ticks" -gt 0 ] && [ ! -f "$directory/exit_code" ]; do
-      sleep 0.2; ticks=$((ticks - 1))
-    done
+    exit_file_wait "$directory" "$sleep_for" || {
+      ticks=$((sleep_for * 5))
+      while [ "$ticks" -gt 0 ] && [ ! -f "$directory/exit_code" ]; do
+        sleep 0.2; ticks=$((ticks - 1))
+      done
+    }
   done
 }
 
@@ -4606,6 +4608,19 @@ stop_command() {
     while run_live "$directory" && [ "$ticks" -lt 300 ]; do sleep 0.1; ticks=$((ticks + 1)); done
   fi
   wait_run "$1" --max 0
+}
+
+exit_file_wait() { # directory seconds: back as soon as exit_code appears, else after the seconds; fails without kqueue
+  python3 - "$1" "$2" 2>/dev/null <<'PY'
+import os, select, sys, time
+directory, end = sys.argv[1], time.monotonic() + float(sys.argv[2])
+queue = select.kqueue()
+# Armed before the existence check, so an exit written in between still wakes the wait.
+queue.control([select.kevent(os.open(directory, os.O_RDONLY), select.KQ_FILTER_VNODE,
+                             select.KQ_EV_ADD | select.KQ_EV_CLEAR, select.KQ_NOTE_WRITE)], 0)
+while not os.path.exists(os.path.join(directory, "exit_code")) and (left := end - time.monotonic()) > 0:
+    queue.control(None, 1, left)
+PY
 }
 
 transcript_run() {

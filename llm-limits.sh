@@ -1866,6 +1866,13 @@ while IFS= read -r gemini_account; do
 done < <(printf '%s\n' "$gemini_accounts_list")
 
 gemini_order=$(printf '%s\n' "$gemini_accounts_list" | account_order_json gemini)
+
+# Network reads stay outside the store lock: one slow API held every other writer for up to 56 s.
+[ "$write_cache" = 0 ] || python3 "$script_dir/share/elevenlabs_keys_sync.py" 2>/dev/null || true
+elevenlabs_timeout=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" 2>/dev/null) ||
+  elevenlabs=''
+
 if [ "$write_cache" -eq 1 ]; then
   if ! mkdir -p "$(dirname "$cache")"; then
     echo "llm-limits.sh: cache directory creation failed" >&2
@@ -1980,12 +1987,8 @@ if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
   fi
 fi
 
-[ "$write_cache" = 0 ] || python3 "$script_dir/share/elevenlabs_keys_sync.py" 2>/dev/null || true
-
 # A failed read keeps the previous reading: its as_of ages on the menubar instead of the rows vanishing.
-elevenlabs_timeout=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" 2>/dev/null) ||
-  elevenlabs=$(jq -c '.elevenlabs // null' < <(printf '%s\n' "$previous_cache"))
+[ -n "$elevenlabs" ] || elevenlabs=$(jq -c '.elevenlabs // null' < <(printf '%s\n' "$previous_cache"))
 
 # OpenCode Go publishes no usage endpoint, so there is no percentage to collect and never will be:
 # an account has exactly two knowable states, a refusal the gateway stated and the last completion

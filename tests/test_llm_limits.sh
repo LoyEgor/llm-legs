@@ -781,5 +781,28 @@ heartbeat_of() {
   || fail "a heartbeat state 11 h old did not read as a stalled refresh"
 [ "$(heartbeat_of "$((now - 60))" | tr '\n' ' ')" = 'false "number" ' ] \
   || fail "a Mac awake one minute read its sleep as a stalled refresh"
-echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract including vendor pin (*_profile=*) vs account pin, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, the same for a removed Codex main (menubar flag, passive collects, table and plain, the vendor stating its removal when nothing named is left, undone by deleting the marker), a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
+EL_BIN="$WORK/elevenlabs-bin"
+mkdir -p "$EL_BIN"
+cat >"$EL_BIN/python3" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in
+  */elevenlabs_balance.py)
+    if [ -e "\$LLM_LIMITS_CACHE.lock" ]; then echo held; else echo free; fi >>"$WORK/elevenlabs-lock"
+    [ -n "\${EL_BALANCE:-}" ] || exit 1
+    printf '%s\n' "\$EL_BALANCE"; exit 0 ;;
+esac
+exec "$(command -v python3)" "\$@"
+EOF
+chmod +x "$EL_BIN/python3"
+el_collect() {
+  PATH="$EL_BIN:$PATH" HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" EL_BALANCE="$1" bash "$SCRIPT" --json |
+    jq -c '.elevenlabs'
+}
+[ "$(el_collect '{"as_of":1,"accounts":[{"account":"a"}]}')" = '{"as_of":1,"accounts":[{"account":"a"}]}' ] \
+  || fail "a read ElevenLabs balance did not land in the store"
+[ "$(el_collect '')" = '{"as_of":1,"accounts":[{"account":"a"}]}' ] \
+  || fail "a failed ElevenLabs read dropped the previous reading"
+[ "$(tr '\n' ' ' <"$WORK/elevenlabs-lock")" = 'free free ' ] \
+  || fail "the ElevenLabs balance was read under the store lock, holding every other writer behind its network calls"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract including vendor pin (*_profile=*) vs account pin, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, the same for a removed Codex main (menubar flag, passive collects, table and plain, the vendor stating its removal when nothing named is left, undone by deleting the marker), a paused vendor absent from the store and every render path with its collector never run, the ElevenLabs balance read outside the store lock, missing exit 3"
 exit 0
