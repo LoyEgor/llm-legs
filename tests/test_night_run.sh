@@ -374,7 +374,9 @@ printf 'pem\n' >"$WORK/snap/keys/server.pem"
 printf 'key\n' >"$WORK/snap/k.key"
 printf 'ssh\n' >"$WORK/snap/keys/id_ed25519"
 head -c 6291456 /dev/zero >"$WORK/snap/big.bin"
-printf '%s\n' "$WORK/snap" >"$WORK/sweep-repos"
+git init -q -b main "$WORK/clean"
+git -C "$WORK/clean" -c user.email=t@t -c user.name=t commit -q --allow-empty -m root
+printf '%s\n' "$WORK/snap" "$WORK/clean" >"$WORK/sweep-repos"
 id6=$(ls -t "$NIGHTS" | sed -n 's/\.json$//p' | head -1)
 before_status=$(git -C "$WORK/snap" status --porcelain)
 night base "$id6" >"$WORK/base.out" 2>"$WORK/base.err" || fail "night base failed"
@@ -389,8 +391,10 @@ assert grep -qxF "night-run: the base of $WORK/snap drops big.bin: a 6 MB blob" 
 assert [ "$(wc -l <"$WORK/base.err" | tr -d ' ')" = 5 ]
 assert [ "$(git -C "$WORK/snap" rev-parse "refs/night/$id6/base^")" = "$(git -C "$WORK/snap" rev-parse HEAD)" ]
 assert [ "$(git -C "$WORK/snap" status --porcelain)" = "$before_status" ]
+# A clean checkout's base is its HEAD: an empty base commit would ride a fast-forward landing into main.
+assert [ "$(git -C "$WORK/clean" rev-parse "refs/night/$id6/base")" = "$(git -C "$WORK/clean" rev-parse HEAD)" ]
 assert jqe --arg c "$(git -C "$WORK/snap" rev-parse "refs/night/$id6/base")" '.bases.snap == $c' "$(record "$id6")"
-assert jqe '.events[-1] | .phase == "base" and .repos == 1 and .pred == [] and .job == null and (.secs | type) == "number"' \
+assert jqe '.events[-1] | .phase == "base" and .repos == 2 and .pred == [] and .job == null and (.secs | type) == "number"' \
   "$(record "$id6")"
 CLAUDE_CODE_SESSION_ID=$(jq -r .session "$(record "$id6")") night finish "$id6" >/dev/null
 

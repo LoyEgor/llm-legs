@@ -432,8 +432,10 @@ tree_commit() { # dir message what -> commit on HEAD of the checkout as it stand
 
 snapshot() { # dir id -> refs/night/<id>/base: the checkout as it stands
   local commit
-  commit=$(tree_commit "$1" "night $2 base: the checkout as pressed" 'the base') &&
-    git -C "$1" update-ref "refs/night/$2/base" "$commit" && printf '%s\n' "$commit"
+  commit=$(tree_commit "$1" "night $2 base: the checkout as pressed" 'the base') || return 1
+  [ "$(git -C "$1" rev-parse "$commit^{tree}")" != "$(git -C "$1" rev-parse 'HEAD^{tree}')" ] ||
+    commit=$(git -C "$1" rev-parse HEAD) || return 1
+  git -C "$1" update-ref "refs/night/$2/base" "$commit" && printf '%s\n' "$commit"
 }
 
 # Night worktrees start from refs/night/<id>/base, not HEAD: main carries days of uncommitted work
