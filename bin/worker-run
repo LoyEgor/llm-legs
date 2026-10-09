@@ -3729,10 +3729,12 @@ listing_spelling() { # workdir; paths on stdin
   # A trailing slash makes the prefix double-slashed and silently stops matching; an absent workdir
   # would strip the leading `/` off every absolute path, so it strips nothing at all.
   [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
+  # The context-nudge hook has every session, a worker's too, Write its focus line there.
   while IFS= read -r path; do
     [ -z "$path" ] || resolve_tool_path "$path" "$workdir"
-  done | AWK_DIR=$dir awk \
-    'BEGIN { dir = ENVIRON["AWK_DIR"] }
+  done | AWK_DIR=$dir AWK_NUDGE="${CONTEXT_NUDGE_STATE_DIR:-$HOME/.cache/claude-context-nudge}/" awk \
+    'BEGIN { dir = ENVIRON["AWK_DIR"]; nudge = ENVIRON["AWK_NUDGE"] }
+     index($0, nudge) == 1 { next }
      { if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
     | sort -u
 }

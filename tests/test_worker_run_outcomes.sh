@@ -79,6 +79,21 @@ assert test ! -e "$RUN_DIR/report-readonly"
 assert grep -qx "RUN-FILES: unknown (the run's own calls name 1 path(s) git shows no change for here: ignored/lane.py)" <<<"$report"
 rm -rf "$readonly_workdir/ignored"
 
+# The focus line the context-nudge hook has every session write is the harness's, not the run's work.
+clear_stub
+export CONTEXT_NUDGE_STATE_DIR="$WORK/context-nudge"
+mkdir -p "$CONTEXT_NUDGE_STATE_DIR"
+printf 'focus\n' >"$CONTEXT_NUDGE_STATE_DIR/readonly-focus.focus"
+export PICK_RC=0 PICK_ACCOUNT=readonly-focus STUB_TRANSCRIPT_SESSION=readonly-focus STUB_SESSION=readonly-focus
+export STUB_TRANSCRIPT_ACCOUNT=readonly-focus STUB_EDIT_PATH="$CONTEXT_NUDGE_STATE_DIR/readonly-focus.focus"
+start_ok claudeb
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 0' <<<"$report"
+assert_fails grep -q '^RUN-FILES-NOTE: \|^UNNAMED: \|^PARTIAL: ' <<<"$report"
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 1
+unset CONTEXT_NUDGE_STATE_DIR
+
 # A shell program that may have written somewhere git cannot see leaves the listing a floor, never a 0.
 clear_stub
 mkdir -p "$CLAUDEB_PROFILES_ROOT/readonly-shell/projects/fixture"
