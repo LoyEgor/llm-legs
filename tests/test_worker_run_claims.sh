@@ -510,6 +510,21 @@ done
 assert test "${cpu:-0}" -ge 2
 gate_open
 assert await_done
+# Git sees no edit to an ignored path; the run's own transcript names it, so it is still work.
+clear_stub
+printf 'ignored-live/\n' >>"$DIRT_REPO/.git/info/exclude"
+mkdir -p "$DIRT_REPO/ignored-live"
+export STUB_TRANSCRIPT_SESSION=lastedit-ignored STUB_TRANSCRIPT_ACCOUNT=recordacct
+export STUB_EDIT_PATH="$DIRT_REPO/ignored-live/bench.json"
+WORKER_RUN_IDLE_S=60 start_gated claudeb --workdir "$DIRT_REPO"
+for _ in $(seq 1 100); do [ ! -s "$RUN_DIR/session-file" ] || break; sleep 0.2; done
+printf 'the run is working\n' >"$DIRT_REPO/ignored-live/bench.json"
+ignored=$("$RUNNER" wait "$RUN_ID" --max 0)
+assert grep -qx 'STATUS: running' <<<"$ignored"
+assert grep -Eq '^LAST-EDIT: [0-9]$' <<<"$ignored"
+gate_open
+assert await_done
+rm -rf "$DIRT_REPO/ignored-live"
 unset CLAUDE_CODE_SESSION_ID
 
 

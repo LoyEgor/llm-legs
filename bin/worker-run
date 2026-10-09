@@ -4144,8 +4144,18 @@ unknown_report() {
 # 52-minute run stalled one minute before it finished (live 2026-08-24). Newest mtime among the
 # paths the dirt tracker already calls this run's own; nonzero where nothing has changed yet.
 last_edit_age() { # directory workdir now
-  local now="$3" newest age
-  newest=$(workdir_activity_stamp "$1" "$2") || return 1
+  local now="$3" newest own path age
+  local -a named=()
+  newest=$(workdir_activity_stamp "$1" "$2") || newest=0
+  # Git sees no edit to an ignored path, a committed one or one in another repository; the run's own
+  # transcript names them.
+  compute_transcript_files "$1"
+  while IFS= read -r path; do
+    case "$path" in '') ;; /*) named+=("$path") ;; *) named+=("${2%/}/$path") ;; esac
+  done <<<"$RUN_FILES_LIST"
+  own=$(newest_mtime ${named[@]+"${named[@]}"})
+  [ "$own" -le "$newest" ] || newest=$own
+  [ "$newest" -gt 0 ] || return 1
   age=$((now - newest)); [ "$age" -ge 0 ] || age=0
   printf '%s\n' "$age"
 }
