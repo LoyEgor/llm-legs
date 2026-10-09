@@ -58,7 +58,8 @@ end
 -- not reach a row at all.
 local KNOWN_COLORS = {}
 local palette = assert(loadfile(root .. "/hammerspoon/menu-style.lua"))()
-for _, color in ipairs({ dimTone(0), dimTone(1), palette.RED, palette.DIM_RED, palette.GREEN }) do
+for _, color in ipairs({ dimTone(0), dimTone(1), palette.RED, palette.DIM_RED, palette.GREEN,
+    palette.tone(palette.GREEN, true) }) do
   KNOWN_COLORS[colorKey(color)] = true
 end
 
@@ -3758,7 +3759,7 @@ do
       .. "0\tw24\t\t24 h vs prev 24 h · 1 worse\n"
       .. "1\tdw24\t\t             24 h  prev 24 h  Δ\n"
       .. "1\tw24\t\tBash wait s   5.0        1.5  +233%\n"
-      .. "0\tw72\t\t3 d vs prev 3 d · 1 better\n"
+      .. "0\tw72\tg:19:8\t3 d vs prev 3 d · 1 better\n"
       .. "1\tw72\t\tBash wait s  1.0  2.0  -50%\n"
       .. "1\tsw72\t\t-\n"
       .. "1\tw72\t\tby week\n"
@@ -3819,8 +3820,8 @@ do
     "the section note does not close its section before the separator")
   local delta = items[9].title.runs
   assert(#delta == 4 and delta[2].text == "+243%" and delta[2].attributes.color.red == 0.9
-      and delta[4].text == "-50%" and colorKey(delta[4].attributes.color) == colorKey(palette.GREEN),
-    "a worse Δ is not red and a better Δ not green")
+      and delta[4].text == "-50%" and colorKey(delta[4].attributes.color) == colorKey(palette.tone(palette.GREEN, true)),
+    "a worse Δ is not red and a better Δ not the disabled row's green")
   assert(titleText(items[#items]) == "Refresh" and items[#items].fn, "the Harness doctor has no Refresh")
   local function windowBlocks(list)
     local found = {}
@@ -3849,6 +3850,9 @@ do
   assert(#blocks == 1 and titleText(blocks[1]) == "3 d vs prev 3 d · 1 better" and #blocks[1].menu == 3
       and titleText(blocks[1].menu[2]) == "-" and titleText(blocks[1].menu[3].menu[1]) == "week (Mon–Sun)  09-22",
     "choosing 3 d did not swap in its block with its nested rows")
+  assert(blocks[1].title.runs[2].text == "1 better" and not blocks[1].disabled
+      and colorKey(blocks[1].title.runs[2].attributes.color) == colorKey(palette.GREEN),
+    "a green span on a row that opens a submenu is not the enabled row's green")
   assert(titleText(after[#after - 2]) == "window: 3d", "the picker did not follow the shared selection")
   harnessMenuText = menuText(os.time() - 3 * 3600)
   row = harnessRow(loadModule(roleFixture))

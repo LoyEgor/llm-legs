@@ -20,7 +20,7 @@ local M = {
 }
 
 local style = require("menu-style")
-local redColor, dimRedColor, greenColor, menuFont = style.RED, style.DIM_RED, style.GREEN, style.MONO
+local redColor, dimRedColor, menuFont = style.RED, style.DIM_RED, style.MONO
 local dimColorName = style.DIM
 
 -- Measured off a real popup menu: macOS paints a disabled row's text at tertiaryLabelColor, and
@@ -1730,21 +1730,21 @@ stuckQueues = function()
   return out
 end
 
-local function harnessLine(flags, spans, text)
+local function harnessLine(flags, spans, text, inactive)
   if flags:find("s", 1, true) then return { title = "-" } end
   local dim = flags:find("d", 1, true) ~= nil
   local title, at = nil, 1
   local function add(piece, red, pieceDim, green)
     if piece == "" then return end
-    local styled = green and hs.styledtext.new(piece, { font = menuFont, color = greenColor })
+    local styled = green and hs.styledtext.new(piece, { font = menuFont, color = style.tone(style.GREEN, inactive) })
       or infoTitle(piece, red, pieceDim and not red)
     title = title and (title .. styled) or styled
   end
-  for style, start, length in spans:gmatch("(%a):(%d+):(%d+)") do
+  for kind, start, length in spans:gmatch("(%a):(%d+):(%d+)") do
     start, length = tonumber(start) + 1, tonumber(length)
     if start >= at then
       add(text:sub(at, start - 1), false, dim)
-      add(text:sub(start, start + length - 1), style == "r", false, style == "g")
+      add(text:sub(start, start + length - 1), kind == "r", false, kind == "g")
       at = start + length
     end
   end
@@ -1803,7 +1803,7 @@ local function readHarnessMenu()
           actionPath, actionArgs = harnessAction(packed)
         end
       end
-      local item = harnessLine(flags, spans, text)
+      local item = harnessLine(flags, spans, text, not actionPath)
       local chromeCheck = flags:find("v", 1, true) ~= nil
       if chromeCheck then item.plainTitle, chromeChecks[#chromeChecks + 1] = text, item end
       if item.title ~= "-" then
@@ -1811,6 +1811,7 @@ local function readHarnessMenu()
           item.fn = function() startDiagnosticsTask("harnessActionTask", actionPath, actionArgs) end
         else
           item.disabled = true
+          item.enabledTitle = function() return harnessLine(flags, spans, text, false).title end
         end
       end
       if not chromeCheck then parent[#parent + 1] = item end
@@ -1823,9 +1824,10 @@ local function readHarnessMenu()
   local function settle(items)
     for _, item in ipairs(items) do
       if item.children and #item.children > 0 then
+        if item.enabledTitle then item.title = item.enabledTitle() end
         item.menu, item.disabled = settle(item.children), nil
       end
-      item.children = nil
+      item.children, item.enabledTitle = nil, nil
     end
     return items
   end

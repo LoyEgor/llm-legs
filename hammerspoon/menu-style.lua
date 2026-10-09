@@ -4,9 +4,18 @@ local M = {}
 
 M.RED = { red = 0.9, green = 0.25, blue = 0.2 }
 M.DIM_RED = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
-M.GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 0.55 }
+M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }
 M.DIM = { list = "System", name = "tertiaryLabelColor" }
 M.MONO = { name = "Menlo", size = 13 }
+
+-- A disabled NSMenu row re-tints a custom text colour (dark green turns grey-green). Measured on the
+-- light theme: this input in a disabled row renders as GREEN at DIM_RED's alpha in an enabled row.
+local INACTIVE_GREEN = { red = 0.17, green = 0.73, blue = 0.36 }
+
+function M.tone(color, inactive)
+  if inactive and color == M.GREEN then return INACTIVE_GREEN end
+  return color
+end
 
 function M.age(seconds)
   seconds = math.max(0, tonumber(seconds) or 0)

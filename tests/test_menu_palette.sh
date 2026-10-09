@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # hammerspoon/menu-style.lua is the only palette: no other menu module builds a colour, and every
-# palette is exactly PALETTE, each colour opaque or at DIM_RED's alpha.
+# palette is exactly PALETTE, each colour opaque or at DIM_RED's alpha. GREEN reaches a title only
+# through M.tone, which holds the disabled-row green calibrated on the real menu.
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -22,6 +23,8 @@ COLOR = [
     (re.compile(r"\blist\s*=\s*[\"']"), "a named colour"),
     (re.compile(r"hs\.drawing\.color\.(?!asRGB\b|asHSB\b)\w+"), "an hs.drawing.color name"),
 ]
+GREEN = re.compile(r"\.GREEN\b|\[\s*[\"']GREEN[\"']\s*\]")
+TONED = re.compile(r"\btone\(\s*[\w.]*(?:\.GREEN\b|\[\s*[\"']GREEN[\"']\s*\])")
 
 
 def code(line):
@@ -45,9 +48,14 @@ for path in modules:
             for pattern, what in COLOR:
                 if pattern.search(body):
                     problems.append(f"{path}:{number}: {what} outside menu-style.lua ({line.strip()}); {HOME}")
+            if len(GREEN.findall(body)) > len(TONED.findall(body)):
+                problems.append(f"{path}:{number}: a raw GREEN ({line.strip()}); pass it through menu-style.lua"
+                                " tone(GREEN, inactive) so a disabled row gets the calibrated green")
 
 with open(style_path, encoding="utf-8") as handle:
     style = handle.read()
+if not re.search(r"^function M\.tone\(color, inactive\)$", style, re.M) or "local INACTIVE_GREEN = {" not in style:
+    problems.append("menu-style.lua: M.tone(color, inactive) and its INACTIVE_GREEN are gone")
 palette = {}
 for name, body in re.findall(r"^M\.([A-Z_]+)\s*=\s*\{([^}]*)\}", style, re.M):
     fields = dict(re.findall(r"(\w+)\s*=\s*(\"[^\"]*\"|[-0-9.]+)", body))
@@ -83,9 +91,14 @@ found=$(check "$ROOT/hammerspoon/menu-style.lua" "${modules[@]}") || fail "the p
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-printf 'local x = { red = 0.13, green = 0.55, blue = 0.25 }\nlocal y = "#ff0000"\n-- { alpha = 0.5 } in a comment\nlocal z = hs.drawing.color.x11.red\n' >"$WORK/rogue.lua"
+printf 'local x = { red = 0.13, green = 0.55, blue = 0.25 }\nlocal y = "#ff0000"\n-- { alpha = 0.5 } in a comment\nlocal z = hs.drawing.color.x11.red\nlocal g = { color = style.GREEN }\nlocal h = style.tone(style.GREEN, true)\n' >"$WORK/rogue.lua"
 rogue=$(check "$ROOT/hammerspoon/menu-style.lua" "$WORK/rogue.lua")
-[ "$(printf '%s\n' "$rogue" | grep -c 'menu-style.lua')" = 3 ] || fail "a colour built outside menu-style.lua passed: $rogue"
+[ "$(printf '%s\n' "$rogue" | grep -c 'menu-style.lua')" = 4 ] || fail "a colour built outside menu-style.lua passed: $rogue"
+case "$rogue" in *"rogue.lua:5: a raw GREEN"*) ;; *) fail "a raw GREEN outside tone() passed: $rogue" ;; esac
+case "$rogue" in *"rogue.lua:6:"*) fail "GREEN through tone() was rejected: $rogue" ;; esac
+grep -v '^function M.tone' "$ROOT/hammerspoon/menu-style.lua" >"$WORK/menu-style.lua"
+untoned=$(check "$WORK/menu-style.lua")
+case "$untoned" in *"M.tone(color, inactive)"*) ;; *) fail "a palette without M.tone passed: $untoned" ;; esac
 { cat "$ROOT/hammerspoon/menu-style.lua"; printf 'M.TEAL = { red = 0.1, green = 0.6, blue = 0.6 }\n'; } >"$WORK/menu-style.lua"
 added=$(check "$WORK/menu-style.lua")
 case "$added" in *"Egor's call"*) ;; *) fail "an invented palette colour passed: $added" ;; esac

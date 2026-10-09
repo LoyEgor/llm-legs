@@ -222,6 +222,26 @@ check(codexAt and cat[codexAt - 1].title ~= "-" and text(cat[codexAt - 1].title)
     and cat[codexAt - 2].title == "-", "the vendor group has no separator and caption")
 
 local drill = spend.menu
+local menuStyle = dofile(root .. "/hammerspoon/menu-style.lua")
+local function painted(item, cell, color)
+    local start = text(item.title):find(cell, 1, true)
+    for _, run in ipairs(start and item.title:asTable() or {}) do
+        if type(run) == "table" and run.starts <= start and start <= run.ends then
+            local shown = run.attributes.color or {}
+            for _, key in ipairs({ "red", "green", "blue", "alpha" }) do
+                if math.abs((shown[key] or 1) - (color[key] or 1)) > 1e-6 then return false end
+            end
+            return true
+        end
+    end
+    return false
+end
+local zone = find(drill, "review-bench")
+check(painted(workers, "-13%", menuStyle.GREEN) and zone and zone.disabled
+    and painted(zone, "-33%", menuStyle.tone(menuStyle.GREEN, true))
+    and colorAt(zone, "-33%") ~= colorAt(workers, "-13%"),
+    "a better Δ is not GREEN in an enabled row and the calibrated green in a disabled one: "
+        .. tostring(colorAt(workers, "-13%")) .. " / " .. tostring(zone and colorAt(zone, "-33%")))
 check(text(drill[1].title):find("^By zone") ~= nil, "the drill does not open on its first section: " .. text(drill[1].title))
 local zoneHead, topHead = find(drill, "By zone"), find(drill, "Top projects")
 check(zoneHead and topHead and cellEnd(zoneHead, "Δ") == cellEnd(topHead, "Δ")

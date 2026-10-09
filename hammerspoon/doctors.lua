@@ -729,7 +729,8 @@ local NAMES = { llm = "LLM doctor", harness = "Harness doctor", updater = "Updat
 local BARS = { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" }
 local MISSING = "–"
 
-local TONES = { [style.RED] = "r", [style.DIM_RED] = "d", [style.DIM] = "m", [style.GREEN] = "g" }
+local GREEN = style.tone(style.GREEN, false)
+local TONES = { [style.RED] = "r", [style.DIM_RED] = "d", [style.DIM] = "m", [GREEN] = "g" }
 local styledCache, styledCount = {}, 0
 
 local function styled(segments)
@@ -740,7 +741,7 @@ local function styled(segments)
   local title
   for _, segment in ipairs(segments) do
     local text, tone = segment[1], segment[2]
-    local piece = tone == style.GREEN and hs.styledtext.new(text, { font = style.MONO, color = tone })
+    local piece = tone == GREEN and hs.styledtext.new(text, { font = style.MONO, color = tone })
       or infoTitle(text, tone == style.RED, tone == style.DIM or tone == style.DIM_RED, tone == style.DIM_RED)
     title = title and title .. piece or piece
   end
@@ -772,7 +773,7 @@ local function summaryTitle(name, value, unit, status, history, now, stale, show
   local median = #prior > 0 and (prior[math.floor((#prior + 1) / 2)] + prior[math.ceil((#prior + 1) / 2)]) / 2 or nil
   local tone = (stale or status == "nodata") and style.DIM
     or (status == "error" or status == "problems") and style.RED
-    or (status == "blind" or status == "watch") and style.DIM_RED or style.GREEN
+    or (status == "blind" or status == "watch") and style.DIM_RED or GREEN
   local segments = { { string.format("%-9s", name), tone }, { " " },
     value and { padded(show(value), 4) } or { padded(MISSING, 4), style.DIM }, { string.format(" %-10s  ", unit or "") } }
   for index = 1, 7 do

@@ -33,7 +33,10 @@ local CATEGORY_RANGES = { RANGES[2], RANGES[3], RANGES[1], RANGES[4] }
 local DELTA_COLUMN = 3
 
 local RED = menuStyle.RED
-local TONES = { worse = RED, better = menuStyle.GREEN }
+local function toneColor(tone, inactive)
+    if tone == "worse" then return RED end
+    if tone == "better" then return menuStyle.tone(menuStyle.GREEN, inactive) end
+end
 
 local path = DEFAULT_PATH
 local caches = {}
@@ -146,7 +149,7 @@ local function aligned(rows)
         local title = style(pad(row.label or "", labelWidth), rowColor)
         for c = 1, #numWidths do
             local color = rowColor
-            if c == DELTA_COLUMN and row.tone then color = TONES[row.tone] or rowColor end
+            if c == DELTA_COLUMN and row.tone then color = toneColor(row.tone, not row.active) or rowColor end
             title = title .. style("  " .. pad(nums[c] or "", numWidths[c], true), color)
         end
         titles[index] = title
@@ -206,7 +209,8 @@ local function rowMenu(row)
             rows[#rows + 1] = { label = section.title or "", nums = section.columns or {}, dim = true }
             owners[#rows] = false
             for _, item in ipairs(section.rows) do
-                rows[#rows + 1] = { label = item.label, nums = item.cells, tone = item.tone, dim = item.dim }
+                rows[#rows + 1] = { label = item.label, nums = item.cells, tone = item.tone, dim = item.dim,
+                    active = item.child ~= nil or item.copy ~= nil }
                 owners[#rows] = item
             end
         end
@@ -479,8 +483,10 @@ end
 -- `lead` is one more row aligned with the table but placed by the caller; its title comes second.
 local function tableItems(data, lead)
     local rows = { { label = data.unit_label or "", nums = data.columns or { "7 days", "prev 7", "Δ" }, dim = true } }
-    for _, row in ipairs(data.rows) do
-        rows[#rows + 1] = { label = row.label, nums = row.cells, tone = row.tone }
+    local menus = {}
+    for index, row in ipairs(data.rows) do
+        menus[index] = rowMenu(row)
+        rows[#rows + 1] = { label = row.label, nums = row.cells, tone = row.tone, active = #menus[index] > 0 }
     end
     if lead then rows[#rows + 1] = lead end
     local titles = aligned(rows)
@@ -493,7 +499,7 @@ local function tableItems(data, lead)
             if caption then items[#items + 1] = { title = style(caption, dimColor()), disabled = true } end
         end
         group = row.group
-        local menu = rowMenu(row)
+        local menu = menus[index]
         items[#items + 1] = #menu > 0 and { title = titles[index + 1], menu = menu }
             or { title = titles[index + 1], disabled = true }
     end
@@ -617,9 +623,10 @@ function M.menuItems(changeLogItem)
     end
     local items = statusItems(data, problem, attrs, false, { running = spendTask ~= nil, error = spendError })
     local lead, indexRow = indexLead(data)
+    local indexMenu = indexRow and rowMenu(indexRow) or {}
+    lead.active = #indexMenu > 0
     local rows, leadTitle
     if data then rows, leadTitle = tableItems(data, lead) else leadTitle = aligned({ lead })[1] end
-    local indexMenu = indexRow and rowMenu(indexRow) or {}
     items[#items + 1] = #indexMenu > 0 and { title = leadTitle, menu = indexMenu } or { title = leadTitle, disabled = true }
     local title = "Compare: " .. range.label
     if sameRange(spendAsked, range) then title = title .. " — computing…" end

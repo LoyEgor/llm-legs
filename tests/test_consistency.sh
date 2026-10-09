@@ -3127,9 +3127,9 @@ if [ -f "$TOKENMAP_TRACKING" ]; then
 fi
 assert grep -Fxq 'DELTA_TIMES_FROM = 11' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq 'DELTA_MATERIAL = 0.10' "$HARNESS_DOCTOR_BIN"
-assert grep -Fxq 'local TONES = { worse = RED, better = menuStyle.GREEN }' "$ROOT/hammerspoon/token-tracking.lua"
-assert grep -Fxq 'local redColor, dimRedColor, greenColor, menuFont = style.RED, style.DIM_RED, style.GREEN, style.MONO' "$ROOT/hammerspoon/llm-limits.lua"
-assert grep -Fxq 'M.GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 0.55 }' "$ROOT/hammerspoon/menu-style.lua"
+assert grep -Fxq '    if tone == "better" then return menuStyle.tone(menuStyle.GREEN, inactive) end' "$ROOT/hammerspoon/token-tracking.lua"
+assert grep -Fq 'color = style.tone(style.GREEN, inactive) })' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fxq 'M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }' "$ROOT/hammerspoon/menu-style.lua"
 assert doc_has '`7 days · prev 7 · Δ`'
 
 # --- Row dc: limiter hold files ---------------------------------------------------------
