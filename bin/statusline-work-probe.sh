@@ -87,13 +87,14 @@ found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v n
     nw = split(cmd[pid], w, /[ \t]+/); pi = 1; b = base(w[1])
     while (b ~ /^(env|nohup|time|timeout|nice|sudo|caffeinate|setsid|uv|poetry|npx|bash|sh|zsh|dash|[Pp]ython[0-9.]*|node|perl|ruby|lua|luajit)$/ && pi < nw) {
       for (i = pi + 1; i <= nw && (w[i] ~ /^-/ || (b == "env" && w[i] ~ /=/)); i++) {
-        if ((w[i] == "-c" && b ~ /^(bash|sh|zsh|dash|[Pp]ython[0-9.]*)$/) || (w[i] ~ /^-[a-zA-Z]*[eE]$/ && b ~ /^(perl|ruby|lua|luajit|node)$/) ||
-            (b == "node" && w[i] ~ /^(--eval|--print|-p)$/)) return b
+        if ((w[i] == "-c" && b ~ /^(bash|sh|zsh|dash|[Pp]ython[0-9.]*)$/) || (w[i] ~ /^-[a-zA-Z]*e$/ && b ~ /^(perl|ruby|lua|luajit|node)$/) ||
+            (w[i] ~ /^-[a-zA-Z]*E$/ && b == "perl") || (b == "node" && w[i] ~ /^(--eval|--print|-p)$/)) return b
         if (w[i] == "-m" && b ~ /^[Pp]ython/ && i < nw) { pi = i + 1; return base(w[pi]) }
         if (w[i] == "--test" && b == "node") return "node --test"
         if ((b == "timeout" && w[i] ~ /^-[sk]$/) || (b == "nice" && w[i] == "-n") || (b == "caffeinate" && w[i] ~ /^-[tw]$/) ||
             (b == "env" && w[i] ~ /^-[uCP]$/) || (b ~ /^(bash|sh|zsh|dash)$/ && w[i] ~ /^-[oO]$/) ||
-            (b == "sudo" && w[i] ~ /^-[ugCDhpt]$/) || (b ~ /^(uv|npx)$/ && w[i] ~ /^(--with|--python|-p|--package|--project|--directory|--from)$/)) i++
+            (b == "sudo" && w[i] ~ /^-[ugCDhpt]$/) || (b ~ /^(lua|luajit)$/ && w[i] == "-l") || (b == "ruby" && w[i] ~ /^-[EI]$/) ||
+            (b ~ /^(uv|npx)$/ && w[i] ~ /^(--with|--python|-p|--package|--project|--directory|--from)$/)) i++
       }
       if (i <= nw && b == "timeout" && w[i] ~ /^[0-9.]+[smhd]?$/) i++
       if (i <= nw && b ~ /^(uv|poetry)$/ && w[i] == "run") { pi = i; continue }
@@ -105,7 +106,7 @@ found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v n
   function arg(k,   i, c) {
     c = 0
     for (i = pi + 1; i <= nw; i++) {
-      if (w[i] ~ /^(-C|--dir|--prefix|--filter|-F|--workspace|-w|--cwd)$/) { i++; continue }
+      if (w[i] ~ /^(-C|--dir|--prefix|--filter|-F|--workspace|-w|--cwd|--max|--session)$/) { i++; continue }
       if (w[i] ~ /^-/) continue; if (++c == k) return w[i]
     }
     return ""

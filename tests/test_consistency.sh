@@ -3039,7 +3039,8 @@ assert grep -Fq 'OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|wait)
 assert grep -Fq '[[:space:]]+)*(REVIEW_BENCH_DOOR)="' "$ROOT/bin/worker-launch-gate.sh"
 assert grep -Fq 'local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh}' "$WORKER_RUN_BIN"
 assert test -z "$(git -C "$ROOT" grep -l 'WORKER_RUN_RELAY' -- bin share 2>/dev/null)"
-assert doc_has '`worker-run` refuses both inside a headless worker (`CLAUDEB_WORKER=1`, `worker_door`)'
+assert grep -Fq '[ "${CLAUDEB_WORKER:-}" != 1 ] && [ "${GROK_WORKER:-}" != 1 ] && [ -z "${WORKER_RUN_ID:-}" ] ||' "$WORKER_RUN_BIN"
+assert doc_has '`worker-run` refuses both inside any worker run (`CLAUDEB_WORKER`/`GROK_WORKER`=1 or `WORKER_RUN_ID` set, `worker_door`)'
 # The review nonce: one directory, one TTL, one variable name on both sides of the door.
 REVIEW_DOOR_HOOK="$FAMILY_SETUP_ROOT/hooks/review-flow-gate.sh"
 assert grep -Fq 'door_dir=$HOME/.cache/claude-review-door' "$REVIEW_DOOR_HOOK"

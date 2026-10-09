@@ -3476,11 +3476,12 @@ classify_tool_rows() { # rows workdir
 # agy's own per-conversation log, the only place it names the files it wrote. `transcript.jsonl`
 # beside it carries the same rows with the tool_call ARGUMENTS stripped, so it can never answer
 # this question — read the `_full` one or nothing.
+GEMINI_WRITE_TOOLS='^(write_to_file|replace_file_content|multi_replace_file_content)$'
 gemini_tool_rows() { # transcript since
-  jq -rs --argjson since "$2" '
+  jq -rs --argjson since "$2" --arg writes "$GEMINI_WRITE_TOOLS" '
     def epoch(value):
       try ((value | tostring | sub("\\.[0-9]+(?=Z$)"; "")) | fromdateiso8601) catch null;
-    def write_tool: test("^(write_to_file|replace_file_content|multi_replace_file_content)$");
+    def write_tool: test($writes);
     def read_tool: test("^(view_file|list_dir|find_by_name|grep_search|search_web|read_url_content|manage_task|schedule|send_message|ask_question|list_permissions)$");
     def succeeded: tostring | ascii_upcase | test("^(DONE|SUCCESS|SUCCEEDED)$");
     def failed: tostring | ascii_upcase | test("^(FAILED|FAILURE|ERROR|CANCELLED|CANCELED|REJECTED)$");
@@ -4352,6 +4353,66 @@ inbox_carry_resume() { # directory session
   done < <(refuse_live_matches "$2" "${1%/*}" worker-session)
 }
 
+# The file extractors drop read-only tools and messages, which are most of what a working run shows.
+gemini_progress_rows() { # transcript since
+  jq -rR --argjson since "$2" --arg writes "$GEMINI_WRITE_TOOLS" '
+    def epoch(value):
+      try ((value | tostring | sub("\\.[0-9]+(?=Z$)"; "")) | fromdateiso8601) catch null;
+    fromjson? | objects | select(.type? == "PLANNER_RESPONSE" and (epoch(.created_at? // "") // 0) >= $since)
+    | (if (.content? | type) == "string" then ["M", .content] else empty end),
+      (.tool_calls[]? | objects | (.name? // "tool") as $name | (.args? // {}) as $args
+       | if ($name | test($writes)) then ["F", ($args.TargetFile? // "")]
+         elif $name == "run_command" then ["C", ($args.CommandLine? // "")]
+         else ["X", $name + " " + ([$args | objects | .[] | strings] | first // "")] end)
+    | .[0] + "\t" + (.[1] | tostring | gsub("[\n\r\t]+"; " ") | sub(" +$"; ""))' "$1" 2>/dev/null
+}
+
+# A message arrives as consecutive chunks; each call once, by its first `tool_call` line.
+grok_progress_rows() { # updates since
+  jq -rRs --argjson since "$2" '
+    [split("\n")[] | select(length > 0) | fromjson? | select(type == "object")]
+    | reduce .[] as $row ({rows: [], seen: {}};
+        ($row.params.update // {}) as $u
+        | ($u.toolCallId // "") as $id
+        | if $u.sessionUpdate == "agent_message_chunk" then
+            if (.rows[-1].open // false) then .rows[-1].text += ($u.content.text // "" | tostring)
+            else .rows += [{open: true, t: $row.timestamp, text: ($u.content.text // "" | tostring)}] end
+          else
+            (if (.rows | length) > 0 then .rows[-1].open = false else . end)
+            | if $u.sessionUpdate == "tool_call" and ($id == "" or (.seen[$id] | not)) then
+                .seen[$id] = true
+                | .rows += [{t: $row.timestamp, tool: ($u._meta["x.ai/tool"] // {}), in: ($u.rawInput // {})}]
+              else . end
+          end)
+    | .rows[] | select((.t | numbers) >= $since)
+    | if has("text") then ["M", .text]
+      elif (.tool.kind // "" | IN("write", "edit")) then ["F", (.in.file_path // .in.path // .in.absolute_path // "")]
+      elif .tool.kind == "execute" then ["C", (.in.command // "")]
+      else ["X", ((.tool.name // "tool") + " " + ([.in | objects | .[] | strings] | first // ""))] end
+    | .[0] + "\t" + (.[1] | tostring | gsub("[\n\r\t]+"; " ") | sub(" +$"; ""))' "$1" 2>/dev/null
+}
+
+codex_message_rows() { # rollout since
+  jq -rR --argjson since "$2" '
+    fromjson? | objects | select(.payload?.type? == "message" and .payload.role? == "assistant")
+    | select((try ((.timestamp // "") | sub("\\.[0-9]+(?=Z$)"; "") | fromdateiso8601) catch 0) >= $since)
+    | .payload.content[]? | objects | select(.type? == "output_text")
+    | "M\t" + (.text // "" | tostring | gsub("[\n\r\t]+"; " "))' "$1" 2>/dev/null
+}
+
+# Grok names its session only on the terminal `end` event: until then a run's session is the one
+# it resumed, else the first one created in its workdir since it started.
+grok_live_session() { # account workdir started resume
+  [ -z "$4" ] || { printf '%s' "$4"; return 0; }
+  local summaries=("$(grok_home "$1")/sessions/"*/*/summary.json)
+  [ -f "${summaries[0]}" ] || return 1
+  jq -r --arg cwd "${2%/}" --argjson since "$3" '
+    select((.info.cwd // "" | rtrimstr("/")) == $cwd)
+    | (try ((.created_at // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null) as $t
+    | select($t != null and $t >= $since) | "\($t) \(.info.id)"' "${summaries[@]}" 2>/dev/null |
+    sort -n | awk 'NR == 1 { print $2 }' | grep .
+}
+
 # What `wait` streams to the chat's /tasks view: one line per tool call or short message of the
 # worker, read off its live session log with the same extractors the run's file list uses.
 # A claudeb log is read from byte offset `from` on, and its first row `O<TAB>n` counts the bytes of the
@@ -4372,9 +4433,9 @@ progress_rows() { # vendor transcript since from
               // .input.url // .input.query // .input.description // "") | tostring))]
           elif .type? == "text" then ["M", (.text // "")]
           else empty end | .[0] + "\t" + (.[1] | gsub("[\n\r\t]+"; " ")))' 2>/dev/null ;;
-    codex) codex_tool_rows "$2" "$3" ;;
-    gemini) gemini_tool_rows "$2" "$3" ;;
-    grok) grok_tool_rows "$2" "$3" ;;
+    codex) codex_tool_rows "$2" "$3"; codex_message_rows "$2" "$3" ;;
+    gemini) gemini_progress_rows "$2" "$3" ;;
+    grok) grok_progress_rows "$2" "$3" ;;
   esac | awk -F'\t' '
     $1 == "O" { print "\037" $2; next }
     $1 == "F" { print "edit " $2; next }
@@ -4431,7 +4492,9 @@ wait_progress() { # directory run-id stream
     transcript=$WAIT_TRANSCRIPT
   fi
   [ -n "$transcript" ] && [ -f "$transcript" ] ||
-    transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory" "$vendor")" "$workdir") || return 0
+    transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory" "$vendor")" "$workdir") ||
+    { [ "$vendor" = grok ] && transcript=$(session_transcript grok "$account" "$(grok_live_session "$account" "$workdir" "$started" \
+        "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)")" "$workdir"); } || return 0
   stamp=$(stat -f '%z %Fm' "$transcript" 2>/dev/null || stat -c '%s %.9Y' "$transcript" 2>/dev/null)
   size=${stamp%% *}
   if [ "$transcript" != "$WAIT_TRANSCRIPT" ] || ! [ "$size" -ge "$WAIT_OFFSET" ] 2>/dev/null; then

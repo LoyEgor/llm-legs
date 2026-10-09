@@ -4111,7 +4111,7 @@ wrap 1220 1000 02:00 "'worker-run wait codex-7-7-other'"
 printf '1221 1220 01:59 bash /x/bin/worker-run wait codex-7-7-other --max 540\n'
 wrap 1500 1000 03:00 "'review-bench wait 20261008T100000Z-aaaaaaa'"
 printf '1501 1500 02:59 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-aaaaaaa\n'
-printf '1510 1000 00:50 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-bbbbbbb\n'
+printf '1510 1000 00:50 /usr/bin/python3 /x/bin/review-bench wait --session wp-sess --max 60 20261008T100000Z-bbbbbbb\n'
 printf '1520 1000 00:40 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-ggggggg\n'
 printf '1530 1000 00:40 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-hhhhhhh\n'
 printf '1540 1000 00:40 /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /x/bin/review-bench wait 20261008T100000Z-kkkkkkk\n'
@@ -4127,6 +4127,8 @@ wrap 1330 1000 00:35 "'perl -le 1'"
 printf '1331 1330 00:34 perl -le select(undef,undef,undef,secretcode)\n'
 wrap 1310 1000 01:30 "'bash /abs/test_y.sh'"
 printf '1311 1310 01:29 bash %s/tests/test_y.sh\n' "$WORK/wp-other"
+wrap 1340 1000 01:20 "'lua -E /abs/test_z.lua'"
+printf '1341 1340 01:19 lua -E %s/tests/test_z.lua\n' "$WORK/wp-other"
 wrap 1320 1000 03:00 "'bash /o/tests/run-all'"
 cat <<'SNAP'
 1321 1320 02:59 /opt/homebrew/bin/bash /r/share/run-suites.sh --repo /o
@@ -4175,7 +4177,7 @@ printf 'p1101\nfcwd\nn%s\n' "$WORK/wp-plain"
 printf 'p1200\nfcwd\nn%s\n' "$WP_REPO/.claude/worktrees/wt-one"
 printf 'p1231\nfcwd\nn%s\n' "$WORK/wp-plain"
 printf 'p1260\nfcwd\nn%s\n' "$WORK/wp-plain"
-for p in 1270 1280 1290 1300 1311 1330; do printf 'p%s\nfcwd\nn%s\n' "\$p" "$WORK/wp-plain"; done
+for p in 1270 1280 1290 1300 1311 1330 1341; do printf 'p%s\nfcwd\nn%s\n' "\$p" "$WORK/wp-plain"; done
 printf 'p1321\nfcwd\nn%s\n' "$WP_REPO"
 printf 'p3000\nfcwd\nn%s\n' "$WP_REPO"
 printf 'p3200\nfcwd\nn%s\n' "$WP_REPO"
@@ -4229,6 +4231,7 @@ assert_eq "$(printf '%s\n' \
   $'main\ttests\twp repo\tsuites queued\t\t\t' \
   $'main\ttests\twp repo\ttest_orphan\t\t\t' \
   $'main\ttests\twp-other\ttest_y\t\t\t' \
+  $'main\ttests\twp-other\ttest_z\t\t\t' \
   $'main\ttests\twp repo\ttest_sid\t\t\t' \
   $'main\ttests\twp-plain\tpytest\t\t\t' \
   $'main\ttests\twp-plain\tvitest\t\t\t' \

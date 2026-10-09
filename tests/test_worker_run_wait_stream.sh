@@ -124,5 +124,50 @@ kill -9 "$live" 2>/dev/null
 assert_eq 143 "$(cat "$RUN/exit_code" 2>/dev/null)"
 assert_eq 0 "$(grep -c '^STATUS: running' <<<"$out")"
 assert_eq 1 "$(grep -c '^STATUS: ' <<<"$out")"
+# Every vendor streams its messages and its read-only tools, not only what it changed.
+vendor_run() { # id vendor
+  mkdir -p "$WORKER_RUN_DIR/$1"
+  jq -nc --arg v "$2" --argjson s $((now - 60)) '{vendor:$v,account:"acct",workdir:"/w",pid:0,started_at:$s,pid_started_at:$s}' \
+    >"$WORKER_RUN_DIR/$1/meta.json"
+  printf '0\n' >"$WORKER_RUN_DIR/$1/exit_code"
+  : >"$WORKER_RUN_DIR/$1/out"; : >"$WORKER_RUN_DIR/$1/err"
+}
+row() { grep -Eqx -- "\[[0-9]+m[0-5][0-9]s\] $1" <<<"$out"; }
+vendor_run gemini-1-2-x gemini
+printf 'Created conversation conv-1\n' >"$WORKER_RUN_DIR/gemini-1-2-x/log"
+gemini_log="$GEMINIB_PROFILES_DIR/acct/.gemini/antigravity-cli/brain/conv-1/.system_generated/logs"
+mkdir -p "$gemini_log"
+jq -nc --arg ts "$(iso "$now")" '{type:"PLANNER_RESPONSE",source:"MODEL",status:"DONE",created_at:$ts,content:"Reading the docs",
+  tool_calls:[{name:"view_file",args:{AbsolutePath:"/w/README.md"}},{name:"search_web",args:{query:"jq docs"}}]}' \
+  >"$gemini_log/transcript_full.jsonl"
+out=$("$RUNNER" wait gemini-1-2-x 2>&1)
+assert row '» Reading the docs'
+assert row 'view_file /w/README.md'
+assert row 'search_web jq docs'
+# A grok run's id arrives only on its terminal event: until then the session it created in the run's
+# workdir after the run started is the one streamed, never an older one there.
+vendor_run grok-1-2-x grok
+grok_sessions="$GROKB_PROFILES_DIR/acct/sessions/%2Fw"
+mkdir -p "$grok_sessions/old" "$grok_sessions/new"
+jq -nc --arg at "$(iso $((now - 600)))" '{info:{id:"old",cwd:"/w"},created_at:$at}' >"$grok_sessions/old/summary.json"
+jq -nc --arg at "$(iso $((now - 30)))" '{info:{id:"new",cwd:"/w"},created_at:$at}' >"$grok_sessions/new/summary.json"
+grok_update() { jq -nc --argjson t "$now" --argjson u "$1" '{timestamp:$t,method:"_x.ai/session/update",params:{update:$u}}'; }
+grok_update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Stale session"}}' >"$grok_sessions/old/updates.jsonl"
+{
+  grok_update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Looking at "}}'
+  grok_update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"the gate"}}'
+  grok_update '{"sessionUpdate":"tool_call","toolCallId":"c1","rawInput":{"pattern":"door","path":"/w/bin"},"_meta":{"x.ai/tool":{"name":"grep","kind":"search","read_only":true}}}'
+} >"$grok_sessions/new/updates.jsonl"
+out=$("$RUNNER" wait grok-1-2-x 2>&1)
+assert row '» Looking at the gate'
+assert row 'grep door'
+assert_fails grep -q 'Stale session' <<<"$out"
+vendor_run codex-1-3-x codex
+printf 'session id: rollout-1\n' >"$WORKER_RUN_DIR/codex-1-3-x/err"
+mkdir -p "$CODEX_PROFILES_DIR/acct/sessions"
+jq -nc --arg ts "$(iso "$now")" '{timestamp:$ts,type:"response_item",payload:{type:"message",role:"assistant",
+  content:[{type:"output_text",text:"Checking the parser"}]}}' >"$CODEX_PROFILES_DIR/acct/sessions/rollout-1.jsonl"
+out=$("$RUNNER" wait codex-1-3-x 2>&1)
+assert row '» Checking the parser'
 
 printf 'PASS: %s asserts; a wait with no --max streams one `[elapsed] row` line per transcript message, tool and edit (cut to 120 characters with an ellipsis, never repeated), writes the run'"'"'s tokens beside its tag and ends on the terminal report, while --max keeps the bounded STATUS: running poll and the tokens\n' "$asserts"
