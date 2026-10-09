@@ -249,12 +249,19 @@ assert chat_is 'grok_profile=*'
 rm -f "$WORDS_DIR/gate-open"
 assert exits 3 "$PIN" all
 assert chat_is 'grok_profile=*'
-# A WORD= quote is attested by the door, but the door records no target for it, so it opens none.
+# A WORD= quote attests a grant naming the target the quoted words name, and opens that one only.
 rm -f "$WORDS_DIR/sess-1/grant.pin"
 printf 'воркеры на все\n' >"$WORDS_DIR/sess-1/last.txt"
 assert exits 3 env WORD='воркеры на все' "$PIN" codex
-assert exits 3 env WORD='воркеры на все' "$PIN" all
 assert chat_is 'grok_profile=*'
+assert [ "$(jq -r .target "$WORDS_DIR/sess-1/grant.pin")" = all ]
+rm -f "$WORDS_DIR/sess-1/grant.pin"
+assert env WORD='воркеры на все' "$PIN" all
+assert chat_is 'open=all'
+rm -f "$WORDS_DIR/sess-1/grant.pin"
+assert exits 3 env WORD='воркеры на всех' "$PIN" all
+words_grant grok
+assert "$PIN" grok
 rm -f "$WORDS_DIR/sess-1/last.txt"
 words_grant codex
 chmod 000 "$WORDS_DIR/sess-1"

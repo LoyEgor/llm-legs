@@ -1721,7 +1721,7 @@ assert eq "$(grep -rlF 'claude-chat-pins' "$ROOT/bin" "$ROOT/share" "$ROOT/llm-l
 assert doc_has '`<state_dir>/pin-grants/chat-<session_id>`'
 assert grep -Fq "printf '%s/chat-%s' \"\$(dirname \"\$(worker_model_pin_grant)\")\" \"\$sid\"" "$WORKER_MODEL_SH"
 assert doc_has '`${WORDS_DIR:-$HOME/.cache/claude/words}/<session_id>/grant.pin`'
-assert grep -Fq 'word_gate_allow "$sid" pin "chat-pin $1"' "$ROOT/bin/chat-pin"
+assert grep -Fq 'word_gate_allow "$sid" pin "$(words_quoted_cmd "chat-pin $1")"' "$ROOT/bin/chat-pin"
 assert doc_has 'claude-setup `hooks/word-intake.sh` (writer)'
 assert grep -Fq '[ -z "$hook_session" ] || export CLAUDE_CODE_SESSION_ID="$hook_session"' "$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq "CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok" "$ROOT/llm-limits.sh"

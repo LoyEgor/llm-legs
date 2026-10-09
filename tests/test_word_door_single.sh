@@ -22,7 +22,7 @@ ALLOWED=$(cat <<'EOF'
 bin/chat-pin	door	after word_gate_allow opened on his word, the grant's target must be the one asked
 bin/worker-pin-gate.sh	door	after word_gate_allow opened on his word, the grant's scope must be the account pin
 share/worker-model.sh	door	worker_model_pin_allowed: as worker-pin-gate.sh, for the account pin's command path
-bin/night-run	exempt	cmd_hold decides on grant.night-hold directly; owed: route it through word_gate_allow (handoff, another chat's live edits)
+bin/night-run	door	after word_gate_allow opened the hold, the grant's excerpt is the words it records
 EOF
 )
 

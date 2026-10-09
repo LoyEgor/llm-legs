@@ -58,7 +58,7 @@ granted() { # target
     sid=$(worker_model_chat_session)
     transcript=$(words_session_transcript "$sid")
     words_span_live "$sid" "$transcript" && return 0
-    word_gate_allow "$sid" pin "chat-pin $1" "" "$file" "$transcript" || return 1
+    word_gate_allow "$sid" pin "$(words_quoted_cmd "chat-pin $1")" "" "$file" "$transcript" || return 1
     grant=$(words_grant_fresh "$sid" pin)
     # The door waves a pin on over an unreadable store; this one never did. Opened by anything but
     # his word (the open gate), any target goes; opened by his word, only the target it names.

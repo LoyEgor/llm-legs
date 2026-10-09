@@ -568,6 +568,20 @@ assert [ "$(cat "$WORK/out")" = "held repo onhold until the next night finishes:
 assert jqe --arg r "$WORK/repo" --arg w "$wt/onhold" '.session == "chat-h" and .words == "сделай холд, я ещё тут"
   and .branches == [{repo: $r, branch: "onhold", worktree: $w}]' "$NIGHTS/holds/chat-h.json"
 assert_fails env CLAUDE_CODE_SESSION_ID=nobody bash "$ROOT/bin/night-run" hold 2>/dev/null
+# The hold asks word_gate_allow: the open gate opens it, so does a WORD= quote of his last message.
+printf '%s\n' "$wt/onhold" >"$journal/chat-w.repos"
+mkdir -p "$HOME/.cache/claude/words/chat-w"
+jq -nc --argjson u "$(($(date +%s) + 3600))" '{until: $u}' >"$HOME/.cache/claude/words/gate-open"
+(cd "$WORK" && CLAUDE_CODE_SESSION_ID=chat-w night hold) >/dev/null || fail "a hold by the open gate"
+assert jqe '.session == "chat-w"' "$NIGHTS/holds/chat-w.json"
+rm -f "$HOME/.cache/claude/words/gate-open" "$NIGHTS/holds/chat-w.json"
+printf 'сделай холд, я ещё тут\n' >"$HOME/.cache/claude/words/chat-w/last.txt"
+assert_fails env CLAUDE_CODE_SESSION_ID=chat-w bash "$ROOT/bin/night-run" hold 2>/dev/null
+assert_fails env CLAUDE_CODE_SESSION_ID=chat-w WORD='я ещё тут, сделай холд' bash "$ROOT/bin/night-run" hold 2>/dev/null
+(cd "$WORK" && CLAUDE_CODE_SESSION_ID=chat-w WORD='сделай холд, я ещё тут' night hold) >"$WORK/out" || fail "a hold by a WORD= quote"
+assert [ "$(cat "$WORK/out")" = "held repo onhold until the next night finishes: сделай холд, я ещё тут" ]
+assert_fails test -e "$HOME/.cache/claude/words/chat-w/grant.night-hold"
+rm -f "$NIGHTS/holds/chat-w.json" "$journal/chat-w.repos"
 behind=$(git -C "$WORK/repo" rev-list --count "$pushed_hash..main")
 night leftovers >"$WORK/left" || fail "leftovers"
 night leftovers --json >"$WORK/left.json" || fail "leftovers --json"
