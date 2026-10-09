@@ -1,9 +1,8 @@
 # Log audit of night 20261006T233611Z-7777 (run harness-doctor-20261007T214015Z-24b7)
 
-Status: open — To: next night (Harness Doctor owner); each item names its repository and its ledger row `log_audit:<id>`.
+Status: settled 20261009T023738Z-817e: 1 LC_ALL=C awks + NUL strip in jq, 2 `worker-run stop` named by the Stop ask (relays retired), 3 cause gone since 06c1915c (each job's worktree removed at landing), 4 stays the owner's dismissal
 
-Quotes confirmed in `~/.cache/doctors/log-audit/runs/20261006T233611Z-7777/chunk-*.md`. From tonight on, carry gives a handoff
-job every sweep repository's worktree, so items 1-3 need no other chat.
+Quotes: `~/.cache/doctors/log-audit/runs/20261006T233611Z-7777/chunk-*.md`.
 
 1. **hook-awk-multibyte-failure** (claude-setup). Since llm-legs 05430753 landed (2026-10-07 04:39) every
    `towc: multibyte conversion failure` comes from `hooks/dia-not-chrome.sh`: 31 events, error source lines 12 and 24

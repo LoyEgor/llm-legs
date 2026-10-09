@@ -4591,13 +4591,24 @@
         "rule": "log_audit",
         "ident": "hook-awk-multibyte-failure"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T06:44:43+03:00",
+          "by": "night 20261009T023738Z-817e handoff-2026-10-08-log-audit-night-7777",
+          "files": [
+            "claude-setup/hooks/dia-not-chrome.sh",
+            "claude-setup/hooks/limits-triage-nudge.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Confirmed after llm-legs' 05430753 landed: 31 PreToolUse:Bash stderr events since 2026-10-07 04:40 all come from claude-setup hooks/dia-not-chrome.sh (awk programs at its lines 45 and 66, error source lines 12 and 24), which last night's probe missed; limits-triage-nudge.sh line 39, worker-limit-gate.sh line 37 and cd-guard.sh print 'ignored null byte'. claude-setup is not this run's repository: handoff. Night 817e: still stands in claude-setup hooks/dia-not-chrome.sh; tonight's job handoff-2026-10-08-log-audit-night-7777 carries it.",
-      "handoff": "docs/handoffs/2026-10-08-log-audit-night-7777.md"
+      "reviewed_by": "night 20261009T023738Z-817e handoff-2026-10-08-log-audit-night-7777",
+      "note": "Fixed: dia-not-chrome runs both awks under LC_ALL=C (test_dia_not_chrome denies a Cyrillic chain with a launch behind `;`, which passed on the old hook); limits-triage-nudge strips NUL from the tool output inside its jq (test_limits_triage_nudge, red on line 39). worker-limit-gate line 37 was the cat of brief-named files on the Agent path, gone with the relays; cd-guard reads JSON and read -d , so it cannot print the warning: no change.",
+      "handoff": null
     },
     {
       "id": "log_audit:worker-launch-gate-account-flag",
@@ -4637,13 +4648,24 @@
         "rule": "log_audit",
         "ident": "relay-stop-leaves-worker-running"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T06:44:43+03:00",
+          "by": "night 20261009T023738Z-817e handoff-2026-10-08-log-audit-night-7777",
+          "files": [
+            "llm-legs/bin/worker-run",
+            "claude-setup/hooks/stop.d/ask-run-unfinished.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Confirmed in chunk-007: TaskStop at 01:46 killed the relay; worker-run's detached supervisor runs on by design (ATTACH re-adopts it) and the backstop holds the turn for an unowned run, so stopping needs worker-run stop. No hook on TaskStop exists in claude-setup or llm-legs; the 'never started' claim was the chat's. Handoff: a TaskStop hook that resolves the relay's run from its tag file. Night 817e: relays deleted by ee185fa8, so the TaskStop-on-relay cause is gone; a stopped background worker-run wait leaves its run going by design (worker-run stop ends it). Carried tonight by job handoff-2026-10-08-log-audit-night-7777.",
-      "handoff": "docs/handoffs/2026-10-08-log-audit-night-7777.md"
+      "reviewed_by": "night 20261009T023738Z-817e handoff-2026-10-08-log-audit-night-7777",
+      "note": "Relays are retired (claude-setup 46879c6): a TaskStop now ends a background worker-run wait, and the detached run goes on by design. No way to end a run existed; worker-run stop <run> TERMs its supervisor and reports its end (test_worker_run_wait_stream), and the Stop ask for a run with no wait names it beside the wait (test_stop_dispatch). No TaskStop hook: a stopped wait may be meant to re-wait.",
+      "handoff": null
     },
     {
       "id": "log_audit:debt-scope-double-count",
@@ -4652,13 +4674,23 @@
         "rule": "log_audit",
         "ident": "debt-scope-double-count"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T06:44:43+03:00",
+          "by": "night 20261009T023738Z-817e handoff-2026-10-08-log-audit-night-7777",
+          "files": [
+            "llm-legs/docs/fix-orchestrator.md"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Confirmed in chunk-009 (04:51): review-bench prices every checkout of a family (share/rbench/debt.py repo_debt_rows, max per path), and night-run removes landed worktrees only at finish, after the debt pass. Which side to change needs review-bench research: handoff. Night 817e: still stands; carried tonight by job handoff-2026-10-08-log-audit-night-7777.",
-      "handoff": "docs/handoffs/2026-10-08-log-audit-night-7777.md"
+      "reviewed_by": "night 20261009T023738Z-817e handoff-2026-10-08-log-audit-night-7777",
+      "note": "The inflating worktrees (night 7777, 14093 to 10832 lines once removed) were job branches landed through an integration branch: neither in main nor patch-equivalent. Since llm-legs 06c1915c fix-orchestrator step 4 rebases each job in its own worktree, ff-merges it and removes the worktree at once, and review-anchors main_carried already charges an ff-landed or cherry-equivalent checkout nothing (test_review_debt worktree cases).",
+      "handoff": null
     },
     {
       "id": "log_audit:harness-branches-conflict-on-shared-files",

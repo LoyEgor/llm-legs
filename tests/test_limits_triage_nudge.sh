@@ -60,6 +60,12 @@ rm -f "/tmp/claude-limits-triage-nudge-${session_tool}" "/tmp/claude-limits-tria
 [ -z "$(run_hook "$session_tool" "claudeb: no available accounts" "Edit")" ] \
   || fail "non-Bash tool_name fired"
 
+session_nul="limits-nudge-test-$$-nul"
+rm -f "/tmp/claude-limits-triage-nudge-${session_nul}" "/tmp/claude-limits-triage-nudge-${session_nul}.lock"
+err=$(jq -cn --arg s "$session_nul" '{hook_event_name:"PostToolUse",tool_name:"Bash",session_id:$s,
+  tool_response:"Claude API: usage limit reached\u0000"}' | LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK" 2>&1 >/dev/null)
+[ -z "$err" ] || fail "a NUL in the tool output reached bash: $err"
+
 [ -z "$(printf 'not json at all' | LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK")" ] \
   || fail "malformed stdin produced output"
 printf 'not json at all' | LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK" >/dev/null 2>&1
@@ -71,7 +77,7 @@ jq -cn '{hook_event_name:"PostToolUse",tool_name:"Bash",session_id:"plain",tool_
   BASH_ENV="$WORK/count-jq.sh" FORKS="$WORK/forks" LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK" >/dev/null
 [ ! -s "$WORK/forks" ] || fail "an output with no limit-shaped word reached jq"
 
-for s in match case-insensitive plain-429 no-context no-pattern dedup wrong-tool; do
+for s in match case-insensitive plain-429 no-context no-pattern dedup wrong-tool nul; do
   rm -f "/tmp/claude-limits-triage-nudge-limits-nudge-test-$$-${s}" \
         "/tmp/claude-limits-triage-nudge-limits-nudge-test-$$-${s}.lock"
 done

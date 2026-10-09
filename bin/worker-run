@@ -14,6 +14,7 @@ usage() {
   printf '%s\n' \
     'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search | --no-web-search] [--browser] [--target dia|chrome] [--computer] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
+    '       worker-run stop <run-id>' \
     '       worker-run report <run-id>' \
     '       worker-run say [<run-id>] <text>' \
     '       worker-run transcript <run-id>...' \
@@ -4511,6 +4512,19 @@ wait_run() {
   done
 }
 
+# A TaskStop of a background wait ends only the wait: the run is detached so a new wait can adopt it.
+stop_command() {
+  [ "$#" -eq 1 ] || usage
+  local directory ticks=0
+  directory=$(run_path "$1")
+  [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
+  if run_live "$directory"; then
+    kill -TERM "$(jq -r '.pid' "$directory/meta.json")" 2>/dev/null
+    while run_live "$directory" && [ "$ticks" -lt 300 ]; do sleep 0.1; ticks=$((ticks + 1)); done
+  fi
+  wait_run "$1" --max 0
+}
+
 transcript_run() {
   [ "$#" -ge 1 ] || usage
   local directory run
@@ -5719,6 +5733,7 @@ worker_door "${1:-}"
 case "${1:-}" in
   start) shift; start_run "$@"; exit $? ;;
   wait) shift; wait_run "$@"; exit $? ;;
+  stop) shift; stop_command "$@"; exit $? ;;
   report) shift; report_run "$@"; exit $? ;;
   transcript) shift; transcript_run "$@"; exit $? ;;
   claim) shift; claim_run "$@"; exit $? ;;

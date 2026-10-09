@@ -114,5 +114,15 @@ printf '0\n' >"$CRUN/exit_code"
 wait "$waiter"
 kill "$live" 2>/dev/null
 assert [ "$(grep -c '^find .*-name \*abc123\*' "$CALLS")" = 1 ]
+# `stop` TERMs the run's supervisor and answers with the run's end, not with its wait still running.
+bash -c 'trap "printf \"143\n\" >\"$1/exit_code\"; exit 0" TERM; while :; do sleep 0.1; done' _ "$RUN" &
+live=$!
+jq -c --argjson p "$live" --argjson t "$(date +%s)" \
+  '.pid = $p | .pid_started_at = $t' "$RUN/meta.json" >"$WORK/m" && mv "$WORK/m" "$RUN/meta.json"
+out=$("$RUNNER" stop "$ID" 2>&1)
+kill -9 "$live" 2>/dev/null
+assert_eq 143 "$(cat "$RUN/exit_code" 2>/dev/null)"
+assert_eq 0 "$(grep -c '^STATUS: running' <<<"$out")"
+assert_eq 1 "$(grep -c '^STATUS: ' <<<"$out")"
 
 printf 'PASS: %s asserts; a wait with no --max streams one `[elapsed] row` line per transcript message, tool and edit (cut to 120 characters with an ellipsis, never repeated), writes the run'"'"'s tokens beside its tag and ends on the terminal report, while --max keeps the bounded STATUS: running poll and the tokens\n' "$asserts"
