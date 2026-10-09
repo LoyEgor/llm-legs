@@ -4797,7 +4797,7 @@
     },
     {
       "id": "hook-error-ask-run-unfinished-stall",
-      "title": "ask-run-unfinished.sh ran out its 5 s slice blocked, not computing",
+      "title": "ask-run-unfinished.sh ran out its 5 s slice re-checking runs the backstop had just checked",
       "match": {
         "rule": "hook-error",
         "ident": "ask-run-unfinished\\.sh"
@@ -4807,7 +4807,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-09",
       "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
-      "note": "One exit 124 in 562 runs (2026-10-09T01:34:14Z/7977deeb): 5.02 s wall for 0.28 s CPU (hooks/folded 20735.tsv); the other 561 took at most 0.79 s. The chat had no live run then (its last ended 01:08Z), so the run loop only compared launcher files; commit-report.sh ran 5.47 s in the same seconds; load1 about 30, no swap-in (memlogd machine log), so a short machine stall. The dispatcher capped it as specified and ran the rest; the next stop (01:39Z) was silent. Ruled out: a stuck chat run, swap, the hook's own loop. Not proven which call blocked: the ps -axwwo scan, its awk, or a jq. Its run and live-review branches duplicate the run backstop, which runs first: handoff item 1 deletes them and their ps scan (claude-setup, no worktree in this run).",
+      "note": "Two exit 124 on 2026-10-09 (hooks/folded 20735.tsv). 03:45:38Z/349272e0, the night sweep chat: 18 live runs of its own at load1 255; the hook forks about a dozen processes per run of the chat (rj_run_liveness sed/ps/date, a jq for phase, starter_alive ps/awk/date), 5.11 s for 0.49 s CPU, right after the backstop spent 3.3 s on the same runs. 01:34:14Z/7977deeb: no live run of that chat (its last ended 01:08Z), 5.02 s for 0.28 s CPU beside commit-report.sh 5.47 s at load1 30, no swap-in: a short machine stall in the ps scan, its awk or a jq, not proven which. The other ~560 runs that day took at most 0.79 s. The dispatcher capped both as specified. Ruled out: swap, a stuck run, the run-dir glob (1600 dirs, 0.07 s idle). Its run and live-review branches duplicate the run backstop, which runs first: handoff item 1 deletes them and their per-run forks (claude-setup, no worktree in this run).",
       "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
     },
     {
@@ -4822,7 +4822,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-09",
       "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
-      "note": "words:1791513530/349272e0 (night 20261009T023738Z-817e sweep chat, Opus): night-run's own message 'сделай чистку — night run <id>' raised ⚡ span on + ⚡ sweep; the chat ran the whole sweep with no ⚡ reading line. The seven night sweep chats before it (2026-10-03..10-08) all wrote them, and nothing in night-sweep SKILL.md, docs/night-run.md or the launch message changed since, so a model miss. ask-word-reading.sh, the late-reading net, is skipped-busy at every stop of a chat busy all night (4 of 4 stops by 03:07Z), so the row stays red until its first idle stop. Ruled out: intake regex, journal ordering. Dismissal proposed to the owner (handoff item 2).",
+      "note": "words:1791513530/349272e0 (night 20261009T023738Z-817e sweep chat, Opus): night-run's own message 'сделай чистку — night run <id>' raised ⚡ span on + ⚡ sweep; the chat ran the sweep with no ⚡ reading line. The seven night sweep chats before it (2026-10-03..10-08) all wrote them and nothing in night-sweep SKILL.md, docs/night-run.md or the launch message changed since: a model miss. ask-word-reading.sh was skipped-busy at every stop until the dispatcher's hold cap released the asks at 03:45:38Z; it asked and the chat's late reading marked the row ok at 03:45:44Z, so the net worked and the doctor counted the row an hour before it could. Ruled out: intake regex, journal ordering. Dismissal, or a doctor that waits for a busy chat's deferred ask, proposed to the owner (handoff item 2).",
       "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
     }
   ],
