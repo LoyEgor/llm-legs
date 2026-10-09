@@ -54,6 +54,14 @@ end_waits; forget
 assert_eq block "$(stop | jq -r .decision)"
 forget
 assert_eq "" "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/r1" </dev/null)"
+# The Stop ask's question: the same ownership and resume command, for the candidates it names.
+unowned() { printf '%s\n' "$@" | bash "$HOOK" --unowned; }
+assert_eq $'run r1 worker-run wait r1\nreview v1 review-bench wait v1' "$(unowned 'run r1' 'review v1' 'bogus r1' 'run a/b')"
+wait_on worker-run r1
+wait_on review-bench v1
+assert_eq "" "$(unowned 'run r1' 'review v1')"
+assert_eq "run r1 worker-run wait r1" "$(WORKER_RUN_BACKSTOP_CHAT_PID=$LIVE_PID unowned 'run r1')"
+end_waits
 rm -rf "$WORKER_RUN_DIR/r1"; forget
 
 # A run whose starter (a script waiting on its runs one at a time) still lives is owned by it; a starter
@@ -75,11 +83,13 @@ printf '#!/bin/sh\nexit 0\n' >"$WORK/mute/ps"
 chmod +x "$WORK/mute/ps"
 printf '%s %s\n' "$LIVE_PID" "$live_began" >"$WORKER_RUN_DIR/r3/starter"
 assert_eq "" "$(PATH="$WORK/mute:$PATH" stop)"
+assert_eq "" "$(unowned 'run r3')"
 rm -rf "$WORKER_RUN_DIR/r3"; forget
 # A research run is picked up by light-research, which checks its citations and writes the answer file.
 run r4 s1 gemini
 jq -c '.light = "research"' "$WORKER_RUN_DIR/r4/meta.json" >"$WORK/m" && mv "$WORK/m" "$WORKER_RUN_DIR/r4/meta.json"
 assert_has '`light-research --attach r4 --out <answer-file>`' "$(stop | reason)"
+assert_eq "run r4 light-research --attach r4 --out <answer-file>" "$(unowned 'run r4')"
 rm -rf "$WORKER_RUN_DIR/r4"; forget
 
 # Not this chat's, finished, dead, or still inside `worker-run start` (no state.json yet): nothing to hold.
@@ -140,4 +150,4 @@ assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
 assert_eq 1 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
 end_waits
 
-printf 'PASS: %s asserts; a live worker or review run of this chat that no live `worker-run wait` / `review-bench wait` under the chat process owns holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay mode pass, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"
+printf 'PASS: %s asserts; a live worker or review run of this chat that no live `worker-run wait` / `review-bench wait` under the chat process owns holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay mode pass, --unowned answers the Stop ask with the same verdict and resume command, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"

@@ -12,18 +12,12 @@
 {
 set -u
 self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || exit 0
-[ "$#" -eq 0 ] || exit 0
+[ "$#" -eq 0 ] || [ "$*" = --unowned ] || exit 0
 
-payload=$(cat 2>/dev/null) || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 [ "${CLAUDEB_WORKER:-}" = 1 ] && exit 0
 . "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
 . "${self%/*}/../share/processes.sh" 2>/dev/null || exit 0
-{ IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; } <<EOF
-$(jq -r '(.session_id // ""), (.agent_id // ""), (.transcript_path // "")' <<<"$payload" 2>/dev/null)
-EOF
-[ -z "$agent" ] || exit 0
-case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) exit 0 ;; esac
 
 chat_pid() {
   local pid=$PPID comm guard=0
@@ -61,9 +55,40 @@ owned() { # key id
   case $'\n'"$waits"$'\n' in *$'\n'"$1=$2"$'\n'*) return 0 ;; esac
   return 1
 }
+run_root=${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}
+held() { # run|review id
+  owned "$1" "$2" || { [ "$1" = run ] && starter_alive "$run_root/$2"; }
+}
+resume_of() { # run|review id
+  if [ "$1" = review ]; then
+    printf 'review-bench wait %s' "$2"
+  elif [ "$(jq -r '.light // ""' "$run_root/$2/meta.json" 2>/dev/null)" = research ]; then
+    printf 'light-research --attach %s --out <answer-file>' "$2"
+  else
+    printf 'worker-run wait %s' "$2"
+  fi
+}
+
+# claude-setup's stop.d/ask-run-unfinished.sh asks the same question of its own candidates: stdin
+# `<run|review> <id>` lines, out `<kind> <id> <resume command>` for each nothing holds. A chat that
+# cannot be found prints nothing, so the ask stays quiet exactly where the hold does.
+if [ "$#" -eq 1 ]; then
+  while read -r kind id; do
+    case "$kind" in run|review) ;; *) continue ;; esac
+    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    held "$kind" "$id" || printf '%s %s %s\n' "$kind" "$id" "$(resume_of "$kind" "$id")"
+  done
+  exit 0
+fi
+
+payload=$(cat 2>/dev/null) || exit 0
+{ IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; } <<EOF
+$(jq -r '(.session_id // ""), (.agent_id // ""), (.transcript_path // "")' <<<"$payload" 2>/dev/null)
+EOF
+[ -z "$agent" ] || exit 0
+case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) exit 0 ;; esac
 
 lines=''
-run_root=${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}
 for run in "$run_root"/*/; do
   run=${run%/}
   [ ! -e "$run/exit_code" ] && [ -f "$run/state.json" ] || continue
@@ -72,22 +97,18 @@ for run in "$run_root"/*/; do
   [ "$launcher" = "$session" ] || continue
   id=${run##*/}
   case "$id" in *[!A-Za-z0-9._-]*) continue ;; esac
-  owned run "$id" && continue
-  starter_alive "$run" && continue
+  held run "$id" && continue
   pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
   [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
   tag=$(head -n1 "$run/tag" 2>/dev/null)
-  resume="worker-run wait $id"
-  [ "$(jq -r '.light // ""' "$run/meta.json" 2>/dev/null)" != research ] ||
-    resume="light-research --attach $id --out <answer-file>"
-  lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — \`$resume\`"
+  lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — \`$(resume_of run "$id")\`"
 done
 
 progress="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/progress"
 while IFS= read -r id; do
   case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-  owned review "$id" && continue
-  lines=$lines${lines:+$'\n'}"- review $id — \`review-bench wait $id\`"
+  held review "$id" && continue
+  lines=$lines${lines:+$'\n'}"- review $id — \`$(resume_of review "$id")\`"
 done < <(cat "$progress"/*.json 2>/dev/null | jq -r --arg s "$session" --argjson now "$now" \
   'select((.session // "") == $s and .state == "running" and (.heartbeat_epoch | type) == "number" and ($now - .heartbeat_epoch) < 600)
    | .run_id // empty' 2>/dev/null | awk '!seen[$0]++')
