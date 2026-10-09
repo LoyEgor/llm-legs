@@ -150,6 +150,19 @@ Egor's terminal carry no session) take as many minutes, named by chat, `:workers
 far over model/floor share;
 the proof of a fix is the measurement back under it (no row).
 
+**Test health** (`share/test_health.py`, Speed's `tests` key; the one place test time is shown). From run-suites'
+journal, the last 24 h against the median of the 7 days before it, one line per class in one unit, red past 1.5× its
+usual and a least delta: wait (chats' and workers' queued-to-end suite spans, a union per caller), retests (a run of a
+`tree` already green on that checkout; a chat's or the night's run in a worktree after its worker's last run), runs per
+change landed on HEAD, suites per targeted run, idle (p10 wall over the CPU of the fastest runs, ≥ 2× and ≥ 10 s), red
+and flaky (red then green on one `tree`, or two every-suite runs of one head), wall per CPU second and the slot queue;
+then the 7-day heaviest suites (wall h, runs, avg, red %, CPU/wall). Findings over 7 days become
+`opportunity:test-health/{retests,idle/<repo>/<suite>,flaky/<repo>/<suite>,fan-out/<repo>/<path>}` (`TEST_HEALTH_LEVERS`)
+in min/day; a floor gap never folds into one. Fan-out reads tests/affected's rule in Python (a suite or a tests/ helper
+it names holding the basename as a word, shared-invariants.md → test_consistency), cached per `git ls-files -s`.
+Dead suites (a `$ROOT/` path gone from the repo, or no run in 30 days once the journal covers them) go to Suite
+audits' queue; nothing here deletes a test. Without `tree` rows the repeat count reads zero and says so.
+
 **ROI** (`night-run report`, `roi ·` lines). A fixer job whose problem is a Speed or time row (`opportunity`,
 `regression`, `time_floor`, `test_*`) is an improvement: spend, lines, gain. A class in `share/time_budget.py` `UNITS`
 is proven per unit (medians of its named suites or hooks, else all) and gains each proven key's delta × its daily
@@ -178,7 +191,7 @@ Harness doctor: 2 problems
 Speed: 1 problem · 169 OM/d · 3.9 of 7 days covered · R 2/10: 88/287
   Chat turns: 99 min/day · model 50 · tools 31 · compaction 4
   Delegation: +70 min/day · workers 56 · background Bash 14 · media <1
-  Hooks and tests: of which 4.5 and 9 min/day
+  Test health: 928 min + 2113 w-min/day on suites · 3 of 9 lines over their usual · 2 heavy suites red · 6 dead
   Machine: 12 min/day contention · load 2.3/core · 31 % unattributed
   Background: statusline 0.9 CPU-cores · 18 % of P
   Night: last 5 h 50 m · first landing 4 h 47 m

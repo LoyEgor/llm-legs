@@ -1,5 +1,6 @@
 """Suite audits, the Harness doctor's standing night job beside Spend: every suite of the sweep and night helper
-repositories priced at CPU-min/day over 7 days of run-suites' journal (every runner). An audit is
+repositories priced and ranked at wall-min/day over 7 days of run-suites' journal (every runner), CPU-min/day beside
+it: a suite idles most of its wall, so CPU alone misses it. Test health's dead suites join the queue. An audit is
 due when never done, when the suite or a tests/ helper it names has another blob than at audit, or when its CPU per
 run reached 1.5x the audit's; a rise of 1.5x and 30 s between commits, or a new suite over 3x the median suite per
 run, is due at once and names its commit. Audit rows live in Spend's ledger (share/spend-ledger.json) as
@@ -49,6 +50,7 @@ def runs(path, lo):
         for name, s in r["suites"].items():
             if isinstance(s, dict) and isinstance(s.get("cpu_s"), (int, float)):
                 out.append({"repo": os.path.basename(root), "name": name, "end": float(end), "cpu": float(s["cpu_s"]),
+                            "wall": float(s["secs"]) if isinstance(s.get("secs"), (int, float)) else float(s["cpu_s"]),
                             "head": str(r.get("head") or ""), "worker": bool(r.get("worker_run")), "ok": s.get("rc") == 0})
     return sorted(out, key=lambda x: x["end"])
 
@@ -147,12 +149,21 @@ def price(rows, found):
         history = by.get((repo, name))
         if not history:
             continue
-        p50 = statistics.median(h["cpu"] for h in passing(history)[-RECENT_RUNS:])
+        recent = passing(history)[-RECENT_RUNS:]
+        p50, wall = statistics.median(h["cpu"] for h in recent), statistics.median(h["wall"] for h in recent)
         out.append({"key": "%s/%s" % (repo, os.path.splitext(name)[0]), "repo": repo,
                     "label": os.path.splitext(name)[0], "top": top, "path": path, "runs": len(history),
                     "cpu_min_day": round(p50 * len(history) / WINDOW_D / 60.0, 2), "p50": round(p50, 1),
+                    "wall_min_day": round(wall * len(history) / WINDOW_D / 60.0, 2), "wall_p50": round(wall, 1),
                     "history": history})
-    return sorted(out, key=lambda c: (-c["cpu_min_day"], c["key"]))
+    return sorted(out, key=lambda c: (-c["wall_min_day"], c["key"]))
+
+
+def unrun(key, found):
+    """A dead suite no run priced: its queue row at no cost."""
+    return {"key": key, "repo": key.split("/")[0], "label": key.split("/", 1)[1], "top": found["top"],
+            "path": found["path"], "runs": 0, "cpu_min_day": 0.0, "p50": 0.0, "wall_min_day": 0.0, "wall_p50": 0.0,
+            "history": []}
 
 
 def epoch(text):
@@ -183,9 +194,11 @@ def culprit(c, rise):
     return commit(c["top"], found or rise["head"])
 
 
-def due(c, row, held, median, new):
+def due(c, row, held, median, new, dead=None):
     """(reason, at once, since): since is when the reason arose, so an audit recorded after it settles it."""
     audited = epoch((row or {}).get("audited_at")) or 0.0
+    if dead and (not row or audited < dead["since"]):
+        return "dead: " + dead["reason"], False, dead["since"]
     rise = jump(c["history"])
     if rise and rise["at"] > audited:
         c["commit"] = culprit(c, rise)
@@ -229,28 +242,32 @@ def fmt(value):
 
 
 def problem(c, why, at_once, since, at):
-    fact = "%s · %s · %.1f CPU-min/day · %s CPU-s a run · audit due: %s" % (c["label"], c["repo"], c["cpu_min_day"],
-                                                                         fmt(c["p50"]), why)
+    fact = "%s · %s · %.1f wall-min/day · %.1f CPU-min/day · %s CPU-s a run · audit due: %s" % (
+        c["label"], c["repo"], c["wall_min_day"], c["cpu_min_day"], fmt(c["p50"]), why)
     return {"id": "%s:%s:%s" % (RULE, c["repo"], c["label"]), "rule": RULE, "state": "watch", "fact": fact,
-            "value": c["cpu_min_day"], "limit": None, "unit": "CPU-min/day", "window_h": WINDOW_D * 24, "exposure": 0,
+            "value": c["wall_min_day"], "limit": None, "unit": "wall-min/day", "window_h": WINDOW_D * 24, "exposure": 0,
             "count": c["runs"], "first_seen": at, "last_seen": at, "evidence": [], "ledger": None, "group": GROUP,
             "suite": {"component": c["key"], "repo": c["repo"], "label": c["label"], "sources": c["sources"],
-                      "cpu_min_day": c["cpu_min_day"], "p50": c["p50"], "runs": c["runs"], "due": why,
+                      "cpu_min_day": c["cpu_min_day"], "wall_min_day": c["wall_min_day"], "p50": c["p50"],
+                      "runs": c["runs"], "due": why,
                       "at_once": at_once, "since": since, "commit": c.get("commit")}}
 
 
-def collect(now, journal, root):
-    """The `suites` section: suites priced, problems (one per due audit), the night's queue (`selection`, at-once
-    rows first, then by CPU-min/day), audit proofs and menu lines. No journal row in the window reads nodata."""
+def collect(now, journal, root, dead=None):
+    """The `suites` section: suites priced, problems (one per due audit), the night's queue (`selection`, by
+    wall-min/day), audit proofs and menu lines. `dead` ({repo/label: {reason, since, top, path}}, share/
+    test_health.py) queues those suites too, a run or none. No journal row in the window reads nodata."""
     lo = now - WINDOW_D * 86400
     rows = runs(journal, lo)
     out = {"status": "nodata", "as_of_s": int(now), "problems": [], "selection": [], "issues": [], "proofs": {},
            "menu": [], "head": "no suite run in run-suites' journal over %d days" % WINDOW_D}
     found = price(rows, suites(repos()))
+    dead = dead or {}
+    found += [unrun(key, d) for key, d in sorted(dead.items()) if key not in {c["key"] for c in found}]
     if not found:
         return out
     ledger = spend.load_ledger(root)
-    median = statistics.median([c["p50"] for c in found])
+    median = statistics.median([c["p50"] for c in found if c["runs"]] or [0.0])
     at = datetime.datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds")
     reasons, new = {}, {}
     for top in {c["top"] for c in found if c["p50"] > NEW_HEAVY * median}:
@@ -261,19 +278,19 @@ def collect(now, journal, root):
         held = spend.blobs(c["sources"]) if row else {}
         held = None if held is None else {spend.repo_path(p, os.path.dirname(c["top"].rstrip("/"))): h
                                           for p, h in held.items()}
-        reasons[c["key"]] = due(c, row, held, median, new)
+        reasons[c["key"]] = due(c, row, held, median, new, dead.get(c["key"]))
         if row and not reasons[c["key"]]:
             out["proofs"][c["key"]] = dict(proof(c, row), verdict=row.get("verdict"), audited_at=row.get("audited_at"))
-    queue = sorted((c for c in found if reasons[c["key"]]), key=lambda c: (-c["cpu_min_day"], c["key"]))
+    queue = sorted((c for c in found if reasons[c["key"]]), key=lambda c: (-c["wall_min_day"], c["key"]))
     out["problems"] = [problem(c, *reasons[c["key"]], at) for c in queue]
     out["selection"] = [p["id"] for p in out["problems"]]
-    out["issues"] = [[c["cpu_min_day"], c["key"]] for c in queue[:3]]
-    total = sum(c["cpu_min_day"] for c in found)
-    workers = sum(c["p50"] for c in found for h in c["history"] if h["worker"])
-    out.update(status="watch" if queue else "ok", cpu_min_day=round(total, 1),
-               components=[{k: c[k] for k in ("key", "cpu_min_day", "p50", "runs")} for c in found],
-               head="%d due · %.0f CPU-min/day over %d suites · workers %d %%%s" % (
-                   len(queue), total, len(found), round(100 * workers / (total * WINDOW_D * 60)) if total else 0,
+    out["issues"] = [[c["wall_min_day"], c["key"]] for c in queue[:3]]
+    total, cpu = sum(c["wall_min_day"] for c in found), sum(c["cpu_min_day"] for c in found)
+    workers = sum(c["wall_p50"] for c in found for h in c["history"] if h["worker"])
+    out.update(status="watch" if queue else "ok", cpu_min_day=round(cpu, 1), wall_min_day=round(total, 1),
+               components=[{k: c[k] for k in ("key", "wall_min_day", "cpu_min_day", "p50", "runs")} for c in found],
+               head="%d due · %.0f wall-min/day, %.0f CPU-min/day over %d suites · workers %d %%%s" % (
+                   len(queue), total, cpu, len(found), round(100 * workers / (total * WINDOW_D * 60)) if total else 0,
                    " · next: " + queue[0]["key"] if queue else ""))
     out["menu"] = lines(found, ledger, reasons, out["proofs"])
     return out
@@ -285,12 +302,12 @@ def lines(found, ledger, reasons, proofs):
         why, row = reasons[c["key"]], ledger.get(ROW + c["key"])
         tail = "audit due: " + why[0] if why else "%s %s · %s" % (row.get("verdict"), str(row.get("audited_at"))[:10],
                                                                  proof_text(proofs[c["key"]]))
-        out.append([0, "" if why else "d", False, "%5.1f CPU-min/day · %4s CPU-s a run · %s · %s" % (
-            c["cpu_min_day"], fmt(c["p50"]), c["key"], tail)])
+        out.append([0, "" if why else "d", False, "%6.1f wall-min/day · %5.1f CPU-min/day · %4s CPU-s a run · %s · %s" % (
+            c["wall_min_day"], c["cpu_min_day"], fmt(c["p50"]), c["key"], tail)])
     rest = found[SHOWN:]
     if rest:
-        out.append([0, "d", False, "%d more suites · %.1f CPU-min/day · %d due" % (
-            len(rest), sum(c["cpu_min_day"] for c in rest), sum(1 for c in rest if reasons[c["key"]]))])
+        out.append([0, "d", False, "%d more suites · %.1f wall-min/day · %d due" % (
+            len(rest), sum(c["wall_min_day"] for c in rest), sum(1 for c in rest if reasons[c["key"]]))])
     out.append([0, "d", False, "run-suites journal · %d days" % WINDOW_D])
     return out
 
@@ -311,13 +328,15 @@ def restate(problems, rows):
 def record(root, journal, key, verdict, note, by, worktrees, now):
     if verdict not in spend.VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(spend.VERDICTS))
-    found = {c["key"]: c for c in price(runs(journal, now - WINDOW_D * 86400), suites(repos()))}
-    c = found.get(key)
+    listed = suites(repos())
+    found = {c["key"]: c for c in price(runs(journal, now - WINDOW_D * 86400), listed)}
+    c = found.get(key) or next((unrun(key, {"top": top, "path": path}) for (repo, name), (top, path) in listed.items()
+                                if "%s/%s" % (repo, os.path.splitext(name)[0]) == key), None)
     if not c:
-        raise SystemExit("no suite %s ran in the last %d days of %s" % (key, WINDOW_D, journal))
+        raise SystemExit("no suite %s in the sweep and helper repositories" % key)
     return spend.save_row(root, {
         "id": ROW + key, "title": key, "audited_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "by": by, "cpu_run": c["p50"], "cpu_min_day": c["cpu_min_day"],
+        "by": by, "cpu_run": c["p50"], "cpu_min_day": c["cpu_min_day"], "wall_min_day": c["wall_min_day"],
         "sources": spend.source_blobs(root, os.path.dirname(c["top"].rstrip("/")), sources(c["path"]), worktrees),
         "verdict": verdict, "note": note})
 

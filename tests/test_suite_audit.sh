@@ -139,7 +139,13 @@ check(due["alpha/test_new"]["suite"]["at_once"]
 check(out["selection"][:4] == ["suite_audit:alpha:test_heavy", "suite_audit:alpha:test_part", "suite_audit:alpha:test_mid",
                                "suite_audit:alpha:test_new"] and out["status"] == "watch"
       and out["issues"][0] == [2.0, "alpha/test_heavy"],
-      "the night's queue is by CPU-min/day alone, a due-at-once suite included: %s" % out["selection"])
+      "the night's queue is by wall-min/day alone, a due-at-once suite included: %s" % out["selection"])
+idle = [{"repo": "alpha", "name": name, "end": NOW - 60, "cpu": cpu_s, "wall": wall, "head": cheap, "worker": False,
+         "ok": True} for name, cpu_s, wall in (("test_a.sh", 1.0, 300.0), ("test_b.sh", 50.0, 60.0))]
+priced = suite_audit.price(idle, suite_audit.suites([repo]))
+check([c["key"] for c in priced] == ["alpha/test_a", "alpha/test_b"] and priced[0]["wall_min_day"] == round(300 / 7 / 60.0, 2)
+      and priced[0]["cpu_min_day"] < priced[1]["cpu_min_day"],
+      "a suite idling most of its wall outranks a busier one, its CPU-min/day kept beside it: %s" % priced)
 check(sorted(due["alpha/test_mid"]["suite"]["sources"]) == sorted(
     os.path.join(repo, "tests", n) for n in ("test_mid.sh", "helper.sh", os.path.join("lib", "common.sh"))),
       "a suite's sources are its file and the tests/ helpers it names: %s" % due["alpha/test_mid"]["suite"]["sources"])
@@ -210,8 +216,9 @@ h.apply_speed(document, {"problems": problems, "suites": section, "menu": [], "h
 lines = h.menu_text(document).splitlines()
 check(document["problem_count"] == 0 and all(p["group"] == "Suite audits" and p["speed"] for p in document["problems"])
       and "0\t\t\tSuite audits: watch · %s" % section["head"] in lines
-      and section["head"].startswith("9 due · 4 CPU-min/day over 9 suites · workers 1 % · next: alpha/test_heavy")
-      and "1\t\t\t  2.0 CPU-min/day ·   70 CPU-s a run · alpha/test_heavy · audit due: %s" % heavy["due"] in lines,
+      and section["head"].startswith("9 due · 4 wall-min/day, 4 CPU-min/day over 9 suites · workers 1 % · next: alpha/test_heavy")
+      and "1\t\t\t   2.0 wall-min/day ·   2.0 CPU-min/day ·   70 CPU-s a run · alpha/test_heavy · audit due: %s"
+      % heavy["due"] in lines,
       "Harness lays Suite audits beside Spend: watch rows counted nowhere, its block: %s" % lines[2:6])
 
 item = {"ref": "night-x", "ids": ["test_slow:alpha:test_mid"], "class": time_budget.improvement_class(

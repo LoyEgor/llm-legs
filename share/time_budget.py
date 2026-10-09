@@ -1,6 +1,6 @@
 """The harness time budget (docs/handoffs/2026-10-05-harness-time-budget.md): where the wall time of chats and
-workers goes, plain Claude Code against each class the harness adds, with each class's usual band, the holes named,
-test time as its own budget, an honest one-line-per-night ledger with its 7-night trend and the doctors' daily
+workers goes, plain Claude Code against each class the harness adds, with each class's usual band, the holes named
+(test time is share/test_health.py's), an honest one-line-per-night ledger with its 7-night trend and the doctors' daily
 problem counts. Measurement only: it reads existing journals and gates nothing.
 
   time_budget.py day [--hours H] [--json]       the last H hours (24), its bands, holes, tests and levers
@@ -67,7 +67,6 @@ WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("workers", "review-cells"), "
 UNIT_BEFORE_DAYS = 7
 SETTLE_S = 24 * 3600
 KEEP_DAYS = 35
-TOP_SUITES = 10
 UNMEASURED = "unmeasured"
 
 
@@ -327,30 +326,6 @@ def shares(b):
     return total, harness, (harness / total if total else 0.0)
 
 
-# ---------------------------------------------------------------- tests
-
-
-def tests_budget(lo, hi):
-    """Suite hours by caller, slot wait against running, and the slowest suites by median seconds."""
-    rows = suite_rows(lo, hi)
-    by, wait, ran, per = collections.Counter(), 0.0, 0.0, collections.defaultdict(list)
-    for r in rows:
-        started = num(r.get("started_at")) or r["queued_at"]
-        caller = "workers" if r.get("worker_run") else "chats" if r.get("session") else "night and others"
-        w = max(0.0, min(started, hi) - max(r["queued_at"], lo))
-        x = max(0.0, min(r["ended_at"], hi) - max(started, lo))
-        by[caller] += w + x
-        wait, ran = wait + w, ran + x
-        for name, suite in (r.get("suites") or {}).items():
-            if isinstance(suite, dict) and num(suite.get("secs")) is not None:
-                per[name].append(suite["secs"])
-    slow = sorted(((statistics.median(v), len(v), sum(v), k) for k, v in per.items()), reverse=True)[:TOP_SUITES]
-    return {"runs": len(rows), "hours": round((wait + ran) / 3600.0, 2), "wait_h": round(wait / 3600.0, 2),
-            "run_h": round(ran / 3600.0, 2), "wait_share": round(wait / (wait + ran), 3) if wait + ran else 0.0,
-            "by_caller_h": {k: round(v / 3600.0, 2) for k, v in by.most_common()},
-            "slowest": [{"suite": k, "median_s": round(m), "runs": n, "total_min": round(t / 60.0)} for m, n, t, k in slow]}
-
-
 # ---------------------------------------------------------------- levers
 
 
@@ -440,9 +415,8 @@ def holes(b, med):
     w = b["worker"]
     wall = worker_wall(w)
     if wall >= BAND_MIN_S and w.get("model", 0) < ACTIVE_FLOOR * wall:
-        tests = w.get("suite_run", 0) + w.get("suite_wait", 0)
-        out.append("workers worked %d %% of their time; %d %% went to their own tests, %d %% to the slot queue"
-                   % (pct(w.get("model", 0), wall), pct(tests, wall), pct(w.get("slot", 0), wall)))
+        out.append("workers worked %d %% of their time; %d %% went to the slot queue"
+                   % (pct(w.get("model", 0), wall), pct(w.get("slot", 0), wall)))
     for key, label, kind in CLASSES:
         value, normal = b["seconds"].get(key, 0), med.get(key)
         if kind != "plain" and normal is not None and value >= BAND_MIN_S + normal and value > BAND_RATIO * normal:
@@ -587,7 +561,7 @@ def document(now, hours=24.0, write=True):
            "harness_min": round(harness / 60.0, 1), "harness_share": round(share, 3), "classes": rows,
            "hooks_by_min": {k: round(v / 60.0, 1) for k, v in b["hooks_by"].items()}, "refusals": b["refusals"],
            "worker_runs": b["runs"], "band_days": covered, "holes": holes(b, med),
-           "tests": tests_budget(lo, now), "levers": levers(events, lo, now), "problems_by_day": problem_trend(now)}
+           "levers": levers(events, lo, now), "problems_by_day": problem_trend(now)}
     days, rec = hours / 24.0, recoverable(b, lo, now) if measured(b) else {}
     doc["floors"] = floors_of(b, rec, days) if rec else []
     doc["lost_min_day"] = round(sum(sum(v) for v in rec.values()) / 60.0 / days, 1) if rec else None
@@ -624,10 +598,6 @@ def plain_lines(doc):
     plain = [r for r in doc["classes"] if r["kind"] == "plain" and r["min"] >= 1]
     if plain:
         lines.append("Claude Code itself: " + " · ".join("%s %s" % (r["label"], minutes(r["min"] * 60)) for r in plain))
-    t = doc["tests"]
-    if t["runs"]:
-        lines.append("Tests: %.1f h in %d suite runs, %d %% waiting for a slot" % (
-            t["hours"], t["runs"], round(100 * t["wait_share"])))
     lines += ["Hole: " + h for h in doc["holes"]]
     return lines
 
@@ -660,8 +630,6 @@ def print_day(doc):
     if doc["hooks_by_min"]:
         print("hooks by event · " + " · ".join("%s %s" % (k, minutes(v * 60)) for k, v in doc["hooks_by_min"].items()))
     print("gates · %d refusals (their time is inside hooks and the turns after)" % doc["refusals"])
-    for s in doc["tests"]["slowest"]:
-        print("slow suite · %s · median %d s · %d runs · %d min" % (s["suite"], s["median_s"], s["runs"], s["total_min"]))
     for lever in doc["levers"]:
         print("lever · %s · %s" % (lever["lever"], lever["value"] if lever["measured"] else "idea, not measured"))
     for doctor, days in doc["problems_by_day"].items():
@@ -731,7 +699,7 @@ def improvement_class(rule, pid):
         return key if key in FLOORS else None
     if ident.startswith(("chat/hooks", "hooks/")):
         return "hooks"
-    if ident.startswith(("chat/tests", "tests/")) or rule.startswith("test_") or rule == suite_audit.RULE:
+    if ident.startswith(("chat/tests", "tests/", "test-health/")) or rule.startswith("test_") or rule == suite_audit.RULE:
         return "suite_run"
     return "suite_wait" if ident.startswith("chat/queue") else None
 

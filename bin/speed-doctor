@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 import spend  # noqa: E402
 import suite_audit  # noqa: E402
+import test_health  # noqa: E402
 import time_budget  # noqa: E402
 
 _loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(ROOT_DIR, "bin", "harness-doctor"))
@@ -152,7 +153,15 @@ TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "
     "slot": {"lever": "a worker slot lent while its holder runs its own suites"},
     "retries": {"lever": "fewer failed attempts before a worker's last start"},
     "locks": {"lever": "shorter lock holds and polls"}}.items()}
-validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()))
+TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "confidence": "measured",
+                               "night_cost_h": 0.0, "proof": "tests", "quality": "equivalent"}, **v) for k, v in {
+    "retests": {"lever": "a suite green on the same tree, or on its worker's last run, is not run again",
+                "saving": 0.5, "confidence": "estimated", "proof": "orchestration"},
+    "idle": {"lever": "event waits instead of sleeps and polls inside the suite, every check kept", "saving": 0.5},
+    "flaky": {"lever": "make the suite pass or fail the same on the same code, every check kept", "saving": 1.0},
+    "fan-out": {"lever": "tests/affected pulls only the suites that exercise the file", "saving": 0.3,
+                "confidence": "estimated", "proof": "orchestration"}}.items()}
+validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()) + list(TEST_HEALTH_LEVERS.values()))
 
 
 def state_dir():
@@ -789,7 +798,7 @@ def with_time(opportunities, budget):
             continue
         # chat/hooks prices the Stop leaf too (CHAT_LEAVES), though its fix is scored against hooks alone.
         family = "hooks" if key == "stop" else key
-        owner = next((o for o in out if not o["opportunity"]["needs_egor"]
+        owner = next((o for o in out if not o["opportunity"]["needs_egor"] and not o["id"].startswith(TEST_HEALTH_ID)
                       and time_budget.improvement_class(o["rule"], o["id"]) == family), None)
         if owner:
             f = owner["opportunity"]
@@ -808,6 +817,23 @@ def with_time(opportunities, budget):
                     "count": None, "first_seen": None, "last_seen": None, "evidence": [], "ledger": None, "group": "time",
                     "opportunity": fields})
     return sorted(out, key=rank_key)
+
+
+TEST_HEALTH_ID = "opportunity:test-health/"
+
+
+def test_opportunities(tests):
+    """Test health findings as opportunities priced at their own min/day; a floor gap never folds into one."""
+    out = []
+    for f in tests.get("findings") or ():
+        lever = TEST_HEALTH_LEVERS[f["class"]]
+        o = target_opportunity(f["target"], f["min_day"], lever, f["exposure"], seen_days=f["days"])
+        fields = o["opportunity"]
+        fields.update(files=f["files"], worker_min_day=round(f["worker_min_day"] * lever["saving"], 2))
+        o["fact"] = "%s · %s → saves %s · %s" % (f["fact"], per_day(f["min_day"], f["worker_min_day"]),
+                                                 per_day(fields["saving"], fields["worker_min_day"]), lever["lever"])
+        out.append(o)
+    return out
 
 
 def full_runs(now, journal):
@@ -935,7 +961,8 @@ def judge_digest(ledger):
     digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SLICE_LEVER, NO_SLICE_LEVER, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
                               TIME_LEVERS, spend.SHARE_RISE, spend.LEAVES, suite_audit.CPU_RISE, suite_audit.JUMP_S,
                               suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.FLOORS,
-                              time_budget.FLOOR_ROW_MIN_DAY],
+                              time_budget.FLOOR_ROW_MIN_DAY, TEST_HEALTH_LEVERS, test_health.LINES, test_health.BAND,
+                              test_health.IDLE_RATIO, test_health.IDLE_MIN_S, test_health.DEAD_D],
                              sort_keys=True).encode())
     return digest.hexdigest()
 
@@ -1121,6 +1148,11 @@ def collect(write, now):
                               "exposure": seen, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
                               "ledger": None, "group": area, "opportunity": best})
     opportunities += moved_opportunities(component_om, days, now, covered)
+    try:
+        tests = test_health.collect(now, H.suites_journal(), suite_audit.repos(), write)
+    except Exception as exc:
+        tests = {"status": "error", "head": H.error_line(exc), "findings": [], "candidates": {}, "menu": []}
+    opportunities += [o for o in test_opportunities(tests) if o["opportunity"]["om_day"] >= LIMITS["worth_om_day"]]
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
     problems += floor_rows(budget, ledger, now, full_runs(now, H.suites_journal()))
@@ -1190,6 +1222,7 @@ def collect(write, now):
                         (budget.get("workers_active") or {}).get("recoverable_min_day") or 0.0),
         "lost_min_day": budget.get("lost_min_day"),
         "budget": budget,
+        "tests": tests,
     }
     history = state.get("lost_min_day_by_day") or {}
     history = {day: value for day, value in history.items() if day >= H.local_day(now - JOURNAL_DAYS * 86400)}
@@ -1203,7 +1236,7 @@ def collect(write, now):
         document["spend"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
     problems += document["spend"].pop("problems")
     try:
-        document["suites"] = suite_audit.collect(now, H.suites_journal(), ROOT_DIR)
+        document["suites"] = suite_audit.collect(now, H.suites_journal(), ROOT_DIR, tests.get("candidates"))
     except Exception as exc:
         document["suites"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
     problems += document["suites"].pop("problems")
@@ -1271,8 +1304,10 @@ def menu_lines(document):
     d = document["delegation"]
     emit(1, "%d worker runs · pre-CLI p50 %s s · %d reroutes" % (d["runs"], d["pre_cli_p50_s"] if d["pre_cli_p50_s"] is not None
                                                                  else "–", d["reroutes"]), "d")
-    of = document["of_which"]
-    emit(0, "Hooks and tests: of which %s and %s min/day" % (fmt(of["hooks"]), fmt(of["tests"])))
+    tests = document.get("tests") or {}
+    for depth, flags, red, text in tests.get("menu") or [[0, "", tests.get("status") == "error",
+                                                           "Test health: " + str(tests.get("head") or "not measured")]]:
+        emit(depth, text, flags, red)
     m = document["machine"]
     high = sum(v for k, v in (m["band_share"] or {}).items() if k in ("2-4", ">4"))
     emit(0, "Machine: %s · %s · %s unattributed" % (

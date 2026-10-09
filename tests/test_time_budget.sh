@@ -152,15 +152,11 @@ long = T.document(NOW, 72.0, write=False)
 check(long["holes"] == [] and {r["class"]: r["usual_min"] for r in long["classes"]}["suite_wait"] == 5.0,
       "a 72 h window is judged against three usual days, never one: %s" % long["holes"])
 check(T.holes({"worker": {"model": 900, "suite_run": 4500, "slot": 4600}, "seconds": {}}, {})
-      == ["workers worked 9 % of their time; 45 % went to their own tests, 46 % to the slot queue"]
+      == ["workers worked 9 % of their time; 46 % went to the slot queue"]
       and T.holes({"worker": {"model": 4000, "suite_run": 6000}, "seconds": {}}, {}) == [],
       "workers under 30 % model time are a named hole, at 40 % they are not")
-t = doc["tests"]
-check(t["runs"] == 2 and t["wait_h"] == round(1000 / 3600.0, 2) and t["run_h"] == round(2100 / 3600.0, 2)
-      and t["by_caller_h"] == {"workers": round(3000 / 3600.0, 2), "chats": round(100 / 3600.0, 2)}
-      and [s["suite"] for s in t["slowest"]] == ["test_b.sh", "test_a.sh"] and t["slowest"][1]["median_s"] == 75
-      and "Tests: 0.9 h in 2 suite runs, 32 % waiting for a slot" in doc["lines"],
-      "test time: hours by caller, slot wait against running, the slowest suites by median: %s" % t)
+check("tests" not in doc and not any(l.startswith("Tests:") for l in doc["lines"]),
+      "test time is share/test_health.py's block, never a second line here")
 lever = {x["lever"]: x for x in doc["levers"]}
 check(lever["prompt-cache hits"]["value"] == "90 % of cached input read from cache"
       and lever["parallel tool calls"]["value"] == "0 % of 3 tool calls ran beside another"
