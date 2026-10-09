@@ -38,6 +38,21 @@ assert() {
   "$@" || fail "assert $asserts: $*"
 }
 eq() { [ "$1" = "$2" ] || return 1; }
+# ~1100 `grep -Fq <one-line literal> <file>` probes were a fork each and most of this suite's CPU:
+# that one form is answered in-process, every other grep goes to the binary.
+grep() {
+  local LC_ALL=C text pattern file
+  case "$#:${1-}:${2-}" in
+    4:-Fq:-- | 4:-qF:--) pattern=$3 file=$4 ;;
+    3:-Fq:* | 3:-qF:*) [[ $2 == -* ]] || pattern=$2 file=$3 ;;
+  esac
+  if [ -z "${pattern-}" ] || [[ $pattern == *$'\n'* || $file == -* ]] || [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    command grep "$@"
+    return
+  fi
+  text=$(<"$file")
+  [[ $text == *"$pattern"* ]]
+}
 
 REVIEW_ROOT="${REVIEW_ROOT:-$PROJECTS/review-bench}"
 [ -r "$REVIEW_ROOT/bin/review-bench" ] || fail "review-bench root $REVIEW_ROOT is unreadable (set REVIEW_ROOT)"
@@ -3359,7 +3374,8 @@ for f in "$ROOT"/launchd/*; do
 done
 assert doc_has '`DEPLOYS` in `bin/harness-doctor`'
 unjournaled=$(for f in "$ROOT"/tests/test_*.sh "$ROOT"/tests/e2e_*.sh; do
-  [ "$(sed -n 2p "$f")" = '. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"' ] || printf '%s ' "${f##*/}"
+  line2=; { IFS= read -r _ && IFS= read -r line2; } <"$f"
+  [ "$line2" = '. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"' ] || printf '%s ' "${f##*/}"
 done)
 assert eq "suites without the journal line 2: $unjournaled" "suites without the journal line 2: "
 # bash 5.3 in a UTF-8 locale reads a non-ASCII byte right after $name as part of the name: under set -u that dies.
@@ -3367,15 +3383,22 @@ glued=$(cd "$ROOT" && git grep -lIP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' -- bi
   { [ "${f##*.}" = sh ] || head -1 "$f" | grep -q bash; } && printf '%s ' "$f"
 done)
 assert eq "bash expansions glued to a non-ASCII char, brace them: $glued" "bash expansions glued to a non-ASCII char, brace them: "
-unparsed=$(cd "$ROOT" && find bin share -type f -perm -u+x | LC_ALL=C sort | while IFS= read -r f; do
-  head -1 "$f" | grep -q '^#!.*bash' || continue
-  preamble=$(awk '/exec "\$modern_bash" "\$0"/ { seen = 1 } seen && /^fi$/ { print NR; exit }' "$f")
-  first=$(awk -v after="${preamble:-1}" 'NR > after && !/^[[:space:]]*(#|$)/ { print; exit }' "$f")
-  closer='exit; }'
-  grep -qE '"\$\{BASH_SOURCE\[0\]\}" ==? "\$0"' "$f" && closer='case $0 in "${BASH_SOURCE[0]}") exit; esac; }'
-  { [ "$first" = '{' ] && { [ "$(tail -n 1 "$f")" = "$closer" ] ||
-    { [ "$closer" = 'exit; }' ] && [ "$(tail -n 2 "$f")" = "$(printf 'exit\n}')" ]; }; }; } || printf '%s ' "$f"
-done)
+unparsed=$(cd "$ROOT" && find bin share -type f -perm -u+x | LC_ALL=C sort | tr '\n' '\0' | xargs -0 awk '
+  function judge() {
+    if (!bash) return
+    closer = guarded ? "case $0 in \"${BASH_SOURCE[0]}\") exit; esac; }" : "exit; }"
+    if (!((preamble ? after_preamble : after_shebang) == "{" &&
+          (last == closer || (!guarded && prev == "exit" && last == "}")))) printf "%s ", file
+  }
+  FNR == 1 { if (NR > 1) judge(); file = FILENAME; bash = /^#!.*bash/; seen = preamble = guarded = 0
+             after_shebang = after_preamble = prev = last = "" }
+  !/^[[:space:]]*(#|$)/ { if (FNR > 1 && after_shebang == "") after_shebang = $0
+                          if (preamble && after_preamble == "" && FNR > preamble) after_preamble = $0 }
+  /exec "\$modern_bash" "\$0"/ { seen = 1 }
+  seen && !preamble && /^fi$/ { preamble = FNR }
+  /"\$\{BASH_SOURCE\[0\]\}" ==? "\$0"/ { guarded = 1 }
+  { prev = last; last = $0 }
+  END { if (NR) judge() }')
 assert eq "executed bash scripts not one brace group (row eh): $unparsed" "executed bash scripts not one brace group (row eh): "
 # Row ej: a measuring run writes no tracked ledger; what it settles lives in the overlay every reader merges.
 ledger_writes=$(cd "$ROOT" && grep -nE 'write_json\(ledger_path\(\)|os\.replace\([^)]*ledger_path\(\)|open\(ledger_path\(\)[^)]*"[wa]' bin/*-doctor bin/doctor-fix |
