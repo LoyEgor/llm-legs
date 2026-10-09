@@ -110,10 +110,11 @@ brief_title() { # brief
   local line
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
-    case "$line" in
-      RESUME\ *:* | ATTACH\ *:*) continue ;;
-    esac
-    [[ "$line" =~ ^[A-Z][A-Z-]*: ]] && continue
+    if [[ "${line#"${line%%[![:space:]]*}"}" =~ ^(RESUME|ATTACH)[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$ ]]; then
+      line=${BASH_REMATCH[2]}
+    elif [[ "$line" =~ ^[A-Z][A-Z-]*: ]]; then
+      continue
+    fi
     [[ "$line" =~ [^[:space:]] ]] || continue
     printf '%s\n' "$line" | perl -CSD -ne 's/^\s+|\s+$//g; print substr($_, 0, 100), "\n"'
     return 0
@@ -2270,10 +2271,12 @@ write_run_state() { # directory phase [exit-code]
 
 # The pressure check a chat's delegation passes before any account is picked: a deny refuses the
 # launch, a note rides along on stderr.
-limit_gate() { # vendor light brief account
-  local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh} verdict reason note
+limit_gate() { # vendor light brief account computer
+  local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh} verdict reason note worker=$1
   [ -x "$gate" ] || return 0
-  verdict=$("$gate" --start "$([ -z "$2" ] && printf '%s' "$1" || printf light)" "$3" ${4:+"$4"} 2>/dev/null) || return 0
+  [ -z "$2" ] || worker=light
+  [ "${5:-false}" != true ] || worker=computer
+  verdict=$("$gate" --start "$worker" "$3" ${4:+"$4"} 2>/dev/null) || return 0
   [ -n "$verdict" ] || return 0
   reason=$(jq -r 'select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason // empty' <<<"$verdict" 2>/dev/null)
   [ -z "$reason" ] || fail "$reason Nothing was launched and no account was spent."
@@ -2334,6 +2337,14 @@ refuse_live_matches() { # needle root filename
   printf '%s\n' "$matches"
 }
 
+run_wait_line() { # directory
+  if [ "$(jq -r '.light // ""' "$1/meta.json" 2>/dev/null)" = research ]; then
+    printf 'WAIT: light-research --attach %s --out <answer-file> (as a background Bash)\n' "${1##*/}"
+  else
+    printf 'WAIT: worker-run wait %s (as a background Bash)\n' "${1##*/}"
+  fi
+}
+
 refuse_live_run() { # brief resume
   local brief="$1" resume="$2" root entry directory pid now started sha other_sha owner
   root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
@@ -2345,7 +2356,7 @@ refuse_live_run() { # brief resume
       pid=$(jq -r '.pid // 0' "$directory/meta.json" 2>/dev/null)
       supervisor_running "$directory" "$pid" || continue
       outcome_line "RESUME_BUSY ${directory##*/}"
-      printf 'WAIT: worker-run wait %s (as a background Bash)\n' "${directory##*/}"
+      run_wait_line "$directory"
       exit 4
     done < <(refuse_live_matches "$resume" "$root" worker-session)
   fi
@@ -2369,7 +2380,7 @@ refuse_live_run() { # brief resume
     other_sha=$(shasum -a 256 "$directory/brief" 2>/dev/null | awk '{print $1}')
     [ "$sha" = "$other_sha" ] || continue
     outcome_line "DUPLICATE_RUN ${directory##*/}"
-    printf 'WAIT: worker-run wait %s (as a background Bash)\n' "${directory##*/}"
+    run_wait_line "$directory"
     exit 4
   done < <(refuse_live_matches "$owner" "$root" launcher)
   return 0
@@ -2507,7 +2518,7 @@ start_run() {
     usage
   fi
   [ -r "$brief" ] || fail "brief is not readable: $brief"
-  [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief" "$explicit_account"
+  [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief" "$explicit_account" "$computer"
   # The first line is the run's handle: readers take `RESUME <id>:` and
   # `ATTACH <id>:` off the top of it, and every reader that falls back to a prefix of the brief
   # matches nothing useful with a blank one.
@@ -2726,7 +2737,7 @@ start_run() {
     [ -r "${images[$value]}" ] || fail "image is not readable: ${images[$value]}"
     [[ "${images[$value]}" = /* ]] || images[$value]="$PWD/${images[$value]}"
   done
-  while IFS= read -r value; do brief_images+=("$value"); done < <(grep -oiE '(^|[[:space:]"'\''`(<])/[^[:space:]"'\''`()<>]+\.(png|jpe?g|webp|gif)' "$brief" | sed 's|^[^/]*||' | awk '!seen[$0]++')
+  while IFS= read -r value; do brief_images+=("$value"); done < <(perl -nle 'print $1 while /(?:^|[\s"'\''`(<])(\/[^\s"'\''`()<>]+?\.(?:png|jpe?g|webp|gif))(?![\w\/-]|\.\w)/gi' "$brief" | awk '!seen[$0]++')
   if [ "$vendor" = codex ]; then
     for value in "${brief_images[@]}"; do
       [ -f "$value" ] && [ -r "$value" ] || continue
@@ -5603,7 +5614,7 @@ browse_run() {
 # one would spend an account with nobody waiting on the result.
 worker_door() { # subcommand
   case "$1" in start | wait) ;; *) return 0 ;; esac
-  [ "${CLAUDEB_WORKER:-}" != 1 ] ||
+  [ "${CLAUDEB_WORKER:-}" != 1 ] && [ "${GROK_WORKER:-}" != 1 ] && [ -z "${WORKER_RUN_ID:-}" ] ||
     fail "\`worker-run $1\` runs from the chat that owns the run, never inside a headless worker: report what should be delegated in your RETURN. Nothing was launched and no account was spent."
 }
 

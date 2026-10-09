@@ -9,6 +9,7 @@ LIVE_PID=$!
 trap 'kill "$LIVE_PID" ${WAIT_PIDS:-} 2>/dev/null; rm -rf "$WORK"' EXIT
 export HOME="$WORK/home" WORKER_RUN_DIR="$WORK/runs" WORKER_STATS_DIR="$WORK/stats"
 unset CLAUDEB_WORKER
+export WORKER_RUN_BACKSTOP_CHAT_PID=$$
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "expected [$1] got [$2]"; }
@@ -44,7 +45,6 @@ cp "$WORK/bin/worker-run" "$WORK/bin/review-bench"
 chmod +x "$WORK/bin/worker-run" "$WORK/bin/review-bench"
 wait_on() { "$WORK/bin/$1" wait "$2" & WAIT_PIDS="${WAIT_PIDS:-} $!"; sleep 0.2; }
 end_waits() { kill $WAIT_PIDS 2>/dev/null; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
-export WORKER_RUN_BACKSTOP_CHAT_PID=$$
 wait_on worker-run r1x
 assert_eq block "$(stop | jq -r .decision)"
 wait_on worker-run r1

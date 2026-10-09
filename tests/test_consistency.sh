@@ -1089,6 +1089,9 @@ computer_gate_out=$(light_gate codex-worker $'COMPUTER: yes\nx')
 assert grep -qx -- '--account codex --role computer' "$LIGHT_GATE_WORK/picks"
 assert test "$(grep -c 'The worker toggle says' <<<"$computer_gate_out")" = 0
 : >"$LIGHT_GATE_WORK/picks"
+light_gate computer-worker >/dev/null
+assert grep -qx -- '--account codex --role computer' "$LIGHT_GATE_WORK/picks"
+: >"$LIGHT_GATE_WORK/picks"
 light_gate codex-worker >/dev/null
 assert grep -qx -- '--account codex' "$LIGHT_GATE_WORK/picks"
 # A brief's ACCOUNT is judged by the worker pool itself, not the limits file's cached `enabled`:
@@ -1101,6 +1104,9 @@ jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:true, five_
 printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
 assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
   <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx')"
+light_gate_flag=$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker x beta)
+assert grep -Fq -- "--account beta is switched off or removed" <<<"$light_gate_flag"
+assert grep -Fq -- "to --account, or drop the flag" <<<"$light_gate_flag"
 jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:false, five_hour:{used_pct:10}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=codex\ncodex_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"

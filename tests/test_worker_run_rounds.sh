@@ -341,6 +341,7 @@ printf 'seed · opus · high\nstart=%s\nround=20260801T140000Z-0a1b2c3\n' "$(dat
 clear_stub
 printf 'Repository: somewhere\n\nFix the findings.\n' >"$WORK/round-brief"
 CLAUDE_AGENT_ID=agent-relay CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "seeded start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq 'has("review_round") or has("round_source")' "$RUN_DIR/meta.json")" = false
 assert test ! -e "$RUN_DIR/agent-task"
@@ -348,6 +349,7 @@ await_done || fail "the seeded run never finished"
 clear_stub
 printf 'ROUND: 20260801T130000Z-def4560\nFix the findings.\n' >"$WORK/round-brief"
 CLAUDE_AGENT_ID=agent-relay CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "seeded header start was refused: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '[.review_round, .round_source] | join(" ")' "$RUN_DIR/meta.json")" = '20260801T130000Z-def4560 header'
 await_done || fail "the seeded header run never finished"

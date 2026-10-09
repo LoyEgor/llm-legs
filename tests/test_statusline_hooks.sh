@@ -4015,8 +4015,9 @@ wp_run() { # run-id launcher state-json meta-json
   printf '%s\n' "$2" > "$WP_RUNS/$1/launcher"; printf '%s\n' "$3" > "$WP_RUNS/$1/state.json"
   printf '%s\n' "$4" > "$WP_RUNS/$1/meta.json"
 }
-wp_run codex-7-7-live wp-sess "{\"phase\": \"wait\", \"round_id\": null, \"started_epoch\": $((wp_now - 600))}" \
-  "{\n  \"pid\": 2000,\n  \"cli_pid\": 2001,\n  \"pid_started_at\": $((wp_now - 180))\n}"
+wp_run codex-7-7-live wp-sess "{\"phase\": \"wait\", \"round_id\": null, \"started_epoch\": $((wp_now - 600))}" '{}'
+jq -n --argjson at "$((wp_now - 180))" '{pid: 2000, cli_pid: 2001, pid_started_at: $at, orphans_ended: [{pid: 2900, age_s: 5}]}' \
+  > "$WP_RUNS/codex-7-7-live/meta.json"
 printf 'acc · astra · high\n' > "$WP_RUNS/codex-7-7-live/tag"; printf 'Fix the parser\n' > "$WP_RUNS/codex-7-7-live/title"
 printf '184321\n' > "$WP_RUNS/codex-7-7-live/tokens"
 wp_run codex-7-7-other other-sess '{"phase": "wait"}' "{\"pid\": 2200, \"started_at\": $((wp_now - 300)), \"pid_started_at\": $((wp_now - 300))}"
@@ -4067,6 +4068,8 @@ wp_doc llm-legs__x '{run_id:"20261008T100000Z-hhhhhhh",tier:"T1",state:"failed",
 wp_doc llm-legs__j '{run_id:"20261008T100000Z-jjjjjjj",tier:"T1",lens:"bugs",state:"running",phase:"judge",repo:"/r/llm-legs",
   session:"wp-sess",started_epoch:($now - 350),heartbeat_epoch:$now,cells:["a#1","b#1"],done:["a#1","b#1"],
   judge:{account:"notcom",model:"",effort:"high"}}'
+wp_doc llm-legs__k '{run_id:"20261008T100000Z-kkkkkkk",tier:"T1",state:"dead",phase:"judge",session:"other",
+  started_epoch:($now - 600),heartbeat_epoch:$now,cells:["a#1"],done:["a#1"],judge:{account:"notcom"}}'
 WP_LOGS="$WORK/wp-logs"
 mkdir -p "$WP_LOGS"
 printf '0\t3\n' > "$WP_LOGS/test_a.sh.status"; printf '1\t2\n' > "$WP_LOGS/test_b.sh.status"
@@ -4108,6 +4111,7 @@ printf '1501 1500 02:59 /usr/bin/python3 /x/bin/review-bench wait 20261008T10000
 printf '1510 1000 00:50 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-bbbbbbb\n'
 printf '1520 1000 00:40 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-ggggggg\n'
 printf '1530 1000 00:40 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-hhhhhhh\n'
+printf '1540 1000 00:40 /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /x/bin/review-bench wait 20261008T100000Z-kkkkkkk\n'
 printf '6001 4001 01:00 bash /x/bin/review-bench wait 20261008T100000Z-fffffff\n'
 wrap 1230 1000 01:00 "'python3 -m pytest -q'"
 printf '1231 1230 00:59 /usr/bin/python3 -m pytest -q\n'
@@ -4210,6 +4214,7 @@ assert_eq "$(printf '%s\n' \
   $'main\treview\tT0 · double · bugs\tclaude-setup, llm-legs\tall 5/8 a 1/2 b 1/2 c ✓ d 1/2 ✗1\tall 5/8\t' \
   $'main\treview\tT1 · standard · review\tllm-legs\t✓ report 3\t✓ report 3\tnotcom · opus · high' \
   $'main\treview\tT1 · standard · review\t\t✗ dead\t✗ dead\t' \
+  $'main\treview\tT1 · standard · review\t\t✗ dead\t✗ dead\t' \
   $'main\treview\tT2 · standard · task\tHunt the stale rows\tall 0/2 {a 0/1} b 0/1\tall 0/2\t' \
   $'main\treview\tT1 · standard · bugs\tllm-legs\tall 2/2 a ✓ b ✓ · ✓ done\tall 2/2 · ✓ done\tnotcom · high' \
   $'main\treview\treview · bbbbbbb\t\t\t\t' \
@@ -4234,7 +4239,7 @@ assert_eq "$(printf '%s\n' \
 assert_eq "$((wp_now - 179))" "$(awk -F'\t' '$4 == "pool · img·web" { print $3 }' "$STATE_DIR/work-wp-sess")"
 # A worker starts at its run's start (state.json, else meta.json), a review at its document's, a
 # document-less wait at the wait's own start; the worker's own token count rides in the ninth field.
-assert_eq "600 300 100 50 20 900 700 650 400 350 50" "$(awk -F'\t' -v now="$wp_now" '$2 == "worker" || $2 == "review" { printf "%s%s", s, now - $3; s = " " }' \
+assert_eq "600 300 100 50 20 900 700 650 600 400 350 50" "$(awk -F'\t' -v now="$wp_now" '$2 == "worker" || $2 == "review" { printf "%s%s", s, now - $3; s = " " }' \
   "$STATE_DIR/work-wp-sess" | sed -E 's/ (4[6-9]|50)$/ 50/')"
 assert_eq "184321||||" "$(awk -F'\t' '$2 == "worker" { printf "%s%s", s, $9; s = "|" }' "$STATE_DIR/work-wp-sess")"
 wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_DIR/work-wp-sess")
@@ -4244,7 +4249,7 @@ assert test "$wp_run_start" -ge "$((wp_now - 91))" -a "$wp_run_start" -le "$((wp
 assert_eq "$wp_run_start" "$(awk -F'\t' '$2 == "worker" && $7 != "" { print $7 }' "$STATE_DIR/work-wp-sess")"
 # The judge phase runs from the judge's stamp (field 9), and the judge row names the run (field 10).
 assert_eq "$((wp_now - 120)) 20261008T100000Z-ggggggg" "$(awk -F'\t' '$10 ~ /ggggggg$/ { print $9, $10 }' "$STATE_DIR/work-wp-sess")"
-assert_eq "|$((wp_now - 120))|||" "$(awk -F'\t' '$2 == "review" && $10 !~ /jjjjjjj$/ { printf "%s%s", s, $9; s = "|" }' "$STATE_DIR/work-wp-sess")"
+assert_eq "|$((wp_now - 120))||||" "$(awk -F'\t' '$2 == "review" && $10 !~ /jjjjjjj$/ { printf "%s%s", s, $9; s = "|" }' "$STATE_DIR/work-wp-sess")"
 wp_judge=$(awk -F'\t' '$10 ~ /jjjjjjj$/ { print $9 }' "$STATE_DIR/work-wp-sess")
 assert test "$wp_judge" -ge "$wp_now" -a "$wp_judge" -le "$((wp_now + 60))"
 # A suite run counts from its pointer's stamp, the moment it took its slot.
@@ -4299,14 +4304,17 @@ wl_strip() { perl -pe 's/\e\[[0-9;]*m//g'; }
 wl_norm() { perl -pe 's/\b4m 0[56]s\b/4m 05s/g; s/(?<![0-9])4[56]s\b/45s/g; s/\b1m 0[56]s\b/1m 05s/g; s/(?<![0-9])3[01]s\b/30s/g'; }
 wl_rows() { run_statusline "$(statusline_payload "$1")" | tail -n +3 | wl_strip | wl_norm; }
 wl_now=$(date +%s)
-{
+# Each render gets its fixture rewritten on a fresh clock: a cache older than 4s also sends the
+# render's probe to rewrite it, which empties one with no process behind it.
+wl_mix() { wl_now=$(date +%s); {
   printf 'main\ttests\t%s\tllm-legs\ttest_statusline_hooks\t12\t1\t41\t\t\n' "$((wl_now - 245))"
   printf 'main\tshell\t%s\ttoken-map\tsleep\t\t\t\n' "$((wl_now - 45))"
   printf 'main\tworker\t%s\tlocomthebest · opus · high\tSpeed up tracking\ttests\t%s\t\t184321\n' "$((wl_now - 3725))" "$((wl_now - 65))"
   printf 'main\tworker\t%s\tcom · sonnet · medium\tSplit reviews\tworking\t\t\t900\n' "$((wl_now - 245))"
   printf 'main\treview\t%s\tT1 · standard · bugs\tllm-legs\tall 5/8 opus 2/3 ✗1 {gpt 1/3} pro ✓\tall 5/8\t\t\tx\n' "$((wl_now - 45))"
   printf 'run\tcodex-7-7-live\t%s\tpnpm test\n' "$((wl_now - 90))"
-} > "$STATE_DIR/work-wl-mix"
+} > "$STATE_DIR/work-wl-mix"; }
+wl_mix
 wl_out=$(run_statusline "$(statusline_payload wl-mix)")
 assert_eq "$(printf '%s\n' \
   'locomthebest · opus · high — Speed up tracking  tests 1m 05s                       1h 02m  ↓ 184k' \
@@ -4327,17 +4335,19 @@ printf 'main\treview\t%s\tT0 · double · bugs\tllm-legs\tall 2/4 {a 1/2 ✗1} b
 assert grep -Fq "${DIM}all 2/4 ${RESET}${RED}a 1/2 ✗1${RESET}${DIM} b ${RESET}${GREEN}✓" <<< "$(run_statusline "$(statusline_payload wl-late)")"
 # The judge phase: the review's elapsed stops at the phase start and a magenta judge row follows,
 # titled by the run's last seven characters and timed from the phase start; a dead run has none.
-{
+wl_judge() { wl_now=$(date +%s); {
   printf 'main\treview\t%s\tT1 · standard · bugs\tllm-legs\t✓ report 3\t✓ report 3\tnotcom\t%s\t20261009T100000Z-1234567\n' "$((wl_now - 3725))" "$((wl_now - 245))"
   printf 'main\treview\t%s\tT0 · double · bugs\tllm-legs\tall 4/4 a ✓ b ✗2 · ✓ done\tall 4/4 · ✓ done\tnotcom · opus · high\t%s\t20261009T100000Z-abcdefg\n' "$((wl_now - 245))" "$((wl_now - 45))"
   printf 'main\treview\t%s\tT1 · standard · bugs\t\t✗ dead\t✗ dead\t\t\t20261009T100000Z-7654321\n' "$((wl_now - 65))"
-} > "$STATE_DIR/work-wl-judge"
+} > "$STATE_DIR/work-wl-judge"; }
+wl_judge
 assert_eq "$(printf '%s\n' \
   'T1 · standard · bugs — llm-legs        ✓ report 3                 58m 00s' \
   'judge: notcom — 1234567                                            4m 05s' \
   'T0 · double · bugs — llm-legs          all 4/4 a ✓ b ✗2 · ✓ done   3m 20s' \
   'judge: notcom · opus · high — abcdefg                                 45s' \
   'T1 · standard · bugs                   ✗ dead                      1m 05s')" "$(wl_rows wl-judge)"
+wl_judge
 wl_judged=$(run_statusline "$(statusline_payload wl-judge)")
 assert grep -Fq "${MAGENTA}judge: notcom · opus · high${RESET} ${DIM}—${RESET} abcdefg " <<< "$wl_judged"
 assert grep -Fq "${DIM}${RESET}${GREEN}✓${RESET}${DIM} report 3" <<< "$wl_judged"
@@ -4349,35 +4359,37 @@ assert_eq "$(printf '%s\n' \
   'judge: notcom — 12345…                     4m 05s' \
   'T0 · double · bugs      all 4/4 · ✓ done   3m 20s' \
   'judge: notcom · opus…                         45s' \
-  'T1 · standard · bugs    ✗ dead             1m 05s')" "$(FIT_COLUMNS=50 FIT_MARGIN=1 wl_rows wl-judge)"
+  'T1 · standard · bugs    ✗ dead             1m 05s')" "$(wl_judge; FIT_COLUMNS=50 FIT_MARGIN=1 wl_rows wl-judge)"
 assert_eq "$(printf '%s\n' \
   'locomthebest · opus · high — Spe…  tests     1h 02m  ↓ 184k' \
   'com · sonnet · medium — Split re…  working   4m 05s   ↓ 900' \
   'T1 · standard · bugs — llm-legs    all 5/8      45s' \
   'tests · llm-legs — test_statusli…  12/41 ✗1  4m 05s' \
-  'shell · token-map — sleep                       45s')" "$(FIT_COLUMNS=63 FIT_MARGIN=4 wl_rows wl-mix)"
+  'shell · token-map — sleep                       45s')" "$(wl_mix; FIT_COLUMNS=63 FIT_MARGIN=4 wl_rows wl-mix)"
 assert_eq "$(printf '%s\n' \
   'locomthebest…  tests     1h 02m  ↓ 184k' \
   'com · sonnet…  working   4m 05s   ↓ 900' \
   'T1 · standar…  all 5/8      45s' \
   'tests · llm-…  12/41 ✗1  4m 05s' \
-  'shell · toke…               45s')" "$(FIT_COLUMNS=40 FIT_MARGIN=1 wl_rows wl-mix)"
+  'shell · toke…               45s')" "$(wl_mix; FIT_COLUMNS=40 FIT_MARGIN=1 wl_rows wl-mix)"
 # A column no visible row fills takes no space; a short row is padded so elapsed ends where the rest do.
-{
+wl_plain() { wl_now=$(date +%s); {
   printf 'main\tshell\t%s\tr\tsleep\t\t\t\n' "$((wl_now - 45))"
   printf 'main\tshell\t%s\trepo\tgit push\t\t\t\n' "$((wl_now - 245))"
-} > "$STATE_DIR/work-wl-plain"
+} > "$STATE_DIR/work-wl-plain"; }
 assert_eq "$(printf '%s\n' \
   'shell · r — sleep           45s' \
-  'shell · repo — git push  4m 05s')" "$(wl_rows wl-plain)"
+  'shell · repo — git push  4m 05s')" "$(wl_plain; wl_rows wl-plain)"
 # Work rows keep one cell more than the shared margin: the harness pads its footer two cells a side.
 assert_eq "$(printf '%s\n' \
   'shell · r — sleep     45s' \
-  'shell · repo — g…  4m 05s')" "$(FIT_COLUMNS=26 FIT_MARGIN=1 wl_rows wl-plain)"
+  'shell · repo — g…  4m 05s')" "$(wl_plain; FIT_COLUMNS=26 FIT_MARGIN=1 wl_rows wl-plain)"
 # A record with no repository or no label keeps its fields in place: tab is IFS whitespace to `read`.
+wl_now=$(date +%s)
 printf 'main\ttests\t%s\t\tsuites\t2\t1\t5\nmain\tshell\t%s\tr\t\t\t\t\n' "$((wl_now - 45))" "$((wl_now - 45))" > "$STATE_DIR/work-wl-norepo"
 assert_eq "$(printf '%s\n' 'tests — suites  2/5 ✗1  45s' 'shell · r               45s')" "$(wl_rows wl-norepo)"
 # Elapsed pads its seconds or minutes to two digits; tokens read ↓ 900, ↓ 37k, ↓ 184k, ↓ 1.2M.
+wl_now=$(date +%s)
 {
   printf 'main\tworker\t%s\ta · m · e\tone\tworking\t\t\t900\n' "$((wl_now - 3725))"
   printf 'main\tworker\t%s\ta · m · e\ttwo\tworking\t\t\t37400\n' "$((wl_now - 245))"
@@ -4392,11 +4404,12 @@ assert_eq "$(printf '%s\n' \
   'a · m · e — four   start        7s  ↓ 1.2M' \
   'a · m · e — five   working  1m 05s')" "$(wl_rows wl-tok | perl -pe 's/(?<![0-9])[78]s\b/7s/')"
 # A media-run job: `media · <tag>` is the head, its label the title, a fan-out's cells the state.
-printf 'main\tmedia\t%s\tnotcom · img·web\tedit\t\t\t\t\nmain\tmedia\t%s\tfanout · img\tall\t2\t1\t3\t\n' \
-  "$((wl_now - 65))" "$((wl_now - 30))" > "$STATE_DIR/work-wl-media"
+wl_media() { wl_now=$(date +%s); printf 'main\tmedia\t%s\tnotcom · img·web\tedit\t\t\t\t\nmain\tmedia\t%s\tfanout · img\tall\t2\t1\t3\t\n' \
+  "$((wl_now - 65))" "$((wl_now - 30))" > "$STATE_DIR/work-wl-media"; }
 assert_eq "$(printf '%s\n' \
   'media · notcom · img·web — edit          1m 05s' \
-  'media · fanout · img — all       2/3 ✗1     30s')" "$(wl_rows wl-media)"
+  'media · fanout · img — all       2/3 ✗1     30s')" "$(wl_media; wl_rows wl-media)"
+wl_media
 assert grep -Fq "${MAGENTA}media · notcom · img·web${RESET}" <<< "$(run_statusline "$(statusline_payload wl-media)")"
 # At most five rows; the rest is one dim line of hidden counts by kind, agents first, singular for one.
 wl_cap() { # session workers reviews media commands
@@ -5534,10 +5547,16 @@ done
 # headless worker recovers no review and runs no light-research.
 for tr_chat_ok in "review-bench wait $TR_REVIEW --max 540" "review-bench wait $TR_REVIEW --relaunch" \
   "review-bench wait $TR_REVIEW --finish-partial" 'review-bench review --tier T2' "review-bench report $TR_REVIEW" \
-  'review-bench findings' 'light-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' \
-  'light-research --attach gemini-1-2-abcd --out /tmp/a' 'worker-run start light --brief /tmp/b --workdir /tmp'; do
+  'review-bench findings' 'worker-run start light --brief /tmp/b --workdir /tmp'; do
   gate_out=$(gate_payload "$tr_chat_ok" | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
+done
+for tr_chat_bg in 'light-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' 'light-research --attach gemini-1-2-abcd --out /tmp/a'; do
+  gate_out=$(gate_payload "$tr_chat_bg" | jq -c '.tool_input.run_in_background = true' | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") ||
+    fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+  gate_out=$(gate_payload "$tr_chat_bg" | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 done
 for tr_recovery in --relaunch --finish-partial; do
   gate_out=$(gate_payload "review-bench wait $TR_REVIEW $tr_recovery" | CLAUDEB_WORKER=1 "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"

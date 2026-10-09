@@ -320,6 +320,15 @@ if [ -n "$agent_id" ] || [ "${CLAUDEB_WORKER:-}" = 1 ]; then
   [ -z "$owned_hit" ] ||
     deny "Blocked: \`${owned_hit}\` inside an agent or a headless worker starts or awaits a worker run that belongs to the chat: the chat starts it, waits on it as a background Bash and reads its report. Report what should be delegated in your RETURN instead. \`worker-run report\`, \`worker-run claim\` and the test suites are not gated."
 fi
+# An unbounded wait in a foreground call dies at the Bash timeout while the run keeps spending, and
+# nothing wakes the chat when it ends.
+if [ "$tool" = Bash ] && [ "$(input_field .tool_input.run_in_background)" != true ]; then
+  foreground_hit=$(grep -Ev -e "${VENDOR_WORD}worker-run[[:space:]]+wait[[:space:]].*--max([[:space:]=]|$)" <<<"$scan" 2>/dev/null |
+    grep -Eo "${VENDOR_WORD}(worker-run[[:space:]]+wait|light-research)${EDGE}" | head -n1 |
+    tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
+  [ -z "$foreground_hit" ] ||
+    deny "Blocked: \`${foreground_hit}\` blocks until the run ends, and a foreground Bash call is killed at its timeout (600 s at most) while the run keeps spending and nothing wakes this chat. Run the identical call with \`run_in_background: true\`: its completion notification wakes this chat."
+fi
 legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_FREE_RE" | head -n1 |
   grep -Eo "$OWNED_LEGS_RE" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$legs_hit" ] || span_live ||

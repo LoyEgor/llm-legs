@@ -430,7 +430,7 @@ run_one() { # suite-path [shard i/N]
     # The chat's session id would hand every suite that chat's own worker pin; bytecode a suite's
     # SourceFileLoader import leaves in bin/ reads to a review's integrity check as a new file.
     # This run's own journal and times files are the live ones whenever a caller exported them.
-    unset CLAUDEB_WORKER WORKER_RUN_RECORD WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE CLAUDE_CODE_SESSION_ID \
+    unset CLAUDEB_WORKER GROK_WORKER WORKER_RUN_RECORD WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE CLAUDE_CODE_SESSION_ID \
       RUN_SUITES_JOURNAL RUN_SUITES_TIMES WORKER_SLOT
     export PYTHONDONTWRITEBYTECODE=1
     # A fixture's slot and lock waits would read as the machine's own in the Harness doctor.

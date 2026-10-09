@@ -187,6 +187,12 @@ assert test "$(cat "$RUN_DIR/title")" = "Fix the gate wording $(printf '%079d' 0
 assert test "$(grep -c '^MD-GUARD' "$RUN_DIR/brief.launch")" = 1
 assert await_done
 mv "$WORK/brief.plain" "$WORK/brief"
+# A resumed brief is titled by the task on its RESUME line, the context below only when that is bare.
+brief_title_of() ( eval "$(sed -n '/^brief_title() {/,/^}/p' "$RUNNER")"; brief_title "$1" )
+printf 'ACCOUNT: com\n\nRESUME claudeb-1-1-abcd: Map the hooks\nContext paragraph\n' >"$WORK/brief.resume"
+assert test "$(brief_title_of "$WORK/brief.resume")" = 'Map the hooks'
+printf 'RESUME claudeb-1-1-abcd:\nContext paragraph\n' >"$WORK/brief.resume"
+assert test "$(brief_title_of "$WORK/brief.resume")" = 'Context paragraph'
 # A writer that outwaits a live holder of a run's lock leaves that holder's lock alone; a lock a dead
 # holder left more than a minute ago is cleared on the way in, without first sitting out the wait.
 LOCK_RUN="$WORK/lock-run"

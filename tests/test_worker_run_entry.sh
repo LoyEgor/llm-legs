@@ -177,7 +177,7 @@ door_refused() { # expected-text env-assignments... -- worker-run-args...
   shift
   clear_stub
   runs_before=$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
-  env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER "${assignments[@]}" \
+  env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER -u GROK_WORKER -u WORKER_RUN_ID "${assignments[@]}" \
     "$RUNNER" "$@" >"$WORK/door.out" 2>"$WORK/door.err" || rc=$?
   assert test "$rc" -eq 4
   assert grep -Fq -- "$expected" "$WORK/door.err"
@@ -192,6 +192,9 @@ worker_door_tests() {
   export PICK_RC=0 PICK_ACCOUNT=picked
   door_refused "$owner" CLAUDEB_WORKER=1 -- start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
   door_refused "$owner" CLAUDEB_WORKER=1 -- wait claudeb-1-1-abcd --max 0
+  door_refused "$owner" GROK_WORKER=1 -- start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
+  door_refused "$owner" CLAUDECODE=1 WORKER_RUN_ID=codex-1-1-abcd -- start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
+  door_refused "$owner" WORKER_RUN_ID=codex-1-1-abcd -- wait claudeb-1-1-abcd --max 0
   # Inside Claude Code the chat's start passes the limit gate on its own brief first.
   cat >"$gate" <<'GATE'
 #!/bin/sh
@@ -207,6 +210,11 @@ GATE
   door_refused 'Blocked: claudeb is walled. Nothing was launched and no account was spent.' CLAUDECODE=1 LIMIT_GATE_MODE=deny -- \
     start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
   assert test "$(cat "$LIMIT_GATE_LOG")" = "--start claudeb $WORK/brief"
+  # A Computer Use run is priced under its own role, flag or brief line alike.
+  : >"$LIMIT_GATE_LOG"
+  door_refused 'Blocked: claudeb is walled.' CLAUDECODE=1 LIMIT_GATE_MODE=deny -- \
+    start codex --computer --brief "$WORK/brief" --workdir "$WORK/workdir"
+  assert test "$(cat "$LIMIT_GATE_LOG")" = "--start computer $WORK/brief"
   clear_stub
   CLAUDECODE=1 LIMIT_GATE_MODE=note start_ok claudeb
   assert grep -Fqx 'worker-run: note: Claude account picked is at 90%.' "$WORK/start.err"

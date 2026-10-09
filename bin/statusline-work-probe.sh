@@ -85,11 +85,11 @@ found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v n
   # option that takes a value skips it too, or `timeout -s KILL 60 x` would run KILL.
   function prog(pid,   b, i) {
     nw = split(cmd[pid], w, /[ \t]+/); pi = 1; b = base(w[1])
-    while (b ~ /^(env|nohup|time|timeout|nice|sudo|caffeinate|setsid|uv|poetry|npx|bash|sh|zsh|dash|python[0-9.]*|node|perl|ruby|lua|luajit)$/ && pi < nw) {
+    while (b ~ /^(env|nohup|time|timeout|nice|sudo|caffeinate|setsid|uv|poetry|npx|bash|sh|zsh|dash|[Pp]ython[0-9.]*|node|perl|ruby|lua|luajit)$/ && pi < nw) {
       for (i = pi + 1; i <= nw && (w[i] ~ /^-/ || (b == "env" && w[i] ~ /=/)); i++) {
-        if ((w[i] == "-c" && b ~ /^(bash|sh|zsh|dash|python[0-9.]*)$/) || (w[i] ~ /^-[a-zA-Z]*[eE]$/ && b ~ /^(perl|ruby|lua|luajit|node)$/) ||
+        if ((w[i] == "-c" && b ~ /^(bash|sh|zsh|dash|[Pp]ython[0-9.]*)$/) || (w[i] ~ /^-[a-zA-Z]*[eE]$/ && b ~ /^(perl|ruby|lua|luajit|node)$/) ||
             (b == "node" && w[i] ~ /^(--eval|--print|-p)$/)) return b
-        if (w[i] == "-m" && b ~ /^python/ && i < nw) { pi = i + 1; return base(w[pi]) }
+        if (w[i] == "-m" && b ~ /^[Pp]ython/ && i < nw) { pi = i + 1; return base(w[pi]) }
         if (w[i] == "--test" && b == "node") return "node --test"
         if ((b == "timeout" && w[i] ~ /^-[sk]$/) || (b == "nice" && w[i] == "-n") || (b == "caffeinate" && w[i] ~ /^-[tw]$/) ||
             (b == "env" && w[i] ~ /^-[uCP]$/) || (b ~ /^(bash|sh|zsh|dash)$/ && w[i] ~ /^-[oO]$/) ||
@@ -165,8 +165,8 @@ found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v n
   function run_meta(id,   f, l, v, live) {
     mpid = 0; mstart = 0; f = runs_root "/" id "/meta.json"
     while ((getline l < f) > 0) {
-      if (match(l, /"pid": *[0-9]+/)) { v = substr(l, RSTART, RLENGTH); sub(/.*: */, "", v); mpid = v + 0 }
-      if (match(l, /"pid_started_at": *[0-9]+/)) { v = substr(l, RSTART, RLENGTH); sub(/.*: */, "", v); mstart = v + 0 }
+      if (mpid == 0 && match(l, /"pid": *[0-9]+/)) { v = substr(l, RSTART, RLENGTH); sub(/.*: */, "", v); mpid = v + 0 }
+      if (mstart == 0 && match(l, /"pid_started_at": *[0-9]+/)) { v = substr(l, RSTART, RLENGTH); sub(/.*: */, "", v); mstart = v + 0 }
     }
     close(f)
     if (mpid == 0) return "?"
@@ -425,13 +425,13 @@ for run in "${!review_docs[@]}"; do
               + (if $v then " verify" else "" end) end) as $detail
          | if any(.late) then " {\($l) \($detail)}" else " \($l) \($detail)" end) | join("")) as $groups
     | "all \($rows | map(select(.fin)) | length)/\($cells | length)" as $all
-    | (if $state == "failed" then ["✗ dead", "✗ dead"]
+    | (if $state | IN("failed", "dead") then ["✗ dead", "✗ dead"]
        elif $state == "cancelled" then ["", ""]
        elif $state == "done" then ("✓ report" + (.confirmed // "" | tostring | if . == "" then "" else " " + . end)) | [., .]
        elif .phase == "report" then ["report", "report"]
        elif ($cells | length) == 0 then ["", ""]
        else [$all + $groups, $all] | if $judging then map(. + " · ✓ done") else . end end) as $st
-    | ($judging and ($state | IN("failed", "cancelled") | not)) as $judge_row
+    | ($judging and ($state | IN("failed", "dead", "cancelled") | not)) as $judge_row
     | [(.started_epoch | numbers | floor | tostring) // "",
        ([(.tier | word("T?")), (.composition | word("standard")), $lens] | join(" · ")),
        ((if $lens == "task" then (.task // .title // "" | line) else "" end)

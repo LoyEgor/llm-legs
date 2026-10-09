@@ -19,9 +19,13 @@ printf '0\n' >"$RUN/exit_code"
 printf 'acct · opus · high\n' >"$RUN/tag"
 
 out=$("$RUNNER" wait "$ID" 2>&1)
-# The label is wall-clock elapsed at the wait's read: a loaded machine reaches it seconds after 4m05s.
-at=$(grep -oE '^\[4m[0-5][0-9]s\]' <<<"$out" | head -n 1)
-assert [ "$(printf '%.4s' "$at")" = '[4m0' ]
+waited=$(($(date +%s) - now))
+# The label is wall-clock elapsed at the wait's read: 4m05s plus however long the machine took to reach it.
+at=$(grep -oE '^\[[0-9]+m[0-5][0-9]s\]' <<<"$out" | head -n 1)
+at_s=$(perl -ne 'print $1 * 60 + $2 if /^\[(\d+)m(\d+)s\]$/' <<<"$at")
+assert [ -n "$at_s" ]
+assert [ "$at_s" -ge 245 ]
+assert [ "$at_s" -le $((245 + waited)) ]
 assert grep -Fqx -- "$at » Reading the gate now" <<<"$out"
 assert grep -Fqx -- "$at Edit /w/bin/gate.sh" <<<"$out"
 bash_row=$(grep -F "$at Bash grep -n door" <<<"$out")

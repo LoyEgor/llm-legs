@@ -408,7 +408,8 @@ def main():
             if not any(arg == "--effort" or arg.startswith("--effort=") for arg in forwarded):
                 command += ["--effort", env.get("CLAUDE_CODE_EFFORT_LEVEL") or "high"]
             if agents:
-                command += ["--agents", json.dumps(agents), "--append-system-prompt",
+                command += ["--agents", json.dumps(agents)]
+            command += ["--append-system-prompt",
                             "For implementation tasks, implement directly or delegate through "
                             "worker-pick's START line. Never use native implementation agents. Task size "
                             "is never a refusal condition: delegate larger tasks and verify the result. Preserve "

@@ -280,8 +280,10 @@ assert grep -qxF "ARG=$WORK/rel-image.png" "$CALL_LOG"
 # inside a relative one never does.
 cp "$WORK/brief" "$WORK/brief.noimg"
 printf 'img\n' >"$WORK/shot.PNG"
+printf 'img\n' >"$WORK/old.png"
 { cat "$WORK/brief.noimg"; printf 'See %s and (%s), not %s/gone.png, https://x.io%s, docs%s.\n' \
-  "$WORK/shot.PNG" "$WORK/rel-image.png" "$WORK" "$WORK/shot.PNG" "$WORK/shot.PNG"; } >"$WORK/brief"
+  "$WORK/shot.PNG" "$WORK/rel-image.png" "$WORK" "$WORK/shot.PNG" "$WORK/shot.PNG"
+  printf 'Nor %s.bak, %s/new.gif2 or %s/new.pngs.\n' "$WORK/old.png" "$WORK" "$WORK"; } >"$WORK/brief"
 clear_stub
 set_config 'codex_effort=high'
 (cd "$WORK" && "$RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" --account options --image rel-image.png) >"$WORK/start.out" 2>"$WORK/start.err" || fail "brief-image start failed: $(<"$WORK/start.err")"

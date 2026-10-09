@@ -68,9 +68,13 @@ expect deny '' 'gemini-probe --account rawi'
 expect deny codex-worker 'ask_gemini.sh q'
 expect pass '' 'ask_claude.sh --extract-served-model /tmp/out.json'
 
-# 13: the chat starts and awaits its own worker runs, in the foreground or the background.
+# 13: the chat starts and awaits its own worker runs; a wait with no --max, or light-research, only in
+# the background, where the Bash timeout cannot kill it and its end wakes the chat.
 expect pass '' 'worker-run start codex --brief /tmp/b --workdir /tmp'
 expect pass '' 'worker-run wait r1' '' true
+expect deny '' 'worker-run wait r1'
+expect deny '' 'cd /w && ~/.local/bin/worker-run wait r1' 600000
+expect deny '' 'light-research --attach gemini-1-2-abcd --out /tmp/a'
 expect pass '' 'worker-run wait r1 --max 540' 120000
 expect pass '' 'light-research --prompt-file /tmp/q --out /tmp/a --repo /w' '' true
 expect pass '' 'review-bench wait 20260924T000000Z-abc1234' '' true

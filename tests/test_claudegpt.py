@@ -620,6 +620,19 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(app.main(), 0)
         return captured[-1]
 
+    def test_delegation_instruction_rides_without_any_agent_definition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "store"
+            Path(os.environ["CODEXB_PROFILES_DIR"], "work4").mkdir()
+            (state / "accounts/work4/auth").mkdir(parents=True)
+            (state / "accounts/work4/auth/fixture.json").write_text(json.dumps({"type": "codex", "access_token": "fixture", "account_id": "acct-work4"}))
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(Path(temporary) / "claude")}):
+                command = self.launch(state, ["claudegpt", "p", "work4"])
+            self.assertNotIn("--agents", command)
+            prompt = command[command.index("--append-system-prompt") + 1]
+            self.assertIn("worker-pick's START line", prompt)
+            self.assertIn("Never use native implementation agents", prompt)
+
     def test_every_launch_records_the_account_its_conversation_runs_on(self):
         # A transcript names the model and never the account, so without this stamp the
         # only way back into a gateway chat is a claudeb line that opens it on Claude.

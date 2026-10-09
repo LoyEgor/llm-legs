@@ -281,6 +281,12 @@ EOF
     assert test "$rc" -eq 4
     assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/duplicate.out"
     assert grep -qx "WAIT: worker-run wait $old_id (as a background Bash)" "$WORK/duplicate.out"
+    jq '.light = "research"' "$old_dir/meta.json" >"$WORK/meta.research" && mv "$WORK/meta.research" "$old_dir/meta.json"
+    rc=0
+    WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --brief "$WORK/brief" --account duplicate >"$WORK/duplicate.out" 2>&1 || rc=$?
+    jq 'del(.light)' "$old_dir/meta.json" >"$WORK/meta.research" && mv "$WORK/meta.research" "$old_dir/meta.json"
+    assert test "$rc" -eq 4
+    assert grep -qx "WAIT: light-research --attach $old_id --out <answer-file> (as a background Bash)" "$WORK/duplicate.out"
     unset STUB_SLEEP
     WORKER_RUN_ALLOW_DUPLICATE=1 start_ok codex --account duplicate
     assert await_done

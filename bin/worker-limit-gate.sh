@@ -12,10 +12,13 @@ TOGGLE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
 
 
-# `worker-run start` asks before it picks an account: `--start <claudeb|codex|gemini|grok|light> <brief> [<account>]`,
-# the account its `--account` flag names, which a brief without an ACCOUNT: line does not carry.
+# `worker-run start` asks before it picks an account: `--start <claudeb|codex|gemini|grok|light|computer> <brief> [<account>]`,
+# the account its `--account` flag names, which a brief without an ACCOUNT: line does not carry;
+# `computer` is a codex run under `--computer`.
 [ "${1:-}" = --start ] && { [ "$#" -eq 3 ] || [ "$#" -eq 4 ]; } || exit 0
 worker="$2-worker"
+computer=false
+[ "$2" != computer ] || { worker=codex-worker; computer=true; }
 prompt=$(head -c 65536 "$3" 2>/dev/null) || prompt=''
 
 # Carries $toggle_note, so a vendor that disagrees with the toggle is reported without
@@ -100,7 +103,7 @@ case "$toggle_worker" in
     ;;
 esac
 
-if [ "$worker" = codex-worker ] && grep -Eq '^COMPUTER:[[:space:]]*yes[[:space:]]*$' <<<"$prompt"; then
+if [ "$worker" = codex-worker ] && { [ "$computer" = true ] || grep -Eq '^COMPUTER:[[:space:]]*yes[[:space:]]*$' <<<"$prompt"; }; then
   role_arg=computer
   toggle_note=''
 fi
@@ -182,6 +185,9 @@ account_off() { # vendor limits_vendor account
   ' "$LIMITS_FILE" >/dev/null 2>&1
 }
 if [ -n "$brief_account" ] && account_off "$vendor" "$limits_vendor" "$brief_account"; then
+  if [ -n "${4:-}" ]; then
+    deny "worker-run's --account ${brief_account} is switched off or removed in Egor's menu, so a ${worker%-worker} run cannot start on it. Pass worker-pick's NEXT account${router_account:+ (${router_account})} to --account, or drop the flag."
+  fi
   deny "The brief's ACCOUNT: ${brief_account} is switched off or removed in Egor's menu, so a ${worker%-worker} run cannot start on it. Put worker-pick's NEXT account${router_account:+ (${router_account})} in the ACCOUNT line, or drop the line."
 fi
 # worker-pick's ACCOUNT: names an account of the vendor in its NEXT row 1, and the same name may be
