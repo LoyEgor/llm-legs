@@ -4615,7 +4615,7 @@ last_messages() { # directory
   [ -n "$transcript" ] && [ -f "$transcript" ] ||
     transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory")" "$workdir") || return 0
   [[ "$started" =~ ^[0-9]+$ ]] || started=0
-  progress_rows "$vendor" "$transcript" "$started" | sed -n 's/^» //p' | tail -n 3 |
+  progress_rows "$vendor" "$transcript" "$started" 0 | sed -n 's/^» //p' | tail -n 3 |
     awk 'NR == 1 { print "(no final answer; the worker'"'"'s last messages:)" } { print }'
 }
 
