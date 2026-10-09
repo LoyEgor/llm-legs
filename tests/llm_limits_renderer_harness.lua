@@ -57,12 +57,8 @@ end
 -- better-Δ green. A second gray is exactly what Egor cannot tell apart from the system's, so it may
 -- not reach a row at all.
 local KNOWN_COLORS = {}
-for _, color in ipairs({
-  dimTone(0), dimTone(1),
-  { red = 0.9, green = 0.25, blue = 0.2 },
-  { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 },
-  { red = 0.13, green = 0.55, blue = 0.25 },
-}) do
+local palette = assert(loadfile(root .. "/hammerspoon/menu-style.lua"))()
+for _, color in ipairs({ dimTone(0), dimTone(1), palette.RED, palette.DIM_RED, palette.GREEN }) do
   KNOWN_COLORS[colorKey(color)] = true
 end
 
@@ -3823,7 +3819,7 @@ do
     "the section note does not close its section before the separator")
   local delta = items[9].title.runs
   assert(#delta == 4 and delta[2].text == "+243%" and delta[2].attributes.color.red == 0.9
-      and delta[4].text == "-50%" and delta[4].attributes.color.green == 0.55,
+      and delta[4].text == "-50%" and colorKey(delta[4].attributes.color) == colorKey(palette.GREEN),
     "a worse Δ is not red and a better Δ not green")
   assert(titleText(items[#items]) == "Refresh" and items[#items].fn, "the Harness doctor has no Refresh")
   local function windowBlocks(list)

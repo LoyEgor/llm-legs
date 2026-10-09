@@ -1,8 +1,9 @@
--- Automations ▸ Token tracking: tokenmap's week-over-week spend rows.
+-- Automations ▸ Token tracking: tokenmap's spend by vendor and consumer, with the week-over-week
+-- category rows under By category.
 --
--- The whole Automations menu is rebuilt on every click, so this module reads one small JSON
--- tokenmap writes (tracking.json, or tracking-range-<key>.json for a chosen Compare range, and
--- spend-<key>.json for Spend's own range),
+-- The whole Automations menu is rebuilt on every click, so this module reads small JSONs
+-- tokenmap writes (spend-<key>.json for the vendor trees, tracking.json or
+-- tracking-range-<key>.json for the harness index row and By category),
 -- decoded once per size+mtime — never a query or a subprocess on the click path. Every number,
 -- label and Δ tone is decided by tokenmap (tokenmap/tracking.py); this side only aligns the
 -- columns and colours the tone. An export is current while its db_generation is the one in the
@@ -27,7 +28,7 @@ local RANGES = {
     { key = "3d", label = "3 days vs 3 before" },
     { key = "today", label = "Today vs yesterday, same hours" },
 }
-local SPEND_RANGES = { RANGES[1], RANGES[2], RANGES[3] }
+local SPEND_RANGES = { RANGES[2], RANGES[3], RANGES[1] }
 local DELTA_COLUMN = 3
 
 local RED = menuStyle.RED
@@ -247,17 +248,26 @@ local function rangeLabel(range)
     return range.label or ("from " .. range.since)
 end
 
+local function spendRange()
+    if spendActive then return spendActive end
+    local saved = settingsStore.get(SPEND_KEY)
+    spendActive = RANGES[1]
+    for _, range in ipairs(SPEND_RANGES) do
+        if type(saved) == "table" and saved.key == range.key then spendActive = range end
+    end
+    return spendActive
+end
+
+-- By category follows the one range unless Today or Since… is chosen inside it.
 local function activeRange()
     if active then return active end
     local saved = settingsStore.get(SETTINGS_KEY)
-    active = RANGES[1]
+    active = spendRange()
     if type(saved) == "table" and saved.key == "custom" and type(saved.since) == "string"
         and saved.since ~= "" then
         active = { key = "custom", since = saved.since }
-    elseif type(saved) == "table" then
-        for _, range in ipairs(RANGES) do
-            if range.key == saved.key then active = range end
-        end
+    elseif type(saved) == "table" and saved.key == RANGES[4].key then
+        active = RANGES[4]
     end
     return active
 end
@@ -446,29 +456,13 @@ local function rangeChoices(ranges, current, busy, choose)
     return choices
 end
 
-local function compareItem()
-    local current = activeRange()
-    local function title(text, range)
-        return sameRange(asked, range) and (text .. " — computing…") or text
-    end
-    local choices = rangeChoices(RANGES, current, asked, M.choose)
-    local custom = current.key == "custom"
-    local sinceTitle = custom and ("Since " .. current.since) or "Since…"
-    if asked and asked.key == "custom" then sinceTitle = title("Since " .. asked.since, asked) end
-    choices[#choices + 1] = { title = sinceTitle, checked = custom, fn = function()
-        local text = promptFn(custom and current.since or "")
-        text = text and text:match("^%s*(.-)%s*$")
-        if text and text ~= "" then M.choose({ key = "custom", since = text }) end
-    end }
-    return { title = asked and title("Compare: " .. rangeLabel(asked), asked) or ("Compare: " .. rangeLabel(current)),
-             menu = choices }
-end
-
-local function tableItems(data)
+-- `lead` is one more row aligned with the table but placed by the caller; its title comes second.
+local function tableItems(data, lead)
     local rows = { { label = data.unit_label or "", nums = data.columns or { "7 days", "prev 7", "Δ" }, dim = true } }
     for _, row in ipairs(data.rows) do
         rows[#rows + 1] = { label = row.label, nums = row.cells, tone = row.tone }
     end
+    if lead then rows[#rows + 1] = lead end
     local titles = aligned(rows)
     local items = { { title = titles[1], disabled = true } }
     local group = nil
@@ -483,7 +477,7 @@ local function tableItems(data)
         items[#items + 1] = #menu > 0 and { title = titles[index + 1], menu = menu }
             or { title = titles[index + 1], disabled = true }
     end
-    return items
+    return items, lead and titles[#titles]
 end
 
 local function byDayMenu(days)
@@ -492,16 +486,6 @@ local function byDayMenu(days)
     local items = {}
     for _, title in ipairs(aligned(rows)) do items[#items + 1] = { title = title, disabled = true } end
     return items
-end
-
-local function spendRange()
-    if spendActive then return spendActive end
-    local saved = settingsStore.get(SPEND_KEY)
-    spendActive = SPEND_RANGES[1]
-    for _, range in ipairs(SPEND_RANGES) do
-        if type(saved) == "table" and saved.key == range.key then spendActive = range end
-    end
-    return spendActive
 end
 
 local function spendFile(range)
@@ -515,61 +499,84 @@ local function cancelSpend()
     spendTask, spendAsked = nil, nil
 end
 
--- Spend has its own range and its own fast export (`tokenmap spend`), apart from Compare's.
-local function startSpend(range, quiet)
+-- The vendor trees' fast export (`tokenmap spend`). It never alerts: a range choice alerts once,
+-- from By category's run, and a spend failure shows on the status line.
+local function startSpend(range)
     cancelSpend()
     spendError = nil
-    local serial, what = spendSerial, "Spend " .. range.label
+    local serial = spendSerial
     local task = taskFn(TOKENMAP, function(code, _, err)
         if serial ~= spendSerial then return end
         spendTask, spendAsked = nil, nil
         if code ~= 0 then spendError = lastLine(err) or ("exit " .. tostring(code)) end
-        if quiet then return end
-        alertFn(code == 0 and (what .. " ready") or (what .. " failed: " .. spendError))
     end, { "spend", "--range", range.key, "--write" })
     if task then task:setEnvironment({ PATH = TASK_PATH, HOME = HOME }) end
     if not (task and task:start()) then
         spendError = "could not start " .. TOKENMAP
-        if not quiet then alertFn(what .. " failed: " .. spendError) end
         return false
     end
     spendTask, spendAsked = task, range
     return true
 end
 
-function M.chooseSpend(range)
+-- Today and Since… compare categories only, so they live at the bottom of By category.
+local function categoryItem()
+    local range = activeRange()
+    local file = rangeFile(range)
+    local data, problem, attrs = load(file)
+    local current = generation()
+    if current and tried[file] ~= current and outdated(data) and (not scanTask or jobSoft and file ~= path) then
+        tried[file] = current
+        if cancelJob() then startJob(range, false, true) end
+    end
+    local items = statusItems(data, problem, attrs, file ~= path)
+    if data then
+        items[#items + 1] = { title = "-" }
+        for _, item in ipairs(tableItems(data)) do items[#items + 1] = item end
+        items[#items + 1] = { title = "-" }
+        items[#items + 1] = { title = "By week", menu = byWeekMenu(data) }
+    end
+    local function title(text, choice)
+        return sameRange(asked, choice) and (text .. " — computing…") or text
+    end
+    local custom = range.key == "custom"
+    local sinceTitle = custom and ("Since " .. range.since) or "Since…"
+    if asked and asked.key == "custom" then sinceTitle = title("Since " .. asked.since, asked) end
+    items[#items + 1] = { title = "-" }
+    items[#items + 1] = { title = title(RANGES[4].label, RANGES[4]), checked = range == RANGES[4],
+                          fn = function() M.choose(RANGES[4]) end }
+    items[#items + 1] = { title = sinceTitle, checked = custom, fn = function()
+        local text = promptFn(custom and range.since or "")
+        text = text and text:match("^%s*(.-)%s*$")
+        if text and text ~= "" then M.choose({ key = "custom", since = text }) end
+    end }
+    local name = "By category"
+    local shown = asked or range
+    if shown.key == "today" or shown.key == "custom" then name = name .. ": " .. rangeLabel(shown) end
+    if asked then name = name .. " — computing…" end
+    return { title = name, menu = items }
+end
+
+function M.chooseRange(range)
     spendActive = range
     settingsStore.set(SPEND_KEY, { key = range.key })
     if generation() and not outdated((load(spendFile(range)))) then
         if spendAsked and spendAsked ~= range then cancelSpend() end
-        return true
+    elseif not sameRange(spendAsked, range) then
+        startSpend(range)
     end
-    if sameRange(spendAsked, range) then return true end
-    return startSpend(range, false)
+    return M.choose(range)
 end
 
-local function spendItem()
-    local range = spendRange()
-    local file = spendFile(range)
-    local data, problem, attrs = load(file)
-    local current = generation()
-    if current and not spendTask and tried[file] ~= current and outdated(data) then
-        tried[file] = current
-        startSpend(range, true)
-    end
-    local items = statusItems(data, problem, attrs, false, { running = spendTask ~= nil, error = spendError })
-    local title = "Compare: " .. range.label
-    if sameRange(spendAsked, range) then title = title .. " — computing…" end
-    items[#items + 1] = { title = title, menu = rangeChoices(SPEND_RANGES, range, spendAsked, M.chooseSpend) }
-    if data then
-        items[#items + 1] = { title = "-" }
-        for _, item in ipairs(tableItems(data)) do items[#items + 1] = item end
-        if type(data.days) == "table" and #(data.days.rows or {}) > 0 then
-            items[#items + 1] = { title = "-" }
-            items[#items + 1] = { title = "By day", menu = byDayMenu(data.days) }
+-- The harness index row of the one range, aligned with the vendor trees under it.
+local function indexLead(range)
+    local data = load(rangeFile(range))
+    for _, row in ipairs(data and data.rows or {}) do
+        if row.key == "harness_index" then
+            return { label = row.label, nums = row.cells, tone = row.tone, dim = outdated(data) }, row
         end
     end
-    return { title = "Spend", menu = items }
+    return { label = "Harness index", nums = { "…" }, dim = true }, nil
 end
 
 -- The Automations row itself: red when the export is stale or the instruction watcher is down,
@@ -584,23 +591,35 @@ function M.title(watcherAlarm)
 end
 
 function M.menuItems(changeLogItem)
-    local range = activeRange()
-    local file = rangeFile(range)
+    local range = spendRange()
+    local file = spendFile(range)
     local data, problem, attrs = load(file)
     local current = generation()
-    if current and tried[file] ~= current and outdated(data) and (not scanTask or jobSoft and file ~= path) then
+    if current and not spendTask and tried[file] ~= current and outdated(data) then
         tried[file] = current
-        if cancelJob() then startJob(range, false, true) end
+        startSpend(range)
     end
-    local items = statusItems(data, problem, attrs, file ~= path)
-    items[#items + 1] = spendItem()
-    items[#items + 1] = compareItem()
+    local category = categoryItem()
+    local items = statusItems(data, problem, attrs, false,
+        { running = spendTask ~= nil or scanTask ~= nil, error = spendError or scanError })
+    local lead, indexRow = indexLead(range)
+    local rows, leadTitle
+    if data then rows, leadTitle = tableItems(data, lead) else leadTitle = aligned({ lead })[1] end
+    local indexMenu = indexRow and rowMenu(indexRow) or {}
+    items[#items + 1] = #indexMenu > 0 and { title = leadTitle, menu = indexMenu } or { title = leadTitle, disabled = true }
+    local title = "Compare: " .. range.label
+    if sameRange(spendAsked, range) or sameRange(asked, range) then title = title .. " — computing…" end
+    items[#items + 1] = { title = title, menu = rangeChoices(SPEND_RANGES, range, spendAsked, M.chooseRange) }
     if data then
         items[#items + 1] = { title = "-" }
-        for _, item in ipairs(tableItems(data)) do items[#items + 1] = item end
-        items[#items + 1] = { title = "-" }
-        items[#items + 1] = { title = "By week", menu = byWeekMenu(data) }
+        for _, item in ipairs(rows) do items[#items + 1] = item end
+        if type(data.days) == "table" and #(data.days.rows or {}) > 0 then
+            items[#items + 1] = { title = "-" }
+            items[#items + 1] = { title = "By day", menu = byDayMenu(data.days) }
+        end
     end
+    items[#items + 1] = { title = "-" }
+    items[#items + 1] = category
     items[#items + 1] = { title = "-" }
     if changeLogItem then items[#items + 1] = changeLogItem end
     if hs.fs.attributes(PAGE) then
@@ -623,7 +642,7 @@ function M.setAlert(fn) alertFn = fn or function(text) hs.alert.show(text, 4) en
 function M.setTask(fn) taskFn = fn or function(...) return hs.task.new(...) end end
 function M.setSettings(store)
     settingsStore = store or hs.settings
-    active = nil
+    active, spendActive = nil, nil
 end
 function M.setPrompt(fn) promptFn = fn or askSince end
 
