@@ -2171,7 +2171,7 @@ instruction_alert_sendable() {
 instruction_alert_poke() {
   local alert=${INSTRUCTION_WATCH_ALERT:-hs}
   command -v "$alert" >/dev/null 2>&1 || return 1
-  ( "$alert" -c 'local ok, m = pcall(require, "instruction-watch"); if ok then m.pump() end' \
+  ( env -u WORKER_RUN_ID "$alert" -c 'local ok, m = pcall(require, "instruction-watch"); if ok then m.pump() end' \
       >/dev/null 2>&1 & ) &
   return 0
 }

@@ -183,6 +183,17 @@ case "$poke" in *quote*|*slash*|*.md*) fail "a watched file name reached the Ham
 rm "$nasty"
 watch baseline sid-d >/dev/null
 
+echo "== tripwire: the detached poke drops the worker run id, so worker-run never ends it as the run's orphan"
+printf '#!/usr/bin/env bash\nprintf "run=%%s\\n" "${WORKER_RUN_ID:-none}" >>"${ALERT_LOG:?}"\n' >"$INSTRUCTION_WATCH_ALERT"
+: > "$ALERT_LOG"
+printf 'run id\n' > "$HOME/.claude/agents/run-id.md"
+WORKER_RUN_ID=claudeb-1-2-abcd watch check sid-d >/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$ALERT_LOG" ] && break; sleep 0.2; done
+assert_eq "run=none" "$(cat "$ALERT_LOG")"
+rm "$HOME/.claude/agents/run-id.md"
+alert_log_stub
+watch baseline sid-d >/dev/null
+
 echo "== tripwire: one alert per change, whichever session notices it first"
 # This hook runs in every live session at once — the chat, its workers, every other window — and
 # each keeps its own baseline, so one edit used to flash Egor's screen once per session that

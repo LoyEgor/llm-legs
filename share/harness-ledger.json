@@ -3781,12 +3781,22 @@
           ],
           "in": null,
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-10T08:25:36+03:00",
+          "by": "night fixer harness-wait-classes-20261010T031957Z-620b",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_gate_tripwire.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
       "last_reviewed": "2026-10-10",
       "reviewed_by": "Harness Doctor",
-      "note": "2026-10-10 (night 4c4e): a run the watchdog cut (runs.jsonl reason wall, idle, deadline, silent, term or signal) ends its detached jobs with it, so worker_orphans_line counts only the orphans of runs that ended on their own; test_wait_journal's deadline row is red on the old code. Both fixes hold: of 45 orphans 2026-10-07 14:00 to 2026-10-09 03:38, none is session-trash's purge or worker-run's pack. All 45 are logo-vectorizer-bench builder workers' `nohup .venv/bin/python …&` traces and evals (the Bash tool's timeout makes them detach): 26 of 2026-10-09 from three runs the 6 h deadline killed (19, 1, 6), so the rule counts jobs cut with the run, not left behind; 15 from two done runs whose results promised a chain still running or queued last, which end_run_orphans then ended (the false report fixed in llm-legs@6431047f: worker-run report prints ENDED: with the count and commands). 4 more on 2026-10-08 came from a 4 s failed run on the unknown account tronjhon (`llm-limits.sh --refresh-account claude/tron…`, an elevenlabs timeout): who spawns that refresh under the run id is unverified. Counting only self-ended runs, or per command family (blind spot worker-orphans-unclassified), would be a judge change: handoff.",
+      "note": "2026-10-10 (night 4c4e): the instruction tripwire's detached `hs -c … m.pump()` poke (1 orphan of a self-ended failed run, 06:39) drops WORKER_RUN_ID like session-trash's purge (test_instruction_gate_tripwire); 28 run-suites orphans of 2026-10-09 08:48 were a done review fixer's own nohup'd run-all past the Bash cap, the nohup family; chrome-native-host orphans of 2026-10-07 never recurred. A run the watchdog cut (runs.jsonl reason wall, idle, deadline, silent, term or signal) ends its detached jobs with it, so worker_orphans_line counts only the orphans of runs that ended on their own; test_wait_journal's deadline row is red on the old code. Both fixes hold: of 45 orphans 2026-10-07 14:00 to 2026-10-09 03:38, none is session-trash's purge or worker-run's pack. All 45 are logo-vectorizer-bench builder workers' `nohup .venv/bin/python …&` traces and evals (the Bash tool's timeout makes them detach): 26 of 2026-10-09 from three runs the 6 h deadline killed (19, 1, 6), so the rule counts jobs cut with the run, not left behind; 15 from two done runs whose results promised a chain still running or queued last, which end_run_orphans then ended (the false report fixed in llm-legs@6431047f: worker-run report prints ENDED: with the count and commands). 4 more on 2026-10-08 came from a 4 s failed run on the unknown account tronjhon (`llm-limits.sh --refresh-account claude/tron…`, an elevenlabs timeout): who spawns that refresh under the run id is unverified. Counting only self-ended runs, or per command family (blind spot worker-orphans-unclassified), would be a judge change: handoff.",
       "handoff": "docs/handoffs/2026-10-09-worker-orphans-deadline-jobs.md"
     },
     {
