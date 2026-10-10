@@ -6,5 +6,7 @@ test_statusline_hooks.sh
 test_vendor_fingerprint.sh
 test_worker_pick.sh
 test_worker_pin_gate.sh
+test_worker_pin_gate_runtime.sh
+test_worker_pin_gate_shell.sh
 test_worker_run_pool.sh
 test_worker_run_vendor_files.sh

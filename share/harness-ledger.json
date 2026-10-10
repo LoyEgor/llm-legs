@@ -7010,6 +7010,40 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-code-doctor-20261010T031916Z-708b",
       "note": "cProfile of every code-doctor call in the suite: check_run 35 of 57 profiled s, of which review_claims 17.7 s (48 launches of the live ~/.local/bin/review-anchors found through PATH; HOME was the fixture's, PATH was not), the rest git subprocesses and Python startup of bin/code-doctor (102 launches). Not cut: the code-doctor launches and their git calls are the behaviour under test; shard 1 is one stateful corpus chain with no reset to cut at. Separate open rows on the same suite (test_daily_cost, test_slow, suite_audit) were outside this run.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-heavy-worker-pin-gate",
+      "title": "test_worker_pin_gate ran its 328 gate cases in one serial file",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_pin_gate"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-pin-gate-20261010T031935Z-603c",
+          "files": [
+            "llm-legs/tests/test_worker_pin_gate.sh",
+            "llm-legs/tests/test_worker_pin_gate_shell.sh",
+            "llm-legs/tests/test_worker_pin_gate_runtime.sh",
+            "llm-legs/tests/worker_pin_gate_harness.sh",
+            "llm-legs/tests/slow-suites"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the sorted line multiset of the old suite against the three suites plus the harness: identical but for the new headers, PASS lines, harness source lines and the dropped dead PROJECTS/test-scope pair",
+            "data": "the suites' own fixtures",
+            "result": "328 asserts before, 161 + 76 + 91 after, all PASS; CPU 64.7 s before (load 118), 23.5 + 17.8 + 24.2 = 65.5 s after (load ~205); wall 404 s serial vs longest shard 325 s at nearly twice the load"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-pin-gate-20261010T031935Z-603c",
+      "note": "Wall is ~330 gate calls, each a jq-built event plus the gate's own jq/grep forks and, on the shell door, a source of share/instruction-files.sh: ~0.2 CPU-s a call, under load almost all of it fork scheduling. Audit: no sleeps; every case cites a live incident or a door shape, none cut; the only legacy was an unused PROJECTS=$(git_projects) (cut). Not cut: the test's jq event builder (one fork of ~6-10 a call, no shared bash JSON encoder to reuse); the gate's write mode spends two jq forks (event check, file_path) on every live Write/Edit before it knows the path is a pin, a hook floor that is the hooks lever's ground, not this suite's.",
+      "handoff": null
     }
   ],
   "blind_spots": [
