@@ -4148,9 +4148,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held. Night 817e: the relay rounds are gone (ee185fa8): a chat waits with a background worker-run wait, light-research waits its run out (92a22609).",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held. Night 817e: the relay rounds are gone (ee185fa8): a chat waits with a background worker-run wait, light-research waits its run out (92a22609). Night 4c4e: quiet; relay rounds are gone with the relays (ee185fa8), waits are background Bash.",
       "handoff": null
     },
     {
@@ -4215,9 +4215,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff. Night 20261007T213650Z-7b98: kept, no cap. The extra rounds followed the fit-round anchor bug (review-bench e53e183, reverted: only a bugs read retires debt), a one-off; resume_night's debt-<n> is documented in docs/night-run.md (a resumed night lands more work, which gets its own pass). Night 817e: quiet, no component changed; kept.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff. Night 20261007T213650Z-7b98: kept, no cap. The extra rounds followed the fit-round anchor bug (review-bench e53e183, reverted: only a bugs read retires debt), a one-off; resume_night's debt-<n> is documented in docs/night-run.md (a resumed night lands more work, which gets its own pass). Night 817e: quiet, no component changed; kept. Night 4c4e: quiet; the debt pass is now fit, legacy and bugs (981c1486), still no mechanical cap.",
       "handoff": null
     },
     {
@@ -4875,9 +4875,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Not reproduced: 4 copies each of test_run_suites_journal and test_slots in parallel at load 51 all passed; night 7777 already replaced test_run_suites_journal's fixed sleep with a poll (33eb4e77); test_statusline_hooks is tonight's suite job. No doctor rule sees a flake (blind spot suite-flake-unseen). Night 817e: same family as log_audit:run-all-load-flakes; test_test_journal's direct-run restamp was one deterministic cause, fixed tonight.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Not reproduced: 4 copies each of test_run_suites_journal and test_slots in parallel at load 51 all passed; night 7777 already replaced test_run_suites_journal's fixed sleep with a poll (33eb4e77); test_statusline_hooks is tonight's suite job. No doctor rule sees a flake (blind spot suite-flake-unseen). Night 817e: same family as log_audit:run-all-load-flakes; test_test_journal's direct-run restamp was one deterministic cause, fixed tonight. Night 4c4e: quiet; the load-bound asserts were made CPU-based (ae0d28dd, review-bench speed suite in row load-bound-timing-assertions).",
       "handoff": null
     },
     {
@@ -7117,6 +7117,321 @@
       "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-worker-run-watchdog-20261010T031952Z-336a",
       "note": "Before (run-suites journal since sharding landed 2026-10-09 ~10Z): whole runs 120-352 s on 14-30 CPU-s, sharded 32-56 s on 17-30 CPU-s; ~40% of runs went whole because slot_room fails on load1 > load15 + cores, a rule meant for CPU-bound shards. Profiled 2026-10-10 (xtrace timestamps): the idle is the stubs' fixed survival sleeps against 1-16 s watchdog windows (~100 s summed, matching idle 95 s) plus worker-run start ~4-6 s a run under load (CPU, not idle); wait --max returns on exit_code by kqueue already. Fixed: `# shards: N wait` shards under load and is held by memory only (pressure level, available MB); the watchdog suite declares it. Not cut: shortening stub sleeps/windows (race margins: paused/frozen flake at load 250+, wd-editing failed once at load 215 in a sharded run, pre-existing; a shorter margin turns a regression into a vacuous pass under load); an injected watchdog clock in bin/worker-run (integer seconds, hop >= 1 s) stays the remaining lever. test_worker_run_files (63/22) and _attribution (58/24) are wait-bound too and could take `wait` after a profile.",
       "handoff": null
+    },
+    {
+      "id": "log_audit:stop-hook-empty-blocking-error",
+      "title": "Stop hook blocks the turn with an empty hook_blocking_error and no reason",
+      "match": {
+        "rule": "log_audit",
+        "ident": "stop-hook-empty-blocking-error"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T07:30:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+          "files": [
+            "llm-legs/share/log_skeleton.py",
+            "llm-legs/tests/test_log_audit.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Reading did not hold for the hook: the transcripts carry the full word-hook ask under attachment.blockingError.blockingError and the model answered it. The log-audit skeleton printed only content/stderr, so the reader saw an empty reason. Fixed: log_skeleton reads blockingError (flat or nested); test_log_audit red on the old code.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:known-red-suites-rediagnosed",
+      "title": "Suites red on untouched base are re-diagnosed by every worker",
+      "match": {
+        "rule": "log_audit",
+        "ident": "known-red-suites-rediagnosed"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T07:30:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+          "files": [
+            "llm-legs/bin/night-run",
+            "llm-legs/tests/test_night_carry.sh",
+            "hammerspoon/tests/run-all"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Confirmed: hammerspoon had no tests/run-all and night-run skipped any sweep repo without one, so test_menu_cache sat red on main 1.5 days (fixed in hammerspoon 04d73c6). Fixed: hammerspoon gets the shared run-all (18 suites green, 7 s), and a sweep repo with no runner is a red night row (test_night_carry red on old code). test_test_journal 27 settled by ae0d28dd; test_consistency 238 was cross-repo drift, green now. Open: token-map TestMergedSplit fails in any .claude/worktrees checkout (handoff item 1).",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:load-bound-timing-assertions",
+      "title": "Wall-clock assertions fail on main under load",
+      "match": {
+        "rule": "log_audit",
+        "ident": "load-bound-timing-assertions"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T07:30:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+          "files": [
+            "review-bench/tests/test_review_bench_speed.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Settled before this read for llm-legs: ae0d28dd (10-09 10:40) made the 8 MB workdir-hook bound CPU and pinned the statusline clock; both quotes predate it. Left: review-bench test_review_bench_speed gated warm vs cold launches on wall medians taken minutes apart (red at 10-10 05:12 on untouched code); it now uses children CPU time.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:speed-doctor-metrics-misleading",
+      "title": "Wall-clock and stale-window metrics mislead fixers and crashed the Speed block",
+      "match": {
+        "rule": "log_audit",
+        "ident": "speed-doctor-metrics-misleading"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T07:30:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+          "files": [
+            "llm-legs/tests/test_speed_doctor.sh",
+            "llm-legs/bin/speed-doctor"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "KeyError 'refusal' fixed by 9d76b38b (10-09 22:47); test_speed_doctor now pins every time_budget.FLOORS class to a TIME_LEVERS entry (red when a lever is missing). The 7-day test-health window moved to a 7-day median (a48cbb24, de7e98f1). Open: test_daily_cost prices wall seconds; a CPU basis changes the judge, so it is the owner's (handoff item 2).",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:gates-match-text-not-command",
+      "title": "Hooks refuse legitimate commands by payload text or block the worker's own conflict resolution",
+      "match": {
+        "rule": "log_audit",
+        "ident": "gates-match-text-not-command"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T07:30:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+          "files": [
+            "llm-legs/bin/worker-git-guard.sh",
+            "llm-legs/tests/test_worker_git_guard.sh",
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/tests/test_review_flow_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Confirmed: worker-git-guard denied git checkout --ours/--theirs in a worker's own rebase (6 times on 10-09); it now passes when every operand is an unmerged file and stays denied otherwise. review-flow-gate refused a $G git commit whose quoted message said 'run'; it now reads an unreadable binary's subcommand and unquoted words only. Both suites red on the old code. Kept: worker-git-guard's stash denial (the stash is shared across worktrees), cd-guard by design (ee185fa8); the python3 heredoc refusal no longer reproduces; resume-timer-guard settled by claude-setup@3da0376.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:haiku-bench-ran-sonnet",
+      "title": "Haiku bench cells ran Sonnet because plan mode upgrades the bare alias",
+      "match": {
+        "rule": "log_audit",
+        "ident": "haiku-bench-ran-sonnet"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T07:30:00+03:00",
+          "by": "review-bench@909514f (chat «Updater doctor»)",
+          "files": [
+            "review-bench/share/rbench/catalog.py",
+            "review-bench/share/rbench/launch.py",
+            "review-bench/tests/test_review_bench.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Settled by the owner chat: review-bench 909514f launches Claude haiku cells as claude-haiku-5-5 (the plan-mode upgrade keys on the bare alias), e1f1a15 pins it; 16dcb55 confirmed Haiku served and billed. The extra runs after Egor's complaint were conduct (memory bench-minimal-runs). fixes[].at is this review's time: the read of 10-10 06:16 still carried the pre-fix quotes.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:wrapper-report-lines-false",
+      "title": "Wrapper-composed worker-run and bench report lines assert false facts",
+      "match": {
+        "rule": "log_audit",
+        "ident": "wrapper-report-lines-false"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T07:30:00+03:00",
+          "by": "fa8ce358, 5fbacfdd, 474e981d, 017f1886, 3e4acfb1 (chat «Workers и review bench унификация отображения»)",
+          "files": [
+            "llm-legs/bin/worker-run"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Settled by the owner chat right after its own research (19:23): HINT needs a finished answering run (fa8ce358), LAST-EDIT reads the run's transcript paths (5fbacfdd), RUN-FILES says unknown not 0 (474e981d, 017f1886), the walled explicit account is no 'pool exhausted' (3e4acfb1); CPU-SECONDS reads the CLI's group (pid_group_cpu_seconds), fixed before the research. fixes[].at is this review's time: the read of 10-10 06:16 still carried the pre-fix quotes.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:landing-pipeline-retests-and-mistakes",
+      "title": "Hand-made landing queue retested after every rebase and mishandled branches",
+      "match": {
+        "rule": "log_audit",
+        "ident": "landing-pipeline-retests-and-mistakes"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T07:30:00+03:00",
+          "by": "0f2198e6, ca188bd0",
+          "files": [
+            "llm-legs/docs/fix-orchestrator.md",
+            "llm-legs/bin/night-run"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Settled after the quotes (10-09 12:38): 0f2198e6 lands one branch at a time and reruns only the suites the overlap with main touches; ca188bd0 takes later rebase passes from merge-base and chains teardown on a successful ff. The zsh split and the chained removal were the chat's own script (conduct); landing stays plain git (memory no-landing-wrapper). fixes[].at is this review's time: the read of 10-10 06:16 still carried the pre-fix quotes.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:foreground-call-hangs-25min",
+      "title": "Ad-hoc probes and scans hang to the 25-minute cap",
+      "match": {
+        "rule": "log_audit",
+        "ident": "foreground-call-hangs-25min"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Ruled out: same cause as hung-commands-25min-timeout (unbounded foreground sleeps 600-1380 s, recursive greps over all transcripts, a bare interpreter); model conduct, no component. run-suites already joins a newline-joined suite list (affected-suite-list-handling). Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:launch-into-exhausted-limit",
+      "title": "Workers and chats start on accounts whose limit is spent",
+      "match": {
+        "rule": "log_audit",
+        "ident": "launch-into-exhausted-limit"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Weather: the quoted walls are the chats' own session/weekly limits (the night orchestrator at 06:09, a chat at its weekly cap), which no harness can reroute; walled workers are rerouted by worker-run reroute_walled with a CONTINUATION note (9da6a1c1), and the gate now matches worker-pick at 100 % (04965684). Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:suites-timeout-under-night-load",
+      "title": "Full suites queue behind night load and hit the tool cap",
+      "match": {
+        "rule": "log_audit",
+        "ident": "suites-timeout-under-night-load"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Weather: load 165-350 from parallel night work (memory load-is-weather). Already in place: run-suites slots paced by load, red-first early stop (e03d41ae), landing reruns only overlap suites (0f2198e6). Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:parallel-fixers-duplicate-work",
+      "title": "Parallel fixers re-find landed fixes and rebases drop duplicates",
+      "match": {
+        "rule": "log_audit",
+        "ident": "parallel-fixers-duplicate-work"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Ruled out: parallel fixers are the design (final speed, not zero queue); each job rebases at landing (fix-orchestrator step 4) and duplicates drop there. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:slot-throttle-foreground-sleeps",
+      "title": "Vector Magic worker polls with long sleeps behind the slot throttle",
+      "match": {
+        "rule": "log_audit",
+        "ident": "slot-throttle-foreground-sleeps"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Ruled out: logo-vectorizer-bench's own lane throttle and the lane's choice to shrink its experiment, not the harness. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:spend-menu-spec-churn",
+      "title": "Spend/menu requirements not restated in briefs, work redone",
+      "match": {
+        "rule": "log_audit",
+        "ident": "spend-menu-spec-churn"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Ruled out: the owner chat's own brief-writing (it said so itself); no hook, gate or launcher. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:classifier-output-noise",
+      "title": "Commit-kinds classifier workers return inconsistent output",
+      "match": {
+        "rule": "log_audit",
+        "ident": "classifier-output-noise"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
+      "note": "Ruled out: the quoted batches were the chat's experiment workers; the shipped `tokenmap kinds` reads one key (fix) and finds the JSON array inside a fence. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     }
   ],
   "blind_spots": [
