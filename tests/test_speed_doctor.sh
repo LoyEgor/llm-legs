@@ -309,6 +309,16 @@ check([(o["id"], o["opportunity"]["recoverable_min_day"], o["opportunity"]["leve
       "dead worker runs are a Lost time class like the others: their own time opportunity with a lever, a floor row "
       "priced for the night's admission, and a queue's floor names the busy machine: %s %s"
       % ([(o["id"], o["opportunity"]) for o in dead_time], [(r["id"], r["fact"]) for r in dead_rows]))
+try:
+    every_time = module.with_time([], {"floors": [dict(dead, label=module.time_budget.LABEL[k], **{"class": k})
+                                                  for k in module.time_budget.FLOORS]})
+    every_unit = module.unit_rows({"refusal_cost": {"by_gate_min_day": {"gate-x": 40.0}}}, set())
+except KeyError as exc:
+    every_time, every_unit = [], exc
+check({o["id"] for o in every_time} >= {"opportunity:time/" + k for k in module.time_budget.FLOORS if k != "stop"}
+      and [o["id"] for o in every_unit] == ["opportunity:refusal/gate-x"],
+      "every Lost time class with a floor and every gate's refusal row has its lever, so a new class never ends the "
+      "Speed collector (exec'd by com.egor.harness-doctor) in KeyError: %r" % (every_unit,))
 runs_journal = os.path.join(work, "full-runs.jsonl")
 with open(runs_journal, "w") as handle:
     for session, scope, end, minutes in (("chatAAAAxyz", "full", HI - 600, 25), ("chatAAAAxyz", "all", HI - 60, 15),

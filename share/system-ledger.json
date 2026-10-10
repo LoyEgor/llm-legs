@@ -23,6 +23,28 @@
           "regressed_at": null
         }
       ]
+    },
+    {
+      "id": "harness-doctor-speed-keyerror",
+      "title": "com.egor.harness-doctor exits 1 while the Speed collector it execs ends in KeyError on a Lost time class with no lever",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "job-loop",
+        "key": "com.egor.harness-doctor",
+        "cause": "llm-legs/bin/harness-doctor"
+      },
+      "note": "The 7 exit-1 runs (harvest 10-09 18:26..10-10 00:26) are bin/speed-doctor, which harness-doctor's exec_speed replaces itself with, so its exit is the job's: ~/Library/Logs/harness-doctor.log ends in 7 'Speed: error · KeyError: 'refusal'' lines (log mtime 22:42), a 5-min job between share/time_budget.py gaining the refusal class and 9d76b38b (22:47) adding its TIME_LEVERS entry; the next harvest (16 runs) has none. Fix here: tests/test_speed_doctor.sh pins every time_budget.FLOORS class and gate refusal row to a TIME_LEVERS lever (red with the refusal lever removed). Ruled out: harness-doctor's own collect (guarded_collect turns its exceptions into an error document; the log's older TypeError tracebacks predate the window, their line numbers match a <3,000-line file vs 6,268 now); exit 1 on a Speed error stays, the menu shows it too.",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:58:37+03:00",
+          "by": "system-system-20261010T032004Z-1cfb",
+          "files": [
+            "llm-legs/tests/test_speed_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
     }
   ],
   "blind_spots": [
