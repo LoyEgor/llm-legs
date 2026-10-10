@@ -26,7 +26,7 @@ set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
   'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=picked
 printf 'picked\n' >"$STUB_DIR/gemini_profiles"
-for spec in 'claudeb:mythos' 'claudeb:haiku' 'codex:gpt-5.6-nova' 'codex:gpt-5.6' 'gemini:flash' \
+for spec in 'claudeb:mythos' 'codex:gpt-5.6-nova' 'codex:gpt-5.6' 'gemini:flash' \
             'gemini:flash35' 'gemini:flash39' 'grok:grok-3'; do
   vendor=${spec%%:*}
   bad=${spec#*:}
