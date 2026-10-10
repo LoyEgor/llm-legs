@@ -245,7 +245,8 @@ write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s =
     caches = { { ".cache/uv", 22.1 } } } })
 local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" } },
   speed = { status = "ok", as_of_s = now, lost_min_day = 12, lost_min_day_by_day = writeDays(series),
-    issues = { { 40, "suites running", "w-min/day" }, { 12, "hooks" } } },
+    issues = { { 40, "w-min suites", "w-min/day" }, { 12, "hooks" }, { 1244, "tests", "min/day" } },
+    tests = { over = { { 1033, "suites per targeted run" } }, heavy = { { 283, "test_worker_run_pool" }, { 7.4, "test_fast" } } } },
   spend = { status = "watch", as_of_s = now, index = 0.46, tone = "better", index_by_day = spendDays(series),
     issues = { { 1.888, "compaction summaries" } } } }
 local function trendHarness()
@@ -316,7 +317,13 @@ check(issue(trendItems[1].menu, 2, "   4  review anchors"), "LLM review machiner
 check(issue(trendItems[2].menu, 1, "   3  Hooks"), "Harness issue row")
 check(issue(trendItems[4].menu, 1, "   2  Dead") and issue(trendItems[4].menu, 2, "   1  Duplicate"), "Code issue rows")
 check(issue(trendItems[5].menu, 2, "  12 min/day  hooks"), "Speed floor issue row in min/day")
-check(issue(trendItems[5].menu, 1, "  40 w-min/day  suites running"), "a workers' floor gap carries its own unit")
+check(issue(trendItems[5].menu, 1, "  40 w-min/day  w-min suites"), "a workers' floor gap carries its own unit")
+local testsRow = trendItems[5].menu[3]
+check(text(testsRow.title) == "1244 min/day  tests" and not testsRow.disabled and testsRow.menu
+  and issue(testsRow.menu, 1, "1033 min/day  suites per targeted run") and testsRow.menu[2].title == "-"
+  and text(testsRow.menu[3].title) == " 283 min/day  test_worker_run_pool" and not red(testsRow.menu[3].title)
+  and text(testsRow.menu[4].title) == "   7 min/day  test_fast" and #testsRow.menu == 4,
+  "Lost time's tests row opens what grew over its usual, then the heaviest suites")
 check(issue(trendItems[6].menu, 1, " 1.9 %  compaction summaries"), "Spend issue row: the due component by its share")
 check(issue(trendItems[7].menu, 1, "   1  new processes") and issue(trendItems[7].menu, 2, "   1  swap full")
   and not find(trendItems[7].menu, "   1  low disk space"), "System issue rows: one per loud problem by its short name")

@@ -843,15 +843,36 @@ local function egorLayer(rows, menu, details)
   return rows
 end
 
-local function harnessSection(entryMenu, prefix, issues, unit, format)
+local function harnessSection(entryMenu, prefix, issues, unit, format, submenus)
   local details, rows = {}, {}
   for _, item in ipairs(entryMenu or {}) do
     if item.title ~= "-" and plainText(item.title):match("^" .. prefix .. ":") then details = item.menu or {} break end
   end
   for _, issue in ipairs(type(issues) == "table" and issues or {}) do
-    if tonumber(issue[1]) then rows[#rows + 1] = issueRow(tonumber(issue[1]), tostring(issue[3] or unit), tostring(issue[2]), format) end
+    if tonumber(issue[1]) then
+      local row = issueRow(tonumber(issue[1]), tostring(issue[3] or unit), tostring(issue[2]), format)
+      local sub = submenus and submenus[tostring(issue[2])]
+      if sub and #sub > 0 then row.menu, row.disabled = sub, nil end
+      rows[#rows + 1] = row
+    end
   end
   return details, rows
+end
+
+local function testRows(tests)
+  local rows = {}
+  local function pairsOf(list) return type(list) == "table" and list or {} end
+  for _, r in ipairs(pairsOf(tests.over)) do
+    if tonumber(r[1]) then rows[#rows + 1] = issueRow(tonumber(r[1]), "min/day", tostring(r[2])) end
+  end
+  if #rows > 0 then rows[#rows + 1] = { title = "-" } end
+  for _, r in ipairs(pairsOf(tests.heavy)) do
+    if tonumber(r[1]) then
+      rows[#rows + 1] = fitRow({ title = styled({ { padded(rounded(tonumber(r[1])), 4) }, { " min/day  " .. tostring(r[2]) } }),
+        disabled = true })
+    end
+  end
+  return rows
 end
 
 local function compute()
@@ -895,7 +916,8 @@ local function compute()
     if doctor.key == "harness" then
       local metrics = document and type(document.speed) == "table" and document.speed or {}
       local byDay = type(metrics.lost_min_day_by_day) == "table" and metrics.lost_min_day_by_day or {}
-      local speedMenu, speedRows = harnessSection(entry.menu, "Lost time", metrics.issues, "min/day")
+      local speedMenu, speedRows = harnessSection(entry.menu, "Lost time", metrics.issues, "min/day", nil,
+        { tests = testRows(type(metrics.tests) == "table" and metrics.tests or {}) })
       for _, item in ipairs(speedMenu) do
         local text = item.title ~= "-" and plainText(item.title) or ""
         if text:match("^Needs Egor") and text ~= "Needs Egor: nothing" then speedRows[#speedRows + 1] = item end

@@ -314,9 +314,18 @@ check(full == {"min_day": 40.0, "chats": [("chatAAAA", 2)]}
 parts = json.loads(next(l for l in h.menu_text({
     "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
     "speed": {"status": "ok", "budget": gaps}}).splitlines() if l.startswith("H\t"))[2:])["speed"]["issues"]
-check(parts == [[50.0, "worker slot queue", "w-min/day"], [30.0, "suites running", "w-min/day"],
-                [10.0, "suites running", "min/day"]],
-      "the menu header's floor gaps are chats' and workers' parts apart, each with its unit: %s" % parts)
+check(parts == [[50.0, "worker slot queue", "w-min/day"], [40.0, "tests", "min/day"], [5.0, "stop hooks", "min/day"]],
+      "the menu header's floor gaps are chats' and workers' parts apart, each with its unit; suites running and "
+      "their slot wait are one tests row, chats and workers summed: %s" % parts)
+tests_header = json.loads(next(l for l in h.menu_text({
+    "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
+    "speed": {"status": "ok", "budget": gaps, "tests": {
+        "regressions": [{"label": "suites per targeted run", "min_day": 1032.8}, {"label": "red runs", "min_day": 0}],
+        "heavy": [{"label": "test_%d" % i, "min_day": 100.0 - i} for i in range(10)]}}}).splitlines()
+    if l.startswith("H\t"))[2:])["speed"]["tests"]
+check(tests_header == {"over": [[1032.8, "suites per targeted run"]],
+                       "heavy": [[100.0 - i, "test_%d" % i] for i in range(8)]},
+      "the menu header carries the tests row's lines: what grew over its usual, then the 8 heaviest suites: %s" % tests_header)
 saved_env, saved = dict(os.environ), (module.with_time, module.time_budget.section)
 os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-floor"))
 module.with_time = lambda opportunities, budget: [dict(o, opportunity=dict(o["opportunity"], quality="risk"))
