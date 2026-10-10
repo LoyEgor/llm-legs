@@ -3071,7 +3071,12 @@
         {
           "at": "2026-10-06T20:20:26+03:00",
           "by": "night fixer harness-hooks-20261010T031901Z-2b39, crediting the 10-06 render cuts llm-legs@3cd9006f and llm-legs@af01f55e",
-          "files": ["llm-legs/bin/statusline.sh", "llm-legs/share/statusline-probe.sh", "llm-legs/bin/statusline-work-probe.sh", "llm-legs/bin/statusline-ports-probe.sh"],
+          "files": [
+            "llm-legs/bin/statusline.sh",
+            "llm-legs/share/statusline-probe.sh",
+            "llm-legs/bin/statusline-work-probe.sh",
+            "llm-legs/bin/statusline-ports-probe.sh"
+          ],
           "in": null,
           "regressed_at": null
         }
@@ -5680,6 +5685,31 @@
       "reviewed_by": "night fixer harness-speed-chat-tools-20261009T024752Z-14e9",
       "note": "Before: chat/tools 17.77 OM/d (latest.json 2026-10-09, 168 h). Owner-chat Bash calls 10-02..10-09 inside turn tool layers, joined to transcripts, hook ms subtracted: 11.6k calls, 103k s net. Split: suite runs C1_SUITE misses ~27% (`bash tests/$t.sh` loops, quoted \"$F/tests/test_x.sh\", `env -u X bash`, `time`/`nice -n` prefixes, pytest, unittest; see blind_spots chat-tools-misfiled-suites); logo-vectorizer-bench runs ~22% (the chat's own work); foreground poll loops (until/while with sleep, pgrep, kill -0) ~13.5%, overshoot at most one sleep step; ~20 calls ran into the 600 s Bash timeout and were moved to the background (~12k s); edit scripts 7%; our CLIs 5.6%; tokenmap 3.4%; review-bench 3.3%; git 2.5% (a commit nets ~1.2 s, its ~4.5 s more is the chat/hooks leaf). Solo grep/sed/ls p50 0.47 s, p90 3.4 s, following load (10-05 p50 1.5 s, 10-07 0.15 s): machine/contention's ground; the 138 KB zsh shell snapshot costs ~50 ms a call. Fixed, outputs identical: worker-pick's per-codex-account `codexb models --own` checks run at once (7 accounts, ~3.6 s a table at load ~270; the list is only read as a set), elevenlabs_balance.py reads the keys' subscriptions concurrently in key order (~7 s off every llm-limits.sh run, chat --table reads and the collector alike). Before per unit: worker-pick in a chat call p50 3.2 s net (326 calls in 8 days); llm-limits --table --no-write ~9 s (52 calls). Not cut: llm-limits.sh's other ~12 s at load 270 (1.6 CPU-s, not traced), worker-pick's claims reads and grokb/geminib catalog calls (~0.7 s).",
       "handoff": null
+    },
+    {
+      "id": "speed-refusal-unknown-stop-hook-word-reading",
+      "title": "Speed's refusal lever: Stop blocks time_budget.refusal_rows could not name were ask-word-reading.sh's reading-line asks",
+      "match": {
+        "rule": "opportunity",
+        "ident": "refusal/unknown-stop-hook"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T04:06:41+03:00",
+          "by": "Egor's order in claude-setup@4c7eaf02, recorded by night fixer harness-speed-refusal-unknown-stop-hook-20261010T031905Z-007b",
+          "files": [
+            "claude-setup/hooks/stop.d/ask-word-reading.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-refusal-unknown-stop-hook-20261010T031905Z-007b",
+      "note": "5.7 min/day = Stop hook_blocking_error attachments whose reason has no `[hook]` prefix (share/time_budget.py refusal_rows names them unknown-stop-hook). Joined to ~/.cache/claude/stop-gate/journal.jsonl (session + ts), 7 days to 2026-10-10T03:20Z: all 8 unprefixed asks were ask-word-reading.sh (`The word hook printed ⚡ … your reply carries no reading line`), last at 2026-10-10T00:55Z; the prefixed rest is worker-run-backstop.sh 30, ask-run-unfinished.sh 3, ask-span-drill.sh 2. claude-setup@4c7eaf02 (2026-10-10T01:06Z, Egor: the forced re-answer cost turns and tokens) deleted the hook; every ask left in hooks/stop.d (pr-mattermost, run-unfinished, span-drill) and the backstop prefix their reason, so the row should leave Speed's 24 h window by 2026-10-11T01:00Z. No output-equivalence record: the removal changes behaviour by Egor's order, it is no speed refactor of ours. Ruled out: a doctor-side join of the stop-gate journal to name the hook (renames this row's ident mid-window for no saving; see blind_spots stop-ask-unprefixed-reason).",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -5934,6 +5964,13 @@
       "reason": "2026-10-09 the chat/tools split by command put ~27% of its net seconds (1.36k calls in 8 days) in `for t in ...; do bash tests/$t.sh`, `bash \"$F/tests/test_x.sh\"`, `env -u X bash tests/...`, `time`/`nice -n 10` prefixes, `perl -e 'alarm N; exec @ARGV' bash ...`, pytest and unittest; the tests lever never sees them",
       "since": "2026-10-09",
       "would_catch_if": "C1_SUITE matched a test_*.sh path behind quotes, a variable directory or a time/nice/env -u/perl alarm prefix, a tests/$var.sh loop, and pytest/unittest runs"
+    },
+    {
+      "id": "stop-ask-unprefixed-reason",
+      "what": "which Stop ask hook blocked when its JSON reason lacks the `[hook]` prefix",
+      "reason": "stop-dispatch.sh prefixes only exit-2 reasons; a JSON-block ask that forgets its own prefix lands in refusal_rows as unknown-stop-hook (ask-word-reading.sh, 8 asks in 7 days to 2026-10-10)",
+      "since": "2026-10-10",
+      "would_catch_if": "stop-dispatch.sh prefixed every asked reason with `[name] ` unless already prefixed, or refusal_rows joined Stop blocks to the stop-gate journal's asked hook by session and ts"
     }
   ]
 }
