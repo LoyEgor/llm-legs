@@ -35,3 +35,4 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Listings: slash-only vs model use. — Done in token-map 3f597e7 (Unused startup `Typed only`).
    - Auto-memory prompt (spend audit `startup:CLAUDE.md + memory index`, 2026-10-09): the memory system-prompt section (~2.3k chars a context, there only while auto-memory is on) is priced inside `system + tools (not in total)`; attribute it to this part.
    - Stop re-answers (spend audit `hook:worker-run-backstop.sh`, 2026-10-10): every request of the forced turn bills the hook, so a turn that goes on to other work is over-priced (264k of its 527k was one turn fixing the hook); the wakes of the waits a block starts are billed nowhere.
+   - Review waits (spend audit `spawn:review-waiter`, 2026-10-10): the relay is gone (llm-legs ee185fa8); a background `review-bench wait`'s completion wakes the chat as a main-thread turn no row attributes to review waits.

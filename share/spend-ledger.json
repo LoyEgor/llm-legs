@@ -195,6 +195,17 @@
    },
    "verdict": "kept",
    "note": "7 d 527k limit-tokens over 29 blocks: 496k (94%) relay-era blocks of 10-04..10-08 whose class is gone at source (c9087e4b script-owner, fbb35ae0 starter alive, ee185fa8 relay-free; 264k of it one forced turn that fixed this hook); the 5 relay-free blocks since 10-09 (31k, 2 requests each) each started the missing background wait (new tool calls, no repeat to cut); price is the re-answer request, not the 300-byte text, so saying less saves nothing"
+  },
+  {
+   "id": "spawn:review-waiter",
+   "title": "spawn review-waiter",
+   "audited_at": "2026-10-10T06:33:34+03:00",
+   "by": "harness-speed-spend-spawn-review-waiter-20261010T031912Z-16cc",
+   "share": 0.001143,
+   "prices": {},
+   "sources": {},
+   "verdict": "cut",
+   "note": "already cut by llm-legs@ee185fa8 (relay-free delegation, 2026-10-09 02:31 +03): bin/worker-spawn-hook.sh denies the type, the chat runs review-bench wait as a background Bash; last spawn 2026-10-08T23:13Z, 0 since across all profiles; the 7-day share is pre-retirement spawns ageing out; nothing left to replay"
   }
  ]
 }
