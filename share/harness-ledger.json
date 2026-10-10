@@ -6950,6 +6950,36 @@
       "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-review-bench-test-review-bench-rounds-20261010T031950Z-3c00",
       "note": "Before: 9.8 min + 13 w-min/day, 91 runs, 2.4 wall-min a run (latest.json 2026-10-10). Profile at load ~200: 67 CPU-s in a 406 s wall, all subprocess waits (git plumbing ~30 a cmd_run, review-anchors, report-bus post ~1.4 s each); sections merged 25 s, cooldown 14, multi-source 54, --debt 41, ranged 28, judge batches 2, bash tail 153. Cut: run-suites' `# shards: 3`, auto only while slot_room finds room, so a saturated machine still runs it whole. Not cut: the one sleep (0.05 s in batch_runner, measures the judge's concurrency peak); rbench's per-run git calls (production code, output-equivalence would need its own replay); cooldown could move to shard 2 (~14 s off the longest shard) for a 270-line move.",
       "handoff": null
+    },
+    {
+      "id": "opportunity-test-health-night-carry",
+      "title": "test_night_carry · llm-legs heavy suite: 281 runs a day at 0.5 wall-min, one serial file of seven night-run carries",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_night_carry"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:45:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-carry-20261010T031927Z-48cc",
+          "files": [
+            "llm-legs/tests/test_night_carry.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_night_carry unsharded vs its 4 shards (SUITE_SHARD=i/4): assert counts and verdicts; each section is gated by suite_shard_owns, which refuses a name owned twice",
+            "data": "this branch, 2026-10-10 08:32 local, all five runs side by side at load ~150; tests/run-all with RUN_SUITES_SHARDS=on",
+            "result": "unsharded 91 asserts PASS 349 s; shards 35+19+6+31 = 91 PASS, 72/100/109/97 s (longest 109 s); run-all merges them into one PASS line of 91 asserts"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-carry-20261010T031927Z-48cc",
+      "note": "Wall is ~200 s at load 105, 15-48 s on an idle bench: seven night-run carries, each ~20-27 s loaded from ~80 small subprocesses (job add re-execs night-run, worktree_new in up to three repos, handoffs.py --outside per brief); no sleep binds (the 3 s run-all in the N1y report-wait case is what that case measures; the background-suites poll exits on completion). The owner-chat nights N2-N4p (~105 s) and N5 are independent of N1, so the file runs as 4 shards over shared cheap setup. Ruled out: cutting a carry (each second carry pins idempotence of a distinct path), merging N3 with N4p (a failed-launch job does not count toward the owner-chat cap, so beta would start). Not done: night-run's per-job re-exec of itself (job add/set) costs ~0.7 s each under load in production carries too; a speed lever for night-run, not this suite.",
+      "handoff": null
     }
   ],
   "blind_spots": [
