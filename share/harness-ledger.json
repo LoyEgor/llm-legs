@@ -5900,6 +5900,36 @@
       "reviewed_by": "night fixer harness-speed-background-hs-lag-20261010T031902Z-7608",
       "note": "Before: background/hs lag 27.62 OM/d (latest.json 2026-10-10, 168 h); hs-lag journal 10-09: 1860 rows, 3670 s. A 2-3 s stall every 120 s on a fixed phase, ending at the watcher heartbeat's mtime: ~25 min/day (10-09), plus many 13-17 s stalls under load. Traced in Hammerspoon (io.popen timed inside one watchTick): list 148 ms, repo 2944-3044 ms; repo got ~/Downloads (a ranked ~/Downloads/CLAUDE.md made its parent a root) and, not a git repo, instruction_repo_files fell back to a find walk of it. M.pump runs watchTick too, so every hook poke and journal change paid it again. Not fixed here, left to the next run of this lever: the Automation menu's 5 s section refresh (~/.hammerspoon/automation_menu.lua REFRESH_S) stalls 1-1.8 s per refresh while active, ~7 min/day (10-09); the tick still runs list+repo synchronously (~0.5 s idle) and pump re-runs a tick on every poke, an hs.task move would need the menu harness's synchronous M.pump/M.watchTick asserts reworked.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-heavy-worker-run-rounds",
+      "title": "test_worker_run_rounds ran every case in one serial job, waited for a full `wait` report on runs whose report no case reads, and kept four duplicate or legacy runs",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_rounds"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:45:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-rounds-20261010T031944Z-4946",
+          "files": [
+            "llm-legs/tests/test_worker_run_rounds.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "asserts and verdict of the base suite vs the fix, whole and as its 2 shards (SUITE_SHARD=i/2), same machine window",
+            "data": "paired background runs at load 185-200 (10 cores): base whole, fix whole, fix shard 1 and shard 2",
+            "result": "base 175 asserts PASS; fix 159 = shards 96+63 PASS, disjoint sections; the 16 dropped asserts are the 4 duplicate/legacy runs of the note, each with its witness case kept; base whole 827 s vs shards 308 s and 347 s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-rounds-20261010T031944Z-4946",
+      "note": "Before: 244 runs, 1.3 wall-min a run (doctor 2026-10-10); runs.jsonl 45-75 s at light load, up to 514 s under the night's. Traced at load ~240: each start_ok ~15-25 s and each await_done ~13-34 s, the latter mostly the `worker-run wait --max 0` report built after exit_code. Fixed: 2 shards (walls/reroutes/pins, round binding; shard 2 sets its own codex config); report-free cases wait for exit_code (the supervisor's last write) instead of a `wait` report; dropped runs, witness in brackets: the second-wall-before-the-picker case [one-reroute-per-run asserts the third pick still queued, same outcome lines], (iv) last pin key deleted [pin fallback asserts the key gone], the bench `record` brief [the settled-round brief: prose id, empty fix rule, unbound], the relay tag-file seed pair [no reader of claude-worker-tags round seeds in worker-run since ee185fa8; header and no-header binding kept by header-wins and non-round-token]. Left: worker-run start/wait per run is the cost every worker_run suite shares, not this file's. Ruled out: no fixed sleeps in this suite's path (stub gates and polls only).",
+      "handoff": null
     }
   ],
   "blind_spots": [

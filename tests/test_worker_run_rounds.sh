@@ -1,7 +1,25 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
+# For a case that reads no report: exit_code is the supervisor's last write, so the run is over
+# without paying for `wait`'s report.
+await_exit() {
+  local tick pid
+  for tick in $(seq 1 10000); do
+    [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 0
+    if [ $((tick % 20)) -eq 0 ]; then
+      pid=$(jq -r '.pid // 0' "$WORKER_RUN_DIR/$RUN_ID/meta.json" 2>/dev/null) || pid=0
+      [ "${pid:-0}" -le 0 ] 2>/dev/null || kill -0 "$pid" 2>/dev/null ||
+        [ -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 1
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
+if suite_shard_owns 1 rounds-walls; then
 # A brief with no first line cannot identify its run: RESUME is read off the top of it, and
 # a discovery prefix taken from a blank line matches every transcript in the tree at once.
 clear_stub
@@ -93,22 +111,6 @@ assert test -f "$WORKER_WALLS_DIR/codex-walled2"
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'WALL: reroute cap reached (walled: walled1, walled2) — the work done so far stays in the workdir' <<<"$report"
 
-# The second wall ends the run before the picker is asked again.
-clear_stub
-set_config 'codex_effort=high'
-printf 'walled1\nwalled2\n' >"$STUB_DIR/wall_accounts"
-printf '%s\n' '0 walled1' '0 walled2' '3' >"$STUB_DIR/pick_queue"
-start_ok codex
-assert await_done
-assert grep -qx '3' "$STUB_DIR/pick_queue"
-assert grep -q '^STATUS: failed$' "$WORK/wait.out"
-assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
-assert grep -qx 'WALL: reroute cap reached (walled: walled1, walled2) — the work done so far stays in the workdir' "$WORK/wait.out"
-assert meta_account_is walled2
-assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
-assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
-assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
-
 # A gemini rescue account must hold a usable geminib profile, the same check
 # start_run applies: an unlisted answer ends the run instead of relaunching
 # into a CLI error.
@@ -171,16 +173,6 @@ assert grep -qx 'codex_profile=cool' "$WORKER_RUN_CONFIG_FILE"
 assert test -f "$WORKER_WALLS_DIR/codex-hot"
 assert_fails test -f "$WORKER_WALLS_DIR/codex-cool"
 
-# (iv) last pin removed → key deleted.
-clear_stub
-set_config 'codex_effort=high' 'codex_profile=lastpin'
-printf 'lastpin\n' >"$STUB_DIR/wall_accounts"
-printf '%s\n' '2' '0 leftover' >"$STUB_DIR/pick_queue"
-start_ok codex
-assert await_done
-assert meta_account_is leftover
-assert_fails grep -q '^codex_profile=' "$WORKER_RUN_CONFIG_FILE"
-
 # (h) limits at 100% without a run-observed wall still launch on the pin first.
 clear_stub
 now=$(date +%s)
@@ -236,24 +228,13 @@ assert grep -qx 'WALL: reroute cap reached (walled: walled1, walled2) — the wo
 assert meta_account_is walled2
 assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
+fi
 
-# A brief quoting a bench run's own `record` command names no review round it fixes.
-clear_stub
+if suite_shard_owns 2 rounds-binding; then
+set_config 'codex_effort=high'
 export PICK_ACCOUNT=deleg PICK_RC=0
-gate_shut
 DELEG_BENCHES="$HOME/.claude-profiles/.claudeb/worker-stats/benches"
-mkdir -p "$DELEG_BENCHES/20260801T120000Z-abc123f" "$DELEG_BENCHES/20260801T130000Z-def4560"
-cat >"$WORK/deleg-brief" <<'DELEGBRIEF'
-STEP 1 — blind triage.
-Record exactly with: review-bench record 20260801T120000Z-abc123f --no-corpus --verdicts /tmp/v.jsonl
-DELEGBRIEF
-REVIEW_BENCH_STUB_EMPTY=1 "$RUNNER" start codex --brief "$WORK/deleg-brief" --workdir "$WORK/workdir" \
-  >"$WORK/deleg.out" 2>"$WORK/deleg.err" || fail "delegated start failed: $(<"$WORK/deleg.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/deleg.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/deleg.out")
-assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
-gate_open
-await_done || fail "the delegated run never finished"
+mkdir -p "$DELEG_BENCHES/20260801T130000Z-def4560"
 
 # A fixing worker's brief names the review round it fixes — line 1, or line 2 under a RESUME
 # line — and the run record keeps it: review-bench closes the round on what that run produced.
@@ -276,7 +257,7 @@ STUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print
 write verdicts.jsonl rows"
 assert test "$(sed -n '9p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
 assert cmp -s "$WORK/round-brief" "$RUN_DIR/brief"
-await_done || fail "the round run never finished"
+await_exit || fail "the round run never finished"
 clear_stub
 # Naming verdicts.jsonl in prose is no rule: the findings still come along.
 printf 'ROUND: 20260801T140000Z-0a1b2c3\nWrite one row per finding into $WORKER_RUN_RECORD/verdicts.jsonl.\n' >"$WORK/round-brief"
@@ -284,7 +265,7 @@ round_start || fail "verdicts round start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert grep -qx 'STUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print' "$RUN_DIR/brief.launch"
-await_done || fail "the verdicts round run never finished"
+await_exit || fail "the verdicts round run never finished"
 clear_stub
 # A brief that already holds the whole rule (a `review-bench fix --brief` file) does not get it twice.
 printf 'ROUND: 20260801T140000Z-0a1b2c3\nSTUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print\nwrite verdicts.jsonl rows\n' >"$WORK/round-brief"
@@ -292,7 +273,7 @@ round_start || fail "rule round start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert [ "$(grep -c 'STUB FIX RULE' "$RUN_DIR/brief.launch")" = 1 ]
-await_done || fail "the rule round run never finished"
+await_exit || fail "the rule round run never finished"
 clear_stub
 printf 'ROUND: 20260801T140000Z-0a1b2c3\nNothing is left.\n' >"$WORK/round-brief"
 REVIEW_BENCH_STUB_EMPTY=1 round_start || fail "fixed round start failed: $(<"$WORK/round.err")"
@@ -300,7 +281,7 @@ RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(sed -n '4p' "$RUN_DIR/brief.launch" | cut -c1-28)" = "MD-GUARD (worker-run-injecte"
 assert test "$(sed -n '6p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
-await_done || fail "the fixed round run never finished"
+await_exit || fail "the fixed round run never finished"
 clear_stub
 printf 'ROUND: 20260801T140000Z-0a1b2c3\nFix it.\n' >"$WORK/round-brief"
 rc=0
@@ -315,14 +296,14 @@ round_start --account main --resume codex-resume || fail "resumed round start fa
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
-await_done || fail "the resumed round run never finished"
+await_exit || fail "the resumed round run never finished"
 clear_stub
 printf 'ACCOUNT: main\nEFFORT: high\nROUND: 20260801T140000Z-0a1b2c3\n\nFix the findings.\n' >"$WORK/round-brief"
 round_start || fail "header round start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
-await_done || fail "the header round run never finished"
+await_exit || fail "the header round run never finished"
 clear_stub
 printf 'ACCOUNT: main\n\nThe brief must carry the line\nROUND: 20260801T140000Z-0a1b2c3\n' >"$WORK/round-brief"
 # A ROUND: past the header is not a header line — it is prose naming an open round, and prose is
@@ -332,28 +313,6 @@ round_start || rc=$?
 assert test "$rc" -eq 4
 assert grep -Fq "open review round(s) 20260801T140000Z-0a1b2c3 but has no ROUND: line" "$WORK/round.err"
 assert_fails grep -q '^RUN: ' "$WORK/round.out"
-
-# The chat writes the brief the run reads, so the round comes from the flag or the header alone: a
-# stale tag-file seed of the retired relays binds nothing and refuses nothing.
-SPAWN_TAGS="$HOME/.cache/claude-worker-tags/chat-spawn-round"
-mkdir -p "$SPAWN_TAGS"
-printf 'seed · opus · high\nstart=%s\nround=20260801T140000Z-0a1b2c3\n' "$(date +%s)" >"$SPAWN_TAGS/agent-relay"
-clear_stub
-printf 'Repository: somewhere\n\nFix the findings.\n' >"$WORK/round-brief"
-CLAUDE_AGENT_ID=agent-relay CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "seeded start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq 'has("review_round") or has("round_source")' "$RUN_DIR/meta.json")" = false
-assert test ! -e "$RUN_DIR/agent-task"
-await_done || fail "the seeded run never finished"
-clear_stub
-printf 'ROUND: 20260801T130000Z-def4560\nFix the findings.\n' >"$WORK/round-brief"
-CLAUDE_AGENT_ID=agent-relay CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "seeded header start was refused: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq -r '[.review_round, .round_source] | join(" ")' "$RUN_DIR/meta.json")" = '20260801T130000Z-def4560 header'
-await_done || fail "the seeded header run never finished"
-rm -rf "$SPAWN_TAGS"
 
 # A brief that names an open round in prose alone is refused, never bound: bound, a read-only audit
 # that cited a run as evidence was handed that round's findings to fix (2026-09-23), and unasked a
@@ -373,7 +332,7 @@ round_start || fail "ROUND: none start failed: $(<"$WORK/round.err")"
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
 assert_fails grep -q 'STUB FIX RULE' "$RUN_DIR/brief.launch"
-await_done || fail "the ROUND: none run never finished"
+await_exit || fail "the ROUND: none run never finished"
 
 # The same brief against a settled round: `fix --print` prints nothing, so nothing is asked — a
 # round with no confirmed finding left is not a round this run could fix.
@@ -386,7 +345,7 @@ assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
 assert test "$(jq 'has("round_source")' "$RUN_DIR/meta.json")" = false
 assert_fails grep -q 'STUB FIX RULE' "$RUN_DIR/brief.launch"
 assert_fails grep -q 'ROUND: line' "$WORK/round.err"
-await_done || fail "the settled brief-text run never finished"
+await_exit || fail "the settled brief-text run never finished"
 
 # A member id of a chunked round is one token to the scan as well as to the validator: the prose of
 # a chunk's fix brief names `<round>-<n>`, and a scan blind to the suffix would ask nothing.
@@ -419,7 +378,7 @@ RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
 assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = header
 assert_fails grep -q 'ROUND: line' "$WORK/round.err"
-await_done || fail "the header-wins run never finished"
+await_exit || fail "the header-wins run never finished"
 
 # The flag answers alone the same way, and names its own source.
 clear_stub
@@ -427,7 +386,7 @@ round_start --round 20260801T130000Z-def4560 || fail "flag-source start failed: 
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T130000Z-def4560
 assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = flag
-await_done || fail "the flag-source run never finished"
+await_exit || fail "the flag-source run never finished"
 
 # A round over several repositories grants the fixer every one of them: round dd96a57's claudeb fixer
 # ran in llm-legs alone, and its writes to claude-setup had no baseline and read as escaped. The
@@ -451,7 +410,7 @@ for round_vendor in codex claudeb; do
   start_ok "$round_vendor" --workdir "$round_repos/alpha-fix" --add-dir "$round_repos/gamma"
   assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" \
     = "$(jq -cn --arg root "$round_repos" '[$root + "/gamma", $root + "/beta"]')"
-  await_done || fail "the $round_vendor multi-repository round run never finished"
+  await_exit || fail "the $round_vendor multi-repository round run never finished"
 done
 assert grep -qx "ARG=--add-dir" "$CALL_LOG"
 assert grep -qx "ARG=$(printf '%q' "$round_repos/beta")" "$CALL_LOG"
@@ -466,7 +425,7 @@ RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
 assert_fails grep -q 'ROUND: line' "$WORK/round.err"
-await_done || fail "the non-round token run never finished"
+await_exit || fail "the non-round token run never finished"
 
 for bad_round in 'ROUND: 20260801T140000Z-0A1B2C3' 'ROUND: 20260801T140000Z-0a1b2c' \
   'ROUND: 20260801T150000Z-0a1b2c3' 'ROUND: 20260801T140000Z- 0a1b2c3'; do
@@ -491,6 +450,7 @@ printf 'ROUND: 20260801T160000Z-1b2c3d4\nFix the confirmed findings.\n' >"$WORK/
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
 assert test "$(jq -c '.add_dirs // []' "$RUN_DIR/meta.json")" = '[]'
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
-assert await_done
+assert await_exit
+fi
 
 echo "PASS: $asserts asserts; blank briefs, pinned walls, limits-driven picks, delegation and review rounds"
