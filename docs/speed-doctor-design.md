@@ -139,8 +139,11 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 Proven reads `fixed · −X <unit> · ≈Y OM/d`. Only `disproven` counts toward the freeze (two disproven fixes freeze a component); a freeze lifts on a structural change (the component's code digest or a new ident), never on volume. `pending-exposure` waits as long as it needs; a later regression stamps `regressed_at`.
 
 **Floor** (`share/time_budget.py`). Each class has a floor, chats and workers apart: zero for hooks, Stop hooks,
-retries, dead worker runs and locks (plain Claude Code has none); suites their uncontended p10 wall. A queue (suite slot
-wait, worker slot queue) is lost only while the machine was free: memlogd sampled load1 under the core count and
+retries, dead worker runs, wrap-up, hung tails and locks (plain Claude Code has none); suites their uncontended p10
+wall. A review round's worker splits like any run (`review_min` keeps its total for display only). Wrap-up: the last
+CLI's exit (its start plus its `attempt_secs`) to the run's end. Hung: a watchdog `idle N` kill's last N s before the
+exit, a `silent` kill's whole last attempt; a deadline kill has no idle stamp and stays work. A queue (suite slot
+wait — a chat turn's `queue` part and its suite rows' queued_at → started_at included — worker slot queue) is lost only while the machine was free: memlogd sampled load1 under the core count and
 available RAM at or over its incident threshold (`free_spans`; an unsampled moment is busy, memlogd keeps 3 days); the
 slot queue no more than how much sooner night-worker bursts end in a FIFO replay lending slots during the holder's
 suites. Dead worker runs (`dead_runs`): a failed run, not a review round or bench, no later run resumed (RESUME brief
@@ -209,7 +212,7 @@ without result`, never a revert or a gate.
 - Skipped: active work (the Code doctor's rule), `pending-exposure`, frozen components, savings below their proof's noise.
 - No score floor: an equivalent, positive-score, non-needs-Egor lever qualifies at ≥ 5 min/day expected gain. An empty pick's `why_none` names its true cause: levers needing Egor, not equivalent or scoring 0, or no opportunity.
 
-**Own keys**: `cost {collector_cpu_min_day, fixer_worker_min, review_min, slot_queue_min, landing_delay_min}`, `yield {proven_om_day, pending_om_day}`.
+**Own keys**: `cost {collector_cpu_min_day}` (review time is the time budget's `review_min`; no other cost is mechanically recorded, so none is shown as a zero), `yield {proven_om_day, pending_om_day}`.
 
 **Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, the slice lever, R, the bands and the proof table.
 

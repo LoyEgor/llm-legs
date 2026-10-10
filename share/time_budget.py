@@ -36,14 +36,16 @@ CLASSES = (("model", "model turns", "plain"), ("tools", "tool execution", "plain
            ("suite_run", "suites running", "harness"), ("suite_wait", "suite slot wait", "harness"),
            ("refusal", "gate refusal recovery", "harness"),
            ("slot", "worker slot queue", "harness"), ("retries", "retries and relaunches", "harness"),
-           ("dead", "dead worker runs", "harness"),
-           ("walled", "usage-wall relaunches", "other"), ("review", "review rounds", "harness"),
+           ("dead", "dead worker runs", "harness"), ("wrapup", "worker wrap-up", "harness"),
+           ("hung", "watchdog-killed idle tails", "harness"),
+           ("walled", "usage-wall relaunches", "other"),
            ("bench", "bench workers", "other"), ("locks", "locks and polls", "harness"),
            ("other", "other / unmeasured", "other"))
 KIND = {key: kind for key, _, kind in CLASSES}
 LABEL = {key: label for key, label, _ in CLASSES}
 TURN_PART = {"gen": "model", "tool": "tools", "media": "tools", "compact": "compaction", "hook": "hooks",
-             "stop": "stop", "test": "suite_run", "resid": "other"}
+             "stop": "stop", "test": "suite_run", "queue": "suite_wait", "resid": "other"}
+WATCHDOG_KILLS = ("idle", "silent")
 TURN_AWAY = ("dark", "ask")
 WAIT_CLASSES = ("lock", "poll")
 GATE_REFUSALS = ("denied", "relay-refused")
@@ -56,7 +58,8 @@ BAND_RATIO = 2.0
 BAND_MIN_S = 15 * 60
 ACTIVE_FLOOR = 0.30
 FLOORS = {"refusal": 0, "hooks": 0, "stop": 0, "suite_wait": "waits on a busy machine",
-          "slot": "slots lent during suites on a free machine", "retries": 0, "dead": 0, "locks": 0,
+          "slot": "slots lent during suites on a free machine", "retries": 0, "dead": 0, "wrapup": 0, "hung": 0,
+          "locks": 0,
           "suite_run": "uncontended p10 wall"}
 FREE_CLASSES = ("suite_wait", "slot")
 FREE_TICK_S = 60
@@ -460,11 +463,13 @@ def dead_runs(runs):
 
 def run_split(run, lo, hi, suites, calls, hooks, free=None):
     """One worker run's wall inside [lo, hi): launch -> first CLI start is the slot queue, earlier attempts are
-    retries, or a walled run's usage-wall relaunches (weather, neither work nor retries); the last attempt is split
-    into its own suites (slot wait apart), tool calls, hooks inside them, and the rest, which is model time, or is
-    dead whole for a run `dead_runs` marked. A review round or a bench worker (the owner's benchmark, sleeping on its
-    own jobs) is its own class whole. `started_at` is restamped by the slot wait, so the run starts at its pid. With
-    `free` spans, `<class>_free` carries each wait class's seconds inside them."""
+    retries, or a walled run's usage-wall relaunches (weather, neither work nor retries); the last CLI's exit -> the
+    run's end is its wrap-up (file attribution, anchors, the result); the last attempt is split into the idle tail a
+    watchdog killed it after, its own suites (slot wait apart), tool calls, hooks inside them, and the rest, which is
+    model time, or is dead whole for a run `dead_runs` marked. A review round splits like any run; a bench worker
+    (the owner's benchmark, sleeping on its own jobs) is its own class whole. `started_at` is restamped by the slot
+    wait, so the run starts at its pid. With `free` spans, `<class>_free` carries each wait class's seconds inside
+    them."""
     start = num(run.get("pid_started_at")) or num(run.get("started_at"))
     end = num(run.get("ended_at"))
     out = collections.Counter()
@@ -472,19 +477,28 @@ def run_split(run, lo, hi, suites, calls, hooks, free=None):
         return out
     clis = [num(c) for c in run.get("cli_starts") or () if num(c)] or [num(run.get("started_at")) or start]
     first, last = max(start, min(clis[0], end)), max(start, min(clis[-1], end))
-    whole = "review" if run.get("round") else "bench" if BENCH_WORKDIR.search(str(run.get("workdir") or "")) else None
-    if whole:
-        out[whole] = length(clip([(start, end)], lo, hi))
+    if BENCH_WORKDIR.search(str(run.get("workdir") or "")):
+        out["bench"] = length(clip([(start, end)], lo, hi))
         return out
     slot = clip([(start, first)], lo, hi)
     out["slot"] = length(slot)
     out["walled" if run.get("walled") else "retries"] = length(clip([(first, last)], lo, hi))
-    work = clip([(last, end)], lo, hi)
+    secs = run.get("attempt_secs") or ()
+    exited = min(end, max(last, last + num(secs[-1]))) if len(secs) == len(clis) and num(secs[-1]) else end
+    out["wrapup"] = length(clip([(exited, end)], lo, hi))
+    work = clip([(last, exited)], lo, hi)
     if free is not None:
         out["slot_free"] = length(minus(slot, minus(slot, free)))
     if run.get("dead"):
         out["dead"] = length(work)
         return out
+    kill = (run_file(run.get("run"), "killed") or "").split() if run.get("reason") in WATCHDOG_KILLS else []
+    if kill and kill[0] in WATCHDOG_KILLS:
+        idle = float(kill[1]) if kill[0] == "idle" and kill[1:2] and kill[1].isdigit() else None
+        if kill[0] == "silent" or idle:
+            hung = clip([(last if kill[0] == "silent" else exited - idle, exited)], lo, hi)
+            out["hung"] = length(hung)
+            work = minus(work, hung)
     mine = [s for s in suites if s.get("worker_run") == run.get("run")]
     ran = union((max(s["started_at"], s["queued_at"]), s["ended_at"]) for s in mine if num(s.get("started_at")))
     queued = minus([(s["queued_at"], num(s.get("started_at")) or s["ended_at"]) for s in mine], ran)
@@ -532,16 +546,20 @@ def budget(lo, hi, events=None):
     for row in events.get("t", ()):
         if row[3] > lo and row[1] < hi:
             chats += turn_split(row, lo, hi)
-    free, freed, dead = free_spans(lo, hi), collections.Counter(), dead_runs(runs)
+    free, freed, dead, review = free_spans(lo, hi), collections.Counter(), dead_runs(runs), 0.0
+    asked = union((s["queued_at"], num(s.get("started_at")) or s["ended_at"]) for s in suites
+                  if s.get("session") and not s.get("worker_run"))
+    asked = minus(clip(asked, lo, hi), minus(clip(asked, lo, hi), free))
+    freed["suite_wait_chat"] = float(length(asked))
     for run in runs:
         split = run_split(dict(run, dead=run.get("run") in dead), lo, hi, suites, calls, events.get("h", ()), free)
         for key in FREE_CLASSES:
             freed[key] += split.pop(key + "_free", 0.0)
         workers += split
-        if not run.get("round"):
-            own = run_split(run, float("-inf"), float("inf"), suites, (), ())
-            start = num(run.get("pid_started_at")) or num(run.get("started_at"))
-            jobs.append([start, start + own["slot"], run["ended_at"], own["suite_run"] + own["suite_wait"]])
+        review += sum(split.values()) if run.get("round") else 0.0
+        own = run_split(run, float("-inf"), float("inf"), suites, (), ())
+        start = num(run.get("pid_started_at")) or num(run.get("started_at"))
+        jobs.append([start, start + own["slot"], run["ended_at"], own["suite_run"] + own["suite_wait"]])
     ids = {r.get("run") for r in runs}
     paid = [(min(r["seconds"], max(0.0, hi - r["started"])), r["caller"] in ids) for r in wait_rows(lo, hi)
             if r.get("class") in WAIT_CLASSES and r.get("caller")]
@@ -562,7 +580,7 @@ def budget(lo, hi, events=None):
     return {"lo": lo, "hi": hi, "seconds": {k: round(total[k], 1) for k, _, _ in CLASSES},
             "chat_s": round(sum(chats.values()), 1), "worker_s": round(sum(workers.values()), 1),
             "worker": {k: round(v, 1) for k, v in workers.items() if v}, "runs": len(runs), "jobs": jobs,
-            "free_s": {k: round(freed[k], 1) for k in FREE_CLASSES}, "dead_runs": sorted(dead),
+            "free_s": {k: round(v, 1) for k, v in freed.items()}, "dead_runs": sorted(dead), "review_s": round(review, 1),
             "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)},
             "hooks_by_hook": {k: round(v, 1) for k, v in by_hook.most_common(20)}, "refusals": recovery["count"], "refusal_cost": recovery}
 
@@ -737,7 +755,8 @@ def recoverable(b, lo, hi):
     share = suite_floor(lo, hi)
     chat, worker = out["suite_run"]
     out["suite_run"] = (chat * (1 - share.get("chat", 1.0)), worker * (1 - share.get("worker", 1.0)))
-    out["suite_wait"] = (0.0, min(w.get("suite_wait", 0), free.get("suite_wait", 0.0)))
+    out["suite_wait"] = (min(out["suite_wait"][0], free.get("suite_wait_chat", 0.0)),
+                         min(w.get("suite_wait", 0), free.get("suite_wait", 0.0)))
     out["slot"] = (0.0, min(w.get("slot", 0), slot_gain(b["jobs"]), free.get("slot", 0.0)))
     return out
 
@@ -825,6 +844,7 @@ def document(now, hours=24.0, write=True):
     doc["lost_min_day"] = round(sum(sum(v) for v in rec.values()) / 60.0 / days, 1) if rec else None
     doc["workers_active"] = worker_floor(b["worker"], rec, days)
     doc["free_min_day"] = {k: round(v / 60.0 / days, 1) for k, v in b["free_s"].items()}
+    doc["review_min"] = round(b["review_s"] / 60.0, 1)
     doc["dead_runs"] = b["dead_runs"]
     doc["last_night"] = last_night()
     doc["lines"] = plain_lines(doc)
@@ -840,6 +860,7 @@ def plain_lines(doc):
         round(100 * doc["harness_share"]), minutes(doc["harness_min"] * 60), minutes(doc["total_min"] * 60),
         doc["window_h"]),
         "Chats %s · workers %s" % (minutes(doc["chat_min"] * 60), minutes(doc["worker_min"] * 60, True))
+        + (" (reviews %s)" % minutes(doc["review_min"] * 60, True) if doc.get("review_min") else "")
         + (" · bench %s" % minutes(doc["bench_min"] * 60, True) if doc["bench_min"] else "")]
     gaps = sorted((f for f in doc["floors"] if f["chat_min_day"] >= 1), key=lambda f: -f["chat_min_day"])
     lines.append("Over the floor: chats %s/day" % minutes(sum(f["chat_min_day"] for f in doc["floors"]) * 60)

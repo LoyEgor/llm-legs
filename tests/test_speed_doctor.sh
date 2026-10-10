@@ -90,8 +90,7 @@ check(all(p["state"] == "watch" and set(p["opportunity"]) >= {"om_day", "saving"
           for p in backlog), "every opportunity stores its score fields and the score recomputes from them")
 check(doc["selection"] == ["opportunity:chat/tools", "opportunity:delegation/background Bash"],
       "the night takes the biggest recoverable gap first: %s" % doc["selection"])
-check({"cost", "yield"} <= set(doc) and set(doc["cost"]) == {"collector_cpu_min_day", "fixer_worker_min", "review_min",
-                                                              "slot_queue_min", "landing_delay_min"}
+check({"cost", "yield"} <= set(doc) and set(doc["cost"]) == {"collector_cpu_min_day"}
       and set(doc["yield"]) == {"proven_om_day", "pending_om_day"}, "own keys cost and yield")
 check([b["id"] for b in doc["blind_spots"]] == ["presence", "speed-days"],
       "missing presence and machine inputs are blind spots: %s" % doc["blind_spots"])

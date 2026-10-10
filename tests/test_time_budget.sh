@@ -249,13 +249,14 @@ check(doc["refusal_cost"]["unmeasured_by_gate"] == {"unknown": 1}
       "JSON reports the refusal cost coverage and a zero-floor harness class")
 by = {r["class"]: r for r in doc["classes"]}
 check(by["model"]["min"] == 80.0 and by["tools"]["min"] == round(760 / 60.0, 1) and by["locks"]["min"] == round(40 / 60.0, 1)
-      and by["review"]["min"] == 10.0 and by["suite_run"]["min"] == round(2080 / 60.0, 1)
-      and by["other"]["min"] == round(50 / 60.0, 1) and doc["refusals"] == 1 and doc["worker_runs"] == 2,
+      and doc["review_min"] == 10.0 and "review" not in by and by["suite_run"]["min"] == round(2080 / 60.0, 1)
+      and by["slot"]["min"] == round(601 / 60.0, 1)
+      and by["other"]["min"] == round(649 / 60.0, 1) and doc["refusals"] == 1 and doc["worker_runs"] == 2,
       "the classes add owner turns (dark time out) to worker runs, lock and poll waits a chat or worker paid come out "
       "of tool time (a background job's never), a review "
-      "round is its own class, gate refusals are counted: %s" % {k: v["min"] for k, v in by.items()})
-check(doc["total_min"] == round(10550 / 60.0, 1) and doc["harness_share"] == round(4940 / 10550.0, 3)
-      and doc["lines"][0] == "Without the harness ≈ 47 % faster: 82 min of 2.9 h in 24 h"
+      "round splits like any run (its slot wait a slot, its unsplit rest other) and only its total is kept, gate refusals are counted: %s" % {k: v["min"] for k, v in by.items()})
+check(doc["total_min"] == round(10550 / 60.0, 1) and doc["harness_share"] == round(4341 / 10550.0, 3)
+      and doc["lines"][0] == "Without the harness ≈ 41 % faster: 72 min of 2.9 h in 24 h"
       and abs(sum(r["share"] for r in doc["classes"]) - 1) < 0.01,
       "the headline is the harness classes over the total, the shares sum to one: %s" % doc["lines"][0])
 check(doc["band_days"] == 7 and by["suite_wait"]["usual_min"] == round(100 / 60.0, 1)
@@ -281,7 +282,7 @@ check(lever["prompt-cache hits"]["value"] == "90 % of cached input read from cac
       "levers are measured where the journals hold the data and marked ideas where not: %s" % lever)
 gap = {f["class"]: (f["chat_min_day"], f["worker_min_day"]) for f in doc["floors"]}
 check(gap == {"refusal": (0.0, 0.0), "hooks": (1.7, 1.7), "stop": (0.3, 0.0), "suite_wait": (0.0, 16.7), "slot": (0.0, 0.0),
-              "retries": (0.0, 6.7), "dead": (0.0, 0.0), "locks": (0.7, 0.0), "suite_run": (0.7, 0.0)},
+              "retries": (0.0, 6.7), "dead": (0.0, 0.0), "wrapup": (0.0, 0.0), "hung": (0.0, 0.0), "locks": (0.7, 0.0), "suite_run": (0.7, 0.0)},
       "each class is judged against its floor, chats' and workers' parts apart: zero for hooks, gates and waits, "
       "none for plain Claude Code: %s" % gap)
 check(T.suite_floor(D0, D0 + 86400) == {"worker": 1.0, "chat": 0.5} and gap["suite_run"] == (0.7, 0.0),
@@ -309,7 +310,7 @@ check(active == {"share": 0.09, "floor_share": 0.114, "recoverable_min_day": 35.
       "outside the wall; the parent's recoverable is the sum of its parts: %s" % active)
 check(doc["workers_active"]["floor_share"] == 0.543 and doc["workers_active"]["recoverable_min_day"] == 25.0
       and doc["lost_min_day"] == 28.3
-      and doc["lines"][1:4] == ["Chats 16 min · workers 2.7 w-h", "Over the floor: chats 3 min/day · hooks 2 min",
+      and doc["lines"][1:4] == ["Chats 16 min · workers 2.7 w-h (reviews 10 w-min)","Over the floor: chats 3 min/day · hooks 2 min",
                                 "Workers active 46 % of their wall (floor 54 %) · over it 25 w-min/day · suite slot "
                                 "wait 17 w-min · retries and relaunches 7 w-min · hooks 2 w-min"],
       "workers active is the parent of its parts, the headline counts each minute once, worker-minutes carry "
@@ -323,8 +324,9 @@ check(T.budget(D0 + 7000, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10
 lines(os.path.join(work, "day-stats", "runs.jsonl"), [dict(run, workdir="/r/.claude/worktrees/feat-x"),
                                                       dict(review, workdir="/r/.claude/worktrees/feat-x")])
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "day-stats")
-check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
-      "a day worker takes a slot from the same pool and enters the slot replay too; a review round stays out")
+check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0],
+                                           [D0 + 5000, D0 + 5001, D0 + 5600, 0.0]],
+      "a day worker takes a slot from the same pool and enters the slot replay too, a review round's worker as well")
 check(dict(T.unit_samples({"class": "slot"}, D0, D0 + 86400)) == {"workers": [600], "review-cells": [45]},
       "the slot class's unit samples are the one admission's waits: the workers pool's and the review cells'")
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
@@ -335,7 +337,7 @@ check(sum(map(sum, wrec.values())) - sum(map(sum, rec.values())) == 0
       and T.worker_floor(wb["worker"], wrec, 1) == T.worker_floor(b["worker"], rec, 1),
       "a walled run's relaunch minutes add 0 to lost_min_day and leave the workers' shares alone: usage walls are "
       "weather: %s" % wrec)
-check(b["free_s"] == {"suite_wait": 1000.0, "slot": 0.0} and rec["suite_wait"] == (0.0, 1000.0) and rec["slot"] == (0.0, 0.0),
+check(b["free_s"] == {"suite_wait_chat": 0.0, "suite_wait": 1000.0, "slot": 0.0} and rec["suite_wait"] == (0.0, 1000.0) and rec["slot"] == (0.0, 0.0),
       "a suite wait the machine had room through is lost whole; a slot queue memlogd never sampled is busy: %s"
       % b["free_s"])
 memlogd([(t, 12.0 if t in (3500, 20090) else 2.0, 1000 if t == 20195 else 8000)
@@ -358,7 +360,7 @@ check([T.recoverable(dict(b, jobs=critical, worker=dict(b["worker"], slot=500), 
       "the slot queue recovers its free part, never more than lending slots during suites moves")
 shutil.rmtree(os.path.join(work, "memlogd"))
 bare = T.budget(D0, D0 + 86400)
-check(bare["free_s"] == {"suite_wait": 0.0, "slot": 0.0} and T.recoverable(bare, D0, D0 + 86400)["suite_wait"] == (0.0, 0.0),
+check(bare["free_s"] == {"suite_wait_chat": 0.0, "suite_wait": 0.0, "slot": 0.0} and T.recoverable(bare, D0, D0 + 86400)["suite_wait"] == (0.0, 0.0),
       "with no memlogd sample a wait is busy: undercount, never a guess")
 memlogd([(t, 2.0, 8000) for t in range(2900, 4101, 15)])
 
@@ -378,7 +380,7 @@ def run_dir(run, files):
             handle.write(body)
 run_dir(DEAD, dead_files)
 check(T.dead_runs([dead_row]) == {DEAD}
-      and dict(T.run_split(dict(dead_row, dead=True), 0, 1e12, [], [], [])) == {"slot": 10, "retries": 0, "dead": 600},
+      and dict(T.run_split(dict(dead_row, dead=True), 0, 1e12, [], [], [])) == {"slot": 10, "retries": 0, "wrapup": 0, "dead": 600},
       "a failed run nobody resumed, with no file, commit or report, is dead: its last attempt's wall, the slot queue "
       "before it kept apart")
 alive = {"files names a path": dict(dead_files, files="WORKDIR: /w/feat\nsrc/a.py\n"),
@@ -417,6 +419,49 @@ os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
 check(died["seconds"]["dead"] == 600 and died["dead_runs"] == [DEAD]
       and T.recoverable(died, D0, D0 + 86400)["dead"] == (0.0, 600.0) and T.KIND["dead"] == "harness",
       "dead worker runs are a harness class over a floor of zero: %s" % died["seconds"])
+
+queue_turn = ["t", D0 + 3950, "sessQ", D0 + 4400, "n", [0, 0, 0], 0, [], [], {"gen": 50, "queue": 300, "test": 100},
+              {}, []]
+check(dict(T.turn_split(queue_turn, 0, 1e12)) == {"model": 50, "suite_wait": 300, "suite_run": 100},
+      "a chat turn's suite queue seconds are suite slot wait, never other")
+chat_journal = os.path.join(work, "chat-suites.jsonl")
+lines(chat_journal, list(night_spend.rows(os.environ["RUN_SUITES_JOURNAL"]))
+      + [{"kind": "direct", "queued_at": D0 + 4000, "started_at": D0 + 4300, "ended_at": D0 + 4400, "worker_run": None,
+          "session": "sessQ", "suites": {"test_a.sh": {"rc": 0, "secs": 100}}}])
+os.environ["RUN_SUITES_JOURNAL"], journal = chat_journal, os.environ["RUN_SUITES_JOURNAL"]
+queued = T.budget(D0, D0 + 86400, {"t": [queue_turn], "c": [], "h": []})
+os.environ["RUN_SUITES_JOURNAL"] = journal
+chat_wait = T.recoverable(queued, D0, D0 + 86400)["suite_wait"][0]
+check(queued["free_s"]["suite_wait_chat"] == 160.0 and chat_wait == 160.0,
+      "a chat's suite queue recovers only the part memlogd saw the machine free: %s %s" % (queued["free_s"], chat_wait))
+
+wrapped = T.run_split(dict(run, attempt_secs=[300, 7000]), 0, 1e12, T.suite_rows(0, 1e12),
+                      T.event_rows(D0, D0 + 86400)["c"], T.event_rows(D0, D0 + 86400)["h"])
+unpaired = T.run_split(dict(run, attempt_secs=[7000]), 0, 1e12, T.suite_rows(0, 1e12), [], [])
+check(wrapped["wrapup"] == 1000 and round(wrapped["model"]) == 3400 and round(sum(wrapped.values())) == 9000
+      and not unpaired["wrapup"],
+      "the last CLI's exit -> the run's end is wrap-up, not model; with attempts and their seconds unpaired it is "
+      "unknown and stays in the run: %s" % dict(wrapped))
+with open(os.path.join(work, "runs", RUN, "killed"), "w") as handle:
+    handle.write("idle 1800\n")
+hung_split = {reason: T.run_split(dict(run, attempt_secs=[300, 7000], reason=reason), 0, 1e12, T.suite_rows(0, 1e12),
+                                  T.event_rows(D0, D0 + 86400)["c"], T.event_rows(D0, D0 + 86400)["h"])
+              for reason in ("idle", "deadline")}
+with open(os.path.join(work, "runs", RUN, "killed"), "w") as handle:
+    handle.write("silent\n")
+silent = T.run_split(dict(run, attempt_secs=[300, 7000], reason="silent"), 0, 1e12, T.suite_rows(0, 1e12), [], [])
+os.remove(os.path.join(work, "runs", RUN, "killed"))
+check(hung_split["idle"]["hung"] == 1800 and round(hung_split["idle"]["tools"]) == 100
+      and round(sum(hung_split["idle"].values())) == 9000 and not hung_split["deadline"]["hung"]
+      and silent["hung"] == 7000 and not silent["suite_run"] and not silent["model"],
+      "a watchdog's idle kill books its idle seconds before the exit as hung, a silent kill the whole last attempt; a "
+      "deadline kill has no idle stamp and stays work: %s %s" % (dict(hung_split["idle"]), dict(silent)))
+lines(os.path.join(work, "tail-stats", "runs.jsonl"), [dict(run, attempt_secs=[300, 7000])])
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "tail-stats")
+tail = T.budget(D0, D0 + 86400)
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
+check(T.recoverable(tail, D0, D0 + 86400)["wrapup"] == (0.0, 1000.0) and T.KIND["wrapup"] == T.KIND["hung"] == "harness",
+      "wrap-up and hung tails are harness classes over a floor of zero")
 section = T.section(NOW)
 check(open(os.path.join(work, "harness", "budget.txt")).read().splitlines() == section["lines"]
       and not os.path.exists(T.day_cache_path("2026-01-10")),
@@ -588,8 +633,9 @@ for name, meta in (("claudeb-%d-3-cccc" % (D0 + 2000), {"review_round": "R1", "p
         with open(os.path.join(work, "runs", name, file), "w") as handle:
             handle.write(body)
 split = T.night_split(night)[1]
-check(round(split["review"]) == 600 and round(split["walled"]) == 200 and round(split["retries"]) == 400,
-      "a night run's meta.json names its review round and usage walls as review_round and walled_accounts: %s"
+check("review" not in split and round(split["slot"]) == 701 and round(split["other"]) == 799
+      and round(split["walled"]) == 200 and round(split["retries"]) == 400,
+      "a night run's review round splits like any run, its usage walls are named by walled_accounts: %s"
       % dict(split))
 print(count[0])
 EOF

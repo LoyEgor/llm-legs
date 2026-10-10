@@ -154,6 +154,8 @@ TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "
     "slot": {"lever": "a worker slot lent while its holder runs its own suites"},
     "retries": {"lever": "fewer failed attempts before a worker's last start"},
     "dead": {"lever": "a worker that cannot finish fails before it works, and a failed run is resumed, never dropped"},
+    "wrapup": {"lever": "a worker's result is published before its file attribution and anchor folding finish"},
+    "hung": {"lever": "a hung worker is caught sooner (no CPU, no transcript growth) and resumed"},
     "locks": {"lever": "shorter lock holds and polls"},
     "refusal": {"lever": "fewer gate refusals and a faster turn after one", "proof": "latency", "hooks": True}}.items()}
 TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "confidence": "measured",
@@ -1295,8 +1297,7 @@ def collect(write, now):
                      "machine": machine["p_om_day"]},
         "machine": machine, "background": background, "night": night, "delegation": delegation,
         "baselines": baselines, "selection": selection, "why_none": why_none,
-        "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0, "fixer_worker_min": 0, "review_min": 0,
-                 "slot_queue_min": 0, "landing_delay_min": 0},
+        "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0},
         "yield": speed_yield(ledger),
         "head": head_of(headline, r_band, status, gap, budget.get("lost_min_day"),
                         (budget.get("workers_active") or {}).get("recoverable_min_day") or 0.0),
