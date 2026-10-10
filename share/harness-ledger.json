@@ -6454,6 +6454,36 @@
       "handoff": null,
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-run-suites-journal-20261010T031929Z-195c"
+    },
+    {
+      "id": "speed-test-health-llm-limits-grok",
+      "title": "Speed's test-health lever: test_llm_limits_grok's wall is its collector calls, split over too few shards",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_llm_limits_grok"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:45:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261010T031925Z-1fd4",
+          "files": [
+            "llm-legs/tests/test_llm_limits_grok.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the suite's sections and asserts, base vs fix: the same lines run, only regrouped under suite_shard_owns 1..4 instead of 1..2; one redundant `rm -f worker-model` (the file was already removed two lines up) dropped",
+            "data": "each shard alone (SUITE_SHARD=i/4) and the unsharded run (tests/run-all, no room to shard at load ~150), all at load 90-150",
+            "result": "every shard and the unsharded run PASS with the same last line; collector calls per job 39/37 -> 24/15/14/23, so the pole holds ~38 % fewer"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261010T031925Z-1fd4",
+      "note": "Before: 356 runs, 1.2 wall-min a run, 18 min + 42 w-min/day. Timestamped xtrace: the wall is ~76 llm-limits.sh calls at 4-8 s each under load 90-150, while one empty-HOME call is ~0.45 CPU-s (676 traced lines; forks of file_mtime/worker_model_pinned_account ~70 ms each, elevenlabs_balance.py ~0.8 s even with no keys). No sleeps worth cutting (the hung-touch and busy-lock cases wait ~1.5 s by design), no legacy checks found; hs renderer ~1 s. Shards only split when run-suites' slot_room finds room. Not cut: the collector's own per-call cost (llm-limits.sh forks and the ElevenLabs python start), production code outside this suite; rebalancing blocks further would save only 2 calls on the pole.",
+      "handoff": null
     }
   ],
   "blind_spots": [
