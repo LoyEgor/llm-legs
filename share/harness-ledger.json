@@ -6051,6 +6051,36 @@
       "handoff": "docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md",
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-time-hooks-20261010T031954Z-41e7"
+    },
+    {
+      "id": "speed-heavy-test-worker-run-claims",
+      "title": "Heavy suite test_worker_run_claims: launches and stub sleeps its requirements do not need",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_claims"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-claims-20261010T031937Z-1391",
+          "files": [
+            "llm-legs/tests/test_worker_run_claims.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "every assert of the suite, base vs fix: 143 -> 139, the four gone being `assert await_done` of the four launches removed; no other assert changed its operand or expected value",
+            "data": "the suite's own fixtures (tests/worker_run_harness.sh stubs)",
+            "result": "PASS both sides; 18 -> 14 worker-run launches, 11 -> 0 stub `sleep 1`, 8 -> 3 stderr-capturing claim calls (5 were the same refused call run twice); wall 384 s -> 303 s direct and 237 s under run-all (--profile) at load ~200 on 10 cores"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-claims-20261010T031937Z-1391",
+      "note": "Profiled at load ~250 (EPOCHREALTIME xtrace): a case costs worker-run start ~4 s + await_launched ~1.8 s + await_done's poll ~4.5 s + its final wait ~2.5 s, so launches were the lever. The produced-record cases now gate the stub while their fixture writes land (the 1 s stub sleep raced the CLI's exit under load); the legacy-claim cases share one ended run per workdir since legacy_claim_record rewrites the whole record. Kept: the STUB_BURN case's CPU-SECONDS >= 2 (~40 s at load 250, 2 s idle): its wall is the burner's share of the cores and a lower bar narrows the margin over the supervisor's own CPU. Not this suite's: worker-run start's ~4 s under load and await_launched's jq poll (shared harness of 16 suites).",
+      "handoff": null
     }
   ],
   "blind_spots": [
