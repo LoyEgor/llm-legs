@@ -7044,6 +7044,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-pin-gate-20261010T031935Z-603c",
       "note": "Wall is ~330 gate calls, each a jq-built event plus the gate's own jq/grep forks and, on the shell door, a source of share/instruction-files.sh: ~0.2 CPU-s a call, under load almost all of it fork scheduling. Audit: no sleeps; every case cites a live incident or a door shape, none cut; the only legacy was an unused PROJECTS=$(git_projects) (cut). Not cut: the test's jq event builder (one fork of ~6-10 a call, no shared bash JSON encoder to reuse); the gate's write mode spends two jq forks (event check, file_path) on every live Write/Edit before it knows the path is a pin, a hook floor that is the hooks lever's ground, not this suite's.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-worker-run-grok-outcomes",
+      "title": "Speed's test-health lever: test_worker_run_grok_outcomes launches one stub run per outcome class and one for the transcript reader, not one per wording and per transcript case",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_grok_outcomes"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T10:06:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-grok-outcomes-20261010T031940Z-4d68",
+          "files": [
+            "llm-legs/tests/test_worker_run_grok_outcomes.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the suite at base vs fix, run side by side: PASS line and every outcome, REASON, RUN-FILES and WORKDIR-ESCAPE assert",
+            "data": "its own stubs at load 120-136; a mutation dropping one wording from GROK_LIMIT_RE",
+            "result": "both PASS, 114 -> 102 asserts (14 assert await_done on runs no longer launched gone, 2 run-count pins added); the mutation turns a replayed wording red; 31 -> 17 stub runs, 456 -> 273 s wall, 43 -> 29 CPU-s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "2026-10-10: Speed read 222 runs/day at 1.1 wall-min (16 min + 23 w-min/day). Each stub run costs 8-18 s at load 120-260, so the suite is its run count. Cut: the 9-wording loop keeps one real run per outcome class and replays the rest through `wait`, which re-reads err on every call; the 9 transcript-reader cases rewrite the session record under one run, as the reader takes only meta and the record (the escape case keeps its run: the supervisor writes workdir-escape); the 9 discarded transcript_report calls are gone. Ruled out: sleeps (none in the suite; harness polls use the sleep builtin), legacy checks (every case states a live behaviour), replaying the 17 left runs (each asserts a supervisor write: denied_tools, max_turns at start, reroute walls, terminal status), a shard (wall only, one more harness setup and run-all slot per shard). roster_add's one-mkdir cut is the sibling speed-test-health-worker-run-files row's (35e7a893).",
+      "handoff": null,
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-grok-outcomes-20261010T031940Z-4d68"
     }
   ],
   "blind_spots": [
