@@ -6665,7 +6665,8 @@
       "same_cause": [],
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-attribution-20261010T031936Z-3e0e",
-      "note": "Per launch the wall is worker-run itself (start ~3 s, supervisor finish ~6 s, wait ~1.5 s, report ~2 s at load 160), production code shared by 16 suites, not this suite's; await_done's worker-run wait stays (it writes run state other suites read). The made-worktree tick wait stays: worker-run reads admin-dir birth in whole seconds and the early worktree must be born a second before the run. 3 shards ruled out: the pole would hold the 13-launch variant loop either way, and each shard adds a harness setup."
+      "note": "Per launch the wall is worker-run itself (start ~3 s, supervisor finish ~6 s, wait ~1.5 s, report ~2 s at load 160), production code shared by 16 suites, not this suite's; await_done's worker-run wait stays (it writes run state other suites read). The made-worktree tick wait stays: worker-run reads admin-dir birth in whole seconds and the early worktree must be born a second before the run. 3 shards ruled out: the pole would hold the 13-launch variant loop either way, and each shard adds a harness setup.",
+      "handoff": null
     }
   ],
   "blind_spots": [
