@@ -70,8 +70,8 @@ def reviews_line(night):
 
     if per_branch_n == 0 and other_n == 0:
         return None
-    return (f"reviews · per-branch {per_branch_n} rounds ({night_spend.mega(per_branch_w)} weighted) · "
-            f"other {other_n} rounds ({night_spend.mega(other_w)} weighted)")
+    return (f"reviews · per-branch {per_branch_n} rounds ({night_spend.mega(per_branch_w)} {night_spend.UNIT}) · "
+            f"other {other_n} rounds ({night_spend.mega(other_w)} {night_spend.UNIT})")
 
 
 def problem_counts(night, night_path):
@@ -253,7 +253,8 @@ def fixer_spend_line(night, night_path, worker_run):
 
     if unproven_X == 0:
         return None
-    return f"fixer spend without proof · {night_spend.mega(unproven_X)} weighted of {night_spend.mega(total_Y)}"
+    return (f"fixer spend without proof · {night_spend.mega(unproven_X)} {night_spend.UNIT} "
+            f"of {night_spend.mega(total_Y)}")
 
 
 def rewrite_counts(night):

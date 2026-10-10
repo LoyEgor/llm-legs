@@ -241,7 +241,7 @@ the numbers block of the morning message, which `--post` also sends to the chat 
 `notice` block (word `night · <date>`, cells right-aligned in compact columns): one column per night, this one and the two
 previous finished nights that had jobs (a night with none is skipped), oldest left, local dates as heads
 (with the time when two share a date), right-aligned. Rows are facts the stores already hold: duration;
-weighted spend in total and by fixers / reviews / orchestrator; merged, left and blocked-on-egor jobs;
+Opus-eq spend in total and by fixers / reviews / orchestrator; merged, left and blocked-on-egor jobs;
 worker runs, their wall, model-active share, hours queued for slots and in their own tests (the ledger's
 split); each doctor's problem count before → after; lines changed by the night's jobs (code and tests);
 week-old lines rewritten; the full suites run's PASS/FAIL, summed over repositories. A value with no
@@ -252,9 +252,13 @@ the numbers of the morning message: duration (local start–finish, hours); jobs
 by kind; the worker runs whose `launcher` is one of the night's orchestrator sessions, started inside
 its window, by vendor/served model, with their summed wall-clock hours and any without a transcript;
 the review rounds started inside the window whose bench `meta.json` `session` is the night's (one
-without that field counts by window alone); token spend of fixers, reviews and orchestrator (output,
-cache write, cache read) and one weighted total in input-token equivalents (input 1, cache write
-1.25, cache read 0.1, output 5) with its ratio to the newest earlier finished night. Sources: each
+without that field counts by window alone); token spend of fixers, reviews and orchestrator in
+Opus-equivalent tokens, split by model (Claude family, else vendor), and one total with its ratio to the
+newest earlier finished night, e.g. `spend fixers · 1.2M Opus-eq (opus 0.5M · sonnet 0.4M · haiku 0.3M)`.
+Prices come from token-map's `tokenmap/pricing.py` (sibling checkout, `TOKENMAP_ROOT` overrides; absent →
+the report fails with one line), weighed as its menu does: one Opus input token is 1, cache and output
+multipliers and the vendor tables are its own; the model is each Claude message's `model`, a bench row's
+`model`, a vendor run's `meta.json` `served_model`/`model`. Sources: each
 run's `session-file`, else `worker-run transcript <run>` (claudeb, codex, gemini and grok alike), a
 Claude transcript with its `subagents/`, one assistant message counted once across runs (a RESUME
 shares its transcript); a bench's `claude-usage-*.jsonl` by id, plus `usage-<label>.jsonl`
@@ -280,6 +284,7 @@ sweep repositories' HEAD inside the window; week-old rewrites; problems before �
 touched again without proof; spend, plus what was deferred: a debt round left or absent), then one trend line
 per night for the last 7, oldest first, and their problem direction. A finished night's row is cached in
 `${DOCTORS_DIR}/night-ledger/<id>.json`, so it outlives the 7-day run directories and 8-day event files;
+a cached row without `spend_unit` `Opus-eq` has its spend re-priced live once (a pruned store reads lower);
 nights before the run stamps (2026-10-03) read `not timed` / `?`. The `roi ·` lines close it: each improvement
 job (a fixer whose problem is a Speed or time row) as what · spend · lines · before → after unit · verdict · gain a
 day, then the night's and the trend's totals (rules in `docs/speed-doctor-design.md` §3 ROI).

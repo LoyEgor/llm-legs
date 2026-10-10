@@ -886,8 +886,9 @@ spend_night() { # id started finished-or-null session jobs
     finished_at: $f, session: $o, account: null, command: null, note: null, doctors_before: {}, doctors_after: null,
     jobs: $j}' >"$SP/doctors/nights/$1.json"
 }
-assistant() { # id timestamp usage-json
-  jq -nc --arg i "$1" --arg t "$2" --argjson u "$3" '{type: "assistant", timestamp: $t, message: {id: $i, usage: $u}}'
+assistant() { # id timestamp usage-json [model]
+  jq -nc --arg i "$1" --arg t "$2" --argjson u "$3" --arg m "${4:-claude-opus-5-5}" \
+    '{type: "assistant", timestamp: $t, message: {id: $i, model: $m, usage: $u}}'
 }
 spend_run() { # run launcher meta-json
   mkdir -p "$SP/runs/$1"
@@ -906,7 +907,7 @@ spend_night 20260102T000000Z-bbbb 2026-01-02T00:00:00Z '"2026-01-02T02:00:00Z"' 
 assistant o0 2026-01-01T00:10:00Z '{"output_tokens": 1600000}' >"$SP/profiles/p1/projects/-x/S0.jsonl"
 { assistant o1 2026-01-02T00:10:00.000Z '{"output_tokens": 200000, "cache_read_input_tokens": 10000000}'
   assistant o2 2026-01-02T03:00:00.000Z '{"output_tokens": 9000000}'; } >"$SP/profiles/p1/projects/-x/S1.jsonl"
-assistant o3 2026-01-02T00:20:00Z '{"cache_creation_input_tokens": 400000}' >"$SP/profiles/p1/projects/-x/S1/subagents/agent-a.jsonl"
+assistant o3 2026-01-02T00:20:00Z '{"cache_creation_input_tokens": 400000}' claude-haiku-4-5 >"$SP/profiles/p1/projects/-x/S1/subagents/agent-a.jsonl"
 ln -s "$SP/profiles/p1/projects/-x/S1.jsonl" "$SP/profiles/p2/projects/-x/S1.jsonl"
 T1="$SP/profiles/p1/projects/-x/T1.jsonl"
 { assistant m1 2026-01-02T00:02:00Z '{"cache_creation_input_tokens": 2000000, "cache_read_input_tokens": 10000000, "output_tokens": 200000}'
@@ -931,14 +932,14 @@ spend_run claudeb-1767312500-6-ffff S1 "{$opus, \"started_at\": 1767312500}"
 bench() { mkdir -p "$SP/stats/benches/$1"; printf '%s\n' "$2" >"$SP/stats/benches/$1/meta.json"; }
 bench 20260102T003000Z-1111111 '{"session": "S1"}'
 B="$SP/stats/benches/20260102T003000Z-1111111"
-row='{"id": "r1", "input": 0, "cache_read": 20000000, "cache_5m": 1000000, "cache_1h": 1000000, "output": 600000}'
+row='{"id": "r1", "model": "claude-opus-5-5", "input": 0, "cache_read": 20000000, "cache_5m": 1200000, "cache_1h": 1000000, "output": 600000}'
 printf '%s\n' "$row" >"$B/claude-usage-opus-high~c0.jsonl"
 printf '%s\n' "$row" >"$B/claude-usage-opus-high~c0~a1.jsonl"
-printf '{"id": "j1", "cache_read": 5000000, "output": 400000}\n' >"$B/claude-usage-judge~b1.jsonl"
-printf '{"total_tokens": 5400000}\n' >"$B/usage-judge~b1.jsonl"
-printf '{"total_tokens": 5400000}\n' >"$B/usage-judge.jsonl"
+printf '{"id": "j1", "model": "claude-sonnet-5", "cache_read": 5000000, "output": 400000}\n' >"$B/claude-usage-judge~b1.jsonl"
+printf '{"model": "opus", "total_tokens": 5400000}\n' >"$B/usage-judge~b1.jsonl"
+printf '{"model": "opus", "total_tokens": 5400000}\n' >"$B/usage-judge.jsonl"
 bench 20260102T010000Z-2222222 '{}'
-printf '{"total_tokens": 3000000}\n' >"$SP/stats/benches/20260102T010000Z-2222222/usage-judge.jsonl"
+printf '{"model": "opus", "total_tokens": 3000000}\n' >"$SP/stats/benches/20260102T010000Z-2222222/usage-judge.jsonl"
 bench 20260102T011500Z-3333333 '{"session": "S2"}'
 printf '%s\n' "$row" >"$SP/stats/benches/20260102T011500Z-3333333/claude-usage-x.jsonl"
 bench 20260102T050000Z-4444444 '{"session": "S1"}'
@@ -951,11 +952,11 @@ assert [ "$(body "$WORK/spend-report" | head -8)" = "duration · 02 Jan 00:00 �
 jobs · landed 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
 agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 3.0 h wall-clock · 1 without a transcript
 review rounds · 2
-spend fixers · out 1.4M · cache write 2.0M · cache read 12.0M · 11.7M weighted
-spend reviews · out 1.0M · cache write 2.0M · cache read 25.0M · 13.0M weighted
-spend orchestrator · out 0.2M · cache write 0.4M · cache read 10.0M · 2.5M weighted
-spend total · 27.2M weighted · 3.40× night 20260101T000000Z-aaaa (8.0M)" ]
-assert [ "$(body "$WORK/spend-report" | sed -n '9,11p')" = "reviews · per-branch 0 rounds (0.0M weighted) · other 2 rounds (13.0M weighted)
+spend fixers · 11.1M Opus-eq (opus 8.5M · codex 2.6M)
+spend reviews · 12.5M Opus-eq (opus 11.5M · sonnet 1.0M)
+spend orchestrator · 2.1M Opus-eq (opus 2.0M · haiku 0.1M)
+spend total · 25.7M Opus-eq · 3.21× night 20260101T000000Z-aaaa (8.0M)" ]
+assert [ "$(body "$WORK/spend-report" | sed -n '9,11p')" = "reviews · per-branch 0 rounds (0.0M Opus-eq) · other 2 rounds (12.5M Opus-eq)
 problems · no snapshot
 fixer spend without proof · no snapshot" ]
 assert [ "$(body "$WORK/spend-report" | sed -n 12p | cut -d' ' -f1-2)" = "night 20260102T000000Z-bbbb" ]
@@ -976,19 +977,43 @@ with open(f"{spend_dir}/doctors/nights/20260102T000000Z-bbbb.json") as handle:
     now = ns.spend(json.load(handle), worker_run)
 assert calls == [["claudeb-1767312500-6-ffff", "codex-1767312300-3-cccc"]], calls
 assert reads[t1] == 1, reads
-assert now["blind"] == 1 and ns.weighted(now["kinds"]["fixers"]) == 11700000, now
+assert now["blind"] == 1 and round(now["kinds"]["fixers"]["opus"]) == 8500000, now
 with open(t1) as handle:
     kept = handle.read()
 seen = set()
 ns.run_usage(worker_run, "claudeb-1767312100-1-aaaa", "claudeb", seen)
 with open(t1, "a") as handle:
     handle.write(json.dumps({"type": "assistant", "timestamp": "2026-01-02T00:05:00Z",
-                             "message": {"id": "m9", "usage": {"output_tokens": 7}}}) + "\n")
+                             "message": {"id": "m9", "model": "claude-opus-5-5", "usage": {"output_tokens": 7}}}) + "\n")
 grown = ns.run_usage(worker_run, "claudeb-1767312200-2-bbbb", "claudeb", seen)
-assert grown["out"] == 7 and sum(grown.values()) == 7, grown
+assert list(grown) == ["opus"] and round(grown["opus"]) == 35, grown
 with open(t1, "w") as handle:
     handle.write(kept)
+# The same tokens on Haiku weigh what token-map's menu weighs them: a fifth of Opus, never raw billions.
+usage = {"input_tokens": 3000000, "cache_creation_input_tokens": 2000000, "cache_read_input_tokens": 400000000,
+         "output_tokens": 1000000}
+weigh = {}
+for model in ("claude-haiku-4-5-20251001", "claude-opus-5-5"):
+    path = os.path.join(spend_dir, model + ".jsonl")
+    with open(path, "w") as handle:
+        handle.write(json.dumps({"type": "assistant", "timestamp": "2026-10-10T01:00:00Z",
+                                 "message": {"id": model, "model": model, "usage": usage}}) + "\n")
+    bench = os.path.join(spend_dir, "bench-" + model, "20261010T010000Z-x")
+    os.makedirs(bench)
+    with open(os.path.join(bench, "claude-usage-x.jsonl"), "w") as handle:
+        handle.write(json.dumps({"id": "b", "model": model, "input": 3000000, "cache_read": 400000000,
+                                 "cache_5m": 2000000, "output": 1000000}) + "\n")
+    weigh[model] = (ns.claude_usage(path, set()), ns.bench_usage(bench))
+(haiku, haiku_bench), (opus, opus_bench) = weigh.values()
+assert list(haiku) == ["haiku"] and abs(ns.weighted(haiku) / ns.weighted(opus) - 0.2) < 0.01, weigh
+assert haiku_bench == haiku and opus_bench == opus and 50e6 < ns.weighted(opus) < 51e6, weigh
 PY
+assert_fails env TOKENMAP_ROOT="$WORK/no-token-map" WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT="$SP/profiles" \
+  WORKER_STATS_DIR="$SP/stats" CODEX_PROFILES_DIR="$SP/codex" CHAT_NAME_ROOTS="$SP/profiles/p1/projects" \
+  CHAT_NAMES_CACHE="$SP/chat-names.json" python3 -B "$ROOT/share/night_spend.py" "$ROOT/bin/worker-run" \
+  "$SP/doctors/nights/20260102T000000Z-bbbb.json" >/dev/null 2>"$WORK/err"
+assert [ "$(grep -c . "$WORK/err")" = 1 ]
+assert grep -qF "no token-map checkout at $WORK/no-token-map (set TOKENMAP_ROOT)" "$WORK/err"
 
 # Observational churn block: review rounds per-branch vs other, problems touched again without proof,
 # regressed from after snapshot, proved excluded, fixer spend without proof, and rewrites in past 7 days.
@@ -1049,18 +1074,18 @@ printf '%s\n' "$CHURN/profiles/p1/projects/-x/U2.jsonl" >"$CHURN/runs/claudeb-17
 mkdir -p "$CHURN/stats/benches/20260131T003000Z-bench-per-branch" "$CHURN/stats/benches/20260131T010000Z-bench-other"
 printf '{"session": "S_NOW"}\n' >"$CHURN/stats/benches/20260131T003000Z-bench-per-branch/meta.json"
 printf '{"session": "S_NOW"}\n' >"$CHURN/stats/benches/20260131T010000Z-bench-other/meta.json"
-printf '{"id": "b1", "output": 400000}\n' >"$CHURN/stats/benches/20260131T003000Z-bench-per-branch/claude-usage-x.jsonl"
-printf '{"id": "b2", "output": 600000}\n' >"$CHURN/stats/benches/20260131T010000Z-bench-other/claude-usage-x.jsonl"
+printf '{"id": "b1", "model": "claude-opus-5-5", "output": 400000}\n' >"$CHURN/stats/benches/20260131T003000Z-bench-per-branch/claude-usage-x.jsonl"
+printf '{"id": "b2", "model": "claude-opus-5-5", "output": 600000}\n' >"$CHURN/stats/benches/20260131T010000Z-bench-other/claude-usage-x.jsonl"
 
 TZ=UTC DOCTORS_DIR="$CHURN/doctors" WORKER_RUN_DIR="$CHURN/runs" CLAUDEB_PROFILES_ROOT="$CHURN/profiles" \
   WORKER_STATS_DIR="$CHURN/stats" NIGHT_RUN_SWEEP_REPOS="$CHURN/sweep-repos" \
   CHAT_NAME_ROOTS="$CHURN/profiles/p1/projects" CHAT_NAMES_CACHE="$CHURN/chat-names.json" \
   night report 20260131T000000Z-now >"$WORK/churn-report" || fail "churn report"
 
-assert [ "$(body "$WORK/churn-report" | sed -n '9,14p')" = "reviews · per-branch 1 rounds (2.0M weighted) · other 1 rounds (3.0M weighted)
+assert [ "$(body "$WORK/churn-report" | sed -n '9,14p')" = "reviews · per-branch 1 rounds (2.0M Opus-eq) · other 1 rounds (3.0M Opus-eq)
 problems · 1 touched again without proof · 1 regressed
 problem · harness/P_OPEN · nights touched 2 · now open
-fixer spend without proof · 5.0M weighted of 15.0M
+fixer spend without proof · 5.0M Opus-eq of 15.0M
 rewrite · 1 of 2 lines deleted tonight were written in the 7 days before (1 by earlier night commits)
 night 20260131T000000Z-now · 00:00–02:00" ]
 
@@ -1096,9 +1121,9 @@ night = {"started_at": "2026-01-31T00:00:00Z", "jobs": [{"state": "merged", "com
 assert nc.rewrite_counts(night) == (3, 4, 0, 0), nc.rewrite_counts(night)
 
 nc.fixer_spend = lambda *args: ([{"ref": "code-x-1"}], {"code-x-1": {"doctor": "code", "decisions": [{"id": "P1"}]}},
-                                {"code-x-1": collections.Counter(out=1000000)}, collections.Counter(out=1000000))
+                                {"code-x-1": collections.Counter(opus=5000000)}, collections.Counter(opus=5000000))
 line = nc.fixer_spend_line({"doctor_problems_after": {"code": None}}, None, "worker-run")
-assert line == "fixer spend without proof · 5.0M weighted of 5.0M", line
+assert line == "fixer spend without proof · 5.0M Opus-eq of 5.0M", line
 PY
 
 # Comparison table: this night and the two previous finished nights with jobs, oldest left; an older one
@@ -1125,7 +1150,8 @@ tb_night 20260205T000000Z-abcd 2026-02-05T00:00:00Z 2026-02-05T03:30:00Z "$(tb_j
     "failed": ["test_a.sh"]}, {"repo": "/r2", "passed": 5, "failed": []}]}'
 jq -n '{id: "20260202T000000Z-a0b1", finished: true, hours: 9.8, runs: 3, wall_s: 36000,
   split_s: {model: 3600, slot: 7200, suite_run: 1800, suite_wait: 1800}, lines: {jobs: [10, 2, 4, 1], other: [0, 0, 0, 0]},
-  rewrite: [7, 20], problems: [8, null], spend_m: 12.5, spend_kinds: {fixers: 8.0, reviews: 3.0, orchestrator: 1.5}}' \
+  rewrite: [7, 20], problems: [8, null], spend_m: 12.5, spend_kinds: {fixers: 8.0, reviews: 3.0, orchestrator: 1.5},
+  spend_unit: "Opus-eq"}' \
   >"$TB/doctors/night-ledger/20260202T000000Z-a0b1.json"
 jq -n '{id: "20260204T000000Z-e4f5", finished: true, hours: 6.0, runs: 2, wall_s: 0, split_s: {}, rewrite: null,
   problems: [7, 6], spend_m: 5.0}' >"$TB/doctors/night-ledger/20260204T000000Z-e4f5.json"
@@ -1135,10 +1161,10 @@ TZ=UTC DOCTORS_DIR="$TB/doctors" WORKER_RUN_DIR="$TB/runs" CLAUDEB_PROFILES_ROOT
 sed '/^$/,$d' "$WORK/table-report" >"$WORK/table-block"
 assert [ "$(cat "$WORK/table-block")" = "                2 Feb   4 Feb   5 Feb
 duration        9.8 h   6.0 h   3.5 h
-spend           12.5M    5.0M    0.0M
-  fixers         8.0M       –    0.0M
-  reviews        3.0M       –    0.0M
-  night chat     1.5M       –    0.0M
+spend           12.5M    0.0M    0.0M
+  fixers         8.0M    0.0M    0.0M
+  reviews        3.0M    0.0M    0.0M
+  night chat     1.5M    0.0M    0.0M
 landed              2       1       1
 left                1       0       0
 needs Egor          0       1       0
@@ -1156,6 +1182,8 @@ problems        8 → –   7 → 6   3 → 4
 job lines      +14/-3       –   +0/-0
 rewrote 7d          7       –       –
 suites ✓/✗          –       –    15/1" ]
+# A row cached before Opus-eq pricing is re-priced from the live stores once and stored in the new unit.
+assert [ "$(jq -c '[.spend_m, .spend_unit, .hours]' "$TB/doctors/night-ledger/20260204T000000Z-e4f5.json")" = '[0.0,"Opus-eq",6.0]' ]
 assert [ "$(python3 -c 'import sys; print(len({len(l.rstrip("\n")) for l in sys.stdin}))' <"$WORK/table-block")" = 1 ]
 assert [ "$(head -1 "$WORK/table-block" | wc -w | tr -d ' ')" = 6 ]
 assert grep -qxE 'suites ✓/✗ +– +– +15/1' "$WORK/table-block"

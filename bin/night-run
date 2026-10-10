@@ -71,8 +71,8 @@ Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
 report opens with share/time_budget.py's comparison table: this night and the two previous finished
   nights with jobs, a column each, oldest left, facts only, – where a value has no source, a blank line
   after it; then share/night_spend.py's header: duration, jobs, the orchestrator's worker runs and
-  hours, its review rounds, token spend of fixers, reviews and orchestrator weighted in input-token
-  equivalents (input 1, cache write 1.25, cache read 0.1, output 5) against the previous finished night;
+  hours, its review rounds, token spend of fixers, reviews and orchestrator in Opus-equivalent tokens
+  by model, priced by token-map's pricing.py (TOKENMAP_ROOT), against the previous finished night;
   then share/night_churn.py's churn, the jobs, and last share/time_budget.py's ledger (worker wall split
   into model, slot queue and own tests; lines by jobs and outside them; problems; spend and what was
   deferred) with the trend of the last 7 nights; --post sends the comparison table to the chat as one

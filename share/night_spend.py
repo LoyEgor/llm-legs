@@ -1,27 +1,80 @@
 """The mechanical header of `night-run report`: duration, jobs, worker runs, review rounds and token
-spend by kind, with one weighted total compared against the previous finished night.
+spend by kind and model in Opus-equivalent tokens, the total compared against the previous finished night.
+
+A usage Counter maps a model label (Claude family or vendor) to Opus-eq tokens, priced by token-map's
+`tokenmap/pricing.py` the way its menu weighs a model: one Opus input token is 1.
 
 Read-only over the run, bench and transcript stores; every root follows the same environment
 override its writer honours, so tests point it at fixtures.
 """
 
+import __future__
 import collections
 import datetime as dt
+import functools
 import glob
 import json
 import os
 import subprocess
 import sys
 import time
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chat_names  # noqa: E402
 
-WEIGHTS = {"in": 1, "cache_w": 1.25, "cache_r": 0.1, "out": 5}
+UNIT = "Opus-eq"
+OPUS = "claude-opus-5"
 HOME = os.path.expanduser("~")
 RUNS = os.environ.get("WORKER_RUN_DIR") or f"{HOME}/.cache/claude-worker-runs"
 BENCHES = (os.environ.get("WORKER_STATS_DIR")
            or f"{os.environ.get('CLAUDEB_DIR') or HOME + '/.claude-profiles/.claudeb'}/worker-stats") + "/benches"
+
+
+@functools.lru_cache(maxsize=None)
+def pricing():
+    checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).split(chat_names.WORKTREES)[0]
+    root = os.environ.get("TOKENMAP_ROOT") or os.path.join(os.path.dirname(checkout), "token-map")
+    path = os.path.join(root, "tokenmap", "pricing.py")
+    if not os.path.isfile(path):
+        sys.exit(f"night_spend: no token-map checkout at {root} (set TOKENMAP_ROOT); spend is priced by its pricing.py")
+    # /usr/bin/python3 (3.9) runs this and pricing.py annotates `str | None`: only postponed annotations load it.
+    table = types.ModuleType("tokenmap_pricing")
+    table.__file__ = path
+    sys.modules[table.__name__] = table
+    with open(path) as handle:
+        exec(compile(handle.read(), path, "exec", __future__.annotations.compiler_flag, dont_inherit=True),
+             table.__dict__)
+    return table
+
+
+def opus_usd():
+    return pricing().price_for(OPUS, dt.date.today().isoformat())[0] / 1e6
+
+
+def claude_model(model):
+    """A bare alias (`opus`) as the newest model of its family in token-map's price list."""
+    if model and "-" not in model and not model.startswith("<"):
+        return next((name for name in pricing().PRICES if name.startswith(f"claude-{model}-")), model)
+    return model or "unknown"
+
+
+def claude_eq(model, day, fresh=0, cache_read=0, cache_5m=0, cache_1h=0, out=0, fast=False):
+    """{label: Opus-eq} of one Claude request; a routed model (claudegpt) prices as its vendor's."""
+    model = claude_model(model)
+    vendor = pricing().routed_vendor(model)
+    if vendor:
+        return vendor_eq(vendor, model, fresh, cache_read, cache_5m + cache_1h, out)
+    usd = pricing().input_cost_usd(model, day, fresh=fresh, cache_read=cache_read, cache_5m=cache_5m,
+                                   cache_1h=cache_1h, fast=fast) + pricing().output_cost_usd(model, day, out, fast)
+    family = model.split("-")[1] if model.startswith("claude-") else "?"
+    return collections.Counter({family: usd / opus_usd()}) if usd else collections.Counter()
+
+
+def vendor_eq(vendor, model, fresh=0, cache_read=0, cache_write=0, out=0):
+    _, cost_in, cost_out = pricing().vendor_costs(vendor, model, fresh=fresh, cache_read=cache_read,
+                                                  cache_write=cache_write, output=out)
+    return collections.Counter({vendor: (cost_in + cost_out) / opus_usd()}) if cost_in + cost_out else collections.Counter()
 
 
 def epoch(stamp):
@@ -65,46 +118,45 @@ def claude_usage(path, seen, window=None):
             if window and not window[0] <= epoch(row.get("timestamp", "1970-01-01T00:00:00Z")[:19] + "Z") <= window[1]:
                 continue
             seen.add(message.get("id"))
-            total["in"] += usage.get("input_tokens") or 0
-            total["cache_w"] += usage.get("cache_creation_input_tokens") or 0
-            total["cache_r"] += usage.get("cache_read_input_tokens") or 0
-            total["out"] += usage.get("output_tokens") or 0
+            written = usage.get("cache_creation_input_tokens") or 0
+            hour = min((usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0, written)
+            total += claude_eq(message.get("model"), row.get("timestamp", "")[:10], usage.get("input_tokens") or 0,
+                               usage.get("cache_read_input_tokens") or 0, written - hour, hour,
+                               usage.get("output_tokens") or 0, usage.get("speed") == "fast")
     return total
 
 
-def codex_usage(path):
+def codex_usage(path, model):
     last = {}
     for row in rows(path):
         payload = row.get("payload") or {}
         if payload.get("type") == "token_count":
             last = (payload.get("info") or {}).get("total_token_usage") or last
     cached = last.get("cached_input_tokens", 0)
-    return collections.Counter({"in": max(last.get("input_tokens", 0) - cached, 0), "cache_r": cached,
-                                "cache_w": last.get("cache_write_input_tokens", 0),
-                                "out": last.get("output_tokens", 0)})
+    return vendor_eq("codex", model, max(last.get("input_tokens", 0) - cached, 0), cached,
+                     last.get("cache_write_input_tokens", 0), last.get("output_tokens", 0))
 
 
-def gemini_usage(path):
-    total = collections.Counter()
+def gemini_usage(path, model):
+    fresh = cache_read = out = 0
     for row in rows(path):
         if "output_tokens" in row:
             cached = row.get("cache_read_tokens") or 0
-            total["in"] += max((row.get("input_tokens") or 0) - cached, 0)
-            total["cache_r"] += cached
-            total["out"] += row.get("output_tokens") or 0
-    return total
+            fresh += max((row.get("input_tokens") or 0) - cached, 0)
+            cache_read += cached
+            out += row.get("output_tokens") or 0
+    return vendor_eq("gemini", model, fresh, cache_read, 0, out)
 
 
-def grok_usage(path):
+def grok_usage(path, model):
     try:
         with open(os.path.join(os.path.dirname(path), "usage.json")) as handle:
             session = json.load(handle).get("session") or {}
     except (OSError, ValueError):
         return None
     cached = session.get("cachedReadTokens", 0)
-    return collections.Counter({"in": max(session.get("inputTokens", 0) - cached, 0), "cache_r": cached,
-                                "cache_w": session.get("cacheCreationTokens", 0),
-                                "out": session.get("outputTokens", 0)})
+    return vendor_eq("grok", model, max(session.get("inputTokens", 0) - cached, 0), cached,
+                     session.get("cacheCreationTokens", 0), session.get("outputTokens", 0))
 
 
 def transcripts(worker_run, runs):
@@ -144,8 +196,14 @@ def run_usage(worker_run, run, vendor, seen, found=None):
     files = claude_files(whole) if vendor == "claudeb" else None
     if files is not None and files in seen:
         return collections.Counter()
-    usage = {"claudeb": lambda: claude_usage(transcript, seen), "codex": lambda: codex_usage(transcript),
-             "gemini": lambda: gemini_usage(transcript), "grok": lambda: grok_usage(transcript)}.get(
+    try:
+        with open(f"{RUNS}/{run}/meta.json") as handle:
+            meta = json.load(handle)
+    except (OSError, ValueError):
+        meta = {}
+    model = meta.get("served_model") or meta.get("model")
+    usage = {"claudeb": lambda: claude_usage(transcript, seen), "codex": lambda: codex_usage(transcript, model),
+             "gemini": lambda: gemini_usage(transcript, model), "grok": lambda: grok_usage(transcript, model)}.get(
         vendor, lambda: None)()
     if usage is not None:
         seen.add(whole)
@@ -159,22 +217,25 @@ def bench_usage(bench):
     for path in glob.glob(f"{bench}/claude-usage-*.jsonl"):
         for row in rows(path):
             by_id[row.get("id")] = row
+    name = os.path.basename(bench)
+    day = f"{name[:4]}-{name[4:6]}-{name[6:8]}"
     total = collections.Counter()
     for row in by_id.values():
-        total["in"] += row.get("input", 0)
-        total["cache_w"] += row.get("cache_5m", 0) + row.get("cache_1h", 0)
-        total["cache_r"] += row.get("cache_read", 0)
-        total["out"] += row.get("output", 0)
+        total += claude_eq(row.get("model"), (row.get("ts") or day)[:10], row.get("input", 0), row.get("cache_read", 0),
+                           row.get("cache_5m", 0), row.get("cache_1h", 0), row.get("output", 0))
     batches = glob.glob(f"{bench}/usage-judge~*.jsonl")
     for path in batches or glob.glob(f"{bench}/usage-judge.jsonl"):
         label = os.path.basename(path)[len("usage-"):]
         if not os.path.exists(f"{bench}/claude-usage-{label}"):
-            total["in"] += sum(row.get("total_tokens", 0) for row in rows(path))
+            for row in rows(path):
+                split = "prompt_tokens" in row
+                total += claude_eq(row.get("model"), day, row.get("prompt_tokens" if split else "total_tokens", 0),
+                                   out=row.get("output_tokens", 0) if split else 0)
     return total
 
 
 def weighted(total):
-    return sum(total[key] * weight for key, weight in WEIGHTS.items())
+    return sum(total.values())
 
 
 def window(night):
@@ -269,8 +330,14 @@ def mega(value):
     return f"{value / 1e6:.1f}M"
 
 
+def by_model(total):
+    shown = sorted(((value, label) for label, value in total.items() if round(value / 1e6, 1)), reverse=True)
+    return " (" + " · ".join(f"{label} {mega(value)}" for value, label in shown) + ")" if shown else ""
+
+
 def main():
     worker_run, path = sys.argv[1:3]
+    pricing()
     with open(path) as handle:
         night = json.load(handle)
     now = spend(night, worker_run)
@@ -290,14 +357,13 @@ def main():
           + f" · {now['hours']:.1f} h wall-clock" + (f" · {now['blind']} without a transcript" if now["blind"] else ""))
     print(f"review rounds · {now['rounds']}")
     for kind, total in now["kinds"].items():
-        print(f"spend {kind} · out {mega(total['out'])} · cache write {mega(total['cache_w'])} · "
-              f"cache read {mega(total['cache_r'])} · {mega(weighted(total))} weighted")
+        print(f"spend {kind} · {mega(weighted(total))} {UNIT}{by_model(total)}")
     before = previous(path, night)
     ratio = ""
     if before:
         was = spend(before, worker_run)["total"]
         ratio = f" · {now['total'] / was:.2f}× night {before['id']} ({mega(was)})" if was else ""
-    print(f"spend total · {mega(now['total'])} weighted{ratio}")
+    print(f"spend total · {mega(now['total'])} {UNIT}{ratio}")
 
 
 if __name__ == "__main__":

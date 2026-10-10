@@ -1170,7 +1170,7 @@ def ledger_row(worker_run, path, night):
             "regressed": sum((s or {}).get("regressed", 0) for s in states.values()),
             "touched_unproven": len(touched[0]) if touched else 0,
             "spend_m": round(spent["total"] / 1e6, 1), "spend_kinds": spend_kinds(spent),
-            "improvements": improvements(night, path, worker_run),
+            "spend_unit": night_spend.UNIT, "improvements": improvements(night, path, worker_run),
             "deferred": "no debt round" if not debt else (
                 "debt round %s" % debt[0].get("state") if all(j.get("state") != "merged" for j in debt) else None)}
 
@@ -1185,6 +1185,14 @@ def cached_row(worker_run, path):
         return None
     row = read_json(ledger_cache(night["id"], path), None)
     if isinstance(row, dict) and row.get("finished"):
+        if row.get("spend_unit") != night_spend.UNIT:
+            spent = night_spend.spend(night, worker_run)
+            fresh = {i["ref"]: i["spend_m"] for i in improvements(night, path, worker_run)}
+            for item in row.get("improvements") or ():
+                item["spend_m"] = fresh.get(item["ref"], 0.0)
+            row.update(spend_m=round(spent["total"] / 1e6, 1), spend_kinds=spend_kinds(spent),
+                       spend_unit=night_spend.UNIT)
+            write_json(ledger_cache(night["id"], path), row)
         stale = [i for i in row.get("improvements") or () if "files" not in i]
         if stale:
             jobs = {j.get("ref"): j for j in night.get("jobs") or ()}
