@@ -217,6 +217,15 @@ touch -t 202001010000 "$LOCK_RUN/.claim.lock"
 locked_write
 assert test ! -e "$LOCK_RUN/.claim.lock"
 assert test "$(grep -c . "$WORK/claim-sleeps")" -eq 0
+# Every worker_run suite and shard sources the harness: a mkdir per roster account was ~400 forks,
+# 5-8 s of each one's setup under load.
+mkdir -p "$WORK/mkdir-shim"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/mkdirs"\nexec /bin/mkdir "$@"\n' "$WORK" >"$WORK/mkdir-shim/mkdir"
+chmod +x "$WORK/mkdir-shim/mkdir"
+: >"$WORK/mkdirs"
+PATH="$WORK/mkdir-shim:$PATH" bash -c '. "$1"' "$ROOT/tests/${0##*/}" "$ROOT/tests/worker_run_harness.sh" </dev/null >/dev/null 2>&1
+assert test "$(grep -c . "$WORK/mkdirs")" -ge 1
+assert test "$(grep -c . "$WORK/mkdirs")" -le 10
 fi
 
 clear_stub
@@ -586,7 +595,7 @@ EOF
   unset GUARD_REPO
   clear_stub
 }
-commit_attribution_tests
+if suite_shard_owns 1 files-commit-attribution; then commit_attribution_tests; fi
 
 # A contents copy into the top (`rsync -a src/ .`) is recorded as the top itself, answering for every
 # changed file under it; it is no write outside the repository.
@@ -615,7 +624,7 @@ EOF
   unset GUARD_REPO
   clear_stub
 }
-if suite_shard_owns 3 files-guard-top; then guard_top_recorded_tests; fi
+if suite_shard_owns 1 files-guard-top; then guard_top_recorded_tests; fi
 
 snapshot_blobs_packed_tests() {
   local repo="$WORK/never-committed" tries=0
