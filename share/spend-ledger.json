@@ -206,6 +206,17 @@
    "sources": {},
    "verdict": "cut",
    "note": "already cut by llm-legs@ee185fa8 (relay-free delegation, 2026-10-09 02:31 +03): bin/worker-spawn-hook.sh denies the type, the chat runs review-bench wait as a background Bash; last spawn 2026-10-08T23:13Z, 0 since across all profiles; the 7-day share is pre-retirement spawns ageing out; nothing left to replay"
+  },
+  {
+   "id": "rewrites:idle 5-60min",
+   "title": "re-writes idle 5-60min",
+   "audited_at": "2026-10-10T08:52:16+03:00",
+   "by": "harness-speed-spend-rewrites-idle-5-60min-20261010T031909Z-3410",
+   "share": 0.002413,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "note": "kept: all 6 re-writes over 1k in 7 d (1.86M of 1.86M, 27 events) are resumes on another account (credential_org changes; prompt cache is per org, only the 8-25k cross-org system prefix is read), 4 worker-run RESUMEs whose brief carried worker-pick's ACCOUNT and 2 chat account switches; same-org resumes in the gap kept the cache; pinning a resume to its old account would override limits routing for ~0.13 % of spend; tokenmap mislabels the cause (handoff 2026-10-07-tokenmap-waste-detectors.md, account switch line)"
   }
  ]
 }

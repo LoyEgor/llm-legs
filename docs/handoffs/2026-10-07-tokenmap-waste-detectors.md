@@ -1,6 +1,9 @@
 # Tokenmap: detectors for spend that buys nothing
 
 Status: open (the last two lines of 9; done: token-map b044500, 93c2a59, cf68b86, 03057cb, 3f597e7; every row carries `candidate_count` and `candidates` with file, session, line) — To: «Token spending tracking and optimization»
+Status: open (account switch on resume, last item; the rest done in token-map b044500, 93c2a59, cf68b86, 03057cb, 3f597e7) — To: «Token spending tracking and optimization»
+
+From «Updater doctor», 2026-10-07, after Egor agreed that work for tokenmap goes to tokenmap.
 
 ## Context
 - **Why:** Egor wants every token the harness spends without need to be found and cut.
@@ -22,10 +25,16 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 4. **Chunking that does not pay.** A fan-out (log-audit chunks, review cells, image takes) whose startup per chunk is larger than the chunk's own work. — Done in token-map 93c2a59 (`Chunks that do not pay`).
 5. **Delegation that retells.** A worker brief whose size is close to the delegated work, while the delegating chat's account had room to do the work itself. — Done in token-map cf68b86 (`Delegation that retells`; whether the account had room is the audit's).
 6. **Outputs nobody reads.** Scheduled LLM jobs (launchd wrappers in `~/.local/libexec`, reports, digests): the cost per run, and whether any model or menu reads the output afterwards. — Done in token-map cf68b86 (`Scheduled outputs nobody reads`; whether a menu or Egor reads them is the audit's).
+2. **Hook-forced repeats.** Done in token-map cf68b86 (`Hook-forced repeats`: exact, near, language switch or paraphrase).
+3. **Cold restarts on one topic.** Done in token-map 93c2a59 (`Cold restarts on one topic`).
+4. **Chunking that does not pay.** Done in token-map 93c2a59 (`Chunks that do not pay`).
+5. **Delegation that retells.** Done in token-map cf68b86 (`Delegation that retells`; whether the account had room is the audit's).
+6. **Outputs nobody reads.** Done in token-map cf68b86 (`Scheduled outputs nobody reads`; whether a menu or Egor reads them is the audit's).
 7. **Startup that is never used.** Done in token-map b044500 (`Unused startup`, read by Spend's startup audits).
 8. **Frontier model on a small task.** Model and size per task. This one is shown only, never a cut: model choice is Egor's. — Done in token-map 93c2a59 (`Frontier model, small task`: opus or fable contexts that ended within 5 requests, never toned; 4.0M a week).
 
 9. **Export which causes are avoidable.** Harness `share/spend.py` (llm-legs 90cae246) copies tokenmap's unavoidable cache re-write causes (`expired (1h+ idle)` and the others from FINDINGS §26). Put an `avoidable` flag on each cause row in `tracking.json`, so the doctor reads it rather than keeping a copy. — Done in token-map 3e3b078; the Spend side is in `2026-10-07-harness-index.md`.
+   - Account switch on resume (spend audit `rewrites:idle 5-60min`, 2026-10-10): prompt cache is per org, so a resume on another account reads only the cross-org system prefix (8-25k) and re-writes the rest, filed as `idle 5-60min` or `unexplained`. All 6 such re-writes over 1k in the 7 days to 10-10 (1.86M) follow a `credential_org` attachment naming a new org; same-org resumes in that window kept the cache. Track the org per context (the `credential_org` attachment) and file it as an avoidable `account switch` cause ahead of the idle ones.
    - Resumes: count main contexts only; flag a cold resume compacted within 10 requests. — Done in token-map 03057cb (main contexts only; compacted-soon resumes are candidates).
    - Relay turns outside the procedure. — Done in token-map 3f597e7 (`Relay turns off procedure`).
    - Instructions by agent type. — Done in token-map 03057cb (Startup `CLAUDE.md + memory index, by agent`); which type never acts on them stays the audit's call.
