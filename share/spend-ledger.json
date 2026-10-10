@@ -236,6 +236,17 @@
    },
    "verdict": "kept",
    "note": "0.033 % of spend (~370k limit tokens/7 d, ~250 a firing, priced as text resent until the cut); 1469 real firings/7 d, 96 % of compact cycles clean (one stage1 + one stage2), the focus Write follows 98 % of stage1 and 92 % of stage2 nudges; the only cheaper equivalent is shorter wording, which test_context_nudge.sh pins from the manual-compact/wrap-up incident (claude-setup@03b25e0b) and no replay can prove output-equivalent, for at most ~0.013 % of spend; repeat firings (~3 %, window change or re-arm) and skipping stage2 after a fresh focus Write (176/685) change decisions; hook_success twins are not charged (tokenmap excludes their stdout)"
+  },
+  {
+   "id": "rewrites:unexplained",
+   "title": "re-writes unexplained",
+   "audited_at": "2026-10-10T08:24:22+03:00",
+   "by": "harness-speed-spend-rewrites-unexplained-20261010T031910Z-2752",
+   "share": 0.00254,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "note": "kept: no harness cause; 7d 1.91M (1334 req), 1.73M is turn 2 of 73 browser runs whose turn 1 ToolSearch-loads claude-in-chrome tools and Claude Code re-writes the messages after it (built-in WebSearch loads: 0 of 19); the +145% is the 2026-10-06/07 enrollment burst (1.64M), steady state ~2 runs/day x ~22k (~0.03% of spend); the one lever, ENABLE_TOOL_SEARCH=false in browser runs, loads every MCP schema into every request and costs more than it saves; rest: a vendor full miss 6 s after a 5m write and a post-compaction first write tokenmap books as a re-write (handoff line)"
   }
  ]
 }

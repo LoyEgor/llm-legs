@@ -54,3 +54,4 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 - Each detector is in `tracking.json` with its own tests.
 - The Token tracking submenu shows it.
 - `docs/shared-invariants.md` row db still agrees.
+   - Re-write causes (spend audit `rewrites:unexplained`, 2026-10-10): 73 of 76 turn-2 `unexplained` re-writes (1.73M of 1.91M in 7 d) follow a turn-1 ToolSearch load of `claude-in-chrome` tools (Claude Code re-writes the messages after it; built-in WebSearch loads never do): give them a cause of their own. A first post-compaction request that cached nothing still sets the next one's `prev_ctx`, so its first write books as a re-write (2026-10-09 night fixer, 55k).
