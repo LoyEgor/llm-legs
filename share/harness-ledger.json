@@ -6209,6 +6209,40 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-wait-stream-20261010T031947Z-479d",
       "note": "Before: 149 runs, 0.3 wall-min a run; own wall 8-42 s by load, CPU ~15 %. Profile: harness roster 340 mkdir forks (~7.5 s at load 150, paid by all 19 test_worker_run_* suites), each worker-run invocation 1.8-2.8 s spread over ~40 forks (run_tokens python 0.2-0.4 s, needed), 2 fixed sleeps 5 s. Found red at HEAD: run_tokens printed a float since 5458081c made run_usage Opus-eq, the integer check dropped it, so the menu worker row lost its token cell; fixed by rounding (row cell now Opus-eq, contract updated). Kept: the 1 s WORKER_RUN_WAIT_POLL_S (integer-only knob, production 5 s), the live waits (each proves a real poll), every vendor case (each a distinct reader). Ruled out: legacy checks (suite born 2026-10-09, every assert names a live requirement), a split (no independent half above 5 s once the harness cost is gone). Seen, not this run's: test_worker_run_stamps red at line 33 on base too (claudeb:haiku no longer refused since the 2026-10-10 Haiku 5.5 trial lift).",
       "handoff": null
+    },
+    {
+      "id": "speed-hook-commit-report",
+      "title": "Speed's hook lever: commit-report pays the review-journal library on every git call and its debt probe's budget on every landing",
+      "match": {
+        "rule": "opportunity",
+        "ident": "hooks/commit-report\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:20:00+03:00",
+          "by": "night fixer harness-speed-hooks-commit-report-sh-20261010T031904Z-0906",
+          "files": [
+            "claude-setup/hooks/commit-report.sh",
+            "claude-setup/hooks/lib/splice.sh",
+            "claude-setup/hooks/lib/review-journal.sh",
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/tests/test_commit_report.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "hooks/commit-report.sh at the night base vs the fix: stdout, stderr and exit code per call",
+            "data": "700 distinct Bash commands naming git from 695 transcripts of 2026-10-08..10, each as a PostToolUse payload with a named session and tool_use_id, scratch HOME, review-debt and review-bench stubbed, CLAUDE_PROJECT_DIR unset",
+            "result": "700/700 identical; 694 leave at the new screen, 6 name a landing or push word and run the unchanged path; paired at load ~90, 250 pairs: 339 -> 88 ms mean, 485 -> 135 ms p95"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261010T031904Z-0906",
+      "note": "Before: 15.58 min/day recoverable (latest.json 2026-10-10). hooks/folded 20735 (2026-10-09): 11 249 runs, 33.7 wall-min; by CPU, 7963 under 25 ms (4.1 min: no git or the old screen), 2931 at 25-150 ms (9.6 min: a git call that loaded the 2k-line library to find no landing), 295 over 500 ms (19 min: landings). Fixed: a named call with no write stash, no armed HEAD snapshot and no spliced whole word of push or RJ_LANDING_SUBCOMMANDS leaves before the library; anonymous calls (nocall.* snapshots) and stashed ones keep the full path. RJ_LIB found by expansion (the 10-09 note's dirname/cd forks). Test: test_commit_report no grep/sed/awk on such a call (red on old code) and an armed snapshot with no landing word still reports (red with the snapshot check removed). Left, handed off: the landing tail is the debt probe, review-debt --split missing its cache after every commit (76-82 s llm-legs at load ~39) and killed at the 4 s row budget as `debt unknown`, 197 runs over 4.5 s in 2026-10-08..09, about 10 min/day. Found, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base too (2026-10-10, load ~90). Seen, not changed: the libdown note now waits for a landing call, as it already did for a call naming no git.",
+      "handoff": "docs/handoffs/2026-10-10-commit-report-debt-probe.md"
     }
   ],
   "blind_spots": [
