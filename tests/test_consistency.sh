@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 # Guards docs/shared-invariants.md: values duplicated across independent
 # implementations (bash/jq/Lua/prose) must not drift apart. Each check
 # re-extracts the live value from every site and asserts they agree with each
@@ -60,11 +61,42 @@ grep() {
 REVIEW_ROOT="${REVIEW_ROOT:-$PROJECTS/review-bench}"
 [ -r "$REVIEW_ROOT/bin/review-bench" ] || fail "review-bench root $REVIEW_ROOT is unreadable (set REVIEW_ROOT)"
 export RBENCH_SHARE="$REVIEW_ROOT/share"
+# Sites more than one shard reads are named here, outside every section.
+LIMITSVIEW="$ROOT/share/limits-view.sh"
+CLAUDE_RESETS="$ROOT/share/claude_resets.py"
+CODEXB="$ROOT/bin/codexb"
+POLICY="$ROOT/share/worker-policy.md"
+CONTRACT="$ROOT/docs/routing-contract.md"
+RB_PKG="$REVIEW_ROOT/share/rbench"
+RB_STORE="$RB_PKG/store.py"
+RB_CATALOG="$RB_PKG/catalog.py"
+RB_RATERS="$RB_PKG/raters.py"
+RB_ACCOUNTS="$RB_PKG/accounts.py"
+RB_SCOPE="$RB_PKG/scope.py"
+RB_PANEL="$RB_PKG/panel.py"
+RB_PROMPTS="$RB_PKG/prompts.py"
+RB_LAUNCH="$RB_PKG/launch.py"
+RB_ROUND="$RB_PKG/round.py"
+RB_DEBT="$RB_PKG/debt.py"
+RB_REPORT="$RB_PKG/report.py"
+RB_CLI="$RB_PKG/cli.py"
+RB_ANCHORS="$REVIEW_ROOT/bin/review-anchors"
+WORKER_COMMAND="${WORKER_COMMAND_FILE:-$REAL_HOME/.claude/commands/worker.md}"
+WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
+WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
+FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
+CLAUDE_SETUP=$FAMILY_SETUP_ROOT
+GEMINI_ACCOUNTS="$ROOT/share/gemini-accounts.sh"
+GEMINIB="$ROOT/bin/geminib"
+OPENCODE_GO="$ROOT/bin/opencode-go"
+LLMREFRESH="$ROOT/bin/llm-refresh"
+CHATNAMES="$ROOT/share/chat_names.py"
 
 # Value the doc declares canonical, extracted from its own table so a drifted
 # doc is caught too.
 doc_has() { grep -Fq -- "$1" "$ROOT/$DOC"; }
 
+if suite_shard_owns 1 rows-a-m; then
 # Every row is `| id | invariant | canonical value | implementation sites |`, and a row that lost
 # a separator renders its sites as part of the value — invisible to a reader looking for the file.
 short_rows=$(awk '/^\| [0-9a-z]+ \|/ { line = $0; gsub(/\\\|/, "", line)
@@ -111,7 +143,6 @@ done
 
 # --- Row a: staleness/dim thresholds -----------------------------------------
 FIVE=1800; WEEK=21600; FABLE=21600; ROUTING=7200
-LIMITSVIEW="$ROOT/share/limits-view.sh"
 
 # doc prose carries all three
 assert doc_has '`1800`s'
@@ -254,7 +285,6 @@ assert grep -Fq 'hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]' "$DRIV
 assert grep -Fq '"Claude Code-credentials-"' "$DRIVER"
 assert grep -Fq '".claude-profiles"' "$DRIVER"
 assert doc_has 'bin/claude-session-driver'
-CLAUDE_RESETS="$ROOT/share/claude_resets.py"
 assert grep -q '^def keychain_service' "$CLAUDE_RESETS"
 assert grep -Fq 'hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]' "$CLAUDE_RESETS"
 assert grep -Fq '"Claude Code-credentials-"' "$CLAUDE_RESETS"
@@ -315,9 +345,6 @@ assert doc_has 'Robot curl refresh is off, permanently and unconditionally'
 assert doc_has '`robot-skip`'
 
 # --- Row g: worker rank contract and display priority -------------------------
-CODEXB="$ROOT/bin/codexb"
-POLICY="$ROOT/share/worker-policy.md"
-CONTRACT="$ROOT/docs/routing-contract.md"
 # `auth_late` ranks a grok account whose access token expired behind every signed-in one without
 # walling it — the CLI refreshes it silently — and reads as false on every other vendor's rows.
 assert test "$(grep -Fc '  def rank_keys: (if $media_order == "true" then [(if .claimed then 1 else 0 end), (.started // 0)] else [] end) +' "$WORKERPICK")" -eq 1
@@ -345,21 +372,6 @@ assert grep -Fq 'the workers pin tier leads, then `[five-hour deferral, fresh cl
 assert grep -Fq 'pin tier first, then `[five-hour deferral, fresh claim, late auth, −budget, name]`' "$CONTRACT"
 assert grep -Fq 'NEXT_MAX_ROWS=5' "$WORKERPICK"
 assert doc_has 'Worker rank contract'
-
-RB_PKG="$REVIEW_ROOT/share/rbench"
-RB_STORE="$RB_PKG/store.py"
-RB_CATALOG="$RB_PKG/catalog.py"
-RB_RATERS="$RB_PKG/raters.py"
-RB_ACCOUNTS="$RB_PKG/accounts.py"
-RB_SCOPE="$RB_PKG/scope.py"
-RB_PANEL="$RB_PKG/panel.py"
-RB_PROMPTS="$RB_PKG/prompts.py"
-RB_LAUNCH="$RB_PKG/launch.py"
-RB_ROUND="$RB_PKG/round.py"
-RB_DEBT="$RB_PKG/debt.py"
-RB_REPORT="$RB_PKG/report.py"
-RB_CLI="$RB_PKG/cli.py"
-RB_ANCHORS="$REVIEW_ROOT/bin/review-anchors"
 
 assert grep -Fq 'REVIEWERS_TOKEN_HORIZON_S=1920' "$ROOT/bin/worker-pick"
 assert python3 - "$RB_PKG" "$ROOT/bin/worker-pick" <<'HORIZONPY'
@@ -468,9 +480,7 @@ assert test "$(sed -n '/^def run_agy(/,/^def /p' "$RB_LAUNCH" | grep -Fc '"--eff
 assert doc_has 'Antigravity review cell invocation mapping'
 
 # --- Row i: Gemini worker knobs ----------------------------------------------
-WORKER_COMMAND="${WORKER_COMMAND_FILE:-$REAL_HOME/.claude/commands/worker.md}"
 assert test -r "$WORKER_COMMAND"
-WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 assert test -x "$WORKER_RUN"
 assert test "$(grep -Fc -- 'awk -F'"'"'\t'"'"' -v slug="$model" '"'"'$2 == slug { print; exit }'"'"')' "$WORKER_RUN")" -eq 1
 assert test "$(grep -Fc -- 'agy_model="$(cut -f3 <<<"$gemini_family")-$effort"' "$WORKER_RUN")" -eq 1
@@ -603,7 +613,6 @@ assert doc_has 'Gemini capacity fallback'
 assert doc_has 'geminib: model <slug>'
 
 # --- Row cr: Gemini model families -------------------------------------------
-FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
 # The built-in list, both fixtures and what `geminib families` prints share one column format.
 family_rows_ok() {
   awk -F'\t' 'NF != 4 || $1 !~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)$/ || $2 !~ /^(flash[0-9]+|pro)$/ ||
@@ -704,7 +713,6 @@ assert doc_has '`grokb models [--json] [--refresh|--cached]`'
 # ONE list: the builtin fallback and a cache read share one row format, the table keys codex on the
 # family word, and every launcher resolves that word through `codexb models --family`.
 CODEXB_BIN="$ROOT/bin/codexb"
-WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
 codex_rows_ok() {
   awk -F'\t' 'NF != 6 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || $5 !~ /^[yn]$/ || $6 !~ /^[a-z,]+$/ { bad = 1 }
               $5 == "y" { defaults++ }
@@ -731,7 +739,6 @@ assert doc_has '`worker_model_codex_slug`'
 # --- Row bq: allowed worker models -------------------------------------------
 # The list has ONE home in code; every other site is prose, and prose that drifts sends a worker
 # after a model `worker-run` will refuse.
-WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
 PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 assert test -r "$WORKER_MODEL_SH"
 assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claudeb opus high high,xhigh low,medium,max no
@@ -923,8 +930,6 @@ assert doc_has 'case-insensitive group label contains `gemini`'
 assert doc_has 'Gemini quota group matching'
 
 # --- Row m: Gemini account discovery and HOME mapping ------------------------
-GEMINI_ACCOUNTS="$ROOT/share/gemini-accounts.sh"
-GEMINIB="$ROOT/bin/geminib"
 assert test -r "$GEMINI_ACCOUNTS"
 assert grep -Eq '^\. "\$(\(resolve_root\)|geminib_root)/share/gemini-accounts\.sh"$' "$GEMINIB"
 assert grep -Fq '. "$script_dir/share/gemini-accounts.sh"' "$LLMLIMITS"
@@ -940,9 +945,10 @@ assert grep -Fq '"models", "--family"' "$REVIEW_ROOT/share/rbench/catalog.py"
 assert grep -Fq '("sol", 1)' "$REVIEW_ROOT/share/rbench/catalog.py"
 assert eq "$(bash -c ' . "$1"; worker_model_default_model codex' _ "$WORKER_MODEL_SH")" 'astra'
 assert eq "$(grep -c worker_model_allowed_models "$REVIEW_ROOT/share/rbench/launch.py")" 0
+fi
 
+if suite_shard_owns 3 rows-n-cl; then
 # --- Row n: weekly bucket provenance ----------------------------------------
-STATUSLINE="$ROOT/bin/statusline.sh"
 # No writer may mint a weekly percentage from headers: the header-learn paths must
 # not mention the weekly bucket at all.
 assert eq "$(awk '/^merge_headers\(\)/,/^}/' "$ROOT/bin/claudeb" | grep -Ec 'seven_day: \{|used_percentage: 100')" 0
@@ -1552,7 +1558,6 @@ assert grep -Fq -- "/Library/Logs/$HS_LABEL.log" "$HS_GUARD"
 assert grep -Fq -- "$HS_LABEL" "$ROOT/docs/DIAGNOSTICS.md"
 assert doc_has 'Hammerspoon launchd agent identity'
 
-CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
 RJOURNAL="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/review-flow-gate.sh"
 
@@ -1660,7 +1665,6 @@ assert eq "$(grep -c 'def pid_still_running(' "$RB_ROUND")" 1
 # The file doors read the resolved file, both registrations stand, and no pin door is left: a pin
 # grant check coming back is a refusal Egor ended (2026-10-09).
 PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
-WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
 assert grep -Fq 'canonical_path "$HOME/.claude/worker-model"' "$PIN_GATE"
 assert grep -Fq 'worker-pin-gate.sh write' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh bash' "$WORKER_GATE_SETTINGS"
@@ -1696,14 +1700,15 @@ assert doc_has '`bin/worker-pin-gate.sh` `chat_pins_dir`'
 assert doc_has '`bin/statusline.sh` `pin` segment'
 assert eq "$(grep -rlF 'claude-chat-pins' "$ROOT/bin" "$ROOT/share" "$ROOT/llm-limits.sh" | sed "s|^$ROOT/||" | sort | tr '\n' ' ')" 'bin/statusline.sh bin/worker-pin-gate.sh share/worker-model.sh '
 assert grep -Fq "CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok" "$ROOT/llm-limits.sh"
+fi
 
+if suite_shard_owns 2 rows-ai-ak; then
 # --- Row ai: usage wall record ------------------------------------------------
 # Two processes write this file in two languages — bin/opencode-go at the 429 it sees, bin/review-bench
 # for every side — so the record shape and the one rule they must spell alike, the per-window ceiling
 # on a stated horizon, are pinned here. Nothing reads it to decide whether a wall still stands except
 # the bench's own pool and llm-limits.sh (row al); the menubar no longer touches it at all.
 WALL_FILE=walls.jsonl
-OPENCODE_GO="$ROOT/bin/opencode-go"
 rb_wall_file=$(grep -E '^WALL_STATE_FILE = ' "$RB_ACCOUNTS" | sed -E 's/^[^=]+= "([^"]+)"/\1/')
 assert eq "$rb_wall_file" "$WALL_FILE"
 assert grep -Fq "WALLS_FILE=\$WALL_STATE_DIR/$WALL_FILE" "$OPENCODE_GO"
@@ -2026,7 +2031,6 @@ assert doc_has 'worker_model_set_paused'
 # it existed. `opencode` is the inverted one: it has no usage endpoint, so anything that would make
 # it poll on the other four's cadence spends the plan. A paused vendor (row bp) drops out of that
 # one list and so out of all three consumers at once.
-LLMREFRESH="$ROOT/bin/llm-refresh"
 REFRESH_VENDORS="claude codex gemini grok opencode"
 refresh_roster=$(sed -n '/^live_vendors() {/,/^}/p' "$LLMREFRESH" | grep -E '^  for vendor in ' | head -n1)
 [ -n "$refresh_roster" ] ||
@@ -2120,7 +2124,9 @@ assert grep -Fq 'refresh_lock_release' \
   <<<"$(grep -B2 -F 'opencode_result=$(opencode_tick' "$LLMREFRESH")"
 assert doc_has 'read as one of three states and never two'
 assert doc_has 'The tick lock is handed back for the duration of the probe'
+fi
 
+if suite_shard_owns 1 rows-al-am; then
 # --- Row al: OpenCode rows in the limits store --------------------------------
 # The Go plan states no usage figure, so whether a wall still stands is the only reading there is
 # and llm-limits.sh computes it once. Every other surface renders those rows; a second answer to
@@ -2275,7 +2281,6 @@ assert eq "$(sed -n '/^record_worker_session()/,/^}/p' "$WORKER_RUN" |
 assert grep -Fq 'session=$(session_id "$directory")' "$WORKER_RUN"
 # The third reader: a waiver naming no path must drop the files a co-tenant's worker run claims,
 # which it can only do by looking in the same directory the other two sweep.
-CHATNAMES="$ROOT/share/chat_names.py"
 rb_run_root=$(sed -n '/^def worker_run_root():/,/^$/p' "$CHATNAMES" |
   sed -n 's|.*Path.home() / "\(.*\)" / "\(.*\)")$|\1/\2|p' | head -1)
 worker_run_root=$(grep -oE 'WORKER_RUN_DIR:-\$HOME/[^}]*' "$WORKER_RUN" | head -1 | sed 's|.*\$HOME/||')
@@ -2351,7 +2356,9 @@ if [ -r "$REVIEW_GATE" ]; then
 else
   fail "the gate prices no run records: $REVIEW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
+fi
 
+if suite_shard_owns 3 rows-an-ek; then
 # --- Row an: launching-chat pid walk ------------------------------------------
 # One walk, the bench's, at run start: the top statusline that walked again at render time for an
 # old document went with its review segment, so a second walk reappearing there would answer a
@@ -3411,6 +3418,7 @@ assert grep -Fq 'state["lost_min_day_by_day"] = document["lost_min_day_by_day"] 
 assert grep -Fq '"lost_min_day_by_day") if k in speed' "$ROOT/bin/harness-doctor"
 assert grep -Fq 'metrics.lost_min_day_by_day or {}' "$ROOT/hammerspoon/doctors.lua"
 assert doc_has 'an unmeasured date is a blank cell, never an invented bar'
+fi
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk only the progress writer runs, once, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the four carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the five-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, the one wait journal every wait class writes and the Harness doctor shows, every copy an installer deploys, which the Harness doctor compares with its source, the ledger overlay a measuring run settles into instead of a tracked file, and the README PATH link of every script the media skill runs by name) and match %s
 ' "$asserts" "$DOC"
