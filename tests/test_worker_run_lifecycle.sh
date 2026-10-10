@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
+if suite_shard_owns 1 lifecycle-detached; then
 clear_stub
 set_config 'codex_effort=high'
 export PICK_ACCOUNT=fast PICK_RC=0 STUB_GATE="$WORK/start-gate"
@@ -97,7 +99,9 @@ for vendor in claudeb codex gemini; do
   assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
   assert await_done
 done
+fi
 
+if suite_shard_owns 2 lifecycle-light-refusals; then
 # A light edit asks the picker under the `light` role, so `<vendor>_workers=off` closes neither
 # door it passes: not the picker's, and not worker-run's own wall over the resolved vendor.
 clear_stub
@@ -213,7 +217,9 @@ for vendor in claudeb codex gemini grok; do
   assert test ! -s "$CALL_LOG"
   unset PICK_STDERR
 done
+fi
 
+if suite_shard_owns 3 lifecycle-walls-computer; then
 # The role switch closes the vendor, not one account of it, so naming an account outright — or
 # falling back to the pin — cannot walk around it the way it cannot walk around the pool.
 for vendor in claudeb codex gemini; do
@@ -405,7 +411,9 @@ assert test -z "$(cat "$STUB_DIR/pack.id")"
 assert jq -e '(.orphans_ended // []) == []' "$RUN_DIR/meta.json" >/dev/null
 unset PICK_ACCOUNT PICK_RC
 set_config
+fi
 
+if suite_shard_owns 2 lifecycle-missing-pool; then
 # A missing wall is loud: worker-run must refuse to launch rather than read every account as
 # excluded because its include went missing.
 NOSHARE_RUNNER="$WORK/noshare/bin/worker-run"
@@ -417,5 +425,13 @@ assert test "$noshare_rc" -eq 4
 assert grep -q 'share/worker-pool.sh is missing' "$WORK/noshare.err"
 assert_fails grep -q 'out of the worker pool' "$WORK/noshare.err"
 
+# Every worker_run suite builds its roster at setup: a fork per name was 7 s of each start under load.
+mkdir -p "$WORK/forks"
+printf '#!/bin/sh\necho mkdir >>"%s/forks/log"\nexec /bin/mkdir "$@"\n' "$WORK" >"$WORK/forks/mkdir"
+chmod +x "$WORK/forks/mkdir"
+for vendor in claudeb codex gemini grok; do PATH="$WORK/forks:$PATH" roster_add "$vendor" fork1 fork2 fork3; done
+assert test "$(wc -l <"$WORK/forks/log" | tr -d ' ')" -eq 4
+assert test -d "$GROKB_PROFILES_DIR/fork3" -a -e "$CLAUDEB_DIR/tokens/fork3"
+fi
 
 echo "PASS: $asserts asserts; detached start, bounded waits, light runs, chat pins, computer use, missing pool"

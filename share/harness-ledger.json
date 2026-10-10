@@ -6605,6 +6605,37 @@
       "handoff": null,
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-hooks-cd-guard-sh-20261010T031903Z-0d2c"
+    },
+    {
+      "id": "speed-test-health-heavy-worker-run-lifecycle",
+      "title": "test_worker_run_lifecycle ran its ~47 worker-run starts in one serial process, behind a roster setup of one fork per account name",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_lifecycle"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:40:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-lifecycle-20261010T031941Z-12bb",
+          "files": [
+            "llm-legs/tests/test_worker_run_lifecycle.sh",
+            "llm-legs/tests/worker_run_harness.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert count and verdict of the whole suite (RUN_SUITES_SHARDS=off) vs its three shards; the harness roster tree (find over $WORK) base vs fix",
+            "data": "tests/test_worker_run_lifecycle.sh at load ~200, whole and sharded run side by side; harness setup sourced once per side",
+            "result": "whole PASS 215, shards 60+75+80 = 215, every section once (suite_shard_owns); roster tree 337 paths identical; whole 889 s vs sharded 434 s wall at equal CPU (~55 s); setup 7.2 -> 0.68 s wall, 0.94 -> 0.11 CPU-s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-lifecycle-20261010T031941Z-12bb",
+      "note": "Before: 281 runs, 1.1 wall-min a run, 5.4 min + 27 w-min/day (value 57.2, latest.json 2026-10-10). Traced at load 70: 418 s wall, 49.5 CPU-s; a start costs 0.5-0.8 CPU-s but ~4 s wall, so the wall is ~47 serial launches waiting on the scheduler, plus 7.2 s of setup (roster_add's ~320 mkdir forks, every worker_run suite and shard pays it). Fixed: `# shards: 3` (detached/accounts 60, light+refusals+missing pool 75+, walls/pins/computer/orphans 80 asserts; profile shares ~150/120/143 s), roster_add one mkdir per vendor (fork-count assert, 12 -> 4, red on base). Not cut: the vendor loops (each case asserts its vendor's OUTCOME name) and the legacy SESSION RESERVE case (its launch also guards picker stderr passthrough and the report's ACCOUNT line); the pack stub's 2 s sleep is the run-outlives-pack premise. The sibling opportunity test-health/idle/llm-legs/test_worker_run_lifecycle (6.95) was not this run's.",
+      "handoff": null
     }
   ],
   "blind_spots": [
