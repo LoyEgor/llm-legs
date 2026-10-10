@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 . "$(dirname "$0")/instruction_gate_harness.sh" || exit 1
 profile_link
 docs_link
 alert_log_stub
 
+if suite_shard_owns 1 relay-and-tripwire; then
 echo "== relay worker: an instruction file is the orchestrator's to edit, never a worker's"
 # Egor's rule: these files are edited by the model he negotiated with, after that model's audit —
 # a worker proposes. The audit-then-retry protocol is honour-based, and a relay worker walked
@@ -229,6 +231,58 @@ assert_eq "" "$(raw_check sid-off Bash command "$grow_cmd" "$SPAN_T")"
 assert_eq "tier doc" "$(cat "$DOC")"
 export INSTRUCTION_WATCH_CHAT=all
 
+echo "== journal: the bound trims what Hammerspoon receipted, and says so when it must drop more"
+TRIM_STATE="$WORK/trim"
+trim_plant() { # unreceipted receipted
+  rm -rf "$TRIM_STATE"
+  mkdir -p "$TRIM_STATE/receipts"
+  { [ "$2" = 0 ] || seq 1 "$2" | awk '{printf "{\"id\":\"r%d\",\"kind\":\"change\",\"summary\":\"r\"}\n", $1}'
+    seq 1 "$1" | awk '{printf "{\"id\":\"u%d\",\"kind\":\"change\",\"summary\":\"u\"}\n", $1}'
+  } | grep . > "$TRIM_STATE/events.jsonl"
+  [ "$2" = 0 ] || (cd "$TRIM_STATE/receipts" && seq 1 "$2" | sed 's/^/r/' | xargs touch)
+}
+trim_append() {
+  INSTRUCTION_WATCH_STATE="$TRIM_STATE" INSTRUCTION_WATCH_JOURNAL_MAX=200 \
+    share_call 'instruction_journal_append "$2"' "{\"id\":\"new$1\",\"kind\":\"change\",\"summary\":\"n\"}"
+}
+TJ="$TRIM_STATE/events.jsonl"
+trim_plant 249 0
+trim_append 1
+assert_eq 250 "$(grep -c . "$TJ")"
+assert_eq 0 "$(grep -c '"kind":"dropped"' "$TJ")"
+trim_plant 249 151
+trim_append 1
+assert_eq 250 "$(grep -c . "$TJ")"
+assert_eq 0 "$(grep -c '"id":"r' "$TJ")"
+assert_eq 0 "$(grep -c '"kind":"dropped"' "$TJ")"
+trim_plant 99 301
+trim_append 1
+assert_eq 200 "$(grep -c . "$TJ")"
+assert_eq 100 "$(grep -c '"id":"r' "$TJ")"
+assert_eq '"r202"' "$(grep '"id":"r' "$TJ" | head -1 | jq .id)"
+trim_plant 449 0
+trim_append 1
+assert_eq 400 "$(grep -c . "$TJ")"
+assert_eq dropped "$(tail -1 "$TJ" | jq -r .kind)"
+assert_eq 51 "$(tail -1 "$TJ" | jq -r .count)"
+assert_eq '"u52"' "$(head -1 "$TJ" | jq .id)"
+trim_append 2
+assert_eq 400 "$(grep -c . "$TJ")"
+assert_eq 1 "$(grep -c '"kind":"dropped"' "$TJ")"
+assert_eq 52 "$(tail -1 "$TJ" | jq -r .count)"
+
+echo "== baseline sweep: a quiet session that just ran a check is alive, a silent one goes"
+span_base sid-alive >/dev/null
+span_base sid-gone >/dev/null
+touch -t 202001010000 "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" \
+  "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv"
+assert_eq "" "$(raw_check sid-alive Bash command "$ANY_CALL" "$NOSPAN_T")"
+span_base sid-sweeper >/dev/null
+assert [ -e "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" ]
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv" ]
+
+fi
+if suite_shard_owns 2 journal-and-inflight; then
 chat_name_stub
 
 echo "== journal: one durable record per change, machine-wide, with what a menu needs"
@@ -397,56 +451,6 @@ assert_eq ambiguous "$(tail -1 "$J" | jq -r .writer)"
 rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
 printf 'tier doc\n' > "$DOC"
 
-echo "== journal: the bound trims what Hammerspoon receipted, and says so when it must drop more"
-TRIM_STATE="$WORK/trim"
-trim_plant() { # unreceipted receipted
-  rm -rf "$TRIM_STATE"
-  mkdir -p "$TRIM_STATE/receipts"
-  { [ "$2" = 0 ] || seq 1 "$2" | awk '{printf "{\"id\":\"r%d\",\"kind\":\"change\",\"summary\":\"r\"}\n", $1}'
-    seq 1 "$1" | awk '{printf "{\"id\":\"u%d\",\"kind\":\"change\",\"summary\":\"u\"}\n", $1}'
-  } | grep . > "$TRIM_STATE/events.jsonl"
-  [ "$2" = 0 ] || (cd "$TRIM_STATE/receipts" && seq 1 "$2" | sed 's/^/r/' | xargs touch)
-}
-trim_append() {
-  INSTRUCTION_WATCH_STATE="$TRIM_STATE" INSTRUCTION_WATCH_JOURNAL_MAX=200 \
-    share_call 'instruction_journal_append "$2"' "{\"id\":\"new$1\",\"kind\":\"change\",\"summary\":\"n\"}"
-}
-TJ="$TRIM_STATE/events.jsonl"
-trim_plant 249 0
-trim_append 1
-assert_eq 250 "$(grep -c . "$TJ")"
-assert_eq 0 "$(grep -c '"kind":"dropped"' "$TJ")"
-trim_plant 249 151
-trim_append 1
-assert_eq 250 "$(grep -c . "$TJ")"
-assert_eq 0 "$(grep -c '"id":"r' "$TJ")"
-assert_eq 0 "$(grep -c '"kind":"dropped"' "$TJ")"
-trim_plant 99 301
-trim_append 1
-assert_eq 200 "$(grep -c . "$TJ")"
-assert_eq 100 "$(grep -c '"id":"r' "$TJ")"
-assert_eq '"r202"' "$(grep '"id":"r' "$TJ" | head -1 | jq .id)"
-trim_plant 449 0
-trim_append 1
-assert_eq 400 "$(grep -c . "$TJ")"
-assert_eq dropped "$(tail -1 "$TJ" | jq -r .kind)"
-assert_eq 51 "$(tail -1 "$TJ" | jq -r .count)"
-assert_eq '"u52"' "$(head -1 "$TJ" | jq .id)"
-trim_append 2
-assert_eq 400 "$(grep -c . "$TJ")"
-assert_eq 1 "$(grep -c '"kind":"dropped"' "$TJ")"
-assert_eq 52 "$(tail -1 "$TJ" | jq -r .count)"
-
-echo "== baseline sweep: a quiet session that just ran a check is alive, a silent one goes"
-span_base sid-alive >/dev/null
-span_base sid-gone >/dev/null
-touch -t 202001010000 "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" \
-  "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv"
-assert_eq "" "$(raw_check sid-alive Bash command "$ANY_CALL" "$NOSPAN_T")"
-span_base sid-sweeper >/dev/null
-assert [ -e "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" ]
-assert [ ! -e "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv" ]
-
 echo "== journal: a delivery that could not even be attempted says so"
 saved_alert=$INSTRUCTION_WATCH_ALERT
 INSTRUCTION_WATCH_ALERT="$WORK/no-such-hammerspoon"
@@ -470,5 +474,7 @@ done
 assert [ "$(grep -c . "$J")" -le 4 ]
 assert_contains "tier line 5" "$(tail -1 "$J" | jq -r '.summary')$(cat "$DOC")"
 unset INSTRUCTION_WATCH_JOURNAL_MAX
+
+fi
 
 echo "OK ($asserts assertions)"
