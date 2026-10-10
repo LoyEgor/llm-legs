@@ -347,8 +347,7 @@ assert_eq pass "$(bloat_decision "$HOME/.claude/instructions/table.json")"
 printf '%s\n' 'jq() { printf "jq\n" >>"$FORKS"; command jq "$@"; }' \
   'mktemp() { printf "mktemp\n" >>"$FORKS"; command mktemp "$@"; }' >"$WORK/count-forks.sh"
 : >"$WORK/forks"
-jq -cn --arg p "$WORK/liveproj/run.py" '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:"y"}}' |
-  BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$BLOAT" >/dev/null 2>&1
+BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bloat "$WORK/liveproj/run.py" >/dev/null 2>&1
 assert_eq "jq " "$(tr '\n' ' ' <"$WORK/forks")"
 assert_eq deny "$(bloat_decision "$HOME/.claude/skills/foo/SKILL.md")"
 

@@ -22,6 +22,8 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chat_names  # noqa: E402
+from fix_commit import siblings_dir  # noqa: E402
+from spend import read_json  # noqa: E402
 
 UNIT = "Opus-eq"
 HOME = os.path.expanduser("~")
@@ -32,8 +34,8 @@ BENCHES = (os.environ.get("WORKER_STATS_DIR")
 
 @functools.lru_cache(maxsize=None)
 def pricing():
-    checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).split(chat_names.WORKTREES)[0]
-    root = os.environ.get("TOKENMAP_ROOT") or os.path.join(os.path.dirname(checkout), "token-map")
+    checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = os.environ.get("TOKENMAP_ROOT") or os.path.join(siblings_dir(checkout), "token-map")
     path = os.path.join(root, "tokenmap", "pricing.py")
     if not os.path.isfile(path):
         sys.exit(f"night_spend: no token-map checkout at {root} (set TOKENMAP_ROOT); spend is priced by its pricing.py")
@@ -196,11 +198,7 @@ def run_usage(worker_run, run, vendor, seen, found=None):
     files = claude_files(whole) if vendor == "claudeb" else None
     if files is not None and files in seen:
         return collections.Counter()
-    try:
-        with open(f"{RUNS}/{run}/meta.json") as handle:
-            meta = json.load(handle)
-    except (OSError, ValueError):
-        meta = {}
+    meta = read_json(f"{RUNS}/{run}/meta.json", {})
     model = meta.get("served_model") or meta.get("model")
     usage = {"claudeb": lambda: claude_usage(transcript, seen), "codex": lambda: codex_usage(transcript, model),
              "gemini": lambda: gemini_usage(transcript, model), "grok": lambda: grok_usage(transcript, model)}.get(

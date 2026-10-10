@@ -503,10 +503,8 @@ adopt_leftover() { # id branch ready-why repos -> sets branch and adopted (JSON)
       if [[ $old =~ code-code-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$ ]]; then
         keep='code-doctor check reads the Code fixer run from it'
       else
-        ignored=$(git -C "$wt" ls-files -o -i --exclude-standard --directory | head -3 | paste -sd ' ' -)
-        [ -z "$ignored" ] || keep="it holds ignored files ($ignored)"
+        keep=$(landed_keep "$wt")
       fi
-      [ -n "$keep" ] || keep=$(cwd_held "$wt")
     fi
     if [ -n "$keep" ]; then
       printf 'adopted %s %s into %s at %s; the old one stays: %s\n' "$(basename "$repo")" "$old" "$branch" "$path" "$keep"

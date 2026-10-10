@@ -182,6 +182,10 @@ assert_eq deny "$(GATE_CWD="$PROJ" decision "cat > scratch/gate.py <<'PY'
 $JOINED
 PY
 python3 scratch/gate.py $PROJ")"
+assert_eq deny "$(GATE_CWD="$PROJ" decision "cat >| scratch/gate2.py <<'PY'
+$JOINED
+PY
+python3 scratch/gate2.py $PROJ")"
 assert_eq deny "$(GATE_CWD="$PROJ" decision "python3 - <<'PY'
 $JOINED
 PY")"

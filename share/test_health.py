@@ -248,10 +248,8 @@ def allocate(rows, suites, usual_j, free=None):
         kept = slack
         if free is not None and slack > 0:
             lo, hi = (row["start"], row["end"]) if serial else (row["end"] - slack, row["end"])
-            i, room = max(0, bisect.bisect_right(starts, lo) - 1), 0.0
-            while i < len(free) and free[i][0] < hi:
-                room += max(0.0, min(free[i][1], hi) - max(free[i][0], lo))
-                i += 1
+            i = max(0, bisect.bisect_right(starts, lo) - 1)
+            room = time_budget.length(time_budget.clip(free[i:bisect.bisect_left(starts, hi)], lo, hi))
             kept = slack * room / max(hi - lo, 1e-9)
         for e in execs:
             share = (wall - slack) * e["secs"] / total if total > 0 else wall / len(execs)

@@ -992,7 +992,8 @@ import night_spend as ns
 
 worker_run, spend_dir, t1 = os.path.join(sys.argv[1], "bin", "worker-run"), sys.argv[2], os.path.realpath(sys.argv[3])
 calls, reads, real_run, real_rows = [], collections.Counter(), subprocess.run, ns.rows
-ns.subprocess.run = lambda args, **kw: calls.append(args[2:]) or real_run(args, **kw)
+ns.pricing()
+ns.subprocess.run =lambda args, **kw: calls.append(args[2:]) or real_run(args, **kw)
 ns.rows = lambda path: reads.update([os.path.realpath(path)]) or real_rows(path)
 with open(f"{spend_dir}/doctors/nights/20260102T000000Z-bbbb.json") as handle:
     now = ns.spend(json.load(handle), worker_run)
@@ -1035,6 +1036,15 @@ assert_fails env TOKENMAP_ROOT="$WORK/no-token-map" WORKER_RUN_DIR="$SP/runs" CL
   "$SP/doctors/nights/20260102T000000Z-bbbb.json" >/dev/null 2>"$WORK/err"
 assert [ "$(grep -c . "$WORK/err")" = 1 ]
 assert grep -qF "no token-map checkout at $WORK/no-token-map (set TOKENMAP_ROOT)" "$WORK/err"
+# A linked worktree outside .claude/worktrees still prices with the token-map beside its main checkout.
+TM="$WORK/tm-wt"
+git init -q -b main "$TM/proj/main" && git -C "$TM/proj/main" -c user.email=t@e -c user.name=T commit -q --allow-empty -m x &&
+  git -C "$TM/proj/main" worktree add -q -b tm-wt "$TM/elsewhere/wt" &&
+  mkdir -p "$TM/elsewhere/wt/share" "$TM/proj/token-map/tokenmap" &&
+  cp "$ROOT"/share/{night_spend,chat_names,fix_commit,spend}.py "$TM/elsewhere/wt/share/" &&
+  printf 'PRICES = {"tm-wt": 1}\n' >"$TM/proj/token-map/tokenmap/pricing.py" || fail "token-map worktree fixture"
+assert env -u TOKENMAP_ROOT python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import night_spend
+assert night_spend.pricing().PRICES == {"tm-wt": 1}' "$TM/elsewhere/wt/share"
 
 # Observational churn block: review rounds per-branch vs other, problems touched again without proof,
 # regressed from after snapshot, proved excluded, fixer spend without proof, and rewrites in past 7 days.

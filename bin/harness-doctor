@@ -205,8 +205,9 @@ C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|e
 MEDIA_TOOLS = ("media-run", "codex-image", "gemini-image", "grok-image", "image-fanout", "gemini-video", "grok-video",
                "video-chain", "gemini-music", "gemini-sfx", "gemini-listen", "gemini-speech", "chatgpt-web", "gemini-web")
 MEDIA_TOOL = re.compile(r"(?<![\w.-])(%s)(?![\w.-])" % "|".join(MEDIA_TOOLS))
-HEREDOC_BODY = re.compile(r"(^[^\n]*?(?<!<)<<-?[ \t]*(['\"]?)(\w+)\2[^\n]*)\n.*?\n[ \t]*\3[ \t]*(?=\n|$)", re.S | re.M)
-HEREDOC_SHELL = re.compile(r">\s*\S+\.(?:sh|bash)\b|(?:^|[\s;&|(])(?:bash|sh|zsh)(?:\s+-\w+)*\s*<<")
+HEREDOC_SCRIPT = r">[[:space:]]*[^[:space:]]+\.(sh|bash)([^[:alnum:]_]|$)"
+HEREDOC_SHELL_FED = (r"(^|[[:space:];&|(])(bash|sh|zsh)([[:space:]]+-[^[:space:]]+)*[[:space:]]*$|" + HEREDOC_SCRIPT,
+                     r"[|][[:space:]]*(bash|sh|zsh)([[:space:]]|$)|" + HEREDOC_SCRIPT)
 WORKER_WAIT = re.compile(r"(?:^|[\s/;&|(])(?:worker-run\s+wait|light-research)(?=\s|$|[;&|)])")
 REVIEW_WAIT = re.compile(r"(?:^|[\s/;&|(])review-bench\s+wait(?=\s|$|[;&|)])")
 C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
@@ -617,14 +618,25 @@ def command_mechanism(command):
     return None
 
 
+def heredoc_masked(text):
+    try:
+        done = subprocess.run(["bash", "-c", '. "$1" && heredoc_mask "$2" "$3"', "_",
+                               os.path.join(ROOT_DIR, "share", "heredoc-mask.sh"), *HEREDOC_SHELL_FED],
+                              input=text, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return text
+    return done.stdout if done.returncode == 0 else text
+
+
 @functools.lru_cache(maxsize=4096)
 def media_tool(command):
     """The media script a Bash call runs: a command word or a $VAR assigned its path. A media path that is only an
     argument, a quoted string or a heredoc line (an edit, a grep, a commit message) is no media wait."""
     if not MEDIA_TOOL.search(command):
         return None
-    text = HEREDOC_BODY.sub(lambda h: h.group(0) if HEREDOC_SHELL.search(h.group(1)) else h.group(1),
-                            command.replace("\\\n", " "))
+    text = command.replace("\\\n", " ")
+    if "<<" in text:
+        text = heredoc_masked(text)
     lex = shlex.shlex(text, posix=True, punctuation_chars="();<>|&\n")
     lex.whitespace, lex.commenters = " \t\r", ""
     lex.wordchars += "${}:@%+,^!#[]"

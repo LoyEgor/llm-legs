@@ -456,7 +456,7 @@ assert jqe '.suites["test_prof.sh"] | .rc == 0 and (has("execs") or has("sleep_s
 
 # Red first: a day run starts the suites red in this checkout's last covering run first and, once they
 # are red again, stops the rest unrun; the summary says FAIL and the row is complete:false repeat-red.
-# A green repeat and the night's full run run everything. A run prunes log dirs past two days.
+# A green repeat and the night's full run run everything. Old log dirs are log-sweep's (tmp-sandboxes), never a run's.
 R9="$WORK/r9"
 new_repo "$R9"
 suite "$R9" test_a.sh 'exit 0'
@@ -466,7 +466,7 @@ mkdir -p "$WORK/r9tmp/run-suites.old" "$WORK/r9tmp/run-suites.new" "$WORK/r9tmp/
 touch -t 202001010000 "$WORK/r9tmp/run-suites.old" "$WORK/r9tmp/other.old"
 r9() { TMPDIR="$WORK/r9tmp" bash "$ROOT/share/run-suites.sh" --repo "$R9" -j 1 "$@" 2>&1; }
 r9 test_a.sh test_b.sh test_z_red.sh >/dev/null
-assert test ! -e "$WORK/r9tmp/run-suites.old"
+assert test -d "$WORK/r9tmp/run-suites.old"
 assert test -d "$WORK/r9tmp/run-suites.new"
 assert test -d "$WORK/r9tmp/other.old"
 assert jqe '.complete == true and (has("stopped") | not) and (.suites | keys) == ["test_a.sh","test_b.sh","test_z_red.sh"]' <(tail -1 "$JOURNAL")

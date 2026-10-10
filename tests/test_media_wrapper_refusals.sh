@@ -23,7 +23,11 @@ assert_fails() {
   fi
 }
 
-wrappers=(codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-speech gemini-video grok-image grok-video)
+wrappers=()
+for script in $(jq -r '.scripts // {} | .[]' "$ROOT"/share/image-caps/*.json | sort -u); do
+  ! grep -q image_leg_help "$ROOT/bin/$script" || wrappers+=("$script")
+done
+assert test "${#wrappers[@]}" -ge 9
 for wrapper in "${wrappers[@]}"; do
   help_rc=0
   help_out=$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --help 2>/dev/null) || help_rc=$?

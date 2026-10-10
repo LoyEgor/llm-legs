@@ -981,52 +981,7 @@ instruction_interp_scripts() { # command cwd [all] → INTERPRETER<TAB>PATH line
 # A file a heredoc writes, as MODE<TAB>TARGET<TAB>BODY rows, the body on one line with its pipes blanked as the gate
 # reads a program file: a script the same command writes and then runs does not exist yet at PreToolUse.
 instruction_heredoc_writes() { # command → MODE<TAB>TARGET<TAB>BODY lines, MODE trunc or append
-  awk -v sq="'" -v dq='"' '
-    function target(seg,   t) {
-      if (match(seg, /(^|[ \t])g?tee[ \t]+((-a|--append)[ \t]+)?[^ \t;&|<>]+/)) {
-        t = substr(seg, RSTART, RLENGTH)
-        tmode = t ~ /[ \t](-a|--append)[ \t]/ ? "append" : "trunc"
-        sub(/^[ \t]*g?tee[ \t]+((-a|--append)[ \t]+)?/, "", t)
-        return t
-      }
-      if (match(seg, /(^|[^0-9&<>])>>?[ \t]*[^ \t;&|<>]+/)) {
-        t = substr(seg, RSTART, RLENGTH)
-        tmode = t ~ />>/ ? "append" : "trunc"
-        sub(/^[^>]*>>?[ \t]*/, "", t)
-        return t
-      }
-      return ""
-    }
-    { lines[++n] = $0 }
-    END {
-      hd = "<<-?[ \t]*[" sq dq "]?[A-Za-z_0-9.-]+[" sq dq "]?"
-      i = 1
-      while (i <= n) {
-        line = lines[i++]; rest = line; off = 0; k = 0
-        while (match(rest, hd)) {
-          at = off + RSTART; tok = substr(rest, RSTART, RLENGTH)
-          off += RSTART + RLENGTH - 1; rest = substr(rest, RSTART + RLENGTH)
-          if (substr(line, at + 2, 1) == "<" || (at > 1 && substr(line, at - 1, 1) == "<")) continue
-          strip[++k] = substr(tok, 3, 1) == "-"
-          delim = tok; sub(/^<<-?[ \t]*/, "", delim); gsub("[" sq dq "]", "", delim); delims[k] = delim
-          pre = substr(line, 1, at - 1); sub(/.*[;&|]/, "", pre)
-          post = substr(line, at); sub(/[;&].*/, "", post)
-          targets[k] = target(pre post); modes[k] = tmode
-        }
-        for (j = 1; j <= k; j++) {
-          body = ""
-          while (i <= n) {
-            l = lines[i++]; c = l
-            if (strip[j]) sub(/^\t+/, "", c)
-            if (c == delims[j]) break
-            body = body (body == "" ? "" : " ") l
-          }
-          gsub(/\|/, " ", body)
-          t = targets[j]; gsub("[" sq dq "]", "", t)
-          if (t != "") printf "%s\t%s\t%s\n", modes[j], t, body
-        }
-      }
-    }' <<<"$1"
+  instruction_write_targets "$1" '[^[:space:]]+' heredoc
 }
 
 # WHERE A COMMAND LEAVES ITS BYTES: the one parse both doors on these files ask. Two parses of one
@@ -1051,10 +1006,13 @@ instruction_heredoc_writes() { # command → MODE<TAB>TARGET<TAB>BODY lines, MOD
 # name is not that name, and a copy whose last operand is elsewhere reads OUT of the file. Only an
 # interpreter is read loosely, because there the path stands inside the call rather than in an
 # operand.
-instruction_write_targets() { # command-text names-alternation → KIND MODE VERB NAME rows
+#
+# With `heredoc` the rows are instead MODE<TAB>NAME<TAB>BODY: each redirection and tee of the
+# pipeline that declares a heredoc, with that heredoc's body (instruction_heredoc_writes).
+instruction_write_targets() { # command-text names-alternation [heredoc] → KIND MODE VERB NAME rows
   [ -n "${2:-}" ] || return 0
   # C locale: tolower() under UTF-8 aborts on a byte run it cannot decode, and a path is bytes.
-  LC_ALL=C IWT_TARGET=$2 IWT_NAME_START=$INSTRUCTION_NAME_START IWT_NAME_END=$INSTRUCTION_NAME_END \
+  LC_ALL=C IWT_TARGET=$2 IWT_NAME_START=$INSTRUCTION_NAME_START IWT_NAME_END=$INSTRUCTION_NAME_END IWT_HEREDOC=${3:-} \
   awk -v sq="'" -v bq='`' '
     # Only the simple command that declares the heredoc decides whether a shell reads it, pipes kept:
     # `cat <<EOF | bash` runs the body, `bash -n x && cat > f <<EOF` does not.
@@ -1133,6 +1091,10 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
     function emit(kind, mode, verb, name, whole) {
       if (name == "") return
       if (name ~ /[\t\n]/) { gsub(/[\t\n]/, "?", name); kind = "refuse" }
+      if (hdmode) {
+        if (kind == "redirect" || (kind == "verb" && verb ~ /^g?tee$/)) GR[grp, ++GN[grp]] = mode "\t" name
+        return
+      }
       if (whole && tolower(name) !~ exact) return
       printf "%s\t%s\t%s\t%s\n", kind, mode, verb, name
     }
@@ -1243,7 +1205,7 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
             } else emit("copy", "trunc", verb "/", dest "/" src, 1)
           }
         }
-      } else if (vkind == "loose") {
+      } else if (vkind == "loose" && !hdmode) {
         scan_loose(rawtext " " body, verb)
       }
       nw = 0; word = ""
@@ -1253,6 +1215,7 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
       n = length(code)
       p = 1
       cstart = 1
+      grp++
       while (p <= n) {
         c = substr(code, p, 1)
         prev = (p > 1) ? substr(code, p - 1, 1) : ""
@@ -1279,6 +1242,7 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
         if (c == ";" || c == "|" || c == "&" || c == bq) {
           addword()
           finish(substr(code, cstart, p - cstart), body)
+          if (c == ";" || c == "&" || (c == "|" && substr(code, p + 1, 1) == "|")) grp++
           p++
           cstart = p
           continue
@@ -1312,6 +1276,7 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
           # it.
           if (word ~ /^[0-9]+$/) word = ""
           addword()
+          if (p in HAT) HG[HAT[p]] = grp
           p++
           c2 = substr(code, p, 1)
           if (c2 == "<") { p++; c2 = substr(code, p, 1); if (c2 == "<" || c2 == "-") p++ }
@@ -1338,6 +1303,7 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
       exact = "^(" target ")$"
       bounded = tolower(ENVIRON["IWT_NAME_START"] "(" ENVIRON["IWT_TARGET"] ")" ENVIRON["IWT_NAME_END"])
       shellre = "(^|[ \t|;&(])([^ \t|;&()<>]*/)?(bash|sh|zsh|ksh|dash)([ \t]|$)"
+      hdmode = ENVIRON["IWT_HEREDOC"] != ""
       blank = "[ \t]"
       nl = 0
       # A continuation is one command to the shell and two lines to everything here, and the
@@ -1360,8 +1326,12 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
         # `<<<` declares no body at all.
         ndel = 0
         rest = code
+        off = 0
+        split("", HAT)
         while (match(rest, "<<<|<<-?[ \t]*(\"[^\"]*\"|" sq "[^" sq "]*" sq "|[^ \t|;&<>()]+)")) {
           tok = substr(rest, RSTART, RLENGTH)
+          at = off + RSTART
+          off += RSTART + RLENGTH - 1
           rest = substr(rest, RSTART + RLENGTH)
           if (tok ~ /^<<</) continue
           d = tok
@@ -1374,8 +1344,10 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
           ndel++
           DEL[ndel] = d
           STRIP[ndel] = (tok ~ /^<<-/)
+          HP[ndel] = at
         }
         body = ""
+        lo = hid + 1
         # A heredoc fed to a shell is a program, so its lines are commands in their own right.
         if (feedsshell(code)) ndel = 0
         for (k = 1; k <= ndel; k++) {
@@ -1388,10 +1360,23 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
           # A terminator that is not in the text means the body was already dropped by the caller
           # (instruction_shell_scan): reading to the end would swallow the next command whole.
           if (!stop) break
-          for (j = i; j < stop; j++) body = body " " L[j]
+          hb = ""
+          for (j = i; j < stop; j++) {
+            body = body " " L[j]
+            hb = hb (hb == "" ? "" : " ") L[j]
+          }
+          HAT[HP[k]] = ++hid
+          HB[hid] = hb
           i = stop + 1
         }
         tokenize(code, body)
+        if (hdmode)
+          for (h = lo; h <= hid; h++) {
+            if (!(h in HG)) continue
+            hb = HB[h]
+            gsub(/\|/, " ", hb)
+            for (r = 1; r <= GN[HG[h]]; r++) printf "%s\t%s\n", GR[HG[h], r], hb
+          }
       }
     }' <<<"$1"
 }

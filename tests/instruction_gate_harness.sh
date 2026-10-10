@@ -226,7 +226,7 @@ share_call() { # snippet arg... → the shared module, sourced, answering
 # writing call: a fixture's own write, standing for another process, waits for it the same way.
 span_base() {
   watch_sid "$1" baseline
-  share_call 'instruction_baseline_wait "$INSTRUCTION_WATCH_STATE/pending-$2"' "$1"
+  share_call 'instruction_sid_name "$2" name; instruction_baseline_wait "$INSTRUCTION_WATCH_STATE/pending-$name"' "$1"
 }
 raw_check() { # sid tool key value transcript
   arm_span "$1" "$5"

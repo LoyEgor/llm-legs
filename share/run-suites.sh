@@ -303,8 +303,6 @@ if [ -z "${RUN_SUITES_SLOT:-}" ]; then
 fi
 run_slot=${RUN_SUITES_SLOT:-}
 
-# The longest reader, bin/harness-doctor hang_log, looks back test_cost_window_s (24 h).
-find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'run-suites.*' -type d -mmin +2880 -exec rm -rf {} + 2>/dev/null
 logdir=$(mktemp -d "${TMPDIR:-/tmp}/run-suites.XXXXXX") || fail 'could not create a log directory'
 # The statusline's work probe finds this run by its pid, counts its .status files for `n/m` and
 # names the repository from here: this process never leaves the caller's directory.
