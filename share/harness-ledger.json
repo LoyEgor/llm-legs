@@ -6273,6 +6273,36 @@
       "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-llm-legs-test-statusline-hooks-20261010T031931Z-342e",
       "note": "2026-10-10, one unsharded run at load ~200 (wall ~6x CPU): 120.5 CPU-s; per section CPU/wall s: workdir-hook 23.7/142 (271 hook calls, ~87 ms each, the hook's own cost), render-pins 30.5/195 (~690 statusline renders), sweep 20.2/34, worker-tags 9.7/64, launch-gate grok/relay/wait 7.9/8.1/6.4 at ~58 wall each, task-rows 6.9/41, rest under 3. Fixed: the three launch-gate sections form shard 4 (shards ~160-200 wall-s each in that run, side by side 244-284 s), and the parent-big pad is head|tr instead of `${pad// /x}` (1.7 CPU-s, 10-50 s wall under load). Not cut: a 5th shard needs render-pins or workdir-hook split, whose helpers are defined inline through the section; the 1 s and 0.2-0.3 s negative-check waits and the .claim.lock hold were ruled load-bearing on 2026-10-08 (row test_daily_cost-statusline-hooks).",
       "handoff": null
+    },
+    {
+      "id": "speed-heavy-test-worker-run-websearch",
+      "title": "test_worker_run_websearch ran its 39 real worker-run launches in one serial file",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/heavy/llm-legs/test_worker_run_websearch$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:12:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-websearch-20261010T031948Z-36ce",
+          "files": [
+            "llm-legs/tests/test_worker_run_websearch.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "suite asserts per whole run and the set of worker-run launches and refusals, base vs fix; shard sets",
+            "data": "tests/test_worker_run_websearch.sh at base (unsharded) and fix (RUN_SUITES_SHARDS=on), load 95-180",
+            "result": "231 asserts PASS both (shards 66 + 67 + 53 + 45 = 231, every section once: ws-grid-<vendor> by table index, ws-header-refusals, ws-meta-state, ws-grok-research-fence, ws-research-model-refused); the same 39 launches; wall 9:24 -> 2:07"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-websearch-20261010T031948Z-36ce",
+      "note": "Timed base at load 150-180: 39 launches, `worker-run start` 4.6 s and await_done 8.5 s each (528 of 573 s), `report` 0.4 s each; the suite has no sleeps of its own (only the harness's builtin 0.05 s polls). Not cut: the per-launch cost is worker-run start/_supervise, the behaviour under test; the vendor x entry-point grid is the requirement (row ct). Where slot_room finds no room the suite still runs unsharded at the old wall (suite_shard_wanted's design). Also fixed: `grep -q <(worker-run report)` left the report running past the match, so a shard's last case printed a jq error after $WORK was removed.",
+      "handoff": null
     }
   ],
   "blind_spots": [
