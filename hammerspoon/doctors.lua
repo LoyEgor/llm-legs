@@ -764,7 +764,7 @@ local function ratio(value)
 end
 local function padded(text, width) return string.rep(" ", width - cells(text)) .. text end
 
-local function summaryTitle(name, value, unit, status, history, now, stale, show)
+local function summaryTitle(name, value, status, history, now, stale, show)
   show = show or rounded
   local days, prior, high = {}, {}, 0
   local date = os.date("*t", now)
@@ -783,7 +783,7 @@ local function summaryTitle(name, value, unit, status, history, now, stale, show
     or (status == "error" or status == "problems") and style.RED
     or (status == "blind" or status == "watch") and style.DIM_RED or GREEN
   local segments = { { string.format("%-9s", name), tone }, { " " },
-    value and { padded(show(value), 4) } or { padded(MISSING, 4), style.DIM }, { string.format(" %-10s  ", unit or "") } }
+    value and { padded(show(value), 4) } or { padded(MISSING, 4), style.DIM }, { "  " } }
   for index = 1, 7 do
     local amount = days[index]
     segments[#segments + 1] = amount == nil and { " " }
@@ -907,7 +907,7 @@ local function compute()
     local status = entry.status
     if status == "ok" and doctor.key == "updater" and document and updatesPending(document) > 0 then status = "watch" end
     local summary = { title = summaryTitle((NAMES[doctor.key]:gsub(" doctor$", "")),
-      entry.status ~= "nodata" and entry.status ~= "error" and count or nil, nil, status, histories[doctor.key] or {}, now, stale),
+      entry.status ~= "nodata" and entry.status ~= "error" and count or nil, status, histories[doctor.key] or {}, now, stale),
       menu = egorLayer(issueRows(doctor, document), menu, menu), problems = count, status = entry.status }
     if doctor.key == "system" then machine = summary else entries[#entries + 1] = summary end
     if doctor.key == "harness" then
@@ -920,13 +920,13 @@ local function compute()
         if text:match("^Needs Egor") and text ~= "Needs Egor: nothing" then speedRows[#speedRows + 1] = item end
       end
       local lost = tonumber(metrics.lost_min_day)
-      speed = { title = summaryTitle("Lost time", lost, "min/day", lost and metrics.status or "nodata", byDay, now,
+      speed = { title = summaryTitle("Lost time", lost, lost and metrics.status or "nodata", byDay, now,
         stale or not byDay[os.date("%Y-%m-%d", now)]), menu = egorLayer(speedRows, menu, speedMenu), problems = 0 }
       local cost = document and type(document.spend) == "table" and document.spend or {}
       local spendMenu, spendRows = harnessSection(entry.menu, "Spend", cost.issues, "%", "%.1f")
       local index = cost.status ~= "nodata" and tonumber(cost.index) or nil
       local spendStatus = not index and "nodata" or cost.status == "watch" and "problems" or cost.status
-      spend = { title = summaryTitle("Spend", index, nil, spendStatus,
+      spend = { title = summaryTitle("Spend", index, spendStatus,
         type(cost.index_by_day) == "table" and cost.index_by_day or {}, now, stale, ratio),
         menu = egorLayer(spendRows, menu, spendMenu), problems = 0 }
     end

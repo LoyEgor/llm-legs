@@ -24,12 +24,11 @@ local function details(menu)
   end
   return {}
 end
-local function row(name, value, unit, bars, usual)
+local function row(name, value, bars, usual)
   local function pad(cell, width) return string.rep(" ", width - utf8.len(cell)) .. cell end
-  return string.format("%-9s", name) .. " " .. pad(value, 4) .. " " .. string.format("%-10s", unit or "") .. "  "
-    .. bars .. " " .. pad(usual, 4)
+  return string.format("%-9s", name) .. " " .. pad(value, 4) .. "  " .. bars .. " " .. pad(usual, 4)
 end
-local function summary(name, value) return row(name, value and tostring(value) or "–", nil, "       ", "–") end
+local function summary(name, value) return row(name, value and tostring(value) or "–", "       ", "–") end
 local function fix(menu) return menu[#menu - 1] end
 local function fixer(menu) return menu[#menu] end
 local function refreshRow(menu) return menu[#menu - 2] end
@@ -195,7 +194,7 @@ local function colorAt(title, at)
   local first = utf8.offset(plain, at)
   return first and color(title:sub(first, (utf8.offset(plain, at + 1) or #plain + 1) - 1))
 end
-local VALUE_AT, UNIT_AT, BAR_AT, USUAL_AT = 14, 16, 28, 39
+local VALUE_AT, BAR_AT, USUAL_AT = 14, 17, 28
 local trendNow = os.date("*t", now)
 local function trendDay(offset)
   return os.date("%Y-%m-%d", os.time({ year = trendNow.year, month = trendNow.month,
@@ -267,12 +266,11 @@ local trendItems = trendDoctor.menuItems()
 local trendNight = tasks[#tasks]
 local names, values = { "LLM", "Harness", "Updater", "Code", "Lost time", "Spend", "System" },
   { "2", "3", "0", "3", "12", "0.46", "2" }
-local UNITS = { [5] = "min/day" }
 local USUAL = { [5] = "25", [6] = "0.25" }
 local bars = "▁▂▂▃▄▆█"
 for index, name in ipairs(names) do
   local title = trendItems[index] and trendItems[index].title
-  local want = row(name, values[index], UNITS[index], bars, USUAL[index] or "3")
+  local want = row(name, values[index], bars, USUAL[index] or "3")
   check(title and text(title) == want, "trend summary " .. name .. ": " .. (title and text(title) or "missing"))
   for day = 1, 7 do
     check(title and sameColor(colorAt(title, BAR_AT + day - 1), palette.DIM), "every bar DIM, above usual too " .. name .. " day " .. day)
@@ -286,7 +284,7 @@ local function aligned(rows)
     width = width or utf8.len(plain)
     if utf8.len(plain) ~= width or not span(item.title, 1, 1):match("%a") or text(item.title):find("●", 1, true) or not span(item.title, VALUE_AT, VALUE_AT):match("%S")
       or not span(item.title, USUAL_AT, USUAL_AT):match("%S") then return false end
-    for _, at in ipairs({ 10, 15, 26, 27, 35 }) do
+    for _, at in ipairs({ 10, 15, 16, 24 }) do
       if span(item.title, at, at) ~= " " then return false end
     end
     for at = BAR_AT, BAR_AT + 6 do
@@ -298,9 +296,8 @@ end
 check(aligned({ table.unpack(trendItems, 1, 7) }), "summary columns line up at the same cells in every doctor row")
 for index = 1, 7 do
   local title = trendItems[index].title
-  check(span(title, UNIT_AT, UNIT_AT + 9) == string.format("%-10s", UNITS[index] or "")
-    and not span(title, VALUE_AT - 3, USUAL_AT):gsub("min/day", ""):match("[%a%%]"),
-    "min/day is the only unit on the summary rows, counts and Spend bare: " .. text(title))
+  check(not span(title, VALUE_AT - 3, USUAL_AT):match("[%a%%/]"),
+    "summary rows carry no unit, Lost time's min/day lives inside its menu: " .. text(title))
 end
 check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].title) == "Cleanup now"
   and text(trendItems[10].title) == "Run everything now", "top level: seven summaries, System last, then the actions")
@@ -462,23 +459,23 @@ trendHarness()
 local previous = text(trendItems[1].title)
 writeDays({ 0, 1, 2, 6, 7, 8, 800 })
 local changed = trendDoctor.menuItems()[1].title
-check(text(changed) == row("LLM", "2", nil, "▁▂▂▂▂▂█", "4") and text(changed) ~= previous,
+check(text(changed) == row("LLM", "2", "▁▂▂▂▂▂█", "4") and text(changed) ~= previous,
   "today stays out of the median; a renamed journal invalidates the cache; a day at under 1/8 of the peak is not drawn as zero: " .. text(changed))
 writeDays({ 0, 1, 2, 3, 4, 0, 8 })
 local falling = trendDoctor.menuItems()[1].title
-check(text(falling) == row("LLM", "2", nil, "▁▂▂▃▄▁█", "2"), "no trend arrow, whichever way yesterday went: " .. text(falling))
+check(text(falling) == row("LLM", "2", "▁▂▂▃▄▁█", "2"), "no trend arrow, whichever way yesterday went: " .. text(falling))
 writeDays({ 5, 5, 5, 5, 5, 5, 5 })
 local flat = trendDoctor.menuItems()[1].title
 local flatRed = false
 for at = BAR_AT, BAR_AT + 6 do flatRed = flatRed or sameColor(colorAt(flat, at), palette.RED) end
-check(text(flat) == row("LLM", "2", nil, "███████", "5") and not flatRed, "a flat week has no RED bar: " .. text(flat))
+check(text(flat) == row("LLM", "2", "███████", "5") and not flatRed, "a flat week has no RED bar: " .. text(flat))
 metadata.speed.lost_min_day_by_day = writeDays({ false, 1, 2, 3, 4, 6, 8 })
 metadata.spend.index_by_day = spendDays({ false, 1, 2, 3, 4, 6, 8 })
 trendHarness()
 local cold = trendDoctor.menuItems()
 for index, name in ipairs(names) do
   local title = cold[index].title
-  check(text(title) == row(name, values[index], UNITS[index], " ▂▂▃▄▆█",
+  check(text(title) == row(name, values[index], " ▂▂▃▄▆█",
     index == 5 and "30" or index == 6 and "0.30" or "3"),
     "cold start: an unmeasured day is a blank cell, measured days keep their bars: " .. text(title))
 end
@@ -487,13 +484,13 @@ metadata.speed.lost_min_day_by_day[trendDay(0)] = nil
 trendHarness()
 local oldSpeed = trendDoctor.menuItems()[5]
 check(sameColor(colorAt(oldSpeed.title, 1), palette.DIM)
-  and text(oldSpeed.title) == row("Lost time", "12", "min/day", " ▂▃▄▆█ ", "30"),
+  and text(oldSpeed.title) == row("Lost time", "12", " ▂▃▄▆█ ", "30"),
   "Speed without a current-day observation is DIM even when Harness is fresh: " .. text(oldSpeed.title))
 metadata.speed.lost_min_day_by_day[trendDay(0)] = 80
 metadata.speed.lost_min_day = nil
 trendHarness()
 local unknownSpeed = trendDoctor.menuItems()[5]
-check(text(unknownSpeed.title) == row("Lost time", "–", "min/day", " ▂▂▃▄▆█", "30")
+check(text(unknownSpeed.title) == row("Lost time", "–", " ▂▂▃▄▆█", "30")
   and sameColor(colorAt(unknownSpeed.title, 1), palette.DIM) and sameColor(colorAt(unknownSpeed.title, VALUE_AT), palette.DIM),
   "a missing Speed floor is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
 metadata.speed.lost_min_day = 12
@@ -501,7 +498,7 @@ trendHarness()
 metadata.spend.status, metadata.spend.index = "nodata", nil
 trendHarness()
 local staleSpend = trendDoctor.menuItems()[6]
-check(text(staleSpend.title) == row("Spend", "–", nil, " ▂▂▃▄▆█", "0.30")
+check(text(staleSpend.title) == row("Spend", "–", " ▂▂▃▄▆█", "0.30")
   and sameColor(colorAt(staleSpend.title, 1), palette.DIM) and sameColor(colorAt(staleSpend.title, VALUE_AT), palette.DIM),
   "a stale tracking.json is a DIM – on Spend, never its old index: " .. text(staleSpend.title))
 metadata.spend.status, metadata.spend.index = "watch", 0.46
