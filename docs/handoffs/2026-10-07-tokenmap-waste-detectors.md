@@ -7,13 +7,12 @@ From «Updater doctor», 2026-10-07, after Egor agreed that work for tokenmap go
 ## Context
 - **Why:** Egor wants every token the harness spends without need to be found and cut.
 - **What qualifies:** only the same result for less. Raw growth is load, never a defect (that week had +86% contexts), and model, effort and thinking are his alone.
-- **What reads your output:** the Harness doctor's new Spend block (llm-legs branch feat/spend-doctor, landing soon). It reads `tracking.json` and audits one priced component per night: purpose → price → effect → a cheaper rewrite proven by replay.
+- **What reads your output:** the Harness doctor's Spend block. It reads `tracking.json` and audits one priced component per night: purpose → price → effect → a cheaper rewrite proven by replay.
 - **The split:**
   - tokenmap measures and flags candidates;
   - the audit decides;
   - an exact repeat is mechanical;
   - a paraphrase or a language switch is only a candidate, which a Sonnet judge reads on a sample.
-- **Night access:** token-map is a night helper repository since llm-legs 22dfebdb, so the night may extend it too.
 
 ## Detectors wanted
 Each detector is a `tracking.json` section with a share of Claude spend, the Δ, a candidate count and a sample of candidates (file, session, line).
@@ -35,8 +34,4 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Startup part totals. — Done in token-map 03057cb (Startup `Main contexts, total by part`); `share/spend.py` splits by it since fix/debt-spend.
    - Listings: slash-only vs model use. — Done in token-map 3f597e7 (Unused startup `Typed only`).
    - Auto-memory prompt (spend audit `startup:CLAUDE.md + memory index`, 2026-10-09): the memory system-prompt section (~2.3k chars a context, there only while auto-memory is on) is priced inside `system + tools (not in total)`; attribute it to this part.
-
-## Done when
-- Each detector is in `tracking.json` with its own tests.
-- The Token tracking submenu shows it.
-- `docs/shared-invariants.md` row db still agrees.
+   - Stop re-answers (spend audit `hook:worker-run-backstop.sh`, 2026-10-10): every request of the forced turn bills the hook, so a turn that goes on to other work is over-priced (264k of its 527k was one turn fixing the hook); the wakes of the waits a block starts are billed nowhere.

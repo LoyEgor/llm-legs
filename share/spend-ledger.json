@@ -176,6 +176,25 @@
    },
    "verdict": "cut",
    "note": "1130 grep -Fq literal probes answered in-process, line-2 read and row eh one awk: execs 3597->2033, paired runs 24.3->21.5 CPU-s, 1784 asserts unchanged, mutations red; rest is behavioural probes (rows n, bq, aj, ak, al, bp ~11 CPU-s) kept"
+  },
+  {
+   "id": "hook:worker-run-backstop.sh",
+   "title": "worker-run-backstop.sh",
+   "audited_at": "2026-10-10T06:28:43+03:00",
+   "by": "harness-speed-spend-hook-worker-run-backstop-sh-20261010T031908Z-5cdf",
+   "share": 0.000669,
+   "prices": {
+    "Workers · attachment: hook context": 56.33763507716477,
+    "Workers · Hooks": 13.357765001847183,
+    "Chat · Hooks": 45.77301711581157,
+    "Chat · attachment: hook context": 52.02714453550694,
+    "Reviewers · Hooks": 0.054084720651576476
+   },
+   "sources": {
+    "llm-legs/bin/worker-run-backstop.sh": "38615df2e23fb654ea6dbb1de18c59c50e59e795"
+   },
+   "verdict": "kept",
+   "note": "7 d 527k limit-tokens over 29 blocks: 496k (94%) relay-era blocks of 10-04..10-08 whose class is gone at source (c9087e4b script-owner, fbb35ae0 starter alive, ee185fa8 relay-free; 264k of it one forced turn that fixed this hook); the 5 relay-free blocks since 10-09 (31k, 2 requests each) each started the missing background wait (new tool calls, no repeat to cut); price is the re-answer request, not the 300-byte text, so saying less saves nothing"
   }
  ]
 }
