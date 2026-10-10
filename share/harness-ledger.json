@@ -6574,6 +6574,37 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-harness-doctor-20261010T031921Z-2dea",
       "note": "Before: 865 runs, 0.6 wall-min a run, 32 min + 41 w-min/day. Profile at load ~200: 15 s python CPU over 43 calls, wall ~7x CPU; 22 doctor runs ~0.35 s CPU each (module compile ~0.08 s of it, not cached for a script run), the classes block 3.1 s, the ledger guard 2.3 s (now 0.15 s), the calibration-transcript gzip|jq scan 0.6 s CPU / ~5 s wall. Kept: the four 0.1-0.3 s canary sleeps in the classes block, negative checks that need a window; a deeper legacy-assert read of the 2600 lines was not done.",
       "handoff": null
+    },
+    {
+      "id": "speed-hook-lever-cd-guard",
+      "title": "Speed's hook lever: a fork-free screen for cd-guard, which runs before every Bash call",
+      "match": {
+        "rule": "opportunity",
+        "ident": "hooks/cd-guard\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:10:00+03:00",
+          "by": "night fixer harness-speed-hooks-cd-guard-sh-20261010T031903Z-0d2c",
+          "files": [
+            "claude-setup/hooks/cd-guard.sh",
+            "claude-setup/tests/test_cd_guard.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "cd-guard at base vs the fix: exit code, stderr, decision class (allow/rewrite/deny) and the rewritten updatedInput; note and deny text masked (shortened on purpose)",
+            "data": "99.9k unique Bash calls of the last 7 days' transcripts (all profiles), payloads rebuilt compact with cwd/session as recorded: 3000+2000 sampled (seed 11), 2000 more cd-bearing; 1210 generated spellings (control-char/NBSP/U+2028 separators, \\u-escaped letters, ensure_ascii and spaced-key payloads, quoted/escaped/prefixed cd, heredocs, review launches, fork agents, odd payloads); scratch HOME, CLAUDE_PROJECT_DIR unset",
+            "result": "7000/7000 real calls identical (old: 2378 allow, 2613 rewrite, 9 deny of the first 5000); generated 1205/1210 identical, the 5 others old allow because tr died on 'Illegal byte sequence' (backslash before a multibyte char), now rewrite as the guard specifies (pinned in test_cd_guard); screen exits 63% of real calls before any fork; paired 300 real calls at load 74-103: 128 -> 52 ms mean, p95 193 -> 138, paired delta p50 77 ms"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "Before (hooks/*.tsv): 20733 6818 runs mean 51 ms, 20734 10019 runs 41 ms, 20735 11625 runs 99 ms (19.2 min), cpu ~33 ms each; Speed 15.75 min/day. Bash alone costs ~13 ms, hook-time+read ~20 ms; the rest was cat, jq and awk on every call and tr, a second jq on every cd. Work-not-done proof: test_cd_guard's PATH shim sees no cat/jq/awk/tr on a cd-free call (red on base). Left: cd-bearing calls (37%) still pay jq+awk and the rewrites a bash -n exec, which must stay (an original that does not parse is denied, only a parser knows). Found, not done: 26% of cd calls (9.0k of 34.5k) cd into the cwd itself (`cd <worktree> && ...`); allowing those untouched would drop their rewrite and note, but it changes a decision class, so it waits for the owner. opportunity:refusal/cd-guard.sh (0.62 min/day) is the fork deny re-plan, not touched.",
+      "handoff": null,
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-hooks-cd-guard-sh-20261010T031903Z-0d2c"
     }
   ],
   "blind_spots": [

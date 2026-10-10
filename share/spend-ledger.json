@@ -269,6 +269,25 @@
    "sources": {},
    "verdict": "cut",
    "note": "cut at the source by ee185fa8 (2026-10-09, relay-free delegation): the codex-worker relay is retired, its agent file gone and worker-spawn-hook denies the type; last codex-worker request 2026-10-08T17:17Z, none since (tokenmap requests.agent_type), so the 0.4M 7-day startup is a tail that ages out by 2026-10-16; the chat now runs the same worker-run start/wait/report itself, same worker, same report"
+  },
+  {
+   "id": "hook:cd-guard.sh",
+   "title": "cd-guard.sh",
+   "audited_at": "2026-10-10T08:11:29+03:00",
+   "by": "harness-speed-hooks-cd-guard-sh-20261010T031903Z-0d2c",
+   "share": 0.002493,
+   "prices": {
+    "Workers · attachment: hook context": 56.33763507716477,
+    "Workers · Hooks": 13.357765001847183,
+    "Chat · Hooks": 45.77301711581157,
+    "Chat · attachment: hook context": 52.02714453550694,
+    "Reviewers · Hooks": 0.054084720651576476
+   },
+   "sources": {
+    "claude-setup/hooks/cd-guard.sh": "cbdb5b5cf7037d8292da8e77f4a85215b27e2a34"
+   },
+   "verdict": "cut",
+   "note": "Exists to keep a cd from moving the prompt-embedded cwd (claude-setup@2ea2cb72, rewrite since 4a65439d). Price 0.175% of spend (Injected text 1.64M, Blocked calls 324k a week) plus Speed 15.75 min/day. Effect: the rewrite note tells the model its cd did not stick (kept); the deny carries the fix. Cut: note 'cd-guard ran this in a subshell: the working directory did not change.' -> 'cd-guard: ran in a subshell, cwd unchanged.', deny reason ~40% shorter, no fork on cd-free calls; replay 7000 real calls identical decisions (claude-setup@c5a2a69). Next lever: no-op cds into the cwd (26% of cd calls), owner's call."
   }
  ]
 }

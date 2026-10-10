@@ -52,6 +52,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Skill listing per entry (spend audit 2026-10-10): `skills()` prices entries from the most common listing only, so account-only synced entries (com workers' `anthropic-skills:*`, `cowork-plugin-management:*`) are missing there; split per listing hash.
    - Hook-asked calls (spend audit `hook:context-nudge.sh`, 2026-10-10): the focus-file Write a nudge asks for (~1.4k/week) is priced as `tool call: Write`; charge a call that follows a hook's note and touches the path it names to that hook.
    - Retired relays (spend audit `spawn:codex-worker`, 2026-10-10): their successor, the chat's own `worker-run` start/wait/report turns, shows only in Bash `worker-run`, never per vendor.
+   - No-op cd rewrites (spend audit `hook:cd-guard.sh`, 2026-10-10): 26% of cd calls cd into the cwd itself; split their cd-guard note out of `Injected text` so the owner can price allowing them untouched.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.
