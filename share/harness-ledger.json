@@ -6636,6 +6636,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-lifecycle-20261010T031941Z-12bb",
       "note": "Before: 281 runs, 1.1 wall-min a run, 5.4 min + 27 w-min/day (value 57.2, latest.json 2026-10-10). Traced at load 70: 418 s wall, 49.5 CPU-s; a start costs 0.5-0.8 CPU-s but ~4 s wall, so the wall is ~47 serial launches waiting on the scheduler, plus 7.2 s of setup (roster_add's ~320 mkdir forks, every worker_run suite and shard pays it). Fixed: `# shards: 3` (detached/accounts 60, light+refusals+missing pool 75+, walls/pins/computer/orphans 80 asserts; profile shares ~150/120/143 s), roster_add one mkdir per vendor (fork-count assert, 12 -> 4, red on base). Not cut: the vendor loops (each case asserts its vendor's OUTCOME name) and the legacy SESSION RESERVE case (its launch also guards picker stderr passthrough and the report's ACCOUNT line); the pack stub's 2 s sleep is the run-outlives-pack premise. The sibling opportunity test-health/idle/llm-legs/test_worker_run_lifecycle (6.95) was not this run's. Met on the covering run: test_worker_run_stamps red on base since llm-legs@8bd96a43 made `--model haiku` a launchable request row (its refusal list still held claudeb:haiku; dropped here); test_worker_run_wait_stream red (assert 11, `$RUN/tokens` never written: run_tokens -> night_spend.run_usage gives no number) on heads 010b5a3a, 8f685eb7, d496f12b and this branch since ~2026-10-10T06:53Z, green on base 981c1486 at 05:38Z, so not this branch's; not dug.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-worker-run-attribution-pole",
+      "title": "test_worker_run_attribution: shard 2 held 18 of its 26 worker-run launches, and every worker_run suite process forked ~231 mkdirs seeding its rosters",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_attribution"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:43:14+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-attribution-20261010T031936Z-3e0e",
+          "files": [
+            "llm-legs/tests/test_worker_run_attribution.sh",
+            "llm-legs/tests/worker_run_harness.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert totals and sections per shard, base vs fix; the harness fixture tree (type, size, path of every entry under $HOME and $CLAUDEB_DIR), base vs fix harness",
+            "data": "SUITE_SHARD 1/2 and 2/2 runs plus WORKER_RUN_TEST_ATTRIBUTION_CASE=made_worktree, load 150-190; one source of each harness",
+            "result": "asserts 66+258 -> 106+218 (324 both), every section runs once per full run in the old order; fixture tree sha identical, 392 entries; harness setup 6.4 s -> 0.45 s (3 pairs, load ~180)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-attribution-20261010T031936Z-3e0e",
+      "note": "Per launch the wall is worker-run itself (start ~3 s, supervisor finish ~6 s, wait ~1.5 s, report ~2 s at load 160), production code shared by 16 suites, not this suite's; await_done's worker-run wait stays (it writes run state other suites read). The made-worktree tick wait stays: worker-run reads admin-dir birth in whole seconds and the early worktree must be born a second before the run. 3 shards ruled out: the pole would hold the 13-launch variant loop either way, and each shard adds a harness setup."
     }
   ],
   "blind_spots": [
