@@ -6424,6 +6424,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-log-stores-20261010T031926Z-1da1",
       "note": "Before: 21.75 OM/d, 80 runs in 7 d, 0.5 wall-min a run being its share of run-all walls incl. queue; its own secs 0.65-4.2 s, CPU 0.36-0.80 s (run-suites runs.jsonl 10-09..10). Profile: 6 python starts (suite, 4 direct log-sweep, the collector's), a 300k-line genexpr for big.log, bash lsof/du stubs. Ruled out: sleeps (none), legacy checks (suite born 10-09, every assert names a live requirement), a split (a 2 s suite; a shard adds a python start). Not cut: the collector's log-sweep subprocess (the only CLI/shebang path), the bash lsof stub per sweep (~5 forks, it feeds open_paths' parse).",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-run-suites-journal-fixture-leaks",
+      "title": "test_run_suites_journal's fixtures leaked real work into its runs: a committed e2e_surfaces.sh pulled the repo's own test_consistency.sh into two --changed runs, a reused r4 dir carried a sleep-10 suite into two full runs",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_run_suites_journal"
+      },
+      "status": "fixed-pending",
+      "same_cause": [],
+      "note": "2026-10-10: traced per line (PS4 EPOCHREALTIME) at load 105-160: 7:05 wall, 66 s CPU. 284 s were the two R4 --changed runs scoped by commits (head-before, branch since main): the e2e_surfaces.sh fixture of the affected-suites block got committed by `git add -A`, docs/shared-invariants.md names it, so affected-suites added the real tests/test_consistency.sh (145 s each at that load); now removed after its asserts, and both runs assert test_consistency absent. 20 s were the two R4 --run-all full runs: the serial-tail block had used the same $WORK/r4, so its test_review_flow_gate.sh (sleep 10) ran in each; that block now has its own dir and the full run's suite set is asserted. The real-repo `tests/affected share/slots.sh` probe (2.8 s CPU, a scan of 170 suites) became the same wrapper through symlinks in R4. The EXIT trap's 0.3 s sleep only runs while the wait suite lives. After: 1:52 wall, 18 s CPU at load 160, 166 asserts plus the 2 new keys checks. Left: every run-suites call queues ~1.2 s before its slot under load (runner startup, not this suite); r9's five runs ~3 s each are its red-first requirement.",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:45:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-run-suites-journal-20261010T031929Z-195c",
+          "files": [
+            "llm-legs/tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_run_suites_journal at the base vs the fix: every assert of the base kept (the tests/affected wrapper assert now on a fixture), 3 strengthened",
+            "data": "one run each at load 105-160; mutations: restoring the committed e2e_surfaces.sh reds assert 123, restoring the shared r4 dir reds assert 131",
+            "result": "PASS 166 asserts both; wall 7:05 -> 1:52, CPU 66 s -> 18 s; no real-repo suite runs inside the fixture any more"
+          }
+        }
+      ],
+      "handoff": null,
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-run-suites-journal-20261010T031929Z-195c"
     }
   ],
   "blind_spots": [

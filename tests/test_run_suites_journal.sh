@@ -6,7 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$ROOT/share/test-scope.sh"
 PROJECTS=$(git_projects "$ROOT")
 WORK=$(cd "$(mktemp -d)" && pwd -P)
-trap 'touch "$WORK/release"; sleep 0.3; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
+trap 'touch "$WORK/release"; ! kill -0 "$(cat "$WORK/wait-pid" 2>/dev/null)" 2>/dev/null || sleep 0.3; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
@@ -151,15 +151,15 @@ sigrun() { READY=$1 python3 "$WORK/sigrun.py" "${@:2}"; }
 alive() { kill -0 "$1" 2>/dev/null; }
 # The serial tail stops at once too, on a TERM to the runner alone and on a Ctrl-C to the group, which
 # ends the suite with it; each run dies of its signal and journals it.
-R4="$WORK/r4"
-new_repo "$R4"
-suite "$R4" test_review_flow_gate.sh "printf '%s\\n' \"\$\$\" >\"$WORK/tail-pid\"; touch \"$WORK/tail-ready\"; sleep 10"
+RT="$WORK/tail"
+new_repo "$RT"
+suite "$RT" test_review_flow_gate.sh "printf '%s\\n' \"\$\$\" >\"$WORK/tail-pid\"; touch \"$WORK/tail-ready\"; sleep 10"
 for case in "15 pid" "2 group"; do
   rm -f "$WORK/tail-ready" "$WORK/tail-pid"
-  read -r rc ms < <(sigrun "$WORK/tail-ready" ${case} bash "$ROOT/share/run-suites.sh" --repo "$R4")
+  read -r rc ms < <(sigrun "$WORK/tail-ready" ${case} bash "$ROOT/share/run-suites.sh" --repo "$RT")
   assert test "$rc" = "-${case% *}"
   assert test "$ms" -lt 2000
-  assert jqe --arg repo "$R4" --argjson sig "${case% *}" '.repo == $repo and .signal == $sig and .complete == false' <(tail -1 "$JOURNAL")
+  assert jqe --arg repo "$RT" --argjson sig "${case% *}" '.repo == $repo and .signal == $sig and .complete == false' <(tail -1 "$JOURNAL")
 done
 for _ in $(seq 50); do alive "$(cat "$WORK/tail-pid")" || break; sleep 0.1; done
 assert_fails alive "$(cat "$WORK/tail-pid")"
@@ -296,8 +296,9 @@ suite "$R4" e2e_surfaces.sh 'echo tool.sh; exit 0'
 assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" = "$R4/tests/test_tool_part.sh"
 assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" share/limiter-hold.sh)" = "$ROOT/tests/test_consistency.sh"
 assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" nowhere-named.txt)"
-assert grep -qx "$ROOT/tests/test_slots.sh" <<<"$(bash "$ROOT/tests/affected" share/slots.sh)"
 assert test "$(/bin/bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" = "$R4/tests/test_tool_part.sh"
+# Committed, shared-invariants' mention of it would pull this repo's own test_consistency.sh into every later R4 --changed run.
+rm "$R4/tests/e2e_surfaces.sh"
 joined_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R4" -j 2 "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)"$'\n'test_other.sh 2>&1)
 assert grep -q 'test_tool_part.sh .*PASS' <<<"$joined_out"
 assert grep -q 'test_other.sh .*PASS' <<<"$joined_out"
@@ -378,7 +379,7 @@ mkdir -p "$WORK/wrec"
 git -C "$R4" rev-parse HEAD~1 >"$WORK/wrec/head-before"
 committed_out=$(WORKER_RUN_RECORD="$WORK/wrec" WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" -j 2 --changed 2>&1)
 assert grep -q 'test_tool_part.sh .*PASS' <<<"$committed_out"
-assert_fails grep -q 'test_other.sh' <<<"$committed_out"
+assert_fails grep -qE 'test_other.sh|test_consistency.sh' <<<"$committed_out"
 rows=$(wc -l <"$JOURNAL")
 WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >"$WORK/gate.out" 2>"$WORK/gate.err"
 assert test "$?" -eq 3
@@ -391,7 +392,7 @@ WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 
 assert test "$?" -eq 0
 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >/dev/null 2>&1
 assert test "$?" -eq 0
-assert jqe '.scope == "full" and .worker_run == null' <(tail -1 "$JOURNAL")
+assert jqe '.scope == "full" and .worker_run == null and (.suites | keys) == ["test_other.sh","test_tool_part.sh"]' <(tail -1 "$JOURNAL")
 rows=$(wc -l <"$JOURNAL")
 CLAUDE_CODE_SESSION_ID=sess-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >"$WORK/gate.out" 2>"$WORK/gate.err"
 assert test "$?" -eq 3
@@ -406,10 +407,14 @@ assert jqe '.scope == "full" and .session == "sess-9"' <(tail -1 "$JOURNAL")
 git -C "$R4" branch -f main HEAD~1
 branch_out=$(CLAUDE_CODE_SESSION_ID=sess-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 --changed 2>&1)
 assert grep -q 'test_tool_part.sh .*PASS' <<<"$branch_out"
-assert_fails grep -q 'test_other.sh' <<<"$branch_out"
+assert_fails grep -qE 'test_other.sh|test_consistency.sh' <<<"$branch_out"
 branch_affected=$(bash "$ROOT/share/affected-suites.sh" --repo "$R4")
 assert grep -qxF "$R4/tests/test_tool_part.sh" <<<"$branch_affected"
 assert_fails grep -q test_other.sh <<<"$branch_affected"
+mkdir -p "$R4/share"
+ln -s "$ROOT/tests/affected" "$R4/tests/affected"
+ln -s "$ROOT/share/affected-suites.sh" "$R4/share/affected-suites.sh"
+assert test "$(bash "$R4/tests/affected" bin/tool.sh)" = "$R4/tests/test_tool_part.sh"
 
 R8="$WORK/overlap"
 new_repo "$R8"
