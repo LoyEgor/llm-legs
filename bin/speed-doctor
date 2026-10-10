@@ -940,7 +940,8 @@ def full_runs(now, journal):
 def floor_rows(budget, ledger, now, full=None):
     """Named rows proven fixed only by the measurement returning under them: a class more than FLOOR_ROW_MIN_DAY
     over its floor in the last day, every-suite runs outside the night more than FLOOR_ROW_MIN_DAY minutes over their
-    floor of none, and the last night's workers more than FLOOR_ROW_MIN_DAY minutes under their derived floor share."""
+    floor of none, and the last night's workers more than FLOOR_ROW_MIN_DAY minutes under the floor share that night's
+    own parts derive."""
     found = [(key, gap, time_budget.FLOOR_ROW_MIN_DAY, "min/day", "%s %s over its floor of %s" % (
         label, per_day(gap, worker), floor if isinstance(floor, str) else "%s min/day" % fmt(floor)))
              for key, label, _, gap, floor, worker in time_gaps(budget) if gap > time_budget.FLOOR_ROW_MIN_DAY]
@@ -948,7 +949,8 @@ def floor_rows(budget, ledger, now, full=None):
         found.append(("full-runs", full["min_day"], time_budget.FLOOR_ROW_MIN_DAY, "min/day",
                       "every-suite runs outside the night %s min/day over its floor of none (%s)" % (
                           fmt(full["min_day"]), ", ".join("%s ×%d" % kv for kv in full["chats"]))))
-    night, floor = budget.get("last_night") or {}, (budget.get("workers_active") or {}).get("floor_share")
+    night = budget.get("last_night") or {}
+    floor = night.get("floor_share")
     if night.get("share") is not None and floor and night["share"] < floor \
             and night["wall_s"] - night["model_s"] / floor > 60 * time_budget.FLOOR_ROW_MIN_DAY:
         found.append(("workers-active", night["share"], floor, "share",

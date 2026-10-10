@@ -117,10 +117,12 @@ orphan() { printf '{"pid":%s,"age_s":%s,"command":"%s"}' "$1" "$2" "$3"; }
 { printf '{"run":"r-old","ended_at":%s,"orphans":[%s]}\n' $((T - 86400)) "$(orphan 1 1 a),$(orphan 2 1 b),$(orphan 3 1 c),$(orphan 4 1 d)"
   printf '{"run":"r-legacy","ended_at":%s}\n' $((T + 50))
   printf '{"run":"r-a","ended_at":%s,"orphans":[%s]}\n' $((T + 100)) "$(orphan 11 840 'bash -x tests/test_slots.sh')"
-  printf '{"run":"r-b","ended_at":%s,"orphans":[%s]}\n' $((T + 200)) "$(orphan 12 30 'sleep 300'),$(orphan 13 31 'sleep 301')"
+  printf '{"run":"r-b","ended_at":%s,"reason":"done","orphans":[%s]}\n' $((T + 200)) "$(orphan 12 30 'sleep 300'),$(orphan 13 31 'sleep 301')"
+  printf '{"run":"r-cut","ended_at":%s,"reason":"deadline","orphans":[%s]}\n' $((T + 250)) "$(orphan 15 9000 'nohup python trace.py')"
 } >"$WORKER_STATS_DIR/runs.jsonl"
 read_section >"$WORK/section.json" || fail "the reader failed"
-# Orphans worker runs left behind, ended at their run's end: today's only, information up to the limit.
+# Orphans worker runs left behind, ended at their run's end: today's only, information up to the limit; a run the
+# watchdog cut (deadline) ends its detached jobs with it, so they are no leak.
 assert jqe '.lead[0] | .cells == ["worker-run orphans ended today: 3"] and .dim and .red == [] and .key == "waits:orphans"
   and ([.judge[] | [.rule, .ident, .value, .limit, .level]] == [["worker_orphans", "worker-run", 3, 3, null]])
   and ([.menu.rows[].cells] == [["08:03", "r-b", "30 s", "sleep 300"], ["08:03", "r-b", "31 s", "sleep 301"],

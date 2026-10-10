@@ -5868,13 +5868,18 @@ def wait_classes(now):
     return out, days[0]
 
 
+RUN_CUT_REASONS = ("wall", "idle", "deadline", "silent", "term", "signal")
+
+
 def worker_orphans_line(now):
-    """Processes a worker run left behind outside its own tree, ended by worker-run at the run's end (row ec)."""
+    """Processes a worker run that ended on its own left behind outside its own tree, ended by worker-run at the
+    run's end (row ec); a run the watchdog cut ends its detached jobs with it, so they are no leak."""
     start = day_start(local_day(now))
     ended = []
     for run in read_jsonl(os.path.join(worker_stats_dir(), "runs.jsonl"), start, "ended_at") or ():
         at = run.get("ended_at")
-        if isinstance(at, (int, float)) and at >= start and isinstance(run.get("orphans"), list):
+        if (isinstance(at, (int, float)) and at >= start and isinstance(run.get("orphans"), list)
+                and run.get("reason") not in RUN_CUT_REASONS):
             ended += [(at, str(run.get("run") or ""), o) for o in run["orphans"] if isinstance(o, dict)]
     count, limit = len(ended), LIMITS["worker_orphans"]
     red = count > limit

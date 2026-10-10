@@ -1551,12 +1551,31 @@
         "rule": "floor",
         "ident": "event:Stop"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T04:06:41+03:00",
+          "by": "Egor (claude-setup@4c7eaf02), recorded by Harness Doctor",
+          "files": [
+            "claude-setup/hooks/stop.d/ask-word-reading.sh"
+          ],
+          "in": "claude-setup@4c7eaf02",
+          "regressed_at": null
+        },
+        {
+          "at": "2026-10-10T06:52:16+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "claude-setup/hooks/stop.d/ask-run-unfinished.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-hook-waits 20261009T024734Z-1f86",
-      "note": "2026-10-09 cut, kept open: 335 ms p50 in 1 h (stop-dispatch 347 ms CPU avg; notices word-journal 60, chat-names 52, word-attested 19, reports 10; asks run-unfinished 44, word-reading 24, span-drill 12, mattermost 10). At load 280 a stop is ~30 process starts at 50-150 ms each, so forks are the lever: 11 cut a quiet stop (worker-run-backstop: cat, date, the progress cat|jq|awk unless a progress file names the session, rm of an absent hold; stop-dispatch: dirname x2, the timeout subshell, own mktemp and rm), tests test_worker_run_backstop and claude-setup test_stop_dispatch count them, red on the old code. Cheapest cut left: run the backstop in prerun beside the notices, saves ~30 ms x 400/day = 12 s/day, costs an ordering guard (its words_sync races the notices' store reads, stop-dispatch prerun comment). Below the 150 ms note only a one-process stop.d, the dispatcher class Egor declined 2026-10-05; handoff proposes the dismissal. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask order), a vendor replacement for the busy/held journal contract.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (night 4c4e): two asks of the chain are gone, the reading-line ask (Egor, claude-setup@4c7eaf02) and ask-run-unfinished's live-run walk (tonight). Last hour p50 105 ms, under the 150 ms note; the 24 h p50 of 281 ms still carries the hours before. Proof: the 24 h p50 under the note. 2026-10-09 cut, kept open: 335 ms p50 in 1 h (stop-dispatch 347 ms CPU avg; notices word-journal 60, chat-names 52, word-attested 19, reports 10; asks run-unfinished 44, word-reading 24, span-drill 12, mattermost 10). At load 280 a stop is ~30 process starts at 50-150 ms each, so forks are the lever: 11 cut a quiet stop (worker-run-backstop: cat, date, the progress cat|jq|awk unless a progress file names the session, rm of an absent hold; stop-dispatch: dirname x2, the timeout subshell, own mktemp and rm), tests test_worker_run_backstop and claude-setup test_stop_dispatch count them, red on the old code. Cheapest cut left: run the backstop in prerun beside the notices, saves ~30 ms x 400/day = 12 s/day, costs an ordering guard (its words_sync races the notices' store reads, stop-dispatch prerun comment). Below the 150 ms note only a one-process stop.d, the dispatcher class Egor declined 2026-10-05; handoff proposes the dismissal. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask order), a vendor replacement for the busy/held journal contract.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -3348,16 +3367,27 @@
         "rule": "time_floor",
         "ident": "suite_run"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T06:52:16+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/share/time_budget.py",
+            "llm-legs/tests/test_time_budget.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "wait-run-suites-slot-hogs",
         "time_floor:suite_wait",
         "time_floor:workers-active"
       ],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-speed-time-floor-suite-run-20261009T024805Z-70d1",
-      "note": "2026-10-09: 294 min/day (123 chat + 171 w-min) over the p10 floor; 3603 suite-min ran in 24 h (chats 1793, Updater doctor 1056 and the chat 7977deeb 656 of them in runs of 21-151 suites). Fixed a measure bug: the p10 sampled failed runs too (test_consistency 257 of 1025 rc 1 at 0.04 s), so the floor of a covering suite was an early exit; passing runs only now (share/time_budget.py suite_floor, as suite_audit and run-suites' p90 do), gap share 44 % -> 36 %. Left, by load band (memlogd load1 hourly mean): under 10 the gap is 23 % of suite wall, 10-30 28 %, 30+ 48 % (868 of 1319 gap suite-min). The quiet 23 % is p10 against the median of suites that grew in the 7-day window; the load share is the night's workers at the cores (Egor 2026-10-07) and the owner's benchmark (weather, 2026-10-05), with suites' own CPU about 2 of 10 cores. One-off: a flake hunt (fix/doctor-fix-lock-flake, 10-08 06:43-07:25) ran test_doctor_fix 161 times under load it made. Ruled out: sharding (direct runs of the 4 sharded suites add 27 of 1319), slot waits (room only). Measure proposals to the owner in the handoff. 2026-10-08: 450 min/day; worker suites held 618 min in 24 h: 326 in 516 single-suite iteration runs (test_statusline_hooks 87 min, test_llm_limits_grok 78, test_consistency 77, test_night_run 76), 73 in runs of 20+ suites. Per-suite speed is the suite audit's. 2026-10-07: 622 min/day in 24 h. Worker suite runs held 804 min of wall: 305 in runs of 20+ suites (tests/affected over bin/worker-run or run-suites names 20-60), 114 in three -j 1 runs of one day chat's workers (10-06 02:32-03:00, none since). Dearest by runs x time: test_consistency 111 min (81 runs), test_llm_limits_grok 108 (35, median 186 s), test_night_run 70, test_doctor_fix 66; suite speed is the tests area's (harness-tests holds test_daily_cost-worker-run on night 7777). Seen, not fixed: test_run_suites_journal assert 35 (the /bin/bash untrap case) failed once in an 18-suite wave at load ~75 and passed alone. 2026-10-06: 2266 min/day in 24 h, 2115 since 2026-10-05 19:00 (the slow layer of c4adcbb8 already skips test_statusline_hooks, test_worker_pick and test_instruction_gate inside workers). Wall ran 5-20x CPU (test_statusline_hooks 3066 s at 247 s CPU): wave suites at nice 10 under the owner's benchmark, the cause the wait-classes fixer of the same night fixed in e2c3ec43 (one owner per cause file). Seen, not fixed: 12 worker runs of 8-43 suites at -j 1 (320 min in 2 days, the worker's own flag); workers background run-all past the 600 s Bash cap and poll with a fixed sleep 540-590 that overshoots the suite end (counted as tools). Ruled out: double counting of parallel suites (run_split takes the union per run); unattributed worker suites (rows without worker_run were a chat running suites in a worker's worktree).",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (night 4c4e): the gap was the measure. The p10 is now per blob of the suite file at the run's head: a suite that grew in the window was judged against its smaller self (quiet-band gap 17-19 % by name, 3-10 % by blob on blobs of 20+ runs). Only a run's part on a free machine (free_spans) is over its floor: the loaded band is parallel runs' price, judged by the slot replay and the night's makespan. Live, suite seconds over their floor read 5851 min in the 24 h to 06:35 by the old measure and 52 by the new (the day before 1977 and 68); test_time_budget's grown and loaded cases are red on the old code. 2026-10-09: 294 min/day (123 chat + 171 w-min) over the p10 floor; 3603 suite-min ran in 24 h (chats 1793, Updater doctor 1056 and the chat 7977deeb 656 of them in runs of 21-151 suites). Fixed a measure bug: the p10 sampled failed runs too (test_consistency 257 of 1025 rc 1 at 0.04 s), so the floor of a covering suite was an early exit; passing runs only now (share/time_budget.py suite_floor, as suite_audit and run-suites' p90 do), gap share 44 % -> 36 %. Left, by load band (memlogd load1 hourly mean): under 10 the gap is 23 % of suite wall, 10-30 28 %, 30+ 48 % (868 of 1319 gap suite-min). The quiet 23 % is p10 against the median of suites that grew in the 7-day window; the load share is the night's workers at the cores (Egor 2026-10-07) and the owner's benchmark (weather, 2026-10-05), with suites' own CPU about 2 of 10 cores. One-off: a flake hunt (fix/doctor-fix-lock-flake, 10-08 06:43-07:25) ran test_doctor_fix 161 times under load it made. Ruled out: sharding (direct runs of the 4 sharded suites add 27 of 1319), slot waits (room only). Measure proposals to the owner in the handoff. 2026-10-08: 450 min/day; worker suites held 618 min in 24 h: 326 in 516 single-suite iteration runs (test_statusline_hooks 87 min, test_llm_limits_grok 78, test_consistency 77, test_night_run 76), 73 in runs of 20+ suites. Per-suite speed is the suite audit's. 2026-10-07: 622 min/day in 24 h. Worker suite runs held 804 min of wall: 305 in runs of 20+ suites (tests/affected over bin/worker-run or run-suites names 20-60), 114 in three -j 1 runs of one day chat's workers (10-06 02:32-03:00, none since). Dearest by runs x time: test_consistency 111 min (81 runs), test_llm_limits_grok 108 (35, median 186 s), test_night_run 70, test_doctor_fix 66; suite speed is the tests area's (harness-tests holds test_daily_cost-worker-run on night 7777). Seen, not fixed: test_run_suites_journal assert 35 (the /bin/bash untrap case) failed once in an 18-suite wave at load ~75 and passed alone. 2026-10-06: 2266 min/day in 24 h, 2115 since 2026-10-05 19:00 (the slow layer of c4adcbb8 already skips test_statusline_hooks, test_worker_pick and test_instruction_gate inside workers). Wall ran 5-20x CPU (test_statusline_hooks 3066 s at 247 s CPU): wave suites at nice 10 under the owner's benchmark, the cause the wait-classes fixer of the same night fixed in e2c3ec43 (one owner per cause file). Seen, not fixed: 12 worker runs of 8-43 suites at -j 1 (320 min in 2 days, the worker's own flag); workers background run-all past the 600 s Bash cap and poll with a fixed sleep 540-590 that overshoots the suite end (counted as tools). Ruled out: double counting of parallel suites (run_split takes the union per run); unattributed worker suites (rows without worker_run were a chat running suites in a worker's worktree).",
       "handoff": "docs/handoffs/2026-10-08-speed-floor-measures.md"
     },
     {
@@ -3478,15 +3508,27 @@
         "rule": "time_floor",
         "ident": "workers-active"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T06:52:16+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/share/time_budget.py",
+            "llm-legs/bin/speed-doctor",
+            "llm-legs/tests/test_speed_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "time_floor:slot",
         "time_floor:suite_run"
       ],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-speed-time-floor-suite-run-20261009T024805Z-70d1",
-      "note": "2026-10-09: night 7b98 23.1 % (12642 of 54771 s model) against a 23.9 % floor; the parts over their floors are suite_run 170.8 w-min/day of 175 (hooks 3.1, suite wait 1.0, slot 0), so the row is time_floor:suite_run's cause. Seen, not fixed: the night's share is judged against a floor derived from the last 24 h of workers, not that night's own parts (handoff item 3). 2026-10-08: night 7777 202 of 1035 min model (19.5 %): slot 349, suites 261, tools 170, suite wait 40; without the summed slot queue 29 %. 2026-10-07: f253 read 16 %, its wall the same slot burst (time_floor:slot) and covering suites; workers read 21 % over the last 24 h. 2026-10-06: night 052f, 28 runs, 72.5 h wall: slot queue 39.9 h, suites 12.2 h, tools 10.8 h, suite wait 6.1 h, model 3.2 h (4 %). The slot queue was the fixed 5 slots before c4adcbb8; all worker runs since 2026-10-05 19:00 read 21 % model. The suite share is the wait-classes cause (e2c3ec43). Tools include sleep-polls on backgrounded run-all.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (night 4c4e): the night is judged against the floor share its own parts derive (time_budget night_split with parts, cached in its night-ledger row as floor_share), never the last 24 h of workers'; its suite part shrinks with time_floor:suite_run's measure fix. test_speed_doctor's floor fixture is red on the old code. 2026-10-09: night 7b98 23.1 % (12642 of 54771 s model) against a 23.9 % floor; the parts over their floors are suite_run 170.8 w-min/day of 175 (hooks 3.1, suite wait 1.0, slot 0), so the row is time_floor:suite_run's cause. Seen, not fixed: the night's share is judged against a floor derived from the last 24 h of workers, not that night's own parts (handoff item 3). 2026-10-08: night 7777 202 of 1035 min model (19.5 %): slot 349, suites 261, tools 170, suite wait 40; without the summed slot queue 29 %. 2026-10-07: f253 read 16 %, its wall the same slot burst (time_floor:slot) and covering suites; workers read 21 % over the last 24 h. 2026-10-06: night 052f, 28 runs, 72.5 h wall: slot queue 39.9 h, suites 12.2 h, tools 10.8 h, suite wait 6.1 h, model 3.2 h (4 %). The slot queue was the fixed 5 slots before c4adcbb8; all worker runs since 2026-10-05 19:00 read 21 % model. The suite share is the wait-classes cause (e2c3ec43). Tools include sleep-polls on backgrounded run-all.",
       "handoff": "docs/handoffs/2026-10-08-speed-floor-measures.md"
     },
     {
@@ -3688,7 +3730,7 @@
         "rule": "worker_orphans",
         "ident": "worker-run"
       },
-      "status": "open",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-07T04:07:58+03:00",
@@ -3709,12 +3751,22 @@
           ],
           "in": "llm-legs@59f456ca",
           "regressed_at": "2026-10-07T13:59:20+03:00"
+        },
+        {
+          "at": "2026-10-10T06:52:16+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_wait_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-wait-classes-20261009T024822Z-268c",
-      "note": "Both fixes hold: of 45 orphans 2026-10-07 14:00 to 2026-10-09 03:38, none is session-trash's purge or worker-run's pack. All 45 are logo-vectorizer-bench builder workers' `nohup .venv/bin/python …&` traces and evals (the Bash tool's timeout makes them detach): 26 of 2026-10-09 from three runs the 6 h deadline killed (19, 1, 6), so the rule counts jobs cut with the run, not left behind; 15 from two done runs whose results promised a chain still running or queued last, which end_run_orphans then ended (the false report fixed in llm-legs@6431047f: worker-run report prints ENDED: with the count and commands). 4 more on 2026-10-08 came from a 4 s failed run on the unknown account tronjhon (`llm-limits.sh --refresh-account claude/tron…`, an elevenlabs timeout): who spawns that refresh under the run id is unverified. Counting only self-ended runs, or per command family (blind spot worker-orphans-unclassified), would be a judge change: handoff.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (night 4c4e): a run the watchdog cut (runs.jsonl reason wall, idle, deadline, silent, term or signal) ends its detached jobs with it, so worker_orphans_line counts only the orphans of runs that ended on their own; test_wait_journal's deadline row is red on the old code. Both fixes hold: of 45 orphans 2026-10-07 14:00 to 2026-10-09 03:38, none is session-trash's purge or worker-run's pack. All 45 are logo-vectorizer-bench builder workers' `nohup .venv/bin/python …&` traces and evals (the Bash tool's timeout makes them detach): 26 of 2026-10-09 from three runs the 6 h deadline killed (19, 1, 6), so the rule counts jobs cut with the run, not left behind; 15 from two done runs whose results promised a chain still running or queued last, which end_run_orphans then ended (the false report fixed in llm-legs@6431047f: worker-run report prints ENDED: with the count and commands). 4 more on 2026-10-08 came from a 4 s failed run on the unknown account tronjhon (`llm-limits.sh --refresh-account claude/tron…`, an elevenlabs timeout): who spawns that refresh under the run id is unverified. Counting only self-ended runs, or per command family (blind spot worker-orphans-unclassified), would be a judge change: handoff.",
       "handoff": "docs/handoffs/2026-10-09-worker-orphans-deadline-jobs.md"
     },
     {
@@ -4233,12 +4285,12 @@
         "rule": "log_audit",
         "ident": "overbuilt-before-asking"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out as a harness bug: model judgment with no hook, gate or launcher behind it; dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's. Night 817e: quiet, conduct; kept.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out as a harness bug: model judgment with no hook, gate or launcher behind it; dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's. Night 817e: quiet, conduct; kept.",
       "handoff": null
     },
     {
@@ -4248,12 +4300,12 @@
         "rule": "log_audit",
         "ident": "reports-jargon-and-unverified-claims"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out as a harness bug: model conduct with no component; dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's. Night 817e: quiet, conduct; kept.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out as a harness bug: model conduct with no component; dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's. Night 817e: quiet, conduct; kept.",
       "handoff": null
     },
     {
@@ -4263,12 +4315,12 @@
         "rule": "log_audit",
         "ident": "memory-guard-lane-pause"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out as a harness bug: the memory guard killed the lane as designed (exit 137) and the pause was the lane's own resume at load 164 (weather); dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's. Night 817e: quiet; kept, the dismissal stays the owner's.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out as a harness bug: the memory guard killed the lane as designed (exit 137) and the pause was the lane's own resume at load 164 (weather); dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's. Night 817e: quiet; kept, the dismissal stays the owner's.",
       "handoff": null
     },
     {
@@ -4770,12 +4822,12 @@
         "rule": "log_audit",
         "ident": "night-worker-queue-wait"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out as a bug: the night-workers wait class journals every slot wait (22 rows on 2026-10-07, up to 40 min), and slots are paced by load and memory as Egor settled (docs/handoffs/2026-10-06-speed-floors.md). Dismissal proposed in the handoff. Night 817e: quiet; the dismissal stays the owner's.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out as a bug: the night-workers wait class journals every slot wait (22 rows on 2026-10-07, up to 40 min), and slots are paced by load and memory as Egor settled (docs/handoffs/2026-10-06-speed-floors.md). Dismissal proposed in the handoff. Night 817e: quiet; the dismissal stays the owner's.",
       "handoff": "docs/handoffs/2026-10-08-log-audit-night-7777.md"
     },
     {
@@ -4785,12 +4837,12 @@
         "rule": "log_audit",
         "ident": "detached-chain-dies-with-builder"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Confirmed: worker-run's end_run_orphans (8a5f5a80) ended 17 python processes carrying run claudeb-1791327019-53180-25b9's WORKER_RUN_ID at 02:27, as designed against leaked processes. A process meant to outlive its run starts under env -u WORKER_RUN_ID (worker-run does so itself). Ruled out as a harness bug; the recipe goes to the owner chat via the handoff. Night 817e: quiet; the dismissal stays the owner's.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Confirmed: worker-run's end_run_orphans (8a5f5a80) ended 17 python processes carrying run claudeb-1791327019-53180-25b9's WORKER_RUN_ID at 02:27, as designed against leaked processes. A process meant to outlive its run starts under env -u WORKER_RUN_ID (worker-run does so itself). Ruled out as a harness bug; the recipe goes to the owner chat via the handoff. Night 817e: quiet; the dismissal stays the owner's.",
       "handoff": "docs/handoffs/2026-10-08-log-audit-night-7777.md"
     },
     {
@@ -4915,12 +4967,12 @@
         "rule": "opportunity",
         "ident": "delegation/reviews"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-speed-delegation-reviews-20261009T024756Z-0064",
-      "note": "2026-10-09: ruled out. The slice is attended `review-bench wait` (bin/speed-doctor delegation_leaf), launch to notification. Non-model parts measured: (1) the review-waiter Agent relay, retired in llm-legs@ee185fa8, cost 2.1 s spawn + 1.4 s final message (medians, 109 waiter transcripts in ~/.claude/projects) of a 671 s median wait; 62 of the window's 67 rows predate it; (2) review-bench cmd_wait polls panel_still_running every PANEL_POLL_S 2 s, ~1 s per review; (3) review-cells slot holds (launch.py admitted): all 106 on 2026-10-09 (9892 s, p50 68 s) belong to the unattended bench chat 7977deeb, none to the attended chat c0f23f02. The rest is reviewer cells' model time, which Speed never trades. Cheapest cut: event-driven panel exit instead of the 2 s poll saves ~1000 ms x ~3/day, costs a review-bench change (another repository). The slice lever's 30 % saving is the generic SLICE_LEVER, not a measurement: see blind_spots delegation-model-time.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug. The wait is reviewer model time, which Speed never trades; its non-model parts are about 1 s of poll per review and the relay is cut (ee185fa8); blind spot delegation-model-time keeps the measure gap. 2026-10-09: ruled out. The slice is attended `review-bench wait` (bin/speed-doctor delegation_leaf), launch to notification. Non-model parts measured: (1) the review-waiter Agent relay, retired in llm-legs@ee185fa8, cost 2.1 s spawn + 1.4 s final message (medians, 109 waiter transcripts in ~/.claude/projects) of a 671 s median wait; 62 of the window's 67 rows predate it; (2) review-bench cmd_wait polls panel_still_running every PANEL_POLL_S 2 s, ~1 s per review; (3) review-cells slot holds (launch.py admitted): all 106 on 2026-10-09 (9892 s, p50 68 s) belong to the unattended bench chat 7977deeb, none to the attended chat c0f23f02. The rest is reviewer cells' model time, which Speed never trades. Cheapest cut: event-driven panel exit instead of the 2 s poll saves ~1000 ms x ~3/day, costs a review-bench change (another repository). The slice lever's 30 % saving is the generic SLICE_LEVER, not a measurement: see blind_spots delegation-model-time.",
       "handoff": "docs/handoffs/2026-10-09-delegation-reviews-floor.md"
     },
     {
@@ -4930,12 +4982,24 @@
         "rule": "hook-error",
         "ident": "ask-run-unfinished\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T06:52:16+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "claude-setup/hooks/stop.d/ask-run-unfinished.sh",
+            "claude-setup/tests/test_stop_dispatch.sh",
+            "llm-legs/bin/worker-run-backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
-      "note": "Two exit 124 on 2026-10-09 (hooks/folded 20735.tsv). 03:45:38Z/349272e0, the night sweep chat: 18 live runs of its own at load1 255; the hook forks about a dozen processes per run of the chat (rj_run_liveness sed/ps/date, a jq for phase, starter_alive ps/awk/date), 5.11 s for 0.49 s CPU, right after the backstop spent 3.3 s on the same runs. 01:34:14Z/7977deeb: no live run of that chat (its last ended 01:08Z), 5.02 s for 0.28 s CPU beside commit-report.sh 5.47 s at load1 30, no swap-in: a short machine stall in the ps scan, its awk or a jq, not proven which. The other ~560 runs that day took at most 0.79 s. The dispatcher capped both as specified. Ruled out: swap, a stuck run, the run-dir glob (1600 dirs, 0.07 s idle). Its run and live-review branches duplicate the run backstop, which runs first: handoff item 1 deletes them and their per-run forks (claude-setup, no worktree in this run).",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (night 4c4e): the ask no longer walks live runs. A live run with no wait is worker-run-backstop.sh's alone (stop-dispatch runs it first and never defers it), so the per-run forks (rj_run_liveness, starter_alive, the phase jq) and the backstop's --unowned mode are gone; the ask keeps the dead and done-never-read review refusals. test_stop_dispatch 17c is red on the old code (asked twice, read the process table). Two exit 124 on 2026-10-09 (hooks/folded 20735.tsv). 03:45:38Z/349272e0, the night sweep chat: 18 live runs of its own at load1 255; the hook forks about a dozen processes per run of the chat (rj_run_liveness sed/ps/date, a jq for phase, starter_alive ps/awk/date), 5.11 s for 0.49 s CPU, right after the backstop spent 3.3 s on the same runs. 01:34:14Z/7977deeb: no live run of that chat (its last ended 01:08Z), 5.02 s for 0.28 s CPU beside commit-report.sh 5.47 s at load1 30, no swap-in: a short machine stall in the ps scan, its awk or a jq, not proven which. The other ~560 runs that day took at most 0.79 s. The dispatcher capped both as specified. Ruled out: swap, a stuck run, the run-dir glob (1600 dirs, 0.07 s idle). Its run and live-review branches duplicate the run backstop, which runs first: handoff item 1 deletes them and their per-run forks (claude-setup, no worktree in this run).",
       "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
     },
     {
@@ -4945,12 +5009,12 @@
         "rule": "word-miss",
         "ident": "span\\+sweep"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
-      "note": "words:1791513530/349272e0 (night 20261009T023738Z-817e sweep chat, Opus): night-run's own message 'сделай чистку — night run <id>' raised ⚡ span on + ⚡ sweep; the chat ran the sweep with no ⚡ reading line. The seven night sweep chats before it (2026-10-03..10-08) all wrote them and nothing in night-sweep SKILL.md, docs/night-run.md or the launch message changed since: a model miss. ask-word-reading.sh was skipped-busy at every stop until the dispatcher's hold cap released the asks at 03:45:38Z; it asked and the chat's late reading marked the row ok at 03:45:44Z, so the net worked and the doctor counted the row an hour before it could. Ruled out: intake regex, journal ordering. Dismissal, or a doctor that waits for a busy chat's deferred ask, proposed to the owner (handoff item 2).",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug. The span and sweep words came from night-run's own launch message, not Egor's, so no reading line was owed; the deferred-ask timing is moot since Egor removed the reading-line ask (claude-setup@4c7eaf02). words:1791513530/349272e0 (night 20261009T023738Z-817e sweep chat, Opus): night-run's own message 'сделай чистку — night run <id>' raised ⚡ span on + ⚡ sweep; the chat ran the sweep with no ⚡ reading line. The seven night sweep chats before it (2026-10-03..10-08) all wrote them and nothing in night-sweep SKILL.md, docs/night-run.md or the launch message changed since: a model miss. ask-word-reading.sh was skipped-busy at every stop until the dispatcher's hold cap released the asks at 03:45:38Z; it asked and the chat's late reading marked the row ok at 03:45:44Z, so the net worked and the doctor counted the row an hour before it could. Ruled out: intake regex, journal ordering. Dismissal, or a doctor that waits for a busy chat's deferred ask, proposed to the owner (handoff item 2).",
       "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
     },
     {
@@ -5014,12 +5078,24 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/llm\\-legs/CLAUDE\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T06:52:16+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-guards-20261009T024729Z-7a2d",
-      "note": "Event 2026-10-08T18:55:46Z, +145 B: the fast-forward of feat/run-all-chat-gate (847c18ad). The write came from chat «Updater doctor» at 18:47:08Z: a scratchpad gate.py run by heredoc and then python3, with p = w / path; p.write_text(...) and sub(\"CLAUDE.md\", ...). Replayed through the write gate under the test harness, it passes. This is a gate-scope widening, so it is the owner's call: docs/handoffs/2026-10-09-harness-guards-param-path-writes.md. Ruled out: the landing credit (no gate pass on the worktree path, gates.jsonl has no row), the vendor sync, and the tripwire, which did see it at the landing.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (night 4c4e): both gaps closed in the write gate. A script the same command writes by heredoc and runs by path is read from that heredoc (instruction_heredoc_writes), and a write through a variable bound to a join, with the guarded name handed to a call, is judged a write of that name (joined_call). The incident shape, its inline and file-run forms and three heredoc-written literal scripts deny, all six red on the old gate; a program that reads CLAUDE.md and writes another computed path still passes. Event 2026-10-08T18:55:46Z, +145 B: the fast-forward of feat/run-all-chat-gate (847c18ad). The write came from chat «Updater doctor» at 18:47:08Z: a scratchpad gate.py run by heredoc and then python3, with p = w / path; p.write_text(...) and sub(\"CLAUDE.md\", ...). Replayed through the write gate under the test harness, it passes. This is a gate-scope widening, so it is the owner's call: docs/handoffs/2026-10-09-harness-guards-param-path-writes.md. Ruled out: the landing credit (no gate pass on the worktree path, gates.jsonl has no row), the vendor sync, and the tripwire, which did see it at the landing.",
       "handoff": "docs/handoffs/2026-10-09-harness-guards-param-path-writes.md"
     },
     {
@@ -5163,12 +5239,12 @@
         "rule": "log_audit",
         "ident": "hung-commands-25min-timeout"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out: a headless worker's Bash stdin is /dev/null (timeout 3 cat returns 0 at once). The stalls were the model's own sleep 1500 polls, a mutation check whose backgrounded child held the pipe, and a 5-minute recursive grep: model conduct, no component. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out: a headless worker's Bash stdin is /dev/null (timeout 3 cat returns 0 at once). The stalls were the model's own sleep 1500 polls, a mutation check whose backgrounded child held the pipe, and a 5-minute recursive grep: model conduct, no component. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-09-log-audit-night-817e.md"
     },
     {
@@ -5285,12 +5361,12 @@
         "rule": "log_audit",
         "ident": "padding-claim-unverified"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out: model conduct (answered a challenged harness property from one file); no component. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out: model conduct (answered a challenged harness property from one file); no component. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-09-log-audit-night-817e.md"
     },
     {
@@ -5300,12 +5376,12 @@
         "rule": "log_audit",
         "ident": "relay-retirement-parity-missed"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out: the process of one finished migration (ee185fa8); no component. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out: the process of one finished migration (ee185fa8); no component. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-09-log-audit-night-817e.md"
     },
     {
@@ -5315,12 +5391,12 @@
         "rule": "log_audit",
         "ident": "trace-stale-retrace-after-code-change"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out: logo-vectorizer-bench lane planning in the chat «Vector Magic macOS ARM migration», not the harness. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out: logo-vectorizer-bench lane planning in the chat «Vector Magic macOS ARM migration», not the harness. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-09-log-audit-night-817e.md"
     },
     {
@@ -5330,12 +5406,12 @@
         "rule": "log_audit",
         "ident": "token-map-rule-and-menu-rework"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out: token-map's own process (schema bumps 27-30, menu rework) in its owner chat; the log/app split landed in 0106037b. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out: token-map's own process (schema bumps 27-30, menu rework) in its owner chat; the log/app split landed in 0106037b. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-09-log-audit-night-817e.md"
     },
     {
@@ -5345,12 +5421,12 @@
         "rule": "log_audit",
         "ident": "landing-wrapper-rebuilt"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Ruled out: model conduct; landing is plain git and the cut is recorded. A guard against one name is the one-incident ban Egor declined (process before guards). Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-10 (Harness Doctor): not a bug, dismissed by the owner: model conduct with no component to fix, as the note below rules. Ruled out: model conduct; landing is plain git and the cut is recorded. A guard against one name is the one-incident ban Egor declined (process before guards). Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-09-log-audit-night-817e.md"
     },
     {

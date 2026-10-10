@@ -14,7 +14,7 @@
 {
 set -u
 self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || exit 0
-[ "$#" -eq 0 ] || [ "$*" = --unowned ] || exit 0
+[ "$#" -eq 0 ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
 [ "${CLAUDEB_WORKER:-}" = 1 ] && exit 0
@@ -75,18 +75,6 @@ resume_of() { # run|review id
     printf 'worker-run wait %s' "$2"
   fi
 }
-
-# claude-setup's stop.d/ask-run-unfinished.sh asks the same question of its own candidates: stdin
-# `<run|review> <id>` lines, out `<kind> <id> <resume command>` for each nothing holds. A chat that
-# cannot be found prints nothing, so the ask stays quiet exactly where the hold does.
-if [ "$#" -eq 1 ]; then
-  while read -r kind id; do
-    case "$kind" in run|review) ;; *) continue ;; esac
-    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-    held "$kind" "$id" || printf '%s %s %s\n' "$kind" "$id" "$(resume_of "$kind" "$id")"
-  done
-  exit 0
-fi
 
 payload=''
 IFS= read -r -d '' payload || :

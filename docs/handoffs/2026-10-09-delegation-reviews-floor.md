@@ -1,6 +1,6 @@
 # Hand-off: dismiss opportunity:delegation/reviews
 
-Status: open — To: Harness Doctor (owner chat), from night fixer harness-speed-delegation-reviews-20261009T024756Z-0064
+Status: settled 20261010T031219Z-4c4e: dismissed not-a-bug, the wait is reviewer model time Speed never trades; its non-model parts are ~1 s a review and the relay is cut (ee185fa8); blind spot delegation-model-time keeps the measure gap
 
 Row `speed-delegation-reviews` in `share/harness-ledger.json` holds the measurement. The attended review
 wait is the reviewers' model time; its non-model parts are the 2 s panel poll (~1 s/review) and no

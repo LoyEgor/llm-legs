@@ -236,7 +236,8 @@ def memlogd(samples):
                              "%d quiet avail_mb=%d swap_used_mb=0\n" % (D0 + t, avail))
 
 
-memlogd([(t, 2.0, 8000) for t in range(2900, 4101, 15)])
+QUIET = [(t, 2.0, 8000) for t in list(range(2900, 4101, 15)) + list(range(7990, 8101, 15))]
+memlogd(QUIET)
 NOW = D0 + 20 * 3600
 for back in range(1, 8):
     day = T.local_day(D0 - back * 86400)
@@ -295,6 +296,28 @@ lines(failed, [{"kind": "direct", "queued_at": D0 - 86400, "started_at": D0 - 86
 os.environ["RUN_SUITES_JOURNAL"], journal = failed, os.environ["RUN_SUITES_JOURNAL"]
 check(T.suite_floor(D0, D0 + 86400) == {"worker": 1.0, "chat": 0.5},
       "a failed run that stopped at its first check is no suite's floor: %s" % T.suite_floor(D0, D0 + 86400))
+os.environ["RUN_SUITES_JOURNAL"] = journal
+grown = os.path.join(work, "grown")
+heads = []
+for body in ("x\n", "x\ny\nz\n"):
+    os.makedirs(os.path.join(grown, "tests"), exist_ok=True)
+    with open(os.path.join(grown, "tests", "test_y.sh"), "w") as handle:
+        handle.write(body)
+    subprocess.run(["git", "init", "-q", grown], check=True)
+    subprocess.run(["git", "-C", grown, "add", "-A"], check=True)
+    subprocess.run(["git", "-C", grown, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", body], check=True)
+    heads.append(subprocess.run(["git", "-C", grown, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip())
+def suite_run(at, head, secs, session):
+    return {"kind": "direct", "queued_at": D0 + at, "started_at": D0 + at, "ended_at": D0 + at + secs, "worker_run": None,
+            "session": session, "repo_root": grown, "head": head, "suites": {"test_y.sh": {"rc": 0, "secs": secs}}}
+history = [suite_run(-86400 - 100 * i, heads[i // 10], 10 if i < 10 else 40, "hist") for i in range(20)]
+for at, want in ((3000, 40 / 44.0), (5000, 1.0)):
+    lines(os.path.join(work, "grown-%d.jsonl" % at), history + [suite_run(at, heads[1], 44, "chat-9")])
+    os.environ["RUN_SUITES_JOURNAL"] = os.path.join(work, "grown-%d.jsonl" % at)
+    found = T.suite_floor(D0, D0 + 86400)
+    check(abs(found["chat"] - want) < 1e-9,
+          "a suite's floor is the p10 of its own file's blob, never of the smaller one it grew from, and only a run on a "
+          "free machine is over it, a run slowed by load at it: %s at %d" % (found, at))
 os.environ["RUN_SUITES_JOURNAL"] = journal
 critical = [[0, 0, 100, 60], [0, 100, 200, 60], [1000, 1000, 1100, 50]]
 idle = [[0, 0, 1000, 0], [0, 0, 100, 50], [0, 100, 200, 50]]
@@ -362,7 +385,7 @@ shutil.rmtree(os.path.join(work, "memlogd"))
 bare = T.budget(D0, D0 + 86400)
 check(bare["free_s"] == {"suite_wait_chat": 0.0, "suite_wait": 0.0, "slot": 0.0} and T.recoverable(bare, D0, D0 + 86400)["suite_wait"] == (0.0, 0.0),
       "with no memlogd sample a wait is busy: undercount, never a guess")
-memlogd([(t, 2.0, 8000) for t in range(2900, 4101, 15)])
+memlogd(QUIET)
 
 DEAD = "claudeb-%d-5-dddd" % (D0 + 30000)
 dead_row = {"run": DEAD, "status": "failed", "round": None, "pid_started_at": D0 + 30000, "started_at": D0 + 30000,
@@ -611,9 +634,13 @@ check(cached["improvements"][0]["files"] == [["repo", "code.py"], ["repo", "test
       "a cached row from before files were recorded gets them from its night's commits, its numbers kept")
 with open(T.ledger_cache("N1"), "w") as handle:
     json.dump(dict(cached, split_s=dict(cached["split_s"], model=1200, walled=5000)), handle)
-check(T.last_night() == {"id": "N1", "wall_s": 5800, "model_s": 1200, "share": 0.207},
+check(T.last_night() == {"id": "N1", "wall_s": 5800, "model_s": 1200, "share": 0.207, "floor_share": cached["floor_share"]},
       "the last night's worker activity is the newest finished night's cached ledger row, its usage-wall relaunches "
       "outside the wall: %s" % T.last_night())
+with open(T.ledger_cache("N1"), "w") as handle:
+    json.dump({k: v for k, v in cached.items() if k != "floor_share"}, handle)
+check(T.last_night()["floor_share"] == cached["floor_share"] == json.load(open(T.ledger_cache("N1")))["floor_share"],
+      "a cached night from before its floor share was recorded gets it from its own parts once: %s" % T.last_night())
 moved =os.path.join(work, "moved-doctors")
 shutil.copytree(os.path.join(work, "doctors"), moved)
 shutil.rmtree(os.path.join(moved, "night-ledger"))

@@ -870,6 +870,16 @@ instruction_interp_var_bind_re() { # variable → ERE matching any assignment to
   printf '%s' "(^|[^A-Za-z_0-9.\$])${1//\$/\\\$}[[:space:]]*=([^=]|\$)"
 }
 
+instruction_interp_var_join_re() { # variable → ERE matching it assigned a path join, at the same offset as the bind
+  local s="[[:space:]]*"
+  printf '%s' "(^|[^A-Za-z_0-9.\$])${1//\$/\\\$}$s=$s(\\\$?$_INSTRUCTION_ID$s(/|\+)|\\\$$_INSTRUCTION_ID$s\.$s|([A-Za-z_]+\.)*(join|Path|PurePath)\([^()]*,)"
+}
+
+instruction_interp_call_arg_re() { # names-alternation → ERE matching a call handed one of them as a whole quoted argument
+  local s="[[:space:]]*"
+  printf '%s' "(^|[^A-Za-z_0-9\$])$_INSTRUCTION_ID$s\(([^()]*,)?$s$_INSTRUCTION_Q($1)$_INSTRUCTION_Q$s[,)]"
+}
+
 instruction_interp_dir_construct_re() { # [trunc] → ERE matching ONE write through a joined variable
   local s="[[:space:]]*" id=$_INSTRUCTION_ID mode=$_INSTRUCTION_MODE node="(write|append)File(Sync)?"
   [ "${1:-}" != trunc ] || mode=$_INSTRUCTION_TRUNC_MODE node="writeFile(Sync)?"
@@ -912,7 +922,7 @@ instruction_expand_var() { # word assigns(newline-joined VAR=value, latest last)
   printf '%s%s' "${val%%$'\n'*}" "$rest"
 }
 
-instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
+instruction_interp_scripts() { # command cwd [all] → INTERPRETER<TAB>PATH lines, with all also the missing and unexpanded ones
   local cwd=${2:-$PWD} seg w interp op assigns=$'\n' skip
   local -a words
   while IFS= read -r -d '' seg; do
@@ -953,11 +963,61 @@ instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
     case "$op" in
       '~/'*) op="$HOME/${op#\~/}" ;;
       '$HOME/'*|'${HOME}/'*) op="$HOME/${op#*/}" ;;
-      '$'*) op=$(instruction_expand_var "$op" "$assigns") || continue ;;
+      '$'*) w=$(instruction_expand_var "$op" "$assigns") || { [ -z "${3:-}" ] || printf '%s\t%s\n' "$interp" "$op"; continue; }
+        op=$w ;;
     esac
     case "$op" in *'$'*|*'`'*) continue ;; /*) ;; *) op="$cwd/$op" ;; esac
-    [ -f "$op" ] && [ -r "$op" ] && printf '%s\t%s\n' "$interp" "$op"
+    if [ -n "${3:-}" ] || { [ -f "$op" ] && [ -r "$op" ]; }; then printf '%s\t%s\n' "$interp" "$op"; fi
   done < <(instruction_split_commands "$1")
+}
+
+# A file a heredoc writes, as TARGET<TAB>BODY rows, the body on one line with its pipes blanked as the gate
+# reads a program file: a script the same command writes and then runs does not exist yet at PreToolUse.
+instruction_heredoc_writes() { # command → TARGET<TAB>BODY lines
+  awk -v sq="'" -v dq='"' '
+    function target(seg,   t) {
+      if (match(seg, /(^|[ \t])g?tee[ \t]+((-a|--append)[ \t]+)?[^ \t;&|<>]+/)) {
+        t = substr(seg, RSTART, RLENGTH)
+        sub(/^[ \t]*g?tee[ \t]+((-a|--append)[ \t]+)?/, "", t)
+        return t
+      }
+      if (match(seg, /(^|[^0-9&<>])>>?[ \t]*[^ \t;&|<>]+/)) {
+        t = substr(seg, RSTART, RLENGTH)
+        sub(/^[^>]*>>?[ \t]*/, "", t)
+        return t
+      }
+      return ""
+    }
+    { lines[++n] = $0 }
+    END {
+      hd = "<<-?[ \t]*[" sq dq "]?[A-Za-z_0-9.-]+[" sq dq "]?"
+      i = 1
+      while (i <= n) {
+        line = lines[i++]; rest = line; off = 0; k = 0
+        while (match(rest, hd)) {
+          at = off + RSTART; tok = substr(rest, RSTART, RLENGTH)
+          off += RSTART + RLENGTH - 1; rest = substr(rest, RSTART + RLENGTH)
+          if (substr(line, at + 2, 1) == "<" || (at > 1 && substr(line, at - 1, 1) == "<")) continue
+          strip[++k] = substr(tok, 3, 1) == "-"
+          delim = tok; sub(/^<<-?[ \t]*/, "", delim); gsub("[" sq dq "]", "", delim); delims[k] = delim
+          pre = substr(line, 1, at - 1); sub(/.*[;&|]/, "", pre)
+          post = substr(line, at); sub(/[;&].*/, "", post)
+          targets[k] = target(pre post)
+        }
+        for (j = 1; j <= k; j++) {
+          body = ""
+          while (i <= n) {
+            l = lines[i++]; c = l
+            if (strip[j]) sub(/^\t+/, "", c)
+            if (c == delims[j]) break
+            body = body (body == "" ? "" : " ") l
+          }
+          gsub(/\|/, " ", body)
+          t = targets[j]; gsub("[" sq dq "]", "", t)
+          if (t != "") printf "%s\t%s\n", t, body
+        }
+      }
+    }' <<<"$1"
 }
 
 # WHERE A COMMAND LEAVES ITS BYTES: the one parse both doors on these files ask. Two parses of one

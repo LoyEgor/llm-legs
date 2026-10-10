@@ -61,14 +61,7 @@ end_waits; forget
 assert_eq block "$(stop | jq -r .decision)"
 forget
 assert_eq "" "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/r1" </dev/null)"
-# The Stop ask's question: the same ownership and resume command, for the candidates it names.
-unowned() { printf '%s\n' "$@" | bash "$HOOK" --unowned; }
-assert_eq $'run r1 worker-run wait r1\nreview v1 review-bench wait v1' "$(unowned 'run r1' 'review v1' 'bogus r1' 'run a/b')"
-wait_on worker-run r1
-wait_on review-bench v1
-assert_eq "" "$(unowned 'run r1' 'review v1')"
-assert_eq "run r1 worker-run wait r1" "$(WORKER_RUN_BACKSTOP_CHAT_PID=$LIVE_PID unowned 'run r1')"
-end_waits
+assert_eq "" "$(printf 'run r1\n' | bash "$HOOK" --unowned)"
 rm -rf "$WORKER_RUN_DIR/r1"; forget
 # A background shell that waits on its runs in turn, or after a sleep, owns every id it names before its
 # own wait process exists (2026-10-09, two chats held for waits they had started); a shell naming the id
@@ -103,13 +96,11 @@ printf '#!/bin/sh\nexit 0\n' >"$WORK/mute/ps"
 chmod +x "$WORK/mute/ps"
 printf '%s %s\n' "$LIVE_PID" "$live_began" >"$WORKER_RUN_DIR/r3/starter"
 assert_eq "" "$(PATH="$WORK/mute:$PATH" stop)"
-assert_eq "" "$(unowned 'run r3')"
 rm -rf "$WORKER_RUN_DIR/r3"; forget
 # A research run is picked up by light-research, which checks its citations and writes the answer file.
 run r4 s1 gemini
 jq -c '.light = "research"' "$WORKER_RUN_DIR/r4/meta.json" >"$WORK/m" && mv "$WORK/m" "$WORKER_RUN_DIR/r4/meta.json"
 assert_has '`light-research --attach r4 --out <answer-file>`' "$(stop | reason)"
-assert_eq "run r4 light-research --attach r4 --out <answer-file>" "$(unowned 'run r4')"
 rm -rf "$WORKER_RUN_DIR/r4"; forget
 
 # Not this chat's, finished, dead, or still inside `worker-run start` (no state.json yet): nothing to hold.
@@ -194,4 +185,4 @@ jq -nc --argjson hb "$(date +%s)" '{run_id:"other-review",session:"s9",state:"ru
 assert_eq "" "$(jq -cn '{hook_event_name:"Stop",session_id:"s7"}' | PATH="$WORK/count:$PATH" bash "$HOOK")"
 assert_eq jq "$(tr '\n' ' ' <"$WORK/forks" | sed 's/ $//')"
 rm -f "$WORKER_STATS_DIR/progress/other.json"
-printf 'PASS: %s asserts; a live worker or review run of this chat that no live `worker-run wait` / `review-bench wait` under the chat process owns holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay mode pass, --unowned answers the Stop ask with the same verdict and resume command, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"
+printf 'PASS: %s asserts; a live worker or review run of this chat that no live `worker-run wait` / `review-bench wait` under the chat process owns holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay and --unowned modes pass, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"

@@ -140,7 +140,7 @@ Proven reads `fixed · −X <unit> · ≈Y OM/d`. A later regression stamps `reg
 
 **Floor** (`share/time_budget.py`). Each class has a floor, chats and workers apart: zero for hooks, Stop hooks,
 retries, dead worker runs, wrap-up, hung tails and locks (plain Claude Code has none); suites their uncontended p10
-wall. A review round's worker splits like any run (`review_min` keeps its total for display only). Wrap-up: the last
+wall per suite-file blob at the run's head, only a run's part on a free machine over it. A review round's worker splits like any run (`review_min` keeps its total for display only). Wrap-up: the last
 CLI's exit (its start plus its `attempt_secs`) to the run's end. Hung: a watchdog `idle N` kill's last N s before the
 exit, a `silent` kill's whole last attempt; a deadline kill has no idle stamp and stays work. A queue (suite slot
 wait — a chat turn's `queue` part and its suite rows' queued_at → started_at included — worker slot queue) is lost only while the machine was free: memlogd sampled load1 under the core count and
@@ -151,7 +151,7 @@ or resume launch), its files record naming no path and no unknown or partial lis
 outside, HEAD unmoved, its result empty or only error and limit lines; its last attempt's wall is `dead` (slot queue
 and retries keep their classes). No `UNITS` entry: a few such runs a week leave most days at 0, so a per-unit median
 before a fix is 0; the day totals prove it. Workers active (bench and usage walls
-outside) is the parent of its parts, never ranked: floor share = model over the wall less their gaps. `lost_min_day`
+outside) is the parent of its parts, never ranked: floor share = model over the wall less their gaps, the last night's from its own parts (`night_split`). `lost_min_day`
 counts each minute once (`<chat> min + <worker> w-min/day`). The 7-day band only names sudden regressions as holes. A class gap ≥ 0.5 min/day adds to the best-ranked opportunity whose fix
 `time_budget.improvement_class` scores against that class (hooks and Stop → chat/hooks, suites → chat/tests, suite wait →
 chat/queue), else it is `opportunity:time/<class>` (`TIME_LEVERS`); recoverable minutes set the score, so the night takes

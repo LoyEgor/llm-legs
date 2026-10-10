@@ -1,6 +1,6 @@
 # Log audit of night 20261009T023738Z-817e (run harness-doctor-20261009T024650Z-5055)
 
-Status: open — To: next night (Harness Doctor owner); each item is ledger row `log_audit:<id>`, its note the verdict.
+Status: settled 20261010T031219Z-4c4e: the six rows and the five older owner-only ones (overbuilt-before-asking, reports-jargon-and-unverified-claims, memory-guard-lane-pause, night-worker-queue-wait, detached-chain-dies-with-builder) dismissed not-a-bug: model conduct, no component
 
 Ruled out as harness bugs, dismissal proposed:
 

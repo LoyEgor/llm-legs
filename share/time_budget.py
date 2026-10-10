@@ -703,21 +703,47 @@ def suite_secs(r):
             if isinstance(s, dict) and num(s.get("secs"))]
 
 
-def suite_floor(lo, hi):
+def suite_blobs(rows):
+    """{(repo_root, head, suite): the suite file's blob at that head, None when git has none}, one cat-file per
+    repository."""
+    want, out = collections.defaultdict(set), {}
+    for r in rows:
+        if r.get("head") and r.get("repo_root"):
+            want[r["repo_root"]].update((r["head"], name) for name in r.get("suites") or ())
+    for root, specs in want.items():
+        specs = sorted(specs)
+        try:
+            found = subprocess.run(["git", "-C", root, "cat-file", "--batch-check=%(objectname)"], capture_output=True,
+                                   input="".join("%s:tests/%s\n" % s for s in specs), text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for (head, name), line in zip(specs, found.stdout.splitlines()):
+            out[(root, head, name)] = None if line.endswith(" missing") else line
+    return out
+
+
+def suite_floor(lo, hi, free=None):
     """{"chat"|"worker": the share of that caller's suite seconds in [lo, hi) left with every suite at its p10 wall
     over suite_audit's window, the cost a covering suite keeps on a quiet machine; its passing runs only, as a failed
-    one may stop at its first check}."""
+    one may stop at its first check}. The p10 is per blob of the suite file, as a suite gaining checks within the
+    window is slower at its own floor; only a run's part on a free machine (`free_spans`) is over its floor, as load
+    from parallel runs is the price of their throughput, judged by the slot replay and the night's makespan."""
+    window = suite_rows(hi - suite_audit.WINDOW_D * 86400, hi)
+    blobs = suite_blobs(window)
     walls, secs, floor = collections.defaultdict(list), collections.Counter(), collections.Counter()
-    for r in suite_rows(hi - suite_audit.WINDOW_D * 86400, hi):
+    for r in window:
         for key, s in suite_secs(r):
             if r["suites"][key[1]].get("rc") == 0:
-                walls[key].append(s)
+                walls[key + (blobs.get((r.get("repo_root"), r.get("head"), key[1])),)].append(s)
     p10 = {k: sorted(v)[len(v) // 10] for k, v in walls.items()}
+    free = free_spans(lo, hi) if free is None else free
     for r in suite_rows(lo, hi):
         who = "worker" if r.get("worker_run") else "chat" if r.get("session") else None
+        ran = clip([(num(r.get("started_at")) or r["queued_at"], r["ended_at"])], lo, hi)
+        quiet = length(minus(ran, minus(ran, free))) / length(ran) if length(ran) else 0.0
         for key, s in suite_secs(r) if who else ():
             secs[who] += s
-            floor[who] += min(s, p10.get(key, s))
+            floor[who] += s - (s - min(s, p10.get(key + (blobs.get((r.get("repo_root"), r.get("head"), key[1])),), s))) * quiet
     return {who: floor[who] / secs[who] for who in secs}
 
 
@@ -781,7 +807,8 @@ def floors_of(b, rec, days):
 
 
 def last_night():
-    """The newest finished night's worker wall against its model time, from its cached ledger row when there is one."""
+    """The newest finished night's worker wall against its model time and its own floor share, from its cached ledger
+    row when there is one."""
     nights = [read_json(p, {}) for p in glob.glob(os.path.join(night_churn.doctors_dir(), "nights", "*.json"))]
     nights = sorted((n for n in nights if n.get("finished_at") and n.get("started_at") and n.get("id")),
                     key=lambda n: (n["started_at"], n["id"]))
@@ -789,10 +816,17 @@ def last_night():
         return None
     night = nights[-1]
     row = read_json(ledger_cache(night["id"]), None)
-    split = row["split_s"] if isinstance(row, dict) and row.get("finished") and "split_s" in row else night_split(night)[1]
+    cached = isinstance(row, dict) and row.get("finished") and "split_s" in row
+    if cached and "floor_share" in row:
+        split, floor = row["split_s"], row["floor_share"]
+    else:
+        split, floor = night_split(night, parts=True)[1:]
+        if cached:
+            write_json(ledger_cache(night["id"]), dict(row, floor_share=floor))
+            split = row["split_s"]
     wall, model = worker_wall(split), split.get("model", 0)
     return {"id": night["id"], "wall_s": round(wall), "model_s": round(model),
-            "share": round(model / wall, 3) if wall else None}
+            "share": round(model / wall, 3) if wall else None, "floor_share": floor}
 
 
 def pct(part, whole):
@@ -920,8 +954,9 @@ def print_day(doc):
 # ---------------------------------------------------------------- nights
 
 
-def night_split(night):
-    """Wall and its split over the worker runs the night's sessions launched (night_spend's selection)."""
+def night_split(night, parts=False):
+    """Wall and its split over the worker runs the night's sessions launched (night_spend's selection); with parts,
+    also the floor share worker_floor derives from that night's own parts."""
     low, high, sessions = night_spend.window(night)
     runs = []
     for run, _, meta, _ in night_spend.night_runs(low, high, sessions):
@@ -930,10 +965,21 @@ def night_split(night):
     events = event_rows(low, hi, ("c", "h"))
     suites = suite_rows(low, hi + 86400)
     calls = [c for c in events.get("c", ()) if c[6] == "w"]
-    split = collections.Counter()
+    free = free_spans(low, hi) if parts else None
+    split, freed, jobs = collections.Counter(), collections.Counter(), []
     for run in runs:
-        split += run_split(run, low, hi, suites, calls, events.get("h", ()))
-    return len(runs), split
+        one = run_split(run, low, hi, suites, calls, events.get("h", ()), free)
+        for key in FREE_CLASSES:
+            freed[key] += one.pop(key + "_free", 0.0)
+        split += one
+        start, end = num(run.get("pid_started_at")) or num(run.get("started_at")), num(run.get("ended_at"))
+        if parts and start is not None and end is not None:
+            own = run_split(run, float("-inf"), float("inf"), suites, (), ())
+            jobs.append([start, start + own["slot"], end, own["suite_run"] + own["suite_wait"]])
+    if not parts:
+        return len(runs), split
+    rec = recoverable({"worker": split, "seconds": split, "free_s": freed, "jobs": jobs}, low, hi)
+    return len(runs), split, worker_floor(split, rec, max(hi - low, 1.0) / 86400.0)["floor_share"]
 
 
 def lines_of(night):
@@ -1307,7 +1353,7 @@ def roi_lines(rows, now):
 
 def ledger_row(worker_run, path, night):
     low, high, _ = night_spend.window(night)
-    n_runs, split = night_split(night)
+    n_runs, split, floor = night_split(night, parts=True)
     wall = sum(split.values())
     touched = night_churn.problem_counts(night, path)
     rewrite = night_churn.rewrite_counts(night)
@@ -1316,7 +1362,7 @@ def ledger_row(worker_run, path, night):
     spent = night_spend.spend(night, worker_run)
     return {"id": night.get("id"), "started": low, "ended": high, "hours": round((high - low) / 3600.0, 1),
             "finished": bool(night.get("finished_at")), "runs": n_runs, "wall_s": round(wall),
-            "split_s": {k: round(v) for k, v in split.items() if v},
+            "split_s": {k: round(v) for k, v in split.items() if v}, "floor_share": floor,
             "lines": lines_of(night),
             "rewrite": list(rewrite[:2]) if rewrite else None,
             "problems": [sum(v for v in (night.get("doctors_before") or {}).values() if isinstance(v, int)),

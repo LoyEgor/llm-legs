@@ -102,18 +102,41 @@ done <<< "$segments"
 
 # A program FILE run by path is judged like an inline program, each file as its own invocation: the
 # command text of `S=…; python3 $S/patch.py` names nothing the script writes.
+# A script the same command writes by heredoc is read from that heredoc: the file does not exist yet.
 script_texts=()
 haystack=$command
+heredocs=''
+heredoc_body() { # path → script_body, from the last heredoc of the command that writes it
+  local t b found=''
+  while IFS=$'\t' read -r t b; do
+    case "$t" in
+      '~/'*) t="$HOME/${t#\~/}" ;;
+      '$HOME/'*|'${HOME}/'*) t="$HOME/${t#*/}" ;;
+    esac
+    case "$t" in
+      "$1") ;;
+      /*) continue ;;
+      '$'*/*) case "$1" in *"/${t#*/}") ;; *) continue ;; esac ;;
+      *) case "$1" in */"${t#./}") ;; *) continue ;; esac ;;
+    esac
+    found=1 script_body=${b:0:262144}
+  done <<< "$heredocs"
+  [ -n "$found" ]
+}
 if [[ $command =~ $_INSTRUCTION_INTERP ]]; then
   script_seen=$'\n'
+  case "$command" in *'<<'*) heredocs=$(instruction_heredoc_writes "$command") ;; esac
   while IFS=$'\t' read -r script_interp script_path; do
     [ -n "$script_path" ] || continue
     case "$script_seen" in *$'\n'"$script_interp $script_path"$'\n'*) continue ;; esac
     script_seen+="$script_interp $script_path"$'\n'
-    script_body=$(head -c 262144 "$script_path" 2>/dev/null | LC_ALL=C tr '\000|\n' '   ') || continue
+    if [ -z "$heredocs" ] || ! heredoc_body "$script_path"; then
+      [ -f "$script_path" ] || continue
+      script_body=$(head -c 262144 "$script_path" 2>/dev/null | LC_ALL=C tr '\000|\n' '   ') || continue
+    fi
     script_texts+=("$script_interp $script_body")
     haystack+=" $script_body"
-  done < <(for here in "${cwds[@]}"; do instruction_interp_scripts "$command" "$here"; done)
+  done < <(for here in "${cwds[@]}"; do instruction_interp_scripts "$command" "$here" ${heredocs:+all}; done)
 fi
 
 # Fast path before any glob or realpath: this runs ahead of every Bash call, and a command that
@@ -328,6 +351,34 @@ bound_at() { # variable offset → bound, of the caller's $text
   done
   [ -n "$bound" ]
 }
+# A write through a variable bound to a join with a function argument writes whatever name the program
+# hands that function, so a guarded name passed whole to a call is judged written.
+call_arg_re=''
+joined_call() { # variable offset → call_names, the guarded names handed to a call when the variable is a join
+  local bind found='' call i
+  if [ -z "$calls_read" ]; then
+    calls_read=1 call_names=''
+    [ -n "$call_arg_re" ] || call_arg_re=$(instruction_interp_call_arg_re "$TARGET")
+    while IFS= read -r call; do
+      [[ $call =~ ^[^A-Za-z_]?([A-Za-z_][A-Za-z_0-9]*) ]] || continue
+      case "${BASH_REMATCH[1]}" in
+        Path|PurePath|PosixPath|open|print|puts|warn|die|log|exists|isfile|isdir|islink|stat|lstat|getsize|getmtime|\
+        read_text|read_bytes|readFile|readFileSync|existsSync|statSync|join|resolve|abspath|realpath|relpath|normpath|\
+        expanduser|basename|dirname|glob|rglob|fnmatch|replace|startswith|endswith|split|format|str|repr|len) continue ;;
+      esac
+      call=$(name_in "$call") && call_names+=$call$'\n'
+    done < <(printf '%s' "$text" | grep -Eio "$call_arg_re")
+  fi
+  [ -n "$call_names" ] || return 1
+  bound_at "$1" "$2" || return 1
+  for ((i = 0; i < ${#join_vars[@]}; i++)); do [ "${join_vars[i]}" = "$1" ] && break; done
+  if [ "$i" -eq "${#join_vars[@]}" ]; then
+    join_vars+=("$1")
+    join_offsets+=("$(printf '%s' "$text" | grep -Eiob "$(instruction_interp_var_join_re "$1")" | cut -d: -f1)")
+  fi
+  for bind in ${join_offsets[i]}; do [ "$bind" = "$bound" ] && found=1; done
+  [ -n "$found" ]
+}
 assigns_of() { # variable names → assigns, of the caller's $text
   local i
   for ((i = 0; i < ${#assign_vars[@]}; i++)); do [ "${assign_vars[i]}" = "$1" ] && break; done
@@ -357,17 +408,23 @@ judge_interp() { # program text
       judge_row "$name" "$mode" && return 0
     done < <(printf '%s' "$text" | grep -Eio "$interp_cons")
   fi
-  interp_starts='' bind_vars=() bind_offsets=() assign_vars=() assign_rows=()
+  interp_starts='' bind_vars=() bind_offsets=() assign_vars=() assign_rows=() calls_read='' join_vars=() join_offsets=()
   if printf '%s' "$text" | grep -Eiq "$_INSTRUCTION_IW$var_cons"; then
     constructs_of "$text" "$var_cons" "$var_trunc"
     for ((k = 0; k < ${#cons_at[@]}; k++)); do
       at=${cons_at[k]} construct=${cons_text[k]}
       instruction_interp_var_name "$construct" var || continue
-      assigns_of "$var" "$TARGET"
-      [ -n "$assigns" ] || continue
-      bound_at "$var" "$at" || continue
       mode=append
       [ -z "${cons_trunc[k + 1]:-}" ] || mode=trunc
+      assigns_of "$var" "$TARGET"
+      if [ -z "$assigns" ]; then
+        joined_call "$var" "$at" || continue
+        while IFS= read -r name; do
+          [ -z "$name" ] || ! judge_row "$name" "$mode" || return 0
+        done <<< "$call_names"
+        continue
+      fi
+      bound_at "$var" "$at" || continue
       while IFS=: read -r bind assigned; do
         [ "$bind" = "$bound" ] || continue
         name=$(name_in "$assigned") || continue

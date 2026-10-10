@@ -236,9 +236,9 @@ gaps = {"lost_min_day": 95.3, "lines": ["Without the harness ≈ 40 % faster"],
                     "recoverable_min_day": 0.3, "chat_min_day": 0.3, "worker_min_day": 0.0},
                    {"class": "stop", "label": "stop hooks", "floor_min_day": 0, "actual_min_day": 5.0,
                     "recoverable_min_day": 5.0, "chat_min_day": 5.0, "worker_min_day": 0.0}],
-        "workers_active": {"share": 0.1, "floor_share": 0.15, "recoverable_min_day": 80.0,
+        "workers_active": {"share": 0.1, "floor_share": 0.05, "recoverable_min_day": 80.0,
                            "parts": {"slot": 50.0, "suite_run": 30.0}},
-        "last_night": {"id": "N9", "wall_s": 36000, "model_s": 3600, "share": 0.1}}
+        "last_night": {"id": "N9", "wall_s": 36000, "model_s": 3600, "share": 0.1, "floor_share": 0.15}}
 timed = module.with_time(copy.deepcopy(backlog), gaps)
 check(all("workers-active" not in o["id"] for o in timed)
       and [module.per_day(o["opportunity"]["recoverable_min_day"], o["opportunity"].get("worker_min_day", 0.0))
@@ -281,8 +281,8 @@ check([(r["id"], r["state"], r["value"], r["limit"]) for r in rows]
       "under it"
       and rows[2]["fact"] == "workers were model-active 10 % of their wall on night N9 (floor 15 %) · proof: back under it"
       and module.floor_rows(dict(gaps, floors=gaps["floors"][2:], last_night=dict(gaps["last_night"], share=0.3)), {}, HI) == [],
-      "a class more than 30 min/day over its floor and a night under the derived workers' floor share are named rows "
-      "through the ledger's states; back under them there is no row: %s" % [(r["id"], r["state"]) for r in rows])
+      "a class more than 30 min/day over its floor and a night under the floor share its own parts derive (never the "
+      "last day's workers') are named rows through the ledger's states; back under them there is no row: %s" % [(r["id"], r["state"]) for r in rows])
 near = dict(gaps["last_night"], model_s=5300, share=0.147)
 check(module.floor_rows(dict(gaps, floors=[], last_night=near), {}, HI) == []
       and [r["ident"] for r in module.floor_rows(dict(gaps, floors=[], last_night=dict(near, model_s=4000, share=0.111)),

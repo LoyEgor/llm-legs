@@ -165,6 +165,60 @@ printf 'open(C + name, "w")\n' > "$SCRATCH/use.py"
 assert_eq pass "$(decision "python3 $SCRATCH/bind.py && python3 $SCRATCH/use.py")"
 assert_eq pass "$(decision "python3 -c 'print(1)' $SCRATCH/patch.py")"
 
+echo "== write gate: a script the command writes by heredoc, and a join a call hands the name"
+PROJ="$WORK/joined"
+mkdir -p "$PROJ/scratch"
+printf 'project rules\n' > "$PROJ/CLAUDE.md"
+JOINED='import pathlib, sys
+w = pathlib.Path(sys.argv[1])
+def sub(path, old, new):
+    p = w / path
+    t = p.read_text()
+    p.write_text(t.replace(old, new))
+sub("CLAUDE.md", "a", "b")'
+assert_eq deny "$(GATE_CWD="$PROJ" decision "cat > scratch/gate.py <<'PY'
+$JOINED
+PY
+python3 scratch/gate.py $PROJ")"
+assert_eq deny "$(GATE_CWD="$PROJ" decision "python3 - <<'PY'
+$JOINED
+PY")"
+printf '%s\n' "$JOINED" > "$PROJ/scratch/joined.py"
+assert_eq deny "$(GATE_CWD="$PROJ" decision "python3 scratch/joined.py $PROJ")"
+assert_eq deny "$(decision "cat <<'PY' > $SCRATCH/lit.py
+open('$PROJ/CLAUDE.md', 'a').write('x')
+PY
+python3 $SCRATCH/lit.py")"
+assert_eq deny "$(decision "S=$SCRATCH; tee \$S/lit2.py >/dev/null <<'PY'
+open('$PROJ/CLAUDE.md', 'a').write('x')
+PY
+python3 \$S/lit2.py")"
+assert_eq deny "$(decision "cat > \$X/lit3.py <<'PY'
+open('$PROJ/CLAUDE.md', 'a').write('x')
+PY
+python3 \$X/lit3.py")"
+assert_eq pass "$(GATE_CWD="$PROJ" decision "python3 - <<'PY'
+import pathlib
+t = pathlib.Path('CLAUDE.md').read_text()
+out = pathlib.Path(name)
+out.write_text(t)
+PY")"
+assert_eq pass "$(GATE_CWD="$PROJ" decision "python3 - <<'PY'
+import pathlib, sys
+w = pathlib.Path(sys.argv[1])
+def put(path, text):
+    p = w / path
+    p.write_text(text)
+put('notes.md', 'x')
+PY")"
+assert_eq pass "$(GATE_CWD="$PROJ" decision "cat > scratch/kept.py <<'PY'
+$JOINED
+PY")"
+assert_eq pass "$(GATE_CWD="$PROJ" decision "cat > notes.txt <<'PY'
+$JOINED
+PY
+python3 -c 'print(1)'")"
+
 echo "== write gate: the spelling of the path does not matter"
 # The first live test walked through the gate on exactly this line: the expanded path was
 # the only form it knew, and nobody types that.

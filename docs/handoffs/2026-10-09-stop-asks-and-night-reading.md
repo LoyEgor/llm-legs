@@ -1,6 +1,6 @@
 # Hand-off: ask-run-unfinished duplicates the run backstop; the night sweep chat's unread words
 
-Status: open
+Status: settled 20261010T031219Z-4c4e: ask-run-unfinished keeps only dead and done-never-read reviews, a live run is the backstop's alone (its --unowned mode gone too), inside a span ask-span-drill's one nudge stands in; word-miss-night-sweep-no-reading dismissed, the words were night-run's own message
 
 To: next night (item 1, claude-setup stop hooks); the chat «Harness Doctor» (item 2). From night fixer
 harness-stop-hooks-20261009T024811Z-29b3, which had no claude-setup worktree.

@@ -1,6 +1,6 @@
 # Guards: a python write whose guarded name arrives as a function argument
 
-Status: open — To: «Harness Doctor» (`share/harness-ledger.json` `owner`), carried by the next night
+Status: settled 20261010T031219Z-4c4e: the write gate reads a script the same command writes by heredoc and runs by path, and judges a join handed the guarded name by a call; six new denies red on the old gate, row fixed-pending
 
 Written 2026-10-09 by night fixer harness-guards-20261009T024729Z-7a2d. Row
 `guards-ungated-llm-legs-claude-md-param-path`. A gate-scope decision, so no gate was changed. Same

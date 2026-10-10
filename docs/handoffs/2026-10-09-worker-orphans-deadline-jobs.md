@@ -1,6 +1,6 @@
 # worker_orphans counts jobs a deadline cut, not leaks
 
-Status: open — To: Harness Doctor
+Status: settled 20261010T031219Z-4c4e: worker_orphans_line counts only runs that ended on their own, a run the watchdog cut (wall, idle, deadline, silent, term, signal) ends its jobs with it; row fixed-pending, test_wait_journal red on the old code
 
 From night 20261009T023738Z-817e run harness-wait-classes; row `worker-orphans-detached-on-purpose` (now open).
 The 26 orphans of 2026-10-09 are logo-vectorizer-bench builders' `nohup` python jobs in three runs the 6 h deadline
