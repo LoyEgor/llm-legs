@@ -6697,6 +6697,66 @@
       "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-worker-run-reliability-20261010T031951Z-1829",
       "note": "suite_journal CPU counts only reaped children: the detached worker-run supervisors and stub CLIs every case starts are outside it, so most of the 55 s 'idle' is their work plus the watchdog's 1 s hops (hop = window/10, floor 1 s), not sleeps. worker-run wait already wakes on exit_code by kqueue (exit_file_wait) and await_done polls at 0.05 s. Deliberate sleeps that stay, each the length its check needs: R1 6 s of live edits past WORKER_RUN_IDLE_S=3; A-echo 5 s of stderr past WALL_SETTLE_S=3; A-quoted 3 watchdog ticks over a quoted limit line; B 3 s silent run under SILENT_S=0; R2-redeem's 2 s pin clear inside the watchdog (widens the mark/fire window da1b836c made it red on). Cut: R2-redeem's foreground record slept that same 2 s for nothing (-2 s a run); the rest of the wall is cut by running the 19 independent sections as 3 shards like the sibling test_worker_run_watchdog/files suites. A sub-second watchdog hop for tests would be a new knob in bin/worker-run: cut 1 s hop latency saves ~800 ms x ~10 detections a run, costs a test-only switch in the supervisor (not taken: no bulk). Seen at load 177 under /bin/bash 3.2 with xtrace: R1 killed by its 3 s idle watchdog between the last edit and the gated stub's exit; not reproduced under Homebrew bash.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-heavy-night-run",
+      "title": "test_night_run · llm-legs: 1.6 wall-min a run after retests, flakes, idle and its pole",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_night_run"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:41:56+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-run-20261010T031928Z-51ca",
+          "files": [
+            "llm-legs/tests/test_night_run.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the suite at HEAD (2 shards, price asserts updated alike) vs the fix (4 shards), both RUN_SUITES_SHARDS=on side by side at load ~195, plus the fix unsharded and per shard",
+            "data": "tests/test_night_run.sh against the worktree's bin/night-run, journal to a scratch SUITE_JOURNAL",
+            "result": "479 asserts in every mode (shards 180+69+162+68); wall 483 s -> 299 s, CPU 103 -> 106 s (two more prologues)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-run-20261010T031928Z-51ca",
+      "note": "CPU-bound: ~1460 git + ~1470 jq forks in the old first shard, 35 lsof, 51 pgrep; the leftovers/finish/hold block (night leftovers, report) and the report/trade tail are the heavy parts. Fixed: 4 shards, cut at the cleanup night (its shard rebuilds the repo, fetches origin's later main and finishes the first night only when run alone; side-branch behind counts read $behind) and at the tail's own night reset. Ruled out: sleeps (0.3 + 0.5 + 0.5 s a run, process-cwd settles), legacy checks (none found). Left: branch_row forks ~8 git + 2 awk per branch and cwd_held re-lists lsof per night branch in bin/night-run, a product CPU cut for its own run. Shard 2 also went red today on token-map 9caede1's Claude 5.5 prices; its spend numbers follow them.",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-pole-night-run",
+      "title": "test_night_run · llm-legs: the long pole of 85 runs, the other slots idle while it runs",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/pole/llm-legs/test_night_run"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:41:56+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-run-20261010T031928Z-51ca",
+          "files": [
+            "llm-legs/tests/test_night_run.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "as speed-test-health-heavy-night-run",
+            "data": "as speed-test-health-heavy-night-run",
+            "result": "479 asserts in every mode; by the old first shard's profile (302 s at load ~170) the new first shard is ~46 % of it and the cleanup shard ~54 %, the old second shard split ~57/43"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-run-20261010T031928Z-51ca",
+      "note": "Same split and commit as speed-test-health-heavy-night-run: the old first shard was the pole (302 s vs 226 s for the second at load ~170).",
+      "handoff": null
     }
   ],
   "blind_spots": [

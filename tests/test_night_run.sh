@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 2
+# shards: 4
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -59,6 +59,23 @@ doc() { jq -n --argjson n "$2" --argjson p "${3:-[]}" '{contract: 1, problem_cou
 stop_chat() { pkill -f -- "--session-id $1"; while pgrep -f -- "--session-id $1" >/dev/null; do sleep 0.1; done; }
 wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 night wall; }
 old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
+last_arg() { local line; line=$(grep '^exec ' "$NIGHTS/$1.command"); eval "set -- ${line#exec }"; printf '%s\n' "${!#}"; }
+night_repo() {
+  git init -q --bare "$WORK/origin.git"
+  git init -q -b main "$WORK/repo"
+  git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m zero
+  based_hash=$(git -C "$WORK/repo" rev-parse HEAD)
+  git -C "$WORK/repo" update-ref "refs/night/$id/base" "$based_hash"
+  git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
+  git -C "$WORK/repo" remote add origin "$WORK/origin.git"
+  git -C "$WORK/repo" push -q origin main
+  pushed_hash=$(git -C "$WORK/repo" rev-parse HEAD)
+  side_tree=$(printf '100644 blob %s\tside\n' "$(printf 'side\n' | git -C "$WORK/repo" hash-object -w --stdin)" | git -C "$WORK/repo" mktree)
+  side_hash=$(git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit-tree "$side_tree" -p HEAD -m side)
+  git -C "$WORK/repo" push -q origin "$side_hash:refs/heads/side"
+  git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+  local_hash=$(git -C "$WORK/repo" rev-parse HEAD)
+}
 doc llm 5
 doc harness 3 '[{"id": "h1", "state": "new"}, {"id": "h2", "state": "open"}, {"id": "h3", "state": "regressed"}, {"id": "h4", "state": "watch", "fact": "fine"}]'
 
@@ -146,20 +163,7 @@ night job "$id" set harness-r1 state=failed-launch reason=opener >/dev/null || f
 assert jqe '.jobs[2].state == "left" and .jobs[2].reason == "hung: idle 1800"' "$R"
 
 # pushed=true is checked against the remote: on origin's main, and made after the night's base.
-git init -q --bare "$WORK/origin.git"
-git init -q -b main "$WORK/repo"
-git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m zero
-based_hash=$(git -C "$WORK/repo" rev-parse HEAD)
-git -C "$WORK/repo" update-ref "refs/night/$id/base" "$based_hash"
-git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
-git -C "$WORK/repo" remote add origin "$WORK/origin.git"
-git -C "$WORK/repo" push -q origin main
-pushed_hash=$(git -C "$WORK/repo" rev-parse HEAD)
-side_tree=$(printf '100644 blob %s\tside\n' "$(printf 'side\n' | git -C "$WORK/repo" hash-object -w --stdin)" | git -C "$WORK/repo" mktree)
-side_hash=$(git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit-tree "$side_tree" -p HEAD -m side)
-git -C "$WORK/repo" push -q origin "$side_hash:refs/heads/side"
-git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
-local_hash=$(git -C "$WORK/repo" rev-parse HEAD)
+night_repo
 printf '%s\n' "$WORK/elsewhere/llm-legs" "$WORK/repo" >"$WORK/sweep-repos"
 assert_fails night job "$id" set llm-20260930T010203Z pushed=true 2>"$WORK/err"
 assert grep -qF 'needs the job' "$WORK/err"
@@ -410,7 +414,6 @@ CLAUDE_CODE_SESSION_ID=$(jq -r .session "$(record "$id6")") night finish "$id6" 
 
 # Resume: the SAME night reopens under a new orchestrator for its unfinished jobs, the old session kept
 # in previous_sessions; the review-flow gate reads finished_at null and the new session's live process.
-last_arg() { local line; line=$(grep '^exec ' "$NIGHTS/$1.command"); eval "set -- ${line#exec }"; printf '%s\n' "${!#}"; }
 R6=$(record "$id6")
 rm "$(record "$id5")"
 night job "$id6" add vendor codex-e1 --branch "night/$id6/codex" >/dev/null
@@ -508,11 +511,24 @@ assert [ "$(cat "$WORK/out")" = "night $id6 resumed: orchestrator on acct-n" ]
 walled=$(jq -r .session "$R6")
 stop_chat "$walled"
 night finish "$id6" >/dev/null
+fi
 
+if suite_shard_owns 3 nr-cleanup-to-leftovers; then
+if [ ! -d "$WORK/repo" ]; then
+  night_repo
+  git clone -q -b main "$WORK/origin.git" "$WORK/other"
+  git -C "$WORK/other" -c user.name=t -c user.email=t@t commit -q --allow-empty -m later
+  git -C "$WORK/other" push -q origin HEAD:main
+  git -C "$WORK/repo" fetch -q origin
+fi
+if jqe '.finished_at == null' "$R"; then
+  stop_chat "$(jq -r .session "$R")"
+  night finish "$id" >/dev/null
+fi
 # Cleanup alone: a new night whose orchestrator prompt carries the sweep word and the cleanup scope.
 night start --cleanup >"$WORK/out" || fail "cleanup start"
 idc=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
-assert [ -n "$idc" ] && [ "$idc" != "$id6" ]
+assert [ -n "$idc" ] && [ "$idc" != "${id6:-$id}" ]
 assert [ "$(last_arg "$idc")" = "сделай чистку — night run $idc cleanup" ]
 assert jqe '.jobs == [] and .finished_at == null' "$(record "$idc")"
 assert_fails night start --cleanup 2>/dev/null
@@ -580,23 +596,23 @@ behind=$(git -C "$WORK/repo" rev-list --count "$pushed_hash..main")
 night leftovers >"$WORK/left" || fail "leftovers"
 night leftovers --json >"$WORK/left.json" || fail "leftovers --json"
 assert grep -qxF "repo merged-bare · no worktree · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left"
-assert grep -qxF "repo stale-open · $wt/stale-open · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
-assert grep -qxF "repo stale-bare · no worktree · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo stale-open · $wt/stale-open · unlanded · +1/-$behind main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo stale-bare · no worktree · unlanded · +1/-$behind main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
 assert grep -qxF "repo picked-bare · no worktree · landed · +1/-1 main · 0 dirty · landed" "$WORK/left"
 assert grep -qxF "repo stale-dirty · $wt/stale-dirty · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" "$WORK/left"
 assert grep -qxF "repo night/$idc/busy · $wt/busy · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left"
-assert grep -qxF "repo plain-busy · $wt/plain-busy · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
-assert grep -qxF "repo addir-busy · $wt/addir-busy · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
-assert grep -qxF "repo frozen · $wt/frozen · unlanded · +1/-3 main · 0 dirty · live (locked)" "$WORK/left"
+assert grep -qxF "repo plain-busy · $wt/plain-busy · unlanded · +1/-$behind main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo addir-busy · $wt/addir-busy · unlanded · +1/-$behind main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo frozen · $wt/frozen · unlanded · +1/-$behind main · 0 dirty · live (locked)" "$WORK/left"
 assert grep -qxF "repo fresh · $wt/fresh · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left"
 assert grep -qxF "repo edited · $wt/edited · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" "$WORK/left"
-assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-3 main · 0 dirty · held (Egor: сделай холд, я ещё тут)" "$WORK/left"
+assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-$behind main · 0 dirty · held (Egor: сделай холд, я ещё тут)" "$WORK/left"
 assert_fails grep -q '^repo main ' "$WORK/left"
 assert grep -qxF "checkout repo: diverged" "$WORK/left"
 assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 18 ]
-assert jqe --arg w "$wt" 'length == 17 and (map(.branch) | index("main")) == null
+assert jqe --arg w "$wt" --argjson b "$behind" 'length == 17 and (map(.branch) | index("main")) == null
   and (.[] | select(.branch == "stale-open")) == {repo: ($w | sub("/.claude/worktrees$"; "")), branch: "stale-open",
-    worktree: "\($w)/stale-open", landed: false, ahead: 1, behind: 3, dirty: 0, live: false, state: "leftover",
+    worktree: "\($w)/stale-open", landed: false, ahead: 1, behind: $b, dirty: 0, live: false, state: "leftover",
     why: "1 unlanded commits"}
   and ((.[] | select(.branch == "merged-bare")) | .worktree == null and .landed and .state == "landed" and .why == null)
   and ((.[] | select(.branch == "fresh")) | (.live | not) and .state == "landed")
@@ -647,7 +663,7 @@ assert grep -qxF "leftover · repo · stale-open · 1 unlanded commits" <(night 
 assert grep -qxF "held · repo · onhold · Egor: сделай холд, я ещё тут" <(night report "$idc")
 # The hold lasted that one night: its finish released it.
 assert [ ! -e "$NIGHTS/holds/chat-h.json" ]
-assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" <(night leftovers)
+assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-$behind main · 0 dirty · leftover (1 unlanded commits)" <(night leftovers)
 # A finished night's worker still writing in its dirty worktree keeps that branch live: adopting it would
 # commit the worker's half-done edit under it. Once the worker exits, it is a leftover.
 git -C "$WORK/repo" worktree add -q -b "night/$idc/worked" "$wt/worked" "$pushed_hash"
@@ -952,11 +968,11 @@ assert [ "$(body "$WORK/spend-report" | head -8)" = "duration · 02 Jan 00:00 �
 jobs · landed 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
 agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 3.0 h wall-clock · 1 without a transcript
 review rounds · 2
-spend fixers · 11.1M Opus-eq (opus 8.5M · codex 2.6M)
-spend reviews · 12.5M Opus-eq (opus 11.5M · sonnet 1.0M)
-spend orchestrator · 2.1M Opus-eq (opus 2.0M · haiku 0.1M)
-spend total · 25.7M Opus-eq · 3.21× night 20260101T000000Z-aaaa (8.0M)" ]
-assert [ "$(body "$WORK/spend-report" | sed -n '9,11p')" = "reviews · per-branch 0 rounds (0.0M Opus-eq) · other 2 rounds (12.5M Opus-eq)
+spend fixers · 11.2M Opus-eq (opus 8.0M · codex 3.2M)
+spend reviews · 11.8M Opus-eq (opus 10.5M · sonnet 1.2M)
+spend orchestrator · 1.6M Opus-eq (opus 1.5M · haiku 0.1M)
+spend total · 24.6M Opus-eq · 3.07× night 20260101T000000Z-aaaa (8.0M)" ]
+assert [ "$(body "$WORK/spend-report" | sed -n '9,11p')" = "reviews · per-branch 0 rounds (0.0M Opus-eq) · other 2 rounds (11.8M Opus-eq)
 problems · no snapshot
 fixer spend without proof · no snapshot" ]
 assert [ "$(body "$WORK/spend-report" | sed -n 12p | cut -d' ' -f1-2)" = "night 20260102T000000Z-bbbb" ]
@@ -977,7 +993,7 @@ with open(f"{spend_dir}/doctors/nights/20260102T000000Z-bbbb.json") as handle:
     now = ns.spend(json.load(handle), worker_run)
 assert calls == [["claudeb-1767312500-6-ffff", "codex-1767312300-3-cccc"]], calls
 assert reads[t1] == 1, reads
-assert now["blind"] == 1 and round(now["kinds"]["fixers"]["opus"]) == 8500000, now
+assert now["blind"] == 1 and round(now["kinds"]["fixers"]["opus"]) == 8000000, now
 with open(t1) as handle:
     kept = handle.read()
 seen = set()
@@ -989,7 +1005,7 @@ grown = ns.run_usage(worker_run, "claudeb-1767312200-2-bbbb", "claudeb", seen)
 assert list(grown) == ["opus"] and round(grown["opus"]) == 35, grown
 with open(t1, "w") as handle:
     handle.write(kept)
-# The same tokens on Haiku weigh what token-map's menu weighs them: a fifth of Opus, never raw billions.
+# The same tokens on Haiku weigh what token-map's menu weighs them, never raw billions.
 usage = {"input_tokens": 3000000, "cache_creation_input_tokens": 2000000, "cache_read_input_tokens": 400000000,
          "output_tokens": 1000000}
 weigh = {}
@@ -1005,8 +1021,8 @@ for model in ("claude-haiku-4-5-20251001", "claude-opus-5-5"):
                                  "cache_5m": 2000000, "output": 1000000}) + "\n")
     weigh[model] = (ns.claude_usage(path, set()), ns.bench_usage(bench))
 (haiku, haiku_bench), (opus, opus_bench) = weigh.values()
-assert list(haiku) == ["haiku"] and abs(ns.weighted(haiku) / ns.weighted(opus) - 0.2) < 0.01, weigh
-assert haiku_bench == haiku and opus_bench == opus and 50e6 < ns.weighted(opus) < 51e6, weigh
+assert list(haiku) == ["haiku"] and abs(ns.weighted(haiku) / ns.weighted(opus) - 0.414) < 0.01, weigh
+assert haiku_bench == haiku and opus_bench == opus and 30e6 < ns.weighted(opus) < 31e6, weigh
 PY
 assert_fails env TOKENMAP_ROOT="$WORK/no-token-map" WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT="$SP/profiles" \
   WORKER_STATS_DIR="$SP/stats" CODEX_PROFILES_DIR="$SP/codex" CHAT_NAME_ROOTS="$SP/profiles/p1/projects" \
@@ -1390,7 +1406,9 @@ assert grep -qxF "speed · levers 6 selected · 2 started · 4 left by the 6 h w
 night report nopen >"$WORK/report" || fail "report of the open speed night"
 assert grep -qxF "speed · levers 4 selected · 4 started · 0 left by the 6 h window" "$WORK/report"
 rm "$(record nlate)" "$(record nopen)"
+fi
 
+if suite_shard_owns 4 nr-no-night-to-end; then
 # No night at all: the menu prints nothing.
 rm "$NIGHTS"/*.json
 assert [ -z "$(night latest --menu)" ]
