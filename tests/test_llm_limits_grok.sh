@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 2
+# shards: 4
 . "$(dirname "$0")/llm_limits_harness.sh" || exit 1
 
 home_fixture_after_first_suite
@@ -238,6 +238,8 @@ grep -q 'no grokb at' "$WORK/grok-touch.err" || fail "a missing grokb went unrep
 grep -q -- '--account second' "$GROK_SENTINEL" || fail "a missing grokb cost the account its poll"
 rm -f "$GROK_SECOND_AUTH"
 
+fi
+if suite_shard_owns 2 grok-auth-age; then
 # needs_login is the one state no automated path can leave; expired is the CLI's own to heal.
 GROK_AUTH_CACHE="$WORK/grok-auth.json"
 grok_auth_env=("${grok_env[@]}")
@@ -340,7 +342,7 @@ jq -e '.vendors.grok.accounts[0] | .reset_credits == 2 and .reset_credits_stale 
   || fail "an old grok reset-credit reading was not marked stale: $grok_credits_stale"
 
 fi
-if suite_shard_owns 2 grok-rows; then
+if suite_shard_owns 3 grok-rows; then
 # The real helper against a dead endpoint: the access token in auth.json may reach neither the
 # store nor a log, however the read fails.
 GROK_SECRET_HOME="$WORK/grok-secret-home"
@@ -577,9 +579,9 @@ rm -f "$PAUSE_HOME/.claude/worker-model"
 jq -e '(.vendors | keys) == ["claude","codex","grok","opencode"]' \
   <<<"$(WORKER_PICK_CONFIG_FILE="$WORK/pause-config" pause_run --json 2>/dev/null)" >/dev/null \
   || fail "WORKER_PICK_CONFIG_FILE was not honoured by the pause reader"
-rm -f "$PAUSE_HOME/.claude/worker-model"
 
-
+fi
+if suite_shard_owns 4 refresh-errors; then
 # The classification cases rewrite a collected document; this suite collects its own.
 HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --json >/dev/null || fail "base collection for the refresh_errors cases failed"
 # Structured refresh_errors: classification at write, roster-drop, one cause per HTTP blob.
