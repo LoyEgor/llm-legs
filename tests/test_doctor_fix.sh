@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 3
+# shards: 4
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -245,8 +245,10 @@ printf '%0500d\n' 0 >"$WT2/DAY.md"
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
 assert grep -qF "markdown grew by 501 bytes since refs/doctor-fix/$id2/base in $WT2 (DAY.md +501)" "$WORK/err"
 mv "$WT2/DAY.md" "$L/DAY.md"
+printf '#!/bin/bash\necho >>"$DATA/py-calls"\nexec %q "$@"\n' "$(command -v python3)" >"$FAKE_BIN/python3" && chmod +x "$FAKE_BIN/python3"
 fix close "$id2" --decisions "$WORK/decisions" "three fixed or ruled out" >"$WORK/out" || fail "clean close failed"
-rm "$L/DAY.md" "$DATA/llm-doc.json" "$DATA/harness-doc.json"
+rm "$L/DAY.md" "$DATA/llm-doc.json" "$DATA/harness-doc.json" "$FAKE_BIN/python3"
+assert [ "$(wc -l <"$DATA/py-calls" | tr -d ' ')" = 1 ]
 assert grep -qxF "run $id2 closed: 4 decisions" "$WORK/out"
 assert jqe '.closed_at != null and .judge_at_close == "j2" and .note == "three fixed or ruled out"' "$R2"
 assert jqe --arg h "llm-legs@$lhash" '.decisions == [
@@ -533,7 +535,7 @@ assert grep -qF 'failed: worktree not created' "$WORK/err"
 assert [ -z "$(fix runs llm --open)" ]
 fi
 
-if suite_shard_owns 2 df-harness-doc; then
+if suite_shard_owns 4 df-harness-doc; then
 # Harness: areas are the document's sections; the snapshot adds the top 8 watch rows of Hooks and Hook waits.
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge: "h-live", status: "problems", problem_count: 3,
   sections: [
@@ -569,7 +571,7 @@ git init -q "$O" && git -C "$O" -c user.name=t -c user.email=t@t commit -q --all
 git -C "$O" update-ref refs/night/n3/base HEAD
 printf '%s\n' "$L" "$O" >"$WORK/sweep-repos"
 export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos"
-if suite_shard_owns 2 df-harness-runs; then
+if suite_shard_owns 4 df-harness-runs; then
 for n in 1 2 3 4; do bash "$FIX" launch harness --night n3 >"$DATA/h-$n" 2>/dev/null & done
 wait
 assert [ "$(cat "$DATA"/h-* | cut -f1 | sed -E 's/^harness-([a-z-]+)-[0-9]{8}.*/\1/' | sort | xargs)" = "doctor hook-waits hooks load" ]
@@ -621,7 +623,8 @@ assert_fails fix close "$hw" --decisions "$WORK/fl" "floors" 2>"$WORK/err"
 assert grep -qF "line 1 (floor:event:PreToolUse): ruled-out refused: a floor row's floor is zero" "$WORK/err"
 assert grep -qF "line 2 (floor:tool): handoff refused: a Speed or floor row is this run's to fix" "$WORK/err"
 printf 'floor:event:PreToolUse\truled-out\tclaude-setup/hooks/gate.sh\tcut the jq parse saves 40 ms × 900/day, costs one cache file\n' >"$WORK/fl"
-printf 'floor:tool\thandoff\tclaude-setup/hooks/gate.sh\tdocs/handoffs/2026-10-02-egor.md\nbogus\tnope\tx\ty\n' >>"$WORK/fl"
+printf '# floor\n\nTo: Egor.\nStatus: open\nCost: 1 s a call.\nLoss: none.\nRecommendation: keep.\n' >"$WORK/docs/handoffs/2026-10-02-floor.md"
+printf 'floor:tool\thandoff\tclaude-setup/hooks/gate.sh\tdocs/handoffs/2026-10-02-floor.md\nbogus\tnope\tx\ty\n' >>"$WORK/fl"
 assert_fails fix close "$hw" --decisions "$WORK/fl" "floors" 2>"$WORK/err"
 assert_fails grep -qF "refused" "$WORK/err"
 assert grep -qF "line 3 (bogus): verdict 'nope'" "$WORK/err"
@@ -840,7 +843,7 @@ assert grep -qF 'known, quiet (1): ' "$WORK/show"
 assert grep -qxF "$(printf '  Q7\tquiet\tquiet')" "$WORK/show"
 fi
 
-if suite_shard_owns 1 df-code; then
+if suite_shard_owns 4 df-code; then
 # Code: one area, top-K by value, needs-Egor problems stay out, close runs code-doctor check.
 export CODE_DOCTOR_DIR="$WORK/code" CODE_DOCTOR_REPOS="" CODE_DOCTOR_LEDGER="$WORK/ledgers/code.json"
 mkdir -p "$WORK/code"
@@ -969,7 +972,9 @@ git -C "$L" update-ref refs/night/n8/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n8 >"$WORK/out" 2>"$WORK/err" ||
   fail "the speed night did not launch: $(cat "$WORK/err")"
 speed_runs() { # -> each launched run as [area, [problem id, component files]...], by area
-  for r in $(cut -f1 "$WORK/out"); do jq -c '[.area] + [.problems[] | [.id, .component.files]]' "$(record "$r")"; done | jq -sc 'sort'
+  local files=() r
+  for r in $(cut -f1 "$WORK/out"); do files+=("$RUNS/$r.json"); done
+  jq -sc 'map([.area] + [.problems[] | [.id, .component.files]]) | sort' ${files[@]+"${files[@]}"} </dev/null
 }
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 7 ]
 assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '. == [
@@ -1178,7 +1183,9 @@ chmod +x "$WORK/spy/bash"
 assert [ "$(PATH="$WORK/spy:$PATH" night_snapshot n18 8)" = "$(PATH="$WORK/spy:$PATH" night_snapshot n18 1)" ]
 assert [ ! -e "$WORK/spy/calls" ]
 mv "$S/cap.json" "$S/harness/latest.json"
+fi
 
+if suite_shard_owns 4 df-log-audit; then
 # A log-audit reading names no file, so its run gets every sweep repository (a gate's cause sat in claude-setup).
 for r in "$RUNS"/harness-*.json; do
   jq -e '.closed_at == null and .abandoned_at == null and .failed_at == null' "$r" >/dev/null || continue

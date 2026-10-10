@@ -658,10 +658,12 @@ if __name__ == "__main__":
         sys.exit(touches(sys.argv[2], sys.argv[3], sys.argv[4]))
     elif command == "knob-lines":
         print(json.dumps(knob_lines()))
-    elif command == "knobs":
-        knobs(sys.argv[2])
-    elif command == "fix-faults":
-        fix_faults(sys.argv[2], sys.argv[3])
+    elif command == "close-checks":
+        record_file, doctor, pairs = sys.argv[2], sys.argv[3], sys.argv[4:]
+        print(" ".join(str(touches(record_file, pairs[i], pairs[i + 1])) for i in range(0, len(pairs), 2)))
+        if doctor in ("harness", "system"):
+            knobs(record_file)
+        fix_faults(record_file, doctor)
     elif command == "ledger-sync":
         ledger_sync(sys.argv[2])
 '
@@ -830,7 +832,7 @@ component_repos() { # id top -> the main checkouts other than top that hold the 
 }
 
 launch_runs() { # doctor night-or-empty -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
-  local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0
+  local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs=''
   [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
   count=$(check_doc "$doctor") || exit 1
   snap=$(py snapshot "$doctor" "$(doc_path "$doctor")" ${night:+"$night"}) || die "cannot snapshot the $doctor doctor"
@@ -844,6 +846,7 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
   fi
   [ "$snap" != '[]' ] || return 0
   top=$(worktree_top) || die "no repository at $repo_root"
+  [ "$doctor" != harness ] && [ "$doctor" != system ] || knobs=$(py knob-lines)
   for area in $(jq -r 'map(.area) | unique[]' <<<"$snap"); do
     jq --arg a "$area" 'map(select(.area == $a))' <<<"$snap" >"$runs_dir/.$$.problems"
     id=$(locked claim_run "$doctor" "$area" "$night" "$runs_dir/.$$.problems")
@@ -853,7 +856,7 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
       *) failed=1; continue ;;
     esac
     pending_id=$id
-    [ "$doctor" != harness ] && [ "$doctor" != system ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$(py knob-lines)"
+    [ -z "$knobs" ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$knobs"
     if [ -n "$night" ]; then branch="night/$night/$id" base="refs/night/$night/base"
     else branch="doctor-fix/$id" base="refs/doctor-fix/$id/base"; fi
     wt=$(worktree_path "$top" "$branch")
@@ -1048,6 +1051,7 @@ review_refusal() { # round -> why the run's review round keeps it open, empty wh
 close_run() { # id --decisions <file> note...
   local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
   local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule base wt growth handoffs
+  local pairs=() codes=() checks
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
   shift
@@ -1075,6 +1079,12 @@ close_run() { # id --decisions <file> note...
   [ "${as_of%.*}" -gt "${launched%.*}" ] ||
     die "rerun the $doctor doctor, the proof reads its fresh numbers: its document is not newer than this run's launch"
   while IFS=$'\x1f' read -r pid verdict purpose evidence; do
+    pairs+=("$pid" "$purpose")
+  done < <(awk -F'\t' '{ printf "%s\037%s\037%s\037%s\n", $1, $2, $3, $4 }' "$decisions")
+  checks=$(py close-checks "$file" "$doctor" ${pairs[@]+"${pairs[@]}"}) || bad+=("close checks failed (exit $?): the purpose, knob and fix-record checks did not finish")
+  read -ra codes <<<"${checks%%$'\n'*}"
+  case $checks in *$'\n'*) checks=${checks#*$'\n'} ;; *) checks='' ;; esac
+  while IFS=$'\x1f' read -r pid verdict purpose evidence; do
     line_no=$((line_no + 1))
     [ -n "$pid$verdict$purpose$evidence" ] || continue
     if [ "$pid" = judge ]; then
@@ -1092,8 +1102,7 @@ close_run() { # id --decisions <file> note...
         continue
       fi
     fi
-    py touches "$file" "$pid" "$purpose"
-    touch=$?
+    touch=${codes[$((line_no - 1))]:-1}
     [ "$touch" != 3 ] || { unverified+="$pid"$'\n'; touch=0; }
     [ "$touch" != 1 ] ||
       { bad+=("line $line_no ($pid): purpose '$purpose' resolves to no commit (repo@hash) and no file"); continue; }
@@ -1155,14 +1164,9 @@ close_run() { # id --decisions <file> note...
       [ -z "$line" ] || bad+=("system-doctor check: $line")
     done < <("${DOCTOR_FIX_SYSTEM_DOCTOR:-$repo_root/bin/system-doctor}" check --record "$file" --decisions "$decisions" 2>&1)
   fi
-  if [ "$doctor" = harness ] || [ "$doctor" = system ]; then
-    while IFS= read -r line; do
-      [ -z "$line" ] || bad+=("$line")
-    done < <(py knobs "$file")
-  fi
   while IFS= read -r line; do
     [ -z "$line" ] || bad+=("$line")
-  done < <(py fix-faults "$file" "$doctor")
+  done <<<"$checks"
   line=$(jq -r '.lens_round // empty' "$file")
   [ -z "$line" ] || line=$(review_refusal "$line")
   [ -z "$line" ] || bad+=("$line")
