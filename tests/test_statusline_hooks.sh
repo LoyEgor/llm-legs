@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 3
+# shards: 4
 set -u
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE CLAUDEB_WORKER
 
@@ -2788,8 +2788,8 @@ assert_eq 2 "$(grep -Fc "$PARENT_TRANSCRIPT" "$TAIL_LOG")"
 # nothing after it, which settles the fork as a tail fork without reading the rest.
 PARENT_TRANSCRIPT="$WORK/parent-big.jsonl"
 t_reset
-printf -v big_pad '%65536s' ''
-yes '{"type":"attachment","timestamp":"'"$(iso_utc $((NOW - 900)))"'","uuid":"pad","pad":"'"${big_pad// /x}"'"}' \
+big_pad=$(head -c 65536 /dev/zero | tr '\0' x)
+yes '{"type":"attachment","timestamp":"'"$(iso_utc $((NOW - 900)))"'","uuid":"pad","pad":"'"$big_pad"'"}' \
   | head -c 8500000 > "$PARENT_TRANSCRIPT"; printf '\n' >> "$PARENT_TRANSCRIPT"
 parent_assist $((NOW - 300)) big-anchor
 t_assist_fork $((NOW - 300)) parent-big big-anchor
@@ -5144,7 +5144,7 @@ gate_agent_payload() {
     '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,agent_id:"a1",tool_input:{command:$command}}'
 }
 gate_decision() { jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null; }
-if suite_shard_owns 2 launch-gate-grok; then
+if suite_shard_owns 4 launch-gate-grok; then
 for gate_denied in \
   'grok -p "do the thing"' \
   'grok --print "do the thing"' \
@@ -5189,7 +5189,7 @@ done
 
 
 fi
-if suite_shard_owns 3 launch-gate-relay; then
+if suite_shard_owns 4 launch-gate-relay; then
 # --- worker-launch-gate.sh: a run belongs to the chat --------------------------------------------
 # The chat starts a run and waits on it as a background Bash; an agent spelling either through any
 # wrapper, keyword or shell string starts a run nobody waits on.
@@ -5272,7 +5272,7 @@ gate_timeout_payload() { # agent command timeout-ms|null
     '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,agent_id:"a1",
       tool_input:({command:$command} + (if $timeout == null then {} else {timeout:$timeout} end))}'
 }
-if suite_shard_owns 1 launch-gate-wait; then
+if suite_shard_owns 4 launch-gate-wait; then
 # An agent of any type owns no run, whatever timeout its call carries, and a headless worker owns
 # none either.
 for gate_agent in fork Explore claudeb-worker; do

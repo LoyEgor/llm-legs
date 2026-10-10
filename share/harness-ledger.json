@@ -6243,6 +6243,36 @@
       "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261010T031904Z-0906",
       "note": "Before: 15.58 min/day recoverable (latest.json 2026-10-10). hooks/folded 20735 (2026-10-09): 11 249 runs, 33.7 wall-min; by CPU, 7963 under 25 ms (4.1 min: no git or the old screen), 2931 at 25-150 ms (9.6 min: a git call that loaded the 2k-line library to find no landing), 295 over 500 ms (19 min: landings). Fixed: a named call with no write stash, no armed HEAD snapshot and no spliced whole word of push or RJ_LANDING_SUBCOMMANDS leaves before the library; anonymous calls (nocall.* snapshots) and stashed ones keep the full path. RJ_LIB found by expansion (the 10-09 note's dirname/cd forks). Test: test_commit_report no grep/sed/awk on such a call (red on old code) and an armed snapshot with no landing word still reports (red with the snapshot check removed). Left, handed off: the landing tail is the debt probe, review-debt --split missing its cache after every commit (76-82 s llm-legs at load ~39) and killed at the 4 s row budget as `debt unknown`, 197 runs over 4.5 s in 2026-10-08..09, about 10 min/day. Found, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base too (2026-10-10, load ~90). Seen, not changed: the libdown note now waits for a landing call, as it already did for a call naming no git.",
       "handoff": "docs/handoffs/2026-10-10-commit-report-debt-probe.md"
+    },
+    {
+      "id": "speed-test-health-statusline-hooks",
+      "title": "test_statusline_hooks: shard 2 (render-pins plus launch-gate-grok) was the pole, and a bash pattern replace built a 64 KiB fixture pad",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/(heavy|pole)/llm-legs/test_statusline_hooks"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:30:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-llm-legs-test-statusline-hooks-20261010T031931Z-342e",
+          "files": [
+            "llm-legs/tests/test_statusline_hooks.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert counts and PASS of the 3-shard base vs the 4-shard fix, run side by side; the parent-big.jsonl pad string old vs new",
+            "data": "the suite's own fixtures, SUITE_SHARD=k/3 and k/4 at load ~195 on 10 cores; one unsharded run with per-section `times`",
+            "result": "1602 asserts both ways (base 659+540+403, fix 618+477+319+188), all PASS; the pad is the same 65536 x either way. Longest shard 421 s -> 284 s at the same load"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-llm-legs-test-statusline-hooks-20261010T031931Z-342e",
+      "note": "2026-10-10, one unsharded run at load ~200 (wall ~6x CPU): 120.5 CPU-s; per section CPU/wall s: workdir-hook 23.7/142 (271 hook calls, ~87 ms each, the hook's own cost), render-pins 30.5/195 (~690 statusline renders), sweep 20.2/34, worker-tags 9.7/64, launch-gate grok/relay/wait 7.9/8.1/6.4 at ~58 wall each, task-rows 6.9/41, rest under 3. Fixed: the three launch-gate sections form shard 4 (shards ~160-200 wall-s each in that run, side by side 244-284 s), and the parent-big pad is head|tr instead of `${pad// /x}` (1.7 CPU-s, 10-50 s wall under load). Not cut: a 5th shard needs render-pins or workdir-hook split, whose helpers are defined inline through the section; the 1 s and 0.2-0.3 s negative-check waits and the .claim.lock hold were ruled load-bearing on 2026-10-08 (row test_daily_cost-statusline-hooks).",
+      "handoff": null
     }
   ],
   "blind_spots": [
