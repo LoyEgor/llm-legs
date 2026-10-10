@@ -115,6 +115,7 @@ worker_pool_set_all() {
 # "every account of this vendor is out".
 worker_pool_disabled_json() {
   local dir="$1" file="$1/disabled" shield_dir="$1/shielded" marker name
+  [ -e "$file" ] || [ -L "$file" ] || [ -e "$shield_dir" ] || [ -L "$shield_dir" ] || { printf '[]'; return 0; }
   if [ -e "$file" ] && { [ ! -f "$file" ] || [ ! -r "$file" ]; }; then
     printf 'worker-pool: %s cannot be read; treating every account as out of the pool\n' "$file" >&2
     printf 'null'
@@ -187,6 +188,7 @@ worker_pool_marker_clear() {
   case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac
   worker_pool_valid_name "$account" || return 1
   dir=$(worker_pool_dir "$vendor") || return 1
+  [ -e "$dir/$kind/$account" ] || [ -L "$dir/$kind/$account" ] || return 0
   rm -f -- "$dir/$kind/$account"
 }
 

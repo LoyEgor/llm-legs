@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Copies the ElevenLabs key file (accounts.file, the master) over every accounts.mirrors path, so an app that reads
-only its own file spends the same keys in the same order. llm-limits.sh runs it on every poll.
+only its own file spends the same keys in the same order. llm-limits.sh runs it on every writing poll, inside elevenlabs_balance.py --sync.
 
 A mirror line whose key the master lacks and the last sync never wrote (its header lists the hashes it wrote) was
 added there by hand: it stays at the end and is named on stderr. A key the master dropped leaves the mirror.

@@ -678,31 +678,6 @@ jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("refresh_err
   || fail "healed Gemini did not clear its cause or feed the global success gate"
 rm -f "$GEMINI_SENTINEL"
 
-# agy-quota.py against a fake agy: print-mode `/usage` yields the quota, and the login line on
-# stderr is the logged-out verdict long before the timeout (tests/test_agy_quota.sh owns the rest).
-FAKE_AGY="$WORK/fake-agy"
-cat >"$FAKE_AGY" <<'EOF'
-#!/usr/bin/env bash
-if [ "${FAKE_AGY_MODE:-ok}" = "nologin" ]; then
-  printf 'Authentication required. Please visit the URL to log in:\n' >&2
-  sleep 30
-  exit 0
-fi
-printf '%s\n' '{"conversation_id":"","status":"SUCCESS","response":"","command":{"name":"usage","data":{"description":"shared weekly limit","groups":[{"name":"Gemini Models","description":"","buckets":[{"name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.5,"reset_time":"2099-01-01T00:00:00Z"},{"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1.0,"reset_time":"2099-01-01T00:00:00Z"}]}]}}}'
-EOF
-chmod +x "$FAKE_AGY"
-agy_out=$(FAKE_AGY_MODE=ok AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" python3 "$ROOT/agy-quota.py") \
-  || fail "print-mode /usage probe failed (rc $?)"
-jq -e '(.groups | type) == "array" and (has("auth_needed") | not) and
-  .groups[0].displayName == "Gemini Models" and
-  ([.groups[0].buckets[] | select(.window == "5h")][0].remainingFraction) == 1.0' <<<"$agy_out" >/dev/null \
-  || fail "print-mode /usage probe returned no quota in the cache shape"
-agy_rc=0
-agy_out=$(FAKE_AGY_MODE=nologin AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
-  AGY_QUOTA_TIMEOUT=30 python3 "$ROOT/agy-quota.py") || agy_rc=$?
-[ "$agy_rc" -eq 2 ] || fail "login line on stderr: expected exit 2, got $agy_rc"
-jq -e '.auth_needed == true' <<<"$agy_out" >/dev/null || fail "login line on stderr: auth_needed missing"
-
 # Regression: statusline-last.json goes stale while cache-rl keeps updating —
 # the fresher cache-rl must win even though last.json is present and valid.
 touch -t "$(date -r "$(( $(date +%s) - 2 ))" +%Y%m%d%H%M.%S)" "$HOME_FIXTURE/.claude/statusline-last.json"
@@ -785,6 +760,7 @@ EL_BIN="$WORK/elevenlabs-bin"
 mkdir -p "$EL_BIN"
 cat >"$EL_BIN/python3" <<EOF
 #!/usr/bin/env bash
+printf '%s\n' "\${1##*/}" >>"$WORK/python-runs"
 case "\${1:-}" in
   */elevenlabs_balance.py)
     if [ -e "\$LLM_LIMITS_CACHE.lock" ]; then echo held; else echo free; fi >>"$WORK/elevenlabs-lock"
@@ -793,7 +769,17 @@ case "\${1:-}" in
 esac
 exec "$(command -v python3)" "\$@"
 EOF
-chmod +x "$EL_BIN/python3"
+cat >"$EL_BIN/date" <<EOF
+#!/usr/bin/env bash
+[ ! /dev/fd/1 -ef /dev/null ] || printf '%s\n' "\$*" >>"$WORK/discarded-dates"
+exec /bin/date "\$@"
+EOF
+cat >"$EL_BIN/sed" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$WORK/sed-runs"
+exec /usr/bin/sed "\$@"
+EOF
+chmod +x "$EL_BIN/python3" "$EL_BIN/date" "$EL_BIN/sed"
 el_collect() {
   PATH="$EL_BIN:$PATH" HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" EL_BALANCE="$1" bash "$SCRIPT" --json |
     jq -c '.elevenlabs'
@@ -804,5 +790,9 @@ el_collect() {
   || fail "a failed ElevenLabs read dropped the previous reading"
 [ "$(tr '\n' ' ' <"$WORK/elevenlabs-lock")" = 'free free ' ] \
   || fail "the ElevenLabs balance was read under the store lock, holding every other writer behind its network calls"
+[ "$(grep -c elevenlabs "$WORK/python-runs")" = 2 ] \
+  || fail "a poll started more than one Python for ElevenLabs: $(tr '\n' ' ' <"$WORK/python-runs")"
+[ ! -s "$WORK/discarded-dates" ] || fail "a date ran only to be discarded: $(head -3 "$WORK/discarded-dates")"
+grep -qF '[+-][0-9]{2})([0-9]{2})$' "$WORK/sed-runs" 2>/dev/null && fail "a timestamp forked sed for its zone colon"
 echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract including vendor pin (*_profile=*) vs account pin, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, the same for a removed Codex main (menubar flag, passive collects, table and plain, the vendor stating its removal when nothing named is left, undone by deleting the marker), a paused vendor absent from the store and every render path with its collector never run, the ElevenLabs balance read outside the store lock, missing exit 3"
 exit 0

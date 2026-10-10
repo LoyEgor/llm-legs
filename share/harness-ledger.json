@@ -7468,6 +7468,40 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-entry-20261010T031938Z-0fca",
       "note": "Traced with timestamped xtrace at load ~200. Cut: every worker-run start forked basename per roster account (2.0 of 5.7 s a start over the harness's ~95 fixture accounts; production pays it per account too), brief_line_value forked head|grep|sed for each of 8 header keys, the harness's roster_add forked mkdir per account x 4 vendors on every worker_run suite's setup, and this suite's await_done built a full wait report (~1.6 s) per run it never read; await_exit polls exit_code, which the supervisor writes after _deliver. Ruled out: a split (model_effort_tests is ~64% of the rest, but the suite is no run-all pole: lifecycle, claims, reliability run longer, so a split moves no wall); sleeps (only 0.05 s polls and a TERM-ended STUB_SLEEP); legacy checks (the report-bus assert guards a decided removal and rides on existing runs); running model_effort's 7 meta-only launches concurrently (shared CALL_LOG and claims on com/main make it race-prone). Left: start -> exit_code is ~4 s a run under load in worker-run's own _supervise/_deliver path, production code beyond this suite. The roster_add hunk is byte-identical to main's 42be82a4 (wait_stream audit, same night) and lands as a no-op. Red at this night's base, not this run's: test_worker_run_stamps (model_refused claudeb haiku, line 33) and test_worker_run_wait_stream (run_tokens float, fixed on main by 42be82a4).",
       "handoff": null
+    },
+    {
+      "id": "speed-heavy-test-llm-limits",
+      "title": "test_llm_limits · llm-legs is heavy: ~55 collector runs at ~0.7 CPU-s each, wall ~8x that under load",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_llm_limits"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-20261010T031924Z-67ba",
+          "files": [
+            "llm-legs/llm-limits.sh",
+            "llm-legs/share/elevenlabs_balance.py",
+            "llm-legs/share/elevenlabs_keys_sync.py",
+            "llm-legs/share/worker-pool.sh",
+            "llm-legs/tests/test_llm_limits.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "llm-limits.sh --json/--table/--plain on the suite's fixture HOME at a pinned LLM_LIMITS_NOW byte for byte (fetched_at aside), and live --no-write --json/--table (as_of and ages aside), base vs fix",
+            "data": "tests/llm_limits_harness.sh fixtures with the walls log; the live store read-only; test_llm_limits on base and fix side by side",
+            "result": "5/5 identical; per collection 0.71 -> 0.63 CPU-s (6 runs each, load ~180); suite 50.6 -> 42.2 CPU-s, 876 -> 769 s wall side by side at load ~190"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-20261010T031924Z-67ba",
+      "note": "Wall is ~55 collector runs; each ~0.7 CPU-s spread over ~110 forks (52 jq), wall ~8x CPU at load 100-190, no sleeps or hot spot. Cut: each writing poll ran two Pythons for ElevenLabs (keys sync, then balance; ~0.08 CPU-s each, mostly the elevenlabs_media import), now one (balance.py --sync); epoch_iso/format_reset_time probed `date -r` before the real call and piped through sed for the zone colon (3 forks -> 1); four wall_for jq reads of the walls log -> one; worker_pool_disabled_json skips sort+jq with no disabled file or shield dir; marker clears skip rm on a missing marker. The suite's agy-quota.py block duplicated tests/test_agy_quota.sh (ok shape, login line -> rc 2) and is gone. The production poll (heartbeat, menubar) gets the same per-call cut. Not cut: the remaining ~45 jq per poll (one per vendor/account assembly step; merging them is a collector rewrite), sharding (summed suite seconds stay the same, ledger row test_daily_cost-llm-limits).",
+      "handoff": null
     }
   ],
   "blind_spots": [

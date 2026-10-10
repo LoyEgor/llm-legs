@@ -3,10 +3,11 @@
 
 The menubar's ElevenLabs rows: `name` is the key line's `label=` (the account name otherwise), `reserve`
 its `reserve=` floor. A key without the read permission is skipped; any other failure exits 1 so the
-collector keeps the previous reading.
+collector keeps the previous reading. `--sync` first runs elevenlabs_keys_sync in this process (a writing poll).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
@@ -61,4 +62,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--sync" in sys.argv[1:]:
+        import elevenlabs_keys_sync
+        with contextlib.suppress(Exception):
+            elevenlabs_keys_sync.main()
     sys.exit(main())

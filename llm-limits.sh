@@ -106,26 +106,21 @@ case "$chunk_bytes" in
 esac
 
 now_epoch=${LLM_LIMITS_NOW:-$(date +%s)}
+tz_colon() {
+  [ -n "$1" ] || return 0
+  printf '%s:%s\n' "${1%??}" "${1#"${1%??}"}"
+}
+
 local_iso() {
-  date '+%Y-%m-%dT%H:%M:%S%z' | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/'
+  tz_colon "$(date '+%Y-%m-%dT%H:%M:%S%z')"
 }
 
 epoch_iso() {
-  local epoch=$1
-  if date -r "$epoch" '+%Y-%m-%dT%H:%M:%S%z' >/dev/null 2>&1; then
-    date -r "$epoch" '+%Y-%m-%dT%H:%M:%S%z' | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/'
-  else
-    date -d "@$epoch" '+%Y-%m-%dT%H:%M:%S%z' | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/'
-  fi
+  tz_colon "$(date -r "$1" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d "@$1" '+%Y-%m-%dT%H:%M:%S%z')"
 }
 
 format_reset_time() {
-  local epoch=$1
-  if date -r "$epoch" '+%H:%M' >/dev/null 2>&1; then
-    date -r "$epoch" '+%H:%M'
-  else
-    date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
-  fi
+  date -r "$1" '+%H:%M' 2>/dev/null || date -d "@$1" '+%H:%M' 2>/dev/null || printf 'unknown'
 }
 
 claude_stale_cause() {
@@ -465,22 +460,14 @@ render_table() {
   done < <(printf '%s\n' "$sorted")
 }
 
-wall_for() {
-  local vendor=$1 log=${LLM_LIMITS_WALLS_LOG:-}
-  if [ -n "$log" ] && [ -r "$log" ]; then
-    jq -Rs --arg leg "$vendor" '
-      split("\n") | map(fromjson? | select(.leg == $leg and .rc == 5)) |
-      last | (.timestamp // .ts // null)
-    ' "$log" 2>/dev/null || printf 'null\n'
-  else
-    printf 'null\n'
-  fi
-}
-
-claude_wall=$(wall_for claude)
-codex_wall=$(wall_for codex)
-gemini_wall=$(wall_for gemini)
-grok_wall=$(wall_for grok)
+claude_wall=null codex_wall=null gemini_wall=null grok_wall=null
+walls_log=${LLM_LIMITS_WALLS_LOG:-}
+if [ -n "$walls_log" ] && [ -r "$walls_log" ] && walls=$(jq -Rsc '
+    split("\n") | map(fromjson?) as $events | ("claude", "codex", "gemini", "grok") as $leg |
+    $events | map(select(.leg == $leg and .rc == 5)) | last | (.timestamp // .ts // null)
+  ' "$walls_log" 2>/dev/null); then
+  { read -r claude_wall; read -r codex_wall; read -r gemini_wall; read -r grok_wall; } < <(printf '%s\n' "$walls")
+fi
 
 # Every per-account read cold-starts a vendor CLI: at load ~250 (2026-10-05) a heartbeat agy read
 # needed ~50 s, and the old 45 s cap left 6 of 7 Gemini accounts stale for a day.
@@ -1868,9 +1855,10 @@ done < <(printf '%s\n' "$gemini_accounts_list")
 gemini_order=$(printf '%s\n' "$gemini_accounts_list" | account_order_json gemini)
 
 # Network reads stay outside the store lock: one slow API held every other writer for up to 56 s.
-[ "$write_cache" = 0 ] || python3 "$script_dir/share/elevenlabs_keys_sync.py" 2>/dev/null || true
 elevenlabs_timeout=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" 2>/dev/null) ||
+elevenlabs_sync=--sync
+[ "$write_cache" = 1 ] || elevenlabs_sync=''
+elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" $elevenlabs_sync 2>/dev/null) ||
   elevenlabs=''
 
 if [ "$write_cache" -eq 1 ]; then
