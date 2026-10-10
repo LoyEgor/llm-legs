@@ -6333,6 +6333,36 @@
       "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-claude-setup-test-review-flow-gate-20261010T031914Z-3689",
       "note": "Before: test-health heavy 69 runs, 5.4 wall-min a run, 7.6 min + 29 w-min/day; pole 52 runs, 1.1 min + 14 w-min/day (latest.json at launch). Cause: 2 shards, shard 2 held door-nonces, door-night (662 s, 131 two-hook gate calls), door-grants (210 s) and span-and-journal (364 s), shard 1 the rest (736 s); the suite is the serial tail wave's only sharded suite (run-suites serial_suite), so every other slot idled behind shard 2. Fix: 4 shards balanced by measured section time (door-night split into night, door-cwd and door-verbatim; span-and-journal into span-and-journal and journal, which carries the `. review-journal.sh` its rj_* cases need), DOCTORS_DIR unset in the prelude so a section moved away from door-night's own export/unset never reads a live night record. Per-call cost is the two hooks' forks (~5 s a gate call at load 200, ~0.3 s quiet), ~310 calls; no sleeps or polls on the path (the `sleep 600`/`sleep 30` are fake live processes, killed). Kept, not checked further: run-suites' serial_suite tail placement for this suite (since 90a17f22, README: a loaded machine fails it on load); shards run only while slot_room finds room, so on a full machine the run stays unsharded and only the fast-import and duplicate cuts apply.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-worker-run-vendor-files",
+      "title": "test_worker_run_vendor_files launched a full worker run for every transcript-reader case and read each report twice",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/(heavy|idle)/llm-legs/test_worker_run_vendor_files"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:55:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-vendor-files-20261010T031946Z-57c6",
+          "files": [
+            "llm-legs/tests/test_worker_run_vendor_files.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "every file-list, escape, report and record assertion of the suite, base vs fix (151 assert lines identical; the 31 dropped are `assert await_done` of launches no longer made)",
+            "data": "the suite's own gemini and codex transcript fixtures; tests/run-all over it and its 4 covering suites",
+            "result": "all pass on both sides (fix: 146 executed asserts, 5/5 suites PASS); worker-run launches 50 -> 19, transcript_report calls 79 -> 40; suite CPU 46-52 s at normal load (runs.jsonl 10-10 01:51-02:55) -> 32.9 s at load 185"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-vendor-files-20261010T031946Z-57c6",
+      "note": "Before (packet 2026-10-10): heavy 186 runs, 2.3 wall-min a run, 36 min + 13 w-min/day; idle p10 wall 102 s on 43 s CPU, 58 s idle a run. Cause: each case paid a start/supervise/wait cycle (~2 s at normal load, ~20 s at load 150) only to get a meta.json for transcript_report, plus a discarded transcript_report before the asserted one. Ruled out: harness polls already use the sleep builtin and the stubs sleep only on STUB_SLEEP (0.3 s, kept for the two resume-cut cases that write the transcript after the run's start is known); the recycled-pid block's `sleep 120 &` is killed, never waited. Left: idle of the 19 launches is the detached supervisor (outside the suite's rusage) and the await polls; each asserts what only a launch makes (supervisor workdir-escape, wait.out, report, files record, worker-session, OUTCOME, stale/recycled liveness). No split: one harness prefix for 19 launches is cheaper than two.",
+      "handoff": null
     }
   ],
   "blind_spots": [
