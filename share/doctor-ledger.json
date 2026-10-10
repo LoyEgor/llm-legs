@@ -101,7 +101,7 @@
     "detail": "malformed Markdown|read coverage \\d+ bytes below|no parseable finding and did not declare"
    },
    "title": "bad output: empty-findings chunks, agy Markdown shapes and the read-coverage floor (R1, R3, R4)",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-09-23T21:40:26+03:00",
@@ -159,7 +159,7 @@
       "review-bench/share/rbench/prompts.py",
       "review-bench/share/rbench/launch.py"
      ],
-     "in": null,
+     "in": "review-bench@7fd71ca",
      "regressed_at": null
     }
    ],
@@ -1188,7 +1188,7 @@
     "detail": "^wrote [^/]+$"
    },
    "title": "a run wrote another repository's main checkout or a non-repository directory that its brief authorized only in prose, or escaped through a tracked symlink, so worker-run granted it nothing and the write read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T16:52:41+03:00",
@@ -1212,7 +1212,7 @@
       "llm-legs/bin/worker-run",
       "llm-legs/share/worker-policy.md"
      ],
-     "in": null,
+     "in": "llm-legs@6594c10d",
      "regressed_at": null
     }
    ],
@@ -2138,7 +2138,7 @@
     "detail": "--resume requires a valid session ID"
    },
    "title": "a RESUME brief named the worker-run run id instead of its session, so the CLI refused --resume and the run failed at once",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-10T08:06:48+03:00",
@@ -2146,7 +2146,7 @@
      "files": [
       "llm-legs/bin/worker-run"
      ],
-     "in": null,
+     "in": "llm-legs@6594c10d",
      "regressed_at": null
     }
    ],
@@ -2181,7 +2181,7 @@
     "detail": "unknown argument --dry-run"
    },
    "title": "A one-vendor media-run --dry-run reached a script that refuses it",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-10T06:27:00+03:00",
@@ -2189,7 +2189,7 @@
      "files": [
       "llm-legs/bin/media-run"
      ],
-     "in": null,
+     "in": "llm-legs@3754e02e",
      "regressed_at": null
     }
    ],
