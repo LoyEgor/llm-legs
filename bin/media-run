@@ -141,6 +141,15 @@ if [ -z "$account" ]; then
     account=$("$worker_pick" --account "$vendors" --role image 2>/dev/null) || account=''
   fi
 fi
+if [ "$dry_run" = true ] && { [ "$kind" = image ] || [ "$kind" = video ]; } && ! grep -qF -- '--dry-run)' "$bin_dir/$script"; then
+  run=()
+  for arg in "$@"; do [ "$arg" = --dry-run ] || run+=("$arg"); done
+  printf 'account=%s\n' "${account:-pool}"
+  printf 'IMAGE_JOB_ID=%s %q' "$IMAGE_JOB_ID" "$bin_dir/$script"
+  [ "${#run[@]}" -eq 0 ] || printf ' %q' "${run[@]}"
+  printf '\n'
+  exit 0
+fi
 media_tag=$(set +eu; . "$root/share/worker-model.sh" 2>/dev/null && worker_media_tag "$vendors" "$kind" "$*" 2>/dev/null) ||
   media_tag=''
 label=gen

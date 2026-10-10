@@ -146,6 +146,21 @@ run image --vendors codex,zeta -- --dest-dir /tmp/fan --prompt x --dry-run
 IFS=$'\037' read -r _ _ _ p_state _ < <(pointer "$(cat "$LOG/image-fanout.pid")")
 [ -z "$p_state" ] || fail "a dry run named a state file"
 ok
+run image --vendor zeta -- --dest '/tmp/out dir/a.png' --dry-run --prompt x >/dev/null
+[ "$rc" = 0 ] && [ ! -e "$LOG/zeta-image.args" ] || fail "a one-vendor dry run reached a script with no --dry-run (rc $rc)"
+ok
+out=$(MEDIA_RUN_CAPS_ROOT="$WORK/root" MEDIA_RUN_BIN_DIR="$BIN" MEDIA_RUN_WORKER_PICK="$WORK/worker-pick" \
+  STATUSLINE_CACHE_DIR="$CACHE" FAKE_LOG="$LOG" "$MEDIA_RUN" image --vendor zeta -- --dest '/tmp/out dir/a.png' --dry-run --prompt x 2>&1)
+grep -qx 'account=zacct' <<<"$out" && grep -qF "zeta-image --dest /tmp/out\\ dir/a.png --prompt x" <<<"$out" ||
+  fail "a one-vendor dry run printed: $out"
+ok
+run music --vendor elevenlabs -- --dest /tmp/a.mp3 --dry-run
+[ "$rc" = 0 ] && same_args elevenlabs-music --dest /tmp/a.mp3 --dry-run || fail "an audio script's own --dry-run did not reach it"
+ok
+printf '    --dry-run) ;;\n' >>"$BIN/zeta-image"
+run image --vendor zeta -- --dest /tmp/a.png --dry-run
+[ "$rc" = 0 ] && same_args zeta-image --dest /tmp/a.png --dry-run || fail "an image script's own --dry-run did not reach it"
+ok
 
 # No vendor literal in the door itself.
 [ -z "$(grep -nE 'codex|gemini|grok' "$MEDIA_RUN")" ] || fail "media-run names a vendor: $(grep -nE 'codex|gemini|grok' "$MEDIA_RUN")"
