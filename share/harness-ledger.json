@@ -6081,6 +6081,41 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-claims-20261010T031937Z-1391",
       "note": "Profiled at load ~250 (EPOCHREALTIME xtrace): a case costs worker-run start ~4 s + await_launched ~1.8 s + await_done's poll ~4.5 s + its final wait ~2.5 s, so launches were the lever. The produced-record cases now gate the stub while their fixture writes land (the 1 s stub sleep raced the CLI's exit under load); the legacy-claim cases share one ended run per workdir since legacy_claim_record rewrites the whole record. Kept: the STUB_BURN case's CPU-SECONDS >= 2 (~40 s at load 250, 2 s idle): its wall is the burner's share of the cores and a lower bar narrows the margin over the supervisor's own CPU. Not this suite's: worker-run start's ~4 s under load and await_launched's jq poll (shared harness of 16 suites).",
       "handoff": null
+    },
+    {
+      "id": "speed-heavy-test-word-triggers",
+      "title": "test_word_triggers ran its ~2.7k hook spawns as one serial suite",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/claude-setup/test_word_triggers"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:45:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-claude-setup-test-word-triggers-20261010T031915Z-09b0",
+          "files": [
+            "claude-setup/tests/word_triggers_harness.sh",
+            "claude-setup/tests/test_word_triggers.sh",
+            "claude-setup/tests/test_word_notices.sh",
+            "claude-setup/tests/test_word_doors.sh",
+            "claude-setup/tests/test_word_lifetime.sh",
+            "claude-setup/tests/test_word_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert inventory base vs fix: test_word_triggers at base against the five test_word_* parts at the fix; tests/affected for word-intake.sh, words.py, word-gate.sh, notice-word-journal.sh",
+            "data": "the suite's own fixtures, load ~97 (base) and ~150-160 (fix)",
+            "result": "base 559 asserts = 135 grammar + 147 notices/span + 94 doors/spend/cancel + 57 lifetime + 126 quote/journal/table/reset, every case moved verbatim in its original order within its part; every part still selected for the hook files it drove"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-claude-setup-test-word-triggers-20261010T031915Z-09b0",
+      "note": "Before: 81 runs in 7 d, 2.9 wall-min a run; at load ~97 one run 245-287 s wall on ~47 CPU-s (16-19% CPU): ~2.7k short processes in series, each intake a jq + bash + python3 (~90 ms wall a spawn at that load). No blocking sleep: the 0.4 s background writer is the journal's late-reply re-read under test, `sleep 0` mints a gone pid. Fixed: split by section into five suites sourcing tests/word_triggers_harness.sh (the commit_report_harness.sh pattern), CPU ~8-10 s each; all five at once at load ~150 finish in 89-136 s; the grammar grants() reader is one jq per read instead of jq per grant + sort/tr/sed (~200 reads). Not cut: the ~190 grammar reads still drive the real word-intake.sh end to end; batching them through one python would drop the hook's bash entry (sid fast path, worker skip) from those cases, a coverage trade. No legacy case found: WORDS_PIN_LEGACY_GRANT asserts the old global pin stays unwritten.",
+      "handoff": null
     }
   ],
   "blind_spots": [
