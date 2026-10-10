@@ -5,6 +5,7 @@
 # quality rule, presence, judging, the merge into Harness's document with each rule counted once, the moved heavy-test
 # and hot-hook opportunities, the offset reads, the journal prune and Harness's exec. Fixture directories only.
 set -u
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
@@ -28,6 +29,8 @@ sys.path.insert(0, os.path.join(root, "tests", "lib"))
 from speed_calibration import HI, LO, fold, harness
 h = harness(root)
 fold(h, root, work)
+projects = os.environ.pop("CLAUDE_PROJECTS_DIR")
+os.environ.pop("HARNESS_DOCTOR_BOOTS")
 
 ledger = os.path.join(work, "ledger.json")
 with open(ledger, "w") as handle:
@@ -139,6 +142,8 @@ def lever_commit(ago, text):
 
 
 lever_git(6, "init", "-q")
+check(subprocess.run(["git", "-C", lever_repo, "config", "core.hooksPath"], capture_output=True).returncode == 1,
+      "fixture commits, checkouts and merges run no global git hooks")
 lever_commit(6, "#!/bin/bash")
 lever_git(6, "checkout", "-q", "-b", "lever-fix")
 lever_commit(6, "# the lever's fix")
@@ -168,7 +173,7 @@ os.environ.update(saved_env)
 landed = h.local_day(HI - 2 * 86400)
 lever_secs = sum(s for (day, a, l), s in lever_credit.items() if (a, l) == ("chat", "hooks") and day > landed)
 lever_om = [p["opportunity"]["om_day"] for p in lever_doc["problems"] if p["id"] == "opportunity:chat/hooks"]
-check(lever_om and lever_om != base_om
+check(lever_om and lever_om != base_om and lever_doc["headline"] == doc["headline"]
       and abs(lever_om[0] - lever_secs / 60.0 / ((HI - max(lever_lo, h.day_end(landed))) / 86400.0)) < 0.01,
       "a lever is charged per day only after its own fix landed through the merge that brought it in: %s" % lever_om)
 loaded = {h.local_day(HI - back * 86400): {"machine": {"band_s": {"<1": 50000, "busy": 30000},
@@ -500,7 +505,7 @@ check(away["headline"] < part["headline"] < doc["headline"] and part["r_band"] i
       "presence logged on one day only: the other days keep the R = 5 min proxy, unknown is never away: %s %s"
       % (part["headline"], part["r_band"]))
 
-transcripts = {"CLAUDE_PROJECTS_DIR": os.environ["CLAUDE_PROJECTS_DIR"], "HARNESS_DOCTOR_BOOTS": "1790882097",
+transcripts = {"CLAUDE_PROJECTS_DIR": projects,"HARNESS_DOCTOR_BOOTS": "1790882097",
                "DOCTORS_DIR": os.path.join(work, "doctors-backfill")}
 blank_dir = os.path.join(work, "harness-blank")
 os.makedirs(blank_dir)
@@ -537,9 +542,9 @@ check(job["files"] == len(job["todo"]) + 1 and not job.get("stored")
       "a backfill run stops at its budget after one step and leaves the rest for the next run: %d of %d left"
       % (len(job["todo"]), job["files"]))
 speed("speed-resumed", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
-os.rename(os.environ["CLAUDE_PROJECTS_DIR"], os.environ["CLAUDE_PROJECTS_DIR"] + "-hidden")
+os.rename(projects, projects + "-hidden")
 done, _ = speed("speed-resumed", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
-os.rename(os.environ["CLAUDE_PROJECTS_DIR"] + "-hidden", os.environ["CLAUDE_PROJECTS_DIR"])
+os.rename(projects + "-hidden", projects)
 job = json.load(open(os.path.join(resumed, "state.json")))["backfill"]
 check(not job["todo"] and job["stored"] and done["headline"] == cold["headline"]
       and done["selection"] == cold["selection"] and "backfill" not in [b["id"] for b in done["blind_spots"]],

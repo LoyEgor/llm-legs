@@ -6116,6 +6116,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-claude-setup-test-word-triggers-20261010T031915Z-09b0",
       "note": "Before: 81 runs in 7 d, 2.9 wall-min a run; at load ~97 one run 245-287 s wall on ~47 CPU-s (16-19% CPU): ~2.7k short processes in series, each intake a jq + bash + python3 (~90 ms wall a spawn at that load). No blocking sleep: the 0.4 s background writer is the journal's late-reply re-read under test, `sleep 0` mints a gone pid. Fixed: split by section into five suites sourcing tests/word_triggers_harness.sh (the commit_report_harness.sh pattern), CPU ~8-10 s each; all five at once at load ~150 finish in 89-136 s; the grammar grants() reader is one jq per read instead of jq per grant + sort/tr/sed (~200 reads). Not cut: the ~190 grammar reads still drive the real word-intake.sh end to end; batching them through one python would drop the hook's bash entry (sid fast path, worker skip) from those cases, a coverage trade. No legacy case found: WORDS_PIN_LEGACY_GRANT asserts the old global pin stays unwritten.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-test-speed-doctor",
+      "title": "test_speed_doctor's wall: its fixture git ran Egor's global hooks and its in-process collects backfilled the transcripts fold() left in the env",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_speed_doctor"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:50:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-speed-doctor-20261010T031930Z-3d79",
+          "files": [
+            "llm-legs/tests/test_speed_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "every check of the suite, base vs fix: no pinned literal changed; one check added (fixture git sees no core.hooksPath), one tightened (the in-process lever collect keeps the subprocess headline)",
+            "data": "the committed speed-calibration fixture; mutation: dropping either fix turns its check red",
+            "result": "105 -> 106 asserts green; back to back at load ~170: CPU 18.7 -> 12.6 s, wall 110 -> 79 s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-speed-doctor-20261010T031930Z-3d79",
+      "note": "Cut: ~29 fixture git ops (lever and hooks repos) inherited the real HOME, so /Volumes/Work/Projects/claude-setup/git-hooks ran on each (~0.5 s wall an op, 12 ops 6.7 s vs 0.42 s), now GIT_CONFIG_GLOBAL=/dev/null as test_time_budget; fold() left CLAUDE_PROJECTS_DIR/HARNESS_DOCTOR_BOOTS set, so the 4 in-process module.collect checks each backfilled 40 transcripts (0.68 vs 0.03 CPU s) and judged a 167.1 OM/d document instead of the 179.3 baseline. Ruled out: a fork server loading speed-doctor once (import ~0.09 CPU s of a ~0.17 s run) measured no CPU gain and +9 s sys under load; the 21-run speed-half loop (3.6 CPU s) is the stepwise backfill the half-done check pins, kept; speed-cold/both/resumed backfills (~0.85 CPU s each) are the checked work. A split was not taken: the setup fold (~0.8 CPU s) would repeat per shard.",
+      "handoff": null
     }
   ],
   "blind_spots": [
