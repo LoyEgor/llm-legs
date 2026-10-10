@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 # bin/code-doctor over the calibration corpus (tests/fixtures/code-doctor): the six labelled cases, a
 # healthy repository with zero problems, clustering, reachability, protected roots, the durable rollup,
 # the judge budget, the structural verdict digest, the fixer's safety gate and the ledger's recurrence.
@@ -11,7 +12,11 @@ CD="$ROOT/bin/code-doctor"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 WORK="$(cd -P "$WORK" && pwd)"
+mkdir -p "$WORK/no-claims"
+printf '#!/bin/sh\necho %s\n' "'{\"claims\": {}}'" >"$WORK/no-claims/review-anchors" && chmod +x "$WORK/no-claims/review-anchors"
+export PATH="$WORK/no-claims:$PATH"
 asserts=0
+now=$(date +%s)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly succeeded: $*"; }
@@ -43,6 +48,7 @@ init_repos() {
 
 judged() { wc -l <"$CODE_DOCTOR_FAKE_LOG" | tr -d ' '; }
 
+if suite_shard_owns 2 cd-healthy; then
 # A healthy repository: every file reached from an entry point, nothing to say.
 lay_out "$FIX/healthy" "$WORK/healthy"
 ln -s "$REPOS/good/bin/good-tool" "$HOME/.local/bin/good-tool"
@@ -50,7 +56,9 @@ init_repos
 "$CD" refresh --quiet || fail "refresh failed on the healthy repository"
 assert jqe '.status == "ok" and .problem_count == 0 and .candidates.total == 0 and .doctor == "code" and .contract == 1' \
   "$CODE_DOCTOR_DIR/latest.json"
+fi
 
+if suite_shard_owns 1 cd-corpus; then
 # The corpus.
 C="$WORK/corpus"
 lay_out "$FIX/corpus" "$C"
@@ -58,7 +66,6 @@ A="$REPOS/alpha"
 ln -s "$REPOS/beta/lib" "$A/vendor"
 ln -s "$A/bin/alpha-run" "$HOME/.local/bin/alpha-run"
 init_repos
-now=$(date +%s)
 for secs in 300 310 290; do
   printf '{"end":%s,"secs":%s,"who":"chat","repo":"alpha","label":"test_isolation"}\n' "$now" "$secs"
 done >"$C/sl/test-history.jsonl"
@@ -364,11 +371,9 @@ jq --arg w "$C/no-such-worktree" '.worktrees = [$w]' "$C/record.json" >"$C/recor
 "$CD" check "$C/record-gone.json" --base refs/night/n1/base >"$WORK/check.out"
 assert grep -qF "$C/no-such-worktree: the run's worktree is gone" "$WORK/check.out"
 printf 'echo day\n' >"$REPOS/beta/lib/day-extra.sh"
-git -C "$REPOS/beta" add lib/day-extra.sh && commit "$REPOS/beta" "day extra"
-sleep 1
-jq -n --arg t "$(iso_ago 0)" '{id: "code-day", doctor: "code", area: "code", launched_at: $t, problems: []}' \
+git -C "$REPOS/beta" add lib/day-extra.sh && GIT_COMMITTER_DATE="$(($(date +%s) - 2)) +0000" commit "$REPOS/beta" "day extra"
+jq -n --arg t "$(iso_ago 1)" '{id: "code-day", doctor: "code", area: "code", launched_at: $t, problems: []}' \
   >"$C/record-day.json"
-sleep 1
 assert "$CD" check "$C/record-day.json"
 git -C "$REPOS/beta" rm -q lib/day-extra.sh && commit "$REPOS/beta" "day fixer deletes"
 "$CD" check "$C/record-day.json" >"$WORK/check.out"
@@ -404,7 +409,9 @@ ln -s "$REPOS/beta/lib/blob.bin" "$HOME/.local/bin/blob"
 "$CD" refresh --quiet
 assert test "$(grep -c 'blob.bin' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
 rm "$HOME/.local/bin/blob" "$REPOS/beta/lib/blob.bin"
+fi
 
+if suite_shard_owns 2 cd-units-to-end; then
 # Index and revalidation units: identical bytes keep each path's own kind, a link follows its target's edits,
 # whole-file digests hash raw bytes, a same-named symbol resolves to its own span, a pre-history day base diffs.
 U="$WORK/units"
@@ -917,5 +924,6 @@ assert cd.check_run({"problems": [{"id": "cause:y", "units": [span]}], "launched
 assert cd.file_lang("bin/tool", "#!/usr/bin/env sh\n") == "bash"
 assert cd.file_lang("bin/tool", "#!/usr/bin/env -S perl -w\n") == "undeclared:perl"
 PY
+fi
 
-echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base and main, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first)"
+echo "PASS: $asserts asserts; the calibration cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base and main, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first)"
