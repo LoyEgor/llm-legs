@@ -6303,6 +6303,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-websearch-20261010T031948Z-36ce",
       "note": "Timed base at load 150-180: 39 launches, `worker-run start` 4.6 s and await_done 8.5 s each (528 of 573 s), `report` 0.4 s each; the suite has no sleeps of its own (only the harness's builtin 0.05 s polls). Not cut: the per-launch cost is worker-run start/_supervise, the behaviour under test; the vendor x entry-point grid is the requirement (row ct). Where slot_room finds no room the suite still runs unsharded at the old wall (suite_shard_wanted's design). Also fixed: `grep -q <(worker-run report)` left the report running past the match, so a shard's last case printed a jq error after $WORK was removed.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-review-flow-gate-shards",
+      "title": "test_review_flow_gate · claude-setup: the heaviest suite and the serial tail's long pole, one shard holding 64% of the run",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/(heavy|pole)/claude-setup/test_review_flow_gate"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:45:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-claude-setup-test-review-flow-gate-20261010T031914Z-3689",
+          "files": [
+            "claude-setup/tests/test_review_flow_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert inventory base vs fix: shards 1+2 at base 222+405 = 627 asserts; shards 1..4 at fix 174+90+152+206 = 622, the 5 missing being exact duplicates of a case kept with the same grant and span state (door-verbatim's RB=$(command -v review-bench) launch with its two said lines and 'X=y; $X run', kept in door-asks; its 'review-bench review --help', kept in door-merges); the unsharded run (SUITE_SHARD unset, every section in file order) green",
+            "data": "the suite's own fixtures; the cap-repo fixture's 50 co-tenant commits now written by one git fast-import instead of 50 git commit processes, checked identical in shape (51 commits over origin/main, empty co-tenant trees, mine.txt only in the newest)",
+            "result": "all PASS; at load ~190-210 the longest shard 1285 s -> 363 s (shards 275/363/353/319 s; base 736/1285 s), Σ shard wall 2021 -> 1310 s; the cap section 104 s -> one fast-import"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-claude-setup-test-review-flow-gate-20261010T031914Z-3689",
+      "note": "Before: test-health heavy 69 runs, 5.4 wall-min a run, 7.6 min + 29 w-min/day; pole 52 runs, 1.1 min + 14 w-min/day (latest.json at launch). Cause: 2 shards, shard 2 held door-nonces, door-night (662 s, 131 two-hook gate calls), door-grants (210 s) and span-and-journal (364 s), shard 1 the rest (736 s); the suite is the serial tail wave's only sharded suite (run-suites serial_suite), so every other slot idled behind shard 2. Fix: 4 shards balanced by measured section time (door-night split into night, door-cwd and door-verbatim; span-and-journal into span-and-journal and journal, which carries the `. review-journal.sh` its rj_* cases need), DOCTORS_DIR unset in the prelude so a section moved away from door-night's own export/unset never reads a live night record. Per-call cost is the two hooks' forks (~5 s a gate call at load 200, ~0.3 s quiet), ~310 calls; no sleeps or polls on the path (the `sleep 600`/`sleep 30` are fake live processes, killed). Kept, not checked further: run-suites' serial_suite tail placement for this suite (since 90a17f22, README: a loaded machine fails it on load); shards run only while slot_room finds room, so on a full machine the run stays unsharded and only the fast-import and duplicate cuts apply.",
+      "handoff": null
     }
   ],
   "blind_spots": [
