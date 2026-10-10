@@ -527,6 +527,99 @@
    "same_cause": [],
    "status": "fixed-pending",
    "title": "llm-legs/bin/llm-doctor#read_json and llm-legs/bin/system-doctor#read_json share clone (0.78); llm-legs/bin/system-doctor#read_json and llm-legs/bin/updater-do…"
+  },
+  {
+   "fixes": [
+    {
+     "at": "2026-10-10T08:32:51+03:00",
+     "by": "code-code-20261010T032003Z-4c5b",
+     "files": [
+      "llm-legs/bin/code-doctor",
+      "llm-legs/bin/log-audit",
+      "llm-legs/bin/llm-doctor",
+      "llm-legs/bin/system-doctor",
+      "llm-legs/share/spend.py"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 46,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "duplicate",
+   "handoff": null,
+   "id": "cause:llm-legs/bin/code-doctor#read_jsonl",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:llm-legs/bin/code-doctor#read_jsonl",
+    "identity": {
+     "sketch": [
+      84701014,
+      160991167,
+      279354725,
+      285954652,
+      321480995,
+      334477739,
+      516290787,
+      531553491,
+      559653116,
+      561689174,
+      604148178,
+      611637440,
+      616510117,
+      618397480,
+      679472182,
+      764581346,
+      780797784,
+      809119368,
+      832362047,
+      946794672,
+      948025926,
+      967830039,
+      968416815,
+      1102521130,
+      1218616561,
+      1222264505,
+      1303404839,
+      1576682420,
+      1586763766,
+      1588072043,
+      1592022312,
+      1602510577,
+      1621618696,
+      1628099265,
+      1636122736,
+      1812588788,
+      1813226560,
+      1848024484,
+      1864017093,
+      1889455823,
+      1974277928,
+      1981713425,
+      2041661637,
+      2050161553,
+      2134357289,
+      2196279201,
+      2213993622,
+      2420735929,
+      2591747361,
+      2691672456,
+      2777357881
+     ],
+     "touch": [
+      "call:json.loads",
+      "call:rows.append"
+     ]
+    }
+   },
+   "note": "share/night_spend.py#rows kept: a lazy generator over whole transcripts (memory), not a journal reader; bin/harness-doctor#read_jsonl(path, since, stamp) is a binary tail reader with a time cut, a different job.",
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "llm-legs/bin/code-doctor#read_jsonl and llm-legs/bin/log-audit#read_jsonl share clone (1.00); llm-legs/bin/llm-doctor#read_jsonl and llm-legs/bin/log-audit#rea…"
   }
  ]
 }

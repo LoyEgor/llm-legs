@@ -14,6 +14,18 @@
     "bin/updater-doctor",
     "share/time_budget.py"
    ]
+  },
+  {
+   "at": "2026-10-10T08:32:51+03:00",
+   "canonical": "llm-legs/share/spend.py",
+   "cause": "cause:llm-legs/bin/code-doctor#read_jsonl",
+   "mechanism": "jsonl journal reader",
+   "replaced": [
+    "llm-legs/bin/code-doctor#read_jsonl",
+    "llm-legs/bin/log-audit#read_jsonl",
+    "llm-legs/bin/llm-doctor#read_jsonl",
+    "llm-legs/bin/system-doctor#read_lines"
+   ]
   }
  ]
 }
