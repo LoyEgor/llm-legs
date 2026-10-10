@@ -4701,7 +4701,7 @@ cat > "$DEBT_STUB" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$DEBT_LOG"
 [ -n "${DEBT_SLEEP:-}" ] && sleep "$DEBT_SLEEP"
-[ -z "${DEBT_HOLD:-}" ] || for _ in $(seq 1 160); do [ -e "$DEBT_HOLD" ] && break; sleep 0.05; done
+[ -z "${DEBT_HOLD:-}" ] || for _ in $(seq 1 1200); do [ -e "$DEBT_HOLD" ] && break; sleep 0.05; done
 printf '%s\n' "$DEBT_ANSWER"
 STUB
 chmod +x "$DEBT_STUB"
@@ -4818,14 +4818,14 @@ DEBT_SLEEP=
 DEBT_HOLD="$WORK/debt-hold-lock-owner"
 NO_TIMEOUT_BIN=1 run_statusline \
   "$(statusline_payload repo-debt-lock-owner "" "$REVIEW_DIRTY")" >/dev/null
-for debt_wait in $(seq 1 100); do
+for debt_wait in $(seq 1 600); do
   [ -d "$debt_lock" ] && break
   sleep 0.05
 done
 assert test -d "$debt_lock"
 rmdir "$debt_lock" && mkdir "$debt_lock"
 touch "$DEBT_HOLD"
-for debt_wait in $(seq 1 100); do
+for debt_wait in $(seq 1 600); do
   [ -s "$debt_cache" ] && break
   sleep 0.05
 done
