@@ -3066,12 +3066,20 @@
         "rule": "statusline",
         "ident": "^render$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T20:20:26+03:00",
+          "by": "night fixer harness-hooks-20261010T031901Z-2b39, crediting the 10-06 render cuts llm-legs@3cd9006f and llm-legs@af01f55e",
+          "files": ["llm-legs/bin/statusline.sh", "llm-legs/share/statusline-probe.sh", "llm-legs/bin/statusline-work-probe.sh", "llm-legs/bin/statusline-ports-probe.sh"],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-hooks-20261009T024739Z-0be0",
-      "note": "2026-10-09: quiet; the render path changed a lot on 10-08/09 (work lines from run dirs and live waits, llm-legs@90f85c68; its ps read is a 3 s snapshot, statusline-work-probe.sh:56). Not profiled: a live render reads the claudeb store, which an ad-hoc check must not; the lever stays a per-segment profile, now with the work-line probe in it. 2026-10-08: quiet; ~/.claude/statusline.sh render path not profiled tonight, refreshInterval still 3 s; the lever stays a per-segment profile of live renders. 2026-10-07: quiet; the render path is untouched by this run and the interval stays 3 s per the settled hand-off; the remaining lever is a per-segment profile of live renders. 2026-10-05: 1.1 s a render; 306 ms CPU p50 (p90 378) and 1.19 s mean wall at load 286-330. `refreshInterval: 3` in ~/.claude/settings.json over about 8 chats made 127k renders in 14.4 h, 11.1 CPU-hours (about 0.77 core). Handed off: memoize the dearest segments first, and bring the interval to Egor as a trade only if that falls short. 2026-10-06 (night f253): 216k renders, 1089 CPU-min on 10-05 (302 ms a render, half while idle); per-segment cost is unmeasurable without the live store, so the interval is the trade in the handoff.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-hooks-20261010T031901Z-2b39",
+      "note": "2026-10-10: cause gone since the 10-06 render cuts (fewer forks, one machine-wide ps/lsof snapshot): the statusline journal reads wall p50 88/96/125/76 ms (p90 164/181/496/129) on 10-07..10-10 against the 1 s limit, 180-220k renders and 280-360 CPU-min a day (~95 ms CPU a render). The 10-09 p90 is load, not the work-line probe: CPU a render stayed 98 ms while mean wall doubled to 217, and 10-10 runs the same code at p90 129. What is left is CPU, Speed's to price; the interval trade was settled at 3 s (docs/handoffs/2026-10-05-hook-cuts-left.md). 2026-10-05: 1.1 s a render, 306 ms CPU, 1.19 s mean wall at load 286-330.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
