@@ -6363,6 +6363,37 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-vendor-files-20261010T031946Z-57c6",
       "note": "Before (packet 2026-10-10): heavy 186 runs, 2.3 wall-min a run, 36 min + 13 w-min/day; idle p10 wall 102 s on 43 s CPU, 58 s idle a run. Cause: each case paid a start/supervise/wait cycle (~2 s at normal load, ~20 s at load 150) only to get a meta.json for transcript_report, plus a discarded transcript_report before the asserted one. Ruled out: harness polls already use the sleep builtin and the stubs sleep only on STUB_SLEEP (0.3 s, kept for the two resume-cut cases that write the transcript after the run's start is known); the recycled-pid block's `sleep 120 &` is killed, never waited. Left: idle of the 19 launches is the detached supervisor (outside the suite's rusage) and the await polls; each asserts what only a launch makes (supervisor workdir-escape, wait.out, report, files record, worker-session, OUTCOME, stale/recycled liveness). No split: one harness prefix for 19 launches is cheaper than two.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-worker-run-files",
+      "title": "Speed's test-health lever: the worker_run harness forks one mkdir per vendor, not per roster account, and test_worker_run_files runs its commit-attribution case in one shard, not all three",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_files"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:35:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-files-20261010T031939Z-214b",
+          "files": [
+            "llm-legs/tests/worker_run_harness.sh",
+            "llm-legs/tests/test_worker_run_files.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_worker_run_files per shard at base vs fix: PASS lines and assert counts; the roster tree roster_add builds, old vs new",
+            "data": "SUITE_SHARD 1/3..3/3 at load 170-230; roster_add on a scratch tree for all four vendors with a name holding a space; the harness sourced through a mkdir PATH shim",
+            "result": "every shard PASS; asserts 70/73/120 (263, commit-attribution's 4 counted in all 3 shards) -> 76/69/112 (255 distinct + 2 new fork-count asserts); identical roster tree; mkdir forks per harness source 310 -> 6, setup 5.4-8.0 s -> 0.7-0.9 s at load 250"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "2026-10-10: Speed read 270 runs/day at 1.3 wall-min (15 min + 29 w-min/day). Found: roster_add forked a mkdir per account x 4 vendors, 310 per harness source, paid by every process of the 17 worker_run suites and their shards; commit_attribution_tests (97dc23b4) was called outside every shard section after f081980f's split, so its claudeb run ran 3 times; guard_top moved shard 3 -> 1 to even the runs (6/12/11 -> 7/11/9). Ruled out: sleeps (await_done paces on exit_code, gated stubs poll with the sleep builtin, blobs_packed waits on a real detached git maintenance), legacy checks (every case drives a live worker-run path), merged cases (each needs its own run record). Left: the per-run cost is worker-run's own (start ~5 s, wait --max 0 ~1.1 s at load 186); await_done's every-5th-round running poll is harness-wide and kept.",
+      "handoff": null,
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-files-20261010T031939Z-214b"
     }
   ],
   "blind_spots": [
