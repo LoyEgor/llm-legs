@@ -6884,6 +6884,8 @@
         }
       ],
       "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-consistency-20261010T031919Z-4925",
       "note": "Before: 1138 runs/7 d, 0.7 wall-min a run; 22.4 CPU-s a run (spend-ledger suite audit 2026-10-09 already took the grep forks), the rest behavioural probes (worker-pick roles/pause, llm-refresh ticks, llm-limits OpenCode snapshots, the light gate) kept whole. It is the pole of 128 of 670 named runs in 7 d and never of a full run (sum/j 800-1100 s there, design 5 shard rule), so it is sharded `# shards: 3` into five sections (rows a-m and al-am, ai-ak, n-cl and an-ek), cross-section site constants hoisted above them; modelled max(longest, sum/j) saving over the 7 d of runs: ~10 min/day. Ruled out: the per-probe $(<file) read (bash 5.3, ~1 ms a 300 KB file, no fork), sleeps (none), legacy checks (dead-code lens 926070a3 already swept). Not reached: a direct `bash tests/test_consistency.sh` (CLAUDE.md's own command) stays serial, and run-suites shards only while slot_room finds room.",
       "handoff": null
     }
