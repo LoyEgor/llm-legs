@@ -85,6 +85,8 @@ assert test ! -s "$CALL_LOG"
 # Every other persistent wording says the same thing, and the CLI's transient classes say something
 # else entirely: xAI folds 429 and 5xx into the same internal rate-limit class as a real wall, so a
 # bare "rate limit" here would report an exhausted plan on every bad minute.
+grok_runs() { set -- "$WORKER_RUN_DIR"/*/meta.json; printf '%s' "$#"; }
+grok_runs_before=$(grok_runs)
 for grok_spec in 'You have hit the rate limit for your plan:GROK_USAGE_LIMIT' \
   'error: subscription:free-usage-exhausted:GROK_USAGE_LIMIT' \
   'Your team has run out of credits:GROK_USAGE_LIMIT' \
@@ -96,17 +98,26 @@ for grok_spec in 'You have hit the rate limit for your plan:GROK_USAGE_LIMIT' \
   'rate limit exceeded, Retry-After: 30:GROK_UNAVAILABLE'; do
   grok_error=${grok_spec%:*}
   grok_outcome=${grok_spec##*:}
-  clear_stub
-  set_config 'grok_effort=high'
-  export PICK_RC=0 PICK_ACCOUNT=grokwording STUB_CODE=1 STUB_ERROR="$grok_error"
-  start_ok grok
-  assert await_done
+  grok_class_run=grok_run_$grok_outcome
+  if [ -z "${!grok_class_run:-}" ]; then
+    clear_stub
+    set_config 'grok_effort=high'
+    export PICK_RC=0 PICK_ACCOUNT=grokwording STUB_CODE=1 STUB_ERROR="$grok_error"
+    start_ok grok
+    assert await_done
+    printf -v "$grok_class_run" '%s' "$RUN_ID"
+  else
+    # `wait` reads the outcome off `err` every time: one real run per class carries the other wordings.
+    printf '%s\n' "$grok_error" >"$WORKER_RUN_DIR/${!grok_class_run}/err"
+    "$RUNNER" wait "${!grok_class_run}" --max 0 >"$WORK/wait.out"
+  fi
   assert grep -qx "OUTCOME: $grok_outcome" "$WORK/wait.out"
   if [ "$grok_outcome" = GROK_UNAVAILABLE ]; then
     assert grep -qx 'REASON: transient — capacity weather, not a wall; the brief may be relaunched' \
       "$WORK/wait.out"
   fi
 done
+assert test "$(($(grok_runs) - grok_runs_before))" -eq 2
 
 # An expired login needs a human and says so: relaunching it anywhere spends nothing but time.
 clear_stub
@@ -237,6 +248,7 @@ clear_stub
 set_config 'grok_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=grokfiles
 GROK_SESSION=01a05811-7788-7d22-a9c9-c028072cbff5
+grok_runs_before=$(grok_runs)
 grok_encode() { printf '%s' "$1" | jq -sRr @uri; }
 GROK_UPDATES="$GROKB_PROFILES_DIR/grokfiles/sessions/$(grok_encode "$grok_workdir")/$GROK_SESSION/updates.jsonl"
 mkdir -p "$(dirname "$GROK_UPDATES")"
@@ -270,7 +282,6 @@ grok_summary "$grok_workdir"
 } >"$GROK_UPDATES"
 start_ok grok
 assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 2' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/grok-written' <<<"$report"
@@ -279,8 +290,9 @@ assert test "$(grep -c 'grok-only-read' <<<"$report")" -eq 0
 assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
 assert test ! -e "$RUN_DIR/workdir-escape"
 
+# The reader takes only the run's meta and its session record: the cases down to the escape one
+# rewrite the record under the run above instead of launching their own.
 # A refused write changed nothing and cannot make the successful call beside it review debt.
-clear_stub
 GROK_TS=$(($(date +%s) + 60))
 {
   grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-kept" '{file_path: $p}')"
@@ -288,9 +300,6 @@ GROK_TS=$(($(date +%s) + 60))
   grok_call w2 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-refused" '{file_path: $p}')"
   grok_update w2 failed
 } >"$GROK_UPDATES"
-start_ok grok
-assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/grok-kept' <<<"$report"
@@ -298,7 +307,6 @@ assert test "$(grep -c 'grok-refused' <<<"$report")" -eq 0
 
 # A tool this reader cannot classify leaves the run unanswerable rather than short by one file, and
 # an unknown tool is the ordinary case: the vendor keeps adding them.
-clear_stub
 GROK_TS=$(($(date +%s) + 60))
 {
   grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-written" '{file_path: $p}')"
@@ -306,66 +314,43 @@ GROK_TS=$(($(date +%s) + 60))
   grok_call i1 image_gen other false '{}'
   grok_update i1 completed
 } >"$GROK_UPDATES"
-start_ok grok
-assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: image_gen)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # The dispatcher tool answers for what it dispatched: a shell through it is a shell.
-clear_stub
 GROK_TS=$(($(date +%s) + 60))
 {
   grok_call u1 use_tool other false \
     "$(jq -cn '{tool_name: "bash", tool_input: {command: "printf x > out.txt"}}')"
   grok_update u1 completed "$grok_workdir"
 } >"$GROK_UPDATES"
-start_ok grok
-assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A mutating row with no usable time cannot be silently dropped out of the run's window.
-clear_stub
 GROK_TS=null
 {
   grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-timeless" '{file_path: $p}')"
   grok_update w1 completed
 } >"$GROK_UPDATES"
-start_ok grok
-assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a mutating context with an unparseable timestamp)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A session record filed under another directory is not this run's, however well the id matches.
-clear_stub
 GROK_TS=$(($(date +%s) + 60))
 {
   grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-elsewhere" '{file_path: $p}')"
   grok_update w1 completed
 } >"$GROK_UPDATES"
 grok_summary "$WORK/extra"
-start_ok grok
-assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx "RUN-FILES: unknown (no session transcript for $GROK_SESSION)" <<<"$(transcript_report "$RUN_DIR")"
 # With no summary.json at all the encoded directory name is what answers, and it answers for this
 # run: a record whose own cwd cannot be read is not a licence to claim it.
 rm -f "$(dirname "$GROK_UPDATES")/summary.json"
-clear_stub
-start_ok grok
-assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILE: bin/grok-elsewhere' <<<"$(transcript_report "$RUN_DIR")"
 
 # No record at all is unknown too, and never the workdir.
-clear_stub
 mv "$GROK_UPDATES" "$GROK_UPDATES.moved"
-start_ok grok
-assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx "RUN-FILES: unknown (no session transcript for $GROK_SESSION)" <<<"$(transcript_report "$RUN_DIR")"
 mv "$GROK_UPDATES.moved" "$GROK_UPDATES"
 
@@ -379,12 +364,19 @@ GROK_TS=$(($(date +%s) + 60))
 } >"$GROK_UPDATES"
 start_ok grok
 assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 report=$(transcript_report "$RUN_DIR")
 assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in $WORK/extra/grok-went-elsewhere" \
   <<<"$report"
 assert grep -qxF "$WORK/extra/grok-went-elsewhere" "$RUN_DIR/workdir-escape"
 rm -rf "$GROKB_PROFILES_DIR/grokfiles"
+assert test "$(($(grok_runs) - grok_runs_before))" -eq 2
+
+mkdir_calls=0
+mkdir() { mkdir_calls=$((mkdir_calls + 1)); command mkdir "$@"; }
+roster_add grok rosterone rostertwo rosterthree
+unset -f mkdir
+assert test "$mkdir_calls" -eq 1
+assert test -d "$GROKB_PROFILES_DIR/rostertwo"
 
 
 echo "PASS: $asserts asserts; grok switched off, pools, outcomes, denials and its own file lists"
