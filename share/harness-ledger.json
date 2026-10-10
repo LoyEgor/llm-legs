@@ -5921,7 +5921,7 @@
           "equivalence": {
             "compared": "asserts and verdict of the base suite vs the fix, whole and as its 2 shards (SUITE_SHARD=i/2), same machine window",
             "data": "paired background runs at load 185-200 (10 cores): base whole, fix whole, fix shard 1 and shard 2",
-            "result": "base 175 asserts PASS; fix 159 = shards 96+63 PASS, disjoint sections; the 16 dropped asserts are the 4 duplicate/legacy runs of the note, each with its witness case kept; base whole 827 s vs shards 308 s and 347 s"
+            "result": "base 175 asserts PASS; fix 159 = shards 96+63 PASS, disjoint sections; the 16 dropped asserts are the 4 duplicate/legacy runs of the note, each with its witness case kept; base whole 827 s vs shards 308 s and 347 s; started together, base 587 s / 42.6 CPU-s vs a direct fix run (self-sharded) 277 s / 32.8 CPU-s; in tests/run-all 82 s"
           }
         }
       ],
