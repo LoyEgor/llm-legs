@@ -6818,6 +6818,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-outcomes-20261010T031942Z-7a63",
       "note": "Traced whole at load ~190 (531 s, ~55 CPU-s): worker-run start 165 s over 35 launches, await_done polling ~240 s (the supervised stub run itself), wait/report ~20 s, await_launched 39 s, harness source 8 s; the wall-reset parsing section ~3 s. Shards: {read-only runs, 11 launches}, {outcome classification 7, self-edit 2, pruning 1, wall resets}, {codex trust and model retries, 12}. Cut: the never-recorded refusal case's first launch repeated the dropped-model case launch for launch, its asserts now ride on that run. Left: per launch ~4.7 s start + ~7 s supervise at load 190, the worker-run start/wait cost every worker_run suite shares, not this file's. Ruled out: the one STUB_SLEEP=3 is the window the self-edit wait --max 1 must see running (load-robust, not idle); no legacy check beyond the refused-models absence, which guards the 2026-09-30 store removal (handoff done) and costs one assert; the two read-only launches pin the month counter 1 -> 2; the Light/research launches pin the hint's exemptions. Under /bin/bash 3.2 the harness's sleep builtin does not load (forked sleeps): 634 s vs 531 s, but run-suites runs bash 5.",
       "handoff": null
+    },
+    {
+      "id": "speed-heavy-test-instruction-gate-relay",
+      "title": "test_instruction_gate_relay · llm-legs heavy suite, 0.4 wall-min a run",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_instruction_gate_relay"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:50:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261010T031923Z-0201",
+          "files": [
+            "llm-legs/tests/test_instruction_gate_relay.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the suite whole vs SUITE_SHARD=1/2 and 2/2: every section inside exactly one suite_shard_owns block, assertion counts",
+            "data": "the suite's own fixtures, base and fix, at load ~187",
+            "result": "151 assertions whole = 95 + 58 split less the harness's 2 setup asserts run per shard; CPU 28.5 s whole -> 13.9 / 15.3 s per shard, longest 54 %"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261010T031923Z-0201",
+      "note": "Audit 2026-10-10: ~29 CPU-s a run (12 user + 17 sys), all in ~70 hook invocations the suite exists to drive (instruction-watch check 0.13-0.5 CPU-s, baseline 0.18-0.4, write/bloat gate with a write 0.22, arm_span's words_sync python 0.06 each), 20-30 forks per hook call; wall 190 s at load 105 is CPU starvation, not waiting. No sleeps beyond alert_said's 50 ms poll on a backgrounded alert (returns on first sight), no legacy or duplicated case: each section pins a distinct rule. Fixed by a 2-shard split (wall halves when run-suites finds slot room, serial otherwise). Not cut: arm_span re-syncing an unchanged sid+transcript (~3.5 CPU-s a run here, also in the sibling suites) lives in the shared instruction_gate_harness.sh the test_instruction_gate run of the same night holds; the hooks' own fork counts are the hook-floor runs' lever.",
+      "handoff": null
     }
   ],
   "blind_spots": [
