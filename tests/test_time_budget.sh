@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# share/time_budget.py: one worker run's wall split from its pid start (never the restamped started_at), owner turns
-# by partition, the class shares and headline, bands and named holes, the test budget, the levers, the night ledger
-# line with its trend and cache, and the daily problem-count rows of share/collector_runs.py. Fixture stores only.
+# share/time_budget.py: one worker run's wall split from its pid start (never the restamped started_at), each class
+# the union of its spans and the overhead the union of all, the day history, the night ledger line with its trend and
+# cache, and the daily problem-count rows of share/collector_runs.py. Fixture stores only.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(cd -P "$(mktemp -d)" && pwd)"
 trap 'rm -rf "$WORK"' EXIT
 export TZ=UTC HOME="$WORK/home" HARNESS_DOCTOR_DIR="$WORK/harness" DOCTORS_DIR="$WORK/doctors" \
   WORKER_STATS_DIR="$WORK/stats" WORKER_RUN_DIR="$WORK/runs" RUN_SUITES_JOURNAL="$WORK/suites.jsonl" \
-  INSTRUCTION_WATCH_STATE="$WORK/watch" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" MEMLOGD_DIR="$WORK/memlogd" \
+  INSTRUCTION_WATCH_STATE="$WORK/watch" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" \
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 unset HARNESS_WAITS_DIR XDG_CACHE_HOME RUN_SUITES_TIMES CLAUDEB_DIR CHAT_NAME_ROOTS
 mkdir -p "$HOME"
@@ -123,7 +123,7 @@ check(cost["seconds"] == 348 and cost["by_gate_s"] == {"cap": 300, "write": 19, 
       and cost["measured"] == 4 and cost["unmeasured_by_gate"] == {"legacy": 1},
       "session/time refusal links need no call ID, skip known denied retries and other sessions, cap and name missing "
       "calls, and charge a window two denials share once: %s" % cost)
-check(cost["chat_s"] == 348, "overlapping retries are charged once in the wall partition")
+check(T.length(cost["spans"]) == 348, "overlapping retries are charged once in the wall partition")
 check(T.refusal_cost(D0 + 115, D0 + 125, recovery_events)["seconds"] == 5,
       "recovery intervals are clipped at both reporting window boundaries")
 for row in recovery_events["t"]:
@@ -131,8 +131,7 @@ for row in recovery_events["t"]:
 recovery_events["t"].append(["t", D0 + 90, "recover1", D0 + 150, "n", [0, 0, 0], 0, [], [],
                               {"gen": 60}, {}, []])
 charged = T.budget(D0, D0 + 86400, recovery_events)
-check(charged["seconds"]["refusal"] == 348 and charged["seconds"]["model"] >= 0,
-      "measured recovery moves from model time to the harness class without double charging retries")
+check(charged["seconds"]["refusal"] == 348, "measured recovery is its own class, retries charged once")
 transcript = os.path.join(work, "home", ".claude", "projects", "fixture", "recover4-full.jsonl")
 lines(transcript, [
     {"timestamp": iso(D0 + 500), "message": {"content": [
@@ -149,7 +148,7 @@ extra = {"c": [call(499, "blocked4", "recover4"), call(504, "blocked5", "recover
                call(520, "accepted4", "recover4")]}
 extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
 check(extra_cost["by_gate_s"] == {"worker-limit-gate.sh": 5, "review-flow-gate.sh": 15}
-      and extra_cost["chat_s"] == 20 and extra_cost["count"] == 2,
+      and extra_cost["seconds"] == 20 and extra_cost["count"] == 2,
       "native transcript denials count per hook, exclude denied c rows, and ignore ordinary errors and quoted text")
 lines(fixture, [{"at": D0 + 499, "sid": "recover4-full", "gate": "worker-limit", "decision": "denied"}])
 extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
@@ -169,7 +168,7 @@ lines(profile, [
          "content": "PreToolUse:Bash hook error: Unnamed denial"}]}}])
 extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
 check(extra_cost["count"] == 4 and extra_cost["by_gate_s"]["cd-guard.sh"] == 1
-      and extra_cost["by_gate_s"]["unknown-hook"] == 11 and extra_cost["seconds"] == extra_cost["chat_s"] == 21,
+      and extra_cost["by_gate_s"]["unknown-hook"] == 11 and extra_cost["seconds"] == 21,
       "profile subagent transcripts use the parent session, deduplicate copied calls and retain unnamed hooks")
 os.unlink(profile)
 os.unlink(transcript)
@@ -188,204 +187,97 @@ lines(blocks, [stop, stop,
 blocked = T.refusal_cost(D0 + 590, D0 + 1200, {"c": [call(650, "after-post", "recover5"), call(1100, "late", "recover5")],
                                                  "t": [["t", D0 + 590, "recover5", D0 + 620]]})
 check(blocked["by_gate_s"] == {"ask-span-drill.sh": 20, "unknown-posttooluse-hook": 10} and blocked["count"] == 3
-      and blocked["unmeasured_by_gate"] == {"unknown-stop-hook": 1} and blocked["chat_s"] == 30,
+      and blocked["unmeasured_by_gate"] == {"unknown-stop-hook": 1} and blocked["seconds"] == 30,
       "a Stop block recovers until its turn ends, a PostToolUse block until the next call, a copied block counts once, "
       "and a block with no turn and no call within the cap stays unmeasured: %s" % blocked)
 os.unlink(blocks)
 T.gates_path = old_gates
 baseline = T.budget(D0, D0 + 86400, recovery_events)
-check(sum(charged["seconds"].values()) == sum(baseline["seconds"].values()),
-      "reclassifying recovery preserves total measured wall time")
+check(round(charged["overhead_s"] - baseline["overhead_s"]) == 348 and baseline["seconds"]["refusal"] == 0,
+      "measured recovery adds its own union to the overhead, once: %s" % (charged["overhead_s"] - baseline["overhead_s"]))
 
-split = T.run_split(run, 0, 1e12, T.suite_rows(0, 1e12), T.event_rows(D0, D0 + 86400)["c"],
-                    T.event_rows(D0, D0 + 86400)["h"])
-check(dict((k, round(v)) for k, v in split.items() if v) == {
-    "slot": 600, "retries": 400, "suite_wait": 1000, "suite_run": 2000, "tools": 500, "hooks": 100, "model": 4400}
-      and round(sum(split.values())) == 9000,
+
+def run_dir(run, files):
+    folder = os.path.join(work, "runs", run)
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder)
+    for name, body in files.items():
+        with open(os.path.join(folder, name), "w") as handle:
+            handle.write(body)
+
+
+L = lambda split: {k: round(T.length(v)) for k, v in split.items() if T.length(v)}
+calls = T.event_rows(D0, D0 + 86400)["c"]
+split = T.run_split(run, 0, 1e12, T.suite_rows(0, 1e12), calls)
+check(L(split) == {"slot": 600, "retries": 400, "suite_wait": 1000, "suite_run": 2000, "tools": 600, "model": 4400},
       "a worker run's wall starts at its pid, not the restamped started_at: slot queue, retries, its own suites "
-      "(the call inside them absorbed), tools net of their hooks, the rest model: %s" % dict(split))
-walled = T.run_split(dict(run, walled=["com"]), 0, 1e12, T.suite_rows(0, 1e12), T.event_rows(D0, D0 + 86400)["c"],
-                     T.event_rows(D0, D0 + 86400)["h"])
-check(not walled["retries"] and round(walled["walled"]) == 400 and round(walled["model"]) == 4400
-      and round(walled["slot"]) == 600 and round(sum(walled.values())) == 9000,
-      "a walled run's earlier attempts are weather, neither retries nor work: %s" % dict(walled))
-bench = T.run_split(dict(run, workdir="/w/logo-vectorizer-bench/lane"), 0, 1e12, T.suite_rows(0, 1e12),
-                    T.event_rows(D0, D0 + 86400)["c"], T.event_rows(D0, D0 + 86400)["h"])
-check(dict(bench) == {"bench": 9000} and T.worker_wall({"model": 60, "bench": 9000}) == 60,
-      "a bench worker is its own class, whole, outside the workers' wall: %s" % dict(bench))
-clipped = T.run_split(run, D0 + 5000, D0 + 7300, T.suite_rows(0, 1e12), [], [])
-orphan = T.run_split(dict(run, run="claudeb-1-9-none"), 0, 1e12, [], [], [])
-check(round(clipped["suite_run"]) == 1000 and round(clipped["model"]) == 1300 and round(sum(clipped.values())) == 2300
-      and round(orphan["other"]) == 8000 and not orphan["model"],
-      "a window clips every span, and a run with no session file is unsplit, never model: %s %s"
-      % (dict(clipped), dict(orphan)))
+      "(the call inside them absorbed), its tools, the rest model: %s" % L(split))
+walled = T.run_split(dict(run, walled=["com"]), 0, 1e12, T.suite_rows(0, 1e12), calls)
+check(L(walled) == {"slot": 600, "walled": 400, "suite_wait": 1000, "suite_run": 2000, "tools": 600, "model": 4400},
+      "a walled run's earlier attempts are weather, neither retries nor work: %s" % L(walled))
+bench = T.run_split(dict(run, workdir="/w/logo-vectorizer-bench/lane"), 0, 1e12, T.suite_rows(0, 1e12), calls)
+check(L(bench) == {"bench": 9000}, "a bench worker is its own class, whole: %s" % L(bench))
+clipped = T.run_split(run, D0 + 5000, D0 + 7300, T.suite_rows(0, 1e12), [])
+orphan = T.run_split(dict(run, run="claudeb-1-9-none"), 0, 1e12, [], [])
+check(L(clipped) == {"suite_run": 1000, "model": 1300} and L(orphan) == {"slot": 600, "retries": 400, "other": 8000},
+      "a window clips every span, and a run with no session file is unsplit, never model: %s %s" % (L(clipped), L(orphan)))
 late = T.run_split(run, D0 + 7700, D0 + 10000, T.suite_rows(0, 1e12),
-                   T.event_rows(D0, D0 + 86400)["c"] + [["c", D0 + 8500, "p", "Bash", 0, 200, "w", "tid0000009", "abcd1234", 1]],
-                   T.event_rows(D0, D0 + 86400)["h"])
-check(round(late["hooks"]) == 0 and round(late["tools"]) == 200,
-      "a call outside the window takes its hooks with it, never out of the window's tool time: %s" % dict(late))
+                   calls + [["c", D0 + 8500, "p", "Bash", 0, 200, "w", "tid0000009", "abcd1234", 1]])
+check(L(late) == {"tools": 200, "model": 2100}, "a call outside the window stays out of its tool time: %s" % L(late))
+WS = "claudeb-%d-9-wsss" % (D0 + 1000)
+run_dir(WS, {"worker-session": "ws000001-0000\n"})
+check(T.run_session(WS) == "ws000001" and "other" not in L(T.run_split(dict(run, run=WS), 0, 1e12, [], [])),
+      "a run whose CLI session only worker-session names (gemini, codex) is split, never unmeasured")
 
-def memlogd(samples):
-    for name in ("machine", ""):
-        path = os.path.join(work, "memlogd", name, "2026-01-10.log")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as handle:
-            handle.write("JUMP %d node_count=9 avail_mb=1\n" % (D0 + 3000))
-            for t, load, avail in samples:
-                handle.write("%d load1=%s ncpu=10 swap_mb=0\n" % (D0 + t, load) if name else
-                             "%d quiet avail_mb=%d swap_used_mb=0\n" % (D0 + t, avail))
+day = T.budget(D0, D0 + 86400)
+check(day["seconds"] == dict(dict.fromkeys(T.LABEL, 0), suite_run=2100, suite_wait=1000, slot=601, retries=400,
+                             hooks=100, stop=20, locks=40, other=649)
+      and day["active_s"] == 9000 and day["runs"] == 2
+      and {k: day["rows"][k] for k in ("tests", "delegation", "harness rules", "unmeasured")}
+      == {"tests": 3100, "delegation": 1001, "harness rules": 159, "unmeasured": 649},
+      "each class is the union of its spans: suites from every caller, a review round's slot queue too, hook rows and "
+      "a turn's Stop seconds at its end, locks a chat paid (a background job's never), a review round's unsplit rest "
+      "and a turn's unexplained seconds unmeasured; a row is the union of its classes: %s %s"
+      % (day["seconds"], day["rows"]))
+TWIN = "claudeb-%d-8-twin" % (D0 + 1000)
+run_dir(TWIN, {"session": "twin0001-0000\n"})
+lines(os.path.join(work, "twin-stats", "runs.jsonl"), [run, review, dict(run, run=TWIN)])
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "twin-stats")
+pair = T.budget(D0, D0 + 86400)
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
+check(pair["runs"] == 3 and pair["rows"]["delegation"] == day["rows"]["delegation"]
+      and pair["overhead_s"] == day["overhead_s"],
+      "two runs queued and retried side by side count once: %s %s" % (pair["rows"], pair["overhead_s"]))
+check(day["overhead_s"] == 4289 and sum(day["seconds"].values()) == 4910,
+      "the overhead is the union of all classes, a second two classes share counted once, never their sum: %s"
+      % day["overhead_s"])
+T.write_json(T.day_cache_path("2026-01-10"), {"settled": True, "seconds": {"model": 5000}, "worker": {}})
+later = D0 + 3 * 86400 + 3600
+recomputed = T.history(later, True, 5.0)
+check(recomputed == {"2026-01-10": 71.5, T.local_day(later): 5.0}
+      and json.load(open(T.day_cache_path("2026-01-10")))["version"] == T.BUDGET_VERSION,
+      "a settled day an older budget cached is recomputed and stored again; the history holds each measured day's "
+      "overhead and today's latest value: %s" % recomputed)
+T.write_json(T.day_cache_path("2026-01-10"), dict(json.load(open(T.day_cache_path("2026-01-10"))), overhead_s=600))
+check(T.history(later, True, 5.0)["2026-01-10"] == 10.0, "a day the current budget settled is read, never recomputed")
+os.unlink(T.day_cache_path("2026-01-10"))
 
-
-QUIET = [(t, 2.0, 8000) for t in list(range(2900, 4101, 15)) + list(range(7990, 8101, 15))]
-memlogd(QUIET)
 NOW = D0 + 20 * 3600
-for back in range(1, 8):
-    day = T.local_day(D0 - back * 86400)
-    T.write_json(T.day_cache_path(day), {"settled": True, "seconds": {"suite_wait": 100, "suite_run": 1100, "model": 5000},
-                                         "worker": {}})
 doc = T.document(NOW)
-check(doc["refusal_cost"]["unmeasured_by_gate"] == {"unknown": 1}
-      and doc["refusal_cost"]["min_day"] == 0
-      and any(r["class"] == "refusal" and r["floor_min_day"] == 0 for r in doc["floors"]),
-      "JSON reports the refusal cost coverage and a zero-floor harness class")
-by = {r["class"]: r for r in doc["classes"]}
-check(by["model"]["min"] == 80.0 and by["tools"]["min"] == round(760 / 60.0, 1) and by["locks"]["min"] == round(40 / 60.0, 1)
-      and doc["review_min"] == 10.0 and "review" not in by and by["suite_run"]["min"] == round(2080 / 60.0, 1)
-      and by["slot"]["min"] == round(601 / 60.0, 1)
-      and by["other"]["min"] == round(649 / 60.0, 1) and doc["refusals"] == 1 and doc["worker_runs"] == 2,
-      "the classes add owner turns (dark time out) to worker runs, lock and poll waits a chat or worker paid come out "
-      "of tool time (a background job's never), a review "
-      "round splits like any run (its slot wait a slot, its unsplit rest other) and only its total is kept, gate refusals are counted: %s" % {k: v["min"] for k, v in by.items()})
-check(doc["total_min"] == round(10550 / 60.0, 1) and doc["harness_share"] == round(4341 / 10550.0, 3)
-      and doc["lines"][0] == "Without the harness ≈ 41 % faster: 72 min of 2.9 h in 24 h"
-      and abs(sum(r["share"] for r in doc["classes"]) - 1) < 0.01,
-      "the headline is the harness classes over the total, the shares sum to one: %s" % doc["lines"][0])
-check(doc["band_days"] == 7 and by["suite_wait"]["usual_min"] == round(100 / 60.0, 1)
-      and doc["holes"][-1:] == ["suite slot wait: 17 min, usually 2 min"]
-      and "unknown: 1" in doc["holes"][0]
-      and "Hole: suite slot wait: 17 min, usually 2 min" in doc["lines"],
-      "a harness class past twice its 7-day median by 15 minutes is a named hole; one under twice its median, one "
-      "under the floor or a plain class never is: %s" % doc["holes"])
-long = T.document(NOW, 72.0, write=False)
-check(len(long["holes"]) == 1 and "unmeasured" in long["holes"][0] and {r["class"]: r["usual_min"] for r in long["classes"]}["suite_wait"] == 5.0,
-      "a 72 h window is judged against three usual days, never one: %s" % long["holes"])
-check(T.holes({"worker": {"model": 900, "suite_run": 4500, "slot": 4600}, "seconds": {}}, {})
-      == ["workers worked 9 % of their time; 46 % went to the slot queue"]
-      and T.holes({"worker": {"model": 4000, "suite_run": 6000}, "seconds": {}}, {}) == [],
-      "workers under 30 % model time are a named hole, at 40 % they are not")
+check(doc["refusal_cost"]["unmeasured_by_gate"] == {"unknown": 1} and doc["refusal_cost"]["min_day"] == 0
+      and doc["refusals"] == 1 and doc["worker_runs"] == 2,
+      "JSON reports the refusal count and its cost coverage")
+check(doc["lost_min_day"] == 71.5 and doc["lines"][0] == "72 min/day overhead" and doc["rows"] == [
+          [71.5, "overhead", []], [51.7, "tests", [[35.0, "running"], [16.7, "queued"]]],
+          [16.7, "delegation", [[10.0, "worker queue"], [0.0, "wrap-up"], [6.7, "retries"], [0.0, "dead, hung"]]],
+          [2.6, "harness rules", [[2.0, "hooks"], [0.0, "gate refusals"], [0.7, "locks"], "-", [1.7, "gate"]]],
+          [0.0, "usage walls", []], [0.0, "compaction", []], [10.8, "unmeasured", []], [150.0, "system active", []]],
+      "the day document: overhead first, each row with its parts, gates and the heaviest hooks under theirs, system "
+      "active last: %s" % doc["rows"])
 check("tests" not in doc and not any(l.startswith("Tests:") for l in doc["lines"]),
       "test time is share/test_health.py's block, never a second line here")
-lever = {x["lever"]: x for x in doc["levers"]}
-check(lever["prompt-cache hits"]["value"] == "90 % of cached input read from cache"
-      and lever["parallel tool calls"]["value"] == "0 % of 3 tool calls ran beside another"
-      and lever["fewer process starts"]["value"] == "1 CLI starts, 0.1 min launching"
-      and lever["smaller context per turn"]["measured"] is False,
-      "levers are measured where the journals hold the data and marked ideas where not: %s" % lever)
-gap = {f["class"]: (f["chat_min_day"], f["worker_min_day"]) for f in doc["floors"]}
-check(gap == {"refusal": (0.0, 0.0), "hooks": (1.7, 1.7), "stop": (0.3, 0.0), "suite_wait": (0.0, 16.7), "slot": (0.0, 0.0),
-              "retries": (0.0, 6.7), "dead": (0.0, 0.0), "wrapup": (0.0, 0.0), "hung": (0.0, 0.0), "locks": (0.7, 0.0), "suite_run": (0.7, 0.0)},
-      "each class is judged against its floor, chats' and workers' parts apart: zero for hooks, gates and waits, "
-      "none for plain Claude Code: %s" % gap)
-check(T.suite_floor(D0, D0 + 86400) == {"worker": 1.0, "chat": 0.5} and gap["suite_run"] == (0.7, 0.0),
-      "suites keep their uncontended p10 wall: only a caller's suite seconds above each suite's p10 are recoverable, "
-      "never a flat budget: %s" % T.suite_floor(D0, D0 + 86400))
-failed = os.path.join(work, "suites-failed.jsonl")
-lines(failed, [{"kind": "direct", "queued_at": D0 - 86400, "started_at": D0 - 86400, "ended_at": D0 - 86399,
-                "worker_run": None, "session": "chat-2", "suites": {"test_a.sh": {"rc": 1, "secs": 1}}}]
-      + list(night_spend.rows(os.environ["RUN_SUITES_JOURNAL"])))
-os.environ["RUN_SUITES_JOURNAL"], journal = failed, os.environ["RUN_SUITES_JOURNAL"]
-check(T.suite_floor(D0, D0 + 86400) == {"worker": 1.0, "chat": 0.5},
-      "a failed run that stopped at its first check is no suite's floor: %s" % T.suite_floor(D0, D0 + 86400))
-os.environ["RUN_SUITES_JOURNAL"] = journal
-grown = os.path.join(work, "grown")
-heads = []
-for body in ("x\n", "x\ny\nz\n"):
-    os.makedirs(os.path.join(grown, "tests"), exist_ok=True)
-    with open(os.path.join(grown, "tests", "test_y.sh"), "w") as handle:
-        handle.write(body)
-    subprocess.run(["git", "init", "-q", grown], check=True)
-    subprocess.run(["git", "-C", grown, "add", "-A"], check=True)
-    subprocess.run(["git", "-C", grown, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", body], check=True)
-    heads.append(subprocess.run(["git", "-C", grown, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip())
-def suite_run(at, head, secs, session):
-    return {"kind": "direct", "queued_at": D0 + at, "started_at": D0 + at, "ended_at": D0 + at + secs, "worker_run": None,
-            "session": session, "repo_root": grown, "head": head, "suites": {"test_y.sh": {"rc": 0, "secs": secs}}}
-history = [suite_run(-86400 - 100 * i, heads[i // 10], 10 if i < 10 else 40, "hist") for i in range(20)]
-for at, want in ((3000, 40 / 44.0), (5000, 1.0)):
-    lines(os.path.join(work, "grown-%d.jsonl" % at), history + [suite_run(at, heads[1], 44, "chat-9")])
-    os.environ["RUN_SUITES_JOURNAL"] = os.path.join(work, "grown-%d.jsonl" % at)
-    found = T.suite_floor(D0, D0 + 86400)
-    check(abs(found["chat"] - want) < 1e-9,
-          "a suite's floor is the p10 of its own file's blob, never of the smaller one it grew from, and only a run on a "
-          "free machine is over it, a run slowed by load at it: %s at %d" % (found, at))
-os.environ["RUN_SUITES_JOURNAL"] = journal
-critical = [[0, 0, 100, 60], [0, 100, 200, 60], [1000, 1000, 1100, 50]]
-idle = [[0, 0, 1000, 0], [0, 0, 100, 50], [0, 100, 200, 50]]
-check(T.slot_gain(critical) == 60 and T.slot_gain(idle) == 0 and gap["slot"] == (0.0, 0.0)
-      and by["slot"]["min"] == 10.0,
-      "the slot queue is priced by what lending slots during suites moves the bursts' ends, so a queue off the "
-      "critical path recovers nothing: %s %s" % (T.slot_gain(critical), T.slot_gain(idle)))
-active = T.worker_floor({"model": 900, "suite_run": 4500, "slot": 4600, "bench": 5000},
-                        {"suite_run": (300, 1500), "slot": (0, 600)}, 1)
-check(active == {"share": 0.09, "floor_share": 0.114, "recoverable_min_day": 35.0,
-                 "parts": {"suite_run": 25.0, "slot": 10.0}},
-      "workers' floor share is derived: model time over the wall left once every part is at its floor, bench "
-      "outside the wall; the parent's recoverable is the sum of its parts: %s" % active)
-check(doc["workers_active"]["floor_share"] == 0.543 and doc["workers_active"]["recoverable_min_day"] == 25.0
-      and doc["lost_min_day"] == 28.3
-      and doc["lines"][1:4] == ["Chats 16 min · workers 2.7 w-h (reviews 10 w-min)","Over the floor: chats 3 min/day · hooks 2 min",
-                                "Workers active 46 % of their wall (floor 54 %) · over it 25 w-min/day · suite slot "
-                                "wait 17 w-min · retries and relaunches 7 w-min · hooks 2 w-min"],
-      "workers active is the parent of its parts, the headline counts each minute once, worker-minutes carry "
-      "their own unit: %s %s" % (doc["lost_min_day"], doc["lines"][1:4]))
-lines(os.path.join(work, "night-stats", "runs.jsonl"), [dict(run, workdir="/r/.claude/worktrees/night-x-y")])
-os.environ["WORKER_STATS_DIR"] = os.path.join(work, "night-stats")
-check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
-      "a night worker enters the slot replay with its launch, first CLI start, end and own suite seconds")
-check(T.budget(D0 + 7000, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
-      "a night worker that started before the window keeps the suite seconds it ran before it")
-lines(os.path.join(work, "day-stats", "runs.jsonl"), [dict(run, workdir="/r/.claude/worktrees/feat-x"),
-                                                      dict(review, workdir="/r/.claude/worktrees/feat-x")])
-os.environ["WORKER_STATS_DIR"] = os.path.join(work, "day-stats")
-check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0],
-                                           [D0 + 5000, D0 + 5001, D0 + 5600, 0.0]],
-      "a day worker takes a slot from the same pool and enters the slot replay too, a review round's worker as well")
 check(dict(T.unit_samples({"class": "slot"}, D0, D0 + 86400)) == {"workers": [600], "review-cells": [45]},
       "the slot class's unit samples are the one admission's waits: the workers pool's and the review cells'")
-os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
-b = T.budget(D0, D0 + 86400)
-wb = dict(b, seconds=dict(b["seconds"], walled=3600), worker=dict(b["worker"], walled=3600))
-rec, wrec = T.recoverable(b, D0, D0 + 86400), T.recoverable(wb, D0, D0 + 86400)
-check(sum(map(sum, wrec.values())) - sum(map(sum, rec.values())) == 0
-      and T.worker_floor(wb["worker"], wrec, 1) == T.worker_floor(b["worker"], rec, 1),
-      "a walled run's relaunch minutes add 0 to lost_min_day and leave the workers' shares alone: usage walls are "
-      "weather: %s" % wrec)
-check(b["free_s"] == {"suite_wait_chat": 0.0, "suite_wait": 1000.0, "slot": 0.0} and rec["suite_wait"] == (0.0, 1000.0) and rec["slot"] == (0.0, 0.0),
-      "a suite wait the machine had room through is lost whole; a slot queue memlogd never sampled is busy: %s"
-      % b["free_s"])
-memlogd([(t, 12.0 if t in (3500, 20090) else 2.0, 1000 if t == 20195 else 8000)
-         for t in list(range(2900, 4101, 15)) + list(range(20000, 20301, 15))])
-free = T.free_spans(D0 + 20000, D0 + 20500)
-lines(os.path.join(work, "harness", "waits", "2026-01-10.jsonl"),
-      [{"class": "workers", "source": "w", "started": D0 + 20300, "seconds": 30, "pid": 4, "reason": "room"},
-       {"class": "workers", "source": "w", "started": D0 + 20000, "seconds": 30, "pid": 5, "reason": "limit"}])
-roomless = T.free_spans(D0 + 20000, D0 + 20500)
-check(T.length(free) == 330 and free[-1] == [D0 + 20210, D0 + 20360]
-      and T.length(roomless) == 300 and roomless[-2:] == [[D0 + 20210, D0 + 20300], [D0 + 20330, D0 + 20360]],
-      "the machine is free where memlogd's load1 is under its cores and available RAM at or over its incident "
-      "threshold, and never through a slot wait refused for room; a sample covers at most a minute, past it the "
-      "machine counts busy: %s %s" % (free, roomless))
-busy = T.budget(D0, D0 + 86400)
-check(busy["free_s"]["suite_wait"] == 985.0 and T.recoverable(busy, D0, D0 + 86400)["suite_wait"] == (0.0, 985.0),
-      "only a wait's free part is recoverable, its busy part is the floor: %s" % busy["free_s"])
-check([T.recoverable(dict(b, jobs=critical, worker=dict(b["worker"], slot=500), free_s={"slot": s}), D0, D0 + 86400)["slot"]
-       for s in (30.0, 100.0)] == [(0.0, 30.0), (0.0, 60.0)],
-      "the slot queue recovers its free part, never more than lending slots during suites moves")
-shutil.rmtree(os.path.join(work, "memlogd"))
-bare = T.budget(D0, D0 + 86400)
-check(bare["free_s"] == {"suite_wait_chat": 0.0, "suite_wait": 0.0, "slot": 0.0} and T.recoverable(bare, D0, D0 + 86400)["suite_wait"] == (0.0, 0.0),
-      "with no memlogd sample a wait is busy: undercount, never a guess")
-memlogd(QUIET)
 
 DEAD = "claudeb-%d-5-dddd" % (D0 + 30000)
 dead_row = {"run": DEAD, "status": "failed", "round": None, "pid_started_at": D0 + 30000, "started_at": D0 + 30000,
@@ -394,16 +286,9 @@ dead_files = {"session": "dead0001-aaaa", "worker-session": "dead0001-aaaa", "fi
               "head-before": "abc\n", "head-after": "abc\n", "produced": "", "files-external": "",
               "result": "Failed to authenticate: OAuth session expired and could not be refreshed\n",
               "brief": "EFFORT: low\n\nRESUME dead0001-aaaa: its own resume is no continuation\n"}
-def run_dir(run, files):
-    folder = os.path.join(work, "runs", run)
-    shutil.rmtree(folder, ignore_errors=True)
-    os.makedirs(folder)
-    for name, body in files.items():
-        with open(os.path.join(folder, name), "w") as handle:
-            handle.write(body)
 run_dir(DEAD, dead_files)
 check(T.dead_runs([dead_row]) == {DEAD}
-      and dict(T.run_split(dict(dead_row, dead=True), 0, 1e12, [], [], [])) == {"slot": 10, "retries": 0, "wrapup": 0, "dead": 600},
+      and L(T.run_split(dict(dead_row, dead=True), 0, 1e12, [], [])) == {"slot": 10, "dead": 600},
       "a failed run nobody resumed, with no file, commit or report, is dead: its last attempt's wall, the slot queue "
       "before it kept apart")
 alive = {"files names a path": dict(dead_files, files="WORKDIR: /w/feat\nsrc/a.py\n"),
@@ -439,14 +324,11 @@ lines(os.path.join(work, "dead-stats", "runs.jsonl"), [dead_row])
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "dead-stats")
 died = T.budget(D0, D0 + 86400)
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
-check(died["seconds"]["dead"] == 600 and died["dead_runs"] == [DEAD]
-      and T.recoverable(died, D0, D0 + 86400)["dead"] == (0.0, 600.0) and T.KIND["dead"] == "harness",
-      "dead worker runs are a harness class over a floor of zero: %s" % died["seconds"])
+check(died["seconds"]["dead"] == 600 and died["dead_runs"] == [DEAD] and died["rows"]["delegation"] == 610,
+      "dead worker runs are a delegation class: %s" % died["seconds"])
 
 queue_turn = ["t", D0 + 3950, "sessQ", D0 + 4400, "n", [0, 0, 0], 0, [], [], {"gen": 50, "queue": 300, "test": 100},
               {}, []]
-check(dict(T.turn_split(queue_turn, 0, 1e12)) == {"model": 50, "suite_wait": 300, "suite_run": 100},
-      "a chat turn's suite queue seconds are suite slot wait, never other")
 chat_journal = os.path.join(work, "chat-suites.jsonl")
 lines(chat_journal, list(night_spend.rows(os.environ["RUN_SUITES_JOURNAL"]))
       + [{"kind": "direct", "queued_at": D0 + 4000, "started_at": D0 + 4300, "ended_at": D0 + 4400, "worker_run": None,
@@ -454,37 +336,36 @@ lines(chat_journal, list(night_spend.rows(os.environ["RUN_SUITES_JOURNAL"]))
 os.environ["RUN_SUITES_JOURNAL"], journal = chat_journal, os.environ["RUN_SUITES_JOURNAL"]
 queued = T.budget(D0, D0 + 86400, {"t": [queue_turn], "c": [], "h": []})
 os.environ["RUN_SUITES_JOURNAL"] = journal
-chat_wait = T.recoverable(queued, D0, D0 + 86400)["suite_wait"][0]
-check(queued["free_s"]["suite_wait_chat"] == 160.0 and chat_wait == 160.0,
-      "a chat's suite queue recovers only the part memlogd saw the machine free: %s %s" % (queued["free_s"], chat_wait))
+check(queued["seconds"]["suite_wait"] == 1300 and queued["seconds"]["suite_run"] == 2100,
+      "a chat's suite queue is suite slot wait from run-suites' journal, and its run inside a worker's suite counts "
+      "once: %s" % queued["seconds"])
 
-wrapped = T.run_split(dict(run, attempt_secs=[300, 7000]), 0, 1e12, T.suite_rows(0, 1e12),
-                      T.event_rows(D0, D0 + 86400)["c"], T.event_rows(D0, D0 + 86400)["h"])
-unpaired = T.run_split(dict(run, attempt_secs=[7000]), 0, 1e12, T.suite_rows(0, 1e12), [], [])
-check(wrapped["wrapup"] == 1000 and round(wrapped["model"]) == 3400 and round(sum(wrapped.values())) == 9000
+wrapped = T.run_split(dict(run, attempt_secs=[300, 7000]), 0, 1e12, T.suite_rows(0, 1e12), calls)
+unpaired = T.run_split(dict(run, attempt_secs=[7000]), 0, 1e12, T.suite_rows(0, 1e12), [])
+check(L(wrapped)["wrapup"] == 1000 and L(wrapped)["model"] == 3400 and sum(L(wrapped).values()) == 9000
       and not unpaired["wrapup"],
       "the last CLI's exit -> the run's end is wrap-up, not model; with attempts and their seconds unpaired it is "
-      "unknown and stays in the run: %s" % dict(wrapped))
+      "unknown and stays in the run: %s" % L(wrapped))
 with open(os.path.join(work, "runs", RUN, "killed"), "w") as handle:
     handle.write("idle 1800\n")
-hung_split = {reason: T.run_split(dict(run, attempt_secs=[300, 7000], reason=reason), 0, 1e12, T.suite_rows(0, 1e12),
-                                  T.event_rows(D0, D0 + 86400)["c"], T.event_rows(D0, D0 + 86400)["h"])
+hung_split = {reason: L(T.run_split(dict(run, attempt_secs=[300, 7000], reason=reason), 0, 1e12, T.suite_rows(0, 1e12),
+                                    calls))
               for reason in ("idle", "deadline")}
 with open(os.path.join(work, "runs", RUN, "killed"), "w") as handle:
     handle.write("silent\n")
-silent = T.run_split(dict(run, attempt_secs=[300, 7000], reason="silent"), 0, 1e12, T.suite_rows(0, 1e12), [], [])
+silent = L(T.run_split(dict(run, attempt_secs=[300, 7000], reason="silent"), 0, 1e12, T.suite_rows(0, 1e12), []))
 os.remove(os.path.join(work, "runs", RUN, "killed"))
-check(hung_split["idle"]["hung"] == 1800 and round(hung_split["idle"]["tools"]) == 100
-      and round(sum(hung_split["idle"].values())) == 9000 and not hung_split["deadline"]["hung"]
-      and silent["hung"] == 7000 and not silent["suite_run"] and not silent["model"],
+check(hung_split["idle"]["hung"] == 1800 and hung_split["idle"]["tools"] == 200
+      and sum(hung_split["idle"].values()) == 9000 and "hung" not in hung_split["deadline"]
+      and silent["hung"] == 7000 and "suite_run" not in silent and "model" not in silent,
       "a watchdog's idle kill books its idle seconds before the exit as hung, a silent kill the whole last attempt; a "
-      "deadline kill has no idle stamp and stays work: %s %s" % (dict(hung_split["idle"]), dict(silent)))
+      "deadline kill has no idle stamp and stays work: %s %s" % (hung_split["idle"], silent))
 lines(os.path.join(work, "tail-stats", "runs.jsonl"), [dict(run, attempt_secs=[300, 7000])])
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "tail-stats")
 tail = T.budget(D0, D0 + 86400)
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
-check(T.recoverable(tail, D0, D0 + 86400)["wrapup"] == (0.0, 1000.0) and T.KIND["wrapup"] == T.KIND["hung"] == "harness",
-      "wrap-up and hung tails are harness classes over a floor of zero")
+check(tail["seconds"]["wrapup"] == 1000 and tail["rows"]["delegation"] == 2000,
+      "a wrap-up tail is a delegation class: %s" % tail["rows"])
 section = T.section(NOW)
 check(open(os.path.join(work, "harness", "budget.txt")).read().splitlines() == section["lines"]
       and not os.path.exists(T.day_cache_path("2026-01-10")),
@@ -528,9 +409,9 @@ for ref, problem in (("harness-x-20260110T000000Z", {"id": "opportunity:chat/que
                      ("harness-y-20260110T000000Z", {"id": "test_slow:repo:test_x", "rule": "test_slow"}),
                      ("llm-z-20260110T000000Z", {"id": "leg-failure:codex/x", "rule": "leg-failure"})):
     T.write_json(os.path.join(work, "doctors", "runs", ref + ".json"), {"problems": [problem]})
-for back, wait in ((1, 40), (2, 40), (3, 40), (4, 9000)):
+for back, wait in ((-3, 100), (-2, 100), (-1, 100), (1, 40), (2, 40), (3, 40), (4, 9000)):
     T.write_json(T.day_cache_path(T.local_day(D0 + back * 86400)),
-                 {"settled": True, "seconds": {"suite_wait": wait, "model": 5000}, "worker": {}})
+                 {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"suite_wait": wait}, "overhead_s": wait, "active_s": 5000})
 check(night_spend.spend(night, "/usr/bin/false")["hours"] == 2.5,
       "the night report's worker wall starts at each run's pid, not its restamped started_at")
 rollout = os.path.join(work, "codex-rollout.jsonl")
@@ -585,9 +466,10 @@ check(shown[0] == "roi · r · harness total · 2.0M · +1/-1 lines · pending a
       "an improvement whose class is None measures the harness total, never crashes the ROI lines: %s" % shown)
 L = D0 + 20 * 86400 + 43200
 for back in (1, 2, 3):
-    T.write_json(T.day_cache_path(T.local_day(L - back * 86400)), {"settled": True, "seconds": {"slot": 0, "model": 0}, "worker": {}})
+    T.write_json(T.day_cache_path(T.local_day(L - back * 86400)),
+                 {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 0}, "overhead_s": 0, "active_s": 0})
     T.write_json(T.day_cache_path(T.local_day(L + back * 86400)),
-                 {"settled": True, "seconds": {"slot": 60, "model": 5000}, "worker": {}})
+                 {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 60}, "overhead_s": 60, "active_s": 5000})
 check(T.saved_min_day(dict(item, **{"class": "slot"}), L, L + 86400 * 9) == T.UNMEASURED
       and T.roi_lines([{"started": L, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1],
                                                                          **{"class": "slot"})]}], L + 86400 * 9)
@@ -616,8 +498,8 @@ check(suite(["share/suite_audit.py", "tests/test_suite_audit.sh", "share/spend-l
       "runtime code of a unit: any code but measurers, ledgers and docs; tests only for a suite unit, and only its "
       "named suite, test helpers, or a measurer for the measurer's own suite")
 empty = T.document(L + 86400 * 9, write=False)
-check(empty["total_min"] == 0 and empty["floors"] == [] and empty["lost_min_day"] is None,
-      "a window with no recorded time is unmeasured, so it owes no floor: %s %s" % (empty["floors"], empty["lost_min_day"]))
+check(empty["lost_min_day"] is None and empty["lines"] == ["Lost time: nothing measured in the last 24 h"],
+      "a window with no recorded time is unmeasured, never a zero day: %s" % empty["lines"])
 cached = json.load(open(os.path.join(work, "doctors", "night-ledger", "N1.json")))
 check(cached["wall_s"] == 9000 and cached["split_s"]["slot"] == 600,
       "a finished night's ledger row is cached, so its numbers outlive the pruned run and event stores")
@@ -632,19 +514,6 @@ cached = json.load(open(T.ledger_cache("N1")))
 check(cached["improvements"][0]["files"] == [["repo", "code.py"], ["repo", "tests/test_x.sh"]]
       and cached["improvements"][1]["files"] == [],
       "a cached row from before files were recorded gets them from its night's commits, its numbers kept")
-with open(T.ledger_cache("N1"), "w") as handle:
-    json.dump(dict(cached, split_s=dict(cached["split_s"], model=1200, walled=5000)), handle)
-floor = round(1200 / (5800 - cached["over_s"]), 3)
-check(T.last_night() == {"id": "N1", "wall_s": 5800, "model_s": 1200, "share": 0.207, "floor_share": floor},
-      "the last night's worker activity is the newest finished night's cached ledger row, its usage-wall relaunches "
-      "outside the wall, its floor share that split less its seconds over floors: %s" % T.last_night())
-with open(T.ledger_cache("N1"), "w") as handle:
-    json.dump(dict({k: v for k, v in cached.items() if k != "over_s"}, floor_share=0.5,
-                   split_s=dict(cached["split_s"], model=1200, walled=5000)), handle)
-backfilled = (T.last_night()["floor_share"], json.load(open(T.ledger_cache("N1"))))
-check(backfilled[0] == floor and backfilled[1]["over_s"] == cached["over_s"] and "floor_share" not in backfilled[1],
-      "a cached night without its seconds over floors gets them from its own parts once and judges its cached split "
-      "with them, never against a share a fresh split derived: %s %s" % backfilled)
 moved =os.path.join(work, "moved-doctors")
 shutil.copytree(os.path.join(work, "doctors"), moved)
 shutil.rmtree(os.path.join(moved, "night-ledger"))

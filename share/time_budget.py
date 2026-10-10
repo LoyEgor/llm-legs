@@ -11,8 +11,6 @@ problem counts. Measurement only: it reads existing journals and gates nothing.
 import argparse
 import collections
 import glob
-import heapq
-import itertools
 import json
 import os
 import re
@@ -31,44 +29,34 @@ import spend as spend_block  # noqa: E402
 from spend import read_json  # noqa: E402
 import suite_audit  # noqa: E402
 
-CLASSES = (("model", "model turns", "plain"), ("tools", "tool execution", "plain"),
-           ("compaction", "compaction", "plain"), ("hooks", "hooks", "harness"), ("stop", "stop hooks", "harness"),
-           ("suite_run", "suites running", "harness"), ("suite_wait", "suite slot wait", "harness"),
-           ("refusal", "gate refusal recovery", "harness"),
-           ("slot", "worker slot queue", "harness"), ("retries", "retries and relaunches", "harness"),
-           ("dead", "dead worker runs", "harness"), ("wrapup", "worker wrap-up", "harness"),
-           ("hung", "watchdog-killed idle tails", "harness"),
-           ("walled", "usage-wall relaunches", "other"),
-           ("bench", "bench workers", "other"), ("locks", "locks and polls", "harness"),
-           ("other", "other / unmeasured", "other"))
-KIND = {key: kind for key, _, kind in CLASSES}
-LABEL = {key: label for key, label, _ in CLASSES}
-TURN_PART = {"gen": "model", "tool": "tools", "media": "tools", "compact": "compaction", "hook": "hooks",
-             "stop": "stop", "test": "suite_run", "queue": "suite_wait", "resid": "other"}
+CLASSES = (("suite_run", "suites running"), ("suite_wait", "suite slot wait"), ("slot", "worker slot queue"),
+           ("wrapup", "worker wrap-up"), ("retries", "retries and relaunches"), ("dead", "dead worker runs"),
+           ("hung", "watchdog-killed idle tails"), ("hooks", "hooks"), ("stop", "stop hooks"),
+           ("refusal", "gate refusal recovery"), ("locks", "locks and polls"), ("walled", "usage-wall relaunches"),
+           ("compaction", "compaction"), ("other", "unmeasured"))
+LABEL = dict(CLASSES)
+ROWS = (("tests", (("running", "suite_run"), ("queued", "suite_wait"))),
+        ("delegation", (("worker queue", "slot"), ("wrap-up", "wrapup"), ("retries", "retries"),
+                        ("dead, hung", "dead", "hung"))),
+        ("harness rules", (("hooks", "hooks", "stop"), ("gate refusals", "refusal"), ("locks", "locks"))),
+        ("usage walls", (("usage walls", "walled"),)), ("compaction", (("compaction", "compaction"),)),
+        ("unmeasured", (("unmeasured", "other"),)))
+UNPLACED = ("compaction", "other")
 WATCHDOG_KILLS = ("idle", "silent")
-TURN_AWAY = ("dark", "ask")
 WAIT_CLASSES = ("lock", "poll")
 GATE_REFUSALS = ("denied", "relay-refused")
 REFUSAL_CAP_S = 300
 # A gate's recovery seconds a day swing to 0 and back on unchanged code (p5 of mean(3 days)/mean(5 before) is 0 over
 # the events of 2026-10-01..09), so only a gate that cost nothing for a week after the night proves.
 REFUSAL_PROOF_RATIO, REFUSAL_PROOF_DAYS = 0.0, 7
-BAND_DAYS = 7
-BAND_RATIO = 2.0
-BAND_MIN_S = 15 * 60
-ACTIVE_FLOOR = 0.30
-FLOORS = {"refusal": 0, "hooks": 0, "stop": 0, "suite_wait": "waits on a busy machine",
-          "slot": "slots lent during suites on a free machine", "retries": 0, "dead": 0, "wrapup": 0, "hung": 0,
-          "locks": 0,
-          "suite_run": "uncontended p10 wall"}
-FREE_CLASSES = ("suite_wait", "slot")
-FREE_TICK_S = 60
+HISTORY_DAYS = 6
+TREND_DAYS = 7
+BUDGET_VERSION = 2
 DEAD_LINE = re.compile(r"(?:(?:Failed to authenticate|Not logged in|You've hit your \w+ limit|API Error|Execution error|"
                        r"Request timed out|[A-Z]+_(?:FAILED|USAGE_LIMIT|UNAVAILABLE))\b|Error:)")
 DEAD_LINE_MAX = 300
 RESUME = re.compile(r"(?m)^RESUME ([0-9a-f][0-9a-f-]{7,})")
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
-FLOOR_ROW_MIN_DAY = 30
 NIGHT_GAIN_MIN_DAY = 5
 ROI_DAYS = 3
 IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE, suite_audit.RULE)
@@ -113,10 +101,6 @@ def suites_path():
 
 def gates_path():
     return os.path.join(env_path("INSTRUCTION_WATCH_STATE", ".cache", "claude-instruction-watch"), "gates.jsonl")
-
-
-def memlogd_dir():
-    return env_path("MEMLOGD_DIR", "Library", "Logs", "memlogd")
 
 
 def now_s():
@@ -241,48 +225,6 @@ def wait_rows(lo, hi):
     return [r for r in out if lo <= r["started"] < hi]
 
 
-def sampled(name, lo, hi, ok):
-    """Spans in [lo, hi) where memlogd's `<dir>/<name><day>.log` samples satisfy ok(fields); a sample covers up to
-    the next one, at most FREE_TICK_S, so an unsampled moment satisfies nothing."""
-    rows, day = [], local_day(lo - FREE_TICK_S)
-    while day <= local_day(hi):
-        try:
-            with open(os.path.join(memlogd_dir(), name + day + ".log"), errors="replace") as handle:
-                for line in handle:
-                    words = line.split()
-                    if len(words) > 1 and words[0].isdigit() and lo - FREE_TICK_S <= int(words[0]) < hi:
-                        rows.append((int(words[0]), dict(w.split("=", 1) for w in words[1:] if "=" in w)))
-        except OSError:
-            pass
-        day = local_day(day_bounds(day)[1] + 1)
-    rows.sort(key=lambda r: r[0])
-    ends = [t for t, _ in rows[1:]] + [float("inf")]
-    return clip([(t, min(end, t + FREE_TICK_S)) for (t, fields), end in zip(rows, ends) if ok(fields)], lo, hi)
-
-
-def field(fields, key):
-    try:
-        return float(fields.get(key, ""))
-    except ValueError:
-        return -1.0
-
-
-def memlogd_enter_mb():
-    text = night_spend.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "memlogd"))
-    found = re.search(r'enter_avail_mb="\$\{MEMLOGD_ENTER_AVAIL_MB:-(\d+)\}"', text)
-    return int(found.group(1)) if found else 4096
-
-
-def free_spans(lo, hi):
-    """Spans in [lo, hi) the machine had room in: memlogd's load1 under its core count and available RAM at or over
-    memlogd's incident threshold, outside any slot wait share/slots.sh recorded as refused for room."""
-    enter = memlogd_enter_mb()
-    load = sampled("machine/", lo, hi, lambda f: 0 <= field(f, "load1") < field(f, "ncpu"))
-    ram = sampled("", lo, hi, lambda f: field(f, "avail_mb") >= enter)
-    room = [(r["started"], r["started"] + r["seconds"]) for r in wait_rows(lo - 86400, hi) if r.get("reason") == "room"]
-    return minus(minus(load, minus(load, ram)), room)
-
-
 def refusal_rows(lo, hi):
     rows = [r for r in night_spend.rows(gates_path()) if r.get("decision") in GATE_REFUSALS
             and lo <= (num(r.get("at")) or 0) < hi]
@@ -352,8 +294,8 @@ def refusal_rows(lo, hi):
 
 def refusal_cost(lo, hi, events, rows=None):
     """Recovery from each refusal (a PreToolUse denial, a Stop or PostToolUse block) to the session's next accepted
-    call, else the end of the owner turn it fell in, capped; the next refusal of the session ends it too, so a window
-    several gates deny in is charged once, split between them."""
+    call, else the end of the owner turn it fell in, capped; the next refusal of the session ends it too. Each gate's
+    seconds and the total are unions of these spans, so a window several sessions or gates share counts once."""
     rows = refusal_rows(lo - REFUSAL_CAP_S, hi) if rows is None else rows
     calls, turns, refused = collections.defaultdict(list), collections.defaultdict(list), collections.defaultdict(set)
     for c in events.get("c", ()):
@@ -363,15 +305,14 @@ def refusal_cost(lo, hi, events, rows=None):
     denied = {(str(r.get("sid") or "")[:8], str(r.get("tool_use_id") or "")[-10:]) for r in rows}
     for r in rows:
         refused[str(r.get("sid") or "")[:8]].add(num(r.get("at")) or 0)
-    by, missing, spans, seen = collections.Counter(), collections.Counter(), collections.defaultdict(list), set()
+    by, missing, seen = collections.defaultdict(list), collections.Counter(), set()
     measured = 0
     for r in sorted(rows, key=lambda r: (num(r.get("at")) or 0, str(r.get("gate") or ""))):
         gate, at = r.get("gate") or "unknown", num(r.get("at")) or 0
         sid = str(r.get("sid") or "")[:8]
-        following = [c for c in calls[sid] if at < c[1] <= at + REFUSAL_CAP_S and (sid, c[7]) not in denied]
-        c = min(following, key=lambda c: c[1]) if following else None
+        following = [c[1] for c in calls[sid] if at < c[1] <= at + REFUSAL_CAP_S and (sid, c[7]) not in denied]
         turn = next((t[3] for t in turns[sid] if t[1] <= at < t[3]), None)
-        ends = [x for x in (c[1] if c else None, turn) if x is not None]
+        ends = [x for x in (min(following) if following else None, turn) if x is not None]
         if not sid or not ends:
             if lo <= at < hi:
                 missing[gate] += 1
@@ -380,20 +321,21 @@ def refusal_cost(lo, hi, events, rows=None):
             continue
         seen.add((sid, at))
         ends += [a for a in refused[sid] if a > at] + [at + REFUSAL_CAP_S]
-        span = clip([(at, min(ends))], lo, hi)
-        by[gate] += length(span)
-        spans[(c[6] if c else "t", sid)].extend(span)
+        by[gate] += clip([(at, min(ends))], lo, hi)
         measured += 1
-    return {"seconds": sum(by.values()), "by_gate_s": dict(by.most_common()), "measured": measured,
-            "count": sum(lo <= r["at"] < hi for r in rows),
-            "unmeasured_by_gate": dict(missing), "cap_s": REFUSAL_CAP_S,
-            "chat_s": sum(length(union(v)) for (kind, _), v in spans.items() if kind != "w"),
-            "worker_s": sum(length(union(v)) for (kind, _), v in spans.items() if kind == "w")}
+    spans = union(x for v in by.values() for x in v)
+    by_gate = sorted(((length(union(v)), gate) for gate, v in by.items()), key=lambda x: (-x[0], x[1]))
+    return {"seconds": length(spans), "spans": spans, "by_gate_s": {gate: secs for secs, gate in by_gate},
+            "measured": measured, "count": sum(lo <= r["at"] < hi for r in rows),
+            "unmeasured_by_gate": dict(missing), "cap_s": REFUSAL_CAP_S}
 
 
 def run_session(run):
-    text = night_spend.read(os.path.join(night_spend.RUNS, str(run), "session"))
-    return text.splitlines()[0][:8] if text else None
+    for name in ("session", "worker-session"):
+        text = run_file(run, name)
+        if text:
+            return text.splitlines()[0][:8]
+    return None
 
 
 def run_file(run, name):
@@ -461,173 +403,108 @@ def dead_runs(runs):
 # ---------------------------------------------------------------- the split
 
 
-def run_split(run, lo, hi, suites, calls, hooks, free=None):
-    """One worker run's wall inside [lo, hi): launch -> first CLI start is the slot queue, earlier attempts are
-    retries, or a walled run's usage-wall relaunches (weather, neither work nor retries); the last CLI's exit -> the
+def run_split(run, lo, hi, suites, calls):
+    """One worker run's spans inside [lo, hi) per class: launch -> first CLI start is the slot queue, earlier attempts
+    are retries, or a walled run's usage-wall relaunches (weather, neither work nor retries); the last CLI's exit -> the
     run's end is its wrap-up (file attribution, anchors, the result); the last attempt is split into the idle tail a
-    watchdog killed it after, its own suites (slot wait apart), tool calls, hooks inside them, and the rest, which is
-    model time, or is dead whole for a run `dead_runs` marked. A review round splits like any run; a bench worker
-    (the owner's benchmark, sleeping on its own jobs) is its own class whole. `started_at` is restamped by the slot
-    wait, so the run starts at its pid. With `free` spans, `<class>_free` carries each wait class's seconds inside
-    them."""
+    watchdog killed it after, its own suites (slot wait apart), its tool calls and the rest, which is model time, or is
+    dead whole for a run `dead_runs` marked; a run with no session file names no calls, so its rest is `other`. A bench
+    worker (the owner's benchmark) is its own class whole. `started_at` is restamped by the slot wait, so the run starts
+    at its pid."""
     start = num(run.get("pid_started_at")) or num(run.get("started_at"))
     end = num(run.get("ended_at"))
-    out = collections.Counter()
+    out = collections.defaultdict(list)
     if start is None or end is None or end <= start:
         return out
     clis = [num(c) for c in run.get("cli_starts") or () if num(c)] or [num(run.get("started_at")) or start]
     first, last = max(start, min(clis[0], end)), max(start, min(clis[-1], end))
     if BENCH_WORKDIR.search(str(run.get("workdir") or "")):
-        out["bench"] = length(clip([(start, end)], lo, hi))
+        out["bench"] = clip([(start, end)], lo, hi)
         return out
-    slot = clip([(start, first)], lo, hi)
-    out["slot"] = length(slot)
-    out["walled" if run.get("walled") else "retries"] = length(clip([(first, last)], lo, hi))
+    out["slot"] = clip([(start, first)], lo, hi)
+    out["walled" if run.get("walled") else "retries"] = clip([(first, last)], lo, hi)
     secs = run.get("attempt_secs") or ()
     exited = min(end, max(last, last + num(secs[-1]))) if len(secs) == len(clis) and num(secs[-1]) else end
-    out["wrapup"] = length(clip([(exited, end)], lo, hi))
+    out["wrapup"] = clip([(exited, end)], lo, hi)
     work = clip([(last, exited)], lo, hi)
-    if free is not None:
-        out["slot_free"] = length(minus(slot, minus(slot, free)))
     if run.get("dead"):
-        out["dead"] = length(work)
+        out["dead"] = work
         return out
     kill = (run_file(run.get("run"), "killed") or "").split() if run.get("reason") in WATCHDOG_KILLS else []
     if kill and kill[0] in WATCHDOG_KILLS:
         idle = float(kill[1]) if kill[0] == "idle" and kill[1:2] and kill[1].isdigit() else None
         if kill[0] == "silent" or idle:
-            hung = clip([(last if kill[0] == "silent" else exited - idle, exited)], lo, hi)
-            out["hung"] = length(hung)
-            work = minus(work, hung)
+            out["hung"] = clip([(last if kill[0] == "silent" else exited - idle, exited)], lo, hi)
+            work = minus(work, out["hung"])
     mine = [s for s in suites if s.get("worker_run") == run.get("run")]
     ran = union((max(s["started_at"], s["queued_at"]), s["ended_at"]) for s in mine if num(s.get("started_at")))
     queued = minus([(s["queued_at"], num(s.get("started_at")) or s["ended_at"]) for s in mine], ran)
-    waited = [x for w in work for x in clip(queued, *w)]
-    out["suite_run"] = length([x for w in work for x in clip(ran, *w)])
-    out["suite_wait"] = length(waited)
-    if free is not None:
-        out["suite_wait_free"] = length(minus(waited, minus(waited, free)))
+    out["suite_run"] = [x for w in work for x in clip(ran, *w)]
+    out["suite_wait"] = [x for w in work for x in clip(queued, *w)]
     rest = minus(work, ran + queued)
     session = run_session(run.get("run"))
     if session is None:
-        out["other"] = length(rest)
+        out["other"] = rest
         return out
-    own = [c for c in calls if c[8] == session]
-    tools = [x for w in rest for x in clip([(c[1], c[1] + c[5]) for c in own], *w)]
-    tids = {c[7] for c in own if any(clip([(c[1], c[1] + c[5])], *w) for w in rest)}
-    hook_s = min(length(tools), sum(h[5] for h in hooks if h[7] in tids and h[7]) / 1000.0)
-    out["hooks"] = hook_s
-    out["tools"] = length(tools) - hook_s
-    out["model"] = length(rest) - length(tools)
-    return out
-
-
-def turn_split(row, lo, hi):
-    out = collections.Counter()
-    start, end = row[1], row[3]
-    if end <= start:
-        return out
-    share = max(0.0, min(end, hi) - max(start, lo)) / (end - start)
-    for key, secs in (row[9] or {}).items():
-        if key not in TURN_AWAY:
-            out[TURN_PART.get(key, "other")] += secs * share
+    out["tools"] = [x for w in rest for x in clip([(c[1], c[1] + c[5]) for c in calls if c[8] == session], *w)]
+    out["model"] = minus(rest, out["tools"])
     return out
 
 
 def budget(lo, hi, events=None):
-    """Seconds per class over [lo, hi) for owner chats (Harness turn rows) and worker runs (worker-stats runs). A
-    lock or poll wait comes out of tool time only when a chat or worker paid it (its row names a `caller`)."""
+    """Overhead over [lo, hi) as wall-clock seconds: each class is the union of its spans, so parallel runs count once.
+    Suites come from run-suites' journal for every caller, hooks from Harness's hook rows and a turn's Stop seconds
+    at its end, refusals from `refusal_cost`, locks and polls from the waits a chat or worker paid, and the rest from
+    each worker run's split. A turn's compaction and unexplained seconds have no position, so they add to the union.
+    `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither."""
     events = events if events is not None else event_rows(lo, hi)
-    runs, jobs = worker_runs(lo, hi), []
+    runs = worker_runs(lo, hi)
     suites = suite_rows(min([lo] + [num(r.get("pid_started_at")) or num(r.get("started_at")) or lo for r in runs]),
                         hi + 86400)
-    calls = [c for c in events.get("c", ()) if c[6] == "w"]
-    chats, workers = collections.Counter(), collections.Counter()
-    for row in events.get("t", ()):
-        if row[3] > lo and row[1] < hi:
-            chats += turn_split(row, lo, hi)
-    free, freed, dead, review = free_spans(lo, hi), collections.Counter(), dead_runs(runs), 0.0
-    asked = union((s["queued_at"], num(s.get("started_at")) or s["ended_at"]) for s in suites
-                  if s.get("session") and not s.get("worker_run"))
-    asked = minus(clip(asked, lo, hi), minus(clip(asked, lo, hi), free))
-    freed["suite_wait_chat"] = float(length(asked))
+    spans, unplaced, active, dead = collections.defaultdict(list), collections.Counter(), [], dead_runs(runs)
     for run in runs:
-        split = run_split(dict(run, dead=run.get("run") in dead), lo, hi, suites, calls, events.get("h", ()), free)
-        for key in FREE_CLASSES:
-            freed[key] += split.pop(key + "_free", 0.0)
-        workers += split
-        review += sum(split.values()) if run.get("round") else 0.0
-        own = run_split(run, float("-inf"), float("inf"), suites, (), ())
-        start = num(run.get("pid_started_at")) or num(run.get("started_at"))
-        jobs.append([start, start + own["slot"], run["ended_at"], own["suite_run"] + own["suite_wait"]])
-    ids = {r.get("run") for r in runs}
-    paid = [(min(r["seconds"], max(0.0, hi - r["started"])), r["caller"] in ids) for r in wait_rows(lo, hi)
-            if r.get("class") in WAIT_CLASSES and r.get("caller")]
-    recovery = refusal_cost(lo, hi, events)
-    for split, key in ((chats, "chat_s"), (workers, "worker_s")):
-        split["refusal"] = min(split["model"], recovery[key])
-        split["model"] -= split["refusal"]
-    total = chats + workers
-    total["locks"] = min(sum(s for s, _ in paid), total["tools"])
-    total["tools"] -= total["locks"]
-    workers["locks"] = min(sum(s for s, worker in paid if worker), workers["tools"], total["locks"])
-    workers["tools"] -= workers["locks"]
-    hooks_by, by_hook = collections.Counter(), collections.Counter()
+        split = run_split(dict(run, dead=run.get("run") in dead), lo, hi, suites, ())
+        if "bench" not in split:
+            active += [x for v in split.values() for x in v]
+            for key in ("slot", "retries", "walled", "wrapup", "dead", "hung", "other"):
+                spans[key] += split.get(key, ())
+    for t in events.get("t", ()):
+        if t[3] > lo and t[1] < hi and t[3] > t[1]:
+            parts, share = t[9] or {}, (min(t[3], hi) - max(t[1], lo)) / (t[3] - t[1])
+            active.append((t[1], t[3]))
+            spans["stop"].append((t[3] - parts.get("stop", 0), t[3]))
+            unplaced["compaction"] += parts.get("compact", 0) * share
+            unplaced["other"] += parts.get("resid", 0) * share
+    for r in suites:
+        started = num(r.get("started_at"))
+        active.append((r["queued_at"], r["ended_at"]))
+        spans["suite_wait"].append((r["queued_at"], started or r["ended_at"]))
+        if started:
+            spans["suite_run"].append((max(started, r["queued_at"]), r["ended_at"]))
+    by_hook = collections.defaultdict(list)
     for h in events.get("h", ()):
-        if lo <= h[1] < hi:
-            hooks_by[h[3] + (":" + h[6] if h[6] else "")] += h[5] / 1000.0
-            by_hook["%s/%s" % ("stop" if h[3] == "Stop" else "hooks", hook_key(str(h[4])))] += h[5] / 1000.0
-    return {"lo": lo, "hi": hi, "seconds": {k: round(total[k], 1) for k, _, _ in CLASSES},
-            "chat_s": round(sum(chats.values()), 1), "worker_s": round(sum(workers.values()), 1),
-            "worker": {k: round(v, 1) for k, v in workers.items() if v}, "runs": len(runs), "jobs": jobs,
-            "free_s": {k: round(v, 1) for k, v in freed.items()}, "dead_runs": sorted(dead), "review_s": round(review, 1),
-            "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)},
-            "hooks_by_hook": {k: round(v, 1) for k, v in by_hook.most_common(20)}, "refusals": recovery["count"], "refusal_cost": recovery}
+        family = "stop" if h[3] == "Stop" else "hooks"
+        spans[family].append((h[1], h[1] + h[5] / 1000.0))
+        by_hook["%s/%s" % (family, hook_key(str(h[4])))].append((h[1], h[1] + h[5] / 1000.0))
+    spans["locks"] = [(w["started"], w["started"] + w["seconds"]) for w in wait_rows(lo, hi)
+                      if w.get("class") in WAIT_CLASSES and w.get("caller")]
+    recovery = refusal_cost(lo, hi, events)
+    spans["refusal"] = recovery.pop("spans")
+    spans = {k: clip(v, lo, hi) for k, v in spans.items()}
+
+    def seconds(keys):
+        return round(length(union(x for k in keys for x in spans.get(k, ()))) + sum(unplaced[k] for k in keys), 1)
+
+    hooks = sorted(((length(clip(v, lo, hi)), k) for k, v in by_hook.items()), key=lambda x: (-x[0], x[1]))
+    return {"lo": lo, "hi": hi, "version": BUDGET_VERSION, "seconds": {k: seconds((k,)) for k in LABEL},
+            "overhead_s": seconds(LABEL), "active_s": round(length(clip(active, lo, hi)), 1),
+            "rows": {row: seconds([k for part in parts for k in part[1:]]) for row, parts in ROWS},
+            "parts": {part[0]: seconds(part[1:]) for _, parts in ROWS for part in parts},
+            "hooks_by_hook": {k: round(v, 1) for v, k in hooks[:20] if v}, "runs": len(runs),
+            "dead_runs": sorted(dead), "refusals": recovery["count"], "refusal_cost": recovery}
 
 
-def shares(b):
-    total = sum(b["seconds"].values())
-    harness = sum(v for k, v in b["seconds"].items() if KIND[k] == "harness")
-    return total, harness, (harness / total if total else 0.0)
-
-
-# ---------------------------------------------------------------- levers
-
-
-def levers(events, lo, hi):
-    """Where plain Claude Code itself could go faster, measured where the journals hold the data."""
-    cw = cr = 0
-    for row in events.get("t", ()):
-        if lo <= row[1] < hi:
-            for use in (row[10] or {}).values():
-                cw, cr = cw + use[3], cr + use[4]
-    by_session = collections.defaultdict(list)
-    for c in events.get("c", ()):
-        if lo <= c[1] < hi:
-            by_session[c[8]].append((c[1], c[1] + c[5]))
-    calls = overlapped = 0
-    for spans in by_session.values():
-        spans.sort()
-        reach = float("-inf")
-        for i, (a, b) in enumerate(spans):
-            calls += 1
-            if a < reach or (i + 1 < len(spans) and spans[i + 1][0] < b):
-                overlapped += 1
-            reach = max(reach, b)
-    starts = [s for s in event_rows(lo, hi, ("s",)).get("s", ()) if lo <= s[1] < hi]
-    out = [{"lever": "prompt-cache hits", "measured": bool(cw + cr),
-            "value": "%d %% of cached input read from cache" % round(100.0 * cr / (cw + cr)) if cw + cr else None},
-           {"lever": "parallel tool calls", "measured": bool(calls),
-            "value": "%d %% of %d tool calls ran beside another" % (round(100.0 * overlapped / calls), calls) if calls else None},
-           {"lever": "fewer process starts", "measured": bool(starts),
-            "value": "%d CLI starts, %.1f min launching" % (len(starts), sum(num(s[4]) or 0 for s in starts) / 60.0)
-            if starts else None},
-           {"lever": "smaller context per turn", "measured": False, "value": None},
-           {"lever": "fewer hook processes per tool call", "measured": False, "value": None}]
-    return out
-
-
-# ---------------------------------------------------------------- days, bands, holes
+# ---------------------------------------------------------------- days
 
 
 def day_cache_path(day):
@@ -635,13 +512,13 @@ def day_cache_path(day):
 
 
 def day_budget(day, now, store):
-    """A day's budget, stored once the day ended a day ago: worker rows land when the run ends."""
+    """A day's budget, stored once the day ended a day ago (worker rows land when the run ends) and recomputed when
+    its BUDGET_VERSION is older."""
     lo, hi = day_bounds(day)
     cached = read_json(day_cache_path(day), None)
-    if isinstance(cached, dict) and cached.get("settled"):
+    if isinstance(cached, dict) and cached.get("settled") and cached.get("version") == BUDGET_VERSION:
         return cached
     found = budget(lo, min(hi, now))
-    found.pop("jobs")
     found["settled"] = now >= hi + SETTLE_S
     if found["settled"] and store:
         write_json(day_cache_path(day), found)
@@ -649,8 +526,8 @@ def day_budget(day, now, store):
 
 
 def measured(b):
-    """Days before measurement started are stored as zeros: no recorded time is no measurement, never a zero day."""
-    return sum(b["seconds"].values()) > 0
+    """No recorded time is no measurement, never a zero day."""
+    return (b.get("active_s") or 0) > 0
 
 
 def prune_days(now):
@@ -663,192 +540,28 @@ def prune_days(now):
                 pass
 
 
-def usual(now, store):
-    """Median seconds per class over the BAND_DAYS closed days before today that hold any time."""
-    days, day = [], local_day(now)
-    for back in range(1, BAND_DAYS + 1):
-        b = day_budget(local_day(day_bounds(day)[0] - back * 86400 + 3600), now, store)
+def history(now, store, today):
+    """{day: overhead minutes} of the HISTORY_DAYS days before today, each its whole day's value, and today's latest."""
+    out, day = {}, local_day(now)
+    for back in range(HISTORY_DAYS, 0, -1):
+        prior = local_day(day_bounds(day)[0] - back * 86400 + 3600)
+        b = day_budget(prior, now, store)
         if measured(b):
-            days.append(b)
-    med = {k: statistics.median([d["seconds"].get(k, 0) for d in days]) for k, _, _ in CLASSES} if days else {}
-    return med, len(days)
-
-
-def holes(b, med):
-    """Named rows: workers under ACTIVE_FLOOR model time, and any class past BAND_RATIO x its usual day."""
-    out = []
-    recovery = b.get("refusal_cost") or {}
-    if recovery.get("unmeasured_by_gate"):
-        out.append("gate refusal recovery unmeasured (missing session or next accepted call): " +
-                   ", ".join("%s: %d" % item for item in sorted(recovery["unmeasured_by_gate"].items())))
-    w = b["worker"]
-    wall = worker_wall(w)
-    if wall >= BAND_MIN_S and w.get("model", 0) < ACTIVE_FLOOR * wall:
-        out.append("workers worked %d %% of their time; %d %% went to the slot queue"
-                   % (pct(w.get("model", 0), wall), pct(w.get("slot", 0), wall)))
-    for key, label, kind in CLASSES:
-        value, normal = b["seconds"].get(key, 0), med.get(key)
-        if kind != "plain" and normal is not None and value >= BAND_MIN_S + normal and value > BAND_RATIO * normal:
-            out.append("%s: %s, usually %s" % (label, minutes(value), minutes(normal)))
+            out[prior] = round(b["overhead_s"] / 60.0, 1)
+    if today is not None:
+        out[day] = today
     return out
-
-
-def worker_wall(worker):
-    return sum(v for k, v in worker.items() if k not in ("bench", "walled"))
-
-
-def suite_secs(r):
-    repo = os.path.basename(str(r.get("repo_root") or r.get("repo") or "").rstrip("/"))
-    return [((repo, name), s["secs"]) for name, s in (r.get("suites") or {}).items()
-            if isinstance(s, dict) and num(s.get("secs"))]
-
-
-def suite_blobs(rows):
-    """{(repo_root, head, suite): the suite file's blob at that head, None when git has none}, one cat-file per
-    repository."""
-    want, out = collections.defaultdict(set), {}
-    for r in rows:
-        if r.get("head") and r.get("repo_root"):
-            want[r["repo_root"]].update((r["head"], name) for name in r.get("suites") or ())
-    for root, specs in want.items():
-        specs = sorted(specs)
-        try:
-            found = subprocess.run(["git", "-C", root, "cat-file", "--batch-check=%(objectname)"], capture_output=True,
-                                   input="".join("%s:tests/%s\n" % s for s in specs), text=True, timeout=60)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        for (head, name), line in zip(specs, found.stdout.splitlines()):
-            out[(root, head, name)] = None if line.endswith(" missing") else line
-    return out
-
-
-def suite_floor(lo, hi, free=None):
-    """{"chat"|"worker": the share of that caller's suite seconds in [lo, hi) left with every suite at its p10 wall
-    over suite_audit's window, the cost a covering suite keeps on a quiet machine; its passing runs only, as a failed
-    one may stop at its first check}. The p10 is per blob of the suite file, as a suite gaining checks within the
-    window is slower at its own floor; only a run's part on a free machine (`free_spans`) is over its floor, as load
-    from parallel runs is the price of their throughput, judged by the slot replay and the night's makespan."""
-    window = suite_rows(hi - suite_audit.WINDOW_D * 86400, hi)
-    blobs = suite_blobs(window)
-    walls, secs, floor = collections.defaultdict(list), collections.Counter(), collections.Counter()
-    for r in window:
-        for key, s in suite_secs(r):
-            if r["suites"][key[1]].get("rc") == 0:
-                walls[key + (blobs.get((r.get("repo_root"), r.get("head"), key[1])),)].append(s)
-    p10 = {k: sorted(v)[len(v) // 10] for k, v in walls.items()}
-    free = free_spans(lo, hi) if free is None else free
-    for r in suite_rows(lo, hi):
-        who = "worker" if r.get("worker_run") else "chat" if r.get("session") else None
-        ran = clip([(num(r.get("started_at")) or r["queued_at"], r["ended_at"])], lo, hi)
-        quiet = length(minus(ran, minus(ran, free))) / length(ran) if length(ran) else 0.0
-        for key, s in suite_secs(r) if who else ():
-            secs[who] += s
-            floor[who] += s - (s - min(s, p10.get(key + (blobs.get((r.get("repo_root"), r.get("head"), key[1])),), s))) * quiet
-    return {who: floor[who] / secs[who] for who in secs}
-
-
-def burst_gain(burst):
-    """Seconds sooner a burst of worker runs [start, first CLI start, end, own suite s] ends when a slot is held only
-    outside the run's own suites: FIFO replays at the burst's peak concurrency, held against lent."""
-    edges = sorted([(j[1], 1) for j in burst] + [(j[2], -1) for j in burst])
-    slots = max(1, max(itertools.accumulate(d for _, d in edges)))
-    ends = []
-    for lent in (False, True):
-        free, last = [float("-inf")] * slots, float("-inf")
-        for start, first, end, suites in burst:
-            at = max(start, heapq.heappop(free))
-            heapq.heappush(free, at + end - first - (suites if lent else 0.0))
-            last = max(last, at + end - first)
-        ends.append(last)
-    return max(0.0, ends[0] - ends[1])
-
-
-def slot_gain(jobs):
-    gain, burst = 0.0, []
-    for job in sorted(jobs):
-        if burst and job[0] >= max(j[2] for j in burst):
-            gain, burst = gain + burst_gain(burst), []
-        burst.append(job)
-    return gain + (burst_gain(burst) if burst else 0.0)
-
-
-def recoverable(b, lo, hi):
-    """{class: (chat s, worker s)} over the class's floor: plain Claude Code has none of a harness class, suites keep
-    their uncontended p10 wall, and a queue counts only its part on a free machine (`free_spans`), the slot queue no
-    more than the wall-clock lending slots during suites moves."""
-    w, free = b["worker"], b.get("free_s") or {}
-    out = {k: (max(0.0, b["seconds"].get(k, 0) - w.get(k, 0)), w.get(k, 0)) for k in FLOORS}
-    share = suite_floor(lo, hi)
-    chat, worker = out["suite_run"]
-    out["suite_run"] = (chat * (1 - share.get("chat", 1.0)), worker * (1 - share.get("worker", 1.0)))
-    out["suite_wait"] = (min(out["suite_wait"][0], free.get("suite_wait_chat", 0.0)),
-                         min(w.get("suite_wait", 0), free.get("suite_wait", 0.0)))
-    out["slot"] = (0.0, min(w.get("slot", 0), slot_gain(b["jobs"]), free.get("slot", 0.0)))
-    return out
-
-
-def worker_floor(worker, rec, days):
-    """Workers' model share of their wall (bench aside) against the share left once every part is at its floor; the
-    parent's recoverable is the sum of its parts."""
-    wall, model = worker_wall(worker), worker.get("model", 0)
-    over = sum(w for _, w in rec.values())
-    return {"share": round(model / wall, 3) if wall else None, "floor_share": floor_share(worker, over),
-            "recoverable_min_day": round(over / 60.0 / days, 1),
-            "parts": {k: round(w / 60.0 / days, 1) for k, (_, w) in rec.items() if w}}
-
-
-def floor_share(worker, over):
-    wall = worker_wall(worker)
-    return round(worker.get("model", 0) / (wall - over), 3) if wall > over else None
-
-
-def floors_of(b, rec, days):
-    return [{"class": k, "label": LABEL[k], "floor_min_day": FLOORS[k],
-             "actual_min_day": round(b["seconds"].get(k, 0) / 60.0 / days, 1),
-             "recoverable_min_day": round(sum(rec[k]) / 60.0 / days, 1),
-             "chat_min_day": round(rec[k][0] / 60.0 / days, 1), "worker_min_day": round(rec[k][1] / 60.0 / days, 1)}
-            for k in FLOORS]
-
-
-def last_night():
-    """The newest finished night's worker wall against its model time and its own floor share, from its cached ledger
-    row when there is one. The cache keeps seconds over floors, never a share: a floor derived from a fresh split
-    judged against the cached split compares two measurements."""
-    nights = [read_json(p, {}) for p in glob.glob(os.path.join(night_churn.doctors_dir(), "nights", "*.json"))]
-    nights = sorted((n for n in nights if n.get("finished_at") and n.get("started_at") and n.get("id")),
-                    key=lambda n: (n["started_at"], n["id"]))
-    if not nights:
-        return None
-    night = nights[-1]
-    row = read_json(ledger_cache(night["id"]), None)
-    cached = isinstance(row, dict) and row.get("finished") and "split_s" in row
-    if cached and "over_s" in row:
-        split, over = row["split_s"], row["over_s"]
-    else:
-        split, over = night_split(night, parts=True)[1:]
-        if cached:
-            write_json(ledger_cache(night["id"]), dict({k: v for k, v in row.items() if k != "floor_share"},
-                                                       over_s=round(over)))
-            split = row["split_s"]
-    wall, model = worker_wall(split), split.get("model", 0)
-    return {"id": night["id"], "wall_s": round(wall), "model_s": round(model),
-            "share": round(model / wall, 3) if wall else None, "floor_share": floor_share(split, over)}
 
 
 def pct(part, whole):
     return round(100.0 * part / whole) if whole else 0
 
 
-def minutes(secs, worker=False):
-    m, (hour, minute) = secs / 60.0, ("w-h", "w-min") if worker else ("h", "min")
-    return "%.1f %s" % (m / 60.0, hour) if m >= 120 else "%d %s" % (round(m), minute)
-
-
 # ---------------------------------------------------------------- the day document
 
 
 def problem_trend(now):
-    rows = collector_runs.problem_days(local_day(now - (BAND_DAYS - 1) * 86400))
+    rows = collector_runs.problem_days(local_day(now - (TREND_DAYS - 1) * 86400))
     out = collections.defaultdict(dict)
     for r in rows:
         out[r["doctor"]][r["day"]] = r["count"]
@@ -857,70 +570,35 @@ def problem_trend(now):
 
 def document(now, hours=24.0, write=True):
     lo = now - hours * 3600
-    events = event_rows(lo, now)
-    b = budget(lo, now, events)
-    med, covered = usual(now, write)
-    med = {k: v * hours / 24.0 for k, v in med.items()}
+    b = budget(lo, now)
+    scale = lambda secs, digits=1: round(secs / 60.0 * 24.0 / hours, digits)
+    gates = list(b["refusal_cost"]["by_gate_s"].items())
+    rows = [[scale(b["overhead_s"]), "overhead", []]]
+    for row, parts in ROWS:
+        sub = []
+        for part in parts if len(parts) > 1 else ():
+            sub.append([scale(b["parts"][part[0]]), part[0]])
+            if part[1] == "refusal":
+                sub += [[scale(s), "  " + gate] for gate, s in gates[:5] if scale(s) >= 1]
+        hooks = [[scale(s), key.split("/", 1)[1]] for key, s in list(b["hooks_by_hook"].items())[:5] if scale(s) >= 1]
+        if row == "harness rules" and hooks:
+            sub += ["-"] + hooks
+        rows.append([scale(b["rows"][row]), row, sub])
+    rows.append([scale(b["active_s"]), "system active", []])
+    doc = {"window_h": hours, "as_of_s": int(now), "lost_min_day": scale(b["overhead_s"]) if measured(b) else None,
+           "rows": rows, "classes_min_day": {k: scale(v) for k, v in b["seconds"].items()},
+           "hooks_by_hook_min_day": {k: scale(v, 2) for k, v in b["hooks_by_hook"].items()},
+           "worker_runs": b["runs"], "dead_runs": b["dead_runs"], "refusals": b["refusals"],
+           "refusal_cost": dict(b["refusal_cost"], min_day=scale(b["refusal_cost"]["seconds"], 2),
+                                by_gate_min_day={k: scale(v, 2) for k, v in gates}),
+           "problems_by_day": problem_trend(now)}
+    doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])
     if write:
         prune_days(now)
-    total, harness, share = shares(b)
-    rows = [{"class": k, "label": label, "kind": kind, "min": round(b["seconds"][k] / 60.0, 1),
-             "share": round(b["seconds"][k] / total, 3) if total else 0.0,
-             "usual_min": round(med[k] / 60.0, 1) if k in med else None} for k, label, kind in CLASSES]
-    doc = {"window_h": hours, "as_of_s": int(now), "total_min": round(total / 60.0, 1),
-           "chat_min": round(b["chat_s"] / 60.0, 1), "worker_min": round(worker_wall(b["worker"]) / 60.0, 1),
-           "bench_min": round(b["worker"].get("bench", 0) / 60.0, 1),
-           "harness_min": round(harness / 60.0, 1), "harness_share": round(share, 3), "classes": rows,
-           "hooks_by_min": {k: round(v / 60.0, 1) for k, v in b["hooks_by"].items()}, "refusals": b["refusals"],
-           "hooks_by_hook_min_day": {k: round(v / 60.0 / (hours / 24), 2) for k, v in b["hooks_by_hook"].items()},
-           "worker_runs": b["runs"], "band_days": covered, "holes": holes(b, med),
-           "levers": levers(events, lo, now), "problems_by_day": problem_trend(now)}
-    recovery = b["refusal_cost"]
-    doc["refusal_cost"] = dict(recovery, min_day=round(recovery["seconds"] / 60 / (hours / 24), 2),
-                               by_gate_min_day={k: round(v / 60 / (hours / 24), 2)
-                                                for k, v in recovery["by_gate_s"].items()})
-    days, rec = hours / 24.0, recoverable(b, lo, now) if measured(b) else {}
-    doc["floors"] = floors_of(b, rec, days) if rec else []
-    doc["lost_min_day"] = round(sum(sum(v) for v in rec.values()) / 60.0 / days, 1) if rec else None
-    doc["workers_active"] = worker_floor(b["worker"], rec, days)
-    doc["free_min_day"] = {k: round(v / 60.0 / days, 1) for k, v in b["free_s"].items()}
-    doc["review_min"] = round(b["review_s"] / 60.0, 1)
-    doc["dead_runs"] = b["dead_runs"]
-    doc["last_night"] = last_night()
-    doc["lines"] = plain_lines(doc)
+    doc["lines"] = ["%d min/day %s" % (round(v), label) + "".join(
+        " · %s %d" % (part[0], round(scale(b["parts"][part[0]]))) for part in dict(ROWS).get(label, ()) if label != part[0])
+        for v, label, _ in rows] if doc["lost_min_day"] is not None else ["Lost time: nothing measured in the last %d h" % hours]
     return doc
-
-
-def plain_lines(doc):
-    """The compact block in plain words the menu can show; its first line is the headline."""
-    if not doc["total_min"]:
-        return ["Harness time: nothing measured in the last %d h" % doc["window_h"]]
-    top = sorted((r for r in doc["classes"] if r["kind"] == "harness" and r["min"] >= 1), key=lambda r: -r["min"])[:4]
-    lines = ["Without the harness ≈ %d %% faster: %s of %s in %d h" % (
-        round(100 * doc["harness_share"]), minutes(doc["harness_min"] * 60), minutes(doc["total_min"] * 60),
-        doc["window_h"]),
-        "Chats %s · workers %s" % (minutes(doc["chat_min"] * 60), minutes(doc["worker_min"] * 60, True))
-        + (" (reviews %s)" % minutes(doc["review_min"] * 60, True) if doc.get("review_min") else "")
-        + (" · bench %s" % minutes(doc["bench_min"] * 60, True) if doc["bench_min"] else "")]
-    gaps = sorted((f for f in doc["floors"] if f["chat_min_day"] >= 1), key=lambda f: -f["chat_min_day"])
-    lines.append("Over the floor: chats %s/day" % minutes(sum(f["chat_min_day"] for f in doc["floors"]) * 60)
-                 + "".join(" · %s %s" % (f["label"], minutes(f["chat_min_day"] * 60)) for f in gaps[:3]))
-    active = doc["workers_active"]
-    if active["share"] is not None:
-        parts = sorted(((v, LABEL[k]) for k, v in active["parts"].items() if v >= 1), reverse=True)
-        lines.append("Workers active %d %% of their wall (floor %s) · over it %s/day" % (
-            round(100 * active["share"]), "–" if active["floor_share"] is None else "%d %%" % round(
-                100 * active["floor_share"]), minutes(active["recoverable_min_day"] * 60, True))
-            + "".join(" · %s %s" % (label, minutes(v * 60, True)) for v, label in parts[:3]))
-    if top:
-        lines.append("Harness: " + " · ".join("%s %s%s" % (r["label"], minutes(r["min"] * 60), "" if r["usual_min"] is None
-                                                             else " (usually %s)" % minutes(r["usual_min"] * 60))
-                                             for r in top))
-    plain = [r for r in doc["classes"] if r["kind"] == "plain" and r["min"] >= 1]
-    if plain:
-        lines.append("Claude Code itself: " + " · ".join("%s %s" % (r["label"], minutes(r["min"] * 60)) for r in plain))
-    lines += ["Hole: " + h for h in doc["holes"]]
-    return lines
 
 
 def section(now, write=True):
@@ -946,46 +624,29 @@ def write_block(doc):
 
 def print_day(doc):
     print("\n".join(doc["lines"]))
-    print("classes · " + " · ".join("%s %s (%d %%)" % (r["label"], minutes(r["min"] * 60), round(100 * r["share"]))
-                                     for r in doc["classes"] if r["min"]))
-    if doc["hooks_by_min"]:
-        print("hooks by event · " + " · ".join("%s %s" % (k, minutes(v * 60)) for k, v in doc["hooks_by_min"].items()))
     print("gates · %d refusals · %.2f min/day measured recovery" % (doc["refusals"], doc["refusal_cost"]["min_day"]))
-    for lever in doc["levers"]:
-        print("lever · %s · %s" % (lever["lever"], lever["value"] if lever["measured"] else "idea, not measured"))
     for doctor, days in doc["problems_by_day"].items():
         print("problems · %s · %s" % (doctor, " ".join("%s:%s" % (d[5:], n) for d, n in days.items())))
+    print("days · " + " ".join("%s:%s" % (d[5:], v) for d, v in doc["lost_min_day_by_day"].items()))
 
 
 # ---------------------------------------------------------------- nights
 
 
-def night_split(night, parts=False):
-    """Wall and its split over the worker runs the night's sessions launched (night_spend's selection); with parts,
-    also the seconds that night's own parts ran over their floors."""
+def night_split(night):
+    """Wall and its split over the worker runs the night's sessions launched (night_spend's selection)."""
     low, high, sessions = night_spend.window(night)
     runs = []
     for run, _, meta, _ in night_spend.night_runs(low, high, sessions):
         runs.append(dict(meta, run=run, round=meta.get("review_round"), walled=meta.get("walled_accounts")))
     hi = max([num(r.get("ended_at")) or 0 for r in runs] + [high])
-    events = event_rows(low, hi, ("c", "h"))
+    calls = [c for c in event_rows(low, hi, ("c",)).get("c", ()) if c[6] == "w"]
     suites = suite_rows(low, hi + 86400)
-    calls = [c for c in events.get("c", ()) if c[6] == "w"]
-    free = free_spans(low, hi) if parts else None
-    split, freed, jobs = collections.Counter(), collections.Counter(), []
+    split = collections.Counter()
     for run in runs:
-        one = run_split(run, low, hi, suites, calls, events.get("h", ()), free)
-        for key in FREE_CLASSES:
-            freed[key] += one.pop(key + "_free", 0.0)
-        split += one
-        start, end = num(run.get("pid_started_at")) or num(run.get("started_at")), num(run.get("ended_at"))
-        if parts and start is not None and end is not None:
-            own = run_split(run, float("-inf"), float("inf"), suites, (), ())
-            jobs.append([start, start + own["slot"], end, own["suite_run"] + own["suite_wait"]])
-    if not parts:
-        return len(runs), split
-    rec = recoverable({"worker": split, "seconds": split, "free_s": freed, "jobs": jobs}, low, hi)
-    return len(runs), split, sum(w for _, w in rec.values())
+        for key, spans in run_split(run, low, hi, suites, calls).items():
+            split[key] += length(spans)
+    return len(runs), split
 
 
 def lines_of(night):
@@ -1039,8 +700,6 @@ def expected_gain(problem):
     gain = num(problem.get("expected_min_day"))
     if gain is None:
         gain = num(fields.get("recoverable_min_day", fields.get("saving")))
-    if gain is None and problem.get("rule") == "time_floor" and problem.get("unit") == "min/day":
-        gain = num(problem.get("value"))
     return gain
 
 
@@ -1051,7 +710,7 @@ def improvement_class(rule, pid):
         return pid
     if rule == "time_floor" or ident.startswith("time/"):
         key = ident[5:] if ident.startswith("time/") else ident
-        return key if key in FLOORS else None
+        return key if key in LABEL else None
     if ident.startswith(("chat/hooks", "hooks/")):
         return "hooks"
     if ident.startswith(("stop/", "refusal/")):
@@ -1155,8 +814,7 @@ def class_min_day(day, key, now):
     b = day_budget(day, now, True)
     if not b.get("settled") or not measured(b):
         return None
-    seconds = b["seconds"].get(key, 0) if key else sum(v for k, v in b["seconds"].items() if KIND.get(k) == "harness")
-    return seconds / 60.0
+    return (b["seconds"].get(key, 0) if key else b["overhead_s"]) / 60.0
 
 
 def saved_min_day(item, landed, now):
@@ -1359,7 +1017,7 @@ def roi_lines(rows, now):
 
 def ledger_row(worker_run, path, night):
     low, high, _ = night_spend.window(night)
-    n_runs, split, over = night_split(night, parts=True)
+    n_runs, split = night_split(night)
     wall = sum(split.values())
     touched = night_churn.problem_counts(night, path)
     rewrite = night_churn.rewrite_counts(night)
@@ -1368,7 +1026,7 @@ def ledger_row(worker_run, path, night):
     spent = night_spend.spend(night, worker_run)
     return {"id": night.get("id"), "started": low, "ended": high, "hours": round((high - low) / 3600.0, 1),
             "finished": bool(night.get("finished_at")), "runs": n_runs, "wall_s": round(wall),
-            "split_s": {k: round(v) for k, v in split.items() if v}, "over_s": round(over),
+            "split_s": {k: round(v) for k, v in split.items() if v},
             "lines": lines_of(night),
             "rewrite": list(rewrite[:2]) if rewrite else None,
             "problems": [sum(v for v in (night.get("doctors_before") or {}).values() if isinstance(v, int)),
@@ -1470,7 +1128,7 @@ def nights_upto(path):
 
 
 def night_report(worker_run, path):
-    trend = [cached_row(worker_run, p) for _, p, _ in nights_upto(path)[-BAND_DAYS:]]
+    trend = [cached_row(worker_run, p) for _, p, _ in nights_upto(path)[-TREND_DAYS:]]
     if trend and trend[-1]:
         print("\n".join(ledger_lines(trend[-1])))
     for line in trend_lines(trend) + roi_lines(trend, now_s()):

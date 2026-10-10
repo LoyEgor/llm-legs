@@ -891,15 +891,15 @@ equiv = {"compared": "c", "data": "d", "result": "r"}
 lever = {"id": "lever", "title": "l", "match": {"rule": "opportunity", "ident": "chat/hooks"}, "status": "fixed",
          "fixes": [dict(fixed_row["fixes"][0], equivalence=equiv)]}
 floor_row = dict(lever, id="time_floor:locks", match={"rule": "time_floor", "ident": "locks"}, fixes=fixed_row["fixes"])
-measured = {"as_of_s": T + 86400, "budget": {"floors": [{"class": "locks"}]}, "problems": []}
+measured = {"as_of_s": T + 86400, "problems": []}
 speed_fact = lambda row, doc, now=T + 86400: [p["fact"].split(" · l")[0] for p in m.problems_from(
     [], {"rows": [row]}, {}, now, speed=doc)]
 check([speed_fact(lever, None), speed_fact(dict(lever, fixes=fixed_row["fixes"]), None), speed_fact(floor_row, measured),
-       speed_fact(floor_row, dict(measured, as_of_s=T)), speed_fact(floor_row, dict(measured, budget={})),
+       speed_fact(floor_row, dict(measured, as_of_s=T)),
        speed_fact(floor_row, dict(measured, problems=[{"id": "time_floor:locks", "ledger": "time_floor:locks"}]))]
       == [["fixed · output-equivalent by its replay"], ["unproven · no output-equivalence record on the fix"],
           ["fixed · back under its limit in Speed's last 24 h"],
-          ["unproven · Speed has not measured a whole 24 h since the fix"], ["unproven · Speed measures no locks"], []],
+          ["unproven · Speed has not measured a whole 24 h since the fix"], []],
       "a Speed rule's fix reads Speed's proof, never an event count, and no second row while Speed shows its own")
 back = {"judge": [m.verdict("floor", "bash:trivial", 400, 300, "ms", 1, 25, "red",
                             evidence=[m.evidence(T - 60, "tool_use x")])], "cells": ["x"]}

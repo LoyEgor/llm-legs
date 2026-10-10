@@ -149,7 +149,6 @@ TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "
                          "night_cost_h": 0.0, "proof": "orchestration", "quality": "equivalent"}, **v) for k, v in {
     "hooks": {"lever": "fast path for the slowest hooks", "proof": "latency", "hooks": True},
     "stop": {"lever": "Stop hooks off the turn's critical path", "proof": "latency", "hooks": True},
-    "suite_run": {"lever": "bring suite walls to their uncontended p10 and keep every check", "proof": "tests"},
     "suite_wait": {"lever": "a covering suite starts while the machine has room, never queued by the slot count alone"},
     "slot": {"lever": "a worker slot lent while its holder runs its own suites"},
     "retries": {"lever": "fewer failed attempts before a worker's last start"},
@@ -787,13 +786,6 @@ def target_opportunity(target, om, lever, exposure, protected=None, seen_days=WI
             "ledger": None, "group": lever["component"].split("/")[0], "opportunity": fields}
 
 
-def time_gaps(budget):
-    """(key, label, actual min/day, recoverable min/day, floor, its workers' part) per class in share/time_budget.py.
-    Workers active is their parent and never ranks beside them."""
-    return [(f["class"], f["label"], f["actual_min_day"], f["recoverable_min_day"], f["floor_min_day"],
-             f.get("worker_min_day", 0.0)) for f in budget.get("floors") or ()]
-
-
 def per_day(total, worker=0.0):
     """Chat minutes and worker-minutes, which add up across parallel workers, each with its own unit."""
     parts = ["%s min" % fmt(total - worker)] if total - worker >= 0.05 or not worker else []
@@ -820,22 +812,18 @@ def unit_rows(budget, taken):
 
 
 def with_time(opportunities, budget):
-    """A class over its floor, less what its gate and hook rows (unit_rows) already price, adds its gap to the
-    best-ranked opportunity already pricing it (the class time_budget.improvement_class scores its fix against), else
-    it becomes its own time opportunity. Recoverable minutes set the score, so the biggest gap is the one the night takes.
-    The suites-running gap is net of what test-health opportunities already recover: one minute is offered once."""
+    """Each time class's union minutes a day (share/time_budget.py), less what its gate and hook rows (unit_rows)
+    already price, add to the best-ranked opportunity already pricing it (the class time_budget.improvement_class
+    scores its fix against), else become its own time opportunity, so the biggest class is the one the night takes."""
     out = sorted(opportunities, key=rank_key)
-    offered = sum(o["opportunity"]["recoverable_min_day"] for o in out if o["id"].startswith(TEST_HEALTH_ID))
     units = unit_rows(budget, {o["id"] for o in out})
     named = collections.Counter()
     for o in units:
         named[time_budget.improvement_class(o["rule"], o["id"])] += o["opportunity"]["recoverable_min_day"]
     out += units
-    for key, label, actual, gap, floor, worker in time_gaps(budget):
-        for taken in (offered if key == "suite_run" else 0.0, named[key]):
-            if taken:
-                left = max(0.0, gap - taken)
-                gap, worker = round(left, 2), round(worker * left / gap, 2) if gap else 0.0
+    for key, lever in TIME_LEVERS.items():
+        actual = (budget.get("classes_min_day") or {}).get(key, 0.0)
+        gap = round(max(0.0, actual - named[key]), 2)
         if gap < LIMITS["worth_om_day"]:
             continue
         # chat/hooks prices the Stop leaf too (CHAT_LEAVES), though its fix is scored against hooks alone.
@@ -845,17 +833,13 @@ def with_time(opportunities, budget):
                       and time_budget.improvement_class(o["rule"], o["id"]) == family), None)
         if owner:
             f = owner["opportunity"]
-            f["floor_gap_min_day"] = round(f.get("floor_gap_min_day", 0.0) + gap, 2)
-            f["floor_worker_min_day"] = round(f.get("floor_worker_min_day", 0.0) + worker, 2)
-            if f["floor_gap_min_day"] > f["saving"]:
-                f["worker_min_day"] = f["floor_worker_min_day"]
-            f["recoverable_min_day"] = max(f["saving"], f["floor_gap_min_day"])
+            f["time_min_day"] = round(f.get("time_min_day", 0.0) + gap, 2)
+            f["recoverable_min_day"] = max(f["saving"], f["time_min_day"])
             f["score"] = score_of(f["recoverable_min_day"], f["confidence"], f["effort_h"], f["night_cost_h"])
             continue
-        fields = dict(opportunity_fields(gap, TIME_LEVERS[key]), floor=floor, actual_min_day=actual,
-                      worker_min_day=worker, floor_gap_min_day=gap, floor_worker_min_day=worker)
+        fields = dict(opportunity_fields(gap, lever), actual_min_day=actual, time_min_day=gap)
         out.append({"id": "opportunity:time/%s" % key, "rule": "opportunity", "state": "watch",
-                    "fact": "%s · %s over the floor · %s" % (label, per_day(gap, worker), fields["levers"][0]),
+                    "fact": "%s · %s · %s" % (time_budget.LABEL[key], per_day(gap), fields["levers"][0]),
                     "value": gap, "limit": LIMITS["worth_om_day"], "unit": "min/day", "window_h": 24, "exposure": None,
                     "count": None, "first_seen": None, "last_seen": None, "evidence": [], "ledger": None, "group": "time",
                     "opportunity": fields})
@@ -907,63 +891,6 @@ def test_regressions(tests, ledger, now):
                     "window_h": 24, "exposure": None, "count": None, "first_seen": None, "last_seen": None,
                     "evidence": [], "ledger": row["id"] if row else None, "group": "test-health", "component": key,
                     "expected_min_day": max(0.0, reg["min_day"]), "band": "usual", "ident": reg["key"]})
-    return out
-
-
-def full_runs(now, journal):
-    """Every-suite runs of the last day a chat or a worker started: the night's own run and Egor's terminal carry no
-    session. -> {"min_day", "chats": [(name, runs)]}"""
-    import chat_names
-    total, by = 0.0, {}
-    try:
-        with open(journal, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(r, dict) or r.get("kind") != "suites" or r.get("scope") not in ("full", "all"):
-                    continue
-                who, end, start = r.get("session") or r.get("worker_run"), time_budget.num(r.get("ended_at")), time_budget.num(r.get("started_at"))
-                if who and end is not None and start is not None and end >= now - 86400:
-                    total += (end - start) / 60
-                    by[who] = by.get(who, 0) + 1
-    except OSError:
-        pass
-    names, launchers = {}, chat_names.worker_run_launchers() if by else {}
-    for who, runs in by.items():
-        name = chat_names.chat_label(who, launchers=launchers)
-        names[name] = names.get(name, 0) + runs
-    return {"min_day": round(total, 1), "chats": sorted(names.items(), key=lambda kv: (-kv[1], kv[0]))}
-
-
-def floor_rows(budget, ledger, now, full=None):
-    """Named rows proven fixed only by the measurement returning under them: a class more than FLOOR_ROW_MIN_DAY
-    over its floor in the last day, every-suite runs outside the night more than FLOOR_ROW_MIN_DAY minutes over their
-    floor of none, and the last night's workers more than FLOOR_ROW_MIN_DAY minutes under the floor share that night's
-    own parts derive."""
-    found = [(key, gap, time_budget.FLOOR_ROW_MIN_DAY, "min/day", "%s %s over its floor of %s" % (
-        label, per_day(gap, worker), floor if isinstance(floor, str) else "%s min/day" % fmt(floor)))
-             for key, label, _, gap, floor, worker in time_gaps(budget) if gap > time_budget.FLOOR_ROW_MIN_DAY]
-    if full and full["min_day"] > time_budget.FLOOR_ROW_MIN_DAY:
-        found.append(("full-runs", full["min_day"], time_budget.FLOOR_ROW_MIN_DAY, "min/day",
-                      "every-suite runs outside the night %s min/day over its floor of none (%s)" % (
-                          fmt(full["min_day"]), ", ".join("%s ×%d" % kv for kv in full["chats"]))))
-    night = budget.get("last_night") or {}
-    floor = night.get("floor_share")
-    if night.get("share") is not None and floor and night["share"] < floor \
-            and night["wall_s"] - night["model_s"] / floor > 60 * time_budget.FLOOR_ROW_MIN_DAY:
-        found.append(("workers-active", night["share"], floor, "share",
-                      "workers were model-active %d %% of their wall on night %s (floor %d %%)" % (
-                          round(100 * night["share"]), night["id"], round(100 * floor))))
-    out = []
-    for key, value, limit, unit, fact in found:
-        row = H.ledger_row(ledger, "time_floor", key)
-        out.append({"id": row["id"] if row else "time_floor:%s" % key, "rule": "time_floor", "state": H.ledger_state(row, 24, now),
-                    "fact": fact + " · proof: back under it", "value": value, "limit": limit, "unit": unit,
-                    "window_h": 24, "exposure": None, "count": None, "first_seen": None, "last_seen": None,
-                    "expected_min_day": value if unit == "min/day" else (night["wall_s"] - night["model_s"] / floor) / 60,
-                    "evidence": [], "ledger": row["id"] if row else None, "group": "time", "ident": key})
     return out
 
 
@@ -1037,8 +964,7 @@ def judge_digest(ledger):
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
     digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SLICE_LEVER, NO_SLICE_LEVER, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
                               TIME_LEVERS, spend.SHARE_RISE, spend.LEAVES, suite_audit.WALL_RISE, suite_audit.JUMP_S,
-                              suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.FLOORS,
-                              time_budget.FLOOR_ROW_MIN_DAY, TEST_HEALTH_LEVERS, test_health.LINES, test_health.BAND,
+                              suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.ROWS, TEST_HEALTH_LEVERS, test_health.LINES, test_health.BAND,
                               test_health.IDLE_RATIO, test_health.IDLE_MIN_S, test_health.DEAD_D],
                              sort_keys=True).encode())
     return digest.hexdigest()
@@ -1232,7 +1158,6 @@ def collect(write, now):
     problems += test_regressions(tests, ledger, now)
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
-    problems += floor_rows(budget, ledger, now, full_runs(now, H.suites_journal()))
     why = {}
     selection = select(opportunities, why)
     coverage = {"days": round(covered, 2), "window_days": WINDOW_D, "backfill_files_done": job["files"] - len(job["todo"]),
@@ -1301,17 +1226,12 @@ def collect(write, now):
         "baselines": baselines, "selection": selection, "why_none": why_none,
         "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0},
         "yield": speed_yield(ledger),
-        "head": head_of(headline, r_band, status, gap, budget.get("lost_min_day"),
-                        (budget.get("workers_active") or {}).get("recoverable_min_day") or 0.0),
+        "head": head_of(budget.get("lost_min_day"), status, gap),
         "lost_min_day": budget.get("lost_min_day"),
+        "lost_min_day_by_day": budget.get("lost_min_day_by_day") or {},
         "budget": budget,
         "tests": tests,
     }
-    history = state.get("lost_min_day_by_day") or {}
-    history = {day: value for day, value in history.items() if day >= H.local_day(now - JOURNAL_DAYS * 86400)}
-    if document["lost_min_day"] is not None:
-        history[today] = max(history.get(today, 0), document["lost_min_day"])
-    state["lost_min_day_by_day"] = document["lost_min_day_by_day"] = history
     try:
         document["spend"] = spend.collect(now, state, write, [H.hook_script(h["command"]) for h in H.settings_hooks()],
                                           H.base_home(), H.repos_dir(), ROOT_DIR, H.local_day)
@@ -1357,12 +1277,9 @@ def background_share(background, machine):
     return statusline / total if total else None
 
 
-def head_of(headline, r_band, status, gap=None, lost=None, worker=0.0):
-    floor = "" if lost is None else "%s over the floor · " % per_day(lost, min(worker, lost))
-    if status == "blind":
-        return floor + "blind · no owner turns from Harness"
-    return floor + "%s OM/d" % fmt(headline) + (" · " + gap if gap else "") + (
-        " · presence" if r_band is None else " · R 2/10: %s/%s" % (fmt(r_band[0]), fmt(r_band[1])))
+def head_of(lost, status, gap=None):
+    head = "overhead not measured" if lost is None else "%s min/day overhead" % fmt(lost)
+    return head + (" · blind · no owner turns from Harness" if status == "blind" else "") + (" · " + gap if gap else "")
 
 
 def leaf_line(leaves, top=3):
@@ -1392,24 +1309,6 @@ def menu_lines(document):
     for depth, flags, red, text in tests.get("menu") or [[0, "", tests.get("status") == "error",
                                                            "Test health: " + str(tests.get("head") or "not measured")]]:
         emit(depth, text, flags, red)
-    m = document["machine"]
-    high = sum(v for k, v in (m["band_share"] or {}).items() if k in ("2-4", ">4"))
-    emit(0, "Machine: %s · %s · %s unattributed" % (
-        "%s min/day contention" % fmt(m["p_om_day"]) if m["p_om_day"] is not None else "contention not measured",
-        "load ≥ 2/core %d %% of the time" % round(100 * high) if m["band_share"] else "load not measured",
-        "%d %%" % round(100 * m["unattributed_share"]) if m["unattributed_share"] is not None else "–"))
-    for band, share in (m["band_share"] or {}).items():
-        emit(1, "load %s/core: %d %% of the time · probe %s ms" % (band, round(100 * share), m["probe_ms"].get(band, "–")), "d")
-    b = document["background"]
-    probes = b.get("probes") or {}
-    emit(0, "Background: statusline %s + probes %s CPU-min/day · merge-kick %s runs/day · hs lag %s/day" % (
-        fmt(b["statusline"]["cpu_min_day"]), fmt(sum(p["cpu_min_day"] or 0.0 for p in probes.values())),
-        fmt(b["merge_kick"]["runs_day"]), fmt(b["hs"]["lag_events_day"])))
-    for kind, p in sorted(probes.items(), key=lambda x: -(x[1]["cpu_min_day"] or 0.0)):
-        emit(1, "statusline %s: %s runs/day · %s CPU-min/day" % (kind, fmt(p["runs_day"]), fmt(p["cpu_min_day"])), "d")
-    for doctor, c in b["collectors"].items():
-        emit(1, "%s collector: %s runs/day · p50 %s s · %s CPU-min/day" % (doctor, fmt(c["runs_day"]), c["wall_p50_s"],
-                                                                          fmt(c["cpu_min_day"])), "d")
     last = document["night"]["last"]
     emit(0, "Night: last %s · first landing %s" % (hours(last["wall_h"]), hours(last["first_landing_h"]))
          if last else "Night: no finished night")
@@ -1438,7 +1337,7 @@ def menu_lines(document):
         emit(1, "%s · saves %s min/day · %s · %s: %s" % (p["id"].split(":", 1)[1], fmt(o["saving"]), o["levers"][0],
                                                          evidence.get("compared", "–"), evidence.get("result", "–")), "d")
     for p in document["problems"]:
-        if p["rule"] in ("regression", "time_floor"):
+        if p["rule"] == "regression":
             emit(0, p["fact"], red=p["state"] in H.LOUD_STATES)
     emit(0, "not measured" if document["blind_spots"] else "not measured: nothing", "d")
     for spot in document["blind_spots"]:

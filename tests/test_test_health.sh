@@ -264,20 +264,11 @@ check({"opportunity:test-health/retests", "opportunity:test-health/idle/alpha/te
 retest = next(o for o in opps if o["id"] == "opportunity:test-health/retests")
 check(retest["opportunity"]["files"] and retest["opportunity"]["quality"] == "equivalent",
       "speed: an opportunity names its files and stays output-equivalent")
-budget = {"floors": [{"class": "suite_run", "label": "suites running", "actual_min_day": 99, "recoverable_min_day": 50,
-                      "floor_min_day": "uncontended p10 wall", "worker_min_day": 0.0}]}
-ranked = S.with_time(opps, budget)
-check("opportunity:time/suite_run" in {o["id"] for o in ranked}
-      and all("floor_gap_min_day" not in o["opportunity"] for o in ranked if o["id"].startswith(S.TEST_HEALTH_ID)),
-      "speed: a floor gap is its own time row, never folded into a test-health one")
-offered = sum(o["opportunity"]["recoverable_min_day"] for o in opps)
-gap = next(o for o in ranked if o["id"] == "opportunity:time/suite_run")["opportunity"]["floor_gap_min_day"]
-check(0 < offered < 49 and abs(gap - round(50 - offered, 2)) < 1e-9,
-      "speed: the suites-running gap is net of what test-health rows recover, one minute offered once: %s %s"
-      % (gap, offered))
-budget["floors"][0]["recoverable_min_day"] = offered
-check("opportunity:time/suite_run" not in {o["id"] for o in S.with_time(opps, budget)},
-      "speed: a gap test health already covers is no time row")
+ranked = {o["id"]: o for o in S.with_time(opps, {"classes_min_day": {"suite_run": 99, "suite_wait": 40}})}
+check("opportunity:time/suite_run" not in ranked and ranked["opportunity:time/suite_wait"]["value"] == 40
+      and all("time_min_day" not in o["opportunity"] for k, o in ranked.items() if k.startswith(S.TEST_HEALTH_ID)),
+      "speed: suites running is test health's to price per suite, never a time row; a queue's union minutes are their "
+      "own row, never folded into a test-health one: %s" % sorted(ranked))
 problems = {p["id"]: p for p in S.test_regressions(section, {}, NOW)}
 wait_row = problems.get("regression:test-health/wait_chat") or {}
 check(wait_row.get("rule") == "regression" and wait_row.get("expected_min_day") == regs["wait_chat"]["min_day"]
@@ -358,13 +349,6 @@ check(abs(th.cost(mrows[1]["execs"], "retests") - 120) < 1e-9,
       % th.cost(mrows[1]["execs"], "retests"))
 check(abs(mrows[2]["execs"][0]["cost"].get("serial", 0) - 100) < 1e-9 and abs(total(mrows[2]) - 200) < 1e-9,
       "parallel: a multi-suite run on one slot loses what the usual slots would save: %s" % mrows[2]["execs"][0]["cost"])
-th.allocate(mrows, {}, 5, [(M + 300 - (300 - 340 / 3.0) / 2, M + 300), (M + 700, M + 900)])
-check(abs(mrows[0]["execs"][0]["cost"].get("pole", 0) - (300 - 340 / 3.0) / 2) < 1e-6
-      and abs(mrows[2]["execs"][0]["cost"].get("serial", 0) - 50) < 1e-9
-      and all(abs(total(r) - w) < 1e-6 for r, w in ((mrows[0], 310), (mrows[2], 200))),
-      "parallel: pole and serial slack count only their part on a free machine, the rest stays the run's wall: %s %s"
-      % (mrows[0]["execs"][0]["cost"], mrows[2]["execs"][0]["cost"]))
-th.allocate(mrows, {}, 5)
 check(mrows[3]["execs"][0]["cost"] == {"flaky": 50} and all(len(e["cost"]) == 1 for r in mrows[1:2] + mrows[3:4]
                                                               for e in r["execs"]),
       "flaky and retests: a minute in one class only: %s" % [e["cost"] for r in mrows for e in r["execs"]])

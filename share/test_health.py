@@ -225,14 +225,10 @@ def per_suite(execs, now, born):
     return out
 
 
-def allocate(rows, suites, usual_j, free=None):
+def allocate(rows, suites, usual_j):
     """Splits each row's wall, queued to end, into one class per minute: a retest or flaky exec takes its share
     whole; else its idle part, the run's long-pole or serial slack (to the pole suite, or `serial`) and the rest as
-    `work`. A share is the exec's suite seconds over the row's, so concurrent suites never add up past the wall.
-    With `free` (time_budget.free_spans) the slack counts only its part on a free machine, the pole's tail or the
-    serial run's span; the rest is the pole suite's work: shards and slots only run on room."""
-    free = None if free is None else time_budget.union(free)
-    starts = [a for a, _ in free or ()]
+    `work`. A share is the exec's suite seconds over the row's, so concurrent suites never add up past the wall."""
     for row in rows:
         execs = row["execs"]
         total = sum(e["secs"] for e in execs)
@@ -245,12 +241,6 @@ def allocate(rows, suites, usual_j, free=None):
             else:
                 slack = max(0.0, min(ran, pole["secs"]) - total / min(row["j"], len(execs)))
         slack = min(slack, wall)
-        kept = slack
-        if free is not None and slack > 0:
-            lo, hi = (row["start"], row["end"]) if serial else (row["end"] - slack, row["end"])
-            i = max(0, bisect.bisect_right(starts, lo) - 1)
-            room = time_budget.length(time_budget.clip(free[i:bisect.bisect_left(starts, hi)], lo, hi))
-            kept = slack * room / max(hi - lo, 1e-9)
         for e in execs:
             share = (wall - slack) * e["secs"] / total if total > 0 else wall / len(execs)
             whole = "retests" if e["repeat"] else "flaky" if e["flaky"] else None
@@ -260,9 +250,9 @@ def allocate(rows, suites, usual_j, free=None):
                 continue
             idle = (suites.get((e["repo"], e["name"])) or {}).get("idle_s", 0.0)
             idle = share * min(idle, e["secs"]) / e["secs"] if e["secs"] > 0 else 0.0
-            e["cost"] = {"idle": idle, "work": share - idle + extra - (kept if extra else 0.0)}
-            if extra and kept:
-                e["cost"]["serial" if serial else "pole"] = kept
+            e["cost"] = {"idle": idle, "work": share - idle}
+            if extra:
+                e["cost"]["serial" if serial else "pole"] = extra
 
 
 def cost(execs, cls, who=None):
@@ -756,8 +746,7 @@ def collect(now, journal, tops=None, write=False, lo=None):
     born = first_runs(execs)
     stats = per_suite(window, now, born)
     multi = [r["j"] for r in rows if r["n"] >= 2 and r["j"] > 1 and r["end"] >= stats_lo]
-    allocate([r for r in rows if r["end"] >= first], stats, statistics.median(multi) if multi else 1,
-             time_budget.free_spans(first - 86400, now))
+    allocate([r for r in rows if r["end"] >= first], stats, statistics.median(multi) if multi else 1)
     heavy = heavy_keys(window, now, born)
     cache = time_budget.read_json(cache_path(), {})
     scanned = scans(tops, cache if isinstance(cache, dict) else {}, write)

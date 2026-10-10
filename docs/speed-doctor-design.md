@@ -115,7 +115,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 **Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions (both scaled to the covered share of the 7 days, at least 1), with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[], seen_days, data_confidence}`, every field stored and the score recomputed from them; the backlog ranks by `recoverable_min_day`, then score × `data_confidence` (seen days of 7).
 
-**Night admission.** Expected recoverable gain must be >= 5 min/day, including loud Harness performance rows and suite audits (token-spend audits keep their own policy); the 30 min/day floor alarm stays unchanged. `expected_min_day` in a problem or its ledger row prices a job without an opportunity estimate. Unpriced rows and pure `class: measurement fix` jobs stay out, unless `blind_for` names a priced >= 5 min/day opportunity blind without that repair. Speed prints skipped ids and reasons on one line; day repair remains available.
+**Night admission.** Expected recoverable gain must be >= 5 min/day, including loud Harness performance rows and suite audits (token-spend audits keep their own policy). `expected_min_day` in a problem or its ledger row prices a job without an opportunity estimate. Unpriced rows and pure `class: measurement fix` jobs stay out, unless `blind_for` names a priced >= 5 min/day opportunity blind without that repair. Speed prints skipped ids and reasons on one line; day repair remains available.
 
 **Score** = saving × confidence ÷ (effort_h + night_cost_h), night_cost_h being the slot-queue and first-landing delay its run adds. Confidence 0.8 measured with a mechanical lever, 0.5 estimated, 0.3 unmeasured. Effort S 1 h, M 3 h; an L lever is split into budget-fitting stages; classes recalibrate to closed runs.
 
@@ -138,33 +138,32 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 Proven reads `fixed · −X <unit> · ≈Y OM/d`. A later regression stamps `regressed_at`.
 
-**Floor** (`share/time_budget.py`). Each class has a floor, chats and workers apart: zero for hooks, Stop hooks,
-retries, dead worker runs, wrap-up, hung tails and locks (plain Claude Code has none); suites their uncontended p10
-wall per suite-file blob at the run's head, only a run's part on a free machine over it. A review round's worker splits like any run (`review_min` keeps its total for display only). Wrap-up: the last
-CLI's exit (its start plus its `attempt_secs`) to the run's end. Hung: a watchdog `idle N` kill's last N s before the
-exit, a `silent` kill's whole last attempt; a deadline kill has no idle stamp and stays work. A queue (suite slot
-wait — a chat turn's `queue` part and its suite rows' queued_at → started_at included — worker slot queue) is lost only while the machine was free: memlogd sampled load1 under the core count and
-available RAM at or over its incident threshold (`free_spans`; an unsampled moment is busy, memlogd keeps 3 days); the
-slot queue no more than how much sooner night-worker bursts end in a FIFO replay lending slots during the holder's
-suites. Dead worker runs (`dead_runs`): a failed run, not a review round or bench, no later run resumed (RESUME brief
+**Lost time** (`share/time_budget.py`; Egor, 2026-10-10). Wall-clock overhead around the work, never the work, in
+min/day: each class is the union of its intervals, so parallel runs count once; the overhead (`overhead_s`) is the union
+of all classes, never their sum. No floors, free-machine deductions or "could save" estimates; a class exists only where
+its intervals are already journaled. Classes: suites running and queued (run-suites' journal, every caller; tests are
+overhead whole), worker slot queue, wrap-up (the last CLI's exit, its start plus its `attempt_secs`, to the run's end),
+retries, dead and hung runs, hooks (hook rows; a turn's Stop seconds at its end), gate refusal recovery (a PreToolUse
+denial, a Stop or PostToolUse block, to the session's next accepted call or the turn's end, the next refusal splitting a
+shared window), locks a chat or worker paid, usage-wall relaunches, compaction and `other` (a run with no session file's
+rest, a turn's unexplained seconds: `unmeasured`); compaction and turn residue have no position and add on top. A review
+round's worker splits like any run; a run's session is its `session` file, else `worker-session` (gemini, codex). Hung:
+a watchdog `idle N` kill's last N s before the exit, a `silent` kill's whole last attempt; a deadline kill stays work.
+Dead worker runs (`dead_runs`): a failed run, not a review round or bench, no later run resumed (RESUME brief
 or resume launch), its files record naming no path and no unknown or partial listing, nothing produced or written
 outside, HEAD unmoved, its result empty or only error and limit lines; its last attempt's wall is `dead` (slot queue
 and retries keep their classes). No `UNITS` entry: a few such runs a week leave most days at 0, so a per-unit median
-before a fix is 0; the day totals prove it. Workers active (bench and usage walls
-outside) is the parent of its parts, never ranked: floor share = model over the wall less their gaps, the last night's from its own parts (`night_split`). `lost_min_day`
-counts each minute once (`<chat> min + <worker> w-min/day`). The 7-day band only names sudden regressions as holes. A class gap ≥ 0.5 min/day adds to the best-ranked opportunity whose fix
-`time_budget.improvement_class` scores against that class (hooks and Stop → chat/hooks, suites → chat/tests, suite wait →
-chat/queue), else it is `opportunity:time/<class>` (`TIME_LEVERS`); recoverable minutes set the score, so the night takes
-the biggest gap even when nothing regressed, and an empty pick names them in `why_none`. Gate refusal recovery (a
-PreToolUse denial, a Stop or PostToolUse block, to the session's next accepted call or the turn's end, the next refusal
-splitting a shared window) and hook time come apart per gate and per hook: each ≥ 0.5 min/day is
-`opportunity:refusal/<gate>`, `:hooks/<hook>` or `:stop/<hook>` at its own minutes (`unit_rows`), and only the rest of
-the class gap goes on as above.
-**Floor rows** (rule `time_floor`, counted, ledger states as regressions): `time_floor:<class>` more than `FLOOR_ROW_MIN_DAY` (30)
-over its floor in the last day, `:full-runs` when every-suite runs a chat or a worker started (the night's run and
-Egor's terminal carry no session) take as many minutes, named by chat, `:workers-active` when the last night's wall is as
-far over model/floor share;
-the proof of a fix is the measurement back under it (no row).
+before a fix is 0; the day totals prove it. System active (`active_s`) is the union of owner turns, worker runs and suites; a bench worker is in
+neither. Rows (`ROWS`, the menu's layer): overhead, tests ▸ running · queued · heaviest suites, delegation ▸ worker queue
+· wrap-up · retries · dead, hung, harness rules ▸ hooks · gate refusals per gate · locks · heaviest hooks, usage walls,
+compaction, unmeasured, system active. The day history is each prior day's settled `overhead_s` (`budget-days`,
+recomputed when its `version` is not `BUDGET_VERSION`) and today's latest value, never a day's maximum. A class's
+minutes, less what its gate and hook rows already price, add to the best-ranked opportunity whose fix
+`time_budget.improvement_class` scores against that class (hooks and Stop → chat/hooks, suite wait → chat/queue), else
+it is `opportunity:time/<class>` (`TIME_LEVERS`; suites running are test health's to price); its minutes set the score,
+so the night takes the biggest class even when nothing regressed, and an empty pick names them in `why_none`. Gate
+refusal recovery and hook time come apart per gate and per hook: each ≥ 0.5 min/day is `opportunity:refusal/<gate>`,
+`:hooks/<hook>` or `:stop/<hook>` at its own minutes (`unit_rows`), and only the rest of the class goes on as above.
 
 **Test health** (`share/test_health.py`, Speed's `tests` key; the one place test time is shown). From run-suites'
 journal, the last 24 h against the median of the 7 days before it, one line per class in one unit over every caller,
@@ -181,13 +180,11 @@ day, the median ignores up to three, and a suite run on under four days reads 0 
 the seven, when the median runs over its own days since, zero days included (a new heavy suite shows at once). Each row's wall,
 queued to end, splits once (`allocate`): a retest or flaky exec takes its share whole (share = its suite seconds over
 the row's, so concurrent suites never sum past the wall); else its idle part, the run's slack to the long-pole suite
-(its seconds over the row's suite seconds per slot) or, on one slot, to `serial` (against the usual slots), only its
-part on a free machine (`free_spans`: shards and slots run only on room), and the rest is `work`. Findings become `opportunity:test-health/{retests,flaky,idle,pole/<repo>/<suite>,serial,
+(its seconds over the row's suite seconds per slot) or, on one slot, to `serial` (against the usual slots), and the rest is `work`. Findings become `opportunity:test-health/{retests,flaky,idle,pole/<repo>/<suite>,serial,
 heavy/<repo>/<suite>,fan-out/<repo>/<path>}` (`TEST_HEALTH_LEVERS`) in min/day, idle, pole, heavy and fan-out by
 `per_day`, retests, flaky and serial as their 7-day mean: heavy at ≥ 15 work-min/day (it drops
 the moved `tests/<repo>/<suite>` row), fan-out from the targeted runs holding every suite a changed file pulls (each run
-to its widest file), on suites no heavy row prices, those shown beside it. The `time/suite_run` floor gap is net of the
-test-health rows' recoverable minutes. A line over its usual is `regression:test-health/<line>`, its expected gain the
+to its widest file), on suites no heavy row prices, those shown beside it. A line over its usual is `regression:test-health/<line>`, its expected gain the
 excess in min/day. Fan-out reads tests/affected's rule in Python (a suite or a tests/ helper it names holding the
 basename as a word, shared-invariants.md → test_consistency), cached per `git ls-files -s` and this reader's source.
 Dead suites (a `$ROOT/` path gone from the repo that the suite neither creates, removes, asserts absent nor single- or
@@ -214,26 +211,24 @@ without result`, never a revert or a gate.
 
 **Own keys**: `cost {collector_cpu_min_day}` (review time is the time budget's `review_min`; no other cost is mechanically recorded, so none is shown as a zero), `yield {proven_om_day, pending_om_day}`.
 
-**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, the slice lever, R, the bands and the proof table.
+**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the slice lever, R, the bands and the proof table.
 
 ## 4. Menu
 
 Illustrative, the top of Harness's menu:
 ```
 Harness doctor: 2 problems
-Speed: 1 problem · 169 OM/d · 3.9 of 7 days covered · R 2/10: 88/287
+Lost time: 1 problem · 587 min/day overhead · 3.9 of 7 days covered
   Chat turns: 99 min/day · model 50 · tools 31 · compaction 4
   Delegation: +70 min/day · workers 56 · background Bash 14 · media <1
   Test health: 287 min + 389 w-min/day by day, 2417 w-min/day at night · 5 of 12 lines over their usual · 2 heavy suites red · 3 dead or pinned
-  Machine: 12 min/day contention · load 2.3/core · 31 % unattributed
-  Background: statusline 0.9 CPU-cores · 18 % of P
   Night: last 5 h 50 m · first landing 4 h 47 m
   Opportunities · top 10 · Needs Egor · not measured · cost · yield
   Waits · Slow periods · Hook waits · Hooks · Load · Tests · Collector
 Stop hooks · Guards · Growth · Hook health · Test flakes · Memory guard · Limiter holds
 ```
 
-The headline is the strict OM/d. Area lines are "of which" and sum to it (Harness §2.1 shape); means appear only in drills; model minutes are a measured leaf with no lever. An opportunity row reads rank · target · saving · effort · lever · protection; a needs-Egor row adds its evidence. `bin/speed-doctor` lays out its lines, `bin/harness-doctor` `menu_text` places them.
+The head is the overhead (`lost_min_day`); Machine and Background are System's. The OM/d partition stays in the JSON; its area lines are "of which" and sum to it (Harness §2.1 shape); means appear only in drills; model minutes are a measured leaf with no lever. An opportunity row reads rank · target · saving · effort · lever · protection; a needs-Egor row adds its evidence. `bin/speed-doctor` lays out its lines, `bin/harness-doctor` `menu_text` places them.
 
 **Each rule judged once.** The time rules stay in their Harness sections, now under Speed: `wait`, `local_slow`, `floor`, `hook_*`, `statusline`, `menu_build`, `load`, `test_*`, `collector`. Once Speed judges a component against a ≥ 7-day baseline, its `covers` (chat: `wait`, `wait_cut`, `local_slow`; background/statusline: `statusline`) turn those verdicts `watch` with `judged_by`, keeping `was_state`, so `problem_count` counts each rule once. Health lines leave for Hook health (`fastpath`, `unjournaled`), Test flakes (`test_load_fail`) and Memory guard. Code's `heavy_tests`/`hot_hooks` become Speed opportunities, kept `protected` by `test_requirement`, a hook charged only for days after its last commit. Harness stays the data plane; the LLM doctor keeps per-leg judging and reads `local_slow` from Harness.
 

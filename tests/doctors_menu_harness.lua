@@ -245,13 +245,17 @@ write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s =
     caches = { { ".cache/uv", 22.1 } } } })
 local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" } },
   speed = { status = "ok", as_of_s = now, lost_min_day = 12, lost_min_day_by_day = writeDays(series),
-    issues = { { 40, "w-min suites", "w-min/day" }, { 12, "hooks" }, { 1244, "tests", "min/day" } },
-    tests = { over = { { 1033, "suites per targeted run" } }, heavy = { { 283, "test_worker_run_pool" }, { 7.4, "test_fast" } } } },
+    rows = { { 573, "overhead", {} },
+      { 542, "tests", { { 540, "running" }, { 122, "queued" }, "-", { 283, "test_worker_run_pool" }, { 7.4, "test_fast" } } },
+      { 120, "delegation", { { 105, "worker queue" }, { 9.5, "wrap-up" }, { 4.2, "retries" }, { 0, "dead, hung" } } },
+      { 35, "harness rules", { { 24.5, "hooks" }, { 9.5, "gate refusals" }, { 6, "  write-gate.sh" }, { 1.6, "locks" }, "-",
+        { 13, "commit-report.sh" } } },
+      { 26, "usage walls", {} }, { 19, "compaction", {} }, { 75, "unmeasured", {} }, { 1051, "system active", {} } } },
   spend = { status = "watch", as_of_s = now, index = 0.46, index_by_day = spendDays(series),
     issues = { { 1.888, "compaction summaries" } } } }
 local function trendHarness()
   write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 problems\nH\t" .. hs.json.encode(metadata)
-    .. "\n0\t\t\tLost time: ok · 179 OM/d\n1\td\t\t12 min/day over the floor\n"
+    .. "\n0\t\t\tLost time: ok · 573 min/day overhead\n1\t\t\tChat turns: 103 min/day · model 64\n"
     .. "1\td\t\tNeeds Egor: nothing\n0\t\t\tSpend: watch · index 0.46 (-54%) · 1 audit due\n"
     .. "1\t\t\t1.9 % · compaction summaries · Δ -6% · audit due: never audited\n"
     .. "0\t\t\tHooks: 3 problems\n1\td\t\tall hook details\n")
@@ -316,14 +320,20 @@ check(issue(trendItems[1].menu, 1, "   8  reviewers crashed"), "LLM issue row")
 check(issue(trendItems[1].menu, 2, "   4  review anchors"), "LLM review machinery issue row")
 check(issue(trendItems[2].menu, 1, "   3  Hooks"), "Harness issue row")
 check(issue(trendItems[4].menu, 1, "   2  Dead") and issue(trendItems[4].menu, 2, "   1  Duplicate"), "Code issue rows")
-check(issue(trendItems[5].menu, 2, "  12 min/day  hooks"), "Speed floor issue row in min/day")
-check(issue(trendItems[5].menu, 1, "  40 w-min/day  w-min suites"), "a workers' floor gap carries its own unit")
-local testsRow = trendItems[5].menu[3]
-check(text(testsRow.title) == "1244 min/day  tests" and not testsRow.disabled and testsRow.menu
-  and issue(testsRow.menu, 1, "1033 min/day  suites per targeted run") and testsRow.menu[2].title == "-"
-  and text(testsRow.menu[3].title) == " 283 min/day  test_worker_run_pool" and not red(testsRow.menu[3].title)
-  and text(testsRow.menu[4].title) == "   7 min/day  test_fast" and #testsRow.menu == 4,
-  "Lost time's tests row opens what grew over its usual, then the heaviest suites")
+local lost = trendItems[5].menu
+local function plainRow(item, want) return item and text(item.title) == want and not red(item.title) end
+check(plainRow(lost[1], " 573 min/day  overhead") and lost[1].disabled and not lost[1].menu
+  and plainRow(lost[5], "  26 min/day  usage walls") and plainRow(lost[7], "  75 min/day  unmeasured")
+  and plainRow(lost[8], "1051 min/day  system active") and lost[8].disabled,
+  "Lost time's rows: overhead first, system active last, one unit, never red: " .. text(lost[1].title))
+local testsRow, rulesRow = lost[2], lost[4]
+check(plainRow(testsRow, " 542 min/day  tests") and not testsRow.disabled and plainRow(testsRow.menu[1], " 540 min/day  running")
+  and plainRow(testsRow.menu[2], " 122 min/day  queued") and testsRow.menu[3].title == "-"
+  and plainRow(testsRow.menu[4], " 283 min/day  test_worker_run_pool") and plainRow(testsRow.menu[5], "   7 min/day  test_fast")
+  and #testsRow.menu == 5, "Lost time's tests row opens running, queued, then the heaviest suites")
+check(plainRow(lost[3].menu[4], "   0 min/day  dead, hung") and plainRow(rulesRow.menu[3], "   6 min/day    write-gate.sh")
+  and rulesRow.menu[5].title == "-" and plainRow(rulesRow.menu[6], "  13 min/day  commit-report.sh"),
+  "delegation and harness rules open their parts, a gate under its refusals, the heaviest hooks last")
 check(issue(trendItems[6].menu, 1, " 1.9 %  compaction summaries"), "Spend issue row: the due component by its share")
 check(issue(trendItems[7].menu, 1, "   1  new processes") and issue(trendItems[7].menu, 2, "   1  swap full")
   and not find(trendItems[7].menu, "   1  low disk space"), "System issue rows: one per loud problem by its short name")

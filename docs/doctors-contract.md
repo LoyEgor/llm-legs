@@ -51,19 +51,19 @@ LLM ▸     8  reviewers crashed
   `tracking.json` via `share/spend.py`, two decimals, 1.00 = the previous 7 days' harness price per Claude request,
   Harness being the Spend tree's Harness leaves of every consumer; the problems of both stay counted by Harness alone).
 - Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error (Spend: an
-  audit due, as Lost time's floor gaps), DIM_RED watch/blind/pending update, DIM no data or
+  audit due), DIM_RED watch/blind/pending update, DIM no data or
   stale (Speed also without an observation dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null). Missing value: DIM `–`.
-- Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Speed: the daily
-  maxima in Harness's `menu.txt` header; Spend: its stored index of each day, the 7-day window ending that day). Eight heights against the window maximum. An unmeasured date
+- Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Lost time: each
+  day's overhead in Harness's `menu.txt` header, today the latest; Spend: its stored index of each day, the 7-day window ending that day). Eight heights against the window maximum. An unmeasured date
   is a blank cell, never an invented bar or a dash; a zero is `▁` (as every other spark line, Chats → Other's
   load graph the model). Every bar is DIM, never RED.
 - `usual` is the median of measured completed dates, never today.
 - A doctor's first level: up to three issue rows (RED count, the problem's own short name;
-  Speed's floor gaps in min or w-min/day, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
+  Lost time: the header's `rows`, plain aligned min/day, separators and sub-menus, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title
   (stale, failed, pending) first; Lost time's and Spend's details are Harness's `Lost time:` and `Spend:` subtrees.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,
-  three group issues, Speed's status, timestamp, floor, daily series and three floor gaps. The menu
+  three group issues, Speed's status, timestamp, overhead, daily series and budget rows. The menu
   reads it and `problem-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;
   a header-less file shows open Harness ledger rows as `known, awaiting snapshot`.
 

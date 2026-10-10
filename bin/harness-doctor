@@ -5111,7 +5111,6 @@ AUDIT_STALE_S = 48 * 3600
 SPEED_GROUP = "Speed"
 SPEED_LABEL = "Lost time"
 WAITS_GROUP = "Wait classes"
-TEST_FLOORS = ("suite_run", "suite_wait")
 SPEED_SECTIONS = ("Waits", WAITS_GROUP, "Slow periods", "Hook waits", "Hooks", "Load", "Tests", "Collector")
 SPLITS = (("Hooks", "Hook health", ("hooks:fastpath", "hooks:unjournaled"), "every hook keeps its fast path and journal"),
           ("Tests", "Test flakes", ("tests:load",), "no suite failed under load"),
@@ -5330,18 +5329,12 @@ def menu_text(document):
     if speed.get("spend"):
         header["spend"] = {k: speed["spend"][k] for k in ("as_of_s", "status", "index", "index_by_day", "change",
                                                           "issues") if k in speed["spend"]}
-    floors = (speed.get("budget") or {}).get("floors") or ()
-    parts = [[f[key], f["label"], unit] for f in floors if f.get("class") not in TEST_FLOORS
-             for key, unit in (("chat_min_day", "min/day"), ("worker_min_day", "w-min/day")) if f.get(key, 0) > 0]
-    tests = sum(f.get(key, 0) for f in floors if f.get("class") in TEST_FLOORS for key in ("chat_min_day", "worker_min_day"))
-    if tests > 0:
-        parts.append([round(tests, 1), "tests", "min/day"])
-    header["speed"]["issues"] = sorted(parts, key=lambda p: -p[0])[:3]
-    found = speed.get("tests") or {}
-    tests = {"over": [[r["min_day"], r["label"]] for r in found.get("regressions") or () if (r.get("min_day") or 0) > 0],
-             "heavy": [[h["min_day"], h["label"]] for h in (found.get("heavy") or ())[:8] if h.get("min_day") is not None]}
-    if tests["over"] or tests["heavy"]:
-        header["speed"]["tests"] = tests
+    heavy = [[h["min_day"], h["label"]] for h in ((speed.get("tests") or {}).get("heavy") or ())[:8]
+             if h.get("min_day") is not None]
+    rows = [[v, label, sub + (["-"] + heavy if label == "tests" and heavy else [])]
+            for v, label, sub in (speed.get("budget") or {}).get("rows") or ()]
+    if rows:
+        header["speed"]["rows"] = rows
     menu.lines.append("H\t" + json.dumps(header, separators=(",", ":")))
     sections = document.get("sections") or ()
     if document["status"] != "error":
@@ -5609,9 +5602,7 @@ def speed_proof(entry, speed, fix_at):
     if any(p.get("ledger") == entry["id"] for p in (speed or {}).get("problems") or ()):
         return None
     window_h = 48 if rule == "regression" else 24
-    measured = {f.get("class") for f in ((speed or {}).get("budget") or {}).get("floors") or ()} | {
-        "full-runs", "workers-active"} if rule == "time_floor" else None
-    if not speed or measured is not None and entry["match"]["ident"] not in measured:
+    if not speed:
         return False, "Speed measures no %s" % entry["match"]["ident"]
     if (speed.get("as_of_s") or 0) - window_h * 3600 < fix_at:
         return False, "Speed has not measured a whole %d h since the fix" % window_h
