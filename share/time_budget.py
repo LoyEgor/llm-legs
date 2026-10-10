@@ -792,10 +792,14 @@ def worker_floor(worker, rec, days):
     parent's recoverable is the sum of its parts."""
     wall, model = worker_wall(worker), worker.get("model", 0)
     over = sum(w for _, w in rec.values())
-    return {"share": round(model / wall, 3) if wall else None,
-            "floor_share": round(model / (wall - over), 3) if wall > over else None,
+    return {"share": round(model / wall, 3) if wall else None, "floor_share": floor_share(worker, over),
             "recoverable_min_day": round(over / 60.0 / days, 1),
             "parts": {k: round(w / 60.0 / days, 1) for k, (_, w) in rec.items() if w}}
+
+
+def floor_share(worker, over):
+    wall = worker_wall(worker)
+    return round(worker.get("model", 0) / (wall - over), 3) if wall > over else None
 
 
 def floors_of(b, rec, days):
@@ -808,7 +812,8 @@ def floors_of(b, rec, days):
 
 def last_night():
     """The newest finished night's worker wall against its model time and its own floor share, from its cached ledger
-    row when there is one."""
+    row when there is one. The cache keeps seconds over floors, never a share: a floor derived from a fresh split
+    judged against the cached split compares two measurements."""
     nights = [read_json(p, {}) for p in glob.glob(os.path.join(night_churn.doctors_dir(), "nights", "*.json"))]
     nights = sorted((n for n in nights if n.get("finished_at") and n.get("started_at") and n.get("id")),
                     key=lambda n: (n["started_at"], n["id"]))
@@ -817,16 +822,17 @@ def last_night():
     night = nights[-1]
     row = read_json(ledger_cache(night["id"]), None)
     cached = isinstance(row, dict) and row.get("finished") and "split_s" in row
-    if cached and "floor_share" in row:
-        split, floor = row["split_s"], row["floor_share"]
+    if cached and "over_s" in row:
+        split, over = row["split_s"], row["over_s"]
     else:
-        split, floor = night_split(night, parts=True)[1:]
+        split, over = night_split(night, parts=True)[1:]
         if cached:
-            write_json(ledger_cache(night["id"]), dict(row, floor_share=floor))
+            write_json(ledger_cache(night["id"]), dict({k: v for k, v in row.items() if k != "floor_share"},
+                                                       over_s=round(over)))
             split = row["split_s"]
     wall, model = worker_wall(split), split.get("model", 0)
     return {"id": night["id"], "wall_s": round(wall), "model_s": round(model),
-            "share": round(model / wall, 3) if wall else None, "floor_share": floor}
+            "share": round(model / wall, 3) if wall else None, "floor_share": floor_share(split, over)}
 
 
 def pct(part, whole):
@@ -956,7 +962,7 @@ def print_day(doc):
 
 def night_split(night, parts=False):
     """Wall and its split over the worker runs the night's sessions launched (night_spend's selection); with parts,
-    also the floor share worker_floor derives from that night's own parts."""
+    also the seconds that night's own parts ran over their floors."""
     low, high, sessions = night_spend.window(night)
     runs = []
     for run, _, meta, _ in night_spend.night_runs(low, high, sessions):
@@ -979,7 +985,7 @@ def night_split(night, parts=False):
     if not parts:
         return len(runs), split
     rec = recoverable({"worker": split, "seconds": split, "free_s": freed, "jobs": jobs}, low, hi)
-    return len(runs), split, worker_floor(split, rec, max(hi - low, 1.0) / 86400.0)["floor_share"]
+    return len(runs), split, sum(w for _, w in rec.values())
 
 
 def lines_of(night):
@@ -1353,7 +1359,7 @@ def roi_lines(rows, now):
 
 def ledger_row(worker_run, path, night):
     low, high, _ = night_spend.window(night)
-    n_runs, split, floor = night_split(night, parts=True)
+    n_runs, split, over = night_split(night, parts=True)
     wall = sum(split.values())
     touched = night_churn.problem_counts(night, path)
     rewrite = night_churn.rewrite_counts(night)
@@ -1362,7 +1368,7 @@ def ledger_row(worker_run, path, night):
     spent = night_spend.spend(night, worker_run)
     return {"id": night.get("id"), "started": low, "ended": high, "hours": round((high - low) / 3600.0, 1),
             "finished": bool(night.get("finished_at")), "runs": n_runs, "wall_s": round(wall),
-            "split_s": {k: round(v) for k, v in split.items() if v}, "floor_share": floor,
+            "split_s": {k: round(v) for k, v in split.items() if v}, "over_s": round(over),
             "lines": lines_of(night),
             "rewrite": list(rewrite[:2]) if rewrite else None,
             "problems": [sum(v for v in (night.get("doctors_before") or {}).values() if isinstance(v, int)),

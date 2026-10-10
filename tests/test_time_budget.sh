@@ -634,13 +634,17 @@ check(cached["improvements"][0]["files"] == [["repo", "code.py"], ["repo", "test
       "a cached row from before files were recorded gets them from its night's commits, its numbers kept")
 with open(T.ledger_cache("N1"), "w") as handle:
     json.dump(dict(cached, split_s=dict(cached["split_s"], model=1200, walled=5000)), handle)
-check(T.last_night() == {"id": "N1", "wall_s": 5800, "model_s": 1200, "share": 0.207, "floor_share": cached["floor_share"]},
+floor = round(1200 / (5800 - cached["over_s"]), 3)
+check(T.last_night() == {"id": "N1", "wall_s": 5800, "model_s": 1200, "share": 0.207, "floor_share": floor},
       "the last night's worker activity is the newest finished night's cached ledger row, its usage-wall relaunches "
-      "outside the wall: %s" % T.last_night())
+      "outside the wall, its floor share that split less its seconds over floors: %s" % T.last_night())
 with open(T.ledger_cache("N1"), "w") as handle:
-    json.dump({k: v for k, v in cached.items() if k != "floor_share"}, handle)
-check(T.last_night()["floor_share"] == cached["floor_share"] == json.load(open(T.ledger_cache("N1")))["floor_share"],
-      "a cached night from before its floor share was recorded gets it from its own parts once: %s" % T.last_night())
+    json.dump(dict({k: v for k, v in cached.items() if k != "over_s"}, floor_share=0.5,
+                   split_s=dict(cached["split_s"], model=1200, walled=5000)), handle)
+backfilled = (T.last_night()["floor_share"], json.load(open(T.ledger_cache("N1"))))
+check(backfilled[0] == floor and backfilled[1]["over_s"] == cached["over_s"] and "floor_share" not in backfilled[1],
+      "a cached night without its seconds over floors gets them from its own parts once and judges its cached split "
+      "with them, never against a share a fresh split derived: %s %s" % backfilled)
 moved =os.path.join(work, "moved-doctors")
 shutil.copytree(os.path.join(work, "doctors"), moved)
 shutil.rmtree(os.path.join(moved, "night-ledger"))
