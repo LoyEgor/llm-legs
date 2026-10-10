@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 2
+# shards: 3
 . "$(dirname "$0")/instruction_gate_harness.sh" || exit 1
+AGENTS="$HOME/.claude/agents"
 
 if suite_shard_owns 1 write-gate-early; then
 echo "== write gate: denies a shell write to a protected file"
@@ -101,7 +102,6 @@ open('$CLAUDE_MD','w')
 EOF")"
 
 echo "== write gate: a guarded directory held in a variable and joined to a name"
-AGENTS="$HOME/.claude/agents"
 assert_eq deny "$(decision "python3 -c \"import os; C='$AGENTS'; open(os.path.join(C, n), 'w')\"")"
 assert_eq deny "$(decision "python3 - <<'EOF'
 from pathlib import Path
@@ -126,6 +126,8 @@ assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'; open(C + 'notes.txt', 'w'
 assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'; C='/tmp/'; open(C + name, 'w')\"")"
 assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'\" && python3 -c \"open(C + name, 'w')\"")"
 
+fi
+if suite_shard_owns 2 write-gate-scripts; then
 echo "== write gate: a program file run by path is read like an inline program"
 SCRATCH="$WORK/scratchpad"
 mkdir -p "$SCRATCH"
@@ -229,8 +231,6 @@ assert_eq deny "$(decision 'echo hi > ${HOME}/.claude/CLAUDE.md')"
 assert_eq deny "$(decision 'python3 -c "open(\"~/.claude/CLAUDE.md\",\"w\").write(1)"')"
 assert_eq pass "$(decision 'grep rules ~/.claude/CLAUDE.md')"
 
-fi
-if suite_shard_owns 2 write-gate-late; then
 echo "== write gate: every protected class"
 assert_eq deny "$(decision "echo x > $HOME/.claude/docs/review-tiers.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/agents/codex-worker.md")"
@@ -322,6 +322,8 @@ assert_eq deny "$(decision "printf x | /usr/bin/tee $CLAUDE_MD")"
 assert_eq deny "$(decision "python3.11 -c \"open('$CLAUDE_MD','w').write('x')\"")"
 assert_eq deny "$(decision "node -e \"fs.writeFileSync('$CLAUDE_MD','x')\"")"
 
+fi
+if suite_shard_owns 3 write-gate-late; then
 echo "== write gate: a guarded name merely mentioned is not a write to it"
 assert_eq pass "$(decision "sed -i '' 's/x/y/' $WORK/unrelated.py # fixes CLAUDE.md guidance")"
 assert_eq pass "$(decision "git commit -m 'update CLAUDE.md wording'")"

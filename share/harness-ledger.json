@@ -6146,6 +6146,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-speed-doctor-20261010T031930Z-3d79",
       "note": "Cut: ~29 fixture git ops (lever and hooks repos) inherited the real HOME, so /Volumes/Work/Projects/claude-setup/git-hooks ran on each (~0.5 s wall an op, 12 ops 6.7 s vs 0.42 s), now GIT_CONFIG_GLOBAL=/dev/null as test_time_budget; fold() left CLAUDE_PROJECTS_DIR/HARNESS_DOCTOR_BOOTS set, so the 4 in-process module.collect checks each backfilled 40 transcripts (0.68 vs 0.03 CPU s) and judged a 167.1 OM/d document instead of the 179.3 baseline. Ruled out: a fork server loading speed-doctor once (import ~0.09 CPU s of a ~0.17 s run) measured no CPU gain and +9 s sys under load; the 21-run speed-half loop (3.6 CPU s) is the stepwise backfill the half-done check pins, kept; speed-cold/both/resumed backfills (~0.85 CPU s each) are the checked work. A split was not taken: the setup fold (~0.8 CPU s) would repeat per shard.",
       "handoff": null
+    },
+    {
+      "id": "speed-tests-instruction-gate-shards",
+      "title": "Speed's test-health lever: test_instruction_gate's long shard and its harness's spare jq per gate call",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_instruction_gate"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:00:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-instruction-gate-20261010T031922Z-5827",
+          "files": [
+            "llm-legs/tests/test_instruction_gate.sh",
+            "llm-legs/tests/instruction_gate_harness.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "every section and assert of test_instruction_gate, base vs fix: the same 219 body asserts in the same file order, only regrouped under three shard sections; the harness's transcript witness line byte-identical",
+            "data": "the suite's own fixtures; per-section CPU from `times` at every section header, load 100-180",
+            "result": "all three shards green (62+79+84 asserts, 2 setup asserts each); shard CPU 20.6/27.3 s -> 14.5/16.9/15.6 s, so a sharded run's wall (the journal's max shard) falls ~38%; one jq fewer per gate call (no parse of an empty pass output, one jq instead of two for a denial's witness)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-instruction-gate-20261010T031922Z-5827",
+      "note": "Audit, 48 CPU-s a whole run, 203 gate calls at ~0.24 CPU-s each (~30 execs per denial: jq, sed, realpath, mkdir, find, stat, date, shasum): the gate's own per-call cost is the suite, no sleeps, no legacy checks, 6 decision strings shared with the matrix/span/bypasses suites (different session/span context, kept). Heaviest sections are the interpreter-variable (5.1 s), program-file (4.4 s) and directory-variable (3.1 s) bypass regressions, each a distinct historical bypass. Not cut: the gate's ~30 forks a denial (a hook refactor, its own run); runs without room for shards (24 of 55 since 10-08) still run whole."
     }
   ],
   "blind_spots": [

@@ -140,13 +140,12 @@ append_write_tool_result() {
 # tool_result behind the harness's own `PreToolUse:<tool> hook error: ` prefix, the witness a retry
 # stamp is honoured beside.
 harness_deny() { # transcript gate-output tool
-  local r
-  [ -n "$1" ] || return 0
-  r=$(printf '%s' "$2" | jq -r 'select(.hookSpecificOutput.permissionDecision == "deny")
-    | .hookSpecificOutput.permissionDecisionReason' 2>/dev/null)
-  [ -n "$r" ] || return 0
-  jq -cn --arg r "PreToolUse:${3:-Write} hook error: $r" \
-    '{type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:$r}]}}' >> "$1"
+  [ -n "$1" ] && [ -n "$2" ] || return 0
+  printf '%s' "$2" | jq -c --arg p "PreToolUse:${3:-Write} hook error: " '
+    select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason
+    | select(. != null and . != "")
+    | {type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:($p + tostring)}]}}' \
+    2>/dev/null >> "$1"
 }
 
 gate() {
