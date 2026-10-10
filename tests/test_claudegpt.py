@@ -995,7 +995,7 @@ class ConcurrentLauncherSubprocessTests(unittest.TestCase):
                                    env=self.env, cwd=str(self.project),
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertNotEqual(login.returncode, 0)
-            self.assertIn("active claudegpt launch", login.stderr.decode())
+            self.assertIn("claudegpt login for this account is already running", login.stderr.decode())
 
             launch = subprocess.run([sys.executable, str(source), "p", "fresh"],
                                     env=self.env, cwd=str(self.project),

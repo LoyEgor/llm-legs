@@ -504,14 +504,13 @@ assert eq "$(bash -c '. "$1"; worker_model_default_effort claudeb fable' _ "$ROO
 assert grep -Fq 'canonical knob-to-agy mapping lives in `worker-run`' "$POLICY"
 assert doc_has 'Gemini worker knobs'
 
-# --- Row co: Gemini model weather cache ---------------------------------------
+# --- Row co: Gemini model weather ---------------------------------------------
 # The states are decided once: a reader holding a step threshold would disagree with the table the
 # collector prints the moment either side is retuned.
 WEATHER_BIN="$ROOT/bin/gemini-weather"
 assert grep -Fqx 'HEALTHY_STEP_S = 3' "$WEATHER_BIN"
 assert grep -Fqx 'SLOW_FACTOR = 3' "$WEATHER_BIN"
 assert grep -Fqx 'DEFAULT_WINDOW_MIN = 60' "$WEATHER_BIN"
-assert grep -Fq 'os.path.join(base_home(), ".cache", "gemini-weather")' "$WEATHER_BIN"
 # The menu reads no Gemini state at all: `theirs` is one collector's count for every vendor
 # (row `cq`), so a second reader here would mix two windows on one row again.
 assert test "$(grep -Ec 'gemini-weather|GEMINI_WEATHER_DIR|valid_until|errors_503' "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
@@ -521,7 +520,7 @@ assert grep -Fq 'model = family["agy_prefix"] + "-high"' "$ROOT/bin/gemini-probe
 for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
   assert test "$(grep -Ec 'median_step_s *(>=|>) *[0-9]|SLOW_STEP|slow_step_s' "$weather_reader")" -eq 0
 done
-assert doc_has 'Gemini model weather cache'
+assert doc_has 'Gemini model weather | '
 
 # --- Row cq: LLM doctor document; Row cw: its problem ledger ------------------
 # bin/llm-doctor carries a copy of review-bench's failure table and of the origin table beside it;
@@ -914,12 +913,8 @@ assert grep -Fq 'grok_cancelled_start "$1"' "$WORKER_RUN"
 assert doc_has '`OUTCOME: GROK_CANCELLED <run-id>` with `STATUS: failed`'
 assert grep -Fq 'OUTCOME: GROK_CANCELLED <run-id>' "$ROOT/docs/DIAGNOSTICS.md"
 
-# claudeb's headless selection announcement is a two-site contract with the legs test stub.
-# ask_claude.sh picks its own reviewers-role account and runs `claudeb profile`, so it parses none.
-assert grep -Fq "printf 'claudeb: worker-pick selected %s\\n'" "$CLAUDEB"
+# ask_claude.sh picks its own reviewers-role account and runs `claudeb profile`.
 assert grep -Fq 'worker-pick --account claudeb --role "${LEGS_ROLE:-reviewers}"' "$ROOT/ask_claude.sh"
-assert grep -Fq "printf 'claudeb: worker-pick selected %s\\n'" "$ROOT/tests/test_legs_routing.sh"
-assert doc_has 'claudeb: worker-pick selected'
 
 # --- Row l: Gemini quota group matching --------------------------------------
 assert grep -Fq 'def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));' "$WORKERPICK"
@@ -1414,7 +1409,7 @@ assert grep -qE 'codex\) pattern=.*out of credits' "$WORKER_RUN"
 assert grep -Fqi 'out of credits' <<<"$(sed -n '/^def codex_usage_wall(/,/^def is_429_error(/p' "$RB_ACCOUNTS")"
 assert doc_has 'out of credits'
 assert doc_has 'A spent SuperGrok plan is one wording in both repositories'
-assert doc_has 'Codex out-of-credits wall wording agrees across relay and bench'
+assert doc_has 'Codex out-of-credits wall wording agrees across worker-run and bench'
 
 # --- Row bz: run-observed worker wall records --------------------------------
 # One path, one format, two readers: worker-run writes the epoch, worker-pick treats an
@@ -2681,8 +2676,8 @@ assert doc_has '`grok_model=auto`, `grok_effort=high`'
 CHATS="$ROOT/bin/chats"
 CHATFIND_LEGS="$ROOT/bin/chat-find"
 assert doc_has 'Cache-TTL track line'
-assert doc_has '`<assist_ts> <acct> <learned_upto> <ttl> <model> <uuid> <scan_bytes> <account_seen_upto> <account_seen>`'
-assert grep -Fq "printf 'v2 %s %s %s %s %s %s %s %s %s\\n'" "$STATUSLINE"
+assert doc_has '`<assist_ts> <acct> 0 <ttl> <model> <uuid> <scan_bytes> <account_seen_upto> <account_seen>`'
+assert grep -Fq "printf 'v2 %s %s 0 %s %s %s %s %s %s\\n'" "$STATUSLINE"
 assert grep -Fq 'statusline_cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"' "$STATUSLINE"
 assert grep -Fq 'os.environ.get("STATUSLINE_CACHE_DIR") or os.path.expanduser("~/.cache/claude-statusline")' "$CHATS"
 assert grep -Fq 'track="$statusline_cache_dir/cache-ttl-track-$session_id"' "$STATUSLINE"

@@ -303,7 +303,6 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
     harness-owned component whose audit is due), the night's queue (bin/doctor-fix takes its slot share),
     audit proofs, menu lines. A stale or missing tracking.json or harness_index reads nodata: never an old number as
     current."""
-    state.pop("spend_by_day", None)
     history = state["index_by_day"] = {d: v for d, v in (state.get("index_by_day") or {}).items()
                                        if d >= local_day(now - DAYS_KEPT * 86400)}
     out = {"status": "nodata", "as_of_s": int(now), "index": None, "index_by_day": history, "problems": [],
@@ -341,9 +340,7 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
     out["issues"] = [[p["value"], p["spend"]["label"]] for p in out["problems"][:3]]
     value = index_value(index)
     out.update(status="watch" if out["problems"] else "ok", index=value, change=index.get("change"),
-               tone=index.get("tone"), generated_at=payload["generated_at"],
-               proofs={k: v for k, v in proofs.items() if v},
-               components=[{k: c[k] for k in ("key", "share", "delta", "target")} for c in found])
+               tone=index.get("tone"), proofs={k: v for k, v in proofs.items() if v})
     if write:
         if value is not None:
             history[local_day(made)] = value

@@ -1126,7 +1126,7 @@ assert_eq "$TOP_D" "$(last_tree "$S")"
 # --- no ownership claims are written -------------------------------------------------------
 # The hook used to answer a second question here — which changed paths are THIS chat's work — into
 # `touched-<sid>`, for a review segment that has since become the gate's mouthpiece. Session-path
-# ownership is the commit journal's now, so nothing may write that file back: it had no reader, and
+# ownership is the family's review-anchors.json's now, so nothing may write that file back: it had no reader, and
 # a claim nobody reads is a claim nobody can check.
 run_workdir_hook "$(workdir_payload Edit session-touch "$REPO_A" "$REPO_A/tracked.txt")"
 run_workdir_hook "$(agent_payload Edit session-touch-agent "$REPO_A" "$REPO_D/other.txt")"
@@ -2919,8 +2919,6 @@ garbage_rc=$?
 assert_eq 0 "$garbage_rc"
 assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$garbage_out"
 
-LEARNED="$STATE_DIR/cache-ttl-learned"
-rm -f "$LEARNED"
 # Re-stamped: under load the suite can reach here minutes after NOW was taken, and a 5m cache
 # would already read as dead.
 NOW=$(date +%s)
@@ -2943,7 +2941,6 @@ t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 mixed; t_stamp ctx-mixed
 mixed_out=$(run_statusline "$(statusline_payload ctx-mixed "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$mixed_out"
 
-printf '{"observed_floor_s":0,"observed_ceiling_s":600,"updated_at":%s}\n' "$NOW" > "$LEARNED"
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 1h; t_stamp ctx-bk1
 bk1_out=$(run_statusline "$(statusline_payload ctx-bk1 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 bk1_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 3600)) +%H:%M)
@@ -2955,101 +2952,7 @@ no_bucket=$(run_statusline "$(statusline_payload ctx-no-bucket "$(warm_extra "$T
 assert grep -Fq "${DIM}? 50k${RESET}" <<< "$no_bucket"
 assert test "${no_bucket#*→}" = "$no_bucket"
 rm -f "$HOME/.claude/statusline-cache-ttl"
-rm -f "$LEARNED"
-
-# --- TTL learning from transcript evidence (newest turn's first response) ---
-# The evidence pair needs a same-account stamp covering the previous response,
-# so each case pre-seeds the v2 track with acctgen and the last response epoch.
-learn_case() { # sid prev_assist_gap user_at ev_cr ev_cc [ev_model] [boundary_at]
-  local sid="$1" prev="$2" user="$3" cr="$4" cc="$5" m="${6:-fixmodel}" bnd="${7:-}"
-  t_reset; t_assist "$prev" fixmodel 60000 300
-  [ -n "$bnd" ] && t_boundary "$bnd"
-  t_user "$user"; t_assist $((user + 1)) "$m" "$cr" "$cc"
-  printf 'v2 %s acctgen 0\n' $((user + 1)) > "$STATE_DIR/cache-ttl-track-$sid"
-  run_statusline "$(statusline_payload "$sid" "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
-}
-
-# HIT after a 300s gap raises the floor to 300.
-rm -f "$LEARNED"
-learn_case learn-hit $((NOW - 500)) $((NOW - 200)) 50000 100
-assert grep -Fq '"observed_floor_s":300' "$LEARNED"
-assert_eq "$((NOW - 199))" "$(awk '{print $4}' "$STATE_DIR/cache-ttl-track-learn-hit")"
-
-# ...and a HIT after a gap longer than the believed ceiling disproves it.
-printf '{"observed_floor_s":0,"observed_ceiling_s":200,"updated_at":%s}\n' "$NOW" > "$LEARNED"
-learn_case learn-heal $((NOW - 500)) $((NOW - 200)) 50000 100
-assert grep -Fq '"observed_ceiling_s":null' "$LEARNED"
-
-# MISS (full rebuild) after a 600s gap lowers the ceiling to 600.
-rm -f "$LEARNED"
-learn_case learn-miss $((NOW - 800)) $((NOW - 200)) 0 50000
-assert grep -Fq '"observed_ceiling_s":600' "$LEARNED"
-
-FRESH_LEARNED="$WORK/fresh-cache/deep/cache-ttl-learned"
-rm -rf "$WORK/fresh-cache"
-t_reset; t_assist $((NOW - 800)) fixmodel 60000 300
-t_user $((NOW - 200)); t_assist $((NOW - 199)) fixmodel 0 50000
-printf 'v2 %s acctgen 0\n' $((NOW - 199)) > "$STATE_DIR/cache-ttl-track-fresh-lock"
-STATUSLINE_CACHE_TTL_LEARNED="$FRESH_LEARNED" \
-  run_statusline "$(statusline_payload fresh-lock "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
-assert test -f "$FRESH_LEARNED"
-
-CONC_A="$WORK/learn-concurrent-a.jsonl"
-CONC_B="$WORK/learn-concurrent-b.jsonl"
-saved_transcript="$TRANSCRIPT"
-TRANSCRIPT="$CONC_A"; : > "$TRANSCRIPT"
-t_assist $((NOW - 700)) fixmodel 60000 300
-t_user $((NOW - 400)); t_assist $((NOW - 399)) fixmodel 50000 100
-TRANSCRIPT="$CONC_B"; : > "$TRANSCRIPT"
-t_assist $((NOW - 900)) fixmodel 60000 300
-t_user $((NOW - 300)); t_assist $((NOW - 299)) fixmodel 0 50000
-TRANSCRIPT="$saved_transcript"
-printf 'v2 %s acctgen 0\n' $((NOW - 399)) > "$STATE_DIR/cache-ttl-track-learn-concurrent-a"
-printf 'v2 %s acctgen 0\n' $((NOW - 299)) > "$STATE_DIR/cache-ttl-track-learn-concurrent-b"
-rm -f "$LEARNED"
-run_statusline "$(statusline_payload learn-concurrent-a "$(warm_extra "$CONC_A" 20 50000)")" >/dev/null &
-learn_pid_a=$!
-run_statusline "$(statusline_payload learn-concurrent-b "$(warm_extra "$CONC_B" 20 50000)")" >/dev/null &
-learn_pid_b=$!
-wait "$learn_pid_a" "$learn_pid_b"
-assert grep -Fq '"observed_floor_s":300' "$LEARNED"
-assert grep -Fq '"observed_ceiling_s":600' "$LEARNED"
-
-# Each response is consumed once (learned_upto): manually zero the floor,
-# re-render the same transcript — the old evidence must not re-learn.
-rm -f "$LEARNED"
-learn_case learn-dedup $((NOW - 500)) $((NOW - 200)) 50000 100
-assert grep -Fq '"observed_floor_s":300' "$LEARNED"
-printf '{"observed_floor_s":0,"observed_ceiling_s":null,"updated_at":%s}\n' "$NOW" > "$LEARNED"
-run_statusline "$(statusline_payload learn-dedup "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
-assert grep -Fq '"observed_floor_s":0' "$LEARNED"
-
-# Guards: a miss is TTL evidence only when nothing else explains it.
-# (a) sub-120s gaps are prefix invalidations, never ceiling evidence;
-rm -f "$LEARNED"
-learn_case learn-tiny $((NOW - 260)) $((NOW - 200)) 0 50000
-assert test ! -e "$LEARNED"
-# (b) a model switch across the gap is not TTL evidence;
-learn_case learn-modelsw $((NOW - 800)) $((NOW - 200)) 0 50000 othermodel
-assert test ! -e "$LEARNED"
-# (c) a compact boundary inside the gap is not TTL evidence;
-learn_case learn-bnd $((NOW - 800)) $((NOW - 200)) 0 50000 fixmodel $((NOW - 400))
-assert test ! -e "$LEARNED"
-# (d) an account switch across the gap (stamp != current) is not TTL evidence.
-t_reset; t_assist $((NOW - 800)) fixmodel 60000 300
-t_user $((NOW - 200)); t_assist $((NOW - 199)) fixmodel 0 50000
-printf 'v2 %s alona 0\n' $((NOW - 199)) > "$STATE_DIR/cache-ttl-track-learn-acctsw"
-run_statusline "$(statusline_payload learn-acctsw "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
-assert test ! -e "$LEARNED"
-
-# Stale bounds (updated_at > 7 days old) decay to floor 0 / ceiling null.
-printf '{"observed_floor_s":1234,"observed_ceiling_s":5000,"updated_at":%s}\n' $((NOW - 800000)) > "$LEARNED"
-t_reset; t_assist $((NOW - 20))
-run_statusline "$(statusline_payload ctx-decay "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
-assert grep -Fq '"observed_floor_s":0' "$LEARNED"
-assert grep -Fq '"observed_ceiling_s":null' "$LEARNED"
-assert test "$(grep -oE '"updated_at":[0-9]+' "$LEARNED" | grep -oE '[0-9]+')" -ge "$NOW"
-rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
+rm -f "$STATE_DIR"/cache-ttl-track-*
 : > "$TRANSCRIPT"
 RUN_STATUSLINE_DEFAULT_ACCOUNT=
 
@@ -4025,7 +3928,7 @@ wp_now=$(date +%s)
 # The probe's clock is pinned: the stamps below are checked against starts it derives from ps etimes.
 export STATUSLINE_NOW=$wp_now
 # Worker runs (bin/worker-run): one launched here and testing, one launched elsewhere that this chat
-# waits on (its title from the brief past its header lines), one so new it has no supervisor pid yet;
+# waits on, one so new it has no supervisor pid yet;
 # none for an ended run, a dead or recycled supervisor, or a pid-less start older than any start takes.
 wp_run() { # run-id launcher state-json meta-json
   mkdir -p "$WP_RUNS/$1"
@@ -4039,11 +3942,11 @@ printf 'acc · astra · high\n' > "$WP_RUNS/codex-7-7-live/tag"; printf 'Fix the
 printf '184321\n' > "$WP_RUNS/codex-7-7-live/tokens"
 wp_run codex-7-7-other other-sess '{"phase": "wait"}' "{\"pid\": 2200, \"started_at\": $((wp_now - 300)), \"pid_started_at\": $((wp_now - 300))}"
 printf 'com · opus · high\n' > "$WP_RUNS/codex-7-7-other/tag"; printf 'unknown\n' > "$WP_RUNS/codex-7-7-other/tokens"
-printf 'ACCOUNT: com\nEFFORT: high\n\n  RESUME 1a2b-3c: Map the hooks\nmore\n' > "$WP_RUNS/codex-7-7-other/brief"
+printf 'Map the hooks\n' > "$WP_RUNS/codex-7-7-other/title"
 # A light run's tag is recast as the light call that made it; a fix round's run is `fix:` and the round.
 wp_run codex-7-7-light wp-sess "{\"phase\": \"wait\", \"started_epoch\": $((wp_now - 100))}" \
   "{\"pid\": 2400, \"pid_started_at\": $((wp_now - 100)), \"light\": \"research\"}"
-printf 'rawilimo · gemini-3.5-flash-high · high\n' > "$WP_RUNS/codex-7-7-light/tag"; printf 'Find the docs\n' > "$WP_RUNS/codex-7-7-light/title"
+printf 'rawilimo · flash38 · high\n' > "$WP_RUNS/codex-7-7-light/tag"; printf 'Find the docs\n' > "$WP_RUNS/codex-7-7-light/title"
 wp_run codex-7-7-fix wp-sess "{\"phase\": \"wait\", \"round_id\": \"20261009T120000Z-1a2b3c4d5\", \"started_epoch\": $((wp_now - 50))}" \
   "{\"pid\": 2500, \"pid_started_at\": $((wp_now - 50))}"
 printf 'com · opus · high\n' > "$WP_RUNS/codex-7-7-fix/tag"; printf 'Fix the findings\n' > "$WP_RUNS/codex-7-7-fix/title"
@@ -4052,7 +3955,7 @@ wp_run codex-7-7-que wp-sess "{\"phase\": \"wait\", \"started_epoch\": $((wp_now
   "{\"pid\": 2600, \"pid_started_at\": $((wp_now - 40)), \"slot_at\": $((wp_now - 5))}"
 printf 'com · opus · high\n' > "$WP_RUNS/codex-7-7-que/tag"; printf 'Queued task\n' > "$WP_RUNS/codex-7-7-que/title"
 wp_run codex-7-7-new wp-sess "{\"phase\": \"start\", \"started_epoch\": $((wp_now - 20))}" '{"pid": 0}'
-printf 'MODEL: opus\nNew task\n' > "$WP_RUNS/codex-7-7-new/brief"
+printf 'New task\n' > "$WP_RUNS/codex-7-7-new/title"
 wp_run codex-7-7-done wp-sess '{"phase": "done"}' '{"pid": 2100}'; printf '0\n' > "$WP_RUNS/codex-7-7-done/exit_code"
 wp_run codex-7-7-foreign other-sess '{"phase": "wait"}' "{\"pid\": 2300, \"pid_started_at\": $((wp_now - 240))}"
 wp_run codex-7-7-gone wp-sess '{"phase": "wait"}' '{"pid": 2900}'
@@ -4232,7 +4135,7 @@ wp_view() { awk -F'\t' -v OFS='\t' '$2 == "worker" && $7 != "" { $7 = "@" } { pr
 assert_eq "$(printf '%s\n' \
   $'main\tworker\tacc · astra · high\tFix the parser\ttests\t@\t' \
   $'main\tworker\tcom · opus · high\tMap the hooks\tworking\t\t' \
-  $'main\tworker\tlight research · 3.5-flash · rawilimo\tFind the docs\tworking\t\t' \
+  $'main\tworker\tlight research · 3.8-flash · rawilimo\tFind the docs\tworking\t\t' \
   $'main\tworker\tfix: com · opus · high\t2b3c4d5\tworking\t\t' \
   $'main\tworker\tcom · opus · high\tQueued task\tqueued\t\t' \
   $'main\tworker\tworker · 7-7-new\tNew task\tstart\t\t' \
@@ -5152,7 +5055,7 @@ unpushed_render unpushed-cache "$AHEAD_REPO" >/dev/null
 run_statusline "$(statusline_payload unpushed-cache "" "$AHEAD_REPO")" >/dev/null ||
   fail "unpushed cache render failed"
 assert_eq 1 "$(unpushed_calls)"
-# And asked again the moment the debt journal moves: whose the commit is is read out of it, so a
+# And asked again the moment review-anchors.json moves: whose the commit is is read out of it, so a
 # row appended there changes the answer with no commit made and nothing in `git status` moving. The
 # journal is the git FAMILY's, under the common dir (shared-invariants row `bd`), which is the one
 # file every checkout of the project writes to.
@@ -5452,9 +5355,6 @@ for tr_native in Explore Plan general-purpose claude-code-guide statusline-setup
   assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("is not spawned. Delegate from this chat")' <<<"$tr_out" >/dev/null
 done
 assert test ! -e "$TR_HOME_CACHE/tr-native"
-tr_wf=$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Workflow",session_id:"tr-wf",tool_input:{script:"x"}}' |
-  "$SPAWN_HOOK") || fail "Workflow spawn exited nonzero"
-assert_eq "" "$tr_wf"
 
 # fork is tagged `fork · <model> · <session account>`, and gets no MD guard: it is his word, not a worker.
 tr_fork=$(CLAUDE_LIMITS_ACCOUNT=forkacct tr_spawn tr-fork fork 'Refactor the parser' '' claude-opus-5) || fail "fork spawn exited nonzero"
@@ -5672,4 +5572,4 @@ assert_eq 4 "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "
 no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")
 assert grep -Fq 'acc · astra · high' <<<"$no_status"
 fi
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — no per-chat review debt number whatever the gate would answer, the gate's autonomy dot asked once per TTL with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, fork tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the chat, refused to an agent through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — no per-chat review debt number whatever the gate would answer, the gate's autonomy dot asked once per TTL with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's review-anchors.json that decides whose the commit is moves — main-last and Gemini account predictions, fork tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the chat, refused to an agent through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

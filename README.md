@@ -352,7 +352,7 @@ has to sign in once more. macOS refuses `security unlock-keychain` on anything n
   the `light_research` row's vendor and model (default the table's first gemini row) with account
   selection through role `research`, automatic rotation after a quota wall, and a per-vendor
   read-only guard. Its terminal exits are 3 for usage limit, 4 for
-  unavailable, 5 for a read-only violation, and 124 for timeout.
+  unavailable (a timeout included), and 5 for a read-only violation.
 
 Adding an account: `geminib profile work` opens an isolated, logged-out Antigravity profile and
 prompts for Google login; on a tty it then offers `geminib web work`, the one hidden-Chrome sign-in the

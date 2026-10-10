@@ -166,13 +166,15 @@ print("label-pinned:", chats.label(0, (7,)))
 # --- the track line is ONE format, written there and read here ---------------
 # The reader counts fields by position, so reordering that printf keeps every suite green while
 # the picker names the wrong account. Pin the two to each other rather than to a literal line.
-writer = re.search(r"printf 'v2((?: %s)+)\\n'((?:[^\n]*\\\n)*[^\n]*)",
+writer = re.search(r"printf 'v2((?: (?:%s|0))+)\\n'((?:[^\n]*\\\n)*[^\n]*)",
                    open(sys.argv[2], encoding="utf-8").read())
 # The arg list ends where the redirect begins; a `>` never appears inside it.
 args = re.findall(r'"\$\{?([a-z_]+)', writer.group(2).split(">")[0])
-print("writer-fields:", writer.group(1).count("%s") == len(args), len(args))
-print("pinned-ts:", args[chats.TRACK_TS - 1])
-print("pinned-account:", args[chats.TRACK_ACCOUNT - 1])
+fields = writer.group(1).split()
+at = lambda p: args[fields[:p].count("%s") - 1] if fields[p - 1] == "%s" else fields[p - 1]
+print("writer-fields:", fields.count("%s") == len(args), len(fields))
+print("pinned-ts:", at(chats.TRACK_TS))
+print("pinned-account:", at(chats.TRACK_ACCOUNT))
 PY
 ) || fail "module probe failed"
 

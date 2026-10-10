@@ -277,9 +277,7 @@ for ((question=0; question<${#prompt_files[@]}; question++)); do
     fi
     start_rc=0
     if [ "$vendor" = gemini ]; then
-      launch=$(WORKER_RUN_GEMINIB="$geminib_bin" \
-        GEMINI_RESEARCH_SANDBOX_EXEC="${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}" \
-        "$worker_run" "${args[@]}") || start_rc=$?
+      launch=$(WORKER_RUN_GEMINIB="$geminib_bin" "$worker_run" "${args[@]}") || start_rc=$?
     else
       launch=$("$worker_run" "${args[@]}") || start_rc=$?
     fi

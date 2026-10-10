@@ -21,7 +21,7 @@ FAKE_BIN="$WORK/bin"
 export CALLS="$WORK/calls"
 mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini-profiles/alpha" "$FAKE_BIN"
 export GEMINIB_PROFILES_DIR="$HOME/.gemini-profiles" XDG_CACHE_HOME="$HOME/.cache"
-export GEMINIB_CACHE_DIR="$HOME/.cache/geminib" GEMINI_WEATHER_DIR="$HOME/weather"
+export GEMINIB_CACHE_DIR="$HOME/.cache/geminib"
 export CLAUDEB_DIR="$HOME/claudeb" WORKER_RUN_DIR="$HOME/runs"
 unset GEMINI_WEATHER_NOW GEMINIB_CAPACITY_FALLBACK
 
@@ -99,11 +99,11 @@ assert_eq "$(wc -l <"$CALLS-hung" | tr -d ' ')" 2
 while read -r hung; do assert_eq "$(kill -0 "$hung" 2>/dev/null && echo alive || echo gone)" gone; done <"$CALLS-hung"
 
 # --- A plain gemini-weather afterwards sees the probe's runs, tagged as probes ---
-weather=$("$ROOT/bin/gemini-weather" --window 5 --json --no-write)
+weather=$("$ROOT/bin/gemini-weather" --window 5 --json)
 assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.8-flash") | "\(.state) \(.runs) \(.probe_runs) \(.steps)"' <<<"$weather")" 'ok 2 2 7'
 assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.7-flash") | .state' <<<"$weather")" slow
 assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.6-flash") | "\(.state) \(.errors_503)"' <<<"$weather")" 'starved 2'
-table=$("$ROOT/bin/gemini-weather" --window 5 --no-write)
+table=$("$ROOT/bin/gemini-weather" --window 5)
 assert grep -Eq '^gemini-3\.8-flash +ok +2 \(2 probe\) +0 +7 ' <<<"$table"
 
 # --- --families and --short-only: one family, one request ---

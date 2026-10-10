@@ -299,14 +299,14 @@ review_session_line() { # session now
 # tells the chat to push reads the same subcommand, and a marker deriving ownership on its own would
 # stand over commits that ask disowns. Cached off the render path — the gate forks git
 # once per candidate commit, which is not a render-path cost — and keyed on everything cheap that
-# can change the answer: the two shas, and the family's journals ownership is read from.
+# can change the answer: the two shas, and the family's review-anchors.json ownership is read from.
 unpushed_marker() { # toplevel session now
   local out="$1" top="$2" sid="$3" now="$4"
   printf -v "$out" ''
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
   local cache="$statusline_cache_dir/unpushed-${sid:-unknown}"
   local lock="$cache.lock"
-  local key cached_key cached cache_mtime lock_mtime commondir head upstream commit_mtime debt_mtime
+  local key cached_key cached cache_mtime lock_mtime commondir head upstream anchors_mtime
   [ -n "$sid" ] && [ -n "$top" ] && [ -x "$gate" ] || { printf -v "$out" '%s' off; return 0; }
   # A branch with no upstream owes nothing here — nothing on this machine knows where it would go —
   # and one whose upstream is HEAD is a branch with nothing ahead at all. Both answer without the
@@ -323,15 +323,10 @@ unpushed_marker() { # toplevel session now
   [ -n "$head" ] && [ -n "$upstream" ] && [ "$head" != "$upstream" ] ||
     { printf -v "$out" '%s' off; return 0; }
   journal_dir commondir "$top"
-  commit_mtime=""
-  debt_mtime=""
-  if [ -n "$commondir" ]; then
-    file_mtime_to commit_mtime "$commondir/review-anchors.json"
-    debt_mtime=$commit_mtime
-  fi
-  [[ "$commit_mtime" =~ ^[0-9]+$ ]] || commit_mtime=0
-  [[ "$debt_mtime" =~ ^[0-9]+$ ]] || debt_mtime=0
-  key="$top|$head|$upstream|$commit_mtime|$debt_mtime"
+  anchors_mtime=""
+  [ -z "$commondir" ] || file_mtime_to anchors_mtime "$commondir/review-anchors.json"
+  [[ "$anchors_mtime" =~ ^[0-9]+$ ]] || anchors_mtime=0
+  key="$top|$head|$upstream|$anchors_mtime"
   file_mtime_to cache_mtime "$cache"
   cached_key=""
   cached=""
@@ -497,14 +492,13 @@ pct_colored() { # var pct dim warn
 
 # \x1f (unit separator) instead of tab: bash `read` collapses consecutive tab
 # delimiters (tab is IFS-whitespace), which misaligns fields whenever a middle
-# one (e.g. fast_mode, commonly empty) is blank.
-IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw rl_json transcript_path < <(printf '%s' "$input" | jq -r '
+# one (e.g. effort, commonly empty) is blank.
+IFS=$'\x1f' read -r model model_id effort ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw rl_json transcript_path < <(printf '%s' "$input" | jq -r '
   def num0: if . == null then "" else (.+0|round|tostring) end;
   def str0: if . == null then "" else tostring end;
   [ (.model.display_name // "?"),
     (.model.id // ""),
     (.effort.level // ""),
-    (if .fast_mode == true then "1" else "" end),
     (.context_window.context_window_size | num0),
     (.workspace.project_dir // .workspace.current_dir // .cwd // "."),
     (.workspace.current_dir // .cwd // "."),
@@ -1045,11 +1039,9 @@ fi
 # User/tool activity and payload cache counters cannot prove server cache warmth.
 assist_ts=0; assist_model="-"; assist_uuid="-"; fork_sid="-"; ttl_bucket=0
 post_compact=0; ctx_stale=1; boundary_ts=0; fresh_ctx=0; oldest_ts=0
-ev_valid=0; ev_ts=0; ev_gap=0; ev_cr=0; ev_cc=0
 fork_anchor_uuid="-"; fork_own_ts=0
 latest_ts=0; latest_model="-"; latest_ttl=0; latest_uuid="-"; latest_fork="-"
-learned_file="${STATUSLINE_CACHE_TTL_LEARNED:-$statusline_cache_dir/cache-ttl-learned}"
-warm_acct="${CLAUDEGPT_ACCOUNT:-$acct}"; track_acct=""; learned_upto=0
+warm_acct="${CLAUDEGPT_ACCOUNT:-$acct}"; track_acct=""
 rec_ts=0; rec_acct=""; rec_ttl=0; rec_model="-"; rec_uuid="-"; rec_scan=262144
 seen_upto=0; seen_acct=""; track_ready=0
 track=""; t1=""; t2=""; t3=""; t4=""; t5=""; t6=""; t7=""; t8=""; t9=""; t10=""
@@ -1059,7 +1051,6 @@ if [ -n "$session_id" ]; then
   if [ "$t1" = v2 ]; then
     [[ "$t2" =~ ^[0-9]+$ ]] && rec_ts="$t2"
     rec_acct="$t3"
-    [[ "$t4" =~ ^[0-9]+$ ]] && learned_upto="$t4"
     [[ "$t5" =~ ^[0-9]+$ ]] && rec_ttl="$t5"
     [ -n "$t6" ] && rec_model="$t6"
     [ -n "$t7" ] && rec_uuid="$t7"
@@ -1161,8 +1152,8 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" 
   boundary_seed="$bnd_seen"
 fi
 
-scan_vars=(scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket post_compact ev_valid ev_ts
-  ev_gap ev_cr ev_cc ctx_stale boundary_ts fork_anchor_uuid fork_own_ts latest_ts latest_model latest_ttl
+scan_vars=(scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket post_compact
+  ctx_stale boundary_ts fork_anchor_uuid fork_own_ts latest_ts latest_model latest_ttl
   latest_uuid latest_fork fresh_ctx oldest_ts scan_complete scan_bytes transcript_size)
 if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
   file_size_to transcript_size "$transcript_path"
@@ -1171,7 +1162,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
   # transcript replays its last answer instead of re-reading up to 8 MiB.
   file_mtime_to scan_mtime "$transcript_path"
   file_stat_to scan_inode inode "$transcript_path"
-  scan_key="v1|$transcript_path|$scan_inode|$transcript_size|$scan_mtime|$model_id|$boundary_seed|$saved_scan_bytes"
+  scan_key="v2|$transcript_path|$scan_inode|$transcript_size|$scan_mtime|$model_id|$boundary_seed|$saved_scan_bytes"
   scan_memo="$statusline_cache_dir/scan-$session_id"
   scan_memo_key=""; scan_memo_vals=""
   [ -n "$session_id" ] && [ -r "$scan_memo" ] &&
@@ -1197,9 +1188,8 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
               | {ttl: ($v | if length == 0 then 0 else min end)};
             # The plain context-size core is claude-setup hooks/lib/context-size.jq; a fix there has to be re-checked against this superset.
             reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
-              {la:0, pm:"", pg:-1, pa:0, lb:($seedb | ep // 0), ats:0, am:"-", au:"-", afk:"", bk:0,
-               pbk:0, ots:0,
-               cgap:0, ccr:0, ccc:0, cets:0, cpm:"", cem:"", cpa:0, chas:0, own:0,
+              {lb:($seedb | ep // 0), ats:0, am:"-", au:"-", afk:"", bk:0,
+               pbk:0, ots:0, own:0,
                sawf:0, fas:"", fau:"", fot:0, lts:0, lm:"-", lbk:0, lu:"-", lfk:"",
                fc:0, fcts:0};
               (($x.forkedFrom?.sessionId? // "") | tostring) as $fs
@@ -1220,9 +1210,6 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                      .lb = $ts
                      | (if .fcts > $ts then . else .fc = 0 | .fcts = 0 end)
                    else . end)
-                elif $x.type == "user" and ($x.isCompactSummary? != true) then
-                  (if .la > 0 and .pg < 0 then .pg = ($ts - .la) | .pa = .la else . end)
-                  | (if $ts > .la then .la = $ts else . end)
                 elif $x.type == "assistant" and (($x.message?.model? // "") != "<synthetic>") then
                   ($x.message?.usage? // null) as $u
                   | (($u.cache_read_input_tokens? // 0) | num) as $cr
@@ -1233,11 +1220,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                   | if ($u | type) != "object" then .
                     else
                       (if ($cr + $cc) <= 0 or $xm == "" then . else
-                      (if .pg >= 0 then
-                         .cgap = .pg | .ccr = $cr | .ccc = $cc | .cets = $ts
-                         | .cpm = .pm | .cem = $xm | .cpa = .pa | .chas = 1 | .pg = -1
-                       else . end)
-                      | (if $ts >= .lts then
+                      (if $ts >= .lts then
                            .lts = $ts | .lm = $xm | .lbk = $bs.ttl
                            | .lu = (if $xu == "" then "-" else $xu end) | .lfk = $fs
                          else . end)
@@ -1254,8 +1237,6 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                            | (if $bs.ttl > 0 then .pbk = $bs.ttl else . end)
                          else . end)
                       | (if $fs == "" and $ts > .own then .own = $ts else . end)
-                      | .pm = $xm
-                      | (if $ts > .la then .la = $ts else . end)
                       end)
                       # Entries re-emitted after a boundary keep their pre-compact usage
                       # totals, so only a response stamped after it sizes live context -
@@ -1272,9 +1253,6 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
             | [ (if .ats > 0 then 1 else 0 end), .ats, .am, .au,
                 (.afk | if . == "" then "-" else . end), .bk,
                 (if .lb > 0 and .lb >= .ats then 1 else 0 end),
-                (if .chas == 1 and .cgap > 0 and .cpm != "" and .cpm == .cem
-                    and (.lb == 0 or .lb <= .cpa or .lb >= .cets) then 1 else 0 end),
-                .cets, .cgap, .ccr, .ccc,
                 (if .own == 0 or (.lb > 0 and .own <= .lb) then 1 else 0 end),
                 .lb, (.fau | if . == "" then "-" else . end), .fot,
                 .lts, .lm, .lbk, .lu, (.lfk | if . == "" then "-" else . end), .fc, .ots ]
@@ -1282,7 +1260,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
       )
       if [ -n "$cache_scan" ]; then
         IFS=$'\x1f' read -r scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket \
-          post_compact ev_valid ev_ts ev_gap ev_cr ev_cc ctx_stale boundary_ts fork_anchor_uuid \
+          post_compact ctx_stale boundary_ts fork_anchor_uuid \
           fork_own_ts latest_ts latest_model latest_ttl latest_uuid latest_fork fresh_ctx \
           oldest_ts <<< "$cache_scan" || :
       fi
@@ -1311,7 +1289,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
   fi
 fi
 
-for scan_num in assist_ts ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc \
+for scan_num in assist_ts ttl_bucket post_compact \
   ctx_stale boundary_ts fork_own_ts latest_ts latest_ttl fresh_ctx oldest_ts; do
   [[ "${!scan_num}" =~ ^[0-9]+$ ]] || printf -v "$scan_num" %s 0
 done
@@ -1563,65 +1541,15 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
   fi
 fi
 
-shared_bounds_lock="$learned_file.lock"
-bounds_need_decay=""
-if [ -r "$learned_file" ] && read -r learned_probe < "$learned_file" 2>/dev/null \
-   && [[ "$learned_probe" =~ \"updated_at\":([0-9]+) ]] \
-   && [ $((now - BASH_REMATCH[1])) -gt 604800 ]; then
-  bounds_need_decay=1
-fi
-learn_event=""
-if [ "$ev_valid" = 1 ] && [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null \
-   && [ -n "$track_acct" ] && [ "$track_acct" != "?" ] && [ "$track_acct" = "$warm_acct" ]; then
-  learn_event=1
-fi
-if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && { [ -n "$learn_event" ] || [ -n "$bounds_need_decay" ]; }; then
-  statusline_parent_dir "$learned_file"
-  ensure_dir "$statusline_parent" 2>/dev/null
-  lock_tries=0
-  while ! snapshot_lock_acquire "$shared_bounds_lock"; do
-    lock_tries=$((lock_tries + 1))
-    [ "$lock_tries" -lt 20 ] || break
-    sleep 0.01
-  done
-  if [ -d "$shared_bounds_lock" ] && [ "$lock_tries" -lt 20 ]; then
-    ttl_floor=0; ttl_ceiling=""; learned_at=""; bounds_changed=""
-    if [ -r "$learned_file" ] && read -r learned_raw < "$learned_file" 2>/dev/null; then
-      [[ "$learned_raw" =~ \"observed_floor_s\":([0-9]+) ]] && ttl_floor="${BASH_REMATCH[1]}"
-      [[ "$learned_raw" =~ \"observed_ceiling_s\":([0-9]+) ]] && ttl_ceiling="${BASH_REMATCH[1]}"
-      [[ "$learned_raw" =~ \"updated_at\":([0-9]+) ]] && learned_at="${BASH_REMATCH[1]}"
-    fi
-    if [[ "$learned_at" =~ ^[0-9]+$ ]] && [ $((now - learned_at)) -gt 604800 ]; then
-      ttl_floor=0; ttl_ceiling=""; bounds_changed=1
-    fi
-    if [ -n "$learn_event" ]; then
-      if [ "$ev_cr" -ge 1000 ] 2>/dev/null && [ "$ev_cr" -ge "$ev_cc" ] 2>/dev/null; then
-        [ "$ev_gap" -gt "$ttl_floor" ] 2>/dev/null && { ttl_floor=$ev_gap; bounds_changed=1; }
-        if [ -n "$ttl_ceiling" ] && [ "$ev_gap" -gt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=""; bounds_changed=1; fi
-      elif [ "$ev_cr" -lt 1000 ] 2>/dev/null && [ "$ev_cc" -ge 20000 ] 2>/dev/null && [ "$ev_gap" -ge 120 ] 2>/dev/null; then
-        if [ -z "$ttl_ceiling" ] || [ "$ev_gap" -lt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=$ev_gap; bounds_changed=1; fi
-      fi
-    fi
-    if [ -n "$bounds_changed" ]; then
-      ceil_json=null; [ -n "$ttl_ceiling" ] && ceil_json="$ttl_ceiling"
-      printf '{"observed_floor_s":%s,"observed_ceiling_s":%s,"updated_at":%s}\n' \
-        "$ttl_floor" "$ceil_json" "$now" > "$learned_file.tmp.$$" 2>/dev/null \
-        && mv "$learned_file.tmp.$$" "$learned_file" 2>/dev/null || rm -f "$learned_file.tmp.$$" 2>/dev/null
-    fi
-    [ -n "$learn_event" ] && learned_upto="$ev_ts"
-    rmdir "$shared_bounds_lock" 2>/dev/null
-  fi
-fi
-
 if [ -n "$track" ] && [ "$track_ready" = 1 ] \
    && { [ "$t1" != v2 ] || [ "$rec_ts" != "${t2:-}" ] || [ "$rec_acct" != "${t3:-}" ] \
-        || [ "$learned_upto" != "${t4:-}" ] || [ "$rec_ttl" != "${t5:-}" ] \
+        || [ "${t4:-}" != 0 ] || [ "$rec_ttl" != "${t5:-}" ] \
         || [ "$rec_model" != "${t6:-}" ] || [ "$rec_uuid" != "${t7:-}" ] \
         || [ "$rec_scan" != "${t8:-}" ] || [ "$seen_upto" != "${t9:-}" ] \
         || [ "$seen_acct" != "${t10:-}" ]; }; then
   statusline_parent_dir "$track"
   ensure_dir "$statusline_parent" 2>/dev/null
-  printf 'v2 %s %s %s %s %s %s %s %s %s\n' "$rec_ts" "${rec_acct:-?}" "$learned_upto" \
+  printf 'v2 %s %s 0 %s %s %s %s %s %s\n' "$rec_ts" "${rec_acct:-?}" \
     "$rec_ttl" "$rec_model" "$rec_uuid" "$rec_scan" "$seen_upto" "$seen_acct" \
     > "$track.tmp.$$" 2>/dev/null && mv "$track.tmp.$$" "$track" 2>/dev/null \
     || rm -f "$track.tmp.$$" 2>/dev/null
@@ -1805,7 +1733,7 @@ fi
 # Both lines are built to the terminal's width, not printed once: the harness exports COLUMNS and
 # cuts a row at the right edge, a few cells before COLUMNS. Every shrinkable segment has full /
 # short / off forms; the steps below are applied in a fixed order, re-measuring after each
-# (docs/statusline-contract.md "Progressive fit"). The red alarm blocks and `↓N↑N` have no `off`
+# (docs/statusline-contract.md "Progressive fit"). The red `unpushed` alarm and `↓N↑N` have no `off`
 # form at all — a width small enough to need them gone is a width that keeps them.
 STATUSLINE_FIT_MARGIN=${STATUSLINE_FIT_MARGIN:-4}
 if [[ "$STATUSLINE_FIT_MARGIN" =~ ^[0-9]+$ ]]; then

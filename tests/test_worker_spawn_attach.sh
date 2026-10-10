@@ -26,7 +26,7 @@ cat >"$WORK/count-jq.sh" <<'SH'
 jq() { printf 'call\n' >> "$JQ_CALLS"; command jq "$@"; }
 SH
 BASH_ENV="$WORK/count-jq.sh" JQ_CALLS="$WORK/jq-calls" bash "$HOOK" <<'JSON'
-{"hook_event_name":"PreToolUse","tool_name":"Workflow","session_id":"s1"}
+{"hook_event_name":"PostToolUse","tool_name":"Agent","session_id":"s1"}
 JSON
 assert_eq 1 "$(wc -l <"$WORK/jq-calls" | tr -d ' ')"
 # A denied type is answered by the one jq that classifies it, its prompt never copied into the shell.

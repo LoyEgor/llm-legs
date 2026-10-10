@@ -300,7 +300,6 @@ slurp() { # var file
 }
 agent_records=""
 re_started='"started_epoch": *([0-9]+)' re_started_at='"started_at": *([0-9]+)' re_phase='"phase": *"([a-z_-]*)"'
-re_key='^[A-Z][A-Z0-9_-]*:([[:space:]]|$)' re_resume='^RESUME[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$'
 re_light='"light": *"([a-z]+)"' re_round='"round_id": *"([A-Za-z0-9_-]+)"'
 re_cli='"cli_pid": *[0-9]' re_slot='"slot_at": *[0-9]'
 for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
@@ -320,25 +319,11 @@ for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
   [ "$live" != '?' ] || [ "$waited" = 1 ] || [ "$((now - start))" -le 300 ] || continue
   one_line head "$dir/tag"
   one_line title "$dir/title"
-  if [ -z "$title" ] && [ -f "$dir/brief" ]; then
-    brief_lines=0
-    while IFS= read -r line && [ "$brief_lines" -lt 40 ]; do
-      brief_lines=$((brief_lines + 1))
-      line=${line#"${line%%[![:space:]]*}"}
-      [ -n "$line" ] && ! [[ $line =~ $re_key ]] || continue
-      if [[ $line =~ $re_resume ]]; then line=${BASH_REMATCH[1]}; [ -n "$line" ] || continue; fi
-      line=${line//[$'\t\037\r']/ }
-      title=${line:0:200}
-      break
-    done < "$dir/brief"
-  fi
   head=${head:-worker · ${run: -7}}
   # A light run's tag names the account first; its row reads like the light call that made it.
   if [ -n "$light" ] && [[ $head == *' · '*' · '* ]] && [[ $head != 'light '* ]]; then
     model=${head#* · }; model=${model%% · *}
-    if [[ $model =~ ^flash([0-9])([0-9])$ ]]; then model="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}-flash"
-    elif [[ $model =~ ^gemini-([0-9.]+)-(flash|pro)(-(high|medium|low))?$ ]]; then model="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
-    fi
+    [[ ! $model =~ ^flash([0-9])([0-9])$ ]] || model="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}-flash"
     head="light $light · $model · ${head%% · *}"
   fi
   if [ -n "$round" ]; then
@@ -526,7 +511,7 @@ while IFS=$'\037' read -r pid class elapsed label tpath parent; do
   esac
   spid=""
   case "$label" in suites*) spid=$'\t'"$pid" ;; esac
-  case $class in worker) rank=1 ;; review) rank=2 ;; media) rank=3 ;; tests) rank=4 ;; shell) rank=5 ;; *) rank=9 ;; esac
+  case $class in tests) rank=4 ;; shell) rank=5 ;; *) rank=9 ;; esac
   records="${records}$rank"$'\tmain\t'"$class"$'\t'"$((now - elapsed))"$'\t'"$repo"$'\t'"$label"$'\t'"$done_n"$'\t'"$total"$'\t'"$outcome_dir"$'\t'"$root$spid"$'\n'
 done <<< "$items"
 
@@ -627,7 +612,6 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
           fi
         done
         if [[ "$g" =~ ^[1-9][0-9]*$ ]]; then
-          f=$((bad + killed))
           if [ "$bad" -gt 0 ]; then ok=false
           elif [ "$killed" -eq 0 ] && [ "$n" -eq "$g" ]; then ok=true
           fi
@@ -646,8 +630,7 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
           + (if $root == "" then {} else {repo_root: $root} end) + ('"$suite_secs"')'
       else
         jq -cn --argjson end "$now" --argjson start "$start" --arg repo "$c" --arg label "$d" --arg done "$e" \
-          --arg failed "$f" --arg total "$g" --arg ok "$ok" --arg root "$root" --arg times "$times" '{end: $end, secs: ($end - $start), who: "chat", repo: $repo, label: $label}
-          + (if $total == "" then {} else {total: ($total | tonumber), failed: (($failed | tonumber?) // 0)} end)
+          --arg ok "$ok" --arg root "$root" --arg times "$times" '{end: $end, secs: ($end - $start), who: "chat", repo: $repo, label: $label}
           + (if $ok == "" then {} else {ok: ($ok == "true")} end)
           + (if $root == "" then {} else {repo_root: $root} end) + ('"$suite_secs"')'
       fi

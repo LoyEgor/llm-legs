@@ -1,7 +1,7 @@
 # Sourced by every tests/test_light_research*.sh: each suite builds its own $WORK of stubs from here.
 set -u
-# worker-run opens start and wait outside Claude Code only; its relay door is tested with CLAUDECODE set.
-unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDEB_WORKER GROK_WORKER WORKER_RUN_ID WORKER_RUN_RELAY
+# worker-run refuses start and wait inside a worker run and runs its limit gate inside Claude Code.
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDEB_WORKER GROK_WORKER WORKER_RUN_ID
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT

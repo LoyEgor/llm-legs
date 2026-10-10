@@ -78,10 +78,6 @@ def geminib_families():
                     for key in ("family", "slug", "agy_prefix", "label"))]
 
 
-def weather_dir():
-    return os.environ.get("GEMINI_WEATHER_DIR") or os.path.join(base_home(), ".cache", "gemini-weather")
-
-
 def worker_run_log(run_dir):
     try:
         with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as handle:
@@ -361,7 +357,6 @@ def collect(window_min, now):
         "schema": SCHEMA,
         "generated_at": int(now),
         "window_min": window_min,
-        "valid_until": int(now + window_min * 60),
         "thresholds": {"healthy_step_s": HEALTHY_STEP_S, "slow_step_s": SLOW_STEP_S},
         "logs_scanned": scanned,
         "families": families,
@@ -382,7 +377,7 @@ def number(value):
     return "-" if value is None else "%.1f" % value
 
 
-def render_table(report, cache_path):
+def render_table(report):
     header = ("FAMILY", "STATE", "RUNS", "CUT", "STEPS", "MED S", "P90 S", "503", "LAST 503", "LAST STEP", "HOLD")
     rows = [header]
     for entry in report["families"]:
@@ -396,46 +391,26 @@ def render_table(report, cache_path):
         ))
     widths = [max(len(row[column]) for row in rows) for column in range(len(header))]
     lines = ["  ".join(cell.ljust(widths[column]) for column, cell in enumerate(row)).rstrip() for row in rows]
-    lines.append("window %dm · %d logs · slow at median step >= %gs · cache %s" % (
-        report["window_min"], report["logs_scanned"], report["thresholds"]["slow_step_s"],
-        cache_path or "not written"))
+    lines.append("window %dm · %d logs · slow at median step >= %gs" % (
+        report["window_min"], report["logs_scanned"], report["thresholds"]["slow_step_s"]))
     lines += ["state: %s %s" % (entry["family"], entry["state"]) for entry in report["families"]]
     return "\n".join(lines) + "\n"
-
-
-def write_cache(report):
-    directory = weather_dir()
-    os.makedirs(directory, exist_ok=True)
-    target = os.path.join(directory, "latest.json")
-    temporary = "%s.tmp.%d" % (target, os.getpid())
-    with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump(report, handle, ensure_ascii=False, indent=1)
-        handle.write("\n")
-    os.replace(temporary, target)
-    return target
 
 
 def main(argv):
     parser = argparse.ArgumentParser(prog="gemini-weather", description=__doc__.splitlines()[0])
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW_MIN, metavar="MIN")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--no-write", action="store_true", help="do not refresh the cached latest.json")
     args = parser.parse_args(argv)
     if args.window <= 0:
         parser.error("--window must be a positive number of minutes")
     now_override = os.environ.get("GEMINI_WEATHER_NOW")
     now = float(now_override) if now_override else time.time()
     report = collect(args.window, now)
-    cache_path = None
-    if not args.no_write:
-        try:
-            cache_path = write_cache(report)
-        except OSError as error:
-            print("gemini-weather: cache not written: %s" % error, file=sys.stderr)
     if args.json:
         sys.stdout.write(json.dumps(report, ensure_ascii=False) + "\n")
     else:
-        sys.stdout.write(render_table(report, cache_path))
+        sys.stdout.write(render_table(report))
     return 0
 
 

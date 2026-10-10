@@ -255,9 +255,9 @@ if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
   m=$(file_mtime "$marker" 2>/dev/null || printf '0')
   [[ "$m" =~ ^[0-9]+$ ]] || m=0
   if [ "$((now - m))" -gt 3600 ]; then
-    find "$cache_dir" -maxdepth 1 -type f \( -name 'ports-*' -o -name 'title-*' -o -name 'cache-ttl-track-*' -o -name 'topic-*' \
-      -o -name 'review-class-*' -o -name 'scan-*' -o -name 'rl-cost-*' -o -name 'unpushed-*' -o -name 'review-autonomy-*' \
-      -o -name 'review-session-*' -o -name 'work-*' -o -name 'repo-debt-*' \) -mtime +7 -delete 2>/dev/null
+    find "$cache_dir" -maxdepth 1 -type f \( -name 'ports-*' -o -name 'cache-ttl-track-*' -o -name 'scan-*' \
+      -o -name 'rl-cost-*' -o -name 'unpushed-*' -o -name 'review-autonomy-*' -o -name 'work-*' -o -name 'repo-debt-*' \) \
+      -mtime +7 -delete 2>/dev/null
     # A writer renames its temporary within the second; one an hour old was left by a killed writer.
     find "$cache_dir" "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/limits" -maxdepth 1 -type f -name '*.tmp.*' -mmin +60 \
       -delete 2>/dev/null

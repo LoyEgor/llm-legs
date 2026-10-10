@@ -191,15 +191,11 @@ CONTRADICTIONS
   assert test "$rc" -eq 4
   assert grep -qF 'ask for opposite states' "$WORK/websearch.err"
 
-  # A run recorded before the table existed carries no state at all, and the CLIs that search by
-  # default did search: reported `off`, it promises a relaunch a capability its answer already had.
   for vendor in $(web_search_table | cut -f1); do
-    expected=off
-    [ "$(web_search_column "$vendor" on)" != '-' ] || expected=on
-    jq -cn --arg v "$vendor" '{vendor:$v}' >"$WORK/websearch/legacy.json"
-    assert test "$(web_search_meta_state "$WORK/websearch/legacy.json")" = "$expected"
-    jq -cn --arg v "$vendor" '{vendor:$v,web_search:false}' >"$WORK/websearch/legacy.json"
-    assert test "$(web_search_meta_state "$WORK/websearch/legacy.json")" = off
+    jq -cn --arg v "$vendor" '{vendor:$v,web_search:true}' >"$WORK/websearch/meta.json"
+    assert test "$(web_search_meta_state "$WORK/websearch/meta.json")" = on
+    jq -cn --arg v "$vendor" '{vendor:$v,web_search:false}' >"$WORK/websearch/meta.json"
+    assert test "$(web_search_meta_state "$WORK/websearch/meta.json")" = off
   done
 
   # The grok research leg is policed from outside by a tree digest, and the answer contract now asks

@@ -33,16 +33,17 @@ the resolver emits `--resume <uuid>` exactly as before.
 
 An account already signed in under `codexb` launches straight away: its canonical
 login is reused read-only (see "Which accounts a gateway chat can open" below).
-Launching a chat never opens a browser login automatically. Initial authorization
-for a genuinely new account is explicit:
+Launching a chat never opens a browser login automatically. An account on the codex
+roster with no Codex login signs in to the gateway explicitly:
 
 ```sh
 claudegpt login work4
 ```
 
 Open the displayed OpenAI authorization link in the browser on this Mac. The
-callback completes locally. The account name is a label: sign in to the account
-that label represents. Existing gateway logins are reused. `claudegpt login work4`
+callback completes locally. The name must already be on the codex roster (`codexb`
+or the menubar adds it); sign in to the OpenAI account it represents. Existing
+gateway logins are reused. `claudegpt login work4`
 remains available for login without launching a conversation; it cannot overwrite
 an existing login. Headless `-p`/`--print` calls require a prior login.
 
@@ -79,10 +80,9 @@ These are third-party adapters; provider compatibility can change.
 `share/chat_resume.py` all ask it, so no surface can advertise a target another
 refuses. Its roster is every OpenAI account `codexb` knows
 (`~/.codex-profiles/<name>`, `CODEXB_PROFILES_DIR` overrides it, `main` dropped by
-the same removal marker `share/codex-accounts.sh` writes) plus any account that
-still has only a gateway login of its own. That is what closed the systemic
-mismatch: an account working as a Codex worker was refused by the menu item
-because it had no directory in the gateway store.
+the same removal marker `share/codex-accounts.sh` writes); a gateway login alone
+never makes an account. So an account working as a Codex worker is never refused
+by the menu item for lacking a directory in the gateway store.
 
 A Codex profile needs **no second browser login**. The launch projects that
 profile's ACCESS token — and nothing else — into a per-run directory the bridge
@@ -103,7 +103,7 @@ Renewal failures are reported without invoking browser authorization.
 
 When both stores contain the name, their `account_id` values must match. A mismatch
 or malformed canonical login is an error, not permission to choose another identity.
-Gateway-only accounts keep their existing login. Each running projection pins its
+A roster account with no Codex login keeps its gateway login. Each running projection pins its
 initial identity, so replacing a profile cannot silently switch an active chat to
 another account. Readiness and dry-run resolution perform no refreshes or writes.
 

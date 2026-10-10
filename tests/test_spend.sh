@@ -270,10 +270,10 @@ with open(fake, "w") as handle:
 os.chmod(fake, 0o755)
 day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t))
 shift = lambda d, n: (datetime.date.fromisoformat(d) + datetime.timedelta(days=n)).isoformat()
-state = {"spend_by_day": {day(NOW - 86400): 26.0}}
+state = {}
 collect(state=state, write=True)
 check(state == {"index_by_day": {day(NOW - 3600): 0.46}, "index_definition": "d1"} and not os.path.exists(os.path.join(work, "tokenmap.calls")),
-      "a run stores the reading's index under its day and drops the old share history; a fixture tracking.json with "
+      "a run stores the reading's index under its day; a fixture tracking.json with "
       "no fixture tokenmap never reaches the live index: %s" % state)
 os.environ["SPEND_TOKENMAP"] = fake
 first = collect(state=state, write=True)

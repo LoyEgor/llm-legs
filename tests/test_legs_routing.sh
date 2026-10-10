@@ -57,21 +57,6 @@ cat >"$STUB_BIN/claudeb" <<'EOF'
 printf 'claudeb' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
-if [ "${1:-}" = profile ]; then
-  printf '{"result":"claude answer","modelUsage":{"claude-opus-fixture":{"outputTokens":2}}}\n'
-  exit 0
-fi
-rc=0
-account="$(worker-pick --account claudeb)" || rc=$?
-if [ "$rc" -eq 3 ]; then
-  printf 'claudeb: worker-pick selected no account; use `claudeb profile <name>`\n' >&2
-  exit 3
-fi
-if [ "$rc" -ne 0 ]; then
-  printf 'claudeb: worker-pick failed (exit %s); use `claudeb profile <name>`\n' "$rc" >&2
-  exit 2
-fi
-printf 'claudeb: worker-pick selected %s\n' "$account" >&2
 printf '{"result":"claude answer","modelUsage":{"claude-opus-fixture":{"outputTokens":2}}}\n'
 EOF
 

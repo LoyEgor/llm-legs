@@ -251,7 +251,6 @@ def main():
     for executable in ("ccr", "cli-proxy-api"):
         if not os.access(BIN / executable, os.X_OK):
             fail("missing executable: " + str(BIN / executable))
-    lock = None
     if needs_login:
         auth.mkdir(parents=True, mode=0o700, exist_ok=True)
         account.chmod(0o700)
@@ -260,7 +259,7 @@ def main():
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            fail("this account already has an active claudegpt launch; close it first")
+            fail("a claudegpt login for this account is already running; finish it first")
     env = clean_env()
     env["CLAUDEGPT_ACCOUNT"] = args.account
     env.update(CONTEXT_ENV)
@@ -288,20 +287,12 @@ def main():
             finally:
                 for path in auth.glob("*.json"):
                     path.chmod(0o600)
+            lock.close()
             if result:
-                if lock:
-                    lock.close()
                 return result
             if len(list(auth.glob("*.json"))) != 1:
-                fail("login did not save exactly one account; Claude Code was not started")
-            if args.action == "login":
-                if lock:
-                    lock.close()
-                return 0
-            if lock:
-                lock.close()
-                lock = None
-            bridge_auth = auth
+                fail("login did not save exactly one account")
+            return 0
         models = codex_models()
         proxy = None
         keeper = None
@@ -410,8 +401,6 @@ def main():
             if keeper:
                 keeper.join(timeout=70)
             stop(proxy)
-            if lock:
-                lock.close()
 
 
 if __name__ == "__main__":

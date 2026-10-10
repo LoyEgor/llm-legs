@@ -56,17 +56,7 @@ web_search_claudeb_args() { # on|off tool,... — claudeb's argv words, these to
 }
 
 web_search_meta_state() { # meta.json — the state a supervisor must relaunch in
-  local recorded vendor
-  recorded=$(jq -r 'if has("web_search") then (.web_search | tostring) else "absent" end' "$1")
-  case "$recorded" in
-    true) printf 'on\n'; return 0 ;;
-    false) printf 'off\n'; return 0 ;;
-  esac
-  # A run recorded before the table existed carries no state at all, and its CLI launched in the one
-  # it stands in by itself: an ON cell of `-` is search already on, and reporting `off` there would
-  # hand a supervisor or an --attach a capability record the answer contradicts.
-  vendor=$(jq -r '.vendor // empty' "$1")
-  if [ "$(web_search_column "$vendor" on 2>/dev/null)" = '-' ]; then printf 'on\n'; else printf 'off\n'; fi
+  if [ "$(jq -r '.web_search' "$1")" = true ]; then printf 'on\n'; else printf 'off\n'; fi
 }
 
 # `WEB:` is a header line of the contiguous block at the top of a brief, the way ROUND: is — key and

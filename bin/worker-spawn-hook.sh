@@ -16,7 +16,7 @@ parsed=$(jq -r --arg hook "${0##*/}" --arg direct "$direct" '
    .tool_use_id // ""]
   | ($direct | split("%s")) as [$head, $tail]
   | if any(.[]; iterables) then error("not scalar") else . end
-  | if .[1] != "PreToolUse" or .[2] == "Workflow" then [.[0], "skip"]
+  | if .[1] != "PreToolUse" then [.[0], "skip"]
     elif .[3] == "fork" then [.[0], "fork"] + .[3:]
     else ((.[3] | tostring | if . == "" then "general-purpose" else . end) as $type
       | (if IN($type; "claudeb-worker", "codex-worker", "gemini-worker", "grok-worker", "light-worker") then
