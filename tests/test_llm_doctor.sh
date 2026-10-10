@@ -658,6 +658,12 @@ assert legs[("flash", "final")][0] == "walled" and legs[("flash", "chunk")][:2] 
 assert legs[("sonnet", "final")] == ("cap", "cut", "signal exit 143", ""), legs
 assert legs[("opus", "final")][0] is None and legs[("opus", "chunk")][1] == "bad output", legs
 assert legs[("ghost", "final")] == ("failed", "no output", "no exit recorded", ""), legs
+# The cell that ran on was launched by the kill (a pool-empty re-run), so the cap cost no wall time.
+legs = readings(run_legs([
+    cell("agy", finished=3900, exit_code=1, killed="watchdog", stderr="rater timed out after 572s"),
+    cell("opus", exit_code=0, started_at=iso(3899)),
+], finished=iso(3000)))
+assert legs[("agy", "final")][:2] == ("cap", "timeout"), legs
 # The run's current `finished` field dates the judge, not the run id.
 judge = [row for row in run_legs([], finished=iso(3000), judge={"state": "ran", "model": "opus"})
          if row["surface"] == "judge"]

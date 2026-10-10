@@ -828,8 +828,11 @@ def run_legs(meta, name, started, cutoff, now):
         klass, reason, detail, origin = owner_switch(*classify_bench(cell, escaped, retry_word, run_done),
                                                      cell.get("stderr") or "", started, ended)
         if final and cell.get("killed") in WATCHDOG_KILLS and klass in ("stalled", "cap"):
+            # A cell launched only after the kill (a pool-empty re-run, a queued slot) ran because the
+            # kill ended the pass, not beside it: run 20261009T234154Z-19160d2's opus re-run.
             others = [ends[other] for other, row in enumerate(rows)
-                      if last.get(row.get("rater")) == other and row.get("rater") != cell.get("rater")]
+                      if last.get(row.get("rater")) == other and row.get("rater") != cell.get("rater")
+                      and (iso_epoch(row.get("started_at")) or 0) < ended]
             waited = max(others, default=ended) - ended
             if waited > KILLED_EARLY_SLACK_S:
                 klass, reason, origin = "failed", "killed early", "ours"
