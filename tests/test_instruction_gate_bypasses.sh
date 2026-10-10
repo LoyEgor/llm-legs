@@ -407,4 +407,15 @@ assert_eq - "$(claim "$h1@2.5")"
 assert_contains w "$(claim "$h2@3.5")"
 assert_contains w "$(claim "$h1@4.5")"
 
+# A ranked CLAUDE.md in a plain folder is no repository: the tick's repo scan lists the git one and
+# never walks the folder (~/Downloads with an Xcode bundle in it stalled the menubar 3-6 s a tick).
+mkdir -p "$WORK/plain/deep" "$WORK/gitrepo" "$WORK/find-shim"
+printf 'r\n' > "$WORK/plain/CLAUDE.md"; printf 'r\n' > "$WORK/plain/deep/SKILL.md"; printf 'r\n' > "$WORK/gitrepo/CLAUDE.md"
+git -C "$WORK/gitrepo" init -q
+printf '#!/bin/sh\necho called >> "%s"\nexec /usr/bin/find "$@"\n' "$WORK/find.log" > "$WORK/find-shim/find"
+chmod +x "$WORK/find-shim/find"
+repo_out=$(PATH="$WORK/find-shim:$PATH" bash -c "$watch_script" _ "$ROOT" "$HOME" "$claim_state" repo "$WORK/plain" "$WORK/gitrepo")
+assert_eq "$WORK/gitrepo/CLAUDE.md" "$repo_out"
+assert [ ! -e "$WORK/find.log" ]
+
 echo "OK ($asserts assertions)"

@@ -145,7 +145,8 @@ BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.p
 MENU_BUILDERS = {"automation": ("hammerspoon/automation_menu.lua", "llm-legs/hammerspoon/llm-limits.lua"),
                  "llm-limits": ("llm-legs/hammerspoon/llm-limits.lua",)}
 SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
-               "background/hs lag": ("llm-legs/hammerspoon/doctors.lua", "llm-legs/hammerspoon/llm-limits.lua"),
+               "background/hs lag": ("llm-legs/hammerspoon/doctors.lua", "llm-legs/hammerspoon/llm-limits.lua",
+                                     "llm-legs/hammerspoon/instruction-watch.lua", "hammerspoon/automation_menu.lua"),
                "time/slot": ("llm-legs/share/slots.sh", "llm-legs/bin/worker-run"),
                "time/suite_wait": ("llm-legs/share/run-suites.sh", "llm-legs/share/slots.sh"),
                "time/suite_run": ("llm-legs/share/run-suites.sh",), "time/retries": ("llm-legs/bin/worker-run",),

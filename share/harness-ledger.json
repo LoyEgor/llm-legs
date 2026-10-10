@@ -5869,6 +5869,37 @@
       "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-llm-legs-test-worker-launch-gate-visibility-20261010T031933Z-02f2",
       "note": "Before: 1.0 wall-min a run, 251 runs a week; 152 s wall unsharded at load 66, 78 s sharded under run-all at load ~100. The wall is the gate's own deny path, ~60 process starts a call (28 grep, 8 sed, 8 tr, 6 head, 4 awk, 2 jq), 0.8 s at load 84; the test adds 2 jq a call (~4 %). Audit: no sleeps; no legacy check (every block names a live gate branch); the help forms run as the chat and as an agent because the agent branch runs before the help exemption, kept. Not cut: the gate's deny path forks (production calls mostly leave at the prefilter, so only this suite pays them; a cut needs the gate's adversarial pass); ../claude-setup/tests/test_worker_launch_gate.sh drives the same gate with ~100 overlapping spellings, another repository's suite.",
       "handoff": null
+    },
+    {
+      "id": "speed-hs-lag-instruction-watch-walk",
+      "title": "Speed's hs lag lever: the instruction watcher's 120 s tick walked a non-git folder with find on Hammerspoon's main thread",
+      "match": {
+        "rule": "opportunity",
+        "ident": "background/hs lag"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:30:00+03:00",
+          "by": "night fixer harness-speed-background-hs-lag-20261010T031902Z-7608",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua",
+            "llm-legs/tests/test_instruction_gate_bypasses.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the watcher scan's `repo` mode output, HEAD vs fix, on the six live roots the tick passes (llm-legs, claude-setup, review-bench, arbostar-frs-frontend, transcriptions-gpt, ~/Downloads)",
+            "data": "live repositories and ~/Downloads, read-only, 2 runs each side",
+            "result": "the five git repositories' 60 files identical; only ~/Downloads' 5 walked files (its CLAUDE.md stays watched through the ranked list, 2 nested SKILL.md, 2 inside Xcode-beta.app) drop, which the tripwire never lists either (instruction_repo_root: a session's git toplevel only); scan 8.3-11.2 s -> 1.4-1.5 s at current load"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-background-hs-lag-20261010T031902Z-7608",
+      "note": "Before: background/hs lag 27.62 OM/d (latest.json 2026-10-10, 168 h); hs-lag journal 10-09: 1860 rows, 3670 s. A 2-3 s stall every 120 s on a fixed phase, ending at the watcher heartbeat's mtime: ~25 min/day (10-09), plus many 13-17 s stalls under load. Traced in Hammerspoon (io.popen timed inside one watchTick): list 148 ms, repo 2944-3044 ms; repo got ~/Downloads (a ranked ~/Downloads/CLAUDE.md made its parent a root) and, not a git repo, instruction_repo_files fell back to a find walk of it. M.pump runs watchTick too, so every hook poke and journal change paid it again. Not fixed here, left to the next run of this lever: the Automation menu's 5 s section refresh (~/.hammerspoon/automation_menu.lua REFRESH_S) stalls 1-1.8 s per refresh while active, ~7 min/day (10-09); the tick still runs list+repo synchronously (~0.5 s idle) and pump re-runs a tick on every poke, an hs.task move would need the menu harness's synchronous M.pump/M.watchTick asserts reworked.",
+      "handoff": null
     }
   ],
   "blind_spots": [
