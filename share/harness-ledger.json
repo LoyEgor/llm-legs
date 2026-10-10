@@ -6544,6 +6544,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-vendor-fingerprint-20261010T031932Z-6e6e",
       "note": "Profile at load 100-190: 51 check calls held 390 of 561 s wall; the rest is request/close/night (doctor-fix record and orchestrate, fixture worktrees), the checked work itself. Ruled out: global git hooks (HOME is the fixture home, git sees no core.hooksPath); a shard split (sections chain events, fingerprints and ids from the first check to the last, a shard would replay most of the run); legacy cases (each section pins a 2026-09/10 behaviour still in bin/vendor-fingerprint). Left: vendor-fingerprint check runs one jq per event file in requested() per vendor (48 live events, ~0.5 CPU s a scheduled check), not the suite's cost.",
       "handoff": null
+    },
+    {
+      "id": "speed-heavy-test-harness-doctor",
+      "title": "test_harness_doctor ran its 407 asserts as one serial process, and its ledger guard forked one git cat-file per ledger fix",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_harness_doctor"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:40:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-harness-doctor-20261010T031921Z-2dea",
+          "files": [
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert count and verdict of the suite unsharded (RUN_SUITES_SHARDS=off) vs its 4 shards, and the batched ledger guard vs the per-fix cat-file one",
+            "data": "the suite's own fixtures at load ~200 on 10 cores; the committed ledger (203 fixes with a commit in llm-legs, claude-setup, review-bench, usage-ai-report) plus two mutants naming a missing llm-legs and claude-setup commit",
+            "result": "407 asserts green both ways; shards 65 + 253 + 21 + 68 = 407, sections disjoint (suite_shard_owns refuses a repeated name); the guard green on the ledger and red on both mutants; wall 110 s before, 80 s unsharded, 24-26 s sharded (longest shard 25-38 s at load ~200, CPU 13 s)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-harness-doctor-20261010T031921Z-2dea",
+      "note": "Before: 865 runs, 0.6 wall-min a run, 32 min + 41 w-min/day. Profile at load ~200: 15 s python CPU over 43 calls, wall ~7x CPU; 22 doctor runs ~0.35 s CPU each (module compile ~0.08 s of it, not cached for a script run), the classes block 3.1 s, the ledger guard 2.3 s (now 0.15 s), the calibration-transcript gzip|jq scan 0.6 s CPU / ~5 s wall. Kept: the four 0.1-0.3 s canary sleeps in the classes block, negative checks that need a window; a deeper legacy-assert read of the 2600 lines was not done.",
+      "handoff": null
     }
   ],
   "blind_spots": [

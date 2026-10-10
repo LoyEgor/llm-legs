@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 4
 # bin/harness-doctor over a fixture HOME: transcript waits, hook cut attribution, levels, the tests
 # journal, steps against the change log, the local_slow windows LLM doctor reads, incremental
 # reads, the lock and the laid-out menu lines.
@@ -164,6 +165,7 @@ sample() { printf '{"busy":%s,"kernel":0.35,"forks":500,"ncpu":10,"visible":%s,"
 doc() { jq -c "$1" "$HARNESS_DOCTOR_DIR/latest.json"; }
 rowq() { printf '.sections[] | select(.name == "%s") | .rows[] | select(.cells[0] | startswith("%s"))' "$1" "$2"; }
 
+if suite_shard_owns 1 hd-runs; then
 HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE=$(sample 0.89 8 false) "$DOCTOR" --quiet || fail "first run failed"
 
 assert_eq '[true,true,0]' \
@@ -466,7 +468,9 @@ assert len(by_week["columns"]) == 1 + module.BY_WEEKS and by_week["columns"][0] 
 assert module.delta(1.05, 1.0) == ("+5%", "") and module.delta(12.0, 1.0) == ("×12", "worse"), module.delta(12.0, 1.0)
 EOF
 asserts=$((asserts + 1))
+fi
 
+if suite_shard_owns 2 hd-classes; then
 checks=$(python3 - "$DOCTOR" "$T" "$WORK" <<'EOF'
 import importlib.machinery, importlib.util, json, os, shutil, sys, time
 loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
@@ -1878,7 +1882,9 @@ print(count[0])
 EOF
 ) || fail "the detection classes or their clearing paths misjudged"
 asserts=$((asserts + checks))
+fi
 
+if suite_shard_owns 3 hd-ledger-holds; then
 # The hooks write their timings into hooks/spool with builtins alone; a fresh install's first run makes it.
 HARNESS_DOCTOR_DIR="$WORK/fresh" HARNESS_DOCTOR_NOW=$((T + 900)) HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --quiet ||
   fail "a fresh run failed"
@@ -2013,7 +2019,9 @@ assert_eq '["ledger:ledger",true]' "$(HARNESS_LEDGER="$WORK/malformed-ledger.jso
   HARNESS_DOCTOR_NOW=$((T + 900)) HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json |
   jq -c '[.problems[] | select(.rule == "ledger_fault") | .id, (.fact | test("not JSON"))]')" \
   "a ledger that is not JSON is a ledger fault, never an empty ledger"
+fi
 
+if suite_shard_owns 4 hd-replay-speed; then
 catchup="$WORK/catchup"
 gap=$((T - 55 * 3600))
 mkdir -p "$catchup/hooks"
@@ -2033,6 +2041,7 @@ ledger = json.load(open(sys.argv[1]))
 assert ledger["owner"] == "Harness Doctor" and isinstance(ledger["rows"], list), "owner and rows"
 fields = {"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note", "handoff"}
 ids = [r["id"] for r in ledger["rows"]]
+commits = {}
 for r in ledger["rows"]:
     assert set(r) == fields, r["id"]
     assert set(r["same_cause"]) <= set(ids), r["id"]
@@ -2045,9 +2054,14 @@ for r in ledger["rows"]:
         assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
         if fix["in"]:
             repo, commit = fix["in"].split("@")
-            top = os.path.join(sys.argv[2], repo)
-            if os.path.isdir(top):
-                assert subprocess.run(["git", "-C", top, "cat-file", "-e", commit + "^{commit}"]).returncode == 0, fix
+            commits.setdefault(os.path.join(sys.argv[2], repo), []).append((commit, fix))
+for top, wanted in commits.items():
+    if os.path.isdir(top):
+        found = subprocess.run(["git", "-C", top, "cat-file", "--batch-check"], capture_output=True, text=True,
+                               input="".join(c + "^{commit}\n" for c, _ in wanted)).stdout.splitlines()
+        assert len(found) == len(wanted), top
+        for (commit, fix), line in zip(wanted, found):
+            assert line.split()[1:2] == ["commit"], fix
 for b in ledger["blind_spots"]:
     assert set(b) == {"id", "what", "reason", "since", "would_catch_if"}, b
 LEDGER
@@ -2591,7 +2605,9 @@ print(count[0])
 EOF
 ) || fail "the transcript rows (C1) or the journal offsets misjudged"
 asserts=$((asserts + speed))
+fi
 
+if suite_shard_owns 1 hd-launchd; then
 # A Background agent gets no CPU under a saturated machine: on 2026-09-30 a run starved for 48 min
 # holding the lock, and the menu froze exactly when load was what it had to show.
 assert_eq Standard "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.harness-doctor.plist")" \
@@ -2605,5 +2621,6 @@ os.execv = lambda path, argv: print(json.dumps(argv, separators=(",", ":")))
 module.exec_speed()
 EOF
 )" "Speed runs at its caller's priority: a night prep or menu waiting on Harness never waits on a taskpolicy -b band"
+fi
 
 printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock in a LaunchAgent that is never starved, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"
