@@ -5960,6 +5960,37 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-browse-20261010T031936Z-0493",
       "note": "Traced at load 171 (148 s whole, 20 CPU-s): harness source 5.7 s, sections 1-4 33 s, 5-6 53 s, 7-8 35 s, 9 6 s, cua_repl sync 17 s, chrome-applescript-js 5 s. Shards: {1-4, 9, chrome-applescript-js}, {5-6}, {7-8, cua_repl sync}; shards 2-3 seed the registry sections 1-4 leave when it is absent (a whole run seeds nothing). The chrome-live case's 2 s STUB_SLEEP window is now the stub gate. Left: shard 2 is the pole, 5 start_ok+await_done pairs at ~10-13 s each under load, the cost of worker-run start/wait shared by every worker_run suite, not this file's; _deliver ~1.4 s x 12 in shard 3, each a distinct workaround class. Ruled out: no legacy check found (every section guards live code: enrolment, Chrome/Dia runs, supervisor log, canary, cua_repl sync, chrome-applescript-js); BROWSE_SEEN_WAIT=2 idles 0.5 s on each of 3 negative --seen calls, idle not work; the sleep 300 holders are killed, never waited.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-heavy-test-doctor-fix",
+      "title": "Speed's heavy-suite lever on test_doctor_fix: its wall cut with every check kept",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_doctor_fix"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:57:32+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-doctor-fix-20261010T031920Z-7187",
+          "files": [
+            "llm-legs/bin/doctor-fix",
+            "llm-legs/tests/test_doctor_fix.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_doctor_fix base vs fix: the PASS line, its asserts summed over the shards (base 410 unsharded; fix 146+128+77+59 = 410 over 4 disjoint shards whose section names cover every section once, plus the new python-count assert), and the close refusal messages",
+            "data": "the suite's own fixtures; the clean day close of four decision lines under a PATH python3 counter",
+            "result": "same asserts green, same messages; per-shard CPU 21/26/19 s (3 shards) -> 13/16/16/13 s (4 shards), suite CPU 66 -> 59 s; a close runs python once instead of once per decision line plus two (5 -> 1 on the counted close, red on the old code)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-doctor-fix-20261010T031920Z-7187",
+      "note": "Measured 2026-10-10 at load 140-200 on 10 cores: wall is CPU times contention (a shard ran 16-26 CPU-s in 3-4 min), so the lever is the longest shard's CPU. Where it went: doctor-fix close and launch calls 38 of 66 CPU-s (python starts 40-70 ms each, ~260 in the suite: per decision-line touches, knobs, fix-faults, per-run knob-lines, snapshot, packet); the speed section 18 s alone, its launches and six snapshot calls chained over one fixture, so it stays one section. Ruled out: sleeps (3 x sleep 1 order run ids by the second, 3 s of a 66 s suite), legacy checks (every section pins a live doctor-fix path), packet batching (one call per run, quiet runs rare). Hidden dependency found: the floor handoff case read night-launch-close's Egor handoff file; it now writes its own.",
+      "handoff": null
     }
   ],
   "blind_spots": [
