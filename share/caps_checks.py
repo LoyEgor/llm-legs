@@ -3,6 +3,7 @@ ${VENDOR_CLI_UPDATE_STATE_DIR:-~/.cache/vendor-cli-update}/caps-checks.jsonl (do
 {at, vendor, section, state: fresh|stale, what}. bin/updater-doctor folds it into `caps-stale`. Never fails a run.
 
     python3 share/caps_checks.py record <vendor> <section> fresh|stale [what]"""
+from __future__ import annotations
 
 import fcntl
 import json
