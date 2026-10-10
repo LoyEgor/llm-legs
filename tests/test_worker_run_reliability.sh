@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 reliability_cleanup() {
@@ -17,7 +18,10 @@ reliability_cleanup() {
 }
 trap 'reliability_cleanup; rm -rf "$WORK"' EXIT
 
-reliability_case() { [ -z "${WORKER_RUN_TEST_CASE:-}" ] || [ "$WORKER_RUN_TEST_CASE" = "$1" ]; }
+case ${WORKER_RUN_TEST_CASE:-0} in
+  0) ;;
+  *) suite_shard_owns() { [ "$2" = "$WORKER_RUN_TEST_CASE" ] && { [ -z "$suite_shard" ] || [ "${suite_shard%/*}" = "$1" ]; }; } ;;
+esac
 reliability_tests() {
   local WORKER_RUN_DIR="$WORK/reliability-runs" WORKER_RUN_IDLE_S=0 WORKER_RUN_SILENT_S=0 WORKER_RUN_WALL_SETTLE_S=0
   local WORKER_RUN_DEADLINE=10 CLAUDE_CODE_SESSION_ID=reliability-launcher
@@ -28,7 +32,7 @@ reliability_tests() {
   mkdir -p "$WORKER_RUN_DIR"
   set_config 'codex_effort=high'
 
-  if reliability_case R1; then
+  if suite_shard_owns 2 R1; then
     clear_stub
     fixture="$WORK/live-edits"
     mkdir -p "$fixture"
@@ -49,7 +53,7 @@ reliability_tests() {
     assert grep -qx owned "$RUN_DIR/files"
   fi
 
-  if reliability_case R2; then
+  if suite_shard_owns 1 R2; then
     (
       eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$RUNNER")"
       . "$ROOT/share/worker-walls.sh"
@@ -81,7 +85,7 @@ reliability_tests() {
 
   # The watchdog's wall fires the armed redeem from inside its own tree, which is killed whole the
   # moment the CLI exits; reroute_walled's second record then reads no reset text.
-  if reliability_case R2-redeem; then
+  if suite_shard_owns 1 R2-redeem; then
     (
       eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$RUNNER")"
       . "$ROOT/share/worker-walls.sh"
@@ -102,6 +106,7 @@ reliability_tests() {
       for _ in $(seq 1 600); do [ ! -e "$WORK/redeem-wall/wall-reset.1" ] || break; sleep 0.05; done
       process_tree_end "$watchdog" 0
       wait "$watchdog" 2>/dev/null
+      worker_model_clear_walled_pin() { :; }
       record_run_wall "$WORK/redeem-wall" codex
       for _ in $(seq 1 300); do [ "$(cat "$WORK/redeem.log" 2>/dev/null)" = '--fire-armed codex/armed --wall weekly unset' ] && break; sleep 0.1; done
       [ "$(cat "$WORK/redeem.log" 2>/dev/null)" = '--fire-armed codex/armed --wall weekly unset' ]
@@ -110,7 +115,7 @@ reliability_tests() {
     rm -f "$CLAUDEB_DIR/reset-arm/codex-armed"
   fi
 
-  if reliability_case R3; then
+  if suite_shard_owns 3 R3; then
     clear_stub
     : >"$STUB_DIR/codex_bad_model_always"
     STUB_PICK_WALL=1 start_ok codex --account model
@@ -121,7 +126,7 @@ reliability_tests() {
     assert test ! -e "$WORKER_WALLS_DIR/codex-model"
   fi
 
-  if reliability_case R3-default; then
+  if suite_shard_owns 2 R3-default; then
     for resume in '' default-session; do
       clear_stub
       start_ok codex --account model --model default --resume "$resume"
@@ -131,7 +136,7 @@ reliability_tests() {
     done
   fi
 
-  if reliability_case R3-retry; then
+  if suite_shard_owns 3 R3-retry; then
     clear_stub
     : >"$STUB_DIR/codex_bad_model"
     start_ok codex --account model
@@ -152,7 +157,7 @@ reliability_tests() {
     printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
   fi
 
-  if reliability_case A-mtime; then
+  if suite_shard_owns 1 A-mtime; then
     (
       eval "$(sed -n '/^newest_mtime() {/,/^}/p' "$RUNNER")"
       stat() {
@@ -164,7 +169,7 @@ reliability_tests() {
     assert test "$?" -eq 0
   fi
 
-  if reliability_case A-heartbeat; then
+  if suite_shard_owns 3 A-heartbeat; then
     clear_stub
     cat >"$WORK/bin/heartbeat-grokb" <<'EOF'
 #!/usr/bin/env bash
@@ -182,7 +187,7 @@ EOF
     assert test "$(sed -n 1p "$WORKER_WALLS_DIR/grok-wall")" -gt "$(date +%s)"
   fi
 
-  if reliability_case A; then
+  if suite_shard_owns 3 A; then
     clear_stub
     printf 'wall\n' >"$STUB_DIR/wall_accounts"
     start_ok codex --account wall
@@ -196,7 +201,7 @@ EOF
     assert_fails kill -0 "$(cat "$STUB_DIR/wall.child.pid")"
   fi
 
-  if reliability_case A-echo; then
+  if suite_shard_owns 3 A-echo; then
     clear_stub
     printf 'wall\n' >"$STUB_DIR/wall_accounts"
     STUB_WALL_ECHO=5 WORKER_RUN_WALL_SETTLE_S=3 start_ok codex --account wall
@@ -209,7 +214,7 @@ EOF
   fi
 
   # A limit phrase in a file the worker just read is no wall, however long the stream then stays quiet.
-  if reliability_case A-quoted; then
+  if suite_shard_owns 3 A-quoted; then
     clear_stub
     printf 'wall\n' >"$STUB_DIR/wall_accounts"
     STUB_WALL_TEXT='| a row this worker read: rate limit reached' STUB_WALL_ECHO=3 start_ok codex --account wall
@@ -219,7 +224,7 @@ EOF
     assert test ! -e "$WORKER_WALLS_DIR/codex-wall"
   fi
 
-  if reliability_case A-resume; then
+  if suite_shard_owns 3 A-resume; then
     clear_stub
     printf 'wall\n' >"$STUB_DIR/wall_accounts"
     start_ok codex --account wall --resume wall-session
@@ -230,7 +235,7 @@ EOF
     assert test ! -s "$PICK_LOG"
   fi
 
-  if reliability_case B; then
+  if suite_shard_owns 2 B; then
     clear_stub
     export STUB_SLEEP=60
     WORKER_RUN_SILENT_S=2 WORKER_RUN_DEADLINE=120 start_ok codex --account silent
@@ -251,7 +256,7 @@ EOF
     unset STUB_SLEEP
   fi
 
-  if reliability_case C; then
+  if suite_shard_owns 2 C; then
     clear_stub
     export STUB_SLEEP=120
     WORKER_RUN_DEADLINE=600 start_ok codex --account busy --resume busy-session
@@ -270,7 +275,7 @@ EOF
     assert grep -qx 'STATUS: done' "$WORK/wait.out"
   fi
 
-  if reliability_case D; then
+  if suite_shard_owns 1 D; then
     clear_stub
     # The first run must still be live at the nested check after two more whole runs; only the kill
     # below may end it, never its own sleep or the section's 10 s deadline on a loaded machine.
@@ -321,7 +326,7 @@ EOF
     printf '0\n' >"$fixture/exit_code"
   fi
 
-  if reliability_case E1; then
+  if suite_shard_owns 2 E1; then
     clear_stub
     printf 'main\n' >"$STUB_DIR/wall_accounts"
     printf '2\n0 rescue\n' >"$STUB_DIR/pick_queue"
@@ -333,7 +338,7 @@ EOF
     unset STUB_WALL_TEXT
   fi
 
-  if reliability_case E2; then
+  if suite_shard_owns 1 E2; then
     clear_stub
     fixture="$WORK/reliability-repo"
     mkdir -p "$fixture"
@@ -351,7 +356,7 @@ EOF
     unset STUB_SLEEP
   fi
 
-  if reliability_case E3; then
+  if suite_shard_owns 1 E3; then
     clear_stub
     export STUB_SLEEP=60
     WORKER_RUN_DEADLINE=120 start_ok codex --account main
@@ -367,7 +372,7 @@ EOF
     unset STUB_SLEEP
   fi
 
-  if reliability_case E4; then
+  if suite_shard_owns 1 E4; then
     . "$ROOT/share/worker-pool.sh"
     fixture="$WORK/reliability-pool"
     mkdir -p "$fixture/shielded"
