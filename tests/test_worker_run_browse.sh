@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 browse_tests() {
@@ -70,7 +71,29 @@ EOF
   local front='-e tell application "System Events" to set frontmost of first application process whose bundle identifier is "com.apple.Terminal" to true'
   local registry="$WORKER_RUN_DIR/browse/accounts.json" log="$WORKER_RUN_DIR/browse/log.jsonl"
   browse() { WORKER_RUN_CLAUDEB="$bt/stub/claudeb" "$RUNNER" browse "$@"; }
+  local fixture="$WORKER_RUN_DIR/browser-fixture"
+  deliver() { # result-text exit-code [started-at]
+    rm -rf "$fixture"
+    mkdir -p "$fixture"
+    printf '{"vendor":"claudeb","account":"com","workdir":"%s","started_at":%s,"pid":0,"browser":true,"browser_target":"chrome","browser_profile":"Profile 1"}\n' \
+      "$WORK/workdir" "${3:-0}" >"$fixture/meta.json"
+    : >"$fixture/err"
+    jq -cn --arg r "$1" '{result:$r, session_id:"s1"}' >"$fixture/out"
+    "$RUNNER" _deliver "$fixture" "$2" >/dev/null 2>&1 || :
+    jq -sc '.[-1]' "$log"
+  }
+  enrolled() { # the registry sections 1-4 leave, for a shard that starts after them
+    [ ! -e "$registry" ] || return 0
+    mkdir -p "${registry%/*}"
+    jq -n --arg c "$dev_com" '{com: {chrome_profile: "Profile 1", device_id: $c, email: "COM@x.test", last_error: "", pin: false,
+        proven_at: "2026-01-01T00:00:00Z", status: "ok"},
+      extra: {chrome_profile: "Profile 2", email: "extra@x.test", last_error: "no listed browser proved to be its Chrome profile",
+        pin: false, status: "needs-login"},
+      lost: {chrome_profile: "Profile 3", device_id: "cccccccc-3333-4333-8333-333333333333", email: "lost@x.test", last_error: "",
+        pin: true, proven_at: "2026-01-01T00:00:00Z", status: "ok"}}' >"$registry"
+  }
 
+  if suite_shard_owns 1 browse-enrol; then
   # 1: a window per profile, matched by email case-insensitively, opened once however often it is asked for
   assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
   assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
@@ -169,13 +192,17 @@ EOF
   assert jq -se '.[-1].outcome == "BROWSER_INTERRUPTED"' "$log" >/dev/null
   rm -f "$bt/mode-lost"
   browse --enroll lost >/dev/null
+  fi
 
+  if suite_shard_owns 2 browse-runs; then
+  enrolled
   # 5: BROWSER: chrome in the brief is a Chrome run on the account's own profile
   printf 'BROWSER: chrome\nACCOUNT: com\nfill the form\n' >"$WORK/brief"
   clear_stub
-  STUB_SLEEP=2 start_ok claudeb
+  start_gated claudeb
   # the menu's Show Chrome checkbox reads browse/chrome-live: written at a Chrome run's start, gone after the last ends
   assert test "$(cat "$WORKER_RUN_DIR/browse/chrome-live")" = "$RUN_ID"
+  gate_open
   assert await_done
   assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
@@ -220,19 +247,12 @@ EOF
   assert jq -e '.browser_target == "dia"' "$RUN_DIR/meta.json" >/dev/null
   assert test ! -s "$bt/open.log"
   rm -f "$bt/up/Dia"
+  fi
 
+  if suite_shard_owns 3 browse-supervisor; then
+  enrolled
   # 7: the supervisor's own record: a proof refreshes the device, a dead run is interrupted, a way around is flagged
-  local fixture="$WORKER_RUN_DIR/browser-fixture" transcript="$CLAUDEB_PROFILES_ROOT/com/projects/fx/s1.jsonl" listed
-  deliver() { # result-text exit-code [started-at]
-    rm -rf "$fixture"
-    mkdir -p "$fixture"
-    printf '{"vendor":"claudeb","account":"com","workdir":"%s","started_at":%s,"pid":0,"browser":true,"browser_target":"chrome","browser_profile":"Profile 1"}\n' \
-      "$WORK/workdir" "${3:-0}" >"$fixture/meta.json"
-    : >"$fixture/err"
-    jq -cn --arg r "$1" '{result:$r, session_id:"s1"}' >"$fixture/out"
-    "$RUNNER" _deliver "$fixture" "$2" >/dev/null 2>&1 || :
-    jq -sc '.[-1]' "$log"
-  }
+  local transcript="$CLAUDEB_PROFILES_ROOT/com/projects/fx/s1.jsonl" listed
   mkdir -p "${transcript%/*}"
   listed=$(jq -cn --arg d "$dev_com" '[{deviceId:$d, isLocal:true}] | tostring')
   {
@@ -282,7 +302,9 @@ EOF
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Codex / Google Chrome)'
   assert grep -q '"Work" (Profile 1), "Spare" (Profile 3)' "$RUN_DIR/browser-preamble"
   unset BROWSE_CUA_SYNC BROWSE_SKIP_PROCESSES BT_SYNC_MODE
+  fi
 
+  if suite_shard_owns 1 browse-canary; then
   # 9: the canary's verdict is its own listener's receipt, and a live browser run holds it
   printf 'nosubmit\n' >"$bt/mode-lost"
   jq '.lost.proven_at = "2020-01-01T00:00:00Z"' "$registry" >"$registry.tmp" && mv "$registry.tmp" "$registry"
@@ -321,9 +343,10 @@ EOF
   assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
   assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
   rm -rf "$WORKER_RUN_DIR/live-browser"
-  unset -f browse deliver
+  fi
+  unset -f browse deliver enrolled
 
-  # cua_repl sync
+  if suite_shard_owns 3 cua-sync; then
   unset BROWSE_CODEX_CONFIG
   local SYNC_TEST_HOME="$BT_WORK/codex_sync_home"
   local SYNC_MANIFEST_DIR="$SYNC_TEST_HOME/plugins/cache/openai-bundled/unified-computer-use/26.901.51231"
@@ -473,7 +496,9 @@ EOF
   assert test "$(grep -c 'mcp remove cua_repl' "$SYNC_LOG")" -eq 0
   assert grep -q 'mcp add cua_repl' "$SYNC_LOG"
   assert grep -qxF 'args = ["/after-failed-add/launch.mjs"]' "$SYNC_TEST_HOME/config.toml"
+  fi
 
+  if suite_shard_owns 1 chrome-applescript-js; then
   # 10: chrome-applescript-js edits Preferences only with Chrome quit and no worker run on Chrome
   local cj="$BT_WORK/cj" holder
   mkdir -p "$cj/data/Profile 1" "$cj/runs/browse" "$cj/runs/on-chrome" "$cj/runs/on-dia" "$cj/bin"
@@ -515,7 +540,7 @@ EOF
   assert test "$(env -u BROWSE_CHROME_USER_DATA HOME="$cj/home" "$RUNNER" _chrome-data)" != "$cj/home/Library/Application Support/Google/Chrome"
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
-
+  fi
 }
 browse_tests
 
