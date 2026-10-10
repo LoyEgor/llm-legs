@@ -7532,6 +7532,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-pick-20261010T031934Z-1cb8",
       "note": "Before: 214 runs in 7 days, 5.4 wall-min a run, all but 5 of them before 3a2a1d7b's 3 shards (pre-shard median 253 s, p90 2477 s under night load 150-260; post-shard median 70 s). Audit: one sleep (the jq-barrier race check, kept), no legacy or duplicated cases (21 of 498 calls repeat an earlier call's exact inputs, ~4 %); ~90 % of the suite's CPU is worker-pick itself, ~0.23 CPU-s a call at load 200, most of it the catalog helpers each call spawns (grokb models, geminib families, codexb models --family and --own per codex account, ~35 ms each) - the same floor speed-chat-tools-serial-reads left; cutting it is a worker-pick production change, not a suite audit. Lever taken: wp-roles and wp-hygiene split at self-contained boundaries into wp-roles/-modes/-walls and wp-hygiene/wp-pause/wp-decisions, packed into 5 shards (-j defaults to cores/2 = 5). wp-decisions (one diff over all 13 fixtures x 5 calls) cannot split without changing that assert's form.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-worker-run-stamps",
+      "title": "test_worker_run_stamps · llm-legs heavy suite: wall per run",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_stamps"
+      },
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:45:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-stamps-20261010T031945Z-3053",
+          "files": [
+            "llm-legs/tests/test_worker_run_stamps.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "whole run vs the three SUITE_SHARD runs: PASS lines and assert counts",
+            "data": "the suite's own fixtures; every case kept, only grouped into suite_shard_owns sections",
+            "result": "162 asserts whole, 26+59+77 sharded; run-all with shards 150 s wall vs 500 s whole at load 150-177"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-stamps-20261010T031945Z-3053",
+      "note": "2026-10-10: wait-bound, ~49 s CPU in 500 s wall at load 150; each start+await_done is ~10-15 s under that load and the suite holds ~45 of them, none sleeping on its own (harness polls already use the sleep builtin). Cut: 3 shards (models 176 s | relay owner 58 + fix anchors 54 + run journal 51 | snapshot attribution 152, base-load seconds). Ruled out: dropping the eight allowed-model launches or the per-model refusals (each is a distinct requirement); a new suite file (the shards header does it). Found: the suite was red on base since 8bd96a43 (haiku became a request row; the suite still listed it refused); fixed here. Seen, not changed: an explicit --model haiku takes the stored claudeb_effort, so a brief naming haiku without EFFORT: low|medium under claudeb_effort=high is EFFORT_REFUSED.",
+      "handoff": null
     }
   ],
   "blind_spots": [
