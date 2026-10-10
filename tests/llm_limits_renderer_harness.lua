@@ -646,7 +646,7 @@ end
 -- The ⚡ has to come from the file codexb writes: the block above stubs the reader out, so this is
 -- the only place the two halves of the toggle are checked against each other.
 -- `main` is a Codex account like any other here: codexb lists it, writes its marker beside the
--- profiles' and worker-run reads it, so a reader that skipped the name left a dead toggle on the row.
+-- profiles' and workers read it, so a reader that skipped the name left a dead toggle on the row.
 do
   fastModeMarkers = { main = "priority\n" }
   local module = loadModule(pinFixture, nil, nil, nil, nil, pinConfig)

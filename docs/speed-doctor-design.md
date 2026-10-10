@@ -181,8 +181,8 @@ day, the median ignores up to three, and a suite run on under four days reads 0 
 the seven, when the median runs over its own days since, zero days included (a new heavy suite shows at once). Each row's wall,
 queued to end, splits once (`allocate`): a retest or flaky exec takes its share whole (share = its suite seconds over
 the row's, so concurrent suites never sum past the wall); else its idle part, the run's slack to the long-pole suite
-(its seconds over the row's suite seconds per slot) or, on one slot, to `serial` (against the usual slots), and the
-rest is `work`. Findings become `opportunity:test-health/{retests,flaky,idle,pole/<repo>/<suite>,serial,
+(its seconds over the row's suite seconds per slot) or, on one slot, to `serial` (against the usual slots), only its
+part on a free machine (`free_spans`: shards and slots run only on room), and the rest is `work`. Findings become `opportunity:test-health/{retests,flaky,idle,pole/<repo>/<suite>,serial,
 heavy/<repo>/<suite>,fan-out/<repo>/<path>}` (`TEST_HEALTH_LEVERS`) in min/day, idle, pole, heavy and fan-out by
 `per_day`, retests, flaky and serial as their 7-day mean: heavy at ≥ 15 work-min/day (it drops
 the moved `tests/<repo>/<suite>` row), fan-out from the targeted runs holding every suite a changed file pulls (each run

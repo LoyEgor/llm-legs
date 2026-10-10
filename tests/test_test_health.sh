@@ -358,6 +358,13 @@ check(abs(th.cost(mrows[1]["execs"], "retests") - 120) < 1e-9,
       % th.cost(mrows[1]["execs"], "retests"))
 check(abs(mrows[2]["execs"][0]["cost"].get("serial", 0) - 100) < 1e-9 and abs(total(mrows[2]) - 200) < 1e-9,
       "parallel: a multi-suite run on one slot loses what the usual slots would save: %s" % mrows[2]["execs"][0]["cost"])
+th.allocate(mrows, {}, 5, [(M + 300 - (300 - 340 / 3.0) / 2, M + 300), (M + 700, M + 900)])
+check(abs(mrows[0]["execs"][0]["cost"].get("pole", 0) - (300 - 340 / 3.0) / 2) < 1e-6
+      and abs(mrows[2]["execs"][0]["cost"].get("serial", 0) - 50) < 1e-9
+      and all(abs(total(r) - w) < 1e-6 for r, w in ((mrows[0], 310), (mrows[2], 200))),
+      "parallel: pole and serial slack count only their part on a free machine, the rest stays the run's wall: %s %s"
+      % (mrows[0]["execs"][0]["cost"], mrows[2]["execs"][0]["cost"]))
+th.allocate(mrows, {}, 5)
 check(mrows[3]["execs"][0]["cost"] == {"flaky": 50} and all(len(e["cost"]) == 1 for r in mrows[1:2] + mrows[3:4]
                                                               for e in r["execs"]),
       "flaky and retests: a minute in one class only: %s" % [e["cost"] for r in mrows for e in r["execs"]])

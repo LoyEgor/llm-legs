@@ -3467,9 +3467,9 @@
       "same_cause": [
         "floor-bash-other-hooks"
       ],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "2026-10-08: quiet in the launch window; tonight's harness-hooks and harness-hook-waits runs hold the per-hook cuts. 2026-10-07: 76 min/day in 24 h (PostToolUse Bash 29, PreToolUse Bash 22); per-hook cuts are night 7777's hooks and hook-waits runs; the floor of zero stays the owner's call. 2026-10-06: 147 min/day in 24 h, 132 since 2026-10-05 19:00; PreToolUse Bash 70 and PostToolUse Bash 20 of it. The per-hook cuts are the hooks area's rows (one hook a night; Egor declined the dispatcher on 2026-10-05), worked tonight by harness-hooks-20261006T032924Z-3077. A floor of zero cannot be met while any hook runs: the floor itself is the owner's call. Night 817e: quiet; tonight's harness-hooks runs hold the per-hook cuts.",
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-regression-test-health-targeted-20261010T031906Z-6548",
+      "note": "2026-10-10: 31 min/day of hook time in 24 h, two hooks: commit-report.sh 15.5 (254 calls, p50 3.3 s) and cd-guard.sh 14.5 (4558 calls, p50 89 ms, mean 191 ms); the rest under 1 min. Their cuts are tonight's harness-speed-hooks-commit-report-sh and harness-speed-hooks-cd-guard-sh runs, not duplicated here. 2026-10-08: quiet in the launch window; tonight's harness-hooks and harness-hook-waits runs hold the per-hook cuts. 2026-10-07: 76 min/day in 24 h (PostToolUse Bash 29, PreToolUse Bash 22); per-hook cuts are night 7777's hooks and hook-waits runs; the floor of zero stays the owner's call. 2026-10-06: 147 min/day in 24 h, 132 since 2026-10-05 19:00; PreToolUse Bash 70 and PostToolUse Bash 20 of it. The per-hook cuts are the hooks area's rows (one hook a night; Egor declined the dispatcher on 2026-10-05), worked tonight by harness-hooks-20261006T032924Z-3077. A floor of zero cannot be met while any hook runs: the floor itself is the owner's call. Night 817e: quiet; tonight's harness-hooks runs hold the per-hook cuts.",
       "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
     },
     {
@@ -5785,6 +5785,59 @@
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-refusal-unknown-stop-hook-20261010T031905Z-007b",
       "note": "5.7 min/day = Stop hook_blocking_error attachments whose reason has no `[hook]` prefix (share/time_budget.py refusal_rows names them unknown-stop-hook). Joined to ~/.cache/claude/stop-gate/journal.jsonl (session + ts), 7 days to 2026-10-10T03:20Z: all 8 unprefixed asks were ask-word-reading.sh (`The word hook printed ⚡ … your reply carries no reading line`), last at 2026-10-10T00:55Z; the prefixed rest is worker-run-backstop.sh 30, ask-run-unfinished.sh 3, ask-span-drill.sh 2. claude-setup@4c7eaf02 (2026-10-10T01:06Z, Egor: the forced re-answer cost turns and tokens) deleted the hook; every ask left in hooks/stop.d (pr-mattermost, run-unfinished, span-drill) and the backstop prefix their reason, so the row should leave Speed's 24 h window by 2026-10-11T01:00Z. No output-equivalence record: the removal changes behaviour by Egor's order, it is no speed refactor of ours. Ruled out: a doctor-side join of the stop-gate journal to name the hook (renames this row's ident mid-window for no saving; see blind_spots stop-ask-unprefixed-reason).",
+      "handoff": null
+    },
+    {
+      "id": "regression-test-health-targeted-landing-passes",
+      "title": "Suites per targeted run over its usual: an overrun night's landing passes reran each branch's whole fan-out",
+      "match": {
+        "rule": "regression",
+        "ident": "test-health/targeted"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T02:01:17+03:00",
+          "by": "night fixer harness-speed-regression-test-health-targeted-20261010T031906Z-6548 (recorded; the fix is llm-legs@0f2198e6 and llm-legs@ca188bd0)",
+          "files": [
+            "llm-legs/share/affected-suites.sh",
+            "llm-legs/docs/fix-orchestrator.md"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-regression-test-health-targeted-20261010T031906Z-6548",
+      "note": "24 h to 2026-10-10 06:20: 338 targeted runs, mean 16.4 suites (usual 11), 2838 queued-to-end min. Two chats closing night 20261009T023738Z-817e by hand (2026-10-09 07:49-16:17) made 125 of them (mean 20.8, 1242 min): their own prep/land loop ran tests/affected over the whole branch diff after every rebase, 37 worktrees, 757 suites on first passes and 1744 on later ones (llm-workers 62 suites x 6). 0f2198e6 (10-09 21:58) made landing run only tests/affected --overlap and ca188bd0 (10-10 02:01) bases every later pass on git merge-base main HEAD, so a repeat pass reruns only main's newer overlap. Without those two chats the window reads 13.8 (Haiku bench scratch copies included, 28 runs of 17.4), under the band 16.5. Fan-out of bin/worker-run is 50+ suites, nearly all executing it; test_llm_limits_grok matched only through a comment word in tests/llm_limits_renderer_harness.lua, reworded. Ruled out: a comment-blind tests/affected (a suite naming a file only in a comment may still run it through another script: a coverage trade).",
+      "handoff": null
+    },
+    {
+      "id": "regression-test-health-pole-busy-machine",
+      "title": "Long pole and serial runs over its usual: slack counted while the machine had no room, where shards and slots never run",
+      "match": {
+        "rule": "regression",
+        "ident": "test-health/pole"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:05:00+03:00",
+          "by": "night fixer harness-speed-regression-test-health-targeted-20261010T031906Z-6548",
+          "files": [
+            "llm-legs/share/test_health.py",
+            "llm-legs/tests/test_test_health.sh",
+            "llm-legs/docs/speed-doctor-design.md"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-regression-test-health-targeted-20261010T031906Z-6548",
+      "note": "24 h to 2026-10-10 06:20: 243 min/day pole+serial (usual 127), 225 of it night-window runs at load up to 93; only 11 min/day fell where memlogd saw load1 under the cores and RAM over its threshold (d1 23 of 87, d2 28 of 70, d3 0 of 196). Sharded suites ran whole on no room (run-suites shards only while slot_room), so splitting more saves no wall there. allocate now keeps only the slack's free-machine part (time_budget.free_spans, as f328edd1 did for queues), the rest is the pole suite's work: line 251 -> 10 min/day, usual 0 until memlogd's machine log covers 7 days (from 2026-10-07). Remaining free-machine poles: test_doctor_fix, test_statusline_hooks, test_worker_run_lifecycle, test_worker_run_pool (unsharded), held by tonight's heavy-suite runs.",
       "handoff": null
     }
   ],
