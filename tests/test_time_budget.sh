@@ -486,6 +486,23 @@ check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [measure]}], D0
           "roi · night: improvements 2.0M · gained 0.0 min/day · 1 measurement fix",
           "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · nothing measured yet"],
       "a fix whose commits changed only a measurer, a ledger, tests or docs is a measurement fix, never a gain")
+twice = [dict(item, ref=ref, spend_m=1.0, lines=[1, 1], ids=[]) for ref in ("r1", "r2")]
+check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": twice[:1]},
+                   {"started": D0 + 3600, "hours": 3.0, "improvements": twice[1:]}], D0 + 86400 * 9)
+      == ["roi · r2 · suite slot wait · 1.0M · +1/-1 lines · shared with r1",
+          "roi · night: improvements 1.0M · gained 0.0 min/day",
+          "roi · last 2 nights: improvements 2.0M · gained 1.0 min/day · 0.5 min/day per 1M"],
+      "one class-level drop is claimed once over the trend: the earliest fix takes it, a later one of the class reads "
+      "shared and adds nothing")
+Q = D0 + 40 * 86400 + 43200
+for back in (1, 2, 3):
+    T.write_json(T.day_cache_path(T.local_day(Q - back * 86400)),
+                 {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 120}, "overhead_s": 120, "active_s": 6000})
+    T.write_json(T.day_cache_path(T.local_day(Q + back * 86400)),
+                 {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 60}, "overhead_s": 60, "active_s": 3000})
+check(T.saved_min_day(dict(item, **{"class": "slot"}), Q, Q + 86400 * 9) == 0.0,
+      "a quieter week after a fix is no gain: the class's seconds per active second, times the active seconds a day "
+      "before it")
 suite = lambda files, ids=("suite_audit:llm-legs:test_gate",): T.runtime_change(
     {"class": "suite_run", "ids": list(ids), "files": [["llm-legs", f] for f in files]})
 check(suite(["share/suite_audit.py", "tests/test_suite_audit.sh", "share/spend-ledger.json"]) is False

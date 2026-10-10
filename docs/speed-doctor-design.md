@@ -195,10 +195,14 @@ reads zero and says so.
 
 **ROI** (`night-run report`, `roi ·` lines). A fixer job whose problem is a Speed or time row (`opportunity`,
 `regression`, `time_floor`, `test_*`) is an improvement: spend, lines, gain. A class in `share/time_budget.py` `UNITS`
-is proven per unit (medians of its named suites or hooks, else all) and gains each proven key's delta × its daily
-exposure since the night, in its own daily unit (suites: CPU-min/day). Other classes save their mean over up to 3
-settled days before minus after a full day; a zero-time day is unmeasured, and a job without a measured day on a side
-reads `unmeasured before or after it`, its spend out of the return. Commits touching only measurers, ledgers, docs or
+is proven per unit: per key (its named suites or hooks, else all) the median of the first M samples after the night
+against the newest M before it, M the smaller side, so neither sample count nor an earlier drop proves it; a gain is
+each proven key's delta × its samples a day over the 7 days before (frozen exposure), in its own daily unit. Other
+classes compare class seconds per active second over equal counts of settled days (up to 3) before and after a full
+day, times the active seconds a day before, so a quieter day is no gain; a zero-time day is unmeasured, and a job
+without a measured day on a side reads `unmeasured before or after it`, its spend out of the return. Samples carry no
+load reading, so load stays unmatched. Over the trend a key's gain is claimed once: the earliest positive claim takes
+it (a day-totals claim takes the whole class), later fixes gain only unclaimed keys and read `shared with <ref>`. Commits touching only measurers, ledgers, docs or
 other suites (`runtime_change`), or a named unit gone, read `measurement fix`, never a gain. No gain reads `spend
 without result`, never a revert or a gate.
 
