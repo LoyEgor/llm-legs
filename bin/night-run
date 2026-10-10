@@ -972,13 +972,18 @@ cmd_suites() {
     || die "cannot write night $id"
   unlock
   while IFS= read -r repo; do
-    [ -n "$repo" ] && [ -x "$repo/tests/run-all" ] || continue
+    [ -n "$repo" ] || continue
     name=$(basename "$repo") log="$nights_dir/$id.suites.$name.log"
     since=$(date +%s)
-    env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION bash "$repo/tests/run-all" >"$log" 2>&1 &
-    pid=$!
-    wait "$pid"
-    rc=$?
+    if [ -x "$repo/tests/run-all" ]; then
+      env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION bash "$repo/tests/run-all" >"$log" 2>&1 &
+      pid=$!
+      wait "$pid"
+      rc=$?
+    else
+      printf 'night-run: %s has no tests/run-all, so none of its suites ran\n' "$repo" >"$log"
+      pid=0 rc=127
+    fi
     rows=$(jq -c --arg r "$repo" --arg l "$log" --argjson x "$rc" --slurpfile run <(jq -cR --argjson p "$pid" --argjson t "$since" \
       'fromjson? | select(.kind == "suites" and .pid == $p and .started_at >= $t)' "$journal" 2>/dev/null) \
       '(($run | last // {}).suites // {}) as $s | . + [{repo: $r, exit: $x, log: $l,

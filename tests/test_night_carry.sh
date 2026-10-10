@@ -107,7 +107,10 @@ CLAUDE_CODE_SESSION_ID=chat-1 CLAUDE_LAUNCHER_SESSION=chat-1 SESSION_SEEN="$WORK
 # Nobody waits on the night's full run, so run-suites must not read it as the launching chat's own.
 assert test "$(cat "$WORK/session-seen")" = "|"
 assert jqe --arg r "$WORK/repo" --arg l "$NIGHTS/N1.suites.repo.log" \
-  '.suites.finished_at != null and .suites.repos == [{repo: $r, exit: 1, log: $l, passed: 1, failed: ["test_b.sh"]}]' "$NIGHTS/N1.json"
+  '.suites.finished_at != null and .suites.repos[0] == {repo: $r, exit: 1, log: $l, passed: 1, failed: ["test_b.sh"]}' "$NIGHTS/N1.json"
+# A sweep repository with no runner is a red row, never a silent skip.
+assert jqe --arg r "$WORK/other" '.suites.repos[1] | .repo == $r and .exit == 127 and .failed == ["run-all"]' "$NIGHTS/N1.json"
+assert grep -qF 'has no tests/run-all' "$NIGHTS/N1.suites.other.log"
 assert grep -qxF 'suites · repo · 1 PASS · 1 FAIL: test_b.sh' <(night report N1 2>/dev/null)
 rm "$NIGHTS/N1.suites.repo.log"
 night suites N1 | grep -q '^night N1: full suites run in the background, pid [0-9]*$' || fail "suites did not detach"
