@@ -11,6 +11,7 @@ Status: open (Auto-memory prompt and Denied spawns pending; the rest done in tok
 - **What qualifies:** only the same result for less. Raw growth is load, never a defect (that week had +86% contexts), and model, effort and thinking are his alone.
 - **What qualifies:** only the same result for less. Raw growth is load, never a defect, and model, effort and thinking are his alone.
 - **What reads your output:** the Harness doctor's Spend block. It reads `tracking.json` and audits one priced component per night: purpose → price → effect → a cheaper rewrite proven by replay.
+- **What reads your output:** the Harness doctor's new Spend block. It reads `tracking.json` and audits one priced component per night: purpose → price → effect → a cheaper rewrite proven by replay.
 - **The split:**
   - tokenmap measures and flags candidates;
   - the audit decides;
@@ -35,7 +36,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 5. **Delegation that retells.** Done in token-map cf68b86 (`Delegation that retells`; whether the account had room is the audit's).
 6. **Outputs nobody reads.** Done in token-map cf68b86 (`Scheduled outputs nobody reads`; whether a menu or Egor reads them is the audit's).
 7. **Startup that is never used.** Done in token-map b044500 (`Unused startup`, read by Spend's startup audits).
-8. **Frontier model on a small task.** Model and size per task. This one is shown only, never a cut: model choice is Egor's. — Done in token-map 93c2a59 (`Frontier model, small task`: opus or fable contexts that ended within 5 requests, never toned; 4.0M a week).
+8. **Frontier model on a small task.** Model and size per task. This one is shown only, never a cut: model choice is Egor's. — Done in token-map 93c2a59 (`Frontier model, small task`: opus or fable contexts that ended within 5 requests, never toned).
 
 9. **Export which causes are avoidable.** Harness `share/spend.py` (llm-legs 90cae246) copies tokenmap's unavoidable cache re-write causes (`expired (1h+ idle)` and the others from FINDINGS §26). Put an `avoidable` flag on each cause row in `tracking.json`, so the doctor reads it rather than keeping a copy. — Done in token-map 3e3b078; the Spend side is in `2026-10-07-harness-index.md`.
    - Account switch on resume (spend audit `rewrites:idle 5-60min`, 2026-10-10): prompt cache is per org, so a resume on another account reads only the cross-org system prefix (8-25k) and re-writes the rest, filed as `idle 5-60min` or `unexplained`. All 6 such re-writes over 1k in the 7 days to 10-10 (1.86M) follow a `credential_org` attachment naming a new org; same-org resumes in that window kept the cache. Track the org per context (the `credential_org` attachment) and file it as an avoidable `account switch` cause ahead of the idle ones.
@@ -50,6 +51,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Review waits (spend audit `spawn:review-waiter`, 2026-10-10): the relay is gone (llm-legs ee185fa8); a background `review-bench wait`'s completion wakes the chat as a main-thread turn no row attributes to review waits.
    - Skill listing per entry (spend audit 2026-10-10): `skills()` prices entries from the most common listing only, so account-only synced entries (com workers' `anthropic-skills:*`, `cowork-plugin-management:*`) are missing there; split per listing hash.
    - Hook-asked calls (spend audit `hook:context-nudge.sh`, 2026-10-10): the focus-file Write a nudge asks for (~1.4k/week) is priced as `tool call: Write`; charge a call that follows a hook's note and touches the path it names to that hook.
+   - Retired relays (spend audit `spawn:codex-worker`, 2026-10-10): their successor, the chat's own `worker-run` start/wait/report turns, shows only in Bash `worker-run`, never per vendor.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.

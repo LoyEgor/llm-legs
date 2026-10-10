@@ -258,6 +258,17 @@
    "sources": {},
    "verdict": "cut",
    "note": "cut at source before this run: claude-setup 46879c6 removed agents/gemini-worker.md (2026-10-09) and llm-legs b615c97 makes worker-spawn-hook deny the type with the worker-run start gemini protocol; replay of all 42 recorded Agent(gemini-worker) calls 10-04..10-08 through the hook: 42/42 denied with that protocol, so the same geminib run starts from the chat's Bash with no subagent startup; no spawn since 10-08 00:29, the 7d row (0.3M) drains as the window rolls"
+  },
+  {
+   "id": "spawn:codex-worker",
+   "title": "spawn codex-worker",
+   "audited_at": "2026-10-10T08:07:50+03:00",
+   "by": "harness-speed-spend-spawn-codex-worker-20261010T031910Z-2558",
+   "share": 0.000508,
+   "prices": {},
+   "sources": {},
+   "verdict": "cut",
+   "note": "cut at the source by ee185fa8 (2026-10-09, relay-free delegation): the codex-worker relay is retired, its agent file gone and worker-spawn-hook denies the type; last codex-worker request 2026-10-08T17:17Z, none since (tokenmap requests.agent_type), so the 0.4M 7-day startup is a tail that ages out by 2026-10-16; the chat now runs the same worker-run start/wait/report itself, same worker, same report"
   }
  ]
 }
