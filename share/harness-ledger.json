@@ -6514,6 +6514,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-codexb-20261010T031918Z-6532",
       "note": "A traced run (580 s under xtrace, load ~130) holds no sleep worth cutting: wait_announce polls 0.1 s, the 0.3 s negative wait and the 1 s image deadline are the checks themselves; the wall is ~2000 short forks of bin/codexb, codex-quota.py and bin/codex-image. Fix: `# shards: 3` cut where the state allows (accounts, pool, status and launch args 211 s; profiles, web, reserved names, quota helper, remove and pins 217 s on a seeded home; codex-image and the export helpers 148 s). Shards run only while slot_room finds room, so a saturated machine still runs it whole at the old wall. Not cut: no legacy or duplicate check found; the 6 TTY key specs and the reserved-word loop are distinct requirements.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-heavy-test-vendor-fingerprint",
+      "title": "test_vendor_fingerprint probed all four vendors on every check while each section changes one or two",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_vendor_fingerprint"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:00:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-vendor-fingerprint-20261010T031932Z-6e6e",
+          "files": [
+            "llm-legs/tests/test_vendor_fingerprint.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "every assert of the suite, base vs fix: each single-vendor section checks the vendor whose inputs it changed (codex and gemini together where both change); the baseline, the no-change recheck and the lock-held check stay check_all; the version for the merge cases is the fixture version file instead of a fourth codex snapshot; the two 1 s bounded lock waits run side by side",
+            "data": "the suite fixture; mutation: a bare check in a section turns the suite red (check names its vendors or is check_all)",
+            "result": "272 -> 271 asserts green (the events count between the two lock waits, read once after both); CPU 96 -> 55 s, a full check 1.35 vs a one-vendor check 0.35 CPU s, wall 556 s at load 100 -> 262 s at load 169"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-vendor-fingerprint-20261010T031932Z-6e6e",
+      "note": "Profile at load 100-190: 51 check calls held 390 of 561 s wall; the rest is request/close/night (doctor-fix record and orchestrate, fixture worktrees), the checked work itself. Ruled out: global git hooks (HOME is the fixture home, git sees no core.hooksPath); a shard split (sections chain events, fingerprints and ids from the first check to the last, a shard would replay most of the run); legacy cases (each section pins a 2026-09/10 behaviour still in bin/vendor-fingerprint). Left: vendor-fingerprint check runs one jq per event file in requested() per vendor (48 live events, ~0.5 CPU s a scheduled check), not the suite's cost.",
+      "handoff": null
     }
   ],
   "blind_spots": [

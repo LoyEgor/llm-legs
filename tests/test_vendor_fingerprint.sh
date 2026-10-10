@@ -134,7 +134,9 @@ fixture_repo() { # dir
 DREPO="$WORK/day-repo"
 fixture_repo "$DREPO"
 SCRIPT="$DREPO/bin/vendor-fingerprint"
-check() { bash "$SCRIPT" check "$@"; }
+# A check of every vendor costs four probes; a section that changes one vendor checks that one.
+check() { [ $# -gt 0 ] || fail "check names the vendors its section changes, or is check_all"; bash "$SCRIPT" check "$@"; }
+check_all() { bash "$SCRIPT" check; }
 quiet() { "$@" 2>/dev/null; }
 events() { find "$EVENTS" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
 last_event() { ls -t "$EVENTS"/*.json 2>/dev/null | head -n 1; }
@@ -152,7 +154,7 @@ taken() {
 }
 
 # The first check is the baseline: every installed vendor is recorded and nothing is reported.
-check || fail "check exited non-zero"
+check_all || fail "check exited non-zero"
 for vendor in codex grok gemini claude; do assert test -s "$STATE/fingerprints/$vendor.json"; done
 assert [ "$(events)" = 0 ]
 assert [ ! -s "$OPENED" ]
@@ -177,13 +179,13 @@ assert jqe '.facets["help: agy --help"] | test("Model for the current CLI sessio
 assert jqe '.facets["help: claude --help"] | test("Claude Code <version>")' "$STATE/fingerprints/claude.json"
 assert jqe '.facets.probe_failures == []' "$STATE/fingerprints/claude.json"
 
-check
+check_all
 assert [ "$(events)" = 0 ]
 # A list an older glue rule stored is no release once the current rule cuts it the same way.
 jq '.facets.ids += ["gemini-3.1-pro-low-thinkingx", "gemini-3.5-flashcheck", "gemini-3.7-flash-tieredopenai"]' \
   "$FP_GEMINI" >"$WORK/glued"
 mv "$WORK/glued" "$FP_GEMINI"
-check
+check gemini
 assert [ "$(events)" = 0 ]
 assert jqe '.facets.ids | index("gemini-3.1-pro-low-thinkingx") == null' "$FP_GEMINI"
 assert jqe '.facets.ids | index("gemini-3.7-flash-tieredopenai") == null' "$FP_GEMINI"
@@ -191,7 +193,7 @@ assert jqe '.facets.ids | index("gemini-3.7-flash-tieredopenai") == null' "$FP_G
 # A release that changes nothing but the version closes itself.
 printf '2.1.281\n' >"$DATA/ver-claude"
 printf 'Claude Code 2.1.281\n  --model <model>\n' >"$DATA/help-claude"
-check
+check claude
 assert [ "$(events)" = 1 ]
 assert [ "$(field .status)" = auto-closed ]
 assert [ "$(field '.changed | join(",")')" = version ]
@@ -200,7 +202,7 @@ assert [ ! -s "$OPENED" ]
 
 # A new model id in the binary is an open event, and no chat opens by itself.
 printf 'grok-4.7 grok-imagine-video-1.5 grok-imagine-image-3.0\n' >"$HOME/.grok/bin/grok-1.0.41"
-check
+check grok
 assert [ "$(events)" = 2 ]
 fid=$(field .id)
 assert [ "$(field .vendor)" = grok ]
@@ -234,7 +236,7 @@ assert jqe '.launched_at != null and .launched == "day" and .night == null' "$EV
 assert jqe --arg id "$id" --arg s "$launch_sid" --arg c "$EVENTS/$run.command" --arg w "$tree" '.doctor == "updater" and .launched_at != null
   and .closed_at == null and .account == "acct-b" and .session == $s and .command == $c and .judge_at_launch == "u1"
   and .night == null and .branch == "vendor/\($id)" and .worktrees == [$w] and (.problems | map(.id)) == [$id]' "$RUNS/$run.json"
-check
+check grok
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
 assert [ ! -e "$EVENTS/$fid.base" ]
 taken
@@ -252,7 +254,7 @@ assert grep -qF 'profile repo-acct ' "$(cat "$OPENED")"
 : >"$OPENED"
 codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
   "[{\"slug\":\"gpt-6-sol\",\"context_window\":272000,\"supports_computer_use\":true,\"model_messages\":{\"instructions_template\":\"$PROMPT\"}}]"
-check
+check codex
 assert [ "$(field .vendor)" = codex ]
 assert [ "$(field '.substantive | join(",")')" = catalog ]
 assert grep -qxF '+gpt-6-sol.supports_computer_use = true' "$(field .diff)"
@@ -260,19 +262,19 @@ assert [ ! -s "$OPENED" ]
 taken
 codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
   "[{\"slug\":\"gpt-6-sol\",\"context_window\":272000,\"supports_computer_use\":true,\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
-check
+check codex
 assert [ "$(field '.changed | join(",")')" = catalog_text ]
 assert [ "$(field .status)" = auto-closed ]
 # A field gaining an empty container has a diff line for its close to decide, like any other value.
 codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
   "[{\"slug\":\"gpt-6-sol\",\"context_window\":272000,\"supports_computer_use\":true,\"input_modalities\":[],\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
-check
+check codex
 assert [ "$(field '.substantive | join(",")')" = catalog ]
 assert grep -qxF '+gpt-6-sol.input_modalities = []' "$(field .diff)"
 taken
 codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
   "[{\"slug\":\"gpt-6-sol\",\"context_window\":272000,\"supports_computer_use\":true,\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
-check
+check codex
 assert grep -qxF -- '-gpt-6-sol.input_modalities = []' "$(field .diff)"
 taken
 
@@ -284,16 +286,16 @@ VARIANT="[{\"slug\":\"gpt-6-sol\",\"context_window\":272000,\"supports_computer_
 mkdir -p "$HOME/.codex-profiles/b"
 ln -s "$HOME/.codex-profiles/a/skills" "$HOME/.codex/skills"
 codex_cache "$HOME/.codex-profiles/b" 0.156.1 "$VARIANT"
-check
+check codex
 assert [ "$(events)" = $((count + 1)) ]
 assert [ "$(field '.substantive | join(",")')" = catalog ]
 assert grep -qxF '+gpt-6-sol.default_service_tier.per_account.1 = "priority"' "$(field .diff)"
 taken
 count=$(events)
 codex_cache "$HOME/.codex" 0.156.1 "$VARIANT"
-check
+check codex
 codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"}]'
-check
+check codex
 assert [ "$(events)" = "$count" ]
 
 # The list order differs per account and flaps; every launch resolves its -m, so it opens no chat.
@@ -301,7 +303,7 @@ count=$(events)
 codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
   "[{\"slug\":\"gpt-6-sol\",\"priority\":2,\"context_window\":272000,\"supports_computer_use\":true,\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
 codex_cache "$HOME/.codex-profiles/b" 0.156.1 "${VARIANT/\"slug\":\"gpt-6-sol\",/\"slug\":\"gpt-6-sol\",\"priority\":3,}"
-check
+check codex
 assert [ "$(events)" = $((count + 1)) ]
 assert [ "$(field '.changed | join(",")')" = catalog_order ]
 assert [ "$(field .status)" = auto-closed ]
@@ -312,7 +314,7 @@ count=$(events)
 : >"$OPENED"
 jq '.facets.catalog["gpt-6-sol"].priority = {per_account: [2, 3]}' "$STATE/fingerprints/codex.json" >"$WORK/old-codex.json"
 mv "$WORK/old-codex.json" "$STATE/fingerprints/codex.json"
-check
+check codex
 assert [ "$(events)" = $((count + 1)) ]
 assert [ "$(field '.changed | join(",")')" = catalog ]
 assert [ "$(field .status)" = auto-closed ]
@@ -324,13 +326,13 @@ count=$(events)
 : >"$OPENED"
 REGROUPED="[{\"slug\":\"gpt-6-sol\",\"priority\":3,\"context_window\":272000,\"supports_computer_use\":true,\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
 codex_cache "$HOME/.codex-profiles/b" 0.156.1 "$REGROUPED"
-check
+check codex
 assert [ "$(events)" = $((count + 1)) ]
 assert [ "$(field '.changed | join(",")')" = catalog ]
 assert [ "$(field .status)" = auto-closed ]
 assert [ ! -s "$OPENED" ]
 codex_cache "$HOME/.codex-profiles/b" 0.156.1 "${REGROUPED/\"priority\":3,/\"priority\":3,\"default_service_tier\":\"flex\",}"
-check
+check codex
 assert [ "$(events)" = $((count + 2)) ]
 assert [ "$(field '.substantive | join(",")')" = catalog ]
 assert [ "$(field .status)" = open ]
@@ -340,13 +342,13 @@ taken
 count=$(events)
 codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"},{"slug":"gpt-5.5"}]'
 : >"$DATA/agy-models-fail"
-check
+check codex gemini
 assert [ "$(events)" = "$count" ]
 # The Updater doctor reads which facets a remote read missed, kept beside the facets so it is no change.
 assert jqe '.remote_failures == ["catalog"] and (.facets.catalog | length) > 0' "$STATE/fingerprints/gemini.json"
 rm "$DATA/agy-models-fail"
 printf 'gemini-4-flash-high\tGemini 4 Flash (High)\n' >>"$DATA/models-agy"
-check
+check gemini
 assert jqe '.remote_failures == []' "$STATE/fingerprints/gemini.json"
 assert [ "$(field .vendor)" = gemini ]
 assert grep -qxF "+gemini-4-flash-high	Gemini 4 Flash (High)" "$(field .diff)"
@@ -354,16 +356,16 @@ taken
 
 # A probe that breaks locally is news; the facet it could not read keeps its value.
 rm "$HOME/.grok/bin/grok"
-check
+check grok
 assert [ "$(field .vendor)" = grok ]
 assert [ "$(field '.substantive | join(",")')" = probe_failures ]
 assert jqe '.facets.ids | index("grok-imagine-image-3.0")' "$STATE/fingerprints/grok.json"
 taken
 ln -s grok-1.0.41 "$HOME/.grok/bin/grok"
-check
+check grok
 taken
 printf '# Imagine\n' >"$HOME/.grok/docs/28-imagine.md"
-check
+check grok
 assert [ "$(field '.substantive | join(",")')" = docs ]
 assert grep -qF '+28-imagine.md = ' "$(field .diff)"
 taken
@@ -371,16 +373,16 @@ taken
 # Divergence: an account missing a model is substantive; a foreign client is recorded, and it stays
 # recorded while the app that runs it is closed.
 printf '{"codex":{"divergence":["catalog\\tb\\tmissing gpt-6-sol"]}}\n' >"$STATE/state.json"
-check
+check codex
 assert [ "$(field '.substantive | join(",")')" = divergence ]
 taken
 printf '{"codex":{"divergence":["catalog\\tb\\tmissing gpt-6-sol","client\\t/Applications/ChatGPT.app/codex\\t0.154.0"]}}\n' >"$STATE/state.json"
-check
+check codex
 assert [ "$(field '.changed | join(",")')" = foreign_clients ]
 assert [ "$(field .status)" = auto-closed ]
 count=$(events)
 printf '{"codex":{"divergence":["catalog\\tb\\tmissing gpt-6-sol"]}}\n' >"$STATE/state.json"
-check
+check codex
 assert [ "$(events)" = "$count" ]
 
 # A second, older install of a CLI is found on any PATH or nvm.
@@ -389,31 +391,31 @@ count=$(events)
 second() { printf '#!/usr/bin/env bash\nprintf "%s (Claude Code)\\n"\n' "$1" >"$HOME/.nvm/versions/node/v24.0.0/bin/claude"; }
 second 2.1.281
 chmod +x "$HOME/.nvm/versions/node/v24.0.0/bin/claude"
-check
+check claude
 assert [ "$(events)" = "$count" ]
 second 2.1.201
-check
+check claude
 assert [ "$(field .vendor)" = claude ]
 assert [ "$(field '.substantive | join(",")')" = installs ]
 assert grep -qxF "+$HOME/.nvm/versions/node/v24.0.0/bin/claude = \"2.1.201\"" "$(field .diff)"
 # Once its chat is open, the install catching up or still lagging is no new event to handle.
 taken
 second 2.1.250
-check
+check claude
 assert [ "$(field '.changed | join(",")')" = installs ]
 assert [ "$(field .status)" = auto-closed ]
 second 2.1.281
-check
+check claude
 assert [ "$(field '.changed | join(",")')" = installs ]
 assert [ "$(field .status)" = auto-closed ]
 # An install that moved ahead of the primary is no event: the primary's version event follows.
 second 2.1.289
-check
+check claude
 assert [ "$(field '.changed | join(",")')" = installs ]
 assert [ "$(field .status)" = auto-closed ]
 assert grep -qxF "+$HOME/.nvm/versions/node/v24.0.0/bin/claude = \"2.1.289\"" "$(field .diff)"
 second 2.1.281
-check
+check claude
 
 # A request for a vendor whose release event waits takes that event, never a manual one beside it. A
 # request with no Claude account to run on, or whose chat could not be opened, is opened by the next
@@ -421,7 +423,7 @@ check
 : >"$OPENED"
 : >"$DATA/pick"
 fake_cli "$FAKE_BIN/claude" claude claude-opus-5-5 claude-sonnet-5 claude-opus-6
-check
+check claude
 id=$(field .id)
 assert [ "$(field '.launched_at == null')" = true ]
 count=$(events)
@@ -431,17 +433,17 @@ assert [ "$(events)" = "$count" ]
 assert jqe '.launched_at == null and .run == null and .requested_at != null' "$EVENTS/$retry.json"
 : >"$DATA/opener-fails"
 printf 'acct-b\n' >"$DATA/pick"
-check
+check claude
 assert jqe '.launched_at == null' "$EVENTS/$retry.json"
 assert [ -s "$EVENTS/$retry.base" ]
 assert [ ! -s "$OPENED" ]
 printf 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-4-flash\tGemini 4 Flash\n' >"$DATA/models-agy"
-VENDOR_FINGERPRINT_HOLD=1 check
+VENDOR_FINGERPRINT_HOLD=1 check gemini
 unrequested=$(field .id)
 assert [ "$(jq -r .vendor "$EVENTS/$unrequested.json")" = gemini ]
 rm "$DATA/opener-fails"
-check
-check
+check claude
+check gemini
 assert [ "$(cat "$OPENED")" = "$EVENTS/$(jq -r .run "$EVENTS/$retry.json").command" ]
 assert jqe '.launched_at != null and .run != null' "$EVENTS/$retry.json"
 assert [ ! -e "$EVENTS/$retry.base" ]
@@ -512,13 +514,16 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   lockf -k -t 0 "$STATE/fingerprints/check.lock" true 2>/dev/null || break
   sleep 0.2
 done
-assert_fails quiet check
+assert_fails quiet check_all
 assert [ "$(events)" = "$count" ]
 # Parallel vendor workers run `check --here` at nearly the same time: it waits for the lock, bounded.
-assert_fails quiet env VENDOR_FINGERPRINT_LOCK_WAIT=1 bash "$SCRIPT" check --here grok
-assert [ "$(events)" = "$count" ]
+env VENDOR_FINGERPRINT_LOCK_WAIT=1 bash "$SCRIPT" check --here grok 2>/dev/null &
+here_wait=$!
 # A request waits for it too: a check's launch_pending would see it requested and open a second chat.
-assert_fails quiet env VENDOR_FINGERPRINT_LOCK_WAIT=1 bash "$SCRIPT" request grok
+env VENDOR_FINGERPRINT_LOCK_WAIT=1 bash "$SCRIPT" request grok 2>/dev/null &
+request_wait=$!
+assert_fails wait "$here_wait"
+assert_fails wait "$request_wait"
 assert [ "$(events)" = "$count" ]
 (sleep 1; kill "$HOLDER" 2>/dev/null) &
 
@@ -538,33 +543,33 @@ assert [ ! -s "$OPENED" ]
 count=$(events)
 grok_ids() { printf 'grok-4.7 grok-imagine-video-1.5 grok-imagine-image-3.0 grok-5 %s\n' "$*" >"$HOME/.grok/bin/grok-1.0.41"; }
 grok_ids grok-6
-check
+check grok
 grok_id=$(field .id)
 assert [ "$(field '"\(.vendor) \(.status) \(.launched_at)"')" = "grok open null" ]
 grok_ids grok-6 grok-7
-check
+check grok
 assert [ "$(events)" = $((count + 1)) ]
 assert grep -qxF '+grok-6' "$EVENTS/$grok_id.diff"
 assert grep -qxF '+grok-7' "$EVENTS/$grok_id.diff"
 printf 'gemini-5-pro\tGemini 5 Pro\n' >>"$DATA/models-agy"
-check
+check gemini
 gemini_id=$(field .id)
 assert [ "$(field '"\(.vendor) \(.status)"')" = "gemini open" ]
 jq '.facets.ids += ["gemini-3.1-pro-low-thinkingx"]' "$EVENTS/$gemini_id.base" >"$WORK/glued"
 mv "$WORK/glued" "$EVENTS/$gemini_id.base"
 sed -i '' '/gemini-5-pro/d' "$DATA/models-agy"
-check
+check gemini
 assert [ "$(jq -r .status "$EVENTS/$gemini_id.json")" = auto-closed ]
 assert [ "$(events)" = $((count + 2)) ]
 fake_cli "$FAKE_BIN/claude" claude claude-opus-5-5 claude-sonnet-5 claude-opus-6 claude-opus-7
-check
+check claude
 claude_id=$(field .id)
 assert [ "$(events)" = $((count + 3)) ]
 assert [ ! -s "$OPENED" ]
 jq --arg t "$(date -u -r $(($(date +%s) - 30 * 86400)) +%Y-%m-%dT%H:%M:%SZ)" '.created_at = $t' "$EVENTS/$grok_id.json" >"$WORK/old"
 touch -r "$EVENTS/$grok_id.json" "$WORK/old"
 mv "$WORK/old" "$EVENTS/$grok_id.json"
-check
+check grok
 assert [ ! -s "$OPENED" ]
 assert jqe '.launched_at == null' "$EVENTS/$grok_id.json"
 assert [ ! -e "$STATE/fingerprints/last-launch" ]
@@ -573,7 +578,7 @@ assert [ ! -e "$STATE/fingerprints/last-launch" ]
 : >"$DATA/opener-fails"
 manual=$(bash "$SCRIPT" request codex | head -n 1)
 rm "$DATA/opener-fails"
-VENDOR_FINGERPRINT_HOLD=1 bash "$SCRIPT" check
+VENDOR_FINGERPRINT_HOLD=1 bash "$SCRIPT" check codex
 assert [ ! -s "$OPENED" ]
 assert jqe '.launched_at == null' "$EVENTS/$manual.json"
 # Egor's update word: every vendor now — the waiting events carry their vendors' passes, each other
@@ -740,7 +745,7 @@ assert_fails grep -q '^MODEL:' "$n_brief"
 # A field that is a leaf in one home and a container in another no longer kills the codex catalog
 # merge (gpt-6.1-sol vanished from every catalog facet this way), and a merge that does fail is a
 # broken probe, never a silently missing facet.
-v=$(bash "$SCRIPT" snapshot codex | jq -r .version)
+v=$(cat "$DATA/ver-codex")
 mkdir -p "$HOME/.codex-profiles/x" "$HOME/.codex-profiles/y" "$HOME/.codex-profiles/z"
 codex_cache "$HOME/.codex-profiles/x" "$v" '[{"slug":"gpt-7-test","available_in_plans":[]}]'
 codex_cache "$HOME/.codex-profiles/y" "$v" '[{"slug":"gpt-7-test","available_in_plans":["pro"]}]'
