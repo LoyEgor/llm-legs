@@ -887,6 +887,13 @@ instruction_interp_dir_construct_re() { # [trunc] → ERE matching ONE write thr
   printf '%s' "(open\($s(file$s=$s)?$j$s,([^()]*,)?$s(mode$s=$s)?$mode|open\([^(),]*,$s$mode$s,$s$j|$node\($s$j$s,|File\.write\($s$j$s,|Path\($s$id$s,[^()]*\)$s\.(write_text|write_bytes|open\($s$mode)|\($s$j\)$s\.(write_text|write_bytes|open\($s$mode))"
 }
 
+# `p = r / 'docs/x.md'` … `p.write_text(…)`: the joined part must be one quoted literal, since an
+# unbounded one runs on past the `;` that ends the assignment.
+instruction_interp_var_literal_join_re() { # → ERE matching any variable assigned a variable joined to one literal
+  local s="[[:space:]]*" id=$_INSTRUCTION_ID lit="$_INSTRUCTION_Q[^\"'\\\\]*$_INSTRUCTION_Q"
+  printf '%s' "(^|[^A-Za-z_0-9.\$])$id$s=$s(([A-Za-z_]+\.)*join\($s$id$s,$s$lit$s\)|Path\($s($id|$lit)$s\)$s/$s$lit|$id$s[+/]$s$lit)"
+}
+
 instruction_interp_dir_join() { # one construct of the rule above [var] → VARIABLE<TAB>SEPARATOR<TAB>JOINED
   local s="[[:space:]]*" id="([\$]?$_INSTRUCTION_ID)" rest
   local pathargs="^Path\($s$id$s,$s([^()]*)\)" perl="^open\([^(),]*,$s$_INSTRUCTION_MODE$s,$s(.*)$"

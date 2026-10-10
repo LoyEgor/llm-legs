@@ -558,5 +558,19 @@ assert_eq pass "$(GATE_CWD="$WT" decision 'echo x >> notes/plain.md')"
 assert_eq pass "$(decision "python3 -c \"open('$WT/notes/plain.md','a').write('x')\"")"
 assert_eq pass "$(decision "D=$WORK; cd \$D && echo x >> guide.md")"
 
+echo "== write gate: a variable holding a checkout joined to a literal that completes a guarded name"
+assert_eq deny "$(decision "python3 - <<'PY'
+from pathlib import Path
+r=Path('$WT')
+p=r/'notes/plain.md';p.write_text('x')
+p=r/'global/docs/guide.md';s=p.read_text().replace('a','b');p.write_text(s)
+PY")"
+assert_eq deny "$(decision "python3 -c \"from pathlib import Path; r=Path('$R'); (r/'global/CLAUDE.md').write_text('x')\"")"
+assert_eq deny "$(decision "python3 -c \"from pathlib import Path; p=Path('$WT')/'global/docs/guide.md'; p.write_text('x')\"")"
+assert_eq deny "$(decision "python3 -c \"import os; r='$R'; p=os.path.join(r, 'global/CLAUDE.md'); open(p,'a')\"")"
+assert_eq pass "$(decision "python3 -c \"from pathlib import Path; r=Path('$WT'); p=r/'notes/plain.md'; p.write_text('x')\"")"
+assert_eq pass "$(decision "python3 -c \"from pathlib import Path; r=Path('$WT'); p=r/'global/docs/guide.md'; print(p.read_text())\"")"
+assert_eq pass "$(decision "python3 -c \"from pathlib import Path; r=Path('$WT'); p=r/'global/docs/guide.md'; p='/tmp/x.md'; open(p,'w')\"")"
+
 fi
 echo "OK ($asserts assertions)"

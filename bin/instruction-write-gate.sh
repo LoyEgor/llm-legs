@@ -332,7 +332,9 @@ var_cons=$(instruction_interp_var_construct_re)
 var_trunc=$(instruction_interp_var_construct_re trunc)
 dir_cons=$(instruction_interp_dir_construct_re)
 dir_trunc=$(instruction_interp_dir_construct_re trunc)
+var_join=$(instruction_interp_var_literal_join_re)
 literal_re="^${_INSTRUCTION_Q}([^\"'\\\\]*)${_INSTRUCTION_Q}\$"
+path_lit_re="^[[:space:]]*Path\\([[:space:]]*${_INSTRUCTION_Q}([^\"'\\\\]*)${_INSTRUCTION_Q}[[:space:]]*\\)[[:space:]]*/[[:space:]]*(.*)\$"
 # Only an assignment inside the write's own invocation binds it. Every grep below reads the whole
 # text, so each runs once per text or per variable, never once per construct: a script of
 # thousands of writes made that minutes of greps.
@@ -397,8 +399,36 @@ constructs_of() { # text construct-re trunc-re → cons_at, cons_text, cons_trun
   [ "${#cons_at[@]}" -gt 0 ] || return 0
   while IFS= read -r n; do cons_trunc[n]=1; done < <(printf '%s\n' "${cons_text[@]}" | grep -Ein "$3" | cut -d: -f1)
 }
+literal_of() { # variable offset → lit: the quoted literal its binding before the offset gave it, of the caller's $text
+  local i bind assigned
+  lit=''
+  bound_at "$1" "$2" || return 1
+  for ((i = 0; i < ${#lit_vars[@]}; i++)); do [ "${lit_vars[i]}" = "$1" ] && break; done
+  if [ "$i" -eq "${#lit_vars[@]}" ]; then
+    lit_vars+=("$1")
+    lit_rows+=("$(printf '%s' "$text" | grep -Eiob "$(instruction_interp_var_assign_re "$1" "[^\"'\\\\]+")")")
+  fi
+  while IFS=: read -r bind assigned; do
+    [ "$bind" = "$bound" ] || continue
+    lit=${assigned#*=}; lit="${lit#*[\"\']}"; lit="${lit%%[\"\'\\]*}"
+    return 0
+  done <<< "${lit_rows[i]}"
+  return 1
+}
+# A literal joined part names the file whatever directory the variable holds; any other joined part
+# is a write somewhere in that directory, judged only where the directory itself is guarded.
+judge_join() { # directory separator joined mode
+  local dir=$1 joined=${3%"${3##*[![:space:]]}"}
+  if [[ $joined =~ $literal_re ]]; then
+    [ "$2" = / ] && dir=${dir%/}/
+    judge_row "$dir${BASH_REMATCH[1]}" "$4"
+  else
+    printf '%s' "$dir" | grep -Eiqx "($DIR_TARGET)" && judge_row "${dir%/}/*.md" "$4" || return 1
+    hit=$dir
+  fi
+}
 judge_interp() { # program text
-  local text=$1 construct name mode var at bind assigned sep joined row dir k
+  local text=$1 construct name mode var at bind assigned sep joined row k var_bound lit joins
   if printf '%s' "$text" | grep -Eiq "${interp_write}"; then
     while IFS= read -r construct; do
       [ -n "$construct" ] || continue
@@ -409,8 +439,10 @@ judge_interp() { # program text
     done < <(printf '%s' "$text" | grep -Eio "$interp_cons")
   fi
   interp_starts='' bind_vars=() bind_offsets=() assign_vars=() assign_rows=() calls_read='' join_vars=() join_offsets=()
+  lit_vars=() lit_rows=()
   if printf '%s' "$text" | grep -Eiq "$_INSTRUCTION_IW$var_cons"; then
     constructs_of "$text" "$var_cons" "$var_trunc"
+    joins=$(printf '%s' "$text" | grep -Eiob "$var_join")
     for ((k = 0; k < ${#cons_at[@]}; k++)); do
       at=${cons_at[k]} construct=${cons_text[k]}
       instruction_interp_var_name "$construct" var || continue
@@ -418,43 +450,42 @@ judge_interp() { # program text
       [ -z "${cons_trunc[k + 1]:-}" ] || mode=trunc
       assigns_of "$var" "$TARGET"
       if [ -z "$assigns" ]; then
-        joined_call "$var" "$at" || continue
-        while IFS= read -r name; do
-          [ -z "$name" ] || ! judge_row "$name" "$mode" || return 0
-        done <<< "$call_names"
-        continue
+        if joined_call "$var" "$at"; then
+          while IFS= read -r name; do
+            [ -z "$name" ] || ! judge_row "$name" "$mode" || return 0
+          done <<< "$call_names"
+        fi
+      elif bound_at "$var" "$at"; then
+        while IFS=: read -r bind assigned; do
+          [ "$bind" = "$bound" ] || continue
+          name=$(name_in "$assigned") || continue
+          judge_row "$name" "$mode" && return 0
+        done <<< "$assigns"
       fi
-      bound_at "$var" "$at" || continue
+      [ -n "$joins" ] && bound_at "$var" "$at" || continue
+      var_bound=$bound
       while IFS=: read -r bind assigned; do
-        [ "$bind" = "$bound" ] || continue
-        name=$(name_in "$assigned") || continue
-        judge_row "$name" "$mode" && return 0
-      done <<< "$assigns"
+        [ "$bind" = "$var_bound" ] || continue
+        if [[ ${assigned#*=} =~ $path_lit_re ]]; then
+          judge_join "${BASH_REMATCH[1]}" / "${BASH_REMATCH[2]}" "$mode" && return 0
+          continue
+        fi
+        # Parenthesised, the right-hand side reads as the `(r / 'x')` write construct the parser knows.
+        instruction_interp_dir_join "(${assigned#*=})" row || continue
+        IFS=$'\t' read -r var sep joined <<< "$row"
+        literal_of "$var" "$bind" && judge_join "$lit" "$sep" "$joined" "$mode" && return 0
+      done <<< "$joins"
     done
   fi
-  assign_vars=() assign_rows=()
   if printf '%s' "$text" | grep -Eiq "$_INSTRUCTION_IW$dir_cons"; then
     constructs_of "$text" "$dir_cons" "$dir_trunc"
     for ((k = 0; k < ${#cons_at[@]}; k++)); do
       at=${cons_at[k]} construct=${cons_text[k]}
       instruction_interp_dir_join "$construct" row || continue
       IFS=$'\t' read -r var sep joined <<< "$row"
-      assigns_of "$var" "$DIR_TARGET"
-      [ -n "$assigns" ] || continue
-      bound_at "$var" "$at" || continue
       mode=append
       [ -z "${cons_trunc[k + 1]:-}" ] || mode=trunc
-      while IFS=: read -r bind assigned; do
-        [ "$bind" = "$bound" ] || continue
-        dir=${assigned#*=}; dir="${dir#*[\"\']}"; dir="${dir%%[\"\'\\]*}"
-        joined=${joined%"${joined##*[![:space:]]}"}
-        if [[ $joined =~ $literal_re ]]; then
-          [ "$sep" = / ] && dir=${dir%/}/
-          judge_row "$dir${BASH_REMATCH[1]}" "$mode" && return 0
-        else
-          judge_row "${dir%/}/*.md" "$mode" && { hit=$dir; return 0; }
-        fi
-      done <<< "$assigns"
+      literal_of "$var" "$at" && judge_join "$lit" "$sep" "$joined" "$mode" && return 0
     done
   fi
   return 1
