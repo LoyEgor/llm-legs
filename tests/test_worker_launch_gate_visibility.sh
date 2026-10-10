@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/share/test-scope.sh"
@@ -31,7 +32,26 @@ expect() { # decision agent command [timeout] [background]
   got=$(verdict "${@:2}")
   [ "${got:-pass}" = "$1" ] || fail "[$3] as ${2:-main}: expected $1 got ${got:-pass}"
 }
+# The hook payload as the harness sends it: an agent's call carries its id beside its type.
+raw_verdict() { # extra-json command
+  jq -cn --argjson extra "$1" --arg command "$2" \
+    '({hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_input:{command:$command}}) * $extra' |
+    bash "$GATE" 2>/dev/null
+}
+expect_as() { # decision extra-json command [reason-fragment]
+  asserts=$((asserts + 1))
+  local out got
+  out=$(raw_verdict "$2" "$3")
+  [ -n "$out" ] || out='{}'
+  got=$(jq -r '.hookSpecificOutput.permissionDecision // "pass"' <<<"$out" 2>/dev/null)
+  [ "${got:-pass}" = "$1" ] || fail "[$3] as $2: expected $1 got ${got:-pass}"
+  [ -z "${4:-}" ] || jq -r '.hookSpecificOutput.permissionDecisionReason' <<<"$out" | grep -Fq -- "$4" ||
+    fail "[$3] as $2: the reason does not say [$4]"
+}
+AGENT='{"agent_type":"general-purpose","agent_id":"a1","tool_input":{"timeout":600000}}'
+FORK='{"agent_type":"fork","agent_id":"a3","tool_input":{"timeout":600000}}'
 
+if suite_shard_owns 1 wlg-spellings; then
 # 9: a print flag with an inline value is still headless.
 expect deny '' 'claude --prompt=hi'
 expect deny '' 'claude -p=hi'
@@ -96,25 +116,8 @@ done
 asserts=$((asserts + 1))
 [ "$(CLAUDEB_WORKER=1 verdict '' 'worker-run report r1')" != deny ] || fail "worker report denied"
 
-# The hook payload as the harness sends it: an agent's call carries its id beside its type.
-raw_verdict() { # extra-json command
-  jq -cn --argjson extra "$1" --arg command "$2" \
-    '({hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_input:{command:$command}}) * $extra' |
-    bash "$GATE" 2>/dev/null
-}
-expect_as() { # decision extra-json command [reason-fragment]
-  asserts=$((asserts + 1))
-  local out got
-  out=$(raw_verdict "$2" "$3")
-  [ -n "$out" ] || out='{}'
-  got=$(jq -r '.hookSpecificOutput.permissionDecision // "pass"' <<<"$out" 2>/dev/null)
-  [ "${got:-pass}" = "$1" ] || fail "[$3] as $2: expected $1 got ${got:-pass}"
-  [ -z "${4:-}" ] || jq -r '.hookSpecificOutput.permissionDecisionReason' <<<"$out" | grep -Fq -- "$4" ||
-    fail "[$3] as $2: the reason does not say [$4]"
-}
-AGENT='{"agent_type":"general-purpose","agent_id":"a1","tool_input":{"timeout":600000}}'
-FORK='{"agent_type":"fork","agent_id":"a3","tool_input":{"timeout":600000}}'
-
+fi
+if suite_shard_owns 2 wlg-agents; then
 # A worker run belongs to the chat that waits on it: no agent starts, awaits or researches through one.
 for agent in "$AGENT" "$FORK"; do
   for owned in 'worker-run start codex --brief /tmp/b --workdir /tmp' 'cd /w && worker-run wait r1 --max 540' \
@@ -162,6 +165,8 @@ expect_as deny '{}' 'review-bench debt && codex exec hi' 'bare headless vendor l
 expect_as deny '{}' 'worker-run wait r1 --max 540; codex exec hi' 'bare headless vendor launch'
 expect_as pass '{}' 'llm-limits --table --no-write'
 
+fi
+if suite_shard_owns 3 wlg-help; then
 # A help screen launches nothing, while a real launch chained beside one still does.
 for help in 'codex help exec' 'codex exec --help' 'claude -p --help' 'claude -p -h' 'codexb exec -h' \
   'gemini -p --help' 'grokb --prompt x --help' 'opencode run --help' 'codex exec --help | head -40' \
@@ -189,6 +194,8 @@ for wrapped in 'npx claude -p hi' 'bunx codex exec hi' 'pnpx claude -p hi' 'npm 
   expect_as deny '{}' "$wrapped" 'bare headless vendor launch'
 done
 
+fi
+if suite_shard_owns 2 wlg-scheduling; then
 # A vendor fed on stdin is headless, and a scheduler runs its command where no gate reads it.
 for scheduled in 'echo hi | gemini' 'cat /tmp/b | agy' 'printf q | nohup codex' 'echo hi | /opt/homebrew/bin/claude' \
   "echo 'claude -p hi' | at now" "(crontab -l; echo '* * * * * claude -p hi') | crontab -" 'crontab /tmp/tab' \
@@ -224,6 +231,8 @@ done
 expect_as deny '{}' $'echo "a\nb"; claude -p hi'
 expect_as deny '{}' $'echo "a\\"b\nc"; claude -p hi'
 
+fi
+if suite_shard_owns 1 wlg-wrappers; then
 # A wrapper flag's own operand, or a sanctioned word swallowed by a loose wrapper's operands, leaves
 # the launch in command position; a quoted value split by an unquoted variable is the launch it spells.
 for wrapped in 'timeout -s KILL 600 claude -p x' 'env -u FOO claude -p x' 'exec codex exec "review bin/worker-run"' \
@@ -245,6 +254,8 @@ done
 WORDS_LIB="$WORK/span-on.sh" expect deny '' 'claude -p hi'
 WORDS_LIB="$WORK/span-on.sh" expect deny '' 'echo hi | claude'
 
+fi
+if suite_shard_owns 3 wlg-prefilter; then
 # The builtin prefilter that lets a plain call out before any fork reads these spellings as the scan does.
 for spliced in "'cl''aude' -p hi" 'c\laude -p hi' 'a=cla; ${a}ude -p hi' 'cd /tmp;at now' '(batch)' 'ls|codex'; do
   expect deny '' "$spliced"
@@ -274,5 +285,6 @@ for chained in 'worker-run report cb-1; claude -p hi' 'worker-run report cb-1 &&
   'worker-run report cb-1 | claude -p' 'worker-run say cb-1 $(claude -p hi)' 'worker-run stop cb-1 `codex exec hi`'; do
   expect deny '' "$chained"
 done
+fi
 
 printf 'PASS: %s asserts; the launch gate denies inline print flags, every headless codex subcommand, wrapped and program-string vendor calls, comment and operand exemptions, the ask_*/probe legs, worker review panels, worker-run start/wait and light-research inside any agent or a headless worker while the chat runs them in the foreground or background, a Monitor polling a wait, a hand-set review token, review launches from any agent or a Monitor (the chat keeps its recoveries), a launch chained after a sanctioned segment and the package-runner, flock and exec wrappers, a vendor fed through a pipe, at/batch/crontab scheduling and the codex MCP tools, with deny texts naming the chat'"'"'s own worker-run start, background wait and report, while plain reads pass\n' "$asserts"

@@ -5839,6 +5839,36 @@
       "reviewed_by": "night fixer harness-speed-regression-test-health-targeted-20261010T031906Z-6548",
       "note": "24 h to 2026-10-10 06:20: 243 min/day pole+serial (usual 127), 225 of it night-window runs at load up to 93; only 11 min/day fell where memlogd saw load1 under the cores and RAM over its threshold (d1 23 of 87, d2 28 of 70, d3 0 of 196). Sharded suites ran whole on no room (run-suites shards only while slot_room), so splitting more saves no wall there. allocate now keeps only the slack's free-machine part (time_budget.free_spans, as f328edd1 did for queues), the rest is the pole suite's work: line 251 -> 10 min/day, usual 0 until memlogd's machine log covers 7 days (from 2026-10-07). Remaining free-machine poles: test_doctor_fix, test_statusline_hooks, test_worker_run_lifecycle, test_worker_run_pool (unsharded), held by tonight's heavy-suite runs.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-heavy-llm-legs-test-worker-launch-gate-visibility",
+      "title": "test_worker_launch_gate_visibility runs its 214 gate calls serially",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_launch_gate_visibility"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:30:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-llm-legs-test-worker-launch-gate-visibility-20261010T031933Z-02f2",
+          "files": [
+            "llm-legs/tests/test_worker_launch_gate_visibility.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the suite's assertion set before and after: every expect/expect_as/shim check moved verbatim into one of six suite_shard_owns sections, helpers in the shared prelude",
+            "data": "SUITE_SHARD=1/3, 2/3, 3/3 runs and the unsharded run",
+            "result": "71 + 75 + 68 = 214 asserts, all PASS, the same 214 the unsharded run counts; run-all merges one PASS 214 line"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-llm-legs-test-worker-launch-gate-visibility-20261010T031933Z-02f2",
+      "note": "Before: 1.0 wall-min a run, 251 runs a week; 152 s wall unsharded at load 66, 78 s sharded under run-all at load ~100. The wall is the gate's own deny path, ~60 process starts a call (28 grep, 8 sed, 8 tr, 6 head, 4 awk, 2 jq), 0.8 s at load 84; the test adds 2 jq a call (~4 %). Audit: no sleeps; no legacy check (every block names a live gate branch); the help forms run as the chat and as an agent because the agent branch runs before the help exemption, kept. Not cut: the gate's deny path forks (production calls mostly leave at the prefilter, so only this suite pays them; a cut needs the gate's adversarial pass); ../claude-setup/tests/test_worker_launch_gate.sh drives the same gate with ~100 overlapping spellings, another repository's suite.",
+      "handoff": null
     }
   ],
   "blind_spots": [
