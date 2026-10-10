@@ -31,15 +31,16 @@ pids_end() { # grace-seconds pid... -> TERM and CONT to each, KILL to what still
   return 0
 }
 
-# One `ps -E` listing. The environment trails the command with no delimiter, so a hit is confirmed
+# The environment trails the command with no delimiter, so a hit is confirmed
 # against the plain command, or a process naming the id only in its arguments would match. macOS
 # shows no environment for Apple's own binaries (/bin/sleep, /bin/bash, /usr/bin/python3), so a
 # confirmed holder's descendants count too, short of one showing another WORKER_RUN_ID. The caller's
 # ancestors and everything under the highest of them carrying the id are its own.
+# The `ps -E` listing (~2 MB) is piped, never held in a shell variable: bash copying it twice cost
+# every run's wrap-up ~0.6 s; only the rare run with a holder lists a second time.
 run_env_holders() { # run-id -> "<pid>\t<etime>\t<command>" per other process of the run, by WORKER_RUN_ID=<run-id>
-  local listing pids
-  listing=$(ps -E -ww -A -o pid=,ppid=,etime=,command= 2>/dev/null) || return 0
-  pids=$(awk -v self="$$" -v token=" WORKER_RUN_ID=$1" '
+  local pids
+  pids=$(ps -E -ww -A -o pid=,ppid=,etime=,command= 2>/dev/null | LC_ALL=C awk -v self="$$" -v token=" WORKER_RUN_ID=$1" '
     { parent[$1] = $2; kids[$2] = kids[$2] " " $1
       if (index($0 " ", token " ")) has[$1] = 1; else if (index($0, " WORKER_RUN_ID=")) other[$1] = 1 }
     END {
@@ -51,7 +52,7 @@ run_env_holders() { # run-id -> "<pid>\t<etime>\t<command>" per other process of
       for (p in has) if (!(p in skip)) { queue[++n] = p; seen[p] = 1 }
       for (i = 1; i <= n; i++) { print queue[i]; m = split(kids[queue[i]], k, " ")
         for (j = 1; j <= m; j++) if (!(k[j] in seen) && !(k[j] in skip) && !(k[j] in other)) { seen[k[j]] = 1; queue[++n] = k[j] } }
-    }' < <(printf '%s\n' "$listing"))
+    }')
   [ -n "$pids" ] || return 0
   awk -v token=" WORKER_RUN_ID=$1" '
     FNR == NR { pid = $1; sub(/^ *[0-9]+ /, ""); plain[pid] = $0; next }
@@ -63,7 +64,7 @@ run_env_holders() { # run-id -> "<pid>\t<etime>\t<command>" per other process of
       for (i = 1; i <= n; i++) seen[queue[i]] = 1
       for (i = 1; i <= n; i++) { printf "%s\t%s\t%s\n", queue[i], etime[queue[i]], plain[queue[i]]; m = split(kids[queue[i]], k, " ")
         for (j = 1; j <= m; j++) if (!(k[j] in seen)) { seen[k[j]] = 1; queue[++n] = k[j] } }
-    }' <(ps -ww -o pid=,command= -p "$(printf '%s\n' $pids | paste -sd, -)" 2>/dev/null) <(printf '%s\n' "$listing")
+    }' <(ps -ww -o pid=,command= -p "$(printf '%s\n' $pids | paste -sd, -)" 2>/dev/null) <(ps -E -ww -A -o pid=,ppid=,etime=,command= 2>/dev/null)
 }
 
 cwd_listing() { lsof -d cwd -Fpn 2>/dev/null; }

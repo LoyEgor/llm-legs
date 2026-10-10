@@ -110,6 +110,17 @@ hasnt "$(cat "$WORK/deliver-en.out")" 'LANG:'
 printf '0\n' >"$directory/exit_code"
 hasnt "$(WORKER_RUN_DIR="$WORK/runs" "$RUNNER" report english 2>&1)" 'LANG:'
 
+# A share of 0 is under any ceiling: the delivery does not launch the helper again for `--max`.
+cat >"$WORK/count-share" <<EOF
+#!/bin/sh
+printf 'call %s\n' "\$*" >>"$WORK/share-calls"
+exec "$SHARE" "\$@"
+EOF
+chmod +x "$WORK/count-share"
+directory=$(stamped_run english-count 'Done: the gate is in, the suite is green.')
+WORKER_RUN_DIR="$WORK/runs" WORKER_RUN_CYRILLIC_SHARE="$WORK/count-share" "$RUNNER" _deliver "$directory" 0 >/dev/null 2>&1
+eq "$(grep -c '^call' "$WORK/share-calls")" "1"
+
 # --- 5. the message a resume timer types into another chat ------------------
 TIMER="$ROOT/bin/claude-resume-timer"
 # No `hs` on PATH: an English message must reach the Hammerspoon call and die there, or this suite

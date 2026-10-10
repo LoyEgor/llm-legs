@@ -6888,6 +6888,38 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-consistency-20261010T031919Z-4925",
       "note": "Before: 1138 runs/7 d, 0.7 wall-min a run; 22.4 CPU-s a run (spend-ledger suite audit 2026-10-09 already took the grep forks), the rest behavioural probes (worker-pick roles/pause, llm-refresh ticks, llm-limits OpenCode snapshots, the light gate) kept whole. It is the pole of 128 of 670 named runs in 7 d and never of a full run (sum/j 800-1100 s there, design 5 shard rule), so it is sharded `# shards: 3` into five sections (rows a-m and al-am, ai-ak, n-cl and an-ek), cross-section site constants hoisted above them; modelled max(longest, sum/j) saving over the 7 d of runs: ~10 min/day. Ruled out: the per-probe $(<file) read (bash 5.3, ~1 ms a 300 KB file, no fork), sleeps (none), legacy checks (dead-code lens 926070a3 already swept). Not reached: a direct `bash tests/test_consistency.sh` (CLAUDE.md's own command) stays serial, and run-suites shards only while slot_room finds room.",
       "handoff": null
+    },
+    {
+      "id": "speed-wrapup-worker-run-tail",
+      "title": "Speed's wrap-up lever: a worker's last CLI exit to its exit_code, cut without changing what the wait reports",
+      "match": {
+        "rule": "opportunity",
+        "ident": "time/wrapup"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:35:00+03:00",
+          "by": "night fixer harness-speed-time-wrapup-20261010T031955Z-015b",
+          "files": [
+            "llm-legs/share/processes.sh",
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_english_gates.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "run_env_holders at the night base vs the fix: full stdout (pid, etime, command per holder); cyrillic_over: a share of 0 is false under any ceiling, since CYRILLIC_MAX is forced to a non-negative integer",
+            "data": "one frozen live process table (1.79 MB ps -E listing, ps replayed by a shell function for both versions), every WORKER_RUN_ID in it plus an absent id: 58 ids, 391 holder rows; test_english_gates English and Russian result deliveries",
+            "result": "58/58 identical; run_env_holders 1.17 -> 0.57 s mean over 20 interleaved pairs at night load; an English result launches cyrillic-share once instead of twice (test red on the old code: 2 calls)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "2026-10-10: 8.0 w-min/day. Phase means over 241 non-round runs (file mtimes): exit -> head-after 0.33 s, -> files 0.90, -> files-note 0.07, -> result 1.07, -> exit_code 0.58 (~3 s/run; 5-11 s at night load). Cut: end_run_orphans's ps -E listing no longer copied through bash variables (~0.6 s/run), cyrillic --max not launched for a share of 0. Left, measured: the _deliver re-exec (a fresh worker-run parse, 0.7-0.8 s at load; folding complete_run into the _supervise process needs an audit of the RUN_* globals persist_run_files leaves and of the cwd it cd'd into) and persist_run_files (~1.3 s mean, 4-5 s at load, spread over snapshot, transcript, commit-path and produced passes, no hotspot). Ruled out as not output-equivalent: exit_code before persist_run_files (the wait report's escape and unnamed lines read its records), before end_run_orphans (a living orphan races the landing's cwd_holders), before fold_run_anchors (the next review round reads unfolded anchors), before journal_worker_run (readers of runs.jsonl right after wait). Seen: ~21 multiprocessing python children of runs ended 2026-10-04 (before end_run_orphans, 8a5f5a80) still alive under ppid 1.",
+      "handoff": null,
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-time-wrapup-20261010T031955Z-015b"
     }
   ],
   "blind_spots": [

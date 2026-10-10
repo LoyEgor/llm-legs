@@ -310,6 +310,7 @@ cyrillic_share() { # <stdin
 }
 
 cyrillic_over() { # share
+  [ "$1" -gt 0 ] || return 1
   [ -n "$CYRILLIC_MAX" ] || CYRILLIC_MAX=$("$CYRILLIC_SHARE" --max 2>/dev/null)
   [[ "$CYRILLIC_MAX" =~ ^[0-9]+$ ]] || CYRILLIC_MAX=0
   [ "$1" -gt "$CYRILLIC_MAX" ]
