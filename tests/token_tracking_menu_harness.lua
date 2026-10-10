@@ -1,10 +1,22 @@
 local root = debug.getinfo(1, "S").source:match("^@(.+)/tests/[^/]+$")
 assert(root, "harness path is unavailable")
+-- This runs inside the live Hammerspoon: a module loaded with the real require registers its
+-- busy source on the live menu-style and the real Token tracking menu loses its ⟳.
 local menuStyle = dofile(root .. "/hammerspoon/menu-style.lua")
-local M = assert(loadfile(root .. "/hammerspoon/token-tracking.lua", "t", setmetatable({ require = function(name)
-    if name == "menu-style" then return menuStyle end
-    return require(name)
-end }, { __index = _G })))()
+local function loadModule()
+    return assert(loadfile(root .. "/hammerspoon/token-tracking.lua", "t", setmetatable({ require = function(name)
+        if name == "menu-style" then return menuStyle end
+        return require(name)
+    end }, { __index = _G })))()
+end
+local function liveBusy()
+    local live = package.loaded["menu-style"]
+    if not live then return nil end
+    local _, sources = debug.getupvalue(live.busySource, 1)
+    return sources["Token tracking"]
+end
+local liveBefore = liveBusy()
+local M = loadModule()
 
 local failures = {}
 local function check(ok, message)
@@ -520,7 +532,7 @@ launched[1].callback(0, "", "")
 launched[2].callback(0, "", "")
 check(marked(M.menuItems(nil)) == "Since yesterday 18:00", "the custom range is not checked")
 
-local reloaded = assert(loadfile(root .. "/hammerspoon/token-tracking.lua"))()
+local reloaded = loadModule()
 reloaded.setPath(path)
 reloaded.setSettings(store)
 check(marked(reloaded.menuItems(nil)) == "Since yesterday 18:00" and checked(selector(reloaded.menuItems(nil)).menu) == "7 days vs 7 before",
@@ -721,6 +733,7 @@ check(text(category(M.menuItems(nil, nil))[1].title):find("unreadable", 1, true)
 os.remove(path)
 check(text(category(M.menuItems(nil, nil))[1].title):find("^no data yet") ~= nil, "a missing export is not named")
 hs.fs.rmdir(dir)
+check(liveBusy() == liveBefore, "the harness replaced the live Token tracking busy source")
 
 if #failures > 0 then return "FAIL:\n" .. table.concat(failures, "\n") end
 return "PASS: token-tracking menu contract"
