@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
+if suite_shard_owns 1 pool-wall-resume-fast; then
 # The pool is a wall, not advice to the picker: a brief naming an excluded account cannot get in,
 # and only the vendor pin overrides.
 for vendor in claudeb codex gemini; do
@@ -229,6 +231,13 @@ assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
 rm -f "$CHAT_PINS_DIR/chat-codex-fast"
 rm -r "$HOME/.codex-profiles/.codexb/fast-mode"
+fi
+
+if suite_shard_owns 2 grants-floor; then
+# Run alone, this shard starts from none of shard 1's state: these are the parts its cases read.
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=resumeacct
+mkdir -p "$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture"
 
 # codex resume cannot carry --add-dir; refuse before launching anything.
 clear_stub
@@ -469,7 +478,9 @@ assert grep -qx dirty "$RUN_DIR/dirty-before"
 assert test "$(awk '/^CLAUDEB_CALL$/ { exit } /^GIT_STATUS$/ { n++ } END { print n + 0 }' "$CALL_LOG")" = 1
 assert test "$(cut -f2 "$RUN_DIR/dirty-before-shas")" = "$(cat "$RUN_DIR/dirty-before")"
 rm -f "$WORK/bin/git"
+fi
 
+if suite_shard_owns 3 limits-models-claims; then
 # These picks keep naming the one account that walls — a picker that ignores
 # --exclude — so the run has nowhere to reroute and the limit outcome reaches
 # the caller.
@@ -671,6 +682,6 @@ unset WORKER_CLAIMS_DIR
 rm -f "$STUB_DIR/pick_queue"
 rm -r "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/lapsed"
 export CODEXB_MODELS_CACHE=$saved_models_cache
-
+fi
 
 echo "PASS: $asserts asserts; the worker pool wall, agy models, resume, limit outcomes, model lists and claims"

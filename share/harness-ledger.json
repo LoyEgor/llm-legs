@@ -7572,6 +7572,70 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-stamps-20261010T031945Z-3053",
       "note": "2026-10-10: wait-bound, ~49 s CPU in 500 s wall at load 150; each start+await_done is ~10-15 s under that load and the suite holds ~45 of them, none sleeping on its own (harness polls already use the sleep builtin). Cut: 3 shards (models 176 s | relay owner 58 + fix anchors 54 + run journal 51 | snapshot attribution 152, base-load seconds). Ruled out: dropping the eight allowed-model launches or the per-model refusals (each is a distinct requirement); a new suite file (the shards header does it). Found: the suite was red on base since 8bd96a43 (haiku became a request row; the suite still listed it refused); fixed here. Seen, not changed: an explicit --model haiku takes the stored claudeb_effort, so a brief naming haiku without EFFORT: low|medium under claudeb_effort=high is EFFORT_REFUSED.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-heavy-worker-run-pool",
+      "title": "test_worker_run_pool ran its ~65 stub worker runs as one serial file",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_pool"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T10:06:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-pool-20261010T031943Z-0022",
+          "files": [
+            "llm-legs/tests/test_worker_run_pool.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_worker_run_pool.sh whole (RUN_SUITES_SHARDS=off) vs its 3 shards (on): PASS line and runtime assert count; the diff to the base adds only the shard header, three section guards and shard 2's seed of the state shard 1 left (codex_effort, PICK_RC/PICK_ACCOUNT, the resumeacct transcript directory)",
+            "data": "the suite's own fixtures under tests/worker_run_harness.sh, direct runs at load 117-146 on 10 cores, 2026-10-10 09:54-10:05",
+            "result": "256 asserts PASS both ways (shards 115 + 67 + 74); wall 452 s whole vs 181 s sharded, CPU 79.6 vs 79.2 s"
+          }
+        }
+      ],
+      "same_cause": [
+        "speed-test-health-idle-worker-run-pool"
+      ],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-pool-20261010T031943Z-0022",
+      "note": "2026-10-10: 213 runs, 2.2 wall-min a run, 43 min + 34 w-min/day. The cost is ~65 sequential worker-run start + await_done cycles against stub CLIs; no case is legacy or redundant (each pins a distinct launch rule) and no blocking sleep is left. Fixed with the existing `# shards: N` mechanism (f081980f), cut where the state resets: 1 pool wall, agy models, resume, Fast mode; 2 resume/launch options, brief images, ADD-DIR and inherited grants, the dirty floor; 3 limit outcomes, served models, per-account model lists and claims; shards run only while slot_room finds room, so a loaded machine pays no duplicated setup. Not done: the per-run cost is bin/worker-run's own (start, the setsid supervisor, _deliver and wait --max 0 each parse the 5.9k-line script; ~4.5 s launch to exit_code for a do-nothing stub at load ~190), production code outside a test-speed fix. roster_add's one-mkdir-per-vendor cut is the wait_stream/attribution/files/lifecycle fixers' identical hunk tonight, not repeated here.",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-worker-run-pool",
+      "title": "test_worker_run_pool idle wall over its CPU, bounded by sleeps that never elapse",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_worker_run_pool"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T10:06:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-pool-20261010T031943Z-0022",
+          "files": [
+            "llm-legs/tests/test_worker_run_pool.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_worker_run_pool.sh whole (RUN_SUITES_SHARDS=off) vs its 3 shards (on): PASS line and runtime assert count; the diff to the base adds only the shard header, three section guards and shard 2's seed of the state shard 1 left (codex_effort, PICK_RC/PICK_ACCOUNT, the resumeacct transcript directory)",
+            "data": "the suite's own fixtures under tests/worker_run_harness.sh, direct runs at load 117-146 on 10 cores, 2026-10-10 09:54-10:05",
+            "result": "256 asserts PASS both ways (shards 115 + 67 + 74); wall 452 s whole vs 181 s sharded, CPU 79.6 vs 79.2 s"
+          }
+        }
+      ],
+      "same_cause": [
+        "speed-test-health-heavy-worker-run-pool"
+      ],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-pool-20261010T031943Z-0022",
+      "note": "2026-10-10: p10 wall 101 s on 43 s CPU, idle 58 s bounded by the profiled sleep_s 62 s. Ruled out as sleeps, measured with a PATH sleep shim over the three shards: the suite's own polls use the bash sleep builtin, and bin/worker-run forks only 0.01 s .ready polls (~534 a run, ~5 s requested) and two 0.1 s; the profiled 62 s is the watchdog's `sleep 30` hop (IDLE 1800 / 10, capped 30), reached in about 2 runs a suite when its subshell beats the stub's exit and killed at once by process_tree_end: requested, never waited. The real idle is the detached setsid supervisors' CPU, which the suite's times never counts, plus load. Fixed by the same shards: a caller waits on the longest third.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -7833,6 +7897,13 @@
       "reason": "stop-dispatch.sh prefixes only exit-2 reasons; a JSON-block ask that forgets its own prefix lands in refusal_rows as unknown-stop-hook (ask-word-reading.sh, 8 asks in 7 days to 2026-10-10)",
       "since": "2026-10-10",
       "would_catch_if": "stop-dispatch.sh prefixed every asked reason with `[name] ` unless already prefixed, or refusal_rows joined Stop blocks to the stop-gate journal's asked hook by session and ts"
+    },
+    {
+      "id": "test-health-nominal-sleep-bound",
+      "what": "the idle bound of opportunity:test-health/idle reads requested sleep seconds, including sleeps killed at once",
+      "reason": "2026-10-10 test_worker_run_pool's 62 s sleep_s was two worker-run watchdog `sleep 30` hops killed as soon as the stub CLI exited; the suite holds ~5 s of real 0.01 s polls; found only with a timing shim",
+      "since": "2026-10-10",
+      "would_catch_if": "run-suites --profile shims logged each sleep's elapsed seconds (stamped at exit or kill) instead of its argument"
     }
   ]
 }
