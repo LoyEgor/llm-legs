@@ -46,17 +46,17 @@
   {
    "id": "startup:skill listing",
    "title": "startup skill listing",
-   "audited_at": "2026-10-08T03:20:03+03:00",
-   "by": "feat/spend-audit-listings",
-   "share": 0.006616,
+   "audited_at": "2026-10-10T08:18:50+03:00",
+   "by": "harness-speed-spend-startup-skill-listing-20261010T031913Z-3685",
+   "share": 0.011172,
    "prices": {
-    "worker": 26143.393762135063,
-    "chat": 34987.16713699263,
-    "subagent": 15017.701136311005
+    "Workers · attachment: skill listing": 29.449381386790364,
+    "Reviewers · attachment: skill listing": 15.173697308514745,
+    "Chat · attachment: skill listing": 7.289541400808372
    },
    "sources": {},
-   "verdict": "cut",
-   "note": "cut: ~/.claude/settings.json skillOverrides user-invocable-only for schedule, keybindings-help, plugin-authoring, fewer-permission-prompts, simplify, security-review, init, loop, anthropic-skills:skill-creator (2119 of 6902 chars of the common listing, ~31% ≈ 0.16% of Claude spend); replay over 394 recorded invocations of 50 skills 2026-07-09..10-07: zero model Skill calls of any of them, the one /loop Egor typed still works; local skills/commands already on-demand (claude-setup 9c804e2, 84fbb03, 05e57ff), each model-invoked or rarely needed (wut-ticket 14, md-compact 5, worker, impeccable; trash/3d-review kept at ~65 chars)"
+   "verdict": "kept",
+   "note": "share rise is load: per main context the listing fell 3214 -> 1672 tokens (-48%) since the 10-08 skillOverrides cut while listing contexts doubled (231 -> 437/day) and its daily cost stayed flat; every remaining built-in entry was model-invoked in 30 days (code-review 48, media 8, experiment 6, claude-api 3, update-config 2, run 1, workflow-authoring 1, the last one the Workflow tool requires); the only never-invoked entries (93 days, zero calls) are 8 account-synced ones on com/ambiguous listings (anthropic-skills:arbostar-feature-spec, wut-ticket-draft, computer-use, built-in-browser, chrome-browser, deep-research, cowork-plugin-management:create-cowork-plugin, cowork-plugin-customizer: ~357k of 4494k listing tokens last week, ~8%, ~0.07% of Claude spend), proposed to the orchestrator as skillOverrides user-invocable-only in the unversioned ~/.claude/settings.json a worker may not write; per-listing-hash pricing goes to the tokenmap waste-detectors handoff"
   },
   {
    "id": "startup:MCP instructions",
