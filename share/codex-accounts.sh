@@ -20,7 +20,7 @@ codex_account_names() {
   if [ -d "$dir" ]; then
     for path in "$dir"/*; do
       [ -d "$path" ] || continue
-      basename "$path"
+      printf '%s\n' "${path##*/}"
     done | LC_ALL=C sort
   fi
 }

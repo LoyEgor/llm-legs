@@ -79,7 +79,14 @@ review_anchors() { # subcommand argument...
 
 # The header line a flag must agree with: the first `KEY: value` of the brief.
 brief_line_value() { # brief key
-  head -n 400 "$1" 2>/dev/null | grep -m1 -oE "^$2:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$2:[[:space:]]*//"
+  local line count=0 pattern="^$2:[[:space:]]*([A-Za-z0-9_.-]+)"
+  while [ "$count" -lt 400 ] && { IFS= read -r line || [ -n "$line" ]; }; do
+    count=$((count + 1))
+    [[ $line =~ $pattern ]] || continue
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    break
+  done 2>/dev/null <"$1"
+  return 0
 }
 
 brief_review_round() {

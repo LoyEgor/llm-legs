@@ -121,4 +121,19 @@ for dir in "$WORK/codex-empty" "$WORK/codex-file"; do
     account_roster_refuse t codex main' _ "$ROOT"
 done
 
+# Every worker-run start walks each roster: a basename fork per account was seconds a start under load.
+roster_home="$WORK/roster-home"
+mkdir -p "$roster_home/.claude-profiles/.claudeb/tokens" "$roster_home/.claude-profiles/.claudeb/limits" \
+  "$roster_home/.claude-profiles/p1" "$roster_home/.codex-profiles/x1" "$roster_home/.gemini-profiles/g1" \
+  "$roster_home/.grok-profiles/k1" "$WORK/fork-shim"
+: >"$roster_home/.claude-profiles/.claudeb/tokens/t1"
+: >"$roster_home/.claude-profiles/.claudeb/limits/l1.json"
+printf '#!/bin/sh\necho "$*" >>"%s"\nexit 1\n' "$WORK/basename.log" >"$WORK/fork-shim/basename"
+chmod +x "$WORK/fork-shim/basename"
+out=$(env -u CLAUDEB_DIR HOME="$roster_home" PATH="$WORK/fork-shim:$PATH" bash -c '. "$1/share/account-roster.sh"
+  gemini_base_home=$HOME gemini_profiles_dir=$HOME/.gemini-profiles
+  claude_account_names; codex_account_names; gemini_account_names; grok_account_names' _ "$ROOT")
+assert test "$(tr '\n' ' ' <<<"$out")" = 'l1 p1 t1 main x1 main g1 k1 '
+assert test ! -e "$WORK/basename.log"
+
 echo "PASS: $asserts asserts; every vendor's remove empties every per-account store of its table, a roster account keeps its data and is refused a purge, a dry run lists exactly what goes, and nothing is left for the doctor's remnant check"

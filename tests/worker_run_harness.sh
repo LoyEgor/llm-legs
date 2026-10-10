@@ -453,6 +453,21 @@ await_done() {
   return 1
 }
 
+# await_done without its `wait` report, for a case that reads only the record and the stub logs: the
+# supervisor writes exit_code after delivering, so nothing of the run is still to come.
+await_exit() {
+  local tick pid
+  for tick in $(seq 1 6000); do
+    [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 0
+    if [ $((tick % 20)) -eq 0 ]; then
+      pid=$(jq -r '.pid // 0' "$WORKER_RUN_DIR/$RUN_ID/meta.json" 2>/dev/null) || pid=0
+      [ "${pid:-0}" -le 0 ] 2>/dev/null || kill -0 "$pid" 2>/dev/null || [ -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 1
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
 meta_account_is() { [ "$(jq -r '.account' "$RUN_DIR/meta.json")" = "$1" ]; }
 meta_agy_is() { [ "$(jq -r '.agy_model' "$RUN_DIR/meta.json")" = "$1" ]; }
 

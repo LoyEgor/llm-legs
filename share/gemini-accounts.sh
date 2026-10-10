@@ -27,7 +27,7 @@ gemini_account_names() {
   if [ -d "$gemini_profiles_dir" ]; then
     for path in "$gemini_profiles_dir"/*; do
       [ -d "$path" ] || continue
-      name=$(basename "$path")
+      name=${path##*/}
       [ "$name" != main ] && gemini_profile_name_valid "$name" || continue
       printf '%s\n' "$name"
     done | LC_ALL=C sort

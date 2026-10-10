@@ -27,14 +27,14 @@ model_effort_tests() {
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     clear_stub
     start_ok "$vendor" --model "$model" --account "$([ "$vendor" = gemini ] && printf main || printf com)"
-    assert await_done
+    assert await_exit
     assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = "$model"
     assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = "$effort"
   done
   assert test "$(jq -r '.model_id' "$RUN_DIR/meta.json")" = null
   clear_stub
   start_ok codex --account main
-  assert await_done
+  assert await_exit
   assert grep -qx 'ARG=model_reasoning_effort=low' "$CALL_LOG"
   assert test "$(jq -r '[.model, .model_id] | join(" ")' "$RUN_DIR/meta.json")" = 'astra gpt-6.1-astra'
   assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
@@ -42,13 +42,13 @@ model_effort_tests() {
   set_config 'codex_effort=high'
   clear_stub
   start_ok codex --account main
-  assert await_done
+  assert await_exit
   assert grep -qx 'ARG=model_reasoning_effort=high' "$CALL_LOG"
   for spec in codex:astra:xhigh codex:gpt-5.6-sol:low claudeb:fable:max claudeb:opus:low; do
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     clear_stub
     start_ok "$vendor" --model "$model" --effort "$effort" --account com
-    assert await_done
+    assert await_exit
     assert grep -qx "ARG=$([ "$model" = astra ] && printf gpt-6.1-astra || printf %s "$model")" "$CALL_LOG"
     assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = "$effort"
     if [ "$model" = gpt-5.6-sol ]; then
@@ -60,7 +60,7 @@ model_effort_tests() {
   set_config 'claudeb_model=fable'
   clear_stub
   start_ok claudeb --account com
-  assert await_done
+  assert await_exit
   assert grep -qx 'ARG=fable' "$CALL_LOG"
   assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = low
   # The brief's EFFORT: is the run's effort like its ACCOUNT: and MODEL:, and a flag that contradicts
@@ -69,7 +69,7 @@ model_effort_tests() {
   { printf 'MODEL: fable\nEFFORT: high\n\n'; cat "$WORK/brief.noheader"; } >"$WORK/brief"
   clear_stub
   start_ok claudeb --account com
-  assert await_done
+  assert await_exit
   assert test "$(jq -r '[.model, .effort] | join(" ")' "$RUN_DIR/meta.json")" = 'fable high'
   for flag in '--effort low' '--model opus'; do
     clear_stub
@@ -93,11 +93,11 @@ model_effort_tests() {
   set_config 'gemini_model=pro'
   clear_stub
   start_ok gemini --account main
-  assert await_done
+  assert await_exit
   set_config 'claudeb_model=fable'
   clear_stub
   start_ok codex --account main
-  assert await_done
+  assert await_exit
   mv "$WORK/brief.noheader" "$WORK/brief"
   # `gemini:flash38:ultra` and not `xhigh`: every effort the table knows is RAISED to high on a
   # Gemini leg, so only a word that is no effort at all can be refused there.
@@ -119,7 +119,7 @@ model_effort_tests() {
   assert test ! -s "$CALL_LOG"
   clear_stub
   start_ok codex --account main --resume codex-resume
-  assert await_done
+  assert await_exit
   assert_fails grep -q '^ARG=model_reasoning_effort=' "$CALL_LOG"
   effort_refused codex astra max --account main --resume codex-resume
   set_config
@@ -138,7 +138,7 @@ report_bus_tests() {
   place_top=$(cd "$place_repo" && pwd -P)
   clear_stub
   TMPDIR=/nonexistent WORKER_TEST_WORKDIR=$place_repo start_ok codex --account reportacct
-  assert await_done
+  assert await_exit
   TMPDIR=/nonexistent "$RUNNER" report "$RUN_ID" >/dev/null
   "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
   assert test "$(cut -f2,3 "$HOME/.cache/claude-statusline/place-report-launcher" | tr '\t' ' ')" = "worker-start $place_top
@@ -159,7 +159,7 @@ worker-end $place_top"
   assert test "$rc" = 4
   assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/report-duplicate.out"
   kill -TERM "$(jq -r .pid "$old_dir/meta.json")"
-  assert await_done
+  assert await_exit
   "$RUNNER" report "$old_id" >/dev/null
   clear_stub
 }
@@ -232,19 +232,19 @@ GATE
   clear_stub
   CLAUDE_CODE_ENTRYPOINT=cli start_ok codex
   assert grep -Fqx -- "--start codex $WORK/brief" "$LIMIT_GATE_LOG"
-  await_done
+  await_exit
   # The gate judges the account --account names, not the router's pick.
   : >"$LIMIT_GATE_LOG"
   clear_stub
   CLAUDE_CODE_ENTRYPOINT=cli start_ok codex --account main
   assert grep -Fqx -- "--start codex $WORK/brief main" "$LIMIT_GATE_LOG"
-  await_done
+  await_exit
   # Outside Claude Code (Egor's terminal, the night's scripts) no gate is asked.
   : >"$LIMIT_GATE_LOG"
   clear_stub
   start_ok claudeb
   assert test ! -s "$LIMIT_GATE_LOG"
-  await_done
+  await_exit
   unset WORKER_RUN_LIMIT_GATE LIMIT_GATE_LOG
 }
 
@@ -259,11 +259,11 @@ nested_model_tests() {
     start codex --model astra --account main --brief "$WORK/brief" --workdir "$WORK/workdir"
   clear_stub
   WORKER_RUN_RECORD="$parent" start_ok claudeb --model fable --account com
-  assert await_done
+  assert await_exit
   printf '{"vendor":"claudeb","model":"opus"}\n' >"$parent/meta.json"
   clear_stub
   WORKER_RUN_RECORD="$parent" start_ok claudeb --model opus --account com
-  assert await_done
+  assert await_exit
 }
 
 off_roster_tests() {
@@ -289,5 +289,17 @@ model_effort_tests
 worker_door_tests
 nested_model_tests
 off_roster_tests
+
+# A start reads eight header keys: a head|grep|sed pipeline each was 24 forks before any launch.
+mkdir -p "$WORK/fork-shim"
+for tool in head grep sed; do
+  printf '#!/bin/sh\necho %s >>"%s"\nexit 1\n' "$tool" "$WORK/forks.log" >"$WORK/fork-shim/$tool"
+done
+chmod +x "$WORK/fork-shim"/*
+printf 'RESUME x:\nACCOUNT:\tcom\r\nEFFORT: high\n' >"$WORK/header-brief"
+eval "$(sed -n '/^brief_line_value() {/,/^}/p' "$RUNNER")"
+assert test "$(PATH="$WORK/fork-shim:$PATH" brief_line_value "$WORK/header-brief" ACCOUNT)" = com
+assert test "$(PATH="$WORK/fork-shim:$PATH" brief_line_value "$WORK/header-brief" EFFORT)" = high
+assert test ! -e "$WORK/forks.log"
 
 echo "PASS: $asserts asserts; the report bus, effort refusals before launch, the worker door refusing a headless worker's start and wait, and the limit gate a chat's start passes (deny refuses unlaunched, a note rides on stderr, none asked outside Claude Code), an ACCOUNT off the vendor roster refused unlaunched"

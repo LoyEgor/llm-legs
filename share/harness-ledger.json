@@ -7432,6 +7432,42 @@
       "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
       "note": "Ruled out: the quoted batches were the chat's experiment workers; the shipped `tokenmap kinds` reads one key (fix) and finds the JSON array inside a fence. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "speed-test-health-heavy-worker-run-entry",
+      "title": "test_worker_run_entry heavy: fork-per-account rosters, fork-per-key header reads, unread wait reports",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_entry"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:31:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-entry-20261010T031938Z-0fca",
+          "files": [
+            "llm-legs/share/account-roster.sh",
+            "llm-legs/share/codex-accounts.sh",
+            "llm-legs/share/gemini-accounts.sh",
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/worker_run_harness.sh",
+            "llm-legs/tests/test_worker_run_entry.sh",
+            "llm-legs/tests/test_account_purge.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "brief_line_value old pipeline vs bash loop on 32 key x brief cases (CRLF, tab, leading space, <bad> token then a valid line, match at line 400 vs 401, no trailing newline, missing file); roster enumerators' output on a fixture of tokens, limits, profile dirs; test_worker_run_entry PASS and asserts (224 -> 227, the three new are the fork proof)",
+            "data": "worker_run_harness fixtures; fork proofs: a basename PATH shim over all four rosters (test_account_purge), head/grep/sed shims over brief_line_value (test_worker_run_entry), both red on the old code",
+            "result": "identical outputs; test_worker_run_entry 565 s -> 302 s at load ~200 (report_bus 84 -> 42 s); harness setup per worker_run suite 9 s -> 0.6 s; one codex start 5.7 s -> 4.1 s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-entry-20261010T031938Z-0fca",
+      "note": "Traced with timestamped xtrace at load ~200. Cut: every worker-run start forked basename per roster account (2.0 of 5.7 s a start over the harness's ~95 fixture accounts; production pays it per account too), brief_line_value forked head|grep|sed for each of 8 header keys, the harness's roster_add forked mkdir per account x 4 vendors on every worker_run suite's setup, and this suite's await_done built a full wait report (~1.6 s) per run it never read; await_exit polls exit_code, which the supervisor writes after _deliver. Ruled out: a split (model_effort_tests is ~64% of the rest, but the suite is no run-all pole: lifecycle, claims, reliability run longer, so a split moves no wall); sleeps (only 0.05 s polls and a TERM-ended STUB_SLEEP); legacy checks (the report-bus assert guards a decided removal and rides on existing runs); running model_effort's 7 meta-only launches concurrently (shared CALL_LOG and claims on com/main make it race-prone). Left: start -> exit_code is ~4 s a run under load in worker-run's own _supervise/_deliver path, production code beyond this suite.",
+      "handoff": null
     }
   ],
   "blind_spots": [

@@ -13,20 +13,20 @@ claude_account_names() {
   {
     if [ -d "$store/tokens" ]; then
       for path in "$store/tokens"/*; do
-        if [ -f "$path" ]; then basename "$path"; fi
+        if [ -f "$path" ]; then printf '%s\n' "${path##*/}"; fi
       done
     fi
     if [ -d "$store/limits" ]; then
       for path in "$store/limits"/*.json; do
         if [ -f "$path" ]; then
-          name=$(basename "$path")
+          name=${path##*/}
           printf '%s\n' "${name%.json}"
         fi
       done
     fi
     if [ -d "$HOME/.claude-profiles" ]; then
       for path in "$HOME/.claude-profiles"/*; do
-        if [ -d "$path" ]; then basename "$path"; fi
+        if [ -d "$path" ]; then printf '%s\n' "${path##*/}"; fi
       done
     fi
   } | LC_ALL=C sort -u | { grep -vx -e main -e - || true; }
@@ -41,7 +41,7 @@ grok_account_names() {
   if [ -d "$dir" ]; then
     for path in "$dir"/*; do
       [ -d "$path" ] || continue
-      name=$(basename "$path")
+      name=${path##*/}
       case "$name" in .*|main) continue ;; esac
       printf '%s\n' "$name"
     done | LC_ALL=C sort
