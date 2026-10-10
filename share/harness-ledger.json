@@ -6788,6 +6788,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-codex-image-20261010T031917Z-10e1",
       "note": "Before: 267 runs in 7 d, 0.7 work-min a run, 10 min + 9.6 w-min/day; at load ~100 one run 145 s wall on 29 CPU-s, 133 s of it the 68 bin/codex-image launches (~2 s each, ~0.5 CPU-s, ~40 forks, no blocking sleep; `codexb models --own` 0.3 s wall of it) and 22 s the nine wrappers' help/I23 block. tests/affected matched the suite on words it never runs: a comment naming worker-run (104 main commits in 7 d), the vendor-cli-update scratch dir, `chats` in an expected message. Fixed: those three words gone; the wrapper block moved to test_media_wrapper_refusals.sh (24 s wall, 2.7 CPU-s), so the 37 gemini/grok wrapper commits a week no longer run the codex part; its duplicate --bogus launch per wrapper cut (9 launches). Codex part after: 26.8 CPU-s. Not cut: worker-pick (the stub's name; codex-image's pick contract is exercised), pkill (a command). Legacy C2PA {name: gpt-image, version: 2.0} branch kept: the web route reads ChatGPT downloads through c2pa_model and their shape is unproven. Heuristic gap seen, not this row's: share/image-caps.sh and share/account-arg.sh select neither suite though codex-image sources both.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-heavy-worker-run-outcomes",
+      "title": "test_worker_run_outcomes ran its 35 worker-run launches in one serial job: 0.9 wall-min a run, 5.7 min + 23 w-min/day",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_outcomes"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:26:44+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-outcomes-20261010T031942Z-7a63",
+          "files": [
+            "llm-legs/tests/test_worker_run_outcomes.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "asserts and verdict of the whole run at base vs its 3 shards (SUITE_SHARD=i/3) on the fix, same harness",
+            "data": "whole run at base under load ~190 (bash 5 trace), sharded run on the fix under load ~200, then tests/run-all",
+            "result": "whole 164 asserts PASS = shards 57+51+54 PASS plus the 2 dropped duplicates (await_done and STATUS: done of the second identical --model sol launch); longest shard 183 s vs whole 531 s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-outcomes-20261010T031942Z-7a63",
+      "note": "Traced whole at load ~190 (531 s, ~55 CPU-s): worker-run start 165 s over 35 launches, await_done polling ~240 s (the supervised stub run itself), wait/report ~20 s, await_launched 39 s, harness source 8 s; the wall-reset parsing section ~3 s. Shards: {read-only runs, 11 launches}, {outcome classification 7, self-edit 2, pruning 1, wall resets}, {codex trust and model retries, 12}. Cut: the never-recorded refusal case's first launch repeated the dropped-model case launch for launch, its asserts now ride on that run. Left: per launch ~4.7 s start + ~7 s supervise at load 190, the worker-run start/wait cost every worker_run suite shares, not this file's. Ruled out: the one STUB_SLEEP=3 is the window the self-edit wait --max 1 must see running (load-robust, not idle); no legacy check beyond the refused-models absence, which guards the 2026-09-30 store removal (handoff done) and costs one assert; the two read-only launches pin the month counter 1 -> 2; the Light/research launches pin the hint's exemptions. Under /bin/bash 3.2 the harness's sleep builtin does not load (forked sleeps): 634 s vs 531 s, but run-suites runs bash 5.",
+      "handoff": null
     }
   ],
   "blind_spots": [
