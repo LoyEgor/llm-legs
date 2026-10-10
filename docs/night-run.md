@@ -84,7 +84,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
    state=merged commits=… pushed=true`. No per-branch review (Egor, 2026-10-03: per-branch rounds took about 60% of a night's
    spend). Merges into main are serial and short; everything else is parallel.
 5. **Debt pass, after the landings** (the `debt` job, once no other job is `pending`): night-sweep
-   step 3 once — one fit round, then one bugs round, each ONE chunked round across all sweep
+   step 3 once — one fit round, one legacy round, then one bugs round, each ONE chunked round across all sweep
    repositories, over the press-time debt plus everything the night landed — then one fix pass, the
    commit and push, and the recount. The 150-line floor stays: a round review-bench refuses is skipped.
 6. **No deadline** (Egor, 2026-09-30: a 4 h deadline left a debt round's findings unfixed till noon).
