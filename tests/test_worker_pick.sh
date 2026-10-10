@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 3
+# shards: 5
 set -u
 
 # The suite reads docs/routing-contract.md as the specification: three rules (pool-toggle
@@ -726,7 +726,7 @@ GROK_PAIR='{available:true,accounts:[
 GROK_PAIR_JSON='{"available":true,"accounts":[
   {"account":"supergrok","enabled":true,"weekly":{"used_pct":40},"auth":{"status":"ok"}},
   {"account":"spare","enabled":true,"weekly":{"used_pct":10},"auth":{"status":"ok"}}]}'
-if suite_shard_owns 1 wp-grok-next; then
+if suite_shard_owns 2 wp-grok-next; then
 # A store with no grok row at all is the state of every machine before the collector lands: the
 # vendor is simply absent from the render, never a wall and never a failed lookup.
 run_case golden
@@ -1006,7 +1006,7 @@ assert before "$(next_block)" 'grok/spare' 'claude/session'
 assert contains "$(next_block)" 'session* opus·high 5h!'
 fi
 
-if suite_shard_owns 2 wp-roles; then
+if suite_shard_owns 3 wp-roles; then
 # Walled, off, and dead-auth stay skips even when the table has room.
 run_case claude_pool
 assert not_contains "$(next_block)" 'claude/off'
@@ -1251,6 +1251,9 @@ write_config 'grok_profile=ghost' 'grok_workers=off'
 grok_query "$GROK_PAIR_JSON" --account grok
 assert test "$query_rc" -eq 3
 assert test "$(cat "$WORK/query.err")" = 'worker-pick: grok is switched off for workers'
+fi
+
+if suite_shard_owns 4 wp-roles-modes; then
 # A vendor switched off never speaks for the ALL WALLED verdict, and never hides one either.
 write_config 'claudeb_workers=off' 'codex_workers=off' 'gemini_workers=off' 'grok_workers=off'
 run_case all_walled
@@ -1487,7 +1490,9 @@ for seconds_left in 1921 7200 0; do
   assert test "$query_out" = session
 done
 rm "$expiry_fixture"
+fi
 
+if suite_shard_owns 3 wp-roles-walls; then
 # Roles are walls layered over the pool: a vendor closed for a role may not serve that work at
 # all, so the query never reaches the question of which account.
 write_config 'claudeb_workers=off'
@@ -1747,7 +1752,7 @@ assert test "$query_rc" -eq 3
 assert grep -q 'no selectable codex account' "$WORK/query.err"
 fi
 
-if suite_shard_owns 3 wp-hygiene; then
+if suite_shard_owns 2 wp-hygiene; then
 # Data hygiene (shared-invariants y): effective_pct beats a stale raw reading, a bucket past
 # its reset reads 0%, and a weekly stamped `origin: headers` was never measured at all.
 run_case stale
@@ -2040,6 +2045,9 @@ printf '%s\n' 'worker=codex' 'codex_paused=on' >"$CONFIG"
 run_store codex-paused-fail-safe
 assert contains "$(next_fail)" 'NEXT: claudeb (rotating) — limits parse failed'
 write_config
+fi
+
+if suite_shard_owns 4 wp-pause; then
 # A duplicate hand-edited line resolves first-wins, as every other key in this file does.
 printf '%s\n' 'worker=auto' 'grok_paused=on' 'grok_paused=off' >"$CONFIG"
 grok_query "$GROK_PAIR_JSON" --account grok
@@ -2271,7 +2279,9 @@ run_case claude_pool
 assert test -z "$(pinned_now)"
 clear_walls
 write_config
+fi
 
+if suite_shard_owns 5 wp-decisions; then
 # What the rows SAY is display; what they DECIDE is this table. Every fixture runs under the
 # default config and is pinned by the answer it produces — the `NEXT:` line plus the four machine
 # queries, `-` where none is selectable — so an edit to the wording of a row, a tag or the DATA

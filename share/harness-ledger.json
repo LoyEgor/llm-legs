@@ -7502,6 +7502,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-20261010T031924Z-67ba",
       "note": "Wall is ~55 collector runs; each ~0.7 CPU-s spread over ~110 forks (52 jq), wall ~8x CPU at load 100-190, no sleeps or hot spot. Cut: each writing poll ran two Pythons for ElevenLabs (keys sync, then balance; ~0.08 CPU-s each, mostly the elevenlabs_media import), now one (balance.py --sync); epoch_iso/format_reset_time probed `date -r` before the real call and piped through sed for the zone colon (3 forks -> 1); four wall_for jq reads of the walls log -> one; worker_pool_disabled_json skips sort+jq with no disabled file or shield dir; marker clears skip rm on a missing marker. The suite's agy-quota.py block duplicated tests/test_agy_quota.sh (ok shape, login line -> rc 2) and is gone. The production poll (heartbeat, menubar) gets the same per-call cut. Not cut: the remaining ~45 jq per poll (one per vendor/account assembly step; merging them is a collector rewrite), sharding (summed suite seconds stay the same, ledger row test_daily_cost-llm-limits).",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-heavy-test-worker-pick",
+      "title": "test_worker_pick's wall: 5 balanced shards instead of 3",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_pick"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T10:55:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-pick-20261010T031934Z-1cb8",
+          "files": [
+            "llm-legs/tests/test_worker_pick.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "every worker-pick call's inputs (args, run_env, exported env, store, config, tiers, claims, walls, chat-pins, settings, fixture HOME and bin trees, file listings and hashes) of each section, sequential run (RUN_SUITES_SHARDS=off) vs its shard alone, paired call by call; same probe on the 3-shard base as control",
+            "data": "the suite's committed fixtures, 498 worker-pick calls; PASS counts per shard 243+222+202+237+81",
+            "result": "PASS:985 sequential and sharded, the base's 985; sections disjoint and complete (suite_shard_owns refuses a repeated name); input diffs only empty dirs worker-pick never reads (chat-pins with no session id, .claudeb/tokens read per file, ~/.claude under WORKER_PICK_CONFIG_FILE) and each shard's first geminib cache seed, both already in the base's shards; CPU per section 8-22 CPU-s, longest shard 33 -> 22 CPU-s of ~92 summed; run alone at load ~11 on 10 cores 29-30 s -> 20-25 s wall"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-pick-20261010T031934Z-1cb8",
+      "note": "Before: 214 runs in 7 days, 5.4 wall-min a run, all but 5 of them before 3a2a1d7b's 3 shards (pre-shard median 253 s, p90 2477 s under night load 150-260; post-shard median 70 s). Audit: one sleep (the jq-barrier race check, kept), no legacy or duplicated cases (21 of 498 calls repeat an earlier call's exact inputs, ~4 %); ~90 % of the suite's CPU is worker-pick itself, ~0.23 CPU-s a call at load 200, most of it the catalog helpers each call spawns (grokb models, geminib families, codexb models --family and --own per codex account, ~35 ms each) - the same floor speed-chat-tools-serial-reads left; cutting it is a worker-pick production change, not a suite audit. Lever taken: wp-roles and wp-hygiene split at self-contained boundaries into wp-roles/-modes/-walls and wp-hygiene/wp-pause/wp-decisions, packed into 5 shards (-j defaults to cores/2 = 5). wp-decisions (one diff over all 13 fixtures x 5 calls) cannot split without changing that assert's form.",
+      "handoff": null
     }
   ],
   "blind_spots": [
