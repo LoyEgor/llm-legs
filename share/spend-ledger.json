@@ -217,6 +217,25 @@
    "sources": {},
    "verdict": "kept",
    "note": "kept: all 6 re-writes over 1k in 7 d (1.86M of 1.86M, 27 events) are resumes on another account (credential_org changes; prompt cache is per org, only the 8-25k cross-org system prefix is read), 4 worker-run RESUMEs whose brief carried worker-pick's ACCOUNT and 2 chat account switches; same-org resumes in the gap kept the cache; pinning a resume to its old account would override limits routing for ~0.13 % of spend; tokenmap mislabels the cause (handoff 2026-10-07-tokenmap-waste-detectors.md, account switch line)"
+  },
+  {
+   "id": "hook:context-nudge.sh",
+   "title": "context-nudge.sh",
+   "audited_at": "2026-10-10T08:19:09+03:00",
+   "by": "harness-speed-spend-hook-context-nudge-sh-20261010T031907Z-4017",
+   "share": 0.000469,
+   "prices": {
+    "Workers · attachment: hook context": 56.33763507716477,
+    "Workers · Hooks": 13.357765001847183,
+    "Chat · Hooks": 45.77301711581157,
+    "Chat · attachment: hook context": 52.02714453550694,
+    "Reviewers · Hooks": 0.054084720651576476
+   },
+   "sources": {
+    "claude-setup/hooks/context-nudge.sh": "1982993beb06e387dba4489830c7d6e2d558cc68"
+   },
+   "verdict": "kept",
+   "note": "0.033 % of spend (~370k limit tokens/7 d, ~250 a firing, priced as text resent until the cut); 1469 real firings/7 d, 96 % of compact cycles clean (one stage1 + one stage2), the focus Write follows 98 % of stage1 and 92 % of stage2 nudges; the only cheaper equivalent is shorter wording, which test_context_nudge.sh pins from the manual-compact/wrap-up incident (claude-setup@03b25e0b) and no replay can prove output-equivalent, for at most ~0.013 % of spend; repeat firings (~3 %, window change or re-arm) and skipping stage2 after a fresh focus Write (176/685) change decisions; hook_success twins are not charged (tokenmap excludes their stdout)"
   }
  ]
 }
