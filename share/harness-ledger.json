@@ -6394,6 +6394,36 @@
       "handoff": null,
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-files-20261010T031939Z-214b"
+    },
+    {
+      "id": "speed-test-log-stores-subprocess-sweeps",
+      "title": "test_log_stores started a python per log-sweep call and built its 3.6 MB tail fixture line by line",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/heavy/llm-legs/test_log_stores$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-log-stores-20261010T031926Z-1da1",
+          "files": [
+            "llm-legs/tests/test_log_stores.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_log_stores asserts, base vs fix: four `bin/log-sweep` subprocesses (two --dry-run, two --json) replaced by the module's main() in-process with stdout/stderr captured; the CLI path stays covered by the collector's own log-sweep subprocess",
+            "data": "5 interleaved pairs on this branch, 2026-10-10 08:25 local, load 100-157; one mutation (bin/log-sweep dry run deleting) on the fix",
+            "result": "all 79 base asserts pass both ways, plus 1 python-exec count (6 on the base body, red; 2 on the fix); mutation red at assert 42 (--dry-run removes nothing); CPU-s 0.65 -> 0.34 median, wall 3.2 -> 1.7 s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-log-stores-20261010T031926Z-1da1",
+      "note": "Before: 21.75 OM/d, 80 runs in 7 d, 0.5 wall-min a run being its share of run-all walls incl. queue; its own secs 0.65-4.2 s, CPU 0.36-0.80 s (run-suites runs.jsonl 10-09..10). Profile: 6 python starts (suite, 4 direct log-sweep, the collector's), a 300k-line genexpr for big.log, bash lsof/du stubs. Ruled out: sleeps (none), legacy checks (suite born 10-09, every assert names a live requirement), a split (a 2 s suite; a shard adds a python start). Not cut: the collector's log-sweep subprocess (the only CLI/shebang path), the bash lsof stub per sweep (~5 forks, it feeds open_paths' parse).",
+      "handoff": null
     }
   ],
   "blind_spots": [

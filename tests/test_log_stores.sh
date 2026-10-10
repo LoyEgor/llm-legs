@@ -10,7 +10,10 @@ WORK=$(mktemp -d)
 WORK=$(cd -P "$WORK" && pwd)
 TMPW=$(mktemp -d /private/tmp/test-log-stores.XXXXXX)
 trap 'rm -rf "$WORK" "$TMPW"' EXIT
-mkdir -p "$WORK/home" "$WORK/bin" "$WORK/state"
+mkdir -p "$WORK/home" "$WORK/bin" "$WORK/state" "$WORK/path"
+printf '#!/bin/bash\necho >>"%s/python-execs"\nexec "%s" "$@"\n' "$WORK" "$(command -v python3)" >"$WORK/path/python3"
+chmod +x "$WORK/path/python3"
+export PATH="$WORK/path:$PATH"
 export HOME="$WORK/home" LOG_SWEEP_DIR="$WORK/sweep" LOG_STORES_REGISTRY="$WORK/registry.json" TMPDIR="$WORK/tmpdir"
 export SYSTEM_DOCTOR_DIR="$WORK/state" DOCTORS_DIR="$WORK/doctors" SYSTEM_DOCTOR_LEDGER="$WORK/ledger.json"
 export LOG_SWEEP_LSOF="$WORK/bin/lsof" SYSTEM_DOCTOR_DU="$WORK/bin/du" SYSTEM_DOCTOR_LOG_SWEEP="$ROOT/bin/log-sweep"
@@ -20,8 +23,10 @@ printf '#!/bin/bash\nawk -F"\\t" -v top="${@: -1}" '"'"'$2 == top || index($2, t
 chmod +x "$WORK/bin/lsof" "$WORK/bin/du"
 
 python3 - "$ROOT" "$WORK" "$TMPW" <<'PY'
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import socket
@@ -157,7 +162,7 @@ check(sorted(os.path.basename(r["path"]) for r, _a in ls.doomed(cap, vrows, now)
       "max_mb 5 keeps the newest within 5 MB, oldest go first")
 check(sorted(os.path.basename(r["path"]) for r, _a in ls.doomed(cap, vrows, now, slack=True)) == ["v0", "v1"],
       "max_mb slack is 25%: 6.25 MB holds a third 2 MB unit")
-put("app/big.log", text=b"".join(b"line %06d\n" % i for i in range(300000)))
+put("app/big.log", text=b"line 000000\n" * 299999 + b"line 299999\n")
 put("app/small.log", 100)
 tail = {"name": "t", "globs": ["~/app/*.log"], "cleaner": "sweep", "tail_mb": 1}
 trows = ls.measure(tail)
@@ -216,6 +221,19 @@ check(small == [] and scan[R + "/*"] == [100 * K, 100 * K] and [r["grow_kb_day"]
 check(ls.parse_du("12\t/a/b/\nbad\n7\t/c\n") == {"/a/b": 12, "/c": 7}, "du lines parse")
 
 # ---- log-sweep: dry run, then the real sweep
+loader = importlib.machinery.SourceFileLoader("log_sweep", os.path.join(root, "bin", "log-sweep"))
+spec = importlib.util.spec_from_loader("log_sweep", loader)
+sweep_mod = importlib.util.module_from_spec(spec)
+loader.exec_module(sweep_mod)
+
+
+def log_sweep(*argv):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = sweep_mod.main(list(argv))
+    return subprocess.CompletedProcess(argv, code, out.getvalue(), err.getvalue())
+
+
 registry([{"name": "s", "globs": ["~/logs/*"], "exclude": ["*/keep", "*.jsonl"], "cleaner": "sweep", "days": 60},
           {"name": "deep", "globs": ["~/deep/*/*/*"], "cleaner": "sweep", "days": 14},
           {"name": "t", "globs": ["~/app/*.log"], "cleaner": "sweep", "tail_mb": 1},
@@ -226,7 +244,7 @@ put("deep/p2/kind/old.jsonl", 100, 20)
 with open(os.path.join(work, "open-paths"), "w") as handle:
     handle.write("p1234\nn%s/logs/s3/a.txt\n" % home)
 before = sorted(os.path.relpath(os.path.join(d, f), home) for d, _s, fs in os.walk(home) for f in fs)
-dry = subprocess.run([os.path.join(root, "bin", "log-sweep"), "--dry-run"], capture_output=True, text=True)
+dry = log_sweep("--dry-run")
 after = sorted(os.path.relpath(os.path.join(d, f), home) for d, _s, fs in os.walk(home) for f in fs)
 check(dry.returncode == 0 and before == after, "--dry-run removes nothing: %s" % dry.stderr)
 check("delete" in dry.stdout and "/logs/s2" in dry.stdout and "/deep/p1/kind/old.jsonl" in dry.stdout
@@ -234,7 +252,7 @@ check("delete" in dry.stdout and "/logs/s2" in dry.stdout and "/deep/p1/kind/old
       "--dry-run lists each removal with its size, sweep stores only: %s" % dry.stdout)
 check("/logs/s3" not in dry.stdout and "1 held open" in dry.stdout, "a dir some process holds open is skipped")
 check(not os.path.exists(os.path.join(work, "sweep", "sweeps.jsonl")), "a dry run records nothing")
-real_run = subprocess.run([os.path.join(root, "bin", "log-sweep"), "--json"], capture_output=True, text=True)
+real_run = log_sweep("--json")
 result = json.loads(real_run.stdout)
 check(real_run.returncode == 0 and result["units"] == 4 and result["skipped_open"] == 1 and result["errors"] == 0,
       "the sweep removes s2 and two old deep files and truncates big.log: %s" % result)
@@ -250,10 +268,6 @@ check(os.path.getsize(os.path.join(home, "app/small.log")) == 100, "a file under
 check(len(os.listdir(os.path.join(home, "vers"))) == 5, "a self store is never swept")
 record = open(os.path.join(work, "sweep", "sweeps.jsonl")).read().splitlines()
 check(len(record) == 1 and json.loads(record[0])["units"] == 4, "one summary line per real run")
-loader = importlib.machinery.SourceFileLoader("log_sweep", os.path.join(root, "bin", "log-sweep"))
-spec = importlib.util.spec_from_loader("log_sweep", loader)
-sweep_mod = importlib.util.module_from_spec(spec)
-loader.exec_module(sweep_mod)
 sweep_mod.RECORD_MAX_BYTES = 2000
 for i in range(40):
     sweep_mod.record({"t": i, "pad": "x" * 100})
@@ -278,10 +292,10 @@ registry([{"name": "bridge", "globs": [tmpw + "/bridge/*"], "type": "file", "cle
 alias = tmpw[len("/private"):]
 with open(os.path.join(work, "open-paths"), "w") as handle:
     handle.write("p1\nn%s/vheld/d1/a.txt\nn%s/sheld/old.log\nn%s/sheld/d1/a.txt\nn%s/bridge/1.sock\n" % (home, alias, alias, alias))
-dry = subprocess.run([os.path.join(root, "bin", "log-sweep"), "--dry-run"], capture_output=True, text=True)
+dry = log_sweep("--dry-run")
 check("bridge/loose.txt" in dry.stdout and "1.sock" not in dry.stdout and "fifo" not in dry.stdout and "/link" not in dry.stdout,
       "the dry run lists the old regular file, never the socket, FIFO or symlink: %s" % dry.stdout)
-held_run = json.loads(subprocess.run([os.path.join(root, "bin", "log-sweep"), "--json"], capture_output=True, text=True).stdout)
+held_run = json.loads(log_sweep("--json").stdout)
 check(sorted(os.listdir(os.path.join(tmpw, "bridge"))) == ["1.sock", "fifo", "link"] and os.path.exists(os.path.join(home, "logs/top.jsonl")),
       "the sweep never deletes a socket, a FIFO or a symlink's target")
 check(os.path.exists(os.path.join(home, "vheld/d1")) and not os.path.exists(os.path.join(home, "vheld/d2")),
@@ -374,5 +388,7 @@ check(m.proof("worker-run", "log-store", now - 10, now + 1)["verdict"] == "refus
       and m.proof("Other", "log-store", now - 10, now + 1)["verdict"] == "proven"
       and m.proof("worker-run", "log-store", now + 5, now + 6)["verdict"] == "pending",
       "a log-store fix is proven by the next scan no longer firing it")
+execs = len(open(os.path.join(work, "python-execs")).read().splitlines())
+check(execs == 2, "python starts twice, this suite and the collector's log-sweep; log-sweep runs in-process here: %d" % execs)
 print("OK: PASS: %d log store checks" % asserts)
 PY
