@@ -77,14 +77,12 @@ mkdir -p "$HOME" "$WORK/bin" "$WORKER_RUN_DIR" "$WORKER_WALLS_DIR" "$STUB_DIR" "
 roster_add() { # vendor name...
   local vendor="$1" name
   shift
-  for name; do
-    case "$vendor" in
-      claudeb) mkdir -p "$CLAUDEB_DIR/tokens" && : >"$CLAUDEB_DIR/tokens/$name" ;;
-      codex) mkdir -p "$CODEX_PROFILES_DIR/$name" ;;
-      gemini) mkdir -p "$GEMINIB_PROFILES_DIR/$name" ;;
-      grok) mkdir -p "$GROKB_PROFILES_DIR/$name" ;;
-    esac
-  done
+  case "$vendor" in
+    claudeb) mkdir -p "$CLAUDEB_DIR/tokens" && for name; do : >"$CLAUDEB_DIR/tokens/$name"; done ;;
+    codex) mkdir -p "${@/#/$CODEX_PROFILES_DIR/}" ;;
+    gemini) mkdir -p "${@/#/$GEMINIB_PROFILES_DIR/}" ;;
+    grok) mkdir -p "${@/#/$GROKB_PROFILES_DIR/}" ;;
+  esac
 }
 for vendor in claudeb codex gemini grok; do
   roster_add "$vendor" authdead badmodel benched busy chatty claudeb codex codexfiles com cu deadacct deleg duplicate \

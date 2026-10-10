@@ -2278,21 +2278,22 @@ journal_worker_run() { # directory status exit-code
 
 # The task row the chat paints for this run reads this file, so every transition rewrites it whole.
 write_run_state() { # directory phase [exit-code]
-  local directory="$1" phase="$2" code="${3:-}" tag='' rest session tmp
+  local directory="$1" phase="$2" code="${3:-}" tag='' rest session='' meta='' tmp
   [ -d "$directory" ] || return 0
   IFS= read -r tag 2>/dev/null <"$directory/tag" || :
   rest=${tag#* · }
-  session=$(cat "$directory/launcher" 2>/dev/null) || session=''
+  IFS= read -r session 2>/dev/null <"$directory/launcher" || :
+  { meta=$(<"$directory/meta.json"); } 2>/dev/null || :
   tmp="$directory/state.json.tmp.$$"
-  if jq -n --arg phase "$phase" --arg code "$code" \
+  if jq -n --arg phase "$phase" --arg code "$code" --arg meta "$meta" \
     --arg session "$session" --arg account "${tag%% · *}" --arg model "${rest%% · *}" --arg effort "${rest##* · }" \
-    --arg round_id "$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null)" \
-    --arg started "$(jq -r '.pid_started_at // .started_at // empty' "$directory/meta.json" 2>/dev/null)" \
     'def opt: if . == "" then null else . end;
+     def raw: if . == null or . == false then "" elif type == "string" then . else tojson end;
+     ((try ($meta | fromjson) catch {}) | if type == "object" then . else {} end) as $m |
      {phase: $phase, exit_code: ($code | opt | if . == null then . else (tonumber? // .) end),
       session: ($session | opt), account: ($account | opt),
-      model: ($model | opt), effort: ($effort | opt), round_id: ($round_id | opt),
-      started_epoch: ($started | opt | if . == null then . else (tonumber? // null) end),
+      model: ($model | opt), effort: ($effort | opt), round_id: ($m.review_round | raw | opt),
+      started_epoch: ($m.pid_started_at // $m.started_at | raw | opt | if . == null then . else (tonumber? // null) end),
       ts: (now | floor | todate)}' >"$tmp" 2>/dev/null; then
     mv -f "$tmp" "$directory/state.json" 2>/dev/null || rm -f "$tmp"
   else
@@ -4518,7 +4519,7 @@ elapsed_label() { # seconds
   else printf '%ds' "$1"; fi
 }
 
-# The worker's own tokens so far — the total share/night_spend.py run_usage prices the run at.
+# The worker's Opus-eq tokens so far, rounded: the total share/night_spend.py run_usage prices the run at.
 run_tokens() { # run-id vendor transcript
   python3 - "$SCRIPT_DIRECTORY/../share" "$SCRIPT_PATH" "$1" "$2" "$3" 2>/dev/null <<'PY'
 import sys
@@ -4526,7 +4527,7 @@ sys.path.insert(0, sys.argv[1])
 import night_spend
 usage = night_spend.run_usage(sys.argv[2], sys.argv[3], sys.argv[4], set(), {sys.argv[3]: sys.argv[5]})
 if usage is not None:
-    print(sum(usage.values()))
+    print(round(sum(usage.values())))
 PY
 }
 

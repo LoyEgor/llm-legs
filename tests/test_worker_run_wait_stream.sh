@@ -3,9 +3,9 @@
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 mkdir -p "$WORK/shim"
 CALLS="$WORK/tool-calls"
-mkdir -p "$WORK/tick-shim"
-for tool in perl python3 find sleep; do
-  shim="$WORK/shim/$tool"; [ "$tool" != sleep ] || shim="$WORK/tick-shim/$tool"
+mkdir -p "$WORK/tick-shim" "$WORK/jq-shim"
+for tool in perl python3 find sleep jq; do
+  shim="$WORK/shim/$tool"; [ "$tool" != sleep ] || shim="$WORK/tick-shim/$tool"; [ "$tool" != jq ] || shim="$WORK/jq-shim/$tool"
   printf '#!/bin/bash\nprintf "%%s\\n" "%s $*" >>"%s"\nexec %q "$@"\n' "$tool" "$CALLS" "$(command -v "$tool")" >"$shim"
   chmod +x "$shim"
 done
@@ -26,12 +26,17 @@ printf '%s\n' "$WORK/session.jsonl" >"$RUN/session-file"
 printf '0\n' >"$RUN/exit_code"
 : >"$RUN/out"; : >"$RUN/err"
 printf 'acct · opus · high\n' >"$RUN/tag"
-
+priced=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import night_spend
+print(round(sum(night_spend.run_usage(sys.argv[2], sys.argv[3], "claudeb", set()).values())))' "$ROOT/share" "$RUNNER" "$ID")
+assert [ "$priced" -gt 0 ]
 
 : >"$CALLS"
-out=$("$RUNNER" wait "$ID" 2>&1)
+out=$(PATH="$WORK/jq-shim:$PATH" "$RUNNER" wait "$ID" 2>&1)
 # One perl cuts every row of a read, never one per row.
 assert [ "$(grep -cF 'substr($_, 0, 119)' "$CALLS")" = 1 ]
+# Each state write (wait, done) is one jq handed meta.json, never jq reads of meta.json of its own.
+assert [ "$(grep -c '^jq -n --arg phase ' "$CALLS")" = 2 ]
+assert_fails grep -q '^jq -r .review_round\|^jq -r .pid_started_at // .started_at // empty' "$CALLS"
 # A run already ended is read once, by the last pass alone.
 assert [ "$(grep -c "^python3 - .* $ID claudeb " "$CALLS")" = 1 ]
 waited=$(($(date +%s) - now))
@@ -47,8 +52,8 @@ bash_row=$(grep -F "$at Bash grep -n door" <<<"$out")
 assert [ "$(printf '%s' "$bash_row" | wc -m | tr -d ' ')" = 120 ]
 assert [ "$(printf '%s' "$bash_row" | perl -CSD -ne 'print substr($_, -1)')" = '…' ]
 assert [ "$(grep -c '^STATUS: done' <<<"$out")" = 1 ]
-# The run's usage so far is written beside its tag for the rows that render it.
-assert [ "$(cat "$RUN/tokens")" = 115 ]
+# The run's usage so far, as night_spend prices it, is written beside its tag for the rows that render it.
+assert [ "$(cat "$RUN/tokens")" = "$priced" ]
 # A row is printed once however many times the wait reads the transcript.
 assert [ "$(grep -c 'Reading the gate' <<<"$out")" = 1 ]
 
@@ -63,13 +68,20 @@ kill "$live" 2>/dev/null
 assert [ "$(grep -c '^STATUS: running' <<<"$out")" = 1 ]
 assert [ "$(grep -c '^\[' <<<"$out")" = 0 ]
 # ... and still writes the worker's tokens, so a script's bounded waits keep the row's token cell.
-assert [ "$(cat "$RUN/tokens" 2>/dev/null)" = 115 ]
+assert [ "$(cat "$RUN/tokens" 2>/dev/null)" = "$priced" ]
 
 # A live claudeb run: the wait reads each log line once (bytes it already read are never re-read, so
 # the rewritten first line stays unprinted), keeps a partial last line for the next read, and counts
 # the tokens on its first and last read only.
 row() { jq -nc --arg ts "$(iso "$(date +%s)")" --arg text "$1" '{type:"assistant",timestamp:$ts,message:{content:[{type:"text",text:$text}]}}'; }
 await() { local i; for i in $(seq 100); do grep -Fq -- "$1" "$WORK/live.out" && return 0; sleep 0.1; done; fail "no [$1] in $(cat "$WORK/live.out")"; }
+# A tick is one exit_file_wait, each after a transcript read: the second new one proves a read began after the call.
+await_ticks() { # run-dir count
+  local want i
+  want=$(($(grep -cFx "python3 - $1 1" "$CALLS") + $2))
+  for i in $(seq 300); do [ "$(grep -cFx "python3 - $1 1" "$CALLS")" -lt "$want" ] || return 0; sleep 0.1; done
+  fail "under $want ticks of $1"
+}
 rm -f "$RUN/exit_code" "$RUN/tokens"
 sleep 300 &
 live=$!
@@ -83,7 +95,7 @@ await alpha-row
 row bravo-row >"$WORK/session.jsonl"
 part=$(row charlie-row)
 printf '%s' "${part:0:20}" >>"$WORK/session.jsonl"
-sleep 2.5
+await_ticks "$RUN" 2
 printf '%s\n' "${part:20}" >>"$WORK/session.jsonl"
 await charlie-row
 row delta-row >>"$WORK/session.jsonl"
@@ -115,7 +127,7 @@ jq -c --argjson p "$live" --argjson t "$now" '.pid = $p | .pid_started_at = $t' 
 WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await '$ ls'
-sleep 2.5
+await_ticks "$CRUN" 2
 printf '0\n' >"$CRUN/exit_code"
 wait "$waiter"
 kill "$live" 2>/dev/null

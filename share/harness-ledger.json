@@ -6177,6 +6177,38 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-instruction-gate-20261010T031922Z-5827",
       "note": "Audit, 48 CPU-s a whole run, 203 gate calls at ~0.24 CPU-s each (~30 execs per denial: jq, sed, realpath, mkdir, find, stat, date, shasum): the gate's own per-call cost is the suite, no sleeps, no legacy checks, 6 decision strings shared with the matrix/span/bypasses suites (different session/span context, kept). Heaviest sections are the interpreter-variable (5.1 s), program-file (4.4 s) and directory-variable (3.1 s) bypass regressions, each a distinct historical bypass. Not cut: the gate's ~30 forks a denial (a hook refactor, its own run); runs without room for shards (24 of 55 since 10-08) still run whole.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-worker-run-wait-stream-roster-forks",
+      "title": "test_worker_run_wait_stream spent a third of its wall in the shared harness seeding its account roster one mkdir per name, two sleep 2.5 and three forks per state write",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/heavy/llm-legs/test_worker_run_wait_stream$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:40:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-wait-stream-20261010T031947Z-479d",
+          "files": [
+            "llm-legs/tests/worker_run_harness.sh",
+            "llm-legs/tests/test_worker_run_wait_stream.sh",
+            "llm-legs/bin/worker-run"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "suite asserts, base (HEAD plus the run_tokens rounding, else red at the tokens assert) vs fix: worker_run_harness roster_add seeds each vendor with one mkdir -p of all names (claudeb: one mkdir, builtin token files); the two sleep 2.5 wait for two exit_file_wait ticks after the write, so a transcript read provably began after it; write_run_state hands meta.json to its one jq instead of two jq reads and a cat",
+            "data": "3 interleaved pairs 2026-10-10 08:35 local, load 171-189; roster tree probe old vs new; mutation: old write_run_state on the fix suite",
+            "result": "33 base asserts pass both ways plus 3 (priced tokens > 0, 2 jq state writes, no own meta jq reads: red on the old write_run_state); roster 77 entries x 4 vendors identical, harness source 7.6 -> 1.0 s alone; suite wall 32.5 -> 27.2 s median"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-wait-stream-20261010T031947Z-479d",
+      "note": "Before: 149 runs, 0.3 wall-min a run; own wall 8-42 s by load, CPU ~15 %. Profile: harness roster 340 mkdir forks (~7.5 s at load 150, paid by all 19 test_worker_run_* suites), each worker-run invocation 1.8-2.8 s spread over ~40 forks (run_tokens python 0.2-0.4 s, needed), 2 fixed sleeps 5 s. Found red at HEAD: run_tokens printed a float since 5458081c made run_usage Opus-eq, the integer check dropped it, so the menu worker row lost its token cell; fixed by rounding (row cell now Opus-eq, contract updated). Kept: the 1 s WORKER_RUN_WAIT_POLL_S (integer-only knob, production 5 s), the live waits (each proves a real poll), every vendor case (each a distinct reader). Ruled out: legacy checks (suite born 2026-10-09, every assert names a live requirement), a split (no independent half above 5 s once the harness cost is gone).",
+      "handoff": null
     }
   ],
   "blind_spots": [
