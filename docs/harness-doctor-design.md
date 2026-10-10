@@ -545,7 +545,7 @@ the rework:
   the median and state rules the contract §6 names); `runs_red` is the collector runs in 24 h that
   judged it.
 - **Ledger.** `share/harness-ledger.json`. A fixed or fixed-pending row is shown as
-  `fixed · E events since · M matched` for 7 days, and while unproven. When the collector writes, it
+  its proof fact (`docs/doctor-fix.md`, Proof) for 7 days, and while unproven. When the collector writes, it
   turns a `fixed-pending` row `fixed` with `in: repo@hash` once every file of its last fix is
   committed, and stamps `regressed_at` on a regression, both in its overlay `ledger-settled.json`,
   never the tracked file (contract §2). Before judging, `ledger_faults` drops every

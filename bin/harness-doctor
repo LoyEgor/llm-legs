@@ -3023,10 +3023,10 @@ def hooks_section(hooks, calls, cuts, samples_h, hooks_since, timed24, timed1, n
                 ("hook_full_work", trivial_ms is not None, full_work, trivial_ms, LIMITS["full_work_min_ms"],
                  lambda: "%s takes %s ms on a trivial Bash call, as on the rest (%s ms)" % (
                      name, num(trivial_ms), num(other_ms))),
-                ("hook_grows_size", grows, grows, big_ms, small_ms,
+                ("hook_grows_size", enough("small") and enough("big"), grows, big_ms, small_ms,
                  lambda: "%s takes %s ms in transcripts over %d MB, %s ms under %d MB" % (
                      name, num(big_ms), SIZE_BIG_KB // 1024, num(small_ms), SIZE_SMALL_KB // 1024)),
-                ("hook_grows_repos", grows_repos, grows_repos, many_ms, few_ms,
+                ("hook_grows_repos", enough("few") and enough("many"), grows_repos, many_ms, few_ms,
                  lambda: "%s takes %s ms in chats with %d+ repositories, %s ms with up to %d" % (
                      name, num(many_ms), REPOS_MANY, num(few_ms), REPOS_FEW))):
             if applies:
@@ -3448,13 +3448,18 @@ def pole_line(tests, now):
             pole, took, run["secs"], repo, fmt_pct(share), took - next_took, after)
         rows.append((share, row([clip(repo, 20), clip(pole, 30), num(took, 60.0), num(took - next_took, 60.0),
                                  fmt_pct(share)], [4] if level == "red" else [], dim=not level, say=fact,
-                                judge=verdict("test_long_pole", test_ident(run.get("repo"), SUITE_EXT.sub("", pole),
-                                                                           run.get("repo_root")), share,
+                                judge=[verdict("test_long_pole", test_ident(run.get("repo"), SUITE_EXT.sub("", pole),
+                                                                            run.get("repo_root")), share,
                                     LIMITS["long_pole_share"], "", window // 3600, len(runs), level, fact=fact,
                                     values=[max(r["suite_secs"].values()) / float(r["secs"]) for r in runs
                                             if r["secs"] > 0], evidence=[evidence(
                                         run["end"] - run["secs"], history_ref(run), "%s %d s of %d s" % (
-                                            pole, took, run["secs"]), run.get("who") or "")]))))
+                                            pole, took, run["secs"]), run.get("who") or "")])] + [
+                                    verdict("test_long_pole", test_ident(run.get("repo"), SUITE_EXT.sub("", name),
+                                                                         run.get("repo_root")),
+                                            min(1.0, secs / float(run["secs"])) if run["secs"] > 0 else None,
+                                            LIMITS["long_pole_share"], "", window // 3600, len(runs), None, bad=0)
+                                    for name, secs in ranked[1:]])))
     rows.sort(key=lambda x: -x[0])
     rows = [r for _, r in rows]
     top = rows[0] if rows else None
@@ -3823,7 +3828,9 @@ def clock(at, now):
     return time.strftime("%H:%M" if local_day(at) == local_day(now) else "%m-%d %H:%M", time.localtime(at))
 
 
-def health_section(name, prefix, items, exposure, now, ok, blind=""):
+def health_section(name, prefix, items, exposure, now, ok, blind="", judged=None):
+    """judged: the events the check examined per (rule, ident); one with no hit is a quiet verdict, the exposure a
+    fixed ledger row is proven on, never a row or a problem."""
     rows = []
     for (rule, ident), item in sorted(items.items(), key=lambda kv: (-LEVELS[kv[1]["level"]], -kv[1]["last"])):
         limit_key, unit = HEALTH_LIMITS.get(rule, (None, "events"))
@@ -3838,14 +3845,18 @@ def health_section(name, prefix, items, exposure, now, ok, blind=""):
                           bad=item["count"],
                           evidence=[evidence(at, ref, excerpt) for at, ref, excerpt in
                                     sorted(item["events"], key=lambda e: -e[0])[:3]])))
-    return section(name, rows, HEALTH_COLUMNS, [False, True, False], ok=ok, blind=blind)
+    out = section(name, rows, HEALTH_COLUMNS, [False, True, False], ok=ok, blind=blind)
+    out["quiet"] = [verdict(rule, ident, 0, LIMITS[HEALTH_LIMITS[rule][0]] if rule in HEALTH_LIMITS else 0,
+                            HEALTH_LIMITS.get(rule, (None, "events"))[1], 24, n, None, bad=0)
+                    for (rule, ident), n in sorted((judged or {}).items()) if n and (rule, ident) not in items]
+    return out
 
 
 def stop_hooks_section(now):
     """What llm-doctor's Hooks row judged: stop-hook failures, asks left unanswered, word notices with no
     reading line, and a stop dispatcher that went quiet while chats ran."""
     cutoff = now - 86400
-    items, asked, streaks, last_stop, seen = {}, {}, {}, None, 0
+    items, asked, streaks, last_stop, seen, judged = {}, {}, {}, None, 0, collections.Counter()
     journal = read_jsonl(stop_journal(), cutoff)
 
     def streak_end(session, reason, first, last, ref, *_):
@@ -3889,6 +3900,10 @@ def stop_hooks_section(now):
                     streak[2], streak[3] = at, ref
         for hook in hooks:
             name, outcome, reason = str(hook.get("name") or "?"), hook.get("outcome"), str(hook.get("reason") or "")
+            judged["hook-error", name] += 1
+            judged["hook-held", name] += 1
+            if outcome == "asked":
+                judged["ask-busy" if entry.get("busy") else "ask-repeat", name] += 1
             if outcome == "error":
                 health_hit(items, "hook-error", name, "%s: %s" % (name, reason or "error"), at, ref=ref, excerpt=reason,
                            head="an end-of-turn check failed")
@@ -3916,12 +3931,13 @@ def stop_hooks_section(now):
         seen += 1
         if entry.get("silent") or not (entry.get("hook") or entry.get("unprompted")):
             continue
+        unprompted = bool(entry.get("unprompted"))
+        key = ("reading-miss", "unprompted") if unprompted else ("word-miss", word_ident(entry.get("hook"), families))
+        judged[key] += 1
         mark = marks.get("%s:%s" % (entry.get("ts"), entry.get("session")))
         if mark == "miss" or (entry.get("match") is False and mark != "ok"):
             said = "; ".join(entry.get("model") or [])
-            unprompted = bool(entry.get("unprompted"))
-            health_hit(items, "reading-miss" if unprompted else "word-miss",
-                       "unprompted" if unprompted else word_ident(entry.get("hook"), families),
+            health_hit(items, *key,
                        "⚡ reading with no notice: %s" % said[:DETAIL_MAX] if unprompted else
                        "word notice with no reading: %s" % str(entry.get("hook"))[:DETAIL_MAX], entry["ts"],
                        ref="words:%s/%s" % (entry["ts"], entry.get("session") or "-"),
@@ -3940,7 +3956,7 @@ def stop_hooks_section(now):
                    else "end-of-turn checks recorded nothing for %s" % fmt_long(gap))
     return health_section("Stop hooks", "stophooks", items, seen, now,
                           ok="%d stop and word journal lines in 24 h, none failed or unanswered" % seen,
-                          blind="" if journal is not None else "no stop journal at %s" % stop_journal())
+                          blind="" if journal is not None else "no stop journal at %s" % stop_journal(), judged=judged)
 
 
 def file_key(path):
@@ -4102,7 +4118,7 @@ def guards_section(now):
     """What llm-doctor's Guards row judged: instruction-file growth no gate priced or passed, forged retry
     stamps, the gates' own faults, and a watcher or tripwire that went quiet."""
     cutoff = now - 86400
-    items, decisions, seen = {}, [], 0
+    items, decisions, seen, judged = {}, [], 0, collections.Counter()
     state = watch_state()
     if not os.path.isdir(state):
         return health_section("Guards", "guards", items, 0, now, ok="",
@@ -4164,12 +4180,19 @@ def guards_section(now):
         kind = entry.get("kind") or "change"
         files = [str(p) for p in entry.get("files") or []]
         ref = "events:%s/%s" % (entry.get("at"), file_key(files[0]) if files else "-")
+        if kind == "change" and entry.get("source") != "watcher":
+            judged["baseline-missing", "tripwire"] += 1
         if kind in ("change", "changed-between-sessions") and not entry.get("reverted"):
             between = kind == "changed-between-sessions"
             groups, aside, grew = {}, {}, []
             for path, delta in zip(files, entry.get("bytes") or []):
                 if (not isinstance(delta, (int, float)) or delta <= 0 or not classes.get(path, "?")
-                        or FIXTURE_PATH_RE.search(file_key(path)) or (id(entry), str(path)) in landings):
+                        or FIXTURE_PATH_RE.search(file_key(path))):
+                    continue
+                ident = "between-sessions" if between else file_key(growth_root(path, skills)[0])
+                judged["growth-ungated", ident] += 1
+                judged["growth-denied", ident] += 1
+                if (id(entry), str(path)) in landings:
                     continue
                 gate = gate_verdict(decisions, path, at, delta)
                 if gate == "passed" or not gate and vendor_synced(path, at, manifests):
@@ -4252,7 +4275,8 @@ def guards_section(now):
                    head="the instruction watcher took no snapshot while chats started" if gap > LIMITS["silent_s"]
                    else "the instruction watcher took no snapshot for %s" % fmt_long(gap))
     out = health_section("Guards", "guards", items, seen, now,
-                         ok="%d gate and change journal lines in 24 h, every write priced or passed, watcher up" % seen)
+                         ok="%d gate and change journal lines in 24 h, every write priced or passed, watcher up" % seen,
+                         judged=judged)
     out["rows"] += [row(["upstream instruction growth · %s · +%s B" % (file_key(top), fmt_count(total)), fmt_count(n),
                          clock(last, now)], dim=True) for top, (n, total, last) in sorted(upstream.items())]
     return out
@@ -4410,11 +4434,12 @@ def deploys_section(now):
     """Each copy an installer of this repository deployed, against its source in the main checkout: launchd runs
     the deployed copy, so an edit to the source does nothing until the installer runs again. A group none of whose
     copies exists is not installed and is not judged."""
-    rows, checked = [], 0
+    rows, checked, quiet = [], 0, []
     for fix, copies in installed_deploys(deploy_source()):
         for target, kind, src, why in copies:
             checked += 1
             if not why:
+                quiet.append(verdict("deploy-drift", file_key(target), 0, 0, "copies", 0, 1, None, bad=0))
                 continue
             ident, command = file_key(target), fix or "cp %s %s" % (src, file_key(target))
             say = "%s %s · fix: %s" % (ident, why, command)
@@ -4426,9 +4451,11 @@ def deploys_section(now):
                             head="a deployed copy differs from its repo source",
                             judge=verdict("deploy-drift", ident, 1, 0, "copies", 0, checked, "red", fact=say,
                                           evidence=[evidence(at, "deploy:" + ident, "%s: %s" % (src, why))], bad=1)))
-    return section("Deploys", rows, ["", "fix"], [False, False],
-                   ok="%d deployed cop%s match%s the repo source" % (checked, "y" if checked == 1 else "ies",
-                                                                    "es" if checked == 1 else ""))
+    out = section("Deploys", rows, ["", "fix"], [False, False],
+                  ok="%d deployed cop%s match%s the repo source" % (checked, "y" if checked == 1 else "ies",
+                                                                   "es" if checked == 1 else ""))
+    out["quiet"] = quiet
+    return out
 
 
 BROWSER_REPAIR = ("HARNESS_NEEDS_REPAIR", "missing")
@@ -5314,6 +5341,9 @@ def menu_text(document):
 
 CONTRACT = 1
 PROOF_MIN_EXPOSURE = 20
+PROOF_MIN_PREDICTED = 3
+SPEED_RULES = ("regression", "opportunity", "time_floor")
+EVIDENCE_KEYS = ("compared", "data", "result")
 PROOF_SHOW_S = 7 * 86400
 SEEN_GAP_S = 86400
 SEEN_KEEP_S = 30 * 86400
@@ -5471,7 +5501,8 @@ def all_verdicts(sections):
     merged, stack = {}, [(part.get("name"), part) for part in sections]
     while stack:
         group, part = stack.pop(0)
-        for item in part.get("lead", []) + part.get("rows", []) + part.get("extra_red", []) + part.get("nav", []):
+        for item in part.get("lead", []) + part.get("rows", []) + part.get("extra_red", []) + part.get("nav", []) + [
+                {"judge": part.get("quiet"), "cells": [None]}]:
             for v in item.get("judge") or ():
                 v = dict(v, fact=v.get("fact") or item.get("say") or item["cells"][0], group=group)
                 key = (v["rule"], v["ident"])
@@ -5517,9 +5548,58 @@ def settle_fixes(ledger):
     return settled
 
 
-def problems_from(sections, ledger, state, now, extra=()):
+def record_rate(rates, v, times, now):
+    if v["level"] != "red" or not v.get("bad") or not v["window_h"]:
+        return
+    key, at = "%s\t%s" % (v["rule"], v["ident"]), max(times) if times else now
+    old = rates.get(key)
+    rate = v["bad"] / float(v["window_h"])
+    rates[key] = {"at": at, "per_h": max(rate, old["per_h"]) if old and old.get("at") == at else rate}
+
+
+def rate_before(rates, entry, fix_at):
+    """The red rate per hour last seen before the fix, summed over the idents its row matches; None if never seen."""
+    match = entry.get("match") or {}
+    found = []
+    for key, seen_rate in rates.items():
+        rule, _, ident = key.partition("\t")
+        if rule == match.get("rule") and seen_rate["at"] < fix_at:
+            try:
+                if re.fullmatch(match.get("ident") or "", ident):
+                    found.append(seen_rate["per_h"])
+            except re.error:
+                continue
+    return sum(found) if found else None
+
+
+def equivalent(fix):
+    proof = fix.get("equivalence") if isinstance(fix, dict) else None
+    return isinstance(proof, dict) and all(str(proof.get(k) or "").strip() for k in EVIDENCE_KEYS)
+
+
+def speed_proof(entry, speed, fix_at):
+    """Speed proves its rules' fixes by its own measurement (ledger_state, speed-doctor's speed_yield), never by events:
+    (proven, fact), or None while Speed shows the row itself."""
+    rule = entry["match"]["rule"]
+    if rule == "opportunity":
+        return (True, "output-equivalent by its replay") if equivalent(entry["fixes"][-1]) else (
+            False, "no output-equivalence record on the fix")
+    if any(p.get("ledger") == entry["id"] for p in (speed or {}).get("problems") or ()):
+        return None
+    window_h = 48 if rule == "regression" else 24
+    measured = {f.get("class") for f in ((speed or {}).get("budget") or {}).get("floors") or ()} | {
+        "full-runs", "workers-active"} if rule == "time_floor" else None
+    if not speed or measured is not None and entry["match"]["ident"] not in measured:
+        return False, "Speed measures no %s" % entry["match"]["ident"]
+    if (speed.get("as_of_s") or 0) - window_h * 3600 < fix_at:
+        return False, "Speed has not measured a whole %d h since the fix" % window_h
+    return True, "back under its limit in Speed's last %d h" % window_h
+
+
+def problems_from(sections, ledger, state, now, extra=(), covered=None, speed=None):
     seen = state.setdefault("seen", {})
     proof_state = state.setdefault("proof", {})
+    rates = state.setdefault("rates", {})
     verdicts = all_verdicts(sections) + list(extra)
     by_id, touched = {}, {}
     for v in verdicts:
@@ -5528,11 +5608,12 @@ def problems_from(sections, ledger, state, now, extra=()):
             touched.setdefault(entry["id"], []).append(v)
         if not v["level"] or (entry and entry.get("status") in DISMISSED):
             continue
+        times = [t for t in (at_epoch(e["at"]) for e in v["evidence"]) if t]
+        record_rate(rates, v, times, now)
         if v["level"] == "watch" and entry and entry.get("status") in ("fixed", "fixed-pending"):
             continue
         pid = entry["id"] if entry else v.get("pid") or "%s:%s" % (v["rule"], v["ident"])
         fix_at = last_fix_at(entry)
-        times = [t for t in (at_epoch(e["at"]) for e in v["evidence"]) if t]
         if v["level"] == "watch":
             state_name = "watch"
         elif not entry:
@@ -5577,26 +5658,51 @@ def problems_from(sections, ledger, state, now, extra=()):
         problems.append(problem)
     for pid in [k for k, v in seen.items() if now - v.get("last", 0) > SEEN_KEEP_S]:
         del seen[pid]
+    for key in [k for k, v in rates.items() if now - v["at"] > SEEN_KEEP_S]:
+        del rates[key]
     shown = {p["ledger"] for p in problems if p["ledger"]}
     for entry in ledger.get("rows") or ():
         fix_at = last_fix_at(entry)
         if entry.get("status") not in ("fixed-pending", "fixed") or not fix_at or fix_at == NOT_LANDED or entry["id"] in shown:
             continue
+        rule = (entry.get("match") or {}).get("rule")
+        by_speed = speed_proof(entry, speed, fix_at) if rule in SPEED_RULES else False
+        if by_speed is None:
+            continue
         proof = proof_state.get(entry["id"])
         if not proof or proof.get("at") != fix_at:
             proof = proof_state[entry["id"]] = {"at": fix_at, "events": 0, "matched": 0}
+        if "rate" not in proof:
+            proof["rate"] = rate_before(rates, entry, fix_at)
         after = [v for v in touched.get(entry["id"], []) if now - v["window_h"] * 3600 >= fix_at]
-        proof["events"] = max(proof["events"], sum(v["exposure"] for v in after))
-        proven = proof["events"] >= PROOF_MIN_EXPOSURE and not proof["matched"]
+        current = sum(v["exposure"] for v in after)
+        bank_at = proof.get("bank_at", fix_at)
+        # Windows banked once each span ends never overlap, so their exposure adds up across days.
+        if after and now > bank_at and now - max(v["window_h"] for v in after) * 3600 >= bank_at:
+            proof["bank"], proof["bank_at"] = proof.get("bank", 0) + current, now
+        proof["events"] = max(proof["events"], current, proof.get("bank", 0))
+        days = max(0.0, (covered or {}).get(rule, now) - fix_at) / 86400
+        predicted = (proof["rate"] or 0) * days * 24
+        by_events = proof["events"] >= PROOF_MIN_EXPOSURE and not proof["matched"]
+        by_rate = bool(proof["rate"]) and predicted >= PROOF_MIN_PREDICTED and not proof["matched"]
+        if by_speed:
+            proven, said = by_speed
+        elif proof["rate"] and not by_events and (by_rate or not proof["events"]):
+            proven, said = by_rate, "%d matched in %.1f d, %.1f predicted at %.1f/d before the fix%s" % (
+                proof["matched"], days, predicted, proof["rate"] * 24,
+                "" if by_rate else ", needs %d predicted and none matched" % PROOF_MIN_PREDICTED)
+        elif touched.get(entry["id"]) or proof["events"] or proof["matched"]:
+            proven, said = by_events, "%d events since · %d matched%s" % (
+                proof["events"], proof["matched"], "" if by_events else ", needs %d events and none matched" % PROOF_MIN_EXPOSURE)
+        else:
+            proven, said = False, "no exposure measured, no rate before the fix"
         if proven and now - fix_at > PROOF_SHOW_S:
             continue
         last = max(after, key=lambda v: v["exposure"]) if after else (touched.get(entry["id"]) or [None])[0]
         problems.append({
-            "id": entry["id"], "rule": (entry.get("match") or {}).get("rule"),
+            "id": entry["id"], "rule": rule,
             "ident": (entry.get("match") or {}).get("ident"), "state": "fixed-pending",
-            "fact": "%s · %d events since · %d matched%s · %s" % (
-                "fixed" if proven else "unproven", proof["events"], proof["matched"],
-                "" if proven else ", needs %d events and none matched" % PROOF_MIN_EXPOSURE, entry.get("title")),
+            "fact": "%s · %s · %s" % ("fixed" if proven else "unproven", said, entry.get("title")),
             "value": last and last["value"], "limit": last and last["limit"], "unit": last and last["unit"],
             "window_h": last and last["window_h"], "exposure": proof["events"],
             "count": sum(v.get("bad") or 0 for v in after if v["level"]), "runs_red": proof["matched"],
@@ -5689,8 +5795,11 @@ def audit_verdicts(now):
     """bin/log-audit's findings, one problem each; none once its last read is older than AUDIT_STALE_S."""
     document = read_json(os.path.join(env_dir("LOG_AUDIT_DIR", ".cache", "doctors", "log-audit"), "findings.json"), {})
     at = document.get("at") if isinstance(document, dict) else None
+    until, since = (document.get(k) if isinstance(document, dict) else None for k in ("until", "since"))
+    until = until if isinstance(until, (int, float)) else at
+    window_h = max(1, round((until - since) / 3600)) if isinstance(since, (int, float)) and until else 24
     if not isinstance(at, (int, float)) or now - at > AUDIT_STALE_S:
-        return [], at
+        return [], at, until
     out = []
     for item in document.get("findings") or ():
         if not isinstance(item, dict) or not item.get("id") or not item.get("title"):
@@ -5698,10 +5807,11 @@ def audit_verdicts(now):
         minutes = item["minutes"] if isinstance(item.get("minutes"), (int, float)) else None
         where = ", ".join(str(name) for name in item.get("where") or ())[:120] or "log-audit"
         quotes = [str(quote) for quote in item.get("quotes") or ()] or [str(item.get("why") or "")]
-        out.append(dict(verdict("log_audit", item["id"], minutes, 0, "min", 24, len(item.get("where") or ()), "red",
-                                fact="%s%s" % (item["title"], " · ~%d min" % minutes if minutes else ""),
-                                evidence=[evidence(at, where, quote) for quote in quotes]), group=AUDIT_GROUP))
-    return out, at
+        out.append(dict(verdict("log_audit", item["id"], minutes, 0, "min", window_h, len(item.get("where") or ()),
+                                "red", fact="%s%s" % (item["title"], " · ~%d min" % minutes if minutes else ""),
+                                evidence=[evidence(at, where, quote) for quote in quotes],
+                                bad=len(item.get("where") or ()) or 1), group=AUDIT_GROUP))
+    return out, at, until
 
 
 def hold_verdicts(now, held):
@@ -5997,7 +6107,7 @@ def collect(write, now):
     if not any(k.startswith(MENU_KEY) for k in timed24):
         blind.append({"id": "menu-journal", "what": "menu build time", "reason": "no menu journal line in 24 h",
                       "since": None, "would_catch_if": "the Hammerspoon menu builds write their journal lines"})
-    audit, audit_at = audit_verdicts(now)
+    audit, audit_at, audit_until = audit_verdicts(now)
     if not audit_at or now - audit_at > AUDIT_STALE_S:
         blind.append({"id": "log-audit", "what": "odd behaviour in chat and worker transcripts",
                       "reason": "bin/log-audit has not read them for %d h" % (AUDIT_STALE_S // 3600), "since": iso_time(audit_at) if audit_at else None,
@@ -6017,7 +6127,9 @@ def collect(write, now):
     holds, leaked_holds = hold_verdicts(now, held_now)
     for v in holds:
         v["group"] = HOLDS_GROUP
-    problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds + audit)
+    speed = read_json(os.path.join(folder, "latest.json"), {}).get("speed")
+    problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds + audit,
+                             covered={"log_audit": audit_until or now}, speed=speed)
     settled = settle_fixes(judging) if write else []
     for problem in problems:
         entry = problem["state"] == "regressed" and ledger_row_by_id(judging, problem["ledger"])
@@ -6048,8 +6160,7 @@ def collect(write, now):
         "sections": sections, "periods": periods, "extras": extras,
         "footer": "as of %s" % time.strftime("%H:%M", time.localtime(now)),
     }
-    apply_speed(document, read_json(os.path.join(folder, "latest.json"), {}).get("speed"),
-                None if ledger is None else judging)
+    apply_speed(document, speed, None if ledger is None else judging)
     speed_flush(state, now, write)
     if write:
         write_json(os.path.join(folder, "state.json"), state)

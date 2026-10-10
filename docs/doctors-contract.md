@@ -292,8 +292,9 @@ Harness doctor (added 2026-09-29 by its owner chat):
   and tool. A red hook-wait floor (`floor`) is already inside the call wait it feeds, and a busy
   machine (`load`) with no slow call slowed no leg, so neither marks a period local.
 - Proof of a fix is the `fact` of a `fixed-pending` problem: `fixed · E events since · M matched`, or
-  `unproven · …` while E < 20. E is the largest exposure of the row's rules over a window that
-  started after the fix; M counts the runs that judged a regression.
+  `unproven · …` while E < 20. E is the row's rules' exposure (quiet verdicts included) over
+  non-overlapping windows that started after the fix; M counts the runs that judged a regression. The
+  rate proof and Speed's rules: `docs/doctor-fix.md`, Proof.
 - `count` is the number of events the rule judged bad in its window: calls, hook runs, batches,
   cuts, test runs, journal lines, load samples over the limit (the hour's), the latest store sample,
   the stuck spool's files, a slow collector run. It is `null` where the rule judges a median over

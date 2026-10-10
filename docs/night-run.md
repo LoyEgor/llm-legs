@@ -124,7 +124,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
   ones in `previous_sessions`;
 - `doctors_before` and `doctors_after` (problem counts), and `doctor_states_before`/`doctor_states_after`:
   per doctor the problems of its `latest.json` by ledger state, `proved` (a harness fix proven,
-  `fixed · E events since · 0 matched`), `pending` (`fixed-pending` or rule `fix-proof`), `open`,
+  `fixed · …` per `docs/doctor-fix.md` Proof), `pending` (`fixed-pending` or rule `fix-proof`), `open`,
   `new`, `regressed`. `report` prints one line per doctor,
   `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
 - `jobs[]`, each with:

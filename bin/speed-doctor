@@ -95,7 +95,7 @@ METRICS = {"chat.om_per_100_prompts": ("chat", 30), "delegation.pre_cli_s": ("de
            "background.merge_kick_cpu_ms": ("background/statusline", 20), "machine.probe_ms": ("machine/contention", 30),
            "night.wall_h_per_job": ("night", 5)}
 QUALITY = ("equivalent", "risk")
-EVIDENCE_KEYS = ("compared", "data", "result")
+EVIDENCE_KEYS = H.EVIDENCE_KEYS
 FORBIDDEN_LEVER = re.compile(r"(?i)\b(models?|opus|sonnet|haiku|fable|flash|gpt[\w.-]*|cheaper|downgrades?|effort|"
                              r"reasoning|xhigh|thinking|think|vendors?)\b")
 FORBIDDEN_COMPONENTS = ("chat/model",)
@@ -136,7 +136,7 @@ def shown_levers(levers):
             if l["quality"] == "equivalent" or lever_evidence(l)]
 
 
-SPEED_RULES = ("regression", "opportunity", "time_floor")
+SPEED_RULES = H.SPEED_RULES
 COVERS = {"chat": (("wait", "*"), ("wait_cut", "*"), ("local_slow", "*")),
           "background/statusline": (("statusline", "*"),)}
 HEAVY_TEST_S, HOT_CPU_MS_DAY, HOT_MIN_DAYS = float(C.LIMITS["heavy_test_s"]), 60000.0, 3
@@ -1039,9 +1039,7 @@ def judge_digest(ledger):
     return digest.hexdigest()
 
 
-def equivalent(fix):
-    proof = fix.get("equivalence") if isinstance(fix, dict) else None
-    return isinstance(proof, dict) and all(str(proof.get(k) or "").strip() for k in EVIDENCE_KEYS)
+equivalent = H.equivalent
 
 
 def speed_yield(ledger):

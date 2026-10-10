@@ -147,8 +147,8 @@ loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
 spec = importlib.util.spec_from_loader("harness_doctor", loader)
 module = importlib.util.module_from_spec(spec)
 loader.exec_module(module)
-found, at = module.audit_verdicts(float(sys.argv[2]))
-print(json.dumps({"found": found, "at": at}))
+found, at, until = module.audit_verdicts(float(sys.argv[2]))
+print(json.dumps({"found": found, "at": at, "until": until}))
 PY
 }
 at=$(jq -r '.at' "$LOG_AUDIT_DIR/findings.json")
@@ -156,6 +156,8 @@ assert jqe '.found | length == 2 and .[0].rule == "log_audit" and .[0].ident == 
   and .[0].group == "Log audit" and .[0].fact == "A Bash hook prints an awk multibyte error · ~4 min"
   and .[0].evidence[0].ref == "Fixture chat" and (.[0].evidence[0].excerpt | startswith("H×3"))' <(verdicts "$at")
 assert jqe '.found == [] and (.at | type) == "number"' <(verdicts "$((at + 49 * 3600))")
+assert jqe --argjson until "$(jq '.until' "$LOG_AUDIT_DIR/findings.json")" \
+  '.until == $until and .found[0].window_h >= 1 and .found[0].bad == 1' <(verdicts "$at")
 
 # A chunk whose run fails is not read: the read stops without a merge and the next one rereads its logs.
 printf '{"type": "user", "timestamp": "%s", "message": {"content": "и опять"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \

@@ -220,7 +220,11 @@ assert [ "$(wc -l <"$WORK/menu" | tr -d ' ')" = 13 ]
 doc llm 1
 doc harness 0 '[{"id": "c1", "state": "fixed-pending", "fact": "fixed · 25 events since · 0 matched · a fix"},
   {"id": "c2", "state": "fixed-pending", "fact": "unproven · 3 events since · 0 matched, needs 20 events and none matched · b"},
-  {"id": "c3", "state": "fixed-pending", "fact": "fixed · 30 events since · 2 matched · c"}, {"id": "c4", "state": "new"}, {"id": "c5", "state": "new"}]'
+  {"id": "c3", "state": "fixed-pending", "fact": "fixed · 30 events since · 2 matched · c"}, {"id": "c4", "state": "new"}, {"id": "c5", "state": "new"},
+  {"id": "c6", "state": "fixed-pending", "fact": "fixed · 0 matched in 2.0 d, 4.0 predicted at 2.0/d before the fix · d"},
+  {"id": "c7", "state": "fixed-pending", "fact": "fixed · back under its limit in Speed'"'"'s last 24 h · e"},
+  {"id": "c8", "state": "fixed-pending", "fact": "fixed · output-equivalent by its replay · f"},
+  {"id": "c9", "state": "fixed-pending", "fact": "unproven · 1 matched in 2.0 d, 4.0 predicted at 2.0/d before the fix, needs 3 predicted and none matched · g"}]'
 doc updater 2 '[{"id": "u1", "state": "watch", "rule": "fix-proof", "fact": "W1 · fixed 0d · 0 since · 0 matched · unproven"}]'
 
 # Another chat cannot finish a night whose orchestrator chat runs; the orchestrator itself can.
@@ -232,7 +236,8 @@ assert_fails night finish "$id" 2>/dev/null
 assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2, code: null, system: null} and .finished_at != null
   and ([.jobs[] | select(.state == "pending")] | length) == 0
   and ([.jobs[] | select(.ref == "p2")][0] | .state == "left" and .reason == "no outcome recorded by the close")' "$R"
-assert jqe '.doctor_problems_after == {llm: {}, harness: {c1: "proved", c2: "pending", c3: "pending", c4: "new", c5: "new"},
+assert jqe '.doctor_problems_after == {llm: {}, harness: {c1: "proved", c2: "pending", c3: "pending", c4: "new", c5: "new", c6: "proved", c7: "proved",
+    c8: "proved", c9: "pending"},
   updater: {u1: "pending"}, code: null, system: null}' "$R"
 mkdir -p "$DOCTORS_DIR/runs"
 printf '{"decisions": [{"id": "load:busy", "component": "unverified"}, {"id": "R1"}, {"id": "reading-miss:x", "component": "unverified"}]}\n' \
@@ -242,7 +247,7 @@ night report "$id" >"$WORK/report" || fail "report"
 assert grep -qxF "unverified component · llm-20260930T010203Z · load:busy, reading-miss:x" "$WORK/report"
 assert [ "$(grep -c '^unverified' "$WORK/report")" = 1 ]
 assert grep -qxF "llm 5 → 1 · proved 0 · pending 0 · new 0 · regressed 0" "$WORK/report"
-assert grep -qxF "harness 3 → 0 · proved 1 · pending 2 · new 2 · regressed 0" "$WORK/report"
+assert grep -qxF "harness 3 → 0 · proved 4 · pending 3 · new 2 · regressed 0" "$WORK/report"
 assert grep -qxF "updater - → 2 · proved 0 · pending 1 · new 0 · regressed 0" "$WORK/report"
 assert grep -qxF "code - → -" "$WORK/report"
 assert grep -qxF "system - → -" "$WORK/report"

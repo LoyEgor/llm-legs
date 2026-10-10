@@ -588,6 +588,9 @@ check(repo_nav["cells"][0] == "by repositories in the chat: 1 of 4 hooks grow"
       and [r["cells"][0] for r in repo_nav["menu"]["rows"] if not r["dim"]] == ["gate-b"]
       and "in chats with 5+ repositories" in {r["cells"][0]: r for r in part["nav"][0]["menu"]["rows"]}["gate-b"]["say"],
       "F: a hook slower in chats with a long repository registry is flagged")
+grows = {j["ident"]: j["level"] for r in part["rows"] for j in r.get("judge", []) if j["rule"] == "hook_grows_repos"}
+check(grows.get("gate-b.sh") == "watch" and len(grows) > 1 and not [i for i, lv in grows.items() if lv and i != "gate-b.sh"],
+      "F: every hook judged in both repository bands carries a hook_grows_repos verdict, quiet unless it grows: %s" % grows)
 check(by_repos({"sessaaaa": [(T - 9999, 1)], "sessbbbb": [(T - 9999, 8), (T - 4000, 1)]})[1]["cells"][0]
       == "by repositories in the chat: 0 of 4 hooks grow", "J F: the count at the run's time decides")
 registry = os.path.join(home, ".cache", "claude", "review-journal", "sessbbbb-0000-full-id.repos")
@@ -857,6 +860,43 @@ check([(p["id"], p["state"], p["fact"].split(" · a")[0]) for p in proof]
 thin = {"judge": [m.verdict("floor", "bash:trivial", 90, 300, "ms", 1, 5, None)], "cells": ["x"]}
 check(m.problems_from([{"rows": [thin]}], {"rows": [fixed_row]}, {}, T)[0]["fact"].startswith("unproven · 5 events"),
       "a fix with too little exposure reads unproven, never fixed")
+banked = {}
+check([m.problems_from([{"rows": [thin]}], {"rows": [fixed_row]}, banked, T + dt)[0]["fact"].split(" · a")[0]
+       for dt in (0, 1800, 3600, 7200, 10800)]
+      == ["unproven · %d events since · 0 matched, needs 20 events and none matched" % e for e in (5, 5, 10, 15)]
+      + ["fixed · 20 events since · 0 matched"],
+      "exposure adds up over windows that do not overlap, never twice for one window")
+check(m.problems_from([], {"rows": [fixed_row]}, {}, T)[0]["fact"]
+      == "unproven · no exposure measured, no rate before the fix · a",
+      "a fix no check examined and no red rate preceded reads why it stays unproven, never a count")
+rate_at = T - 5 * 86400
+rate_row = {"id": "fix-r", "title": "r", "match": {"rule": "log_audit", "ident": "odd-thing"}, "status": "open", "fixes": []}
+rated = {}
+m.problems_from([], {"rows": [rate_row]}, rated, rate_at, [m.verdict(
+    "log_audit", "odd-thing", 3, 0, "min", 24, 2, "red", evidence=[m.evidence(rate_at, "chat")], bad=2)])
+rate_row = dict(rate_row, status="fixed", fixes=[dict(fixed_row["fixes"][0], at=m.iso_time(rate_at + 3600))])
+rate_fact = lambda dt, cover=None: m.problems_from([], {"rows": [rate_row]}, json.loads(json.dumps(rated)),
+                                                   rate_at + 3600 + dt, covered=cover)[0]["fact"].split(" · r")[0]
+check([rate_fact(86400), rate_fact(2 * 86400), rate_fact(2 * 86400, {"log_audit": rate_at + 3600 + 86400})]
+      == ["unproven · 0 matched in 1.0 d, 2.0 predicted at 2.0/d before the fix, needs 3 predicted and none matched",
+          "fixed · 0 matched in 2.0 d, 4.0 predicted at 2.0/d before the fix",
+          "unproven · 0 matched in 1.0 d, 2.0 predicted at 2.0/d before the fix, needs 3 predicted and none matched"],
+      "with no exposure, a fix is proven when the red rate before it predicts 3 matches since and none came, over "
+      "the time its check covered")
+equiv = {"compared": "c", "data": "d", "result": "r"}
+lever = {"id": "lever", "title": "l", "match": {"rule": "opportunity", "ident": "chat/hooks"}, "status": "fixed",
+         "fixes": [dict(fixed_row["fixes"][0], equivalence=equiv)]}
+floor_row = dict(lever, id="time_floor:locks", match={"rule": "time_floor", "ident": "locks"}, fixes=fixed_row["fixes"])
+measured = {"as_of_s": T + 86400, "budget": {"floors": [{"class": "locks"}]}, "problems": []}
+speed_fact = lambda row, doc, now=T + 86400: [p["fact"].split(" · l")[0] for p in m.problems_from(
+    [], {"rows": [row]}, {}, now, speed=doc)]
+check([speed_fact(lever, None), speed_fact(dict(lever, fixes=fixed_row["fixes"]), None), speed_fact(floor_row, measured),
+       speed_fact(floor_row, dict(measured, as_of_s=T)), speed_fact(floor_row, dict(measured, budget={})),
+       speed_fact(floor_row, dict(measured, problems=[{"id": "time_floor:locks", "ledger": "time_floor:locks"}]))]
+      == [["fixed · output-equivalent by its replay"], ["unproven · no output-equivalence record on the fix"],
+          ["fixed · back under its limit in Speed's last 24 h"],
+          ["unproven · Speed has not measured a whole 24 h since the fix"], ["unproven · Speed measures no locks"], []],
+      "a Speed rule's fix reads Speed's proof, never an event count, and no second row while Speed shows its own")
 back = {"judge": [m.verdict("floor", "bash:trivial", 400, 300, "ms", 1, 25, "red",
                             evidence=[m.evidence(T - 60, "tool_use x")])], "cells": ["x"]}
 old_ev = {"judge": [m.verdict("floor", "bash:trivial", 400, 300, "ms", 1, 25, "red",
@@ -1284,6 +1324,23 @@ for kind in ("changed-while-watcher-off", "baseline-missing", "dropped"):
 check(all(judged(health(G, events=[change(T - 600, kind="baseline-missing", sid=sid)], transcript_at=T - 100)) == {}
           for sid in ("hlprof-a", "t*", None)),
       "Guards: a lost baseline of a session id no chat transcript owns is not judged")
+quiet = lambda part: {(v["rule"], v["ident"]): v["exposure"] for v in part.get("quiet") or ()}
+calm = health(S, stop=[stop(T - 600 + i, ("ask-x", "ran", ""), ("ask-y", "asked", "why %d" % i)) for i in range(3)],
+              words=[dict(word, match=True), dict(reading, match=True)])
+check(quiet(calm) == {("hook-error", "ask-x"): 3, ("hook-held", "ask-x"): 3, ("hook-error", "ask-y"): 3,
+                      ("hook-held", "ask-y"): 3, ("ask-repeat", "ask-y"): 3, ("word-miss", "review"): 1,
+                      ("reading-miss", "unprompted"): 1}
+      and not calm["rows"] and calm["state"] == "ok" and m.problems_from([calm], {"rows": []}, {}, T) == [],
+      "Stop hooks: each hook's runs, asks and word notices with no hit are quiet verdicts, never a row or a problem")
+hit = quiet(health(S, stop=[stop(T - 600, ("ask-x", "error", "boom")), stop(T - 500, ("ask-x", "ran", ""))]))
+check(hit == {("hook-held", "ask-x"): 2}, "Stop hooks: an ident with a hit keeps its red verdict and no quiet one")
+calm = health(G, gates=[passed], events=[change(T - 600), change(T - 500, delta=10, kind="changed-between-sessions"),
+                                         dict(change(T - 400, docs[0], 10), source="watcher")])
+check(quiet(calm) == {(rule, ident): 1 for rule in ("growth-ungated", "growth-denied")
+                      for ident in ("~/.claude/CLAUDE.md", "between-sessions", "~/p/docs")}
+      | {("baseline-missing", "tripwire"): 1} and not judged(calm) and calm["state"] == "ok",
+      "Guards: every judged growth is exposure of its root (or between-sessions) and every tool-call check of a "
+      "baseline, quiet when nothing hit")
 synced = [os.path.join(home, ".claude", "skills", "synced", "org_acct", "pptx", "SKILL.md"),
           os.path.join(home, ".claude", "plugins", "synced", "org_acct", "kit", "skills", "make", "SKILL.md")]
 put(os.path.join(home, ".claude", "skills", "synced", "org_acct", "manifest.json"),
@@ -1379,6 +1436,9 @@ for _, copies in m.DEPLOYS[:2]:
         put(target, open(os.path.join(source_root, src)).read() if kind == "copy" else
             '#!/usr/bin/env bash\nexec %s "$@"\n' % os.path.join(source_root, src))
 check(judged(D(T)) == {} and D(T)["state"] == "ok", "Deploys: deployed copies equal to their repo sources are no problem")
+check(quiet(D(T)) == {("deploy-drift", m.file_key(os.path.join(libexec if w == "libexec" else agents, n))): 1
+                      for _, copies in m.DEPLOYS[:2] for w, n, _, _ in copies},
+      "Deploys: each copy checked equal is a quiet verdict, one examination a run")
 put(os.path.join(libexec, "memlogd"), open(os.path.join(source_root, "bin", "memlogd")).read().replace("machine_tick", "x"))
 put(os.path.join(libexec, "llm-refresh-heartbeat"), '#!/usr/bin/env bash\nexec /gone/bin/llm-refresh "$@"\n')
 part = D(T)
@@ -1740,8 +1800,12 @@ check((big.get("level"), round(big.get("value") or 0, 2), big.get("exposure"), b
       "long pole: the suite over half of its repository's latest full run is red, with its lead over the next suite")
 check(pole.get("claude-setup:test_a", {}).get("level") == "watch",
       "long pole: over half of a full run under 5 min is a watch, a split saves under 2.5 min")
-check(lead["red"] and part["state"] == "problem" and lead in part["extra_red"] and "llm-legs:test_mid" not in pole,
+check(lead["red"] and part["state"] == "problem" and lead in part["extra_red"]
+      and (pole["llm-legs:test_mid"]["level"], round(pole["llm-legs:test_mid"]["value"], 2)) == (None, 0.29),
       "long pole: a red pole makes Tests a problem, and a changed-suites run is no full run")
+check({i: (j["level"], j["exposure"]) for i, j in pole.items() if i.startswith("llm-legs:")}
+      == {"llm-legs:test_big": ("red", 2), "llm-legs:test_mid": (None, 2), "llm-legs:test_small": (None, 2)},
+      "long pole: every other suite of the latest full run is a quiet verdict, the exposure a fixed pole is proven on")
 part, lead, pole = cost_judges([poles[1], full_run(T - 60, 700, {"test_big.sh": 300, "test_mid.sh": 290})], "tests:pole")
 check(pole.get("llm-legs:test_big", {}).get("level") is None and pole["llm-legs:test_big"]["value"] is not None
       and not lead["red"], "long pole: only the latest full run is judged, and a balanced one stays a quiet value")
@@ -2030,7 +2094,7 @@ assert_eq "$(jq -c --argjson head "$calibration_head" '($head | map(sub("=[^=]*$
   | select(.status == "fixed" or .status == "fixed-pending") | .id | select(IN($ids[]) | not) | . + "=fixed-pending"]' \
   "$ROOT/share/harness-ledger.json")" \
   "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and every night fix as pending proof"
-assert_eq '["test_daily_cost-worker-run 8577.0 23","test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_long_pole-worker-run 0.957 1","test_long_pole-review-bench null 0","test_long_pole-review-bench-in-llm-legs null 0","test_daily_cost-llm-limits 314.0 0","test_daily_cost-review-flow-gate null 0","test_long_pole-commit-report null 0","test_long_pole-light-research null 0","test_slow-instruction-gate 344.0 0","test_daily_cost-statusline-hooks 332.0 0","test_daily_cost-doctor-fix 24.0 0","test_daily_cost-night-run null 0","test_daily_cost-review-bench null 0"]' \
+assert_eq '["test_daily_cost-worker-run 8577.0 23","test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_long_pole-worker-run 0.957 1","test_long_pole-review-bench null 0","test_long_pole-review-bench-in-llm-legs null 0","test_daily_cost-llm-limits 314.0 0","test_daily_cost-review-flow-gate null 0","test_long_pole-commit-report null 0","test_long_pole-light-research 0.265 0","test_slow-instruction-gate 344.0 0","test_daily_cost-statusline-hooks 332.0 0","test_daily_cost-doctor-fix 24.0 0","test_daily_cost-night-run null 0","test_daily_cost-review-bench null 0"]' \
   "$(jq -c '[.problems[] | select(.id | startswith("test_")) | "\(.id) \(.value) \(.exposure)"]' "$WORK/replay-1.json")" \
   "the calibration's 24 h of llm-legs tests: test_worker_run is the long pole, both suites cost over 2 h"
 
