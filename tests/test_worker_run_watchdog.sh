@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 4
+# shards: 4 wait
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 watchdog_tests() {

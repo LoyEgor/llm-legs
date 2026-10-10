@@ -105,6 +105,26 @@ assert test "$(sections)" = 'a b c d '
 SUITE_SHARD=2/3 bash "$REPO/tests/test_sharded.sh" >/dev/null 2>&1
 assert test "$(sections)" = 'b '
 
+# A `wait` suite's shards sleep, so a load surge leaves them on and only short memory holds them.
+mkdir -p "$WORK/bin"
+printf '#!/usr/bin/env bash\n[ "$*" = "-n kern.memorystatus_vm_pressure_level hw.ncpu vm.loadavg" ] || exec /usr/sbin/sysctl "$@"\nread -ra r <"%s/room"\nprintf "%%s\\n10\\n{ %%s 0.00 %%s }\\n" "${r[0]}" "${r[1]}" "${r[2]}"\n' "$WORK" >"$WORK/bin/sysctl"
+printf '#!/usr/bin/env bash\nread -ra r <"%s/room"\nprintf "Mach Virtual Memory Statistics: (page size of 1048576 bytes)\\nPages free: %%s.\\n" "${r[3]}"\n' "$WORK" >"$WORK/bin/vm_stat"
+chmod +x "$WORK/bin/"*
+printf '1 50.00 1.00 100000\n' >"$WORK/room"
+run PATH="$WORK/bin:$PATH" -- -j 3
+assert grep -q '1 suites, 1 jobs' "$WORK/out"
+sed -i '' 's/^# shards: 3$/# shards: 3 wait/' "$REPO/tests/test_sharded.sh"
+run PATH="$WORK/bin:$PATH" -- -j 3
+assert grep -q '1 suites, 3 jobs' "$WORK/out"
+assert test "$(sections)" = 'a b c d '
+: >"$WORK/concurrent"
+PATH="$WORK/bin:$PATH" bash "$REPO/tests/test_sharded.sh" >/dev/null 2>&1
+assert test "$(sort -n "$WORK/concurrent" | tail -1)" = 3
+printf '2 50.00 1.00 100000\n' >"$WORK/room"
+run PATH="$WORK/bin:$PATH" -- -j 3
+assert grep -q '1 suites, 1 jobs' "$WORK/out"
+sed -i '' 's/^# shards: 3 wait$/# shards: 3/' "$REPO/tests/test_sharded.sh"
+
 # A direct run splits alike: one journal row, every shard's output, the failing one last.
 : >"$WORK/sections"; : >"$WORK/concurrent"; : >"$WORK/child"
 RUN_SUITES_SHARDS=on bash "$REPO/tests/test_sharded.sh" >"$WORK/out" 2>&1

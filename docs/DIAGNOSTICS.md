@@ -248,9 +248,9 @@ shared with review-bench and claude-setup; in a linked worktree it exports `CLAU
 `REVIEW_BENCH_ROOT`, `REVIEW_ROOT` and `LLM_LEGS_ROOT` (when unset) as the sibling worktree on the same
 branch, else the checkout beside the MAIN one (`tests/test_run_suites_nice.sh`).
 A suite whose first 5 lines hold `# shards: N` runs as N jobs of the same `-j` while `slot_room` finds
-room (`RUN_SUITES_SHARDS=on|off`), each with `SUITE_SHARD=i/N` running the shared setup and only the
-sections `suite_shard_owns i <name>` gives it; the table, the exit code and the journal entry stay one
-per suite (max shard wall, summed CPU, `shards: N`) (`tests/test_run_suites_shards.sh`).
+room (`# shards: N wait`: memory room; `RUN_SUITES_SHARDS=on|off`), each with `SUITE_SHARD=i/N` running
+the shared setup and only its `suite_shard_owns i <name>` sections; one table row, exit code and
+journal entry per suite (`tests/test_run_suites_shards.sh`).
 A suite that writes into the runner's own report-bus queue fails (`REPORT_BUS_LIVE_ROOT`,
 docs/report-bus.md). A suite past its wall bound — 5 × the p90 of its last 50 passes in the run-suites
 journal, floor `RUN_SUITES_SUITE_FLOOR` 1800 s (doubled for `tests/slow-suites`, ×2 again before 3

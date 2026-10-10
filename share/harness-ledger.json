@@ -7084,6 +7084,39 @@
       "handoff": null,
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-grok-outcomes-20261010T031940Z-4d68"
+    },
+    {
+      "id": "speed-idle-worker-run-watchdog-wait-shards",
+      "title": "test_worker_run_watchdog's idle is its stubs' survival sleeps, and its 4 shards were dropped whenever load rose, so it ran whole",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_worker_run_watchdog"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-idle-llm-legs-test-worker-run-watchdog-20261010T031952Z-336a",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/tests/test_worker_run_watchdog.sh",
+            "llm-legs/tests/test_run_suites_shards.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "sections run and asserts counted, whole run vs its 4 shards",
+            "data": "the suite's 18 suite_shard_owns sections, unchanged; shard runs at load ~200-260 on 2026-10-10",
+            "result": "same 18 sections each run once, 74 asserts = 12+12+15+35; no check, stub duration or window changed"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-worker-run-watchdog-20261010T031952Z-336a",
+      "note": "Before (run-suites journal since sharding landed 2026-10-09 ~10Z): whole runs 120-352 s on 14-30 CPU-s, sharded 32-56 s on 17-30 CPU-s; ~40% of runs went whole because slot_room fails on load1 > load15 + cores, a rule meant for CPU-bound shards. Profiled 2026-10-10 (xtrace timestamps): the idle is the stubs' fixed survival sleeps against 1-16 s watchdog windows (~100 s summed, matching idle 95 s) plus worker-run start ~4-6 s a run under load (CPU, not idle); wait --max returns on exit_code by kqueue already. Fixed: `# shards: N wait` shards under load and is held by memory only (pressure level, available MB); the watchdog suite declares it. Not cut: shortening stub sleeps/windows (race margins: paused/frozen flake at load 250+, wd-editing failed once at load 215 in a sharded run, pre-existing; a shorter margin turns a regression into a vacuous pass under load); an injected watchdog clock in bin/worker-run (integer seconds, hop >= 1 s) stays the remaining lever. test_worker_run_files (63/22) and _attribution (58/24) are wait-bound too and could take `wait` after a profile.",
+      "handoff": null
     }
   ],
   "blind_spots": [
