@@ -24,7 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chat_names  # noqa: E402
 
 UNIT = "Opus-eq"
-OPUS = "claude-opus-5"
 HOME = os.path.expanduser("~")
 RUNS = os.environ.get("WORKER_RUN_DIR") or f"{HOME}/.cache/claude-worker-runs"
 BENCHES = (os.environ.get("WORKER_STATS_DIR")
@@ -49,7 +48,8 @@ def pricing():
 
 
 def opus_usd():
-    return pricing().price_for(OPUS, dt.date.today().isoformat())[0] / 1e6
+    anchor = getattr(pricing(), "OPUS_ANCHOR", None) or claude_model("opus")
+    return pricing().price_for(anchor, dt.date.today().isoformat())[0] / 1e6
 
 
 def claude_model(model):
