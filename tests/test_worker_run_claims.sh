@@ -11,14 +11,14 @@ INITIAL_REPO="$WORK/initial-repo"
 mkdir -p "$INITIAL_REPO"
 INITIAL_REPO=$(cd "$INITIAL_REPO" && pwd -P)
 git -C "$INITIAL_REPO" init -q
-export STUB_SLEEP=1
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Write file_path "$INITIAL_REPO/initial" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-start_ok claudeb --workdir "$INITIAL_REPO"
+start_gated claudeb --workdir "$INITIAL_REPO"
 printf 'initial content\n' >"$INITIAL_REPO/initial"
 git -C "$INITIAL_REPO" add initial
 git -C "$INITIAL_REPO" -c user.name=fixture -c user.email=fixture@example.test commit -qm initial
+gate_open
 assert await_done
 assert grep -qx initial "$RUN_DIR/files"
 assert grep -qxF -- $'-\t'"$(git -C "$INITIAL_REPO" rev-parse HEAD:initial)"$'\tinitial\tcommit' "$RUN_DIR/produced"
@@ -65,8 +65,8 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Edit file_path "$PROD_TOP/bin/committed-open"
   tool_call Write file_path "$PROD_TOP/bin/committed-born"
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
-start_ok claudeb --workdir "$PROD_REPO"
+export CLAUDE_CODE_SESSION_ID=chat-abc
+start_gated claudeb --workdir "$PROD_REPO"
 # The commit the tree stood on when the run was launched, written before the CLI takes a token: read
 # at the end instead, every link the run committed would be measured against its own result.
 assert test "$(cat "$RUN_DIR/head-before")" = "$PROD_BASE"
@@ -81,6 +81,7 @@ printf 'the worker rewrote it\n' >"$PROD_REPO/bin/committed-open"
 printf 'landed\n' >"$PROD_REPO/bin/committed-born"
 git -C "$PROD_REPO" add bin/committed bin/committed-born bin/committed-open >/dev/null
 git -C "$PROD_REPO" -c user.email=t@t -c user.name=t commit -qm 'the run committed' >/dev/null
+gate_open
 assert await_done
 assert grep -qxF -- "$(blob_of one)$tab$(blob_of two)${tab}bin/modified" "$RUN_DIR/produced"
 # A file born and a file gone are the same row with `-` on the side holding no content: priced off
@@ -135,10 +136,10 @@ CLEAN_TOP=$(cd "$CLEAN_REPO" && pwd -P)
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$CLEAN_TOP/bin/edited" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$CLEAN_REPO"
+start_gated claudeb --workdir "$CLEAN_REPO"
 assert test ! -s "$RUN_DIR/dirty-before-shas"
 printf 'rewritten\n' >"$CLEAN_REPO/bin/edited"
+gate_open
 assert await_done
 assert grep -qxF -- "$(blob_of base)$tab$(blob_of rewritten)${tab}bin/edited" "$RUN_DIR/produced"
 assert git -C "$CLEAN_REPO" cat-file -e "$(blob_of rewritten)"
@@ -186,10 +187,10 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Edit file_path "$PROD_TOP/tests/named-here"
   tool_call Edit file_path "$PROD_TOP/bin/named-from-the-top"
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$PROD_REPO/tests"
+start_gated claudeb --workdir "$PROD_REPO/tests"
 printf 'in the workdir\n' >"$PROD_REPO/tests/named-here"
 printf 'above the workdir\n' >"$PROD_REPO/bin/named-from-the-top"
+gate_open
 assert await_done
 assert grep -qxF -- "-$tab$(blob_of 'in the workdir')${tab}named-here" "$RUN_DIR/produced"
 assert grep -qxF -- "-$tab$(blob_of 'above the workdir')$tab$PROD_TOP/bin/named-from-the-top" \
@@ -201,9 +202,9 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-content' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$PROD_REPO"
+start_gated claudeb --workdir "$PROD_REPO"
 printf 'claimed content\n' >"$PROD_REPO/bin/claimed-content"
+gate_open
 assert await_done
 assert_fails grep -q 'bin/claimed-content' "$RUN_DIR/produced"
 assert grep -qx 'bin/claimed-content' "$RUN_DIR/dirty"
@@ -225,21 +226,19 @@ legacy_claim_record() {
   rm -f "$RUN_DIR/dirty-after-shas" "$RUN_DIR/head-after"
   "$RUNNER" wait "$RUN_ID" --max 0 >"$WORK/wait.out"
 }
+refusal() { REFUSAL=$("$@" 2>&1 >/dev/null); }
 
 # --- Naming what the run could not name -----------------------------------------------------------
 # A run that worked through the shell lists nothing and its work is owned by nobody. The launching
 # chat is the one reader who knows which of the paths that changed in the run's window are its
 # worker's, so `wait` prints them and `claim` records the answer.
+# legacy_claim_record rewrites the whole record, so every case below on one workdir shares one ended run.
 clear_stub
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-one' \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 export CLAUDE_CODE_SESSION_ID=chat-abc
-export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
+assert await_done
 printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-one"
 printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-two"
-assert await_done
 legacy_claim_record 'bin/claimed-one' 'bin/claimed-two'
 assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
 # The line the orchestrator acts on, and the paths in it are already spelled the way `claim` takes
@@ -255,41 +254,36 @@ sleep 60 &
 live_supervisor=$!
 jq --argjson p "$live_supervisor" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at = $t | .started_at = $t' \
   "$RUN_DIR/meta.json.held" >"$RUN_DIR/meta.json"
-assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
-assert grep -q 'is still running' \
-  <<<"$("$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+assert_fails refusal "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
+assert grep -q 'is still running' <<<"$REFUSAL"
 # A supervisor that died without writing exit_code (a reboot, a SIGKILL) ended the run as wait and
 # report already read it: nothing will ever write that file, so the claim is open.
 kill "$live_supervisor"; wait "$live_supervisor" 2>/dev/null
-assert_fails grep -q 'is still running' \
-  <<<"$("$RUNNER" claim "$RUN_ID" --paths /etc/hosts 2>&1 >/dev/null)"
-assert grep -q '/etc/hosts is not under this run' \
-  <<<"$("$RUNNER" claim "$RUN_ID" --paths /etc/hosts 2>&1 >/dev/null)"
+refusal "$RUNNER" claim "$RUN_ID" --paths /etc/hosts
+assert_fails grep -q 'is still running' <<<"$REFUSAL"
+assert grep -q '/etc/hosts is not under this run' <<<"$REFUSAL"
 mv "$RUN_DIR/meta.json.held" "$RUN_DIR/meta.json"
 mv "$RUN_DIR/exit_code.held" "$RUN_DIR/exit_code"
 
 # Only the chat that spawned the run may name its work: another chat signing for it is one session
 # taking a waiver over work it has never read.
-assert_fails env CLAUDE_CODE_SESSION_ID=chat-somebody-else "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
-assert grep -q 'launched by chat-abc' \
-  <<<"$(CLAUDE_CODE_SESSION_ID=chat-somebody-else "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+assert_fails refusal env CLAUDE_CODE_SESSION_ID=chat-somebody-else "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
+assert grep -q 'launched by chat-abc' <<<"$REFUSAL"
 # A worker of the launching chat answers for it, as every other owner check reads it.
 assert_fails grep -q 'launched by chat-abc' \
   <<<"$(CLAUDE_CODE_SESSION_ID=worker-own CLAUDE_LAUNCHER_SESSION=chat-abc "$RUNNER" claim "$RUN_ID" --paths /etc/hosts 2>&1 >/dev/null)"
 
 # A shell that names no chat at all is not the launching chat either: read as an empty session it
 # would match a record whose launcher is empty and claim the work of a run nobody can answer for.
-assert_fails env -u CLAUDE_CODE_SESSION_ID "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
-assert grep -q 'this shell names no chat' \
-  <<<"$(env -u CLAUDE_CODE_SESSION_ID "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+assert_fails refusal env -u CLAUDE_CODE_SESSION_ID "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
+assert grep -q 'this shell names no chat' <<<"$REFUSAL"
 
 # And a run whose own record names no launching chat is claimable by nobody, whoever is asking:
 # the answer to "whose worker was this" is the record, and an empty one is not an open invitation.
 mv "$RUN_DIR/launcher" "$RUN_DIR/launcher.held"
 : >"$RUN_DIR/launcher"
-assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
-assert grep -q 'records no launching chat' \
-  <<<"$("$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+assert_fails refusal "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
+assert grep -q 'records no launching chat' <<<"$REFUSAL"
 mv -f "$RUN_DIR/launcher.held" "$RUN_DIR/launcher"
 
 # A path outside the run's workdir is not the run's to claim, and the whole call is refused rather
@@ -339,14 +333,7 @@ assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP"
 
 # The printed line is pasted into a shell, so it has to survive one: a path carrying a space
 # reached `claim` as several paths, and one carrying a `*` as whatever the tree held beside it.
-clear_stub
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Bash command 'sed -i "" s/a/b/ "bin/named with a space"' \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
 printf 'through the shell\n' >"$DIRT_REPO/bin/named with a space"
-assert await_done
 legacy_claim_record 'bin/named with a space'
 printed=$(grep '^UNNAMED: ' "$WORK/wait.out")
 assert test -n "$printed"
@@ -361,38 +348,10 @@ assert eval '(cd "$DIRT_REPO" && "$RUNNER" claim "$RUN_ID" --paths "bin/globbed*
 assert grep -qxF 'bin/globbed*star' "$RUN_DIR/files"
 assert_fails grep -q 'globbedXstar' "$RUN_DIR/files"
 
-# A run launched in a SUBDIRECTORY: its dirt is its REPOSITORY's, spelled against the top, so the
-# command `wait` prints names paths outside the workdir. Checked against the workdir alone, that
-# exact command is refused whole and not one of its paths is claimed.
-clear_stub
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-from-a-subdirectory' \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO/tests"
-printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-from-a-subdirectory"
-assert await_done
-legacy_claim_record 'bin/claimed-from-a-subdirectory'
-assert grep -qxF "UNNAMED: 1 path(s) changed in this run's window that no record names — claim yours: worker-run claim $RUN_ID --paths $DIRT_TOP/bin/claimed-from-a-subdirectory" \
-  "$WORK/wait.out"
-assert eval "\"$RUNNER\" $(grep '^UNNAMED: ' "$WORK/wait.out" | sed 's/.*claim yours: worker-run //')" >/dev/null
-# Spelled absolutely in the listing, exactly as any path outside the workdir is.
-assert grep -qxF "$DIRT_TOP/bin/claimed-from-a-subdirectory" "$RUN_DIR/files"
-assert test ! -e "$RUN_DIR/dirty"
-# Outside the repository is still nobody's to claim: what widened is the run's own tree, no more.
-assert_fails "$RUNNER" claim "$RUN_ID" --paths /etc/hosts
-
 # What the UNNAMED line turns on is the run saying it cannot name its own files — not on there
 # being dirt. A caveat retired by `--complete` over a record that still holds rows prints nothing,
 # and the complete-listing run below would pass that assertion with the guard deleted.
-clear_stub
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Bash command 'sed -i "" s/a/b/ bin/still-unnamed' \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
 printf 'through the shell\n' >"$DIRT_REPO/bin/still-unnamed"
-assert await_done
 legacy_claim_record 'bin/still-unnamed'
 assert grep -q '^UNNAMED: ' "$WORK/wait.out"
 assert "$RUNNER" claim "$RUN_ID" --paths bin/was-never-dirty --complete >/dev/null
@@ -402,16 +361,9 @@ assert_fails grep -q '^UNNAMED: ' <<<"$("$RUNNER" wait "$RUN_ID" --max 0)"
 # A run whose window changed hundreds of paths printed all of them shell-quoted into ONE line at
 # the end of every wait — multiple kilobytes, crowding out the outcome and the result tail it is
 # printed beside. Past the cap the count is still exact and the reader is sent to the record.
-clear_stub
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Bash command 'sed -i "" s/a/b/ bin/capped-one' \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
 for capped in one two three; do
   printf 'through the shell\n' >"$DIRT_REPO/bin/capped-$capped"
 done
-assert await_done
 legacy_claim_record 'bin/capped-one' 'bin/capped-two' 'bin/capped-three'
 CAPPED_COUNT=$(grep -cv '^WORKDIR: ' "$RUN_DIR/dirty")
 assert test "$CAPPED_COUNT" -ge 3
@@ -429,20 +381,30 @@ capped_full=$(WORKER_RUN_UNNAMED_INLINE_MAX="$CAPPED_COUNT" "$RUNNER" wait "$RUN
 assert grep -qF "$DIRT_TOP/bin/capped-one" <<<"$capped_full"
 assert eval "\"$RUNNER\" $(sed 's/.*claim yours: worker-run //' <<<"$capped_full")" >/dev/null
 
+# A run launched in a SUBDIRECTORY: its dirt is its REPOSITORY's, spelled against the top, so the
+# command `wait` prints names paths outside the workdir. Checked against the workdir alone, that
+# exact command is refused whole and not one of its paths is claimed.
+clear_stub
+start_ok claudeb --workdir "$DIRT_REPO/tests"
+assert await_done
+printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-from-a-subdirectory"
+legacy_claim_record 'bin/claimed-from-a-subdirectory'
+assert grep -qxF "UNNAMED: 1 path(s) changed in this run's window that no record names — claim yours: worker-run claim $RUN_ID --paths $DIRT_TOP/bin/claimed-from-a-subdirectory" \
+  "$WORK/wait.out"
+assert eval "\"$RUNNER\" $(grep '^UNNAMED: ' "$WORK/wait.out" | sed 's/.*claim yours: worker-run //')" >/dev/null
+# Spelled absolutely in the listing, exactly as any path outside the workdir is.
+assert grep -qxF "$DIRT_TOP/bin/claimed-from-a-subdirectory" "$RUN_DIR/files"
+assert test ! -e "$RUN_DIR/dirty"
+# Outside the repository is still nobody's to claim: what widened is the run's own tree, no more.
+assert_fails "$RUNNER" claim "$RUN_ID" --paths /etc/hosts
+
 # The record it sends the reader to is spelled against the repository TOP, while `claim` resolves a
 # relative operand against the run's WORKDIR: for a run launched in a subdirectory a row pasted as
 # it stands names a path the run never touched, and the widened repository check takes it. So the
 # line states the prefix, and following it mechanically claims what the record actually holds.
-clear_stub
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Bash command 'sed -i "" s/a/b/ bin/capped-sub-one' \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO/tests"
 for capped in one two three; do
   printf 'through the shell\n' >"$DIRT_REPO/bin/capped-sub-$capped"
 done
-assert await_done
 legacy_claim_record 'bin/capped-sub-one' 'bin/capped-sub-two' 'bin/capped-sub-three'
 capped_sub_line=$(WORKER_RUN_UNNAMED_INLINE_MAX=1 "$RUNNER" wait "$RUN_ID" --max 0 \
   | grep '^UNNAMED: ')
