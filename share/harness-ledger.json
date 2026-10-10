@@ -5991,6 +5991,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-doctor-fix-20261010T031920Z-7187",
       "note": "Measured 2026-10-10 at load 140-200 on 10 cores: wall is CPU times contention (a shard ran 16-26 CPU-s in 3-4 min), so the lever is the longest shard's CPU. Where it went: doctor-fix close and launch calls 38 of 66 CPU-s (python starts 40-70 ms each, ~260 in the suite: per decision-line touches, knobs, fix-faults, per-run knob-lines, snapshot, packet); the speed section 18 s alone, its launches and six snapshot calls chained over one fixture, so it stays one section. Ruled out: sleeps (3 x sleep 1 order run ids by the second, 3 s of a 66 s suite), legacy checks (every section pins a live doctor-fix path), packet batching (one call per run, quiet runs rare). Hidden dependency found: the floor handoff case read night-launch-close's Egor handoff file; it now writes its own.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-review-bench-lifecycle",
+      "title": "test_review_bench_lifecycle · review-bench suite wall audit",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/review-bench/test_review_bench_lifecycle"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:40:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-review-bench-test-review-bench-lifecycle-20261010T031949Z-43ed",
+          "files": [
+            "review-bench/tests/test_review_bench_lifecycle.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_review_bench_lifecycle stdout+stderr, base vs fix, run ids, shas, times and durations normalised",
+            "data": "the suite's committed fixtures (tests/fixtures/review-bench)",
+            "result": "301 lines each, identical; PASS: 7 assertions both; zero 'report-bus unavailable' lines both; wall 366-397 s -> 301 s at load 145-177"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-review-bench-test-review-bench-lifecycle-20261010T031949Z-43ed",
+      "note": "2026-10-10: cProfile of one run (357 s at load ~145): 4300 subprocesses; the real report-bus 68 posts = 91 s (25%), review-anchors 34 calls = 21 s, git plumbing the rest (~1-10 s per helper), time.sleep 4.6 s. Cut: the part puts a no-op report-bus first on PATH; nothing in it reads the bus, delivery is the rounds part's report-bus block (stub with capture). Kept real: review-anchors (later --debt/price blocks may read the anchors it writes), the 1.2 s frozen-heartbeat sleep (heartbeat_epoch is whole seconds), the 0.2/0.3 s overlap sleeps in slot/admission runners (they make the peak count observable). Not split: each part re-execs the 591-line harness, so a split trades worker-min for wall; the section boundaries at lines 27/277/332/588/2522/2656 are where one would go.",
+      "handoff": null
     }
   ],
   "blind_spots": [
