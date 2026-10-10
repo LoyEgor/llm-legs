@@ -6042,7 +6042,7 @@
           "equivalence": {
             "compared": "rj_owned_paths at the night base vs the fix: RJ_OWNED (hash and count) and exit code",
             "data": "715 (home x session) pairs: the 4 journal homes plus this run's worktree, x 143 sessions (the last day's transcript ids, the newest writers in each claude-writes journal, 2 unknown ids) over the live stores, read-only",
-            "result": "715/715 identical, 46 pairs with owned paths, every exit 0; a 4-home walk 0.9-1.0 s -> 0.2-0.3 s for a chat with no records, 734 -> 521 ms with records, load ~200 on 10 cores"
+            "result": "715/715 identical, 46 pairs with owned paths, every exit 0; a 4-home walk 0.9-1.0 s -> 0.2-0.3 s for a chat with no records, 734 -> 521 ms with records, load ~200 on 10 cores; same under /bin/bash 3.2 (150 pairs); an unreadable store still exits 2 both ways; one divergence by construction: a readable but malformed anchors store in a repository whose files never name the session answers no paths instead of exit 2 (the row's `not computed`), where no reading could give this chat a path"
           }
         }
       ],
