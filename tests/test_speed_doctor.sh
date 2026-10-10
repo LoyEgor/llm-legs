@@ -297,6 +297,9 @@ dead = {"class": "dead", "label": "dead worker runs", "floor_min_day": 0, "actua
         "recoverable_min_day": 40.0, "chat_min_day": 0.0, "worker_min_day": 40.0}
 busy = dict(dead, label="suite slot wait", floor_min_day="waits on a busy machine", actual_min_day=300.0,
             **{"class": "suite_wait"})
+check(set(module.time_budget.FLOORS) <= set(module.TIME_LEVERS),
+      "every floored time class has its lever, or a gap over the worth line ends the Speed collector in KeyError: %s"
+      % sorted(set(module.time_budget.FLOORS) - set(module.TIME_LEVERS)))
 dead_time = module.with_time([], {"floors": [dead]})
 dead_rows = module.floor_rows({"floors": [dead, busy]}, {}, HI)
 check([(o["id"], o["opportunity"]["recoverable_min_day"], o["opportunity"]["levers"][0]) for o in dead_time]
