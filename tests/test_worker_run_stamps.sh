@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # A model outside the table is refused before the account is resolved: an explicit --model, the
@@ -22,6 +23,7 @@ model_refused() { # vendor expected-offender [flags...]
   [ "$runs_before" = "$runs_after" ]
 }
 
+if suite_shard_owns 1 stamps-models; then
 set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
   'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=picked
@@ -69,9 +71,10 @@ assert await_done
 clear_stub
 start_ok codex --model astra
 assert await_done
-for spec in 'claudeb:sonnet' 'codex:terra'; do
+for spec in 'claudeb:sonnet' 'claudeb:haiku --effort low' 'codex:terra'; do
   clear_stub
-  start_ok "${spec%%:*}" --model "${spec#*:}"
+  # shellcheck disable=SC2086
+  start_ok "${spec%%:*}" --model ${spec#*:}
   assert await_done
 done
 clear_stub
@@ -84,7 +87,9 @@ assert await_done
 clear_stub
 start_ok grok --model auto
 assert await_done
+fi
 
+if suite_shard_owns 2 stamps-relay-owner; then
 # --- One stamping point: every relay inherits the LAUNCHING chat --------------------------------
 # The launcher is known at `start` and nowhere else: a fresh relay's own session id is not printed
 # until its CLI exits (live run claudeb-1788388059-13078-3ffd, 2026-09-03). So the chat is stamped
@@ -123,7 +128,9 @@ unset STUB_SESSION
 rm -f "$STUB_DIR/relay_hook" "$STUB_DIR/relay_owner"
 unset PICK_RC PICK_ACCOUNT
 clear_stub
+fi
 
+if suite_shard_owns 2 stamps-fix-anchors; then
 STAMP_ANCHORS="${REVIEW_BENCH_ROOT:-$(git_projects "$ROOT")/review-bench}/bin/review-anchors"
 [ -x "$STAMP_ANCHORS" ] || fail "../review-bench's review-anchors is unreadable (set REVIEW_BENCH_ROOT)"
 mkdir -p "$WORK/stamp-bin"
@@ -250,12 +257,14 @@ fix_nonrepo_tests() {
   clear_stub
 }
 fix_nonrepo_tests
+fi
 
 # Snapshot attribution P1/P2 (after-snapshot UNKNOWN, first-row-wins, foreign HEAD, path shape, symlink, claim).
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
 mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
+if suite_shard_owns 3 stamps-snapshot; then
 ATTR_REPO="$WORK/attr-repo"
 mkdir -p "$ATTR_REPO/bin"
 git -C "$ATTR_REPO" init -q .
@@ -512,7 +521,9 @@ assert grep -qi 'UNKNOWN\|unknown' <<<"$killed_report"
 assert grep -q "claim $RUN_ID" <<<"$killed_report"
 assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/keep >"$WORK/claim-killed.out" 2>&1
 assert grep -q 'no after-snapshot' "$WORK/claim-killed.out"
+fi
 
+if suite_shard_owns 2 stamps-run-journal; then
 clear_stub
 rc=0
 "$RUNNER" start gemini --brief "$WORK/brief" --browser >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
@@ -598,5 +609,6 @@ jq -nc --argjson t "$((now - 40 * 86400))" '{run: "old-again", ended_at: $t}' >>
 "$RUNNER" _deliver "$no_start" 4 >/dev/null 2>&1
 assert jq -se 'map(.run) | index("old-again") != null' "$RUNS_JOURNAL" >/dev/null
 assert test ! -e "$RUNS_JOURNAL.lock"
+fi
 
 echo "PASS: $asserts asserts; refused models, fix anchors, snapshot attribution"
