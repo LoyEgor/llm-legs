@@ -4329,14 +4329,19 @@ chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
 # launchd drops a kickstart while the doctor is mid-run, and its 1-3 min runs outlast short browser runs.
 chrome_run_edge() { # directory start|end
   jq -e "$CHROME_BROWSER_RUN" "$1/meta.json" >/dev/null 2>&1 || return 0
-  local dir live
+  local dir
   dir=$(browse_dir)
-  live=$(chrome_runs "$CHROME_BROWSER_RUN" | grep -vxF -- "${1##*/}")
-  [ "$2" = end ] || live=$(printf '%s\n%s\n' "$live" "${1##*/}" | sed '/^$/d')
+  mkdir -p "$dir" && with_lock "$dir" chrome_live_write "$dir" "$1" "$2"
+}
+
+chrome_live_write() { # browse-directory run-directory start|end
+  local live
+  live=$(chrome_runs "$CHROME_BROWSER_RUN" | grep -vxF -- "${2##*/}")
+  [ "$3" = end ] || live=$(printf '%s\n%s\n' "$live" "${2##*/}" | sed '/^$/d')
   if [ -n "$live" ]; then
-    mkdir -p "$dir" && printf '%s\n' "$live" >"$dir/chrome-live.$$" && mv -f "$dir/chrome-live.$$" "$dir/chrome-live"
+    printf '%s\n' "$live" >"$1/chrome-live.$$" && mv -f "$1/chrome-live.$$" "$1/chrome-live"
   else
-    rm -f "$dir/chrome-live" "$dir/hidden"
+    rm -f "$1/chrome-live" "$1/hidden"
   fi
 }
 
@@ -4643,6 +4648,7 @@ wait_run() {
         terminal_report "$directory"
       else
         write_run_state "$directory" failed unknown
+        chrome_run_edge "$directory" end
         unknown_report "$directory"
       fi
       return 0

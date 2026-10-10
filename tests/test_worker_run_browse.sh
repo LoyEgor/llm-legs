@@ -343,6 +343,17 @@ EOF
   assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
   assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
   rm -rf "$WORKER_RUN_DIR/live-browser"
+  # a Chrome run whose supervisor died before delivery leaves the list at the wait that finds it dead
+  sleep 300 &
+  holder=$!
+  mkdir -p "$WORKER_RUN_DIR/dead-browser"
+  printf '{"pid":%s,"started_at":%s,"browser":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/dead-browser/meta.json"
+  printf 'dead-browser\n' >"$WORKER_RUN_DIR/browse/chrome-live"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  "$RUNNER" wait dead-browser >/dev/null 2>&1 || true
+  assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
+  rm -rf "$WORKER_RUN_DIR/dead-browser"
   fi
   unset -f browse deliver enrolled
 

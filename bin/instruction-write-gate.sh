@@ -102,26 +102,33 @@ done <<< "$segments"
 
 # A program FILE run by path is judged like an inline program, each file as its own invocation: the
 # command text of `S=…; python3 $S/patch.py` names nothing the script writes.
-# A script the same command writes by heredoc is read from that heredoc: the file does not exist yet.
+# A script the same command writes by heredoc is read from that heredoc: the file may not exist yet.
+# The file on disk is read as well unless a truncating heredoc surely names that very path: a
+# suffix match or an append leaves the code on disk the code that runs.
 script_texts=()
 haystack=$command
 heredocs=''
-heredoc_body() { # path → script_body, from the last heredoc of the command that writes it
-  local t b found=''
-  while IFS=$'\t' read -r t b; do
+heredoc_body() { # path → heredoc_text, and keep_disk emptied when a heredoc replaces the file
+  local mode t b r
+  while IFS=$'\t' read -r mode t b; do
     case "$t" in
       '~/'*) t="$HOME/${t#\~/}" ;;
       '$HOME/'*|'${HOME}/'*) t="$HOME/${t#*/}" ;;
+      '$'*/*) r=$(instruction_expand_var "$t" "$assigned") && t=$r ;;
     esac
-    case "$t" in
-      "$1") ;;
-      /*) continue ;;
-      '$'*/*) case "$1" in *"/${t#*/}") ;; *) continue ;; esac ;;
-      *) case "$1" in */"${t#./}") ;; *) continue ;; esac ;;
-    esac
-    found=1 script_body=${b:0:262144}
+    r=$t
+    case "$r" in /*|'$'*) ;; *) [ ${#cwds[@]} -eq 1 ] && r="${cwds[0]}/${r#./}" ;; esac
+    if [ "$r" = "$1" ]; then
+      [ "$mode" = append ] || { heredoc_text='' keep_disk=''; }
+    else
+      case "$t" in
+        /*) continue ;;
+        '$'*/*) case "$1" in *"/${t#*/}") ;; *) continue ;; esac ;;
+        *) case "$1" in */"${t#./}") ;; *) continue ;; esac ;;
+      esac
+    fi
+    heredoc_text+=" $b"
   done <<< "$heredocs"
-  [ -n "$found" ]
 }
 if [[ $command =~ $_INSTRUCTION_INTERP ]]; then
   script_seen=$'\n'
@@ -130,10 +137,15 @@ if [[ $command =~ $_INSTRUCTION_INTERP ]]; then
     [ -n "$script_path" ] || continue
     case "$script_seen" in *$'\n'"$script_interp $script_path"$'\n'*) continue ;; esac
     script_seen+="$script_interp $script_path"$'\n'
-    if [ -z "$heredocs" ] || ! heredoc_body "$script_path"; then
-      [ -f "$script_path" ] || continue
-      script_body=$(head -c 262144 "$script_path" 2>/dev/null | LC_ALL=C tr '\000|\n' '   ') || continue
+    heredoc_text='' keep_disk=1
+    [ -z "$heredocs" ] || heredoc_body "$script_path"
+    script_body=''
+    if [ -n "$keep_disk" ] && [ -f "$script_path" ]; then
+      script_body=$(head -c 262144 "$script_path" 2>/dev/null | LC_ALL=C tr '\000|\n' '   ') || script_body=''
     fi
+    script_body+=$heredoc_text
+    script_body=${script_body:0:524288}
+    [ -n "$script_body" ] || continue
     script_texts+=("$script_interp $script_body")
     haystack+=" $script_body"
   done < <(for here in "${cwds[@]}"; do instruction_interp_scripts "$command" "$here" ${heredocs:+all}; done)

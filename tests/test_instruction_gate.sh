@@ -220,6 +220,22 @@ assert_eq pass "$(GATE_CWD="$PROJ" decision "cat > notes.txt <<'PY'
 $JOINED
 PY
 python3 -c 'print(1)'")"
+assert_eq deny "$(GATE_CWD="$PROJ" decision "cat >> scratch/joined.py <<'PY'
+# note
+PY
+python3 scratch/joined.py $PROJ")"
+assert_eq deny "$(GATE_CWD="$PROJ" decision "tee -a scratch/joined.py >/dev/null <<'PY'
+# note
+PY
+python3 scratch/joined.py $PROJ")"
+assert_eq deny "$(GATE_CWD="$PROJ" decision "cat > joined.py <<'PY'
+print(1)
+PY
+python3 scratch/joined.py $PROJ")"
+assert_eq pass "$(GATE_CWD="$PROJ" decision "cat > scratch/joined.py <<'PY'
+print(1)
+PY
+python3 scratch/joined.py $PROJ")"
 
 echo "== write gate: the spelling of the path does not matter"
 # The first live test walked through the gate on exactly this line: the expanded path was

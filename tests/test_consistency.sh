@@ -1131,6 +1131,8 @@ assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
   <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx')"
 assert grep -Fq "The brief's ACCOUNT: beta is switched off or removed" \
   <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx' beta)"
+assert grep -Fq "The brief's ACCOUNT: beta is switched off or removed" \
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta # main\nx' beta)"
 light_gate_flag=$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex x beta)
 assert grep -Fq -- "--account beta is switched off or removed" <<<"$light_gate_flag"
 assert grep -Fq -- "to --account, or drop the flag" <<<"$light_gate_flag"

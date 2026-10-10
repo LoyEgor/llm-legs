@@ -45,6 +45,11 @@ looks_like_file() {
   [ "${#extension}" -le 5 ] && [[ "$extension" =~ ^[A-Za-z][A-Za-z0-9]*$ ]]
 }
 
+is_worktree_key() {
+  case "$1" in [Cc][Oo][Rr][Ee].[Ww][Oo][Rr][Kk][Tt][Rr][Ee][Ee]=*|[Cc][Oo][Rr][Ee].[Ww][Oo][Rr][Kk][Tt][Rr][Ee][Ee]) return 0 ;; esac
+  return 1
+}
+
 is_revert_segment() {
   local segment=$1 subcommand arg dry_run=0 other_mode=0 git_cwd=$guard_cwd other_tree=0
   local -a words
@@ -66,11 +71,13 @@ is_revert_segment() {
         case "$1" in
           -C) case "$2" in /*) git_cwd=$2 ;; *) git_cwd=$git_cwd/$2 ;; esac ;;
           --git-dir|--work-tree) other_tree=1 ;;
+          -c|--config-env) is_worktree_key "$2" && other_tree=1 ;;
         esac
         shift 2
         ;;
       --git-dir=*|--work-tree=*) other_tree=1; shift ;;
-      --namespace=*|--config-env=*|-p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+      --config-env=*) is_worktree_key "${1#*=}" && other_tree=1; shift ;;
+      --namespace=*|-p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
         shift
         ;;
       -*) shift ;;
@@ -86,9 +93,10 @@ is_revert_segment() {
       local skip_next=0 saw_separator=0 remaining=0 side=0 forced=0
       local -a operands=()
       for arg in "$@"; do
+        if [ "$saw_separator" -eq 1 ]; then operands+=("$arg"); continue; fi
         case "$arg" in
           --ours|--theirs) side=1 ;;
-          --) ;;
+          --) saw_separator=1 ;;
           -f|--force|-p|--patch) forced=1 ;;
           -[!-]*) [[ "$arg" == *f* || "$arg" == *p* ]] && forced=1 ;;
           -*) ;;
@@ -102,6 +110,7 @@ is_revert_segment() {
         done
         return 1
       fi
+      saw_separator=0
       for arg in "$@"; do
         if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
         case "$arg" in

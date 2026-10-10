@@ -978,18 +978,20 @@ instruction_interp_scripts() { # command cwd [all] → INTERPRETER<TAB>PATH line
   done < <(instruction_split_commands "$1")
 }
 
-# A file a heredoc writes, as TARGET<TAB>BODY rows, the body on one line with its pipes blanked as the gate
+# A file a heredoc writes, as MODE<TAB>TARGET<TAB>BODY rows, the body on one line with its pipes blanked as the gate
 # reads a program file: a script the same command writes and then runs does not exist yet at PreToolUse.
-instruction_heredoc_writes() { # command → TARGET<TAB>BODY lines
+instruction_heredoc_writes() { # command → MODE<TAB>TARGET<TAB>BODY lines, MODE trunc or append
   awk -v sq="'" -v dq='"' '
     function target(seg,   t) {
       if (match(seg, /(^|[ \t])g?tee[ \t]+((-a|--append)[ \t]+)?[^ \t;&|<>]+/)) {
         t = substr(seg, RSTART, RLENGTH)
+        tmode = t ~ /[ \t](-a|--append)[ \t]/ ? "append" : "trunc"
         sub(/^[ \t]*g?tee[ \t]+((-a|--append)[ \t]+)?/, "", t)
         return t
       }
       if (match(seg, /(^|[^0-9&<>])>>?[ \t]*[^ \t;&|<>]+/)) {
         t = substr(seg, RSTART, RLENGTH)
+        tmode = t ~ />>/ ? "append" : "trunc"
         sub(/^[^>]*>>?[ \t]*/, "", t)
         return t
       }
@@ -1009,7 +1011,7 @@ instruction_heredoc_writes() { # command → TARGET<TAB>BODY lines
           delim = tok; sub(/^<<-?[ \t]*/, "", delim); gsub("[" sq dq "]", "", delim); delims[k] = delim
           pre = substr(line, 1, at - 1); sub(/.*[;&|]/, "", pre)
           post = substr(line, at); sub(/[;&].*/, "", post)
-          targets[k] = target(pre post)
+          targets[k] = target(pre post); modes[k] = tmode
         }
         for (j = 1; j <= k; j++) {
           body = ""
@@ -1021,7 +1023,7 @@ instruction_heredoc_writes() { # command → TARGET<TAB>BODY lines
           }
           gsub(/\|/, " ", body)
           t = targets[j]; gsub("[" sq dq "]", "", t)
-          if (t != "") printf "%s\t%s\n", t, body
+          if (t != "") printf "%s\t%s\t%s\n", modes[j], t, body
         }
       }
     }' <<<"$1"

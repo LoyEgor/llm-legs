@@ -109,7 +109,7 @@ if [ "$worker" = codex ] && { [ "$computer" = true ] || grep -Eq '^COMPUTER:[[:s
 fi
 
 brief_header_account() {
-  sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' "$1" 2>/dev/null | head -n1
+  head -n 400 "$1" 2>/dev/null | sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+).*/\1/p' | head -n1
 }
 brief_account=${4:-$(printf '%s\n' "$prompt" | sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' | head -n1)}
 # worker-run passes a brief's ACCOUNT: line as the account argument too: only an account the brief
