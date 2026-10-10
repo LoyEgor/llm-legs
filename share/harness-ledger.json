@@ -5930,6 +5930,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-rounds-20261010T031944Z-4946",
       "note": "Before: 244 runs, 1.3 wall-min a run (doctor 2026-10-10); runs.jsonl 45-75 s at light load, up to 514 s under the night's. Traced at load ~240: each start_ok ~15-25 s and each await_done ~13-34 s, the latter mostly the `worker-run wait --max 0` report built after exit_code. Fixed: 2 shards (walls/reroutes/pins, round binding; shard 2 sets its own codex config); report-free cases wait for exit_code (the supervisor's last write) instead of a `wait` report; dropped runs, witness in brackets: the second-wall-before-the-picker case [one-reroute-per-run asserts the third pick still queued, same outcome lines], (iv) last pin key deleted [pin fallback asserts the key gone], the bench `record` brief [the settled-round brief: prose id, empty fix rule, unbound], the relay tag-file seed pair [no reader of claude-worker-tags round seeds in worker-run since ee185fa8; header and no-header binding kept by header-wins and non-round-token]. Left: worker-run start/wait per run is the cost every worker_run suite shares, not this file's. Ruled out: no fixed sleeps in this suite's path (stub gates and polls only).",
       "handoff": null
+    },
+    {
+      "id": "speed-test-heavy-worker-run-browse",
+      "title": "test_worker_run_browse ran all its sections in one serial job: ~0.6 wall-min a run, 6.8 min/day",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_worker_run_browse"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:13:51+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-browse-20261010T031936Z-0493",
+          "files": [
+            "llm-legs/tests/test_worker_run_browse.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "asserts and verdict of the whole run vs its 3 shards (SUITE_SHARD=i/3), same tree",
+            "data": "2 parallel whole+shard rounds at load 200-274, then tests/run-all with RUN_SUITES_SHARDS=on",
+            "result": "whole 153 asserts PASS = shards 85+24+44 PASS, disjoint sections; longest shard 159 s vs whole 418 s at load 274, Σ CPU 23.3 s vs 21.7 s; run-all merged PASS 153 in 86 s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-browse-20261010T031936Z-0493",
+      "note": "Traced at load 171 (148 s whole, 20 CPU-s): harness source 5.7 s, sections 1-4 33 s, 5-6 53 s, 7-8 35 s, 9 6 s, cua_repl sync 17 s, chrome-applescript-js 5 s. Shards: {1-4, 9, chrome-applescript-js}, {5-6}, {7-8, cua_repl sync}; shards 2-3 seed the registry sections 1-4 leave when it is absent (a whole run seeds nothing). The chrome-live case's 2 s STUB_SLEEP window is now the stub gate. Left: shard 2 is the pole, 5 start_ok+await_done pairs at ~10-13 s each under load, the cost of worker-run start/wait shared by every worker_run suite, not this file's; _deliver ~1.4 s x 12 in shard 3, each a distinct workaround class. Ruled out: no legacy check found (every section guards live code: enrolment, Chrome/Dia runs, supervisor log, canary, cua_repl sync, chrome-applescript-js); BROWSE_SEEN_WAIT=2 idles 0.5 s on each of 3 negative --seen calls, idle not work; the sleep 300 holders are killed, never waited.",
+      "handoff": null
     }
   ],
   "blind_spots": [
