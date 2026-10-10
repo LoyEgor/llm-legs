@@ -1188,7 +1188,7 @@
     "detail": "^wrote [^/]+$"
    },
    "title": "a run wrote another repository's main checkout or a non-repository directory that its brief authorized only in prose, or escaped through a tracked symlink, so worker-run granted it nothing and the write read as escaped",
-   "status": "fixed",
+   "status": "fixed-pending",
    "fixes": [
     {
      "at": "2026-10-04T16:52:41+03:00",
@@ -1203,6 +1203,16 @@
       "claude-setup/tests/test_worker_edit_guard.sh"
      ],
      "in": "claude-setup@091caf4",
+     "regressed_at": "2026-10-09T07:49:30+03:00"
+    },
+    {
+     "at": "2026-10-10T08:06:48+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run",
+      "llm-legs/share/worker-policy.md"
+     ],
+     "in": null,
      "regressed_at": null
     }
    ],
@@ -1210,9 +1220,9 @@
     "W3",
     "W5"
    ],
-   "last_reviewed": "2026-10-04",
-   "reviewed_by": "LLM Doctor меню refactoring",
-   "note": "2026-10-04: worker-edit-guard denies a worker's shell write that crosses a symlink under its tree into another checkout, unless an ADD-DIR grant covers the target; Edit/Write stay unhooked by Egor's decision (40 ms on every edit for one escape seen), so the W5 escape check is their only guard. 2026-10-04: relays drop the redundant --resume flag and take --workdir from the directory the brief works in; tests/test_consistency.sh pins both. Split from W5 on 2026-10-03, which matches only legs up to its fix. 2026-10-01: 7ea3 (review-bench main, brief 'Repos: ... review-bench at <path>'), 7c1f (hammerspoon main, brief 'Code: <path>'), 3f6b (video/alona/R7-A/clips.json, workdir video/harness): day briefs authorizing a main-checkout write in prose only, from a repository workdir. Not inferred in worker-run on purpose: night and fixer briefs name main checkouts to forbid writes there. 2026-10-02: 1632 (night fixer harness-hooks-5607) is a genuine escape caught right: an edit through claude-setup's absolute symlink hooks/worker-run-backstop.sh landed in llm-legs main (docs/handoffs/2026-10-03-path-shape-tilde.md). Detail is project_of of the first outside path: a main-checkout file yields its basename, a task worktree repo/worktree (W3). 2026-10-04 recheck: cause stands by design; the template/brief-file grant added for W3 resolves only existing .claude/worktrees/<name> trees, never a main checkout.",
+   "last_reviewed": "2026-10-10",
+   "reviewed_by": "LLM doctor",
+   "note": "2026-10-10 (night 20261010T031219Z-4c4e): the 7 regressions (2026-10-09) were all one day chat («Token spending tracking and optimization»), relays already retired, writing Egor's own main checkouts its briefs named only as 'Repos: <a> and <b> (main checkouts; commit on main in each)' (or by `~/.hammerspoon`, or inherited through RESUME). worker-run now grants, to a run whose workdir is itself a main checkout, every other repository root the brief or a *.md it names gives by absolute or ~/ path (tests/test_worker_run_pool.sh, red on the old code). The 2026-10-01 objection holds: night and fixer runs work in task worktrees, so a main checkout their prose names stays ungranted. Replayed on the 7: 6 read granted; 28f0 still escapes, rightly: it wrote ~/.hammerspoon/automation_menu.lua, a repository its brief never named. Ruled out: the relay retirement (46879c63) itself; relays never inferred grants either. Uncovered: a granted root written through a symlinked alias (the doctor compares path strings). 2026-10-04: worker-edit-guard denies a worker's shell write that crosses a symlink under its tree into another checkout, unless an ADD-DIR grant covers the target; Edit/Write stay unhooked by Egor's decision (40 ms on every edit for one escape seen), so the W5 escape check is their only guard. 2026-10-04: relays drop the redundant --resume flag and take --workdir from the directory the brief works in; tests/test_consistency.sh pins both. Split from W5 on 2026-10-03, which matches only legs up to its fix. 2026-10-01: 7ea3 (review-bench main, brief 'Repos: ... review-bench at <path>'), 7c1f (hammerspoon main, brief 'Code: <path>'), 3f6b (video/alona/R7-A/clips.json, workdir video/harness): day briefs authorizing a main-checkout write in prose only, from a repository workdir. Not inferred in worker-run on purpose: night and fixer briefs name main checkouts to forbid writes there. 2026-10-02: 1632 (night fixer harness-hooks-5607) is a genuine escape caught right: an edit through claude-setup's absolute symlink hooks/worker-run-backstop.sh landed in llm-legs main (docs/handoffs/2026-10-03-path-shape-tilde.md). Detail is project_of of the first outside path: a main-checkout file yields its basename, a task worktree repo/worktree (W3). 2026-10-04 recheck: cause stands by design; the template/brief-file grant added for W3 resolves only existing .claude/worktrees/<name> trees, never a main checkout.",
    "handoff": null
   },
   {
@@ -2119,6 +2129,48 @@
    "reviewed_by": "LLM doctor",
    "note": "2026-10-09 (night 20261009T023738Z-817e): codex-1791462438-96029-684c (notcom, astra) was launched from an llm-legs workdir on a review-bench brief naming a worktree that did not exist yet; the run ran `git worktree add .claude/worktrees/feat-speed-lens` with cwd review-bench and wrote only through the shell, so RUN_FILES_EXTERNAL was empty, worktrees_made stayed null and the first outside cwd row (review-bench main) became workdir-escape. worker-run now feeds every outside place of an all-outside run to record_made_worktrees and drops the escape when one lies under a made worktree (tests/test_worker_run_vendor_files.sh cx-made, red on the old code; cx-foreign keeps an un-made worktree escaped). W3 family, 6th shape: every cause so far is a cross-repository brief launched with the chat's own repository as workdir; the root lever is the launching chat passing --workdir or ADD-DIR, not more grants. The detail is the narrowest the leg carries: any other astra workdir escape lands here and reads as a regression.",
    "handoff": null
+  },
+  {
+   "id": "W10",
+   "block": "workers",
+   "match": {
+    "word": "unclassified",
+    "detail": "--resume requires a valid session ID"
+   },
+   "title": "a RESUME brief named the worker-run run id instead of its session, so the CLI refused --resume and the run failed at once",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-10T08:06:48+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-10",
+   "reviewed_by": "LLM doctor",
+   "note": "2026-10-10 (night 20261010T031219Z-4c4e): 2aff (2026-10-09, chat «Чистка night run 20261009T023738Z-817e») carried 'RESUME claudeb-1791580306-76633-3433:'. worker-run start now resolves a run id of the same vendor to the last session its worker-session file records, and refuses one that recorded none (tests/test_worker_run_pool.sh, red on the old code).",
+   "handoff": null
+  },
+  {
+   "id": "W11",
+   "block": "workers",
+   "match": {
+    "word": "unclassified",
+    "detail": "its worktree \\S+ is still worked in by"
+   },
+   "title": "night-run speed-gate refused a night worker before any CLI start because a process stood in the job's night worktree, and the refusal reads as an unclassified failure",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-10",
+   "reviewed_by": "LLM doctor",
+   "note": "2026-10-10 (night 20261010T031219Z-4c4e): 0312, 58a4, 5e93 (2026-10-09) and 6867 (2026-10-10), all exit 4 with no CLI start and no account spent. Holders: a live worker of the same job in the sibling repository's worktree (the gate's intended catch), a session-trash delayed purge, a caffeinate, and the launching chat's own background shell (the detached supervisor's self-ancestry skip cannot cover the launcher). Whether a refusal is a failure leg, and whether the launcher's tree is exempt, are the owner's (handoff).",
+   "handoff": "docs/handoffs/2026-10-10-speed-gate-refusal-legs.md"
   }
  ],
  "blind_spots": [

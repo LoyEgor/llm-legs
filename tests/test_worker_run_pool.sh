@@ -398,6 +398,38 @@ rc=0
 assert test "$rc" -eq 4
 assert grep -qF "contradicts the brief's first line 'RESUME claude-moved:'" "$WORK/start.err"
 rm -rf "$WORKER_RUN_DIR/prior-workdir"
+mkdir -p "$WORKER_RUN_DIR/claudeb-1-2-prior"
+printf 'claude-first\nclaude-last\n' >"$WORKER_RUN_DIR/claudeb-1-2-prior/worker-session"
+jq -n '{vendor: "claudeb", add_dirs: []}' >"$WORKER_RUN_DIR/claudeb-1-2-prior/meta.json"
+{ printf 'RESUME claudeb-1-2-prior:\nACCOUNT: resumeacct\n\n'; cat "$WORK/brief.plain"; } >"$WORK/brief"
+clear_stub
+start_ok claudeb
+assert await_done
+assert test "$(jq -r '.resume' "$RUN_DIR/meta.json")" = claude-last
+assert grep -q '^ARG=claude-last$' "$CALL_LOG"
+rm -rf "$WORKER_RUN_DIR/claudeb-1-2-prior"
+cp "$WORK/brief.plain" "$WORK/brief"
+
+# The W7 escapes of 2026-10-09: day briefs from a main-checkout workdir named the second repository's
+# main checkout by root only in prose. From a task worktree the same brief grants nothing.
+main_work="$WORK/main-work"
+git init -q "$main_work"
+mkdir -p "$HOME/.linked-real/.git"
+ln -s "$HOME/.linked-real" "$HOME/.linked"
+{ printf 'ACCOUNT: options\n\nRepos: %s and %s (main checkouts; commit on main in each), `~/.linked`. Read %s/sub.\n' \
+    "$main_work" "$other" "$WORK/inherited"; cat "$WORK/brief.plain"; } >"$WORK/brief"
+clear_stub
+set_config 'codex_effort=high'
+WORKER_TEST_WORKDIR=$main_work start_ok codex
+assert await_done
+assert test "$(jq -c '.add_dirs | sort' "$RUN_DIR/meta.json")" = "$(jq -cn --arg a "$(cd "$other" && pwd -P)" --arg b "$(cd "$HOME/.linked-real" && pwd -P)" '[$a, $b] | sort')"
+git -C "$main_work" commit -q --allow-empty -m init
+git -C "$main_work" worktree add -q "$main_work/.claude/worktrees/night-task" -b night-task
+clear_stub
+WORKER_TEST_WORKDIR=$main_work/.claude/worktrees/night-task start_ok codex
+assert await_done
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = '[]'
+cp "$WORK/brief.plain" "$WORK/brief"
 cp "$WORK/brief.plain" "$WORK/brief"
 clear_stub
 rc=0

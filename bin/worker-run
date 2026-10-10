@@ -130,9 +130,8 @@ md_guard_text() {
 }
 
 # Header-only, as ROUND: is: a brief's prose names other repositories to read far more often than to
-# write, and a grant is also what exempts a write there from the doctor's escape count. The one
-# prose exception is brief_worktree_roots: a task worktree exists to be written; a main checkout
-# named in prose stays ungranted, so a write there still reads as escaped.
+# write, and a grant is also what exempts a write there from the doctor's escape count. The prose
+# exceptions: brief_worktree_roots, as a task worktree exists to be written, and brief_checkout_roots.
 brief_add_dirs() { # brief
   local line
   while IFS= read -r line || [ -n "$line" ]; do
@@ -151,11 +150,16 @@ brief_add_dirs() { # brief
 
 # A named *.md is read as part of the brief (chats hand over to brief files), and
 # `<repo>/.claude/worktrees/<name>` resolves in every repository the text names.
+brief_text() { # brief
+  local value
+  cat "$1" 2>/dev/null
+  grep -oE '/[A-Za-z0-9._~+/-]+\.md' "$1" 2>/dev/null | sort -u |
+    while IFS= read -r value; do [ -f "$value" ] && cat "$value" 2>/dev/null; done
+}
+
 brief_worktree_roots() { # brief
   local text value name root roots='' roots_read=''
-  text=$(cat "$1" 2>/dev/null
-    grep -oE '/[A-Za-z0-9._~+/-]+\.md' "$1" 2>/dev/null | sort -u |
-      while IFS= read -r value; do [ -f "$value" ] && cat "$value" 2>/dev/null; done)
+  text=$(brief_text "$1")
   {
     grep -oE '/[A-Za-z0-9._~+/-]+/\.claude/worktrees/[A-Za-z0-9._-]+' <<<"$text" | sed 's/\.*$//'
     grep -oE '(^|[^A-Za-z0-9._~+/-])[^[:space:]/]*/\.claude/worktrees/[A-Za-z0-9._-]+' <<<"$text" |
@@ -172,6 +176,19 @@ brief_worktree_roots() { # brief
   } | sort -u |
     while IFS= read -r value; do
       [ -e "$value/.git" ] && printf '%s\n' "$value"
+    done
+}
+
+# A run working in a main checkout writes main checkouts (Egor's own-repo rule), so one its brief names
+# by root, `~/` included, is granted (the W7 escapes of 2026-10-09: `Repos: <a> and <b> (main
+# checkouts; commit on main in each)`). Night and fixer runs work in task worktrees: a main checkout
+# their prose names, often to forbid it, stays ungranted.
+brief_checkout_roots() { # brief
+  local value
+  brief_text "$1" | grep -oE '(^|[^A-Za-z0-9._~+/-])~?/[A-Za-z0-9._~+/-]+' | sed -E 's#^[^~/]##; s#[./]*$##' |
+    sort -u | while IFS= read -r value; do
+      [[ "$value" != '~/'* ]] || value=$HOME/${value#\~/}
+      [[ "$value" = /?* ]] && [ -d "$value/.git" ] && (cd "$value" && pwd -P)
     done
 }
 
@@ -2489,6 +2506,14 @@ start_run() {
     [ -z "$value" ] || [ -z "$resume" ] || [ "$resume" = "$value" ] ||
       fail "--resume $resume contradicts the brief's first line 'RESUME $value:': drop the flag, worker-run reads the line itself. Nothing was launched and no account was spent."
     [ -n "$resume" ] || resume=$value
+    # Chats resume by the run id they hold (2026-10-09: the CLI refused it as no session).
+    if [ -n "$resume" ] && valid_run_id "$resume" &&
+      [ "$(jq -r '.vendor // empty' "$(run_path "$resume")/meta.json" 2>/dev/null)" = "$vendor" ]; then
+      value=$(sed '/^$/d' "$(run_path "$resume")/worker-session" 2>/dev/null | tail -n1)
+      [ -n "$value" ] ||
+        fail "RESUME $resume names a run that recorded no session to resume. Nothing was launched and no account was spent."
+      resume=$value
+    fi
     while IFS= read -r value; do
       [[ "$value" = /* ]] && [ -d "$value" ] ||
         fail "the brief's 'ADD-DIR: $value' names no absolute directory: give each other repository the run writes as its own ADD-DIR: line. Nothing was launched and no account was spent."
@@ -2618,6 +2643,10 @@ start_run() {
       [ -n "$(git_common_dir "$value")" ] && value=$(cd "$value" && pwd -P) &&
         ! same_repository "$value" "$workdir" ${add_dirs[@]+"${add_dirs[@]}"} && add_dirs+=("$value")
     done < <(resumed_add_dirs "$resume" .workdir)
+    value=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) && [ -d "$value/.git" ] &&
+      while IFS= read -r value; do
+        ! same_repository "$value" "$workdir" ${add_dirs[@]+"${add_dirs[@]}"} && add_dirs+=("$value")
+      done < <(brief_checkout_roots "$brief")
   fi
   web_search_column "$vendor" on >/dev/null ||
     fail "share/web-search.sh has no row for $vendor: a launch with an unknown search state would take whichever one the CLI happens to stand in. Nothing was launched and no account was spent."

@@ -51,8 +51,8 @@ each: `worker-run` grants it as `--add-dir` and baselines it. It also grants, un
 existing task worktree (`<repo>/.claude/worktrees/<name>`) the brief or a `*.md` it names gives by
 path or as that template beside a named repository, and
 every grant and repository workdir of the session a `RESUME <sid>:` first line continues (read
-without `--resume`); a main checkout or other directory named only in the prose is ungranted, and the
-run's writes there count as escaped. A writing run is refused in `$HOME`, where nothing is tracked.
+without `--resume`, a run id resolving to its session); from a main-checkout workdir, every
+repository root the prose names too. Anything else named only in prose is ungranted: writes there count as escaped. A writing run is refused in `$HOME`, where nothing is tracked.
 A browser brief carries `BROWSER: chrome` (the account's own Chrome profile, the default) or
 `BROWSER: yes` (Egor's Dia, never launched); `worker-run start` reads it itself — never repeat it as flags.
 The canonical knob-to-agy mapping lives in `worker-run`.
