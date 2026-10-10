@@ -6980,6 +6980,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-carry-20261010T031927Z-48cc",
       "note": "Wall is ~200 s at load 105, 15-48 s on an idle bench: seven night-run carries, each ~20-27 s loaded from ~80 small subprocesses (job add re-execs night-run, worktree_new in up to three repos, handoffs.py --outside per brief); no sleep binds (the 3 s run-all in the N1y report-wait case is what that case measures; the background-suites poll exits on completion). The owner-chat nights N2-N4p (~105 s) and N5 are independent of N1, so the file runs as 4 shards over shared cheap setup. Ruled out: cutting a carry (each second carry pins idempotence of a distinct path), merging N3 with N4p (a failed-launch job does not count toward the owner-chat cap, so beta would start). Not done: night-run's per-job re-exec of itself (job add/set) costs ~0.7 s each under load in production carries too; a speed lever for night-run, not this suite.",
       "handoff": null
+    },
+    {
+      "id": "speed-heavy-test-code-doctor",
+      "title": "test_code_doctor ran the real review-anchors on every check and its whole chain in one serial file",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_code_doctor"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T09:10:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-code-doctor-20261010T031916Z-708b",
+          "files": [
+            "llm-legs/tests/test_code_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "suite asserts and the real review-anchors launches per whole run, base vs fix; shard sets",
+            "data": "tests/test_code_doctor.sh at base and fix, RUN_SUITES_SHARDS=off, a logging PATH shim in front of ~/.local/bin/review-anchors; SUITE_SHARD=1/2 and 2/2 runs; load 66-220",
+            "result": "194 asserts PASS both; real review-anchors launches 47 -> 0; shards disjoint and complete (80 + 114 = 194, sections cd-corpus | cd-healthy, cd-units-to-end); CPU-s whole run 31.9 (base, load 66) -> 27.1 (fix, load 179), shards 15.7 + 11.7, longest 15.7; two sleep 1 gone"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-code-doctor-20261010T031916Z-708b",
+      "note": "cProfile of every code-doctor call in the suite: check_run 35 of 57 profiled s, of which review_claims 17.7 s (48 launches of the live ~/.local/bin/review-anchors found through PATH; HOME was the fixture's, PATH was not), the rest git subprocesses and Python startup of bin/code-doctor (102 launches). Not cut: the code-doctor launches and their git calls are the behaviour under test; shard 1 is one stateful corpus chain with no reset to cut at. Separate open rows on the same suite (test_daily_cost, test_slow, suite_audit) were outside this run.",
+      "handoff": null
     }
   ],
   "blind_spots": [
