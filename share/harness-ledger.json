@@ -7550,7 +7550,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_worker_run_stamps"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T08:45:00+03:00",
