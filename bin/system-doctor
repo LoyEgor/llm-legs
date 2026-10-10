@@ -28,7 +28,7 @@ import collector_runs  # noqa: E402
 import log_stores  # noqa: E402
 import machine_probe  # noqa: E402
 from fix_commit import fix_commit, fix_landed, siblings_dir  # noqa: E402
-from spend import read_json  # noqa: E402
+from spend import read_json, read_jsonl  # noqa: E402
 
 HOME = os.path.expanduser("~")
 
@@ -245,22 +245,6 @@ def write_json(path, value, indent=None):
         json.dump(value, handle, ensure_ascii=False, indent=indent, separators=None if indent else (",", ":"))
         handle.write("\n")
     os.replace(temporary, path)
-
-
-def read_lines(path):
-    rows = []
-    try:
-        with open(path, encoding="utf-8") as handle:
-            for line in handle:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict):
-                    rows.append(row)
-    except OSError:
-        pass
-    return rows
 
 
 def write_lines(path, rows):
@@ -699,7 +683,7 @@ def tick_rows(since, until, sub="ticks"):
     while at < until + 6 * HOUR_S:
         names.add(local_day(min(at, until)))
         at += 6 * HOUR_S
-    rows = [row for name in sorted(names) for row in read_lines(os.path.join(state_dir(), sub, name + ".jsonl"))
+    rows = [row for name in sorted(names) for row in read_jsonl(os.path.join(state_dir(), sub, name + ".jsonl"))
             if isinstance(row.get("t"), (int, float)) and since <= row["t"] <= until]
     rows.sort(key=lambda r: r["t"])
     return rows
@@ -751,7 +735,7 @@ def rollup(now, rows, persist=True):
     forever) off the minute rows `rows`, which cover both days; minute rows older than 14 days are deleted."""
     base = state_dir()
     days_path = os.path.join(base, "days.jsonl")
-    days = {r["day"]: r for r in read_lines(days_path) if isinstance(r.get("day"), str)}
+    days = {r["day"]: r for r in read_jsonl(days_path) if isinstance(r.get("day"), str)}
     for offset in (1, 0):
         day = local_day(now - offset * DAY_S)
         part = [row for row in rows if local_day(row["t"]) == day]

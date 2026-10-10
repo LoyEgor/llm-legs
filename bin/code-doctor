@@ -28,6 +28,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 SCOPE = []
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
+from spend import read_jsonl  # noqa: E402
 
 DETECTOR_VERSION = 4
 GROUP_DETECTOR = {"dead": 3, "heavy": 3, "promise": 1}
@@ -291,22 +292,6 @@ def append_jsonl(path, row):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-
-
-def read_jsonl(path):
-    rows = []
-    try:
-        with open(path, encoding="utf-8") as handle:
-            for line in handle:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict):
-                    rows.append(row)
-    except OSError:
-        pass
-    return rows
 
 
 def iso_time(epoch):

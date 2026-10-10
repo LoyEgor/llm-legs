@@ -41,6 +41,22 @@ def read_json(path, default=None):
         return default
 
 
+def read_jsonl(path):
+    rows = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
 def load_ledger(root):
     ledger = read_json(ledger_path(root), {})
     return {r["id"]: r for r in (ledger.get("rows") if isinstance(ledger, dict) else None) or ()

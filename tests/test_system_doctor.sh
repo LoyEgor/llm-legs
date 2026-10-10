@@ -1119,7 +1119,7 @@ check(cli("tick", "--quiet", env={"SYSTEM_DOCTOR_DIR": state2}).returncode == 0,
 put("ps", ps_rows([(1, 0, 0, "0:01.00", start, "/sbin/launchd")]))
 put("ps-children", open(os.path.join(fix, "ps")).read())
 check(cli("tick", "--quiet", env={"SYSTEM_DOCTOR_DIR": state2}).returncode == 0, "a tick sees it gone")
-gone = [r for f in glob.glob(os.path.join(state2, "pids", "*.jsonl")) for r in m.read_lines(f)]
+gone = [r for f in glob.glob(os.path.join(state2, "pids", "*.jsonl")) for r in m.read_jsonl(f)]
 check(len(gone) == 1 and [g[0] for g in gone[0]["gone"]] == [700, 701, 702]
       and gone[0]["gone"][0][3:] == ["llm-legs/bin/x.py", "own"] and own not in json.dumps(gone),
       "a dead interpreter's pid and script name are kept, no argv: %s" % gone)

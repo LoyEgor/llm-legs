@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs
 import handoffs
 from fix_commit import FIX_KEYS, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, load_merged, record_settled, siblings_dir, unrooted_files
-from spend import read_json
+from spend import read_json, read_jsonl
 
 
 def load_gemini_weather():
@@ -379,22 +379,6 @@ def ledger_path():
 def repos_dir():
     """Where a fix's `repo/path` files live: the ledger names repositories by their directory name."""
     return os.environ.get("LLM_DOCTOR_REPOS") or siblings_dir(ROOT_DIR)
-
-
-def read_jsonl(path):
-    rows = []
-    try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict):
-                    rows.append(row)
-    except OSError:
-        pass
-    return rows
 
 
 def read_tail(path, limit):
