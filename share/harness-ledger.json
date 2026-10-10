@@ -6920,6 +6920,36 @@
       "handoff": null,
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-time-wrapup-20261010T031955Z-015b"
+    },
+    {
+      "id": "speed-test-heavy-review-bench-rounds-shards",
+      "title": "test_review_bench_rounds ran its three independent parts in one serial process",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/review-bench/test_review_bench_rounds"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T10:15:00+03:00",
+          "by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-review-bench-test-review-bench-rounds-20261010T031950Z-3c00",
+          "files": [
+            "review-bench/tests/test_review_bench_rounds.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the suite's lines and assertions, base vs the 3 shards: line multiset, bash assert count per shard, each shard alone and the unsharded whole",
+            "data": "tests/test_review_bench_rounds.sh at refs/night/20261010T031219Z-4c4e/base vs review-bench@48f93e1; SUITE_SHARD=1/3, 2/3, 3/3 in parallel and a direct run, load ~190-210",
+            "result": "every base line kept but the dead scoped-worktree git init (only test_review_bench_lifecycle reads its own) and a duplicate ad_printed reset; disjoint and complete: shards 1+87+248 = 336 asserts = base 335 + the second Python part's exit check, all green, unsharded 336 green; wall serial 406 s, shards 198/147/104 s (longest 198 s, sum 449 s with 2 more setups of ~5 s)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-review-bench-test-review-bench-rounds-20261010T031950Z-3c00",
+      "note": "Before: 9.8 min + 13 w-min/day, 91 runs, 2.4 wall-min a run (latest.json 2026-10-10). Profile at load ~200: 67 CPU-s in a 406 s wall, all subprocess waits (git plumbing ~30 a cmd_run, review-anchors, report-bus post ~1.4 s each); sections merged 25 s, cooldown 14, multi-source 54, --debt 41, ranged 28, judge batches 2, bash tail 153. Cut: run-suites' `# shards: 3`, auto only while slot_room finds room, so a saturated machine still runs it whole. Not cut: the one sleep (0.05 s in batch_runner, measures the judge's concurrency peak); rbench's per-run git calls (production code, output-equivalence would need its own replay); cooldown could move to shard 2 (~14 s off the longest shard) for a 270-line move.",
+      "handoff": null
     }
   ],
   "blind_spots": [
