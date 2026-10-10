@@ -526,6 +526,11 @@ if jqe '.finished_at == null' "$R"; then
   night finish "$id" >/dev/null
 fi
 # Cleanup alone: a new night whose orchestrator prompt carries the sweep word and the cleanup scope.
+# `latest` orders nights by their whole-second started_at, then by the random id suffix: one started
+# in the same second as the previous night is the latest only by chance.
+while jq -se --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 'any(.[]; .started_at == $t)' "$NIGHTS"/*.json >/dev/null 2>&1; do
+  sleep 0.1
+done
 night start --cleanup >"$WORK/out" || fail "cleanup start"
 idc=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
 assert [ -n "$idc" ] && [ "$idc" != "${id6:-$id}" ]
