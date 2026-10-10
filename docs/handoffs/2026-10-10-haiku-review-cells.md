@@ -8,6 +8,7 @@ Opus check. Changed on review-bench main while this night was paused:
 - 1fbc22d: any launch staffing a Haiku cell chunks itself (`cli.chunk_launch`), `--chunk` or not.
 - 22c0acd: the speed lens staffs `haiku-high x2` (doctor-fix's speed lens, once its launch door is fixed).
 - bugs stays `opus-high x2`.
+- 7fd71ca: a chunked cell left running alone starts passes for the panel cap times its waves. Before, the one-pass cap was the whole cell's budget, and it cut this night's Haiku debt cells at 11-18 of 41-44 chunks (failed as `chunks unread`, judge skipped). Rounds launched before it may rerun on it.
 
 Chunked Haiku bench, 2026-10-10, key hits against the baseline:
 
