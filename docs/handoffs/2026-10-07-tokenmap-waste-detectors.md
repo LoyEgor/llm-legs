@@ -4,6 +4,7 @@ Status: open (the last two lines of 9; done: token-map b044500, 93c2a59, cf68b86
 Status: open (account switch on resume, last item; the rest done in token-map b044500, 93c2a59, cf68b86, 03057cb, 3f597e7) — To: «Token spending tracking and optimization»
 
 From «Updater doctor», 2026-10-07.
+Status: open (Auto-memory prompt and Denied spawns pending; the rest done in token-map b044500, 93c2a59, cf68b86, 03057cb, 3f597e7) — To: «Token spending tracking and optimization»
 
 ## Context
 - **Why:** Egor wants every token the harness spends without need to be found and cut.
@@ -55,3 +56,4 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 - The Token tracking submenu shows it.
 - `docs/shared-invariants.md` row db still agrees.
    - Re-write causes (spend audit `rewrites:unexplained`, 2026-10-10): 73 of 76 turn-2 `unexplained` re-writes (1.73M of 1.91M in 7 d) follow a turn-1 ToolSearch load of `claude-in-chrome` tools (Claude Code re-writes the messages after it; built-in WebSearch loads never do): give them a cause of their own. A first post-compaction request that cached nothing still sets the next one's `prev_ctx`, so its first write books as a re-write (2026-10-09 night fixer, 55k).
+   - Denied spawns (spend audit `spawn:gemini-worker`, 2026-10-10): an Agent call `worker-spawn-hook.sh` denies is no spawn, yet costs the parent its prompt and the re-issued brief; count denied Agent calls by type.

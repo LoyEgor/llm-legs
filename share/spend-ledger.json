@@ -247,6 +247,17 @@
    "sources": {},
    "verdict": "kept",
    "note": "kept: no harness cause; 7d 1.91M (1334 req), 1.73M is turn 2 of 73 browser runs whose turn 1 ToolSearch-loads claude-in-chrome tools and Claude Code re-writes the messages after it (built-in WebSearch loads: 0 of 19); the +145% is the 2026-10-06/07 enrollment burst (1.64M), steady state ~2 runs/day x ~22k (~0.03% of spend); the one lever, ENABLE_TOOL_SEARCH=false in browser runs, loads every MCP schema into every request and costs more than it saves; rest: a vendor full miss 6 s after a 5m write and a post-compaction first write tokenmap books as a re-write (handoff line)"
+  },
+  {
+   "id": "spawn:gemini-worker",
+   "title": "spawn gemini-worker",
+   "audited_at": "2026-10-10T08:28:52+03:00",
+   "by": "harness-speed-spend-spawn-gemini-worker-20261010T031911Z-4cb8",
+   "share": 0.000381,
+   "prices": {},
+   "sources": {},
+   "verdict": "cut",
+   "note": "cut at source before this run: claude-setup 46879c6 removed agents/gemini-worker.md (2026-10-09) and llm-legs b615c97 makes worker-spawn-hook deny the type with the worker-run start gemini protocol; replay of all 42 recorded Agent(gemini-worker) calls 10-04..10-08 through the hook: 42/42 denied with that protocol, so the same geminib run starts from the chat's Bash with no subagent startup; no spawn since 10-08 00:29, the 7d row (0.3M) drains as the window rolls"
   }
  ]
 }
