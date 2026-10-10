@@ -3167,7 +3167,7 @@
         "rule": "hook-held",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-06T06:54:29+03:00",
@@ -3199,13 +3199,23 @@
           ],
           "in": "llm-legs@19e9f508",
           "regressed_at": "2026-10-09T15:08:37+03:00"
+        },
+        {
+          "at": "2026-10-10T10:15:54+03:00",
+          "by": "night fixer harness-stop-hooks-20261010T031956Z-1eeb",
+          "files": [
+            "llm-legs/bin/worker-run-backstop.sh",
+            "llm-legs/tests/test_worker_run_backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
-      "note": "Shared cause of all three fixes: owned() recognised one shape of owner at a time, and each new way a chat or script waits (relay tags, scripts waiting in turn, background loops) read as no owner. Third cause, 2026-10-09: relay-free delegation (ee185fa8) left a literal `worker-run wait <id>` process as the only owner. 00:04:49Z b7514e35 started four runs and one background `for r in A B C D; do worker-run wait $r; done`; 00:45:16Z 2ddedf36 waited behind `R=<id>; sleep 30; while out=$(worker-run wait $R ...)`. Both held 15-40 s after the wait was started and the chat started duplicate waits (2ddedf36 also got the same from ask-run-unfinished.sh, handoff item 1). Fixed: a live command line under the chat that runs worker-run wait (review-bench wait) and names the id owns it. The 2026-10-08T08:40:02Z/233cceb1 evidence is the relay-era text ('no task row'), code gone with ee185fa8. Earlier causes: log-audit chunk runs held 233cceb1 2026-10-06 (c9087e4b, rebuilt without the relay token as the starter file in fbb35ae0); Fable workers delegating to nested Opus runs 2026-10-04 (f72bf339, NESTED_MODEL_REFUSED). Unconfirmed: an owner the backstop still cannot read is a wait whose ids come from an expansion (`for r in $(ls ...)`).",
-      "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-stop-hooks-20261010T031956Z-1eeb",
+      "note": "Shared cause of all four fixes: owned() matched one spelling of owner at a time (relay tags, scripts waiting in turn, literal ids in a background loop), and each new spelling read as no owner. Fourth cause, the four holds of 2026-10-09/10 (bca23aef 12:08Z, c0f23f02 19:04Z, 233cceb1 23:13Z and 02:13Z), every chat with its background wait live: ids read from a file (`for r in $(cat runs.txt)`, `while read m r ... < runs-r2.txt`, `cut -f2 runs.tsv | while read id`) and the verb behind a variable (`RB=.../review-bench; $RB wait A; $RB wait B`, B held while A's wait ran). Fixed by deleting id matching: any live `worker-run wait` / `review-bench wait` command line under the chat owns all its runs and reviews, since its end wakes the chat and the next stop checks again; worker-run wait is bounded, so no wait silences the hold for good. Accepted miss: a run whose sibling has a wait and it has none is held only at the sibling's wake. Still held: polling loops with no wait verb (`until [ -e panel.exit ]; do sleep 20; done`). The --unowned mode went with it: claude-setup@62caa56 dropped its only caller. Earlier: literal `worker-run wait <id>` loops (19e9f508), log-audit chunk runs (c9087e4b), nested Opus runs (f72bf339).",
+      "handoff": null
     },
     {
       "id": "wait-run-suites-slot-hogs",

@@ -5,12 +5,12 @@
 # spellings; this reads the runs themselves, so no spelling dodges it. The chat's turn is held until
 # it starts the wait as a background Bash.
 #
-# Owned = a live process in this chat's process tree, below the nearest `claude` ancestor of this hook,
-# whose command line runs `worker-run wait` (`review-bench wait` for a review) and names the run id: a
-# background `for r in A B; do worker-run wait $r; done` or `R=A; sleep 30; worker-run wait $R` owns
-# every id it names before its own wait process exists. Or the process that started the run still
-# alive (a script waiting on its runs one at a time). A run whose state.json is not written yet is
-# still inside `worker-run start`. Fail-open everywhere.
+# Owned = any live process in this chat's process tree, below the nearest `claude` ancestor of this
+# hook, whose command line runs `worker-run wait` or `review-bench wait`, whatever ids it names: its
+# end wakes the chat, and this stop checks again then. Matching ids held chats whose loops read them
+# from a file or spelled the verb `$RB wait` (four times 2026-10-09). Or the process that started the
+# run still alive (a script waiting on its runs one at a time). A run whose state.json is not written
+# yet is still inside `worker-run start`. Fail-open everywhere.
 {
 set -u
 self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || exit 0
@@ -35,36 +35,25 @@ chat_pid() {
       exit 1
     }'
 }
-# One process table read per stop, and only once a run needs it: "<run|review>=<word>" for every word
-# of every waiting command line below the chat.
-waits=''
-waits_read=false
-owned() { # key id
-  if [ "$waits_read" = false ]; then
-    waits_read=true
+# One process table read per stop, and only once a run needs it.
+waiting=''
+owned() {
+  if [ -z "$waiting" ]; then
     local root listing
     root=$(chat_pid) || exit 0
     listing=$(ps -Ao pid=,ppid=,command= 2>/dev/null)
-    waits=$(process_listing() { printf '%s\n' "$listing"; }
+    waiting=no
+    (process_listing() { printf '%s\n' "$listing"; }
       process_tree "$root" | awk -v root="$root" '
       FNR == NR { if ($1 != root) below[$1] = 1; next }
-      ($1 in below) {
-        $1 = ""; $2 = ""
-        kinds = ""
-        if ($0 ~ /(^|[^A-Za-z0-9._-])worker-run[ ]+wait[ ]/) kinds = "run"
-        if ($0 ~ /(^|[^A-Za-z0-9._-])review-bench[ ]+wait[ ]/) kinds = kinds " review"
-        if (kinds == "") next
-        nk = split(kinds, k, " "); nw = split($0, w, /[^A-Za-z0-9._-]+/)
-        for (i = 1; i <= nk; i++) for (j = 1; j <= nw; j++)
-          if (w[j] != "" && !seen[k[i] "=" w[j]]++) print k[i] "=" w[j]
-      }' - <(printf '%s\n' "$listing"))
+      ($1 in below) && $0 ~ /(^|[^A-Za-z0-9._-])(worker-run|review-bench)[ ]+wait[ ]/ { found = 1; exit }
+      END { exit !found }' - <(printf '%s\n' "$listing")) && waiting=yes
   fi
-  case $'\n'"$waits"$'\n' in *$'\n'"$1=$2"$'\n'*) return 0 ;; esac
-  return 1
+  [ "$waiting" = yes ]
 }
 run_root=${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}
 held() { # run|review id
-  owned "$1" "$2" || { [ "$1" = run ] && starter_alive "$run_root/$2"; }
+  owned || { [ "$1" = run ] && starter_alive "$run_root/$2"; }
 }
 resume_of() { # run|review id
   if [ "$1" = review ]; then

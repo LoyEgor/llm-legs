@@ -38,8 +38,8 @@ assert_eq block "$(jq -r .decision <<<"$out")"
 assert_has 'worker run r1 (acct · astra · high) — `worker-run wait r1`' "$(reason <<<"$out")"
 assert_has 'Start each wait now as a Bash with run_in_background: true' "$(reason <<<"$out")"
 
-# A live `worker-run wait r1` under the chat owns it; one under another process tree, or one waiting on
-# another run, does not.
+# Any live `worker-run wait` under the chat owns its runs, whatever id it names: its end wakes the chat
+# and the next stop checks again. One under another process tree does not.
 forget
 mkdir -p "$WORK/bin"
 # A stub's ready file is written once its own command line is in the process table.
@@ -51,10 +51,11 @@ ready() { local name i; for name in "$@"; do
   for i in $(seq 1000); do [ -e "$WORK/ready/$name" ] && break; sleep 0.01; done
   [ -e "$WORK/ready/$name" ] || fail "line ${BASH_LINENO[0]}: $name never started"; done; }
 wait_on() { rm -f "$WORK/ready/$1-$2"; "$WORK/bin/$1" wait "$2" & WAIT_PIDS="${WAIT_PIDS:-} $!"; ready "$1-$2"; }
-end_waits() { kill $WAIT_PIDS 2>/dev/null; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
+# Children listed before any kill: a loop whose sleep dies first starts its next wait, an orphan that holds
+# the suite's output open for good.
+end_waits() { local p kids=''; for p in $WAIT_PIDS; do kids="$kids $(pgrep -P "$p")"; done
+  kill $WAIT_PIDS $kids 2>/dev/null; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
 wait_on worker-run r1x
-assert_eq block "$(stop | jq -r .decision)"
-wait_on worker-run r1
 assert_eq "" "$(stop)"
 assert_eq block "$(WORKER_RUN_BACKSTOP_CHAT_PID=$LIVE_PID stop | jq -r .decision)"
 end_waits; forget
@@ -63,17 +64,27 @@ forget
 assert_eq "" "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/r1" </dev/null)"
 assert_eq "" "$(printf 'run r1\n' | bash "$HOOK" --unowned)"
 rm -rf "$WORKER_RUN_DIR/r1"; forget
-# A background shell that waits on its runs in turn, or after a sleep, owns every id it names before its
-# own wait process exists (2026-10-09, two chats held for waits they had started); a shell naming the id
-# with no wait, or a wait naming only a longer id, does not.
+# A background shell that waits on its runs in turn owns them before its own wait process exists, the
+# ids written in it, read from a file, or the verb behind a variable while its first wait runs (the four
+# holds of 2026-10-09); a shell naming the ids with no wait does not.
 run r5 s1 codex; run r6 s1 codex
-bash -c ": >$WORK/ready/loop; for r in r5 r6; do sleep 30; $WORK/bin/worker-run wait \$r; done" & WAIT_PIDS="${WAIT_PIDS:-} $!"
-ready loop
+printf 'r5\nr6\n' >"$WORK/ids"
+for loop in "for r in r5 r6; do sleep 30; $WORK/bin/worker-run wait \$r; done" \
+  "for r in \$(cat $WORK/ids); do sleep 30; $WORK/bin/worker-run wait \$r; done" \
+  "while read -r r; do sleep 30; $WORK/bin/worker-run wait \"\$r\"; done <$WORK/ids"; do
+  rm -f "$WORK/ready/loop"
+  bash -c ": >$WORK/ready/loop; $loop" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+  ready loop
+  assert_eq "" "$(stop)"
+  end_waits; forget
+done
+rm -f "$WORK/ready/worker-run-r5"
+bash -c "W=$WORK/bin/worker-run; \$W wait r5; \$W wait r6" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+ready worker-run-r5
 assert_eq "" "$(stop)"
 end_waits; forget
-bash -c ": >$WORK/ready/echo; sleep 30; echo r5 r6" & WAIT_PIDS="${WAIT_PIDS:-} $!"
-bash -c ": >$WORK/ready/longer; R=r5x; sleep 30; $WORK/bin/worker-run wait \$R r6x" & WAIT_PIDS="${WAIT_PIDS:-} $!"
-ready echo longer
+bash -c ": >$WORK/ready/echo; sleep 30; echo r5 r6 worker-run" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+ready echo
 assert_eq block "$(stop | jq -r .decision)"
 end_waits; rm -rf "$WORKER_RUN_DIR/r5" "$WORKER_RUN_DIR/r6"; forget
 
@@ -126,14 +137,12 @@ assert_eq "" "$(WORDS_LIB="$WORK/span-words.sh" stop '+ {transcript_path:"/t/s1.
 assert_eq block "$(WORDS_LIB="$WORK/span-words.sh" stop | jq -r .decision)"
 rm -rf "$WORKER_RUN_DIR/r2"; forget
 
-# A live review of this chat needs a live `review-bench wait` under the chat; a stale heartbeat is a dead panel.
+# A live review of this chat needs a live wait under the chat; a stale heartbeat is a dead panel.
 R=20260924T010203Z-abc1234
 jq -nc --arg r "$R" --argjson hb "$(date +%s)" '{run_id:$r,session:"s1",state:"running",heartbeat_epoch:$hb}' \
   >"$WORKER_STATS_DIR/progress/x.json"
 assert_has "review $R — \`review-bench wait $R\`" "$(stop | reason)"
 forget
-wait_on worker-run "$R"
-assert_eq block "$(stop | jq -r .decision)"
 wait_on review-bench "$R"
 assert_eq "" "$(stop)"
 end_waits; forget
@@ -185,4 +194,4 @@ jq -nc --argjson hb "$(date +%s)" '{run_id:"other-review",session:"s9",state:"ru
 assert_eq "" "$(jq -cn '{hook_event_name:"Stop",session_id:"s7"}' | PATH="$WORK/count:$PATH" bash "$HOOK")"
 assert_eq jq "$(tr '\n' ' ' <"$WORK/forks" | sed 's/ $//')"
 rm -f "$WORKER_STATS_DIR/progress/other.json"
-printf 'PASS: %s asserts; a live worker or review run of this chat that no live `worker-run wait` / `review-bench wait` under the chat process owns holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay and --unowned modes pass, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"
+printf 'PASS: %s asserts; a live worker or review run of this chat with no live `worker-run wait` / `review-bench wait` under the chat process holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay and --unowned modes pass, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"
