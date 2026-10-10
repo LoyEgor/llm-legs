@@ -91,17 +91,17 @@
   {
    "id": "startup:deferred tool list",
    "title": "startup deferred tool list",
-   "audited_at": "2026-10-08T03:20:03+03:00",
-   "by": "feat/spend-audit-listings",
-   "share": 0.000839,
+   "audited_at": "2026-10-10T09:09:07+03:00",
+   "by": "harness-speed-spend-startup-deferred-tool-list-20261010T031913Z-73f2",
+   "share": 0.004571,
    "prices": {
-    "worker": 26143.393762135063,
-    "chat": 34987.16713699263,
-    "subagent": 15017.701136311005
+    "Workers · attachment: deferred tool schemas": 21.74211973089868,
+    "Chat · attachment: deferred tool schemas": 57.221576887985314,
+    "Reviewers · attachment: deferred tool schemas": 0.0
    },
    "sources": {},
    "verdict": "kept",
-   "note": "kept: ~335 tokens a context, mostly the used atlassian MCP names; never-called deferred built-ins are 81k of 7.5M unused startup (~1%), a disabledBuiltinTools cut saves ~20 tokens a context"
+   "note": "kept: x5.4 is measurement, not growth: token-map c45eac9 (10-09, schema 33 re-ingest) folded deferred_tools_record schemas into the leaf (0.69M of 3.69M lu/7d: Claude Docs surfacedNames auto-loads and ToolSearch-loaded chrome tools that were called) and 2.5M sits in contexts begun before the 10-05 disableClaudeAiConnectors cut (no new context lists Claude Docs since 10-06), decaying (delta -22%); contexts free of it run 0.07-0.13% (~300 tokens a request), the 10-08 audit's level; never-used built-ins (PushNotification, RemoteTrigger, Enter/ExitWorktree, NotebookEdit, DesignSync) are 122k/7d (~3%, ~25 tokens a context), not worth a settings deny; atlassian names stay (used)"
   },
   {
    "id": "spawn:claudeb-worker",
