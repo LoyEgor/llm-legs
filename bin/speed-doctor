@@ -150,9 +150,10 @@ TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "
     "hooks": {"lever": "fast path for the slowest hooks", "proof": "latency", "hooks": True},
     "stop": {"lever": "Stop hooks off the turn's critical path", "proof": "latency", "hooks": True},
     "suite_run": {"lever": "bring suite walls to their uncontended p10 and keep every check", "proof": "tests"},
-    "suite_wait": {"lever": "covering suites start without a slot queue"},
+    "suite_wait": {"lever": "a covering suite starts while the machine has room, never queued by the slot count alone"},
     "slot": {"lever": "a worker slot lent while its holder runs its own suites"},
     "retries": {"lever": "fewer failed attempts before a worker's last start"},
+    "dead": {"lever": "a worker that cannot finish fails before it works, and a failed run is resumed, never dropped"},
     "locks": {"lever": "shorter lock holds and polls"},
     "refusal": {"lever": "fewer gate refusals and a faster turn after one", "proof": "latency", "hooks": True}}.items()}
 TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "confidence": "measured",

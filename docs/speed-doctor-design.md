@@ -138,9 +138,16 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 Proven reads `fixed · −X <unit> · ≈Y OM/d`. Only `disproven` counts toward the freeze (two disproven fixes freeze a component); a freeze lifts on a structural change (the component's code digest or a new ident), never on volume. `pending-exposure` waits as long as it needs; a later regression stamps `regressed_at`.
 
-**Floor** (`share/time_budget.py`). Each class has a floor, chats and workers apart: zero for hooks, Stop hooks, suite
-waits, retries and locks (plain Claude Code has none); suites their uncontended p10 wall; the slot queue how much sooner
-night-worker bursts end in a FIFO replay lending slots during the holder's suites. Workers active (bench and usage walls
+**Floor** (`share/time_budget.py`). Each class has a floor, chats and workers apart: zero for hooks, Stop hooks,
+retries, dead worker runs and locks (plain Claude Code has none); suites their uncontended p10 wall. A queue (suite slot
+wait, worker slot queue) is lost only while the machine was free: memlogd sampled load1 under the core count and
+available RAM at or over its incident threshold (`free_spans`; an unsampled moment is busy, memlogd keeps 3 days); the
+slot queue no more than how much sooner night-worker bursts end in a FIFO replay lending slots during the holder's
+suites. Dead worker runs (`dead_runs`): a failed run, not a review round or bench, no later run resumed (RESUME brief
+or resume launch), its files record naming no path and no unknown or partial listing, nothing produced or written
+outside, HEAD unmoved, its result empty or only error and limit lines; its last attempt's wall is `dead` (slot queue
+and retries keep their classes). No `UNITS` entry: a few such runs a week leave most days at 0, so a per-unit median
+before a fix is 0; the day totals prove it. Workers active (bench and usage walls
 outside) is the parent of its parts, never ranked: floor share = model over the wall less their gaps. `lost_min_day`
 counts each minute once (`<chat> min + <worker> w-min/day`). The 7-day band only names sudden regressions as holes. A class gap ≥ 0.5 min/day adds to the best-ranked opportunity whose fix
 `time_budget.improvement_class` scores against that class (hooks and Stop → chat/hooks, suites → chat/tests, suite wait →

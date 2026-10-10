@@ -36,6 +36,7 @@ CLASSES = (("model", "model turns", "plain"), ("tools", "tool execution", "plain
            ("suite_run", "suites running", "harness"), ("suite_wait", "suite slot wait", "harness"),
            ("refusal", "gate refusal recovery", "harness"),
            ("slot", "worker slot queue", "harness"), ("retries", "retries and relaunches", "harness"),
+           ("dead", "dead worker runs", "harness"),
            ("walled", "usage-wall relaunches", "other"), ("review", "review rounds", "harness"),
            ("bench", "bench workers", "other"), ("locks", "locks and polls", "harness"),
            ("other", "other / unmeasured", "other"))
@@ -54,8 +55,15 @@ BAND_DAYS = 7
 BAND_RATIO = 2.0
 BAND_MIN_S = 15 * 60
 ACTIVE_FLOOR = 0.30
-FLOORS = {"refusal": 0, "hooks": 0, "stop": 0, "suite_wait": 0, "slot": "slots lent during suites", "retries": 0, "locks": 0,
+FLOORS = {"refusal": 0, "hooks": 0, "stop": 0, "suite_wait": "waits on a busy machine",
+          "slot": "slots lent during suites on a free machine", "retries": 0, "dead": 0, "locks": 0,
           "suite_run": "uncontended p10 wall"}
+FREE_CLASSES = ("suite_wait", "slot")
+FREE_TICK_S = 60
+DEAD_LINE = re.compile(r"(?:(?:Failed to authenticate|Not logged in|You've hit your \w+ limit|API Error|Execution error|"
+                       r"Request timed out|[A-Z]+_(?:FAILED|USAGE_LIMIT|UNAVAILABLE))\b|Error:)")
+DEAD_LINE_MAX = 300
+RESUME = re.compile(r"(?m)^RESUME ([0-9a-f][0-9a-f-]{7,})")
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
 FLOOR_ROW_MIN_DAY = 30
 NIGHT_GAIN_MIN_DAY = 5
@@ -102,6 +110,10 @@ def suites_path():
 
 def gates_path():
     return os.path.join(env_path("INSTRUCTION_WATCH_STATE", ".cache", "claude-instruction-watch"), "gates.jsonl")
+
+
+def memlogd_dir():
+    return env_path("MEMLOGD_DIR", "Library", "Logs", "memlogd")
 
 
 def now_s():
@@ -226,6 +238,48 @@ def wait_rows(lo, hi):
     return [r for r in out if lo <= r["started"] < hi]
 
 
+def sampled(name, lo, hi, ok):
+    """Spans in [lo, hi) where memlogd's `<dir>/<name><day>.log` samples satisfy ok(fields); a sample covers up to
+    the next one, at most FREE_TICK_S, so an unsampled moment satisfies nothing."""
+    rows, day = [], local_day(lo - FREE_TICK_S)
+    while day <= local_day(hi):
+        try:
+            with open(os.path.join(memlogd_dir(), name + day + ".log"), errors="replace") as handle:
+                for line in handle:
+                    words = line.split()
+                    if len(words) > 1 and words[0].isdigit() and lo - FREE_TICK_S <= int(words[0]) < hi:
+                        rows.append((int(words[0]), dict(w.split("=", 1) for w in words[1:] if "=" in w)))
+        except OSError:
+            pass
+        day = local_day(day_bounds(day)[1] + 1)
+    rows.sort(key=lambda r: r[0])
+    ends = [t for t, _ in rows[1:]] + [float("inf")]
+    return clip([(t, min(end, t + FREE_TICK_S)) for (t, fields), end in zip(rows, ends) if ok(fields)], lo, hi)
+
+
+def field(fields, key):
+    try:
+        return float(fields.get(key, ""))
+    except ValueError:
+        return -1.0
+
+
+def memlogd_enter_mb():
+    text = night_spend.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "memlogd"))
+    found = re.search(r'enter_avail_mb="\$\{MEMLOGD_ENTER_AVAIL_MB:-(\d+)\}"', text)
+    return int(found.group(1)) if found else 4096
+
+
+def free_spans(lo, hi):
+    """Spans in [lo, hi) the machine had room in: memlogd's load1 under its core count and available RAM at or over
+    memlogd's incident threshold, outside any slot wait share/slots.sh recorded as refused for room."""
+    enter = memlogd_enter_mb()
+    load = sampled("machine/", lo, hi, lambda f: 0 <= field(f, "load1") < field(f, "ncpu"))
+    ram = sampled("", lo, hi, lambda f: field(f, "avail_mb") >= enter)
+    room = [(r["started"], r["started"] + r["seconds"]) for r in wait_rows(lo - 86400, hi) if r.get("reason") == "room"]
+    return minus(minus(load, minus(load, ram)), room)
+
+
 def refusal_rows(lo, hi):
     rows = [r for r in night_spend.rows(gates_path()) if r.get("decision") in GATE_REFUSALS
             and lo <= (num(r.get("at")) or 0) < hi]
@@ -339,15 +393,78 @@ def run_session(run):
     return text.splitlines()[0][:8] if text else None
 
 
+def run_file(run, name):
+    try:
+        with open(os.path.join(night_spend.RUNS, str(run), name), errors="replace") as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
+def resumers(since):
+    """{session prefix: [(start, run)]} of the runs touched since `since` that resumed it: a RESUME line in the
+    brief or meta.json's resume."""
+    out = collections.defaultdict(list)
+    try:
+        entries = list(os.scandir(night_spend.RUNS))
+    except OSError:
+        return out
+    for entry in entries:
+        try:
+            touched = entry.stat().st_mtime
+        except OSError:
+            continue
+        if touched < since:
+            continue
+        meta = read_json(os.path.join(entry.path, "meta.json"), {})
+        meta = meta if isinstance(meta, dict) else {}
+        named = RESUME.findall(run_file(entry.name, "brief") or "")
+        if isinstance(meta.get("resume"), str) and meta["resume"]:
+            named.append(meta["resume"])
+        at = num(meta.get("pid_started_at")) or num(meta.get("started_at")) or touched
+        for session in named:
+            out[session[:8]].append((at, entry.name))
+    return out
+
+
+def dead_runs(runs):
+    """Failed runs whose wall left nothing: no later run resumed their session, their files record names no path
+    and no unknown or partial listing, nothing written outside it or produced, HEAD unmoved, and their result empty
+    or only error and limit lines. A missing record is no proof."""
+    failed = [r for r in runs if r.get("status") not in (None, "done") and not r.get("round")
+              and not BENCH_WORKDIR.search(str(r.get("workdir") or ""))]
+    if not failed:
+        return set()
+    starts = {r.get("run"): num(r.get("pid_started_at")) or num(r.get("started_at")) or 0.0 for r in failed}
+    later, out = resumers(min(starts.values())), set()
+    for r in failed:
+        run = str(r.get("run"))
+        sessions = {(run_file(run, name) or "")[:8] for name in ("session", "worker-session")} - {""}
+        if any(at > starts[r.get("run")] and name != run for s in sessions for at, name in later.get(s, ())):
+            continue
+        files = run_file(run, "files")
+        if files is None or any(not line.startswith("WORKDIR: ") for line in files.splitlines() if line):
+            continue
+        if run_file(run, "files-external") or run_file(run, "produced"):
+            continue
+        if run_file(run, "head-before") != run_file(run, "head-after"):
+            continue
+        result = [line.strip() for line in (run_file(run, "result") or "").splitlines() if line.strip()]
+        if all(len(line) <= DEAD_LINE_MAX and DEAD_LINE.match(line) for line in result):
+            out.add(run)
+    return out
+
+
 # ---------------------------------------------------------------- the split
 
 
-def run_split(run, lo, hi, suites, calls, hooks):
+def run_split(run, lo, hi, suites, calls, hooks, free=None):
     """One worker run's wall inside [lo, hi): launch -> first CLI start is the slot queue, earlier attempts are
     retries, or a walled run's usage-wall relaunches (weather, neither work nor retries); the last attempt is split
-    into its own suites (slot wait apart), tool calls, hooks inside them, and the rest, which is model time. A review
-    round or a bench worker (the owner's benchmark, sleeping on its own jobs) is its own class whole. `started_at`
-    is restamped by the slot wait, so the run starts at its pid."""
+    into its own suites (slot wait apart), tool calls, hooks inside them, and the rest, which is model time, or is
+    dead whole for a run `dead_runs` marked. A review round or a bench worker (the owner's benchmark, sleeping on its
+    own jobs) is its own class whole. `started_at` is restamped by the slot wait, so the run starts at its pid. With
+    `free` spans, `<class>_free` carries each wait class's seconds inside them."""
     start = num(run.get("pid_started_at")) or num(run.get("started_at"))
     end = num(run.get("ended_at"))
     out = collections.Counter()
@@ -359,14 +476,23 @@ def run_split(run, lo, hi, suites, calls, hooks):
     if whole:
         out[whole] = length(clip([(start, end)], lo, hi))
         return out
-    out["slot"] = length(clip([(start, first)], lo, hi))
+    slot = clip([(start, first)], lo, hi)
+    out["slot"] = length(slot)
     out["walled" if run.get("walled") else "retries"] = length(clip([(first, last)], lo, hi))
     work = clip([(last, end)], lo, hi)
+    if free is not None:
+        out["slot_free"] = length(minus(slot, minus(slot, free)))
+    if run.get("dead"):
+        out["dead"] = length(work)
+        return out
     mine = [s for s in suites if s.get("worker_run") == run.get("run")]
     ran = union((max(s["started_at"], s["queued_at"]), s["ended_at"]) for s in mine if num(s.get("started_at")))
     queued = minus([(s["queued_at"], num(s.get("started_at")) or s["ended_at"]) for s in mine], ran)
+    waited = [x for w in work for x in clip(queued, *w)]
     out["suite_run"] = length([x for w in work for x in clip(ran, *w)])
-    out["suite_wait"] = length([x for w in work for x in clip(queued, *w)])
+    out["suite_wait"] = length(waited)
+    if free is not None:
+        out["suite_wait_free"] = length(minus(waited, minus(waited, free)))
     rest = minus(work, ran + queued)
     session = run_session(run.get("run"))
     if session is None:
@@ -406,8 +532,12 @@ def budget(lo, hi, events=None):
     for row in events.get("t", ()):
         if row[3] > lo and row[1] < hi:
             chats += turn_split(row, lo, hi)
+    free, freed, dead = free_spans(lo, hi), collections.Counter(), dead_runs(runs)
     for run in runs:
-        workers += run_split(run, lo, hi, suites, calls, events.get("h", ()))
+        split = run_split(dict(run, dead=run.get("run") in dead), lo, hi, suites, calls, events.get("h", ()), free)
+        for key in FREE_CLASSES:
+            freed[key] += split.pop(key + "_free", 0.0)
+        workers += split
         if not run.get("round"):
             own = run_split(run, float("-inf"), float("inf"), suites, (), ())
             start = num(run.get("pid_started_at")) or num(run.get("started_at"))
@@ -432,6 +562,7 @@ def budget(lo, hi, events=None):
     return {"lo": lo, "hi": hi, "seconds": {k: round(total[k], 1) for k, _, _ in CLASSES},
             "chat_s": round(sum(chats.values()), 1), "worker_s": round(sum(workers.values()), 1),
             "worker": {k: round(v, 1) for k, v in workers.items() if v}, "runs": len(runs), "jobs": jobs,
+            "free_s": {k: round(freed[k], 1) for k in FREE_CLASSES}, "dead_runs": sorted(dead),
             "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)},
             "hooks_by_hook": {k: round(v, 1) for k, v in by_hook.most_common(20)}, "refusals": recovery["count"], "refusal_cost": recovery}
 
@@ -599,13 +730,15 @@ def slot_gain(jobs):
 
 def recoverable(b, lo, hi):
     """{class: (chat s, worker s)} over the class's floor: plain Claude Code has none of a harness class, suites keep
-    their uncontended p10 wall, and the slot queue counts only the wall-clock lending slots during suites moves."""
-    w = b["worker"]
+    their uncontended p10 wall, and a queue counts only its part on a free machine (`free_spans`), the slot queue no
+    more than the wall-clock lending slots during suites moves."""
+    w, free = b["worker"], b.get("free_s") or {}
     out = {k: (max(0.0, b["seconds"].get(k, 0) - w.get(k, 0)), w.get(k, 0)) for k in FLOORS}
     share = suite_floor(lo, hi)
     chat, worker = out["suite_run"]
     out["suite_run"] = (chat * (1 - share.get("chat", 1.0)), worker * (1 - share.get("worker", 1.0)))
-    out["slot"] = (0.0, min(w.get("slot", 0), slot_gain(b["jobs"])))
+    out["suite_wait"] = (0.0, min(w.get("suite_wait", 0), free.get("suite_wait", 0.0)))
+    out["slot"] = (0.0, min(w.get("slot", 0), slot_gain(b["jobs"]), free.get("slot", 0.0)))
     return out
 
 
@@ -691,6 +824,8 @@ def document(now, hours=24.0, write=True):
     doc["floors"] = floors_of(b, rec, days) if rec else []
     doc["lost_min_day"] = round(sum(sum(v) for v in rec.values()) / 60.0 / days, 1) if rec else None
     doc["workers_active"] = worker_floor(b["worker"], rec, days)
+    doc["free_min_day"] = {k: round(v / 60.0 / days, 1) for k, v in b["free_s"].items()}
+    doc["dead_runs"] = b["dead_runs"]
     doc["last_night"] = last_night()
     doc["lines"] = plain_lines(doc)
     return doc

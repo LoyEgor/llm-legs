@@ -289,6 +289,22 @@ check(module.floor_rows(dict(gaps, floors=[], last_night=near), {}, HI) == []
       and [r["ident"] for r in module.floor_rows(dict(gaps, floors=[], last_night=dict(near, model_s=4000, share=0.111)),
                                                 {}, HI)] == ["workers-active"],
       "the night row needs more than 30 minutes of the night's wall under the derived floor share, not a share point")
+dead = {"class": "dead", "label": "dead worker runs", "floor_min_day": 0, "actual_min_day": 40.0,
+        "recoverable_min_day": 40.0, "chat_min_day": 0.0, "worker_min_day": 40.0}
+busy = dict(dead, label="suite slot wait", floor_min_day="waits on a busy machine", actual_min_day=300.0,
+            **{"class": "suite_wait"})
+dead_time = module.with_time([], {"floors": [dead]})
+dead_rows = module.floor_rows({"floors": [dead, busy]}, {}, HI)
+check([(o["id"], o["opportunity"]["recoverable_min_day"], o["opportunity"]["levers"][0]) for o in dead_time]
+      == [("opportunity:time/dead", 40.0, module.TIME_LEVERS["dead"]["lever"])]
+      and [(r["id"], r["fact"], r["expected_min_day"]) for r in dead_rows]
+      == [("time_floor:dead", "dead worker runs 40 w-min/day over its floor of 0.0 min/day · proof: back under it", 40.0),
+          ("time_floor:suite_wait", "suite slot wait 40 w-min/day over its floor of waits on a busy machine · proof: "
+           "back under it", 40.0)]
+      and module.time_budget.improvement_class("time_floor", "time_floor:dead") == "dead",
+      "dead worker runs are a Lost time class like the others: their own time opportunity with a lever, a floor row "
+      "priced for the night's admission, and a queue's floor names the busy machine: %s %s"
+      % ([(o["id"], o["opportunity"]) for o in dead_time], [(r["id"], r["fact"]) for r in dead_rows]))
 runs_journal = os.path.join(work, "full-runs.jsonl")
 with open(runs_journal, "w") as handle:
     for session, scope, end, minutes in (("chatAAAAxyz", "full", HI - 600, 25), ("chatAAAAxyz", "all", HI - 60, 15),
@@ -317,6 +333,12 @@ parts = json.loads(next(l for l in h.menu_text({
 check(parts == [[50.0, "worker slot queue", "w-min/day"], [40.0, "tests", "min/day"], [5.0, "stop hooks", "min/day"]],
       "the menu header's floor gaps are chats' and workers' parts apart, each with its unit; suites running and "
       "their slot wait are one tests row, chats and workers summed: %s" % parts)
+dead_parts = json.loads(next(l for l in h.menu_text({
+    "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
+    "speed": {"status": "ok", "budget": {"floors": [dead, gaps["floors"][-1]]}}}).splitlines()
+    if l.startswith("H\t"))[2:])["speed"]["issues"]
+check(dead_parts == [[40.0, "dead worker runs", "w-min/day"], [5.0, "stop hooks", "min/day"]],
+      "dead worker runs reach the Lost time layer as a floor row in worker-minutes: %s" % dead_parts)
 tests_header = json.loads(next(l for l in h.menu_text({
     "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
     "speed": {"status": "ok", "budget": gaps, "tests": {

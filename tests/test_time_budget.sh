@@ -9,7 +9,7 @@ WORK="$(cd -P "$(mktemp -d)" && pwd)"
 trap 'rm -rf "$WORK"' EXIT
 export TZ=UTC HOME="$WORK/home" HARNESS_DOCTOR_DIR="$WORK/harness" DOCTORS_DIR="$WORK/doctors" \
   WORKER_STATS_DIR="$WORK/stats" WORKER_RUN_DIR="$WORK/runs" RUN_SUITES_JOURNAL="$WORK/suites.jsonl" \
-  INSTRUCTION_WATCH_STATE="$WORK/watch" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" \
+  INSTRUCTION_WATCH_STATE="$WORK/watch" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" MEMLOGD_DIR="$WORK/memlogd" \
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 unset HARNESS_WAITS_DIR XDG_CACHE_HOME RUN_SUITES_TIMES CLAUDEB_DIR CHAT_NAME_ROOTS
 mkdir -p "$HOME"
@@ -225,6 +225,18 @@ late = T.run_split(run, D0 + 7700, D0 + 10000, T.suite_rows(0, 1e12),
 check(round(late["hooks"]) == 0 and round(late["tools"]) == 200,
       "a call outside the window takes its hooks with it, never out of the window's tool time: %s" % dict(late))
 
+def memlogd(samples):
+    for name in ("machine", ""):
+        path = os.path.join(work, "memlogd", name, "2026-01-10.log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            handle.write("JUMP %d node_count=9 avail_mb=1\n" % (D0 + 3000))
+            for t, load, avail in samples:
+                handle.write("%d load1=%s ncpu=10 swap_mb=0\n" % (D0 + t, load) if name else
+                             "%d quiet avail_mb=%d swap_used_mb=0\n" % (D0 + t, avail))
+
+
+memlogd([(t, 2.0, 8000) for t in range(2900, 4101, 15)])
 NOW = D0 + 20 * 3600
 for back in range(1, 8):
     day = T.local_day(D0 - back * 86400)
@@ -269,7 +281,7 @@ check(lever["prompt-cache hits"]["value"] == "90 % of cached input read from cac
       "levers are measured where the journals hold the data and marked ideas where not: %s" % lever)
 gap = {f["class"]: (f["chat_min_day"], f["worker_min_day"]) for f in doc["floors"]}
 check(gap == {"refusal": (0.0, 0.0), "hooks": (1.7, 1.7), "stop": (0.3, 0.0), "suite_wait": (0.0, 16.7), "slot": (0.0, 0.0),
-              "retries": (0.0, 6.7), "locks": (0.7, 0.0), "suite_run": (0.7, 0.0)},
+              "retries": (0.0, 6.7), "dead": (0.0, 0.0), "locks": (0.7, 0.0), "suite_run": (0.7, 0.0)},
       "each class is judged against its floor, chats' and workers' parts apart: zero for hooks, gates and waits, "
       "none for plain Claude Code: %s" % gap)
 check(T.suite_floor(D0, D0 + 86400) == {"worker": 1.0, "chat": 0.5} and gap["suite_run"] == (0.7, 0.0),
@@ -323,6 +335,88 @@ check(sum(map(sum, wrec.values())) - sum(map(sum, rec.values())) == 0
       and T.worker_floor(wb["worker"], wrec, 1) == T.worker_floor(b["worker"], rec, 1),
       "a walled run's relaunch minutes add 0 to lost_min_day and leave the workers' shares alone: usage walls are "
       "weather: %s" % wrec)
+check(b["free_s"] == {"suite_wait": 1000.0, "slot": 0.0} and rec["suite_wait"] == (0.0, 1000.0) and rec["slot"] == (0.0, 0.0),
+      "a suite wait the machine had room through is lost whole; a slot queue memlogd never sampled is busy: %s"
+      % b["free_s"])
+memlogd([(t, 12.0 if t in (3500, 20090) else 2.0, 1000 if t == 20195 else 8000)
+         for t in list(range(2900, 4101, 15)) + list(range(20000, 20301, 15))])
+free = T.free_spans(D0 + 20000, D0 + 20500)
+lines(os.path.join(work, "harness", "waits", "2026-01-10.jsonl"),
+      [{"class": "night-workers", "source": "w", "started": D0 + 20300, "seconds": 30, "pid": 4, "reason": "room"},
+       {"class": "night-workers", "source": "w", "started": D0 + 20000, "seconds": 30, "pid": 5, "reason": "limit"}])
+roomless = T.free_spans(D0 + 20000, D0 + 20500)
+check(T.length(free) == 330 and free[-1] == [D0 + 20210, D0 + 20360]
+      and T.length(roomless) == 300 and roomless[-2:] == [[D0 + 20210, D0 + 20300], [D0 + 20330, D0 + 20360]],
+      "the machine is free where memlogd's load1 is under its cores and available RAM at or over its incident "
+      "threshold, and never through a slot wait refused for room; a sample covers at most a minute, past it the "
+      "machine counts busy: %s %s" % (free, roomless))
+busy = T.budget(D0, D0 + 86400)
+check(busy["free_s"]["suite_wait"] == 985.0 and T.recoverable(busy, D0, D0 + 86400)["suite_wait"] == (0.0, 985.0),
+      "only a wait's free part is recoverable, its busy part is the floor: %s" % busy["free_s"])
+check([T.recoverable(dict(b, jobs=critical, worker=dict(b["worker"], slot=500), free_s={"slot": s}), D0, D0 + 86400)["slot"]
+       for s in (30.0, 100.0)] == [(0.0, 30.0), (0.0, 60.0)],
+      "the slot queue recovers its free part, never more than lending slots during suites moves")
+shutil.rmtree(os.path.join(work, "memlogd"))
+bare = T.budget(D0, D0 + 86400)
+check(bare["free_s"] == {"suite_wait": 0.0, "slot": 0.0} and T.recoverable(bare, D0, D0 + 86400)["suite_wait"] == (0.0, 0.0),
+      "with no memlogd sample a wait is busy: undercount, never a guess")
+memlogd([(t, 2.0, 8000) for t in range(2900, 4101, 15)])
+
+DEAD = "claudeb-%d-5-dddd" % (D0 + 30000)
+dead_row = {"run": DEAD, "status": "failed", "round": None, "pid_started_at": D0 + 30000, "started_at": D0 + 30000,
+            "cli_starts": [D0 + 30010], "ended_at": D0 + 30610, "workdir": "/w/feat"}
+dead_files = {"session": "dead0001-aaaa", "worker-session": "dead0001-aaaa", "files": "WORKDIR: /w/feat\n",
+              "head-before": "abc\n", "head-after": "abc\n", "produced": "", "files-external": "",
+              "result": "Failed to authenticate: OAuth session expired and could not be refreshed\n",
+              "brief": "EFFORT: low\n\nRESUME dead0001-aaaa: its own resume is no continuation\n"}
+def run_dir(run, files):
+    folder = os.path.join(work, "runs", run)
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder)
+    for name, body in files.items():
+        with open(os.path.join(folder, name), "w") as handle:
+            handle.write(body)
+run_dir(DEAD, dead_files)
+check(T.dead_runs([dead_row]) == {DEAD}
+      and dict(T.run_split(dict(dead_row, dead=True), 0, 1e12, [], [], [])) == {"slot": 10, "retries": 0, "dead": 600},
+      "a failed run nobody resumed, with no file, commit or report, is dead: its last attempt's wall, the slot queue "
+      "before it kept apart")
+alive = {"files names a path": dict(dead_files, files="WORKDIR: /w/feat\nsrc/a.py\n"),
+         "files partial": dict(dead_files, files="WORKDIR: /w/feat\nPARTIAL: the run also ran shell commands\n"),
+         "files unknown": dict(dead_files, files="UNKNOWN: the workdir after snapshot could not be established\n"),
+         "no files record": {k: v for k, v in dead_files.items() if k != "files"},
+         "head moved": dict(dead_files, **{"head-after": "def\n"}),
+         "no head after": {k: v for k, v in dead_files.items() if k != "head-after"},
+         "produced": dict(dead_files, produced="-\tabc\tsrc/a.py\tedit\n"),
+         "wrote outside": dict(dead_files, **{"files-external": "/tmp/x\n"}),
+         "a report": dict(dead_files, result="Failed to authenticate.\nDone: the fixture passes, 3 files read\n"),
+         "a long error": dict(dead_files, result="API Error: " + "x" * 400 + "\n")}
+kept = [why for why, files in alive.items() if run_dir(DEAD, files) or T.dead_runs([dead_row])]
+run_dir(DEAD, dead_files)
+check(kept == [] and T.dead_runs([dict(dead_row, status="done")]) == T.dead_runs([dict(dead_row, round=2)])
+      == T.dead_runs([dict(dead_row, workdir="/w/logo-vectorizer-bench")]) == set(),
+      "a changed file, an unknown or partial listing, a missing record, a moved HEAD, produced content, a write "
+      "outside, a report or a done, review or bench run is never dead: %s" % kept)
+run_dir("claudeb-%d-6-eeee" % (D0 + 20000), {"brief": "RESUME dead0001-aaaa: an earlier resume\n",
+                                             "meta.json": json.dumps({"pid_started_at": D0 + 20000})})
+earlier = T.dead_runs([dead_row])
+run_dir("claudeb-%d-7-ffff" % (D0 + 40000), {"brief": "EFFORT: low\nACCOUNT: x\n\nRESUME dead0001-aaaa: go on\n",
+                                             "meta.json": json.dumps({"pid_started_at": D0 + 40000})})
+by_brief = T.dead_runs([dead_row])
+run_dir("claudeb-%d-7-ffff" % (D0 + 40000), {"meta.json": json.dumps({"pid_started_at": D0 + 40000,
+                                                                      "resume": "dead0001-aaaa"})})
+by_launch = T.dead_runs([dead_row])
+shutil.rmtree(os.path.join(work, "runs", "claudeb-%d-7-ffff" % (D0 + 40000)))
+check(earlier == {DEAD} and by_brief == by_launch == set(),
+      "a later run's RESUME brief or resume launch continues the session, so the failed run is no dead work; an "
+      "earlier run's resume is not: %s %s %s" % (earlier, by_brief, by_launch))
+lines(os.path.join(work, "dead-stats", "runs.jsonl"), [dead_row])
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "dead-stats")
+died = T.budget(D0, D0 + 86400)
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
+check(died["seconds"]["dead"] == 600 and died["dead_runs"] == [DEAD]
+      and T.recoverable(died, D0, D0 + 86400)["dead"] == (0.0, 600.0) and T.KIND["dead"] == "harness",
+      "dead worker runs are a harness class over a floor of zero: %s" % died["seconds"])
 section = T.section(NOW)
 check(open(os.path.join(work, "harness", "budget.txt")).read().splitlines() == section["lines"]
       and not os.path.exists(T.day_cache_path("2026-01-10")),
