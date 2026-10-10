@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 4
 # night-run carry and suites: open handoffs and the previous night's failed suites become night jobs;
 # the full run at Close records its result for the report.
 set -u
@@ -39,6 +40,7 @@ printf '{"pid": %s, "sessionId": "live-1"}\n' "$$" >"$HOME/.claude/sessions/1.js
 printf '{"type": "custom-title", "customTitle": "Live Chat", "sessionId": "live-1"}\n' >"$HOME/.claude/projects/p/live-1.jsonl"
 for name in repo other; do git -C "$WORK/$name" add -A && git -C "$WORK/$name" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init; done
 
+if suite_shard_owns 1 nc-carry-and-suites; then
 assert [ "$(python3 "$ROOT/share/handoffs.py" | jq -sc 'map([.slug, .to, .live])')" = \
   '[["2026-09-28-old",["Gone Chat"],[]],["2026-10-03-live",["Live Chat"],["Live Chat"]]]' ]
 
@@ -135,6 +137,7 @@ assert jqe -s 'length == 1 and .[0].class == "night-suites" and .[0].source == "
 jq -n '{id: "N1z", started_at: "2026-10-03T14:00:00Z", finished_at: null, jobs: [],
   suites: {started_at: "2026-10-03T14:00:00Z", finished_at: null, pid: 99999999, repos: []}}' >"$NIGHTS/N1z.json"
 assert grep -qE '^suites · stopped unfinished since [0-9]{2}:[0-9]{2}$' <(night report N1z 2>/dev/null)
+fi
 
 mkdir -p "$WORK/bin" "$WORK/repo/share" "$WORK/alpha-cwd"
 export PATH="$WORK/bin:$PATH" NIGHT_RUN_OPENER="$WORK/bin/opener" NIGHT_RUN_WORKER_PICK="$WORK/bin/pick"
@@ -165,7 +168,9 @@ printf '# B1\n\nStatus: open\n\n## Yours to decide\n\nOne fork.\n' >"$H/2026-09-
 
 new_night() { jq -n --arg id "$1" '{id: $id, started_at: "2026-10-04T01:00:00Z", finished_at: null, session: null, jobs: []}' >"$NIGHTS/$1.json"
   night base "$1" >/dev/null || fail "night base $1 failed"; }
+gt() { git -c user.name=t -c user.email=t@t "$@"; }
 handoff_refs() { jq -c '[.jobs[] | select(.kind == "handoff") | .ref]' "$NIGHTS/$1.json"; }
+if suite_shard_owns 2 nc-owner-chats; then
 new_night N2
 night carry N2 >"$WORK/n2.out" 2>"$WORK/n2.err" || fail "owner carry failed"
 awt="$WORK/repo/.claude/worktrees/night-N2-owner-chat-alpha-doctor"
@@ -200,7 +205,9 @@ NIGHT_RUN_OWNER_CHATS=1 night carry N3 >"$WORK/n3.out" 2>"$WORK/n3.err" || fail 
 assert [ "$(grep -c '^owner-chat-' "$WORK/n3.out")" = 1 ]
 assert grep -qxF 'night-run: owner chat «Beta Chat» deferred (1 owner chats at work): its handoffs are night jobs' "$WORK/n3.err"
 assert [ "$(handoff_refs N3)" = '["handoff-2026-09-25-b1","handoff-2026-09-26-c1","handoff-2026-09-27-d1","handoff-2026-09-28-d2","handoff-2026-09-28-old"]' ]
+fi
 
+if suite_shard_owns 3 nc-owner-deferred; then
 new_night N4
 printf '2 1.00 1.00 100000\n' >"$WORK/room"
 night carry N4 >"$WORK/n4.out" 2>"$WORK/n4.err" || fail "loaded carry failed"
@@ -216,7 +223,9 @@ new_night N4p
 mkdir "$NIGHTS/N4p.owner-chat-alpha-doctor.prompt.md"
 night carry N4p >/dev/null 2>&1 || fail "carry with an unwritable prompt failed"
 assert jqe '.jobs[] | select(.ref == "owner-chat-alpha-doctor") | .state == "failed-launch" and .reason == "not carried: prompt not written"' "$NIGHTS/N4p.json"
+fi
 
+if suite_shard_owns 4 nc-owner-evidence; then
 O="$WORK/own"
 git init -q "$O"
 mkdir -p "$O/docs/handoffs" "$O/share" "$O/bin" "$HOME/.claude/projects/p/sess-dh/subagents" "$HOME/.cache/claude-worker-runs/r1"
@@ -356,10 +365,11 @@ assert_fails grep -qF 'Owner check' "$NIGHTS/N5.owner-chat-phase-four.prompt.md"
 assert grep -qxF "   Not the night's, so it lands none of your work there: \`$WORK/foreign\`. Fix those on their own branch and landing, as your day work." "$NIGHTS/N5.owner-chat-phase-four.prompt.md"
 assert_fails grep -qF "Not the night's" "$NIGHTS/N5.owner-chat-debt-hardening.prompt.md"
 assert [ "$(grep -c '^owner-chat-' "$WORK/n5.out")" = 6 ]
+fi
 
+if suite_shard_owns 1 nc-leftovers-lands; then
 # A main checkout behind origin/main shows as a leftovers row with the WIP in the way; a branch
 # already in origin/main is landed though local main lags.
-gt() { git -c user.name=t -c user.email=t@t "$@"; }
 L="$WORK/lands"
 git init -q --bare -b main "$WORK/lands.git" && git init -q -b main "$L"
 printf 'f\n' >"$L/f.txt" && gt -C "$L" add f.txt && gt -C "$L" commit -qm init &&
@@ -375,7 +385,9 @@ assert grep -qF "lands done · no worktree · landed · " "$WORK/lands.out"
 printf 'h\n' >"$L/h.txt" && gt -C "$L" add h.txt && gt -C "$L" commit -qm local
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-lands" night leftovers >"$WORK/lands.out" || fail "leftovers with a diverged checkout"
 assert grep -qxF "checkout lands: diverged, WIP in the way: f.txt" "$WORK/lands.out"
+fi
 
+if suite_shard_owns 4 nc-dup-trade-suites; then
 # One handoff file name open in two repositories is two jobs, each carried once.
 for name in dupa dupb; do
   git init -q "$WORK/$name" && mkdir -p "$WORK/$name/docs/handoffs"
@@ -429,5 +441,6 @@ assert [ "$(cut -f1 "$WORK/n7.out")" = suite-suites-test_red ]
 assert [ "$(sed -n 2p "$NIGHTS/N7.suite-suites-test_red.brief.md")" = 'MODEL: sonnet' ]
 assert grep -qF 'end with `ESCALATE: <reason>`' "$NIGHTS/N7.suite-suites-test_red.brief.md"
 assert [ ! -e "$NIGHTS/N7.suite-suites-test_ok.brief.md" ]
+fi
 
 printf 'PASS: test_night_carry.sh (%s asserts)\n' "$asserts"
