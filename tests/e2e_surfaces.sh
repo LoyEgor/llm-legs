@@ -340,6 +340,17 @@ local function styled(text, attributes)
       local r = type(right) == "table" and right.text or tostring(right)
       return styled(l .. r, type(left) == "table" and left.attributes or right.attributes)
     end,
+    __index = {
+      asTable = function(self)
+        return { self.text, { starts = 1, ends = #self.text, attributes = self.attributes } }
+      end,
+      setStyle = function(self, attrs)
+        local merged = {}
+        for k, v in pairs(self.attributes or {}) do merged[k] = v end
+        for k, v in pairs(attrs or {}) do merged[k] = v end
+        return styled(self.text, merged)
+      end,
+    },
   })
 end
 local function loadModule(fixture, state)
@@ -423,8 +434,10 @@ for i, item in ipairs(expiredMenu) do
 end
 if not expiredRow or not title(expiredRow):match("%s–%s*$") then error("null reset did not render dash") end
 local color = expiredRow.title.attributes.color
-if not color or color.red ~= 0.9 or color.green ~= 0.25 or color.blue ~= 0.2
-    or color.alpha ~= 0.55 then
+local tones = assert(loadfile((path:gsub("[^/]+$", "menu-style.lua"))))()
+local want = expiredRow.disabled and tones.tone(tones.DIM_RED, true) or tones.DIM_RED
+if not color or color.red ~= want.red or color.green ~= want.green or color.blue ~= want.blue
+    or color.alpha ~= want.alpha then
   error("expired at-limit row was not dim red")
 end
 local entryState = { starts = {}, alerts = {} }
