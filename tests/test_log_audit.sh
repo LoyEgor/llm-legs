@@ -32,6 +32,10 @@ rows = [
         {"type": "tool_result", "content": "FAIL: assert 3", "is_error": True}]}},
 ] + [{"type": "attachment", "timestamp": late, "attachment": {"type": "hook_success", "hookName": "PreToolUse:Bash",
                                                                 "stderr": "awk: towc: multibyte conversion failure"}}] * 3 + [
+    {"type": "attachment", "timestamp": late, "attachment": {"type": "hook_blocking_error", "hookName": "Stop",
+     "blockingError": {"blockingError": "write the reading line", "command": "stop-dispatch.sh"}}},
+    {"type": "attachment", "timestamp": late, "attachment": {"type": "hook_blocking_error", "hookName": "PreToolUse:Bash",
+     "blockingError": "files left owned by nobody"}},
     {"type": "system", "subtype": "turn_duration", "durationMs": 900000, "timestamp": now},
     {"type": "user", "timestamp": now, "message": {"content": "```зачем```" + " длинное русское сообщение" * 50}},
 ]
@@ -84,6 +88,8 @@ assert grep -q '^D: 10 min gap$' <<<"$skeleton"
 assert grep -q 'D: turn took 15 min$' <<<"$skeleton"
 assert grep -qx 'H×3: PreToolUse:Bash stderr awk: towc: multibyte conversion failure' <<<"$skeleton"
 assert test "$(grep -c 'multibyte' <<<"$skeleton")" -eq 2
+assert grep -q 'H: Stop hook_blocking_error write the reading line$' <<<"$skeleton"
+assert grep -q 'H: PreToolUse:Bash hook_blocking_error files left owned by nobody$' <<<"$skeleton"
 assert test "$(grep -c 'SECRET-OUTPUT\|huge context' <<<"$skeleton")" -eq 0
 
 # A full read: every chunk and the merge run on Claude Sonnet with no relay token at all, and the

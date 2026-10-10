@@ -76,7 +76,11 @@ def entry_lines(row, repeats):
         if item.get("type") == "hook_success" and (item.get("stderr") or "").strip():
             line = "H: %s stderr %s" % (item.get("hookName"), clip(item["stderr"], HOOK_MAX))
         elif item.get("type") in ("hook_blocking_error", "hook_non_blocking_error", "hook_error_during_execution"):
-            line = "H: %s %s %s" % (item.get("hookName"), item["type"], clip(item.get("content") or item.get("stderr") or "", HOOK_MAX))
+            error = item.get("blockingError")
+            if isinstance(error, dict):
+                error = error.get("blockingError")
+            text = item.get("content") or item.get("stderr") or error or ""
+            line = "H: %s %s %s" % (item.get("hookName"), item["type"], clip(text, HOOK_MAX))
         elif item.get("type") == "hook_system_message":
             line = "H: %s says %s" % (item.get("hookName"), clip(item.get("content") or "", HOOK_MAX))
         else:
