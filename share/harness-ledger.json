@@ -6484,6 +6484,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261010T031925Z-1fd4",
       "note": "Before: 356 runs, 1.2 wall-min a run, 18 min + 42 w-min/day. Timestamped xtrace: the wall is ~76 llm-limits.sh calls at 4-8 s each under load 90-150, while one empty-HOME call is ~0.45 CPU-s (676 traced lines; forks of file_mtime/worker_model_pinned_account ~70 ms each, elevenlabs_balance.py ~0.8 s even with no keys). No sleeps worth cutting (the hung-touch and busy-lock cases wait ~1.5 s by design), no legacy checks found; hs renderer ~1 s. Shards only split when run-suites' slot_room finds room. Not cut: the collector's own per-call cost (llm-limits.sh forks and the ElevenLabs python start), production code outside this suite; rebalancing blocks further would save only 2 calls on the pole.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-heavy-test-codexb",
+      "title": "test_codexb runs whole: one serial process for codexb accounts, profiles and codex-image",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_codexb"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:50:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-codexb-20261010T031918Z-6532",
+          "files": [
+            "llm-legs/tests/test_codexb.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_codexb base vs fix: whole run, RUN_SUITES_SHARDS=on and RUN_SUITES_SHARDS=off",
+            "data": "the suite's own fixtures; shard 2 starts on a fresh home seeded with the accounts, trap profile and quota files its checks read (the same files shard 1 ends on)",
+            "result": "443 asserts and the same PASS line in all three runs (shards 161 + 181 + 101); CPU unchanged (17.6 s user, 25.4 s sys); wall 5:12 whole at load ~127 -> 1:40 sharded at load ~177"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-codexb-20261010T031918Z-6532",
+      "note": "A traced run (580 s under xtrace, load ~130) holds no sleep worth cutting: wait_announce polls 0.1 s, the 0.3 s negative wait and the 1 s image deadline are the checks themselves; the wall is ~2000 short forks of bin/codexb, codex-quota.py and bin/codex-image. Fix: `# shards: 3` cut where the state allows (accounts, pool, status and launch args 211 s; profiles, web, reserved names, quota helper, remove and pins 217 s on a seeded home; codex-image and the export helpers 148 s). Shards run only while slot_room finds room, so a saturated machine still runs it whole at the old wall. Not cut: no legacy or duplicate check found; the 6 TTY key specs and the reserved-word loop are distinct requirements.",
+      "handoff": null
     }
   ],
   "blind_spots": [

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,16 +22,21 @@ assert_fails() {
   fi
 }
 
-HOME="$WORK/home"
 FAKE_BIN="$WORK/bin"
 CODEX_CALLS="$WORK/codex-calls"
-export HOME CODEX_CALLS
+export CODEX_CALLS
 unset CODEX_HOME
-mkdir -p "$HOME/.codex/skills" "$HOME/.codex/plugins" "$FAKE_BIN"
-printf 'model = "fixture"\n' >"$HOME/.codex/config.toml"
-printf 'fixture agents\n' >"$HOME/.codex/AGENTS.md"
-printf 'skill\n' >"$HOME/.codex/skills/example"
-printf 'plugin\n' >"$HOME/.codex/plugins/example"
+mkdir -p "$FAKE_BIN"
+new_home() {
+  HOME=$1
+  export HOME
+  mkdir -p "$HOME/.codex/skills" "$HOME/.codex/plugins"
+  printf 'model = "fixture"\n' >"$HOME/.codex/config.toml"
+  printf 'fixture agents\n' >"$HOME/.codex/AGENTS.md"
+  printf 'skill\n' >"$HOME/.codex/skills/example"
+  printf 'plugin\n' >"$HOME/.codex/plugins/example"
+}
+new_home "$WORK/home"
 
 if ! grep -q '^worker_pool_shield_override()' "$ROOT/share/worker-pool.sh"; then
   BASH_ENV="$WORK/bash-env"
@@ -113,7 +119,16 @@ wait_announce() {
   done
   return 1
 }
+now=$(date +%s)
+future=$((now + 7200))
+week=$((now + 172800))
+credit_expiry=$((now + 950400))
+credit_expiry_iso=$(date -u -r "$credit_expiry" +%Y-%m-%dT%H:%M:%SZ)
+# The spent credit keeps an earlier `expiresAt`: only the ones still available may name the deadline.
+quota_main_credits() { printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"RateLimitResetCredit_spent","status":"redeemed","expiresAt":%s},{"id":"RateLimitResetCredit_live","status":"available","expiresAt":%s}]}}\n' "$future" "$week" "$future" "$credit_expiry" >"$HOME/quota-main.json"; }
+quota_alpha_no_credits() { printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":0}}\n' "$future" "$week" >"$HOME/quota-alpha.json"; }
 
+if suite_shard_owns 1 cx-accounts-pool-launch; then
 printf 'ok\n' >"$HOME/auth-main"
 add_output=$(bash "$SCRIPT" add alpha) || fail "add alpha failed"
 assert wait_announce '--refresh-account codex/alpha'
@@ -142,9 +157,6 @@ assert test "$(sed -n '1p' <<<"$list_output")" = 'main: Logged in using ChatGPT'
 assert grep -qx 'alpha: Logged in using ChatGPT' <<<"$list_output"
 assert grep -qx 'beta: Not logged in' <<<"$list_output"
 
-now=$(date +%s)
-future=$((now + 7200))
-week=$((now + 172800))
 near_week=$((now + 86400))
 far_week=$((now + 518400))
 past=$((now - 60))
@@ -176,16 +188,13 @@ printf '{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"se
 printf '{"primary":{"usedPercent":50,"windowDurationMins":300,"resetsAt":%s},"secondary":null,"planType":"plus"}\n' "$future" >"$HOME/quota-alpha.json"
 assert test "$(bash "$SCRIPT" pick)" = alpha
 
-credit_expiry=$((now + 950400))
-credit_expiry_iso=$(date -u -r "$credit_expiry" +%Y-%m-%dT%H:%M:%SZ)
-# The spent credit keeps an earlier `expiresAt`: only the ones still available may name the deadline.
-printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"RateLimitResetCredit_spent","status":"redeemed","expiresAt":%s},{"id":"RateLimitResetCredit_live","status":"available","expiresAt":%s}]}}\n' "$future" "$week" "$future" "$credit_expiry" >"$HOME/quota-main.json"
-printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":0}}\n' "$future" "$week" >"$HOME/quota-alpha.json"
+quota_main_credits
+quota_alpha_no_credits
 assert test "$(bash "$SCRIPT" pick)" = alpha
 printf '{"primary":{"usedPercent":60,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
 printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-beta.json"
 assert test "$(bash "$SCRIPT" pick)" = main
-printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":0}}\n' "$future" "$week" >"$HOME/quota-alpha.json"
+quota_alpha_no_credits
 printf 'no\n' >"$HOME/auth-main"
 printf 'no\n' >"$HOME/auth-alpha"
 assert test "$(bash "$SCRIPT" pick)" = main
@@ -480,6 +489,19 @@ assert grep -qx "CALL account=alpha home=$HOME/.codex-profiles/alpha argc=5" "$C
 assert grep -qx 'ARG=resume' "$CODEX_CALLS"
 assert grep -qx 'ARG=--disable' "$CODEX_CALLS"
 assert grep -qx 'model = "fixture"' "$HOME/.codex/config.toml"
+
+fi
+
+if suite_shard_owns 2 cx-profiles-quota-remove-pin; then
+new_home "$WORK/home-2"
+: >"$ANNOUNCE_LOG"
+printf 'ok\n' >"$HOME/auth-main"
+printf 'ok\n' >"$HOME/auth-alpha"
+bash "$SCRIPT" add alpha >/dev/null && bash "$SCRIPT" add beta >/dev/null || fail "seed accounts failed"
+wait_announce '--refresh-account codex/alpha' || fail "seed announce missing"
+mkdir -p "$HOME/.codex-profiles/trap"
+quota_main_credits
+quota_alpha_no_credits
 
 # One-step profile: an unknown name is auto-created (mirrors claudeb profile) and codex launches.
 : >"$CODEX_CALLS"
@@ -865,7 +887,9 @@ else
   assert grep -qx 'codex_profile=alpha' "$UNREADABLE_PIN"
 fi
 chmod 600 "$UNREADABLE_PIN"
+fi
 
+if suite_shard_owns 3 codex-image-and-helpers; then
 IMAGE_SCRIPT="$ROOT/bin/codex-image"
 IMAGE_BIN="$WORK/image-bin"
 IMAGE_CALLS="$WORK/image-calls"
@@ -1264,5 +1288,6 @@ CODEX_HOME="$OTHER_HOME" bash "$SCRIPT" export-auth main --to "$WORK/exported-au
   || fail "export-auth main failed"
 assert test "$(jq -r .tokens.account_id "$WORK/exported-auth.json")" = main-account
 assert test "$(jq -r .tokens.refresh_token "$WORK/exported-auth.json")" = ''
+fi
 
 echo "PASS: $asserts asserts; add and shared-link trap, codexb web (a roster-gated chatgpt-web login held until its window is quit, then status: ready with the plan or the reason and exit 4; offered once after a first interactive login on a tty, default no), worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry, the base account removed by marker alone (hidden from list/status/pin/pick/launch, the real ~/.codex untouched, the cache's current falling to the first account left, undone by deleting the marker), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"
