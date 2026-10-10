@@ -248,8 +248,23 @@ ANCHORS
   clear_stub
   unset CLAUDE_CODE_SESSION_ID
 }
+attribution_fixture() { # sets the caller's repo and outside
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
+  repo="$WORK/attribution-repair" outside="$WORK/outside-repair"
+  mkdir -p "$repo/bin" "$outside" "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
+  if [ ! -d "$repo/.git" ]; then
+    git -C "$repo" init -q
+    printf 'base\n' >"$repo/bin/restored"
+    git -C "$repo" add bin/restored
+    git -C "$repo" -c user.name=fixture -c user.email=fixture@example.test commit -qm base
+  fi
+  repo=$(cd "$repo" && pwd -P)
+  outside=$(cd "$outside" && pwd -P)
+}
 attribution_repair_tests() {
-  local repo="$WORK/attribution-repair" outside="$WORK/outside-repair" command variant report note
+  local repo outside command variant report note
   eval "$(sed -n '/^writes_through_shell() {/,/^}/p' "$RUNNER")"
   parser_failure_is_unknown() (
     python3() { return 2; }
@@ -270,16 +285,7 @@ attribution_repair_tests() {
       "printf '%s' 'a >= b' 'x => x'"; do
     assert_fails writes_through_shell "$command"
   done
-  clear_stub
-  set_config 'claudeb_model=opus' 'claudeb_effort=high'
-  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
-  mkdir -p "$repo/bin" "$outside" "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
-  git -C "$repo" init -q
-  printf 'base\n' >"$repo/bin/restored"
-  git -C "$repo" add bin/restored
-  git -C "$repo" -c user.name=fixture -c user.email=fixture@example.test commit -qm base
-  repo=$(cd "$repo" && pwd -P)
-  outside=$(cd "$outside" && pwd -P)
+  attribution_fixture
   for variant in readonly python sed bash unknown empty whitespace undated comment splitcalls unreadable missing namedonly shellonly; do
     [ -z "${WORKER_RUN_TEST_ATTRIBUTION_CASE:-}" ] || [ "$variant" = "$WORKER_RUN_TEST_ATTRIBUTION_CASE" ] || continue
     case "$variant" in
@@ -368,6 +374,17 @@ attribution_repair_tests() {
       assert grep -q bin/restored "$RUN_DIR/produced"
     fi
   done
+}
+outside_worktree_tests() {
+  local repo outside variant note trees made_meta elsewhere="$WORK/made-elsewhere" before
+  attribution_fixture
+  # Born early so the launches below usually carry the clock past its second before the wait.
+  mkdir -p "$elsewhere"
+  git -C "$elsewhere" init -q
+  git -C "$elsewhere" -c user.name=fixture -c user.email=fixture@example.test commit -q --allow-empty -m base
+  elsewhere=$(cd "$elsewhere" && pwd -P)
+  git -C "$elsewhere" worktree add -q "$elsewhere/.claude/worktrees/early" 2>/dev/null
+  before=$(date +%s)
   for variant in outside outside_dotdot outside_only; do
     [ -z "${WORKER_RUN_TEST_ATTRIBUTION_CASE:-}" ] || [ "$variant" = "$WORKER_RUN_TEST_ATTRIBUTION_CASE" ] || continue
     git -C "$outside" init -q
@@ -411,13 +428,7 @@ attribution_repair_tests() {
     assert_fails grep -q bin/outside-cotenant "$RUN_DIR/produced"
   done
   [ -n "${WORKER_RUN_TEST_ATTRIBUTION_CASE:-}" ] && [ "$WORKER_RUN_TEST_ATTRIBUTION_CASE" != made_worktree ] && return 0
-  local trees="$repo/.claude/worktrees" made_meta elsewhere="$WORK/made-elsewhere" before
-  mkdir -p "$elsewhere"
-  git -C "$elsewhere" init -q
-  git -C "$elsewhere" -c user.name=fixture -c user.email=fixture@example.test commit -q --allow-empty -m base
-  elsewhere=$(cd "$elsewhere" && pwd -P)
-  git -C "$elsewhere" worktree add -q "$elsewhere/.claude/worktrees/early" 2>/dev/null
-  before=$(date +%s)
+  trees="$repo/.claude/worktrees"
   while [ "$(date +%s)" -le "$before" ]; do sleep 0.1; done
   git -C "$repo" worktree add -q "$trees/task" 2>/dev/null
   git -C "$repo" worktree add -q "$trees/foreign" 2>/dev/null
@@ -454,8 +465,6 @@ attribution_repair_tests() {
     >"$WORK/gnu-stat/stat"
   chmod +x "$WORK/gnu-stat/stat"
   clear_stub
-  before=$(date +%s)
-  while [ "$(date +%s)" -le "$before" ]; do sleep 0.1; done
   TOOL_TS=$(iso $(($(date +%s) + 60)))
   {
     tool_call Bash command "cd $elsewhere && git worktree add .claude/worktrees/gnu"
@@ -524,6 +533,7 @@ produced_rows_tests() {
 
 if suite_shard_owns 1 attr-anchors-store; then anchors_store_tests; fi
 if suite_shard_owns 2 attr-repair; then attribution_repair_tests; fi
+if suite_shard_owns 1 attr-outside-worktrees; then outside_worktree_tests; fi
 if suite_shard_owns 2 attr-produced-rows; then produced_rows_tests; fi
 
 echo "PASS: $asserts asserts; the review-anchors store and attribution repair"
