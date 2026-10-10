@@ -6175,7 +6175,8 @@
       "same_cause": [],
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-instruction-gate-20261010T031922Z-5827",
-      "note": "Audit, 48 CPU-s a whole run, 203 gate calls at ~0.24 CPU-s each (~30 execs per denial: jq, sed, realpath, mkdir, find, stat, date, shasum): the gate's own per-call cost is the suite, no sleeps, no legacy checks, 6 decision strings shared with the matrix/span/bypasses suites (different session/span context, kept). Heaviest sections are the interpreter-variable (5.1 s), program-file (4.4 s) and directory-variable (3.1 s) bypass regressions, each a distinct historical bypass. Not cut: the gate's ~30 forks a denial (a hook refactor, its own run); runs without room for shards (24 of 55 since 10-08) still run whole."
+      "note": "Audit, 48 CPU-s a whole run, 203 gate calls at ~0.24 CPU-s each (~30 execs per denial: jq, sed, realpath, mkdir, find, stat, date, shasum): the gate's own per-call cost is the suite, no sleeps, no legacy checks, 6 decision strings shared with the matrix/span/bypasses suites (different session/span context, kept). Heaviest sections are the interpreter-variable (5.1 s), program-file (4.4 s) and directory-variable (3.1 s) bypass regressions, each a distinct historical bypass. Not cut: the gate's ~30 forks a denial (a hook refactor, its own run); runs without room for shards (24 of 55 since 10-08) still run whole.",
+      "handoff": null
     }
   ],
   "blind_spots": [
