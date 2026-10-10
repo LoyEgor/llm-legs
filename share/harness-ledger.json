@@ -6757,6 +6757,37 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-run-20261010T031928Z-51ca",
       "note": "Same split and commit as speed-test-health-heavy-night-run: the old first shard was the pole (302 s vs 226 s for the second at load ~170).",
       "handoff": null
+    },
+    {
+      "id": "speed-heavy-test-codex-image",
+      "title": "test_codex_image ran on changes it never exercises and carried every media wrapper's refusal block",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_codex_image"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-10T08:40:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-codex-image-20261010T031917Z-10e1",
+          "files": [
+            "llm-legs/tests/test_codex_image.sh",
+            "llm-legs/tests/test_media_wrapper_refusals.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert inventory base vs fix: test_codex_image at base against test_codex_image + test_media_wrapper_refusals at the fix; tests/affected for bin/worker-run, bin/vendor-cli-update, bin/chats, the nine wrappers and share/image-leg.sh",
+            "data": "the suites' committed fixtures, load ~100-113",
+            "result": "base 453 asserts = 344 + 109 after, the wrapper block's cases unchanged (its per-wrapper --bogus usage relaunch now reads the usage from the refusal's own stderr); worker-run, vendor-cli-update and chats select neither suite, a gemini/grok wrapper selects only the 24 s refusal suite, codex-image and image-leg.sh select both"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-10",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-codex-image-20261010T031917Z-10e1",
+      "note": "Before: 267 runs in 7 d, 0.7 work-min a run, 10 min + 9.6 w-min/day; at load ~100 one run 145 s wall on 29 CPU-s, 133 s of it the 68 bin/codex-image launches (~2 s each, ~0.5 CPU-s, ~40 forks, no blocking sleep; `codexb models --own` 0.3 s wall of it) and 22 s the nine wrappers' help/I23 block. tests/affected matched the suite on words it never runs: a comment naming worker-run (104 main commits in 7 d), the vendor-cli-update scratch dir, `chats` in an expected message. Fixed: those three words gone; the wrapper block moved to test_media_wrapper_refusals.sh (24 s wall, 2.7 CPU-s), so the 37 gemini/grok wrapper commits a week no longer run the codex part; its duplicate --bogus launch per wrapper cut (9 launches). Codex part after: 26.8 CPU-s. Not cut: worker-pick (the stub's name; codex-image's pick contract is exercised), pkill (a command). Legacy C2PA {name: gpt-image, version: 2.0} branch kept: the web route reads ChatGPT downloads through c2pa_model and their shape is unproven. Heuristic gap seen, not this row's: share/image-caps.sh and share/account-arg.sh select neither suite though codex-image sources both.",
+      "handoff": null
     }
   ],
   "blind_spots": [

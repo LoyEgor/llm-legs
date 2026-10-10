@@ -8,7 +8,7 @@ FIXTURE="$ROOT/tests/fixtures/fake-codex-image.sh"
 . "$ROOT/tests/fixtures/codexb-models.sh"
 arg_after() { grep -A1 -x -- "ARG=$1" "$FAKE_CODEX_CALLS" | grep -qx -- "ARG=$2"; }
 WORK="$(mktemp -d)"
-export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-state"
 sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
@@ -141,44 +141,6 @@ assert grep -q '^usage: codex-image ' "$IMAGE_ERR"
 # The usage line quotes the manifest rather than a literal of its own, so a changed cap is stated
 # where a caller reads it.
 assert grep -q "references: at most $REF_MAX" "$IMAGE_ERR"
-
-legs_before=$(wc -l <"$IMAGE_LEG_LOG")
-wrappers=(codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-speech gemini-video grok-image grok-video)
-for wrapper in "${wrappers[@]}"; do
-  help_rc=0
-  help_out=$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --help 2>/dev/null) || help_rc=$?
-  assert test "$help_rc" -eq 0
-  assert grep -q "^usage: $wrapper " <<<"$help_out"
-  assert test "$(grep -v '^#' "$ROOT/bin/$wrapper" | head -n 1)" = '{'
-  assert test "$(tail -n 2 "$ROOT/bin/$wrapper" | tr '\n' ' ')" = 'exit } '
-done
-assert test "$(wc -l <"$IMAGE_LEG_LOG")" -eq "$legs_before"
-
-# I23: a refusal names its cause on the first stderr line, and the line reaches the leg log's err.
-refusal_log="$WORK/refusal-legs.jsonl"
-for wrapper in "${wrappers[@]}"; do
-  case $wrapper in
-    gemini-listen) dest_args=(-o /nonexistent-i23/out.txt question "$WORK/clip.mp3") folder_flag=-o ;;
-    gemini-music) dest_args=(--dest /nonexistent-i23/out.mp3 --prompt tune) folder_flag=--dest ;;
-    gemini-sfx) dest_args=(--dest /nonexistent-i23/out.wav --prompt thud) folder_flag=--dest ;;
-    gemini-speech) dest_args=(--dest /nonexistent-i23/out.wav --text hello) folder_flag=--dest ;;
-    *-video) dest_args=(--dest /nonexistent-i23/out.mp4 --prompt clip --ref "$WORK/clip.png") folder_flag=--dest ;;
-    *) dest_args=(--dest /nonexistent-i23/out.png --prompt badge) folder_flag=--dest ;;
-  esac
-  for case_args in "--bogus-i23|unknown argument --bogus-i23" "DEST|$folder_flag folder /nonexistent-i23 does not exist"; do
-    want="$wrapper: ${case_args#*|}"
-    if [ "${case_args%%|*}" = DEST ]; then args=("${dest_args[@]}"); else args=("${case_args%%|*}"); fi
-    : >"$refusal_log"
-    refusal_rc=0
-    refusal_err=$(IMAGE_LEG_LOG="$refusal_log" HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" "${args[@]}" 2>&1 >/dev/null) ||
-      refusal_rc=$?
-    assert test "$refusal_rc" -eq 2
-    assert test "$(head -n 1 <<<"$refusal_err")" = "$want"
-    assert test "$(jq -r '.err | split("\n") | map(select(startswith("'"$wrapper"': "))) | first' "$refusal_log")" = "$want"
-  done
-  assert grep -q "^usage: $wrapper " <<<"$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --bogus-i23 2>&1)"
-  assert_fails grep -nE '(^|[^-_[:alnum:]])usage[[:space:]]*(;|\)|$)' <(grep -vE 'usage\(\)|image_leg_help usage' "$ROOT/bin/$wrapper")
-done
 
 # 2026-10-02: a chat rewrote bin/codex-image in place while two legs ran, and both died on shifted
 # bytes ("line 559: the: command not found"). The leg here is rewritten while its codex runs.
@@ -591,7 +553,7 @@ assert grep -qx 'CLAUDE_LAUNCHER_SESSION=image-launching-chat' "$FAKE_CODEX_CALL
 # A leg killed by a caller's timeout is logged with the signal's status, never as a success.
 killed_log="$WORK/killed-legs.jsonl"
 for signal_rc in TERM:143 HUP:129; do
-  # A worker's suite runs under worker-run's nohup: a HUP ignored on entry cannot be trapped by
+  # A worker's suite runs under nohup: a HUP ignored on entry cannot be trapped by
   # bash, so the leg would sleep out and exit 0 unless the disposition is reset before it starts.
   IMAGE_LEG_LOG="$killed_log" perl -e '$SIG{HUP} = $SIG{TERM} = "DEFAULT"; exec @ARGV or die' \
     bash -c '. "$1/share/image-leg.sh"; image_leg_start killed-leg image
@@ -770,7 +732,7 @@ for refused in "--remove-bg" "--point 0.5,0.5=bluer"; do
   read -r -a refused_args <<<"$refused"
   web_run ok --dest "$OUTPUT_DIR/stay.png" --ref "$WORK/edit-base.png" --count 2 "${refused_args[@]}"
   assert test "$image_rc" -eq 2
-  assert grep -q -- '--count renders new chats' "$IMAGE_ERR"
+  assert grep -q -- '--count renders new chat' "$IMAGE_ERR"
   assert test ! -e "$WEB_CALLS"
 done
 
