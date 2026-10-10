@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
+if suite_shard_owns 1 outcomes-readonly; then
 light_workdir="$WORK/light-workdir"
 mkdir -p "$light_workdir"
 git -C "$light_workdir" init -q
@@ -174,11 +176,13 @@ assert jq -e '.role == "research"' "$RUN_DIR/meta.json" >/dev/null
 report=$("$RUNNER" report "$RUN_ID")
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
 assert test ! -e "$RUN_DIR/report-readonly"
+fi
 
 export WORKER_RUN_DIR="$WORK/runs"
 unset WORKER_TEST_WORKDIR
 printf 'test brief\nsecond line\n' >"$WORK/brief"
 
+if suite_shard_owns 2 outcomes-classification; then
 # A clean exit whose text merely mentions quotas is not a limit: no OUTCOME line.
 clear_stub
 set_config 'gemini_model=flash38' 'gemini_effort=high'
@@ -224,7 +228,9 @@ for spec in 'true:1' 'false:0'; do
   assert test "$(grep -c '^ARG=auth-needed$' "$CALL_LOG")" -eq "$calls"
   [ "$calls" = 0 ] || assert test "$(grep -A1 '^ARG=auth-needed$' "$CALL_LOG" | tail -n1)" = ARG=authdead
 done
+fi
 
+if suite_shard_owns 3 outcomes-codex-retries; then
 clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=trusted
@@ -272,6 +278,15 @@ assert test "$(grep -c '^ARG=gpt-5.6-sol$' "$CALL_LOG")" -eq 1
 assert grep -qxF 'ARG=model=\"gpt-6.1-astra\"' "$CALL_LOG"
 assert jq -e '.model_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert_launched_brief "$STUB_DIR/codex.stdin"
+# A refusal is never recorded (gpt-6.1-sol's on 2026-09-30 was rollout lag): the next launch on
+# that account asks for the same slug again.
+assert test ! -e "$HOME/.codex-profiles/.codexb/refused-models"
+: >"$CALL_LOG"
+rm -f "$STUB_DIR/codex_bad_model"
+start_ok codex --model sol
+assert await_done
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+assert grep -qx 'ARG=gpt-5.6-sol' "$CALL_LOG"
 
 # The default resolving to the refused slug itself: the server would refuse it again.
 clear_stub
@@ -283,23 +298,6 @@ assert await_done
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
 assert jq -e 'has("model_flag_dropped") | not' "$RUN_DIR/meta.json" >/dev/null
-
-# A refusal is never recorded (gpt-6.1-sol's on 2026-09-30 was rollout lag): the next launch on
-# that account asks for the same slug again.
-clear_stub
-set_config 'codex_effort=high'
-export PICK_RC=0 PICK_ACCOUNT=badmodel
-: >"$STUB_DIR/codex_bad_model"
-start_ok codex --model sol
-assert await_done
-assert grep -q '^STATUS: done$' "$WORK/wait.out"
-assert test ! -e "$HOME/.codex-profiles/.codexb/refused-models"
-: >"$CALL_LOG"
-rm -f "$STUB_DIR/codex_bad_model"
-start_ok codex --model sol
-assert await_done
-assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
-assert grep -qx 'ARG=gpt-5.6-sol' "$CALL_LOG"
 
 # A clean exit whose stderr mentions the phrase is not rerun.
 clear_stub
@@ -365,7 +363,9 @@ export PICK_RC=0 PICK_ACCOUNT=noisyacct STUB_CODE=7 STUB_ERROR='ordinary failure
 start_ok codex
 assert await_done
 assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
+fi
 
+if suite_shard_owns 2 outcomes-self-edit-prune; then
 # A worker editing this very script mid-run must not corrupt it: bash re-reads
 # the file after the last top-level command and a grown file parses as garbage.
 clear_stub
@@ -423,7 +423,9 @@ start_ok codex
 assert test ! -d "$WORKER_RUN_DIR/codex-1-1-dead"
 assert test -d "$RUN_DIR"
 assert await_done
+fi
 
+if suite_shard_owns 2 outcomes-wall-resets; then
 # Codex walls with a bare clock time and a trailing dot; read as now+1h, worker-pick freed the
 # account hours before its real reset.
 . "$ROOT/share/worker-walls.sh"
@@ -466,5 +468,6 @@ assert test "$(wall_reset "resets ${iso}Z")" = "$(TZ=UTC date -j -f '%Y-%m-%dT%H
 assert test -z "$(printf 'Connection reset by peer\npreset: 5\nretry at most once\n' >"$WORK/wall.out"; worker_walls_extract_reset "$WORK/wall.out")"
 dec31=$(at "$(date +%Y)-12-31 10:00:00")
 assert test "$(WORKER_WALLS_NOW=$dec31 worker_walls_parse_reset 'resets Jan 2 3:00 PM')" = "$(date -j -v+1y -f '%Y-%m-%d %H:%M:%S' "$(date +%Y)-01-02 15:00:00" +%s)"
+fi
 
 echo "PASS: $asserts asserts; read-only runs, outcome classification, codex trust and model retries, self-edit, pruning"
