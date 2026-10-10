@@ -143,11 +143,17 @@ web_search_grid() { # vendor
 
 # The vendors come from the table: a row added without an entry point, or an entry point that
 # stops reading the table, is what this grid exists to catch — a hand-written list catches neither.
-shard=0
-for vendor in $(web_search_table | cut -f1); do
-  shard=$((shard % 4 + 1))
-  if suite_shard_owns "$shard" "ws-grid-$vendor"; then web_search_grid "$vendor"; fi
-done
+web_search_grid_shard() { # shard -> the grid of every table vendor whose row index lands on it
+  local index=0 vendor
+  for vendor in $(web_search_table | cut -f1); do
+    index=$((index % 4 + 1))
+    [ "$index" != "$1" ] || web_search_grid "$vendor"
+  done
+}
+if suite_shard_owns 1 ws-grid-1; then web_search_grid_shard 1; fi
+if suite_shard_owns 2 ws-grid-2; then web_search_grid_shard 2; fi
+if suite_shard_owns 3 ws-grid-3; then web_search_grid_shard 3; fi
+if suite_shard_owns 4 ws-grid-4; then web_search_grid_shard 4; fi
 
 if suite_shard_owns 1 ws-header-refusals; then
   web_search_config claudeb

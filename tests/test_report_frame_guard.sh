@@ -20,7 +20,7 @@ done
 DRAWING="['\"]=['\"] *\\*|\\* *['\"]=['\"]|={10,}|tr ' ' '='|tr \" \" \"=\"|=%\\.0s|// /=\\}"
 CONSTANT='(^|[^.A-Za-z_])(FRAME_WIDTH|REPORT_WIDTH[A-Z_]*|REPORT_FRAME_WIDTH|REPORT_LABEL_WIDTH|LABEL_WIDTH|REPORT_END)\b'
 # A table the model reads is not a chat block; base64 padding is not a rule.
-ALLOWED='^llm-legs:bin/worker-corpus:[0-9]+:    print\("=" \* 80\)$|^llm-legs:share/merge_ledger\.py:[0-9]+:        lines\.append\("=" \* 7\)$|% 4\)'
+ALLOWED='^llm-legs:share/merge_ledger\.py:[0-9]+:        lines\.append\("=" \* 7\)$|% 4\)'
 
 sources() {
   git -C "$1" ls-files --cached --others --exclude-standard |

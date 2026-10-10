@@ -14,7 +14,12 @@ Steps, in order (a relay worker may not write `~/.claude/settings.json`):
    `~/.claude/hooks/cd-guard.sh` entry from PreToolUse Bash.
 2. One live check: a Bash call `cd /tmp`, then `pwd` in the next call prints the project directory.
 3. Then, in claude-setup: delete `hooks/cd-guard.sh` and `tests/test_cd_guard.sh`, and the cd-guard
-   mentions in `hooks/comment-gate.sh` and `hooks/lib/review-journal.sh`; `~/.cache/claude-cd-guard` unlock
-   files go with it. Step 2 also checks that EnterWorktree still moves a session into its worktree.
+   mentions in `hooks/comment-gate.sh` and `hooks/lib/review-journal.sh`; `tests/test_hook_time.sh` copies
+   its `hook-time.sh` line out of `hooks/cd-guard.sh`, so point it at another hook that sources it.
+   `~/.cache/claude-cd-guard` unlock files go with it. In llm-legs, reword the cd-guard clause of the
+   `share/statusline-workdir.jq` comment (a `(cd /path && cmd)` call stays input it must parse). The
+   cd-guard rows in `tests/test_speed_doctor.sh`, `tests/test_time_budget.sh` and
+   `tests/fixtures/harness-calibration/` are recorded data under a hook name, not callers: they stay.
+   Step 2 also checks that EnterWorktree still moves a session into its worktree.
 
 Step 3 before step 1 makes every Bash call report a missing hook.

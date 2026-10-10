@@ -247,7 +247,7 @@ local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" }
   speed = { status = "ok", as_of_s = now, lost_min_day = 12, lost_min_day_by_day = writeDays(series),
     issues = { { 40, "w-min suites", "w-min/day" }, { 12, "hooks" }, { 1244, "tests", "min/day" } },
     tests = { over = { { 1033, "suites per targeted run" } }, heavy = { { 283, "test_worker_run_pool" }, { 7.4, "test_fast" } } } },
-  spend = { status = "watch", as_of_s = now, index = 0.46, tone = "better", index_by_day = spendDays(series),
+  spend = { status = "watch", as_of_s = now, index = 0.46, index_by_day = spendDays(series),
     issues = { { 1.888, "compaction summaries" } } } }
 local function trendHarness()
   write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 problems\nH\t" .. hs.json.encode(metadata)
@@ -303,7 +303,7 @@ check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].ti
 check(span(trendItems[5].title, 1, 9) == "Lost time" and span(trendItems[6].title, 1, 5) == "Spend"
   and sameColor(colorAt(trendItems[6].title, 1), palette.RED), "the time row reads Lost time; Spend beside it, RED while an audit is due")
 check(colorAt(trendItems[6].title, VALUE_AT) == nil and colorAt(trendItems[5].title, VALUE_AT) == nil,
-  "Spend's value is plain like every other value, whatever tokenmap's tone")
+  "Spend's value is plain like every other value")
 check(span(trendItems[3].title, 1, 7) == "Updater" and sameColor(colorAt(trendItems[3].title, 1), palette.GREEN)
   and sameColor(colorAt(trendItems[3].title, 7), palette.GREEN), "ok name GREEN")
 check(span(trendItems[1].title, 1, 3) == "LLM" and sameColor(colorAt(trendItems[1].title, 1), palette.RED), "problem name RED")
@@ -487,16 +487,14 @@ check(text(unknownSpeed.title) == row("Lost time", "–", "min/day", " ▂▂▃
   and sameColor(colorAt(unknownSpeed.title, 1), palette.DIM) and sameColor(colorAt(unknownSpeed.title, VALUE_AT), palette.DIM),
   "a missing Speed floor is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
 metadata.speed.lost_min_day = 12
-metadata.spend.tone = "worse"
 trendHarness()
-check(colorAt(trendDoctor.menuItems()[6].title, VALUE_AT) == nil, "Spend's value stays plain when tokenmap's tone is worse")
 metadata.spend.status, metadata.spend.index = "nodata", nil
 trendHarness()
 local staleSpend = trendDoctor.menuItems()[6]
 check(text(staleSpend.title) == row("Spend", "–", nil, " ▂▂▃▄▆█", "0.30")
   and sameColor(colorAt(staleSpend.title, 1), palette.DIM) and sameColor(colorAt(staleSpend.title, VALUE_AT), palette.DIM),
   "a stale tracking.json is a DIM – on Spend, never its old index: " .. text(staleSpend.title))
-metadata.spend.status, metadata.spend.index, metadata.spend.tone = "watch", 0.46, "better"
+metadata.spend.status, metadata.spend.index = "watch", 0.46
 trendHarness()
 write("/doctors/problem-days.jsonl", "")
 trendItems = trendDoctor.menuItems()

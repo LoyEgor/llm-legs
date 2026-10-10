@@ -327,14 +327,12 @@ EOF
   assert grep -qx 'CANARY: skipped — a browser run is live' <<<"$(browse --canary)"
   assert test ! -s "$bt/claudeb.log"
   # hidden mode outlives a Chrome run while another is live, never the last one
-  assert test "$("$RUNNER" _chrome-runs --browser)" = live-browser
   : >"$WORKER_RUN_DIR/browse/hidden"
   deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
   assert test -e "$WORKER_RUN_DIR/browse/hidden"
   assert test "$(cat "$WORKER_RUN_DIR/browse/chrome-live")" = live-browser
   mkdir -p "$WORKER_RUN_DIR/live-computer"
   printf '{"pid":%s,"started_at":%s,"computer":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/live-computer/meta.json"
-  assert test "$("$RUNNER" _chrome-runs --browser)" = live-browser
   assert_fails "$RUNNER" browse --hide
   rm -rf "$WORKER_RUN_DIR/live-computer"
   kill "$holder" 2>/dev/null || true

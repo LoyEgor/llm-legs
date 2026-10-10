@@ -241,5 +241,7 @@ assert modes == ["600"] and sorted(p.name for p in work.glob(".mirror.txt.sync-*
 del os.environ["ELEVENLABS_MIRRORS"]
 assert s.mirrors() == []
 PY
+assert grep -qF "[ \"\$write_cache\" = 1 ] || elevenlabs_sync=''" "$ROOT/llm-limits.sh"
+assert grep -qF 'run on every writing `llm-limits.sh` poll' "$ROOT/docs/image-vendors/elevenlabs.md"
 
 echo "PASS test_elevenlabs_media ($asserts asserts)"

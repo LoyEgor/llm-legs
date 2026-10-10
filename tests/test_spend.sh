@@ -127,7 +127,7 @@ def collect(made=NOW - 3600, state=None, write=False, **fixture):
 
 out = collect()
 ids = [p["id"] for p in out["problems"]]
-check(out["status"] == "watch" and out["index"] == 0.46 and out["change"] == "-54%" and out["tone"] == "better"
+check(out["status"] == "watch" and out["index"] == 0.46 and out["change"] == "-54%" and "tone" not in out
       and out["head"] == "index 0.46 (-54%%) · Harness 11.3 %% of spend · %d audits due" % len(ids)
       and ids[:3] == ["spend:startup:CLAUDE.md + memory index", "spend:resumes", "spend:hook:gate.sh"]
       and "spend:rewrites:expired (1h+ idle)" not in ids and "spend:compaction" not in ids
@@ -140,6 +140,12 @@ check([p["id"] for p in collect(idle_avoidable=True)["problems"]][0] == "spend:r
       "a cause tokenmap flags avoidable becomes a target and, the largest, the first audit")
 check(out["selection"] == ids and out["issues"][0] == [6.0, "startup CLAUDE.md + memory index"],
       "the night's queue is every due audit, largest first; bin/doctor-fix takes its slot share: %s" % out["selection"])
+stale_keys = [(r["id"], z) for r in json.load(open(os.path.join(root, "share", "spend-ledger.json")))["rows"]
+              for z in r.get("prices") or {} if " · " not in z]
+check(not stale_keys, "every recorded audit price is keyed the way part_prices keys it, or proof() never reads it: %s"
+      % stale_keys)
+check("`spend.selection` lists every due\n  audit" in open(os.path.join(root, "docs", "doctors-contract.md")).read(),
+      "docs/doctors-contract.md describes spend.selection as the whole queue the code writes")
 stale = collect(made=NOW - 27 * 3600)
 check(stale["status"] == "nodata" and stale["index"] is None and stale["problems"] == [] and stale["selection"] == []
       and stale["head"].startswith("tracking.json stale since"),
@@ -324,7 +330,7 @@ check(document["problem_count"] == 0 and spent and all(p["group"] == "Spend" and
       and "0\t\t\tSpend: watch · index 0.46 (-54%%) · Harness 11.3 %% of spend · %d audits due" % len(spent) in lines
       and "1\t\t\t6.0 % · startup CLAUDE.md + memory index · Δ -40% · audit due: never audited" in lines
       and "1\td\t\t15.5 % · compaction summaries · Δ ×16 · never targeted" in lines
-      and header["spend"] == {k: section[k] for k in ("as_of_s", "status", "index", "index_by_day", "change", "tone",
+      and header["spend"] == {k: section[k] for k in ("as_of_s", "status", "index", "index_by_day", "change",
                                                       "issues")},
       "Harness lays Spend beside Lost time: watch rows counted nowhere, its block and its header: %s" % lines[:6])
 print(count[0])

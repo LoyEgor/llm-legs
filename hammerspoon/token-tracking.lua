@@ -444,12 +444,11 @@ function startJob(range, scanFirst)
 end
 
 local function cancelJob()
-    if not scanTask or jobScan then return not scanTask end
+    if not scanTask then return end
     jobSerial = jobSerial + 1
     scanTask:terminate()
     scanTask, jobSoft = nil, false
     menuStyle.busyChanged()
-    return true
 end
 
 local function lastScan()

@@ -367,8 +367,8 @@ memlogd([(t, 12.0 if t in (3500, 20090) else 2.0, 1000 if t == 20195 else 8000)
          for t in list(range(2900, 4101, 15)) + list(range(20000, 20301, 15))])
 free = T.free_spans(D0 + 20000, D0 + 20500)
 lines(os.path.join(work, "harness", "waits", "2026-01-10.jsonl"),
-      [{"class": "night-workers", "source": "w", "started": D0 + 20300, "seconds": 30, "pid": 4, "reason": "room"},
-       {"class": "night-workers", "source": "w", "started": D0 + 20000, "seconds": 30, "pid": 5, "reason": "limit"}])
+      [{"class": "workers", "source": "w", "started": D0 + 20300, "seconds": 30, "pid": 4, "reason": "room"},
+       {"class": "workers", "source": "w", "started": D0 + 20000, "seconds": 30, "pid": 5, "reason": "limit"}])
 roomless = T.free_spans(D0 + 20000, D0 + 20500)
 check(T.length(free) == 330 and free[-1] == [D0 + 20210, D0 + 20360]
       and T.length(roomless) == 300 and roomless[-2:] == [[D0 + 20210, D0 + 20300], [D0 + 20330, D0 + 20360]],

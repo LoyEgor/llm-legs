@@ -14,7 +14,7 @@
      "readers": ["Claude Code (resume)", "token-map", "chat-find", "chat_resume", "harness-doctor", "code-doctor", "statusline", "worker-run", "review-bench"],
      "cleaner": "self", "days": 30, "why": "cleanupPeriodDays 30 in ~/.claude/settings.json; token-map shows 4 weeks"},
     {"name": "claude-session-dirs", "kind": "log", "globs": ["~/.claude/projects/*/*-*-*-*-*"], "exclude": ["*.jsonl"], "writer": "Claude Code",
-     "owner": "third-party", "readers": ["Claude Code (resume)", "token-map", "chat-find", "worker-run", "worker-corpus", "night_spend", "claude-setup ask hooks"],
+     "owner": "third-party", "readers": ["Claude Code (resume)", "token-map", "chat-find", "worker-run", "night_spend", "claude-setup ask hooks"],
      "cleaner": "sweep", "days": 30, "why": "subagents and tool-results beside each transcript; Claude Code's cleanup leaves them behind, so they go with the transcripts at 30 days"},
     {"name": "claude-file-history", "kind": "log", "globs": ["~/.claude/file-history/*"], "writer": "Claude Code", "owner": "third-party",
      "readers": ["Claude Code (rewind)"], "cleaner": "self", "days": 30, "why": "cleanupPeriodDays"},

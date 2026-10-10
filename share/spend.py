@@ -356,7 +356,7 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
     out["issues"] = [[p["value"], p["spend"]["label"]] for p in out["problems"][:3]]
     value = index_value(index)
     out.update(status="watch" if out["problems"] else "ok", index=value, change=index.get("change"),
-               tone=index.get("tone"), proofs={k: v for k, v in proofs.items() if v})
+               proofs={k: v for k, v in proofs.items() if v})
     if write:
         if value is not None:
             history[local_day(made)] = value

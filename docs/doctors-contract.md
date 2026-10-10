@@ -49,7 +49,7 @@ LLM ▸     8  reviewers crashed
   time, blank for the rest) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare
   (Lost time, internally Speed: Harness time budget `lost_min_day`; Spend: tokenmap's `harness_index.value` from
   `tracking.json` via `share/spend.py`, two decimals, 1.00 = the previous 7 days' harness price per Claude request,
-  Harness being the Spend tree's Harness leaves of every consumer, its `tone` unshown; the problems of both stay counted by Harness alone).
+  Harness being the Spend tree's Harness leaves of every consumer; the problems of both stay counted by Harness alone).
 - Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error (Spend: an
   audit due, as Lost time's floor gaps), DIM_RED watch/blind/pending update, DIM no data or
   stale (Speed also without an observation dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null). Missing value: DIM `–`.
@@ -311,8 +311,8 @@ Harness doctor (added 2026-09-29 by its owner chat):
   harness-owned component whose audit is due (never audited, a source blob moved, share ≥ 1.5× its share at audit).
   Harness-owned: hook scripts, startup instruction parts (CLAUDE.md + memory index, nested CLAUDE.md, skill listing),
   worker cold resumes, subagent/worker spawns, re-write causes tokenmap flags `avoidable`; compaction summaries, the
-  other re-writes and system + tools are Claude Code's, shown and never targeted. `spend.selection` names the one a
-  night audits, area `speed-spend-<component>`; `spend.proofs` holds each audited component's share and part price
+  other re-writes and system + tools are Claude Code's, shown and never targeted. `spend.selection` lists every due
+  audit, of which a night takes up to its kind share, area `speed-spend-<component>`; `spend.proofs` holds each audited component's share and part price
   against the audit, which the night's `roi` lines read.
   Its `tests` (`share/test_health.py`, design § Test health) is the Test health block in Speed's menu lines and
   `opportunity:test-health/...` problems in min/day, its lines over their usual `regression:test-health/<line>` rows;

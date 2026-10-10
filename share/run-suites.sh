@@ -183,7 +183,7 @@ if $from_run_all && ! $changed && [ "${#explicit[@]}" -eq 0 ]; then
     exit 3
   fi
 fi
-suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound or its owner ended
+suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound or the run stops
   local deadline=$((SECONDS + $2))
   while kill -0 "$1" 2>/dev/null; do
     if [ -e "$logdir/stop" ]; then process_tree_end "$1" 10; return; fi

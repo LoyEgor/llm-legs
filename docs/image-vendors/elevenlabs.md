@@ -20,7 +20,7 @@ plan or key refusal (exit 4 class) or a voice the account lacks moves to the nex
 A `reserve=N` account is skipped unless its balance is readable and above N — the same rule as the dictation pool
 in transcriptions-gpt (`KeyPool`).
 
-The file is the master. `share/elevenlabs_keys_sync.py` (run on every `llm-limits.sh` poll) copies it over each
+The file is the master. `share/elevenlabs_keys_sync.py` (run on every writing `llm-limits.sh` poll, inside `elevenlabs_balance.py --sync`) copies it over each
 `accounts.mirrors` path — transcriptions-gpt `settings/elevenlabs_keys.txt` — so dictation spends the same keys in
 the same order while reading only its own file. A key added by hand to a mirror alone stays there, at the end.
 

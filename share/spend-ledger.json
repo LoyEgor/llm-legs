@@ -34,11 +34,7 @@
    "audited_at": "2026-10-08T03:19:23+03:00",
    "by": "feat/spend-audit-nested-claude-md",
    "share": 0.010995,
-   "prices": {
-    "worker": 26143.393762135063,
-    "chat": 34987.16713699263,
-    "subagent": 15017.701136311005
-   },
+   "prices": {},
    "sources": {},
    "verdict": "kept",
    "note": "real cost 0.006 % (59k limit tokens over 6 of 1881 main contexts, 7 days): Claude Code loads an out-of-cwd CLAUDE.md, in sweep repos only claude-setup/global/CLAUDE.md (3 loads, exact copy of the symlinked user file) and llm-legs worktree copies in main-cwd chats (3, exact); claudeMdExcludes could drop them but risks the symlinked user file for ~9k tokens/week; the 0.889 % is Spend scaling per-carrier averages, handed to tokenmap-waste-detectors"
@@ -64,11 +60,7 @@
    "audited_at": "2026-10-08T03:20:03+03:00",
    "by": "feat/spend-audit-listings",
    "share": 0.001864,
-   "prices": {
-    "worker": 26143.393762135063,
-    "chat": 34987.16713699263,
-    "subagent": 15017.701136311005
-   },
+   "prices": {},
    "sources": {},
    "verdict": "kept",
    "note": "kept: claude.ai Claude Docs and Figma already cut at source by disableClaudeAiConnectors (last listed 2026-10-05 18:48, avg 880 to 735 tokens a context; the 7-day row still holds Oct 1-5); left atlassian (used in Arbostar, loyegor.com, wut-ticket from llm-legs) and claude-in-chrome (used); project-scoping atlassian would drop Jira outside Arbostar for ~0.08%"
@@ -79,11 +71,7 @@
    "audited_at": "2026-10-08T03:20:03+03:00",
    "by": "feat/spend-audit-listings",
    "share": 0.001584,
-   "prices": {
-    "worker": 26143.393762135063,
-    "chat": 34987.16713699263,
-    "subagent": 15017.701136311005
-   },
+   "prices": {},
    "sources": {},
    "verdict": "kept",
    "note": "kept: every custom agent spawned in 30 days; the unused two are built-ins claude and statusline-setup (250k of 7d), whose only switch CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS works in non-interactive sessions alone and drops the general-purpose default too"
@@ -109,9 +97,7 @@
    "audited_at": "2026-10-08T03:39:10+03:00",
    "by": "feat/spend-audit-worker-spawn",
    "share": 0.015393,
-   "prices": {
-    "subagent": 15017.701136311005
-   },
+   "prices": {},
    "sources": {},
    "verdict": "cut",
    "note": "relay agents omitClaudeMd (claude-setup 9d0aded): CLAUDE.md+MEMORY.md (~80% of the spawn's startup) leave every relay spawn; first request 13.8k->6.5k tokens, replayed decisions identical 16/17 (17th = MD-GUARD copy drop, baseline 34/669); MCP instructions remain (Claude Code injects them regardless of tools)"
@@ -152,11 +138,7 @@
    "audited_at": "2026-10-09T06:41:17+03:00",
    "by": "harness-speed-spend-startup-claude-md-memory-index-20261009T024759Z-58c8",
    "share": 0.020381,
-   "prices": {
-    "worker": 28822.2787337412,
-    "chat": 35906.0442391454,
-    "subagent": 13787.431835524785
-   },
+   "prices": {},
    "sources": {},
    "verdict": "kept",
    "note": "kept: the x1.7 is load (harness_index worker contexts 641->1086/7d) while this part per context fell 14.7k->12.9k (-12%) since the relay cut; workers act on the memory index (43 of 675 with it cite a slug or memory path, chats 26/37) and on global rules, log-audit readers judge instruction violations against them; one-shot no-tool claudeb -p callers outside llm-legs (llm_gate, judge_last, end-report compose: 90 calls, 0.97M chars) handed off with CLAUDE_CODE_DISABLE_CLAUDE_MDS/AUTO_MEMORY + replay (docs/handoffs/2026-10-09-one-shot-instructions.md)"

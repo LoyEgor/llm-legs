@@ -123,5 +123,5 @@ def launched(doctor, started, own_env, session=None, run=None, finished=None):
 def worker_launched(doctor, started, own_env, run, waited):
     """launched() for a worker-run run, off the output of its `worker-run wait`: a run still going has no end."""
     said = dict(line.split(": ", 1) for line in waited.splitlines() if ": " in line)
-    finished = None if said.get("STATUS", "").strip() in ("running", "queued") else time.time()
+    finished = None if said.get("STATUS", "").strip() == "running" else time.time()
     launched(doctor, started, own_env, session=said.get("SESSION", "").strip(), run=run, finished=finished)
