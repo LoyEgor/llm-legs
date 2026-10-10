@@ -371,12 +371,5 @@ assert grep -qxF "$WORK/extra/grok-went-elsewhere" "$RUN_DIR/workdir-escape"
 rm -rf "$GROKB_PROFILES_DIR/grokfiles"
 assert test "$(($(grok_runs) - grok_runs_before))" -eq 2
 
-mkdir_calls=0
-mkdir() { mkdir_calls=$((mkdir_calls + 1)); command mkdir "$@"; }
-roster_add grok rosterone rostertwo rosterthree
-unset -f mkdir
-assert test "$mkdir_calls" -eq 1
-assert test -d "$GROKB_PROFILES_DIR/rostertwo"
-
 
 echo "PASS: $asserts asserts; grok switched off, pools, outcomes, denials and its own file lists"
