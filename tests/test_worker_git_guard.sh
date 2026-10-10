@@ -78,6 +78,33 @@ assert_deny 'hard reset' claudeb 'git reset --hard HEAD~1'
 assert_deny 'clean force' claudeb 'git clean -fd'
 assert_deny 'grok worker restore' grok 'git restore file'
 assert_deny 'stash drop' claudeb 'git stash drop'
+
+# Resolving the worker's own rebase conflict: --ours/--theirs on an unmerged path writes one side of
+# that conflict, nobody's edits; on any other path it re-checks-out the index over unstaged work.
+CONFLICT="$HOME/conflict"
+git init -q -b main "$CONFLICT"
+gitc() { git -C "$CONFLICT" -c user.name=t -c user.email=t@t "$@"; }
+printf 'base\n' >"$CONFLICT/both.txt"; printf 'calm\n' >"$CONFLICT/calm.txt"
+gitc add -A && gitc commit -qm base
+gitc checkout -qb side && printf 'side\n' >"$CONFLICT/both.txt" && gitc commit -qam side
+gitc checkout -q main && printf 'main\n' >"$CONFLICT/both.txt" && gitc commit -qam main
+gitc merge -q side >/dev/null 2>&1
+printf 'wip\n' >>"$CONFLICT/calm.txt"
+conflict_case() { # deny|allow name command
+  local saved=$GUARD_CWD
+  GUARD_CWD=$CONFLICT
+  "assert_$1" "$2" claudeb "$3"
+  GUARD_CWD=$saved
+}
+conflict_case allow 'checkout --ours on an unmerged path' 'git checkout --ours both.txt'
+conflict_case allow 'checkout --theirs -- unmerged path via -C' "git -C $CONFLICT checkout --theirs -- both.txt"
+conflict_case deny 'checkout --ours on a merged dirty path' 'git checkout --ours calm.txt'
+conflict_case deny 'checkout --ours mixing unmerged and merged' 'git checkout --ours both.txt calm.txt'
+conflict_case deny 'checkout --ours on the whole tree' 'git checkout --ours .'
+conflict_case deny 'checkout --ours with no path' 'git checkout --ours'
+conflict_case deny 'checkout --ours -f' 'git checkout -f --ours both.txt'
+conflict_case deny 'checkout --ours into another work tree' 'git --work-tree=/elsewhere checkout --ours both.txt'
+assert_deny 'checkout --ours outside any conflict' claudeb 'git checkout --ours Makefile'
 assert_deny 'stash bare' grok 'git stash'
 assert_deny 'stash push' claudeb 'git stash push -m wip'
 assert_deny 'stash pop' claudeb 'git stash pop'

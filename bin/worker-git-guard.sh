@@ -46,7 +46,7 @@ looks_like_file() {
 }
 
 is_revert_segment() {
-  local segment=$1 subcommand arg dry_run=0 other_mode=0
+  local segment=$1 subcommand arg dry_run=0 other_mode=0 git_cwd=$guard_cwd other_tree=0
   local -a words
 
   read -r -a words <<< "$segment"
@@ -63,9 +63,14 @@ is_revert_segment() {
     case "$1" in
       -C|-c|--git-dir|--work-tree|--namespace|--config-env)
         [ "$#" -ge 2 ] || return 1
+        case "$1" in
+          -C) case "$2" in /*) git_cwd=$2 ;; *) git_cwd=$git_cwd/$2 ;; esac ;;
+          --git-dir|--work-tree) other_tree=1 ;;
+        esac
         shift 2
         ;;
-      --git-dir=*|--work-tree=*|--namespace=*|--config-env=*|-p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+      --git-dir=*|--work-tree=*) other_tree=1; shift ;;
+      --namespace=*|--config-env=*|-p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
         shift
         ;;
       -*) shift ;;
@@ -78,7 +83,25 @@ is_revert_segment() {
 
   case "$subcommand" in
     checkout)
-      local skip_next=0 saw_separator=0 remaining=0
+      local skip_next=0 saw_separator=0 remaining=0 side=0 forced=0
+      local -a operands=()
+      for arg in "$@"; do
+        case "$arg" in
+          --ours|--theirs) side=1 ;;
+          --) ;;
+          -f|--force|-p|--patch) forced=1 ;;
+          -[!-]*) [[ "$arg" == *f* || "$arg" == *p* ]] && forced=1 ;;
+          -*) ;;
+          *) operands+=("$arg") ;;
+        esac
+      done
+      if [ "$side" -eq 1 ]; then
+        [ "$forced" -eq 0 ] && [ "$other_tree" -eq 0 ] && [ "${#operands[@]}" -gt 0 ] || return 0
+        for arg in "${operands[@]}"; do
+          [ -f "$git_cwd/$arg" ] && [ -n "$(git -C "$git_cwd" ls-files -u -- "$arg" 2>/dev/null)" ] || return 0
+        done
+        return 1
+      fi
       for arg in "$@"; do
         if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
         case "$arg" in
