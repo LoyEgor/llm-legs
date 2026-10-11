@@ -117,7 +117,7 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    REPLACES the global pin tier for that session — every `*_profile=` line of the global file is
    ignored there, and every other chat keeps the global pins. The session id is
    `CLAUDE_CODE_SESSION_ID`. An account switched off in the menu takes a chat pin only from Egor's
-   own `! chat-pin <name>` (`bin/worker-pin-gate.sh` denies a session's): that chat spends it, the night never.
+   own `! chat-pin [<vendor>:]<name>` (`bin/worker-pin-gate.sh` denies a session's): that chat spends it, the night never.
    No session id, no file, or a file with no `*_profile=` line (`open=all` alone) means the global pins. Resolution lives in
    `share/worker-model.sh` alone (`worker_model_pin_file`), and every reader takes pins through it. The
    same file may carry `<vendor>_fast=on` beside the pin (`chat-pin grok-fast`/`codex-fast`): on a

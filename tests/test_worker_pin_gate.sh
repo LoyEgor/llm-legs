@@ -100,6 +100,8 @@ assert denied "$(bash_event 'chat-pin offacct')"
 assert contains "$(bash_event 'chat-pin offacct')" '`! chat-pin offacct`'
 assert denied "$(bash_event '~/.local/bin/chat-pin offacct && echo ok')"
 assert allowed "$(bash_event 'chat-pin onacct')"
+assert denied "$(bash_event 'chat-pin claude:offacct')"
+assert allowed "$(bash_event 'chat-pin codex:offacct')"
 assert allowed "$(bash_event 'echo chat-pinned offacct')"
 rm -f "$CLAUDEB_DIR/disabled"
 assert allowed "$(bash_event 'chat-pin offacct')"

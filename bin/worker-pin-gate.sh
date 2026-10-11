@@ -222,11 +222,15 @@ DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|cho
 # Egor's `! chat-pin <name>` runs without this hook, so only he pins a chat to an account he
 # switched off in the menu; a session pinning it would spend what the night must not.
 chat_pin_off_account() { # command → the switched-off account a `chat-pin <name>` in it pins
-  local name vendor dir
-  [[ "$1" =~ (^|[^[:alnum:]_.-])chat-pin[[:space:]]+([A-Za-z0-9_][A-Za-z0-9._-]*) ]] || return 1
+  local name vendor vendors='claudeb codex gemini grok' dir
+  [[ "$1" =~ (^|[^[:alnum:]_.-])chat-pin[[:space:]]+([A-Za-z0-9_][A-Za-z0-9._:-]*) ]] || return 1
   name=${BASH_REMATCH[2]}
+  if [[ "$name" == *:* ]]; then
+    vendors=${name%%:*} name=${name#*:}
+    [ "$vendors" != claude ] || vendors=claudeb
+  fi
   load_share worker-pool.sh worker_pool_dir || return 1
-  for vendor in claudeb codex gemini grok; do
+  for vendor in $vendors; do
     dir=$(worker_pool_dir "$vendor") || continue
     grep -qxF -- "$name" "$dir/disabled" 2>/dev/null && { printf '%s' "$name"; return 0; }
   done

@@ -119,6 +119,26 @@ assert exits 2 "$PIN" benched
 rm -rf "$CODEXB_PROFILES_DIR/.codexb/shielded"
 assert "$PIN" delta
 assert_fails contains "$("$PIN")" 'switched off'
+# <vendor>:<account> settles a name several pools share, live or switched off.
+assert exits 2 "$PIN" shared
+assert contains "$(cat "$WORK/out")" 'name it as <vendor>:shared'
+assert "$PIN" claude:shared
+assert chat_is 'claudeb_profile=shared'
+assert "$PIN" codex:benched
+assert chat_is 'codex_profile=benched'
+for bad in claude:benched foo:alpha 'claude:bad/name'; do
+  assert exits 2 "$PIN" "$bad"
+  assert chat_is 'codex_profile=benched'
+done
+assert contains "$("$PIN" foo:alpha 2>&1)" 'unknown vendor: foo'
+mkdir -p "$CLAUDEB_DIR" && printf 'shared\n' >"$CLAUDEB_DIR/disabled"
+assert "$PIN" shared
+assert chat_is 'codex_profile=shared'
+assert "$PIN" claude:shared
+assert chat_is 'claudeb_profile=shared'
+assert contains "$("$PIN")" 'shared stays switched off in the menu'
+rm -f "$CLAUDEB_DIR/disabled"
+assert "$PIN" delta
 
 assert "$PIN" auto
 assert_fails test -e "$CHAT"
