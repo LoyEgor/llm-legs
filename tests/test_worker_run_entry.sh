@@ -285,6 +285,53 @@ off_roster_tests() {
   assert test ! -s "$CALL_LOG"
 }
 
+own_headroom_tests() (
+  asserts=0
+  unset CLAUDEGPT_ACCOUNT CLAUDE_CONFIG_DIR
+  export CLAUDE_LIMITS_ACCOUNT=com LLM_LIMITS_FILE="$WORK/headroom.json"
+  export WORKER_RUN_OWN_HEADROOM=60
+  local spec pct age target override expected rc before
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  for spec in '65 0 com default refuse' '50 0 com 60 allow' '55 1200 com 60 refuse' '90 0 other 60 allow' '65 0 com 0 allow' '60 0 com 60 refuse' 'null 0 com 60 allow' '90 0 com 60 resume'; do
+    read -r pct age target override expected <<<"$spec"
+    clear_stub
+    export PICK_RC=0 PICK_ACCOUNT=other WORKER_RUN_OWN_HEADROOM=$override
+    [ "$override" != default ] || unset WORKER_RUN_OWN_HEADROOM
+    jq -n --argjson pct "$pct" --argjson now "$(date +%s)" --argjson age "$age" '
+      {vendors:{claude:{accounts:[{account:"com",five_hour:{used_pct:$pct,as_of:($now-$age),resets_at:($now+3600)}},
+        {account:"other",five_hour:{used_pct:90,as_of:$now,resets_at:($now+3600)}}]}}}' >"$LLM_LIMITS_FILE"
+    if [ "$expected" = refuse ]; then
+      before=$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
+      rc=0
+      "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --account "$target" >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+      assert test "$rc" -ne 0
+      assert grep -qF "own-account headroom: claude/com 5h $pct%" "$WORK/start.err"
+      assert grep -qF 'use claude/other' "$WORK/start.err"
+      assert test "$(wc -l <"$WORK/start.err")" -eq 1
+      assert test ! -s "$CALL_LOG"
+      assert test "$before" = "$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+      assert grep -qx -- '--account claudeb --role workers --exclude com' "$PICK_LOG"
+      [ "$age" = 0 ] || assert grep -qF 'age 20m, +10 points' "$WORK/start.err"
+    else
+      if [ "$expected" = resume ]; then start_ok claudeb --account "$target" --resume existing-session
+      else start_ok claudeb --account "$target"; fi
+      assert await_exit
+    fi
+  done
+  clear_stub
+  export PICK_RC=3 WORKER_RUN_OWN_HEADROOM=60
+  rc=0
+  "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --account com >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+  assert test "$rc" -ne 0
+  assert grep -qE 'wait for the 5h reset at [0-9]{2}:[0-9]{2}' "$WORK/start.err"
+  assert test ! -s "$CALL_LOG"
+  export CLAUDEGPT_ACCOUNT=com
+  start_ok claudeb --account com
+  assert await_exit
+  echo "PASS: $asserts asserts; own-account headroom"
+)
+
+own_headroom_tests || exit 1
 model_effort_tests
 worker_door_tests
 nested_model_tests

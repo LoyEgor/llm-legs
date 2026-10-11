@@ -2426,6 +2426,35 @@ refuse_live_run() { # brief resume
   return 0
 }
 
+own_headroom_guard() {
+  local account=$1 threshold=${WORKER_RUN_OWN_HEADROOM:-60} reading alternative picker
+  [ "$threshold" != 0 ] || return 0
+  . "$SCRIPT_DIRECTORY/../share/chat-account.sh"
+  chat_account_resolve
+  [ "$CHAT_ACCOUNT_VENDOR" = claude ] && [ "${CHAT_ACCOUNT_NAME:-main}" = "$account" ] || return 0
+  [[ "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail 'WORKER_RUN_OWN_HEADROOM must be a percentage (0 disables)'
+  . "$SCRIPT_DIRECTORY/../share/limits-view.sh"
+  reading=$(jq -r --arg account "$account" --argjson threshold "$threshold" --argjson now "$(date +%s)" "$LIMITS_VIEW_JQ"'
+    .vendors.claude.accounts[]? | select(.account == $account) |
+    limits_store_eff(.five_hour; $now) as $pct |
+    ((.five_hour.as_of // .as_of) | limits_store_epoch) as $asof |
+    (if $asof == null then null else $now - $asof end) as $age |
+    (if $age != null and limits_data_stale($age; 600) then 10 else 0 end) as $margin |
+    select($pct != null and $pct + $margin >= $threshold) |
+    ["5h \($pct)% (age \(limits_age_text($age)), +\($margin) points staleness margin >= \($threshold)% threshold)",
+     limits_reset_text((.five_hour.resets_at | limits_store_epoch); $now)] | @tsv
+  ' "${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}" 2>/dev/null) || return 0
+  [ -n "$reading" ] || return 0
+  picker=${WORKER_RUN_WORKER_PICK:-worker-pick}
+  alternative=$("$picker" --account claudeb --role "${WORKER_RUN_ROLE:-workers}" --exclude "$account" 2>/dev/null) || alternative=''
+  if [ -n "$alternative" ] && [ "$alternative" != "$account" ]; then
+    alternative="use claude/$alternative"
+  else
+    alternative="wait for the 5h reset at ${reading#*$'\t'}"
+  fi
+  fail "own-account headroom: claude/$account ${reading%%$'\t'*}; $alternative. Nothing was launched and no account was spent."
+}
+
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
@@ -2901,6 +2930,7 @@ start_run() {
     value=$(worker_model_codex_slug "$model" "$account") && [ -n "$value" ] && model_id=$value
     [ -n "$model_id" ] || refuse_codex_model "$model"
   fi
+  [ "$vendor" != claudeb ] || [ -n "$resume" ] || own_headroom_guard "$account"
   warn_cold_resume "$vendor" "$account" "$resume" || :
   if [ "$browser" = true ]; then
     browser_target=${browser_target:-chrome}
