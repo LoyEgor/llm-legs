@@ -99,6 +99,7 @@ while [ -L "$script_path" ]; do
 done
 script_dir=$(cd "$(dirname "$script_path")" && pwd)
 . "$script_dir/share/store-lock.sh"
+. "$script_dir/share/worker-walls.sh"
 
 chunk_bytes=${LLM_LIMITS_CHUNK_BYTES:-4194304}
 case "$chunk_bytes" in
@@ -288,7 +289,9 @@ age_def='def age_seconds($now):
    else null end);
 def compact_age($now): limits_age_text(age_seconds($now));
 def data_stale($now): limits_data_stale(age_seconds($now); $stale_thr);
-def stale_status($now): if data_stale($now) then "stale" else "-" end;'
+def stale_status($now): if .worker_wall != null then
+  "walled→" + limits_reset_text(.worker_wall.resets_at; $now)
+  elif data_stale($now) then "stale" else "-" end;'
 
 reset_format_def='def format_reset($now):
   . as $iso | ($iso | iso2epoch) as $epoch |
@@ -2464,6 +2467,48 @@ if [ "$write_cache" -eq 1 ]; then
       </dev/null >/dev/null 2>&1 &
   fi
 fi
+
+overlay_worker_walls() {
+  local vendor key account reset written reading as_of pct walls='' records
+  for vendor in claudeb codex gemini grok; do
+    key=$vendor
+    [ "$vendor" != claudeb ] || key=claude
+    worker_walls_fresh_r "$vendor" "$now_epoch"
+    records=$WORKER_WALLS_RECORDS_R
+    while IFS=$'\t' read -r account reset; do
+      [ -n "$account" ] || continue
+      written=$(worker_walls_written "$vendor" "$account")
+      [ -n "$written" ] || continue
+      reading=$(jq -r --arg v "$key" --arg a "$account" '
+        .vendors[$v] | (.accounts // [.])[]? | select((.account // "main") == $a) |
+        ([.five_hour, .weekly] | map(select(type == "object")) | select(length > 0)) as $buckets |
+        ($buckets | map([(.as_of | numbers), ((.effective_pct // .used_pct) | numbers)] |
+                        select(length == 2))) |
+        select(length == ($buckets | length)) |
+        [(map(.[0]) | min), (map(.[1]) | max | ceil)] | @tsv' < <(printf '%s\n' "$result"))
+      as_of=${reading%%$'\t'*}; pct=${reading##*$'\t'}
+      if [ -n "$reading" ]; then
+        worker_walls_lapse_if_read "$vendor" "$account" "$as_of" "$pct" && continue
+        [ "$written" -gt "$as_of" ] || continue
+      fi
+      walls+="$key"$'\t'"$account"$'\t'"$reset"$'\t'"$written"$'\n'
+    done < <(printf '%s' "$records")
+  done
+  result=$(jq --arg walls "$walls" '
+    ($walls | split("\n") | map(select(length > 0) | split("\t") |
+      {key: (.[0] + "/" + .[1]), value: {resets_at: (.[2] | tonumber), recorded_at: (.[3] | tonumber)}}) |
+      from_entries) as $walls |
+    .vendors |= with_entries(.key as $vendor | .value |= (
+      del(.worker_wall) |
+      (if (.accounts | type) == "array" then .accounts |= map(del(.worker_wall) |
+        ($walls[$vendor + "/" + (.account // "main")]) as $wall |
+        if $wall != null and .removed != true then .worker_wall = $wall else . end) else . end) |
+      ($walls[$vendor + "/" + (.current_account // .account // "main")]) as $wall |
+      if $wall != null and .removed != true then .worker_wall = $wall else . end))
+  ' < <(printf '%s\n' "$result"))
+}
+
+overlay_worker_walls
 
 experiments_banner() {
   experiments_active_lines "$(experiments_registry_path "$script_dir")"

@@ -2,6 +2,39 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/llm_limits_harness.sh" || exit 1
 
+export WORKER_WALLS_DIR="$WORK/worker-walls"
+. "$ROOT/share/worker-walls.sh"
+wall_baseline=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json --no-write) || fail "wall baseline failed"
+wall_read=$(jq -r '.vendors.codex.five_hour.as_of' <<<"$wall_baseline")
+wall_reset=$((now + 1800))
+wall_label=$(date -r "$wall_reset" '+%H:%M')
+for wall_case in newer older expired; do
+  wall_written=$((wall_read + 1))
+  wall_until=$wall_reset
+  case "$wall_case" in
+    older) wall_written=$((wall_read - 1)) ;;
+    expired) wall_until=$((now - 1)) ;;
+  esac
+  for wall_format in json table plain; do
+    worker_walls_record codex main "$wall_until" "$wall_written" || fail "wall fixture failed"
+    wall_output=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --"$wall_format" --no-write) || fail "wall $wall_case $wall_format failed"
+    if [ "$wall_format" = json ]; then
+      if [ "$wall_case" = newer ]; then
+        jq -e --argjson reset "$wall_reset" --argjson written "$wall_written" '
+          .vendors.codex.worker_wall == {resets_at:$reset, recorded_at:$written} and
+          .vendors.codex.accounts[0].worker_wall == .vendors.codex.worker_wall' <<<"$wall_output" >/dev/null || fail "new worker wall absent from JSON"
+      else
+        jq -e '.vendors.codex | has("worker_wall") | not' <<<"$wall_output" >/dev/null || fail "$wall_case wall changed JSON status"
+      fi
+      [ "$(jq -c '.vendors.codex | [.five_hour, .weekly]' <<<"$wall_output")" = "$(jq -c '.vendors.codex | [.five_hour, .weekly]' <<<"$wall_baseline")" ] || fail "wall changed vendor numbers"
+    elif [ "$wall_case" = newer ]; then
+      grep '^codex' <<<"$wall_output" | grep -q "walled→$wall_label" || fail "new worker wall absent from $wall_format STATUS"
+    else
+      grep '^codex' <<<"$wall_output" | grep -q 'walled' && fail "$wall_case wall changed $wall_format STATUS"
+    fi
+  done
+done
+
 home_fixture_after_first_suite
 seed_claudeb_store
 

@@ -171,6 +171,7 @@ worker_walls_fresh() {
 worker_walls_fresh_r() {
   local vendor="$1" now="${2:-$(date +%s)}" dir prefix file epoch account out=''
   WORKER_WALLS_R=''
+  WORKER_WALLS_RECORDS_R=''
   worker_walls_valid_name "$vendor" || return 1
   worker_walls_dir_r
   dir=$WORKER_WALLS_R
@@ -190,6 +191,7 @@ worker_walls_fresh_r() {
     esac
     if [ "$epoch" -gt "$now" ]; then
       out+="$account"$'\n'
+      WORKER_WALLS_RECORDS_R+="$account"$'\t'"$epoch"$'\n'
     else
       rm -f -- "$file"
     fi
