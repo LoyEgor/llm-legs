@@ -22,7 +22,7 @@ IFS= read -r -d '' input
 # nothing.
 if [ "$MODE" = bash ]; then
   case $input in
-    *worker-model* | *claude-chat-pins*) ;;
+    *worker-model* | *chat-pin*) ;;
     *) [ -n "${CHAT_PINS_DIR:-}" ] && [[ $input == *"${CHAT_PINS_DIR##*/}"* ]] || exit 0 ;;
   esac
 fi
@@ -219,6 +219,20 @@ PIN_NAME_RE='[^[:space:]]*worker-model'
 # for the same reason: a pin `worker-pick` can no longer read is a pin gone, whatever its bytes say.
 DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|chown)([[:space:]]|$)'
 
+# Egor's `! chat-pin <name>` runs without this hook, so only he pins a chat to an account he
+# switched off in the menu; a session pinning it would spend what the night must not.
+chat_pin_off_account() { # command → the switched-off account a `chat-pin <name>` in it pins
+  local name vendor dir
+  [[ "$1" =~ (^|[^[:alnum:]_.-])chat-pin[[:space:]]+([A-Za-z0-9_][A-Za-z0-9._-]*) ]] || return 1
+  name=${BASH_REMATCH[2]}
+  load_share worker-pool.sh worker_pool_dir || return 1
+  for vendor in claudeb codex gemini grok; do
+    dir=$(worker_pool_dir "$vendor") || continue
+    grep -qxF -- "$name" "$dir/disabled" 2>/dev/null && { printf '%s' "$name"; return 0; }
+  done
+  return 1
+}
+
 deny() {
   jq -cn --arg hook "${0##*/}" --arg r "$1" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: ("[" + $hook + "] " + $r)}}' \
@@ -264,6 +278,8 @@ case "$MODE" in
       >/dev/null 2>&1 || exit 0
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty') || exit 0
     ! chat_pins_written "$cmd" || deny "$CHAT_DENY_REASON"
+    ! off=$(chat_pin_off_account "$cmd") ||
+      deny "Blocked: $off is switched off in Egor's menu, and only Egor pins a chat to it, typing \`! chat-pin $off\` himself. Tell him that line; do not run it."
     # The pin file, not every name starting with it: `share/worker-model.sh` is a source file, and
     # gating commands that merely name it made ordinary work argue with this door. Cheap and on the
     # raw text, so the shared module is read only for a command that could be about the pin at all;

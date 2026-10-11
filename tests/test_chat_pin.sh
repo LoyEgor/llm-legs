@@ -105,10 +105,20 @@ assert chat_is 'grok_profile=delta'
 assert exits 2 "$PIN" shared
 assert contains "$(cat "$WORK/out")" 'ambiguous account'
 assert chat_is 'grok_profile=delta'
-for missing in nobody benched gone 'bad/name' '-x'; do
+for missing in nobody gone 'bad/name' '-x'; do
   assert exits 2 "$PIN" "$missing"
   assert chat_is 'grok_profile=delta'
 done
+# Switched off in the menu: this chat alone may still spend it, and the pin says so.
+assert "$PIN" benched
+assert chat_is 'codex_profile=benched'
+assert contains "$("$PIN")" 'benched stays switched off in the menu: only this chat spends it'
+mkdir -p "$CODEXB_PROFILES_DIR/.codexb/shielded" && : >"$CODEXB_PROFILES_DIR/.codexb/shielded/benched"
+assert "$PIN" auto
+assert exits 2 "$PIN" benched
+rm -rf "$CODEXB_PROFILES_DIR/.codexb/shielded"
+assert "$PIN" delta
+assert_fails contains "$("$PIN")" 'switched off'
 
 assert "$PIN" auto
 assert_fails test -e "$CHAT"
@@ -166,7 +176,7 @@ assert contains "$(cat "$WORK/out")" 'no chat pin'
 # A `*` pin's first account is worker-pick's pick among the pins, never the store's order.
 FAKE="$WORK/fake-root"
 mkdir -p "$FAKE/share" "$FAKE/bin"
-cp "$ROOT"/share/worker-model.sh "$ROOT"/share/worker-pool.sh "$ROOT"/share/worker-walls.sh "$FAKE/share/"
+cp "$ROOT"/share/worker-model.sh "$ROOT"/share/worker-pool.sh "$ROOT"/share/worker-walls.sh "$ROOT"/share/codex-accounts.sh "$FAKE/share/"
 printf 'codex_profile=*\n' >"$CHAT"
 first_with_pick() { # stub body → pin_first codex
   printf '#!/usr/bin/env bash\n%s\n' "$1" >"$FAKE/bin/worker-pick"

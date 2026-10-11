@@ -94,6 +94,16 @@ do
   assert allowed "$(bash_event "$chat_read")"
 done
 
+# A chat pin onto an account switched off in the menu is Egor's own `! chat-pin`, never a session's.
+mkdir -p "$CLAUDEB_DIR" && printf 'offacct\n' >"$CLAUDEB_DIR/disabled"
+assert denied "$(bash_event 'chat-pin offacct')"
+assert contains "$(bash_event 'chat-pin offacct')" '`! chat-pin offacct`'
+assert denied "$(bash_event '~/.local/bin/chat-pin offacct && echo ok')"
+assert allowed "$(bash_event 'chat-pin onacct')"
+assert allowed "$(bash_event 'echo chat-pinned offacct')"
+rm -f "$CLAUDEB_DIR/disabled"
+assert allowed "$(bash_event 'chat-pin offacct')"
+
 # The directory is the one the module reads, CHAT_PINS_DIR included.
 export CHAT_PINS_DIR="$WORK/pins-fixture"
 assert denied "$(write_event "$WORK/pins-fixture/s")"

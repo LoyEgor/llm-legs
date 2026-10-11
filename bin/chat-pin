@@ -39,6 +39,8 @@ show_state() {
     printf 'chat-pin: this chat pins workers to every %s pool account (*)%s; its reviews may use %s too\n' "$vendor" "$fast" "$vendor"
   else
     printf 'chat-pin: this chat pins workers to %s (%s)%s; its reviews may use %s too\n' "$value" "$vendor" "$fast" "$vendor"
+    ! grep -qxF -- "$value" "$(worker_pool_dir "$vendor")/disabled" 2>/dev/null ||
+      printf 'chat-pin: %s stays switched off in the menu: only this chat spends it, never the night or another chat\n' "$value"
   fi
 }
 
@@ -46,6 +48,17 @@ account_vendors() { # name → every vendor whose live pool holds it, one per li
   local vendor
   for vendor in $VENDORS; do
     worker_model_pool_accounts "$vendor" 2>/dev/null | grep -qxF -- "$1" && printf '%s\n' "$vendor"
+  done
+}
+
+off_vendors() { # name → every vendor whose menu switched it off while the limits store still lists it
+  local vendor dir store="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
+  for vendor in $VENDORS; do
+    dir=$(worker_pool_dir "$vendor") || continue
+    [ ! -e "$dir/shielded/$1" ] && grep -qxF -- "$1" "$dir/disabled" 2>/dev/null || continue
+    jq -e --arg v "${vendor/#claudeb/claude}" --arg a "$1" \
+      'any(.vendors[$v].accounts[]?; (.account // "main") == $a and .removed != true)' "$store" >/dev/null 2>&1 &&
+      printf '%s\n' "$vendor"
   done
 }
 
@@ -86,6 +99,7 @@ case "$arg" in
   *)
     [[ "$arg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || die "unknown account: $arg"
     vendors=$(account_vendors "$arg")
+    [ -n "$vendors" ] || vendors=$(off_vendors "$arg")
     case "$(grep -c . <<<"$vendors")" in
       0) die "unknown account: $arg is in no vendor's live worker pool" ;;
       1) ;;
