@@ -110,7 +110,7 @@ EVENT_ROWS = (("SessionStart", "session start", "every chat start"),
               ("Stop", "turn end", "every turn"),
               ("SubagentStop", "subagent end", "every subagent"))
 BACKFILL_DAYS = 28
-EVENT_DAYS = 8
+EVENT_DAYS = 22
 DAY_SUMMARY_DAYS = 60
 PENDING_TTL_S = 7200
 SAMPLE_GAP_S = 3600
