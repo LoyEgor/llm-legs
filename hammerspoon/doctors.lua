@@ -764,8 +764,7 @@ local function ratio(value)
 end
 local function padded(text, width) return string.rep(" ", width - cells(text)) .. text end
 
-local function summaryTitle(name, value, status, history, now, stale, show)
-  show = show or rounded
+local function summaryTitle(name, value, status, history, now, stale, indexed)
   local days, prior, high = {}, {}, 0
   local date = os.date("*t", now)
   for index = 1, 7 do
@@ -783,13 +782,13 @@ local function summaryTitle(name, value, status, history, now, stale, show)
     or (status == "error" or status == "problems") and style.RED
     or (status == "blind" or status == "watch") and style.DIM_RED or GREEN
   local segments = { { string.format("%-9s", name), tone }, { " " },
-    value and { padded(show(value), 4) } or { padded(MISSING, 4), style.DIM }, { "  " } }
+    value and { padded((indexed and ratio or rounded)(value), 4) } or { padded(MISSING, 4), style.DIM }, { "  " } }
   for index = 1, 7 do
     local amount = days[index]
     segments[#segments + 1] = amount == nil and { " " }
       or { BARS[amount == 0 and 1 or math.max(2, math.ceil(amount / high * 8))], style.DIM }
   end
-  segments[#segments + 1] = { " " .. padded(median and show(median) or MISSING, 4), style.DIM }
+  if not indexed then segments[#segments + 1] = { " " .. padded(median and rounded(median) or MISSING, 4), style.DIM } end
   return styled(segments)
 end
 
@@ -856,6 +855,16 @@ local function harnessSection(entryMenu, prefix, issues, unit, format)
   return details, rows
 end
 
+local function levelRows(levels)
+  local out = {}
+  for _, r in ipairs(type(levels) == "table" and levels or {}) do
+    local v = type(r) == "table" and tonumber(r[1])
+    out[#out + 1] = fitRow({ title = styled({ { padded(v and (v < 9.95 and string.format("%.1f", v) or rounded(v)) or MISSING, 4) },
+      { " " .. tostring(r[2]) } }), disabled = true })
+  end
+  return out
+end
+
 local function lostRows(rows)
   local out = {}
   for _, r in ipairs(type(rows) == "table" and rows or {}) do
@@ -912,22 +921,23 @@ local function compute()
     if doctor.key == "system" then machine = summary else entries[#entries + 1] = summary end
     if doctor.key == "harness" then
       local metrics = document and type(document.speed) == "table" and document.speed or {}
-      local byDay = type(metrics.lost_min_day_by_day) == "table" and metrics.lost_min_day_by_day or {}
+      local byDay = type(metrics.index_by_day) == "table" and metrics.index_by_day or {}
       local speedMenu = harnessSection(entry.menu, "Lost time")
-      local speedRows = lostRows(metrics.rows)
+      local speedRows = levelRows(metrics.levels)
+      for _, row in ipairs(lostRows(metrics.rows)) do speedRows[#speedRows + 1] = row end
       for _, item in ipairs(speedMenu) do
         local text = item.title ~= "-" and plainText(item.title) or ""
         if text:match("^Needs Egor") and text ~= "Needs Egor: nothing" then speedRows[#speedRows + 1] = item end
       end
-      local lost = tonumber(metrics.lost_min_day)
+      local lost = tonumber(metrics.index)
       speed = { title = summaryTitle("Lost time", lost, lost and metrics.status or "nodata", byDay, now,
-        stale or not byDay[os.date("%Y-%m-%d", now)]), menu = egorLayer(speedRows, menu, speedMenu), problems = 0 }
+        stale or not byDay[os.date("%Y-%m-%d", now)], true), menu = egorLayer(speedRows, menu, speedMenu), problems = 0 }
       local cost = document and type(document.spend) == "table" and document.spend or {}
       local spendMenu, spendRows = harnessSection(entry.menu, "Spend", cost.issues, "%", "%.1f")
       local index = cost.status ~= "nodata" and tonumber(cost.index) or nil
       local spendStatus = not index and "nodata" or cost.status == "watch" and "problems" or cost.status
       spend = { title = summaryTitle("Spend", index, spendStatus,
-        type(cost.index_by_day) == "table" and cost.index_by_day or {}, now, stale, ratio),
+        type(cost.index_by_day) == "table" and cost.index_by_day or {}, now, stale, true),
         menu = egorLayer(spendRows, menu, spendMenu), problems = 0 }
     end
   end

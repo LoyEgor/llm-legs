@@ -29,6 +29,7 @@ local function row(name, value, bars, usual)
   return string.format("%-9s", name) .. " " .. pad(value, 4) .. "  " .. bars .. " " .. pad(usual, 4)
 end
 local function summary(name, value) return row(name, value and tostring(value) or "–", "       ", "–") end
+local function indexRow(name, value, bars) return row(name, value, bars, ""):sub(1, -6) end
 local function fix(menu) return menu[#menu - 1] end
 local function fixer(menu) return menu[#menu] end
 local function refreshRow(menu) return menu[#menu - 2] end
@@ -242,8 +243,10 @@ write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s =
   causes = { births = { { "statusline.sh", 0.52, "own" } }, cpu = { { "WindowServer", 0.3, 0, "apple" } } },
   nightly = { as_of_s = now - 3600, reports = { crash = 3 }, processes = { { "crash", "bash", 3, "own" } },
     caches = { { ".cache/uv", 22.1 } } } })
+writeDays(series)
 local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" } },
-  speed = { status = "ok", as_of_s = now, lost_min_day = 12, lost_min_day_by_day = writeDays(series),
+  speed = { status = "ok", as_of_s = now, index = 0.93, index_by_day = spendDays(series),
+    levels = { { 1.24, "min per order · chat" }, { 12, "min per task · workers" } },
     rows = { { 573, "overhead", {} },
       { 542, "tests", { { 540, "running" }, { 122, "queued" }, "-", { 283, "test_worker_run_pool" }, { 7.4, "test_fast" } } },
       { 120, "delegation", { { 105, "worker queue" }, { 9.5, "wrap-up" }, { 4.2, "retries" }, { 0, "dead, hung" } } },
@@ -265,33 +268,34 @@ local trendDoctor = loadDoctors()
 local trendItems = trendDoctor.menuItems()
 local trendNight = tasks[#tasks]
 local names, values = { "LLM", "Harness", "Updater", "Code", "Lost time", "Spend", "System" },
-  { "2", "3", "0", "3", "12", "0.46", "2" }
-local USUAL = { [5] = "25", [6] = "0.25" }
+  { "2", "3", "0", "3", "0.93", "0.46", "2" }
+local INDEXED = { [5] = true, [6] = true }
 local bars = "▁▂▂▃▄▆█"
 for index, name in ipairs(names) do
   local title = trendItems[index] and trendItems[index].title
-  local want = row(name, values[index], bars, USUAL[index] or "3")
+  local want = INDEXED[index] and indexRow(name, values[index], bars) or row(name, values[index], bars, "3")
   check(title and text(title) == want, "trend summary " .. name .. ": " .. (title and text(title) or "missing"))
   for day = 1, 7 do
     check(title and sameColor(colorAt(title, BAR_AT + day - 1), palette.DIM), "every bar DIM, above usual too " .. name .. " day " .. day)
   end
-  check(title and sameColor(colorAt(title, USUAL_AT), palette.DIM), "usual DIM " .. name)
+  check(title and (INDEXED[index] and utf8.len(text(title)) == BAR_AT + 6
+    or not INDEXED[index] and sameColor(colorAt(title, USUAL_AT), palette.DIM)),
+    "an index row (Lost time, Spend) ends at its bars with no median, every other doctor keeps its DIM usual: " .. name)
 end
 local function aligned(rows)
-  local width
   for _, item in ipairs(rows) do
     local plain = text(item.title)
-    width = width or utf8.len(plain)
-    if utf8.len(plain) ~= width or not span(item.title, 1, 1):match("%a") or text(item.title):find("●", 1, true) or not span(item.title, VALUE_AT, VALUE_AT):match("%S")
-      or not span(item.title, USUAL_AT, USUAL_AT):match("%S") then return false end
-    for _, at in ipairs({ 10, 15, 16, 24 }) do
+    local indexed = plain:match("^Lost time ") or plain:match("^Spend ")
+    if utf8.len(plain) ~= (indexed and BAR_AT + 6 or USUAL_AT) or not span(item.title, 1, 1):match("%a") or text(item.title):find("●", 1, true) or not span(item.title, VALUE_AT, VALUE_AT):match("%S")
+      or not indexed and not span(item.title, USUAL_AT, USUAL_AT):match("%S") then return false end
+    for _, at in ipairs(indexed and { 10, 15, 16 } or { 10, 15, 16, 24 }) do
       if span(item.title, at, at) ~= " " then return false end
     end
     for at = BAR_AT, BAR_AT + 6 do
       if not ("▁▂▃▄▅▆▇█ "):find(span(item.title, at, at), 1, true) then return false end
     end
   end
-  return width == USUAL_AT
+  return true
 end
 check(aligned({ table.unpack(trendItems, 1, 7) }), "summary columns line up at the same cells in every doctor row")
 for index = 1, 7 do
@@ -319,6 +323,10 @@ check(issue(trendItems[2].menu, 1, "   3  Hooks"), "Harness issue row")
 check(issue(trendItems[4].menu, 1, "   2  Dead") and issue(trendItems[4].menu, 2, "   1  Duplicate"), "Code issue rows")
 local lost = trendItems[5].menu
 local function plainRow(item, want) return item and text(item.title) == want and not red(item.title) end
+check(plainRow(lost[1], " 1.2 min per order · chat") and plainRow(lost[2], "  12 min per task · workers")
+  and lost[1].disabled and lost[2].disabled, "Lost time opens with the current window's level per stratum, aligned: "
+  .. text(lost[1].title))
+lost = { table.unpack(lost, 3) }
 check(plainRow(lost[1], " 573 min/day  overhead") and lost[1].disabled and not lost[1].menu
   and plainRow(lost[5], "  26 min/day  usage walls") and plainRow(lost[7], "  75 min/day  unmeasured")
   and plainRow(lost[8], "1051 min/day  system active") and lost[8].disabled,
@@ -469,36 +477,36 @@ local flat = trendDoctor.menuItems()[1].title
 local flatRed = false
 for at = BAR_AT, BAR_AT + 6 do flatRed = flatRed or sameColor(colorAt(flat, at), palette.RED) end
 check(text(flat) == row("LLM", "2", "███████", "5") and not flatRed, "a flat week has no RED bar: " .. text(flat))
-metadata.speed.lost_min_day_by_day = writeDays({ false, 1, 2, 3, 4, 6, 8 })
+writeDays({ false, 1, 2, 3, 4, 6, 8 })
+metadata.speed.index_by_day = spendDays({ false, 1, 2, 3, 4, 6, 8 })
 metadata.spend.index_by_day = spendDays({ false, 1, 2, 3, 4, 6, 8 })
 trendHarness()
 local cold = trendDoctor.menuItems()
 for index, name in ipairs(names) do
   local title = cold[index].title
-  check(text(title) == row(name, values[index], " ▂▂▃▄▆█",
-    index == 5 and "30" or index == 6 and "0.30" or "3"),
+  check(text(title) == (INDEXED[index] and indexRow(name, values[index], " ▂▂▃▄▆█") or row(name, values[index], " ▂▂▃▄▆█", "3")),
     "cold start: an unmeasured day is a blank cell, measured days keep their bars: " .. text(title))
 end
 check(aligned({ table.unpack(cold, 1, 7) }), "cold start rows stay aligned")
-metadata.speed.lost_min_day_by_day[trendDay(0)] = nil
+metadata.speed.index_by_day[trendDay(0)] = nil
 trendHarness()
 local oldSpeed = trendDoctor.menuItems()[5]
 check(sameColor(colorAt(oldSpeed.title, 1), palette.DIM)
-  and text(oldSpeed.title) == row("Lost time", "12", " ▂▃▄▆█ ", "30"),
+  and text(oldSpeed.title) == indexRow("Lost time", "0.93", " ▂▃▄▆█ "),
   "Speed without a current-day observation is DIM even when Harness is fresh: " .. text(oldSpeed.title))
-metadata.speed.lost_min_day_by_day[trendDay(0)] = 80
-metadata.speed.lost_min_day = nil
+metadata.speed.index_by_day[trendDay(0)] = 0.8
+metadata.speed.index = nil
 trendHarness()
 local unknownSpeed = trendDoctor.menuItems()[5]
-check(text(unknownSpeed.title) == row("Lost time", "–", " ▂▂▃▄▆█", "30")
+check(text(unknownSpeed.title) == indexRow("Lost time", "–", " ▂▂▃▄▆█")
   and sameColor(colorAt(unknownSpeed.title, 1), palette.DIM) and sameColor(colorAt(unknownSpeed.title, VALUE_AT), palette.DIM),
-  "a missing Speed floor is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
-metadata.speed.lost_min_day = 12
+  "no index yet is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
+metadata.speed.index = 0.93
 trendHarness()
 metadata.spend.status, metadata.spend.index = "nodata", nil
 trendHarness()
 local staleSpend = trendDoctor.menuItems()[6]
-check(text(staleSpend.title) == row("Spend", "–", " ▂▂▃▄▆█", "0.30")
+check(text(staleSpend.title) == indexRow("Spend", "–", " ▂▂▃▄▆█")
   and sameColor(colorAt(staleSpend.title, 1), palette.DIM) and sameColor(colorAt(staleSpend.title, VALUE_AT), palette.DIM),
   "a stale tracking.json is a DIM – on Spend, never its old index: " .. text(staleSpend.title))
 metadata.spend.status, metadata.spend.index = "watch", 0.46

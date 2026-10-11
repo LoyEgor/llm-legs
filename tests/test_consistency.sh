@@ -3419,8 +3419,10 @@ assert doc_has '| ek | Media manifest check journal |'
 assert grep -Fq '"lost_min_day_by_day": budget.get("lost_min_day_by_day")' "$ROOT/bin/speed-doctor"
 assert grep -Fq 'doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])' "$ROOT/share/time_budget.py"
 assert grep -Fq 'cached.get("version") == BUDGET_VERSION' "$ROOT/share/time_budget.py"
-assert grep -Fq '"lost_min_day_by_day") if k in speed' "$ROOT/bin/harness-doctor"
-assert grep -Fq 'metrics.lost_min_day_by_day or {}' "$ROOT/hammerspoon/doctors.lua"
+assert grep -Fq '"index": budget.get("index"), "index_by_day": budget.get("index_by_day") or {}' "$ROOT/bin/speed-doctor"
+assert grep -Fq 'doc["index_by_day"], current = index_history(now, write)' "$ROOT/share/time_budget.py"
+assert grep -Fq '"index_by_day", "levels") if k in speed' "$ROOT/bin/harness-doctor"
+assert grep -Fq 'metrics.index_by_day or {}' "$ROOT/hammerspoon/doctors.lua"
 assert doc_has 'an unmeasured date is a blank cell, never an invented bar'
 fi
 

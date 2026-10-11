@@ -165,6 +165,25 @@ so the night takes the biggest class even when nothing regressed, and an empty p
 refusal recovery and hook time come apart per gate and per hook: each ≥ 0.5 min/day is `opportunity:refusal/<gate>`,
 `:hooks/<hook>` or `:stop/<hook>` at its own minutes (`unit_rows`), and only the rest of the class goes on as above.
 
+**Lost time index** (Egor, 2026-10-11; the title number). Fee per unit of work against the previous 7 days, Paasche
+per stratum as token-map's `_price_index`: price_P(s) = overhead_P(s) / units_P(s), index = Σ overhead_W / Σ units_W ×
+price_P, W the 7 local days ending with the day, P the 7 before; 1.00 = the same, no norms or thresholds. It must not
+move with volume, parallelism, vendor, night/day or presence, so a stratum's overhead is the SUM over its agents, each
+agent's own spans unioned (the cross-agent union of the min/day rows moves with overlap). Strata and units: `chat`, one
+owner order = one `t` row of origin `h` (`n`/`p` turns add none), its overhead the turns' Stop seconds and compaction,
+hooks joined to its session by tool id (`h[7]` ↔ `c[7]` → `c[8]`), locks it paid (waits `caller`), its refusal spans and
+suites whose `session` it is, background tails included; `workers`, one task = a non-bench run ending that day, no
+resumer (`resumers()`, `resume`) and not `dead_runs()` (its minutes stay), its overhead `WORKER_OVERHEAD` from
+`run_split` plus its session's hooks, locks and refusals. Unmeasured (`other`, turn `resid`) is unknown, not loss, and a
+suite with no `worker_run` and no turn-holding session (the night's headless launchers) is out; both are reported
+(`out_s`). A stratum under 20 units on either side is left out and named (`left_out`). Each day's `strata` sits in
+`budget-days`; a day before `horizon()` (the oldest kept events file and the first run, both 2026-10-03 07:24: runs.jsonl
+and the run folders begin then, events are pruned at 8 days, so nothing older is rebuildable) has none, and any such day
+in W or P means no value, never a partial one: the first index is 2026-10-16. History: the window ending on each of the
+6 prior days, today live. Inside the menu, `levels` give W's minutes per order and per task. Hook rows are stamped at
+completion, so a hook's span is [h[1] − duration, h[1]]; waits crossing midnight keep their tail; a refusal whose next
+call comes after the cap costs the cap (was: unmeasured).
+
 **Test health** (`share/test_health.py`, Speed's `tests` key; the one place test time is shown). From run-suites'
 journal, the last 24 h against the median of the 7 days before it, one line per class in one unit over every caller,
 red past 1.5× its usual and a least delta: wait (queued-to-end suite spans, a union per caller: chats and workers by

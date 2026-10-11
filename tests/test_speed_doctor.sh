@@ -604,8 +604,9 @@ check(doc.get("lost_min_day_by_day") == first.get("lost_min_day_by_day") == days
       and header == {"status": latest["status"],
                      "problems": [{k: p[k] for k in ("id", "ledger") if k in p} for p in latest["problems"]],
                      "issues": [[1, "Waits"], [1, "Guards"], [1, "Memory guard"]],
-                     "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "lost_min_day": 19.8,
-                               "lost_min_day_by_day": days_value, "rows": first["budget"]["rows"]},
+                     "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "index": None, "index_by_day": {},
+                               "levels": [[None, "min per order · chat"], [None, "min per task · workers"]],
+                               "rows": first["budget"]["rows"]},
                      "spend": {"as_of_s": first["as_of_s"], "status": "nodata", "index": None, "index_by_day": {},
                                "issues": []}}
       and repeated.get("lost_min_day_by_day") == days_value,

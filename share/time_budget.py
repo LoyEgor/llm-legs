@@ -51,7 +51,10 @@ REFUSAL_CAP_S = 300
 REFUSAL_PROOF_RATIO, REFUSAL_PROOF_DAYS = 0.0, 7
 HISTORY_DAYS = 6
 TREND_DAYS = 7
-BUDGET_VERSION = 2
+BUDGET_VERSION = 3
+STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"))
+WORKER_OVERHEAD = ("slot", "retries", "walled", "wrapup", "dead", "hung", "suite_run", "suite_wait")
+INDEX_DAYS, INDEX_MIN_UNITS = 7, 20
 DEAD_LINE = re.compile(r"(?:(?:Failed to authenticate|Not logged in|You've hit your \w+ limit|API Error|Execution error|"
                        r"Request timed out|[A-Z]+_(?:FAILED|USAGE_LIMIT|UNAVAILABLE))\b|Error:)")
 DEAD_LINE_MAX = 300
@@ -217,12 +220,12 @@ def suite_rows(lo, hi):
 
 def wait_rows(lo, hi):
     out = []
-    day = local_day(lo)
+    day = local_day(lo - 86400)
     while day <= local_day(hi):
         out += [r for r in night_spend.rows(os.path.join(limiter_hold.wait_dir(), day + ".jsonl"))
                 if num(r.get("started")) is not None and num(r.get("seconds")) is not None]
         day = local_day(day_bounds(day)[1] + 1)
-    return [r for r in out if lo <= r["started"] < hi]
+    return [r for r in out if r["started"] < hi and r["started"] + r["seconds"] > lo]
 
 
 def refusal_rows(lo, hi):
@@ -305,12 +308,12 @@ def refusal_cost(lo, hi, events, rows=None):
     denied = {(str(r.get("sid") or "")[:8], str(r.get("tool_use_id") or "")[-10:]) for r in rows}
     for r in rows:
         refused[str(r.get("sid") or "")[:8]].add(num(r.get("at")) or 0)
-    by, missing, seen = collections.defaultdict(list), collections.Counter(), set()
+    by, own, missing, seen = collections.defaultdict(list), collections.defaultdict(list), collections.Counter(), set()
     measured = 0
     for r in sorted(rows, key=lambda r: (num(r.get("at")) or 0, str(r.get("gate") or ""))):
         gate, at = r.get("gate") or "unknown", num(r.get("at")) or 0
         sid = str(r.get("sid") or "")[:8]
-        following = [c[1] for c in calls[sid] if at < c[1] <= at + REFUSAL_CAP_S and (sid, c[7]) not in denied]
+        following = [c[1] for c in calls[sid] if at < c[1] and (sid, c[7]) not in denied]
         turn = next((t[3] for t in turns[sid] if t[1] <= at < t[3]), None)
         ends = [x for x in (min(following) if following else None, turn) if x is not None]
         if not sid or not ends:
@@ -321,13 +324,15 @@ def refusal_cost(lo, hi, events, rows=None):
             continue
         seen.add((sid, at))
         ends += [a for a in refused[sid] if a > at] + [at + REFUSAL_CAP_S]
-        by[gate] += clip([(at, min(ends))], lo, hi)
+        span = clip([(at, min(ends))], lo, hi)
+        by[gate] += span
+        own[sid] += span
         measured += 1
     spans = union(x for v in by.values() for x in v)
     by_gate = sorted(((length(union(v)), gate) for gate, v in by.items()), key=lambda x: (-x[0], x[1]))
     return {"seconds": length(spans), "spans": spans, "by_gate_s": {gate: secs for secs, gate in by_gate},
             "measured": measured, "count": sum(lo <= r["at"] < hi for r in rows),
-            "unmeasured_by_gate": dict(missing), "cap_s": REFUSAL_CAP_S}
+            "unmeasured_by_gate": dict(missing), "cap_s": REFUSAL_CAP_S, "by_sid": own}
 
 
 def run_session(run):
@@ -456,44 +461,78 @@ def budget(lo, hi, events=None):
     Suites come from run-suites' journal for every caller, hooks from Harness's hook rows and a turn's Stop seconds
     at its end, refusals from `refusal_cost`, locks and polls from the waits a chat or worker paid, and the rest from
     each worker run's split. A turn's compaction and unexplained seconds have no position, so they add to the union.
-    `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither."""
+    `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither. `strata` is the
+    index's per-day input: each stratum's overhead summed over its agents, every agent's own spans unioned, and its
+    units; None for a day before the journals record (`horizon`)."""
     events = events if events is not None else event_rows(lo, hi)
     runs = worker_runs(lo, hi)
     suites = suite_rows(min([lo] + [num(r.get("pid_started_at")) or num(r.get("started_at")) or lo for r in runs]),
                         hi + 86400)
     spans, unplaced, active, dead = collections.defaultdict(list), collections.Counter(), [], dead_runs(runs)
+    agents, compact, owner, units, outside = collections.defaultdict(list), collections.Counter(), {}, collections.Counter(), []
+    chained = {name for found in resumers(lo).values() for _, name in found} if runs else set()
     for run in runs:
-        split = run_split(dict(run, dead=run.get("run") in dead), lo, hi, suites, ())
+        name = run.get("run")
+        split = run_split(dict(run, dead=name in dead), lo, hi, suites, ())
         if "bench" not in split:
             active += [x for v in split.values() for x in v]
             for key in ("slot", "retries", "walled", "wrapup", "dead", "hung", "other"):
                 spans[key] += split.get(key, ())
+            owner[name] = owner[run_session(name)] = ("workers", name)
+            agents[owner[name]] += [x for key in WORKER_OVERHEAD for x in split.get(key, ())]
+            owner.pop(None, None)
+            units["workers"] += (name not in dead and name not in chained and not run.get("resume")
+                                 and lo <= num(run.get("ended_at")) < hi)
     for t in events.get("t", ()):
+        chat = owner.setdefault(str(t[2])[:8], ("chat", str(t[2])[:8]))
         if t[3] > lo and t[1] < hi and t[3] > t[1]:
             parts, share = t[9] or {}, (min(t[3], hi) - max(t[1], lo)) / (t[3] - t[1])
             active.append((t[1], t[3]))
             spans["stop"].append((t[3] - parts.get("stop", 0), t[3]))
             unplaced["compaction"] += parts.get("compact", 0) * share
             unplaced["other"] += parts.get("resid", 0) * share
+            agents[chat].append(spans["stop"][-1])
+            compact[chat] += parts.get("compact", 0) * share
+            units[chat[0]] += chat[0] == "chat" and t[4] == "h" and lo <= t[1] < hi
     for r in suites:
         started = num(r.get("started_at"))
         active.append((r["queued_at"], r["ended_at"]))
         spans["suite_wait"].append((r["queued_at"], started or r["ended_at"]))
         if started:
             spans["suite_run"].append((max(started, r["queued_at"]), r["ended_at"]))
-    by_hook = collections.defaultdict(list)
+        chat = None if r.get("worker_run") else owner.get(str(r.get("session") or "")[:8])
+        if chat and chat[0] == "chat":
+            agents[chat].append((r["queued_at"], r["ended_at"]))
+        elif not r.get("worker_run"):
+            outside.append((r["queued_at"], r["ended_at"]))
+    by_hook, session_of = collections.defaultdict(list), {c[7]: str(c[8])[:8] for c in events.get("c", ())}
     for h in events.get("h", ()):
-        family = "stop" if h[3] == "Stop" else "hooks"
-        spans[family].append((h[1], h[1] + h[5] / 1000.0))
-        by_hook["%s/%s" % (family, hook_key(str(h[4])))].append((h[1], h[1] + h[5] / 1000.0))
-    spans["locks"] = [(w["started"], w["started"] + w["seconds"]) for w in wait_rows(lo, hi)
-                      if w.get("class") in WAIT_CLASSES and w.get("caller")]
+        family, span = "stop" if h[3] == "Stop" else "hooks", (h[1] - h[5] / 1000.0, h[1])
+        spans[family].append(span)
+        by_hook["%s/%s" % (family, hook_key(str(h[4])))].append(span)
+        agents[owner.get(session_of.get(h[7]))].append(span)
+    for w in wait_rows(lo, hi):
+        if w.get("class") in WAIT_CLASSES and w.get("caller"):
+            spans["locks"].append((w["started"], w["started"] + w["seconds"]))
+            agents[owner.get(w["caller"]) or owner.get(w["caller"][:8])].append(spans["locks"][-1])
     recovery = refusal_cost(lo, hi, events)
     spans["refusal"] = recovery.pop("spans")
+    for sid, own in recovery.pop("by_sid").items():
+        agents[owner.get(sid)] += own
     spans = {k: clip(v, lo, hi) for k, v in spans.items()}
 
     def seconds(keys):
         return round(length(union(x for k in keys for x in spans.get(k, ()))) + sum(unplaced[k] for k in keys), 1)
+
+    strata = None
+    if local_day(lo) >= (horizon() or "~"):
+        strata = {s: {"overhead_s": 0.0, "units": units[s]} for s, _ in STRATA}
+        for agent, own in agents.items():
+            if agent:
+                strata[agent[0]]["overhead_s"] += length(clip(own, lo, hi)) + compact[agent]
+        for s, _ in STRATA:
+            strata[s]["overhead_s"] = round(strata[s]["overhead_s"], 1)
+        strata["out_s"] = {"suites": round(length(clip(outside, lo, hi)), 1), "unmeasured": seconds(("other",))}
 
     hooks = sorted(((length(clip(v, lo, hi)), k) for k, v in by_hook.items()), key=lambda x: (-x[0], x[1]))
     return {"lo": lo, "hi": hi, "version": BUDGET_VERSION, "seconds": {k: seconds((k,)) for k in LABEL},
@@ -501,7 +540,7 @@ def budget(lo, hi, events=None):
             "rows": {row: seconds([k for part in parts for k in part[1:]]) for row, parts in ROWS},
             "parts": {part[0]: seconds(part[1:]) for _, parts in ROWS for part in parts},
             "hooks_by_hook": {k: round(v, 1) for v, k in hooks[:20] if v}, "runs": len(runs),
-            "dead_runs": sorted(dead), "refusals": recovery["count"], "refusal_cost": recovery}
+            "dead_runs": sorted(dead), "refusals": recovery["count"], "refusal_cost": recovery, "strata": strata}
 
 
 # ---------------------------------------------------------------- days
@@ -511,18 +550,28 @@ def day_cache_path(day):
     return os.path.join(harness_dir(), "budget-days", day + ".json")
 
 
+_BUDGETS = {}
+
+
+def cached_day(day):
+    cached = read_json(day_cache_path(day), None)
+    return cached if isinstance(cached, dict) and cached.get("settled") and cached.get("version") == BUDGET_VERSION else None
+
+
 def day_budget(day, now, store):
     """A day's budget, stored once the day ended a day ago (worker rows land when the run ends) and recomputed when
     its BUDGET_VERSION is older."""
     lo, hi = day_bounds(day)
-    cached = read_json(day_cache_path(day), None)
-    if isinstance(cached, dict) and cached.get("settled") and cached.get("version") == BUDGET_VERSION:
+    cached = cached_day(day)
+    if cached:
         return cached
-    found = budget(lo, min(hi, now))
-    found["settled"] = now >= hi + SETTLE_S
-    if found["settled"] and store:
-        write_json(day_cache_path(day), found)
-    return found
+    key = (day, now, harness_dir(), worker_runs_path(), suites_path(), gates_path())
+    if key not in _BUDGETS:
+        found = _BUDGETS[key] = budget(lo, min(hi, now))
+        found["settled"] = now >= hi + SETTLE_S
+        if found["settled"] and store:
+            write_json(day_cache_path(day), found)
+    return _BUDGETS[key]
 
 
 def measured(b):
@@ -551,6 +600,47 @@ def history(now, store, today):
     if today is not None:
         out[day] = today
     return out
+
+
+def horizon():
+    """The first day both journals record: the oldest kept events file and the first worker run (2026-10-03 for both;
+    runs.jsonl and the run folders begin that morning, so nothing older can be rebuilt)."""
+    days = sorted(glob.glob(os.path.join(harness_dir(), "events", "????-??-??.jsonl")))
+    first = next(iter(night_spend.rows(worker_runs_path())), None) or {}
+    start = num(first.get("pid_started_at")) or num(first.get("started_at")) or num(first.get("ended_at"))
+    return max(os.path.basename(days[0])[:10], local_day(start)) if days and start else None
+
+
+def paasche(days):
+    """The index of the last INDEX_DAYS days' strata against the INDEX_DAYS before: each stratum's window overhead
+    over its window units at the prior's price, strata with under INDEX_MIN_UNITS units on either side left out. None
+    while a window day is unrecorded; no value while a prior day is."""
+    sides = [None if any(d is None for d in part) else
+             {s: [sum(d[s][k] for d in part) for k in ("overhead_s", "units")] for s, _ in STRATA}
+             for part in (days[:INDEX_DAYS], days[INDEX_DAYS:])]
+    prior, window = sides
+    if window is None:
+        return None
+    kept = [s for s, _ in STRATA if prior and min(prior[s][1], window[s][1]) >= INDEX_MIN_UNITS]
+    base = sum(window[s][1] * prior[s][0] / prior[s][1] for s in kept)
+    return {"value": round(sum(window[s][0] for s in kept) / base, 2) if base else None, "window": window,
+            "prior": prior, "left_out": [s for s, _ in STRATA if s not in kept],
+            "out_s": {k: round(sum(d["out_s"][k] for d in days[INDEX_DAYS:]), 1) for k in ("suites", "unmeasured")}}
+
+
+def index_history(now, store):
+    """{day: index} of the windows ending on each of the HISTORY_DAYS days before today and on today (live), and
+    today's window."""
+    first, today = horizon(), day_bounds(local_day(now))[0]
+    days = [local_day(today - back * 86400 + 3600) for back in range(HISTORY_DAYS + 2 * INDEX_DAYS - 1, -1, -1)]
+    found = [cached_day(d) or (day_budget(d, now, store) if first and d >= first else {}) for d in days]
+    found = [f.get("strata") for f in found]
+    out, current = {}, None
+    for end in range(2 * INDEX_DAYS, len(days) + 1):
+        current = paasche(found[end - 2 * INDEX_DAYS:end])
+        if current and current["value"] is not None:
+            out[days[end - 1]] = current["value"]
+    return out, current
 
 
 def pct(part, whole):
@@ -593,6 +683,11 @@ def document(now, hours=24.0, write=True):
                                 by_gate_min_day={k: scale(v, 2) for k, v in gates}),
            "problems_by_day": problem_trend(now)}
     doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])
+    doc["index_by_day"], current = index_history(now, write)
+    doc["index"] = doc["index_by_day"].get(local_day(now))
+    doc["index_window"] = current
+    doc["levels"] = [[round(current["window"][s][0] / current["window"][s][1] / 60.0, 2)
+                      if current and current["window"][s][1] else None, label] for s, label in STRATA]
     if write:
         prune_days(now)
     doc["lines"] = ["%d min/day %s" % (round(v), label) + "".join(
@@ -628,6 +723,8 @@ def print_day(doc):
     for doctor, days in doc["problems_by_day"].items():
         print("problems · %s · %s" % (doctor, " ".join("%s:%s" % (d[5:], n) for d, n in days.items())))
     print("days · " + " ".join("%s:%s" % (d[5:], v) for d, v in doc["lost_min_day_by_day"].items()))
+    print("index · %s · " % (doc["index"] if doc["index"] is not None else "–") + " · ".join(
+        "%s %s" % ("–" if v is None else v, label) for v, label in doc["levels"]))
 
 
 # ---------------------------------------------------------------- nights
@@ -860,7 +957,7 @@ def unit_samples(item, lo, hi):
             if len(h) > 5 and lo <= h[1] < hi and num(h[5]) is not None and (h[3] == "Stop") == (item["class"] == "stop"):
                 out[hook_key(str(h[4]))].append(h[5])
     for w in wait_rows(lo, hi) if item["class"] in WAIT_OF else ():
-        if w.get("class") in WAIT_OF[item["class"]]:
+        if w.get("class") in WAIT_OF[item["class"]] and w["started"] >= lo:
             out[w["class"]].append(w["seconds"])
     return out
 

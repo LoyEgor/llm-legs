@@ -186,10 +186,10 @@ lines(blocks, [stop, stop,
                    "type": "hook_blocking_error", "hookEvent": "Stop", "blockingError": {"blockingError": "rewrite"}}}])
 blocked = T.refusal_cost(D0 + 590, D0 + 1200, {"c": [call(650, "after-post", "recover5"), call(1100, "late", "recover5")],
                                                  "t": [["t", D0 + 590, "recover5", D0 + 620]]})
-check(blocked["by_gate_s"] == {"ask-span-drill.sh": 20, "unknown-posttooluse-hook": 10} and blocked["count"] == 3
-      and blocked["unmeasured_by_gate"] == {"unknown-stop-hook": 1} and blocked["seconds"] == 30,
+check(blocked["by_gate_s"] == {"ask-span-drill.sh": 20, "unknown-posttooluse-hook": 10, "unknown-stop-hook": 300}
+      and blocked["count"] == 3 and blocked["unmeasured_by_gate"] == {} and blocked["seconds"] == 330,
       "a Stop block recovers until its turn ends, a PostToolUse block until the next call, a copied block counts once, "
-      "and a block with no turn and no call within the cap stays unmeasured: %s" % blocked)
+      "and a block whose next call comes after the cap costs the cap, never zero: %s" % blocked)
 os.unlink(blocks)
 T.gates_path = old_gates
 baseline = T.budget(D0, D0 + 86400, recovery_events)
@@ -234,7 +234,7 @@ check(day["seconds"] == dict(dict.fromkeys(T.LABEL, 0), suite_run=2100, suite_wa
                              hooks=100, stop=20, locks=40, other=649)
       and day["active_s"] == 9000 and day["runs"] == 2
       and {k: day["rows"][k] for k in ("tests", "delegation", "harness rules", "unmeasured")}
-      == {"tests": 3100, "delegation": 1001, "harness rules": 159, "unmeasured": 649},
+      == {"tests": 3100, "delegation": 1001, "harness rules": 160, "unmeasured": 649},
       "each class is the union of its spans: suites from every caller, a review round's slot queue too, hook rows and "
       "a turn's Stop seconds at its end, locks a chat paid (a background job's never), a review round's unsplit rest "
       "and a turn's unexplained seconds unmeasured; a row is the union of its classes: %s %s"
@@ -248,9 +248,14 @@ os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
 check(pair["runs"] == 3 and pair["rows"]["delegation"] == day["rows"]["delegation"]
       and pair["overhead_s"] == day["overhead_s"],
       "two runs queued and retried side by side count once: %s %s" % (pair["rows"], pair["overhead_s"]))
-check(day["overhead_s"] == 4289 and sum(day["seconds"].values()) == 4910,
+check(day["overhead_s"] == 4290 and sum(day["seconds"].values()) == 4910,
       "the overhead is the union of all classes, a second two classes share counted once, never their sum: %s"
       % day["overhead_s"])
+check(day["strata"] == {"chat": {"overhead_s": 60, "units": 0}, "workers": {"overhead_s": 4101, "units": 2},
+                        "out_s": {"suites": 100, "unmeasured": 649}},
+      "a chat's stratum holds its turns' Stop seconds and the locks it paid, a notification turn adds no order; a "
+      "worker's holds its own classes and the hook its call ran; a suite of no worker and no chat with turns and the "
+      "unmeasured seconds stay out, reported: %s" % day["strata"])
 T.write_json(T.day_cache_path("2026-01-10"), {"settled": True, "seconds": {"model": 5000}, "worker": {}})
 later = D0 + 3 * 86400 + 3600
 recomputed = T.history(later, True, 5.0)
@@ -270,7 +275,7 @@ check(doc["refusal_cost"]["unmeasured_by_gate"] == {"unknown": 1} and doc["refus
 check(doc["lost_min_day"] == 71.5 and doc["lines"][0] == "72 min/day overhead" and doc["rows"] == [
           [71.5, "overhead", []], [51.7, "tests", [[35.0, "running"], [16.7, "queued"]]],
           [16.7, "delegation", [[10.0, "worker queue"], [0.0, "wrap-up"], [6.7, "retries"], [0.0, "dead, hung"]]],
-          [2.6, "harness rules", [[2.0, "hooks"], [0.0, "gate refusals"], [0.7, "locks"], "-", [1.7, "gate"]]],
+          [2.7, "harness rules", [[2.0, "hooks"], [0.0, "gate refusals"], [0.7, "locks"], "-", [1.7, "gate"]]],
           [0.0, "usage walls", []], [0.0, "compaction", []], [10.8, "unmeasured", []], [150.0, "system active", []]],
       "the day document: overhead first, each row with its parts, gates and the heaviest hooks under theirs, system "
       "active last: %s" % doc["rows"])
@@ -554,6 +559,74 @@ check("review" not in split and round(split["slot"]) == 701 and round(split["oth
       and round(split["walled"]) == 200 and round(split["retries"]) == 400,
       "a night run's review round splits like any run, its usage walls are named by walled_accounts: %s"
       % dict(split))
+
+
+def stats(name, rows):
+    lines(os.path.join(work, name, "runs.jsonl"), rows)
+    os.environ["WORKER_STATS_DIR"] = os.path.join(work, name)
+    found = T.budget(D0, D0 + 86400)
+    os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
+    return found
+
+
+def quick(run, at):
+    return {"run": run, "round": None, "pid_started_at": at, "started_at": at, "cli_starts": [at + 100], "ended_at": at + 1000}
+
+
+both = stats("par-stats", [quick("claudeb-1-1-par1", D0 + 50000), quick("claudeb-1-2-par2", D0 + 50000)])
+apart = stats("seq-stats", [quick("claudeb-1-1-par1", D0 + 50000), quick("claudeb-1-2-par2", D0 + 52000)])
+T.INDEX_MIN_UNITS = 1
+alike = T.paasche([apart["strata"]] * 7 + [both["strata"]] * 7)
+T.INDEX_MIN_UNITS = 20
+check(both["strata"]["workers"] == apart["strata"]["workers"] == {"overhead_s": 200, "units": 2}
+      and both["overhead_s"] != apart["overhead_s"] and alike["value"] == 1.0 and alike["left_out"] == ["chat"],
+      "the same work in parallel or one after another is the same stratum overhead and index 1.00, while the union "
+      "differs: %s %s" % (both["strata"], alike))
+DEAD2 = "claudeb-%d-5-dead" % (D0 + 30000)
+run_dir(DEAD2, dict({k: v for k, v in dead_files.items() if k != "brief"}, session="dead0002-a", **{"worker-session": "dead0002-a"}))
+gone = stats("dead2-stats", [dict(dead_row, run=DEAD2)])
+check(gone["dead_runs"] == [DEAD2] and gone["strata"]["workers"] == {"overhead_s": 610, "units": 0},
+      "a dead run adds no unit; its minutes stay overhead: %s" % gone["strata"])
+run_dir("claudeb-1-1-cha1", {"session": "cafe0001-0000\n"})
+run_dir("claudeb-1-2-cha2", {"session": "cafe0002-0000\n", "brief": "EFFORT: low\n\nRESUME cafe0001-0000: go on\n"})
+chain = stats("chain-stats", [quick("claudeb-1-1-cha1", D0 + 50000), quick("claudeb-1-2-cha2", D0 + 52000)])
+check(chain["strata"]["workers"] == {"overhead_s": 200, "units": 1},
+      "a resume chain is one task, each run's overhead its own: %s" % chain["strata"])
+day1 = {"chat": {"overhead_s": 600, "units": 10}, "workers": {"overhead_s": 3000, "units": 5},
+        "out_s": {"suites": 0, "unmeasured": 0}}
+twice = {k: {f: 2 * v for f, v in day1[k].items()} for k in day1}
+moved = dict(day1, chat={"overhead_s": 240, "units": 4}, workers={"overhead_s": 5400, "units": 9})
+thin = dict(moved, chat={"overhead_s": 600, "units": 1})
+check(T.paasche([day1] * 7 + [twice] * 7)["value"] == 1.0 and T.paasche([day1] * 7 + [moved] * 7)["value"] == 1.0
+      and T.paasche([day1] * 7 + [thin] * 7)["left_out"] == ["chat"]
+      and T.paasche([day1] * 7 + [thin] * 7)["value"] == 1.0
+      and T.paasche([day1] * 7 + [dict(day1, workers={"overhead_s": 1500, "units": 5})] * 7)["value"] == 0.58,
+      "doubled volume is 1.00, units moved between strata at unchanged prices are 1.00, a stratum under 20 units on "
+      "a side is left out and named, a cheaper task reads below 1")
+hz = os.path.join(work, "hz-harness")
+os.makedirs(os.path.join(hz, "events"))
+open(os.path.join(hz, "events", "2026-01-10.jsonl"), "w").close()
+early = [quick("claudeb-1-%d-hz%02d" % (k, k), D0 - 7 * 86400 + k // 3 * 86400 + 1000 * (k % 3 + 1)) for k in range(42)]
+lines(os.path.join(work, "hz-stats", "runs.jsonl"), early)
+os.environ.update(WORKER_STATS_DIR=os.path.join(work, "hz-stats"), HARNESS_DOCTOR_DIR=hz)
+young, now_ = T.index_history(D0 + 6 * 86400 + 43200, False)
+open(os.path.join(hz, "events", "2026-01-03.jsonl"), "w").close()
+grown = T.index_history(D0 + 6 * 86400 + 43200, False)[0]
+os.environ.update(WORKER_STATS_DIR=os.path.join(work, "stats"), HARNESS_DOCTOR_DIR=os.path.join(work, "harness"))
+check(young == {} and now_["value"] is None and now_["prior"] is None
+      and now_["window"]["workers"] == [2100, 21] and grown == {"2026-01-16": 1.0},
+      "no index while the prior window reaches before the first day both journals record, never a partial one; the "
+      "current window's level stands: %s %s %s" % (young, now_, grown))
+E = D0 + 2 * 86400
+os.environ["HARNESS_WAITS_DIR"] = os.path.join(work, "late-waits")
+lines(os.path.join(work, "late-waits", T.local_day(E - 1) + ".jsonl"),
+      [{"class": "lock", "source": "x", "started": E - 50, "seconds": 100, "pid": 1, "caller": "late0001"}])
+ended = T.budget(E - 100, E, {"h": [["h", E, "p", "PreToolUse", "gate", 100000, "Bash", "tid"]]})
+crossed = T.budget(E, E + 3600, {})
+del os.environ["HARNESS_WAITS_DIR"]
+check(ended["seconds"]["hooks"] == 100 and crossed["seconds"]["locks"] == 50,
+      "a hook row is stamped at its end, so its span ends there; a wait begun before midnight keeps its tail in the "
+      "next day: %s %s" % (ended["seconds"]["hooks"], crossed["seconds"]["locks"]))
 print(count[0])
 EOF
 ) || exit 1

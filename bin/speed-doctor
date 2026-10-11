@@ -1229,6 +1229,7 @@ def collect(write, now):
         "head": head_of(budget.get("lost_min_day"), status, gap),
         "lost_min_day": budget.get("lost_min_day"),
         "lost_min_day_by_day": budget.get("lost_min_day_by_day") or {},
+        "index": budget.get("index"), "index_by_day": budget.get("index_by_day") or {}, "levels": budget.get("levels") or [],
         "budget": budget,
         "tests": tests,
     }
