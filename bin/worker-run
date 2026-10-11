@@ -2427,7 +2427,7 @@ refuse_live_run() { # brief resume
 }
 
 own_headroom_guard() {
-  local account=$1 threshold=${WORKER_RUN_OWN_HEADROOM:-60} reading alternative picker
+  local account=$1 threshold=${WORKER_RUN_OWN_HEADROOM:-80} reading alternative picker
   [ "$threshold" != 0 ] || return 0
   . "$SCRIPT_DIRECTORY/../share/chat-account.sh"
   chat_account_resolve
@@ -2452,7 +2452,7 @@ own_headroom_guard() {
   else
     alternative="wait for the 5h reset at ${reading#*$'\t'}"
   fi
-  fail "own-account headroom: claude/$account ${reading%%$'\t'*}; $alternative. Nothing was launched and no account was spent."
+  fail "own-account headroom: claude/$account ${reading%%$'\t'*}; $alternative. Nothing was launched and no account was spent. Only Egor's «обойди» lifts it, for one launch: WORKER_RUN_OWN_HEADROOM=0."
 }
 
 start_run() {

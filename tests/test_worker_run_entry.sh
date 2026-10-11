@@ -292,7 +292,7 @@ own_headroom_tests() (
   export WORKER_RUN_OWN_HEADROOM=60
   local spec pct age target override expected rc before
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
-  for spec in '65 0 com default refuse' '50 0 com 60 allow' '55 1200 com 60 refuse' '90 0 other 60 allow' '65 0 com 0 allow' '60 0 com 60 refuse' 'null 0 com 60 allow' '90 0 com 60 resume'; do
+  for spec in '75 0 com default allow' '85 0 com default refuse' '50 0 com 60 allow' '55 1200 com 60 refuse' '90 0 other 60 allow' '65 0 com 0 allow' '60 0 com 60 refuse' 'null 0 com 60 allow' '90 0 com 60 resume'; do
     read -r pct age target override expected <<<"$spec"
     clear_stub
     export PICK_RC=0 PICK_ACCOUNT=other WORKER_RUN_OWN_HEADROOM=$override
@@ -307,6 +307,7 @@ own_headroom_tests() (
       assert test "$rc" -ne 0
       assert grep -qF "own-account headroom: claude/com 5h $pct%" "$WORK/start.err"
       assert grep -qF 'use claude/other' "$WORK/start.err"
+      assert grep -qF 'обойди» lifts it, for one launch: WORKER_RUN_OWN_HEADROOM=0' "$WORK/start.err"
       assert test "$(wc -l <"$WORK/start.err")" -eq 1
       assert test ! -s "$CALL_LOG"
       assert test "$before" = "$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)"
