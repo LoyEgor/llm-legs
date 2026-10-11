@@ -232,7 +232,7 @@ chat_pin_off_account() { # command → the switched-off account a `chat-pin <nam
   load_share worker-pool.sh worker_pool_dir || return 1
   for vendor in $vendors; do
     dir=$(worker_pool_dir "$vendor") || continue
-    grep -qxF -- "$name" "$dir/disabled" 2>/dev/null && { printf '%s' "$name"; return 0; }
+    grep -qxF -- "$name" "$dir/disabled" 2>/dev/null && { printf '%s:%s' "${vendor/#claudeb/claude}" "$name"; return 0; }
   done
   return 1
 }
@@ -283,7 +283,7 @@ case "$MODE" in
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty') || exit 0
     ! chat_pins_written "$cmd" || deny "$CHAT_DENY_REASON"
     ! off=$(chat_pin_off_account "$cmd") ||
-      deny "Blocked: $off is switched off in Egor's menu, and only Egor pins a chat to it, typing \`! chat-pin $off\` himself. Tell him that line; do not run it."
+      deny "Blocked: ${off#*:} is switched off in Egor's menu, and only Egor pins a chat to it, typing \`! chat-pin $off\` himself. Tell him that line; do not run it."
     # The pin file, not every name starting with it: `share/worker-model.sh` is a source file, and
     # gating commands that merely name it made ordinary work argue with this door. Cheap and on the
     # raw text, so the shared module is read only for a command that could be about the pin at all;
