@@ -44,7 +44,7 @@ loader.exec_module(module)
 parts = {"Hooks": "hook_every_call", "Hook waits": "floor", "Load": "load"}
 sections = [module.section(name, [module.row([rule], red=[0], judge=[module.verdict(rule, "x", 1, 0, "calls", 1, 1, "red")])],
                            [""], [False]) for name, rule in parts.items()]
-problems = [{"id": rule + ":x", "rule": rule, "state": "new", "fact": rule} for rule in parts.values()]
+problems = [{"id": rule + ":x", "rule": rule, "state": "new", "fact": rule, "expected_min_day": 5} for rule in parts.values()]
 problems.append({"id": "collector:run", "rule": "collector", "state": "new", "fact": "slow collector"})
 document = {"contract": 1, "doctor": "harness", "as_of_s": now, "judge": "h", "status": "problems",
             "problem_count": len(problems), "problems": problems, "title": "Harness doctor: %d problems" % len(problems),

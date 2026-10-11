@@ -741,7 +741,7 @@ def select(opportunities, why=None):
     for o in opportunities:
         fields = o["opportunity"]
         reason = "egor" if fields["needs_egor"] else "risk" if fields["quality"] != "equivalent" \
-            else "score" if fields["score"] <= 0 else time_budget.night_speed_skip(o, opportunities)
+            else "score" if fields["score"] <= 0 else time_budget.speed_skip(o, opportunities)
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
         else:
@@ -1319,7 +1319,7 @@ def menu_lines(document):
     emit(0, "-", "s")
     opportunities = [p for p in document["problems"] if p["rule"] == "opportunity"]
     ranked = [p for p in opportunities if not p["opportunity"]["needs_egor"]]
-    skipped = [(p["id"], time_budget.night_speed_skip(p, document["problems"])) for p in document["problems"]
+    skipped = [(p["id"], time_budget.speed_skip(p, document["problems"])) for p in document["problems"]
                if p["rule"] in SPEED_RULES + ("suite_audit",) or p.get("class") == "measurement fix"]
     emit(0, "Night skipped: " + ("; ".join("%s (%s)" % (pid, reason) for pid, reason in skipped if reason) or "none"), "d")
     emit(0, "Opportunities · top %d of %d" % (min(len(ranked), 10), len(ranked)))

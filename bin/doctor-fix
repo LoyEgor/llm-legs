@@ -398,7 +398,7 @@ def snapshot(doctor, doc_file, night=None):
         entry = {"id": pid, "state": state, "fact": problem.get("fact"), "rule": rule, "ledger": problem.get("ledger"),
                  "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
                                                    "rule_at": rule_at(doctor, rule)}}
-        if night and doctor == "harness":
+        if doctor == "harness":
             import time_budget
             admission = dict(problem)
             source_root = norm(ROOT)
@@ -411,7 +411,7 @@ def snapshot(doctor, doc_file, night=None):
                 admission["class"] = "measurement fix"
             if ((problem.get("speed") or rule in time_budget.IMPROVEMENT_RULES) and rule != "spend_audit" or rule in ("floor", "test_long_pole", "test_daily_cost", "test_slow", "suites_at_once", "hook_p50", "hook_sync", "hook_full_work", "hook_every_call")
                     or admission.get("class", (admission.get("opportunity") or {}).get("class")) == "measurement fix"):
-                reason = time_budget.night_speed_skip(admission, problems)
+                reason = time_budget.speed_skip(admission, problems)
                 if reason:
                     skipped.append("skipped %s: %s" % (pid, reason))
                     continue

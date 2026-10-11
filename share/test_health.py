@@ -615,7 +615,7 @@ def findings(window, suites, files, now, born):
                                        ", bounded by the sleeps %d profiled runs journaled" % slept if slept else
                                        ", any wait (sleep, I/O, subprocess); no profiled run bounds it"), files_of,
                                    "measured" if slept else "estimated"))
-            elif cls == "pole" and secs / 60.0 >= time_budget.NIGHT_GAIN_MIN_DAY:
+            elif cls == "pole" and secs / 60.0 >= time_budget.GAIN_MIN_DAY:
                 out.append(finding("pole", "pole/%s/%s" % (repo, short), secs, worker, len(runs), days(runs),
                                    "%s · %s: the long pole of %d runs, the other slots idle while it runs" % (
                                        short, repo, len(runs)), files_of))
@@ -625,7 +625,7 @@ def findings(window, suites, files, now, born):
                                    "legacy checks, over-complicated, splittable, sleeps" % (
                                        short, repo, len(runs), plain(cost(runs, "work") / 60.0 / len(runs))), files_of))
     serial = [e for e in window if e["cost"].get("serial")]
-    if serial and cost(serial, "serial") / 60.0 / STATS_D >= time_budget.NIGHT_GAIN_MIN_DAY:
+    if serial and cost(serial, "serial") / 60.0 / STATS_D >= time_budget.GAIN_MIN_DAY:
         out.append(finding("serial", "serial", cost(serial, "serial") / STATS_D, cost(serial, "serial", "worker") / STATS_D,
                            len({id(e["row"]) for e in serial}), days(serial),
                            "%d multi-suite runs on one slot, their suites one after another" % len(

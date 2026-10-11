@@ -60,7 +60,7 @@ DEAD_LINE = re.compile(r"(?:(?:Failed to authenticate|Not logged in|You've hit y
 DEAD_LINE_MAX = 300
 RESUME = re.compile(r"(?m)^RESUME ([0-9a-f][0-9a-f-]{7,})")
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
-NIGHT_GAIN_MIN_DAY = 5
+GAIN_MIN_DAY = 5
 ROI_DAYS = 3
 IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE, suite_audit.RULE)
 # (unit, samples a side needs, the after/before ratio proving it, the gain's daily unit, units in one of it): the
@@ -780,16 +780,16 @@ def is_test(path):
     return "/tests/" in "/" + path or os.path.basename(path).startswith("test_")
 
 
-def night_speed_skip(problem, problems=()):
+def speed_skip(problem, problems=()):
     fields = problem.get("opportunity") or {}
     if problem.get("class", fields.get("class")) == "measurement fix":
         blind_for = problem.get("blind_for", fields.get("blind_for")) or []
         if any(p.get("id") in blind_for and p.get("class", (p.get("opportunity") or {}).get("class")) != "measurement fix"
-               and not night_speed_skip(p) for p in problems):
+               and not speed_skip(p) for p in problems):
             return None
         return "measurement fix without a >=5 min/day blind opportunity"
     gain = expected_gain(problem)
-    return None if gain is not None and gain >= NIGHT_GAIN_MIN_DAY else "expected gain <5 min/day or unpriced"
+    return None if gain is not None and gain >= GAIN_MIN_DAY else "expected gain <5 min/day or unpriced"
 
 
 def expected_gain(problem):
