@@ -897,7 +897,7 @@ summary=$(jq -r \
      general_usable:bool_or(.rotation.usable.general?; true),
      fable_capable:bool_or(.rotation.usable.fable?; true),
      h5_absent:limits_window_absent(.five_hour),
-     h5:eff(.five_hour),wk:eff($bucket),
+     h5:eff(.five_hour),wk:eff($bucket),gwk:eff(.weekly),
      wk_reset:(($bucket.resets_at? // null) | epoch),
      rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str($bucket) end)} |
     .blocked = (if fable_view then (.fable_capable | not) else (.general_usable | not) end) |
@@ -910,7 +910,8 @@ summary=$(jq -r \
     .budget_days = spend_days |
     .claimed = claimed_in($cb_claims) |
     .observed = (.name | IN($cb_walls[])) |
-    .walled = (usage_walled(.spend) or .observed) | eligibility |
+    # A spent general week stops every model, Fable included: the worker-run gate walls at max(5h, weekly).
+    .walled = (usage_walled(.spend) or .observed or (fable_view and (.gwk // -1) >= 100)) | eligibility |
     .eligible = (.eligible and (.blocked | not) and (.token_expiry | not))]) as $cl_accounts |
   ($cl_accounts | map(select(.eligible)) | rank) as $cl_eligible |
   # Fable exhaustion never disqualifies ordinary work, and the reverse holds as well: on the fable

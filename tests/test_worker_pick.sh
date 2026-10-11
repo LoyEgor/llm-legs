@@ -422,6 +422,12 @@ record_wall claudeb session 2000003600
 query --account claudeb --fable
 assert test "$query_out" = tie-a
 clear_walls
+run_filter claude_pool '.vendors.claude.accounts = [
+  {account:"wk-spent",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:100},fable:{used_pct:5}},
+  {account:"wk-left",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:60},fable:{used_pct:40}}]'
+query --account claudeb --fable
+assert test "$query_out" = wk-left
+run_case claude_pool
 query --account claudeb --fable
 assert test "$query_out" = session
 # The fable bucket is paced by the reset it carries, not the weekly one: equal fable percentages
