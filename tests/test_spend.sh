@@ -278,22 +278,24 @@ day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t))
 shift = lambda d, n: (datetime.date.fromisoformat(d) + datetime.timedelta(days=n)).isoformat()
 state = {}
 collect(state=state, write=True)
-check(state == {"index_by_day": {day(NOW - 3600): 0.46}, "index_definition": "d1"} and not os.path.exists(os.path.join(work, "tokenmap.calls")),
+check(state == {"index_by_day": {day(NOW - 3600): 0.46}, "index_definition": "d1", "index_closed": []}
+      and not os.path.exists(os.path.join(work, "tokenmap.calls")),
       "a run stores the reading's index under its day; a fixture tracking.json with "
       "no fixture tokenmap never reaches the live index: %s" % state)
 os.environ["SPEND_TOKENMAP"] = fake
 first = collect(state=state, write=True)
-missing_day = next(d for d in (day(NOW - b * 86400) for b in range(1, 8)) if d != day(NOW - 3600))
+missing_day = day(NOW - 86400)
 calls = open(os.path.join(work, "tokenmap.calls")).read().splitlines()
 check(state["index_by_day"] == {day(NOW - 3600): 0.46, missing_day: 0.7} and first["index_by_day"] == state["index_by_day"]
+      and state["index_closed"] == [missing_day]
       and calls == ["tracking --since %s --until %s --json" % (shift(missing_day, -6), shift(missing_day, 1))],
       "one missing completed day a run from tokenmap's 7-day window ending it, stored as its index: %s %s"
       % (state["index_by_day"], calls))
 collect(state=state, write=True)
-check(len(state["index_by_day"]) == 3 and len(open(os.path.join(work, "tokenmap.calls")).read().splitlines()) == 2,
+check(len(state["index_closed"]) == 2 and len(open(os.path.join(work, "tokenmap.calls")).read().splitlines()) == 2,
       "the next run takes the next missing day: %s" % state["index_by_day"])
 collect(state=state, write=False)
-check(len(state["index_by_day"]) == 3, "a read-only run backfills nothing")
+check(len(state["index_closed"]) == 2, "a read-only run backfills nothing")
 failing = os.path.join(work, "tokenmap-failing")
 with open(failing, "w") as handle:
     handle.write("#!/bin/sh\nexit 1\n")
@@ -301,15 +303,22 @@ os.chmod(failing, 0o755)
 os.environ["SPEND_TOKENMAP"] = failing
 collect(state=state, write=True)
 os.environ["SPEND_TOKENMAP"] = fake
-held_days = len(state["index_by_day"])
+held_days = len(state["index_closed"])
 collect(state=state, write=True)
-check(held_days == 3 and len(state["index_by_day"]) == 4 and None not in state["index_by_day"].values(),
+check(held_days == 2 and len(state["index_closed"]) == 3 and None not in state["index_by_day"].values(),
       "a failed tokenmap run stores no day, so the next run retries it instead of a permanent gap: %s"
       % state["index_by_day"])
 
-redefined = {"index_by_day": dict(state["index_by_day"]), "index_definition": "d1"}
+provisional = {"index_by_day": {missing_day: 0.46}, "index_definition": "d1"}
+collect(state=provisional, write=True)
+check(provisional["index_by_day"][missing_day] == 0.7 and provisional["index_closed"] == [missing_day],
+      "a day read intraday is provisional: once it closes, the backfill replaces it with the closed day's value: %s"
+      % provisional)
+
+redefined = {"index_by_day": dict(state["index_by_day"]), "index_definition": "d1",
+             "index_closed": list(state["index_closed"])}
 collect(state=redefined, write=False, definition="d2")
-check(redefined == {"index_by_day": {}, "index_definition": "d2"},
+check(redefined == {"index_by_day": {}, "index_definition": "d2", "index_closed": []},
       "history recorded under another index definition is dropped, never charted beside the new one: %s" % redefined)
 
 with open(ledger, "w") as handle:

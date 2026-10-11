@@ -278,7 +278,8 @@ def tokenmap_cmd(home):
     return None if os.environ.get("SPEND_TRACKING") else [os.path.join(home, ".local", "bin", "tokenmap")]
 
 
-def backfill(history, through, now, local_day, home):
+def backfill(history, closed, through, now, local_day, home):
+    """One completed day a run whose value is missing or was read intraday takes the closed day's value."""
     cmd = tokenmap_cmd(home)
     if not cmd:
         return
@@ -286,9 +287,10 @@ def backfill(history, through, now, local_day, home):
         day = local_day(now - back * 86400)
         end = datetime.datetime.combine(datetime.date.fromisoformat(day) + datetime.timedelta(days=1),
                                         datetime.time()).timestamp()
-        if day not in history and end <= through:
+        if day not in closed and end <= through:
             try:
                 history[day] = day_value(day, cmd)
+                closed.append(day)
             except (OSError, subprocess.SubprocessError, ValueError):
                 pass
             return
@@ -321,6 +323,7 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
     current."""
     history = state["index_by_day"] = {d: v for d, v in (state.get("index_by_day") or {}).items()
                                        if d >= local_day(now - DAYS_KEPT * 86400)}
+    closed = state["index_closed"] = [d for d in state.get("index_closed") or () if d in history]
     out = {"status": "nodata", "as_of_s": int(now), "index": None, "index_by_day": history, "problems": [],
            "selection": [], "issues": [], "proofs": {}, "menu": []}
     path = tracking_path(home)
@@ -338,6 +341,7 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
         return out
     if state.get("index_definition") != index.get("definition"):
         history.clear()
+        closed.clear()
         state["index_definition"] = index.get("definition")
     files, texts = hook_files(scripts), file_texts()
     found = components(payload, files, texts)
@@ -358,9 +362,9 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
     out.update(status="watch" if out["problems"] else "ok", index=value, change=index.get("change"),
                proofs={k: v for k, v in proofs.items() if v})
     if write:
-        if value is not None:
+        if value is not None and local_day(made) not in closed:
             history[local_day(made)] = value
-        backfill(history, epoch(payload.get("data_through")) or made, now, local_day, home)
+        backfill(history, closed, epoch(payload.get("data_through")) or made, now, local_day, home)
     coverage = index.get("coverage")
     out["head"] = "%s%s · %d audit%s due" % (
         "index %.2f (%s)" % (value, index.get("change") or "–") if value is not None
