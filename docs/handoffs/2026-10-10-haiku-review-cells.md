@@ -1,6 +1,6 @@
 # Haiku review cells: chunked, judged by Opus; the legacy round is a production trial
 
-Status: open — To: night 20261010T031219Z-4c4e
+Status: open — To: next night (night 20261010T031219Z-4c4e ran its Haiku rounds before 7fd71ca, so they read 11-22 of 41-44 chunks, and its report carried no trial line)
 
 From chat «Updater doctor», on Egor's word 2026-10-10: Haiku reviews only chunked and only with the
 Opus check. Changed on review-bench main while this night was paused:
