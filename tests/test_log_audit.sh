@@ -92,7 +92,7 @@ assert grep -q 'H: Stop hook_blocking_error write the reading line$' <<<"$skelet
 assert grep -q 'H: PreToolUse:Bash hook_blocking_error files left owned by nobody$' <<<"$skeleton"
 assert test "$(grep -c 'SECRET-OUTPUT\|huge context' <<<"$skeleton")" -eq 0
 
-# A full read: every chunk and the merge run on Claude Sonnet with no relay token at all, and the
+# A full read: chunks run on Claude Haiku, the merge on Sonnet, with no relay token at all, and the
 # audit's own transcripts are never read back.
 out=$(DOCTORS_DIR="$WORK/doctors" "$ROOT/bin/log-audit" run --night N1)
 assert grep -q '^log-audit: 1 transcripts in 1 chunks read, 2 findings for the Harness doctor$' <<<"$out"
@@ -100,7 +100,8 @@ assert jqe -s '[.[] | select(.doctor == "log-audit" and .finished_at >= .started
   "$WORK/doctors/launches.jsonl"
 assert test "$(wc -l <"$CALLS" | tr -d ' ')" -eq 2
 assert test "$(cut -f1 "$CALLS" | sort -u)" = unset
-assert test "$(cut -f2 "$CALLS" | grep -c '^claudeb --model sonnet --effort medium ')" -eq 2
+assert test "$(sed -n 1p "$CALLS" | cut -f2 | grep -c '^claudeb --model haiku --effort medium ')" -eq 1
+assert test "$(sed -n 2p "$CALLS" | cut -f2 | grep -c '^claudeb --model sonnet --effort medium ')" -eq 1
 assert grep -q '^# Log audit: chunk 1 of 1$' "$CALLS.brief.1"
 assert test "$(head -1 "$CALLS.brief.1")$(head -1 "$CALLS.brief.2")" = 'ROUND: noneROUND: none'
 assert grep -q 'Fixture chat' "$CALLS.brief.1"

@@ -21,7 +21,7 @@ import collector_runs  # noqa: E402
 import log_skeleton  # noqa: E402
 from spend import read_jsonl  # noqa: E402
 
-MODEL, EFFORT = "sonnet", "medium"
+READ_MODEL, MERGE_MODEL, EFFORT = "haiku", "sonnet", "medium"
 CHUNK_CHARS = 200000
 PARALLEL = 6
 MAX_WALL_S = 2400
@@ -133,9 +133,9 @@ def objects(text, required):
         position = start + max(consumed, 1)
 
 
-def launch(brief_file):
+def launch(brief_file, model=READ_MODEL):
     started = time.time()
-    done = subprocess.run([worker_run(), "start", "claudeb", "--model", MODEL, "--effort", EFFORT, "--brief", brief_file,
+    done = subprocess.run([worker_run(), "start", "claudeb", "--model", model, "--effort", EFFORT, "--brief", brief_file,
                            "--workdir", ROOT_DIR], capture_output=True, text=True)
     run_id = next((line[5:].strip() for line in done.stdout.splitlines() if line.startswith("RUN: ")), None)
     if done.returncode != 0 or not run_id:
@@ -180,7 +180,7 @@ def merged(raw, folder, deadline):
     if time.time() >= deadline:
         run_id, error = None, "no wall left for the merge"
     else:
-        run_id, error = launch(path)
+        run_id, error = launch(path, MERGE_MODEL)
     text, failure = result_of(run_id, deadline) if run_id else (None, None)
     error = error or failure
     found = objects(text or "", ("id", "title"))
