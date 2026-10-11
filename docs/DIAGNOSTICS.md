@@ -93,9 +93,10 @@ For LLM sessions asked to fix limits, the menu, or claudeb. Read this before tou
   `bash tests/test_hs_env_guard.sh`.
 - `launchd/com.tokenmap-scand.plist` — INSTALLED (copy in `~/Library/LaunchAgents/`, wrapper
   `~/.local/libexec/tokenmap-scand`). Nightly `tokenmap scan` at 05:00 plus `RunAtLoad` as
-  catch-up for missed nights; the wrapper, not launchd, decides whether a scan happens (a
-  `read-rates.json` inside the wrapper's freshness guard — currently 20h, the wrapper is the
-  source of truth → silent exit 0). The scan refreshes the tokenmap index and rewrites
+  catch-up for missed nights; the wrapper, not launchd, decides whether a scan happens (it
+  skips only when both `read-rates.json` and `tracking.json` were written since the last 05:00,
+  so `tracking.json` never outlives its 26h `stale_after_hours` and Spend never blanks). The
+  scan refreshes the tokenmap index, `tracking.json` (Spend's title) and rewrites
   `~/.local/share/tokenmap/read-rates.json`, which `instruction_live_rates()` in
   `share/instruction-files.sh` serves to the instruction write and bloat gates. Every entry
   carries two currencies: `limit_units` is what the weekly usage limit charges and is what both

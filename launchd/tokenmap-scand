@@ -10,24 +10,27 @@ set -u
 REPO="/Volumes/Work/Projects/token-map"
 INSTRUCTION_CANARY="/Volumes/Work/Projects/llm-legs/bin/instruction-canary"
 PYTHON="/opt/homebrew/bin/python3"
-RATES="$HOME/.local/share/tokenmap/read-rates.json"
+EXPORTS=("$HOME/.local/share/tokenmap/read-rates.json" "$HOME/.local/share/tokenmap/tracking.json")
 PAGE_DAYS=31
 LOG="$HOME/Library/Logs/tokenmap-scand.log"
-FRESH_SECONDS=$((20 * 3600))
 MAX_BYTES=1048576
 KEEP_BYTES=262144
 
 now=$(date +%s)
-scan_needed=1
-if [ -f "$RATES" ]; then
-    mtime=$(stat -f %m "$RATES" 2>/dev/null || echo 0)
-    age=$((now - mtime))
+# Fresh = both exports written since the last 05:00 slot. An age bound let a scan without
+# tracking (the menu's ranged views) or an afternoon refresh skip the night, and tracking.json
+# then aged past its 26h stale_after_hours, blanking Spend until the next night.
+slot=$(date -v5H -v0M -v0S +%s)
+[ "$slot" -gt "$now" ] && slot=$((slot - 86400))
+scan_needed=0
+for export in "${EXPORTS[@]}"; do
+    mtime=$(stat -f %m "$export" 2>/dev/null || echo 0)
     # A stamp in the future is a broken clock, not a fresher export; reading it as fresh would
     # pin this job dormant for as long as the stamp stays ahead.
-    if [ "$age" -ge 0 ] && [ "$age" -lt "$FRESH_SECONDS" ]; then
-        scan_needed=0
+    if [ "$mtime" -lt "$slot" ] || [ "$mtime" -gt "$now" ]; then
+        scan_needed=1
     fi
-fi
+done
 
 mkdir -p "$(dirname "$LOG")"
 size=$(stat -f %z "$LOG" 2>/dev/null || echo 0)
