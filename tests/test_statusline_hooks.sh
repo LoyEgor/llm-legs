@@ -1434,6 +1434,17 @@ jq --argjson now "$cg_now" '.vendors.codex.accounts[0].as_of = ($now - 600 | tod
   "$WORK/cg-limits-kept.json" > "$WORK/limits.json"
 cg_recent=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
 assert test "${cg_recent#*stale}" = "$cg_recent"
+cg_wall_reset=$((cg_now + 5400))
+LLM_LIMITS_FILE="$WORK/limits.json" bash -c '. "$1/share/worker-walls.sh" && worker_walls_record codex work4 "$2" "$3"' \
+  _ "$ROOT" "$cg_wall_reset" "$((cg_now + 1))"
+cg_walled=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
+assert grep -Fq "${RED}walled→$(date -r "$cg_wall_reset" +%H:%M)${RESET}" <<< "$(sed -n '2p' <<< "$cg_walled")"
+assert grep -Fq "${RED}work4${RESET}" <<< "$(sed -n '1p' <<< "$cg_walled")"
+jq --argjson t "$((cg_now + 2))" '.vendors.codex.accounts[0] |= (.five_hour.as_of = $t | .weekly.as_of = $t)' \
+  "$WORK/limits.json" > "$WORK/cg-limits-read.json"
+mv "$WORK/cg-limits-read.json" "$WORK/limits.json"
+cg_read=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
+assert test "${cg_read#*walled}" = "$cg_read"
 jq --argjson now "$cg_now" '.vendors.claude.accounts = [{account:"stalefab", as_of:($now - 19 * 3600 | todateiso8601),
     fable:{used_pct:5,effective_pct:5,stale:true,resets_at:($now + 86400 | todateiso8601)}}]' \
   "$WORK/cg-limits-kept.json" > "$WORK/limits.json"

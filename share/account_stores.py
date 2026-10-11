@@ -23,9 +23,9 @@ import gateway_auth
 import gemini_web
 
 SHARE = Path(__file__).resolve().parent
-PATHS_READ = ('. "$0/worker-pool.sh" && . "$0/worker-claims.sh" && . "$0/worker-walls.sh" && '
+PATHS_READ = ('. "$0/worker-pool.sh" && . "$0/worker-claims.sh" && '
               'dir=$(worker_pool_dir "$1") && printf "%s\n" "$dir" && worker_pool_file "$dir" && '
-              'worker_claims_dir && worker_walls_path "$1" "{name}"')
+              'worker_claims_dir')
 _ROOTS: dict[str, Path] = {}
 
 VENDORS = ("claude", "codex", "gemini", "grok")
@@ -132,24 +132,24 @@ class PoolExclusions:
 
 @functools.cache
 def _paths(word: str) -> dict[str, Path]:
-    """The worker pool, claim and run-observed wall paths of a vendor, from their bash owners."""
+    """The worker pool and claim paths of a vendor, from their bash owners."""
     try:
         out = subprocess.run(["bash", "-c", PATHS_READ, str(SHARE), word], capture_output=True, text=True,
                              timeout=30, check=True).stdout.splitlines()
-        pool, file, claims, wall = map(Path, out)
+        pool, file, claims = map(Path, out)
     except (subprocess.SubprocessError, ValueError) as exc:
         raise OSError(f"cannot read the {word} pool paths: {exc}") from exc
-    return {"pool": pool, "file": file, "claims": claims / word, "walls": wall.parent, "wall": wall.name}
+    return {"pool": pool, "file": file, "claims": claims / word}
 
 
 def _shared(word: str) -> list:
-    pool = lambda: _paths(word)["pool"]
+    # Read here, not inside held(): Entries.held swallows OSError, and an unreadable path would read as no remnant.
+    paths = _paths(word)
     return [
-        Entries("worker claim", lambda: _paths(word)["claims"]),
-        Entries("run-observed wall", lambda: _paths(word)["walls"], _paths(word)["wall"] + r"(\.tmp\.[0-9]+)?"),
+        Entries("worker claim", lambda: paths["claims"]),
         PoolExclusions("worker pool exclusion", word),
-        Entries("pool shield", lambda: pool() / "shielded"),
-        Entries("pool shield override", lambda: pool() / "shield-override"),
+        Entries("pool shield", lambda: paths["pool"] / "shielded"),
+        Entries("pool shield override", lambda: paths["pool"] / "shield-override"),
     ]
 
 

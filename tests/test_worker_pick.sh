@@ -101,12 +101,30 @@ run_env=(TZ=UTC "PATH=$WORK/bin:$PATH" "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_
   "CODEXB_PROFILES_DIR=$HOME_FIXTURE/.codex-profiles"
   "GEMINIB_PROFILES_DIR=$HOME_FIXTURE/.gemini-profiles"
   "GROKB_PROFILES_DIR=$HOME_FIXTURE/.grok-profiles"
-  CLAUDE_LIMITS_ACCOUNT=session "WORKER_CLAIMS_DIR=$CLAIMS" "WORKER_WALLS_DIR=$WALLS"
+  CLAUDE_LIMITS_ACCOUNT=session "WORKER_CLAIMS_DIR=$CLAIMS"
   "CHAT_PINS_DIR=$WORK/chat-pins" CLAUDE_CODE_SESSION_ID=)
 # Claims are per-run state, and a marker left behind would silently demote an account in every
 # later case, so each case that is not about claims starts from an empty store.
 clear_claims() { rm -rf "$CLAIMS"; mkdir -p "$CLAIMS"; }
-clear_walls() { rm -rf "$WALLS"; mkdir -p "$WALLS"; }
+. "$ROOT/share/worker-walls.sh"
+record_wall() {
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:-2000000000}" >>"$WALLS/events"
+  LLM_LIMITS_FILE="$STORE" worker_walls_record "$1" "$2" "$3" "${4:-2000000000}"
+}
+apply_walls() {
+  local vendor account reset written
+  [ -f "$WALLS/events" ] || return 0
+  while IFS=$'\t' read -r vendor account reset written; do
+    LLM_LIMITS_FILE="$STORE" worker_walls_record "$vendor" "$account" "$reset" "$written" || fail 'wall fixture'
+  done <"$WALLS/events"
+}
+wall_active() {
+  LLM_LIMITS_FILE="$STORE" worker_walls_fresh "$1" 2000000000 | grep -qxF "$2"
+}
+clear_walls() {
+  : >"$WALLS/events"
+  [ ! -f "$STORE" ] || { jq 'walk(if type == "object" then del(.worker_wall) else . end)' "$STORE" >"$STORE.next" && mv "$STORE.next" "$STORE"; }
+}
 sync_fixture_pool() {
   local vendor dir item
   local -A disabled=([claude]='' [codex]='' [gemini]='' [grok]='')
@@ -127,6 +145,7 @@ sync_fixture_pool() {
   done
 }
 run_store() {
+  apply_walls
   sync_fixture_pool
   # Stderr to a file rather than the terminal: a human-facing run carries its notes there, and a
   # suite that let them scroll past could not tell a note that fired from one that did not.
@@ -147,6 +166,7 @@ run_filter() {
 }
 # `--account` answers a caller: stdout is one bare name, stderr carries anything else.
 query() {
+  apply_walls
   [ "${live_pool_test:-false}" = true ] || sync_fixture_pool
   query_out=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" "$@" 2>"$WORK/query.err")
   query_rc=$?
@@ -398,7 +418,7 @@ assert test "$query_rc" -eq 3
 assert grep -q 'no fable-capable account with a fable bucket below 100%' "$WORK/query.err"
 assert test 0 -eq "$(grep -c 'score' "$WORK/query.err")"
 # A run-observed wall is the whole ACCOUNT's, so it takes it out of the fable answer as well.
-printf '2000003600\n' >"$WALLS/claudeb-session"
+record_wall claudeb session 2000003600
 query --account claudeb --fable
 assert test "$query_out" = tie-a
 clear_walls
@@ -714,6 +734,7 @@ grok_case() {
   run_filter golden ".vendors.grok = $1"
 }
 grok_query() {
+  apply_walls
   [ "${live_pool_test:-false}" = true ] || sync_fixture_pool
   jq -c --arg name golden --argjson grok "$1" '.[$name] | .vendors.grok = $grok' "$FIXTURES" \
     >"$STORE" || fail 'grok fixture transform failed'
@@ -951,11 +972,11 @@ assert contains "$(nrow 1)" 'grok/spare grok·high PINNED'
 assert not_contains "$output" 'off for workers'
 # A met wall on one account leaves `*` standing; it lapses only once every pool account walled.
 write_config 'grok_profile=*'
-printf '2000003600\n' >"$WALLS/grok-spare"
+record_wall grok spare 2000003600
 run_filter golden "$TWO_BY_TWO"
 assert test "$(sed -n 's/^grok_profile=//p' "$CONFIG")" = '*'
 assert contains "$(nrow 1)" 'grok/supergrok grok·high PINNED'
-printf '2000003600\n' >"$WALLS/grok-supergrok"
+record_wall grok supergrok 2000003600
 run_filter golden "$TWO_BY_TWO"
 assert test -z "$(sed -n 's/^grok_profile=//p' "$CONFIG")"
 assert grep -qF 'pin * (every grok account) hit its wall — cleared' "$WORK/note.err"
@@ -987,7 +1008,7 @@ assert contains "$(nrow 1)" 'claude/worker opus·high PINNED'
 run_env=("${base_env[@]}" CLAUDE_CODE_SESSION_ID=chat-t)
 write_config 'grok_profile=supergrok'
 printf 'grok_profile=spare\n' >"$WORK/chat-pins/chat-t"
-printf '2000003600\n' >"$WALLS/grok-spare"
+record_wall grok spare 2000003600
 run_filter golden "$TWO_BY_TWO"
 assert test ! -s "$WORK/chat-pins/chat-t"
 assert test "$(sed -n 's/^grok_profile=//p' "$CONFIG")" = supergrok
@@ -1400,7 +1421,7 @@ query --account gemini --role image
 assert test "$query_out" = work
 query --account gemini
 assert test "$query_out" = main
-printf '2000003600\n' >"$WALLS/gemini-work"
+record_wall gemini work 2000003600
 query --account gemini --role image
 assert test "$query_out" = main
 clear_walls
@@ -2145,10 +2166,10 @@ clear_walls
 run_case claude_pool
 query --account claudeb
 assert test "$query_out" = session
-printf '2000003600\n' >"$WALLS/claudeb-session"
+record_wall claudeb session 2000003600
 run_case claude_pool
 assert contains "$(nrow 1)" 'claude/dry'
-assert contains "$(vsection claude)" 'session* opus·high WALLED'
+assert contains "$(vsection claude)" 'session* opus·high ↺ 04:33 WALLED'
 query --account claudeb
 assert test "$query_out" = dry
 assert test "$query_rc" -eq 0
@@ -2167,29 +2188,29 @@ assert test -z "$(pinned_now)"
 write_config 'claudeb_profile=session'
 run_case claude_pool
 assert test -z "$(pinned_now)"
-assert contains "$(vsection claude)" 'session* opus·high WALLED'
+assert contains "$(vsection claude)" 'session* opus·high ↺ 04:33 WALLED'
 assert contains "$(nrow 1)" 'claude/dry'
 assert not_contains "$(nrow 1)" 'PINNED'
 # Expired record is ignored and deleted.
 write_config
 clear_walls
-printf '1999999999\n' >"$WALLS/claudeb-session"
+record_wall claudeb session 1999999999
 run_case claude_pool
 query --account claudeb
 assert test "$query_out" = session
-assert test ! -e "$WALLS/claudeb-session"
-assert not_contains "$(vsection claude)" 'session* opus·high WALLED'
+assert_fails wall_active claudeb session
+assert not_contains "$(grep -F 'session*' <<<"$(vsection claude)")" WALLED
 # unexpired wall on a pin → NEXT rank 1 is the pool's best, any vendor; pin is cleared.
 write_config 'claudeb_profile=session'
 clear_walls
-printf '2000003600\n' >"$WALLS/claudeb-session"
+record_wall claudeb session 2000003600
 run_case golden
 assert test -z "$(pinned_now)"
 assert contains "$(nrow 1)" 'gemini/main'
 assert not_contains "$(nrow 1)" 'claude/session'
 # expired record → pin is rank 1 again, file untouched.
 write_config 'claudeb_profile=session'
-printf '1999999999\n' >"$WALLS/claudeb-session"
+record_wall claudeb session 1999999999
 run_case golden
 assert test "$(pinned_now)" = session
 assert contains "$(nrow 1)" 'claude/session'
@@ -2207,32 +2228,27 @@ read_store() {
     if .account == "session" then .five_hour += {as_of: $as_of, effective_pct: $pct} |
       .weekly += {as_of: $as_of, effective_pct: 0} else . end)' "$FIXTURES" >"$STORE"
 }
-printf '2000003600\n2000000000\n' >"$WALLS/claudeb-session"
+record_wall claudeb session 2000003600 2000000000
 read_store 1999999000 0
 run_store wall-read-older
-assert contains "$(vsection claude)" 'session* opus·high WALLED'
-assert test -e "$WALLS/claudeb-session"
+assert contains "$(vsection claude)" 'session* opus·high ↺ 04:33 WALLED'
+assert wall_active claudeb session
 read_store 2000000100 100
 run_store wall-read-still-full
-assert contains "$(vsection claude)" 'session* opus·high WALLED'
-assert test -e "$WALLS/claudeb-session"
+assert contains "$(vsection claude)" 'session* opus·high ↺ 04:33 WALLED'
+assert wall_active claudeb session
 read_store 2000000100 0
 run_store wall-read-open
-assert not_contains "$(vsection claude)" 'session* opus·high WALLED'
-assert test ! -e "$WALLS/claudeb-session"
+assert not_contains "$(grep -F 'session*' <<<"$(vsection claude)")" WALLED
+assert_fails wall_active claudeb session
 assert contains "$(nrow 1)" 'claude/session'
-printf '2000003600\n' >"$WALLS/claudeb-session"
-read_store 2000000100 0
-run_store wall-one-line-record
-assert contains "$(vsection claude)" 'session* opus·high WALLED'
-assert test -e "$WALLS/claudeb-session"
 clear_walls
 write_config 'codex_profile=main'
 jq -c '.golden | .vendors.codex.accounts |= map(if .account == "main" then
   .five_hour += {as_of: 2000000100, effective_pct: 10} | .weekly += {as_of: 2000000100, effective_pct: 10}
   else . end)' "$FIXTURES" >"$STORE"
 sync_fixture_pool
-printf '2000003600\n2000000000\n' >"$WALLS/codex-main"
+record_wall codex main 2000003600 2000000000
 env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account claudeb >/dev/null 2>"$WORK/note.err"
 assert test "$(sed -n 's/^codex_profile=//p' "$CONFIG")" = main
 assert not_contains "$(cat "$WORK/note.err")" 'hit its wall'
@@ -2247,31 +2263,31 @@ grok_read_store() {
       weekly:{used_pct:$pct,effective_pct:$pct,as_of:$as_of},auth:{status:"ok"}}]}' \
     "$FIXTURES" >"$STORE" || fail 'grok wall fixture transform failed'
 }
-printf '2000003600\n2000000000\n' >"$WALLS/grok-supergrok"
+record_wall grok supergrok 2000003600 2000000000
 grok_read_store 1999999000 0
 run_store grok-wall-read-older
 assert contains "$(vsection grok)" 'WALLED'
-assert test -e "$WALLS/grok-supergrok"
+assert wall_active grok supergrok
 grok_read_store 2000000100 0
 run_store grok-wall-read-open
 assert not_contains "$(vsection grok)" 'WALLED'
-assert test ! -e "$WALLS/grok-supergrok"
+assert_fails wall_active grok supergrok
 # grok stores creditUsagePercent unrounded: a fractional reading lapses the record like a whole one,
 # and one rounding up to 100 does not.
-printf '2000003600\n2000000000\n' >"$WALLS/grok-supergrok"
+record_wall grok supergrok 2000003600 2000000000
 grok_read_store 2000000100 99.2
 run_store grok-wall-read-full-fraction
-assert test -e "$WALLS/grok-supergrok"
+assert wall_active grok supergrok
 grok_read_store 2000000100 61.2
 run_store grok-wall-read-open-fraction
 assert not_contains "$(vsection grok)" 'WALLED'
-assert test ! -e "$WALLS/grok-supergrok"
+assert_fails wall_active grok supergrok
 clear_walls
 
 # A paused vendor spends no pin: pause blanks the in-memory copy only, and the record on disk is
 # what the vendor comes back to.
 write_config 'claudeb_profile=session' 'claudeb_paused=on'
-printf '2000003600\n' >"$WALLS/claudeb-session"
+record_wall claudeb session 2000003600
 run_case claude_pool
 assert test "$(pinned_now)" = session
 write_config 'claudeb_profile=session'

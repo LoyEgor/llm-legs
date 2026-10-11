@@ -37,10 +37,6 @@ EOF
 # Older than rollout-new.jsonl by more than the second the collector sorts mtimes at.
 touch -t "$(date -r "$((now - 60))" +%Y%m%d%H%M.%S)" "$HOME_FIXTURE/.codex/sessions/2026/07/10/rollout-old.jsonl"
 printf '%s\n' '{"timestamp":"2026-07-11T11:00:00Z","payload":{"type":"session_meta"}}' >"$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-new.jsonl"
-WALLS="$WORK/served-models.jsonl"
-printf '%s\n' \
-  '{"timestamp":"2026-07-11T08:00:00Z","leg":"gemini","rc":5}' \
-  '{"timestamp":"2026-07-11T09:00:00Z","leg":"codex","rc":5}' >"$WALLS"
 
 CACHE="$WORK/cache.json"
 

@@ -1,3 +1,4 @@
+local wallFixturePath = ...
 local source = debug.getinfo(1, "S").source
 local root = source:match("^@(.+)/tests/[^/]+$")
 assert(root, "renderer harness path is unavailable")
@@ -437,6 +438,25 @@ end
 
 local function assertNoRed(item, message)
   assert(#redRuns(item.title) == 0, message)
+end
+
+if wallFixturePath then
+  for _, case in ipairs(assert(loadfile(wallFixturePath))()) do
+    local menu = loadModule(case.store, nil, case.now).menuItems()
+    local index = accountIndex(menu, case.account)
+    local row, wallRow = menu[index], nil
+    for i = index + 1, #menu do
+      local text = titleText(menu[i])
+      if text:match("^%s+wall%s") then wallRow = menu[i] break end
+      if not text:match("^%s") then break end
+    end
+    assert((#redRuns(row.title) > 0) == case.walled, case.name .. ": account color disagrees with the store")
+    assert((wallRow ~= nil) == case.walled, case.name .. ": wall row disagrees with the store")
+    if case.walled then
+      assert(titleText(wallRow):find(os.date("%H:%M", case.reset), 1, true), case.name .. ": wall reset missing")
+    end
+  end
+  return "PASS: wall store menu"
 end
 
 local fixture = { schema = 1, vendors = {

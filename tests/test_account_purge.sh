@@ -13,7 +13,7 @@ asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 
-unset XDG_CACHE_HOME WORKER_CLAIMS_DIR WORKER_WALLS_DIR GEMINI_WEB_DIR CHATGPT_WEB_DIR CLAUDEGPT_HOME \
+unset XDG_CACHE_HOME WORKER_CLAIMS_DIR GEMINI_WEB_DIR CHATGPT_WEB_DIR CLAUDEGPT_HOME \
   CODEXB_PROFILES_DIR GEMINIB_PROFILES_DIR GROKB_PROFILES_DIR LLM_LIMITS_GEMINI_ACCOUNTS_DIR \
   LLM_LIMITS_CODEX_CACHE LLM_LIMITS_CODEX_REMOVED LLM_LIMITS_GROK_CACHE GROKB_MAIN_GROK_HOME OPENCODE_GO_PROFILES \
   STATUSLINE_CACHE_DIR
@@ -62,11 +62,11 @@ check_vendor() { # vendor tool profile-dir remove-args...
   mkdir -p "$profile/gone" "$profile/kept"
   [ "$vendor" != claude ] || printf 'tok' >"$CLAUDEB_DIR/tokens/gone"
   stores fill "$vendor" gone kept
-  assert test "$(stores held "$vendor" gone | grep -c .)" -ge 4
+  assert test "$(stores held "$vendor" gone | grep -c .)" -ge 3
   out=$(bash "$ROOT/bin/$tool" remove gone "$@" 2>&1) || fail "$tool remove gone: $out"
   held=$(stores held "$vendor" gone)
   assert test -z "$held"
-  assert test "$(grep -c "^$tool: purged /" <<<"$out")" -ge 4
+  assert test "$(grep -c "^$tool: purged /" <<<"$out")" -ge 3
   assert test "$(grep -c "purged" <<<"$out")" -eq "$(grep -c "^$tool: purged /" <<<"$out")"
   assert test "$(stores held "$vendor" kept | grep -c .)" -eq "$(PYTHONPATH="$ROOT/share" python3 -c \
     'import account_stores, sys; print(len(account_stores.stores(sys.argv[1])))' "$vendor")"
@@ -90,19 +90,18 @@ assert python3 "$ROOT/share/account_stores.py" purge codex ghost >/dev/null
 assert test -z "$(stores held codex ghost)"
 assert test -z "$(python3 "$ROOT/share/account_stores.py" remnants)"
 
-# A wall writer killed before its mv and a running quota probe's lock belong to their account.
-walls=$(PYTHONPATH="$ROOT/share" python3 -c 'import account_stores; print(account_stores._paths("codex")["walls"])')
+# A running quota probe's lock belongs to its account.
 kicks="$HOME/.cache/claude-statusline"
-mkdir -p "$walls" "$kicks/codex-quota-kick-ghost.lock"
-touch "$walls/codex-ghost.tmp.4242" "$kicks/codex-quota-kick-ghost"
+mkdir -p "$kicks/codex-quota-kick-ghost.lock"
+touch "$kicks/codex-quota-kick-ghost"
 assert test "$(python3 "$ROOT/share/account_stores.py" remnants)" = \
-  "$(printf 'codex\tghost\trun-observed wall, statusline quota kick')"
+  "$(printf 'codex\tghost\tstatusline quota kick')"
 assert python3 "$ROOT/share/account_stores.py" purge codex ghost >/dev/null
-assert test ! -e "$walls/codex-ghost.tmp.4242" -a ! -e "$kicks/codex-quota-kick-ghost.lock"
+assert test ! -e "$kicks/codex-quota-kick-ghost.lock"
 
 # A failed pool path read or pool rewrite is an error line and exit 1, never a traceback.
 fail_bash() { printf 'case "$BASH_EXECUTION_STRING" in *%s*) exit 3 ;; esac\n' "$1" >"$WORK/bash-env"; }
-fail_bash worker_walls_path
+fail_bash worker_claims_dir
 out=$(BASH_ENV="$WORK/bash-env" python3 "$ROOT/share/account_stores.py" remnants 2>&1; echo "rc=$?")
 assert grep -q '^account_stores: cannot read the claudeb pool paths' <<<"$out"
 assert grep -qx 'rc=1' <<<"$out"

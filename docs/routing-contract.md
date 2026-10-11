@@ -100,7 +100,7 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    number of accounts and vendors. Tier 0 ranks first, then tier 1, then everyone else — an account
    pin beats a vendor pin even across vendors — each tier on the same vector as the pool. A pin is always
    tried first — stale usage at 100% does not skip it, because the owner knows more than stale
-   data. The only skip is a run-observed wall record (`claude-worker-runs/walls/<vendor>-<account>`)
+   data. The only skip is a run-observed wall (`worker_wall` in the limits store, shared-invariants bz)
    whose reset has not passed and that no llm-limits reading newer than the record has shown open. A wall that was actually MET — the run launched on that pinned
    account and the vendor answered limit — writes that record and removes that one name from the
    pin; a `*` pin is removed only once every pool account it covers holds an unexpired record.

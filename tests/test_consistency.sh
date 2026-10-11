@@ -1420,18 +1420,24 @@ assert doc_has 'A spent SuperGrok plan is one wording in both repositories'
 assert doc_has 'Codex out-of-credits wall wording agrees across worker-run and bench'
 
 # --- Row bz: run-observed worker wall records --------------------------------
-# One path, one format, two readers: worker-run writes the epoch, worker-pick treats an
-# unexpired file as walled. Distinct from the OpenCode JSONL of row ai.
+# One fact in the limits store: one writer function, every surface reading it with one rule.
 WALLS_SH="$ROOT/share/worker-walls.sh"
 assert test -r "$WALLS_SH"
-assert grep -Fq '${XDG_CACHE_HOME:-$HOME/.cache}/claude-worker-runs/walls' "$WALLS_SH"
-assert grep -Fq '%s/%s-%s' "$WALLS_SH"
-assert grep -Fq 'worker-walls.sh' "$WORKER_RUN"
-assert grep -Fq 'worker_walls_record' "$WORKER_RUN"
+assert grep -Fq '.worker_wall = {resets_at:$reset,recorded_at:$at}' "$WALLS_SH"
+assert grep -Fq 'store_lock_acquire "$store.lock"' "$WALLS_SH"
+assert test -z "$(command grep -rlF 'claude-worker-runs/walls' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS")"
+for writer in "$WORKER_RUN" "$ROOT/ask_claude.sh" "$ROOT/ask_codex.sh" "$ROOT/ask_gemini.sh" \
+  "$ROOT/bin/grok-image" "$ROOT/bin/grok-video"; do
+  assert grep -Fq 'worker_walls_record' "$writer"
+done
+assert test "$(grep -rlE 'worker_wall *= *\{' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS" "$ROOT"/ask_*.sh | wc -l)" -eq 1
 assert grep -Fq 'record_run_wall' "$WORKER_RUN"
 assert grep -Fq 'worker_model_clear_walled_pin' "$WORKER_RUN"
-assert grep -Fq 'worker-walls.sh' "$WORKERPICK"
-assert grep -Fq 'worker_walls_fresh' "$WORKERPICK"
+for reader in "$WORKERPICK" "$STATUSLINE" "$LLMLIMITS" "$ROOT/share/worker-walls.sh"; do
+  assert grep -Fq 'limits_observed_wall(' "$reader"
+done
+assert grep -Fq 'local function observedWall(block, now)' "$HAMMER"
+assert grep -Fq 'limits_clean_wall($now)' "$LLMLIMITS"
 assert grep -Fq 'IN($cx_walls[])' "$WORKERPICK"
 assert grep -Fq 'IN($cb_walls[])' "$WORKERPICK"
 assert grep -Fq 'IN($gm_walls[])' "$WORKERPICK"
@@ -1439,7 +1445,7 @@ assert grep -Fq 'IN($gr_walls[])' "$WORKERPICK"
 assert grep -Fq 'WALL: resumed session stays on' "$WORKER_RUN"
 assert test "$(grep -c 'pool not consulted' "$WORKER_RUN")" -eq 0
 assert doc_has 'Run-observed worker wall records'
-assert doc_has '`${XDG_CACHE_HOME:-$HOME/.cache}/claude-worker-runs/walls/<vendor>-<account>`'
+assert doc_has 'Written only by `worker_walls_record`'
 
 assert grep -Fq 'def apply_vendor_errors' "$LLMLIMITS"
 assert grep -Fq '.refresh_errors =' "$LLMLIMITS"

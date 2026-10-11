@@ -106,8 +106,8 @@ assert_fails grep -q 'codex-profiles/rescue2$' "$CALL_LOG"
 assert grep -qx '0 rescue2' "$STUB_DIR/pick_queue"
 assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 1
 assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
-assert test -f "$WORKER_WALLS_DIR/codex-walled1"
-assert test -f "$WORKER_WALLS_DIR/codex-walled2"
+assert wall_has codex walled1
+assert wall_has codex walled2
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'WALL: reroute cap reached (walled: walled1, walled2) — the work done so far stays in the workdir' <<<"$report"
 
@@ -139,8 +139,8 @@ assert jq -e '.walled_accounts == ["pinnedacct"]' "$RUN_DIR/meta.json" >/dev/nul
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert grep -qx -- '--account codex --claim --exclude pinnedacct' "$PICK_LOG"
 assert grep -qx 'REROUTE: walled on pinnedacct → continued on rescue3' "$WORK/wait.out"
-assert test -f "$WORKER_WALLS_DIR/codex-pinnedacct"
-wall_epoch=$(sed -n 1p "$WORKER_WALLS_DIR/codex-pinnedacct" | tr -d '[:space:]')
+assert wall_has codex pinnedacct
+wall_epoch=$(wall_field codex pinnedacct resets_at | tr -d '[:space:]')
 now=$(date +%s)
 assert test "$wall_epoch" -ge $((now + 3600 - 30))
 assert test "$wall_epoch" -le $((now + 3600 + 30))
@@ -156,7 +156,7 @@ assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert meta_account_is rescue4
 assert jq -e '.walled_accounts == ["pinacct"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'REROUTE: walled on pinacct → continued on rescue4' "$WORK/wait.out"
-assert test -f "$WORKER_WALLS_DIR/codex-pinacct"
+assert wall_has codex pinacct
 assert_fails grep -q '^codex_profile=' "$WORKER_RUN_CONFIG_FILE"
 
 # (iii) a met wall drops only that pinned name; the run lands on the other pin.
@@ -170,8 +170,8 @@ assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert meta_account_is cool
 assert jq -e '.walled_accounts == ["hot"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'codex_profile=cool' "$WORKER_RUN_CONFIG_FILE"
-assert test -f "$WORKER_WALLS_DIR/codex-hot"
-assert_fails test -f "$WORKER_WALLS_DIR/codex-cool"
+assert wall_has codex hot
+assert_fails wall_has codex cool
 
 # (h) limits at 100% without a run-observed wall still launch on the pin first.
 clear_stub
@@ -213,7 +213,7 @@ assert jq -e 'has("walled_accounts") | not' "$RUN_DIR/meta.json" >/dev/null
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
 assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 0
 assert grep -qx '0 rescue5' "$STUB_DIR/pick_queue"
-assert test -f "$WORKER_WALLS_DIR/codex-resacct"
+assert wall_has codex resacct
 
 # A named account that walls, then its one rescue walls: the reroute cap.
 clear_stub

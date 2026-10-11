@@ -155,7 +155,6 @@ assert worker_model_chat_fast grok
 assert_fails worker_model_chat_fast codex
 
 # A wall that empties the chat file removes it.
-export WORKER_WALLS_DIR="$WORK/walls"
 worker_walls_record grok delta "$(($(date +%s) + 3600))"
 assert worker_model_clear_walled_pin grok delta 2>/dev/null
 assert_fails test -e "$CHAT"

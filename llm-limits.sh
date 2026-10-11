@@ -99,7 +99,6 @@ while [ -L "$script_path" ]; do
 done
 script_dir=$(cd "$(dirname "$script_path")" && pwd)
 . "$script_dir/share/store-lock.sh"
-. "$script_dir/share/worker-walls.sh"
 
 chunk_bytes=${LLM_LIMITS_CHUNK_BYTES:-4194304}
 case "$chunk_bytes" in
@@ -289,8 +288,8 @@ age_def='def age_seconds($now):
    else null end);
 def compact_age($now): limits_age_text(age_seconds($now));
 def data_stale($now): limits_data_stale(age_seconds($now); $stale_thr);
-def stale_status($now): if .worker_wall != null then
-  "walled→" + limits_reset_text(.worker_wall.resets_at; $now)
+def stale_status($now): limits_observed_wall(.; $now) as $wall | if $wall != null then
+  "walled→" + limits_reset_text($wall.resets_at; $now)
   elif data_stale($now) then "stale" else "-" end;'
 
 reset_format_def='def format_reset($now):
@@ -462,15 +461,6 @@ render_table() {
     printf '%-*s  %-*s  %s\n' "$w_rot" "$rot" "$w_cr" "$credits" "$status"
   done < <(printf '%s\n' "$sorted")
 }
-
-claude_wall=null codex_wall=null gemini_wall=null grok_wall=null
-walls_log=${LLM_LIMITS_WALLS_LOG:-}
-if [ -n "$walls_log" ] && [ -r "$walls_log" ] && walls=$(jq -Rsc '
-    split("\n") | map(fromjson?) as $events | ("claude", "codex", "gemini", "grok") as $leg |
-    $events | map(select(.leg == $leg and .rc == 5)) | last | (.timestamp // .ts // null)
-  ' "$walls_log" 2>/dev/null); then
-  { read -r claude_wall; read -r codex_wall; read -r gemini_wall; read -r grok_wall; } < <(printf '%s\n' "$walls")
-fi
 
 # Every per-account read cold-starts a vendor CLI: at load ~250 (2026-10-05) a heartbeat agy read
 # needed ~50 s, and the old 45 s cap left 6 of 7 Gemini accounts stale for a day.
@@ -960,7 +950,7 @@ if [ -n "$gemini_refresh_results_dir" ] &&
   fi
 fi
 
-claude='{"available":false,"status":"no rate-limit snapshot","source":"none","last_wall":null}'
+claude='{"available":false,"status":"no rate-limit snapshot","source":"none"}'
 claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 claude_refresh_error=''
 claude_refresh_attempted=0
@@ -1135,13 +1125,13 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       map(.is_current = (.account == $current)) |
       sort_by(.account as $n | (($order | index($n)) // ($order | length)))
     ' < <(printf '%s\n' "$accounts"))
-    claude_bundle=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
+    claude_bundle=$(jq -cn --argjson accounts "$accounts" '
       (first($accounts[] | select(.is_current)) // $accounts[0]) as $current |
       (if ($current.five_hour.used_pct | type) == "number" then $current
        else (first($accounts[] | select(.five_hour.used_pct | type == "number")) // $current)
        end) as $five_source |
       ({available:true,source:"claudeb-store",current_account:$current.account,accounts:$accounts,
-       five_hour:$five_source.five_hour,as_of:$current.as_of,stale_seconds:$current.stale_seconds,last_wall:$wall} +
+       five_hour:$five_source.five_hour,as_of:$current.as_of,stale_seconds:$current.stale_seconds} +
       (if $current.auth then {auth:$current.auth} else {} end) +
       (if $current.weekly then {weekly:$current.weekly} else {} end) +
       (if $current.fable then {fable:$current.fable} else {} end)) as $claude |
@@ -1199,7 +1189,7 @@ else
     mtime=$(file_mtime "$claude_file" || true)
     if [ -n "$mtime" ]; then
       stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
-      claude=$(jq -cn --argjson d "$claude_data" --argjson wall "$claude_wall" --arg source "$claude_source" \
+      claude=$(jq -cn --argjson d "$claude_data" --arg source "$claude_source" \
         --arg five_reset "$(reset_iso_or_empty "$(jq -r '.five_hour.resets_at // empty' < <(printf '%s\n' "$claude_data"))")" \
         --arg week_reset "$(reset_iso_or_empty "$(jq -r '.seven_day.resets_at // empty' < <(printf '%s\n' "$claude_data"))")" \
         --arg as_of "$(epoch_iso "$mtime")" --argjson as_of_epoch "$mtime" --argjson stale "$stale" \
@@ -1208,7 +1198,7 @@ else
          five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:(if $five_reset == "" then null else $five_reset end),as_of:$as_of_epoch,stale:($stale > $thr5)},
          weekly:{used_pct:$d.seven_day.used_percentage,resets_at:(if $week_reset == "" then null else $week_reset end),as_of:$as_of_epoch,stale:($stale > $thrw)},
          as_of:$as_of,stale_seconds:$stale} as $account |
-        {available:true,source:$source,current_account:"main",accounts:[$account],five_hour:$account.five_hour,weekly:$account.weekly,as_of:$as_of,stale_seconds:$stale,last_wall:$wall}')
+        {available:true,source:$source,current_account:"main",accounts:[$account],five_hour:$account.five_hour,weekly:$account.weekly,as_of:$as_of,stale_seconds:$stale}')
     fi
   fi
 fi
@@ -1508,7 +1498,7 @@ if [ -n "$codex_event" ]; then
     week_reset=''; [ -z "$secondary_reset" ] || week_reset=$(epoch_iso "$secondary_reset")
     codex_order=$(jq -r '[.payload.rate_limits.accounts[]?.account // "main"] | .[]' < <(printf '%s\n' "$codex_event") \
       | account_order_json codex)
-    codex=$(jq -cn --argjson e "$codex_event" --argjson wall "$codex_wall" --argjson now "$now_epoch" \
+    codex=$(jq -cn --argjson e "$codex_event" --argjson now "$now_epoch" \
       --argjson order "$codex_order" \
       --arg five_reset "$five_reset" --arg week_reset "$week_reset" \
       --arg as_of "$(epoch_iso "$codex_epoch")" --argjson as_of_epoch "$codex_epoch" \
@@ -1569,21 +1559,21 @@ if [ -n "$codex_event" ]; then
       (first($accounts[] | select(.is_current)) // $accounts[0]) as $current |
       {available:true,current_account:$current.account,accounts:$accounts,
        five_hour:$current.five_hour,weekly:$current.weekly,
-       as_of:$current.as_of,stale_seconds:$current.stale_seconds,source:$source,last_wall:$wall,
+       as_of:$current.as_of,stale_seconds:$current.stale_seconds,source:$source,
        plan_type:$current.plan_type}')
   else
-    codex=$(jq -cn --argjson wall "$codex_wall" \
-      '{available:false,status:"unparsable session timestamp",source:"session-rollout",last_wall:$wall}')
+    codex=$(jq -cn \
+      '{available:false,status:"unparsable session timestamp",source:"session-rollout"}')
   fi
 elif codex_main_removed; then
   # main removed and no named profile beside it: the vendor states its REMOVAL, the one thing that
   # tells a store Egor emptied on purpose from one whose accounts have simply never been refreshed.
   # The menubar skips a removed vendor whole (the same branch gemini's removal already uses).
-  codex=$(jq -cn --argjson wall "$codex_wall" \
-    '{available:false,removed:true,status:"removed",source:"codex-app-server",last_wall:$wall}')
+  codex=$(jq -cn \
+    '{available:false,removed:true,status:"removed",source:"codex-app-server"}')
 else
-  codex=$(jq -cn --argjson wall "$codex_wall" \
-    '{available:false,status:"no rate-limit event",source:"session-rollout",last_wall:$wall}')
+  codex=$(jq -cn \
+    '{available:false,status:"no rate-limit event",source:"session-rollout"}')
 fi
 
 # Live weekly quota through the Grok CLI's own billing endpoint (GET /v1/billing?format=credits):
@@ -1729,7 +1719,7 @@ grok_cache_mtime=$(int_or_empty "$(file_mtime "$grok_cache" 2>/dev/null || true)
 # The store is shared by every chat, so one chat's own pin must not name its current account.
 grok_pin=$(CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok 2>/dev/null || true)
 grok_order=$(jq -r '.accounts[]?.account // empty' < <(printf '%s\n' "$grok_payload") | account_order_json grok)
-grok=$(jq -cn --argjson payload "$grok_payload" --argjson wall "$grok_wall" --argjson now "$now_epoch" \
+grok=$(jq -cn --argjson payload "$grok_payload" --argjson now "$now_epoch" \
   --argjson order "$grok_order" --argjson mtime "$grok_cache_mtime" --arg pin "$grok_pin" \
   --argjson thrw "$LIMITS_STALE_WEEKLY" \
   --argjson pool_out "$(worker_pool_disabled_json "$grok_pool_dir")" '
@@ -1774,10 +1764,10 @@ grok=$(jq -cn --argjson payload "$grok_payload" --argjson wall "$grok_wall" --ar
   ([$rows[] | account(.; $current)]) as $accounts |
   (first($accounts[] | select(.is_current)) // $accounts[0] // null) as $selected |
   if ($accounts | length) == 0 then
-    {available:false,status:"no quota snapshot",source:"grok-billing",last_wall:$wall}
+    {available:false,status:"no quota snapshot",source:"grok-billing"}
   else
     {available:true,current_account:$selected.account,accounts:$accounts,
-     source:"grok-billing",last_wall:$wall} +
+     source:"grok-billing"} +
     (if ($selected.weekly | type) == "object" then
        ($selected | {weekly,as_of,stale_seconds}) +
        (if ($selected.plan_type | type) == "string" then {plan_type:$selected.plan_type} else {} end)
@@ -1924,7 +1914,7 @@ gemini_refresh_error=$(jq -rn --argjson rows "$gemini_accounts" --argjson record
 
 gemini_main_removed_json=false
 if gemini_main_removed; then gemini_main_removed_json=true; fi
-gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wall" \
+gemini=$(jq -cn --argjson accounts "$gemini_accounts" \
   --argjson main_removed "$gemini_main_removed_json" '
   [$accounts[] | select(.removed != true)] as $visible |
   [$visible[] |
@@ -1940,7 +1930,7 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
     # no profile beside it the vendor states its removal HERE — it is the one thing that tells a
     # store Egor emptied on purpose from one whose accounts have simply never been refreshed, and
     # the menubar skips a removed vendor whole where it renders the other as "no live data".
-    {available:false,source:"agy-print-usage",last_wall:$wall} +
+    {available:false,source:"agy-print-usage"} +
     (if $main_removed then {removed:true,status:"removed"}
      else {status:"no quota snapshot"} end)
   # The flat shape is what a store holding nothing but the base profile has always been; every
@@ -1950,10 +1940,9 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
     | del(.account,.is_current)
     | .available = (.removed != true and .auth_needed != true and
                     (.five_hour | type) == "object" and (.weekly | type) == "object")
-    | .last_wall = $wall
   else
     ({available:(($usable | length) > 0),accounts:$accounts,
-      source:"agy-print-usage",last_wall:$wall} +
+      source:"agy-print-usage"} +
      (if $current == null then {} else {current_account:$current.account} end) +
      (if ($usable | length) == 0 and any($visible[]; .auth_needed == true)
       then {auth_needed:true} else {} end) +
@@ -2112,7 +2101,9 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   def drop_ancient_reset:
     if limits_reset_ancient($now; (.resets_at | iso2epoch)) then .resets_at = null else . end;
   def mark:
-    if type == "object" and has("used_pct")
+    # A worker_wall (shared-invariants bz) keeps its epoch: every reader compares it as a number.
+    if type == "object" and has("recorded_at") then .
+    elif type == "object" and has("used_pct")
     then .resets_at = ((.resets_at // null) | normalize_reset) |
       # A row whose date THIS pass drops must survive the next one: every collection walks the
       # merged document, cached rows included, and a bucket judged by a date that is gone would
@@ -2352,8 +2343,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
             ($prev | del(.auth, .auth_needed, .enabled, .shielded, .removed, .blocked, .rotation, .is_current))
             + ($new | {auth,auth_needed,enabled,shielded,removed,blocked,rotation,is_current}
                     | with_entries(select(.value != null)))
-          else $new end
-        end)
+          else $new + ($prev | {worker_wall} | with_entries(select(.value != null))) end
+        end | limits_clean_wall($now))
     end;
   # The last door on codex main: the roster is already built without it, but a failed refresh
   # falls back to the PREVIOUS snapshot below, and that one still holds the row main left. A
@@ -2363,8 +2354,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     else (.accounts | map(select(.account != "main"))) as $rows |
       if ($rows | length) == 0 then
         {available:false,removed:true,status:"removed",
-         source:(.source // "codex-app-server")} +
-        (if has("last_wall") then {last_wall:.last_wall} else {} end)
+         source:(.source // "codex-app-server")}
       else
         (first($rows[] | select(.is_current == true)) // $rows[0]) as $selected |
         .accounts = ($rows | map(.is_current = (.account == $selected.account))) |
@@ -2388,7 +2378,13 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     codex:vendor_data("codex"; $codex; $codex_attempted; $codex_error),
     gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error),
     grok:vendor_data("grok"; $grok; $grok_attempted; $grok_error)}}
-  | .vendors |= with_entries(.key as $key | .value |= newest_accounts($key))
+  | .vendors |= with_entries(.key as $key | .value |= (newest_accounts($key) |
+      if (.accounts | type) == "array" then
+        (.current_account // "main") as $selected |
+        (first(.accounts[] | select(.account == $selected)).worker_wall // null) as $wall |
+        if $wall == null then del(.worker_wall) else .worker_wall = $wall end
+      else . + ($previous.vendors[$key] | {worker_wall} | with_entries(select(.value != null))) |
+        limits_clean_wall($now) end))
   | if $codex_removed and (.vendors.codex | type) == "object"
     then .vendors.codex |= codex_without_main else . end
   | .vendors.claude.refresh_errors = (.vendors.claude | apply_vendor_errors("claude"; $claude_attempted; $claude_error; $claude_target))
@@ -2468,48 +2464,6 @@ if [ "$write_cache" -eq 1 ]; then
   fi
 fi
 
-overlay_worker_walls() {
-  local vendor key account reset written reading as_of pct walls='' records
-  for vendor in claudeb codex gemini grok; do
-    key=$vendor
-    [ "$vendor" != claudeb ] || key=claude
-    worker_walls_fresh_r "$vendor" "$now_epoch"
-    records=$WORKER_WALLS_RECORDS_R
-    while IFS=$'\t' read -r account reset; do
-      [ -n "$account" ] || continue
-      written=$(worker_walls_written "$vendor" "$account")
-      [ -n "$written" ] || continue
-      reading=$(jq -r --arg v "$key" --arg a "$account" '
-        .vendors[$v] | (.accounts // [.])[]? | select((.account // "main") == $a) |
-        ([.five_hour, .weekly] | map(select(type == "object")) | select(length > 0)) as $buckets |
-        ($buckets | map([(.as_of | numbers), ((.effective_pct // .used_pct) | numbers)] |
-                        select(length == 2))) |
-        select(length == ($buckets | length)) |
-        [(map(.[0]) | min), (map(.[1]) | max | ceil)] | @tsv' < <(printf '%s\n' "$result"))
-      as_of=${reading%%$'\t'*}; pct=${reading##*$'\t'}
-      if [ -n "$reading" ]; then
-        worker_walls_lapse_if_read "$vendor" "$account" "$as_of" "$pct" && continue
-        [ "$written" -gt "$as_of" ] || continue
-      fi
-      walls+="$key"$'\t'"$account"$'\t'"$reset"$'\t'"$written"$'\n'
-    done < <(printf '%s' "$records")
-  done
-  result=$(jq --arg walls "$walls" '
-    ($walls | split("\n") | map(select(length > 0) | split("\t") |
-      {key: (.[0] + "/" + .[1]), value: {resets_at: (.[2] | tonumber), recorded_at: (.[3] | tonumber)}}) |
-      from_entries) as $walls |
-    .vendors |= with_entries(.key as $vendor | .value |= (
-      del(.worker_wall) |
-      (if (.accounts | type) == "array" then .accounts |= map(del(.worker_wall) |
-        ($walls[$vendor + "/" + (.account // "main")]) as $wall |
-        if $wall != null and .removed != true then .worker_wall = $wall else . end) else . end) |
-      ($walls[$vendor + "/" + (.current_account // .account // "main")]) as $wall |
-      if $wall != null and .removed != true then .worker_wall = $wall else . end))
-  ' < <(printf '%s\n' "$result"))
-}
-
-overlay_worker_walls
-
 experiments_banner() {
   experiments_active_lines "$(experiments_registry_path "$script_dir")"
 }
@@ -2583,8 +2537,7 @@ else
       line(.key; .value; ((.value.accounts[0] // .value) | rotation);
         (.value | credits); (.value | stale_status($render_now)))
     else line(.key; {age_alarm: (.value.age_alarm == true)}; "-"; "-";
-      (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) +
-      (if .value.last_wall then " | last wall " + .value.last_wall else "" end) end
+      (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) end
   ' < <(printf '%s\n' "$result")
 fi
 

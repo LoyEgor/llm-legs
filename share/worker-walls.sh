@@ -1,27 +1,10 @@
-# Run-observed usage walls. Path and format: docs/shared-invariants.md row bz.
-# One file per vendor+account: line 1 the reset epoch, line 2 the write epoch. Unexpired → walled,
-# unless llm-limits has read the account after the write and found it open (worker-pick lapses it).
-
-worker_walls_dir() {
-  worker_walls_dir_r
-  printf '%s\n' "$WORKER_WALLS_R"
-}
-
-worker_walls_dir_r() {
-  WORKER_WALLS_R=${WORKER_WALLS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-worker-runs/walls}
-}
+# Run-observed usage walls live in the shared limits store (docs/shared-invariants.md row bz).
 
 worker_walls_valid_name() {
   [ -n "$1" ] || return 1
   case "$1" in
     */*|*..*) return 1 ;;
   esac
-}
-
-worker_walls_path() {
-  worker_walls_valid_name "$1" || return 1
-  worker_walls_valid_name "$2" || return 1
-  printf '%s/%s-%s\n' "$(worker_walls_dir)" "$1" "$2"
 }
 
 # Same extraction print_outcome uses for RESET:. The value must open on a digit or a month and a
@@ -117,85 +100,50 @@ worker_walls_kind() { # vendor parsed-reset-epoch-or-empty run-output-file...
   esac
 }
 
-worker_walls_record() {
-  local vendor="$1" account="$2" epoch="$3" written="${4:-$(date +%s)}" path dir tmp
-  path=$(worker_walls_path "$vendor" "$account") || return 1
-  case "$epoch" in
-    ''|*[!0-9]*) return 1 ;;
-  esac
-  case "$written" in
-    ''|*[!0-9]*) return 1 ;;
-  esac
-  dir=$(worker_walls_dir) || return 1
-  mkdir -p -- "$dir" || return 1
-  tmp="$path.tmp.$$"
-  printf '%s\n%s\n' "$epoch" "$written" >"$tmp" && mv -f "$tmp" "$path"
-}
+# An account the store has no row for is left alone: a row made up here would show an account the
+# collector never listed, and the collector would drop it again on its next pass.
+worker_walls_record() (
+  local vendor="$1" account="$2" epoch="$3" written="${4:-$(date +%s)}" store tmp
+  worker_walls_valid_name "$vendor" && worker_walls_valid_name "$account" || return 1
+  case "$epoch:$written" in *[!0-9:]*|:*|*:) return 1 ;; esac
+  [ "$vendor" != claudeb ] || vendor=claude
+  store=${LLM_LIMITS_FILE:-${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}}
+  [ -e "$store" ] || return 0
+  . "${BASH_SOURCE[0]%/*}/store-lock.sh"
+  store_lock_acquire "$store.lock" || return 1
+  tmp=''
+  trap 'test -z "$tmp" || rm -f "$tmp"; store_lock_release "$store.lock"' EXIT
+  tmp=$(mktemp "$store.tmp.XXXXXX") || return 1
+  jq --arg v "$vendor" --arg a "$account" --argjson reset "$epoch" --argjson at "$written" '
+    def record:
+      if (.worker_wall.recorded_at // 0) > $at then .
+      else .worker_wall = {resets_at:$reset,recorded_at:$at} end;
+    select((.schema // 1) == 1 and (.vendors | type) == "object") |
+    (.vendors[$v] // null) as $block |
+    if $block == null or $block.removed == true then empty
+    elif ($block.accounts | type) == "array" then
+      select(any($block.accounts[]; .account == $a and .removed != true)) |
+      .vendors[$v].accounts |= map(if .account == $a then record else . end) |
+      if ($block.current_account // "main") == $a then .vendors[$v] |= record else . end
+    elif ($block.account // "main") == $a then .vendors[$v] |= record
+    else empty end
+  ' "$store" >"$tmp" || return 1
+  [ -s "$tmp" ] || return 0
+  mv -f "$tmp" "$store" && tmp=''
+)
 
-# The write epoch of a record; empty for a one-line record written before the line existed.
-worker_walls_written() {
-  local path written
-  path=$(worker_walls_path "$1" "$2") || return 1
-  written=$(sed -n '2p' "$path" 2>/dev/null | tr -d '[:space:]')
-  case "$written" in
-    ''|*[!0-9]*) return 0 ;;
-  esac
-  printf '%s\n' "$written"
-}
-
-# Drops the record when a usage reading taken after its write shows the account open (pct < 100).
-# The record stands in for the collector only until the collector has looked again; an older
-# reading, an unknown reading or a one-line record leaves it in force. Returns 0 when lapsed.
-worker_walls_lapse_if_read() {
-  local vendor="$1" account="$2" as_of="$3" pct="$4" path written
-  case "$as_of" in ''|*[!0-9]*) return 1 ;; esac
-  case "$pct" in ''|*[!0-9]*) return 1 ;; esac
-  written=$(worker_walls_written "$vendor" "$account") || return 1
-  [ -n "$written" ] || return 1
-  [ "$as_of" -gt "$written" ] || return 1
-  [ "$pct" -lt 100 ] || return 1
-  path=$(worker_walls_path "$vendor" "$account") || return 1
-  rm -f -- "$path"
-}
-
-# Prints unexpired account names for vendor. Deletes expired files.
 worker_walls_fresh() {
-  local status
-  worker_walls_fresh_r "$@"
-  status=$?
+  worker_walls_fresh_r "$@" || return
   printf '%s' "$WORKER_WALLS_R"
-  return "$status"
 }
 
-# The same lines into WORKER_WALLS_R; line 1 is read the way `sed -n 1p | tr -d '[:space:]'` read it.
 worker_walls_fresh_r() {
-  local vendor="$1" now="${2:-$(date +%s)}" dir prefix file epoch account out=''
-  WORKER_WALLS_R=''
-  WORKER_WALLS_RECORDS_R=''
-  worker_walls_valid_name "$vendor" || return 1
-  worker_walls_dir_r
-  dir=$WORKER_WALLS_R
-  WORKER_WALLS_R=''
-  [ -d "$dir" ] || return 0
-  prefix="$vendor-"
-  for file in "$dir"/"$prefix"*; do
-    [ -f "$file" ] || continue
-    account=${file##*/}
-    account=${account#"$prefix"}
-    [ -n "$account" ] || continue
-    epoch=''
-    { IFS= read -r epoch <"$file"; } 2>/dev/null
-    epoch=${epoch//[[:space:]]/}
-    case "$epoch" in
-      ''|*[!0-9]*) continue ;;
-    esac
-    if [ "$epoch" -gt "$now" ]; then
-      out+="$account"$'\n'
-      WORKER_WALLS_RECORDS_R+="$account"$'\t'"$epoch"$'\n'
-    else
-      rm -f -- "$file"
-    fi
-  done
-  WORKER_WALLS_R=$out
-  return 0
+  local vendor="$1" now="${2:-$(date +%s)}" store
+  [ "$vendor" != claudeb ] || vendor=claude
+  store=${LLM_LIMITS_FILE:-${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}}
+  . "${BASH_SOURCE[0]%/*}/limits-view.sh"
+  WORKER_WALLS_R=$(jq -r --arg v "$vendor" --argjson now "$now" "$LIMITS_VIEW_JQ"'
+    .vendors[$v] | (.accounts // [.])[]? |
+    select(limits_observed_wall(.; $now) != null) | .account // "main"
+  ' "$store" 2>/dev/null) || WORKER_WALLS_R=''
 }

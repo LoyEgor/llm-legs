@@ -36,6 +36,7 @@ cat >"$STUB_BIN/codexb" <<'EOF'
 printf 'codexb' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
+[ -z "${STUB_WALL:-}" ] || { printf "model: gpt-6-astra\nERROR: You've hit your usage limit.\n" >&2; exit 1; }
 printf 'model: gpt-6-astra\n' >&2
 printf 'codex answer\n'
 EOF
@@ -57,6 +58,7 @@ cat >"$STUB_BIN/claudeb" <<'EOF'
 printf 'claudeb' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
+[ -z "${STUB_WALL:-}" ] || { printf '{"is_error":true,"result":"You have hit your session limit"}\n'; exit 1; }
 printf '{"result":"claude answer","modelUsage":{"claude-opus-fixture":{"outputTokens":2}}}\n'
 EOF
 
@@ -312,5 +314,21 @@ run_leg "$ROUTED_PATH" "$WORK/list-models" "$ROOT/ask_gemini.sh" --list-models \
 assert test "$rc" -eq 0
 assert grep -q 'Gemini 3.1 Pro (High)' "$WORK/list-models.out"
 assert test ! -s "$PICK_LOG"
+
+# A leg that meets its usage wall exits 5 and records it on its account in the shared limits store.
+printf '{"schema":1,"vendors":{"codex":{"available":true,"accounts":[{"account":"codex-worker"}]},"claude":{"available":true,"accounts":[{"account":"claude-worker"}]}}}\n' \
+  >"$WORK/limits.json"
+LEG_ENV=(STUB_WALL=1 "LLM_LIMITS_FILE=$WORK/limits.json")
+for spec in "codex:codex-worker:$ROOT/ask_codex.sh" "claude:claude-worker:$ROOT/ask_claude.sh"; do
+  IFS=: read -r leg account script <<<"$spec"
+  STUB_PICK_ACCOUNT="$account"
+  STUB_PICK_RC=0
+  rc=0
+  run_leg "$ROUTED_PATH" "$WORK/wall-$leg" "$script" "wall $leg" >/dev/null 2>"$WORK/wall-$leg.err" || rc=$?
+  assert test "$rc" -eq 5
+  assert jq -e --arg v "$leg" --arg a "$account" \
+    '.vendors[$v].accounts[] | select(.account == $a) | .worker_wall.resets_at > now' "$WORK/limits.json" >/dev/null
+done
+LEG_ENV=()
 
 echo "PASS: $asserts asserts; all legs route reviewers-role accounts (LEGS_ROLE overrides) through vendor profile launchers, codex runs the roster's newest slug (explicit CODEX_MODEL wins, a silent roster falls back to cli-default), refuse an unselectable pool without a vendor call, degrade to bare main-account CLIs when worker-pick is absent, audit the answering account, keep probes on the routed path, and answer --list-models without a selectable account"

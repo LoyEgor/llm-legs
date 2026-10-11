@@ -171,7 +171,7 @@ assert grep -qx "OUTCOME: GROK_CANCELLED $RUN_ID" "$WORK/wait.out"
 assert grep -qx 'REASON: cancelled — grok ended the session before its first turn; capacity weather, not a wall: pause and relaunch once' \
   "$WORK/wait.out"
 assert test "$(grep -c 'GROK_UNAVAILABLE\|GROK_USAGE_LIMIT' "$WORK/wait.out")" -eq 0
-assert test ! -e "$WORKER_WALLS_DIR/grok-grokcancel"
+assert_fails wall_has grok grokcancel
 assert grep -qx "OUTCOME: GROK_CANCELLED $RUN_ID" <<<"$("$RUNNER" report "$RUN_ID")"
 assert grep -qx 'STATUS: failed' <<<"$("$RUNNER" report "$RUN_ID")"
 

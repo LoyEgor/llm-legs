@@ -172,6 +172,8 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
 done
 
 if [ "$quota_hit" = 1 ] && [ "$served_other" = 0 ]; then
+  . "$(dirname "${BASH_SOURCE[0]}")/share/worker-walls.sh"
+  worker_walls_record gemini "$ACCOUNT" "$(worker_walls_parse_reset "$reset_hint")" || true
   echo "ask_gemini.sh: Antigravity individual quota exhausted across the model chain${reset_hint:+ — $reset_hint} — account-wide, leg unavailable (quota)" >&2
   exit 5
 fi

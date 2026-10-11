@@ -67,16 +67,18 @@ reliability_tests() {
       for text in 'resets in 2 hours' ''; do
         printf '%s\n' "$text" >"$fixture/err"
         printf '1000000\n' >"$WORK/wall-clock"
+        jq 'del(.vendors.codex.accounts[].worker_wall)' "$HOME/.llm-limits.json" >"$WORK/rewound.json" &&
+          mv "$WORK/rewound.json" "$HOME/.llm-limits.json"
         record_run_wall "$fixture" codex
-        epoch=$(sed -n 1p "$WORKER_WALLS_DIR/codex-epoch")
-        [ "$(sed -n 2p "$WORKER_WALLS_DIR/codex-epoch")" = 1000000 ] || exit 1
+        epoch=$(wall_field codex epoch resets_at)
+        [ "$(wall_field codex epoch recorded_at)" = 1000000 ] || exit 1
         printf '1000120\n' >"$WORK/wall-clock"
         record_run_wall "$fixture" codex
-        [ "$(sed -n 1p "$WORKER_WALLS_DIR/codex-epoch")" = "$epoch" ] || exit 1
-        [ "$(sed -n 2p "$WORKER_WALLS_DIR/codex-epoch")" = 1000120 ] || exit 1
+        [ "$(wall_field codex epoch resets_at)" = "$epoch" ] || exit 1
+        [ "$(wall_field codex epoch recorded_at)" = 1000120 ] || exit 1
         printf '%s\n' "$(( $(cat "$fixture/attempt") + 1 ))" >"$fixture/attempt"
         record_run_wall "$fixture" codex
-        [ "$(sed -n 1p "$WORKER_WALLS_DIR/codex-epoch")" -gt "$epoch" ] || exit 1
+        [ "$(wall_field codex epoch resets_at)" -gt "$epoch" ] || exit 1
         printf '%s\n' "$(( $(cat "$fixture/attempt") + 1 ))" >"$fixture/attempt"
       done
     )
@@ -123,7 +125,7 @@ reliability_tests() {
     assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' <<<"$result"
     assert_fails grep -q 'REROUTE\|KILLED: wall' <<<"$result"
     assert test ! -s "$PICK_LOG"
-    assert test ! -e "$WORKER_WALLS_DIR/codex-model"
+    assert_fails wall_has codex model
   fi
 
   if suite_shard_owns 2 R3-default; then
@@ -184,7 +186,7 @@ EOF
     result=$("$RUNNER" wait "$RUN_ID" --max 60)
     assert grep -qx 'STATUS: done' <<<"$result"
     assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$result"
-    assert test "$(sed -n 1p "$WORKER_WALLS_DIR/grok-wall")" -gt "$(date +%s)"
+    assert test "$(wall_field grok wall resets_at)" -gt "$(date +%s)"
   fi
 
   if suite_shard_owns 3 A; then
@@ -194,7 +196,7 @@ EOF
     result=$("$RUNNER" wait "$RUN_ID" --max 60)
     assert grep -qx 'STATUS: done' <<<"$result"
     assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$result"
-    assert test "$(sed -n 1p "$WORKER_WALLS_DIR/codex-wall")" -gt "$(date +%s)"
+    assert test "$(wall_field codex wall resets_at)" -gt "$(date +%s)"
     assert test "$(cat "$RUN_DIR/attempt")" = 2
     assert grep -q '^CONTINUATION (worker-run-injected): this is attempt 2 of this run' "$RUN_DIR/brief.launch"
     assert_fails kill -0 "$(cat "$STUB_DIR/wall.pid")"
@@ -209,7 +211,7 @@ EOF
     assert grep -qx 'STATUS: done' <<<"$result"
     assert_fails grep -q 'REROUTE\|KILLED' <<<"$result"
     assert test ! -e "$RUN_DIR/killed"
-    assert test ! -e "$WORKER_WALLS_DIR/codex-wall"
+    assert_fails wall_has codex wall
     unset STUB_WALL_ECHO
   fi
 
@@ -221,7 +223,7 @@ EOF
     result=$("$RUNNER" wait "$RUN_ID" --max 60)
     assert grep -qx 'STATUS: done' <<<"$result"
     assert_fails grep -q 'REROUTE\|KILLED' <<<"$result"
-    assert test ! -e "$WORKER_WALLS_DIR/codex-wall"
+    assert_fails wall_has codex wall
   fi
 
   if suite_shard_owns 3 A-resume; then
@@ -244,7 +246,7 @@ EOF
     assert grep -qx 'silent 2' "$RUN_DIR/killed"
     assert test ! -s "$RUN_DIR/out"
     assert test ! -s "$RUN_DIR/err"
-    assert test ! -e "$WORKER_WALLS_DIR/codex-silent"
+    assert_fails wall_has codex silent
     unset STUB_SLEEP
     start_ok codex --account silent --resume silent-session
     assert await_done

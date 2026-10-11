@@ -583,7 +583,7 @@ jq -e '(.vendors | keys) == ["claude","codex","grok","opencode"]' \
 fi
 if suite_shard_owns 4 refresh-errors; then
 # The classification cases rewrite a collected document; this suite collects its own.
-HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --json >/dev/null || fail "base collection for the refresh_errors cases failed"
+HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json >/dev/null || fail "base collection for the refresh_errors cases failed"
 # Structured refresh_errors: classification at write, roster-drop, one cause per HTTP blob.
 blob='rateLimits/read failed: {'"'"'code'"'"': -32603, '"'"'message'"'"': '"'"'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 402 Payment Required; content-type=text/plain; body={
   "error": {
@@ -596,7 +596,7 @@ blob='rateLimits/read failed: {'"'"'code'"'"': -32603, '"'"'message'"'"': '"'"'f
 CLASS_CACHE="$WORK/refresh-errors-cache.json"
 jq --arg cause "$blob" --argjson at "$now" \
   '.vendors.codex.refresh_error = {cause:$cause,at:$at} | del(.vendors.codex.refresh_errors)'   "$CACHE" >"$CLASS_CACHE"
-class_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+class_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
   /bin/bash "$SCRIPT" --json --no-write) || fail "refresh_errors migration collect failed"
 jq -e --arg cause "$blob" '
   (.vendors.codex.refresh_errors | length) == 1 and
@@ -610,7 +610,7 @@ jq --arg cause "$blob" --argjson at "$now" \
   '.vendors.codex.refresh_errors = [
      {account:"nexerod",class:"402 payment required",cause:$cause,at:$at}
    ] | del(.vendors.codex.refresh_error)' "$CACHE" >"$CLASS_CACHE"
-drop_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+drop_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
   /bin/bash "$SCRIPT" --json --no-write) || fail "roster-drop collect failed"
 jq -e '(.vendors.codex.refresh_errors | type) != "array" or (.vendors.codex.refresh_errors | length) == 0'   <<<"$drop_out" >/dev/null \
   || fail "deleted-account nexerod error was not dropped: $(jq -c '.vendors.codex.refresh_errors' <<<"$drop_out")"
@@ -621,7 +621,7 @@ class_case() {
     '.vendors.codex.refresh_error = {cause:$cause,at:$at} | del(.vendors.codex.refresh_errors)' \
     "$CACHE" >"$CLASS_CACHE"
   local got
-  got=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+  got=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
     /bin/bash "$SCRIPT" --json --no-write) || fail "class collect failed for $class"
   jq -e --arg class "$class" --arg cause "$cause" '
     .vendors.codex.refresh_errors[0].class == $class and
@@ -642,7 +642,7 @@ class_case 'HTTP 402 {"error":{"code":"deactivated_workspace","message":"Payment
 
 dead_cause='main: failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 402 Payment Required; body={"error":{"code":"deactivated_workspace","message":"Payment Required"}}'
 jq --arg cause "$dead_cause" --argjson at "$now"   '.vendors.codex.refresh_error = {cause:$cause,at:$at} | del(.vendors.codex.refresh_errors)'   "$CACHE" >"$CLASS_CACHE"
-dead_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" LLM_LIMITS_WALLS_LOG="$WALLS"   /bin/bash "$SCRIPT" --json --no-write) || fail "deactivated_workspace collect failed"
+dead_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE"   /bin/bash "$SCRIPT" --json --no-write) || fail "deactivated_workspace collect failed"
 jq -e --arg cause "$dead_cause" '
   any(.vendors.codex.refresh_errors[];
     .account == "main" and .class == "workspace deactivated" and .cause == $cause) and
@@ -665,7 +665,7 @@ jq --arg cause "olx: not refreshed (usage weather); notcom: not refreshed (token
   '.vendors.claude.refresh_error = {cause:$cause,at:$at} | del(.vendors.claude.refresh_errors)' \
   "$CACHE" >"$CLASS_CACHE"
 claude_err=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDE_ERR_STORE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
-  LLM_LIMITS_WALLS_LOG="$WALLS" /bin/bash "$SCRIPT" --json --no-write) \
+  /bin/bash "$SCRIPT" --json --no-write) \
   || fail "claude split collect failed"
 jq -e '
   (.vendors.claude.refresh_errors | length) == 2 and
@@ -683,7 +683,7 @@ jq --arg cause "olx: not refreshed (usage weather); notcom: not refreshed (token
    ] | del(.vendors.claude.refresh_error)' \
   "$CACHE" >"$CLASS_CACHE"
 claude_arr=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDE_ERR_STORE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
-  LLM_LIMITS_WALLS_LOG="$WALLS" /bin/bash "$SCRIPT" --json --no-write) \
+  /bin/bash "$SCRIPT" --json --no-write) \
   || fail "claude array re-split collect failed"
 jq -e '
   (.vendors.claude.refresh_errors | length) == 2 and
@@ -698,7 +698,7 @@ jq --arg cause "curl: (7) failed to connect to host" --argjson at "$err_at" \
   '.vendors.claude.refresh_error = {cause:$cause,at:$at} | del(.vendors.claude.refresh_errors)' \
   "$CACHE" >"$CLASS_CACHE"
 unattributed=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDE_ERR_STORE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
-  LLM_LIMITS_WALLS_LOG="$WALLS" /bin/bash "$SCRIPT" --json --no-write) \
+  /bin/bash "$SCRIPT" --json --no-write) \
   || fail "unattributed cause collect failed"
 jq -e --arg cause "curl: (7) failed to connect to host" '
   (.vendors.claude.refresh_errors | length) == 1 and
@@ -711,7 +711,7 @@ jq --arg cause "notcom: curl: (7) failed to connect to host" --argjson at "$err_
   '.vendors.claude.refresh_error = {cause:$cause,at:$at} | del(.vendors.claude.refresh_errors)' \
   "$CACHE" >"$CLASS_CACHE"
 attributed=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDE_ERR_STORE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
-  LLM_LIMITS_WALLS_LOG="$WALLS" /bin/bash "$SCRIPT" --json --no-write) \
+  /bin/bash "$SCRIPT" --json --no-write) \
   || fail "attributed cause collect failed"
 jq -e --arg cause "notcom: curl: (7) failed to connect to host" '
   (.vendors.claude.refresh_errors | length) == 1 and
@@ -720,26 +720,7 @@ jq -e --arg cause "notcom: curl: (7) failed to connect to host" '
 ' <<<"$attributed" >/dev/null \
   || fail "a roster account prefix was not read as one: $(jq -c '.vendors.claude.refresh_errors' <<<"$attributed")"
 
-hs_bounded() {
-  python3 - "$@" <<'PY'
-import subprocess
-import sys
-
-try:
-    result = subprocess.run(
-        ["/usr/bin/lockf", "-k", "-t", sys.argv[1], "/tmp/hs-cli.lock", "hs", "-t", "30", *sys.argv[2:]],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=int(sys.argv[1]) + 40,
-    )
-except (FileNotFoundError, subprocess.TimeoutExpired):
-    raise SystemExit(124)
-sys.stdout.write(result.stdout)
-sys.stderr.write(result.stderr)
-raise SystemExit(result.returncode)
-PY
-}
+. "$ROOT/tests/lib/hs-bounded.sh"
 
 if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 3 -c 'return "ok"' 2>/dev/null)" = ok ]; then
   renderer_output=$(hs_bounded 600 -c "_G.HS_ROOT = [[${HS_ROOT:-$HOME/.hammerspoon}]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null) \

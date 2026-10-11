@@ -141,6 +141,9 @@ served="$(printf '%s' "$OUT" | extract_served_model "$MODEL" || true)"
 weak=0
 if printf '%s' "${served:-}" | grep -qiE "$WEAK_RE"; then weak=1; fi
 if [ "$RC" -ne 0 ] && { printf '%s' "$OUT"; cat "$ERRF"; } | grep -qiE "$LIMIT_RE"; then
+  . "$(dirname "${BASH_SOURCE[0]}")/share/worker-walls.sh"
+  worker_walls_record claudeb "$ACCOUNT" \
+    "$(worker_walls_parse_reset "$(worker_walls_extract_reset "$ERRF" <(printf '%s' "$OUT"))")" || true
   RC=5
   served="QUOTA_EXHAUSTED"
 fi

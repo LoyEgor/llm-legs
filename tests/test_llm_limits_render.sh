@@ -2,7 +2,6 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/llm_limits_harness.sh" || exit 1
 
-export WORKER_WALLS_DIR="$WORK/worker-walls"
 . "$ROOT/share/worker-walls.sh"
 wall_baseline=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json --no-write) || fail "wall baseline failed"
 wall_read=$(jq -r '.vendors.codex.five_hour.as_of' <<<"$wall_baseline")
@@ -16,7 +15,8 @@ for wall_case in newer older expired; do
     expired) wall_until=$((now - 1)) ;;
   esac
   for wall_format in json table plain; do
-    worker_walls_record codex main "$wall_until" "$wall_written" || fail "wall fixture failed"
+    printf '%s\n' "$wall_baseline" >"$CACHE"
+    LLM_LIMITS_FILE="$CACHE" worker_walls_record codex main "$wall_until" "$wall_written" || fail "wall fixture failed"
     wall_output=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --"$wall_format" --no-write) || fail "wall $wall_case $wall_format failed"
     if [ "$wall_format" = json ]; then
       if [ "$wall_case" = newer ]; then

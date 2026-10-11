@@ -2,7 +2,7 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/llm_limits_harness.sh" || exit 1
 
-out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --json) || fail "fixture collection failed"
+out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "fixture collection failed"
 jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini","grok","opencode"])' <<<"$out" >/dev/null || fail "schema mismatch"
 jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.source == "statusline-last" and .vendors.claude.current_account == "main" and (.vendors.claude.accounts | length) == 1 and (.vendors.claude | has("session_model") | not)' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
 jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and
@@ -16,7 +16,7 @@ jq -e '.vendors.claude.five_hour.effective_pct == .vendors.claude.five_hour.used
   .vendors.gemini.usable_now == false' <<<"$out" >/dev/null || fail "live effective percentages or usable state mismatch"
 jq -e '(.vendors.claude.five_hour.as_of | type) == "number" and .vendors.claude.five_hour.stale == false and .vendors.claude.stale == false' <<<"$out" >/dev/null || fail "Claude bucket freshness fields missing"
 jq -e '.vendors.codex.five_hour.origin == "usage" and (.vendors.codex.five_hour.as_of | type) == "number" and .vendors.codex.five_hour.stale == true and .vendors.codex.stale == true' <<<"$out" >/dev/null || fail "Codex rollout freshness fields mismatch"
-jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "no quota snapshot" and .vendors.gemini.last_wall == "2026-07-11T08:00:00Z"' <<<"$out" >/dev/null || fail "Gemini state mismatch"
+jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "no quota snapshot" and (.vendors.gemini | has("last_wall") | not)' <<<"$out" >/dev/null || fail "Gemini state mismatch"
 jq -e . "$CACHE" >/dev/null || fail "cache was not valid JSON"
 compgen -G "$CACHE.tmp.*" >/dev/null && fail "atomic-write temporary file remains"
 
@@ -689,11 +689,11 @@ rm "$HOME_FIXTURE/.claude/statusline-last.json"
 fallback=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude fallback collection failed"
 jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.weekly.used_pct == 53 and (.vendors.claude | has("session_model") | not) and .vendors.claude.source == "statusline-cache"' <<<"$fallback" >/dev/null || fail "Claude cache fallback mismatch"
 
-plain_raw=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain collection failed"
+plain_raw=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "plain collection failed"
 # CLICOLOR_FORCE is the whole color decision (nothing captured here is a tty), which is what
 # makes strip_ansi elsewhere in this file a no-op rather than a guard against unread escapes.
 grep -q $'\033\[' <<<"$plain_raw" && fail "uncolored capture carried escapes"
-colored=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+colored=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   CLICOLOR_FORCE=1 bash "$SCRIPT" --plain) || fail "colored plain collection failed"
 grep -q $'\033\[' <<<"$colored" || fail "CLICOLOR_FORCE produced no color"
 grep -q $'\033\[' <<<"$(strip_ansi <<<"$colored")" && fail "strip_ansi left color behind"
@@ -707,17 +707,17 @@ grep -q '| rot - | cr - | status -' <<<"$plain" || fail "plain explicit state fi
 # row is built from the vendor object, so it must reach into the one account it stands for.
 mkdir -p "$HOME_FIXTURE/.codex-profiles/.codexb"
 printf 'main\n' >"$HOME_FIXTURE/.codex-profiles/.codexb/disabled"
-pool_plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+pool_plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   bash "$SCRIPT" --plain) || fail "plain collection with a Codex pool exclusion failed"
 grep -q '^codex: .* | rot off ' <<<"$pool_plain" \
   || fail "the single-account Codex row hid its worker-pool exclusion"
 rm -f "$HOME_FIXTURE/.codex-profiles/.codexb/disabled"
-grep -q '^gemini: .* | status no quota snapshot | last wall 2026-07-11T08:00:00Z$' <<<"$plain" \
-  || fail "plain unavailable vendor lost its last wall"
+grep -q '^gemini: .* | status no quota snapshot$' <<<"$plain" \
+  || fail "plain unavailable vendor lost its status"
 # A vendor with no data at all is the loudest age alarm there is; the plain row must not be the
 # one surface that renders it as an ordinary reading.
 plain_color=$(CLICOLOR_FORCE=1 HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
-  LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain color collection failed"
+  bash "$SCRIPT" --plain) || fail "plain color collection failed"
 grep '^gemini:' <<<"$plain_color" | grep -q "| age "$'\033\[31m' \
   || fail "an unavailable vendor rendered its age unalarmed in plain"
 fallback_table=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "fallback table collection failed"

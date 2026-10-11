@@ -108,12 +108,28 @@ def limits_store_eff($b; $now):
   elif $reset != null and $reset <= $now then 0
   elif (($bucket.effective_pct // null) | type) == "number" then $bucket.effective_pct
   else $bucket.used_pct end;
+# A run-observed wall (shared-invariants bz) stands until its reset, or until every window the
+# account has was read after it and found open. Mirrored by observedWall in hammerspoon/llm-limits.lua.
+def limits_observed_wall($row; $now):
+  ($row.worker_wall // null) as $wall |
+  [$row.five_hour, $row.weekly | select(type == "object" and (limits_window_absent(.) | not))] as $buckets |
+  if ($wall | type) != "object" or $row.removed == true or (($wall.resets_at // 0) <= $now) then null
+  elif ($buckets | length) > 0 and all($buckets[];
+    .origin != "cached" and
+    ((.as_of | limits_store_epoch) // 0) > ($wall.recorded_at // 0) and
+    ((.effective_pct // .used_pct) | type) == "number" and
+    ((.effective_pct // .used_pct) | ceil) < 100) then null
+  else $wall end;
+def limits_clean_wall($now):
+  limits_observed_wall(.; $now) as $wall |
+  if $wall == null then del(.worker_wall) else .worker_wall = $wall end;
 # How long the walls standing on an account run, null when none does. Dead auth is deliberately
 # not a wall here: it is a login to fix, not a window to wait out.
 def limits_store_wall_until($row; $now):
-  [$row.five_hour?, $row.weekly? | select(type == "object") |
+  [(limits_observed_wall($row; $now).resets_at // empty),
+   ($row.five_hour?, $row.weekly? | select(type == "object") |
    select((limits_store_eff(.; $now) // -1) >= 100) |
-   (.resets_at | limits_store_epoch) | select(type == "number" and . > $now)] | max;
+   (.resets_at | limits_store_epoch) | select(type == "number" and . > $now))] | max;
 # Marks the account blocks of a vendor that the account-staleness warning counts; each reader
 # still takes the age itself, since a collector starved past its timeout writes no fresh verdict.
 # OpenCode is never marked: its as_of is the last served completion, which no refresh moves.

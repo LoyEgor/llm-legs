@@ -381,7 +381,7 @@ LOCK_WAIT_S = 600
 WORD_WINDOW_S = 24 * 3600
 # A test pointing any of these at a fixture while the arms resolve to the real store would spend a
 # real reset on a fake wall.
-FIXTURE_SEAMS = ("LLM_LIMITS_CACHE", "WORKER_WALLS_DIR", "CLAUDE_RESETS_ENDPOINT",
+FIXTURE_SEAMS = ("LLM_LIMITS_CACHE", "LLM_LIMITS_FILE", "CLAUDE_RESETS_ENDPOINT",
                  "GROK_RESETS_ENDPOINT")
 
 

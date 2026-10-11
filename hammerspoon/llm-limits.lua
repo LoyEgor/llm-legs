@@ -15,7 +15,6 @@ local M = {
   workerPickPath = home .. "/.local/bin/worker-pick",
   opencodeGoCmd = "opencode-go",
   routingFailed = false,
-  wallsLog = nil,
   onRefreshStateChanged = function() end,
 }
 
@@ -421,6 +420,23 @@ local function windowAbsent(bucket)
     and not (bucket.stale == true and bucket.origin == nil))
 end
 
+local function observedWall(block, now)
+  local wall = block.worker_wall
+  if type(wall) ~= "table" or block.removed == true or (tonumber(wall.resets_at) or 0) <= now then return nil end
+  local measured, read = false, true
+  for _, key in ipairs({ "five_hour", "weekly" }) do
+    local bucket = block[key]
+    if type(bucket) == "table" and not windowAbsent(bucket) then
+      measured = true
+      local pct = bucket.effective_pct or bucket.used_pct
+      if bucket.origin == "cached" or (parseTime(bucket.as_of) or 0) <= (tonumber(wall.recorded_at) or 0)
+        or type(pct) ~= "number" or math.ceil(pct) >= 100 then read = false end
+    end
+  end
+  if measured and read then return nil end
+  return wall
+end
+
 local function bucketAtLimit(bucket)
   return type(bucket) == "table" and (tonumber(bucket.effective_pct) or 0) >= 100
 end
@@ -581,9 +597,6 @@ local function newCollectorTask(callback, args, envExtra)
   local task = hs.task.new(M.collectorPath, callback, args or {})
   if task then
     local environment = baseEnvironment()
-    if M.wallsLog then
-      environment.LLM_LIMITS_WALLS_LOG = M.wallsLog
-    end
     if type(envExtra) == "table" then
       for k, v in pairs(envExtra) do environment[k] = v end
     end
@@ -2957,7 +2970,7 @@ local function buildMenuItems()
         if not isAccountRows then
           blocks = {{ account = entry.label, five_hour = vendor.five_hour,
             weekly = vendor.weekly, fable = vendor.fable, as_of = vendor.as_of,
-            age_alarm = vendor.age_alarm, is_current = false }}
+            age_alarm = vendor.age_alarm, worker_wall = vendor.worker_wall, is_current = false }}
         end
         if isAccountRows then
           local sectionMenu = {}
@@ -3030,7 +3043,8 @@ local function buildMenuItems()
           local accountAge, accountAgeAlarm, untrusted = accountAgeText(block.as_of,
             isAccountRows and late[acct], not authNeeded and staleAfter or nil,
             block.age_alarm == true and not (entry.key == "grok" and authStatus == "expired"))
-          local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
+          local wall = observedWall(block, os.time())
+          local generalAtLimit = wall ~= nil or bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           local pinExists = pinSet[acct] == true
           local pinFn
           if entry.key == "claude" then
@@ -3161,6 +3175,10 @@ local function buildMenuItems()
               end
             end
             table.insert(menu, accountRow)
+          end
+          if wall then
+            table.insert(menu, { title = rowTitle("", "wall", { effective_pct = 100,
+              resets_at = wall.resets_at }, false, true, false, { pct = "" }), disabled = true })
           end
           if not authNeeded then
             if type(fiveHour) == "table" and not windowAbsent(fiveHour) then

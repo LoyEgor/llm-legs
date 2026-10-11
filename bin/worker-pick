@@ -314,37 +314,9 @@ if [ "$query_role" = image ]; then
   ! asked grok || gr_starts=$(worker_starts_json grok 2>/dev/null) || gr_starts='{}'
 fi
 
-# A wall worker-run just watched, before llm-limits has caught up. Unexpired record → walled —
-# until a reading of that account newer than the record shows EVERY window it records open; then
-# the collector has caught up and the record lapses (an unparseable RESET falls back to now+3600,
-# which outlives a real reset by up to an hour).
-limits_reading() {
-  local vendor="$1" account="$2"
-  [ -r "$LIMITS_FILE" ] || return 0
-  case "$vendor" in claudeb) vendor=claude ;; esac
-  # Vendors carry different windows — grok records a weekly quota and no five-hour one — so the
-  # count is read off the account rather than fixed at two: demanding both left every grok wall
-  # in force until its fallback expiry.
-  jq -r --arg v "$vendor" --arg a "$account" '
-    .vendors[$v] | (.accounts // [.])[]? | select((.account // "main") == $a) |
-    ([.five_hour, .weekly] | map(select(type == "object")) | select(length > 0)) as $buckets |
-    ($buckets | map([(.as_of | numbers), ((.effective_pct // .used_pct) | numbers)] |
-                    select(length == 2))) |
-    select(length == ($buckets | length)) |
-    [(map(.[0]) | min), (map(.[1]) | max | ceil)] | @tsv' "$LIMITS_FILE" 2>/dev/null |
-    head -n1
-}
-walls_list() { # vendor var
-  local vendor="$1" account reading as_of pct kept=''
-  worker_walls_fresh_r "$vendor" "$now" 2>/dev/null
-  while IFS= read -r account; do
-    [ -n "$account" ] || continue
-    reading=$(limits_reading "$vendor" "$account")
-    as_of=${reading%%	*}; pct=${reading##*	}
-    [ -n "$reading" ] && worker_walls_lapse_if_read "$vendor" "$account" "$as_of" "$pct" && continue
-    kept+="$account$nl"
-  done <<<"$WORKER_WALLS_R"
-  printf -v "$2" '%s' "$kept"
+walls_list() {
+  worker_walls_fresh_r "$1" "$now"
+  printf -v "$2" '%s' "$WORKER_WALLS_R"
 }
 cb_walls=''; cx_walls=''; gm_walls=''; gr_walls=''
 ! asked claudeb || walls_list claudeb cb_walls
@@ -368,15 +340,14 @@ if [ "$cx_paused" = false ] && [ -n "$cx_model" ] && { [ -z "$query_vendor" ] ||
       done; wait; }) || cx_unlisted=''
 fi
 
-# A met wall drops the pin once. Limits at 100% never do. The walls are the ones read above: that
-# read already deleted the expired records and lapsed the caught-up ones.
+# A met wall drops the pin once; vendor percentages alone never do.
 clear_observed_pins() { # vendor walls
   local vendor="$1" walls="$2" acct
   [ -n "$walls" ] || return 0
   worker_model_pins_r "$vendor" 2>/dev/null
   while IFS= read -r acct; do
     [ -n "$acct" ] || continue
-    case "$nl$walls" in *"$nl$acct$nl"*) ;; *) continue ;; esac
+    case "$nl$walls$nl" in *"$nl$acct$nl"*) ;; *) continue ;; esac
     worker_model_clear_walled_pin "$vendor" "$acct" "$now" || true
   done <<<"$WORKER_MODEL_R"
 }
@@ -823,7 +794,7 @@ summary=$(jq -r \
      enabled:(.enabled != false),auth_ok:auth_ok,
      h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
-     rs:reset_str(.weekly)} |
+     rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str(.weekly) end)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($cx_claims) |
     .started = $cx_starts[.name] |
@@ -855,7 +826,7 @@ summary=$(jq -r \
      enabled:(.enabled != false),auth_ok:auth_ok,
      h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
-     rs:reset_str(.weekly)} |
+     rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str(.weekly) end)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gm_claims) |
     .started = $gm_starts[.name] |
@@ -889,7 +860,7 @@ summary=$(jq -r \
     {name:(.account // "main"),
      enabled:(.enabled != false),auth_ok:gr_auth_ok,
      auth_late:(gr_auth_ok and gr_auth == "expired"),
-     wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),rs:reset_str(.weekly)} |
+     wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str(.weekly) end)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gr_claims) |
     .started = $gr_starts[.name] |
@@ -928,7 +899,7 @@ summary=$(jq -r \
      h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff($bucket),
      wk_reset:(($bucket.resets_at? // null) | epoch),
-     rs:reset_str($bucket)} |
+     rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str($bucket) end)} |
     .blocked = (if fable_view then (.fable_capable | not) else (.general_usable | not) end) |
     # Fable has no five-hour twin to be paced by, so an account with no measured fable window
     # leaves the ranking rather than falling back to the pace of another bucket.

@@ -52,7 +52,12 @@ export WORKER_RUN_ALLOW_DUPLICATE=1
 export WORKER_RUN_DIR="$WORK/runs"
 # How often a `wait --max N` looks again, never what it reports: 5s per round was most of this suite.
 export WORKER_RUN_WAIT_POLL_S=1
-export WORKER_WALLS_DIR="$WORK/walls"
+wall_field() {
+  jq -r --arg v "$1" --arg a "$2" --arg field "${3:-resets_at}" '
+    .vendors[$v].accounts[]? | select(.account == $a) | .worker_wall[$field] // empty
+  ' "${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}" 2>/dev/null
+}
+wall_has() { [ -n "$(wall_field "$1" "$2")" ]; }
 export CHAT_PINS_DIR="$WORK/chat-pins"
 export WORKER_RUN_CONFIG_FILE="$WORK/worker-model"
 # A worker harness exports WORKER_PICK_CONFIG_FILE at Egor's real toggle, and worker-run reads the
@@ -73,7 +78,11 @@ export GROKB_PROFILES_DIR="$HOME/.grok-profiles"
 export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
 export PICK_LOG="$WORK/picks"
-mkdir -p "$HOME" "$WORK/bin" "$WORKER_RUN_DIR" "$WORKER_WALLS_DIR" "$STUB_DIR" "$WORK/workdir" "$WORK/extra"
+mkdir -p "$HOME" "$WORK/bin" "$WORKER_RUN_DIR" "$STUB_DIR" "$WORK/workdir" "$WORK/extra"
+# The wall writer marks only accounts the limits store lists: these are the ones the cases wall.
+jq -n '["epoch","model","wall","silent","walled1","walled2","pinnedacct","pinacct","hot","cool","resacct","grokcancel"] |
+  map({account:.}) as $rows | {schema:1,vendors:{codex:{available:true,accounts:$rows},grok:{available:true,accounts:$rows}}}' \
+  >"$HOME/.llm-limits.json"
 roster_add() { # vendor name...
   local vendor="$1" name
   shift
@@ -394,7 +403,9 @@ clear_stub() {
     "$STUB_DIR/grok_auth" "$STUB_DIR/grok_transient" "$STUB_DIR/grok_denied" \
     "$STUB_DIR/grok_max_turns" "$STUB_DIR/grok_cancelled" "$STUB_DIR/grok_cancelled_worked" \
     "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"
-  rm -f "$WORKER_WALLS_DIR"/*
+  local store=${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}
+  [ ! -f "$store" ] || { jq 'walk(if type == "object" then del(.worker_wall) else . end)' "$store" >"$store.next" &&
+    mv "$store.next" "$store"; }
 }
 
 start_ok() {

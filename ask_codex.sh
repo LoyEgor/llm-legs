@@ -116,7 +116,11 @@ if [ $RC -ne 0 ]; then
   cat "$ERRF" >&2
   # Subscription usage-limit errors get a distinct exit code so the orchestrator can drop the
   # leg for the rest of the run instead of retrying into the same wall (observed 2026-06-12).
-  if grep -qiE 'hit your usage limit|usage_limit|quota' "$ERRF" 2>/dev/null; then exit 5; fi
+  if grep -qiE 'hit your usage limit|usage_limit|quota' "$ERRF" 2>/dev/null; then
+    . "$(dirname "${BASH_SOURCE[0]}")/share/worker-walls.sh"
+    worker_walls_record codex "$ACCOUNT" "$(worker_walls_parse_reset "$(worker_walls_extract_reset "$ERRF")")" || true
+    exit 5
+  fi
   exit $RC
 fi
 if [ "$weak" = "1" ] && [ "${CODEX_ALLOW_WEAK:-0}" != "1" ]; then

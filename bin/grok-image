@@ -272,6 +272,9 @@ generated=$(grok_media_stream_path "$stream_file" ImageGen,ImageEdit) || generat
 if [ -z "$generated" ]; then
   case "$(grok_media_failure_class "$stream_file" "$stderr_file")" in
     limit)
+      . "$root/share/worker-walls.sh"
+      worker_walls_record grok "$grok_media_account" \
+        "$(worker_walls_parse_reset "$(worker_walls_extract_reset "$stream_file" "$stderr_file")")" || true
       printf 'GROK_USAGE_LIMIT\n' >&2
       exit 3
       ;;

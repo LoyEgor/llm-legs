@@ -11,7 +11,7 @@ asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 
-unset XDG_CACHE_HOME WORKER_CLAIMS_DIR WORKER_WALLS_DIR GEMINI_WEB_DIR CHATGPT_WEB_DIR CLAUDEGPT_HOME \
+unset XDG_CACHE_HOME WORKER_CLAIMS_DIR GEMINI_WEB_DIR CHATGPT_WEB_DIR CLAUDEGPT_HOME \
   CODEXB_PROFILES_DIR GEMINIB_PROFILES_DIR GROKB_PROFILES_DIR LLM_LIMITS_GEMINI_ACCOUNTS_DIR \
   LLM_LIMITS_CODEX_CACHE LLM_LIMITS_CODEX_REMOVED LLM_LIMITS_GROK_CACHE GROKB_MAIN_GROK_HOME OPENCODE_GO_PROFILES \
   STATUSLINE_CACHE_DIR LLM_LIMITS_CACHE
@@ -447,7 +447,7 @@ assert env LLM_LIMITS_CODEX_REMOVED="$WORK/codex-main.removed" "$DOCTOR" --dry-r
 assert jq -e '[.problems[] | select(.group == "accounts")] as $rows | .groups.accounts == 1 and ($rows | length) == 1
   and $rows[0].id == "remnant:codex:ghost" and $rows[0].value == 2
   and ($rows[0].fact | contains("purge: python3 share/account_stores.py purge codex ghost"))' "$WORK/remnants.json" >/dev/null
-printf 'case "$BASH_EXECUTION_STRING" in *worker_walls_path*) exit 3 ;; esac\n' >"$WORK/paths-fail.sh"
+printf 'case "$BASH_EXECUTION_STRING" in *worker_claims_dir*) exit 3 ;; esac\n' >"$WORK/paths-fail.sh"
 assert env BASH_ENV="$WORK/paths-fail.sh" LLM_LIMITS_CODEX_REMOVED="$WORK/codex-main.removed" "$DOCTOR" --dry-run --json \
   >"$WORK/remnants-unread.json"
 assert jq -e '[.problems[] | select(.id == "remnant:roster")] | length == 1' "$WORK/remnants-unread.json" >/dev/null

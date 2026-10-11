@@ -162,8 +162,9 @@ puts it back; the set lives in `$CLAUDEB_DIR/disabled` (one name per line, missi
 enabled). An explicit `claudeb profile <name>` launch bypasses membership. The last enabled
 account cannot be disabled, and each JSON account carries the resulting `enabled` flag.
 
-Set `LLM_LIMITS_WALLS_LOG` to a `served-models.jsonl` audit log to include the most recent
-exit-5 wall timestamp for each vendor. `LLM_LIMITS_CACHE` overrides the cache path.
+A leg that exits 5 on a usage wall records it on its account in the cache (`worker_wall`), and
+every limits surface shows that account walled until its reset or a newer open reading.
+`LLM_LIMITS_CACHE` overrides the cache path.
 
 For Hammerspoon, copy or symlink `hammerspoon/llm-limits.lua` into `~/.hammerspoon`. Requiring
 the module has no side effects. Use its menu items inside an existing menu:
