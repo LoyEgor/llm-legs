@@ -270,6 +270,25 @@
    },
    "verdict": "cut",
    "note": "Exists to keep a cd from moving the prompt-embedded cwd (claude-setup@2ea2cb72, rewrite since 4a65439d). Price 0.175% of spend (Injected text 1.64M, Blocked calls 324k a week) plus Speed 15.75 min/day. Effect: the rewrite note tells the model its cd did not stick (kept); the deny carries the fix. Cut: note 'cd-guard ran this in a subshell: the working directory did not change.' -> 'cd-guard: ran in a subshell, cwd unchanged.', deny reason ~40% shorter, no fork on cd-free calls; replay 7000 real calls identical decisions (claude-setup@c5a2a69). Next lever: no-op cds into the cwd (26% of cd calls), owner's call."
+  },
+  {
+   "id": "hook:word-intake.sh",
+   "title": "word-intake.sh",
+   "audited_at": "2026-10-12T04:04:04+03:00",
+   "by": "harness-speed-spend-hook-word-intake-sh-20261012T010233Z-20a6",
+   "share": 0.000268,
+   "prices": {
+    "Workers · Hooks": 496.64621242756425,
+    "Workers · attachment: hook context": 2879.5939310547787,
+    "Doctors · attachment: hook context": 696.6429838946558,
+    "Doctors · Hooks": 252.30745007151472,
+    "Reviewers · Hooks": 4.96130445842753
+   },
+   "sources": {
+    "claude-setup/hooks/word-intake.sh": "a8e24168d097a6f939d0dfc57d6b53e12a3f94dd"
+   },
+   "verdict": "kept",
+   "note": "0.0% of spend; one UserPromptSubmit pass writing word grants, bash fast path already skips jq and workers; grants replace per-trigger gates, no cheaper equivalent"
   }
  ]
 }
