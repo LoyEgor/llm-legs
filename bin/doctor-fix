@@ -467,8 +467,9 @@ def batch_kind(rules):
 
 def batch_sizes(kinds):
     """Rows per Speed fixer, per kind: the size of the lowest Opus-eq cost per closed row over past nights (a job`s
-    spend from its night ledger over the rows its run decided, unattributed spend left out), twice it while that is
-    the largest size tried, or the minimum is never found; a kind with no such history takes the median rows of its
+    spend from its night ledger over the rows its run decided, unattributed spend left out) on its own curve once it
+    has two sizes, else on all kinds` pooled; a size of one run is no minimum beside a size of more; twice it while
+    that is the largest size tried, or the minimum is never found; a kind with no such history takes the median rows of its
     past Speed runs, any kind`s without them, and with none at all is unsplit."""
     import statistics
     import time_budget
@@ -490,15 +491,23 @@ def batch_sizes(kinds):
         if spend.get(run.get("id")) and decided and shared:
             cost = costs.setdefault(kind, {}).setdefault(len(rows), [0.0, 0, 0])
             cost[0], cost[1], cost[2] = cost[0] + spend[run["id"]] * shared, cost[1] + len(decided), cost[2] + 1
+    pooled = {}
+    for curve in costs.values():
+        for size, c in curve.items():
+            pooled[size] = [x + y for x, y in zip(pooled.get(size, [0.0, 0, 0]), c)]
     sizes = {}
     for kind in kinds:
-        cost = {size: (c[0] / c[1], c[2]) for size, c in (costs.get(kind) or {}).items()}
+        source = "own" if len(costs.get(kind) or ()) >= 2 else "pooled"
+        cost = {size: (c[0] / c[1], c[2]) for size, c in ((costs.get(kind) if source == "own" else pooled) or {}).items()}
         if cost:
-            best = min(cost, key=lambda size: (round(cost[size][0], 2), -size))
-            sizes[kind] = best * 2 if best == max(cost) else best
-            why = ", ".join("%.2f at %d (%d runs)" % (cost[size][0], size, cost[size][1]) for size in sorted(cost))
-            print("doctor-fix: Speed %s fixers take %d rows: Opus-eq M per closed row %s%s · %d samples" % (
-                kind, sizes[kind], why, "; the cheapest is the largest tried, so this night tries twice it"
+            order = sorted(cost)
+            fair = [size for i, size in enumerate(order) if cost[size][1] > 1 or not any(
+                cost[near][1] > 1 for near in order[max(0, i - 1):i] + order[i + 1:i + 2])]
+            best = min(fair, key=lambda size: (round(cost[size][0], 2), -size))
+            sizes[kind] = best * 2 if best == order[-1] else best
+            why = ", ".join("%.2f at %d (%d runs)" % (cost[size][0], size, cost[size][1]) for size in order)
+            print("doctor-fix: Speed %s fixers take %d rows: %s Opus-eq M per closed row %s%s · %d samples" % (
+                kind, sizes[kind], source, why, "; the cheapest is the largest tried, so this night tries twice it"
                 if sizes[kind] != best else "", sum(c[1] for c in cost.values())), file=sys.stderr)
             continue
         pool = seen.get(kind) or [n for counts in seen.values() for n in counts]

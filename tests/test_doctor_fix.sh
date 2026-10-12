@@ -1196,7 +1196,8 @@ done
 assert_fails grep -qF -- '--fresh' "$brief"
 assert grep -qF -- 'tests/run-all --profile <suite>' "$brief"
 # Rows per Speed fixer per kind from past nights: the size of the lowest Opus-eq cost per closed row (a job's ledger
-# spend over the rows its run decided, unattributed spend out), twice it while that is the largest size tried; ~160
+# spend over the rows its run decided, unattributed spend out) on the kind's own curve once it has two sizes, else on
+# all kinds' pooled; a size of one run is no minimum beside a size of more; twice it at the largest size tried; ~160
 # suite audits of one repository ride in runs of that size, in rank order: priced rows by expected gain, however
 # small, then unpriced ones by measured loss, minutes a day before a share of spend.
 for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
@@ -1233,10 +1234,11 @@ history() { # id rule rows decided spend_m -> a closed past Speed run of that ma
   jq -n --arg id "$1" --argjson m "$5" '{improvements: [{ref: $id, spend_m: $m}]}' >"$RUNS/../night-ledger/$1.json"
 }
 history hist-s1 suite_audit 1 1 1.0; history hist-s2 suite_audit 1 1 1.0; history hist-s3 suite_audit 3 3 0.5
-history hist-s6 suite_audit 6 3 0.4; history hist-s0 suite_audit 3 3 0; history hist-p2 spend_audit 2 2 0.4
+history hist-s4 suite_audit 3 3 0.5; history hist-s6 suite_audit 6 3 0.15; history hist-s0 suite_audit 3 3 0
+history hist-p1 spend_audit 1 1 0.2
 night_snapshot n16 8 >"$WORK/cap.json" 2>"$WORK/cap.err"
-assert grep -qxF 'doctor-fix: Speed suite_audit fixers take 3 rows: Opus-eq M per closed row 1.00 at 1 (2 runs), 0.50 at 3 (1 runs), 0.80 at 6 (1 runs) · 4 samples' "$WORK/cap.err"
-assert grep -qxF 'doctor-fix: Speed spend_audit fixers take 4 rows: Opus-eq M per closed row 0.40 at 2 (1 runs); the cheapest is the largest tried, so this night tries twice it · 1 samples' "$WORK/cap.err"
+assert grep -qxF 'doctor-fix: Speed suite_audit fixers take 3 rows: own Opus-eq M per closed row 1.00 at 1 (2 runs), 0.50 at 3 (2 runs), 0.30 at 6 (1 runs) · 5 samples' "$WORK/cap.err"
+assert grep -qxF 'doctor-fix: Speed spend_audit fixers take 3 rows: pooled Opus-eq M per closed row 0.73 at 1 (3 runs), 0.50 at 3 (2 runs), 0.30 at 6 (1 runs) · 6 samples' "$WORK/cap.err"
 assert jqe '[.[] | select(.area | startswith("speed-suite-audit-llm-legs"))]
   | map(.id) == (["suite_audit:llm-legs:test_mid", "suite_audit:llm-legs:test_light"]
       + [range(1; 161) | "suite_audit:llm-legs:test_g\(.)"] + ["suite_audit:llm-legs:test_extra"])
@@ -1247,6 +1249,8 @@ assert jqe '[.[] | select(.area | startswith("speed-")) | select(.id | test("^(s
   == {"speed-machine-contention": ["opportunity:machine/contention", "opportunity:chat/hooks"],
       "speed-suite-audit-claude-setup-test-c1": ["suite_audit:claude-setup:test_c1", "suite_audit:claude-setup:test_c2"],
       "speed-spend-resumes": ["spend:resumes", "spend:hook:gate.sh"]}' "$WORK/cap.json"
+history hist-s9 suite_audit 9 9 0.1; history hist-s10 suite_audit 9 9 0.1
+assert grep -qF 'doctor-fix: Speed suite_audit fixers take 18 rows: own Opus-eq M per closed row 1.00 at 1 (2 runs), 0.50 at 3 (2 runs), 0.30 at 6 (1 runs), 0.10 at 9 (2 runs); the cheapest is the largest tried, so this night tries twice it' <(night_snapshot n16 8 2>&1 >/dev/null)
 rm "$RUNS"/hist-*.json && rm -r "$RUNS/../night-ledger"
 # The free worker slots never shape the Speed pick: the same snapshot on 8 slots and on 1.
 assert [ "$(night_snapshot n18 8 2>/dev/null)" = "$(night_snapshot n18 1 2>/dev/null)" ]
