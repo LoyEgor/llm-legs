@@ -231,7 +231,9 @@ settle, not the owner's or Egor's; the class row itself stays `open`. A round of
 never touched, read or listed: its project is Egor's (2026-10-01). `review-bench doctor --json` lists
 them (`id`, `repo`, `session`); `review-bench fix <id> --print` prints a round's unsettled findings. Per round:
 
-- Skip it while its chat is live: a `~/.claude/sessions/*.json` with its `sessionId` whose `pid` is alive.
+- Skip it while its chat is live (a `~/.claude/sessions/*.json` with its `sessionId` whose `pid` is alive)
+  and the round is under 24 h old; an older one is yours even in a live chat, which has moved on (a
+  chat held its round 4 days, 2026-10-12).
 - Judge each finding against the code in `repo` now, read-only:
   - resolved → `review-bench record <id> --verdicts <file>` with a row
     `{"kind":"fixer","finding":<index>,"outcome":"fixed"}`;
