@@ -973,7 +973,7 @@ env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SP
   fail "speed-doctor did not merge its section"
 night1='["opportunity:chat/tools", "opportunity:delegation/background Bash", "opportunity:chat/hooks", "opportunity:machine/contention",
   "opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/tests", "opportunity:delegation/reviews"]'
-assert jqe '.speed.selection == ["opportunity:chat/tools", "opportunity:delegation/background Bash"]' "$S/harness/latest.json"
+assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
 jq --argjson n "$night1" '.speed.selection = $n | (.problems[] | select(.rule == "opportunity") | .opportunity.recoverable_min_day) = 5' \
   "$S/harness/latest.json" >"$S/priced.json" && mv "$S/priced.json" "$S/harness/latest.json"
 mkdir -p "$L/share/rbench" "$L/share/briefs" "$L/agents"
@@ -1151,7 +1151,7 @@ for step in '1. Why it exists' '2. Price per day' '3. Effect' 'a Sonnet judge (n
   '4. A cheaper equivalent' 'replaying last week' '5. Spend tokenmap cannot see' 'bin/speed-doctor --spend-audit'; do
   assert grep -qF "$step" "$brief"
 done
-# Suite audits: a night takes the first queued suite the night's red test rules do not already hold, in a run of
+# Suite audits: a night takes every queued suite the night's red test rules do not already hold, each in a run of
 # its own whose brief refuses a Light or Gemini Flash worker and carries the audit's steps.
 jq --argjson s "$(now)" --arg l "$L" '.as_of_s = $s | .speed.spend.selection = []
   | .problems += [{id: "test_daily_cost:llm-legs:test_heavy", rule: "test_daily_cost", ident: "llm-legs:test_heavy",
@@ -1163,8 +1163,10 @@ jq --argjson s "$(now)" --arg l "$L" '.as_of_s = $s | .speed.spend.selection = [
       "suite_audit:llm-legs:test_light"]}' "$S/harness/latest.json" >"$S/suites.json" && mv "$S/suites.json" "$S/harness/latest.json"
 git -C "$L" update-ref refs/night/n14/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n14 >"$WORK/out" 2>"$WORK/err" || fail "suite night n14: $(cat "$WORK/err")"
-assert jqe --arg m "$L/tests/test_mid.sh" 'map(select(.[0] | startswith("speed-"))) == [["speed-suite-audit-llm-legs-test-mid", ["suite_audit:llm-legs:test_mid", [$m]]]]' <(speed_runs)
-brief=$(grep -F speed-suite-audit "$WORK/out" | cut -f2)
+assert jqe --arg m "$L/tests/test_mid.sh" --arg l "$L/tests/test_light.sh" 'map(select(.[0] | startswith("speed-"))) == [
+  ["speed-suite-audit-llm-legs-test-light", ["suite_audit:llm-legs:test_light", [$l]]],
+  ["speed-suite-audit-llm-legs-test-mid", ["suite_audit:llm-legs:test_mid", [$m]]]]' <(speed_runs)
+brief=$(grep -F speed-suite-audit-llm-legs-test-mid "$WORK/out" | cut -f2)
 assert [ "$(head -n1 "$brief")" = 'STRONG: yes' ]
 for step in '1. What each check guards' '2. Where the wall goes' 'Never shorten a sleep or a timeout a race check depends on' \
   'assert count unchanged' 'every mutation still red' 'kept (the suite is fine: a normal outcome)' 'bin/speed-doctor --suite-audit'; do
@@ -1172,27 +1174,49 @@ for step in '1. What each check guards' '2. Where the wall goes' 'Never shorten 
 done
 assert_fails grep -qF -- '--fresh' "$brief"
 assert grep -qF -- 'tests/run-all --profile <suite>' "$brief"
-# Capacity, not one a night: each kind takes its share of the free worker slots, 8 over four kinds, in rank order.
+# Five Speed fixers a night, batches in rank order: priced rows by expected gain, however small, then unpriced ones by
+# measured loss, minutes a day before a share of spend; the rest rank again the next night, whatever the free slots.
 for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
-jq --argjson s "$(now)" '.as_of_s = $s | .speed.spend.selection = ["spend:resumes", "spend:hook:gate.sh"]
+jq --argjson s "$(now)" --arg l "$L" '.as_of_s = $s | .speed.spend.selection = ["spend:hook:gate.sh", "spend:resumes"]
   | .speed.selection = ["opportunity:chat/hooks", "opportunity:machine/contention"]
   | .speed.suites.selection += ["suite_audit:llm-legs:test_extra"]
-  | .problems += [.problems[] | select(.id == "suite_audit:llm-legs:test_light") | .id = "suite_audit:llm-legs:test_extra"]
-  | (.problems[] | select(.id == "opportunity:machine/contention") | .opportunity.hooks) = true' \
+  | .problems += [.problems[] | select(.id == "suite_audit:llm-legs:test_light") | .id = "suite_audit:llm-legs:test_extra"
+      | .suite = {component: "llm-legs/test_extra", sources: ["\($l)/tests/test_extra.sh"]}]
+  | (.problems[] | select(.id == "opportunity:chat/hooks") | .opportunity.recoverable_min_day) = 3
+  | (.problems[] | select(.id == "opportunity:machine/contention") | .opportunity.recoverable_min_day) = 40
+  | (.problems[] | select(.id == "suite_audit:llm-legs:test_mid") | .expected_min_day) = 1
+  | (.problems[] | select(.id == "suite_audit:llm-legs:test_light")) |= (del(.expected_min_day) + {value: 30, unit: "wall-min/day"})
+  | (.problems[] | select(.id == "suite_audit:llm-legs:test_extra")) |= (del(.expected_min_day) + {value: 10, unit: "wall-min/day"})
+  | (.problems[] | select(.id == "spend:resumes")) += {value: 4.0, unit: "% of spend"}
+  | (.problems[] | select(.id == "spend:hook:gate.sh")) += {value: 1.2, unit: "% of spend"}' \
   "$S/harness/latest.json" >"$S/cap.json" && mv "$S/cap.json" "$S/harness/latest.json"
-# The share is the launch's own snapshot, read without its worktrees and briefs (the nights above build those).
+# The cap is the launch's own snapshot, read without its worktrees and briefs (the nights above build those).
 eval "$(sed -n "/^PY='\$/,/^'\$/p" "$FIX")"
 night_snapshot() { # night slots -> the entries the night's launch would queue
   env "${speed_env[@]}" WORKER_SLOTS="$2" DF_ROOT="$ROOT" DF_PROJECTS="$DOCTOR_FIX_PROJECTS" DF_RUNS="$RUNS" DF_HOME="$HOME" \
     DF_DOCS="$DOCTOR_FIX_DOCS" python3 -c "$PY" snapshot harness "$S/harness/latest.json" "$1"
 }
-assert jqe '[.[].id | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
-  "opportunity:machine/contention", "spend:hook:gate.sh", "spend:resumes", "suite_audit:llm-legs:test_light",
-  "suite_audit:llm-legs:test_mid"]' <(night_snapshot n16 8)
-assert jqe '[.[].id | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
-  "spend:resumes", "suite_audit:llm-legs:test_mid"]' <(night_snapshot n17 4)
+night_snapshot n16 8 >"$WORK/cap.json" 2>"$WORK/cap.err"
+assert jqe '[.[] | select(.area | startswith("speed-")) | .id] == ["opportunity:machine/contention", "opportunity:chat/hooks",
+  "suite_audit:llm-legs:test_mid", "suite_audit:llm-legs:test_light", "suite_audit:llm-legs:test_extra", "spend:resumes"]
+  and ([.[] | select(.area | startswith("speed-")) | .area] | unique | length == 5)' "$WORK/cap.json"
+assert grep -qxF 'doctor-fix: Speed takes 5 fixers; 1 rows rank again the next night' "$WORK/cap.err"
+for n in 1 2 3; do
+  jq -n --arg a "speed-launched-$n" '{id: "harness-\($a)", doctor: "harness", night: "n21", area: $a, problems: [],
+    launched_at: "2026-10-13T00:00:00Z", closed_at: "2026-10-13T01:00:00Z"}' >"$RUNS/harness-speed-launched-$n.json"
+done
+assert jqe '[.[] | select(.area | startswith("speed-")) | .area] | unique | length == 2' <(night_snapshot n21 8 2>/dev/null)
+assert jqe '[.[] | select(.area | startswith("speed-")) | .area] | unique | length == 5' <(night_snapshot n22 8 2>/dev/null)
+rm "$RUNS"/harness-speed-launched-[123].json
+# The free worker slots no longer shape the Speed pick: the same snapshot on 8 slots and on 1, never probed.
+mkdir -p "$WORK/spy"
+printf '#!%s\ncase "$*" in *worker_capacity*) echo probe >>"%s" ;; esac\nexec %q "$@"\n' "$(command -v bash)" "$WORK/spy/calls" \
+  "$(command -v bash)" >"$WORK/spy/bash"
+chmod +x "$WORK/spy/bash"
+assert [ "$(PATH="$WORK/spy:$PATH" night_snapshot n18 8 2>/dev/null)" = "$(PATH="$WORK/spy:$PATH" night_snapshot n18 1 2>/dev/null)" ]
+assert [ ! -e "$WORK/spy/calls" ]
 cp "$S/harness/latest.json" "$S/admission-before.json"
-jq '.problems += [
+jq '.speed.spend.selection = [] | .speed.suites.selection = [] | .problems += [
   {id: "collector:repair", rule: "collector", state: "new"},
   {id: "suite_audit:unpriced", rule: "suite_audit", state: "new", speed: true},
   {id: "hook_p50:small", rule: "hook_p50", state: "new", expected_min_day: 4.99},
@@ -1205,24 +1229,18 @@ jq '.problems += [
   | (.problems[] | select(.id == "opportunity:chat/hooks") | .opportunity.recoverable_min_day) = 4.99' \
   "$S/harness/latest.json" >"$S/admission.json" && mv "$S/admission.json" "$S/harness/latest.json"
 night_snapshot admission 8 >"$WORK/admission.json" 2>"$WORK/admission.err"
-assert jqe '[.[].id | select(test("^(regression:|repair:)|chat/hooks"))] == ["regression:enough", "repair:needed"]' "$WORK/admission.json"
-assert grep -qF 'skipped regression:small: expected gain <5 min/day or unpriced' "$WORK/admission.err"
+assert jqe '[.[].id | select(test("^(regression:|repair:)|chat/hooks"))] == ["regression:quiet", "regression:enough",
+  "regression:small", "opportunity:chat/hooks", "repair:needed", "repair:small"]' "$WORK/admission.json"
 assert grep -qF 'skipped repair:alone: measurement fix' "$WORK/admission.err"
-assert grep -qF 'skipped opportunity:chat/hooks: expected gain <5 min/day or unpriced' "$WORK/admission.err"
+assert jqe '.[] | select(.id == "regression:enough") | .component.files == []
+  and (.component.what | startswith("Regression regression:enough · no lever names its fix: find the cause first"))' "$WORK/admission.json"
+assert grep -qF 'skipped hook_p50:small: expected gain <5 min/day or unpriced' "$WORK/admission.err"
+assert_fails grep -qF 'skipped regression:small' "$WORK/admission.err"
+assert_fails grep -qF 'skipped opportunity:chat/hooks' "$WORK/admission.err"
 assert test "$(wc -l <"$WORK/admission.err" | tr -d ' ')" = 1
-assert jqe 'all(.[]; .id != "suite_audit:unpriced" and .id != "hook_p50:small") and any(.[]; .id == "collector:repair")' "$WORK/admission.json"
-assert jqe '[.[].id] | index("regression:small") == null and index("collector:repair") != null' <(night_snapshot "" 8 2>/dev/null)
+assert jqe 'all(.[]; .id != "hook_p50:small") and any(.[]; .id == "suite_audit:unpriced") and any(.[]; .id == "collector:repair")' "$WORK/admission.json"
+assert jqe '[.[].id] | index("regression:small") != null and index("collector:repair") != null' <(night_snapshot "" 8 2>/dev/null)
 mv "$S/admission-before.json" "$S/harness/latest.json"
-# A Speed document whose three selections are empty never asks for the free slots it could not use.
-jq '.speed.selection = [] | .speed.spend.selection = [] | .speed.suites.selection = []' "$S/harness/latest.json" >"$S/none.json"
-cp "$S/harness/latest.json" "$S/cap.json" && mv "$S/none.json" "$S/harness/latest.json"
-mkdir -p "$WORK/spy"
-printf '#!%s\ncase "$*" in *worker_capacity*) echo probe >>"%s" ;; esac\nexec %q "$@"\n' "$(command -v bash)" "$WORK/spy/calls" \
-  "$(command -v bash)" >"$WORK/spy/bash"
-chmod +x "$WORK/spy/bash"
-assert [ "$(PATH="$WORK/spy:$PATH" night_snapshot n18 8)" = "$(PATH="$WORK/spy:$PATH" night_snapshot n18 1)" ]
-assert [ ! -e "$WORK/spy/calls" ]
-mv "$S/cap.json" "$S/harness/latest.json"
 # Batches: seven levers on distinct files of one repository ride in two runs (5 + 2), another repository's lever in a
 # third; seven levers sharing one file stay one run.
 jq --argjson s "$(now)" '.as_of_s = $s | .speed.spend.selection = [] | .speed.suites.selection = []
@@ -1286,4 +1304,4 @@ assert jqe --arg o "$O/.claude/worktrees/night-n15-$audit" '[.problems[].rule] =
   "$(record "$audit")"
 fi
 
-echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture in runs of up to 5 levers of one repository, levers of another repository apart, levers sharing a file in one run however many, an open lever run holding only its levers, an older one overlapping a batch abandoned, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit on a one-slot share, its five-step brief), a suite night (the first queued suite no red test rule holds, STRONG: yes, its steps), each kind's share of the free worker slots (hook levers, spend and suite audits), a floor row's ruled-out refused without a priced cut and a Speed or floor handoff without a trade to Egor"
+echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture in runs of up to 5 levers of one repository, levers of another repository apart, levers sharing a file in one run however many, an open lever run holding only its levers, an older one overlapping a batch abandoned, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit, its five-step brief), a suite night (every queued suite no red test rule holds, each alone, STRONG: yes, its steps), five Speed fixers a night in rank order (priced by gain however small, then unpriced by measured loss, the night's launched runs counted, the free slots never probed), a lever-less regression briefed to find its cause first, a floor row's ruled-out refused without a priced cut and a Speed or floor handoff without a trade to Egor"

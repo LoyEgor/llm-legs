@@ -783,9 +783,21 @@ def speed_skip(problem, problems=()):
         if any(p.get("id") in blind_for and p.get("class", (p.get("opportunity") or {}).get("class")) != "measurement fix"
                and not speed_skip(p) for p in problems):
             return None
-        return "measurement fix without a >=5 min/day blind opportunity"
+        return "measurement fix without an admissible blind opportunity"
+    if problem.get("rule") in IMPROVEMENT_RULES:
+        return None
     gain = expected_gain(problem)
     return None if gain is not None and gain >= GAIN_MIN_DAY else "expected gain <5 min/day or unpriced"
+
+
+def speed_rank(problem):
+    """Priced rows by expected gain, then unpriced ones by their measured loss: minutes a day, then a share of spend."""
+    gain = expected_gain(problem)
+    if gain is not None:
+        return (0, -gain)
+    if "om_day" in problem or "min/day" in str(problem.get("unit") or ""):
+        return (1, -(num(problem.get("om_day", problem.get("value"))) or 0.0))
+    return (2, -(num(problem.get("value")) or 0.0))
 
 
 def expected_gain(problem):

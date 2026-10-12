@@ -91,8 +91,10 @@ check(all(p["state"] == "watch" and set(p["opportunity"]) >= {"om_day", "saving"
           and p["opportunity"]["score"] == round(p["opportunity"]["recoverable_min_day"] * p["opportunity"]["confidence"]
                                                  / (p["opportunity"]["effort_h"] + p["opportunity"]["night_cost_h"]), 3)
           for p in backlog), "every opportunity stores its score fields and the score recomputes from them")
-check(doc["selection"] == ["opportunity:chat/tools", "opportunity:delegation/background Bash"],
-      "the night takes the biggest recoverable gap first: %s" % doc["selection"])
+check(doc["selection"][:2] == ["opportunity:chat/tools", "opportunity:delegation/background Bash"]
+      and doc["selection"] == [p["id"] for p in backlog if not p["opportunity"]["needs_egor"]
+                               and p["opportunity"]["quality"] == "equivalent" and p["opportunity"]["score"] > 0],
+      "the night takes the biggest recoverable gap first, and every other equivalent lever after it: %s" % doc["selection"])
 check({"cost", "yield"} <= set(doc) and set(doc["cost"]) == {"collector_cpu_min_day"}
       and set(doc["yield"]) == {"proven_om_day", "pending_om_day"}, "own keys cost and yield")
 check([b["id"] for b in doc["blind_spots"]] == ["presence", "speed-days"],
@@ -203,7 +205,7 @@ spike, pattern = ({"id": i, "opportunity": {"needs_egor": False, "score": 0.5, "
                   for i, c in (("a-spike", round(1 / 7.0, 2)), ("b-pattern", round(4 / 7.0, 2))))
 check([o["id"] for o in sorted([spike, pattern], key=module.rank_key)] == ["b-pattern", "a-spike"],
       "a pattern seen on several days ranks above a one-day spike of the same score")
-low = {"id": "low", "opportunity": {"needs_egor": False, "quality": "equivalent", "score": 0.1, "effort_h": 1.0,
+low = {"id": "low", "rule": "opportunity", "opportunity": {"needs_egor": False, "quality": "equivalent", "score": 0.1, "effort_h": 1.0,
                                     "night_cost_h": 0.0, "hooks": False, "recoverable_min_day": 5.0}}
 zero = {}
 check(module.select([low]) == ["low"] and module.select([dict(low, opportunity=dict(low["opportunity"], score=0.0))], zero) == []
@@ -214,9 +216,9 @@ repair = dict(low, id="repair", **{"class": "measurement fix"})
 needed = dict(repair, id="needed", blind_for=["low"])
 small = dict(repair, id="small", blind_for=["below"])
 why = {}
-check(module.select([below, low, unpriced, repair, needed, small], why) == ["low", "needed"],
-      "5 min/day is inclusive; smaller, unpriced and pure measurement fixes stay out; only a named big blind opportunity admits repair")
-check(module.why_skipped(why) == "2 expected gain <5 min/day or unpriced, 2 measurement fixes without a >=5 min/day blind opportunity",
+check(module.select([below, low, unpriced, repair, needed, small], why) == ["below", "low", "unpriced", "needed", "small"],
+      "no minimum gain: smaller and unpriced levers enter; a pure measurement fix enters only beside the opportunity it is blind for")
+check(module.why_skipped(why) == "1 measurement fixes without an admissible blind opportunity",
       "all skipped opportunities have visible reasons even when another is selected")
 
 scored = [{"id": "opportunity:%s" % i, "opportunity": dict(low["opportunity"], score=s, effort_h=e, hooks=i.startswith("hook"))}
@@ -236,7 +238,7 @@ check([(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed]
       == [("opportunity:time/slot", 50.0), ("opportunity:time/suite_wait", 40.0), ("opportunity:chat/tools", 9.01),
           ("opportunity:chat/hooks", 8.4), ("opportunity:delegation/background Bash", 5.07),
           ("opportunity:chat/tests", 0.91), ("opportunity:delegation/reviews", 0.65)]
-      and module.select(timed) == [o["id"] for o in timed if o["opportunity"]["recoverable_min_day"] >= 5]
+      and module.select(timed) == [o["id"] for o in timed]
       and all(o["opportunity"]["score"] == module.score_of(o["opportunity"]["recoverable_min_day"], o["opportunity"]["confidence"],
                                                            o["opportunity"]["effort_h"], 0.0) for o in timed),
       "a time class ranks by its union min/day: its own time opportunity, or added to the opportunity already pricing "
@@ -366,10 +368,9 @@ menu, _ = speed("speed", "--menu")
 lines = menu.stdout.splitlines()
 skipped_lines = [line for line in lines if "Night skipped:" in line]
 check(doc["night_skipped"] in menu.stdout, "JSON and menu expose the same single skipped-jobs line")
-check(len(skipped_lines) == 1 and all(name in skipped_lines[0] for name in
-      ("opportunity:chat/hooks", "opportunity:chat/tests", "opportunity:delegation/reviews"))
-      and "opportunity:chat/tools" not in skipped_lines[0],
-      "one output line names the skipped small jobs while the qualifying jobs remain selected")
+check(len(skipped_lines) == 1 and not any(name in skipped_lines[0] for name in
+      ("opportunity:chat/hooks", "opportunity:chat/tests", "opportunity:delegation/reviews", "opportunity:chat/tools")),
+      "one output line names the skipped jobs, and no small job is skipped for its size")
 check(lines[0] == "T\t0\t%d\tHarness doctor: ok" % HI and lines[2] == "0\t\t\tLost time: ok · 20 min/day overhead · 3.9 of 7 days covered"
       and "1\t\t\tChat turns: 103 min/day · model 64 · tools 30 · tests 5.4" in lines
       and "1\t\t\tDelegation: +76 min/day · workers 54 · background Bash 17 · media 2.7" in lines
@@ -424,7 +425,8 @@ blank_dir = os.path.join(work, "harness-blank")
 os.makedirs(blank_dir)
 cold, _ = speed("speed-cold", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
 check(headline(cold) * cold["window"]["days"] >= headline(doc) * doc["window"]["days"] > 0
-      and cold["selection"] == [p["id"] for p in cold["problems"] if p["rule"] == "opportunity" and p["opportunity"]["recoverable_min_day"] >= 5]
+      and cold["selection"] == [p["id"] for p in cold["problems"] if p["rule"] == "opportunity" and not p["opportunity"]["needs_egor"]
+                                and p["opportunity"]["quality"] == "equivalent" and p["opportunity"]["score"] > 0]
       and all(p["opportunity"]["score"] < 0.2 for p in cold["problems"] if p["id"] == "opportunity:chat/tests")
       and "backfill" not in [b["id"] for b in cold["blind_spots"]],
       "a fresh state with no Harness turn rows backfills every calibration minute from the transcripts: %s %s"
@@ -507,6 +509,12 @@ check([r["key"] for r in module.judge_regressions(history, "2026-10-02", lambda 
       and module.judge_regressions(dict(history, **{"2026-10-02": history.pop("2026-10-01")}), "2026-10-03",
                                    lambda c: 10.0)[0] == [],
       "only the two closed days right before today, consecutive, are judged: an old or gapped pair stays quiet")
+bare = "night.wall_h_per_job|all|-"
+history = {h.local_day(LO - offset * 86400): {"values": {key: [10.0, 100], bare: [10.0, 100]}} for offset in range(3, 17)}
+history.update({d: {"values": {key: [20.0, 100], bare: [20.0, 100]}} for d in ("2026-09-30", "2026-10-01")})
+check([(r["key"], bool(r["levers"])) for r in module.judge_regressions(history, "2026-10-02", lambda c: 10.0)[0]]
+      == [(key, True), (bare, False)],
+      "a regression whose component no lever names is still judged, its levers empty, so its fixer finds the cause first")
 
 harness = {"status": "problems", "as_of_s": HI, "problem_count": 3, "blind_spots": [], "periods": {}, "extras": [],
            "title": "Harness doctor: 3 problems", "footer": "as of 21:50",

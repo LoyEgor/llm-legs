@@ -667,7 +667,8 @@ def stored_days(now):
 
 def judge_regressions(days, today, component_om):
     """A unit metric over 1.3 x its trailing 28-day median on the two latest closed days, each with its
-    exposure minimum, on a component worth >= 0.5 OM/d with a lever."""
+    exposure minimum, on a component worth >= 0.5 OM/d; `levers` names the LEVERS rows for it, none when its fixer
+    must find the cause first."""
     closed = sorted(d for d in days if d < today)
     judged, baselines, out = closed[-LIMITS["regression_days"]:], {}, []
     recent = [today]
@@ -691,12 +692,12 @@ def judge_regressions(days, today, component_om):
         if not all(v and v[1] >= exposure_min and v[0] > LIMITS["regression_ratio"] * base for v in seen):
             continue
         worth = component_om(component)
-        lever = any(l["component"] == component or l["component"].startswith(component + "/")
-                    for l in shown_levers(LEVERS))
-        if worth < LIMITS["worth_om_day"] or not lever:
+        if worth < LIMITS["worth_om_day"]:
             continue
+        levers = [l["lever"] for l in shown_levers(LEVERS)
+                  if l["component"] == component or l["component"].startswith(component + "/")]
         out.append({"key": key, "component": component, "value": seen[-1][0], "limit": round(LIMITS["regression_ratio"] * base, 3),
-                    "exposure": seen[-1][1], "days": judged, "om_day": round(worth, 2)})
+                    "exposure": seen[-1][1], "days": judged, "om_day": round(worth, 2), "levers": levers})
     return out, baselines
 
 
@@ -732,7 +733,7 @@ def rank_key(o):
 
 
 def select(opportunities, why=None):
-    """Equivalent positive-score opportunities worth the night's minimum gain, in rank order."""
+    """Equivalent positive-score opportunities, in rank order."""
     chosen, skipped = [], {}
     for o in opportunities:
         fields = o["opportunity"]
@@ -753,8 +754,7 @@ def why_skipped(why):
         ("egor", "%d need Egor" % skipped.get("egor", 0)),
         ("risk", "%d are not output-equivalent" % skipped.get("risk", 0)),
         ("score", "%d score 0" % skipped.get("score", 0)),
-        ("expected gain <5 min/day or unpriced", "%d expected gain <5 min/day or unpriced" % skipped.get("expected gain <5 min/day or unpriced", 0)),
-        ("measurement fix without a >=5 min/day blind opportunity", "%d measurement fixes without a >=5 min/day blind opportunity" % skipped.get("measurement fix without a >=5 min/day blind opportunity", 0))) if key in skipped)
+        ("measurement fix without an admissible blind opportunity", "%d measurement fixes without an admissible blind opportunity" % skipped.get("measurement fix without an admissible blind opportunity", 0))) if key in skipped)
 
 
 def test_requirement(repo, rel):
@@ -1112,7 +1112,7 @@ def collect(write, now):
                          "exposure": reg["exposure"], "count": len(reg["days"]), "first_seen": reg["days"][0],
                          "last_seen": reg["days"][-1], "evidence": [], "ledger": row["id"] if row else None,
                          "group": reg["component"].split("/")[0], "component": reg["component"],
-                         "band": band, "ident": ident})
+                         "band": band, "ident": ident, "om_day": reg["om_day"], "levers": reg["levers"]})
     opportunities = []
     components = {}
     for lever in shown_levers(LEVERS) + slice_levers(tree):
@@ -1170,11 +1170,13 @@ def collect(write, now):
         "transcript backfill at %d of %d files" % (coverage["backfill_files_done"], job["files"]) if job["todo"] else None]))
     for problem in problems:
         if problem["rule"] == "regression":
-            problem["expected_min_day"] = max([problem.get("expected_min_day", 0)] + [
-                o["opportunity"]["recoverable_min_day"] for o in opportunities
-                if (o["id"] == "opportunity:" + problem.get("component", "")
-                    or o["id"].startswith("opportunity:" + problem.get("component", "") + "/"))
-                and not o["opportunity"]["needs_egor"] and o["opportunity"]["quality"] == "equivalent"])
+            gains = [problem["expected_min_day"]] if "expected_min_day" in problem else []
+            gains += [o["opportunity"]["recoverable_min_day"] for o in opportunities
+                      if (o["id"] == "opportunity:" + problem.get("component", "")
+                          or o["id"].startswith("opportunity:" + problem.get("component", "") + "/"))
+                      and not o["opportunity"]["needs_egor"] and o["opportunity"]["quality"] == "equivalent"]
+            if gains:
+                problem["expected_min_day"] = max(gains)
     problems += opportunities
     problem_count = sum(1 for p in problems if p["state"] in H.LOUD_STATES)
 
