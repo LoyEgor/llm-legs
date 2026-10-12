@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import handoffs
+import limit_hit
 from fix_commit import FIX_KEYS, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, load_merged, record_settled, siblings_dir, unrooted_files
 from spend import read_json, read_jsonl
 
@@ -218,6 +219,7 @@ DIGEST_RE = re.compile(r"tree digest[^\n]*could not be taken", re.IGNORECASE)
 NIGHT_GATE_RE = re.compile(r"^worker-run: (night \S+ job \S+: its worktree .* is still worked in by |speed window closed )",
                            re.MULTILINE)
 WORKER_TAIL_BYTES = 8192
+ERR_FULL_BYTES = 4 << 20
 ID_LIKE_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|^[0-9a-f]{12,}$", re.IGNORECASE)
 # Words the image wrappers print that the review vocabulary never meets; checked before it.
 IMAGE_REASONS = (
@@ -935,6 +937,35 @@ def claude_error_result(run_dir, meta):
     return "\n" + str(envelope.get("result") or "")
 
 
+def tail_cut(run_dir, meta, exit_code, verdict):
+    """An err longer than WORKER_TAIL_BYTES whose tail names no cause: the whole err, up to ERR_FULL_BYTES, may."""
+    path = os.path.join(run_dir, "err")
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return verdict
+    if size <= WORKER_TAIL_BYTES:
+        return verdict
+    full = classify_failure_text(read_tail(path, ERR_FULL_BYTES) + claude_error_result(run_dir, meta), exit_code)
+    if full[1] == verdict[1]:
+        return verdict
+    seen_path = os.path.join(doctor_dir(), "tail-cuts.json")
+    seen = read_json(seen_path) or []
+    run = os.path.basename(run_dir.rstrip("/"))
+    if run not in seen:
+        limit_hit.hit("llm-doctor.worker-tail", WORKER_TAIL_BYTES, "bytes", "fallback",
+                      "run %s: its last %d bytes read %s, the whole err %s" % (run, WORKER_TAIL_BYTES, verdict[1], full[1]),
+                      "bin/llm-doctor:WORKER_TAIL_BYTES =", observed=size)
+        try:
+            os.makedirs(doctor_dir(), exist_ok=True)
+            with open(seen_path + ".tmp", "w") as handle:
+                json.dump((seen + [run])[-500:], handle)
+            os.replace(seen_path + ".tmp", seen_path)
+        except OSError:
+            pass
+    return full
+
+
 def classify_worker(run_dir, meta, killed, exit_code):
     """(class, reason, detail, origin) of one worker-run leg, off the verdicts worker-run left beside it."""
     kill_word = killed.split()[0] if killed else ""
@@ -988,6 +1019,8 @@ def classify_worker(run_dir, meta, killed, exit_code):
     if outcome == "GROK_MAX_TURNS":
         return "cap", "turns", "max turns", ""
     klass, reason, detail, origin = classify_failure_text(err + claude_error_result(run_dir, meta), exit_code)
+    if reason in ("unclassified", "no output"):
+        klass, reason, detail, origin = tail_cut(run_dir, meta, exit_code, (klass, reason, detail, origin))
     if klass == "failed" and not origin and exit_code is not None:
         detail = "%s · exit %d" % (reason, exit_code) if "exit" not in detail else detail
     return klass, reason, detail, origin

@@ -722,6 +722,12 @@ assert doctor.classify_worker(made, {}, "", 0)[0] == "escaped"
 itself = worker("itself", files={"files-note": "UNKNOWN: transcript names a write outside the snapshotted repository; "
                                  "no content baseline was recorded: /Volumes/Work/other\n"})
 assert doctor.classify_worker(itself, {"add_dirs": ["/Volumes/Work/other"]}, "", 0)[0] is None
+# A cause above the 8 KiB tail was read as unclassified.
+os.environ["LIMIT_HITS_LOG"] = os.path.join(unit, "limit-hits.jsonl")
+buried = worker("buried", files={"err": "SIGKILLed by the memory guard\n" + "progress line\n" * 1000})
+assert doctor.classify_worker(buried, {}, "", 1)[1] == "killed memory", doctor.classify_worker(buried, {}, "", 1)
+hits = [json.loads(l) for l in open(os.environ["LIMIT_HITS_LOG"])]
+assert [h["limit"] for h in hits] == ["llm-legs:llm-doctor.worker-tail"] and hits[0]["observed"] > 8192, hits
 turns = worker("turns", files={"outcome": "GROK_MAX_TURNS\n", "err": "x"})
 assert doctor.classify_worker(turns, {}, "", 1)[:2] == ("cap", "turns")
 phase = worker("phase", files={"state.json": '{"phase": "failed"}', "err": "sandbox_apply failed: internal error\n"})
