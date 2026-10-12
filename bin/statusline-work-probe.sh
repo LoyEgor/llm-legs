@@ -50,8 +50,7 @@ fi
 trap 'rmdir "$lock" 2>/dev/null; probe_journal work "$probe_start_us"' EXIT
 
 write_cache() {
-  local tmp="$cache_file.tmp.$$"
-  printf '%s\n' "$1" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  probe_publish "$cache_file" "$1"$'\n'
 }
 
 snapshot_take ps_snap ps-snapshot 3 "$PS_CMD" snapshot_ps || { write_cache ""; exit 0; }

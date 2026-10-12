@@ -1,8 +1,9 @@
 """CPU audits, beside Spend and Suite audits: every own repeating or long-lived component priced at CPU-min/day, the
 median of its last 7 settled days (today alone before any), from journals the components already write: statusline
-renders and background probes, the System doctor's hourly CPU of own processes, doctor collector runs. Due when never
-audited, a source has another blob than at audit, or CPU-min/day reached spend.SHARE_RISE x the audit's; no minimum.
-Rows live in Spend's ledger as `cpu:<component>`."""
+renders and background probes, the System doctor's hourly CPU of own processes, doctor collector runs, hook runs.
+Wasted is the CPU of runs whose output equalled the previous run's (the statusline journals' same column). Due when
+never audited, a source has another blob than at audit, or CPU-min/day reached spend.SHARE_RISE x the audit's; no
+minimum. Rows live in Spend's ledger as `cpu:<component>`."""
 
 import datetime
 import glob
@@ -38,13 +39,13 @@ def cpu_s(text, scale):
 
 
 def render_line(line):
-    f = line.rstrip("\n").split("\t")
-    return [("statusline/render", cpu_s(f[3], 1000))] if len(f) >= 4 else []
+    f = line.rstrip("\n").split("\t") + [None]
+    return [("statusline/render", cpu_s(f[3], 1000), f[4])] if len(f) >= 5 else []
 
 
 def probe_line(line):
-    f = line.rstrip("\n").split("\t")
-    return [("statusline/" + f[3], cpu_s(f[2], 1000))] if len(f) >= 4 and f[3] else []
+    f = line.rstrip("\n").split("\t") + [None]
+    return [("statusline/" + f[3], cpu_s(f[2], 1000), f[4])] if len(f) >= 5 and f[3] else []
 
 
 def hour_line(line):
@@ -54,12 +55,20 @@ def hour_line(line):
         return []
     if not isinstance(row, dict):
         return []
-    return [("process/" + str(e[0]), cpu_s(e[1], 1)) for e in row.get("cpu_top") or ()
+    return [("process/" + str(e[0]), cpu_s(e[1], 1), None) for e in row.get("cpu_own") or row.get("cpu_top") or ()
             if isinstance(e, list) and len(e) >= 4 and e[3] == "own"]
 
 
+def add(found, key, cpu, same):
+    t = found.setdefault(key, [0.0, 0, 0.0, 0])
+    t[0], t[1] = t[0] + cpu, t[1] + 1
+    if same in ("0", "1"):
+        t[2], t[3] = t[2] + (cpu if same == "1" else 0.0), t[3] + 1
+
+
 def tally(path, parse, cache):
-    """{component: [cpu_s, runs]} of one day file, kept in the state while its size and mtime hold."""
+    """{component: [cpu_s, runs, wasted_cpu_s, judged_runs]} of one day file, kept in the state while its size and
+    mtime hold."""
     try:
         st = os.stat(path)
     except OSError:
@@ -70,16 +79,15 @@ def tally(path, parse, cache):
     found = {}
     with open(path, errors="replace") as handle:
         for line in handle:
-            for key, value in parse(line):
-                t = found.setdefault(key, [0.0, 0])
-                t[0], t[1] = t[0] + value, t[1] + 1
+            for key, cpu, same in parse(line):
+                add(found, key, cpu, same)
     cache[path] = [st.st_size, st.st_mtime_ns, found]
     return found
 
 
-def days(now, state, harness_dir, speed_dir, collector_rows, local_day):
-    """{journal: {day: {component: [cpu_s, runs]}}} over the window: a journal's days are the ones it holds, so a
-    component reads 0 on a day its journal covers and nothing on a day it never kept."""
+def days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_day):
+    """{journal: {day: {component: tally}}} over the window: a journal's days are the ones it holds, so a component
+    reads 0 on a day its journal covers and nothing on a day it never kept. hook_runs: Harness's journal_runs."""
     cache, lo = {}, local_day(now - WINDOW_D * 86400)
     held = state.get("cpu_files") or {}
     out = {}
@@ -97,17 +105,19 @@ def days(now, state, harness_dir, speed_dir, collector_rows, local_day):
     state["cpu_files"] = cache
     for r in collector_rows:
         if isinstance(r.get("start"), (int, float)) and r.get("doctor") and local_day(r["start"]) >= lo:
-            o = out.setdefault("collector", {}).setdefault(local_day(r["start"]), {}).setdefault(
-                "doctor/" + str(r["doctor"]), [0.0, 0])
-            o[0], o[1] = o[0] + cpu_s(r.get("cpu_s"), 1), o[1] + 1
+            add(out.setdefault("collector", {}).setdefault(local_day(r["start"]), {}), "doctor/" + str(r["doctor"]),
+                cpu_s(r.get("cpu_s"), 1), None)
+    for end, key, _ms, _failed, _start, _ppid, cpu_ms in hook_runs:
+        if local_day(end) >= lo:
+            add(out.setdefault("hooks", {}).setdefault(local_day(end), {}), "hook/" + str(key).split(" ")[0],
+                cpu_s(cpu_ms, 1000), None)
     return out
 
 
 def sources(key, repos):
     kind, _, name = key.partition("/")
-    rel = (STATUSLINE,) if kind == "statusline" and name not in PROBE_SOURCES else PROBE_SOURCES.get(name, ()) \
-        if kind == "statusline" else ("llm-legs/bin/%s-doctor" % name,) if kind == "doctor" else \
-        APP_SOURCES.get(name, (name,) if "/" in name else ())
+    rel = {"statusline": PROBE_SOURCES.get(name, (STATUSLINE,)), "doctor": ("llm-legs/bin/%s-doctor" % name,),
+           "hook": ("claude-setup/hooks/" + name,)}.get(kind) or APP_SOURCES.get(name, (name,) if "/" in name else ())
     return [os.path.join(repos, r) for r in rel if os.path.isfile(os.path.join(repos, r))]
 
 
@@ -116,9 +126,11 @@ def components(journals, today, repos):
     for by_day in journals.values():
         settled = sorted(d for d in by_day if d < today) or [today]
         for key in sorted({k for d in settled for k in by_day.get(d, {})}):
-            seen = [by_day.get(d, {}).get(key, [0.0, 0]) for d in settled]
+            seen = [by_day.get(d, {}).get(key, [0.0, 0, 0.0, 0]) for d in settled]
             runs, total = sum(t[1] for t in seen), sum(t[0] for t in seen)
             out.append({"key": key, "cpu_min_day": round(statistics.median(t[0] / 60 for t in seen), 1),
+                        "wasted_min_day": round(statistics.median(t[2] / 60 for t in seen), 1)
+                        if any(t[3] for t in seen) else None,
                         "runs_day": round(runs / len(settled)), "cpu_s_run": round(total / runs, 3) if runs else 0.0,
                         "sources": sources(key, repos)})
     return sorted(out, key=lambda c: (-c["cpu_min_day"], c["key"]))
@@ -135,24 +147,29 @@ def due(c, row, held):
     return None
 
 
+def wasted(c):
+    return "-" if c["wasted_min_day"] is None else "%.1f" % c["wasted_min_day"]
+
+
 def machine_share(cpu_min_day):
     return round(100 * cpu_min_day / ((os.cpu_count() or 1) * 1440), 2)
 
 
 def problem(c, why, at):
-    fact = "%s · %.1f CPU-min/day · %d runs a day · %.3f CPU-s a run · audit due: %s" % (
-        c["key"], c["cpu_min_day"], c["runs_day"], c["cpu_s_run"], why)
+    fact = "%s · %.1f CPU-min/day · %s wasted · %d runs a day · %.3f CPU-s a run · audit due: %s" % (
+        c["key"], c["cpu_min_day"], wasted(c), c["runs_day"], c["cpu_s_run"], why)
     return {"id": ROW + c["key"], "rule": RULE, "state": "watch", "fact": fact, "value": machine_share(c["cpu_min_day"]),
             "limit": None, "unit": "% CPU", "window_h": WINDOW_D * 24, "exposure": 0, "count": c["runs_day"],
             "first_seen": at, "last_seen": at, "evidence": [], "ledger": None, "group": GROUP,
             "cpu": dict(c, component=c["key"], due=why)}
 
 
-def collect(now, state, harness_dir, speed_dir, collector_rows, root, repos, local_day):
+def collect(now, state, harness_dir, speed_dir, collector_rows, hook_runs, root, repos, local_day):
     """The `cpu` section: components ranked by CPU-min/day, one problem per due audit, the night's queue, menu lines."""
     out = {"status": "nodata", "as_of_s": int(now), "problems": [], "selection": [], "issues": [], "proofs": {},
            "menu": [], "head": "no CPU journal over %d days" % WINDOW_D}
-    found = components(days(now, state, harness_dir, speed_dir, collector_rows, local_day), local_day(now), repos)
+    found = components(days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_day), local_day(now),
+                       repos)
     if not found:
         return out
     rows = spend.load_ledger(root)
@@ -169,12 +186,12 @@ def collect(now, state, harness_dir, speed_dir, collector_rows, root, repos, loc
                      for c in found if ROW + c["key"] in rows and not reasons[c["key"]]}
     total = sum(c["cpu_min_day"] for c in found)
     out.update(status="watch" if out["problems"] else "ok", cpu_min_day=round(total, 1),
-               components=[{k: c[k] for k in ("key", "cpu_min_day", "runs_day", "cpu_s_run")} for c in found],
+               components=[{k: c[k] for k in ("key", "cpu_min_day", "wasted_min_day", "runs_day", "cpu_s_run")} for c in found],
                head="%d due · %.0f CPU-min/day over %d components%s" % (
                    len(out["problems"]), total, len(found), " · next: " + out["problems"][0]["cpu"]["key"]
                    if out["problems"] else ""))
-    out["menu"] = [[0, "" if reasons[c["key"]] else "d", False, "%6.1f CPU-min/day · %7d runs a day · %s · %s" % (
-        c["cpu_min_day"], c["runs_day"], c["key"], "audit due: " + reasons[c["key"]] if reasons[c["key"]] else
+    out["menu"] = [[0, "" if reasons[c["key"]] else "d", False, "%6.1f CPU-min/day · %6s wasted · %7d runs a day · %s · %s" % (
+        c["cpu_min_day"], wasted(c), c["runs_day"], c["key"], "audit due: " + reasons[c["key"]] if reasons[c["key"]] else
         proof_text(out["proofs"][c["key"]]))] for c in found[:SHOWN]]
     return out
 
@@ -199,13 +216,13 @@ def restate(problems, rows):
     return out
 
 
-def record(root, repos, state, harness_dir, speed_dir, collector_rows, key, verdict, note, zero, by, worktrees, now,
-           local_day):
+def record(root, repos, state, harness_dir, speed_dir, collector_rows, hook_runs, key, verdict, note, zero, by, worktrees,
+           now, local_day):
     if verdict not in spend.VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(spend.VERDICTS))
     zero = spend.zero_option(zero)
-    c = next((c for c in components(days(now, state, harness_dir, speed_dir, collector_rows, local_day), local_day(now),
-                                    repos) if c["key"] == key), None)
+    c = next((c for c in components(days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_day),
+                                    local_day(now), repos) if c["key"] == key), None)
     if not c:
         raise SystemExit("no CPU component %s in the journals" % key)
     return spend.save_row(root, {

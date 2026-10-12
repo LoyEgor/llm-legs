@@ -34,14 +34,21 @@ snapshot_ps() { # key
   printf '%s\t-\t%s\n%s\n' "${STATUSLINE_NOW:-$EPOCHSECONDS}" "$1" "$body"
 }
 
-# `<start_us>\t<wall_ms>\t<cpu_ms>\t<kind>`: the merge-kick journal's columns plus the kind; cpu_ms is
-# this process's own and its waited children's, `-` where bash cannot say.
+probe_publish() { # file content -> written whole (tmp + rename); probe_same 1 when the file already held it
+  local old='' tmp="$1.tmp.${BASHPID:-$$}"
+  { IFS= read -r -d '' old < "$1"; } 2>/dev/null
+  [ "$old" = "$2" ] && probe_same=1 || probe_same=0
+  printf '%s' "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+}
+
+# `<start_us>\t<wall_ms>\t<cpu_ms>\t<kind>\t<same>`: the merge-kick journal's columns plus the kind; cpu_ms is
+# this process's own and its waited children's, `-` where bash cannot say; same is probe_publish's.
 probe_journal() { # kind start_us
   local end_us=${EPOCHREALTIME//[!0-9]/} dir="${SPEED_DOCTOR_DIR:-$HOME/.cache/speed-doctor}/statusline-probes" day cpu
   suite_journal_cpu_ms cpu ''
   printf -v day '%(%Y-%m-%d)T' -1
-  printf '%s\t%s\t%s\t%s\n' "$2" "$(( (end_us - $2) / 1000 ))" "${cpu:--}" "$1" 2>/dev/null >> "$dir/$day.tsv" ||
+  printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$(( (end_us - $2) / 1000 ))" "${cpu:--}" "$1" "${probe_same:--}" 2>/dev/null >> "$dir/$day.tsv" ||
     { mkdir -p "$dir" 2>/dev/null &&
-      printf '%s\t%s\t%s\t%s\n' "$2" "$(( (end_us - $2) / 1000 ))" "${cpu:--}" "$1" 2>/dev/null >> "$dir/$day.tsv"; }
+      printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$(( (end_us - $2) / 1000 ))" "${cpu:--}" "$1" "${probe_same:--}" 2>/dev/null >> "$dir/$day.tsv"; }
   return 0
 }

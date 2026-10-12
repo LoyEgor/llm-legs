@@ -53,8 +53,7 @@ LSOF_CMD="${STATUSLINE_LSOF:-lsof}"
 
 write_cache() {
   # Trailing newline even on empty: a 1-byte file still reads back as "" (probed, no servers).
-  local content="$1" tmp="$cache_file.tmp.$$"
-  printf '%s\n' "$content" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  probe_publish "$cache_file" "$1"$'\n'
 }
 
 # Every listener this user owns, in one call: the pid list can no longer be narrowed to the
@@ -256,7 +255,7 @@ if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
   [[ "$m" =~ ^[0-9]+$ ]] || m=0
   if [ "$((now - m))" -gt 3600 ]; then
     find "$cache_dir" -maxdepth 1 -type f \( -name 'ports-*' -o -name 'cache-ttl-track-*' -o -name 'scan-*' \
-      -o -name 'rl-cost-*' -o -name 'unpushed-*' -o -name 'review-autonomy-*' -o -name 'work-*' -o -name 'repo-debt-*' \) \
+      -o -name 'rl-cost-*' -o -name 'unpushed-*' -o -name 'review-autonomy-*' -o -name 'work-*' -o -name 'repo-debt-*' -o -name 'render-*' \) \
       -mtime +7 -delete 2>/dev/null
     # A writer renames its temporary within the second; one an hour old was left by a killed writer.
     find "$cache_dir" "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/limits" -maxdepth 1 -type f -name '*.tmp.*' -mmin +60 \

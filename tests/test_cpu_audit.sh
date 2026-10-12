@@ -44,42 +44,51 @@ def write(path, lines):
 
 
 for rel in ("llm-legs/bin/statusline.sh", "llm-legs/bin/statusline-work-probe.sh", "llm-legs/share/statusline-probe.sh",
-            "llm-legs/bin/harness-doctor", "hammerspoon/init.lua"):
+            "llm-legs/bin/harness-doctor", "hammerspoon/init.lua", "claude-setup/hooks/gate.sh"):
     write(os.path.join(repos, rel), ["v1"])
-render = lambda back, n: write(os.path.join(harness, "statusline", D(back) + ".tsv"),
-                               ["1\t2\tsid\t60000"] * n)
-render(2, 3)
-render(1, 2)
-render(0, 50)
+render = lambda back, sames: write(os.path.join(harness, "statusline", D(back) + ".tsv"),
+                                   ["1\t2\tsid\t60000\t" + s for s in sames])
+render(2, "110")
+render(1, "10")
+render(0, "0" * 50)
 for back in range(1, 6):
     write(os.path.join(speed, "statusline-probes", D(back) + ".tsv"),
-          ["1\t500\t120000\twork"] + (["1\t50\t9000\tports"] if back == 3 else []))
+          ["1\t500\t120000\twork"] + (["1\t50\t9000\tports\t-"] if back == 3 else []))
 write(os.path.join(system, "hours", D(1) + ".jsonl"),
-      [json.dumps({"cpu_top": [["Hammerspoon", 600, 5.0, "own"], ["Safari", 6000, 50.0, "other"]]})])
+      [json.dumps({"cpu_top": [["Hammerspoon", 600, 5.0, "own"], ["Safari", 6000, 50.0, "other"]]}),
+       json.dumps({"cpu_top": [["Safari", 6000, 50.0, "other"]], "cpu_own": [["tool.py", 120, 0.0, "own"]]})])
 collector = [{"doctor": "harness", "start": NOW - 86400, "wall_s": 9, "cpu_s": 30, "trigger": "timer"}]
+hooks = [(NOW - 86400, "gate.sh autonomous", 5.0, False, NOW - 86400, "1", 30000.0)]
 
 
 def collect(state=None):
-    return cpu_audit.collect(NOW, {} if state is None else state, harness, speed, collector, root, repos, day)
+    return cpu_audit.collect(NOW, {} if state is None else state, harness, speed, collector, hooks, root, repos, day)
 
 
 first = collect()
 ranked = [(c["key"], c["cpu_min_day"]) for c in first["components"]]
-check(ranked == [("process/Hammerspoon", 10.0), ("statusline/render", 2.5), ("statusline/work", 2.0),
-                 ("doctor/harness", 0.5), ("statusline/ports", 0.0)],
+check(ranked == [("process/Hammerspoon", 10.0), ("statusline/render", 2.5), ("process/tool.py", 2.0),
+                 ("statusline/work", 2.0), ("doctor/harness", 0.5), ("hook/gate.sh", 0.5), ("statusline/ports", 0.0)],
       "each component's CPU-min/day is the median over the settled days its own journal holds, today aside, own "
-      "processes only, ranked: %s" % ranked)
+      "processes only (every one System kept), hooks by script, ranked: %s" % ranked)
+shown = {c["key"]: c["wasted_min_day"] for c in first["components"]}
+check(shown["statusline/render"] == 1.5 and shown["statusline/work"] is None and shown["statusline/ports"] is None
+      and "   1.5 wasted ·       2 runs a day · statusline/render" in first["menu"][1][3]
+      and "statusline/render · 2.5 CPU-min/day · 1.5 wasted ·" in first["problems"][1]["fact"],
+      "wasted is the median CPU of runs whose output equalled the previous one, unknown without a same column: %s"
+      % shown)
 check(first["selection"] == ["cpu:" + k for k, _ in ranked]
       and {p["cpu"]["due"] for p in first["problems"]} == {"never audited"}
       and all(p["rule"] == "cpu_audit" and p["unit"] == "% CPU" and p["group"] == "CPU audits"
               for p in first["problems"]),
       "every component never audited is due, no minimum, queued in rank order: %s" % first["selection"])
 check([os.path.relpath(s, repos) for s in first["problems"][1]["cpu"]["sources"]] == ["llm-legs/bin/statusline.sh"]
-      and [os.path.relpath(s, repos) for s in first["problems"][2]["cpu"]["sources"]]
+      and [os.path.relpath(s, repos) for s in first["problems"][3]["cpu"]["sources"]]
       == ["llm-legs/bin/statusline-work-probe.sh", "llm-legs/share/statusline-probe.sh"]
+      and [os.path.relpath(s, repos) for s in first["problems"][5]["cpu"]["sources"]] == ["claude-setup/hooks/gate.sh"]
       and [os.path.relpath(s, repos) for s in first["problems"][0]["cpu"]["sources"]] == ["hammerspoon/init.lua"],
       "a component names the sources a fixer opens: %s" % [p["cpu"]["sources"] for p in first["problems"]])
-check(first["head"] == "5 due · 15 CPU-min/day over 5 components · next: process/Hammerspoon",
+check(first["head"] == "7 due · 18 CPU-min/day over 7 components · next: process/Hammerspoon",
       "the block head: %s" % first["head"])
 
 state = {}
@@ -92,8 +101,8 @@ check(collect(state)["components"] == first["components"] and len(state["cpu_fil
       "a day file whose size and mtime hold is read from the state: %s" % sorted(state["cpu_files"]))
 write(oldest, ["1\t500\t120000\twork"])
 
-record = lambda key, zero: cpu_audit.record(root, repos, {}, harness, speed, collector, key, "kept", "fine", zero,
-                                            "t", [], NOW, day)
+record = lambda key, zero: cpu_audit.record(root, repos, {}, harness, speed, collector, hooks, key, "kept", "fine",
+                                            zero, "t", [], NOW, day)
 try:
     record("statusline/render", " ")
     refused = False
@@ -118,7 +127,7 @@ write(os.path.join(repos, "llm-legs/bin/statusline.sh"), ["v2"])
 moved = {p["cpu"]["component"]: p["cpu"]["due"] for p in collect()["problems"]}
 check(moved.get("statusline/render") == "source changed", "a source with another blob reopens the audit: %s" % moved)
 record("statusline/render", "removal saves 2.5 CPU-min/day; loses every statusline")
-render(1, 5)
+render(1, "00000")
 risen = {p["cpu"]["component"]: p["cpu"]["due"] for p in collect()["problems"]}
 check(risen.get("statusline/render") == "CPU-min/day ×1.6 since audit",
       "CPU-min/day at 1.5x the audit's reopens it: %s" % risen)
@@ -141,4 +150,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the CPU audits block misjudged its fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; CPU audits price each component by its median over the days its own journal holds, rank own components, judge audits due by never/source blob/x1.5 CPU-min/day, refuse a record with no zero option, close a kept audit with its proof and settle it for a night close, and never read live System hours under a fixture Harness directory\n' "$asserts"
+printf 'PASS: %s asserts; CPU audits price each component by its median over the days its own journal holds, rank own components (every own process System kept, hooks by script), price wasted CPU off the same column, judge audits due by never/source blob/x1.5 CPU-min/day, refuse a record with no zero option, close a kept audit with its proof and settle it for a night close, and never read live System hours under a fixture Harness directory\n' "$asserts"

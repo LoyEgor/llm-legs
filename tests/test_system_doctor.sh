@@ -164,6 +164,12 @@ check(row["births_top"] == [["statusline.sh", 2, "own"], ["Hammerspoon", 1, "own
       "births attributed to the nearest own script or app above the newborn: %s" % row["births_top"])
 check(row["cpu_top"] == [["statusline.sh", 10.0, 9.0, "own"]],
       "reaped-child CPU of statusline.sh = its children-included time less its own: %s" % row["cpu_top"])
+many = [{"t": 1.0, "cpu_top": [["third%d" % i, 100.0, 0.0, "third-party"] for i in range(m.TOP)],
+         "cpu_own": [["own%d" % i, 1.0, 0.0, "own"] for i in range(m.TOP + 2)]}] * 2
+hour = m.summarize(many)
+check(row["cpu_own"] == row["cpu_top"] and len(hour["cpu_own"]) == m.TOP + 2
+      and hour["cpu_own"][0] == ["own0", 2.0, 0.0, "own"] and not any(e[3] == "own" for e in hour["cpu_top"]),
+      "every own process's CPU is kept beside the top, however far below it: %s" % hour["cpu_own"][:2])
 check(row["kernel"] == 0.25 and row["busy"] == 0.5, "kernel and busy shares off host ticks: %s %s" % (row["kernel"], row["busy"]))
 check(row["comp_share"] == 0.25 and row["comp_gib"] == 6.0 and row["mem_gib"] == 24.0, "compressor share of RAM: %s" % row)
 check(row["swap_share"] == 0.75 and row["swapout_b"] == 1000 * 16384, "swap use and swap writes: %s" % row)

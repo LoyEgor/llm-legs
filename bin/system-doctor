@@ -640,6 +640,8 @@ def tick(now=None):
             slot[0] += spent
             slot[1] += reaped
     row["cpu_top"] = top_rows([[tag, round(s, 2), round(r, 2), owner] for (tag, owner), (s, r) in cpu.items()])
+    row["cpu_own"] = top_rows([[tag, round(s, 2), round(r, 2), owner] for (tag, owner), (s, r) in cpu.items()
+                               if owner == "own"], width=None)
 
     row["own_procs"] = sum(1 for entry in last.values() if entry[3] == "own")
     row["usage_read"] = len(usage)
@@ -720,7 +722,8 @@ def summarize(rows):
            "ext_r_b": sum(rd for r in rows for label, (rd, _w) in (r.get("disk") or {}).items() if label.startswith("external")),
            "swapout_b": sum(r.get("swapout_b") or 0 for r in rows),
            "tick_cpu_s": round(sum((r.get("self") or {}).get("cpu_s") or 0 for r in rows), 2),
-           "births_top": merge_top(rows, "births_top"), "cpu_top": merge_top(rows, "cpu_top")}
+           "births_top": merge_top(rows, "births_top"), "cpu_top": merge_top(rows, "cpu_top"),
+           "cpu_own": merge_top(rows, "cpu_own", width=None)}
     free = {}
     for row in rows:
         for name, gib in (row.get("free_gib") or {}).items():

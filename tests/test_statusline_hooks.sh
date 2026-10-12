@@ -3410,15 +3410,20 @@ assert_eq "$timing_plain" "$timing_out"
 assert_eq "$timing_plain_rc" "$timing_rc"
 assert_eq "" "$(cat "$WORK/timing.err")"
 assert_eq 1 "$(wc -l < "$timing_file" | tr -d ' ')"
-IFS=$'\t' read -r timing_start timing_end timing_sid timing_cpu < "$timing_file"
+IFS=$'\t' read -r timing_start timing_end timing_sid timing_cpu timing_same < "$timing_file"
 assert_eq timing-sess "$timing_sid"
+# The plain render just before printed the same lines for this session.
+assert_eq 1 "$timing_same"
+HARNESS_DOCTOR_DIR="$TIMING_DIR" run_statusline "$(statusline_payload timing-new)" >/dev/null
+assert_eq "timing-new 0" "$(tail -1 "$timing_file" | cut -f3,5 | tr '\t' ' ')"
+sed -i '' '$d' "$timing_file"
 assert grep -Eq '^[0-9]+$' <<< "$timing_cpu"
 assert test "$timing_cpu" -gt 0
 # A decimal-comma locale prints `times` as 0m0,019s.
 LC_ALL=ru_RU.UTF-8 HARNESS_DOCTOR_DIR="$WORK/timing-ru" run_statusline "$(statusline_payload timing-sess)" \
   >/dev/null 2>"$WORK/timing-ru.err"
 assert_eq "" "$(cat "$WORK/timing-ru.err")"
-IFS=$'\t' read -r _ _ _ timing_ru_cpu < "$WORK/timing-ru/statusline/$(date +%Y-%m-%d).tsv"
+IFS=$'\t' read -r _ _ _ timing_ru_cpu _ < "$WORK/timing-ru/statusline/$(date +%Y-%m-%d).tsv"
 assert test "$timing_ru_cpu" -gt 0
 assert grep -Eq '^[0-9]{16}$' <<< "$timing_start"
 assert test "$timing_end" -ge "$timing_start"
@@ -3908,8 +3913,11 @@ assert_eq "20" "$(($(snap_at ps-snapshot) - snap_t0))"
 
 # Every probe run journals its own cost for the Speed doctor, builtins only.
 probe_rows="$HOME/.cache/speed-doctor/statusline-probes/$(date +%Y-%m-%d).tsv"
-assert grep -Eq $'^[0-9]{16}\t[0-9]+\t([0-9]+|-)\tports$' "$probe_rows"
-assert grep -Eq $'^[0-9]{16}\t[0-9]+\t([0-9]+|-)\twork$' "$probe_rows"
+assert grep -Eq $'^[0-9]{16}\t[0-9]+\t([0-9]+|-)\tports\t[01]$' "$probe_rows"
+assert grep -Eq $'^[0-9]{16}\t[0-9]+\t([0-9]+|-)\twork\t[01]$' "$probe_rows"
+# A probe's same column says whether it published what its cache already held.
+assert_eq "0 1 0 b" "$(. "$ROOT/share/statusline-probe.sh"; for v in a a b; do probe_publish "$WORK/publish" "$v"$'\n'
+  printf '%s ' "$probe_same"; done; cat "$WORK/publish")"
 
 # The hourly sweep: a temporary an hour old was left by a killed writer, here and in the account
 # store; per-session caches go after a week, the place journals never.
@@ -3919,17 +3927,17 @@ if suite_shard_owns 3 sweep; then
 prune_limits="$HOME/.claude-profiles/.claudeb/limits"
 mkdir -p "$prune_limits" "$STATE_DIR/old-probe.lock"
 for prune_file in x.tmp.1 y.tmp.2 work-old work-new scan-old rl-cost-old unpushed-old review-autonomy-old \
-    repo-debt-old place-old; do : > "$STATE_DIR/$prune_file"; done
+    repo-debt-old render-old place-old; do : > "$STATE_DIR/$prune_file"; done
 : > "$prune_limits/a.json.tmp.3"; : > "$prune_limits/b.json.tmp.4"
 age_path 7200 "$STATE_DIR/x.tmp.1"; age_path 7200 "$prune_limits/a.json.tmp.3"
-for prune_file in work-old scan-old rl-cost-old unpushed-old review-autonomy-old repo-debt-old place-old; do
+for prune_file in work-old scan-old rl-cost-old unpushed-old review-autonomy-old repo-debt-old render-old place-old; do
   age_path 691200 "$STATE_DIR/$prune_file"
 done
 age_path 172800 "$STATE_DIR/old-probe.lock"
 rm -f "$STATE_DIR/.ports-prune"
 snap_probe pp-prune
 assert_eq "y.tmp.2 work-new place-old b.json.tmp.4" "$(for prune_file in x.tmp.1 y.tmp.2 work-old work-new scan-old \
-  rl-cost-old unpushed-old review-autonomy-old repo-debt-old place-old; do [ -e "$STATE_DIR/$prune_file" ] && printf '%s ' "$prune_file"; done
+  rl-cost-old unpushed-old review-autonomy-old repo-debt-old render-old place-old; do [ -e "$STATE_DIR/$prune_file" ] && printf '%s ' "$prune_file"; done
   for prune_file in a.json.tmp.3 b.json.tmp.4; do [ -e "$prune_limits/$prune_file" ] && printf '%s' "$prune_file"; done)"
 assert test ! -d "$STATE_DIR/old-probe.lock"
 

@@ -237,9 +237,7 @@ repo_debt_lines() { # var toplevel now tree-state
         else
           answer=""
         fi
-        tmp="$cache.tmp.${BASHPID:-$$}"
-        printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
-          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+        probe_publish "$cache" "$key"$'\n'"$answer"
         probe_journal debt "$refresh_start_us"
       ) >/dev/null 2>&1 &
     fi
@@ -279,9 +277,7 @@ review_session_line() { # session now
           rmdir "$lock" 2>/dev/null' EXIT
         auto=$(run_bounded 10 "$gate" autonomous "$sid" 2>/dev/null | head -1)
         [ "$auto" = yes ] || auto=no
-        tmp="$cache.tmp.${BASHPID:-$$}"
-        printf '%s' "$auto" > "$tmp" 2>/dev/null &&
-          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+        probe_publish "$cache" "$auto"
         probe_journal autonomy "$refresh_start_us"
       ) >/dev/null 2>&1 &
     fi
@@ -353,9 +349,7 @@ unpushed_marker() { # toplevel session now
           rmdir "$lock" 2>/dev/null' EXIT
         answer=off
         [ -n "$(run_bounded 10 "$gate" unpushed "$top" "$sid" 2>/dev/null | head -1)" ] && answer=unpushed
-        tmp="$cache.tmp.${BASHPID:-$$}"
-        printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
-          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+        probe_publish "$cache" "$key"$'\n'"$answer"
         probe_journal unpushed "$refresh_start_us"
       ) >/dev/null 2>&1 &
     fi
@@ -2258,9 +2252,21 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-printf '%s\n%s' "$line1" "$line2"
-for w_row in ${work_rows[@]+"${work_rows[@]}"}; do printf '\n%s' "$w_row"; done
+printf -v statusline_out '%s\n%s' "$line1" "$line2"
+for w_row in ${work_rows[@]+"${work_rows[@]}"}; do statusline_out+=$'\n'"$w_row"; done
+printf '%s' "$statusline_out"
 statusline_rc=$?
+statusline_same=-
+if [ -n "$session_id" ]; then
+  statusline_prev=''
+  { IFS= read -r -d '' statusline_prev < "$statusline_cache_dir/render-$session_id"; } 2>/dev/null
+  if [ "$statusline_prev" = "$statusline_out" ]; then
+    statusline_same=1
+  else
+    statusline_same=0
+    printf '%s' "$statusline_out" 2>/dev/null > "$statusline_cache_dir/render-$session_id"
+  fi
+fi
 
 # Render timing for the Harness doctor, which prunes the files itself. One O_APPEND write per
 # render keeps concurrent sessions' lines whole without a lock.
@@ -2269,10 +2275,10 @@ printf -v statusline_day '%(%Y-%m-%d)T' -1
 statusline_end_us=${EPOCHREALTIME//[!0-9]/}
 self_cpu_ms
 statusline_cpu_ms=$cpu_ms
-printf '%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
-  2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv" ||
+printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
+  "$statusline_same" 2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv" ||
   { ensure_dir "$statusline_timing_dir" 2>/dev/null &&
-    printf '%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
-      2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv"; }
+    printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
+      "$statusline_same" 2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv"; }
 exit "$statusline_rc"
 exit; }
