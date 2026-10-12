@@ -1168,8 +1168,9 @@ assert jqe --arg g "$gate" --arg t "$L/tests/test_llm_limits.sh" '. == [["speed-
 assert [ "$(wc -l <"$DATA/rb-args" | tr -d ' ')" = 1 ]
 brief=$(cut -f2 "$WORK/out")
 for step in '1. Why it exists' '2. Price per day' '3. Effect' 'a Sonnet judge (never Haiku) reads a sample' \
-  '4. A cheaper equivalent' 'replaying last week' '5. Spend tokenmap cannot see' 'bin/speed-doctor --spend-audit'; do
-  assert grep -qF "$step" "$brief"
+  '4. A cheaper equivalent' 'replaying last week' '5. Spend tokenmap cannot see' 'bin/speed-doctor --spend-audit' \
+  '--zero <removal saves X; loses Y>'; do
+  assert grep -qF -- "$step" "$brief"
 done
 # Suite audits: a night takes every queued suite the night's red test rules do not already hold, a repository's in one
 # run in rank order, whose brief refuses a Light or Gemini Flash worker and carries the audit's steps once.
@@ -1195,6 +1196,27 @@ for step in '1. What each check guards' '2. Where the wall goes' 'Never shorten 
 done
 assert_fails grep -qF -- '--fresh' "$brief"
 assert grep -qF -- 'tests/run-all --profile <suite>' "$brief"
+# CPU audits: every queued component in one run in rank order, a strong worker, the six steps, the zero option priced.
+jq --argjson s "$(now)" --arg g "$gate" --arg t "$L/tests/test_llm_limits.sh" '.as_of_s = $s
+  | .problems += [{rule: "cpu_audit", state: "watch", speed: true, group: "CPU audits", unit: "% CPU"} as $p
+    | [["statusline/render", $g, 1.2], ["process/Hammerspoon", $t, 0.4]][] as [$c, $f, $v]
+    | $p + {id: "cpu:\($c)", value: $v, fact: "\($c) · audit due: never audited", cpu: {component: $c, sources: [$f]}}]
+  | .speed.cpu = {selection: ["cpu:statusline/render", "cpu:process/Hammerspoon"]}' \
+  "$S/harness/latest.json" >"$S/cpu.json" && mv "$S/cpu.json" "$S/harness/latest.json"
+git -C "$L" update-ref refs/night/n21/base HEAD
+env "${speed_env[@]}" bash "$FIX" launch harness --night n21 >"$WORK/out" 2>"$WORK/err" || fail "cpu night n21: $(cat "$WORK/err")"
+assert jqe --arg g "$gate" --arg t "$L/tests/test_llm_limits.sh" 'map(select(.[0] | startswith("speed-cpu"))) == [
+  ["speed-cpu-statusline-render", ["cpu:statusline/render", [$g]], ["cpu:process/Hammerspoon", [$t]]]]' <(speed_runs)
+brief=$(grep -F speed-cpu-statusline-render "$WORK/out" | cut -f2)
+assert [ "$(head -n1 "$brief")" = 'STRONG: yes' ]
+for step in '1. Why it exists' '2. What it waits for' '3. Where the CPU goes, on captured live inputs' \
+  '4. How often its output changed' '5. The zero option' 'identical output on the same captured inputs' \
+  "the statusline's 3 s refresh, 2026-10-06) is never the lever" \
+  'bin/speed-doctor --cpu-audit <component> --verdict cut|kept|trade --by harness-speed-cpu-statusline-render-' \
+  '--zero <removal saves X; loses Y>'; do
+  assert grep -qF -- "$step" "$brief"
+done
+jq '.speed.cpu.selection = []' "$S/harness/latest.json" >"$S/cpu.json" && mv "$S/cpu.json" "$S/harness/latest.json"
 # Rows per Speed fixer per kind from past nights: the size of the lowest Opus-eq cost per closed row (a job's ledger
 # spend over the rows its run decided, unattributed spend out) on the kind's own curve once it has two sizes, else on
 # all kinds' pooled; a size of one run is no minimum beside a size of more; twice it at the largest size tried; ~160
@@ -1351,4 +1373,4 @@ assert jqe --arg o "$O/.claude/worktrees/night-n15-$audit" '[.problems[].rule] =
   "$(record "$audit")"
 fi
 
-echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture one run of a repository's levers, levers of another repository apart, levers sharing a file in one run however many, an open lever run holding only its levers, an older one overlapping a batch abandoned, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit, its five-step brief), a suite night (every queued suite no red test rule holds, a repository's in one run, STRONG: yes, its steps once), one Speed run per shared context and no count (~160 suite audits in one run), rows in rank order (priced by gain however small, then unpriced by measured loss, the free slots never probed), a Speed run closing on its first decided row with the rest left open, a lever-less regression briefed to find its cause first, a floor row's ruled-out refused without a priced cut and a Speed or floor handoff without a trade to Egor"
+echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture one run of a repository's levers, levers of another repository apart, levers sharing a file in one run however many, an open lever run holding only its levers, an older one overlapping a batch abandoned, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit, its five-step brief), a suite night (every queued suite no red test rule holds, a repository's in one run, STRONG: yes, its steps once), a CPU night (every queued component in one run in rank order, STRONG: yes, six steps, the zero option),one Speed run per shared context and no count (~160 suite audits in one run), rows in rank order (priced by gain however small, then unpriced by measured loss, the free slots never probed), a Speed run closing on its first decided row with the rest left open, a lever-less regression briefed to find its cause first, a floor row's ruled-out refused without a priced cut and a Speed or floor handoff without a trade to Egor"

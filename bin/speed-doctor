@@ -23,6 +23,7 @@ import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
+import cpu_audit  # noqa: E402
 import spend  # noqa: E402
 import suite_audit  # noqa: E402
 import test_health  # noqa: E402
@@ -966,7 +967,7 @@ def judge_digest(ledger):
         digest.update(handle.read())
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
     digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SLICE_LEVER, NO_SLICE_LEVER, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
-                              TIME_LEVERS, spend.SHARE_RISE, spend.LEAVES, suite_audit.WALL_RISE, suite_audit.JUMP_S,
+                              TIME_LEVERS, spend.SHARE_RISE, spend.LEAVES, cpu_audit.WINDOW_D, suite_audit.WALL_RISE, suite_audit.JUMP_S,
                               suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.ROWS, TEST_HEALTH_LEVERS, test_health.LINES, test_health.BAND,
                               test_health.IDLE_RATIO, test_health.IDLE_MIN_S, test_health.DEAD_D],
                              sort_keys=True).encode())
@@ -1289,6 +1290,12 @@ def collect(write, now):
     except Exception as exc:
         document["suites"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
     problems += document["suites"].pop("problems")
+    try:
+        document["cpu"] = cpu_audit.collect(now, state, H.state_dir(), state_dir(), collector_rows, ROOT_DIR,
+                                            H.repos_dir(), H.local_day)
+    except Exception as exc:
+        document["cpu"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
+    problems += document["cpu"].pop("problems")
     document["menu"] = menu_lines(document)
     document["night_skipped"] = next(row[3] for row in document["menu"] if row[3].startswith("Night skipped:"))
     document["timing"] = {"cpu_s": round(H.cpu_s() - cpu_start, 2)}
@@ -1365,7 +1372,7 @@ def menu_lines(document):
     opportunities = [p for p in document["problems"] if p["rule"] == "opportunity"]
     ranked = [p for p in opportunities if not p["opportunity"]["needs_egor"]]
     skipped = [(p["id"], time_budget.speed_skip(p, document["problems"])) for p in document["problems"]
-               if p["rule"] in SPEED_RULES + ("suite_audit",) or p.get("class") == "measurement fix"]
+               if p["rule"] in SPEED_RULES + ("suite_audit", cpu_audit.RULE) or p.get("class") == "measurement fix"]
     emit(0, "Night skipped: " + ("; ".join("%s (%s)" % (pid, reason) for pid, reason in skipped if reason) or "none"), "d")
     emit(0, "Opportunities · top %d of %d" % (min(len(ranked), 10), len(ranked)))
     for rank, p in enumerate(ranked[:10], 1):
@@ -1447,7 +1454,10 @@ def main():
                         "checkout's share/spend-ledger.json")
     parser.add_argument("--suite-audit", metavar="REPO/SUITE", help="record the audit of a suite (repo/test_name) in "
                         "this checkout's share/spend-ledger.json")
+    parser.add_argument("--cpu-audit", metavar="COMPONENT", help="record the audit of a CPU component (statusline/render, "
+                        "process/<name>, doctor/<name>) in this checkout's share/spend-ledger.json")
     parser.add_argument("--verdict", choices=spend.VERDICTS)
+    parser.add_argument("--zero", default="", help="every audit: what removing the component whole saves and loses")
     parser.add_argument("--note", default="")
     parser.add_argument("--by", default="", help="the fixer run id")
     parser.add_argument("--worktree", action="append", default=[], help="a night worktree whose files are the sources")
@@ -1455,12 +1465,18 @@ def main():
     now, started = now_s(), time.time()
     if args.spend_audit:
         row = spend.record(ROOT_DIR, H.base_home(), H.repos_dir(), [H.hook_script(h["command"]) for h in H.settings_hooks()],
-                           args.spend_audit, args.verdict, args.note, args.by, args.worktree)
+                           args.spend_audit, args.verdict, args.note, args.zero, args.by, args.worktree)
         print(json.dumps(row, ensure_ascii=False))
         return 0
     if args.suite_audit:
-        row = suite_audit.record(ROOT_DIR, H.suites_journal(), args.suite_audit, args.verdict, args.note, args.by,
-                                 args.worktree, now)
+        row = suite_audit.record(ROOT_DIR, H.suites_journal(), args.suite_audit, args.verdict, args.note, args.zero,
+                                 args.by, args.worktree, now)
+        print(json.dumps(row, ensure_ascii=False))
+        return 0
+    if args.cpu_audit:
+        collector = spend.read_jsonl(os.path.join(doctors_dir(), "collector-runs.jsonl"))
+        row = cpu_audit.record(ROOT_DIR, H.repos_dir(), {}, H.state_dir(), state_dir(), collector, args.cpu_audit,
+                               args.verdict, args.note, args.zero, args.by, args.worktree, now, H.local_day)
         print(json.dumps(row, ensure_ascii=False))
         return 0
     if args.json or args.menu:

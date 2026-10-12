@@ -397,9 +397,17 @@ def restate(problems, rows):
     return out
 
 
-def record(root, home, repos, scripts, key, verdict, note, by, worktrees):
+def zero_option(text):
+    """What removing the component whole saves and loses: every audit prices it, whatever it then cuts."""
+    if not str(text or "").strip():
+        raise SystemExit("--zero is required: what removing the component whole saves and what it loses, one line")
+    return str(text).strip()
+
+
+def record(root, home, repos, scripts, key, verdict, note, zero, by, worktrees):
     if verdict not in VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(VERDICTS))
+    zero = zero_option(zero)
     payload = read_json(tracking_path(home), None)
     if not isinstance(payload, dict):
         raise SystemExit("no tracking.json at %s" % tracking_path(home))
@@ -411,7 +419,7 @@ def record(root, home, repos, scripts, key, verdict, note, by, worktrees):
         "id": key, "title": c["label"], "audited_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "by": by, "share": c["basis"],
         "prices": {z: price for z, (_, price) in part_prices(harness_index(payload), key).items()},
-        "sources": source_blobs(root, repos, c["sources"], worktrees), "verdict": verdict, "note": note})
+        "sources": source_blobs(root, repos, c["sources"], worktrees), "verdict": verdict, "zero": zero, "note": note})
 
 
 def source_blobs(root, repos, sources, worktrees):

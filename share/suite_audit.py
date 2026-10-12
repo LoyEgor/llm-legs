@@ -331,9 +331,10 @@ def restate(problems, rows):
     return out
 
 
-def record(root, journal, key, verdict, note, by, worktrees, now):
+def record(root, journal, key, verdict, note, zero, by, worktrees, now):
     if verdict not in spend.VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(spend.VERDICTS))
+    zero = spend.zero_option(zero)
     listed = suites(repos())
     found = {c["key"]: c for c in price(runs(journal, now - WINDOW_D * 86400), listed)}
     c = found.get(key) or next((unrun(key, {"top": top, "path": path}) for (repo, name), (top, path) in listed.items()
@@ -345,7 +346,7 @@ def record(root, journal, key, verdict, note, by, worktrees, now):
         "by": by, "cpu_run": c["p50"], "wall_run": c["wall_floor"], "cpu_min_day": c["cpu_min_day"],
         "wall_min_day": c["wall_min_day"],
         "sources": spend.source_blobs(root, os.path.dirname(c["top"].rstrip("/")), sources(c["path"]), worktrees),
-        "verdict": verdict, "note": note})
+        "verdict": verdict, "zero": zero, "note": note})
 
 
 def samples(journal, lo, hi, named=()):

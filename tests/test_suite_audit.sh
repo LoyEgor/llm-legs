@@ -150,8 +150,16 @@ check(sorted(due["alpha/test_mid"]["suite"]["sources"]) == sorted(
     os.path.join(repo, "tests", n) for n in ("test_mid.sh", "helper.sh", os.path.join("lib", "common.sh"))),
       "a suite's sources are its file and the tests/ helpers it names: %s" % due["alpha/test_mid"]["suite"]["sources"])
 
+held = open(os.environ["SPEND_LEDGER"]).read() if os.path.exists(os.environ["SPEND_LEDGER"]) else None
+try:
+    suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "", "", "night-x", [], NOW)
+    refused = False
+except SystemExit:
+    refused = True
+check(refused and (open(os.environ["SPEND_LEDGER"]).read() if os.path.exists(os.environ["SPEND_LEDGER"]) else None)
+      == held, "a suite audit with no zero option is refused, nothing stored")
 recorded = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "fine as it is",
-                              "night-x", [], NOW)
+                              "removal saves 20 s a run; loses its checks", "night-x", [], NOW)
 stored = json.load(open(os.environ["SPEND_LEDGER"]))["rows"]
 check(stored == [recorded] and recorded["id"] == "suite:alpha/test_mid" and recorded["cpu_run"] == 20
       and recorded["wall_run"] == 20
@@ -198,8 +206,8 @@ cut = collect()
 mid = {c["key"]: c for c in cut["components"]}["alpha/test_mid"]
 check("workers 33 %" in cut["head"], "the workers' share prices their runs at the suite's CPU a run like the total it "
       "divides, so runs before a cut never read over 100 %%: %s" % cut["head"])
-recorded = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "split", "night-x", [],
-                              NOW)
+recorded = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "split",
+                              "removal saves 40 s a run; loses its checks", "night-x", [], NOW)
 check(mid["p50"] == 40 and recorded["cpu_run"] == recorded["wall_run"] == 40 and mid["cpu_min_day"] == round(40 * 60 / 7 / 60.0, 2),
       "CPU a run reads the last %d passing runs and CPU-min/day prices the window's runs at it, so a suite cut or split "
       "days ago is queued and audited at its new cost: %s %s" % (suite_audit.RECENT_RUNS, mid, recorded))

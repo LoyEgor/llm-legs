@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import collector_runs  # noqa: E402
 import handoffs  # noqa: E402
 import limiter_hold  # noqa: E402
+import cpu_audit  # noqa: E402
 import night_churn  # noqa: E402
 import night_spend  # noqa: E402
 import spend as spend_block  # noqa: E402
@@ -62,7 +63,7 @@ RESUME = re.compile(r"(?m)^RESUME ([0-9a-f][0-9a-f-]{7,})")
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
 GAIN_MIN_DAY = 5
 ROI_DAYS = 3
-IMPROVEMENT_RULES = ("opportunity", "regression", spend_block.RULE, suite_audit.RULE)
+IMPROVEMENT_RULES = ("opportunity", "regression", spend_block.RULE, suite_audit.RULE, cpu_audit.RULE)
 # (unit, samples a side needs, the after/before ratio proving it, the gain's daily unit, units in one of it): the
 # ratio is p5 of median(N)/median(the samples before) on unchanged code over the journals of 2026-09-29..10-07, so a
 # lower ratio is no noise.
@@ -816,7 +817,7 @@ def expected_gain(problem):
 def improvement_class(rule, pid):
     """The time class a Speed or time row's fix should shrink; None measures the harness total."""
     ident = pid.split(":", 1)[1] if ":" in pid else ""
-    if rule == spend_block.RULE:
+    if rule in (spend_block.RULE, cpu_audit.RULE):
         return pid
     if ident.startswith("time/"):
         return ident[5:] if ident[5:] in LABEL else None
@@ -1050,14 +1051,14 @@ def unit_proof(item, started, ended, now):
             "text": "%s · %s" % (span, "proven · %.1f %s" % (gain, daily) if proven else "not proven")}
 
 
-def spend_proofs():
+def spend_proofs(section="spend"):
     doc = read_json(os.path.join(harness_dir(), "latest.json"), None)
-    found = (((doc or {}).get("speed") or {}).get("spend") or {}).get("proofs") if isinstance(doc, dict) else None
+    found = (((doc or {}).get("speed") or {}).get(section) or {}).get("proofs") if isinstance(doc, dict) else None
     return found if isinstance(found, dict) else {}
 
 
 def timed(row):
-    return [i for i in row.get("improvements") or () if not (i["class"] or "").startswith("spend:")]
+    return [i for i in row.get("improvements") or () if not (i["class"] or "").startswith(("spend:", cpu_audit.ROW))]
 
 
 def gained(minutes, other):
@@ -1102,6 +1103,13 @@ def roi_lines(rows, now, gains=None, wins=None):
                         item["ref"][:40], item["class"][6:], item["spend_m"], item["lines"][0], item["lines"][1],
                         spend_block.proof_text(proofs.get(item["class"][6:]))
                         if item["merged"] else "not landed"))
+                continue
+            if (item["class"] or "").startswith(cpu_audit.ROW):
+                if row is rows[-1]:
+                    key = item["class"][len(cpu_audit.ROW):]
+                    out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
+                        item["ref"][:40], key, item["spend_m"], item["lines"][0], item["lines"][1],
+                        cpu_audit.proof_text(spend_proofs("cpu").get(key)) if item["merged"] else "not landed"))
                 continue
             ended = row.get("ended") or row["started"] + row["hours"] * 3600
             what = ", ".join(sorted(unit_names(item))) or LABEL.get(item["class"], "harness total")

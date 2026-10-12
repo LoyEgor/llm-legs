@@ -209,9 +209,10 @@ check(spend.restate([measured], audited) == [] and spend.restate([measured], {})
 with open(ledger, "w") as handle:
     json.dump({"owner": "Harness Doctor", "rows": []}, handle)
 recorded = spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "kept",
-                        "fires rarely, every block changed the call", "night-x", [])
+                        "fires rarely, every block changed the call", "removal saves 0.4 %; loses every block", "night-x", [])
 stored = json.load(open(ledger))["rows"]
 check(stored == [recorded] and recorded["verdict"] == "kept" and recorded["share"] == gate["basis"]
+      and recorded["zero"] == "removal saves 0.4 %; loses every block"
       and recorded["sources"] == {key: spend.blobs([source])[source]} and recorded["by"] == "night-x"
       and recorded["prices"] == {"Chat · Hooks": 300.0}
       and spend.part_prices(json.load(open(os.environ["SPEND_TRACKING"]))["harness_index"], "spawn:claudeb-worker")
@@ -221,15 +222,26 @@ check(stored == [recorded] and recorded["verdict"] == "kept" and recorded["share
       "the audit record holds each source's blob, the share at audit on tokenmap's Δ basis, its harness_index cells' "
       "prices by consumer and leaf (a re-write cause is Cold cache, never priced), the verdict: %s" % recorded)
 try:
-    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "maybe", "", "", [])
+    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "maybe", "",
+                 "removal saves all", "", [])
     refused = False
 except SystemExit:
     refused = True
 check(refused, "a verdict other than cut, kept or trade is refused")
+before_zero = open(ledger).read()
+try:
+    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "kept", "", " ",
+                 "", [])
+    refused = False
+except SystemExit:
+    refused = True
+check(refused and open(ledger).read() == before_zero,
+      "an audit with no zero option (what removing the component saves and loses) is refused, nothing stored")
 before_git = open(ledger).read()
 os.environ["PATH"] = os.path.join(work, "no-git")
 try:
-    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "kept", "", "", [])
+    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "kept", "",
+                 "removal saves all", "", [])
     refused = False
 except SystemExit:
     refused = True
