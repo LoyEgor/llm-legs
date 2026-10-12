@@ -201,18 +201,16 @@ local function trendDay(offset)
   return os.date("%Y-%m-%d", os.time({ year = trendNow.year, month = trendNow.month,
     day = trendNow.day + offset, hour = 12 }))
 end
-local function writeDays(values, scale)
-  local rows, speedDays = {}, {}
+local function writeDays(values)
+  local rows = {}
   for index = 1, 7 do
     if values[index] then
       for _, doctor in ipairs({ "llm", "harness", "updater", "code", "system" }) do
         rows[#rows + 1] = hs.json.encode({ day = trendDay(index - 7), doctor = doctor, count = 0, max = values[index] })
       end
-      speedDays[trendDay(index - 7)] = values[index] * (scale or 10)
     end
   end
   write("/doctors/problem-days.jsonl", table.concat(rows, "\n") .. "\nmalformed\n")
-  return speedDays
 end
 local series = { 0, 1, 2, 3, 4, 6, 8 }
 local function spendDays(values)

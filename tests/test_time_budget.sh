@@ -130,7 +130,13 @@ for row in recovery_events["t"]:
     row.extend(["n", [0, 0, 0], 0, [], [], {"gen": row[3] - row[1]}, {}, []])
 recovery_events["t"].append(["t", D0 + 90, "recover1", D0 + 150, "n", [0, 0, 0], 0, [], [],
                               {"gen": 60}, {}, []])
-charged = T.budget(D0, D0 + 86400, recovery_events)
+def budget_on(lo, hi, events):
+    real, T.event_rows = T.event_rows, lambda *args, **kwargs: events
+    try:
+        return T.budget(lo, hi)
+    finally:
+        T.event_rows = real
+charged = budget_on(D0, D0 + 86400, recovery_events)
 check(charged["seconds"]["refusal"] == 348, "measured recovery is its own class, retries charged once")
 transcript = os.path.join(work, "home", ".claude", "projects", "fixture", "recover4-full.jsonl")
 lines(transcript, [
@@ -192,7 +198,7 @@ check(blocked["by_gate_s"] == {"ask-span-drill.sh": 20, "unknown-posttooluse-hoo
       "and a block whose next call comes after the cap costs the cap, never zero: %s" % blocked)
 os.unlink(blocks)
 T.gates_path = old_gates
-baseline = T.budget(D0, D0 + 86400, recovery_events)
+baseline = budget_on(D0, D0 + 86400, recovery_events)
 check(round(charged["overhead_s"] - baseline["overhead_s"]) == 348 and baseline["seconds"]["refusal"] == 0,
       "measured recovery adds its own union to the overhead, once: %s" % (charged["overhead_s"] - baseline["overhead_s"]))
 
@@ -339,7 +345,7 @@ lines(chat_journal, list(night_spend.rows(os.environ["RUN_SUITES_JOURNAL"]))
       + [{"kind": "direct", "queued_at": D0 + 4000, "started_at": D0 + 4300, "ended_at": D0 + 4400, "worker_run": None,
           "session": "sessQ", "suites": {"test_a.sh": {"rc": 0, "secs": 100}}}])
 os.environ["RUN_SUITES_JOURNAL"], journal = chat_journal, os.environ["RUN_SUITES_JOURNAL"]
-queued = T.budget(D0, D0 + 86400, {"t": [queue_turn], "c": [], "h": []})
+queued = budget_on(D0, D0 + 86400, {"t": [queue_turn], "c": [], "h": []})
 os.environ["RUN_SUITES_JOURNAL"] = journal
 check(queued["seconds"]["suite_wait"] == 1300 and queued["seconds"]["suite_run"] == 2100,
       "a chat's suite queue is suite slot wait from run-suites' journal, and its run inside a worker's suite counts "
@@ -632,8 +638,8 @@ E = D0 + 2 * 86400
 os.environ["HARNESS_WAITS_DIR"] = os.path.join(work, "late-waits")
 lines(os.path.join(work, "late-waits", T.local_day(E - 1) + ".jsonl"),
       [{"class": "lock", "source": "x", "started": E - 50, "seconds": 100, "pid": 1, "caller": "late0001"}])
-ended = T.budget(E - 100, E, {"h": [["h", E, "p", "PreToolUse", "gate", 100000, "Bash", "tid"]]})
-crossed = T.budget(E, E + 3600, {})
+ended = budget_on(E - 100, E, {"h": [["h", E, "p", "PreToolUse", "gate", 100000, "Bash", "tid"]]})
+crossed = budget_on(E, E + 3600, {})
 del os.environ["HARNESS_WAITS_DIR"]
 check(ended["seconds"]["hooks"] == 100 and crossed["seconds"]["locks"] == 50,
       "a hook row is stamped at its end, so its span ends there; a wait begun before midnight keeps its tail in the "

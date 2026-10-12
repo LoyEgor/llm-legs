@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # bin/speed-doctor, the Speed block of the Harness doctor, over the 2026-09-29 .. 10-02 calibration transcripts folded
-# by Harness's own C1 reader: the headline, the R band, a partition that sums to it, the backlog and its scores, the
+# by Harness's own C1 reader: the headline, a partition that sums to it, the backlog and its scores, the
 # quality rule, presence, judging, the merge into Harness's document with each rule counted once, the moved heavy-test
 # and hot-hook opportunities, the offset reads, the journal prune and Harness's exec. Fixture directories only.
 set -u
@@ -68,14 +68,14 @@ doc, cpu = speed("speed")
 check(doc["status"] == "ok" and doc["problem_count"] == 0 and not {"contract", "doctor", "title"} & set(doc),
       "the calibration section has nothing counted and no document keys of its own: %s" % doc["status"])
 check(cpu <= 2.0, "speed-doctor reads its inputs in <= 2 CPU s: %.2f s" % cpu)
-check(doc["headline"] == 179.3 and doc["areas"] == {"chat": 103.42, "delegation": 75.91},
-      "calibration headline at R = 5 min: A 103.4 + B 75.9 = 179.3 OM/d: %s %s" % (doc["headline"], doc["areas"]))
-check(doc["r_band"] == [87.9, 237.9] and doc["presence"] is False,
-      "with no presence journal the R band is shown: R 2 min 87.9, R 10 min 237.9: %s" % doc["r_band"])
+headline = lambda d: round(sum(d["areas"].values()), 1)
+check(headline(doc) == 179.3 and doc["areas"] == {"chat": 103.42, "delegation": 75.91},
+      "calibration headline at R = 5 min: A 103.4 + B 75.9 = 179.3 OM/d: %s %s" % (headline(doc), doc["areas"]))
+check(doc["presence"] is False, "with no presence journal every row keeps the R = 5 min proxy")
 leaves = sum(v for area in doc["partition"].values() for v in area.values())
-check(abs(leaves - doc["headline"]) < 0.1 and all(abs(sum(doc["partition"][a].values()) - v) < 0.05
+check(abs(leaves - headline(doc)) < 0.1 and all(abs(sum(doc["partition"][a].values()) - v) < 0.05
                                                    for a, v in doc["areas"].items()),
-      "the partition's leaves sum to their areas and to the headline: %.2f vs %.1f" % (leaves, doc["headline"]))
+      "the partition's leaves sum to their areas and to the headline: %.2f vs %.1f" % (leaves, headline(doc)))
 backlog = [p for p in doc["problems"] if p["rule"] == "opportunity"]
 check(doc["head"] == "20 min/day overhead · 3.9 of 7 days covered"
       and doc["lost_min_day"] == doc["budget"]["lost_min_day"] == 19.8, "the headline: %s" % doc["head"])
@@ -117,7 +117,7 @@ shutil.copytree(os.path.join(work, "harness"), early_dir)
 with open(os.path.join(early_dir, "events", h.local_day(HI - 6 * 86400) + ".jsonl"), "w") as handle:
     handle.write(json.dumps(["w", HI - 6 * 86400, "x"]) + "\n")
 early, _ = speed("speed-early", HARNESS_DOCTOR_DIR=early_dir)
-check(early["window"] == doc["window"] and early["headline"] == doc["headline"],
+check(early["window"] == doc["window"] and headline(early) == headline(doc),
       "an events file from before Harness's turn rows began never widens the window: %s" % early["window"])
 lever_repo = os.path.join(base["HARNESS_REPOS_DIR"], "lever-hooks")
 os.makedirs(lever_repo)
@@ -173,7 +173,7 @@ os.environ.update(saved_env)
 landed = h.local_day(HI - 2 * 86400)
 lever_secs = sum(s for (day, a, l), s in lever_credit.items() if (a, l) == ("chat", "hooks") and day > landed)
 lever_om = [p["opportunity"]["om_day"] for p in lever_doc["problems"] if p["id"] == "opportunity:chat/hooks"]
-check(lever_om and lever_om != base_om and lever_doc["headline"] == doc["headline"]
+check(lever_om and lever_om != base_om and headline(lever_doc) == headline(doc)
       and abs(lever_om[0] - lever_secs / 60.0 / ((HI - max(lever_lo, h.day_end(landed))) / 86400.0)) < 0.01,
       "a lever is charged per day only after its own fix landed through the merge that brought it in: %s" % lever_om)
 loaded = {h.local_day(HI - back * 86400): {"machine": {"band_s": {"<1": 50000, "busy": 30000},
@@ -395,18 +395,18 @@ for day in ("2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02"):
     with open(os.path.join(presence, day + ".tsv"), "w") as handle:
         handle.write("".join("%d\t5\tcom.mitchellh.ghostty\n" % m for m in range(start, start + 86400, 60)))
 here, _ = speed("speed-present")
-check(here["presence"] is True and here["r_band"] is None and here["headline"] == doc["r_band"][1],
-      "presence, always at the machine: every R = 10 min candidate minute counts and the R band goes: %s %s"
-      % (here["headline"], here["head"]))
+check(here["presence"] is True and headline(here) == 237.9,
+      "presence, always at the machine: every R = 10 min candidate minute counts: %s %s"
+      % (headline(here), here["head"]))
 for path in glob.glob(os.path.join(presence, "*.tsv")):
     with open(path) as handle:
         text = handle.read().replace("\t5\t", "\t900\t")
     with open(path, "w") as handle:
         handle.write(text)
 away, _ = speed("speed-present")
-check(0 < away["headline"] < doc["headline"] and
-      abs(sum(v for a in away["partition"].values() for v in a.values()) - away["headline"]) < 0.1,
-      "presence, idle all along: only the last R before each reaction counts, still partitioned: %s" % away["headline"])
+check(0 < headline(away) < headline(doc) and
+      abs(sum(v for a in away["partition"].values() for v in a.values()) - headline(away)) < 0.1,
+      "presence, idle all along: only the last R before each reaction counts, still partitioned: %s" % headline(away))
 with open(os.path.join(presence, "2026-10-02.tsv")) as handle:
     one_day = handle.read()
 for path in glob.glob(os.path.join(presence, "*.tsv")):
@@ -414,30 +414,30 @@ for path in glob.glob(os.path.join(presence, "*.tsv")):
 with open(os.path.join(presence, "2026-10-02.tsv"), "w") as handle:
     handle.write(one_day)
 part, _ = speed("speed-present")
-check(away["headline"] < part["headline"] < doc["headline"] and part["r_band"] is not None,
-      "presence logged on one day only: the other days keep the R = 5 min proxy, unknown is never away: %s %s"
-      % (part["headline"], part["r_band"]))
+check(headline(away) < headline(part) < headline(doc),
+      "presence logged on one day only: the other days keep the R = 5 min proxy, unknown is never away: %s"
+      % headline(part))
 
 transcripts = {"CLAUDE_PROJECTS_DIR": projects,"HARNESS_DOCTOR_BOOTS": "1790882097",
                "DOCTORS_DIR": os.path.join(work, "doctors-backfill")}
 blank_dir = os.path.join(work, "harness-blank")
 os.makedirs(blank_dir)
 cold, _ = speed("speed-cold", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
-check(cold["headline"] * cold["window"]["days"] >= doc["headline"] * doc["window"]["days"] > 0
+check(headline(cold) * cold["window"]["days"] >= headline(doc) * doc["window"]["days"] > 0
       and cold["selection"] == [p["id"] for p in cold["problems"] if p["rule"] == "opportunity" and p["opportunity"]["recoverable_min_day"] >= 5]
       and all(p["opportunity"]["score"] < 0.2 for p in cold["problems"] if p["id"] == "opportunity:chat/tests")
       and "backfill" not in [b["id"] for b in cold["blind_spots"]],
       "a fresh state with no Harness turn rows backfills every calibration minute from the transcripts: %s %s"
-      % (cold["headline"], cold["selection"]))
+      % (headline(cold), cold["selection"]))
 for folder, harness_at in (("speed-cold", blank_dir), ("speed-both", os.path.join(work, "harness"))):
     speed(folder, "--quiet", HARNESS_DOCTOR_DIR=harness_at, **transcripts)
 stored = lambda folder: {os.path.basename(p): json.load(open(p))
                          for p in glob.glob(os.path.join(work, folder, "days", "*.json"))}
 both, _ = speed("speed-both", **transcripts)
-check(both["headline"] == cold["headline"] and stored("speed-both") == stored("speed-cold")
+check(headline(both) == headline(cold) and stored("speed-both") == stored("speed-cold")
       and "2026-10-01.json" in stored("speed-both"),
       "backfilled turns Harness already holds count once, prompts included: %s vs %s"
-      % (both["headline"], cold["headline"]))
+      % (headline(both), headline(cold)))
 shutil.copytree(os.path.join(work, "speed-cold"), os.path.join(work, "speed-dup"))
 for path in glob.glob(os.path.join(work, "speed-dup", "backfill", "*.jsonl")):
     body = open(path).read()
@@ -459,9 +459,9 @@ os.rename(projects, projects + "-hidden")
 done, _ = speed("speed-resumed", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
 os.rename(projects + "-hidden", projects)
 job = json.load(open(os.path.join(resumed, "state.json")))["backfill"]
-check(not job["todo"] and job["stored"] and done["headline"] == cold["headline"]
+check(not job["todo"] and job["stored"] and headline(done) == headline(cold)
       and done["selection"] == cold["selection"] and "backfill" not in [b["id"] for b in done["blind_spots"]],
-      "the resumed backfill finishes and later runs read its rows, never the transcripts again: %s" % done["headline"])
+      "the resumed backfill finishes and later runs read its rows, never the transcripts again: %s" % headline(done))
 job = {"files": 1, "todo": [1]}
 while len(job["todo"]) * 2 > job["files"]:
     speed("speed-half", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
@@ -470,10 +470,10 @@ half, _ = speed("speed-half", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFIL
 same_days = sum(cold["om_by_day"][d] for d in half["om_by_day"]) / max(half["window"]["days"], 0.01)
 check(half["coverage"] == {"days": 2.91, "window_days": 7, "backfill_files_done": 21, "backfill_files": 40}
       and set(cold["selection"]) <= set(half["selection"]) and half["why_none"] is None
-      and abs(half["headline"] - same_days) <= 0.1 * same_days and min(half["om_by_day"]) == "2026-09-30"
+      and abs(headline(half) - same_days) <= 0.1 * same_days and min(half["om_by_day"]) == "2026-09-30"
       and "backfill" in [b["id"] for b in half["blind_spots"]] and half["head"].endswith(" · 2.9 of 7 days covered"),
       "a half-done backfill counts only the days it read in full: %s OM/d vs %s over the same days, %s"
-      % (half["headline"], round(same_days, 1), half["coverage"]))
+      % (headline(half), round(same_days, 1), half["coverage"]))
 
 days = os.path.join(work, "speed-judged", "days")
 os.makedirs(days)
@@ -575,7 +575,7 @@ out, _ = speed("speed-own", "--quiet")
 latest = json.load(open(os.path.join(harness_dir, "latest.json")))
 first = latest["speed"]
 menu_txt = open(os.path.join(harness_dir, "menu.txt")).read().splitlines()
-check(out.returncode == 0 and first["headline"] == doc["headline"] and counted_once(latest)
+check(out.returncode == 0 and headline(first) == headline(doc) and counted_once(latest)
       and menu_txt[2] == "0\t\tr:11:9\tLost time: 1 problem · 20 min/day overhead · 3.9 of 7 days covered"
       and latest["problems"][0]["state"] == "new" and latest["problem_count"] == 3
       and not os.path.exists(os.path.join(own, "latest.json")) and not os.path.exists(os.path.join(own, "menu.txt")),
@@ -600,7 +600,7 @@ with open(state_path, "w") as handle:
 speed("speed-own", "--quiet")
 repeated = json.load(open(os.path.join(harness_dir, "latest.json")))["speed"]
 days_value = {"2026-09-29": 34.7, "2026-09-30": 35.6, "2026-10-01": 52.6, today: 19.8}
-check(doc.get("lost_min_day_by_day") == first.get("lost_min_day_by_day") == days_value
+check(doc["budget"].get("lost_min_day_by_day") == first["budget"].get("lost_min_day_by_day") == days_value
       and header == {"status": latest["status"],
                      "problems": [{k: p[k] for k in ("id", "ledger") if k in p} for p in latest["problems"]],
                      "issues": [[1, "Waits"], [1, "Guards"], [1, "Memory guard"]],
@@ -609,7 +609,7 @@ check(doc.get("lost_min_day_by_day") == first.get("lost_min_day_by_day") == days
                                "rows": first["budget"]["rows"]},
                      "spend": {"as_of_s": first["as_of_s"], "status": "nodata", "index": None, "index_by_day": {},
                                "issues": []}}
-      and repeated.get("lost_min_day_by_day") == days_value,
+      and repeated["budget"].get("lost_min_day_by_day") == days_value,
       "the day history holds each day's value, today the latest and never a larger earlier reading kept in state; "
       "the compact header carries the budget rows and no OM/d history: %s" % header)
 
@@ -626,9 +626,9 @@ with open(events_file, "a") as handle:
     handle.write(json.dumps(extra) + "\n")
 speed("speed-own", "--quiet")
 second = json.load(open(os.path.join(harness_dir, "latest.json")))["speed"]
-check(abs(second["headline"] - first["headline"] - 300 / 60.0 / second["window"]["days"]) < 0.06,
+check(abs(headline(second) - headline(first) - 300 / 60.0 / second["window"]["days"]) < 0.06,
       "a second run reads only the appended bytes: the new turn adds its 5 minutes, the rewritten old row stays read: "
-      "%s -> %s" % (first["headline"], second["headline"]))
+      "%s -> %s" % (headline(first), headline(second)))
 cached = json.load(open(os.path.join(own, "state.json")))["events"]["2026-10-02"]["rows"]
 folded = sum(1 for line in text.splitlines() if line[:5] in ('["t",', '["d",', '["s",')) + 1
 check(len(cached) == folded, "the second run appends only the new row to its day cache: %d rows, %d expected"

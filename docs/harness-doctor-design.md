@@ -124,7 +124,7 @@ a tone only from 10 %), worse red and better green. The line names them without 
   read them from `state.json`.
 - `by week`, under `7 d` only, shows the same rows over 8 calendar weeks, Mon–Sun, the current one
   partial.
-- Waits history reaches back 28 days (the transcripts), the raw events 8 days, the hook journal
+- Waits history reaches back 28 days (the transcripts), the raw events 22 days, the hook journal
   3; hooks and load start with their first row, so their previous period fills in over time.
 
 ## 3. Signals
@@ -284,14 +284,14 @@ over all of it and at 18:26 over the runs from 18:00:
     tool_uses, mode, entrypoint and toplevel; plus the watched file hashes, the hooks snapshot,
     the versions, first-red and first-watch times with each rule family's first evaluation (a
     rule first seen after an upgrade claims no cause), the birth time and CPU ticks;
-  - `events/YYYY-MM-DD.jsonl`, kept 8 days;
+  - `events/YYYY-MM-DD.jsonl`, kept 22 days;
   - `days/YYYY-MM-DD.json` summaries (`"v": 2`), kept 60 days, which feed §2.2 and the Waits
     `wait s 7 d` column: a histogram per waiter (`bash:<project>`, `edit`, `read`,
     `event:<hook event>`), the day's slow seconds, the hook journal's histograms per hook
     (accumulated in `state.json` under `journal.days` until the day ends) and the load means. A
     day is summarized once it ends. When the format version changes, days whose events are pruned
     are rebuilt once from the transcripts (28 days, about 25 s); `state.json` `rebuilt` records it;
-  - `samples.jsonl` (8 days), `growth.jsonl` (daily), `changes.jsonl` (60 days);
+  - `samples.jsonl` (22 days), `growth.jsonl` (daily), `changes.jsonl` (60 days);
   - `latest.json` and `menu.txt`.
 - **Incremental scan**:
   - The first run backfills 28 days. Later runs read only new files and appended bytes, up to
@@ -300,7 +300,7 @@ over all of it and at 18:26 over the runs from 18:00:
   - A tool_use whose result is not read yet stays pending across runs and is dropped after 2 h.
 - **`local_slow`**: `latest.json` carries the merged periods in which a Waits call row (trivial Bash
   per project, edit, read) was red. They are replayed on a 5-minute grid from the events, each
-  from its first slow call to the end of its last, and kept 8 days. The state holds them
+  from its first slow call to the end of its last, and kept 22 days. The state holds them
   incrementally and re-evaluates the last hour each run. LLM doctor's `mark_slow` reads them to
   label a slow leg `local slow` instead of weather. The contract is row `cz` of
   `docs/shared-invariants.md`.

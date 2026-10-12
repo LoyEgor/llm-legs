@@ -439,7 +439,6 @@ WORKER_TEST_WORKDIR=$main_work/.claude/worktrees/night-task start_ok codex
 assert await_done
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = '[]'
 cp "$WORK/brief.plain" "$WORK/brief"
-cp "$WORK/brief.plain" "$WORK/brief"
 clear_stub
 rc=0
 "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$HOME" --account resumeacct >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?

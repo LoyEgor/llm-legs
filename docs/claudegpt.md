@@ -203,7 +203,7 @@ retention window rather than a guess. It cannot, on three independent grounds.
 
 A 30-minute countdown drawn from a doc page would also contradict the statusline's own
 rule, which already refuses to let locally MEASURED bounds authorize a warm arrow
-(`docs/statusline-contract.md`, "Server TTL evidence and learned bounds"); a vendor
+(`docs/statusline-contract.md`, "Server TTL evidence"); a vendor
 paragraph is weaker evidence than that, not stronger. So the unknown form stays, and it
 is the end state — not a placeholder. The one thing that would change the verdict is the
 bridge starting to emit a real `cache_creation.ephemeral_<n><m|h>_input_tokens` bucket,

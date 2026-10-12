@@ -43,7 +43,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 | **headline** | **≈ 169** |
 
 - The previous headline, 148 = 114 + 34, took B from [WN]'s 9.2-day window, which includes the 09-23..28 hook-timeout incident.
-- **R sensitivity**: 88 at R = 2, 287 at R = 10, no plateau. The menu shows all three; the headline is R = 5. A **bound** (his reaction in *any* owner chat confirms presence) is shown, never summed.
+- **R sensitivity**: 88 at R = 2, 287 at R = 10, no plateau. The headline is R = 5. A **bound** (his reaction in *any* owner chat confirms presence) is shown, never summed.
 - **Yield and proofs never use the headline's R-selection**: a component's exposure is frozen from its before window (attended share × all owner turns or calls of that class), so shortening a turn below his reaction cannot fake a saving.
 
 **Exclusive partition.** Every blocked minute is split once, in precedence: hook batch > queue (suite slot, media lock, worker slot; charged to the slot holder's job: night, worker or chat) > suite > media local phase > other tool > compaction > generation > residual. B splits along its critical path: pre-CLI, per-attempt run, reroute loss, suites inside, notification, continuation turn. Media is a component of A and B with its own drill. Area lines are "of which" and sum to the headline.
@@ -65,7 +65,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 ## 2. Areas, metrics, collectors
 
-**Areas**, the same in the menu and `doctor-fix`: `chat`, `delegation`, `hooks`, `tests`, `machine`, `background`, `night`.
+**Areas**, as `doctor-fix` names a component: `chat`, `delegation`, `hooks`, `tests`, `machine`, `background`, `night`.
 
 **Two forms per metric**: a **unit metric** for regressions and proofs, its **OM/d** for ranking. Normalisation: chat totals per 100 prompts; background per open session-hour; tests per (suite set, sha); delegation per run class; nights per completed job.
 
@@ -213,7 +213,7 @@ pinned ones (≥ 5 source-text greps of a file shared-invariants.md does not lis
 7 days with ≥ 2 red runs) go to Suite audits' queue; nothing here deletes a test. Without `tree` rows the repeat count
 reads zero and says so.
 
-**ROI** (`night-run report`, `roi ·` lines). Each Speed or time row (`opportunity`, `regression`, `time_floor`,
+**ROI** (`night-run report`, `roi ·` lines). Each Speed or time row (`opportunity`, `regression`,
 `test_*`) of a fixer job is an improvement of its own: an even share of the job's spend, the job's lines, its gain. A class in `share/time_budget.py` `UNITS`
 is proven per unit: per key (its named suites or hooks, else all) the median of the first M samples after the night
 against the newest M before it, M the smaller side, so neither sample count nor an earlier drop proves it; a gain is
@@ -233,7 +233,7 @@ without result`, never a revert or a gate.
 - Skipped: active work (the Code doctor's rule), levers not output-equivalent, measurement fixes without a ≥ 5 min/day blind opportunity.
 - No score floor: an equivalent, positive-score, non-needs-Egor lever qualifies at ≥ 5 min/day expected gain. An empty pick's `why_none` names its true cause: levers needing Egor, not equivalent or scoring 0, or no opportunity.
 
-**Own keys**: `cost {collector_cpu_min_day}` (review time is the time budget's `review_min`; no other cost is mechanically recorded, so none is shown as a zero), `yield {proven_om_day, pending_om_day}`.
+**Own keys**: `cost {collector_cpu_min_day}` (no other cost is mechanically recorded, so none is shown as a zero), `yield {proven_om_day, pending_om_day}`.
 
 **Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the slice lever, R, the bands and the proof table.
 

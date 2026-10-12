@@ -890,17 +890,16 @@ check([rate_fact(86400), rate_fact(2 * 86400), rate_fact(2 * 86400, {"log_audit"
 equiv = {"compared": "c", "data": "d", "result": "r"}
 lever = {"id": "lever", "title": "l", "match": {"rule": "opportunity", "ident": "chat/hooks"}, "status": "fixed",
          "fixes": [dict(fixed_row["fixes"][0], equivalence=equiv)]}
-floor_row = dict(lever, id="time_floor:locks", match={"rule": "time_floor", "ident": "locks"}, fixes=fixed_row["fixes"])
-measured = {"as_of_s": T + 86400, "problems": [], "budget": {"classes_min_day": {"locks": 3.0}}}
-speed_fact = lambda row, doc, now=T + 86400: [p["fact"].split(" · l")[0] for p in m.problems_from(
+floor_row = dict(lever, id="regression:locks", match={"rule": "regression", "ident": "locks"}, fixes=fixed_row["fixes"])
+measured = {"as_of_s": T + 2 * 86400, "problems": []}
+speed_fact = lambda row, doc, now=T + 2 * 86400: [p["fact"].split(" · l")[0] for p in m.problems_from(
     [], {"rows": [row]}, {}, now, speed=doc)]
 check([speed_fact(lever, None), speed_fact(dict(lever, fixes=fixed_row["fixes"]), None), speed_fact(floor_row, measured),
        speed_fact(floor_row, dict(measured, as_of_s=T)),
-       speed_fact(floor_row, dict(measured, problems=[{"id": "time_floor:locks", "ledger": "time_floor:locks"}])),
-       speed_fact(floor_row, dict(measured, budget={"classes_min_day": {"hooks": 3.0}}))]
+       speed_fact(floor_row, dict(measured, problems=[{"id": "regression:locks", "ledger": "regression:locks"}]))]
       == [["fixed · output-equivalent by its replay"], ["unproven · no output-equivalence record on the fix"],
-          ["fixed · back under its limit in Speed's last 24 h"],
-          ["unproven · Speed has not measured a whole 24 h since the fix"], [], ["unproven · Speed measures no locks"]],
+          ["fixed · back under its limit in Speed's last 48 h"],
+          ["unproven · Speed has not measured a whole 48 h since the fix"], []],
       "a Speed rule's fix reads Speed's proof, never an event count, and no second row while Speed shows its own")
 back = {"judge": [m.verdict("floor", "bash:trivial", 400, 300, "ms", 1, 25, "red",
                             evidence=[m.evidence(T - 60, "tool_use x")])], "cells": ["x"]}
@@ -1908,17 +1907,17 @@ for ident in '[^z]{2,}' '.*' ''; do
     "a catch-all dismissal /$ident/ is dropped before judging and reported as ledger:<row id>"
 done
 jq '.rows += [{id: "bad-fixes", title: "t", match: {rule: "wait", ident: "bash:alpha"}, status: "open", fixes: ["x"]},
-  {id: "twice", match: {rule: "time_floor", ident: "edit-floor"}, status: "open", fixes: []},
-  {id: "twice", match: {rule: "time_floor", ident: "edit-floor"}, status: "open", fixes: []}, "junk"]' \
+  {id: "twice", match: {rule: "regression", ident: "edit-floor"}, status: "open", fixes: []},
+  {id: "twice", match: {rule: "regression", ident: "edit-floor"}, status: "open", fixes: []}, "junk"]' \
   "$ROOT/share/harness-ledger.json" > "$WORK/rejected-ledger.json"
 mkdir -p "$WORK/rejected"
-jq -n '{speed: {problems: [{id: "time_floor:edit-floor", rule: "time_floor", ident: "edit-floor", state: "new",
+jq -n '{speed: {problems: [{id: "regression:edit-floor", rule: "regression", ident: "edit-floor", state: "new",
   fact: "an edit floor", window_h: 24}], covers: [], blind_spots: []}}' > "$WORK/rejected/latest.json"
 HARNESS_LEDGER="$WORK/rejected-ledger.json" HARNESS_DOCTOR_DIR="$WORK/rejected" HARNESS_DOCTOR_NOW=$((T + 900)) \
   HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --quiet || fail "a run over rejected ledger rows failed"
 assert_eq '[["ledger:#'"$(jq '.rows | length + 3' "$ROOT/share/harness-ledger.json")"'","ledger:bad-fixes","ledger:twice"],"new",["new",null]]' \
   "$(jq -c '[([.problems[] | select(.rule == "ledger_fault") | .id] | sort), (.problems[] | select(.id == "wait:bash:alpha") | .state),
-    (.problems[] | select(.id == "time_floor:edit-floor") | [.state, .ledger])]' "$WORK/rejected/latest.json")" \
+    (.problems[] | select(.id == "regression:edit-floor") | [.state, .ledger])]' "$WORK/rejected/latest.json")" \
   "a row whose fixes hold a non-object, a duplicated id or a non-object row is a ledger fault, judges neither Harness nor Speed's carried rows, and crashes nothing"
 holds="$WORK/holds"
 mkdir -p "$holds"

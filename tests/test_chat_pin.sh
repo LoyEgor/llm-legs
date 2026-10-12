@@ -4,8 +4,6 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-. "$ROOT/share/test-scope.sh"
-PROJECTS=$(git_projects "$ROOT")
 PIN="$ROOT/bin/chat-pin"
 WORK="$(mktemp -d)"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the

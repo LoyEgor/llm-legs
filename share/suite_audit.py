@@ -117,7 +117,7 @@ def adds(top, lo):
 
 
 def passing(history):
-    """A failed run stops early: CPU per run reads passing runs while any exist."""
+    """A failed run stops early: its CPU and wall are short, so every reading takes the passing runs while any exist."""
     return [h for h in history if h["ok"]] or history
 
 

@@ -11,5 +11,5 @@ itself spells the launches, so the lens has never run inside a chat.
 
 Fix by doctrine, no door bypass: `doctor-fix launch` writes each lens launch as a ready
 `review-bench review …` line (key, run id) and leaves its brief waiting; the orchestrator runs them as ONE
-Bash call (the door stamps as many uses as the call spells), then `doctor-fix lens-rounds` records the
+Bash call (the door stamps as many uses as the call spells), then `doctor-fix lens-round` records the
 round ids into the briefs' `ROUND:`. Or drop the lens: 39 T2 rounds a night against the night spend goal.

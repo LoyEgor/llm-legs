@@ -13,7 +13,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts should have failed: $*"; }
 
-GRANT_READ='words_grant_(target|fresh)|(^|[/"'\''])grant\.([$]|[{]|[a-z])'
+GRANT_READ='words_grant_fresh|(^|[/"'\''])grant\.([$]|[{]|[a-z])'
 
 # path<TAB>reason
 ALLOWED=$(cat <<'EOF'
@@ -52,7 +52,7 @@ assert listed_still_read
 mkdir -p "$WORK/plant/bin" "$WORK/plant/share"
 printf '#!/usr/bin/env bash\n# words_grant_fresh in a comment reads nothing\n' >"$WORK/plant/bin/quiet"
 assert quiet_check "$WORK/plant"
-printf 'ok=$(words_grant_target "$sid" pin)\n' >"$WORK/plant/bin/planted"
+printf 'ok=$(words_grant_fresh "$sid" pin)\n' >"$WORK/plant/bin/planted"
 assert_fails quiet_check "$WORK/plant"
 rm -f "$WORK/plant/bin/planted"
 printf 'jq .target "$dir/grant.$family"\n' >"$WORK/plant/share/planted.sh"

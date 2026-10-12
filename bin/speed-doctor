@@ -40,7 +40,7 @@ ROW_DAYS = WINDOW_D + 1
 JOURNAL_DAYS = 35
 BACKFILL_S = 20.0
 BACKFILL_CHUNK_B = 4 << 20
-R_INDEX, R_LOW, R_HIGH = 1, 0, 2
+R_INDEX, R_HIGH = 1, 2
 PRESENCE_IDLE_S = 120
 LIMITS = {"regression_ratio": 1.3, "regression_days": 2, "worth_om_day": 0.5, "blind_om_day": 1.0,
           "residual_share": 0.05, "baseline_days": 28, "baseline_min_days": 7, "seen_days": 3, "seen_sessions": 3,
@@ -413,10 +413,6 @@ def watched(row, minutes, memo):
     if id(row) not in memo:
         memo[id(row)] = any(m in minutes for m in range(int(row[1] // 60 * 60), int(row[3]) + 1, 60))
     return memo[id(row)]
-
-
-def union_minutes(spans, extra, lo, hi):
-    return H.union_secs([(max(a, lo), min(b, hi)) for a, b, _ in spans + extra if min(b, hi) > max(a, lo)]) / 60.0
 
 
 def attended(rows, r_index, minutes, typed, memo):
@@ -1062,11 +1058,7 @@ def collect(write, now):
     for (day, area, leaf), secs in credit.items():
         if secs >= 1:
             leaf_days.setdefault((area, leaf), set()).add(day)
-    headline = sum(sum(v.values()) for v in tree.values())
     areas = {area: round(sum(v.values()), 2) for area, v in tree.items()}
-    proxied = [r for r in rows if r[0] in ("t", "d") and r[3] > lo and not watched(r, minutes, memo)]
-    r_band = [round(union_minutes(*attended(rows, i, minutes, typed, memo), lo, now) / covered, 1)
-              for i in (R_LOW, R_HIGH)] if proxied else None
     local = sum(tree.get("chat", {}).get(leaf, 0.0) for leaf in LOCAL_LEAVES)
     machine = machine_view(days, local)
     night = night_view()
@@ -1218,23 +1210,20 @@ def collect(write, now):
         "covers": covers(baselines),
         "window": {"from_s": int(lo), "to_s": int(now), "days": round(covered, 2)}, "coverage": coverage,
         "presence": presence,
-        "headline": round(headline, 1),
         "om_by_day": {day: round(sum(s for (d, _, _), s in credit.items() if d == day) / 60.0, 1)
                       for day in sorted({d for d, _, _ in credit})},
-        "r_band": r_band,
         "areas": areas,
         "partition": {area: {leaf: round(v, 2) for leaf, v in sorted(leaves.items(), key=lambda x: -x[1])}
                       for area, leaves in sorted(tree.items())},
         "of_which": {"hooks": round(tree.get("chat", {}).get("hooks", 0.0), 2),
                      "tests": round(tree.get("chat", {}).get("tests", 0.0) + tree.get("chat", {}).get("queue", 0.0), 2),
                      "machine": machine["p_om_day"]},
-        "machine": machine, "background": background, "night": night, "delegation": delegation,
+        "night": night, "delegation": delegation,
         "baselines": baselines, "selection": selection, "why_none": why_none,
         "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0},
         "yield": speed_yield(ledger),
         "head": head_of(budget.get("lost_min_day"), status, gap),
         "lost_min_day": budget.get("lost_min_day"),
-        "lost_min_day_by_day": budget.get("lost_min_day_by_day") or {},
         "index": budget.get("index"), "index_by_day": budget.get("index_by_day") or {}, "levels": budget.get("levels") or [],
         "budget": budget,
         "tests": tests,

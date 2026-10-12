@@ -41,7 +41,6 @@ ROWS = (("tests", (("running", "suite_run"), ("queued", "suite_wait"))),
         ("harness rules", (("hooks", "hooks", "stop"), ("gate refusals", "refusal"), ("locks", "locks"))),
         ("usage walls", (("usage walls", "walled"),)), ("compaction", (("compaction", "compaction"),)),
         ("unmeasured", (("unmeasured", "other"),)))
-UNPLACED = ("compaction", "other")
 WATCHDOG_KILLS = ("idle", "silent")
 WAIT_CLASSES = ("lock", "poll")
 GATE_REFUSALS = ("denied", "relay-refused")
@@ -62,7 +61,7 @@ RESUME = re.compile(r"(?m)^RESUME ([0-9a-f][0-9a-f-]{7,})")
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
 GAIN_MIN_DAY = 5
 ROI_DAYS = 3
-IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE, suite_audit.RULE)
+IMPROVEMENT_RULES = ("opportunity", "regression", spend_block.RULE, suite_audit.RULE)
 # (unit, samples a side needs, the after/before ratio proving it, the gain's daily unit, units in one of it): the
 # ratio is p5 of median(N)/median(the samples before) on unchanged code over the journals of 2026-09-29..10-07, so a
 # lower ratio is no noise.
@@ -186,7 +185,7 @@ def event_day(day):
         out = collections.defaultdict(list)
         with open(path, "rb") as handle:
             for line in handle:
-                if line[2:3] in (b"t", b"c", b"h", b"s") and line[3:5] == b'",':
+                if line[2:3] in (b"t", b"c", b"h") and line[3:5] == b'",':
                     try:
                         out[line[2:3].decode()].append(json.loads(line))
                     except ValueError:
@@ -196,7 +195,7 @@ def event_day(day):
 
 
 def event_rows(lo, hi, kinds=("t", "c", "h")):
-    """Harness's derived event rows (`t` owner turns, `c` tool calls, `h` hook runs, `s` CLI starts) of the local
+    """Harness's derived event rows (`t` owner turns, `c` tool calls, `h` hook runs) of the local
     days the window touches; a turn or call is filed under its start day, so the day before is read too."""
     out = collections.defaultdict(list)
     day, last = local_day(lo - 86400), local_day(hi)
@@ -332,7 +331,7 @@ def refusal_cost(lo, hi, events, rows=None):
     by_gate = sorted(((length(union(v)), gate) for gate, v in by.items()), key=lambda x: (-x[0], x[1]))
     return {"seconds": length(spans), "spans": spans, "by_gate_s": {gate: secs for secs, gate in by_gate},
             "measured": measured, "count": sum(lo <= r["at"] < hi for r in rows),
-            "unmeasured_by_gate": dict(missing), "cap_s": REFUSAL_CAP_S, "by_sid": own}
+            "unmeasured_by_gate": dict(missing), "by_sid": own}
 
 
 def run_session(run):
@@ -452,7 +451,7 @@ def run_split(run, lo, hi, suites, calls):
     return out
 
 
-def budget(lo, hi, events=None):
+def budget(lo, hi):
     """Overhead over [lo, hi) as wall-clock seconds: each class is the union of its spans, so parallel runs count once.
     Suites come from run-suites' journal for every caller, hooks from Harness's hook rows and a turn's Stop seconds
     at its end, refusals from `refusal_cost`, locks and polls from the waits a chat or worker paid, and the rest from
@@ -460,7 +459,7 @@ def budget(lo, hi, events=None):
     `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither. `strata` is the
     index's per-day input: each stratum's overhead summed over its agents, every agent's own spans unioned, and its
     units; None for a day before the journals record (`horizon`)."""
-    events = events if events is not None else event_rows(lo, hi)
+    events = event_rows(lo, hi)
     runs = worker_runs(lo, hi)
     suites = suite_rows(min([lo] + [num(r.get("pid_started_at")) or num(r.get("started_at")) or lo for r in runs]),
                         hi + 86400)
@@ -801,9 +800,8 @@ def improvement_class(rule, pid):
     ident = pid.split(":", 1)[1] if ":" in pid else ""
     if rule == spend_block.RULE:
         return pid
-    if rule == "time_floor" or ident.startswith("time/"):
-        key = ident[5:] if ident.startswith("time/") else ident
-        return key if key in LABEL else None
+    if ident.startswith("time/"):
+        return ident[5:] if ident[5:] in LABEL else None
     if ident.startswith(("chat/hooks", "hooks/")):
         return "hooks"
     if ident.startswith(("stop/", "refusal/")):

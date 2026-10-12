@@ -39,9 +39,9 @@ JQ_BASE='def base: .base // (if .night then "refs/night/\(.night)/base" else nul
 JQ_COUNTS='"\(.problems | length) problems" + (if (.quiet // []) | length > 0 then " · \(.quiet | length) known, quiet" else "" end)'
 TEST_SPEED_RULES=' test_long_pole test_daily_cost test_slow suites_at_once '
 TEST_FIX_RULES="$TEST_SPEED_RULES test_hang "
-FLOOR_RULES=' floor time_floor '
+FLOOR_RULES=' floor '
 NIGHT_FIX_RULES="$FLOOR_RULES opportunity regression "
-SPEED_LENS_RULES="$TEST_SPEED_RULES opportunity regression time_floor suite_audit hook_p50 hook_sync hook_full_work hook_every_call "
+SPEED_LENS_RULES="$TEST_SPEED_RULES opportunity regression suite_audit hook_p50 hook_sync hook_full_work hook_every_call "
 SPEED_LENS_TIER=T2
 JQ_HAS_RULES='any(.problems[]; .rule as $r | $rules | split(" ") | index($r))'
 
@@ -152,10 +152,7 @@ SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
                                      "llm-legs/hammerspoon/instruction-watch.lua", "hammerspoon/automation_menu.lua"),
                "time/slot": ("llm-legs/share/slots.sh", "llm-legs/bin/worker-run"),
                "time/suite_wait": ("llm-legs/share/run-suites.sh", "llm-legs/share/slots.sh"),
-               "time/suite_run": ("llm-legs/share/run-suites.sh",), "time/retries": ("llm-legs/bin/worker-run",),
-               "time/full-runs": ("llm-legs/share/run-suites.sh",),
-               "time/locks": ("llm-legs/share/store-lock.sh",),
-               "time/workers-active": ("llm-legs/bin/worker-run", "llm-legs/share/run-suites.sh")}
+               "time/retries": ("llm-legs/bin/worker-run",), "time/locks": ("llm-legs/share/store-lock.sh",)}
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
@@ -361,8 +358,6 @@ def snapshot(doctor, doc_file, night=None):
             elif problem.get("speed") and rule == "opportunity":
                 files += [os.path.join(repos_dir(doctor), name) for name in
                           SPEED_FILES.get(pid[12:], ()) + tuple(strings((problem.get("opportunity") or {}).get("files")))]
-            elif problem.get("speed") and rule == "time_floor" and "time/" + pid[11:] in SPEED_FILES:
-                files += [os.path.join(repos_dir(doctor), name) for name in SPEED_FILES["time/" + pid[11:]]]
             elif problem.get("speed"):
                 files.append(doctor_script("speed"))
         elif doctor == "code":
@@ -810,7 +805,7 @@ write_brief() { # id worktree -> the brief file
     ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
     ! jq -e --arg rules "$NIGHT_FIX_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
-      printf 'Speed and floor rows (`floor`, `time_floor`, `opportunity`, `regression`) are this run'"'"'s to fix: `close` refuses a handoff on one unless it cites a trade to Egor. A floor'"'"'s target is zero, never a limit: `close` refuses `ruled-out` on a `floor` or `time_floor` row unless its evidence prices the cheapest cut as `cut <what> saves <N> ms × <M>/day, costs <Y>`.\n\n'
+      printf 'Speed and floor rows (`floor`, `opportunity`, `regression`) are this run'"'"'s to fix: `close` refuses a handoff on one unless it cites a trade to Egor. A floor'"'"'s target is zero, never a limit: `close` refuses `ruled-out` on a `floor` row unless its evidence prices the cheapest cut as `cut <what> saves <N> ms × <M>/day, costs <Y>`.\n\n'
     ! jq -e --arg rules ' test_hang ' "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'A hung suite (`test_hang`) is this run'"'"'s to fix, never a handoff (`close` refuses one): find what it blocked on and fix it so it cannot hang, e.g. stdin from /dev/null for a child that may read a tty, a timeout on a child that waits, a tty probe a fixture answers; every assert keeps its coverage. The proof is the doctor'"'"'s own: no `test_hang` row for that suite after the fix.\n\n'
     ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||

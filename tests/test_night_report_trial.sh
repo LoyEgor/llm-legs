@@ -15,7 +15,7 @@ mkdir -p "$HOME" "$DOCTORS_DIR/runs" "$DOCTORS_DIR/nights" "$WORKER_STATS_DIR/be
 : >"$WORK/sweep-repos"
 
 python3 -B - "$ROOT" "$WORK" <<'EOF' || exit 1
-import collections, json, os, subprocess, sys, time
+import json, os, subprocess, sys, time
 
 root, work = sys.argv[1], sys.argv[2]
 sys.path.insert(0, os.path.join(root, "share"))
@@ -60,7 +60,7 @@ def blob(text):
 
 subprocess.run(["git", "init", "-q", "-b", "main", repo], check=True)
 commit(start - 5 * 86400, **{"a.sh": "1\n2\n3\n", "b.sh": "x\n", "c.sh": "p\n"})
-fit_landed = commit(start + 200, **{"a.sh": "1\nFIX\n3\n"})
+commit(start + 200, **{"a.sh": "1\nFIX\n3\n"})
 commit(start - 86400 + 200, **{"b.sh": "y\n"})
 commit(start + 300, **{"b.sh": "x\n"})
 speed_commit = commit(start + 400, **{"c.sh": "q\n"})
@@ -103,7 +103,7 @@ write(os.path.join(work, "doctors", "runs", "speed-c.json"), {"id": "speed-c", "
 
 S.time_budget.roi_lines = lambda rows, now, gains: gains.update({"speed-a": 6.5, "speed-z": 9.0})
 S.time_budget.cached_row = lambda worker_run, path: None
-stats, spend = S.arms("/usr/bin/false", night, start)
+stats, _ = S.arms("/usr/bin/false", night, start)
 got = {arm: {k: v for k, v in stats[arm].items() if v} for arm in S.ARMS}
 check(got[("round", "sonnet")] == {"runs": 1, "landed": 2, "findings": 1},
       "a tagged fit fixer's fixes landed, one confirmed finding on its own line, none on lines it did not write: %s" % got)

@@ -149,7 +149,7 @@ events the check examined for the row's idents (a check with no hit leaves a qui
 non-overlapping windows after the fix's `at`; else `fixed · 0 matched in D d, P predicted at R/d before the fix`
 with P ≥ 3 (`PROOF_MIN_PREDICTED`), R the last red count per window seen before the fix; with neither,
 `unproven · no exposure measured, no rate before the fix`. A quiet row alone proves nothing. Speed's rules
-(`time_floor`, `regression`, `opportunity`) read Speed's proof: `back under its limit in Speed's last 24 h`
+(`regression`, `opportunity`) read Speed's proof: `back under its limit in Speed's last 24 h`
 (48 h for `regression`), `output-equivalent by its replay`. Record a `fixes[]` entry with
 `in: null` and status `fixed-pending`; the doctor fills `in` once every listed file is committed.
 Never edit `in` by hand.

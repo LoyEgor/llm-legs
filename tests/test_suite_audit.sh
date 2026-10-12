@@ -276,7 +276,7 @@ for day in {time_budget.local_day(r[1]) for r in hooks}:
     with open(os.path.join(events, day + ".jsonl"), "w") as handle:
         handle.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in hooks
                              if time_budget.local_day(r[1]) == day))
-shown = time_budget.unit_proof({"class": "hooks", "ids": ["time_floor:hooks"]}, NOW - 30, NOW, NOW + 600)
+shown = time_budget.unit_proof({"class": "hooks", "ids": ["regression:hooks"]}, NOW - 30, NOW, NOW + 600)
 check(shown["text"] == "600 → 90 ms/call · proven · 0.1 min/day" and shown["samples"] == 100
       and time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/gate.sh"]}, NOW - 30, NOW,
                                  NOW + 600)["text"] == "200 → 80 ms/call · proven · 0.0 min/day"
@@ -295,7 +295,7 @@ check(shown["text"] == "600 → 90 ms/call · proven · 0.1 min/day" and shown["
 h1 = {"ref": "night-h1", "class": "hooks", "ids": ["opportunity:hooks/other.sh fast"], "spend_m": 1.0,
       "lines": [1, 1], "merged": True}
 shown = time_budget.roi_lines([dict(night, improvements=[h1]),
-                               dict(night, improvements=[dict(h1, ref="night-h2", ids=["time_floor:hooks"])])], NOW + 600)
+                               dict(night, improvements=[dict(h1, ref="night-h2", ids=["regression:hooks"])])], NOW + 600)
 check(shown[0] == "roi · night-h2 · hooks · 1.0M · +1/-1 · 600 → 90 ms/call · proven · 0.0 min/day · shared with night-h1"
       and shown[-1] == "roi · last 2 nights: improvements 2.0M · gained 0.1 min/day · 0.1 min/day per 1M",
       "a later fix gains only the hooks no earlier fix claimed: %s" % shown)
