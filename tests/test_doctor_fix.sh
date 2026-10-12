@@ -991,6 +991,7 @@ jq --arg c "$rfg" '. + {model: "opus"} | .hooks.PreToolUse[0].hooks += [{type: "
 git -C "$L" update-ref refs/night/n8/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n8 >"$WORK/out" 2>"$WORK/err" ||
   fail "the speed night did not launch: $(cat "$WORK/err")"
+sized() { grep -v '^doctor-fix: Speed [a-z_]* fixers take ' "$1" || true; } # a stderr file without its batch size lines
 speed_runs() { # -> each launched run as [area, [problem id, component files]...], by area
   local files=() r
   for r in $(cut -f1 "$WORK/out"); do files+=("$RUNS/$r.json"); done
@@ -1123,7 +1124,7 @@ assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" --arg g "$gate" 
   ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)
 # The same files at the same content are not read twice.
 tid=$(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out" | cut -f1)
-assert [ "$(cat "$WORK/err")" = "doctor-fix: $tid gets no speed lens: round 20261008T000000Z-abcdef1 read the same files at the same content" ]
+assert [ "$(sized "$WORK/err")" = "doctor-fix: $tid gets no speed lens: round 20261008T000000Z-abcdef1 read the same files at the same content" ]
 assert [ "$(wc -l <"$DATA/rb-args" | tr -d ' ')" = 1 ]
 assert grep -qx 'ROUND: none' "$(grep -F "$tid" "$WORK/out" | cut -f2)"
 for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
@@ -1194,10 +1195,10 @@ for step in '1. What each check guards' '2. Where the wall goes' 'Never shorten 
 done
 assert_fails grep -qF -- '--fresh' "$brief"
 assert grep -qF -- 'tests/run-all --profile <suite>' "$brief"
-# One Speed run per shared context and no count of any kind: ~160 suite audits of one repository ride in one run, a
-# second repository's in another, the spend audits in a third, the levers sharing a file in a fourth; each run's rows in
-# rank order: priced rows by expected gain, however small, then unpriced ones by measured loss, minutes a day before a
-# share of spend.
+# Rows per Speed fixer per kind from past nights: the size of the lowest Opus-eq cost per closed row (a job's ledger
+# spend over the rows its run decided, unattributed spend out), twice it while that is the largest size tried; ~160
+# suite audits of one repository ride in runs of that size, in rank order: priced rows by expected gain, however
+# small, then unpriced ones by measured loss, minutes a day before a share of spend.
 for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
 jq --argjson s "$(now)" --arg l "$L" '.as_of_s = $s | .speed.spend.selection = ["spend:hook:gate.sh", "spend:resumes"]
   | .speed.selection = ["opportunity:chat/hooks", "opportunity:machine/contention"]
@@ -1224,14 +1225,29 @@ jq --arg l "$L" '.speed.suites.selection += ([range(1; 161) | "suite_audit:llm-l
       | (([range(1; 161) | ["llm-legs", "test_g\(.)"]] + [["claude-setup", "test_c1"], ["claude-setup", "test_c2"]])[]) as [$r, $t]
       | .id = "suite_audit:\($r):\($t)" | .value = 20 | .suite = {component: "\($r)/\($t)", sources: ["\($l)/tests/\($t).sh"]}]' \
   "$S/harness/latest.json" >"$S/cap.json" && mv "$S/cap.json" "$S/harness/latest.json"
+mkdir -p "$RUNS/../night-ledger"
+history() { # id rule rows decided spend_m -> a closed past Speed run of that many rows and its night ledger item
+  jq -n --arg id "$1" --arg r "$2" --argjson n "$3" --argjson d "$4" '{id: $id, doctor: "harness", area: "speed-\($id)",
+    closed_at: "2026-10-01T00:00:00Z", problems: [range($n) | {id: "\($r):h\(.)", rule: $r}],
+    decisions: ([range($d) | {id: "\($r):h\(.)", verdict: "fixed"}] + [{id: "judge", verdict: "changed"}])}' >"$RUNS/$1.json"
+  jq -n --arg id "$1" --argjson m "$5" '{improvements: [{ref: $id, spend_m: $m}]}' >"$RUNS/../night-ledger/$1.json"
+}
+history hist-s1 suite_audit 1 1 1.0; history hist-s2 suite_audit 1 1 1.0; history hist-s3 suite_audit 3 3 0.5
+history hist-s6 suite_audit 6 3 0.4; history hist-s0 suite_audit 3 3 0; history hist-p2 spend_audit 2 2 0.4
 night_snapshot n16 8 >"$WORK/cap.json" 2>"$WORK/cap.err"
-assert jqe '[.[] | select(.area | startswith("speed-"))] | group_by(.area) | map({(.[0].area): map(.id)}) | add
+assert grep -qxF 'doctor-fix: Speed suite_audit fixers take 3 rows: Opus-eq M per closed row 1.00 at 1 (2 runs), 0.50 at 3 (1 runs), 0.80 at 6 (1 runs) · 4 samples' "$WORK/cap.err"
+assert grep -qxF 'doctor-fix: Speed spend_audit fixers take 4 rows: Opus-eq M per closed row 0.40 at 2 (1 runs); the cheapest is the largest tried, so this night tries twice it · 1 samples' "$WORK/cap.err"
+assert jqe '[.[] | select(.area | startswith("speed-suite-audit-llm-legs"))]
+  | map(.id) == (["suite_audit:llm-legs:test_mid", "suite_audit:llm-legs:test_light"]
+      + [range(1; 161) | "suite_audit:llm-legs:test_g\(.)"] + ["suite_audit:llm-legs:test_extra"])
+  and ([range(0; length; 3) as $i | .[$i:$i + 3] | map(.area) | unique | length] | all(. == 1))
+  and (map(.area) | unique | length == 55)' "$WORK/cap.json"
+assert jqe '[.[] | select(.area | startswith("speed-")) | select(.id | test("^(spend:|opportunity:|suite_audit:claude-setup)"))]
+  | group_by(.area) | map({(.[0].area): map(.id)}) | add
   == {"speed-machine-contention": ["opportunity:machine/contention", "opportunity:chat/hooks"],
-      "speed-suite-audit-llm-legs-test-mid": (["suite_audit:llm-legs:test_mid", "suite_audit:llm-legs:test_light"]
-        + [range(1; 161) | "suite_audit:llm-legs:test_g\(.)"] + ["suite_audit:llm-legs:test_extra"]),
       "speed-suite-audit-claude-setup-test-c1": ["suite_audit:claude-setup:test_c1", "suite_audit:claude-setup:test_c2"],
       "speed-spend-resumes": ["spend:resumes", "spend:hook:gate.sh"]}' "$WORK/cap.json"
-assert [ ! -s "$WORK/cap.err" ]
+rm "$RUNS"/hist-*.json && rm -r "$RUNS/../night-ledger"
 # The free worker slots never shape the Speed pick: the same snapshot on 8 slots and on 1.
 assert [ "$(night_snapshot n18 8 2>/dev/null)" = "$(night_snapshot n18 1 2>/dev/null)" ]
 cp "$S/harness/latest.json" "$S/admission-before.json"
@@ -1263,12 +1279,13 @@ assert jqe '.[] | select(.id == "regression:enough") | .component.files == []
 assert grep -qF 'skipped hook_p50:small: expected gain <5 min/day or unpriced' "$WORK/admission.err"
 assert_fails grep -qF 'skipped regression:small' "$WORK/admission.err"
 assert_fails grep -qF 'skipped opportunity:chat/hooks' "$WORK/admission.err"
-assert test "$(wc -l <"$WORK/admission.err" | tr -d ' ')" = 1
+assert test "$(sized "$WORK/admission.err" | wc -l | tr -d ' ')" = 1
 assert jqe 'all(.[]; .id != "hook_p50:small") and any(.[]; .id == "suite_audit:unpriced") and any(.[]; .id == "collector:repair")' "$WORK/admission.json"
 assert jqe '[.[].id] | index("regression:small") != null and index("collector:repair") != null' <(night_snapshot "" 8 2>/dev/null)
 mv "$S/admission-before.json" "$S/harness/latest.json"
-# Batches: seven levers on distinct files of one repository ride in one run, another repository's lever in a second;
-# seven levers sharing one file stay one run.
+# Batches: with no spend history a lever fixer takes the median rows of the past Speed runs (here 5): seven levers on
+# distinct files of one repository ride in two runs (5 + 2), another repository's lever in a third; seven levers
+# sharing one file stay one run.
 jq --argjson s "$(now)" '.as_of_s = $s | .speed.spend.selection = [] | .speed.suites.selection = []
   | ({rule: "opportunity", state: "watch", speed: true, group: "Speed", opportunity: {quality: "equivalent", recoverable_min_day: 5}}
      as $p | .problems += ([range(1; 8) as $n | $p + {id: "opportunity:batch/\($n)", fact: "lever \($n)"}
@@ -1278,7 +1295,8 @@ jq --argjson s "$(now)" '.as_of_s = $s | .speed.spend.selection = [] | .speed.su
       "opportunity:batch/other", "opportunity:batch/5", "opportunity:batch/6", "opportunity:batch/7"]' \
   "$S/harness/latest.json" >"$S/batch.json" && mv "$S/batch.json" "$S/harness/latest.json"
 batches() { jq -c 'map(select(.area | startswith("speed-"))) | group_by(.area) | map({(.[0].area): map(.id)}) | add'; }
-assert [ "$(night_snapshot n19 8 | batches)" = '{"speed-batch-1":["opportunity:batch/1","opportunity:batch/2","opportunity:batch/3","opportunity:batch/4","opportunity:batch/5","opportunity:batch/6","opportunity:batch/7"],"speed-batch-other":["opportunity:batch/other"]}' ]
+assert [ "$(night_snapshot n19 8 2>"$WORK/batch.err" | batches)" = '{"speed-batch-1":["opportunity:batch/1","opportunity:batch/2","opportunity:batch/3","opportunity:batch/4","opportunity:batch/5"],"speed-batch-6":["opportunity:batch/6","opportunity:batch/7"],"speed-batch-other":["opportunity:batch/other"]}' ]
+assert grep -qxE 'doctor-fix: Speed lever fixers take 5 rows: fallback, the median of [0-9]+ past Speed runs, no spend history' "$WORK/batch.err"
 cp "$S/harness/latest.json" "$S/batch.json"
 jq '(.problems[] | select(.id | test("^opportunity:batch/[0-9]$")) | .opportunity.files) = ["llm-legs/share/batch.sh"]' \
   "$S/batch.json" >"$S/harness/latest.json"

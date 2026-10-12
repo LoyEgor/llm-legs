@@ -460,10 +460,60 @@ def repo_top(path):
     return top if top != os.sep else os.path.dirname(path)
 
 
+def batch_kind(rules):
+    rules = set(rules)
+    return rules.pop() if len(rules) == 1 and next(iter(rules)).endswith("_audit") else "lever"
+
+
+def batch_sizes(kinds):
+    """Rows per Speed fixer, per kind: the size of the lowest Opus-eq cost per closed row over past nights (a job`s
+    spend from its night ledger over the rows its run decided, unattributed spend left out), twice it while that is
+    the largest size tried, or the minimum is never found; a kind with no such history takes the median rows of its
+    past Speed runs, any kind`s without them, and with none at all is unsplit."""
+    import statistics
+    import time_budget
+    spend = {}
+    for path in glob.glob(os.path.join(os.path.dirname(RUNS), "night-ledger", "*.json")):
+        for item in (read_json(path, {}) or {}).get("improvements") or ():
+            if isinstance(item, dict) and item.get("ref"):
+                spend[item["ref"]] = item.get("spend_m") or 0.0
+    seen, costs = {}, {}
+    for path in glob.glob(os.path.join(RUNS, "*.json")):
+        run = read_json(path, {})
+        if not isinstance(run, dict) or not str(run.get("area") or "").startswith("speed-") or not run.get("closed_at"):
+            continue
+        rows = [p for p in run.get("problems") or () if isinstance(p, dict)]
+        kind = batch_kind(p.get("rule") for p in rows)
+        seen.setdefault(kind, []).append(len(rows))
+        decided = {d.get("id") for d in run.get("decisions") or () if isinstance(d, dict)} & {p.get("id") for p in rows}
+        shared = sum(1 for p in rows if p.get("rule") in time_budget.IMPROVEMENT_RULES or str(p.get("rule")).startswith("test_"))
+        if spend.get(run.get("id")) and decided and shared:
+            cost = costs.setdefault(kind, {}).setdefault(len(rows), [0.0, 0, 0])
+            cost[0], cost[1], cost[2] = cost[0] + spend[run["id"]] * shared, cost[1] + len(decided), cost[2] + 1
+    sizes = {}
+    for kind in kinds:
+        cost = {size: (c[0] / c[1], c[2]) for size, c in (costs.get(kind) or {}).items()}
+        if cost:
+            best = min(cost, key=lambda size: (round(cost[size][0], 2), -size))
+            sizes[kind] = best * 2 if best == max(cost) else best
+            why = ", ".join("%.2f at %d (%d runs)" % (cost[size][0], size, cost[size][1]) for size in sorted(cost))
+            print("doctor-fix: Speed %s fixers take %d rows: Opus-eq M per closed row %s%s · %d samples" % (
+                kind, sizes[kind], why, "; the cheapest is the largest tried, so this night tries twice it"
+                if sizes[kind] != best else "", sum(c[1] for c in cost.values())), file=sys.stderr)
+            continue
+        pool = seen.get(kind) or [n for counts in seen.values() for n in counts]
+        sizes[kind] = max(1, int(statistics.median(pool))) if pool else None
+        print("doctor-fix: Speed %s fixers take %s rows: fallback, %s" % (
+            kind, sizes[kind] or "all", "the median of %d past Speed runs, no spend history" % len(pool) if pool
+            else "no past Speed run"), file=sys.stderr)
+    return sizes
+
+
 def batch_speed(entries, speed):
-    """One Speed run per shared context, however many rows, in rank order: the suite audits of one repository, all spend
-    audits, the levers whose component files lie in one set of repositories (levers sharing a file always together).
-    A row an open run under 12 h holds stays out: its batch would claim a fresh area beside that run."""
+    """Speed runs per shared context (the suite audits of one repository, all spend audits, the levers whose component
+    files lie in one set of repositories), filled in rank order up to their kind`s `batch_sizes`; levers sharing a file
+    always ride together. A row an open run under 12 h holds stays out: its batch would claim a fresh area beside
+    that run."""
     held = dict(line.split("\t") for line in os.environ.get("DF_HELD_SPEED", "").splitlines())
     for entry in entries:
         if entry["id"] in speed and entry["id"] in held:
@@ -483,14 +533,25 @@ def batch_speed(entries, speed):
             groups.remove(other)
         group["files"] |= files
         group["entries"].append(entry)
-    batches = {}
+    contexts = {}
     for group in groups:
         rule = group["entries"][0]["rule"]
         key = (rule, str(group["entries"][0]["id"]).split(":")[1]) if rule == "suite_audit" else (rule,) if group["audit"] \
             else tuple(sorted({repo_top(path) for path in group["files"]}))
-        batches.setdefault(key, []).extend(group["entries"])
+        contexts.setdefault(key, []).append(group)
+    kind = {key: batch_kind(e["rule"] for g in found for e in g["entries"]) if found[0]["audit"] else "lever"
+            for key, found in contexts.items()}
+    sizes = batch_sizes(sorted(set(kind.values()))) if contexts else {}
     ranked = {entry["id"]: n for n, entry in enumerate(entries)}
-    for batch in batches.values():
+    batches = []
+    for key, found in contexts.items():
+        size, batch = sizes.get(kind[key]), None
+        for group in sorted(found, key=lambda g: min(ranked[e["id"]] for e in g["entries"])):
+            if batch is None or size and len(batch) + len(group["entries"]) > size:
+                batch = []
+                batches.append(batch)
+            batch += group["entries"]
+    for batch in batches:
         batch.sort(key=lambda entry: ranked[entry["id"]])
         area = "speed-" + slug(re.sub(r"^opportunity:", "", str(batch[0]["id"])))
         for entry in batch:
