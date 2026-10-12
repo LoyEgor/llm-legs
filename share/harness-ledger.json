@@ -6785,6 +6785,20 @@
       "status": "fixed",
       "fixes": [
         {
+          "at": "2026-10-12T04:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-carry-20261012T010242Z-4ed0",
+          "files": [
+            "llm-legs/tests/test_code_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "whole suite vs 3 shards (SUITE_SHARD=i/3): asserts and verdict",
+            "data": "SUITE_SHARD=i/N parallel runs and tests/run-all on this branch, load 35-170",
+            "result": "194 asserts PASS before and after: shards 80+43+71 = 194, tail cd-units-to-end (114) cut at the --repo section into 43 + 71; shard wall 77/23/34 s vs 95/72 s at load ~170; run-all merged 194 PASS"
+          }
+        },
+        {
           "at": "2026-10-10T09:10:00+03:00",
           "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-code-doctor-20261010T031916Z-708b",
           "files": [
@@ -7226,6 +7240,20 @@
       },
       "status": "fixed",
       "fixes": [
+        {
+          "at": "2026-10-12T04:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-carry-20261012T010242Z-4ed0",
+          "files": [
+            "llm-legs/tests/test_worker_run_entry.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "whole suite vs its 4 shards (SUITE_SHARD=i/4): asserts and verdict",
+            "data": "SUITE_SHARD=i/N parallel runs and tests/run-all on this branch, load 35-170",
+            "result": "whole 227 asserts PASS 102 s = shards 149+12+72+(35+3) PASS; the 3 fork-shim asserts run in every shard; sections disjoint (suite_shard_owns refuses a repeat); run-all merged 227 PASS in 130 s at load ~170"
+          }
+        },
         {
           "at": "2026-10-10T09:31:00+03:00",
           "by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-entry-20261010T031938Z-0fca",
