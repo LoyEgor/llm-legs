@@ -351,12 +351,12 @@ def doctor_dir(name):
 
 
 def backlog():
-    """What the night still has to process: due review-debt lines over the sweep repositories, Speed's selected rows,
+    """What the night still has to process: review-debt lines over the sweep repositories (fit and legacy read them all), Speed's selected rows,
     the doctors' open rows; None where a source is unreadable."""
     import handoffs
 
     debt = os.environ.get("NIGHT_RUN_REVIEW_DEBT") or f"{HOME}/.local/bin/review-debt"
-    due = 0
+    lines = 0
     for repo in handoffs.sweep_repos():
         try:
             row = subprocess.run([debt, "--repo", repo, "--split"], capture_output=True, text=True,
@@ -364,13 +364,13 @@ def backlog():
         except OSError:
             row = ""
         found = dict(part.split("=", 1) for part in row.split() if "=" in part)
-        if not str(found.get("DUE_LINES", "")).isdigit():
-            due = None
+        if not str(found.get("LINES", "")).isdigit():
+            lines = None
             break
-        due += int(found["DUE_LINES"])
+        lines += int(found["LINES"])
     selection = (read_json(f"{doctor_dir('harness')}/latest.json", {}).get("speed") or {}).get("selection")
     counts = [read_json(f"{doctor_dir(name)}/latest.json", {}).get("problem_count") for name in DOCTOR_NAMES]
-    return {"debt_due": due, "speed": len(selection) if isinstance(selection, list) else None,
+    return {"debt": lines, "speed": len(selection) if isinstance(selection, list) else None,
             "doctors": sum(counts) if all(isinstance(c, int) for c in counts) else None}
 
 
@@ -431,7 +431,7 @@ def goal_lines(path, night):
         heads = [day(n, "%d %b %H:%M") for n in nights]
     share = [(g.get("doctors_share") or {}).get("share") for g in goals]
     ages = [(g.get("doctors_share") or {}).get("age_h", -1) for g in goals]
-    cols = [[(g.get("backlog") or {}).get(key) for g in goals] for key in ("debt_due", "speed", "doctors")]
+    cols = [[(g.get("backlog") or {}).get(key) for g in goals] for key in ("debt", "speed", "doctors")]
     show = lambda v: DASH if v is None else "%s" % v
     rows = [["", "Doctors %", "debt ln", "Speed", "rows"]]
     for i, head in enumerate(heads):

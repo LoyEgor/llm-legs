@@ -653,7 +653,7 @@ seven(30)
 check(night_spend.doctors_share() == {"share": 22.9, "age_h": 30}, "a stale file keeps its share and names its age")
 debt = os.path.join(work, "review-debt")
 with open(debt, "w") as handle:
-    handle.write("#!/bin/sh\nprintf 'LINES=40 FILES=3 DUE_LINES=7 DUE_FILES=1\\n'\n")
+    handle.write("#!/bin/sh\nprintf 'LINES=7 FILES=3 DUE_LINES=2 DUE_FILES=1\\n'\n")
 os.chmod(debt, 0o755)
 os.environ["NIGHT_RUN_REVIEW_DEBT"] = debt
 for name, count_ in zip(night_spend.DOCTOR_NAMES, (1, 2, 0, 3, 0)):
@@ -663,11 +663,11 @@ for name, count_ in zip(night_spend.DOCTOR_NAMES, (1, 2, 0, 3, 0)):
     if name == "harness":
         doc["speed"] = {"selection": ["a", "b", "c"]}
     json.dump(doc, open(os.path.join(work, "goal-" + name, "latest.json"), "w"))
-check(night_spend.backlog() == {"debt_due": 7, "speed": 3, "doctors": 6}, "backlog now: %s" % night_spend.backlog())
+check(night_spend.backlog() == {"debt": 7, "speed": 3, "doctors": 6}, "backlog now: %s" % night_spend.backlog())
 goal_dir = os.path.join(work, "goal-nights")
 os.makedirs(goal_dir)
-for id_, day, backlog_, share in (("n1", 1, {"debt_due": 20, "speed": 5, "doctors": 9}, 30.0),
-                                  ("n2", 2, {"debt_due": 14, "speed": 4, "doctors": 8}, 26.5)):
+for id_, day, backlog_, share in (("n1", 1, {"debt": 20, "speed": 5, "doctors": 9}, 30.0),
+                                  ("n2", 2, {"debt": 14, "speed": 4, "doctors": 8}, 26.5)):
     json.dump({"id": id_, "started_at": "2026-10-0%dT02:00:00Z" % day, "finished_at": "2026-10-0%dT08:00:00Z" % day,
                "jobs": [{"ref": "x"}], "doctors_share": {"share": share}, "backlog": backlog_},
               open(os.path.join(goal_dir, id_ + ".json"), "w"))
