@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 2
+# shards: 3
 . "$(dirname "$0")/instruction_gate_harness.sh" || exit 1
 profile_link
 docs_link
@@ -231,6 +231,9 @@ assert_eq "" "$(raw_check sid-off Bash command "$grow_cmd" "$SPAN_T")"
 assert_eq "tier doc" "$(cat "$DOC")"
 export INSTRUCTION_WATCH_CHAT=all
 
+fi
+if suite_shard_owns 2 journal-and-inflight; then
+export INSTRUCTION_WATCH_CHAT=all
 echo "== journal: the bound trims what Hammerspoon receipted, and says so when it must drop more"
 TRIM_STATE="$WORK/trim"
 trim_plant() { # unreceipted receipted
@@ -281,8 +284,6 @@ span_base sid-sweeper >/dev/null
 assert [ -e "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" ]
 assert [ ! -e "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv" ]
 
-fi
-if suite_shard_owns 2 journal-and-inflight; then
 chat_name_stub
 
 echo "== journal: one durable record per change, machine-wide, with what a menu needs"
@@ -320,6 +321,10 @@ assert_eq sid-jw "$(printf '%s' "$rec" | jq -r '.sid')"
 assert_eq 'Stub chat (abcdef12)' "$(printf '%s' "$rec" | jq -r '.chat')"
 assert_eq null "$(printf '%s' "$rec" | jq '.observer')"
 printf '#!/bin/sh\nexit 1\n' > "$HOME/.local/bin/chat-name"
+
+fi
+if suite_shard_owns 3 in-flight; then
+chat_name_stub
 
 echo "== in flight: bytes no mark accounts for are reported, never put back"
 printf 'tier doc\n' > "$DOC"

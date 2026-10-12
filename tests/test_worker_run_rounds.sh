@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 2
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # For a case that reads no report: exit_code is the supervisor's last write, so the run is over
@@ -452,6 +452,10 @@ assert test "$(jq -c '.add_dirs // []' "$RUN_DIR/meta.json")" = '[]'
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
 assert await_exit
 
+fi
+
+if suite_shard_owns 3 rounds-sonnet-trial; then
+DELEG_BENCHES="$HOME/.claude-profiles/.claudeb/worker-stats/benches"
 # TEMP-SONNET-TRIAL(fixers): while the marker is live, a claudeb fixer of a fit or legacy round with no explicit
 # model runs sonnet at the table's effort; any other lens, an explicit model, an effort sonnet lacks, or a spent or
 # missing marker keeps opus.
