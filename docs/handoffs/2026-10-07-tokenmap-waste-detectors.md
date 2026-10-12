@@ -1,6 +1,6 @@
 # Tokenmap: detectors for spend that buys nothing
 
-Status: open (the item-9 sub-items with no Done mark; the rest done in token-map b044500, 93c2a59, cf68b86, 03057cb, 3f597e7, 3e3b078) — To: «Token spending tracking and optimization»
+Status: open (the item-9 sub-items with no Done mark, added 2026-10-12; the 2026-10-10 ones settled 20261012T005404Z-e2f7) — To: «Token spending tracking and optimization»
 
 From «Updater doctor», 2026-10-07.
 
@@ -21,18 +21,18 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 7. **Startup that is never used.** Done in token-map b044500 (`Unused startup`, read by Spend's startup audits).
 8. **Frontier model on a small task.** Shown only, never a cut. Done in token-map 93c2a59 (`Frontier model, small task`: opus or fable contexts that ended within 5 requests, never toned).
 9. **Export which causes are avoidable.** Harness `share/spend.py` (llm-legs 90cae246) copies tokenmap's unavoidable cache re-write causes (`expired (1h+ idle)` and the others from FINDINGS §26). Put an `avoidable` flag on each cause row in `tracking.json`, so the doctor reads it rather than keeping a copy. — Done in token-map 3e3b078; the Spend side is in `2026-10-07-harness-index.md`.
-   - Account switch on resume (spend audit `rewrites:idle 5-60min`, 2026-10-10): prompt cache is per org, so a resume on another account reads only the cross-org system prefix (8-25k) and re-writes the rest, filed as `idle 5-60min` or `unexplained`. All 6 such re-writes over 1k in the 7 days to 10-10 (1.86M) follow a `credential_org` attachment naming a new org; same-org resumes in that window kept the cache. Track the org per context (the `credential_org` attachment) and file it as an avoidable `account switch` cause ahead of the idle ones.
-   - Auto-memory prompt (spend audit `startup:CLAUDE.md + memory index`, 2026-10-09): the memory system-prompt section (~2.3k chars a context, there only while auto-memory is on) is priced inside `system + tools (not in total)`; attribute it to this part.
-   - Stop re-answers (spend audit `hook:worker-run-backstop.sh`, 2026-10-10): every request of the forced turn bills the hook, so a turn that goes on to other work is over-priced (264k of its 527k was one turn fixing the hook); the wakes of the waits a block starts are billed nowhere. Re-audit 2026-10-12: 0 blocks since 10-10T02:13Z, yet the row reads ×42 `worse` until the window rolls (10-17); a per-row last-block date would show a component quiet since its fix.
-   - Review waits (spend audit `spawn:review-waiter`, 2026-10-10): the relay is gone (llm-legs ee185fa8); a background `review-bench wait`'s completion wakes the chat as a main-thread turn no row attributes to review waits.
-   - Skill listing per entry (spend audit 2026-10-10): `skills()` prices entries from the most common listing only, so account-only synced entries (com workers' `anthropic-skills:*`, `cowork-plugin-management:*`) are missing there; split per listing hash.
-   - Hook-asked calls (spend audit `hook:context-nudge.sh`, 2026-10-10): the focus-file Write a nudge asks for (~1.4k/week) is priced as `tool call: Write`; charge a call that follows a hook's note and touches the path it names to that hook.
-   - Retired relays (spend audit `spawn:codex-worker`, 2026-10-10): their successor, the chat's own `worker-run` start/wait/report turns, shows only in Bash `worker-run`, never per vendor.
+   - Account switch on resume (`credential_org` names a new org): avoidable `account switch` cause. — Done in token-map e2c86b4.
+   - Auto-memory prompt section: carved into `CLAUDE.md + memory index` from `prompt_snapshot`. — Done in token-map 1869303.
+   - Stop re-answers: the forced turn bills the hook only while it keeps to the procedure; its waits' wakes bill it too. — Done in token-map 1869303.
+   - Quiet since a fix (re-audit 2026-10-12, worker-run-backstop.sh): 0 blocks since 10-10T02:13Z, yet the row reads ×42 `worse` until the window rolls (10-17); a per-row last-block date would show it.
+   - Review waits and retired relays: `procedure` row (worker-run by vendor, review-bench, wakes); Spend `turns:<step>`. — Done in token-map 7a24c2d, llm-legs 503e604e.
+   - Skill listing per entry: priced from every listing hash. — Done in token-map 63f4458.
+   - Hook-asked calls: Hooks `Calls a hook asked for`. — Done in token-map db663fc, llm-legs f3527bf8.
    - Gate time (spend audit `hook:worker-launch-gate.sh`, 2026-10-12): cost is hook time (749 floor events in 10 days), not tokens.
-   - No-op cd rewrites (spend audit `hook:cd-guard.sh`, 2026-10-10): 26% of cd calls cd into the cwd itself; split their cd-guard note out of `Injected text` so the owner can price allowing them untouched.
-   - Re-write causes (spend audit `rewrites:unexplained`, 2026-10-10): 73 of 76 turn-2 `unexplained` re-writes (1.73M of 1.91M in 7 d) follow a turn-1 ToolSearch load of `claude-in-chrome` tools (Claude Code re-writes the messages after it; built-in WebSearch loads never do): give them a cause of their own. A first post-compaction request that cached nothing still sets the next one's `prev_ctx`, so its first write books as a re-write (2026-10-09 night fixer, 55k).
-   - Denied spawns (spend audit `spawn:gemini-worker`, 2026-10-10): an Agent call `worker-spawn-hook.sh` denies is no spawn, yet costs the parent its prompt and the re-issued brief; count denied Agent calls by type.
-   - Deferred tool list (spend audit 2026-10-10): `surfacedNames` schemas Claude Code loads itself share the leaf with ToolSearch loads; a listing cut at source (Claude Docs, 10-05) still rides resumed contexts as live `Never used` spend; split both.
+   - No-op cd rewrites: own row `cd-guard (cd into the cwd)`. — Done in token-map a0d6b69.
+   - Re-write causes: `MCP tool load`; a post-compaction request that cached nothing is no baseline. — Done in token-map e2c86b4.
+   - Denied spawns: Startup `Denied spawns, by agent`. — Done in token-map ad0f177.
+   - Deferred tool list: schemas by who loaded them; cut-at-source entries apart from Never used. — Done in token-map 2131945.
    - Deny-forced reads (spend audit `hook:instruction-write-gate.sh`, 2026-10-12): 10 of the 24 true shell-write denials in 7 d were followed by a full Read of the denied file (the Edit route needs it), priced as `tool call: Read`; charge a Read that follows a deny and names its path to the hook.
    - Skill forks (spend audit `spawn:subagent`, 2026-10-12): `subagent` is the fallback for a sidechain with no `attributionAgent`; all 49 of the 7 d are Claude Code's forked `/code-review` in review-bench skill cells: label them by the parent's Skill name. Pre-10-09 forks sit in `raw-events` rows with `agent_type` NULL, which `SUB_CLAUDE` drops, so the row reads `Δ new` on old load.
    - Gate wall time (spend audit `hook:review-flow-gate.sh`, 2026-10-12): its token price is refusals only (see its ledger row); its cost now is the PreToolUse wait on every Bash call, which only Speed's hook floors see.
