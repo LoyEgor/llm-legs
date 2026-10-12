@@ -6281,7 +6281,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_llm_limits_grok"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T08:45:00+03:00",
@@ -6296,12 +6296,27 @@
             "data": "each shard alone (SUITE_SHARD=i/4) and the unsharded run (tests/run-all, no room to shard at load ~150), all at load 90-150",
             "result": "every shard and the unsharded run PASS with the same last line; collector calls per job 39/37 -> 24/15/14/23, so the pole holds ~38 % fewer"
           }
+        },
+        {
+          "at": "2026-10-12T05:00:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+          "files": [
+            "llm-legs/llm-limits.sh",
+            "llm-legs/tests/test_llm_limits.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "llm-limits.sh --json on the suite fixture HOME, base vs fix, as_of/fetched_at/ages aside; the ElevenLabs reader on a missing ELEVENLABS_KEYS file exits 1 before any read (elevenlabs_balance.py accounts(), elevenlabs_keys_sync.py main), the same empty reading the skip leaves",
+            "data": "tests/llm_limits_harness.sh fixtures (every suite sets ELEVENLABS_KEYS to a missing file); 3 rounds of 5 collections per side at load 26-70",
+            "result": "identical output; 0.537 -> 0.431 CPU-s a collection (-20 %), ~76 collections a run; red on old: test_llm_limits el_collect with a missing key file"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261010T031925Z-1fd4",
-      "note": "Before: 356 runs, 1.2 wall-min a run, 18 min + 42 w-min/day. Timestamped xtrace: the wall is ~76 llm-limits.sh calls at 4-8 s each under load 90-150, while one empty-HOME call is ~0.45 CPU-s (676 traced lines; forks of file_mtime/worker_model_pinned_account ~70 ms each, elevenlabs_balance.py ~0.8 s even with no keys). No sleeps worth cutting (the hung-touch and busy-lock cases wait ~1.5 s by design), no legacy checks found; hs renderer ~1 s. Shards only split when run-suites' slot_room finds room. Not cut: the collector's own per-call cost (llm-limits.sh forks and the ElevenLabs python start), production code outside this suite; rebalancing blocks further would save only 2 calls on the pole.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+      "note": "2026-10-12 (night e2f7): xtrace again showed the wall is ~59 collector calls a run, ~28 % of each collection's wall one ElevenLabs Python that a missing fixture key file can only fail; cut in llm-limits.sh (llm-legs@a1577911). Left: the row's minutes are mostly its run count, 30-50 named runs a day pulled by tests/affected (186+116 of 330 grok runs in 7 d were multi-suite named runs), the fan-out lever and not this suite's wall; a 20 % per-run cut cannot bring 40-50 min/day under the 15 min/day heavy floor. Before: 356 runs, 1.2 wall-min a run, 18 min + 42 w-min/day. Timestamped xtrace: the wall is ~76 llm-limits.sh calls at 4-8 s each under load 90-150, while one empty-HOME call is ~0.45 CPU-s (676 traced lines; forks of file_mtime/worker_model_pinned_account ~70 ms each, elevenlabs_balance.py ~0.8 s even with no keys). No sleeps worth cutting (the hung-touch and busy-lock cases wait ~1.5 s by design), no legacy checks found; hs renderer ~1 s. Shards only split when run-suites' slot_room finds room. Not cut: the collector's own per-call cost (llm-limits.sh forks and the ElevenLabs python start), production code outside this suite; rebalancing blocks further would save only 2 calls on the pole.",
       "handoff": null
     },
     {
@@ -6341,7 +6356,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_vendor_fingerprint"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:00:00+03:00",
@@ -6356,12 +6371,27 @@
             "data": "the suite fixture; mutation: a bare check in a section turns the suite red (check names its vendors or is check_all)",
             "result": "272 -> 271 asserts green (the events count between the two lock waits, read once after both); CPU 96 -> 55 s, a full check 1.35 vs a one-vendor check 0.35 CPU s, wall 556 s at load 100 -> 262 s at load 169"
           }
+        },
+        {
+          "at": "2026-10-12T05:00:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+          "files": [
+            "llm-legs/bin/vendor-fingerprint",
+            "llm-legs/tests/test_vendor_fingerprint.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the four fingerprints (codex, grok, gemini, claude) a baseline check writes from the suite fixture, base vs fix, checked_at aside, with a seeded codex divergence (catalog and client lines)",
+            "data": "tests/test_vendor_fingerprint.sh fixture; jq counted through a PATH shim; 3 rounds of 3 check_all per side at load ~70",
+            "result": "byte-identical fingerprints; jq runs per baseline check_all 94 -> 56 (codex 50 -> 34); 1.23 -> 1.08 CPU-s a check_all (-12 %); red on old: the suite's jq-runs <= 56 pin"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-vendor-fingerprint-20261010T031932Z-6e6e",
-      "note": "Profile at load 100-190: 51 check calls held 390 of 561 s wall; the rest is request/close/night (doctor-fix record and orchestrate, fixture worktrees), the checked work itself. Ruled out: global git hooks (HOME is the fixture home, git sees no core.hooksPath); a shard split (sections chain events, fingerprints and ids from the first check to the last, a shard would replay most of the run); legacy cases (each section pins a 2026-09/10 behaviour still in bin/vendor-fingerprint). Left: vendor-fingerprint check runs one jq per event file in requested() per vendor (48 live events, ~0.5 CPU s a scheduled check), not the suite's cost.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+      "note": "2026-10-12 (night e2f7): 94 check calls hold most of the wall; a check is ~55 jq forks for codex, each facet a parse | slurp | wrap chain of three; put_lines/put_pairs write a facet with one jq (llm-legs@a1577911). Ruled out: lockf re-exec (the lock is tested), the fixture repo copies (once a run). Left: the row's minutes are mostly its run count, 30-50 named runs a day pulled by tests/affected (186+116 of 330 grok runs in 7 d were multi-suite named runs), the fan-out lever and not this suite's wall; a 20 % per-run cut cannot bring 40-50 min/day under the 15 min/day heavy floor. Profile at load 100-190: 51 check calls held 390 of 561 s wall; the rest is request/close/night (doctor-fix record and orchestrate, fixture worktrees), the checked work itself. Ruled out: global git hooks (HOME is the fixture home, git sees no core.hooksPath); a shard split (sections chain events, fingerprints and ids from the first check to the last, a shard would replay most of the run); legacy cases (each section pins a 2026-09/10 behaviour still in bin/vendor-fingerprint). Left: vendor-fingerprint check runs one jq per event file in requested() per vendor (48 live events, ~0.5 CPU s a scheduled check), not the suite's cost.",
       "handoff": null
     },
     {
@@ -6432,7 +6462,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_worker_run_lifecycle"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:40:00+03:00",
@@ -6448,12 +6478,27 @@
             "data": "tests/test_worker_run_lifecycle.sh at load ~200, whole and sharded run side by side; harness setup sourced once per side",
             "result": "whole PASS 215, shards 60+75+80 = 215, every section once (suite_shard_owns); roster tree 337 paths identical; whole 889 s vs sharded 434 s wall at equal CPU (~55 s); setup 7.2 -> 0.68 s wall, 0.94 -> 0.11 CPU-s"
           }
+        },
+        {
+          "at": "2026-10-12T05:00:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+          "files": [
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_lifecycle.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "model_id a picked codex start records: base resolves the vendor-wide slug, the picked account's slug in pick_account_listing and the same again after the pick; the fix reuses the pick's slug for the same account and model, and resolves the vendor-wide slug only when the account's own lists none",
+            "data": "worker_run_harness fixture, codex starts with PICK_ACCOUNT=picked; catalog reads counted through a jq PATH shim; 3 rounds of 3 starts per side at load ~70",
+            "result": "same model_id and outcomes (13 covering suites PASS); codexb lookups 4 -> 2 per picked codex run (start 3 -> 1, supervisor 1); 0.66 -> 0.53 CPU-s a start (-19 %); red on old: lifecycle `test 8 -eq 4`"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-lifecycle-20261010T031941Z-12bb",
-      "note": "Before: 281 runs, 1.1 wall-min a run, 5.4 min + 27 w-min/day (value 57.2, latest.json 2026-10-10). Traced at load 70: 418 s wall, 49.5 CPU-s; a start costs 0.5-0.8 CPU-s but ~4 s wall, so the wall is ~47 serial launches waiting on the scheduler, plus 7.2 s of setup (roster_add's ~320 mkdir forks, every worker_run suite and shard pays it). Fixed: `# shards: 3` (detached/accounts 60, light+refusals+missing pool 75+, walls/pins/computer/orphans 80 asserts; profile shares ~150/120/143 s), roster_add one mkdir per vendor (fork-count assert, 12 -> 4, red on base). Not cut: the vendor loops (each case asserts its vendor's OUTCOME name) and the legacy SESSION RESERVE case (its launch also guards picker stderr passthrough and the report's ACCOUNT line); the pack stub's 2 s sleep is the run-outlives-pack premise. The sibling opportunity test-health/idle/llm-legs/test_worker_run_lifecycle (6.95) was not this run's. Met on the covering run: test_worker_run_stamps red on base since llm-legs@8bd96a43 made `--model haiku` a launchable request row (its refusal list still held claudeb:haiku; dropped here); test_worker_run_wait_stream red (assert 11, `$RUN/tokens` never written: run_tokens -> night_spend.run_usage gives no number) on heads 010b5a3a, 8f685eb7, d496f12b and this branch since ~2026-10-10T06:53Z, green on base 981c1486 at 05:38Z, so not this branch's; not dug.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+      "note": "2026-10-12 (night e2f7): traced again at load 30-180: 320 s wall on ~40 CPU-s; the wall is worker-run's own start/supervise/report per case, no sleeps but the 0.05 s exit polls; each picked codex start ran `codexb models` 3 times for 2 distinct answers (llm-legs@a1577911). Left: the row's minutes are mostly its run count, 30-50 named runs a day pulled by tests/affected (186+116 of 330 grok runs in 7 d were multi-suite named runs), the fan-out lever and not this suite's wall; a 20 % per-run cut cannot bring 40-50 min/day under the 15 min/day heavy floor. Before: 281 runs, 1.1 wall-min a run, 5.4 min + 27 w-min/day (value 57.2, latest.json 2026-10-10). Traced at load 70: 418 s wall, 49.5 CPU-s; a start costs 0.5-0.8 CPU-s but ~4 s wall, so the wall is ~47 serial launches waiting on the scheduler, plus 7.2 s of setup (roster_add's ~320 mkdir forks, every worker_run suite and shard pays it). Fixed: `# shards: 3` (detached/accounts 60, light+refusals+missing pool 75+, walls/pins/computer/orphans 80 asserts; profile shares ~150/120/143 s), roster_add one mkdir per vendor (fork-count assert, 12 -> 4, red on base). Not cut: the vendor loops (each case asserts its vendor's OUTCOME name) and the legacy SESSION RESERVE case (its launch also guards picker stderr passthrough and the report's ACCOUNT line); the pack stub's 2 s sleep is the run-outlives-pack premise. The sibling opportunity test-health/idle/llm-legs/test_worker_run_lifecycle (6.95) was not this run's. Met on the covering run: test_worker_run_stamps red on base since llm-legs@8bd96a43 made `--model haiku` a launchable request row (its refusal list still held claudeb:haiku; dropped here); test_worker_run_wait_stream red (assert 11, `$RUN/tokens` never written: run_tokens -> night_spend.run_usage gives no number) on heads 010b5a3a, 8f685eb7, d496f12b and this branch since ~2026-10-10T06:53Z, green on base 981c1486 at 05:38Z, so not this branch's; not dug.",
       "handoff": null
     },
     {
@@ -6463,7 +6508,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_worker_run_attribution"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T08:43:14+03:00",
@@ -6479,12 +6524,27 @@
             "data": "SUITE_SHARD 1/2 and 2/2 runs plus WORKER_RUN_TEST_ATTRIBUTION_CASE=made_worktree, load 150-190; one source of each harness",
             "result": "asserts 66+258 -> 106+218 (324 both), every section runs once per full run in the old order; fixture tree sha identical, 392 entries; harness setup 6.4 s -> 0.45 s (3 pairs, load ~180)"
           }
+        },
+        {
+          "at": "2026-10-12T05:00:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+          "files": [
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_attribution.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the outside-repair variants' asserts, base vs fix: two `worker-run report` calls on the same finished run become one read checked for both notes; the worker-run slug change as in speed-test-health-heavy-worker-run-lifecycle",
+            "data": "SUITE_SHARD 1/2 and 2/2 via tests/run-all at load ~70",
+            "result": "324 asserts PASS both; one report (~0.9 s wall) less per outside variant; 0.66 -> 0.53 CPU-s a picked codex start"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-attribution-20261010T031936Z-3e0e",
-      "note": "Per launch the wall is worker-run itself (start ~3 s, supervisor finish ~6 s, wait ~1.5 s, report ~2 s at load 160), production code shared by 16 suites, not this suite's; await_done's worker-run wait stays (it writes run state other suites read). The made-worktree tick wait stays: worker-run reads admin-dir birth in whole seconds and the early worktree must be born a second before the run. 3 shards ruled out: the pole would hold the 13-launch variant loop either way, and each shard adds a harness setup.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+      "note": "2026-10-12 (night e2f7): traced at load 30-180: 340 s wall on ~39 CPU-s, 106 s in exit polls of worker-run's supervisor, 67 s in starts, 18 s in reports; cut a duplicate report and the start's duplicate slug lookups (llm-legs@a1577911). Left: the row's minutes are mostly its run count, 30-50 named runs a day pulled by tests/affected (186+116 of 330 grok runs in 7 d were multi-suite named runs), the fan-out lever and not this suite's wall; a 20 % per-run cut cannot bring 40-50 min/day under the 15 min/day heavy floor. Per launch the wall is worker-run itself (start ~3 s, supervisor finish ~6 s, wait ~1.5 s, report ~2 s at load 160), production code shared by 16 suites, not this suite's; await_done's worker-run wait stays (it writes run state other suites read). The made-worktree tick wait stays: worker-run reads admin-dir birth in whole seconds and the early worktree must be born a second before the run. 3 shards ruled out: the pole would hold the 13-launch variant loop either way, and each shard adds a harness setup.",
       "handoff": null
     },
     {
@@ -7303,7 +7363,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_llm_limits"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:30:00+03:00",
@@ -7322,12 +7382,27 @@
             "data": "tests/llm_limits_harness.sh fixtures with the walls log; the live store read-only; test_llm_limits on base and fix side by side",
             "result": "5/5 identical; per collection 0.71 -> 0.63 CPU-s (6 runs each, load ~180); suite 50.6 -> 42.2 CPU-s, 876 -> 769 s wall side by side at load ~190"
           }
+        },
+        {
+          "at": "2026-10-12T05:00:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+          "files": [
+            "llm-legs/llm-limits.sh",
+            "llm-legs/tests/test_llm_limits.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "llm-limits.sh --json on the suite fixture HOME, base vs fix, as_of/fetched_at/ages aside; the ElevenLabs reader on a missing ELEVENLABS_KEYS file exits 1 before any read (elevenlabs_balance.py accounts(), elevenlabs_keys_sync.py main), the same empty reading the skip leaves",
+            "data": "tests/llm_limits_harness.sh fixtures; 3 rounds of 5 collections per side at load 26-70; test_llm_limits mutation (base llm-limits.sh) fails `a missing ElevenLabs key file dropped the previous reading`",
+            "result": "identical output; 0.537 -> 0.431 CPU-s a collection (-20 %); the suite's 55+ collections and every test_llm_limits_* suite share it"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-20261010T031924Z-67ba",
-      "note": "Wall is ~55 collector runs; each ~0.7 CPU-s spread over ~110 forks (52 jq), wall ~8x CPU at load 100-190, no sleeps or hot spot. Cut: each writing poll ran two Pythons for ElevenLabs (keys sync, then balance; ~0.08 CPU-s each, mostly the elevenlabs_media import), now one (balance.py --sync); epoch_iso/format_reset_time probed `date -r` before the real call and piped through sed for the zone colon (3 forks -> 1); four wall_for jq reads of the walls log -> one; worker_pool_disabled_json skips sort+jq with no disabled file or shield dir; marker clears skip rm on a missing marker. The suite's agy-quota.py block duplicated tests/test_agy_quota.sh (ok shape, login line -> rc 2) and is gone. The production poll (heartbeat, menubar) gets the same per-call cut. Not cut: the remaining ~45 jq per poll (one per vendor/account assembly step; merging them is a collector rewrite), sharding (summed suite seconds stay the same, ledger row test_daily_cost-llm-limits).",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+      "note": "2026-10-12 (night e2f7): the one ElevenLabs Python left per collection after 53fa17ca now starts only when the key file exists (llm-legs@a1577911). Left: ~42 jq forks a collection with no single hot spot; Left: the row's minutes are mostly its run count, 30-50 named runs a day pulled by tests/affected (186+116 of 330 grok runs in 7 d were multi-suite named runs), the fan-out lever and not this suite's wall; a 20 % per-run cut cannot bring 40-50 min/day under the 15 min/day heavy floor. Wall is ~55 collector runs; each ~0.7 CPU-s spread over ~110 forks (52 jq), wall ~8x CPU at load 100-190, no sleeps or hot spot. Cut: each writing poll ran two Pythons for ElevenLabs (keys sync, then balance; ~0.08 CPU-s each, mostly the elevenlabs_media import), now one (balance.py --sync); epoch_iso/format_reset_time probed `date -r` before the real call and piped through sed for the zone colon (3 forks -> 1); four wall_for jq reads of the walls log -> one; worker_pool_disabled_json skips sort+jq with no disabled file or shield dir; marker clears skip rm on a missing marker. The suite's agy-quota.py block duplicated tests/test_agy_quota.sh (ok shape, login line -> rc 2) and is gone. The production poll (heartbeat, menubar) gets the same per-call cut. Not cut: the remaining ~45 jq per poll (one per vendor/account assembly step; merging them is a collector rewrite), sharding (summed suite seconds stay the same, ledger row test_daily_cost-llm-limits).",
       "handoff": null
     },
     {
