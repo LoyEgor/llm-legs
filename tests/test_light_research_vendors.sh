@@ -16,8 +16,8 @@ run; rc=$?; assert test "$rc" -eq 0
 assert test "$(sed '1,2d' "$WORK/answer")" = 'claude research answer'
 assert grep -q '^ACCOUNT: researcher (claudeb)$' "$WORK/out"
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
-assert jq -e '.vendor == "claudeb" and .role == "research" and .model == "sonnet" and .effort == "medium"' "$RUNS/$run_id/meta.json"
-assert grep -q -- '--model sonnet --effort medium --output-format json --permission-mode plan' "$WORK/vendor.log"
+assert jq -e '.vendor == "claudeb" and .role == "research" and .model == "sonnet" and .effort == "high"' "$RUNS/$run_id/meta.json"
+assert grep -q -- '--model sonnet --effort high --output-format json --permission-mode plan' "$WORK/vendor.log"
 assert test "$(grep -c -- '--dangerously-skip-permissions' "$WORK/vendor.log")" = 0
 
 printf 'light_research=codex\n' >"$TOGGLE"
@@ -49,7 +49,7 @@ printf 'Edit the repository file.\n' >"$WORK/edit-brief"
 : >"$WORK/vendor.log"
 wr start light --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 0
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
-assert jq -e '.vendor == "claudeb" and .role == "workers" and .light == "edit" and .model == "sonnet" and .effort == "medium"' "$RUNS/$run_id/meta.json"
+assert jq -e '.vendor == "claudeb" and .role == "workers" and .light == "edit" and .model == "sonnet" and .effort == "high"' "$RUNS/$run_id/meta.json"
 wr wait "$run_id" --max 60; assert grep -q '^STATUS: done$' "$WORK/out"
 assert grep -q -- '--dangerously-skip-permissions' "$HOME/.claude-profiles/researcher/vendor.log"
 # Unfenced, a Light edit writes its workdir like any worker: never $HOME, and a task worktree its
@@ -65,7 +65,7 @@ wr wait "$run_id" --max 60
 git -C "$REPO" worktree remove --force "$REPO/.claude/worktrees/light-task"
 wr start claudeb --model sonnet --brief "$WORK/prompt" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 0
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
-assert jq -e '.model == "sonnet" and .effort == "medium" and .light == null' "$RUNS/$run_id/meta.json"
+assert jq -e '.model == "sonnet" and .effort == "high" and .light == null' "$RUNS/$run_id/meta.json"
 wr wait "$run_id" --max 60
 printf 'light_edit=grok:opus\n' >"$TOGGLE"
 wr start light --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 4

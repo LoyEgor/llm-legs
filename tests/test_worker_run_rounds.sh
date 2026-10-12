@@ -473,7 +473,7 @@ trial_model() { # round [header line...] -> model effort trial trial_lens of the
   jq -r '[.model, .effort, (.trial // "-"), (.trial_lens // "-")] | join(" ")' "$(sed -n 's/^DIR: //p' "$WORK/round.out")/meta.json"
 }
 jq -n --argjson u $(($(date +%s) + 3600)) '{id: "sonnet-fixes", until: $u}' >"$SONNET_TRIAL_MARKER"
-assert test "$(trial_model 20260802T100000Z-1f17a00)" = "sonnet medium sonnet-fixes fit"
+assert test "$(trial_model 20260802T100000Z-1f17a00)" = "sonnet high sonnet-fixes fit"
 assert grep -qx 'ARG=sonnet' "$CALL_LOG"
 assert test "$(trial_model 20260802T100000Z-1e9ac00 'EFFORT: high')" = "sonnet high sonnet-fixes legacy-b"
 assert test "$(trial_model 20260802T100000Z-0b0950f)" = "opus high - -"

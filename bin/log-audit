@@ -21,7 +21,7 @@ import collector_runs  # noqa: E402
 import log_skeleton  # noqa: E402
 from spend import read_jsonl  # noqa: E402
 
-READ_MODEL, MERGE_MODEL, EFFORT = "haiku", "sonnet", "medium"
+READ_MODEL, MERGE_MODEL, EFFORT = "haiku", "sonnet", "high"
 CHUNK_CHARS = 200000
 PARALLEL = 6
 MAX_WALL_S = 2400

@@ -28,7 +28,8 @@ Source: `share/worker-model.sh` (`worker_model_table`); first model per vendor i
 | claudeb / fable | low | low, medium, high | xhigh, max | yes |
 | codex / astra | low | low, medium, high | xhigh | no |
 | codex / sol | medium | medium, high | low, xhigh | yes |
-| claudeb / sonnet; codex / luna, terra | medium | low, medium, high | — | no |
+| claudeb / sonnet | high | medium, high | low | no |
+| codex / luna, terra | medium | low, medium, high | — | no |
 | gemini / each Flash slug `geminib families` prints | high | high | — | no |
 | gemini / pro | high | high | — | yes |
 | grok / auto (the CLI's own default) | high | high, xhigh (those its default slug lists) | — | no |

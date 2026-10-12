@@ -167,7 +167,7 @@ EOF
   assert jq -e --arg d "$dev_com" '.com.status == "ok" and .com.device_id == $d and (.com.proven_at | test("Z$"))
     and .com.email == "COM@x.test" and .com.chrome_profile == "Profile 1" and .extra.status == "needs-login"
     and .lost.status == "no-profile"' "$registry" >/dev/null
-  assert grep -q 'profile com -p --model sonnet --effort low --chrome --output-format json' "$bt/claudeb.log"
+  assert grep -q 'profile com -p --model sonnet --effort high --chrome --output-format json' "$bt/claudeb.log"
   assert test "$(head -n 1 "$bt/prompt-com")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
   assert grep -q -- "worker-run browse --seen [0-9]*-<candidate number> --account com\`" "$bt/prompt-com"
   assert test "$(grep -c '"outcome":"BROWSER_NO_DEVICE"' "$log")" -eq 1

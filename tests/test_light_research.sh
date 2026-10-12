@@ -10,7 +10,7 @@ assert test "$(toggle worker_light_vendor research)" = gemini
 assert test "$(toggle worker_light_model edit)" = "$(toggle worker_model_default_model gemini)"
 assert test "$(toggle worker_light_effort research)" = high
 printf 'worker=auto\nlight_research=claudeb:sonnet\nlight_edit=codex\n' >"$TOGGLE"
-assert test "$(toggle worker_light_vendor research) $(toggle worker_light_model research) $(toggle worker_light_effort research)" = 'claudeb sonnet medium'
+assert test "$(toggle worker_light_vendor research) $(toggle worker_light_model research) $(toggle worker_light_effort research)" = 'claudeb sonnet high'
 assert test "$(toggle worker_light_vendor edit) $(toggle worker_light_model edit)" = 'codex astra'
 printf 'light_research=mistral\nlight_edit=grok:opus\n' >"$TOGGLE"
 assert test "$(toggle eval 'worker_light_vendor research 2>/dev/null; echo $?')" = 2

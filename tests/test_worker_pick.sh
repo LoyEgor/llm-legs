@@ -1912,7 +1912,7 @@ assert contains "$output" 'light:   research gemini  f38·high'
 assert contains "$output" '         edit     gemini  f38·high'
 write_config 'light_research=claudeb:sonnet' 'light_edit=codex'
 run_case golden
-assert contains "$output" 'light:   research claudeb sonnet·med'
+assert contains "$output" 'light:   research claudeb sonnet·high'
 assert contains "$output" '         edit     codex   astra·low'
 write_config 'light_edit=grok:opus'
 run_case golden

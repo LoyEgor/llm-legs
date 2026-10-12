@@ -100,8 +100,8 @@ assert jqe -s '[.[] | select(.doctor == "log-audit" and .finished_at >= .started
   "$WORK/doctors/launches.jsonl"
 assert test "$(wc -l <"$CALLS" | tr -d ' ')" -eq 2
 assert test "$(cut -f1 "$CALLS" | sort -u)" = unset
-assert test "$(sed -n 1p "$CALLS" | cut -f2 | grep -c '^claudeb --model haiku --effort medium ')" -eq 1
-assert test "$(sed -n 2p "$CALLS" | cut -f2 | grep -c '^claudeb --model sonnet --effort medium ')" -eq 1
+assert test "$(sed -n 1p "$CALLS" | cut -f2 | grep -c '^claudeb --model haiku --effort high ')" -eq 1
+assert test "$(sed -n 2p "$CALLS" | cut -f2 | grep -c '^claudeb --model sonnet --effort high ')" -eq 1
 assert grep -q '^# Log audit: chunk 1 of 1$' "$CALLS.brief.1"
 assert test "$(head -1 "$CALLS.brief.1")$(head -1 "$CALLS.brief.2")" = 'ROUND: noneROUND: none'
 assert grep -q 'Fixture chat' "$CALLS.brief.1"
