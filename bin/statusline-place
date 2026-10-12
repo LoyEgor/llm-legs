@@ -72,7 +72,7 @@ add() {
       sleep 0.01
     done
   fi
-  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$kind" "$top" "$main" >> "$journal" 2>/dev/null || {
+  printf '%s\t%s\t%s\t%s\n' "${EPOCHSECONDS:-$(date +%s)}" "$kind" "$top" "$main" >> "$journal" 2>/dev/null || {
     [ -z "$locked" ] || rmdir "$lock" 2>/dev/null
     return 3
   }

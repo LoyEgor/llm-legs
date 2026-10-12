@@ -1367,7 +1367,7 @@ run_statusline() {
 }
 
 
-if suite_shard_owns 1 render-limits; then
+if suite_shard_owns 3 render-limits; then
 fixture_repos_cfgh
 cg_now=$(date +%s)
 jq -cn --argjson now "$cg_now" '{vendors:{codex:{accounts:[
@@ -2967,6 +2967,10 @@ rm -f "$STATE_DIR"/cache-ttl-track-*
 : > "$TRANSCRIPT"
 RUN_STATUSLINE_DEFAULT_ACCOUNT=
 
+fi
+if suite_shard_owns 4 render-kicks; then
+fixture_repos_klm
+NOW=$(date +%s)
 # --- store merge-kick (bin/statusline.sh) ---
 KICK_STAMP="$STATE_DIR/store-merge-kick"
 KICK_LOCK="$STATE_DIR/store-merge-kick.lock"

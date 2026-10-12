@@ -17,7 +17,7 @@ fi
 self=$(realpath "${BASH_SOURCE[0]}") || self=${BASH_SOURCE[0]}
 case $self in */*) bin_dir=${self%/*} ;; *) bin_dir=. ;; esac
 place="$bin_dir/statusline-place"
-parsed=$(printf '%s' "$input" | jq -r -f "$bin_dir/../share/statusline-workdir.jq") || exit 0
+parsed=$(jq -r -f "$bin_dir/../share/statusline-workdir.jq" <<< "$input") || exit 0
 IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate bash_subshell \
   bash_read_only bash_worktree bash_worktree_base bash_cd_hit tool_use_id dispatch bash_writes \
   transcript bash_rel_base bash_writes_win <<< "$parsed"
