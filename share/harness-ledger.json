@@ -5772,7 +5772,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_doctor_fix"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:57:32+03:00",
@@ -5788,12 +5788,27 @@
             "data": "the suite's own fixtures; the clean day close of four decision lines under a PATH python3 counter",
             "result": "same asserts green, same messages; per-shard CPU 21/26/19 s (3 shards) -> 13/16/16/13 s (4 shards), suite CPU 66 -> 59 s; a close runs python once instead of once per decision line plus two (5 -> 1 on the counted close, red on the old code)"
           }
+        },
+        {
+          "at": "2026-10-12T05:11:43+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+          "files": [
+            "llm-legs/bin/doctor-fix",
+            "llm-legs/share/chat-open.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_doctor_fix at HEAD vs the fix, 4 shards side by side",
+            "data": "the suite's own fixtures; shard 1 of the base cannot run outside the projects tree (its command-file cd assert), so shards 2-4 compare",
+            "result": "419 asserts green; shards 2-4 CPU 43.1 -> 41.8 s; doctor-fix startup 36 -> 20 ms a call (139 calls a run)"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-doctor-fix-20261010T031920Z-7187",
-      "note": "Measured 2026-10-10 at load 140-200 on 10 cores: wall is CPU times contention (a shard ran 16-26 CPU-s in 3-4 min), so the lever is the longest shard's CPU. Where it went: doctor-fix close and launch calls 38 of 66 CPU-s (python starts 40-70 ms each, ~260 in the suite: per decision-line touches, knobs, fix-faults, per-run knob-lines, snapshot, packet); the speed section 18 s alone, its launches and six snapshot calls chained over one fixture, so it stays one section. Ruled out: sleeps (3 x sleep 1 order run ids by the second, 3 s of a 66 s suite), legacy checks (every section pins a live doctor-fix path), packet batching (one call per run, quiet runs rare). Hidden dependency found: the floor handoff case read night-launch-close's Egor handoff file; it now writes its own.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+      "note": "2026-10-12: post-split runs read 32-48 s a run (10-11/12) against 56-337 s before; the 7-day median still holds the pre-split days. Cut: doctor-fix startup without dirname/basename, close's undecided check in bash. Left: shard 3 (df-speed, 16 CPU-s) is speed-doctor and the calibration fixture's python, chained over one fixture. Measured 2026-10-10 at load 140-200 on 10 cores: wall is CPU times contention (a shard ran 16-26 CPU-s in 3-4 min), so the lever is the longest shard's CPU. Where it went: doctor-fix close and launch calls 38 of 66 CPU-s (python starts 40-70 ms each, ~260 in the suite: per decision-line touches, knobs, fix-faults, per-run knob-lines, snapshot, packet); the speed section 18 s alone, its launches and six snapshot calls chained over one fixture, so it stays one section. Ruled out: sleeps (3 x sleep 1 order run ids by the second, 3 s of a 66 s suite), legacy checks (every section pins a live doctor-fix path), packet batching (one call per run, quiet runs rare). Hidden dependency found: the floor handoff case read night-launch-close's Egor handoff file; it now writes its own.",
       "handoff": null
     },
     {
@@ -6584,7 +6599,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_night_run"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:41:56+03:00",
@@ -6599,12 +6614,28 @@
             "data": "tests/test_night_run.sh against the worktree's bin/night-run, journal to a scratch SUITE_JOURNAL",
             "result": "479 asserts in every mode (shards 180+69+162+68); wall 483 s -> 299 s, CPU 103 -> 106 s (two more prologues)"
           }
+        },
+        {
+          "at": "2026-10-12T05:11:43+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+          "files": [
+            "llm-legs/bin/night-run",
+            "llm-legs/share/slots.sh",
+            "llm-legs/share/chat-open.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_night_run at HEAD vs the fix, both 4 shards side by side (base a detached worktree of 7f233cfe), plus the 17 suites tests/affected names for the four files",
+            "data": "tests/test_night_run.sh fixtures; doctor_snapshot's combined filter against the three old filters on the five live doctor documents (read-only)",
+            "result": "480 asserts green both sides; CPU 27.5+22.1+41.2+19.5 = 110 s -> 24.5+21.2+36.7+17.7 = 100 s, shard 3 (the pole) wall 90 -> 82 s at load ~90; snapshot identical on all five documents; 17/17 covering suites PASS"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-run-20261010T031928Z-51ca",
-      "note": "CPU-bound: ~1460 git + ~1470 jq forks in the old first shard, 35 lsof, 51 pgrep; the leftovers/finish/hold block (night leftovers, report) and the report/trade tail are the heavy parts. Fixed: 4 shards, cut at the cleanup night (its shard rebuilds the repo, fetches origin's later main and finishes the first night only when run alone; side-branch behind counts read $behind) and at the tail's own night reset. Ruled out: sleeps (0.3 + 0.5 + 0.5 s a run, process-cwd settles), legacy checks (none found). Left: branch_row forks ~8 git + 2 awk per branch and cwd_held re-lists lsof per night branch in bin/night-run, a product CPU cut for its own run. Shard 2 also went red today on token-map 9caede1's Claude 5.5 prices; its spend numbers follow them.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+      "note": "2026-10-12: the row stays loud mostly on the 7-day median of pre-split days (10-05..10-09 115-410 s a run, since ce46b797 37-57 s). Its CPU is bin/night-run's forks (a traced run: ~230 night-run calls, 2-3k external commands a shard): cut the startup's dirname/basename subshells (117 -> 38 ms a call), branch_row's ancestor git, wc/tr, awk and grep per branch, and start/finish's 18 jq doctor reads to 6. Left: report's six python3 runs (time_budget table and night, night_spend twice, night_churn, sonnet_trial; shard 2's wall), stamp's date per write (/bin/bash 3.2 runs the suite, no printf %(...)T), per-branch rev-parse/rev-list/status/night_status. CPU-bound: ~1460 git + ~1470 jq forks in the old first shard, 35 lsof, 51 pgrep; the leftovers/finish/hold block (night leftovers, report) and the report/trade tail are the heavy parts. Fixed: 4 shards, cut at the cleanup night (its shard rebuilds the repo, fetches origin's later main and finishes the first night only when run alone; side-branch behind counts read $behind) and at the tail's own night reset. Ruled out: sleeps (0.3 + 0.5 + 0.5 s a run, process-cwd settles), legacy checks (none found). Left: branch_row forks ~8 git + 2 awk per branch and cwd_held re-lists lsof per night branch in bin/night-run, a product CPU cut for its own run. Shard 2 also went red today on token-map 9caede1's Claude 5.5 prices; its spend numbers follow them.",
       "handoff": null
     },
     {
@@ -6614,7 +6645,7 @@
         "rule": "opportunity",
         "ident": "test-health/pole/llm-legs/test_night_run"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:41:56+03:00",
@@ -6629,12 +6660,28 @@
             "data": "as speed-test-health-heavy-night-run",
             "result": "479 asserts in every mode; by the old first shard's profile (302 s at load ~170) the new first shard is ~46 % of it and the cleanup shard ~54 %, the old second shard split ~57/43"
           }
+        },
+        {
+          "at": "2026-10-12T05:11:43+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+          "files": [
+            "llm-legs/bin/night-run",
+            "llm-legs/share/slots.sh",
+            "llm-legs/share/chat-open.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "as speed-test-health-heavy-night-run",
+            "data": "as speed-test-health-heavy-night-run",
+            "result": "the pole shard (3, cleanup to leftovers) CPU 41.2 -> 36.7 s, wall 90 -> 82 s side by side at load ~90; its external commands 3345 -> 2335 by trace"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-night-run-20261010T031928Z-51ca",
-      "note": "Same split and commit as speed-test-health-heavy-night-run: the old first shard was the pole (302 s vs 226 s for the second at load ~170).",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+      "note": "2026-10-12: same commit as speed-test-health-heavy-night-run; shard 3 is the pole by branch_row forks (143 rows), cut there. Same split and commit as speed-test-health-heavy-night-run: the old first shard was the pole (302 s vs 226 s for the second at load ~170).",
       "handoff": null
     },
     {
@@ -7798,6 +7845,36 @@
       "reviewed_by": "night fixer harness-stop-hooks-20261012T010248Z-4f84",
       "note": "words:1791756162/233cceb1 (Updater doctor, turn 312): Egor's pasted message raised ⚡ review; the model wrote `⚡ нет: review` (transcript 22:02:40.828Z), notice-word-journal.sh ran 22:02:40.950-42.769 (hook-time spool, the full WORDS_FLUSH_WAIT) and journaled model [] match false. readings() replayed on the transcript cut at the stop finds the line in 1 ms, and answered() takes `нет: review` for the notice, so the line reached disk after the poll. The turn had one stop (next human turn 22:04:02Z), so settle() never re-read it. Ruled out: transcript path (all profile copies are one inode), parse_readings turn reset (clean() returns None for the pasted message, the 21:55Z message bounds the turn, the line still reads), answered() matching. The fix belongs to claude-setup words_journal.py (no worktree there this run). Not this cause: words:1791766800/0a8f7814 (night 20261012T0054 orchestrator, ⚡ span on + sweep from night-run's own launch message) has no reading line in its transcript at all, the row word-miss-night-sweep-no-reading shape.",
       "handoff": "docs/handoffs/2026-10-12-word-journal-flush-race.md"
+    },
+    {
+      "id": "speed-test-health-retests",
+      "title": "Test health retests: suites rerun on content already green",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/retests"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+      "note": "Ruled out as a lever 2026-10-12: pass reuse on identical inputs was built and dropped by Egor on 2026-10-07 (an exact key saves about 1 % of suite CPU, 7 % at most; the repeats count different worktrees on one base commit) and must not be rebuilt; design §5 also allows reuse only on unchanged source, fixture, environment and scope digests, which the journal's tree does not carry. 326 repeats, 28 a chat or the night after its worker's green run. Dismissal proposed to the owner.",
+      "handoff": "docs/handoffs/2026-10-12-test-health-retests-serial.md"
+    },
+    {
+      "id": "speed-test-health-serial",
+      "title": "Test health serial: multi-suite runs on one slot",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/serial"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+      "note": "Ruled out 2026-10-12: all 15 one-slot multi-suite runs ended 2026-10-05/06 (12 worker runs at -j 1 in feat-* worktrees, the last 10-06 03:54; 3 full runs of a tmp fixture repo the live journal took before 33eb4e77 stopped run-suites passing RUN_SUITES_JOURNAL on); none since, so the row leaves the 168 h window by 2026-10-13 18:32. run-suites' own -j never goes under 2 (slots_from_cores 2 2). Dismissal proposed to the owner.",
+      "handoff": "docs/handoffs/2026-10-12-test-health-retests-serial.md"
     }
   ],
   "blind_spots": [
