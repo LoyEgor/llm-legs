@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Cross-vendor leg: OpenAI GPT via Codex CLI, BY SUBSCRIPTION, READ-ONLY.
 # Prompt as $1 or stdin. Prints the model's final message to stdout.
+# STRIPPED: an empty cwd (no AGENTS.md), no user config.toml (MCP, plugins, notify) and no tools.
 #
 # AUTONOMY MODEL POLICY (owner request 2026-06-09): do NOT hardcode a model version.
 #   - CODEX_MODEL unset => the newest slug of the roster's default codex family
@@ -85,10 +86,18 @@ MODEL_ARGS=()
 [ -n "$REQUESTED" ] && MODEL_ARGS=(-m "$REQUESTED")
 
 ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
+LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STUB_DIR="${TMPDIR:-/tmp}/llm-legs-stub"
+mkdir -p "$STUB_DIR" && cd "$STUB_DIR" || exit 1
+STRIP_ARGS=(--ignore-user-config)
+for feature in shell_tool unified_exec apps browser_use browser_use_external computer_use goals hooks \
+  image_generation multi_agent plugins skill_search sleep_tool tool_suggest view_image; do
+  STRIP_ARGS+=(--disable "$feature")
+done
 set +e
 # </dev/null: codex reads stdin IN ADDITION to the argv prompt ("Reading additional input
 # from stdin..."): an open pipe without EOF hangs the call, stray input pollutes the prompt.
-OUT="$("${CODEX_CMD[@]}" exec --skip-git-repo-check --sandbox read-only \
+OUT="$("${CODEX_CMD[@]}" exec --skip-git-repo-check --sandbox read-only "${STRIP_ARGS[@]}" \
         ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -c model_reasoning_effort="$EFFORT" "$PROMPT" </dev/null 2>"$ERRF")"
 RC=$?
 set -e
@@ -117,7 +126,7 @@ if [ $RC -ne 0 ]; then
   # Subscription usage-limit errors get a distinct exit code so the orchestrator can drop the
   # leg for the rest of the run instead of retrying into the same wall (observed 2026-06-12).
   if grep -qiE 'hit your usage limit|usage_limit|quota' "$ERRF" 2>/dev/null; then
-    . "$(dirname "${BASH_SOURCE[0]}")/share/worker-walls.sh"
+    . "$LEGS_DIR/share/worker-walls.sh"
     worker_walls_record codex "$ACCOUNT" "$(worker_walls_parse_reset "$(worker_walls_extract_reset "$ERRF")")" || true
     exit 5
   fi

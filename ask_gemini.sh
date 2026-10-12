@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Cross-vendor leg: Google, via the Antigravity CLI (`agy`), SUBSCRIPTION-ONLY.
 # Prompt as $1 or stdin; the model's text answer goes to stdout.
+# STRIPPED: an empty cwd (no GEMINI.md/AGENTS.md) and no slash commands or skills.
 #
 # agy is the only Google backend (Antigravity CLI; there is no fallback transport).
 # agy >=1.0.7 headless facts (measured here):
@@ -126,6 +127,9 @@ if [ "${GEMINI_CMD[0]}" = agy ] && ! command -v agy >/dev/null 2>&1; then
 fi
 
 ERRF="$(mktemp)"; LOGF="$(mktemp)"; trap 'rm -f "$ERRF" "$LOGF"' EXIT
+LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STUB_DIR="${TMPDIR:-/tmp}/llm-legs-stub"
+mkdir -p "$STUB_DIR" && cd "$STUB_DIR" || exit 1
 quota_hit=0
 served_other=0
 reset_hint=""
@@ -142,8 +146,8 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
   # RESOURCE_EXHAUSTED/429 in agy's internal log, so route it to a temp file we can grep.
   : > "$LOGF"  # agy appends — truncate so we inspect only THIS model's log
   rc=0
-  out="$("${GEMINI_CMD[@]}" --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --log-file "$LOGF" </dev/null 2>"$ERRF")" || rc=$?
-  if grep -q 'print timeout after' "$ERRF" 2>/dev/null && . "$(dirname "${BASH_SOURCE[0]}")/share/limit-hit.sh"; then
+  out="$("${GEMINI_CMD[@]}" --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --disable-slash-commands --log-file "$LOGF" </dev/null 2>"$ERRF")" || rc=$?
+  if grep -q 'print timeout after' "$ERRF" 2>/dev/null && . "$LEGS_DIR/share/limit-hit.sh"; then
     limit_hit ask-gemini.print-timeout 300 s kill "an ask_gemini answer from $MODEL, cut at --print-timeout $AGY_PRINT_TIMEOUT" \
       'ask_gemini.sh:AGY_PRINT_TIMEOUT="${'
   fi
@@ -176,7 +180,7 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
 done
 
 if [ "$quota_hit" = 1 ] && [ "$served_other" = 0 ]; then
-  . "$(dirname "${BASH_SOURCE[0]}")/share/worker-walls.sh"
+  . "$LEGS_DIR/share/worker-walls.sh"
   worker_walls_record gemini "$ACCOUNT" "$(worker_walls_parse_reset "$reset_hint")" || true
   echo "ask_gemini.sh: Antigravity individual quota exhausted across the model chain${reset_hint:+ — $reset_hint} — account-wide, leg unavailable (quota)" >&2
   exit 5

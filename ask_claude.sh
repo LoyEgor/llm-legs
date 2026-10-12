@@ -8,10 +8,11 @@
 # subscription credit pool, so keep fan-out through this leg bounded; the Gemini/GPT legs still
 # do the heavy search lifting.
 #
-# WEB-TOOL TRAP: headless `claude -p` is non-interactive, so any permission-gated tool
-# (WebSearch, WebFetch) is silently DENIED unless it is on --allowedTools — the model then
-# answers "denied permission" and returns empty findings. That is WHY ALLOWED_TOOLS and the
-# --allowedTools flag below exist. Disable with CLAUDE_ALLOW_WEB=0 (restores judgment-only).
+# STRIPPED by default: an empty cwd, --safe-mode (no CLAUDE.md, memory, skills, hooks, MCP) and
+# no tool schemas. CLAUDE_ALLOW_WEB=1 declares the web tools. WEB-TOOL TRAP: headless `claude -p`
+# silently DENIES a permission-gated tool (WebSearch, WebFetch) that is not on --allowedTools —
+# the model then answers "denied permission" with empty findings.
+# Optional: CLAUDE_EFFORT=<level>, CLAUDE_SYSTEM_PROMPT=<text> (replaces the default one).
 #
 # Model policy mirrors ask_codex.sh: no hardcoded version. Default is the `opus` alias (the CLI
 # resolves it to the current Opus flagship); judgment seats need a strong tier. The served model
@@ -46,9 +47,6 @@ ACCOUNT_WALL_RE='hit your (session|weekly|usage) limit'
 # NOTE: only CURRENT tool names — the CLI rejects unknown names in permission rules
 # (MultiEdit no longer exists; listing it broke review calls on 2026-06-12).
 DISALLOWED_TOOLS='Write,Edit,NotebookEdit,Bash,KillShell'
-# Read-only web tools. Headless -p denies permission-gated tools unless allow-listed (see
-# WEB-TOOL TRAP above); the orchestrator relies on this leg reaching the web. CLAUDE_ALLOW_WEB=0
-# drops the allow flag and restores judgment-only behavior.
 ALLOWED_TOOLS='WebSearch,WebFetch'
 
 log() { # $1 requested, $2 served, $3 weak(0/1), $4 rc
@@ -125,29 +123,23 @@ if printf '%s' "$MODEL" | grep -qiE "$BLOCKED_RE"; then
 fi
 
 ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
-# Pass --allowedTools only when web is enabled. Built as an array so the empty case adds no
-# flag at all; the ${ARR[@]+...} expansion is the set -u-safe form (bare "${ARR[@]}" on an
-# empty array aborts under nounset in bash < 4.4, e.g. /bin/bash 3.2 in a bare cron PATH).
-ALLOW_ARGS=()
-if [ "${CLAUDE_ALLOW_WEB:-1}" != "0" ]; then ALLOW_ARGS=(--allowedTools "$ALLOWED_TOOLS"); fi
-CONTEXT_ARGS=()
-if [ "${CLAUDE_MINIMAL_CONTEXT:-0}" = "1" ]; then
-  if [ "${CLAUDE_CMD[0]}" != claudeb ]; then
-    echo "ask_claude.sh: minimal context requires claudeb routing" >&2
-    exit 6
-  fi
-  CONTEXT_TOOLS=""
-  if [ "${CLAUDE_ALLOW_WEB:-1}" != "0" ]; then CONTEXT_TOOLS="$ALLOWED_TOOLS"; fi
-  CONTEXT_ARGS=(--safe-mode --disable-slash-commands --tools "$CONTEXT_TOOLS")
-fi
+# The ${ARR[@]+...} expansion is the set -u-safe form (bare "${ARR[@]}" on an empty array aborts
+# under nounset in bash < 4.4, e.g. /bin/bash 3.2 in a bare cron PATH).
+TOOLS=""
+ARGS=()
+if [ "${CLAUDE_ALLOW_WEB:-0}" = "1" ]; then TOOLS="$ALLOWED_TOOLS"; ARGS=(--allowedTools "$ALLOWED_TOOLS"); fi
+[ -n "${CLAUDE_EFFORT:-}" ] && ARGS+=(--effort "$CLAUDE_EFFORT")
+[ -n "${CLAUDE_SYSTEM_PROMPT:-}" ] && ARGS+=(--system-prompt "$CLAUDE_SYSTEM_PROMPT")
+LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STUB_DIR="${TMPDIR:-/tmp}/llm-legs-stub"
+mkdir -p "$STUB_DIR" && cd "$STUB_DIR" || exit 1
 set +e
-# --setting-sources project: skip user-level settings/CLAUDE.md so personal preferences
-# (language, hooks) never leak into a judgment call. --strict-mcp-config: no MCP servers.
+# --safe-mode still reads settings files: --setting-sources project keeps the account's user settings out.
 OUT="$("${CLAUDE_CMD[@]}" -p "$PROMPT" --output-format json --model "$MODEL" \
+        --safe-mode --disable-slash-commands --tools "$TOOLS" \
         --strict-mcp-config --setting-sources project \
         --disallowedTools "$DISALLOWED_TOOLS" \
-        ${CONTEXT_ARGS[@]+"${CONTEXT_ARGS[@]}"} \
-        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} </dev/null 2>"$ERRF")"
+        ${ARGS[@]+"${ARGS[@]}"} </dev/null 2>"$ERRF")"
 RC=$?
 set -e
 
@@ -156,7 +148,7 @@ weak=0
 if printf '%s' "${served:-}" | grep -qiE "$WEAK_RE"; then weak=1; fi
 if [ "$RC" -ne 0 ] && { printf '%s' "$OUT"; cat "$ERRF"; } | grep -qiE "$LIMIT_RE"; then
   if { printf '%s' "$OUT"; cat "$ERRF"; } | grep -qiE "$ACCOUNT_WALL_RE"; then
-    . "$(dirname "${BASH_SOURCE[0]}")/share/worker-walls.sh"
+    . "$LEGS_DIR/share/worker-walls.sh"
     worker_walls_record claudeb "$ACCOUNT" \
       "$(worker_walls_parse_reset "$(worker_walls_extract_reset "$ERRF" <(printf '%s' "$OUT"))")" || true
   fi
