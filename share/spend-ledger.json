@@ -289,6 +289,25 @@
    },
    "verdict": "kept",
    "note": "0.0% of spend; one UserPromptSubmit pass writing word grants, bash fast path already skips jq and workers; grants replace per-trigger gates, no cheaper equivalent"
+  },
+  {
+   "id": "hook:worker-spawn-hook.sh",
+   "title": "worker-spawn-hook.sh",
+   "audited_at": "2026-10-12T04:04:24+03:00",
+   "by": "harness-speed-spend-hook-worker-spawn-hook-sh-20261012T010236Z-22be",
+   "share": 0.000169,
+   "prices": {
+    "Workers · Hooks": 496.64621242756425,
+    "Workers · attachment: hook context": 2879.5939310547787,
+    "Doctors · attachment: hook context": 696.6429838946558,
+    "Doctors · Hooks": 252.30745007151472,
+    "Reviewers · Hooks": 4.96130445842753
+   },
+   "sources": {
+    "llm-legs/bin/worker-spawn-hook.sh": "20f3cce2b81e1fd4472b1da387dceb43af7d420a"
+   },
+   "verdict": "kept",
+   "note": "0.0% of spend: the deny text (one short redirect) replaces a subagent spawn costing far more; the fork path is one rewritten description; relay types are already retired so denies are rare; denied-spawn billing already filed in the tokenmap handoff"
   }
  ]
 }
