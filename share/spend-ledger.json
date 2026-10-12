@@ -57,13 +57,17 @@
   {
    "id": "startup:MCP instructions",
    "title": "startup MCP instructions",
-   "audited_at": "2026-10-08T03:20:03+03:00",
-   "by": "feat/spend-audit-listings",
-   "share": 0.001864,
-   "prices": {},
+   "audited_at": "2026-10-12T04:05:13+03:00",
+   "by": "harness-speed-spend-startup-mcp-instructions-20261012T010238Z-5d5e",
+   "share": 0.002858,
+   "prices": {
+    "Workers · attachment: MCP instructions": 1732.5427968335516,
+    "Doctors · attachment: MCP instructions": 604.6481308773265,
+    "Background · attachment: MCP instructions": 745.1289641570633
+   },
    "sources": {},
    "verdict": "kept",
-   "note": "kept: claude.ai Claude Docs and Figma already cut at source by disableClaudeAiConnectors (last listed 2026-10-05 18:48, avg 880 to 735 tokens a context; the 7-day row still holds Oct 1-5); left atlassian (used in Arbostar, loyegor.com, wut-ticket from llm-legs) and claude-in-chrome (used); project-scoping atlassian would drop Jira outside Arbostar for ~0.08%"
+   "note": "kept (re-audit 2026-10-12): only atlassian instructions remain (Docs/Figma cut at source; figma now fails ECONNREFUSED and adds none); 7d Workers 611 ctx x 1733 tok (prev 519 x 3110, price -44%), Doctors 828 x 605 (prev 609 x 396), Background 219 x 745 (prev 68 ctx): the rise is Background/Doctor context count, not larger instructions; the text is atlassian's own, a headless-launcher --strict-mcp-config would drop Jira tools from workers (wut-ticket, Arbostar) and cannot replay to identical decisions for ~0.2 % of spend; unchanged from the 10-08 audit"
   },
   {
    "id": "startup:agent listing",
