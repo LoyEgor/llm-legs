@@ -13,10 +13,10 @@ From «Updater doctor», 2026-10-07.
 ## Detectors wanted
 Each detector is a `tracking.json` section with a share of Claude spend, the Δ, a candidate count and a sample of candidates (file, session, line).
 1. **Duplicate reads.** Done in token-map b044500 (`Repeated reads`).
-2. **Hook-forced repeats.** After a hook block, a forced Stop re-answer or an injected note, the next output repeats what was already said. — Done in token-map cf68b86 (`Hook-forced repeats`: exact, near, language switch or paraphrase).
+2. **Hook-forced repeats.** Done in token-map cf68b86.
 3. **Cold restarts on one topic.** Done in token-map 93c2a59.
 4. **Chunking that does not pay.** Done in token-map 93c2a59 (`Chunks that do not pay`).
-5. **Delegation that retells.** A worker brief whose size is close to the delegated work, while the delegating chat's account had room to do the work itself. — Done in token-map cf68b86 (`Delegation that retells`; whether the account had room is the audit's).
+5. **Delegation that retells.** Done in token-map cf68b86 (whether the account had room is the audit's).
 6. **Outputs nobody reads.** Done in token-map cf68b86 (`Scheduled outputs nobody reads`; whether a menu or Egor reads them is the audit's).
 7. **Startup that is never used.** Done in token-map b044500 (`Unused startup`, read by Spend's startup audits).
 8. **Frontier model on a small task.** Shown only, never a cut. Done in token-map 93c2a59 (`Frontier model, small task`: opus or fable contexts that ended within 5 requests, never toned).
