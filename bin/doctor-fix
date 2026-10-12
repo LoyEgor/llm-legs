@@ -24,6 +24,7 @@ VERDICTS=' fixed ruled-out weather blind-spot handoff '
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/test-scope.sh"
 . "$repo_root/share/worktree.sh"
+. "$repo_root/share/sonnet-trial.sh" # TEMP-SONNET-TRIAL(fixers)
 
 JQ_EPOCH='def epoch: if type == "number" then . elif type == "string" then
   ((capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})([.][0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
@@ -793,6 +794,7 @@ write_brief() { # id worktree -> the brief file
   case $doctor in llm) title=LLM ;; harness) title=Harness ;; code) title=Code ;; system) title=System ;; *) title=Updater ;; esac
   {
     ! jq -e --arg rules ' suite_audit ' "$JQ_HAS_RULES" "$file" >/dev/null || printf 'STRONG: yes\n'
+    ! jq -e '.trial.arm == "sonnet"' "$file" >/dev/null || printf 'MODEL: sonnet\n' # TEMP-SONNET-TRIAL(fixers)
     printf 'ROUND: %s\n' "$(jq -r '.lens_round // "none"' "$file")"
     jq -r '.worktrees[1:][] | "ADD-DIR: \(.)"' "$file"
     printf 'Working directory: %s\n\n# Fixer run %s\n\n' "$wt" "$id"
@@ -880,6 +882,7 @@ component_repos() { # id top -> the main checkouts other than top that hold the 
 
 launch_runs() { # doctor night-or-empty -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
   local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs=''
+  local trial_turn=-1 # TEMP-SONNET-TRIAL(fixers)
   [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
   count=$(check_doc "$doctor") || exit 1
   snap=$(py snapshot "$doctor" "$(doc_path "$doctor")" ${night:+"$night"}) || die "cannot snapshot the $doctor doctor"
@@ -904,6 +907,11 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
     esac
     pending_id=$id
     [ -z "$knobs" ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$knobs"
+    # TEMP-SONNET-TRIAL(fixers)
+    if [[ $area == speed-* ]] && sonnet_trial_live; then
+      trial_turn=$((trial_turn + 1))
+      locked record_set "$id" '.trial = {id: "sonnet-fixes", arm: $a}' --arg a "$([ $((trial_turn % 2)) -eq 0 ] && echo sonnet || echo opus)"
+    fi
     if [ -n "$night" ]; then branch="night/$night/$id" base="refs/night/$night/base"
     else branch="doctor-fix/$id" base="refs/doctor-fix/$id/base"; fi
     wt=$(worktree_path "$top" "$branch")

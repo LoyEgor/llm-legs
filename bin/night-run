@@ -1002,11 +1002,12 @@ cmd_finish() {
     die "night $id is still running: $(jq -r '"its orchestrator chat \(.session // "(opening, pid \(.opener))") has run since \(.started_at)"' \
       "$(night_file "$id")") and only it finishes the night."
   night_set "$id" "$JQ_EVENTS"' .finished_at = $t | .doctors_after = $after | .doctor_states_after = $states
-    | .doctor_problems_after = $problems
+    | .doctor_problems_after = $problems | .doctors_share = $goals.doctors_share | .backlog = $goals.backlog
     | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)
     | events([{phase: "finish", pred: "jobs"}]; $t)' \
     --arg t "$(stamp)" --argjson after "$(doctor_counts)" --argjson states "$(doctor_states)" \
-    --argjson problems "$(doctor_problems)" || die "cannot write night $id"
+    --argjson problems "$(doctor_problems)" \
+    --argjson goals "$(python3 -B "$repo_root/share/night_spend.py" goals 2>/dev/null || echo '{}')" || die "cannot write night $id"
   unlock
   printf 'night %s finished\n' "$id"
   at=$(stamp) began=$SECONDS
@@ -1474,6 +1475,8 @@ cmd_report() {
         count($t.unpushed; "not pushed")]
         | if length == 0 then "no jobs" else join(" · ") end))' "$file" || return
   repo_debt
+  python3 -B "$repo_root/share/night_spend.py" goal-lines "$file" || true
+  python3 -B "$repo_root/share/sonnet_trial.py" "$repo_root/bin/worker-run" "$file" || true # TEMP-SONNET-TRIAL(fixers)
   python3 -B "$repo_root/share/time_budget.py" night "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
 }
 

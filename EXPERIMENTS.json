@@ -11,5 +11,19 @@
       "llm-limits --table banner once overdue"
     ],
     "how_to_remove": "The walls in ~/.gemini-web/walls.json and the marker expire by themselves on 2026-10-20 12:00 local. Run `gemini-web status rawilimo` and `gemini-web status abel` once (Flow Music was never checked on them; exit 4 names its missing one-time step, which the owner agreed to have done for him on 2026-10-06 for loiyehor and tronjhon). Delete ~/.gemini-web/flow-rest.json, then this entry. Verdict: no flag on either account within a week of normal use after the rest = recovered, nothing else to do; a flag again = gemini_web.wall_until walls that account 30 days by itself (flagged_at in ~/.gemini-web/accounts/<a>.json was seeded with the 2026-10-05 flags), then ask the owner whether it stays manual-only for Flow (longer rest, or account-side steps only he can take: phone, 2FA, normal use by hand)."
+  },
+  {
+    "id": "sonnet-fixes",
+    "tag": "TEMP-SONNET-TRIAL(fixers)",
+    "what": "Sonnet 5.5 (medium, the table default) instead of Opus for two fixer classes (Egor, 2026-10-12): claudeb fixers of fit and legacy review rounds launched with no explicit model run sonnet (bugs-round fixers stay on Opus), and doctor-fix Speed runs alternate sonnet, opus, sonnet... per launch in area order; hypothesis: Sonnet lands as many fixes with no more reverts and no more confirmed findings on its fixes than Opus, at lower spend",
+    "started": "2026-10-12",
+    "review_by": "2026-10-26",
+    "state_marker": "~/.cache/doctors/sonnet-trial.json",
+    "evidence": "worker run meta.json `trial: \"sonnet-fixes\"` + `trial_lens` + `model` (~/.cache/claude-worker-runs/claudeb-*; the round Opus arm is the untagged Opus fixers of fit/legacy rounds since 14 days before the start), doctor-fix records `trial.arm` (~/.cache/doctors/runs/*.json); read them all with `python3 -B share/sonnet_trial.py bin/worker-run <newest ~/.cache/doctors/nights/*.json> --evidence` (runs, landed fixes, reverted fixes, confirmed findings blamed on a fix's commits, Speed min/day, Opus-eq per arm)",
+    "surfaces": [
+      "night-run report: the `trial sonnet-fixes` arm table while the marker is live",
+      "llm-limits --table banner once overdue (share/experiments.sh)"
+    ],
+    "how_to_remove": "Read the evidence first. Verdict: Sonnet's land rate, revert rate and findings-on-fix not worse than Opus's -> propose to Egor Sonnet for these classes everywhere (a separate deliberate change); worse -> remove and keep Opus. Plateau not reached at review -> Egor extends both dates (review_by and the marker's until); never extend them yourself. Removal: delete share/sonnet-trial.sh and share/sonnet_trial.py; delete every line or block tagged TEMP-SONNET-TRIAL(fixers) in bin/worker-run (the source line, the trial_lens local, the two lens/model blocks in start_run, the trial_lens jq arg and the trial meta line), bin/doctor-fix (the source line, trial_turn, the trial record block in launch_runs, the MODEL: sonnet line in write_brief), bin/night-run (the sonnet_trial.py call in cmd_report), share/time_budget.py (the gains parameter of roi_lines and its two uses), and the trial cases in tests/test_worker_run_rounds.sh, tests/test_doctor_fix.sh and tests/test_night_report_trial.sh, and share/sonnet-trial.sh from the self-edit cp list in tests/test_worker_run_outcomes.sh; `grep -rn 'TEMP-SONNET-TRIAL' .` must print nothing; rm -f ~/.cache/doctors/sonnet-trial.json; delete this entry last and run tests/run-all $(tests/affected <the changed files>)."
   }
 ]

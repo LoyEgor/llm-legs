@@ -324,6 +324,124 @@ def previous(path, night):
     return max(older, key=lambda n: (n["started_at"], n["id"])) if older else None
 
 
+DOCTORS_GOAL = 5.0
+DASH = "\u2013"
+DOCTOR_NAMES = ("llm", "harness", "updater", "code", "system")
+
+
+def doctors_share():
+    """{share: % of 7-day usage token-map gives its top-level Doctors node, age_h past its stale_after_hours}."""
+    doc = read_json(os.environ.get("TOKENMAP_SPEND_7D") or f"{HOME}/.local/share/tokenmap/spend-7d.json", {})
+    node = next((n for n in doc.get("tree") or () if isinstance(n, dict) and n.get("name") == "Doctors"), None)
+    if not isinstance(node, dict) or not isinstance(node.get("share"), (int, float)):
+        return None
+    out = {"share": round(node["share"] * 100, 1)}
+    try:
+        age = (time.time() - dt.datetime.fromisoformat(doc["generated_at"]).timestamp()) / 3600
+    except (KeyError, TypeError, ValueError):
+        age = None
+    stale = doc.get("stale_after_hours")
+    if age is None or isinstance(stale, (int, float)) and age > stale:
+        out["age_h"] = None if age is None else round(age)
+    return out
+
+
+def doctor_dir(name):
+    return os.environ.get(f"{name.upper()}_DOCTOR_DIR") or f"{HOME}/.cache/{name}-doctor"
+
+
+def backlog():
+    """What the night still has to process: due review-debt lines over the sweep repositories, Speed's selected rows,
+    the doctors' open rows; None where a source is unreadable."""
+    import handoffs
+
+    debt = os.environ.get("NIGHT_RUN_REVIEW_DEBT") or f"{HOME}/.local/bin/review-debt"
+    due = 0
+    for repo in handoffs.sweep_repos():
+        try:
+            row = subprocess.run([debt, "--repo", repo, "--split"], capture_output=True, text=True,
+                                 stdin=subprocess.DEVNULL).stdout
+        except OSError:
+            row = ""
+        found = dict(part.split("=", 1) for part in row.split() if "=" in part)
+        if not str(found.get("DUE_LINES", "")).isdigit():
+            due = None
+            break
+        due += int(found["DUE_LINES"])
+    selection = (read_json(f"{doctor_dir('harness')}/latest.json", {}).get("speed") or {}).get("selection")
+    counts = [read_json(f"{doctor_dir(name)}/latest.json", {}).get("problem_count") for name in DOCTOR_NAMES]
+    return {"debt_due": due, "speed": len(selection) if isinstance(selection, list) else None,
+            "doctors": sum(counts) if all(isinstance(c, int) for c in counts) else None}
+
+
+def goals_now():
+    return {"doctors_share": doctors_share(), "backlog": backlog()}
+
+
+def night_goals(night):
+    """A night's stored goals; a running one reads them now. A night older than the stored field keeps its doctor rows."""
+    if "backlog" in night or night.get("finished_at"):
+        stored = {"doctors_share": night.get("doctors_share"), "backlog": dict(night.get("backlog") or {})}
+        after = night.get("doctors_after") or {}
+        if stored["backlog"].get("doctors") is None and after and all(isinstance(after.get(d), int) for d in DOCTOR_NAMES):
+            stored["backlog"]["doctors"] = sum(after[d] for d in DOCTOR_NAMES)
+        return stored
+    return goals_now()
+
+
+def previous_nights(path, night, count=2):
+    older = []
+    for other in glob.glob(os.path.join(os.path.dirname(path), "*.json")):
+        candidate = read_json(other, {})
+        if isinstance(candidate, dict) and candidate.get("finished_at") and candidate.get("jobs") and (
+                candidate.get("started_at", ""), candidate.get("id", "")) < (night["started_at"], night["id"]):
+            older.append(candidate)
+    return sorted(older, key=lambda n: (n["started_at"], n["id"]))[-count:]
+
+
+def trend(values):
+    known = [v for v in values if v is not None]
+    if len(known) < 2 or values[-1] is None:
+        return "\u00b7"
+    return "\u2193" if known[-1] < known[0] else "\u2191" if known[-1] > known[0] else "\u2192"
+
+
+def plateau(series):
+    """Nights until every backlog column reaches zero at its burn over the shown nights; a dash when one does not shrink."""
+    nights = None
+    for values in series:
+        known = [(i, v) for i, v in enumerate(values) if v is not None]
+        if len(known) < 2 or known[-1][0] != len(values) - 1 or known[-1][1] == 0:
+            continue
+        if known[-1][1] >= known[0][1]:
+            return DASH
+        burn = (known[0][1] - known[-1][1]) / (known[-1][0] - known[0][0])
+        nights = max(nights or 0, -(-known[-1][1] // burn))
+    return DASH if nights is None else "%d" % nights
+
+
+def goal_lines(path, night):
+    """This night against the two previous finished ones, oldest first: the 7-day Doctors share against its goal,
+    then the backlog with a glyph per column and the nights to plateau."""
+    nights = previous_nights(path, night) + [night]
+    goals = [night_goals(n) for n in nights]
+    day = lambda n, f: time.strftime(f, time.localtime(epoch(n["started_at"]))).lstrip("0")
+    heads = [day(n, "%d %b") for n in nights]
+    if len(set(heads)) < len(heads):
+        heads = [day(n, "%d %b %H:%M") for n in nights]
+    share = [(g.get("doctors_share") or {}).get("share") for g in goals]
+    ages = [(g.get("doctors_share") or {}).get("age_h", -1) for g in goals]
+    cols = [[(g.get("backlog") or {}).get(key) for g in goals] for key in ("debt_due", "speed", "doctors")]
+    show = lambda v: DASH if v is None else "%s" % v
+    rows = [["", "Doctors %", "debt ln", "Speed", "rows"]]
+    for i, head in enumerate(heads):
+        stale = "" if ages[i] == -1 else " %sh" % (DASH if ages[i] is None else ages[i])
+        rows.append([head, show(share[i]) + stale] + [show(c[i]) for c in cols])
+    rows.append(["\u21e5 " + plateau(cols), "%s %g" % (trend(share), DOCTORS_GOAL)] + [trend(c) for c in cols])
+    widths = [max(len(r[i]) for r in rows) for i in range(5)]
+    return ["  ".join(c.rjust(w) if i else c.ljust(w) for i, (c, w) in enumerate(zip(r, widths))).rstrip() for r in rows]
+
+
 def mega(value):
     return f"{value / 1e6:.1f}M"
 
@@ -334,6 +452,12 @@ def by_model(total):
 
 
 def main():
+    if sys.argv[1:] == ["goals"]:
+        print(json.dumps(goals_now()))
+        return
+    if sys.argv[1:2] == ["goal-lines"]:
+        print("\n".join(goal_lines(sys.argv[2], read_json(sys.argv[2], {}))))
+        return
     worker_run, path = sys.argv[1:3]
     pricing()
     with open(path) as handle:

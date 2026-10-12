@@ -1038,7 +1038,7 @@ def plural(n, word, many):
     return " · %d %s" % (n, word if n == 1 else many) if n else ""
 
 
-def roi_lines(rows, now):
+def roi_lines(rows, now, gains=None):
     """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against the
     minutes per day saved once the change ran a full day, or, for a class with a natural unit, its per-unit proof
     times the unit's daily exposure since the night, in the unit's own daily measure. A fix that changed no code its
@@ -1094,6 +1094,8 @@ def roi_lines(rows, now):
                             shown["span"], "%.1f %s · " % (gain, shown["daily"]) if free else "", owner[:40]))
                     if shown["daily"] == "min/day":
                         saved += shown["gain"]
+                        if gains is not None:  # TEMP-SONNET-TRIAL(fixers)
+                            gains[item["ref"]] += shown["gain"]
                     else:
                         other[shown["daily"]] += shown["gain"]
                 if row is rows[-1]:
@@ -1110,6 +1112,8 @@ def roi_lines(rows, now):
                 pending += item["merged"]
             elif gain != UNMEASURED:
                 saved += 0 if owner else gain
+                if gains is not None and not owner:  # TEMP-SONNET-TRIAL(fixers)
+                    gains[item["ref"]] += gain
                 measured += 1
             if row is rows[-1]:
                 out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (

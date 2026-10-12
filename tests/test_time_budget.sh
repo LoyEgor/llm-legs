@@ -36,7 +36,7 @@ commit $((D0 + 900)) "Day work" >/dev/null
 echo "$REPO" >"$WORK/sweep-repos"
 
 asserts=$(python3 - "$ROOT" "$WORK" "$D0" "$JOB" <<'EOF'
-import json, os, shutil, subprocess, sys
+import json, os, shutil, subprocess, sys, time
 
 root, work, D0, job = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
 sys.path.insert(0, os.path.join(root, "share"))
@@ -638,6 +638,57 @@ del os.environ["HARNESS_WAITS_DIR"]
 check(ended["seconds"]["hooks"] == 100 and crossed["seconds"]["locks"] == 50,
       "a hook row is stamped at its end, so its span ends there; a wait begun before midnight keeps its tail in the "
       "next day: %s %s" % (ended["seconds"]["hooks"], crossed["seconds"]["locks"]))
+# The night report's goal block: token-map's 7-day Doctors share (its age once stale, never recomputed) and the
+# backlog (due review debt, Speed's selection, the doctors' open rows) of this night against the two previous
+# finished ones, a glyph per column and the nights to plateau at the burn over them.
+spend7 = os.path.join(work, "spend-7d.json")
+os.environ["TOKENMAP_SPEND_7D"] = spend7
+stamp = lambda hours: time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - hours * 3600))
+seven = lambda hours: json.dump({"generated_at": stamp(hours), "stale_after_hours": 26,
+                                 "tree": [{"name": "Workers", "share": 0.5}, {"name": "Doctors", "share": 0.229}]},
+                                open(spend7, "w"))
+seven(1)
+check(night_spend.doctors_share() == {"share": 22.9}, "the Doctors node's share in %%: %s" % night_spend.doctors_share())
+seven(30)
+check(night_spend.doctors_share() == {"share": 22.9, "age_h": 30}, "a stale file keeps its share and names its age")
+debt = os.path.join(work, "review-debt")
+with open(debt, "w") as handle:
+    handle.write("#!/bin/sh\nprintf 'LINES=40 FILES=3 DUE_LINES=7 DUE_FILES=1\\n'\n")
+os.chmod(debt, 0o755)
+os.environ["NIGHT_RUN_REVIEW_DEBT"] = debt
+for name, count_ in zip(night_spend.DOCTOR_NAMES, (1, 2, 0, 3, 0)):
+    os.environ[name.upper() + "_DOCTOR_DIR"] = os.path.join(work, "goal-" + name)
+    os.makedirs(os.path.join(work, "goal-" + name), exist_ok=True)
+    doc = {"problem_count": count_}
+    if name == "harness":
+        doc["speed"] = {"selection": ["a", "b", "c"]}
+    json.dump(doc, open(os.path.join(work, "goal-" + name, "latest.json"), "w"))
+check(night_spend.backlog() == {"debt_due": 7, "speed": 3, "doctors": 6}, "backlog now: %s" % night_spend.backlog())
+goal_dir = os.path.join(work, "goal-nights")
+os.makedirs(goal_dir)
+for id_, day, backlog_, share in (("n1", 1, {"debt_due": 20, "speed": 5, "doctors": 9}, 30.0),
+                                  ("n2", 2, {"debt_due": 14, "speed": 4, "doctors": 8}, 26.5)):
+    json.dump({"id": id_, "started_at": "2026-10-0%dT02:00:00Z" % day, "finished_at": "2026-10-0%dT08:00:00Z" % day,
+               "jobs": [{"ref": "x"}], "doctors_share": {"share": share}, "backlog": backlog_},
+              open(os.path.join(goal_dir, id_ + ".json"), "w"))
+seven(1)
+running = {"id": "n3", "started_at": "2026-10-03T02:00:00Z", "jobs": []}
+shown = night_spend.goal_lines(os.path.join(goal_dir, "n3.json"), running)
+check(shown == ["       Doctors %  debt ln  Speed  rows",
+                "1 Oct       30.0       20      5     9",
+                "2 Oct       26.5       14      4     8",
+                "3 Oct       22.9        7      3     6",
+                "⇥ 4          ↓ 5        ↓      ↓     ↓"], "goal lines:\n" + "\n".join(shown))
+os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "goal-none")
+check(night_spend.goal_lines(os.path.join(goal_dir, "n3.json"), running)[-1].startswith("⇥ 3 "),
+      "an unreadable column is a dash and burns nothing")
+os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "goal-code")
+json.dump({"problem_count": 30}, open(os.path.join(work, "goal-llm", "latest.json"), "w"))
+check(night_spend.goal_lines(os.path.join(goal_dir, "n3.json"), running)[-1].startswith("⇥ – "),
+      "a growing column leaves no plateau")
+finished = dict(running, finished_at="2026-10-03T08:00:00Z", doctors_after={n: 1 for n in night_spend.DOCTOR_NAMES})
+check(night_spend.night_goals(finished) == {"doctors_share": None, "backlog": {"doctors": 5}},
+      "a finished night without stored goals keeps only its doctor rows, never today's values")
 print(count[0])
 EOF
 ) || exit 1
