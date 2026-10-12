@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 4
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 effort_refused() {
@@ -163,9 +164,11 @@ worker-end $place_top"
   "$RUNNER" report "$old_id" >/dev/null
   clear_stub
 }
-report_bus_tests
-# A finished worker posts nothing to Egor's chat; its outcome is the chat's to read through its report.
-assert test ! -s "$REPORT_BUS_LOG"
+if suite_shard_owns 2 report-bus; then
+  report_bus_tests
+  # A finished worker posts nothing to Egor's chat; its outcome is the chat's to read through its report.
+  assert test ! -s "$REPORT_BUS_LOG"
+fi
 
 
 # Start and wait belong to the chat that owns the run; a headless worker holds none of its own.
@@ -332,11 +335,13 @@ own_headroom_tests() (
   echo "PASS: $asserts asserts; own-account headroom"
 )
 
-own_headroom_tests || exit 1
-model_effort_tests
-worker_door_tests
-nested_model_tests
-off_roster_tests
+if suite_shard_owns 4 own-headroom; then own_headroom_tests || exit 1; fi
+if suite_shard_owns 1 model-effort; then model_effort_tests; fi
+if suite_shard_owns 3 door-nested-roster; then
+  worker_door_tests
+  nested_model_tests
+  off_roster_tests
+fi
 
 # A start reads eight header keys: a head|grep|sed pipeline each was 24 forks before any launch.
 mkdir -p "$WORK/fork-shim"

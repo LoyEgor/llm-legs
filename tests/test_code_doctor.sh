@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 2
+# shards: 3
 # bin/code-doctor over the calibration corpus (tests/fixtures/code-doctor): the six labelled cases, a
 # healthy repository with zero problems, clustering, reachability, protected roots, the durable rollup,
 # the judge budget, the structural verdict digest, the fixer's safety gate and the ledger's recurrence.
@@ -628,6 +628,9 @@ rm "$G/.claude/settings.json" "$HOME/Library/LaunchAgents/com.test.feed.plist" "
 "$CD" refresh --quiet
 assert jqe '[.problems[] | select(.rule == "registration")] == []' "$P"
 
+fi
+
+if suite_shard_owns 3 cd-repo-to-end; then
 # Any repository through --repo: its own state under scopes/, generic entry points and JS/TS imports, no runtime
 # journal claimed, and report-only: judged problems show, but no snapshot and no check hands them to a fixer.
 lay_out "$FIX/node" "$WORK/node"
