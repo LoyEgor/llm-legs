@@ -976,15 +976,60 @@ def judge_digest(ledger):
 equivalent = H.equivalent
 
 
-def speed_yield(ledger):
-    """A fixed row is proven only with its output-equivalence proof (identical decisions or results on the replay)
-    beside the time saving; without it the row stays pending."""
+def roi_read(state, now):
+    """The trend's roi read once a day or once a newer night exists: {fixer job ref: min/day} its lines prove, and the
+    landed fixes whose unit measured slower (time_budget.slower_fixes)."""
+    paths = sorted(glob.glob(os.path.join(doctors_dir(), "nights", "*.json")))
+    key = [H.local_day(now), os.path.basename(paths[-1]) if paths else None]
+    if (state.get("roi") or {}).get("key") != key:
+        gains, slower = collections.Counter(), []
+        try:
+            if paths:
+                worker_run = os.path.join(ROOT_DIR, "bin", "worker-run")
+                nights = [(p, time_budget.cached_row(worker_run, p)) for _, p, _ in
+                          time_budget.nights_upto(paths[-1])[-time_budget.TREND_DAYS:]]
+                time_budget.roi_lines([row for _, row in nights], now, gains)
+                slower = time_budget.slower_fixes(nights, now)
+        except (TypeError, ValueError, KeyError, OSError) as error:
+            print("speed-doctor: the roi lines did not read (%s): the yield keeps its last read" % error, file=sys.stderr)
+            return state.get("roi") or {"gains": {}, "slower": []}
+        state["roi"] = {"key": key, "gains": {ref: round(v, 2) for ref, v in gains.items()}, "slower": slower}
+    return state["roi"]
+
+
+def fix_regressions(slower, ledger):
+    """A landed Speed fix whose unit measured slower is a regression row naming its commits, ranked first the next
+    night; decided once (its ledger row closed), the fixed proof window never reopens it."""
+    out = []
+    for fix in slower:
+        ident = "fix/" + fix["ref"]
+        row = H.ledger_row(ledger, "regression", ident)
+        out.append({"id": row["id"] if row else "regression:" + ident, "rule": "regression", "ident": ident,
+                    "state": H.fix_regression_state(row), "ledger": row["id"] if row else None,
+                    "fact": "Speed fix %s (%s) measured slower: %s · %.1f %s lost" % (
+                        fix["ref"], ", ".join(fix["commits"]) or "no commit read", "; ".join(fix["spans"]), fix["loss"],
+                        fix["daily"]),
+                    "value": fix["loss"], "unit": fix["daily"], "expected_min_day": fix["loss"], "window_h": 48,
+                    "group": "fix", "component": ident, "evidence": [], "levers": [],
+                    "fix_commits": fix["commits"], "fix_files": ["%s/%s" % tuple(f) for f in fix["files"]]})
+    return out
+
+
+def speed_yield(ledger, gains):
+    """A fixed row yields the min/day its fixer job's roi lines prove, once a job however many rows it fixed; proven
+    only with its output-equivalence proof (identical decisions or results on the replay), else pending."""
     proven = pending = 0.0
+    seen = set()
     for row in speed_rows(ledger):
-        om = float(row.get("om_day") or 0)
-        if row.get("status") == "fixed" and equivalent((row.get("fixes") or [None])[-1]):
+        fix = (row.get("fixes") or [None])[-1]
+        ref = str((fix or {}).get("by") or "").rpartition(" ")[2]
+        if ref in seen or row.get("status") not in ("fixed", "fixed-pending"):
+            continue
+        seen.add(ref)
+        om = float(gains.get(ref) or 0)
+        if row.get("status") == "fixed" and equivalent(fix):
             proven += om
-        elif row.get("status") in ("fixed", "fixed-pending"):
+        else:
             pending += om
     return {"proven_om_day": round(proven, 2), "pending_om_day": round(pending, 2)}
 
@@ -1113,6 +1158,7 @@ def collect(write, now):
                          "last_seen": reg["days"][-1], "evidence": [], "ledger": row["id"] if row else None,
                          "group": reg["component"].split("/")[0], "component": reg["component"],
                          "band": band, "ident": ident, "om_day": reg["om_day"], "levers": reg["levers"]})
+    problems += fix_regressions(roi_read(state, now)["slower"], ledger)
     opportunities = []
     components = {}
     for lever in shown_levers(LEVERS) + slice_levers(tree):
@@ -1225,7 +1271,7 @@ def collect(write, now):
         "night": night, "delegation": delegation,
         "baselines": baselines, "selection": selection, "why_none": why_none,
         "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0},
-        "yield": speed_yield(ledger),
+        "yield": speed_yield(ledger, roi_read(state, now)["gains"]),
         "head": head_of(budget.get("lost_min_day"), status, gap),
         "lost_min_day": budget.get("lost_min_day"),
         "index": budget.get("index"), "index_by_day": budget.get("index_by_day") or {}, "levels": budget.get("levels") or [],

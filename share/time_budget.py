@@ -71,6 +71,8 @@ UNITS = {"suite_run": ("wall-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_R
          "suite_wait": ("s/wait", 20, 0.4, "min/day", 60.0), "slot": ("s/wait", 20, 0.4, "min/day", 60.0),
          "locks": ("s/wait", 20, 0.4, "min/day", 60.0), "refusal": ("s/day", REFUSAL_PROOF_DAYS, REFUSAL_PROOF_RATIO, "min/day", 60.0)}
 UNIT_STAT = {"refusal": statistics.mean}
+LOAD_MATCHED, LOAD_CONTROLS = ("suite_run", "hooks", "stop"), 3
+SLOWER_RATIO = 1.3
 MEASURERS = ("bin/harness-doctor", "bin/speed-doctor", "share/suite_audit.py", "share/time_budget.py")
 WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("workers", "review-cells"), "locks": WAIT_CLASSES}
 UNIT_BEFORE_DAYS = 7
@@ -791,8 +793,11 @@ def speed_skip(problem, problems=()):
 
 
 def speed_rank(problem):
-    """Priced rows by expected gain, then unpriced ones by their measured loss: minutes a day, then a share of spend."""
+    """A landed fix measured slower first, then priced rows by expected gain, then unpriced ones by their measured loss:
+    minutes a day, then a share of spend."""
     gain = expected_gain(problem)
+    if problem.get("fix_commits"):
+        return (-1, -(gain or 0.0))
     if gain is not None:
         return (0, -gain)
     if "om_day" in problem or "min/day" in str(problem.get("unit") or ""):
@@ -984,12 +989,26 @@ def unit_gone(item, named, after, need, ended, now):
             and sum(len(v) for v in after.values()) >= need)
 
 
+def load_factor(item, before, after, named, need, stat):
+    """How much slower the machine ran the units the fix never touched over the same windows: the median of their
+    after/before stat over the unnamed suites or hooks with N samples on both sides, 1 under LOAD_CONTROLS of them."""
+    if item["class"] not in LOAD_MATCHED:
+        return 1.0
+    ratios = []
+    for key, values in after.items():
+        if key not in named and len(values) >= need and before.get(key) and stat(before[key]) > 0:
+            n = min(len(values), len(before[key]))
+            ratios.append(stat(values[:n]) / stat(before[key][-n:]))
+    return statistics.median(ratios) if len(ratios) >= LOAD_CONTROLS else 1.0
+
+
 def unit_proof(item, started, ended, now):
     """A landed improvement whose class has a natural unit, proven from the journals once N samples follow the night:
     per key (the keys its ids name, else every suite, hook script, gate's day or wait class) the median of the first M
     samples after the night against the newest M before it, M the smaller side, weighted by M, so a changed mix of
-    suites or hooks reads as no gain. No load is recorded beside a sample, so none is matched. A proven gain sums, over
-    the keys proven on their own (`keys`), the key's delta times its samples a day in the UNIT_BEFORE_DAYS before the
+    suites or hooks reads as no gain. A named suite or hook is judged against the `load_factor` of the unnamed ones in
+    the same windows, so a busy morning after the night reads as no slowdown. A proven gain sums, over the keys proven
+    on their own (`keys`), the key's load-matched delta times its samples a day in the UNIT_BEFORE_DAYS before the
     night. No sample or a zero median before the night, or a fix that cuts runs (`counted`), keeps the day totals; a
     named unit that no longer exists is `gone`."""
     unit = UNITS.get(item["class"])
@@ -999,11 +1018,13 @@ def unit_proof(item, started, ended, now):
     named = unit_names(item)
     before = unit_samples(item, started - UNIT_BEFORE_DAYS * 86400, started)
     after = unit_samples(item, ended, now)
+    stat = UNIT_STAT.get(item["class"], statistics.median)
+    load = 1.0
     if named:
         if unit_gone(item, named, after, need, ended, now):
             return {"proven": False, "gone": True, "text": "%s no longer exists" % ", ".join(sorted(named))}
+        load = load_factor(item, before, after, named, need, stat)
         before, after = ({k: v for k, v in d.items() if k in named} for d in (before, after))
-    stat = UNIT_STAT.get(item["class"], statistics.median)
     before = {k: v for k, v in before.items() if v and stat(v) > 0}
     if not before:
         return None
@@ -1016,13 +1037,16 @@ def unit_proof(item, started, ended, now):
     total = float(sum(weight.values()))
     was = sum(weight[k] * pair[k][0] for k in keys) / total
     now_ = sum(weight[k] * pair[k][1] for k in keys) / total
-    proven = now_ <= ratio * was
-    gains = {k: (pair[k][0] - pair[k][1]) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
-             if pair[k][1] <= ratio * pair[k][0]} if proven else {}
+    proven = now_ <= ratio * was * load
+    gains = {k: (pair[k][0] - pair[k][1] / load) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
+             if pair[k][1] <= ratio * pair[k][0] * load} if proven else {}
     gain = round(sum(gains.values()), 1)
-    span = "%s → %s %s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label)
+    slower = {k: (pair[k][1] / load - pair[k][0]) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
+              if pair[k][1] > SLOWER_RATIO * pair[k][0] * load}
+    span = "%s → %s %s%s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label,
+                             " · load ×%.2f" % load if load != 1.0 else "")
     return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total), "span": span,
-            "gain": gain, "daily": daily, "gains": gains,
+            "gain": gain, "daily": daily, "gains": gains, "load": round(load, 2), "slower": slower,
             "text": "%s · %s" % (span, "proven · %.1f %s" % (gain, daily) if proven else "not proven")}
 
 
@@ -1045,7 +1069,7 @@ def plural(n, word, many):
     return " · %d %s" % (n, word if n == 1 else many) if n else ""
 
 
-def roi_lines(rows, now, gains=None):
+def roi_lines(rows, now, gains=None, wins=None):
     """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against the
     minutes per day saved once the change ran a full day, or, for a class with a natural unit, its per-unit proof
     times the unit's daily exposure since the night, in the unit's own daily measure. A fix that changed no code its
@@ -1053,7 +1077,8 @@ def roi_lines(rows, now, gains=None):
     reads 'spend without result', never a revert. A Spend audit reads its proof from Harness's latest.json instead
     and stays out of the minute totals. A gain is claimed once over the trend: the earliest positive claim of a key
     (a proven suite, hook or wait class, or a whole class from the day totals) takes it, a later one gains only its
-    unclaimed keys and names the owner as `shared with`."""
+    unclaimed keys and names the owner as `shared with`; `gains` collects each fixer job's min/day, `wins` the
+    `speed_block` lines: the last night's gains and fixes measured slower, then the night's and the trend's totals."""
     out, total_spend, total_saved, total_proven, measured, proofs = [], 0.0, 0.0, 0, 0, None
     total_other, claims = collections.Counter(), {}
 
@@ -1101,13 +1126,17 @@ def roi_lines(rows, now, gains=None):
                             shown["span"], "%.1f %s · " % (gain, shown["daily"]) if free else "", owner[:40]))
                     if shown["daily"] == "min/day":
                         saved += shown["gain"]
-                        if gains is not None:  # TEMP-SONNET-TRIAL(fixers)
+                        if gains is not None:
                             gains[item["ref"]] += shown["gain"]
                     else:
                         other[shown["daily"]] += shown["gain"]
                 if row is rows[-1]:
                     out.append("roi · %s · %s · %.1fM · %+d/-%d · %s" % (
                         item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1], shown["text"]))
+                    if wins is not None and shown["proven"] and shown["gain"] > 0:
+                        wins.append("%s · %s · +%.1f %s" % (what, shown["span"], shown["gain"], shown["daily"]))
+                    elif wins is not None and shown["proven"] is False and shown.get("slower") and change:
+                        wins.append("%s · %s · slower: a regression row next night" % (what, shown["span"]))
                 continue
             gain = saved_min_day(item, ended, now) if item["merged"] else None
             owner = claim(item, ["*"])[1] if gain not in (None, UNMEASURED) and gain > 0 else None
@@ -1119,9 +1148,11 @@ def roi_lines(rows, now, gains=None):
                 pending += item["merged"]
             elif gain != UNMEASURED:
                 saved += 0 if owner else gain
-                if gains is not None and not owner:  # TEMP-SONNET-TRIAL(fixers)
+                if gains is not None and not owner:
                     gains[item["ref"]] += gain
                 measured += 1
+            if row is rows[-1] and wins is not None and gain not in (None, UNMEASURED) and gain > 0 and not owner:
+                wins.append("%s · +%.1f min/day" % (what, gain))
             if row is rows[-1]:
                 out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
                     item["ref"][:40], what, item["spend_m"], item["lines"][0],
@@ -1134,6 +1165,8 @@ def roi_lines(rows, now, gains=None):
                 spend, gained(saved, other), plural(proven, "proven per unit", "proven per unit"),
                 plural(fixes, "measurement fix", "measurement fixes"),
                 " · %d pending" % pending if pending else "", " · %d unmeasured" % unmeasured if unmeasured else ""))
+            if wins is not None:
+                wins.append("night · " + gained(saved, other))
         total_spend, total_saved, total_proven = total_spend + spend, total_saved + saved, total_proven + proven
         total_other.update(other)
     if any(r and timed(r) for r in rows):
@@ -1144,7 +1177,39 @@ def roi_lines(rows, now, gains=None):
             else " · %d proven per unit" % total_proven if total_proven and not total_saved
             else " · spend without result so far" if not total_saved
             else " · %.1f min/day per 1M" % (total_saved / total_spend) if total_spend else ""))
+        if wins is not None:
+            wins.append("last %d nights · %s" % (len([r for r in rows if r]), gained(total_saved, total_other)))
     return out
+
+
+def speed_block(wins):
+    """The morning message's «Скорость» part, quoted as is: only what the roi lines measured, never a worker's word."""
+    return ["Скорость"] + ["  " + w for w in wins] if wins else []
+
+
+def slower_fixes(nights, now):
+    """Each landed fix of the (path, cached row) nights whose own unit, load-matched, ran over SLOWER_RATIO of its
+    before after it: its job, the commits, files and ids, the span and the loss in the unit's daily measure."""
+    out = {}
+    for path, row in nights:
+        if not row:
+            continue
+        jobs = {j.get("ref"): j for j in read_json(path, {}).get("jobs") or () if isinstance(j, dict)}
+        ended = row.get("ended") or row["started"] + row["hours"] * 3600
+        for item in row.get("improvements") or ():
+            if not item["merged"] or runtime_change(item) is not True:
+                continue
+            shown = unit_proof(item, row["started"], ended, now)
+            if not shown or shown.get("proven") is not False or not shown.get("slower"):
+                continue
+            found = out.setdefault(item["ref"], {
+                "ref": item["ref"], "night": row.get("id"), "ids": [], "spans": [], "loss": 0.0, "daily": shown["daily"],
+                "files": item.get("files") or [], "commits": ["%s@%s" % (c.get("repo"), str(c.get("hash"))[:12])
+                                                          for c in (jobs.get(item["ref"]) or {}).get("commits") or ()]})
+            found["ids"] += item["ids"]
+            found["spans"].append("%s %s" % (", ".join(sorted(shown["slower"])), shown["span"]))
+            found["loss"] = round(found["loss"] + sum(shown["slower"].values()), 1)
+    return list(out.values())
 
 
 def ledger_row(worker_run, path, night):
@@ -1276,7 +1341,8 @@ def night_report(worker_run, path):
     trend = [cached_row(worker_run, p) for _, p, _ in nights_upto(path)[-TREND_DAYS:]]
     if trend and trend[-1]:
         print("\n".join(ledger_lines(trend[-1])))
-    for line in trend_lines(trend) + roi_lines(trend, now_s()):
+    wins = []
+    for line in trend_lines(trend) + roi_lines(trend, now_s(), wins=wins) + speed_block(wins):
         print(line)
 
 

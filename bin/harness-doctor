@@ -5607,6 +5607,12 @@ def ledger_state(row, window_h=None, now=None):
     return "fixed-pending" if window_h and now is not None and now - window_h * 3600 < held else "regressed"
 
 
+def fix_regression_state(row):
+    """A fix measured slower is read over a fixed window, so its row is new until a ledger row decides it, and watch
+    once that row is closed."""
+    return "new" if not row else "open" if row.get("status") == "open" else "watch"
+
+
 def speed_restate(problem, ledger, now=None):
     """Speed's store was judged against the ledger Speed read; a night close reruns this doctor on its own branch."""
     rule = problem.get("rule")
@@ -5615,8 +5621,8 @@ def speed_restate(problem, ledger, now=None):
     # A regression's ident is only the middle of the key its row matches; an unmatched id is rule:key.
     key = problem["id"][len(rule) + 1:] if problem["id"].startswith(rule + ":") else None
     row = ledger_row_by_id(ledger, problem.get("ledger") or "") or (ledger_row(ledger, rule, key) if key else None)
-    return dict(problem, state=ledger_state(row, problem.get("window_h"), now), id=row["id"] if row else problem["id"],
-                ledger=row["id"] if row else None)
+    state = fix_regression_state(row) if problem.get("fix_commits") is not None else ledger_state(row, problem.get("window_h"), now)
+    return dict(problem, state=state, id=row["id"] if row else problem["id"], ledger=row["id"] if row else None)
 
 
 def last_fix_at(entry):

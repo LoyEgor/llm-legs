@@ -158,8 +158,6 @@ SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
-SPEED_BATCH = 5
-SPEED_FIXERS = 5
 
 
 def ledger_path(doctor):
@@ -354,6 +352,12 @@ def snapshot(doctor, doc_file, night=None):
             elif problem.get("speed") and rule == "suite_audit":
                 files += strings((problem.get("suite") or {}).get("sources"))
                 what = "Suite audit %s · %s" % ((problem.get("suite") or {}).get("component"), problem.get("fact"))
+            elif problem.get("speed") and rule == "regression" and problem.get("fix_commits") is not None:
+                files += [os.path.join(repos_dir(doctor), name) for name in strings(problem.get("fix_files"))]
+                what = ("Speed fix measured slower · %s: find why its unit got slower and cut that cause; no cause found -> "
+                        "revert %s (git revert, one commit each) · %s" % (
+                            problem.get("component") or pid, ", ".join(strings(problem.get("fix_commits"))) or "its commits",
+                            problem.get("fact")))
             elif problem.get("speed") and rule == "regression" and not problem.get("levers"):
                 what = ("Regression %s · no lever names its fix: find the cause first (what changed against its usual, "
                         "from the journals behind the row), then cut it · %s" % (problem.get("component") or pid,
@@ -446,26 +450,7 @@ def snapshot(doctor, doc_file, night=None):
     entries = [entry for entry in kept if entry["id"] not in speed] + ranked + [entry for _, entry in watched[:8]]
     if skipped:
         print("speed-doctor: " + "; ".join(skipped), file=sys.stderr)
-    taken = {run.get("area") for path in glob.glob(os.path.join(RUNS, "*.json")) for run in [read_json(path, {})]
-             if night and isinstance(run, dict) and run.get("doctor") == "harness" and run.get("night") == night
-             and run.get("launched_at") and str(run.get("area") or "").startswith("speed-")}
-    print(json.dumps(speed_fixers(batch_speed(entries, speed), speed, SPEED_FIXERS - len(taken))))
-
-
-def speed_fixers(entries, speed, room):
-    """Up to `room` Speed batches: the best of each kind (levers, suite audits, spend audits) first, then the rest by
-    rank; the rows of the others rank again the next night."""
-    kinds = {}
-    for entry in entries:
-        if entry["id"] in speed:
-            kinds.setdefault(entry["area"], entry["rule"] if entry["rule"] in ("spend_audit", "suite_audit") else "lever")
-    firsts = list({kind: area for area, kind in reversed(list(kinds.items()))}.values())
-    areas = sorted(firsts, key=list(kinds).index) + [area for area in kinds if area not in firsts]
-    left = [entry["id"] for entry in entries if entry["id"] in speed and entry["area"] not in areas[:max(0, room)]]
-    if left:
-        print("doctor-fix: Speed takes %d fixers; %d rows rank again the next night" % (SPEED_FIXERS, len(left)),
-              file=sys.stderr)
-    return [entry for entry in entries if entry["id"] not in left]
+    print(json.dumps(batch_speed(entries, speed)))
 
 
 def repo_top(path):
@@ -476,9 +461,9 @@ def repo_top(path):
 
 
 def batch_speed(entries, speed):
-    """Speed rows ride in runs of up to SPEED_BATCH rows whose component files lie in one repository; rows sharing a
-    component file stay in one run however many, and a spend or suite audit runs alone. A row an open run under 12 h
-    holds stays out: its batch would claim a fresh area beside that run."""
+    """One Speed run per shared context, however many rows, in rank order: the suite audits of one repository, all spend
+    audits, the levers whose component files lie in one set of repositories (levers sharing a file always together).
+    A row an open run under 12 h holds stays out: its batch would claim a fresh area beside that run."""
     held = dict(line.split("\t") for line in os.environ.get("DF_HELD_SPEED", "").splitlines())
     for entry in entries:
         if entry["id"] in speed and entry["id"] in held:
@@ -498,15 +483,15 @@ def batch_speed(entries, speed):
             groups.remove(other)
         group["files"] |= files
         group["entries"].append(entry)
-    batches, filling = [], {}
+    batches = {}
     for group in groups:
-        key = id(group) if group["audit"] else tuple(sorted({repo_top(path) for path in group["files"]}))
-        batch = filling.get(key)
-        if batch is None or len(batch) + len(group["entries"]) > SPEED_BATCH:
-            batch = filling[key] = []
-            batches.append(batch)
-        batch += group["entries"]
-    for batch in batches:
+        rule = group["entries"][0]["rule"]
+        key = (rule, str(group["entries"][0]["id"]).split(":")[1]) if rule == "suite_audit" else (rule,) if group["audit"] \
+            else tuple(sorted({repo_top(path) for path in group["files"]}))
+        batches.setdefault(key, []).extend(group["entries"])
+    ranked = {entry["id"]: n for n, entry in enumerate(entries)}
+    for batch in batches.values():
+        batch.sort(key=lambda entry: ranked[entry["id"]])
         area = "speed-" + slug(re.sub(r"^opportunity:", "", str(batch[0]["id"])))
         for entry in batch:
             entry["area"] = area
@@ -823,7 +808,7 @@ write_brief() { # id worktree -> the brief file
     ! jq -e '.lens_round' "$file" >/dev/null ||
       printf 'Speed lens: the `ROUND:` above is a `--lens speed` review of your component files aimed at the problems below; its confirmed findings, appended after this brief, are your leads to them. Each finding gets its verdicts.jsonl row (fixed, or false when it is not real or would trade quality); your decision lines still answer the problems.\n\n'
     ! jq -e '(.area | test("^speed-")) and (.problems | length) > 1' "$file" >/dev/null ||
-      printf 'Speed rows share only this fixer: each keeps its own decision line and its own proof (the doctor measures every row on its own), so a fix for one never stands for another.\n\n'
+      printf 'Speed rows share this run for their shared context, stated once above: work them in the packet'"'"'s order, best first, committing each on its own; each keeps its own decision line and its own proof (the doctor measures every row on its own), so a fix for one never stands for another. Close once your run reaches no further row: the rows without a decision line stay open and rank again the next night.\n\n'
     [ "$doctor" != code ] ||
       printf 'Code runs: every problem carries its judged plan and proof obligations; a deletion lands only through `bin/code-doctor check` (close runs it against `%s`), never edit through a symlink into another repository, and a cross-repository merge lands in stages over nights (the shared module and the callers first, `merges: [{stage: "migrated", night}]` in the ledger row, the old copy on a later night). Record each landed cleanup with `bin/code-doctor record-fix <cause> --by <run> --files ... --lines-removed N [--mechanism M --canonical PATH --replaced PATH...]`.\n\n' "$base"
     [ "$doctor" != system ] ||
@@ -837,9 +822,9 @@ write_brief() { # id worktree -> the brief file
     ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Menu delays (`menu_build`) are this run'"'"'s to fix, never a handoff (`close` refuses one): make the build in the files the packet names faster, measured by the menu journal the doctor reads.\n\n'
     ! jq -e --arg rules ' spend_audit ' "$JQ_HAS_RULES" "$file" >/dev/null ||
-      printf 'Spend audit: the component above costs the share of Claude spend its fact names (tokenmap, `~/.local/share/tokenmap/tracking.json`). Model, effort and thinking are never the lever. Five steps:\n1. Why it exists: `git log -S` on its source, the commit message, or the owner chat via `chat-name`.\n2. Price per day: its tokenmap share, plus the minutes Speed charges it, if any.\n3. Effect: how often it changed the outcome (a block followed by a different call, a note the model acted on, a re-answer that did new work). Sieve mechanically first: an exact duplicate is mechanical; a paraphrase or a language switch is only a candidate, and a Sonnet judge (never Haiku) reads a sample of the candidates.\n4. A cheaper equivalent: fire less, say less, once per session, or fix at the source; for a `startup:` part, the entries tokenmap'"'"'s `Unused startup` row lists as never used in 30 days come first. Prove it by replaying last week'"'"'s recorded inputs through the old and the new version: identical decisions -> commit it (verdict cut; claude-setup and the helper repositories through your `ADD-DIR:` worktrees); otherwise verdict kept with a one-line reason, or trade (a handoff with Cost:/Loss:/Recommendation: lines) only for a serious downside.\n5. Spend tokenmap cannot see: one line appended under the last item of `docs/handoffs/2026-10-07-tokenmap-waste-detectors.md`.\nRecord the audit, then commit `share/spend-ledger.json`: `bin/speed-doctor --spend-audit <component> --verdict cut|kept|trade --by %s --note <one line> [--worktree <ADD-DIR worktree>]...`; the decision line is `fixed` for cut, `ruled-out` for kept, `handoff` for trade. Proof is the doctor'"'"'s: the component'"'"'s share or the price of its Harness cells in `harness_index.cells` falls below the audit'"'"'s, read by the night'"'"'s roi lines.\n\n' "$id"
+      printf 'Spend audit: each component in the packet costs the share of Claude spend its fact names (tokenmap, `~/.local/share/tokenmap/tracking.json`). Model, effort and thinking are never the lever. Five steps:\n1. Why it exists: `git log -S` on its source, the commit message, or the owner chat via `chat-name`.\n2. Price per day: its tokenmap share, plus the minutes Speed charges it, if any.\n3. Effect: how often it changed the outcome (a block followed by a different call, a note the model acted on, a re-answer that did new work). Sieve mechanically first: an exact duplicate is mechanical; a paraphrase or a language switch is only a candidate, and a Sonnet judge (never Haiku) reads a sample of the candidates.\n4. A cheaper equivalent: fire less, say less, once per session, or fix at the source; for a `startup:` part, the entries tokenmap'"'"'s `Unused startup` row lists as never used in 30 days come first. Prove it by replaying last week'"'"'s recorded inputs through the old and the new version: identical decisions -> commit it (verdict cut; claude-setup and the helper repositories through your `ADD-DIR:` worktrees); otherwise verdict kept with a one-line reason, or trade (a handoff with Cost:/Loss:/Recommendation: lines) only for a serious downside.\n5. Spend tokenmap cannot see: one line appended under the last item of `docs/handoffs/2026-10-07-tokenmap-waste-detectors.md`.\nRecord the audit, then commit `share/spend-ledger.json`: `bin/speed-doctor --spend-audit <component> --verdict cut|kept|trade --by %s --note <one line> [--worktree <ADD-DIR worktree>]...`; the decision line is `fixed` for cut, `ruled-out` for kept, `handoff` for trade. Proof is the doctor'"'"'s: the component'"'"'s share or the price of its Harness cells in `harness_index.cells` falls below the audit'"'"'s, read by the night'"'"'s roi lines.\n\n' "$id"
     ! jq -e --arg rules ' suite_audit ' "$JQ_HAS_RULES" "$file" >/dev/null ||
-      printf 'Suite audit: the suite above costs the wall-min/day (CPU-min/day beside it) its fact names over the last 7 days of `~/.cache/run-suites/runs.jsonl`, every runner (chats, workers, the night). No change is forced. Three steps:\n1. What each check guards: the behaviour or the incident it pins (`git log -S`, the commit message). Read the suite through the `tests` lens yourself (`review-bench/lenses/tests.md`; a headless run cannot launch `review-bench review`, the review door refuses it) and fix what it finds by its Fixing section: a check that stays green under the production mutation it names is fixed to fail on it or removed (exempt from the assert count below), proven by that mutation red after the fix.\n2. Where the wall goes: `tests/run-all --profile <suite>` journals its spawns per binary (`execs`) and slept seconds (`sleep_s`); then sleeps, timeouts, fixture rebuilds, checks another suite already makes.\n3. The cheaper equivalent: fewer spawns, a fixture built once, a check kept in one suite only. Never shorten a sleep or a timeout a race check depends on (the 2026-10-05 speed-ups that did went vacuous and were reverted).\nProof of a cut: the PASS line'"'"'s assert count unchanged, or each removed check proven covered elsewhere by a mutation the other suite catches; every mutation still red; wall a run lower on fresh runs. Verdict cut, kept (the suite is fine: a normal outcome) or trade (a handoff with Cost:/Loss:/Recommendation: lines). After your last suite run record it and commit `share/spend-ledger.json`: `bin/speed-doctor --suite-audit <repo>/<suite> --verdict cut|kept|trade --by %s --note <one line> [--worktree <ADD-DIR worktree>]...`; the decision line is `fixed` for cut, `ruled-out` for kept, `handoff` for trade. Proof is the doctor'"'"'s: the fastest wall a run after the audit against the audit'"'"'s, read in the Suite audits block and the night'"'"'s roi lines.\n\n' "$id"
+      printf 'Suite audit: each suite in the packet costs the wall-min/day (CPU-min/day beside it) its fact names over the last 7 days of `~/.cache/run-suites/runs.jsonl`, every runner (chats, workers, the night). No change is forced. Three steps:\n1. What each check guards: the behaviour or the incident it pins (`git log -S`, the commit message). Read the suite through the `tests` lens yourself (`review-bench/lenses/tests.md`; a headless run cannot launch `review-bench review`, the review door refuses it) and fix what it finds by its Fixing section: a check that stays green under the production mutation it names is fixed to fail on it or removed (exempt from the assert count below), proven by that mutation red after the fix.\n2. Where the wall goes: `tests/run-all --profile <suite>` journals its spawns per binary (`execs`) and slept seconds (`sleep_s`); then sleeps, timeouts, fixture rebuilds, checks another suite already makes.\n3. The cheaper equivalent: fewer spawns, a fixture built once, a check kept in one suite only. Never shorten a sleep or a timeout a race check depends on (the 2026-10-05 speed-ups that did went vacuous and were reverted).\nProof of a cut: the PASS line'"'"'s assert count unchanged, or each removed check proven covered elsewhere by a mutation the other suite catches; every mutation still red; wall a run lower on fresh runs. Verdict cut, kept (the suite is fine: a normal outcome) or trade (a handoff with Cost:/Loss:/Recommendation: lines). After your last suite run record it and commit `share/spend-ledger.json`: `bin/speed-doctor --suite-audit <repo>/<suite> --verdict cut|kept|trade --by %s --note <one line> [--worktree <ADD-DIR worktree>]...`; the decision line is `fixed` for cut, `ruled-out` for kept, `handoff` for trade. Proof is the doctor'"'"'s: the fastest wall a run after the audit against the audit'"'"'s, read in the Suite audits block and the night'"'"'s roi lines.\n\n' "$id"
     [ "$doctor/$area" != llm/reviewers ] ||
       printf 'Settle every stuck review round (`machinery:closure_pending`) of the sweep repositories yourself, not only its machinery; never touch a round of another project: the LLM doctor section "Stuck review rounds".\n\n'
     printf '## Packet\n\n'
@@ -1164,7 +1149,7 @@ review_refusal() { # round -> why the run's review round keeps it open, empty wh
 close_run() { # id --decisions <file> note...
   local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
   local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule base wt growth handoffs
-  local pairs=() codes=() checks
+  local pairs=() codes=() checks speed_batch left=()
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
   shift
@@ -1249,9 +1234,12 @@ close_run() { # id --decisions <file> note...
     decided+="$pid"$'\n'
   done < <(awk -F'\t' '{ printf "%s\037%s\037%s\037%s\n", $1, $2, $3, $4 }' "$decisions")
   problems=$(jq -r '.problems[].id' "$file")
+  speed_batch=$(jq -r 'if (.area | test("^speed-")) and (.problems | length) > 1 then 1 else "" end' "$file")
+  [ -z "$speed_batch" ] || [ -n "$decided" ] || bad+=("no row decided: a Speed run closes once it decided its first row")
   while IFS= read -r pid; do
     [ -n "$pid" ] || continue
-    [[ $'\n'$decided == *$'\n'"$pid"$'\n'* ]] || bad+=("$pid: undecided")
+    [[ $'\n'$decided == *$'\n'"$pid"$'\n'* ]] && continue
+    if [ -n "$speed_batch" ]; then left+=("$pid"); else bad+=("$pid: undecided"); fi
   done <<<"$problems"
   judge_then=$(jq -r '.judge_at_launch // ""' "$file")
   judge_now=$(doc_judge "$doctor" "$doc")
@@ -1290,6 +1278,7 @@ close_run() { # id --decisions <file> note...
   fi
   (locked commit_close "$id" "$decisions" "$judge_now" "$*" "$unverified") || exit 1
   printf 'run %s closed: %s decisions\n' "$id" "$(jq '.decisions | length' "$file")"
+  [ ${#left[@]} -eq 0 ] || printf 'run %s left %s rows open; they rank again the next night: %s\n' "$id" "${#left[@]}" "${left[*]}"
 }
 
 abandon_locked() { # id reason

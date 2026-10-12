@@ -242,6 +242,42 @@ check(time_budget.roi_lines([night], NOW + 600)
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(w)}, split) for i, w in enumerate((8, 30, 30, 30, 30))])
 check(time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["text"] == "20 → 30 wall-s/run · not proven",
       "one lucky fast run after the night proves nothing: a suite compares medians, never the fastest run")
+controls = ("test_a", "test_b", "test_c")
+busy = [row(NOW + 60 + i, {n: cpu(4) for n in controls}, cheap) for i in range(5)]
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(24)}, split) for i in range(5)] + busy)
+loaded = time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(25)}, split) for i in range(5)] + busy[:3])
+check(loaded["text"] == "20 → 24 wall-s/run · load ×2.00 · proven · 0.2 suite-min/day" and loaded["load"] == 2.0
+      and time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["text"] == "20 → 25 wall-s/run · not proven",
+      "a suite is judged against the suites the fix never named in the same windows: 20 → 24 s while three untouched "
+      "suites ran 2 → 4 s is a gain, priced at 20 - 24/2 s a run; under 3 such suites with N runs, none is matched: %s"
+      % loaded)
+night_file = os.path.join(work, "night-slow.json")
+with open(night_file, "w") as handle:
+    json.dump({"jobs": [{"ref": "night-x", "commits": [{"repo": "alpha", "hash": "0123456789abcdef"}]}]}, handle)
+code = dict(item, files=[["alpha", "tests/test_mid.sh"]])
+slow_night = [(night_file, dict(night, id="n-slow", improvements=[code, dict(code, ref="night-m", files=[["alpha", "a.md"]])]))]
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)])
+slow = time_budget.slower_fixes(slow_night, NOW + 600)
+slow_wins, won = [], []
+time_budget.roi_lines([slow_night[0][1]], NOW + 600, wins=slow_wins)
+save(journal + later)
+time_budget.roi_lines([dict(night, improvements=[item, dict(item, ref="night-m", files=[["alpha", "a.md"]])])], NOW + 600,
+                      wins=won)
+check(slow_wins == ["alpha/test_mid · 20 → 30 wall-s/run · slower: a regression row next night",
+                    "night · gained 0.0 min/day", "last 1 nights · gained 0.0 min/day"]
+      and won == ["alpha/test_mid · 20 → 8.0 wall-s/run · +0.3 suite-min/day",
+                  "night · gained 0.0 min/day · 0.3 suite-min/day", "last 1 nights · gained 0.0 min/day · 0.3 suite-min/day"],
+      "the «Скорость» lines are the roi lines' own measures: a proven gain with its span, a fix measured slower named "
+      "as such, a measurement fix never: %s %s" % (slow_wins, won))
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)])
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)] + busy)
+check(slow == [{"ref": "night-x", "night": "n-slow", "ids": ["test_slow:alpha:test_mid"], "loss": 0.2,
+                "spans": ["alpha/test_mid 20 → 30 wall-s/run"], "daily": "suite-min/day",
+                "files": [["alpha", "tests/test_mid.sh"]], "commits": ["alpha@0123456789ab"]}]
+      and time_budget.slower_fixes(slow_night, NOW + 600) == [],
+      "a landed fix whose own suite ran over 1.3x its wall after it is measured slower, naming its job's commits; a "
+      "measurement fix never is, nor a suite as slow as the untouched ones beside it: %s" % slow)
 save(journal + later)
 check(time_budget.roi_lines([night, dict(night, improvements=[dict(item, ref="night-y")])], NOW + 600)[0]
       == "roi · night-y · alpha/test_mid · 1.5M · +3/-9 · 20 → 8.0 wall-s/run · proven · shared with night-x",

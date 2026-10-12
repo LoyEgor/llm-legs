@@ -351,14 +351,56 @@ check(shown[0]["needs_egor"] is True and fields["quality_evidence"]["result"] ==
       "a risk lever with evidence is a needs-Egor proposal and never enters the night pick, whatever its score")
 check(module.select([{"id": "opportunity:eq", "opportunity": module.opportunity_fields(100.0, module.LEVERS[0])}])
       == ["opportunity:eq"], "an equivalent lever enters the night pick")
-row = lambda om, status, fix: {"id": "s-%s" % om, "status": status, "om_day": om, "match": {"rule": "opportunity"},
-                               "fixes": [fix]}
-check(module.speed_yield({"rows": [row(2, "fixed", {"equivalence": {"compared": "replay", "data": "d", "result": "same"}}),
-                                   row(3, "fixed", {"at": "2026-10-03"}), row(5, "fixed-pending", {}),
-                                   dict(row(7, "fixed", {"equivalence": {"compared": "r", "data": "d", "result": "s"}}),
-                                        match={"rule": "wait"})]})
+row = lambda job, status, fix: {"id": "s-" + job, "status": status, "om_day": 99, "match": {"rule": "opportunity"},
+                                "fixes": [dict(fix, by="night fixer " + job)]}
+same = {"equivalence": {"compared": "replay", "data": "d", "result": "same"}}
+check(module.speed_yield({"rows": [row("job-a", "fixed", same), row("job-b", "fixed", {"at": "2026-10-03"}),
+                                   row("job-c", "fixed-pending", {}), row("job-a", "fixed", same), row("job-e", "open", same),
+                                   dict(row("job-d", "fixed", same), match={"rule": "wait"})]},
+                          {"job-a": 2.0, "job-b": 3.0, "job-c": 5.0, "job-d": 7.0, "job-e": 11.0})
       == {"proven_om_day": 2.0, "pending_om_day": 8.0},
-      "a fixed Speed row is proven only with its output-equivalence proof; one without it stays pending")
+      "a fixed Speed row yields the min/day its fixer job's roi lines prove, once a job: proven only with its "
+      "output-equivalence proof, pending without it; no row carries its own minutes")
+calls, nights = [], os.path.join(work, "doctors", "nights")
+os.environ["DOCTORS_DIR"] = base["DOCTORS_DIR"]
+real = module.time_budget.cached_row, module.time_budget.roi_lines, module.time_budget.slower_fixes
+module.time_budget.cached_row, module.time_budget.roi_lines, module.time_budget.slower_fixes = (
+    lambda worker_run, path: {"night": os.path.basename(path)},
+    lambda rows, now, gains: calls.append([r["night"] for r in rows]) or gains.update({"job-a": 2.004}),
+    lambda pairs, now: [{"ref": "job-a", "nights": len(pairs)}])
+reads = [module.roi_read(state, HI) for state in [{}]] if not os.path.isdir(nights) else None
+os.makedirs(nights, exist_ok=True)
+for name in ("20261001T000000Z-aaaa.json", "20261002T000000Z-bbbb.json"):
+    with open(os.path.join(nights, name), "w") as handle:
+        json.dump({"id": name[:-5], "started_at": name[:15]}, handle)
+state = {}
+reads += [module.roi_read(state, HI), module.roi_read(state, HI + 60)]
+check([(r["gains"], r["slower"]) for r in reads] == [({}, [])] + [({"job-a": 2.0}, [{"ref": "job-a", "nights": 2}])] * 2
+      and calls == [["20261001T000000Z-aaaa.json", "20261002T000000Z-bbbb.json"]]
+      and state["roi"]["key"][1] == "20261002T000000Z-bbbb.json",
+      "the yield's gains and the fixes measured slower are the roi read over the trend's nights, once a day and "
+      "night: %s %s" % (reads, calls))
+os.environ.pop("DOCTORS_DIR")
+module.time_budget.cached_row, module.time_budget.roi_lines, module.time_budget.slower_fixes = real
+for name in ("20261001T000000Z-aaaa.json", "20261002T000000Z-bbbb.json"):
+    os.remove(os.path.join(nights, name))
+slow = {"ref": "harness-speed-x-1", "night": "n1", "ids": ["opportunity:chat/hooks"], "spans": ["gate.sh 100 → 200 ms/call"],
+        "loss": 1.5, "daily": "min/day", "files": [["claude-setup", "hooks/gate.sh"]], "commits": ["claude-setup@abc"]}
+fixed_row = {"id": "speed-fix-x", "status": "fixed", "match": {"rule": "regression", "ident": "fix/harness-speed-x-1"},
+             "fixes": [{"at": "2026-10-01T00:00:00+03:00"}]}
+found = [module.fix_regressions([slow], {"rows": rows}) for rows in ([], [dict(fixed_row, status="open")], [fixed_row])]
+check(found[0] == [{"id": "regression:fix/harness-speed-x-1", "rule": "regression", "ident": "fix/harness-speed-x-1",
+                    "state": "new", "ledger": None,
+                    "fact": "Speed fix harness-speed-x-1 (claude-setup@abc) measured slower: gate.sh 100 → 200 ms/call · "
+                            "1.5 min/day lost", "value": 1.5, "unit": "min/day", "expected_min_day": 1.5, "window_h": 48,
+                    "group": "fix", "component": "fix/harness-speed-x-1", "evidence": [], "levers": [],
+                    "fix_commits": ["claude-setup@abc"], "fix_files": ["claude-setup/hooks/gate.sh"]}]
+      and [f[0]["state"] for f in found] == ["new", "open", "watch"]
+      and h.speed_restate(dict(found[0][0], state="new"), {"rows": [fixed_row]}, HI)["state"] == "watch"
+      and h.speed_restate(dict(found[0][0], state="new"), {"rows": [dict(fixed_row, status="open")]}, HI)["state"] == "open"
+      and module.time_budget.speed_rank(found[0][0]) < module.time_budget.speed_rank({"expected_min_day": 300}),
+      "a landed fix measured slower is a regression row naming its commits and files, ranked before any priced row; "
+      "its ledger row decides it once, so the fixed proof window never reopens it: %s" % found)
 check(module.covers({"chat.om_per_100_prompts|all|-": {"days": 6}}) == []
       and module.covers({"chat.om_per_100_prompts|all|-": {"days": 7}})
       == [["wait", "*", "chat"], ["wait_cut", "*", "chat"], ["local_slow", "*", "chat"]],

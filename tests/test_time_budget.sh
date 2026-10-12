@@ -458,13 +458,17 @@ audit = [{"problems": p, "started": D0 + i * 86400, "hours": 1.0, "split_s": {},
 check(T.trend_lines(audit)[-1] == "trend · problems 32 → 24 over 7 nights · last 3: 1 down, 2 up · going back",
       "the trend never reads forward while the recent nights each ended with more problems than they began with: %s"
       % T.trend_lines(audit)[-1])
-check(out[10:] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · saves 1.0 min/day",
+check(out[10:14] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · saves 1.0 min/day",
                    "roi · harness-y-20260110T000000Z · repo/test_x · 0.0M · +0/-0 lines · not landed",
                    "roi · night: improvements 0.0M · gained 1.0 min/day",
                    "roi · last 2 nights: improvements 0.0M · gained 1.0 min/day"],
       "the ROI ledger: each Speed or time fixer job with its spend, lines and the min/day its class lost less over "
       "up to 3 settled days after a full day of the change than before it; other fixers are no improvement: %s"
       % out[10:])
+check(out[14:] == ["Скорость", "  suite slot wait · +1.0 min/day", "  night · gained 1.0 min/day",
+                   "  last 2 nights · gained 1.0 min/day"],
+      "the report ends with the morning message's «Скорость» block, quoted as is: the night's measured gains from the "
+      "roi lines, the night's and the trend's totals, never a fixer's own words: %s" % out[14:])
 item = {"class": "suite_wait", "merged": True}
 check(T.saved_min_day(item, D0 + 11000, D0 + 86400 * 2.5) is None
       and T.saved_min_day(dict(item, **{"class": "slot"}), D0 + 11000, D0 + 86400 * 9) == 0.0
