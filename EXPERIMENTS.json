@@ -25,5 +25,17 @@
       "llm-limits --table banner once overdue (share/experiments.sh)"
     ],
     "how_to_remove": "Read the evidence first. Verdict: Sonnet's land rate, revert rate and findings-on-fix not worse than Opus's -> propose to Egor Sonnet for these classes everywhere (a separate deliberate change); worse -> remove and keep Opus. Plateau not reached at review -> Egor extends both dates (review_by and the marker's until); never extend them yourself. Removal: delete share/sonnet-trial.sh and share/sonnet_trial.py; delete every line or block tagged TEMP-SONNET-TRIAL(fixers) in bin/worker-run (the source line, the trial_lens local, the two lens/model blocks in start_run, the trial_lens jq arg and the trial meta line), bin/doctor-fix (the source line, trial_turn, the trial record block in launch_runs, the MODEL: sonnet line in write_brief), bin/night-run (the sonnet_trial.py call in cmd_report), share/time_budget.py (the gains parameter of roi_lines and its two uses), and the trial cases in tests/test_worker_run_rounds.sh, tests/test_doctor_fix.sh and tests/test_night_report_trial.sh, and share/sonnet-trial.sh from the self-edit cp list in tests/test_worker_run_outcomes.sh; `grep -rn 'TEMP-SONNET-TRIAL' .` must print nothing; rm -f ~/.cache/doctors/sonnet-trial.json; delete this entry last and run tests/run-all $(tests/affected <the changed files>)."
+  },
+  {
+    "id": "haiku-review-cells",
+    "tag": "TEMP-HAIKU-TRIAL(report)",
+    "what": "Haiku 5.5 review cells in production, chunked and judged by the Opus blind judge (Egor, 2026-10-10; review-bench 16dcb55 legacy lens staffs haiku-high, 22c0acd speed lens haiku-high x2, fit since b7b7dd2): hypothesis: Haiku cells reach judge-confirmed findings comparable to the other cells per round, and fixes of their findings are no more often reverted or left unlanded",
+    "started": "2026-10-12",
+    "review_by": "2026-10-26",
+    "evidence": "review rounds under ~/.claude-profiles/.claudeb/worker-stats/benches/ (meta.json lens, panel_raters, judge.state; findings-<cell>.jsonl; verdicts.jsonl) and their fixer runs (~/.cache/claude-worker-runs/*/meta.json review_round, verdicts.jsonl, produced); read one night with `python3 -B share/haiku_trial.py <~/.cache/doctors/nights/<id>.json>`",
+    "surfaces": [
+      "night-run report: one `haiku trial · <lens> · <round>` line per fit, legacy and speed round staffing a Haiku cell"
+    ],
+    "how_to_remove": "The Updater doctor reads the lines and decides with its owner whether review-bench keeps or reverts 16dcb55 and 22c0acd. Removal: delete share/haiku_trial.py, the haiku_trial.py call tagged TEMP-HAIKU-TRIAL(report) in bin/night-run cmd_report and tests/test_night_report_haiku.sh; `grep -rn 'TEMP-HAIKU-TRIAL' .` must print nothing; delete this entry last and run tests/run-all $(tests/affected <the changed files>)."
   }
 ]

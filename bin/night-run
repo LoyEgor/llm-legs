@@ -1477,6 +1477,7 @@ cmd_report() {
   repo_debt
   python3 -B "$repo_root/share/night_spend.py" goal-lines "$file" || true
   python3 -B "$repo_root/share/sonnet_trial.py" "$repo_root/bin/worker-run" "$file" || true # TEMP-SONNET-TRIAL(fixers)
+  python3 -B "$repo_root/share/haiku_trial.py" "$file" || true # TEMP-HAIKU-TRIAL(report)
   python3 -B "$repo_root/share/time_budget.py" night "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
 }
 

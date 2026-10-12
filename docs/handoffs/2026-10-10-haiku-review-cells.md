@@ -1,6 +1,6 @@
 # Haiku review cells: chunked, judged by Opus; the legacy round is a production trial
 
-Status: open — To: next night (night 20261010T031219Z-4c4e ran its Haiku rounds before 7fd71ca, so they read 11-22 of 41-44 chunks, and its report carried no trial line)
+Status: settled 20261012T005404Z-e2f7: night-run report prints a `haiku trial` line per fit/legacy/speed round (share/haiku_trial.py, experiment haiku-review-cells); fix handoffs already need judge verdicts
 
 From chat «Updater doctor», on Egor's word 2026-10-10: Haiku reviews only chunked and only with the
 Opus check. Changed on review-bench main while this night was paused:
@@ -8,7 +8,7 @@ Opus check. Changed on review-bench main while this night was paused:
 - 1fbc22d: any launch staffing a Haiku cell chunks itself (`cli.chunk_launch`), `--chunk` or not.
 - 22c0acd: the speed lens staffs `haiku-high x2` (doctor-fix's speed lens, once its launch door is fixed).
 - bugs stays `opus-high x2`.
-- 7fd71ca: a chunked cell left running alone starts passes for the panel cap times its waves. Before, the one-pass cap was the whole cell's budget, and it cut this night's Haiku debt cells at 11-18 of 41-44 chunks (failed as `chunks unread`, judge skipped). Rounds launched before it may rerun on it.
+- 7fd71ca: a chunked cell left running alone starts passes for the panel cap times its waves. Before, the one-pass cap was the whole cell's budget, and it cut this night's Haiku debt cells at 11-18 of 41-44 chunks (failed as `chunks unread`, judge skipped).
 
 Chunked Haiku bench, 2026-10-10, key hits against the baseline:
 
