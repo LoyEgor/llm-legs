@@ -138,9 +138,28 @@ history_row() {
       source_session:.session, text:$text}' "$1"
 }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+# /branch runs the fork under a new session id while every report its parent's launches queued
+# stays under the parent's, a chat nobody is in any more; the fork drains that queue too. The
+# transcript is read once per session: the answer, empty for a session that is no fork, is kept
+# in forked-from, and report-flush.sh skips its no-pending exit until that file exists.
+parent=''
+fork_parent() {
+  local mark="$ROOT/$session/forked-from"
+  if [ -f "$mark" ]; then
+    parent=$(cat "$mark" 2>/dev/null) || parent=''
+  else
+    parent=''
+    if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+      parent=$(grep -m1 -o '"forkedFrom":{"sessionId":"[A-Za-z0-9._-]*"' "$transcript" 2>/dev/null) || parent=''
+      parent=${parent##*\"sessionId\":\"}; parent=${parent%\"}
+    fi
+    mkdir -p "$ROOT/$session" 2>/dev/null && printf '%s\n' "$parent" >"$mark" 2>/dev/null
+  fi
+  valid_name "$parent" && [ "$parent" != "$session" ] && [ "$parent" != _orphan ] || parent=''
+}
 pending_files() {
   local entry base
-  for base in "$ROOT/$session/pending" "$ROOT/_orphan/pending"; do
+  for base in "$ROOT/$session/pending" ${parent:+"$ROOT/$parent/pending"} "$ROOT/_orphan/pending"; do
     for entry in "$base"/*.txt; do
       [ -f "$entry" ] || continue
       printf '%s\t%s\n' "$(mtime "$entry")" "$entry"
@@ -152,7 +171,7 @@ pending_files() {
 # delivered reports are stat'ed only past the cap, never one stat per report on every call.
 has_pending() {
   local entry
-  for entry in "$ROOT/$session/pending"/*.txt "$ROOT/_orphan/pending"/*.txt; do
+  for entry in "$ROOT/$session/pending"/*.txt ${parent:+"$ROOT/$parent/pending"/*.txt} "$ROOT/_orphan/pending"/*.txt; do
     [ -f "$entry" ] && return 0
   done
   return 1
@@ -259,10 +278,12 @@ case "$verb" in
       fields=$(printf '%s' "$payload" | jq -er '[.session_id // "", .agent_id // "", .transcript_path // ""] | .[]' 2>/dev/null) || exit 0
       { IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; } <<<"$fields"
     fi
+    ! valid_name "$session" || [ "$session" = _orphan ] || [ ! -d "$ROOT" ] || fork_parent
     skip_flush && exit 0
     [ -n "$session" ] || resolve_session
     valid_name "$session" || exit 0
     [ -d "$ROOT" ] || exit 0
+    [ "$session" = _orphan ] || [ -n "$parent" ] || fork_parent
     has_pending || over_cap || exit 0
     lock_store || { printf 'report-bus: cannot acquire flush lock\n' >&2; exit 0; }
     blocks='' files=() selected=() rows=() total=0 remaining=0

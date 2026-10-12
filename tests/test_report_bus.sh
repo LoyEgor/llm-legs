@@ -372,4 +372,22 @@ assert test "$(jq -s length "$STORE/history.log")" = "$lines"
 post safe 'post@origin/main'
 assert test -f "$(find "$STORE/safe/pending" -name '*__post-origin-main.txt')"
 
+# A /branch fork runs under a new id: it drains the queue its parent's launches left, reading the
+# transcript once; a session that is no fork remembers that and never reads it again.
+post forkparent fromparent 'parent report'
+printf '{"type":"system"}\n{"forkedFrom":{"sessionId":"forkparent"},"sessionId":"forkparent"}\n' >"$WORK/fork.jsonl"
+fork_flush() { jq -cn --arg s "$1" --arg t "$2" '{session_id:$s, transcript_path:$t}' | "$BUS" flush --event PostToolUse; }
+output=$(fork_flush forkchild "$WORK/fork.jsonl")
+assert test "$(message <<<"$output" | sed 1d)" = "$(frame 'parent report')"
+assert test "$(count "$STORE/forkparent/pending")" = 0
+assert test "$(count "$STORE/forkchild/delivered")" = 1
+assert test "$(cat "$STORE/forkchild/forked-from")" = forkparent
+printf '{"sessionId":"plain"}\n' >"$WORK/plain.jsonl"
+assert test -z "$(fork_flush plainchat "$WORK/plain.jsonl")"
+assert test -f "$STORE/plainchat/forked-from"
+assert test -z "$(cat "$STORE/plainchat/forked-from")"
+post forkparent later 'second parent report'
+rm "$WORK/fork.jsonl"
+assert test -n "$(fork_flush forkchild "$WORK/fork.jsonl")"
+
 printf 'PASS: %s asserts; report bus delivery, history, isolation and failure retention\n' "$asserts"
