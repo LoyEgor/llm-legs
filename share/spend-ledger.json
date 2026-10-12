@@ -348,6 +348,25 @@
    },
    "verdict": "kept",
    "note": "0.0 % of spend; denies bare headless launches that would be unowned workers (routing-contract rule 4); its cost is hook time, not tokens; no cheaper equivalent proven"
+  },
+  {
+   "id": "hook:instruction-write-gate.sh",
+   "title": "instruction-write-gate.sh",
+   "audited_at": "2026-10-12T04:08:16+03:00",
+   "by": "harness-speed-spend-hook-instruction-write-gate-sh-20261012T010230Z-2e77",
+   "share": 0.000106,
+   "prices": {
+    "Workers · Hooks": 496.64621242756425,
+    "Workers · attachment: hook context": 2879.5939310547787,
+    "Doctors · attachment: hook context": 696.6429838946558,
+    "Doctors · Hooks": 252.30745007151472,
+    "Reviewers · Hooks": 4.96130445842753
+   },
+   "sources": {
+    "llm-legs/bin/instruction-write-gate.sh": "91318b0fab61b1a3a9639170e16618d17ecac529"
+   },
+   "verdict": "kept",
+   "note": "kept: 70.2k/7d (0.0 %) is 30 blocked shell writes; 24 were real instruction-file writes (python open(...,'w'), cp, git checkout) and each changed the outcome (next call Read+Edit or an MD-PROPOSAL); 6 false denials were variable-held fixture paths ($D/$R/$W/.../CLAUDE.md, even D=$(mktemp -d)) in sessions testing the gate itself: the gate denies a guarded basename behind any unresolved variable, which also catches cp x $P/global/CLAUDE.md on a real checkout, so exempting variables loses real catches for ~14k/week; denial text is ~10 % of the price (the rest is the denied command x5) and carries the per-file cost figures; +153 % is night-sweep SKILL.md shell edits; wall time 286->33 ms mean since 87288698"
   }
  ]
 }

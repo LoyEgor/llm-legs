@@ -20,13 +20,6 @@ The reliable version does not read shell text at all and does not enumerate. It 
 - **Fail-closed at the only door that can close.** PreToolUse keeps exit 2 on any hook error. The audit path cannot fail closed — a missed event is a missed event — so its reliability is the watcher's uptime, and that is what the menu must show: a `watcher: live since …` line under `Automations ▸ Instruction files`, red when the process is gone or its heartbeat is older than its interval. A silent watcher is the one failure the current design cannot display either.
 - **Bounds that alert on themselves.** A journal truncation or a receipt-without-alert becomes one row (`N changes dropped`) rather than a silent count.
 
-## What is left open in the current code, for whoever picks this up
-
-- CLOSED 2026-09-23, a stamp is honoured only beside the `denied/<hash>` record its own session's deny wrote, anything else is `stamp-forged`, exit 2: pre-creatable retry stamp directory (bloat-gate:378 `instruction_stamp_ready`, write-gate:223): an LLM can `mkdir` the stamp before the first deny and pass on the first try. The fix is a stamp the gate alone can mint (an HMAC over hash+time with a key outside `$HOME`), which is the same "state outside the LLM's reach" the watcher needs.
-- CLOSED 2026-09-23, only receipted records are trimmed and unreceipted overflow past twice the cap becomes one counted `dropped` record: 200-record journal truncation before pump (Lua:113, watch.sh trim): raise the cap or trim only records that already carry a receipt.
-- CLOSED 2026-09-23, every `check` touches its session's baseline: seven-day baseline sweep of a live session (watch.sh:469): sweep by the session's last hook stamp, not the file's mtime.
-- CLOSED 2026-09-23, each asserted in `tests/test_instruction_gate*.sh` (23 by the menu harness) and `git apply`/`stash pop` landings read by `instruction_git_landing`: items 4, 15, 20, 23, 28 above: an assertion each, spelled with the round's exact command; item 4 also `git apply`/`stash pop` as copy verbs.
-
 ## Closed on 2026-09-23 by the file watcher (`hammerspoon/instruction-watch.lua`)
 
 - **Kernel evidence (point 3).** One `hs.pathwatcher` per root (`~/.claude`, each symlinked class directory's target, every repository the visible-paths rule names) hashes on the event, so a write by a worker, launchd or an editor is journaled with no hook running (`source: watcher`). Still open: the watcher covers the same RULE, so point 1's enumeration edge stands, and the nightly diff against tokenmap's index is not built.

@@ -38,6 +38,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Re-write causes (spend audit `rewrites:unexplained`, 2026-10-10): 73 of 76 turn-2 `unexplained` re-writes (1.73M of 1.91M in 7 d) follow a turn-1 ToolSearch load of `claude-in-chrome` tools (Claude Code re-writes the messages after it; built-in WebSearch loads never do): give them a cause of their own. A first post-compaction request that cached nothing still sets the next one's `prev_ctx`, so its first write books as a re-write (2026-10-09 night fixer, 55k).
    - Denied spawns (spend audit `spawn:gemini-worker`, 2026-10-10): an Agent call `worker-spawn-hook.sh` denies is no spawn, yet costs the parent its prompt and the re-issued brief; count denied Agent calls by type.
    - Deferred tool list (spend audit 2026-10-10): `surfacedNames` schemas Claude Code loads itself share the leaf with ToolSearch loads; a listing cut at source (Claude Docs, 10-05) still rides resumed contexts as live `Never used` spend; split both.
+   - Deny-forced reads (spend audit `hook:instruction-write-gate.sh`, 2026-10-12): 10 of the 24 true shell-write denials in 7 d were followed by a full Read of the denied file (the Edit route needs it), priced as `tool call: Read`; charge a Read that follows a deny and names its path to the hook.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.
