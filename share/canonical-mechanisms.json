@@ -26,6 +26,19 @@
     "llm-legs/bin/llm-doctor#read_jsonl",
     "llm-legs/bin/system-doctor#read_lines"
    ]
+  },
+  {
+   "at": "2026-10-12T04:08:34+03:00",
+   "canonical": "review-bench/share/rbench/store.py#write_json_atomic",
+   "cause": "cause:review-bench/share/rbench/debt.py#write_state_json",
+   "mechanism": "atomic-json-write",
+   "replaced": [
+    "review-bench/share/rbench/debt.py#write_state_json",
+    "review-bench/share/rbench/store.py#_write_review_progress",
+    "review-bench/share/rbench/store.py#persist_review_receipt",
+    "review-bench/share/rbench/debt.py#write_meta",
+    "review-bench/share/rbench/round.py#recovered_round_stamp"
+   ]
   }
  ]
 }
