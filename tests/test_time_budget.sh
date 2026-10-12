@@ -701,19 +701,19 @@ check(cells["unreviewed"] == ["20 \u221220 %", "14 \u221230 %", "7 \u221250 %"]
       "goal rows, the oldest column's debt against the night before it:\n" + "\n".join(shown))
 check(re.search(r"^to plateau +4$", "\n".join(shown), re.M)
       and len({len(l) for l in shown}) == 1, "one plateau value, in this night's column:\n" + "\n".join(shown))
-check(cells["Opus work"] == ["96 %", "\u2013", "85 %"] and cells["vs all-Opus"] == ["\u00d70.96", "\u2013", "\u00d70.39"]
-      and "Fable work" not in cells, "the model mix of each night, no Fable row without Fable spend: %s" % cells)
+check(cells["Opus spend"] == ["96 %", "\u2013", "85 %"] and cells["vs all-Opus"] == ["\u00d70.96", "\u2013", "\u00d70.39"]
+      and "Fable spend" not in cells, "the model mix of each night, no Fable row without Fable spend: %s" % cells)
 check(not hasattr(night_spend, "goal_lines"), "the goals live in the table only, never in a second block")
 mixes["n2"] = {"opus": 40.0, "fable": 55.0, "vs_opus": 1.4}
-check(table()[1]["Fable work"] == ["\u2013", "55 %", "\u2013"], "a Fable row once any shown night spent on Fable")
+check(table()[1]["Fable spend"] == ["\u2013", "55 %", "\u2013"], "a Fable row once any shown night spent on Fable")
 os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "goal-none")
 check(table()[1]["to plateau"] == ["3"], "an unreadable column is a dash and burns nothing")
 os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "goal-code")
 json.dump({"problem_count": 30}, open(os.path.join(work, "goal-llm", "latest.json"), "w"))
 check(table()[1]["to plateau"] == ["\u2013"], "a growing column leaves no plateau")
 T.cached_row = kept_row
-# The model mix comes from the spend itself: each label's share of the work, its tokens priced on Opus at token-map's
-# prices, and the Opus-eq total over that price.
+# The model mix comes from the spend itself: each label's share of the Opus-eq total, and the total over what the
+# same tokens cost on Opus at token-map's prices.
 bench = os.path.join(work, "stats", "benches", "20261005T030000Z-mix")
 os.makedirs(bench)
 json.dump({"session": "mix-s"}, open(os.path.join(bench, "meta.json"), "w"))
@@ -722,12 +722,10 @@ lines(os.path.join(bench, "claude-usage-a.jsonl"), [
     {"id": "s", "model": "claude-sonnet-5-5", "input": 1000000}])
 mix_night = {"id": "m", "started_at": "2026-10-05T02:00:00Z", "finished_at": "2026-10-05T08:00:00Z", "session": "mix-s"}
 spent = night_spend.spend(mix_night, "/usr/bin/false")
-check(abs(spent["all_opus"] - 2.0e6) < 1 and night_spend.mix(spent) == {"opus": 50.0, "vs_opus": 0.75}
-      and {k: round(v) for k, v in spent["work"].items()} == {"opus": 1000000, "sonnet": 1000000},
-      "1M tokens each on Opus and Sonnet: half the work on Opus, though 2/3 of the spend: %s %s"
-      % (spent.get("work"), night_spend.mix(spent)))
+check(abs(spent["all_opus"] - 2.0e6) < 1 and night_spend.mix(spent) == {"opus": 66.7, "vs_opus": 0.75},
+      "1M Opus-eq on Opus, 0.5M on Sonnet of 2M Opus tokens' worth: %s %s" % (spent.get("all_opus"), night_spend.mix(spent)))
 lines(os.path.join(bench, "claude-usage-a.jsonl"), [{"id": "f", "model": "claude-fable-5-1", "input": 400000}])
-check(night_spend.mix(night_spend.spend(mix_night, "/usr/bin/false")) == {"opus": 41.7, "fable": 16.7, "vs_opus": 1.042},
+check(night_spend.mix(night_spend.spend(mix_night, "/usr/bin/false")) == {"opus": 40.0, "fable": 40.0, "vs_opus": 1.042},
       "Fable counts on its own: %s" % night_spend.mix(night_spend.spend(mix_night, "/usr/bin/false")))
 check(night_spend.all_opus is None and night_spend.weighted(night_spend.bench_usage(bench)) > 0
       and night_spend.all_opus is None, "outside spend() nothing accumulates the Opus basis")

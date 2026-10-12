@@ -1203,7 +1203,7 @@ spend           12.5M    0.0M    0.0M
   fixers         8.0M    0.0M    0.0M
   reviews        3.0M    0.0M    0.0M
   night chat     1.5M    0.0M    0.0M
-Opus work           –       –       –
+Opus spend          –       –       –
 vs all-Opus         –       –       –
 landed              2       1       1
 left                1       0       0

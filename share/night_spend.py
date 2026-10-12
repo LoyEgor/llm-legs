@@ -71,9 +71,9 @@ def claude_eq(model, day, fresh=0, cache_read=0, cache_5m=0, cache_1h=0, out=0, 
     if vendor:
         return vendor_eq(vendor, model, fresh, cache_read, cache_5m + cache_1h, out)
     usd = claude_usd(model, day, fresh, cache_read, cache_5m, cache_1h, out, fast)
-    family = model.split("-")[1] if model.startswith("claude-") else "?"
     if usd:
-        on_opus(family, day, fresh, cache_read, cache_5m, cache_1h, out, fast)
+        on_opus(day, fresh, cache_read, cache_5m, cache_1h, out, fast)
+    family = model.split("-")[1] if model.startswith("claude-") else "?"
     return collections.Counter({family: usd / opus_usd()}) if usd else collections.Counter()
 
 
@@ -81,7 +81,7 @@ def vendor_eq(vendor, model, fresh=0, cache_read=0, cache_write=0, out=0):
     _, cost_in, cost_out = pricing().vendor_costs(vendor, model, fresh=fresh, cache_read=cache_read,
                                                   cache_write=cache_write, output=out)
     if cost_in + cost_out:
-        on_opus(vendor, dt.date.today().isoformat(), fresh, cache_read, cache_write, 0, out)
+        on_opus(dt.date.today().isoformat(), fresh, cache_read, cache_write, 0, out)
     return collections.Counter({vendor: (cost_in + cost_out) / opus_usd()}) if cost_in + cost_out else collections.Counter()
 
 
@@ -93,10 +93,11 @@ def claude_usd(model, day, fresh, cache_read, cache_5m, cache_1h, out, fast=Fals
 all_opus = None
 
 
-def on_opus(label, day, fresh, cache_read, cache_5m, cache_1h, out, fast=False):
-    """Inside spend(): adds what the same tokens cost on Opus, in Opus-eq, to their label."""
+def on_opus(day, fresh, cache_read, cache_5m, cache_1h, out, fast=False):
+    """Inside spend(): adds what the same tokens cost on Opus, in Opus-eq."""
+    global all_opus
     if all_opus is not None:
-        all_opus[label] += claude_usd(opus_anchor(), day, fresh, cache_read, cache_5m, cache_1h, out, fast) / opus_usd()
+        all_opus += claude_usd(opus_anchor(), day, fresh, cache_read, cache_5m, cache_1h, out, fast) / opus_usd()
 
 
 def epoch(stamp):
@@ -301,27 +302,26 @@ def night_benches(low, high, sessions):
 
 def spend(night, worker_run):
     global all_opus
-    all_opus = collections.Counter()
+    all_opus = 0.0
     try:
         out = kind_spend(night, worker_run)
-        out["all_opus"], out["work"] = sum(all_opus.values()), dict(all_opus)
+        out["all_opus"] = all_opus
     finally:
         all_opus = None
     return out
 
 
 def mix(spent):
-    """% of the night's work done on Opus (and on Fable when any), work being tokens priced on Opus, and the spend
-    over that price."""
+    """% of the Opus-eq spend on Opus (and on Fable when any), and the spend over what its tokens cost on Opus."""
     labels = collections.Counter()
     for total in spent["kinds"].values():
         labels.update(total)
-    whole, work = weighted(labels), spent.get("work") or {}
+    whole = weighted(labels)
     if not whole or not spent.get("all_opus"):
         return {}
-    out = {"opus": round(100 * work.get("opus", 0) / spent["all_opus"], 1), "vs_opus": round(whole / spent["all_opus"], 3)}
-    if work.get("fable"):
-        out["fable"] = round(100 * work["fable"] / spent["all_opus"], 1)
+    out = {"opus": round(100 * labels["opus"] / whole, 1), "vs_opus": round(whole / spent["all_opus"], 3)}
+    if labels["fable"]:
+        out["fable"] = round(100 * labels["fable"] / whole, 1)
     return out
 
 
