@@ -37,6 +37,7 @@ for _ in 1 2 3 4 5; do
 done
 case "$self" in */*) self=${self%/*} ;; *) self=. ;; esac
 . "$self/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
+. "$self/../share/limit-hit.sh" 2>/dev/null || { limit_hit() { :; }; limit_hit_bytes() { limit_hit_n=${#1}; }; }
 . "$self/../share/instruction-files.sh" 2>/dev/null ||
   { gate_journal write fault '' '' '' 'share/instruction-files.sh missing'
     echo "instruction write gate: cannot load share/instruction-files.sh, so no shell write can be checked" >&2; exit 2; }
@@ -140,11 +141,23 @@ if [[ $command =~ $_INSTRUCTION_INTERP ]]; then
     heredoc_text='' keep_disk=1
     [ -z "$heredocs" ] || heredoc_body "$script_path"
     script_body=''
+    script_tail=''
     if [ -n "$keep_disk" ] && [ -f "$script_path" ]; then
       script_body=$(head -c 262144 "$script_path" 2>/dev/null | LC_ALL=C tr '\000|\n' '   ') || script_body=''
+      limit_hit_bytes "$script_body"
+      if [ "$limit_hit_n" -ge 262144 ] && script_size=$(wc -c <"$script_path" 2>/dev/null) && [ "${script_size// /}" -gt 262144 ]; then
+        # Past the read cap the gate still sees every line its fast path below could act on, so a
+        # write to an instruction file in a big script's tail is judged, not skipped.
+        script_tail=$(tail -c +262145 "$script_path" 2>/dev/null | LC_ALL=C awk '{ s = tolower($0); gsub(/[\\"'\'']/, "", s) }
+          s ~ /\.md|\.claude\/|review-debt|git.*(apply|stash|merge|cherry-pick|pull)/' | LC_ALL=C tr '\000|\n' '   ')
+        limit_hit instruction-write-gate.script-read 262144 bytes trim \
+          "$((${script_size// /} - 262144)) bytes of $script_path past the read cap, judged by their guarded-looking lines alone" \
+          'bin/instruction-write-gate.sh:head -c 262144' "${script_size// /}"
+      fi
     fi
     script_body+=$heredoc_text
     script_body=${script_body:0:524288}
+    [ -z "$script_tail" ] || script_body+=" $script_tail"
     [ -n "$script_body" ] || continue
     script_texts+=("$script_interp $script_body")
     haystack+=" $script_body"

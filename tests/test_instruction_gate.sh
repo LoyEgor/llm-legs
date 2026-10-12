@@ -150,6 +150,12 @@ if '--apply' in sys.argv:
     open('$HOME/.claude/skills/demo/SKILL.md', 'a').write('x')
 EOF
 assert_eq deny "$(GATE_CWD="$WORK" decision 'python3 land.py --apply')"
+# The gate reads a script's first 256 KiB; a write in its tail was unseen.
+{ head -c 300000 /dev/zero | tr '\0' '#'; printf '\nopen("%s/codex-worker.md", "w").write("x")\n' "$AGENTS"; } >"$SCRATCH/big.py"
+assert_eq deny "$(LIMIT_HITS_LOG="$WORK/limit-hits.jsonl" decision "python3 $SCRATCH/big.py")"
+assert jq -e 'select(.limit == "llm-legs:instruction-write-gate.script-read" and .observed > 300000)' "$WORK/limit-hits.jsonl"
+{ head -c 300000 /dev/zero | tr '\0' '#'; printf '\nopen("/tmp/out.txt", "w").write("x")\n'; } >"$SCRATCH/big-plain.py"
+assert_eq pass "$(decision "python3 $SCRATCH/big-plain.py")"
 assert_eq deny "$(GATE_CWD="$WORK" decision 'cd scratchpad && python3 patch.py')"
 assert_eq deny "$(GATE_CWD=/ decision "cd $SCRATCH; python3 patch.py")"
 cat > "$SCRATCH/read.py" <<EOF
