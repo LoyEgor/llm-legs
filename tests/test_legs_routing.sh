@@ -140,7 +140,9 @@ for spec in \
   case "$leg" in
     codex) assert grep -q $'^codexb\tprofile\tcodex-worker\texec\t' "$CALL_LOG" ;;
     gemini) assert grep -q $'^geminib\tprofile\tgemini-worker\t--print\t' "$CALL_LOG" ;;
-    claude) assert grep -q $'^claudeb\tprofile\tclaude-worker\t-p\troute claude\t' "$CALL_LOG" ;;
+    claude)
+      assert grep -q $'^claudeb\tprofile\tclaude-worker\t-p\troute claude\t' "$CALL_LOG"
+      assert test "$(grep -c -- '--safe-mode' "$CALL_LOG")" -eq 0 ;;
   esac
   assert grep -q "args=--account $leg" "$PICK_LOG"
   assert grep -q -- "--role reviewers$" "$PICK_LOG"
@@ -155,6 +157,24 @@ for spec in \
       assert jq -e --arg slug "$ROSTER_CODEX" '.requested == $slug' "$data/served-models.jsonl" >/dev/null ;;
   esac
 done
+
+for web in 0 1; do
+  : >"$CALL_LOG"
+  LEG_ENV=(CLAUDE_MINIMAL_CONTEXT=1 CLAUDE_ALLOW_WEB="$web")
+  assert run_leg "$ROUTED_PATH" "$WORK/minimal-$web" "$ROOT/ask_claude.sh" minimal >/dev/null
+  assert grep -q $'\t--safe-mode\t--disable-slash-commands\t--tools\t' "$CALL_LOG"
+  if [ "$web" = 0 ]; then
+    assert grep -q $'\t--tools\t$' "$CALL_LOG"
+  else
+    assert grep -q $'\t--tools\tWebSearch,WebFetch\t' "$CALL_LOG"
+  fi
+done
+: >"$CALL_LOG"
+rc=0
+run_leg "$BARE_PATH" "$WORK/minimal-bare" "$ROOT/ask_claude.sh" minimal >/dev/null 2>&1 || rc=$?
+assert test "$rc" -eq 6
+assert test ! -s "$CALL_LOG"
+LEG_ENV=()
 
 # LEGS_ROLE names another role for every leg.
 for spec in \

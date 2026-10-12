@@ -130,12 +130,23 @@ ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
 # empty array aborts under nounset in bash < 4.4, e.g. /bin/bash 3.2 in a bare cron PATH).
 ALLOW_ARGS=()
 if [ "${CLAUDE_ALLOW_WEB:-1}" != "0" ]; then ALLOW_ARGS=(--allowedTools "$ALLOWED_TOOLS"); fi
+CONTEXT_ARGS=()
+if [ "${CLAUDE_MINIMAL_CONTEXT:-0}" = "1" ]; then
+  if [ "${CLAUDE_CMD[0]}" != claudeb ]; then
+    echo "ask_claude.sh: minimal context requires claudeb routing" >&2
+    exit 6
+  fi
+  CONTEXT_TOOLS=""
+  if [ "${CLAUDE_ALLOW_WEB:-1}" != "0" ]; then CONTEXT_TOOLS="$ALLOWED_TOOLS"; fi
+  CONTEXT_ARGS=(--safe-mode --disable-slash-commands --tools "$CONTEXT_TOOLS")
+fi
 set +e
 # --setting-sources project: skip user-level settings/CLAUDE.md so personal preferences
 # (language, hooks) never leak into a judgment call. --strict-mcp-config: no MCP servers.
 OUT="$("${CLAUDE_CMD[@]}" -p "$PROMPT" --output-format json --model "$MODEL" \
         --strict-mcp-config --setting-sources project \
         --disallowedTools "$DISALLOWED_TOOLS" \
+        ${CONTEXT_ARGS[@]+"${CONTEXT_ARGS[@]}"} \
         ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} </dev/null 2>"$ERRF")"
 RC=$?
 set -e
