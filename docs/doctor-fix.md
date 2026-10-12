@@ -166,7 +166,7 @@ files (`hammerspoon/automation_menu.lua`, `llm-legs/hammerspoon/llm-limits.lua`)
 
 ### Speed: same intelligence, less waiting
 
-A `speed-<lever>` run holds every Speed row of one context, best first, and closes on its first decided
+A `speed-<lever>` run holds a kind's batch of one context, best first, and closes on its first decided
 row, the rest staying open; each row keeps its own decision line and proof, and carries its lever, saving and proof in `opportunity` and
 `docs/speed-doctor-design.md` §5 bounds what may change. Never touch a model, effort or thinking knob: `close` refuses any such added or
 removed line and names it (`docs/doctors-contract.md` §4).
