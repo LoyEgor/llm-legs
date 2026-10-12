@@ -441,8 +441,9 @@ cp "$ROOT/bin/worker-run" "$WORK/fake/bin/worker-run"
 ln -s "$ROOT/share" "$WORK/fake/share"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/gate-calls"\n' "$WORK" >"$WORK/fake/bin/night-run"
 chmod +x "$WORK/fake/bin/night-run"
+jq '.launcher_pid = 4242' "$WORK/run-hs-in/meta.json" >"$WORK/meta.tmp" && mv "$WORK/meta.tmp" "$WORK/run-hs-in/meta.json"
 for r in run run-plain run-hs-in; do bash "$WORK/fake/bin/worker-run" _supervise "$WORK/$r" >/dev/null 2>&1; done
-assert [ "$(cat "$WORK/gate-calls")" = 'speed-gate nopen hs-in' ]
+assert [ "$(cat "$WORK/gate-calls")" = 'speed-gate nopen hs-in 4242' ]
 assert [ ! -e "$WORKER_SLOTS_DIR/1" ]
 # A slot taken or refused at once is no wait: slot polling never journals a lock row.
 assert jqe 'length == 0' <(waits_of lock)

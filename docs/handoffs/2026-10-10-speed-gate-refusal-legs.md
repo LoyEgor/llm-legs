@@ -1,6 +1,6 @@
 # Speed-gate refusals read as unclassified worker failures
 
-Status: open — To: LLM Doctor owner (ledger W11)
+Status: settled 20261012T005404Z-e2f7: a gate refusal (no CLI start, no account) reads off · refused · night gate like a prelaunch refusal; the gate skips the launching chat's own tree (worker-run records its claude pid for a night worktree); 6867's caffeinate waited on that run's OWN supervisor and now starts from /, as do session-trash's detached tails (58a4); 0312 stays the intended catch
 
 `night-run speed-gate` refusals (worker-run exit 4, no CLI start, job left pending) read `unclassified`.
 Holders: a live worker of the same job in the sibling repository's worktree (0312, the intended catch); a

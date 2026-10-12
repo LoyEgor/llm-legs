@@ -71,19 +71,35 @@ cwd_listing() { lsof -d cwd -Fpn 2>/dev/null; }
 process_listing() { ps -A -o pid=,ppid= 2>/dev/null; }
 args_listing() { ps -A -o pid=,args= 2>/dev/null; }
 
+claude_ancestor() { # pid -> the nearest process at or above pid named claude (a chat's CLI); 1 when none
+  ps -Ao pid=,ppid=,comm= 2>/dev/null | awk -v pid="$1" '
+    match($0, /^ *[0-9]+ +[0-9]+ /) { parent[$1] = $2; comm[$1] = substr($0, RLENGTH + 1) }
+    END {
+      for (n = 0; pid > 1 && n < 40; n++) {
+        if (!(pid in comm)) exit 1
+        c = comm[pid]; sub(/.*\//, "", c)
+        if (c == "claude") { printf "%s", pid; exit 0 }
+        pid = parent[pid]
+      }
+      exit 1
+    }'
+}
+
 # The caller's own session never holds: everything under the highest of its ancestors standing inside
 # the directory, so a chat landing the worktree it works in is not held by its own shell or servers.
+# A detached caller names its chat as own-claude-pid: that chat's tree is its own too, while it is still a claude.
 # A worker launched with --add-dir <worktree> from a cwd elsewhere edits that worktree too, so it holds it.
-cwd_holders() { # dir -> "<pid> <command>" per process whose working directory or --add-dir is dir or below it; 2 when unlisted
+cwd_holders() { # dir [own-claude-pid] -> "<pid> <command>" per process whose working directory or --add-dir is dir or below it; 2 when unlisted
   local dir given=${1%/} listing tree args pids
   dir=$(cd -P "$1" 2>/dev/null && pwd -P) || return 0
   listing=$(cwd_listing) tree=$(process_listing) args=$(args_listing)
   [ -n "$listing" ] && [ -n "$tree" ] || return 2
-  pids=$(awk -v self="$$" -v dir="$dir" -v given="$given" '
+  pids=$(awk -v self="$$" -v own="${2:-}" -v dir="$dir" -v given="$given" '
     function within(path) { sub(/\/+$/, "", path); return path == dir || index(path, dir "/") == 1 || path == given || index(path, given "/") == 1 }
     FNR == 1 { file++ }
     file == 1 { parent[$1] = $2; kids[$2] = kids[$2] " " $1; next }
     file == 3 {
+      if ($1 == own) { c = $2; sub(/.*\//, "", c); if (c == "claude") ownok = 1 }
       for (i = 2; i <= NF; i++)
         if (($i == "--add-dir" && i < NF && within($(i + 1))) || (index($i, "--add-dir=") == 1 && within(substr($i, 11)))) inside[$1] = 1
       next
@@ -94,6 +110,7 @@ cwd_holders() { # dir -> "<pid> <command>" per process whose working directory o
       top = self
       for (p = self; p > 1 && (p in parent); p = parent[p]) if (p in inside) top = p
       queue[n = 1] = top; skip[top] = 1
+      if (ownok) { queue[++n] = own; skip[own] = 1 }
       for (i = 1; i <= n; i++) { m = split(kids[queue[i]], k, " "); for (j = 1; j <= m; j++) { skip[k[j]] = 1; queue[++n] = k[j] } }
       for (p in inside) if (!(p in skip)) print p
     }' <(printf '%s\n' "$tree") <(printf '%s\n' "$listing") <(printf '%s\n' "${args:- }"))

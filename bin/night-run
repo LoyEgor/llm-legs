@@ -51,7 +51,7 @@ usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run leftovers [--json]
        night-run survey [--post] [<repo>...]
        night-run hold
-       night-run speed-gate <id> <ref>
+       night-run speed-gate <id> <ref> [<launcher-claude-pid>]
        night-run report [<id>] [--post]
        night-run latest --menu
        night-run wall                 (StopFailure hook: JSON on stdin)
@@ -123,7 +123,7 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
 speed-gate, run by worker-run once a night worker takes its slot: exits 3 while a process stands in the
-  job's night worktree (a resumed night's earlier worker), naming it, the job untouched; a Speed fixer (a harness run of area
+  job's night worktree (a resumed night's earlier worker), naming it, the job untouched — never the launching chat's own; a Speed fixer (a harness run of area
   speed-<first lever>, up to 5 levers of one repository) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
   its job left with reason `speed window closed (6 h)` and its run abandoned; an earlier start is
   recorded as a speed-start event, after which a resumed worker of that fixer always passes
@@ -1108,11 +1108,11 @@ worktree_lines() { # repo -> worktree<TAB>branch|-<TAB>main-checkout(0|1)<TAB>lo
   done < <(git -C "$1" worktree list --porcelain; echo)
 }
 
-cmd_speed_gate() { # id ref -> exit 3 while the job's night worktree is worked in, or once the Speed window closed before the fixer's first start
-  local id=$1 ref=$2 file run verdict reason="speed window closed ($SPEED_WINDOW_H h)" repo wt holders
+cmd_speed_gate() { # id ref [launcher-claude-pid] -> exit 3 while the job's night worktree is worked in, or once the Speed window closed before the fixer's first start
+  local id=$1 ref=$2 launcher=${3:-} file run verdict reason="speed window closed ($SPEED_WINDOW_H h)" repo wt holders
   while IFS= read -r repo; do
     wt="$repo/.claude/worktrees/night-$id-$ref"
-    [ -d "$wt" ] && holders=$(cwd_holders "$wt") && [ -n "$holders" ] || continue
+    [ -d "$wt" ] && holders=$(cwd_holders "$wt" "$launcher") && [ -n "$holders" ] || continue
     printf 'night %s job %s: its worktree %s is still worked in by %s; it is handed out again once they exit\n' \
       "$id" "$ref" "$wt" "${holders//$'\n'/; }"
     exit 3
@@ -1595,7 +1595,7 @@ case "${1:-}" in
   carry) shift; cmd_carry "$@" ;;
   suites) shift; cmd_suites "$@" ;;
   hold) shift; cmd_hold "$@" ;;
-  speed-gate) shift; [ $# -eq 2 ] || usage; known_night "$1"; cmd_speed_gate "$@" ;;
+  speed-gate) shift; [ $# -eq 2 ] || [ $# -eq 3 ] || usage; known_night "$1"; cmd_speed_gate "$@" ;;
   *) usage ;;
 esac
 exit; }

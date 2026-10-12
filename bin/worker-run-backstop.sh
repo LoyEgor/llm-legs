@@ -23,17 +23,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 
 chat_pid() {
   [ -z "${WORKER_RUN_BACKSTOP_CHAT_PID:-}" ] || { printf '%s' "$WORKER_RUN_BACKSTOP_CHAT_PID"; return 0; }
-  ps -Ao pid=,ppid=,comm= 2>/dev/null | awk -v pid="$PPID" '
-    match($0, /^ *[0-9]+ +[0-9]+ /) { parent[$1] = $2; comm[$1] = substr($0, RLENGTH + 1) }
-    END {
-      for (n = 0; pid > 1 && n < 40; n++) {
-        if (!(pid in comm)) exit 1
-        c = comm[pid]; sub(/.*\//, "", c)
-        if (c == "claude") { printf "%s", pid; exit 0 }
-        pid = parent[pid]
-      }
-      exit 1
-    }'
+  claude_ancestor "$PPID"
 }
 # One process table read per stop, and only once a run needs it.
 waiting=''

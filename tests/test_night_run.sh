@@ -1418,6 +1418,18 @@ assert grep -qxF "night nopen job hs-in: its worktree $wt is still worked in by 
 assert jqe '.jobs[0].state == "pending"' "$(record nopen)"
 kill "$holder"; wait "$holder" 2>/dev/null
 night speed-gate nopen hs-in || fail "a job whose worktree holder exited was still refused"
+# The launching chat's own processes never hold: worker-run names its claude pid, a pid that is no claude exempts nothing.
+ln -s /bin/bash "$WORK/claude"
+"$WORK/claude" -c 'cd "$1" && sleep 600 & wait' _ "$wt" &
+chat=$!
+printf '%s\n' "$chat" >>"$DATA/orchestrators"
+for _ in $(seq 50); do pgrep -P "$chat" >/dev/null && lsof -a -p "$(pgrep -P "$chat")" -d cwd -Fn 2>/dev/null | grep -qxF "n$wt" && break; sleep 0.1; done
+night speed-gate nopen hs-in "$chat" || fail "the launching chat's own shell held its worker's night worktree"
+rc=0; night speed-gate nopen hs-in >/dev/null 2>&1 || rc=$?
+assert [ "$rc" = 3 ]
+rc=0; night speed-gate nopen hs-in "$$" >/dev/null 2>&1 || rc=$?
+assert [ "$rc" = 3 ]
+pkill -P "$chat"; kill "$chat"; wait "$chat" 2>/dev/null
 rm -rf "$wt"
 night report nlate >"$WORK/report" || fail "report of the speed night"
 assert grep -qxF "speed · levers 6 selected · 2 started · 4 left by the 6 h window" "$WORK/report"

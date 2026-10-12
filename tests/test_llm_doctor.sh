@@ -728,6 +728,13 @@ phase = worker("phase", files={"state.json": '{"phase": "failed"}', "err": "sand
 assert doctor.classify_worker(phase, {}, "", 0)[1:] == ("crashed", "crashed · failed under exit 0", "ours")
 cancel = worker("cancel", files={"state.json": '{"phase": "failed"}', "out": '{"type":"end","stopReason":"cancelled"}\n'})
 assert doctor.classify_worker(cancel, {}, "", 0)[1:] == ("cancelled", "cancelled before the first turn", "theirs")
+# The night gate refuses before any CLI start, no account spent: `off` like a prelaunch refusal; any other exit 4 stays a bug.
+held = worker("held", files={"err": "worker-run: night n1 job j1: its worktree /r/.claude/worktrees/night-n1-j1 is still worked in "
+                             "by 7 sleep 600; it is handed out again once they exit\n"})
+assert doctor.classify_worker(held, {}, "", 4) == ("off", "refused", "night gate", ""), doctor.classify_worker(held, {}, "", 4)
+closed = worker("closed", files={"err": "worker-run: speed window closed (6 h): night n1 job j1 left, its fixer not started\n"})
+assert doctor.classify_worker(closed, {}, "", 4)[0] == "off"
+assert doctor.classify_worker(worker("quoting", files={"err": "boom: is still worked in by x\n"}), {}, "", 4)[0] == "failed"
 # A claudeb JSON result that calls itself an error is the failure's evidence, its success subtype notwithstanding;
 # a result that is not an error, another vendor's out, stderr and the kill and wall verdicts keep their readings.
 claude = {"vendor": "claudeb"}
@@ -895,11 +902,15 @@ os.environ["LLM_DOCTOR_REPOS"] = fixture_repos
 # The judge is pinned: loosening a dismissal, a theirs word, an exemption or a limit is an edit here.
 assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"]
               if row["status"] in doctor.DISMISSALS) == [
-    ("I1", "2026-10-01T05:13:28+03:00"), ("I10", None), ("I11", None), ("I13", None), ("I15", None), ("I17", None),
-    ("I23", "2026-10-03T07:25:31+03:00"), ("I26", None), ("I30", None), ("I32", None), ("I34", None),
-    ("I35", "2026-10-04T01:39:27+03:00"), ("I36", "2026-10-03T16:33:01+03:00"),
-    ("I41", "2026-10-06T06:30:00+03:00"), ("I43", "2026-10-06T00:50:00+03:00"), ("I44", "2026-10-06T01:50:00+03:00"),
-    ("I46", "2026-10-06T01:50:00+03:00"), ("I9", None),
+    ("I1", "2026-10-01T05:13:28+03:00"), ("I10", None), ("I11", None), ("I13", None), ("I15", None),
+    ("I16", "2026-10-01T20:02:00+03:00"), ("I17", None), ("I18", "2026-10-01T14:34:00+03:00"),
+    ("I19", "2026-10-02T23:59:59+03:00"), ("I22", "2026-10-02T23:23:00+03:00"), ("I23", "2026-10-03T07:25:31+03:00"),
+    ("I26", None), ("I28", "2026-10-03T05:18:00+03:00"), ("I3", "2026-10-01T03:45:00+03:00"), ("I30", None),
+    ("I32", None), ("I34", None), ("I35", "2026-10-04T01:39:27+03:00"), ("I36", "2026-10-03T16:33:01+03:00"),
+    ("I4", "2026-10-01T03:11:00+03:00"), ("I41", "2026-10-06T06:30:00+03:00"), ("I43", "2026-10-06T00:50:00+03:00"),
+    ("I44", "2026-10-06T01:50:00+03:00"), ("I46", "2026-10-06T01:50:00+03:00"), ("I47", "2026-10-05T23:21:00+03:00"),
+    ("I48", "2026-10-07T02:00:00+03:00"), ("I5", "2026-10-01T04:32:00+03:00"), ("I51", "2026-10-06T23:30:00+03:00"),
+    ("I54", None), ("I55", "2026-10-06T00:30:00+03:00"), ("I56", "2026-10-05T21:31:00+03:00"), ("I9", None),
     ("N4", "2026-09-16T23:59:59+03:00"), ("N5", None), ("N6", "2026-09-14T23:59:59+03:00"),
     ("N7", "2026-09-13T23:59:59+03:00")]
 # Every image rc=2 reads `bad command` and every wrapper prints `usage:` on any bad argv: a row that catches that

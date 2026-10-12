@@ -52,6 +52,19 @@ start_ok codex --model default
 assert grep -qx 'TAG: fast · astra · high' "$WORK/start.out"
 assert grep -qx 'fast · astra · high' "$RUN_DIR/tag"
 assert await_done
+assert jq -e 'has("launcher_pid") | not' "$RUN_DIR/meta.json" >/dev/null
+# A run in a night worktree names the chat that launched it: the speed gate, asked by its detached supervisor,
+# skips that chat's own processes.
+night_wt="$WORK/r/.claude/worktrees/night-n1-j1"
+mkdir -p "$night_wt"
+ln -s /bin/bash "$WORK/claude"
+"$WORK/claude" -c '"$1" start codex --model default --brief "$2" --workdir "$3" >"$4" 2>&1; true' _ \
+  "$RUNNER" "$WORK/brief" "$night_wt" "$WORK/start.out" &
+chat=$!
+wait "$chat"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out") RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+assert await_done
+assert [ "$(jq -r '.launcher_pid' "$RUN_DIR/meta.json")" = "$chat" ]
 
 # A running run whose vendor has already surfaced its id reports it mid-flight,
 # so a budget-spent relay can still hand back a resumable session.

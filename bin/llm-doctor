@@ -215,6 +215,8 @@ OUTSIDE_WRITE_RE = re.compile(
     r"^UNKNOWN: transcript names a write outside the snapshotted repository[^\n]*?: (/[^\n]*)$",
     re.MULTILINE)
 DIGEST_RE = re.compile(r"tree digest[^\n]*could not be taken", re.IGNORECASE)
+NIGHT_GATE_RE = re.compile(r"^worker-run: (night \S+ job \S+: its worktree .* is still worked in by |speed window closed )",
+                           re.MULTILINE)
 WORKER_TAIL_BYTES = 8192
 ID_LIKE_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|^[0-9a-f]{12,}$", re.IGNORECASE)
 # Words the image wrappers print that the review vocabulary never meets; checked before it.
@@ -981,6 +983,8 @@ def classify_worker(run_dir, meta, killed, exit_code):
         return "failed", "crashed", "exit %d" % exit_code, "ours"
     if exit_code == 4 and not err.strip():
         return "failed", "crashed", "abandoned before launch", "ours"
+    if exit_code == 4 and NIGHT_GATE_RE.search(err):
+        return "off", "refused", "night gate", ""
     if outcome == "GROK_MAX_TURNS":
         return "cap", "turns", "max turns", ""
     klass, reason, detail, origin = classify_failure_text(err + claude_error_result(run_dir, meta), exit_code)
