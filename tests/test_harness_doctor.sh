@@ -1136,6 +1136,18 @@ check([hang_v.get("hang-repo:" + s, {}).get("level") for s in ("test_ok", "test_
 check(slow_level(slow_mix) == ["red"] and [j["level"] for r in hang_part["rows"] for j in r.get("judge", [])
                                            if j["rule"] == "test_slow"] == ["red"],
       "a slow passing suite stays with test_slow beside the hang rule")
+def usual_hangs(fail, passes):
+    runs = [hang_run("suites", T - 20000 + 100 * i, {"test_codexb.sh": {"rc": 0, "secs": s, "bound": 1800}})
+            for i, s in enumerate(passes)] + [hang_run("suites", T - 600, {"test_codexb.sh": fail}, session="c0f23f02-0000")]
+    return {v["ident"]: v for v in m.all_verdicts([m.tests_section(slow_mix, T, (), runs)])
+            if v["rule"] == "test_hang" and v.get("level")}
+hand = usual_hangs({"rc": 1, "secs": 1728.383, "bound": 1800}, [17.2, 18.4, 18.9, 17.8]).get("hang-repo:test_codexb", {})
+check(hand.get("level") == "red" and "ended by hand or failure after 1728 s, 90× its usual 19 s" in hand["fact"]
+      and "session c0f23f02" in hand["fact"],
+      "a suite ended by hand after far more than 5x its usual pass time, under its bound, is a hang: %s" % hand)
+check(usual_hangs({"rc": 1, "secs": 60, "bound": 1800}, [17.2, 18.4, 18.9, 17.8]) == {}
+      and usual_hangs({"rc": 1, "secs": 1728.383, "bound": 1800}, [17.2, 18.4]) == {},
+      "a failure within 5x its usual time, or one with fewer than 3 passes behind it, is no hang")
 check(m.suite_bound([hang_run("suites", T - 10 * i, {"test_p.sh": {"rc": 0, "secs": 400, "bound": b}})
                      for i, b in enumerate((4500, 3600, 9000))], hang_root, "test_p.sh") == 4500
       and m.suite_bound([hang_run("suites", T, {"test_p.sh": {"rc": 0, "secs": 400}})], hang_root, "test_p.sh") is None

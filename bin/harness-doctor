@@ -13,6 +13,7 @@ import fcntl
 import functools
 import glob
 import hashlib
+import math
 import json
 import os
 import pickle
@@ -189,6 +190,7 @@ FAST_PATH_PROBES = {"readonly-command.sh": 'rc_readonly_command ls && ! rc_reado
 SECRET_SETTING = re.compile(r"(?i)^env\.|token|secret|passw|credential|api.?key")
 SUITE_EXT = re.compile(r"\.(sh|bash|py|lua)$")
 HANG_MARK = b"run-suites: TIMEOUT after "
+HANG_USUAL_X = 5
 SUITE_HARNESS = re.compile(r"(?m)^\s*(?:\.|source)\s.*?\b([A-Za-z0-9_]+)_harness\.sh\b")
 QUIET_SOURCE = re.compile(r"(?m)(?:^|[\s;&|!(])(?:\.|source)\s+([^\s;&|].*?)\s+2>\s?/dev/null")
 OWNER_ENTRIES = ("cli", "claude-desktop")
@@ -3562,6 +3564,18 @@ def suite_bound(runs, root, name):
     return max(found)[1] if found else None
 
 
+def usual_secs(runs, root, name, before):
+    """run-suites' own p90: its last 50 passes in the repo before, None under 3."""
+    passes = [(r["ended_at"], r["suites"][name]["secs"]) for r in runs
+              if r.get("repo_root") == root and r["ended_at"] < before and isinstance(r.get("suites"), dict)
+              and isinstance(r["suites"].get(name), dict) and r["suites"][name].get("rc") == 0
+              and isinstance(r["suites"][name].get("secs"), (int, float))]
+    if len(passes) < 3:
+        return None
+    ordered = sorted(x[1] for x in sorted(passes)[-50:])
+    return math.ceil(ordered[math.ceil(len(ordered) * 0.9) - 1])
+
+
 def hang_log(name, start, end):
     """run-suites keeps each suite's log under $TMPDIR/run-suites.*/ and never journals the path."""
     found = []
@@ -3591,25 +3605,29 @@ def hang_line(runs, now):
                 continue
             ident = test_ident(r.get("repo"), SUITE_EXT.sub("", name), r.get("repo_root"))
             seen[ident] = seen.get(ident, 0) + 1
+            usual = usual_secs(runs, r.get("repo_root"), name, r["ended_at"]) if rc else None
             if r.get("kind") == "suites" and rc == 124:
                 how = "timeout"
             elif 128 < rc < 160 and secs >= (suite_bound(runs, r.get("repo_root"), name) or float("inf")):
                 how = "signal %d" % (rc - 128)
+            elif usual and secs > HANG_USUAL_X * usual:
+                how = "signal %d" % (rc - 128) if 128 < rc < 160 else "hand or failure"
             else:
                 continue
-            hangs.setdefault(ident, []).append((r["ended_at"], secs, how, name, r))
+            hangs.setdefault(ident, []).append((r["ended_at"], secs, how, name, r, usual))
     rows = []
     for ident, items in hangs.items():
         items.sort(key=lambda x: x[0])
-        end, secs, how, name, run = items[-1]
+        end, secs, how, name, run, usual = items[-1]
         wasted = sum(x[1] for x in items)
         who = run.get("worker_run") or ("session " + run["session"][:8] if run.get("session") else "–")
         log = hang_log(name, run["started_at"], end) if how == "timeout" else None
         repo = os.path.basename(str(run.get("repo_root") or "").rstrip("/")) or repo_name(run.get("repo"))
-        fact = "%s · %s hung %d time%s in %d h, %s wasted; last %s after %d s, hit by %s, log %s" % (
+        fact = "%s · %s hung %d time%s in %d h, %s wasted; last %s after %d s%s, hit by %s, log %s" % (
             SUITE_EXT.sub("", name), repo, len(items), "" if len(items) == 1 else "s", window // 3600,
-            fmt_long(wasted), "ended by the per-suite bound" if how == "timeout" else "killed by " + how, secs, who,
-            log or "–")
+            fmt_long(wasted), "ended by the per-suite bound" if how == "timeout" else "ended by " + how
+            if how == "hand or failure" else "killed by " + how, secs,
+            ", %d× its usual %d s" % (secs // usual, usual) if usual else "", who, log or "–")
         rows.append((end, row([clip("%s · %s" % (SUITE_EXT.sub("", name), repo), 34), fmt_count(len(items)),
                                num(wasted, 60.0), who, log or "–"], [1], dim=False, say=fact,
                               judge=verdict("test_hang", ident, len(items), 0, "runs", window // 3600, seen[ident], "red",
