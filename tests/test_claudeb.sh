@@ -150,6 +150,20 @@ rm "$MODEL_HOME/.claude/settings.json"
 assert model_run -p 'noop'
 assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p noop)"
 
+# A launchd caller's PATH carries no claude: the native install in ~/.local/bin still launches, and none at all refuses by name.
+bare_path=$(IFS=:; for dir in $PATH; do [ -x "$dir/claude" ] || printf '%s:' "$dir"; done)
+bare_path=${bare_path%:}
+mkdir -p "$MODEL_HOME/.local/bin"
+cp "$MODEL_BIN/claude" "$MODEL_HOME/.local/bin/claude"
+rm -f "$MODEL_ARGV"
+assert env HOME="$MODEL_HOME" CLAUDEB_DIR="$MODEL_HOME/store" PATH="$bare_path" MODEL_ARGV="$MODEL_ARGV" \
+  bash "$SCRIPT" profile model-test -p bare >/dev/null 2>&1
+assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p bare)"
+rm "$MODEL_HOME/.local/bin/claude"
+assert_fails env HOME="$MODEL_HOME" CLAUDEB_DIR="$MODEL_HOME/store" PATH="$bare_path" \
+  bash "$SCRIPT" profile model-test -p bare >"$WORK/no-claude.out" 2>&1
+assert grep -q "^claudeb: no claude binary: .* none at $MODEL_HOME/.local/bin/claude" "$WORK/no-claude.out"
+
 COPY_JSON="$MODEL_HOME/.claude-profiles/model-test/.claude.json"
 COPY_LOG="$MODEL_HOME/store/copy-on-select.log"
 rm -f "$COPY_JSON" "$COPY_LOG"

@@ -609,7 +609,11 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   `browse/log.jsonl` (one line per browser run, 7 days) — plus Dia's process arguments; never a file a browser
   writes (Chrome and Dia rewrite theirs live: a compacted leveldb hid a device, 2026-10-06). One row per enrolled
   account (`Profile 1 · ok · proven 2 h ago · 72 h: BROWSER_INTERRUPTED ×1`); `browser-account` watches a
-  `needs-login` (fix: the login brief), another non-ok status or 7 days without a success (fix: `--enroll`);
+  `needs-login` (fix: the login brief), another non-ok status or 7 days without a success (fix: `--enroll`),
+  and at once an account whose newest canary row is `CANARY_NO_RECEIPT` with no success after it (fix: read
+  `browse/last-session-<account>.json`); `browser-canary-start` is red when the newest canary row is
+  `CANARY_NOT_STARTED`, its evidence the row's `error` (the session's first stderr line, written by the canary);
+  a newest `CANARY_OUT_OF_POOL` row marks the account `out of the worker pool`, never judged, no 7-day watch;
   `browser-repair` is red for a 72 h workaround, `HARNESS_NEEDS_REPAIR` or `missing`; `browser-applescript-js`
   watches a Dia without its JS flag. A writing run starts `worker-run browse --canary` (`HARNESS_BROWSE_CMD`)
   detached when `browse/canary.stamp` is older than 23 h; the canary's receipts land in the same log.

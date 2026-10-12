@@ -5751,11 +5751,11 @@ browse_absorb() { # account profile answer [enrolling|log-only]
   fi
 }
 
-browse_log() { # run vendor account profile target device outcome workaround
+browse_log() { # run vendor account profile target device outcome workaround [error]
   mkdir -p "$(browse_dir)" && jq -cn --arg run "$1" --arg vendor "$2" --arg account "$3" --arg profile "$4" --arg target "$5" \
-    --arg device "$6" --arg outcome "$7" --argjson workaround "$8" \
+    --arg device "$6" --arg outcome "$7" --argjson workaround "$8" --arg error "${9:-}" \
     '{ts:(now | todate), run:$run, vendor:$vendor, account:$account, profile:$profile, target:$target, device:$device,
-      outcome:$outcome, workaround:$workaround}' >>"$(browse_dir)/log.jsonl"
+      outcome:$outcome, workaround:$workaround} + (if $error == "" then {} else {error:$error} end)' >>"$(browse_dir)/log.jsonl"
 }
 
 # A way around the preamble since the run started (a resumed session holds earlier runs): a device no
@@ -5833,8 +5833,8 @@ browse_enroll() { # account [pin-directory]
   [ "$status" = ok ]
 }
 
-# Each enrolled account fills and submits a form on a listener only this canary runs; the server's own
-# receipt is the verdict, never the worker's word.
+# Each enrolled account in the claudeb worker pool fills and submits a form on a listener only this canary
+# runs; the server's own receipt is the verdict, never the worker's word.
 browse_canary() {
   local work port account dir rc=0 tag child answer
   local -a children=()
@@ -5874,19 +5874,27 @@ PY
   port=$(cat "$work/port" 2>/dev/null) || { printf 'CANARY: failed — its form server did not start\n'; return 1; }
   while IFS=$'\t' read -r account dir; do
     tag="canary-$account-$(date +%s)"
+    if ! worker_pool_refuse_headless claudeb "$account" "$(worker_model_pin_csv < <(worker_model_pins claudeb))" 2>/dev/null; then
+      browse_log "$tag" claudeb "$account" "$dir" chrome '' CANARY_OUT_OF_POOL false
+      printf 'CANARY: %s skipped — out of the worker pool\n' "$account"
+      continue
+    fi
     (
-      BROWSE_OUTCOME=BROWSER_INTERRUPTED BROWSE_PROVEN=''
+      BROWSE_OUTCOME=BROWSER_INTERRUPTED BROWSE_PROVEN='' error=''
       if browse_window "$dir"; then
         answer=$(browse_proof_session "$account" "$dir" "open http://127.0.0.1:$port/form?case=$tag in your proven tab, set the field \`v\` to \`$tag\` and submit the form through JavaScript, then read the page back: it must say \`received $tag\`.")
         if grep -qF "\"v\": \"$tag\"" "$work/receipts" 2>/dev/null; then
           browse_absorb "$account" "$dir" "$answer"
+        elif [ ! -s "$(browse_dir)/last-session-$account.json" ] && [ -s "$(browse_dir)/last-session-$account.err" ]; then
+          BROWSE_OUTCOME=CANARY_NOT_STARTED
+          error=$(grep -m 1 . "$(browse_dir)/last-session-$account.err" | cut -c 1-300)
         else
           browse_absorb "$account" "$dir" "$answer" log-only
           BROWSE_OUTCOME=CANARY_NO_RECEIPT
         fi
       fi
-      browse_log "$tag" claudeb "$account" "$dir" chrome "$BROWSE_PROVEN" "$BROWSE_OUTCOME" false
-      printf 'CANARY: %s %s\n' "$account" "$BROWSE_OUTCOME"
+      browse_log "$tag" claudeb "$account" "$dir" chrome "$BROWSE_PROVEN" "$BROWSE_OUTCOME" false "$error"
+      printf 'CANARY: %s %s%s\n' "$account" "$BROWSE_OUTCOME" "${error:+ — $error}"
       [ "$BROWSE_OUTCOME" = BROWSER_OK ]
     ) &
     children+=("$!")

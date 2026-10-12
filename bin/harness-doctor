@@ -4536,22 +4536,37 @@ def browser_section(now, write=False):
         mine = [(at, e) for at, e in log if e.get("account") == account and e.get("target", "chrome") == "chrome"]
         wins = [at for at, e in mine if str(e.get("outcome")).startswith("BROWSER_OK")] + ([proven] if proven else [])
         fails = collections.Counter(e.get("outcome") for at, e in mine
-                                    if now - at <= 72 * 3600 and not str(e.get("outcome")).startswith("BROWSER_OK"))
+                                    if now - at <= 72 * 3600 and not str(e.get("outcome")).startswith("BROWSER_OK")
+                                    and e.get("outcome") != "CANARY_OUT_OF_POOL")
+        canary_at, canary = max(((at, e) for at, e in mine if str(e.get("run")).startswith("canary-")),
+                                key=lambda pair: pair[0], default=(None, {}))
+        canary_outcome = canary.get("outcome")
         state = "%s · %s%s" % (profile, status, " · proven %s ago" % fmt_long(now - proven) if proven else "")
+        state += " · out of the worker pool" if canary_outcome == "CANARY_OUT_OF_POOL" else ""
         failed = " · ".join("%s ×%d" % (kind, n) for kind, n in sorted(fails.items()))
         say = fix = None
-        if status == "needs-login":
+        level, rule, head = "watch", "browser-account", "a browser account cannot serve runs"
+        if canary_outcome == "CANARY_NOT_STARTED":
+            say = "%s: its canary session never started: %s" % (account, canary.get("error") or "?")
+            fix = "read browse/last-session-%s.err" % account
+            level, rule, head = "red", "browser-canary-start", "the browser canary could not start its session"
+        elif status == "needs-login":
             say = "%s: the Claude extension in Chrome %s is not signed in as %s" % (account, profile, entry.get("email"))
             fix = "dispatch share/briefs/claude-ext-login.md"
         elif status not in ("ok", "no-profile"):
             say, fix = "%s: %s — %s" % (account, status, entry.get("last_error") or "?"), "worker-run browse --enroll %s" % account
-        elif status == "ok" and (not wins or now - max(wins) > BROWSER_QUIET_S):
+        elif canary_outcome == "CANARY_NO_RECEIPT" and not any(at > canary_at for at in wins):
+            say = "%s: its last canary session ran but its form got no receipt" % account
+            fix = "read browse/last-session-%s.json" % account
+        elif status == "ok" and canary_outcome != "CANARY_OUT_OF_POOL" and (not wins or now - max(wins) > BROWSER_QUIET_S):
             say, fix = "%s: no browser success in 7 days" % account, "worker-run browse --enroll %s" % account
-        rows.append(row([account, state + (" · 72 h: " + failed if failed else ""), fix or ""],
+        proof = evidence(canary_at, "canary:%s" % canary.get("run"), canary.get("error") or "") if level == "red" else \
+            evidence(now, "browse:" + account, say)
+        rows.append(row([account, state + (" · 72 h: " + failed if failed else ""), fix or ""], [1] if level == "red" else (),
                         dim=not say, key="browser:account:" + account if say else None, say=say and "%s · fix: %s" % (say, fix),
-                        head="a browser account cannot serve runs" if say else None,
-                        judge=[verdict("browser-account", account, 1, 0, "findings", 0, 1, "watch", fact=say,
-                                       evidence=[evidence(now, "browse:" + account, say)], bad=1)] if say else None))
+                        head=head if say else None,
+                        judge=[verdict(rule, account, 1, 0, "findings", 0, 1, level, fact=say,
+                                       evidence=[proof], bad=1)] if say else None))
     repair = sorted(((at, e) for at, e in log if now - at <= 72 * 3600 and (
         e.get("workaround") or e.get("outcome") in BROWSER_REPAIR)), key=lambda pair: pair[0])
     if repair:
