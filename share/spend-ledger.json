@@ -378,6 +378,25 @@
    "sources": {},
    "verdict": "kept",
    "note": "kept: 0.018 % of spend (185k limit tokens/7 d, ~3.8k a fork: memory files 82k, skill listing 66k, CLAUDE.md 35k, deferred 2k) is the startup of Claude Code's own forked /code-review run (49 forks, all in review-bench skill cells, cell prompt share/rbench/brief.py skill_brief); the fork IS the cell's review, its result is the cell's findings; its waste (bare-sha whole-commit forks, 57M/week) already cut at source by review-bench@e0392fd (2026-10-10); inline instead of fork changes the reviewed behaviour the bench measures and no replay of a stochastic review can prove identical findings, while the parent's post-fork turns would re-read the larger context; skill listing in a fork that calls no skill is vendor-injected with no per-fork switch; Δ new is measurement: pre-10-09 forks sit in raw-events rows with agent_type NULL that SUB_CLAUDE drops (handoff line in 2026-10-07-tokenmap-waste-detectors.md)"
+  },
+  {
+   "id": "hook:review-flow-gate.sh",
+   "title": "review-flow-gate.sh",
+   "audited_at": "2026-10-12T04:17:01+03:00",
+   "by": "harness-speed-spend-hook-review-flow-gate-sh-20261012T010231Z-55c3",
+   "share": 0.000189,
+   "prices": {
+    "Workers · Hooks": 496.64621242756425,
+    "Workers · attachment: hook context": 2879.5939310547787,
+    "Doctors · attachment: hook context": 696.6429838946558,
+    "Doctors · Hooks": 252.30745007151472,
+    "Reviewers · Hooks": 4.96130445842753
+   },
+   "sources": {
+    "claude-setup/hooks/review-flow-gate.sh": "0c9199b2ad9482a7ad0b5cc8c51d0b48b2eebd4a"
+   },
+   "verdict": "cut",
+   "note": "price is refusals only; replay of last week's 53 refusals: 51 pass on current code (word door open b50e5bf, quoted-message false catch 5cb3dc1, comment false catch claude-setup@9a58b25), 2 stay by design (unreadable-binary launches)"
   }
  ]
 }
