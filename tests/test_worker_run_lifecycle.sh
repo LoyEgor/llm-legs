@@ -39,8 +39,9 @@ assert grep -qx 'codex result' <<<"$("$RUNNER" report "$RUN_ID")"
 assert grep -q 'test brief' "$STUB_DIR/codex.stdin"
 assert grep -q 'second line' "$STUB_DIR/codex.stdin"
 # Idle sleep held off for exactly the supervisor's life, by a caffeinate the orphan sweep cannot take for the
-# run's; the stub exits 1 and the run is still done.
-assert grep -qx -- "-i -w $pid run-id=unset" "$CAFFEINATE_LOG"
+# run's, standing outside the launcher's cwd (the speed gate read it as a holder of the run's own worktree); the stub exits 1
+# and the run is still done.
+assert grep -qx -- "-i -w $pid run-id=unset cwd=/" "$CAFFEINATE_LOG"
 assert test "$(jq -r '.orphans_ended // [] | length' "$RUN_DIR/meta.json")" = 0
 unset STUB_GATE
 

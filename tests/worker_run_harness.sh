@@ -120,7 +120,7 @@ chmod +x "$WORK/bin/review-bench"
 export CAFFEINATE_LOG="$WORK/caffeinate.calls"
 cat >"$WORK/bin/caffeinate" <<'CAFFEINATE'
 #!/usr/bin/env bash
-printf '%s run-id=%s\n' "$*" "${WORKER_RUN_ID-unset}" >>"$CAFFEINATE_LOG"
+printf '%s run-id=%s cwd=%s\n' "$*" "${WORKER_RUN_ID-unset}" "$PWD" >>"$CAFFEINATE_LOG"
 exit 1
 CAFFEINATE
 chmod +x "$WORK/bin/caffeinate"
