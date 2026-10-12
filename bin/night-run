@@ -128,7 +128,8 @@ speed-gate, run by worker-run once a night worker takes its slot: exits 3 while 
   its job left with reason `speed window closed (6 h)` and its run abandoned; an earlier start is
   recorded as a speed-start event, after which a resumed worker of that fixer always passes
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
-  night's suites {started_at, finished_at, pid, repos: [{repo, exit, passed, failed[], log}]}; report waits
+  night's suites {started_at, finished_at, pid, repos: [{repo, exit, passed, failed[], flaky[]?, log}]}, each red
+  suite then rerun once, serially: red twice stays failed, red then green is flaky; report waits
   for a live one up to NIGHT_RUN_SUITES_WAIT_S (1200) and journals the wait (class night-suites)
 pushed=true is refused unless every commit of the job, its integration ones included, is on its
   repository's origin main and not in the night's refs/night/<id>/base
@@ -951,7 +952,7 @@ cmd_carry() {
 }
 
 cmd_suites() {
-  local id=${1:-} repo name log rc rows='[]' pid since
+  local id=${1:-} repo name log rc rows='[]' pid since suite flaky
   local journal=${RUN_SUITES_JOURNAL:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/runs.jsonl}
   [ -n "$id" ] && [ $# -le 2 ] || usage
   known_night "$id"
@@ -985,6 +986,15 @@ cmd_suites() {
       '(($run | last // {}).suites // {}) as $s | . + [{repo: $r, exit: $x, log: $l,
       passed: ([$s[] | select(.rc == 0)] | length), failed: ([$s | to_entries[] | select(.value.rc != 0) | .key]
         | if length == 0 and $x != 0 then ["run-all"] else . end)}]' <<<"$rows")
+    flaky=()
+    while IFS= read -r suite; do
+      [ "$suite" != run-all ] && [ -e "$repo/tests/$suite" ] || continue
+      printf '\nnight-run: %s rerun once\n' "$suite" >>"$log"
+      env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION bash "$repo/tests/run-all" "$suite" >>"$log" 2>&1 </dev/null &&
+        flaky+=("$suite")
+    done < <(jq -r '.[-1].failed[]' <<<"$rows")
+    [ ${#flaky[@]} -eq 0 ] ||
+      rows=$(jq -c '.[-1] |= (.failed -= $ARGS.positional | .flaky = $ARGS.positional)' --args "${flaky[@]}" <<<"$rows")
   done <"$sweep_repos"
   lock
   night_set "$id" '.suites.finished_at = $t | .suites.repos = $r' --arg t "$(stamp)" --argjson r "$rows" || die "cannot write night $id"
@@ -1470,7 +1480,8 @@ cmd_report() {
       (.suites // null | if . == null then empty elif .finished_at == null then
          "suites · \(if $live then "running" else "stopped unfinished" end) since \(.started_at | hm)"
        else .repos[] | "suites · \(.repo | split("/") | last) · \(.passed) PASS · \(.failed | length) FAIL"
-         + (if .failed == [] then "" else ": \(.failed | join(", "))" end) end),
+         + (if .failed == [] then "" else ": \(.failed | join(", "))" end)
+         + (if (.flaky // []) == [] then "" else " · \(.flaky | length) FLAKY: \(.flaky | join(", "))" end) end),
       ($u | to_entries[] | select(.value | length > 0) | "unverified component · \(.key) · \(.value | join(", "))"),
       ("total · " + ([count($t.merged; "landed"), count($t.left; "left"), count($t.failed; "failed-launch"),
         count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.settled; "settled"), count($t.pending; "pending"),

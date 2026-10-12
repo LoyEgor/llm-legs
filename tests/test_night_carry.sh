@@ -140,6 +140,26 @@ assert jqe -s 'length == 1 and .[0].class == "night-suites" and .[0].source == "
 jq -n '{id: "N1z", started_at: "2026-10-03T14:00:00Z", finished_at: null, jobs: [],
   suites: {started_at: "2026-10-03T14:00:00Z", finished_at: null, pid: 99999999, repos: []}}' >"$NIGHTS/N1z.json"
 assert grep -qE '^suites · stopped unfinished since [0-9]{2}:[0-9]{2}$' <(night report N1z 2>/dev/null)
+# Each red suite reruns once, alone, after the full run: red then green is flaky, red twice stays failed.
+jq -n '{id: "N1f", started_at: "2026-10-03T15:00:00Z", finished_at: null, jobs: []}' >"$NIGHTS/N1f.json"
+mv "$WORK/repo/tests/run-all" "$WORK/run-all.kept"
+touch "$WORK/repo/tests/test_flaky.sh" "$WORK/repo/tests/test_red.sh"
+cat >"$WORK/repo/tests/run-all" <<'RUNALL'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$WORK/reruns"
+[ $# -eq 0 ] || { [ "$*" = test_flaky.sh ]; exit; }
+printf '{"kind":"suites","pid":%s,"started_at":%s,"suites":{"test_a.sh":{"rc":0},"test_flaky.sh":{"rc":1},"test_red.sh":{"rc":1}}}\n' \
+  "$$" "$(date +%s)" >>"$RUN_SUITES_JOURNAL"
+exit 1
+RUNALL
+chmod +x "$WORK/repo/tests/run-all"
+: >"$WORK/reruns"
+WORK="$WORK" night suites N1f --wait || fail "suites with a flaky suite failed"
+mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
+rm "$WORK/repo/tests/test_flaky.sh" "$WORK/repo/tests/test_red.sh"
+assert test "$(cat "$WORK/reruns")" = $'\ntest_flaky.sh\ntest_red.sh'
+assert jqe '.suites.repos[0] | .passed == 1 and .failed == ["test_red.sh"] and .flaky == ["test_flaky.sh"]' "$NIGHTS/N1f.json"
+assert grep -qxF 'suites · repo · 1 PASS · 1 FAIL: test_red.sh · 1 FLAKY: test_flaky.sh' <(night report N1f 2>/dev/null)
 fi
 
 mkdir -p "$WORK/bin" "$WORK/repo/share" "$WORK/alpha-cwd"
