@@ -12,7 +12,7 @@
 # no tool schemas. CLAUDE_ALLOW_WEB=1 declares the web tools. WEB-TOOL TRAP: headless `claude -p`
 # silently DENIES a permission-gated tool (WebSearch, WebFetch) that is not on --allowedTools —
 # the model then answers "denied permission" with empty findings.
-# Optional: CLAUDE_EFFORT=<level>, CLAUDE_SYSTEM_PROMPT=<text> (replaces the default one).
+# Optional: CLAUDE_EFFORT=<level>.
 #
 # Model policy mirrors ask_codex.sh: no hardcoded version. Default is the `opus` alias (the CLI
 # resolves it to the current Opus flagship); judgment seats need a strong tier. The served model
@@ -129,7 +129,6 @@ TOOLS=""
 ARGS=()
 if [ "${CLAUDE_ALLOW_WEB:-0}" = "1" ]; then TOOLS="$ALLOWED_TOOLS"; ARGS=(--allowedTools "$ALLOWED_TOOLS"); fi
 [ -n "${CLAUDE_EFFORT:-}" ] && ARGS+=(--effort "$CLAUDE_EFFORT")
-[ -n "${CLAUDE_SYSTEM_PROMPT:-}" ] && ARGS+=(--system-prompt "$CLAUDE_SYSTEM_PROMPT")
 LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STUB_DIR="${TMPDIR:-/tmp}/llm-legs-stub"
 mkdir -p "$STUB_DIR" && cd "$STUB_DIR" || exit 1

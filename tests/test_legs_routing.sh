@@ -166,9 +166,9 @@ for spec in \
 done
 
 : >"$CALL_LOG"
-LEG_ENV=(CLAUDE_ALLOW_WEB=1 CLAUDE_EFFORT=medium CLAUDE_SYSTEM_PROMPT=judge)
+LEG_ENV=(CLAUDE_ALLOW_WEB=1 CLAUDE_EFFORT=medium)
 assert run_leg "$ROUTED_PATH" "$WORK/web" "$ROOT/ask_claude.sh" web >/dev/null
-assert grep -q $'\t--tools\tWebSearch,WebFetch\t.*\t--allowedTools\tWebSearch,WebFetch\t--effort\tmedium\t--system-prompt\tjudge$' "$CALL_LOG"
+assert grep -q $'\t--tools\tWebSearch,WebFetch\t.*\t--allowedTools\tWebSearch,WebFetch\t--effort\tmedium$' "$CALL_LOG"
 LEG_ENV=()
 
 # LEGS_ROLE names another role for every leg.
