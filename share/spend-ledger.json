@@ -312,6 +312,23 @@
    },
    "verdict": "kept",
    "note": "0.0% of spend: the deny text (one short redirect) replaces a subagent spawn costing far more; the fork path is one rewritten description; relay types are already retired so denies are rare; denied-spawn billing already filed in the tokenmap handoff"
+  },
+  {
+   "id": "hook:PreToolUse:Bash · cd-guard ran this",
+   "title": "PreToolUse:Bash · cd-guard ran this",
+   "audited_at": "2026-10-12T04:04:10+03:00",
+   "by": "harness-speed-spend-hook-pretooluse-bash-cd-guard-ran-this-20261012T010231Z-0f59",
+   "share": 0.001869,
+   "prices": {
+    "Workers · Hooks": 496.64621242756425,
+    "Workers · attachment: hook context": 2879.5939310547787,
+    "Doctors · attachment: hook context": 696.6429838946558,
+    "Doctors · Hooks": 252.30745007151472,
+    "Reviewers · Hooks": 4.96130445842753
+   },
+   "sources": {},
+   "verdict": "kept",
+   "note": "The note is the already-shortened rewrite note of hook:cd-guard.sh (claude-setup@c5a2a69, audited 2026-10-10); 0.1% of spend, shrinking. Whole hook, note included, goes when docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md lands (CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, ~/.claude/settings.json, not writable by a relay); shortening a note that is deleted next is churn"
   }
  ]
 }
