@@ -2,9 +2,10 @@
 # reason line on stderr and returns 1. The caller hands in CHAT_OPEN_OPENER (a command line),
 # CHAT_OPEN_WORKER_PICK (a path) and, optionally, CHAT_OPEN_PREFIX (words in front of claudeb).
 chat_open_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+. "$chat_open_repo/share/worker-pool.sh"
 
 chat_open() {
-  local file=$1 workdir=$2 prompt=$3 resume=${4:-} claudeb account session word prefix_quoted='' model=opus line
+  local file=$1 workdir=$2 prompt=$3 resume=${4:-} claudeb account session word prefix_quoted='' model=opus line off
   local -a opener prefix=() launch=()
   read -r -a opener <<<"${CHAT_OPEN_OPENER:-open -a Terminal}"
   # %q: a prefix word is data. The generated script is what actually runs.
@@ -14,12 +15,12 @@ chat_open() {
   fi
   # A bare `claude` runs on ~/.claude, which holds no login: the chat opens on a picked profile.
   claudeb=$(command -v claudeb) || { printf 'no claudeb on PATH\n' >&2; return 1; }
-  # The chat role: this is an interactive chat, and the workers switch it meets is lifted only by the
-  # pin written below, once the account is already chosen. --claim is what spreads parallel launches:
-  # the marker ages out (WORKER_CLAIMS_TTL, default 600s); nothing releases it early. The caller's
-  # session id would apply the caller's chat pin to a different chat (night 56cc opened on a
-  # menu-off account pinned to the chat that started it).
-  account=$(env -u CLAUDE_CODE_SESSION_ID "${CHAT_OPEN_WORKER_PICK:-$chat_open_repo/bin/worker-pick}" --account claudeb --role chat --model "$model" --claim 2>/dev/null) &&
+  # The chat role ranks by the chat model, but `chat` ignores the pool, and an opened chat is delegated
+  # work (the night, a doctor fixer): an account out of the pool is never its (Egor 2026-10-12).
+  # --claim is what spreads parallel launches: the marker ages out (WORKER_CLAIMS_TTL, default 600s).
+  off=$(worker_pool_disabled_json "$(worker_pool_dir claudeb)" | jq -r 'join(",")') ||
+    { printf 'the claudeb pool cannot be read\n' >&2; return 1; }
+  account=$("${CHAT_OPEN_WORKER_PICK:-$chat_open_repo/bin/worker-pick}" --account claudeb --role chat --model "$model" ${off:+--exclude "$off"} --claim 2>/dev/null) &&
     [ -n "$account" ] || { printf 'worker-pick names no Claude account\n' >&2; return 1; }
   session=${resume:-$(uuidgen | tr '[:upper:]' '[:lower:]')}
   if [ -n "$resume" ]; then

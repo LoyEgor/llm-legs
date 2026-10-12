@@ -810,12 +810,19 @@ assert [ "$(sed -n 4p <<<"$prefix_words")" = profile ]
 assert [ "$(sed -n 5p <<<"$prefix_words")" = acct-b ]
 assert grep -q '^acct-b ' "$WORK/prefix.out"
 
-# The opener's own chat pin never picks the opened chat's account.
-printf '#!/usr/bin/env bash\n[ -z "${CLAUDE_CODE_SESSION_ID:-}" ] && echo acct-free || echo acct-pinned\n' >"$WORK/pick-pinned"
-chmod +x "$WORK/pick-pinned"
-CLAUDE_CODE_SESSION_ID=sess-opener CHAT_OPEN_OPENER="$FAKE_BIN/opener" CHAT_OPEN_WORKER_PICK="$WORK/pick-pinned" \
-  chat_open "$WORK/pinned.command" "$WORK/wd" 'say hi' >"$WORK/pinned.out"
-assert grep -q '^acct-free ' "$WORK/pinned.out"
+# An opened chat is delegated work: accounts out of the claudeb pool are excluded from its pick.
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >"%s"\necho acct-free\n' "$WORK/pick.args" >"$WORK/pick-args"
+chmod +x "$WORK/pick-args"
+mkdir -p "$WORK/cbpool"
+printf 'acct-off\nacct-off2\n' >"$WORK/cbpool/disabled"
+CLAUDEB_DIR="$WORK/cbpool" CHAT_OPEN_OPENER="$FAKE_BIN/opener" CHAT_OPEN_WORKER_PICK="$WORK/pick-args" \
+  chat_open "$WORK/pool.command" "$WORK/wd" 'say hi' >"$WORK/pool.out"
+assert grep -q '^acct-free ' "$WORK/pool.out"
+assert [ "$(grep -A1 -x -- --exclude "$WORK/pick.args" | tail -1)" = acct-off,acct-off2 ]
+assert grep -qx -- '--role' "$WORK/pick.args"
+CLAUDEB_DIR="$WORK/cbpool-empty" CHAT_OPEN_OPENER="$FAKE_BIN/opener" CHAT_OPEN_WORKER_PICK="$WORK/pick-args" \
+  chat_open "$WORK/pool.command" "$WORK/wd" 'say hi' >/dev/null
+assert_fails grep -qx -- --exclude "$WORK/pick.args"
 
 # A resume reopens the chat on its own launcher: a claudegpt-stamped chat stays on its gateway account.
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudegpt"

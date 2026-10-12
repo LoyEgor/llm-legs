@@ -333,7 +333,9 @@ it, and the bucket is the chat model's (`chat_model_bucket`). The pin it never s
 there being no reserve to be an exception to. A chat query decides nothing about workers and
 therefore never clears a walled pin. It answers for every vendor under those same rules, `claudeb` being the only one with
 a caller today, and its machine face is the others': one bare account name on stdout, exit 3 when
-none is selectable.
+none is selectable. A chat opened by automation (`share/chat-open.sh`: the night's orchestrator, a doctor
+fixer) is delegated work, not one Egor talks to: its pick passes the claudeb accounts out of the pool as
+`--exclude` (Egor 2026-10-12: a menu-off account is never the night's).
 
 In the human table — the workers view — a workers-off vendor with no pin serving holds no rank at
 all and states the switch in place of its rows: `<vendor>: off for workers`. A closed role is a
