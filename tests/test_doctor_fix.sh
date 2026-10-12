@@ -1169,7 +1169,8 @@ assert jqe --arg m "$L/tests/test_mid.sh" --arg l "$L/tests/test_light.sh" 'map(
 brief=$(grep -F speed-suite-audit-llm-legs-test-mid "$WORK/out" | cut -f2)
 assert [ "$(head -n1 "$brief")" = 'STRONG: yes' ]
 for step in '1. What each check guards' '2. Where the wall goes' 'Never shorten a sleep or a timeout a race check depends on' \
-  'assert count unchanged' 'every mutation still red' 'kept (the suite is fine: a normal outcome)' 'bin/speed-doctor --suite-audit'; do
+  'assert count unchanged' 'every mutation still red' 'kept (the suite is fine: a normal outcome)' 'bin/speed-doctor --suite-audit' \
+  'through the `vacuous-tests` lens yourself (`review-bench/lenses/vacuous-tests.md`' 'proven by that mutation red after the fix'; do
   assert grep -qF "$step" "$brief"
 done
 assert_fails grep -qF -- '--fresh' "$brief"
