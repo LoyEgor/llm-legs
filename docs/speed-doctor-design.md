@@ -1,23 +1,5 @@
 # Speed doctor — design
 
-## Script context cut, measured 2026-10-12
-
-`ask_claude.sh` now accepts opt-in `CLAUDE_MINIMAL_CONTEXT=1`: safe mode, skills disabled,
-and only WebSearch/WebFetch when web is enabled, otherwise no tools. The mode requires claudeb;
-ordinary callers keep their launch. The Red team caller in find-truth opts in without web.
-Served CLI 2.1.296 replays through `claudeb profile` loaded zero skills/MCP/tools and carried
-14,234 fewer input tokens on each of two recorded Red team prompts. Decisions matched both times;
-explanatory prose differed. Limit tokens totaled 158,511 before and 156,003 after; one sample rose
-because thinking/output varied, so this is not a guaranteed per-run quota saving. Work not done:
-no project/memory customization loading, skills catalog or unused tool schemas on that launch.
-
-The sanitization gate in usage-ai-report uses the same flags: three recorded decisions matched,
-22,577 fewer input tokens each, aggregate limit tokens 158,088 → 94,059. Commit check, Advisor and
-Daily note retain their old launches because decisions changed. Browser checks retain Chrome MCP
-and shell access to prove the selected device. No cadence or batching change, speed target or new gate.
-Full index allocation, cache caveats, replay table and reference-drift results:
-[`token-map/research/script-context-2026-10-12.md`](../../token-map/research/script-context-2026-10-12.md).
-
 Status: design, 2026-10-02, revised after seven T2 hunts (280 confirmed findings); reshaped 10-03 into the Speed block at the top of the Harness doctor, no doctor of its own:
 - module `bin/speed-doctor`, exec'd by `bin/harness-doctor` after each run at the run's own priority within 2 s; its section is Harness's key `speed`, its lines open Harness's `menu.txt`; own state and journals under `${SPEED_DOCTOR_DIR:-~/.cache/speed-doctor}`;
 - one ledger, `share/harness-ledger.json`.
