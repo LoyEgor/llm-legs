@@ -273,6 +273,8 @@ assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
 mkdir -p "$WORK/direct/tests"
 printf '#!/usr/bin/env bash\n. "%s/tests/lib/suite-journal.sh"\necho "PASS: slot=$RUN_SUITES_SLOT"\n' "$ROOT" \
   >"$WORK/direct/tests/test_d.sh"
+git -C "$WORK/direct" init -q -b main
+git -C "$WORK/direct" -c user.email=t@example.test -c user.name=t commit -q --allow-empty -m before
 h6=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
 env -u SUITE_JOURNAL_PID SUITE_JOURNAL="$WORK/direct.jsonl" bash "$WORK/direct/tests/test_d.sh" >"$WORK/direct.out" 2>&1 &
 direct=$!
@@ -281,12 +283,14 @@ for i in $(seq 1 50); do [ "$(holds_of run-suites)" = 1 ] && break; sleep 0.1; d
 assert [ "$(holds_of run-suites)" = 1 ]
 assert jqe --arg r "$WORK/direct" '.held.what == "suite test_d.sh of \($r)"' "$HARNESS_HOLDS_DIR"/run-suites-*.json
 assert kill -0 "$direct"
+git -C "$WORK/direct" -c user.email=t@example.test -c user.name=t commit -q --allow-empty -m during-the-wait
 sleep 1
 kill "$h6"
 wait "$direct" || fail "a direct run failed: $(cat "$WORK/direct.out")"
 assert grep -q "PASS: slot=$RUN_SUITES_SLOTS_DIR/1" "$WORK/direct.out"
 assert jqe --arg slot "$RUN_SUITES_SLOTS_DIR/1" --argjson pid "$direct" '.kind == "direct" and .pid == $pid and .slot == $slot
   and .started_at - .queued_at >= 1 and .suites["test_d.sh"].secs < .ended_at - .queued_at - 0.9' "$WORK/direct.jsonl"
+assert jqe --arg h "$(git -C "$WORK/direct" rev-parse HEAD)" '.head == $h' "$WORK/direct.jsonl"
 assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
 assert jqe --arg r "$WORK/direct" 'map(select(.source == "suite test_d.sh of \($r)")) | length == 1 and .[0].seconds >= 1' \
   <(waits_of run-suites)

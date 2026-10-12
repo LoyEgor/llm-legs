@@ -337,6 +337,7 @@ if [ -z "$suite_journal_held" ]; then
     export RUN_SUITES_SLOT=$suite_journal_slot
     suite_journal_held=$suite_journal_slot suite_journal_waited=$SECONDS
     suite_journal_ms suite_journal_began
+    suite_journal_git "$suite_journal_repo"
   fi
 fi
 
