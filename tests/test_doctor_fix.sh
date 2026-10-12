@@ -1202,6 +1202,16 @@ assert jqe '[.[] | select(.area | startswith("speed-")) | .id] == ["opportunity:
   "suite_audit:llm-legs:test_mid", "suite_audit:llm-legs:test_light", "suite_audit:llm-legs:test_extra", "spend:resumes"]
   and ([.[] | select(.area | startswith("speed-")) | .area] | unique | length == 5)' "$WORK/cap.json"
 assert grep -qxF 'doctor-fix: Speed takes 5 fixers; 1 rows rank again the next night' "$WORK/cap.err"
+# Each kind's best batch first: with more suite audits due than places, the best spend audit still runs.
+cp "$S/harness/latest.json" "$S/kinds-before.json"
+jq --arg l "$L" '.speed.suites.selection += ["suite_audit:llm-legs:test_s1", "suite_audit:llm-legs:test_s2"]
+  | .problems += [.problems[] | select(.id == "suite_audit:llm-legs:test_extra") | ("test_s1", "test_s2") as $t
+      | .id = "suite_audit:llm-legs:\($t)" | .value = 20 | .suite = {component: "llm-legs/\($t)", sources: ["\($l)/tests/\($t).sh"]}]' \
+  "$S/kinds-before.json" >"$S/harness/latest.json"
+assert jqe '[.[] | select(.area | startswith("speed-")) | .id] == ["opportunity:machine/contention", "opportunity:chat/hooks",
+  "suite_audit:llm-legs:test_mid", "suite_audit:llm-legs:test_light", "suite_audit:llm-legs:test_s1", "spend:resumes"]' \
+  <(night_snapshot n16 8 2>/dev/null)
+mv "$S/kinds-before.json" "$S/harness/latest.json"
 for n in 1 2 3; do
   jq -n --arg a "speed-launched-$n" '{id: "harness-\($a)", doctor: "harness", night: "n21", area: $a, problems: [],
     launched_at: "2026-10-13T00:00:00Z", closed_at: "2026-10-13T01:00:00Z"}' >"$RUNS/harness-speed-launched-$n.json"
@@ -1209,13 +1219,8 @@ done
 assert jqe '[.[] | select(.area | startswith("speed-")) | .area] | unique | length == 2' <(night_snapshot n21 8 2>/dev/null)
 assert jqe '[.[] | select(.area | startswith("speed-")) | .area] | unique | length == 5' <(night_snapshot n22 8 2>/dev/null)
 rm "$RUNS"/harness-speed-launched-[123].json
-# The free worker slots no longer shape the Speed pick: the same snapshot on 8 slots and on 1, never probed.
-mkdir -p "$WORK/spy"
-printf '#!%s\ncase "$*" in *worker_capacity*) echo probe >>"%s" ;; esac\nexec %q "$@"\n' "$(command -v bash)" "$WORK/spy/calls" \
-  "$(command -v bash)" >"$WORK/spy/bash"
-chmod +x "$WORK/spy/bash"
-assert [ "$(PATH="$WORK/spy:$PATH" night_snapshot n18 8 2>/dev/null)" = "$(PATH="$WORK/spy:$PATH" night_snapshot n18 1 2>/dev/null)" ]
-assert [ ! -e "$WORK/spy/calls" ]
+# The free worker slots never shape the Speed pick: the same snapshot on 8 slots and on 1.
+assert [ "$(night_snapshot n18 8 2>/dev/null)" = "$(night_snapshot n18 1 2>/dev/null)" ]
 cp "$S/harness/latest.json" "$S/admission-before.json"
 jq '.speed.spend.selection = [] | .speed.suites.selection = [] | .problems += [
   {id: "collector:repair", rule: "collector", state: "new"},

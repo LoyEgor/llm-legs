@@ -453,8 +453,14 @@ def snapshot(doctor, doc_file, night=None):
 
 
 def speed_fixers(entries, speed, room):
-    """The first `room` Speed batches in rank order; the rows of the rest rank again the next night."""
-    areas = list(dict.fromkeys(entry["area"] for entry in entries if entry["id"] in speed))
+    """Up to `room` Speed batches: the best of each kind (levers, suite audits, spend audits) first, then the rest by
+    rank; the rows of the others rank again the next night."""
+    kinds = {}
+    for entry in entries:
+        if entry["id"] in speed:
+            kinds.setdefault(entry["area"], entry["rule"] if entry["rule"] in ("spend_audit", "suite_audit") else "lever")
+    firsts = list({kind: area for area, kind in reversed(list(kinds.items()))}.values())
+    areas = sorted(firsts, key=list(kinds).index) + [area for area in kinds if area not in firsts]
     left = [entry["id"] for entry in entries if entry["id"] in speed and entry["area"] not in areas[:max(0, room)]]
     if left:
         print("doctor-fix: Speed takes %d fixers; %d rows rank again the next night" % (SPEED_FIXERS, len(left)),

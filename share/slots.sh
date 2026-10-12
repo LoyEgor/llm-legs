@@ -104,14 +104,6 @@ slots_held() { # dir -> the slots a live process holds
   printf '%s\n' "$held"
 }
 
-worker_capacity() { # -> the worker slots free now: the count slot_room admits less the live holders
-  local count=${WORKER_SLOTS:-$(worker_slots)} allowed held
-  allowed=${count#*-}
-  [ "${count%-*}" = "$allowed" ] || slot_room >/dev/null || allowed=${count%-*}
-  held=$(slots_held "${WORKER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/worker-slots}")
-  printf '%s\n' $((allowed > held ? allowed - held : 0))
-}
-
 slot_release() { store_lock_release "${1:-}"; }
 
 holds_in_tree() { # pid -> whether a live limiter hold's holder runs inside that process tree
