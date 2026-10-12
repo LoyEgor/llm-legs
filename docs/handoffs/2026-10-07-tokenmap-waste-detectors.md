@@ -14,8 +14,8 @@ From «Updater doctor», 2026-10-07.
 Each detector is a `tracking.json` section with a share of Claude spend, the Δ, a candidate count and a sample of candidates (file, session, line).
 1. **Duplicate reads.** Done in token-map b044500 (`Repeated reads`).
 2. **Hook-forced repeats.** After a hook block, a forced Stop re-answer or an injected note, the next output repeats what was already said. — Done in token-map cf68b86 (`Hook-forced repeats`: exact, near, language switch or paraphrase).
-3. **Cold restarts on one topic.** A new context, or a worker resume past the cache TTL, whose brief names the same files or task as a context that ended shortly before. — Done in token-map 93c2a59 (`Cold restarts on one topic`).
-4. **Chunking that does not pay.** A fan-out (log-audit chunks, review cells, image takes) whose startup per chunk is larger than the chunk's own work. — Done in token-map 93c2a59 (`Chunks that do not pay`).
+3. **Cold restarts on one topic.** Done in token-map 93c2a59.
+4. **Chunking that does not pay.** Done in token-map 93c2a59 (`Chunks that do not pay`).
 5. **Delegation that retells.** A worker brief whose size is close to the delegated work, while the delegating chat's account had room to do the work itself. — Done in token-map cf68b86 (`Delegation that retells`; whether the account had room is the audit's).
 6. **Outputs nobody reads.** Scheduled LLM jobs (launchd wrappers in `~/.local/libexec`, reports, digests): the cost per run, and whether any model or menu reads the output afterwards. — Done in token-map cf68b86 (`Scheduled outputs nobody reads`; whether a menu or Egor reads them is the audit's).
 7. **Startup that is never used.** Done in token-map b044500 (`Unused startup`, read by Spend's startup audits).
@@ -28,7 +28,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Startup part totals. — Done in token-map 03057cb (Startup `Main contexts, total by part`); `share/spend.py` splits by it since fix/debt-spend.
    - Listings: slash-only vs model use. — Done in token-map 3f597e7 (Unused startup `Typed only`).
    - Auto-memory prompt (spend audit `startup:CLAUDE.md + memory index`, 2026-10-09): the memory system-prompt section (~2.3k chars a context, there only while auto-memory is on) is priced inside `system + tools (not in total)`; attribute it to this part.
-   - Stop re-answers (spend audit `hook:worker-run-backstop.sh`, 2026-10-10): every request of the forced turn bills the hook, so a turn that goes on to other work is over-priced (264k of its 527k was one turn fixing the hook); the wakes of the waits a block starts are billed nowhere.
+   - Stop re-answers (spend audit `hook:worker-run-backstop.sh`, 2026-10-10): every request of the forced turn bills the hook, so a turn that goes on to other work is over-priced (264k of its 527k was one turn fixing the hook); the wakes of the waits a block starts are billed nowhere. Re-audit 2026-10-12: 0 blocks since 10-10T02:13Z, yet the row reads ×42 `worse` until the window rolls (10-17); a per-row last-block date would show a component quiet since its fix.
    - Review waits (spend audit `spawn:review-waiter`, 2026-10-10): the relay is gone (llm-legs ee185fa8); a background `review-bench wait`'s completion wakes the chat as a main-thread turn no row attributes to review waits.
    - Skill listing per entry (spend audit 2026-10-10): `skills()` prices entries from the most common listing only, so account-only synced entries (com workers' `anthropic-skills:*`, `cowork-plugin-management:*`) are missing there; split per listing hash.
    - Hook-asked calls (spend audit `hook:context-nudge.sh`, 2026-10-10): the focus-file Write a nudge asks for (~1.4k/week) is priced as `tool call: Write`; charge a call that follows a hook's note and touches the path it names to that hook.

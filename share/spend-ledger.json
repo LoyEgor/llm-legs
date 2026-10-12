@@ -166,21 +166,21 @@
   {
    "id": "hook:worker-run-backstop.sh",
    "title": "worker-run-backstop.sh",
-   "audited_at": "2026-10-10T06:28:43+03:00",
-   "by": "harness-speed-spend-hook-worker-run-backstop-sh-20261010T031908Z-5cdf",
-   "share": 0.000669,
+   "audited_at": "2026-10-12T04:07:06+03:00",
+   "by": "harness-speed-spend-hook-worker-run-backstop-sh-20261012T010236Z-74c0",
+   "share": 0.000793,
    "prices": {
-    "Workers · attachment: hook context": 56.33763507716477,
-    "Workers · Hooks": 13.357765001847183,
-    "Chat · Hooks": 45.77301711581157,
-    "Chat · attachment: hook context": 52.02714453550694,
-    "Reviewers · Hooks": 0.054084720651576476
+    "Workers · Hooks": 496.64621242756425,
+    "Workers · attachment: hook context": 2879.5939310547787,
+    "Doctors · attachment: hook context": 696.6429838946558,
+    "Doctors · Hooks": 252.30745007151472,
+    "Reviewers · Hooks": 4.96130445842753
    },
    "sources": {
-    "llm-legs/bin/worker-run-backstop.sh": "38615df2e23fb654ea6dbb1de18c59c50e59e795"
+    "llm-legs/bin/worker-run-backstop.sh": "1238782d78778709a013cd206f9b82866e94bea2"
    },
    "verdict": "kept",
-   "note": "7 d 527k limit-tokens over 29 blocks: 496k (94%) relay-era blocks of 10-04..10-08 whose class is gone at source (c9087e4b script-owner, fbb35ae0 starter alive, ee185fa8 relay-free; 264k of it one forced turn that fixed this hook); the 5 relay-free blocks since 10-09 (31k, 2 requests each) each started the missing background wait (new tool calls, no repeat to cut); price is the re-answer request, not the 300-byte text, so saying less saves nothing"
+   "note": "re-audit after b4b13f07/fea5e1fd (hold narrowed to any live wait, --unowned cut): stop-gate journal and transcripts show 0 holds and 0 errors since 2026-10-10T02:13Z (~47 h); the 526k 7-day cell is the relay-era blocks of 10-05..10-10 already judged in the 10-10 audit, rolling out of the window by 10-17; quiet stops cost hook time, not tokens; nothing left to cut"
   },
   {
    "id": "spawn:review-waiter",
