@@ -312,8 +312,9 @@ Harness doctor (added 2026-09-29 by its owner chat):
   Harness-owned: hook scripts, startup instruction parts (CLAUDE.md + memory index, nested CLAUDE.md, skill listing),
   worker cold resumes, subagent/worker spawns, re-write causes tokenmap flags `avoidable`; compaction summaries, the
   other re-writes and system + tools are Claude Code's, shown and never targeted. `spend.selection` lists every due
-  audit, of which a night takes up to its kind share, area `speed-spend-<component>`; `spend.proofs` holds each audited component's share and part price
-  against the audit, which the night's `roi` lines read.
+  audit, area `speed-spend-<component>`; `spend.proofs` (share, part price at audit) feed night `roi` lines.
+  `cpu` (`share/cpu_audit.py`): `cpu:<component>` rows, group `CPU audits`, own, wasted CPU-min/day, due as
+  Spend's.
   Its `tests` (`share/test_health.py`, design § Test health) is the Test health block in Speed's menu lines and
   `opportunity:test-health/...` problems in min/day, its lines over their usual `regression:test-health/<line>` rows;
   its `candidates` (dead and pinned suites) feed `suites`.
@@ -324,9 +325,9 @@ Harness doctor (added 2026-09-29 by its owner chat):
   over the fastest before it, or a new suite (not a split) over 3× the median suite a run, is due at once and names its commit. `suites.selection` is the queue by wall-min/day; a night takes the first its red test rules do not hold, area `speed-suite-audit-<repo>-<suite>`,
   brief header `STRONG: yes` (worker-run refuses Light and Gemini Flash). Audits are `suite:<repo>/<suite>` rows of
   `share/spend-ledger.json` (`bin/speed-doctor --suite-audit`), proven once the fastest of 5 runs after it reads ≤ 0.65× its wall a run (its fastest of 20).
-  A night's `roi` line proves a suite, hook or wait improvement per unit (median wall-s a run, ms a call per hook script,
-  a gate's recovery s a day, s a wait) once N samples follow the night (`time_budget.UNITS`); other classes, and test
-  health fixes that cut runs (retests, flaky, fan-out), keep the day totals.
+  A night's `roi` line proves a suite, hook or wait improvement per unit (median wall-s a run, hook ms a call,
+  a gate's recovery s a day, s a wait) once N samples follow the night (`time_budget.UNITS`); other classes and
+  run-cutting test health fixes (retests, flaky, fan-out) keep day totals.
 
 LLM doctor (added 2026-09-29 by its owner chat):
 - `as_of` is ISO as §1 says; the epoch stays under the doctor's own key `as_of_s`, which the menu

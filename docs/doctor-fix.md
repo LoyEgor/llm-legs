@@ -178,11 +178,11 @@ A `speed-spend-<component>` run audits one component of the Spend block; its bri
 prices at audit; it is proven once the share or that price in `harness_index.cells` falls. Model, effort and thinking are
 never the lever.
 
-### Suite audits: same checks, less CPU
+### Suite and CPU audits: same output, less CPU
 
-A `speed-suite-audit-<repo>-<suite>` run audits the suites the queue ranks first (its share of free worker slots,
-beside the red test rules); its brief carries the steps, `STRONG: yes` keeps Light and Gemini Flash off it, and
-`bin/speed-doctor --suite-audit` records the row in `share/spend-ledger.json`. `kept` is a normal verdict.
+A `speed-suite-audit-<repo>-<suite>` or `speed-cpu-<component>` run audits the rows its queue ranks first; its brief
+carries the steps, `STRONG: yes` keeps Light and Gemini Flash off it, and `bin/speed-doctor --suite-audit` or
+`--cpu-audit` records the row in `share/spend-ledger.json`, `--zero` pricing its removal.
 
 ### The judge is not yours to loosen
 

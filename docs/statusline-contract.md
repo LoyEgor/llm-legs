@@ -403,10 +403,11 @@ own rows are re-read often enough to stay bright, and when no gateway chat is op
 
 ## Render timing journal (background, not a rendered segment)
 
-Every render appends `<start_us>\t<end_us>\t<session_id>\t<cpu_ms>` (`$EPOCHREALTIME`; cpu_ms = bash
-`times` shell+children user+sys, `-` under bash < 5.3) to `${HARNESS_DOCTOR_DIR:-~/.cache/harness-doctor}/statusline/<local YYYY-MM-DD>.tsv`
-for the Harness doctor, which owns pruning. One `printf` append, a `mkdir -p` only when it fails, no
-lock; a failed write is silent and never changes the output or exit code.
+Every render appends `<start_us>\t<end_us>\t<session_id>\t<cpu_ms>\t<same>` (`$EPOCHREALTIME`; cpu_ms: bash
+`times` with children, `-` under bash < 5.3; same: 1 if the lines equal the session's last render in
+`render-<sid>`, else 0) to `${HARNESS_DOCTOR_DIR:-~/.cache/harness-doctor}/statusline/<day>.tsv`
+for the Harness doctor, which prunes it. One `printf` append, `mkdir -p` on failure, no lock; a failed write
+is silent.
 
 ## Probe snapshots (background, not a rendered segment)
 
@@ -424,15 +425,14 @@ answer is a failed ps and is never published.
 
 ## Probe journal (background, not a rendered segment)
 
-Every background run of the statusline appends `<start_us>\t<wall_ms>\t<cpu_ms>\t<kind>` to
+Every background run of the statusline appends `<start_us>\t<wall_ms>\t<cpu_ms>\t<kind>\t<same>` to
 `${SPEED_DOCTOR_DIR:-~/.cache/speed-doctor}/statusline-probes/<local YYYY-MM-DD>.tsv` through
 `probe_journal`: kinds `ports` and `work` (each probe run that took its session lock, from the probe's
 EXIT trap), `debt`, `autonomy`, `unpushed` and `codex-kick` (each refresh that took its lock, at its
 end). `cpu_ms` is that process's own CPU and its waited children's (bash `times`, `-` under bash < 5.3)
-— the render's own `times` never sees it, the work having left the render. Builtins only: one `printf`
-append, a `mkdir -p` only when it fails, no lock. The Speed doctor folds it into its Background line
-(runs and CPU-min/day per kind, added to the statusline's background share) and prunes it with its
-other journals past 35 days. The store merge-kick keeps its own `merge-kick/` journal.
+— the render's `times` never sees it. same: 1 if `probe_publish` found its cache holding what it wrote,
+else 0. Builtins only: one `printf` append, `mkdir -p` on failure, no lock. The Speed doctor folds it into
+its Background line and CPU audits and prunes it past 35 days. The store merge-kick keeps its own `merge-kick/` journal.
 
 ## Server TTL evidence
 
