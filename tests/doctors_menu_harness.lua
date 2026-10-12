@@ -256,7 +256,7 @@ local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" }
 local function trendHarness()
   write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 problems\nH\t" .. hs.json.encode(metadata)
     .. "\n0\t\t\tLost time: ok · 573 min/day overhead\n1\t\t\tChat turns: 103 min/day · model 64\n"
-    .. "1\td\t\tNeeds Egor: nothing\n0\t\t\tSpend: watch · index 0.46 (-54%) · 1 audit due\n"
+    .. "1\td\t\tNeeds Egor: nothing\n0\t\t\tSpend: watch · Fee index 0.46 (-54%) · 1 audit due\n"
     .. "1\t\t\t1.9 % · compaction summaries · Δ -6% · audit due: never audited\n"
     .. "0\t\t\tHooks: 3 problems\n1\td\t\tall hook details\n")
 end

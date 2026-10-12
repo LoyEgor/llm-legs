@@ -132,7 +132,7 @@ def collect(made=NOW - 3600, state=None, write=False, **fixture):
 out = collect()
 ids = [p["id"] for p in out["problems"]]
 check(out["status"] == "watch" and out["index"] == 0.46 and out["change"] == "-54%" and "tone" not in out
-      and out["head"] == "index 0.46 (-54%%) · Harness 11.3 %% of spend · %d audits due" % len(ids)
+      and out["head"] == "Fee index 0.46 (-54%%) · Fee 11.3 %% of spend · %d audits due" % len(ids)
       and ids[:3] == ["spend:startup:CLAUDE.md + memory index", "spend:resumes", "spend:hook:gate.sh"]
       and "spend:rewrites:expired (1h+ idle)" not in ids and "spend:compaction" not in ids
       and "spend:spawn:claudeb-worker" in ids
@@ -159,7 +159,7 @@ check(missing["status"] == "nodata" and missing["index"] is None and missing["pr
       and missing["head"] == "no harness_index in tracking.json",
       "a tracking.json without harness_index is nodata: %s" % missing["head"])
 thin = collect(value=None)
-check(thin["index"] is None and thin["head"].startswith("harness index: too little use · ") and thin["problems"],
+check(thin["index"] is None and thin["head"].startswith("Fee index: too little use · ") and thin["problems"],
       "a null index has no value while its audits stay due: %s" % thin["head"])
 
 source = gate["sources"][0]
@@ -340,7 +340,7 @@ header = json.loads(lines[1][2:])
 spent = [p for p in document["problems"] if p["rule"] == "spend_audit"]
 check(document["problem_count"] == 0 and spent and all(p["group"] == "Spend" and p["speed"] for p in spent)
       and lines[2].startswith("0\t\t\tLost time: ok")
-      and "0\t\t\tSpend: watch · index 0.46 (-54%%) · Harness 11.3 %% of spend · %d audits due" % len(spent) in lines
+      and "0\t\t\tSpend: watch · Fee index 0.46 (-54%%) · Fee 11.3 %% of spend · %d audits due" % len(spent) in lines
       and "1\t\t\t6.0 % · startup CLAUDE.md + memory index · Δ -40% · audit due: never audited" in lines
       and "1\td\t\t15.5 % · compaction summaries · Δ ×16 · never targeted" in lines
       and header["spend"] == {k: section[k] for k in ("as_of_s", "status", "index", "index_by_day", "change",

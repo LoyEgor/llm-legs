@@ -636,7 +636,7 @@ local function indexLead(data)
     if type(row) == "table" then
         return { label = row.label, nums = row.cells, tone = row.tone, dim = outdated(data) }, row
     end
-    return { label = "Harness index", nums = { "…" }, dim = true }, nil
+    return { label = "Fee index", nums = { "…" }, dim = true }, nil
 end
 
 -- The Automations row itself: red when the export is stale or the instruction watcher is down,

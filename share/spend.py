@@ -370,9 +370,9 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
         backfill(history, closed, epoch(payload.get("data_through")) or made, now, local_day, home)
     coverage = index.get("coverage")
     out["head"] = "%s%s · %d audit%s due" % (
-        "index %.2f (%s)" % (value, index.get("change") or "–") if value is not None
-        else "harness index: too little use",
-        " · Harness %.1f %% of spend" % (100 * coverage) if isinstance(coverage, (int, float)) else "",
+        "Fee index %.2f (%s)" % (value, index.get("change") or "–") if value is not None
+        else "Fee index: too little use",
+        " · Fee %.1f %% of spend" % (100 * coverage) if isinstance(coverage, (int, float)) else "",
         len(out["problems"]), "" if len(out["problems"]) == 1 else "s")
     out["menu"] = lines(found, rows, reasons, out["proofs"]) + [
         [0, "d", False, "tracking.json %s · 7 days" % time.strftime("%d %b %H:%M", time.localtime(made))]]

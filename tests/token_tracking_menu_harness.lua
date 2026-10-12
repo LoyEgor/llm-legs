@@ -39,7 +39,7 @@ local fixture = {
     stale_after_hours = 26, columns = { "7 days", "prev 7", "Δ", "share" }, unit_label = "limit tokens",
     groups = { harness = "Harness price — its cost per unit of use", vendors = "Other vendors — each its own pool" },
     rows = {
-        { key = "harness_index", label = "Harness index", group = "harness", cells = { "1.14", "1.00", "+14%", "4.3%" },
+        { key = "harness_index", label = "Fee index", group = "harness", cells = { "1.14", "1.00", "+14%", "4.3%" },
           tone = "worse", note = "Per unit of use.", weeks = {}, weeks_unit = "index",
           sections = { { title = "By part", columns = { "7 days", "prev 7", "Δ" },
                          rows = { { label = "hooks", cells = { "1.20", "1.00", "+20%" }, tone = "worse" } } } } },
@@ -92,7 +92,7 @@ local spendFixture = {
     stale_after_hours = 26, unit_label = "tokens", columns = SPEND_COLUMNS,
     range = { key = "7d", title = "7 days vs the 7 before", cur_label = "7 days", prev_label = "prev 7" },
     groups = { codex = "Codex — its own units, never summed with Claude" },
-    index = { key = "harness_index", label = "Harness index", group = "harness", cells = { "1.14", "1.00", "+14%", "4.3%", "" },
+    index = { key = "harness_index", label = "Fee index", group = "harness", cells = { "1.14", "1.00", "+14%", "4.3%", "" },
               tone = "worse", weeks = {}, weeks_unit = "index",
               sections = { { title = "By part", columns = { "7 days", "prev 7", "Δ" },
                              rows = { { label = "hooks", cells = { "1.20", "1.00", "+20%" }, tone = "worse" } } } } },
@@ -112,7 +112,7 @@ local spendFixture = {
         { label = "  Workers", group = "codex", cells = { "30.0M", "10.0M", "0%", "100.0%", "" }, tone = "",
           sections = level("Workers", { { label = "gpt-5", cells = { "30.0M", "10.0M", "0%", "100.0%", "" }, tone = "" } }) },
     },
-    days = { columns = { "Chat", "Workers", "Reviewers", "Doctors", "Other", "System" },
+    days = { columns = { "Chat", "Workers", "Reviewers", "Cleanup", "Other", "System" },
              rows = { { label = "Fri Sep 25 (today)", cells = { "55.0%", "45.0%", "0.0%", "0.0%", "0.0%", "0.0%" } },
                       { label = "Thu Sep 24", cells = { "40.0%", "50.0%", "5.0%", "5.0%", "0.0%", "0.0%" } } } },
 }
@@ -168,7 +168,7 @@ end
 
 local pie = items
 local indexRow, spendCompare = items[2], items[3]
-check(indexRow and text(indexRow.title):find("^Harness index") and indexRow.menu and find(indexRow.menu, "hooks"),
+check(indexRow and text(indexRow.title):find("^Fee index") and indexRow.menu and find(indexRow.menu, "hooks"),
     "the harness index row is not second, or does not open its drill")
 check(spendCompare and text(spendCompare.title) == "Compare: 7 days vs 7 before" and #spendCompare.menu == 3
     and text(spendCompare.menu[1].title) == "24h vs 24h before" and spendCompare.menu[3].checked,
@@ -212,7 +212,7 @@ local header = find(cat, "limit tokens")
 local spend, startup = find(cat, "Claude spend"), find(cat, "Startup")
 local codex, codexAt = find(cat, "Codex")
 check(header and text(header.title):find("share", 1, true), "no unit header with a share column")
-check(find(items, "Harness index") and not find(cat, "Harness index"),
+check(find(items, "Fee index") and not find(cat, "Fee index"),
     "the harness index is not on the top level only")
 check(header and spend and startup and codex
     and cellEnd(header, "Δ") == cellEnd(spend, "-21%") and cellEnd(spend, "-21%") == cellEnd(startup, "+37%")
@@ -407,7 +407,7 @@ M.setPrompt(function() return answer end)
 hs.fs.touch(path, os.time() - 60)
 
 local ranged = M.menuItems(nil)
-check(ranged[3] == selector(ranged) and text(ranged[2].title):find("^Harness index") and checked(selector(ranged).menu) == "7 days vs 7 before"
+check(ranged[3] == selector(ranged) and text(ranged[2].title):find("^Fee index") and checked(selector(ranged).menu) == "7 days vs 7 before"
     and marked(ranged) == "7 days vs 7 before", "the two ranges do not both start at 7 days")
 alerts = {}
 pickTop(ranged, "24h vs 24h before").fn()
