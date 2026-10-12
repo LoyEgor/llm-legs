@@ -2010,9 +2010,33 @@ profile_command() {
     ${worker_env[@]+"${worker_env[@]}"} claude "$@"
 }
 
+# The programs above a headless run, nearest first: token-map names a self-started session by them.
+launcher_chain() {
+  local pid=$PPID ppid cmd first word name chain='' n=0 words
+  while [ "${pid:-1}" -gt 1 ] && [ "$n" -lt 5 ]; do
+    read -r ppid cmd < <(ps -o ppid=,command= -p "$pid" 2>/dev/null) || break
+    read -r -a words <<<"$cmd"
+    first=${words[0]##*/}
+    name=$first
+    case "$first" in
+      bash|sh|zsh|dash|env|python|python3*|Python|node|perl|ruby)
+        for word in "${words[@]:1}"; do
+          case "$word" in -c) break ;; -*|*=*) ;; *) name=${word##*/}; break ;; esac
+        done ;;
+    esac
+    case "$first" in claude|launchd|Hammerspoon|login|tmux|Terminal|iTerm2) name=$first ;; esac
+    case " < $chain < " in *" < $name < "*) ;; *) chain=${chain:+$chain < }$name ;; esac
+    case "$first" in claude|launchd|Hammerspoon|login|tmux|Terminal|iTerm2) break ;; esac
+    pid=$ppid n=$((n + 1))
+  done
+  printf '%s' "$chain"
+}
+
 stamp_start() { # profile worker|""
   local log="${CLAUDEB_STARTS_LOG:-$HOME/.cache/claudeb/starts.tsv}" line
-  printf -v line '%s\t%s\t%s\t%s\t%s\n' "$claudeb_entry_at" "${EPOCHREALTIME:--}" "$$" "$1" "${2:-chat}"
+  printf -v line '%s\t%s\t%s\t%s\t%s' "$claudeb_entry_at" "${EPOCHREALTIME:--}" "$$" "$1" "${2:-chat}"
+  [ "${2:-}" = worker ] && line+=$'\t'"$(pwd -P 2>/dev/null)"$'\t'"$(launcher_chain)"
+  line+=$'\n'
   { printf '%s' "$line" >>"$log"; } 2>/dev/null ||
     { mkdir -p "${log%/*}" && printf '%s' "$line" >>"$log"; } 2>/dev/null || true
 }

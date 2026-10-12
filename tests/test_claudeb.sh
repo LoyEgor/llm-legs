@@ -139,7 +139,8 @@ for settings in '{"model":"claude-fable-5-1[1m]"}' '{}' '{invalid'; do
 done
 model_starts="$MODEL_HOME/.cache/claudeb/starts.tsv"
 assert grep -qE $'^[0-9]+\\.[0-9]{6}\t[0-9]+\\.[0-9]{6}\t[0-9]+\tmodel-test\tchat$' "$model_starts"
-assert grep -qE $'^[0-9]+\\.[0-9]{6}\t[0-9]+\\.[0-9]{6}\t[0-9]+\tmodel-test\tworker$' "$model_starts"
+assert grep -qE $'^[0-9]+\\.[0-9]{6}\t[0-9]+\\.[0-9]{6}\t[0-9]+\tmodel-test\tworker\t' "$model_starts"
+assert awk -F'\t' -v cwd="$(pwd -P)" '$5 == "worker" && $6 == cwd && $7 ~ /^test_claudeb\.sh( < |$)/ { found = 1 } END { exit !found }' "$model_starts"
 assert awk -F'\t' '$1 > $2 { exit 1 }' "$model_starts"
 starts_lines=$(wc -l <"$model_starts")
 assert env CLAUDEB_STARTS_LOG="$WORK/starts-override.tsv" HOME="$MODEL_HOME" CLAUDEB_DIR="$MODEL_HOME/store" \
