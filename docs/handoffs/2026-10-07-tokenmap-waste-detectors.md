@@ -36,6 +36,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Deny-forced reads (spend audit `hook:instruction-write-gate.sh`, 2026-10-12): 10 of the 24 true shell-write denials in 7 d were followed by a full Read of the denied file (the Edit route needs it), priced as `tool call: Read`; charge a Read that follows a deny and names its path to the hook.
    - Skill forks (spend audit `spawn:subagent`, 2026-10-12): `subagent` is the fallback for a sidechain with no `attributionAgent`; all 49 of the 7 d are Claude Code's forked `/code-review` in review-bench skill cells: label them by the parent's Skill name. Pre-10-09 forks sit in `raw-events` rows with `agent_type` NULL, which `SUB_CLAUDE` drops, so the row reads `Δ new` on old load.
    - Gate wall time (spend audit `hook:review-flow-gate.sh`, 2026-10-12): its token price is refusals only (see its ledger row); its cost now is the PreToolUse wait on every Bash call, which only Speed's hook floors see.
+   - Guard workarounds (spend audit `hook:worker-git-guard.sh`, 2026-10-12): a block prices the denied call alone; the cp + `git show HEAD:<f> >` restore a worker runs next (53 blocks in 52 sessions, 7 d) books as plain Bash; charge it to the hook as Hook-asked calls do.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.

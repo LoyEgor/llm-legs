@@ -160,7 +160,7 @@ is_revert_segment() {
       [ "$dry_run" -eq 1 ] && [ "$other_mode" -eq 0 ] || return 0
       ;;
     stash)
-      case "${1:-}" in list|show) ;; *) return 0 ;; esac
+      case "${1:-}" in list|show|create|-h|--help) ;; *) return 0 ;; esac
       ;;
   esac
   return 1
