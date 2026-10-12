@@ -2224,9 +2224,9 @@
         "guards-growth-claude-skills-media"
       ],
       "handoff": "docs/handoffs/2026-10-10-harness-guards-codex-landing.md",
-      "note": "2026-10-10 (night fixer harness-guards-20261010T031900Z-5315): regression event 2026-10-09T19:29:23Z SKILL.md +396 B (with ~/.claude/docs review-tiers.md +247, worktrees.md +222, row guards-ungated-docs-worktree-shell-write) is chat «Чистка night run 20261009T023738Z-817e»'s git merge --ff-only feat/landing-overlap (claude-setup 66cbc49). Writer: Codex worker codex-1791571148-71493-0a04 (borodatch) at 18:41:46Z in the claude-setup worktree feat-landing-overlap, python heredoc r=Path('<worktree>'); p=r/'<rel>'; p.write_text(s), its brief ordering the rule edits against the injected MD-GUARD. Cause: no Codex profile wires a hook, so the worktree write has no gate pass and the 2026-10-04 landing credit has nothing to join; a gate-scope decision (gate merge landings, or Codex/Gemini/Grok hooks), handed off. Also fixed: the Claude write gate passed that shape (a variable bound to a literal checkout joined to a literal: Path(id)/'x', Path('lit')/'x', id/'x', id+'x', join(id,'x'), one step or via a second variable); test_instruction_gate 'a variable holding a checkout joined to a literal' red on the old code. Still missed: chained joins (r/'a'/'b.md'), multi-argument join, f-strings. Ruled out: vendor sync, upstream delivery (local branch), a gate pass beside the landing (gates.jsonl has none for these files on 10-09). 2026-10-06 (night fixer harness-guards-20261006T032921Z-5b99): shared cause of the regressions: the landing credit read only tripwire events, and the watcher journals few worktree writes. Event 2026-10-05T19:50:17Z +390 B is the fast-forward of claude-setup main to 5dc5308; its bytes were judged in worktree feat-night-report-doctors at 19:43:50-19:44:30Z (bloat passed +4, granted +386, chat 9b1c0bc5). guards_section now credits a gate's priced pass (passed, span-pass, granted) of a worktree path to a landing of the same file, keyed by real path; an event of that worktree write adds only bytes no pass priced. Tests 'bytes a gate priced in a worktree the watcher never journaled excuse their landing' and 'one credit, never two'. Left: event 2026-10-05T14:15:55Z +84 B (under the 120 B limit) is the scratchpad ff.sh landing of night leftover branch leftover-feat-night-default-land (49935a1); only +17 B was priced within 24 h (12:48:54Z, conflict resolution); +30 B was priced 34 h earlier in worktree feat-night-default-land (2026-10-04T04:40:08Z), the rest has no gate record. A leftover adopted after LANDING_S is outside the landing rule; widening it is the owner's call. Fixed 2026-10-04 by Harness Doctor: Both shapes fixed: the variable-path write is gated (instruction_interp_var_write_re), and a merge, patch or copy that re-lands bytes the same file key grew by in another checkout within 24 h is no new growth (guards_section landed, handoff option (b)); test 'a merge or copy landing bytes a worktree already grew by'. 2026-10-04 check: window events 2026-10-03T18:45-18:46Z and 22:39:34Z (+44..+221 B, chat \"Updater doctor\" 233cceb1) all carry a gate pass; instruction_git_landing still reads no merge, cause stands. 2026-10-03 check: the only window event was the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-guards-20261010T031900Z-5315"
+      "note": "Night e2f7: quiet; cause stands (no codexb/geminib/grokb home wires bin/instruction-write-gate.sh, the gate still reads no merge landing); the (a)/(c) pick stays the owner's. 2026-10-10 (night fixer harness-guards-20261010T031900Z-5315): regression event 2026-10-09T19:29:23Z SKILL.md +396 B (with ~/.claude/docs review-tiers.md +247, worktrees.md +222, row guards-ungated-docs-worktree-shell-write) is chat «Чистка night run 20261009T023738Z-817e»'s git merge --ff-only feat/landing-overlap (claude-setup 66cbc49). Writer: Codex worker codex-1791571148-71493-0a04 (borodatch) at 18:41:46Z in the claude-setup worktree feat-landing-overlap, python heredoc r=Path('<worktree>'); p=r/'<rel>'; p.write_text(s), its brief ordering the rule edits against the injected MD-GUARD. Cause: no Codex profile wires a hook, so the worktree write has no gate pass and the 2026-10-04 landing credit has nothing to join; a gate-scope decision (gate merge landings, or Codex/Gemini/Grok hooks), handed off. Also fixed: the Claude write gate passed that shape (a variable bound to a literal checkout joined to a literal: Path(id)/'x', Path('lit')/'x', id/'x', id+'x', join(id,'x'), one step or via a second variable); test_instruction_gate 'a variable holding a checkout joined to a literal' red on the old code. Still missed: chained joins (r/'a'/'b.md'), multi-argument join, f-strings. Ruled out: vendor sync, upstream delivery (local branch), a gate pass beside the landing (gates.jsonl has none for these files on 10-09). 2026-10-06 (night fixer harness-guards-20261006T032921Z-5b99): shared cause of the regressions: the landing credit read only tripwire events, and the watcher journals few worktree writes. Event 2026-10-05T19:50:17Z +390 B is the fast-forward of claude-setup main to 5dc5308; its bytes were judged in worktree feat-night-report-doctors at 19:43:50-19:44:30Z (bloat passed +4, granted +386, chat 9b1c0bc5). guards_section now credits a gate's priced pass (passed, span-pass, granted) of a worktree path to a landing of the same file, keyed by real path; an event of that worktree write adds only bytes no pass priced. Tests 'bytes a gate priced in a worktree the watcher never journaled excuse their landing' and 'one credit, never two'. Left: event 2026-10-05T14:15:55Z +84 B (under the 120 B limit) is the scratchpad ff.sh landing of night leftover branch leftover-feat-night-default-land (49935a1); only +17 B was priced within 24 h (12:48:54Z, conflict resolution); +30 B was priced 34 h earlier in worktree feat-night-default-land (2026-10-04T04:40:08Z), the rest has no gate record. A leftover adopted after LANDING_S is outside the landing rule; widening it is the owner's call. Fixed 2026-10-04 by Harness Doctor: Both shapes fixed: the variable-path write is gated (instruction_interp_var_write_re), and a merge, patch or copy that re-lands bytes the same file key grew by in another checkout within 24 h is no new growth (guards_section landed, handoff option (b)); test 'a merge or copy landing bytes a worktree already grew by'. 2026-10-04 check: window events 2026-10-03T18:45-18:46Z and 22:39:34Z (+44..+221 B, chat \"Updater doctor\" 233cceb1) all carry a gate pass; instruction_git_landing still reads no merge, cause stands. 2026-10-03 check: the only window event was the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5"
     },
     {
       "id": "hook-sync-stop-dispatch",
@@ -3960,10 +3960,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held. Night 817e: the relay rounds are gone (ee185fa8): a chat waits with a background worker-run wait, light-research waits its run out (92a22609). Night 4c4e: quiet; relay rounds are gone with the relays (ee185fa8), waits are background Bash.",
-      "handoff": null
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; cause gone (ee185fa8, 92a22609), dismissal proposed in the handoff. Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held. Night 817e: the relay rounds are gone (ee185fa8): a chat waits with a background worker-run wait, light-research waits its run out (92a22609). Night 4c4e: quiet; relay rounds are gone with the relays (ee185fa8), waits are background Bash.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
       "id": "log_audit:wip-owner-misattribution",
@@ -4027,9 +4027,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff. Night 20261007T213650Z-7b98: kept, no cap. The extra rounds followed the fit-round anchor bug (review-bench e53e183, reverted: only a bugs read retires debt), a one-off; resume_night's debt-<n> is documented in docs/night-run.md (a resumed night lands more work, which gets its own pass). Night 817e: quiet, no component changed; kept. Night 4c4e: quiet; the debt pass is now fit, legacy and bugs (981c1486), still no mechanical cap.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet, no component changed; kept. docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff. Night 20261007T213650Z-7b98: kept, no cap. The extra rounds followed the fit-round anchor bug (review-bench e53e183, reverted: only a bugs read retires debt), a one-off; resume_night's debt-<n> is documented in docs/night-run.md (a resumed night lands more work, which gets its own pass). Night 817e: quiet, no component changed; kept. Night 4c4e: quiet; the debt pass is now fit, legacy and bugs (981c1486), still no mechanical cap.",
       "handoff": null
     },
     {
@@ -4231,9 +4231,9 @@
       "same_cause": [
         "guards-ungated-claude-md-pathlib-assign"
       ],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-guards-20261010T031900Z-5315",
-      "note": "2026-10-10 (night fixer harness-guards-20261010T031900Z-5315): regressed by event 2026-10-09T19:29:23Z, review-tiers.md +247 and worktrees.md +222 B: a Codex worker's python heredoc in the claude-setup worktree feat-landing-overlap, landed by a chat's git merge --ff-only; no Codex hook runs the write gate, so the worktree write has no pass to credit. Cause, ruled-out ground and the Claude-gate join fix are in row guards-growth-claude-setup-night-sweep-skill; handed off. Event 2026-10-06T18:11:13Z, browser-ui-work.md +453 B = eab2019 +280 (the pathlib miss) + 418d15a +38 + d8861ff +135, all python heredocs of chat 24cb1f32 in the worktree docs-browser-chrome-automation, the last two after C=<worktree>; cd $C with relative global/docs/browser-ui-work.md. instruction_carved_out carved every non-CLAUDE markdown file of a worktree out, the cd loop dropped a cd through a variable, and only spellings relative to the cwd itself were matched. Fixed: a worktree copy whose main-checkout counterpart resolves into a guarded directory stays guarded, cd $VAR resolves a literal assignment of the same command, and a worktree cwd also spells names relative to its main checkout. Not covered still: a cd into a directory the same command creates (here the gate judged the main-checkout spelling, which denies too). The landing itself (a chat git merge into main) is judged by no gate; growth born in a gated write is credited by harness-doctor's landing pool. test_instruction_gate red on the old code.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; same standing cause and open pick as guards-growth-claude-setup-night-sweep-skill. 2026-10-10 (night fixer harness-guards-20261010T031900Z-5315): regressed by event 2026-10-09T19:29:23Z, review-tiers.md +247 and worktrees.md +222 B: a Codex worker's python heredoc in the claude-setup worktree feat-landing-overlap, landed by a chat's git merge --ff-only; no Codex hook runs the write gate, so the worktree write has no pass to credit. Cause, ruled-out ground and the Claude-gate join fix are in row guards-growth-claude-setup-night-sweep-skill; handed off. Event 2026-10-06T18:11:13Z, browser-ui-work.md +453 B = eab2019 +280 (the pathlib miss) + 418d15a +38 + d8861ff +135, all python heredocs of chat 24cb1f32 in the worktree docs-browser-chrome-automation, the last two after C=<worktree>; cd $C with relative global/docs/browser-ui-work.md. instruction_carved_out carved every non-CLAUDE markdown file of a worktree out, the cd loop dropped a cd through a variable, and only spellings relative to the cwd itself were matched. Fixed: a worktree copy whose main-checkout counterpart resolves into a guarded directory stays guarded, cd $VAR resolves a literal assignment of the same command, and a worktree cwd also spells names relative to its main checkout. Not covered still: a cd into a directory the same command creates (here the gate judged the main-checkout spelling, which denies too). The landing itself (a chat git merge into main) is judged by no gate; growth born in a gated write is credited by harness-doctor's landing pool. test_instruction_gate red on the old code.",
       "handoff": "docs/handoffs/2026-10-10-harness-guards-codex-landing.md"
     },
     {
@@ -4687,9 +4687,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Not reproduced: 4 copies each of test_run_suites_journal and test_slots in parallel at load 51 all passed; night 7777 already replaced test_run_suites_journal's fixed sleep with a poll (33eb4e77); test_statusline_hooks is tonight's suite job. No doctor rule sees a flake (blind spot suite-flake-unseen). Night 817e: same family as log_audit:run-all-load-flakes; test_test_journal's direct-run restamp was one deterministic cause, fixed tonight. Night 4c4e: quiet; the load-bound asserts were made CPU-based (ae0d28dd, review-bench speed suite in row load-bound-timing-assertions).",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Not reproduced: 4 copies each of test_run_suites_journal and test_slots in parallel at load 51 all passed; night 7777 already replaced test_run_suites_journal's fixed sleep with a poll (33eb4e77); test_statusline_hooks is tonight's suite job. No doctor rule sees a flake (blind spot suite-flake-unseen). Night 817e: same family as log_audit:run-all-load-flakes; test_test_journal's direct-run restamp was one deterministic cause, fixed tonight. Night 4c4e: quiet; the load-bound asserts were made CPU-based (ae0d28dd, review-bench speed suite in row load-bound-timing-assertions).",
       "handoff": null
     },
     {
@@ -7122,9 +7122,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Ruled out: same cause as hung-commands-25min-timeout (unbounded foreground sleeps 600-1380 s, recursive greps over all transcripts, a bare interpreter); model conduct, no component. run-suites already joins a newline-joined suite list (affected-suite-list-handling). Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: same cause as hung-commands-25min-timeout (unbounded foreground sleeps 600-1380 s, recursive greps over all transcripts, a bare interpreter); model conduct, no component. run-suites already joins a newline-joined suite list (affected-suite-list-handling). Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7137,9 +7137,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Weather: the quoted walls are the chats' own session/weekly limits (the night orchestrator at 06:09, a chat at its weekly cap), which no harness can reroute; walled workers are rerouted by worker-run reroute_walled with a CONTINUATION note (9da6a1c1), and the gate now matches worker-pick at 100 % (04965684). Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Weather: the quoted walls are the chats' own session/weekly limits (the night orchestrator at 06:09, a chat at its weekly cap), which no harness can reroute; walled workers are rerouted by worker-run reroute_walled with a CONTINUATION note (9da6a1c1), and the gate now matches worker-pick at 100 % (04965684). Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7152,9 +7152,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Weather: load 165-350 from parallel night work (memory load-is-weather). Already in place: run-suites slots paced by load, red-first early stop (e03d41ae), landing reruns only overlap suites (0f2198e6). Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Weather: load 165-350 from parallel night work (memory load-is-weather). Already in place: run-suites slots paced by load, red-first early stop (e03d41ae), landing reruns only overlap suites (0f2198e6). Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7167,9 +7167,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Ruled out: parallel fixers are the design (final speed, not zero queue); each job rebases at landing (fix-orchestrator step 4) and duplicates drop there. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: parallel fixers are the design (final speed, not zero queue); each job rebases at landing (fix-orchestrator step 4) and duplicates drop there. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7182,9 +7182,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Ruled out: logo-vectorizer-bench's own lane throttle and the lane's choice to shrink its experiment, not the harness. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: logo-vectorizer-bench's own lane throttle and the lane's choice to shrink its experiment, not the harness. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7197,9 +7197,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Ruled out: the owner chat's own brief-writing (it said so itself); no hook, gate or launcher. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: the owner chat's own brief-writing (it said so itself); no hook, gate or launcher. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7212,9 +7212,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Ruled out: the quoted batches were the chat's experiment workers; the shipped `tokenmap kinds` reads one key (fix) and finds the JSON array inside a fence. Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: the quoted batches were the chat's experiment workers; the shipped `tokenmap kinds` reads one key (fix) and finds the JSON array inside a fence. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7410,6 +7410,261 @@
       "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-worker-run-pool-20261010T031943Z-0022",
       "note": "2026-10-10: p10 wall 101 s on 43 s CPU, idle 58 s bounded by the profiled sleep_s 62 s. Ruled out as sleeps, measured with a PATH sleep shim over the three shards: the suite's own polls use the bash sleep builtin, and bin/worker-run forks only 0.01 s .ready polls (~534 a run, ~5 s requested) and two 0.1 s; the profiled 62 s is the watchdog's `sleep 30` hop (IDLE 1800 / 10, capped 30), reached in about 2 runs a suite when its subshell beats the stub's exit and killed at once by process_tree_end: requested, never waited. The real idle is the detached setsid supervisors' CPU, which the suite's times never counts, plus load. Fixed by the same shards: a caller waits on the longest third.",
       "handoff": null
+    },
+    {
+      "id": "log_audit:own-headroom-guard-opaque-refusal",
+      "title": "Own-account headroom guard refused a launch at 71% with no stated rule, and the retry waited on the clock",
+      "match": {
+        "rule": "log_audit",
+        "ident": "own-headroom-guard-opaque-refusal"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-12T04:30:00+03:00",
+          "by": "9d125acb (chat «Updater doctor»)",
+          "files": [
+            "llm-legs/bin/worker-run"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Confirmed in the quoted chat (02:09-02:39). Settled by the owner chat before the read: the guard trips at 80% (was 60%), its refusal names the reading, the threshold, a free alternative account or the reset, and Egor's «обойди» bypass (WORKER_RUN_OWN_HEADROOM=0, one launch). fixes[].at is this review's time.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:test-harness-second-menu-copy",
+      "title": "Test harness loaded a second menu-style copy into the live Hammerspoon, silently removing the ⟳ marker",
+      "match": {
+        "rule": "log_audit",
+        "ident": "test-harness-second-menu-copy"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-12T04:30:00+03:00",
+          "by": "f90a41c9 (chat «Token spending tracking and optimization»)",
+          "files": [
+            "llm-legs/tests/token_tracking_menu_harness.lua"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Confirmed: the quoted line is the owner chat reporting its own fix. Both loads take the harness's own menu-style and the harness fails if the live Token tracking busy source changes. fixes[].at is this review's time.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:live-claim-not-read-back-from-source",
+      "title": "Orchestrator reported a value as live or rebuilt without reading it back from the file the menu uses",
+      "match": {
+        "rule": "log_audit",
+        "ident": "live-claim-not-read-back-from-source"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-12T04:30:00+03:00",
+          "by": "f2f6d7c3 (chat «test and lost time optimization»)",
+          "files": [
+            "llm-legs/launchd/tokenmap-scand"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Component part confirmed and fixed by the owner chat: tokenmap-scand skipped nights on read-rates.json's age alone, so tracking.json went stale (Spend read nodata from 10-11 19:00); it now needs both files written since 05:00. The rest (claiming 'live' unread, a 7-day window spanning the relay's retirement) is the chat's conduct, no component. fixes[].at is this review's time.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:gemini-flash-used-after-rejection",
+      "title": "Gemini Flash kept running, was re-delegated, and was ranked first by worker-pick after Egor restricted it to Light work",
+      "match": {
+        "rule": "log_audit",
+        "ident": "gemini-flash-used-after-rejection"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out now: Egor switched Gemini workers and reviewers off in the menu (~/.claude/worker-model gemini_workers=off, gemini_reviewers=off), so worker-pick ranks no Gemini row for either role; the Flash judges and the re-delegation were the chats' own picks (one says so at 14:09). Left for the owner: share/worker-policy.md still calls Gemini a full implementation worker, against Egor's «Flash is Light only»; it bites only if he switches Gemini workers back on (handoff).",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:bench-default-cap-zero-findings",
+      "title": "Default 30-minute pass cap cut the Haiku-max bench to zero findings, measuring the cap not the model",
+      "match": {
+        "rule": "log_audit",
+        "ident": "bench-default-cap-zero-findings"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: by design. A pair with under DURATION_CAP_LEARNING_SAMPLES (15) completions gets RATER_TIMEOUT_S 1800 (review-bench share/rbench/catalog.py, Egor 2026-09-01), and `--uncapped` exists for exactly this probe; the chat did not pass it. The cut was reported (killed_cap_s; the chat said «обрезан лимитом»), not read as a zero.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:biased-bench-answer-key",
+      "title": "Bug bench answer key was built from Opus's own findings, so the comparison was invalid and rerun",
+      "match": {
+        "rule": "log_audit",
+        "ident": "biased-bench-answer-key"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: an ad-hoc experiment the chat assembled in a scratch directory; its answer key was its own choice. No review-bench command builds a truth set.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:walls-worker-burned-accounts-high-effort",
+      "title": "Wall-unification worker on Astra high effort burned two codex accounts in 13 minutes and left half-done edits in the shared checkout",
+      "match": {
+        "rule": "log_audit",
+        "ident": "walls-worker-burned-accounts-high-effort"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: model conduct. The chat picked Codex Astra high itself (worker-pick pointed elsewhere, 14:09) and launched the writer in the shared checkout instead of a worktree; Egor accepted the choice («ничего не меняем»).",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:orchestrator-invented-speed-targets",
+      "title": "Orchestrator invented 12 s / 35 s speed targets and a worker chased them for about 90 minutes",
+      "match": {
+        "rule": "log_audit",
+        "ident": "orchestrator-invented-speed-targets"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: the chat's own brief (it said so at 19:51); Egor then declined a speed test for tokenmap («лучше я сам буду решать»).",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:metric-explanations-not-followable",
+      "title": "Metric and plan explanations Egor could not follow: reused labels, dense tables, unexplained terms",
+      "match": {
+        "rule": "log_audit",
+        "ident": "metric-explanations-not-followable"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: chat conduct in conversation, no hook, gate or launcher; the menu-side wording is token-map's and the owner chats'.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:one-worker-241-images",
+      "title": "A single worker was given 241 images and self-compacted repeatedly",
+      "match": {
+        "rule": "log_audit",
+        "ident": "one-worker-241-images"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: the chat's own fan-out choice for a logo-vectorizer-bench judging batch; no harness rule sizes a brief.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:judge-calibration-oversized",
+      "title": "Judging spent the codex 5-hour window on 289 panels for about 22 useful votes",
+      "match": {
+        "rule": "log_audit",
+        "ident": "judge-calibration-oversized"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out as a harness bug: logo-vectorizer-bench's own judging lane (results/lanes/coord/tools) and the Vector Magic chat's sample size; that repository is not a sweep repository.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:lane-idle-between-rounds",
+      "title": "Lane sat idle 284 min between a finished round and the next resume",
+      "match": {
+        "rule": "log_audit",
+        "ident": "lane-idle-between-rounds"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: worker-run wait returns when a run ends; the gap is the Vector Magic chat sequencing its lane (judging, the 23:02 Fable exam, Egor's talk), not a harness wait.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:dev-green-new-loss-class-on-unseen-files",
+      "title": "Each c46-pad round passed dev checks, then a new loss class appeared on held-out files",
+      "match": {
+        "rule": "log_audit",
+        "ident": "dev-green-new-loss-class-on-unseen-files"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: logo-vectorizer-bench's c46-pad research loop (held-out checks are the lane's method), not the harness.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:thin-seam-repair-artefacts",
+      "title": "Thin-seam repair added new artefacts and took about 15 scan-and-look iterations",
+      "match": {
+        "rule": "log_audit",
+        "ident": "thin-seam-repair-artefacts"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: logo-vectorizer-bench tracer work (wsplice.py repair step), not the harness.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
+    },
+    {
+      "id": "log_audit:wait-for-vendor-reset-instead-of-available-members",
+      "title": "Panels and exams held for one vendor's reset while other members were ready",
+      "match": {
+        "rule": "log_audit",
+        "ident": "wait-for-vendor-reset-instead-of-available-members"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
+      "note": "Ruled out: the chats scheduled them. The 17:56 frontier panel kept the members Egor's frontier composition names (Fable, Astra, Grok) and he kept extending the brief meanwhile; the 23:02 Fable exam waited for Claude's own reset. Weather plus chat choice; no launcher held them.",
+      "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     }
   ],
   "blind_spots": [
