@@ -29,6 +29,7 @@ id_prefixes='gpt|grok|gemini|imagen|veo|sora|claude'
 id_re="($id_prefixes)(-[a-z]+)*-[0-9]+[a-z]?(\\.[0-9]+)*(-[a-z0-9]+){0,3}"
 doctor_fix="${VENDOR_FINGERPRINT_DOCTOR_FIX:-$repo_root/bin/doctor-fix}"
 . "$repo_root/share/worktree.sh"
+. "$repo_root/share/limit-hit.sh"
 # npm puts codex and grok under nvm, which neither a LaunchAgent's PATH nor a plain shell's carries.
 # Appended, so a native install earlier on PATH (~/.local/bin/claude) stays the one that runs.
 while IFS= read -r nvm_bin; do PATH="$PATH:$nvm_bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
@@ -488,12 +489,22 @@ day_launch() { # -> the requested events' runs, then one orchestrator chat dispa
   cat "$file.lines"
 }
 
+locked_rerun() { # wait verb args... -> exits with the locked rerun's status
+  local wait=$1 rc=0
+  shift
+  [ "$wait" -gt 0 ] || exec env VENDOR_FINGERPRINT_LOCKED=1 lockf -k -t 0 "$fp_dir/check.lock" "$script_path" "$@"
+  env VENDOR_FINGERPRINT_LOCKED=1 lockf -k -t "$wait" "$fp_dir/check.lock" "$script_path" "$@" || rc=$?
+  [ "$rc" -ne 75 ] || limit_hit vendor-fingerprint.lock-wait "$wait" s skip "vendor-fingerprint $1: another check held the lock" \
+    'bin/vendor-fingerprint:VENDOR_FINGERPRINT_LOCK_WAIT:-600' "$wait"
+  exit "$rc"
+}
+
 check() { # [--here] [vendor...]
   local vendor file here=false wait=0
   mkdir -p "$fp_dir" "$events_dir"
   if [ -z "${VENDOR_FINGERPRINT_LOCKED:-}" ]; then
     [ "${1:-}" != --here ] || wait=${VENDOR_FINGERPRINT_LOCK_WAIT:-600}
-    exec env VENDOR_FINGERPRINT_LOCKED=1 lockf -k -t "$wait" "$fp_dir/check.lock" "$script_path" check "$@"
+    locked_rerun "$wait" check "$@"
   fi
   [ "${1:-}" = --here ] && { here=true; shift; }
   for vendor in ${*:-$vendors}; do check_vendor "$vendor"; done
@@ -646,8 +657,7 @@ request() { # [--here] vendor|--all [note...] | --night <night-id>
   [ "${1:-}" != --night ] || [ -n "${2:-}" ] || usage
   mkdir -p "$fp_dir" "$events_dir"
   # Unlocked, a check's launch_pending sees requested_at before launched_at and opens a second chat.
-  [ -n "${VENDOR_FINGERPRINT_LOCKED:-}" ] || exec env VENDOR_FINGERPRINT_LOCKED=1 \
-    lockf -k -t "${VENDOR_FINGERPRINT_LOCK_WAIT:-600}" "$fp_dir/check.lock" "$script_path" request "$@"
+  [ -n "${VENDOR_FINGERPRINT_LOCKED:-}" ] || locked_rerun "${VENDOR_FINGERPRINT_LOCK_WAIT:-600}" request "$@"
   if [ "${1:-}" = --night ]; then
     vendor_runs "$2"
     return

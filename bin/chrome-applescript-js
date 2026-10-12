@@ -11,6 +11,7 @@ OSASCRIPT=${CHROME_JS_OSASCRIPT:-osascript}
 OPEN=${BROWSE_OPEN:-open}
 PS=${BROWSE_PS:-ps}
 WAIT_S=${CHROME_JS_WAIT_S:-30}
+. "$SCRIPT_DIRECTORY/../share/limit-hit.sh" 2>/dev/null || limit_hit() { :; }
 
 mode=${1:-status}
 [ "$#" -eq 0 ] || shift
@@ -61,7 +62,11 @@ if [ -n "$(chrome_pids)" ]; then
   "$OSASCRIPT" -e 'tell application "Google Chrome" to quit' >/dev/null
   deadline=$((SECONDS + WAIT_S))
   while [ -n "$(chrome_pids)" ]; do
-    [ "$SECONDS" -lt "$deadline" ] || { printf 'OUTCOME: QUIT_TIMEOUT\n'; exit 1; }
+    [ "$SECONDS" -lt "$deadline" ] || {
+      limit_hit chrome-applescript-js.wait "$WAIT_S" s skip "enabling Apple-event JavaScript: Chrome did not quit" \
+        'bin/chrome-applescript-js:CHROME_JS_WAIT_S:-30' "$WAIT_S"
+      printf 'OUTCOME: QUIT_TIMEOUT\n'; exit 1
+    }
     sleep 1
   done
 fi
@@ -81,7 +86,11 @@ mapfile -t flags < <("$SCRIPT_DIRECTORY/worker-run" _chrome-flags)
 "$OPEN" -g -a 'Google Chrome' --args --profile-directory="$profile" "${flags[@]}"
 deadline=$((SECONDS + WAIT_S))
 until [ -n "$(chrome_pids)" ]; do
-  [ "$SECONDS" -lt "$deadline" ] || { printf 'OUTCOME: LAUNCH_TIMEOUT\n'; exit 1; }
+  [ "$SECONDS" -lt "$deadline" ] || {
+    limit_hit chrome-applescript-js.wait "$WAIT_S" s skip "Chrome's relaunch on $profile after enabling Apple-event JavaScript" \
+      'bin/chrome-applescript-js:CHROME_JS_WAIT_S:-30' "$WAIT_S"
+    printf 'OUTCOME: LAUNCH_TIMEOUT\n'; exit 1
+  }
   sleep 1
 done
 sleep "${CHROME_JS_SETTLE_S:-5}"

@@ -22,6 +22,7 @@ DOC_MAX_AGE_S=7200
 OPEN_RUN_MAX_S=43200
 VERDICTS=' fixed ruled-out weather blind-spot handoff '
 . "$repo_root/share/chat-open.sh"
+. "$repo_root/share/limit-hit.sh"
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/test-scope.sh"
 . "$repo_root/share/worktree.sh"
@@ -349,6 +350,13 @@ def snapshot(doctor, doc_file, night=None):
                     ident, MENU_BUILDERS["automation"])) if os.path.isfile(f)]
             if rule == "collector":
                 files.append(doctor_script(doctor))
+            if rule in ("limit_hit", "limit_registry"):
+                repo, _, name = ident.partition(":")
+                registry = os.path.join(repos_dir(doctor), repo, "limits.json")
+                files.append(registry)
+                where = ((read_json(registry) or {}).get(name) or {}).get("where") if name else None
+                if isinstance(where, str) and os.path.isfile(os.path.join(repos_dir(doctor), repo, where.split(":")[0])):
+                    files.append(os.path.join(repos_dir(doctor), repo, where.split(":")[0]))
             if problem.get("speed") and rule == "spend_audit":
                 files += strings((problem.get("spend") or {}).get("sources"))
                 what = "Spend component %s · %s" % ((problem.get("spend") or {}).get("component"), problem.get("fact"))
@@ -700,7 +708,10 @@ check_doc() { # doctor -> dies unless its document is fresh and speaks contract 
     die "$doc is not a doctor document. Refresh the doctor first."
   IFS=$'\t' read -r contract age status count <<<"$facts"
   [ "$contract" = 1 ] || die "$doc speaks contract $contract, not 1. Refresh the doctor first."
-  [ "$age" -le "$DOC_MAX_AGE_S" ] || die "the $1 doctor document is $((age / 3600)) h old. Refresh the doctor first."
+  [ "$age" -le "$DOC_MAX_AGE_S" ] || {
+    limit_hit doctor-fix.doc-age "$DOC_MAX_AGE_S" s skip "the $1 doctor's fix launch: its document was too old" 'bin/doctor-fix:DOC_MAX_AGE_S=' "$age"
+    die "the $1 doctor document is $((age / 3600)) h old. Refresh the doctor first."
+  }
   if [ "$count" = 0 ] && [ "$status" = ok ]; then printf 'none\n'; else printf '%s\n' "${count:-0}"; fi
 }
 
@@ -715,6 +726,7 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
     fi
     record_set "$id" '.abandoned_at = $t' --arg t "$(stamp)" || return 1
     printf 'run %s abandoned: open for %s h\n' "$id" "$((age / 3600))" >&2
+    limit_hit doctor-fix.open-run "$OPEN_RUN_MAX_S" s expire "fix run $id of the $doctor doctor, abandoned unclosed" 'bin/doctor-fix:OPEN_RUN_MAX_S=' "$age"
   done < <(all_records | jq -r --arg d "$doctor" --arg a "$area" --slurpfile p "$4" "$JQ_EPOCH $JQ_OPEN $JQ_AREA $JQ_SPEED"'
     [$p[0][].id] as $ids | .[] | select(.doctor == $d and open and ($a == "all" or area == "all" or area == $a
       or ($a | speed) and (area | speed) and any(.problems[]?.id; IN($ids[]))))

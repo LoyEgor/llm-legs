@@ -33,6 +33,7 @@ grokb_root=$(resolve_root)
 . "$grokb_root/share/worker-model.sh"
 . "$grokb_root/share/account-announce.sh"
 . "$grokb_root/share/account-roster.sh"
+. "$grokb_root/share/limit-hit.sh"
 pool_dir=$(worker_pool_dir grok)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
@@ -563,7 +564,11 @@ refresh_access_token() { # name min-seconds -> 1 and refresh_failure when nothin
   fi
   case "$rc" in
     127) refresh_failure=${reason:-grok CLI not found} ;;
-    124|137|143) refresh_failure="the token touch timed out after ${grok_touch_timeout}s" ;;
+    124|137|143)
+      refresh_failure="the token touch timed out after ${grok_touch_timeout}s"
+      limit_hit grokb.touch-timeout "$grok_touch_timeout" s kill "the token refresh of $1: the export keeps the old token" \
+        'bin/grokb:LLM_LIMITS_GROK_TOUCH_TIMEOUT:-30' "$grok_touch_timeout"
+      ;;
     *) return 0 ;;
   esac
   return 1

@@ -36,6 +36,7 @@ accounts_refresh_summary=accounts_refresh_outcome
 accounts_plain=render_plain_accounts
 accounts_launch_hook=maybe_launch_profile
 . "$claudeb_root/share/store-lock.sh"
+. "$claudeb_root/share/limit-hit.sh"
 
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 tokens_dir="$base_dir/tokens"
@@ -149,9 +150,12 @@ lock_acquire() {
       now=$(date +%s) || return 1
       mt=$(file_mtime "$lock" 2>/dev/null) || mt="$now"
       if [[ "$mt" =~ ^[0-9]+$ ]] && [ "$((now - mt))" -gt 30 ]; then
+        limit_hit claudeb.lock-stale 30 s break "claudeb lock ${lock##*/} broken by age: its holder, if alive, now races this writer" \
+          'bin/claudeb:-gt 30 ]; then' "$((now - mt))"
         rm -rf "$lock" 2>/dev/null && continue
       fi
-      [ "$tries" -ge "$max" ] && return 1
+      [ "$tries" -lt "$max" ] || { limit_hit claudeb.lock-retries "$max" count retry-exhausted \
+        "claudeb lock ${lock##*/}: the bookkeeping write it guards" 'bin/claudeb:CLAUDEB_LOCK_RETRIES:-10' "$tries"; return 1; }
     fi
     sleep "$delay" 2>/dev/null || return 1
   done
@@ -524,6 +528,9 @@ token_journal() {
   if [[ "$max_bytes" =~ ^[0-9]+$ ]] && [ -f "$token_attempts_file" ]; then
     sz=$(wc -c < "$token_attempts_file" 2>/dev/null) || sz=0
     if [[ "$sz" =~ ^[0-9]+$ ]] && [ "$sz" -ge "$max_bytes" ]; then
+      [ ! -f "$token_attempts_file.1" ] || limit_hit claudeb.token-journal-rotate "$max_bytes" bytes drop \
+        "$(wc -c <"$token_attempts_file.1" | tr -d ' ') bytes of the older OAuth token-attempt history (.1) deleted" \
+        'bin/claudeb:CLAUDEB_TOKEN_JOURNAL_MAX_BYTES:-2000000' "$sz"
       mv -f "$token_attempts_file" "$token_attempts_file.1" 2>/dev/null || true
     fi
   fi
@@ -562,9 +569,13 @@ oauth_attempt_update() {
       if ! lock_mtime=$(file_mtime "$lock"); then lock_mtime=$now; fi
       if [ "$stale_retake" = false ] && [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 30 ]; then
         stale_retake=true
+        limit_hit claudeb.lock-stale 30 s break "oauth-attempts lock broken by age: its holder, if alive, now races this writer" \
+          'bin/claudeb:-gt 30 ]; then' "$((now - lock_mtime))"
         rm -rf "$lock" || return 0
         continue
       fi
+      limit_hit claudeb.lock-retries "$max_tries" count retry-exhausted "the oauth-attempts update of $name ($outcome)" \
+        'bin/claudeb:CLAUDEB_LOCK_RETRIES:-10' "$tries"
       return 0
     fi
     sleep "$delay" || return 0
@@ -1404,7 +1415,11 @@ probe_accounts_run() {
     # retry-after must not starve accounts that are ready to retry in seconds.
     wait=$(converge_backoff "$round")
     [ -n "$min_rem" ] && [ "$min_rem" -gt "$wait" ] 2>/dev/null && wait="$min_rem"
-    [ "$((spent + wait))" -le "$converge_budget" ] 2>/dev/null || break
+    [ "$((spent + wait))" -le "$converge_budget" ] 2>/dev/null || {
+      limit_hit claudeb.refresh-converge "$converge_budget" s expire "accounts${retry_names} left unprobed after weather: the menu keeps their stale state" \
+        'bin/claudeb:CLAUDEB_REFRESH_CONVERGE_S:-240' "$((spent + wait))"
+      break
+    }
     actual="$wait"
     [ "${CLAUDEB_WEATHER_RETRY_DELAY:-}" = '' ] || actual="$CLAUDEB_WEATHER_RETRY_DELAY"
     [ "$actual" -le 0 ] 2>/dev/null || sleep "$actual" 2>/dev/null || true
@@ -2064,8 +2079,12 @@ profile_required() {
 run_warm_session() {
   local dir="$1" name="$2" output="$3" prompt="$4"
   shift 4
+  local rc=0
   timeout 90 env CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$name" \
-    claude -p "$prompt" "$@" --output-format json >"$output" 2>&1
+    claude -p "$prompt" "$@" --output-format json >"$output" 2>&1 || rc=$?
+  [ "$rc" -ne 124 ] || limit_hit claudeb.warm-timeout 90 s kill "the warm session of $name: its token verdict" \
+    'bin/claudeb:timeout 90 env CLAUDE_CONFIG_DIR' 90
+  return "$rc"
 }
 
 persist_warm_output() {

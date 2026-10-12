@@ -25,6 +25,7 @@ import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
+import limit_hit  # noqa: E402
 import log_stores  # noqa: E402
 import machine_probe  # noqa: E402
 from fix_commit import fix_commit, fix_landed, siblings_dir  # noqa: E402
@@ -983,9 +984,11 @@ def unclean_reboots(events):
 
 
 def cache_sizes(deadline):
-    sizes = []
+    sizes, skipped = [], []
     for root in cache_roots():
         left = deadline - time.time()
+        if left <= 1 and os.path.isdir(root):
+            skipped.append(root)
         if left <= 1 or not os.path.isdir(root):
             continue
         for line in machine_probe.run("du", ["-k", "-d", "1", root], timeout=left).splitlines():
@@ -995,12 +998,18 @@ def cache_sizes(deadline):
                               round(int(size) * 1024 / GIB, 1)])
     for folder in cache_dirs():
         left = deadline - time.time()
+        if left <= 1 and os.path.isdir(folder):
+            skipped.append(folder)
         if left <= 1 or not os.path.isdir(folder):
             continue
         out = machine_probe.run("du", ["-k", "-d", "0", folder], timeout=left).split("\t", 1)[0]
         if out.isdigit():
             sizes.append([os.path.relpath(folder, HOME) if folder.startswith(HOME) else os.path.basename(folder),
                           round(int(out) * 1024 / GIB, 1)])
+    if skipped:
+        limit_hit.hit("system-doctor.cache-budget", CACHE_BUDGET_S, "s", "skip",
+                      "cache sizes of %d folders: %s" % (len(skipped), ", ".join(tilde(p) for p in skipped)),
+                      "bin/system-doctor:CACHE_BUDGET_S =", observed=round(time.time() - deadline + CACHE_BUDGET_S))
     return sorted(sizes, key=lambda r: -r[1])[:8]
 
 
@@ -1551,6 +1560,11 @@ def logstores(now=None):
             sizes.update(found)
 
     steps("du", du_all)
+    if cut:
+        limit_hit.hit("system-doctor.scan-budget", scan.get("budget_s", 600), "s", "skip",
+                      "the log scan's sizes and new-store findings under %s" % ", ".join(cut),
+                      'bin/system-doctor:deadline = time.time() + scan.get("budget_s", 600)',
+                      observed=round(time.time() - deadline + scan.get("budget_s", 600)))
     old, old_days = previous_scan(now)
     claims = steps("apps", log_stores.app_claims, registry, sizes) | claims
     reported, dirs = steps("fallback", log_stores.unregistered, sizes, roots, depth, claims,

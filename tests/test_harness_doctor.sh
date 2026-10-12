@@ -18,7 +18,8 @@ export TZ=UTC HOME="$WORK/home"
 export CLAUDE_PROJECTS_DIR="$HOME/.claude/projects" HARNESS_SETTINGS="$HOME/.claude/settings.json"
 export STATUSLINE_CACHE_DIR="$WORK/statusline" MEMLOGD_DIR="$WORK/memlogd" INSTRUCTION_WATCH_STATE="$WORK/watch"
 export CLAUDEB_DIR="$WORK/claudeb" HARNESS_WATCH_ROOTS="$HOME/hooks" HARNESS_DOCTOR_DIR="$WORK/state"
-export HARNESS_LEDGER="$WORK/ledger.json" HARNESS_REPOS_DIR="$WORK"
+export HARNESS_LEDGER="$WORK/ledger.json" HARNESS_REPOS_DIR="$WORK" LIMIT_REPOS_DIR="$WORK/limit-repos"
+for repo in llm-legs claude-setup review-bench token-map; do mkdir -p "$LIMIT_REPOS_DIR/$repo"; echo '{}' >"$LIMIT_REPOS_DIR/$repo/limits.json"; done
 export DOCTORS_DIR="$WORK/doctors" HARNESS_DOCTOR_BOOTS= DOCTOR_TRIGGER=fixture
 export WORKER_RUN_DIR="$WORK/runs" HARNESS_BROWSE_CMD="$WORK/browse-stub"
 cat >"$HARNESS_BROWSE_CMD" <<EOF

@@ -18,6 +18,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import chat_names  # noqa: E402
 import collector_runs  # noqa: E402
+import limit_hit  # noqa: E402
 import log_skeleton  # noqa: E402
 from spend import read_jsonl  # noqa: E402
 
@@ -76,10 +77,26 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def since_of(now):
-    done = [row.get("until") for row in read_jsonl(os.path.join(state_dir(), "runs.jsonl"))
+def done_runs():
+    return [row for row in read_jsonl(os.path.join(state_dir(), "runs.jsonl"))
             if row.get("stop") == "done" and isinstance(row.get("until"), (int, float))]
+
+
+def since_of(now):
+    done = [row["until"] for row in done_runs()]
     return max(max(done) if done else now - LOOKBACK_S, now - LOOKBACK_MAX_S)
+
+
+def lookback_cut(now, since):
+    """The hours between the last full read and the lookback cap that no run will ever read."""
+    done = done_runs()
+    last = max((row["until"] for row in done), default=None)
+    if last is None or last >= since:
+        return
+    spans = sorted(row["until"] - row["since"] for row in done if isinstance(row.get("since"), (int, float)))
+    limit_hit.hit("log-audit.lookback", LOOKBACK_MAX_S, "s", "skip",
+                  "%.1f h of transcripts not audited (%s to %s)" % ((since - last) / 3600, iso(last), iso(since)),
+                  "bin/log-audit:LOOKBACK_MAX_S =", observed=now - last, usual=spans[len(spans) // 2] if spans else None)
 
 
 def transcripts(since):
@@ -186,11 +203,23 @@ def merged(raw, folder, deadline):
     error = error or failure
     found = objects(text or "", ("id", "title"))
     if found:
+        top_cut(found, len(raw))
         return by_minutes(found)[:TOP], None
     fallback = [{"id": slug(item["title"]), "title": item["title"], "kind": item.get("kind"), "where": item.get("where") or [],
                  "quotes": [item["quote"]] if item.get("quote") else [], "why": item.get("why"),
                  "minutes": item.get("minutes"), "fix": item.get("fix")} for item in raw]
+    top_cut(fallback, len(raw))
     return by_minutes(fallback)[:TOP], error or "merge returned no findings; raw findings kept"
+
+
+def top_cut(found, raw):
+    """The merge is told to keep TOP, so a merge that returns exactly TOP of more raw findings may have cut some."""
+    if len(found) > TOP or (len(found) == TOP and raw > TOP):
+        limit_hit.hit("log-audit.findings-top", TOP, "count", "trim",
+                      "%d merged findings past the top %d dropped (%d raw findings before the merge)" % (
+                          max(0, len(found) - TOP), TOP, raw) if len(found) > TOP else
+                      "the merge kept %d of %d raw findings, maybe more causes" % (TOP, raw),
+                      "bin/log-audit:TOP =", observed=max(len(found), raw))
 
 
 def detach(args):
@@ -225,6 +254,7 @@ def run(args):
         print("log-audit: %d transcripts since %s in %d chunks under %s (dry run, nothing launched)" % (
             len(found), iso(since), len(packed), folder))
         return 0
+    lookback_cut(now, since)
     raw, read, error, stop, pending, queue = [], 0, None, "done", [], list(files)
     while queue or pending:
         while queue and len(pending) < args.parallel and stop == "done":
@@ -258,7 +288,7 @@ def run(args):
                    {"at": at, "night": args.night, "since": int(since), "until": int(now), "transcripts": len(found),
                     "chunks": len(packed), "read": read, "stop": stop, "findings": findings})
     record = {"at": at, "night": args.night, "since": int(since), "until": int(now), "transcripts": len(found),
-              "chunks": len(packed), "read": read, "findings": len(findings), "stop": stop,
+              "chunks": len(packed), "read": read, "findings": len(findings), "raw": len(raw), "stop": stop,
               "wall_s": round(time.time() - started, 1), "error": error or merge_error}
     with open(os.path.join(state_dir(), "runs.jsonl"), "a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")

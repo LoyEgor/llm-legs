@@ -30,6 +30,7 @@ JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^spee
 JQ_DONE_JOB='def done_job: .state == "nothing-to-do" or .state == "settled"; def job_branch($n): .branch // "night/\($n)/\(.ref)";'
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
+. "$repo_root/share/limit-hit.sh"
 . "$repo_root/share/test-scope.sh"
 . "$repo_root/share/worktree.sh"
 . "$repo_root/share/processes.sh"
@@ -420,6 +421,8 @@ tree_commit() { # dir message what -> commit on HEAD of the checkout as it stand
     [ -n "$reason" ] || continue
     drops+=("$path")
     printf 'night-run: %s of %s drops %s: %s\n' "$3" "$1" "$path" "$reason" >&2
+    limit_hit night-run.snapshot-drop "$SNAPSHOT_MAX_BYTES" bytes drop "$path of $1 ($reason) left out of the $3: the night's workers never see it" \
+      'bin/night-run:SNAPSHOT_MAX_BYTES=' "$([ "$reason" = 'an untracked secret name' ] || printf '%s' "$size")"
   done < <(GIT_INDEX_FILE=$index git -C "$1" diff-index -z --cached HEAD)
   [ ${#drops[@]} -eq 0 ] || GIT_INDEX_FILE=$index git --literal-pathspecs -C "$1" reset -q HEAD -- "${drops[@]}" ||
     { rm -rf "$dir"; return 1; }
@@ -602,6 +605,9 @@ checked_event() { # check; reads job_set's id, ref, at, began and refusal, appen
   if LLM_STORE_LOCK_RETRIES=1 store_lock_acquire "$lock_dir"; then
     night_events "$id" "$events" || :
     store_lock_release "$lock_dir"
+  else
+    limit_hit night-run.refusal-lock 1 count drop "the validate refusal of job $ref in night $id's events: $refusal" \
+      'bin/night-run:A refusal never waits on a held nights lock'
   fi
   die "$refusal"
 }
@@ -1422,6 +1428,8 @@ suites_wait() { # night file -> once its suites run finished, died or NIGHT_RUN_
   suites_live "$1" || return 0
   since=$(date +%s)
   while suites_live "$1" && [ "$(date +%s)" -lt $((since + ${NIGHT_RUN_SUITES_WAIT_S:-1200})) ]; do sleep 2; done
+  ! suites_live "$1" || limit_hit night-run.suites-wait "${NIGHT_RUN_SUITES_WAIT_S:-1200}" s skip \
+    "the suites verdict in night report $(basename "$1" .json): the run was still going" 'bin/night-run:NIGHT_RUN_SUITES_WAIT_S:-1200' "$(($(date +%s) - since))"
   wait_note night-suites "night-run report $(basename "$1" .json)" "$since"
 }
 

@@ -44,6 +44,7 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 . "$(resolve_root)/share/account-roster.sh"
+. "$(resolve_root)/share/limit-hit.sh"
 roster_profiles() { account_roster opencode; }
 # Whether a recorded wall still stands is llm-limits.sh's to decide; this file only writes down
 # what one finished request showed. A stated horizon is capped here, once, by the window it
@@ -561,6 +562,13 @@ run_model() {
       # being handed to the parser as a complete answer.
       [[ $status =~ ^[45][0-9][0-9]$ ]] || status=000
       printf 'curl exit %d after %ds (HTTP %s)\n' "$curl_rc" "$elapsed" "$status" >&2
+      if (( curl_rc == 28 )) && $stream; then
+        limit_hit opencode-go.stall "$stall_seconds" s kill "an OpenCode Go $model stream that stalled: its answer this attempt" \
+          'bin/opencode-go:OPENCODE_GO_STALL_S:-120' "$elapsed"
+      elif (( curl_rc == 28 )); then
+        limit_hit opencode-go.max-wait "$max_wait" s kill "a buffered OpenCode Go $model generation: its answer this attempt" \
+          'bin/opencode-go:OPENCODE_GO_MAX_WAIT_S:-900' "$elapsed"
+      fi
     fi
     # A model that rejects one reasoning-off strategy may accept the next; only a
     # 400 shaped like an invalid-parameter complaint is worth re-trying this way.
@@ -600,6 +608,10 @@ run_model() {
     # upstream inference pool was unavailable; the identical request usually
     # succeeds on a later attempt. A 429 is a real Go usage wall and must
     # surface immediately instead of being retried into a longer outage.
+    if transient_status "$status" && [[ $attempt -ge $retries ]] && (( retries > 1 )); then
+      limit_hit opencode-go.retries "$retries" count retry-exhausted "an OpenCode Go $model call still failing with HTTP $status" \
+        'bin/opencode-go:local retries=3' "$attempt"
+    fi
     transient_status "$status" && [[ $attempt -lt $retries ]] || break
     delay=$((attempt * 15))
     printf 'HTTP %s from provider (attempt %d/%d), retrying in %ds\n' \

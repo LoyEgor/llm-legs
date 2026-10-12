@@ -184,6 +184,7 @@ command -v jq >/dev/null 2>&1 || {
 }
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/limit-hit.sh"
 . "$root/share/account-arg.sh"
 image_leg_start codex-image image text_model
 . "$root/share/image-caps.sh" ||
@@ -748,6 +749,8 @@ fi
 if [ "$codex_rc" -ne 0 ]; then
   if [ -e "$tmp_dir/deadline" ]; then
     printf 'codex-image: generation exceeded %ss deadline\n' "$codex_deadline" >&2
+    limit_hit codex-image.deadline "$codex_deadline" s kill "a codex image generation on $account: the image" \
+      'bin/codex-image:codex_deadline="${' "$codex_deadline"
     exit 1
   fi
   if grep -Eqi 'hit your usage limit|usage_limit|workspace is out of credits' "$stdout_file" "$cli_stdout" "$cli_stderr" 2>/dev/null; then

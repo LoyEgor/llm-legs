@@ -46,6 +46,7 @@ for _ in 1 2 3 4 5; do
 done
 case "$self" in */*) self=${self%/*} ;; *) self=. ;; esac
 . "$self/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
+. "$self/../share/limit-hit.sh" 2>/dev/null || limit_hit() { :; }
 . "$self/../share/instruction-files.sh" 2>/dev/null ||
   { gate_journal watch fault '' '' '' 'share/instruction-files.sh missing'
     echo "instruction watch: cannot load share/instruction-files.sh, so no instruction-file change can be seen" >&2; exit 2; }
@@ -326,6 +327,12 @@ write_baseline() {
     rows+=("${r_m[$i]}$t${r_s[$i]}$t${r_i[$i]}$t$trust$t${r_h[$i]}$t${r_l[$i]}$t$p$t${r_r[$i]}")
     [ "$trust" = 1 ] && [ -n "${r_snap[$i]}" ] && [ "${r_s[$i]}" -le "$SNAP_MAX_BYTES" ] 2>/dev/null &&
       snap_idx+=("$i")
+    if [ "$trust" = 1 ] && [ -n "${r_snap[$i]}" ] && [ "${r_s[$i]}" -gt "$SNAP_MAX_BYTES" ] 2>/dev/null &&
+        [ ! -e "$SNAP_DIR/.oversize-${r_h[$i]}" ]; then
+      : >"$SNAP_DIR/.oversize-${r_h[$i]}" 2>/dev/null
+      limit_hit instruction-watch.snapshot-size "$SNAP_MAX_BYTES" bytes skip "the restore point of $p: a change to it cannot be put back" \
+        'bin/instruction-watch.sh:SNAP_MAX_BYTES=' "${r_s[$i]}"
+    fi
   done
   [ "${#rows[@]}" -eq 0 ] || printf '%s\n' "${rows[@]}" >>"$tmp" || return 1
 
@@ -846,7 +853,7 @@ cmd_check() {
   [ "$mode" = check ] || moved=1
 
   local i line real vis cur cur_mtime cur_size cur_ino cur_link cur_hash delta
-  local vis_seen vis_ino vis_mtime handled=0 deferred=''
+  local vis_seen vis_ino vis_mtime handled=0 deferred='' over=0
   if [ "${#b_real[@]}" -gt 0 ]; then
     for i in "${!b_real[@]}"; do
       real=${b_real[$i]}; vis=${b_vis[$i]}
@@ -854,6 +861,7 @@ cmd_check() {
       # check the hook timeout kills advances nothing and repeats every report it had made.
       if [ "$handled" -gt 0 ] && [ "$SECONDS" -ge "$budget" ]; then
         pin "$vis" "${b_mtime[$i]}" "${b_size[$i]}" "${b_ino[$i]}" "${b_hash[$i]}" "${b_link[$i]}" "$real"
+        over=$((over + 1))
         continue
       fi
       handled=$((handled + 1))
@@ -968,6 +976,7 @@ cmd_check() {
       esac
       if [ "$handled" -gt 0 ] && [ "$SECONDS" -ge "$budget" ]; then
         deferred="$deferred$vis$_watch_nl"
+        over=$((over + 1))
         continue
       fi
       handled=$((handled + 1))
@@ -994,6 +1003,8 @@ cmd_check() {
       LC_ALL=C awk '!sep { if ($0 == "\035") { sep = 1; next } K[$0] = 1; next }
         length($0) && !($0 in K) && !seen[$0]++')
   fi
+  [ "$over" -eq 0 ] || limit_hit instruction-watch.budget "$budget" s defer "$over instruction files left for the next call's check" \
+    'bin/instruction-watch.sh:INSTRUCTION_WATCH_BUDGET:-20' "$SECONDS"
   # An arrival left for the next call stays out of the rewritten baseline, or it would be absorbed.
   [ -z "$deferred" ] || visible_set=$({ printf '%s\035\n' "$deferred"; printf '%s\n' "$visible_set"; } |
     LC_ALL=C awk '!sep { if ($0 == "\035") { sep = 1; next } D[$0] = 1; next } !($0 in D)')

@@ -26,6 +26,7 @@ gemini_accounts_cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$base_home/.llm-lim
 . "$geminib_root/share/worker-pool.sh"
 . "$geminib_root/share/worker-model.sh"
 . "$geminib_root/share/account-announce.sh"
+. "$geminib_root/share/limit-hit.sh"
 pool_dir=$(worker_pool_dir gemini)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
@@ -741,6 +742,8 @@ launch_agy() { # agy's own arguments; env assignments come from agy_env
   # hold lapses it is tried again, which is the whole of "back up when it is served again".
   while capacity_held "$family" && next=$(capacity_next "$family"); do
     printf 'geminib: capacity hold %s -> %s\n' "$slug" "$next$effort" >&2
+    limit_hit geminib.capacity-hold "$(capacity_hold_seconds)" s skip "$slug not tried after a recent 503: the run uses $next$effort" \
+      'bin/geminib:GEMINIB_CAPACITY_HOLD_S:-600'
     family=$next
     slug="$next$effort"
   done

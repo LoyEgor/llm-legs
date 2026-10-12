@@ -36,6 +36,14 @@ emit() { # description
 }
 
 SEED_MAX_AGE_S=${WORKER_TAG_SEED_MAX_AGE_S:-600}
+tag_limit_hit() { # same arguments as limit_hit; resolved only on a hit so the hook's common path spawns nothing
+  local self=${BASH_SOURCE[0]} target
+  while [ -L "$self" ]; do
+    target=$(readlink "$self")
+    case "$target" in /*) self=$target ;; *) self=${self%/*}/$target ;; esac
+  done
+  . "${self%/*}/../share/limit-hit.sh" 2>/dev/null && limit_hit "$@"
+}
 # The spawn's first prompt line is the one fact both the seed and the fork's own transcript carry; a
 # hook payload names that transcript or its parent's plus agent_id.
 agent_prompt_key() {
@@ -54,7 +62,7 @@ agent_prompt_key() {
 # An agent that knows its spawn key takes only the seed carrying that key, and a denied or cancelled
 # spawn leaves its seed behind: an agent without a key takes only a fresh seed.
 pick_seed() {
-  local key seed seed_key mtime now
+  local key seed seed_key mtime now stale=''
   key=$(agent_prompt_key)
   now=$(date +%s)
   while IFS= read -r seed; do
@@ -65,10 +73,12 @@ pick_seed() {
       continue
     fi
     mtime=$(stat -f %m "$seed" 2>/dev/null || stat -c %Y "$seed" 2>/dev/null) || continue
-    [ "$((now - mtime))" -le "$SEED_MAX_AGE_S" ] || continue
+    [ "$((now - mtime))" -le "$SEED_MAX_AGE_S" ] || { stale=$((now - mtime)); continue; }
     printf '%s' "$seed"
     return 0
   done < <(ls -tr "$cache_dir/pending-$agent_type"-* 2>/dev/null)
+  [ -z "$stale" ] || tag_limit_hit worker-tag-hook.seed-age "$SEED_MAX_AGE_S" s skip "the fork $agent_id's account tag: its seed was too old" \
+    'bin/worker-tag-hook.sh:WORKER_TAG_SEED_MAX_AGE_S:-600' "$stale"
 }
 tag_line() { local first; [ -f "$tag_file" ] && IFS= read -r first < "$tag_file" && printf '%s' "$first"; }
 # Rewrites the tag file atomically: line one is the tag (kept when $1 is empty), every other line a
@@ -80,7 +90,11 @@ tag_lock() {
   [[ $max =~ ^[0-9]+$ ]] || max=30
   until mkdir "$cache_dir/.claim.lock" 2>/dev/null; do
     if [ "$tries" -ge "$max" ]; then
-      [ "$broke" = 0 ] && [ -n "$(find "$cache_dir/.claim.lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 1
+      [ "$broke" = 0 ] && [ -n "$(find "$cache_dir/.claim.lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || {
+        tag_limit_hit worker-tag-hook.lock-tries "$max" count skip "the fork $agent_id's account tag on this call" \
+          'bin/worker-tag-hook.sh:WORKER_TAG_LOCK_TRIES:-30' "$tries"
+        return 1
+      }
       rmdir "$cache_dir/.claim.lock" 2>/dev/null
       broke=1 tries=0
       continue

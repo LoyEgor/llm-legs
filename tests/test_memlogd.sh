@@ -1294,7 +1294,7 @@ assert grep -q '^GUARD_AVAIL_MB = 3072$' "$ROOT/bin/chat-load"
 assert grep -q '^GUARD_JOB_MB = 1536$' "$ROOT/bin/chat-load"
 assert grep -qF 'chat_load="$(dirname "$script_path")/chat-load"' "$SCRIPT"
 # So are the resolver and the bus it runs: macOS denies the daemon's Python /Volumes/Work.
-assert grep -qF 'for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh; do' "$SCRIPT"
+assert grep -qF 'for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh share/limit-hit.sh; do' "$SCRIPT"
 assert grep -qF 'mv -f "$deployed_tmp" "$(dirname "$wrapper")/${source##*/}"' "$SCRIPT"
 assert grep -q '3072' "$ROOT/docs/memory-guard.md"
 assert grep -q '1536' "$ROOT/docs/memory-guard.md"

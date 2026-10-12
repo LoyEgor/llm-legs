@@ -17,6 +17,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import caps_checks  # noqa: E402
 import collector_runs  # noqa: E402
+import limit_hit  # noqa: E402
 from fix_commit import fix_held_from, siblings_dir  # noqa: E402
 from spend import read_json  # noqa: E402
 
@@ -130,6 +131,10 @@ def read_log():
         if match:
             lines.append({"at": iso_epoch(match.group(1)), "ts": match.group(1), "who": match.group(2),
                           "word": match.group(3), "rest": match.group(4) or "", "raw": raw})
+    if size > LOG_TAIL_BYTES:
+        limit_hit.hit("updater-doctor.log-tail", LOG_TAIL_BYTES, "bytes", "trim",
+                      "update.log lines before %s: older pass streaks and failures go unread" % (lines[0]["ts"] if lines else "?"),
+                      "bin/updater-doctor:LOG_TAIL_BYTES =", observed=size)
     return lines
 
 

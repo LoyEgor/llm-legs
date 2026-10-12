@@ -13,6 +13,8 @@ import tempfile
 import time
 
 BIN_DIR = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(BIN_DIR), "share"))
+import limit_hit  # noqa: E402
 
 
 def load_weather():
@@ -95,6 +97,9 @@ def run_request(account, slug, kind, log, workdir, timeout):
         except subprocess.TimeoutExpired:
             timed_out = True
             stop_group(process)
+            limit_hit.hit("gemini-probe.request-timeout", timeout, "s", "kill",
+                          "the %s %s probe answer; its cell reads timeout" % (slug, kind),
+                          "bin/gemini-probe:DEFAULT_TIMEOUT_S =", observed=round(time.time() - started, 1))
     summary = weather.log_summary(log)
     summary.update({"kind": kind, "rc": process.returncode, "timed_out": timed_out,
                     "wall_s": time.time() - started})

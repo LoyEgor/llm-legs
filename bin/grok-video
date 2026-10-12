@@ -21,6 +21,7 @@ resolve_root() {
 
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/limit-hit.sh"
 . "$root/share/account-arg.sh"
 image_leg_start grok-video video observed_model
 . "$root/share/image-caps.sh"
@@ -224,8 +225,11 @@ mkdir -p "$work_dir"
 stream_file="$tmp_dir/stream.jsonl"
 stderr_file="$tmp_dir/grok.stderr"
 
-GROK_MEDIA_LOCK_WAIT=${IMAGE_LEG_LOCK_WAIT:-${GROK_MEDIA_LOCK_WAIT:-900}} grok_media_lock_acquire grok-video "$account" ||
+GROK_MEDIA_LOCK_WAIT=${IMAGE_LEG_LOCK_WAIT:-${GROK_MEDIA_LOCK_WAIT:-900}} grok_media_lock_acquire grok-video "$account" || {
+  limit_hit grok-video.lock-wait "${IMAGE_LEG_LOCK_WAIT:-${GROK_MEDIA_LOCK_WAIT:-900}}" s skip "a grok video on $account: never started behind the account lock" \
+    'bin/grok-video:GROK_MEDIA_LOCK_WAIT=${'
   image_leg_busy "$account"
+}
 image_leg_mark "$duration"
 
 instruction="Generate exactly one video and stop after the video tool completes.

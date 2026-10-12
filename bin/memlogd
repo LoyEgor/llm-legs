@@ -4,7 +4,7 @@
 # gets EPERM from TCC unless that exact program path was granted, and a memory logger must also
 # keep running while that volume is unmounted. harness-doctor reruns install-agent once an edit of
 # this file or any file it deploys beside the copy (chat-load, chat_names.py, report-bus,
-# report_frame.py, store-lock.sh, limiter-hold.sh) lands in main.
+# report_frame.py, store-lock.sh, limiter-hold.sh, limit-hit.sh) lands in main.
 # Besides logging, this daemon ACTS: every tick runs chat-load, deployed beside this copy, which
 # keeps the per-chat load snapshot for the menubar and, when the machine is nearly out of RAM,
 # SIGKILLs the fattest job a chat launched (`docs/memory-guard.md` is the decision record).
@@ -47,6 +47,7 @@ label=com.egor.memlogd
 agent_plist="$HOME/Library/LaunchAgents/$label.plist"
 wrapper="$HOME/.local/libexec/memlogd"
 chat_load="$(dirname "$script_path")/chat-load"
+. "$(dirname "$script_path")/limit-hit.sh" 2>/dev/null || . "$repo_root/share/limit-hit.sh" 2>/dev/null || limit_hit() { :; }
 lock_dir="$log_dir/memlogd.lock"
 current_file=""
 episode_frames=""
@@ -198,7 +199,9 @@ evict_frames() {
     [ -n "$name" ] || continue
     [ "$total" -gt "$cap" ] || break
     [ "${name##*/}" = "$keep" ] && continue
-    rm -f "$name" && total=$((total - size))
+    rm -f "$name" && total=$((total - size)) &&
+      limit_hit memlogd.frames-cap "$cap" bytes drop "incident frames ${name##*/} ($size bytes) evicted for a newer episode" \
+        'bin/memlogd:max_frames_mb="${' "$((total + size))"
   done <<<"$listing"
 }
 
@@ -231,7 +234,14 @@ pressure() { [ "$1" -ge 0 ] && [ "$1" -lt "$enter_avail_mb" ]; }
 recovered() { [ "$1" -lt 0 ] || [ "$1" -ge "$exit_avail_mb" ]; }
 
 rotate() {
-  local cutoff file base live=""
+  local cutoff file base live="" gone=0 kills=0 incidents=0 n
+  rotate_files "$@"
+  [ "$gone" -eq 0 ] || limit_hit memlogd.retention "$retention_days" count expire \
+    "$gone memlogd day logs/frames older than $cutoff deleted, holding $kills KILLED and $incidents INCIDENT lines" \
+    'bin/memlogd:retention_days="${'
+}
+
+rotate_files() {
   [ -z "$episode_frames" ] || live=${episode_frames##*/}
   cutoff=$(date -v-"${retention_days}"d +%F 2>/dev/null) || return 0
   [ -n "$cutoff" ] || return 0
@@ -240,13 +250,15 @@ rotate() {
     base=${file##*/}
     base=${base%.log}
     [[ "$base" < "$cutoff" ]] || continue
-    rm -f "$file"
+    n=$(grep -c 'KILLED' "$file" 2>/dev/null) && kills=$((kills + n))
+    n=$(grep -c '^INCIDENT' "$file" 2>/dev/null) && incidents=$((incidents + n))
+    rm -f "$file" && gone=$((gone + 1))
   done
   for file in "$log_dir"/machine/????-??-??.log; do
     [ -f "$file" ] || continue
     base=${file##*/}
     [[ "${base%.log}" < "$cutoff" ]] || continue
-    rm -f "$file"
+    rm -f "$file" && gone=$((gone + 1))
   done
   for file in "$(frames_dir)"/*.log; do
     [ -f "$file" ] || continue
@@ -257,7 +269,7 @@ rotate() {
     base=${base#jump-}
     base=${base%%T*}
     [[ "$base" < "$cutoff" ]] || continue
-    rm -f "$file"
+    rm -f "$file" && gone=$((gone + 1))
   done
 }
 
@@ -350,6 +362,8 @@ run_loop() {
       if [ "$episode_capped" = 0 ] && \
          [ "$(file_bytes "$episode_frames")" -ge $((max_episode_mb * 1048576)) ]; then
         episode_capped=1
+        limit_hit memlogd.episode-cap "$((max_episode_mb * 1048576))" bytes trim "every later frame of incident ${episode_frames##*/}: summary lines only" \
+          'bin/memlogd:max_episode_mb="${' "$(file_bytes "$episode_frames")"
         append "EPISODE-CAP $now frames=${episode_frames##*/}"
         flush
       fi
@@ -414,7 +428,7 @@ install_agent() {
   cat "$script_path" >"$deployed_tmp"
   chmod 755 "$deployed_tmp"
   mv -f "$deployed_tmp" "$wrapper"
-  for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh; do
+  for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh share/limit-hit.sh; do
     deployed_tmp=$(mktemp "${wrapper}.tmp.XXXXXX") || return 1
     cat "$repo_root/$source" >"$deployed_tmp" || return 1
     chmod 755 "$deployed_tmp"
@@ -437,7 +451,7 @@ uninstall_agent() {
   rm -f "$agent_plist"
   if [ -f "$wrapper" ] && grep -qF "label=$label" "$wrapper"; then
     (cd "$(dirname "$wrapper")" && rm -f "$wrapper" chat-load chat_names.py report-bus report_frame.py \
-      store-lock.sh limiter-hold.sh)
+      store-lock.sh limiter-hold.sh limit-hit.sh)
   fi
   printf 'Uninstalled %s.\n' "$label"
 }

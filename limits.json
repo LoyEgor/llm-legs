@@ -1,0 +1,490 @@
+{
+  "chrome-applescript-js.wait": {
+    "value": 30,
+    "unit": "s",
+    "where": "bin/chrome-applescript-js:66",
+    "set_by": "chat 36cf6f25",
+    "why": "Chrome quits and relaunches within seconds; past 30 s it is wedged and enabling Apple-event JS gives up.",
+    "normal": "0 hits; a hit means Chrome hung on quit or launch."
+  },
+  "claude-session-driver.capture": {
+    "value": 262144,
+    "unit": "bytes",
+    "where": "bin/claude-session-driver:247",
+    "set_by": "chat 0067e246",
+    "why": "A revive session's log keeps its last 256 KiB; the login and exit markers sit at the end.",
+    "normal": "Rare; a long chatty revive trims its start."
+  },
+  "claudeb.lock-retries": {
+    "value": 10,
+    "unit": "count",
+    "where": "bin/claudeb:157",
+    "set_by": "chat 456e2c7e",
+    "why": "claudeb's store locks are held for milliseconds; 10 tries x 0.2 s bounds a writer behind a stuck holder.",
+    "normal": "0 hits; a hit drops one store write."
+  },
+  "claudeb.lock-stale": {
+    "value": 30,
+    "unit": "s",
+    "where": "bin/claudeb:153",
+    "set_by": "chat 523d1cb2",
+    "why": "No claudeb lock is held 30 s by a live writer, so an older lock is a crashed holder's.",
+    "normal": "Rare: only after a crash or kill mid-write."
+  },
+  "claudeb.refresh-converge": {
+    "value": 240,
+    "unit": "s",
+    "where": "bin/claudeb:1419",
+    "set_by": "chat f3b74984",
+    "why": "A refresh retries weather-failed accounts serially but must end; 240 s bounds the menu's wait.",
+    "normal": "Rare; hits cluster in API weather."
+  },
+  "claudeb.token-journal-rotate": {
+    "value": 2000000,
+    "unit": "bytes",
+    "where": "bin/claudeb:531",
+    "set_by": "chat 5f17a755",
+    "why": "The token journal keeps one .1 generation; the oldest generation goes at 2 MB.",
+    "normal": "A few times a month."
+  },
+  "claudeb.warm-timeout": {
+    "value": 90,
+    "unit": "s",
+    "where": "bin/claudeb:2085",
+    "set_by": "chat 888bf7ba",
+    "why": "A warm session is one tiny prompt; 90 s means the CLI wedged.",
+    "normal": "0 hits; a hit leaves the account's token verdict unknown."
+  },
+  "code-doctor.file-size": {
+    "value": 2097152,
+    "unit": "bytes",
+    "where": "bin/code-doctor:773",
+    "set_by": "chat d2bd755d",
+    "why": "Files over 2 MiB are data or generated, not code worth indexing.",
+    "normal": "Once per new big file."
+  },
+  "codex-image.deadline": {
+    "value": 900,
+    "unit": "s",
+    "where": "bin/codex-image:752",
+    "set_by": "chat 426aceca",
+    "why": "A codex image call answers in a few minutes; 900 s means it hung.",
+    "normal": "0 hits."
+  },
+  "doctor-fix.doc-age": {
+    "value": 7200,
+    "unit": "s",
+    "where": "bin/doctor-fix:705",
+    "set_by": "night 100ca1bf",
+    "why": "A fix run must act on a doctor document at most 2 h old, or it fixes a stale picture.",
+    "normal": "0 hits; the night refreshes doctors first."
+  },
+  "doctor-fix.open-run": {
+    "value": 43200,
+    "unit": "s",
+    "where": "bin/doctor-fix:722",
+    "set_by": "night 100ca1bf",
+    "why": "An unclosed fix run older than 12 h is dead and stops holding its area.",
+    "normal": "Rare; a crashed fixer chat."
+  },
+  "gemini-image.print-timeout": {
+    "value": 180,
+    "unit": "s",
+    "where": "bin/gemini-image:340",
+    "set_by": "chat 3d04ce21",
+    "why": "The text step of an image job is one short agy answer; 180 s means it stalled.",
+    "normal": "Rare; agy capacity weather."
+  },
+  "gemini-listen.print-timeout": {
+    "value": 540,
+    "unit": "s",
+    "where": "bin/gemini-listen:314",
+    "set_by": "night e961a078",
+    "why": "One listen attempt transcribes a clip; 540 s means agy stalled.",
+    "normal": "Rare; agy capacity weather."
+  },
+  "gemini-probe.request-timeout": {
+    "value": 180,
+    "unit": "s",
+    "where": "bin/gemini-probe:100",
+    "set_by": "chat 9251dece",
+    "why": "A probe request is a short or a 3-file prompt; 180 s means the family is not serving.",
+    "normal": "Hits only in a serving outage, which is what the probe reports."
+  },
+  "gemini-weather.families-timeout": {
+    "value": 120,
+    "unit": "s",
+    "where": "bin/gemini-weather:78",
+    "set_by": "chat 2c7e524e",
+    "why": "`geminib families` answers in seconds; 120 s means it hung.",
+    "normal": "0 hits; the cache usually answers."
+  },
+  "geminib.capacity-hold": {
+    "value": 600,
+    "unit": "s",
+    "where": "bin/geminib:745",
+    "set_by": "chat e98d03c9",
+    "why": "A family that answered 503 is skipped for 10 min instead of being retried at once.",
+    "normal": "Hits follow 503 weather; the run falls to the next family."
+  },
+  "grok-video.lock-wait": {
+    "value": 900,
+    "unit": "s",
+    "where": "bin/grok-video:229",
+    "set_by": "night e29635ae",
+    "why": "One grok media job at a time; a job waits at most 15 min for the lock.",
+    "normal": "0 hits; a hit means a job hung holding it."
+  },
+  "grokb.touch-timeout": {
+    "value": 30,
+    "unit": "s",
+    "where": "bin/grokb:569",
+    "set_by": "chat 119d80dc",
+    "why": "A token touch is one `grok models` call; 30 s means the CLI wedged.",
+    "normal": "0 hits."
+  },
+  "harness-doctor.pending-call": {
+    "value": 7200,
+    "unit": "s",
+    "where": "bin/harness-doctor:598",
+    "set_by": "chat 3566f928",
+    "why": "A tool call with no result after 2 h is dropped from the pending set.",
+    "normal": "A few per day: killed sessions."
+  },
+  "harness-doctor.spool-stale": {
+    "value": 900,
+    "unit": "s",
+    "where": "bin/harness-doctor:1622",
+    "set_by": "chat 3566f928",
+    "why": "Spool files older than 15 min are folded and dropped.",
+    "normal": "Rare."
+  },
+  "image-fanout.busy-giveup": {
+    "value": 900,
+    "unit": "s",
+    "where": "bin/image-fanout:1004",
+    "set_by": "night 0d9e7c3c",
+    "why": "An image job waits up to 15 min for a free leg.",
+    "normal": "0 hits; a hit drops one image job."
+  },
+  "instruction-watch.budget": {
+    "value": 20,
+    "unit": "s",
+    "where": "bin/instruction-watch.sh:1006",
+    "set_by": "chat 3566f928",
+    "why": "One hook call checks moved instruction files for at most 20 s; the rest wait for the next call.",
+    "normal": "Rare; mass file moves."
+  },
+  "instruction-watch.snapshot-size": {
+    "value": 1048576,
+    "unit": "bytes",
+    "where": "bin/instruction-watch.sh:333",
+    "set_by": "chat d967d0e7",
+    "why": "Restore points are kept for instruction files up to 1 MiB; the set is ~150 KB.",
+    "normal": "0 hits."
+  },
+  "instruction-write-gate.script-read": {
+    "value": 262144,
+    "unit": "bytes",
+    "where": "bin/instruction-write-gate.sh:153",
+    "set_by": "night 3a3531d7",
+    "why": "The gate reads 256 KiB of a script it judges; past that only write-shaped lines are scanned.",
+    "normal": "Rare: big generated scripts."
+  },
+  "llm-doctor.worker-tail": {
+    "value": 8192,
+    "unit": "bytes",
+    "where": "bin/llm-doctor:956",
+    "set_by": "chat a9a033cf",
+    "why": "Worker failures are classified from the err tail's last 8 KiB; an unclassified tail is reread whole.",
+    "normal": "A hit means the cause sat above the tail."
+  },
+  "llm-refresh.collector-timeout": {
+    "value": 1800,
+    "unit": "s",
+    "where": "bin/llm-refresh:320",
+    "set_by": "chat 3092bf70",
+    "why": "One collector run is bounded at 30 min (raised from 600 s after load-cut ticks).",
+    "normal": "0 hits since 2026-10-06."
+  },
+  "llm-refresh.lock-stale": {
+    "value": 1800,
+    "unit": "s",
+    "where": "bin/llm-refresh:97",
+    "set_by": "chat 123b5750",
+    "why": "A refresh lock with no owner pid older than 30 min is broken.",
+    "normal": "Rare."
+  },
+  "llm-refresh.probe-timeout": {
+    "value": 90,
+    "unit": "s",
+    "where": "bin/llm-refresh:711",
+    "set_by": "chat 00cceb3d",
+    "why": "An account probe is one short request; 90 s means it hung.",
+    "normal": "Rare."
+  },
+  "llm-refresh.revive-timeout": {
+    "value": 240,
+    "unit": "s",
+    "where": "bin/llm-refresh:750",
+    "set_by": "chat 0067e246",
+    "why": "A revive drives a session through a token refresh within 4 min.",
+    "normal": "Rare."
+  },
+  "llm-refresh.tick-ceiling": {
+    "value": 3600,
+    "unit": "s",
+    "where": "bin/llm-refresh:94",
+    "set_by": "chat 123b5750",
+    "why": "A refresh tick holding its lock past 1 h is hung and is killed.",
+    "normal": "0 hits since 2026-10-06."
+  },
+  "llm-reset-redeem.attempts": {
+    "value": 3,
+    "unit": "count",
+    "where": "bin/llm-reset-redeem:609",
+    "set_by": "chat 90b1bfde",
+    "why": "An armed auto-redeem retries a transient failure 3 times, 600 s apart, then disarms.",
+    "normal": "0 hits."
+  },
+  "llm-reset-redeem.lock-wait": {
+    "value": 600,
+    "unit": "s",
+    "where": "bin/llm-reset-redeem:648",
+    "set_by": "night 5a27cb17",
+    "why": "A run's weekly wall waits up to 10 min for the collector's redeem to finish.",
+    "normal": "0 hits."
+  },
+  "llm-selfcheck.suite-timeout": {
+    "value": 300,
+    "unit": "s",
+    "where": "bin/llm-selfcheck:202",
+    "set_by": "chat e58add92",
+    "why": "Each daily selfcheck suite gets 300 s (the e2e step 900 s).",
+    "normal": "0 hits; a hit fails the day's selfcheck."
+  },
+  "log-audit.findings-top": {
+    "value": 15,
+    "unit": "count",
+    "where": "bin/log-audit:218",
+    "set_by": "chat c1b270c7",
+    "why": "A log-audit run reports its 15 strongest findings.",
+    "normal": "Every run currently fills the cap."
+  },
+  "log-audit.lookback": {
+    "value": 129600,
+    "unit": "s",
+    "where": "bin/log-audit:97",
+    "set_by": "chat c1b270c7",
+    "why": "A run audits at most 36 h back so a long gap does not become one huge run.",
+    "normal": "Rare: after a long outage."
+  },
+  "memlogd.episode-cap": {
+    "value": 268435456,
+    "unit": "bytes",
+    "where": "bin/memlogd:366",
+    "set_by": "chat 0bc21301",
+    "why": "One memory-pressure episode keeps at most 256 MB of frames.",
+    "normal": "0 hits in the audit window."
+  },
+  "memlogd.frames-cap": {
+    "value": 1073741824,
+    "unit": "bytes",
+    "where": "bin/memlogd:203",
+    "set_by": "chat 0bc21301",
+    "why": "All episode frames together stay under 1 GB; the oldest go first.",
+    "normal": "0 hits in the audit window."
+  },
+  "memlogd.retention": {
+    "value": 3,
+    "unit": "count",
+    "where": "bin/memlogd:239",
+    "set_by": "chat adda0a43",
+    "why": "memlogd keeps 3 days of logs and episodes.",
+    "normal": "Daily: retention by design; the lost text counts what aged out."
+  },
+  "night-run.refusal-lock": {
+    "value": 1,
+    "unit": "count",
+    "where": "bin/night-run:609",
+    "set_by": "chat e5bd8fd1",
+    "why": "A refusal never waits on a held nights lock: one try, else its event is dropped.",
+    "normal": "Rare."
+  },
+  "night-run.snapshot-drop": {
+    "value": 5242880,
+    "unit": "bytes",
+    "where": "bin/night-run:424",
+    "set_by": "night e961a078",
+    "why": "Night snapshots skip blobs over 5 MiB and secret-named files.",
+    "normal": "Rare."
+  },
+  "night-run.suites-wait": {
+    "value": 1200,
+    "unit": "s",
+    "where": "bin/night-run:1431",
+    "set_by": "chat 7b5fdfa5",
+    "why": "The night report waits up to 20 min for its suites run.",
+    "normal": "Rare; a hit reports without suite verdicts."
+  },
+  "opencode-go.max-wait": {
+    "value": 900,
+    "unit": "s",
+    "where": "bin/opencode-go:569",
+    "set_by": "chat 2ecc0bdc",
+    "why": "A buffered opencode call answers within 15 min.",
+    "normal": "Rare."
+  },
+  "opencode-go.retries": {
+    "value": 3,
+    "unit": "count",
+    "where": "bin/opencode-go:612",
+    "set_by": "chat 2ecc0bdc",
+    "why": "Three attempts with growing delay before a call fails.",
+    "normal": "Rare: provider outages."
+  },
+  "opencode-go.stall": {
+    "value": 120,
+    "unit": "s",
+    "where": "bin/opencode-go:566",
+    "set_by": "chat 2ecc0bdc",
+    "why": "A streaming call silent for 2 min has stalled.",
+    "normal": "Rare."
+  },
+  "system-doctor.cache-budget": {
+    "value": 120,
+    "unit": "s",
+    "where": "bin/system-doctor:1010",
+    "set_by": "chat 5db21770",
+    "why": "Cache-folder du runs get 2 min per doctor run.",
+    "normal": "Rare: a cold disk cache."
+  },
+  "system-doctor.scan-budget": {
+    "value": 600,
+    "unit": "s",
+    "where": "bin/system-doctor:1564",
+    "set_by": "chat 5db21770",
+    "why": "The log-store du scan gets 10 min (the registry's scan.budget_s).",
+    "normal": "Rare."
+  },
+  "updater-doctor.log-tail": {
+    "value": 1048576,
+    "unit": "bytes",
+    "where": "bin/updater-doctor:135",
+    "set_by": "night 100ca1bf",
+    "why": "The updater doctor reads the update log's last 1 MiB; the log is ~40 KB today.",
+    "normal": "0 hits."
+  },
+  "vendor-fingerprint.lock-wait": {
+    "value": 600,
+    "unit": "s",
+    "where": "bin/vendor-fingerprint:497",
+    "set_by": "night 100ca1bf",
+    "why": "A --here check or request waits up to 10 min behind a running check.",
+    "normal": "Rare."
+  },
+  "worker-run.agy-print-timeout": {
+    "value": 21600,
+    "unit": "s",
+    "where": "bin/worker-run:1233",
+    "set_by": "chat 90a17f22",
+    "why": "agy's own print timeout matches the 6 h worker deadline.",
+    "normal": "Rare."
+  },
+  "worker-run.attempts-rotate": {
+    "value": 16777216,
+    "unit": "bytes",
+    "where": "bin/worker-run:2286",
+    "set_by": "chat 3aaf9e1c",
+    "why": "The attempts journal rotates at 16 MiB keeping two segments.",
+    "normal": "A few times a month."
+  },
+  "worker-run.bash-cap": {
+    "value": 1500,
+    "unit": "s",
+    "where": "bin/worker-run:2253",
+    "set_by": "chat 6c1173cd",
+    "why": "A claudeb worker's Bash call is capped at idle minus 300 s, so a hung command dies before the idle watchdog kills the run.",
+    "normal": "Hits are commands that outlived 25 min, often a suite."
+  },
+  "worker-run.browse-session": {
+    "value": 300,
+    "unit": "s",
+    "where": "bin/worker-run:5789",
+    "set_by": "chat 2e55698f",
+    "why": "A browser session gets 5 min.",
+    "normal": "Rare."
+  },
+  "worker-run.browse-wait": {
+    "value": 40,
+    "unit": "count",
+    "where": "bin/worker-run:5702",
+    "set_by": "chat 2e55698f",
+    "why": "40 polls for the Chrome window (20 for the seen mark).",
+    "normal": "Rare."
+  },
+  "worker-run.deadline": {
+    "value": 21600,
+    "unit": "s",
+    "where": "bin/worker-run:673",
+    "set_by": "chat 90a17f22",
+    "why": "A worker run ends at 6 h (raised from 170 min after two real runs were killed).",
+    "normal": "7 kills in 2026-10-04..09."
+  },
+  "worker-run.idle": {
+    "value": 1800,
+    "unit": "s",
+    "where": "bin/worker-run:675",
+    "set_by": "chat 90a17f22",
+    "why": "A run silent for 30 min (3x the slowest suite) is killed.",
+    "normal": "0 kills in the audit window."
+  },
+  "worker-run.journal-lock": {
+    "value": 40,
+    "unit": "count",
+    "where": "bin/worker-run:2326",
+    "set_by": "chat e5bd8fd1",
+    "why": "Journal writers try the store lock 40 times before dropping the row.",
+    "normal": "0 hits."
+  },
+  "worker-run.own-headroom": {
+    "value": 80,
+    "unit": "pct",
+    "where": "bin/worker-run:2511",
+    "set_by": "chat 9d125acb",
+    "why": "A run on the chat's own account is refused past 80 % usage (raised from 60).",
+    "normal": "Hits are refusals the chat then routes around."
+  },
+  "worker-run.silent-start": {
+    "value": 600,
+    "unit": "s",
+    "where": "bin/worker-run:677",
+    "set_by": "chat d1c1676b",
+    "why": "A run that prints nothing for its first 10 min never started.",
+    "normal": "0 hits."
+  },
+  "worker-tag-hook.lock-tries": {
+    "value": 30,
+    "unit": "count",
+    "where": "bin/worker-tag-hook.sh:94",
+    "set_by": "night 2caa4456",
+    "why": "The fork tag lock is tried 30 x 0.1 s.",
+    "normal": "Rare."
+  },
+  "worker-tag-hook.seed-age": {
+    "value": 600,
+    "unit": "s",
+    "where": "bin/worker-tag-hook.sh:80",
+    "set_by": "chat 3861346a",
+    "why": "A spawn seed older than 10 min belongs to a cancelled spawn and is not claimed.",
+    "normal": "Rare."
+  },
+  "workflow-burn-gate.deny": {
+    "value": 95,
+    "unit": "pct",
+    "where": "bin/workflow-burn-gate.sh:131",
+    "set_by": "chat c75ba394",
+    "why": "A Workflow fan-out is denied at 95 % of the session account's usage.",
+    "normal": "Rare; the chat routes to workers."
+  }
+}

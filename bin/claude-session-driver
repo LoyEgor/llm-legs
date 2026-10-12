@@ -21,6 +21,9 @@ import tempfile
 import termios
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
+import limit_hit  # noqa: E402
+
 EXIT_LOGIN = 4
 EXIT_FAILED = 5
 
@@ -173,6 +176,7 @@ def drive(account, cwd, timeout):
         pass
 
     capture = bytearray()
+    captured = 0
     login = False
     login_until = None
     login_settled = False
@@ -195,6 +199,7 @@ def drive(account, cwd, timeout):
             if not chunk:
                 break
             capture += chunk
+            captured += len(chunk)
             if len(capture) > CAPTURE_CAP:
                 del capture[:len(capture) - CAPTURE_CAP]
             if not login_settled and login_until is None and looks_like_login(capture[-SCAN_TAIL:]):
@@ -238,6 +243,10 @@ def drive(account, cwd, timeout):
         os.close(fd)
     except OSError:
         pass
+    if captured > CAPTURE_CAP:
+        limit_hit.hit("claude-session-driver.capture", CAPTURE_CAP, "bytes", "trim",
+                      "the first %d bytes of %s's revive session in its log" % (captured - CAPTURE_CAP, account),
+                      "bin/claude-session-driver:CAPTURE_CAP =", observed=captured)
     return status, bytes(capture), login
 
 

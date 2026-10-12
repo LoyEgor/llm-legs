@@ -33,6 +33,7 @@ resolve_root() {
 
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/limit-hit.sh"
 . "$root/share/account-arg.sh"
 image_leg_start gemini-listen listen observed_model
 . "$root/share/image-caps.sh"
@@ -309,6 +310,8 @@ while :; do
   (cd "$tmp_dir" && geminib profile "$account" --model "$agy_model" --print-timeout 540s \
     --output-format stream-json --dangerously-skip-permissions --log-file "$tmp_dir/agy.log" \
     --print "$instruction") >"$tmp_dir/stdout" 2>"$tmp_dir/stderr" || rc=$?
+  ! grep -q 'print timeout after' "$tmp_dir/stderr" 2>/dev/null ||
+    limit_hit gemini-listen.print-timeout 540 s kill "gemini-listen attempt $attempt on $account: its listening verdict" 'bin/gemini-listen:--print-timeout 540s' 540
   events="$tmp_dir/events.json"
   jq -Rn '[inputs | fromjson? | select(type == "object")]' "$tmp_dir/stdout" >"$events"
   session=$(jq -r '([.[] | select(.event == "result") | .result.conversation_id // empty] | last) //

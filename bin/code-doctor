@@ -28,6 +28,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 SCOPE = []
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
+import limit_hit  # noqa: E402
 from spend import read_jsonl  # noqa: E402
 
 DETECTOR_VERSION = 4
@@ -768,6 +769,10 @@ def index_repo(top, cache):
             continue
         if info.st_size > MAX_FILE_BYTES:
             skipped.append(rel)
+            if rel not in (old.get("skipped") or ()):
+                limit_hit.hit("code-doctor.file-size", MAX_FILE_BYTES, "bytes", "skip",
+                              "%s:%s goes unindexed: no dead, duplicate or heavy findings for it" % (name, rel),
+                              "bin/code-doctor:MAX_FILE_BYTES =", observed=info.st_size)
             continue
         try:
             with open(full, "rb") as handle:

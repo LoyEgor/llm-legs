@@ -42,6 +42,7 @@ resolve_root() {
 
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/limit-hit.sh"
 . "$root/share/account-arg.sh"
 image_leg_start gemini-image image observed_model
 . "$root/share/image-caps.sh"
@@ -335,6 +336,8 @@ geminib profile "$account" --model "$text_family-low" --print-timeout 180s \
   ${resume_args[@]+"${resume_args[@]}"} --output-format stream-json \
   --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" \
   >"$stdout_file" 2>"$tmp_dir/stderr" || generation_rc=$?
+! grep -q 'print timeout after' "$tmp_dir/stderr" 2>/dev/null ||
+  limit_hit gemini-image.print-timeout 180 s kill "gemini-image text step on $account: the image it was driving" 'bin/gemini-image:--print-timeout 180s' 180
 events_file="$tmp_dir/events.json"
 jq -Rn '[inputs | fromjson? | select(type == "object")]' "$stdout_file" >"$events_file"
 session=$(jq -r '([.[] | select(.event == "result") | .result.conversation_id // empty] | last) //

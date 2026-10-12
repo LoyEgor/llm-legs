@@ -47,6 +47,7 @@ gate_root() {
 legs_root=$(gate_root) || exit 0
 [ -r "$legs_root/share/chat-account.sh" ] || exit 0
 . "$legs_root/share/chat-account.sh" || exit 0
+. "$legs_root/share/limit-hit.sh" 2>/dev/null || limit_hit() { :; }
 chat_account_resolve
 vendor=$CHAT_ACCOUNT_VENDOR
 own=$CHAT_ACCOUNT_NAME
@@ -127,6 +128,8 @@ span_live() {
     words_span_live "$(jq -r '.session_id // ""' <<<"$input")" "$(jq -r '.transcript_path // ""' <<<"$input")" ) >/dev/null 2>&1
 }
 if [ "$pct_int" -ge "$DENY_AT" ] 2>/dev/null && ! span_live; then
+  limit_hit workflow-burn-gate.deny "$DENY_AT" pct skip "a workflow fan-out on $vendor/$own: the chat must shrink or route the work" \
+    'bin/workflow-burn-gate.sh:WORKFLOW_GATE_DENY_PCT:-95' "$pct"
   jq -cn --arg hook "${0##*/}" --arg r "Session account $vendor/$own is at ${pct}% — a workflow fan-out would burn this same account and wall the session before its own task finishes. Do not run the workflow now: shrink the work to inline/single agents, route implementation through workers (run worker-pick), or ask Egor." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null
   exit 0

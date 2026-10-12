@@ -32,6 +32,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
+import limit_hit
 from fix_commit import NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import command as probe_command, host_ticks, spawn_pid, sysctl
@@ -114,6 +115,7 @@ BACKFILL_DAYS = 28
 EVENT_DAYS = 22
 DAY_SUMMARY_DAYS = 60
 PENDING_TTL_S = 7200
+WRITING = [False]
 SAMPLE_GAP_S = 3600
 SLOW_STEP_S = 300
 INVENTORY_ROWS = 20
@@ -592,6 +594,11 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
                 events.append(["c", round(start, 3), project, name, trivial, round(max(0.0, t - start), 3),
                                who, block["tool_use_id"][-10:], session, kb])
     for key in [k for k, v in pend.items() if v[0] < last_t - PENDING_TTL_S]:
+        if WRITING[0]:
+            limit_hit.hit("harness-doctor.pending-call", PENDING_TTL_S, "s", "expire",
+                          "%s call %s in %s never got its result: its time is in no wait or hang count" % (
+                              pend[key][1] or "a tool", key[-10:], transcript),
+                          "bin/harness-doctor:PENDING_TTL_S =", observed=round(last_t - pend[key][0]))
         del pend[key]
     for key in [k for k in mechanisms if k not in pend]:
         del mechanisms[key]
@@ -1611,6 +1618,10 @@ def fold_spool(add, now, write):
                          fields[2] if len(fields) > 2 else "", fields[3] if len(fields) > 3 else ""))
         else:
             add(birth, fields[0] or "?", None)
+            if write:
+                limit_hit.hit("harness-doctor.spool-stale", SPOOL_STALE_S, "s", "expire",
+                              "hook %s never wrote its end: folded with no duration" % (fields[0] or "?"),
+                              "bin/harness-doctor:SPOOL_STALE_S =", observed=round(now - birth))
         done_paths.append(path)
     if write and runs:
         folder = os.path.join(state_dir(), "hooks", "folded")
@@ -4323,6 +4334,7 @@ DEPLOYS = (
                                    ("libexec", "report_frame.py", "copy", "share/report_frame.py"),
                                    ("libexec", "store-lock.sh", "copy", "share/store-lock.sh"),
                                    ("libexec", "limiter-hold.sh", "copy", "share/limiter-hold.sh"),
+                                   ("libexec", "limit-hit.sh", "copy", "share/limit-hit.sh"),
                                    ("agents", "com.egor.memlogd.plist", "copy", "launchd/com.egor.memlogd.plist"))),
     ("bin/llm-refresh install-agent", (("libexec", "llm-refresh-heartbeat", "exec", "bin/llm-refresh"),
                                        ("agents", "com.llm-refresh.plist", "copy", "launchd/com.llm-refresh.plist"))),
@@ -6007,6 +6019,107 @@ def waits_classes_section(now):
     return out
 
 
+LIMITS_GROUP = "Limits"
+LIMIT_REPOS = ("llm-legs", "claude-setup", "review-bench", "token-map")
+LIMIT_FAULT_X = HANG_USUAL_X
+LIMIT_QUIET_DAYS = 7
+
+
+def limit_hits_log():
+    return os.environ.get("LIMIT_HITS_LOG") or os.path.join(base_home(), ".cache", "limits", "hits.jsonl")
+
+
+def limit_registries():
+    """Each repository's limits.json by repository name; None where the file is missing or unreadable."""
+    out = {}
+    for repo in LIMIT_REPOS:
+        value = read_json(os.path.join(os.environ.get("LIMIT_REPOS_DIR") or repos_dir(), repo, "limits.json"), None)
+        out[repo] = value if isinstance(value, dict) else None
+    return out
+
+
+def limit_ratio(hit):
+    observed, usual = hit.get("observed"), hit.get("usual")
+    if isinstance(observed, (int, float)) and isinstance(usual, (int, float)) and usual > 0:
+        return observed / usual
+    return None
+
+
+def limits_section(now):
+    """Every threshold hit the four repositories journal (share/limit_hit.py), per limit over 24 h and 7 d,
+    with who set it and why. A hit reads as a fault when it ran LIMIT_FAULT_X times its usual amount, or when a
+    limit quiet for the 7 d before today fires, once the journal is older than those 7 d."""
+    hits = [h for h in read_jsonl(limit_hits_log(), now - (LIMIT_QUIET_DAYS + 1) * 86400) or ()
+            if isinstance(h.get("ts"), (int, float)) and isinstance(h.get("limit"), str)]
+    try:
+        with open(limit_hits_log()) as handle:
+            first = json.loads(handle.readline()).get("ts")
+    except (OSError, ValueError, AttributeError):
+        first = None
+    covered = isinstance(first, (int, float)) and first <= now - (LIMIT_QUIET_DAYS + 1) * 86400
+    registries = limit_registries()
+    by_limit = {}
+    for hit in hits:
+        by_limit.setdefault(hit["limit"], []).append(hit)
+    rows, lead = [], []
+    for repo, registry in sorted(registries.items()):
+        if registry is None:
+            say = "%s has no readable limits.json: its thresholds have no who/why" % repo
+            lead.append(dict(line(say, dim=False), say=say, key="limits:registry:" + repo,
+                             judge=[verdict("limit_registry", repo, 1, 0, "findings", 0, 1, "watch", fact=say,
+                                            evidence=[evidence(now, "%s/limits.json" % repo, "missing")], bad=1)]))
+    for limit, mine in by_limit.items():
+        day = [h for h in mine if h["ts"] > now - 86400]
+        week = [h for h in mine if h["ts"] > now - 7 * 86400]
+        before = [h for h in mine if h["ts"] <= now - 86400]
+        if not week:
+            continue
+        repo, _, name = limit.partition(":")
+        entry = (registries.get(repo) or {}).get(name)
+        entry = entry if isinstance(entry, dict) else None
+        ratios = [(r, h) for h, r in ((h, limit_ratio(h)) for h in week) if r is not None]
+        worst = max(ratios, key=lambda pair: pair[0]) if ratios else None
+        far = [(r, h) for r, h in ratios if r >= LIMIT_FAULT_X and h["ts"] > now - 86400]
+        fresh = bool(day) and not before and covered
+        last = max(week, key=lambda h: h["ts"])
+        where = last.get("where") or (entry or {}).get("where") or ""
+        cause = []
+        if far:
+            r, h = max(far, key=lambda pair: pair[0])
+            cause.append("ran %.1fx its usual (%s of %s %s)" % (r, num(h.get("observed")), num(h.get("usual")), h.get("unit") or ""))
+        if fresh:
+            cause.append("fired %d time%s in 24 h after %d quiet days" % (len(day), "" if len(day) == 1 else "s", LIMIT_QUIET_DAYS))
+        if entry is None and registries.get(repo, {}) is not None:
+            cause.append("not in %s/limits.json" % repo)
+        level = "red" if cause else None
+        say = "%s hit %s: %s · lost: %s%s" % (
+            limit, where, "; ".join(cause), last.get("lost") or "?",
+            " · normal: %s" % entry["normal"] if entry and entry.get("normal") else "") if cause else None
+        proof = [evidence(h["ts"], "%s %s" % (where, h.get("run") or h.get("session") or ""),
+                          "%s · observed %s, usual %s · lost: %s" % (h.get("action"), h.get("observed"), h.get("usual"), h.get("lost")))
+                 for h in sorted(day or week, key=lambda h: -h["ts"])[:3]]
+        detail = [row([k, str(v)], dim=True) for k, v in (
+            ("value", "%s %s" % (num((entry or {}).get("value", last.get("value"))), (entry or {}).get("unit") or last.get("unit") or "")),
+            ("where", where), ("set by", (entry or {}).get("set_by") or "unregistered"),
+            ("why", (entry or {}).get("why") or "unregistered"), ("normal", (entry or {}).get("normal") or "unregistered"),
+            ("last lost", last.get("lost") or ""), ("last run", last.get("run") or last.get("session") or ""))]
+        rows.append(row([limit, len(day), len(week), "%.1fx" % worst[0] if worst else "–", clip(last.get("lost") or "", 60)],
+                        red=[0] if level else (), dim=not level, key="limits:" + limit, say=say,
+                        head="a threshold hit looks like a fault" if level else None,
+                        menu=section("", detail, ["", ""], [False, False]),
+                        judge=[verdict("limit_hit", limit, worst[0] if worst else len(day), LIMIT_FAULT_X if worst else None,
+                                       "x" if worst else "hits", 24, len(day), level, fact=say, evidence=proof,
+                                       bad=len(far) or int(fresh) or int(bool(cause)))]))
+    rows.sort(key=lambda r: (not r["red"], -int(r["cells"][2]), r["cells"][0]))
+    out = section(LIMITS_GROUP, rows, ["limit", "hits 24 h", "hits 7 d", "worst ×usual 7 d", "last lost"],
+                  [False, True, True, True, False], lead=lead,
+                  ok="no threshold hit looks like a fault (none ran %dx its usual, none fired after %d quiet days)" % (
+                      LIMIT_FAULT_X, LIMIT_QUIET_DAYS))
+    if out["state"] == "ok" and lead:
+        out.update(state="watch", fact=lead[0]["say"])
+    return out
+
+
 def blind_rows(ledger, dynamic):
     return dynamic + [dict(b) for b in ledger.get("blind_spots") or () if isinstance(b, dict)]
 
@@ -6059,6 +6172,7 @@ class Phases:
 
 def collect(write, now):
     started, cpu_start, phase = time.monotonic(), cpu_s(), Phases()
+    WRITING[0] = write
     folder = state_dir()
     if write:
         os.makedirs(folder, exist_ok=True)
@@ -6164,7 +6278,8 @@ def collect(write, now):
                 guards_section(now),
                 deploys_section(now),
                 browser_section(now, write),
-                waits_classes_section(now)]
+                waits_classes_section(now),
+                limits_section(now)]
     growth_part = growth_section(growth, now, spool_backlog(now))
     if growth_part:
         sections.append(growth_part)

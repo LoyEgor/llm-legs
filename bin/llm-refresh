@@ -75,10 +75,28 @@ refresh_lock_acquire() {
     rm -rf "$captured" 2>/dev/null
     return 1
   fi
+  lock_break_hit "$captured" "$stale" "$current"
   rm -rf "$captured"
   mkdir "$lock" 2>/dev/null || return 1
   store_lock_claim "$lock" || return 1
   active_lock=$lock
+  return 0
+}
+
+# A dead owner's lock is no hit; a pidless one past the stale age, or a live owner past the ceiling, is.
+lock_break_hit() { # captured-lock stale now
+  local owner='' mtime age
+  mtime=$(store_lock_mtime "$1" 2>/dev/null) || return 0
+  age=$(($3 - mtime))
+  read -r owner 2>/dev/null <"$1/pid" || owner=''
+  case "$owner" in ''|*[!0-9]*) owner='' ;; esac
+  if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+    limit_hit llm-refresh.tick-ceiling "$tick_ceiling" s break "the refresh lock of live pid $owner: two ticks may now run at once" \
+      'bin/llm-refresh:tick_ceiling=${' "$age"
+  elif [ -z "$owner" ]; then
+    limit_hit llm-refresh.lock-stale "$2" s break "a refresh lock with no owner pid, $age s old" \
+      'bin/llm-refresh:LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800' "$age"
+  fi
   return 0
 }
 
@@ -99,6 +117,8 @@ kill_hung_holder() {
   [ "$owner" != "$$" ] && kill -0 "$owner" 2>/dev/null || return 0
   ps -o command= -p "$owner" 2>/dev/null | grep -q 'llm-refresh' || return 0
   process_tree_end "$owner" 5
+  limit_hit llm-refresh.tick-ceiling "$tick_ceiling" s kill "hung refresh tick pid $owner and its process tree: that tick's readings" \
+    'bin/llm-refresh:tick_ceiling=${' "$((current - mtime))"
   journal_attempt tick 0 '[]' hung \
     "tick pid $owner held the lock $((current - mtime))s, past the ${tick_ceiling}s ceiling; its process tree was killed" 0
 }
@@ -112,6 +132,8 @@ supervise_tick() {
   child=$!
   trap 'process_tree_end "$watchdog" 0; process_tree_end "$child" 5; exit 129' HUP INT TERM
   ( sleep "$tick_ceiling"
+    limit_hit llm-refresh.tick-ceiling "$tick_ceiling" s kill "refresh tick $tick_id and its process tree: that tick's readings" \
+      'bin/llm-refresh:tick_ceiling=${' "$tick_ceiling"
     journal_attempt tick 0 '[]' hung "tick ran past the ${tick_ceiling}s ceiling; its process tree was killed" 0
     process_tree_end "$child" 5 ) &
   watchdog=$!
@@ -123,6 +145,7 @@ supervise_tick() {
 script_path=$(resolve_script)
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 . "$repo_root/share/store-lock.sh"
+. "$repo_root/share/limit-hit.sh"
 . "$repo_root/share/processes.sh"
 collector=${LLM_LIMITS_REFRESH_COLLECTOR:-${LLM_REFRESH_COLLECTOR:-$repo_root/llm-limits.sh}}
 opencode_go=${LLM_LIMITS_REFRESH_OPENCODE_GO:-$repo_root/bin/opencode-go}
@@ -293,7 +316,9 @@ run_collector() {
   local rc=0
   timeout_command "$collector_timeout" "$collector" "$@" || rc=$?
   case "$rc" in
-    124|142) timed_out_note=${timed_out_note:-"collector ${*:-passive collect} timed out after ${collector_timeout}s"} ;;
+    124|142) timed_out_note=${timed_out_note:-"collector ${*:-passive collect} timed out after ${collector_timeout}s"}
+      limit_hit llm-refresh.collector-timeout "$collector_timeout" s kill "limits collector ${*:-passive collect}: this tick's readings of it" \
+        'bin/llm-refresh:collector_timeout=${' "$collector_timeout" ;;
   esac
   return "$rc"
 }
@@ -683,6 +708,8 @@ run_tick() {
             ( export LLM_LIMITS_ANNOUNCE_SUPPRESS=1
               timeout_command "$probe_timeout" "$claudeb_bin" revive "$account" ) \
               >/dev/null 2>"$refresh_log" || rc=$?
+            case $rc in 124|142) limit_hit llm-refresh.probe-timeout "$probe_timeout" s kill \
+              "claudeb revive probe of $account: its token verdict this tick" 'bin/llm-refresh:probe_timeout=${' "$probe_timeout" ;; esac
             # revive only reaches the store through the collector run below, so what it did is
             # remembered here and judged once the store can answer for it. The excerpt travels
             # with the verdict because the log is gone by then.
@@ -720,6 +747,8 @@ run_tick() {
             ( export LLM_LIMITS_ANNOUNCE_SUPPRESS=1
               timeout_command "$revive_timeout" "$claudeb_bin" revive "$account" ) \
               >/dev/null 2>"$refresh_log" || rc=$?
+            case $rc in 124|142) limit_hit llm-refresh.revive-timeout "$revive_timeout" s kill \
+              "interactive claudeb revive of $account: its token stays stale until another tick" 'bin/llm-refresh:revive_timeout=${' "$revive_timeout" ;; esac
             if refresh_lock_acquire "$lock_dir"; then
               # Whatever ran while we were out owns the file now; our own stamp is already in it.
               state=$(state_read)

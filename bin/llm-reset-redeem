@@ -34,6 +34,7 @@ import chat_names  # noqa: E402
 import claude_resets  # noqa: E402
 import codex_appserver  # noqa: E402
 import grok_resets  # noqa: E402
+import limit_hit  # noqa: E402
 
 EXIT_REDEEMED = 0
 EXIT_USAGE = 2
@@ -604,6 +605,10 @@ def fire(vendor: str, account: str, now: int, wall: str) -> None:
     if code in (EXIT_EXPIRED, EXIT_NO_BACKEND) or (code == EXIT_NOTHING and lost) or (
             code == EXIT_TRANSIENT and failures >= ATTEMPTS_MAX):
         reason = line if code != EXIT_TRANSIENT else f"{failures} attempts failed · {line}"
+        if code == EXIT_TRANSIENT:
+            limit_hit.hit("llm-reset-redeem.attempts", ATTEMPTS_MAX, "count", "retry-exhausted",
+                          f"the auto-redeem of {target} at its weekly wall: disarmed", "bin/llm-reset-redeem:ATTEMPTS_MAX =",
+                          observed=failures)
         disarm(vendor, account, reason)
         alert(f"Auto-redeem disarmed · {reason}")
         return
@@ -639,6 +644,10 @@ def fire_armed(only: tuple[str, str] | None, wall: str) -> int:
                 break
             except OSError:
                 if time.time() >= deadline:
+                    if only is not None and wall == "weekly":
+                        limit_hit.hit("llm-reset-redeem.lock-wait", LOCK_WAIT_S, "s", "skip",
+                                      f"the auto-redeem of {only[0]}/{only[1]} at this run's weekly wall",
+                                      "bin/llm-reset-redeem:LOCK_WAIT_S =", observed=LOCK_WAIT_S)
                     return 0
                 time.sleep(0.2)
         now = int(time.time())

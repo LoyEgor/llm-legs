@@ -11,6 +11,9 @@ import sys
 import time
 from datetime import datetime, timezone
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
+import limit_hit  # noqa: E402
+
 HEALTHY_STEP_S = 3
 SLOW_FACTOR = 3
 SLOW_STEP_S = HEALTHY_STEP_S * SLOW_FACTOR
@@ -71,6 +74,11 @@ def geminib_families():
                 [os.path.join(os.path.dirname(os.path.realpath(__file__)), "geminib"), "families", "--json"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=120)
             families = json.loads(result.stdout)
+        except subprocess.TimeoutExpired:
+            limit_hit.hit("gemini-weather.families-timeout", 120, "s", "kill",
+                          "the family list: weather shows no family this run",
+                          "bin/gemini-weather:stderr=subprocess.DEVNULL, text=True, timeout=120", observed=120)
+            families = []
         except (OSError, ValueError, subprocess.SubprocessError):
             families = []
     return [family for family in families if isinstance(family, dict)

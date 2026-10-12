@@ -33,6 +33,7 @@ root=$(cd "$script_dir/.." && pwd)
 . "$root/share/image-caps.sh"
 . "$root/share/limiter-hold.sh"
 . "$root/share/image-leg.sh"
+. "$root/share/limit-hit.sh"
 
 caps_root=${IMAGE_FANOUT_CAPS_ROOT:-$root}
 bin_dir=${IMAGE_FANOUT_BIN_DIR:-$script_dir}
@@ -1000,6 +1001,8 @@ handle_exit() { # unit rc
     [ "$a" -eq 0 ] || a_cool[a]=$((now + busy_retry_ms))
     [ -n "${u_busy_since[u]}" ] || u_busy_since[u]=$now
     if [ $((now - u_busy_since[u])) -ge "$busy_giveup_ms" ]; then
+      limit_hit image-fanout.busy-giveup "$((busy_giveup_ms / 1000))" s skip "image unit $u: never launched while ${u_account[u]} stayed busy" \
+        'bin/image-fanout:busy_giveup_ms=${' "$(((now - u_busy_since[u]) / 1000))"
       finalize "$u" "$rc" 0
       return
     fi
