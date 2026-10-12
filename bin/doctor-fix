@@ -4,16 +4,17 @@ set -u
 
 resolve_script() {
   local source="${BASH_SOURCE[0]}" directory
+  [[ $source == */* ]] || source=./$source
   while [ -L "$source" ]; do
-    directory=$(cd -P "$(dirname "$source")" && pwd)
+    directory=$(cd -P "${source%/*}" && pwd)
     source=$(readlink "$source")
     [[ "$source" = /* ]] || source="$directory/$source"
   done
-  cd -P "$(dirname "$source")" && printf '%s/%s\n' "$PWD" "$(basename "$source")"
+  cd -P "${source%/*}" && printf '%s/%s\n' "$PWD" "${source##*/}"
 }
 
 script_path=$(resolve_script)
-repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
+repo_root=${script_path%/*/*}
 runs_dir="${DOCTORS_DIR:-$HOME/.cache/doctors}/runs"
 projects_dir="${DOCTOR_FIX_PROJECTS:-/Volumes/Work/Projects}"
 events_dir="${VENDOR_CLI_UPDATE_STATE_DIR:-$HOME/.cache/vendor-cli-update}/events"
@@ -1193,7 +1194,7 @@ close_run() { # id --decisions <file> note...
   problems=$(jq -r '.problems[].id' "$file")
   while IFS= read -r pid; do
     [ -n "$pid" ] || continue
-    printf '%s' "$decided" | grep -qxF -- "$pid" || bad+=("$pid: undecided")
+    [[ $'\n'$decided == *$'\n'"$pid"$'\n'* ]] || bad+=("$pid: undecided")
   done <<<"$problems"
   judge_then=$(jq -r '.judge_at_launch // ""' "$file")
   judge_now=$(doc_judge "$doctor" "$doc")

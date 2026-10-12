@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Counted slots machine-wide: <dir>/<n> is a store-lock directory owned by the holder's $$, freed
 # when it exits or dies. A waiter raises a limiter hold (docs/harness-doctor-design.md §12).
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/store-lock.sh"
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/limiter-hold.sh"
+. "${BASH_SOURCE[0]%/*}/store-lock.sh"
+. "${BASH_SOURCE[0]%/*}/limiter-hold.sh"
 
 slots_from_cores() { # divisor floor [ceiling] -> cores / divisor, clamped
   local n

@@ -1,7 +1,7 @@
 # Sourced. chat_open <command-file> <workdir> <prompt> [<session to resume>] -> prints "<account> <session>", or one
 # reason line on stderr and returns 1. The caller hands in CHAT_OPEN_OPENER (a command line),
 # CHAT_OPEN_WORKER_PICK (a path) and, optionally, CHAT_OPEN_PREFIX (words in front of claudeb).
-chat_open_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+chat_open_repo=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
 . "$chat_open_repo/share/worker-pool.sh"
 
 # The chat role ranks by the chat model, but `chat` ignores the pool, and an opened chat is delegated

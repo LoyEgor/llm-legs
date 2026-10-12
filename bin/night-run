@@ -5,16 +5,17 @@ set -u
 
 resolve_script() {
   local source="${BASH_SOURCE[0]}" directory
+  [[ $source == */* ]] || source=./$source
   while [ -L "$source" ]; do
-    directory=$(cd -P "$(dirname "$source")" && pwd)
+    directory=$(cd -P "${source%/*}" && pwd)
     source=$(readlink "$source")
     [[ "$source" = /* ]] || source="$directory/$source"
   done
-  cd -P "$(dirname "$source")" && printf '%s/%s\n' "$PWD" "$(basename "$source")"
+  cd -P "${source%/*}" && printf '%s/%s\n' "$PWD" "${source##*/}"
 }
 
 script_path=$(resolve_script)
-repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
+repo_root=${script_path%/*/*}
 nights_dir="${DOCTORS_DIR:-$HOME/.cache/doctors}/nights"
 lock_dir="$nights_dir/.lock"
 holds_dir="$nights_dir/holds"
@@ -194,8 +195,6 @@ doctor_read() { # jq-filter -> {"llm": value|null, "harness": value|null, "updat
     '{llm: $ln, harness: $hn, updater: $un, code: $cn, system: $sn}'
 }
 
-doctor_counts() { doctor_read '.problem_count // null'; }
-
 JQ_PROBLEM_NORM='def norm_problem: (.fact // "") as $f
   | if (.state == "fixed-pending" or .state == "watch") and (($f | test("^fixed · ([0-9]+ events since · 0 matched|0 matched in |output-equivalent |back under )"))
       or (.proof | if type == "object" then .verdict else null end) == "proven") then "proved"
@@ -203,14 +202,14 @@ JQ_PROBLEM_NORM='def norm_problem: (.fact // "") as $f
 
 # proved: a fix the doctor proved (harness `fixed · …` per docs/doctor-fix.md's Proof, the System doctor's
 # `proof.verdict` proven; the LLM doctor drops a proved row instead); pending: a fix awaiting its commit or its proof.
-doctor_states() {
-  doctor_read "$JQ_PROBLEM_NORM"' [.problems[]? | norm_problem] as $s
-    | reduce ("proved", "pending", "open", "new", "regressed") as $k ({}; .[$k] = ($s | map(select(. == $k)) | length))'
+doctor_snapshot() { # -> doctor_read's object, each doctor's value [problem count, states, problems]; JQ_SNAPSHOT splits it
+  doctor_read "$JQ_PROBLEM_NORM"' [(try (.problem_count // null) catch null),
+    (try ([.problems[]? | norm_problem] as $s
+      | reduce ("proved", "pending", "open", "new", "regressed") as $k ({}; .[$k] = ($s | map(select(. == $k)) | length))) catch null),
+    (try (reduce (.problems[]? | select(.id != null)) as $p ({}; .[$p.id] = ($p | norm_problem))) catch null)]'
 }
+JQ_SNAPSHOT='def snapshot($i): $d | map_values(.[$i]?);'
 
-doctor_problems() {
-  doctor_read "$JQ_PROBLEM_NORM"' reduce (.problems[]? | select(.id != null)) as $p ({}; .[$p.id] = ($p | norm_problem))'
-}
 
 main_checkout() {
   local top root
@@ -358,11 +357,10 @@ cmd_start() {
     id="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
     file=$(night_file "$id")
     [ ! -e "$file" ] || die "night id $id is taken"
-    jq -n --arg id "$id" --arg t "$(stamp)" --argjson before "$(doctor_counts)" --argjson states "$(doctor_states)" \
-      --argjson problems "$(doctor_problems)" \
-      --argjson opener "$$" '{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
-        doctors_before: $before, doctors_after: null, doctor_states_before: $states, doctor_states_after: null,
-        doctor_problems_before: $problems, doctor_problems_after: null, jobs: [],
+    jq -n --arg id "$id" --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" \
+      --argjson opener "$$" "$JQ_SNAPSHOT"'{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
+        doctors_before: snapshot(0), doctors_after: null, doctor_states_before: snapshot(1), doctor_states_after: null,
+        doctor_problems_before: snapshot(2), doctor_problems_after: null, jobs: [],
         opener: $opener}' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
       { rm -f "$file.tmp"; die "cannot write $file"; }
   fi
@@ -1001,12 +999,11 @@ cmd_finish() {
   [ "$(night_status "$(night_file "$id")")" != running ] || orchestrator_caller "$(night_file "$id")" ||
     die "night $id is still running: $(jq -r '"its orchestrator chat \(.session // "(opening, pid \(.opener))") has run since \(.started_at)"' \
       "$(night_file "$id")") and only it finishes the night."
-  night_set "$id" "$JQ_EVENTS"' .finished_at = $t | .doctors_after = $after | .doctor_states_after = $states
-    | .doctor_problems_after = $problems | .doctors_share = $goals.doctors_share | .backlog = $goals.backlog
+  night_set "$id" "$JQ_EVENTS$JQ_SNAPSHOT"' .finished_at = $t | .doctors_after = snapshot(0) | .doctor_states_after = snapshot(1)
+    | .doctor_problems_after = snapshot(2) | .doctors_share = $goals.doctors_share | .backlog = $goals.backlog
     | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)
     | events([{phase: "finish", pred: "jobs"}]; $t)' \
-    --arg t "$(stamp)" --argjson after "$(doctor_counts)" --argjson states "$(doctor_states)" \
-    --argjson problems "$(doctor_problems)" \
+    --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" \
     --argjson goals "$(python3 -B "$repo_root/share/night_spend.py" goals 2>/dev/null || echo '{}')" || die "cannot write night $id"
   unlock
   printf 'night %s finished\n' "$id"
@@ -1030,24 +1027,27 @@ done_jobs() { # -> branch<TAB>ref<TAB>state<TAB>night per nothing-to-do or settl
 }
 
 branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD, DONE_JOBS
-  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold cherry job inside
+  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold='' cherry job inside held_repo held_branch held_words
   ref=${branch:+refs/heads/$branch}
   head=$(git -C "${wt:-$repo}" rev-parse -q --verify "${ref:-HEAD}^{commit}") || return 0
   read -r behind ahead < <(git -C "$repo" rev-list --left-right --count "refs/heads/main...$head")
   [[ $branch == night/*/* ]] && night=${branch#night/} && night=${night%%/*}
-  if git -C "$repo" merge-base --is-ancestor "$head" refs/heads/main ||
-    git -C "$repo" merge-base --is-ancestor "$head" refs/remotes/origin/main 2>/dev/null; then landed=true
+  if [ "$ahead" = 0 ] || git -C "$repo" merge-base --is-ancestor "$head" refs/remotes/origin/main 2>/dev/null; then landed=true
   elif [ -n "$night" ] && [ "$head" = "$(git -C "$repo" rev-parse -q --verify "refs/night/$night/base")" ]; then landed=true
   # cherry skips merges, so a merge's own resolution never counts as landed by patch equivalence.
-  elif cherry=$(git -C "$repo" cherry refs/heads/main "$head" 2>/dev/null) && ! grep -q '^+' <<<"$cherry" &&
+  elif cherry=$(git -C "$repo" cherry refs/heads/main "$head" 2>/dev/null) && [[ $'\n'$cherry != *$'\n+'* ]] &&
     [ -z "$(git -C "$repo" rev-list --merges -1 "refs/heads/main..$head")" ]; then landed=true; fi
-  [ -z "$wt" ] || dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
+  if [ -n "$wt" ] && dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null) && [ -n "$dirty" ]; then
+    dirty=${dirty//[!$'\n']/}; dirty=$((${#dirty} + 1))
+  else dirty=0; fi
   if [ "$4" = 1 ]; then why='main checkout'
   elif [ "$5" = 1 ]; then why='locked'
   elif [ -n "$night" ]; then
     [ ! -s "$(night_file "$night")" ] || [ "$(night_status "$(night_file "$night")" 2>/dev/null)" != running ] || why="night $night running"
   fi
-  hold=$(awk -F '\t' -v r="$repo" -v b="$branch" '$1 == r && $2 == b { print $3; exit }' <<<"$HELD")
+  [ -z "$HELD" ] || while IFS=$'\t' read -r held_repo held_branch held_words; do
+    [ "$held_repo" != "$repo" ] || [ "$held_branch" != "$branch" ] || { hold=$held_words; break; }
+  done <<<"$HELD"
   if [ -z "$why" ] && [ -n "$branch" ] && [ -n "$hold" ]; then
     state=held why="Egor: $hold"
   elif [ -z "$why" ]; then
@@ -1055,8 +1055,10 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
     $landed || { state=leftover why="$ahead unlanded commits"; }
     [ "$dirty" = 0 ] || { state=leftover why="${why:+$why, }$dirty uncommitted files"; }
     [ "$state" = landed ] || [ -n "$branch" ] || why="$why, detached HEAD"
-    job=$(awk -F '\t' -v b="$branch" '$1 == b { print $2 " " $3; exit }' <<<"$DONE_JOBS")
-    [ "$state" = landed ] || [ -z "$night" ] || [ -z "$job" ] || state=superseded why="by job $job, $why"
+    if [ "$state" != landed ] && [ -n "$night" ] && [ -n "$DONE_JOBS" ]; then
+      job=$(awk -F '\t' -v b="$branch" '$1 == b { print $2 " " $3; exit }' <<<"$DONE_JOBS")
+      [ -z "$job" ] || state=superseded why="by job $job, $why"
+    fi
     # A night worker outlives a dead orchestrator and cannot ask for a hold: adopting under it commits its half-done edit.
     [ "$state" != leftover ] || [ -z "$night" ] || [ -z "$wt" ] || ! inside=$(cwd_held "$wt") || state=live why="night $night worker: $inside"
   fi
@@ -1072,7 +1074,7 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
 branch_rows() { # [repo...], default the sweep repositories and the helpers' night branches; ROWS_BRANCH=b: b's rows only
   local repo wt branch main locked seen HELD DONE_JOBS only want=${ROWS_BRANCH:-}
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
-  HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
+  HELD=$(! compgen -G "$holds_dir/*.json" >/dev/null || cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
   DONE_JOBS=$(done_jobs)
   while IFS=$'\t' read -r repo only; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue
