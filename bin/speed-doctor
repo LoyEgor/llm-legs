@@ -952,6 +952,11 @@ def lever_since(ledger, component):
     return max((H.local_day(t) for t in landed if t), default=None)
 
 
+def landed_end(ledger, component):
+    day = lever_since(ledger, component)
+    return H.day_end(day) if day else None
+
+
 def speed_rows(ledger):
     return [r for r in ledger.get("rows") or () if isinstance(r, dict)
             and (r.get("match") or {}).get("rule") in SPEED_RULES]
@@ -1150,7 +1155,8 @@ def collect(write, now):
                               "ledger": None, "group": area, "opportunity": best})
     opportunities += moved_opportunities(component_om, days, now, covered)
     try:
-        tests = test_health.collect(now, H.suites_journal(), suite_audit.repos(), write)
+        tests = test_health.collect(now, H.suites_journal(), suite_audit.repos(), write,
+                                    since=lambda target: landed_end(ledger, target))
     except Exception as exc:
         tests = {"status": "error", "head": H.error_line(exc), "findings": [], "candidates": {}, "menu": []}
     opportunities = without_moved_heavy(opportunities, tests) + [

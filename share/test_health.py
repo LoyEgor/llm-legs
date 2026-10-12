@@ -584,9 +584,10 @@ def heavy_keys(window, now, born):
     return {k for k, (day_s, _, _) in per_class(window, "work", now, born).items() if day_s / 60.0 >= HEAVY_MIN_DAY}
 
 
-def findings(window, suites, files, now, born):
+def findings(window, suites, files, now, born, since=lambda target: None):
     """Each minute of the window's suite wall in at most one finding: retests, flaky, idle, long pole, serial,
-    heavy suites (their work at HEAVY_MIN_DAY or more), then fan-out on the rest."""
+    heavy suites (their work at HEAVY_MIN_DAY or more), then fan-out on the rest. A suite's finding is charged only
+    for its runs from since(its target) on, the time its own fix landed."""
     out = []
     days = lambda runs: len({time_budget.local_day(e["end"]) for e in runs})
     retest = [e for e in window if e["repeat"]]
@@ -597,8 +598,12 @@ def findings(window, suites, files, now, born):
                            "%d suite runs on content already green (same tree), %d of them a chat or the night after "
                            "its worker's green run" % (len(retest), sum(1 for e in retest if e["post"])),
                            ["llm-legs/share/run-suites.sh", "llm-legs/bin/worker-run"]))
+    keys = {(e["repo"], e["name"]) for e in window}
     for cls in ("flaky", "idle", "pole", "work"):
-        found = per_class(window, cls, now, born)
+        cuts = {k: since("test-health/%s/%s/%s" % ("heavy" if cls == "work" else cls, k[0], os.path.splitext(k[1])[0]))
+                for k in keys}
+        found = per_class([e for e in window if e["end"] >= (cuts[(e["repo"], e["name"])] or 0)], cls, now,
+                          {**born, **{k: max(born.get(k) or 0, cut) for k, cut in cuts.items() if cut}})
         for (repo, name), (secs, worker, runs) in sorted(found.items(), key=lambda kv: (-kv[1][0], kv[0])):
             s, files_of = suites.get((repo, name)) or {}, ["%s/tests/%s" % (repo, name)]
             short = os.path.splitext(name)[0]
@@ -724,7 +729,7 @@ def block(now, normal, stats, files, found, queued, hours):
     return menu
 
 
-def collect(now, journal, tops=None, write=False, lo=None):
+def collect(now, journal, tops=None, write=False, lo=None, since=lambda target: None):
     """The `tests` section over [lo, now) (the last 24 h) against the USUAL_D days before it: `menu`, `findings`
     (min/day over STATS_D days), `regressions` (lines over their usual, in min/day), `candidates` (dead and pinned
     suites for suite_audit) and the class values."""
@@ -754,7 +759,7 @@ def collect(now, journal, tops=None, write=False, lo=None):
     current = measure(rows, recent, landed, lo, now)
     normal, days = usual(rows, recent, landed, now)
     queued = dict(pinned(tops, scanned, stats, edits), **dead(tops, scanned, execs, journal_lo, now))
-    found = findings(window, stats, files, now, born)
+    found = findings(window, stats, files, now, born, since)
     out.update(status="watch" if any(red_line(k, current[k], normal[k], m) for k, _, _, m in LINES) else "ok",
                now=current, usual=normal, usual_days=days, findings=found, regressions=regressions(current, normal),
                heavy=[dict({k: s[k] for k in ("repo", "label", "runs", "wall_s", "avg_s", "red", "judged", "flaky",

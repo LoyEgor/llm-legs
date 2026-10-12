@@ -276,7 +276,12 @@ check(wait_row.get("rule") == "regression" and wait_row.get("expected_min_day") 
       "speed: a test health line over its usual is a regression row priced at its excess: %s" % wait_row)
 th.HEAVY_MIN_DAY = 0.0
 heavy_section = th.collect(NOW, journal, [repo])
+fixed = {"test-health/heavy/alpha/test_a", "test-health/idle/alpha/test_slow"}
+cut = {f["target"] for f in th.collect(NOW, journal, [repo], since=lambda t: NOW if t in fixed else None)["findings"]}
 th.HEAVY_MIN_DAY = 15.0
+check(not fixed & cut and {f["target"] for f in heavy_section["findings"]} - fixed == cut,
+      "speed: a suite's row whose own fix landed is charged only for its runs after, every other row as it was: %s"
+      % sorted(cut))
 heavy_ids = {o["id"] for o in S.test_opportunities(heavy_section)}
 moved = {"id": "opportunity:tests/alpha/test_a"}
 check("opportunity:test-health/heavy/alpha/test_a" in heavy_ids

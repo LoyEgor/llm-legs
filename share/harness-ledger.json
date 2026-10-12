@@ -6115,7 +6115,7 @@
         "rule": "opportunity",
         "ident": "test-health/(heavy|pole)/claude-setup/test_review_flow_gate"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:45:00+03:00",
@@ -6130,12 +6130,27 @@
             "data": "the suite's own fixtures; the cap-repo fixture's 50 co-tenant commits now written by one git fast-import instead of 50 git commit processes, checked identical in shape (51 commits over origin/main, empty co-tenant trees, mine.txt only in the newest)",
             "result": "all PASS; at load ~190-210 the longest shard 1285 s -> 363 s (shards 275/363/353/319 s; base 736/1285 s), Σ shard wall 2021 -> 1310 s; the cap section 104 s -> one fast-import"
           }
+        },
+        {
+          "at": "2026-10-12T04:30:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 harness-speed-test-health-pole-claude-setup-test-review-flow-gate-20261012T010246Z-6557",
+          "files": [
+            "llm-legs/share/test_health.py",
+            "llm-legs/bin/speed-doctor"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "Speed's test-health findings, base vs fix code, one pinned SPEED_DOCTOR_NOW/TIME_BUDGET_NOW",
+            "data": "the live run-suites journal and this branch's ledger, 2026-10-12 ~01:30Z",
+            "result": "42 of 74 findings identical; the 32 others all belong to suites whose own ledger row's fix landed 2026-10-10 (28 gone, 4 idle rows repriced from the days after); none without a landed fix changed"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-speed-test-health-heavy-claude-setup-test-review-flow-gate-20261010T031914Z-3689",
-      "note": "Before: test-health heavy 69 runs, 5.4 wall-min a run, 7.6 min + 29 w-min/day; pole 52 runs, 1.1 min + 14 w-min/day (latest.json at launch). Cause: 2 shards, shard 2 held door-nonces, door-night (662 s, 131 two-hook gate calls), door-grants (210 s) and span-and-journal (364 s), shard 1 the rest (736 s); the suite is the serial tail wave's only sharded suite (run-suites serial_suite), so every other slot idled behind shard 2. Fix: 4 shards balanced by measured section time (door-night split into night, door-cwd and door-verbatim; span-and-journal into span-and-journal and journal, which carries the `. review-journal.sh` its rj_* cases need), DOCTORS_DIR unset in the prelude so a section moved away from door-night's own export/unset never reads a live night record. Per-call cost is the two hooks' forks (~5 s a gate call at load 200, ~0.3 s quiet), ~310 calls; no sleeps or polls on the path (the `sleep 600`/`sleep 30` are fake live processes, killed). Kept, not checked further: run-suites' serial_suite tail placement for this suite (since 90a17f22, README: a loaded machine fails it on load); shards run only while slot_room finds room, so on a full machine the run stays unsharded and only the fast-import and duplicate cuts apply.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-pole-claude-setup-test-review-flow-gate-20261012T010246Z-6557",
+      "note": "Re-raised 2026-10-12 (heavy 63 runs 3.4 wall-min a run, pole 50 runs) with no run of the suite since aaf399b landed (last 2026-10-10 08:15Z; the 3 post-fix runs 37/59/297 s at 4 shards vs 70-955 s before): test-health findings ignored the ledger's landed fix that lever_since applies to every other lever, so 7 days of pre-fix runs re-raised it and 30 other suites fixed the same night. Fix: findings charge a suite's row only for runs after the day its own fix landed. Not cut the same way: retests, serial and fan-out rows (not per suite). Not re-audited: CPU ~190 s a run is ~310 two-hook gate calls, unchanged by shards. Before: test-health heavy 69 runs, 5.4 wall-min a run, 7.6 min + 29 w-min/day; pole 52 runs, 1.1 min + 14 w-min/day (latest.json at launch). Cause: 2 shards, shard 2 held door-nonces, door-night (662 s, 131 two-hook gate calls), door-grants (210 s) and span-and-journal (364 s), shard 1 the rest (736 s); the suite is the serial tail wave's only sharded suite (run-suites serial_suite), so every other slot idled behind shard 2. Fix: 4 shards balanced by measured section time (door-night split into night, door-cwd and door-verbatim; span-and-journal into span-and-journal and journal, which carries the `. review-journal.sh` its rj_* cases need), DOCTORS_DIR unset in the prelude so a section moved away from door-night's own export/unset never reads a live night record. Per-call cost is the two hooks' forks (~5 s a gate call at load 200, ~0.3 s quiet), ~310 calls; no sleeps or polls on the path (the `sleep 600`/`sleep 30` are fake live processes, killed). Kept, not checked further: run-suites' serial_suite tail placement for this suite (since 90a17f22, README: a loaded machine fails it on load); shards run only while slot_room finds room, so on a full machine the run stays unsharded and only the fast-import and duplicate cuts apply.",
       "handoff": null
     },
     {

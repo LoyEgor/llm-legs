@@ -201,7 +201,8 @@ queued to end, splits once (`allocate`): a retest or flaky exec takes its share 
 the row's, so concurrent suites never sum past the wall); else its idle part, the run's slack to the long-pole suite
 (its seconds over the row's suite seconds per slot) or, on one slot, to `serial` (against the usual slots), and the rest is `work`. Findings become `opportunity:test-health/{retests,flaky,idle,pole/<repo>/<suite>,serial,
 heavy/<repo>/<suite>,fan-out/<repo>/<path>}` (`TEST_HEALTH_LEVERS`) in min/day, idle, pole, heavy and fan-out by
-`per_day`, retests, flaky and serial as their 7-day mean: heavy at ≥ 15 work-min/day (it drops
+`per_day`, retests, flaky and serial as their 7-day mean; a suite's row counts only runs after the day its ledger row's
+fix landed (`lever_since`): heavy at ≥ 15 work-min/day (it drops
 the moved `tests/<repo>/<suite>` row), fan-out from the targeted runs holding every suite a changed file pulls (each run
 to its widest file), on suites no heavy row prices, those shown beside it. A line over its usual is `regression:test-health/<line>`, its expected gain the
 excess in min/day. Fan-out reads tests/affected's rule in Python (a suite or a tests/ helper it names holding the
