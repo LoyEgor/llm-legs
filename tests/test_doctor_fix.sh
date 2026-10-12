@@ -810,6 +810,13 @@ assert [ "$(sed -n 4p <<<"$prefix_words")" = profile ]
 assert [ "$(sed -n 5p <<<"$prefix_words")" = acct-b ]
 assert grep -q '^acct-b ' "$WORK/prefix.out"
 
+# The opener's own chat pin never picks the opened chat's account.
+printf '#!/usr/bin/env bash\n[ -z "${CLAUDE_CODE_SESSION_ID:-}" ] && echo acct-free || echo acct-pinned\n' >"$WORK/pick-pinned"
+chmod +x "$WORK/pick-pinned"
+CLAUDE_CODE_SESSION_ID=sess-opener CHAT_OPEN_OPENER="$FAKE_BIN/opener" CHAT_OPEN_WORKER_PICK="$WORK/pick-pinned" \
+  chat_open "$WORK/pinned.command" "$WORK/wd" 'say hi' >"$WORK/pinned.out"
+assert grep -q '^acct-free ' "$WORK/pinned.out"
+
 # A resume reopens the chat on its own launcher: a claudegpt-stamped chat stays on its gateway account.
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudegpt"
 chmod +x "$FAKE_BIN/claudegpt"

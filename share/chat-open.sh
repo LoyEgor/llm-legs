@@ -16,8 +16,10 @@ chat_open() {
   claudeb=$(command -v claudeb) || { printf 'no claudeb on PATH\n' >&2; return 1; }
   # The chat role: this is an interactive chat, and the workers switch it meets is lifted only by the
   # pin written below, once the account is already chosen. --claim is what spreads parallel launches:
-  # the marker ages out (WORKER_CLAIMS_TTL, default 600s); nothing releases it early.
-  account=$("${CHAT_OPEN_WORKER_PICK:-$chat_open_repo/bin/worker-pick}" --account claudeb --role chat --model "$model" --claim 2>/dev/null) &&
+  # the marker ages out (WORKER_CLAIMS_TTL, default 600s); nothing releases it early. The caller's
+  # session id would apply the caller's chat pin to a different chat (night 56cc opened on a
+  # menu-off account pinned to the chat that started it).
+  account=$(env -u CLAUDE_CODE_SESSION_ID "${CHAT_OPEN_WORKER_PICK:-$chat_open_repo/bin/worker-pick}" --account claudeb --role chat --model "$model" --claim 2>/dev/null) &&
     [ -n "$account" ] || { printf 'worker-pick names no Claude account\n' >&2; return 1; }
   session=${resume:-$(uuidgen | tr '[:upper:]' '[:lower:]')}
   if [ -n "$resume" ]; then
