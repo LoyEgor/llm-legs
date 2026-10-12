@@ -23,7 +23,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chat_names  # noqa: E402
 from fix_commit import siblings_dir  # noqa: E402
-from spend import read_json  # noqa: E402
+from spend import epoch as iso_epoch, read_json  # noqa: E402
 
 UNIT = "Opus-eq"
 HOME = os.path.expanduser("~")
@@ -99,7 +99,7 @@ def rows(path):
 
 def read(path):
     try:
-        with open(path) as handle:
+        with open(path, errors="replace") as handle:
             return handle.read().strip()
     except OSError:
         return ""
@@ -310,20 +310,6 @@ def spend(night, worker_run):
             "total": sum(weighted(total) for total in kinds.values())}
 
 
-def previous(path, night):
-    older = []
-    for other in glob.glob(os.path.join(os.path.dirname(path), "*.json")):
-        try:
-            with open(other) as handle:
-                candidate = json.load(handle)
-        except (OSError, ValueError):
-            continue
-        if candidate.get("finished_at") and (candidate.get("started_at", ""), candidate.get("id", "")) < (
-                night["started_at"], night["id"]):
-            older.append(candidate)
-    return max(older, key=lambda n: (n["started_at"], n["id"])) if older else None
-
-
 DOCTORS_GOAL = 5.0
 DASH = "\u2013"
 DOCTOR_NAMES = ("llm", "harness", "updater", "code", "system")
@@ -336,10 +322,8 @@ def doctors_share():
     if not isinstance(node, dict) or not isinstance(node.get("share"), (int, float)):
         return None
     out = {"share": round(node["share"] * 100, 1)}
-    try:
-        age = (time.time() - dt.datetime.fromisoformat(doc["generated_at"]).timestamp()) / 3600
-    except (KeyError, TypeError, ValueError):
-        age = None
+    generated = iso_epoch(doc.get("generated_at"))
+    age = None if generated is None else (time.time() - generated) / 3600
     stale = doc.get("stale_after_hours")
     if age is None or isinstance(stale, (int, float)) and age > stale:
         out["age_h"] = None if age is None else round(age)
@@ -390,13 +374,9 @@ def night_goals(night):
 
 
 def previous_nights(path, night, count=2):
-    older = []
-    for other in glob.glob(os.path.join(os.path.dirname(path), "*.json")):
-        candidate = read_json(other, {})
-        if isinstance(candidate, dict) and candidate.get("finished_at") and candidate.get("jobs") and (
-                candidate.get("started_at", ""), candidate.get("id", "")) < (night["started_at"], night["id"]):
-            older.append(candidate)
-    return sorted(older, key=lambda n: (n["started_at"], n["id"]))[-count:]
+    import time_budget
+
+    return [n for _, _, n in time_budget.finished_before(path, night, count)]
 
 
 def trend(values):
@@ -480,7 +460,7 @@ def main():
     print(f"review rounds · {now['rounds']}")
     for kind, total in now["kinds"].items():
         print(f"spend {kind} · {mega(weighted(total))} {UNIT}{by_model(total)}")
-    before = previous(path, night)
+    before = next(iter(previous_nights(path, night, 1)), None)
     ratio = ""
     if before:
         was = spend(before, worker_run)["total"]

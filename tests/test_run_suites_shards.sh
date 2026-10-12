@@ -181,5 +181,7 @@ done
 assert test "$sharded" -ge 3
 printf '#!/usr/bin/env bash\n# shards: 2\nif suite_shard_owns 1 a; then :; fi\n' >"$WORK/empty-shard.sh"
 assert test "$(shard_layout "$WORK/empty-shard.sh")" = "$WORK/empty-shard.sh: shard 2 owns nothing"
+# A suite narrowed to one case keeps the shared guards: a shard its header does not declare is refused.
+assert_fails env WORKER_RUN_TEST_CASE=R1 SUITE_SHARD=1/9 bash "$ROOT/tests/test_worker_run_reliability.sh"
 
 printf 'PASS: %s asserts; sharded suites expand into -j jobs with one verdict and one journal entry, every section run once\n' "$asserts"

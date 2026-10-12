@@ -6,6 +6,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/tests/lib/hs-bounded.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
@@ -135,14 +136,7 @@ assert grep -q 'did not quit' <<<"$err"
 assert test ! -e "$WORK/open.log"
 
 if command -v hs >/dev/null 2>&1; then
-  output=$(python3 - "$ROOT/tests/dia_flag_watch_harness.lua" <<'HSPY'
-import subprocess, sys
-result = subprocess.run(["/usr/bin/lockf", "-k", "-t", "600", "/tmp/hs-cli.lock", "hs", "-q", "-t", "60", "-c", f"return loadfile([[{sys.argv[1]}]])()"],
-                        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=670)
-sys.stdout.write(result.stdout)
-sys.stderr.write(result.stderr)
-raise SystemExit(result.returncode)
-HSPY
+  output=$(HS_BOUNDED_IPC_S=60 hs_bounded 600 -q -c "return loadfile([[$ROOT/tests/dia_flag_watch_harness.lua]])()"
   ) || fail "the Hammerspoon harness threw or timed out: $output"
   result=$(printf '%s\n' "$output" | grep -v '^-- Loading extension: ' | awk '/^(PASS|FAIL)/ { found = 1 } found')
   case "$result" in

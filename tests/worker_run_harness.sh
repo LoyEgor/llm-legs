@@ -411,7 +411,7 @@ clear_stub() {
 start_ok() {
   local vendor="$1"
   shift
-  "$RUNNER" start "$vendor" --brief "$WORK/brief" --workdir "${WORKER_TEST_WORKDIR:-$WORK/workdir}" "$@" >"$WORK/start.out" 2>"$WORK/start.err" || fail "start $vendor failed: $(<"$WORK/start.err")"
+  "$RUNNER" start "$vendor" --brief "${WORKER_TEST_BRIEF:-$WORK/brief}" --workdir "${WORKER_TEST_WORKDIR:-$WORK/workdir}" "$@" >"$WORK/start.out" 2>"$WORK/start.err" || fail "start $vendor failed: $(<"$WORK/start.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
   await_launched
@@ -468,7 +468,7 @@ await_done() {
 # supervisor writes exit_code after delivering, so nothing of the run is still to come.
 await_exit() {
   local tick pid
-  for tick in $(seq 1 6000); do
+  for tick in $(seq 1 "${AWAIT_EXIT_TICKS:-6000}"); do
     [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 0
     if [ $((tick % 20)) -eq 0 ]; then
       pid=$(jq -r '.pid // 0' "$WORKER_RUN_DIR/$RUN_ID/meta.json" 2>/dev/null) || pid=0

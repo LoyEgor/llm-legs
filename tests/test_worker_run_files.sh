@@ -677,6 +677,9 @@ knobs_changed_tests() {
   assert grep -A1 '^OUTCOME: ' <<<"$report" | grep -q '^KNOBS CHANGED: '
   printf '%s\n' "WORKDIR: $repo" settings.json >"$RUN_DIR/files"
   assert test "$(grep -c '^KNOBS CHANGED: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+  mkdir "$WORK/no-meta" && cp "$RUN_DIR/head-before" "$WORK/no-meta/" &&
+    printf '%s\n' "$WORK/outside/worker-model" >"$WORK/no-meta/files"
+  assert test "$(python3 "$ROOT/share/knobs.py" run "$WORK/no-meta" | grep -c '^KNOBS CHANGED: ')" -eq 1
   clear_stub
 }
 if suite_shard_owns 3 files-knobs; then knobs_changed_tests; fi

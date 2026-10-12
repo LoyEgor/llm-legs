@@ -21,6 +21,7 @@ REAL_HS="$(command -v hs || true)"
 # there: in a worktree or a sealed clone the installed copy is somebody else's, and a broken branch
 # edit would pass on it.
 . "$ROOT/share/test-scope.sh"
+. "$ROOT/tests/lib/hs-bounded.sh"
 PROJECTS=$(git_projects "$ROOT")
 if [ -z "${CHAT_SWITCH_LUA:-}" ]; then
   for lua_home in "$ROOT/hammerspoon/config" "$PROJECTS/hammerspoon" "$HOME/.hammerspoon"; do
@@ -1039,17 +1040,7 @@ LUA
 } > "$HARNESS"
 
 echo "PASS: claude-chat-switch shell ($asserts assertions); checking Hammerspoon harness"
-WALL_OUT=$(python3 - "$REAL_HS" "$HARNESS" <<'PYHS'
-import subprocess, sys
-try:
-    result = subprocess.run(["/usr/bin/lockf", "-k", "-t", "600", "/tmp/hs-cli.lock", sys.argv[1], "-t", "120", "-c", "return dofile([[" + sys.argv[2] + "]])"],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=730)
-    print(result.stdout, end="")
-    sys.exit(result.returncode)
-except subprocess.TimeoutExpired:
-    print("FAIL: Hammerspoon IPC did not answer within 730 seconds")
-    sys.exit(1)
-PYHS
+WALL_OUT=$(HS_BOUNDED_BIN="$REAL_HS" HS_BOUNDED_IPC_S=120 hs_bounded 600 -c "return dofile([[$HARNESS]])" 2>&1
 ); WALL_RC=$?
 [ "$WALL_RC" -eq 0 ] || printf '%s\n' "$WALL_OUT" >&2
 assert test "$WALL_RC" -eq 0

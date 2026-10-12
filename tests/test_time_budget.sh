@@ -671,6 +671,7 @@ for id_, day, backlog_, share in (("n1", 1, {"debt": 20, "speed": 5, "doctors": 
     json.dump({"id": id_, "started_at": "2026-10-0%dT02:00:00Z" % day, "finished_at": "2026-10-0%dT08:00:00Z" % day,
                "jobs": [{"ref": "x"}], "doctors_share": {"share": share}, "backlog": backlog_},
               open(os.path.join(goal_dir, id_ + ".json"), "w"))
+json.dump({"id": "n0", "finished_at": "2026-09-30T08:00:00Z", "jobs": [{"ref": "x"}]}, open(os.path.join(goal_dir, "n0.json"), "w"))
 seven(1)
 running = {"id": "n3", "started_at": "2026-10-03T02:00:00Z", "jobs": []}
 shown = night_spend.goal_lines(os.path.join(goal_dir, "n3.json"), running)

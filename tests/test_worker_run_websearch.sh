@@ -40,10 +40,7 @@ web_search_launch() { # brief vendor extra-arg...
   local file="$1" target="$2"
   shift 2
   clear_stub
-  "$RUNNER" start "$target" --brief "$file" --workdir "$workdir" "$@" \
-    >"$WORK/start.out" 2>"$WORK/start.err" || fail "web-search start $target failed: $(<"$WORK/start.err")"
-  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
-  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+  WORKER_TEST_BRIEF=$file WORKER_TEST_WORKDIR=$workdir start_ok "$target" "$@"
   WEB_SEARCH_ENTRY=$target
   assert await_done
 }

@@ -20,7 +20,10 @@ trap 'reliability_cleanup; rm -rf "$WORK"' EXIT
 
 case ${WORKER_RUN_TEST_CASE:-0} in
   0) ;;
-  *) suite_shard_owns() { [ "$2" = "$WORKER_RUN_TEST_CASE" ] && { [ -z "$suite_shard" ] || [ "${suite_shard%/*}" = "$1" ]; }; } ;;
+  *)
+    eval "$(declare -f suite_shard_owns | sed '1s/^suite_shard_owns/suite_shard_lib_owns/')"
+    suite_shard_owns() { suite_shard_lib_owns "$@" && [ "$2" = "$WORKER_RUN_TEST_CASE" ]; }
+    ;;
 esac
 reliability_tests() {
   local WORKER_RUN_DIR="$WORK/reliability-runs" WORKER_RUN_IDLE_S=0 WORKER_RUN_SILENT_S=0 WORKER_RUN_WALL_SETTLE_S=0

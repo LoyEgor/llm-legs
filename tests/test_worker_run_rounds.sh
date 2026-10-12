@@ -3,21 +3,7 @@
 # shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
-# For a case that reads no report: exit_code is the supervisor's last write, so the run is over
-# without paying for `wait`'s report.
-await_exit() {
-  local tick pid
-  for tick in $(seq 1 10000); do
-    [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 0
-    if [ $((tick % 20)) -eq 0 ]; then
-      pid=$(jq -r '.pid // 0' "$WORKER_RUN_DIR/$RUN_ID/meta.json" 2>/dev/null) || pid=0
-      [ "${pid:-0}" -le 0 ] 2>/dev/null || kill -0 "$pid" 2>/dev/null ||
-        [ -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 1
-    fi
-    sleep 0.05
-  done
-  return 1
-}
+AWAIT_EXIT_TICKS=10000
 
 if suite_shard_owns 1 rounds-walls; then
 # A brief with no first line cannot identify its run: RESUME is read off the top of it, and

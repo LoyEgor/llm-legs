@@ -3,6 +3,7 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HOOK="$ROOT/bin/worker-run-backstop.sh"
+. "$ROOT/share/processes.sh"
 WORK=$(mktemp -d)
 # A supervisor alive for as long as the suite: a `sleep 300` ended mid-suite under load, and every run read dead.
 ( while kill -0 $$ 2>/dev/null; do sleep 1; done ) &
@@ -51,10 +52,9 @@ ready() { local name i; for name in "$@"; do
   for i in $(seq 1000); do [ -e "$WORK/ready/$name" ] && break; sleep 0.01; done
   [ -e "$WORK/ready/$name" ] || fail "line ${BASH_LINENO[0]}: $name never started"; done; }
 wait_on() { rm -f "$WORK/ready/$1-$2"; "$WORK/bin/$1" wait "$2" & WAIT_PIDS="${WAIT_PIDS:-} $!"; ready "$1-$2"; }
-# Children listed before any kill: a loop whose sleep dies first starts its next wait, an orphan that holds
-# the suite's output open for good.
-end_waits() { local p kids=''; for p in $WAIT_PIDS; do kids="$kids $(pgrep -P "$p")"; done
-  kill $WAIT_PIDS $kids 2>/dev/null; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
+# The whole tree is stopped before any kill: a loop whose sleep dies first starts its next wait, an orphan that
+# holds the suite's output open for good.
+end_waits() { local p; for p in $WAIT_PIDS; do process_tree_end "$p" 0; done; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
 wait_on worker-run r1x
 assert_eq "" "$(stop)"
 assert_eq block "$(WORKER_RUN_BACKSTOP_CHAT_PID=$LIVE_PID stop | jq -r .decision)"

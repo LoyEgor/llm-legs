@@ -33,6 +33,7 @@ JQ_EPOCH='def epoch: if type == "number" then . elif type == "string" then
         else ((.h | tonumber) * 3600 + (.m | tonumber) * 60) * (if .s == "-" then -1 else 1 end) end)) // null)
   else null end;'
 JQ_OPEN='def open: .closed_at == null and .abandoned_at == null and .failed_at == null;'
+JQ_SPEED='def speed: test("^speed(-|$)");'
 JQ_AREA='def area: .area // (if .doctor == "updater" then "release" else "all" end);'
 JQ_BASE='def base: .base // (if .night then "refs/night/\(.night)/base" else null end);'
 JQ_COUNTS='"\(.problems | length) problems" + (if (.quiet // []) | length > 0 then " · \(.quiet | length) known, quiet" else "" end)'
@@ -160,7 +161,6 @@ UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("
 WIDTH = 200
 NIGHT_KINDS = ("speed", "hooks", "suites", "spend")
 SPEED_BATCH = 5
-OPEN_RUN_MAX_S = int(os.environ.get("DF_OPEN_RUN_MAX_S") or 43200)
 
 
 def kind_share():
@@ -464,19 +464,7 @@ def batch_speed(entries, speed):
     """Speed rows ride in runs of up to SPEED_BATCH rows whose component files lie in one repository; rows sharing a
     component file stay in one run however many, and a spend or suite audit runs alone. A row an open run under 12 h
     holds stays out: its batch would claim a fresh area beside that run."""
-    import calendar, time
-    held = {}
-    for path in glob.glob(os.path.join(RUNS, "*.json")):
-        run = read_json(path, {})
-        if not isinstance(run, dict) or run.get("doctor") != "harness" or not re.match(r"speed(-|$)", str(run.get("area") or "")) \
-                or any(run.get(key) for key in ("closed_at", "abandoned_at", "failed_at")):
-            continue
-        try:
-            began = calendar.timegm(time.strptime(run.get("launched_at") or run.get("created_at") or "", "%Y-%m-%dT%H:%M:%SZ"))
-        except ValueError:
-            continue
-        if time.time() - began < OPEN_RUN_MAX_S:
-            held.update((p.get("id"), run.get("id")) for p in dicts(run.get("problems")))
+    held = dict(line.split("\t") for line in os.environ.get("DF_HELD_SPEED", "").splitlines())
     for entry in entries:
         if entry["id"] in speed and entry["id"] in held:
             print("doctor-fix: %s stays with its open run %s" % (entry["id"], held[entry["id"]]), file=sys.stderr)
@@ -707,7 +695,7 @@ if __name__ == "__main__":
         ledger_sync(sys.argv[2])
 '
 
-py() { DF_OPEN_RUN_MAX_S=$OPEN_RUN_MAX_S DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
+py() { DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
 
 check_doc() { # doctor -> dies unless its document is fresh and speaks contract 1; prints its problem count
   local doc facts contract age status count
@@ -732,7 +720,7 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
     fi
     record_set "$id" '.abandoned_at = $t' --arg t "$(stamp)" || return 1
     printf 'run %s abandoned: open for %s h\n' "$id" "$((age / 3600))" >&2
-  done < <(all_records | jq -r --arg d "$doctor" --arg a "$area" --slurpfile p "$4" "$JQ_EPOCH $JQ_OPEN $JQ_AREA"' def speed: test("^speed(-|$)");
+  done < <(all_records | jq -r --arg d "$doctor" --arg a "$area" --slurpfile p "$4" "$JQ_EPOCH $JQ_OPEN $JQ_AREA $JQ_SPEED"'
     [$p[0][].id] as $ids | .[] | select(.doctor == $d and open and ($a == "all" or area == "all" or area == $a
       or ($a | speed) and (area | speed) and any(.problems[]?.id; IN($ids[]))))
     | [.id, ((now - ((.launched_at // .created_at) | epoch)) | floor)] | @tsv')
@@ -915,12 +903,19 @@ component_repos() { # id top -> the main checkouts other than top that hold the 
   done | sort -u
 }
 
+speed_held() { # -> "<problem id>\t<run id>" for each problem an open harness speed run under 12 h holds
+  all_records | jq -r --argjson max "$OPEN_RUN_MAX_S" "$JQ_EPOCH $JQ_OPEN $JQ_AREA $JQ_SPEED"' .[]
+    | select(.doctor == "harness" and open and (area | speed)) | .id as $run
+    | ((.launched_at // .created_at) | epoch) as $began | select($began != null and now - $began < $max)
+    | (.problems[]? | select(type == "object")) | [.id, $run] | @tsv'
+}
+
 launch_runs() { # doctor night-or-empty -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
   local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs=''
   local trial_turn=-1 # TEMP-SONNET-TRIAL(fixers)
   [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
   count=$(check_doc "$doctor") || exit 1
-  snap=$(py snapshot "$doctor" "$(doc_path "$doctor")" ${night:+"$night"}) || die "cannot snapshot the $doctor doctor"
+  snap=$(DF_HELD_SPEED=$(speed_held) py snapshot "$doctor" "$(doc_path "$doctor")" ${night:+"$night"}) || die "cannot snapshot the $doctor doctor"
   [ "$doctor" != harness ] || jq -r '.speed | select(. != null and (.selection // []) == [])
     | "harness: Speed selects nothing: \(.why_none // "no reason recorded")"' "$(doc_path harness)" >&2 2>/dev/null || true
   if [ -z "$night" ]; then

@@ -357,22 +357,7 @@ raw_check sid-hs Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 tail -1 "$J" > "$J.one" && mv "$J.one" "$J"
 
 echo "== Hammerspoon: the record the collector just wrote travels to the menu and the receipt"
-hs_bounded() {
-  python3 - "$@" <<'HSPY'
-import subprocess
-import sys
-
-try:
-    # The menu harness alone takes ~11s. -q: another client's print() lines otherwise reach this one.
-    result = subprocess.run(["/usr/bin/lockf", "-k", "-t", "600", "/tmp/hs-cli.lock", "hs", "-q", "-t", "120", *sys.argv[1:]], stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=730)
-except (FileNotFoundError, subprocess.TimeoutExpired):
-    raise SystemExit(124)
-sys.stdout.write(result.stdout)
-sys.stderr.write(result.stderr)
-raise SystemExit(result.returncode)
-HSPY
-}
+. "$ROOT/tests/lib/hs-bounded.sh"
 assert [ -s "$INSTRUCTION_WATCH_STATE/events.jsonl" ]
 WH="$WORK/watcher"
 mkdir -p "$WH/home/.claude/docs" "$WH/repo" "$WH/state"
@@ -380,7 +365,7 @@ printf 'watched doc\n' > "$WH/home/.claude/docs/x.md"
 printf '{"model":"opus","hooks":{}}\n' > "$WH/home/.claude/settings.json"
 printf 'repo rules\n' > "$WH/repo/CLAUDE.md"
 printf '#1\n%s\n' "$WH/repo/CLAUDE.md" > "$WH/state/ranked.txt"
-if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded -c 'return "ok"' 2>/dev/null)" = ok ]; then
+if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -q -c 'return "ok"' 2>/dev/null)" = ok ]; then
   # Isolate require and globals: the harness otherwise replaces the live module and starts it.
   menu_lua=$(cat <<LUA
 local env = setmetatable({}, { __index = _G })
@@ -408,7 +393,8 @@ env.dofile = function(path) return assert(loadfile(path, "t", env))() end
 return env.dofile([[$ROOT/tests/instruction_watch_menu_harness.lua]])
 LUA
 )
-  menu_out=$(hs_bounded -c "$menu_lua" 2>/dev/null) \
+  # -q: another client's print() lines otherwise reach this one.
+  menu_out=$(HS_BOUNDED_IPC_S=120 hs_bounded 600 -q -c "$menu_lua" 2>/dev/null) \
     || fail "the Hammerspoon menu harness threw"
   assert_eq "PASS: instruction-watch menu contract" "$(printf '%s\n' "$menu_out" | grep -v '^-- Loading extension: ')"
 else

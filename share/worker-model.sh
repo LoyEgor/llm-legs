@@ -673,7 +673,7 @@ worker_model_chat_pin_vendors() { # [vendor:]account → "<vendor> live|off" lin
       continue
     fi
     dir=$(worker_pool_dir "$vendor") || continue
-    [ ! -e "$dir/shielded/$name" ] && grep -qxF -- "$name" "$dir/disabled" 2>/dev/null || continue
+    [ ! -e "$dir/shielded/$name" ] && worker_pool_is_disabled "$dir" "$name" 2>/dev/null || continue
     jq -e --arg v "${vendor/#claudeb/claude}" --arg a "$name" '
       .vendors[$v] | select(type == "object" and .removed != true) |
       if (.accounts | type) == "array" then any(.accounts[]; (.account // "main") == $a and .removed != true)

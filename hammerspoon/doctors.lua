@@ -792,8 +792,8 @@ local function summaryTitle(name, value, status, history, now, stale, indexed)
   return styled(segments)
 end
 
-local function issueRow(amount, unit, what, format)
-  return fitRow({ title = styled({ { padded(format and string.format(format, amount) or rounded(amount), 4), style.RED },
+local function issueRow(amount, unit, what, format, tone)
+  return fitRow({ title = styled({ { padded(format and string.format(format, amount) or rounded(amount), 4), (tone == nil and style.RED) or tone or nil },
     { (unit and " " .. unit or "") .. "  " .. what } }), disabled = true })
 end
 
@@ -871,8 +871,7 @@ local function lostRows(rows)
     if r == "-" then
       out[#out + 1] = { title = "-" }
     elseif type(r) == "table" and tonumber(r[1]) then
-      local row = fitRow({ title = styled({ { padded(rounded(tonumber(r[1])), 4) }, { " min/day  " .. tostring(r[2]) } }),
-        disabled = true })
+      local row = issueRow(tonumber(r[1]), "min/day", tostring(r[2]), nil, false)
       local sub = lostRows(r[3])
       if #sub > 0 then row.menu, row.disabled = sub, nil end
       out[#out + 1] = row

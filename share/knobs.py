@@ -4,6 +4,8 @@ import re
 import subprocess
 import sys
 
+from spend import read_json
+
 KNOBS = (
     ("settings model/effort/thinking", r"(^|/)settings(\.[\w-]+)?\.json$",
      r"\"(model|effortLevel|alwaysThinkingEnabled|MAX_THINKING_TOKENS|modelSettings)\"\s*:"),
@@ -63,10 +65,9 @@ def run_changes(directory):
             listed = [l.rstrip("\n") for l in handle if l.strip() and not re.match(r"^(WORKDIR|UNKNOWN|PARTIAL): ", l)]
         with open(os.path.join(directory, "head-before"), errors="replace") as handle:
             base = handle.read().strip()
-        with open(os.path.join(directory, "meta.json")) as handle:
-            workdir = json.load(handle).get("workdir") or ""
-    except (OSError, ValueError):
+    except OSError:
         return []
+    workdir = read_json(os.path.join(directory, "meta.json"), {}).get("workdir") or ""
     inside = [p for p in listed if not p.startswith("/")]
     hits = {}
     if workdir and base and inside:

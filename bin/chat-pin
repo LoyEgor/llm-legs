@@ -39,7 +39,7 @@ show_state() {
     printf 'chat-pin: this chat pins workers to every %s pool account (*)%s; its reviews may use %s too\n' "$vendor" "$fast" "$vendor"
   else
     printf 'chat-pin: this chat pins workers to %s (%s)%s; its reviews may use %s too\n' "$value" "$vendor" "$fast" "$vendor"
-    ! grep -qxF -- "$value" "$(worker_pool_dir "$vendor")/disabled" 2>/dev/null ||
+    ! worker_pool_is_disabled "$(worker_pool_dir "$vendor")" "$value" 2>/dev/null ||
       printf 'chat-pin: %s stays switched off in the menu: only this chat spends it, never the night or another chat\n' "$value"
   fi
 }

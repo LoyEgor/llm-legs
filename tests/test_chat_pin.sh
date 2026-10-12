@@ -138,6 +138,11 @@ assert "$PIN" claude:shared
 assert chat_is 'claudeb_profile=shared'
 assert contains "$("$PIN")" 'shared stays switched off in the menu'
 rm -f "$CLAUDEB_DIR/disabled"
+# An unreadable disabled file fails closed: every account of that pool reads as switched off.
+assert "$PIN" codex:beta
+chmod 000 "$CODEXB_PROFILES_DIR/.codexb/disabled"
+assert contains "$("$PIN")" 'beta stays switched off in the menu'
+chmod 644 "$CODEXB_PROFILES_DIR/.codexb/disabled"
 assert "$PIN" delta
 # A vendor block with no accounts array is its one account, main, switched off like any other.
 printf '{"vendors": {"gemini": {}}}\n' >"$WORK/single.json"

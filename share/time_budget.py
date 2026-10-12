@@ -344,11 +344,7 @@ def run_session(run):
 
 
 def run_file(run, name):
-    try:
-        with open(os.path.join(night_spend.RUNS, str(run), name), errors="replace") as handle:
-            return handle.read().strip()
-    except OSError:
-        return None
+    return night_spend.read(os.path.join(night_spend.RUNS, str(run), name))
 
 
 def resumers(since):
@@ -393,7 +389,7 @@ def dead_runs(runs):
         if any(at > starts[r.get("run")] and name != run for s in sessions for at, name in later.get(s, ())):
             continue
         files = run_file(run, "files")
-        if files is None or any(not line.startswith("WORKDIR: ") for line in files.splitlines() if line):
+        if not os.path.exists(os.path.join(night_spend.RUNS, run, "files")) or any(not line.startswith("WORKDIR: ") for line in files.splitlines() if line):
             continue
         if run_file(run, "files-external") or run_file(run, "produced"):
             continue
@@ -1240,9 +1236,9 @@ def trend_lines(rows):
     return out
 
 
-def nights_upto(path):
-    """(started_at, path, night) of each night up to the one at path, oldest first."""
-    night = read_json(path, {})
+def nights_upto(path, night=None):
+    """(started_at, path, night) of each night up to the one at path (or the given night record), oldest first."""
+    night = read_json(path, {}) if night is None else night
     out = []
     for other in sorted(glob.glob(os.path.join(os.path.dirname(path), "*.json"))):
         candidate = read_json(other, {})
@@ -1250,6 +1246,14 @@ def nights_upto(path):
                 night.get("started_at", ""), night.get("id", "")):
             out.append((candidate["started_at"], other, candidate))
     return sorted(out, key=lambda n: n[:2])
+
+
+def finished_before(path, night=None, count=2):
+    """(started_at, path, night) of the last count finished nights with jobs before the night, oldest first."""
+    night = read_json(path, {}) if night is None else night
+    key = (night.get("started_at", ""), night.get("id", ""))
+    return [n for n in nights_upto(path, night) if (n[0], n[2].get("id", "")) < key
+            and n[2].get("finished_at") and n[2].get("jobs")][-count:]
 
 
 def night_report(worker_run, path):
@@ -1315,8 +1319,7 @@ def table_column(worker_run, path, night):
 
 def table_lines(worker_run, path):
     """This night against the two previous finished nights with jobs, oldest left, a column per night."""
-    *older, current = nights_upto(path)
-    nights = [n for n in older if n[2].get("finished_at") and n[2].get("jobs")][-2:] + [current]
+    nights = finished_before(path) + nights_upto(path)[-1:]
     day = lambda n, f: time.strftime(f, time.localtime(night_spend.epoch(n[0]))).lstrip("0")
     heads = [day(n, "%d %b") for n in nights]
     if len(set(heads)) < len(heads):

@@ -71,14 +71,10 @@ def round_line(bench, meta, started):
             confirmed[family(row["rater"])] += 1
     fixes = collections.Counter()
     for directory, run_meta, began in fixer_runs(os.path.basename(bench), started):
-        fixed = [r.get("finding") for r in night_spend.rows(f"{directory}/verdicts.jsonl")
-                 if r.get("kind") == "fixer" and r.get("outcome") == "fixed"]
+        fixed = sonnet_trial.fixed_findings(directory)
         if not fixed:
             continue
-        top = (sonnet_trial.git(run_meta.get("workdir"), "rev-parse", "--show-toplevel") or "").strip()
-        produced = [tuple(line.split("\t")[:3]) for line in night_spend.read(f"{directory}/produced").splitlines()
-                    if line.count("\t") >= 2]
-        record = sonnet_trial.fix_record(top, len(fixed), run_meta.get("ended_at") or began, produced)
+        record = sonnet_trial.directory_fix(directory, run_meta, began, len(fixed))
         haiku = sum(1 for i in fixed if isinstance(i, int) and 0 <= i < len(judged) and is_haiku(judged[i]["rater"]))
         outcome = "reverted" if record["reverted"] else "landed" if record["landed"] else "unlanded"
         fixes["fixed"] += len(fixed)

@@ -88,13 +88,20 @@ def round_runs(start):
         yield arm, os.path.basename(directory), directory, meta, int(parts[1])
 
 
-def round_fix(directory, meta, began):
-    fixes = sum(1 for r in night_spend.rows(f"{directory}/verdicts.jsonl")
-                if r.get("kind") == "fixer" and r.get("outcome") == "fixed")
+def fixed_findings(directory):
+    return [r.get("finding") for r in night_spend.rows(f"{directory}/verdicts.jsonl")
+            if r.get("kind") == "fixer" and r.get("outcome") == "fixed"]
+
+
+def directory_fix(directory, meta, began, fixes):
     top = (git(meta.get("workdir"), "rev-parse", "--show-toplevel") or "").strip()
     rows = [tuple(line.split("\t")[:3]) for line in night_spend.read(f"{directory}/produced").splitlines()
             if line.count("\t") >= 2]
     return fix_record(top, fixes, meta.get("ended_at") or began, rows)
+
+
+def round_fix(directory, meta, began):
+    return directory_fix(directory, meta, began, len(fixed_findings(directory)))
 
 
 def speed_fixes(ddir):
