@@ -40,14 +40,13 @@ recorded `component: unverified`, shown by `doctor-fix show` and `night-run repo
 | verdict | when | what you leave behind |
 |---|---|---|
 | `fixed` | a clear bug, or a component of ours that works as specified but misses its goal | the fix (a change or a deletion; deletions beat additions), a red-on-old-code test for P1/P2 or behaviour bugs (P3, fit, cleanup and speed refactors: existing suites green; speed keeps its work-not-done proof), a `fixes[]` entry and status `fixed-pending` per your doctor's section |
-| `ruled-out` | not a bug of ours | an `open` ledger row narrowed to this cause, the reason in its `note`, and a handoff proposing the dismissal to the owner |
-| `weather` | vendor-side or external | the same as `ruled-out` |
+| `ruled-out` | not a bug of ours | the reason in the row's `note`; `close` turns a harness row `ruled-out` until an occurrence after the ruling reopens it |
+| `weather` | vendor-side or external | an `open` row narrowed to this cause, the reason in its `note` |
 | `blind-spot` | cannot be measured yet | a ledger `blind_spots` row with `would_catch_if` |
 | `handoff` | research cannot settle it here, or it would loosen the judge; to Egor only as a trade (`Cost:`/`Loss:`/`Recommendation:` lines); never test speed or `menu_build` (`close` refuses it) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line and the row's `handoff` pointing at it. It is addressed to the next night, whose `night-run carry` makes it a job; a chat is its addressee only while live right now |
 
-Clear bugs are fixed, never handed off. A fixer never writes a `not-a-bug` or `weather` row: the
-narrowed `open` row keeps the cause on record without loosening the judge, and the owner decides the
-dismissal.
+Clear bugs are fixed, never handed off. A fixer never writes a `not-a-bug` or `weather` row: the owner
+dismisses.
 
 Done means the run is closed with every `fixed` row at `fixed-pending`. Proof is the doctor's later
 job (your section says what it counts); never wait for it.
@@ -167,8 +166,8 @@ files (`hammerspoon/automation_menu.lua`, `llm-legs/hammerspoon/llm-limits.lua`)
 
 ### Speed: same intelligence, less waiting
 
-A `speed-<lever>` run holds up to 5 rows of the Speed block (regressions or chosen `opportunity:`s) of one
-repository, more only when they share a component file; each row keeps its own decision line and proof, and carries its lever, saving and proof in `opportunity` and
+A `speed-<lever>` run holds every Speed row of one context, best first, and closes on its first decided
+row, the rest staying open; each row keeps its own decision line and proof, and carries its lever, saving and proof in `opportunity` and
 `docs/speed-doctor-design.md` §5 bounds what may change. Never touch a model, effort or thinking knob: `close` refuses any such added or
 removed line and names it (`docs/doctors-contract.md` §4).
 

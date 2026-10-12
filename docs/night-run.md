@@ -68,7 +68,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
          keep their label; `tests/test_doctors_menu.sh` checks every label against the rendered menu.
      - Each run gets a worktree on branch `night/<night-id>/<run-id>` and a brief file, as a day launch does
        off main; `docs/fix-orchestrator.md` dispatches and lands them.
-     - Speed gets at most 5 fixers in rank order (`SPEED_FIXERS`), each starting only inside a 6-hour
+     - Speed gets one fixer per shared context, each starting only inside a 6-hour
        wall-clock window from the night's `started_at`: `worker-run`
        runs `night-run speed-gate` once its slot is taken (a `speed-start` event); a first start past the window
        is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, its levers ranked
