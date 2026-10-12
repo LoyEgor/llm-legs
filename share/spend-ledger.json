@@ -397,6 +397,25 @@
    },
    "verdict": "cut",
    "note": "price is refusals only; replay of last week's 53 refusals: 51 pass on current code (word door open b50e5bf, quoted-message false catch 5cb3dc1, comment false catch claude-setup@9a58b25), 2 stay by design (unreadable-binary launches)"
+  },
+  {
+   "id": "hook:worker-git-guard.sh",
+   "title": "worker-git-guard.sh",
+   "audited_at": "2026-10-12T04:12:43+03:00",
+   "by": "harness-speed-spend-hook-worker-git-guard-sh-20261012T010234Z-5497",
+   "share": 0.000119,
+   "prices": {
+    "Workers · Hooks": 496.64621242756425,
+    "Workers · attachment: hook context": 2879.5939310547787,
+    "Doctors · attachment: hook context": 696.6429838946558,
+    "Doctors · Hooks": 252.30745007151472,
+    "Reviewers · Hooks": 4.96130445842753
+   },
+   "sources": {
+    "llm-legs/bin/worker-git-guard.sh": "650f87253c7020a427458471445489757a27aa51"
+   },
+   "verdict": "kept",
+   "note": "7d to 10-11: 53 blocks in 52 worker sessions (one repeat), each followed by a different call, ~1.5k each, priced mostly as the denied call's own output (tokenmap BLOCK_VALUE), the ~100-token reason ~7%; 9 were the --ours/--theirs conflict class cd8d51e6 fixed 10-10 (none recorded since 08:28Z), 2 harmless stash create/-h forms fixed in 91093929 (replay of 779 worker git commands: only those differ); the other 42 are its purpose (own-vs-foreign WIP is undecidable here); the one source lever, a TEST LOOP clause naming the cp + git show restore for mutation checks (~25 blocks), adds ~20 tokens to every brief (611 relays/7d) re-read each turn, more than it saves"
   }
  ]
 }
