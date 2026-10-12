@@ -1014,12 +1014,13 @@ pick_account() {
 # alone, so its idle account ranks first and would launch an id it does not serve.
 pick_account_listing() { # vendor exclude model
   local exclude=$2 claimed=''
-  PICKED_UNLISTED=''
+  PICKED_UNLISTED='' PICKED_SLUG=''
   while :; do
     [ "$1" != codex ] || claimed=$(worker_claims_fresh codex 2>/dev/null) || claimed=''
     pick_account "$1" "$exclude"
     [ "$1" = codex ] && [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 0
-    [ -z "$(worker_model_codex_slug "$3" "$PICKED_ACCOUNT")" ] || return 0
+    PICKED_SLUG=$(worker_model_codex_slug "$3" "$PICKED_ACCOUNT")
+    [ -z "$PICKED_SLUG" ] || return 0
     case ",$exclude," in *",$PICKED_ACCOUNT,"*) PICKED_ACCOUNT='' PICKED_RC=3; return 0 ;; esac
     # The picker claimed it for this launch; a claim someone else already held stays theirs.
     grep -qxF -- "$PICKED_ACCOUNT" <<<"$claimed" || worker_claims_release codex "$PICKED_ACCOUNT" || :
@@ -2823,8 +2824,10 @@ start_run() {
   fi
   if [ "$vendor" = codex ]; then
     slug_account=$explicit_account
-    model_id=$(worker_model_codex_slug "$model" "$slug_account") || model_id=''
-    [ -n "$model_id" ] || [ -z "$slug_account" ] || refuse_codex_model "$model"
+    if [ -n "$slug_account" ]; then
+      model_id=$(worker_model_codex_slug "$model" "$slug_account") || model_id=''
+      [ -n "$model_id" ] || refuse_codex_model "$model"
+    fi
   fi
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   refuse_live_run "$brief" "$resume"
@@ -2942,7 +2945,12 @@ start_run() {
     model=$value
   fi
   if [ "$vendor" = codex ] && [ "$account" != "$slug_account" ]; then
-    value=$(worker_model_codex_slug "$model" "$account") && [ -n "$value" ] && model_id=$value
+    if [ -n "${PICKED_SLUG:-}" ] && [ "$account" = "$PICKED_ACCOUNT" ]; then
+      model_id=$PICKED_SLUG
+    else
+      model_id=$(worker_model_codex_slug "$model" "$account") && [ -n "$model_id" ] ||
+        model_id=$(worker_model_codex_slug "$model") || model_id=''
+    fi
     [ -n "$model_id" ] || refuse_codex_model "$model"
   fi
   [ "$vendor" != claudeb ] || [ -n "$resume" ] || own_headroom_guard "$account"

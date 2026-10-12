@@ -415,12 +415,12 @@ outside_worktree_tests() {
       assert grep -qx bin/named "$RUN_DIR/files"
       assert grep -q bin/named "$RUN_DIR/produced"
     fi
-    note="UNKNOWN: transcript names a write outside the snapshotted repository; no content baseline was recorded: $outside/edited"
-    assert grep -qxF "$note" "$RUN_DIR/files-note"
-    assert grep -qxF "RUN-FILES-NOTE: $note" <<<"$("$RUNNER" report "$RUN_ID")"
-    note="UNKNOWN: transcript names a write outside the snapshotted repository; no content baseline was recorded: $outside/second"
-    assert grep -qxF "$note" "$RUN_DIR/files-note"
-    assert grep -qxF "RUN-FILES-NOTE: $note" <<<"$("$RUNNER" report "$RUN_ID")"
+    report=$("$RUNNER" report "$RUN_ID")
+    for written in edited second; do
+      note="UNKNOWN: transcript names a write outside the snapshotted repository; no content baseline was recorded: $outside/$written"
+      assert grep -qxF "$note" "$RUN_DIR/files-note"
+      assert grep -qxF "RUN-FILES-NOTE: $note" <<<"$report"
+    done
     assert grep -q '^PARTIAL: .*outside the snapshotted repository' "$RUN_DIR/files"
     assert_fails grep -q '^UNKNOWN: ' "$RUN_DIR/files"
     assert_fails grep -q "$outside/edited" "$RUN_DIR/produced"

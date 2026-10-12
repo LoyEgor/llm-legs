@@ -1851,7 +1851,9 @@ gemini_order=$(printf '%s\n' "$gemini_accounts_list" | account_order_json gemini
 elevenlabs_timeout=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
 elevenlabs_sync=--sync
 [ "$write_cache" = 1 ] || elevenlabs_sync=''
-elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" $elevenlabs_sync 2>/dev/null) ||
+elevenlabs=''
+[ -n "${ELEVENLABS_KEYS:-}" ] && [ ! -e "${ELEVENLABS_KEYS/#\~/$HOME}" ] ||
+  elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" $elevenlabs_sync 2>/dev/null) ||
   elevenlabs=''
 
 if [ "$write_cache" -eq 1 ]; then

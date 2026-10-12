@@ -780,14 +780,17 @@ printf '%s\n' "\$*" >>"$WORK/sed-runs"
 exec /usr/bin/sed "\$@"
 EOF
 chmod +x "$EL_BIN/python3" "$EL_BIN/date" "$EL_BIN/sed"
-el_collect() {
-  PATH="$EL_BIN:$PATH" HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" EL_BALANCE="$1" bash "$SCRIPT" --json |
-    jq -c '.elevenlabs'
+: >"$WORK/elevenlabs-keys"
+el_collect() { # balance [keys-file]
+  PATH="$EL_BIN:$PATH" HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" EL_BALANCE="$1" \
+    ELEVENLABS_KEYS="${2:-$WORK/elevenlabs-keys}" bash "$SCRIPT" --json | jq -c '.elevenlabs'
 }
 [ "$(el_collect '{"as_of":1,"accounts":[{"account":"a"}]}')" = '{"as_of":1,"accounts":[{"account":"a"}]}' ] \
   || fail "a read ElevenLabs balance did not land in the store"
 [ "$(el_collect '')" = '{"as_of":1,"accounts":[{"account":"a"}]}' ] \
   || fail "a failed ElevenLabs read dropped the previous reading"
+[ "$(el_collect '{"as_of":2,"accounts":[]}' "$WORK/no-elevenlabs-keys")" = '{"as_of":1,"accounts":[{"account":"a"}]}' ] \
+  || fail "a missing ElevenLabs key file dropped the previous reading"
 [ "$(tr '\n' ' ' <"$WORK/elevenlabs-lock")" = 'free free ' ] \
   || fail "the ElevenLabs balance was read under the store lock, holding every other writer behind its network calls"
 [ "$(grep -c elevenlabs "$WORK/python-runs")" = 2 ] \

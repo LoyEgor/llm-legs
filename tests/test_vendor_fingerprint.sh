@@ -154,7 +154,12 @@ taken() {
 }
 
 # The first check is the baseline: every installed vendor is recorded and nothing is reported.
-check_all || fail "check exited non-zero"
+mkdir -p "$WORK/jq-count"
+printf '#!/usr/bin/env bash\necho >>%q\nexec %q "$@"\n' "$WORK/jq-count/runs" "$(command -v jq)" >"$WORK/jq-count/jq"
+chmod +x "$WORK/jq-count/jq"
+PATH="$WORK/jq-count:$PATH" check_all || fail "check exited non-zero"
+# Each facet is one jq, not a parse-slurp-wrap chain of three (94 before).
+assert [ "$(wc -l <"$WORK/jq-count/runs")" -le 56 ]
 for vendor in codex grok gemini claude; do assert test -s "$STATE/fingerprints/$vendor.json"; done
 assert [ "$(events)" = 0 ]
 assert [ ! -s "$OPENED" ]

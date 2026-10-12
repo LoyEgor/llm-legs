@@ -149,6 +149,21 @@ assert await_done
 assert grep -q '^ACCOUNT: picked (codex)$' <<<"$("$RUNNER" report "$RUN_ID")"
 unset PICK_STDERR
 
+# A picked codex launch reads its catalog once at start and once in the supervisor, no more.
+mkdir -p "$WORK/jq-count"
+printf '#!/usr/bin/env bash\nfor a; do [ "$a" != "$CODEXB_MODELS_CACHE" ] || echo >>%q; done\nexec %q "$@"\n' \
+  "$WORK/jq-count/reads" "$(command -v jq)" >"$WORK/jq-count/jq"
+chmod +x "$WORK/jq-count/jq"
+PATH="$WORK/jq-count:$PATH" "$ROOT/bin/codexb" models --own --family astra --account picked >/dev/null
+lookup_reads=$(wc -l <"$WORK/jq-count/reads")
+: >"$WORK/jq-count/reads"
+clear_stub
+set_config 'codex_effort=medium'
+PATH="$WORK/jq-count:$PATH" start_ok codex
+assert test "$(wc -l <"$WORK/jq-count/reads")" -eq $((2 * lookup_reads))
+assert test "$lookup_reads" -gt 0
+assert await_done
+
 for vendor in codex gemini; do
   clear_stub
   set_config 'codex_effort=medium' 'gemini_model=flash38' 'gemini_effort=high'

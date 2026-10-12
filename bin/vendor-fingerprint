@@ -92,10 +92,12 @@ put_installs() { # vendor
     version=$(version_of timeout_command 30 "$path" --version)
     [ "$version" = "$primary_version" ] && continue
     printf '%s\t%s\n' "$path" "${version:-unknown}"
-  done | LC_ALL=C sort -u | jq -R 'split("\t") | {(.[0]): .[1]}' | jq -s 'add // {}' | put installs
+  done | LC_ALL=C sort -u | put_pairs installs
 }
 
 put() { jq -c --arg k "$1" '{k: $k, v: .}' >>"$work/facets.jsonl"; }
+put_lines() { jq -Rnc --arg k "$1" '{k: $k, v: [inputs]}' >>"$work/facets.jsonl"; }
+put_pairs() { jq -Rnc --arg k "$1" '{k: $k, v: ([inputs | split("\t") | {(.[0]): .[1]}] | add // {})}' >>"$work/facets.jsonl"; }
 fail() { printf '%s\t%s\n' "$1" "$2" >>"$work/failed.tsv"; }
 
 put_text() { # facet command...
@@ -106,7 +108,7 @@ put_text() { # facet command...
     return 0
   fi
   printf '%s\n' "$out" | V="$version" perl -pe 's/\e\[[0-9;]*[A-Za-z]//g; s/\Q$ENV{V}\E/<version>/g if length $ENV{V}' |
-    jq -Rs . | put "$facet"
+    jq -Rsc --arg k "$facet" '{k: $k, v: .}' >>"$work/facets.jsonl"
 }
 
 # Packed string tables glue an id onto the next string (gemini-3.1-pro-highparse mime type): a lowercase
@@ -159,7 +161,7 @@ put_ids() { # vendor
     unglue >"$work/ids"
   # An empty dump means the binary moved or changed format, not that the vendor dropped its models.
   [ -s "$work/ids" ] || { fail ids local; return 0; }
-  jq -R . "$work/ids" | jq -s . | put ids
+  put_lines ids <"$work/ids"
 }
 
 put_docs() { # facet directory
@@ -167,7 +169,7 @@ put_docs() { # facet directory
   [ -d "$2" ] || { fail "$1" local; return 0; }
   find "$2" -type f ! -name '.*' 2>/dev/null | LC_ALL=C sort | while IFS= read -r file; do
     printf '%s\t%s\n' "${file#"$2"/}" "$(shasum -a 256 <"$file" | cut -c1-16)"
-  done | jq -R 'split("\t") | {(.[0]): .[1]}' | jq -s 'add // {}' | put "$1"
+  done | put_pairs "$1"
 }
 
 codex_facets() {
@@ -175,7 +177,7 @@ codex_facets() {
   put_text 'help: codex --help' codex --help
   put_text 'help: codex exec --help' codex exec --help
   NO_COLOR=1 timeout_command 60 codex features list 2>/dev/null </dev/null |
-    awk 'NF > 1 { $NF = ""; sub(/ +$/, ""); print }' | jq -R . | jq -s . >"$work/features"
+    awk 'NF > 1 { $NF = ""; sub(/ +$/, ""); print }' | jq -Rn '[inputs]' >"$work/features"
   if [ "$(jq length "$work/features" 2>/dev/null || printf 0)" -gt 0 ]; then put features <"$work/features"; else fail features local; fi
   while IFS= read -r home; do homes+=("$home"); done < <(codex_homes "$version")
   if [ "${#homes[@]}" -gt 0 ]; then
@@ -201,7 +203,7 @@ codex_facets() {
       jq -r 'paths(type == "string" and length > 300) as $p | [($p | map(tostring) | join(".")), (getpath($p) | @base64)] | @tsv' \
         "$work/catalog" | while IFS=$'\t' read -r key text; do
         printf '%s\t%s\n' "$key" "$(printf '%s' "$text" | base64 -D 2>/dev/null | shasum -a 256 | cut -c1-16)"
-      done | jq -R 'split("\t") | {(.[0]): .[1]}' | jq -s 'add // {}' | put catalog_text
+      done | put_pairs catalog_text
     else
       fail catalog local
       fail catalog_text local
@@ -215,8 +217,9 @@ codex_facets() {
     fail docs remote
   fi
   jq -r '.codex.divergence // [] | .[]' "$state_dir/state.json" 2>/dev/null >"$work/divergence"
-  LC_ALL=C grep $'^catalog\t' "$work/divergence" | jq -R . | jq -s . | put divergence
-  LC_ALL=C grep $'^client\t' "$work/divergence" | jq -R 'split("\t") | {(.[1]): .[2]}' | jq -s 'add // {}' | put foreign_clients
+  LC_ALL=C grep $'^catalog\t' "$work/divergence" | put_lines divergence
+  LC_ALL=C grep $'^client\t' "$work/divergence" |
+    jq -Rnc '{k: "foreign_clients", v: ([inputs | split("\t") | {(.[1]): .[2]}] | add // {})}' >>"$work/facets.jsonl"
 }
 
 grok_facets() {
@@ -233,7 +236,7 @@ grok_facets() {
 gemini_facets() {
   put_text 'help: agy --help' agy --help
   if timeout_command 30 agy models </dev/null 2>/dev/null | LC_ALL=C grep -E $'^[a-z0-9][a-z0-9._-]*\t' >"$work/models"; then
-    jq -R . "$work/models" | jq -s . | put catalog
+    put_lines catalog <"$work/models"
     cut -f1 "$work/models" >"$work/served"
   else
     fail catalog remote
@@ -259,7 +262,7 @@ snapshot() { # vendor -> {vendor, version, facets, failed}
   : >"$work/facets.jsonl"
   : >"$work/failed.tsv"
   : >"$work/served"
-  jq -n --arg v "$version" '$v' | put version
+  jq -nc --arg v "$version" '{k: "version", v: $v}' >>"$work/facets.jsonl"
   put_installs "$vendor"
   "${vendor}_facets"
   put_ids "$vendor"
