@@ -133,7 +133,7 @@ import glob, importlib.machinery, importlib.util, json, os, re, subprocess, sys
 ROOT, PROJECTS, RUNS, HOME, DOCS = (os.environ["DF_" + k] for k in ("ROOT", "PROJECTS", "RUNS", "HOME", "DOCS"))
 sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
-from fix_commit import FIX_KEYS, fix_record_faults, fix_root_faults, load_merged, main_checkout, sync_settled
+from fix_commit import FIX_KEYS, fix_record_faults, fix_root_faults, load_merged, main_checkout, record_ruled, sync_settled
 from spend import read_json
 from knobs import changed_lines, knob_site
 import limit_hit
@@ -695,6 +695,14 @@ if __name__ == "__main__":
         fix_faults(record_file, doctor)
     elif command == "ledger-sync":
         ledger_sync(sys.argv[2])
+    elif command == "rule-out":
+        record = read_json(sys.argv[2], {})
+        module = doctor_module(record.get("doctor"))
+        if module and hasattr(module, "settled_path") and "ruled-out" in getattr(module, "LEDGER_STATUSES", ()):
+            rows = {r.get("id") for r in merged_ledger(record["doctor"]).get("rows") or () if isinstance(r, dict)}
+            ruled = [d["id"] for d in dicts(record.get("decisions")) if d.get("verdict") == "ruled-out" and d.get("id") in rows]
+            if ruled:
+                record_ruled(module.settled_path(), ruled, record["closed_at"])
 '
 
 py() { DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
@@ -1277,6 +1285,7 @@ close_run() { # id --decisions <file> note...
     exit 1
   fi
   (locked commit_close "$id" "$decisions" "$judge_now" "$*" "$unverified") || exit 1
+  [ "$doctor" != harness ] || ! grep -q $'\truled-out\t' "$decisions" || py rule-out "$file" || printf 'doctor-fix: run %s closed, but its ruled-out rows stay open: the overlay was not written\n' "$id" >&2
   printf 'run %s closed: %s decisions\n' "$id" "$(jq '.decisions | length' "$file")"
   [ ${#left[@]} -eq 0 ] || printf 'run %s left %s rows open; they rank again the next night: %s\n' "$id" "${#left[@]}" "${left[*]}"
 }

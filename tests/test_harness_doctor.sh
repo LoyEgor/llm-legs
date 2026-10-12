@@ -844,6 +844,14 @@ long_b = [["c", T - 990 + i * 60, "a-very-long-project-name-two", "Bash", 1, 8.0
 ids = [p["id"] for p in m.problems_from([m.waits_section(long_a + long_b, [], [], week, T)], ledger0, {}, T)
        if p["rule"] == "wait"]
 check(len(set(ids)) == 2 and not any("…" in i for i in ids), "problem ids come from identity, never a clipped label")
+ruled = lambda at: {"rows": [{"id": "wait-ruled", "status": "ruled-out",
+                              "ruled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at)),
+                              "match": {"rule": "wait", "ident": "bash:alpha"}}]}
+judged_ruled = lambda at: [(p["id"], p["state"]) for p in m.problems_from([m.waits_section(slow, [], [], week, T)],
+                                                                          ruled(at), {}, T) if p["rule"] == "wait"]
+check(judged_ruled(T) == [] and judged_ruled(T - 86400) == [("wait-ruled", "open")]
+      and not m.ledger_faults(ruled(T)),
+      "a ruled-out row stays closed over occurrences before its ruling and reopens on one after it")
 
 loose = m.hooks_section(hooks, [], [], [], 0, quiet_hook, quiet_hook, T, unjournaled=set())
 flag = [x for x in loose["lead"] if x.get("key") == "hooks:unjournaled"]

@@ -5476,7 +5476,7 @@ SEEN_GAP_S = 86400
 SEEN_KEEP_S = 30 * 86400
 LEVELS = {"red": 2, "watch": 1}
 DISMISSED = ("not-a-bug", "weather")
-LEDGER_STATUSES = ("open", "fixed-pending", "fixed") + DISMISSED
+LEDGER_STATUSES = ("open", "fixed-pending", "fixed", "ruled-out") + DISMISSED
 IDENT_TOKEN_RE = re.compile(r"\\[dDwWsSbBAZ]|\\(.)|\[(?:\\.|[^\]])*\]|\{\d*,?\d*\}|[.^$*+?()|]|(.)", re.S)
 
 
@@ -5740,6 +5740,10 @@ def problems_from(sections, ledger, state, now, extra=(), covered=None, speed=No
         if not v["level"] or (entry and entry.get("status") in DISMISSED):
             continue
         times = [t for t in (at_epoch(e["at"]) for e in v["evidence"]) if t]
+        if entry and entry.get("status") == "ruled-out":
+            ruled = at_epoch(entry.get("ruled_at")) or now
+            if not (any(t > ruled for t in times) or (not times and now - v["window_h"] * 3600 >= ruled)):
+                continue
         record_rate(rates, v, times, now)
         if v["level"] == "watch" and entry and entry.get("status") in ("fixed", "fixed-pending"):
             continue
@@ -5749,7 +5753,7 @@ def problems_from(sections, ledger, state, now, extra=(), covered=None, speed=No
             state_name = "watch"
         elif not entry:
             state_name = "new"
-        elif entry.get("status") == "open" or not fix_at:
+        elif entry.get("status") in ("open", "ruled-out") or not fix_at:
             state_name = "open"
         elif any(t > fix_at for t in times) or (not times and now - v["window_h"] * 3600 >= fix_at):
             state_name = "regressed"

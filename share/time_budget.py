@@ -1377,10 +1377,11 @@ def table_column(worker_run, path, night, goals, was):
     problems = row.get("problems") or [None, None]
     mix = row.get("model_mix") or {}
     debt, debt_was = ((g.get("backlog") or {}).get("debt") for g in (goals, was))
-    change = "" if debt is None or not debt_was else " %+d %%" % round(100.0 * (debt - debt_was) / debt_was)
+    change = "" if debt is None or debt_was is None else " =" if debt == debt_was else " %s%s" % (
+        "↑" if debt > debt_was else "↓", kilo(abs(debt - debt_was)))
     return [
         ("duration", show(row.get("hours"), "%.1f h")),
-        ("unreviewed", dash if debt is None else kilo(debt) + change.replace("-", "\u2212")),
+        ("unreviewed", dash if debt is None else kilo(debt) + change),
         ("Doctors 7d", show((goals.get("doctors_share") or {}).get("share"), "%.1f %%")),
         ("Speed", show((goals.get("backlog") or {}).get("speed"))),
         ("spend", show(row.get("spend_m"), "%.1fM")),

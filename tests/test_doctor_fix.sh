@@ -1084,10 +1084,20 @@ assert grep -qxF "no row decided: a Speed run closes once it decided its first r
 assert_fails grep -qF ': undecided' "$WORK/err"
 head -n 2 "$WORK/sd" >"$WORK/sd2"
 # A live settings or worker-model change since launch may be Egor's own /model: a note, never a refusal.
+cp "$WORK/ledgers/harness.json" "$WORK/harness-ledger-kept"
+jq '.rows += [{id: "opportunity:chat/tools", status: "open", title: "t", match: {rule: "opportunity", ident: "chat/tools"}}]' \
+  "$WORK/harness-ledger-kept" >"$WORK/ledgers/harness.json"
 fix close "$sid" --decisions "$WORK/sd2" "a speed diff" >"$WORK/closed" 2>"$WORK/err" ||
   fail "a speed diff touching no knob stays open: $(cat "$WORK/err")"
 assert grep -qF "run $sid left 3 rows open; they rank again the next night: opportunity:" "$WORK/closed"
 assert jqe '.decisions | length == 2' "$(record "$sid")"
+# A ruled-out verdict with its evidence closes its ledger row, stamped with the close time; ids no row holds stay out.
+assert jqe --arg t "$(jq -r .closed_at "$(record "$sid")")" '.rows | keys == ["opportunity:chat/tools"]
+  and .["opportunity:chat/tools"].ruled == $t' "$WORK/harness/ledger-settled.json"
+assert [ "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import fix_commit
+row = fix_commit.load_merged(sys.argv[2], sys.argv[3])["rows"][-1]; print(row["status"], row["ruled_at"])' \
+  "$ROOT/share" "$WORK/ledgers/harness.json" "$WORK/harness/ledger-settled.json")" = "ruled-out $(jq -r .closed_at "$(record "$sid")")" ]
+mv "$WORK/harness-ledger-kept" "$WORK/ledgers/harness.json" && rm "$WORK/harness/ledger-settled.json"
 live() { grep -qF "doctor-fix: note: live model/effort knob changed since launch, $1: $2" "$WORK/err"; }
 assert live "settings model/effort/thinking" "$WORK/settings.json:$(grep -n '"model"' "$WORK/settings.json" | cut -d: -f1): +"
 assert live "worker-model" "$HOME/.claude/worker-model:1: +claudeb_model=sonnet"

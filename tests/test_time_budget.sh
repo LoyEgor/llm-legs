@@ -705,13 +705,19 @@ def table():
 
 shown, cells = table()
 check(shown[0].split() == ["1", "Oct", "2", "Oct", "3", "Oct"], "the three newest nights: %s" % shown[0])
-check(cells["unreviewed"] == ["20 \u221220 %", "14 \u221230 %", "7 \u221250 %"]
+check(cells["unreviewed"] == ["20 \u21935", "14 \u21936", "7 \u21937"]
       and cells["Doctors 7d"] == ["30.0 %", "26.5 %", "22.9 %"] and cells["Speed"] == ["5", "4", "3"],
       "goal rows, the oldest column's debt against the night before it:\n" + "\n".join(shown))
 check(re.search(r"^to plateau +4$", "\n".join(shown), re.M)
       and len({len(l) for l in shown}) == 1, "one plateau value, in this night's column:\n" + "\n".join(shown))
 check(cells["Opus spend"] == ["96 %", "\u2013", "85 %"] and cells["vs all-Opus"] == ["\u00d70.96", "\u2013", "\u00d70.39"]
       and "Fable spend" not in cells, "the model mix of each night, no Fable row without Fable spend: %s" % cells)
+unreviewed = lambda debt, was: dict(T.table_column("/usr/bin/false", os.path.join(goal_dir, "n3.json"), running,
+                                                   {"backlog": {"debt": debt}}, {"backlog": {"debt": was}}))["unreviewed"]
+check([unreviewed(2300, 1100), unreviewed(7, 7), unreviewed(40, 0), unreviewed(7, None), unreviewed(None, 7)]
+      == ["2.3k ↑1.2k", "7 =", "40 ↑40", "7", "–"],
+      "unreviewed lines grow, plateau or shrink against the night before in lines; a night with no stored count is a "
+      "dash and the night after it shows its count alone")
 check(not hasattr(night_spend, "goal_lines"), "the goals live in the table only, never in a second block")
 mixes["n2"] = {"opus": 40.0, "fable": 55.0, "vs_opus": 1.4}
 check(table()[1]["Fable spend"] == ["\u2013", "55 %", "\u2013"], "a Fable row once any shown night spent on Fable")

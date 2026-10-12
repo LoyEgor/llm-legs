@@ -13,6 +13,7 @@ CLOCK_SLACK_S = 60
 FIX_KEYS = frozenset({"at", "by", "files", "in", "regressed_at"})
 SETTLED_FILE = "ledger-settled.json"
 SETTLED_KEYS = ("in", "regressed_at")
+RULED = "ruled"
 
 
 def read_settled(path):
@@ -32,6 +33,9 @@ def merge_settled(ledger, settled):
         return ledger
     for row in ledger["rows"]:
         found = settled.get(row.get("id")) if isinstance(row, dict) and isinstance(row.get("id"), str) else None
+        ruled = found.get(RULED) if isinstance(found, dict) else None
+        if isinstance(ruled, str) and row.get("status") in ("open", "ruled-out") and str(row.get("ruled_at") or "") < ruled:
+            row["status"], row["ruled_at"] = "ruled-out", ruled
         fixes = row.get("fixes") if isinstance(found, dict) else None
         if not isinstance(fixes, list) or not fixes:
             continue
@@ -71,6 +75,18 @@ def record_settled(path, rows):
         entry.update({key: fix[key] for key in SETTLED_KEYS if fix.get(key)})
         if row.get("status") == "fixed":
             entry["status"] = "fixed"
+    write_settled(path, settled)
+
+
+def record_ruled(path, ids, at):
+    """A fixer's ruled-out verdict closes each row until the doctor sees it again after `at`."""
+    settled = read_settled(path)
+    for row_id in ids:
+        settled.setdefault(row_id, {})[RULED] = at
+    write_settled(path, settled)
+
+
+def write_settled(path, settled):
     temporary = "%s.tmp.%d" % (path, os.getpid())
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
