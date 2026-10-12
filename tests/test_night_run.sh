@@ -1203,7 +1203,7 @@ spend           12.5M    0.0M    0.0M
   fixers         8.0M    0.0M    0.0M
   reviews        3.0M    0.0M    0.0M
   night chat     1.5M    0.0M    0.0M
-on Opus             –       –       –
+Opus work           –       –       –
 vs all-Opus         –       –       –
 landed              2       1       1
 left                1       0       0
@@ -1225,7 +1225,7 @@ suites ✓/✗          –       –    15/1" ]
 # A row cached before Opus-eq pricing is re-priced from the live stores once and stored in the new unit.
 assert [ "$(jq -c '[.spend_m, .spend_unit, .hours]' "$TB/doctors/night-ledger/20260204T000000Z-e4f5.json")" = '[0.0,"Opus-eq",6.0]' ]
 # A row cached before the model mix gains it from the live stores once: a night with no spend has none.
-assert [ "$(jq -c '[.spend_mix, .spend_m]' "$TB/doctors/night-ledger/20260202T000000Z-a0b1.json")" = '[{},12.5]' ]
+assert [ "$(jq -c '[.model_mix, .spend_m]' "$TB/doctors/night-ledger/20260202T000000Z-a0b1.json")" = '[{},12.5]' ]
 assert_fails grep -qE 'Doctors %|debt ln' "$WORK/table-report"
 assert [ "$(python3 -c 'import sys; print(len({len(l.rstrip("\n")) for l in sys.stdin}))' <"$WORK/table-block")" = 1 ]
 assert [ "$(head -1 "$WORK/table-block" | wc -w | tr -d ' ')" = 6 ]

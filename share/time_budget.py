@@ -1155,7 +1155,7 @@ def ledger_row(worker_run, path, night):
             "regressed": sum((s or {}).get("regressed", 0) for s in states.values()),
             "touched_unproven": len(touched[0]) if touched else 0,
             "spend_m": round(spent["total"] / 1e6, 1), "spend_kinds": spend_kinds(spent),
-            "spend_unit": night_spend.UNIT, "spend_mix": night_spend.mix(spent), "improvements": improvements(night, path, worker_run),
+            "spend_unit": night_spend.UNIT, "model_mix": night_spend.mix(spent), "improvements": improvements(night, path, worker_run),
             "deferred": "no debt round" if not debt else (
                 "debt round %s" % debt[0].get("state") if all(j.get("state") != "merged" for j in debt) else None)}
 
@@ -1176,10 +1176,10 @@ def cached_row(worker_run, path):
             for item in row.get("improvements") or ():
                 item["spend_m"] = fresh.get(item["ref"], 0.0)
             row.update(spend_m=round(spent["total"] / 1e6, 1), spend_kinds=spend_kinds(spent),
-                       spend_unit=night_spend.UNIT, spend_mix=night_spend.mix(spent))
+                       spend_unit=night_spend.UNIT, model_mix=night_spend.mix(spent))
             write_json(ledger_cache(night["id"], path), row)
-        elif "spend_mix" not in row:
-            row["spend_mix"] = night_spend.mix(night_spend.spend(night, worker_run))
+        elif "model_mix" not in row:
+            row["model_mix"] = night_spend.mix(night_spend.spend(night, worker_run))
             write_json(ledger_cache(night["id"], path), row)
         stale = [i for i in row.get("improvements") or () if "files" not in i]
         if stale:
@@ -1294,7 +1294,7 @@ def table_column(worker_run, path, night, goals, was):
     show = lambda v, f="%s": dash if v is None else f % v
     doctors = ("llm", "harness", "updater", "code", "system")
     problems = row.get("problems") or [None, None]
-    mix = row.get("spend_mix") or {}
+    mix = row.get("model_mix") or {}
     debt, debt_was = ((g.get("backlog") or {}).get("debt") for g in (goals, was))
     change = "" if debt is None or not debt_was else " %+d %%" % round(100.0 * (debt - debt_was) / debt_was)
     return [
@@ -1306,8 +1306,8 @@ def table_column(worker_run, path, night, goals, was):
         ("  fixers", show(kinds.get("fixers"), "%.1fM")),
         ("  reviews", show(kinds.get("reviews"), "%.1fM")),
         ("  night chat", show(kinds.get("orchestrator"), "%.1fM")),
-        ("on Opus", show(mix.get("opus"), "%.0f %%")),
-        ("on Fable", show(mix.get("fable"), "%.0f %%")),
+        ("Opus work", show(mix.get("opus"), "%.0f %%")),
+        ("Fable work", show(mix.get("fable"), "%.0f %%")),
         ("vs all-Opus", show(mix.get("vs_opus"), "\u00d7%.2f")),
         ("landed", str(states["merged"])),
         ("left", str(states["left"])),
@@ -1350,8 +1350,8 @@ def table_lines(worker_run, path):
     for i, column in enumerate(columns):
         at = next(n for n, (label, _) in enumerate(column) if label == "Speed") + 1
         column.insert(at, ("to plateau", plateau if i == len(columns) - 1 else ""))
-    if all(dict(c)["on Fable"] == "\u2013" for c in columns):
-        columns = [[cell for cell in c if cell[0] != "on Fable"] for c in columns]
+    if all(dict(c)["Fable work"] == "\u2013" for c in columns):
+        columns = [[cell for cell in c if cell[0] != "Fable work"] for c in columns]
     labels = [label for label, _ in columns[0]]
     width = max(len(label) for label in labels)
     widths = [max([len(head)] + [len(v) for _, v in column]) for head, column in zip(heads, columns)]
