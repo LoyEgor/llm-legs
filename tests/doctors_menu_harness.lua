@@ -29,7 +29,7 @@ local function row(name, value, bars, usual)
   return string.format("%-9s", name) .. " " .. pad(value, 4) .. "  " .. bars .. " " .. pad(usual, 4)
 end
 local function summary(name, value) return row(name, value and tostring(value) or "–", "       ", "–") end
-local function indexRow(name, value, bars) return row(name, value, bars, ""):sub(1, -6) end
+local function indexRow(name, value, bars, usual) return row(name, value, bars, usual) end
 local function fix(menu) return menu[#menu - 1] end
 local function fixer(menu) return menu[#menu] end
 local function refreshRow(menu) return menu[#menu - 2] end
@@ -271,22 +271,20 @@ local INDEXED = { [5] = true, [6] = true }
 local bars = "▁▂▂▃▄▆█"
 for index, name in ipairs(names) do
   local title = trendItems[index] and trendItems[index].title
-  local want = INDEXED[index] and indexRow(name, values[index], bars) or row(name, values[index], bars, "3")
+  local want = INDEXED[index] and indexRow(name, values[index], bars, "0.25") or row(name, values[index], bars, "3")
   check(title and text(title) == want, "trend summary " .. name .. ": " .. (title and text(title) or "missing"))
   for day = 1, 7 do
     check(title and sameColor(colorAt(title, BAR_AT + day - 1), palette.DIM), "every bar DIM, above usual too " .. name .. " day " .. day)
   end
-  check(title and (INDEXED[index] and utf8.len(text(title)) == BAR_AT + 6
-    or not INDEXED[index] and sameColor(colorAt(title, USUAL_AT), palette.DIM)),
-    "an index row (Lost time, Spend) ends at its bars with no median, every other doctor keeps its DIM usual: " .. name)
+  check(title and sameColor(colorAt(title, USUAL_AT), palette.DIM),
+    "every doctor row ends with its DIM usual, an index row (Lost time, Spend) as an index: " .. name)
 end
 local function aligned(rows)
   for _, item in ipairs(rows) do
     local plain = text(item.title)
-    local indexed = plain:match("^Lost time ") or plain:match("^Spend ")
-    if utf8.len(plain) ~= (indexed and BAR_AT + 6 or USUAL_AT) or not span(item.title, 1, 1):match("%a") or text(item.title):find("●", 1, true) or not span(item.title, VALUE_AT, VALUE_AT):match("%S")
-      or not indexed and not span(item.title, USUAL_AT, USUAL_AT):match("%S") then return false end
-    for _, at in ipairs(indexed and { 10, 15, 16 } or { 10, 15, 16, 24 }) do
+    if utf8.len(plain) ~= USUAL_AT or not span(item.title, 1, 1):match("%a") or text(item.title):find("●", 1, true) or not span(item.title, VALUE_AT, VALUE_AT):match("%S")
+      or not span(item.title, USUAL_AT, USUAL_AT):match("%S") then return false end
+    for _, at in ipairs({ 10, 15, 16, 24 }) do
       if span(item.title, at, at) ~= " " then return false end
     end
     for at = BAR_AT, BAR_AT + 6 do
@@ -482,7 +480,7 @@ trendHarness()
 local cold = trendDoctor.menuItems()
 for index, name in ipairs(names) do
   local title = cold[index].title
-  check(text(title) == (INDEXED[index] and indexRow(name, values[index], " ▂▂▃▄▆█") or row(name, values[index], " ▂▂▃▄▆█", "3")),
+  check(text(title) == (INDEXED[index] and indexRow(name, values[index], " ▂▂▃▄▆█", "0.30") or row(name, values[index], " ▂▂▃▄▆█", "3")),
     "cold start: an unmeasured day is a blank cell, measured days keep their bars: " .. text(title))
 end
 check(aligned({ table.unpack(cold, 1, 7) }), "cold start rows stay aligned")
@@ -490,13 +488,13 @@ metadata.speed.index_by_day[trendDay(0)] = nil
 trendHarness()
 local oldSpeed = trendDoctor.menuItems()[5]
 check(sameColor(colorAt(oldSpeed.title, 1), palette.DIM)
-  and text(oldSpeed.title) == indexRow("Lost time", "0.93", " ▂▃▄▆█ "),
+  and text(oldSpeed.title) == indexRow("Lost time", "0.93", " ▂▃▄▆█ ", "0.30"),
   "Speed without a current-day observation is DIM even when Harness is fresh: " .. text(oldSpeed.title))
 metadata.speed.index_by_day[trendDay(0)] = 0.8
 metadata.speed.index = nil
 trendHarness()
 local unknownSpeed = trendDoctor.menuItems()[5]
-check(text(unknownSpeed.title) == indexRow("Lost time", "–", " ▂▂▃▄▆█")
+check(text(unknownSpeed.title) == indexRow("Lost time", "–", " ▂▂▃▄▆█", "0.30")
   and sameColor(colorAt(unknownSpeed.title, 1), palette.DIM) and sameColor(colorAt(unknownSpeed.title, VALUE_AT), palette.DIM),
   "no index yet is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
 metadata.speed.index = 0.93
@@ -504,7 +502,7 @@ trendHarness()
 metadata.spend.status, metadata.spend.index = "nodata", nil
 trendHarness()
 local staleSpend = trendDoctor.menuItems()[6]
-check(text(staleSpend.title) == indexRow("Spend", "–", " ▂▂▃▄▆█")
+check(text(staleSpend.title) == indexRow("Spend", "–", " ▂▂▃▄▆█", "0.30")
   and sameColor(colorAt(staleSpend.title, 1), palette.DIM) and sameColor(colorAt(staleSpend.title, VALUE_AT), palette.DIM),
   "a stale tracking.json is a DIM – on Spend, never its old index: " .. text(staleSpend.title))
 metadata.spend.status, metadata.spend.index = "watch", 0.46

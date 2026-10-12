@@ -788,7 +788,7 @@ local function summaryTitle(name, value, status, history, now, stale, indexed)
     segments[#segments + 1] = amount == nil and { " " }
       or { BARS[amount == 0 and 1 or math.max(2, math.ceil(amount / high * 8))], style.DIM }
   end
-  if not indexed then segments[#segments + 1] = { " " .. padded(median and rounded(median) or MISSING, 4), style.DIM } end
+  segments[#segments + 1] = { " " .. padded(median and (indexed and ratio or rounded)(median) or MISSING, 4), style.DIM }
   return styled(segments)
 end
 
