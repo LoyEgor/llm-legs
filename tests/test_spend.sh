@@ -77,6 +77,7 @@ def payload(made=NOW - 3600, idle_avoidable=False, hook_price=300.0, index=True,
                 ("skill listing", ["39k", "49k"], 0), ("nested CLAUDE.md files", ["1k", "1k"], 0)]),
             rows("Subagent spawns, by agent", [
                 ("claudeb-worker", ["20k", "10k"], 0)])]},
+        {"key": "procedure", "sections": [rows("By step", [("worker-run codex", ["12k", "0"], 0)])]},
         {"key": "hidden", "sections": [rows("Compaction summaries, by zone", [("worker", ["5k", "1k"], 0),
                                                                              ("chat", ["150k", "4k"], 0)])]},
         {"key": "thinking", "cur": 3e5, "prev": 1e5}]}
@@ -98,6 +99,7 @@ check(not [k for k in found if "17 more" in k or "system + tools" in k] and "thi
 check(found["startup:CLAUDE.md + memory index"]["share"] == 6.0 and found["startup:nested CLAUDE.md files"]["share"] == 0.1
       and found["compaction"]["share"] == 15.5
       and found["spawn:claudeb-worker"]["share"] == 2.0 and found["spawn:claudeb-worker"]["target"]
+      and found["turns:worker-run codex"]["share"] == 1.2 and found["turns:worker-run codex"]["target"]
       and found["resumes"]["share"] == 5.0 and not found["rewrites:expired (1h+ idle)"]["target"]
       and found["rewrites:expired (5m ttl)"]["target"] and not found["compaction"]["target"],
       "spawns are their own components and startup parts split the rest by tokenmap's main-context totals, never "

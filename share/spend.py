@@ -163,6 +163,9 @@ def components(payload, files, texts):
     for item in spawns:
         add("spawn:" + str(item.get("label")), "spawn " + str(item.get("label")), amount(item["cells"][0]),
             amount(item["cells"][1]))
+    for item in section(rows.get("procedure"), "By step"):
+        add("turns:" + str(item.get("label")), str(item.get("label")) + " turns", amount(item["cells"][0]),
+            amount(item["cells"][1]))
     contexts = [max(float(startup.get(k) or 0) - sum(amount(i["cells"][side]) for i in spawns), 0.0)
                 for side, k in ((0, "cur"), (1, "prev"))]
     parts = section(startup, "Main contexts, total by part")
