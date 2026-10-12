@@ -473,7 +473,8 @@ run_one() { # suite-path [shard i/N]
       # own off PATH gets macOS 3.2, where `declare -A` fails while the table still prints PASS.
       *) exec "$BASH" "$path" ;;
     esac
-  ) >"$logdir/$job.log" 2>&1 &
+  # Explicit: once a `done < <(...)` loop has run, bash stops giving `&` jobs /dev/null on its own.
+  ) >"$logdir/$job.log" 2>&1 </dev/null &
   suite=$!
   suite_watch "$suite" "$bound" "$logdir/$job.timeout" &
   watch=$!

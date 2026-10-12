@@ -70,4 +70,16 @@ assert test "$rc" = 0
 assert grep -qx 1 "$WORK/sleeps"
 assert test "$(grep -cvx 1 "$WORK/sleeps")" = 0
 
+# A suite never inherits the caller's stdin, or a stub stdio server reading it to EOF hangs the run.
+printf '#!/usr/bin/env bash\nread -r -t 1 _\n[ "$?" = 1 ] || { echo "stdin left open"; exit 1; }\necho ok\n' \
+  >"$REPO/tests/test_stdin.sh"
+exec {held}< <(sleep 60)
+holder=$!
+rc=0
+bash "$ROOT/share/run-suites.sh" --repo "$REPO" test_stdin.sh <&"$held" >"$WORK/out" 2>&1 || rc=$?
+kill "$holder" 2>/dev/null
+exec {held}<&-
+assert test "$rc" = 0
+assert grep -qE '^test_stdin\.sh +PASS ' "$WORK/out"
+
 printf 'PASS: %s asserts\n' "$asserts"

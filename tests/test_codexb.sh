@@ -428,7 +428,7 @@ assert test "$(sed -n '9p' "$CODEX_CALLS")" = 'ARG=two\ words'
 
 for subcommand in mcp-server app-server completion cloud apply features help; do
   : >"$CODEX_CALLS"
-  bash "$SCRIPT" profile alpha "$subcommand" || fail "$subcommand launch failed"
+  bash "$SCRIPT" profile alpha "$subcommand" </dev/null || fail "$subcommand launch failed"
   assert_fails grep -qx 'ARG=fast_mode' "$CODEX_CALLS"
 done
 
