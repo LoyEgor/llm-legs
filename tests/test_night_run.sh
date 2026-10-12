@@ -479,10 +479,13 @@ assert [ ! -s "$WORK/out" ]
 assert [ "$(jq -r .session "$R6")" = "$walled" ]
 assert pgrep -f -- "--session-id $walled" >/dev/null
 : >"$DATA/pick-args"
+mkdir -p "$HOME/.claude-profiles/.claudeb"
+printf 'acct-off\n' >"$HOME/.claude-profiles/.claudeb/disabled"
 wall "$walled" rate_limit >"$WORK/out" || fail "the wall failover failed"
+rm "$HOME/.claude-profiles/.claudeb/disabled"
 assert [ "$(cat "$WORK/out")" = "night $id6 resumed: orchestrator on acct-n" ]
 assert_fails pgrep -f -- "--session-id $walled"
-assert grep -qxF -- '--account claudeb --role chat --model opus' "$DATA/pick-args"
+assert grep -qxF -- '--account claudeb --role chat --model opus --exclude acct-off' "$DATA/pick-args"
 assert jqe --arg w "$walled" '.session != $w and .previous_sessions[-1] == $w and .finished_at == null
   and ([.events[] | select(.phase | startswith("wall")) | .phase] == ["wall", "wall-moved"])
   and ([.events[] | select(.phase == "wall")][0] | .session == $w and .account == "acct-n")

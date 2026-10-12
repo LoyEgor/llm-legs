@@ -1559,7 +1559,7 @@ cmd_failover() { # id walled-session
     unlock
     die "night $id: $walls orchestrator walls already, not moving it again"
   fi
-  until account=$("${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" --account claudeb --role chat --model opus 2>/dev/null) &&
+  until account=$(CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" chat_open_pick 2>/dev/null) &&
     [ -n "$account" ]; do
     if [ $(($(date +%s) - start)) -ge "$limit" ]; then
       lock

@@ -4,8 +4,17 @@
 chat_open_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$chat_open_repo/share/worker-pool.sh"
 
+# The chat role ranks by the chat model, but `chat` ignores the pool, and an opened chat is delegated
+# work (the night, a doctor fixer): an account out of the pool is never its (Egor 2026-10-12).
+chat_open_pick() { # [worker-pick args...] -> the account an opened chat may run on
+  local off
+  off=$(worker_pool_disabled_json "$(worker_pool_dir claudeb)" | jq -r 'join(",")') ||
+    { printf 'the claudeb pool cannot be read\n' >&2; return 1; }
+  "${CHAT_OPEN_WORKER_PICK:-$chat_open_repo/bin/worker-pick}" --account claudeb --role chat --model opus ${off:+--exclude "$off"} "$@"
+}
+
 chat_open() {
-  local file=$1 workdir=$2 prompt=$3 resume=${4:-} claudeb account session word prefix_quoted='' model=opus line off
+  local file=$1 workdir=$2 prompt=$3 resume=${4:-} claudeb account session word prefix_quoted='' model=opus line
   local -a opener prefix=() launch=()
   read -r -a opener <<<"${CHAT_OPEN_OPENER:-open -a Terminal}"
   # %q: a prefix word is data. The generated script is what actually runs.
@@ -15,12 +24,8 @@ chat_open() {
   fi
   # A bare `claude` runs on ~/.claude, which holds no login: the chat opens on a picked profile.
   claudeb=$(command -v claudeb) || { printf 'no claudeb on PATH\n' >&2; return 1; }
-  # The chat role ranks by the chat model, but `chat` ignores the pool, and an opened chat is delegated
-  # work (the night, a doctor fixer): an account out of the pool is never its (Egor 2026-10-12).
   # --claim is what spreads parallel launches: the marker ages out (WORKER_CLAIMS_TTL, default 600s).
-  off=$(worker_pool_disabled_json "$(worker_pool_dir claudeb)" | jq -r 'join(",")') ||
-    { printf 'the claudeb pool cannot be read\n' >&2; return 1; }
-  account=$("${CHAT_OPEN_WORKER_PICK:-$chat_open_repo/bin/worker-pick}" --account claudeb --role chat --model "$model" ${off:+--exclude "$off"} --claim 2>/dev/null) &&
+  account=$(chat_open_pick --claim 2>/dev/null) &&
     [ -n "$account" ] || { printf 'worker-pick names no Claude account\n' >&2; return 1; }
   session=${resume:-$(uuidgen | tr '[:upper:]' '[:lower:]')}
   if [ -n "$resume" ]; then
