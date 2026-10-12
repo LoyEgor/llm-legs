@@ -391,6 +391,15 @@ EOF
   assert grep -q 'http://127.0.0.1:[0-9]*/form?case=canary-codex-cx-' "$bt/prompt-codex"
   assert jq -se '[.[] | select(.vendor == "codex")][-1] | .account == "cx" and .outcome == "BROWSER_OK"
     and .profile == "Profile 1" and (.run | startswith("canary-codex-cx-"))' "$log" >/dev/null
+  # a LaunchAgent's PATH has no nvm, where npm puts codex and its node
+  mkdir -p "$HOME/.nvm/versions/node/v9.0.0/bin"
+  cp "$bt/stub/codex" "$HOME/.nvm/versions/node/v9.0.0/bin/codex-nvm-stub"
+  printf 'ok\n' >"$bt/cx-status"
+  printf 'ok\n' >"$bt/mode-codex"
+  rc=0
+  out=$(BT_SYNC_MODE=ok BROWSE_CUA_SYNC="$bt/stub/cua-sync" BROWSE_SKIP_PROCESSES=1 WORKER_RUN_CODEX=codex-nvm-stub \
+    WORKER_RUN_WORKER_PICK="$bt/stub/worker-pick" WORKER_RUN_CODEX_CONFIG="$bt/codex.toml" browse --canary) || rc=$?
+  assert grep -qx 'CANARY: codex/cx BROWSER_OK' <<<"$out"
   codex_canary ok wall
   assert test "$rc" -eq 0
   assert grep -qx 'CANARY: codex/cx CANARY_WALLED' <<<"$out"
