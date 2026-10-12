@@ -66,7 +66,8 @@ def payload(made=NOW - 3600, idle_avoidable=False, hook_price=300.0, index=True,
         {"key": "hooks", "sections": [
             rows("Blocked calls", [("gate.sh", ["10k", "5k"], 0), ("17 more", ["3k", "1k"], 1)]),
             rows("Stop-hook re-answers", [("Stop [drill.sh]", ["20k", "0"], 0)]),
-            rows("Injected text", [("PreToolUse:Bash · gate ran this", ["30k", "10k"], 0)])]},
+            rows("Injected text", [("PreToolUse:Bash · gate ran this", ["30k", "10k"], 0)]),
+            rows("Calls a hook asked for", [("other.sh", ["5k", "0"], 0)])]},
         {"key": "resumes", "cur": 5e4, "prev": 1e4},
         {"key": "rewrites", "sections": [causes]},
         {"key": "startup", "cur": 1.2e5, "prev": 1.1e5, "sections": [rows("Per context that loads it (avg)", [
@@ -94,6 +95,7 @@ check(found["hook:drill.sh"]["cur"] == 20000 and found["hook:drill.sh"]["sources
       == [os.path.realpath(os.path.join(hooks, "stop.d", "drill.sh"))],
       "a Stop-hook re-answer names its script in brackets; a stop.d part beside the dispatcher resolves: %s"
       % found["hook:drill.sh"])
+check(found["hook:other.sh"]["cur"] == 5000, "a call a hook asked for is that hook's: %s" % found.get("hook:other.sh"))
 check(not [k for k in found if "17 more" in k or "system + tools" in k] and "thinking" not in found,
       "the dim tail rows and the model's own spend (thinking) are no component: %s" % sorted(found))
 check(found["startup:CLAUDE.md + memory index"]["share"] == 6.0 and found["startup:nested CLAUDE.md files"]["share"] == 0.1

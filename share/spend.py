@@ -17,7 +17,7 @@ LEAVES = {"hook": ("Hooks", "attachment: hook context"),
           "startup:nested CLAUDE.md files": ("attachment: memory files",),
           "spawn:claudeb-worker": ("Relays",)}
 SHARE_RISE = 1.5
-HOOK_SECTIONS = ("Blocked calls", "Stop-hook re-answers", "Injected text")
+HOOK_SECTIONS = ("Blocked calls", "Stop-hook re-answers", "Injected text", "Calls a hook asked for")
 RULE = "spend_audit"
 GROUP = "Spend"
 DAYS_KEPT = 35
