@@ -1216,7 +1216,6 @@ for step in '1. Why it exists' '2. What it waits for' '3. Where the CPU goes, on
   '--zero <removal saves X; loses Y>'; do
   assert grep -qF -- "$step" "$brief"
 done
-jq '.speed.cpu.selection = []' "$S/harness/latest.json" >"$S/cpu.json" && mv "$S/cpu.json" "$S/harness/latest.json"
 # Rows per Speed fixer per kind from past nights: the size of the lowest Opus-eq cost per closed row (a job's ledger
 # spend over the rows its run decided, unattributed spend out) on the kind's own curve once it has two sizes, else on
 # all kinds' pooled; a size of one run is no minimum beside a size of more; twice it at the largest size tried; ~160
@@ -1261,6 +1260,10 @@ history hist-p1 spend_audit 1 1 0.2
 night_snapshot n16 8 >"$WORK/cap.json" 2>"$WORK/cap.err"
 assert grep -qxF 'doctor-fix: Speed suite_audit fixers take 3 rows: own Opus-eq M per closed row 1.00 at 1 (2 runs), 0.50 at 3 (2 runs), 0.30 at 6 (1 runs) · 5 samples' "$WORK/cap.err"
 assert grep -qxF 'doctor-fix: Speed spend_audit fixers take 3 rows: pooled Opus-eq M per closed row 0.73 at 1 (3 runs), 0.50 at 3 (2 runs), 0.30 at 6 (1 runs) · 6 samples' "$WORK/cap.err"
+assert grep -qxF 'doctor-fix: Speed cpu_audit fixers take 3 rows: pooled Opus-eq M per closed row 0.73 at 1 (3 runs), 0.50 at 3 (2 runs), 0.30 at 6 (1 runs) · 6 samples' "$WORK/cap.err"
+assert jqe '[.[] | select(.id | startswith("cpu:")) | [.id, .area]]
+  == [["cpu:statusline/render", "speed-cpu-statusline-render"], ["cpu:process/Hammerspoon", "speed-cpu-statusline-render"]]' "$WORK/cap.json"
+jq '.speed.cpu.selection = []' "$S/harness/latest.json" >"$S/cpu.json" && mv "$S/cpu.json" "$S/harness/latest.json"
 assert jqe '[.[] | select(.area | startswith("speed-suite-audit-llm-legs"))]
   | map(.id) == (["suite_audit:llm-legs:test_mid", "suite_audit:llm-legs:test_light"]
       + [range(1; 161) | "suite_audit:llm-legs:test_g\(.)"] + ["suite_audit:llm-legs:test_extra"])
