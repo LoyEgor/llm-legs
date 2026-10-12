@@ -1055,8 +1055,15 @@ commit_close() { # id decisions-file judge note unverified-ids (locked)
     | ($u | split("\n")) as $u
     | .decisions = [$lines | split("\n")[] | split("\t") | select(length >= 4 and (.[0] | length) > 0)
         | {id: .[0], verdict: .[1], purpose: .[2], evidence: .[3]}
-        + (if .[0] as $p | $u | index([$p]) then {component: "unverified"} else {} end)]' \
-    --arg t "$(stamp)" --arg j "$3" --arg n "$4" --arg u "${5:-}" --rawfile lines "$2"
+        + (if .[0] as $p | $u | index([$p]) then {component: "unverified"} else {} end)]
+    | if $e == "" then . else .effort = $e end' \
+    --arg t "$(stamp)" --arg j "$3" --arg n "$4" --arg u "${5:-}" --arg e "$(run_effort "$1")" --rawfile lines "$2"
+}
+
+run_effort() { # id -> the effort of the worker run closing it from one of its worktrees, else nothing
+  [ -n "${WORKER_RUN_RECORD:-}" ] || return 0
+  jq -r --slurpfile r "$(record_file "$1")" 'select(.workdir as $w | $r[0].worktrees // [] | index([$w])) | .effort // empty' \
+    "$WORKER_RUN_RECORD/meta.json" 2>/dev/null || true
 }
 
 rerun_doc() { # id doctor -> the document the doctor prints from the run's worktree, kept run-local

@@ -31,6 +31,7 @@ export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR
   UPDATER_DOCTOR_LEDGER="$WORK/ledgers/updater.json" HARNESS_SETTINGS="$WORK/settings.json" \
   DOCTOR_FIX_WORKTREE_REPO="$WORK/projects/llm-legs" LLM_DOCTOR_REPOS="$WORK/projects" HARNESS_REPOS_DIR="$WORK/projects" \
   WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model"
+unset WORKER_RUN_RECORD
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
 mkdir -p "$FAKE_BIN" "$DATA" "$HOME" "$WORK/llm" "$WORK/harness" "$WORK/updater" "$WORK/vcu/events" "$WORK/projects" \
   "$WORK/docs/handoffs" "$WORK/ledgers"
@@ -246,11 +247,14 @@ assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
 assert grep -qF "markdown grew by 501 bytes since refs/doctor-fix/$id2/base in $WT2 (DAY.md +501)" "$WORK/err"
 mv "$WT2/DAY.md" "$L/DAY.md"
 printf '#!/bin/bash\necho >>"$DATA/py-calls"\nexec %q "$@"\n' "$(command -v python3)" >"$FAKE_BIN/python3" && chmod +x "$FAKE_BIN/python3"
-fix close "$id2" --decisions "$WORK/decisions" "three fixed or ruled out" >"$WORK/out" || fail "clean close failed"
+mkdir -p "$WORK/wrun"
+jq -n --arg w "$WORK/elsewhere" '{workdir: $w, effort: "low"}' >"$WORK/wrun/meta.json"
+WORKER_RUN_RECORD="$WORK/wrun" fix close "$id2" --decisions "$WORK/decisions" "three fixed or ruled out" >"$WORK/out" || fail "clean close failed"
 rm "$L/DAY.md" "$DATA/llm-doc.json" "$DATA/harness-doc.json" "$FAKE_BIN/python3"
 assert [ "$(wc -l <"$DATA/py-calls" | tr -d ' ')" = 1 ]
 assert grep -qxF "run $id2 closed: 4 decisions" "$WORK/out"
 assert jqe '.closed_at != null and .judge_at_close == "j2" and .note == "three fixed or ruled out"' "$R2"
+assert jqe 'has("effort") | not' "$R2"
 assert jqe --arg h "llm-legs@$lhash" '.decisions == [
   {id: "A", verdict: "fixed", purpose: $h, evidence: "bin/x.py:12 fixed; tests/test_x.sh"},
   {id: "B", verdict: "ruled-out", purpose: "llm-legs/bin/llm-doctor:40", evidence: "the row is the design"},
@@ -503,9 +507,11 @@ assert_fails fix close "$rid" --decisions "$WORK/nd-dot" "x" 2>"$WORK/err"
 assert grep -qF "handoff to Egor docs/handoffs/2026-10-02-egor.md lacks Cost:" "$WORK/err"
 printf 'Cost: keeping anchors costs 2 s a run.\n- **Loss:** dropping them loses the round links.\nRecommendation: keep.\n' >>"$WORK/docs/handoffs/2026-10-02-egor.md"
 assert jqe '.closed_at == null' "$RR"
-fix close "$rid" --decisions "$WORK/nd-egor" "R9 fixed" >"$WORK/out" 2>"$WORK/err" || fail "night close failed: $(cat "$WORK/err")"
+mkdir -p "$WORK/wrun"
+jq -n --arg w "$WT" '{workdir: $w, effort: "medium"}' >"$WORK/wrun/meta.json"
+WORKER_RUN_RECORD="$WORK/wrun" fix close "$rid" --decisions "$WORK/nd-egor" "R9 fixed" >"$WORK/out" 2>"$WORK/err" || fail "night close failed: $(cat "$WORK/err")"
 assert grep -qxF "run $rid closed: 2 decisions" "$WORK/out"
-assert jqe '.closed_at != null and .judge_at_close == "base-llm"' "$RR"
+assert jqe '.closed_at != null and .judge_at_close == "base-llm" and .effort == "medium"' "$RR"
 assert [ "$(wc -l <"$DATA/llm-doctor-runs" | tr -d ' ')" = 10 ]
 
 # abandon: the deadline's verb. An abandoned run closes no more; a closed one cannot be abandoned.

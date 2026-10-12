@@ -95,9 +95,10 @@ night = os.path.join(work, "doctors", "nights", "n1.json")
 write(night, {"id": "n1", "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(start + 300)), "jobs": [
     {"ref": "speed-a", "state": "merged", "commits": [{"repo": repo, "hash": speed_commit}]},
     {"ref": "speed-b", "state": "left", "commits": []}]})
-for ref, arm in (("speed-a", "sonnet"), ("speed-b", "opus")):
+for ref, arm, held in (("speed-a", "sonnet", 3), ("speed-b", "opus", 2)):
     write(os.path.join(work, "doctors", "runs", ref + ".json"),
           {"id": ref, "area": "speed-x", "trial": {"id": "sonnet-fixes", "arm": arm}, "closed_at": "2026-01-01T00:00:00Z",
+           "problems": [{"id": "p%d" % i} for i in range(held)],
            "decisions": [{"id": "p", "verdict": "fixed"}, {"id": "judge", "verdict": "changed"}], "worktrees": []})
 write(os.path.join(work, "doctors", "runs", "speed-c.json"), {"id": "speed-c", "area": "speed-y"})
 
@@ -110,9 +111,9 @@ check(got[("round", "sonnet")] == {"runs": 1, "landed": 2, "findings": 1},
 check(got[("round", "opus")] == {"runs": 1, "landed": 1, "reverted": 1},
       "an untagged Opus fit fixer since the baseline is the Opus arm; main back at its pre-fix blob is a revert; "
       "a bugs-lens fixer and one older than the baseline count nowhere: %s" % got)
-check(got[("speed", "sonnet")] == {"runs": 1, "landed": 1, "min_day": 6.5},
-      "a merged Speed job's fixed decisions landed, its run's ROI minutes go to its arm: %s" % got)
-check(got[("speed", "opus")] == {"runs": 1}, "a left Speed job landed nothing: %s" % got)
+check(got[("speed", "sonnet")] == {"runs": 1, "rows": 3, "landed": 1, "min_day": 6.5},
+      "a merged Speed job's fixed decisions landed, its rows are its run's problems, its run's ROI minutes go to its arm: %s" % got)
+check(got[("speed", "opus")] == {"runs": 1, "rows": 2}, "a left Speed job landed nothing: %s" % got)
 
 gone = os.path.join(repo, ".claude", "worktrees", "gone")
 commit(start + 500, **{"d.sh": "d0\n"})
@@ -135,9 +136,10 @@ check(not S.directory_fix(f"{extra}/superseded", {"workdir": gone, "review_round
 write(os.environ["SONNET_TRIAL_MARKER"], {"id": "sonnet-fixes", "started": start, "until": int(time.time()) + 3600})
 out = subprocess.run([sys.executable, "-B", os.path.join(root, "share", "sonnet_trial.py"), "/usr/bin/false", night],
                      capture_output=True, text=True)
-check(out.returncode == 0 and out.stdout.splitlines()[1].split() == ["runs", "landed", "reverted", "findings", "min/day", "Opus-eq"]
-      and out.stdout.splitlines()[2].split()[:6] == ["round", "sonnet", "1", "2", "0", "1"],
-      "the live marker prints the arm table: %s %s" % (out.stdout, out.stderr))
+check(out.returncode == 0 and out.stdout.splitlines()[1].split() == ["runs", "rows", "landed", "reverted", "findings", "min/day", "Opus-eq"]
+      and out.stdout.splitlines()[2].split()[:7] == ["round", "sonnet", "1", "–", "2", "0", "1"]
+      and out.stdout.splitlines()[4].split()[:4] == ["speed", "sonnet", "1", "3"],
+      "the live marker prints the arm table, rows a Speed arm's alone: %s %s" % (out.stdout, out.stderr))
 write(os.environ["SONNET_TRIAL_MARKER"], {"id": "sonnet-fixes", "started": start, "until": int(time.time()) - 1})
 spent = lambda *extra: subprocess.run([sys.executable, "-B", os.path.join(root, "share", "sonnet_trial.py"),
                                        "/usr/bin/false", night, *extra], capture_output=True, text=True).stdout

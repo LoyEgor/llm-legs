@@ -221,6 +221,7 @@ def arms(worker_run, night_path, start):
         if ("speed", arm) not in stats:
             continue
         stats[("speed", arm)]["runs"] += 1
+        stats[("speed", arm)]["rows"] += len(record.get("problems") or ())
         records[record["id"]] = ("speed", arm)
         fixes += found
         owner += [("speed", arm)] * len(found)
@@ -245,10 +246,11 @@ def arms(worker_run, night_path, start):
 def lines(worker_run, night_path, found):
     stats, spend = arms(worker_run, night_path, found.get("started") or found["until"] - 15 * 86400)
     dash = "–"
-    rows = [["", "runs", "landed", "reverted", "findings", "min/day", night_spend.UNIT]]
+    rows = [["", "runs", "rows", "landed", "reverted", "findings", "min/day", night_spend.UNIT]]
     for kind, arm in ARMS:
         s = stats[(kind, arm)]
-        rows.append([f"{kind} {arm}", str(s["runs"]), str(s["landed"]), str(s["reverted"]), str(s["findings"]),
+        rows.append([f"{kind} {arm}", str(s["runs"]), str(s["rows"]) if kind == "speed" else dash, str(s["landed"]),
+                     str(s["reverted"]), str(s["findings"]),
                      "%.1f" % s["min_day"] if kind == "speed" else dash,
                      night_spend.mega(night_spend.weighted(spend[(kind, arm)]))])
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
