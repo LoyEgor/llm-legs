@@ -2564,24 +2564,25 @@ start_run() {
   [ "$web_search_flag" = false ] || [ "$web_search_off_flag" = false ] ||
     fail '--web-search and --no-web-search ask for opposite states: pass one of them'
   [ "$role" = workers ] || [ "$role" = research ] || usage
+  # A flag a chat rebuilt from the header must not outvote it: a relay that lost `--effort` to a
+  # shell quoting slip launched a Fable `EFFORT: high` brief on the low default (2026-09-30). A
+  # research run read no header at all until 2026-10-12 and ran its `EFFORT: high` brief on low.
+  local header_key header_value header_flag
+  for header_key in ACCOUNT MODEL EFFORT; do
+    [ "$header_key" = ACCOUNT ] || [ "$vendor" != light ] || continue
+    header_value=$(brief_line_value "$brief" "$header_key")
+    case "$header_key" in
+      ACCOUNT) header_flag=$explicit_account ;;
+      MODEL) header_flag=$model ;;
+      EFFORT) header_flag=$effort ;;
+    esac
+    [ -z "$header_value" ] || [ -z "$header_flag" ] || [ "$header_flag" = "$header_value" ] ||
+      fail "--$(tr '[:upper:]' '[:lower:]' <<<"$header_key") $header_flag contradicts the brief header '$header_key: $header_value': drop the flag, worker-run reads the header itself. Nothing was launched and no account was spent."
+  done
+  [ -n "$explicit_account" ] || explicit_account=$(brief_line_value "$brief" ACCOUNT)
+  [ -n "$model" ] || [ "$vendor" = light ] || model=$(brief_line_value "$brief" MODEL)
+  [ -n "$effort" ] || [ "$vendor" = light ] || effort=$(brief_line_value "$brief" EFFORT)
   if [ "$role" = workers ]; then
-    # A flag a chat rebuilt from the header must not outvote it: a relay that lost `--effort` to a
-    # shell quoting slip launched a Fable `EFFORT: high` brief on the low default (2026-09-30).
-    local header_key header_value header_flag
-    for header_key in ACCOUNT MODEL EFFORT; do
-      [ "$header_key" = ACCOUNT ] || [ "$vendor" != light ] || continue
-      header_value=$(brief_line_value "$brief" "$header_key")
-      case "$header_key" in
-        ACCOUNT) header_flag=$explicit_account ;;
-        MODEL) header_flag=$model ;;
-        EFFORT) header_flag=$effort ;;
-      esac
-      [ -z "$header_value" ] || [ -z "$header_flag" ] || [ "$header_flag" = "$header_value" ] ||
-        fail "--$(tr '[:upper:]' '[:lower:]' <<<"$header_key") $header_flag contradicts the brief header '$header_key: $header_value': drop the flag, worker-run reads the header itself. Nothing was launched and no account was spent."
-    done
-    [ -n "$explicit_account" ] || explicit_account=$(brief_line_value "$brief" ACCOUNT)
-    [ -n "$model" ] || [ "$vendor" = light ] || model=$(brief_line_value "$brief" MODEL)
-    [ -n "$effort" ] || [ "$vendor" = light ] || effort=$(brief_line_value "$brief" EFFORT)
     [ "$computer" = true ] || [ "$(brief_line_value "$brief" COMPUTER)" != yes ] || computer=true
     value=$(brief_line_value "$brief" BROWSER)
     case "$value" in

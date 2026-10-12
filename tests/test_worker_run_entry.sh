@@ -81,6 +81,21 @@ model_effort_tests() {
     assert grep -qF -e "$flag contradicts the brief header" "$WORK/effort.out"
     assert test ! -s "$CALL_LOG"
   done
+  # A research run reads the same header: it once ran an `EFFORT: high` brief on the low default.
+  set_config 'codex_effort=low' 'light_paused=on'
+  { printf 'EFFORT: high\n\n'; cat "$WORK/brief.noheader"; } >"$WORK/brief"
+  clear_stub
+  start_ok codex --account com --role research --research-timeout 5m
+  assert await_exit
+  assert test "$(jq -r '[.role, .effort] | join(" ")' "$RUN_DIR/meta.json")" = 'research high'
+  assert grep -qx 'ARG=model_reasoning_effort=high' "$CALL_LOG"
+  clear_stub
+  rc=0
+  "$RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" --account com --role research --effort low >"$WORK/effort.out" 2>&1 || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qF -e "--effort low contradicts the brief header" "$WORK/effort.out"
+  assert test ! -s "$CALL_LOG"
+  set_config 'claudeb_model=fable'
   { printf 'STRONG: yes\n\n'; cat "$WORK/brief.noheader"; } >"$WORK/brief"
   for vendor in gemini light; do
     clear_stub
