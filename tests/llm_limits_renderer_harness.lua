@@ -444,16 +444,28 @@ if wallFixturePath then
   for _, case in ipairs(assert(loadfile(wallFixturePath))()) do
     local menu = loadModule(case.store, nil, case.now).menuItems()
     local index = accountIndex(menu, case.account)
-    local row, wallRow = menu[index], nil
+    local row, wallRow, windowRow = menu[index], nil, nil
     for i = index + 1, #menu do
       local text = titleText(menu[i])
-      if text:match("^%s+wall%s") then wallRow = menu[i] break end
+      if text:match("^%s+wall%s") then wallRow = menu[i] end
+      if case.window and text:match("^%s+" .. case.window .. "%s") then windowRow = menu[i] end
       if not text:match("^%s") then break end
     end
     assert((#redRuns(row.title) > 0) == case.walled, case.name .. ": account color disagrees with the store")
-    assert((wallRow ~= nil) == case.walled, case.name .. ": wall row disagrees with the store")
+    assert(wallRow == nil, case.name .. ": a wall drew a row of its own")
     if case.walled then
-      assert(titleText(wallRow):find(os.date("%H:%M", case.reset), 1, true), case.name .. ": wall reset missing")
+      local text = assert(windowRow, case.name .. ": walled window row missing").title
+      local shown = titleText(windowRow)
+      assert(shown:find("100%", 1, true), case.name .. ": walled window row is not at 100 %: " .. shown)
+      assert(#redRuns(text) > 0, case.name .. ": walled window row is not red")
+      if case.label then
+        assert(shown:find(case.label, 1, true), case.name .. ": wall reset missing: " .. shown)
+      else
+        assert(shown:match("%s–$"), case.name .. ": a wall with no known reset printed a time: " .. shown)
+      end
+      if case.guess then
+        assert(not shown:find(case.guess, 1, true), case.name .. ": the guessed time was printed: " .. shown)
+      end
     end
   end
   return "PASS: wall store menu"

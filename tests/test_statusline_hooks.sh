@@ -1438,7 +1438,10 @@ cg_wall_reset=$((cg_now + 5400))
 LLM_LIMITS_FILE="$WORK/limits.json" bash -c '. "$1/share/worker-walls.sh" && worker_walls_record codex work4 "$2" "$3"' \
   _ "$ROOT" "$cg_wall_reset" "$((cg_now + 1))"
 cg_walled=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
-assert grep -Fq "${RED}walled→$(date -r "$cg_wall_reset" +%H:%M)${RESET}" <<< "$(sed -n '2p' <<< "$cg_walled")"
+# The five-hour reset this fixture carries by now is past, so the week holds the only future reset.
+assert grep -Fq "wk ${RED}100%${RESET} ${DIM}" <<< "$(sed -n '2p' <<< "$cg_walled")"
+assert test "${cg_walled#*5h ${RED}100%}" = "$cg_walled"
+assert test "${cg_walled#*walled}" = "$cg_walled"
 assert grep -Fq "${RED}work4${RESET}" <<< "$(sed -n '1p' <<< "$cg_walled")"
 jq --argjson t "$((cg_now + 2))" '.vendors.codex.accounts[0] |= (.five_hour.as_of = $t | .weekly.as_of = $t)' \
   "$WORK/limits.json" > "$WORK/cg-limits-read.json"

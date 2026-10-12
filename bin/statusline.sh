@@ -771,10 +771,16 @@ fi
 wall_vendor=claude
 wall_account=$acct
 if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then wall_vendor=codex; wall_account=$CLAUDEGPT_ACCOUNT; fi
-store_wall_txt=$(jq -r --arg v "$wall_vendor" --arg a "$wall_account" --argjson now "$now" "$LIMITS_VIEW_JQ"'
-  .vendors[$v] | (.accounts // [.])[]? | select((.account // "main") == $a) |
-  limits_observed_wall(.; $now) | select(. != null) | limits_reset_text(.resets_at; $now)
-' "$limits_file" 2>/dev/null) || store_wall_txt=''
+store_wall_window=''; store_wall_reset=''
+read -r store_wall_window store_wall_reset < <(jq -r --arg v "$wall_vendor" --arg a "$wall_account" --argjson now "$now" "$LIMITS_VIEW_JQ"'
+  first(.vendors[$v] | (.accounts // [.])[]? | select((.account // "main") == $a) |
+    limits_wall_view(.; $now) | select(. != null)) |
+  "\(.window) \(.resets_at // "" | if type == "number" then floor else . end)"
+' "$limits_file" 2>/dev/null)
+case "$store_wall_window" in
+  five_hour) h5_pct=100; h5_dim=''; h5_absent=false; h5_reset=$store_wall_reset ;;
+  weekly) wk_pct=100; wk_dim=''; wk_reset=$store_wall_reset ;;
+esac
 
 dir=${dir_path%"${dir_path##*[!/]}"}
 dir=${dir##*/}; [ -z "$dir_path" ] || dir=${dir:-/}
@@ -1846,7 +1852,7 @@ fit_cb_part() {
     name=$fit_out
   fi
   cb_part=" ${MAGENTA}${name}${RESET}"
-  [ -z "${store_wall_txt:-}" ] || cb_part=" ${RED}${name}${RESET}"
+  [ -z "${store_wall_window:-}" ] || cb_part=" ${RED}${name}${RESET}"
 }
 
 fit_dir_part() {
@@ -1990,7 +1996,6 @@ fit_compose2() {
     fit_label "$fable_reset_txt"
     line2="${line2}${gap}fb ${fable_pct_part}${fit_out}"
   fi
-  [ -z "$store_wall_txt" ] || line2="${line2}${gap}${RED}walled→${store_wall_txt}${RESET}"
   [ -n "$store_stale_txt" ] && line2="${line2}${gap}${RED}stale ${store_stale_txt}${RESET}"
   [ "$fit2_cost" = 1 ] && [ -n "$cost_part" ] && line2="${line2}${gap}${cost_part}"
 }

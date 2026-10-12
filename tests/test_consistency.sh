@@ -1430,10 +1430,20 @@ done
 assert test "$(grep -rlE 'worker_wall *= *\{' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS" "$ROOT"/ask_*.sh | wc -l)" -eq 1
 assert grep -Fq 'record_run_wall' "$WORKER_RUN"
 assert grep -Fq 'worker_model_clear_walled_pin' "$WORKER_RUN"
-for reader in "$WORKERPICK" "$STATUSLINE" "$LLMLIMITS" "$ROOT/share/worker-walls.sh"; do
-  assert grep -Fq 'limits_observed_wall(' "$reader"
+assert grep -Fq 'limits_observed_wall(' "$ROOT/share/worker-walls.sh"
+for reader in "$WORKERPICK" "$STATUSLINE" "$LLMLIMITS"; do
+  assert grep -Fq 'limits_wall_view(' "$reader"
 done
+assert grep -Fq 'def limits_wall_view($row; $now):' "$ROOT/share/limits-view.sh"
 assert grep -Fq 'local function observedWall(block, now)' "$HAMMER"
+assert grep -Fq 'local function wallView(block, now)' "$HAMMER"
+# A wall is never a row or segment of its own, and no time is invented for a wall without one.
+assert test -z "$(command grep -F 'rowTitle("", "wall"' "$HAMMER")"
+assert test -z "$(command grep -F 'walled→' "$STATUSLINE")"
+assert test -z "$(command grep -F 'now + 3600' "$WALLS_SH")"
+assert grep -Fq '{guessed:true}' "$WALLS_SH"
+assert test -z "$(command grep -F 'date +%s) + 3600' "$WORKER_RUN")"
+assert doc_has 'limits_wall_view'
 assert grep -Fq 'limits_clean_wall($now)' "$LLMLIMITS"
 assert grep -Fq 'IN($cx_walls[])' "$WORKERPICK"
 assert grep -Fq 'IN($cb_walls[])' "$WORKERPICK"

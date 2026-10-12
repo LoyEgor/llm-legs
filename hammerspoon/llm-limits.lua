@@ -437,6 +437,38 @@ local function observedWall(block, now)
   return wall
 end
 
+-- Mirrors limits_wall_view in share/limits-view.sh.
+local function wallView(block, now)
+  local wall = observedWall(block, now)
+  if not wall then return nil end
+  local windows = {}
+  for _, key in ipairs({ "five_hour", "weekly" }) do
+    local bucket = block[key]
+    if type(bucket) == "table" and not windowAbsent(bucket) then
+      local reset = parseTime(bucket.resets_at)
+      local used = tonumber(bucket.used_pct)
+      local eff = -1
+      if used then
+        if reset and reset <= now then eff = 0 else eff = tonumber(bucket.effective_pct) or used end
+      end
+      windows[#windows + 1] = { window = key, eff = eff, reset = reset and reset > now and reset or nil }
+    end
+  end
+  if #windows == 0 then windows = { { window = "weekly", eff = -1 } } end
+  local mostUsed = windows[1]
+  for _, w in ipairs(windows) do
+    if w.eff > mostUsed.eff then mostUsed = w end
+  end
+  if wall.guessed == true then return { window = mostUsed.window, resets_at = mostUsed.reset } end
+  local target, nearest = tonumber(wall.resets_at), nil
+  for _, w in ipairs(windows) do
+    if w.reset and (not nearest or math.abs(w.reset - target) < math.abs(nearest.reset - target)) then
+      nearest = w
+    end
+  end
+  return { window = (nearest or mostUsed).window, resets_at = target }
+end
+
 local function bucketAtLimit(bucket)
   return type(bucket) == "table" and (tonumber(bucket.effective_pct) or 0) >= 100
 end
@@ -3043,7 +3075,7 @@ local function buildMenuItems()
           local accountAge, accountAgeAlarm, untrusted = accountAgeText(block.as_of,
             isAccountRows and late[acct], not authNeeded and staleAfter or nil,
             block.age_alarm == true and not (entry.key == "grok" and authStatus == "expired"))
-          local wall = observedWall(block, os.time())
+          local wall = wallView(block, os.time())
           local generalAtLimit = wall ~= nil or bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           local pinExists = pinSet[acct] == true
           local pinFn
@@ -3176,12 +3208,11 @@ local function buildMenuItems()
             end
             table.insert(menu, accountRow)
           end
-          if wall then
-            table.insert(menu, { title = rowTitle("", "wall", { effective_pct = 100,
-              resets_at = wall.resets_at }, false, true, false, { pct = "" }), disabled = true })
-          end
           if not authNeeded then
-            if type(fiveHour) == "table" and not windowAbsent(fiveHour) then
+            local wallBucket = wall and { effective_pct = 100, resets_at = wall.resets_at }
+            if wall and wall.window == "five_hour" then
+              table.insert(menu, { title = rowTitle("", "5h", wallBucket, false, true), disabled = true })
+            elseif type(fiveHour) == "table" and not windowAbsent(fiveHour) then
               local fiveRow = {
                 title = rowTitle("", "5h", fiveHour, isStale(fiveHour),
                   bucketAtLimit(fiveHour), false, { untrusted = untrusted }),
@@ -3211,9 +3242,13 @@ local function buildMenuItems()
             if buildPct and (not weeklyPct or math.abs(buildPct - weeklyPct) >= 0.05) then
               weeklyColumns = { detail = string.format("  build %d%%", math.floor(buildPct + 0.5)) }
             end
-            table.insert(menu, {
-              title = tailRow(weeklyLabel, weekly, false, weeklyColumns), disabled = true,
-            })
+            local weeklyTitle
+            if wall and wall.window == "weekly" then
+              weeklyTitle = rowTitle("", weeklyLabel, wallBucket, false, true, false, weeklyColumns)
+            else
+              weeklyTitle = tailRow(weeklyLabel, weekly, false, weeklyColumns)
+            end
+            table.insert(menu, { title = weeklyTitle, disabled = true })
             if type(block.fable) == "table" then
               local fableWarning = (tonumber(block.fable.effective_pct) or 0) >= 80
               table.insert(menu, { title = tailRow("fb", block.fable, fableWarning), disabled = true })

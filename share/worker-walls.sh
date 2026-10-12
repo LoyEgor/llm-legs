@@ -15,18 +15,17 @@ worker_walls_extract_reset() {
   grep -Eioh "$WORKER_WALLS_RESET_RE" "$@" 2>/dev/null | tail -n1
 }
 
+# Prints nothing when the text names no time: worker_walls_record takes an empty reset as a wall
+# with no vendor time, and any made-up epoch here would be shown as the vendor's.
 worker_walls_parse_reset() {
   local text="${1-}" rest epoch now n unit fmt zone=''
   local -a tz=()
   now=${WORKER_WALLS_NOW:-$(date +%s)} || return 1
-  if [ -z "$text" ]; then
-    printf '%s\n' "$((now + 3600))"
-    return 0
-  fi
+  [ -n "$text" ] || return 0
   rest=$(printf '%s\n' "$text" | sed -E 's/^(try again at|retry[_ -]?at|resets?([_ -]?at|[ _-]?in)?)[[:space:]:=]+//I')
   rest=$(printf '%s\n' "$rest" | sed -E 's/([0-9])(st|nd|rd|th)/\1/g; s/^[[:space:]]+//; s/[[:space:].]+$//')
   case "$rest" in
-    '') printf '%s\n' "$((now + 3600))"; return 0 ;;
+    '') return 0 ;;
     *[!0-9]*) ;;
     *) printf '%s\n' "$rest"; return 0 ;;
   esac
@@ -83,7 +82,6 @@ worker_walls_parse_reset() {
     printf '%s\n' "$epoch"
     return 0
   fi
-  printf '%s\n' "$((now + 3600))"
 }
 
 # `weekly` only for the account's main weekly bucket, else `unknown`: grok has no other bucket, a
@@ -103,29 +101,39 @@ worker_walls_kind() { # vendor parsed-reset-epoch-or-empty run-output-file...
 # An account the store has no row for is left alone: a row made up here would show an account the
 # collector never listed, and the collector would drop it again on its next pass.
 worker_walls_record() (
-  local vendor="$1" account="$2" epoch="$3" written="${4:-$(date +%s)}" store tmp
+  local vendor="$1" account="$2" epoch="$3" written="${4:-$(date +%s)}" since="${5:-}" store tmp
   worker_walls_valid_name "$vendor" && worker_walls_valid_name "$account" || return 1
-  case "$epoch:$written" in *[!0-9:]*|:*|*:) return 1 ;; esac
+  case "$epoch:$written:$since" in *[!0-9:]*|*::*) return 1 ;; esac
+  since=${since:-$written}
   [ "$vendor" != claudeb ] || vendor=claude
   store=${LLM_LIMITS_FILE:-${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}}
   [ -e "$store" ] || return 0
   . "${BASH_SOURCE[0]%/*}/store-lock.sh"
+  . "${BASH_SOURCE[0]%/*}/limits-view.sh"
   store_lock_acquire "$store.lock" || return 1
   tmp=''
   trap 'test -z "$tmp" || rm -f "$tmp"; store_lock_release "$store.lock"' EXIT
   tmp=$(mktemp "$store.tmp.XXXXXX") || return 1
-  jq --arg v "$vendor" --arg a "$account" --argjson reset "$epoch" --argjson at "$written" '
-    def record:
+  jq --arg v "$vendor" --arg a "$account" --argjson vendor_reset "${epoch:-null}" --argjson at "$written" --argjson since "$since" "$LIMITS_VIEW_JQ"'
+    def wall($row):
+      if $vendor_reset != null then {reset:$vendor_reset, guess:{}}
+      else limits_wall_most_used($row; $at).reset as $known |
+        if $known != null then {reset:$known, guess:{}}
+        else {reset:($since + 3600), guess:{guessed:true}} end
+      end;
+    def record($w):
+      $w.reset as $reset |
       if (.worker_wall.recorded_at // 0) > $at then .
-      else .worker_wall = {resets_at:$reset,recorded_at:$at} end;
+      else .worker_wall = {resets_at:$reset,recorded_at:$at} + $w.guess end;
     select((.schema // 1) == 1 and (.vendors | type) == "object") |
     (.vendors[$v] // null) as $block |
     if $block == null or $block.removed == true then empty
     elif ($block.accounts | type) == "array" then
       select(any($block.accounts[]; .account == $a and .removed != true)) |
-      .vendors[$v].accounts |= map(if .account == $a then record else . end) |
-      if ($block.current_account // "main") == $a then .vendors[$v] |= record else . end
-    elif ($block.account // "main") == $a then .vendors[$v] |= record
+      wall(first($block.accounts[] | select(.account == $a))) as $w |
+      .vendors[$v].accounts |= map(if .account == $a then record($w) else . end) |
+      if ($block.current_account // "main") == $a then .vendors[$v] |= record($w) else . end
+    elif ($block.account // "main") == $a then wall($block) as $w | .vendors[$v] |= record($w)
     else empty end
   ' "$store" >"$tmp" || return 1
   [ -s "$tmp" ] || return 0

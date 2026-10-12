@@ -288,8 +288,8 @@ age_def='def age_seconds($now):
    else null end);
 def compact_age($now): limits_age_text(age_seconds($now));
 def data_stale($now): limits_data_stale(age_seconds($now); $stale_thr);
-def stale_status($now): limits_observed_wall(.; $now) as $wall | if $wall != null then
-  "walled→" + limits_reset_text($wall.resets_at; $now)
+def stale_status($now): limits_wall_view(.; $now) as $wall | if $wall != null then
+  "walled" + (if $wall.resets_at == null then "" else "→" + limits_reset_text($wall.resets_at; $now) end)
   elif data_stale($now) then "stale" else "-" end;'
 
 reset_format_def='def format_reset($now):
@@ -387,7 +387,7 @@ render_table() {
     # out of nulls, which reads as a leg that answered with no data rather than one that is gone.
       (if ($v | has("claude") | not) then empty
        elif $v.claude.available and (($v.claude.accounts | type) == "array") then
-         ($v.claude.accounts[]
+         ($v.claude.accounts[] | limits_wall_painted($render_now)
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
              five: .five_hour, week: .weekly, fable: .fable,
              age: compact_age($render_now), alarm: (.age_alarm == true or data_stale($render_now)),
@@ -400,7 +400,7 @@ render_table() {
        | if ((.accounts | type) == "array") and
             (($k == "codex" and any(.accounts[]; .auth_needed == true)) or (.accounts | length) > 1 or
              (($k == "gemini" or $k == "grok") and (.accounts | length) > 0)) then
-           (.accounts[] | select(.removed != true)
+           (.accounts[] | select(.removed != true) | limits_wall_painted($render_now)
               | {src: ($k + "/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
                  age: compact_age($render_now), alarm: (.age_alarm == true or data_stale($render_now)),
@@ -408,6 +408,7 @@ render_table() {
                  credits: credits,
                  status:account_status($k)})
          elif .available then
+           limits_wall_painted($render_now) |
            {src: $k, five: .five_hour, week: .weekly, fable:null,
             age: compact_age($render_now), alarm: (.age_alarm == true or data_stale($render_now)),
             rot: ((.accounts[0] // .) | rotation),
@@ -2525,18 +2526,18 @@ else
     # reads as a reading taken.
     select(.key != "opencode") |
     if .key == "claude" and .value.available and (.value.accounts | type) == "array" then
-        .value.accounts[] |
+        .value.accounts[] | limits_wall_painted($render_now) |
         line("claude/" + .account + (if .is_current then "*" else "" end); .; rotation; credits; account_status("claude"))
     elif (.key == "codex" or .key == "gemini" or .key == "grok") and
          ((.value.accounts | type) == "array") and
          ((.value.accounts | length) > 1 or
           (.key == "codex" and any(.value.accounts[]; .auth_needed == true)) or
           ((.key == "gemini" or .key == "grok") and (.value.accounts | length) > 0)) then
-      .key as $key | .value.accounts[] | select(.removed != true) |
+      .key as $key | .value.accounts[] | select(.removed != true) | limits_wall_painted($render_now) |
       line($key + "/" + .account + (if .is_current then "*" else "" end); .; rotation;
         credits; account_status($key))
     elif .value.available then
-      line(.key; .value; ((.value.accounts[0] // .value) | rotation);
+      line(.key; (.value | limits_wall_painted($render_now)); ((.value.accounts[0] // .value) | rotation);
         (.value | credits); (.value | stale_status($render_now)))
     else line(.key; {age_alarm: (.value.age_alarm == true)}; "-"; "-";
       (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) end

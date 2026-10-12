@@ -120,6 +120,29 @@ def limits_observed_wall($row; $now):
     ((.effective_pct // .used_pct) | type) == "number" and
     ((.effective_pct // .used_pct) | ceil) < 100) then null
   else $wall end;
+def limits_wall_windows($row; $now):
+  [("five_hour", "weekly") as $k | $row[$k] | select(type == "object" and (limits_window_absent(.) | not)) |
+   {window:$k, eff:(limits_store_eff(.; $now) // -1),
+    reset:((.resets_at // null) | limits_store_epoch | select(type == "number" and . > $now) // null)}] |
+  if length > 0 then . else [{window:"weekly", eff:-1, reset:null}] end;
+def limits_wall_most_used($row; $now):
+  limits_wall_windows($row; $now) | sort_by(-.eff) | .[0];
+# The window row a standing wall paints at 100 % and the reset that row shows (null: none). A
+# guessed wall (no vendor time) shows only the own future reset of its window, never the guess.
+def limits_wall_view($row; $now):
+  limits_observed_wall($row; $now) as $wall |
+  if $wall == null then null
+  elif $wall.guessed == true then limits_wall_most_used($row; $now) | {window, resets_at:.reset}
+  else
+    ([limits_wall_windows($row; $now)[] | select(.reset != null)] |
+     sort_by(.reset - $wall.resets_at | if . < 0 then -. else . end) | .[0]) as $near |
+    {window:(($near // limits_wall_most_used($row; $now)).window), resets_at:$wall.resets_at}
+  end;
+def limits_wall_painted($now):
+  limits_wall_view(.; $now) as $view |
+  if $view == null then .
+  else .[$view.window] = {used_pct:100, effective_pct:100, stale:false, expired:false,
+    resets_at:($view.resets_at | if . == null then null else todateiso8601 end)} end;
 def limits_clean_wall($now):
   limits_observed_wall(.; $now) as $wall |
   if $wall == null then del(.worker_wall) else .worker_wall = $wall end;

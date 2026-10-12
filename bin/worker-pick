@@ -502,6 +502,9 @@ summary=$(jq -r \
   def epoch: limits_store_epoch;
   def eff($b): limits_store_eff($b; $now);
   def reset_str($b): limits_reset_text((($b.resets_at // null) | epoch); $now);
+  def wall_reset_str($b):
+    limits_wall_view(.; $now) as $wall |
+    if $wall == null then reset_str($b) else limits_reset_text($wall.resets_at; $now) end;
   def bool_or($value; $fallback): if ($value | type) == "boolean" then $value else $fallback end;
   def names: split("\n") | map(select(length > 0));
   def pool_list: (try fromjson catch null) |
@@ -603,8 +606,9 @@ summary=$(jq -r \
   # must print `–` where a vendor whose window nobody measured prints `?`.
   def cells($selected; $pins; $five_hour; $display):
     (.auth_ok | not) as $dead |
-    {key: .name, budget: (if $dead then "-" else budget_cell end), wk: (if $dead then "?" else pct_cell(.wk) end),
-     h5: (if $dead and $five_hour != "–" then "?" else $five_hour end),
+    {key: .name, budget: (if $dead then "-" else budget_cell end),
+     wk: (if $dead then "?" elif .wv == "weekly" then "100%" else pct_cell(.wk) end),
+     h5: (if $dead and $five_hour != "–" then "?" elif .wv == "five_hour" then "100%" else $five_hour end),
      name: (.name + (if .own then "*" else "" end)), display: $display,
      reset: (if .rs == "-" then "" else "↺ " + .rs end),
      flags: flag_text($pins)};
@@ -794,7 +798,7 @@ summary=$(jq -r \
      enabled:(.enabled != false),auth_ok:auth_ok,
      h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
-     rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str(.weekly) end)} |
+     rs:wall_reset_str(.weekly),wv:limits_wall_view(.; $now).window} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($cx_claims) |
     .started = $cx_starts[.name] |
@@ -826,7 +830,7 @@ summary=$(jq -r \
      enabled:(.enabled != false),auth_ok:auth_ok,
      h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
-     rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str(.weekly) end)} |
+     rs:wall_reset_str(.weekly),wv:limits_wall_view(.; $now).window} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gm_claims) |
     .started = $gm_starts[.name] |
@@ -860,7 +864,7 @@ summary=$(jq -r \
     {name:(.account // "main"),
      enabled:(.enabled != false),auth_ok:gr_auth_ok,
      auth_late:(gr_auth_ok and gr_auth == "expired"),
-     wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str(.weekly) end)} |
+     wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),rs:wall_reset_str(.weekly),wv:limits_wall_view(.; $now).window} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gr_claims) |
     .started = $gr_starts[.name] |
@@ -899,7 +903,7 @@ summary=$(jq -r \
      h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff($bucket),gwk:eff(.weekly),
      wk_reset:(($bucket.resets_at? // null) | epoch),
-     rs:(limits_observed_wall(.; $now) as $wall | if $wall != null then limits_reset_text($wall.resets_at; $now) else reset_str($bucket) end)} |
+     rs:wall_reset_str($bucket),wv:limits_wall_view(.; $now).window} |
     .blocked = (if fable_view then (.fable_capable | not) else (.general_usable | not) end) |
     # Fable has no five-hour twin to be paced by, so an account with no measured fable window
     # leaves the ranking rather than falling back to the pace of another bucket.
