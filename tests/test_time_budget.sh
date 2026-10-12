@@ -450,9 +450,14 @@ check(out[:6] == ["ledger · night N1 · 3.1 h",
 check(out[6:10] == ["trend · last 2 nights · oldest first",
                   "trend · 09 Jan · 1.8 h · workers ? model · problems 6 → 5 · spend 0.0M · deferred",
                   "trend · 10 Jan · 3.1 h · workers 49 % model · problems 8 → 7 · spend 0.0M · deferred",
-                  "trend · problems 6 → 7 over 2 nights · going back"],
-      "the trend: one line per night oldest first, an untimed night reads ?, and the direction from the first "
-      "night's start to the last night's end, so problems that came between nights count too: %s" % out[6:10])
+                  "trend · problems 6 → 7 over 2 nights · last 2: 2 down, 0 up · moving forward"],
+      "the trend: one line per night oldest first, an untimed night reads ?, the span from the first night's start "
+      "to the last night's end, and the direction from each recent night's own before → after: %s" % out[6:10])
+audit = [{"problems": p, "started": D0 + i * 86400, "hours": 1.0, "split_s": {}, "wall_s": 0, "spend_m": 0.0,
+          "deferred": ""} for i, p in enumerate([(32, 28), (28, 25), (25, 22), (22, 20), (20, 19), (33, 39), (19, 24)])]
+check(T.trend_lines(audit)[-1] == "trend · problems 32 → 24 over 7 nights · last 3: 1 down, 2 up · going back",
+      "the trend never reads forward while the recent nights each ended with more problems than they began with: %s"
+      % T.trend_lines(audit)[-1])
 check(out[10:] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · saves 1.0 min/day",
                    "roi · harness-y-20260110T000000Z · repo/test_x · 0.0M · +0/-0 lines · not landed",
                    "roi · night: improvements 0.0M · gained 1.0 min/day",

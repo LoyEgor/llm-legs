@@ -4167,6 +4167,15 @@ def growth_root(path, skills):
     return path, False
 
 
+PLUGIN_INSTALL_RE = re.compile(r"^(.*/\.claude/plugins/cache/[^/]+/[^/]+/[^/]+)/")
+
+
+def install_root(path, root):
+    """A plugin version dir: one install lands over several events and every skill in it, one row."""
+    hit = PLUGIN_INSTALL_RE.match(path)
+    return hit.group(1) if hit else root
+
+
 def guards_section(now):
     """What llm-doctor's Guards row judged: instruction-file growth no gate priced or passed, forged retry
     stamps, the gates' own faults, and a watcher or tripwire that went quiet."""
@@ -4222,6 +4231,7 @@ def guards_section(now):
             if delta > 0:
                 mine.append([at, real, delta, 0])
 
+    pending = {}
     classes = write_classes(str(p) for entry in events for p in entry.get("files") or [])
     skills = {os.path.dirname(str(p)): True for entry in events for p in entry.get("files") or []
               if os.path.basename(str(p)).upper() == "SKILL.MD"}
@@ -4237,12 +4247,12 @@ def guards_section(now):
             judged["baseline-missing", "tripwire"] += 1
         if kind in ("change", "changed-between-sessions") and not entry.get("reverted"):
             between = kind == "changed-between-sessions"
-            groups, aside, grew = {}, {}, []
+            grew = []
             for path, delta in zip(files, entry.get("bytes") or []):
                 if (not isinstance(delta, (int, float)) or delta <= 0 or not classes.get(path, "?")
                         or FIXTURE_PATH_RE.search(file_key(path))):
                     continue
-                ident = "between-sessions" if between else file_key(growth_root(path, skills)[0])
+                ident = "between-sessions" if between else file_key(install_root(path, growth_root(path, skills)[0]))
                 judged["growth-ungated", ident] += 1
                 judged["growth-denied", ident] += 1
                 if (id(entry), str(path)) in landings:
@@ -4258,30 +4268,15 @@ def guards_section(now):
                     got[0], got[1], got[2] = got[0] + 1, got[1] + delta, max(got[2], at)
                     continue
                 root, on_demand = growth_root(path, skills)
+                merged = install_root(path, root)
+                group = pending.setdefault((between, "growth-denied" if gate else "growth-ungated", merged,
+                                            None if merged != root else id(entry)), [at, entry.get("at"), [], 0])
+                if at >= group[0]:
+                    group[0], group[1] = at, entry.get("at")
                 if on_demand:
-                    aside[root] = aside.get(root, 0) + 1
+                    group[3] += 1
                     continue
-                groups.setdefault(("growth-denied" if gate else "growth-ungated", root), []).append((path, delta))
-            for (rule, root), grown in sorted(groups.items()):
-                total = sum(delta for _, delta in grown)
-                if total < NEAR_SHARE * LIMITS["growth_min_b"]:
-                    continue
-                denied = rule == "growth-denied"
-                label = "instruction files grew between sessions" if between else "%s%s grew %s" % (
-                    "/".join(file_key(root).rstrip("/").split("/")[-2:]), " (%d files)" % len(grown) if len(grown) > 1 else "",
-                    "after a denial" if denied else "with no gate seeing it")
-                listed = ", ".join("%s +%d B" % (os.path.basename(p) if p == root else os.path.relpath(p, root), delta)
-                                   for p, delta in grown)
-                if aside.get(root):
-                    listed += "; %d on-demand file%s not counted" % (aside[root], "" if aside[root] == 1 else "s")
-                health_hit(items, rule, "between-sessions" if between else file_key(root), label, at, value=total,
-                           ref="events:%s/%s" % (entry.get("at"), file_key(root)),
-                           excerpt="%s +%d B: %s" % (file_key(root), total, listed),
-                           level="red" if total > LIMITS["growth_min_b"] else "watch",
-                           head=None if between else "%s grew %s" % (
-                               "an instruction file" if len(grown) == 1 else "instruction files",
-                               "after a guard refused it" if denied else "with no guard seeing it"),
-                           n=len(grown), noun="file")
+                group[2].append((path, delta))
         elif kind == "stamp-forged":
             health_hit(items, "stamp-forged", file_key(files[0]) if files else "?", "forged retry stamp: %s" % (
                 "/".join((files[0] if files else "?").split("/")[-2:])), at, ref=ref,
@@ -4296,6 +4291,26 @@ def guards_section(now):
                        head={"changed-while-watcher-off": "instruction files changed while their watcher was off",
                              "baseline-missing": "the instruction watcher lost its starting snapshot",
                              "dropped": "the instruction watcher lost change records"}[kind])
+    for (between, rule, root, _), (at, stamp, grown, aside) in sorted(pending.items(), key=lambda kv: kv[0][:3]):
+        total = sum(delta for _, delta in grown)
+        if total < NEAR_SHARE * LIMITS["growth_min_b"]:
+            continue
+        denied = rule == "growth-denied"
+        label = "instruction files grew between sessions" if between else "%s%s grew %s" % (
+            "/".join(file_key(root).rstrip("/").split("/")[-2:]), " (%d files)" % len(grown) if len(grown) > 1 else "",
+            "after a denial" if denied else "with no gate seeing it")
+        listed = ", ".join("%s +%d B" % (os.path.basename(p) if p == root else os.path.relpath(p, root), delta)
+                           for p, delta in grown)
+        if aside:
+            listed += "; %d on-demand file%s not counted" % (aside, "" if aside == 1 else "s")
+        health_hit(items, rule, "between-sessions" if between else file_key(root), label, at, value=total,
+                   ref="events:%s/%s" % (stamp, file_key(root)),
+                   excerpt="%s +%d B: %s" % (file_key(root), total, listed),
+                   level="red" if total > LIMITS["growth_min_b"] else "watch",
+                   head=None if between else "%s grew %s" % (
+                       "an instruction file" if len(grown) == 1 else "instruction files",
+                       "after a guard refused it" if denied else "with no guard seeing it"),
+                   n=len(grown), noun="file")
     beat = os.path.join(state, "watcher", "heartbeat")
     try:
         born = os.stat(beat).st_mtime
@@ -4523,7 +4538,8 @@ def deploys_section(now):
 
 
 BROWSER_REPAIR = ("HARNESS_NEEDS_REPAIR", "missing")
-BROWSER_SKIPS = {"CANARY_OUT_OF_POOL": "out of the worker pool", "CANARY_WALLED": "walled"}
+BROWSER_SKIPS = {"CANARY_OUT_OF_POOL": "out of the worker pool", "CANARY_WALLED": "walled",
+                 "BROWSER_OWNER_LOGIN": "waits for Egor's sign-in"}
 BROWSER_CANARY_S = 23 * 3600
 BROWSER_QUIET_S = 7 * 86400
 

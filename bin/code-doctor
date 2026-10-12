@@ -2760,7 +2760,8 @@ def run_critical(night, max_tokens, max_wall, vendor, batch_size=JUDGE_BATCH):
             if re.search(r"^STATUS: running", report, re.M):
                 stop = "wall"
     record = {"night": night, "at": iso_time(now_s()), "stop": stop, "judged": judged, "pending": waiting - judged,
-              "tokens": spent, "wall_s": round(time.time() - started, 1), "error": error}
+              "tokens": spent, "wall_s": round(time.time() - started, 1), "max_tokens": max_tokens, "max_wall_s": max_wall,
+              "error": error}
     append_jsonl(os.path.join(state_dir(), "critical-runs.jsonl"), record)
     return record
 
@@ -2848,6 +2849,15 @@ def run_judge(night, max_tokens, max_wall, vendor, limit=None, batch_size=JUDGE_
               "error": error}
     append_jsonl(os.path.join(state_dir(), "judge-runs.jsonl"), record)
     return record
+
+
+def budget_said(record):
+    if record["stop"] not in ("tokens", "wall"):
+        return ""
+    span = lambda s: "%d h" % (s // 3600) if s >= 3600 and not s % 3600 else "%d min" % round(s / 60.0) if s >= 60 \
+        else "%d s" % s
+    return " at the budget %dk tokens / %s, used %dk tokens / %s" % (
+        record["max_tokens"] // 1000, span(record["max_wall_s"]), round(record["tokens"] / 1000.0), span(record["wall_s"]))
 
 
 
@@ -3609,11 +3619,13 @@ def main(argv=None):
             for line in settle_registrations(args.night):
                 print("registration: " + line)
         write_document(doc_or_error(started))
-        print("judge: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record)
+        print("judge: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record
+              + budget_said(record))
         return 0
     if args.command == "critical":
         record = run_critical(args.night, args.max_tokens, args.max_wall, args.vendor, args.batch)
-        print("critical: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record)
+        print("critical: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record
+              + budget_said(record))
         if record["error"]:
             print("critical: " + record["error"], file=sys.stderr)
         return 0 if record["stop"] not in ("launch-failed", "list-failed", "record-failed") else 1

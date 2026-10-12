@@ -50,6 +50,7 @@ REFUSAL_CAP_S = 300
 REFUSAL_PROOF_RATIO, REFUSAL_PROOF_DAYS = 0.0, 7
 HISTORY_DAYS = 6
 TREND_DAYS = 7
+TREND_RECENT = 3
 BUDGET_VERSION = 3
 STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"))
 WORKER_OVERHEAD = ("slot", "retries", "walled", "wrapup", "dead", "hung", "suite_run", "suite_wait")
@@ -1231,9 +1232,11 @@ def trend_lines(rows):
     moved = [r for r in rows if r["problems"][0] is not None and r["problems"][1] is not None]
     if moved:
         first, last = moved[0]["problems"][0], moved[-1]["problems"][1]
-        out.append("trend · problems %d → %d over %d nights · %s" % (
-            first, last, len(moved), "moving forward" if last < first else "treading water" if last == first
-            else "going back"))
+        recent = [r["problems"] for r in moved[-TREND_RECENT:]]
+        down, up = sum(a < b for b, a in recent), sum(a > b for b, a in recent)
+        out.append("trend · problems %d → %d over %d nights · last %d: %d down, %d up · %s" % (
+            first, last, len(moved), len(recent), down, up,
+            "moving forward" if down > up else "going back" if up > down else "treading water"))
     return out
 
 

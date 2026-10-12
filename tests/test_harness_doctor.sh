@@ -1311,6 +1311,15 @@ check(judged(part) == {("growth-ungated", "~/.claude/skills/tool"): "red"}
 put(os.path.join(skill, "SKILL.md"), "---\nname: tool\n---\n")
 check(judged(health(G, events=[dict(install, files=refs, bytes=[5000] * 40)])) == {},
       "J Guards: growth only in an installed skill's on-demand files is not judged")
+plugin = os.path.join(home, ".claude", "plugins", "cache", "market", "kit", "0.5.0")
+landed = [os.path.join(plugin, "skills", n, "SKILL.md") for n in ("a", "b", "b/upstream")] + [os.path.join(plugin, "CLAUDE.md")]
+part = health(G, events=[dict(change(T - 610), files=landed[:2] + [os.path.join(plugin, "skills", "a", "ref.md")],
+                              bytes=[900, 800, 5000]),
+                         dict(change(T - 600), files=landed[2:], bytes=[700, 600])])
+check(judged(part) == {("growth-ungated", "~/.claude/plugins/cache/market/kit/0.5.0"): "red"}
+      and [(j["value"], j["bad"]) for r in part["rows"] for j in r["judge"]] == [(3000, 4)]
+      and "(4 files)" in part["rows"][0]["say"],
+      "Guards: one plugin install over several events is one problem keyed by its version dir, naming its file count")
 docs = [os.path.join(home, "p", "docs", n) for n in ("a.md", "sub/b.md", "c.md")]
 part = health(G, events=[dict(change(T - 600), files=docs + [os.path.join(skill, "SKILL.md")], bytes=[50, 50, 50, 70])])
 check(judged(part) == {("growth-ungated", "~/p/docs"): "red", ("growth-ungated", "~/.claude/skills/tool"): "watch"}
@@ -1621,6 +1630,13 @@ check(cells["gone"][0] == "no profile · no-profile" and ("browser-account", "go
       "Browser: an account without a Chrome profile is shown, not judged")
 check(cells["Runs"] == ["harness needs repair · missing ×1 · workaround ×1", "worker-run transcript r-wa"],
       "Browser: the repair row counts kinds in 72 h and names the newest run")
+put(os.path.join(runs, "browse", "log.jsonl"), json.dumps(
+    {"ts": stamp(T - 60), "run": "r-login", "account": "com", "target": "chrome", "outcome": "BROWSER_OWNER_LOGIN",
+     "workaround": False}) + "\n")
+part = B(T)
+cells = {r["cells"][0]: r["cells"][1:] for r in part["rows"]}
+check(("browser-repair", "runs") not in judged(part) and "Runs" not in cells and "72 h" not in cells["com"][0],
+      "Browser: a site Egor himself must sign in to is neither a harness repair nor an account failure")
 put(os.path.join(runs, "browse", "accounts.json"), json.dumps({
     "com": {"email": "c@x", "chrome_profile": "Profile 1", "status": "ok", "proven_at": T - 3600}}))
 put(os.path.join(runs, "browse", "log.jsonl"), "".join(json.dumps(dict(e, ts=stamp(T - 60))) + "\n" for e in (

@@ -595,6 +595,8 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   `SKILL.md`), else the `docs` tree it sits in, else the file. Its value is the bytes the change added
   under that root, its count the files, and the files are listed in the evidence. Incident
   2026-09-30 13:32: one install of third-party skills under `~/.claude/skills` read as 233 problems.
+  A plugin version dir (`~/.claude/plugins/cache/<market>/<plugin>/<version>`) is one root over every
+  event of the 24 h window: 2026-10-12 18:57 one vercel install, journaled as five events, read as 39 rows.
 - **On-demand skill files are out of scope.** The rule prices context that loads into every chat
   with no audit. Only a skill's own `SKILL.md` loads that way. Its `references/` and other files load
   when the skill runs and its `SKILL.md` points to them, and the rule still watches that `SKILL.md`.
@@ -614,8 +616,8 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   `browse/last-session-<account>.json`); `browser-canary-start` is red when the newest canary row is
   `CANARY_NOT_STARTED`, its evidence the row's `error` (the session's first error line, written by the canary);
   a newest `CANARY_OUT_OF_POOL` or `CANARY_WALLED` row marks the account `out of the worker pool` or `walled`
-  (weather, per the 429 doctrine), never judged, no 7-day watch, not counted among the 72 h failures;
-  `browser-repair` is red for a 72 h workaround, `HARNESS_NEEDS_REPAIR` or `missing`; `browser-applescript-js`
+  (weather, per the 429 doctrine), never judged, no 7-day watch, not counted among the 72 h failures; neither is
+  `BROWSER_OWNER_LOGIN` (a site Egor himself must sign in to); `browser-repair` is red for a 72 h workaround, `HARNESS_NEEDS_REPAIR` or `missing`; `browser-applescript-js`
   watches a Dia without its JS flag. A writing run starts `worker-run browse --canary` (`HARNESS_BROWSE_CMD`)
   detached when `browse/canary.stamp` is older than 23 h; the canary's receipts land in the same log. Account rows read
   claudeb rows only (`vendor` not `codex`); one `Codex` row shows the newest codex canary leg (`<account> · <profile> ·

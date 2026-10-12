@@ -85,12 +85,14 @@ assert jqe '[.blind_spots[].id] | index("rollup:none") != null' "$LATEST"
 # stop, then the rest in one batched session whose tokens split evenly over its candidates.
 "$CD" judge --night n00 --max-tokens 60000 >"$WORK/judge.out"
 assert grep -q 'stop tokens' "$WORK/judge.out"
+assert grep -q 'stop tokens at the budget 60k tokens / 1 h, used 0k tokens / [0-9]* s$' "$WORK/judge.out"
 assert test "$(judged)" = 0
 CODE_DOCTOR_FAKE_COST=90000 "$CD" judge --night n0 --max-tokens 100000 --batch 1 >"$WORK/judge.out"
 assert grep -q 'stop tokens' "$WORK/judge.out"
 assert test "$(judged)" = 1
 "$CD" judge --night n0 --max-wall 0 >"$WORK/judge.out"
 assert grep -q 'stop wall' "$WORK/judge.out"
+assert grep -q 'stop wall at the budget 400k tokens / 0 s, used 0k tokens / ' "$WORK/judge.out"
 assert test "$(judged)" = 1
 assert jqe 'select(.night == "n0" and .stop == "tokens" and .tokens == 90000)' "$CODE_DOCTOR_DIR/judge-runs.jsonl"
 assert test ! -e "$HOME/.cache/doctors/launches.jsonl"
