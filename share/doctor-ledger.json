@@ -697,12 +697,24 @@
     "machinery": "integrity"
    },
    "title": "the reviewed tree changed while its review ran",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed",
+   "fixes": [
+    {
+     "at": "2026-10-12T03:20:29+03:00",
+     "by": "Updater doctor",
+     "files": [
+      "review-bench/share/rbench/launch.py",
+      "review-bench/share/rbench/debt.py",
+      "review-bench/share/rbench/cell_runtime.py"
+     ],
+     "in": "review-bench@c47e63d",
+     "regressed_at": null
+    }
+   ],
    "same_cause": [],
-   "last_reviewed": "2026-10-10",
-   "reviewed_by": "Night fixer llm-reviewers-20261010T031845Z-64f1",
-   "note": "Cause: tracked files edited in the shared checkout by other chats while a round ran (uncommitted work or a commit landing mid-round); the class cannot tell them from a cell's write, which is what it watches for, so it stays counted (owner, 2026-10-04). Ignored paths (.git/info/exclude included) were the second cause until the owner left them out (review-bench debt.py doctor_ignored; test_doctor_integrity_counts_paths_past_the_truncated_lists). Nightly counts 2026-10-01 to 2026-10-09: 11, 2, 1, 4, 1, 1, 2, 1, 12, every one a tracked-file edit by another chat (e.g. 2026-10-06 llm-legs bin/night-run +4 from commit c4d9f13e mid-round 20261005T193613Z-73d6ca2). 2026-10-09's 16 rows (12 at launch): 10 rounds of the live «Updater doctor» over its own edits, 5 of «Workers и review bench унификация отображения» (llm-legs bin/system-doctor committed 0106037b, claude-setup night-sweep/SKILL.md committed f3e1ccd, both after the rounds launched), 1 token-map benches.py (a441f30); no new cause. 2026-10-10: 8 at launch, 3 listed: rounds 20261009T111707Z-4e0053c/111757Z-e033986 over llm-legs hammerspoon/token-tracking.lua (commit 8a125622 landed 14:29 local, rounds launched 14:17) and 20261009T234154Z-19160d2 over token-map tests/test_kinds.py (commits f5f05cc, 0ee2c61 after its 02:41 launch); no new cause.",
+   "last_reviewed": "2026-10-12",
+   "reviewed_by": "Updater doctor",
+   "note": "Cured at the cause (Egor, 2026-10-12, overriding the 2026-10-04 keep-counted call): cells read sealed snapshot clones, so another chat's edit or commit in the live checkout never changed what a round reviewed. review-bench c47e63d counts a changed root only when a cell's recorded write folders (rater or judge) overlap it; every difference stays recorded in meta.integrity. Every cell vendor and the judge already ran sandboxed against the checkout and ~/.claude; the Gemini verifier ran unsandboxed and now runs under write_guard_command. Nightly counts 2026-10-01..10-10 were all other chats' tracked-file edits (11, 2, 1, 4, 1, 1, 2, 1, 12, 8).",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
