@@ -114,6 +114,24 @@ check(got[("speed", "sonnet")] == {"runs": 1, "landed": 1, "min_day": 6.5},
       "a merged Speed job's fixed decisions landed, its run's ROI minutes go to its arm: %s" % got)
 check(got[("speed", "opus")] == {"runs": 1}, "a left Speed job landed nothing: %s" % got)
 
+gone = os.path.join(repo, ".claude", "worktrees", "gone")
+commit(start + 500, **{"d.sh": "d0\n"})
+commit(start + 600, **{"d.sh": "d1\n"})
+write(os.path.join(repo, "d.sh"), "d1\nd2\n")
+git("add", "d.sh")
+git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "Debt fit round %s: two fixers" % fit_round, at=start + 900)
+debt = git("rev-parse", "HEAD")
+extra = os.path.join(work, "extra")
+for name, after in (("on-main", "d1\n"), ("superseded", "d0\nmine\n")):
+    write(f"{extra}/{name}/produced", "%s\t%s\td.sh\n" % (blob("d0\n"), blob(after)))
+    meta = {"workdir": gone, "review_round": fit_round, "ended_at": start + 550}
+    check(S.directory_fix(f"{extra}/{name}", meta, start + 450, 1)["landed"],
+          "a fixer whose worktree is gone still finds its landing (%s)" % name)
+check(S.directory_fix(f"{extra}/superseded", {"workdir": gone, "review_round": fit_round, "ended_at": start + 550},
+                      start + 450, 1)["commits"] == {debt}, "a superseded blob lands through the debt commit naming its round")
+check(not S.directory_fix(f"{extra}/superseded", {"workdir": gone, "review_round": later, "ended_at": start + 550},
+                          start + 450, 1)["landed"], "a commit naming another round is not this fixer's landing")
+
 write(os.environ["SONNET_TRIAL_MARKER"], {"id": "sonnet-fixes", "started": start, "until": int(time.time()) + 3600})
 out = subprocess.run([sys.executable, "-B", os.path.join(root, "share", "sonnet_trial.py"), "/usr/bin/false", night],
                      capture_output=True, text=True)

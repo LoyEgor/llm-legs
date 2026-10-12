@@ -94,10 +94,21 @@ def fixed_findings(directory):
 
 
 def directory_fix(directory, meta, began, fixes):
-    top = (git(meta.get("workdir"), "rev-parse", "--show-toplevel") or "").strip()
+    workdir = str(meta.get("workdir") or "")
+    top = (git(workdir, "rev-parse", "--show-toplevel") or "").strip()
+    if not top and "/.claude/worktrees/" in workdir:
+        top = (git(workdir.split("/.claude/worktrees/")[0], "rev-parse", "--show-toplevel") or "").strip()
     rows = [tuple(line.split("\t")[:3]) for line in night_spend.read(f"{directory}/produced").splitlines()
             if line.count("\t") >= 2]
-    return fix_record(top, fixes, meta.get("ended_at") or began, rows)
+    ended = meta.get("ended_at") or began
+    record = fix_record(top, fixes, ended, rows)
+    # A debt job commits its round's fixers together: a later fixer's edit replaces an earlier one's blob.
+    if not record["landed"] and meta.get("review_round") and rows:
+        commits = set((git(top, "log", "main", "--format=%H", "--since=" + iso(ended - 86400), "-F",
+                           "--grep=" + meta["review_round"], "--", *{p for _, _, p in rows}) or "").split())
+        if commits:
+            record = fix_record(top, fixes, ended, rows, commits)
+    return record
 
 
 def round_fix(directory, meta, began):
