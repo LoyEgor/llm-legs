@@ -1761,12 +1761,58 @@ instruction_all_dirs() { # home cwd...
   instruction_guarded_dirs "$home" | _instruction_spell_all "$home" "$@"
 }
 
+# A landing into a main checkout carries bytes typed in a worktree, where a worker outside Claude Code
+# (Codex, Gemini, Grok) or a copy script passed no gate: every file it grows, by how many bytes, less
+# what gate passes on the file's worktree spellings priced within the day before.
+_instruction_landing_growth() { # top merge|cherry-pick|pull args... → path<TAB>delta, one per line
+  local top=$1 sub=$2 w skip='' ref c base rows sizes pairs=''
+  local -a refs=()
+  shift 2
+  for w in "$@"; do
+    [ -z "$skip" ] || { skip=''; continue; }
+    case "$w" in
+      -m|-s|-X|-F|--file|--strategy|--strategy-option|--cleanup|--into-name) skip=1 ;;
+      -*) ;;
+      *) refs+=("$w") ;;
+    esac
+  done
+  if [ "$sub" = pull ]; then
+    if [ ${#refs[@]} -ge 2 ]; then refs=("${refs[0]}/${refs[1]}"); else refs=('@{upstream}'); fi
+  fi
+  for ref in ${refs[@]+"${refs[@]}"}; do
+    if [ "$sub" != cherry-pick ]; then
+      base=$(git -C "$top" merge-base HEAD "$ref" 2>/dev/null) && pairs+="$base $ref"$'\n'
+    elif [[ $ref == *..* ]]; then
+      while IFS= read -r c; do pairs+="$c^ $c"$'\n'; done < <(git -C "$top" rev-list --reverse "$ref" 2>/dev/null)
+    else
+      pairs+="$ref^ $ref"$'\n'
+    fi
+  done
+  rows=$(printf '%s' "$pairs" | while read -r base ref; do
+    [ -n "$ref" ] && git -C "$top" diff --raw --no-abbrev --no-renames "$base" "$ref" -- 2>/dev/null
+  done | awk -F'\t' 'NF == 2 { split($1, m, " "); print m[3] "\t" m[4] "\t" $2 }')
+  [ -n "$rows" ] || return 0
+  sizes=$(printf '%s\n' "$rows" | cut -f1,2 | tr '\t' '\n' | grep -v '^0*$' | sort -u |
+    git -C "$top" cat-file --batch-check='%(objectname) %(objectsize)' 2>/dev/null)
+  rows=$(awk -F'\t' -v top="$top" 'NR == FNR { split($0, s, " "); size[s[1]] = s[2]; next }
+    { grown[$3] += size[$2] - size[$1] } END { for (p in grown) if (grown[p] > 0) print top "/" p "\t" grown[p] }' \
+    <(printf '%s\n' "$sizes") <(printf '%s\n' "$rows"))
+  [ -n "$rows" ] || return 0
+  { jq -r --argjson since "$(($(date +%s) - 86400))" 'select((.at // 0) >= $since and (.delta | type) == "number"
+      and .delta > 0 and ([.decision] | inside(["passed", "span-pass", "granted"])))
+    | (.file, .real) | strings | select(test("/\\.claude/worktrees/")) | sub("/\\.claude/worktrees/[^/]+"; "")' \
+    "${INSTRUCTION_WATCH_STATE:-$HOME/.cache/claude-instruction-watch}/gates.jsonl" 2>/dev/null; echo; } |
+    awk -F'\t' 'NR == FNR { seen[$0] = 1; next } !($1 in seen)' - <(printf '%s\n' "$rows")
+}
+
 # `git apply` and `git stash pop|apply` write files their command text never names. What they
 # write is read off the patch — the command text itself (a heredoc) and every file the command
 # names — and off the stash, relative to the repository's top level (the directory outside one).
+# A merge, cherry-pick or pull into a main checkout names the files it grows unpriced, each with its
+# byte delta after a tab.
 instruction_git_landing() { # command cwd → absolute paths, one per line
   local cmd=$1 cwd=${2:-$PWD} seg gcwd i n sub w ro real dir top ref f base strip next
-  local apply='' stash='' gcwds='' files='' strips='' sh_cwd=$cwd
+  local apply='' stash='' gcwds='' files='' strips='' landed='' sh_cwd=$cwd
   local -a words
   case "$cmd" in *git*) ;; *) return 0 ;; esac
   while IFS= read -r -d '' seg; do
@@ -1824,9 +1870,16 @@ instruction_git_landing() { # command cwd → absolute paths, one per line
           git -C "$gcwd" stash show --name-only ${ref:+"$ref"} 2>/dev/null; } |
           while IFS= read -r f; do printf '%s/%s\n' "$top" "$f"; done)"$'\n'
         ;;
+      merge|cherry-pick|pull)
+        top=$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null) || continue
+        [ "$(git -C "$top" rev-parse --path-format=absolute --git-dir 2>/dev/null)" = \
+          "$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ] || continue
+        landed="$landed$(_instruction_landing_growth "$top" "$sub" "${words[@]:$((i + 1))}")"$'\n'
+        ;;
     esac
   done < <(instruction_split_commands "$cmd")
   [ -z "$stash" ] || printf '%s' "$stash" | grep .
+  [ -z "$landed" ] || printf '%s' "$landed" | grep .
   [ -n "$apply" ] || return 0
   read -r -a words <<<"$(printf '%s' "$cmd" | tr -d "\"'" | tr '\n()<>;|&' '         ')"
   for w in ${words[@]+"${words[@]}"}; do

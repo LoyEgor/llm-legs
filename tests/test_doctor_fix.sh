@@ -1004,11 +1004,23 @@ jq '(["opportunity:chat/tools", "opportunity:delegation/background Bash", "oppor
   mv "$S/core.json" "$S/harness/latest.json"
 sid=$(grep -F 'speed-chat-tools' "$WORK/out" | cut -f1)
 # A Speed run whose component files live in the night's repository waits for a speed-lens review of them in its
-# worktree: its brief names that round, so worker-run hands the fixer the round's findings; the others get none.
+# worktree. review-bench refuses a launch a script makes inside Claude Code, so the launch makes none: it hands the chat
+# the line, the chat's own call runs it, and the round lands in the brief, so worker-run hands the fixer its findings.
 IFS=$'\t' read -r tid tbrief twt < <(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out")
-assert [ "$(cat "$DATA/rb-args")" = "$twt	review --repo $twt --files tests/test_llm_limits.sh --lens speed --tier T2 --scope-lines 3 --focus Aimed by the Harness doctor's measured rows: $(jq -r '.problems[0].fact' "$(record "$tid")"). Find what makes them slow; keep every check." ]
-assert grep -qxF "doctor-fix: $tid waits for speed lens round 20261008T000000Z-abcdef1: dispatch its brief when that round's \`review-bench wait\` returns" "$WORK/err"
+assert [ ! -e "$DATA/rb-args" ]
+assert grep -qx 'ROUND: none' "$tbrief"
+lens_line() { # id -> the launch line the last launch handed the chat for that run's speed lens
+  grep -A1 -xF "doctor-fix: $1 waits for its speed lens: run the line below in ONE Bash call with every other such line of this launch, then dispatch its brief when the round it names returns from \`review-bench wait\`" "$WORK/err" | tail -n +2
+}
+lens=$(lens_line "$tid")
+assert [ -n "$lens" ]
+(cd "$WORK" && env "${speed_env[@]}" bash -c "$lens") 2>"$WORK/lens-err" || fail "the lens line failed: $(cat "$WORK/lens-err")"
+assert [ "$(cut -f2- "$DATA/rb-args")" = "review --repo $twt --files $twt/tests/test_llm_limits.sh --lens speed --tier T2 --scope-lines 3 --focus Aimed by the Harness doctor's measured rows: $(jq -r '.problems[0].fact' "$(record "$tid")"). Find what makes them slow; keep every check." ]
+assert [ "$(cat "$WORK/lens-err")" = "doctor-fix: $tid waits for speed lens round 20261008T000000Z-abcdef1: dispatch its brief when that round's \`review-bench wait\` returns" ]
 assert grep -qx 'ROUND: 20261008T000000Z-abcdef1' "$tbrief"
+printf 'run id: 20261008T000000Z-abcdef9
+' | assert_fails fix lens-round "$tid" 2>"$WORK/lens-err"
+assert grep -qxF "doctor-fix: run $tid waits for no speed lens" "$WORK/lens-err"
 assert grep -qF 'Speed lens: the `ROUND:` above' "$tbrief"
 for r in $(grep -vF "$tid" "$WORK/out" | cut -f2); do
   assert grep -qx 'ROUND: none' "$r"
@@ -1092,14 +1104,17 @@ jq --argjson s "$(now)" '.as_of_s = $s
   | (.problems[] | select(.id == "opportunity:machine/contention") | .opportunity.hook) = "review-flow-gate.sh"' \
   "$S/harness/latest.json" >"$S/shared.json" && mv "$S/shared.json" "$S/harness/latest.json"
 git -C "$L" update-ref refs/night/n12/base HEAD
-rm "$RUNS/speed-lens.tsv" && : >"$DATA/rb-fails"
+rm "$RUNS/speed-lens.tsv"
 env "${speed_env[@]}" bash "$FIX" launch harness --night n12 >"$WORK/out" 2>"$WORK/err" || fail "speed night n12: $(cat "$WORK/err")"
-rm "$DATA/rb-fails"
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 2 ]
 # A review that does not launch leaves the run its own search, said on stderr.
 tid=$(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out" | cut -f1)
-assert [ "$(cat "$WORK/err")" = "doctor-fix: $tid gets no speed lens: review-bench: no lens named speed" ]
+: >"$DATA/rb-fails"
+env "${speed_env[@]}" bash -c "$(lens_line "$tid")" 2>"$WORK/lens-err" || fail "the failed lens line failed: $(cat "$WORK/lens-err")"
+rm "$DATA/rb-fails"
+assert [ "$(cat "$WORK/lens-err")" = "doctor-fix: $tid gets no speed lens: review-bench: no lens named speed" ]
 assert grep -qx 'ROUND: none' "$(grep -F "$tid" "$WORK/out" | cut -f2)"
+assert jqe '.lens_launch == null and .lens_round == null' "$(record "$tid")"
 assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '. == [
   ["speed-chat-hooks", ["opportunity:chat/hooks", [$h]], ["opportunity:machine/contention", [$h]]],
   ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)

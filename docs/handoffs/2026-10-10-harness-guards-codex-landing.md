@@ -1,6 +1,6 @@
 # Guards: a Codex worker's instruction write lands through a chat's merge
 
-Status: open — To: «Harness Doctor» (`share/harness-ledger.json` `owner`), carried by the next night
+Status: settled 20261012T005404Z-e2f7: owner's pick (a): the write gate prices a merge, cherry-pick or pull into a main checkout; a guarded file it grows that no gate pass priced on its worktree spelling within 24 h is denied as an addition, the landing chat pays (test_instruction_gate_bypasses red on old code)
 
 Rows `guards-growth-claude-setup-night-sweep-skill` and `guards-ungated-docs-worktree-shell-write`,
 written 2026-10-10 by night fixer harness-guards-20261010T031900Z-5315. A gate-scope decision.

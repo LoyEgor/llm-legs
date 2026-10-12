@@ -1,6 +1,6 @@
 # One-shot `claudeb -p` calls load CLAUDE.md + memory for nothing
 
-Status: open 20261010T031219Z-4c4e: carried to a fresh night; no caller records its inputs (llm_gate's gate-cache keeps digest and verdict only), so the replay proof needs recording first, and transcriptions-gpt has no night base ref
+Status: settled 20261012T005404Z-e2f7: kept as is: the three callers' instruction load is ~0.28M tokens a week (~0.04 % of spend, 2 % of the kept spend row startup:CLAUDE.md + memory index); its inputs exist only as headless transcripts in the claudeb store no ad-hoc check may read, so the proof needs a recorder in three repos (one outside the sweep) and an old-vs-old baselined replay, night spend the ≤5 % goal cannot pay for that gain
 From: spend audit `startup:CLAUDE.md + memory index`, night 20261009T023738Z-817e
 To: next night (claude-setup worktree; usage-ai-report and transcriptions-gpt are outside the sweep repos)
 

@@ -1,6 +1,6 @@
 # doctor-fix's speed lens never launches: the review door refuses scripts
 
-Status: open — To: Harness Doctor
+Status: settled 20261012T005404Z-e2f7: fixed by doctrine, no door bypass: doctor-fix no longer calls review-bench; it prints each speed-lens launch line, the orchestrator runs them in ONE Bash call (the gate stamps the nonce for their count), and `doctor-fix lens-round` records the round into the brief (test_doctor_fix red on old code)
 
 Night 20261010T031219Z-4c4e: `doctor-fix launch all --night R` printed `gets no speed lens: review-bench: a
 review launch inside Claude Code runs only as the plain Bash call the review door let through` for all 39

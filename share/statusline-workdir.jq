@@ -1,6 +1,6 @@
 def value: if . == null then "" else tostring end;
-# `(` is a separator and is barred from unquoted tokens: the cd-guard hook steers persistent `cd`
-# into `(cd /path && cmd)`, where the path token would otherwise swallow the closing paren.
+# `(` is a separator and is barred from unquoted tokens: in `(cd /path && cmd)` the path token
+# would otherwise swallow the closing paren.
 def tok: "\"(?:\\\\.|[^\"])*\"|'[^']*'|[^[:space:];&|()]+";
 # Wrappers, assignments and shell keywords a cd or git hides behind. Nothing added to `lead` or
 # `gopt` may capture: `bash_hit` reads the separator as `.captures[0]`.

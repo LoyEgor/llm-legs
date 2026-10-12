@@ -839,8 +839,13 @@ write_brief() { # id worktree -> the brief file
   printf '%s\n' "$runs_dir/$id.brief.md"
 }
 
-speed_lens() { # id worktree top -> a Speed run's component files in top's repository get a speed-lens review in its worktree, its round on the record
-  local id=$1 wt=$2 top=$3 file path rel key hash round out ledger="$runs_dir/speed-lens.tsv" files=() fresh=() keys=() seen=() i=0
+sq() { # word -> it as one shell word
+  local q="'\\''"
+  case $1 in '' | *[!A-Za-z0-9_./:=@%+-]*) printf "'%s'" "${1//\'/$q}" ;; *) printf '%s' "$1" ;; esac
+}
+
+speed_lens() { # id worktree top -> a Speed run's component files in top's repository: the launch line of their speed-lens review, for the chat to run
+  local id=$1 wt=$2 top=$3 file path rel key hash round line ledger="$runs_dir/speed-lens.tsv" files=() fresh=() keys=() seen=() i=0
   file=$(record_file "$id")
   [ "$(jq -r .doctor "$file")" = harness ] && jq -e --arg rules "$SPEED_LENS_RULES" "$JQ_HAS_RULES" "$file" >/dev/null || return 0
   while IFS= read -r path; do
@@ -859,16 +864,36 @@ speed_lens() { # id worktree top -> a Speed run's component files in top's repos
       "$(printf '%s\n' "${seen[@]}" | sort -u | paste -sd, - | sed 's/,/, /g')" >&2
     return 0
   fi
-  out=$(cd "$wt" && "${DOCTOR_FIX_REVIEW_BENCH:-review-bench}" review --repo "$wt" --files "${fresh[@]}" --lens speed \
-    --tier "$SPEED_LENS_TIER" --scope-lines "$(git diff --numstat "$(git hash-object -t tree /dev/null)" HEAD -- "${fresh[@]}" | awk '{ s += $1 } END { print s + 0 }')" \
-    --focus "Aimed by the Harness doctor's measured rows: $(jq -r '[.problems[] | .fact // .id] | join(" | ")' "$file"). Find what makes them slow; keep every check." 2>&1 </dev/null)
+  # review-bench takes a launch inside Claude Code only from the chat's own Bash call that spells it (the review
+  # door's nonce): run from here it refuses, so the chat gets the line to run.
+  line="$(sq "${DOCTOR_FIX_REVIEW_BENCH:-review-bench}") review --repo $(sq "$wt") --files"
+  for rel in "${fresh[@]}"; do line+=" $(sq "$wt/$rel")"; done
+  line+=" --lens speed --tier $SPEED_LENS_TIER --scope-lines $(git -C "$wt" diff --numstat "$(git hash-object -t tree /dev/null)" HEAD -- "${fresh[@]}" | awk '{ s += $1 } END { print s + 0 }')"
+  line+=" --focus $(sq "Aimed by the Harness doctor's measured rows: $(jq -r '[.problems[] | .fact // .id] | join(" / ")' "$file"). Find what makes them slow; keep every check.")"
+  line+=" </dev/null 2>&1 | DOCTORS_DIR=$(sq "${runs_dir%/runs}") $(sq "$script_path") lens-round $(sq "$id")"
+  locked record_set "$id" '.lens_launch = $l | .lens_keys = $k' --arg l "$line" \
+    --argjson k "$(printf '%s\n' "${keys[@]}" | jq -R . | jq -sc .)" || return 0
+  printf 'doctor-fix: %s waits for its speed lens: run the line below in ONE Bash call with every other such line of this launch, then dispatch its brief when the round it names returns from `review-bench wait`\n%s\n' "$id" "$line" >&2
+}
+
+lens_record() { # id round|'' (locked)
+  [ -z "$2" ] || jq -r --arg r "$2" --arg id "$1" '.lens_keys[]? | [., $r, $id] | @tsv' "$(record_file "$1")" >>"$runs_dir/speed-lens.tsv" ||
+    return 1
+  record_set "$1" 'del(.lens_launch, .lens_keys) | if $r == "" then . else .lens_round = $r end' --arg r "$2"
+}
+
+lens_round() { # id; stdin: its speed-lens launch line's output -> the round on its record and in its brief, or why it has none
+  local id=$1 file out round
+  file=$(record_file "$id")
+  out=$(cat)
+  [ -f "$file" ] && jq -e '.lens_launch' "$file" >/dev/null && [ "$(run_state "$id")" = open ] || die "run $id waits for no speed lens"
   round=$(sed -En 's/^run id: ([0-9]{8}T[0-9]{6}Z-[0-9a-f]{7})$/\1/p' <<<"$out" | head -1)
+  locked lens_record "$id" "$round" || die "run $id: its speed lens round was not recorded"
   if [ -z "$round" ]; then
     printf 'doctor-fix: %s gets no speed lens: %s\n' "$id" "$(grep -m1 '^review-bench:' <<<"$out" || grep . <<<"$out" | tail -1)" >&2
     return 0
   fi
-  locked record_set "$id" '.lens_round = $r' --arg r "$round" || return 0
-  for key in "${keys[@]}"; do printf '%s\t%s\t%s\n' "$key" "$round" "$id"; done >>"$ledger"
+  write_brief "$id" "$(jq -r '.worktrees[0]' "$file")" >/dev/null || die "run $id: its brief does not name round $round"
   printf 'doctor-fix: %s waits for speed lens round %s: dispatch its brief when that round'"'"'s `review-bench wait` returns\n' "$id" "$round" >&2
 }
 
@@ -1300,6 +1325,7 @@ usage: doctor-fix launch llm|harness|updater|code|system [--night <night-id>]
        doctor-fix runs [llm|harness|updater|code|system] [--open] [--json]
        doctor-fix close <id> --decisions <file> <note...>   (reruns the doctor in the run's worktree)
        doctor-fix abandon <id> [--reason TEXT]
+       doctor-fix lens-round <id>   (its speed-lens launch line's output on stdin: the round into the run's brief)
        doctor-fix record updater [--night <night-id>] --branch <b> --worktree <w> [--worktree <w>...] --problems <event id>...   (internal)
        doctor-fix orchestrate <lines-file>   (internal: one chat dispatching the runs of its <ref>\t<brief>\t<worktree> lines)
        doctor-fix record-close <id> --decisions <json-file> <note...>   (internal, updater release runs)
@@ -1317,6 +1343,7 @@ case "${1:-}" in
   show) show_run "${2:-}" ;;
   runs) list_runs "${@:2}" ;;
   close) close_run "${@:2}" ;;
+  lens-round) [ $# -eq 2 ] || usage; lens_round "$2" ;;
   abandon) abandon_run "${@:2}" ;;
   touches) [ $# -eq 4 ] && [ -f "$2" ] || usage; py touches "${@:2}" ;;
   ledger-sync) [ $# -eq 2 ] && [ -d "$2" ] || usage; py ledger-sync "$2" ;;

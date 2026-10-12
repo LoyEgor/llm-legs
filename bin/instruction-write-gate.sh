@@ -160,11 +160,11 @@ fi
 # neither of the first two patterns sees it and the guarded basename below is never reached.
 # An ANSI-C quoted run spells a name through escapes, a quote or a backslash splits it
 # (`CLAUDE.m\d`), and the volume folds letter case, so none of those is a reason to leave early.
-# `git apply` and `git stash pop` name no destination at all.
+# `git apply`, `git stash pop` and a landing name no destination at all.
 case "$command" in *"\$'"*) ;; *)
   instruction_sub_bytes bare "$haystack" "[\\\\\"']"
   case "$bare" in
-    *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*git*apply*|*git*stash*) ;;
+    *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*git*apply*|*git*stash*|*git*merge*|*git*cherry-pick*|*git*pull*) ;;
     *) exit 0 ;;
   esac ;;
 esac
@@ -315,7 +315,7 @@ judge_at() { # name mode verb directory
 # shrink shape was read off ANY row is how `tee -a ~/.claude/docs/a.md; : > ~/.claude/docs/b.md`
 # passed inside the span: the second row can shrink its file, so the first row grew its own
 # unasked. The first refused row is the one the denial speaks about.
-denied=''
+denied='' landed_bytes=''
 row_sep=$(printf '\t')
 while IFS=$row_sep read -r row_kind row_mode row_verb row_name; do
   [ -n "$row_name" ] || continue
@@ -508,10 +508,11 @@ if [ -z "$denied" ]; then
   done
 fi
 if [ -z "$denied" ]; then
-  while IFS= read -r landing; do
+  while IFS=$'\t' read -r landing grown; do
     [ -n "$landing" ] || continue
-    if judge_row "$landing" trunc; then
-      denied=1
+    # A landing's growth is an addition, never the reshape a truncating write inside the span may be.
+    if judge_row "$landing" "$([ -n "$grown" ] && echo append || echo trunc)"; then
+      denied=1 landed_bytes=$grown
       break
     fi
   done < <(for here in "${cwds[@]}"; do instruction_git_landing "$command" "$here"; done)
@@ -621,7 +622,9 @@ case "$class" in
     reason="Instruction gate: $hit is the review-debt ignore list — the ONE way a path leaves review debt, so a line written into it retires unreviewed work. That is the project's answer and never a model's, inside Egor's autonomy span as much as outside it: settle the debt by review, or put the case for a waiver to him in one line and wait. With his OK the identical command passes on retry."
     ;;
   *)
-    if [ -n "$span" ]; then
+    if [ -n "$landed_bytes" ]; then
+      reason="Instruction gate: this landing grows $hit by $landed_bytes B that no gate priced where it was written (a Codex, Gemini or Grok worker, or a copy script, passes no hook)$cost. $(instruction_standing_rule) Cut the growth on the branch and land again, or state the byte delta, the weekly token cost with monthly context and what the change SAVES, ask him, and wait. With his OK the IDENTICAL command, byte for byte, passes on retry."
+    elif [ -n "$span" ]; then
       reason="Instruction gate: this command ADDS to $hit rather than replacing it$cost. Egor's autonomy span covers reshaping these files, never growing them: while it stands, a write that leaves the file no larger passes here unasked, and growth of an instruction file waits for him. Rewrite the whole file smaller if the change is a net cut; otherwise keep the addition for his next turn and say so in one line. The tripwire measures the bytes either way and puts back growth this session produced."
     else
       reason="Instruction gate: this command writes to $hit$cost. $(instruction_standing_rule) A shell write cannot be measured, so it is denied whatever its size: change the text with the Edit tool instead, which passes after a full Read. If the growth is genuinely needed: state the byte delta, the weekly token cost with monthly context, what the change SAVES, ask him, and wait. With his OK the IDENTICAL command, byte for byte, passes on retry; a changed command is a new write that needs its own denial and his OK after it."

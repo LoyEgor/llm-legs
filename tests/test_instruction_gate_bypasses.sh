@@ -98,6 +98,39 @@ git -C "$GH" -c user.name=t -c user.email=t@t stash -q
 assert_eq "$(cd "$GH" && pwd -P)/CLAUDE.md" "$(share_call 'instruction_git_landing "git stash pop" "$2"' "$GH")"
 assert_eq deny "$(GATE_CWD="$GH" decision 'git stash pop')"
 
+# A merge, cherry-pick or pull into a main checkout lands what a worktree writer typed: growth no gate pass
+# priced there (a Codex worker's) is refused; priced growth, a shrink, plain files and a worktree's own merge pass.
+GM="$WORK/merge-main"
+mkdir -p "$GM"
+git -C "$GM" init -q -b main
+printf 'rules\n' > "$GM/CLAUDE.md"
+printf 'notes\n' > "$GM/notes.txt"
+git -C "$GM" add CLAUDE.md notes.txt
+git -C "$GM" -c user.name=t -c user.email=t@t commit -qm init
+git -C "$GM" worktree add -q -b feat "$GM/.claude/worktrees/feat" 2>/dev/null
+git -C "$GM" worktree add -q -b cut "$GM/.claude/worktrees/cut" 2>/dev/null
+printf 'more rules\n' >> "$GM/.claude/worktrees/feat/CLAUDE.md"
+printf 'more notes\n' >> "$GM/.claude/worktrees/feat/notes.txt"
+git -C "$GM/.claude/worktrees/feat" -c user.name=t -c user.email=t@t commit -qam grow
+printf 'r\n' > "$GM/.claude/worktrees/cut/CLAUDE.md"
+printf 'more notes\n' >> "$GM/.claude/worktrees/cut/notes.txt"
+git -C "$GM/.claude/worktrees/cut" -c user.name=t -c user.email=t@t commit -qam cut
+gm=$(cd "$GM" && pwd -P)
+assert_eq "$gm/CLAUDE.md	11
+$gm/notes.txt	11" "$(share_call 'instruction_git_landing "git merge --ff-only feat" "$2"' "$GM" | sort)"
+assert_eq deny "$(GATE_CWD="$GM" decision 'git merge --ff-only feat')"
+assert_eq deny "$(GATE_CWD="$WORK" decision "git -C $GM cherry-pick feat")"
+assert_eq deny "$(GATE_CWD="$WORK" decision "cd $GM && git merge -m 'land it' feat")"
+case $(GATE_CWD="$GM" gate 'git merge --ff-only feat' 2>/dev/null) in
+  *'this landing grows '*'CLAUDE.md by 11 B that no gate priced'*) asserts=$((asserts + 1)) ;;
+  *) fail "the landing denial does not name the file and its growth" ;;
+esac
+assert_eq pass "$(GATE_CWD="$GM" decision 'git merge --ff-only cut')"
+assert_eq pass "$(GATE_CWD="$GM/.claude/worktrees/cut" decision 'git merge feat')"
+printf '{"at":%s,"gate":"bloat","decision":"passed","sid":"s","file":"%s","real":"","delta":11,"detail":""}\n' \
+  "$(date +%s)" "$gm/.claude/worktrees/feat/CLAUDE.md" >>"$INSTRUCTION_WATCH_STATE/gates.jsonl"
+assert_eq pass "$(GATE_CWD="$GM" decision 'git merge --ff-only feat')"
+
 echo "== bypasses: the bloat gate prices every spelling and every edit tool"
 mkdir -p "$HOME/.claude/rules" "$HOME/.claude/skills-on-demand/s"
 printf 'x\n' > "$HOME/.claude/rules/r.md"

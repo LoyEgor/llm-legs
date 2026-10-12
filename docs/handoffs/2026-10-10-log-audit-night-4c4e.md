@@ -1,6 +1,6 @@
 # Log audit leftovers, nights 4c4e and e2f7
 
-Status: open — To: next night (Harness Doctor owner); each item is ledger row `log_audit:<id>`, its note the verdict.
+Status: settled 20261012T005404Z-e2f7: item 1 fixed (token-map@6570c78, red in a worktree on old code); item 2 kept: wall seconds stay, Lost time is wall-clock overhead by one rule since 9e64bac4; item 3 dismissed on the ledger (5 not-a-bug, 2 weather)
 
 1. **Judge, owner's call**: `test_daily_cost` sums suite wall seconds, which night load inflates 2-5x; pricing it by
    the journal's CPU would stop fixers sharding against load. Row `speed-doctor-metrics-misleading`.

@@ -2194,7 +2194,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/night\\-sweep$"
       },
-      "status": "open",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -2218,15 +2218,26 @@
           ],
           "in": "llm-legs@535f7f8d",
           "regressed_at": "2026-10-09T22:30:40+03:00"
+        },
+        {
+          "at": "2026-10-12T05:30:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 Harness Doctor",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/tests/test_instruction_gate_bypasses.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "guards-growth-claude-skills-media"
       ],
       "handoff": "docs/handoffs/2026-10-10-harness-guards-codex-landing.md",
-      "note": "Night e2f7: quiet; cause stands (no codexb/geminib/grokb home wires bin/instruction-write-gate.sh, the gate still reads no merge landing); the (a)/(c) pick stays the owner's. 2026-10-10 (night fixer harness-guards-20261010T031900Z-5315): regression event 2026-10-09T19:29:23Z SKILL.md +396 B (with ~/.claude/docs review-tiers.md +247, worktrees.md +222, row guards-ungated-docs-worktree-shell-write) is chat «Чистка night run 20261009T023738Z-817e»'s git merge --ff-only feat/landing-overlap (claude-setup 66cbc49). Writer: Codex worker codex-1791571148-71493-0a04 (borodatch) at 18:41:46Z in the claude-setup worktree feat-landing-overlap, python heredoc r=Path('<worktree>'); p=r/'<rel>'; p.write_text(s), its brief ordering the rule edits against the injected MD-GUARD. Cause: no Codex profile wires a hook, so the worktree write has no gate pass and the 2026-10-04 landing credit has nothing to join; a gate-scope decision (gate merge landings, or Codex/Gemini/Grok hooks), handed off. Also fixed: the Claude write gate passed that shape (a variable bound to a literal checkout joined to a literal: Path(id)/'x', Path('lit')/'x', id/'x', id+'x', join(id,'x'), one step or via a second variable); test_instruction_gate 'a variable holding a checkout joined to a literal' red on the old code. Still missed: chained joins (r/'a'/'b.md'), multi-argument join, f-strings. Ruled out: vendor sync, upstream delivery (local branch), a gate pass beside the landing (gates.jsonl has none for these files on 10-09). 2026-10-06 (night fixer harness-guards-20261006T032921Z-5b99): shared cause of the regressions: the landing credit read only tripwire events, and the watcher journals few worktree writes. Event 2026-10-05T19:50:17Z +390 B is the fast-forward of claude-setup main to 5dc5308; its bytes were judged in worktree feat-night-report-doctors at 19:43:50-19:44:30Z (bloat passed +4, granted +386, chat 9b1c0bc5). guards_section now credits a gate's priced pass (passed, span-pass, granted) of a worktree path to a landing of the same file, keyed by real path; an event of that worktree write adds only bytes no pass priced. Tests 'bytes a gate priced in a worktree the watcher never journaled excuse their landing' and 'one credit, never two'. Left: event 2026-10-05T14:15:55Z +84 B (under the 120 B limit) is the scratchpad ff.sh landing of night leftover branch leftover-feat-night-default-land (49935a1); only +17 B was priced within 24 h (12:48:54Z, conflict resolution); +30 B was priced 34 h earlier in worktree feat-night-default-land (2026-10-04T04:40:08Z), the rest has no gate record. A leftover adopted after LANDING_S is outside the landing rule; widening it is the owner's call. Fixed 2026-10-04 by Harness Doctor: Both shapes fixed: the variable-path write is gated (instruction_interp_var_write_re), and a merge, patch or copy that re-lands bytes the same file key grew by in another checkout within 24 h is no new growth (guards_section landed, handoff option (b)); test 'a merge or copy landing bytes a worktree already grew by'. 2026-10-04 check: window events 2026-10-03T18:45-18:46Z and 22:39:34Z (+44..+221 B, chat \"Updater doctor\" 233cceb1) all carry a gate pass; instruction_git_landing still reads no merge, cause stands. 2026-10-03 check: the only window event was the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
+      "note": "2026-10-12 (Harness Doctor): owner's pick (a), handoff 2026-10-10-harness-guards-codex-landing: the write gate judges a merge, cherry-pick or pull into a main checkout (instruction_git_landing): a guarded file it grows that no gate pass on its worktree spelling priced within 24 h is denied as an addition (never a span reshape), so a Codex, Gemini or Grok worker's or a copy script's instruction growth meets the gate at the landing; the landing chat pays the denial. Not covered: rebase in a main checkout, a pull whose upstream is not fetched yet, a credit is any priced pass on the file that day (not summed bytes). test_instruction_gate_bypasses merge cases red on the old code. Night e2f7: quiet; cause stands (no codexb/geminib/grokb home wires bin/instruction-write-gate.sh, the gate still reads no merge landing); the (a)/(c) pick stays the owner's. 2026-10-10 (night fixer harness-guards-20261010T031900Z-5315): regression event 2026-10-09T19:29:23Z SKILL.md +396 B (with ~/.claude/docs review-tiers.md +247, worktrees.md +222, row guards-ungated-docs-worktree-shell-write) is chat «Чистка night run 20261009T023738Z-817e»'s git merge --ff-only feat/landing-overlap (claude-setup 66cbc49). Writer: Codex worker codex-1791571148-71493-0a04 (borodatch) at 18:41:46Z in the claude-setup worktree feat-landing-overlap, python heredoc r=Path('<worktree>'); p=r/'<rel>'; p.write_text(s), its brief ordering the rule edits against the injected MD-GUARD. Cause: no Codex profile wires a hook, so the worktree write has no gate pass and the 2026-10-04 landing credit has nothing to join; a gate-scope decision (gate merge landings, or Codex/Gemini/Grok hooks), handed off. Also fixed: the Claude write gate passed that shape (a variable bound to a literal checkout joined to a literal: Path(id)/'x', Path('lit')/'x', id/'x', id+'x', join(id,'x'), one step or via a second variable); test_instruction_gate 'a variable holding a checkout joined to a literal' red on the old code. Still missed: chained joins (r/'a'/'b.md'), multi-argument join, f-strings. Ruled out: vendor sync, upstream delivery (local branch), a gate pass beside the landing (gates.jsonl has none for these files on 10-09). 2026-10-06 (night fixer harness-guards-20261006T032921Z-5b99): shared cause of the regressions: the landing credit read only tripwire events, and the watcher journals few worktree writes. Event 2026-10-05T19:50:17Z +390 B is the fast-forward of claude-setup main to 5dc5308; its bytes were judged in worktree feat-night-report-doctors at 19:43:50-19:44:30Z (bloat passed +4, granted +386, chat 9b1c0bc5). guards_section now credits a gate's priced pass (passed, span-pass, granted) of a worktree path to a landing of the same file, keyed by real path; an event of that worktree write adds only bytes no pass priced. Tests 'bytes a gate priced in a worktree the watcher never journaled excuse their landing' and 'one credit, never two'. Left: event 2026-10-05T14:15:55Z +84 B (under the 120 B limit) is the scratchpad ff.sh landing of night leftover branch leftover-feat-night-default-land (49935a1); only +17 B was priced within 24 h (12:48:54Z, conflict resolution); +30 B was priced 34 h earlier in worktree feat-night-default-land (2026-10-04T04:40:08Z), the rest has no gate record. A leftover adopted after LANDING_S is outside the landing rule; widening it is the owner's call. Fixed 2026-10-04 by Harness Doctor: Both shapes fixed: the variable-path write is gated (instruction_interp_var_write_re), and a merge, patch or copy that re-lands bytes the same file key grew by in another checkout within 24 h is no new growth (guards_section landed, handoff option (b)); test 'a merge or copy landing bytes a worktree already grew by'. 2026-10-04 check: window events 2026-10-03T18:45-18:46Z and 22:39:34Z (+44..+221 B, chat \"Updater doctor\" 233cceb1) all carry a gate pass; instruction_git_landing still reads no merge, cause stands. 2026-10-03 check: the only window event was the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "hook-sync-stop-dispatch",
@@ -4215,7 +4226,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/docs$"
       },
-      "status": "open",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-07T03:09:16+03:00",
@@ -4226,14 +4237,25 @@
           ],
           "in": "llm-legs@cb70ea74",
           "regressed_at": "2026-10-09T22:30:40+03:00"
+        },
+        {
+          "at": "2026-10-12T05:30:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 Harness Doctor",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/tests/test_instruction_gate_bypasses.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "guards-ungated-claude-md-pathlib-assign"
       ],
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
-      "note": "Night e2f7: quiet; same standing cause and open pick as guards-growth-claude-setup-night-sweep-skill. 2026-10-10 (night fixer harness-guards-20261010T031900Z-5315): regressed by event 2026-10-09T19:29:23Z, review-tiers.md +247 and worktrees.md +222 B: a Codex worker's python heredoc in the claude-setup worktree feat-landing-overlap, landed by a chat's git merge --ff-only; no Codex hook runs the write gate, so the worktree write has no pass to credit. Cause, ruled-out ground and the Claude-gate join fix are in row guards-growth-claude-setup-night-sweep-skill; handed off. Event 2026-10-06T18:11:13Z, browser-ui-work.md +453 B = eab2019 +280 (the pathlib miss) + 418d15a +38 + d8861ff +135, all python heredocs of chat 24cb1f32 in the worktree docs-browser-chrome-automation, the last two after C=<worktree>; cd $C with relative global/docs/browser-ui-work.md. instruction_carved_out carved every non-CLAUDE markdown file of a worktree out, the cd loop dropped a cd through a variable, and only spellings relative to the cwd itself were matched. Fixed: a worktree copy whose main-checkout counterpart resolves into a guarded directory stays guarded, cd $VAR resolves a literal assignment of the same command, and a worktree cwd also spells names relative to its main checkout. Not covered still: a cd into a directory the same command creates (here the gate judged the main-checkout spelling, which denies too). The landing itself (a chat git merge into main) is judged by no gate; growth born in a gated write is credited by harness-doctor's landing pool. test_instruction_gate red on the old code.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): the landing is now gated: see row guards-growth-claude-setup-night-sweep-skill (owner's pick (a)). Night e2f7: quiet; same standing cause and open pick as guards-growth-claude-setup-night-sweep-skill. 2026-10-10 (night fixer harness-guards-20261010T031900Z-5315): regressed by event 2026-10-09T19:29:23Z, review-tiers.md +247 and worktrees.md +222 B: a Codex worker's python heredoc in the claude-setup worktree feat-landing-overlap, landed by a chat's git merge --ff-only; no Codex hook runs the write gate, so the worktree write has no pass to credit. Cause, ruled-out ground and the Claude-gate join fix are in row guards-growth-claude-setup-night-sweep-skill; handed off. Event 2026-10-06T18:11:13Z, browser-ui-work.md +453 B = eab2019 +280 (the pathlib miss) + 418d15a +38 + d8861ff +135, all python heredocs of chat 24cb1f32 in the worktree docs-browser-chrome-automation, the last two after C=<worktree>; cd $C with relative global/docs/browser-ui-work.md. instruction_carved_out carved every non-CLAUDE markdown file of a worktree out, the cd loop dropped a cd through a variable, and only spellings relative to the cwd itself were matched. Fixed: a worktree copy whose main-checkout counterpart resolves into a guarded directory stays guarded, cd $VAR resolves a literal assignment of the same command, and a worktree cwd also spells names relative to its main checkout. Not covered still: a cd into a directory the same command creates (here the gate judged the main-checkout spelling, which denies too). The landing itself (a chat git merge into main) is judged by no gate; growth born in a gated write is credited by harness-doctor's landing pool. test_instruction_gate red on the old code.",
       "handoff": "docs/handoffs/2026-10-10-harness-guards-codex-landing.md"
     },
     {
@@ -5006,9 +5028,9 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night 20261009T023738Z-817e harness-doctor-20261009T024650Z-5055",
-      "note": "Settled by ee185fa8 (2026-10-09 02:31), before this read: cd-guard rewrites a chat's cd into a subshell (claude-setup hooks/cd-guard.sh:164) and denies only agents and review launches; the denied calls were relay agents, which ee185fa8 deleted and the launch gate now refuses. fixes[].at is this review so only later events count.",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): cd-guard retired for the native cwd reset; see row speed-time-hooks-commit-report-owned-walk. Settled by ee185fa8 (2026-10-09 02:31), before this read: cd-guard rewrites a chat's cd into a subshell (claude-setup hooks/cd-guard.sh:164) and denies only agents and review launches; the denied calls were relay agents, which ee185fa8 deleted and the launch gate now refuses. fixes[].at is this review so only later events count.",
       "handoff": null
     },
     {
@@ -5848,7 +5870,7 @@
         "rule": "opportunity",
         "ident": "time/hooks"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:50:00+03:00",
@@ -5863,13 +5885,25 @@
             "data": "715 (home x session) pairs: the 4 journal homes plus this run's worktree, x 143 sessions (the last day's transcript ids, the newest writers in each claude-writes journal, 2 unknown ids) over the live stores, read-only",
             "result": "715/715 identical, 46 pairs with owned paths, every exit 0; a 4-home walk 0.9-1.0 s -> 0.2-0.3 s for a chat with no records, 734 -> 521 ms with records, load ~200 on 10 cores; same under /bin/bash 3.2 (150 pairs); an unreadable store still exits 2 both ways; one divergence by construction: a readable but malformed anchors store in a repository whose files never name the session answers no paths instead of exit 2 (the row's `not computed`), where no reading could give this chat a path"
           }
+        },
+        {
+          "at": "2026-10-12T05:30:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 Harness Doctor",
+          "files": [
+            "claude-setup/hooks/cd-guard.sh",
+            "claude-setup/tests/test_cd_guard.sh",
+            "claude-setup/tests/test_hook_time.sh",
+            "llm-legs/share/statusline-workdir.jq"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "note": "2026-10-10 (load ~200): the 24 h hooks gap is commit-report 9.5 min/day (674 commit/push calls, p50 4.7 s from transcript hook_success durations) and cd-guard 8.5 (the rewrite calls; 11.6k runs/day, 99 ms wall, 36 ms CPU mean). commit-report, traced on a replayed commit: the uncommitted row (bounded at ROW_BUDGET 4 s) walked rj_owned_paths over every journal home, a jq over each anchors store (0.3-0.8 s each) even where the session had no record: cut by a fixed-string grep (claude-setup hooks/lib/review-journal.sh). Found, not fixed: (1) the row's debt probe, review-debt --split, took 42 s (claude-setup) and >60 s (llm-legs) at this load (statusline debt probes p50 1-2 s, p90 10-60 s on 10-07..10), so where the chat owns files the row dies at its 4 s budget: 201 of 674 calls read `not computed (the journal scan took >4s)`, mean 7.8-12.7 s; the lever is review-debt's own speed (review-bench) or a debt answer cached on its inputs, both beyond an output-equivalent hook cut. (2) report-bus emit 0.8-1.4 s per block (python3 render, the launcher grep over every worker-session file, 5 jq). (3) project_name's python3 report_frame identity, 0.2-0.3 s. (4) cd-guard: Claude Code 2.1.296 resets the Bash cwd itself under CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 (silently); retiring the hook needs ~/.claude/settings.json, a relay worker may not write it: docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md. Seen, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base 4e8763f and on this branch alike.",
+      "note": "2026-10-12 (Harness Doctor): found (4) settled: ~/.claude/settings.json sets CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 and no longer wires cd-guard (live probe: after a persisted cd the next call printed the project directory, after EnterWorktree the worktree, no reset note); the hook, its suite and its unlock files are gone, test_hook_time reads comment-gate.sh's hook-time line. 2026-10-10 (load ~200): the 24 h hooks gap is commit-report 9.5 min/day (674 commit/push calls, p50 4.7 s from transcript hook_success durations) and cd-guard 8.5 (the rewrite calls; 11.6k runs/day, 99 ms wall, 36 ms CPU mean). commit-report, traced on a replayed commit: the uncommitted row (bounded at ROW_BUDGET 4 s) walked rj_owned_paths over every journal home, a jq over each anchors store (0.3-0.8 s each) even where the session had no record: cut by a fixed-string grep (claude-setup hooks/lib/review-journal.sh). Found, not fixed: (1) the row's debt probe, review-debt --split, took 42 s (claude-setup) and >60 s (llm-legs) at this load (statusline debt probes p50 1-2 s, p90 10-60 s on 10-07..10), so where the chat owns files the row dies at its 4 s budget: 201 of 674 calls read `not computed (the journal scan took >4s)`, mean 7.8-12.7 s; the lever is review-debt's own speed (review-bench) or a debt answer cached on its inputs, both beyond an output-equivalent hook cut. (2) report-bus emit 0.8-1.4 s per block (python3 render, the launcher grep over every worker-session file, 5 jq). (3) project_name's python3 report_frame identity, 0.2-0.3 s. (4) cd-guard: Claude Code 2.1.296 resets the Bash cwd itself under CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 (silently); retiring the hook needs ~/.claude/settings.json, a relay worker may not write it: docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md. Seen, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base 4e8763f and on this branch alike.",
       "handoff": "docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md",
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-time-hooks-20261010T031954Z-41e7"
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "speed-heavy-test-worker-run-claims",
@@ -6465,10 +6499,10 @@
         }
       ],
       "same_cause": [],
-      "note": "Before (hooks/*.tsv): 20733 6818 runs mean 51 ms, 20734 10019 runs 41 ms, 20735 11625 runs 99 ms (19.2 min), cpu ~33 ms each; Speed 15.75 min/day. Bash alone costs ~13 ms, hook-time+read ~20 ms; the rest was cat, jq and awk on every call and tr, a second jq on every cd. Work-not-done proof: test_cd_guard's PATH shim sees no cat/jq/awk/tr on a cd-free call (red on base). Left: cd-bearing calls (37%) still pay jq+awk and the rewrites a bash -n exec, which must stay (an original that does not parse is denied, only a parser knows). Found, not done: 26% of cd calls (9.0k of 34.5k) cd into the cwd itself (`cd <worktree> && ...`); allowing those untouched would drop their rewrite and note, but it changes a decision class, so it waits for the owner. opportunity:refusal/cd-guard.sh (0.62 min/day) is the fork deny re-plan, not touched.",
+      "note": "2026-10-12 (Harness Doctor): cd-guard retired: Claude Code's own CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 resets the cwd after every call, so the hook's 99 ms per call and its rewrites are gone; see row speed-time-hooks-commit-report-owned-walk. Before (hooks/*.tsv): 20733 6818 runs mean 51 ms, 20734 10019 runs 41 ms, 20735 11625 runs 99 ms (19.2 min), cpu ~33 ms each; Speed 15.75 min/day. Bash alone costs ~13 ms, hook-time+read ~20 ms; the rest was cat, jq and awk on every call and tr, a second jq on every cd. Work-not-done proof: test_cd_guard's PATH shim sees no cat/jq/awk/tr on a cd-free call (red on base). Left: cd-bearing calls (37%) still pay jq+awk and the rewrites a bash -n exec, which must stay (an original that does not parse is denied, only a parser knows). Found, not done: 26% of cd calls (9.0k of 34.5k) cd into the cwd itself (`cd <worktree> && ...`); allowing those untouched would drop their rewrite and note, but it changes a decision class, so it waits for the owner. opportunity:refusal/cd-guard.sh (0.62 min/day) is the fork deny re-plan, not touched.",
       "handoff": null,
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-hooks-cd-guard-sh-20261010T031903Z-0d2c"
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "speed-test-health-heavy-worker-run-lifecycle",
@@ -7083,12 +7117,22 @@
           ],
           "in": null,
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-12T05:30:00+03:00",
+          "by": "night 20261012T005404Z-e2f7 Harness Doctor",
+          "files": [
+            "token-map/tokenmap/tracking.py",
+            "token-map/tests/test_tracking.py"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "Confirmed: hammerspoon had no tests/run-all and night-run skipped any sweep repo without one, so test_menu_cache sat red on main 1.5 days (fixed in hammerspoon 04d73c6). Fixed: hammerspoon gets the shared run-all (18 suites green, 7 s), and a sweep repo with no runner is a red night row (test_night_carry red on old code). test_test_journal 27 settled by ae0d28dd; test_consistency 238 was cross-repo drift, green now. Open: token-map TestMergedSplit fails in any .claude/worktrees checkout (handoff item 1).",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): token-map TestMergedSplit fixed (token-map@6570c78): PROJECT classifies a merged review path before the temp and worktree folds and TestMergedSplit uses the system temp dir, so its 5 tests pass in a .claude/worktrees checkout (red there on the old code). Confirmed: hammerspoon had no tests/run-all and night-run skipped any sweep repo without one, so test_menu_cache sat red on main 1.5 days (fixed in hammerspoon 04d73c6). Fixed: hammerspoon gets the shared run-all (18 suites green, 7 s), and a sweep repo with no runner is a red night row (test_night_carry red on old code). test_test_journal 27 settled by ae0d28dd; test_consistency 238 was cross-repo drift, green now. Open: token-map TestMergedSplit fails in any .claude/worktrees checkout (handoff item 1).",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7137,9 +7181,9 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night 20261010T031219Z-4c4e harness-doctor-20261010T031848Z-55c7",
-      "note": "KeyError 'refusal' fixed by 9d76b38b (10-09 22:47); test_speed_doctor now pins every time_budget.FLOORS class to a TIME_LEVERS entry (red when a lever is missing). The 7-day test-health window moved to a 7-day median (a48cbb24, de7e98f1). Open: test_daily_cost prices wall seconds; a CPU basis changes the judge, so it is the owner's (handoff item 2).",
+      "last_reviewed": "2026-10-12",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): test_daily_cost, owner's call: it keeps wall seconds. Lost time is wall-clock overhead by one rule since 9e64bac4 (floors and free-machine deductions left it), so a CPU price would be a second basis for one judge; load is weather. KeyError 'refusal' fixed by 9d76b38b (10-09 22:47); test_speed_doctor now pins every time_budget.FLOORS class to a TIME_LEVERS entry (red when a lever is missing). The 7-day test-health window moved to a 7-day median (a48cbb24, de7e98f1). Open: test_daily_cost prices wall seconds; a CPU basis changes the judge, so it is the owner's (handoff item 2).",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7255,12 +7299,14 @@
         "rule": "log_audit",
         "ident": "foreground-call-hangs-25min"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
-      "same_cause": [],
+      "same_cause": [
+        "log_audit:hung-commands-25min-timeout"
+      ],
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
-      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: same cause as hung-commands-25min-timeout (unbounded foreground sleeps 600-1380 s, recursive greps over all transcripts, a bare interpreter); model conduct, no component. run-suites already joins a newline-joined suite list (affected-suite-list-handling). Dismissal proposed in the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): not a bug, dismissed by the owner: model conduct, the cause of log_audit:hung-commands-25min-timeout (not-a-bug since 2026-10-10). Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: same cause as hung-commands-25min-timeout (unbounded foreground sleeps 600-1380 s, recursive greps over all transcripts, a bare interpreter); model conduct, no component. run-suites already joins a newline-joined suite list (affected-suite-list-handling). Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7270,12 +7316,12 @@
         "rule": "log_audit",
         "ident": "launch-into-exhausted-limit"
       },
-      "status": "open",
+      "status": "weather",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
-      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Weather: the quoted walls are the chats' own session/weekly limits (the night orchestrator at 06:09, a chat at its weekly cap), which no harness can reroute; walled workers are rerouted by worker-run reroute_walled with a CONTINUATION note (9da6a1c1), and the gate now matches worker-pick at 100 % (04965684). Dismissal proposed in the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): weather, dismissed by the owner: chats' own session and weekly walls; walled workers are rerouted by worker-run. Night e2f7: quiet; dismissal still the owner's (handoff). Weather: the quoted walls are the chats' own session/weekly limits (the night orchestrator at 06:09, a chat at its weekly cap), which no harness can reroute; walled workers are rerouted by worker-run reroute_walled with a CONTINUATION note (9da6a1c1), and the gate now matches worker-pick at 100 % (04965684). Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7285,12 +7331,12 @@
         "rule": "log_audit",
         "ident": "suites-timeout-under-night-load"
       },
-      "status": "open",
+      "status": "weather",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
-      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Weather: load 165-350 from parallel night work (memory load-is-weather). Already in place: run-suites slots paced by load, red-first early stop (e03d41ae), landing reruns only overlap suites (0f2198e6). Dismissal proposed in the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): weather, dismissed by the owner: night load 165-350 (load is weather); run-suites already paces slots by load and stops red-first. Night e2f7: quiet; dismissal still the owner's (handoff). Weather: load 165-350 from parallel night work (memory load-is-weather). Already in place: run-suites slots paced by load, red-first early stop (e03d41ae), landing reruns only overlap suites (0f2198e6). Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7300,12 +7346,12 @@
         "rule": "log_audit",
         "ident": "parallel-fixers-duplicate-work"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
-      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: parallel fixers are the design (final speed, not zero queue); each job rebases at landing (fix-orchestrator step 4) and duplicates drop there. Dismissal proposed in the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): not a bug, dismissed by the owner: parallel fixers are the design (final speed, not zero queue); duplicates drop at the landing rebase. Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: parallel fixers are the design (final speed, not zero queue); each job rebases at landing (fix-orchestrator step 4) and duplicates drop there. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7315,12 +7361,12 @@
         "rule": "log_audit",
         "ident": "slot-throttle-foreground-sleeps"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
-      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: logo-vectorizer-bench's own lane throttle and the lane's choice to shrink its experiment, not the harness. Dismissal proposed in the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): not a bug, dismissed by the owner: logo-vectorizer-bench's own lane throttle, outside the harness. Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: logo-vectorizer-bench's own lane throttle and the lane's choice to shrink its experiment, not the harness. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7330,12 +7376,12 @@
         "rule": "log_audit",
         "ident": "spend-menu-spec-churn"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
-      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: the owner chat's own brief-writing (it said so itself); no hook, gate or launcher. Dismissal proposed in the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): not a bug, dismissed by the owner: the owner chat's own brief-writing, no component, as the note below rules. Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: the owner chat's own brief-writing (it said so itself); no hook, gate or launcher. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7345,12 +7391,12 @@
         "rule": "log_audit",
         "ident": "classifier-output-noise"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-doctor-20261012T010215Z-5ef5",
-      "note": "Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: the quoted batches were the chat's experiment workers; the shipped `tokenmap kinds` reads one key (fix) and finds the JSON array inside a fence. Dismissal proposed in the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-12 (Harness Doctor): not a bug, dismissed by the owner: a finished experiment's batches; the shipped reader is fixed, as the note below rules. Night e2f7: quiet; dismissal still the owner's (handoff). Ruled out: the quoted batches were the chat's experiment workers; the shipped `tokenmap kinds` reads one key (fix) and finds the JSON array inside a fence. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {

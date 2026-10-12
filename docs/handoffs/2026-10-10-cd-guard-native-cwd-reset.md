@@ -1,6 +1,6 @@
 # cd-guard is replaced by Claude Code's own cwd reset
 
-Status: open — To: Harness Doctor
+Status: settled 20261012T005404Z-e2f7: ~/.claude/settings.json sets CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 and no longer wires cd-guard (live: the call after a persisted cd printed the project dir, after EnterWorktree the worktree, no note); the hook, test_cd_guard and the unlock files are gone from claude-setup
 
 From night 20261010T031219Z-4c4e run harness-speed-time-hooks; ledger row `speed-time-hooks-commit-report-owned-walk`.
 cd-guard (claude-setup `hooks/cd-guard.sh`, PreToolUse Bash) runs on every Bash call (11.6k/day, 99 ms wall,

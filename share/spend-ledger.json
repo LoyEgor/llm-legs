@@ -145,7 +145,7 @@
    "prices": {},
    "sources": {},
    "verdict": "kept",
-   "note": "kept: the x1.7 is load (harness_index worker contexts 641->1086/7d) while this part per context fell 14.7k->12.9k (-12%) since the relay cut; workers act on the memory index (43 of 675 with it cite a slug or memory path, chats 26/37) and on global rules, log-audit readers judge instruction violations against them; one-shot no-tool claudeb -p callers outside llm-legs (llm_gate, judge_last, end-report compose: 90 calls, 0.97M chars) handed off with CLAUDE_CODE_DISABLE_CLAUDE_MDS/AUTO_MEMORY + replay (docs/handoffs/2026-10-09-one-shot-instructions.md)"
+   "note": "kept: the x1.7 is load (harness_index worker contexts 641->1086/7d) while this part per context fell 14.7k->12.9k (-12%) since the relay cut; workers act on the memory index (43 of 675 with it cite a slug or memory path, chats 26/37) and on global rules, log-audit readers judge instruction violations against them; one-shot no-tool claudeb -p callers outside llm-legs (llm_gate, judge_last, end-report compose: 90 calls, 0.97M chars) kept too (2026-10-12): ~0.04 % of spend, and the replay a cut needs reads inputs only the claudeb store holds"
   },
   {
    "id": "suite:llm-legs/test_consistency",
