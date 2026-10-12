@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "share"))
 import grok_resets  # noqa: E402
+import limit_hit  # noqa: E402
 
 ENDPOINT = os.environ.get(
     "GROK_QUOTA_ENDPOINT", "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
@@ -133,6 +134,11 @@ def build_percent(body: dict, config: dict) -> float | int | None:
     return None
 
 
+def timed_out(timeout: float) -> None:
+    limit_hit.hit("grok-quota.timeout", timeout, "s", "kill", "a grok billing read: its usage numbers stay as last read",
+                  "grok-quota.py:urlopen(request, timeout=timeout)")
+
+
 def fetch(entry: dict, timeout: float) -> dict:
     headers = {
         "Authorization": "Bearer " + entry["key"],
@@ -160,8 +166,12 @@ def fetch(entry: dict, timeout: float) -> dict:
                 raise PersistentLimit from None
         raise RuntimeError(f"HTTP {exc.code}") from None
     except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            timed_out(timeout)
         raise RuntimeError(f"network error: {exc.reason}") from None
     except (TimeoutError, OSError) as exc:
+        if isinstance(exc, TimeoutError):
+            timed_out(timeout)
         raise RuntimeError(f"network error: {exc}") from None
     except ValueError:
         raise RuntimeError("unparsable billing payload") from None

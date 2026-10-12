@@ -30,6 +30,13 @@ usage() {
 
 die() { printf 'dia-js: %s\n' "$*" >&2; exit 1; }
 
+wait_or_die() { # condition message
+  wait_for "$WAIT_S" "$1" && return 0
+  ! . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../share/limit-hit.sh" 2>/dev/null ||
+    limit_hit dia-js.wait "$WAIT_S" s kill "the Dia relaunch and the JS it was for: $2" 'bin/dia-js:WAIT_S=${'
+  die "$2"
+}
+
 osa() {
   "$OSASCRIPT" - "$@" <<'APPLESCRIPT'
 on run argv
@@ -167,12 +174,12 @@ dia_restored() { # the tab count holds still across two polls
 
 relaunch() {
   local front
-  wait_for "$WAIT_S" dia_answers || die 'Dia does not answer AppleScript'
+  wait_or_die dia_answers 'Dia does not answer AppleScript'
   front=$(osa front 2>/dev/null) || front=''
   osa quit >/dev/null 2>&1 || true
-  wait_for "$WAIT_S" dia_gone || die "Dia did not quit within ${WAIT_S}s (a dialog may be holding it); nothing relaunched"
+  wait_or_die dia_gone "Dia did not quit within ${WAIT_S}s (a dialog may be holding it); nothing relaunched"
   "$OPEN" -b "$DIA_ID" --args --enable-applescript-javascript
-  wait_for "$WAIT_S" dia_flagged || die "Dia did not come back with the flag within ${WAIT_S}s"
+  wait_or_die dia_flagged "Dia did not come back with the flag within ${WAIT_S}s"
   restored_count=''
   wait_for "$WAIT_S" dia_restored || true
   if [ -n "$front" ] && ! tabs_list | awk -F '\t' -v u="$front" '$3 == u { found = 1 } END { exit !found }'; then
@@ -221,7 +228,13 @@ case "$mode" in
       mkdir -p "$STATE_DIR"
       if [ -e "$STATE_DIR/last-relaunch" ]; then
         age=$(($(date +%s) - $(stat -f %m "$STATE_DIR/last-relaunch")))
-        [ "$age" -ge "$GUARD_S" ] || { printf 'SKIPPED: relaunched %ss ago\n' "$age"; exit 0; }
+        if [ "$age" -lt "$GUARD_S" ]; then
+          ! . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../share/limit-hit.sh" 2>/dev/null ||
+            limit_hit dia-js.guard "$GUARD_S" s skip "an automatic Dia relaunch: Dia stays without AppleScript JS until the next try" \
+              'bin/dia-js:GUARD_S=${' "$age"
+          printf 'SKIPPED: relaunched %ss ago\n' "$age"
+          exit 0
+        fi
       fi
       touch "$STATE_DIR/last-relaunch"
     fi

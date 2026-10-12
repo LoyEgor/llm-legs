@@ -20,13 +20,16 @@ process_tree_end() { # pid grace-seconds -> TERM to the whole tree, KILL to what
 
 # TERM before CONT: continued first, a process stopped by a tty read reads again and stops again
 # with the TERM still to come.
-pids_end() { # grace-seconds pid... -> TERM and CONT to each, KILL to what still lives after the grace
+pids_end() { # grace-seconds pid... -> TERM and CONT to each, KILL to what still lives after the grace; pids_end_killed counts those
   local grace=$1 waited=0
+  pids_end_killed=0
   shift
   [ "$#" -gt 0 ] || return 0
   kill -TERM "$@" 2>/dev/null
   kill -CONT "$@" 2>/dev/null
   while [ "$waited" -lt "$grace" ] && kill -0 "$@" 2>/dev/null; do sleep 1; waited=$((waited + 1)); done
+  # kill -0 also answers for an unreaped zombie, which the KILL cannot touch.
+  [ "$waited" -lt "$grace" ] || pids_end_killed=$(ps -o stat= -p "$(IFS=,; printf '%s' "$*")" 2>/dev/null | grep -vc '^Z')
   kill -KILL "$@" 2>/dev/null
   return 0
 }

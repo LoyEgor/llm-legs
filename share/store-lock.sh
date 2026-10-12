@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 [ ! -r "${BASH_SOURCE[0]%/*}/limiter-hold.sh" ] || . "${BASH_SOURCE[0]%/*}/limiter-hold.sh"
+[ ! -r "${BASH_SOURCE[0]%/*}/limit-hit.sh" ] || . "${BASH_SOURCE[0]%/*}/limit-hit.sh"
 
 store_lock_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
@@ -24,18 +25,37 @@ store_lock_claim() {
 # Who may take a lock away: a holder proven gone (its pid no longer runs) at once, an ownerless
 # directory once it outlives the grace, a live holder never — until the ceiling, past which a
 # recycled pid can no longer be told from the original owner.
-store_lock_breakable() {
+store_lock_breakable() { # -> also store_lock_why (ceiling-live|ceiling|dead|ownerless), _owner and _age
   local lock=$1 stale=$2 ceiling=$3 now=$4 owner='' mtime
+  store_lock_why=''
   mtime=$(store_lock_mtime "$lock" 2>/dev/null) || mtime=$now
   [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=$now
-  [ "$((now - mtime))" -gt "$ceiling" ] && return 0
+  store_lock_age=$((now - mtime))
   read -r owner 2>/dev/null <"$lock/pid" || owner=''
   case "$owner" in ''|*[!0-9]*) owner='' ;; esac
-  if [ -n "$owner" ]; then
-    kill -0 "$owner" 2>/dev/null && return 1
+  store_lock_owner=$owner
+  if [ "$((now - mtime))" -gt "$ceiling" ]; then
+    store_lock_why=ceiling
+    [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null || store_lock_why=ceiling-live
     return 0
   fi
-  [ "$((now - mtime))" -gt "$stale" ]
+  if [ -n "$owner" ]; then
+    kill -0 "$owner" 2>/dev/null && return 1
+    store_lock_why=dead
+    return 0
+  fi
+  [ "$((now - mtime))" -gt "$stale" ] && store_lock_why=ownerless
+}
+
+store_lock_broke() { # lock stale ceiling
+  declare -F limit_hit >/dev/null || return 0
+  case $store_lock_why in
+    ceiling-live) limit_hit store-lock.ceiling "$3" s break "the lock $1 of live pid $store_lock_owner: two writers may now overlap" \
+      'share/store-lock.sh:local ceiling=${LLM_STORE_LOCK_CEILING_SECONDS' "$store_lock_age" ;;
+    ownerless) limit_hit store-lock.ownerless-stale "$2" s break "the ownerless lock $1, $store_lock_age s old" \
+      'share/store-lock.sh:local stale=${LLM_STORE_LOCK_STALE_SECONDS' "$store_lock_age" ;;
+  esac
+  return 0
 }
 
 store_lock_acquire() {
@@ -60,6 +80,7 @@ store_lock_acquire() {
         if mv "$lock" "$captured" 2>/dev/null; then
           if store_lock_breakable "$captured" "$stale" "$ceiling" "$now"; then
             rm -rf "$captured"
+            store_lock_broke "$lock" "$stale" "$ceiling"
             continue
           fi
           # mv into an existing directory would nest, so restore only onto a free path.
@@ -69,7 +90,12 @@ store_lock_acquire() {
       fi
     fi
     tries=$((tries + 1))
-    [ "$tries" -ge "$max" ] && { store_lock_waited "$lock (gave up)" "$waited"; return 1; }
+    if [ "$tries" -ge "$max" ]; then
+      store_lock_waited "$lock (gave up)" "$waited"
+      ! declare -F limit_hit >/dev/null || limit_hit store-lock.retries "$max" count retry-exhausted \
+        "the write under $1: refused after $max tries behind holder ${store_lock_owner:-unknown}" 'share/store-lock.sh:local max=${LLM_STORE_LOCK_RETRIES'
+      return 1
+    fi
     waited=${waited:-${EPOCHREALTIME:-$(date +%s)}}
     sleep "$delay" 2>/dev/null || return 1
   done

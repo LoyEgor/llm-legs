@@ -307,6 +307,8 @@ def open_chat(page, session: Session, account: str, chat: str | None, navigate: 
         page.wait_for_timeout(250)
     if signed_out(page, session):
         raise out
+    gw.limit_hit.hit("chatgpt-web.load", LOAD_S, "s", "kill", f"a ChatGPT job on {account}: chatgpt.com never loaded",
+                     "share/chatgpt_web.py:LOAD_S = ")
     raise gw.Failure(1, f"chatgpt.com did not load within {LOAD_S}s ({page.url})")
 
 
@@ -342,6 +344,9 @@ def project_home(page, session: Session, account: str, meta: dict) -> str:
     if meta.get("project"):
         return meta["project"]
     if time.time() - meta.get("project_failed", 0) < PROJECT_RETRY_S:
+        gw.limit_hit.hit("chatgpt-web.project-retry", PROJECT_RETRY_S, "s", "skip",
+                         f"the Images project of {account}: this chat opens on the home page, in the owner's chat list",
+                         "share/chatgpt_web.py:PROJECT_RETRY_S = ", observed=time.time() - meta.get("project_failed", 0))
         return "/"
     try:
         open_chat(page, session, account, None)
@@ -666,6 +671,10 @@ class Watch:
     def late(self, timeout_s: float) -> gw.Failure | None:
         if time.time() - self.started < timeout_s:
             return None
+        if not getattr(self, "late_hit", False):
+            self.late_hit = True
+            gw.limit_hit.hit("chatgpt-web.timeout", timeout_s, "s", "kill", f"a ChatGPT image on {self.account}: none within the job timeout",
+                             "share/chatgpt_web.py:def late(")
         return gw.Failure(1, f"no image after {timeout_s:.0f}s; it may still land in chat {self.chat or 'unknown'}",
                           chat=self.chat)
 
@@ -788,6 +797,9 @@ def render_takes(context, account: str, args, meta: dict, started: float, home: 
                     if watch.late(args.timeout):
                         raise watch.late(args.timeout)
                     if straggle_until and time.time() > straggle_until:
+                        gw.limit_hit.hit("chatgpt-web.straggler", STRAGGLER_S, "s", "drop",
+                                         f"take {tab} on {account}: no image {STRAGGLER_S:.0f} s after its last sibling landed",
+                                         "share/chatgpt_web.py:STRAGGLER_S = ")
                         raise gw.Failure(1, f"no image {STRAGGLER_S:.0f}s after the last sibling take landed; it may "
                                             f"still land in chat {watch.chat or 'unknown'}", chat=watch.chat)
                     continue

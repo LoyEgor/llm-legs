@@ -1,4 +1,76 @@
 {
+  "account-roster.timeout": {
+    "value": 30,
+    "unit": "s",
+    "where": "share/account_roster.py:29",
+    "set_by": "night bb3bf761",
+    "why": "Reading a vendor's roster is one sourced bash function; 30 s means that shell wedged.",
+    "normal": "0 hits; a hit fails its caller as an unreadable roster."
+  },
+  "agy-quota.timeout": {
+    "value": 45,
+    "unit": "s",
+    "where": "agy-quota.py:23",
+    "set_by": "chat 45ee122a",
+    "why": "agy's print-mode /usage answers in seconds; the bound keeps a wedged agy from holding a refresh (llm-limits.sh passes 180 s).",
+    "normal": "Rare, in Google weather; repeated hits on one account mean agy hangs there."
+  },
+  "aistudio-speech.send-wait": {
+    "value": 12,
+    "unit": "s",
+    "where": "share/aistudio_speech.py:43",
+    "set_by": "night 50a8584c",
+    "why": "The first Run click can be swallowed by the field's blur, so a Run that starts nothing within 12 s is pressed once more.",
+    "normal": "Rare; a hit after both clicks means the page changed under the driver."
+  },
+  "aistudio-speech.wall": {
+    "value": 900,
+    "unit": "s",
+    "where": "share/aistudio_speech.py:42",
+    "set_by": "night 50a8584c",
+    "why": "A per-minute AI Studio limit walls the account for 15 min; a daily one until Pacific midnight.",
+    "normal": "A few on a busy day; every account walled at once means the free tier is spent."
+  },
+  "ask-gemini.print-timeout": {
+    "value": 300,
+    "unit": "s",
+    "where": "ask_gemini.sh:50",
+    "set_by": "chat 16ed7ef4",
+    "why": "The legacy gemini leg answers short questions; 5 min means agy hung.",
+    "normal": "0 hits; the wrapper is legacy."
+  },
+  "chatgpt-web.load": {
+    "value": 45,
+    "unit": "s",
+    "where": "share/chatgpt_web.py:51",
+    "set_by": "night 0d9e7c3c",
+    "why": "chatgpt.com loads in seconds; 45 s means a dead page or network.",
+    "normal": "Rare; a cluster means ChatGPT is down."
+  },
+  "chatgpt-web.project-retry": {
+    "value": 86400,
+    "unit": "s",
+    "where": "share/chatgpt_web.py:54",
+    "set_by": "night e29635ae",
+    "why": "A failed Images project creation is retried once a day, not on every job.",
+    "normal": "Only on accounts whose project creation failed within a day; each hit is a generation chat in the owner's chat list."
+  },
+  "chatgpt-web.straggler": {
+    "value": 180,
+    "unit": "s",
+    "where": "share/chatgpt_web.py:50",
+    "set_by": "night e29635ae",
+    "why": "Pack takes land within seconds of each other; the latest real straggler landed 128 s after its last sibling.",
+    "normal": "Rare; frequent hits mean the page misses images and the reload no longer helps."
+  },
+  "chatgpt-web.timeout": {
+    "value": 600,
+    "unit": "s",
+    "where": "share/chatgpt_web.py:671",
+    "set_by": "night 0d9e7c3c",
+    "why": "A ChatGPT image lands within minutes; the job timeout (default 600 s) ends a take that never will.",
+    "normal": "Rare; a cluster means ChatGPT image generation is degraded."
+  },
   "chrome-applescript-js.wait": {
     "value": 30,
     "unit": "s",
@@ -6,6 +78,14 @@
     "set_by": "chat 36cf6f25",
     "why": "Chrome quits and relaunches within seconds; past 30 s it is wedged and enabling Apple-event JS gives up.",
     "normal": "0 hits; a hit means Chrome hung on quit or launch."
+  },
+  "claude-resets.timeout": {
+    "value": 10,
+    "unit": "s",
+    "where": "share/claude_resets.py:31",
+    "set_by": "chat f612a230",
+    "why": "The reset read answers in a second and the redeem (25 s) in a few; the bounds keep the menu action from hanging.",
+    "normal": "0 hits; the action is user-initiated and shows its error."
   },
   "claude-session-driver.capture": {
     "value": 262144,
@@ -71,6 +151,30 @@
     "why": "A codex image call answers in a few minutes; 900 s means it hung.",
     "normal": "0 hits."
   },
+  "codex-quota.timeout": {
+    "value": 30,
+    "unit": "s",
+    "where": "codex-quota.py:242",
+    "set_by": "chat 888bf7ba",
+    "why": "codex app-server answers its usage RPC in seconds; llm-limits.sh passes 180 s for a targeted refresh and 10 s for a passive one.",
+    "normal": "Rare; repeated hits on one account mean its app-server hangs."
+  },
+  "dia-js.guard": {
+    "value": 120,
+    "unit": "s",
+    "where": "bin/dia-js:20",
+    "set_by": "chat 36cf6f25",
+    "why": "The automatic relaunch quits Egor's browser, so at most one per 2 min: a flag that will not stick cannot loop.",
+    "normal": "Rare; repeated hits mean Dia keeps losing the flag."
+  },
+  "dia-js.wait": {
+    "value": 30,
+    "unit": "s",
+    "where": "bin/dia-js:18",
+    "set_by": "chat 36cf6f25",
+    "why": "Dia answers, quits and relaunches within seconds; 30 s means a dialog or a hang.",
+    "normal": "0 hits."
+  },
   "doctor-fix.doc-age": {
     "value": 7200,
     "unit": "s",
@@ -86,6 +190,54 @@
     "set_by": "night 100ca1bf",
     "why": "An unclosed fix run older than 12 h is dead and stops holding its area.",
     "normal": "Rare; a crashed fixer chat."
+  },
+  "elevenlabs.busy-retries": {
+    "value": 4,
+    "unit": "count",
+    "where": "share/elevenlabs_media.py:138",
+    "set_by": "chat fa460994",
+    "why": "An ElevenLabs 429 busy clears in seconds; 4 tries with growing sleeps bound the wait.",
+    "normal": "Rare; clusters mean the plan's concurrency is full."
+  },
+  "elevenlabs.timeout": {
+    "value": 900,
+    "unit": "s",
+    "where": "share/elevenlabs_media.py:130",
+    "set_by": "night a9e29da0",
+    "why": "The longest generation answers within minutes; balance reads pass 10 s.",
+    "normal": "Rare; a timed-out POST may still be billed server-side."
+  },
+  "flow-music.start": {
+    "value": 90,
+    "unit": "s",
+    "where": "share/flow_music.py:37",
+    "set_by": "chat ffca51e3",
+    "why": "Flow Music shows a started song within a minute of Generate; 90 s after each of two clicks means the click did nothing.",
+    "normal": "Rare."
+  },
+  "flow-music.upload-wait": {
+    "value": 300,
+    "unit": "s",
+    "where": "share/flow_music.py:314",
+    "set_by": "chat d25b8c7f",
+    "why": "A reference audio upload finishes within a minute; upload_wait_s in image-caps/gemini.json bounds a stuck one.",
+    "normal": "0 hits."
+  },
+  "gate-journal.trim": {
+    "value": 4000,
+    "unit": "rows",
+    "where": "share/gate-journal.sh:30",
+    "set_by": "chat 3566f928",
+    "why": "gates.jsonl stays bounded: past 4000 lines it keeps the newest 2000.",
+    "normal": "About monthly; harness-doctor reads a window far shorter than 2000 rows, so a hit loses nothing it reads."
+  },
+  "gateway-auth.lock-wait": {
+    "value": 35,
+    "unit": "s",
+    "where": "share/gateway_auth.py:216",
+    "set_by": "chat a890c031",
+    "why": "One codex token renewal at a time; 35 s covers a renewal in flight.",
+    "normal": "Rare; user-initiated, the switch says retry."
   },
   "gemini-image.print-timeout": {
     "value": 180,
@@ -103,6 +255,30 @@
     "why": "One listen attempt transcribes a clip; 540 s means agy stalled.",
     "normal": "Rare; agy capacity weather."
   },
+  "gemini-music.pick-attempts": {
+    "value": 2,
+    "unit": "count",
+    "where": "share/gemini_music.py:174",
+    "set_by": "chat 6dbbf73b",
+    "why": "A Create music click can leave the plain composer; it is picked once more, never in a loop.",
+    "normal": "Rare; a hit means the page changed."
+  },
+  "gemini-music.track-timeout": {
+    "value": 600,
+    "unit": "s",
+    "where": "share/gemini_music.py:345",
+    "set_by": "night e961a078",
+    "why": "A Gemini track renders within minutes; timeout_s in image-caps/gemini.json ends a take that never will.",
+    "normal": "Rare."
+  },
+  "gemini-music.video-attempts": {
+    "value": 6,
+    "unit": "count",
+    "where": "share/gemini_music.py:366",
+    "set_by": "night e961a078",
+    "why": "The cover-art mp4 link 404s for a while after the reply; 6 tries 10 s apart outwait it.",
+    "normal": "Rare; the audio is delivered either way."
+  },
   "gemini-probe.request-timeout": {
     "value": 180,
     "unit": "s",
@@ -119,6 +295,46 @@
     "why": "`geminib families` answers in seconds; 120 s means it hung.",
     "normal": "0 hits; the cache usually answers."
   },
+  "gemini-web.bounded": {
+    "value": 45,
+    "unit": "s",
+    "where": "share/gemini_web.py:142",
+    "set_by": "night 1cda77fd",
+    "why": "A Playwright call can block forever on a dead Chrome; past the bound Chrome and the driver are killed.",
+    "normal": "0 hits; a hit means Chrome hung."
+  },
+  "gemini-web.download-wait": {
+    "value": 600,
+    "unit": "s",
+    "where": "share/gemini_web.py:1521",
+    "set_by": "chat a8c1ee19",
+    "why": "A 1080p upscale downloads within minutes; 600 s ends one that never comes.",
+    "normal": "Rare."
+  },
+  "gemini-web.failures-age": {
+    "value": 1209600,
+    "unit": "s",
+    "where": "share/gemini_web.py:140",
+    "set_by": "night e961a078",
+    "why": "Failure screenshots and page dumps are kept two weeks, the longest a media failure is investigated.",
+    "normal": "Daily while media fails; the count is what aged out."
+  },
+  "gemini-web.lock-wait": {
+    "value": 900,
+    "unit": "s",
+    "where": "share/gemini_web.py:100",
+    "set_by": "night 0d9e7c3c",
+    "why": "One browser job per Google account profile; a job waits up to 15 min for the one ahead of it.",
+    "normal": "Rare; repeated hits mean jobs queue longer than one generation."
+  },
+  "gemini-web.wall": {
+    "value": 21600,
+    "unit": "s",
+    "where": "share/gemini_web.py:59",
+    "set_by": "night e961a078",
+    "why": "A walled account is skipped for 6 h, a flagged one 24 h and a re-flagged one 30 d (night 50a8584c), so jobs stop paying for refusals.",
+    "normal": "A few a week; a 30-day wall is worth a look."
+  },
   "geminib.capacity-hold": {
     "value": 600,
     "unit": "s",
@@ -126,6 +342,30 @@
     "set_by": "chat e98d03c9",
     "why": "A family that answered 503 is skipped for 10 min instead of being retried at once.",
     "normal": "Hits follow 503 weather; the run falls to the next family."
+  },
+  "grok-media.lock-stale": {
+    "value": 1800,
+    "unit": "s",
+    "where": "share/grok-media.sh:160",
+    "set_by": "chat 27107106",
+    "why": "The grok media lock has no owner pid; a lock older than 30 min is taken for a crashed holder's.",
+    "normal": "0 hits; a hit beside a live generation means two runs share the account."
+  },
+  "grok-quota.timeout": {
+    "value": 10,
+    "unit": "s",
+    "where": "grok-quota.py:139",
+    "set_by": "chat 9529ca54",
+    "why": "The grok billing endpoint answers in a second; 10 s means network trouble.",
+    "normal": "Rare, in weather."
+  },
+  "grok-resets.timeout": {
+    "value": 6,
+    "unit": "s",
+    "where": "share/grok_resets.py:27",
+    "set_by": "chat 36e33353",
+    "why": "The reset read is a side read of a usage poll; 6 s keeps it from holding the poll.",
+    "normal": "Rare; the reset count stays unknown for that pass."
   },
   "grok-video.lock-wait": {
     "value": 900,
@@ -143,6 +383,14 @@
     "why": "A token touch is one `grok models` call; 30 s means the CLI wedged.",
     "normal": "0 hits."
   },
+  "handoffs.chat-find": {
+    "value": 120,
+    "unit": "s",
+    "where": "share/handoffs.py:172",
+    "set_by": "night 2c786177",
+    "why": "chat-find walks every recent transcript; 120 s means it wedged.",
+    "normal": "0 hits; a hit sends every owner batch of that carry to plain night jobs."
+  },
   "harness-doctor.pending-call": {
     "value": 7200,
     "unit": "s",
@@ -159,6 +407,14 @@
     "why": "Spool files older than 15 min are folded and dropped.",
     "normal": "Rare."
   },
+  "image-composite.global": {
+    "value": 60,
+    "unit": "pct",
+    "where": "share/image_composite.py:30",
+    "set_by": "night 1cda77fd",
+    "why": "An edit that changed over 60 % of the image is global, so a region composite would paste a mismatched patch.",
+    "normal": "Common for prompts that restyle the whole image; frequent hits on region edits mean the model redraws everything."
+  },
   "image-fanout.busy-giveup": {
     "value": 900,
     "unit": "s",
@@ -167,6 +423,46 @@
     "why": "An image job waits up to 15 min for a free leg.",
     "normal": "0 hits; a hit drops one image job."
   },
+  "image-leg.work-age": {
+    "value": 1209600,
+    "unit": "s",
+    "where": "share/image-leg.sh:361",
+    "set_by": "chat fbf78be7",
+    "why": "Image-leg work files (edit-chain sidecars, fan-out state) are kept two weeks.",
+    "normal": "Daily; the count is what aged out."
+  },
+  "image-matte.redrawn": {
+    "value": 45,
+    "unit": "count",
+    "where": "share/image_matte.py:33",
+    "set_by": "chat a89a6be0",
+    "why": "A cut-out whose border band differs from the base by a mean over 45 was redrawn, so the matte would show a seam.",
+    "normal": "Occasional; frequent hits mean the cut-out model redraws its subject."
+  },
+  "instruction-files.journal-lock": {
+    "value": 50,
+    "unit": "count",
+    "where": "share/instruction-files.sh:2272",
+    "set_by": "worker 3d21a1fa",
+    "why": "The events journal lock is held for milliseconds; 50 tries x 20 ms bound a hook's wait.",
+    "normal": "0 hits; each hit is an instruction change no watcher reports."
+  },
+  "instruction-files.patch-read": {
+    "value": 20000000,
+    "unit": "bytes",
+    "where": "share/instruction-files.sh:1904",
+    "set_by": "worker 3d21a1fa",
+    "why": "A git apply patch is parsed whole up to 20 MB; past it only its file headers are read.",
+    "normal": "0 hits."
+  },
+  "instruction-files.ranked-max": {
+    "value": 10,
+    "unit": "count",
+    "where": "share/instruction-files.sh:401",
+    "set_by": "chat 3cd30cac",
+    "why": "The watch set is the top 10 project CLAUDE files by monthly reads, so it cannot grow with the disk.",
+    "normal": "On every ranking rebuild while more than 10 rank; the count is how many go unwatched."
+  },
   "instruction-watch.budget": {
     "value": 20,
     "unit": "s",
@@ -174,6 +470,14 @@
     "set_by": "chat 3566f928",
     "why": "One hook call checks moved instruction files for at most 20 s; the rest wait for the next call.",
     "normal": "Rare; mass file moves."
+  },
+  "instruction-watch.scan-timeout": {
+    "value": 20,
+    "unit": "s",
+    "where": "hammerspoon/instruction-watch.lua:566",
+    "set_by": "chat 0593dde6",
+    "why": "The scan blocks Hammerspoon's main thread; past 20 s its process group dies so the menubar does not freeze.",
+    "normal": "0 hits; a hit leaves files unwatched for that tick."
   },
   "instruction-watch.snapshot-size": {
     "value": 1048576,
@@ -191,6 +495,14 @@
     "why": "The gate reads 256 KiB of a script it judges; past that only write-shaped lines are scanned.",
     "normal": "Rare: big generated scripts."
   },
+  "light-research.timeout": {
+    "value": 21600,
+    "unit": "s",
+    "where": "share/light-research.sh:163",
+    "set_by": "worker 426bf9e6",
+    "why": "A research run is bounded by --research-timeout (default 360m); the run's outcome reads GEMINI_UNAVAILABLE.",
+    "normal": "Rare; a hit is a timeout, not an outage."
+  },
   "llm-doctor.worker-tail": {
     "value": 8192,
     "unit": "bytes",
@@ -198,6 +510,62 @@
     "set_by": "chat a9a033cf",
     "why": "Worker failures are classified from the err tail's last 8 KiB; an unclassified tail is reread whole.",
     "normal": "A hit means the cause sat above the tail."
+  },
+  "llm-limits.agy-window-start": {
+    "value": 120,
+    "unit": "s",
+    "where": "llm-limits.sh:946",
+    "set_by": "chat 888bf7ba",
+    "why": "Starting a gemini 5h window is one tiny prompt; 120 s means agy hung.",
+    "normal": "Rare."
+  },
+  "llm-limits.claude-refresh-timeout": {
+    "value": 300,
+    "unit": "s",
+    "where": "llm-limits.sh:274",
+    "set_by": "chat 1a28d8ad",
+    "why": "A claude account refresh is a few usage reads; 300 s bounds a wedged claudeb.",
+    "normal": "Rare; the refresh error names the phase."
+  },
+  "llm-limits.claude-sw-timeout": {
+    "value": 1200,
+    "unit": "s",
+    "where": "llm-limits.sh:271",
+    "set_by": "chat 1a28d8ad",
+    "why": "Refresh, start-windows and heal across every claude account take minutes; 1200 s bounds a wedged pass.",
+    "normal": "Rare."
+  },
+  "llm-limits.codex-window-start": {
+    "value": 60,
+    "unit": "s",
+    "where": "llm-limits.sh:1494",
+    "set_by": "chat 7f8cb8ea",
+    "why": "Starting a codex 5h window is one tiny prompt; 60 s means codex hung.",
+    "normal": "Rare."
+  },
+  "llm-limits.elevenlabs-timeout": {
+    "value": 30,
+    "unit": "s",
+    "where": "llm-limits.sh:1877",
+    "set_by": "chat 5203b2b7",
+    "why": "The ElevenLabs balance read is one GET per key in parallel; 30 s bounds the whole section.",
+    "normal": "Rare."
+  },
+  "llm-limits.gemini-auth-lock": {
+    "value": 60,
+    "unit": "s",
+    "where": "llm-limits.sh:482",
+    "set_by": "chat dd23507c",
+    "why": "agy's keychain read fails when profiles probe at once, so the confirming auth probe runs alone; 60 s bounds the queue.",
+    "normal": "Rare; repeated hits leave a login verdict unconfirmed."
+  },
+  "llm-limits.grok-touch-timeout": {
+    "value": 30,
+    "unit": "s",
+    "where": "llm-limits.sh:536",
+    "set_by": "worker 0bb99a68",
+    "why": "Rotating a grok token is one CLI call; 30 s means it hung.",
+    "normal": "Rare."
   },
   "llm-refresh.collector-timeout": {
     "value": 1800,
@@ -279,6 +647,22 @@
     "why": "A run audits at most 36 h back so a long gap does not become one huge run.",
     "normal": "Rare: after a long outage."
   },
+  "log-skeleton.clip": {
+    "value": 300,
+    "unit": "chars",
+    "where": "share/log_skeleton.py:12",
+    "set_by": "worker c1b270c7",
+    "why": "log-audit's model reads a skeleton: user text 1500, said 500, tools 160, errors 300 and hooks 200 chars per line.",
+    "normal": "Most transcripts clip something; a hit whose error texts lost many chars hides failure detail from the auditor."
+  },
+  "machine-probe.timeout": {
+    "value": 10,
+    "unit": "s",
+    "where": "share/machine_probe.py:25",
+    "set_by": "night 5db21770",
+    "why": "A machine probe (sysctl 5 s) answers instantly; past the bound its value is missing from the system doctor.",
+    "normal": "0 hits."
+  },
   "memlogd.episode-cap": {
     "value": 268435456,
     "unit": "bytes",
@@ -350,6 +734,54 @@
     "set_by": "chat 2ecc0bdc",
     "why": "A streaming call silent for 2 min has stalled.",
     "normal": "Rare."
+  },
+  "run-suites.history-rows": {
+    "value": 5000,
+    "unit": "rows",
+    "where": "share/run-suites.sh:154",
+    "set_by": "night 1d06bf49",
+    "why": "A suite's bound is 5x the p90 of its last 50 passes read from the newest 5000 journal rows.",
+    "normal": "A new or rarely run suite; a familiar suite hitting it means the window is too short and it runs under the floor bound."
+  },
+  "run-suites.kill-grace": {
+    "value": 10,
+    "unit": "s",
+    "where": "share/run-suites.sh:192",
+    "set_by": "night 1d06bf49",
+    "why": "A timed-out suite's tree gets 10 s between TERM and KILL to clean up.",
+    "normal": "Only beside a suite TIMEOUT; processes ignoring TERM leave their own cleanup undone."
+  },
+  "spend.tokenmap": {
+    "value": 180,
+    "unit": "s",
+    "where": "share/spend.py:26",
+    "set_by": "night 90cae246",
+    "why": "One day's tokenmap tracking read; past 180 s the backfill retries next run.",
+    "normal": "Rare under load."
+  },
+  "store-lock.ceiling": {
+    "value": 3600,
+    "unit": "s",
+    "where": "share/store-lock.sh:54",
+    "set_by": "chat 123b5750",
+    "why": "Past an hour a live-looking holder's pid may be a recycled one, so the lock is broken anyway (deliberate, docs/DIAGNOSTICS.md).",
+    "normal": "0 hits; a hit means a holder ran an hour or a recycled pid, and two writers may overlap."
+  },
+  "store-lock.ownerless-stale": {
+    "value": 30,
+    "unit": "s",
+    "where": "share/store-lock.sh:56",
+    "set_by": "chat 123b5750",
+    "why": "A lock directory with no pid file older than 30 s is a crashed claim.",
+    "normal": "Rare: after a kill mid-claim."
+  },
+  "store-lock.retries": {
+    "value": 240,
+    "unit": "count",
+    "where": "share/store-lock.sh:63",
+    "set_by": "chat 123b5750",
+    "why": "240 tries x 0.25 s = 60 s for a store write behind a live holder.",
+    "normal": "0 hits; a hit drops that store write."
   },
   "system-doctor.cache-budget": {
     "value": 120,

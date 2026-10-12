@@ -13,7 +13,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 REAL_JQ=$(command -v jq) || fail "jq is required"
 HOME_FIXTURE="$WORK/home"
-export HARNESS_WAITS_DIR="$WORK/waits"
+export HARNESS_WAITS_DIR="$WORK/waits" LIMIT_HITS_LOG="$WORK/hits.jsonl"
 lock_waits() { cat "$HARNESS_WAITS_DIR"/*.jsonl 2>/dev/null | jq -sc --arg s "$1" 'map(select(.class == "lock" and .source == $s))'; }
 PROFILES="$WORK/profiles"
 GEMINI_CACHES="$WORK/gemini-caches"
@@ -198,6 +198,11 @@ env LLM_STORE_LOCK_STALE_SECONDS=1 LLM_STORE_LOCK_CEILING_SECONDS=60 LLM_STORE_L
   LLM_STORE_LOCK_DELAY=0.02 \
   bash -c '. "$1/share/store-lock.sh"; store_lock_acquire "$2"' _ "$ROOT" "$LIVE_LOCK" \
   || fail "a lock older than the pid-reuse ceiling stayed unbreakable"
+jq -se --arg lock "$LIVE_LOCK" 'map(select(.limit == "llm-legs:store-lock.retries" and (.lost | contains($lock + ":")))) | length == 1' "$LIMIT_HITS_LOG" >/dev/null \
+  || fail "a lock wait given up is no limit hit"
+jq -se --arg pid "$live_pid" 'map(select(.limit == "llm-legs:store-lock.ceiling" and .action == "break" and .value == 60
+  and .observed >= 600 and (.lost | contains("live pid " + $pid)))) | length == 1' "$LIMIT_HITS_LOG" >/dev/null \
+  || fail "a live holder's lock broken at the ceiling is no limit hit"
 kill "$live_pid" 2>/dev/null
 wait "$live_pid" 2>/dev/null
 rm -rf "$LIVE_LOCK"

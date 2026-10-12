@@ -67,6 +67,9 @@ def walls() -> dict:
 
 
 def set_wall(account: str, until: float) -> None:
+    gw.limit_hit.hit("aistudio-speech.wall", MINUTE_WALL_S, "s", "skip",
+                     "%s: no AI Studio speech job routes to it until %s" % (account, time.strftime("%H:%M", time.localtime(until))),
+                     "share/aistudio_speech.py:MINUTE_WALL_S = ", observed=until - time.time())
     gw.update_json(WALLS, lambda data: data.update({account: int(until)}))
 
 
@@ -558,6 +561,9 @@ def run_and_wait(page, replies: Replies, account: str, timeout_s: float) -> int:
         if len(replies.seen) > start or generating(page):
             break
     else:
+        gw.limit_hit.hit("aistudio-speech.send-wait", SEND_WAIT_S, "s", "retry-exhausted",
+                         f"the AI Studio speech take on {account}: Run sent nothing after 2 clicks",
+                         "share/aistudio_speech.py:SEND_WAIT_S = ")
         raise gw.Failure(1, f"Run sent nothing on {account}: no GenerateContent within {SEND_WAIT_S}s of 2 clicks")
     gw.phase("sent")
     deadline = time.time() + timeout_s

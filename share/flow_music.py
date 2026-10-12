@@ -310,6 +310,8 @@ def attach_audio(page, traffic: Traffic, account: str, path: Path, wait_s: float
         flags = [k for k in ("has_vocals", "has_cid_match", "lyrics_moderation_failed") if traffic.upload.get(k)]
         said = re.sub(r"^Notification\s*Error\s*", "", errors[-1]) if errors else ", ".join(flags) or "no reason shown"
         raise gw.Failure(1, f"Flow Music refused the reference audio upload: {said[:200]}")
+    gw.limit_hit.hit("flow-music.upload-wait", wait_s, "s", "kill", f"the reference audio {path.name}: its upload never finished",
+                     "share/flow_music.py:the reference audio upload did not finish")
     raise gw.Failure(1, f"the reference audio upload did not finish within {wait_s:.0f}s")
 
 
@@ -386,6 +388,9 @@ def wait_song(page, traffic: Traffic, account: str, plan: dict, title: str, star
                 if song:
                     return song
                 gw.ledger({"kind": "flow-music", "event": "no-song", "account": account, "title": title})
+                gw.limit_hit.hit("flow-music.start", START_S, "s", "retry-exhausted",
+                                 f"the Flow Music song {title!r} on {account}: no track started after 2 Generate clicks",
+                                 "share/flow_music.py:START_S = ")
                 raise gw.Failure(1, f"no track started on {account}: Flow Music made no song within {START_S}s of "
                                     f"either of 2 Generate clicks ({page.url})")
             gw.ledger({"kind": "flow-music", "event": "regenerate", "account": account, "title": title})

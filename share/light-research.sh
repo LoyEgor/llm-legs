@@ -183,6 +183,10 @@ supervise_gemini_research() {
       research_failure "$directory" GEMINI_USAGE_LIMIT 3; return $?
     fi
     [ "$rc" -ne 0 ] || rc=4
+    ! grep -q 'print timeout after' "$directory/err" 2>/dev/null || ! declare -F limit_hit >/dev/null ||
+      limit_hit light-research.timeout "$(research_duration_seconds "$timeout_value")" s kill \
+        "research run ${directory##*/} (gemini/$account): its answer; the outcome reads GEMINI_UNAVAILABLE but this was the timeout" \
+        'share/light-research.sh:--print-timeout "$timeout_value"'
     research_failure "$directory" GEMINI_UNAVAILABLE "$rc"; return $?
   fi
   return 0

@@ -22,6 +22,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import limit_hit
+
 SERVICE_BASE = os.environ.get("CLAUDE_RESETS_ENDPOINT", "https://api.anthropic.com").rstrip("/")
 USAGE_PATH = "/api/oauth/usage?cedar_ember=1"
 RESET_PATH = "/api/organizations/{organization}/reset_rate_limits"
@@ -80,6 +82,12 @@ def organization_uuid(account: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _timed_out(method: str, path: str, timeout: float) -> None:
+    limit_hit.hit("claude-resets.timeout", timeout, "s", "kill",
+                  "the menu's claude reset %s %s: the action failed as a network error" % (method, path.split("?")[0]),
+                  "share/claude_resets.py:READ_TIMEOUT = " if method == "GET" else "share/claude_resets.py:RESET_TIMEOUT = ")
+
+
 def _request(method: str, path: str, token: str, body: dict | None, timeout: float) -> dict:
     request = urllib.request.Request(
         SERVICE_BASE + path,
@@ -102,8 +110,12 @@ def _request(method: str, path: str, token: str, body: dict | None, timeout: flo
             raise TransientError("HTTP 429 rate limited") from None
         raise TransientError(f"HTTP {exc.code}") from None
     except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            _timed_out(method, path, timeout)
         raise TransientError(f"network error: {exc.reason}") from None
     except (TimeoutError, OSError, http.client.HTTPException) as exc:
+        if isinstance(exc, TimeoutError):
+            _timed_out(method, path, timeout)
         raise TransientError(f"network error: {exc}") from None
     try:
         payload = json.loads(raw)

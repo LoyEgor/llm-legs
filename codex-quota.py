@@ -15,6 +15,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "share"))
 import codex_appserver  # noqa: E402
+import limit_hit  # noqa: E402
 
 READ_METHOD = "account/rateLimits/read"
 
@@ -264,6 +265,11 @@ def main() -> int:
         as_of = int(time.time())
         try:
             return account, fetch(codex_home, timeout), as_of, None
+        except TimeoutError as exc:
+            limit_hit.hit("codex-quota.timeout", timeout, "s", "kill",
+                          "the codex usage read of %s: its numbers stay as last read" % account,
+                          'codex-quota.py:"CODEX_QUOTA_TIMEOUT"')
+            return account, None, as_of, str(exc)
         except Exception as exc:
             return account, None, as_of, str(exc)
 

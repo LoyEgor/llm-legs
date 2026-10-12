@@ -24,6 +24,9 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import limit_hit  # noqa: E402
+
 WORK_SIDE = 1600
 MIN_INLIERS = 40
 MIN_INLIER_SHARE = 0.25
@@ -102,7 +105,10 @@ def matte(base_path: str, cut_path: str, out: str) -> str:
     inner = cv2.GaussianBlur(cv2.erode(core.astype(np.float32), kernel), (0, 0), radius / 3)
     inner = np.maximum(inner, ~covered)
     band = core & (inner < 0.5)
-    if band.any() and np.abs(toned - base)[band].mean() > REDRAWN_LIMIT:
+    if band.any() and (redrawn := float(np.abs(toned - base)[band].mean())) > REDRAWN_LIMIT:
+        limit_hit.hit("image-matte.redrawn", REDRAWN_LIMIT, "count", "fallback",
+                      f"the matte composite of {os.path.basename(out)}: skipped, the result stays uncomposited",
+                      "share/image_matte.py:REDRAWN_LIMIT = ", observed=redrawn)
         return "composite=skipped reason=redrawn"
 
     rgb = base * inner[..., None] + toned * (1 - inner[..., None])

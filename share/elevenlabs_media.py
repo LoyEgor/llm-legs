@@ -29,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import caps_checks  # noqa: E402
+import limit_hit  # noqa: E402
 from spend import read_json  # noqa: E402
 
 API = os.environ.get("ELEVENLABS_API_BASE", "https://api.elevenlabs.io")
@@ -144,12 +145,19 @@ class Client:
                 if error.code == 429 and attempt < 3 and not once:
                     time.sleep(3 * (attempt + 1))
                     continue
+                if error.code == 429 and not once:
+                    limit_hit.hit("elevenlabs.busy-retries", 4, "count", "retry-exhausted",
+                                  f"ElevenLabs {method} {path} on {self.account}: still busy after 4 tries",
+                                  "share/elevenlabs_media.py:for attempt in range(4)")
                 raise self.classify(error.code, status, message) from None
             except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
                 # A POST that timed out may still be billed and delivered server-side; resending it pays twice.
                 if method == "GET" and attempt < 2 and not once:
                     time.sleep(2)
                     continue
+                if isinstance(error, TimeoutError) or isinstance(getattr(error, "reason", None), TimeoutError):
+                    limit_hit.hit("elevenlabs.timeout", timeout, "s", "kill", f"ElevenLabs {method} {path} on {self.account}: no answer",
+                                  "share/elevenlabs_media.py:timeout=900, once=False")
                 raise Fail(1, f"network: {error}") from None
         raise Fail(1, "unreachable")
 

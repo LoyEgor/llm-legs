@@ -357,8 +357,11 @@ image_leg_work_file() { # kind path name
 }
 
 image_leg_work_prune() { # work file
-  local kind_dir=${1%/*/*}
-  find "$kind_dir" -type f -mtime +14 -delete 2>/dev/null || :
+  local kind_dir=${1%/*/*} gone
+  gone=$(find "$kind_dir" -type f -mtime +14 -print -delete 2>/dev/null | wc -l) || gone=0
+  [ "${gone// /}" -eq 0 ] 2>/dev/null || ! declare -F limit_hit >/dev/null ||
+    limit_hit image-leg.work-age 1209600 s expire "${gone// /} ${kind_dir##*/} work files over 14 days old: an edit of their image starts a new chain" \
+      'share/image-leg.sh:-mtime +14'
   find "$kind_dir" -mindepth 1 -type d -empty -delete 2>/dev/null || :
 }
 

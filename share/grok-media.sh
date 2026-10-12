@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by bin/grok-image and bin/grok-video. Limits belong in share/image-caps/grok.json, not
 # here: a value hardcoded in this file is one no manifest re-verification can correct.
+[ ! -r "${BASH_SOURCE[0]%/*}/limit-hit.sh" ] || . "${BASH_SOURCE[0]%/*}/limit-hit.sh"
 
 # grokb's own resolution, minus the exotic candidates: this is only ever asked for a `--version`
 # banner, and an unfound binary degrades to `caps=stale cli=unknown` rather than failing a run.
@@ -157,7 +158,11 @@ grok_media_lock_acquire() { # tool account
     mtime=$(stat -f %m "$candidate" 2>/dev/null || printf '0')
     now=$(date +%s)
     if [ "$mtime" -gt 0 ] && [ $((now - mtime)) -gt "${GROK_MEDIA_LOCK_STALE:-1800}" ]; then
-      rmdir "$candidate" 2>/dev/null || true
+      rmdir "$candidate" 2>/dev/null &&
+        { ! declare -F limit_hit >/dev/null ||
+          limit_hit grok-media.lock-stale "${GROK_MEDIA_LOCK_STALE:-1800}" s break \
+            "the $tool lock of $account, $((now - mtime)) s old: a generation still running there now shares the account" \
+            'share/grok-media.sh:GROK_MEDIA_LOCK_STALE' "$((now - mtime))"; }
       continue
     fi
     if [ "$waited" -ge "${GROK_MEDIA_LOCK_WAIT:-900}" ]; then

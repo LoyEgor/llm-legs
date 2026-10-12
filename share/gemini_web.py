@@ -38,6 +38,7 @@ from pathlib import Path
 
 import account_roster
 import caps_checks
+import limit_hit
 from spend import read_json
 
 faulthandler.register(signal.SIGTERM, all_threads=True, chain=True)
@@ -213,10 +214,15 @@ def snapshot(context, account: str, reason: str) -> str:
         old_files = list(folder.iterdir())
     except OSError:
         return ""
+    gone = 0
     for old in old_files:
         with contextlib.suppress(OSError):
             if old.stat().st_mtime < time.time() - FAILURES_KEEP_S:
                 old.unlink()
+                gone += 1
+    if gone:
+        limit_hit.hit("gemini-web.failures-age", FAILURES_KEEP_S, "s", "expire",
+                      "%d failure screenshots and page dumps over 14 days old" % gone, "share/gemini_web.py:FAILURES_KEEP_S = ")
     shot = base.with_suffix(".png")
     with contextlib.suppress(Exception):
         page.screenshot(path=str(shot), timeout=8000)
@@ -338,6 +344,8 @@ def file_lock(path: Path, wait_s: float | None = None):
                 break
             except BlockingIOError:
                 if time.time() > deadline:
+                    limit_hit.hit("gemini-web.lock-wait", wait_s, "s", "skip", f"a {TOOL} job behind {path.name}: never started",
+                                  "share/gemini_web.py:def file_lock(")
                     raise Failure(1, f"timed out waiting for {path.name}")
                 time.sleep(1)
         yield
@@ -383,6 +391,9 @@ def claim(accounts: list[str], wait_s: float) -> str:
     finally:
         lock_waited += time.monotonic() - started
     if account is None:
+        limit_hit.hit("gemini-web.lock-wait", wait_s, "s", "skip",
+                      "a %s job behind the account lock of %s: refused as account busy" % (TOOL, ", ".join(accounts)),
+                      "share/gemini_web.py:LOCK_WAIT_S = ", observed=time.monotonic() - started)
         raise Failure(5, f"account busy: timed out waiting for {accounts[0]}.lock after {wait_s:.0f}s")
     phase("lock")
     return account
@@ -674,6 +685,8 @@ def bounded(account: str, what: str, chrome: int | None, driver: int | None, sec
     killed, so the blocked Playwright call raises instead of waiting forever."""
     def expire():
         warn(account, f"{what} still running after {seconds:.0f}s; killing Chrome and the Playwright driver")
+        limit_hit.hit("gemini-web.bounded", seconds, "s", "kill", f"{TOOL} on {account}: {what}, Chrome killed mid-call",
+                      "share/gemini_web.py:TEARDOWN_S = ")
         faulthandler.dump_traceback(all_threads=True)
         for kill, target in ((os.killpg, chrome), (os.kill, driver)):
             if target:
@@ -1262,6 +1275,10 @@ def wall_until(account: str, failure: Failure) -> float:
 def set_wall(account: str, until: float | None) -> None:
     if until is None and account not in walls():
         return
+    if until is not None:
+        limit_hit.hit("gemini-web.wall", WALL_SECONDS, "s", "skip",
+                      "%s: no %s job routes to it until %s" % (account, TOOL, time.strftime("%Y-%m-%d %H:%M", time.localtime(until))),
+                      "share/gemini_web.py:WALL_SECONDS = ", observed=until - time.time())
     update_json("walls.json", lambda data: data.pop(account, None) if until is None
                 else data.update({account: int(until)}))
 
@@ -1510,6 +1527,8 @@ def wait_download(page, downloads: list, timeout_s: float = 600.0) -> str | None
         if caught:
             return caught
         page.wait_for_timeout(500)
+    limit_hit.hit("gemini-web.download-wait", timeout_s, "s", "kill", "a 1080p download: the video stays at its lower resolution or undelivered",
+                  "share/gemini_web.py:def wait_download(")
     raise TimeoutError(f"no 1080p download within {timeout_s:.0f}s")
 
 

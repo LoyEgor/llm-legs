@@ -20,6 +20,8 @@ import struct
 import urllib.error
 import urllib.request
 
+import limit_hit
+
 SERVICE_BASE = os.environ.get("GROK_RESETS_ENDPOINT", "https://grok.com").rstrip("/")
 SERVICE_PATH = "/prod_mc_billing.ConsumerUiSvc"
 DEFAULT_TIMEOUT = 6.0
@@ -159,6 +161,11 @@ def _frames(body: bytes) -> tuple[bytes | None, dict[str, str]]:
     return message, trailers
 
 
+def _timed_out(method: str, timeout: float) -> None:
+    limit_hit.hit("grok-resets.timeout", timeout, "s", "kill", "the grok %s call: the reset count stays unknown" % method,
+                  "share/grok_resets.py:DEFAULT_TIMEOUT = ")
+
+
 def _call(method: str, token: str, message: bytes, timeout: float) -> bytes:
     frame = b"\x00" + struct.pack(">I", len(message)) + message
     request = urllib.request.Request(
@@ -183,10 +190,14 @@ def _call(method: str, token: str, message: bytes, timeout: float) -> bytes:
             raise Weather(f"HTTP {exc.code}") from None
         raise TransientError(f"HTTP {exc.code}") from None
     except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            _timed_out(method, timeout)
         raise Weather(f"network error: {exc.reason}") from None
     # A connection dropped mid-body raises out of http.client, which inherits from neither OSError
     # nor URLError; uncaught it would take the whole usage poll down with the reset read.
     except (TimeoutError, OSError, http.client.HTTPException) as exc:
+        if isinstance(exc, TimeoutError):
+            _timed_out(method, timeout)
         raise Weather(f"network error: {exc}") from None
     try:
         payload, trailers = _frames(body)

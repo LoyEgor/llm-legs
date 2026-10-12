@@ -13,6 +13,7 @@ import time
 
 import account_roster
 import codex_appserver
+import limit_hit
 
 ACCOUNT_RE = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
 
@@ -219,6 +220,9 @@ def prepare(name, home=None, expected_id=None):
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
+                    limit_hit.hit("gateway-auth.lock-wait", 35, "s", "skip",
+                                  "the codex token renewal of %s: the chat switch failed as busy" % name,
+                                  "share/gateway_auth.py:deadline = time.monotonic() + 35")
                     raise ValueError("Codex authorization renewal is busy; retry shortly")
                 time.sleep(0.05)
         current = resolve(name, home)

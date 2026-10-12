@@ -13,6 +13,8 @@ import sys
 import time
 from typing import Any
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "share"))
+import limit_hit  # noqa: E402
 
 AGY = os.path.expanduser(os.environ.get("AGY_BIN", "~/.local/bin/agy"))
 WORKDIR = os.path.expanduser(
@@ -201,6 +203,12 @@ def main() -> int:
             )
         )
         return AUTH_EXIT
+    except TimeoutError as exc:
+        limit_hit.hit("agy-quota.timeout", TIMEOUT, "s", "kill",
+                      "the Antigravity /usage read of HOME %s: its numbers stay as last read" % os.path.expanduser("~"),
+                      "agy-quota.py:TIMEOUT = ")
+        print(json.dumps({"error": str(exc), "source": SOURCE}), file=sys.stderr)
+        return 1
     except Exception as exc:
         print(json.dumps({"error": str(exc), "source": SOURCE}), file=sys.stderr)
         return 1

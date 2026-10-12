@@ -686,3 +686,17 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   shows as `suites n/m`; browser and deadline waits in `worker-run`/`codex-image` are bounded
   under 60 s or are kill ceilings. The gates (`worker-limit-gate`, `worker-launch-gate`,
   `workflow-burn-gate`) deny, which the caller sees.
+
+## 13. Limits
+
+`limits_section` reads the limit-hit journal (shared-invariants row `el`) and the `limits.json` of
+llm-legs, claude-setup, review-bench and token-map under `LIMIT_REPOS_DIR` (default: the repos dir).
+One row per limit hit in 7 d: `limit`, `hits 24 h`, `hits 7 d`, `worst ×usual 7 d`, `last lost`;
+its submenu holds the registry's value, where, set by, why and normal, plus the last loss and run.
+A row is red when a hit
+- ran `LIMIT_FAULT_X` (5) times its usual within 24 h (`observed / usual`);
+- fired in 24 h after 7 quiet days, judged only once the journal is older than 8 d;
+- names a limit missing from a readable registry.
+
+A repository with no readable `limits.json` is a watch lead (`limits:registry:<repo>`), not red. A
+red row is a `limit_hit` problem that night-run and doctor-fix pick up like any other.

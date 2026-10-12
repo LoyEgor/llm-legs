@@ -130,6 +130,7 @@ fi
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/slots.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/processes.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/run-liveness.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/limit-hit.sh"
 [ "$jobs" -ne 0 ] || jobs=$(slots_from_cores 2 2)
 
 # Each suite's last passing duration, keyed by the main checkout so a worktree shares it: the wave
@@ -145,7 +146,9 @@ suite_floor=${RUN_SUITES_SUITE_FLOOR:-1800}
 [[ $suite_floor =~ ^[1-9][0-9]*$ ]] || fail "RUN_SUITES_SUITE_FLOOR must be whole seconds: $suite_floor"
 slow_listed=$'\n'$(cat "$repo/tests/slow-suites" 2>/dev/null)$'\n'
 declare -A pass_p90=()
+history_rows=0
 if [ -r "$run_journal" ] && command -v jq >/dev/null; then
+  history_rows=$(wc -l <"$run_journal") && history_rows=${history_rows// /} || history_rows=0
   while IFS=$'\t' read -r name secs; do
     [[ "$secs" =~ ^[0-9]+$ ]] && pass_p90[$name]=$secs
   done < <(tail -n 5000 "$run_journal" | jq -nRr --arg root "$times_key" '
@@ -187,7 +190,13 @@ suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the
   local deadline=$((SECONDS + $2))
   while kill -0 "$1" 2>/dev/null; do
     if [ -e "$logdir/stop" ]; then process_tree_end "$1" 10; return; fi
-    if [ "$SECONDS" -ge "$deadline" ]; then : >"$3"; process_tree_end "$1" 10; return; fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      : >"$3"; process_tree_end "$1" 10
+      [ "${pids_end_killed:-0}" -eq 0 ] || limit_hit run-suites.kill-grace 10 s kill \
+        "${3##*/}: $pids_end_killed processes ignored TERM for 10 s and were KILLed, with no cleanup of their own" \
+        'share/run-suites.sh:process_tree_end "$1" 10'
+      return
+    fi
     sleep 2
   done
 }
@@ -431,6 +440,9 @@ run_one() { # suite-path [shard i/N]
   [ -z "$shard" ] || job="$name.shard-${shard%/*}"
   if [ -e "$logdir/stop" ]; then stop_note >"$logdir/$name.log"; return; fi
   suite_bound bound "$name"
+  [ -n "${pass_p90[$name]:-}" ] || [ "$history_rows" -le 5000 ] ||
+    limit_hit run-suites.history-rows 5000 rows fallback "$name's pass history: under 3 passes in the last 5000 journal rows, so its bound is $bound s, not 5x its p90" \
+      'share/run-suites.sh:tail -n 5000' "$history_rows"
   printf -v start '%(%s)T' -1
   suite_journal_ms began
   # Its own TMPDIR, never its own HOME: several suites here read the real ~/.claude on purpose

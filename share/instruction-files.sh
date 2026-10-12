@@ -45,6 +45,10 @@ _instruction_nl='
 '
 _instruction_tab='	'
 
+_instruction_limit_hit() { # -> limit_hit defined, sourced only on a hit
+  declare -F limit_hit >/dev/null || . "${BASH_SOURCE[0]%/*}/limit-hit.sh" 2>/dev/null
+}
+
 # Dependency trees: the directories package managers install other projects into (npm, Bower,
 # Composer/Go/Bundler `vendor`, pip's `site-packages` inside any virtualenv, CocoaPods). Every
 # install rewrites them and none is this project's instructions, so no door watches them.
@@ -430,7 +434,7 @@ instruction_ranked_paths() { # cache
 # `~/.claude/CLAUDE.md` is a symlink onto the config repository's copy, which is also the ranking's
 # first row, and watching one file under two names reports every change to it twice.
 instruction_ranked_rebuild() { # home cache
-  local home=${1:-$HOME} cache=$2 rates tmp p real known=''
+  local home=${1:-$HOME} cache=$2 rates tmp p real known='' ranked=0
   rates=$(instruction_ranked_rates "$home")
   [ -f "$rates" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
@@ -442,6 +446,7 @@ instruction_ranked_rebuild() { # home cache
   mkdir -p "$(dirname "$cache")" 2>/dev/null || return 1
   printf '#%s\n' "$INSTRUCTION_RANKED_VERSION" >"$tmp" || return 1
   while IFS= read -r p; do
+    case $p in '#'*) ranked=${p#\#}; continue ;; esac
     [ -n "$p" ] && [ -f "$p" ] || continue
     real=$(realpath "$p" 2>/dev/null) || real=$p
     case "$_instruction_nl$known" in *"$_instruction_nl$real$_instruction_nl"*) continue ;; esac
@@ -451,8 +456,12 @@ instruction_ranked_rebuild() { # home cache
       (.paths.entries // {}) | to_entries
       | map(select(.key | test("/(CLAUDE\\.md|CLAUDE\\.local\\.md)$")))
       | map(select(.key | test("/\\.claude/worktrees/") | not))
-      | sort_by(-(.value.monthly.reads // 0)) | .[:$n] | .[].key' "$rates" 2>/dev/null)
+      | "#\(length)", (sort_by(-(.value.monthly.reads // 0)) | .[:$n] | .[].key)' "$rates" 2>/dev/null)
   mv "$tmp" "$cache" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  [ "$ranked" -le "$INSTRUCTION_RANKED_MAX" ] 2>/dev/null || ! _instruction_limit_hit ||
+    limit_hit instruction-files.ranked-max "$INSTRUCTION_RANKED_MAX" count skip \
+      "$((ranked - INSTRUCTION_RANKED_MAX)) ranked CLAUDE files below the top $INSTRUCTION_RANKED_MAX: no watcher sees their changes" \
+      'share/instruction-files.sh:INSTRUCTION_RANKED_MAX=${' "$ranked"
 }
 
 # Stale means the ranking has moved since the cache was cut, or there is no cache at all. A rates
@@ -1890,7 +1899,15 @@ instruction_git_landing() { # command cwd → absolute paths, one per line
     done <<<"$cwd"$'\n'"$gcwds"
   done
   { printf '%s\n' "$cmd"
-    printf '%s' "$files" | while IFS= read -r f; do [ -z "$f" ] || head -c 20000000 "$f"; done
+    printf '%s' "$files" | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      head -c 20000000 "$f"
+      size=$(wc -c <"$f" 2>/dev/null) && [ "${size// /}" -gt 20000000 ] 2>/dev/null || continue
+      printf '\n'
+      tail -c +20000001 "$f" | LC_ALL=C grep -aE '^(\+\+\+ |--- |rename to |copy to )'
+      ! _instruction_limit_hit || limit_hit instruction-files.patch-read 20000000 bytes trim \
+        "patch $f past 20 MB: read for its file headers only" 'share/instruction-files.sh:head -c 20000000' "${size// /}"
+    done
   } | sed -n -e 's#^+++ #P #p' -e 's#^--- #P #p' -e 's#^rename to #R #p' -e 's#^copy to #R #p' |
     cut -f1 | sort -u | while read -r kind f; do
       [ -n "$f" ] && [ "$f" != /dev/null ] || continue
@@ -2252,7 +2269,12 @@ instruction_journal_append() { # json-line
       rmdir "$lock" 2>/dev/null || true
     fi
     i=$((i + 1))
-    [ "$i" -lt 50 ] || return 1
+    if [ "$i" -ge 50 ]; then
+      ! _instruction_limit_hit || limit_hit instruction-files.journal-lock 50 count drop \
+        "an instruction change record, never journaled and never counted as dropped: ${1:0:200}" \
+        'share/instruction-files.sh:[ "$i" -ge 50 ]'
+      return 1
+    fi
     sleep 0.02
   done
   printf '%s\n' "$1" >>"$journal" 2>/dev/null || { rmdir "$lock" 2>/dev/null; return 1; }

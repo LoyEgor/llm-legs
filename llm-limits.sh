@@ -99,6 +99,7 @@ while [ -L "$script_path" ]; do
 done
 script_dir=$(cd "$(dirname "$script_path")" && pwd)
 . "$script_dir/share/store-lock.sh"
+. "$script_dir/share/limit-hit.sh"
 
 chunk_bytes=${LLM_LIMITS_CHUNK_BYTES:-4194304}
 case "$chunk_bytes" in
@@ -265,6 +266,13 @@ run_bounded_claude() {
   [ -z "$stderr_text" ] || printf '%s\n' "$stderr_text" >&2
   if [ "$rc" -eq 124 ]; then
     claude_refresh_error="timed out during $phase (${seconds}s)"
+    if [ "$phase" = 'refresh + start-windows + heal' ]; then
+      limit_hit llm-limits.claude-sw-timeout "$seconds" s kill "claude $phase: this pass's readings, windows started and heals" \
+        'llm-limits.sh:claude_sw_timeout=${'
+    else
+      limit_hit llm-limits.claude-refresh-timeout "$seconds" s kill "claude $phase: this pass's readings" \
+        'llm-limits.sh:claude_refresh_timeout=${'
+    fi
   fi
   return "$rc"
 }
@@ -562,7 +570,10 @@ grok_touch_expired() { # <account>...
       continue
     fi
     printf 'llm-limits.sh: Grok account %s: token touch\n' "$account" >&2
-    run_bounded "$grok_touch_timeout" "$grokb_cmd" "$account" exec models || true
+    run_bounded "$grok_touch_timeout" "$grokb_cmd" "$account" exec models || case $? in
+      124|143) limit_hit llm-limits.grok-touch-timeout "$grok_touch_timeout" s kill \
+        "the token touch of grok/$account: its expired token stays unrotated until the next pass" 'llm-limits.sh:grok_touch_timeout=${' ;;
+    esac
   done
 }
 
@@ -819,6 +830,8 @@ refresh_gemini_quota() {
       /usr/bin/lockf -k -t "$gemini_auth_lock_wait" "$gemini_accounts_cache_dir/.auth-probe.lock" \
         env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" AGY_QUOTA_TIMEOUT="$usage_read_timeout" \
         "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
+      [ "$rc" -ne 75 ] || limit_hit llm-limits.gemini-auth-lock "$gemini_auth_lock_wait" s skip \
+        "the confirming auth probe of gemini/$account: its login verdict stays unconfirmed this pass" 'llm-limits.sh:gemini_auth_lock_wait=${'
     else
       env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" AGY_QUOTA_TIMEOUT="$usage_read_timeout" \
         "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
@@ -930,7 +943,11 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused ge
       elif [ "$gemini_5h_reset" -le "$now_epoch" ]; then
         if [ -x "$agy_bin" ]; then
           (export HOME="$gemini_home" PATH="$script_dir/share/no-browser:$PATH"; cd "${AGY_WORKDIR:-$script_dir}" &&
-            run_bounded 120 "$agy_bin" --print 'Reply with exactly: ok')
+            run_bounded 120 "$agy_bin" --print 'Reply with exactly: ok' || case $? in
+              124|143) limit_hit llm-limits.agy-window-start 120 s kill \
+                "the 5h window start of gemini/$gemini_account: the window stays unstarted until the next pass" \
+                "llm-limits.sh:run_bounded 120 \"\$agy_bin\"" ;;
+            esac)
           new_gemini_refresh_result
           refresh_gemini_quota "$gemini_account" "$gemini_refresh_result_file" || true
         else
@@ -1474,7 +1491,10 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused co
           codex_args+=(-m "$LLM_LIMITS_CODEX_MODEL")
         fi
         codex_args+=('Reply with exactly: ok')
-        run_bounded 60 "$codex_cmd" "${codex_args[@]}"
+        run_bounded 60 "$codex_cmd" "${codex_args[@]}" || case $? in
+          124|143) limit_hit llm-limits.codex-window-start 60 s kill \
+            "the codex 5h window start: the window stays unstarted until the next pass" 'llm-limits.sh:run_bounded 60 "$codex_cmd"' ;;
+        esac
         refresh_codex_quota || true
         select_codex_event
       else
@@ -1855,7 +1875,9 @@ elevenlabs_sync=--sync
 elevenlabs=''
 [ -n "${ELEVENLABS_KEYS:-}" ] && [ ! -e "${ELEVENLABS_KEYS/#\~/$HOME}" ] ||
   elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" $elevenlabs_sync 2>/dev/null) ||
-  elevenlabs=''
+  { [ "$?" -ne 124 ] || limit_hit llm-limits.elevenlabs-timeout 30 s kill "the ElevenLabs balance read: its section is missing this pass" \
+      'llm-limits.sh:"$elevenlabs_timeout" 30'
+    elevenlabs=''; }
 
 if [ "$write_cache" -eq 1 ]; then
   if ! mkdir -p "$(dirname "$cache")"; then

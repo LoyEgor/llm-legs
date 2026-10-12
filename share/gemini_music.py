@@ -178,6 +178,9 @@ def open_music(page, account: str) -> None:
             return
         except Exception as error:  # noqa: BLE001
             if attempt == 2:
+                gw.limit_hit.hit("gemini-music.pick-attempts", 2, "count", "retry-exhausted",
+                                 f"a Gemini music job on {account}: Create music never stayed selected",
+                                 "share/gemini_music.py:for attempt in (1, 2)")
                 raise drift("Create music did not stay selected (no Length chip, picked twice)") from error
 
 
@@ -341,6 +344,8 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
         gw.close_promos(page, account)
         if time.time() - started > plan["timeout_s"]:
             gw.ledger({"kind": "music", "event": "timeout", "account": account, "url": page.url})
+            gw.limit_hit.hit("gemini-music.track-timeout", plan["timeout_s"], "s", "kill", f"a Gemini music take on {account}: no track",
+                             'share/gemini_music.py:plan["timeout_s"]')
             sent = "/app/" in page.url
             raise gw.Failure(1, f"no track after {plan['timeout_s']}s on {account} "
                                 f"({page.url if sent else 'the prompt was never sent: no chat opened'})")
@@ -368,6 +373,9 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
                 if attempt < 5:
                     page.wait_for_timeout(10000)
         if video_error:
+            gw.limit_hit.hit("gemini-music.video-attempts", 6, "count", "retry-exhausted",
+                             f"the cover-art mp4 of a Gemini music take on {account}: {video_error}"[:300],
+                             "share/gemini_music.py:for attempt in range(6)")
             video = None
             gw.warn(account, f"the cover-art mp4 did not download: {video_error}", route="gemini-app")
     gw.ledger({"kind": "music", "event": "saved", "account": account, "chat": reply["chat"],

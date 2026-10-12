@@ -24,6 +24,9 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import limit_hit  # noqa: E402
+
 GLOBAL_LIMIT = 0.60
 ASPECT_TOLERANCE = 0.01
 FLOOR = 6.0
@@ -205,6 +208,10 @@ def composite(base: str, edited: str, out: str, mask_source, mask_out: str | Non
     if refusal:
         deliver(edited, out)
         share = (difference(small_base, small_edited)[1] > FLOOR).mean() if hard is None else hard.mean()
+        if refusal == "global":
+            limit_hit.hit("image-composite.global", GLOBAL_LIMIT * 100, "pct", "fallback",
+                          f"the region composite of {os.path.basename(out)}: the whole edited image was delivered",
+                          "share/image_composite.py:GLOBAL_LIMIT = ", observed=float(share) * 100)
         return f"composite=refused reason={refusal} changed={float(share) * 100:.1f}% kind={kind}"
     alpha = np.clip(resized(feather(hard), base_image.size[::-1]), 0, 1)
     if mask_out:

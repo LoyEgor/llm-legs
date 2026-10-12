@@ -11,6 +11,8 @@ import signal
 import subprocess
 import threading
 
+import limit_hit
+
 COMMANDS = {"ps": "/bin/ps", "vm_stat": "/usr/bin/vm_stat", "sysctl": "/usr/sbin/sysctl", "ioreg": "/usr/sbin/ioreg",
             "df": "/bin/df", "last": "/usr/bin/last", "du": "/usr/bin/du", "diskutil": "/usr/sbin/diskutil",
             "launchctl": "/bin/launchctl", "log": "/usr/bin/log"}
@@ -32,6 +34,8 @@ def spawn(name, args, timeout=10):
     except subprocess.TimeoutExpired:
         process.kill()
         process.communicate()
+        limit_hit.hit("machine-probe.timeout", timeout, "s", "kill", "the system doctor's %s probe: its value is missing" % name,
+                      "share/machine_probe.py:def spawn(name, args, timeout=10)")
         return process.pid, ""
     return process.pid, out or ""
 

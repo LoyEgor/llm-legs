@@ -60,7 +60,8 @@ registry = json.loads(text)
 assert list(registry) == sorted(registry), "limits.json is not sorted by name"
 units = {"s", "bytes", "rows", "count", "chars", "pct"}
 calls = {}
-out = subprocess.run(["grep", "-rnE", r'(limit_hit|tag_limit_hit) [a-z][a-z0-9.-]+ |limit_hit\.hit\("[a-z][a-z0-9.-]+"', "bin", "share"],
+out = subprocess.run(["grep", "-rnE", r'(limit_hit|tag_limit_hit) [a-z][a-z0-9.-]+ |limit_hit\.hit\("[a-z][a-z0-9.-]+"', "bin", "share", "hammerspoon",
+                      *[f for f in os.listdir(root) if f.endswith((".sh", ".py"))]],
                      cwd=root, capture_output=True, text=True).stdout
 for found in out.splitlines():
     path, _, text = found.split(":", 2)

@@ -14,7 +14,7 @@ _gate_journal_str() {
 }
 
 gate_journal() { # gate decision session file [delta] [detail]
-  local dir journal delta=${5:-} real=''
+  local dir journal delta=${5:-} real='' rows oldest
   [ -n "${HOME:-}" ] || return 0
   dir=${INSTRUCTION_WATCH_STATE:-$HOME/.cache/claude-instruction-watch}
   journal=$dir/gates.jsonl
@@ -26,8 +26,13 @@ gate_journal() { # gate decision session file [delta] [detail]
     "$(_gate_journal_str "${4:-}")" "$(_gate_journal_str "$real")" "$delta" \
     "$(_gate_journal_str "${6:-}")" >>"$journal" 2>/dev/null || return 0
   [ $((RANDOM % 64)) -eq 0 ] || return 0
-  if [ "$(wc -l <"$journal" 2>/dev/null)" -gt 4000 ] 2>/dev/null; then
-    tail -n 2000 "$journal" >"$journal.$$" 2>/dev/null && mv "$journal.$$" "$journal" 2>/dev/null
+  rows=$(wc -l <"$journal" 2>/dev/null) || rows=0
+  if [ "${rows// /}" -gt 4000 ] 2>/dev/null; then
+    oldest=$(head -c 24 "$journal" 2>/dev/null) && oldest=${oldest#*\"at\":} && oldest=${oldest%%,*}
+    tail -n 2000 "$journal" >"$journal.$$" 2>/dev/null && mv "$journal.$$" "$journal" 2>/dev/null &&
+      { . "${BASH_SOURCE[0]%/*}/limit-hit.sh" 2>/dev/null &&
+        limit_hit gate-journal.trim 4000 rows trim "$((${rows// /} - 2000)) gate decisions, the oldest from ${oldest:-?}" \
+          'share/gate-journal.sh:-gt 4000' "${rows// /}"; }
     rm -f "$journal.$$" 2>/dev/null
   fi
   return 0

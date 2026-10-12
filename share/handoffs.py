@@ -24,6 +24,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import limit_hit  # noqa: E402
 
 STALE_S = 60 * 3600
 HEAD_LINES = 20
@@ -170,6 +171,11 @@ def recent_chats():
     try:
         out = subprocess.run(["chat-find", "--recent", "--json"], capture_output=True, text=True, timeout=120).stdout
         return json.loads(out or "[]")
+    except subprocess.TimeoutExpired:
+        limit_hit.hit("handoffs.chat-find", 120, "s", "fallback",
+                      "the owner-chat lookup: every handoff batch this carry goes to plain night jobs instead of its owner chat",
+                      'share/handoffs.py:"chat-find", "--recent"')
+        return []
     except (OSError, ValueError, subprocess.SubprocessError):
         return []
 

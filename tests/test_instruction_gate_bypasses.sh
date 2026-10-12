@@ -26,6 +26,7 @@ printf 'more notes\n' >> "$GL/notes.txt"
 git -C "$GL" -c user.name=t -c user.email=t@t stash -q
 printf -- '--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -1 +1,2 @@\n rules\n+more\n' > "$WORK/claude.patch"
 printf -- '--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n notes\n+more\n' > "$WORK/notes.patch"
+{ cat "$WORK/notes.patch"; head -c 20000000 /dev/zero | tr '\0' ' '; printf '\n'; cat "$WORK/claude.patch"; } > "$WORK/big.patch"
 while read -r want c; do
   [ -n "$c" ] || continue
   c=$(printf '%b' "$c")
@@ -71,6 +72,7 @@ deny git -C ../gitland stash pop stash@{1}
 deny cd ../gitland && git stash apply stash@{1}
 deny git -C ../gitland apply ../claude.patch
 deny git apply ../claude.patch
+deny git apply ../big.patch
 deny cat ../claude.patch | git apply --index
 deny git apply <<'X'\n--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -1 +1,2 @@\n rules\n+more\nX
 deny git apply -p0 <<'X'\n--- CLAUDE.md.orig\t2026-09-23 03:00:00\n+++ CLAUDE.md\t2026-09-23 03:01:00\n@@ -1 +1,2 @@\n rules\n+more\nX

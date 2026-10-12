@@ -6,6 +6,7 @@ import os
 import re
 
 import chat_names
+import limit_hit
 
 REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 USER_MAX, SAID_MAX, TOOL_MAX, ERROR_MAX, HOOK_MAX = 1500, 500, 160, 300, 200
@@ -13,9 +14,17 @@ GAP_S = 300
 LONG_TURN_MS = 600000
 
 
+clipped = {"texts": 0, "chars": 0, "errors": 0}
+
+
 def clip(text, limit):
     text = " ".join(str(text).split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    if len(text) <= limit:
+        return text
+    clipped["texts"] += 1
+    clipped["chars"] += len(text) - limit + 1
+    clipped["errors"] += limit == ERROR_MAX
+    return text[: limit - 1] + "…"
 
 
 def clock(stamp):
@@ -98,6 +107,7 @@ def entry_lines(row, repeats):
 def skeleton(path, since=None, launchers=None, store=None):
     """(header, lines) for one transcript; entries before `since` (epoch seconds) are skipped."""
     lines, repeats, last, first, meta = [], {}, None, None, {}
+    clipped.update(texts=0, chars=0, errors=0)
     titles = {"custom-title": None, "ai-title": None}
     with open(path, encoding="utf-8", errors="replace") as handle:
         for raw in handle:
@@ -133,4 +143,9 @@ def skeleton(path, since=None, launchers=None, store=None):
     name = chat_names.chat_label(session, titles["custom-title"] or titles["ai-title"], headless, launchers, store)
     header = "### %s · %s · %s" % (name, "worker" if headless else meta.get("entrypoint") or "?",
                                   chat_names.project_label(meta.get("cwd")))
+    if clipped["texts"]:
+        limit_hit.hit("log-skeleton.clip", ERROR_MAX, "chars", "trim",
+                      "%d texts of %s lost %d chars to the reader, %d of them error texts cut at %d"
+                      % (clipped["texts"], name, clipped["chars"], clipped["errors"], ERROR_MAX),
+                      "share/log_skeleton.py:USER_MAX, SAID_MAX", observed=clipped["chars"], session=session)
     return header, lines + tail

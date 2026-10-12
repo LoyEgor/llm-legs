@@ -6,7 +6,9 @@ import os
 import subprocess
 from pathlib import Path
 
-SHARE = Path(__file__).resolve().parent
+import limit_hit
+
+SHARE =Path(__file__).resolve().parent
 READ = '. "$0/account-roster.sh" && account_roster "$1"'
 _cache: dict[tuple, list[str]] = {}
 # Bound at import: a caller's test that patches subprocess.Popen mocks the CLI it launches, never this read.
@@ -27,6 +29,8 @@ def roster(vendor: str, fresh: bool = False) -> list[str]:
                     out, err = process.communicate(timeout=30)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    limit_hit.hit("account-roster.timeout", 30, "s", "kill", "the %s account roster: its caller fails unreadable" % vendor,
+                                  "share/account_roster.py:communicate(timeout=30)")
                     raise
         except (OSError, subprocess.SubprocessError) as exc:
             raise Unreadable(f"cannot read the {vendor} account roster: {exc}") from exc

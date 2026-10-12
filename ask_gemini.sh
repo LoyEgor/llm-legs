@@ -143,6 +143,10 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
   : > "$LOGF"  # agy appends — truncate so we inspect only THIS model's log
   rc=0
   out="$("${GEMINI_CMD[@]}" --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --log-file "$LOGF" </dev/null 2>"$ERRF")" || rc=$?
+  if grep -q 'print timeout after' "$ERRF" 2>/dev/null && . "$(dirname "${BASH_SOURCE[0]}")/share/limit-hit.sh"; then
+    limit_hit ask-gemini.print-timeout 300 s kill "an ask_gemini answer from $MODEL, cut at --print-timeout $AGY_PRINT_TIMEOUT" \
+      'ask_gemini.sh:AGY_PRINT_TIMEOUT="${'
+  fi
   answered=0
   [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] || answered=1
   # agy >= 1.2.10 exits nonzero when a streamed answer ends on a model error: the text is cut short.

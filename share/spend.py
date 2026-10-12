@@ -7,6 +7,7 @@ import subprocess
 import time
 
 from fix_commit import main_checkout
+import limit_hit
 
 LEAVES = {"hook": ("Hooks", "attachment: hook context"),
           "startup:CLAUDE.md + memory index": ("prefix: CLAUDE.md + memory", "attachment: CLAUDE.md + memory"),
@@ -294,6 +295,9 @@ def backfill(history, closed, through, now, local_day, home):
             try:
                 history[day] = day_value(day, cmd)
                 closed.append(day)
+            except subprocess.TimeoutExpired:
+                limit_hit.hit("spend.tokenmap", TOKENMAP_S, "s", "defer",
+                              "the closed-day spend value of %s: retried next run" % day, "share/spend.py:TOKENMAP_S = ")
             except (OSError, subprocess.SubprocessError, ValueError):
                 pass
             return

@@ -504,6 +504,9 @@ case $mode in
       if [ "$keep" = 1 ] && [ -n "$now" ] && [ -n "$size" ] && [ ! -e "$dst" ] &&
          [ "$size" -le "$SNAP_MAX_BYTES" ] && mkdir -p "$SNAP_DIR" && cp "$real" "$dst.$$" 2>/dev/null; then
         if [ "$(hash_of "$dst.$$" "$vis")" = "$now" ]; then mv "$dst.$$" "$dst"; else rm -f "$dst.$$"; fi
+      elif [ "$keep" = 1 ] && [ -n "$size" ] && [ "$size" -gt "$SNAP_MAX_BYTES" ] && . "$root/share/limit-hit.sh" 2>/dev/null; then
+        limit_hit instruction-watch.snapshot-size "$SNAP_MAX_BYTES" bytes skip "the restore point of $vis: a change to it cannot be put back" \
+          'hammerspoon/instruction-watch.lua:SNAP_MAX_BYTES=' "$size"
       fi
       printf '%s\n' "$line"
     done ;;
@@ -526,6 +529,37 @@ local function shellQuote(value)
     return "'" .. (tostring(value):gsub("'", "'\\''")) .. "'"
 end
 
+-- share/limit_hit.py's line, written here so a scan that never hits spawns nothing.
+local limit_hit = {}
+local function jsonString(value)
+    return '"' .. (tostring(value):gsub('[%c"\\]', function(c) return string.format("\\u%04x", c:byte()) end)) .. '"'
+end
+local function limitWhere(where)
+    local file, anchor = where:match("^(.*):([^:]*)$")
+    if not (ROOT and file and anchor) or anchor == "" or anchor:match("^%d+$") then return where end
+    local handle = io.open(ROOT .. "/" .. file, "r")
+    if not handle then return where end
+    local number = 0
+    for text in handle:lines() do
+        number = number + 1
+        if text:find(anchor, 1, true) then handle:close(); return file .. ":" .. number end
+    end
+    handle:close()
+    return where
+end
+function limit_hit.hit(name, value, unit, action, lost, where, observed)
+    pcall(function()
+        local path = os.getenv("LIMIT_HITS_LOG") or (homeDir() .. "/.cache/limits/hits.jsonl")
+        local line = string.format('{"ts":%.3f,"limit":%s,"value":%s,"unit":%s,"observed":%s,"usual":null,"action":%s,'
+            .. '"lost":%s,"where":%s,"run":null,"session":null}\n', os.time(), jsonString("llm-legs:" .. name),
+            tostring(value), jsonString(unit), observed and tostring(observed) or "null", jsonString(action),
+            jsonString(lost:sub(1, 600)), jsonString(limitWhere(where)))
+        os.execute("mkdir -p " .. shellQuote(path:match("^(.*)/") or "."))
+        local handle = io.open(path, "a")
+        if handle then handle:write(line); handle:close() end
+    end)
+end
+
 -- This read blocks Hammerspoon's main thread, so the scan's whole process group dies past SCAN_LIMIT_S.
 -- LC_ALL=C: with no locale in a launchd app's environment, bash's setlocale asks CoreFoundation, which
 -- deadlocks in a forked pipeline subshell (2026-10-01: the menubar froze 35 minutes).
@@ -545,6 +579,10 @@ local function runScan(mode, args)
     if not handle then return nil, "cannot start bash" end
     local out = handle:read("*a")
     local ok, _, code = handle:close()
+    if code == 124 then
+        limit_hit.hit("instruction-watch.scan-timeout", SCAN_LIMIT_S, "s", "kill",
+            "the instruction watcher's " .. mode .. " scan: this tick's view of the watched files", "hammerspoon/instruction-watch.lua:local SCAN_LIMIT_S")
+    end
     if not ok then return nil, "scan " .. mode .. " exited " .. tostring(code) end
     return out
 end
