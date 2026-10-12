@@ -22,7 +22,8 @@ import log_skeleton  # noqa: E402
 from spend import read_jsonl  # noqa: E402
 
 READ_MODEL, MERGE_MODEL, EFFORT = "haiku", "sonnet", "high"
-CHUNK_CHARS = 200000
+# Haiku 5.5 bills a prompt over 100k tokens at 5x: transcripts run ~1.7 bytes a token, Claude Code adds ~11k.
+CHUNK_BYTES = 120000
 PARALLEL = 6
 MAX_WALL_S = 2400
 LOOKBACK_S, LOOKBACK_MAX_S = 86400, 36 * 3600
@@ -99,19 +100,19 @@ def chunks(found):
     for header, lines in found:
         parts, part, part_size = [], [], 0
         for line in lines:
-            if part and part_size + len(line) + 1 > CHUNK_CHARS:
+            if part and part_size + len(line.encode()) + 1 > CHUNK_BYTES:
                 parts.append(part)
                 part, part_size = [], 0
             part.append(line)
-            part_size += len(line) + 1
+            part_size += len(line.encode()) + 1
         parts.append(part)
         for number, body in enumerate(parts, 1):
             text = "\n".join([header + (" (part %d of %d)" % (number, len(parts)) if len(parts) > 1 else "")] + body)
-            if current and size + len(text) + 2 > CHUNK_CHARS:
+            if current and size + len(text.encode()) + 2 > CHUNK_BYTES:
                 packed.append("\n\n".join(current))
                 current, size = [], 0
             current.append(text)
-            size += len(text) + 2
+            size += len(text.encode()) + 2
     if current:
         packed.append("\n\n".join(current))
     return packed

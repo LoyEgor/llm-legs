@@ -92,6 +92,16 @@ assert grep -q 'H: Stop hook_blocking_error write the reading line$' <<<"$skelet
 assert grep -q 'H: PreToolUse:Bash hook_blocking_error files left owned by nobody$' <<<"$skeleton"
 assert test "$(grep -c 'SECRET-OUTPUT\|huge context' <<<"$skeleton")" -eq 0
 
+# Chunks are capped in bytes: Cyrillic text that fits by characters still splits.
+assert python3 - "$ROOT/bin/log-audit" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("la", sys.argv[1])
+la = importlib.util.module_from_spec(importlib.util.spec_from_loader("la", loader))
+loader.exec_module(la)
+la.CHUNK_BYTES = 100
+sys.exit(0 if len(la.chunks([("# h", ["я" * 30, "я" * 30])])) == 2 else 1)
+PY
+
 # A full read: chunks run on Claude Haiku, the merge on Sonnet, with no relay token at all, and the
 # audit's own transcripts are never read back.
 out=$(DOCTORS_DIR="$WORK/doctors" "$ROOT/bin/log-audit" run --night N1)
