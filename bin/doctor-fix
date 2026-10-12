@@ -136,6 +136,7 @@ from report_frame import fit
 from fix_commit import FIX_KEYS, fix_record_faults, fix_root_faults, load_merged, main_checkout, sync_settled
 from spend import read_json
 from knobs import changed_lines, knob_site
+import limit_hit
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
@@ -166,7 +167,9 @@ def kind_share():
     try:
         out = subprocess.run(["bash", "-c", ". \"$1\" && worker_capacity", "-", os.path.join(ROOT, "share", "slots.sh")],
                              capture_output=True, text=True, timeout=20).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.helper", error, "the free worker slots: each night kind gets one",
+                          "bin/doctor-fix:worker_capacity\", \"-\"")
         out = ""
     return max(1, int(out) // len(NIGHT_KINDS)) if out.isdigit() else 1
 
@@ -504,7 +507,9 @@ def batch_speed(entries, speed):
 def git(folder, *args):
     try:
         out = subprocess.run(["git", "-C", folder] + list(args), capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "its lines in %s: read as none" % folder,
+                          "bin/doctor-fix:[\"git\", \"-C\", folder] + list(args), capture_output=True, text=True, timeout=20")
         return []
     return out.stdout.splitlines() if out.returncode == 0 else []
 

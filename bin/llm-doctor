@@ -1114,7 +1114,9 @@ def reboots(now):
     else:
         try:
             out = subprocess.run(["last", "reboot"], capture_output=True, text=True, timeout=5).stdout
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as error:
+            limit_hit.expired("probe.ps", error, "the reboot times: no worker death is charged to a reboot",
+                              'bin/llm-doctor:["last", "reboot"]')
             out = ""
         year = time.localtime(now).tm_year
         for line in out.splitlines():
@@ -1141,7 +1143,9 @@ def supervisor_gone(run_dir, pid):
     try:
         return subprocess.run(["bash", "-c", script, "bash", os.path.join(ROOT_DIR, "share", "run-liveness.sh"),
                                run_dir, str(pid)], capture_output=True, timeout=10).returncode == 1
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.helper", error, "the supervisor check of %s: read as still running" % run_dir,
+                          "bin/llm-doctor:run_dir, str(pid)], capture_output=True, timeout=10)")
         return False
 
 
@@ -2326,7 +2330,9 @@ def debt_health(now):
 def git_out(root, *args):
     try:
         done = subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "its answer in %s: read as no answer" % root,
+                          'bin/llm-doctor:["git", "-C", root] + list(args)')
         return None
     return done.stdout if done.returncode == 0 else None
 
@@ -2340,7 +2346,9 @@ def missing_commit(value):
     try:
         done = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "--quiet", commit + "^{commit}"],
                               capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "the check that %s is a commit of %s: passed unchecked" % (commit, repo),
+                          'bin/llm-doctor:"rev-parse", "--verify", "--quiet", commit')
         return None
     return "%s is no commit of %s" % (commit, repo) if done.returncode == 1 else None
 

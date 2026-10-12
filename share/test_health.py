@@ -22,6 +22,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import limit_hit  # noqa: E402
 import night_spend  # noqa: E402
 import suite_audit  # noqa: E402
 import time_budget  # noqa: E402
@@ -68,7 +69,9 @@ def cache_path():
 def git(top, *args, stdin=None):
     try:
         out = subprocess.run(["git", "-C", top] + list(args), capture_output=True, text=True, timeout=10, input=stdin)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "its answer in %s: read as no answer" % top,
+                          'share/test_health.py:["git", "-C", top] + list(args)')
         return None
     return out.stdout if out.returncode == 0 else None
 

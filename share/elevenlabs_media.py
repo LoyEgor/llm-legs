@@ -195,7 +195,9 @@ def probe(path: Path) -> tuple[str, str]:
             ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_name,sample_rate,channels,width,height",
              "-of", "json", str(path)], capture_output=True, text=True, timeout=30).stdout
         info = json.loads(out)
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.cli", error, "the format of %s: reads as unknown" % path.name,
+                          'share/elevenlabs_media.py:"-of", "json", str(path)]')
         return "", ""
     duration = info.get("format", {}).get("duration", "")
     parts = []

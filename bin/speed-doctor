@@ -936,7 +936,9 @@ def hook_changed_day(key):
     try:
         out = subprocess.run(["git", "-C", os.path.dirname(real), "log", "-1", "--first-parent", "--format=%ct", "HEAD",
                               "--", os.path.basename(real)], capture_output=True, text=True, timeout=5).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        H.limit_hit.expired("probe.git", error, "the last change day of hook %s: read as unknown" % word,
+                            'bin/speed-doctor:"--", os.path.basename(real)], capture_output=True')
         return None
     return H.local_day(int(out)) if out.isdigit() else None
 

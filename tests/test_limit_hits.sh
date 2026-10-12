@@ -51,6 +51,20 @@ import sys; sys.path.insert(0, '$ROOT/share'); import limit_hit
 limit_hit.hit('broken', 1, 's', 'kill', 'x', 'bin/claudeb:1'); print('alive')" >"$WORK/broken.out" 2>/dev/null
 assert_eq alive "$(cat "$WORK/broken.out")"
 
+# A probe's timeout journals a kill named by its command; any other failure of the probe journals nothing.
+LIMIT_HITS_LOG="$WORK/expired.jsonl" python3 -c "
+import subprocess, sys; sys.path.insert(0, '$ROOT/share'); import limit_hit
+try:
+    subprocess.run(['sleep', '5'], timeout=0.2)
+except subprocess.SubprocessError as error:
+    limit_hit.expired('probe.git', error, 'read as none', 'bin/claudeb:1')
+limit_hit.expired('probe.git', subprocess.TimeoutExpired(['git', '-C', '$WORK', 'log', '-1'], 0.2), 'read as none', 'bin/claudeb:1')
+limit_hit.expired('probe.git', subprocess.CalledProcessError(1, ['git']), 'read as none', 'bin/claudeb:1')
+limit_hit.expired('probe.git', OSError('gone'), 'read as none', 'bin/claudeb:1')"
+assert_eq "llm-legs:probe.git|0.2|s|kill|0.2|sleep 5: read as none llm-legs:probe.git|0.2|s|kill|0.2|git log -1: read as none" \
+  "$(jq -r '[.limit, .value, .unit, .action, .observed, .lost] | map(tostring) | join("|")' "$WORK/expired.jsonl" | paste -sd' ' -)" \
+  "expired: timeouts only, the command ahead of the loss, git's -C dropped"
+
 python3 - "$ROOT" <<'EOF' || fail "registry check"
 import json, os, re, subprocess, sys
 root = sys.argv[1]
@@ -60,14 +74,14 @@ registry = json.loads(text)
 assert list(registry) == sorted(registry), "limits.json is not sorted by name"
 units = {"s", "bytes", "rows", "count", "chars", "pct"}
 calls = {}
-out = subprocess.run(["grep", "-rnE", r'(limit_hit|tag_limit_hit) [a-z][a-z0-9.-]+ |limit_hit\.hit\("[a-z][a-z0-9.-]+"', "bin", "share", "hammerspoon",
+out = subprocess.run(["grep", "-rnE", r'(limit_hit|tag_limit_hit) [a-z][a-z0-9.-]+ |limit_hit\.(hit|expired)\("[a-z][a-z0-9.-]+"', "bin", "share", "hammerspoon",
                       *[f for f in os.listdir(root) if f.endswith((".sh", ".py"))]],
                      cwd=root, capture_output=True, text=True).stdout
 for found in out.splitlines():
     path, _, text = found.split(":", 2)
-    match = re.search(r'(?:limit_hit|tag_limit_hit) ([a-z][a-z0-9.-]+) (.*)|limit_hit\.hit\("([a-z][a-z0-9.-]+)",(.*)', text)
-    name, rest = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
-    unit = next((w for w in re.split(r'[\s",]+', rest) if w in units), None)
+    match = re.search(r'(?:limit_hit|tag_limit_hit) ([a-z][a-z0-9.-]+) (.*)|limit_hit\.(hit|expired)\("([a-z][a-z0-9.-]+)",(.*)', text)
+    name, rest = (match.group(1), match.group(2)) if match.group(1) else (match.group(4), match.group(5))
+    unit = "s" if match.group(3) == "expired" else next((w for w in re.split(r'[\s",]+', rest) if w in units), None)
     calls.setdefault(name, set()).add((path, unit))
 unregistered = sorted(set(calls) - set(registry))
 unused = sorted(set(registry) - set(calls))

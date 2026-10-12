@@ -14,6 +14,7 @@ resolve_script() {
 
 script_path=$(resolve_script)
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
+. "$repo_root/share/limit-hit.sh"
 state_dir="${VENDOR_CLI_UPDATE_STATE_DIR:-$HOME/.cache/vendor-cli-update}"
 state_file="$state_dir/state.json"
 log_file="$state_dir/update.log"
@@ -43,13 +44,19 @@ package_of() {
 }
 
 timeout_command() {
+  local rc=0 frame=0 lost='this step reads as failed'
   if command -v gtimeout >/dev/null 2>&1; then
-    command gtimeout "$@"
+    command gtimeout "$@" || rc=$?
   elif command -v timeout >/dev/null 2>&1; then
-    command timeout "$@"
+    command timeout "$@" || rc=$?
   else
-    perl -e 'alarm shift; exec @ARGV' "$@"
+    perl -e 'alarm shift; exec @ARGV' "$@" || rc=$?
   fi
+  case $rc in 124|142)
+    [ "${FUNCNAME[1]:-}" != version_of ] || frame=1 lost='its version reads as unknown'
+    limit_hit probe.cli "$1" s kill "${2##*/} ${3:-}: $lost" "bin/vendor-cli-update:${BASH_LINENO[frame]}" ;;
+  esac
+  return "$rc"
 }
 
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }

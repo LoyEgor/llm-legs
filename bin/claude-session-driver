@@ -78,7 +78,9 @@ def token_valid(account):
         read = subprocess.run(
             ["security", "find-generic-password", "-s", keychain_service(account), "-w"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.cli", error, "the token expiry of %s: read as not near expiry" % account,
+                          'bin/claude-session-driver:["security", "find-generic-password"')
         return False
     if read.returncode != 0:
         return False

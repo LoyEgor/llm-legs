@@ -5,6 +5,7 @@ python3 share/limit_hit.py NAME VALUE UNIT ACTION LOST WHERE [--observed N] [--u
 """
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -74,6 +75,17 @@ def hit(name, value, unit, action, lost, where, observed=None, usual=None, sessi
             sys.stderr.write("limit_hit: %s not journaled: %s\n" % (name, exc))
         except Exception:
             pass
+
+
+def expired(name, error, lost, where, session=None):
+    """hit() of a kill when ERROR is a subprocess.TimeoutExpired, its command ahead of LOST; any other error journals nothing."""
+    if not isinstance(error, subprocess.TimeoutExpired):
+        return
+    words = [str(word) for word in (error.cmd if isinstance(error.cmd, (list, tuple)) else str(error.cmd or "?").split())] or ["?"]
+    if len(words) > 2 and words[1] == "-C":
+        words = words[:1] + words[3:]
+    head = " ".join([os.path.basename(words[0])] + [word if len(word) <= 40 else word[:37] + "..." for word in words[1:3]])
+    hit(name, error.timeout, "s", "kill", "%s: %s" % (head, lost), where, observed=error.timeout, session=session)
 
 
 def main(argv):

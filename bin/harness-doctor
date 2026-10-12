@@ -632,7 +632,9 @@ def heredoc_masked(text):
         done = subprocess.run(["bash", "-c", '. "$1" && heredoc_mask "$2" "$3"', "_",
                                os.path.join(ROOT_DIR, "share", "heredoc-mask.sh"), *HEREDOC_SHELL_FED],
                               input=text, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.helper", error, "heredoc bodies stay unmasked in this command's judgement",
+                          "bin/harness-doctor:input=text, capture_output=True, text=True, timeout=10")
         return text
     return done.stdout if done.returncode == 0 else text
 
@@ -2133,7 +2135,9 @@ def ps_snapshot():
     try:
         text = subprocess.run(["/bin/ps", "-A", "-o", "pid=,ppid=,time=,lstart=,command="], capture_output=True,
                               text=True, timeout=5, env=dict(os.environ, LC_ALL="C")).stdout
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.ps", error, "this sample's process table: no process CPU or births this run",
+                          "bin/harness-doctor:text=True, timeout=5, env=dict(os.environ")
         return {}
     procs = {}
     for line in text.splitlines():
@@ -2439,7 +2443,9 @@ def du_bytes(path):
     try:
         out = subprocess.run(["/usr/bin/du", "-sk", path], capture_output=True, text=True, timeout=60).stdout
         return int(out.split()[0]) * 1024
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as error:
+        limit_hit.expired("probe.du", error, "the size of %s: reads as unknown" % path,
+                          'bin/harness-doctor:["/usr/bin/du", "-sk", path]')
         return None
 
 
@@ -2447,7 +2453,9 @@ def loose_objects(top):
     try:
         out = subprocess.run(["git", "-C", top, "count-objects", "-v"], capture_output=True, text=True,
                              timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "%s's loose objects: read as unknown" % top,
+                          'bin/harness-doctor:"count-objects", "-v"]')
         return None, None
     values = dict(line.split(": ", 1) for line in out.splitlines() if ": " in line)
     try:
@@ -4034,7 +4042,9 @@ def git_out(top, *args, stdin=None):
     try:
         out = subprocess.run(["git", "-C", top] + list(args), input=stdin, capture_output=True, text=True,
                              timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "its answer in %s: read as no answer" % top,
+                          'bin/harness-doctor:["git", "-C", top] + list(args), input=stdin')
         return None
     return out.stdout if out.returncode == 0 else None
 
@@ -4133,7 +4143,9 @@ def write_classes(paths):
     try:
         out = subprocess.run(["bash", "-c", script, "bash", os.path.join(ROOT_DIR, "share", "instruction-files.sh")]
                              + paths, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.helper", error, "the write class of %d paths: none classed this run" % len(paths),
+                          "bin/harness-doctor:+ paths, capture_output=True, text=True, timeout=10")
         return {}
     found = out.stdout.split("\0")
     return dict(zip(paths, found)) if out.returncode == 0 and len(found) == len(paths) + 1 else {}
@@ -4425,7 +4437,9 @@ def redeploy(periodic=False):
         branch, head = (subprocess.run(["git", "-C", source] + args, capture_output=True, text=True,
                                        timeout=30).stdout.strip()
                         for args in (["symbolic-ref", "-q", "--short", "HEAD"], ["rev-parse", "-q", "HEAD"]))
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "the source branch of %d drifted deployments: none redeployed" % len(groups),
+                          'bin/harness-doctor:for args in (["symbolic-ref", "-q", "--short", "HEAD"]')
         branch = head = ""
     if branch != "main":
         if not periodic:
@@ -4440,6 +4454,8 @@ def redeploy(periodic=False):
             dirty = subprocess.run(["git", "-C", source, "status", "--porcelain", "--"] + sources,
                                    capture_output=True, text=True, timeout=30).stdout.rstrip()
         except (OSError, subprocess.SubprocessError) as exc:
+            limit_hit.expired("probe.git", exc, "the source's status: read as dirty, so nothing redeployed",
+                              'bin/harness-doctor:["git", "-C", source, "status", "--porcelain"')
             dirty = "?? " + str(exc)
         name = fix or "cp " + " ".join(src for _, src in drifted)
         if dirty:
@@ -4463,6 +4479,12 @@ def redeploy(periodic=False):
                     if target.endswith(".plist"):
                         error = error or reload_agent(target)
         except (OSError, subprocess.SubprocessError) as exc:
+            if os.path.basename(str((getattr(exc, "cmd", None) or [""])[0])) == "launchctl":
+                limit_hit.expired("probe.launchctl", exc, "redeploy %s: its job may stay unloaded" % name,
+                                  'bin/harness-doctor:"bootout", domain, plist], capture_output=True, timeout=30')
+            else:
+                limit_hit.expired("probe.cli", exc, "redeploy %s: its fix did not finish" % name,
+                                  "bin/harness-doctor:text=True, timeout=300)")
             error = str(exc)
         failed += bool(error)
         print("redeploy %s %s: %s" % ("failed" if error else "ran", name,
@@ -4535,7 +4557,9 @@ def browser_canary(runs, write):
 def browser_processes():
     try:
         return subprocess.run(["/bin/ps", "-Ao", "command="], capture_output=True, text=True, timeout=10).stdout.splitlines()
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.ps", error, "the browser process list: read as no browsers",
+                          'bin/harness-doctor:["/bin/ps", "-Ao", "command="]')
         return []
 
 
@@ -5832,7 +5856,9 @@ def process_starts(pids):
             return None
         out = done.stdout
         return {int(pid): asked - etime_s(etime) for pid, etime in (row.split() for row in out.splitlines() if row.strip())}
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        limit_hit.expired("probe.ps", error, "the start times of %d pids: none judged alive or recycled" % len(pids),
+                          'bin/harness-doctor:["/bin/ps", "-o", "pid=,etime=", "-p"')
         return None
 
 

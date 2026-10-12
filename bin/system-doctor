@@ -199,7 +199,9 @@ def repo_files(top):
     try:
         out = subprocess.run(["git", "-C", top, "ls-files", "--cached", "--others", "--exclude-standard"],
                              capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "the file list of %s: read as empty" % top,
+                          'bin/system-doctor:"ls-files", "--cached", "--others", "--exclude-standard"]')
         return ()
     return tuple(out.stdout.splitlines()) if out.returncode == 0 else ()
 
@@ -1492,6 +1494,8 @@ def run_log_sweep():
         out = subprocess.run([log_sweep_command(), "--json"], capture_output=True, text=True,
                              timeout=LOGS["sweep_timeout_s"], stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.cli", error, "this run's log sweep: its stores stay unswept until the next",
+                          'bin/system-doctor:timeout=LOGS["sweep_timeout_s"]')
         return {"error": clip("%s: %s" % (type(error).__name__, error), 200)}
     lines = out.stdout.strip().splitlines()
     try:

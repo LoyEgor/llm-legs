@@ -102,7 +102,10 @@ run_bounded() { # seconds command...
   shift
   bin="${STATUSLINE_TIMEOUT_BIN-$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)}"
   if [ -n "$bin" ]; then
-    "$bin" "$secs" "$@"
+    "$bin" "$secs" "$@" && return 0
+    [ "$?" -ne 124 ] || { . "$statusline_dir/../share/limit-hit.sh" &&
+      limit_hit probe.cli "$secs" s kill "${1##*/} ${2:-}: this refresh's answer, read as none" \
+        "bin/statusline.sh:${BASH_LINENO[0]}"; }
     return 0
   fi
   "$@" &

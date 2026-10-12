@@ -322,7 +322,9 @@ def sha(text):
 def git(folder, *args, timeout=60, raw=False):
     try:
         out = subprocess.run(["git", "-C", folder] + list(args), capture_output=True, timeout=timeout)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "its answer in %s: read as no answer" % folder,
+                          'bin/code-doctor:["git", "-C", folder] + list(args), capture_output=True, timeout=timeout)')
         return None
     if out.returncode != 0:
         return None
@@ -3200,7 +3202,9 @@ def review_claims(top):
     try:
         done = subprocess.run([binary, "list", "--repo", top, "--json"], capture_output=True, text=True, timeout=30)
         return (json.loads(done.stdout) or {}).get("claims") or {} if done.returncode == 0 else {}
-    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError) as error:
+        limit_hit.expired("probe.cli", error, "the claims of %s: read as none, so claimed files count as free" % top,
+                          'bin/code-doctor:[binary, "list", "--repo", top, "--json"]')
         return {}
 
 

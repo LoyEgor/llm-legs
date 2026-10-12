@@ -610,9 +610,15 @@ cache_epoch() { jq -r '(.fetched_at | strings | sub("\\.[0-9]+"; "") | fromdatei
 
 cache_field() { jq -r --arg key "$2" '.[$key] // "" | tostring' "$1" 2>/dev/null; }
 timeout_command() {
-  if command -v gtimeout >/dev/null 2>&1; then command gtimeout "$@"
-  elif command -v timeout >/dev/null 2>&1; then command timeout "$@"
-  else perl -e 'alarm shift; exec @ARGV' "$@"; fi
+  local rc=0
+  if command -v gtimeout >/dev/null 2>&1; then command gtimeout "$@" || rc=$?
+  elif command -v timeout >/dev/null 2>&1; then command timeout "$@" || rc=$?
+  else perl -e 'alarm shift; exec @ARGV' "$@" || rc=$?; fi
+  case $rc in 124|142)
+    . "$codexb_root/share/limit-hit.sh"
+    limit_hit probe.cli "$1" s kill "${2##*/} ${3:-}: the models cache stays at the old client's list" "bin/codexb:${BASH_LINENO[0]}" ;;
+  esac
+  return "$rc"
 }
 
 # A cache holds what the server listed to the client that wrote it, and the server hides every model

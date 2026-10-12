@@ -17,6 +17,7 @@ import time
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import limit_hit  # noqa: E402
 import log_stores  # noqa: E402
 
 RECORD_MAX_BYTES = 256 * 1024
@@ -34,7 +35,9 @@ def open_paths():
     try:
         out = subprocess.run([command, "-n", "-P", "-w", "-u", str(os.getuid()), "-F", "n"], capture_output=True,
                              text=True, timeout=120).stdout
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.ps", error, "the open-file list: no file is known held open this sweep",
+                          'bin/log-sweep:"-w", "-u", str(os.getuid())')
         return None
     held = set()
     for path in {os.path.realpath(line[1:]) for line in out.splitlines() if line.startswith("n/")}:

@@ -603,9 +603,12 @@ def quiet_chrome(binary: str, account: str) -> str:
 def parent_pid(pid: int | None) -> int | None:
     if not pid:
         return None
-    with contextlib.suppress(OSError, subprocess.SubprocessError, ValueError):
+    try:
         return int(subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True,
                                   timeout=5).stdout)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        limit_hit.expired("probe.ps", error, "the parent of pid %s: read as none" % pid,
+                          'share/gemini_web.py:["ps", "-o", "ppid=", "-p", str(pid)]')
     return None
 
 
@@ -652,7 +655,7 @@ def sweep_code_sign_clones() -> None:
     with contextlib.suppress(OSError):
         if time.time() - stamp.stat().st_mtime < CLONE_SWEEP_MIN_AGE_S:
             return
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
+    try:
         CLONE_ROOT.mkdir(parents=True, exist_ok=True)
         stamp.touch()
         temp = subprocess.run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True,
@@ -677,6 +680,9 @@ def sweep_code_sign_clones() -> None:
         if stale:
             subprocess.Popen(["rm", "-rf", "--", *stale], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.ps", error, "this sweep: stale code-sign clones stay on disk until the next one",
+                          'share/gemini_web.py:["getconf", "DARWIN_USER_TEMP_DIR"]')
 
 
 @contextlib.contextmanager
@@ -1298,7 +1304,9 @@ def pool() -> tuple[set[str] | None, set[str]]:
                                  text=True, timeout=30, check=True).stdout
             excluded, end = json.JSONDecoder().raw_decode(out.lstrip())
             _pool = (set(excluded) if isinstance(excluded, list) else None, set(out.lstrip()[end:].split()))
-        except (OSError, subprocess.SubprocessError, ValueError):
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            limit_hit.expired("probe.helper", error, "the %s pool: read as no exclusions and no members" % POOL_VENDOR,
+                              "share/gemini_web.py:POOL_READ, str(REPO), POOL_VENDOR]")
             _pool = (None, set())
     return _pool
 

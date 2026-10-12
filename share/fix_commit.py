@@ -7,6 +7,8 @@ import json
 import os
 import subprocess
 
+import limit_hit
+
 CLOCK_SLACK_S = 60
 FIX_KEYS = frozenset({"at", "by", "files", "in", "regressed_at"})
 SETTLED_FILE = "ledger-settled.json"
@@ -103,7 +105,9 @@ def main_checkout(root):
     try:
         common = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
                                 capture_output=True, text=True, timeout=10).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "the main checkout of %s: guessed from its path" % root,
+                          'share/fix_commit.py:"--path-format=absolute", "--git-common-dir"]')
         common = ""
     return os.path.dirname(common) if common else root.split("/.claude/worktrees/")[0]
 
@@ -163,7 +167,9 @@ def file_commits(files, repos):
                                    text=True, timeout=10)
             last = subprocess.run(["git", "-C", top, "log", "-1", "--format=%h %ct", "--", path],
                                   capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as error:
+            limit_hit.expired("probe.git", error, "the fix commit of %s: the fix stays unsettled this run" % path,
+                              'share/fix_commit.py:["git", "-C", top, "status", "--porcelain", "--", path]')
             return None
         words = last.stdout.split()
         if dirty.returncode or last.returncode or len(words) not in (0, 2):
@@ -210,7 +216,9 @@ def _landing(ref, repos):
             return NOT_LANDED if ancestor == 1 else None
         line = git("log", "--first-parent", "--format=%ct %H %P", words[1] + "..HEAD", "--")
         below = git("rev-list", "--ancestry-path", words[1] + "..HEAD", "--")
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "the landing time of %s: read as unknown" % ref,
+                          'share/fix_commit.py:return subprocess.run(["git", "-C", top] + list(args)')
         return None
     if line.returncode or below.returncode:
         return None

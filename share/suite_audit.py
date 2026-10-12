@@ -15,6 +15,7 @@ import subprocess
 import time
 
 import handoffs
+import limit_hit
 import night_spend
 import spend
 
@@ -84,7 +85,9 @@ def sources(path):
 def git(top, *args):
     try:
         out = subprocess.run(["git", "-C", top] + list(args), capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "its answer in %s: read as empty" % top,
+                          'share/suite_audit.py:["git", "-C", top] + list(args)')
         return ""
     return out.stdout.strip() if out.returncode == 0 else ""
 

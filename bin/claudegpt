@@ -19,6 +19,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))
 import chat_resume  # noqa: E402
 import gateway_auth  # noqa: E402
+import limit_hit  # noqa: E402
 
 
 FAMILIES = ("sol", "astra")
@@ -50,7 +51,9 @@ def codex_models():
         try:
             slug = subprocess.run([str(CODEXB), "models", "--family", family], capture_output=True,
                                   text=True, timeout=30).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as error:
+            limit_hit.expired("probe.cli", error, "the %s model: claudegpt stops as if codexb listed none" % family,
+                              'bin/claudegpt:[str(CODEXB), "models", "--family", family]')
             slug = ""
         if not slug:
             fail(f"`codexb models` lists no {family} model")

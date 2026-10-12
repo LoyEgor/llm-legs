@@ -195,7 +195,9 @@ def blobs(paths):
         return {}
     try:
         out = subprocess.run(["git", "hash-object", "--"] + real, capture_output=True, text=True, timeout=20, cwd="/")
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "the content hashes of %d files: read as unknown" % len(real),
+                          'share/spend.py:["git", "hash-object", "--"]')
         return None
     hashes = out.stdout.split() if out.returncode == 0 else []
     return dict(zip(real, hashes)) if len(hashes) == len(real) else None

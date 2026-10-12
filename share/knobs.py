@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 
+import limit_hit
 from spend import read_json
 
 KNOBS = (
@@ -27,7 +28,9 @@ def knob_site(path, text):
 def _git(tree, *args):
     try:
         out = subprocess.run(["git", "-C", tree] + list(args), capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "its lines in %s: read as none, so no knob change is named" % tree,
+                          'share/knobs.py:["git", "-C", tree] + list(args)')
         return []
     return out.stdout.splitlines() if out.returncode == 0 else []
 

@@ -35,13 +35,19 @@ doctor_fix="${VENDOR_FINGERPRINT_DOCTOR_FIX:-$repo_root/bin/doctor-fix}"
 while IFS= read -r nvm_bin; do PATH="$PATH:$nvm_bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
 
 timeout_command() {
+  local rc=0 frame=0 lost='its output: this check reads as failed'
   if command -v gtimeout >/dev/null 2>&1; then
-    command gtimeout "$@"
+    command gtimeout "$@" || rc=$?
   elif command -v timeout >/dev/null 2>&1; then
-    command timeout "$@"
+    command timeout "$@" || rc=$?
   else
-    perl -e 'alarm shift; exec @ARGV' "$@"
+    perl -e 'alarm shift; exec @ARGV' "$@" || rc=$?
   fi
+  case $rc in 124|142)
+    [ "${FUNCNAME[1]:-}" != version_of ] || frame=1 lost='its version reads as unknown'
+    limit_hit probe.cli "$1" s kill "${2##*/} ${3:-}: $lost" "bin/vendor-fingerprint:${BASH_LINENO[frame]}" ;;
+  esac
+  return "$rc"
 }
 
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }

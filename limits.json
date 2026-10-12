@@ -735,6 +735,54 @@
     "why": "A streaming call silent for 2 min has stalled.",
     "normal": "Rare."
   },
+  "probe.cli": {
+    "value": 30,
+    "unit": "s",
+    "where": "bin/vendor-fingerprint:99",
+    "set_by": "chat 845b0c49",
+    "why": "A probe of another program (a vendor CLI's version or listing, worker-pick, security, ffprobe, osascript, a doctor's fix or sweep; 10-900 s per site) that answers in seconds must not hold its caller, which falls back to unknown or failed.",
+    "normal": "Rare; repeated hits at one where mean that program hangs there (a vendor CLI waiting on login or network)."
+  },
+  "probe.du": {
+    "value": 60,
+    "unit": "s",
+    "where": "bin/harness-doctor:2444",
+    "set_by": "chat 3566f928",
+    "why": "A store's du walks its tree in seconds; past a minute the size reads as unknown rather than holding the doctor.",
+    "normal": "Rare, under heavy disk load; every run means the store grew past what du walks in a minute."
+  },
+  "probe.git": {
+    "value": 10,
+    "unit": "s",
+    "where": "bin/llm-doctor:2332",
+    "set_by": "night 100ca1bf",
+    "why": "A doctor's git read (log, status, rev-parse, ls-files, hash-object; 5-60 s per site) answers in well under a second; the bound keeps a locked or huge repo from holding the doctor, which reads no answer.",
+    "normal": "Rare; a cluster means the machine was saturated, repeated hits at one where mean that repository is slow or locked."
+  },
+  "probe.helper": {
+    "value": 10,
+    "unit": "s",
+    "where": "bin/harness-doctor:634",
+    "set_by": "night 84f84c71",
+    "why": "A Python doctor reads a bash helper of this repo (heredoc masks, write classes, slots, pools, store rows) through one bash -c that answers in milliseconds; 10-30 s means that shell wedged.",
+    "normal": "0 hits; any hit is a helper that hangs or a machine past saturation."
+  },
+  "probe.launchctl": {
+    "value": 30,
+    "unit": "s",
+    "where": "bin/harness-doctor:4417",
+    "set_by": "night 12d5b84a",
+    "why": "A redeploy's launchctl bootout or bootstrap returns in seconds; 30 s means launchd is stuck and the job may stay unloaded.",
+    "normal": "0 hits; a hit leaves a LaunchAgent possibly unloaded until the next redeploy."
+  },
+  "probe.ps": {
+    "value": 5,
+    "unit": "s",
+    "where": "bin/harness-doctor:2137",
+    "set_by": "chat e5bd8fd1",
+    "why": "A process-table read (ps, lsof, last, a clone sweep's listings; 5-120 s per site) answers in well under a second; past its bound the caller reads no processes.",
+    "normal": "Rare, under a process storm; repeated hits mean the machine was past saturation at those times."
+  },
   "run-suites.history-rows": {
     "value": 5000,
     "unit": "rows",

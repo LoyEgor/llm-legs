@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
 from chat_names import fold_session, project_label, resolve_session  # noqa: E402
 import chat_resume  # noqa: E402
+import limit_hit  # noqa: E402
 
 PROFILES = os.path.expanduser("~/.claude-profiles")
 STATE = os.path.join(PROFILES, ".claudeb", ".claudeb-state")
@@ -204,7 +205,9 @@ def ranking(timeout=10, model=None):
     command = [worker_pick(), "--list", "--role", "chat"] + (["--model", model] if model else [])
     try:
         done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
-    except Exception:
+    except Exception as error:
+        limit_hit.expired("probe.cli", error, "the account ranking: chats shows no order and no NEXT account",
+                          "bin/chats:done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)")
         return order, used, hidden, chosen
     if done.returncode != 0:
         return order, used, hidden, chosen
@@ -245,7 +248,9 @@ def learn_buckets(models):
         done = subprocess.run(["bash", "-c", script, "_", source] + models,
                               capture_output=True, text=True, timeout=10)
         answers = done.stdout.split() if done.returncode == 0 else []
-    except Exception:
+    except Exception as error:
+        limit_hit.expired("probe.helper", error, "the limit buckets of %d models: their rows show no bucket" % len(models),
+                          'bin/chats:script, "_", source] + models')
         answers = []
     if len(answers) == len(models):
         BUCKETS.update(zip(models, answers))

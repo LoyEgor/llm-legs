@@ -86,7 +86,9 @@ def touch_grok(account: str) -> bool:
     try:
         subprocess.run([grokb, account, "exec", "models"],
                        capture_output=True, text=True, timeout=90)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.cli", error, "the grok touch of %s: the redeem reads it as failed" % account,
+                          'bin/llm-reset-redeem:subprocess.run([grokb, account, "exec", "models"]')
         return False
     return True
 
@@ -96,7 +98,9 @@ def refresh(target: str) -> bool:
     try:
         done = subprocess.run(["bash", collector, "--refresh-account", target],
                               capture_output=True, text=True, timeout=180)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.cli", error, "the limits refresh of %s: the redeem reads it as failed" % target,
+                          'bin/llm-reset-redeem:["bash", collector, "--refresh-account", target]')
         return False
     return done.returncode == 0
 
@@ -537,8 +541,9 @@ def alert(line: str) -> None:
     for call in calls:
         try:
             subprocess.run(call, capture_output=True, timeout=15)
-        except (OSError, subprocess.SubprocessError):
-            pass
+        except (OSError, subprocess.SubprocessError) as error:
+            limit_hit.expired("probe.cli", error, "the usage-reset notice: not shown",
+                              "bin/llm-reset-redeem:subprocess.run(call, capture_output=True, timeout=15)")
 
 
 # The weekly half of worker-pick's own wall verdict (share/limits-view.sh), so a row it routes
@@ -559,7 +564,9 @@ def store_row(vendor: str, account: str, now: int) -> dict:
                                "--argjson", "now", str(now), defs + STORE_ROW_JQ, limits_cache()],
                               capture_output=True, text=True, timeout=20)
         row = json.loads(done.stdout.splitlines()[0])
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as error:
+        limit_hit.expired("probe.helper", error, "the store row of %s/%s: read as none" % (vendor, account),
+                          'bin/llm-reset-redeem:printf %s "$LIMITS_VIEW_JQ"')
         return {}
     return row if isinstance(row, dict) else {}
 
