@@ -2886,7 +2886,7 @@ local function buildMenuItems()
       end
       return {
         title = "In pool",
-        checked = checked and #off < #WORKER_ROLES,
+        checked = checked,
         fn = function()
           for _, role in ipairs(off) do M.setWorkerRole(vendorKey, role, true) end
         end,

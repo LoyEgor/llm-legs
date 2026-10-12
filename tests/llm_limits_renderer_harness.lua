@@ -3576,8 +3576,9 @@ do
     assert(not dimTitle(pool), account .. " coloured its submenu In pool with both roles off")
     assert(isDimmed(row.title.runs[1].attributes),
       account .. " name stayed full-strength for a vendor no role may use")
-    assert(row.checked == false and pool.checked == false,
-      account .. " kept a pool check for a vendor no role may use")
+    assert(row.checked == false, account .. " kept a row check for a vendor no role may use")
+    assert(pool.checked == (account == "cl-one"),
+      account .. " submenu In pool disagreed with its pool membership once both roles went off")
   end
   for _, account in ipairs({ "cx-one", "gk-one", "gm-one" }) do
     local pool, row = poolOf(bothMenu, account)
