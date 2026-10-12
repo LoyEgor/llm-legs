@@ -199,10 +199,10 @@ if suite_shard_owns 2 wlg-scheduling; then
 # A vendor fed on stdin is headless, and a scheduler runs its command where no gate reads it.
 for scheduled in 'echo hi | gemini' 'cat /tmp/b | agy' 'printf q | nohup codex' 'echo hi | /opt/homebrew/bin/claude' \
   "echo 'claude -p hi' | at now" "(crontab -l; echo '* * * * * claude -p hi') | crontab -" 'crontab /tmp/tab' \
-  'batch < /tmp/job' 'echo hi | "claude"'; do
+  'crontab -l 2>/dev/null /tmp/tab' 'batch < /tmp/job' 'echo hi | "claude"'; do
   expect_as deny '{}' "$scheduled"
 done
-for plain in 'crontab -l' 'crontab -u me -l' 'false || claude' 'echo x | grep gemini' 'claude --version' \
+for plain in 'crontab -l' 'crontab -u me -l' 'crontab -l 2>/dev/null | grep -i advisor' 'crontab -l 2>&1' 'false || claude' 'echo x | grep gemini' 'claude --version' \
   "rg 'gemini|claude ' docs" $'cat > /tmp/t.md <<EOF\n| codex | 40% |\nEOF' 'grep -c "agy\|gemini" share/*.py'; do
   expect_as pass '{}' "$plain"
 done

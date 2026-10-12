@@ -356,7 +356,7 @@ piped=$(grep -Eo "(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]
   grep -Ev "[|][[:space:]]*claudeb[[:space:]]+(revive|warm)[[:space:]]*\$" | head -n1 | sed -E 's/^[^|]*[|][[:space:]]*//' | tr -s '[:space:]' ' ' | sed -e 's/ $//')
 [ -z "$piped" ] || deny "Blocked: a pipe into \`${piped}\` runs it headless on its stdin — a bare vendor launch. ${launch_ask}."
 scheduled=$(grep -E "$SCHEDULE_RE" <<<"$scan" 2>/dev/null |
-  grep -Ev '^[[:space:]]*crontab([[:space:]]+-u[[:space:]]+[^[:space:]]+)?[[:space:]]+-l[[:space:]]*$' | head -n1 |
+  grep -Ev '^[[:space:]]*crontab([[:space:]]+-u[[:space:]]+[^[:space:]]+)?[[:space:]]+-l([[:space:]]+[0-9]?>>?(&[0-9]|[^[:space:]&|;]+)?)*[[:space:]]*$' | head -n1 |
   tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$scheduled" ] || span_live || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
 # `help` is a subcommand only to some CLIs; to gemini and claude it is a positional prompt, so a flag
