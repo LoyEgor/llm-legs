@@ -449,7 +449,7 @@ run_one() { # suite-path [shard i/N]
       RUN_SUITES_JOURNAL RUN_SUITES_TIMES WORKER_SLOT
     export PYTHONDONTWRITEBYTECODE=1
     # A fixture's slot and lock waits would read as the machine's own in the Harness doctor.
-    export HARNESS_WAITS_DIR="$TMPDIR/waits" WORKER_SLOTS_DIR="$TMPDIR/worker-slots"
+    export HARNESS_WAITS_DIR="$TMPDIR/waits" WORKER_SLOTS_DIR="$TMPDIR/worker-slots" LIMIT_HITS_LOG="$TMPDIR/limit-hits.jsonl"
     mkdir -p "$TMPDIR"
     if $profile && mkdir -p "$logdir/$job.shims" && : >>"$logdir/$name.execs"; then
       for bin in jq python3 lua git sleep date sed grep awk mktemp bash; do

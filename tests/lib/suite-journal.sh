@@ -230,6 +230,7 @@ suite_shard_wanted() { # [wait] -> status 0 under RUN_SUITES_SHARDS=on, or auto 
 }
 
 [ "${1:-}" != --lib ] || return 0
+[ -n "${LIMIT_HITS_LOG:-}" ] || export LIMIT_HITS_LOG=/dev/null
 [ -z "${SUITE_JOURNAL_PID:-}" ] || return 0
 [ -z "$suite_shard" ] || return 0
 export SUITE_JOURNAL_PID=$$
