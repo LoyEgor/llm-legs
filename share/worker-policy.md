@@ -56,6 +56,8 @@ without `--resume`, a run id resolving to its session); from a main-checkout wor
 repository root the prose names too. Anything else named only in prose is ungranted: writes there count as escaped. A writing run is refused in `$HOME`, where nothing is tracked.
 A browser brief carries `BROWSER: chrome` (the account's own Chrome profile, the default) or
 `BROWSER: yes` (Egor's Dia, never launched); `worker-run start` reads it itself — never repeat it as flags.
+Its account comes from `worker-pick --role browser` (claude or codex, `<vendor>_workers=off` and the pin
+never apply): copy its `ACCOUNT:` and run its `START:` line.
 The canonical knob-to-agy mapping lives in `worker-run`.
 
 ## Brief sizing and test loop

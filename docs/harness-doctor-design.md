@@ -617,7 +617,11 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   (weather, per the 429 doctrine), never judged, no 7-day watch, not counted among the 72 h failures;
   `browser-repair` is red for a 72 h workaround, `HARNESS_NEEDS_REPAIR` or `missing`; `browser-applescript-js`
   watches a Dia without its JS flag. A writing run starts `worker-run browse --canary` (`HARNESS_BROWSE_CMD`)
-  detached when `browse/canary.stamp` is older than 23 h; the canary's receipts land in the same log.
+  detached when `browse/canary.stamp` is older than 23 h; the canary's receipts land in the same log. Account rows read
+  claudeb rows only (`vendor` not `codex`); one `Codex` row shows the newest codex canary leg (`<account> · <profile> ·
+  <outcome> <age> ago`): `browser-canary-start` red on `CANARY_NOT_STARTED` (fix: `browse/last-session-codex-<account>.err`),
+  `browser-account` watch on any other outcome but `BROWSER_OK` or a skip with no codex success after it (fix: its `.out`),
+  a skip shown and never judged.
   A running Dia without the flag adds a clickable `Restart Dia with AppleScript JS — unsaved input may be lost`
   row → `bin/dia-js --relaunch`: Egor's click, never the collector.
 - Two differences from llm-doctor: a value between half the limit and the limit is a watch (deferral,
