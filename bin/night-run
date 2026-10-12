@@ -123,7 +123,7 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   Loss: and Recommendation:
 speed-gate, run by worker-run once a night worker takes its slot: exits 3 while a process stands in the
   job's night worktree (a resumed night's earlier worker), naming it, the job untouched; a Speed fixer (a harness run of area
-  speed-<lever>, one per lever or per levers sharing a file) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
+  speed-<first lever>, up to 5 levers of one repository) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
   its job left with reason `speed window closed (6 h)` and its run abandoned; an earlier start is
   recorded as a speed-start event, after which a resumed worker of that fixer always passes
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the

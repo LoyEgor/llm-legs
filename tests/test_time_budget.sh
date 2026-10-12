@@ -491,7 +491,18 @@ check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [measure]}], D0
           "roi · night: improvements 2.0M · gained 0.0 min/day · 1 measurement fix",
           "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · nothing measured yet"],
       "a fix whose commits changed only a measurer, a ledger, tests or docs is a measurement fix, never a gain")
-twice = [dict(item, ref=ref, spend_m=1.0, lines=[1, 1], ids=[]) for ref in ("r1", "r2")]
+kept = (T.night_churn.fixer_spend, T.night_spend.weighted, T.job_changes)
+T.night_churn.fixer_spend = lambda night, path, worker_run: ([{"ref": "r", "state": "merged"}], {"r": {"problems": [
+    {"id": "opportunity:hooks/gate.sh", "rule": "opportunity"}, {"id": "test_slow:alpha:test_mid", "rule": "test_slow"},
+    {"id": "collector:x", "rule": "collector"}]}}, {"r": 3e6}, None)
+T.night_spend.weighted, T.job_changes = (lambda usage: usage), (lambda job: ([4, 2], [["alpha", "tests/test_mid.sh"]]))
+batch = T.improvements({}, "", "")
+T.night_churn.fixer_spend, T.night_spend.weighted, T.job_changes = kept
+check([(i["ids"], i["class"], i["spend_m"], i["lines"]) for i in batch]
+      == [(["opportunity:hooks/gate.sh"], "hooks", 1.5, [4, 2]), (["test_slow:alpha:test_mid"], "suite_run", 1.5, [4, 2])],
+      "a fixer of several Speed rows is one improvement per row, each in its own class with an even share of the spend: %s"
+      % batch)
+twice =[dict(item, ref=ref, spend_m=1.0, lines=[1, 1], ids=[]) for ref in ("r1", "r2")]
 check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": twice[:1]},
                    {"started": D0 + 3600, "hours": 3.0, "improvements": twice[1:]}], D0 + 86400 * 9)
       == ["roi · r2 · suite slot wait · 1.0M · +1/-1 lines · shared with r1",

@@ -157,6 +157,8 @@ UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-s
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
 NIGHT_KINDS = ("speed", "hooks", "suites", "spend")
+SPEED_BATCH = 5
+OPEN_RUN_MAX_S = int(os.environ.get("DF_OPEN_RUN_MAX_S") or 43200)
 
 
 def kind_share():
@@ -446,18 +448,42 @@ def snapshot(doctor, doc_file, night=None):
     entries = kept + [opportunities[pid] for pid in chosen if pid in opportunities] + [entry for _, entry in watched[:8]]
     if skipped:
         print("speed-doctor: " + "; ".join(skipped), file=sys.stderr)
-    split_speed([entry for entry in entries if entry["id"] in speed])
-    print(json.dumps(entries))
+    print(json.dumps(batch_speed(entries, speed)))
 
 
-def split_speed(entries):
-    """One run per Speed row, so each claims its own slot and window; rows sharing a component file stay in one run."""
-    groups = []
+def repo_top(path):
+    top = path
+    while top != os.sep and not os.path.exists(os.path.join(top, ".git")):
+        top = os.path.dirname(top)
+    return top if top != os.sep else os.path.dirname(path)
+
+
+def batch_speed(entries, speed):
+    """Speed rows ride in runs of up to SPEED_BATCH rows whose component files lie in one repository; rows sharing a
+    component file stay in one run however many, and a spend or suite audit runs alone. A row an open run under 12 h
+    holds stays out: its batch would claim a fresh area beside that run."""
+    import calendar, time
+    held = {}
+    for path in glob.glob(os.path.join(RUNS, "*.json")):
+        run = read_json(path, {})
+        if not isinstance(run, dict) or run.get("doctor") != "harness" or not re.match(r"speed(-|$)", str(run.get("area") or "")) \
+                or any(run.get(key) for key in ("closed_at", "abandoned_at", "failed_at")):
+            continue
+        try:
+            began = calendar.timegm(time.strptime(run.get("launched_at") or run.get("created_at") or "", "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            continue
+        if time.time() - began < OPEN_RUN_MAX_S:
+            held.update((p.get("id"), run.get("id")) for p in dicts(run.get("problems")))
     for entry in entries:
+        if entry["id"] in speed and entry["id"] in held:
+            print("doctor-fix: %s stays with its open run %s" % (entry["id"], held[entry["id"]]), file=sys.stderr)
+    entries = [entry for entry in entries if entry["id"] not in speed or entry["id"] not in held]
+    groups = []
+    for entry in (entry for entry in entries if entry["id"] in speed):
         files = set(entry["component"]["files"])
         hits = [group for group in groups if group["files"] & files]
-        group = hits[0] if hits else {"area": "speed-" + slug(re.sub(r"^opportunity:", "", str(entry["id"]))),
-                                      "files": set(), "entries": []}
+        group = hits[0] if hits else {"files": set(), "entries": []}
         if not hits:
             groups.append(group)
         for other in hits[1:]:
@@ -466,9 +492,20 @@ def split_speed(entries):
             groups.remove(other)
         group["files"] |= files
         group["entries"].append(entry)
+    batches, filling = [], {}
     for group in groups:
-        for entry in group["entries"]:
-            entry["area"] = group["area"]
+        key = id(group) if any(entry["rule"] in ("spend_audit", "suite_audit") for entry in group["entries"]) \
+            else tuple(sorted({repo_top(path) for path in group["files"]}))
+        batch = filling.get(key)
+        if batch is None or len(batch) + len(group["entries"]) > SPEED_BATCH:
+            batch = filling[key] = []
+            batches.append(batch)
+        batch += group["entries"]
+    for batch in batches:
+        area = "speed-" + slug(re.sub(r"^opportunity:", "", str(batch[0]["id"])))
+        for entry in batch:
+            entry["area"] = area
+    return entries
 
 
 def git(folder, *args):
@@ -668,7 +705,7 @@ if __name__ == "__main__":
         ledger_sync(sys.argv[2])
 '
 
-py() { DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
+py() { DF_OPEN_RUN_MAX_S=$OPEN_RUN_MAX_S DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
 
 check_doc() { # doctor -> dies unless its document is fresh and speaks contract 1; prints its problem count
   local doc facts contract age status count
@@ -693,8 +730,10 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
     fi
     record_set "$id" '.abandoned_at = $t' --arg t "$(stamp)" || return 1
     printf 'run %s abandoned: open for %s h\n' "$id" "$((age / 3600))" >&2
-  done < <(all_records | jq -r --arg d "$doctor" --arg a "$area" "$JQ_EPOCH $JQ_OPEN $JQ_AREA"' .[] | select(.doctor == $d and open
-    and ($a == "all" or area == "all" or area == $a)) | [.id, ((now - ((.launched_at // .created_at) | epoch)) | floor)] | @tsv')
+  done < <(all_records | jq -r --arg d "$doctor" --arg a "$area" --slurpfile p "$4" "$JQ_EPOCH $JQ_OPEN $JQ_AREA"' def speed: test("^speed(-|$)");
+    [$p[0][].id] as $ids | .[] | select(.doctor == $d and open and ($a == "all" or area == "all" or area == $a
+      or ($a | speed) and (area | speed) and any(.problems[]?.id; IN($ids[]))))
+    | [.id, ((now - ((.launched_at // .created_at) | epoch)) | floor)] | @tsv')
   id=$(new_record "$doctor" "$area" "$3") || return 1
   record_set "$id" '.judge_at_launch = ($doc[0].judge // null) | .problems = ($p[0] | map(select(.state != "quiet")))
     | .quiet = ($p[0] | map(select(.state == "quiet")))' \
@@ -771,6 +810,8 @@ write_brief() { # id worktree -> the brief file
     printf '6. Report: per problem the verdict and one line of why, the commits (repo@hash) and every handoff.\n\n'
     ! jq -e '.lens_round' "$file" >/dev/null ||
       printf 'Speed lens: the `ROUND:` above is a `--lens speed` review of your component files aimed at the problems below; its confirmed findings, appended after this brief, are your leads to them. Each finding gets its verdicts.jsonl row (fixed, or false when it is not real or would trade quality); your decision lines still answer the problems.\n\n'
+    ! jq -e '(.area | test("^speed-")) and (.problems | length) > 1' "$file" >/dev/null ||
+      printf 'Speed rows share only this fixer: each keeps its own decision line and its own proof (the doctor measures every row on its own), so a fix for one never stands for another.\n\n'
     [ "$doctor" != code ] ||
       printf 'Code runs: every problem carries its judged plan and proof obligations; a deletion lands only through `bin/code-doctor check` (close runs it against `%s`), never edit through a symlink into another repository, and a cross-repository merge lands in stages over nights (the shared module and the callers first, `merges: [{stage: "migrated", night}]` in the ledger row, the old copy on a later night). Record each landed cleanup with `bin/code-doctor record-fix <cause> --by <run> --files ... --lines-removed N [--mechanism M --canonical PATH --replaced PATH...]`.\n\n' "$base"
     [ "$doctor" != system ] ||
@@ -796,7 +837,7 @@ write_brief() { # id worktree -> the brief file
 }
 
 speed_lens() { # id worktree top -> a Speed run's component files in top's repository get a speed-lens review in its worktree, its round on the record
-  local id=$1 wt=$2 top=$3 file path rel key round out ledger="$runs_dir/speed-lens.tsv" files=()
+  local id=$1 wt=$2 top=$3 file path rel key hash round out ledger="$runs_dir/speed-lens.tsv" files=() fresh=() keys=() seen=() i=0
   file=$(record_file "$id")
   [ "$(jq -r .doctor "$file")" = harness ] && jq -e --arg rules "$SPEED_LENS_RULES" "$JQ_HAS_RULES" "$file" >/dev/null || return 0
   while IFS= read -r path; do
@@ -804,13 +845,19 @@ speed_lens() { # id worktree top -> a Speed run's component files in top's repos
     [ "$rel" != "$path" ] && [ -f "$wt/$rel" ] && files+=("$rel")
   done < <(jq -r '[.problems[].component.files[]?] | unique[]' "$file")
   [ ${#files[@]} -gt 0 ] || return 0
-  key=$({ printf '%s\n' "$SPEED_LENS_TIER" "${files[@]}"; git -C "$wt" hash-object -- "${files[@]}"; } | shasum -a 256 | cut -c1-16)
-  if round=$(awk -F'\t' -v k="$key" '$1 == k { r = $2 } END { if (r == "") exit 1; print r }' "$ledger" 2>/dev/null); then
-    printf 'doctor-fix: %s gets no speed lens: round %s read the same files at the same content\n' "$id" "$round" >&2
+  while IFS= read -r hash; do
+    key="$SPEED_LENS_TIER ${files[$i]} $hash"
+    round=$(awk -F'\t' -v k="$key" '$1 == k { r = $2 } END { print r }' "$ledger" 2>/dev/null)
+    if [ -n "$round" ]; then seen+=("$round"); else fresh+=("${files[$i]}") keys+=("$key"); fi
+    i=$((i + 1))
+  done < <(git -C "$wt" hash-object -- "${files[@]}")
+  if [ ${#fresh[@]} -eq 0 ]; then
+    printf 'doctor-fix: %s gets no speed lens: round %s read the same files at the same content\n' "$id" \
+      "$(printf '%s\n' "${seen[@]}" | sort -u | paste -sd, - | sed 's/,/, /g')" >&2
     return 0
   fi
-  out=$(cd "$wt" && "${DOCTOR_FIX_REVIEW_BENCH:-review-bench}" review --repo "$wt" --files "${files[@]}" --lens speed \
-    --tier "$SPEED_LENS_TIER" --scope-lines "$(git diff --numstat "$(git hash-object -t tree /dev/null)" HEAD -- "${files[@]}" | awk '{ s += $1 } END { print s + 0 }')" \
+  out=$(cd "$wt" && "${DOCTOR_FIX_REVIEW_BENCH:-review-bench}" review --repo "$wt" --files "${fresh[@]}" --lens speed \
+    --tier "$SPEED_LENS_TIER" --scope-lines "$(git diff --numstat "$(git hash-object -t tree /dev/null)" HEAD -- "${fresh[@]}" | awk '{ s += $1 } END { print s + 0 }')" \
     --focus "Aimed by the Harness doctor's measured rows: $(jq -r '[.problems[] | .fact // .id] | join(" | ")' "$file"). Find what makes them slow; keep every check." 2>&1 </dev/null)
   round=$(sed -En 's/^run id: ([0-9]{8}T[0-9]{6}Z-[0-9a-f]{7})$/\1/p' <<<"$out" | head -1)
   if [ -z "$round" ]; then
@@ -818,7 +865,7 @@ speed_lens() { # id worktree top -> a Speed run's component files in top's repos
     return 0
   fi
   locked record_set "$id" '.lens_round = $r' --arg r "$round" || return 0
-  printf '%s\t%s\t%s\n' "$key" "$round" "$id" >>"$ledger"
+  for key in "${keys[@]}"; do printf '%s\t%s\t%s\n' "$key" "$round" "$id"; done >>"$ledger"
   printf 'doctor-fix: %s waits for speed lens round %s: dispatch its brief when that round'"'"'s `review-bench wait` returns\n' "$id" "$round" >&2
 }
 

@@ -818,7 +818,8 @@ def improvement_class(rule, pid):
 
 
 def improvements(night, path, worker_run):
-    """Fixer jobs whose problem is a Speed or time row, with their weighted spend and changed lines."""
+    """Each Speed or time row of a fixer job, proven on its own: its even share of the job's weighted spend, the job's
+    changed lines and files."""
     found = night_churn.fixer_spend(night, path, worker_run)
     if not found:
         return []
@@ -830,10 +831,10 @@ def improvements(night, path, worker_run):
         if not rows:
             continue
         lines, files = job_changes(job)
-        out.append({"ref": job["ref"], "ids": [p.get("id") for p in rows],
-                    "class": improvement_class(str(rows[0].get("rule") or ""), str(rows[0].get("id") or "")),
-                    "spend_m": round(night_spend.weighted(spend[job["ref"]]) / 1e6, 1), "lines": lines,
-                    "files": files, "merged": job.get("state") == "merged"})
+        share = round(night_spend.weighted(spend[job["ref"]]) / 1e6 / len(rows), 1)
+        out += [{"ref": job["ref"], "ids": [p.get("id")],
+                 "class": improvement_class(str(p.get("rule") or ""), str(p.get("id") or "")),
+                 "spend_m": share, "lines": lines, "files": files, "merged": job.get("state") == "merged"} for p in rows]
     return out
 
 
