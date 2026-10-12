@@ -3,8 +3,10 @@
 # dia-js --list                      every open Dia tab: id, front (1/0), URL, title
 # dia-js --relaunch [--auto]         restart a Dia that runs without --enable-applescript-javascript
 # dia-js --open                      bring Dia forward, launching a closed one with the flag
+# dia-js (--active | --url-contains <text> | --tab-id <id>) --shot <png> [--focus]   PNG of the Dia window showing that tab
 # Runs JavaScript in a tab Egor already has open in Dia and prints its result. AppleScript JavaScript
-# exists only in a Dia started with the flag, so a Dia without it is quit and reopened with it first.
+# exists only in a Dia started with the flag, so a Dia without it is quit and reopened with it first;
+# --shot needs no flag and never relaunches.
 {
 set -euo pipefail
 
@@ -17,9 +19,12 @@ WAIT_S=${DIA_JS_WAIT_S:-30}
 STATE_DIR=${DIA_JS_STATE_DIR:-$HOME/.cache/dia-js}
 GUARD_S=${DIA_JS_GUARD_S:-120}
 POLL_S=${DIA_JS_POLL_S:-0.5}
+SCREENCAPTURE=${DIA_JS_SCREENCAPTURE:-screencapture}
+WINDOWS=${DIA_JS_WINDOWS:-}
+SETTLE_S=${DIA_JS_SETTLE_S:-0.4}
 
 usage() {
-  sed -n '2,5s/^# //p' "$0" >&2
+  sed -n '2,6s/^# //p' "$0" >&2
   exit 2
 }
 
@@ -71,6 +76,12 @@ on run argv
       return out
     end if
     set tid to item 2 of argv
+    if mode is "visible" then
+      repeat with w in windows
+        if (id of active tab of w) is tid then return "1"
+      end repeat
+      return "0"
+    end if
     set doFocus to item 3 of argv
     set js to item 4 of argv
     repeat with w in windows
@@ -84,6 +95,7 @@ on run argv
                 delay 0.25
               end repeat
             end if
+            if mode is "focus" then return "1"
             set r to execute t javascript js
             if r is missing value then return ""
             return r as text
@@ -105,6 +117,31 @@ dia_main() { # prints "flag" or "bare" per Dia main process
 }
 
 tabs_list() { osa list | awk -F '\t' 'NF >= 3 && !seen[$1]++'; }
+
+dia_windows() { # "<CG window id>\t<window name>" per on-screen Dia window
+  if [ -n "$WINDOWS" ]; then
+    "$WINDOWS"
+    return
+  fi
+  osascript -l JavaScript -e 'ObjC.import("CoreGraphics");
+    ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)))
+      .filter((w) => w.kCGWindowOwnerName === "Dia" && w.kCGWindowLayer === 0 && w.kCGWindowBounds.Height > 100)
+      .map((w) => w.kCGWindowNumber + "\t" + (w.kCGWindowName || "")).join("\n")'
+}
+
+window_for() { # tab title -> the CG id of the window showing it
+  local wins count
+  wins=$(dia_windows)
+  count=$(printf '%s' "$wins" | grep -c . || true)
+  [ "$count" -gt 0 ] || die 'no Dia window on screen (minimized or on another Space)'
+  if [ "$count" -gt 1 ]; then
+    # Window names read "<profile>: <tab title, cut with …>".
+    wins=$(printf '%s\n' "$wins" | awk -F '\t' -v t="$1" '{ n = $2; sub(/^[^:]*: /, "", n); sub(/…$/, "", n) } n != "" && index(t, n) == 1')
+    count=$(printf '%s' "$wins" | grep -c . || true)
+    [ "$count" -eq 1 ] || die 'several Dia windows on screen and none is told apart by the tab title; leave one on screen'
+  fi
+  cut -f1 <<<"$wins"
+}
 
 wait_for() { # seconds command...
   local deadline=$((SECONDS + $1))
@@ -149,6 +186,7 @@ relaunch() {
 pick=''
 needle=''
 js_file=''
+shot=''
 focus=0
 mode=run
 auto=false
@@ -162,6 +200,7 @@ while [ "$#" -gt 0 ]; do
     --list) mode=list; shift ;;
     --relaunch) mode=relaunch; shift ;;
     --open) mode=open; shift ;;
+    --shot) mode=shot; shot=${2:?--shot needs a .png path}; shift 2 ;;
     --auto) auto=true; shift ;;
     *) usage ;;
   esac
@@ -193,16 +232,6 @@ case "$mode" in
     ;;
 esac
 
-[ -n "$pick" ] || usage
-[ -n "$state" ] || die 'Dia is not running'
-if [ -n "$js_file" ]; then
-  js=$(cat "$js_file")
-else
-  [ ! -t 0 ] || die 'no JavaScript: give --file <path> or pipe it on stdin'
-  js=$(cat)
-fi
-[ -n "$js" ] || die 'the JavaScript is empty'
-
 choose() { # prints the one matching tab line or dies
   local lines count
   case "$pick" in
@@ -220,6 +249,32 @@ choose() { # prints the one matching tab line or dies
   fi
   printf '%s\n' "$lines"
 }
+
+[ -n "$pick" ] || usage
+[ -n "$state" ] || die 'Dia is not running'
+if [ "$mode" = shot ]; then
+  target=$(choose)
+  tid=$(cut -f1 <<<"$target")
+  if [ "$(osa visible "$tid")" != 1 ]; then
+    [ "$focus" = 1 ] || die "tab $tid is not the one showing in its Dia window; add --focus to bring it forward (Egor sees the switch)"
+    osa focus "$tid" 1 '' >/dev/null
+    sleep "$SETTLE_S"
+  fi
+  wid=$(window_for "$(cut -f4 <<<"$target")")
+  rm -f "$shot"
+  "$SCREENCAPTURE" -x -o -l "$wid" "$shot" 2>/dev/null && [ -s "$shot" ] ||
+    die "screencapture could not grab Dia window $wid (minimized, on another Space, or this terminal lacks Screen Recording)"
+  printf '%s\n' "$shot"
+  exit 0
+fi
+if [ -n "$js_file" ]; then
+  js=$(cat "$js_file")
+else
+  [ ! -t 0 ] || die 'no JavaScript: give --file <path> or pipe it on stdin'
+  js=$(cat)
+fi
+[ -n "$js" ] || die 'the JavaScript is empty'
+
 
 target=$(choose)
 if [ "$state" = bare ]; then

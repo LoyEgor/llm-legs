@@ -34,6 +34,8 @@ case "\$1" in
   front) awk -F '\t' '\$2 == "1" { print \$3 }' "$WORK/tabs.now" ;;
   quit) : >"$WORK/ps.now"; : >"$WORK/tabs.now" ;;
   exec) printf 'ran %s focus=%s js=%s\n' "\$2" "\$3" "\$4" ;;
+  visible) cat "$WORK/visible.now" ;;
+  focus) echo 1 ;;
 esac
 EOF
 cat >"$WORK/bin/open" <<EOF
@@ -135,6 +137,57 @@ assert test "$rc" -eq 1
 assert grep -q 'did not quit' <<<"$err"
 assert test ! -e "$WORK/open.log"
 
+# 7: --shot grabs the window showing the tab, needs no flag, and refuses a hidden tab unless --focus
+cat >"$WORK/bin/windows" <<EOF
+#!/bin/sh
+cat "$WORK/windows.now"
+EOF
+cat >"$WORK/bin/screencapture" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$WORK/shot.log"
+[ ! -e "$WORK/shot.fail" ] || exit 1
+for last; do :; done
+printf 'png' >"\$last"
+EOF
+chmod +x "$WORK/bin/windows" "$WORK/bin/screencapture"
+export DIA_JS_WINDOWS="$WORK/bin/windows" DIA_JS_SCREENCAPTURE="$WORK/bin/screencapture" DIA_JS_SETTLE_S=0
+printf '238\twork dia: Front\n' >"$WORK/windows.now"
+echo 1 >"$WORK/visible.now"
+reset ps.bare tabs.before tabs.after
+rm -f "$WORK/shot.log"
+assert test "$("$DJ" --active --shot "$WORK/a.png")" = "$WORK/a.png"
+assert grep -qx -- "-x -o -l 238 $WORK/a.png" "$WORK/shot.log"
+assert test "$(grep -c -e '^quit' -e '^focus' "$WORK/osa.log")" -eq 0
+assert test ! -e "$WORK/open.log"
+echo 0 >"$WORK/visible.now"
+rm -f "$WORK/shot.log"
+rc=0
+err=$("$DJ" --tab-id T3 --shot "$WORK/b.png" 2>&1) || rc=$?
+assert test "$rc" -eq 1
+assert grep -q 'not the one showing.*--focus' <<<"$err"
+assert test ! -e "$WORK/shot.log"
+assert test "$("$DJ" --tab-id T3 --shot "$WORK/b.png" --focus)" = "$WORK/b.png"
+assert grep -q '^focus T3 1' "$WORK/osa.log"
+printf '238\twork dia: Front\n239\twork dia: Oth…\n' >"$WORK/windows.now"
+rm -f "$WORK/shot.log"
+"$DJ" --tab-id T3 --shot "$WORK/c.png" --focus >/dev/null
+assert grep -qx -- "-x -o -l 239 $WORK/c.png" "$WORK/shot.log"
+printf '238\twork dia: Front\n' >"$WORK/windows.now"
+echo 1 >"$WORK/visible.now"
+: >"$WORK/shot.fail"
+rc=0
+err=$("$DJ" --active --shot "$WORK/d.png" 2>&1) || rc=$?
+assert test "$rc" -eq 1
+assert grep -q 'Screen Recording' <<<"$err"
+assert test ! -e "$WORK/d.png"
+rm "$WORK/shot.fail"
+: >"$WORK/windows.now"
+rc=0
+err=$("$DJ" --active --shot "$WORK/e.png" 2>&1) || rc=$?
+assert test "$rc" -eq 1
+assert grep -q 'no Dia window on screen' <<<"$err"
+unset DIA_JS_WINDOWS DIA_JS_SCREENCAPTURE
+
 if command -v hs >/dev/null 2>&1; then
   output=$(HS_BOUNDED_IPC_S=60 hs_bounded 600 -q -c "return loadfile([[$ROOT/tests/dia_flag_watch_harness.lua]])()"
   ) || fail "the Hammerspoon harness threw or timed out: $output"
@@ -147,4 +200,4 @@ else
   echo "   (Hammerspoon harness skipped: no hs CLI)"
 fi
 
-echo "PASS: $asserts asserts; dia-js tab choice, relaunch with the AppleScript flag, watcher guard; dia-flag-watch"
+echo "PASS: $asserts asserts; dia-js tab choice, relaunch with the AppleScript flag, watcher guard, window shot; dia-flag-watch"
