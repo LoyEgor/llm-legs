@@ -705,7 +705,8 @@
      "files": [
       "review-bench/share/rbench/launch.py",
       "review-bench/share/rbench/debt.py",
-      "review-bench/share/rbench/cell_runtime.py"
+      "review-bench/share/rbench/cell_runtime.py",
+      "review-bench/share/rbench/verify.py"
      ],
      "in": "review-bench@c47e63d",
      "regressed_at": null
