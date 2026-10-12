@@ -12,13 +12,15 @@ TOGGLE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
 
 
-# `worker-run start` asks before it picks an account: `--start <claudeb|codex|gemini|grok|light|computer> <brief> [<account>]`,
+# `worker-run start` asks before it picks an account: `--start <claudeb|codex|gemini|grok|light|computer|claudeb-browser|codex-browser> <brief> [<account>]`,
 # the account it starts on, from its `--account` flag or the brief's ACCOUNT: line;
-# `computer` is a codex run under `--computer`.
+# `computer` is a codex run under `--computer`, `<vendor>-browser` a browser run.
 [ "${1:-}" = --start ] && { [ "$#" -eq 3 ] || [ "$#" -eq 4 ]; } || exit 0
 worker=$2
 computer=false
+browser=false
 [ "$2" != computer ] || { worker=codex; computer=true; }
+case "$2" in claudeb-browser | codex-browser) worker=${2%-browser}; browser=true ;; esac
 prompt=''
 if [ -z "${4:-}" ] || { [ "$worker" = codex ] && [ "$computer" = false ]; }; then
   prompt=$(head -c 65536 "$3" 2>/dev/null) || prompt=''
@@ -105,6 +107,10 @@ esac
 
 if [ "$worker" = codex ] && { [ "$computer" = true ] || grep -Eq '^COMPUTER:[[:space:]]*yes[[:space:]]*$' <<<"$prompt"; }; then
   role_arg=computer
+  toggle_note=''
+fi
+if [ "$browser" = true ]; then
+  role_arg=browser
   toggle_note=''
 fi
 

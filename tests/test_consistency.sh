@@ -1116,6 +1116,13 @@ assert grep -qx -- '--account codex --role computer' "$LIGHT_GATE_WORK/picks"
 : >"$LIGHT_GATE_WORK/picks"
 light_gate codex >/dev/null
 assert grep -qx -- '--account codex' "$LIGHT_GATE_WORK/picks"
+# A browser run routes its vendor under `browser`, which no `<vendor>_workers=off` closes.
+for browser_vendor in claudeb codex; do
+  : >"$LIGHT_GATE_WORK/picks"
+  browser_gate_out=$(light_gate "$browser_vendor-browser")
+  assert grep -qx -- "--account $browser_vendor --role browser" "$LIGHT_GATE_WORK/picks"
+  assert test "$(grep -c 'The worker toggle says' <<<"$browser_gate_out")" = 0
+done
 # A brief's ACCOUNT is judged by the worker pool itself, not the limits file's cached `enabled`:
 # an excluded account is refused even when that copy is stale, and a pinned one passes like
 # worker-run lets it.

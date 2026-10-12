@@ -218,6 +218,16 @@ GATE
   door_refused 'Blocked: claudeb is walled.' CLAUDECODE=1 LIMIT_GATE_MODE=deny -- \
     start codex --computer --brief "$WORK/brief" --workdir "$WORK/workdir"
   assert test "$(cat "$LIMIT_GATE_LOG")" = "--start computer $WORK/brief"
+  # A browser run is priced under the browser role of its vendor, flag or brief line alike.
+  : >"$LIMIT_GATE_LOG"
+  door_refused 'Blocked: claudeb is walled.' CLAUDECODE=1 LIMIT_GATE_MODE=deny -- \
+    start codex --browser --brief "$WORK/brief" --workdir "$WORK/workdir"
+  assert test "$(cat "$LIMIT_GATE_LOG")" = "--start codex-browser $WORK/brief"
+  printf 'BROWSER: chrome\ntest brief\n' >"$WORK/browser-brief"
+  : >"$LIMIT_GATE_LOG"
+  door_refused 'Blocked: claudeb is walled.' CLAUDECODE=1 LIMIT_GATE_MODE=deny -- \
+    start claudeb --brief "$WORK/browser-brief" --workdir "$WORK/workdir"
+  assert test "$(cat "$LIMIT_GATE_LOG")" = "--start claudeb-browser $WORK/browser-brief"
   clear_stub
   CLAUDECODE=1 LIMIT_GATE_MODE=note start_ok claudeb
   assert grep -Fqx 'worker-run: note: Claude account picked is at 90%.' "$WORK/start.err"

@@ -353,6 +353,70 @@ EOF
   assert grep -qx 'CANARY: lost CANARY_WALLED' <<<"$out"
   assert jq -se '[.[] | select(.account == "extra")][-1].outcome == "CANARY_WALLED"
     and ([.[] | select(.account == "lost")][-1].outcome == "CANARY_WALLED")' "$log" >/dev/null
+  # 9c: one codex leg: the browser list's first `ok` codex account drives the first open `ok` profile through the
+  # Codex extension, judged by the same receipt; a wall is weather, an out-of-pool account is skipped unlaunched
+  cat >"$bt/stub/codex" <<EOF
+#!/usr/bin/env bash
+printf '%s CODEX_HOME=%s\n' "\$*" "\${CODEX_HOME-}" >>"$bt/codex.log"
+while [ "\$#" -gt 0 ]; do [ "\$1" != -o ] || out=\$2; shift; done
+prompt=\$(cat)
+printf '%s\n' "\$prompt" >"$bt/prompt-codex"
+mode=\$(cat "$bt/mode-codex" 2>/dev/null || echo ok)
+[ "\$mode" != wall ] || { printf "ERROR: You've hit your usage limit. Try again later.\n" >&2; exit 1; }
+[ "\$mode" != nostart ] || { printf 'ERROR: unexpected status 401 Unauthorized\n' >&2; exit 1; }
+url=\$(grep -o 'http://127.0.0.1:[0-9]*/form?case=[^ ]*' <<<"\$prompt" | head -n 1)
+[ "\$mode" != ok ] || curl -s "\${url%/form*}/submit?case=\${url##*=}&v=\${url##*=}" >/dev/null
+printf 'OUTCOME: BROWSER_OK\n' >"\$out"
+EOF
+  printf '#!/bin/sh\n[ "$BT_SYNC_MODE" = ok ] || { echo "fake registration failure" >&2; exit 2; }\n' >"$bt/stub/cua-sync"
+  printf '#!/bin/sh\nprintf "codex\\tcx\\t10\\t%%s\\ncodex\\tcx2\\t20\\tok\\n" "$(cat "%s/cx-status")"\n' "$bt" >"$bt/stub/worker-pick"
+  chmod +x "$bt/stub/codex" "$bt/stub/cua-sync" "$bt/stub/worker-pick"
+  printf 'com\nextra\nlost\n' >"$CLAUDEB_DIR/disabled"
+  codex_canary() { # cx-status codex-mode [cua-sync-mode]
+    printf '%s\n' "$1" >"$bt/cx-status"
+    printf '%s\n' "$2" >"$bt/mode-codex"
+    : >"$bt/codex.log"
+    rc=0
+    out=$(BT_SYNC_MODE=${3:-ok} BROWSE_CUA_SYNC="$bt/stub/cua-sync" BROWSE_SKIP_PROCESSES=1 WORKER_RUN_CODEX="$bt/stub/codex" \
+      WORKER_RUN_WORKER_PICK="$bt/stub/worker-pick" WORKER_RUN_CODEX_CONFIG="$bt/codex.toml" browse --canary) || rc=$?
+  }
+  printf 'model = "gpt-6-astra"\n' >"$bt/codex.toml"
+  codex_canary ok ok
+  assert test "$rc" -eq 0
+  assert grep -qx 'CANARY: codex/cx BROWSER_OK' <<<"$out"
+  assert test "$(grep -c '^CANARY: codex' <<<"$out")" -eq 1
+  assert grep -q -- "-c model_reasoning_effort=low .* CODEX_HOME=$CODEX_PROFILES_DIR/cx\$" "$bt/codex.log"
+  assert test "$(head -n 1 "$bt/prompt-codex")" = '# Browser preamble (Codex / Google Chrome)'
+  assert grep -q '"Work" (Profile 1), first listed wins' "$bt/prompt-codex"
+  assert grep -q 'http://127.0.0.1:[0-9]*/form?case=canary-codex-cx-' "$bt/prompt-codex"
+  assert jq -se '[.[] | select(.vendor == "codex")][-1] | .account == "cx" and .outcome == "BROWSER_OK"
+    and .profile == "Profile 1" and (.run | startswith("canary-codex-cx-"))' "$log" >/dev/null
+  codex_canary ok wall
+  assert test "$rc" -eq 0
+  assert grep -qx 'CANARY: codex/cx CANARY_WALLED' <<<"$out"
+  codex_canary ok nostart
+  assert test "$rc" -eq 1
+  assert grep -qx 'CANARY: codex/cx CANARY_NOT_STARTED — ERROR: unexpected status 401 Unauthorized' <<<"$out"
+  assert jq -se '[.[] | select(.vendor == "codex")][-1] | .outcome == "CANARY_NOT_STARTED"
+    and .error == "ERROR: unexpected status 401 Unauthorized"' "$log" >/dev/null
+  codex_canary ok nosubmit
+  assert test "$rc" -eq 1
+  assert grep -qx 'CANARY: codex/cx CANARY_NO_RECEIPT' <<<"$out"
+  codex_canary ok ok broken
+  assert test "$rc" -eq 1
+  assert grep -qx 'CANARY: codex/cx CANARY_NOT_STARTED — cua_repl registration failed: fake registration failure' <<<"$out"
+  assert test ! -s "$bt/codex.log"
+  printf '#!/bin/sh\nprintf "codex\\tcx\\t10\\t%%s\\n" "$(cat "%s/cx-status")"\n' "$bt" >"$bt/stub/worker-pick"
+  codex_canary walled ok
+  assert test "$rc" -eq 0
+  assert grep -qx 'CANARY: codex/cx skipped — walled' <<<"$out"
+  assert test ! -s "$bt/codex.log"
+  codex_canary off ok
+  assert test "$rc" -eq 0
+  assert grep -qx 'CANARY: codex/cx skipped — out of the worker pool' <<<"$out"
+  assert test ! -s "$bt/codex.log"
+  assert jq -se '[.[] | select(.vendor == "codex")][-1] | .outcome == "CANARY_OUT_OF_POOL" and .account == "cx"' "$log" >/dev/null
+  rm -f "$CLAUDEB_DIR/disabled"
   printf 'nosubmit\n' >"$bt/mode-lost"
   local holder
   sleep 300 &

@@ -30,7 +30,7 @@ query_claim=false
 query_list=false
 query_menu=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image|light|computer] [--model <id>] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image|light|computer] [--model <id>] | --menu]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image|light|computer|browser] [--model <id>] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image|light|computer|browser] [--model <id>] | --role browser | --menu]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -55,7 +55,7 @@ while [ "$#" -gt 0 ]; do
       query_role="$2"
       query_role_given=true
       case "$query_role" in
-        workers|reviewers|chat|research|image|light|computer) ;;
+        workers|reviewers|chat|research|image|light|computer|browser) ;;
         *) printf 'worker-pick: unknown role %s\n' "$query_role" >&2; usage ;;
       esac
       shift 2
@@ -85,8 +85,16 @@ if [ "$query_list" = true ] && [ -n "$query_vendor" ]; then
   printf 'worker-pick: --list and --account are two different answers\n' >&2
   usage
 fi
-if [ "$query_role_given" = true ] && [ -z "$query_vendor" ] && [ "$query_list" = false ]; then
+if [ "$query_role_given" = true ] && [ -z "$query_vendor" ] && [ "$query_list" = false ] && [ "$query_role" != browser ]; then
   printf 'worker-pick: --role only means something with --account\n' >&2
+  usage
+fi
+if [ "$query_role" = browser ] && [ -n "$query_vendor" ] && [ "$query_vendor" != claudeb ] && [ "$query_vendor" != codex ]; then
+  printf 'worker-pick: --role browser only means something with --account claudeb or codex\n' >&2
+  usage
+fi
+if [ "$query_role" = browser ] && [ "$query_menu" = true ]; then
+  printf 'worker-pick: --menu is the table alone, without --role\n' >&2
   usage
 fi
 if [ "$query_fable" = true ] && [ "$query_vendor" != claudeb ]; then
@@ -250,15 +258,16 @@ chat_opens() { # vendor role
 }
 role_off() { conf_get "$1_$2"; [ "$conf_val" = off ] && ! chat_opens "$1" "$2"; }
 query_role_wall=false
-# `chat`, `research`, `image`, `light` and `computer` have no `<vendor>_<role>` key. `image` also
+# `chat`, `research`, `image`, `light`, `computer` and `browser` have no `<vendor>_<role>` key. `image` also
 # ignores `<vendor>_workers=off` and the pin: a picture is not code work, so image = pool + login +
 # not walled, ordered by free budget (Egor, 2026-09-11). `light` reads the same way for the same
 # reason — a cheap edit is not the implementation leg `<vendor>_workers` closes (Egor,
-# 2026-09-19) — and so does `computer`, a GUI app driven through Codex Computer Use (Egor,
-# 2026-09-25). Walls, pool and login still apply.
+# 2026-09-19) — and so do `computer`, a GUI app driven through Codex Computer Use (Egor,
+# 2026-09-25), and `browser`, a Chrome run on claude or codex (Egor, 2026-10-12). Walls, pool and
+# login still apply.
 if [ -n "$query_vendor" ] && [ "$query_role" != chat ] && [ "$query_role" != research ] &&
    [ "$query_role" != image ] && [ "$query_role" != light ] && [ "$query_role" != computer ] &&
-   role_off "$query_vendor" "$query_role"; then
+   [ "$query_role" != browser ] && role_off "$query_vendor" "$query_role"; then
   if [ "$query_role" = workers ]; then
     query_role_wall=true
   else
@@ -378,7 +387,7 @@ cb_pins=''; cx_pins=''; gm_pins=''; gr_pins=''
 [ "$gm_paused" = false ] || gm_pins=''
 [ "$gr_paused" = false ] || gr_pins=''
 case "$query_role" in
-  reviewers|chat|research|image|light|computer) cb_pins=''; cx_pins=''; gm_pins=''; gr_pins='' ;;
+  reviewers|chat|research|image|light|computer|browser) cb_pins=''; cx_pins=''; gm_pins=''; gr_pins='' ;;
 esac
 pin_scope() { # vendor pins var
   local scope=none
@@ -1017,6 +1026,8 @@ cb_known=false; cx_known=false; gm_known=false; gr_known=false
 ! vendor_known "$cx_present" "$cx_role_off" codex "$cx_pin" "$cx_paused" || cx_known=true
 ! vendor_known "$gm_present" "$gm_role_off" gemini "$gm_pin" "$gm_paused" || gm_known=true
 ! vendor_known "$gr_present" "$gr_role_off" grok "$gr_pin" "$gr_paused" || gr_known=true
+# Only claude (Claude in Chrome) and codex (its Chrome extension) drive a browser.
+[ "$query_role" != browser ] || { gm_known=false; gr_known=false; gm_list=''; gr_list=''; }
 # A vendor that is not here selected nothing, whatever a snapshot older than the pause still says;
 # left standing, its account would keep the ALL WALLED verdict from ever being reached.
 [ "$cb_known" = true ] || { cl_acct=""; cl_pinned=no; cl_pin_lapse=""; cl_nextrows=""; }
@@ -1217,6 +1228,12 @@ print_next() {
   printf 'NEXT: %s\n' "$reason"
 }
 
+# The worker toggle names the implementation leg, and a browser run is not one: no vendor leads.
+if [ "$query_role" = browser ]; then
+  print_next false cb cx
+  printf 'DATA: %s\n' "$age"
+  exit 0
+fi
 if [ "$worker_mode" = gemini ]; then
   print_next true gm cb cx gr
 elif [ "$worker_mode" = grok ]; then

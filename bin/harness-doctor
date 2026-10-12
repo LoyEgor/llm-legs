@@ -4534,7 +4534,8 @@ def browser_section(now, write=False):
             continue
         status, profile = entry.get("status") or "?", entry.get("chrome_profile") or "no profile"
         proven = browser_ts(entry.get("proven_at"))
-        mine = [(at, e) for at, e in log if e.get("account") == account and e.get("target", "chrome") == "chrome"]
+        mine = [(at, e) for at, e in log if e.get("account") == account and e.get("target", "chrome") == "chrome"
+                and e.get("vendor") != "codex"]
         wins = [at for at, e in mine if str(e.get("outcome")).startswith("BROWSER_OK")] + ([proven] if proven else [])
         fails = collections.Counter(e.get("outcome") for at, e in mine
                                     if now - at <= 72 * 3600 and not str(e.get("outcome")).startswith("BROWSER_OK")
@@ -4568,12 +4569,37 @@ def browser_section(now, write=False):
                         head=head if say else None,
                         judge=[verdict(rule, account, 1, 0, "findings", 0, 1, level, fact=say,
                                        evidence=[proof], bad=1)] if say else None))
+    codex = [(at, e) for at, e in log if e.get("vendor") == "codex" and e.get("target", "chrome") == "chrome"]
+    canary_at, canary = max(((at, e) for at, e in codex if str(e.get("run")).startswith("canary-")),
+                            key=lambda pair: pair[0], default=(None, {}))
+    if canary:
+        account, outcome = canary.get("account") or "?", canary.get("outcome")
+        state = "%s · %s · %s %s ago" % (account, canary.get("profile") or "no profile",
+                                         BROWSER_SKIPS.get(outcome, outcome), fmt_long(now - canary_at))
+        say = fix = None
+        level, rule, head = "watch", "browser-account", "a browser account cannot serve runs"
+        if outcome == "CANARY_NOT_STARTED":
+            say = "codex/%s: its canary session never started: %s" % (account, canary.get("error") or "?")
+            fix = "read browse/last-session-codex-%s.err" % account
+            level, rule, head = "red", "browser-canary-start", "the browser canary could not start its session"
+        elif outcome not in BROWSER_SKIPS and not str(outcome).startswith("BROWSER_OK") and \
+                not any(at > canary_at and str(e.get("outcome")).startswith("BROWSER_OK") for at, e in codex):
+            say = "codex/%s: its last canary session ended %s" % (account, outcome)
+            fix = "read browse/last-session-codex-%s.out" % account
+        rows.append(row(["Codex", state, fix or ""], [1] if level == "red" else (), dim=not say,
+                        key="browser:codex" if say else None, say=say and "%s · fix: %s" % (say, fix),
+                        head=head if say else None,
+                        judge=[verdict(rule, "codex/" + account, 1, 0, "findings", 0, 1, level, fact=say,
+                                       evidence=[evidence(canary_at, "canary:%s" % canary.get("run"), canary.get("error") or say)],
+                                       bad=1)] if say else None))
     repair = sorted(((at, e) for at, e in log if now - at <= 72 * 3600 and (
         e.get("workaround") or e.get("outcome") in BROWSER_REPAIR)), key=lambda pair: pair[0])
     if repair:
         newest = repair[-1][1]
         where = "worker-run transcript %s" % newest.get("run")
-        if str(newest.get("run")).startswith(("enroll-", "canary-")):
+        if str(newest.get("run")).startswith("canary-codex-"):
+            where = "browse/last-session-codex-%s.out" % newest.get("account")
+        elif str(newest.get("run")).startswith(("enroll-", "canary-")):
             where = "browse/last-session-%s.json" % newest.get("account")
         kinds = collections.Counter("workaround" if e.get("workaround") else e.get("outcome") for _, e in repair)
         say = "%d browser run%s in 72 h went around the harness or ended without its outcome (%s), newest %s · fix: " \

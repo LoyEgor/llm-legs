@@ -362,6 +362,20 @@ BROWSE_CUA_SYNC="$WORK/bin/cua-sync-broken" BROWSE_SKIP_PROCESSES=1 \
 assert test "$rc" -eq 2
 assert grep -qx 'REASON: codex computer use unavailable — cua_repl registration failed: fake registration failure' "$WORK/computer-cua.out"
 assert test ! -s "$CALL_LOG"
+# Nor is a browser run: under codex_workers=off it asks the picker as `browser` and gets past the
+# role wall to the browser preflight, an explicit account included.
+for browser_args in '' '--account cu'; do
+  clear_stub
+  : >"$PICK_LOG"
+  rc=0
+  # shellcheck disable=SC2086
+  BROWSE_CUA_SYNC="$WORK/bin/cua-sync-ok" BROWSE_SKIP_PROCESSES=1 \
+    "$RUNNER" start codex --browser $browser_args --brief "$WORK/brief" >"$WORK/browser-open.out" 2>"$WORK/browser-open.err" || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -qx 'REASON: no enrolled Chrome profile is open: worker-run browse --enroll all' "$WORK/browser-open.out"
+  assert test "$(grep -c 'switched off for workers' "$WORK/browser-open.err")" = 0
+  [ -n "$browser_args" ] || assert grep -qx -- '--account codex --role browser --claim' "$PICK_LOG"
+done
 unset PICK_ACCOUNT PICK_RC
 set_config
 

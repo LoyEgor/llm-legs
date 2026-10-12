@@ -24,6 +24,7 @@ assert() {
   asserts=$((asserts + 1))
   "$@" || fail "assert $asserts failed: $*"
 }
+assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
 contains() { [[ $1 == *"$2"* ]]; }
 # Vendor lines are optional — a vendor the store carries no row for prints none — so a case reads
 # the line it means by its prefix rather than by an index the next absent vendor would shift.
@@ -1477,6 +1478,68 @@ query_case codex_credit --account codex --role computer
 assert test "$query_rc" -eq 3
 assert grep -q 'codex is paused' "$WORK/query.err"
 
+# A browser run reads like computer on both vendors that drive Chrome, and its table ranks the two
+# vendors' accounts by the shared rule with no lead for the worker toggle.
+browser_store='.vendors.claude.accounts = [
+    {account:"cl-busy",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:60}},
+    {account:"cl-walled",enabled:true,five_hour:{used_pct:100},weekly:{used_pct:5}},
+    {account:"cl-out",enabled:false,five_hour:{used_pct:0},weekly:{used_pct:0}}]
+  | .vendors.codex = {available:true,accounts:[
+    {account:"cx-free",enabled:true,five_hour:{used_pct:5},weekly:{used_pct:10}},
+    {account:"cx-out",enabled:false,five_hour:{used_pct:0},weekly:{used_pct:0}}]}'
+write_config 'worker=claudeb' 'codex_workers=off' 'claudeb_workers=off' 'codex_profile=cx-out' 'claudeb_profile=cl-out'
+load_case gemini_fresh "$browser_store"
+query --role browser
+assert test "$query_rc" -eq 0
+output=$query_out
+assert test "$(acct_line)" = 'ACCOUNT: cx-free'
+assert grep -qx 'START: worker-run start codex' <<<"$query_out"
+assert test "$(next_block | awk '{print $6}' | tr '\n' ' ' | squeeze)" = 'codex/cx-free claude/cl-busy'
+assert not_contains "$query_out" gemini
+query --account codex --role browser
+assert test "$query_rc" -eq 0
+assert test "$query_out" = cx-free
+query --account codex
+assert test "$query_out" = cx-out
+query --account claudeb --role browser
+assert test "$query_rc" -eq 0
+assert test "$query_out" = cl-busy
+query --account gemini --role browser
+assert test "$query_rc" -eq 2
+query --list --role browser
+assert test "$query_rc" -eq 0
+browser_list_line() { grep -m1 -- "^$1	$2	" <<<"$query_out"; }
+assert test "$(browser_list_line claudeb cl-walled)" = "$(printf 'claudeb\tcl-walled\t5\twalled')"
+assert test "$(browser_list_line claudeb cl-busy)" = "$(printf 'claudeb\tcl-busy\t60\tok')"
+assert test "$(browser_list_line codex cx-free)" = "$(printf 'codex\tcx-free\t10\tok')"
+assert test "$(browser_list_line codex cx-out)" = "$(printf 'codex\tcx-out\t0\toff')"
+assert grep -qx "$(printf 'NEXT\tclaudeb\tcl-busy')" <<<"$query_out"
+assert grep -qx "$(printf 'NEXT\tcodex\tcx-free')" <<<"$query_out"
+assert grep -qx "$(printf 'NEXT\tgemini\t-')" <<<"$query_out"
+assert test -z "$(grep '^gemini' <<<"$query_out")"
+load_case gemini_fresh "$browser_store | .vendors.codex.accounts[0].five_hour.used_pct = 100"
+query --role browser
+output=$query_out
+assert test "$(acct_line)" = 'ACCOUNT: cl-busy'
+assert grep -qx 'START: worker-run start claudeb' <<<"$query_out"
+load_case gemini_fresh "$browser_store | .vendors.claude.accounts[0].five_hour.used_pct = 100"
+query --role browser
+output=$query_out
+assert test "$(acct_line)" = 'ACCOUNT: cx-free'
+load_case gemini_fresh "$browser_store | .vendors.claude.accounts[0].five_hour.used_pct = 100
+  | .vendors.codex.accounts[0].five_hour.used_pct = 100"
+query --role browser
+assert test "$query_rc" -eq 0
+assert grep -qx 'NEXT: ALL WALLED, ask Egor' <<<"$query_out"
+write_config 'codex_paused=on'
+load_case gemini_fresh "$browser_store"
+query --role browser
+output=$query_out
+assert test "$(acct_line)" = 'ACCOUNT: cl-busy'
+query --account codex --role browser
+assert test "$query_rc" -eq 3
+assert grep -q 'codex is paused' "$WORK/query.err"
+
 write_config
 query_case claude_pool --account claudeb --role reviewers
 assert test "$query_rc" -eq 0
@@ -2559,4 +2622,4 @@ gate_start claudeb "$WORK/gate-brief" >/dev/null
 assert test "$(cat "$WORK/gate-reads")" = read
 
 fi
-printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the seven roles including chat, research, light and computer without pins or role keys and light, image and computer ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"
+printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the eight roles including chat, research, light, computer and browser without pins or role keys and light, image, computer and browser ignoring workers-off and the pin alike, a browser table over claude and codex alone, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"

@@ -1679,6 +1679,28 @@ check(cells["notcom"][1] == "read browse/last-session-notcom.json"
       "Browser: no receipt points at the session's answer; an out-of-pool account says so and its skip is no failure")
 check(cells["wk"][0].endswith(" ago · walled") and cells["wk"][1] == "",
       "Browser: a walled canary is weather: shown, never judged, no 7-day watch and no failure")
+def codex_log(*entries):
+    put(os.path.join(runs, "browse", "log.jsonl"), "".join(json.dumps(dict(e, target="chrome", workaround=False)) + "\n" for e in (
+        {"ts": stamp(T - 600), "run": "canary-com-9", "vendor": "claudeb", "account": "com", "outcome": "BROWSER_OK"},
+        {"ts": stamp(T - 7200), "run": "canary-codex-com-1", "vendor": "codex", "account": "com", "outcome": "CANARY_NO_RECEIPT"})
+        + entries))
+    part = B(T)
+    return part, {r["cells"][0]: r["cells"][1:] for r in part["rows"]}
+part, cells = codex_log({"ts": stamp(T - 300), "run": "canary-codex-cx-1", "vendor": "codex", "account": "cx",
+                         "profile": "Profile 1", "outcome": "CANARY_NOT_STARTED", "error": "ERROR: unexpected status 401"})
+check(judged(part).get(("browser-canary-start", "codex/cx")) == "red" and cells["Codex"][1] == "read browse/last-session-codex-cx.err"
+      and cells["Codex"][0].startswith("cx · Profile 1 · CANARY_NOT_STARTED "),
+      "Browser: the codex canary leg has its own row, red when its session never started")
+check("72 h" not in cells["com"][0] and ("browser-account", "com") not in judged(part),
+      "Browser: a codex run on an account name claudeb also has never lands on the claudeb row")
+part, cells = codex_log({"ts": stamp(T - 300), "run": "canary-codex-cx-2", "vendor": "codex", "account": "cx",
+                         "outcome": "CANARY_NO_RECEIPT"})
+check(judged(part).get(("browser-account", "codex/cx")) == "watch" and cells["Codex"][1] == "read browse/last-session-codex-cx.out",
+      "Browser: a codex canary without a receipt is a watch pointing at its answer")
+part, cells = codex_log({"ts": stamp(T - 300), "run": "canary-codex-cx-3", "vendor": "codex", "account": "cx",
+                         "outcome": "CANARY_WALLED"})
+check(not any(ident.startswith("codex/") for _, ident in judged(part)) and " walled " in cells["Codex"][0],
+      "Browser: a walled codex leg is weather: shown, never judged")
 shutil.rmtree(runs)
 for beat, beat_at, ident in ((None, T, "never-started"), ("roots=2\n", T - 1000, "stale"),
                              ("roots=2\nerror=fsevents gone\n", T - 30, "error"), ("roots=0\n", T - 30, "no-root")):
