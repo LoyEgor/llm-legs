@@ -183,10 +183,10 @@ for b in /bin/bash "$BASH"; do
   done
   assert test "$(paste -sd' ' - <"$WORK/rcs$tag")" = '0 1 5'
   assert test -z "$(ls "$WORK" | grep '^marker-')"
-  assert jqe -s --argjson keys "$KEYS" --arg repo "$REPO" --arg sha "$SHA" 'length == 3
-    and all(.[]; (keys == $keys) and .kind == "direct" and .scope == "direct" and .j == 1 and .slot == null
+  assert jqe -s --argjson keys "$KEYS" --arg repo "$REPO" --arg sha "$SHA" --arg slots "$RUN_SUITES_SLOTS_DIR/" 'length == 3
+    and all(.[]; (keys == $keys) and .kind == "direct" and .scope == "direct" and .j == 1 and (.slot | startswith($slots))
       and .signal == null and .complete == true and .repo == $repo and .repo_root == $repo and .head == $sha
-      and .queued_at == .started_at and .started_at <= .ended_at and (.suites | keys) == ["test_trap.sh"]
+      and .queued_at <= .started_at and .started_at <= .ended_at and (.suites | keys) == ["test_trap.sh"]
       and (.suites["test_trap.sh"] | (.cpu_s | type == "number") and (.secs | type == "number") and .forks == null))
     and [.[].suites["test_trap.sh"].rc] == [0,1,5]' "$WORK/h/.cache/run-suites/runs.jsonl"
 done

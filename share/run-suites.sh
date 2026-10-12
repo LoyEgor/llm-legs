@@ -49,7 +49,7 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
 
 Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3 clamped 2 to 4 always, up to 4
 while the machine has room); a run waits for a free slot under RUN_SUITES_SLOTS_DIR, its wait a
-limiter hold, and frees it once only its last suite runs. Inside a worker (WORKER_RUN_ID set) --changed skips the slow layer, tests/slow-suites,
+limiter hold, and frees it once only its last suite runs; a direct `bash tests/x.sh` takes one too. Inside a worker (WORKER_RUN_ID set) --changed skips the slow layer, tests/slow-suites,
 except a suite the worker edited; the landing and the night full run run them.
 
 A suite whose first 5 lines hold `# shards: N` runs as N jobs, each with SUITE_SHARD=i/N and only

@@ -562,8 +562,10 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
     suite_journal=${RUN_SUITES_JOURNAL:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/runs.jsonl}
     if [ -s "$suite_journal" ]; then
       while IFS=$'\t' read -r jkind jid jstart; do journaled[$jkind/$jid]+=" $jstart"; done < <(tail -c 262144 "$suite_journal" 2>/dev/null |
-        jq -rR 'fromjson? | select(.started_at | type == "number") | (.started_at | floor) as $t
-          | if .kind == "suites" then "suites\t\(.pid)\t\($t)" else .suites | keys[] | "direct\t\(sub("\\.[a-z]+$"; ""))\t\($t)" end' 2>/dev/null)
+        jq -rR 'fromjson? | select(.started_at | type == "number")
+          | if .kind == "suites" then (.started_at | floor) as $t | "suites\t\(.pid)\t\($t)"
+            else ((if .queued_at | type == "number" then .queued_at else .started_at end) | floor) as $t
+              | .suites | keys[] | "direct\t\(sub("\\.[a-z]+$"; ""))\t\($t)" end' 2>/dev/null)
     fi
     journaled_run() { # kind id start
       local t

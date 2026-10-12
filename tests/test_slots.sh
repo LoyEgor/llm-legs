@@ -268,6 +268,37 @@ assert kill -0 "$tail_run"
 wait "$tail_run" || fail "the tail run failed: $(cat "$WORK/tail.out")"
 assert grep -q '2 PASS' "$WORK/tail.out"
 assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
+# A direct run waits for a run-suites slot like a one-suite run, journals the wait and holds the slot
+# to its end (2026-10-04: 13 direct runs at once took 422-2009 s against 13-94 s alone).
+mkdir -p "$WORK/direct/tests"
+printf '#!/usr/bin/env bash\n. "%s/tests/lib/suite-journal.sh"\necho "PASS: slot=$RUN_SUITES_SLOT"\n' "$ROOT" \
+  >"$WORK/direct/tests/test_d.sh"
+h6=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
+env -u SUITE_JOURNAL_PID SUITE_JOURNAL="$WORK/direct.jsonl" bash "$WORK/direct/tests/test_d.sh" >"$WORK/direct.out" 2>&1 &
+direct=$!
+pids+=("$direct")
+for i in $(seq 1 50); do [ "$(holds_of run-suites)" = 1 ] && break; sleep 0.1; done
+assert [ "$(holds_of run-suites)" = 1 ]
+assert jqe --arg r "$WORK/direct" '.held.what == "suite test_d.sh of \($r)"' "$HARNESS_HOLDS_DIR"/run-suites-*.json
+assert kill -0 "$direct"
+sleep 1
+kill "$h6"
+wait "$direct" || fail "a direct run failed: $(cat "$WORK/direct.out")"
+assert grep -q "PASS: slot=$RUN_SUITES_SLOTS_DIR/1" "$WORK/direct.out"
+assert jqe --arg slot "$RUN_SUITES_SLOTS_DIR/1" --argjson pid "$direct" '.kind == "direct" and .pid == $pid and .slot == $slot
+  and .started_at - .queued_at >= 1 and .suites["test_d.sh"].secs < .ended_at - .queued_at - 0.9' "$WORK/direct.jsonl"
+assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
+assert jqe --arg r "$WORK/direct" 'map(select(.source == "suite test_d.sh of \($r)")) | length == 1 and .[0].seconds >= 1' \
+  <(waits_of run-suites)
+# The same suite under run-suites takes no second slot: with one slot, the run holding it still ends.
+env -u SUITE_JOURNAL_PID SUITE_JOURNAL="$WORK/direct.jsonl" bash "$ROOT/share/run-suites.sh" --repo "$WORK/direct" \
+  >"$WORK/direct-rs.out" 2>&1 &
+direct_rs=$!
+pids+=("$direct_rs")
+for i in $(seq 1 600); do kill -0 "$direct_rs" 2>/dev/null || break; sleep 0.1; done
+! kill -0 "$direct_rs" 2>/dev/null || fail "a run-suites suite queued for a second slot: $(cat "$WORK/direct-rs.out")"
+assert grep -q '1 PASS' "$WORK/direct-rs.out"
+assert [ "$(wc -l <"$WORK/direct.jsonl")" -eq 1 ]
 # A worker's run stops queueing once that worker has ended; an exit code already there is a stale export.
 h7=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
 # A run that cannot start fails before it queues.

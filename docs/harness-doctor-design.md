@@ -672,7 +672,8 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   `refreshState().prefix` follows the same order.
 - **llm-legs limiters.** `share/slots.sh` `slot_wait` writes one: `run-suites` (at most
   `RUN_SUITES_SLOTS` suite runs machine-wide: cores / 3 clamped 2–4 always, up to 4 while `slot_room`
-  finds room) and `workers` (every `worker-run` run, `WORKER_SLOTS`: cores / 2
+  finds room; a direct `bash tests/x.sh` outside any slot is one such run, held to its end by
+  `tests/lib/suite-journal.sh`, and exports the slot a nested run inherits) and `workers` (every `worker-run` run, `WORKER_SLOTS`: cores / 2
   clamped 2–8 always, up to 4 × the cores capped at 40 while `slot_room` finds room; a nested run inherits
   `WORKER_SLOT`; `run_suites_slots` and `worker_slots` in `share/slots.sh`). Room only adds slots above the old defaults. Room = memory pressure normal, available
   memory above `bin/chat-load` `GUARD_AVAIL_MB` + `SLOTS_ROOM_MB` (1500), and load1 within the cores of

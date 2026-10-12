@@ -249,16 +249,21 @@ suite_journal_run=${WORKER_RUN_ID:-}
 suite_journal_signal='' suite_journal_exit=''
 suite_journal_git "$suite_journal_repo"
 suite_journal_path=$PATH
+suite_journal_slots=${BASH_SOURCE[0]%/*}/../../share/slots.sh
+case $suite_journal_slots in /*) ;; *) suite_journal_slots=$PWD/$suite_journal_slots ;; esac
+suite_journal_queued=$suite_journal_began suite_journal_slot='' suite_journal_held=${RUN_SUITES_SLOT:-} suite_journal_waited=0
 
 suite_journal_end() { # exit-code -> returns it
   [ -z "${suite_journal_done:-}" ] && [ "${BASHPID:-$$}" = "$$" ] || return "$1"
   suite_journal_done=1
-  local rc=$1 flags=$- name=${suite_journal_test##*/} ended secs cpu began complete=true
+  local rc=$1 flags=$- name=${suite_journal_test##*/} ended secs cpu began queued complete=true
   set +eu
+  [ -z "$suite_journal_slot" ] || (. "$suite_journal_slots" && slot_release "$suite_journal_slot") 2>/dev/null
   [ -d "${suite_journal_file%/*}" ] || mkdir -p "${suite_journal_file%/*}" 2>/dev/null
   suite_journal_ms ended
   [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"
-  [ -n "$suite_journal_began" ] || suite_journal_began=$(( ended - SECONDS * 1000 ))
+  [ -n "$suite_journal_queued" ] || suite_journal_queued=$(( ended - SECONDS * 1000 ))
+  [ -n "$suite_journal_began" ] || suite_journal_began=$(( ended - (SECONDS - suite_journal_waited) * 1000 ))
   suite_journal_cpu cpu "$suite_journal_file.$$.times"
   [ -z "$suite_journal_signal" ] || { rc=$(( 128 + suite_journal_signal )); complete=false; }
   suite_journal_digest "$name"
@@ -268,8 +273,9 @@ suite_journal_end() { # exit-code -> returns it
   suite_journal_content "$suite_journal_repo" "$suite_journal_began"
   suite_journal_secs began "$suite_journal_began"
   suite_journal_secs ended "$ended"
-  suite_journal_row direct "$$" "$began" "$began" "$ended" "$suite_journal_repo" "$suite_journal_root" \
-    "$suite_journal_head" direct "$suite_journal_run" "$suite_journal_session" 1 '' "$suite_journal_signal" "$complete"
+  suite_journal_secs queued "$suite_journal_queued"
+  suite_journal_row direct "$$" "$queued" "$began" "$ended" "$suite_journal_repo" "$suite_journal_root" \
+    "$suite_journal_head" direct "$suite_journal_run" "$suite_journal_session" 1 "$suite_journal_held" "$suite_journal_signal" "$complete"
   suite_journal_append "$suite_journal_file"
   case $flags in *e*) set -e ;; esac
   case $flags in *u*) set -u ;; esac
@@ -320,6 +326,19 @@ builtin trap 'suite_journal_end $?' EXIT
 builtin trap 'suite_journal_die 1' HUP
 builtin trap 'suite_journal_die 2' INT
 builtin trap 'suite_journal_die 15' TERM
+
+# A direct run is a one-suite run-suites run: it waits for a run-suites slot and holds it to its end.
+# A nested or run-suites suite never gets here, and a run-suites run inside inherits the slot.
+if [ -z "$suite_journal_held" ]; then
+  suite_journal_slot=$(. "$suite_journal_slots" && slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
+    "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suite ${suite_journal_test##*/} of $suite_journal_repo") ||
+    suite_journal_slot=''
+  if [ -n "$suite_journal_slot" ]; then
+    export RUN_SUITES_SLOT=$suite_journal_slot
+    suite_journal_held=$suite_journal_slot suite_journal_waited=$SECONDS
+    suite_journal_ms suite_journal_began
+  fi
+fi
 
 # A direct run splits like a run-suites one: RUN_SUITES_SHARDS=on|off, auto only while slot_room.
 if [ "$suite_shard_n" -gt 1 ] && [ "${BASH_VERSINFO[0]}" -ge 4 ] && suite_shard_wanted "$suite_shard_wait"; then

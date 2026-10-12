@@ -247,17 +247,22 @@ c5_row suites 90 "$((c5_now - 112))" test_1.sh
 c5_row suites 91 "$((c5_now - 300))" test_1.sh
 c5_row direct 93 "$((c5_now - 41))" test_dup.sh
 c5_row direct 702 "$((c5_now - 109))" test_wdup.sh
-printf 'p95\nfcwd\nn%s\n' "$WORK/repo" > "$WORK/lsof-extra"
+# A direct run that waited for its slot started later than its process: it is matched by its queue.
+printf '{"kind":"direct","pid":97,"queued_at":%s.250,"started_at":%s.250,"suites":{"test_qdup.sh":{"rc":0}}}\n' \
+  "$((c5_now - 41))" "$((c5_now - 20))" >>"$c5_journal"
+printf 'p95\nfcwd\nn%s\np97\nfcwd\nn%s\n' "$WORK/repo" "$WORK/repo" > "$WORK/lsof-extra"
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
   suite_run 90 r-c5 1 "$((c5_now - 110))" 0; suite_run 91 r-c5-reused 1 "$((c5_now - 110))" 0
   shell_line 92 00:41; printf '93 92 00:40 bash tests/test_dup.sh\n'
   shell_line 94 00:41; printf '95 94 00:40 bash tests/test_undup.sh\n'
+  shell_line 96 00:41; printf '97 96 00:40 bash tests/test_qdup.sh\n'
   printf '700 1 03:00 bash -c supervisor\n703 700 01:50 bash tests/test_wdup.sh\n'; } > "$WORK/snap"
 probe
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; printf '700 1 03:00 bash -c supervisor\n'; } > "$WORK/snap"
 probe
 assert_eq 'r-c5-reused test_undup' "$(jq -r 'select((.repo | startswith("r-c5")) or (.label | test("^test_w?u?n?dup$")))
   | if .label == "suites" then .repo else .label end' "$STATUSLINE_CACHE_DIR/test-history.jsonl" | paste -sd' ' -)"
+assert_eq '' "$(jq -r 'select(.label == "test_qdup") | .label' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
 
 # A test script that runs part of itself is partial whichever selector it reads narrowed it.
 selectors=$(cd "$ROOT/tests" && grep -Eo 'WORKER_RUN_TEST_([A-Z_]*_)?(CASE|ONLY)' test_worker_run_*.sh | sort -u)
