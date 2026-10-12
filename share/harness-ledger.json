@@ -258,7 +258,7 @@
             "llm-legs/tests/lib/suite-journal.sh"
           ],
           "in": "llm-legs@f081980f",
-          "regressed_at": null
+          "regressed_at": "2026-10-10T13:58:33+03:00"
         }
       ],
       "same_cause": [
@@ -3603,7 +3603,7 @@
             "llm-legs/tests/test_instruction_gate_tripwire.sh"
           ],
           "in": "llm-legs@c5fa30ea",
-          "regressed_at": null
+          "regressed_at": "2026-10-12T05:35:06+03:00"
         }
       ],
       "same_cause": [],
@@ -5464,7 +5464,7 @@
             "llm-legs/tests/lib/suite-journal.sh"
           ],
           "in": "llm-legs@f081980f",
-          "regressed_at": null
+          "regressed_at": "2026-10-10T13:42:26+03:00"
         }
       ],
       "same_cause": [],
@@ -5490,7 +5490,7 @@
             "llm-legs/tests/lib/suite-journal.sh"
           ],
           "in": "llm-legs@f081980f",
-          "regressed_at": null
+          "regressed_at": "2026-10-10T13:42:26+03:00"
         }
       ],
       "same_cause": [],
@@ -5794,7 +5794,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_doctor_fix"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:57:32+03:00",
@@ -5818,7 +5818,7 @@
             "llm-legs/bin/doctor-fix",
             "llm-legs/share/chat-open.sh"
           ],
-          "in": null,
+          "in": "llm-legs@d2815e9a",
           "regressed_at": null,
           "equivalence": {
             "compared": "test_doctor_fix at HEAD vs the fix, 4 shards side by side",
@@ -6104,7 +6104,7 @@
         "rule": "opportunity",
         "ident": "test-health/(heavy|pole)/llm-legs/test_statusline_hooks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:30:00+03:00",
@@ -6128,7 +6128,7 @@
             "llm-legs/bin/statusline-workdir-hook.sh",
             "llm-legs/bin/statusline-place"
           ],
-          "in": null,
+          "in": "llm-legs@17ad6614",
           "regressed_at": null,
           "equivalence": {
             "compared": "assert counts and PASS per shard, HEAD vs the rebalance (render-limits to shard 3, store merge-kick on split off render-pins as render-kicks in shard 4), plus one RUN_SUITES_SHARDS=off run; the workdir hook's jq here-string vs printf pipe and statusline-place's EPOCHSECONDS vs date on the same inputs",
@@ -6180,7 +6180,7 @@
         "rule": "opportunity",
         "ident": "test-health/(heavy|pole)/claude-setup/test_review_flow_gate"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:45:00+03:00",
@@ -6203,7 +6203,7 @@
             "llm-legs/share/test_health.py",
             "llm-legs/bin/speed-doctor"
           ],
-          "in": null,
+          "in": "llm-legs@cf193646",
           "regressed_at": null,
           "equivalence": {
             "compared": "Speed's test-health findings, base vs fix code, one pinned SPEED_DOCTOR_NOW/TIME_BUDGET_NOW",
@@ -6346,7 +6346,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_llm_limits_grok"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T08:45:00+03:00",
@@ -6369,7 +6369,7 @@
             "llm-legs/llm-limits.sh",
             "llm-legs/tests/test_llm_limits.sh"
           ],
-          "in": null,
+          "in": "llm-legs@e3d1b510",
           "regressed_at": null,
           "equivalence": {
             "compared": "llm-limits.sh --json on the suite fixture HOME, base vs fix, as_of/fetched_at/ages aside; the ElevenLabs reader on a missing ELEVENLABS_KEYS file exits 1 before any read (elevenlabs_balance.py accounts(), elevenlabs_keys_sync.py main), the same empty reading the skip leaves",
@@ -6421,7 +6421,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_vendor_fingerprint"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:00:00+03:00",
@@ -6444,7 +6444,7 @@
             "llm-legs/bin/vendor-fingerprint",
             "llm-legs/tests/test_vendor_fingerprint.sh"
           ],
-          "in": null,
+          "in": "llm-legs@e3d1b510",
           "regressed_at": null,
           "equivalence": {
             "compared": "the four fingerprints (codex, grok, gemini, claude) a baseline check writes from the suite fixture, base vs fix, checked_at aside, with a seeded codex divergence (catalog and client lines)",
@@ -6527,7 +6527,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_worker_run_lifecycle"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:40:00+03:00",
@@ -6551,7 +6551,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_lifecycle.sh"
           ],
-          "in": null,
+          "in": "llm-legs@e3d1b510",
           "regressed_at": null,
           "equivalence": {
             "compared": "model_id a picked codex start records: base resolves the vendor-wide slug, the picked account's slug in pick_account_listing and the same again after the pick; the fix reuses the pick's slug for the same account and model, and resolves the vendor-wide slug only when the account's own lists none",
@@ -6573,7 +6573,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_worker_run_attribution"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T08:43:14+03:00",
@@ -6597,7 +6597,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_attribution.sh"
           ],
-          "in": null,
+          "in": "llm-legs@e3d1b510",
           "regressed_at": null,
           "equivalence": {
             "compared": "the outside-repair variants' asserts, base vs fix: two `worker-run report` calls on the same finished run become one read checked for both notes; the worker-run slug change as in speed-test-health-heavy-worker-run-lifecycle",
@@ -6649,7 +6649,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_night_run"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:41:56+03:00",
@@ -6673,7 +6673,7 @@
             "llm-legs/share/slots.sh",
             "llm-legs/share/chat-open.sh"
           ],
-          "in": null,
+          "in": "llm-legs@effe98ec",
           "regressed_at": null,
           "equivalence": {
             "compared": "test_night_run at HEAD vs the fix, both 4 shards side by side (base a detached worktree of 7f233cfe), plus the 17 suites tests/affected names for the four files",
@@ -6695,7 +6695,7 @@
         "rule": "opportunity",
         "ident": "test-health/pole/llm-legs/test_night_run"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:41:56+03:00",
@@ -6719,7 +6719,7 @@
             "llm-legs/share/slots.sh",
             "llm-legs/share/chat-open.sh"
           ],
-          "in": null,
+          "in": "llm-legs@effe98ec",
           "regressed_at": null,
           "equivalence": {
             "compared": "as speed-test-health-heavy-night-run",
@@ -7183,7 +7183,7 @@
         "rule": "log_audit",
         "ident": "speed-doctor-metrics-misleading"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T07:30:00+03:00",
@@ -7192,7 +7192,7 @@
             "llm-legs/tests/test_speed_doctor.sh",
             "llm-legs/bin/speed-doctor"
           ],
-          "in": null,
+          "in": "llm-legs@9e64bac4",
           "regressed_at": null
         }
       ],
@@ -7237,7 +7237,7 @@
         "rule": "log_audit",
         "ident": "haiku-bench-ran-sonnet"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T07:30:00+03:00",
@@ -7247,7 +7247,7 @@
             "review-bench/share/rbench/launch.py",
             "review-bench/tests/test_review_bench.sh"
           ],
-          "in": null,
+          "in": "review-bench@d49d320",
           "regressed_at": null
         }
       ],
@@ -7289,7 +7289,7 @@
         "rule": "log_audit",
         "ident": "landing-pipeline-retests-and-mistakes"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T07:30:00+03:00",
@@ -7298,7 +7298,7 @@
             "llm-legs/docs/fix-orchestrator.md",
             "llm-legs/bin/night-run"
           ],
-          "in": null,
+          "in": "llm-legs@3d388f3e",
           "regressed_at": null
         }
       ],
@@ -7472,7 +7472,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_llm_limits"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:30:00+03:00",
@@ -7499,7 +7499,7 @@
             "llm-legs/llm-limits.sh",
             "llm-legs/tests/test_llm_limits.sh"
           ],
-          "in": null,
+          "in": "llm-legs@e3d1b510",
           "regressed_at": null,
           "equivalence": {
             "compared": "llm-limits.sh --json on the suite fixture HOME, base vs fix, as_of/fetched_at/ages aside; the ElevenLabs reader on a missing ELEVENLABS_KEYS file exits 1 before any read (elevenlabs_balance.py accounts(), elevenlabs_keys_sync.py main), the same empty reading the skip leaves",
@@ -7645,7 +7645,7 @@
         "rule": "log_audit",
         "ident": "own-headroom-guard-opaque-refusal"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-12T04:30:00+03:00",
@@ -7653,7 +7653,7 @@
           "files": [
             "llm-legs/bin/worker-run"
           ],
-          "in": null,
+          "in": "llm-legs@014f8aef",
           "regressed_at": null
         }
       ],

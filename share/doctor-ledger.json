@@ -2188,7 +2188,7 @@
     "detail": "its worktree \\S+ is still worked in by"
    },
    "title": "night-run speed-gate refused a night worker before any CLI start because a process stood in the job's night worktree, and the refusal reads as an unclassified failure",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-12T04:10:00+03:00",
@@ -2199,7 +2199,7 @@
       "llm-legs/bin/worker-run",
       "llm-legs/share/processes.sh"
      ],
-     "in": null,
+     "in": "llm-legs@e2f0a939",
      "regressed_at": null
     }
    ],
