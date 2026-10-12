@@ -868,7 +868,7 @@ speed_lens() { # id worktree top -> a Speed run's component files in top's repos
   # door's nonce): run from here it refuses, so the chat gets the line to run.
   line="$(sq "${DOCTOR_FIX_REVIEW_BENCH:-review-bench}") review --repo $(sq "$wt") --files"
   for rel in "${fresh[@]}"; do line+=" $(sq "$wt/$rel")"; done
-  line+=" --lens speed --tier $SPEED_LENS_TIER --scope-lines $(git -C "$wt" diff --numstat "$(git hash-object -t tree /dev/null)" HEAD -- "${fresh[@]}" | awk '{ s += $1 } END { print s + 0 }')"
+  line+=" --lens speed --tier $SPEED_LENS_TIER --panel standard --scope-lines $(git -C "$wt" diff --numstat "$(git hash-object -t tree /dev/null)" HEAD -- "${fresh[@]}" | awk '{ s += $1 } END { print s + 0 }')"
   line+=" --focus $(sq "Aimed by the Harness doctor's measured rows: $(jq -r '[.problems[] | .fact // .id] | join(" / ")' "$file"). Find what makes them slow; keep every check.")"
   line+=" </dev/null 2>&1 | DOCTORS_DIR=$(sq "${runs_dir%/runs}") $(sq "$script_path") lens-round $(sq "$id")"
   locked record_set "$id" '.lens_launch = $l | .lens_keys = $k' --arg l "$line" \

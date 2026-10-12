@@ -1023,7 +1023,7 @@ assert [ -n "$lens" ]
 # A day launch's stderr reaches no one: the orchestrator reads the same line off the run's record.
 assert [ "$(fix lens-lines $(cut -f1 "$WORK/out") no-such-run)" = "$lens" ]
 (cd "$WORK" && env "${speed_env[@]}" bash -c "$lens") 2>"$WORK/lens-err" || fail "the lens line failed: $(cat "$WORK/lens-err")"
-assert [ "$(cut -f2- "$DATA/rb-args")" = "review --repo $twt --files $twt/tests/test_llm_limits.sh --lens speed --tier T2 --scope-lines 3 --focus Aimed by the Harness doctor's measured rows: $(jq -r '.problems[0].fact' "$(record "$tid")"). Find what makes them slow; keep every check." ]
+assert [ "$(cut -f2- "$DATA/rb-args")" = "review --repo $twt --files $twt/tests/test_llm_limits.sh --lens speed --tier T2 --panel standard --scope-lines 3 --focus Aimed by the Harness doctor's measured rows: $(jq -r '.problems[0].fact' "$(record "$tid")"). Find what makes them slow; keep every check." ]
 assert [ "$(cat "$WORK/lens-err")" = "doctor-fix: $tid waits for speed lens round 20261008T000000Z-abcdef1: dispatch its brief when that round's \`review-bench wait\` returns" ]
 assert grep -qx 'ROUND: 20261008T000000Z-abcdef1' "$tbrief"
 printf 'run id: 20261008T000000Z-abcdef9
