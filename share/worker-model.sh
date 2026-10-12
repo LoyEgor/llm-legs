@@ -33,7 +33,7 @@ _worker_model_table_build() {
   IFS= read -r -d '' static <<'TABLE' || :
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
-claudeb sonnet high medium,high low no request
+claudeb sonnet high low,medium,high - no request
 claudeb haiku high low,medium,high - yes request
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
