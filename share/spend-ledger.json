@@ -367,6 +367,17 @@
    },
    "verdict": "kept",
    "note": "kept: 70.2k/7d (0.0 %) is 30 blocked shell writes; 24 were real instruction-file writes (python open(...,'w'), cp, git checkout) and each changed the outcome (next call Read+Edit or an MD-PROPOSAL); 6 false denials were variable-held fixture paths ($D/$R/$W/.../CLAUDE.md, even D=$(mktemp -d)) in sessions testing the gate itself: the gate denies a guarded basename behind any unresolved variable, which also catches cp x $P/global/CLAUDE.md on a real checkout, so exempting variables loses real catches for ~14k/week; denial text is ~10 % of the price (the rest is the denied command x5) and carries the per-file cost figures; +153 % is night-sweep SKILL.md shell edits; wall time 286->33 ms mean since 87288698"
+  },
+  {
+   "id": "spawn:subagent",
+   "title": "spawn subagent",
+   "audited_at": "2026-10-12T04:10:17+03:00",
+   "by": "harness-speed-spend-spawn-subagent-20261012T010237Z-16dc",
+   "share": 0.000279,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "note": "kept: 0.018 % of spend (185k limit tokens/7 d, ~3.8k a fork: memory files 82k, skill listing 66k, CLAUDE.md 35k, deferred 2k) is the startup of Claude Code's own forked /code-review run (49 forks, all in review-bench skill cells, cell prompt share/rbench/brief.py skill_brief); the fork IS the cell's review, its result is the cell's findings; its waste (bare-sha whole-commit forks, 57M/week) already cut at source by review-bench@e0392fd (2026-10-10); inline instead of fork changes the reviewed behaviour the bench measures and no replay of a stochastic review can prove identical findings, while the parent's post-fork turns would re-read the larger context; skill listing in a fork that calls no skill is vendor-injected with no per-fork switch; Δ new is measurement: pre-10-09 forks sit in raw-events rows with agent_type NULL that SUB_CLAUDE drops (handoff line in 2026-10-07-tokenmap-waste-detectors.md)"
   }
  ]
 }
