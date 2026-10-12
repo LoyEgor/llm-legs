@@ -5843,10 +5843,17 @@ browse_unstarted() { # account -> the first error line of a proof session that n
   fi | grep -m 1 . | cut -c 1-300 | grep .
 }
 
+browse_walled() { # account scratch-directory -> 0 when its last proof session ended on a usage wall
+  mkdir -p "$2" || return 1
+  jq -r 'select(.is_error == true) | (.result // empty), (.api_error_status // empty)' "$(browse_dir)/last-session-$1.json" >"$2/out" 2>/dev/null
+  cat "$(browse_dir)/last-session-$1.err" >"$2/err" 2>/dev/null
+  has_limit_signature "$2" claudeb
+}
+
 # Each enrolled account in the claudeb worker pool fills and submits a form on a listener only this canary
 # runs; the server's own receipt is the verdict, never the worker's word.
 browse_canary() {
-  local work port account dir rc=0 tag child answer
+  local work port account dir rc=0 tag child answer walled
   local -a children=()
   [ -z "$(chrome_runs)" ] || { printf 'CANARY: skipped — a browser run is live\n'; return 0; }
   mkdir -p "$(browse_dir)" && touch "$(browse_dir)/canary.stamp"
@@ -5882,11 +5889,18 @@ PY
   trap 'exit 1' INT TERM HUP
   for ((tag = 0; tag < 50; tag++)); do [ -s "$work/port" ] && break; sleep 0.1; done
   port=$(cat "$work/port" 2>/dev/null) || { printf 'CANARY: failed — its form server did not start\n'; return 1; }
+  walled=$("${WORKER_RUN_WORKER_PICK:-$SCRIPT_DIRECTORY/worker-pick}" --list --role workers 2>/dev/null |
+    awk -F'\t' '$1 == "claudeb" && $4 == "walled" { print $2 }')
   while IFS=$'\t' read -r account dir; do
     tag="canary-$account-$(date +%s)"
     if ! worker_pool_refuse_headless claudeb "$account" "$(worker_model_pin_csv < <(worker_model_pins claudeb))" 2>/dev/null; then
       browse_log "$tag" claudeb "$account" "$dir" chrome '' CANARY_OUT_OF_POOL false
       printf 'CANARY: %s skipped — out of the worker pool\n' "$account"
+      continue
+    fi
+    if grep -qxF -- "$account" <<<"$walled"; then
+      browse_log "$tag" claudeb "$account" "$dir" chrome '' CANARY_WALLED false
+      printf 'CANARY: %s skipped — walled\n' "$account"
       continue
     fi
     (
@@ -5895,6 +5909,8 @@ PY
         answer=$(browse_proof_session "$account" "$dir" "open http://127.0.0.1:$port/form?case=$tag in your proven tab, set the field \`v\` to \`$tag\` and submit the form through JavaScript, then read the page back: it must say \`received $tag\`.")
         if grep -qF "\"v\": \"$tag\"" "$work/receipts" 2>/dev/null; then
           browse_absorb "$account" "$dir" "$answer"
+        elif browse_walled "$account" "$work/wall-$account"; then
+          BROWSE_OUTCOME=CANARY_WALLED
         elif error=$(browse_unstarted "$account"); then
           BROWSE_OUTCOME=CANARY_NOT_STARTED
         else
@@ -5904,7 +5920,7 @@ PY
       fi
       browse_log "$tag" claudeb "$account" "$dir" chrome "$BROWSE_PROVEN" "$BROWSE_OUTCOME" false "$error"
       printf 'CANARY: %s %s%s\n' "$account" "$BROWSE_OUTCOME" "${error:+ — $error}"
-      [ "$BROWSE_OUTCOME" = BROWSER_OK ]
+      [ "$BROWSE_OUTCOME" = BROWSER_OK ] || [ "$BROWSE_OUTCOME" = CANARY_WALLED ]
     ) &
     children+=("$!")
   done < <(browse_registry | jq -r 'to_entries[] | select((.value.chrome_profile // "") != "") | [.key, .value.chrome_profile] | @tsv')

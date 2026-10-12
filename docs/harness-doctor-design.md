@@ -613,7 +613,8 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   and at once an account whose newest canary row is `CANARY_NO_RECEIPT` with no success after it (fix: read
   `browse/last-session-<account>.json`); `browser-canary-start` is red when the newest canary row is
   `CANARY_NOT_STARTED`, its evidence the row's `error` (the session's first error line, written by the canary);
-  a newest `CANARY_OUT_OF_POOL` row marks the account `out of the worker pool`, never judged, no 7-day watch;
+  a newest `CANARY_OUT_OF_POOL` or `CANARY_WALLED` row marks the account `out of the worker pool` or `walled`
+  (weather, per the 429 doctrine), never judged, no 7-day watch, not counted among the 72 h failures;
   `browser-repair` is red for a 72 h workaround, `HARNESS_NEEDS_REPAIR` or `missing`; `browser-applescript-js`
   watches a Dia without its JS flag. A writing run starts `worker-run browse --canary` (`HARNESS_BROWSE_CMD`)
   detached when `browse/canary.stamp` is older than 23 h; the canary's receipts land in the same log.

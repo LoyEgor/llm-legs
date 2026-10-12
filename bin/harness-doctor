@@ -4471,6 +4471,7 @@ def deploys_section(now):
 
 
 BROWSER_REPAIR = ("HARNESS_NEEDS_REPAIR", "missing")
+BROWSER_SKIPS = {"CANARY_OUT_OF_POOL": "out of the worker pool", "CANARY_WALLED": "walled"}
 BROWSER_CANARY_S = 23 * 3600
 BROWSER_QUIET_S = 7 * 86400
 
@@ -4537,12 +4538,12 @@ def browser_section(now, write=False):
         wins = [at for at, e in mine if str(e.get("outcome")).startswith("BROWSER_OK")] + ([proven] if proven else [])
         fails = collections.Counter(e.get("outcome") for at, e in mine
                                     if now - at <= 72 * 3600 and not str(e.get("outcome")).startswith("BROWSER_OK")
-                                    and e.get("outcome") != "CANARY_OUT_OF_POOL")
+                                    and e.get("outcome") not in BROWSER_SKIPS)
         canary_at, canary = max(((at, e) for at, e in mine if str(e.get("run")).startswith("canary-")),
                                 key=lambda pair: pair[0], default=(None, {}))
         canary_outcome = canary.get("outcome")
         state = "%s · %s%s" % (profile, status, " · proven %s ago" % fmt_long(now - proven) if proven else "")
-        state += " · out of the worker pool" if canary_outcome == "CANARY_OUT_OF_POOL" else ""
+        state += " · " + BROWSER_SKIPS[canary_outcome] if canary_outcome in BROWSER_SKIPS else ""
         failed = " · ".join("%s ×%d" % (kind, n) for kind, n in sorted(fails.items()))
         say = fix = None
         level, rule, head = "watch", "browser-account", "a browser account cannot serve runs"
@@ -4558,7 +4559,7 @@ def browser_section(now, write=False):
         elif canary_outcome == "CANARY_NO_RECEIPT" and not any(at > canary_at for at in wins):
             say = "%s: its last canary session ran but its form got no receipt" % account
             fix = "read browse/last-session-%s.json" % account
-        elif status == "ok" and canary_outcome != "CANARY_OUT_OF_POOL" and (not wins or now - max(wins) > BROWSER_QUIET_S):
+        elif status == "ok" and canary_outcome not in BROWSER_SKIPS and (not wins or now - max(wins) > BROWSER_QUIET_S):
             say, fix = "%s: no browser success in 7 days" % account, "worker-run browse --enroll %s" % account
         proof = evidence(canary_at, "canary:%s" % canary.get("run"), canary.get("error") or "") if level == "red" else \
             evidence(now, "browse:" + account, say)

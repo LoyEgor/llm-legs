@@ -47,6 +47,7 @@ printf '%s\n' "\$*" >>"$bt/claudeb.log"
 printf '%s\n' "\$prompt" >"$bt/prompt-\$account"
 mode=\$(cat "$bt/mode-\$account" 2>/dev/null || echo ok)
 [ "\$mode" != nostart ] || { printf 'env: claude: No such file or directory\n' >&2; exit 127; }
+[ "\$mode" != wall ] || { jq -cn '{is_error:true, duration_api_ms:0, api_error_status:429, session_id:"f4290e00", result:"You'"'"'ve hit your weekly limit · resets Tue 8:59am"}'; exit 1; }
 [ "\$mode" != nologin ] || { jq -cn '{is_error:true, duration_api_ms:0, result:"Not logged in · Please run /login"}'; exit 1; }
 url=\$(grep -o 'http://127.0.0.1:[0-9]*/form?case=[^ ]*' <<<"\$prompt" | head -n 1)
 [ -z "\$url" ] || [ "\$mode" != ok ] || curl -s "\${url%/form*}/submit?case=\${url##*=}&v=\${url##*=}" >/dev/null
@@ -337,6 +338,21 @@ EOF
   assert jq -se '[.[] | select(.account == "lost")][-1] | .outcome == "CANARY_NOT_STARTED"
     and .error == "env: claude: No such file or directory"' "$log" >/dev/null
   assert jq -se '[.[] | select(.account == "extra")][-1] | .outcome == "CANARY_OUT_OF_POOL" and (has("error") | not)' "$log" >/dev/null
+  # 9b: a usage wall is weather, never a harness fault: an account the picker lists walled is skipped unlaunched,
+  # and a session that ends on a wall logs CANARY_WALLED, never CANARY_NOT_STARTED
+  printf '#!/bin/sh\nprintf "claudeb\\tcom\\t38\\tok\\nclaudeb\\textra\\t100\\twalled\\ncodex\\tlost\\t100\\twalled\\n"\n' \
+    >"$bt/stub/worker-pick"
+  chmod +x "$bt/stub/worker-pick"
+  printf 'wall\n' >"$bt/mode-lost"
+  : >"$bt/claudeb.log"
+  rc=0; out=$(WORKER_RUN_WORKER_PICK="$bt/stub/worker-pick" browse --canary) || rc=$?
+  assert test "$rc" -eq 0
+  assert grep -qx 'CANARY: com BROWSER_OK' <<<"$out"
+  assert grep -qx 'CANARY: extra skipped — walled' <<<"$out"
+  assert test -z "$(grep '^profile extra ' "$bt/claudeb.log")"
+  assert grep -qx 'CANARY: lost CANARY_WALLED' <<<"$out"
+  assert jq -se '[.[] | select(.account == "extra")][-1].outcome == "CANARY_WALLED"
+    and ([.[] | select(.account == "lost")][-1].outcome == "CANARY_WALLED")' "$log" >/dev/null
   printf 'nosubmit\n' >"$bt/mode-lost"
   local holder
   sleep 300 &

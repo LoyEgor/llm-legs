@@ -1655,7 +1655,7 @@ time.sleep(0.3)
 check(not os.path.exists(calls), "Browser: a fresh canary stamp holds the next start")
 put(os.path.join(runs, "browse", "accounts.json"), json.dumps({
     name: {"email": name + "@x", "chrome_profile": "Profile " + name, "status": "ok", "proven_at": stamp(T - age)}
-    for name, age in (("com", 3600), ("notcom", 3600), ("rec", 3600), ("loco", 8 * 86400))}))
+    for name, age in (("com", 3600), ("notcom", 3600), ("rec", 3600), ("loco", 8 * 86400), ("wk", 8 * 86400))}))
 put(os.path.join(runs, "browse", "log.jsonl"), "".join(json.dumps(dict(e, target="chrome", workaround=False)) + "\n" for e in (
     {"ts": stamp(T - 7200), "run": "canary-com-1", "account": "com", "outcome": "CANARY_NOT_STARTED",
      "error": "env: claude: No such file or directory"},
@@ -1663,7 +1663,8 @@ put(os.path.join(runs, "browse", "log.jsonl"), "".join(json.dumps(dict(e, target
     {"ts": stamp(T - 7200), "run": "canary-rec-1", "account": "rec", "outcome": "CANARY_NO_RECEIPT"},
     {"ts": stamp(T - 600), "run": "r-rec", "account": "rec", "outcome": "BROWSER_OK"},
     {"ts": stamp(T - 2 * 86400), "run": "canary-loco-1", "account": "loco", "outcome": "CANARY_NO_RECEIPT"},
-    {"ts": stamp(T - 600), "run": "canary-loco-2", "account": "loco", "outcome": "CANARY_OUT_OF_POOL"})))
+    {"ts": stamp(T - 600), "run": "canary-loco-2", "account": "loco", "outcome": "CANARY_OUT_OF_POOL"},
+    {"ts": stamp(T - 600), "run": "canary-wk-1", "account": "wk", "outcome": "CANARY_WALLED"})))
 part = B(T)
 cells = {r["cells"][0]: r["cells"][1:] for r in part["rows"]}
 start = [j for r in part["rows"] for j in r.get("judge", []) if j["rule"] == "browser-canary-start"]
@@ -1676,6 +1677,8 @@ check(start and start[0]["evidence"][0]["excerpt"] == "env: claude: No such file
 check(cells["notcom"][1] == "read browse/last-session-notcom.json"
       and cells["loco"][0].endswith(" ago · out of the worker pool · 72 h: CANARY_NO_RECEIPT ×1"),
       "Browser: no receipt points at the session's answer; an out-of-pool account says so and its skip is no failure")
+check(cells["wk"][0].endswith(" ago · walled") and cells["wk"][1] == "",
+      "Browser: a walled canary is weather: shown, never judged, no 7-day watch and no failure")
 shutil.rmtree(runs)
 for beat, beat_at, ident in ((None, T, "never-started"), ("roots=2\n", T - 1000, "stale"),
                              ("roots=2\nerror=fsevents gone\n", T - 30, "error"), ("roots=0\n", T - 30, "no-root")):
