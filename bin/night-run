@@ -1240,7 +1240,8 @@ frame_rows() { # word -> lines `<label> · <segment> · …` on stdin as one rep
 }
 
 table_block() { # time_budget.py table -> its block document, the cells right-aligned in compact columns
-  jq -Rsc '[split("\n")[] | select(. != "") | [splits(" {3,}")]] as $t
+  jq -Rsc '[split("\n")[] | select(. != "") | [splits(" {3,}")]] as $raw | ($raw[0] | length) as $n
+    | [$raw[] | .[0:1] + [range($n - length) | ""] + .[1:]] as $t
     | [range(1; $t[0] | length) as $c | [$t[][$c] // "" | length] | max] as $w
     | {word: "night · \($t[0][-1])", rows: [$t[] | [.[0], ([.[1:] | to_entries[]
         | ($w[.key] - (.value | length)) as $pad | (if $pad > 0 then " " * $pad else "" end) + .value] | join("  "))]]}' <<<"$1"
@@ -1488,7 +1489,6 @@ cmd_report() {
         count($t.unpushed; "not pushed")]
         | if length == 0 then "no jobs" else join(" · ") end))' "$file" || return
   repo_debt
-  python3 -B "$repo_root/share/night_spend.py" goal-lines "$file" || true
   python3 -B "$repo_root/share/sonnet_trial.py" "$repo_root/bin/worker-run" "$file" || true # TEMP-SONNET-TRIAL(fixers)
   python3 -B "$repo_root/share/haiku_trial.py" "$file" || true # TEMP-HAIKU-TRIAL(report)
   python3 -B "$repo_root/share/time_budget.py" night "$repo_root/bin/worker-run" "$file" 2>/dev/null || true

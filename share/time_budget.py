@@ -1155,7 +1155,7 @@ def ledger_row(worker_run, path, night):
             "regressed": sum((s or {}).get("regressed", 0) for s in states.values()),
             "touched_unproven": len(touched[0]) if touched else 0,
             "spend_m": round(spent["total"] / 1e6, 1), "spend_kinds": spend_kinds(spent),
-            "spend_unit": night_spend.UNIT, "improvements": improvements(night, path, worker_run),
+            "spend_unit": night_spend.UNIT, "spend_mix": night_spend.mix(spent), "improvements": improvements(night, path, worker_run),
             "deferred": "no debt round" if not debt else (
                 "debt round %s" % debt[0].get("state") if all(j.get("state") != "merged" for j in debt) else None)}
 
@@ -1176,7 +1176,10 @@ def cached_row(worker_run, path):
             for item in row.get("improvements") or ():
                 item["spend_m"] = fresh.get(item["ref"], 0.0)
             row.update(spend_m=round(spent["total"] / 1e6, 1), spend_kinds=spend_kinds(spent),
-                       spend_unit=night_spend.UNIT)
+                       spend_unit=night_spend.UNIT, spend_mix=night_spend.mix(spent))
+            write_json(ledger_cache(night["id"], path), row)
+        elif "spend_mix" not in row:
+            row["spend_mix"] = night_spend.mix(night_spend.spend(night, worker_run))
             write_json(ledger_cache(night["id"], path), row)
         stale = [i for i in row.get("improvements") or () if "files" not in i]
         if stale:
@@ -1266,8 +1269,13 @@ def spend_kinds(spent):
     return {kind: round(night_spend.weighted(total) / 1e6, 1) for kind, total in spent["kinds"].items()}
 
 
-def table_column(worker_run, path, night):
-    """(label, value) of each comparison row; a value with no source is a dash."""
+def kilo(value):
+    return "%.1fk" % (value / 1000.0) if value >= 1000 else "%d" % value
+
+
+def table_column(worker_run, path, night, goals, was):
+    """(label, value) of each comparison row; a value with no source is a dash. goals: the night's stored goals
+    (night_spend.night_goals), was: the previous night's."""
     dash = "\u2013"
     row = cached_row(worker_run, path) or {}
     kinds = row.get("spend_kinds")
@@ -1286,12 +1294,21 @@ def table_column(worker_run, path, night):
     show = lambda v, f="%s": dash if v is None else f % v
     doctors = ("llm", "harness", "updater", "code", "system")
     problems = row.get("problems") or [None, None]
+    mix = row.get("spend_mix") or {}
+    debt, debt_was = ((g.get("backlog") or {}).get("debt") for g in (goals, was))
+    change = "" if debt is None or not debt_was else " %+d %%" % round(100.0 * (debt - debt_was) / debt_was)
     return [
         ("duration", show(row.get("hours"), "%.1f h")),
+        ("unreviewed", dash if debt is None else kilo(debt) + change.replace("-", "\u2212")),
+        ("Doctors 7d", show((goals.get("doctors_share") or {}).get("share"), "%.1f %%")),
+        ("Speed", show((goals.get("backlog") or {}).get("speed"))),
         ("spend", show(row.get("spend_m"), "%.1fM")),
         ("  fixers", show(kinds.get("fixers"), "%.1fM")),
         ("  reviews", show(kinds.get("reviews"), "%.1fM")),
         ("  night chat", show(kinds.get("orchestrator"), "%.1fM")),
+        ("on Opus", show(mix.get("opus"), "%.0f %%")),
+        ("on Fable", show(mix.get("fable"), "%.0f %%")),
+        ("vs all-Opus", show(mix.get("vs_opus"), "\u00d7%.2f")),
         ("landed", str(states["merged"])),
         ("left", str(states["left"])),
         ("needs Egor", str(states["blocked-on-egor"])),
@@ -1317,12 +1334,24 @@ def table_column(worker_run, path, night):
 
 def table_lines(worker_run, path):
     """This night against the two previous finished nights with jobs, oldest left, a column per night."""
-    nights = finished_before(path) + nights_upto(path)[-1:]
+    nights = finished_before(path, count=3) + nights_upto(path)[-1:]
+    goals = [night_spend.night_goals(night) for _, _, night in nights]
+    if len(nights) > 3:
+        nights = nights[1:]
+    else:
+        goals = [{}] + goals
     day = lambda n, f: time.strftime(f, time.localtime(night_spend.epoch(n[0]))).lstrip("0")
     heads = [day(n, "%d %b") for n in nights]
     if len(set(heads)) < len(heads):
         heads = [day(n, "%d %b %H:%M") for n in nights]
-    columns = [table_column(worker_run, p, night) for _, p, night in nights]
+    columns = [table_column(worker_run, p, night, goals[i + 1], goals[i]) for i, (_, p, night) in enumerate(nights)]
+    series = [[(g.get("backlog") or {}).get(key) for g in goals[1:]] for key in ("debt", "speed", "doctors")]
+    plateau = night_spend.plateau(series)
+    for i, column in enumerate(columns):
+        at = next(n for n, (label, _) in enumerate(column) if label == "Speed") + 1
+        column.insert(at, ("to plateau", plateau if i == len(columns) - 1 else ""))
+    if all(dict(c)["on Fable"] == "\u2013" for c in columns):
+        columns = [[cell for cell in c if cell[0] != "on Fable"] for c in columns]
     labels = [label for label, _ in columns[0]]
     width = max(len(label) for label in labels)
     widths = [max([len(head)] + [len(v) for _, v in column]) for head, column in zip(heads, columns)]

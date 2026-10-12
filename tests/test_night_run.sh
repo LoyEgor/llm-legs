@@ -261,7 +261,7 @@ assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 landed · 8 left · 1 failed-launch · 1 blocked-on-egor" "$WORK/report"
 assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his word$" "$WORK/report"
-assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 31 ]
+assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 28 ]
 assert [ "$(grep -m1 -E '^(ledger|trend) · ' "$WORK/report")" = "ledger · night $id · $(jq -r '((.finished_at | fromdate)
   - (.started_at | fromdate)) / 3600 * 10 | round / 10 | tostring | if test("\\.") then . else . + ".0" end' "$R") h" ]
 assert grep -qxE "trend · problems [0-9]+ → [0-9]+ over [0-9]+ nights · (moving forward|treading water|going back)" "$WORK/report"
@@ -1195,10 +1195,16 @@ TZ=UTC DOCTORS_DIR="$TB/doctors" WORKER_RUN_DIR="$TB/runs" CLAUDEB_PROFILES_ROOT
 sed '/^$/,$d' "$WORK/table-report" >"$WORK/table-block"
 assert [ "$(cat "$WORK/table-block")" = "                2 Feb   4 Feb   5 Feb
 duration        9.8 h   6.0 h   3.5 h
+unreviewed          –       –       –
+Doctors 7d          –       –       –
+Speed               –       –       –
+to plateau                          –
 spend           12.5M    0.0M    0.0M
   fixers         8.0M    0.0M    0.0M
   reviews        3.0M    0.0M    0.0M
   night chat     1.5M    0.0M    0.0M
+on Opus             –       –       –
+vs all-Opus         –       –       –
 landed              2       1       1
 left                1       0       0
 needs Egor          0       1       0
@@ -1218,6 +1224,9 @@ rewrote 7d          7       –       –
 suites ✓/✗          –       –    15/1" ]
 # A row cached before Opus-eq pricing is re-priced from the live stores once and stored in the new unit.
 assert [ "$(jq -c '[.spend_m, .spend_unit, .hours]' "$TB/doctors/night-ledger/20260204T000000Z-e4f5.json")" = '[0.0,"Opus-eq",6.0]' ]
+# A row cached before the model mix gains it from the live stores once: a night with no spend has none.
+assert [ "$(jq -c '[.spend_mix, .spend_m]' "$TB/doctors/night-ledger/20260202T000000Z-a0b1.json")" = '[{},12.5]' ]
+assert_fails grep -qE 'Doctors %|debt ln' "$WORK/table-report"
 assert [ "$(python3 -c 'import sys; print(len({len(l.rstrip("\n")) for l in sys.stdin}))' <"$WORK/table-block")" = 1 ]
 assert [ "$(head -1 "$WORK/table-block" | wc -w | tr -d ' ')" = 6 ]
 assert grep -qxE 'suites ✓/✗ +– +– +15/1' "$WORK/table-block"

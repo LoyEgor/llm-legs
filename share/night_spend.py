@@ -49,9 +49,12 @@ def pricing():
     return table
 
 
+def opus_anchor():
+    return getattr(pricing(), "OPUS_ANCHOR", None) or claude_model("opus")
+
+
 def opus_usd():
-    anchor = getattr(pricing(), "OPUS_ANCHOR", None) or claude_model("opus")
-    return pricing().price_for(anchor, dt.date.today().isoformat())[0] / 1e6
+    return pricing().price_for(opus_anchor(), dt.date.today().isoformat())[0] / 1e6
 
 
 def claude_model(model):
@@ -67,8 +70,9 @@ def claude_eq(model, day, fresh=0, cache_read=0, cache_5m=0, cache_1h=0, out=0, 
     vendor = pricing().routed_vendor(model)
     if vendor:
         return vendor_eq(vendor, model, fresh, cache_read, cache_5m + cache_1h, out)
-    usd = pricing().input_cost_usd(model, day, fresh=fresh, cache_read=cache_read, cache_5m=cache_5m,
-                                   cache_1h=cache_1h, fast=fast) + pricing().output_cost_usd(model, day, out, fast)
+    usd = claude_usd(model, day, fresh, cache_read, cache_5m, cache_1h, out, fast)
+    if usd:
+        on_opus(day, fresh, cache_read, cache_5m, cache_1h, out, fast)
     family = model.split("-")[1] if model.startswith("claude-") else "?"
     return collections.Counter({family: usd / opus_usd()}) if usd else collections.Counter()
 
@@ -76,7 +80,24 @@ def claude_eq(model, day, fresh=0, cache_read=0, cache_5m=0, cache_1h=0, out=0, 
 def vendor_eq(vendor, model, fresh=0, cache_read=0, cache_write=0, out=0):
     _, cost_in, cost_out = pricing().vendor_costs(vendor, model, fresh=fresh, cache_read=cache_read,
                                                   cache_write=cache_write, output=out)
+    if cost_in + cost_out:
+        on_opus(dt.date.today().isoformat(), fresh, cache_read, cache_write, 0, out)
     return collections.Counter({vendor: (cost_in + cost_out) / opus_usd()}) if cost_in + cost_out else collections.Counter()
+
+
+def claude_usd(model, day, fresh, cache_read, cache_5m, cache_1h, out, fast=False):
+    return pricing().input_cost_usd(model, day, fresh=fresh, cache_read=cache_read, cache_5m=cache_5m,
+                                    cache_1h=cache_1h, fast=fast) + pricing().output_cost_usd(model, day, out, fast)
+
+
+all_opus = None
+
+
+def on_opus(day, fresh, cache_read, cache_5m, cache_1h, out, fast=False):
+    """Inside spend(): adds what the same tokens cost on Opus, in Opus-eq."""
+    global all_opus
+    if all_opus is not None:
+        all_opus += claude_usd(opus_anchor(), day, fresh, cache_read, cache_5m, cache_1h, out, fast) / opus_usd()
 
 
 def epoch(stamp):
@@ -280,6 +301,31 @@ def night_benches(low, high, sessions):
 
 
 def spend(night, worker_run):
+    global all_opus
+    all_opus = 0.0
+    try:
+        out = kind_spend(night, worker_run)
+        out["all_opus"] = all_opus
+    finally:
+        all_opus = None
+    return out
+
+
+def mix(spent):
+    """% of the Opus-eq spend on Opus (and on Fable when any), and the spend over what its tokens cost on Opus."""
+    labels = collections.Counter()
+    for total in spent["kinds"].values():
+        labels.update(total)
+    whole = weighted(labels)
+    if not whole or not spent.get("all_opus"):
+        return {}
+    out = {"opus": round(100 * labels["opus"] / whole, 1), "vs_opus": round(whole / spent["all_opus"], 3)}
+    if labels["fable"]:
+        out["fable"] = round(100 * labels["fable"] / whole, 1)
+    return out
+
+
+def kind_spend(night, worker_run):
     low, high, sessions = window(night)
     kinds = {"fixers": collections.Counter(), "reviews": collections.Counter(),
              "orchestrator": collections.Counter()}
@@ -310,7 +356,6 @@ def spend(night, worker_run):
             "total": sum(weighted(total) for total in kinds.values())}
 
 
-DOCTORS_GOAL = 5.0
 DASH = "\u2013"
 DOCTOR_NAMES = ("llm", "harness", "updater", "code", "system")
 
@@ -379,13 +424,6 @@ def previous_nights(path, night, count=2, with_jobs=True):
     return [n for _, _, n in time_budget.finished_before(path, night, count, with_jobs)]
 
 
-def trend(values):
-    known = [v for v in values if v is not None]
-    if len(known) < 2 or values[-1] is None:
-        return "\u00b7"
-    return "\u2193" if known[-1] < known[0] else "\u2191" if known[-1] > known[0] else "\u2192"
-
-
 def plateau(series):
     """Nights until every backlog column reaches zero at its burn over the shown nights; a dash when one does not shrink."""
     nights = None
@@ -400,28 +438,6 @@ def plateau(series):
     return DASH if nights is None else "%d" % nights
 
 
-def goal_lines(path, night):
-    """This night against the two previous finished ones, oldest first: the 7-day Doctors share against its goal,
-    then the backlog with a glyph per column and the nights to plateau."""
-    nights = previous_nights(path, night) + [night]
-    goals = [night_goals(n) for n in nights]
-    day = lambda n, f: time.strftime(f, time.localtime(epoch(n["started_at"]))).lstrip("0")
-    heads = [day(n, "%d %b") for n in nights]
-    if len(set(heads)) < len(heads):
-        heads = [day(n, "%d %b %H:%M") for n in nights]
-    share = [(g.get("doctors_share") or {}).get("share") for g in goals]
-    ages = [(g.get("doctors_share") or {}).get("age_h", -1) for g in goals]
-    cols = [[(g.get("backlog") or {}).get(key) for g in goals] for key in ("debt", "speed", "doctors")]
-    show = lambda v: DASH if v is None else "%s" % v
-    rows = [["", "Doctors %", "debt ln", "Speed", "rows"]]
-    for i, head in enumerate(heads):
-        stale = "" if ages[i] == -1 else " %sh" % (DASH if ages[i] is None else ages[i])
-        rows.append([head, show(share[i]) + stale] + [show(c[i]) for c in cols])
-    rows.append(["\u21e5 " + plateau(cols), "%s %g" % (trend(share), DOCTORS_GOAL)] + [trend(c) for c in cols])
-    widths = [max(len(r[i]) for r in rows) for i in range(5)]
-    return ["  ".join(c.rjust(w) if i else c.ljust(w) for i, (c, w) in enumerate(zip(r, widths))).rstrip() for r in rows]
-
-
 def mega(value):
     return f"{value / 1e6:.1f}M"
 
@@ -434,9 +450,6 @@ def by_model(total):
 def main():
     if sys.argv[1:] == ["goals"]:
         print(json.dumps(goals_now()))
-        return
-    if sys.argv[1:2] == ["goal-lines"]:
-        print("\n".join(goal_lines(sys.argv[2], read_json(sys.argv[2], {}))))
         return
     worker_run, path = sys.argv[1:3]
     pricing()

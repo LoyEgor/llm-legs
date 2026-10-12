@@ -42,6 +42,7 @@ root, work, D0, job = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
 sys.path.insert(0, os.path.join(root, "share"))
 import collector_runs
 import night_spend
+import re
 import time_budget as T
 
 count = [0]
@@ -644,9 +645,9 @@ del os.environ["HARNESS_WAITS_DIR"]
 check(ended["seconds"]["hooks"] == 100 and crossed["seconds"]["locks"] == 50,
       "a hook row is stamped at its end, so its span ends there; a wait begun before midnight keeps its tail in the "
       "next day: %s %s" % (ended["seconds"]["hooks"], crossed["seconds"]["locks"]))
-# The night report's goal block: token-map's 7-day Doctors share (its age once stale, never recomputed) and the
-# backlog (due review debt, Speed's selection, the doctors' open rows) of this night against the two previous
-# finished ones, a glyph per column and the nights to plateau at the burn over them.
+# The comparison table's goal rows: token-map's 7-day Doctors share (never recomputed) and the backlog (review
+# debt with its change against the night before, Speed's selection) of this night against the two previous
+# finished ones, and the nights to plateau at the burn over them (doctors' open rows included) in this night's column.
 spend7 = os.path.join(work, "spend-7d.json")
 os.environ["TOKENMAP_SPEND_7D"] = spend7
 stamp = lambda hours: time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - hours * 3600))
@@ -672,27 +673,62 @@ for name, count_ in zip(night_spend.DOCTOR_NAMES, (1, 2, 0, 3, 0)):
 check(night_spend.backlog() == {"debt": 7, "speed": 3, "doctors": 6}, "backlog now: %s" % night_spend.backlog())
 goal_dir = os.path.join(work, "goal-nights")
 os.makedirs(goal_dir)
-for id_, day, backlog_, share in (("n1", 1, {"debt": 20, "speed": 5, "doctors": 9}, 30.0),
+for id_, day, backlog_, share in (("n9", 30, {"debt": 25}, None),
+                                  ("n1", 1, {"debt": 20, "speed": 5, "doctors": 9}, 30.0),
                                   ("n2", 2, {"debt": 14, "speed": 4, "doctors": 8}, 26.5)):
-    json.dump({"id": id_, "started_at": "2026-10-0%dT02:00:00Z" % day, "finished_at": "2026-10-0%dT08:00:00Z" % day,
-               "jobs": [{"ref": "x"}], "doctors_share": {"share": share}, "backlog": backlog_},
+    json.dump({"id": id_, "started_at": "2026-%s:00:00Z" % ("09-30T02" if day == 30 else "10-0%dT02" % day),
+               "finished_at": "2026-%s:00:00Z" % ("09-30T08" if day == 30 else "10-0%dT08" % day),
+               "jobs": [{"ref": "x"}], "doctors_share": share and {"share": share}, "backlog": backlog_},
               open(os.path.join(goal_dir, id_ + ".json"), "w"))
 json.dump({"id": "n0", "finished_at": "2026-09-30T08:00:00Z", "jobs": [{"ref": "x"}]}, open(os.path.join(goal_dir, "n0.json"), "w"))
 seven(1)
 running = {"id": "n3", "started_at": "2026-10-03T02:00:00Z", "jobs": []}
-shown = night_spend.goal_lines(os.path.join(goal_dir, "n3.json"), running)
-check(shown == ["       Doctors %  debt ln  Speed  rows",
-                "1 Oct       30.0       20      5     9",
-                "2 Oct       26.5       14      4     8",
-                "3 Oct       22.9        7      3     6",
-                "⇥ 4          ↓ 5        ↓      ↓     ↓"], "goal lines:\n" + "\n".join(shown))
+json.dump(running, open(os.path.join(goal_dir, "n3.json"), "w"))
+kept_row = T.cached_row
+mixes = {"n1": {"opus": 96.4, "vs_opus": 0.962}, "n2": {}, "n3": {"opus": 85.2, "vs_opus": 0.387}}
+T.cached_row = lambda worker_run, path: {"spend_mix": mixes[os.path.basename(path)[:-5]]}
+
+
+def table():
+    shown = T.table_lines("/usr/bin/false", os.path.join(goal_dir, "n3.json"))
+    return shown, {re.split(" {3,}", l)[0]: re.split(" {3,}", l)[1:] for l in shown[1:]}
+
+
+shown, cells = table()
+check(shown[0].split() == ["1", "Oct", "2", "Oct", "3", "Oct"], "the three newest nights: %s" % shown[0])
+check(cells["unreviewed"] == ["20 \u221220 %", "14 \u221230 %", "7 \u221250 %"]
+      and cells["Doctors 7d"] == ["30.0 %", "26.5 %", "22.9 %"] and cells["Speed"] == ["5", "4", "3"],
+      "goal rows, the oldest column's debt against the night before it:\n" + "\n".join(shown))
+check(re.search(r"^to plateau +4$", "\n".join(shown), re.M)
+      and len({len(l) for l in shown}) == 1, "one plateau value, in this night's column:\n" + "\n".join(shown))
+check(cells["on Opus"] == ["96 %", "\u2013", "85 %"] and cells["vs all-Opus"] == ["\u00d70.96", "\u2013", "\u00d70.39"]
+      and "on Fable" not in cells, "the model mix of each night, no Fable row without Fable spend: %s" % cells)
+check(not hasattr(night_spend, "goal_lines"), "the goals live in the table only, never in a second block")
+mixes["n2"] = {"opus": 40.0, "fable": 55.0, "vs_opus": 1.4}
+check(table()[1]["on Fable"] == ["\u2013", "55 %", "\u2013"], "a Fable row once any shown night spent on Fable")
 os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "goal-none")
-check(night_spend.goal_lines(os.path.join(goal_dir, "n3.json"), running)[-1].startswith("⇥ 3 "),
-      "an unreadable column is a dash and burns nothing")
+check(table()[1]["to plateau"] == ["3"], "an unreadable column is a dash and burns nothing")
 os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "goal-code")
 json.dump({"problem_count": 30}, open(os.path.join(work, "goal-llm", "latest.json"), "w"))
-check(night_spend.goal_lines(os.path.join(goal_dir, "n3.json"), running)[-1].startswith("⇥ – "),
-      "a growing column leaves no plateau")
+check(table()[1]["to plateau"] == ["\u2013"], "a growing column leaves no plateau")
+T.cached_row = kept_row
+# The model mix comes from the spend itself: each label's share of the Opus-eq total, and the total over what the
+# same tokens cost on Opus at token-map's prices.
+bench = os.path.join(work, "stats", "benches", "20261005T030000Z-mix")
+os.makedirs(bench)
+json.dump({"session": "mix-s"}, open(os.path.join(bench, "meta.json"), "w"))
+lines(os.path.join(bench, "claude-usage-a.jsonl"), [
+    {"id": "o", "model": "claude-opus-5-5", "input": 1000000},
+    {"id": "s", "model": "claude-sonnet-5-5", "input": 1000000}])
+mix_night = {"id": "m", "started_at": "2026-10-05T02:00:00Z", "finished_at": "2026-10-05T08:00:00Z", "session": "mix-s"}
+spent = night_spend.spend(mix_night, "/usr/bin/false")
+check(abs(spent["all_opus"] - 2.0e6) < 1 and night_spend.mix(spent) == {"opus": 66.7, "vs_opus": 0.75},
+      "1M Opus-eq on Opus, 0.5M on Sonnet of 2M Opus tokens' worth: %s %s" % (spent.get("all_opus"), night_spend.mix(spent)))
+lines(os.path.join(bench, "claude-usage-a.jsonl"), [{"id": "f", "model": "claude-fable-5-1", "input": 400000}])
+check(night_spend.mix(night_spend.spend(mix_night, "/usr/bin/false")) == {"opus": 40.0, "fable": 40.0, "vs_opus": 1.042},
+      "Fable counts on its own: %s" % night_spend.mix(night_spend.spend(mix_night, "/usr/bin/false")))
+check(night_spend.all_opus is None and night_spend.weighted(night_spend.bench_usage(bench)) > 0
+      and night_spend.all_opus is None, "outside spend() nothing accumulates the Opus basis")
 finished = dict(running, finished_at="2026-10-03T08:00:00Z", doctors_after={n: 1 for n in night_spend.DOCTOR_NAMES})
 check(night_spend.night_goals(finished) == {"doctors_share": None, "backlog": {"doctors": 5}},
       "a finished night without stored goals keeps only its doctor rows, never today's values")
