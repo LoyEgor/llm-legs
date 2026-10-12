@@ -329,6 +329,25 @@
    "sources": {},
    "verdict": "kept",
    "note": "The note is the already-shortened rewrite note of hook:cd-guard.sh (claude-setup@c5a2a69, audited 2026-10-10); 0.1% of spend, shrinking. Whole hook, note included, goes when docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md lands (CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, ~/.claude/settings.json, not writable by a relay); shortening a note that is deleted next is churn"
+  },
+  {
+   "id": "hook:worker-launch-gate.sh",
+   "title": "worker-launch-gate.sh",
+   "audited_at": "2026-10-12T04:04:19+03:00",
+   "by": "harness-speed-spend-hook-worker-launch-gate-sh-20261012T010235Z-36be",
+   "share": 0.000253,
+   "prices": {
+    "Workers · Hooks": 496.64621242756425,
+    "Workers · attachment: hook context": 2879.5939310547787,
+    "Doctors · attachment: hook context": 696.6429838946558,
+    "Doctors · Hooks": 252.30745007151472,
+    "Reviewers · Hooks": 4.96130445842753
+   },
+   "sources": {
+    "llm-legs/bin/worker-launch-gate.sh": "7031f346e8c88a5666ec54c8c4a77dd93f44b432"
+   },
+   "verdict": "kept",
+   "note": "0.0 % of spend; denies bare headless launches that would be unowned workers (routing-contract rule 4); its cost is hook time, not tokens; no cheaper equivalent proven"
   }
  ]
 }
