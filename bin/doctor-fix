@@ -796,7 +796,7 @@ write_brief() { # id worktree -> the brief file
   {
     ! jq -e --arg rules ' suite_audit ' "$JQ_HAS_RULES" "$file" >/dev/null || printf 'STRONG: yes\n'
     ! jq -e '.trial.arm == "sonnet"' "$file" >/dev/null || printf 'MODEL: sonnet\n' # TEMP-SONNET-TRIAL(fixers)
-    printf 'ROUND: %s\n' "$(jq -r '.lens_round // "none"' "$file")"
+    printf 'ROUND: %s\n' "$(jq -r 'if .lens_launch then "pending" else .lens_round // "none" end' "$file")"
     jq -r '.worktrees[1:][] | "ADD-DIR: \(.)"' "$file"
     printf 'Working directory: %s\n\n# Fixer run %s\n\n' "$wt" "$id"
     [ "$night" = - ] || printf 'Night %s · ' "$night"
@@ -889,12 +889,21 @@ lens_round() { # id; stdin: its speed-lens launch line's output -> the round on 
   [ -f "$file" ] && jq -e '.lens_launch' "$file" >/dev/null && [ "$(run_state "$id")" = open ] || die "run $id waits for no speed lens"
   round=$(sed -En 's/^run id: ([0-9]{8}T[0-9]{6}Z-[0-9a-f]{7})$/\1/p' <<<"$out" | head -1)
   locked lens_record "$id" "$round" || die "run $id: its speed lens round was not recorded"
+  write_brief "$id" "$(jq -r '.worktrees[0]' "$file")" >/dev/null || die "run $id: its brief does not name round ${round:-none}"
   if [ -z "$round" ]; then
     printf 'doctor-fix: %s gets no speed lens: %s\n' "$id" "$(grep -m1 '^review-bench:' <<<"$out" || grep . <<<"$out" | tail -1)" >&2
     return 0
   fi
-  write_brief "$id" "$(jq -r '.worktrees[0]' "$file")" >/dev/null || die "run $id: its brief does not name round $round"
   printf 'doctor-fix: %s waits for speed lens round %s: dispatch its brief when that round'"'"'s `review-bench wait` returns\n' "$id" "$round" >&2
+}
+
+lens_lines() { # id... -> the speed-lens launch line of each run still waiting for one
+  local id file
+  for id in "$@"; do
+    file=$(record_file "$id")
+    [[ $id != */* ]] && [ -f "$file" ] && [ "$(run_state "$id")" = open ] || continue
+    jq -r '.lens_launch // empty' "$file"
+  done
 }
 
 component_repos() { # id top -> the main checkouts other than top that hold the run's component files
@@ -1325,6 +1334,7 @@ usage: doctor-fix launch llm|harness|updater|code|system [--night <night-id>]
        doctor-fix runs [llm|harness|updater|code|system] [--open] [--json]
        doctor-fix close <id> --decisions <file> <note...>   (reruns the doctor in the run's worktree)
        doctor-fix abandon <id> [--reason TEXT]
+       doctor-fix lens-lines <ref>...   (the speed-lens launch line of each run whose brief reads ROUND: pending)
        doctor-fix lens-round <id>   (its speed-lens launch line's output on stdin: the round into the run's brief)
        doctor-fix record updater [--night <night-id>] --branch <b> --worktree <w> [--worktree <w>...] --problems <event id>...   (internal)
        doctor-fix orchestrate <lines-file>   (internal: one chat dispatching the runs of its <ref>\t<brief>\t<worktree> lines)
@@ -1343,6 +1353,7 @@ case "${1:-}" in
   show) show_run "${2:-}" ;;
   runs) list_runs "${@:2}" ;;
   close) close_run "${@:2}" ;;
+  lens-lines) [ $# -ge 2 ] || usage; lens_lines "${@:2}" ;;
   lens-round) [ $# -eq 2 ] || usage; lens_round "$2" ;;
   abandon) abandon_run "${@:2}" ;;
   touches) [ $# -eq 4 ] && [ -f "$2" ] || usage; py touches "${@:2}" ;;

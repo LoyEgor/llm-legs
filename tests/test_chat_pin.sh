@@ -139,6 +139,13 @@ assert chat_is 'claudeb_profile=shared'
 assert contains "$("$PIN")" 'shared stays switched off in the menu'
 rm -f "$CLAUDEB_DIR/disabled"
 assert "$PIN" delta
+# A vendor block with no accounts array is its one account, main, switched off like any other.
+printf '{"vendors": {"gemini": {}}}\n' >"$WORK/single.json"
+mkdir -p "$GEMINIB_PROFILES_DIR/.geminib" && printf 'main\n' >"$GEMINIB_PROFILES_DIR/.geminib/disabled"
+assert env LLM_LIMITS_FILE="$WORK/single.json" "$PIN" gemini:main
+assert chat_is 'gemini_profile=main'
+rm -f "$GEMINIB_PROFILES_DIR/.geminib/disabled"
+assert "$PIN" delta
 
 assert "$PIN" auto
 assert_fails test -e "$CHAT"

@@ -1008,12 +1008,14 @@ sid=$(grep -F 'speed-chat-tools' "$WORK/out" | cut -f1)
 # the line, the chat's own call runs it, and the round lands in the brief, so worker-run hands the fixer its findings.
 IFS=$'\t' read -r tid tbrief twt < <(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out")
 assert [ ! -e "$DATA/rb-args" ]
-assert grep -qx 'ROUND: none' "$tbrief"
+assert grep -qx 'ROUND: pending' "$tbrief"
 lens_line() { # id -> the launch line the last launch handed the chat for that run's speed lens
   grep -A1 -xF "doctor-fix: $1 waits for its speed lens: run the line below in ONE Bash call with every other such line of this launch, then dispatch its brief when the round it names returns from \`review-bench wait\`" "$WORK/err" | tail -n +2
 }
 lens=$(lens_line "$tid")
 assert [ -n "$lens" ]
+# A day launch's stderr reaches no one: the orchestrator reads the same line off the run's record.
+assert [ "$(fix lens-lines $(cut -f1 "$WORK/out") no-such-run)" = "$lens" ]
 (cd "$WORK" && env "${speed_env[@]}" bash -c "$lens") 2>"$WORK/lens-err" || fail "the lens line failed: $(cat "$WORK/lens-err")"
 assert [ "$(cut -f2- "$DATA/rb-args")" = "review --repo $twt --files $twt/tests/test_llm_limits.sh --lens speed --tier T2 --scope-lines 3 --focus Aimed by the Harness doctor's measured rows: $(jq -r '.problems[0].fact' "$(record "$tid")"). Find what makes them slow; keep every check." ]
 assert [ "$(cat "$WORK/lens-err")" = "doctor-fix: $tid waits for speed lens round 20261008T000000Z-abcdef1: dispatch its brief when that round's \`review-bench wait\` returns" ]

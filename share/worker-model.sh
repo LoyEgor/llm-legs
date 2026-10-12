@@ -657,6 +657,31 @@ worker_model_pool_accounts() {
   done < <(awk '!seen[$0]++' < <(printf '%s\n' "$names"))
 }
 
+# `chat-pin [<vendor>:]<account>` resolved once, for chat-pin and for the gate that judges a
+# session's pin: a bare name goes to the vendor whose live pool holds it, and only when none does
+# to one whose menu switched it off. One line is the pin; several make chat-pin refuse.
+worker_model_chat_pin_vendors() { # [vendor:]account → "<vendor> live|off" lines
+  local name="${1-}" want='' vendor dir live='' off='' store="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
+  if [[ "$name" == *:* ]]; then
+    want=${name%%:*} name=${name#*:}
+    [ "$want" != claude ] || want=claudeb
+  fi
+  for vendor in claudeb codex gemini grok; do
+    [ -z "$want" ] || [ "$want" = "$vendor" ] || continue
+    if worker_model_pool_accounts "$vendor" 2>/dev/null | grep -qxF -- "$name"; then
+      live+="$vendor live"$'\n'
+      continue
+    fi
+    dir=$(worker_pool_dir "$vendor") || continue
+    [ ! -e "$dir/shielded/$name" ] && grep -qxF -- "$name" "$dir/disabled" 2>/dev/null || continue
+    jq -e --arg v "${vendor/#claudeb/claude}" --arg a "$name" '
+      .vendors[$v] | select(type == "object" and .removed != true) |
+      if (.accounts | type) == "array" then any(.accounts[]; (.account // "main") == $a and .removed != true)
+      else $a == "main" end' "$store" >/dev/null 2>&1 && off+="$vendor off"$'\n'
+  done
+  if [ -n "$live" ]; then printf '%s' "$live"; else printf '%s' "$off"; fi
+}
+
 worker_model_pin_scope() {
   worker_model_pin_scope_r "$@" || return
   printf '%s' "$WORKER_MODEL_R"

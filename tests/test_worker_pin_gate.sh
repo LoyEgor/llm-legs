@@ -95,7 +95,9 @@ do
 done
 
 # A chat pin onto an account switched off in the menu is Egor's own `! chat-pin`, never a session's.
-mkdir -p "$CLAUDEB_DIR" && printf 'offacct\n' >"$CLAUDEB_DIR/disabled"
+printf '%s\n' '{"vendors": {"claude": {"accounts": [{"account": "offacct"}, {"account": "onacct"}, {"account": "main"}]}, "codex": {}}}' \
+  >"$HOME/.llm-limits.json"
+mkdir -p "$CLAUDEB_DIR" "$HOME/.codex-profiles/.codexb" && printf 'offacct\n' >"$CLAUDEB_DIR/disabled"
 assert denied "$(bash_event 'chat-pin offacct')"
 assert contains "$(bash_event 'chat-pin offacct')" '`! chat-pin claude:offacct`'
 assert denied "$(bash_event '~/.local/bin/chat-pin offacct && echo ok')"
@@ -103,6 +105,21 @@ assert allowed "$(bash_event 'chat-pin onacct')"
 assert denied "$(bash_event 'chat-pin claude:offacct')"
 assert allowed "$(bash_event 'chat-pin codex:offacct')"
 assert allowed "$(bash_event 'echo chat-pinned offacct')"
+# Every pin in the command is judged, and only pins: carried text naming one is not a pin.
+assert denied "$(bash_event 'grep -n x bin/chat-pin share/y.sh && chat-pin offacct')"
+assert denied "$(bash_event 'chat-pin onacct; chat-pin offacct')"
+assert denied "$(bash_event "bash -c 'chat-pin offacct'")"
+assert allowed "$(bash_event 'git commit -m "later: chat-pin offacct by hand"')"
+assert allowed "$(bash_event "cat > /tmp/brief <<'EOF'
+chat-pin offacct
+EOF")"
+# Resolved as chat-pin resolves it: a bare name to the vendor whose live pool holds it first.
+printf 'main\n' >"$HOME/.codex-profiles/.codexb/disabled"
+assert allowed "$(bash_event 'chat-pin main')"
+assert denied "$(bash_event 'chat-pin codex:main')"
+mkdir -p "$CLAUDEB_DIR/shielded" && : >"$CLAUDEB_DIR/shielded/offacct"
+assert allowed "$(bash_event 'chat-pin offacct')"
+rm -rf "$CLAUDEB_DIR/shielded" "$HOME/.codex-profiles/.codexb/disabled"
 rm -f "$CLAUDEB_DIR/disabled"
 assert allowed "$(bash_event 'chat-pin offacct')"
 

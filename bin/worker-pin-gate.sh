@@ -221,19 +221,31 @@ DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|cho
 
 # Egor's `! chat-pin <name>` runs without this hook, so only he pins a chat to an account he
 # switched off in the menu; a session pinning it would spend what the night must not.
+# Only a `chat-pin` in command position is a pin: a brief, commit message or path that names it is
+# not. Where the scan cannot tell what runs (a shell given text, an unresolved command word), the
+# raw command is read with quotes as command boundaries, this door's false-deny side.
+CHAT_PIN_CALL_RE="(^|[;&|({\`'\"])[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|then|do|else|if|while|until|!|time|sudo|command|exec|env|nohup)[[:space:]]+)*([^[:space:];&|()<>\`'\"]*/)?chat-pin[[:space:]]+([A-Za-z0-9_][A-Za-z0-9._:-]*)"
+
 chat_pin_off_account() { # command → the switched-off account a `chat-pin <name>` in it pins
-  local name vendor vendors='claudeb codex gemini grok' dir
-  [[ "$1" =~ (^|[^[:alnum:]_.-])chat-pin[[:space:]]+([A-Za-z0-9_][A-Za-z0-9._:-]*) ]] || return 1
-  name=${BASH_REMATCH[2]}
-  if [[ "$name" == *:* ]]; then
-    vendors=${name%%:*} name=${name#*:}
-    [ "$vendors" != claude ] || vendors=claudeb
-  fi
-  load_share worker-pool.sh worker_pool_dir || return 1
-  for vendor in $vendors; do
-    dir=$(worker_pool_dir "$vendor") || continue
-    grep -qxF -- "$name" "$dir/disabled" 2>/dev/null && { printf '%s:%s' "${vendor/#claudeb/claude}" "$name"; return 0; }
-  done
+  local scan segment rest name resolved
+  load_share instruction-files.sh instruction_split_commands || return 1
+  load_share worker-model.sh worker_model_chat_pin_vendors || return 1
+  scan=$(printf '%s' "$1" | instruction_shell_scan 2>/dev/null) || scan=''
+  [ -n "$scan" ] || scan=$1
+  grep -Eq "$INSTRUCTION_SHELL_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" <<<"$scan" &&
+    scan=${1//$'\n'/;}
+  while IFS= read -r -d '' segment; do
+    rest=$segment
+    while [[ "$rest" =~ $CHAT_PIN_CALL_RE ]]; do
+      rest=${rest#*"${BASH_REMATCH[0]}"}
+      name=${BASH_REMATCH[5]}
+      resolved=$(worker_model_chat_pin_vendors "$name")
+      [[ "$resolved" == *' off' && "$resolved" != *$'\n'* ]] || continue
+      resolved=${resolved% off}
+      printf '%s:%s' "${resolved/#claudeb/claude}" "${name#*:}"
+      return 0
+    done
+  done < <(instruction_split_commands "$scan")
   return 1
 }
 

@@ -11,7 +11,7 @@ export GROKB_CACHE_DIR="$WORK/grokb-cache"
 . "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 export CLAUDEB_DIR="$WORK/store"
-unset WORKER_STATS_DIR
+unset WORKER_STATS_DIR LLM_LIMITS_FILE CODEXB_PROFILES_DIR GEMINIB_PROFILES_DIR GROKB_PROFILES_DIR
 
 # The sandbox HOME comes FIRST, before a single assertion: both doors resolve the pin under $HOME
 # and read the pin lines standing in it, so anything asserted against the real $HOME is a test whose

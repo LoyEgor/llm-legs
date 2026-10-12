@@ -5602,7 +5602,9 @@ def speed_proof(entry, speed, fix_at):
     if any(p.get("ledger") == entry["id"] for p in (speed or {}).get("problems") or ()):
         return None
     window_h = 48 if rule == "regression" else 24
-    if not speed:
+    measured = set(((speed or {}).get("budget") or {}).get("classes_min_day") or ()) | {
+        "full-runs", "workers-active"} if rule == "time_floor" else None
+    if not speed or measured is not None and entry["match"]["ident"] not in measured:
         return False, "Speed measures no %s" % entry["match"]["ident"]
     if (speed.get("as_of_s") or 0) - window_h * 3600 < fix_at:
         return False, "Speed has not measured a whole %d h since the fix" % window_h

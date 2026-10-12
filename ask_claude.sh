@@ -40,6 +40,9 @@ WEAK_RE='(^|[-_.])(haiku|mini|nano|lite|flash|small|tiny)([-_.0-9]|$)'
 # Mythos-class models (fable/mythos) cost far more per call — block them outright, no override.
 BLOCKED_RE='(^|[-_.])(fable|mythos)([-_.0-9]|$)'
 LIMIT_RE='hit your (session|weekly|Opus|usage) limit|usage_limit|rate.?limit|quota'
+# A worker_wall walls the whole account for every model; an Opus bucket or a transient rate limit
+# only drops this leg.
+ACCOUNT_WALL_RE='hit your (session|weekly|usage) limit'
 # NOTE: only CURRENT tool names — the CLI rejects unknown names in permission rules
 # (MultiEdit no longer exists; listing it broke review calls on 2026-06-12).
 DISALLOWED_TOOLS='Write,Edit,NotebookEdit,Bash,KillShell'
@@ -141,9 +144,11 @@ served="$(printf '%s' "$OUT" | extract_served_model "$MODEL" || true)"
 weak=0
 if printf '%s' "${served:-}" | grep -qiE "$WEAK_RE"; then weak=1; fi
 if [ "$RC" -ne 0 ] && { printf '%s' "$OUT"; cat "$ERRF"; } | grep -qiE "$LIMIT_RE"; then
-  . "$(dirname "${BASH_SOURCE[0]}")/share/worker-walls.sh"
-  worker_walls_record claudeb "$ACCOUNT" \
-    "$(worker_walls_parse_reset "$(worker_walls_extract_reset "$ERRF" <(printf '%s' "$OUT"))")" || true
+  if { printf '%s' "$OUT"; cat "$ERRF"; } | grep -qiE "$ACCOUNT_WALL_RE"; then
+    . "$(dirname "${BASH_SOURCE[0]}")/share/worker-walls.sh"
+    worker_walls_record claudeb "$ACCOUNT" \
+      "$(worker_walls_parse_reset "$(worker_walls_extract_reset "$ERRF" <(printf '%s' "$OUT"))")" || true
+  fi
   RC=5
   served="QUOTA_EXHAUSTED"
 fi

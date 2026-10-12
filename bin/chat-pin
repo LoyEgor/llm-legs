@@ -44,24 +44,6 @@ show_state() {
   fi
 }
 
-account_vendors() { # name → every vendor whose live pool holds it, one per line
-  local vendor
-  for vendor in $VENDORS; do
-    worker_model_pool_accounts "$vendor" 2>/dev/null | grep -qxF -- "$1" && printf '%s\n' "$vendor"
-  done
-}
-
-off_vendors() { # name → every vendor whose menu switched it off while the limits store still lists it
-  local vendor dir store="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
-  for vendor in $VENDORS; do
-    dir=$(worker_pool_dir "$vendor") || continue
-    [ ! -e "$dir/shielded/$1" ] && grep -qxF -- "$1" "$dir/disabled" 2>/dev/null || continue
-    jq -e --arg v "${vendor/#claudeb/claude}" --arg a "$1" \
-      'any(.vendors[$v].accounts[]?; (.account // "main") == $a and .removed != true)' "$store" >/dev/null 2>&1 &&
-      printf '%s\n' "$vendor"
-  done
-}
-
 store() { # file line-or-empty
   local file="$1" line="$2"
   mkdir -p "$(dirname "$file")" || return 2
@@ -104,12 +86,7 @@ case "$arg" in
       [[ " $VENDORS " == *" $want "* ]] || die "unknown vendor: $want (one of claude $VENDORS)"
     fi
     [[ "$arg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || die "unknown account: $arg"
-    if [ -n "$want" ]; then
-      vendors=$({ account_vendors "$arg"; off_vendors "$arg"; } | grep -xF -- "$want" | head -n1)
-    else
-      vendors=$(account_vendors "$arg")
-      [ -n "$vendors" ] || vendors=$(off_vendors "$arg")
-    fi
+    vendors=$(worker_model_chat_pin_vendors "${want:+$want:}$arg" | cut -d' ' -f1)
     case "$(grep -c . <<<"$vendors")" in
       0) die "unknown account: $arg is in no ${want:-vendor}'s worker pool, live or switched off" ;;
       1) ;;

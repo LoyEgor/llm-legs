@@ -9,8 +9,9 @@ jobs (`night-run job`).
 
 `worker-pick`, then per line its START line with the brief file and `--workdir <worktree>` (a `MODEL: sonnet`
 brief: `worker-run start claudeb --account $(worker-pick --account claudeb)`), and a background `worker-run
-wait`; a report's `ESCALATE-BRIEF:` file starts again on the plain START line. A brief whose `ROUND:` is not `none` waits for its speed-lens round (a background `review-bench
-wait`). Never poll.
+wait`; a report's `ESCALATE-BRIEF:` file starts again on the plain START line. `ROUND: pending` (worker-run
+refuses it): run every line `doctor-fix lens-lines <ref>...` prints in ONE Bash call first; a brief naming
+a round waits for it (a background `review-bench wait`). Never poll.
 
 A vendor's run also gets, per event, its blind cross-check (`docs/vendor-release.md` step 4): `worker-run
 start <other vendor> --role research --web-search`, account from `worker-pick --account <vendor> --role

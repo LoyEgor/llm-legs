@@ -58,7 +58,7 @@ cat >"$STUB_BIN/claudeb" <<'EOF'
 printf 'claudeb' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
-[ -z "${STUB_WALL:-}" ] || { printf '{"is_error":true,"result":"You have hit your session limit"}\n'; exit 1; }
+[ -z "${STUB_WALL:-}" ] || { printf '{"is_error":true,"result":"%s"}\n' "${STUB_WALL_TEXT:-You have hit your session limit}"; exit 1; }
 printf '{"result":"claude answer","modelUsage":{"claude-opus-fixture":{"outputTokens":2}}}\n'
 EOF
 
@@ -328,6 +328,15 @@ for spec in "codex:codex-worker:$ROOT/ask_codex.sh" "claude:claude-worker:$ROOT/
   assert test "$rc" -eq 5
   assert jq -e --arg v "$leg" --arg a "$account" \
     '.vendors[$v].accounts[] | select(.account == $a) | .worker_wall.resets_at > now' "$WORK/limits.json" >/dev/null
+done
+# An Opus bucket or a transient rate limit drops the leg but walls no account for every model.
+for text in "You've hit your Opus limit" 'API Error: rate limit, retry shortly'; do
+  printf '{"schema":1,"vendors":{"claude":{"available":true,"accounts":[{"account":"claude-worker"}]}}}\n' >"$WORK/limits.json"
+  LEG_ENV=(STUB_WALL=1 "STUB_WALL_TEXT=$text" "LLM_LIMITS_FILE=$WORK/limits.json")
+  rc=0
+  run_leg "$ROUTED_PATH" "$WORK/wall-bucket" "$ROOT/ask_claude.sh" "bucket" >/dev/null 2>"$WORK/wall-bucket.err" || rc=$?
+  assert test "$rc" -eq 5
+  assert jq -e '.vendors.claude.accounts[0] | has("worker_wall") | not' "$WORK/limits.json" >/dev/null
 done
 LEG_ENV=()
 
