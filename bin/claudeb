@@ -2591,8 +2591,10 @@ export_token() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-# launchd and other detached callers start with a PATH that lacks the native install.
+# launchd and other detached callers start with a PATH that lacks the native install; without USER,
+# claude's keychain lookup misses the login and answers "Not logged in".
 command -v claude >/dev/null 2>&1 || PATH="$PATH:$HOME/.local/bin"
+[ -n "${USER:-}" ] || export USER="$(id -un)"
 case "${1:-}" in
   --direct)
     printf 'claudeb: --direct was removed; use `claudeb profile <name>`\n' >&2

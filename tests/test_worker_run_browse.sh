@@ -47,6 +47,7 @@ printf '%s\n' "\$*" >>"$bt/claudeb.log"
 printf '%s\n' "\$prompt" >"$bt/prompt-\$account"
 mode=\$(cat "$bt/mode-\$account" 2>/dev/null || echo ok)
 [ "\$mode" != nostart ] || { printf 'env: claude: No such file or directory\n' >&2; exit 127; }
+[ "\$mode" != nologin ] || { jq -cn '{is_error:true, duration_api_ms:0, result:"Not logged in · Please run /login"}'; exit 1; }
 url=\$(grep -o 'http://127.0.0.1:[0-9]*/form?case=[^ ]*' <<<"\$prompt" | head -n 1)
 [ -z "\$url" ] || [ "\$mode" != ok ] || curl -s "\${url%/form*}/submit?case=\${url##*=}&v=\${url##*=}" >/dev/null
 case "\$mode" in
@@ -324,11 +325,12 @@ EOF
   mkdir -p "$CLAUDEB_DIR"
   printf 'extra\n' >"$CLAUDEB_DIR/disabled"
   printf 'nostart\n' >"$bt/mode-lost"
+  printf 'nologin\n' >"$bt/mode-com"
   : >"$bt/claudeb.log"
   rc=0; out=$(browse --canary) || rc=$?
-  rm -f "$CLAUDEB_DIR/disabled"
+  rm -f "$CLAUDEB_DIR/disabled" "$bt/mode-com"
   assert test "$rc" -eq 1
-  assert grep -qx 'CANARY: com BROWSER_OK' <<<"$out"
+  assert grep -qx 'CANARY: com CANARY_NOT_STARTED — Not logged in · Please run /login' <<<"$out"
   assert grep -qx 'CANARY: extra skipped — out of the worker pool' <<<"$out"
   assert test -z "$(grep '^profile extra ' "$bt/claudeb.log")"
   assert grep -qx 'CANARY: lost CANARY_NOT_STARTED — env: claude: No such file or directory' <<<"$out"

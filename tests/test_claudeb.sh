@@ -154,11 +154,12 @@ assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p noop)"
 bare_path=$(IFS=:; for dir in $PATH; do [ -x "$dir/claude" ] || printf '%s:' "$dir"; done)
 bare_path=${bare_path%:}
 mkdir -p "$MODEL_HOME/.local/bin"
-cp "$MODEL_BIN/claude" "$MODEL_HOME/.local/bin/claude"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$USER" "$@" >"$MODEL_ARGV"\n' >"$MODEL_HOME/.local/bin/claude"
+chmod +x "$MODEL_HOME/.local/bin/claude"
 rm -f "$MODEL_ARGV"
-assert env HOME="$MODEL_HOME" CLAUDEB_DIR="$MODEL_HOME/store" PATH="$bare_path" MODEL_ARGV="$MODEL_ARGV" \
+assert env -u USER HOME="$MODEL_HOME" CLAUDEB_DIR="$MODEL_HOME/store" PATH="$bare_path" MODEL_ARGV="$MODEL_ARGV" \
   bash "$SCRIPT" profile model-test -p bare >/dev/null 2>&1
-assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p bare)"
+assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' "$(id -un)" -p bare)"
 rm "$MODEL_HOME/.local/bin/claude"
 assert_fails env HOME="$MODEL_HOME" CLAUDEB_DIR="$MODEL_HOME/store" PATH="$bare_path" \
   bash "$SCRIPT" profile model-test -p bare >"$WORK/no-claude.out" 2>&1

@@ -5833,6 +5833,16 @@ browse_enroll() { # account [pin-directory]
   [ "$status" = ok ]
 }
 
+browse_unstarted() { # account -> the first error line of a proof session that never reached the model
+  local json err
+  json="$(browse_dir)/last-session-$1.json" err="$(browse_dir)/last-session-$1.err"
+  if [ -s "$json" ]; then
+    jq -r 'select(.is_error == true and (.duration_api_ms // 0) == 0) | .result // "an error result"' "$json" 2>/dev/null
+  else
+    cat "$err" 2>/dev/null
+  fi | grep -m 1 . | cut -c 1-300 | grep .
+}
+
 # Each enrolled account in the claudeb worker pool fills and submits a form on a listener only this canary
 # runs; the server's own receipt is the verdict, never the worker's word.
 browse_canary() {
@@ -5885,9 +5895,8 @@ PY
         answer=$(browse_proof_session "$account" "$dir" "open http://127.0.0.1:$port/form?case=$tag in your proven tab, set the field \`v\` to \`$tag\` and submit the form through JavaScript, then read the page back: it must say \`received $tag\`.")
         if grep -qF "\"v\": \"$tag\"" "$work/receipts" 2>/dev/null; then
           browse_absorb "$account" "$dir" "$answer"
-        elif [ ! -s "$(browse_dir)/last-session-$account.json" ] && [ -s "$(browse_dir)/last-session-$account.err" ]; then
+        elif error=$(browse_unstarted "$account"); then
           BROWSE_OUTCOME=CANARY_NOT_STARTED
-          error=$(grep -m 1 . "$(browse_dir)/last-session-$account.err" | cut -c 1-300)
         else
           browse_absorb "$account" "$dir" "$answer" log-only
           BROWSE_OUTCOME=CANARY_NO_RECEIPT
