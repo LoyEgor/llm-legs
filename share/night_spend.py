@@ -373,10 +373,10 @@ def night_goals(night):
     return goals_now()
 
 
-def previous_nights(path, night, count=2):
+def previous_nights(path, night, count=2, with_jobs=True):
     import time_budget
 
-    return [n for _, _, n in time_budget.finished_before(path, night, count)]
+    return [n for _, _, n in time_budget.finished_before(path, night, count, with_jobs)]
 
 
 def trend(values):
@@ -460,7 +460,7 @@ def main():
     print(f"review rounds · {now['rounds']}")
     for kind, total in now["kinds"].items():
         print(f"spend {kind} · {mega(weighted(total))} {UNIT}{by_model(total)}")
-    before = next(iter(previous_nights(path, night, 1)), None)
+    before = next(iter(previous_nights(path, night, 1, with_jobs=False)), None)
     ratio = ""
     if before:
         was = spend(before, worker_run)["total"]

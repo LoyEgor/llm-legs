@@ -96,6 +96,7 @@ put_installs() { # vendor
 }
 
 put() { jq -c --arg k "$1" '{k: $k, v: .}' >>"$work/facets.jsonl"; }
+put_raw() { jq -Rsc --arg k "$1" '{k: $k, v: .}' >>"$work/facets.jsonl"; }
 put_lines() { jq -Rnc --arg k "$1" '{k: $k, v: [inputs]}' >>"$work/facets.jsonl"; }
 put_pairs() { jq -Rnc --arg k "$1" '{k: $k, v: ([inputs | split("\t") | {(.[0]): .[1]}] | add // {})}' >>"$work/facets.jsonl"; }
 fail() { printf '%s\t%s\n' "$1" "$2" >>"$work/failed.tsv"; }
@@ -108,7 +109,7 @@ put_text() { # facet command...
     return 0
   fi
   printf '%s\n' "$out" | V="$version" perl -pe 's/\e\[[0-9;]*[A-Za-z]//g; s/\Q$ENV{V}\E/<version>/g if length $ENV{V}' |
-    jq -Rs . | put "$facet"
+    put_raw "$facet"
 }
 
 # Packed string tables glue an id onto the next string (gemini-3.1-pro-highparse mime type): a lowercase
@@ -262,7 +263,7 @@ snapshot() { # vendor -> {vendor, version, facets, failed}
   : >"$work/facets.jsonl"
   : >"$work/failed.tsv"
   : >"$work/served"
-  jq -n --arg v "$version" '$v' | put version
+  printf '%s' "$version" | put_raw version
   put_installs "$vendor"
   "${vendor}_facets"
   put_ids "$vendor"

@@ -1246,12 +1246,12 @@ def nights_upto(path, night=None):
     return sorted(out, key=lambda n: n[:2])
 
 
-def finished_before(path, night=None, count=2):
-    """(started_at, path, night) of the last count finished nights with jobs before the night, oldest first."""
+def finished_before(path, night=None, count=2, with_jobs=True):
+    """(started_at, path, night) of the last count finished nights (with jobs, unless told otherwise) before the night, oldest first."""
     night = read_json(path, {}) if night is None else night
     key = (night.get("started_at", ""), night.get("id", ""))
     return [n for n in nights_upto(path, night) if (n[0], n[2].get("id", "")) < key
-            and n[2].get("finished_at") and n[2].get("jobs")][-count:]
+            and n[2].get("finished_at") and (n[2].get("jobs") or not with_jobs)][-count:]
 
 
 def night_report(worker_run, path):
