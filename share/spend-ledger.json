@@ -1236,6 +1236,21 @@
    "verdict": "trade",
    "zero": "removal saves 0.9 CPU-min/day; loses the printed resume line and ~/.claude/last-chat-switch stash when a chat switch fails (the chat is unreachable without it)",
    "note": "handoff docs/handoffs/2026-10-13-hook-if-filter.md: if-filter Bash(*claude-chat-switch*) skips the spawn for ~all commands; its own work is a substring test that exits at once; settings registrations are Egor's step"
+  },
+  {
+   "id": "cpu:doctor/code",
+   "title": "doctor/code",
+   "audited_at": "2026-10-13T09:16:45+03:00",
+   "by": "harness-speed-cpu-hook-dia-not-chrome-sh-20261012T235042Z-5729",
+   "cpu_min_day": 0.6,
+   "cpu_s_run": 7.039,
+   "runs_day": 6,
+   "sources": {
+    "llm-legs/bin/code-doctor": "53b46f8c540d584ea55ae7f5872da2ede28618f6"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.6 CPU-min/day; loses the dead, heavy, duplicate and promise candidates Egor asked for 2026-10-02 and the Code fixer queue",
+   "note": "refresh 2/day (night prep + menu) at ~10 CPU-s, 6.9 of it build_candidates: symbol_mentions re-read and regex-scanned a file per symbol (3471 calls), glob_targets walked every file per glob (2150 calls); one run tally per file and a per-repo memo cut it to 1.4 CPU-s, candidates.jsonl byte-identical at a fixed hash seed (code-doctor 9ac8dd14); left: run_rollup 1.2 s, json dumps 1.6 s, edges 1 s"
   }
  ]
 }
