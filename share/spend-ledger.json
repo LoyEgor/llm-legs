@@ -3479,6 +3479,94 @@
    "verdict": "cut",
    "zero": "removal saves 0.3 wall-min/day; loses the spawn hook's relay and native denials and the fork rename and seed",
    "note": "each relay's deny reason read once (5 jq fewer a run, 33 asserts); the hook itself forks ~6 fewer per fork spawn (844e68c5)"
+  },
+  {
+   "id": "suite:llm-legs/test_grok_image",
+   "title": "llm-legs/test_grok_image",
+   "audited_at": "2026-10-13T12:11:42+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-grok-image-20261012T235310Z-1ca2",
+   "cpu_run": 24.5,
+   "wall_run": 27.8,
+   "cpu_min_day": 4.78,
+   "wall_min_day": 11.79,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_grok_image.sh": "68b34a176d0b9f0824e10e655026598ac011f292"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 10.5 wall-min/day and loses the pins on grok-image routing, launch controls, manifest-driven aspects, chroma and alpha delivery and limit classification",
+   "note": "grok-image reads its manifest in one jq instead of five: suite jq spawns 988 -> 742, CPU 35.9 -> 32.7 s a run, 210 asserts unchanged; remaining cost is ~70 full grok-image runs, each pinning a distinct path"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_inbox",
+   "title": "llm-legs/test_worker_run_inbox",
+   "audited_at": "2026-10-13T12:11:43+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-grok-image-20261012T235310Z-1ca2",
+   "cpu_run": 9.3,
+   "wall_run": 11.5,
+   "cpu_min_day": 4.13,
+   "wall_min_day": 10.5,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_inbox.sh": "3b48816f734e172d818fccd3bdb46adf195ecc78",
+    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 10.2 wall-min/day and loses the pins on worker-run say: hook wiring, once-only delivery, RESUME carry, finished-run refusal, no fork on an empty inbox",
+   "note": "seven cases wait for exit_code instead of building a wait report they never read: 61 asserts unchanged, CPU 13.8 -> 12.0 s, jq 796 -> 738; the rest is stub gate polls on the builtin sleep"
+  },
+  {
+   "id": "suite:llm-legs/test_instruction_gate_relay",
+   "title": "llm-legs/test_instruction_gate_relay",
+   "audited_at": "2026-10-13T12:11:43+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-grok-image-20261012T235310Z-1ca2",
+   "cpu_run": 26.6,
+   "wall_run": 15.0,
+   "cpu_min_day": 16.01,
+   "wall_min_day": 23.9,
+   "sources": {
+    "llm-legs/tests/instruction_gate_harness.sh": "e689127732952d4637a7594e5158109960845569",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_instruction_gate_relay.sh": "09b4554cc24586d3ac3fa45595d610eb4d53ee25"
+   },
+   "verdict": "kept",
+   "zero": "removing the suite saves 10.1 wall-min/day and loses the relay-worker refusal, the tripwire put-back and the in-flight window attribution pins",
+   "note": "one vacuous check fixed (journal bound read 'tier line 5' off the doc it had just written; now red under uncounted drop and keep-oldest trims); cost is the production hooks' own spawns (awk/jq/date per gate call), a hook-code change is not a suite cut"
+  },
+  {
+   "id": "suite:llm-legs/test_claudegpt",
+   "title": "llm-legs/test_claudegpt",
+   "audited_at": "2026-10-13T12:11:43+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-grok-image-20261012T235310Z-1ca2",
+   "cpu_run": 15.3,
+   "wall_run": 14.6,
+   "cpu_min_day": 6.28,
+   "wall_min_day": 11.81,
+   "sources": {
+    "llm-legs/tests/test_claudegpt.py": "d23b065b5601d2d36f5e0b1f7c694ade04b354a4"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 10.1 wall-min/day and loses the pins on claudegpt launch commands, gateway auth projection, concurrency guards and effort forwarding",
+   "note": "effort-launch ccr stub is sh and starts Python only for launch: effort test 16 -> 10 s, 52 tests and 38 subtests unchanged; wait_ready raised 5 -> 30 s after a load-200 flake"
+  },
+  {
+   "id": "suite:llm-legs/test_test_journal",
+   "title": "llm-legs/test_test_journal",
+   "audited_at": "2026-10-13T12:11:43+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-grok-image-20261012T235310Z-1ca2",
+   "cpu_run": 4.9,
+   "wall_run": 11.5,
+   "cpu_min_day": 3.84,
+   "wall_min_day": 10.96,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
+    "llm-legs/tests/test_test_journal.sh": "3c015d1a19b23c74fc8b03ee40413d2dd6205184",
+    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 10.1 wall-min/day and loses the pins on the work probe's test journal, scope markers and repo_root layouts",
+   "note": "slow-discovery stub sleeps 1 s not 3 (two ls-files calls: 6 -> 2 s asked); 34 asserts unchanged, red under the stamp-after-discovery mutation"
   }
  ]
 }
