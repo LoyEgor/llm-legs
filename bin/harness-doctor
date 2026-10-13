@@ -2531,6 +2531,10 @@ def load_growth():
 # ---------------------------------------------------------------- tests journal
 
 
+def hashed(value):
+    return json.dumps(value, sort_keys=True) if isinstance(value, (list, dict)) else value
+
+
 def load_tests(now):
     rows = []
     try:
@@ -2549,17 +2553,19 @@ def load_tests(now):
     # The probe skips every run run-suites journaled, so a history row a journal row starts with is
     # one the probe wrote while the run was still going; flapping wrote one per minute of the run,
     # each an earlier snapshot of the next one's suite times.
-    joins = [(t["label"], t["end"] - t["secs"], t["_roots"]) for t in journal]
-    kept = []
+    joins, kept, same = {}, [], {}
+    for t in journal:
+        joins.setdefault(hashed(t["label"]), []).append((t["end"] - t["secs"], t["_roots"]))
     for row in sorted(rows, key=lambda t: -t["end"]):
         began, label, root = row["end"] - row["secs"], row.get("label"), row.get("repo_root")
-        if any(label == jl and abs(began - js) <= RUN_JOIN_S and root in roots for jl, js, roots in joins):
+        if any(abs(began - js) <= RUN_JOIN_S and root in roots for js, roots in joins.get(hashed(label), ())):
             continue
-        if any(label == k.get("label") and root == k.get("repo_root") and row.get("who") == k.get("who")
-               and abs(began - (k["end"] - k["secs"])) <= 3 and row["end"] < k["end"]
-               and (row.get("suite_secs") or {}).items() <= (k.get("suite_secs") or {}).items() for k in kept):
+        peers = same.setdefault((hashed(label), hashed(root), hashed(row.get("who"))), [])
+        if any(abs(began - (k["end"] - k["secs"])) <= 3 and row["end"] < k["end"]
+               and (row.get("suite_secs") or {}).items() <= (k.get("suite_secs") or {}).items() for k in peers):
             continue
         kept.append(row)
+        peers.append(row)
     kept = {id(row) for row in kept}
     rows = [row for row in rows if id(row) in kept] + journal
     for t in journal:
