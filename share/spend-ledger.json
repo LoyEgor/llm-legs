@@ -5571,6 +5571,40 @@
    "verdict": "cut",
    "zero": "removal saves 13 wall-s and 17 CPU-s a run (3.4 wall-min/day); loses the watch set's ranking coverage, worktree-copy exclusion, rules-version recut, write-gate twins and bloat-gate pricing checks",
    "note": "harness: printf payload, baseline-wait bash only with a pending file; the rest is instruction-watch's own per-call cost (483 awk, 234 jq a run), a hook-cost row, not this suite's"
+  },
+  {
+   "id": "suite:llm-legs/test_grok_video",
+   "title": "llm-legs/test_grok_video",
+   "audited_at": "2026-10-13T13:40:12+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-reset-redeem-20261012T235332Z-5e50",
+   "cpu_run": 12.9,
+   "wall_run": 21.7,
+   "cpu_min_day": 1.72,
+   "wall_min_day": 4.89,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_grok_video.sh": "9f582ef4d718c348676c4ffd7ca901f665775ec4"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 22 wall-s and 13 CPU-s a run (4.0 wall-min/day); loses grok-video's manifest gates refused before any spend, the account lock and its waiter, resume and the caps footer",
+   "note": "caps read in one jq (13 -> 1 a call), the lock-waiter case waits one real 2 s poll in the foreground instead of an uninterruptible 8 s; image-leg tee poll 0.01 s; caps_checks.py double record kept (one python start, ~0.5 s a run, needs a multi-record CLI across every image wrapper)"
+  },
+  {
+   "id": "suite:llm-legs/test_flow_image",
+   "title": "llm-legs/test_flow_image",
+   "audited_at": "2026-10-13T13:40:12+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-reset-redeem-20261012T235332Z-5e50",
+   "cpu_run": 22.2,
+   "wall_run": 21.4,
+   "cpu_min_day": 2.17,
+   "wall_min_day": 6.82,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_flow_image.sh": "9f112992fbffee04dae9ef1275a069894218d40f"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 21 wall-s and 19 CPU-s a run (3.4 wall-min/day); loses the Flow route's refusals, takes, composites, resume lineage, Image Editor ops and the engine's rotation, locks and reply parsing",
+   "note": "two shards (takes+engine / resume+editor), held-lock failover waits 0.01 s, image-leg tee poll 0.01 s; composites (uv numpy/scipy) and per-pixel magick probes kept: production work each check reads"
   }
  ]
 }
