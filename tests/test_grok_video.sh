@@ -418,12 +418,10 @@ assert test ! -e "$TMP_ROOT/grok-video.explicit.lock"
 
 mkdir -p "$TMP_ROOT/grok-video.explicit.lock"
 : >"$FAKE_GROKB_CALLS"
-GROK_MEDIA_LOCK_WAIT=8 video_run --dest "$OUTPUT_DIR/waiter.$CONTAINER" --prompt 'push in' \
-  --ref "$WORK/ref-a.jpg" --account explicit &
-waiter=$!
-sleep 0.3
-kill -INT "$waiter" 2>/dev/null || true
-wait "$waiter" 2>/dev/null || true
+video_rc=0
+GROK_MEDIA_LOCK_WAIT=2 video_run --dest "$OUTPUT_DIR/waiter.$CONTAINER" --prompt 'push in' \
+  --ref "$WORK/ref-a.jpg" --account explicit || video_rc=$?
+assert test "$video_rc" -eq 5
 assert test -d "$TMP_ROOT/grok-video.explicit.lock"
 assert test ! -s "$FAKE_GROKB_CALLS"
 rmdir "$TMP_ROOT/grok-video.explicit.lock"
