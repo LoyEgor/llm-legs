@@ -5,16 +5,22 @@
 PROJECTS=$(git_projects "$ROOT")
 
 # The toggle rows: absent means the gemini default, and a vendor alone means its default model.
-toggle(){ WORKER_PICK_CONFIG_FILE="$TOGGLE" bash -c '. "$1/share/worker-model.sh"; shift; "$@"' _ "$ROOT" "$@"; }
-assert test "$(toggle worker_light_vendor research)" = gemini
-assert test "$(toggle worker_light_model edit)" = "$(toggle worker_model_default_model gemini)"
-assert test "$(toggle worker_light_effort research)" = high
+toggle(){ WORKER_PICK_CONFIG_FILE="$TOGGLE" bash -c '. "$1/share/worker-model.sh"; worker_model_prime; shift
+  for call; do $call 2>/dev/null || echo "rc=$?"; done' _ "$ROOT" "$@" | paste -sd' ' -; }
+read -r vendor model default effort <<<"$(toggle 'worker_light_vendor research' 'worker_light_model edit' \
+  'worker_model_default_model gemini' 'worker_light_effort research')"
+assert test "$vendor" = gemini
+assert test "$model" = "$default"
+assert test "$effort" = high
 printf 'worker=auto\nlight_research=claudeb:sonnet\nlight_edit=codex\n' >"$TOGGLE"
-assert test "$(toggle worker_light_vendor research) $(toggle worker_light_model research) $(toggle worker_light_effort research)" = 'claudeb sonnet high'
-assert test "$(toggle worker_light_vendor edit) $(toggle worker_light_model edit)" = 'codex astra'
+rows=$(toggle 'worker_light_vendor research' 'worker_light_model research' 'worker_light_effort research' \
+  'worker_light_vendor edit' 'worker_light_model edit')
+assert test "${rows% * *}" = 'claudeb sonnet high'
+assert test "${rows#* * * }" = 'codex astra'
 printf 'light_research=mistral\nlight_edit=grok:opus\n' >"$TOGGLE"
-assert test "$(toggle eval 'worker_light_vendor research 2>/dev/null; echo $?')" = 2
-assert test "$(toggle eval 'worker_light_model edit 2>/dev/null; echo $?')" = 2
+read -r vendor model <<<"$(toggle 'worker_light_vendor research' 'worker_light_model edit')"
+assert test "$vendor" = rc=2
+assert test "$model" = rc=2
 rm -f "$TOGGLE"
 
 run
