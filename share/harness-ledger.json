@@ -7991,6 +7991,38 @@
       "reviewed_by": "night fixer harness-browser-20261012T235000Z-56b7",
       "note": "claudeb-1791819407-6339-7457 (Rentiva service signups, 2026-10-12T15:37Z) found Chrome Profile 10 not signed in to GitHub and, as the preamble then demanded for anything needing a login, ended HARNESS_NEEDS_REPAIR; the harness itself worked (device proven, tab closed, outcome logged). 7f2b3661 (in the night base) gives that case its own outcome, BROWSER_OWNER_LOGIN, which the Browser section skips; test_worker_run_browse and test_harness_doctor pin it. Ruled out: preflight, device proof and log writing all behaved. The row matches every browser-repair finding (the rule has one ident), so any later HARNESS_NEEDS_REPAIR, missing outcome or workaround reopens it.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-review-bench-test-review-bench",
+      "title": "test_review_bench idle wall over its CPU, bounded by the 0.25 s run_streamed poll tick",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/review-bench/test_review_bench"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T05:50:00+03:00",
+          "by": "night 20261012T233034Z-3131 harness-speed-test-health-idle-review-bench-test-review-bench-20261012T235445Z-7074",
+          "files": [
+            "review-bench/share/rbench/launch.py",
+            "review-bench/share/rbench/catalog.py",
+            "review-bench/tests/test_review_bench.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "run_streamed's loop before and after: the stall, duration and hold checks run on the same STALL_POLL_S tick, the one change is that a cell's exit wakes the loop at once (a reaper thread sets an Event) instead of after the rest of a time.sleep; the interrupt check keeps its assertion (the group is killed, the descendant dies) and interrupts through Popen.poll",
+            "data": "test_review_bench.sh whole, a time.sleep tally by call site over the whole suite, and 20 runs of /usr/bin/true through run_streamed, load 95-205 on 10 cores, 2026-10-13",
+            "result": "requested sleeps 52.1 s (run_streamed:667 about 51 s) to 0.6 s; an instant cell 106 to 19 ms; PASS before and after, test_review_bench_panels, test_cell_runtime, test_agy_bare and test_consistency PASS; removing the BaseException kill in run_streamed makes the interrupt check fail (descendant survived)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-idle-review-bench-test-review-bench-20261012T235445Z-7074",
+      "note": "2026-10-13: p10 wall 62 s on 19 s CPU, idle 42 s; the 82 s direct run at load 95 held 31 CPU-s, the rest a run-queue wait that no suite lever owns, plus 52 s of requested time.sleep, 99 % of it run_streamed's 0.25 s poll tick (each fixture cell's exit waited out the rest of a tick; the doctor's PATH-shim profile never sees a Python sleep, so no profiled run bounded it). Fixed: an Event the cell's reaper thread sets; production gains the same ~90 ms per cell exit. Ruled out: the select/communicate waits of the ~980 subprocess.run calls (bin/review-bench and rbench start-up, ~1.2 s wall for 0.15 s CPU at load 95 is the scheduler, not a sleep), the suite's own 0.05 s fixture polls (0.6 s requested). Not done: the stall-fixture sleeps that ARE the premise (hanger.sh, stall_s=1, sleeper.sh at body 1231-1290), the suite's 9.3k-line single process (a split into shards is the long-pole row's lever and the doctor's heavy floor reads the run count). Blind spot: the idle bound reads requested sleeps of shimmed binaries only.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -8273,6 +8305,13 @@
       "reason": "share/cpu_audit.py sources() maps every hook to claude-setup/hooks/<name>, so these audits record sources {} (2026-10-13) and never turn due when the script changes; a hook with fewer than a day of journal runs (worker-spawn-hook, 2 runs a day) also drops out of the window and cannot be recorded",
       "since": "2026-10-13",
       "would_catch_if": "sources() tried llm-legs/bin/<name> after claude-setup/hooks/<name>"
+    },
+    {
+      "id": "test-health-python-sleep-unseen",
+      "what": "the idle bound of opportunity:test-health/idle sees sleeps of shimmed binaries only, never a Python suite's time.sleep or Event/poll waits",
+      "reason": "2026-10-13 test_review_bench: 52 s of requested time.sleep (run_streamed's 0.25 s poll tick) sat under 'no profiled run bounds it'; found only with a time.sleep tally by call site",
+      "since": "2026-10-13",
+      "would_catch_if": "run-suites --profile ran Python suites with a sitecustomize that logs time.sleep seconds by call site, as it does the PATH shims"
     }
   ]
 }
