@@ -1363,7 +1363,7 @@ run_statusline() {
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
     STATUSLINE_CODEX_REFRESH_CMD="${CODEX_REFRESH_CMD:-/usr/bin/true}" \
     STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" STATUSLINE_REVIEW_DEBT="${DEBT_CMD:-}" \
-    env ${NO_TIMEOUT_BIN:+RUN_BOUNDED_TIMEOUT_BIN=} "$STATUSLINE"
+    env ${NO_TIMEOUT_BIN:+STATUSLINE_TIMEOUT_BIN=} "$STATUSLINE"
 }
 
 
@@ -5081,14 +5081,14 @@ unpushed_fit_out=$(FIT_COLUMNS=20 PATH="$UNPUSHED_TIMEOUT_BIN:$PATH" \
   unpushed_render unpushed-fit "$AHEAD_REPO")
 assert grep -Fq "${RED}↑!${RESET}" <<< "$unpushed_fit_out"
 
-# Both gate asks are bounded by run_bounded, the deadline every probe shares: RUN_BOUNDED_TIMEOUT_BIN
+# Both gate asks are bounded by run_bounded, the deadline every probe shares: STATUSLINE_TIMEOUT_BIN
 # is the one they run under, and with none installed its watchdog bounds them.
 : > "$GATE_LOG"
 : > "$UNPUSHED_TIMEOUT_LOG"
-RUN_BOUNDED_TIMEOUT_BIN="$UNPUSHED_TIMEOUT_BIN/timeout" unpushed_render unpushed-bounded "$AHEAD_REPO" >/dev/null
+STATUSLINE_TIMEOUT_BIN="$UNPUSHED_TIMEOUT_BIN/timeout" unpushed_render unpushed-bounded "$AHEAD_REPO" >/dev/null
 assert_eq "10 $UNPUSHED_STUB unpushed $AHEAD_TOP unpushed-bounded" \
   "$(grep -m1 -F "$UNPUSHED_STUB unpushed " "$UNPUSHED_TIMEOUT_LOG")"
-RUN_BOUNDED_TIMEOUT_BIN="$UNPUSHED_TIMEOUT_BIN/timeout" review_session_render autonomy-bounded "$AHEAD_REPO" >/dev/null
+STATUSLINE_TIMEOUT_BIN="$UNPUSHED_TIMEOUT_BIN/timeout" review_session_render autonomy-bounded "$AHEAD_REPO" >/dev/null
 assert_eq "10 $UNPUSHED_STUB autonomous autonomy-bounded" \
   "$(grep -m1 -F "$UNPUSHED_STUB autonomous autonomy-" "$UNPUSHED_TIMEOUT_LOG")"
 # The lock a gate ask removes is the one it made: one swept as dead while the ask ran belongs to the

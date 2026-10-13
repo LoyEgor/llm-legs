@@ -34,7 +34,6 @@ grokb_root=$(resolve_root)
 . "$grokb_root/share/account-announce.sh"
 . "$grokb_root/share/account-roster.sh"
 . "$grokb_root/share/limit-hit.sh"
-. "$grokb_root/share/run-bounded.sh"
 pool_dir=$(worker_pool_dir grok)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
@@ -434,12 +433,28 @@ grok_env_run() { # mode name headless args...
   if [ "$name" = main ]; then unsets+=(-u GROK_HOME); else assigns+=(GROK_HOME="$profiles_dir/$name"); fi
   local -a command=(env ${unsets[@]+"${unsets[@]}"} "${assigns[@]}" "$grok_bin" "$@")
   if [ "$mode" = exec ]; then exec "${command[@]}"; fi
-  run_bounded "$grok_touch_timeout" "${command[@]}" </dev/null
+  run_bounded "$grok_touch_timeout" "${command[@]}"
 }
 
-# llm-limits.sh bounds the heartbeat's touch on the same knob.
+# llm-limits.sh bounds the heartbeat's touch the same way and on the same knob; `timeout` is not on
+# a stock macOS, so the watchdog fallback is the one that usually runs.
 grok_touch_timeout=${LLM_LIMITS_GROK_TOUCH_TIMEOUT:-30}
 case "$grok_touch_timeout" in ''|*[!0-9]*|0) grok_touch_timeout=30 ;; esac
+run_bounded() { # seconds command...
+  local seconds=$1 timeout_cmd pid watchdog rc=0
+  shift
+  timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+  if [ -n "$timeout_cmd" ]; then "$timeout_cmd" "$seconds" "$@" </dev/null; return $?; fi
+  "$@" </dev/null &
+  pid=$!
+  # Its `sleep` outlives the kill below, so an inherited stdout holds a caller's $(…) open until it ends.
+  (sleep "$seconds"; kill "$pid" 2>/dev/null || true) >/dev/null 2>&1 &
+  watchdog=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$rc"
+}
 
 run_account() {
   local allow_create="$1" name="${2:-}" directory created=false

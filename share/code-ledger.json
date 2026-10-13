@@ -742,9 +742,7 @@
      "files": [
       "llm-legs/share/run-bounded.sh",
       "llm-legs/llm-limits.sh",
-      "llm-legs/bin/claude-resume-timer",
-      "llm-legs/bin/statusline.sh",
-      "llm-legs/bin/grokb"
+      "llm-legs/bin/claude-resume-timer"
      ],
      "in": null,
      "regressed_at": null,
@@ -812,7 +810,7 @@
      ]
     }
    },
-   "note": "Merged into share/run-bounded.sh (run code-code-20261012T235610Z-53a3). Found, not fixed: (1) the watchdog branch (no timeout/gtimeout) returns the killed rc (143), never 124, so RUN_BOUNDED_ON_TIMEOUT and the llm-limits.sh `case 124` journals stay silent there, as before the merge; this machine has /opt/homebrew/bin/timeout. (2) a sibling clone family timeout_command (gtimeout|timeout|perl alarm, rc 124|142) lives in bin/codexb, bin/vendor-cli-update, bin/vendor-fingerprint, bin/llm-selfcheck, bin/llm-refresh: same job, its own cause for a later run.",
+   "note": "Merged into share/run-bounded.sh (run code-code-20261012T235610Z-53a3) for the two judged units only: code-doctor check refuses deleting a unit no judged problem names, so the copies in bin/statusline.sh (always rc 0, journals probe.cli on 124, STATUSLINE_TIMEOUT_BIN -> RUN_BOUNDED_TIMEOUT_BIN plus a RUN_BOUNDED_ON_TIMEOUT hook) and bin/grokb (</dev/null moves to its one call) wait for their own judged problem; both migrations passed the affected suites in this run before being reverted. Found, not fixed: (1) the watchdog branch (no timeout/gtimeout) returns the killed rc (143), never 124, so RUN_BOUNDED_ON_TIMEOUT and the llm-limits.sh `case 124` journals stay silent there, as before the merge; this machine has /opt/homebrew/bin/timeout. (2) a sibling clone family timeout_command (gtimeout|timeout|perl alarm, rc 124|142) lives in bin/codexb, bin/vendor-cli-update, bin/vendor-fingerprint, bin/llm-selfcheck, bin/llm-refresh: same job, its own cause for a later run.",
    "reviewed_by": null,
    "same_cause": [],
    "status": "fixed-pending",

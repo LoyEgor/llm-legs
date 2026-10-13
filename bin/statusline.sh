@@ -48,7 +48,6 @@ statusline_dir=${statusline_self%/*}
 . "$statusline_dir/../share/codex-accounts.sh"
 . "$statusline_dir/../tests/lib/suite-journal.sh" --lib
 . "$statusline_dir/../share/statusline-probe.sh"
-. "$statusline_dir/../share/run-bounded.sh"
 
 statusline_parent_dir() {
   local path="$1"
@@ -95,14 +94,28 @@ file_mtime_to() { file_stat_to "$1" mtime "$2"; }
 file_size_to() { file_stat_to "$1" size "$2"; }
 ensure_dir() { [ -d "$1" ] || mkdir -p "$1"; }
 
-# A probe with no deadline outlives the 120s after which its lock counts as dead, so a second probe
-# would start while the first still walks: every probe runs under run_bounded.
-probe_timed_out() { # seconds command...
-  . "$statusline_dir/../share/limit-hit.sh" &&
-    limit_hit probe.cli "$1" s kill "${2##*/} ${3:-}: this refresh's answer, read as none" \
-      "bin/statusline.sh:${BASH_LINENO[1]}"
+# Stock macOS ships neither `timeout` nor `gtimeout`, and a probe with no deadline outlives the 120s
+# after which its lock counts as dead — so a second probe starts while the first still walks. An
+# EMPTY STATUSLINE_TIMEOUT_BIN forces the watchdog branch; unset means "find one".
+run_bounded() { # seconds command...
+  local secs="$1" bin pid killer
+  shift
+  bin="${STATUSLINE_TIMEOUT_BIN-$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)}"
+  if [ -n "$bin" ]; then
+    "$bin" "$secs" "$@" && return 0
+    [ "$?" -ne 124 ] || { . "$statusline_dir/../share/limit-hit.sh" &&
+      limit_hit probe.cli "$secs" s kill "${1##*/} ${2:-}: this refresh's answer, read as none" \
+        "bin/statusline.sh:${BASH_LINENO[0]}"; }
+    return 0
+  fi
+  "$@" &
+  pid=$!
+  ( sleep "$secs"; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  killer=$!
+  wait "$pid" 2>/dev/null
+  kill "$killer" 2>/dev/null
+  return 0
 }
-RUN_BOUNDED_ON_TIMEOUT=probe_timed_out
 
 snapshot_lock_acquire() {
   local lock="$1" now mtime again rc=1

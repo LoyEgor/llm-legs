@@ -47,9 +47,7 @@
    "mechanism": "run_bounded",
    "replaced": [
     "llm-legs/llm-limits.sh",
-    "llm-legs/bin/claude-resume-timer",
-    "llm-legs/bin/statusline.sh",
-    "llm-legs/bin/grokb"
+    "llm-legs/bin/claude-resume-timer"
    ]
   }
  ]
