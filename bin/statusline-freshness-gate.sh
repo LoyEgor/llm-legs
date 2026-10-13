@@ -4,7 +4,8 @@
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
-input=$(cat 2>/dev/null) || exit 0
+IFS= read -r -d '' input || :
+case "$input" in *statusline*) ;; *) exit 0 ;; esac
 
 { IFS= read -r path; IFS= read -r sid; IFS= read -r agent; } < <(printf '%s' "$input" | jq -r '
   def value: if . == null then "" else tostring end;
@@ -16,7 +17,7 @@ input=$(cat 2>/dev/null) || exit 0
 
 [ -n "$path" ] || exit 0
 
-base=$(basename -- "$path")
+base=${path##*/}
 case "$base" in
   statusline-contract.md) exit 0 ;;
   statusline*) ;;

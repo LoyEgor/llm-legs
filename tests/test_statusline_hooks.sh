@@ -3258,6 +3258,11 @@ assert grep -Fq 'freshness contract' <<< "$fg_out"
 rm -f "$WORK/statusline.sh"
 fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/claudeb" | "$FRESH_GATE")
 assert_eq "" "$fg_out"
+printf '%s() { printf "%s\\n" >>"$FORKS"; command %s "$@"; }\n' cat cat cat jq jq jq basename basename basename \
+  >"$WORK/fg-forks.sh"
+: >"$WORK/fg-forks"
+fg_payload PostToolUse Edit /x/src/main.py | BASH_ENV="$WORK/fg-forks.sh" FORKS="$WORK/fg-forks" "$FRESH_GATE" >/dev/null
+assert_eq "" "$(tr '\n' ' ' <"$WORK/fg-forks")"
 fg_out=$(fg_payload PreToolUse Edit "$ROOT/bin/statusline.sh" | "$FRESH_GATE")
 assert_eq "" "$fg_out"
 fg_out=$(printf '{broken' | "$FRESH_GATE") || fail "freshness gate broken json nonzero"
