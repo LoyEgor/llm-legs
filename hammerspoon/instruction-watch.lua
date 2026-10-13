@@ -1019,6 +1019,15 @@ local function watchRefresh(done, sync)
                 candidates[#candidates + 1] = real(root)
                 W.repoReal[#W.repoReal + 1] = real(root)
             end
+            W.linkReal = {}
+            pcall(function()
+                for name in hs.fs.dir(claudeDir) do
+                    local path = claudeDir .. "/" .. name
+                    if hs.fs.symlinkAttributes(path, "mode") == "link" and hs.fs.attributes(path, "mode") == "directory" then
+                        W.linkReal[#W.linkReal + 1] = real(path)
+                    end
+                end
+            end)
             -- ~/.claude's class directories are symlinks into another repository, and FSEvents reports a
             -- write at the target, so a file reached through a link is watched at the link's target.
             for _, path in ipairs(list) do
@@ -1204,9 +1213,13 @@ end
 local function instructionLike(path)
     local lower = tostring(path):lower()
     if lower:find("/.claude/projects/", 1, true) then return false end
-    for _, root in ipairs(W and W.repoReal or {}) do
-        if under(lower, root:lower()) then return repoCandidate(lower:sub(#root + 1)) end
+    local function inside(roots)
+        for _, root in ipairs(roots or {}) do
+            if under(lower, root:lower()) then return root end
+        end
     end
+    local repo = W and not inside(W.linkReal) and inside(W.repoReal)
+    if repo then return repoCandidate(lower:sub(#repo + 1)) end
     return lower:match("%.md$") or lower:match("%.markdown$") or lower:match("/review%-debt%-ignore$")
         or lower:match("/settings%.json$")
 end

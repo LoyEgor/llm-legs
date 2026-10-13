@@ -944,8 +944,15 @@ local ok, err = pcall(function()
     check(relists == 0, "a repository markdown outside the listing's rule scheduled a relisting tick: " .. relists)
     fire(repoReal .. "/sub/CLAUDE.md")
     check(relists == 1, "a new repository CLAUDE.md scheduled no relisting tick: " .. relists)
+    local classLink = wf.home .. "/.claude/agents"
+    os.execute('mkdir -p "' .. wf.repo .. '/agents"')
+    check(hs.fs.link(wf.repo .. "/agents", classLink, true), "the class-directory symlink was not created")
+    if relistFn then relistFn() end
+    fire(repoReal .. "/agents/new.md")
+    check(relists == 2, "a new markdown under a ~/.claude class-directory link target scheduled no relisting tick: " .. relists)
     hs.timer.doAfter = realAfter
     if relistFn then relistFn() end
+    os.remove(classLink)
 
     -- One recorded change is one full tick, whichever of the hook's poke and the journal's FSEvent comes
     -- first.

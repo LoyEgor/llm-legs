@@ -140,7 +140,8 @@ assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $session 
 assert_fails fix launch llm 2>"$WORK/err"
 assert grep -qF "run $id of the llm doctor is still open" "$WORK/err"
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
-jq --arg t "$(date -u -r $(($(now) - 13 * 3600)) +%Y-%m-%dT%H:%M:%SZ)" '.launched_at = $t | .created_at = $t' "$R" >"$WORK/r" && mv "$WORK/r" "$R"
+jq --arg t "$(date -u -r $(($(now) - 13 * 3600)) +%Y-%m-%dT%H:%M:%SZ)" --arg c "$(date -u -r $(($(now) - 30)) +%Y-%m-%dT%H:%M:%SZ)" \
+  '.launched_at = $t | .created_at = $c' "$R" >"$WORK/r" && mv "$WORK/r" "$R"
 fix launch llm >"$WORK/out" 2>&1 || fail "launch over an old run failed"
 assert grep -qF "run $id abandoned: open for 13 h" "$WORK/out"
 assert jqe '.abandoned_at != null and .closed_at == null' "$R"

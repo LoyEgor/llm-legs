@@ -47,6 +47,7 @@ printf '%s\n' "\$*" >>"$bt/claudeb.log"
 printf '%s\n' "\$prompt" >"$bt/prompt-\$account"
 mode=\$(cat "$bt/mode-\$account" 2>/dev/null || echo ok)
 [ "\$mode" != nostart ] || { printf 'env: claude: No such file or directory\n' >&2; exit 127; }
+[ "\$mode" != hang ] || exec sleep 30
 [ "\$mode" != wall ] || { jq -cn '{is_error:true, duration_api_ms:0, api_error_status:429, session_id:"f4290e00", result:"You'"'"'ve hit your weekly limit · resets Tue 8:59am"}'; exit 1; }
 [ "\$mode" != nologin ] || { jq -cn '{is_error:true, duration_api_ms:0, result:"Not logged in · Please run /login"}'; exit 1; }
 url=\$(grep -o 'http://127.0.0.1:[0-9]*/form?case=[^ ]*' <<<"\$prompt" | head -n 1)
@@ -193,6 +194,10 @@ EOF
   printf 'mute\n' >"$bt/mode-lost"
   assert_fails browse --enroll lost
   assert jq -se '.[-1].outcome == "BROWSER_INTERRUPTED"' "$log" >/dev/null
+  # a session killed at BROWSE_SESSION_S that dies on the TERM at once still journals its kill
+  printf 'hang\n' >"$bt/mode-lost"
+  LIMIT_HITS_LOG="$bt/hits.jsonl" BROWSE_SESSION_S=1 browse --enroll lost >/dev/null 2>&1 || :
+  assert jq -se 'any(.[]; .limit == "llm-legs:worker-run.browse-session" and .action == "kill")' "$bt/hits.jsonl" >/dev/null
   rm -f "$bt/mode-lost"
   browse --enroll lost >/dev/null
   fi

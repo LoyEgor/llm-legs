@@ -6031,9 +6031,10 @@ browse_prepare() { # vendor target account preamble-file; REASON lines and 2 whe
 browse_session_wait() { # pid what -> once the session has ended, or was killed after BROWSE_SESSION_S
   local watchdog
   ( sleep "${BROWSE_SESSION_S:-300}"
-    kill "$1" 2>/dev/null || exit 0
+    kill -0 "$1" 2>/dev/null || exit 0
     limit_hit worker-run.browse-session "${BROWSE_SESSION_S:-300}" s kill "$2" \
-      'bin/worker-run:BROWSE_SESSION_S:-300' "${BROWSE_SESSION_S:-300}" ) >/dev/null &
+      'bin/worker-run:BROWSE_SESSION_S:-300' "${BROWSE_SESSION_S:-300}"
+    kill "$1" 2>/dev/null ) >/dev/null &
   watchdog=$!
   wait "$1" 2>/dev/null
   process_tree_end "$watchdog" 0

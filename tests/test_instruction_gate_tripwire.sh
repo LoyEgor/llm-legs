@@ -175,8 +175,9 @@ alerts() { wc -l <"$ALERT_LOG" | tr -d '[:space:]'; }
 attempted() { grep -c '"sent":"attempted"' "$J" 2>/dev/null || :; }
 alert_wait() { local _; for _ in {1..100}; do [ -s "$ALERT_LOG" ] && return 0; sleep 0.02; done; return 1; }
 # The hook journals the attempt before it launches the poke, so the pokes owed are the attempts
-# journaled since the section began: the short tail catches a second poke of the same record.
-alert_settle() { local want=$(( $(attempted) - attempted_base )) _; for _ in {1..100}; do [ "$(alerts)" -ge "$want" ] && break; sleep 0.02; done; sleep 0.1; }
+# journaled since the section began: the tail catches a second poke of the same record, whose
+# detached launch can lag by hundreds of milliseconds under load.
+alert_settle() { local want=$(( $(attempted) - attempted_base )) _; for _ in {1..100}; do [ "$(alerts)" -ge "$want" ] && break; sleep 0.02; done; sleep 0.4; }
 
 echo "== tripwire: a hostile file name never reaches the command that wakes Hammerspoon"
 alert_log_stub

@@ -60,8 +60,13 @@ local function plural(count, word)
 end
 
 -- One styled title per text: the same object lets style.mono's settled cache hit on every later build.
-local dimTitles, dimCount = {}, 0
+-- The memo is per resolved tone: the dim colour follows the appearance.
+local dimTitles, dimCount, dimTone = {}, 0, nil
 local function dim(text)
+  local color = limits.dimColor()
+  local tone = type(color) == "table" and string.format("%s %s %s %s", color.red, color.green, color.blue, color.alpha)
+    or tostring(color)
+  if tone ~= dimTone then dimTitles, dimCount, dimTone = {}, 0, tone end
   local title = dimTitles[text]
   if not title then
     if dimCount >= 512 then dimTitles, dimCount = {}, 0 end
