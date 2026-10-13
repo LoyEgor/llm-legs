@@ -7900,11 +7900,24 @@
         "rule": "word-miss",
         "ident": "review"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T06:10:00+03:00",
+          "by": "night 20261012T233034Z-3131 handoff-2026-10-12-word-journal-flush-race",
+          "files": [
+            "claude-setup/hooks/lib/words_journal.py",
+            "claude-setup/limits.json",
+            "claude-setup/tests/test_words_log.sh",
+            "claude-setup/tests/test_word_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-12",
-      "reviewed_by": "night fixer harness-stop-hooks-20261012T010248Z-4f84",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 handoff-2026-10-12-word-journal-flush-race",
       "note": "words:1791756162/233cceb1 (Updater doctor, turn 312): Egor's pasted message raised ⚡ review; the model wrote `⚡ нет: review` (transcript 22:02:40.828Z), notice-word-journal.sh ran 22:02:40.950-42.769 (hook-time spool, the full WORDS_FLUSH_WAIT) and journaled model [] match false. readings() replayed on the transcript cut at the stop finds the line in 1 ms, and answered() takes `нет: review` for the notice, so the line reached disk after the poll. The turn had one stop (next human turn 22:04:02Z), so settle() never re-read it. Ruled out: transcript path (all profile copies are one inode), parse_readings turn reset (clean() returns None for the pasted message, the 21:55Z message bounds the turn, the line still reads), answered() matching. The fix belongs to claude-setup words_journal.py (no worktree there this run). Not this cause: words:1791766800/0a8f7814 (night 20261012T0054 orchestrator, ⚡ span on + sweep from night-run's own launch message) has no reading line in its transcript at all, the row word-miss-night-sweep-no-reading shape.",
       "handoff": "docs/handoffs/2026-10-12-word-journal-flush-race.md"
     },
