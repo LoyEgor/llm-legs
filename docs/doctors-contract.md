@@ -329,7 +329,8 @@ Harness doctor (added 2026-09-29 by its owner chat):
   Its `spend` (`share/spend.py`) adds `spend:<component>` problems, rule `spend_audit`, group `Spend`, `watch`: a
   component whose audit is due (never audited, a source blob moved, share ≥ 1.5× its share at audit). Components:
   `menus` first (its sources are the Token tracking and Doctors menu code, so it is due when they change: the night
-  checks both menus against what it reads), then `fee:<source>`, each source of tokenmap's Fee index
+  checks both menus against what it reads), then `loaded:<job>`, each harness job whose latest run loaded Egor's
+  configuration (`harness_index.loaded`; due again on a loaded run after a cut), then `fee:<source>`, each source of tokenmap's Fee index
   (`harness_index.sources`) by its share of Fee. `spend.selection` lists every due
   audit, area `speed-spend-<component>`; `spend.proofs` (share, part price at audit) feed night `roi` lines.
   `cpu` (`share/cpu_audit.py`): `cpu:<component>` rows, group `CPU audits`, own, wasted CPU-min/day, due as

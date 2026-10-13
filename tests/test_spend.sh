@@ -71,6 +71,20 @@ check([k for k in found][1:] == ["fee:Delegation", "fee:Hooks", "fee:Advisor"]
       "it, its share of Claude spend as the basis, the plain Δ: %s" % found)
 check([c["key"] for c in spend.components(payload(index=False), repos)] == ["menus"],
       "no Fee index, no Fee components")
+leaky = payload()
+leaky["harness_index"]["loaded"] = [{"source": "Browser check", "runs": 38, "last": "2026-10-13T13:47:49Z",
+                                     "tokens": 50e3}]
+leak = spend.components(leaky, repos)[1]
+check(leak["key"] == "loaded:Browser check" and leak["share"] == 5.0 and leak["basis"] == 0.0125
+      and spend.named(leak) == "5.0 % of Fee · Browser check loaded the harness configuration · 38 runs, last "
+                                "2026-10-13T13:47:49Z"
+      and spend.due(leak, None, {}) == "never audited"
+      and spend.due(leak, {"verdict": "cut", "audited_at": "2026-10-13T12:00:00+00:00", "share": 0.0125}, {})
+      == "still loading after the cut"
+      and spend.due(leak, {"verdict": "cut", "audited_at": "2026-10-13T14:00:00+00:00", "share": 0.0125}, {}) is None
+      and spend.due(leak, {"verdict": "kept", "audited_at": "2026-10-13T12:00:00+00:00", "share": 0.0125}, {}) is None,
+      "a harness job whose latest run loaded the configuration follows the menus check, its share of plain Fee; "
+      "a run after a cut makes it due again: %s" % leak)
 
 ledger = os.path.join(work, "spend-ledger.json")
 os.environ["SPEND_LEDGER"] = ledger

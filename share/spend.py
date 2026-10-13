@@ -88,7 +88,8 @@ def delta(cur, prev):
 
 
 def components(payload, repos):
-    """The menus check first, then every Fee source of tokenmap's Fee index, largest first: its share of Fee as the menu
+    """The menus check first, then each harness job whose latest run loaded Egor's configuration (tokenmap's
+    harness_index.loaded), then every Fee source of tokenmap's Fee index, largest first: its share of Fee as the menu
     shows it, its basis (share of Claude spend) for the due and proof rules, its plain Δ."""
     index = harness_index(payload) or {}
     sources = [s for s in index.get("sources") or () if isinstance(s, dict)]
@@ -96,6 +97,12 @@ def components(payload, repos):
     menus = sorted({f for pattern in MENU_FILES for f in glob.glob(os.path.join(repos, pattern))})
     out = [{"key": MENUS, "label": "Token tracking and Doctors menus against what the night reads", "sources": menus,
             "share": 0.0, "basis": 0.0, "delta": ""}]
+    plain = sum(float(s["plain"][0]) for s in sources)
+    for leak in index.get("loaded") or ():
+        out.append({"key": "loaded:" + leak["source"], "label": "%s loaded the harness configuration" % leak["source"],
+                    "sources": [], "share": round(100 * float(leak["tokens"]) / plain, 3) if plain else 0.0,
+                    "basis": round(float(leak["tokens"]) / claude, 6) if claude else 0.0,
+                    "delta": "%d runs, last %s" % (leak["runs"], leak["last"]), "last": leak["last"]})
     for s in sorted(sources, key=lambda s: -float(s["charged"])):
         out.append({"key": "fee:" + s["source"], "label": "%s (%s)" % (s["source"], s["group"]), "sources": [],
                     "share": round(100 * float(s["charged"]) / fee, 3) if fee else 0.0,
@@ -136,6 +143,8 @@ def due(component, row, held):
         return "never audited"
     if moved(row, held):
         return "source changed"
+    if row.get("verdict") == "cut" and (epoch(component.get("last")) or 0) > (epoch(row.get("audited_at")) or 0):
+        return "still loading after the cut"
     share = row.get("share")
     if isinstance(share, (int, float)) and share > 0 and component["basis"] >= SHARE_RISE * share:
         return "share ×%.1f since audit" % (component["basis"] / share)
@@ -226,7 +235,9 @@ def backfill(history, closed, through, now, local_day, home):
 
 
 def named(c):
-    return c["label"] if c["key"] == MENUS else "%.1f %% of Fee · %s · Δ %s" % (c["share"], c["label"], c["delta"])
+    if c["key"] == MENUS:
+        return c["label"]
+    return "%.1f %% of Fee · %s · %s%s" % (c["share"], c["label"], "" if "last" in c else "Δ ", c["delta"])
 
 
 def problem(c, why, at):
