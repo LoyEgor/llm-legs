@@ -2250,6 +2250,22 @@
    "verdict": "kept",
    "zero": "removal saves 1.4 CPU-s a run (0.0 CPU-min/day); loses every pin of session-trash.sh: stub detection, registry liveness (pid 0, dangling and half-written registries, failed scan reads live), sweep trashing and marker aging, the late-session snapshot race and the detached tail's cwd and run id",
    "note": "cost is production's python3 per liveness scan, marker scan and move; the 5 s pgrep poll exits on first hit; the WORKER_RUN_ID source check was vacuous under 'nohup env \"$0\"' and now reads every detached tail; TZ unpinned but the 1 h marker margin only matters in a DST fall-back hour and this machine's zone (+03) has none"
+  },
+  {
+   "id": "suite:claude-setup/test_claude_md_refs",
+   "title": "claude-setup/test_claude_md_refs",
+   "audited_at": "2026-10-13T06:35:55+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-stop-backstop-20261012T235214Z-2406",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.02,
+   "sources": {
+    "claude-setup/tests/test_claude_md_refs.sh": "68aa59c1f57e3c3635cf5ed070149d7b77c09839"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.1 CPU-s a run (0.0 CPU-min/day); loses the only checks that global CLAUDE.md slash commands, PATH executables and ~/.hammerspoon paths resolve, the strict per-repo location of its path refs, the commit-choice wording guard, and the dead-ref sweep of every global/skills/agents/docs md",
+   "note": "0.1 s, one awk plus one python3 doc_refs run; its path cases overlap doc_refs.py but are stricter (bin/ must be llm-legs, bare .sh must be hooks/), slash commands, executables and ~/.hammerspoon are its alone; reads live ~/.claude and PATH by design (it checks the installed refs)"
   }
  ]
 }
