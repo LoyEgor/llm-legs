@@ -767,6 +767,16 @@ check(night_spend.all_opus is None and night_spend.weighted(night_spend.bench_us
 finished = dict(running, finished_at="2026-10-03T08:00:00Z", doctors_after={n: 1 for n in night_spend.DOCTOR_NAMES})
 check(night_spend.night_goals(finished) == {"doctors_share": None, "backlog": {"doctors": 5}},
       "a finished night without stored goals keeps only its doctor rows, never today's values")
+
+kept_journal = os.path.join(work, "kept", "runs.jsonl")
+lines(kept_journal, [{"ended_at": 1, "queued_at": 0}])
+opened = []
+sys.addaudithook(lambda event, args: event == "open" and args[0] == kept_journal and args[1] == "r" and opened.append(1))
+first = [list(night_spend.rows(kept_journal, keep=True)) for _ in range(3)]
+lines(kept_journal, [{"ended_at": 2, "queued_at": 1}])
+grown = list(night_spend.rows(kept_journal, keep=True))
+check(len(opened) == 2 and first == [[{"ended_at": 1, "queued_at": 0}]] * 3 and len(grown) == 2,
+      "a kept journal is read once per content and again once it grows: %d opens, %s" % (len(opened), grown))
 print(count[0])
 EOF
 ) || exit 1

@@ -104,18 +104,41 @@ def epoch(stamp):
     return dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
 
 
-def rows(path):
+KEPT = {}
+
+
+def kept_lines(path):
+    """A journal's lines, read once per content (inode, size, mtime) for the several readers in one Speed run."""
     try:
+        stat = os.stat(path)
+        key, mark = (stat.st_dev, stat.st_ino), (stat.st_size, stat.st_mtime_ns)
+        if KEPT.get(key, (None,))[0] != mark:
+            with open(path, errors="ignore") as handle:
+                KEPT[key] = (mark, handle.readlines())
+    except OSError:
+        return []
+    return KEPT[key][1]
+
+
+def rows(path, keep=False):
+    try:
+        if keep:
+            yield from parsed(kept_lines(path))
+            return
         with open(path, errors="ignore") as handle:
-            for line in handle:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict):
-                    yield row
+            yield from parsed(handle)
     except OSError:
         return
+
+
+def parsed(lines):
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            yield row
 
 
 def read(path):

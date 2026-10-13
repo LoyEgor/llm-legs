@@ -109,7 +109,7 @@ def load(path, lo, night=()):
     """Every suite exec of a row ended after lo, and the rows themselves; a row ended inside a night-run window is the
     night's whoever ran it."""
     rows, execs = [], []
-    for r in night_spend.rows(path):
+    for r in night_spend.rows(path, keep=True):
         end, queued = num(r.get("ended_at")), num(r.get("queued_at"))
         if end is None or end < lo or not isinstance(r.get("suites"), dict):
             continue
@@ -139,7 +139,7 @@ def load(path, lo, night=()):
 
 def first_end(path):
     """The journal's oldest row end: it is appended in order."""
-    for r in night_spend.rows(path):
+    for r in night_spend.rows(path, keep=True):
         if num(r.get("ended_at")) is not None:
             return r["ended_at"]
     return None

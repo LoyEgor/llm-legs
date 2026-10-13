@@ -213,12 +213,12 @@ def event_rows(lo, hi, kinds=("t", "c", "h")):
 
 
 def worker_runs(lo, hi):
-    return [r for r in night_spend.rows(worker_runs_path())
+    return [r for r in night_spend.rows(worker_runs_path(), keep=True)
             if (num(r.get("ended_at")) or 0) > lo and (num(r.get("pid_started_at")) or num(r.get("started_at")) or hi) < hi]
 
 
 def suite_rows(lo, hi):
-    return [r for r in night_spend.rows(suites_path())
+    return [r for r in night_spend.rows(suites_path(), keep=True)
             if num(r.get("queued_at")) and num(r.get("ended_at")) and r["ended_at"] > lo and r["queued_at"] < hi]
 
 

@@ -45,7 +45,7 @@ def repos():
 def runs(path, lo):
     """One sample per suite run ended after lo."""
     out = []
-    for r in night_spend.rows(path):
+    for r in night_spend.rows(path, keep=True):
         end = r.get("ended_at")
         if not isinstance(end, (int, float)) or end < lo or not isinstance(r.get("suites"), dict):
             continue
