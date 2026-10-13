@@ -1004,7 +1004,6 @@ speed_held() { # -> "<problem id>\t<run id>" for each problem an open harness sp
 
 launch_runs() { # doctor night-or-empty -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
   local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs=''
-  local trial_turn=-1 # TEMP-SONNET-TRIAL(fixers)
   [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
   count=$(check_doc "$doctor") || exit 1
   snap=$(DF_HELD_SPEED=$(speed_held) py snapshot "$doctor" "$(doc_path "$doctor")" ${night:+"$night"}) || die "cannot snapshot the $doctor doctor"
@@ -1031,8 +1030,7 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
     [ -z "$knobs" ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$knobs"
     # TEMP-SONNET-TRIAL(fixers)
     if [[ $area == speed-* ]] && sonnet_trial_live; then
-      trial_turn=$((trial_turn + 1))
-      locked record_set "$id" '.trial = {id: "sonnet-fixes", arm: $a}' --arg a "$([ $((trial_turn % 2)) -eq 0 ] && echo sonnet || echo opus)"
+      locked record_set "$id" '.trial = {id: "sonnet-fixes", arm: "sonnet"}'
     fi
     if [ -n "$night" ]; then branch="night/$night/$id" base="refs/night/$night/base"
     else branch="doctor-fix/$id" base="refs/doctor-fix/$id/base"; fi

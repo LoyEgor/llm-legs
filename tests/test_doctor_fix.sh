@@ -1348,11 +1348,10 @@ jq -n --argjson u $(($(now) + 3600)) '{id: "sonnet-fixes", until: $u}' >"$WORK/s
 env "${speed_env[@]}" SONNET_TRIAL_MARKER="$WORK/sonnet-trial.json" bash "$FIX" launch harness --night n19 >"$WORK/out" 2>"$WORK/err" ||
   fail "batch night n19: $(cat "$WORK/err")"
 assert [ "$(grep -c '^harness-speed-batch' "$WORK/out")" = 2 ]
-# TEMP-SONNET-TRIAL(fixers): while the marker is live, a launch's Speed runs alternate sonnet, opus, ... in area order;
-# a sonnet run's brief opens with MODEL: sonnet, an opus run's names no model.
+# TEMP-SONNET-TRIAL(fixers): while the marker is live, every Speed run is a sonnet run whose brief opens with MODEL: sonnet.
 assert [ "$(while IFS=$'\t' read -r r b _; do printf '%s %s %s\n' "$(jq -r '.area + " " + .trial.arm' "$(record "$r")")" \
   "$(grep -c '^MODEL: sonnet$' "$b")" "$(grep -c '^MODEL:' "$b")"; done < <(grep '^harness-speed-' "$WORK/out") | sort | tr '\n' ,)" = \
-  'speed-batch-1 sonnet 1 1,speed-batch-other opus 0 0,' ]
+  'speed-batch-1 sonnet 1 1,speed-batch-other sonnet 1 1,' ]
 assert [ "$(head -n 1 "$(grep -F speed-batch-1 "$WORK/out" | cut -f2)")" = 'MODEL: sonnet' ]
 stale=$(grep -F 'harness-speed-batch-1-' "$WORK/out" | cut -f1) held=$(grep -F 'harness-speed-batch-other-' "$WORK/out" | cut -f1)
 jq --arg t "$(date -u -v-13H +%Y-%m-%dT%H:%M:%SZ)" '.launched_at = $t' "$(record "$stale")" >"$WORK/stale.json" &&
