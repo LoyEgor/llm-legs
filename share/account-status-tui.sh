@@ -122,20 +122,21 @@ interactive_cleanup() {
   fi
 }
 
-colored_percent() {
+percent_cell() {
   local value="$1" dim="${2:-false}" mark="${3:-}" color pre=''
+  if [ -z "$value" ]; then printf -v accounts_cell '%6s' -; return; fi
   if [ "$value" -lt 50 ]; then color=$'\033[32m'
   elif [ "$value" -lt 80 ]; then color=$'\033[33m'
   else color=$'\033[31m'
   fi
   [ "$dim" != true ] || pre=$'\033[2m'
-  printf '%b%b%6s%b' "$pre" "$color" "${value}%${mark}" $'\033[0m'
+  printf -v accounts_cell '%s%s%6s\033[0m' "$pre" "$color" "${value}%${mark}"
 }
 
 render_sort_tab() {
-  local label="$1" index="$2" active="$3"
-  if [ "$index" -eq "$active" ]; then printf '\033[7m%s\033[0m' "$label"
-  else printf '%s' "$label"
+  local format="$1" label="$2" index="$3" active="$4"
+  if [ "$index" -eq "$active" ]; then printf "\033[7m$format\033[0m" "$label"
+  else printf "$format" "$label"
   fi
 }
 
@@ -173,26 +174,52 @@ selection_after_move() {
 }
 
 render_interactive_accounts() {
-  local active="$1" sort_key="$2" sel="${3:-}" filter row name h5 wk fable hreset wreset age age_text marker off_text index=0
-  local h5_mk wk_mk fable_mk h5_dim wk_dim fable_dim disabled hcell wcell sep_width row_out inv=$'\033[7m' sgr0=$'\033[0m'
-  local render_now="$("$accounts_now")"
+  local active="$1" sort_key="$2" sel="${3:-}" filter name h5 wk fable hreset wreset age age_text marker off_text index=0
+  local h5_mk wk_mk fable_mk h5_dim wk_dim fable_dim disabled hcell wcell sep_width sep row_out inv=$'\033[7m' sgr0=$'\033[0m'
+  local accounts_cell render_now="$("$accounts_now")"
   printf '\033[H\033[2J'
   printf '  '
-  render_sort_tab "$(printf '%-16s' NAME)" "$index" "$active"; index=$((index + 1)); printf ' '
-  render_sort_tab "$(printf '%6s' 5H)" "$index" "$active"; index=$((index + 1)); printf '  '
-  render_sort_tab "$(printf '%6s' WEEKLY)" "$index" "$active"; index=$((index + 1)); printf '  '
+  render_sort_tab '%-16s' NAME "$index" "$active"; index=$((index + 1)); printf ' '
+  render_sort_tab '%6s' 5H "$index" "$active"; index=$((index + 1)); printf '  '
+  render_sort_tab '%6s' WEEKLY "$index" "$active"; index=$((index + 1)); printf '  '
   if [ "$accounts_show_fable" = true ]; then
-    render_sort_tab "$(printf '%6s' FABLE)" "$index" "$active"; index=$((index + 1)); printf '  '
+    render_sort_tab '%6s' FABLE "$index" "$active"; index=$((index + 1)); printf '  '
   fi
-  render_sort_tab "$(printf '%-11s' '5H RESET')" "$index" "$active"; index=$((index + 1)); printf ' '
-  render_sort_tab "$(printf '%-11s' 'WEEKLY RESET')" "$index" "$active"
+  render_sort_tab '%-11s' '5H RESET' "$index" "$active"; index=$((index + 1)); printf ' '
+  render_sort_tab '%-11s' 'WEEKLY RESET' "$index" "$active"
   printf ' AGE\n'
   sep_width=62
   [ "$accounts_show_fable" != true ] || sep_width=70
-  printf '─%.0s' $(seq 1 "$sep_width"); printf '\n'
+  printf -v sep '%*s' "$sep_width" ''
+  printf '%s\n' "${sep// /─}"
   filter=$(accounts_sort_filter "$sort_key")
-  while IFS= read -r row; do
-    IFS=$'\x1f' read -r name h5 wk fable h5_mk wk_mk fable_mk hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r --argjson now "$render_now" "$LIMITS_VIEW_JQ"'
+  while IFS=$'\x1f' read -r name h5 wk fable h5_mk wk_mk fable_mk hreset wreset age h5_dim wk_dim fable_dim disabled; do
+    age_text="$age"
+    if [ "$accounts_mode" = live ] && [ -n "$accounts_live_age" ]; then
+      age_text=$("$accounts_live_age" "$name" "$age")
+    fi
+    marker=' '
+    [ "$name" = "$accounts_picked" ] && marker='*'
+    off_text=""
+    [ "$disabled" != true ] || off_text=" workers off"
+    printf -v hcell '%-11s' "$hreset"
+    [ "$h5_dim" != true ] || hcell=$'\033[2m'"$hcell"$'\033[0m'
+    printf -v wcell '%-11s' "$wreset"
+    [ "$wk_dim" != true ] || wcell=$'\033[2m'"$wcell"$'\033[0m'
+    printf -v row_out '%s %-16s ' "$marker" "$name"
+    percent_cell "$h5" "$h5_dim" "$h5_mk"; row_out+="$accounts_cell  "
+    percent_cell "$wk" "$wk_dim" "$wk_mk"; row_out+="$accounts_cell  "
+    if [ "$accounts_show_fable" = true ]; then
+      percent_cell "$fable" "$fable_dim" "$fable_mk"; row_out+="$accounts_cell  "
+    fi
+    row_out+="$hcell $wcell $age_text$off_text"
+    if [ -n "$sel" ] && [ "$name" = "$sel" ]; then
+      # Re-assert reverse-video after every embedded reset so the whole row stays highlighted.
+      printf '%s\n' "${inv}${row_out//$sgr0/$sgr0$inv}${sgr0}"
+    else
+      printf '%s\n' "$row_out"
+    fi
+  done < <(printf '%s' "$accounts_result" | jq -r --argjson now "$render_now" "$LIMITS_VIEW_JQ$filter"' |
       [.name,
        (if .h5_eff == null then "" else (.h5_eff | round | tostring) end),
        (if .wk_eff == null then "" else (.wk_eff | round | tostring) end),
@@ -204,37 +231,6 @@ render_interactive_accounts() {
        limits_age_text(.age),
        (.h5_dim | tostring), (.wk_dim | tostring), (.fable_dim | tostring),
        ((.disabled // false) | tostring)] | join("\u001f")')
-    age_text="$age"
-    if [ "$accounts_mode" = live ] && [ -n "$accounts_live_age" ]; then
-      age_text=$("$accounts_live_age" "$name" "$age")
-    fi
-    marker=' '
-    [ "$name" = "$accounts_picked" ] && marker='*'
-    off_text=""
-    [ "$disabled" != true ] || off_text=" workers off"
-    hcell=$(printf '%-11s' "$hreset")
-    [ "$h5_dim" != true ] || hcell=$'\033[2m'"$hcell"$'\033[0m'
-    wcell=$(printf '%-11s' "$wreset")
-    [ "$wk_dim" != true ] || wcell=$'\033[2m'"$wcell"$'\033[0m'
-    row_out=$(
-      printf '%s %-16s ' "$marker" "$name"
-      if [ -n "$h5" ]; then colored_percent "$h5" "$h5_dim" "$h5_mk"; else printf '%6s' -; fi
-      printf '  '
-      if [ -n "$wk" ]; then colored_percent "$wk" "$wk_dim" "$wk_mk"; else printf '%6s' -; fi
-      printf '  '
-      if [ "$accounts_show_fable" = true ]; then
-        if [ -n "$fable" ]; then colored_percent "$fable" "$fable_dim" "$fable_mk"; else printf '%6s' -; fi
-        printf '  '
-      fi
-      printf '%s %s %s%s' "$hcell" "$wcell" "$age_text" "$off_text"
-    )
-    if [ -n "$sel" ] && [ "$name" = "$sel" ]; then
-      # Re-assert reverse-video after every embedded reset so the whole row stays highlighted.
-      printf '%s\n' "${inv}${row_out//$sgr0/$sgr0$inv}${sgr0}"
-    else
-      printf '%s\n' "$row_out"
-    fi
-  done < <(printf '%s' "$accounts_result" | jq -c "$filter")
   printf '\n\033[33m↑/↓ select  ⏎ launch  ←/→ sort  r refresh  q/Esc exit\033[0m\n'
   [ -z "${accounts_status_line:-}" ] || printf '%s\n' "$accounts_status_line"
 }

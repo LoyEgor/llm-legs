@@ -48,6 +48,14 @@ assert grep -qF $'\033[7m* beta' <<<"$out"
 assert grep -q '^LAUNCH=beta$' <<<"$out"
 assert test "${out#*FABLE}" = "$out"
 assert grep -qF '0%~!' <<<"$(render_interactive_accounts 0 name)"
+# The picker re-renders every 0.3 s while refreshing: one jq for all rows, no seq.
+mkdir -p "$WORK/count"
+for tool in jq seq; do
+  printf '#!/bin/sh\necho %s >>"%s/execs"\nexec %s "$@"\n' "$tool" "$WORK" "$(command -v "$tool")" >"$WORK/count/$tool"
+  chmod +x "$WORK/count/$tool"
+done
+PATH="$WORK/count:$PATH" render_interactive_accounts 0 name >/dev/null
+assert test "$(cat "$WORK/execs")" = jq
 out=$(loop $'\n' '')
 assert grep -q '^LAUNCH=alpha$' <<<"$out"
 out=$(loop $'\n' absent)
