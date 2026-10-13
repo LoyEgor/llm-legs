@@ -322,8 +322,16 @@ def now_s():
     return float(os.environ.get("HARNESS_DOCTOR_NOW") or time.time())
 
 
+_DAY_OF_MINUTE = {}
+
+
 def local_day(t):
-    return time.strftime("%Y-%m-%d", time.localtime(t))
+    # A local midnight falls on a whole minute, so every second of one epoch minute is one day.
+    minute = int(t // 60)
+    day = _DAY_OF_MINUTE.get(minute)
+    if day is None:
+        day = _DAY_OF_MINUTE[minute] = time.strftime("%Y-%m-%d", time.localtime(minute * 60))
+    return day
 
 
 def day_start(day):
