@@ -31,16 +31,6 @@ local harnessClock = nil
 -- nil is no store at all. Nothing under a real ~/.gemini-web is ever served.
 local geminiWebFake = { root = "/fixture/gemini-web", files = nil }
 
--- What the fake io.open serves for geminib's review Flash pin file and family cache, the two files
--- the Gemini submenu reads; nil is the file being absent — no cache is what the
--- `review flash T0–T1: unavailable` row is rendered off.
-local geminibFiles = { reviewFlash = nil, MODELS = "<geminib-models>", models = { families = {
-  { family = "gemini-3.8-flash", slug = "flash38", agy_prefix = "gemini-3.8-flash", label = "Gemini 3.8 Flash" },
-  { family = "gemini-3.7-flash", slug = "flash37", agy_prefix = "gemini-3.7-flash", label = "Gemini 3.7 Flash" },
-  { family = "gemini-3.6-flash", slug = "flash36", agy_prefix = "gemini-3.6-flash", label = "Gemini 3.6 Flash" },
-  { family = "gemini-3.1-pro", slug = "pro", agy_prefix = "gemini-3.1-pro", label = "Gemini 3.1 Pro" },
-} } }
-
 -- What AppKit resolves {System, tertiaryLabelColor} to, the tone the renderer dims with. The two
 -- levels are the two appearances: black on a light menu, white on a dark one.
 local SYSTEM_DIM_ALPHA = 0.258824
@@ -181,7 +171,6 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if text == DOCTOR_CONTENTS then return doctorSnapshot end
       if text == LLM_DOCTOR_CONTENTS then return llmDoctor end
       if text == "CHATS_SNAPSHOT" then return chatsFake.snapshot end
-      if text == geminibFiles.MODELS then return geminibFiles.models end
       local geminiWebPath = type(text) == "string" and text:match("^GEMINI_WEB:(.+)$")
       if geminiWebPath then return geminiWebFake.files and geminiWebFake.files[geminiWebPath] end
       local holdName = type(text) == "string" and text:match("^HOLD:(.+)$")
@@ -255,14 +244,6 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if path:match("/llm%-doctor/latest%.json$") then
         if llmDoctor == nil then return nil end
         contents = LLM_DOCTOR_CONTENTS
-      end
-      if path:match("/geminib/models%.json$") then
-        if geminibFiles.models == nil then return nil end
-        contents = geminibFiles.MODELS
-      end
-      if path:match("/geminib/review%-flash$") then
-        if geminibFiles.reviewFlash == nil then return nil end
-        contents = geminibFiles.reviewFlash
       end
       if path:match("/%.claude/worker%-model$") then
         if workerModel == nil then return nil end
@@ -842,8 +823,7 @@ local freshRoutingRow = routingItem(freshRouting.menuItems())
 local freshRoutingMenu = freshRoutingRow.menu
 assert(titleText(freshRoutingRow) == "Routing: next alpha", titleText(freshRoutingRow))
 -- worker-pick --menu answers in aligned rows, so the submenu is those rows: one menu item per line,
--- byte for byte, with no second layout on this side to keep in step with the producer. The review
--- flash picker is the one row of this side's own, right under the light section.
+-- byte for byte, with no second layout on this side to keep in step with the producer.
 local expectedRouting = {
   "next   budget          wk    5h    vendor/account       model·eff",
   " 1     23.6%/d ×2.7d   37%   0%    claude/alpha*        opus·high",
@@ -860,7 +840,6 @@ local expectedRouting = {
   "         * = this session account",
   "light:   off",
   "         research gemini  f38·high",
-  "review flash T0–T1: 3.8",
   "DATA: 4 min old",
 }
 assert(titleText(freshRoutingMenu[1]) == "as of " .. os.date("%H:%M", routingNow) .. " · outside any chat",
@@ -868,7 +847,7 @@ assert(titleText(freshRoutingMenu[1]) == "as of " .. os.date("%H:%M", routingNow
 assert(#freshRoutingMenu == #expectedRouting + 1,
   "routing policy heading or trailing lines were not truncated")
 local routingSwitches = { ["codex:   workers off · reviewers off"] = true, ["grok:    on"] = true, ["gemini:  paused"] = true,
-  ["claude:  reviewers off"] = true, ["light:   off"] = true, ["review flash T0–T1: 3.8"] = true }
+  ["claude:  reviewers off"] = true, ["light:   off"] = true }
 for index, expected in ipairs(expectedRouting) do
   local item = freshRoutingMenu[index + 1]
   assert(titleText(item) == expected, "routing line was not rendered verbatim: " .. expected
@@ -942,16 +921,15 @@ local staleRouting = loadModule(routingFixture, nil, routingNow, nil, nil, nil,
   end)
 staleRouting.routingCache = { text = routingText, at = routingNow - 1 }
 for _, item in ipairs(routingItem(staleRouting.menuItems()).menu) do
-  assert(titleText(item):match("^review flash") or isDimmed(item.title.attributes),
+  assert(isDimmed(item.title.attributes),
     "stale routing cache line was not dimmed")
 end
 
 local unavailableRouting = loadModule(routingFixture, nil, routingNow)
 local unavailableMenu = routingItem(unavailableRouting.menuItems()).menu
-assert(#unavailableMenu == 3 and titleText(unavailableMenu[1]) == "routing unavailable"
-    and titleText(unavailableMenu[2]) == "light: on" and unavailableMenu[2].fn
-    and titleText(unavailableMenu[3]):match("^review flash T0–T1: "),
-  "missing routing cache did not keep the unavailable row, the Light switch and the flash picker")
+assert(#unavailableMenu == 2 and titleText(unavailableMenu[1]) == "routing unavailable"
+    and titleText(unavailableMenu[2]) == "light: on" and unavailableMenu[2].fn,
+  "missing routing cache did not keep the unavailable row and the Light switch")
 assert(isDimmed(unavailableMenu[1].title.attributes), "routing unavailable row was not dimmed")
 
 do
@@ -2939,34 +2917,20 @@ local function doctorModule(...)
 end
 
 -- The review Flash pin row, as a pseudo-row so the submenu helpers read it.
-local function geminiRow(menu)
-  for _, item in ipairs(routingItem(menu).menu) do
-    if titleText(item):match("^review flash T0–T1: ") then return { menu = { item } } end
-  end
-  error("no review flash row")
-end
-
 local doctorFixture = {
   schema = 1,
   vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },
 }
 
--- The doctors live in the Doctors entry; LLM Limits keeps the review Flash pin, a routing setting,
--- inside Routing right under the Light switch.
+-- The doctors live in the Doctors entry; the Light switch lives inside Routing, and no row offers a
+-- review Flash choice since every Gemini cell runs the newest Flash.
 do
   local limitsMenu = loadModule(doctorFixture).menuItems()
   for _, item in ipairs(limitsMenu) do
     assert(not titleText(item):find("doctor", 1, true), "LLM Limits still shows a doctor: " .. titleText(item))
   end
-  local gemini = geminiRow(limitsMenu)
-  assert(table.concat(submenuTitles(gemini), "|") == "review flash T0–T1: 3.8" and gemini.menu[1].menu,
-    "the review Flash pin left LLM Limits: " .. table.concat(submenuTitles(gemini), "|"))
-  local routing = routingItem(limitsMenu).menu
-  for index, item in ipairs(routing) do
-    if item == gemini.menu[1] then
-      assert(index > 1 and titleText(routing[index - 1]):match("^light: "),
-        "the review Flash pin left the Light switch")
-    end
+  for _, item in ipairs(routingItem(limitsMenu).menu) do
+    assert(not titleText(item):find("review flash", 1, true), "Routing still offers a review Flash pin")
   end
   for _, item in ipairs(limitsMenu) do
     assert(not titleText(item):match("^Light") and not titleText(item):match("^review flash"),
@@ -4451,17 +4415,14 @@ do
   end
 end
 
--- The Gemini section holds the review Flash pin alone; the weather table's `theirs` column is
--- bin/llm-doctor's own count for every vendor, so the menu never reads or launches gemini-weather.
+-- The weather table's `theirs` column is bin/llm-doctor's own count for every vendor, so the menu
+-- never reads or launches gemini-weather.
 do
   local now = 1800000000
   local weatherFixture = { schema = 1, vendors = {
     claude = { available = false }, codex = { available = false },
     gemini = { available = true, accounts = { { account = "gem-a", five_hour = bucket(10) } } },
   }}
-  local plain = loadModule(weatherFixture, nil, now).menuItems()
-  assert(table.concat(submenuTitles(geminiRow(plain)), "|") == "review flash T0–T1: 3.8",
-    table.concat(submenuTitles(geminiRow(plain)), "|"))
   for _, item in ipairs(loadModule(weatherFixture, nil, now).llmDoctorEntry().menu) do
     local text = titleText(item)
     assert(not text:find("s/step", 1, true) and not text:find("Gemini probe", 1, true)
@@ -4481,71 +4442,6 @@ do
   -- is how they reach it from here.
   assert(kickEnv and kickEnv.HOME == os.getenv("HOME"), "the llm-doctor task lost HOME")
 
-  -- The review Flash pin (shared-invariants row `cs`): the row and its choices are read off the pin
-  -- file and geminib's family cache, and a click writes through geminib rather than touching the file.
-  ;(function()
-    local flashTasks = {}
-    local flashModule = loadModule(weatherFixture, captureTasks(flashTasks), now)
-    local row = submenuItem(geminiRow(flashModule.menuItems()), "review flash T0–T1: 3.8")
-    assert(row, "the review flash row is missing")
-    assert(table.concat(submenuTitles(row), "|") == "3.8|3.7|3.6|newest (default)",
-      table.concat(submenuTitles(row), "|"))
-    for index, choice in ipairs(row.menu) do
-      assert((choice.checked == true) == (index == #row.menu),
-        "the default is not the one checked choice: " .. index)
-    end
-    while #flashTasks > 0 do table.remove(flashTasks) end
-    row.menu[2].fn()
-    assert(flashTasks[1] and flashTasks[1].path:find("geminib", 1, true)
-        and flashTasks[1].args[1] == "review-flash" and flashTasks[1].args[2] == "flash37"
-        and flashTasks[1].args[3] == nil,
-      "choosing a Flash family did not pin it through geminib")
-
-    geminibFiles.reviewFlash = "flash37\n"
-    local pinnedModule = loadModule(weatherFixture, captureTasks(flashTasks), now)
-    local pinnedRow = submenuItem(geminiRow(pinnedModule.menuItems()), "review flash T0–T1: 3.7 · pinned")
-    assert(pinnedRow, "a pinned review flash row is not named as pinned: "
-      .. table.concat(submenuTitles(geminiRow(pinnedModule.menuItems())), "|"))
-    for index, choice in ipairs(pinnedRow.menu) do
-      assert((choice.checked == true) == (index == 2), "the pinned family is not the checked choice: " .. index)
-    end
-    while #flashTasks > 0 do table.remove(flashTasks) end
-    pinnedRow.menu[#pinnedRow.menu].fn()
-    assert(flashTasks[1] and flashTasks[1].path:find("geminib", 1, true)
-        and flashTasks[1].args[1] == "review-flash" and flashTasks[1].args[2] == "--clear"
-        and flashTasks[1].args[3] == nil,
-      "the default choice did not clear the pin through geminib")
-
-    geminibFiles.reviewFlash = nil
-    -- The version on the row is the label geminib already wrote, so a slug whose shape says
-    -- nothing still reads as its family.
-    local labelledModels = geminibFiles.models
-    geminibFiles.models = { families = {
-      { family = "gemini-4.0-flash", slug = "flashnext", agy_prefix = "gemini-4.0-flash",
-        label = "Gemini 4.0 Flash" },
-      { family = "gemini-3.8-flash", slug = "flash38", agy_prefix = "gemini-3.8-flash",
-        label = "Gemini 3.8 Flash" },
-    } }
-    local labelled = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
-    assert(submenuItem(labelled, "review flash T0–T1: 4.0"),
-      "the review flash row ignored geminib's label: " .. table.concat(submenuTitles(labelled), "|"))
-    -- An entry cached before geminib carried labels still parses out of the slug shape.
-    geminibFiles.models = { families = {
-      { family = "gemini-3.8-flash", slug = "flash38", agy_prefix = "gemini-3.8-flash" },
-    } }
-    local bare = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
-    assert(submenuItem(bare, "review flash T0–T1: 3.8"),
-      "a label-less family lost the slug fallback: " .. table.concat(submenuTitles(bare), "|"))
-    geminibFiles.models = labelledModels
-
-    local brokenModels = geminibFiles.models
-    geminibFiles.models = nil
-    local brokenSub = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
-    local brokenRow = submenuItem(brokenSub, "review flash T0–T1: unavailable")
-    assert(brokenRow and brokenRow.disabled == true and brokenRow.menu == nil,
-      "a missing geminib family cache still offered a submenu")
-    geminibFiles.models = brokenModels
-  end)()
 
 end
 

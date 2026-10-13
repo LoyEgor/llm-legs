@@ -198,8 +198,6 @@ LLM doctor: 6 problems
   Image: no legs
   window: 3 d → 3 h / 6 h / 12 h / 24 h / 3 d / 7 d
   Refresh blocks
-  Gemini
-    review flash: 3.8
 ```
 
 A block is one kind of LLM leg — Reviewers (review-bench cells, chunks, judges and panels),

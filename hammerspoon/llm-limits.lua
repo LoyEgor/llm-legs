@@ -1044,15 +1044,6 @@ local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", [['\'']]) .. "'"
 end
 
--- The review Flash pin (shared-invariants row `cs`): the pin file and geminib's family cache are
--- read as files. A shell-out here runs in Hammerspoon's interactive login shell, ~1 s each, and the
--- menu is built on every open.
-local function geminibCacheDir()
-  local override = os.getenv("GEMINIB_CACHE_DIR")
-  if override and override ~= "" then return override end
-  return home .. "/.cache/geminib"
-end
-
 local function readTextFile(path)
   local file = io.open(path, "r")
   if not file then return nil end
@@ -1124,41 +1115,6 @@ local function geminiMediaState(roster, now)
     end
   end
   return state
-end
-
--- The slug shape is the fallback: an entry cached before geminib carried labels has none.
-local flashLabels = {}
-
-local function flashLabel(slug)
-  local label = flashLabels[slug]
-  local version = label and tostring(label):match("(%d+%.%d+)")
-  if version then return version end
-  local major, minor = tostring(slug):match("^flash(%d)(%d+)$")
-  return major and (major .. "." .. minor) or tostring(slug)
-end
-
-local function geminiFlashSlugs() -- newest first, from geminib's models.json; nil without the cache
-  local ok, decoded = pcall(function()
-    local contents = readTextFile(geminibCacheDir() .. "/models.json")
-    return contents and hs.json.decode(contents) or nil
-  end)
-  if not ok or type(decoded) ~= "table" or type(decoded.families) ~= "table" then return nil end
-  local slugs = {}
-  flashLabels = {}
-  for _, family in ipairs(decoded.families) do
-    if tostring(family.family or ""):match("%-flash$") and family.slug then
-      slugs[#slugs + 1] = family.slug
-      flashLabels[family.slug] = family.label
-    end
-  end
-  if #slugs == 0 then return nil end
-  return slugs
-end
-
-local function reviewFlash(slugs)
-  local pinned = (readTextFile(geminibCacheDir() .. "/review-flash") or ""):match("^%s*(%S+)")
-  if pinned then return pinned, "pinned" end
-  return slugs[1], "default"
 end
 
 local DOCTOR_REPO_WIDTH, DOCTOR_CHAT_WIDTH = 20, 24
@@ -1733,24 +1689,6 @@ local function appendDoctorBlocks(items, snapshot)
   return total, document
 end
 
-local function reviewFlashItem()
-  local flashSlugs = geminiFlashSlugs()
-  if not flashSlugs then
-    return { title = infoTitle("review flash T0–T1: unavailable", false, true), disabled = true }
-  end
-  local flashSlug, flashState = reviewFlash(flashSlugs)
-  local flashes = {}
-  for _, slug in ipairs(flashSlugs) do
-    flashes[#flashes + 1] = { title = flashLabel(slug),
-      checked = flashState == "pinned" and slug == flashSlug,
-      fn = function() M.setReviewFlash(slug) end }
-  end
-  flashes[#flashes + 1] = { title = "newest (default)", checked = flashState ~= "pinned",
-    fn = function() M.setReviewFlash(nil) end }
-  return { title = infoTitle("review flash T0–T1: " .. flashLabel(flashSlug)
-    .. (flashState == "pinned" and " · pinned" or "")), menu = flashes }
-end
-
 local DOCTOR_STATUSES = { ok = true, problems = true, blind = true, error = true }
 
 -- LLM doctor's groups, for the Doctors entry.
@@ -2057,10 +1995,6 @@ end
 
 local function runGeminib(args, failMessage, onSuccess, options)
   runAccountCommand(resolveGeminib(), args, failMessage, onSuccess, options)
-end
-
-function M.setReviewFlash(slug)
-  runGeminib({ "review-flash", slug or "--clear" }, "review flash failed")
 end
 
 local function runGrokb(args, failMessage, onSuccess, options)
@@ -2793,7 +2727,6 @@ local function routingSubmenu()
     return {
       { title = infoTitle(text, M.routingFailed == true, M.routingFailed ~= true), disabled = true },
       lightSwitch(),
-      reviewFlashItem(),
     }, "Routing"
   end
   if type(cache) ~= "table" or type(cache.text) ~= "string"
@@ -2823,10 +2756,9 @@ local function routingSubmenu()
   if M.routingFailed == true then
     table.insert(menu, { title = infoTitle("⚠ routing refresh failed", true, false), disabled = true })
   end
-  local pick, section, flashAt, lightShown = nil, nil, nil, false
+  local pick, lightShown = nil, false
   for index, line in ipairs(lines) do
     local label, state = line:match("^(%a+):%s+(.-)%s*$")
-    if label then section = label elseif not line:match("^%s") then section = nil end
     local header = index == 1 and line:match("^NEXT%s") ~= nil
     pick = pick or line:match("^ACCOUNT:%s+(%S+)")
     local item
@@ -2840,11 +2772,9 @@ local function routingSubmenu()
       item = { title = infoTitle(header and line:lower() or line, false, dim or header), disabled = true }
     end
     table.insert(menu, item)
-    if section == "light" then flashAt = #menu + 1 end
   end
   -- worker-pick's fail-safe answer prints no `light:` row, and the switch must not go with it.
   if not lightShown then table.insert(menu, lightSwitch(nil, dim)) end
-  table.insert(menu, flashAt or #menu + 1, reviewFlashItem())
   return menu, pick and ("Routing: next " .. pick) or "Routing"
 end
 

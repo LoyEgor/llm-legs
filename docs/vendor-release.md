@@ -28,7 +28,10 @@ only with a stated reason), and every new capability is supported, per account, 
   test), learn why it is built the way it is — `git log --follow` / `git log -S` on its lines, the
   commit that made it, its handoff or design doc, its `docs/shared-invariants.md` row. Say its goal
   in one sentence and check the release still serves it, not only that the tests stay green; a pin
-  or fallback kept for a reason that no longer holds is removed, one whose reason holds stays.
+  or fallback kept for a reason that no longer holds is removed, one whose reason holds stays. A
+  model the vendor dropped takes every pin, option and menu row naming it along, and a choice left
+  with one option goes too: that is this run's cleanup, never `blocked` — no word of Egor's brings
+  a dropped model back.
 - Work only in the brief's worktree and its `ADD-DIR:` worktrees (review-bench, claude-setup), on its
   branch; a change in a repository without one is a handoff. Commit there; never push, merge or review:
   the orchestrator lands it.
