@@ -17,7 +17,6 @@ import os
 import re
 import sys
 
-root = sys.argv[1]
 MARKED = {
     ("llm-limits.lua", "runAccountCommand"): ("LLM limits", "llm-limits.lua"),
     ("llm-limits.lua", "refreshData"): ("LLM limits", "llm-limits.lua"),
@@ -49,42 +48,45 @@ EXEMPT = {
 }
 SPAWN = re.compile(r"hs\.task\.new\b|\btaskFn\(|\bnewCollectorTask\(")
 DEFINE = re.compile(r"^(?:local\s+)?function\s+([\w.:]+)|^(?:local\s+)?([\w.]+)\s*=\s*function\b")
-problems, seen = [], set()
-for path in sorted(glob.glob(os.path.join(root, "*.lua"))):
-    name, owner = os.path.basename(path), None
-    with open(path, encoding="utf-8") as fh:
-        for number, line in enumerate(fh, 1):
-            found = DEFINE.match(line)
-            if found:
-                owner = found.group(1) or found.group(2)
-            if SPAWN.search(line) and not line.lstrip().startswith("--"):
-                key = (name, owner)
-                seen.add(key)
-                if key not in MARKED and key not in EXEMPT:
-                    problems.append(f"{name}:{number}: {owner} starts a task nobody classified; a refresh"
-                                    " reports it through menu-style busySource, else add an EXEMPT reason")
-for key, (source, home) in MARKED.items():
-    with open(os.path.join(root, home), encoding="utf-8") as fh:
-        if f'busySource("{source}"' not in fh.read():
-            problems.append(f"{key[0]}: {key[1]} is marked {source!r} but {home} registers no such busySource")
-for key in sorted(set(MARKED) | set(EXEMPT)):
-    if key not in seen:
-        problems.append(f"{key[0]}: {key[1]} starts no task any more; drop its entry")
-print("\n".join(problems))
+def check(root):
+    problems, seen = [], set()
+    for path in sorted(glob.glob(os.path.join(root, "*.lua"))):
+        name, owner = os.path.basename(path), None
+        with open(path, encoding="utf-8") as fh:
+            for number, line in enumerate(fh, 1):
+                found = DEFINE.match(line)
+                if found:
+                    owner = found.group(1) or found.group(2)
+                if SPAWN.search(line) and not line.lstrip().startswith("--"):
+                    key = (name, owner)
+                    seen.add(key)
+                    if key not in MARKED and key not in EXEMPT:
+                        problems.append(f"{name}:{number}: {owner} starts a task nobody classified; a refresh"
+                                        " reports it through menu-style busySource, else add an EXEMPT reason")
+    for key, (source, home) in MARKED.items():
+        with open(os.path.join(root, home), encoding="utf-8") as fh:
+            if f'busySource("{source}"' not in fh.read():
+                problems.append(f"{key[0]}: {key[1]} is marked {source!r} but {home} registers no such busySource")
+    for key in sorted(set(MARKED) | set(EXEMPT)):
+        if key not in seen:
+            problems.append(f"{key[0]}: {key[1]} starts no task any more; drop its entry")
+    return "\n".join(problems)
+
+
+print("\x1e".join(check(root) for root in sys.argv[1:]))
 PY
 }
 
-out=$(check "$ROOT/hammerspoon") || fail "the checker threw: $out"
-[ -z "$out" ] || fail "$out"
-
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-cp "$ROOT"/hammerspoon/*.lua "$WORK/"
-printf 'function M.recompute()\n  hs.task.new("/bin/true", nil, {}):start()\nend\n' >>"$WORK/doctors.lua"
-out=$(check "$WORK")
-case "$out" in *"M.recompute starts a task nobody classified"*) ;; *) fail "an unclassified spawn passed: $out" ;; esac
-cp "$ROOT/hammerspoon/doctors.lua" "$WORK/doctors.lua"
-grep -v 'busySource("Token tracking"' "$ROOT/hammerspoon/token-tracking.lua" >"$WORK/token-tracking.lua"
-out=$(check "$WORK")
-case "$out" in *"registers no such busySource"*) ;; *) fail "a marked refresh without its source passed: $out" ;; esac
+mkdir "$WORK/spawn" "$WORK/source"
+cp "$ROOT"/hammerspoon/*.lua "$WORK/spawn/"
+cp "$ROOT"/hammerspoon/*.lua "$WORK/source/"
+printf 'function M.recompute()\n  hs.task.new("/bin/true", nil, {}):start()\nend\n' >>"$WORK/spawn/doctors.lua"
+grep -v 'busySource("Token tracking"' "$ROOT/hammerspoon/token-tracking.lua" >"$WORK/source/token-tracking.lua"
+all=$(check "$ROOT/hammerspoon" "$WORK/spawn" "$WORK/source") || fail "the checker threw: $all"
+IFS=$'\x1e' read -r -d '' out spawn source <<<"$all"
+[ -z "$out" ] || fail "$out"
+case "$spawn" in *"M.recompute starts a task nobody classified"*) ;; *) fail "an unclassified spawn passed: $spawn" ;; esac
+case "$source" in *"registers no such busySource"*) ;; *) fail "a marked refresh without its source passed: $source" ;; esac
 echo "OK: every menu task is a marked refresh or names why not"
