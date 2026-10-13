@@ -4048,6 +4048,98 @@
    "verdict": "cut",
    "zero": "removal saves 0.2 wall-min/day; loses the Remove BG matte pin (input pixels inside the subject, alpha, unregistered skip, exit 1, explicit --composite only)",
    "note": "reads folded into one magick per image and a cutout built in one call, 28 asserts unchanged, ~18 to ~11 magick launches; replacing rgb=toned in share/image_matte.py is still red; ruled out: lazy cv2/numpy imports in share/image_matte.py save one import only on the missing-input path no production call takes, and its except clause needs cv2.error"
+  },
+  {
+   "id": "suite:llm-legs/test_instruction_gate_bypasses",
+   "title": "llm-legs/test_instruction_gate_bypasses",
+   "audited_at": "2026-10-13T12:57:25+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-bypasses-20261012T235320Z-268b",
+   "cpu_run": 27.6,
+   "wall_run": 21.5,
+   "cpu_min_day": 10.57,
+   "wall_min_day": 22.93,
+   "sources": {
+    "llm-legs/tests/instruction_gate_harness.sh": "f5bbd52b0fc805aa3860ca1f4a9583a5ec3431b9",
+    "llm-legs/tests/instruction_watch_menu_harness.lua": "680bf46aa82bacd0395739d89f6294f6a7c23ae7",
+    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_instruction_gate_bypasses.sh": "a368c9bd62884d6924496b04ef31f6d8b712c6e5"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 13.6 wall-min/day; loses the only check of every shell spelling of a write onto a guarded file, the merge-landing pricing and the instruction-watch menu contract",
+   "note": "3 shards (60 s serial -> 20/18/20 s at load 60), menu harness drops the 1,502-file record after its check, down-since clock injected; harness printf/ln cuts"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_limits_grok",
+   "title": "llm-legs/test_llm_limits_grok",
+   "audited_at": "2026-10-13T12:57:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-bypasses-20261012T235320Z-268b",
+   "cpu_run": 32.9,
+   "wall_run": 12.2,
+   "cpu_min_day": 27.86,
+   "wall_min_day": 17.99,
+   "sources": {
+    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
+    "llm-legs/tests/llm_limits_renderer_harness.lua": "da58fe1cfc9373c101b61c2dd38b4af45ffacf9a",
+    "llm-legs/tests/test_llm_limits_grok.sh": "cb8237eec485624660555df885678eaf107c3608"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 13.4 wall-min/day; loses the Grok weekly quota, paused-vendor, refresh_errors and flaky Gemini verdict checks and the renderer contract",
+   "note": "6 shards (long pole 34 -> 22 s at higher load), renderer bytecode once (1.13 -> 0.51 s in live hs), lock ready-file handshake; hs probe 600 s closes a silent SKIP"
+  },
+  {
+   "id": "suite:llm-legs/test_code_doctor",
+   "title": "llm-legs/test_code_doctor",
+   "audited_at": "2026-10-13T12:57:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-bypasses-20261012T235320Z-268b",
+   "cpu_run": 24.6,
+   "wall_run": 13.6,
+   "cpu_min_day": 16.37,
+   "wall_min_day": 16.33,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_code_doctor.sh": "d2be499107d7b2e93132e13181c42eeccfe7f2b3"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 13.3 wall-min/day; loses the code doctor calibration corpus, safety gate and --repo scope checks",
+   "note": "sharded runs were red (shard 3 read shard 2's repo); two rates-only refreshes -> code-doctor candidates; corpus shard stays the long pole (one stateful scenario)"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_stamps",
+   "title": "llm-legs/test_worker_run_stamps",
+   "audited_at": "2026-10-13T12:57:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-bypasses-20261012T235320Z-268b",
+   "cpu_run": 32.5,
+   "wall_run": 18.8,
+   "cpu_min_day": 12.17,
+   "wall_min_day": 15.72,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_stamps.sh": "0d1f7d3a82d49ff787185a779d2f3208233d96e3",
+    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 13.1 wall-min/day; loses refused-model, fix-anchor, relay-owner and snapshot attribution checks of worker-run",
+   "note": "26 of 28 cases await exit_code instead of building an unread wait report (shard 2 side by side 65 vs 75 s)"
+  },
+  {
+   "id": "suite:llm-legs/test_claudeb",
+   "title": "llm-legs/test_claudeb",
+   "audited_at": "2026-10-13T12:57:27+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-bypasses-20261012T235320Z-268b",
+   "cpu_run": 34.3,
+   "wall_run": 40.2,
+   "cpu_min_day": 7.18,
+   "wall_min_day": 13.05,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_claudeb.sh": "68cdc1174d0a5e2dc11bbe64fb101e6bfc78043a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 12.0 wall-min/day; loses claudeb launch guard, oauth refresh race, lock and convergence checks",
+   "note": "fixed waits -> handshakes (4 s glock holder, sleep 2 order probe, sleep 0.3 kill check), live status without convergence spin; unsharded: ~1,100 lines of shared top-level state"
   }
  ]
 }
