@@ -7937,6 +7937,52 @@
       "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
       "note": "Ruled out 2026-10-12: all 15 one-slot multi-suite runs ended 2026-10-05/06 (12 worker runs at -j 1 in feat-* worktrees, the last 10-06 03:54; 3 full runs of a tmp fixture repo the live journal took before 33eb4e77 stopped run-suites passing RUN_SUITES_JOURNAL on); none since, so the row leaves the 168 h window by 2026-10-13 18:32. run-suites' own -j never goes under 2 (slots_from_cores 2 2). Dismissal proposed to the owner.",
       "handoff": "docs/handoffs/2026-10-12-test-health-retests-serial.md"
+    },
+    {
+      "id": "browser-canary-codex-nvm-path",
+      "title": "The Chrome canary's codex leg could not find codex on a LaunchAgent's PATH",
+      "match": {
+        "rule": "browser-canary-start",
+        "ident": "^codex/rawilimo$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-12T17:48:32+03:00",
+          "by": "night fixer harness-browser-20261012T235000Z-56b7",
+          "files": ["llm-legs/bin/worker-run", "llm-legs/tests/test_worker_run_browse.sh"],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-browser-20261012T235000Z-56b7",
+      "note": "The only occurrence, canary-codex-rawilimo-1791816337 at 2026-10-12T14:45:40Z, ran under harness-doctor's launchd PATH, which lacks ~/.nvm where npm puts codex and its node. e49971f0 (14:48Z, in the night base) appends the nvm bins, newest first, in browse_codex_session when codex is not on PATH; test_worker_run_browse covers it. No canary ran since (canary.stamp 14:45Z, BROWSER_CANARY_S 23 h), so the next one proves it. Not done: the same nvm PATH loop lives in bin/vendor-fingerprint, bin/vendor-cli-update and bin/grokb; a shared helper is a separate cleanup.",
+      "handoff": null
+    },
+    {
+      "id": "browser-repair-owner-login-misfiled",
+      "title": "A browser run stopped for Egor's own sign-in ended HARNESS_NEEDS_REPAIR",
+      "match": {
+        "rule": "browser-repair",
+        "ident": "^runs$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T00:50:33+03:00",
+          "by": "night fixer harness-browser-20261012T235000Z-56b7",
+          "files": ["llm-legs/bin/worker-run", "llm-legs/bin/harness-doctor", "llm-legs/tests/test_worker_run_browse.sh", "llm-legs/tests/test_harness_doctor.sh"],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-browser-20261012T235000Z-56b7",
+      "note": "claudeb-1791819407-6339-7457 (Rentiva service signups, 2026-10-12T15:37Z) found Chrome Profile 10 not signed in to GitHub and, as the preamble then demanded for anything needing a login, ended HARNESS_NEEDS_REPAIR; the harness itself worked (device proven, tab closed, outcome logged). 7f2b3661 (in the night base) gives that case its own outcome, BROWSER_OWNER_LOGIN, which the Browser section skips; test_worker_run_browse and test_harness_doctor pin it. Ruled out: preflight, device proof and log writing all behaved. The row matches every browser-repair finding (the rule has one ident), so any later HARNESS_NEEDS_REPAIR, missing outcome or workaround reopens it.",
+      "handoff": null
     }
   ],
   "blind_spots": [
