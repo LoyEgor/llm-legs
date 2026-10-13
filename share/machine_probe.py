@@ -242,6 +242,18 @@ def proc_cwd(pid):
     return info.raw[152:1176].split(b"\0", 1)[0].decode(errors="replace") or None
 
 
+def proc_path(pid):
+    """The executable of one live process (proc_pidpath), or None."""
+    fixture = _fixture("SYSTEM_DOCTOR_PROCS")
+    if fixture is not None:
+        return (fixture.get("path") or {}).get(str(pid))
+    lib = _lib()
+    if lib is None:
+        return None
+    path = ctypes.create_string_buffer(4096)
+    return path.value.decode(errors="replace") if lib.proc_pidpath(pid, path, 4096) > 0 else None
+
+
 def _argv(pid):
     libc = ctypes.CDLL(None, use_errno=True)
     mib = (ctypes.c_int * 3)(1, 49, pid)

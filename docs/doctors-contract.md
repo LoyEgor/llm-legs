@@ -71,8 +71,8 @@ LLM ▸     8  reviewers crashed
   LLM's `debt` → Harness. Harness's details drop `Lost time:` and `Spend:`. Counts move through the same table from
   the doctors' own per-group counts (Harness: the header's `groups`; LLM: `groups`), so each summary's count and
   issue rows change but the `Doctors: N problems` total never does; a header without `groups` keeps Harness's own.
-- System's first level is six fixed sections instead of issue rows: Processor, Memory, Disk writes, Disk space, Logs,
-  Crashes, each `name (13) · value (5) · unit (7) · 7 DIM bars · usual (5)` from the document's `measures` and `days`,
+- System's first level is seven fixed sections instead of issue rows: Processor, Memory, Disk writes, Disk space, Logs,
+  Crashes, Background, each `name (13) · value (5) · unit (7) · 7 DIM bars · usual (5)` from the document's `measures` and `days`,
   the name RED when a loud problem of its rules sits inside, DIM_RED for a watch or pending fix or a blind collector,
   else GREEN. Inside, each rule's problem tones the measure it judges (a problem with no measure row gets its own row),
   lists carry human names (worker-run → workers, test suites → tests, helpers by their app), log groups open their
@@ -81,7 +81,12 @@ LLM ▸     8  reviewers crashed
   (`measures.ssd_sampled`) after the rusage rows as `process  directory` in GB/d, the week's mean times each share, and
   the unattributed rest DIM; Apple's own problems are RED and counted like any other. The moved Harness rows show
   in their section by label and count (CPU audits, Load → Processor; Memory guard → Memory; Growth → Logs); a problem
-  of a rule no section owns follows the sections. The menu only places and formats what the document says.
+  of a rule no section owns follows the sections. Background (rule `cohort`) lists `background.groups` as
+  `B × · group · item count`, RED with a loud problem inside, DIM under its limit, its value the groups at or over
+  it; an item reads `B × · dominant term · name` (the group's prefix dropped, `✗` its job's file gone, `○` a job
+  launchd does not hold with B 0) and opens its `about`, `place`, `label · schedule · state`, then each term per day
+  and as a share of its limit, the unmeasured terms on one DIM row. The menu only places and formats what the
+  document says.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,
   three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows. The menu
   reads it and `problem-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;
@@ -437,6 +442,8 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   against it), `profiles`: every LLM profile dir
   `{label, name, path, mb, age_d, status[, owner]}`, status `menu` | `off` | `home` | `unknown`, owner `llm-doctor`
   on a browser profile; a path gone since the scan is left out; `tidied`: what `system-doctor tidy` moved to the
-  Trash within 7 days `{path, mb, age_d, why}`), `limits`.
+  Trash within 7 days `{path, mb, age_d, why}`), `background` `{covered_days, groups: [{name, B, items: [{name,
+  owner, B, terms, per_day, unknown, place, job, about}]}]}` (B null before 7 covered days; `job` `{label, plist,
+  schedule, missing, loaded}`, `loaded` null before any dumpstate), `limits`.
 - `doctor-fix launch system` snapshots only fix-target causes (plus ledger and collector faults);
   close runs `bin/system-doctor check --record` (design, Phase 2).

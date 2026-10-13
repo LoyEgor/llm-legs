@@ -268,6 +268,20 @@ garbage to `~/.Trash` under a dated name, never deletes, after re-checking the p
 home, no recent file, no credentials inside); an invented path is ignored. Verdicts land in `tidy.jsonl`; the menu
 lists the week's moves under LLM profiles with 🗑. `--dry-run` judges and prints only.
 
+**Background** (Egor, 2026-10-14: every program running behind his back in one place, with its harm, so he removes
+what hurts): `background` holds every cohort item at B ≥ 0.01 and every launchd plist of the agent dirs (through its
+wrapper; `missing` when the file it runs is gone, `loaded` from the hourly dumpstate's services), grouped by where it
+lives so nothing hides: a sweep repository, `~/.claude` or an installed copy of one (a `~/.local/bin|libexec` file
+naming a repository, else one of a sweep repository's file names) → `harness`; another repository → its name;
+Homebrew; a privileged helper's vendor; the outermost `.app`; a node package; a `~/.local/share` or Application
+Support folder (`claude` → Claude Code); Apple; the first two folders under the home; inline commands and the
+unplaced → `other`. Each tick records in `origins.json` the file of every tag it has not seen (an interpreter's
+script, a module's cwd, the executable, `proc_pidpath` for a bare name; inline code its parent's), at most 4000. A
+group shows 60 items but never drops a job or an item at its limit. `system-doctor explain`, in the Prep after
+tidy, has the same Sonnet worker-run write one line per unexplained item (Apple at its limit, else a job or
+B ≥ 0.05; the 40 heaviest) into `about.json`; an invented name or a blank line is ignored, `--dry-run` prints only.
+Login items macOS keeps outside plists stay blind (ledger `login-items`).
+
 `log-growth` threshold: with every big store under a criterion the total plateaus; 1 GiB/day sits under the biggest
 single inflow measured (tmp session scratch, ~1.3 GB/day) and above a retention-limited store's daily swing; re-tune
 once 14 days of series exist. A `log-store` fix is proven when the next scan no longer fires it.

@@ -918,14 +918,19 @@ local function summaryTitle(name, value, status, history, now, stale, indexed)
 end
 
 local SECTIONS = {
-  { name = "Processor", rules = { "spawn", "kernel", "cohort" }, blind = { "ticks", "census" } },
+  { name = "Processor", rules = { "spawn", "kernel" }, blind = { "ticks", "census" } },
   { name = "Memory", rules = { "compressor", "swap", "swap-writes" }, blind = { "ticks", "footprints" } },
   { name = "Disk writes", rules = { "ssd-writes" }, blind = { "ticks", "footprints", "ssd-sampler" } },
   { name = "Disk space", rules = { "free-space", "orphan-profile", "profile-size" }, blind = { "ticks", "nightly" } },
   { name = "Logs", rules = { "log-store", "log-growth", "unregistered-store", "log-unread" }, blind = { "logstores" } },
   { name = "Crashes", rules = { "hammerspoon-crash", "job-crash", "job-loop", "unclean-reboot" },
     blind = { "nightly", "dumpstate", "harvest" } },
+  { name = "Background", rules = { "cohort" }, blind = { "ticks", "dumpstate" } },
 }
+-- A cohort term per day in the unit a row shows it: key, word, unit, factor.
+local TERMS = { { "C", "cpu", "min/d", 1 / 60 }, { "S", "starts", "/s", 1 / 86400 }, { "D", "writes", "GB/d", 1e-9 },
+  { "R", "reads", "GB/d", 1e-9 }, { "M", "memory", "MB", 1e-6 }, { "W", "wakeups", "/s", 1 / 86400 },
+  { "L", "launches", "/d", 1 } }
 local MOVED_TO = { ["CPU audits"] = "Processor", Load = "Processor", ["Memory guard"] = "Memory", Growth = "Logs" }
 local QUIET = { ["not-a-bug"] = true, weather = true, fixed = true }
 local TAG_NAMES = { ["worker-run"] = "workers", ["(bash)"] = "shell", bash = "shell", zsh = "shell", sh = "shell",
@@ -1379,6 +1384,82 @@ local function systemSections(document, now, moved, incoming)
       end
     end
     return rows, tonumber(reports.crash), "/8 d", nil
+  end
+
+  build.Background = function()
+    local flagged, rows, over = {}, {}, 0
+    for _, problem in ipairs(all) do
+      local cause = type(problem.cause) == "table" and problem.cause or {}
+      if problem.rule == "cohort" and cause.name and not used[problem] then
+        flagged[cause.name] = flagged[cause.name] or {}
+        table.insert(flagged[cause.name], problem)
+      end
+    end
+    local function times(value) return value == 0 and "0" or ratio(value) end
+    local function details(item, problem)
+      local menu, job = {}, type(item.job) == "table" and item.job or nil
+      if type(item.about) == "string" then
+        for _, line in ipairs(detailRows(item.about)) do menu[#menu + 1] = line end
+      end
+      if type(item.place) == "string" then menu[#menu + 1] = fitRow(dim(item.place)) end
+      if job then
+        local words = { tostring(job.label), tostring(job.schedule) }
+        words[#words + 1] = job.missing and "file gone" or job.loaded == false and "not loaded" or nil
+        menu[#menu + 1] = fitRow(dim(table.concat(words, " · ")))
+      end
+      if #menu > 0 then menu[#menu + 1] = { title = "-" } end
+      local unknown, blindTerms = {}, {}
+      for _, key in ipairs(list(item.unknown)) do unknown[key] = true end
+      for _, term in ipairs(TERMS) do
+        local per, share = tonumber(list(item.per_day)[term[1]]), tonumber(list(item.terms)[term[1]])
+        if per and (share or 0) >= 0.01 then
+          menu[#menu + 1] = row({ { padded(amount(per * term[4]), 5) }, { " " .. string.format("%-5s", term[3]) .. "  " },
+            { string.format("%-9s", term[2]) }, { padded(times(share or 0) .. "×", 6),
+              (share or 0) >= 1 and (problemTone(problem) or style.RED) or style.DIM } })
+        elseif unknown[term[1]] then
+          blindTerms[#blindTerms + 1] = term[2]
+        end
+      end
+      if #blindTerms > 0 then
+        menu[#menu + 1] = row({ { padded(MISSING, 5), style.DIM }, { "         " }, { table.concat(blindTerms, " "), style.DIM } })
+      end
+      if #menu > 0 and menu[#menu].title == "-" then menu[#menu] = nil end
+      return menu
+    end
+    for _, group in ipairs(list(document.background and document.background.groups)) do
+      local lines, loud, items = {}, nil, list(group.items)
+      for _, item in ipairs(items) do
+        local value, problem = tonumber(item.B), nil
+        for _, found in ipairs(flagged[item.name] or {}) do
+          used[found], problem = true, problem and problemTone(problem) == style.RED and problem or found
+        end
+        flagged[item.name] = nil
+        local top, high = nil, 0
+        for key, share in pairs(list(item.terms)) do
+          if tonumber(share) and share > high then top, high = key, share end
+        end
+        local word = ""
+        for _, term in ipairs(TERMS) do
+          if term[1] == top then word = term[2] end
+        end
+        local name = tostring(item.name)
+        if group.name ~= "harness" and name:sub(1, #tostring(group.name) + 1) == group.name .. "/" then
+          name = name:sub(#group.name + 2)
+        end
+        local job = type(item.job) == "table" and item.job or {}
+        name = (job.missing and "✗ " or job.loaded == false and (value or 0) == 0 and "○ " or "") .. name
+        local tone = problem and problemTone(problem) or not (value and value >= 1) and style.DIM or nil
+        loud = louder(loud, problem and problemTone(problem))
+        lines[#lines + 1] = row({ { padded(value and times(value) or MISSING, 5) }, { " ×  " },
+          { string.format("%-9s", word), style.DIM }, { name, tone } }, details(item, problem))
+      end
+      local value = tonumber(group.B)
+      if value and value >= 1 then over = over + 1 end
+      rows[#rows + 1] = row({ { padded(value and times(value) or MISSING, 5) }, { " ×  " },
+        { tostring(group.name), loud or not (value and value >= 1) and style.DIM or nil },
+        { "  " .. #items, style.DIM } }, lines)
+    end
+    return rows, document.background and over or nil, "over", nil
   end
 
   local out = {}

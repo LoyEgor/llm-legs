@@ -394,7 +394,7 @@ local function captionless(menu)
 end
 for index = 1, 7 do
   local menu = trendItems[index].menu or {}
-  local ok, caption = captionless({ table.unpack(menu, index == 7 and 7 or 1) })
+  local ok, caption = captionless({ table.unpack(menu, index == 7 and 8 or 1) })
   check(ok and #menu > 0 and text(menu[#menu].title) == "LLM details",
     "Egor's layer of " .. names[index] .. " holds issue rows, Fix, fixer and LLM details only: " .. tostring(caption))
 end
@@ -1245,7 +1245,22 @@ do
       { id = "orphan-profile:~/.gemini-profiles/Library", rule = "orphan-profile", label = "LLM profile off the menu",
         state = "new", value = 12, limit = 0, unit = "MB", fact = "~/.gemini-profiles/Library is no gemini account" },
       { id = "profile-size:~/.gemini-web/profiles/rawilimo", rule = "profile-size", label = "LLM profile too big",
-        state = "new", value = 4468, limit = 3072, unit = "MB", fact = "rawilimo holds 4.5 GB" } },
+        state = "new", value = 4468, limit = 3072, unit = "MB", fact = "rawilimo holds 4.5 GB" },
+      { id = "worker-run-births", rule = "cohort", label = "costly program", state = "new", value = 92, limit = 1,
+        unit = "B", cause = { name = "llm-legs/bin/worker-run", owner = "own" }, fact = "worker-run 92× its limit" },
+      { id = "cohort:ghost", rule = "cohort", label = "costly program", state = "watch", value = 2, limit = 1,
+        unit = "B", cause = { name = "ghost", owner = "third-party" }, fact = "ghost 2× its limit" } },
+    background = { covered_days = 7, groups = {
+      { name = "harness", B = 92, items = {
+        { name = "llm-legs/bin/worker-run", B = 92, terms = { S = 92, C = 0.5 }, per_day = { S = 7948800, C = 432 },
+          unknown = { "W", "D" }, place = "~/Projects/llm-legs/bin/worker-run", about = "starts the cheap workers" } } },
+      { name = "find-truth", B = 0.3, items = {
+        { name = "find-truth/pipeline/run_watch.sh", B = 0, terms = {}, per_day = {}, unknown = {},
+          job = { label = "com.ft.watch", schedule = "daily 09:30", missing = false, loaded = false } },
+        { name = "find-truth/gone.sh", B = 0, terms = {}, per_day = {}, unknown = {},
+          job = { label = "com.ft.gone", schedule = "always on", missing = true, loaded = false } },
+        { name = "find-truth/live.sh", B = 0.3, terms = { C = 0.3 }, per_day = { C = 259.2 }, unknown = {},
+          job = { label = "com.ft.live", schedule = "at login", missing = false, loaded = false } } } } } },
     measures = { births_s = 2600, kernel = 0.2, busy = 0.5, cores = 10, comp_gib = 2, mem_gib = 24, swap_used_mb = 1024,
       swap_gib_day = 3, ssd_gb_day_7d = 150, ssd_read_gb_day_7d = 900, free_gib = { Data = 20, Work = 400 },
       ssd_sampled = { samples = 3, minutes = 30, attributed = 0.6, top = { { "kernel_task", "swap", 0.4 },
@@ -1289,15 +1304,15 @@ do
       tidied = { { path = "~/.cursor-tutor", mb = 1, age_d = 0.3, why = "a tutorial folder idle for 463 days" } },
       sweep = { bytes = 500000000, errors = 0 } } })
   local first = loadDoctors().menuItems()[7].menu
-  local order, tones = true, { "R", "g", "g", "R", "R", "R" }
-  for index, name in ipairs({ "Processor", "Memory", "Disk writes", "Disk space", "Logs", "Crashes" }) do
+  local order, tones = true, { "R", "g", "g", "R", "R", "R", "R" }
+  for index, name in ipairs({ "Processor", "Memory", "Disk writes", "Disk space", "Logs", "Crashes", "Background" }) do
     order = order and first[index] and span(first[index].title, 1, 13) == string.format("%-13s", name)
       and first[index].menu ~= nil and toneOf(first[index].title) == tones[index]
   end
   check(order, "System's sections in a fixed order, each toned by its worst problem, Apple's Siri loop RED")
   check(text(first[1].title) == string.format("%-13s %5s %-7s %s %5s", "Processor", "5", "cores", "    ▇▄█", "3"),
     "a section row: name, value with its unit, seven DIM bars, the usual: " .. text(first[1].title))
-  check(rowMatching({ first[7] }, "^ +1 rows +ledger$", "R") and text(first[8].title):match("^Fix —"),
+  check(rowMatching({ first[8] }, "^ +1 rows +ledger$", "R") and text(first[9].title):match("^Fix —"),
     "a problem no section owns shows after the sections")
   local processor, memory, logs, crashes = first[1].menu, first[2].menu, first[5].menu, first[6].menu
   local starts = rowMatching(processor, "^starts ", nil)
@@ -1352,6 +1367,26 @@ do
   check(rowMatching(crashes, "^ +7 /day +Siri$", "R") and rowMatching(crashes, "Hammerspoon$", "r")
     and rowMatching(rowMatching(crashes, "^app crashes ").menu, "^ +3 /8 d +Chrome$"),
     "Crashes: Apple's loop RED by its short name, a pending fix DIM_RED, crashes by process")
+  local background = first[7].menu
+  local harness, findTruth = rowMatching(background, "^ +92%.0 ×  harness  1$"), rowMatching(background, "^ +0%.30 ×  find%-truth  3$")
+  local workerRun = harness and rowMatching(harness.menu, "^ +92%.0 ×  starts +llm%-legs/bin/worker%-run$", "R")
+  local runs = {}
+  for index, item in ipairs(workerRun and workerRun.menu or {}) do runs[index] = item.title == "-" and "-" or text(item.title) end
+  check(text(first[7].title):match("^Background +1 over") and workerRun and runs[1] == "starts the cheap workers"
+    and runs[2] == "~/Projects/llm-legs/bin/worker-run" and runs[3] == "-" and runs[4]:match("^ +7%.2 min/d +cpu +0%.50×$")
+    and runs[5]:match("^ +92 /s +starts +92%.0×$") and runs[6]:match("^ +– +writes wakeups$") and #runs == 6
+    and rowMatching(workerRun.menu, "starts +92%.0×$", "R") and not rowMatching(workerRun.menu, "cpu +0%.50×$", "R")
+    and sameColor(colorAt(harness.title, 10), palette.RED) and sameColor(colorAt(findTruth.title, 10), palette.DIM),
+    "Background: groups by their heaviest program with the count over its limit, a program by its dominant term with "
+    .. "what it is, where it lives and each term per day and as a share of its limit, unmeasured terms on one row: "
+    .. table.concat(runs, " | "))
+  check(findTruth and rowMatching(findTruth.menu, "^ +0 ×  +○ pipeline/run_watch%.sh$")
+    and rowMatching(findTruth.menu, "^ +0 ×  +✗ gone%.sh$") and rowMatching(findTruth.menu, "^ +0%.30 ×  cpu +live%.sh$")
+    and rowMatching(rowMatching(findTruth.menu, "run_watch").menu, "^com%.ft%.watch · daily 09:30 · not loaded$")
+    and rowMatching(rowMatching(findTruth.menu, "gone").menu, "^com%.ft%.gone · always on · file gone$"),
+    "Background: an installed job launchd does not hold and nothing runs ○, a job whose file is gone ✗, its label and schedule inside")
+  check(rowMatching(background, "^ +2 B +ghost$") and not rowMatching(processor, "worker%-run")
+    and not rowMatching(processor, "ghost"), "a costly program off the list still shows in Background, never in Processor")
 end
 
 -- One vocabulary: each night label tests/test_doctors_menu.sh made through bin/doctor-fix and

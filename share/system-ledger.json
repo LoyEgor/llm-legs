@@ -127,6 +127,13 @@
       "reason": "A Hammerspoon ipc crash report names no client; an hs killed by a timeout leaves no report of its own, so the client is inferred from the suites running in the tick before",
       "since": "2026-10-09",
       "would_catch_if": "the hs calls journaled their start, end, exit and caller"
+    },
+    {
+      "id": "login-items",
+      "what": "login items and background helpers macOS registers outside launchd plists (Background Task Management)",
+      "reason": "Background lists every launchd plist in the agent dirs and every process the ticks saw; the BTM store and `sfltool dumpbtm` need root, so an app's SMAppService helper or login item shows only once it runs",
+      "since": "2026-10-14",
+      "would_catch_if": "a consented privileged `sfltool dumpbtm` in the nightly pass"
     }
   ]
 }

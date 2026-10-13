@@ -1299,6 +1299,160 @@ shutil.rmtree(os.path.join(work, "tidy-state"))
 for key in ("SYSTEM_DOCTOR_WORKER_RUN", "FAKE_TIDY_BRIEF", "FAKE_TIDY_VERDICTS", "FAKE_TIDY_FAIL"):
     del os.environ[key]
 
+# ---- Background: every program and launchd job grouped by where it comes from, explained by one night worker
+state_was, agents_was = os.environ["SYSTEM_DOCTOR_DIR"], os.environ["SYSTEM_DOCTOR_AGENTS_DIRS"]
+bg = os.path.join(work, "bg")
+os.environ.update(SYSTEM_DOCTOR_DIR=os.path.join(bg, "state"), SYSTEM_DOCTOR_AGENTS_DIRS=os.path.join(bg, "agents"))
+for folder in ("state", "agents"):
+    os.makedirs(os.path.join(bg, folder))
+repos_real = m.repos_top()
+for rel, text in (("find-truth/pipeline/run_watch.sh", "#!/bin/bash\n"),):
+    os.makedirs(os.path.dirname(os.path.join(repos_real, rel)), exist_ok=True)
+    open(os.path.join(repos_real, rel), "w").write(text)
+loose = {".local/libexec/wrapped": "#!/bin/bash\nexec /bin/bash %sfind-truth/pipeline/run_watch.sh \"$@\"\n" % repos_real,
+         ".local/libexec/envset": "#!/bin/sh\nexec /bin/launchctl setenv A b\n",
+         ".local/libexec/memlogd": "#!/bin/bash\necho\n", ".local/libexec/mine": "#!/bin/bash\necho\n"}
+for rel, text in loose.items():
+    os.makedirs(os.path.dirname(os.path.join(home, rel)), exist_ok=True)
+    open(os.path.join(home, rel), "w").write(text)
+os.makedirs(os.path.join(home, ".local/bin"), exist_ok=True)
+os.symlink(os.path.join(repos_real, "llm-legs/bin/worker-run"), os.path.join(home, ".local/bin/tool"))
+check([m.origin(path) for path in (
+    repos_real + "llm-legs/bin/memlogd", repos_real + "find-truth/pipeline/run_watch.sh", home + "/.claude/hooks/x.sh",
+    home + "/.local/libexec/wrapped", home + "/.local/libexec/memlogd", home + "/.local/libexec/mine", home + "/.local/bin/tool",
+    "/Applications/Dia.app/Contents/Frameworks/Helpers/Browser Helper.app/Contents/MacOS/Browser Helper",
+    "/System/Applications/Mail.app/Contents/MacOS/Mail",
+    "/opt/homebrew/Cellar/python@3.13/Frameworks/Python.framework/Resources/Python.app/Contents/MacOS/Python",
+    home + "/.nvm/versions/node/v24/lib/node_modules/@openai/codex-darwin-arm64/vendor/codex",
+    home + "/.local/share/claude/versions/2.1", "/Library/Application Support/find-truth/guard.sh",
+    "/Library/Application Support/Vendor/tool", "/Library/PrivilegedHelperTools/com.macpaw.CleanMyMac4.Agent",
+    "/usr/libexec/trustd", home + "/bin/odd.sh", home + "/Downloads/x/y/z.sh", "/private/tmp/x.sh", "relative", None)]
+      == ["harness", "find-truth", "harness", "find-truth", "harness", "~/.local/libexec", "harness", "Dia", "Apple",
+          "Homebrew", "codex", "Claude Code", "find-truth", "Vendor", "Macpaw", "Apple", "~/bin", "~/Downloads/x", None,
+          None, None],
+      "a file's group: a sweep repository is the harness, another repository its own, a wrapper the repository it names, "
+      "an installed copy the sweep repository with its name, the outermost app, Homebrew before its Python.app, a node "
+      "package, ~/.local/share and Application Support folders, a helper tool's vendor, Apple, a home folder")
+check([m.item_group(*args) for args in (
+    ("bash", "apple", "/bin/bash", None), ("(bash)", "third-party", None, None), ("WindowServer", "apple", None, None),
+    ("find-truth/pipeline/run_watch.sh", "own", None, None), ("llm-legs/bin/worker-run", "own", None, None),
+    ("Hammerspoon", "third-party", None, None), ("tool", "third-party", "/opt/homebrew/bin/tool", None),
+    ("statusline.sh", "own", home + "/.cache/snap/statusline.sh", None), ("lonely.sh", "own", home + "/.cache/snap/lonely.sh", None),
+    ("ghost", "third-party", None, {"runs": "/Applications/Ghost.app/Contents/MacOS/ghost"}), ("ghost", "third-party", None, None))]
+      == ["other", "other", "Apple", "find-truth", "harness", "harness", "harness", "harness", "~/.cache/snap", "Ghost", "other"],
+      "an item's group: inline commands are other before Apple, a repository tag its repository, an own app the harness, "
+      "a command in ~/.local/bin before its place, a script copy in a home folder the sweep repository with its name")
+check([m.schedule(plist) for plist in (
+    {"KeepAlive": True, "StartInterval": 60}, {"StartInterval": 300}, {"StartInterval": 7200}, {"StartInterval": 172800},
+    {"StartCalendarInterval": {"Hour": 9, "Minute": 30}}, {"StartCalendarInterval": {"Hour": 10, "Weekday": 1}},
+    {"StartCalendarInterval": {"Minute": 5}}, {"StartCalendarInterval": [{"Hour": 1}, {"Hour": 2}]},
+    {"WatchPaths": ["/x"]}, {"RunAtLoad": True}, {})]
+      == ["always on", "every 5 min", "every 2 h", "every 2 d", "daily 09:30", "weekly 10:00", "hourly :05",
+          "2 times a day", "on file change", "at login", "on demand"], "a job's schedule in words")
+for label, args, extra in (("com.ft.watch", [home + "/.local/libexec/wrapped"], {"StartCalendarInterval": {"Hour": 9, "Minute": 30}}),
+                           ("com.gone.job", ["/bin/bash", home + "/.local/bin/gone.sh"], {"KeepAlive": True}),
+                           ("com.env.set", [home + "/.local/libexec/envset"], {"RunAtLoad": True}),
+                           ("com.dup.a", ["/Applications/Dup.app/Contents/MacOS/Dup"], {}),
+                           ("com.dup.b", ["/Applications/Dup.app/Contents/MacOS/Dup"], {}),
+                           ("com.egor.hs", ["/Applications/Hammerspoon.app/Contents/MacOS/Hammerspoon"], {"KeepAlive": True})):
+    with open(os.path.join(bg, "agents", label + ".plist"), "wb") as handle:
+        plistlib.dump(dict({"Label": label, "ProgramArguments": args}, **extra), handle)
+check(all(job["loaded"] is None for job in m.background_jobs().values()), "no dumpstate yet: whether launchd holds a job is unknown")
+m.write_json(os.path.join(bg, "state", "dumpstate-state.json"),
+             {"t": now, "services": {"gui/501/com.ft.watch": [3, "exit 0"], "gui/501/com.dup.a": [1, None]}})
+jobs = m.background_jobs()
+plists = os.path.join(bg, "agents")
+check(sorted(jobs) == ["Dup", "Hammerspoon", "com.dup.b", "com.env.set", "find-truth/pipeline/run_watch.sh", "gone.sh"]
+      and {k: v for k, v in jobs["find-truth/pipeline/run_watch.sh"].items() if k != "owner"} == {
+          "label": "com.ft.watch", "plist": plists + "/com.ft.watch.plist", "schedule": "daily 09:30",
+          "runs": repos_real + "find-truth/pipeline/run_watch.sh", "missing": False, "loaded": True}
+      and jobs["gone.sh"]["missing"] is True and jobs["gone.sh"]["loaded"] is False
+      and jobs["com.env.set"]["runs"] == home + "/.local/libexec/envset" and jobs["Dup"]["loaded"] is True,
+      "every plist is a job named as the ticks name what it runs (through its wrapper; by label when that is an Apple "
+      "command or a second plist runs the same file), with its schedule, a gone file and launchd's hold: %s" % jobs)
+m.write_json(os.path.join(bg, "state", "origins.json"), {"claude": home + "/.local/share/claude/versions/2.1"})
+m.write_json(m.about_path(), {"Dup": {"about": "a dup app", "t": now}})
+score = {"covered_days": 7.0, "items": [
+    {"name": "llm-legs/bin/worker-run", "owner": "own", "B": 92.0, "terms": {"S": 92.0, "C": 0.5},
+     "per_day": {"S": 7948800.0, "C": 432.0}, "unknown": []},
+    {"name": "claude", "owner": "third-party", "B": 3.0, "terms": {"S": 3.0}, "per_day": {"S": 259200.0}, "unknown": ["W", "D"]},
+    {"name": "claude", "owner": "own", "B": 2.0, "terms": {"C": 2.0}, "per_day": {"C": 1728.0}, "unknown": ["W"]},
+    {"name": "WindowServer", "owner": "apple", "B": 1.5, "terms": {"C": 1.5}, "per_day": {"C": 1296.0}, "unknown": []},
+    {"name": "com.dup.a", "owner": "third-party", "B": 0.5, "terms": {"L": 0.5}, "per_day": {"L": 720.0}, "unknown": []},
+    {"name": "com.dup.b", "owner": "third-party", "B": 0.5, "terms": {"L": 0.5}, "per_day": {"L": 720.0}, "unknown": []},
+    {"name": "Dup", "owner": "third-party", "B": 0.2, "terms": {"C": 0.2}, "per_day": {"C": 172.8}, "unknown": ["W"]},
+    {"name": "llm-legs/bin/statusline.sh", "owner": "own", "B": 0.05, "terms": {"C": 0.05}, "per_day": {"C": 43.2}, "unknown": []},
+    {"name": "tiny", "owner": "third-party", "B": 0.001, "terms": {"C": 0.001}, "per_day": {"C": 0.9}, "unknown": []}]}
+items_was = m.BACKGROUND["items"]
+m.BACKGROUND["items"] = 1
+view = m.background(score, now)
+m.BACKGROUND["items"] = items_was
+found = {i["name"]: i for g in view["groups"] for i in g["items"]}
+check([(g["name"], g["B"], [i["name"] for i in g["items"]]) for g in view["groups"]] == [
+    ("harness", 92.0, ["llm-legs/bin/worker-run", "Hammerspoon"]), ("Claude Code", 3.0, ["claude"]),
+    ("Apple", 1.5, ["WindowServer"]), ("Dup", 0.5, ["Dup", "com.dup.b"]),
+    ("find-truth", 0.0, ["find-truth/pipeline/run_watch.sh"]), ("~/.local/bin", 0.0, ["gone.sh"]),
+    ("~/.local/libexec", 0.0, ["com.env.set"])],
+      "groups by their heaviest item: a group past its row cap keeps its jobs and items at the limit, a launches row "
+      "named by label joins its job, the same name of two owners is one row, a quiet non-job item is dropped: %s"
+      % [(g["name"], [i["name"] for i in g["items"]]) for g in view["groups"]])
+check(found["claude"]["terms"] == {"S": 3.0, "C": 2.0} and found["claude"]["unknown"] == ["W"]
+      and found["claude"]["place"] == "~/.local/share/claude/versions/2.1" and found["claude"]["job"] is None
+      and found["Dup"]["terms"] == {"C": 0.2, "L": 0.5} and found["Dup"]["about"] == "a dup app"
+      and found["Dup"]["job"] == {"label": "com.dup.a", "plist": plists + "/com.dup.a.plist", "schedule": "on demand",
+                                  "missing": True, "loaded": True}
+      and found["Hammerspoon"]["B"] == 0.0 and found["gone.sh"]["place"] == "~/.local/bin/gone.sh",
+      "an item carries its merged terms, the place the ticks saw, its job without internals and the night's about: %s"
+      % [found[k] for k in ("claude", "Dup")])
+blind = m.background({"covered_days": 3.0, "items": None}, now)
+check(all(i["B"] is None for g in blind["groups"] for i in g["items"]) and all(g["B"] is None for g in blind["groups"])
+      and blind["covered_days"] == 3.0, "before 7 covered days a job's cost is unknown, never 0")
+m.write_json(os.path.join(bg, "state", "latest.json"), {"background": view})
+explain_was = dict(m.EXPLAIN)
+m.EXPLAIN["max"] = 5
+check([i["name"] for i in m.explain_candidates(view, {"Dup": {}})] == [
+    "llm-legs/bin/worker-run", "claude", "WindowServer", "com.dup.b", "Hammerspoon"],
+      "the night explains the heaviest unexplained items: an Apple one at its limit, a quiet one only as a job")
+os.environ.update(SYSTEM_DOCTOR_WORKER_RUN=fake, FAKE_TIDY_BRIEF=os.path.join(bg, "brief.md"),
+                  FAKE_TIDY_VERDICTS=os.path.join(bg, "answers"), FAKE_TIDY_FAIL=os.path.join(bg, "fail"))
+open(os.environ["FAKE_TIDY_VERDICTS"], "w").write("\n".join([
+    json.dumps({"name": "llm-legs/bin/worker-run", "about": "starts the cheap workers"}),
+    json.dumps({"name": "claude", "about": "  "}), json.dumps({"name": "invented", "about": "x"}), "not json",
+    "`" + json.dumps({"name": "WindowServer", "about": "draws the screen"}) + "`"]) + "\n")
+dry = m.explain(now, dry_run=True)
+check([(r["name"], r["action"]) for r in dry] == [("llm-legs/bin/worker-run", "dry run"), ("WindowServer", "dry run")]
+      and m.read_json(m.about_path(), {}) == {"Dup": {"about": "a dup app", "t": now}},
+      "a dry run asks and records nothing: %s" % dry)
+brief = open(os.environ["FAKE_TIDY_BRIEF"]).read()
+check(brief.startswith("ROUND: none\n") and "## llm-legs/bin/worker-run" in brief
+      and "- costs 92.00 of its limit a day, mostly 7948800 births a day" in brief
+      and "- launchd job com.dup.b (%s/com.dup.b.plist), on demand, its file is gone" % plists in brief
+      and "## Dup\n" not in brief, "the brief names each item with its group, place, job and cost: %s" % brief[-700:])
+done = m.explain(now)
+abouts = m.read_json(m.about_path(), {})
+check([r["action"] for r in done] == ["explained", "explained"] and abouts["llm-legs/bin/worker-run"]["about"]
+      == "starts the cheap workers" and abouts["WindowServer"]["about"] == "draws the screen" and "invented" not in abouts
+      and "claude" not in abouts, "an answer for an asked name lands in about.json, a blank or invented one never: %s" % abouts)
+check("WindowServer" not in [i["name"] for i in m.explain_candidates(view, abouts)], "an explained item is not asked again")
+open(os.environ["FAKE_TIDY_VERDICTS"], "w").write(json.dumps({"name": "claude", "about": "the Claude Code CLI"}) + "\n")
+printed = cli("explain", "--dry-run")
+check(printed.returncode == 0 and printed.stdout == "dry run\tclaude\tthe Claude Code CLI\n",
+      "explain prints action, name and about per row: %r" % printed.stdout)
+open(os.environ["FAKE_TIDY_FAIL"], "w").close()
+failed = m.explain(now)
+check(len(failed) == 1 and failed[0]["action"] == "judge failed" and "boom" in failed[0]["about"]
+      and m.read_json(m.about_path(), {}) == abouts, "a failed judge records nothing and says why: %s" % failed)
+check(cli("explain").returncode == 1, "explain exits 1 when its judge failed")
+m.EXPLAIN.clear()
+m.EXPLAIN.update(explain_was)
+for key in ("SYSTEM_DOCTOR_WORKER_RUN", "FAKE_TIDY_BRIEF", "FAKE_TIDY_VERDICTS", "FAKE_TIDY_FAIL"):
+    del os.environ[key]
+os.environ.update(SYSTEM_DOCTOR_DIR=state_was, SYSTEM_DOCTOR_AGENTS_DIRS=agents_was)
+for rel in (".local", ".claude"):
+    shutil.rmtree(os.path.join(home, rel), ignore_errors=True)
+shutil.rmtree(bg)
+shutil.rmtree(os.path.join(repos_real, "find-truth"))
+
 # ---- phase 3: the cohort score at its edges, amortized over >= 7 days
 check(m.COHORT["cpu_s"] == 864 and m.COHORT["wakes"] == 86400 and m.COHORT["writes_b"] == m.GIB and m.COHORT["reads_b"] == 100 * m.GIB
       and m.COHORT["footprint_b"] == 512 * 2 ** 20 and m.COHORT["births"] == 86400 and m.COHORT["launches"] == 1440
@@ -1533,9 +1687,23 @@ put("ps", ps_rows([(1, 0, 0, "0:01.00", start, "/sbin/launchd"),
 tags = {entry[4]: (entry[2], entry[3]) for entry in m.ps_snapshot(False)[1].values()}
 check(tags[701] == tags[702] == ("llm-legs/bin/x.py", "own") and tags[704] == ("zsh", "apple"),
       "inline code takes its parent's script through inline parents only: %s" % tags)
+procs_was = open(os.environ["SYSTEM_DOCTOR_PROCS"]).read()
+json.dump(dict(json.loads(procs_was), path={"705": "/Applications/Ghost.app/Contents/MacOS/ghostd"}),
+          open(os.environ["SYSTEM_DOCTOR_PROCS"], "w"))
+put("ps", open(os.path.join(fix, "ps")).read() + ps_rows([(705, 1, uid, "0:00.10", start, "ghostd --x")]))
+check(all(entry[8] is None for entry in m.ps_snapshot(False)[1].values()), "no known tags given: no file is looked up")
+places = {entry[4]: entry[8] for entry in m.ps_snapshot(False, {"claude": "~/x"})[1].values()}
+check(places[700] == places[701] == places[702] == script and places[703] is None and places[704] == "/bin/zsh"
+      and places[705] == "/Applications/Ghost.app/Contents/MacOS/ghostd" and places[1] == "/sbin/launchd",
+      "a process's file: its interpreter's script, inline code its script's, an executable named bare by pid, a known "
+      "tag none: %s" % places)
+open(os.environ["SYSTEM_DOCTOR_PROCS"], "w").write(procs_was)
 put("ps-children", open(os.path.join(fix, "ps")).read())
 state2 = os.path.join(work, "state2")
 check(cli("tick", "--quiet", env={"SYSTEM_DOCTOR_DIR": state2}).returncode == 0, "a tick sees the script")
+origins = m.read_json(os.path.join(state2, "origins.json"), {})
+check(origins.get("llm-legs/bin/x.py") == script and origins.get("claude") == "/opt/homebrew/bin/claude",
+      "a tick keeps the file of each tag it has not seen before: %s" % origins)
 put("ps", ps_rows([(1, 0, 0, "0:01.00", start, "/sbin/launchd")]))
 put("ps-children", open(os.path.join(fix, "ps")).read())
 check(cli("tick", "--quiet", env={"SYSTEM_DOCTOR_DIR": state2}).returncode == 0, "a tick sees it gone")

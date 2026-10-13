@@ -98,6 +98,10 @@ COHORT = {"cpu_s": 864, "wakes": 86400, "writes_b": GIB, "reads_b": 100 * GIB, "
 TERMS = (("C", "cpu_s", "%.0f cpu-s"), ("W", "wakes", "%.0f idle wakes"), ("D", "writes_b", "%.1f GB written"),
          ("R", "reads_b", "%.1f GB read"), ("M", "footprint_b", "%.0f MiB held under pressure"), ("S", "births", "%.0f births"),
          ("L", "launches", "%.0f launches"))
+BACKGROUND = {"min_b": 0.01, "items": 60, "origins": 4000}
+HARNESS = "harness"
+LOOSE_DIRS = (".local/bin", ".local/libexec")
+LOCAL_NAMES = {"claude": "Claude Code"}
 CRASH_SIGNALS = {4, 5, 6, 8, 10, 11, 12}
 MIN_TICKS = 3
 TICK_GAP_S = 600
@@ -123,7 +127,7 @@ INLINE_OPTS = {"node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "-E"}, 
                "bun": {"-e", "--eval"}, "deno": {"eval"}}
 INLINE_BUNDLED = {"perl": r"^-[0-9alnpsw]*[eE]$", "ruby": r"^-[alnpsw]*e$", "node": r"^-(pe|ep)$"}
 VALUE_OPTS = {"python": {"-X", "-W"}, "shell": {"-o", "-O", "+O"}, "node": {"-r", "--require", "--import", "--loader"},
-              "uv": {"--with", "--python", "-p", "--project", "--directory"}}
+              "uv": {"--with", "--python", "-p", "--project", "--directory"}, "osascript": {"-l"}}
 ARGV_WORDS = 8
 OWN_APPS = {"Hammerspoon", "hs"}
 CAUSER_APPS = {"claude", "Hammerspoon", "memlogd"}
@@ -432,15 +436,28 @@ def inherit(procs, inline, by_pid):
         while pid in by_pid and depth < 6:
             parent = procs[by_pid[pid]]
             if parent[6] == "script":
-                entry[2], entry[3], entry[6] = parent[2], parent[3], "script"
+                entry[2], entry[3], entry[6], entry[8] = parent[2], parent[3], "script", parent[8]
             if parent[6] != "inline":
                 break
             pid, depth = parent[0], depth + 1
 
 
-def ps_snapshot(with_children):
-    """{key: [ppid, cpu_s, tag, owner, pid, uid, kind, rss_kb]} keyed `pid@lstart`, plus the probe's own pid; kind is
-    `script` for an interpreter tagged by its script."""
+def locate(exe, rest, pid, cwd=None):
+    """The file one process runs: the script its interpreter runs, else its executable (by pid when argv names none)."""
+    name = os.path.basename(exe).lstrip("-")
+    found = script_of(name, exe, rest, cwd) if interpreter(name) else None
+    if found and found[1] and os.path.isabs(found[1]):
+        return found[1]
+    if found and found[0] == "module" and cwd:
+        return cwd() or exe
+    if os.path.isabs(exe):
+        return exe
+    return machine_probe.proc_path(pid) if pid else None
+
+
+def ps_snapshot(with_children, known=None):
+    """{key: [ppid, cpu_s, tag, owner, pid, uid, kind, rss_kb, place]} keyed `pid@lstart`, plus the probe's own pid;
+    kind is `script` for an interpreter tagged by its script; place, the file it runs, only for a tag `known` lacks."""
     args = ["-A"] + (["-S"] if with_children else []) + ["-o", "pid=,ppid=,uid=,time=,rss=,lstart=,args="]
     pid, out = machine_probe.spawn("ps", args)
     roots = own_roots()
@@ -451,9 +468,11 @@ def ps_snapshot(with_children):
             continue
         number, ppid, uid, cpu, rss, start, argv = match.groups()
         exe, rest = exe_and_rest(argv)
-        tag, owner, kind = describe(exe, rest, roots, functools.partial(machine_probe.proc_cwd, int(number)))
+        cwd = functools.partial(machine_probe.proc_cwd, int(number))
+        tag, owner, kind = describe(exe, rest, roots, cwd)
         key = "%s@%s" % (number, " ".join(start.split()))
-        procs[key] = [int(ppid), cpu_seconds(cpu), tag, owner, int(number), int(uid), kind, int(rss)]
+        place = locate(exe, rest, int(number), cwd) if known is not None and tag not in known else None
+        procs[key] = [int(ppid), cpu_seconds(cpu), tag, owner, int(number), int(uid), kind, int(rss), place]
         if kind == "inline":
             inline.append(key)
     inherit(procs, inline, {entry[4]: key for key, entry in procs.items()})
@@ -570,7 +589,9 @@ def tick(now=None):
     first_pid, first = steps("ps", ps_snapshot, False)
     time.sleep(max(0.0, first_at + window - time.monotonic()))
     seconds = time.monotonic() - first_at
-    last_pid, last = steps("ps_children", ps_snapshot, True)
+    origins_file = os.path.join(state_dir(), "origins.json")
+    origins = read_json(origins_file, {}) or {}
+    last_pid, last = steps("ps_children", ps_snapshot, True, origins)
     vm = steps("vm_stat", vm_counters)
     mem = steps("sysctl", memory_sysctls)
     disks = steps("ioreg", disk_counters)
@@ -689,6 +710,9 @@ def tick(now=None):
     if gone:
         append_row("pids", {"t": round(now, 1), "gone": gone}, REPORT_DAYS + 1)
     write_json(path, state)
+    fresh = {entry[2]: entry[8] for entry in last.values() if entry[8] and entry[2] not in origins}
+    if fresh:
+        write_json(origins_file, dict(list({**origins, **fresh}.items())[-BACKGROUND["origins"]:]))
     row["self"] = {"wall_s": round(time.time() - now, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
                    "steps": steps.out}
     folder = os.path.join(state_dir(), "ticks")
@@ -926,9 +950,14 @@ def program_name(program, args=()):
 
 def job_plists():
     """[(label, program, plist)] of the launchd job plists in agent_dirs()."""
+    return [found[:3] for found in job_files()]
+
+
+def job_files():
+    """[(label, program, plist, path)] of the launchd job plists in agent_dirs()."""
     found = []
     for folder in agent_dirs():
-        for path in glob.glob(os.path.join(folder, "*.plist")):
+        for path in sorted(glob.glob(os.path.join(folder, "*.plist"))):
             try:
                 with open(path, "rb") as handle:
                     plist = plistlib.load(handle)
@@ -939,7 +968,7 @@ def job_plists():
             args = plist.get("ProgramArguments")
             program = plist.get("Program") or (args[0] if isinstance(args, list) and args else "")
             if isinstance(program, str) and program:
-                found.append((str(plist.get("Label") or os.path.basename(path)[:-6]), program, plist))
+                found.append((str(plist.get("Label") or os.path.basename(path)[:-6]), program, plist, path))
     return found
 
 
@@ -1577,6 +1606,7 @@ LLM_DIR = re.compile(r"claude|codex|gemini|grok|opencode|chatgpt|openai|anthropi
 # tidy: what the night's cheap judge may call garbage, and the guards around the move to the Trash.
 TIDY = {"idle_days": 30, "active_days": 7, "profile_mb": 3072, "child_mb": 500, "remember_days": 90, "shown_days": 7,
         "model": "sonnet", "effort": "low", "wall_s": 1800, "top": 12}
+EXPLAIN = {"min_b": 0.05, "max": 40}
 SECRET_FILE = re.compile(r"^(Cookies|Login Data|Web Data|auth\.json|oauth_creds\.json|credentials.*|.*\.keychain-db|"
                          r"\.keychain-password|.*token.*)$", re.I)
 
@@ -1766,7 +1796,7 @@ def worker_run_cmd():
     return os.environ.get("SYSTEM_DOCTOR_WORKER_RUN") or os.path.join(ROOT_DIR, "bin", "worker-run")
 
 
-def tidy_judge(brief_file):
+def worker_judge(brief_file):
     """(run id, the run's RESULT text, error): one cheap worker-run judgment, waited on at most wall_s."""
     started = time.time()
     done = subprocess.run([worker_run_cmd(), "start", "claudeb", "--model", TIDY["model"], "--effort", TIDY["effort"],
@@ -1835,7 +1865,7 @@ def tidy(now=None, dry_run=False):
     brief_file = os.path.join(folder, time.strftime("%Y%m%dT%H%M%S", time.localtime(now)) + ".md")
     with open(brief_file, "w", encoding="utf-8") as handle:
         handle.write(tidy_brief(candidates))
-    run_id, text, error = tidy_judge(brief_file)
+    run_id, text, error = worker_judge(brief_file)
     if error:
         return [{"t": round(now), "path": None, "action": "judge failed", "why": error, "run": run_id}]
     verdicts, out = tidy_verdicts(text), []
@@ -2048,6 +2078,271 @@ def cohort_score(days, launches, now):
                       "unknown": [key for key, _unit, _words in TERMS if key not in per_day]})
     items.sort(key=lambda i: (-i["B"], i["name"]))
     return {"covered_days": round(span, 2), "items": items}
+
+
+# ---------------------------------------------------------------- background
+
+
+def span_words(seconds):
+    return "%d min" % (seconds // 60) if seconds < HOUR_S else "%d h" % (seconds // HOUR_S) if seconds < DAY_S \
+        else "%d d" % (seconds // DAY_S)
+
+
+def schedule(plist):
+    """When launchd runs one job, in a few words."""
+    every, calendar = plist.get("StartInterval"), plist.get("StartCalendarInterval")
+    if plist.get("KeepAlive"):
+        return "always on"
+    if isinstance(every, int) and every > 0:
+        return "every " + span_words(every)
+    if isinstance(calendar, dict) and isinstance(calendar.get("Hour"), int):
+        return "%s %02d:%02d" % ("weekly" if "Weekday" in calendar else "daily", calendar["Hour"], calendar.get("Minute") or 0)
+    if isinstance(calendar, dict) and isinstance(calendar.get("Minute"), int):
+        return "hourly :%02d" % calendar["Minute"]
+    if isinstance(calendar, list) and calendar:
+        return "%d times a day" % len(calendar)
+    if plist.get("WatchPaths") or plist.get("QueueDirectories"):
+        return "on file change"
+    return "at login" if plist.get("RunAtLoad") else "on demand"
+
+
+def background_jobs():
+    """{name: job} of every launchd plist in agent_dirs(), named as the ticks name what it runs: its label, plist,
+    schedule, the file it runs, whether that file is gone and whether launchd holds it (None before any dumpstate)."""
+    services = (read_json(os.path.join(state_dir(), "dumpstate-state.json"), {}) or {}).get("services")
+    loaded = {job_label(service) for service in services} if services else None
+    jobs = {}
+    for label, program, plist, path in job_files():
+        args = [a for a in plist.get("ProgramArguments") or () if isinstance(a, str)]
+        target = wrapper_target(program)
+        runs, rest = (target[0], target[1:]) if target else (program, args[1:] if args and args[0] == program else args)
+        runs = runs if os.path.isabs(runs) else loose_file(runs) or runs
+        place = locate(runs, rest, None) or program
+        if path_owner(place, ()) == "apple":
+            place = program
+        name = program_name(program, args)
+        if name in jobs or name == os.path.basename(runs) and (interpreter(name) or not os.path.isabs(runs) or path_owner(
+                runs, ()) == "apple"):
+            name = label
+        jobs[name] = {
+            "label": label, "owner": job_owner(label, place), "plist": tilde(path), "schedule": schedule(plist),
+            "runs": place,
+            "missing": os.path.isabs(place) and not os.path.exists(place),
+            "loaded": job_label(label) in loaded if loaded is not None else None}
+    return jobs
+
+
+def repo_group(repo):
+    return HARNESS if repo in {os.path.basename(top.rstrip("/")) for top in sweep_dirs()} else repo
+
+
+def installed_repo(path):
+    """The repository beside ours an installed script stands for: the first one a small wrapper names, else the one
+    sweep repository holding a file of its name."""
+    if os.path.dirname(path) not in {os.path.join(HOME, d) for d in LOOSE_DIRS} | {"/usr/local/libexec"}:
+        return None
+    with contextlib.suppress(OSError):
+        if os.path.getsize(path) <= 65536:
+            with open(path, errors="replace") as handle:
+                found = re.search(re.escape(repos_top()) + r"([^/\s\"']+)/", handle.read())
+            if found:
+                return found.group(1)
+    return sourced(os.path.basename(path))
+
+
+@functools.lru_cache(maxsize=None)
+def own_basenames():
+    found = {}
+    for top in sweep_dirs():
+        repo = os.path.basename(top.rstrip("/"))
+        for path in repo_files(top):
+            found.setdefault(os.path.basename(path), set()).add(repo)
+    return found
+
+
+def sourced(name):
+    """The one sweep repository holding files of this name, or None."""
+    repos = own_basenames().get(name) or set()
+    return next(iter(repos)) if len({repo_group(repo) for repo in repos}) == 1 else None
+
+
+def origin(path):
+    """The group of one file: a repository beside ours (the sweep repositories are the harness), the app, package or
+    home folder holding it, Homebrew or Apple; None when no path places it."""
+    if not path or not os.path.isabs(path):
+        return None
+    real = os.path.realpath(path)
+    if real.startswith(repos_top()):
+        return repo_group(real[len(repos_top()):].split("/", 1)[0])
+    if real.startswith(os.path.join(HOME, ".claude") + "/"):
+        return HARNESS
+    wrapped = installed_repo(real)
+    if wrapped:
+        return repo_group(wrapped)
+    if real.startswith(("/opt/homebrew/", "/usr/local/")):
+        return "Homebrew"
+    if real.startswith("/Library/PrivilegedHelperTools/"):
+        return (os.path.basename(real).split(".") + [""])[1].capitalize() or None
+    app = re.match(r"^(.*?/)?([^/]+)\.app(?:/|$)", real)
+    if app:
+        return "Apple" if real.startswith("/System/") else app.group(2)
+    package = re.search(r"/node_modules/(?:@[^/]+/)?([^/]+)", real)
+    if package:
+        return re.sub(r"-(darwin|linux|win32)(-.*)?$", "", package.group(1))
+    for base in (os.path.join(HOME, ".local", "share"), os.path.join(HOME, "Library", "Application Support"),
+                 "/Library/Application Support"):
+        if real.startswith(base + "/"):
+            name = real[len(base) + 1:].split("/", 1)[0]
+            return repo_group(name) if os.path.isdir(os.path.join(repos_top(), name)) else LOCAL_NAMES.get(name, name)
+    if real.startswith(APPLE_PREFIXES):
+        return "Apple"
+    if real.startswith(HOME + "/"):
+        parts = real[len(HOME) + 1:].split("/")
+        return "~/" + "/".join(parts[:min(2, len(parts) - 1)]) if len(parts) > 1 else "~"
+    return None
+
+
+def loose_file(name):
+    return next((os.path.join(HOME, d, name) for d in LOOSE_DIRS if os.path.isfile(os.path.join(HOME, d, name))), None)
+
+
+def item_group(name, owner, place, job):
+    """Where one background item comes from; `other` holds inline commands and whatever no path places."""
+    if interpreter(name.strip("()")):
+        return "other"
+    if owner == "apple":
+        return "Apple"
+    if "/" in name and not name.startswith("/"):
+        return repo_group(name.split("/", 1)[0])
+    if name in OWN_APPS:
+        return HARNESS
+    found = next(filter(None, (origin(path) for path in (loose_file(name), place, (job or {}).get("runs")))), None)
+    if found is None or found.startswith("~"):
+        repo = sourced(name)
+        found = repo_group(repo) if repo else found
+    return found or "other"
+
+
+def background(score, now):
+    """{covered_days, groups}: every cohort item at min_b or more and every launchd job, grouped by where it comes
+    from, each with its B, terms, place, job and night-written `about`; groups and items by B, the heaviest first."""
+    origins = read_json(os.path.join(state_dir(), "origins.json"), {}) or {}
+    abouts = read_json(about_path(), {}) or {}
+    jobs = background_jobs()
+    by_label = {job["label"]: name for name, job in jobs.items()}
+    items = {}
+    for item in score.get("items") or ():
+        name = by_label.get(item["name"], item["name"])
+        if item["B"] < BACKGROUND["min_b"] and name not in jobs:
+            continue
+        slot = items.setdefault((name, item["owner"]), {"name": name, "owner": item["owner"], "B": 0.0, "terms": {},
+                                                         "per_day": {}, "unknown": item["unknown"]})
+        slot["B"] = max(slot["B"], item["B"])
+        for key in ("terms", "per_day"):
+            for term, value in item[key].items():
+                slot[key][term] = max(slot[key].get(term, 0), value)
+        slot["unknown"] = [k for k in slot["unknown"] if k in item["unknown"]]
+    named = {name for name, _owner in items}
+    for name, job in jobs.items():
+        if name not in named:
+            items[(name, job["owner"])] = {"name": name, "owner": job["owner"], "B": 0.0 if score.get("items") is not None
+                                           else None, "terms": {}, "per_day": {}, "unknown": []}
+    groups = {}
+    for (name, owner), item in sorted(items.items(), key=lambda kv: (-(kv[1]["B"] or 0), kv[0])):
+        job = jobs.get(name)
+        group = groups.setdefault(item_group(name, owner, origins.get(name), job), {})
+        if name in group:
+            group[name]["unknown"] = [k for k in group[name]["unknown"] if k in item["unknown"]]
+            for key in ("terms", "per_day"):
+                for term, value in item[key].items():
+                    group[name][key][term] = max(group[name][key].get(term, 0), value)
+        elif len(group) < BACKGROUND["items"] or job or (item["B"] or 0) >= COHORT["review"]:
+            place = origins.get(name) or (job or {}).get("runs") or loose_file(name)
+            group[name] = dict(item, B=round(item["B"], 3) if item["B"] is not None else None, place=tilde(place)
+                               if place else None, job={k: v for k, v in job.items() if k not in ("runs", "owner")}
+                               if job else None,
+                               about=(abouts.get(name) or {}).get("about"))
+    out = [{"name": name, "B": max((i["B"] for i in found.values() if i["B"] is not None), default=None),
+            "items": list(found.values())} for name, found in groups.items()]
+    out.sort(key=lambda g: (-(g["B"] or 0), g["name"]))
+    return {"covered_days": score.get("covered_days"), "groups": out}
+
+
+def about_path():
+    return os.path.join(state_dir(), "about.json")
+
+
+def explain_candidates(view, abouts):
+    """The items a night explains: unexplained, no inline command, an Apple one only at its limit, any other one a
+    launchd job or at min_b; the heaviest `max`."""
+    found = []
+    for group in view.get("groups") or ():
+        for item in group["items"]:
+            heavy = item["B"] or 0
+            if item["name"] in abouts or interpreter(item["name"].strip("()")) or group["name"] == "Apple" and heavy < 1 \
+                    or not item.get("job") and heavy < EXPLAIN["min_b"]:
+                continue
+            found.append(dict(item, group=group["name"]))
+    found.sort(key=lambda i: (-(i["B"] or 0), i["name"]))
+    return found[:EXPLAIN["max"]]
+
+
+def explain_brief(items):
+    lines = ["ROUND: none", "# System doctor: what each background program is", "",
+             "Each program below ran on Egor's Mac in the last week or is installed as a launchd job. For each, write one "
+             "plain sentence of at most 14 words: what it is and what it does, naming the app or project it belongs to, "
+             "so he can tell which ones he needs. When it looks abandoned (its file or project is gone, its app is not "
+             "installed), say so. Read only: the plist, the script's head, ls, grep under /Volumes/Work/Projects; run, "
+             "change or delete nothing.",
+             "", "Answer with one JSON line per program and nothing else on those lines:",
+             '{"name": "<the name as given>", "about": "<one sentence>"}']
+    words = dict((key, text) for key, _unit, text in TERMS)
+    for item in items:
+        lines += ["", "## %s" % item["name"], "", "- group %s · owner %s" % (item["group"], item["owner"])]
+        if item.get("place"):
+            lines.append("- runs %s" % item["place"])
+        job = item.get("job")
+        if job:
+            lines.append("- launchd job %s (%s), %s%s%s" % (job["label"], job["plist"], job["schedule"],
+                                                            ", its file is gone" if job["missing"] else "",
+                                                            ", not loaded" if job["loaded"] is False else ""))
+        if item["terms"]:
+            top = max(item["terms"], key=lambda k: item["terms"][k])
+            lines.append("- costs %.2f of its limit a day, mostly %s a day" % (
+                item["B"], words[top] % (item["per_day"][top] / {"D": 1e9, "R": 1e9, "M": 1 << 20}.get(top, 1))))
+    return "\n".join(lines) + "\n"
+
+
+def explain(now=None, dry_run=False):
+    """Asks one cheap worker run what each unexplained background item is; the answers land in about.json."""
+    now = time.time() if now is None else now
+    view = (read_json(os.path.join(state_dir(), "latest.json"), {}) or {}).get("background") or {}
+    abouts = read_json(about_path(), {}) or {}
+    items = explain_candidates(view, abouts)
+    if not items:
+        return []
+    folder = os.path.join(state_dir(), "explain")
+    os.makedirs(folder, exist_ok=True)
+    brief_file = os.path.join(folder, time.strftime("%Y%m%dT%H%M%S", time.localtime(now)) + ".md")
+    with open(brief_file, "w", encoding="utf-8") as handle:
+        handle.write(explain_brief(items))
+    run_id, text, error = worker_judge(brief_file)
+    if error:
+        return [{"t": round(now), "name": None, "about": error, "action": "judge failed", "run": run_id}]
+    asked, rows = {item["name"] for item in items}, []
+    for line in text.splitlines():
+        line = line.strip().strip("`")
+        with contextlib.suppress(ValueError):
+            found = json.loads(line) if line.startswith("{") else None
+            if isinstance(found, dict) and found.get("name") in asked and isinstance(found.get("about"), str) \
+                    and found["about"].strip():
+                asked.discard(found["name"])
+                rows.append({"t": round(now), "name": found["name"], "about": clip(found["about"].strip(), 160),
+                             "action": "dry run" if dry_run else "explained", "run": run_id})
+    if rows and not dry_run:
+        abouts.update({row["name"]: {"about": row["about"], "t": row["t"]} for row in rows})
+        write_json(about_path(), abouts)
+    return rows
 
 
 # ---------------------------------------------------------------- the judge
@@ -2838,13 +3133,14 @@ def document(now, started, persist=True):
                          and local_day(r["t"]) > local_day(now - 7 * DAY_S)}
     cohort = {"covered_days": score["covered_days"], "items": [dict(i, B=round(i["B"], 3)) for i in (score["items"] or [])[:TOP]]
               if score["items"] is not None else None}
+    programs = background(score, now)
     status = "blind" if judge.blind else ("problems" if count else "ok")
     return {
         "contract": 1, "doctor": "system", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge_digest(),
         "status": status, "problem_count": count, "problems": judge.problems,
         "blind_spots": judge.ledger.get("blind_spots") or [], "blind": judge.blind, "measures": measures,
         "days": series, "causes": causes, "nightly": nightly_summary(night, crashed), "costs": costs, "collectors": collectors,
-        "cohort": cohort, "log_stores": logstores_view(logs),
+        "cohort": cohort, "background": programs, "log_stores": logstores_view(logs),
         "limits": LIMITS, "self": {"collector_s": round(time.time() - started, 3), "error": None},
     }
 
@@ -3031,7 +3327,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="system-doctor", description=__doc__.split("\n")[0])
     parser.add_argument("command", nargs="?", default="judge",
                         choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check",
-                                 "census", "dumpstate", "harvest", "logstores", "tidy"))
+                                 "census", "dumpstate", "harvest", "logstores", "tidy", "explain"))
     parser.add_argument("cause", nargs="?", help="check: the cause (a script's basename) whose fix to prove")
     parser.add_argument("--json", action="store_true", help="judge: print the document and write nothing")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
@@ -3039,7 +3335,7 @@ def main(argv=None):
     parser.add_argument("--since", help="check: when the fix landed, epoch or ISO (default: its ledger fix's commit)")
     parser.add_argument("--record", help="check: a doctor-fix run record to gate at close, with --decisions")
     parser.add_argument("--decisions", help="check --record: the close's decisions file")
-    parser.add_argument("--dry-run", action="store_true", help="tidy: judge and print, move and record nothing")
+    parser.add_argument("--dry-run", action="store_true", help="tidy, explain: judge and print, move and record nothing")
     args = parser.parse_args(argv)
     started = time.time()
     if args.command == "check":
@@ -3086,6 +3382,13 @@ def main(argv=None):
         if not args.quiet:
             for row in rows:
                 print("%s\t%s\t%s MB\t%s" % (row["action"], row.get("path") or "-", row.get("mb", "-"), row.get("why") or ""))
+        return 1 if rows and rows[0]["action"] == "judge failed" else 0
+    if args.command == "explain":
+        with single("explain") as mine:
+            rows = explain(dry_run=args.dry_run) if mine else []
+        if not args.quiet:
+            for row in rows:
+                print("%s\t%s\t%s" % (row["action"], row.get("name") or "-", row["about"]))
         return 1 if rows and rows[0]["action"] == "judge failed" else 0
     if args.command == "agent":
         RECORD = bool(agent())
