@@ -23,7 +23,7 @@ set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=readonly-one STUB_TRANSCRIPT_SESSION=readonly-one STUB_SESSION=readonly-one
 export STUB_TRANSCRIPT_ACCOUNT=readonly-one
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test -f "$RUN_DIR/dirty-before"
 assert test -f "$RUN_DIR/dirty-before-shas"
 assert test "$(cd "$(jq -r '.workdir' "$RUN_DIR/meta.json")" && pwd -P)" = "$(cd "$readonly_workdir" && pwd -P)"
@@ -49,7 +49,7 @@ clear_stub
 export PICK_RC=0 PICK_ACCOUNT=readonly-two STUB_TRANSCRIPT_SESSION=readonly-two STUB_SESSION=readonly-two
 export STUB_TRANSCRIPT_ACCOUNT=readonly-two
 start_ok claudeb
-assert await_done
+assert await_exit
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (a background Bash `light-research --prompt-file <f> --out <answer> --repo <abs>`); read-only worker runs this month: 2' <<<"$report"
 assert test -f "$RUN_DIR/report-readonly"
@@ -58,7 +58,7 @@ clear_stub
 export PICK_RC=0 PICK_ACCOUNT=readonly-changed STUB_TRANSCRIPT_SESSION=readonly-changed STUB_SESSION=readonly-changed
 export STUB_TRANSCRIPT_ACCOUNT=readonly-changed
 start_ok claudeb
-assert await_done
+assert await_exit
 printf 'changed\n' >"$readonly_workdir/changed.txt"
 report=$("$RUNNER" report "$RUN_ID")
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
@@ -74,7 +74,7 @@ printf 'edited\n' >"$readonly_workdir/ignored/lane.py"
 export PICK_RC=0 PICK_ACCOUNT=readonly-ignored STUB_TRANSCRIPT_SESSION=readonly-ignored STUB_SESSION=readonly-ignored
 export STUB_TRANSCRIPT_ACCOUNT=readonly-ignored STUB_EDIT_PATH="$readonly_workdir/ignored/lane.py"
 start_ok claudeb
-assert await_done
+assert await_exit
 report=$("$RUNNER" report "$RUN_ID")
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
 assert test ! -e "$RUN_DIR/report-readonly"
@@ -89,7 +89,7 @@ printf 'focus\n' >"$CONTEXT_NUDGE_STATE_DIR/readonly-focus.focus"
 export PICK_RC=0 PICK_ACCOUNT=readonly-focus STUB_TRANSCRIPT_SESSION=readonly-focus STUB_SESSION=readonly-focus
 export STUB_TRANSCRIPT_ACCOUNT=readonly-focus STUB_EDIT_PATH="$CONTEXT_NUDGE_STATE_DIR/readonly-focus.focus"
 start_ok claudeb
-assert await_done
+assert await_exit
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'RUN-FILES: 0' <<<"$report"
 assert_fails grep -q '^RUN-FILES-NOTE: \|^UNNAMED: \|^PARTIAL: ' <<<"$report"
@@ -103,7 +103,7 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'python3 tools/bench.py' >"$CLAUDEB_PROFILES_ROOT/readonly-shell/projects/fixture/readonly-shell.jsonl"
 export PICK_RC=0 PICK_ACCOUNT=readonly-shell STUB_SESSION=readonly-shell
 start_ok claudeb
-assert await_done
+assert await_exit
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'RUN-FILES: unknown (the run also ran shell commands, whose edits no transcript records)' <<<"$report"
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
@@ -114,7 +114,7 @@ export PICK_RC=0 PICK_ACCOUNT=readonly-failed STUB_TRANSCRIPT_SESSION=readonly-f
 export STUB_TRANSCRIPT_ACCOUNT=readonly-failed STUB_CODE=1
 export STUB_STDOUT='{"type":"result","is_error":true,"result":"API Error: 500","session_id":"readonly-failed"}'
 start_ok claudeb
-assert await_done
+assert await_exit
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'STATUS: failed' <<<"$report"
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
@@ -123,7 +123,7 @@ assert test ! -e "$RUN_DIR/report-readonly"
 clear_stub
 export PICK_RC=0 PICK_ACCOUNT=readonly-blind STUB_SESSION=readonly-blind
 start_ok claudeb
-assert await_done
+assert await_exit
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'STATUS: done' <<<"$report"
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
@@ -139,7 +139,7 @@ clear_stub
 export PICK_RC=0 PICK_ACCOUNT=readonly-declared STUB_TRANSCRIPT_SESSION=readonly-declared STUB_SESSION=readonly-declared
 export STUB_TRANSCRIPT_ACCOUNT=readonly-declared
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test -f "$RUN_DIR/dirty-before"
 assert test -f "$RUN_DIR/dirty-before-shas"
 assert test "$(cd "$(jq -r '.workdir' "$RUN_DIR/meta.json")" && pwd -P)" = "$(cd "$declared_workdir" && pwd -P)"
@@ -158,7 +158,7 @@ set_config 'light_edit=claudeb:sonnet'
 export PICK_RC=0 PICK_ACCOUNT=readonly-light STUB_TRANSCRIPT_SESSION=readonly-light STUB_SESSION=readonly-light
 export STUB_TRANSCRIPT_ACCOUNT=readonly-light
 WORKER_TEST_WORKDIR="$light_workdir" start_ok light
-assert await_done
+assert await_exit
 assert jq -e '.light == "edit"' "$RUN_DIR/meta.json" >/dev/null
 report=$("$RUNNER" report "$RUN_ID")
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
@@ -171,7 +171,7 @@ set_config 'claudeb_model=opus' 'claudeb_effort=high' 'light_research=claudeb:so
 export PICK_RC=0 PICK_ACCOUNT=readonly-research STUB_TRANSCRIPT_SESSION=readonly-research STUB_SESSION=readonly-research
 export STUB_TRANSCRIPT_ACCOUNT=readonly-research
 start_ok claudeb --role research
-assert await_done
+assert await_exit
 assert jq -e '.role == "research"' "$RUN_DIR/meta.json" >/dev/null
 report=$("$RUNNER" report "$RUN_ID")
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
@@ -224,7 +224,7 @@ for spec in 'true:1' 'false:0'; do
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
   export PICK_RC=0 PICK_ACCOUNT=authdead STUB_CODE=1 STUB_ERROR='' STUB_STDOUT="{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":$is_error,\"result\":\"Failed to authenticate: OAuth session expired and could not be refreshed\"}"
   start_ok claudeb
-  assert await_done
+  assert await_exit
   assert test "$(grep -c '^ARG=auth-needed$' "$CALL_LOG")" -eq "$calls"
   [ "$calls" = 0 ] || assert test "$(grep -A1 '^ARG=auth-needed$' "$CALL_LOG" | tail -n1)" = ARG=authdead
 done
@@ -236,7 +236,7 @@ set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=trusted
 : >"$STUB_DIR/codex_trusted"
 start_ok codex
-assert await_done
+assert await_exit
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert grep -q '^ARG=--skip-git-repo-check$' "$CALL_LOG"
 assert jq -e '.trusted_dir_retry == true' "$RUN_DIR/meta.json" >/dev/null
@@ -284,7 +284,7 @@ assert test ! -e "$HOME/.codex-profiles/.codexb/refused-models"
 : >"$CALL_LOG"
 rm -f "$STUB_DIR/codex_bad_model"
 start_ok codex --model sol
-assert await_done
+assert await_exit
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
 assert grep -qx 'ARG=gpt-5.6-sol' "$CALL_LOG"
 
@@ -410,7 +410,7 @@ wait "$appender"
 assert test "$rc" -eq 0
 assert test "$(grep -ci 'syntax error' "$WORK/selfedit-wait.err")" -eq 0
 assert grep -q '^STATUS: running$' "$WORK/selfedit-wait.out"
-assert await_done
+assert await_exit
 
 # Run dirs older than 7 days are pruned on start; fresh dirs survive.
 clear_stub
@@ -422,7 +422,7 @@ touch -t 202601010000 "$WORKER_RUN_DIR/.prune"
 start_ok codex
 assert test ! -d "$WORKER_RUN_DIR/codex-1-1-dead"
 assert test -d "$RUN_DIR"
-assert await_done
+assert await_exit
 fi
 
 if suite_shard_owns 2 outcomes-wall-resets; then
