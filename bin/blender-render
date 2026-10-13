@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""Headless Blender for stills, loops and web 3D: Cycles on the Metal GPU, OIDN denoise, AgX.
+
+  blender-render doctor                      Blender, GPU devices, HDRIs, ffmpeg; a 10 s probe render
+  blender-render logo --svg <abs> --out <abs .png|.mp4|.mov|.webm|.glb> [options]
+  blender-render run <script.py> [-- args]   any bpy script, `import kit` available (share/blender)
+  blender-render assets [list | fetch <polyhaven-id> [--res 2k|4k|8k]]
+  blender-render encode <frames dir> --out <abs .mp4|.mov|.webm> [--fps 30]
+
+The output extension picks the job: .png a still, .mp4 an H.264 loop, .mov ProRes 4444 with
+alpha, .webm VP9 with alpha (web), .glb a Draco-compressed mesh for three.js.
+Guide: llm-legs docs/blender.md.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+BLENDER = os.environ.get("BLENDER_BIN") or shutil.which("blender") or "/Applications/Blender.app/Contents/MacOS/Blender"
+SHARE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share", "blender")
+ASSETS = os.path.expanduser(os.environ.get("BLENDER_ASSETS", "~/.local/share/blender-assets"))
+VIDEO = {".mp4", ".mov", ".webm"}
+SIZE_RE = re.compile(r"^(\d{2,5})x(\d{2,5})$")
+
+
+class Usage(Exception):
+    pass
+
+
+def blender(script, args=(), log=None):
+    """Run a bpy script in the background with share/blender on sys.path; the log goes to `log`."""
+    command = [BLENDER, "-b", "--factory-startup", "--python-exit-code", "3",
+               "--python-expr", "import sys; sys.path.insert(0, %r)" % SHARE, "-P", script, "--", *args]
+    with open(log or os.devnull, "w") as out:
+        result = subprocess.run(command, stdout=out, stderr=subprocess.STDOUT)
+    text = open(log).read() if log else ""
+    return result.returncode, text
+
+
+def fail(log_text, code):
+    tail = "\n".join(log_text.strip().splitlines()[-25:])
+    print("blender-render: Blender exited %d\n%s" % (code, tail), file=sys.stderr)
+    return 1
+
+
+def results(log_text):
+    return dict(re.findall(r"^RESULT (\w+)=(.*)$", log_text, re.MULTILINE))
+
+
+def encode(frames_dir, out, fps):
+    pattern = os.path.join(frames_dir, "f_%04d.png")
+    ext = os.path.splitext(out)[1].lower()
+    codec = {
+        ".mp4": ["-c:v", "libx264", "-preset", "slow", "-crf", "14", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        ".mov": ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le"],
+        ".webm": ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "24", "-pix_fmt", "yuva420p", "-row-mt", "1"],
+    }[ext]
+    command = ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-start_number", "0",
+               "-i", pattern, *codec, out]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Usage("ffmpeg failed: %s" % result.stderr.strip()[-400:])
+    return out
+
+
+def absolute(path, flag):
+    if not path or not os.path.isabs(path):
+        raise Usage("%s needs an absolute path, got %r" % (flag, path))
+    return path
+
+
+def logo(args):
+    svg = absolute(args.svg, "--svg")
+    out = absolute(args.out, "--out")
+    if not os.path.isfile(svg):
+        raise Usage("no such SVG: %s" % svg)
+    ext = os.path.splitext(out)[1].lower()
+    if ext not in VIDEO | {".png", ".glb"}:
+        raise Usage("--out must end in .png, .mp4, .mov, .webm or .glb")
+    size = SIZE_RE.match(args.size)
+    if not size:
+        raise Usage("--size is WxH, got %r" % args.size)
+    width, height = int(size.group(1)), int(size.group(2))
+    samples = args.samples
+    if args.preview:
+        width, height, samples = width // 2, height // 2, min(samples, 48)
+    transparent = args.transparent or ext in {".mov", ".webm"} and args.backdrop == "none"
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    color = args.color or single_fill(svg)
+    work = tempfile.mkdtemp(prefix="blender-render-")
+    kind = "glb" if ext == ".glb" else "frames" if ext in VIDEO else "still"
+    frames = round(args.seconds * args.fps)
+    spec = {
+        "svg": svg, "out": out, "kind": kind, "size": [width, height], "samples": samples,
+        "engine": args.engine, "transparent": transparent, "view": args.view, "look": args.look, "exposure": args.exposure,
+        "fps": args.fps, "depth": args.depth, "bevel": args.bevel, "material": args.material,
+        "color": color, "float": args.float, "backdrop": args.backdrop, "hdri": args.hdri,
+        "hdri_strength": args.hdri_strength, "hdri_rotation": args.hdri_rotation,
+        "lights": not args.no_lights, "key": args.key, "angle": angle(args.angle), "lens": args.lens,
+        "margin": args.margin, "dof": args.dof, "save": args.save, "motion": args.motion,
+        "frames": frames, "frames_dir": os.path.join(work, "frames"),
+    }
+    log = os.path.join(work, "blender.log")
+    started = time.time()
+    code, text = blender(os.path.join(SHARE, "logo_scene.py"), [json.dumps(spec)], log)
+    if code != 0:
+        return fail(text, code)
+    found = results(text)
+    if kind == "frames":
+        encode(spec["frames_dir"], out, args.fps)
+    shutil.rmtree(spec["frames_dir"], ignore_errors=True)
+    if kind == "glb":
+        print("blender-render: glb %s · %.0f KB · %.0f s" % (out, os.path.getsize(out) / 1024, time.time() - started))
+    else:
+        engine = "%s samples · %s" % (samples, found.get("device", "?")) if args.engine == "cycles" else "eevee"
+        print("blender-render: %s %s · %dx%d · %s · %.0f s%s" % (
+            kind, out, width, height, engine, time.time() - started,
+            " · %d frames" % frames if kind == "frames" else ""))
+    if args.save:
+        print("blender-render: scene saved %s" % args.save)
+    print("blender-render: log %s" % log)
+    return 0
+
+
+def single_fill(svg):
+    """The SVG's one fill color, or None when it has several (each then keeps its own)."""
+    text = open(svg, errors="replace").read()
+    fills = {value.upper() for value in re.findall(r"fill\s*[:=]\s*[\"']?(#[0-9A-Fa-f]{6})\b", text)}
+    return fills.pop() if len(fills) == 1 else None
+
+
+def angle(text):
+    if "," in text:
+        azimuth, elevation = (float(part) for part in text.split(","))
+        return [azimuth, elevation]
+    return text
+
+
+def run(args):
+    script = os.path.abspath(args.script)
+    if not os.path.isfile(script):
+        raise Usage("no such script: %s" % script)
+    work = tempfile.mkdtemp(prefix="blender-run-")
+    log = os.path.join(work, "blender.log")
+    code, text = blender(script, args.rest, log)
+    if code != 0:
+        return fail(text, code)
+    for line in text.splitlines():
+        if line.startswith("RESULT ") or line.startswith("Saved:"):
+            print(line)
+    print("blender-render: log %s" % log)
+    return 0
+
+
+def doctor(_args):
+    ok = True
+    version = subprocess.run([BLENDER, "--version"], capture_output=True, text=True).stdout.splitlines()
+    print("blender   %s (%s)" % (version[0] if version else "MISSING", BLENDER))
+    probe = os.path.join(tempfile.mkdtemp(prefix="blender-doctor-"), "probe.png")
+    script = os.path.join(tempfile.mkdtemp(prefix="blender-doctor-"), "probe.py")
+    with open(script, "w") as handle:
+        handle.write(
+            "import bpy, kit\n"
+            "scene = kit.clear()\n"
+            "kit.render_settings(scene, size=(320, 180), samples=32)\n"
+            "print('RESULT devices=' + ', '.join(kit.gpu(scene)))\n"
+            "bpy.ops.mesh.primitive_uv_sphere_add(radius=1, location=(0, 0, 1))\n"
+            "sphere = bpy.context.active_object\n"
+            "sphere.data.materials.append(kit.material('probe', 'gold'))\n"
+            "kit.backdrop()\n"
+            "kit.world_color(scene, '#FFFFFF', 0.8)\n"
+            "kit.camera(scene, [sphere], 'hero')\n"
+            "kit.render_still(scene, %r)\n" % probe)
+    started = time.time()
+    code, text = blender(script, (), os.path.join(os.path.dirname(script), "blender.log"))
+    found = results(text)
+    if code != 0 or not os.path.isfile(probe):
+        ok = False
+        print("render    FAILED (exit %d)\n%s" % (code, "\n".join(text.strip().splitlines()[-12:])))
+    else:
+        print("render    ok in %.1f s → %s" % (time.time() - started, probe))
+    print("gpu       %s" % (found.get("devices") or "none — Cycles falls back to CPU"))
+    ok = ok and bool(found.get("devices"))
+    hdris = sorted(os.listdir(os.path.join(ASSETS, "hdri"))) if os.path.isdir(os.path.join(ASSETS, "hdri")) else []
+    print("hdri      %d in %s%s" % (len(hdris), os.path.join(ASSETS, "hdri"), ": " + ", ".join(h.rsplit("_", 1)[0] for h in hdris) if hdris else ""))
+    ok = ok and bool(hdris)
+    print("ffmpeg    %s" % (shutil.which("ffmpeg") or "MISSING (brew install ffmpeg)"))
+    ok = ok and bool(shutil.which("ffmpeg"))
+    print("status    %s" % ("ok" if ok else "BROKEN"))
+    return 0 if ok else 1
+
+
+def assets(args):
+    folder = os.path.join(ASSETS, "hdri")
+    if args.action == "list":
+        names = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+        print("\n".join(names) or "no HDRIs; blender-render assets fetch studio_small_09")
+        return 0
+    if not args.id:
+        raise Usage("assets fetch <polyhaven-id>")
+    with urllib.request.urlopen("https://api.polyhaven.com/files/%s" % args.id, timeout=30) as response:
+        files = json.load(response)
+    try:
+        url = files["hdri"][args.res]["hdr"]["url"]
+    except KeyError:
+        raise Usage("%s has no %s HDR on Poly Haven (only HDRIs are fetched here)" % (args.id, args.res))
+    os.makedirs(folder, exist_ok=True)
+    dest = os.path.join(folder, "%s_%s.hdr" % (args.id, args.res))
+    urllib.request.urlretrieve(url, dest + ".part")
+    os.replace(dest + ".part", dest)
+    print("blender-render: %s (%.1f MB)" % (dest, os.path.getsize(dest) / 1e6))
+    return 0
+
+
+def encode_command(args):
+    out = absolute(args.out, "--out")
+    print("blender-render: %s" % encode(os.path.abspath(args.frames), out, args.fps))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="blender-render", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("doctor").set_defaults(run=doctor)
+
+    p = commands.add_parser("logo", help="an SVG extruded into a studio: still, loop or GLB")
+    p.add_argument("--svg", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--material", default="gloss",
+                   choices=["gloss", "matte", "satin", "metal", "brushed", "gold", "chrome", "copper",
+                            "glass", "frosted", "clay", "emissive"])
+    p.add_argument("--color", help="hex tint; default keeps each SVG fill color")
+    p.add_argument("--depth", type=float, default=0.14, help="thickness, the logo is 2 m wide")
+    p.add_argument("--bevel", type=float, default=0.012)
+    p.add_argument("--float", type=float, default=0.0, help="lift above the floor, m")
+    p.add_argument("--backdrop", default="#F2F0EA", help="hex sweep color, 'hdri' (show the HDRI) or 'none'")
+    p.add_argument("--hdri", default="studio_small_09")
+    p.add_argument("--hdri-strength", type=float, default=0.35)
+    p.add_argument("--hdri-rotation", type=float, default=0.0)
+    p.add_argument("--no-lights", action="store_true", help="HDRI only, no key/fill/rim")
+    p.add_argument("--key", type=float, default=250.0, help="key light watts")
+    p.add_argument("--angle", default="hero", help="front|hero|three-quarter|low|top|side or 'azimuth,elevation'")
+    p.add_argument("--lens", type=float, default=70.0)
+    p.add_argument("--margin", type=float, default=1.3)
+    p.add_argument("--dof", type=float, help="f-stop; enables depth of field")
+    p.add_argument("--size", default="2048x1152")
+    p.add_argument("--samples", type=int, default=384)
+    p.add_argument("--engine", default="cycles", choices=["cycles", "eevee"])
+    p.add_argument("--view", choices=["neutral", "agx", "standard"], default="neutral")
+    p.add_argument("--look", help="an AgX look, with --view agx (default AgX - Medium High Contrast)")
+    p.add_argument("--exposure", type=float, default=0.0)
+    p.add_argument("--transparent", action="store_true")
+    p.add_argument("--motion", default="swing", choices=["swing", "turntable"])
+    p.add_argument("--seconds", type=float, default=6.0)
+    p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--save", help="also save the scene as this absolute .blend")
+    p.add_argument("--preview", action="store_true", help="half size, 48 samples")
+    p.set_defaults(run=logo)
+
+    r = commands.add_parser("run", help="any bpy script with kit importable")
+    r.add_argument("script")
+    r.add_argument("rest", nargs=argparse.REMAINDER)
+    r.set_defaults(run=run)
+
+    a = commands.add_parser("assets", help="Poly Haven HDRIs")
+    a.add_argument("action", choices=["list", "fetch"], nargs="?", default="list")
+    a.add_argument("id", nargs="?")
+    a.add_argument("--res", default="4k", choices=["1k", "2k", "4k", "8k"])
+    a.set_defaults(run=assets)
+
+    e = commands.add_parser("encode", help="a frame folder (f_0000.png…) into a video")
+    e.add_argument("frames")
+    e.add_argument("--out", required=True)
+    e.add_argument("--fps", type=int, default=30)
+    e.set_defaults(run=encode_command)
+
+    args = parser.parse_args()
+    if getattr(args, "rest", None) and args.rest[0] == "--":
+        args.rest = args.rest[1:]
+    try:
+        return args.run(args)
+    except Usage as error:
+        print("blender-render: %s" % error, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
