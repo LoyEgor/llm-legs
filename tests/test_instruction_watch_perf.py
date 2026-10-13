@@ -301,6 +301,31 @@ class InstructionPerformance(unittest.TestCase):
             self.assertIn(new, context)
             self.assertEqual('', check())
 
+    def test_a_plugin_sync_rename_reuses_the_enumeration(self):
+        self.git('init', '-q')
+        self.put(self.repo / 'CLAUDE.md')
+        sync = self.home / '.claude/plugins/synced/x'
+        for name in ('manifest.json', 'tool/SKILL.md', 'notes.md'):
+            self.put(sync / name)
+        self.assertEqual(0, self.hook('baseline').returncode)
+        self.assertEqual('', self.hook('check').stdout)
+        log = self.work / 'exec.log'
+        path = self.shim('git', 'case " $* " in *" ls-files "*) echo ls-files >> "$PROBE_LOG" ;; esac\nexec @REAL@ "$@"\n')
+
+        def check():
+            return self.context(self.hook('check', PATH=path, PROBE_LOG=str(log)))
+
+        spare = sync / 'manifest.json.tmp'
+        spare.write_text('{"round": 2}\n')
+        os.replace(spare, sync / 'manifest.json')
+        self.assertEqual('', check())
+        self.assertFalse(log.exists(), 'a plugin sync rename re-ran the git enumeration')
+        for new in ('more.md', 'fresh/SKILL.md'):
+            self.put(sync / new)
+            context = check()
+            self.assertIn('ADDED ', context)
+            self.assertIn(new, context)
+
     def test_spent_budget_leaves_the_rest_for_the_next_call(self):
         self.git('init', '-q')
         docs = [self.put(self.home / f'.claude/docs/{n}.md') for n in 'abc']

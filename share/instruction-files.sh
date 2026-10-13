@@ -290,10 +290,12 @@ _instruction_stamp_lines() { local IFS=$_instruction_nl; stamps="${lines[*]:1:$1
 # cost every edit the whole enumeration (~240 ms). A moved repository directory keeps the set when its
 # subdirectories are all stamped and its candidates (_instruction_candidate_pl) are exactly the set's. The
 # stamps kept predate the listing, so a directory moving during it is compared again next call.
+# A moved directory under ~/.claude (its plugin sync renames files every few minutes) is judged by the
+# walk's own rule instead: followed links, the unloaded trees and projects/ skipped, any markdown counted.
 # Reads n, lines[] and paths[] of instruction_visible_cached.
 _instruction_moved_dirs_kept() { # home root cache-file header current-stamps
   local home=$1 root=$2 file=$3 want=$4 i p listing
-  local -a now=() moved=()
+  local -a now=() moved=() moved_home=()
   [ -n "$root" ] || return 1
   set -f
   local IFS=$_instruction_nl
@@ -304,27 +306,37 @@ _instruction_moved_dirs_kept() { # home root cache-file header current-stamps
     [ "${now[i]}" = "${lines[i + 1]}" ] && continue
     p=${paths[i]}
     [ "${now[i]#*"$_instruction_tab"}" = "$p" ] && [ -d "$p" ] && [ ! -L "$p" ] || return 1
-    case $p/ in "$home"/.claude/*) return 1 ;; "$root"/*) moved+=("$p") ;; *) return 1 ;; esac
+    case $p/ in "$root"/*) moved+=("$p") ;; "$home"/.claude/*) moved_home+=("$p") ;; *) return 1 ;; esac
   done
-  [ "${#moved[@]}" -gt 0 ] && [ "${#moved[@]}" -le 8 ] || return 1
-  listing=$({ find "${moved[@]}" -mindepth 1 -maxdepth 1 \( "${_instruction_pruned[@]}" \) -prune -o -type d -print0 &&
-              printf '\035\0' && find "${moved[@]}" -mindepth 1 -maxdepth 1 -type f -print0 && printf '\035\0'; } 2>/dev/null |
+  [ $((${#moved[@]} + ${#moved_home[@]})) -gt 0 ] && [ $((${#moved[@]} + ${#moved_home[@]})) -le 8 ] || return 1
+  listing=$({ { [ "${#moved[@]}" -eq 0 ] ||
+                find "${moved[@]}" -mindepth 1 -maxdepth 1 \( "${_instruction_pruned[@]}" \) -prune -o -type d -print0; } &&
+              { [ "${#moved_home[@]}" -eq 0 ] ||
+                find -L "${moved_home[@]}" -mindepth 1 -maxdepth 1 \( "${_instruction_pruned[@]}" \) -prune -o -type d -print0; } &&
+              printf '\035\0' &&
+              { [ "${#moved[@]}" -eq 0 ] || find "${moved[@]}" -mindepth 1 -maxdepth 1 -type f -print0; } &&
+              { [ "${#moved_home[@]}" -eq 0 ] || find -L "${moved_home[@]}" -mindepth 1 -maxdepth 1 -type f -print0; } &&
+              printf '\035\0'; } 2>/dev/null |
             _instruction_emit_paths) || return 1
-  { printf '%s\n' "${moved[@]}" $'\035' "${paths[@]}" $'\035' "${lines[@]:n+1}" $'\035' "$listing"; } |
+  { printf 'r\t%s\n' ${moved[@]+"${moved[@]}"}; printf 'h\t%s\n' ${moved_home[@]+"${moved_home[@]}"}
+    printf '%s\n' $'\035' "${paths[@]}" $'\035' "${lines[@]:n+1}" $'\035' "$listing"; } |
     perl -ne '
-      BEGIN { ($top, $md) = splice @ARGV, 0, 2; $md = join "|", split / /, $md }
+      BEGIN { ($top, $md, $h, $ere) = splice @ARGV, 0, 4; $md = join "|", split / /, $md; $h .= "/.claude/" }
+      sub unloaded { substr($_[0], 0, length $h) eq $h && substr($_[0], length $h) =~ m{^(?:$ere|projects)(?:/|$)} }
       chomp;
       if ($_ eq "\035") { $part++; next }
-      if ($part == 0) { $moved{$_} = 1; next }
+      if ($part == 0) { ($k, $d) = split /\t/, $_, 2; $moved{$d} = $k; next }
       if ($part == 1) { $stamped{$_} = 1; next }
-      if ($part == 2) { ($d = $_) =~ s{/[^/]*$}{}; $want{$_} = 1 if $moved{$d}; next }
-      if ($part == 3) { exit 1 unless $stamped{$_}; next }
+      ($d = $_) =~ s{/[^/]*$}{};
+      if ($part == 2) { $want{$_} = 1 if $moved{$d}; next }
+      if ($part == 3) { exit 1 unless $stamped{$_} || ($moved{$d} eq "h" && unloaded($_)); next }
       ($base = $_) =~ s{.*/}{};
-      $rel = substr($_, length $top);
-      next unless '"$_instruction_candidate_pl"';
+      if ($moved{$d} eq "h") { next if unloaded($_) || ($base ne "review-debt-ignore" && $base !~ /\.(?:$md)$/i) }
+      else { $rel = substr($_, length $top); next unless '"$_instruction_candidate_pl"' }
       exit 1 unless $want{$_};
       $seen{$_} = 1;
-      END { $? ||= ($part != 5 || grep { !$seen{$_} } keys %want) ? 1 : 0 }' "$root" "$INSTRUCTION_MD_EXTENSIONS" || return 1
+      END { $? ||= ($part != 5 || grep { !$seen{$_} } keys %want) ? 1 : 0 }' \
+      "$root" "$INSTRUCTION_MD_EXTENSIONS" "$home" "$INSTRUCTION_HOME_UNLOADED_ERE" || return 1
   { printf '%s%s%s\n%s\n' "$want" "$_instruction_tab" "$n" "$5"
     [ "${#lines[@]}" -le $((n + 1)) ] || printf '%s\n' "${lines[@]:n+1}"; } >"$file.$$" 2>/dev/null &&
     mv -f "$file.$$" "$file" 2>/dev/null || rm -f "$file.$$" 2>/dev/null
