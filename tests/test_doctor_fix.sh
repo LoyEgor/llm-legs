@@ -9,7 +9,7 @@ trap 'rm -rf "$WORK"' EXIT
 WORK="$(cd -P "$WORK" && pwd)"
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts (line ${BASH_LINENO[0]}) failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
   "$@" && fail "assert $asserts unexpectedly succeeded: $*"
@@ -626,7 +626,7 @@ printf 'floor:tool\thandoff\tclaude-setup/hooks/gate.sh\tdocs/handoffs/x.md\nbog
 assert_fails fix close "$hw" --decisions "$WORK/fl" "floors" 2>"$WORK/err"
 assert grep -qF "line 1 (floor:event:PreToolUse): ruled-out refused: a floor row's floor is zero" "$WORK/err"
 assert grep -qF "line 2 (floor:tool): handoff refused: a Speed or floor row is this run's to fix" "$WORK/err"
-printf 'floor:event:PreToolUse\truled-out\tclaude-setup/hooks/gate.sh\tcut the jq parse saves 40 ms × 900/day, costs one cache file\n' >"$WORK/fl"
+printf 'floor:event:PreToolUse\truled-out\tclaude-setup/hooks/gate.sh\twall 547 ms, cpu 40 ms; tried a cached jq parse: 547 -> 507 ms; cut the jq parse saves 40 ms × 900/day, costs one cache file\n' >"$WORK/fl"
 printf '# floor\n\nTo: Egor.\nStatus: open\nCost: 1 s a call.\nLoss: none.\nRecommendation: keep.\n' >"$WORK/docs/handoffs/2026-10-02-floor.md"
 printf 'floor:tool\thandoff\tclaude-setup/hooks/gate.sh\tdocs/handoffs/2026-10-02-floor.md\nbogus\tnope\tx\ty\n' >>"$WORK/fl"
 assert_fails fix close "$hw" --decisions "$WORK/fl" "floors" 2>"$WORK/err"
@@ -1053,7 +1053,9 @@ jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s,
   >"$DATA/harness-doc.json"
 for r in chat/tools 'delegation/background Bash' machine/contention chat/tests delegation/reviews; do
   printf 'opportunity:%s\truled-out\tproj/README\tthe lever is elsewhere\n' "$r"
-done >"$WORK/sd"
+done | sed '2s/the lever is elsewhere/wall 41 s, cpu 31 s, sleeps 8 s/' >"$WORK/sd"
+jq '(.problems[] | select(.id == "opportunity:machine/contention")) |= (.priority = "P3")' "$(record "$sid")" >"$WORK/p3.json" &&
+  mv "$WORK/p3.json" "$(record "$sid")"
 assert_fails fix close "$sid" --decisions "$WORK/sd" "tuned" 2>"$WORK/err"
 knob() { grep -qF "model/effort knob, $1: $2" "$WORK/err"; }
 assert knob "share/worker-model.sh table" "llm-legs/share/worker-model.sh:2: +claudeb opus medium"
@@ -1063,6 +1065,12 @@ assert knob "review-bench tier effort/rater" "llm-legs/share/rbench/catalog.py:1
 assert knob "claudeb default model" "llm-legs/bin/claudeb:1: +CLAUDEB_CLAUDE_MODEL='haiku'"
 assert knob "brief-template EFFORT/MODEL" "llm-legs/share/briefs/new.md:1: +MODEL: haiku"
 assert [ "$(grep -c '^model/effort knob, ' "$WORK/err")" = 11 ]
+# A P1 or P2 Speed row keeps its time only on what was measured and tried; a P3 row needs no measurement.
+assert [ "$(grep -c 'ruled-out refused: a P1 or P2 Speed or test row keeps its time only on measured evidence' "$WORK/err")" = 4 ]
+assert grep -qF 'line 2 (opportunity:delegation/background Bash): ruled-out refused' "$WORK/err"
+assert_fails grep -qF '(opportunity:machine/contention): ruled-out refused' "$WORK/err"
+assert grep -qF 'is a number you measured on that row' "$RUNS/$sid.brief.md"
+sed -i '' -e 's/the lever is elsewhere/wall 41 s, cpu 31 s, sleeps 8 s/' -e 's/sleeps 8 s$/sleeps 8 s; tried one jq pass: 41 s -> 40 s/' "$WORK/sd"
 gw reset -q --hard refs/night/n8/base && gw clean -qfd
 sed -i '' 's/the per-model call/the per-model table/' "$swt/share/worker-model.sh"
 sed -i '' 's/Plain prose/Plain words/' "$swt/share/worker-policy.md"
@@ -1345,13 +1353,16 @@ jq '(.problems[] | select(.id | test("^opportunity:batch/[67]$")) | .opportunity
 for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
 git -C "$L" update-ref refs/night/n19/base HEAD
 jq -n --argjson u $(($(now) + 3600)) '{id: "sonnet-fixes", until: $u}' >"$WORK/sonnet-trial.json"
+jq '(.problems[] | select(.id == "opportunity:batch/other") | .opportunity.recoverable_min_day) = 20' \
+  "$S/harness/latest.json" >"$S/p1.json" && mv "$S/p1.json" "$S/harness/latest.json"
 env "${speed_env[@]}" SONNET_TRIAL_MARKER="$WORK/sonnet-trial.json" bash "$FIX" launch harness --night n19 >"$WORK/out" 2>"$WORK/err" ||
   fail "batch night n19: $(cat "$WORK/err")"
 assert [ "$(grep -c '^harness-speed-batch' "$WORK/out")" = 2 ]
-# TEMP-SONNET-TRIAL(fixers): while the marker is live, every Speed run is a sonnet run whose brief opens with MODEL: sonnet.
-assert [ "$(while IFS=$'\t' read -r r b _; do printf '%s %s %s\n' "$(jq -r '.area + " " + .trial.arm' "$(record "$r")")" \
+# TEMP-SONNET-TRIAL(fixers): while the marker is live, a Speed run is a sonnet run whose brief opens with MODEL: sonnet,
+# unless it holds a P1 row (≥15 wall-min/day): that one stays on the worker-model default (Egor, 2026-10-13).
+assert [ "$(while IFS=$'\t' read -r r b _; do printf '%s %s %s\n' "$(jq -r '.area + " " + (.trial.arm // "default")' "$(record "$r")")" \
   "$(grep -c '^MODEL: sonnet$' "$b")" "$(grep -c '^MODEL:' "$b")"; done < <(grep '^harness-speed-' "$WORK/out") | sort | tr '\n' ,)" = \
-  'speed-batch-1 sonnet 1 1,speed-batch-other sonnet 1 1,' ]
+  'speed-batch-1 sonnet 1 1,speed-batch-other default 0 0,' ]
 assert [ "$(head -n 1 "$(grep -F speed-batch-1 "$WORK/out" | cut -f2)")" = 'MODEL: sonnet' ]
 stale=$(grep -F 'harness-speed-batch-1-' "$WORK/out" | cut -f1) held=$(grep -F 'harness-speed-batch-other-' "$WORK/out" | cut -f1)
 jq --arg t "$(date -u -v-13H +%Y-%m-%dT%H:%M:%SZ)" '.launched_at = $t' "$(record "$stale")" >"$WORK/stale.json" &&
@@ -1383,4 +1394,4 @@ assert jqe --arg o "$O/.claude/worktrees/night-n15-$audit" '[.problems[].rule] =
   "$(record "$audit")"
 fi
 
-echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture one run of a repository's levers, levers of another repository apart, levers sharing a file in one run however many, an open lever run holding only its levers, an older one overlapping a batch abandoned, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit, its five-step brief), a suite night (every queued suite no red test rule holds, a repository's in one run, STRONG: yes, its steps once), a CPU night (every queued component in one run in rank order, STRONG: yes, six steps, the zero option),one Speed run per shared context and no count (~160 suite audits in one run), rows in rank order (priced by gain however small, then unpriced by measured loss, the free slots never probed), a Speed run closing on its first decided row with the rest left open, a lever-less regression briefed to find its cause first, a floor row's ruled-out refused without a priced cut and a Speed or floor handoff without a trade to Egor"
+echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture one run of a repository's levers, levers of another repository apart, levers sharing a file in one run however many, an open lever run holding only its levers, an older one overlapping a batch abandoned, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit, its five-step brief), a suite night (every queued suite no red test rule holds, a repository's in one run, STRONG: yes, its steps once), a CPU night (every queued component in one run in rank order, STRONG: yes, six steps, the zero option),one Speed run per shared context and no count (~160 suite audits in one run), rows in rank order (priced by gain however small, then unpriced by measured loss, the free slots never probed), a Speed run closing on its first decided row with the rest left open, a lever-less regression briefed to find its cause first, a floor row's ruled-out refused without a priced cut and a Speed or floor handoff without a trade to Egor, a P1 or P2 Speed ruled-out refused without what was measured and tried (a P3 one free), a P1 Speed run off the Sonnet trial"

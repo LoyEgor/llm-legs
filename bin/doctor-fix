@@ -232,11 +232,23 @@ def dicts(value):
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
+def levels(record):
+    return [(str(p.get("id")), str(p.get("direction")), str(p.get("priority")))
+            for p in dicts(record.get("problems")) + dicts(record.get("quiet"))]
+
+
+def owed_measurement(record):
+    """The P1 and P2 Speed and test rows: a ruled-out one needs what was measured and tried."""
+    return [pid for pid, way, level in levels(record) if way in ("speed", "tests") and level in ("P1", "P2")]
+
+
 def strings(value):
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
 def snapshot(doctor, doc_file, night=None):
+    import night_priority
+
     doc, ledger = read_json(doc_file, {}), merged_ledger(doctor)
     if doctor == "code" and doc.get("status") != "error":
         module = doctor_module("code")
@@ -412,6 +424,7 @@ def snapshot(doctor, doc_file, night=None):
         entry = {"id": pid, "state": state, "fact": problem.get("fact"), "rule": rule, "ledger": problem.get("ledger"),
                  "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
                                                    "rule_at": rule_at(doctor, rule)}}
+        entry["direction"], entry["priority"] = night_priority.priority(doctor, problem)[:2]
         if doctor == "harness":
             import time_budget
             admission = dict(problem)
@@ -770,9 +783,14 @@ if __name__ == "__main__":
     elif command == "close-checks":
         record_file, doctor, pairs = sys.argv[2], sys.argv[3], sys.argv[4:]
         print(" ".join(str(touches(record_file, pairs[i], pairs[i + 1])) for i in range(0, len(pairs), 2)))
+        print("\x1f".join(owed_measurement(read_json(record_file, {}))))
         if doctor in ("harness", "system"):
             knobs(record_file)
         fix_faults(record_file, doctor)
+    elif command == "levels":  # TEMP-SONNET-TRIAL(fixers)
+        print("\n".join("\t".join(row) for row in levels(read_json(sys.argv[2], {}))))
+    elif command == "owed":
+        print("\n".join(owed_measurement(read_json(sys.argv[2], {}))))
     elif command == "ledger-sync":
         ledger_sync(sys.argv[2])
     elif command == "rule-out":
@@ -905,6 +923,8 @@ write_brief() { # id worktree -> the brief file
       printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
     ! jq -e --arg rules "$NIGHT_FIX_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Speed and floor rows (`floor`, `opportunity`, `regression`) are this run'"'"'s to fix: `close` refuses a handoff on one unless it cites a trade to Egor. A floor'"'"'s target is zero, never a limit: `close` refuses `ruled-out` on a `floor` row unless its evidence prices the cheapest cut as `cut <what> saves <N> ms × <M>/day, costs <Y>`.\n\n'
+    [ -z "$(py owed "$file")" ] ||
+      printf '`close` refuses `ruled-out` on a P1 or P2 Speed or test row unless its evidence carries what you measured and tried: `wall <N> s, cpu <N> s, <where the rest goes> <N> s; tried <what>: <before> -> <after>`. A cause you name (sleeps, race waits, startup) is a number you measured on that row, never a reading of the code.\n\n'
     ! jq -e --arg rules ' test_hang ' "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'A hung suite (`test_hang`) is this run'"'"'s to fix, never a handoff (`close` refuses one): find what it blocked on and fix it so it cannot hang, e.g. stdin from /dev/null for a child that may read a tty, a timeout on a child that waits, a tty probe a fixture answers; every assert keeps its coverage. The proof is the doctor'"'"'s own: no `test_hang` row for that suite after the fix.\n\n'
     ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||
@@ -1035,7 +1055,7 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
     pending_id=$id
     [ -z "$knobs" ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$knobs"
     # TEMP-SONNET-TRIAL(fixers)
-    if [[ $area == speed-* ]] && sonnet_trial_live; then
+    if [[ $area == speed-* ]] && sonnet_trial_live && [[ $(py levels "$(record_file "$id")") != *$'\t'P1* ]]; then
       locked record_set "$id" '.trial = {id: "sonnet-fixes", arm: "sonnet"}'
     fi
     if [ -n "$night" ]; then branch="night/$night/$id" base="refs/night/$night/base"
@@ -1222,6 +1242,11 @@ untraded_handoff() { # egor_handoffs output -> the cited handoff addressed to Eg
   done <<<"$1"
 }
 
+measured() { # evidence -> whether it carries what was measured and tried: wall <N> s, cpu <N> s, tried <what>
+  grep -qiE 'wall [0-9.]+ ?(ms|s|min)([^a-z]|$)' <<<"$1" && grep -qiE 'cpu [0-9.]+ ?(ms|s|min)([^a-z]|$)' <<<"$1" &&
+    grep -qiE '(^|[^a-z])tried [^ ]' <<<"$1"
+}
+
 priced_cut() { # evidence -> whether it prices the cheapest cut: cut <what> saves <N> ms × <M>/day, costs <Y>
   grep -qiE 'cut .+ saves [0-9.]+ ?(ms|s|min) ?(×|x|\*) ?[0-9.]+ ?/ ?day.*costs? [^ ]' <<<"$1"
 }
@@ -1239,7 +1264,7 @@ review_refusal() { # round -> why the run's review round keeps it open, empty wh
 close_run() { # id --decisions <file> note...
   local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
   local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule base wt growth handoffs
-  local pairs=() codes=() checks speed_batch left=()
+  local pairs=() codes=() checks owed speed_batch left=()
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
   shift
@@ -1271,6 +1296,8 @@ close_run() { # id --decisions <file> note...
   done < <(awk -F'\t' '{ printf "%s\037%s\037%s\037%s\n", $1, $2, $3, $4 }' "$decisions")
   checks=$(py close-checks "$file" "$doctor" ${pairs[@]+"${pairs[@]}"}) || bad+=("close checks failed (exit $?): the purpose, knob and fix-record checks did not finish")
   read -ra codes <<<"${checks%%$'\n'*}"
+  case $checks in *$'\n'*) checks=${checks#*$'\n'} ;; *) checks='' ;; esac
+  owed=$'\x1f'${checks%%$'\n'*}$'\x1f'
   case $checks in *$'\n'*) checks=${checks#*$'\n'} ;; *) checks='' ;; esac
   while IFS=$'\x1f' read -r pid verdict purpose evidence; do
     line_no=$((line_no + 1))
@@ -1310,6 +1337,10 @@ close_run() { # id --decisions <file> note...
     fi
     if [ "$verdict" = ruled-out ] && [ -n "$rule" ] && [[ $FLOOR_RULES == *" $rule "* ]] && ! priced_cut "$evidence"; then
       bad+=("line $line_no ($pid): ruled-out refused: a floor row's floor is zero, never a limit; the evidence prices its cheapest cut as 'cut <what> saves <N> ms × <M>/day, costs <Y>'")
+      continue
+    fi
+    if [ "$verdict" = ruled-out ] && [[ $owed == *$'\x1f'"$pid"$'\x1f'* ]] && ! measured "$evidence"; then
+      bad+=("line $line_no ($pid): ruled-out refused: a P1 or P2 Speed or test row keeps its time only on measured evidence: 'wall <N> s, cpu <N> s, <where the rest goes> <N> s; tried <what>: <before> -> <after>'")
       continue
     fi
     if [ "$verdict" = fixed ]; then
