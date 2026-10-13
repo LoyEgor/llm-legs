@@ -48,11 +48,15 @@ init_repos() {
 
 judged() { wc -l <"$CODE_DOCTOR_FAKE_LOG" | tr -d ' '; }
 
+healthy_layout() {
+  lay_out "$FIX/healthy" "$WORK/healthy"
+  ln -s "$REPOS/good/bin/good-tool" "$HOME/.local/bin/good-tool"
+  init_repos
+}
+
 if suite_shard_owns 2 cd-healthy; then
 # A healthy repository: every file reached from an entry point, nothing to say.
-lay_out "$FIX/healthy" "$WORK/healthy"
-ln -s "$REPOS/good/bin/good-tool" "$HOME/.local/bin/good-tool"
-init_repos
+healthy_layout
 "$CD" refresh --quiet || fail "refresh failed on the healthy repository"
 assert jqe '.status == "ok" and .problem_count == 0 and .candidates.total == 0 and .doctor == "code" and .contract == 1' \
   "$CODE_DOCTOR_DIR/latest.json"
@@ -259,10 +263,10 @@ assert test "$(grep -c 'alpha/CLAUDE.md is ~' "$CODE_DOCTOR_DIR/candidates.jsonl
 ln -s "$A/docs" "$C/docs-alias"
 jq --arg d "$A/docs/old-sync.md" --arg a "$C/docs-alias/old-sync.md" \
   '.paths.entries |= with_entries(if .key == $d then .key = $a else . end)' "$C/read-rates.json" >"$C/rates-alias.json"
-TOKENMAP_RATES="$C/rates-alias.json" "$CD" refresh --quiet
+TOKENMAP_RATES="$C/rates-alias.json" "$CD" candidates >/dev/null || fail "candidates over aliased rates failed"
 assert grep -qF '~600000 a day, measured on-demand by tokenmap over 30 d' "$CODE_DOCTOR_DIR/candidates.jsonl"
 jq 'del(.paths.entries[] | select(.mode == "on_demand"))' "$C/read-rates.json" >"$C/rates.tmp"
-TOKENMAP_RATES="$C/rates.tmp" "$CD" refresh --quiet
+TOKENMAP_RATES="$C/rates.tmp" "$CD" candidates >/dev/null || fail "candidates over pruned rates failed"
 assert test "$(grep -c 'old-sync.md is ~' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
 rm "$A/CLAUDE.md"
 
@@ -633,6 +637,7 @@ assert jqe '[.problems[] | select(.rule == "registration")] == []' "$P"
 fi
 
 if suite_shard_owns 3 cd-repo-to-end; then
+[ -d "$WORK/healthy/repos/good/.git" ] || healthy_layout
 # Any repository through --repo: its own state under scopes/, generic entry points and JS/TS imports, no runtime
 # journal claimed, and report-only: judged problems show, but no snapshot and no check hands them to a fixer.
 lay_out "$FIX/node" "$WORK/node"
@@ -651,7 +656,7 @@ assert jqe -s 'map({id, group, units: [.units[].unit]}) | sort_by(.id) == [
   {id: "cause:node-app/src/lib/orphan.ts", group: "dead", units: ["node-app/src/lib/orphan.ts"]}]' "$SCOPED/candidates.jsonl"
 assert jqe '([.blind_spots[].id] | index("runtime:no-journal") != null and index("tests:untimed") != null
   and index("rollup:none") == null) and (.scope.report_only | contains("not a sweep repository"))' "$SCOPED/latest.json"
-"$CD" refresh --quiet --repo "$WORK/healthy/repos/good"
+"$CD" refresh --quiet --repo "$WORK/healthy/repos/good" || fail "scoped refresh of a sweep repository failed"
 assert test "$(ls "$CODE_DOCTOR_DIR/scopes" | wc -l | tr -d ' ')" = 1
 "$CD" judge --repo "$NODE" --night s1 >/dev/null
 assert jqe '.problem_count == 2 and .groups.dead == 1 and .groups.duplicate == 1' "$SCOPED/latest.json"
