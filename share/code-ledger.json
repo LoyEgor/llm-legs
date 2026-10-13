@@ -733,6 +733,90 @@
    "same_cause": [],
    "status": "fixed-pending",
    "title": "review-bench/share/rbench/debt.py#write_state_json and review-bench/share/rbench/store.py#_write_review_progress share touchpoints (0.67); review-bench/share/r…"
+  },
+  {
+   "fixes": [
+    {
+     "at": "2026-10-13T15:10:34+03:00",
+     "by": "code-code-20261012T235610Z-53a3",
+     "files": [
+      "llm-legs/share/run-bounded.sh",
+      "llm-legs/llm-limits.sh",
+      "llm-legs/bin/claude-resume-timer",
+      "llm-legs/bin/statusline.sh",
+      "llm-legs/bin/grokb"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 49,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "duplicate",
+   "handoff": null,
+   "id": "cause:llm-legs/bin/claude-resume-timer#run_bounded",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:llm-legs/bin/claude-resume-timer#run_bounded",
+    "identity": {
+     "sketch": [
+      1300787,
+      28821574,
+      38867075,
+      41739193,
+      83478250,
+      150409170,
+      152070807,
+      154901533,
+      169149685,
+      197390303,
+      269584521,
+      271821465,
+      282694218,
+      289605630,
+      297737517,
+      411695015,
+      491744263,
+      519260423,
+      527176451,
+      534948020,
+      580194220,
+      621758544,
+      622144121,
+      653847889,
+      737578739,
+      775529804,
+      789224558,
+      920623927,
+      988507372,
+      999282486,
+      1018216832,
+      1033202742,
+      1055394671,
+      1071684248,
+      1092171800,
+      1105824394,
+      1140632314,
+      1276047800,
+      1284308387,
+      1380275285,
+      1404980647,
+      1416771113
+     ],
+     "touch": [
+      "cmd:limit_hit",
+      "lit:bin/claude-resume-timer:${BASH_LINENO[0]}"
+     ]
+    }
+   },
+   "note": "Merged into share/run-bounded.sh (run code-code-20261012T235610Z-53a3). Found, not fixed: (1) the watchdog branch (no timeout/gtimeout) returns the killed rc (143), never 124, so RUN_BOUNDED_ON_TIMEOUT and the llm-limits.sh `case 124` journals stay silent there, as before the merge; this machine has /opt/homebrew/bin/timeout. (2) a sibling clone family timeout_command (gtimeout|timeout|perl alarm, rc 124|142) lives in bin/codexb, bin/vendor-cli-update, bin/vendor-fingerprint, bin/llm-selfcheck, bin/llm-refresh: same job, its own cause for a later run.",
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "llm-legs/bin/claude-resume-timer#run_bounded and llm-legs/llm-limits.sh#run_bounded share clone (0.62); new llm-legs/bin/claude-resume-timer#run_bounded may re…"
   }
  ]
 }

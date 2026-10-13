@@ -39,6 +39,18 @@
     "review-bench/share/rbench/debt.py#write_meta",
     "review-bench/share/rbench/round.py#recovered_round_stamp"
    ]
+  },
+  {
+   "at": "2026-10-13T15:10:34+03:00",
+   "canonical": "llm-legs/share/run-bounded.sh",
+   "cause": "cause:llm-legs/bin/claude-resume-timer#run_bounded",
+   "mechanism": "run_bounded",
+   "replaced": [
+    "llm-legs/llm-limits.sh",
+    "llm-legs/bin/claude-resume-timer",
+    "llm-legs/bin/statusline.sh",
+    "llm-legs/bin/grokb"
+   ]
   }
  ]
 }
