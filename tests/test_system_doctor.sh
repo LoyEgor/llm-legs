@@ -38,9 +38,11 @@ chmod +x "$WORK/bin/du"
 export SYSTEM_DOCTOR_DU="$WORK/bin/du"
 
 python3 - "$ROOT" "$WORK" <<'PY'
+import contextlib
 import glob
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import plistlib
@@ -503,14 +505,30 @@ with open(busy, "w") as handle:
                  'n=$(grep -c bootstrap "%s/busy.calls")\n[ "$n" -gt "${BUSY_TRIES:-1}" ] || { echo "Input/output error" >&2; exit 5; }\n'
                  % (fix, fix))
 os.chmod(busy, 0o755)
-run = cli("install-agent", env={"SYSTEM_DOCTOR_LAUNCHCTL": busy})
-check(run.returncode == 0 and "Installed" in run.stdout
+
+
+def install_waits(tries):
+    waits, out, err, sleep = [], io.StringIO(), io.StringIO(), m.time.sleep
+    os.environ.update(SYSTEM_DOCTOR_LAUNCHCTL=busy, BUSY_TRIES=tries)
+    m.time.sleep = waits.append
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = m.install_agent()
+    finally:
+        m.time.sleep = sleep
+        os.environ["SYSTEM_DOCTOR_LAUNCHCTL"] = os.path.join(work, "bin", "launchctl")
+        del os.environ["BUSY_TRIES"]
+    return rc, out.getvalue(), err.getvalue(), waits
+
+
+rc, out, err, waits = install_waits("1")
+check(rc == 0 and "Installed" in out and len(waits) == 2 and waits[1] > 0
       and open(os.path.join(fix, "busy.calls")).read().split() == ["bootout", "bootstrap", "bootstrap"],
-      "a bootstrap racing the bootout's teardown is retried: %s %s" % (run.stdout, run.stderr))
+      "a bootstrap racing the bootout's teardown is retried after a pause: %s %s %s" % (out, err, waits))
 os.remove(os.path.join(fix, "busy.calls"))
-run = cli("install-agent", env={"SYSTEM_DOCTOR_LAUNCHCTL": busy, "BUSY_TRIES": "9"})
-check(run.returncode == 1 and "Installed" not in run.stdout and "Input/output error" in run.stderr,
-      "an agent bootstrap never loaded fails install-agent: %s %s" % (run.stdout, run.stderr))
+rc, out, err, waits = install_waits("9")
+check(rc == 1 and "Installed" not in out and "Input/output error" in err,
+      "an agent bootstrap never loaded fails install-agent: %s %s" % (out, err))
 cli("uninstall-agent")
 check(not os.path.exists(wrapper) and not os.listdir(os.environ["SYSTEM_DOCTOR_AGENT_DIR"]), "uninstall-agent removes both")
 
@@ -531,9 +549,12 @@ def write_ticks(rows):
     folder = os.path.join(work, "state", "ticks")
     for name in os.listdir(folder):
         os.remove(os.path.join(folder, name))
+    days = {}
     for row in rows:
-        with open(os.path.join(folder, m.local_day(row["t"]) + ".jsonl"), "a") as handle:
-            handle.write(json.dumps(row) + "\n")
+        days.setdefault(m.local_day(row["t"]), []).append(json.dumps(row) + "\n")
+    for day, lines in days.items():
+        with open(os.path.join(folder, day + ".jsonl"), "w") as handle:
+            handle.writelines(lines)
 
 
 since = now - 3 * 3600
