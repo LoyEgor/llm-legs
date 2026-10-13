@@ -606,6 +606,81 @@
    "verdict": "kept",
    "zero": "removal saves 1 run a day x 160.4 CPU-s, 7-day median 0.0 CPU-min/day; loses the inkvec tracer runs of logo-vectorizer-bench (Egor's benchmark work)",
    "note": "not a harness component: inkvec binary run by logo-vectorizer-bench tracers (hours journal 2026-10-09/12/13), benchmark load is weather"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/c46-soft/gtscore.py",
+   "title": "process/logo-vectorizer-bench/tracers/c46-soft/gtscore.py",
+   "audited_at": "2026-10-13T06:01:25+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-c46-soft-gtscore-py-20261012T235109Z-719d",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 308.58,
+   "runs_day": 0,
+   "sources": {
+    "logo-vectorizer-bench/tracers/c46-soft/gtscore.py": "b5aa09301966b52a3c935aac60698bdddd197abc"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.0 CPU-min/day (1 run in 7 d, 2026-10-09, 308.6 CPU-s); loses the owner's re-score of champ46 vs the c46-soft switches",
+   "note": "kept: one-shot research iteration of the live chat «Vector Magic macOS ARM migration» (each tracers/<name> dir is one candidate, 394 dirs, untracked by .gitignore tracers/*); no timer, loop or launchd: started by hand per eval set through bench/throttle.py slots; the project, not this file, is the recurring burner (26 process/logo-vectorizer-bench/* keys in 7 d, 6.6-61.5 CPU-min/day); no lever here: this file's runs are done and the next iteration is a new file; it already scores only files a variant changed (byte-equal SVGs skipped) through throttle.pmap(6); re-scoring BASE each call is moot at 1 run"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ46/driver.py",
+   "title": "process/logo-vectorizer-bench/tracers/champ46/driver.py",
+   "audited_at": "2026-10-13T06:01:49+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-c46-soft-gtscore-py-20261012T235109Z-719d",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 131.542,
+   "runs_day": 1,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ46/driver.py": "8ebc05c9e0276f946ce7a18383cf02757ea3d654"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.0 CPU-min/day median (runs on 3 of 7 days: 167, 885, 326 CPU-s); loses the reigning champion tracer every later candidate is diffed against",
+   "note": "kept: one-shot research iteration of the live chat «Vector Magic macOS ARM migration» (each tracers/<name> dir is one candidate, 394 dirs, untracked by .gitignore tracers/*); no timer, loop or launchd: started by hand per eval set through bench/throttle.py slots; the project, not this file, is the recurring burner (26 process/logo-vectorizer-bench/* keys in 7 d, 6.6-61.5 CPU-min/day); no lever here: this file's runs are done and the next iteration is a new file; each run vectorizes a different set (holdout/grad/stress lanes), so no run repeats an earlier one's input"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ47-soft/driver.py",
+   "title": "process/logo-vectorizer-bench/tracers/champ47-soft/driver.py",
+   "audited_at": "2026-10-13T06:02:12+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-c46-soft-gtscore-py-20261012T235109Z-719d",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 164.45,
+   "runs_day": 0,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ47-soft/driver.py": "128199a6007db8cbfe74b656f4a544d19fb6cfe2"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.0 CPU-min/day median (2 of 7 days: 329, 235 CPU-s); loses a candidate under evaluation",
+   "note": "kept: one-shot research iteration of the live chat «Vector Magic macOS ARM migration» (each tracers/<name> dir is one candidate, 394 dirs, untracked by .gitignore tracers/*); no timer, loop or launchd: started by hand per eval set through bench/throttle.py slots; the project, not this file, is the recurring burner (26 process/logo-vectorizer-bench/* keys in 7 d, 6.6-61.5 CPU-min/day); no lever here: this file's runs are done and the next iteration is a new file"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ50-pad/driver.py",
+   "title": "process/logo-vectorizer-bench/tracers/champ50-pad/driver.py",
+   "audited_at": "2026-10-13T06:02:39+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-c46-soft-gtscore-py-20261012T235109Z-719d",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 203.585,
+   "runs_day": 1,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ50-pad/driver.py": "64c905462406c7b9e168b1bc48c2091feec551b4"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.0 CPU-min/day median (1 of 7 days: 814 CPU-s); loses a candidate under evaluation",
+   "note": "kept: one-shot research iteration of the live chat «Vector Magic macOS ARM migration» (each tracers/<name> dir is one candidate, 394 dirs, untracked by .gitignore tracers/*); no timer, loop or launchd: started by hand per eval set through bench/throttle.py slots; the project, not this file, is the recurring burner (26 process/logo-vectorizer-bench/* keys in 7 d, 6.6-61.5 CPU-min/day); no lever here: this file's runs are done and the next iteration is a new file"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ51-pad/driver.py",
+   "title": "process/logo-vectorizer-bench/tracers/champ51-pad/driver.py",
+   "audited_at": "2026-10-13T06:03:45+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-c46-soft-gtscore-py-20261012T235109Z-719d",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 98.6,
+   "runs_day": 0,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ51-pad/driver.py": "64c905462406c7b9e168b1bc48c2091feec551b4"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.0 CPU-min/day median (2 of 7 days: 197, 438 CPU-s); loses the newest candidate under evaluation (driver byte-equal to champ50-pad's, the candidate differs in its sibling modules)",
+   "note": "kept: one-shot research iteration of the live chat «Vector Magic macOS ARM migration» (each tracers/<name> dir is one candidate, 394 dirs, untracked by .gitignore tracers/*); no timer, loop or launchd: started by hand per eval set through bench/throttle.py slots; the project, not this file, is the recurring burner (26 process/logo-vectorizer-bench/* keys in 7 d, 6.6-61.5 CPU-min/day); no lever here: this file's runs are done and the next iteration is a new file"
   }
  ]
 }
