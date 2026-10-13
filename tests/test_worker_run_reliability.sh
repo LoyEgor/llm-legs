@@ -2,6 +2,9 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
+# `wait` wakes on the exit through its kqueue: the harness's one-second poll only adds a meta read and
+# a python spawn per second these watchdog and wall windows are waited out.
+unset WORKER_RUN_WAIT_POLL_S
 
 reliability_cleanup() {
   local meta pid
@@ -135,7 +138,7 @@ reliability_tests() {
     for resume in '' default-session; do
       clear_stub
       start_ok codex --account model --model default --resume "$resume"
-      assert await_done
+      assert await_exit
       assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
       assert_fails grep -qx 'ARG=default' "$CALL_LOG"
     done
@@ -145,7 +148,7 @@ reliability_tests() {
     clear_stub
     : >"$STUB_DIR/codex_bad_model"
     start_ok codex --account model
-    assert await_done
+    assert await_exit
     assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
     assert_fails grep -q '^ARG=model=' "$CALL_LOG"
     clear_stub
@@ -303,7 +306,7 @@ EOF
     assert await_done
     assert grep -qx 'STATUS: done' "$WORK/wait.out"
     CLAUDE_CODE_SESSION_ID=another-launcher WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
-    assert await_done
+    assert await_exit
     rc=0
     CLAUDE_CODE_SESSION_ID=nested-worker CLAUDE_LAUNCHER_SESSION=reliability-launcher WORKER_RUN_ALLOW_DUPLICATE=0 \
       "$RUNNER" start codex --brief "$WORK/brief" --account duplicate >"$WORK/duplicate.out" 2>&1 || rc=$?
@@ -311,11 +314,11 @@ EOF
     assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/duplicate.out"
     printf 'different brief\n' >"$WORK/different-brief"
     WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate --brief "$WORK/different-brief"
-    assert await_done
+    assert await_exit
     kill -TERM "$(jq -r '.pid' "$old_dir/meta.json")"
     "$RUNNER" wait "$old_id" --max 60 >/dev/null
     WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
-    assert await_done
+    assert await_exit
     fixture="$WORKER_RUN_DIR/old-live"
     mkdir -p "$fixture"
     sleep 600 & live_pid=$!
@@ -323,11 +326,11 @@ EOF
     printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$fixture/launcher"
     jq -cn --argjson pid "$live_pid" --argjson start "$(($(date +%s) - 1800))" '{pid:$pid,started_at:$start}' >"$fixture/meta.json"
     WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
-    assert await_done
+    assert await_exit
     kill "$live_pid"
     wait "$live_pid" 2>/dev/null || :
     WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
-    assert await_done
+    assert await_exit
     printf '0\n' >"$fixture/exit_code"
   fi
 
