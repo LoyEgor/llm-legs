@@ -127,17 +127,17 @@ assert test "$(exported_key "$WORK/epoch.json")" = saved-key-sentinel
 
 # --- a CLI that never returns is bounded, and the refusal says so rather than blaming the token ---
 SLEEPER="$WORK/sleeping-grok"
-printf '#!/usr/bin/env bash\nsleep 120\n' >"$SLEEPER"
+printf '#!/usr/bin/env bash\nexec sleep 120\n' >"$SLEEPER"
 chmod +x "$SLEEPER"
 write_session "$(iso_at 600)"
 started=$(date +%s)
 : >"$GROK_CALLS"
 hang_rc=0
-hang_err=$(GROKB_GROK_BIN="$SLEEPER" LLM_LIMITS_GROK_TOUCH_TIMEOUT=2 \
+hang_err=$(GROKB_GROK_BIN="$SLEEPER" LLM_LIMITS_GROK_TOUCH_TIMEOUT=1 \
   bash "$SCRIPT" export-token alpha --to "$WORK/hung.json" --min-seconds 1717 2>&1 >/dev/null) || hang_rc=$?
 assert test "$hang_rc" -eq 4
 assert test "$(( $(date +%s) - started ))" -lt 30
-assert grep -q 'could not be rotated: the token touch timed out after 2s' <<<"$hang_err"
+assert grep -q 'could not be rotated: the token touch timed out after 1s' <<<"$hang_err"
 assert test ! -e "$WORK/hung.json"
 
 # --- no CLI to rotate with is not "the token is too short": the refusal names the missing binary --
