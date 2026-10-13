@@ -89,35 +89,33 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 6. **No deadline** (Egor, 2026-09-30: a 4 h deadline left a debt round's findings unfixed till noon).
    - The orchestrator works until every job is `merged`, `nothing-to-do` or `blocked-on-egor`; a
      job that finishes late is landed like any other, and the debt pass waits for it.
-   - The only stop is for a hung job: `worker-run`'s watchdog ends a worker that shows no progress
+   - The only stop is a hung job: `worker-run`'s watchdog ends a worker showing no progress
      (`WORKER_RUN_IDLE_S`, 30 min; a 6 h wall ceiling behind it). The orchestrator then abandons its
      run (`doctor-fix abandon`) and records the job `left` with the watchdog's reason; its branch
      stays unmerged and is named in the report.
 7. **Close.**
    - `night-run suites <id>` starts the night's one full `tests/run-all` per sweep repository,
      detached: no worker waits for it; `report` waits out a live one (`NIGHT_RUN_SUITES_WAIT_S`, 1200 s), FAILs by suite.
-   - Rerun the five doctors. This settles the ledger's `fixed-pending` rows into each doctor's overlay,
-     never the main checkout. Then, in a worktree of llm-legs on `night/<id>/ledger-sync` from main's
-     HEAD, `bin/doctor-fix ledger-sync <worktree>` writes the settled fields into its tracked ledgers;
-     commit, land and push that bookkeeping like any branch (no output: nothing to commit).
-   - `night-run finish` writes the morning result, then `span-off`. It also removes every landed,
+   - Rerun the five doctors: the ledger's `fixed-pending` rows settle into each doctor's overlay, never
+     the main checkout. Then in an llm-legs worktree on `night/<id>/ledger-sync` from main's HEAD,
+     `bin/doctor-fix ledger-sync <worktree>` writes the settled fields into its tracked ledgers; land
+     that bookkeeping like any branch (no output: nothing to commit).
+   - `night-run finish` writes the morning result, then `span-off`; it removes every landed,
      clean, not live, not held branch of the sweep repositories with its worktree (see Leftovers); it
      prints each one kept as `live|held|leftover <repo> <branch>: <why>`, records the leftovers under
      the night's `leftovers` and the held ones under `held`, and `night-run report` lists both.
 
 ## Priority and admission
-Egor (2026-10-13): fixing everything is a utopia; night 3131's launch burst walled notcom in 8 min.
-- `night-run job add` stamps each job `direction`, `priority` P1|P2|P3 and `value` {n, unit, norm} from
-  `share/night_priority.py`: a fixer by its best row as its doctor lists it, other kinds by `KINDS`. Its constants
-  are the bars: speed, tests, logs P1 ≥ 15 wall-min/day, P2 ≥ 1; cpu P2 ≥ 30 CPU-min/day, never P1; spend P1 ≥ 0.5 %,
+- `night-run job add` stamps each job `direction`, `priority` P1|P2|P3, `value` {n, unit, norm}
+  (`share/night_priority.py`: a fixer by its best row, other kinds by `KINDS`); bars: speed, tests, logs P1 ≥ 15 wall-min/day, P2 ≥ 1; cpu P2 ≥ 30 CPU-min/day, never P1; spend P1 ≥ 0.5 %,
   P2 ≥ 0.1 %; pool, updater P1; legacy, fit, harness P2; bugs P2 only critical on code stable 7 days; unpriced P2.
 - `worker-run` asks `night-run admit` before a night worker's slot: P1, then P2, by norm per expected cost (7 days'
   median night-run tokens × 10 % per 1M); running Claude fixers hold at most the pool's 5h room. A P3 runs only from
   weekly room its burn leaves unused at reset (≥ 5 %), else it ends unlaunched (`admission.deferred`, job `pending`,
   no hold on the debt pass, `finish` keeps the reason). Waits are `night-admission` holds. A `coverage` job
   (`coverage-<fit|legacy>-<n>`, P3) is one `review-bench review --debt --lens <l> --coverage … --foreground`
-  slice, launched in the shell whose `$$` it was admitted with: `night-run admit <id> <ref> claudeb $$ && …`.
-- Plateau = the P1+P2 backlog at zero (`night_priority.py backlog`, the table's `P1+P2` row); P3 never counts.
+  slice: `night-run admit <id> <ref> claudeb $$ && …`.
+- Plateau: the P1+P2 backlog at zero (`night_priority.py backlog`, table row `P1+P2`); P3 never counts.
 - `spend on walls` (report, table row `on walls`, Harness `night_walled` red > 5 %): fixer spend in walled runs.
 - Finding is not a job: `log-audit run` and out-of-doctor hunts are never admitted or cut; a class a dig confirms
   gets a doctor meter in the same fix.
