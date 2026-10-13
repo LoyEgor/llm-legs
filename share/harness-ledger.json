@@ -8904,6 +8904,32 @@
       "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
       "note": "Traced at load 150-170: 67 bin/llm-refresh runs at ~1.7 s each are the bulk of the wall (the script's own forks, CPU under load). Kept: supervisor-term's 5 s negative window past its 4 s ceiling (the watchdog must be seen not to fire), the hung-holder case's 5 s TERM-to-KILL grace of process_tree_end (production constant; the holder ignores TERM on purpose), the batched case's STUB_CALL_SECONDS=2 (it measures serial against batched collector calls).",
       "handoff": null
+    },
+    {
+      "id": "hook-error-stop-dispatch-timeout-missing",
+      "title": "stop-dispatch.sh found neither timeout nor gtimeout on a launchd PATH and ran every Stop hook uncapped",
+      "match": {
+        "rule": "hook-error",
+        "ident": "stop-dispatch\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T00:40:16+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "claude-setup/hooks/stop-dispatch.sh",
+            "claude-setup/tests/test_stop_dispatch.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-stop-hooks-20261012T235452Z-1d5b",
+      "note": "Both hits (stop:2026-10-12T13:22:43Z/f8281bbf, 14:45:36Z/73fafa98) are browser-canary sessions (cwd ~/.cache/claude-worker-runs/browse) launched with launchd's PATH /usr/bin:/bin:/usr/sbin:/sbin; coreutils' timeout and gtimeout live only in /opt/homebrew/bin. claude-setup@a2ef62d (21:40Z, after both hits) also probes /opt/homebrew/bin and /usr/local/bin (STOP_DISPATCH_TIMEOUT_DIRS); test_stop_dispatch runs the dispatcher under launchd's PATH, red on the old hook. The next browse stop, 2026-10-13T02:12:59Z, journalled no error; no other cwd ever hit this reason in the 17.5k-line stop journal.",
+      "handoff": null
     }
   ],
   "blind_spots": [
