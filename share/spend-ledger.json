@@ -1026,6 +1026,21 @@
    "verdict": "kept",
    "zero": "removal saves 0.0 wall-min/day; loses the standing experiment-overdue reminder",
    "note": "0.1 s a run, one jq-per-field pass; the overdue failure is the owner reminder and must not be weakened"
+  },
+  {
+   "id": "cpu:hook/comment-gate.sh",
+   "title": "hook/comment-gate.sh",
+   "audited_at": "2026-10-13T05:41:57+03:00",
+   "by": "harness-speed-cpu-hook-comment-gate-sh-20261012T235036Z-0eab",
+   "cpu_min_day": 1.6,
+   "cpu_s_run": 0.014,
+   "runs_day": 5712,
+   "sources": {
+    "claude-setup/hooks/comment-gate.sh": "30139b2dfb48a5305e1ac86e723489753e48c79f"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.0 CPU-min/day; loses the nudge that stops a comment-heavy staged diff in ~/Arbostar work repos at git commit (the minimal-comment policy), which only acts on ~5% of its runs",
+   "note": "purpose: gate of d9a7d614/66a1829; 19.5% of runs are git calls without commit paying 33.7 ms (jq + 2140-line review-journal source + 3 awk); now 4.6 ms behind a commit screen, replay over 2340 captured git calls screened out no commit; floor of a /bin/bash hook is 3.8 ms; residual: repo-local alias of commit not seen"
   }
  ]
 }
