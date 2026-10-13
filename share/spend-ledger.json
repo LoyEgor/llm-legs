@@ -1322,6 +1322,75 @@
    "verdict": "cut",
    "zero": "removal saves 3.1 CPU-min/day; loses !trash (delete chats from history) and the /clear stub sweep, so the /resume picker fills with empty chats again (Egor's 'мусорные чаты')",
    "note": "journal day 20738: 932 sweeps/day (SessionStart, once-a-minute UserPromptSubmit, two per SessionEnd) x 170 ms of which 105 ms were three python starts, plus hook-end 197 x 50 ms; nearly every sweep trashes nothing but the two delayed ones exist because the exit flush rewrites a stub seconds after SessionEnd. One scan script (registry, markers, stubs as modes, project dirs listed once) and jq in hook-end: sweep 170 -> 95 ms, hook-end 50 -> 10 ms, identical rows on the live store and in test_session_trash (25 asserts). Not taken: dropping the SessionStart sweep or the +2 s delayed sweep (the +10 s one covers it, but the /resume picker would show a stub 8 s longer, a loss Egor would see)"
+  },
+  {
+   "id": "suite:llm-legs/test_menu_palette",
+   "title": "llm-legs/test_menu_palette",
+   "audited_at": "2026-10-13T05:25:13+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-flow-image-refusal-20261012T235305Z-55f4",
+   "cpu_run": 0.3,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.02,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_menu_palette.sh": "6f98515a6b57b85d2fe31a28015850cd62b319eb"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.4 CPU-s a run; loses the single-palette guard (no colour built outside menu-style.lua, calibrated disabled-row tones)",
+   "note": "nine python3 starts batched into one python3 -S run: CPU 0.39 s -> 0.09 s a run, same 9 case checks, mutations red"
+  },
+  {
+   "id": "suite:llm-legs/test_flow_image_refusal",
+   "title": "llm-legs/test_flow_image_refusal",
+   "audited_at": "2026-10-13T05:25:17+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-flow-image-refusal-20261012T235305Z-55f4",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_flow_image_refusal.sh": "84d622b8bcc191c923f682f610097e5506d736c3"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.1 CPU-s a run; loses the refusal-code list and quota exit 3 of flow_image.refusal",
+   "note": "one python start is the whole cost; dedup/sort mutations stayed green, input now reversed with a duplicate, all three red"
+  },
+  {
+   "id": "suite:llm-legs/test_hs_env_guard",
+   "title": "llm-legs/test_hs_env_guard",
+   "audited_at": "2026-10-13T05:25:22+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-flow-image-refusal-20261012T235305Z-55f4",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "llm-legs/tests/hs_env_guard_harness.lua": "9529109cf8ae9384165b1d5fde8f638b78928b6e",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_hs_env_guard.sh": "aa22c35b67b16a789acc0f0edd63fb36f57e4e4c"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.1 wall-s a run; loses the Hammerspoon env guard relaunch/HOME-quoting/log-cap coverage",
+   "note": "one hs call over a hermetic Lua harness, no sleeps; assertions each pin a distinct guard branch"
+  },
+  {
+   "id": "suite:llm-legs/test_cpu_audit",
+   "title": "llm-legs/test_cpu_audit",
+   "audited_at": "2026-10-13T05:25:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-flow-image-refusal-20261012T235305Z-55f4",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_cpu_audit.sh": "2e740180f56355b6f635f7bf602d0a9ef0a79992"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.2 CPU-s a run; loses the CPU audit ranking, due rules and zero-option guard",
+   "note": "one python run over fixtures, 13 asserts, no sleeps or repeated fixtures"
   }
  ]
 }

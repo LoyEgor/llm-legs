@@ -17,13 +17,15 @@ import os, sys
 sys.path.insert(0, os.path.join(sys.argv[1], "share"))
 import flow_image as fi
 
-refused = [{"error": "PUBLIC_ERROR_UNSAFE_GENERATION"}, {"error": "PUBLIC_ERROR_USER_QUOTA_REACHED"}]
+refused = [{"error": "PUBLIC_ERROR_USER_QUOTA_REACHED"}, {"error": "PUBLIC_ERROR_UNSAFE_GENERATION"},
+           {"error": "PUBLIC_ERROR_UNSAFE_GENERATION"}]
 failure = fi.refusal(r["error"] for r in refused)
 assert failure.code == 3, failure.code
 assert failure.reason == "Flow refused the image: PUBLIC_ERROR_UNSAFE_GENERATION, PUBLIC_ERROR_USER_QUOTA_REACHED", \
     failure.reason
-failure = fi.refusal(r["error"] for r in refused[:1])
-assert failure.code == 1 and failure.reason.endswith(": PUBLIC_ERROR_UNSAFE_GENERATION"), (failure.code, failure.reason)
+failure = fi.refusal(r["error"] for r in refused[1:])
+assert failure.code == 1 and failure.reason == "Flow refused the image: PUBLIC_ERROR_UNSAFE_GENERATION", \
+    (failure.code, failure.reason)
 PY
 
 printf 'PASS: %s asserts; flow_image.refusal keeps every refusal code from a generator and exits 3 on a quota code\n' "$asserts"
