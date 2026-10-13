@@ -1,6 +1,6 @@
 # Gemini images through Antigravity CLI
 
-Verified on 2026-10-09 against **agy 1.3.2** (help and the binary's `generate_image` schema; the last
+Verified on 2026-10-13 against **agy 1.3.4** (help and the binary's `generate_image` schema; the last
 live `--route cli` generation ran on 1.2.16), launched by `geminib` with a Google
 subscription. The runtime contract is [gemini.json](../../share/image-caps/gemini.json);
 its `field_sources` maps each capability to evidence. This page concerns the subscription
@@ -570,7 +570,8 @@ length. By ear, 1 of 3 text takes was usable (the others had a drone or hiss und
 `--count 2`. In the edit, whooshes landed on the cuts, but continuous clicks ignored the hand's pauses.
 
 **Listening** — `bin/gemini-listen` asks Gemini (agy, Pro or Flash) to watch and hear files through
-`view_file`. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
+`view_file`. The default is Pro, or Flash while `geminib families` lists no Pro; an asked `--model`
+is never swapped. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
 720p, audio as mp3. Audio otherwise goes as wav, since agy refuses flac, aac, m4a and aiff as unsupported
 mime types. A reply that never opened a file is refused, and so is one whose `view_file` step returned an
 error. It judges sound and sync well, but it echoes timings from the question, so measure exact times

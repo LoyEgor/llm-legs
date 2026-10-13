@@ -202,4 +202,19 @@ PICK_MODE=limit expect_rc 3 'q' "$M/tone.wav"
 assert test ! -s "$FAKE_GEMINIB_CALLS"
 assert test -z "$(find "$TMPDIR" -name 'gemini-listen.*' -print -quit)"
 
+# The catalog dropped every Pro (agy 1.3.3, 2026-10-12): the default runs Flash, an asked Pro refuses.
+FLASH_ONLY="$WORK/flash-only"
+geminib_families_seed "$FLASH_ONLY"
+jq '.families |= map(select(.slug != "pro"))' "$FLASH_ONLY/models.json" >"$FLASH_ONLY/one.json"
+mv "$FLASH_ONLY/one.json" "$FLASH_ONLY/models.json"
+: >"$FAKE_GEMINIB_CALLS"
+GEMINIB_CACHE_DIR="$FLASH_ONLY" expect_rc 0 'q' "$M/tone.wav" --account explicit
+assert grep -qx 'ARG=gemini-3.8-flash-high' "$FAKE_GEMINIB_CALLS"
+assert grep -q 'no pro family listed; the default is flash' "$WORK/err"
+assert test "$(grep -c BEEPS "$FAKE_GEMINIB_PROMPT")" -eq 0
+: >"$FAKE_GEMINIB_CALLS"
+GEMINIB_CACHE_DIR="$FLASH_ONLY" expect_rc 1 'q' "$M/tone.wav" --account explicit --model pro
+assert grep -q 'printed no pro row' "$WORK/err"
+assert test ! -s "$FAKE_GEMINIB_CALLS"
+
 printf 'PASS: gemini-listen (%s asserts)\n' "$asserts"
