@@ -45,11 +45,21 @@ slot_room() { # -> fails, printing why, while one more holder would crowd the ma
 # A count is N slots, or F-M: F always, F+1 to M only while slot_room finds room. A failed take
 # leaves SLOT_WHY empty when every slot is held, else the room it lacked.
 slot_take() { # dir count ceiling-seconds -> the slot taken; fails while all are held or the machine is full
-  local i ceiling floor=${2%-*} max=${2#*-}
+  local i ceiling floor=${2%-*} max=${2#*-} now=${EPOCHSECONDS:-$(date +%s)} mtime path owner
+  local -a mtimes=()
   SLOT_WHY='' SLOT_TAKEN=''
+  # Mirrors store_lock_breakable's refusal (live owner, under its ceiling) without its forks per held slot.
+  while read -r mtime path; do
+    path=${path%/} path=${path##*/}
+    [[ "$path" =~ ^[0-9]+$ && "$mtime" =~ ^[0-9]+$ ]] && mtimes[path]=$mtime
+  done < <(stat -f '%m %N' "$1"/*/ 2>/dev/null || stat -c '%Y %n' "$1"/*/ 2>/dev/null)
   for ((i = 1; i <= max; i++)); do
     # The holder's own ceiling, not the waiter's: a waiter with a shorter one would break a live slot.
     read -r ceiling 2>/dev/null <"$1/$i/ceiling" && [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || ceiling=$3
+    if [ -n "${mtimes[i]:-}" ] && [ "$((now - mtimes[i]))" -le "$ceiling" ] &&
+      read -r owner 2>/dev/null <"$1/$i/pid" && [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
+      continue
+    fi
     LLM_STORE_LOCK_RETRIES=1 LLM_STORE_LOCK_CEILING_SECONDS=$ceiling store_lock_acquire "$1/$i" || continue
     if [ "$i" -gt "$floor" ] && ! SLOT_WHY=$(slot_room); then
       store_lock_release "$1/$i"
@@ -107,14 +117,27 @@ slots_held() { # dir -> the slots a live process holds
 slot_release() { store_lock_release "${1:-}"; }
 
 holds_in_tree() { # pid -> whether a live limiter hold's holder runs inside that process tree
-  local file pid hops
+  local file text pid hops child parent
+  local -a live=() parents=()
+  # Every watchdog tick calls this: one ps snapshot, never a jq and a ps per hold and hop.
   for file in "${HARNESS_HOLDS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/holds}"/*.json; do
     [ -e "$file" ] || return 1
-    pid=$(jq -r '.pid // empty' "$file" 2>/dev/null) hops=0
+    text=''
+    IFS= read -r -d '' text <"$file" 2>/dev/null || :
+    # The top-level pid: both writers (limiter-hold.sh, limiter_hold.py) put it before any nested object.
+    [[ "$text" =~ \"pid\":[[:space:]]*([0-9]+)[,}[:space:]] ]] || continue
+    pid=${BASH_REMATCH[1]}
     kill -0 "$pid" 2>/dev/null || continue
+    [ "$pid" != "$1" ] || return 0
+    live+=("$pid")
+  done
+  [ "${#live[@]}" -gt 0 ] || return 1
+  while read -r child parent; do parents[child]=$parent; done < <(ps -axo pid=,ppid= 2>/dev/null)
+  for pid in "${live[@]}"; do
+    hops=0
     while [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [ "$hops" -lt 64 ]; do
       [ "$pid" != "$1" ] || return 0
-      pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]') hops=$((hops + 1))
+      pid=${parents[pid]:-} hops=$((hops + 1))
     done
   done
   return 1

@@ -13,6 +13,12 @@ assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexp
 export HARNESS_HOLDS_DIR="$WORK/holds" HARNESS_WAITS_DIR="$WORK/waits" SLOTS_POLL_S=0.2 STATUSLINE_CACHE_DIR="$WORK/sl" RUN_SUITES_TIMES="$WORK/times.tsv"
 unset RUN_SUITES_SLOT WORKER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
 . "$ROOT/share/slots.sh"
+mkdir -p "$WORK/shim"
+for tool in date stat jq ps; do
+  printf '#!/bin/sh\necho %s >>"%s/calls"\nexec %s "$@"\n' "$tool" "$WORK" "$(command -v "$tool")" >"$WORK/shim/$tool"
+  chmod +x "$WORK/shim/$tool"
+done
+forks() { : >"$WORK/calls"; PATH="$WORK/shim:$PATH" "$@" >/dev/null || :; grep -c . "$WORK/calls"; }
 
 holder() { # dir count -> pid of a process holding one slot until killed
   # A waiter's probe locks a free slot for a moment before it finds no room: one try could lose it to that.
@@ -122,6 +128,7 @@ h1=$(holder "$WORK/s" 2)
 h2=$(holder "$WORK/s" 2)
 assert [ -n "$h1" ] && assert [ -n "$h2" ]
 assert_fails slot_take "$WORK/s" 2 3600
+assert [ "$(forks slot_take "$WORK/s" 2 3600)" -le 1 ]
 kill "$h1"; until_gone "$h1"
 slot=$(slot_take "$WORK/s" 2 3600) || fail "a dead holder's slot stayed taken"
 assert [ "$(cat "$slot/pid")" = $$ ]
@@ -133,6 +140,10 @@ h10=$(holder "$WORK/c" 1)
 perl -e 'utime(time - 100, time - 100, $ARGV[0])' "$WORK/c/1"
 assert_fails slot_take "$WORK/c" 1 10
 assert [ "$(cat "$WORK/c/1/pid")" = "$h10" ]
+perl -e 'utime(time - 4000, time - 4000, $ARGV[0])' "$WORK/c/1"
+slot=$(slot_take "$WORK/c" 1 10) || fail "a live holder's slot outlived its own ceiling"
+assert [ "$(cat "$slot/pid")" = $$ ]
+slot_release "$slot"
 kill "$h10"; until_gone "$h10"
 
 h3=$(holder "$WORK/s" 2)
@@ -193,6 +204,7 @@ for i in $(seq 1 100); do leaf=$(pgrep -P "$tree" | head -1); [ -z "$leaf" ] || 
 mkdir -p "$HARNESS_HOLDS_DIR"
 printf '{"limiter": "x", "pid": %s}\n' "$leaf" >"$HARNESS_HOLDS_DIR/x-$leaf.json"
 assert holds_in_tree "$tree"
+assert [ "$(forks holds_in_tree "$tree")" -le 1 ]
 sleep 300 &
 other=$!
 pids+=("$other")
