@@ -571,7 +571,7 @@ page = Page()
 page.remove_bg_starts = False
 page.viewer = True
 try:
-    cw.remove_background(page, cw.probe(page), wait_s=0.3)
+    cw.remove_background(page, cw.probe(page), wait_s=0.05)
     raise AssertionError("a Remove BG that started nothing passed")
 except gw.Failure as failure:
     assert failure.code == 1 and "Remove BG started nothing" in failure.reason, failure
