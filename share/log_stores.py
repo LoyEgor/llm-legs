@@ -4,6 +4,7 @@ mechanical fallback that names any big or growing directory under the scan roots
 
 import fnmatch
 import glob
+import itertools
 import json
 import os
 import stat
@@ -15,6 +16,9 @@ KB = 1024
 CLEANERS = ("self", "sweep", "cap", "keep")
 CRITERIA = ("days", "max_mb", "keep_newest", "tail_mb")
 KINDS = ("log", "app")
+GROUPS = ("workers", "temp", "review bench", "our tools", "my chats", "LLM apps")
+SPLITS = ("session", "session-id")
+HEADLESS = ("sdk-cli", "sdk-ts", "sdk-py", "codex_exec")
 NEEDS_CRITERION = ("self", "sweep")
 SLACK = {"days": 2, "keep_newest": 1, "max_mb": 1.25, "tail_mb": 2.0}
 
@@ -57,6 +61,10 @@ def load(path=None):
         readers = entry.get("readers")
         if entry["kind"] == "log" and not (isinstance(readers, list) and all(isinstance(r, str) and r for r in readers)):
             raise ValueError("store %s: a log store needs readers, a list of program names or []" % name)
+        if entry["kind"] == "log" and (entry.get("group") not in GROUPS or not entry.get("label")
+                                       or entry.get("split", SPLITS[0]) not in SPLITS):
+            raise ValueError("store %s: a log store needs a group in %s, a label and no split but %s" % (
+                name, "/".join(GROUPS), "/".join(SPLITS)))
     for entry in registry.get("ignore") or ():
         if not entry.get("glob") or not entry.get("why"):
             raise ValueError("ignore entry %r: needs a glob and a why" % entry)
@@ -160,6 +168,39 @@ def summary(entry, rows, now):
             "oldest_s": round(min(r["newest"] for r in rows)) if rows else None,
             "over_units": len(over), "over_bytes": sum(r["bytes"] for r in over),
             "over_oldest_s": round(min(r["newest"] for r in over)) if over else None}
+
+
+def session_class(path):
+    """'workers' for a headless session (claude -p, codex exec), 'my chats' for an interactive one, None when no
+    entrypoint or originator turns up in its first 256 lines."""
+    try:
+        with open(path, "rb") as handle:
+            for line in itertools.islice(handle, 256):
+                if b'"entrypoint"' in line or b'"originator"' in line:
+                    found = json.loads(line)
+                    origin = found.get("entrypoint") or (found.get("payload") or {}).get("originator")
+                    if origin:
+                        return "workers" if origin in HEADLESS else "my chats"
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def split(entry, rows, sessions):
+    """{group: bytes} of the store's units. A `session` store's file is classified by session_class and recorded in
+    `sessions` under the session id ending its name, which a later `session-id` store's unit named by that id
+    inherits, so the registry lists the `session` stores first."""
+    parts = {}
+    for row in rows:
+        name = os.path.basename(row["path"])
+        if entry.get("split") == "session":
+            found = session_class(row["path"]) if row["reg"] else None
+            sessions[os.path.splitext(name)[0][-36:]] = found
+        else:
+            found = sessions.get(name) if entry.get("split") else None
+        group = found or entry["group"]
+        parts[group] = parts.get(group, 0) + row["bytes"]
+    return parts
 
 
 # ---------------------------------------------------------------- unregistered stores

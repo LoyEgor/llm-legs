@@ -68,7 +68,7 @@ def age(rel, age_days):
 
 
 def registry(stores, ignore=(), scan=None):
-    stores = [dict({"kind": "log", "readers": ["r"]}, **s) for s in stores]
+    stores = [dict({"kind": "log", "readers": ["r"], "group": "workers", "label": s["name"]}, **s) for s in stores]
     value = {"stores": stores, "ignore": list(ignore), "scan": scan or {}}
     with open(os.environ["LOG_STORES_REGISTRY"], "w") as handle:
         json.dump(value, handle)
@@ -100,9 +100,38 @@ check(raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap", "kind
       "a cap store needs no criterion, an app store no readers")
 check("needs a kind" in (raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap"}]}) or ""),
       "a store without a kind is refused")
-check("needs readers" in (raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap", "kind": "log"}]}) or "")
-      and raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap", "kind": "log", "readers": []}]}) is None,
+named = {"group": "temp", "label": "t"}
+check("needs readers" in (raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log")]}) or "")
+      and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[])]}) is None,
       "a log store lists its readers, [] allowed")
+check("needs a group" in (raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap", "kind": "log", "readers": []}]}) or "")
+      and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[], group="logs")]})
+      and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[], split="x")]}),
+      "a log store needs a known group, a label and a known split")
+check(all(e["group"] in ls.GROUPS and e["label"] for e in real["stores"] if e["kind"] == "log")
+      and [e["name"] for e in real["stores"] if e.get("split") == "session"][:1] == ["claude-transcripts"]
+      and min(i for i, e in enumerate(real["stores"]) if e.get("split") == "session-id")
+      > [e["name"] for e in real["stores"]].index("claude-transcripts"),
+      "the shipped log stores each have a group and label; Claude's transcripts come before the stores inheriting their class")
+sessions_dir = os.path.join(work, "sessions")
+os.makedirs(os.path.join(sessions_dir, "u" * 36), exist_ok=True)
+lines = {"c" * 36 + ".jsonl": [{"type": "mode"}, {"entrypoint": "cli"}], "u" * 36 + ".jsonl": [{"entrypoint": "sdk-cli"}],
+         "rollout-2026-x-" + "e" * 36 + ".jsonl": [{"type": "session_meta", "payload": {"originator": "codex_exec"}}],
+         "n" * 36 + ".jsonl": [{"type": "mode"}]}
+for name, rows in lines.items():
+    with open(os.path.join(sessions_dir, name), "w") as handle:
+        handle.write("".join(json.dumps(r) + "\n" for r in rows))
+check([ls.session_class(os.path.join(sessions_dir, n)) for n in lines] == ["my chats", "workers", "workers", None],
+      "a session is classified by its entrypoint or originator: interactive my chats, headless workers, none unknown")
+measured = {n: ls.unit_stats(os.path.join(sessions_dir, n)) for n in list(lines) + ["u" * 36]}
+seen = {}
+parts = ls.split({"group": "workers", "split": "session"}, [measured[n] for n in lines], seen)
+inherited = ls.split({"group": "temp", "split": "session-id"}, [measured["u" * 36]], seen)
+check(parts == {"my chats": measured["c" * 36 + ".jsonl"]["bytes"], "workers": sum(
+          measured[n]["bytes"] for n in list(lines)[1:])} and inherited == {"workers": measured["u" * 36]["bytes"]}
+      and ls.split({"group": "temp"}, [measured["u" * 36]], seen) == {"temp": measured["u" * 36]["bytes"]},
+      "split sums bytes per class, an unclassified unit stays in the store's group, a session dir inherits by id: %s %s"
+      % (parts, inherited))
 check(all(isinstance(e.get("readers"), list) for e in real["stores"] if e["kind"] == "log")
       and {e["name"] for e in real["stores"] if e["kind"] == "app"} >= {"claude-desktop", "gemini-web-profiles", "transcriptions-gpt"},
       "the shipped registry names readers for every log store and keeps app data apart")
@@ -384,6 +413,13 @@ check(m.logstores_due(None, now) and not m.logstores_due(now - 3600, now) and m.
       "the scan is due once a day after the nightly hour, or after 36 h")
 view = m.logstores_view(logs)
 check(view["stores"][0][0] in ("s", "v") and view["unregistered"][0]["path"] == "~/cache/stray", "the document's log_stores view")
+check(view["groups"] and view["groups"][0][0] == "workers" and view["groups"][0][2] is None and view["groups_since"] is None
+      and view["stores"][0][8:10] == ["workers", view["stores"][0][0]], "groups and labels reach the view, no growth from one scan")
+grown = [dict(logs[-1], t=logs[-1]["t"] - 2 * DAY, groups={"workers": 1e9, "temp": 5e9}),
+         dict(logs[-1], groups={"workers": 3e9})]
+view = m.logstores_view(grown)
+check(view["groups"] == [["workers", 3.0, 2.0]] and view["groups_since"] == m.iso_time(grown[0]["t"]),
+      "group growth is measured against the oldest grouped scan at least 20 h before the newest: %s" % view["groups"])
 check(m.proof("worker-run", "log-store", now - 10, now + 1)["verdict"] == "refused"
       and m.proof("Other", "log-store", now - 10, now + 1)["verdict"] == "proven"
       and m.proof("worker-run", "log-store", now + 5, now + 6)["verdict"] == "pending",
