@@ -297,4 +297,15 @@ jq -cn '{hook_event_name: "PreToolUse", session_id: "s", tool_name: "Edit", tool
 assert [ ! -s "$WORK/forks" ]
 fi
 
+# A denial builds the model catalogs once in the denying shell (`worker_model_prime`), not once per
+# vendor lookup, and a call naming no `chat-pin` never reads the model table for one.
+count_forks() { # command
+  : >"$WORK/forks"
+  jq -cn --arg c "$1" '{hook_event_name: "PreToolUse", session_id: "s", tool_name: "Bash", tool_input: {command: $c}}' |
+    BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$GATE" bash >/dev/null 2>&1
+  grep -c "^$2\$" "$WORK/forks"
+}
+assert [ "$(count_forks $'printf x > ~/.claude/worker-model\n# codex_model=gpt-5.6-terra' jq)" -le 5 ]
+assert [ "$(count_forks 'cat ~/.claude/worker-model' dirname)" -le 1 ]
+
 printf 'PASS: %s asserts; ~/.claude/worker-model takes no `*_model=`, effort or light row the table does not list, by Edit/Write or by any shell write the door reads as reaching it however the path is spelled, while a read passes and a pin move passes, word or none, here and at `use`; the chat pins are written only through `chat-pin`\n' "$asserts"

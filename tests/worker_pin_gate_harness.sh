@@ -25,8 +25,8 @@ asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts should have failed: $*"; }
-contains() { grep -Fq -- "$2" <<<"$1"; }
-lacks() { ! grep -Fq -- "$2" <<<"$1"; }
+contains() { [[ "$1" == *"$2"* ]]; }
+lacks() { [[ "$1" != *"$2"* ]]; }
 denied() { contains "$1" '"permissionDecision":"deny"'; }
 allowed() { lacks "$1" '"permissionDecision"'; }
 

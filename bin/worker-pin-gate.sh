@@ -307,7 +307,7 @@ case "$MODE" in
       >/dev/null 2>&1 || exit 0
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty') || exit 0
     ! chat_pins_written "$cmd" || deny "$CHAT_DENY_REASON"
-    ! off=$(chat_pin_off_account "$cmd") ||
+    [[ $cmd != *chat-pin* ]] || ! off=$(chat_pin_off_account "$cmd") ||
       deny "Blocked: ${off#*:} is switched off in Egor's menu, and only Egor pins a chat to it, typing \`! chat-pin $off\` himself. Tell him that line; do not run it."
     # The pin file, not every name starting with it: `share/worker-model.sh` is a source file, and
     # gating commands that merely name it made ordinary work argue with this door. Cheap and on the
