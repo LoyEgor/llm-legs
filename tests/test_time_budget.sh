@@ -19,7 +19,6 @@ REPO="$WORK/repo"
 git init -q "$REPO"
 commit() { # epoch message
   GIT_AUTHOR_DATE="@$1" GIT_COMMITTER_DATE="@$1" git -C "$REPO" -c user.name=t -c user.email=t@t commit -qam "$2"
-  git -C "$REPO" rev-parse --short=7 HEAD
 }
 printf 'a\nb\n' >"$REPO/code.py"
 git -C "$REPO" add code.py
@@ -29,10 +28,11 @@ mkdir -p "$REPO/tests"
 printf 'A\nb\nc\nd\n' >"$REPO/code.py"
 printf 'x\ny\n' >"$REPO/tests/test_x.sh"
 git -C "$REPO" add tests/test_x.sh
-JOB=$(commit $((D0 + 500)) "Night job")
+commit $((D0 + 500)) "Night job"
+JOB=$(git -C "$REPO" rev-parse --short=7 HEAD)
 printf '1\n2\n3\n4\n' >"$REPO/other.txt"
 git -C "$REPO" add other.txt
-commit $((D0 + 900)) "Day work" >/dev/null
+commit $((D0 + 900)) "Day work"
 echo "$REPO" >"$WORK/sweep-repos"
 
 asserts=$(python3 - "$ROOT" "$WORK" "$D0" "$JOB" <<'EOF'
@@ -413,10 +413,11 @@ check(sorted((r["doctor"], r["day"], r["count"], r["max"]) for r in rows)
       "one row per doctor per day, the latest count with the day's max, no row for a null count, days past 35 pruned: "
       "%s" % rows)
 check(T.problem_trend(NOW) == {"code": {"2026-01-10": 0}, "llm": {"2026-01-10": 1}}, "the budget carries the 7-day trend")
-env = dict(os.environ, LLM_DOCTOR_DIR=os.path.join(work, "llm"))
-env.pop("DOCTORS_DIR")
-subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import collector_runs as c; "
-                "c.problem_day('llm', {'problem_count': 5}, 'LLM_DOCTOR_DIR')", os.path.join(root, "share")], env=env)
+saved = {k: os.environ.pop(k, None) for k in ("DOCTORS_DIR", "LLM_DOCTOR_DIR")}
+os.environ["LLM_DOCTOR_DIR"] = os.path.join(work, "llm")
+collector_runs.problem_day("llm", {"problem_count": 5}, "LLM_DOCTOR_DIR")
+del os.environ["LLM_DOCTOR_DIR"]
+os.environ.update({k: v for k, v in saved.items() if v is not None})
 check(not os.path.exists(os.path.join(work, "home", ".cache", "doctors")),
       "a fixture doctor directory with no DOCTORS_DIR never reaches the default journal")
 
