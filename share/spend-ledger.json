@@ -145,13 +145,21 @@
   {
    "id": "startup:CLAUDE.md + memory index",
    "title": "startup CLAUDE.md + memory index",
-   "audited_at": "2026-10-09T06:41:17+03:00",
-   "by": "harness-speed-spend-startup-claude-md-memory-index-20261009T024759Z-58c8",
-   "share": 0.020381,
-   "prices": {},
+   "audited_at": "2026-10-13T11:16:05+03:00",
+   "by": "harness-speed-spend-startup-claude-md-memory-index-20261012T235149Z-5cf8",
+   "share": 0.038699,
+   "prices": {
+    "Reviewers · prefix: CLAUDE.md + memory": 1832.2822440760483,
+    "Reviewers · attachment: CLAUDE.md + memory": 982.9666963948566,
+    "Background · attachment: CLAUDE.md + memory": 3604.1645823283966,
+    "Workers · attachment: CLAUDE.md + memory": 12678.689187332046,
+    "Background · prefix: CLAUDE.md + memory": 466.2698148713138,
+    "Workers · prefix: CLAUDE.md + memory": 1321.9968573426795
+   },
    "sources": {},
    "verdict": "kept",
-   "note": "kept: the x1.7 is load (harness_index worker contexts 641->1086/7d) while this part per context fell 14.7k->12.9k (-12%) since the relay cut; workers act on the memory index (43 of 675 with it cite a slug or memory path, chats 26/37) and on global rules, log-audit readers judge instruction violations against them; one-shot no-tool claudeb -p callers outside llm-legs (llm_gate, judge_last, end-report compose: 90 calls, 0.97M chars) kept too (2026-10-12): ~0.04 % of spend, and the replay a cut needs reads inputs only the claudeb store holds"
+   "zero": "removal saves ~2.2 % of Claude spend; loses every global and project rule (language, commits, shared checkout, cardinal store rules) and the memory index workers and chats cite",
+   "note": "kept (re-audit 2026-10-13): the x1.7 is load: main contexts loading it ~930 -> ~2530/7d while the part per context fell 13.8k -> 9.3k (-33%) and the Workers cell price per unit 13.4k -> 12.7k (-5%); the only new cell is Reviewers (999 bench cells x ~0.9k, the reviewed checkout CLAUDE.md, none before 10-09); Unused startup lists no CLAUDE.md or memory entry; workers act on the index (10-09 audit: 43/675 cite a slug) and instruction files are the orchestrator to cut; tokenmap gap: Reviewers CLAUDE.md + memory (999 cells x ~0.9k, none before 10-09) is the reviewed checkout CLAUDE.md, unpriced before"
   },
   {
    "id": "suite:llm-legs/test_consistency",
@@ -3738,6 +3746,54 @@
    "verdict": "kept",
    "zero": "removal saves ~0.2 s a run (0.0 min/day); loses the served-model extraction pins (requested alias over auxiliary haiku, dominant fallback, canonicalModel, fail closed)",
    "note": "4 CLI spawns of ask_claude.sh --extract-served-model, one per distinct path; the CLI is the only entry so spawns are the wiring; kept"
+  },
+  {
+   "id": "turns:worker-run",
+   "title": "worker-run turns",
+   "audited_at": "2026-10-13T11:16:06+03:00",
+   "by": "harness-speed-spend-startup-claude-md-memory-index-20261012T235149Z-5cf8",
+   "share": 0.008218,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves ~0.4 %; loses delegation from chats (no worker launch, wait or report), so all chat work runs on the chat model",
+   "note": "kept: the chats own delegation procedure at its minimum turns per run (start, background wait, wake, report; 130 of ~390 wakes go straight to report, and a wait printing the result would still cost the turn reading the background output); start+wait in one background call (25 of 297 starts) would hide refusals and the run id until the wake for ~3k a start; the delta is the 10-09 relay retirement moving relay spend here (relays 2.45M -> 0.16M, spawn claudeb-worker 10.1M -> 4.9M); the step also holds worker-run browse (browser driving, ~0.3M) and greps of worker-run source; tokenmap gap: step worker-run holds worker-run browse (browser driving, ~0.3M of 4M/7 d) and greps of worker-run source"
+  },
+  {
+   "id": "turns:worker-run claudeb",
+   "title": "worker-run claudeb turns",
+   "audited_at": "2026-10-13T11:16:06+03:00",
+   "by": "harness-speed-spend-startup-claude-md-memory-index-20261012T235149Z-5cf8",
+   "share": 0.006115,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves ~0.3 %; loses claudeb delegation from chats (launch, wait, report, say, claim)",
+   "note": "kept: the same procedure for runs whose id names claudeb (7 d: start 664k, wait 558k, report 503k, wake 330k, say+claim 300k; one wait and one report per run id for most of ~100 chat starts); x21 is tokenmap PROCEDURE_VENDOR filing wait/report under the vendor only when the run id carries it plus the 10-09 relay retirement, not more turns per run; cheaper launch shapes rejected under turns:worker-run; tokenmap gap: PROCEDURE_VENDOR files wait/report under a vendor only when the run id names it"
+  },
+  {
+   "id": "turns:review-bench",
+   "title": "review-bench turns",
+   "audited_at": "2026-10-13T11:16:07+03:00",
+   "by": "harness-speed-spend-startup-claude-md-memory-index-20261012T235149Z-5cf8",
+   "share": 0.007079,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves ~0.4 %; loses chat-driven reviews (launch, background wait, report, record of fixes)",
+   "note": "kept: the chat own review procedure (7 d: review 965k, wait 285k, run 252k, report 176k, record/fix/findings/lens/doctor the rest), steady (delta +11 %); reviews run on Egor word and each call is a round step, so no cut short of dropping a step"
+  },
+  {
+   "id": "rewrites:MCP tool load",
+   "title": "re-writes MCP tool load",
+   "audited_at": "2026-10-13T11:16:07+03:00",
+   "by": "harness-speed-spend-startup-claude-md-memory-index-20261012T235149Z-5cf8",
+   "share": 0.003131,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal (no mid-session MCP tool load) saves ~0.2 % now, ~0.01 % steady; loses deferred loading of the claude-in-chrome tools browser runs need",
+   "note": "kept: 1.64M of 1.9M/7 d is the 2026-10-07 browser enrollment burst (51 chat + 19 worker re-writes that day), steady state 6 events 10-09..10-12 (~0.15M, ~0.01 %/day): turn 2 of a browser run after turn 1 ToolSearch-loads claude-in-chrome tools (the 10-10 rewrites:unexplained audit, now labelled by token-map e2c86b4); the one lever, ENABLE_TOOL_SEARCH=false in browser runs, loads every MCP schema into every request and costs more; the burst leaves the 7 d window on 10-14"
   }
  ]
 }
