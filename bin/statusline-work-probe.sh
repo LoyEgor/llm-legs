@@ -59,15 +59,28 @@ now=$snapshot_at
 
 # The worker runs this session launched and that have not ended. Their supervisors are setsid'd away
 # from the chat, so ancestry from the chat never reaches them or their tests.
+# Thousands of run directories pile up and almost all have ended: the glob is unsorted (bash 5.3
+# GLOBSORT) and without a trailing slash, one stat less each, and the few left are sorted by hand.
 runs=""
-for run_dir in "$runs_root"/*/; do
-  [ ! -e "${run_dir}exit_code" ] && [ -f "${run_dir}launcher" ] || continue
+live_runs=()
+GLOBSORT=nosort
+for run_dir in "$runs_root"/*; do
+  [ ! -e "$run_dir/exit_code" ] && [ -f "$run_dir/launcher" ] || continue
   launcher=""
-  { IFS= read -r launcher < "${run_dir}launcher"; } 2>/dev/null
+  { IFS= read -r launcher < "$run_dir/launcher"; } 2>/dev/null
   [ "$launcher" = "$session_id" ] || continue
-  run_dir=${run_dir%/}
-  runs="$runs ${run_dir##*/}"
+  live_runs+=("${run_dir##*/}")
 done
+GLOBSORT=name
+for ((run_i = 1; run_i < ${#live_runs[@]}; run_i++)); do
+  run_name=${live_runs[run_i]}
+  for ((run_j = run_i - 1; run_j >= 0; run_j--)); do
+    [[ "${live_runs[run_j]}" > "$run_name" ]] || break
+    live_runs[run_j + 1]=${live_runs[run_j]}
+  done
+  live_runs[run_j + 1]=$run_name
+done
+[ "${#live_runs[@]}" -eq 0 ] || printf -v runs ' %s' "${live_runs[@]}"
 
 found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v now="$now" -v slack="$PID_START_SLACK" '
   function secs(e,   d, n, p) {
@@ -149,8 +162,13 @@ found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v n
   }
   function orphans(pid, depth,   n, a, i) {
     # A detached panel or worker hands its tests the environment of the chat; its row carries them.
-    if (depth > 30 || pid == root || (pid in runpid) || base_of(pid) == "claude" || prog(pid) ~ owned) return
-    if (test_label(pid) != "") { visit(pid, "O", 0); return }
+    # Only a command naming one of these words can be claude, an owned program or a test: any other
+    # skips the three classifiers, which are most of this walk.
+    if (depth > 30 || pid == root || (pid in runpid)) return
+    if (cmd[pid] ~ /claude|worker-run|review-bench|media-run|image-fanout|codex-image|gemini-|grok-|elevenlabs-|run-suites|run-all|test|check|npm|pnpm|yarn|bun|jest|busted|bats|rspec|phpunit/) {
+      if (base_of(pid) == "claude" || prog(pid) ~ owned) return
+      if (test_label(pid) != "") { visit(pid, "O", 0); return }
+    }
     n = split(kids[pid], a, " ")
     for (i = 1; i <= n; i++) orphans(a[i], depth + 1)
   }
