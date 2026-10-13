@@ -30,10 +30,8 @@ image_leg_start grok-image image pin_model
 
 caps() { image_caps_get "$root" grok "$1"; }
 
-generate_aspects=$(caps '.aspects.generate | join("|")')
-edit_aspects=$(caps '.aspects.edit | join("|")')
-refs_max=$(caps '.refs.max')
-default_aspect=$(caps '.aspects.default')
+IFS=$'\x1f' read -r generate_aspects edit_aspects refs_max default_aspect pin_model < <(
+  caps '[(.aspects.generate | join("|")), (.aspects.edit | join("|")), .refs.max, .aspects.default, .model.image] | map(. // "") | join("\u001f")')
 
 usage() {
   image_leg_cause "$@"
@@ -214,7 +212,6 @@ grok_home=$main_grok_home
 [ "$account" = main ] || grok_home="$grok_profiles_dir/$account"
 # One Imagine image model serves both tools, and the CLI has a separate override per tool: an
 # unpinned edit knob would leave every --ref/--resume run on the compiled-in default.
-pin_model=$(caps '.model.image')
 for pin_key in image_gen_model_override image_edit_model_override; do
   grok_media_sync_model_override "$grok_home" "$pin_key" "$pin_model" ||
     printf 'grok-image: could not pin %s in %s/config.toml\n' "$pin_key" "$grok_home" >&2
