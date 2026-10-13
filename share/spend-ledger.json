@@ -3879,6 +3879,91 @@
    "verdict": "cut",
    "zero": "removal saves 0.1 wall-min/day; loses the one Gemini family list and review-flash pin every consumer reads",
    "note": "geminib families/review-flash skip the account libraries and worker_pool_dir (10faa19d), families --json run once; A/B 2.08-2.47 -> 1.78-2.10 s wall, 1.50 -> 1.27 CPU-s; 53 asserts; old geminib red on the lone-copy pin"
+  },
+  {
+   "id": "suite:llm-legs/test_image_composite",
+   "title": "llm-legs/test_image_composite",
+   "audited_at": "2026-10-13T12:23:54+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-image-composite-20261012T235317Z-05eb",
+   "cpu_run": 23.3,
+   "wall_run": 15.5,
+   "cpu_min_day": 2.27,
+   "wall_min_day": 4.13,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_image_composite.sh": "b70c7832cffccf0d53d7c8a72a6d77f78cbf94e1"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 2.8 wall-min/day and 2.0 CPU-min/day; loses the composite, lineage and shared-decision guards",
+   "note": "three shards, memoized vendor repeats of one composite (33 uv runs to 4), batched pixel reads, usage error before numpy; 162 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_wait_journal",
+   "title": "llm-legs/test_wait_journal",
+   "audited_at": "2026-10-13T12:23:55+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-image-composite-20261012T235317Z-05eb",
+   "cpu_run": 1.5,
+   "wall_run": 3.4,
+   "cpu_min_day": 0.84,
+   "wall_min_day": 2.78,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_wait_journal.sh": "c6440045703424b1504a62ca935c9cc111bb7b59"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 2.8 wall-min/day and 0.8 CPU-min/day; loses the wait journal, kqueue wake and sub-second lag guards",
+   "note": "kqueue-armed handshake replaces two 1.2 s sleeps, r3 writes from 0.6 s with one computed sleep; 26 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_browser_failures",
+   "title": "llm-legs/test_browser_failures",
+   "audited_at": "2026-10-13T12:23:55+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-image-composite-20261012T235317Z-05eb",
+   "cpu_run": 1.8,
+   "wall_run": 6.2,
+   "cpu_min_day": 0.68,
+   "wall_min_day": 2.62,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_browser_failures.sh": "591a63d57f5cf5895d0e3aa297efb468d6786fe8"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 2.7 wall-min/day and 0.7 CPU-min/day; loses the browser failure, reap and claim guards",
+   "note": "reap block waits for the kill, claim waits 0.2/0.5 s; 12 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_vendor_cli_update",
+   "title": "llm-legs/test_vendor_cli_update",
+   "audited_at": "2026-10-13T12:23:56+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-image-composite-20261012T235317Z-05eb",
+   "cpu_run": 16.8,
+   "wall_run": 15.0,
+   "cpu_min_day": 1.85,
+   "wall_min_day": 3.16,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_vendor_cli_update.sh": "f0bbd703012c6e9d4d66c87a1b98c36688f6ee6f"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 2.6 wall-min/day and 1.6 CPU-min/day; loses the vendor update pass guards",
+   "note": "bin/vendor-cli-update forks a third less (date 234 to 4, grep 345 to 103 execs), fifo lock handshake; 129 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_git_guard",
+   "title": "llm-legs/test_worker_git_guard",
+   "audited_at": "2026-10-13T12:23:57+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-image-composite-20261012T235317Z-05eb",
+   "cpu_run": 4.3,
+   "wall_run": 2.9,
+   "cpu_min_day": 1.5,
+   "wall_min_day": 2.13,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_git_guard.sh": "6b7c7dea46ab471636d34a9fdcd2d55676da4b10"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves 2.5 wall-min/day and 1.6 CPU-min/day; loses the revert-class git guard decision coverage",
+   "note": "bash payloads, no env hops, three shards, guard skips the heredoc mask without <<; 97 assertions"
   }
  ]
 }
