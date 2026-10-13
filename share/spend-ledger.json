@@ -5605,6 +5605,95 @@
    "verdict": "cut",
    "zero": "removal saves 21 wall-s and 19 CPU-s a run (3.4 wall-min/day); loses the Flow route's refusals, takes, composites, resume lineage, Image Editor ops and the engine's rotation, locks and reply parsing",
    "note": "two shards (takes+engine / resume+editor), held-lock failover waits 0.01 s, image-leg tee poll 0.01 s, flow flags read the manifest in one jq; composites (uv numpy/scipy) and per-pixel magick probes kept: production work each check reads"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_browse",
+   "title": "llm-legs/test_worker_run_browse",
+   "audited_at": "2026-10-13T15:32:47+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261012T235415Z-3d64",
+   "cpu_run": 20.5,
+   "wall_run": 36.3,
+   "cpu_min_day": 14.65,
+   "wall_min_day": 49.84,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_browse.sh": "93cec2adcb4018f49bf850e5b822d76480325eaa",
+    "llm-legs/tests/worker_run_harness.sh": "2789037258a2d333630df211f2f1845ddd1116d3"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 21.5 wall-min/day and 12.2 CPU-min/day; loses the only coverage of browse enrolment, proofs, canaries, Chrome/Dia runs and cua_repl sync",
+   "note": "browse sessions poll 0.2 s not 1 s, browse_seen drops its last sleep, 4 await_exit, applescript-js and the canary codex leg to shard 2 (58/25/34 -> 24/34/26 s at load ~150); 192 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_outcomes",
+   "title": "llm-legs/test_worker_run_outcomes",
+   "audited_at": "2026-10-13T15:32:47+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261012T235415Z-3d64",
+   "cpu_run": 30.4,
+   "wall_run": 34.8,
+   "cpu_min_day": 20.64,
+   "wall_min_day": 53.93,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_outcomes.sh": "c0aa9f580ad3277ebfececda03b9d26df52b98a1",
+    "llm-legs/tests/worker_run_harness.sh": "2789037258a2d333630df211f2f1845ddd1116d3"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 21.1 wall-min/day and 19.6 CPU-min/day; loses read-only hints, outcome classification, codex retries, prune and wall-reset coverage",
+   "note": "16 runs whose wait.out nothing reads end on await_exit (each case's report call still builds the report); shards already balanced 57/49/55 s; 162 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_lifecycle",
+   "title": "llm-legs/test_worker_run_lifecycle",
+   "audited_at": "2026-10-13T15:32:48+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261012T235415Z-3d64",
+   "cpu_run": 34.9,
+   "wall_run": 30.9,
+   "cpu_min_day": 21.84,
+   "wall_min_day": 38.47,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_lifecycle.sh": "155012c0348693112944c5d6a58f8c74689ae28e",
+    "llm-legs/tests/worker_run_harness.sh": "2789037258a2d333630df211f2f1845ddd1116d3"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 20.7 wall-min/day and 21.0 CPU-min/day; loses detached start, bounded waits, orphan ending, pack and missing-pool coverage",
+   "note": "18 of 19 runs end on await_exit (orphan case keeps await_done), gemini mid-flight case gated not STUB_SLEEP=2, orphans+pack to shard 2 (64/48/76 -> 36/36/34 s); 230 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_files",
+   "title": "llm-legs/test_worker_run_files",
+   "audited_at": "2026-10-13T15:32:49+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261012T235415Z-3d64",
+   "cpu_run": 32.3,
+   "wall_run": 27.9,
+   "cpu_min_day": 18.01,
+   "wall_min_day": 37.8,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_files.sh": "b79c475834ece3e366bd6ae5724eed31caf72dd0",
+    "llm-legs/tests/worker_run_harness.sh": "2789037258a2d333630df211f2f1845ddd1116d3"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 18.9 wall-min/day and 17.8 CPU-min/day; loses run file attribution (transcript, snapshot, guard, commits) coverage",
+   "note": "21 of 23 runs end on await_exit (two state.json phase=done cases keep await_done), blobs-packed to shard 1 (48/62/70 -> 36/44/48 s); 258 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_image_fanout",
+   "title": "llm-legs/test_image_fanout",
+   "audited_at": "2026-10-13T15:32:50+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261012T235415Z-3d64",
+   "cpu_run": 39.7,
+   "wall_run": 102.5,
+   "cpu_min_day": 10.51,
+   "wall_min_day": 39.32,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_image_fanout.sh": "82a452790c301b3c81eb0cafdeaf1ede14bace1a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 18.8 wall-min/day and 7.5 CPU-min/day; loses the only coverage of image-fanout planning, scheduling, spares, memory admission and launch spacing",
+   "note": "Chrome fakes gated on the next START not sleep 5 (mutation red), work dirs computed once, duplicate dry-run dropped, a vacuous assert_fails fixed, lazy-spare gap assert load-robust; 359 asserts. Open: bin/image-fanout caps_get runs one jq per manifest read (~1660 jq a run), a planner refactor"
   }
  ]
 }
