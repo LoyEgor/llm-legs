@@ -3394,6 +3394,91 @@
    "verdict": "cut",
    "zero": "removal saves 8.5 wall-s a run; loses the wait stream's live-transcript, partial-line, reroute and stop guards",
    "note": "WORKER_RUN_WAIT_POLL_S accepts fractions, the live waits tick at 0.2 s (same 36 asserts; in-loop stream mutation red)"
+  },
+  {
+   "id": "suite:llm-legs/test_gemini_music",
+   "title": "llm-legs/test_gemini_music",
+   "audited_at": "2026-10-13T12:15:49+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-gemini-music-20261012T235307Z-7526",
+   "cpu_run": 4.2,
+   "wall_run": 4.9,
+   "cpu_min_day": 0.34,
+   "wall_min_day": 0.62,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_gemini_music.sh": "3e619cc25f158670c952585f2cf59bbab8e5bca9"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.5 wall-min/day; loses gemini-music's argument refusals, take handling, failure codes and reply parsing",
+   "note": "tests lens: no vacuous, brittle or redundant check; wall is 27 wrapper starts at ~0.15 s each, mostly the shared image-leg stderr tee and exit wait (share/image-leg.sh, not this suite); image_caps reads lost two forks each (db84b8d6)"
+  },
+  {
+   "id": "suite:llm-legs/test_gemini_sfx",
+   "title": "llm-legs/test_gemini_sfx",
+   "audited_at": "2026-10-13T12:15:50+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-gemini-music-20261012T235307Z-7526",
+   "cpu_run": 7.6,
+   "wall_run": 7.6,
+   "cpu_min_day": 0.41,
+   "wall_min_day": 0.68,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_gemini_sfx.sh": "728ffc59c99f755568f527ac2433f2dc40b84d10"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.5 wall-min/day; loses gemini-sfx's argument refusals, soundtrack extraction, silence verdicts and failure codes",
+   "note": "seven fixture ffmpeg runs merged into one (2.4 s -> 0.35 s, same streams and levels), duration probed once per output, duplicate limit run dropped (covered by the next line); 81 -> 80 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_spend",
+   "title": "llm-legs/test_spend",
+   "audited_at": "2026-10-13T12:15:52+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-gemini-music-20261012T235307Z-7526",
+   "cpu_run": 0.4,
+   "wall_run": 0.5,
+   "cpu_min_day": 0.32,
+   "wall_min_day": 1.02,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_spend.sh": "46d495f57f5bcd1da915e7614166d757578de54d"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.5 wall-min/day; loses Spend's index, component pricing and audit due checks",
+   "note": "tests lens: one python process importing spend and time_budget in-process, no sleeps or spawned CLIs; nothing cheaper keeps its checks"
+  },
+  {
+   "id": "suite:llm-legs/test_grokb_export",
+   "title": "llm-legs/test_grokb_export",
+   "audited_at": "2026-10-13T12:15:53+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-gemini-music-20261012T235307Z-7526",
+   "cpu_run": 0.8,
+   "wall_run": 2.5,
+   "cpu_min_day": 0.09,
+   "wall_min_day": 0.35,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_grokb_export.sh": "77a814d42394c6ade54aab64feae312f06580b80"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.3 wall-min/day; loses export-token's renewal-credential stripping, rotation and timeout refusals",
+   "note": "hang case bounds the touch at 1 s not 2 s (the sleeper never returns, so the value checks nothing) and the sleeper execs sleep (no orphan sleep 120); 47 asserts, reworded timeout message red"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_spawn_attach",
+   "title": "llm-legs/test_worker_spawn_attach",
+   "audited_at": "2026-10-13T12:15:54+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-gemini-music-20261012T235307Z-7526",
+   "cpu_run": 0.6,
+   "wall_run": 0.4,
+   "cpu_min_day": 0.22,
+   "wall_min_day": 0.28,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_spawn_attach.sh": "7b22eb3ac0842540b0c91fd06f31d719f116af1d"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.3 wall-min/day; loses the spawn hook's relay and native denials and the fork rename and seed",
+   "note": "each relay's deny reason read once (5 jq fewer a run, 33 asserts); the hook itself forks ~6 fewer per fork spawn (844e68c5)"
   }
  ]
 }
