@@ -1746,6 +1746,21 @@
    "verdict": "cut",
    "zero": "removal saves 30.5 CPU-min/day; loses the live dev-server ports segment Egor reads in the statusline (bright/dim per tree, 2026-09-04)",
    "note": "per-run CPU 74.5->34 ms (llm-legs, 82 worktrees) and 48->30 ms (one tree) on captured live ps/lsof snapshots with identical records: root walk cached per start pid, worktree list re-run only when <common>/worktrees/ entries change, prune marker read without stat fork; 99.95% of runs (6531/6534 on 2026-10-13) publish unchanged output, but listeners have no event a shell can wait on, so the 15 s poll stays; the per-rebuild ps retake after lsof (40 ms) and the 27 ms lsof cwd pass were left: skipping either changes ownership answers"
+  },
+  {
+   "id": "cpu:hook/instruction-watch.sh",
+   "title": "hook/instruction-watch.sh",
+   "audited_at": "2026-10-13T10:18:36+03:00",
+   "by": "harness-speed-cpu-statusline-ports-20261012T235115Z-60e6",
+   "cpu_min_day": 16.3,
+   "cpu_s_run": 0.119,
+   "runs_day": 6467,
+   "sources": {
+    "llm-legs/bin/instruction-watch.sh": "bba55ecd177bca9e8dece2ee8b17ade45fd9637b"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 19.1 CPU-min/day; loses the tripwire that reports and puts back shell writes to instruction files, the only guard after the Edit/Write gate",
+   "note": "hit path (~20-115 ms) is the tripwire's own stat of every watched file and is kept; misses from ~/.claude moves (plugin sync renames, 240-400 ms, ~12% of checks) now revalidate one level instead of rebuilding: 310->151 ms on a forced move, identical watched set; an FSEvents watcher instead of the per-call poll is the remaining lever, not tried (a new daemon)"
   }
  ]
 }
