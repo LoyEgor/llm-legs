@@ -71,16 +71,16 @@ assert [ "$(jq -r '.launcher_pid' "$RUN_DIR/meta.json")" = "$chat" ]
 clear_stub
 set_config 'gemini_model=flash38' 'gemini_effort=high'
 printf 'fast\n' >"$STUB_DIR/gemini_profiles"
-export PICK_ACCOUNT=fast PICK_RC=0 STUB_SLEEP=2
-start_ok gemini
+export PICK_ACCOUNT=fast PICK_RC=0
+start_gated gemini
 running_wait=$("$RUNNER" wait "$RUN_ID" --max 1)
 assert grep -q '^STATUS: running$' <<<"$running_wait"
 assert grep -q '^SESSION: gemini-conversation$' <<<"$running_wait"
 running_report=$("$RUNNER" report "$RUN_ID")
 assert grep -q '^STATUS: running$' <<<"$running_report"
 assert grep -q '^SESSION: gemini-conversation$' <<<"$running_report"
+gate_open
 assert await_exit
-unset STUB_SLEEP
 printf 'server.go:1017] Created conversation relaunched-conversation\n' >>"$RUN_DIR/log"
 assert grep -q '^SESSION: relaunched-conversation$' <<<"$("$RUNNER" report "$RUN_ID")"
 printf 'printmode.go:174] Print mode: starting (conversationID="resumed-conversation")\n' >>"$RUN_DIR/log"

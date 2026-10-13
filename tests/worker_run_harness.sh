@@ -373,6 +373,8 @@ printf 'server.go:1017] Created conversation gemini-conversation\n' >"$log"
 # chat through the environment and through nothing else.
 [ ! -x "$STUB_DIR/relay_hook" ] || "$STUB_DIR/relay_hook" gemini-conversation
 [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
+[ -z "${STUB_GATE:-}" ] || enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
+[ -z "${STUB_GATE:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do sleep 0.05; done
 [ -z "${STUB_ERROR:-}" ] || printf '%s\n' "$STUB_ERROR" >&2
 [ -z "${STUB_STDOUT:-}" ] || printf '%s\n' "$STUB_STDOUT"
 [ "${STUB_CODE:-0}" -ne 0 ] || printf 'gemini result\n'
