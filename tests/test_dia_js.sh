@@ -132,7 +132,7 @@ reset ps.bare tabs.before tabs.after
 printf '#!/bin/sh\ncat >/dev/null\nshift\ncase "$1" in count) echo 3 ;; front) echo https://b.example/ ;; esac\n' >"$WORK/bin/osascript-stuck"
 chmod +x "$WORK/bin/osascript-stuck"
 rc=0
-err=$(DIA_JS_OSASCRIPT="$WORK/bin/osascript-stuck" DIA_JS_WAIT_S=1 "$DJ" --relaunch 2>&1) || rc=$?
+err=$(DIA_JS_OSASCRIPT="$WORK/bin/osascript-stuck" DIA_JS_WAIT_S=0 "$DJ" --relaunch 2>&1) || rc=$?
 assert test "$rc" -eq 1
 assert grep -q 'did not quit' <<<"$err"
 assert test ! -e "$WORK/open.log"
