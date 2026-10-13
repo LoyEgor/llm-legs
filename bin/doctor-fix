@@ -384,6 +384,7 @@ def snapshot(doctor, doc_file, night=None):
             elif problem.get("speed") and rule == "opportunity":
                 files += [os.path.join(repos_dir(doctor), name) for name in
                           SPEED_FILES.get(pid[12:], ()) + tuple(strings((problem.get("opportunity") or {}).get("files")))]
+                what = (problem.get("opportunity") or {}).get("what") or what
             elif problem.get("speed"):
                 files.append(doctor_script("speed"))
         elif doctor == "code":
@@ -448,6 +449,8 @@ def snapshot(doctor, doc_file, night=None):
                                           "confirm the cause before any fix; a reading that does not hold is ruled-out; a confirmed class gets "
                                           "a doctor meter (a Harness rule) in the same fix")
             entry["quotes"] = ["%s: %s" % (e.get("ref"), e.get("excerpt")) for e in dicts(problem.get("evidence"))]
+        if strings((problem.get("opportunity") or {}).get("examples")):
+            entry["quotes"] = strings(problem["opportunity"]["examples"])
         if doctor == "code":
             entry.update({key: problem.get(key) for key in ("group", "units", "files", "repos", "digest", "needs_egor")})
         if doctor == "system" and isinstance(problem.get("cause"), dict):
@@ -922,6 +925,8 @@ write_brief() { # id worktree -> the brief file
       printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
     ! jq -e --arg rules "$NIGHT_FIX_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Speed and floor rows (`floor`, `opportunity`, `regression`) are this run'"'"'s to fix: `close` refuses a handoff on one unless it cites a trade to Egor. A floor'"'"'s target is zero, never a limit: `close` refuses `ruled-out` on a `floor` row unless its evidence prices the cheapest cut as `cut <what> saves <N> ms × <M>/day, costs <Y>`.\n\n'
+    ! jq -e '[.problems[].id | strings | select(startswith("opportunity:adhoc/"))] | length > 0' "$file" >/dev/null ||
+      printf 'Ad-hoc script rows (`opportunity:adhoc/<cluster>`, `share/tool_mining.py`): models write a script for one job again and again; the quotes are its shortest calls, `share/tool_mining.py --calls` lists the day'"'"'s. A row naming a tool that already does the job gets only the hint; any other gets one command in the repository that owns the data (a subcommand of the owning tool before a new bin), then its hint. The hint goes where the script would start: the command'"'"'s --help, a PreToolUse nudge on the Bash pattern, a tool description; md prose last. Proof is adoption, the doctor'"'"'s: the cluster'"'"'s calls per 1000 Bash calls after landing at most half of before. The cluster'"'"'s pattern in `CLUSTERS` is the measure, never the fix.\n\n'
     [ -z "$(py owed "$file")" ] ||
       printf '`close` refuses `ruled-out` on a P1 or P2 Speed or test row unless its evidence carries what you measured and tried: `wall <N> s, cpu <N> s, <where the rest goes> <N> s; tried <what>: <before> -> <after>`. A cause you name (sleeps, race waits, startup) is a number you measured on that row, never a reading of the code.\n\n'
     ! jq -e --arg rules ' test_hang ' "$JQ_HAS_RULES" "$file" >/dev/null ||

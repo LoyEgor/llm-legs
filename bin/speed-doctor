@@ -28,6 +28,7 @@ import spend  # noqa: E402
 import suite_audit  # noqa: E402
 import test_health  # noqa: E402
 import time_budget  # noqa: E402
+import tool_mining  # noqa: E402
 
 _loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(ROOT_DIR, "bin", "harness-doctor"))
 H = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", _loader))
@@ -52,7 +53,8 @@ BANDS = {"load": ("<1", "1-2", "2-4", ">4"), "size": ("<1", "1-10", ">10")}
 PROOF = {"latency": "paired replay, >= 200 pairs, then 3 band-matched days", "frequency": "runs and CPU-s per session-hour",
          "elimination": "zero occurrences and a parent drop", "contention": "probe slowdown at matched load",
          "tail": "attended aggregate and p95", "tests": "suite CPU-s per (suite set, sha), 3 complete runs",
-         "orchestration": "fixture replay plus the passive window", "media": "offline local-phase benches"}
+         "orchestration": "fixture replay plus the passive window", "media": "offline local-phase benches",
+         "adoption": "the cluster's calls per 1000 Bash calls after landing at most %s of before" % tool_mining.ADOPTED}
 OUTPUT_PROOF = "identical decisions or results on the replay, recorded as the fix's equivalence {compared, data, result}"
 LEVERS = [
     {"component": "chat/hooks", "lever": "provable-absence fast path for the hook setting the Pre-Bash floor",
@@ -172,7 +174,14 @@ TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "
                        "requirement kept", "saving": 0.3, "confidence": "estimated"},
     "fan-out": {"lever": "tests/affected pulls only the suites that exercise the file", "saving": 0.3,
                 "confidence": "estimated", "proof": "orchestration"}}.items()}
-validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()) + list(TEST_HEALTH_LEVERS.values()))
+ADHOC_LEVERS = {k: {"component": "adhoc/" + k, "lever": v, "effort": "S", "confidence": "measured", "saving": 1.0,
+                    "night_cost_h": 0.0, "proof": "adoption", "quality": "equivalent"} for k, v in {
+    "tool": "a command for the job, its hint where the script would start",
+    "hint": "the hint toward the tool that already does the job, where the script would start"}.items()}
+ADHOC_WHAT = {"tool": "ad-hoc scripts · build one command for the job: %s · then its hint",
+              "hint": "ad-hoc scripts · %s already does the job: %s · the hint only, no new tool"}
+validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()) + list(TEST_HEALTH_LEVERS.values())
+                + list(ADHOC_LEVERS.values()))
 
 
 def state_dir():
@@ -928,6 +937,26 @@ def test_opportunities(tests):
     return out
 
 
+def adhoc_opportunities(adhoc):
+    """Tool mining's clusters over its floor (share/tool_mining.py), saving their writing minutes: a new command and
+    its hint, or only the hint where a tool already does the job."""
+    out = []
+    for f in adhoc.get("findings") or ():
+        kind = "hint" if f["covered_by"] else "tool"
+        lever = dict(ADHOC_LEVERS[kind], saving=f["write_min_day"] / f["min_day"] if f["min_day"] else 0.0)
+        o = target_opportunity(f["target"], f["min_day"], lever, f["calls"], seen_days=f["days"])
+        fields = o["opportunity"]
+        fields.update(worker_min_day=round(f["worker_min_day"] * lever["saving"], 2), kind=kind,
+                      what=ADHOC_WHAT[kind] % ((f["covered_by"], f["job"]) if f["covered_by"] else f["job"]),
+                      calls_day=f["calls"], sessions=f["sessions"], per_1k=f["per_1k"], examples=f["examples"])
+        o["fact"] = "%s · %d calls/day in %d sessions · %s → saves %s · %s%s" % (
+            f["job"], f["calls"], f["sessions"], per_day(f["min_day"], f["worker_min_day"]),
+            per_day(fields["saving"], fields["worker_min_day"]), fields["levers"][0],
+            " · %s" % f["covered_by"] if f["covered_by"] else "")
+        out.append(o)
+    return out
+
+
 def without_moved_heavy(opportunities, tests):
     """A suite test health prices as heavy drops its moved `tests/<repo>/<label>` row: one minute, one offer."""
     heavy = {"opportunity:tests/" + f["target"].split("/", 2)[2] for f in tests.get("findings") or ()
@@ -1043,7 +1072,7 @@ def judge_digest(ledger):
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
     digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SLICE_LEVER, NO_SLICE_LEVER, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
                               TIME_LEVERS, spend.SHARE_RISE, spend.MENU_FILES, cpu_audit.WINDOW_D, suite_audit.WALL_RISE, suite_audit.JUMP_S,
-                              suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.ROWS, TEST_HEALTH_LEVERS, test_health.LINES, test_health.BAND,
+                              suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.ROWS, TEST_HEALTH_LEVERS, ADHOC_LEVERS, tool_mining.CLUSTERS, tool_mining.FLOOR_MIN_DAY, test_health.LINES, test_health.BAND,
                               test_health.IDLE_RATIO, test_health.IDLE_MIN_S, test_health.DEAD_D],
                              sort_keys=True).encode())
     return digest.hexdigest()
@@ -1280,6 +1309,11 @@ def collect(write, now):
     opportunities = without_moved_heavy(opportunities, tests) + [
         o for o in test_opportunities(tests) if o["opportunity"]["om_day"] >= LIMITS["worth_om_day"]]
     problems += test_regressions(tests, ledger, now)
+    try:
+        adhoc = tool_mining.collect(now, write, since=lambda target: landed_end(ledger, target))
+    except Exception as exc:
+        adhoc = {"status": "error", "head": H.error_line(exc), "findings": [], "adoption": {}}
+    opportunities += adhoc_opportunities(adhoc)
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
     why = {}
@@ -1355,6 +1389,7 @@ def collect(write, now):
         "index": budget.get("index"), "index_by_day": budget.get("index_by_day") or {}, "levels": budget.get("levels") or [],
         "budget": budget,
         "tests": tests,
+        "adhoc": adhoc,
     }
     try:
         document["spend"] = spend.collect(now, state, write, H.base_home(), H.repos_dir(), ROOT_DIR, H.local_day)
@@ -1439,6 +1474,16 @@ def menu_lines(document):
     for depth, flags, red, text in tests.get("menu") or [[0, "", tests.get("status") == "error",
                                                            "Test health: " + str(tests.get("head") or "not measured")]]:
         emit(depth, text, flags, red)
+    adhoc = document.get("adhoc") or {}
+    emit(0, "Ad-hoc scripts: %d jobs over %s min/day writing · %s min/day · %d of %d Bash calls · scan %s s" % (
+        len(adhoc.get("findings") or ()), fmt(adhoc.get("floor_min_day")),
+        fmt(sum(f["write_min_day"] for f in adhoc.get("findings") or ())),
+        sum(f["calls"] for f in adhoc.get("findings") or ()), adhoc.get("bash_calls") or 0, adhoc.get("scan_s"))
+         if "bash_calls" in adhoc else
+         "Ad-hoc scripts: " + str(adhoc.get("head") or "not measured"), red=adhoc.get("status") == "error")
+    for target, a in sorted((adhoc.get("adoption") or {}).items()):
+        emit(1, "%s · per 1000 Bash calls %s → %s · %s" % (target, a["before"] if a["before"] is not None else "–",
+                                                          a["after"] if a["after"] is not None else "–", a["state"]), "d")
     last = document["night"]["last"]
     emit(0, "Night: last %s · first landing %s" % (hours(last["wall_h"]), hours(last["first_landing_h"]))
          if last else "Night: no finished night")

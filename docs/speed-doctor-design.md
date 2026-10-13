@@ -74,11 +74,11 @@ Quality rule (Egor): the speed of the current setup at the same intelligence. No
 **Clocks.** Durations come from monotonic or elapsed counters where the writer has them; wall jumps and `secs < 0` are flagged, never summed; a span crossing a boot or sleep boundary loses only that slice.
 
 **Collectors**, one append each, with env overrides for fixtures; the labels the code and tests use, each journal's
-schema in its shared-invariants row: C1 transcript rows (Harness's incremental pass, no second reader), C2 hooks, C3
+schema in its shared-invariants row: C1 transcript rows (Harness's incremental pass, no second reader but tool mining's), C2 hooks, C3
 worker-run, C4 night-run, C5 suites, C6 machine sampler (memlogd), C7 CPU attribution, C8 presence, C9 media, C10
 background journals, C11 chat start. Media "interactive" is derived at read time from A ∪ B, never from `[ -t 0 ]`.
 
-**Cost.** `bin/speed-doctor` reads only derived files and the new journals by offset, ≤ 2 s; Harness execs it after each successful run (no own `StartInterval`), at the run's own priority, never `taskpolicy -b` (it starved Speed for 50 min). The exec keeps Harness's pid, so the System doctor tags both runs' disk counters `speed-doctor`. It is a consumer in P and reports its own cost as `cost.collector_cpu_min_day`. A first run backfills the 28-day window from the owner transcripts through Harness's C1 reader, newest first and resumable; a day enters the window only once every transcript that could hold it is read, so OM/d is never diluted by unread days. Egor: Speed fixes from whatever data exists; history only ranks recurring against one-off and proves before/after, so short coverage lowers confidence and never empties the selection.
+**Cost.** `bin/speed-doctor` reads only derived files and the new journals by offset, ≤ 2 s; Harness execs it after each successful run (no own `StartInterval`), at the run's own priority, never `taskpolicy -b` (it starved Speed for 50 min). The exec keeps Harness's pid, so the System doctor tags both runs' disk counters `speed-doctor`. It is a consumer in P and reports its own cost as `cost.collector_cpu_min_day`. A first run backfills 28 days through Harness's C1 reader, newest first, resumable; a day enters the window only once every transcript that could hold it is read. Short coverage lowers confidence, never empties the selection (Egor).
 
 ## 3. Judging, proof, selection
 
@@ -114,35 +114,39 @@ the work, in min/day: each class is the union of its intervals, so parallel runs
 (`overhead_s`) is the union of all classes, never their sum. No floors, free-machine deductions or "could save"
 estimates; a class exists only where its intervals are already journaled.
 
-**Lost time index** (Egor; the title number). Fee per unit of work against the previous 7 days, Paasche per stratum
-as token-map's `_price_index`; 1.00 = the same, no norms or thresholds. It must not move with volume, parallelism,
-vendor, night/day or presence, so a stratum's overhead is the SUM over its agents, each agent's own spans unioned
-(the cross-agent union of the min/day rows moves with overlap). Unmeasured time is unknown, not loss. A day before
-`horizon()` has no strata, and any such day in either window means no value, never a partial one.
+**Lost time index** (Egor; the title number). Fee per unit of work against the previous 7 days, Paasche per stratum as
+token-map's `_price_index`; 1.00 = the same, no norms or thresholds. It must not move with volume, parallelism,
+vendor, night/day or presence, so a stratum's overhead is the SUM over its agents, each agent's own spans unioned.
+Unmeasured time is unknown, not loss; a day before `horizon()` in either window means no value.
 
 **Test health** (`share/test_health.py`, Speed's `tests` key; the one place test time is shown; its lines, bands and
-levers are that module's constants). The heaviest suites rank by their median day of the trailing seven 24 h days,
-not the mean: a 3-day mean still carries a third of one heavy day, the median ignores up to three. A suite run on
-under four days reads 0 (sporadic cost is no daily lever) unless its first journaled run falls inside the seven. Each
-row's wall splits once (`allocate`), so concurrent suites never sum past the wall. Nothing here deletes a test: dead
-and pinned suites go to Suite audits' queue.
+levers are that module's constants). The heaviest suites rank by their median day of the trailing seven 24 h days (a
+mean keeps a third of one heavy day). A suite run on under four days reads 0 (sporadic cost is no daily lever) unless
+its first journaled run falls inside the seven. Each row's wall splits once (`allocate`), so concurrent suites never
+sum past the wall. Nothing here deletes a test: dead and pinned suites go to Suite audits' queue.
+
+**Tool mining** (`share/tool_mining.py`, Speed's `adhoc` key). Once a local day (~3 s) it clusters the day's ad-hoc
+Bash scripts (chats, subagents, workers, codex) by the first `CLUSTERS` pattern matched. Cost: writing (characters at
+the measured write rate) + calls × median exec. Over `FLOOR_MIN_DAY` writing min/day (a 1 h fix repaid in 7 days) in ≥
+3 sessions: `opportunity:adhoc/<key>`, saving its writing: a command plus hint, or the hint alone where `covered_by`
+names a tool. Proof (`speed_proof`): calls per 1000 Bash calls after landing ≤ `ADOPTED` × before.
 
 **ROI** (`night-run report`, `roi ·` lines; the mechanics are `share/time_budget.py`'s). Each Speed or time row of a
 fixer job is an improvement of its own, with an even share of the job's spend. A gain is proven per unit against
-frozen exposure (the 7 days before), load-matched, so neither sample count nor an earlier drop proves it. Over the
-trend a key's gain is claimed once: the earliest positive claim takes it, later fixes read `shared with <ref>`.
+frozen exposure (the 7 days before), load-matched, so neither sample count nor an earlier drop proves it. A key's
+gain is claimed once, by the earliest positive claim; later fixes read `shared with <ref>`.
 Commits touching only measurers and their suites, ledgers, docs or other suites read `measurement fix`, never a gain.
 No gain reads `spend without result`, never a revert or a gate; a fix > 1.3× slower: `regression:fix/<job>`, cause or
 revert.
 
 **Selection.**
-- One rank over every admitted row (`time_budget.speed_rank`): priced by expected gain, unpriced by measured loss in min/day, spend audits by share of spend. A landed fix measured slower (`fix_commits`) ranks first. How many run at once is `share/slots.sh` `slot_room`. The cut-off is also time: the night's speed work has a 6-hour wall-clock window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`, `docs/night-run.md`). Nothing carries over: the next night's pick recomputes from the data, so its levers rank again. A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).
+- One rank over every admitted row (`time_budget.speed_rank`): priced by expected gain, unpriced by measured loss in min/day, spend audits by share of spend. A landed fix measured slower (`fix_commits`) ranks first. Parallelism: `share/slots.sh` `slot_room`; cut-off: a 6 h window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). Nothing carries over: each night recomputes the pick. A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).
 - Ranked rows of a context fill fixers of `batch_sizes`: least cost per closed row, own curve at 2+ sizes else pooled, no 1-run minimum, ×2 at the largest.
 - One owner per cause file per night across doctors; the other doctor's row links as `same_cause`.
 - Skipped: active work (the Code doctor's rule), levers not output-equivalent, measurement fixes without an admitted blind row.
-- No score or gain floor: every equivalent, positive-score, non-needs-Egor lever qualifies. An empty pick's `why_none` names its true cause: levers needing Egor, not equivalent or scoring 0, or no opportunity.
+- No score or gain floor: every equivalent, positive-score, non-needs-Egor lever qualifies; an empty pick's `why_none` names the cause.
 
-**Own keys**: `cost {collector_cpu_min_day}` (no other cost is mechanically recorded, so none is shown as a zero), `yield {proven_om_day, pending_om_day}` from roi gains.
+**Own keys**: `cost {collector_cpu_min_day}` (the only one recorded), `yield {proven_om_day, pending_om_day}` from roi gains.
 
 ## 4. Menu
 

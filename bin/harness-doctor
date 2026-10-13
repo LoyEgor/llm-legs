@@ -5730,6 +5730,11 @@ def speed_proof(entry, speed, fix_at):
     """Speed proves its rules' fixes by its own measurement (ledger_state, speed-doctor's speed_yield), never by events:
     (proven, fact), or None while Speed shows the row itself."""
     rule = entry["match"]["rule"]
+    adopted = next((a for target, a in (((speed or {}).get("adhoc") or {}).get("adoption") or {}).items()
+                    if rule == "opportunity" and re.fullmatch(entry["match"].get("ident") or "", target)), None)
+    if adopted:
+        return adopted["state"] == "proven", "calls per 1000 Bash calls %s before the fix, %s after: %s" % (
+            adopted["before"], adopted["after"], adopted["state"])
     if rule == "opportunity":
         return (True, "output-equivalent by its replay") if equivalent(entry["fixes"][-1]) else (
             False, "no output-equivalence record on the fix")
