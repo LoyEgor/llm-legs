@@ -982,6 +982,10 @@ next_route() { # unit cause -> 0 with the unit pending on its vendor's next rout
   current=${u_route[u]:-$(caps_get "$vendor" '.routes[0] // empty')}
   next=$(IMAGE_LEG_ROUTE=$current image_leg_fallback_route "$caps_root" "$vendor" '' '' true)
   [ -n "$next" ] || return 1
+  if [ "$next" = cli ] && [ "${IMAGE_LEG_CLI_OK:-}" != 1 ]; then
+    add_note "$u" "CLI_NEEDS_CONSENT after $2: ask Egor, on his yes rerun with IMAGE_LEG_CLI_OK=1"
+    return 1
+  fi
   block=$(route_block "$next")
   max=$(caps_get "$vendor" "(${block:+.$block.counts // }.counts) | if type == \"array\" then max else 1 end")
   [[ "$max" =~ ^[0-9]+$ ]] && [ "${u_count[u]}" -le "$max" ] || return 1

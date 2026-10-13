@@ -209,7 +209,7 @@ model's own image), or `composite=refused reason=global|no-local-change changed=
 as Google Flow (`share/gemini_web.py`: one clone app, one off-screen parking, one toast log, one failure-snapshot
 path), through `bin/chatgpt-web` → `share/chatgpt_web.py`. A route-level failure there — exit 4 (no account
 signed in), 5 (every account busy past `--lock-wait`), 3 (limit or wall) or exit 1 with `"sent": false` —
-reruns the same request once on `--route cli` (`fallback_from=web fallback_reason=…`, the same `--account`
+reruns the same request once on `--route cli` under `IMAGE_LEG_CLI_OK=1` (`fallback_from=web fallback_reason=…`, the same `--account`
 when one was given); inside `image-fanout` a busy or limit exit is not rerun, the scheduler moves the take to
 another account or route instead, while sign-in and unsent failures still rerun on `--route cli`. It never falls back for the web-only tools, more refs than the CLI's 5, anything sent
 or refused, an exit 1 without `sent`, an explicit `--route` or a `--resume`: a resume follows the route that

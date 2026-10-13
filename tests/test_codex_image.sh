@@ -599,6 +599,14 @@ assert grep -qx 'job=fanout-7' "$IMAGE_OUT"
 assert grep -qx 'JOB=fanout-7' "$WEB_CALLS"
 assert test "$(tail -n 1 "$IMAGE_LEG_LOG" | jq -r .job)" = fanout-7
 
+for trigger in signin:sign-in:4 busy:busy:5 limit:limit:3 unsent:not-sent:1; do
+  web_run "${trigger%%:*}" --dest "$OUTPUT_DIR/consent.png" --prompt badge --account explicit
+  assert test "$image_rc" -eq "${trigger##*:}"
+  assert test ! -s "$FAKE_CODEX_CALLS"
+  assert grep -q 'CLI_NEEDS_CONSENT' "$IMAGE_ERR"
+  assert_fails grep -q 'the same request goes to' "$IMAGE_ERR"
+done
+export IMAGE_LEG_CLI_OK=1
 for trigger in signin:sign-in busy:busy limit:limit unsent:not-sent; do
   web_run "${trigger%:*}" --dest "$OUTPUT_DIR/fallback.png" --prompt badge --account explicit --lock-wait 30
   assert test "$image_rc" -eq 0
@@ -614,6 +622,7 @@ for trigger in signin:sign-in busy:busy limit:limit unsent:not-sent; do
   assert jq -se --arg why "${trigger#*:}" '.[-1] | .rc == 0 and .route == "cli" and .fallback_from == "web"
     and .fallback_reason == $why and .account == "explicit" and .delivered == 1' "$IMAGE_LEG_LOG" >/dev/null
 done
+unset IMAGE_LEG_CLI_OK
 assert test ! -e "$OUTPUT_DIR/fallback.rendered.png"
 
 for refusal in sent:1 limit-sent:3 unknown:1 refused:1; do

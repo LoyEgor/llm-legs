@@ -302,6 +302,11 @@ image_leg_fallback() { # rc engine-json next-route
     1) jq -e '.sent == false' <<<"$result" >/dev/null || return 1; reason=not-sent ;;
     *) return 1 ;;
   esac
+  if [ "$3" = cli ] && [ "${IMAGE_LEG_CLI_OK:-}" != 1 ]; then
+    printf '%s: --route %s failed (%s); CLI_NEEDS_CONSENT: the CLI spends his limits, ask Egor; on his yes rerun with IMAGE_LEG_CLI_OK=1 (or --route cli)\n' \
+      "${IMAGE_LEG_TOOL:-image}" "$IMAGE_LEG_ROUTE" "$reason" >&2
+    return 1
+  fi
   printf '%s: --route %s failed (%s); the same request goes to --route %s\n' \
     "${IMAGE_LEG_TOOL:-image}" "$IMAGE_LEG_ROUTE" "$reason" "$3" >&2
   IMAGE_LEG_FALLBACK_FROM=$IMAGE_LEG_ROUTE IMAGE_LEG_FALLBACK_REASON=$reason IMAGE_LEG_ROUTE=$3 IMAGE_LEG_PHASES='' IMAGE_LEG_LOAD=''

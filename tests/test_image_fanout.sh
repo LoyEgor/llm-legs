@@ -838,7 +838,9 @@ printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"alpha\",\"login\":true,
 # --- busy and limit reach the fan-out; the next route is its last resort --------------------------
 (
   . "$ROOT/share/image-leg.sh"
-  IMAGE_LEG_ROUTE=web
+  IMAGE_LEG_ROUTE=web IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_SCHEDULER=''
+  ! image_leg_fallback 3 '{}' cli 2>/dev/null || exit 1
+  IMAGE_LEG_CLI_OK=1
   for code in 3 5; do
     IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_SCHEDULER=''
     image_leg_fallback "$code" '{}' cli 2>/dev/null || exit 1
@@ -859,8 +861,16 @@ assert test "$rc" -eq 0
 assert grep -Fq 'moved from webwall after a usage limit' <<<"$(tsv_col "$DEST_WORK/fanout.tsv" codex alphb 4)"
 assert test "$(grep -c '^SCHED=1$' "$CALLS")" -eq 2
 assert_fails "$(cat "$CALLS")" 'ARG=--route'
-# No account left on the web route: the take relaunches on the CLI route, where the wrapper picks.
+# No account left on the web route: without his yes the take stays a usage limit; with it the take
+# relaunches on the CLI route, where the wrapper picks.
 codex_roster '{"account":"webwall","login":true}'
+: >"$CALLS"
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --vendors codex --takes 1 --spare 0 || rc=$?
+assert test "$rc" -eq 3
+assert_fails "$(cat "$CALLS")" 'ARG=--route'
+assert grep -Fq 'CLI_NEEDS_CONSENT' "$DEST_WORK/fanout.tsv"
+export IMAGE_LEG_CLI_OK=1
 : >"$CALLS"
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors codex --takes 1 --spare 0 || rc=$?
@@ -876,6 +886,7 @@ assert test "$rc" -eq 0
 assert grep -Fq $'codex\twebwall\tok' "$DEST_WORK/fanout.tsv"
 assert test "$(grep -c -Fx 'ARG=webwall' "$CALLS")" -eq 2
 assert test "$(grep -c -Fx 'ARG=--route' "$CALLS")" -eq 1
+unset IMAGE_LEG_CLI_OK
 # A pack the next route cannot carry (its counts) stays a usage limit.
 set_roster gemini-web '[ "${1:-}" = accounts ] || exit 2
 printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"webwall\",\"login\":true}]}"'

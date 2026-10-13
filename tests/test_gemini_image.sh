@@ -310,6 +310,13 @@ flow_run() { # mode args...
   flow_rc=0
   FLOW_MODE=$mode image_run "$@" || flow_rc=$?
 }
+for trigger in signin:sign-in:4 busy:busy:5 limit:limit:3 unsent:not-sent:1; do
+  flow_run "${trigger%%:*}" "${args[@]}" --account explicit
+  assert test "$flow_rc" -eq "${trigger##*:}"
+  assert test ! -s "$FAKE_GEMINIB_CALLS"
+  assert grep -q 'CLI_NEEDS_CONSENT' "$WORK/err"
+done
+export IMAGE_LEG_CLI_OK=1
 for trigger in signin:sign-in busy:busy limit:limit unsent:not-sent; do
   flow_run "${trigger%:*}" "${args[@]}" --aspect 2:3 --account explicit --lock-wait 45
   assert test "$flow_rc" -eq 0
@@ -324,6 +331,7 @@ for trigger in signin:sign-in busy:busy limit:limit unsent:not-sent; do
   assert jq -e --arg why "${trigger#*:}" '.rc == 0 and .route == "cli" and .fallback_from == "flow" and .fallback_reason == $why
     and .requested == 1 and .delivered == 1' <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
 done
+unset IMAGE_LEG_CLI_OK
 for stays in sent:1 limit-sent:3 unknown:1 refused:1; do
   flow_run "${stays%:*}" "${args[@]}" --account explicit
   assert test "$flow_rc" -eq "${stays#*:}"

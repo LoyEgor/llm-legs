@@ -37,7 +37,8 @@ vendor API has and its CLI does not carry). No vendor has a mask, a fidelity fla
 
 Without `--route` a script runs its manifest's `routes[0]`. When that route fails at the route level —
 engine exit 4 (sign-in), 5 (every account busy), 3 (limit or wall), or exit 1 with `"sent": false` —
-the same request reruns once on the next route in `routes`, printing `fallback_from=<route>` and
+the same request reruns once on the next route in `routes` (a `cli` one only under `IMAGE_LEG_CLI_OK=1`,
+his yes — the CLI spends his limits; else exit as is after `CLI_NEEDS_CONSENT`), printing `fallback_from=<route>` and
 `fallback_reason=sign-in|busy|limit|flagged|not-sent` after `route=`. Exit 3 prints
 `<VENDOR>_ACCOUNT_FLAGGED` when the engine's result says `flagged` (Flow's unusual-activity flag, a
 24 h wall), else `<VENDOR>_USAGE_LIMIT` (`image_leg_limit`). A request the next route cannot express
