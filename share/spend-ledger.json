@@ -5535,6 +5535,24 @@
    "verdict": "cut",
    "zero": "removal saves 13 wall-s and 10 CPU-s a run (4.0 wall-min/day); loses every guard on spending a one-per-period reset: exactly-once writes, idempotency keys, the soonest grant, ambiguous-write no-retry, the word-armed auto-redeem and the lock wait",
    "note": "two shards (grok+codex+claude / auto) sharing one claude stand-in; 0.05 s port polls in the same 4 s deadline; network modules imported lazily in the bin; 43 asserts; codex 3 s timeout and the 1.5 s lock hold kept (race and load margins)"
+  },
+  {
+   "id": "suite:llm-legs/test_light_research",
+   "title": "llm-legs/test_light_research",
+   "audited_at": "2026-10-13T12:39:59+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-reset-redeem-20261012T235332Z-5e50",
+   "cpu_run": 5.4,
+   "wall_run": 8.3,
+   "cpu_min_day": 1.74,
+   "wall_min_day": 5.13,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/light_research_harness.sh": "f899061a8acbcd0b2fff73b3575cc67d99f893aa",
+    "llm-legs/tests/test_light_research.sh": "a0c5260253b5135cc2312f3e46ce14e66fc48a78"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 7.1 wall-s and 5.1 CPU-s a run (3.7 wall-min/day); loses the light toggle rows' defaults and refusals, the tracked gemini research run with its read-only sandbox, the log-only quota rescue and the research-never-fixes-a-round door",
+   "note": "toggle lookups batched into one primed bash per toggle state (11 -> 3 bash, ~0.5 s); the remaining wall is six light-research launches, one per scenario"
   }
  ]
 }
