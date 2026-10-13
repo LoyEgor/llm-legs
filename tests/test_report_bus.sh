@@ -11,7 +11,13 @@ mkdir -p "$HOME" "$WORK/bin"
 STORE="$XDG_CACHE_HOME/claude-reports"
 asserts=0
 assert() { asserts=$((asserts + 1)); "$@" || { printf 'FAIL: assert %s: %s\n' "$asserts" "$*" >&2; exit 1; }; }
-count() { find "$1" -maxdepth 1 -type f -name '*.txt' 2>/dev/null | wc -l | tr -d ' '; }
+count() { # regular, non-symlink *.txt files directly under $1
+  local n=0 f
+  for f in "$1"/*.txt "$1"/.*.txt; do
+    if [ -f "$f" ] && [ ! -L "$f" ]; then n=$((n + 1)); fi
+  done
+  echo "$n"
+}
 FRAME="$ROOT/share/report_frame.py"
 # A body is a block document; `doc` wraps text as one unlabelled row per line, `frame` is what the
 # bus must deliver for it.
@@ -210,7 +216,9 @@ mkdir -p "$held" "$STORE/.lock"
 cat >"$held/sleep" <<SLEEP
 #!/bin/sh
 echo x >>"$held/polls"
-[ "\$(wc -l <"$held/polls")" -lt 150 ] || { /bin/cat "$STORE/.lock/pid" >>"$held/released"; rm -f "$STORE/.lock/pid"; rmdir "$STORE/.lock"; }
+n=0
+while read -r _; do n=\$((n + 1)); done <"$held/polls"
+[ "\$n" -lt 150 ] || { /bin/cat "$STORE/.lock/pid" >>"$held/released"; rm -f "$STORE/.lock/pid"; rmdir "$STORE/.lock"; }
 SLEEP
 chmod +x "$held/sleep"
 printf '%s\n' "$$" >"$STORE/.lock/pid"
@@ -278,12 +286,13 @@ assert test "$rc" = 2
 # A post signalled while it waits on the lock keeps its report in lost.log instead of exiting 0 empty.
 mkdir "$STORE/.lock"
 printf '%s\n' "$$" >"$STORE/.lock/pid"
-doc 'signalled body' | "$BUS" post --kind notice --id signalled --session signalled 2>"$WORK/error" &
-signalled_pid=$!
-sleep 1
-kill -TERM "$signalled_pid"
+# The shim's first sleep is the bus's first lock poll: it signals its parent, the bus, there, so the
+# TERM lands in the lock wait every time.
+mkdir "$WORK/term-sleep"
+printf '#!/bin/sh\nkill -TERM "$PPID"\nexec /bin/sleep "$@"\n' >"$WORK/term-sleep/sleep"
+chmod +x "$WORK/term-sleep/sleep"
 rc=0
-wait "$signalled_pid" || rc=$?
+doc 'signalled body' | PATH="$WORK/term-sleep:$PATH" "$BUS" post --kind notice --id signalled --session signalled 2>"$WORK/error" || rc=$?
 rm -rf "$STORE/.lock"
 assert test "$rc" = 0
 assert grep -q 'signalled body' "$STORE/lost.log"
@@ -320,8 +329,9 @@ chmod 700 "$WORK/fail-cache/claude-reports"
 post pruned retained
 flush pruned >/dev/null
 source_file=$(find "$STORE/pruned/delivered" -name '*.txt')
+source_text=$(<"$source_file")
 for ((n=1; n<=201; n++)); do
-  cp "$source_file" "$STORE/pruned/delivered/${n}__notice__fixture-$n.txt"
+  printf '%s\n' "$source_text" >"$STORE/pruned/delivered/${n}__notice__fixture-$n.txt"
 done
 # One mtime for all: a loop crossing a second would make fixture-1 the oldest and prune it.
 touch -t 202001010002 "$STORE/pruned/delivered/"*__fixture-*.txt
