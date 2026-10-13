@@ -4,8 +4,8 @@
 mkdir -p "$WORK/shim"
 CALLS="$WORK/tool-calls"
 mkdir -p "$WORK/tick-shim" "$WORK/jq-shim"
-for tool in perl python3 find sleep jq; do
-  shim="$WORK/shim/$tool"; [ "$tool" != sleep ] || shim="$WORK/tick-shim/$tool"; [ "$tool" != jq ] || shim="$WORK/jq-shim/$tool"
+for tool in perl python3 find sleep ps jq; do
+  shim="$WORK/shim/$tool"; [ "$tool" != sleep ] && [ "$tool" != ps ] || shim="$WORK/tick-shim/$tool"; [ "$tool" != jq ] || shim="$WORK/jq-shim/$tool"
   printf '#!/bin/bash\nprintf "%%s\\n" "%s $*" >>"%s"\nexec %q "$@"\n' "$tool" "$CALLS" "$(command -v "$tool")" >"$shim"
   chmod +x "$shim"
 done
@@ -32,8 +32,8 @@ assert [ "$priced" -gt 0 ]
 
 : >"$CALLS"
 out=$(PATH="$WORK/jq-shim:$PATH" "$RUNNER" wait "$ID" 2>&1)
-# One perl cuts every row of a read, never one per row.
-assert [ "$(grep -cF 'substr($_, 0, 119)' "$CALLS")" = 1 ]
+# The shell cuts the rows: no perl per read, let alone one per row.
+assert [ "$(grep -cF 'substr($_, 0, 119)' "$CALLS")" = 0 ]
 # Each state write (wait, done) is one jq handed meta.json, never jq reads of meta.json of its own.
 assert [ "$(grep -c '^jq -n --arg phase ' "$CALLS")" = 2 ]
 assert_fails grep -q '^jq -r .review_round\|^jq -r .pid_started_at // .started_at // empty' "$CALLS"
@@ -75,12 +75,19 @@ assert [ "$(cat "$RUN/tokens" 2>/dev/null)" = "$priced" ]
 # the tokens on its first and last read only.
 row() { jq -nc --arg ts "$(iso "$(date +%s)")" --arg text "$1" '{type:"assistant",timestamp:$ts,message:{content:[{type:"text",text:$text}]}}'; }
 await() { local i; for i in $(seq 100); do grep -Fq -- "$1" "$WORK/live.out" && return 0; sleep 0.1; done; fail "no [$1] in $(cat "$WORK/live.out")"; }
-# A tick is one exit_file_wait, each after a transcript read: the second new one proves a read began after the call.
-await_ticks() { # run-dir count
-  local want i
-  want=$(($(grep -cFx "python3 - $1 0.2" "$CALLS") + $2))
-  for i in $(seq 300); do [ "$(grep -cFx "python3 - $1 0.2" "$CALLS")" -lt "$want" ] || return 0; sleep 0.1; done
-  fail "under $want ticks of $1"
+# The tail shim logs the transcript's size as its read starts: a size past the last byte written
+# proves a read began after it.
+printf '#!/bin/bash\nprintf "tail %%s\\n" "$(stat -f %%z "${@: -1}" 2>/dev/null)" >>"%s"\nexec %q "$@"\n' \
+  "$CALLS" "$(command -v tail)" >"$WORK/tick-shim/tail"
+chmod +x "$WORK/tick-shim/tail"
+await_read() { # transcript
+  local size i
+  size=$(stat -f %z "$1")
+  for i in $(seq 300); do
+    awk -v size="$size" '$1 == "tail" && $2 >= size { seen = 1 } END { exit !seen }' "$CALLS" && return 0
+    sleep 0.1
+  done
+  fail "no read of $1 began past byte $size"
 }
 rm -f "$RUN/exit_code" "$RUN/tokens"
 sleep 300 &
@@ -89,13 +96,13 @@ jq -c --argjson p "$live" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at
   mv "$WORK/m" "$RUN/meta.json"
 row alpha-row >"$WORK/session.jsonl"
 : >"$CALLS"
-PATH="$WORK/tick-shim:$PATH" WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$ID" >"$WORK/live.out" 2>&1 &
+PATH="$WORK/tick-shim:$WORK/jq-shim:$PATH" WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$ID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await alpha-row
 row bravo-row >"$WORK/session.jsonl"
 part=$(row charlie-row)
 printf '%s' "${part:0:20}" >>"$WORK/session.jsonl"
-await_ticks "$RUN" 2
+await_read "$WORK/session.jsonl"
 printf '%s\n' "${part:20}" >>"$WORK/session.jsonl"
 await charlie-row
 row delta-row >>"$WORK/session.jsonl"
@@ -110,6 +117,12 @@ assert [ "$(grep -c 'delta-row' <<<"$live_out")" = 1 ]
 assert [ "$(grep -c "^python3 - .* $ID claudeb " "$CALLS")" = 2 ]
 # The wait's ticks start no sleep process.
 assert [ "$(grep -c '^sleep 0.2$' "$CALLS")" = 0 ]
+# Nor any to wait for the exit, to probe the supervisor or to re-read an unchanged meta.json: one
+# watcher for the whole wait, ps once before it arms and once after, one read of the record.
+assert [ "$(grep -cFx "python3 - $RUN 0.2" "$CALLS")" = 0 ]
+assert [ "$(grep -c '^python3 -c ' "$CALLS")" = 1 ]
+assert [ "$(grep -c '^ps ' "$CALLS")" = 2 ]
+assert [ "$(grep -c '^jq -r .vendor, .account, .workdir' "$CALLS")" = 1 ]
 
 # A codex run's rollout is looked up once per wait, never once per poll.
 CID=codex-1-2-x
@@ -127,7 +140,13 @@ jq -c --argjson p "$live" --argjson t "$now" '.pid = $p | .pid_started_at = $t' 
 WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await '$ ls'
-await_ticks "$CRUN" 2
+# Two more reads of the rollout, each proven by a row written after the one before it was streamed.
+for tick in one two; do
+  jq -nc --arg ts "$(iso "$(date +%s)")" --arg cmd "echo $tick" \
+    '{timestamp:$ts,payload:{type:"function_call",name:"exec_command",arguments:({cmd:$cmd} | tojson)}}' \
+    >>"$HOME/.codex/sessions/2026/rollout-abc123.jsonl"
+  await "\$ echo $tick"
+done
 printf '0\n' >"$CRUN/exit_code"
 wait "$waiter"
 kill "$live" 2>/dev/null

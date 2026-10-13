@@ -230,6 +230,38 @@ SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
 SCRIPT_PATH="$SCRIPT_DIRECTORY/$(basename "$SCRIPT_PATH")"
 umask 077
 
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
+# Loaded disabled: enabled, the builtin would answer every sourced library's `stat -f` with its own syntax.
+STAT_BUILTIN=''
+enable -f "${BASH%/bin/*}/lib/bash/stat" stat 2>/dev/null && enable -n stat && STAT_BUILTIN=1
+
+file_lstat() { # path -> FILE_SIZE FILE_MTIME FILE_INODE of the path itself, mtime in whole seconds
+  local -A st=()
+  local out rc
+  if [ -n "$STAT_BUILTIN" ]; then
+    enable stat
+    stat -L -A st "$1" 2>/dev/null
+    rc=$?
+    enable -n stat
+    [ "$rc" -eq 0 ] || return 1
+    FILE_SIZE=${st[size]} FILE_MTIME=${st[mtime]} FILE_INODE=${st[inode]}
+    return 0
+  fi
+  # Apart: GNU stat takes -f for a filesystem query, prints its answer and fails.
+  out=$(stat -f '%z %m %i' "$1" 2>/dev/null) || out=$(stat -c '%s %Y %i' "$1" 2>/dev/null) || return 1
+  read -r FILE_SIZE FILE_MTIME FILE_INODE <<<"$out"
+}
+
+# Whether a run's meta.json is the one last read under this key variable. Every write after its
+# creation is a rename, so a rewrite always shows as a new inode.
+meta_unchanged() { # directory key-variable
+  local key=''
+  [ -n "$STAT_BUILTIN" ] && file_lstat "$1/meta.json" && key="$1 $FILE_INODE $FILE_MTIME $FILE_SIZE"
+  [ -z "$key" ] || [ "$key" != "${!2-}" ] || return 0
+  printf -v "$2" '%s' "$key"
+  return 1
+}
+
 # Sourced, not optional: without it `worker_pool_refuse_headless` is simply undefined, every
 # launch reads as refused, and each one blames the worker pool for a missing include.
 . "$SCRIPT_DIRECTORY/../share/worker-pool.sh" ||
@@ -516,7 +548,7 @@ activity_fingerprint() { # directory vendor workdir
   fi
   for path in "$directory/out" "$directory/err" "$directory/log" "$session_path"; do
     [ -n "$path" ] && [ -e "$path" ] || continue
-    fingerprint+="$(stat -f '%N %z %m' "$path" 2>/dev/null || stat -c '%n %s %Y' "$path" 2>/dev/null)|"
+    if file_lstat "$path"; then fingerprint+="$path $FILE_SIZE $FILE_MTIME|"; else fingerprint+='|'; fi
   done
   [ -z "$workdir" ] || compute_transcript_files "$directory"
   if stamp=$(workdir_activity_stamp "$directory" "$workdir" own "${RUN_FILES_LIST-}"); then
@@ -624,8 +656,9 @@ run_with_deadline() {
       sleep "$hop"
       kill -0 "$child" 2>/dev/null || exit 0
       printf -v wd_now '%(%s)T' -1
+      [ -z "$directory" ] || newest_mtime "$directory/out" "$directory/err"
       # Log text may quote a wall; a structured vendor error is authoritative even with heartbeats.
-      if [ -n "$directory" ] && { [ "$((wd_now - $(newest_mtime "$directory/out" "$directory/err")))" -ge "$WALL_SETTLE" ] ||
+      if [ -n "$directory" ] && { [ "$((wd_now - NEWEST_MTIME))" -ge "$WALL_SETTLE" ] ||
            { [ "$vendor" = grok ] && grok_stream_errors "$directory" 4096 | grep -Eiq "$GROK_LIMIT_RE"; }; } &&
          has_limit_signature "$directory" "$vendor" 4096; then
         reason=wall
@@ -662,7 +695,8 @@ run_with_deadline() {
       # An idle kill needs POSITIVE evidence that the worker stopped. A run none of the sources
       # above can see offers none, so it is left to the ceiling below instead of being killed for
       # being unobservable — a killed run hands nothing back.
-      if [ "${current%%~*}" = y ] && [ $(($(date +%s) - idle_since)) -ge "$IDLE" ]; then
+      printf -v wd_clock '%(%s)T' -1
+      if [ "${current%%~*}" = y ] && [ $((wd_clock - idle_since)) -ge "$IDLE" ]; then
         reason="idle $IDLE"
         break
       fi
@@ -3199,6 +3233,7 @@ start_run() {
 # exec: without it the forked shell running `cd / &&` stays, the id in its env, as the parent of caffeinate, and both end as orphans.
 # From / because, orphaned out of this tree, it would stand in the launcher cwd and the speed gate would refuse this very run.
 command -v caffeinate >/dev/null 2>&1 && (cd / && exec env -u WORKER_RUN_ID caffeinate -i -w $$ </dev/null >/dev/null 2>&1 &)
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 ticks=0
 while [ ! -e "$2/.ready" ]; do
   ticks=$((ticks + 1))
@@ -3270,11 +3305,11 @@ session_id() { # directory [vendor]
   session=''
   case "$vendor" in
     claudeb)
-      session=$(jq -r '.session_id // empty' "$directory/out" 2>/dev/null)
+      [ ! -s "$directory/out" ] || session=$(jq -r '.session_id // empty' "$directory/out" 2>/dev/null)
       # `out` exists only once the CLI exits, so a run the watchdog killed has none: without the
       # id the watchdog resolved while the run was alive, hours of work end with no SESSION: line
       # and nothing to RESUME (live: two runs killed on the old ceiling, 2026-09-02 and 09-04).
-      [ -n "$session" ] || session=$(head -n1 "$directory/session" 2>/dev/null)
+      [ -n "$session" ] || { { IFS= read -r session || :; } <"$directory/session"; } 2>/dev/null
       ;;
     codex)
       # Live codex exec prints 'session id: <uuid>' to stderr, not stdout.
@@ -3352,19 +3387,20 @@ grok_reason_line() { # directory
   fi
 }
 
-newest_mtime() { # files...
-  local newest=0 m path
+newest_mtime() { # files... -> NEWEST_MTIME
+  local newest=0 path
   for path in "$@"; do
-    m=$(stat -f %m "$path" 2>/dev/null) || m=$(stat -c %Y "$path" 2>/dev/null) || continue
-    [[ "$m" =~ ^[0-9]+$ ]] && [ "$m" -gt "$newest" ] && newest=$m
+    file_lstat "$path" || continue
+    [[ "$FILE_MTIME" =~ ^[0-9]+$ ]] && [ "$FILE_MTIME" -gt "$newest" ] && newest=$FILE_MTIME
   done
-  printf '%s\n' "$newest"
+  NEWEST_MTIME=$newest
 }
 
 has_limit_signature() {
   local directory="$1" vendor="$2" bytes="${3:-}" pattern tail_lines=0 path
   local -a scan
   if [ "$vendor" = codex ] && codex_unsupported_model "$directory" "$bytes"; then return 1; fi
+  [ "$vendor" = grok ] || [ -s "$directory/err" ] || [ -s "$directory/out" ] || return 1
   if tail -c 4096 "$directory/err" 2>/dev/null |
      grep -Eq 'worker-pick: no selectable [a-z]+ account \([^)]*WALLED'; then return 0; fi
   # out holds the worker's ANSWER, which in this repo routinely discusses quotas
@@ -3945,13 +3981,18 @@ compute_transcript_files() {
   RUN_FILES_ESCAPE=''
   RUN_FILES_OUTSIDE=''
   RUN_SHELL_COMMANDS=''
-  {
-    IFS= read -r vendor || true
-    IFS= read -r account || true
-    IFS= read -r workdir || true
-    IFS= read -r started || true
-  } < <(jq -r '.vendor, .account, .workdir, (.started_at // 0)' "$directory/meta.json" 2>/dev/null)
-  session=$(session_id "$directory")
+  if meta_unchanged "$directory" TRANSCRIPT_META_KEY; then
+    vendor=$TRANSCRIPT_META_VENDOR account=$TRANSCRIPT_META_ACCOUNT workdir=$TRANSCRIPT_META_WORKDIR started=$TRANSCRIPT_META_STARTED
+  else
+    {
+      IFS= read -r vendor || true
+      IFS= read -r account || true
+      IFS= read -r workdir || true
+      IFS= read -r started || true
+    } < <(jq -r '.vendor, .account, .workdir, (.started_at // 0)' "$directory/meta.json" 2>/dev/null)
+    TRANSCRIPT_META_VENDOR=$vendor TRANSCRIPT_META_ACCOUNT=$account TRANSCRIPT_META_WORKDIR=$workdir TRANSCRIPT_META_STARTED=$started
+  fi
+  session=$(session_id "$directory" "$vendor")
   if ! transcript=$(session_transcript "$vendor" "$account" "$session" "$workdir"); then
     RUN_FILES_REASON="no session transcript for $session"
     return 0
@@ -3963,9 +4004,11 @@ compute_transcript_files() {
     for sub in "${transcript%.jsonl}"/subagents/*.jsonl; do [ ! -f "$sub" ] || subagents+=("$sub"); done
   fi
   if [ -n "${TRANSCRIPT_MEMO+x}" ]; then
-    key=$(printf '%s\x1f' "$vendor" "$account" "$workdir" "$started" "$session" &&
-      { stat -f '%N %z %Fm' "$transcript" ${subagents[@]+"${subagents[@]}"} 2>/dev/null ||
-        stat -c '%n %s %.9Y' "$transcript" ${subagents[@]+"${subagents[@]}"} 2>/dev/null; }) || key=''
+    printf -v key '%s\x1f' "$vendor" "$account" "$workdir" "$started" "$session"
+    for sub in "$transcript" ${subagents[@]+"${subagents[@]}"}; do
+      file_lstat "$sub" || { key=''; break; }
+      key+="$sub $FILE_SIZE $FILE_MTIME $FILE_INODE"$'\n'
+    done
     if [ -n "$key" ] && [ "$key" = "$TRANSCRIPT_MEMO" ]; then
       RUN_FILES_LIST=$TRANSCRIPT_MEMO_LIST RUN_FILES_REASON=$TRANSCRIPT_MEMO_REASON
       RUN_FILES_PARTIAL=$TRANSCRIPT_MEMO_PARTIAL RUN_FILES_ESCAPE=$TRANSCRIPT_MEMO_ESCAPE RUN_FILES_OUTSIDE=$TRANSCRIPT_MEMO_OUTSIDE
@@ -4357,7 +4400,8 @@ last_edit_age() { # directory workdir now
   while IFS= read -r path; do
     case "$path" in '') ;; /*) named+=("$path") ;; *) named+=("${2%/}/$path") ;; esac
   done <<<"$RUN_FILES_LIST"
-  own=$(newest_mtime ${named[@]+"${named[@]}"})
+  newest_mtime ${named[@]+"${named[@]}"}
+  own=$NEWEST_MTIME
   [ "$own" -le "$newest" ] || newest=$own
   [ "$newest" -gt 0 ] || return 1
   age=$((now - newest)); [ "$age" -ge 0 ] || age=0
@@ -4384,10 +4428,11 @@ workdir_activity_stamp() { # directory workdir [own transcript-files]
       [ -n "$newest" ] || newest=0
       continue
     fi
-    while ! mtime=$(stat -f %m "$target" 2>/dev/null || stat -c %Y "$target" 2>/dev/null); do
-      [ "$target" != "$top" ] || { mtime=''; break; }
+    while ! file_lstat "$target"; do
+      [ "$target" != "$top" ] || { FILE_MTIME=''; break; }
       target=${target%/*}
     done
+    mtime=$FILE_MTIME
     [ -n "$mtime" ] || continue
     [[ "$mtime" =~ ^[0-9]+$ ]] || continue
     [ -n "$newest" ] && [ "$mtime" -le "$newest" ] || newest=$mtime
@@ -4614,17 +4659,32 @@ grok_live_session() { # account workdir started resume
 }
 
 run_transcript() { # directory vendor account workdir started [cached]
-  local directory="$1" vendor="$2" transcript=''
+  run_transcript_to "$@" && printf '%s\n' "$RUN_TRANSCRIPT"
+}
+
+GEMINI_SESSION_KEY='' GEMINI_SESSION=''
+run_transcript_to() { # directory vendor account workdir started [cached] -> RUN_TRANSCRIPT
+  local directory="$1" vendor="$2" transcript='' session='' key=''
+  RUN_TRANSCRIPT=''
   if [ "$vendor" = claudeb ]; then
     { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
   elif [ "$vendor" != gemini ] && [ -f "${6-}" ]; then
     transcript=$6
   fi
+  if [ -z "$transcript" ] || [ ! -f "$transcript" ]; then
+    # A gemini session is named by its log alone, which a streaming wait would otherwise grep every tick.
+    if [ "$vendor" = gemini ] && file_lstat "$directory/log"; then
+      key="$directory $FILE_INODE $FILE_SIZE $FILE_MTIME"
+      [ "$key" != "$GEMINI_SESSION_KEY" ] || session=$GEMINI_SESSION
+    fi
+    [ -n "$session" ] || session=$(session_id "$directory" "$vendor")
+    [ -z "$key" ] || GEMINI_SESSION_KEY=$key GEMINI_SESSION=$session
+  fi
   [ -n "$transcript" ] && [ -f "$transcript" ] ||
-    transcript=$(session_transcript "$vendor" "$3" "$(session_id "$directory" "$vendor")" "$4") ||
+    transcript=$(session_transcript "$vendor" "$3" "$session" "$4") ||
     { [ "$vendor" = grok ] && transcript=$(session_transcript grok "$3" "$(grok_live_session "$3" "$4" "$5" \
         "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)")" "$4"); } || return 1
-  printf '%s\n' "$transcript"
+  RUN_TRANSCRIPT=$transcript
 }
 
 # What `wait` streams to the chat's /tasks view: one line per tool call or short message of the
@@ -4632,21 +4692,24 @@ run_transcript() { # directory vendor account workdir started [cached]
 # A claudeb log is read from byte offset `from` on, and its first row `O<TAB>n` counts the bytes of the
 # whole lines it read: a partial last line is left for the next read.
 progress_rows() { # vendor transcript since from
-  case "$1" in
-    claudeb)
-      tail -c +$(($4 + 1)) "$2" 2>/dev/null | jq -rRs --argjson since "$3" 'split("\n") as $lines
+  if [ "$1" = claudeb ]; then
+    tail -c +$(($4 + 1)) "$2" 2>/dev/null | jq -rRs --argjson since "$3" 'split("\n") as $lines
         | (if ($lines | length) > 0 and ((($lines[-1] | fromjson?) // null) | type) == "object"
            then $lines else $lines[:-1] end) as $done
-        | ("O\t" + (([$done[] | utf8bytelength + 1] | add // 0)
+        | ("\u001f" + (([$done[] | utf8bytelength + 1] | add // 0)
             - (if ($done | length) > 0 and ($done | length) == ($lines | length) then 1 else 0 end) | tostring)),
           ($done[] | fromjson? | objects | select(.type? == "assistant")
         | select((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "")) | fromdateiso8601? // 0) >= $since)
         | .message.content[]? | objects
         | if .type? == "tool_use" then
-            ["X", ((.name // "tool") + " " + ((.input.command // .input.file_path // .input.notebook_path // .input.pattern
-              // .input.url // .input.query // .input.description // "") | tostring))]
-          elif .type? == "text" then ["M", (.text // "")]
-          else empty end | .[0] + "\t" + (.[1] | gsub("[\n\r\t]+"; " ")))' 2>/dev/null ;;
+            ((.name // "tool") + " " + ((.input.command // .input.file_path // .input.notebook_path // .input.pattern
+              // .input.url // .input.query // .input.description // "") | tostring))
+            | gsub("[\n\r\t]+"; " ") | select(test(" (outcome|arguments)$") | not)
+          elif .type? == "text" then (.text // "") | gsub("[\n\r\t]+"; " ") | select(test("[^ ]")) | "» " + .
+          else empty end)' 2>/dev/null
+    return 0
+  fi
+  case "$1" in
     codex) codex_tool_rows "$2" "$3"; codex_message_rows "$2" "$3" ;;
     gemini) gemini_progress_rows "$2" "$3" ;;
     grok) grok_progress_rows "$2" "$3" ;;
@@ -4658,10 +4721,10 @@ progress_rows() { # vendor transcript since from
     $1 == "M" && $2 ~ /[^ ]/ { print "» " $2 }'
 }
 
-elapsed_label() { # seconds
-  if [ "$1" -ge 3600 ]; then printf '%dh%02dm' "$(($1 / 3600))" "$(($1 % 3600 / 60))"
-  elif [ "$1" -ge 60 ]; then printf '%dm%02ds' "$(($1 / 60))" "$(($1 % 60))"
-  else printf '%ds' "$1"; fi
+elapsed_label() { # seconds -> ELAPSED_LABEL
+  if [ "$1" -ge 3600 ]; then printf -v ELAPSED_LABEL '%dh%02dm' "$(($1 / 3600))" "$(($1 % 3600 / 60))"
+  elif [ "$1" -ge 60 ]; then printf -v ELAPSED_LABEL '%dm%02ds' "$(($1 / 60))" "$(($1 % 60))"
+  else printf -v ELAPSED_LABEL '%ds' "$1"; fi
 }
 
 # The worker's Opus-eq tokens so far, rounded: the total share/night_spend.py run_usage prices the run at.
@@ -4696,6 +4759,7 @@ wait_progress() { # directory run-id stream
   local directory="$1" vendor account workdir started transcript='' stamp size row now prefix tokens out='' force=false began
   [ -n "$WAIT_STAMP" ] || force=true
   account=$WAIT_ACCOUNT
+  meta_unchanged "$directory" WAIT_META_KEY ||
   { IFS= read -r WAIT_VENDOR; IFS= read -r WAIT_ACCOUNT; IFS= read -r WAIT_WORKDIR; IFS= read -r WAIT_STARTED
     IFS= read -r WAIT_PID; IFS= read -r WAIT_PID_STARTED; IFS= read -r WAIT_ATTEMPT_STARTED; } \
     < <(jq -r '.vendor, .account, .workdir, (.pid_started_at // .started_at // 0), (.pid // ""), (.pid_started_at // ""),
@@ -4705,8 +4769,9 @@ wait_progress() { # directory run-id stream
   wait_clock
   [ "$force" = true ] || [ "$vendor" = claudeb ] || [ "$WAIT_CLOCK" -ge "$WAIT_ROWS_NEXT" ] ||
     [ "$WAIT_CLOCK" -ge "$WAIT_TOKENS_NEXT" ] || return 0
-  transcript=$(run_transcript "$directory" "$vendor" "$account" "$workdir" "$started" "$WAIT_TRANSCRIPT") || return 0
-  stamp=$(stat -f '%z %Fm' "$transcript" 2>/dev/null || stat -c '%s %.9Y' "$transcript" 2>/dev/null)
+  run_transcript_to "$directory" "$vendor" "$account" "$workdir" "$started" "$WAIT_TRANSCRIPT" || return 0
+  transcript=$RUN_TRANSCRIPT stamp=''
+  ! file_lstat "$transcript" || stamp="$FILE_SIZE $FILE_MTIME $FILE_INODE"
   size=${stamp%% *}
   if [ "$transcript" != "$WAIT_TRANSCRIPT" ] || ! [ "$size" -ge "$WAIT_OFFSET" ] 2>/dev/null; then
     WAIT_TRANSCRIPT=$transcript WAIT_OFFSET=0
@@ -4719,7 +4784,8 @@ wait_progress() { # directory run-id stream
     WAIT_STAMP=$stamp began=$WAIT_CLOCK
     printf -v now '%(%s)T' -1
     [[ "$started" =~ ^[0-9]+$ ]] || started=$now
-    prefix="[$(elapsed_label "$((now > started ? now - started : 0))")] "
+    elapsed_label "$((now > started ? now - started : 0))"
+    prefix="[$ELAPSED_LABEL] "
     [ "$vendor" = claudeb ] || WAIT_COUNTS=()
     [ "$3" = false ] || while IFS= read -r row; do
       case $row in
@@ -4731,7 +4797,7 @@ wait_progress() { # directory run-id stream
       WAIT_PRINTED[$row]=${WAIT_COUNTS[$row]}
       out+="$prefix$row"$'\n'
     done < <(progress_rows "$vendor" "$transcript" "$started" "$WAIT_OFFSET")
-    [ -z "$out" ] || printf '%s' "$out" | perl -CSD -ne 'chomp; print length($_) > 120 ? substr($_, 0, 119) . "\x{2026}" : $_, "\n"'
+    [ -z "$out" ] || wait_print_rows "$out"
     wait_clock
     WAIT_ROWS_NEXT=$((WAIT_CLOCK + 10 * (WAIT_CLOCK - began)))
   fi
@@ -4746,7 +4812,115 @@ wait_progress() { # directory run-id stream
     rm -f "$directory/tokens.tmp.$$"
 }
 
+wait_print_rows() { # lines: each cut to 120 characters
+  # ${#line} counts characters only under a UTF-8 locale; under C it counts bytes.
+  local LC_ALL=C.UTF-8 line out='' mark='…' 2>/dev/null
+  if [ "${#mark}" -ne 1 ]; then
+    printf '%s' "$1" | perl -CSD -ne 'chomp; print length($_) > 120 ? substr($_, 0, 119) . "\x{2026}" : $_, "\n"'
+    return
+  fi
+  while IFS= read -r line; do
+    [ "${#line}" -le 120 ] || line="${line:0:119}$mark"
+    out+=$line$'\n'
+  done <<<"${1%$'\n'}"
+  printf '%s' "$out"
+}
+
+# One kqueue watcher serves a whole wait: it prints `exit` once exit_code is in the run directory and
+# `gone <pid>` once the supervisor it armed on ends, so no tick forks to sleep or to probe that pid.
+WAIT_WATCH_STATE='' WAIT_WATCH_IN='' WAIT_ARMED='' WAIT_ARMED_SINCE='' WAIT_WATCH_SEEN=''
+wait_watch_start() { # directory pid pid_started_at
+  local read_end armed
+  [ -z "$WAIT_WATCH_STATE" ] || return 0
+  WAIT_WATCH_STATE=off
+  coproc WAIT_WATCH { exec python3 -c '
+import errno, os, select, sys
+directory, pid, parent = sys.argv[1], sys.argv[2], os.getppid()
+queue = select.kqueue()
+queue.control([select.kevent(os.open(directory, os.O_RDONLY), select.KQ_FILTER_VNODE,
+                             select.KQ_EV_ADD | select.KQ_EV_CLEAR, select.KQ_NOTE_WRITE),
+               select.kevent(parent, select.KQ_FILTER_PROC, select.KQ_EV_ADD, select.KQ_NOTE_EXIT),
+               select.kevent(0, select.KQ_FILTER_READ, select.KQ_EV_ADD)], 0)
+if pid.isdigit() and int(pid) > 0:
+    try:
+        queue.control([select.kevent(int(pid), select.KQ_FILTER_PROC, select.KQ_EV_ADD, select.KQ_NOTE_EXIT)], 0)
+        os.write(1, b"armed %s\n" % pid.encode())
+    except OSError as error:
+        os.write(1, b"%s %s\n" % (b"gone" if error.errno == errno.ESRCH else b"unarmed", pid.encode()))
+os.write(1, b"ready\n")
+told = False
+while True:
+    if not told and os.path.exists(os.path.join(directory, "exit_code")):
+        os.write(1, b"exit\n")
+        told = True
+    for event in queue.control(None, 8):
+        if event.filter == select.KQ_FILTER_READ and not os.read(0, 4096):
+            sys.exit(0)
+        if event.filter == select.KQ_FILTER_PROC:
+            if event.ident == parent:
+                sys.exit(0)
+            os.write(1, b"gone %d\n" % event.ident)
+' "$1" "$2" 2>/dev/null; } 2>/dev/null
+  read_end=${WAIT_WATCH[0]-}
+  [ -n "$read_end" ] || return 1
+  # A copy, because bash closes and unsets the coproc's own descriptors the moment it reaps the watcher.
+  exec {WAIT_WATCH_IN}<&"$read_end" {read_end}<&-
+  WAIT_WATCH_STATE=on
+  wait_watch_line "^((armed|gone|unarmed) $2|ready)\$" 10 || { wait_watch_stop; return 1; }
+  armed=$WAIT_WATCH_SEEN
+  [ "$armed" = ready ] || wait_watch_line '^ready$' 10 || { wait_watch_stop; return 1; }
+  [ "$armed" != "armed $2" ] || ! supervisor_running "$1" "$2" "$3" || WAIT_ARMED=$2 WAIT_ARMED_SINCE=$3
+  return 0
+}
+
+wait_watch_stop() {
+  [ "$WAIT_WATCH_STATE" = on ] || return 0
+  WAIT_WATCH_STATE=off WAIT_ARMED=''
+  exec {WAIT_WATCH_IN}<&-
+}
+
+wait_watch_line() { # regex seconds: fails on a timeout or on the armed pid's `gone`; a dead watcher is stopped
+  local line now end left frac rc
+  now=${EPOCHREALTIME/[.,]/}
+  left=${2%%.*} frac=000000
+  [[ "$2" != *.* ]] || { frac=${2#*.}000000; frac=${frac:0:6}; }
+  end=$((now + ${left:-0} * 1000000 + 10#$frac))
+  while :; do
+    now=${EPOCHREALTIME/[.,]/}
+    left=$((end - now))
+    [ "$left" -gt 0 ] || return 1
+    printf -v left '%d.%06d' "$((left / 1000000))" "$((left % 1000000))"
+    IFS= read -r -t "$left" -u "$WAIT_WATCH_IN" line || {
+      rc=$?
+      [ "$rc" -gt 128 ] || wait_watch_stop
+      return 1
+    }
+    WAIT_WATCH_SEEN=$line
+    [[ ! "$line" =~ $1 ]] || return 0
+    [ -z "$WAIT_ARMED" ] || [ "$line" != "gone $WAIT_ARMED" ] || { WAIT_ARMED=''; return 1; }
+  done
+}
+
+wait_supervisor_running() { # directory pid pid_started_at
+  [ -z "$WAIT_ARMED" ] || [ "$2" != "$WAIT_ARMED" ] || [ "$3" != "$WAIT_ARMED_SINCE" ] || return 0
+  supervisor_running "$@"
+}
+
+wait_sleep() { # directory seconds: back early once exit_code appears; fails without the watcher
+  [ "$WAIT_WATCH_STATE" = on ] || return 1
+  [ ! -f "$1/exit_code" ] || return 0
+  wait_watch_line '^exit$' "$2" || [ "$WAIT_WATCH_STATE" = on ] || return 1
+  return 0
+}
+
 wait_run() {
+  local rc=0
+  wait_run_loop "$@" || rc=$?
+  wait_watch_stop
+  return "$rc"
+}
+
+wait_run_loop() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" max='' stream=false directory wait_started now waited remaining sleep_for ticks pid account
   shift
@@ -4772,7 +4946,7 @@ wait_run() {
     pid=$WAIT_PID
     # pid 0 is the pre-launch placeholder, and a probe of it would answer for our own
     # process group and report a never-started run as alive.
-    if ! supervisor_running "$directory" "$pid" "$WAIT_PID_STARTED" || run_overdue "$directory" "$WAIT_ATTEMPT_STARTED"; then
+    if ! wait_supervisor_running "$directory" "$pid" "$WAIT_PID_STARTED" || run_overdue "$directory" "$WAIT_ATTEMPT_STARTED"; then
       sleep 0.1
       WAIT_STAMP=''; wait_progress "$directory" "$run_id" "$stream"
       if [ -f "$directory/exit_code" ]; then
@@ -4790,7 +4964,8 @@ wait_run() {
     if [ "$waited" -ge "$max" ]; then running_report "$directory"; return 0; fi
     remaining=$((max - waited))
     sleep_for=$WAIT_POLL; [[ "$sleep_for" == *.* || "$remaining" -ge "$sleep_for" ]] || sleep_for=$remaining
-    exit_file_wait "$directory" "$sleep_for" || {
+    wait_watch_start "$directory" "$pid" "$WAIT_PID_STARTED"
+    wait_sleep "$directory" "$sleep_for" || exit_file_wait "$directory" "$sleep_for" || {
       ticks=$((${sleep_for%.*} * 5)); [ "$ticks" -gt 0 ] || ticks=1
       while [ "$ticks" -gt 0 ] && [ ! -f "$directory/exit_code" ]; do
         sleep 0.2; ticks=$((ticks - 1))

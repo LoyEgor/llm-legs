@@ -167,12 +167,14 @@ reliability_tests() {
 
   if suite_shard_owns 1 A-mtime; then
     (
-      eval "$(sed -n '/^newest_mtime() {/,/^}/p' "$RUNNER")"
+      eval "$(sed -n '/^file_lstat() {/,/^}/p; /^newest_mtime() {/,/^}/p' "$RUNNER")"
+      STAT_BUILTIN=''
       stat() {
         [ "$1" != -f ] || { printf 'filesystem info\n'; return 1; }
-        case "$3" in out) printf '100\n' ;; err) printf '200\n' ;; *) return 1 ;; esac
+        case "$3" in out) printf '1 100 7\n' ;; err) printf '2 200 8\n' ;; *) return 1 ;; esac
       }
-      [ "$(newest_mtime out err missing)" = 200 ]
+      newest_mtime out err missing
+      [ "$NEWEST_MTIME" = 200 ]
     )
     assert test "$?" -eq 0
   fi
