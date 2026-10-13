@@ -255,7 +255,7 @@ GATE
   assert grep -q '^STATUS: done' <<<"$output"
   assert test "$(cat "$STUB_DIR/background_env")" = "1 1500000 1500000"
   assert grep -q '^CLAUDEB_CALL$' "$CALL_LOG"
-  assert test "$(grep -A1 -xF 'ARG=--disallowedTools' "$CALL_LOG" | tail -n +2)" = 'ARG=WebSearch\,WebFetch\,ScheduleWakeup\,CronCreate'
+  assert test "$(grep -A1 -xF 'ARG=--disallowedTools' "$CALL_LOG" | tail -n +2)" = 'ARG=WebSearch\,WebFetch\,ScheduleWakeup\,CronCreate\,Workflow\,ListAgents'
   : >"$LIMIT_GATE_LOG"
   clear_stub
   CLAUDE_CODE_ENTRYPOINT=cli start_ok codex

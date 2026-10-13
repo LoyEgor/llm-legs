@@ -1097,8 +1097,9 @@ supervise_claudeb() {
   # Into `access` and not into `command`: the effort-drop retry below rebuilds the command from it,
   # and a web-search state left behind there relaunches the run with a capability it was denied.
   # A wake-up scheduled in a -p session ends the turn and nothing ever fires it: the run exits 0
-  # "waiting on" suites it never reads, its work uncommitted.
-  while IFS= read -r value; do access+=("$value"); done < <(web_search_claudeb_args "$(web_search_meta_state "$meta")" ScheduleWakeup,CronCreate)
+  # "waiting on" suites it never reads, its work uncommitted. Workflow and ListAgents are a chat's
+  # fan-out, never a headless worker's; their schemas rode every cold start and context rewrite.
+  while IFS= read -r value; do access+=("$value"); done < <(web_search_claudeb_args "$(web_search_meta_state "$meta")" ScheduleWakeup,CronCreate,Workflow,ListAgents)
   value=$(jq -r '.inbox_settings // empty' "$meta")
   [ -z "$value" ] || access+=(--settings "$value")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json "${access[@]}")
