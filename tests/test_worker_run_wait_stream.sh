@@ -78,8 +78,8 @@ await() { local i; for i in $(seq 100); do grep -Fq -- "$1" "$WORK/live.out" && 
 # A tick is one exit_file_wait, each after a transcript read: the second new one proves a read began after the call.
 await_ticks() { # run-dir count
   local want i
-  want=$(($(grep -cFx "python3 - $1 1" "$CALLS") + $2))
-  for i in $(seq 300); do [ "$(grep -cFx "python3 - $1 1" "$CALLS")" -lt "$want" ] || return 0; sleep 0.1; done
+  want=$(($(grep -cFx "python3 - $1 0.2" "$CALLS") + $2))
+  for i in $(seq 300); do [ "$(grep -cFx "python3 - $1 0.2" "$CALLS")" -lt "$want" ] || return 0; sleep 0.1; done
   fail "under $want ticks of $1"
 }
 rm -f "$RUN/exit_code" "$RUN/tokens"
@@ -89,7 +89,7 @@ jq -c --argjson p "$live" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at
   mv "$WORK/m" "$RUN/meta.json"
 row alpha-row >"$WORK/session.jsonl"
 : >"$CALLS"
-PATH="$WORK/tick-shim:$PATH" WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$ID" >"$WORK/live.out" 2>&1 &
+PATH="$WORK/tick-shim:$PATH" WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$ID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await alpha-row
 row bravo-row >"$WORK/session.jsonl"
@@ -124,7 +124,7 @@ sleep 300 &
 live=$!
 jq -c --argjson p "$live" --argjson t "$now" '.pid = $p | .pid_started_at = $t' "$CRUN/meta.json" >"$WORK/m" && mv "$WORK/m" "$CRUN/meta.json"
 : >"$CALLS"
-WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
+WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await '$ ls'
 await_ticks "$CRUN" 2
@@ -139,7 +139,7 @@ live=$!
 jq -c --argjson p "$live" --argjson t "$now" '.pid = $p | .pid_started_at = $t | .account = "main"' "$CRUN/meta.json" >"$WORK/m" &&
   mv "$WORK/m" "$CRUN/meta.json"
 printf 'session id: abc123\n' >"$CRUN/err"
-WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
+WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await '$ ls'
 mkdir -p "$HOME/.codex-profiles/next/sessions"

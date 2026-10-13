@@ -110,20 +110,17 @@ cat >"$WORK/bin/report-bus" <<'REPORTBUS'
 body=$(cat)
 jq -cn --arg body "$body" --args '{argv:$ARGS.positional,body:$body}' -- "$@" >>"$REPORT_BUS_LOG"
 REPORTBUS
-chmod +x "$WORK/bin/report-bus"
 cat >"$WORK/bin/review-bench" <<'REVIEWBENCH'
 #!/usr/bin/env bash
 [ -z "${REVIEW_BENCH_STUB_FAIL:-}" ] || exit 3
 [ -n "${REVIEW_BENCH_STUB_EMPTY:-}" ] || printf 'STUB FIX RULE %s\nwrite verdicts.jsonl rows\n' "$*"
 REVIEWBENCH
-chmod +x "$WORK/bin/review-bench"
 export CAFFEINATE_LOG="$WORK/caffeinate.calls"
 cat >"$WORK/bin/caffeinate" <<'CAFFEINATE'
 #!/usr/bin/env bash
 printf '%s run-id=%s cwd=%s\n' "$*" "${WORKER_RUN_ID-unset}" "$PWD" >>"$CAFFEINATE_LOG"
 exit 1
 CAFFEINATE
-chmod +x "$WORK/bin/caffeinate"
 printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 printf 'test brief\nsecond line\n' >"$WORK/brief"
 printf 'image\n' >"$WORK/image.png"
@@ -404,7 +401,7 @@ clear_stub() {
     "$STUB_DIR/grok_max_turns" "$STUB_DIR/grok_cancelled" "$STUB_DIR/grok_cancelled_worked" \
     "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"
   local store=${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}
-  [ ! -f "$store" ] || { jq 'walk(if type == "object" then del(.worker_wall) else . end)' "$store" >"$store.next" &&
+  [ ! -f "$store" ] || ! grep -q worker_wall "$store" || { jq 'walk(if type == "object" then del(.worker_wall) else . end)' "$store" >"$store.next" &&
     mv "$store.next" "$store"; }
 }
 
@@ -421,7 +418,7 @@ start_ok() {
 await_launched() {
   local tick
   for tick in $(seq 1 400); do
-    { [ -e "$RUN_DIR/exit_code" ] || jq -e '.cli_pid // empty' "$RUN_DIR/meta.json" >/dev/null 2>&1; } && return 0
+    { [ -e "$RUN_DIR/exit_code" ] || grep -Eqs '"cli_pid": *"?[0-9]' "$RUN_DIR/meta.json"; } && return 0
     sleep 0.05
   done
 }

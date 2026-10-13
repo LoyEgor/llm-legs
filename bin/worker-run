@@ -345,7 +345,7 @@ WALL_SETTLE=${WORKER_RUN_WALL_SETTLE_S:-60}
 [[ "$WALL_SETTLE" =~ ^[0-9]+$ ]] || WALL_SETTLE=60
 [[ "$SILENT" =~ ^[0-9]+$ ]] || SILENT=600
 WAIT_POLL=${WORKER_RUN_WAIT_POLL_S:-5}
-[[ "$WAIT_POLL" =~ ^[1-9][0-9]*$ ]] || WAIT_POLL=5
+[[ "$WAIT_POLL" =~ ^([1-9][0-9]*|0\.[0-9]*[1-9][0-9]*)$ ]] || WAIT_POLL=5
 
 # The run record the watchdog watches, set by `supervise` before any vendor is launched.
 RUN_DIRECTORY=''
@@ -4786,9 +4786,9 @@ wait_run() {
     waited=$((now - wait_started)); [ "$waited" -ge 0 ] || waited=0
     if [ "$waited" -ge "$max" ]; then running_report "$directory"; return 0; fi
     remaining=$((max - waited))
-    sleep_for=$WAIT_POLL; [ "$remaining" -ge "$sleep_for" ] || sleep_for=$remaining
+    sleep_for=$WAIT_POLL; [[ "$sleep_for" == *.* || "$remaining" -ge "$sleep_for" ]] || sleep_for=$remaining
     exit_file_wait "$directory" "$sleep_for" || {
-      ticks=$((sleep_for * 5))
+      ticks=$((${sleep_for%.*} * 5)); [ "$ticks" -gt 0 ] || ticks=1
       while [ "$ticks" -gt 0 ] && [ ! -f "$directory/exit_code" ]; do
         sleep 0.2; ticks=$((ticks - 1))
       done
