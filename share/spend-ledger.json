@@ -2997,6 +2997,91 @@
    "verdict": "cut",
    "zero": "removal saves 0.9 wall-min/day; loses the pre-request refusals, leg logging, balance and models-check contracts",
    "note": "SIGTERM fixture ends its vendor right after signalling the wrapper instead of sleeping out a 2 s child; race margin unchanged, TERM-trap mutation red, 19 asserts"
+  },
+  {
+   "id": "suite:hammerspoon/test_ipad_overlay",
+   "title": "hammerspoon/test_ipad_overlay",
+   "audited_at": "2026-10-13T11:39:51+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-ipad-overlay-20261012T235236Z-38ae",
+   "cpu_run": 1.0,
+   "wall_run": 1.8,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.07,
+   "sources": {
+    "hammerspoon/tests/ipad_overlay_harness.lua": "46992a2b046e059b4dfa395c350b9ce9d1ca4406",
+    "hammerspoon/tests/test_ipad_overlay.sh": "112bc8416c6c2920ea62fcaa25e26872326e447b"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~4 s a run (0.0 wall-min/day); loses the iPad overlay supervisor contract (reload relaunch/hide, crash-loop cap, stale-retry invalidation), the brief-fill map, the Lua-literal round-trip of typed text and the PyObjC panel smoke",
+   "note": "two PyObjC imports + py_compile -> one process; smoke's exact lua_string pin removed (live round-trip red under its mutations); hs calls stdin </dev/null (direct runs hung holding /tmp/hs-cli.lock); 13 harness checks + map + literal + smoke unchanged; ~6.5 -> ~4.3 s at load 85"
+  },
+  {
+   "id": "suite:hammerspoon/test_awdl_guard",
+   "title": "hammerspoon/test_awdl_guard",
+   "audited_at": "2026-10-13T11:39:53+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-ipad-overlay-20261012T235236Z-38ae",
+   "cpu_run": 0.0,
+   "wall_run": 0.0,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/awdl_guard_harness.lua": "c85558654f0a126efcc225ed52517e9134681914",
+    "hammerspoon/tests/test_awdl_guard.sh": "650d98e2352fa26b0841ada96a6d336de9ebdaa2"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.1 s a run; loses the awdl0 settle/gap/grant/demand-stream contract that keeps AirDrop's peer Wi-Fi from halving throughput yet lets Universal Clipboard raise it",
+   "note": "every check red under its mutation (grant length mutation red at the grant check); no spawns beyond one hs call, no sleeps, virtual clock; stdin </dev/null added (hang-proofing, no wall change)"
+  },
+  {
+   "id": "suite:hammerspoon/test_chat_gate_guards",
+   "title": "hammerspoon/test_chat_gate_guards",
+   "audited_at": "2026-10-13T11:39:55+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-ipad-overlay-20261012T235236Z-38ae",
+   "cpu_run": 0.0,
+   "wall_run": 0.4,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/chat_gate_guards_harness.lua": "496f96b8f2aa88a287dd23c011fd3c0146f89663",
+    "hammerspoon/tests/test_chat_gate_guards.sh": "b44d1d8bddf9e52708c388b2fd1e02b28249d86f"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.2 s a run; loses 52 checks of the guards inside the keyboard slot (fail-closed screen lock, dictation, tab focus, stamping, budgets)",
+   "note": "fail-open screenIsLocked mutation red; one hs call, virtual clock, temp HOME; stdin </dev/null added"
+  },
+  {
+   "id": "suite:hammerspoon/test_claude_cmd_keys",
+   "title": "hammerspoon/test_claude_cmd_keys",
+   "audited_at": "2026-10-13T11:39:55+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-ipad-overlay-20261012T235236Z-38ae",
+   "cpu_run": 0.0,
+   "wall_run": 0.3,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.02,
+   "sources": {
+    "hammerspoon/tests/claude_cmd_keys_harness.lua": "c90da82fb4191be138589717ba5c5409f34738eb",
+    "hammerspoon/tests/test_claude_cmd_keys.sh": "6de6c3c5884aa01cc23b249e37c2c72a249e17df"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.4 s a run; loses the Claude Cmd-key decision and gesture contract (copy/paste/replace/cut, selection gestures) in 6740 lines of fake-hs cases",
+   "note": "pendingHoldsReplace mutation red; probe: the pre-fake part touches no live hs; one hs call; isWordCell '/' has no check (missing test, not vacuous); stdin </dev/null added"
+  },
+  {
+   "id": "suite:hammerspoon/test_chat_gate",
+   "title": "hammerspoon/test_chat_gate",
+   "audited_at": "2026-10-13T11:40:07+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-ipad-overlay-20261012T235236Z-38ae",
+   "cpu_run": 0.0,
+   "wall_run": 0.7,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/chat_gate_harness.lua": "2cb08437baccf77814aa337396c5469bfd11a48f",
+    "hammerspoon/tests/test_chat_gate.sh": "d6786888ecaa044a9d1da2c0caa8ed321341cec7"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.5 s a run; loses 273 checks of the job/slot model that decides who may type into a terminal (target-gone, pid reuse, FIFO keyboard, budgets, compaction and trash consumers)",
+   "note": "virtual clock, temp HOME per case, one hs call; targetIsGone disabled -> 3 FAILs; stdin </dev/null added; the live block stops its watchers only if no check throws first (P3, not fixed)"
   }
  ]
 }

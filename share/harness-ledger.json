@@ -9137,6 +9137,13 @@
       "reason": "2026-10-13: queue 28-42 % of suite wait over a usual 12; the share is 24-58 % on every night-heavy day (10-05 26, 10-09 24, 10-10 58, 10-13 42) and 1-12 % on quiet ones. 4 of 4 slots held for 293 of the day's ~490 queued min (waits journal reason limit), the rest room refusals; suites ran at 20x their CPU wall under load 37-46, so a 1 min suite held a slot 18 min. The ceiling is the freeze-safe count and parallel fixers are the design; no lever of ours cut the queue, and free-machine deductions left Lost time in 9e64bac4e",
       "since": "2026-10-13",
       "would_catch_if": "the queue line's usual were taken over days of the same kind (night-heavy against night-heavy) or its row carried the night's concurrent runs beside the held-slot count"
+    },
+    {
+      "id": "hs-cli-lock-holder-outside-run-all",
+      "what": "a live-hs suite run directly (bash tests/test_x.sh from an agent shell) that blocks while holding /tmp/hs-cli.lock",
+      "reason": "hs -c reads a non-tty stdin to EOF; run-suites gives /dev/null but an agent shell's stdin is an open socket, so the client never exits and every live-hs suite on the machine waits in lockf (2026-10-13: a test_compact_boundary client held it 12 min, the waiters' wall showed only as slow suites); hammerspoon test_ipad_mode, test_send_actions, test_handoff, test_display_mirror, test_claude_chat_switch and test_compact_boundary still call hs without </dev/null, test_hs_cli_lock.sh checks the lock only",
+      "since": "2026-10-13",
+      "would_catch_if": "test_hs_cli_lock.sh also failed an hs call line without </dev/null, or the lock wait inside lockf were journaled with the holder's command"
     }
   ]
 }
