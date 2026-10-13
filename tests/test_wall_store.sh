@@ -32,7 +32,7 @@ printf 'return {\n' >"$menu_cases"
 # never prints $7, a guessed time; the table/plain STATUS re-collects, so it takes its own label $6.
 surfaces() { # name vendor walled [window shown-label status-label guess-label]
   local name=$1 vendor=$2 walled=$3 window=${4:-} shown=${5-$label} status_label=${6-${5-$label}} guess=${7:-}
-  local status picked rendered format line2
+  local status picked rendered format line2 pids=()
   picked=$(WORKER_PICK_NOW="$now" bash "$ROOT/bin/worker-pick" 2>/dev/null | grep "^$vendor:")
   if [ "$vendor" = codex ]; then
     status=$(printf '%s' '{"model":{"display_name":"GPT"},"context_window":{"used_percentage":1}}' |
@@ -57,7 +57,15 @@ surfaces() { # name vendor walled [window shown-label status-label guess-label]
     check absent "$guess" "$picked"
   fi
   for format in json table plain; do
-    rendered=$(bash "$SCRIPT" --"$format" --no-write) || fail "$name: render $format"
+    bash "$SCRIPT" --"$format" --no-write >"$WORK/render.$format" &
+    pids[${#pids[@]}]=$!
+  done
+  for format in json table plain; do
+    wait "${pids[0]}" || fail "$name: render $format"
+    pids=("${pids[@]:1}")
+  done
+  for format in json table plain; do
+    rendered=$(<"$WORK/render.$format")
     [ "$format" = json ] || rendered=$(grep "^$vendor" <<<"$rendered")
     if [ "$format" = json ]; then
       check jq -e --arg v "$vendor" --argjson walled "$walled" --argjson now "$now" \
