@@ -27,7 +27,7 @@ for _ in 1 2 3 4 5; do
   target=$(readlink "$self")
   case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
 done
-here=$(dirname "$self")
+case "$self" in */*) here=${self%/*} ;; *) here=. ;; esac
 . "$here/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
 . "$here/../share/instruction-files.sh" 2>/dev/null ||
   { gate_journal bloat fault '' '' '' 'share/instruction-files.sh missing'
@@ -60,7 +60,7 @@ pass() { # [decision detail]
 }
 
 sid='' file_path=''
-input=$(cat) || input=''
+IFS= read -r -d '' input || :
 
 fields=$(jq -j 'if type != "object" then error else
   [(.tool_name // ""), (.session_id // ""), (.tool_use_id // "" | tostring), (.cwd // ""), (.agent_id // "" | tostring),
@@ -89,6 +89,14 @@ case "$file_path" in
     [ -n "$payload_cwd" ] || { gate_journal bloat fault "$sid" "$file_path" '' 'relative path with no cwd'; exit 0; }
     file_path="$payload_cwd/$file_path"
     ;;
+esac
+
+# This hook runs before every Edit and every Write in every session, so what it does for a file it
+# will never price has to be nothing. Only markdown is ever measured or always loaded, and the global
+# file resolves to a CLAUDE.md, so a source file leaves here, before any fork.
+case "$file_path" in
+  *.[Mm][Dd]|*.[Mm][Aa][Rr][Kk][Dd][Oo][Ww][Nn]) ;;
+  *) exit 0 ;;
 esac
 
 # A headless worker never edits one of these files, and this stands ahead of every price and every
@@ -139,15 +147,6 @@ else
       ;;
   esac
 fi
-# This hook runs before every Edit and every Write in every session, so what it does for a file it
-# will never price has to be nothing. Only markdown is ever measured (the export indexes no other
-# extension) and only markdown carries a class rate, so a source file leaves here rather than paying
-# for a lookup over the whole rate index — whatever class_reads says, as instruction_read_rate's
-# directory patterns match a script under skills/ too.
-case "$file_path" in
-  *.[Mm][Dd]|*.[Mm][Aa][Rr][Kk][Dd][Oo][Ww][Nn]) ;;
-  *) [ -n "$global" ] || exit 0 ;;
-esac
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/instruction-gate.XXXXXX") ||
   { gate_journal bloat fault "$sid" "$file_path" '' 'mktemp failed'; exit 0; }
 trap 'hook_time_end 2>/dev/null || :; rm -rf "$tmp_dir" 2>/dev/null' EXIT

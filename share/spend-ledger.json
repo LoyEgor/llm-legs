@@ -1851,6 +1851,21 @@
    "verdict": "kept",
    "zero": "removal saves one past run (85 CPU-s once, 10-12T23); loses a research probe of the live logo-vectorizer chat",
    "note": "kept: one-shot research probe of logo-vectorizer-bench (results/ untracked by .gitignore), ran once, no timer, loop or launchd; same as the tracers/* rows kept tonight"
+  },
+  {
+   "id": "cpu:hook/instruction-bloat-gate.sh",
+   "title": "hook/instruction-bloat-gate.sh",
+   "audited_at": "2026-10-13T09:50:35+03:00",
+   "by": "harness-speed-cpu-hook-instruction-bloat-gate-sh-20261012T235045Z-23d2",
+   "cpu_min_day": 0.5,
+   "cpu_s_run": 0.041,
+   "runs_day": 575,
+   "sources": {
+    "llm-legs/bin/instruction-bloat-gate.sh": "fd88310f76aaada05c7f439084e44c7ec68480d4"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.6 CPU-min/day; loses the instruction-file growth gate (priced denials of always-loaded markdown growth, relay refusals, the tripwire's in-flight marks)",
+   "note": "a source-file Edit/Write (most of 742 runs/day) now leaves before any fork: md filter ahead of the relay check and the global realpath, stdin by read, dirname by expansion; 129 real transcript payloads: 22 -> 16 CPU-ms/run interleaved, outputs identical; fork-count pin in test_instruction_gate_bloat.sh red on the old code (dirname cat jq realpath)"
   }
  ]
 }

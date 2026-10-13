@@ -345,7 +345,10 @@ assert_eq pass "$(bloat_decision "$HOME/.claude/agents/helper.sh")"
 assert_eq pass "$(bloat_decision "$HOME/.claude/instructions/table.json")"
 # Every Edit and Write in every session pays this gate, so a source file leaves after one payload parse.
 printf '%s\n' 'jq() { printf "jq\n" >>"$FORKS"; command jq "$@"; }' \
-  'mktemp() { printf "mktemp\n" >>"$FORKS"; command mktemp "$@"; }' >"$WORK/count-forks.sh"
+  'mktemp() { printf "mktemp\n" >>"$FORKS"; command mktemp "$@"; }' \
+  'cat() { printf "cat\n" >>"$FORKS"; command cat "$@"; }' \
+  'dirname() { printf "dirname\n" >>"$FORKS"; command dirname "$@"; }' \
+  'realpath() { printf "realpath\n" >>"$FORKS"; command realpath "$@"; }' >"$WORK/count-forks.sh"
 : >"$WORK/forks"
 BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bloat "$WORK/liveproj/run.py" >/dev/null 2>&1
 assert_eq "jq " "$(tr '\n' ' ' <"$WORK/forks")"
