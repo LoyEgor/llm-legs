@@ -61,26 +61,34 @@ sup=$!
 for r in r1 r2; do jq -n --argjson p "$sup" --argjson t "$(date +%s)" '{vendor: "none", pid: $p, started_at: $t}' >"$RUNS/$r/meta.json"; done
 printf '0\n' >"$RUNS/r2/exit_code"
 perl -e 'utime(time - 5, time - 5, $ARGV[0])' "$RUNS/r2/exit_code"
-(until jq -e '.phase == "wait"' "$RUNS/r1/state.json" >/dev/null 2>&1; do sleep 0.1; done
-  sleep 1.2; printf '0\n' >"$RUNS/r1/exit_code") &
-for r in r2 r1; do
-  env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER WORKER_RUN_DIR="$RUNS" WORKER_RUN_WAIT_POLL_S=1 \
-    bash "$ROOT/bin/worker-run" wait "$r" --max 30 >"$WORK/wait-$r.out" 2>&1
-done
+armed() { # pid: the wait's kqueue python is up; a wait that never arms is written to after 5 s, so the lag check still fails it
+  local n=0
+  until pgrep -P "$1" -f 'ython[0-9.]* - ' >/dev/null || [ $((n += 1)) -gt 100 ]; do /bin/sleep 0.05; done
+}
+env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER WORKER_RUN_DIR="$RUNS" WORKER_RUN_WAIT_POLL_S=1 \
+  bash "$ROOT/bin/worker-run" wait r2 --max 30 >"$WORK/wait-r2.out" 2>&1
+env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER WORKER_RUN_DIR="$RUNS" WORKER_RUN_WAIT_POLL_S=1 \
+  bash "$ROOT/bin/worker-run" wait r1 --max 30 >"$WORK/wait-r1.out" 2>&1 &
+waiter=$!
+armed "$waiter"
+printf '0\n' >"$RUNS/r1/exit_code"
+wait "$waiter"
 assert jqe -s 'map(select(.class == "poll")) | length == 1 and .[0].source == "worker-run wait r1" and .[0].seconds >= 0' \
   "$W/$(date +%Y-%m-%d).jsonl"
 # Between full checks every WAIT_POLL seconds, a kqueue on the run directory wakes the wait when the exit file
-# appears (no 0.2 s ticks), and the lag is taken from its sub-second mtime: written at .7 of a second, a
-# whole-second mtime alone would add 0.7 s.
+# appears (no 0.2 s ticks), and the lag is taken from its sub-second mtime: written in the last 0.4 of a second, a
+# whole-second mtime alone would add 0.6 s or more.
 mkdir -p "$RUNS/r3" "$WORK/sleep-bin"
 printf '#!/bin/sh\necho "$*" >>"%s"\nexec /bin/sleep "$@"\n' "$WORK/sleeps" >"$WORK/sleep-bin/sleep"
 chmod +x "$WORK/sleep-bin/sleep"; : >"$WORK/sleeps"
 jq -n --argjson p "$sup" --argjson t "$(date +%s)" '{vendor: "none", pid: $p, started_at: $t}' >"$RUNS/r3/meta.json"
-(until jq -e '.phase == "wait"' "$RUNS/r3/state.json" >/dev/null 2>&1; do sleep 0.1; done
-  sleep 1.2; until f=${EPOCHREALTIME#*[.,]}; [ "${f:0:1}" = 7 ]; do sleep 0.02; done
-  printf '0\n' >"$RUNS/r3/exit_code") &
 env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER WORKER_RUN_DIR="$RUNS" WORKER_RUN_WAIT_POLL_S=8 \
-  PATH="$WORK/sleep-bin:$PATH" bash "$ROOT/bin/worker-run" wait r3 --max 30 >"$WORK/wait-r3.out" 2>&1
+  PATH="$WORK/sleep-bin:$PATH" bash "$ROOT/bin/worker-run" wait r3 --max 30 >"$WORK/wait-r3.out" 2>&1 &
+waiter=$!
+armed "$waiter"
+until us=$((10#${EPOCHREALTIME#*[.,]})); [ "$us" -ge 600000 ]; do /bin/sleep "0.$(printf %06d $((600000 - us)))"; done
+printf '0\n' >"$RUNS/r3/exit_code"
+wait "$waiter"
 kill "$sup"
 assert jqe -s 'map(select(.source == "worker-run wait r3")) | length == 1 and .[0].seconds < 0.6' "$W/$(date +%Y-%m-%d).jsonl"
 assert test "$(grep -cx '0.2' "$WORK/sleeps")" = 0
