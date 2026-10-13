@@ -3794,6 +3794,91 @@
    "verdict": "kept",
    "zero": "removal (no mid-session MCP tool load) saves ~0.2 % now, ~0.01 % steady; loses deferred loading of the claude-in-chrome tools browser runs need",
    "note": "kept: 1.64M of 1.9M/7 d is the 2026-10-07 browser enrollment burst (51 chat + 19 worker re-writes that day), steady state 6 events 10-09..10-12 (~0.15M, ~0.01 %/day): turn 2 of a browser run after turn 1 ToolSearch-loads claude-in-chrome tools (the 10-10 rewrites:unexplained audit, now labelled by token-map e2c86b4); the one lever, ENABLE_TOOL_SEARCH=false in browser runs, loads every MCP schema into every request and costs more; the burst leaves the 7 d window on 10-14"
+  },
+  {
+   "id": "suite:llm-legs/test_e2e_isolated",
+   "title": "llm-legs/test_e2e_isolated",
+   "audited_at": "2026-10-13T11:46:21+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-e2e-isolated-20261012T235302Z-7ca5",
+   "cpu_run": 0.1,
+   "wall_run": 0.4,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.15,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "e8cdd6f147f03cf7a980e488f016073493a492bb",
+    "llm-legs/tests/test_e2e_isolated.sh": "915a1db0a77cc99e1b5885108bd67dd985adf9c4"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.1 wall-min/day; loses the only routine run of e2e_surfaces isolated Hammerspoon contracts (live suite otherwise runs only in the daily llm-selfcheck)",
+   "note": "one spawn of e2e_surfaces, 0.07 CPU-s, nothing to cut; its OpenCode far-reset oracle padded the day (Nov 01) and went red whenever now+19 d fell on days 1-9: fixed in 3908416b, red on the old oracle"
+  },
+  {
+   "id": "suite:llm-legs/test_experiments_registry",
+   "title": "llm-legs/test_experiments_registry",
+   "audited_at": "2026-10-13T11:46:21+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-e2e-isolated-20261012T235302Z-7ca5",
+   "cpu_run": 0.2,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.07,
+   "wall_min_day": 0.13,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "e8cdd6f147f03cf7a980e488f016073493a492bb",
+    "llm-legs/tests/test_experiments_registry.sh": "0b4678b8183c66a236b4c6867d29d84c72fe74f6"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.1 wall-min/day; loses the overdue-experiment reminder and the code-tag/registry round trip (unregistered, stale, prefix tags)",
+   "note": "0.2 CPU-s, one grep tree scan; tag membership now a case match (9262b8c9) but A/B under load shows no wall change (0.28-0.43 vs 0.33-0.54 s); mutations unregistered/prefix/stale red"
+  },
+  {
+   "id": "suite:llm-legs/test_account_status_tui",
+   "title": "llm-legs/test_account_status_tui",
+   "audited_at": "2026-10-13T11:46:22+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-e2e-isolated-20261012T235302Z-7ca5",
+   "cpu_run": 1.1,
+   "wall_run": 0.9,
+   "cpu_min_day": 0.09,
+   "wall_min_day": 0.15,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "e8cdd6f147f03cf7a980e488f016073493a492bb",
+    "llm-legs/tests/test_account_status_tui.sh": "b1db333e13ff44d4ba2392ab935d1e5af8c4ab19"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.1 wall-min/day; loses the shared account picker keys, selection, async refresh and the one-jq-per-render pin",
+   "note": "render was one jq per row plus seq: one jq after the sort (26284580); A/B 2.14-2.54 -> 1.30-1.73 s wall, 1.19 -> 0.70 CPU-s; 31 asserts; old render red on the no-seq pin"
+  },
+  {
+   "id": "suite:llm-legs/test_pkill_guard",
+   "title": "llm-legs/test_pkill_guard",
+   "audited_at": "2026-10-13T11:46:22+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-e2e-isolated-20261012T235302Z-7ca5",
+   "cpu_run": 0.7,
+   "wall_run": 0.8,
+   "cpu_min_day": 0.08,
+   "wall_min_day": 0.17,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "e8cdd6f147f03cf7a980e488f016073493a492bb",
+    "llm-legs/tests/test_pkill_guard.sh": "cb7f73c22150412384b2c7e2fa675b7d5d268697"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.1 wall-min/day; loses the pkill/pgrep late-option refusal that guards against killing the wrong tree",
+   "note": "shim signal check via builtin kill -l, no tr forks (94020294); A/B 1.83-1.99 -> 1.29-1.38 s wall, 0.78 -> 0.62 CPU-s; 57 asserts; old shim red on the no-tr pin"
+  },
+  {
+   "id": "suite:llm-legs/test_geminib_families",
+   "title": "llm-legs/test_geminib_families",
+   "audited_at": "2026-10-13T11:46:23+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-e2e-isolated-20261012T235302Z-7ca5",
+   "cpu_run": 1.5,
+   "wall_run": 1.3,
+   "cpu_min_day": 0.09,
+   "wall_min_day": 0.13,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "e8cdd6f147f03cf7a980e488f016073493a492bb",
+    "llm-legs/tests/test_geminib_families.sh": "67db219769185f25e40ab6d4569a8818da4112bc"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.1 wall-min/day; loses the one Gemini family list and review-flash pin every consumer reads",
+   "note": "geminib families/review-flash skip the account libraries and worker_pool_dir (10faa19d), families --json run once; A/B 2.08-2.47 -> 1.78-2.10 s wall, 1.50 -> 1.27 CPU-s; 53 asserts; old geminib red on the lone-copy pin"
   }
  ]
 }
