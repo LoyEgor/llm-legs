@@ -55,13 +55,13 @@ assert_eq alive "$(cat "$WORK/broken.out")"
 LIMIT_HITS_LOG="$WORK/expired.jsonl" python3 -c "
 import subprocess, sys; sys.path.insert(0, '$ROOT/share'); import limit_hit
 try:
-    subprocess.run(['sleep', '5'], timeout=0.2)
+    subprocess.run(['sleep', '5'], timeout=0.02)
 except subprocess.SubprocessError as error:
     limit_hit.expired('probe.git', error, 'read as none', 'bin/claudeb:1')
 limit_hit.expired('probe.git', subprocess.TimeoutExpired(['git', '-C', '$WORK', 'log', '-1'], 0.2), 'read as none', 'bin/claudeb:1')
 limit_hit.expired('probe.git', subprocess.CalledProcessError(1, ['git']), 'read as none', 'bin/claudeb:1')
-limit_hit.expired('probe.git', OSError('gone'), 'read as none', 'bin/claudeb:1')"
-assert_eq "llm-legs:probe.git|0.2|s|kill|0.2|sleep 5: read as none llm-legs:probe.git|0.2|s|kill|0.2|git log -1: read as none" \
+limit_hit.expired('probe.git', OSError('gone'), 'read as none', 'bin/claudeb:1')" || fail "expired() raised"
+assert_eq "llm-legs:probe.git|0.02|s|kill|0.02|sleep 5: read as none llm-legs:probe.git|0.2|s|kill|0.2|git log -1: read as none" \
   "$(jq -r '[.limit, .value, .unit, .action, .observed, .lost] | map(tostring) | join("|")' "$WORK/expired.jsonl" | paste -sd' ' -)" \
   "expired: timeouts only, the command ahead of the loss, git's -C dropped"
 
@@ -109,7 +109,7 @@ EOF
 echo '{}' >"$REPOS/claude-setup/limits.json"
 echo 'not json' >"$REPOS/token-map/limits.json"
 now=$(date +%s)
-journal() { # first-hit-age-s
+journal() { # first-hit-age-s file
   {
     printf '{"ts":%s,"limit":"llm-legs:a.ok","value":30,"unit":"s","action":"kill","lost":"old"}\n' "$((now - $1))"
     printf '{"ts":%s,"limit":"llm-legs:a.ok","value":30,"unit":"s","observed":60,"usual":30,"action":"kill","lost":"ok"}\n' "$((now - 3600))"
@@ -119,37 +119,35 @@ journal() { # first-hit-age-s
     printf '{"ts":%s,"limit":"llm-legs:unknown","value":1,"unit":"count","action":"drop","lost":"u"}\n' "$((now - 3 * 86400))"
     printf '{"ts":%s,"limit":"review-bench:b.x","value":1,"unit":"count","action":"drop","lost":"b"}\n' "$((now - 600))"
     printf '{"ts":%s,"limit":"claude-setup:c.unreg","value":1,"unit":"count","action":"drop","lost":"c"}\n' "$((now - 2 * 86400))"
-  } >"$WORK/fixture.jsonl"
+  } >"$2"
 }
-limits() { # -> red rows, lead lines and state of the Limits section
-  LIMIT_HITS_LOG="$WORK/fixture.jsonl" LIMIT_REPOS_DIR="$REPOS" python3 - "$ROOT/bin/harness-doctor" "$now" <<'EOF'
-import importlib.machinery, importlib.util, sys
+journal $((9 * 86400)) "$WORK/fixture-9d.jsonl"
+journal $((2 * 86400)) "$WORK/fixture-2d.jsonl"
+journal $((10 * 86400)) "$WORK/fixture-10d.jsonl"
+LIMIT_REPOS_DIR="$REPOS" python3 - "$ROOT/bin/harness-doctor" "$now" "$WORK" <<'EOF' >"$WORK/limits.out" || fail "limits section"
+import importlib.machinery, importlib.util, json, os, sys
 loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
 module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
 loader.exec_module(module)
-out = module.limits_section(float(sys.argv[2]))
-red = sorted(r["cells"][0] for r in out["rows"] if r["red"])
-levels = sorted({v["level"] or "-" for r in out["rows"] for v in r["judge"]})
-leads = [l["say"].split(" ")[0] for l in out.get("lead") or ()]
-print("red=%s levels=%s leads=%s state=%s rows=%d" % (",".join(red), ",".join(levels), ",".join(leads), out["state"], len(out["rows"])))
-EOF
-}
-journal $((9 * 86400))
-assert_eq "red=claude-setup:c.unreg,llm-legs:a.fresh,llm-legs:a.ratio,llm-legs:unknown,review-bench:b.x levels=-,red leads=review-bench,token-map state=problem rows=6" \
-  "$(limits)" "ratio, fresh after 7 quiet days, unregistered in a readable registry"
-journal $((2 * 86400))
-assert_eq "red=claude-setup:c.unreg,llm-legs:a.ratio,llm-legs:unknown levels=-,red leads=review-bench,token-map state=problem rows=6" \
-  "$(limits)" "a journal younger than 8 d proves no quiet week"
-journal $((10 * 86400))
-LIMIT_HITS_LOG="$WORK/fixture.jsonl" python3 - "$WORK/fixture.jsonl" <<'EOF'
-import json, sys
-rows = [json.loads(l) for l in open(sys.argv[1])]
+quiet = os.path.join(sys.argv[3], "fixture-10d.jsonl")
+rows = [json.loads(l) for l in open(quiet)]
 keep = [r for r in rows if r["limit"] in ("llm-legs:a.ok", "review-bench:b.x")]
 for r in keep:
     if r["limit"] == "review-bench:b.x":
         r["ts"] -= 3 * 86400
-open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in keep))
+open(quiet, "w").write("".join(json.dumps(r) + "\n" for r in keep))
+for name in ("fixture-9d", "fixture-2d", "fixture-10d"):
+    os.environ["LIMIT_HITS_LOG"] = os.path.join(sys.argv[3], name + ".jsonl")
+    out = module.limits_section(float(sys.argv[2]))
+    red = sorted(r["cells"][0] for r in out["rows"] if r["red"])
+    levels = sorted({v["level"] or "-" for r in out["rows"] for v in r["judge"]})
+    leads = [l["say"].split(" ")[0] for l in out.get("lead") or ()]
+    print("red=%s levels=%s leads=%s state=%s rows=%d" % (",".join(red), ",".join(levels), ",".join(leads), out["state"], len(out["rows"])))
 EOF
-assert_eq "red= levels=- leads=review-bench,token-map state=watch rows=2" "$(limits)" "no fault: a missing registry still shows"
+assert_eq "red=claude-setup:c.unreg,llm-legs:a.fresh,llm-legs:a.ratio,llm-legs:unknown,review-bench:b.x levels=-,red leads=review-bench,token-map state=problem rows=6" \
+  "$(sed -n 1p "$WORK/limits.out")" "ratio, fresh after 7 quiet days, unregistered in a readable registry"
+assert_eq "red=claude-setup:c.unreg,llm-legs:a.ratio,llm-legs:unknown levels=-,red leads=review-bench,token-map state=problem rows=6" \
+  "$(sed -n 2p "$WORK/limits.out")" "a journal younger than 8 d proves no quiet week"
+assert_eq "red= levels=- leads=review-bench,token-map state=watch rows=2" "$(sed -n 3p "$WORK/limits.out")" "no fault: a missing registry still shows"
 
 echo "PASS: $asserts asserts; both writers' line, anchor resolution, the line cap, whole lines under racing writers, write failures that change nothing, limits.json both ways with units, and the Harness Limits section's ratio, quiet-week, unregistered and missing-registry rules"
