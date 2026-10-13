@@ -51,7 +51,9 @@ export SECURITY_CALLS SECURITY_STORE SECURITY_ACCOUNT_ONLY
 # non-zero while still reporting the status curl did receive before the transfer broke.
 cat >"$FAKE_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
-n=$(( $(cat "$CURL_COUNT" 2>/dev/null || echo 0) + 1 ))
+n=0
+[ ! -f "$CURL_COUNT" ] || read -r n <"$CURL_COUNT"
+n=$((n + 1))
 printf '%s' "$n" >"$CURL_COUNT"
 out= cfg= url= reads_stdin=false
 args=("$@")
@@ -76,7 +78,8 @@ case $url in
     fi
     exit 0 ;;
 esac
-plan=$(sed -n "${n}p" "$CURL_PLAN" 2>/dev/null)
+plan= i=0
+while IFS= read -r line; do i=$((i + 1)); [ "$i" -lt "$n" ] || { plan=$line; break; }; done 2>/dev/null <"$CURL_PLAN"
 [ -n "$plan" ] || plan='200|-|0'
 code=${plan%%|*}
 rest=${plan#*|}
@@ -173,7 +176,7 @@ reset_calls() {
   rm -f "$CURL_ARGS" "$CURL_CONFIG" "$CURL_COUNT" "$CURL_PLAN" "$CURL_BODY".*
   : >"$CURL_PLAN"
 }
-calls() { cat "$CURL_COUNT" 2>/dev/null || echo 0; }
+calls() { local n=0; [ ! -f "$CURL_COUNT" ] || read -r n <"$CURL_COUNT"; echo "$n"; }
 call_args() { awk -v want="CALL $1" '$0 == want {grab = 1; next} /^CALL /{grab = 0} grab' "$CURL_ARGS"; }
 
 KEY='sk-secret-canary-9182'
