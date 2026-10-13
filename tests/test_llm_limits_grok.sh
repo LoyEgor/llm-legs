@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 4
+# shards: 6
 . "$(dirname "$0")/llm_limits_harness.sh" || exit 1
 
 home_fixture_after_first_suite
@@ -485,7 +485,8 @@ gray_hits=$(awk '
 alpha_hits=$(awk '/alpha *=/ && !/dimRedColor/ { printf "line %d: %s\n", NR, $0 }' \
   "$ROOT/hammerspoon/llm-limits.lua")
 [ -z "$alpha_hits" ] || fail "only the alarm tone dimRedColor may carry a literal alpha; every other dim is the system colour dimColor() resolves: $alpha_hits"
-
+fi
+if suite_shard_owns 4 paused-vendors; then
 # A PAUSED vendor is parked for months and must not exist for the infrastructure: no helper is
 # run for it, and the store carries no entry at all — the same absence a leg this machine never
 # installed leaves, so every render path already has nothing to print.
@@ -581,7 +582,7 @@ jq -e '(.vendors | keys) == ["claude","codex","grok","opencode"]' \
   || fail "WORKER_PICK_CONFIG_FILE was not honoured by the pause reader"
 
 fi
-if suite_shard_owns 4 refresh-errors; then
+if suite_shard_owns 5 refresh-errors; then
 # The classification cases rewrite a collected document; this suite collects its own.
 HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json >/dev/null || fail "base collection for the refresh_errors cases failed"
 # Structured refresh_errors: classification at write, roster-drop, one cause per HTTP blob.
@@ -720,6 +721,8 @@ jq -e --arg cause "notcom: curl: (7) failed to connect to host" '
 ' <<<"$attributed" >/dev/null \
   || fail "a roster account prefix was not read as one: $(jq -c '.vendors.claude.refresh_errors' <<<"$attributed")"
 
+fi
+if suite_shard_owns 6 renderer-gemini-credits; then
 . "$ROOT/tests/lib/hs-bounded.sh"
 
 if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 3 -c 'return "ok"' 2>/dev/null)" = ok ]; then

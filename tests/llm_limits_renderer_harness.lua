@@ -130,6 +130,8 @@ end
 
 local LLM_DOCTOR_CONTENTS = "<llm-doctor>"
 local pasteboardContents = nil
+local modulePath = root .. "/hammerspoon/llm-limits.lua"
+local moduleBytes = string.dump(assert(loadfile(modulePath, "t")))
 
 local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
     workerModel, fsAttributes, interfaceStyle, doctorSnapshot, llmDoctor)
@@ -287,7 +289,7 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
   end
   if holdFake.getenv then env.os = setmetatable({ getenv = holdFake.getenv }, { __index = env.os or os }) end
   env._G = env
-  local chunk, err = loadfile(root .. "/hammerspoon/llm-limits.lua", "t", env)
+  local chunk, err = load(moduleBytes, "@" .. modulePath, "b", env)
   assert(chunk, err)
   local module = chunk()
   module.__writes = writes
