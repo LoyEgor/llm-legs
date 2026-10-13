@@ -66,10 +66,9 @@ err=$(jq -cn --arg s "$session_nul" '{hook_event_name:"PostToolUse",tool_name:"B
   tool_response:"Claude API: usage limit reached\u0000"}' | LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK" 2>&1 >/dev/null)
 [ -z "$err" ] || fail "a NUL in the tool output reached bash: $err"
 
-[ -z "$(printf 'not json at all' | LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK")" ] \
-  || fail "malformed stdin produced output"
-printf 'not json at all' | LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK" >/dev/null 2>&1
-[ $? -eq 0 ] || fail "malformed stdin did not exit 0"
+malformed=$(printf 'not json at all' | LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK" 2>/dev/null); malformed_rc=$?
+[ -z "$malformed" ] || fail "malformed stdin produced output"
+[ "$malformed_rc" -eq 0 ] || fail "malformed stdin did not exit 0"
 
 printf '%s\n' 'jq() { printf "jq\n" >>"$FORKS"; command jq "$@"; }' >"$WORK/count-jq.sh"
 : >"$WORK/forks"

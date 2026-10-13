@@ -8,7 +8,7 @@ FRAME="$ROOT/share/report_frame.py"
 asserts=0
 assert() { asserts=$((asserts + 1)); "$@" || { printf 'FAIL: assert %s: %s\n' "$asserts" "$*" >&2; exit 1; }; }
 
-out=$(FRAME_SHARE="$ROOT/share" python3 - <<'PY' 2>&1
+out=$(FRAME_SHARE="$ROOT/share" python3 -S - <<'PY' 2>&1
 import os
 import sys
 
@@ -105,30 +105,30 @@ PY
 assert test "$out" = ok || { printf '%s\n' "$out" >&2; false; }
 
 doc='{"word":"push","rows":[["repo","llm-legs"],["pushed",[[3," commits · ",{"seconds":78}]]]]}'
-assert test "$(printf '%s' "$doc" | python3 "$FRAME" block)" = "$(printf '%s\n' \
+assert test "$(printf '%s' "$doc" | python3 -S "$FRAME" block)" = "$(printf '%s\n' \
   '========================= push =========================' \
   'repo:         llm-legs' \
   'pushed:       3 commits · 1.3m' \
   '========================================================')"
-assert test "$(python3 "$FRAME" time 402)" = 6.7m
-assert test "$(python3 "$FRAME" time soon)" = –
+assert test "$(python3 -S "$FRAME" time 402)" = 6.7m
+assert test "$(python3 -S "$FRAME" time soon)" = –
 for bad in 'not json' '{"rows":[]}' '{"word":"","rows":[]}' '{"word":"x","rows":{}}' '{"word":"x","rows":[["a",{"ms":1}]]}'; do
-  rc=0; err=$(printf '%s' "$bad" | python3 "$FRAME" block 2>&1 >/dev/null) || rc=$?
+  rc=0; err=$(printf '%s' "$bad" | python3 -S "$FRAME" block 2>&1 >/dev/null) || rc=$?
   assert test "$rc" -ne 0
 done
-rc=0; err=$(printf '%s' '{"word":"x","rows":[["a",{"ms":1}]]}' | python3 "$FRAME" block 2>&1 >/dev/null) || rc=$?
+# rc and err are the last case's, the one that is a refused value.
 assert test "$rc" = 2
 assert test "$err" = "report_frame: not a value: {'ms': 1}"
-rc=0; python3 "$FRAME" >/dev/null 2>&1 || rc=$?
+rc=0; python3 -S "$FRAME" >/dev/null 2>&1 || rc=$?
 assert test "$rc" = 2
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 git init -q "$work/owner" && git -C "$work/owner" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 git -C "$work/owner" worktree add -q -b wt "$work/wt"
 mkdir "$work/plain"
-assert test "$(python3 "$FRAME" identity "$work/owner")" = owner
-assert test "$(python3 "$FRAME" identity "$work/wt")" = "owner ⧉ wt"
-rc=0; out=$(python3 "$FRAME" identity "$work/plain") || rc=$?
+assert test "$(python3 -S "$FRAME" identity "$work/owner")" = owner
+assert test "$(python3 -S "$FRAME" identity "$work/wt")" = "owner ⧉ wt"
+rc=0; out=$(python3 -S "$FRAME" identity "$work/plain") || rc=$?
 assert test "$rc:$out" = "1:"
 
 printf 'PASS: %s asserts; report frame width, label column, fitting, number and time words, CLI\n' "$asserts"
