@@ -71,6 +71,32 @@
           "regressed_at": null
         }
       ]
+    },
+    {
+      "id": "token-map-scan-writes-cohort",
+      "title": "token-map rewrote every request of a grown transcript on each scan and scattered rebuild commits across parts(component)",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "cohort",
+        "key": "token-map/tokenmap/__main__.py",
+        "cause": "token-map/tokenmap/__main__.py"
+      },
+      "note": "The same fix seen by the standing-cost rule: its week amortizes the writes from before the fix, so the item fires for up to 7 days after it; proven by written MB/h. Top own SSD writer, 197 GB of 2,313 GB internal writes 10-06..10-13 (day cohorts' rusage).",
+      "fixes": [
+        {
+          "at": "2026-10-13T20:41:27+03:00",
+          "by": "system chat worker",
+          "files": [
+            "token-map/tokenmap/db.py",
+            "token-map/tokenmap/ingest.py",
+            "token-map/tokenmap/cli.py",
+            "token-map/tests/test_ingest.py",
+            "token-map/tests/test_cli.py"
+          ],
+          "in": "token-map@825b88f",
+          "regressed_at": null
+        }
+      ]
     }
   ],
   "blind_spots": [

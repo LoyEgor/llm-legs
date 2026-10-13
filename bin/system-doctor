@@ -1846,15 +1846,14 @@ def proof(name, rule, since, now, night=None, memo=None):
             memo[key] = before
     after = tag_rates([r for r in rows if r["t"] >= since], name)
     out = {"before": before, "after": after}
-    terms = ("mb_h",) if rule == "ssd-writes" else ("births_s", "cores")
+    terms = {"ssd-writes": ("mb_h",), "cohort": ("births_s", "cores", "mb_h")}.get(rule, ("births_s", "cores"))
     if before["seen"] < PROOF["sightings"] or not any(before.get(k) for k in terms):
         return dict(out, verdict="refused", why="no measurable baseline: %s seen in %d ticks of the %d days before, "
                     "needs %d" % (name, before["seen"], PROOF["baseline_s"] // DAY_S, PROOF["sightings"]))
     need = min(PROOF["max_s"], max(PROOF["min_s"], PROOF["sightings"] * before["covered_s"] / before["seen"]))
     out["need_s"] = round(need)
-    words = ("writes %s -> %s MB/h" % (before.get("mb_h"), after.get("mb_h")) if rule == "ssd-writes" else
-             "births %s -> %s /s · CPU %s -> %s cores" % (before["births_s"], after["births_s"], before["cores"],
-                                                          after["cores"])) + " · %.1f of %.1f h after" % (
+    labels = {"births_s": "births %s -> %s /s", "cores": "CPU %s -> %s cores", "mb_h": "writes %s -> %s MB/h"}
+    words = " · ".join(labels[k] % (before.get(k), after.get(k)) for k in terms) + " · %.1f of %.1f h after" % (
         after["covered_s"] / 3600.0, need / 3600.0)
     if after["covered_s"] < need:
         return dict(out, verdict="pending", why=words)

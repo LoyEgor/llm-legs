@@ -616,6 +616,8 @@ found = m.proof("statusline.sh", "ssd-writes", since, now)
 check(found["verdict"] == "proven" and found["before"]["mb_h"] == 36000 and found["after"]["mb_h"] == 6000
       and found["why"].startswith("writes 36000.0 -> 6000.0 MB/h"),
       "an SSD-writes fix is proven by its written bytes alone, births and CPU unchanged: %s" % found)
+check(m.proof("statusline.sh", "cohort", since, now)["verdict"] == "proven",
+      "a cohort fix whose writes fell is proven though its births and CPU held")
 write_ticks([dict(r, io_top=[["statusline.sh", 6e8, 0, 0, "own"]]) for r in wrote])
 check(m.proof("statusline.sh", "ssd-writes", since, now)["verdict"] == "refused", "unchanged written bytes refuse an SSD-writes fix")
 sparse = [r if i % 30 == 0 else dict(r, births_top=[["xpcproxy", 10, "apple"]], cpu_top=[])
