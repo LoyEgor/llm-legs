@@ -42,7 +42,7 @@ web_search_launch() { # brief vendor extra-arg...
   clear_stub
   WORKER_TEST_BRIEF=$file WORKER_TEST_WORKDIR=$workdir start_ok "$target" "$@"
   WEB_SEARCH_ENTRY=$target
-  assert await_done
+  assert await_exit
 }
 
 # The stubs record each argument as `ARG=%q`, so a table cell carrying anything the shell quotes
@@ -116,10 +116,6 @@ web_search_grid() { # vendor
   web_search_assert "$vendor" "$expected"
   web_search_launch "$WORK/websearch/on" "$vendor"
   web_search_assert "$vendor" "$expected"
-  # The key and the state are case-insensitive: `web: ON` was silently ignored while `WEB: yes`
-  # failed loudly, so the shape a caller guesses wrong is the one that costs a run.
-  web_search_launch "$WORK/websearch/on-lower" "$vendor"
-  web_search_assert "$vendor" "$expected"
   web_search_launch "$WORK/websearch/light-on" light
   web_search_assert "$vendor" "$expected"
   # Research needs no flag and no header: the role is the ask.
@@ -179,6 +175,9 @@ if suite_shard_owns 1 ws-header-refusals; then
     assert grep -qF 'spells a WEB: state worker-run does not read' "$WORK/websearch.err"
     assert test ! -s "$CALL_LOG"
   done
+  # The key and the state are case-insensitive: `web: ON` was silently ignored while `WEB: yes`
+  # failed loudly. worker-run takes the parsed state as is, so no vendor needs its own launch of it.
+  assert test "$(web_search_brief_state "$WORK/websearch/on-lower")" = on
   # A body line that merely starts with `web:` names no state: `Web: <url>` is prose, not a header.
   printf 'probe\n\nWeb: https://example.test/page\n web: nginx\n' >"$WORK/websearch/prose"
   assert test "$(web_search_brief_state "$WORK/websearch/prose"; printf 'rc=%s' "$?")" = rc=0
