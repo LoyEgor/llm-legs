@@ -890,7 +890,7 @@
   "worker-run.browse-session": {
     "value": 300,
     "unit": "s",
-    "where": "bin/worker-run:5789",
+    "where": "bin/worker-run:5782",
     "set_by": "chat 2e55698f",
     "why": "A browser session gets 5 min.",
     "normal": "Rare."

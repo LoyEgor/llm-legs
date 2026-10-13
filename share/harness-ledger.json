@@ -9051,6 +9051,37 @@
       "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
       "note": "Pole slack over 7 d: 147 runs, 121 of them unsharded (73 of 82 slack-min) because slot_room refuses shards while load1 > load15 + cores; 26 sharded (9 slack-min), whose old shard 3 (n-cl + an-ek) was the pole. Fixed for sharded runs: five shards. Measured at load ~195: unsharded 63 s vs 3 shards 35 s on equal CPU, so shards do save this suite's wall under load; admitting CPU-bound shards under load is a run-suites trade (zero-sum on a saturated machine), not this file's (docs/handoffs/2026-10-12-heavy-suites-load-wall.md): the `wait` word means a sleeping suite and this one does not sleep. Hot rows (no cut, behavioural probes): n, aj (worker-pick role loop), ak (two llm-refresh ticks ~2.6 s each, spread over jq/python forks, no sleep), al, dd, bq, ah's llm-limits snapshot.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-worker-run-browse",
+      "title": "test_worker_run_browse idle wall over its CPU: every stubbed proof or canary session waited a whole 1 s poll",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/idle/llm-legs/test_worker_run_browse$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T14:45:00+03:00",
+          "by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
+          "files": [
+            "llm-legs/bin/worker-run",
+            "llm-legs/limits.json"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "bin/worker-run at the branch base vs this fix, test_worker_run_browse's 3 shards in parallel, alternating",
+            "data": "2 rounds each at load 122-150; a probe of browse_session_wait with a 0.2 s and a 30 s session under BROWSE_SESSION_S=1",
+            "result": "192 asserts PASS both ways; shard 1 (enrol, proof, canary) 53.0/52.1 s -> 43.9/36.3 s, its 14 requested `sleep 1` s gone; the probe returns at 0.3 s for the short session and kills the long one at 1.2 s with the same worker-run.browse-session limit hit"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
+      "note": "Traced (xtrace sleep sums): shard 1's idle was browse_session's and the codex canary's `while kill -0; sleep 1` poll, 14 x 1 s for sessions that end in milliseconds; now one watchdog (sleep BROWSE_SESSION_S, kill, limit_hit) beside a `wait` on the session, ended by process_tree_end as llm-refresh's supervise_tick does. Left: browse_window/browse_seen 0.5 s polls (4+4 a run, the not-shown paths by design: BROWSE_WINDOW_WAIT=6, BROWSE_SEEN_WAIT=2), the canary form server's 0.1 s port poll, and shard 2's await_done 0.05 s polls (worker-run start/wait per run, shared by every worker_run suite). BROWSE_SESSION_S's timeout path has no suite case (probe only).",
+      "handoff": null
     }
   ],
   "blind_spots": [
