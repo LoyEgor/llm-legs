@@ -14,21 +14,20 @@ if [ ! -d "$AGENTS" ] || [ ! -d "$LINKS" ]; then
 fi
 
 pass=0 fail=0
+agents=$(cat "$AGENTS"/*.md 2>/dev/null)
 for bin in "$ROOT"/bin/*; do
-  name=$(basename "$bin")
+  name=${bin##*/}
   [ -f "$bin" ] && [ -x "$bin" ] || continue
-  grep -qw -- "$name" "$AGENTS"/*.md 2>/dev/null || continue
+  [[ $agents =~ (^|[^[:alnum:]_])"$name"([^[:alnum:]_]|$) ]] || continue
   [ -x "$HOOKS/$name" ] && [ ! -e "$LINKS/$name" ] && continue
   if [ -x "$LINKS/$name" ]; then pass=$((pass + 1)); else
     fail=$((fail + 1)); echo "FAIL: an agent names \`$name\` and $LINKS/$name does not resolve"
   fi
 done
-for link in "$LINKS"/*; do
-  [ -L "$link" ] || continue
-  case "$(readlink "$link")" in "$ROOT"/*) ;; *) continue ;; esac
+while IFS= read -r link; do
   if [ -e "$link" ]; then pass=$((pass + 1)); else
     fail=$((fail + 1)); echo "FAIL: $link points at a file this repository no longer has"
   fi
-done
+done < <(find -H "$LINKS" -mindepth 1 -maxdepth 1 ! -name '.*' -type l -lname "$ROOT/*" | sort)
 echo "passed: $pass, failed: $fail"
 [ "$fail" -eq 0 ]
