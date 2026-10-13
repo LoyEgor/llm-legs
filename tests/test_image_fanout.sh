@@ -29,6 +29,7 @@ LIVE="$WORK/live"
 mkdir -p "$FAKE_BIN" "$FAKE_LIST" "$FAKE_SYS" "$DEST" "$WORK/refs" "$CHILDREN" "$LIVE"
 : >"$CALLS"
 : >"$PICK_CALLS"
+DEST_WORK=$(fanout_work "$DEST")
 
 for i in 1 2 3 4 5; do
   printf 'ref-%s\n' "$i" >"$WORK/refs/r$i.png"
@@ -286,6 +287,12 @@ assert test "$rc" -eq 0
 assert grep -Fq 'aspect 20:9→16:9' <<<"$(plan_reason gemini gamma)"
 assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd gemini gamma)"
 assert grep -Fq 'aspect 20:9→16:9' <<<"$(plan_reason grok delta)"
+assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd grok delta)"
+cx_reason=$(plan_reason codex alpha)
+assert grep -Fq 'aspect 20:9→prompt' <<<"$cx_reason"
+cx_cmd=$(plan_cmd codex alpha)
+assert grep -Fq -- '--aspect 20:9' <<<"$cx_cmd"
+assert_fails "$cx_cmd" 'aspect ratio'
 # Flow's five aspects, not the CLI route's seven: 2:3 is a CLI ratio Flow lacks.
 for pair in 21:9=16:9 2:3=3:4; do
   rc=0
@@ -294,14 +301,6 @@ for pair in 21:9=16:9 2:3=3:4; do
   assert grep -Fq "aspect ${pair%=*}→${pair#*=}" <<<"$(plan_reason gemini gamma)"
   assert grep -Fq -- "--aspect ${pair#*=}" <<<"$(plan_cmd gemini gamma)"
 done
-rc=0
-fanout --dest-dir "$DEST" --prompt 'badge' --dry-run --aspect 20:9 || rc=$?
-assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd grok delta)"
-cx_reason=$(plan_reason codex alpha)
-assert grep -Fq 'aspect 20:9→prompt' <<<"$cx_reason"
-cx_cmd=$(plan_cmd codex alpha)
-assert grep -Fq -- '--aspect 20:9' <<<"$cx_cmd"
-assert_fails "$cx_cmd" 'aspect ratio'
 
 # grok edit list includes 20:9, so a ref keeps it
 rc=0
@@ -326,7 +325,7 @@ fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --ref "$WORK/refs/
 assert test "$rc" -eq 0
 assert grep -Fq 'skipped: video unsupported' "$FANOUT_OUT"
 assert grep -Fq $'codex -\tskipped: video unsupported' "$FANOUT_OUT"
-assert_fails grep -Fq $'gemini -\tskipped: video unsupported' "$FANOUT_OUT"
+assert_fails "$(cat "$FANOUT_OUT")" $'gemini -\tskipped: video unsupported'
 assert grep -Fq 'gemini-video' <<<"$(plan_cmd gemini gamma)"
 assert grep -Fq '.mp4' <<<"$(plan_cmd gemini gamma)"
 assert grep -Fq 'grok-video' <<<"$(plan_cmd grok delta)"
@@ -357,7 +356,7 @@ assert_fails "$(cat "$FANOUT_OUT")" $'\tspare'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --accounts all || rc=$?
 assert test "$rc" -eq 0
-tsv="$(fanout_work "$DEST")/fanout.tsv"
+tsv="$DEST_WORK/fanout.tsv"
 assert test -f "$tsv"
 assert test "$(head -n1 "$tsv")" = $'vendor\taccount\tstatus\treason\tdest\tsize\tsession\tmodel\tmodel_caps\tcaps\tjob\troute\tfallback_from\tphases\tcomposite'
 delta_row=$(awk -F'\t' '$1=="grok" && $2=="delta" {print; exit}' "$tsv")
@@ -387,7 +386,7 @@ grok_roster 'walled: Logged in\n'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok || rc=$?
 assert test "$rc" -eq 3
-assert grep -Fq 'usage_limit' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq 'usage_limit' "$DEST_WORK/fanout.tsv"
 assert grep -Fq 'ok=0' "$FANOUT_OUT"
 
 # --- exit 1: a hard failure --------------------------------------------------
@@ -395,18 +394,18 @@ grok_roster 'broken: Logged in\n'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok || rc=$?
 assert test "$rc" -eq 1
-assert grep -Fq 'failed' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq 'failed' "$DEST_WORK/fanout.tsv"
 # The row's stderr survives beside the table and its last line rides in the reason column.
-assert test -s "$(fanout_work "$DEST")/grok-broken.stderr"
-assert grep -Fq 'exit 1; failed' "$(fanout_work "$DEST")/fanout.tsv"
+assert test -s "$DEST_WORK/grok-broken.stderr"
+assert grep -Fq 'exit 1; failed' "$DEST_WORK/fanout.tsv"
 
 # pool-disabled is skipped, not failed
 grok_roster 'disabled: Logged in (out of pool)\n'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok || rc=$?
 assert test "$rc" -eq 1
-assert grep -Fq $'grok\tdisabled\tskipped' "$(fanout_work "$DEST")/fanout.tsv"
-assert grep -Fq 'out of pool' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq $'grok\tdisabled\tskipped' "$DEST_WORK/fanout.tsv"
+assert grep -Fq 'out of pool' "$DEST_WORK/fanout.tsv"
 assert_fails "$(cat "$CALLS")" 'ARG=disabled'
 
 # --takes never hands a take to an out-of-pool account while a pooled one is free
@@ -415,7 +414,7 @@ grok_roster 'disabled: Logged in (out of pool)\ndelta: Logged in\n'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 1 || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq $'grok\tdelta\tok' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq $'grok\tdelta\tok' "$DEST_WORK/fanout.tsv"
 assert_fails "$(cat "$CALLS")" 'ARG=disabled'
 
 # restore grok lister for pick
@@ -438,8 +437,8 @@ rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --accounts pick || rc=$?
 assert test "$rc" -eq 0
 assert_fails "$(cat "$CALLS")" 'ARG=--account'
-assert grep -Fq $'grok\trouted\tok' "$(fanout_work "$DEST")/fanout.tsv"
-assert grep -Fq "grok-pick.png" "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq $'grok\trouted\tok' "$DEST_WORK/fanout.tsv"
+assert grep -Fq "grok-pick.png" "$DEST_WORK/fanout.tsv"
 
 # --- --takes N: N takes plus the manifest's spares, each with a dest of its own ----------
 grok_roster 'delta: Logged in\nepsilon: Logged in\n'
@@ -487,9 +486,9 @@ fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 3 --spare 0 ||
 assert test "$rc" -eq 0
 assert test "$(grep -c '^START slowa ' "$CALLS")" -eq 3
 assert_fails "$(cat "$CALLS")" OVERLAP
-assert test "$(grep -c $'^grok\tslowa\tok\t' "$(fanout_work "$DEST")/fanout.tsv")" -eq 3
+assert test "$(grep -c $'^grok\tslowa\tok\t' "$DEST_WORK/fanout.tsv")" -eq 3
 for f in grok-slowa.png grok-slowa-2.png grok-slowa-3.png; do
-  assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/$f" 3)" = ok
+  assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/$f" 3)" = ok
 done
 assert test "$(grep -c '^ARG=--lock-wait$' "$CALLS")" -eq 3
 # Two accounts, four takes: both accounts busy at once, never one account twice.
@@ -510,8 +509,8 @@ rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 1 --spare 0 || rc=$?
 assert test "$rc" -eq 0
 assert test "$(grep -c '^START busy ' "$CALLS")" -eq 1
-assert grep -Fq $'grok\tfasta\tok' "$(fanout_work "$DEST")/fanout.tsv"
-assert grep -Fq 'requeued: busy busy' <<<"$(tsv_col "$(fanout_work "$DEST")/fanout.tsv" grok fasta 4)"
+assert grep -Fq $'grok\tfasta\tok' "$DEST_WORK/fanout.tsv"
+assert grep -Fq 'requeued: busy busy' <<<"$(tsv_col "$DEST_WORK/fanout.tsv" grok fasta 4)"
 # A pinned account that was busy is retried on itself once its cooldown passes.
 grok_roster 'busyonce: Logged in\n'
 rm -f "$CHILDREN/busyonce.seen"
@@ -521,14 +520,14 @@ FANOUT_ENV+=(IMAGE_FANOUT_BUSY_RETRY_MS=200)
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok || rc=$?
 assert test "$rc" -eq 0
 assert test "$(grep -c '^START busyonce ' "$CALLS")" -eq 2
-assert grep -Fq $'grok\tbusyonce\tok' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq $'grok\tbusyonce\tok' "$DEST_WORK/fanout.tsv"
 # Busy past the give-up window is a failure, never an endless loop.
 grok_roster 'busy: Logged in\n'
 rc=0
 env "${FANOUT_ENV[@]}" IMAGE_FANOUT_BUSY_GIVEUP_MS=500 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' --vendors grok \
   >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 1
-assert grep -Fq 'exit 5 (account busy)' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq 'exit 5 (account busy)' "$DEST_WORK/fanout.tsv"
 # A usage limit in the pool moves the take as well; the walled account is not tried again.
 grok_roster 'walled: Logged in\nfasta: Logged in\n'
 : >"$CALLS"
@@ -536,8 +535,8 @@ rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 2 --spare 0 || rc=$?
 assert test "$rc" -eq 0
 assert test "$(grep -c '^START walled ' "$CALLS")" -eq 1
-assert test "$(grep -c $'^grok\tfasta\tok' "$(fanout_work "$DEST")/fanout.tsv")" -eq 2
-assert grep -Fq 'moved from walled after a usage limit' "$(fanout_work "$DEST")/fanout.tsv"
+assert test "$(grep -c $'^grok\tfasta\tok' "$DEST_WORK/fanout.tsv")" -eq 2
+assert grep -Fq 'moved from walled after a usage limit' "$DEST_WORK/fanout.tsv"
 
 # --- spares: return once N takes are delivered; the rest end by process group, no orphan ----------
 for straggler in hang stubborn; do
@@ -551,14 +550,14 @@ for straggler in hang stubborn; do
   assert test "$rc" -eq 0
   assert test $((SECONDS - started)) -lt 20
   assert test "$(grep -c "^START $straggler " "$CALLS")" -eq 1
-  assert test "$(grep -c $'\tok\t' "$(fanout_work "$DEST")/fanout.tsv")" -eq 2
-  assert grep -Fq $'grok\t'"$straggler"$'\tspare-cancelled\t' "$(fanout_work "$DEST")/fanout.tsv"
-  assert grep -Fq 'spare-cancelled after 2 of 2 takes delivered' "$(fanout_work "$DEST")/fanout.tsv"
+  assert test "$(grep -c $'\tok\t' "$DEST_WORK/fanout.tsv")" -eq 2
+  assert grep -Fq $'grok\t'"$straggler"$'\tspare-cancelled\t' "$DEST_WORK/fanout.tsv"
+  assert grep -Fq 'spare-cancelled after 2 of 2 takes delivered' "$DEST_WORK/fanout.tsv"
   assert grep -Fq 'ok=2 skipped=0 usage_limit=0 failed=0' "$FANOUT_OUT"
   assert test -s "$CHILDREN/$straggler.pid"
   child=$(cat "$CHILDREN/$straggler.pid")
   assert wait_for 5 eval "! kill -0 $child 2>/dev/null"
-  assert test "$(jq -r '.cells[] | select(.status == "spare-cancelled") | .account' "$(fanout_work "$DEST")/fanout.state.json")" = "$straggler"
+  assert test "$(jq -r '.cells[] | select(.status == "spare-cancelled") | .account' "$DEST_WORK/fanout.state.json")" = "$straggler"
 done
 
 # --- --jobs: a batch, each line its own request, dest and job id; one table ---------------
@@ -573,7 +572,7 @@ jq -cn --arg d "$JOBS_DIR" --arg r "$WORK/refs/r1.png" '
 rc=0
 fanout --dest-dir "$DEST" --jobs "$WORK/jobs.jsonl" --spare 0 || rc=$?
 assert test "$rc" -eq 0
-jt="$(fanout_work "$DEST")/fanout.tsv"
+jt="$DEST_WORK/fanout.tsv"
 for f in cat.png dog.png dog-2.png cow-grok.png cow-gemini.png; do
   assert test -e "$JOBS_DIR/$f"
   assert test "$(dest_col "$jt" "$JOBS_DIR/$f" 3)" = ok
@@ -584,8 +583,8 @@ assert test "$(dest_col "$jt" "$JOBS_DIR/dog-2.png" 2)" = epsilon
 assert grep -Eq -- '-1-1$' <<<"$(dest_col "$jt" "$JOBS_DIR/cat.png" 11)"
 assert grep -Eq -- '-2-2$' <<<"$(dest_col "$jt" "$JOBS_DIR/dog-2.png" 11)"
 assert test "$(cut -f11 "$jt" | tail -n +2 | sort -u | wc -l | tr -d ' ')" -eq 5
-assert test "$(jq '[.cells[] | select(.job and .dest and .request and .take)] | length' "$(fanout_work "$DEST")/fanout.state.json")" -eq 5
-assert test "$(jq -r '[.cells[] | .request] | unique | map(tostring) | join(",")' "$(fanout_work "$DEST")/fanout.state.json")" = 1,2,3
+assert test "$(jq '[.cells[] | select(.job and .dest and .request and .take)] | length' "$DEST_WORK/fanout.state.json")" -eq 5
+assert test "$(jq -r '[.cells[] | .request] | unique | map(tostring) | join(",")' "$DEST_WORK/fanout.state.json")" = 1,2,3
 assert grep -Fq 'ARG=a dog' "$CALLS"
 assert test "$(grep -c '^ARG=--transparent$' "$CALLS")" -eq 2
 # The roster is listed once per vendor for the whole batch.
@@ -618,18 +617,18 @@ assert test "$rc" -eq 0
 assert test "$(grep -c '^START gamma ' "$CALLS")" -eq 1
 assert test "$(grep -A1 -Fx 'ARG=--count' "$CALLS" | tail -n 1)" = 'ARG=4'
 for f in gemini-gamma.png gemini-gamma-2.png gemini-gamma-3.png gemini-gamma-4.png; do
-  assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/$f" 3)" = ok
+  assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/$f" 3)" = ok
 done
 assert grep -Fq 'ok=4 ' "$FANOUT_OUT"
-assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/gemini-gamma-3.png" 7)" = sess-3
-assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/gemini-gamma.png" 7)" = sess-1
-assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/gemini-gamma.png" 6)" = 64x64
+assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/gemini-gamma-3.png" 7)" = sess-3
+assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/gemini-gamma.png" 7)" = sess-1
+assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/gemini-gamma.png" 6)" = 64x64
 # Each variant's composite= line, the one right after its variant= line, is its own; the main take's comes after.
 rc=0
 FANOUT_VARIANT_COMPOSITE=1 fanout --dest-dir "$DEST" --prompt 'badge' --vendors gemini --takes 4 --pack 4 --spare 0 || rc=$?
 assert test "$rc" -eq 0
 assert test "$(for f in gemini-gamma.png gemini-gamma-2.png gemini-gamma-3.png gemini-gamma-4.png; do
-  printf '%s|' "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/$f" 15)"; done)" = \
+  printf '%s|' "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/$f" 15)"; done)" = \
   'region changed=2.0%|auto changed=4.0%|refused reason=global|region changed=2.0%|'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors gemini,grok --takes 3 --pack 2 --dry-run || rc=$?
@@ -686,9 +685,9 @@ env "${FANOUT_ENV[@]}" IMAGE_FANOUT_CAPS_ROOT="$CAPS" bash "$SCRIPT" --dest-dir 
   "${REFS[@]}" >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
 for row in $'codex\talpha\tok' $'gemini\tgamma\tok' $'grok\tdelta\tok' $'zeta\tomega\tok'; do
-  assert grep -Fq "$row" "$(fanout_work "$DEST")/fanout.tsv"
+  assert grep -Fq "$row" "$DEST_WORK/fanout.tsv"
 done
-assert grep -Fq 'refs 5→2' <<<"$(tsv_col "$(fanout_work "$DEST")/fanout.tsv" zeta omega 4)"
+assert grep -Fq 'refs 5→2' <<<"$(tsv_col "$DEST_WORK/fanout.tsv" zeta omega 4)"
 assert grep -Fq 'BIN=zeta-image' "$CALLS"
 # No spares entry in its manifest: no spare take.
 rc=0
@@ -764,7 +763,7 @@ rc=0
 env "${FANOUT_ENV[@]}" IMAGE_FANOUT_KILL_WAIT_MS=500 FANOUT_SLEEP=1 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
   --vendors grok --takes 1 --spare 1 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq $'grok\tchromeorphan\tspare-cancelled\t' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq $'grok\tchromeorphan\tspare-cancelled\t' "$DEST_WORK/fanout.tsv"
 assert test -s "$CHILDREN/chromeorphan.pid"
 orphan=$(cat "$CHILDREN/chromeorphan.pid")
 assert wait_for 5 eval "! kill -0 $orphan 2>/dev/null"
@@ -788,9 +787,9 @@ start_at() { # account nth -> its nth START time
 }
 assert awk -v a="$(start_at busyonce 1)" -v b="$(start_at busyonce 2)" 'BEGIN { exit !(b != "" && b - a < 5) }'
 assert awk -v f="$(start_at fasta 1)" -v l="$(start_at lingers 2)" 'BEGIN { exit !(l != "" && l - f >= 7) }'
-assert grep -Fq $'grok\tlingers\tspare-cancelled\t' "$(fanout_work "$DEST")/fanout.tsv"
-assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/linger-b.png" 3)" = ok
-assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/linger-c.png" 3)" = ok
+assert grep -Fq $'grok\tlingers\tspare-cancelled\t' "$DEST_WORK/fanout.tsv"
+assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/linger-b.png" 3)" = ok
+assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/linger-c.png" 3)" = ok
 
 # --- primary takes launch before spares; a spare still runs when a slot is free ---------------------
 grok_roster 'fasta: Logged in\nfastb: Logged in\nfastc: Logged in\n'
@@ -803,7 +802,7 @@ env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LAUNCH_GAP_MS=400 FANOUT_SLEEP=2 bash "$SCRI
   --spare 1 --max-parallel 2 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
 assert test "$(awk '/^START / { print $2 }' "$CALLS" | paste -sd, -)" = fasta,fastc
-assert grep -Fq $'grok\t-\tspare-cancelled\t' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq $'grok\t-\tspare-cancelled\t' "$DEST_WORK/fanout.tsv"
 
 # --- a packed request's spare waits for its pack to run lazily long without delivering ---------------
 set_roster gemini-web '[ "${1:-}" = accounts ] || exit 2
@@ -856,7 +855,7 @@ codex_roster '{"account":"webwall","login":true},{"account":"alphb","login":true
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors codex --takes 1 --spare 0 || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq 'moved from webwall after a usage limit' <<<"$(tsv_col "$(fanout_work "$DEST")/fanout.tsv" codex alphb 4)"
+assert grep -Fq 'moved from webwall after a usage limit' <<<"$(tsv_col "$DEST_WORK/fanout.tsv" codex alphb 4)"
 assert test "$(grep -c '^SCHED=1$' "$CALLS")" -eq 2
 assert_fails "$(cat "$CALLS")" 'ARG=--route'
 # No account left on the web route: the take relaunches on the CLI route, where the wrapper picks.
@@ -867,13 +866,13 @@ fanout --dest-dir "$DEST" --prompt 'badge' --vendors codex --takes 1 --spare 0 |
 assert test "$rc" -eq 0
 assert test "$(grep -A1 -Fx 'ARG=--route' "$CALLS" | tail -n 1)" = 'ARG=cli'
 assert test "$(grep -c -Fx 'ARG=--account' "$CALLS")" -eq 1
-assert grep -Fq -- '--route cli after a usage limit' <<<"$(tsv_col "$(fanout_work "$DEST")/fanout.tsv" codex routed 4)"
+assert grep -Fq -- '--route cli after a usage limit' <<<"$(tsv_col "$DEST_WORK/fanout.tsv" codex routed 4)"
 # A pinned account keeps itself on the CLI route.
 : >"$CALLS"
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors codex || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq $'codex\twebwall\tok' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq $'codex\twebwall\tok' "$DEST_WORK/fanout.tsv"
 assert test "$(grep -c -Fx 'ARG=webwall' "$CALLS")" -eq 2
 assert test "$(grep -c -Fx 'ARG=--route' "$CALLS")" -eq 1
 # A pack the next route cannot carry (its counts) stays a usage limit.
@@ -896,15 +895,15 @@ grok_roster 'flagged: Logged in\nfasta: Logged in\n'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 1 --spare 0 || rc=$?
 assert test "$rc" -eq 0
-flag_reason=$(tsv_col "$(fanout_work "$DEST")/fanout.tsv" grok fasta 4)
+flag_reason=$(tsv_col "$DEST_WORK/fanout.tsv" grok fasta 4)
 assert grep -Fq 'moved from flagged after an account flag (unusual activity)' <<<"$flag_reason"
 assert_fails "$flag_reason" 'usage limit'
 grok_roster 'flagged: Logged in\n'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok || rc=$?
 assert test "$rc" -eq 3
-flag_reason=$(tsv_col "$(fanout_work "$DEST")/fanout.tsv" grok flagged 4)
-assert test "$(tsv_col "$(fanout_work "$DEST")/fanout.tsv" grok flagged 3)" = usage_limit
+flag_reason=$(tsv_col "$DEST_WORK/fanout.tsv" grok flagged 4)
+assert test "$(tsv_col "$DEST_WORK/fanout.tsv" grok flagged 3)" = usage_limit
 assert grep -Fq 'account flagged (unusual activity)' <<<"$flag_reason"
 assert_fails "$flag_reason" 'usage limit'
 
@@ -973,12 +972,12 @@ printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"absent\",\"login\":fals
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok,gemini || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq $'grok\tghost\tskipped\tlogin needed' "$(fanout_work "$DEST")/fanout.tsv"
-assert grep -Fq $'gemini\tabsent\tskipped\tlogin needed' "$(fanout_work "$DEST")/fanout.tsv"
-assert grep -Fq $'gemini\tstray\tskipped\tout of pool' "$(fanout_work "$DEST")/fanout.tsv"
-assert grep -Fq $'gemini\twall\tskipped\twalled' "$(fanout_work "$DEST")/fanout.tsv"
-assert grep -Fq $'gemini\tthawed\tok' "$(fanout_work "$DEST")/fanout.tsv"
-assert grep -Fq $'grok\tdelta\tok' "$(fanout_work "$DEST")/fanout.tsv"
+assert grep -Fq $'grok\tghost\tskipped\tlogin needed' "$DEST_WORK/fanout.tsv"
+assert grep -Fq $'gemini\tabsent\tskipped\tlogin needed' "$DEST_WORK/fanout.tsv"
+assert grep -Fq $'gemini\tstray\tskipped\tout of pool' "$DEST_WORK/fanout.tsv"
+assert grep -Fq $'gemini\twall\tskipped\twalled' "$DEST_WORK/fanout.tsv"
+assert grep -Fq $'gemini\tthawed\tok' "$DEST_WORK/fanout.tsv"
+assert grep -Fq $'grok\tdelta\tok' "$DEST_WORK/fanout.tsv"
 assert_fails "$(cat "$CALLS")" 'ARG=ghost'
 assert_fails "$(cat "$CALLS")" 'ARG=absent'
 assert_fails "$(cat "$CALLS")" 'ARG=wall'
@@ -1004,7 +1003,8 @@ rm "$FAKE_BIN/grok-image"
 ln -s "$FAKE_BIN/grok-image-slow" "$FAKE_BIN/grok-image"
 STATE_DEST="$WORK/state dest"
 mkdir -p "$STATE_DEST"
-state_cells() { jq -c '[.kind, [.cells[] | [.vendor, .account, .status, .exit]]]' "$(fanout_work "$STATE_DEST")/fanout.state.json" 2>/dev/null; }
+STATE_WORK=$(fanout_work "$STATE_DEST")
+state_cells() { jq -c '[.kind, [.cells[] | [.vendor, .account, .status, .exit]]]' "$STATE_WORK/fanout.state.json" 2>/dev/null; }
 fanout_bg FANOUT_RELEASE="$WORK/release" -- --dest-dir "$STATE_DEST" --prompt 'badge' --vendors grok
 fanout_pid=$!
 state_live='["image",[["grok","delta","done",0],["grok","slow","running",null],["grok","broken","failed",1],["grok","walled","failed",3]]]'
@@ -1016,11 +1016,11 @@ assert test "$(state_cells)" = "$state_live"
 : >"$WORK/release"
 wait "$fanout_pid"
 assert test "$(state_cells)" = '["image",[["grok","delta","done",0],["grok","slow","done",0],["grok","broken","failed",1],["grok","walled","failed",3]]]'
-assert test "$(find "$(fanout_work "$STATE_DEST")" -name 'fanout.state.json.tmp*' | wc -l | tr -d ' ')" = 0
+assert test "$(find "$STATE_WORK" -name 'fanout.state.json.tmp*' | wc -l | tr -d ' ')" = 0
 
 # A cell holding for a parallel slot has no process yet: `waiting`, never `running`, so the row
 # does not count queued accounts as work in flight. Every planned cell is listed from the start.
-rm -f "$(fanout_work "$STATE_DEST")/fanout.state.json" "$WORK/release"
+rm -f "$STATE_WORK/fanout.state.json" "$WORK/release"
 fanout_bg FANOUT_RELEASE="$WORK/release" -- --dest-dir "$STATE_DEST" --prompt 'badge' --vendors grok --max-parallel 1
 fanout_pid=$!
 state_queued='["image",[["grok","delta","done",0],["grok","slow","running",null],["grok","broken","waiting",null],["grok","walled","waiting",null]]]'
@@ -1032,11 +1032,11 @@ assert test "$(state_cells)" = "$state_queued"
 : >"$WORK/release"
 wait "$fanout_pid"
 assert test "$(state_cells)" = '["image",[["grok","delta","done",0],["grok","slow","done",0],["grok","broken","failed",1],["grok","walled","failed",3]]]'
-rm -f "$(fanout_work "$STATE_DEST")/fanout.state.json"
+rm -f "$STATE_WORK/fanout.state.json"
 rc=0
 fanout --dest-dir "$STATE_DEST" --prompt 'motion' --video --ref "$WORK/refs/r1.png" --vendors grok --dry-run || rc=$?
 assert test "$rc" -eq 0
-assert test ! -e "$(fanout_work "$STATE_DEST")/fanout.state.json"
+assert test ! -e "$STATE_WORK/fanout.state.json"
 
 # --- the caps model check: fresh, stale and unknown ---------------------------
 # shellcheck source=share/image-caps.sh
