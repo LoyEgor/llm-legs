@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 {
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u

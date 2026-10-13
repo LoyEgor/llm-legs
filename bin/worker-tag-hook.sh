@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # PreToolUse(Bash) inside a fork: prefixes the fork's `fork · <model> · <account>` tag, seeded by
 # worker-spawn-hook.sh, onto every Bash description so the UI activity line names who is spending
 # quota. Tag files are session-scoped so the subagent rows can surface the tag. Fail-open everywhere.
