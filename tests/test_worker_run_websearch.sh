@@ -273,18 +273,4 @@ EOF
   assert test "$(grep -cF 'EDITS:' "$RUN_DIR/brief")" = 0
 fi
 
-if suite_shard_owns 2 ws-research-model-refused; then
-  # Off the light_research row the refusal names what to pass, not just that something is missing.
-  set_config 'codex_effort=low' 'light_research=gemini' 'light_edit=gemini'
-  clear_stub
-  rc=0
-  "$RUNNER" start codex --brief "$WORK/websearch/plain" --workdir "$workdir" --role research \
-    >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
-  assert test "$rc" -eq 4
-  assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/websearch.out"
-  assert grep -qF -- '--model <id>' "$WORK/websearch.err"
-  assert grep -qF 'light ids (astra' "$WORK/websearch.err"
-  assert test ! -s "$CALL_LOG"
-fi
-
 echo "PASS: $asserts asserts; web search as one table every vendor and every entry point resolves through"

@@ -74,10 +74,14 @@ rm -f "$TOGGLE"
 
 # Off the light row's vendor, a light run must be told which model to use.
 printf 'light_research=gemini\nlight_edit=claudeb:sonnet\n' >"$TOGGLE"
+launched=$(cat "$HOME/.claude-profiles/researcher/vendor.log")
 wr start codex --role research --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?
 assert test "$rc" -eq 4
 assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/out"
 assert grep -q 'the light_research row names gemini, not codex' "$WORK/err"
+assert grep -qF -- '--model <id>' "$WORK/err"
+assert grep -qF 'light ids (astra' "$WORK/err"
+assert test "$(cat "$HOME/.claude-profiles/researcher/vendor.log")" = "$launched"
 wr start codex --role research --model astra --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?
 assert test "$rc" -eq 0
 assert jq -e '.vendor == "codex" and .role == "research" and .model == "astra" and .model_id == "gpt-6.1-astra" and .light == "research"' \
