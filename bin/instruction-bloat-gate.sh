@@ -185,9 +185,9 @@ payload_fault() { gate_journal bloat fault "$sid" "$file_path" '' 'edit payload 
 # and silently understates multibyte (Cyrillic) growth against the threshold.
 if [ "$tool_name" = "Write" ]; then
   jq -j '.tool_input.content // ""' "$input_file" >"$tmp_dir/new" 2>/dev/null || payload_fault
-  new_bytes=$(wc -c <"$tmp_dir/new" | tr -d '[:space:]')
+  new_bytes=$(wc -c <"$tmp_dir/new") && new_bytes=${new_bytes// /}
   old_bytes=0
-  [ -f "$file_path" ] && old_bytes=$(wc -c <"$file_path" | tr -d '[:space:]')
+  [ -f "$file_path" ] && old_bytes=$(wc -c <"$file_path") && old_bytes=${old_bytes// /}
   delta=$((new_bytes - old_bytes))
 else
   if [ "$tool_name" = MultiEdit ]; then
@@ -203,8 +203,8 @@ else
   while [ "$i" -lt "$n_edits" ]; do
     jq -j --argjson i "$i" "$edits[\$i].old_string" "$input_file" >"$tmp_dir/old" 2>/dev/null || payload_fault
     jq -j --argjson i "$i" "$edits[\$i].new_string" "$input_file" >"$tmp_dir/new" 2>/dev/null || payload_fault
-    old_len=$(wc -c <"$tmp_dir/old" | tr -d '[:space:]')
-    new_len=$(wc -c <"$tmp_dir/new" | tr -d '[:space:]')
+    old_len=$(wc -c <"$tmp_dir/old") && old_len=${old_len// /}
+    new_len=$(wc -c <"$tmp_dir/new") && new_len=${new_len// /}
     one=$((new_len - old_len))
     replace_all=$(jq -r --argjson i "$i" "$edits[\$i].replace_all // false" "$input_file" 2>/dev/null) || payload_fault
     if [ "$replace_all" = "true" ] && [ -f "$file_path" ] && [ "$old_len" -gt 0 ]; then
@@ -227,7 +227,7 @@ fi
 # ritual below is a speed bump for ordinary growth, and it must not be a way past a hard cap.
 if [ -n "$global" ] && [ "$delta" -gt 0 ] 2>/dev/null; then
   current_bytes=0
-  [ -f "$file_path" ] && current_bytes=$(wc -c <"$file_path" | tr -d '[:space:]')
+  [ -f "$file_path" ] && current_bytes=$(wc -c <"$file_path") && current_bytes=${current_bytes// /}
   case "$current_bytes" in ''|*[!0-9]*) current_bytes=0 ;; esac
   prospective=$((current_bytes + delta))
   bound="Keep it bounded: put new detail in an on-demand instruction document and leave only a pointer in global CLAUDE.md."
@@ -353,7 +353,7 @@ retry_read_seen() {
   # A transcript shorter than the byte the note remembers was truncated or rotated under the same
   # name, and every read this gate could have verified went with it: the tail is empty from here
   # on, which would deny the retry forever rather than once.
-  now=$(wc -c <"$transcript" 2>/dev/null | tr -d '[:space:]')
+  now=$(wc -c <"$transcript" 2>/dev/null) && now=${now// /}
   case "$now" in ''|*[!0-9]*) return 0 ;; esac
   [ "$size" -le "$now" ] || return 0
   seen=$(tail -c "+$((size + 1))" "$transcript" 2>/dev/null | jq -R -r '
@@ -410,7 +410,7 @@ fi
 if [ -f "$file_path" ]; then
   transcript_now=$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null) || transcript_now=''
   if [ -n "$transcript_now" ] && [ -f "$transcript_now" ]; then
-    size_now=$(wc -c <"$transcript_now" 2>/dev/null | tr -d '[:space:]')
+    size_now=$(wc -c <"$transcript_now" 2>/dev/null) && size_now=${size_now// /}
     case "$size_now" in
       ''|*[!0-9]*) ;;
       *) printf '%s\n%s\n' "$size_now" "$transcript_now" >"$note" 2>/dev/null || true ;;

@@ -5,26 +5,27 @@
 # A decision the doctor matches a watched change against: a change no gate priced or passed is a
 # write that went around them all. So the record has to outlive the retry stamp it came with.
 
-_gate_journal_str() {
-  local v=${1-}
-  v=${v//\\/\\\\}
-  v=${v//\"/\\\"}
-  v=${v//[[:cntrl:]]/ }
-  printf '"%s"' "$v"
+_gate_journal_str() { # out-var value: no subshell per field
+  local _v=${2-}
+  _v=${_v//\\/\\\\}
+  _v=${_v//\"/\\\"}
+  _v=${_v//[[:cntrl:]]/ }
+  printf -v "$1" '"%s"' "$_v"
 }
 
 gate_journal() { # gate decision session file [delta] [detail]
-  local dir journal delta=${5:-} real='' rows oldest
+  local dir journal delta=${5:-} real='' rows oldest j_gate j_decision j_sid j_file j_real j_detail
   [ -n "${HOME:-}" ] || return 0
   dir=${INSTRUCTION_WATCH_STATE:-$HOME/.cache/claude-instruction-watch}
   journal=$dir/gates.jsonl
   mkdir -p "$dir" 2>/dev/null || return 0
   case "$delta" in ''|*[!0-9-]*|-) delta=null ;; esac
   [ -z "${4:-}" ] || real=$(realpath "$4" 2>/dev/null) || real=''
+  _gate_journal_str j_gate "$1"; _gate_journal_str j_decision "$2"; _gate_journal_str j_sid "${3:-}"
+  _gate_journal_str j_file "${4:-}"; _gate_journal_str j_real "$real"; _gate_journal_str j_detail "${6:-}"
   printf '{"at":%s,"gate":%s,"decision":%s,"sid":%s,"file":%s,"real":%s,"delta":%s,"detail":%s}\n' \
-    "$(date +%s)" "$(_gate_journal_str "$1")" "$(_gate_journal_str "$2")" "$(_gate_journal_str "${3:-}")" \
-    "$(_gate_journal_str "${4:-}")" "$(_gate_journal_str "$real")" "$delta" \
-    "$(_gate_journal_str "${6:-}")" >>"$journal" 2>/dev/null || return 0
+    "$(date +%s)" "$j_gate" "$j_decision" "$j_sid" "$j_file" "$j_real" "$delta" \
+    "$j_detail" >>"$journal" 2>/dev/null || return 0
   [ $((RANDOM % 64)) -eq 0 ] || return 0
   rows=$(wc -l <"$journal" 2>/dev/null) || rows=0
   if [ "${rows// /}" -gt 4000 ] 2>/dev/null; then
