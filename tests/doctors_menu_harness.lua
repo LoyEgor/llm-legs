@@ -582,7 +582,8 @@ write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s
 write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s = now, status = "ok",
   problem_count = 0, problems = {}, blind_spots = {} })
 local doctors = loadDoctors()
-check(doctors.title() == "Doctors", "all ok: " .. text(doctors.title()))
+local title = doctors.title()
+check(title == "Doctors", "all ok: " .. text(title))
 local items = doctors.menuItems()
 check(#items == 10 and text(items[1].title) == summary("LLM", 0) and text(items[2].title) == summary("Harness", 0)
   and text(items[3].title) == summary("Updater", 0) and text(items[4].title) == summary("Code", nil)
@@ -690,18 +691,22 @@ write("/llm-doctor/latest.json", llmDocument("problems", 2))
 write("/harness-doctor/menu.txt", harnessMenu(3, "Harness doctor: 3 problems"))
 write("/updater-doctor/latest.json", updater)
 doctors = loadDoctors()
-check(text(doctors.title()) == "Doctors: 6 problems" and red(doctors.title()), "N problems: " .. text(doctors.title()))
+title = doctors.title()
+check(text(title) == "Doctors: 6 problems" and red(title), "N problems: " .. text(title))
 updater.status = "blind"
 write("/updater-doctor/latest.json", updater)
-check(text(doctors.title()) == "Doctors: 6 problems · blind", "blind: " .. text(doctors.title()))
+title = text(doctors.title())
+check(title == "Doctors: 6 problems · blind", "blind: " .. title)
 write("/llm-doctor/latest.json", llmDocument("error", 0))
-check(text(doctors.title()) == "Doctors: 4 problems · blind · failed", "failed: " .. text(doctors.title()))
+title = text(doctors.title())
+check(title == "Doctors: 4 problems · blind · failed", "failed: " .. title)
 updater.status = "problems"
 write("/updater-doctor/latest.json", updater)
 write("/llm-doctor/latest.json", llmDocument("ok", 0))
 local harnessEntry = limits.harnessDoctorEntry
 limits.harnessDoctorEntry = function() error("menu.txt exploded") end
-check(text(doctors.title()) == "Doctors: 1 problem · failed", "a throwing builder: " .. text(doctors.title()))
+title = text(doctors.title())
+check(title == "Doctors: 1 problem · failed", "a throwing builder: " .. title)
 local broken = doctors.menuItems()[2]
 check(text(broken.title) == summary("Harness", nil) and red(broken.title)
   and text(details(broken.menu)[1].title) == "Harness doctor: failed to render"
@@ -770,10 +775,9 @@ check(table.concat(palette.refreshing(), ",") == "Doctors", "a running Harness d
 limits.harnessDoctorTask = nil
 updater.as_of_s = now - 3 * 86400
 write("/updater-doctor/latest.json", updater)
-check(text(doctors.menuItems()[3].title) == summary("Updater", 1)
-  and sameColor(colorAt(doctors.menuItems()[3].title, 1), palette.DIM)
-  and text(details(doctors.menuItems()[3].menu)[1].title) == "Updater doctor: 1 problem · stale 3d",
-  "stale: " .. text(doctors.menuItems()[3].title))
+up = doctors.menuItems()[3]
+check(text(up.title) == summary("Updater", 1) and sameColor(colorAt(up.title, 1), palette.DIM)
+  and text(details(up.menu)[1].title) == "Updater doctor: 1 problem · stale 3d", "stale: " .. text(up.title))
 updater.status, updater.problem_count, updater.as_of_s = "error", 0, now
 updater.self = { collector_s = 1, error = "vendor-fingerprint: no such file" }
 write("/updater-doctor/latest.json", updater)
@@ -855,8 +859,8 @@ tasks = {}
 fix(details(codeItem.menu)).fn()
 check(#tasks == 1 and table.concat(tasks[1].args, " ") == "launch code", "Fix on the Code doctor launches code")
 tasks[1]:finish(0, "")
-check(text(loadDoctors().title()) == "Doctors: " .. (before + 3) .. " problems", "the Code doctor counts into Doctors: "
-  .. text(loadDoctors().title()))
+title = text(loadDoctors().title())
+check(title == "Doctors: " .. (before + 3) .. " problems", "the Code doctor counts into Doctors: " .. title)
 remove("/code-doctor/latest.json")
 tasks, alerts = {}, {}
 

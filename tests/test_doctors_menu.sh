@@ -34,13 +34,18 @@ jq -n --argjson s "$now" '["reviewers", "workers", "light", "image"] as $blocks
 jq -n --argjson s "$now" '{contract: 1, doctor: "updater", as_of_s: $s, judge: "u", status: "problems", problem_count: 1,
   problems: [{id: "pass-stale:codex", rule: "pass-stale", state: "new", fact: "stale pass"}], blind_spots: [],
   vendors: [{vendor: "codex", installed: "0.1.0", latest: "0.1.0", models: [], events: []}]}' >"$VOCAB/updater.json"
-python3 - "$ROOT" "$VOCAB" "$now" <<'PY' || fail "the harness fixture document was not built"
-import importlib.machinery, importlib.util, json, sys
+eval "$(sed -n "/^PY='\$/,/^'\$/p" "$ROOT/bin/doctor-fix")"
+HOME="$VOCAB/home" LLM_DOCTOR_LEDGER="$VOCAB/llm-ledger.json" HARNESS_LEDGER="$VOCAB/harness-ledger.json" \
+  UPDATER_DOCTOR_LEDGER="$VOCAB/updater-ledger.json" HARNESS_SETTINGS="$VOCAB/settings.json" \
+  CODE_DOCTOR_LEDGER="$VOCAB/code-ledger.json" CODE_DOCTOR_DIR="$VOCAB/code-doctor" CODE_DOCTOR_REPOS="" \
+  DF_ROOT="$ROOT" DF_PROJECTS="$VOCAB/projects" DF_RUNS="$VOCAB/runs" DF_HOME="$VOCAB/home" DF_DOCS="$ROOT/docs" \
+  python3 - "$PY" "$VOCAB" "$now" >"$VOCAB/refs" <<'PY' || fail "the harness fixture document was not built or doctor-fix did not snapshot the fixtures"
+import contextlib, io, json, sys
 
-root, out, now = sys.argv[1], sys.argv[2], int(sys.argv[3])
-loader = importlib.machinery.SourceFileLoader("harness_doctor", root + "/bin/harness-doctor")
-module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-loader.exec_module(module)
+doctor_fix = {"__name__": "doctor_fix"}
+exec(compile(sys.argv[1], "doctor-fix", "exec"), doctor_fix)
+out, now = sys.argv[2], int(sys.argv[3])
+module = doctor_fix["doctor_module"]("harness")
 parts = {"Hooks": "hook_every_call", "Hook waits": "floor", "Load": "load"}
 sections = [module.section(name, [module.row([rule], red=[0], judge=[module.verdict(rule, "x", 1, 0, "calls", 1, 1, "red")])],
                            [""], [False]) for name, rule in parts.items()]
@@ -51,17 +56,13 @@ document = {"contract": 1, "doctor": "harness", "as_of_s": now, "judge": "h", "s
             "sections": sections, "periods": {}, "extras": [], "footer": "as of now"}
 json.dump(document, open(out + "/harness.json", "w"))
 open(out + "/menu.txt", "w").write(module.menu_text(document))
+for doctor in ("llm", "harness", "updater", "code"):
+    snapshot = io.StringIO()
+    with contextlib.redirect_stdout(snapshot):
+        doctor_fix["snapshot"](doctor, "%s/%s.json" % (out, doctor))
+    for area in sorted({entry["area"] for entry in json.loads(snapshot.getvalue())}):
+        print("%s-%s-20261001T020000Z-abcd" % (doctor, area))
 PY
-eval "$(sed -n "/^PY='\$/,/^'\$/p" "$ROOT/bin/doctor-fix")"
-for doctor in llm harness updater code; do
-  HOME="$VOCAB/home" LLM_DOCTOR_LEDGER="$VOCAB/llm-ledger.json" HARNESS_LEDGER="$VOCAB/harness-ledger.json" \
-    UPDATER_DOCTOR_LEDGER="$VOCAB/updater-ledger.json" HARNESS_SETTINGS="$VOCAB/settings.json" \
-    CODE_DOCTOR_LEDGER="$VOCAB/code-ledger.json" CODE_DOCTOR_DIR="$VOCAB/code-doctor" CODE_DOCTOR_REPOS="" \
-    DF_ROOT="$ROOT" DF_PROJECTS="$VOCAB/projects" DF_RUNS="$VOCAB/runs" DF_HOME="$VOCAB/home" DF_DOCS="$ROOT/docs" \
-    python3 -c "$PY" snapshot "$doctor" "$VOCAB/$doctor.json" |
-    jq -r --arg d "$doctor" '[.[].area] | unique[] | "\($d)-\(.)-20261001T020000Z-abcd"' ||
-    fail "doctor-fix did not snapshot the $doctor fixture"
-done >"$VOCAB/refs"
 [ "$(wc -l <"$VOCAB/refs" | tr -d ' ')" = 12 ] || fail "doctor-fix areas of the fixtures: $(tr '\n' ' ' <"$VOCAB/refs")"
 printf '%s\n' llm-health-20261001T020000Z-abcd harness-self-20261001T020000Z-abcd \
   updater-machinery-20261001T020000Z-abcd >>"$VOCAB/refs"
@@ -72,23 +73,13 @@ jq -Rn --arg s "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: "n1", started_at: $s, fini
 DOCTORS_DIR="$VOCAB/doctors" bash "$ROOT/bin/night-run" latest --menu | tail -n +2 | awk -F'\t' '$5 != "doctor"' | cut -f1 >"$VOCAB/labels.txt"
 [ "$(wc -l <"$VOCAB/labels.txt" | tr -d ' ')" = 16 ] || fail "night-run labels: $(tr '\n' ' ' <"$VOCAB/labels.txt")"
 
-output=$(python3 - "$ROOT/tests/doctors_menu_harness.lua" "$VOCAB" "${DOCTORS_MENU_SOURCE:-}" "${DOCTORS_MENU_TRENDS_ONLY:-}" "${DOCTORS_MENU_BASELINE:-}" <<'HSPY'
-import subprocess
-import sys
-
-source = "[[" + sys.argv[3] + "]]" if sys.argv[3] else "nil"
-only = "true" if sys.argv[4] else "false"
-baseline = "[[" + sys.argv[5] + "]]" if sys.argv[5] else "nil"
-try:
-    result = subprocess.run(["/usr/bin/lockf", "-k", "-t", "600", "/tmp/hs-cli.lock", "hs", "-t", "120", "-c", f"return loadfile([[{sys.argv[1]}]])([[{sys.argv[2]}]], {source}, {only}, {baseline})"],
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=730)
-except (FileNotFoundError, subprocess.TimeoutExpired):
-    raise SystemExit(124)
-sys.stdout.write(result.stdout)
-sys.stderr.write(result.stderr)
-raise SystemExit(result.returncode)
-HSPY
-) || fail "the Hammerspoon harness threw or timed out: $output"
+source=nil only=false baseline=nil
+[ -z "${DOCTORS_MENU_SOURCE:-}" ] || source="[[$DOCTORS_MENU_SOURCE]]"
+[ -z "${DOCTORS_MENU_TRENDS_ONLY:-}" ] || only=true
+[ -z "${DOCTORS_MENU_BASELINE:-}" ] || baseline="[[$DOCTORS_MENU_BASELINE]]"
+output=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 \
+  -c "return loadfile([[$ROOT/tests/doctors_menu_harness.lua]])([[$VOCAB]], $source, $only, $baseline)" </dev/null) ||
+  fail "the Hammerspoon harness threw or timed out: $output"
 printf '%s\n' "$output" | awk '/^(BENCH|FIXTURE|SUBMENU) /'
 result=$(printf '%s\n' "$output" | grep -v '^-- Loading extension: ' | awk '/^(PASS|FAIL)/ { found = 1 } found')
 case "$result" in
