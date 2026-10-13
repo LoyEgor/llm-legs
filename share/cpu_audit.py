@@ -117,7 +117,7 @@ def days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_da
 def sources(key, repos):
     kind, _, name = key.partition("/")
     rel = {"statusline": PROBE_SOURCES.get(name, (STATUSLINE,)), "doctor": ("llm-legs/bin/%s-doctor" % name,),
-           "hook": ("claude-setup/hooks/" + name,)}.get(kind) or APP_SOURCES.get(name, (name,) if "/" in name else ())
+           "hook": ("claude-setup/hooks/" + name, "llm-legs/bin/" + name)}.get(kind) or APP_SOURCES.get(name, (name,) if "/" in name else ())
     return [os.path.join(repos, r) for r in rel if os.path.isfile(os.path.join(repos, r))]
 
 

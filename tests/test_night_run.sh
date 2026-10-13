@@ -474,8 +474,12 @@ printf 'printf "%%s\\n" "${0##*/}${1:+ $1}" >>"%s/hook-time-keys"\n' "$WORK" >"$
 wall "$walled" overloaded >"$WORK/out" || fail "a stop that is no wall failed"
 assert [ "$(cat "$WORK/hook-time-keys")" = "night-run wall" ]
 rm "$HOME/.claude/hooks/lib/hook-time.sh"
-wall not-an-orchestrator rate_limit >>"$WORK/out" || fail "a wall outside every night failed"
+mkdir -p "$WORK/jq-shim"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >>"%s/jq-args"\nexec %s "$@"\n' "$WORK" "$(command -v jq)" >"$WORK/jq-shim/jq"
+chmod +x "$WORK/jq-shim/jq"
+PATH="$WORK/jq-shim:$PATH" wall not-an-orchestrator rate_limit >>"$WORK/out" || fail "a wall outside every night failed"
 assert [ ! -s "$WORK/out" ]
+assert_fails grep -qx -- -s "$WORK/jq-args"
 assert [ "$(jq -r .session "$R6")" = "$walled" ]
 assert pgrep -f -- "--session-id $walled" >/dev/null
 : >"$DATA/pick-args"

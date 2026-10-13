@@ -1556,6 +1556,7 @@ cmd_wall() {
   [ "$(jq -r '.error // empty' <<<"$input" 2>/dev/null)" = rate_limit ] || return 0
   sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
   [ -n "$sid" ] || return 0
+  grep -qsF -- "$sid" "$nights_dir"/*.json || return 0
   id=$(all_nights | jq -r --arg s "$sid" 'first(.[] | select(.finished_at == null and .session == $s) | .id) // empty')
   [ -n "$id" ] || return 0
   [ -z "${NIGHT_RUN_WALL_SYNC:-}" ] || { cmd_failover "$id" "$sid"; return; }
