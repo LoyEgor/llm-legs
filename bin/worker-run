@@ -317,7 +317,7 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # prepended — the brief's own first line is load-bearing (`RESUME <id>:`, which
 # readers take off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
-BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — everything you write is English: the report, findings, verdicts, any brief or message to another model, code, comments and commit messages; Russian never passes between models, only as code in backticks. HOUSE RULES: never delete a file you did not create; commit only your own files by explicit path, never `git add -A`; no `rm -rf`, `git reset --hard`, force push, history rewrite or destructive database operation the brief does not name; `llm-limits --table --no-write` before any theory about an account limit; never a headed Playwright window, and browser or Mac-app UI work reads `~/.claude/docs/browser-ui-work.md` first. TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); at the end run, in one `tests/run-all <suite>...` call, only the suites covering the files you changed (`tests/affected <file>...` lists them where the repo has it) plus any required red-on-old-code test, and report PASS counts; never the full `tests/run-all`, which the night runs once in the background. P1/P2 findings and behaviour bugs need a test red on the old code. P3, fit, cleanup and speed refactors need no new test: existing covering suites green suffice. Speed fixes retain the work-not-done proof in docs/speed-doctor-design.md. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. RETURN: first line the outcome — done, partially done or failed, plus one clause; then changed files, verification with PASS counts and anything undone; mark anything you could not confirm and say where you looked. `worker-run report` puts its own `ACCOUNT: <account> (<vendor>)` line second, so never write one; an `OUTCOME:` line is a worker-run status code, written only where a preamble names its code. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
+BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — everything you write is English: the report, findings, verdicts, any brief or message to another model, code, comments and commit messages; Russian never passes between models, only as code in backticks. HOUSE RULES: commit only your own files by explicit path, never `git add -A`; unless the brief names it, never delete a file you did not create, and no `rm -rf`, `git reset --hard`, force push, history rewrite or destructive database operation; `llm-limits --table --no-write` before any theory about an account limit; never a headed Playwright window, and browser or Mac-app UI work reads `~/.claude/docs/browser-ui-work.md` first. TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); at the end run, in one `tests/run-all <suite>...` call, only the suites covering the files you changed (`tests/affected <file>...` lists them where the repo has it) plus any required red-on-old-code test, and report PASS counts; never the full `tests/run-all`, which the night runs once in the background. P1/P2 findings and behaviour bugs need a test red on the old code. P3, fit, cleanup and speed refactors need no new test: existing covering suites green suffice. Speed fixes retain the work-not-done proof in docs/speed-doctor-design.md. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. RETURN: first line the outcome — done, partially done or failed, plus one clause; then changed files, verification with PASS counts and anything undone; mark anything you could not confirm and say where you looked. `worker-run report` puts its own `ACCOUNT: <account> (<vendor>)` line second, so never write one; an `OUTCOME:` line is a worker-run status code, written only where a preamble names its code. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
 
 # Grok is the one research leg with no read-only mode: supervise_grok digests every tree it may read
 # before and after, and ANY difference ends a finished run as READ_ONLY_VIOLATION with the answer
@@ -332,6 +332,7 @@ Drive Egor'"'"'s Mac apps through Codex Computer Use: the CUA REPL `js` tool, wh
 - Close the windows and tabs you opened once the task is complete, unless the brief says to keep them; a stop for Egor'"'"'s input leaves them open.
 - Computer Use refuses some URLs (vendor policy, checked on the frontmost browser tab, even one Egor opened): when it stops the session for a disallowed URL, end with `OUTCOME: COMPUTER_UNAVAILABLE reason=disallowed-url url=<that tab'"'"'s URL>`.
 - Return the evidence the brief asks for and end with: `OUTCOME: COMPUTER_OK` or `OUTCOME: COMPUTER_UNAVAILABLE reason=<text>`'
+CLAUDEB_DENIED_TOOLS=ScheduleWakeup,CronCreate,Workflow,ListAgents
 # The harness's own prompt steers a bypass-mode model toward sed and heredocs, which worker-edit-guard
 # only records; said up front, a text edit stays an Edit call the transcript names.
 CLAUDEB_EDIT_FENCE='EDITS: change repository files only through the Edit and Write tools where an edit can do it; a cp, mv, rsync or redirect with no Edit form is recorded for the run, never refused.'
@@ -1099,7 +1100,7 @@ supervise_claudeb() {
   # A wake-up scheduled in a -p session ends the turn and nothing ever fires it: the run exits 0
   # "waiting on" suites it never reads, its work uncommitted. Workflow and ListAgents are a chat's
   # fan-out, never a headless worker's; their schemas rode every cold start and context rewrite.
-  while IFS= read -r value; do access+=("$value"); done < <(web_search_claudeb_args "$(web_search_meta_state "$meta")" ScheduleWakeup,CronCreate,Workflow,ListAgents)
+  while IFS= read -r value; do access+=("$value"); done < <(web_search_claudeb_args "$(web_search_meta_state "$meta")" "$CLAUDEB_DENIED_TOOLS")
   value=$(jq -r '.inbox_settings // empty' "$meta")
   [ -z "$value" ] || access+=(--settings "$value")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json "${access[@]}")
@@ -2364,7 +2365,7 @@ WORKER_RUNS_KEEP_DAYS=35
 # Appends and the daily prune share one lock: a prune rewriting the file under an unlocked append
 # would drop that row.
 journal_worker_run() { # directory status exit-code
-  local directory="$1" journal now row marker reason
+  local directory="$1" journal now row marker reason user_md transcript line
   journal="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/runs.jsonl"
   printf -v now '%(%s)T' -1
   reason=$2
@@ -2373,14 +2374,22 @@ journal_worker_run() { # directory status exit-code
     | .terminal_reason = (if $reason == "failed" and $code == "4" and ((.cli_starts // []) | length) == 0
         then "no-start" else $reason end)' \
     --argjson now "$now" --arg reason "$reason" --arg code "$3" 2>/dev/null || return 0
-  row=$(jq -c --arg run "${directory##*/}" --arg status "$2" --arg code "$3" \
+  # claudeMdExcludes alone keeps the chat's CLAUDE.md out of a worker: Spend reads this flag to see a
+  # CLI that stopped honouring it.
+  user_md=null
+  if [ "$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)" = claudeb ] &&
+    transcript=$(session_transcript claudeb "$(jq -r '.account' "$directory/meta.json")" "$(session_id "$directory" claudeb)"); then
+    line=$(grep -m1 '"type":"instructions"' "$transcript" 2>/dev/null) || line='{}'
+    user_md=$(jq '[.attachment.files[]? | select(.type == "User")] | length > 0' <<<"$line" 2>/dev/null) || user_md=null
+  fi
+  row=$(jq -c --arg run "${directory##*/}" --arg status "$2" --arg code "$3" --argjson user_md "${user_md:-null}" \
     --arg launcher "$(head -n1 "$directory/launcher" 2>/dev/null)" \
     '{run: $run, vendor, account, role, model, effort, light: (.light // null), workdir,
       launcher: (($launcher | select(. != "")) // null), resume: ((.resume // "") != ""),
       round: (.review_round // null), pid_started_at: (.pid_started_at // null), started_at,
       cli_starts: (.cli_starts // []), attempt_secs: (.attempt_secs // []), attempt_rcs: (.attempt_rcs // []),
       walled: (.walled_accounts // []), ended_at, exit_code: (($code | tonumber?) // null), status: $status,
-      reason: .terminal_reason, orphans: (.orphans_ended // [])}' "$directory/meta.json" 2>/dev/null) || return 0
+      reason: .terminal_reason, orphans: (.orphans_ended // []), user_md_loaded: $user_md}' "$directory/meta.json" 2>/dev/null) || return 0
   mkdir -p "${journal%/*}" 2>/dev/null || return 0
   LLM_STORE_LOCK_RETRIES=40 store_lock_acquire "$journal.lock" || {
     limit_hit worker-run.journal-lock 40 count retry-exhausted "worker-stats runs.jsonl row of run ${directory##*/} ($2)" \
@@ -3114,7 +3123,7 @@ start_run() {
         '. + {claudeMdExcludes: ([$home + "/.claude-profiles/*/CLAUDE.md", $home + "/.claude/CLAUDE.md", $real] | map(select(. != "")) | unique)}' \
         <<<"$inbox_settings") || fail 'could not compose the worker settings. Nothing was launched and no account was spent.'
       command_meta=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions --settings "$inbox_settings")
-      while IFS= read -r value; do command_meta+=("$value"); done < <(web_search_args claudeb "$web_search_state")
+      while IFS= read -r value; do command_meta+=("$value"); done < <(web_search_claudeb_args "$web_search_state" "$CLAUDEB_DENIED_TOOLS")
       [ -z "$resume" ] || command_meta+=(--resume "$resume")
       [ "$chrome" = false ] || command_meta+=(--chrome)
       ;;

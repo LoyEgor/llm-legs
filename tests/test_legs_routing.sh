@@ -37,8 +37,8 @@ printf 'codexb' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
 [ -z "${STUB_WALL:-}" ] || { printf "model: gpt-6-astra\nERROR: You've hit your usage limit.\n" >&2; exit 1; }
-printf 'model: gpt-6-astra\n' >&2
-printf 'codex answer\n'
+[ -n "${STUB_NO_BANNER:-}" ] || printf 'model: gpt-6-astra\n' >&2
+[ -n "${STUB_BLANK:-}" ] || printf 'codex answer\n'
 EOF
 
 cat >"$STUB_BIN/geminib" <<'EOF'
@@ -60,6 +60,7 @@ printf 'claudeb' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
 [ -z "${STUB_WALL:-}" ] || { printf '{"is_error":true,"result":"%s"}\n' "${STUB_WALL_TEXT:-You have hit your session limit}"; exit 1; }
+[ -z "${STUB_BLANK:-}" ] || { printf '{"result":" \\n","modelUsage":{"claude-opus-fixture":{"outputTokens":2}}}\n'; exit 0; }
 printf '{"result":"claude answer","modelUsage":{"claude-opus-fixture":{"outputTokens":2}}}\n'
 EOF
 
@@ -354,4 +355,23 @@ for text in "You've hit your Opus limit" 'API Error: rate limit, retry shortly';
 done
 LEG_ENV=()
 
-echo "PASS: $asserts asserts; all legs route reviewers-role accounts (LEGS_ROLE overrides) through vendor profile launchers, codex runs the roster's newest slug (explicit CODEX_MODEL wins, a silent roster falls back to cli-default), refuse an unselectable pool without a vendor call, degrade to bare main-account CLIs when worker-pick is absent, audit the answering account, keep probes on the routed path, and answer --list-models without a selectable account"
+# An answer is the product: a blank one fails loudly, and a missing banner costs only the audit's model name.
+STUB_PICK_RC=0
+for spec in "codex:codex-worker:$ROOT/ask_codex.sh" "claude:claude-worker:$ROOT/ask_claude.sh"; do
+  IFS=: read -r leg account script <<<"$spec"
+  STUB_PICK_ACCOUNT="$account"
+  LEG_ENV=(STUB_BLANK=1)
+  rc=0
+  run_leg "$ROUTED_PATH" "$WORK/blank-$leg" "$script" "blank $leg" >/dev/null 2>"$WORK/blank-$leg.err" || rc=$?
+  assert test "$rc" -ne 0
+  assert grep -q 'blank answer' "$WORK/blank-$leg.err"
+done
+STUB_PICK_ACCOUNT=codex-worker
+LEG_ENV=(STUB_NO_BANNER=1)
+rc=0
+out=$(run_leg "$ROUTED_PATH" "$WORK/no-banner" "$ROOT/ask_codex.sh" "no banner" 2>/dev/null) || rc=$?
+assert test "$rc" -eq 0
+assert test "$out" = 'codex answer'
+LEG_ENV=()
+
+echo "PASS: $asserts asserts; all legs route reviewers-role accounts (LEGS_ROLE overrides) through vendor profile launchers, codex runs the roster's newest slug (explicit CODEX_MODEL wins, a silent roster falls back to cli-default), refuse an unselectable pool without a vendor call, degrade to bare main-account CLIs when worker-pick is absent, audit the answering account, keep probes on the routed path, answer --list-models without a selectable account, fail loudly on a blank answer and survive a codex run with no model banner"

@@ -15,6 +15,7 @@ import datetime, importlib.machinery, importlib.util, json, os, subprocess, sys,
 
 root, work = sys.argv[1], sys.argv[2]
 count = [0]
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "worker-stats")
 
 
 def check(cond, what):
@@ -85,6 +86,22 @@ check(leak["key"] == "loaded:Browser check" and leak["share"] == 5.0 and leak["b
       and spend.due(leak, {"verdict": "kept", "audited_at": "2026-10-13T12:00:00+00:00", "share": 0.0125}, {}) is None,
       "a harness job whose latest run loaded the configuration follows the menus check, its share of plain Fee; "
       "a run after a cut makes it due again: %s" % leak)
+
+os.makedirs(os.environ["WORKER_STATS_DIR"])
+with open(os.path.join(os.environ["WORKER_STATS_DIR"], "runs.jsonl"), "w") as handle:
+    for ended, flag in ((100, None), (200, True), (300, False), (400, True)):
+        handle.write(json.dumps({"run": "r%d" % ended, "ended_at": 1791900000 + ended, "user_md_loaded": flag}) + "\n")
+workers = spend.components(payload(), repos)[1]
+check(workers["key"] == "loaded:Workers" and workers["delta"].startswith("2 of 3 runs, last ")
+      and spend.due(workers, {"verdict": "cut", "audited_at": "2026-10-13T12:00:00+00:00", "share": 0.0}, {})
+      == "still loading after the cut",
+      "a claudeb worker whose latest checked run loaded the user CLAUDE.md is a loaded: component, due again after a "
+      "cut: %s" % workers)
+with open(os.path.join(os.environ["WORKER_STATS_DIR"], "runs.jsonl"), "a") as handle:
+    handle.write(json.dumps({"run": "r500", "ended_at": 1791900500, "user_md_loaded": False}) + "\n")
+check("loaded:Workers" not in [c["key"] for c in spend.components(payload(), repos)],
+      "a clean latest worker run clears the Workers component")
+os.remove(os.path.join(os.environ["WORKER_STATS_DIR"], "runs.jsonl"))
 
 ledger = os.path.join(work, "spend-ledger.json")
 os.environ["SPEND_LEDGER"] = ledger
@@ -199,6 +216,18 @@ try:
 except SystemExit:
     refused = True
 check(refused, "a verdict other than cut, kept or trade is refused")
+os.environ["SPEND_LEDGER"] = os.path.join(work, "bare-ledger.json")
+bare = spend.record(root, os.path.join(work, "home"), repos, "loaded:Gone job", "cut", "its next run was bare",
+                    "removal saves its share; loses nothing", "night-x", [])
+try:
+    spend.record(root, os.path.join(work, "home"), repos, "loaded:Gone job", "kept", "", "removal saves all", "", [])
+    refused = False
+except SystemExit:
+    refused = True
+os.environ["SPEND_LEDGER"] = ledger
+check(bare["verdict"] == "cut" and bare["share"] == 0.0 and bare["sources"] == {} and refused,
+      "a cut on a harness job whose next run was bare, and so left the index, is recorded; any other verdict "
+      "on a component the index no longer holds is refused: %s" % bare)
 before_zero = open(ledger).read()
 try:
     spend.record(root, os.path.join(work, "home"), repos, "fee:Hooks", "kept", "", " ", "", [])
@@ -330,5 +359,12 @@ check(document["problem_count"] == 0 and spent and all(p["group"] == "Spend" and
 print(count[0])
 EOF
 ) || { printf 'FAIL: the Spend block misjudged its fixture\n' >&2; exit 1; }
+# launchd and harness-doctor fall back to /usr/bin/python3, whose fromisoformat predates the Z suffix.
+if [ -x /usr/bin/python3 ]; then
+  /usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import spend
+assert spend.epoch("2026-10-13T13:47:49Z") == spend.epoch("2026-10-13T13:47:49+00:00") is not None' "$ROOT/share" ||
+    { printf 'FAIL: a Z-suffixed stamp reads as no time on /usr/bin/python3\n' >&2; exit 1; }
+  asserts=$((asserts + 1))
+fi
 
 printf 'PASS: %s asserts; Spend heads with tokenmap'"'"'s harness index, audits the menus check and every Fee index source off tracking.json, reads stale or no index as nodata, judges audits due by never/source blob/1.5x share, selects one, settles an audited one for a night close, records audits with their proof and roi line and backfills one day a run\n' "$asserts"

@@ -197,6 +197,10 @@ if [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
   [ "$attempt" = 1 ] || transcript_name="$STUB_TRANSCRIPT_SESSION-$attempt"
   jq -cn --arg t "$input" '{type:"user",message:{role:"user",content:$t}}' \
     >"$transcript_dir/$transcript_name.jsonl"
+  [ -z "${STUB_TRANSCRIPT_USER_MD+x}" ] ||
+    jq -cn --arg path "$STUB_TRANSCRIPT_USER_MD" \
+      '{type:"attachment",attachment:{type:"instructions",files:([{path:$path,type:"User"} | select($path != "")] + [{path:"/repo/CLAUDE.md",type:"Project"}])}}' \
+      >>"$transcript_dir/$transcript_name.jsonl"
   while IFS= read -r edit_path; do
     [ -n "$edit_path" ] || continue
     jq -cn --arg path "$edit_path" --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -392,7 +396,7 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
-  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_SAY STUB_TRANSCRIPT_GROW STUB_TRANSCRIPT_GROW_TURNS \
+  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_SAY STUB_TRANSCRIPT_USER_MD STUB_TRANSCRIPT_GROW STUB_TRANSCRIPT_GROW_TURNS \
     STUB_EDIT_PATH STUB_PICK_WALL STUB_BURN STUB_WALL_SESSION \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_GEMINI_LABEL STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS STUB_MODEL_USAGE

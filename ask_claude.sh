@@ -182,4 +182,9 @@ if printf '%s' "$OUT" | jq -e '.is_error == true' >/dev/null 2>&1; then
   echo "ask_claude.sh: CLI reported is_error=true" >&2
   exit 1
 fi
-printf '%s' "$OUT" | jq -r '.result // empty'
+answer=$(printf '%s' "$OUT" | jq -r '.result // empty')
+if [ -z "$(printf '%s' "$answer" | tr -d '[:space:]')" ]; then
+  echo "ask_claude.sh: CLI exited 0 with a blank answer" >&2
+  exit 1
+fi
+printf '%s\n' "$answer"

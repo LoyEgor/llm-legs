@@ -62,7 +62,8 @@ def load_ledger(root):
 
 def epoch(text):
     try:
-        return datetime.datetime.fromisoformat(str(text)).timestamp()
+        text = str(text)
+        return datetime.datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text).timestamp()
     except ValueError:
         return None
 
@@ -104,12 +105,31 @@ def components(payload, repos):
                     "sources": [], "share": round(100 * float(leak["tokens"]) / plain, 3) if plain else 0.0,
                     "basis": round(float(leak["tokens"]) / claude, 6) if claude else 0.0,
                     "delta": "%d runs, last %s" % (leak["runs"], leak["last"]), "last": leak["last"]})
+    workers = worker_md_leak()
+    if workers:
+        out.append(workers)
     for s in sorted(sources, key=lambda s: -float(s["charged"])):
         out.append({"key": "fee:" + s["source"], "label": "%s (%s)" % (s["source"], s["group"]), "sources": [],
                     "share": round(100 * float(s["charged"]) / fee, 3) if fee else 0.0,
                     "basis": round(float(s["charged"]) / claude, 6) if claude else 0.0,
                     "delta": delta(*map(float, s["plain"]))})
     return out
+
+
+def worker_md_leak():
+    """Workers as a loaded: component while the latest claudeb worker run whose transcript worker-run checked still
+    loaded the user CLAUDE.md that claudeMdExcludes keeps out; None while that run is clean."""
+    stats = os.environ.get("WORKER_STATS_DIR") or os.path.join(
+        os.environ.get("CLAUDEB_DIR") or os.path.join(os.path.expanduser("~"), ".claude-profiles", ".claudeb"),
+        "worker-stats")
+    checked = [r for r in read_jsonl(os.path.join(stats, "runs.jsonl")) if isinstance(r.get("user_md_loaded"), bool)]
+    latest = max(checked, key=lambda r: r.get("ended_at") or 0, default=None)
+    if not latest or not latest["user_md_loaded"]:
+        return None
+    last = datetime.datetime.fromtimestamp(latest.get("ended_at") or 0, datetime.timezone.utc).isoformat()
+    return {"key": "loaded:Workers", "label": "Workers loaded the chat's CLAUDE.md past bin/worker-run's claudeMdExcludes", "sources": [], "share": 0.0,
+            "basis": 0.0, "delta": "%d of %d runs, last %s" % (sum(r["user_md_loaded"] for r in checked), len(checked),
+                                                               last), "last": last}
 
 
 def repo_path(path, repos):
@@ -437,6 +457,9 @@ def record(root, home, repos, key, verdict, note, zero, by, worktrees):
     if not isinstance(payload, dict):
         raise SystemExit("no tracking.json at %s" % tracking_path(home))
     c = next((c for c in components(payload, repos) if c["key"] == key), None)
+    if not c and verdict == "cut" and key.startswith("loaded:"):
+        # The proof of this cut is the job's next run gone bare, which drops it from the index.
+        c = {"label": "%s loaded the harness configuration" % key[len("loaded:"):], "basis": 0.0, "sources": []}
     if not c:
         raise SystemExit("no Spend component %s in tracking.json" % key)
     return save_row(root, {

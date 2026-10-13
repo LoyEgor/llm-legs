@@ -105,7 +105,7 @@ set -e
 # Best-effort served-model extraction from the startup banner (stderr first, then stdout).
 served="$( { grep -m1 -ioE '(^|[[:space:]])model:?[[:space:]]+[a-z0-9._-]+' "$ERRF" 2>/dev/null \
           || printf '%s' "$OUT" | grep -m1 -ioE '(^|[[:space:]])model:?[[:space:]]+[a-z0-9._-]+'; } \
-          | sed -E 's/.*[Mm]odel:?[[:space:]]+//' | head -1 )"
+          | sed -E 's/.*[Mm]odel:?[[:space:]]+//' | head -1 )" || served=""
 
 weak=0
 if printf '%s' "${served:-}" | grep -qiE "$WEAK_RE"; then weak=1; fi
@@ -135,5 +135,10 @@ fi
 if [ "$weak" = "1" ] && [ "${CODEX_ALLOW_WEAK:-0}" != "1" ]; then
   echo "ask_codex.sh: REFUSING weak-tier model '${served}' in a judgment seat (set CODEX_ALLOW_WEAK=1 to override)" >&2
   exit 3
+fi
+if [ -z "$(printf '%s' "$OUT" | tr -d '[:space:]')" ]; then
+  cat "$ERRF" >&2
+  echo "ask_codex.sh: codex exited 0 with a blank answer" >&2
+  exit 1
 fi
 printf '%s\n' "$OUT"

@@ -32,6 +32,7 @@ report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'MODEL: opus·high' <<<"$report"
 assert_fails grep -q '^SERVED:' <<<"$report"
 assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (a background Bash `light-research --prompt-file <f> --out <answer> --repo <abs>`); read-only worker runs this month: 1' <<<"$report"
+assert jq -se --arg run "$RUN_ID" 'map(select(.run == $run)) | .[0].user_md_loaded == false' "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
 assert test -f "$RUN_DIR/report-readonly"
 assert_fails grep -q '^ESCALATE' <<<"$report"
 # A cheap-model run hands itself back: its ESCALATE line is surfaced with the brief, ready for the default model.
@@ -47,9 +48,11 @@ rm -f "$RUN_DIR/result"
 
 clear_stub
 export PICK_RC=0 PICK_ACCOUNT=readonly-two STUB_TRANSCRIPT_SESSION=readonly-two STUB_SESSION=readonly-two
-export STUB_TRANSCRIPT_ACCOUNT=readonly-two
+export STUB_TRANSCRIPT_ACCOUNT=readonly-two STUB_TRANSCRIPT_USER_MD=/home/.claude/CLAUDE.md
 start_ok claudeb
 assert await_exit
+# The chat's CLAUDE.md reaching a worker despite claudeMdExcludes is journaled for Spend.
+assert jq -se --arg run "$RUN_ID" 'map(select(.run == $run)) | .[0].user_md_loaded == true' "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (a background Bash `light-research --prompt-file <f> --out <answer> --repo <abs>`); read-only worker runs this month: 2' <<<"$report"
 assert test -f "$RUN_DIR/report-readonly"

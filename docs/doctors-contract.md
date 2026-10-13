@@ -329,8 +329,8 @@ Harness doctor (added 2026-09-29 by its owner chat):
   Its `spend` (`share/spend.py`) adds `spend:<component>` problems, rule `spend_audit`, group `Spend`, `watch`: a
   component whose audit is due (never audited, a source blob moved, share ≥ 1.5× its share at audit). Components:
   `menus` first (its sources are the Token tracking and Doctors menu code, so it is due when they change: the night
-  checks both menus against what it reads), then `loaded:<job>`, each harness job whose latest run loaded Egor's
-  configuration (`harness_index.loaded`; due again on a loaded run after a cut), then `fee:<source>`, each source of tokenmap's Fee index
+  checks both menus against what it reads), then `loaded:<job>`, a job whose last run loaded the config
+  (`harness_index.loaded`; workers: runs.jsonl `user_md_loaded`; due again after a cut), then `fee:<source>`, each source of tokenmap's Fee index
   (`harness_index.sources`) by its share of Fee. `spend.selection` lists every due
   audit, area `speed-spend-<component>`; `spend.proofs` (share, part price at audit) feed night `roi` lines.
   `cpu` (`share/cpu_audit.py`): `cpu:<component>` rows, group `CPU audits`, own, wasted CPU-min/day, due as
@@ -422,9 +422,9 @@ Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
 System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
 - Machine rules `spawn`, `kernel`, `compressor`, `swap`, `swap-writes`, `ssd-writes`, `free-space`,
   `hammerspoon-crash`, `job-crash`, `unclean-reboot`, the job rule `job-loop`, the standing-cost
-  rule `cohort` and the log rules `log-store`, `log-growth`, `unregistered-store`, `log-unread` (registry
-  `share/log-stores.json`); ids `<rule>:<key>` (`machine`, a volume, a job name, a cohort item's name, a log
-  store's name, `total`, a directory path). A ledger
+  rule `cohort`, the log rules `log-store`, `log-growth`, `unregistered-store`, `log-unread` (registry
+  `share/log-stores.json`) and `orphan-profile`; ids `<rule>:<key>` (`machine`, a volume, a job name, a cohort
+  item's name, a log store's name, `total`, a directory path). A ledger
   row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.
 - Own problem keys: `label` (the menu's short name), `severity` (`review` | `heavy`) and `cause`
   `{name, share, owner, fix_target, files}`; `fix_target` is true only for an own cause whose name is a
@@ -433,6 +433,7 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   refused or pending fix carries `proof` `{verdict, why, since, ...}`.
 - `status` is `blind` while the newest tick is older than 10 min or the nightly pass older than 36 h
   (own key `blind`). Own keys: `measures`, `causes` (births and CPU by cause), `nightly`,
-  `costs.tick`, `log_stores` (total, growth, per store, unregistered, sweep), `limits`.
+  `costs.tick`, `log_stores` (total, growth, per store, unregistered, sweep, `profiles`: every LLM profile dir
+  `{label, name, path, mb, age_d, status}`, status `menu` | `off` | `home` | `unknown`), `limits`.
 - `doctor-fix launch system` snapshots only fix-target causes (plus ledger and collector faults);
   close runs `bin/system-doctor check --record` (design, Phase 2).
