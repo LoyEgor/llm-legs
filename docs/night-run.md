@@ -7,7 +7,7 @@ Egor (2026-09-30) wants one button pressed before sleep. Behind it, every doctor
 vendor-release integration and the cleanup sweep run on their own. By morning everything is
 reviewed, committed and pushed in the four sweep repositories (`~/.claude/sweep-repos`).
 
-The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morning report is trusted without reading chats.
+Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted without reading chats.
 
 ## Shape
 1. **Button.**
@@ -30,7 +30,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 2. **Prep** (serial, a few minutes; the orchestrator does it):
    - `vendor-cli-update now --night` runs first and blocks, so CLI installs finish before any worker holds a CLI busy;
      it requests nothing, which would claim the events `request --night` hands to workers.
-   - Refresh all five doctors so their documents are fresh. The Code doctor's refresh is
+   - Refresh all five doctors. The Code doctor's refresh is
      `bin/code-doctor refresh` (index, journal rollup, candidates), then
      `bin/code-doctor judge --night <night-id>`: worker-run judgments of the waiting candidates,
      stopped by its token and wall budget (`BUDGET`), so a Code fixer only ever sees judged problems.
@@ -41,15 +41,17 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      committed. Land serially through `docs/fix-orchestrator.md`: worker final-commit green proof,
      pre-rebase `tests/affected --overlap <base>` (the night ref only while the branch holds the press
      snapshot, else `git merge-base main HEAD`), rebase, then only that overlap.
-   - `night-run job` records every expected job before dispatch, a `leftover` job among them for
-     every leftover branch `night-run leftovers` lists, adopted into the night (see Leftovers).
+   - `night-run job` records every expected job before dispatch, a `leftover` job for each branch
+     `night-run leftovers` lists, adopted (see Leftovers).
    - `night-run carry <id>` records what earlier days left. Handoffs go to the chat owning them, which
      holds their context (Egor, 2026-10-04; owner: a known To/For chat, else top edit+mention share,
      else the ledger): an owner with a decision section or ≥ 2 handoffs gets one `owner-chat` job,
      its chat resumed with the batch or, live, sent it; ≤ 3 pending, none while `slot_room` finds no room.
      Other handoffs (trivial, chat gone, owner deferred) are `handoff` jobs unless their To/For chat is
      live; each suite the last full run failed is a `suite` job. A handoff settles with a test or as a
-     trade (`Cost:`/`Loss:`/`Recommendation:`).
+     trade (`Cost:`/`Loss:`/`Recommendation:`). A `PERIODIC` kind (`vendor-watch`, `tool-ideas`, 30 days) is
+     carried once no night holds one merged, nothing-to-do or blocked-on-egor within its days: an llm-legs worktree,
+     brief `share/briefs/<kind>.md`. Its rows: `vendor-fingerprint watch` events, open harness-ledger rows.
 3. **Dispatch.** Everything below starts in parallel at about t+10 min.
    - **Fixers.**
      - `doctor-fix launch <llm|harness|updater|code|system> --night <night-id>` makes one run per area that has
@@ -65,30 +67,28 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
          cause is an own script of the sweep repositories (`docs/system-doctor-design.md`, Phase 2).
          `share/doctor-areas.json` holds those words and old areas' renames;
          `tests/test_doctors_menu.sh` checks every label against the rendered menu.
-     - Each run gets a worktree on branch `night/<night-id>/<run-id>` and a brief file, as a day launch does
-       off main; `docs/fix-orchestrator.md` dispatches and lands them.
+     - Each run gets a worktree on `night/<night-id>/<run-id>` and a brief, as a day launch does;
+       `docs/fix-orchestrator.md` dispatches and lands them.
      - Speed gets fixers sized per kind, each starting only inside a 6-hour
        wall-clock window from the night's `started_at`: `worker-run`
        runs `night-run speed-gate` once its slot is taken (a `speed-start` event); a first start past the window
        is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, its levers ranked
        again the next night. `report` shows `speed · levers N selected · S started · L left by the 6 h window`.
    - **Vendors.** `vendor-fingerprint request --night <night-id>` makes one event per vendor with a
-     REAL waiting release (no manual full-checklist events at night). Each gets an updater fixer
-     run (the printed ref), a worktree on `night/<night-id>/<vendor>`, the same branch's worktrees in
-     review-bench and claude-setup as the brief's `ADD-DIR:` lines, and a brief. One headless worker
-     per vendor.
+     REAL waiting release or vendor-watch event (never a manual full checklist). Each gets an updater fixer
+     run (the printed ref), worktrees on `night/<night-id>/<vendor>` (review-bench, claude-setup as
+     `ADD-DIR:`) and a brief: one headless worker per vendor.
    - **Press-time tree.** The orchestrator commits and pushes each sweep repository as it stood at
      press time, one commit each, unreviewed: every branch lands on it, and the debt pass reviews it.
 4. **Per branch, as soon as its worker returns**: `docs/fix-orchestrator.md`, then `night-run job set …
-   state=merged commits=… pushed=true`. No per-branch review (Egor, 2026-10-03: per-branch rounds took about 60% of a night's
-   spend). Merges into main are serial and short; everything else is parallel.
+   state=merged commits=… pushed=true`. No per-branch review (Egor, 2026-10-03: ~60% of a night's spend). Merges into main are serial and short; everything else is parallel.
 5. **Debt pass, after the landings** (the `debt` job, once no other job is `pending`): night-sweep
    step 3 once — one fit round, one legacy round, then one bugs round, each ONE chunked round across all sweep
    repositories, over the press-time debt plus everything the night landed — then one fix pass, the
    commit and push, and the recount. The 150-line floor stays: a round review-bench refuses is skipped.
 6. **No deadline** (Egor, 2026-09-30: a 4 h deadline left a debt round's findings unfixed till noon).
-   - The orchestrator works until every job is `merged`, `nothing-to-do` or `blocked-on-egor`; a
-     job that finishes late is landed like any other, and the debt pass waits for it.
+   - The orchestrator works until every job is `merged`, `nothing-to-do` or `blocked-on-egor`; a late
+     job lands like any other, the debt pass waiting for it.
    - The only stop is a hung job: `worker-run`'s watchdog ends a worker showing no progress
      (`WORKER_RUN_IDLE_S`, 30 min; a 6 h wall ceiling behind it). The orchestrator then abandons its
      run (`doctor-fix abandon`) and records the job `left` with the watchdog's reason; its branch
@@ -108,7 +108,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 ## Priority and admission
 - `night-run job add` stamps each job `direction`, `priority` P1|P2|P3, `value` {n, unit, norm}
   (`share/night_priority.py`: a fixer by its best row, other kinds by `KINDS`); bars: speed, tests, logs P1 ≥ 15 wall-min/day, P2 ≥ 1; cpu P2 ≥ 30 CPU-min/day, never P1; spend P1 ≥ 0.5 %,
-  P2 ≥ 0.1 %; pool, updater P1; legacy, fit, harness P2; bugs P2 only critical on code stable 7 days; unpriced P2.
+  P2 ≥ 0.1 %; pool, updater P1; legacy, fit, harness, vendor-watch, tool-ideas P2; bugs P2 only critical on code stable 7 days; unpriced P2.
 - `worker-run` asks `night-run admit` before a night worker's slot: P1, then P2, by norm per expected cost (7 days'
   median night-run tokens × 10 % per 1M); running Claude fixers hold at most the pool's 5h room. A P3 runs only from
   weekly room its burn leaves unused at reset (≥ 5 %), else it ends unlaunched (`admission.deferred`, job `pending`,
@@ -123,8 +123,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 ## Isolation rules
 - A worker never writes the main checkout; a second repository gets its own worktree on the same branch.
 - Tests in a worktree run against the job's own worktree set: `share/run-suites.sh` exports a
-  sibling repository's worktree on the same branch, else that repository's main checkout (a job that
-  did not touch it tests against main, which is its true base).
+  sibling repository's worktree on the same branch, else its main checkout (an untouched one's true base).
 - Hammerspoon's live config reload ignores `.claude/worktrees/`, so a worktree `.lua` never loads live.
 - Accounts: `chat_open` and every worker take a `worker-pick` claim, so parallel launches spread.
 - Run records: every read-modify-write takes a lock, and run ids are unique under parallel launch.
@@ -142,7 +141,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
   `new`, `regressed`. `report` prints one line per doctor,
   `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
 - `jobs[]`, each with:
-  - `kind` (fixer, vendor, debt, leftover, handoff, suite, owner-chat, trade, coverage) and `ref` (run id, event id,
+  - `kind` (`KINDS` in `bin/night-run`) and `ref` (run id, event id,
     review round or `leftover-<slug>`); an owner-chat job carries `owner`, `session`, `via` (open,
     message), `handoffs[]`; a leftover job `adopted[]` ({repo, branch, worktree, tip,
     night_worktree}), where its branch came from, and `handover` ({by, at, why}) when adopted with `--ready`;

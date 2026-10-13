@@ -746,6 +746,36 @@ claude_brief=$(jq -r .brief "$EVENTS/$night_claude.json")
 assert_fails grep -q '^MODEL:' "$claude_brief"
 assert_fails grep -q 'ESCALATE' "$claude_brief"
 assert_fails grep -q '^MODEL:' "$n_brief"
+# vendor-watch rows: one open event per vendor, never joined by a check, taken by the next night beside its
+# release; a web-only vendor's brief has no check --here, and its rows close through the same gate.
+printf 'Flow · upload own music · https://x · 2026-10-06 · proposal: bin/media-run flow-music\n\n' >"$WORK/rows-g"
+printf 'ElevenLabs · v4 dialogue · https://y · 2026-09-28 · proposal: share/elevenlabs_media.py\n' >"$WORK/rows-e"
+: >"$WORK/rows-none"
+assert_fails quiet bash "$SCRIPT" watch nobody "$WORK/rows-g"
+assert_fails quiet bash "$SCRIPT" watch gemini "$WORK/rows-none"
+watch_g=$(bash "$SCRIPT" watch gemini "$WORK/rows-g")
+watch_e=$(bash "$SCRIPT" watch elevenlabs "$WORK/rows-e")
+assert jqe '.status == "open" and .reason == "vendor-watch: 1 features" and .launched_at == null' "$EVENTS/$watch_g.json"
+assert [ "$(cat "$EVENTS/$watch_g.diff")" = '### watch
+--- before
++++ after
++Flow · upload own music · https://x · 2026-10-06 · proposal: bin/media-run flow-music' ]
+sed -i '' '2s/$/ gemini-9-watch/' "$FAKE_BIN/agy"
+held_check gemini
+assert jqe '.status == "open" and .launched_at == null and .reason == "vendor-watch: 1 features"' "$EVENTS/$watch_g.json"
+git -C "$NREPO" update-ref refs/night/N3/base HEAD
+git -C "$SIB" update-ref refs/night/N3/base HEAD
+assert night N3 >"$WORK/night3"
+g_brief=$(jq -r .brief "$EVENTS/$watch_g.json") e_brief=$(jq -r .brief "$EVENTS/$watch_e.json")
+assert grep -qF "bin/vendor-fingerprint show $watch_g" "$g_brief"
+assert grep -qF 'bin/vendor-fingerprint check --here gemini' "$g_brief"
+assert grep -qF "bin/vendor-fingerprint show $watch_e" "$e_brief"
+assert_fails grep -qF 'check --here' "$e_brief"
+assert_fails grep -q '^MODEL:' "$e_brief"
+assert jqe '.branch == "night/N3/elevenlabs"' "$RUNS/$(jq -r .run "$EVENTS/$watch_e.json").json"
+printf 'watch\t+ElevenLabs *\tnot-applicable\tdocs/vendor-release.md\tno route\n' >"$WORK/decide-e"
+assert bash "$SCRIPT" close "$watch_e" --decisions "$WORK/decide-e" "watch done"
+assert jqe '.status == "closed"' "$EVENTS/$watch_e.json"
 
 # A field that is a leaf in one home and a container in another no longer kills the codex catalog
 # merge (gpt-6.1-sol vanished from every catalog facet this way), and a merge that does fail is a

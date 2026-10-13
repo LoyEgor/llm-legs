@@ -22,6 +22,8 @@ codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
 grok_home="${GROK_HOME:-$HOME/.grok}"
 grokb_cache="${GROKB_CACHE_DIR:-$HOME/.cache/grokb}/models.json"
 vendors="codex grok gemini claude"
+# vendor-watch rows of a web-only vendor: no CLI, so no fingerprint and no check.
+watch_only="elevenlabs"
 sibling_repos="review-bench claude-setup"
 # Facets that are recorded in an event but never open an integration chat on their own.
 info_facets="version catalog_text catalog_order foreign_clients"
@@ -546,6 +548,28 @@ manual_event() { # vendor note... -> id
   printf '%s\n' "$id"
 }
 
+watched() { # vendor -> its open vendor-watch events no night has taken yet
+  local file
+  for file in "$events_dir/$1"-*.json; do
+    [ -f "$file" ] && jq -e '.status == "open" and .launched_at == null and (.reason // "" | startswith("vendor-watch"))' \
+      "$file" >/dev/null 2>&1 && basename "$file" .json
+  done
+  return 0
+}
+
+watch() { # vendor rows-file -> id: one open event whose diff facet `watch` holds a line per row, for the next night
+  local vendor=${1:-} rows=${2:-} id count
+  case " $vendors $watch_only " in *" $vendor "*) ;; *) printf 'vendor-fingerprint: unknown vendor %s\n' "$vendor" >&2; exit 2 ;; esac
+  count=$(grep -c '[^[:space:]]' "$rows" 2>/dev/null) && [ "$count" -gt 0 ] ||
+    { printf 'vendor-fingerprint: no rows in %s\n' "$rows" >&2; exit 1; }
+  mkdir -p "$fp_dir" "$events_dir"
+  [ -n "${VENDOR_FINGERPRINT_LOCKED:-}" ] || locked_rerun "${VENDOR_FINGERPRINT_LOCK_WAIT:-600}" watch "$@"
+  id=$(new_event "$vendor" watch watch open "vendor-watch: $count features" '["watch"]' '["watch"]')
+  { printf '### watch\n--- before\n+++ after\n'; grep '[^[:space:]]' "$rows" | sed 's/^/+/'; } >"$events_dir/$id.diff"
+  log "$vendor event $id open: vendor-watch, $count features"
+  printf '%s\n' "$id"
+}
+
 waiting() { # [vendor] -> the open events no chat has taken yet
   local file
   for file in "$events_dir/${1:+$1-}"*.json; do
@@ -563,9 +587,11 @@ cheap_events() { # id... -> true when every event changed only help text or bund
 }
 
 vendor_brief() { # top night-or-empty branch worktree id... -> the brief a headless worker runs, after its ROUND: and ADD-DIR: lines
-  local top=$1 night=$2 branch=$3 worktree=$4 id vendor
+  local top=$1 night=$2 branch=$3 worktree=$4 id vendor check=''
   shift 4
   vendor=$(jq -r .vendor "$events_dir/$1.json")
+  case " $vendors " in *" $vendor "*) check="\`bin/vendor-fingerprint check --here $vendor\` runs in this worktree, then
+  " ;; esac
   printf '%sVendor release events of %s:\n' "${night:+Night run $night: }" "$vendor"
   for id in "$@"; do
     printf -- '- %s (%s): `bin/vendor-fingerprint show %s`, its diff %s\n' "$id" \
@@ -581,8 +607,7 @@ Read $top/docs/vendor-release.md in full and follow it${night:+ with its §6 Nig
 - The other repositories you may change have their worktrees on the same branch: the \`ADD-DIR:\`
   lines above. A repository with none is not yours: its change is a handoff.
 - Commit on that branch in every worktree you changed. Never push, merge or rebase.
-- \`bin/vendor-fingerprint check --here $vendor\` runs in this worktree, then
-  \`bin/vendor-fingerprint close <id> --decisions <file> <note>\`.
+- $check\`bin/vendor-fingerprint close <id> --decisions <file> <note>\`.
 - A generation, or any step that needs Egor's word, is decided \`blocked\` with evidence starting
   \`blocked-on-egor:\` and naming what his word unlocks. Never wait for him.
 - Research (step 3) is yours, from primary sources; the blind cross-check (step 4) is the
@@ -604,11 +629,12 @@ vendor_runs() { # night-or-empty -> per vendor its fixer run, brief and worktree
   [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage
   common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
   if [ "$(basename "$common")" = .git ]; then top=$(dirname "$common"); else top=$repo_root; fi
-  for vendor in $vendors; do
+  for vendor in $vendors $watch_only; do
     ids=()
     if [ -n "$night" ]; then
       id=$(pending_event "$vendor")
       [ -z "$id" ] || ids=("$id")
+      while IFS= read -r id; do ids+=("$id"); done < <(watched "$vendor")
     else
       while IFS= read -r id; do ids+=("$id"); done < <(requested "$vendor")
     fi
@@ -796,7 +822,7 @@ show_event() { # id
 }
 
 usage() {
-  printf 'usage: vendor-fingerprint check [--here] [vendor...] | snapshot <vendor> | events [--all] | show <id> | close <id> [--decisions <file>] <note> | request [--here] <vendor>|--all [note] | request --night <night-id>\n' >&2
+  printf 'usage: vendor-fingerprint check [--here] [vendor...] | snapshot <vendor> | events [--all] | show <id> | close <id> [--decisions <file>] <note> | request [--here] <vendor>|--all [note] | request --night <night-id> | watch <vendor> <rows-file>\n' >&2
   exit 2
 }
 
@@ -807,6 +833,7 @@ case "${1:-}" in
   show) [ -n "${2:-}" ] || usage; show_event "$2" ;;
   close) [ -n "${2:-}" ] || usage; close_event "${@:2}" ;;
   request) [ -n "${2:-}" ] || usage; request "${@:2}" ;;
+  watch) [ $# -eq 3 ] || usage; watch "${@:2}" ;;
   *) usage ;;
 esac
 exit; }

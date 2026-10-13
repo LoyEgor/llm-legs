@@ -18,6 +18,8 @@ only with a stated reason), and every new capability is supported, per account, 
 - Several ids given: the procedure per event, each already folding its vendor's changes since it opened.
 - A manual request (`request [--here] <vendor>` with no event waiting) diffs the whole current
   fingerprint: the full checklist, every line decided (a `+*` row per facet is fine).
+- A vendor-watch event (facet `watch`, `share/briefs/vendor-watch.md`): a web feature per line with its
+  proposal; integrate it in its route, or decide it not-applicable/blocked.
 - Model: a strong model (Opus 5.5+ or Fable); Sonnet only under the brief's `MODEL: sonnet`, which ends
   `ESCALATE: <reason>` on more than it names. Any other stops here and says so. Research legs: a strong
   model with web access, never Light.
@@ -45,13 +47,12 @@ only with a stated reason), and every new capability is supported, per account, 
 - Before building a capability for this vendor, study how the other vendors expose the same or an
   analogous one — the Hammerspoon menu, `<vendor>b` verbs, worker-run, chat pins, statusline, review
   pins — and put it in the same places with the same names and look (codex's per-account "Fast Mode
-  (workers)" toggle means grok's fast model gets that toggle too, not a chat tag). Share the mechanism
-  where it fits; where vendors really differ, an own implementation is fine but the visible surface
-  matches. Egor never has to ask for this parity.
+  (workers)" toggle means grok's fast model gets it too, not a chat tag). Share the mechanism where it
+  fits; where vendors differ, the visible surface still matches. Egor never asks for this parity.
 - A worker's "done" is a claim: diff the files it says it changed, and diff every test/spec change
   against HEAD — a weakened assertion is a regression, not a pass.
-- Blocked on the owner (ZDR/privacy toggles, generation budget, paid API): record it as
-  `blocked` with what his word unlocks, and keep going on everything else.
+- Blocked on the owner (ZDR/privacy toggles, generation budget, paid API): `blocked` with what his
+  word unlocks; go on with the rest.
 
 ## 2. Sources of truth, most reliable first
 
@@ -63,8 +64,8 @@ only with a stated reason), and every new capability is supported, per account, 
 3. `--help`, bundled docs (`~/.grok/docs`, codex `skills/.system`), `agy changelog`, catalogs
    (`codexb models [--account]`, `grokb models`, `geminib families`, `agy models`). Catalogs are
    filtered by client version (`minimal_client_version`) and may differ per account.
-4. Vendor web docs and release notes via web search: good for what exists and GA/deprecation dates,
-   misleading about what the subscription CLI carries. A cited id counts only if the page has it.
+4. Vendor web docs and release notes: good for what exists and GA/deprecation dates, misleading about
+   what the subscription CLI carries. A cited id counts only if the page has it.
 5. Model memory: not a source.
 
 ## 3. Checklist — every item gets a verdict in the report
@@ -99,9 +100,8 @@ only with a stated reason), and every new capability is supported, per account, 
    review-bench transport (`share/rbench/launch.py` `run_<side>`, its stream-evidence parser): a
    changed event shape, tool name or parameter, output truncation or sandbox flag silently breaks what
    a cell reads or the report counts; where the release touches one, run one real cell and compare
-   its stream with its `rater_runs` row. On every surface, look at the older blocks around what you
-   touch, not only at what you add: is a workaround there obsolete now, because the vendor does it
-   natively or its reason is gone? Then remove it.
+   its stream with its `rater_runs` row. On every surface, remove an older workaround around what you
+   touch that the vendor now does natively or whose reason is gone.
 9. Per account: resolve and check each account the pool holds today (`codexb models --account`,
    per-account catalogs, entitlements); an entitlement refusal is typed apart from a usage limit.
 10. Live proof. LLM models: your RETURN asks the orchestrator for one `worker-run` per new model
@@ -114,9 +114,9 @@ only with a stated reason), and every new capability is supported, per account, 
     with its `field_sources` note.
 13. Tests: every new behaviour asserted; each new assertion shown red on the old code (mutation);
     `tests/run-all --changed` green in every worktree touched.
-14. Commit on your branch in every worktree you changed. Last, `bin/vendor-fingerprint check --here
-    <vendor>` in your worktree (it waits for the shared lock): your change can move what a facet reads (a
-    new cache field), and the event it records is yours to decide and close, never a new run's.
+14. Commit on your branch in every worktree you changed. Last, for a CLI vendor, `bin/vendor-fingerprint
+    check --here <vendor>` in your worktree: your change can move what a facet reads, and the event it
+    records is yours to decide and close, never a new run's.
 
 ## 4. Close — the completeness gate
 
@@ -137,6 +137,6 @@ every `blocked-on-egor` line. No session ids, diffs or transcripts.
 
 ## 6. Night (`docs/night-run.md`)
 
-`bin/vendor-fingerprint request --night <night-id>` takes per vendor only its real waiting release, on
+`bin/vendor-fingerprint request --night <night-id>` takes per vendor its real waiting release and vendor-watch events, on
 branch `night/<night>/<vendor>` from `refs/night/<night>/base` in every repository. Steps 3 and 4 start
 in parallel.

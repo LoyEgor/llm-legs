@@ -230,6 +230,32 @@ assert grep -qxF 'night-run: owner chat «Beta Chat» deferred (1 owner chats at
 assert [ "$(handoff_refs N3)" = '["handoff-2026-09-25-b1","handoff-2026-09-26-c1","handoff-2026-09-27-d1","handoff-2026-09-28-d2","handoff-2026-09-28-old"]' ]
 fi
 
+if suite_shard_owns 2 nc-periodic; then
+# A periodic kind is carried once no night ran it to an end within its days, from the llm-legs sweep repository,
+# on a strong model with web search, with its brief from share/briefs.
+P="$WORK/periodic/llm-legs"
+git init -q -b main "$P" && gt -C "$P" commit -q --allow-empty -m init
+printf '%s\n' "$P" >"$WORK/sweep-periodic"
+ago() { date -u -v-"$1"d +%Y-%m-%dT%H:%M:%SZ; }
+jq -n --arg t "$(ago 10)" '{id: "P1", started_at: $t, finished_at: $t, jobs: [{kind: "vendor-watch", ref: "vendor-watch-x", state: "nothing-to-do"},
+  {kind: "tool-ideas", ref: "tool-ideas-x", state: "left"}]}' >"$NIGHTS/P1.json"
+jq -n --arg t "$(ago 40)" '{id: "P0", started_at: $t, finished_at: $t, jobs: [{kind: "tool-ideas", ref: "tool-ideas-y", state: "merged"}]}' >"$NIGHTS/P0.json"
+jq -n --arg t "$(ago 0)" '{id: "P2", started_at: $t, finished_at: null, session: null, jobs: []}' >"$NIGHTS/P2.json"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night base P2 >/dev/null || fail "night base P2 failed"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2.out" 2>/dev/null || fail "carry of periodic jobs failed"
+ref="tool-ideas-$(date -u +%Y-%m)" pwt="$P/.claude/worktrees/night-P2-tool-ideas-$(date -u +%Y-%m)"
+assert [ "$(cat "$WORK/p2.out")" = "$ref	$NIGHTS/P2.$ref.brief.md	$pwt" ]
+assert jqe --arg r "$ref" '[.jobs[] | [.kind, .ref, .state, .priority, .direction]] == [["tool-ideas", $r, "pending", "P2", "harness"]]' "$NIGHTS/P2.json"
+assert [ "$(git -C "$pwt" symbolic-ref --short HEAD)" = "night/P2/$ref" ]
+assert [ "$(head -3 "$NIGHTS/P2.$ref.brief.md")" = "ROUND: none
+STRONG: yes
+WEB: on" ]
+assert grep -qF '## Tool ideas — monthly, harness direction' "$NIGHTS/P2.$ref.brief.md"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2b.out" 2>/dev/null || fail "a second carry failed"
+assert [ ! -s "$WORK/p2b.out" ]
+assert [ "$(python3 "$ROOT/share/night_priority.py" job vendor-watch v | jq -c '[.direction, .priority]')" = '["updater","P2"]' ]
+fi
+
 if suite_shard_owns 3 nc-owner-deferred; then
 new_night N4
 printf '2 1.00 1.00 100000\n' >"$WORK/room"
