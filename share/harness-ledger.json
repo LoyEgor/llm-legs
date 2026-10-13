@@ -8930,6 +8930,33 @@
       "reviewed_by": "night fixer harness-stop-hooks-20261012T235452Z-1d5b",
       "note": "Both hits (stop:2026-10-12T13:22:43Z/f8281bbf, 14:45:36Z/73fafa98) are browser-canary sessions (cwd ~/.cache/claude-worker-runs/browse) launched with launchd's PATH /usr/bin:/bin:/usr/sbin:/sbin; coreutils' timeout and gtimeout live only in /opt/homebrew/bin. claude-setup@a2ef62d (21:40Z, after both hits) also probes /opt/homebrew/bin and /usr/local/bin (STOP_DISPATCH_TIMEOUT_DIRS); test_stop_dispatch runs the dispatcher under launchd's PATH, red on the old hook. The next browse stop, 2026-10-13T02:12:59Z, journalled no error; no other cwd ever hit this reason in the 17.5k-line stop journal.",
       "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_codexb",
+      "title": "test_codexb · llm-legs hung 29 min on its stub app-server reading the caller's held-open stdin",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_codexb"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-12T18:27:50+03:00",
+          "by": "a73f719d",
+          "files": [
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/tests/test_codexb.sh",
+            "llm-legs/tests/test_run_suites_timeout.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 harness-tests-20261012T235455Z-6813",
+      "note": "The one hang (2026-10-12 17:32, 1728 s) was shard 1 blocked in `codexb profile alpha app-server`: the fake codex's app-server branch reads stdin to EOF, and run_one's `&` subshell inherited the caller's pipe because bash stops giving `&` jobs /dev/null after a `done < <(...)` loop. a73f719d (55 min later) gives every run-suites suite </dev/null and the loop's direct call </dev/null too; test_run_suites_timeout.sh is red on the old line. Checked 2026-10-13: the stub's app-server branch is its only stdin reader and line 431 its only $SCRIPT path to it (the quota helper drives app-server over its own pipe); the 3 runs since the fix ended rc 0 in 18-57 s. fixes[].at is a73f719d's commit time. Not this row: 9 new test_hang rows (test_agy_quota x3, test_harness_doctor x3, test_doctor_fix, test_doctors_menu, test_grok_quota, test_llm_limits, test_media_run, test_py39_annotations, test_worker_run_lifecycle) all ended 2026-10-13 00:26-11:07Z, after the fix and this run's launch, mostly direct runs run-suites' </dev/null never wraps; unexamined, left to their own runs (a night cut by a usage limit also ends suites by hand).",
+      "handoff": null
     }
   ],
   "blind_spots": [
