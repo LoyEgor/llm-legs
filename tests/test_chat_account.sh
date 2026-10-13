@@ -11,12 +11,16 @@ trap 'rm -rf "$WORK"' EXIT
 
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+clean_env() { # NAME=value... -> exported over a cleared account environment, in this subshell
+  unset CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT CLAUDE_CONFIG_DIR
+  export HOME="$WORK/home"
+  [ "$#" -eq 0 ] || export "$@"
+}
 assert_answer() { # expected env...
   local expected=$1 actual
   shift
   asserts=$((asserts + 1))
-  actual=$(env -u CLAUDEGPT_ACCOUNT -u CLAUDE_LIMITS_ACCOUNT -u CLAUDE_CONFIG_DIR \
-    "HOME=$WORK/home" "$@" bash "$RESOLVER") || fail "resolver run failed for: $*"
+  actual=$(clean_env "$@"; exec bash "$RESOLVER") || fail "resolver run failed for: $*"
   [ "$actual" = "$expected" ] || fail "expected '$expected', got '$actual' for: $*"
 }
 
@@ -37,15 +41,14 @@ assert_answer 'claude com' CLAUDE_LIMITS_ACCOUNT=- "CLAUDE_CONFIG_DIR=$WORK/home
 assert_answer 'claude main' "CLAUDE_CONFIG_DIR=$WORK/home/.claude"
 assert_answer 'claude main'
 asserts=$((asserts + 1))
-answer=$(env -u CLAUDEGPT_ACCOUNT -u CLAUDE_LIMITS_ACCOUNT -u CLAUDE_CONFIG_DIR "HOME=$WORK/home" \
-  bash "$RESOLVER" notcom) || fail "fallback argument run failed"
+answer=$(clean_env; exec bash "$RESOLVER" notcom) || fail "fallback argument run failed"
 [ "$answer" = 'claude notcom' ] || fail "the caller's own fallback was ignored: $answer"
 
 # Sourced, the source is what lets a caller keep its own fallback apart from a resolved account:
 # only `unknown` may be guessed at, and `bin/workflow-burn-gate.sh` guesses exactly there.
 sourced_source() {
-  env -u CLAUDEGPT_ACCOUNT -u CLAUDE_LIMITS_ACCOUNT -u CLAUDE_CONFIG_DIR "HOME=$WORK/home" "$@" \
-    bash -c '. "$1"; chat_account_resolve; printf "%s %s %s\n" \
+  clean_env "$@"
+  exec bash -c '. "$1"; chat_account_resolve; printf "%s %s %s\n" \
       "$CHAT_ACCOUNT_VENDOR" "${CHAT_ACCOUNT_NAME:--}" "$CHAT_ACCOUNT_SOURCE"' _ "$RESOLVER"
 }
 for expected_source in \
