@@ -1911,6 +1911,21 @@
    "verdict": "cut",
    "zero": "removal saves 0.4 CPU-min/day; loses the words-log journal comparing intake notices with the model's readings (temporary scaffolding that goes with the regex intake)",
    "note": "a stop whose last.json (and prior) carries no notice or silent keyword and whose transcript's last words.TAIL_BYTES hold no ⚡ skips Python (25 of 58 sampled real chat stops); skippable 40 -> 22 CPU-ms, journal identical on all 58; the 256 KB BSD tail+grep (~13 ms) is now the largest part, gtail would be 3 ms but is not guaranteed; claude-setup@84f2cf5"
+  },
+  {
+   "id": "cpu:hook/statusline-freshness-gate.sh",
+   "title": "hook/statusline-freshness-gate.sh",
+   "audited_at": "2026-10-13T09:53:41+03:00",
+   "by": "harness-speed-cpu-hook-instruction-bloat-gate-sh-20261012T235045Z-23d2",
+   "cpu_min_day": 0.3,
+   "cpu_s_run": 0.024,
+   "runs_day": 573,
+   "sources": {
+    "llm-legs/bin/statusline-freshness-gate.sh": "d66c84f5ef8e8f7f4d5ce8f4bf261d9b764ad32c"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.4 CPU-min/day; loses the once-per-session statusline freshness-contract reminder on statusline file edits",
+   "note": "a payload with no statusline substring (118 of 129 sampled) leaves before jq: stdin by read, basename by expansion; 13 -> 7 CPU-ms/run, outputs identical; fork pin in tests/test_statusline_hooks.sh red on the old code (cat jq basename)"
   }
  ]
 }
