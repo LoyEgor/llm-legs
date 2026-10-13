@@ -14,10 +14,10 @@ OPEN='{'
 CLOSE='exit; }'
 DUAL_CLOSE='case $0 in "${BASH_SOURCE[0]}") exit; esac; }'
 
+# The wait is an external command: bash moves its script offset to the line's end only before a fork.
 body() { # the lines a chat's edit deletes: the first comment
   printf '%s\n' '# a chat deletes this line' \
-    ': >"$1/ready"' \
-    'while [ ! -e "$1/go" ]; do sleep 0.05; done' \
+    'echo >"$1/ready"; cat "$1/go" >/dev/null' \
     'printf '"'%s\\n'"' "original tail"'
 }
 edited_body() { body | sed 1d; }
@@ -26,13 +26,15 @@ guarded() { printf '#!/usr/bin/env bash\n%s\n' "$OPEN"; "$1"; printf '%s\n' "$CL
 
 edit_mid_run() { # interpreter script new-content-file -> rc; stdout/stderr in $WORK/out, $WORK/err
   rm -f "$WORK/ready" "$WORK/go"
+  mkfifo "$WORK/ready" "$WORK/go"
   "$1" "$2" "$WORK" >"$WORK/out" 2>"$WORK/err" &
-  local pid=$! i inode
-  for i in $(seq 1 200); do [ -e "$WORK/ready" ] && break; sleep 0.05; done
+  local pid=$! inode
+  read -r -t 60 _ <>"$WORK/ready" || { kill "$pid"; fail "$2 never reached its wait"; }
   inode=$(ls -i "$2" | awk '{print $1}')
   cat "$3" >"$2"
-  [ "$(ls -i "$2" | awk '{print $1}')" = "$inode" ] || fail "the rewrite replaced $2 instead of editing it in place"
+  inode="$inode $(ls -i "$2" | awk '{print $1}')"
   : >"$WORK/go"
+  [ "${inode% *}" = "${inode#* }" ] || fail "the rewrite replaced $2 instead of editing it in place"
   wait "$pid"
 }
 
@@ -70,7 +72,7 @@ for sh in "${interpreters[@]}"; do
   # survives the edit; sourced, it returns to its caller with the status of a skipped main.
   dual() {
     printf '#!/usr/bin/env bash\n%s\n' "$OPEN"
-    printf '%s\n' 'dual_main() { : >"$1/ready"; while [ ! -e "$1/go" ]; do sleep 0.05; done; echo "original main"; return 4; }' \
+    printf '%s\n' 'dual_main() { echo >"$1/ready"; cat "$1/go" >/dev/null; echo "original main"; return 4; }' \
       'if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then' '  dual_main "$@"' 'fi'
     printf '%s\n' "$DUAL_CLOSE"
   }
