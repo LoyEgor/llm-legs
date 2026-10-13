@@ -9607,6 +9607,13 @@
       "reason": "2026-10-13 test_worker_run_claims and _grok_outcomes read 29-30 s idle a run with no sleep of their own: the suite's cpu_s counts only reaped children, so the supervisors' CPU reads as idle; 2026-10-10 (worker_run_reliability, worker_run_pool) and 2026-10-13 (light_research_vendors) fixers each re-dug it to find no sleep",
       "since": "2026-10-13",
       "would_catch_if": "the suite journal added the CPU of the worker runs it started (their supervisors' rusage at delivery, kept in each run's meta.json) to its cpu_s"
+    },
+    {
+      "id": "limit-hit-flood-young-journal",
+      "what": "a limit whose limits.json normal is 0 hits firing thousands of times while ~/.cache/limits/hits.jsonl is younger than LIMIT_QUIET_DAYS",
+      "reason": "store-lock.retries journaled every busy slot of every slot poll from 6f01e217 (2026-10-12): 360k rows, 124 MB in 15 h, no problem row because limits_section judges a fault only past LIMIT_FAULT_X of an observed/usual pair or once the journal covers 7 d; the 360k rows stay in the live journal, and every harness-doctor run reads the whole file (fixed at the writer by harness-speed-suite-audit-llm-legs-test-chat-account-20261012T235242Z-393c)",
+      "since": "2026-10-13",
+      "would_catch_if": "limits_section compared a limit's hit rate with its registry normal from the first day, or the journal had a size bound"
     }
   ]
 }
