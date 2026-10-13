@@ -406,6 +406,13 @@ printf '{"until":1,"reason":"fixture"}\n' >"$EXP_MARKER"
 printf '[{"id":"resumed","what":"fixture experiment whose marker has expired","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
 exp_spent_marker=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
 jq -e '.experiments == []' <<<"$exp_spent_marker" >/dev/null || fail "an expired marker is still being announced"
+printf '[{"id":"ended","what":"fixture experiment that ended by itself before its review","started":"2026-01-01","review_by":"2026-01-02","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
+for marker_state in spent absent; do
+  [ "$marker_state" = absent ] && rm -f "$EXP_MARKER"
+  exp_ended=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+  jq -e '.experiments == ["EXPERIMENT ended OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_ended" >/dev/null \
+    || fail "an experiment past its review date whose marker is $marker_state must still be announced OVERDUE"
+done
 
 # Account order in the cache is the order every surface renders: the hardcoded primaries first,
 # then oldest profile directory first, and an account with no directory (hence no birth time) last

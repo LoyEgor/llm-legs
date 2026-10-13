@@ -1,11 +1,11 @@
 # Active-experiment surfacing (registry: EXPERIMENTS.json; rules: the `experiment` skill).
 #
-# Liveness comes from the marker file, never from the review date. A live experiment
-# inside its review window stays OFF the banner (the owner reads these surfaces daily and
-# an "until" line he cannot act on is noise; the affected sites announce themselves) — the
-# banner's job is the OVERDUE line that forces a decision. An experiment with no review
-# date cannot ever become overdue, so it keeps announcing. A marker whose numeric `until`
-# has passed is spent — the experiment self-resumed and stops advertising itself.
+# An experiment inside its review window stays OFF the banner (the owner reads these surfaces
+# daily and an "until" line he cannot act on is noise; the affected sites announce themselves) —
+# the banner's job is the OVERDUE line that forces a decision. Past its review date an entry is
+# OVERDUE whatever its marker says: one that ended by itself still waits for the owner's word, and
+# only removing the entry silences it. An experiment with no review date cannot ever become
+# overdue, so it keeps announcing while its marker is live.
 
 experiments_registry_path() {
   printf '%s\n' "${EXPERIMENTS_REGISTRY:-$1/EXPERIMENTS.json}"
@@ -26,15 +26,17 @@ experiments_active_lines() {
     id=${line%%$'\t'*}; rest=${line#*$'\t'}
     review=${rest%%$'\t'*}; marker=${rest#*$'\t'}
     [ -n "$id" ] || continue
+    if [ -n "$review" ]; then
+      if [ "$review" \< "$today" ]; then
+        printf 'EXPERIMENT %s OVERDUE since %s — decide: remove or extend (EXPERIMENTS.json)\n' "$id" "$review"
+      fi
+      continue
+    fi
     if [ -n "$marker" ]; then
       case "$marker" in "~/"*) marker="$home/${marker#\~/}" ;; esac
       experiments_marker_live "$marker" || continue
     fi
-    if [ -z "$review" ]; then
-      printf 'EXPERIMENT %s until %s — temporary, see EXPERIMENTS.json\n' "$id" "$review"
-    elif [ "$review" \< "$today" ]; then
-      printf 'EXPERIMENT %s OVERDUE since %s — decide: remove or extend (EXPERIMENTS.json)\n' "$id" "$review"
-    fi
+    printf 'EXPERIMENT %s until %s — temporary, see EXPERIMENTS.json\n' "$id" "$review"
   done < <(jq -r '.[]? | [(.id // ""), (.review_by // ""), (.state_marker // "")] | @tsv' "$registry" 2>/dev/null)
 }
 
