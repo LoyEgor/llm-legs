@@ -812,6 +812,12 @@ INSTRUCTION_NAME_END="($|[[:space:]>|;&),}\"'\`\\\\])"
 _INSTRUCTION_INTERP_NAMES="python[0-9.]*|perl|ruby|node|bun|deno"
 _INSTRUCTION_INTERP="(^|[[:space:]|;&({\`/])($_INSTRUCTION_INTERP_NAMES)[[:space:]]"
 _INSTRUCTION_IW="$_INSTRUCTION_INTERP[^|]*"
+# A text no _INSTRUCTION_INTERP can match, without a fork; a name added above must be added here
+# (test_instruction_gate_matrix.sh checks every one).
+instruction_may_interp() { # text
+  case $1 in *[Pp][Yy][Tt][Hh][Oo][Nn]*|*[Pp][Ee][Rr][Ll]*|*[Rr][Uu][Bb][Yy]*|*[Nn][Oo][Dd][Ee]*|*[Bb][Uu][Nn]*|*[Dd][Ee][Nn][Oo]*) return 0 ;; esac
+  return 1
+}
 # The quote around a path or a mode arrives escaped as often as bare: the one-liner is itself a
 # double-quoted argument, so `open(\"x\",\"w\")` is the ordinary spelling.
 _INSTRUCTION_Q="\\\\?['\"]"

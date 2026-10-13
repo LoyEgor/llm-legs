@@ -454,6 +454,7 @@ judge_join() { # directory separator joined mode
 }
 judge_interp() { # program text
   local text=$1 construct name mode var at bind assigned sep joined row k var_bound lit joins
+  instruction_may_interp "$text" || return 1
   if printf '%s' "$text" | grep -Eiq "${interp_write}"; then
     while IFS= read -r construct; do
       [ -n "$construct" ] || continue

@@ -187,4 +187,14 @@ assert_eq pass "$(decision "python3 -c \"open('$WORK/scratch/o.md','w').write('$
 assert_eq pass "$(decision "node -e \"fs.writeFileSync('$WORK/scratch/o.md', 'see $CLAUDE_MD')\"")"
 assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','w').write('$WORK/scratch/o.md')\"")"
 
+echo "== gate matrix: a text naming no interpreter never pays the interpreter greps"
+assert share_call 'for n in ${_INSTRUCTION_INTERP_NAMES//|/ }; do n=${n%%[[]*}
+  instruction_may_interp "a;$n -c" && instruction_may_interp "a;$(printf %s "$n" | tr a-z A-Z) -c" || exit 1; done'
+shim=$WORK/grep-shim
+mkdir -p "$shim"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/args"\nexec %s "$@"\n' "$shim" "$(command -v grep)" > "$shim/grep"
+chmod +x "$shim/grep"
+assert_eq pass "$(PATH=$shim:$PATH decision "echo x > $WORK/scratch/o.md")"
+assert_fails grep -q write_text "$shim/args"
+
 echo "OK ($asserts assertions)"
