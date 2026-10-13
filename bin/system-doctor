@@ -136,7 +136,7 @@ UNIQUE = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}|\b(?=
 LABEL = "com.llm-legs.system-doctor"
 WRAPPER = "system-doctor"
 
-ROW = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w{3} \w{3}\s+\d+ [\d:]+ \d{4})\s+(.*)$")
+ROW = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(\w{3} \w{3}\s+\d+ [\d:]+ \d{4})\s+(.*)$")
 APP_EXE = re.compile(r"^(.*?\.app/Contents/MacOS/[^/]*?)(?= [-/~]| *$)")
 
 
@@ -432,9 +432,9 @@ def inherit(procs, inline, by_pid):
 
 
 def ps_snapshot(with_children):
-    """{key: [ppid, cpu_s, tag, owner, pid, uid, kind]} keyed `pid@lstart`, plus the probe's own pid; kind is `script`
-    for an interpreter tagged by its script."""
-    args = ["-A"] + (["-S"] if with_children else []) + ["-o", "pid=,ppid=,uid=,time=,lstart=,args="]
+    """{key: [ppid, cpu_s, tag, owner, pid, uid, kind, rss_kb]} keyed `pid@lstart`, plus the probe's own pid; kind is
+    `script` for an interpreter tagged by its script."""
+    args = ["-A"] + (["-S"] if with_children else []) + ["-o", "pid=,ppid=,uid=,time=,rss=,lstart=,args="]
     pid, out = machine_probe.spawn("ps", args)
     roots = own_roots()
     procs, inline = {}, []
@@ -442,11 +442,11 @@ def ps_snapshot(with_children):
         match = ROW.match(line)
         if not match:
             continue
-        number, ppid, uid, cpu, start, argv = match.groups()
+        number, ppid, uid, cpu, rss, start, argv = match.groups()
         exe, rest = exe_and_rest(argv)
         tag, owner, kind = describe(exe, rest, roots, functools.partial(machine_probe.proc_cwd, int(number)))
         key = "%s@%s" % (number, " ".join(start.split()))
-        procs[key] = [int(ppid), cpu_seconds(cpu), tag, owner, int(number), int(uid), kind]
+        procs[key] = [int(ppid), cpu_seconds(cpu), tag, owner, int(number), int(uid), kind, int(rss)]
         if kind == "inline":
             inline.append(key)
     inherit(procs, inline, {entry[4]: key for key, entry in procs.items()})
@@ -657,6 +657,13 @@ def tick(now=None):
             slot[1] += read - before[0]
             slot[2] += wakes - before[2]
     row["mem_top"] = top_rows([[tag, footprint, owner] for (tag, owner), footprint in held.items()])
+    resident = {}
+    for entry in last.values():
+        slot = resident.setdefault((entry[2], entry[3]), [0, 0])
+        slot[0] += entry[7] * 1024
+        slot[1] += 1
+    row["rss_top"] = top_rows([[tag, size, count, owner] for (tag, owner), (size, count) in resident.items()])
+    row["rss_total"] = sum(size for size, _count in resident.values())
     row["io_top"] = top_rows([[tag, w, r, k, owner] for (tag, owner), (w, r, k) in moved.items() if w or r or k])
 
     state = {"t": now, "boot": mem["boot"], "ticks": ticks, "vm": vm, "disks": disks,
@@ -2359,7 +2366,8 @@ def document(now, started, persist=True):
                     "launchd": (last_harvest.get("launchd") or [])[:TOP], "das": (last_harvest.get("das") or [])[:TOP],
                     "hangs": (last_harvest.get("hangs") or [])[:TOP]} if last_harvest else None,
         "footprints": {"own_procs": latest.get("own_procs"), "read": latest.get("usage_read"),
-                       "mem_top": latest.get("mem_top") or [], "io_top": merge_top(hour, "io_top")}}
+                       "mem_top": latest.get("mem_top") or [], "io_top": merge_top(hour, "io_top"),
+                       "rss_top": latest.get("rss_top") or [], "rss_total": latest.get("rss_total")}}
     shown = [d for d in days if d.get("day", "") > local_day(now - 7 * DAY_S) and (d.get("covered_s") or 0) >= COVER_MIN_S]
     series = {key: {d["day"]: d[key] for d in shown if d.get(key) is not None}
               for key in ("busy", "kernel", "births_s", "ssd_gb_day", "swap_gib_day", "comp_share_max")}

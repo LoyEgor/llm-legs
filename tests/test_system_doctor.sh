@@ -30,7 +30,7 @@ for name in ps vm_stat sysctl ioreg df last diskutil launchctl; do
   export "SYSTEM_DOCTOR_$(printf %s "$name" | tr '[:lower:]' '[:upper:]')=$WORK/bin/$name"
 done
 cat >>"$WORK/bin/ps" <<'SH'
-case " $* " in *" -S "*) printf '%5d %5d %3d %10s %s %s\n' "$$" "$PPID" 501 0:00.00 "Mon Oct  5 09:30:00 2026" "/bin/ps $*" ;; esac
+case " $* " in *" -S "*) printf '%5d %5d %3d %10s %6d %s %s\n' "$$" "$PPID" 501 0:00.00 1024 "Mon Oct  5 09:30:00 2026" "/bin/ps $*" ;; esac
 SH
 printf '#!/bin/bash\n' >"$WORK/bin/du"
 printf 'printf "%%s\\t%%s\\n" 23068672 "$4/uv" 1048576 "$4/small" 24117248 "$4"\n' >>"$WORK/bin/du"
@@ -111,7 +111,7 @@ born = "Mon Oct  5 09:30:00 2026"
 
 
 def ps_rows(rows):
-    return "".join("%5d %5d %3d %10s %s %s\n" % row for row in rows)
+    return "".join("%5d %5d %3d %10s %6d %s %s\n" % (row[:4] + (2048,) + row[4:]) for row in rows)
 
 
 base = [(1, 0, 0, "0:01.00", start, "/sbin/launchd"),
@@ -936,6 +936,8 @@ check(row["own_procs"] == 2 and row["usage_read"] == 2 and row["mem_top"] == [["
       "footprints of own processes by tag: %s" % row)
 check(row["io_top"] == [["statusline.sh", 4000, 2000, 10, "own"]], "disk bytes written, read and idle wakeups since the last tick: %s" % row["io_top"])
 check(first["io_top"] == [], "the first tick has no deltas")
+check(row["rss_total"] == (8 * 2048 + 1024) << 10 and ["Hammerspoon", 2048 << 10, 1, "own"] in row["rss_top"],
+      "resident memory of every process on the machine, summed by tag with its process count: %s" % row["rss_top"])
 saved_rusage = open(os.path.join(fix, "rusage.json")).read()
 json.dump({}, open(os.path.join(fix, "rusage.json"), "w"))
 row = json.loads(cli("tick").stdout)
