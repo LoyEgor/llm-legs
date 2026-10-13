@@ -3472,63 +3472,78 @@ print_outcome() {
 # The allowlist below treats test entry points as read-only; unclassified shell programs are a floor.
 SHELL_FLOOR_PARTIAL='the run also ran shell commands, whose edits no transcript records'
 
-writes_through_shell() { # command-line
-  python3 - "$1" <<'PY'
+writes_through_shell() { # command-line | no argument: the JSON-encoded command lines on fd 3, 0 once any writes
+  local rc
+  python3 - "$@" <<'PY'
+import json
 import re
 import shlex
 import sys
 
-command = sys.argv[1]
-# Empty is a poll (codex write_stdin chars:""), not an unclassified write.
-if command == "":
-    sys.exit(1)
-if not command.strip() or any(token in command for token in ("$", "`", "\\", "<<")):
-    sys.exit(0)
-try:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>\n()")
-    lexer.whitespace = " \t\r"
-    # shlex's comment reader consumes the newline that separates the next command.
-    lexer.commenters = ""
-    tokens = list(lexer)
-except ValueError:
-    sys.exit(0)
 
-def readonly(words):
-    if not words:
+def writes(command):
+    # Empty is a poll (codex write_stdin chars:""), not an unclassified write.
+    if command == "":
+        return False
+    if not command.strip() or any(token in command for token in ("$", "`", "\\", "<<")):
         return True
-    name, *args = words
-    if name in {"bash", "sh", "python3"}:
-        return len(args) == 1 and ".." not in args[0].split("/") and re.fullmatch(r"(?:\./)?tests/[\w./-]+\.(?:sh|py)", args[0]) is not None
-    if name == "git":
-        return bool(args) and args[0] in {"diff", "status", "show", "log", "ls-files", "rev-parse"} and not any(
-            arg.startswith(("--output", "--ext-diff", "--textconv")) for arg in args)
-    if name == "sed":
-        return len(args) >= 2 and args[0] == "-n" and re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", args[1]) is not None and not any(arg.startswith("-") for arg in args[2:])
-    if name in {"grep", "egrep", "fgrep", "rg"}:
-        return not any(arg.startswith(("--pre", "--hostname-bin")) for arg in args)
-    return name in {"cat", "head", "tail", "wc", "pwd", "ls", "stat", "readlink", "basename", "dirname", "echo", "printf", "true", "false", "test", "[", "cd"}
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>\n()")
+        lexer.whitespace = " \t\r"
+        # shlex's comment reader consumes the newline that separates the next command.
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return True
 
-words = []
-tokens = iter(tokens + [";"])
-for token in tokens:
-    if token in {">", ">>", ">&"}:
-        target = next(tokens, "")
-        if (token in {">", ">>"} and target == "/dev/null") or (token == ">&" and target in {"1", "2"}):
-            if words and words[-1].isdigit():
-                words.pop()
-            continue
-        sys.exit(0)
-    if token in {";", "&&", "||", "|", "\n"}:
-        if not readonly(words):
-            sys.exit(0)
-        words = []
-    elif set(token) <= set(";&|<>()\n"):
-        sys.exit(0)
-    else:
-        words.append(token)
-sys.exit(1)
+    def readonly(words):
+        if not words:
+            return True
+        name, *args = words
+        if name in {"bash", "sh", "python3"}:
+            return len(args) == 1 and ".." not in args[0].split("/") and re.fullmatch(r"(?:\./)?tests/[\w./-]+\.(?:sh|py)", args[0]) is not None
+        if name == "git":
+            return bool(args) and args[0] in {"diff", "status", "show", "log", "ls-files", "rev-parse"} and not any(
+                arg.startswith(("--output", "--ext-diff", "--textconv")) for arg in args)
+        if name == "sed":
+            return len(args) >= 2 and args[0] == "-n" and re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", args[1]) is not None and not any(arg.startswith("-") for arg in args[2:])
+        if name in {"grep", "egrep", "fgrep", "rg"}:
+            return not any(arg.startswith(("--pre", "--hostname-bin")) for arg in args)
+        return name in {"cat", "head", "tail", "wc", "pwd", "ls", "stat", "readlink", "basename", "dirname", "echo", "printf", "true", "false", "test", "[", "cd"}
+
+    words = []
+    tokens = iter(tokens + [";"])
+    for token in tokens:
+        if token in {">", ">>", ">&"}:
+            target = next(tokens, "")
+            if (token in {">", ">>"} and target == "/dev/null") or (token == ">&" and target in {"1", "2"}):
+                if words and words[-1].isdigit():
+                    words.pop()
+                continue
+            return True
+        if token in {";", "&&", "||", "|", "\n"}:
+            if not readonly(words):
+                return True
+            words = []
+        elif set(token) <= set(";&|<>()\n"):
+            return True
+        else:
+            words.append(token)
+    return False
+
+
+if len(sys.argv) > 1:
+    sys.exit(0 if writes(sys.argv[1]) else 1)
+try:
+    with open(3, encoding="utf-8", errors="replace") as lines:
+        found = any(writes(json.loads(line).replace("\0", "").rstrip("\n")) for line in lines if line.strip())
+except ValueError:
+    sys.exit(2)
+sys.exit(0 if found else 1)
 PY
-  [ "$?" -ne 1 ]
+  rc=$?
+  [ "$#" -ne 0 ] || return "$rc"
+  [ "$rc" -ne 1 ]
 }
 
 resolve_tool_path() { # path workdir
@@ -4096,7 +4111,7 @@ compute_run_files() {
 
 # 1 requires every Bash call in the window to be classified read-only; 0 is a floor, 2 unreadable.
 transcript_wrote_through_shell() { # transcript since [transcript...]
-  local transcript="$1" since="${2:-0}" commands command
+  local transcript="$1" since="${2:-0}" commands
   local -a more=("${@:3}")
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
   commands=$(jq -c --argjson since "$since" '
@@ -4111,11 +4126,7 @@ transcript_wrote_through_shell() { # transcript since [transcript...]
              end' "$transcript" ${more[@]+"${more[@]}"} 2>/dev/null) || return 2
   RUN_SHELL_COMMANDS=$commands
   [ -n "$commands" ] || return 1
-  while IFS= read -r command; do
-    command=$(printf '%s\n' "$command" | jq -r .) || return 2
-    writes_through_shell "$command" && return 0
-  done < <(printf '%s\n' "$commands")
-  return 1
+  writes_through_shell 3<<<"$commands"
 }
 
 run_files() {
