@@ -297,6 +297,18 @@ assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" 
 assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" share/limiter-hold.sh)" = "$ROOT/tests/test_consistency.sh"
 assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" nowhere-named.txt)"
 assert test "$(/bin/bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" = "$R4/tests/test_tool_part.sh"
+# tests/affected greps every suite at once: 32 suites cost a fixed handful of grep forks, never ~3 a suite.
+FAN="$WORK/fan"
+mkdir -p "$FAN/tests" "$WORK/grep-shim"
+printf 'SCRIPT=tool.sh\n' >"$FAN/tests/tool_harness.sh"
+for i in $(seq 1 30); do printf 'exit 0\n' >"$FAN/tests/test_by_$i.sh"; done
+printf '. tool_harness.sh\n' >"$FAN/tests/test_via_helper.sh"
+printf 'echo tool.sh\n' >"$FAN/tests/test_named.sh"
+printf '#!/bin/sh\necho >>"%s"\nexec %s "$@"\n' "$WORK/grep.calls" "$(command -v grep)" >"$WORK/grep-shim/grep"
+chmod +x "$WORK/grep-shim/grep"
+assert test "$(PATH="$WORK/grep-shim:$PATH" bash "$ROOT/share/affected-suites.sh" --repo "$FAN" bin/tool.sh)" = \
+  "$FAN/tests/test_named.sh"$'\n'"$FAN/tests/test_via_helper.sh"
+assert test "$(wc -l <"$WORK/grep.calls")" -le 6
 # Committed, shared-invariants' mention of it would pull this repo's own test_consistency.sh into every later R4 --changed run.
 rm "$R4/tests/e2e_surfaces.sh"
 joined_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R4" -j 2 "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)"$'\n'test_other.sh 2>&1)

@@ -32,20 +32,23 @@ affected_names() { # repo [file...] -> basenames, one a line
 }
 
 affected_filter() { # repo names-file <suite paths -> the suites naming one of the names
-  local repo=$1 names=$2 entry helper helpers name invariants consistency
-  helpers=$(cd "$repo/tests" 2>/dev/null && for helper in *; do
+  local repo=$1 names=$2 entry helper hits named listed invariants consistency
+  local -a entries=() helpers=()
+  while IFS= read -r entry; do [ -z "$entry" ] || entries+=("$entry"); done
+  for helper in "$repo"/tests/*; do
     [ -f "$helper" ] || continue
-    case "$helper" in (test_*|e2e_*) ;; (*) printf '%s\n' "$helper" ;; esac
-  done)
-  while IFS= read -r entry; do
-    [ -n "$entry" ] || continue
-    if grep -qxF -- "${entry##*/}" "$names"; then printf '%s\n' "$entry"; continue; fi
-    local -a texts=("$entry")
-    if [ -n "$helpers" ]; then
-      while IFS= read -r helper; do texts+=("$repo/tests/$helper"); done < <(grep -oF -- "$helpers" "$entry" 2>/dev/null | sort -u)
-    fi
-    grep -qwF -f "$names" -- "${texts[@]}" 2>/dev/null && printf '%s\n' "$entry"
+    case "${helper##*/}" in (test_*|e2e_*) ;; (*) helpers+=("$helper") ;; esac
   done
+  if [ "${#entries[@]}" -gt 0 ]; then
+    hits=$(grep -lwF -f "$names" -- "${entries[@]}" 2>/dev/null)
+    named=''
+    [ "${#helpers[@]}" -eq 0 ] || named=$(grep -lwF -f "$names" -- "${helpers[@]}" 2>/dev/null | sed 's,.*/,,')
+    [ -z "$named" ] || hits+=$'\n'$(grep -lF -- "$named" "${entries[@]}" 2>/dev/null)
+    hits=$'\n'$hits$'\n' listed=$'\n'$(<"$names")$'\n'
+    for entry in "${entries[@]}"; do
+      [[ $listed == *$'\n'"${entry##*/}"$'\n'* || $hits == *$'\n'"$entry"$'\n'* ]] && printf '%s\n' "$entry"
+    done
+  fi
   invariants="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/docs/shared-invariants.md"
   consistency="${invariants%/docs/*}/tests/test_consistency.sh"
   [ -r "$invariants" ] && [ -r "$consistency" ] && grep -qwF -f "$names" -- "$invariants" && printf '%s\n' "$consistency"
