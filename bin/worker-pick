@@ -29,8 +29,9 @@ query_model_given=false
 query_claim=false
 query_list=false
 query_menu=false
+query_all=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image|light|computer|browser] [--model <id>] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image|light|computer|browser] [--model <id>] | --role browser | --menu]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image|light|computer|browser] [--model <id>] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image|light|computer|browser] [--model <id>] | --role browser | --menu | --all]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -74,6 +75,9 @@ while [ "$#" -gt 0 ]; do
     # The menubar alone asks for a closed vendor's accounts: every chat reads this table, and those
     # rows would cost each one context while routing nothing.
     --menu) query_menu=true; shift ;;
+    # Every chat runs the bare call before a delegation and needs only its NEXT, ACCOUNT and START;
+    # the per-vendor accounts are for a human reading the whole pool.
+    --all) query_all=true; shift ;;
     *) printf 'worker-pick: unexpected argument %s\n' "$1" >&2; usage ;;
   esac
 done
@@ -1244,6 +1248,10 @@ elif [ "$worker_mode" = auto ]; then
   print_next false cb cx gm gr
 else
   print_next true cb cx gm gr
+fi
+if [ "$query_menu" = false ] && [ "$query_all" = false ]; then
+  printf 'DATA: %s\n' "$age"
+  exit 0
 fi
 
 print_section() {

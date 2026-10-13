@@ -38,7 +38,7 @@ surfaces() { # name vendor walled [window shown-epoch status-epoch guess-label]
   local shown='' pick_shown='' status picked rendered format line2 pids=()
   status_label=$(reset_label "${6-$reset}")
   [ -z "$shown_at" ] || { shown=$(date -r "$shown_at" +%H:%M); pick_shown=$(reset_label "$shown_at"); }
-  picked=$(WORKER_PICK_NOW="$now" bash "$ROOT/bin/worker-pick" 2>/dev/null | grep "^$vendor:")
+  picked=$(WORKER_PICK_NOW="$now" bash "$ROOT/bin/worker-pick" --all 2>/dev/null | grep "^$vendor:")
   if [ "$vendor" = codex ]; then
     status=$(printf '%s' '{"model":{"display_name":"GPT"},"context_window":{"used_percentage":1}}' |
       CLAUDEGPT_ACCOUNT=main STATUSLINE_NOW="$now" COLUMNS= bash "$ROOT/bin/statusline.sh")

@@ -150,7 +150,7 @@ run_store() {
   sync_fixture_pool
   # Stderr to a file rather than the terminal: a human-facing run carries its notes there, and a
   # suite that let them scroll past could not tell a note that fired from one that did not.
-  output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>"$WORK/note.err") ||
+  output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --all 2>"$WORK/note.err") ||
     fail "worker-pick failed for $1"
 }
 load_case() {
@@ -1709,7 +1709,7 @@ assert test "$(vsection claude)" = 'off for workers'
 if [ -x /bin/bash ]; then
   jq -c '.claude_pool | .vendors |= {claude: .claude}' "$FIXTURES" >"$STORE"
   sync_fixture_pool
-  output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" /bin/bash "$SCRIPT" 2>"$WORK/note.err") ||
+  output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" /bin/bash "$SCRIPT" --all 2>"$WORK/note.err") ||
     fail "worker-pick under /bin/bash failed"
   assert contains "$(next_fail)" 'claude off for workers'
   assert not_contains "$(next_fail)" 'codex'
@@ -2427,15 +2427,22 @@ done
 jq -c '.golden' "$FIXTURES" >"$STORE" || fail 'golden fixture missing'
 sync_fixture_pool
 gateway_output=$(env -u CLAUDE_CONFIG_DIR "${gateway_env[@]}" CLAUDEGPT_ACCOUNT=main \
-  "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>"$WORK/gateway.err") ||
+  "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --all 2>"$WORK/gateway.err") ||
   fail "gateway run failed: $(cat "$WORK/gateway.err")"
 assert contains "$(awk -v head='^codex:' '$0 ~ head {sub(head, ""); print}' <<<"$gateway_output")" 'main*'
 assert not_contains "$gateway_output" 'session*'
 claude_output=$(env "${gateway_env[@]}" CLAUDE_LIMITS_ACCOUNT=session \
-  "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>"$WORK/gateway.err") ||
+  "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --all 2>"$WORK/gateway.err") ||
   fail "claude run failed: $(cat "$WORK/gateway.err")"
 assert contains "$(awk -v head='^claude:' '$0 ~ head {sub(head, ""); print}' <<<"$claude_output")" 'session*'
 assert not_contains "$claude_output" 'main*'
+# The bare call every chat makes before a delegation prints the pick alone; the pool is --all's.
+bare_output=$(env "${gateway_env[@]}" CLAUDE_LIMITS_ACCOUNT=session "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>/dev/null) ||
+  fail "bare run failed"
+assert contains "$bare_output" 'ACCOUNT: '
+assert contains "$bare_output" 'START: worker-run start '
+assert test "$(grep -c '^DATA: ' <<<"$bare_output")" -eq 1
+assert test "$(grep -Ec '^(claude|codex|grok|gemini|light):' <<<"$bare_output")" -eq 0
 
 # `--list` is the table for a program: per vendor, the rows in the order the table prints them,
 # and one NEXT line per vendor naming what `--account <vendor>` answers for the same role.
