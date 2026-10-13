@@ -17,6 +17,7 @@ start_pid="${2:-$PPID}"
 # loses almost every dev server a session ever starts; an orphan is claimed back by its own
 # working directory sitting inside one of the project's working trees.
 project_top="${3:-}"
+project_common="${4:-}"
 session_id=${session_id//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || exit 0
 
@@ -86,16 +87,23 @@ snapshot_listeners() { # key
 snapshot_take ps_snap ps-snapshot 10 "$PS_CMD" snapshot_ps || { write_cache ""; exit 0; }
 ps_at=$snapshot_at
 
-root=$(awk -v start="$start_pid" '
-  FNR > 1 { ppid[$1]=$2; line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[^ \t]+[ \t]+/,"",line); cmd[$1]=line }
-  END {
-    pid=start; depth=0
-    while (pid != "" && pid+0 > 1 && depth < 30) {
-      n=split(cmd[pid], a, /[ \t]/); m=split(a[1], b, "/"); base=b[m]
-      if (base == "claude") { print pid; exit }
-      pid=ppid[pid]; depth++
-    }
-  }' "$ps_snap")
+# The walk depends on the start pid's ancestry alone, which holds while that pid lives, so it is
+# taken once per start pid; the probe only runs from a live render under it.
+root_for="" root=""
+{ IFS=$'\t' read -r root_for root; } 2>/dev/null < "$cache_dir/ports-root-$session_id"
+if [ "$root_for" != "$start_pid" ] || [ -z "$root" ]; then
+  root=$(awk -v start="$start_pid" '
+    FNR > 1 { ppid[$1]=$2; line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[^ \t]+[ \t]+/,"",line); cmd[$1]=line }
+    END {
+      pid=start; depth=0
+      while (pid != "" && pid+0 > 1 && depth < 30) {
+        n=split(cmd[pid], a, /[ \t]/); m=split(a[1], b, "/"); base=b[m]
+        if (base == "claude") { print pid; exit }
+        pid=ppid[pid]; depth++
+      }
+    }' "$ps_snap")
+  [ -z "$root" ] || probe_publish "$cache_dir/ports-root-$session_id" "$start_pid"$'\t'"$root"$'\n'
+fi
 if [ -z "$root" ]; then write_cache ""; exit 0; fi
 
 ports=""
@@ -110,12 +118,26 @@ if [ "$snapshot_meta" = 1 ]; then
 # sibling worktree's server from this tree's own: Egor's worktrees live INSIDE the repository, at
 # `<repo>/.claude/worktrees/<branch>`, so a root-prefix test alone reads all of them as the root's.
 # git resolves the paths it prints, which is how they compare against the render's `pwd -P` tops.
+# The list is reused while `<common>/worktrees/` holds the same entries: add, remove and prune change
+# them, a `worktree move` does not and is seen at the next add or remove.
 trees=""
 if [ -n "$project_top" ]; then
-  while IFS= read -r tree_line; do
-    case "$tree_line" in worktree\ *) trees+="${tree_line#worktree }"$'\n' ;; esac
-  done < <(git -C "$project_top" worktree list --porcelain 2>/dev/null)
-  trees=${trees%$'\n'}
+  trees_key="" trees_head="" trees_cached=""
+  if [ -n "$project_common" ]; then
+    trees_ids=("$project_common"/worktrees/*)
+    trees_key="$project_top"$'\t'"${trees_ids[*]}"
+    # Split by read, not ${x%%$'\n'*}: a pattern cut costs ~100 ms on a list of 80 trees.
+    { IFS= read -r trees_head && IFS= read -r -d '' trees_cached; } 2>/dev/null < "$cache_dir/ports-trees-$session_id"
+  fi
+  if [ -n "$trees_key" ] && [ "$trees_head" = "$trees_key" ]; then
+    trees=${trees_cached%$'\n'}
+  else
+    while IFS= read -r tree_line; do
+      case "$tree_line" in worktree\ *) trees+="${tree_line#worktree }"$'\n' ;; esac
+    done < <(git -C "$project_top" worktree list --porcelain 2>/dev/null)
+    trees=${trees%$'\n'}
+    [ -z "$trees" ] || [ -z "$trees_key" ] || probe_publish "$cache_dir/ports-trees-$session_id" "$trees_key"$'\n'"$trees"$'\n'
+  fi
   # Not a repository (or no git): the one tree given is the whole project, as before.
   [ -n "$trees" ] || trees="$project_top"
 fi
@@ -251,7 +273,8 @@ write_cache "$ports"
 marker="$cache_dir/.ports-prune"
 now=$EPOCHSECONDS
 if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
-  m=$(file_mtime "$marker" 2>/dev/null || printf '0')
+  # The marker holds its epoch: a builtin read, not a stat fork on every run.
+  m=0; { read -r m; } 2>/dev/null < "$marker"
   [[ "$m" =~ ^[0-9]+$ ]] || m=0
   if [ "$((now - m))" -gt 3600 ]; then
     find "$cache_dir" -maxdepth 1 -type f \( -name 'ports-*' -o -name 'cache-ttl-track-*' -o -name 'scan-*' \
@@ -261,7 +284,7 @@ if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
     find "$cache_dir" "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/limits" -maxdepth 1 -type f -name '*.tmp.*' -mmin +60 \
       -delete 2>/dev/null
     find "$cache_dir" -maxdepth 1 -type d \( -name '*.genlock' -o -name '*.lock' \) -mtime +1 -exec rmdir {} + 2>/dev/null
-    touch "$marker" 2>/dev/null
+    printf '%s\n' "$now" 2>/dev/null > "$marker"
   fi
 fi
 exit 0

@@ -3830,7 +3830,7 @@ OUT
 LSEOFW
 chmod +x "$FAKE_LSOF_TREES"
 run_probe_trees() {
-  STATUSLINE_PS="$FAKE_PS_TREES" STATUSLINE_LSOF="$FAKE_LSOF_TREES" "$PORTS_PROBE" "$1" 1001 "$2"
+  STATUSLINE_PS="$FAKE_PS_TREES" STATUSLINE_LSOF="$FAKE_LSOF_TREES" "$PORTS_PROBE" "$1" 1001 "$2" "${3:-}"
 }
 # A server started in a worktree that was later removed keeps the gone worktree's path, not the root.
 trees_expected=$(printf '5173\t%s\n4001\t%s\n4002\t%s\n4004\t%s' "$TOP_A" "$TOP_A" "$TOP_E" \
@@ -3841,6 +3841,22 @@ assert_eq "$trees_expected" "$(cat "$STATE_DIR/ports-pp-trees")"
 # not change when the session sits in a worktree — only the render's reading of them does.
 run_probe_trees pp-trees-wt "$TOP_E"
 assert_eq "$trees_expected" "$(cat "$STATE_DIR/ports-pp-trees-wt")"
+# Given the common dir, the list is reused while its worktrees/ holds the same entries (a planted
+# sibling in the reused list proves git was not asked) and listed again once a worktree is added.
+COMMON_A=$(cd "$TOP_A" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
+run_probe_trees pp-trees-cache "$TOP_A" "$COMMON_A"
+assert_eq "$trees_expected" "$(cat "$STATE_DIR/ports-pp-trees-cache")"
+printf '%s\n%s\n' "$(head -1 "$STATE_DIR/ports-trees-pp-trees-cache")" "$SIB_A" > "$STATE_DIR/ports-trees-pp-trees-cache"
+run_probe_trees pp-trees-cache "$TOP_A" "$COMMON_A"
+assert grep -qx "4003	$SIB_A" "$STATE_DIR/ports-pp-trees-cache"
+git -C "$TOP_A" worktree add -q --detach "$FIXTURES/wt-trees-cache"
+run_probe_trees pp-trees-cache "$TOP_A" "$COMMON_A"
+git -C "$TOP_A" worktree remove --force "$FIXTURES/wt-trees-cache"
+assert_eq "$trees_expected" "$(cat "$STATE_DIR/ports-pp-trees-cache")"
+# The root walk runs once per start pid: a planted root that parents the sibling's server is obeyed.
+printf '1001\t1012\n' > "$STATE_DIR/ports-root-pp-trees-cache"
+run_probe_trees pp-trees-cache "$TOP_A" "$COMMON_A"
+assert grep -qx "4003	-" "$STATE_DIR/ports-pp-trees-cache"
 
 run_probe pp-selfroot 9999
 assert test -f "$STATE_DIR/ports-pp-selfroot"

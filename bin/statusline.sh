@@ -1694,7 +1694,9 @@ if [ -n "$session_id" ]; then
   ports_cache="$statusline_cache_dir/ports-$session_id"
   file_mtime_to ports_mtime "$ports_cache"
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
-    ( "$probe_bin" "$session_id" "$PPID" "${project_top:-$active_top}" >/dev/null 2>&1 & ) 2>/dev/null
+    if [ -n "$project_top" ]; then ports_top=$project_top ports_common=$project_common
+    else ports_top=$active_top ports_common=$active_common; fi
+    ( "$probe_bin" "$session_id" "$PPID" "$ports_top" "$ports_common" >/dev/null 2>&1 & ) 2>/dev/null
   fi
   if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
     ports_own=""; ports_away=""
