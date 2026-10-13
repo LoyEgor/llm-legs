@@ -213,6 +213,14 @@ jq -se --arg lock "$LIVE_LOCK" 'map(select(.limit == "llm-legs:store-lock.retrie
 jq -se --arg pid "$live_pid" 'map(select(.limit == "llm-legs:store-lock.ceiling" and .action == "break" and .value == 60
   and .observed >= 600 and (.lost | contains("live pid " + $pid)))) | length == 1' "$LIMIT_HITS_LOG" >/dev/null \
   || fail "a live holder's lock broken at the ceiling is no limit hit"
+TRY_LOCK="$WORK/try.lock"
+mkdir "$TRY_LOCK"
+printf '%s\n' "$live_pid" >"$TRY_LOCK/pid"
+env LLM_STORE_LOCK_RETRIES=1 bash -c '. "$1/share/store-lock.sh"; store_lock_acquire "$2"' _ "$ROOT" "$TRY_LOCK" \
+  && fail "a single try took a live holder's lock"
+jq -se --arg lock "$TRY_LOCK" 'map(select(.limit == "llm-legs:store-lock.retries" and (.lost | contains($lock + ":")))) | length == 0' "$LIMIT_HITS_LOG" >/dev/null \
+  || fail "a single-try lock refused behind a live holder is a limit hit: every busy slot of every slot poll journals one"
+rm -rf "$TRY_LOCK"
 kill "$live_pid" 2>/dev/null
 wait "$live_pid" 2>/dev/null
 rm -rf "$LIVE_LOCK"
@@ -243,4 +251,4 @@ bash -c '. "$1/share/store-lock.sh"; store_lock_claim "$2"' _ "$ROOT" "$CLEANUP_
   && fail "a lock with no pid file reported ownership"
 [ ! -e "$CLEANUP_LOCK" ] || fail "a claim that wrote no pid left its own lock behind"
 
-echo "PASS: shared store lock (10 checks)"
+echo "PASS: shared store lock (11 checks)"
