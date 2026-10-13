@@ -15,7 +15,7 @@ mkdir -p "$HOME" "$DOCTORS_DIR/runs" "$DOCTORS_DIR/nights" "$WORKER_STATS_DIR/be
 : >"$WORK/sweep-repos"
 
 python3 -B - "$ROOT" "$WORK" <<'EOF' || exit 1
-import json, os, subprocess, sys, time
+import hashlib, json, os, subprocess, sys, time
 
 root, work = sys.argv[1], sys.argv[2]
 sys.path.insert(0, os.path.join(root, "share"))
@@ -55,7 +55,8 @@ def commit(at, **files):
 
 
 def blob(text):
-    return subprocess.run(["git", "hash-object", "--stdin"], input=text, capture_output=True, text=True).stdout.strip()
+    data = text.encode()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
 subprocess.run(["git", "init", "-q", "-b", "main", repo], check=True)
