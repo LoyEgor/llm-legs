@@ -5003,6 +5003,95 @@
    "verdict": "kept",
    "zero": "removing saves 14.9 wall-min/day; loses the frames/roster/tiers/compositions/lens pins and the race checks",
    "note": "kept: wall is sleeps of race checks (sleep_s 3669 over 49 spawns, never shortened per 2026-10-05 revert), 602 git + 130 python3 spawns are fixture setup; CPU 45->32 s with stable_git"
+  },
+  {
+   "id": "suite:llm-legs/test_instruction_gate_tripwire",
+   "title": "llm-legs/test_instruction_gate_tripwire",
+   "audited_at": "2026-10-13T12:38:32+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-tripwire-20261012T235323Z-6327",
+   "cpu_run": 25.0,
+   "wall_run": 31.1,
+   "cpu_min_day": 7.31,
+   "wall_min_day": 12.57,
+   "sources": {
+    "llm-legs/tests/instruction_gate_harness.sh": "8dbd7a2fe3c4a63670fb944839d7c248fd07c1f6",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_instruction_gate_tripwire.sh": "8327f68745fa4ccd79c8470454fe50a64ee87789"
+   },
+   "verdict": "cut",
+   "zero": "removing it saves 9.3 wall-min/day; loses the tripwire's detect/restore/alert/dedupe pins (the hook that reports writes that went around the gates)",
+   "note": "alert polls 0.2->0.02 s and the fixed 0.4 s settle tail replaced by a journal-count wait plus 0.1 s (-1.2 s sleep a run), fmt/python-free harness; the rest of the wall is ~678 awk and ~359 jq spawns inside the watch hook itself (CPU audit territory)"
+  },
+  {
+   "id": "suite:llm-legs/test_instruction_gate_bloat",
+   "title": "llm-legs/test_instruction_gate_bloat",
+   "audited_at": "2026-10-13T12:38:33+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-tripwire-20261012T235323Z-6327",
+   "cpu_run": 29.0,
+   "wall_run": 21.9,
+   "cpu_min_day": 6.96,
+   "wall_min_day": 10.99,
+   "sources": {
+    "llm-legs/tests/instruction_gate_harness.sh": "8dbd7a2fe3c4a63670fb944839d7c248fd07c1f6",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_instruction_gate_bloat.sh": "c0792f21c5e7171839a963bd24f9578211c07c22"
+   },
+   "verdict": "cut",
+   "zero": "removing it saves 7.4 wall-min/day; loses every pricing, ceiling and stamp pin of the bloat gate that runs before each Edit/Write",
+   "note": "14 python3 starts and 12 instruction-files.sh subshell parses gone, one duplicate shrink assert dropped (183->182), gate_journal and the gate's wc|tr pairs cut forks; remaining wall is the ~150 gate runs themselves"
+  },
+  {
+   "id": "suite:llm-legs/test_run_suites_timeout",
+   "title": "llm-legs/test_run_suites_timeout",
+   "audited_at": "2026-10-13T12:38:34+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-tripwire-20261012T235323Z-6327",
+   "cpu_run": 0.9,
+   "wall_run": 5.3,
+   "cpu_min_day": 0.52,
+   "wall_min_day": 8.83,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/slow-suites": "082e0d3bce46707e7b7b7bd14e4d45fff9553470",
+    "llm-legs/tests/test_run_suites_timeout.sh": "d0193d24b7b18faa08f60c26ebf15d61fde4319b"
+   },
+   "verdict": "cut",
+   "zero": "removing it saves 8.6 wall-min/day; loses the per-suite wall bound, tree kill, TERM->KILL escalation and stdin isolation pins of run-suites",
+   "note": "RUN_SUITES_KILL_GRACE=1 in the test removes ~9 s of the 14 s (TERM-ignoring child no longer waits 10 s), the sleep-shim and stdin runs fold into one run-suites start; 19 asserts, KILL removal still red"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_limits_claudeb",
+   "title": "llm-legs/test_llm_limits_claudeb",
+   "audited_at": "2026-10-13T12:38:34+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-tripwire-20261012T235323Z-6327",
+   "cpu_run": 31.3,
+   "wall_run": 18.5,
+   "cpu_min_day": 5.89,
+   "wall_min_day": 8.34,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
+    "llm-legs/tests/test_llm_limits_claudeb.sh": "730f1ee5827dd0abb06e32f5e6fe3ceea329f359"
+   },
+   "verdict": "kept",
+   "zero": "removing it saves 8.4 wall-min/day; loses the claudeb store contract (unique accounts, hoist, rotation, heal, refresh_error causes) of llm-limits",
+   "note": "41 distinct collector runs (jq-heavy, ~50 jq each; 3007 jq 438 date per run), only sleep is the 2 s timeout fixture that the 1 s timeout check depends on; no duplicate scenario found, the cost is the collector under test (CPU audit territory)"
+  },
+  {
+   "id": "suite:llm-legs/test_run_suites_shards",
+   "title": "llm-legs/test_run_suites_shards",
+   "audited_at": "2026-10-13T12:38:36+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-tripwire-20261012T235323Z-6327",
+   "cpu_run": 10.2,
+   "wall_run": 37.4,
+   "cpu_min_day": 1.58,
+   "wall_min_day": 8.48,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_run_suites_shards.sh": "e37e85c6dad4b19b3ce45638352174d822e1e3c5"
+   },
+   "verdict": "cut",
+   "zero": "removing it saves 7.6 wall-min/day; loses the shard fan-out, one-verdict, -j sharing and layout pins",
+   "note": "fixture sleeps (1 s, 3 s) now only in the five runs that check overlap or wall (~30 s of ~37 a run were sleeps in runs checking neither); shard-layout sweep no longer forks a subshell per test file; 77 asserts unchanged"
   }
  ]
 }
