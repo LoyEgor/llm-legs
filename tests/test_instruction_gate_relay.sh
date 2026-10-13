@@ -470,13 +470,22 @@ echo "== journal: bounded, so a cache cannot grow for the life of the machine"
 INSTRUCTION_WATCH_JOURNAL_MAX=2
 export INSTRUCTION_WATCH_JOURNAL_MAX
 i=0
+# A trim ends on a `dropped` record, so the newest change is the last record that is not one, and
+# what the bound removed is accounted for by that record's count.
+journal_tally() { jq -rs 'map(if .kind == "dropped" then (.count // 1) else 1 end) | add // 0' "$J"; }
+journal_ids() { jq -rs 'map(select(.kind != "dropped") | .id) | .[]' "$J" | sort; }
+journal_newest() { jq -rs 'map(select(.kind != "dropped")) | last.id // ""' "$J"; }
+tally_before=$(journal_tally)
+newest_kept=yes
 while [ $i -lt 6 ]; do
+  ids_before=$(journal_ids)
   printf 'tier line %s\n' "$i" > "$DOC"
   raw_check sid-j1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
+  [ "$(comm -13 <(printf '%s\n' "$ids_before") <(journal_ids))" = "$(journal_newest)" ] || newest_kept=no
   i=$((i + 1))
 done
 assert [ "$(grep -c . "$J")" -le 4 ]
-assert_contains "tier line 5" "$(tail -1 "$J" | jq -r '.summary')$(cat "$DOC")"
+assert_eq "yes $((tally_before + 6))" "$newest_kept $(journal_tally)"
 unset INSTRUCTION_WATCH_JOURNAL_MAX
 
 fi
