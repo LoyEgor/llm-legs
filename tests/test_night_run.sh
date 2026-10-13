@@ -126,8 +126,9 @@ assert grep -qF 'already has job harness-r1' "$WORK/err"
 assert_fails night job "$id" add robot x 2>/dev/null
 assert_fails night job nosuch add fixer x 2>/dev/null
 assert jqe '[.jobs[] | .state] == ["pending", "pending", "pending", "pending"]
-  and .jobs[0] == {kind: "fixer", ref: "llm-20260930T010203Z", state: "pending", reason: null,
+  and (.jobs[0] | del(.direction, .priority, .value)) == {kind: "fixer", ref: "llm-20260930T010203Z", state: "pending", reason: null,
     branch: "night/'"$id"'/llm-20260930T010203Z", review: null, commits: [], pushed: false}
+  and .jobs[0].direction == "pool" and (.jobs[0].priority | IN("P1", "P2", "P3"))
   and .jobs[2].branch == null' "$R"
 
 # Parallel writers never drop each other's jobs.
@@ -261,7 +262,8 @@ assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 landed · 8 left · 1 failed-launch · 1 blocked-on-egor" "$WORK/report"
 assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his word$" "$WORK/report"
-assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 28 ]
+assert grep -qE '^priority · P1 [0-9]+ · P2 [0-9]+ · P3 [0-9]+ · admitted 0 · deferred 0$' "$WORK/report"
+assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 29 ]
 assert [ "$(grep -m1 -E '^(ledger|trend) · ' "$WORK/report")" = "ledger · night $id · $(jq -r '((.finished_at | fromdate)
   - (.started_at | fromdate)) / 3600 * 10 | round / 10 | tostring | if test("\\.") then . else . + ".0" end' "$R") h" ]
 assert grep -qxE "trend · problems [0-9]+ → [0-9]+ over [0-9]+ nights · last [0-9]+: [0-9]+ down, [0-9]+ up · (moving forward|treading water|going back)" "$WORK/report"
@@ -752,6 +754,7 @@ assert_fails git -C "$WORK/repo" rev-parse -q --verify refs/heads/stale-dirty
 assert jqe --arg r "$WORK/repo" --arg w "$wt/stale-dirty" --arg n "$nwt" --arg t "$(git -C "$WORK/repo" rev-parse "night/$idc/leftover-stale-dirty")" \
   '.jobs[-1] == {kind: "leftover", ref: "leftover-stale-dirty", state: "pending", reason: null,
     branch: "night/'"$idc"'/leftover-stale-dirty", review: null, commits: [], pushed: false,
+    direction: "harness", priority: "P1", value: {n: null, unit: null, norm: 1},
     adopted: [{repo: $r, branch: "stale-dirty", worktree: $w, tip: $t, night_worktree: $n}]}' "$(record "$idc")"
 assert grep -q "^leftover stale-dirty · unfinished	2		leftover-stale-dirty	leftover	1$" <(night latest --menu)
 night job "$idc" add leftover stale-bare >"$WORK/out" || fail "adopt a bare leftover"
@@ -1238,9 +1241,11 @@ duration        9.8 h   6.0 h   3.5 h
 unreviewed          –       –       –
 Doctors 7d          –       –       –
 Speed               –       –       –
+P1+P2               –       –       –
 to plateau                          –
 spend           12.5M    0.0M    0.0M
   fixers         8.0M    0.0M    0.0M
+  on walls          –       –       –
   reviews        3.0M    0.0M    0.0M
   night chat     1.5M    0.0M    0.0M
 Opus spend          –       –       –

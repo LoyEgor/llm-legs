@@ -1520,6 +1520,25 @@ take_floor() { # directory workdir
       ${REPLY_ARRAY[@]+"${REPLY_ARRAY[@]}"}
 }
 
+night_admit() { # directory vendor branch -> fails only when the night defers the job; a long wait re-picks the account
+  local night=${3#night/} out rc began=$SECONDS tag
+  night=${night%%/*}
+  out=$("${WORKER_RUN_NIGHT_RUN:-$SCRIPT_DIRECTORY/night-run}" admit "$night" "${3#"night/$night/"}" "$2" $$ 2>/dev/null)
+  rc=$?
+  if [ "$rc" -eq 3 ]; then
+    printf 'worker-run: %s\n' "$out" >>"$1/err"
+    return 1
+  fi
+  [ "$rc" -eq 0 ] && [ $((SECONDS - began)) -ge "${WORKER_RUN_ADMIT_REPICK_S:-60}" ] && [ "$2" = claudeb ] || return 0
+  jq -e '(.explicit_account // "") == "" and (.resume // "") == ""' "$1/meta.json" >/dev/null 2>&1 || return 0
+  pick_account_listing claudeb '' "$(jq -r '.model' "$1/meta.json")"
+  [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 0
+  meta_update "$1" '.account = $next' --arg next "$PICKED_ACCOUNT" || return 0
+  if IFS= read -r tag 2>/dev/null <"$1/tag"; then
+    printf '%s · %s\n' "$PICKED_ACCOUNT" "${tag#* · }" >"$1/tag"
+  fi
+}
+
 supervise() {
   local directory="$1" vendor workdir rc
   [ -r "$directory/meta.json" ] || return 4
@@ -1542,6 +1561,10 @@ supervise() {
   local branch
   branch=$(linked_worktree_branch "$workdir")
   # A run nested under a slot holder's worker inherits WORKER_SLOT: waiting would deadlock on its ancestor.
+  if [ -z "${WORKER_SLOT:-}" ] && [[ $branch == night/*/* ]] && ! night_admit "$directory" "$vendor" "$branch"; then
+    persist_run_files "$directory"
+    return 4
+  fi
   if [ -z "${WORKER_SLOT:-}" ]; then
     RUN_SLOT=$(slot_wait "${WORKER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/worker-slots}" \
       "${WORKER_SLOTS:-$(worker_slots)}" $((2 * DEADLINE + 900)) workers \

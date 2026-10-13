@@ -1,6 +1,6 @@
 # Night run
 
-Status: design, being built (2026-09-30). Owner: the «Updater doctor» chat.
+Owner: the «Updater doctor» chat.
 
 ## Why
 Egor (2026-09-30) wants one button pressed before sleep. Behind it, every doctor fixer, every
@@ -63,9 +63,8 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
          run holding the top-K problems only (`docs/doctors-contract.md` §4);
        - the System doctor's one area `system`, a bare `System fixer`, holding only the problems whose top
          cause is an own script of the sweep repositories (`docs/system-doctor-design.md`, Phase 2).
-         `share/doctor-areas.json` holds those words and the renamed old
-         areas (`llm-health` → `debt`, `harness-self` and `updater-machinery` → `doctor`), so old runs
-         keep their label; `tests/test_doctors_menu.sh` checks every label against the rendered menu.
+         `share/doctor-areas.json` holds those words and old areas' renames;
+         `tests/test_doctors_menu.sh` checks every label against the rendered menu.
      - Each run gets a worktree on branch `night/<night-id>/<run-id>` and a brief file, as a day launch does
        off main; `docs/fix-orchestrator.md` dispatches and lands them.
      - Speed gets fixers sized per kind, each starting only inside a 6-hour
@@ -105,6 +104,21 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      clean, not live, not held branch of the sweep repositories with its worktree (see Leftovers); it
      prints each one kept as `live|held|leftover <repo> <branch>: <why>`, records the leftovers under
      the night's `leftovers` and the held ones under `held`, and `night-run report` lists both.
+
+## Priority and admission
+Egor (2026-10-13): fixing everything is a utopia; night 3131's launch burst walled notcom in 8 min.
+- `night-run job add` stamps each job `direction`, `priority` P1|P2|P3 and `value` {n, unit, norm} from
+  `share/night_priority.py`: a fixer by its best row as its doctor lists it, other kinds by `KINDS`. Its constants
+  are the bars: speed, tests, logs P1 ≥ 15 wall-min/day, P2 ≥ 1; cpu P2 ≥ 30 CPU-min/day, never P1; spend P1 ≥ 0.5 %,
+  P2 ≥ 0.1 %; pool, updater P1; legacy, fit, harness P2; bugs P2 only critical on code stable 7 days; unpriced P2.
+- `worker-run` asks `night-run admit` before a night worker's slot: P1, then P2, by norm per expected cost (7 days'
+  median night-run tokens × 10 % per 1M); running Claude fixers hold at most the pool's 5h room. A P3 runs only from
+  weekly room its burn leaves unused at reset (≥ 5 %), else it ends unlaunched (`admission.deferred`, job `pending`,
+  no hold on the debt pass, `finish` keeps the reason). Waits are `night-admission` holds.
+- Plateau = the P1+P2 backlog at zero (`night_priority.py backlog`, the table's `P1+P2` row); P3 never counts.
+- `spend on walls` (report, table row `on walls`, Harness `night_walled` red > 5 %): fixer spend in walled runs.
+- Finding is not a job: `log-audit run` and out-of-doctor hunts are never admitted or cut; a class a dig confirms
+  gets a doctor meter in the same fix.
 
 ## Isolation rules
 - A worker never writes the main checkout; a second repository gets its own worktree on the same branch.
@@ -240,32 +254,20 @@ repository outside the sweep list too. `--post` sends the same lines as one repo
 the numbers block of the morning message, which `--post` also sends to the chat as one report-bus
 `notice` block (word `night · <date>`, cells right-aligned in compact columns): one column per night, this one and the two
 previous finished nights that had jobs (a night with none is skipped), oldest left, local dates as heads
-(with the time when two share a date), right-aligned. Rows are facts the stores already hold: duration;
+(with the time when two share a date). Rows are facts the stores already hold: duration;
 Opus-eq spend in total and by fixers / reviews / orchestrator; merged, left and blocked-on-egor jobs;
 worker runs, their wall, model-active share, hours queued for slots and in their own tests (the ledger's
 split); each doctor's problem count before → after; lines changed by the night's jobs (code and tests);
 week-old lines rewritten; the full suites run's PASS/FAIL, summed over repositories. A value with no
-source is `–`: a suites run still going or never run, a ledger row with no time split, a cached ledger
-row from before the spend split whose live re-count no longer matches its total. No ids, no chat names;
-a blank line closes it. Then a mechanical header from `share/night_spend.py`,
-the numbers of the morning message: duration (local start–finish, hours); jobs landed (state `merged`) / left / other
-by kind; the worker runs whose `launcher` is one of the night's orchestrator sessions, started inside
-its window, by vendor/served model, with their summed wall-clock hours and any without a transcript;
-the review rounds started inside the window whose bench `meta.json` `session` is the night's (one
-without that field counts by window alone); token spend of fixers, reviews and orchestrator in
-Opus-equivalent tokens, split by model (Claude family, else vendor), and one total with its ratio to the
-newest earlier finished night, e.g. `spend fixers · 1.2M Opus-eq (opus 0.5M · sonnet 0.4M · haiku 0.3M)`.
-Prices come from token-map's `tokenmap/pricing.py` (sibling checkout, `TOKENMAP_ROOT` overrides; absent →
-the report fails with one line), weighed as its menu does: one Opus input token is 1, cache and output
-multipliers and the vendor tables are its own; the model is each Claude message's `model`, a bench row's
-`model`, a vendor run's `meta.json` `served_model`/`model`. Sources: each
-run's `session-file`, else `worker-run transcript <run>` (claudeb, codex, gemini and grok alike), a
-Claude transcript with its `subagents/`, one assistant message counted once across runs (a RESUME
-shares its transcript); a bench's `claude-usage-*.jsonl` by id, plus `usage-<label>.jsonl`
-`total_tokens` only where no `claude-usage-<label>.jsonl` holds the same calls (the judge's
-`usage-judge.jsonl` sums its `~bN` batches); the orchestrator transcript inside the window. Roots
-follow `WORKER_RUN_DIR`, `CLAUDEB_PROFILES_ROOT`, `WORKER_STATS_DIR`/`CLAUDEB_DIR` and the vendor
-profile overrides. Then one line per job, then the totals. A job with commits
+source is `–`. No ids, no chat names;
+a blank line closes it. Then a mechanical header from `share/night_spend.py`: duration; jobs landed / left /
+other by kind; the worker runs the night's orchestrator sessions launched inside its window, by vendor/served
+model, with wall hours; the review rounds of the night's session; spend of fixers, reviews and orchestrator in
+Opus-eq by model, with its ratio to the newest earlier finished night, e.g. `spend fixers · 1.2M Opus-eq (opus
+0.5M · sonnet 0.4M · haiku 0.3M)`. Prices are token-map's `tokenmap/pricing.py` (`TOKENMAP_ROOT` overrides;
+absent, the report fails), Opus input = 1; sources are each run's transcript (a message counted once across a
+RESUME), the benches' usage journals and the orchestrator transcript inside the window. Then one line per job,
+then the totals. A job with commits
 shows `code +A/-R`: lines its commits add and remove, test paths (`tests/`, `test_*`) left out;
 `code ?` when a commit cannot be read. Information only: no threshold. Then `debt now` per sweep
 repository: `review-debt --repo --split` at report time (`NIGHT_RUN_REVIEW_DEBT`), the whole and the due
@@ -284,8 +286,7 @@ sweep repositories' HEAD inside the window; week-old rewrites; problems before �
 touched again without proof; spend, plus what was deferred: a debt round left or absent), then one trend line
 per night for the last 7, oldest first, and their problem direction. A finished night's row is cached in
 `${DOCTORS_DIR}/night-ledger/<id>.json`, so it outlives the 7-day run directories and 8-day event files;
-a cached row without `spend_unit` `Opus-eq` has its spend re-priced live once (a pruned store reads lower);
-nights before the run stamps (2026-10-03) read `not timed` / `?`. The `roi ·` lines close it: each improvement
+a cached row without `spend_unit` `Opus-eq` has its spend re-priced live once (a pruned store reads lower). The `roi ·` lines close it: each improvement
 job (a fixer whose problem is a Speed or time row) as what · spend · lines · before → after unit · verdict · gain a
 day, then the night's and the trend's totals (rules in `docs/speed-doctor-design.md` §3 ROI).
 

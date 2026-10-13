@@ -348,11 +348,22 @@ def mix(spent):
     return out
 
 
+def ended_on_wall(run):
+    """The run's last attempt hit a usage wall: worker-run's wall-reset.<attempt> mark of that attempt."""
+    attempt = read(f"{RUNS}/{run}/attempt").split("\n")[0] or "1"
+    return os.path.exists(f"{RUNS}/{run}/wall-reset.{attempt}")
+
+
+def walled_share(spent):
+    fixers = weighted(spent["kinds"]["fixers"])
+    return round(100.0 * spent.get("walled", 0) / fixers, 1) if fixers else None
+
+
 def kind_spend(night, worker_run):
     low, high, sessions = window(night)
     kinds = {"fixers": collections.Counter(), "reviews": collections.Counter(),
              "orchestrator": collections.Counter()}
-    models, hours, blind, seen = collections.Counter(), 0.0, 0, set()
+    models, hours, blind, seen, walled = collections.Counter(), 0.0, 0, set(), collections.Counter()
     listed = list(night_runs(low, high, sessions))
     found = transcripts(worker_run, [run for run, *_ in listed
                                      if not os.path.isfile(read(f"{RUNS}/{run}/session-file"))])
@@ -366,6 +377,8 @@ def kind_spend(night, worker_run):
             blind += 1
         else:
             kinds["fixers"] += usage
+            if ended_on_wall(run):
+                walled += usage
     rounds = 0
     for bench in night_benches(low, high, sessions):
         rounds += 1
@@ -375,7 +388,7 @@ def kind_spend(night, worker_run):
         if path:
             kinds["orchestrator"] += claude_usage(str(path), seen, (low, high))
     return {"low": low, "high": high, "running": not night.get("finished_at"), "models": models,
-            "hours": hours, "blind": blind, "rounds": rounds, "kinds": kinds,
+            "hours": hours, "blind": blind, "rounds": rounds, "kinds": kinds, "walled": weighted(walled),
             "total": sum(weighted(total) for total in kinds.values())}
 
 
@@ -427,7 +440,11 @@ def backlog():
 
 
 def goals_now():
-    return {"doctors_share": doctors_share(), "backlog": backlog()}
+    import night_priority
+
+    rows = backlog()
+    rows["p12"] = night_priority.backlog()["p12"]
+    return {"doctors_share": doctors_share(), "backlog": rows}
 
 
 def night_goals(night):
@@ -496,6 +513,9 @@ def main():
     print(f"review rounds · {now['rounds']}")
     for kind, total in now["kinds"].items():
         print(f"spend {kind} · {mega(weighted(total))} {UNIT}{by_model(total)}")
+    if now.get("walled"):
+        print(f"spend on walls · {walled_share(now)} % of the fixers' spend in runs that ended on a usage wall"
+              f" ({mega(now['walled'])} {UNIT})")
     before = next(iter(previous_nights(path, night, 1, with_jobs=False)), None)
     ratio = ""
     if before:

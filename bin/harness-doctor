@@ -94,6 +94,7 @@ LIMITS = {
     "wait_growth": 2.0,
     "wait_growth_days": 3,
     "worker_orphans": 3,
+    "night_walled_pct": 5,
 }
 WAIT_RED_S = {"lock": 60, "poll": 30, "night-suites": 1200}
 WAIT_DAYS = 15
@@ -6038,6 +6039,26 @@ def worker_orphans_line(now):
     return out
 
 
+def night_walled_line(now):
+    """The newest finished night's share of fixer spend in runs whose last attempt hit a usage wall (night ledger)."""
+    rows = [r for r in (read_json(p) for p in glob.glob(os.path.join(env_dir("DOCTORS_DIR", ".cache", "doctors"),
+                                                                       "night-ledger", "*.json")))
+            if isinstance(r, dict) and r.get("finished") and isinstance((r.get("spend_kinds") or {}).get("walled_pct"),
+                                                                        (int, float))]
+    if not rows:
+        return None
+    last = max(rows, key=lambda r: r.get("ended") or 0)
+    share, limit = last["spend_kinds"]["walled_pct"], LIMITS["night_walled_pct"]
+    red = share > limit
+    out = line("night spend on usage walls: %s %%" % share, dim=not red, red=red)
+    out.update(key="waits:night-walled", say="%s %% of night %s's fixer spend went into runs that ended on a usage wall, "
+               "fine up to %s %%" % (share, last.get("id"), limit), judge=[verdict(
+                   "night_walled", "night", share, limit, "% of spend", 24, 1, "red" if red else None, bad=int(red),
+                   evidence=[evidence(last.get("ended"), "night-ledger/%s.json" % last.get("id"),
+                                      "%s %% of %sM fixer spend" % (share, (last.get("spend_kinds") or {}).get("fixers")))])])
+    return out
+
+
 def waits_classes_section(now):
     classes, today = wait_classes(now)
     reasons = {}
@@ -6077,12 +6098,13 @@ def waits_classes_section(now):
                          fmt_s(top if secs else None), fmt_s(usual)], red=red, dim=not red, menu=week, key="waits:" + cls,
                         say=next((j["fact"] for j in judge if j["level"]), None), judge=judge))
     orphans = worker_orphans_line(now)
+    leads = [orphans] + [x for x in (night_walled_line(now),) if x]
     out = section(WAITS_GROUP, rows, ["class", "waits today", "total today", "p50", "p95", "max", "usual day, 7 d"],
-                  [False, True, True, True, True, True, True], lead=[orphans], ok="every wait class within its limit",
+                  [False, True, True, True, True, True, True], lead=leads, ok="every wait class within its limit",
                   blind="" if rows else "no wait journaled in 8 days")
-    out["extra_red"] = [orphans] if orphans["red"] else []
+    out["extra_red"] = [x for x in leads if x["red"]]
     if out["extra_red"] and out["state"] != "problem":
-        out.update(state="problem", fact=orphans["say"])
+        out.update(state="problem", fact=out["extra_red"][0]["say"])
     return out
 
 

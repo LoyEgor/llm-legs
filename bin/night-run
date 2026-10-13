@@ -53,6 +53,7 @@ usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run survey [--post] [<repo>...]
        night-run hold
        night-run speed-gate <id> <ref> [<launcher-claude-pid>]
+       night-run admit <id> <ref> <vendor> <worker-pid>
        night-run report [<id>] [--post]
        night-run latest --menu
        night-run wall                 (StopFailure hook: JSON on stdin)
@@ -130,6 +131,11 @@ speed-gate, run by worker-run once a night worker takes its slot: exits 3 while 
   speed-<first lever>, up to 5 levers of one repository) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
   its job left with reason `speed window closed (6 h)` and its run abandoned; an earlier start is
   recorded as a speed-start event, after which a resumed worker of that fixer always passes
+admit, run by worker-run before a night worker takes its machine slot: returns once the job may start. Jobs carry
+  direction and priority (P1|P2|P3) from share/night_priority.py, stamped by job add; waiters start P1, then P2, by
+  value per expected cost, while the Claude fixers admitted and still running hold no more than the pool accounts' 5h
+  room (min(worker-pick's 5h deferral - 5h, 100 - week) each); a P3 only out of weekly room its burn leaves unused at the
+  reset, else exit 3 with the job pending and admission.deferred; the wait is a night-admission hold
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
   night's suites {started_at, finished_at, pid, repos: [{repo, exit, passed, failed[], flaky[]?, log}]}, each red
   suite then rerun once, serially: red twice stays failed, red then green is flaky; report waits
@@ -566,7 +572,7 @@ leftover_brief() { # id ref old adopted-json -> the brief file its worker runs
 }
 
 cmd_job() {
-  local id=${1:-} verb=${2:-} kind ref branch='' row adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' repos='' handover=null tops='' old brief
+  local id=${1:-} verb=${2:-} kind ref branch='' row adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' repos='' handover=null tops='' old brief prio
   [ -n "$id" ] || usage
   known_night "$id"
   case $verb in
@@ -597,15 +603,16 @@ cmd_job() {
           --arg tops "$tops" --argjson a "$adopted" '{by: $by, at: $at, why: $why,
             owner_verified: (($tops | split("\n")) as $t | any($a[]; .worktree != null and (.worktree | IN($t[]))))}')
       fi
+      prio=$(python3 -B "$repo_root/share/night_priority.py" job "$kind" "$ref" 2>/dev/null) && [ -n "$prio" ] || prio='{}'
       lock
       jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null &&
         die "night $id already has job $ref"
       night_set "$id" "$JQ_EVENTS"' .jobs += [{kind: $k, ref: $r, state: "pending", reason: null,
-        branch: (if $b == "" then null else $b end), review: null, commits: [], pushed: false}
+        branch: (if $b == "" then null else $b end), review: null, commits: [], pushed: false} + $prio
         + (if $a == null then {} else {adopted: $a} end) + (if $h == null then {} else {handover: $h} end)]
         | events([{phase: "add", at: $at, job: $r, kind: $k} + $adopt]; $t)' \
         --arg k "$kind" --arg r "$ref" --arg b "$branch" --argjson a "${adopted:-null}" --argjson h "$handover" \
-        --arg at "$at" --argjson adopt "$adopt" --arg t "$(stamp)" || die "cannot write night $id"
+        --arg at "$at" --argjson adopt "$adopt" --argjson prio "$prio" --arg t "$(stamp)" || die "cannot write night $id"
       printf 'night %s: job %s %s added\n' "$id" "$kind" "$ref"
       if [ "$kind" = leftover ]; then
         brief=$(leftover_brief "$id" "$ref" "$old" "$adopted") && printf 'night %s: brief %s\n' "$id" "$brief" ||
@@ -1040,7 +1047,8 @@ cmd_finish() {
       "$(night_file "$id")") and only it finishes the night."
   night_set "$id" "$JQ_EVENTS$JQ_SNAPSHOT"' .finished_at = $t | .doctors_after = snapshot(0) | .doctor_states_after = snapshot(1)
     | .doctor_problems_after = snapshot(2) | .doctors_share = $goals.doctors_share | .backlog = $goals.backlog
-    | .jobs |= map(if .state == "pending" or .state == "live" then .state = "left" | .reason = "no outcome recorded by the close" else . end)
+    | .jobs |= map(if .state == "pending" or .state == "live" then .state = "left"
+        | .reason = (if .admission.state == "deferred" then .admission.reason else "no outcome recorded by the close" end) else . end)
     | events([{phase: "finish", pred: "jobs"}]; $t)' \
     --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" \
     --argjson goals "$(python3 -B "$repo_root/share/night_spend.py" goals 2>/dev/null || echo '{}')" || die "cannot write night $id"
@@ -1172,6 +1180,41 @@ cmd_speed_gate() { # id ref [launcher-claude-pid] -> exit 3 while the job's nigh
     (job_set "$id" "$ref" state=left "reason=$reason" >/dev/null) || die "cannot leave job $ref of night $id"
   printf '%s: night %s job %s left, its fixer not started\n' "$reason" "$id" "$ref"
   exit 3
+}
+
+admit_readings() { # -> [{account, h5, wk, days_left, ceiling}] of each Claude account in the worker pool, a stale 5h reading +10
+  local pool ceiling
+  . "$repo_root/share/limits-view.sh"
+  pool=$("${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" --list 2>/dev/null | awk -F '\t' '$1 == "claudeb" && $4 == "ok" { print $2 }')
+  ceiling=$(sed -n 's/^FIVE_HOUR_DEFER_PCT=\([0-9][0-9]*\).*/\1/p' "$repo_root/bin/worker-pick" | head -n 1)
+  jq -c --arg pool "$pool" --argjson now "$(date +%s)" --argjson ceiling "${ceiling:-80}" "$LIMITS_VIEW_JQ"'
+    [.vendors.claude.accounts[]? | select(.account as $a | $pool | split("\n") | index($a))
+     | limits_store_eff(.five_hour; $now) as $h5 | limits_store_eff(.weekly; $now) as $wk
+     | ((.five_hour.as_of // .as_of) | limits_store_epoch) as $asof
+     | select($h5 != null and $wk != null)
+     | {account, h5: ($h5 + (if $asof == null or limits_data_stale($now - $asof; 600) then 10 else 0 end)), wk: $wk,
+        days_left: limits_days_remaining((.weekly.resets_at // null) | limits_store_epoch; $now), ceiling: $ceiling}]' \
+    "${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}" 2>/dev/null || printf '[]\n'
+}
+
+cmd_admit() { # id ref vendor pid -> returns once the job may start; exit 3 when it is deferred (a P3 without expiring room)
+  local id=$1 ref=$2 vendor=$3 pid=$4 file verdict why hold='' readings
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || usage
+  file=$(night_file "$id")
+  while :; do
+    readings=$(admit_readings)
+    lock
+    IFS=$'\t' read -r verdict why < <(printf '%s' "$readings" |
+      python3 -B "$repo_root/share/night_priority.py" admit "$file" "$ref" "$vendor" "$pid" 2>/dev/null)
+    unlock
+    case ${verdict:-} in
+      wait) [ -n "$hold" ] || hold=$(hold_raise night-admission "night $id job $ref" "$why") ;;
+      defer) hold_clear "$hold"; printf 'night %s job %s deferred: %s; it stays pending\n' "$id" "$ref" "$why"; exit 3 ;;
+      *) hold_clear "$hold"; printf 'night %s job %s admitted: %s\n' "$id" "$ref" "${why:-no verdict}"; return 0 ;;
+    esac
+    sleep "${NIGHT_RUN_ADMIT_POLL_S:-60}"
+    kill -0 "$pid" 2>/dev/null || { hold_clear "$hold"; exit 1; }
+  done
 }
 
 chat_tops() { # session -> the checkouts that chat worked in: its review journal and the current toplevel
@@ -1495,6 +1538,10 @@ cmd_report() {
       ([.events[]? | select(.phase == "speed-start") | .job] as $began
        | if $speed == {} then empty else "speed · levers \([$speed[]] | add) selected · \([$began | unique[] | $speed[.] // 0] | add // 0) started · "
          + "\([.jobs[] | select(.reason == "speed window closed (\($h) h)") | $speed[.ref] // 0] | add // 0) left by the \($h) h window" end),
+      ([.jobs[] | select(.priority)] as $p | if $p == [] then empty else "priority · "
+        + ([("P1", "P2", "P3") as $l | "\($l) \([$p[] | select(.priority == $l)] | length)"] | join(" · "))
+        + " · admitted \([$p[] | select(.admission.state == "admitted")] | length)"
+        + " · deferred \([$p[] | select(.admission.state == "deferred")] | length)" end),
       (.jobs[] | ([(if .state == "merged" then "landed" else .state end), .kind, .ref]
         + (if .branch and .state != "merged" then [.branch] else [] end)
         + (if .state == "live" then ["worker \(.run)"] else [] end)
@@ -1640,6 +1687,7 @@ case "${1:-}" in
   suites) shift; cmd_suites "$@" ;;
   hold) shift; cmd_hold "$@" ;;
   speed-gate) shift; [ $# -eq 2 ] || [ $# -eq 3 ] || usage; known_night "$1"; cmd_speed_gate "$@" ;;
+  admit) shift; [ $# -eq 4 ] || usage; known_night "$1"; cmd_admit "$@" ;;
   *) usage ;;
 esac
 exit; }

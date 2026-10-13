@@ -1440,7 +1440,10 @@ def night_report(worker_run, path):
 
 
 def spend_kinds(spent):
-    return {kind: round(night_spend.weighted(total) / 1e6, 1) for kind, total in spent["kinds"].items()}
+    out = {kind: round(night_spend.weighted(total) / 1e6, 1) for kind, total in spent["kinds"].items()}
+    if night_spend.walled_share(spent) is not None:
+        out["walled_pct"] = night_spend.walled_share(spent)
+    return out
 
 
 def kilo(value):
@@ -1477,8 +1480,10 @@ def table_column(worker_run, path, night, goals, was):
         ("unreviewed", dash if debt is None else kilo(debt) + change),
         ("Doctors 7d", show((goals.get("doctors_share") or {}).get("share"), "%.1f %%")),
         ("Speed", show((goals.get("backlog") or {}).get("speed"))),
+        ("P1+P2", show((goals.get("backlog") or {}).get("p12"))),
         ("spend", show(row.get("spend_m"), "%.1fM")),
         ("  fixers", show(kinds.get("fixers"), "%.1fM")),
+        ("  on walls", show(kinds.get("walled_pct"), "%.0f %%")),
         ("  reviews", show(kinds.get("reviews"), "%.1fM")),
         ("  night chat", show(kinds.get("orchestrator"), "%.1fM")),
         ("Opus spend", show(mix.get("opus"), "%.0f %%")),
@@ -1520,10 +1525,10 @@ def table_lines(worker_run, path):
     if len(set(heads)) < len(heads):
         heads = [day(n, "%d %b %H:%M") for n in nights]
     columns = [table_column(worker_run, p, night, goals[i + 1], goals[i]) for i, (_, p, night) in enumerate(nights)]
-    series = [[(g.get("backlog") or {}).get(key) for g in goals[1:]] for key in ("debt", "speed", "doctors")]
+    series = [[(g.get("backlog") or {}).get("p12") for g in goals[1:]]]
     plateau = night_spend.plateau(series)
     for i, column in enumerate(columns):
-        at = next(n for n, (label, _) in enumerate(column) if label == "Speed") + 1
+        at = next(n for n, (label, _) in enumerate(column) if label == "P1+P2") + 1
         column.insert(at, ("to plateau", plateau if i == len(columns) - 1 else ""))
     if all(dict(c)["Fable spend"] == "\u2013" for c in columns):
         columns = [[cell for cell in c if cell[0] != "Fable spend"] for c in columns]

@@ -676,7 +676,7 @@ check(ended["seconds"]["hooks"] == 100 and crossed["seconds"]["locks"] == 50,
       "next day: %s %s" % (ended["seconds"]["hooks"], crossed["seconds"]["locks"]))
 # The comparison table's goal rows: token-map's 7-day Doctors share (never recomputed) and the backlog (review
 # debt with its change against the night before, Speed's selection) of this night against the two previous
-# finished ones, and the nights to plateau at the burn over them (doctors' open rows included) in this night's column.
+# finished ones, and the nights to plateau at the burn of their P1+P2 rows (P3 never counts) in this night's column.
 spend7 = os.path.join(work, "spend-7d.json")
 os.environ["TOKENMAP_SPEND_7D"] = spend7
 stamp = lambda hours: time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - hours * 3600))
@@ -698,13 +698,15 @@ for name, count_ in zip(night_spend.DOCTOR_NAMES, (1, 2, 0, 3, 0)):
     doc = {"problem_count": count_}
     if name == "harness":
         doc["speed"] = {"selection": ["a", "b", "c"]}
+        doc["problems"] = [{"id": "h%d" % i, "rule": "hook-error", "state": "new"} for i in range(6)] + [
+            {"id": "s", "rule": "suite_audit", "state": "watch", "speed": True, "value": 0.2, "unit": "wall-min/day"}]
     json.dump(doc, open(os.path.join(work, "goal-" + name, "latest.json"), "w"))
 check(night_spend.backlog() == {"debt": 7, "speed": 3, "doctors": 6}, "backlog now: %s" % night_spend.backlog())
 goal_dir = os.path.join(work, "goal-nights")
 os.makedirs(goal_dir)
 for id_, day, backlog_, share in (("n9", 30, {"debt": 25}, None),
-                                  ("n1", 1, {"debt": 20, "speed": 5, "doctors": 9}, 30.0),
-                                  ("n2", 2, {"debt": 14, "speed": 4, "doctors": 8}, 26.5)):
+                                  ("n1", 1, {"debt": 20, "speed": 5, "doctors": 9, "p12": 9}, 30.0),
+                                  ("n2", 2, {"debt": 14, "speed": 4, "doctors": 8, "p12": 8}, 26.5)):
     json.dump({"id": id_, "started_at": "2026-%s:00:00Z" % ("09-30T02" if day == 30 else "10-0%dT02" % day),
                "finished_at": "2026-%s:00:00Z" % ("09-30T08" if day == 30 else "10-0%dT08" % day),
                "jobs": [{"ref": "x"}], "doctors_share": share and {"share": share}, "backlog": backlog_},
@@ -726,7 +728,8 @@ def table():
 shown, cells = table()
 check(shown[0].split() == ["1", "Oct", "2", "Oct", "3", "Oct"], "the three newest nights: %s" % shown[0])
 check(cells["unreviewed"] == ["20 \u21935", "14 \u21936", "7 \u21937"]
-      and cells["Doctors 7d"] == ["30.0 %", "26.5 %", "22.9 %"] and cells["Speed"] == ["5", "4", "3"],
+      and cells["Doctors 7d"] == ["30.0 %", "26.5 %", "22.9 %"] and cells["Speed"] == ["5", "4", "3"]
+      and cells["P1+P2"] == ["9", "8", "6"],
       "goal rows, the oldest column's debt against the night before it:\n" + "\n".join(shown))
 check(re.search(r"^to plateau +4$", "\n".join(shown), re.M)
       and len({len(l) for l in shown}) == 1, "one plateau value, in this night's column:\n" + "\n".join(shown))
@@ -742,10 +745,12 @@ check(not hasattr(night_spend, "goal_lines"), "the goals live in the table only,
 mixes["n2"] = {"opus": 40.0, "fable": 55.0, "vs_opus": 1.4}
 check(table()[1]["Fable spend"] == ["\u2013", "55 %", "\u2013"], "a Fable row once any shown night spent on Fable")
 os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "goal-none")
-check(table()[1]["to plateau"] == ["3"], "an unreadable column is a dash and burns nothing")
+check(table()[1]["to plateau"] == ["\u2013"] and table()[1]["P1+P2"][-1] == "\u2013",
+      "an unreadable doctor leaves the P1+P2 backlog unknown and no plateau")
 os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "goal-code")
-json.dump({"problem_count": 30}, open(os.path.join(work, "goal-llm", "latest.json"), "w"))
-check(table()[1]["to plateau"] == ["\u2013"], "a growing column leaves no plateau")
+json.dump({"problem_count": 30, "problems": [{"id": "l%d" % i, "rule": "leg-failure", "state": "new"} for i in range(30)]},
+          open(os.path.join(work, "goal-llm", "latest.json"), "w"))
+check(table()[1]["to plateau"] == ["\u2013"], "a growing P1+P2 backlog leaves no plateau")
 T.cached_row = kept_row
 # The model mix comes from the spend itself: each label's share of the Opus-eq total, and the total over what the
 # same tokens cost on Opus at token-map's prices.
