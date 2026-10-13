@@ -6116,6 +6116,91 @@
    "verdict": "kept",
    "zero": "removal saves ~0.2 wall-s and 0.2 CPU-s a run; loses the gate that every live hs call in tests holds /tmp/hs-cli.lock (Hammerspoon SIGTRAP crashes 2026-10-02/03/08)",
    "note": "kept: 7 grep forks over tests/*.sh, a self-test of the call pattern; no sleep or fixture; nothing cheaper keeps the scan"
+  },
+  {
+   "id": "suite:llm-legs/test_log_audit",
+   "title": "llm-legs/test_log_audit",
+   "audited_at": "2026-10-13T15:40:36+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-log-audit-20261012T235339Z-0122",
+   "cpu_run": 2.6,
+   "wall_run": 2.5,
+   "cpu_min_day": 1.53,
+   "wall_min_day": 4.41,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
+    "llm-legs/tests/test_log_audit.sh": "885d29c0b67da49270af1d8be11dc474ebf1706a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.4 wall-min/day; loses the skeleton, chunk cap, Haiku-read/Sonnet-merge and incremental since/until pins of bin/log-audit (56 asserts)",
+   "note": "e8ea08a8: sleep 1 cut (same-second row still read, N3 pins it), one fixture heredoc, one harness-doctor load, one cyrillic-share run, log-audit under scratch HOME/WORKER_RUN_DIR/CHAT_NAMES_CACHE; 56 asserts; 3 s wall at load 85"
+  },
+  {
+   "id": "suite:llm-legs/test_gemini_video",
+   "title": "llm-legs/test_gemini_video",
+   "audited_at": "2026-10-13T15:40:36+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-log-audit-20261012T235339Z-0122",
+   "cpu_run": 13.1,
+   "wall_run": 14.6,
+   "cpu_min_day": 1.49,
+   "wall_min_day": 3.07,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_gemini_video.sh": "a3f0c8a764b8489810d43c4a79c74d2e427362bd"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.3 wall-min/day; loses the pre-spend manifest refusals, frames/ingredients routing and leg-log pins of gemini-video (147 asserts)",
+   "note": "7f3b3ddf: caps read in one jq at start and one per model, image_leg_exit waits on the tee under a 1 s watchdog instead of sleep 0.05 polls, one ffmpeg for three fixtures; shim pins <=5 jq and no sleep 0.x, red on old code; 147 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_grokb",
+   "title": "llm-legs/test_grokb",
+   "audited_at": "2026-10-13T15:40:37+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-log-audit-20261012T235339Z-0122",
+   "cpu_run": 4.3,
+   "wall_run": 4.2,
+   "cpu_min_day": 1.65,
+   "wall_min_day": 2.9,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_grokb.sh": "bec368806907ead795a35e823960ef8080b3ce60"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.3 wall-min/day; loses grok profile creation/login, pool gating, reserved-name refusals and pinned launch env pins (152 asserts)",
+   "note": "0b31d96b: grokb refuses malformed/reserved names before sourcing its five libraries, wait_announce polls 0.01 s under the same 5 s bound; 152 asserts; mutations red (reserved list, withheld announce)"
+  },
+  {
+   "id": "suite:llm-legs/test_grok_quota",
+   "title": "llm-legs/test_grok_quota",
+   "audited_at": "2026-10-13T15:40:38+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-log-audit-20261012T235339Z-0122",
+   "cpu_run": 6.3,
+   "wall_run": 4.0,
+   "cpu_min_day": 1.45,
+   "wall_min_day": 2.58,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_grok_quota.sh": "12898d24006aa23930adcee5f3cadab3c84843c0"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.2 wall-min/day; loses grok-quota usage/reset reads, timeouts, stdout-only JSON and client-version pins (24 sections)",
+   "note": "14ca5bfd: one preloaded interpreter forks per run (python3 start per run was ~6 of 7 CPU-s), CLI contract checks stay real execs, port on a pipe, 0.2 s timeouts vs 3 s stand-in, one reset read reused; 24 sections; mutations red"
+  },
+  {
+   "id": "suite:llm-legs/test_instruction_watch_perf",
+   "title": "llm-legs/test_instruction_watch_perf",
+   "audited_at": "2026-10-13T15:40:39+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-log-audit-20261012T235339Z-0122",
+   "cpu_run": 13.6,
+   "wall_run": 9.0,
+   "cpu_min_day": 1.97,
+   "wall_min_day": 2.9,
+   "sources": {
+    "llm-legs/tests/test_instruction_watch_perf.py": "ba2923584965c98756c0960d883d82d04a1a6d61"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 2.2 wall-min/day; loses the instruction-watch enumeration-reuse, quiet-check one-stat, unloaded-tree, budget and inventory pins (18 tests)",
+   "note": "tests lens read: live state isolated (HOME, STATE, LOG, ALERT, CLAUDEB_DIR fixtures), no sleeps, unloaded-tree mutation red; wall is ~30 change-reporting hook runs (~0.3 s each nominal, diffuse forks in the production hook) each pinning a distinct incident; the 6 in-loop quiet checks cost ~0.3 s and pin the per-arrival refresh, not worth weakening"
   }
  ]
 }
