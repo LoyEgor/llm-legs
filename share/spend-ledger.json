@@ -1717,6 +1717,19 @@
    "verdict": "cut",
    "zero": "removal saves 2.1 CPU-min/day; loses the denial of T3 and --max launches Egor has not named",
    "note": "already builtin-only for a command naming no review-bench; the cost was env bash's start (8.4 ms vs 2.6 on /bin/bash): 5.9 -> 2.0 CPU-ms on the same payload, verdicts identical on 306 real-transcript PreToolUse payloads, test_review_owner_gate 109 asserts pass under 3.2. Wasted is ~all runs (denies are rare) but PreToolUse cannot filter on the command text"
+  },
+  {
+   "id": "cpu:process/agy",
+   "title": "process/agy",
+   "audited_at": "2026-10-13T09:36:27+03:00",
+   "by": "harness-speed-cpu-hook-limits-triage-nudge-sh-20261012T235048Z-1236",
+   "cpu_min_day": 2.4,
+   "cpu_s_run": 301.662,
+   "runs_day": 1,
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 2.4 CPU-min/day; loses every Gemini leg: review cells, workers, light research and the quota reads",
+   "note": "not a loop or poll: the System hours journal shows agy CPU on 4 of the last 7 days only (737, 727, 203, 143 CPU-s; 3.5-13 concurrent process-min in one hour each), the vendor CLI's own language server working a Gemini leg or review cell at ~70-80% of a core; the 2.4 is the 7-day median, one burst. No timer or schedule of ours starts it idle, no cheaper equivalent for a vendor binary doing the work"
   }
  ]
 }
