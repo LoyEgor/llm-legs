@@ -201,7 +201,7 @@ image_run --dest "$OUTPUT_DIR/many.png" --prompt badge "${refs[@]}" || image_rc=
 assert test "$image_rc" -eq 2
 assert grep -q "references exceed the $REF_MAX" "$IMAGE_ERR"
 image_rc=0
-image_run --dest "$OUTPUT_DIR/relref.png" --prompt badge --ref ref-1.png || image_rc=$?
+(cd "$WORK" && image_run --dest "$OUTPUT_DIR/relref.png" --prompt badge --ref ref-1.png) || image_rc=$?
 assert test "$image_rc" -eq 2
 image_rc=0
 image_run --dest "$OUTPUT_DIR/missingref.png" --prompt badge --ref "$WORK/absent.png" || image_rc=$?
