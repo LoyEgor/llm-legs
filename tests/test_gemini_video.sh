@@ -27,14 +27,10 @@ assert_fails() {
 command -v ffmpeg >/dev/null 2>&1 || fail "ffmpeg is required for this suite"
 OUT="$WORK/out"
 mkdir -p "$OUT"
-CLIP="$WORK/clip.mp4"
-ffmpeg -v error -f lavfi -i color=c=blue:s=1280x720:d=1:r=24 -c:v libx264 -pix_fmt yuv420p "$CLIP" \
-  || fail "could not build the fixture clip"
-FRAME="$WORK/frame.png"
-ffmpeg -v error -f lavfi -i color=c=red:s=1280x720 -frames:v 1 "$FRAME" || fail "no fixture frame"
-LONG="$WORK/long.mp4"
-ffmpeg -v error -f lavfi -i color=c=green:s=320x180:d=31:r=4 -c:v libx264 -pix_fmt yuv420p "$LONG" \
-  || fail "could not build the long fixture clip"
+CLIP="$WORK/clip.mp4" FRAME="$WORK/frame.png" LONG="$WORK/long.mp4"
+ffmpeg -v error -f lavfi -i color=c=blue:s=1280x720:d=1:r=24 -f lavfi -i color=c=red:s=1280x720 \
+  -f lavfi -i color=c=green:s=320x180:d=31:r=4 -map 0 -c:v libx264 -pix_fmt yuv420p "$CLIP" \
+  -map 1 -frames:v 1 "$FRAME" -map 2 -c:v libx264 -pix_fmt yuv420p "$LONG" || fail "could not build the fixture clips"
 
 ENGINE="$WORK/fake-gemini-web"
 ENGINE_CALLS="$WORK/engine-calls"
@@ -81,8 +77,18 @@ assert test "$(video_rc --dest relative.mp4 --prompt 'drift')" = 2
 assert test "$(video_rc --dest "$OUT/a.mov" --prompt 'drift')" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --aspect 4:3)" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --duration 5)" = 2
-assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --duration 6 --model fast)" = 2
+SHIM="$WORK/shim"
+mkdir -p "$SHIM"
+for tool in jq sleep; do
+  printf '#!/bin/sh\necho "${0##*/} $*" >>"%s/execs"\nexec %s "$@"\n' "$WORK" "$(command -v "$tool")" >"$SHIM/$tool"
+  chmod +x "$SHIM/$tool"
+done
+assert test "$(PATH="$SHIM:$PATH" video_rc --dest "$OUT/a.mp4" --prompt 'drift' --duration 6 --model fast)" = 2
 assert grep -q 'Veo 3.1 - Fast takes duration 8, not 6' "$VIDEO_ERR"
+# One manifest read per stage, and the leg's exit waits on its stderr tee instead of polling it.
+assert test "$(grep -c '^jq ' "$WORK/execs")" -le 5
+assert test "$(grep -c '^sleep 0' "$WORK/execs")" -eq 0
+assert jq -e '.rc == 2 and (.err | contains("Veo 3.1 - Fast takes duration 8, not 6"))' <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --model nope)" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --ref "$FRAME" --ref "$FRAME" --ref "$FRAME" --ref "$FRAME" --ref "$FRAME")" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --model fast --ref "$FRAME" --ref "$FRAME" --ref "$FRAME" --ref "$FRAME")" = 2

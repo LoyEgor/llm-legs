@@ -25,18 +25,16 @@ root=$(resolve_root)
 image_leg_start gemini-video video observed_model
 . "$root/share/image-caps.sh"
 
-caps() { image_caps_get "$root" gemini "$1"; }
+manifest=$(image_caps_file "$root" gemini)
+caps() { jq -r "$1" "$manifest"; }
 
-container=$(caps '.video.container')
-durations=$(caps '.video.durations | join("|")')
-default_duration=$(caps '.video.duration_default')
-video_aspects=$(caps '.video.aspects | join("|")')
-default_aspect=$(caps '.video.aspect_default')
-resolutions=$(caps '.video.resolutions | join("|")')
-default_resolution=$(caps '.video.resolution_default')
-refs_max=$(caps '.video.refs_max')
-edit_max=$(caps '.video.edit_source_max_s')
-counts=$(caps '.video.counts | map(tostring) | join("|")')
+video_caps=$(caps '.video | .container, (.durations | join("|")), .duration_default, (.aspects | join("|")),
+  .aspect_default, (.resolutions | join("|")), .resolution_default, .refs_max, .edit_source_max_s,
+  (.counts | map(tostring) | join("|")), .extend.seconds, "end"')
+{
+  read -r container; read -r durations; read -r default_duration; read -r video_aspects; read -r default_aspect
+  read -r resolutions; read -r default_resolution; read -r refs_max; read -r edit_max; read -r counts; read -r extend_s
+} <<<"$video_caps"
 
 usage() {
   image_leg_cause "$@"
@@ -45,7 +43,7 @@ usage() {
   printf '  Google Flow on the account'\''s subscription, through a hidden Chrome (gemini-web)\n' >&2
   printf '  frames (--first-frame/--last-frame; a lone --ref is the first frame) or ingredients (several --ref, --edit), never both\n' >&2
   printf '  --edit reworks a video of up to %ss (any source, a Grok clip too) on Omni; the clip keeps its length\n' "$edit_max" >&2
-  printf '  --extend continues a Veo clip gemini-video saved, on its own account: a new %ss clip that picks up its motion\n' "$(caps '.video.extend.seconds')" >&2
+  printf '  --extend continues a Veo clip gemini-video saved, on its own account: a new %ss clip that picks up its motion\n' "$extend_s" >&2
   printf '  --count 2-4 renders variants in one send (dest, then <stem>-2, ...) at that multiple of the credits; default 1\n' >&2
   printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (no extra credits)\n' >&2
   printf '  prompting guide (read before writing a prompt): %s/docs/video-prompting.md\n' "$root" >&2
@@ -107,7 +105,7 @@ if [ -n "$extend" ]; then
   { [ -z "$first_frame" ] && [ -z "$last_frame" ] && [ -z "$edit" ] && [ "${#refs[@]}" -eq 0 ]; } \
     || say "--extend continues a clip from its own ending; it takes no frames, --ref or --edit"
   { [ -z "$duration" ] && [ -z "$model" ] && [ -z "$aspect" ] && [ "$count" = 1 ]; } \
-    || say "--extend keeps the source's model and aspect and adds $(caps '.video.extend.seconds')s; drop --duration, --model, --aspect and --count"
+    || say "--extend keeps the source's model and aspect and adds ${extend_s}s; drop --duration, --model, --aspect and --count"
   { [[ "$extend" = /* ]] && [ -f "$extend" ]; } || usage "--extend $extend is not an absolute path to a file"
 fi
 if [ "${#refs[@]}" -eq 1 ] && [ -z "$first_frame" ] && [ -z "$edit" ]; then
@@ -130,7 +128,7 @@ command -v "$ffprobe_cmd" >/dev/null 2>&1 || {
 }
 
 if [ -n "$extend" ]; then
-  duration=$(caps '.video.extend.seconds')
+  duration=$extend_s
 elif [ -n "$edit" ]; then
   [ -z "$duration" ] || say "an --edit clip keeps the length of its source; drop --duration"
   source_s=$("$ffprobe_cmd" -v error -show_entries format=duration -of csv=p=0 "$edit" 2>/dev/null) || source_s=''
@@ -157,14 +155,14 @@ case "|$video_aspects|" in
   *) say "Flow takes aspect $video_aspects, not $aspect" ;;
 esac
 
-manifest=$(image_caps_file "$root" gemini)
 edit_mode=false
 [ -z "$edit" ] || edit_mode=true
 if [ -n "$extend" ]; then
   model=extend
-  label=$(caps '.video.extend.label')
+  { read -r label; read -r extend_renders; } <<<"$(jq -r --arg r "$resolution" \
+    '.video.extend | .label, (.resolutions | index($r) != null)' "$manifest")"
   wire_path='.video.extend.wire'
-  jq -e --arg r "$resolution" '.video.extend.resolutions | index($r)' "$manifest" >/dev/null \
+  [ "$extend_renders" = true ] \
     || say "$label renders $(caps '.video.extend.resolutions | join("|")'), not $resolution: Flow has no upscaled download of an extension; video-chain join scales it to the chain"
 else
   if [ -z "$model" ]; then
@@ -175,17 +173,18 @@ else
       | first // empty' "$manifest")
     [ -n "$model" ] || say "no Flow model takes this combination (duration $duration, $render, ${#refs[@]} refs)"
   fi
-  label=$(caps ".video.models[\"$model\"].label // empty")
+  model_caps=$(jq -r --arg m "$model" --arg r "$render" --arg d "$duration" '.video.models[$m] as $x
+    | ($x.label // ""), $x.refs_max, ($x.costs[$r] // "" | tostring), ($x.edit_costs[$r] // "" | tostring),
+      ($x.costs[$r][$d] // "" | tostring), "end"' "$manifest")
+  { read -r label; read -r model_refs_max; read -r render_cost; read -r edit_cost; read -r duration_cost; } <<<"$model_caps"
   [ -n "$label" ] || usage "--model $model is not a Flow video model"
   wire_path=".video.models[\"$model\"].wire"
-  [ "${#refs[@]}" -le "$(caps ".video.models[\"$model\"].refs_max")" ] \
-    || say "$label takes at most $(caps ".video.models[\"$model\"].refs_max") --ref images"
-  [ -n "$(caps ".video.models[\"$model\"].costs[\"$render\"] // empty")" ] \
+  [ "${#refs[@]}" -le "$model_refs_max" ] || say "$label takes at most $model_refs_max --ref images"
+  [ -n "$render_cost" ] \
     || say "$label renders $(caps ".video.models[\"$model\"].costs | keys | join(\"|\")"), not $render"
   if [ "$edit_mode" = true ]; then
-    [ -n "$(caps ".video.models[\"$model\"].edit_costs[\"$render\"] // empty")" ] \
-      || say "$label cannot edit a video at $render"
-  elif [ -z "$(caps ".video.models[\"$model\"].costs[\"$render\"][\"$duration\"] // empty")" ]; then
+    [ -n "$edit_cost" ] || say "$label cannot edit a video at $render"
+  elif [ -z "$duration_cost" ]; then
     say "$label takes duration $(caps ".video.models[\"$model\"].costs[\"$render\"] | keys | join(\"|\")"), not $duration"
   fi
 fi
