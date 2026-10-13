@@ -3636,7 +3636,7 @@
    },
    "verdict": "cut",
    "zero": "removal saves 1.3 wall-min/day; loses the test-health scan pins",
-   "note": "covering assert reads the first collect's cached scan; affected_filter three greps for all suites (35 s to 5 s a named run); 50 asserts"
+   "note": "covering assert reads the first collect's cached scan; the affected_filter cut landed on main as 3e34ec7a; 50 asserts"
   },
   {
    "id": "suite:llm-legs/test_account_purge",
