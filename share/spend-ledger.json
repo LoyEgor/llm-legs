@@ -2349,6 +2349,23 @@
    "verdict": "kept",
    "zero": "removal saves ~6 wall-s and ~5 CPU-s a run; loses the eod notice and sorted gate pins, their fork-free fast paths and the 16 KB payload bound",
    "note": "kept: read through the tests lens, every run is the hook under test; the 4 s alarm has ~1000x margin (the hook takes ~4 ms on the 16 KB payload, the old bug minutes); setup checks on git are cheap"
+  },
+  {
+   "id": "suite:claude-setup/test_commit_report_worktrees",
+   "title": "claude-setup/test_commit_report_worktrees",
+   "audited_at": "2026-10-13T05:26:48+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-commit-report-worktrees-20261012T235201Z-02cb",
+   "cpu_run": 24.9,
+   "wall_run": 21.7,
+   "cpu_min_day": 1.78,
+   "wall_min_day": 3.56,
+   "sources": {
+    "claude-setup/tests/commit_report_harness.sh": "9d886fd4962311c550133566ad32b012e211b3b5",
+    "claude-setup/tests/test_commit_report_worktrees.sh": "0dac74ff01e20a7441b2e0b0f1d861d78eee9374"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~3.2 wall-min/day; loses the only pins of commit-report's worktree/owner repo row, the unexpanded -C target fallback, the per-call snapshot and the gate+report worktree-behind-a-variable incident (2026-08-28)",
+   "note": "GIT_CONFIG_GLOBAL=/dev/null in the shared harness stops the global hooksPath running on every fixture ref move (paired A/B 38->20 s wall, CPU 34->22 s); 2 vacuous asserts on the worker-run store production stopped reading in f530d978 removed (46->44)"
   }
  ]
 }
