@@ -59,16 +59,31 @@ local function pinTitle()
   return hs.styledtext.new("  ●", { font = menuFont })
 end
 
+-- A palette-coloured title is the same object on every build, so a disabled row hits style.mono's
+-- settled cache instead of walking its runs again. The dim tone is not memoised: it resolves a
+-- system colour that follows the appearance.
+local paletteTitles, paletteCount = {}, 0
+
 local function infoTitle(text, warning, dim, atLimit)
   local attributes = { font = menuFont }
+  local memoKey
   if atLimit then
     attributes.color = dim and dimRedColor or redColor
+    memoKey = (dim and "d" or "r") .. text
   elseif dim then
     attributes.color = dimColor()
   elseif warning then
     attributes.color = redColor
+    memoKey = "w" .. text
   end
-  return hs.styledtext.new(text, attributes)
+  local hit = memoKey and paletteTitles[memoKey]
+  if hit then return hit end
+  local title = hs.styledtext.new(text, attributes)
+  if memoKey then
+    if paletteCount >= 256 then paletteTitles, paletteCount = {}, 0 end
+    paletteTitles[memoKey], paletteCount = title, paletteCount + 1
+  end
+  return title
 end
 
 local function loginNeededTitle(account, pinned, age, needsUserEntry, dim, ageAlarm)
@@ -473,6 +488,23 @@ local function bucketAtLimit(bucket)
   return type(bucket) == "table" and (tonumber(bucket.effective_pct) or 0) >= 100
 end
 
+-- Keyed by path, inode, mtime and size, since the stores are replaced by rename. A file modified in
+-- the current second is never kept: a same-size in-place rewrite inside one mtime tick would read
+-- as unchanged. Callers must not mutate what it returns.
+local statCache = {}
+
+local function statCached(path, load)
+  local attrs = hs.fs.attributes(path)
+  if not attrs then statCache[path] = nil return load() end
+  local key = string.format("%s:%s:%s", attrs.ino or "", attrs.modification or "", attrs.size or "")
+  local hit = statCache[path]
+  if hit and hit.key == key then return table.unpack(hit.values, 1, hit.values.n) end
+  local values = table.pack(load())
+  local settled = type(attrs.modification) == "number" and os.time() > attrs.modification
+  statCache[path] = settled and { key = key, values = values } or nil
+  return table.unpack(values, 1, values.n)
+end
+
 -- The bench's own store, spelled the way bin/review-bench spells it: a menu reading a different
 -- one would report on records nobody is writing. Class names are the snapshot's own keys.
 local DOCTOR_STALE_S = 24 * 3600
@@ -487,8 +519,9 @@ local function doctorSnapshotPath()
 end
 
 local function readDoctorSnapshot()
-  local ok, decoded = pcall(function()
-    local file = io.open(doctorSnapshotPath(), "r")
+  local path = doctorSnapshotPath()
+  local ok, decoded = pcall(statCached, path, function()
+    local file = io.open(path, "r")
     if not file then return nil end
     local contents = file:read("*a")
     file:close()
@@ -509,7 +542,7 @@ local function doctorStaleSuffix(asOf)
 end
 
 local function readLlmLimits()
-  local ok, result, reason = pcall(function()
+  local ok, result, reason = pcall(statCached, M.cachePath, function()
     local file = io.open(M.cachePath, "r")
     if not file then
       return nil, "cache file not found: " .. M.cachePath
@@ -565,7 +598,7 @@ local function defaultWorkerRoles()
   return roles
 end
 
-local function readWorkerModel()
+local function parseWorkerModel()
   local pins, roles, paused, vendorPins = {}, defaultWorkerRoles(), {}, {}
   pcall(function()
     local file = io.open(M.workerModelPath, "r")
@@ -608,6 +641,10 @@ local function readWorkerModel()
     end
   end)
   return pins, roles, paused, vendorPins
+end
+
+local function readWorkerModel()
+  return statCached(M.workerModelPath, parseWorkerModel)
 end
 
 local function baseEnvironment()
@@ -1033,11 +1070,15 @@ local function geminiWebDir()
 end
 
 local function readJsonTable(path)
-  local contents = readTextFile(path)
-  if not contents then return nil end
-  local ok, decoded = pcall(hs.json.decode, contents)
-  return ok and type(decoded) == "table" and decoded or nil
+  local decoded = statCached(path, function()
+    local contents = readTextFile(path)
+    if not contents then return nil end
+    local ok, value = pcall(hs.json.decode, contents)
+    return ok and type(value) == "table" and value or nil
+  end)
+  return decoded
 end
+M.readJsonTable = readJsonTable
 
 -- A gemini-web profile matching no roster name, even by its email's local part, gets no row: the
 -- store's roster is the only roster.
@@ -1267,20 +1308,9 @@ local function llmDoctorPath()
   return home .. "/.cache/llm-doctor/latest.json"
 end
 
--- Keyed like harnessCache: bin/llm-doctor replaces latest.json by rename.
-local llmDoctorCache = {}
-
 local function readLlmDoctor()
-  local path = llmDoctorPath()
-  local attrs = hs.fs.attributes(path)
-  local key = attrs and string.format("%s:%s:%s:%s", path, attrs.ino or "", attrs.modification or "", attrs.size or "")
-  if key and llmDoctorCache.key == key then return llmDoctorCache.document end
-  local ok, decoded = pcall(function()
-    local contents = readTextFile(path)
-    return contents and hs.json.decode(contents) or nil
-  end)
-  if not ok or type(decoded) ~= "table" or type(decoded.blocks) ~= "table" then decoded = nil end
-  if key then llmDoctorCache.key, llmDoctorCache.document = key, decoded end
+  local decoded = readJsonTable(llmDoctorPath())
+  if type(decoded) ~= "table" or type(decoded.blocks) ~= "table" then return nil end
   return decoded
 end
 
@@ -1757,8 +1787,7 @@ end
 -- bin/chat-load judges a limiter queue stuck (no held job started for 30 min) and its snapshot is
 -- what lights the title's ⚠; a queue that moves stays inside the Chats/other submenu.
 readChats = function()
-  local ok, snapshot = pcall(hs.json.decode, readTextFile(home .. "/Library/Logs/memlogd/chats.json") or "")
-  return ok and type(snapshot) == "table" and snapshot or nil
+  return readJsonTable(home .. "/Library/Logs/memlogd/chats.json")
 end
 
 stuckQueues = function()
@@ -2148,10 +2177,8 @@ function M.grokFastOffered(name)
     if not profiles or profiles == "" then profiles = home .. "/.grok-profiles" end
     path = profiles .. "/" .. name .. "/models_cache.json"
   end
-  local contents = readTextFile(path)
-  if not contents then return nil end
-  local ok, decoded = pcall(hs.json.decode, contents)
-  if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" or next(decoded.models) == nil then
+  local decoded = readJsonTable(path)
+  if type(decoded) ~= "table" or type(decoded.models) ~= "table" or next(decoded.models) == nil then
     return nil
   end
   for slug in pairs(decoded.models) do
@@ -2163,15 +2190,19 @@ end
 -- A worker launch runs the default codex family's newest slug; the family is the first codex row of
 -- share/worker-model.sh's table, the one place it is spelled.
 local function codexDefaultFamily()
-  local file = M.workerModelShPath and io.open(M.workerModelShPath, "r")
-  if not file then return nil end
-  local family
-  for line in file:lines() do
-    family = line:match("^codex (%S+) ")
-    if family then break end
-  end
-  file:close()
-  return family
+  local path = M.workerModelShPath
+  if not path then return nil end
+  return (statCached(path, function()
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local family
+    for line in file:lines() do
+      family = line:match("^codex (%S+) ")
+      if family then break end
+    end
+    file:close()
+    return family
+  end))
 end
 
 local function versionNewer(a, b)
@@ -2196,10 +2227,8 @@ function M.codexFastOffered(name)
     if not profiles or profiles == "" then profiles = home .. "/.codex-profiles" end
     path = profiles .. "/" .. name .. "/models_cache.json"
   end
-  local contents = readTextFile(path)
-  if not contents then return nil end
-  local ok, decoded = pcall(hs.json.decode, contents)
-  if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" or #decoded.models == 0 then
+  local decoded = readJsonTable(path)
+  if type(decoded) ~= "table" or type(decoded.models) ~= "table" or #decoded.models == 0 then
     return nil
   end
   local function priority(model)
@@ -2529,16 +2558,17 @@ function M.loginGrok(name)
 end
 
 local function refreshItems(menu)
+  local busy = busyNow()
   table.insert(menu, {
     title = "Refresh",
-    disabled = M.refreshState().busy,
+    disabled = busy,
     fn = function()
       userRefreshData({ "--refresh" }, "refresh", 360, "refresh")
     end,
   })
   table.insert(menu, {
     title = "Refresh + start windows",
-    disabled = M.refreshState().busy,
+    disabled = busy,
     fn = function()
       userRefreshData({ "--refresh", "--start-windows" }, "start-windows", 1200, "start-windows")
     end,

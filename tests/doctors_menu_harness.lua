@@ -642,13 +642,13 @@ local cached = loadDoctors()
 cached.menuItems()
 local firstScans = runScans
 cached.menuItems()
-check(firstScans == 5 and runScans == firstScans, "a second menu build rescanned the runs directory: "
+check(firstScans == 1 and runScans == firstScans, "one listing feeds the five doctors, and a second menu build rescans nothing: "
   .. firstScans .. " then " .. runScans)
 write("/doctors/runs/llm-all-20261001T020000Z-c0de.json", { id = "llm-all-20261001T020000Z-c0de", doctor = "llm",
   area = "all", created_at = iso(now - 60), launched_at = iso(now - 60), problems = {} })
 os.execute(pinRuns)
 local fresh = cached.menuItems()
-check(runScans == firstScans + 5 and text(fixer(details(fresh[1].menu)).title):match("^fixer: running"),
+check(runScans == firstScans + 1 and text(fixer(details(fresh[1].menu)).title):match("^fixer: running"),
   "a new run record is read on the next build, inside the same directory mtime: " .. text(fixer(details(fresh[1].menu)).title))
 remove("/doctors/runs/llm-all-20261001T020000Z-c0de.json")
 fakeHs.fs = nil

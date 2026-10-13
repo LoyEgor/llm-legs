@@ -50,7 +50,17 @@ local function plural(count, word)
   return string.format("%d %s%s", count, word, count == 1 and "" or "s")
 end
 
-local function dim(text) return { title = infoTitle(text, false, true), disabled = true } end
+-- One styled title per text: the same object lets style.mono's settled cache hit on every later build.
+local dimTitles, dimCount = {}, 0
+local function dim(text)
+  local title = dimTitles[text]
+  if not title then
+    if dimCount >= 512 then dimTitles, dimCount = {}, 0 end
+    title = infoTitle(text, false, true)
+    dimTitles[text], dimCount = title, dimCount + 1
+  end
+  return { title = title, disabled = true }
+end
 
 local function plainText(title) return type(title) == "string" and title or title:getString() end
 local function cells(text) return utf8.len(text) or #text end
@@ -130,7 +140,7 @@ local function readJson(path, format)
   local hit = jsonCache[path]
   if hit and hit.key == key then return hit.value end
   local ok, value = pcall(function()
-    if not format then return hs.json.read(path) end
+    if not format then return limits.readJsonTable(path) end
     local handle = io.open(path)
     if not handle then return nil end
     local rows = {}
@@ -155,8 +165,23 @@ end
 
 -- Run ids are <doctor>-<area>-<stamp>-<hex>, so a name sort orders areas, not time. A new record moves
 -- the directory's size; a record rewritten by rename does not, so the hit re-reads the newest file by name.
-local RUNS_RESCAN_S = 60
-local runsCache = {}
+-- The five doctors rescan in the same build: one listing of the directory feeds all of them.
+local RUNS_RESCAN_S, RUNS_SHARE_S = 60, 2
+local runsCache, runsListing = {}, nil
+local function runNames(runs, key)
+  if runsListing and runsListing.key == key and clock() - runsListing.at < RUNS_SHARE_S then
+    return runsListing.names
+  end
+  local ok, iter, state = pcall(hs.fs.dir, runs)
+  if not ok or not iter then runsListing = nil return nil end
+  local names = {}
+  for name in iter, state do
+    if name:match("%.json$") then names[#names + 1] = name end
+  end
+  runsListing = key and { key = key, at = clock(), names = names } or nil
+  return names
+end
+
 local function latestRun(doctor)
   local runs = dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/runs"
   local attrs = hs.fs.attributes(runs)
@@ -165,11 +190,11 @@ local function latestRun(doctor)
   if hit and key and hit.key == key and clock() - hit.at < RUNS_RESCAN_S then
     return hit.name and readJson(runs .. "/" .. hit.name)
   end
-  local ok, iter, state = pcall(hs.fs.dir, runs)
-  if not ok or not iter then runsCache[doctor] = nil return nil end
+  local names = runNames(runs, key)
+  if not names then runsCache[doctor] = nil return nil end
   local prefix, newest, newestAt, newestName = doctor .. "-", nil, nil, nil
-  for name in iter, state do
-    if name:sub(1, #prefix) == prefix and name:match("%.json$") then
+  for _, name in ipairs(names) do
+    if name:sub(1, #prefix) == prefix then
       local run = readJson(runs .. "/" .. name)
       local at = run and (limits.parseTime(run.created_at) or limits.parseTime(run.launched_at)) or 0
       if run and (not newest or at > newestAt or at == newestAt and name > newestName) then

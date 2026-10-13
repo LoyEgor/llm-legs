@@ -1077,6 +1077,31 @@ end
 assert(passiveModule.refreshState().prefix == "", "passive collect changed the title state")
 
 do
+  local calls, original = 0, passiveModule.refreshState
+  passiveModule.refreshState = function(...) calls = calls + 1 return original(...) end
+  passiveModule.menuItems()
+  passiveModule.refreshState = original
+  assert(calls == 1, "a menu build ran refreshState " .. calls .. " times; the Refresh rows read busyNow")
+
+  local decodes, modified = 0, 100
+  local cachedModule = loadModule(function() decodes = decodes + 1 return fixture end, nil, nil, nil, nil, nil,
+    function() return { ino = 7, modification = modified, size = 10 } end)
+  cachedModule.refreshState()
+  local first = decodes
+  assert(first > 0, "the render decoded nothing")
+  for _ = 1, 2 do cachedModule.refreshState() end
+  assert(decodes == first, "an unchanged store was decoded again by " .. (decodes - first) .. " later renders")
+  modified = 101
+  cachedModule.refreshState()
+  assert(decodes > first, "a store whose mtime moved was not decoded again")
+  modified = os.time()
+  cachedModule.refreshState()
+  local fresh = decodes
+  cachedModule.refreshState()
+  assert(decodes > fresh, "a store modified in the current second was kept: a same-size rewrite would read as unchanged")
+end
+
+do
 local function errorItems(menu)
   local rows = {}
   for _, item in ipairs(menu) do
