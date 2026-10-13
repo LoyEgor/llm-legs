@@ -2655,6 +2655,91 @@
    "verdict": "cut",
    "zero": "removal saves the real end-report note python spawn and live notes.json/fs reads per run, about 0.2 wall-s; loses an unasserted print of the live menu rows",
    "note": "dropped the live-hs api.menu() block (real hs.task ran end-report note); 61 checks unchanged; tabStopType mutation red (via hs NSException crash, so avoid repeating it)"
+  },
+  {
+   "id": "suite:llm-legs/test_chat_names",
+   "title": "llm-legs/test_chat_names",
+   "audited_at": "2026-10-13T11:28:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-names-20261012T235245Z-601a",
+   "cpu_run": 2.6,
+   "wall_run": 1.6,
+   "cpu_min_day": 0.18,
+   "wall_min_day": 0.23,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_chat_names.sh": "5f40c219e72f305c6535fd32da21997507ed1cb8"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~2 wall-s a run; loses the resolver's session-to-title guard",
+   "note": "fixtures via printf, python -S starts, same-state queries in one process; 56 asserts kept"
+  },
+  {
+   "id": "suite:llm-legs/test_video_chain",
+   "title": "llm-legs/test_video_chain",
+   "audited_at": "2026-10-13T11:28:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-names-20261012T235245Z-601a",
+   "cpu_run": 3.7,
+   "wall_run": 2.0,
+   "cpu_min_day": 0.21,
+   "wall_min_day": 0.22,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_video_chain.sh": "68d059e18b6fa2ae01a1714fdef2643d78903386"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~2.5 wall-s a run; loses the video-chain tool guard",
+   "note": "join encode runs behind the fixtures overlapping the checks; join probes 11->7; 27 asserts kept"
+  },
+  {
+   "id": "suite:llm-legs/test_limits_triage_nudge",
+   "title": "llm-legs/test_limits_triage_nudge",
+   "audited_at": "2026-10-13T11:28:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-names-20261012T235245Z-601a",
+   "cpu_run": 0.4,
+   "wall_run": 0.3,
+   "cpu_min_day": 0.1,
+   "wall_min_day": 0.16,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_limits_triage_nudge.sh": "8a4eef1446e984095ded8606adbcd965d72ea877"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.3 wall-s a run; loses the 429 nudge pattern guard",
+   "note": "stdlib python starts with -S, one malformed-stdin hook run for output and exit; asserts kept"
+  },
+  {
+   "id": "suite:llm-legs/test_gemini_weather",
+   "title": "llm-legs/test_gemini_weather",
+   "audited_at": "2026-10-13T11:28:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-names-20261012T235245Z-601a",
+   "cpu_run": 1.5,
+   "wall_run": 1.1,
+   "cpu_min_day": 0.11,
+   "wall_min_day": 0.17,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_gemini_weather.sh": "b5c5f134c056c45123595097e87b32328b6d91d9"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~1.1 wall-s a run; loses the gemini-weather state guard",
+   "note": "cold call checked against builtin rows then cache seeded (geminib starts 9->2), nine logs in one interpreter; 40 asserts kept"
+  },
+  {
+   "id": "suite:llm-legs/test_report_frame",
+   "title": "llm-legs/test_report_frame",
+   "audited_at": "2026-10-13T11:28:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-names-20261012T235245Z-601a",
+   "cpu_run": 1.2,
+   "wall_run": 0.8,
+   "cpu_min_day": 0.1,
+   "wall_min_day": 0.15,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_report_frame.sh": "acec6fbf6097c2c479e64435964eab751850f922"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.8 wall-s a run; loses the report renderer guard",
+   "note": "stdlib python starts with -S, refused-value case reads loop's last run; 15 asserts kept"
   }
  ]
 }
