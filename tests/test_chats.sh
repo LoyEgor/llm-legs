@@ -412,9 +412,11 @@ assert test "$(sort "$STUB/boards/asked" | tr '\n' '|')" = '--list --role chat -
 TREE="$WORK/bucket-tree"
 mkdir -p "$TREE/bin" "$TREE/share"
 cp "$SCRIPT" "$TREE/bin/chats"
+links=()
 for f in "$ROOT"/share/*; do
-  [ "${f##*/}" = chat-account.sh ] || ln -s "$f" "$TREE/share/"
+  [ "${f##*/}" = chat-account.sh ] || links+=("$f")
 done
+ln -s "${links[@]}" "$TREE/share/"
 printf 'chat_model_bucket() { case "$1" in *sonnet*) echo fable ;; *) echo weekly ;; esac; }\n' \
   > "$TREE/share/chat-account.sh"
 OUT=$(python3 - "$TREE/bin/chats" <<'PY'
@@ -568,11 +570,13 @@ assert play(["z", "\x1b", "\n"])[0][1] == rows[0]
 # the wider listing replaces the narrower one when it lands — painted once, not on every tick.
 calls = os.path.join(sys.argv[2], "chat-find.calls")
 finder = os.path.join(sys.argv[2], "chat-find")
+release = os.path.join(sys.argv[2], "chat-find.release")
 with open(finder, "w") as handle:
-    handle.write("#!/usr/bin/env python3\nimport json, sys, time\n"
-                 "open(%r, 'a').write(' '.join(sys.argv[1:]) + '\\n')\ntime.sleep(0.3)\n"
+    handle.write("#!/usr/bin/env python3\nimport json, os, sys, time\n"
+                 "open(%r, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+                 "for _ in range(500):\n    if os.path.exists(%r):\n        break\n    time.sleep(0.01)\n"
                  "print(json.dumps([{'session': 'q-new-%%d' %% i, 'cwd': '/'} for i in range(5)]))\n"
-                 % calls)
+                 % (calls, release))
 os.chmod(finder, 0o755)
 narrow = [dict(session="q-%d" % i, cwd="/") for i in range(3)] + [dict(session="z", cwd="/")]
 
@@ -583,6 +587,8 @@ def typed(*keys):
         for _ in range(500):
             if len(screen.frames) >= 3:
                 break
+            if len(screen.frames) >= 2:
+                open(release, "w").close()
             yield TICK
         yield from [TICK] * 5 + ["\x04"]
     return events
@@ -596,6 +602,7 @@ assert frames[2][3:] == (5, "last 30d"), frames[2]
 assert open(calls).read() == "--recent --json --days 30\n"
 # Scrolling past the end while that load is in flight waits for it instead of loading twice.
 os.unlink(calls)
+os.unlink(release)
 result, frames, _ = play(typed("q", c.KEY_END, c.KEY_DOWN), narrow, (7, 30), load=False)
 assert frames[-1][3:] == (5, "last 30d") and frames[-1][0] == 3, frames
 assert open(calls).read() == "--recent --json --days 30\n"
@@ -604,20 +611,34 @@ PYMOUSE
 
 # --- the screen is up before any subprocess, and both land together ---------
 # The picker used to run its subprocesses one after another before curses opened, so Egor
-# waited seconds on a blank terminal. Each stub here sleeps a second: a first paint that
-# waits for either of them, or loads run in sequence, shows up as time on the clock rather
-# than as a wrong-looking screen.
+# waited seconds on a blank terminal. Each stub here blocks until the probe has painted its
+# first frame (and, in the concurrency probe, until the other stub has started), for at most
+# five seconds: a first paint that waits for either of them, or loads run in sequence, shows
+# up as time on the clock rather than as a wrong-looking screen.
 FAST="$WORK/fast"
 mkdir -p "$FAST/bin" "$FAST/profiles/alpha" "$FAST/profiles/beta" "$FAST/profiles/gamma"
 cat >"$FAST/bin/chat-find" <<'EOF'
 #!/usr/bin/env python3
-import json, time
-time.sleep(1)
+import json, os, time
+state = os.environ["FAST_STATE"]
+open(os.path.join(state, "find-started"), "w").close()
+need = ["painted"] + (["pick-started"] if os.environ.get("FAST_PEER") else [])
+for _ in range(500):
+    if all(os.path.exists(os.path.join(state, name)) for name in need):
+        break
+    time.sleep(0.01)
 print(json.dumps([{"session": "s%d" % i, "cwd": "/", "at": 0, "ctx": 1000} for i in range(3)]))
 EOF
 cat >"$FAST/bin/worker-pick" <<'EOF'
 #!/usr/bin/env bash
-sleep 1
+touch "$FAST_STATE/pick-started"
+need="${FAST_PICK_GATE:-painted}${FAST_PEER:+ find-started}"
+for _ in $(seq 500); do
+  ready=1
+  for name in $need; do [ -e "$FAST_STATE/$name" ] || ready=; done
+  [ -n "$ready" ] && break
+  sleep 0.01
+done
 case "$*" in "--list --role chat"|"--list --role chat --model "*) ;; *) false ;; esac || exit 2
 printf '%s\t%s\t%s\t%s\n' claudeb gamma 10 ok claudeb alpha 40 ok claudeb beta - login
 printf 'NEXT\t%s\t%s\n' claudeb gamma codex - gemini - grok -
@@ -626,7 +647,7 @@ chmod +x "$FAST/bin/chat-find" "$FAST/bin/worker-pick"
 printf 'beta\n' >"$FAST/claudeb-state"
 
 cat >"$FAST/probe.py" <<'PYFAST'
-"""Run the picker headless over the sleeping stubs: argv is the script, the fixture
+"""Run the picker headless over the gated stubs: argv is the script, the fixture
 root, the account the bar must settle on, and optionally a key pressed before anything
 has landed."""
 import importlib.machinery, importlib.util, os, sys, time
@@ -666,6 +687,7 @@ class Screen:
             return KEYS.pop(0)
         if ENTER and frames and frames[-1]["rows"] and not frames[-1]["used"]:
             ENTER = False
+            open(os.path.join(os.environ["FAST_STATE"], "entered"), "w").close()
             return "\n"
         if done():
             return AFTER.pop(0) if AFTER else "\x04"
@@ -685,6 +707,7 @@ class Screen:
 
 
 def record(_, visible, view, accounts, profile, needle, used, note):
+    open(os.path.join(os.environ["FAST_STATE"], "painted"), "w").close()
     frames.append({"at": time.monotonic() - START, "rows": len(visible), "used": len(used),
                    "accounts": " ".join(chats.account_label(e) for e in accounts),
                    "account": "-" if profile is None else chats.account_label(accounts[profile]),
@@ -704,9 +727,9 @@ print("quit:", result)
 print("opened:", result and chats.account_label(result[0]))
 print("timing: first paint %.3fs, full data %.3fs" % (first["at"], full["at"]))
 print("first-paint-fast:", first["at"] < 0.5)
-# Two one-second stubs in parallel land inside two seconds; run one after another they
-# could not.
-print("loads-concurrent:", 1.0 <= full["at"] < 2.0)
+# Each stub waits up to five seconds for the other to start: loads run one after another
+# leave the first stuck at that bound.
+print("loads-concurrent:", full["at"] < 4.0)
 print("first-window:", first["window"])
 print("first-empty:", first["rows"], first["used"])
 print("first-accounts:", first["accounts"])
@@ -721,7 +744,8 @@ print("full-note:", full["note"])
 print("idle-quiet:", len(frames) <= 6)
 PYFAST
 
-OUT=$(PATH="$FAST/bin:$PATH" python3 "$FAST/probe.py" "$SCRIPT" "$FAST" gamma) \
+OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") FAST_PEER=1 PATH="$FAST/bin:$PATH" \
+  python3 "$FAST/probe.py" "$SCRIPT" "$FAST" gamma) \
   || fail "startup probe failed"
 
 echo "$OUT" | grep '^timing:'
@@ -745,7 +769,8 @@ assert grep -qx 'idle-quiet: True' <<<"$OUT"
 
 # ←→ works while the screen is still empty, and the account landing a second later does
 # not take that choice back.
-OUT=$(PATH="$FAST/bin:$PATH" python3 "$FAST/probe.py" "$SCRIPT" "$FAST" alpha left) \
+OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") PATH="$FAST/bin:$PATH" \
+  python3 "$FAST/probe.py" "$SCRIPT" "$FAST" alpha left) \
   || fail "early-key probe failed"
 assert grep -qx 'first-account: beta' <<<"$OUT"
 assert grep -qx 'full-account: alpha' <<<"$OUT"
@@ -754,9 +779,14 @@ assert grep -qx 'full-rows: 3' <<<"$OUT"
 # ↵ on a listed row while worker-pick is still answering waits for it: the bar still holds the
 # logged-out last profile, and opening on it ran a chat on a dead login (2026-10-04).
 mkdir -p "$FAST/quick"
-sed '/time.sleep/d' "$FAST/bin/chat-find" >"$FAST/quick/chat-find"
+cat >"$FAST/quick/chat-find" <<'EOF'
+#!/usr/bin/env python3
+import json
+print(json.dumps([{"session": "s%d" % i, "cwd": "/", "at": 0, "ctx": 1000} for i in range(3)]))
+EOF
 chmod +x "$FAST/quick/chat-find"
-OUT=$(PROBE_BIN="$FAST/quick" CLAUDEB_WORKER_PICK="$FAST/bin/worker-pick" \
+OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") FAST_PICK_GATE=entered \
+  PROBE_BIN="$FAST/quick" CLAUDEB_WORKER_PICK="$FAST/bin/worker-pick" \
   python3 "$FAST/probe.py" "$SCRIPT" "$FAST" - enter) || fail "early-enter probe failed"
 assert grep -qx 'first-account: beta' <<<"$OUT"
 assert grep -qx 'opened: gamma' <<<"$OUT"
@@ -772,7 +802,8 @@ printf '%s\t%s\t%s\t%s\n' claudeb gamma 10 login claudeb alpha 40 login claudeb 
 printf 'NEXT\t%s\t%s\n' claudeb - codex - gemini - grok -
 EOF
 chmod +x "$FAST/login/worker-pick"
-OUT=$(PATH="$FAST/bin:$PATH" CLAUDEB_WORKER_PICK="$FAST/login/worker-pick" \
+OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") PATH="$FAST/bin:$PATH" \
+  CLAUDEB_WORKER_PICK="$FAST/login/worker-pick" \
   python3 "$FAST/probe.py" "$SCRIPT" "$FAST" - after) || fail "all-login probe failed"
 assert grep -qx 'quit: None' <<<"$OUT"
 assert grep -qx 'full-rows: 3' <<<"$OUT"
@@ -930,7 +961,8 @@ assert chats.plan([dict(warm="com", ctx=182000)])[2] == 4
 
 # A cache expiring under the resting cursor hands the account back before Enter reads it.
 names = [("claudeb", "alpha"), ("claudeb", "omega")]
-rows = [dict(session="a", cwd=sys.argv[2], model="opus", warm="omega", until=time.time() + 0.3)]
+clock = [time.time()]
+rows = [dict(session="a", cwd=sys.argv[2], model="opus", warm="omega", until=clock[0] + 0.3)]
 
 
 class Screen:
@@ -946,7 +978,7 @@ class Screen:
     def get_wch(self):
         event = next(self.events)
         if event is None:
-            time.sleep(0.02)
+            clock[0] += 0.02
             raise c.error("no input")
         return event
 
@@ -954,6 +986,7 @@ class Screen:
 with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
                     use_default_colors=lambda: None, mouseinterval=lambda _: None,
                     mousemask=lambda _: None), \
+        patch.object(time, "time", lambda: clock[0]), \
         patch.object(chats, "draw", lambda *rest: None), \
         patch.object(chats, "board_of", lambda row: "weekly"):
     result = chats.run(Screen(), rows, list(names), {}, 0, 0, (7,))
