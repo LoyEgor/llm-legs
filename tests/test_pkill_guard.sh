@@ -51,9 +51,9 @@ passed() {
   local rc expected tool=$1
   run "$@"; rc=$?
   shift
-  expected="REAL $tool argc=$#$(printf ' [%s]' "$@")"
-  [ "$#" -gt 0 ] || expected="REAL $tool argc=0 []"
-  eq "$rc" 0 && [ -e "$WORK/real.log" ] && [ ! -s "$ERR" ] && eq "$(cat "$OUT")" "$expected"
+  printf -v expected ' [%s]' "$@"
+  expected="REAL $tool argc=$#$expected"
+  eq "$rc" 0 && [ -e "$WORK/real.log" ] && [ ! -s "$ERR" ] && eq "$(<"$OUT")" "$expected"
 }
 
 for tool in pkill pgrep; do
@@ -89,6 +89,13 @@ assert passed pkill -TERM -f "$PAT"
 assert passed pkill -SIGTERM -f "$PAT"
 assert passed pkill -STOP -P 1 "$PAT"
 assert refused pgrep -TERM "$PAT" -P 1
+assert refused pkill -int "$PAT" -P 1
+assert passed pkill -Exit "$PAT" -P 1
+mkdir -p "$WORK/count"
+printf '#!/bin/sh\necho tr >>"%s/execs"\nexec /usr/bin/tr "$@"\n' "$WORK" >"$WORK/count/tr"
+chmod +x "$WORK/count/tr"
+PATH="$WORK/count:$PATH" run pkill -SIGTERM -f "$PAT"
+assert [ ! -e "$WORK/execs" ]
 
 ln -s "$ROOT/bin/pkill" "$WORK/path/pkill-other"
 rm -f "$WORK/real.log"
