@@ -23,7 +23,7 @@ clear_stub
 set_config 'grok_workers=off' 'grok_profile=picked' 'grok_effort=high'
 start_ok grok --account picked
 assert meta_account_is picked
-assert await_done
+assert await_exit
 
 clear_stub
 set_config 'grok_effort=high'
@@ -41,7 +41,7 @@ assert test ! -s "$CALL_LOG"
 set_config 'grok_profile=benched' 'grok_effort=high'
 start_ok grok --account benched
 assert meta_account_is benched
-assert await_done
+assert await_exit
 rm -f "$grok_pool/disabled"
 
 # Only the PERSISTENT wording walls an account, and an unpinned run continues on the next one
@@ -227,7 +227,7 @@ export PICK_RC=0 PICK_ACCOUNT=grokdenied \
   STUB_GROK_ANSWER='I could not run it: Tool `run_terminal_command` was not executed: Denied by permission policy: deny rule on bash'
 : >"$STUB_DIR/grok_denied"
 start_ok grok
-assert await_done
+assert await_exit
 assert jq -e '.denied_tools == 1' "$RUN_DIR/meta.json" >/dev/null
 
 # A run that only DISCUSSES a refusal was refused nothing: this repository's own briefs quote the
@@ -281,7 +281,7 @@ grok_summary "$grok_workdir"
   grok_update p1 completed
 } >"$GROK_UPDATES"
 start_ok grok
-assert await_done
+assert await_exit
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 2' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/grok-written' <<<"$report"
@@ -363,7 +363,7 @@ GROK_TS=$(($(date +%s) + 60))
   grok_update w1 completed
 } >"$GROK_UPDATES"
 start_ok grok
-assert await_done
+assert await_exit
 report=$(transcript_report "$RUN_DIR")
 assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in $WORK/extra/grok-went-elsewhere" \
   <<<"$report"
