@@ -5802,6 +5802,23 @@
    "verdict": "cut",
    "zero": "removal saves 2.4 wall-s a run (0.9 wall-min/day); loses the only pins of worker_model_set_role's veto writes, its session gate and the pin writers' one critical section",
    "note": "1.6 s of fixed lock-hold sleep replaced by an arrival handshake (holder waits for the rival's lockf call, 10 s bound); the race now holds under any load, mutation (pin read before lockf) red"
+  },
+  {
+   "id": "suite:llm-legs/test_updater_doctor",
+   "title": "llm-legs/test_updater_doctor",
+   "audited_at": "2026-10-13T12:13:56+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-legs-routing-20261012T235326Z-6558",
+   "cpu_run": 3.4,
+   "wall_run": 2.8,
+   "cpu_min_day": 0.87,
+   "wall_min_day": 1.17,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_updater_doctor.sh": "43dcf9124e166c5e2472a0f6973b02a336b7eb08"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.5 wall-s a run (0.8 wall-min/day); loses the Updater doctor's only rule-by-rule, ledger-judge and caps-checks-recorder pins",
+   "note": "164 date execs gone (printf %()T), 33 jq execs gone (one jq per problem assert); --json check now asserted; the under-1-s wall asserts kept (no flake in 180 journaled runs)"
   }
  ]
 }
