@@ -1866,6 +1866,51 @@
    "verdict": "cut",
    "zero": "removal saves 0.6 CPU-min/day; loses the instruction-file growth gate (priced denials of always-loaded markdown growth, relay refusals, the tripwire's in-flight marks)",
    "note": "a source-file Edit/Write (most of 742 runs/day) now leaves before any fork: md filter ahead of the relay check and the global realpath, stdin by read, dirname by expansion; 129 real transcript payloads: 22 -> 16 CPU-ms/run interleaved, outputs identical; fork-count pin in test_instruction_gate_bloat.sh red on the old code (dirname cat jq realpath)"
+  },
+  {
+   "id": "cpu:hook/memory-prune.sh",
+   "title": "hook/memory-prune.sh",
+   "audited_at": "2026-10-13T09:51:02+03:00",
+   "by": "harness-speed-cpu-hook-instruction-bloat-gate-sh-20261012T235045Z-23d2",
+   "cpu_min_day": 0.3,
+   "cpu_s_run": 0.025,
+   "runs_day": 573,
+   "sources": {
+    "claude-setup/hooks/memory-prune.sh": "931538227e8c3cb5b6e8d98ecaaa264bfbdcbd86"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.4 CPU-min/day; loses archiving shipped ticket memories at the moment a memory file is written",
+   "note": "a write outside memory/ (all 129 sampled payloads) now forks nothing: raw-payload prefilter, stdin by read, [[ =~ ]] for grep, limit-hit.sh sourced inside prune; 21 -> 10 CPU-ms/run, outputs identical; claude-setup@4807a85, fork pin in tests/test_memory_prune.sh red on the old code (dirname jq grep)"
+  },
+  {
+   "id": "cpu:hook/slash-collision-gate.sh",
+   "title": "hook/slash-collision-gate.sh",
+   "audited_at": "2026-10-13T09:51:05+03:00",
+   "by": "harness-speed-cpu-hook-instruction-bloat-gate-sh-20261012T235045Z-23d2",
+   "cpu_min_day": 0.3,
+   "cpu_s_run": 0.026,
+   "runs_day": 575,
+   "sources": {
+    "claude-setup/hooks/slash-collision-gate.sh": "0503a6b4f9db0d4df96f1f7e74dd9ad638e66fef"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.4 CPU-min/day; loses the deny that keeps a skill or command from shadowing a built-in slash command (the compact incident)",
+   "note": "a payload with neither skills nor commands in it leaves before jq and the readlink/dirname/cd self-resolution; 19 -> 8 CPU-ms/run on 129 real payloads, outputs identical; claude-setup@921ead0, fork pin in tests/test_slash_collision.sh red on the old code"
+  },
+  {
+   "id": "cpu:hook/stop.d/notice-word-journal.sh",
+   "title": "hook/stop.d/notice-word-journal.sh",
+   "audited_at": "2026-10-13T09:51:07+03:00",
+   "by": "harness-speed-cpu-hook-instruction-bloat-gate-sh-20261012T235045Z-23d2",
+   "cpu_min_day": 0.3,
+   "cpu_s_run": 0.053,
+   "runs_day": 311,
+   "sources": {
+    "claude-setup/hooks/stop.d/notice-word-journal.sh": "ef3ad2042bfcbea00dfa5446445518576f829599"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.4 CPU-min/day; loses the words-log journal comparing intake notices with the model's readings (temporary scaffolding that goes with the regex intake)",
+   "note": "a stop whose last.json (and prior) carries no notice or silent keyword and whose transcript's last words.TAIL_BYTES hold no ⚡ skips Python (25 of 58 sampled real chat stops); skippable 40 -> 22 CPU-ms, journal identical on all 58; the 256 KB BSD tail+grep (~13 ms) is now the largest part, gtail would be 3 ms but is not guaranteed; claude-setup@84f2cf5"
   }
  ]
 }
