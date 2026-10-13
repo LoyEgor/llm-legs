@@ -1790,7 +1790,7 @@
    },
    "verdict": "cut",
    "zero": "removal saves its 5-minute collector (doctor/harness 42.7 CPU-min/day; this process row is a sampled view of the same runs, 0.0 median); loses the Harness doctor block and its menu, which Egor reads",
-   "note": "launchd every 300 s, ~10 CPU-s a run; profile on live stores: last_fix_at -> share/fix_commit.py _landing ran 4 git calls per landed fix ref (140 refs) every run, 7.1 CPU-s; b37200ee keeps landings in harness state while HEAD's first-parent line grows (0.5 CPU-s, identical for 283 rows). load_tests quadratic dedup (2.2 -> 0.2 CPU-s) is d9f92c86 of run 1231, not repeated here. Left: _found/file_commits per run 0.5 CPU-s; Speed's own LANDED_HELD (d9f92c86) duplicates keep_landings and lacks the rewrite check: switch Speed to keep_landings when both land"
+   "note": "launchd every 300 s, ~10 CPU-s a run; profile on live stores: last_fix_at -> share/fix_commit.py _landing ran 4 git calls per landed fix ref (140 refs) every run, 7.9 CPU-s; 7bac82ae has harness use fix_commit.use_memo (fix-landings.json, llm-doctor's 87abe867) in its state dir (0.9 CPU-s, identical results). load_tests quadratic dedup (2.2 -> 0.2 CPU-s) is d9f92c86 of run 1231, not repeated here. Left: _found/file_commits per run 0.5 CPU-s; Speed's own LANDED_HELD (d9f92c86) duplicates use_memo: switch Speed to use_memo when both land"
   },
   {
    "id": "cpu:process/llm-legs/bin/speed-doctor",
