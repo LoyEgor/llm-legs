@@ -29,11 +29,11 @@ sources() {
 hits=''
 for pair in "llm-legs:$ROOT" "review-bench:$REVIEW_BENCH" "claude-setup:$CLAUDE_SETUP"; do
   name=${pair%%:*} repo=${pair#*:}
-  found=$(cd "$repo" && sources "$repo" | while IFS= read -r file; do
-    [ -f "$file" ] && grep -nE -e "$DRAWING" -e "$CONSTANT" "$file" /dev/null
-  done | sed "s|^|$name:|" | grep -vE "$ALLOWED")
+  files=$(cd "$repo" && sources "$repo")
+  found=$(cd "$repo" && printf '%s\n' "$files" | tr '\n' '\0' |
+    xargs -0 grep -nsE -e "$DRAWING" -e "$CONSTANT" /dev/null | sed "s|^|$name:|" | grep -vE "$ALLOWED")
   hits+=${found:+$found$'\n'}
-  copies=$(cd "$repo" && sources "$repo" | grep -E '(^|/)report_frame\.py$')
+  copies=$(printf '%s\n' "$files" | grep -E '(^|/)report_frame\.py$')
   hits+=${copies:+$name: a copy of the module: $copies$'\n'}
 done
 [ -z "$hits" ] || printf 'a frame drawn outside share/report_frame.py:\n%s' "$hits" >&2
@@ -55,9 +55,7 @@ printf 'print("=" * 56)\n' >"$probe/a.py"
 printf 'printf "%%s\\n" "========== commit =========="\n' >"$probe/b.sh"
 printf 'LABEL_WIDTH=14\n' >"$probe/c.sh"
 printf 'x = _frame.LABEL_WIDTH\n' >"$probe/d.py"
-seen=$(cd "$probe" && sources "$probe" | while IFS= read -r file; do
-  grep -lE -e "$DRAWING" -e "$CONSTANT" "$file"
-done | sort | tr '\n' ' ')
+seen=$(cd "$probe" && sources "$probe" | tr '\n' '\0' | xargs -0 grep -lE -e "$DRAWING" -e "$CONSTANT" | sort | tr '\n' ' ')
 assert test "$seen" = "a.py b.sh c.sh "
 
 printf 'PASS: %s asserts; one report renderer across llm-legs, review-bench and claude-setup\n' "$asserts"
