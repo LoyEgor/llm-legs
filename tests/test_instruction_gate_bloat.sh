@@ -745,4 +745,26 @@ assert_contains "tokens/week and " "$msg"
 case "$msg" in *ceiling*) fail "a project file was held to the global file's ceiling" ;; esac
 printf 'global rules\n' > "$REAL_MD"
 
+echo "== bloat gate: the denial names the file's md-compact state from review-bench receipts"
+export WORKER_STATS_DIR="$WORK/worker-stats"
+mkdir -p "$WORKER_STATS_DIR/receipts" "$WORK/mdrepo" "$WORK/mdcopy"
+printf 'rules\n' > "$WORK/mdrepo/CLAUDE.md"
+git -C "$WORK/mdrepo" init -q && git -C "$WORK/mdrepo" add CLAUDE.md \
+  && git -C "$WORK/mdrepo" -c user.name=t -c user.email=t@t commit -qm r
+md_commit=$(git -C "$WORK/mdrepo" rev-parse HEAD)
+assert_contains "md-compact: no review found." "$(price_bloat md-none "$WORK/mdrepo/CLAUDE.md")"
+jq -n --arg r "$WORK/mdrepo" --arg c "$md_commit" \
+  '{repo: $r, commit: $c, ts: "2026-10-13T17:25:57+00:00", lens: "md-compact", scope: ["CLAUDE.md"]}' \
+  > "$WORKER_STATS_DIR/receipts/md.json"
+jq -n --arg r "$WORK/mdrepo" --arg c "$md_commit" \
+  '{repo: $r, commit: $c, ts: "2026-10-14T00:00:00+00:00", lens: "bugs", scope: ["CLAUDE.md"]}' \
+  > "$WORKER_STATS_DIR/receipts/bugs.json"
+assert_contains "md-compact: reviewed 2026-10-13, unchanged since." "$(price_bloat md-same "$WORK/mdrepo/CLAUDE.md")"
+printf 'rules\n' > "$WORK/mdcopy/CLAUDE.md"
+assert_contains "md-compact: a byte-identical copy reviewed 2026-10-13." "$(price_bloat md-copy "$WORK/mdcopy/CLAUDE.md")"
+printf 'rules, longer\n' > "$WORK/mdrepo/CLAUDE.md"
+assert_contains "md-compact: reviewed 2026-10-13 at 6 bytes, changed since (now 14)." \
+  "$(price_bloat md-changed "$WORK/mdrepo/CLAUDE.md")"
+unset WORKER_STATS_DIR
+
 echo "OK ($asserts assertions)"

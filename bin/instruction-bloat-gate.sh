@@ -452,7 +452,44 @@ elif [ "$live" = legacy ]; then
 else
   measured='measured'
 fi
+# The file's md-compact state, read from review-bench's receipts and never from a review of its own:
+# the newest md-compact receipt whose scope covers the file, or one that reviewed a byte-identical
+# copy (stage reviews run on copies in scratch repos).
+md_compact_state() {
+  local receipts real now ts repo commit scope top rel s blob covered
+  local -a scopes
+  receipts=${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/receipts
+  real=$(readlink -f "$file_path" 2>/dev/null) || real=$file_path
+  now=$(git hash-object "$file_path" 2>/dev/null) || now=''
+  while IFS=$'\t' read -r ts repo commit scope; do
+    top=$(readlink -f "$repo" 2>/dev/null) && [ -d "$top" ] || continue
+    scopes=()
+    [ -z "$scope" ] || IFS=$'\x1f' read -r -a scopes <<<"$scope"
+    case $real in
+      "$top"/*)
+        rel=${real#"$top"/} covered=''
+        [ ${#scopes[@]} -gt 0 ] || covered=1
+        for s in ${scopes[@]+"${scopes[@]}"}; do case $rel in "$s" | "$s"/*) covered=1 ;; esac; done
+        if [ -n "$covered" ] && blob=$(git -C "$top" rev-parse -q --verify "$commit:$rel" 2>/dev/null); then
+          if [ "$blob" = "$now" ]; then
+            printf 'md-compact: reviewed %s, unchanged since' "${ts%%T*}"
+          else
+            printf 'md-compact: reviewed %s at %s bytes, changed since (now %s)' "${ts%%T*}" \
+              "$(git -C "$top" cat-file -s "$blob")" "$(wc -c <"$file_path" | tr -d ' ')"
+          fi
+          return
+        fi ;;
+    esac
+    if [ -n "$now" ] && git -C "$top" ls-tree -r "$commit" -- ${scopes[@]+"${scopes[@]}"} 2>/dev/null \
+        | awk -v b="$now" '$3 == b { found = 1 } END { exit !found }'; then
+      printf 'md-compact: a byte-identical copy reviewed %s' "${ts%%T*}"
+      return
+    fi
+  done < <(jq -r 'select(.lens == "md-compact") | [.ts, .repo, .commit, ((.scope // []) | join("\u001f"))] | @tsv' \
+             "$receipts"/*.json 2>/dev/null | sort -r)
+  printf 'md-compact: no review found'
+}
 headline="+${delta} bytes (~${tokens_shown} tokens) costs ~${weekly} tokens/week and ~${monthly}/month against the weekly usage limit, because this file re-enters the cached prefix ~${weekly_shown} a week and ~${monthly_shown} a month — every token added is paid for that many times over (${measured})."
 
-deny cost "Instruction-bloat gate: ${headline} $(instruction_standing_rule) Protocol, fastest path first: (1) AUDIT — re-read the WHOLE file now and look for up to 3 lines that are stale, duplicated in another live surface, or restate what code/hooks already enforce (criteria: ~/.claude/docs/context-file-hygiene.md). A combined edit that adds your text AND cuts enough to net <= 0 is that Edit — name the cuts in your reply so Egor can veto them. (2) 'Nothing defensibly cuttable' is a fully valid audit outcome — NEVER cut a live rule to make room. In that case present Egor the NET BALANCE and wait for his explicit OK in this turn. Report it as exactly three lines in his language, quoting the figures from this message verbatim rather than deriving your own, and adding nothing else: line 1 COST — the file, the byte delta, the token delta, the weekly cost, the monthly cost; line 2 CUT — what you cut, or that nothing was safely cuttable; line 3 PAYS BACK — what the addition saves per month (avoided corrections, repeated output, worker calls), or that it does not pay for itself. A rule that saves less than it costs does not get written. (3) Content rules trump cost math: history/changelog, anything derivable from code, linter rules as prose, and defensive verification scaffolding are cut, not costed; prefer a hook/mechanical control over prose, and compress what remains. The gate verifies the audit mechanically: after this denial, Read the target file, then retry — the same edit passes once. A retry without that Read is denied again. $(instruction_denial_tag "$hash")"
+deny cost "Instruction-bloat gate: ${headline} $(md_compact_state). $(instruction_standing_rule) Protocol, fastest path first: (1) AUDIT — re-read the WHOLE file now and look for up to 3 lines that are stale, duplicated in another live surface, or restate what code/hooks already enforce (criteria: ~/.claude/docs/context-file-hygiene.md). A combined edit that adds your text AND cuts enough to net <= 0 is that Edit — name the cuts in your reply so Egor can veto them. (2) 'Nothing defensibly cuttable' is a fully valid audit outcome — NEVER cut a live rule to make room. In that case present Egor the NET BALANCE and wait for his explicit OK in this turn. Report it as exactly three lines in his language, quoting the figures from this message verbatim rather than deriving your own, and adding nothing else: line 1 COST — the file, the byte delta, the token delta, the weekly cost, the monthly cost; line 2 CUT — what you cut, or that nothing was safely cuttable, and the md-compact state above verbatim; line 3 PAYS BACK — what the addition saves per month (avoided corrections, repeated output, worker calls), or that it does not pay for itself. A rule that saves less than it costs does not get written. (3) Content rules trump cost math: history/changelog, anything derivable from code, linter rules as prose, and defensive verification scaffolding are cut, not costed; prefer a hook/mechanical control over prose, and compress what remains. The gate verifies the audit mechanically: after this denial, Read the target file, then retry — the same edit passes once. A retry without that Read is denied again. $(instruction_denial_tag "$hash")"
 exit; }
