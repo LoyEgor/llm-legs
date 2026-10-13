@@ -6,7 +6,7 @@ profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-token|models) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|launch-model|export-token|models) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -513,7 +513,8 @@ show_help() {
     'grokb enable <name>|--all            Return an account (or every account) to worker selection.' \
     'grokb disable <name>|--all           Exclude an account (or every account) from the worker pool.' \
     'grokb use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
-    'grokb fast-mode <name> [on|off|status]  Set Fast Mode for worker-run launches on that account; existing sessions are unchanged.' \
+    'grokb fast-mode <name> [on|off|status]  Set Fast Mode for worker and review launches on that account; existing sessions are unchanged.' \
+    'grokb launch-model <name> <slug> workers|reviewers  The slug a launch on that account runs: its Fast Mode swaps the fast twin in for the default.' \
     'grokb models [--json] [--refresh|--cached]  The model list every consumer reads, newest first; --cached never asks the CLI.' \
     'grokb list                           List profiles with login state.' \
     'grokb status                         Per-account login state and quota.' \
@@ -701,6 +702,15 @@ case "${1:-}" in
     [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { printf 'usage: grokb fast-mode <name> [on|off|status]\n' >&2; exit 2; }
     account_exists "$1" || { printf 'grokb: unknown account: %s\n' "$1" >&2; exit 2; }
     python3 "$grokb_root/share/codex_fast_mode.py" "$profiles_dir" "$1" "${2:-status}" grokb
+    exit
+    ;;
+  launch-model)
+    shift
+    [ "$#" -eq 3 ] && { [ "$3" = workers ] || [ "$3" = reviewers ]; } ||
+      { printf 'usage: grokb launch-model <name> <slug> workers|reviewers\n' >&2; exit 2; }
+    account_exists "$1" || { printf 'grokb: unknown account: %s\n' "$1" >&2; exit 2; }
+    . "$grokb_root/share/worker-model.sh"
+    worker_model_grok_launch_model "$2" "$3" '' "$1"
     exit
     ;;
   models)

@@ -823,6 +823,10 @@ for fast_offered in grokFastOffered codexFastOffered; do
   assert test "$(grep -Fc 'io.open' <<<"$fast_body")" = 0
 done
 assert eq "$(grok_launch_acct auto research "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" auto
+# The account's toggle reaches review launches as well (Egor); the chat pin's stays workers only.
+assert eq "$(grok_launch_acct grok-4.7 reviewers "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" grok-4.7-build-fast
+assert eq "$(grok_launch_acct grok-4.7 reviewers "$CONSISTENCY_CACHE/grok-no-pin" slowacct)" grok-4.7
+assert eq "$(grok_launch grok-4.7 reviewers "$grok_fast_pin")" grok-4.7
 assert eq "$(grok_launch_acct grok-4.6 workers "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" grok-4.6
 assert eq "$(grok_launch auto light "$grok_fast_pin")" auto
 assert eq "$(grok_launch auto workers "$CONSISTENCY_CACHE/no-such-pin")" auto

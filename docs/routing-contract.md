@@ -124,11 +124,14 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    WORKERS run of that vendor grok swaps in the `-fast` sibling `grokb models` lists, but only
    when the resolved model is `auto` or the marked default — a brief naming a slug runs
    unchanged — while codex keeps its model and adds the fast/priority flags; any other pin
-   target clears it. The account-level twin is the menu's "Fast Mode (workers)" toggle, one per
-   account for codex and grok alike: `<vendor>b fast-mode <name> on|off` writes
-   `<profiles>/.<vendor>b/fast-mode/<name>` through `share/codex_fast_mode.py`, and a WORKERS run on
-   that account goes fast exactly as a fast chat's does (grok: `worker_model_grok_launch_model`'s
-   account argument, applied once worker-run has settled the account). An `open=all` line
+   target clears it. The account-level twin is the menu's Fast Mode toggle, one per account:
+   `<vendor>b fast-mode <name> on|off` writes `<profiles>/.<vendor>b/fast-mode/<name>` through
+   `share/codex_fast_mode.py`, and a WORKERS run on that account goes fast exactly as a fast chat's
+   does (grok: `worker_model_grok_launch_model`'s account argument, applied once worker-run has
+   settled the account). Grok's toggle is "Fast Mode (workers + reviewers)" (Egor): a review-bench
+   grok cell asks `grokb launch-model <account> <slug> reviewers` once its account is picked and
+   runs the twin under its `grokXYfast` cell token; codex's stays "Fast Mode (workers)" and its
+   review cells disable fast outright. An `open=all` line
    (`chat-pin all`, «воркер на все») opens every `<vendor>_workers`/`<vendor>_reviewers` wall for
    that chat alone — `worker-pick` `chat_opens`, `worker-run` through `worker_model_chat_opens_all`
    for a named `--account` too; the pool, a pause and usage walls still hold.

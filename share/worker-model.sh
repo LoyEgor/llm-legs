@@ -157,16 +157,19 @@ worker_model_grok_account_fast() { # account
   [ "$(codex_fast_tier "$1" "${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}" grokb)" = fast ]
 }
 
-# The grok slug a run really launches: `chat-pin grok-fast`, or the account's menu Fast Mode
-# (`grokb fast-mode`), swaps the fast twin in for the marked default and for `auto` alone — a brief
-# naming a slug runs unchanged — and only on a WORKERS leg. ONE resolution, because `worker-run`
-# launches off it and the spawn hook labels its task row off it; two would let a row name a model
-# the run does not use.
+# The grok slug a run really launches: `chat-pin grok-fast` on a WORKERS leg, or the account's menu
+# Fast Mode (`grokb fast-mode`) on a workers or REVIEWERS leg (Egor: grok's toggle is both, codex's
+# workers only), swaps the fast twin in for the marked default and for `auto` alone — a brief naming
+# a slug runs unchanged. ONE resolution, because `worker-run` launches off it, the spawn hook labels
+# its task row off it and review-bench asks it through `grokb launch-model`; two would let a row
+# name a model the run does not use.
 worker_model_grok_launch_model() { # model role [chat-pin-file] [account]
   local model="${1-}" role="${2-}" file="${3-}" account="${4-}" default sibling fast=false
-  if [ "$role" = workers ]; then
-    [ -n "$file" ] || file=$(worker_model_chat_pin_file) || file=''
-    if [ -n "$file" ] && [ "$(worker_model_pin_line "$file" grok_fast)" = on ]; then fast=true; fi
+  if [ "$role" = workers ] || [ "$role" = reviewers ]; then
+    if [ "$role" = workers ]; then
+      [ -n "$file" ] || file=$(worker_model_chat_pin_file) || file=''
+      if [ -n "$file" ] && [ "$(worker_model_pin_line "$file" grok_fast)" = on ]; then fast=true; fi
+    fi
     if worker_model_grok_account_fast "$account"; then fast=true; fi
     if [ "$fast" = true ]; then
       default=$(worker_model_grok_default)

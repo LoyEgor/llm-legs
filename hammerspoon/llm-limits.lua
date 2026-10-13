@@ -2202,8 +2202,10 @@ end
 
 -- One Fast Mode row shape for every vendor that has one; looked up through M so a test can stub it.
 local fastModeApi = {
-  codex = { mode = "codexFastMode", offered = "codexFastOffered", toggle = "toggleCodexFastMode", vendor = "OpenAI" },
-  grok = { mode = "grokFastMode", offered = "grokFastOffered", toggle = "toggleGrokFastMode", vendor = "xAI" },
+  codex = { mode = "codexFastMode", offered = "codexFastOffered", toggle = "toggleCodexFastMode", vendor = "OpenAI",
+            label = "Fast Mode (workers)" },
+  grok = { mode = "grokFastMode", offered = "grokFastOffered", toggle = "toggleGrokFastMode", vendor = "xAI",
+           label = "Fast Mode (workers + reviewers)" },
 }
 
 function M.pinCodex(name, currentlyPinned)
@@ -3160,7 +3162,7 @@ local function buildMenuItems()
                 if fastMode and not fastWithdrawn then accountRow.title = accountRow.title .. metaTitle("  ⚡") end
               else
                 table.insert(accountRow.menu, {
-                  title = fastWithdrawn and "Fast Mode (workers) · " .. fastApi.vendor .. ": off now" or "Fast Mode (workers)",
+                  title = fastWithdrawn and fastApi.label .. " · " .. fastApi.vendor .. ": off now" or fastApi.label,
                   checked = fastMode,
                   fn = function() M[fastApi.toggle](acct, fastMode) end,
                 })

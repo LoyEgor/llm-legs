@@ -127,6 +127,14 @@ clear_stub
 start_ok grok
 assert await_exit
 assert grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
+# The account's toggle reaches review launches too (review-bench asks `grokb launch-model`), but a
+# research leg stays out of it.
+clear_stub
+set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok'
+start_ok grok --role research
+assert await_exit
+assert_fails grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
+set_config 'grok_model=auto' 'grok_effort=high'
 rm -f "$GROKB_PROFILES_DIR/.grokb/fast-mode/grokacct" "$GROKB_PROFILES_DIR/grokacct/models_cache.json"
 
 # `xhigh` is the CLI's to know: it travels as asked instead of being

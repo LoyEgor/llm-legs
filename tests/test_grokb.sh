@@ -285,5 +285,20 @@ assert_fails bash "$SCRIPT" fast-mode nobody on >/dev/null 2>&1
 assert test "$(bash "$SCRIPT" fast-mode main on)" = on
 assert test "$(cat "$GROKB_PROFILES_DIR/.grokb/fast-mode/main")" = fast
 assert test "$(bash "$SCRIPT" fast-mode main off)" = off
+# The same toggle holds for review launches (Egor: grok's is workers AND reviewers), asked through
+# the one resolution worker-run launches off; the default alone takes the fast twin.
+. "$ROOT/tests/fixtures/grokb-models.sh"
+launched() { bash "$SCRIPT" launch-model "$@" 2>/dev/null; }
+assert test "$(launched alpha grok-4.7 reviewers)" = grok-4.7
+assert test "$(bash "$SCRIPT" fast-mode alpha on)" = on
+assert test "$(launched alpha grok-4.7 reviewers)" = grok-4.7-build-fast
+assert test "$(CHAT_PINS_DIR="$WORK/no-chat-pins" launched alpha grok-4.7 workers)" = grok-4.7-build-fast
+assert test "$(launched alpha grok-4.6 reviewers)" = grok-4.6
+printf '{"models":{"grok-4.7":{}}}\n' >"$GROKB_PROFILES_DIR/alpha/models_cache.json"
+assert test "$(launched alpha grok-4.7 reviewers)" = grok-4.7
+rm -f "$GROKB_PROFILES_DIR/alpha/models_cache.json"
+assert test "$(bash "$SCRIPT" fast-mode alpha off)" = off
+assert_fails bash "$SCRIPT" launch-model alpha grok-4.7 research >/dev/null 2>&1
+assert_fails bash "$SCRIPT" launch-model nobody grok-4.7 reviewers >/dev/null 2>&1
 
-printf 'PASS: %s asserts; Grok profile creation/login, safe status, pool gating, pinned launch environments, main isolation, account pinning, reserved names, removal, announcements, CLI resolution without an nvm PATH, the per-account Fast Mode toggle, and the fake CLI contract are covered\n' "$asserts"
+printf 'PASS: %s asserts; Grok profile creation/login, safe status, pool gating, pinned launch environments, main isolation, account pinning, reserved names, removal, announcements, CLI resolution without an nvm PATH, the per-account Fast Mode toggle and the launch model it resolves for workers and reviewers, and the fake CLI contract are covered\n' "$asserts"
