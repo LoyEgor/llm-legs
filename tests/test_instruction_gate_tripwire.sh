@@ -169,12 +169,21 @@ case "$out" in *"DELETED $HOME/.claude/CLAUDE.md"*) fail "a present file was rep
 printf 'worker agent\n' > "$HOME/.claude/agents/codex-worker.md"
 watch baseline sid-d >/dev/null
 
+# The alert is fired detached so a wedged Hammerspoon cannot hold the hook: a log is only
+# trustworthy once the poke has had time to land, and a count that must STAY put needs the same wait.
+alerts() { wc -l <"$ALERT_LOG" | tr -d '[:space:]'; }
+attempted() { grep -c '"sent":"attempted"' "$J" 2>/dev/null || :; }
+alert_wait() { local _; for _ in {1..100}; do [ -s "$ALERT_LOG" ] && return 0; sleep 0.02; done; return 1; }
+# The hook journals the attempt before it launches the poke, so the pokes owed are the attempts
+# journaled since the section began: the short tail catches a second poke of the same record.
+alert_settle() { local want=$(( $(attempted) - attempted_base )) _; for _ in {1..100}; do [ "$(alerts)" -ge "$want" ] && break; sleep 0.02; done; sleep 0.1; }
+
 echo "== tripwire: a hostile file name never reaches the command that wakes Hammerspoon"
 alert_log_stub
 nasty="$HOME/.claude/agents/quote\"and\\slash.md"
 printf 'smuggled\n' > "$nasty"
 watch check sid-d >/dev/null
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$ALERT_LOG" ] && break; sleep 0.2; done
+alert_wait
 assert [ -s "$ALERT_LOG" ]
 poke=$(cat "$ALERT_LOG")
 assert_contains 'pcall(require, "instruction-watch")' "$poke"
@@ -188,7 +197,7 @@ printf '#!/usr/bin/env bash\nprintf "run=%%s\\n" "${WORKER_RUN_ID:-none}" >>"${A
 : > "$ALERT_LOG"
 printf 'run id\n' > "$HOME/.claude/agents/run-id.md"
 WORKER_RUN_ID=claudeb-1-2-abcd watch check sid-d >/dev/null
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$ALERT_LOG" ] && break; sleep 0.2; done
+alert_wait
 assert_eq "run=none" "$(cat "$ALERT_LOG")"
 rm "$HOME/.claude/agents/run-id.md"
 alert_log_stub
@@ -199,32 +208,29 @@ echo "== tripwire: one alert per change, whichever session notices it first"
 # each keeps its own baseline, so one edit used to flash Egor's screen once per session that
 # happened to run a tool call after it.
 : > "$ALERT_LOG"
-alerts() { wc -l <"$ALERT_LOG" | tr -d '[:space:]'; }
-# The alert is fired detached so a wedged Hammerspoon cannot hold the hook, so a count is only
-# trustworthy after it has had time to land — and a count that must STAY put needs the same wait.
-alert_settle() { local n=$1 _; for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(alerts)" -ge "$n" ] && break; sleep 0.2; done; sleep 0.4; }
+attempted_base=$(attempted)
 watch baseline alert-one >/dev/null
 watch baseline alert-two >/dev/null
 printf 'one change, two sessions\n' > "$HOME/.claude/docs/review-tiers.md"
 watch check alert-one >/dev/null
-alert_settle 1
+alert_settle
 assert_eq 1 "$(alerts)"
 # The second session still tells its own model — the context is per session — and says nothing to
 # Egor, who has already been shown this change.
 ctx=$(watch check alert-two | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED" "$ctx"
-alert_settle 1
+alert_settle
 assert_eq 1 "$(alerts)"
 # A DIFFERENT change to the same file is news again.
 printf 'a second change\n' > "$HOME/.claude/docs/review-tiers.md"
 watch check alert-one >/dev/null
-alert_settle 2
+alert_settle
 assert_eq 2 "$(alerts)"
 # And the same bytes reported later by a session that had not caught up are not: the marker is
 # named for the file and what it now holds, never for a delta each baseline measures differently.
 ctx=$(watch check alert-two | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED" "$ctx"
-alert_settle 2
+alert_settle
 assert_eq 2 "$(alerts)"
 printf 'tier doc\n' > "$HOME/.claude/docs/review-tiers.md"
 watch baseline alert-one >/dev/null
