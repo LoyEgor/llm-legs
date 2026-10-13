@@ -152,14 +152,15 @@ assert [ ! -e "$WORK/other-model" ]
 
 # --- Two concurrent pin writers, one critical section ---------------------------------------------
 # The list is read INSIDE the lock: read before taking it, two adds racing each write back a list
-# missing the name the other had just added. The wrapper holds the lock for a beat so the loser
-# would have to have read stale.
+# missing the name the other had just added. The holder keeps the lock until the rival has reached
+# its own lock call, so a rival that read before locking has read stale.
 rm -f "$MODEL" "$MODEL.lock"
 printf 'worker=auto\n' >"$MODEL"
-cat >"$WORK/slow-lockf" <<'SH'
+cat >"$WORK/slow-lockf" <<SH
 #!/usr/bin/env bash
-/usr/bin/lockf -s 9 || exit $?
-sleep 0.4
+: >"$WORK/arrived.\$\$"
+/usr/bin/lockf -s 9 || exit \$?
+for _ in {1..500}; do set -- "$WORK"/arrived.*; [ \$# -lt 2 ] || exit 0; sleep 0.02; done
 SH
 chmod +x "$WORK/slow-lockf"
 WORKER_MODEL_LOCKF="$WORK/slow-lockf" worker_model_pin_add claudeb one &
@@ -169,6 +170,7 @@ second=$!
 wait "$first" "$second"
 assert test "$(worker_model_pins claudeb | sort | tr '\n' ' ')" = 'one two '
 # A remove racing an add keeps the name it did not touch.
+rm -f "$WORK"/arrived.*
 WORKER_MODEL_LOCKF="$WORK/slow-lockf" worker_model_pin_add claudeb three &
 first=$!
 WORKER_MODEL_LOCKF="$WORK/slow-lockf" worker_model_pin_remove claudeb one &
