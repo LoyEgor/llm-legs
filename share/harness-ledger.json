@@ -7221,7 +7221,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-worker-run-watchdog-20261010T031952Z-336a",
-      "note": "Before (run-suites journal since sharding landed 2026-10-09 ~10Z): whole runs 120-352 s on 14-30 CPU-s, sharded 32-56 s on 17-30 CPU-s; ~40% of runs went whole because slot_room fails on load1 > load15 + cores, a rule meant for CPU-bound shards. Profiled 2026-10-10 (xtrace timestamps): the idle is the stubs' fixed survival sleeps against 1-16 s watchdog windows (~100 s summed, matching idle 95 s) plus worker-run start ~4-6 s a run under load (CPU, not idle); wait --max returns on exit_code by kqueue already. Fixed: `# shards: N wait` shards under load and is held by memory only (pressure level, available MB); the watchdog suite declares it. Not cut: shortening stub sleeps/windows (race margins: paused/frozen flake at load 250+, wd-editing failed once at load 215 in a sharded run, pre-existing; a shorter margin turns a regression into a vacuous pass under load); an injected watchdog clock in bin/worker-run (integer seconds, hop >= 1 s) stays the remaining lever. test_worker_run_files (63/22) and _attribution (58/24) are wait-bound too and could take `wait` after a profile.",
+      "note": "Before (run-suites journal since sharding landed 2026-10-09 ~10Z): whole runs 120-352 s on 14-30 CPU-s, sharded 32-56 s on 17-30 CPU-s; ~40% of runs went whole because slot_room fails on load1 > load15 + cores, a rule meant for CPU-bound shards. Profiled 2026-10-10 (xtrace timestamps): the idle is the stubs' fixed survival sleeps against 1-16 s watchdog windows (~100 s summed, matching idle 95 s) plus worker-run start ~4-6 s a run under load (CPU, not idle); wait --max returns on exit_code by kqueue already. Fixed: `# shards: N wait` shards under load and is held by memory only (pressure level, available MB); the watchdog suite declares it. Not cut: shortening stub sleeps/windows (race margins: paused/frozen flake at load 250+, wd-editing failed once at load 215 in a sharded run, pre-existing; a shorter margin turns a regression into a vacuous pass under load); an injected watchdog clock in bin/worker-run (integer seconds, hop >= 1 s) stays the remaining lever. test_worker_run_files (63/22) and _attribution (58/24) are wait-bound too and could take `wait` after a profile. Re-read 2026-10-13 (night fixer ...20261012T235441Z-4d3f): after the shards its p10 is 39 s on 15 s CPU; what is left is the same fixed survival sleeps against watchdog windows (STUB_SLEEP 14-16 s vs IDLE 3-8 s, DEADLINE 1-8 s) in 4 parallel shards; cutting them stays refused (race margins above) and WORKER_RUN_DEADLINE/IDLE_S/SILENT_S are on speed-doctor-design section 5's Never list; an injected clock stays the only lever.",
       "handoff": null
     },
     {
@@ -8956,6 +8956,66 @@
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-tests-20261012T235455Z-6813",
       "note": "The one hang (2026-10-12 17:32, 1728 s) was shard 1 blocked in `codexb profile alpha app-server`: the fake codex's app-server branch reads stdin to EOF, and run_one's `&` subshell inherited the caller's pipe because bash stops giving `&` jobs /dev/null after a `done < <(...)` loop. a73f719d (55 min later) gives every run-suites suite </dev/null and the loop's direct call </dev/null too; test_run_suites_timeout.sh is red on the old line. Checked 2026-10-13: the stub's app-server branch is its only stdin reader and line 431 its only $SCRIPT path to it (the quota helper drives app-server over its own pipe); the 3 runs since the fix ended rc 0 in 18-57 s. fixes[].at is a73f719d's commit time. Not this row: 9 new test_hang rows (test_agy_quota x3, test_harness_doctor x3, test_doctor_fix, test_doctors_menu, test_grok_quota, test_llm_limits, test_media_run, test_py39_annotations, test_worker_run_lifecycle) all ended 2026-10-13 00:26-11:07Z, after the fix and this run's launch, mostly direct runs run-suites' </dev/null never wraps; unexamined, left to their own runs (a night cut by a usage limit also ends suites by hand).",
+      "handoff": null
+    },
+    {
+      "id": "speed-idle-gemini-listen",
+      "title": "test_gemini_listen's idle is process-spawn wait under load: bin/gemini-listen probed every audio file three times",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_gemini_listen"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T14:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-idle-llm-legs-test-gemini-listen-20261012T235441Z-4d3f",
+          "files": [
+            "llm-legs/bin/gemini-listen"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "suite asserts and its spawn log through a PATH shim, before vs after",
+            "data": "tests/test_gemini_listen.sh, real ffmpeg/ffprobe",
+            "result": "134 asserts pass both; ffprobe spawns 149 -> 72, ffmpeg 92 -> 92; the one probe reads the same codec, sample_rate, channels and format duration the three did"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-gemini-listen-20261012T235441Z-4d3f",
+      "note": "No sleep or poll anywhere in the suite or bin/gemini-listen: the 15 s idle is 241 ffmpeg/ffprobe spawns each queued behind load ~100 (CPU 8 s). Fixed the product's own redundancy: an audio file got duration_of, stream_of a and a rate/channels probe, now one ffprobe (audio_probe). Remaining spawns are ffmpeg beep/convert and the fixture's silencedetect, one per call, each a check. Measuring standalone: a suite run outside run-all waits for a run-suites slot first (suite-journal.sh slot_wait); export RUN_SUITES_SLOT=x to time the body alone.",
+      "handoff": null
+    },
+    {
+      "id": "speed-idle-grok-video",
+      "title": "test_grok_video sat out an 8 s lock wait: its background INT was never delivered",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_grok_video"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T14:30:00+03:00",
+          "by": "night fixer harness-speed-test-health-idle-llm-legs-test-gemini-listen-20261012T235441Z-4d3f",
+          "files": [
+            "llm-legs/tests/test_grok_video.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "suite asserts before vs after",
+            "data": "tests/test_grok_video.sh",
+            "result": "160 asserts pass before, 161 after (one added: the waiter's exit code 5); the case still holds a lock held by another run and asserts the lock dir survives the waiter's exit and the CLI was never called"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-gemini-listen-20261012T235441Z-4d3f",
+      "note": "The case started grok-video in the background with GROK_MEDIA_LOCK_WAIT=8, slept 0.3 s and sent INT; an async job in a non-interactive shell ignores SIGINT (probed: a 3 s sleep job took 3 s), so the waiter always ran its four sleep 2 rounds to the timeout. Now inline with a 2 s wait (one sleep 2 round, then the same timeout exit). The rest of the suite has no sleep: ~70 bin/grok-video runs of ~10-20 spawns each, CPU 6-8 s.",
       "handoff": null
     }
   ],
