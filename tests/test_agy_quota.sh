@@ -58,20 +58,22 @@ esac
 STUB
 chmod +x "$WORK/agy"
 
-now() { python3 -c 'import time; print(time.time())'; }
-elapsed() { python3 -c 'import sys; print(float(sys.argv[2]) - float(sys.argv[1]))' "$1" "$2"; }
-within() { python3 -c 'import sys; v, lo, hi = map(float, sys.argv[1:]); sys.exit(0 if lo <= v <= hi else 1)' "$1" "$2" "$3"; }
+now_ms() {
+  suite_journal_ms "$1"
+  [ -n "${!1}" ] || suite_journal_ms "$1" "$(python3 -c 'import time; print(time.time())')"
+}
 
 run_helper() {
   local mode=$1; shift
   : >"$WORK/stub.log"
   : >"$WORK/stub.pids"
-  started=$(now)
+  now_ms started
   rc=0
   env STUB_MODE="$mode" STUB_LOG="$WORK/stub.log" STUB_PIDS="$WORK/stub.pids" \
     AGY_BIN="$WORK/agy" AGY_WORKDIR="$WORK" "$@" \
     python3 "$HELPER" >"$WORK/out" 2>"$WORK/err" || rc=$?
-  took=$(elapsed "$started" "$(now)")
+  now_ms took
+  took=$(( took - started ))
 }
 
 # Print mode answers with the structured /usage payload; the cache shape is the helper's own.
@@ -106,8 +108,8 @@ run_helper nologin AGY_QUOTA_TIMEOUT=60
 assert test "$rc" -eq 2
 assert jq -e '.auth_needed == true and .source == "agy-print-usage" and
   (.detail | test("Authentication required"))' "$WORK/out" >/dev/null
-assert within "$took" 0 5
-nologin_took=$took
+assert test "$took" -ge 0 -a "$took" -le 5000
+suite_journal_secs nologin_took "$took"
 stub_dead=1
 while read -r pid; do
   [ -n "$pid" ] || continue
