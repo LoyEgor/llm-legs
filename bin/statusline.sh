@@ -297,15 +297,16 @@ review_session_line() { # session now
 # Whose the commit is is the GATE's answer (`unpushed`) and never this render's: the Stop ask that
 # tells the chat to push reads the same subcommand, and a marker deriving ownership on its own would
 # stand over commits that ask disowns. Cached off the render path — the gate forks git
-# once per candidate commit, which is not a render-path cost — and keyed on everything cheap that
-# can change the answer: the two shas, and the family's review-anchors.json ownership is read from.
+# once per candidate commit, which is not a render-path cost — and keyed on everything the gate
+# reads: the two shas, and the family's review-anchors.json and claude-writes ownership is read
+# from. A keyed answer is re-asked only after 100s, a backstop for a gate the deadline cut short.
 unpushed_marker() { # toplevel session now
   local out="$1" top="$2" sid="$3" now="$4"
   printf -v "$out" ''
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
   local cache="$statusline_cache_dir/unpushed-${sid:-unknown}"
   local lock="$cache.lock"
-  local key cached_key cached cache_mtime lock_mtime commondir head upstream anchors_mtime
+  local key cached_key cached cache_mtime lock_mtime commondir head upstream f m s
   [ -n "$sid" ] && [ -n "$top" ] && [ -x "$gate" ] || { printf -v "$out" '%s' off; return 0; }
   # A branch with no upstream owes nothing here — nothing on this machine knows where it would go —
   # and one whose upstream is HEAD is a branch with nothing ahead at all. Both answer without the
@@ -322,10 +323,12 @@ unpushed_marker() { # toplevel session now
   [ -n "$head" ] && [ -n "$upstream" ] && [ "$head" != "$upstream" ] ||
     { printf -v "$out" '%s' off; return 0; }
   journal_dir commondir "$top"
-  anchors_mtime=""
-  [ -z "$commondir" ] || file_mtime_to anchors_mtime "$commondir/review-anchors.json"
-  [[ "$anchors_mtime" =~ ^[0-9]+$ ]] || anchors_mtime=0
-  key="$top|$head|$upstream|$anchors_mtime"
+  key="$top|$head|$upstream"
+  for f in review-anchors.json claude-writes; do
+    m="" s=""
+    [ -z "$commondir" ] || { file_mtime_to m "$commondir/$f"; file_size_to s "$commondir/$f"; }
+    key="$key|${m:-0}:${s:-0}"
+  done
   file_mtime_to cache_mtime "$cache"
   cached_key=""
   cached=""
@@ -333,7 +336,7 @@ unpushed_marker() { # toplevel session now
     { IFS= read -r cached_key; IFS= read -r cached || :; } < "$cache" 2>/dev/null
   fi
   if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
-    [ "$((now - cache_mtime))" -le 15 ]; then
+    [ "$((now - cache_mtime))" -le 100 ]; then
     printf -v "$out" '%s' "${cached:-off}"
     return 0
   fi

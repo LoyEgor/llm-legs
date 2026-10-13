@@ -5112,6 +5112,21 @@ run_statusline "$(statusline_payload unpushed-cache "" "$AHEAD_REPO")" >/dev/nul
 unpushed_await unpushed-cache 2
 assert_eq 2 "$(unpushed_calls)"
 rm -f "$ahead_gitdir/review-anchors.json"
+run_statusline "$(statusline_payload unpushed-cache "" "$AHEAD_REPO")" >/dev/null ||
+  fail "unpushed cache anchors-gone render failed"
+unpushed_await unpushed-cache 3
+# So is the family's claude-writes, the other half of whose the commit is.
+printf '1750000000\tunpushed-cache\tk\tchange.txt\n' >> "$ahead_gitdir/claude-writes"
+run_statusline "$(statusline_payload unpushed-cache "" "$AHEAD_REPO")" >/dev/null ||
+  fail "unpushed cache writes render failed"
+unpushed_await unpushed-cache 4
+# Keyed on every input, an answer 20s old is still this state's: no re-ask.
+touch -t "$(date -r "$(( $(date +%s) - 20 ))" +%Y%m%d%H%M.%S)" "$STATE_DIR/unpushed-unpushed-cache"
+run_statusline "$(statusline_payload unpushed-cache "" "$AHEAD_REPO")" >/dev/null ||
+  fail "unpushed cache aged render failed"
+sleep 0.5
+assert_eq 4 "$(unpushed_calls)"
+rm -f "$ahead_gitdir/claude-writes"
 
 # And the answer under that key is the only one the fallback may serve. The cache is the session's,
 # so a chat that moved to another tree has a cached `unpushed` about the tree it left — rendered
