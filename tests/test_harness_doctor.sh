@@ -328,7 +328,8 @@ lines = open(sys.argv[1], "rb").read().split(b"\n")
 assert lines[0].startswith(b"T\t"), lines[0]
 assert lines[1].startswith(b"H\t"), lines[1]
 header = json.loads(lines[1][2:])
-assert set(header) == {"status", "problems", "issues", "speed"}, header
+assert set(header) == {"status", "problems", "issues", "groups", "speed"}, header
+assert sum(header["groups"].values()) == int(lines[0].split(b"\t")[1]), header
 red = 0
 for line in lines[2:]:
     if not line:

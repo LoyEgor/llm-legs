@@ -401,6 +401,20 @@ do
     { menu = { quiet("Dead: 2 problems"), quiet("Heavy: 0 problems"), quiet("Duplicate: 1 problem"), quiet("Promise: 0 problems"),
       quiet("candidates waiting: 0"), quiet("cost 0k tokens · 0 min · yield 0 lines, 0 causes closed"),
       { title = "-" }, action("Refresh") } } }
+  local harnessTree, movedToLost = old[2].menu, {}
+  local oldSpeed = { table.unpack(find(harnessTree, "Lost time:").menu) }
+  local oldSpend = find(harnessTree, "Spend:").menu
+  old[2] = { menu = {} }
+  for _, item in ipairs(harnessTree) do
+    local plain = item.title ~= "-" and text(item.title) or ""
+    if plain:match("^Hooks:") or plain:match("^window: ") then
+      movedToLost[#movedToLost + 1] = item
+    elseif not plain:match("^Lost time:") and not plain:match("^Spend:") then
+      old[2].menu[#old[2].menu + 1] = item
+    end
+  end
+  oldSpeed[#oldSpeed + 1] = { title = "-" }
+  for _, item in ipairs(movedToLost) do oldSpeed[#oldSpeed + 1] = item end
   for index, entry in ipairs(old) do
     entry.menu[#entry.menu + 1] = action(index == 3 and "Fix — update and integrate all vendors" or "Fix — open a fixer chat")
     entry.menu[#entry.menu + 1] = quiet("fixer: never ran")
@@ -412,10 +426,9 @@ do
     check(topFix and topFixer and #details(trendItems[index].menu) > 0 and topFix.fn == fix(details(trendItems[index].menu)).fn
       and text(topFixer.title) == text(fixer(details(trendItems[index].menu)).title), "outer fixer controls " .. names[index])
   end
-  local oldSpeed = find(old[2].menu, "Lost time:").menu
-  check(rowCount(details(trendItems[5].menu)) == rowCount(oldSpeed), "LLM details row count Speed")
-  check(sameRows(details(trendItems[5].menu), oldSpeed), "LLM details unchanged tree Speed")
-  local oldSpend = find(old[2].menu, "Spend:").menu
+  check(#movedToLost == 2 and rowCount(details(trendItems[5].menu)) == rowCount(oldSpeed), "LLM details row count Speed")
+  check(sameRows(details(trendItems[5].menu), oldSpeed),
+    "Lost time's details: Harness's Lost time: subtree, then Harness's Hooks row and window chooser")
   check(#oldSpend == 1 and sameRows(details(trendItems[6].menu), oldSpend), "Spend's details are Harness's Spend: subtree")
   if baseline then
     local original = loadDoctors(baseline).menuItems()
@@ -1038,6 +1051,104 @@ write("/llm-doctor/latest.json", quietDoc)
 items = doctors.menuItems()
 check(not text(details(items[1].menu)[#details(items[1].menu) - 2].title):find("known, quiet", 1, true), "a failed collector hides nothing as quiet")
 
+-- Regroup (docs/doctors-contract.md "Menu layout"): rows and counts move between summaries, the total never changes.
+do
+  remove("/llm-ledger.json")
+  remove("/harness-ledger.json")
+  remove("/code-doctor/latest.json")
+  local llmDoc = llmDocument("problems", 3)
+  llmDoc.groups = { workers = 2, debt = 1 }
+  llmDoc.health = { { name = "debt", status = "problem", count = 1, items = {}, notes = {} } }
+  write("/llm-doctor/latest.json", llmDoc)
+  write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
+    problem_count = 0, problems = {}, blind_spots = {}, vendors = {} })
+  write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s = now, status = "problems",
+    problem_count = 1, blind_spots = {}, problems = { { id = "swap:machine", rule = "swap", label = "swap full",
+      state = "new", fact = "swap full" } }, measures = {} })
+  local header = { status = "problems", problems = {}, issues = { { 4, "Tests" }, { 2, "CPU audits" }, { 1, "Load" } },
+    groups = { Tests = 4, ["CPU audits"] = 2, Load = 1, ["Suite audits"] = 1, ["Stop hooks"] = 1 },
+    speed = { status = "ok", as_of_s = now, index = 0.9, index_by_day = {}, levels = {} } }
+  local body = table.concat({ "0\t\t\tLost time: 5 problems", "1\t\t\tChat turns: 1 min/day", "1\t\t\tLoad: 1 problem",
+    "1\t\t\tTests: 4 problems", "2\t\t\ttest_slow hung", "0\t\t\tSpend: watch", "1\t\t\t1.9 % · compaction",
+    "0\t\t\tSuite audits: 1 problem", "0\t\t\tCPU audits: 2 problems", "1\t\t\tstatusline/render",
+    "0\t\t\tStop hooks: 1 problem", "0\td\t\tGuards: ok", "0\t\t\tGrowth: watch", "0\td\t\tTest flakes: ok",
+    "0\td\t\tMemory guard: ok", "0\t\t\tLimiter holds: watch", "0\ts\t\t-", "0\tw24\t\t24 h vs prev 24 h · worse",
+    "1\t\t\ta 24 h detail", "0\tw168\t\t7 d vs prev 7 d · better", "0\td\t\tnot measured", "0\ts\t\t-",
+    "0\td\t\tas of 15:11" }, "\n")
+  local function harnessFile(withGroups)
+    local shown = {}
+    for key, value in pairs(header) do shown[key] = value end
+    shown.groups = withGroups and header.groups or nil
+    write("/harness-doctor/menu.txt", "T\t9\t" .. now .. "\tHarness doctor: 9 problems\nH\t" .. hs.json.encode(shown)
+      .. "\n" .. body .. "\n")
+  end
+  local function value(item) return text(item.title):sub(VALUE_AT - 3, VALUE_AT):match("%S+") end
+  local function titles(menu, out)
+    for _, item in ipairs(menu or {}) do
+      local plain = item.title ~= "-" and text(item.title) or "-"
+      if plain ~= "-" and not plain:match("^Fix —") and not plain:match("^fixer:") and not plain:match("^%a+ doctor:") then
+        out[plain] = (out[plain] or 0) + 1
+      end
+    end
+    return out
+  end
+
+  remove("/harness-doctor/menu.txt")
+  local systemOnly = details(loadDoctors().menuItems()[7].menu)
+  harnessFile(true)
+  local before = titles(limits.llmDoctorEntry().menu, {})
+  for _, item in ipairs(limits.harnessDoctorEntry().menu) do
+    local plain = item.title ~= "-" and text(item.title) or ""
+    if plain:match("^Lost time:") or plain:match("^Spend:") then titles(item.menu, before) else titles({ item }, before) end
+  end
+  titles(systemOnly, before)
+  local regrouped = loadDoctors()
+  local items = regrouped.menuItems()
+  local after, where = {}, {}
+  for _, index in ipairs({ 1, 2, 5, 6, 7 }) do
+    for plain, n in pairs(titles(details(items[index].menu), {})) do
+      after[plain] = (after[plain] or 0) + n
+      where[plain] = names[index]
+    end
+  end
+  local lostRow = {}
+  for plain, n in pairs(before) do
+    if after[plain] ~= n then lostRow[#lostRow + 1] = plain .. " " .. n .. "→" .. tostring(after[plain]) end
+  end
+  for plain in pairs(after) do
+    if not before[plain] then lostRow[#lostRow + 1] = "new " .. plain end
+  end
+  table.sort(lostRow)
+  check(#lostRow == 0, "every row of the doctors' trees shows exactly once after the regroup: " .. table.concat(lostRow, ", "))
+  local placed = { ["Suite audits: 1 problem"] = "Lost time", ["Test flakes: ok"] = "Lost time",
+    ["Limiter holds: watch"] = "Lost time", ["24 h vs prev 24 h · worse"] = "Lost time",
+    ["CPU audits: 2 problems"] = "System", ["Load: 1 problem"] = "System", ["Memory guard: ok"] = "System",
+    ["Growth: watch"] = "System", ["Debt: 1 problem"] = "Harness", ["Stop hooks: 1 problem"] = "Harness",
+    ["Tests: 4 problems"] = "Lost time" }
+  for plain, owner in pairs(placed) do
+    check(where[plain] == owner and after[plain] == 1, "«" .. plain .. "» shows once, under " .. owner .. ": "
+      .. tostring(where[plain]) .. " ×" .. tostring(after[plain]))
+  end
+  check(find(details(items[5].menu), "window: ") and not find(details(items[2].menu), "window: "),
+    "the window chooser moves with the window rows to Lost time")
+  check(not find(details(items[2].menu), "Lost time:") and not find(details(items[2].menu), "Spend:"),
+    "Harness details hold no Lost time: or Spend: row, their own doctors show them")
+  check(text(regrouped.title()) == "Doctors: 13 problems", "the total is every document's problem_count, 3 + 9 + 1: "
+    .. text(regrouped.title()))
+  check(value(items[1]) == "2" and value(items[2]) == "2" and value(items[7]) == "4" and value(items[5]) == "0.90",
+    "LLM 3 - debt, Harness 9 - 8 moved + debt, System 1 + CPU audits + Load, Lost time keeps its index: "
+    .. table.concat({ value(items[1]), value(items[2]), value(items[7]), value(items[5]) }, " "))
+  check(issue(items[5].menu, 1, "   4  Tests") and issue(items[5].menu, 2, "   1  Suite audits")
+    and issue(items[2].menu, 1, "   1  Stop hooks") and issue(items[2].menu, 2, "   1  debt")
+    and issue(items[7].menu, 1, "   2  CPU audits") and issue(items[7].menu, 2, "   1  Load")
+    and issue(items[7].menu, 3, "   1  swap full") and not find(items[1].menu, "   1  debt"), "issue rows follow the moved counts")
+  harnessFile(false)
+  items = regrouped.menuItems()
+  check(value(items[2]) == "10" and issue(items[2].menu, 1, "   4  Tests") and text(regrouped.title()) == "Doctors: 13 problems"
+    and not issue(items[5].menu, 1, "   4  Tests"), "a header without groups keeps Harness's own count and issues: "
+    .. tostring(value(items[2])))
+end
+
 -- One vocabulary: each night label tests/test_doctors_menu.sh made through bin/doctor-fix and
 -- bin/night-run from these documents names a doctor and, after the colon, a row its menu shows.
 if vocab then
@@ -1056,6 +1167,7 @@ if vocab then
     local name = text(item.title):match("^(%a+) ")
     if name then menus[name] = details(item.menu) end
   end
+  local SHOWN_IN = { Harness = { "Lost", "System" }, LLM = { "Harness" } }
   local labels = 0
   for label in slurp("labels.txt"):gmatch("[^\n]+") do
     label, labels = label:match("^(.-) · ") or label, labels + 1
@@ -1066,8 +1178,10 @@ if vocab then
     local shown = menu ~= nil and want == ""
     for _, item in ipairs(menu or {}) do
       shown = shown or item.title ~= "-" and text(item.title):lower():sub(1, #want) == want
-      for _, sub in ipairs(text(item.title):match("^Lost time: ") and item.menu or {}) do
-        shown = shown or sub.title ~= "-" and text(sub.title):lower():sub(1, #want) == want
+    end
+    for _, owner in ipairs(SHOWN_IN[name] or {}) do
+      for _, item in ipairs(menus[owner] or {}) do
+        shown = shown or item.title ~= "-" and text(item.title):lower():sub(1, #want) == want
       end
     end
     check(shown, "night label «" .. label .. "» names no row of its doctor's menu")

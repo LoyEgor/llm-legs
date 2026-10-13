@@ -654,6 +654,7 @@ check(doc["budget"].get("lost_min_day_by_day") == first["budget"].get("lost_min_
       and header == {"status": latest["status"],
                      "problems": [{k: p[k] for k in ("id", "ledger") if k in p} for p in latest["problems"]],
                      "issues": [[1, "Waits"], [1, "Guards"], [1, "Memory guard"]],
+                     "groups": {"Waits": 1, "Guards": 1, "Memory guard": 1},
                      "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "index": None, "index_by_day": {},
                                "levels": [[None, "min per order · chat"], [None, "min per task · workers"]],
                                "rows": first["budget"]["rows"]},

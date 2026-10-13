@@ -49,8 +49,8 @@ LLM ▸     8  reviewers crashed
   unit, no trend arrow. Counts are bare. Lost time and Spend are indices, two decimals, 1.00 = the previous 7 days'
   fee per unit of work, and carry no usual (their reference is 1.00): Lost time, internally Speed, is the time budget's
   per-task `index` (docs/speed-doctor-design.md); Spend is tokenmap's `harness_index.value` from `tracking.json` via
-  `share/spend.py`, per Claude request, Harness being the Spend tree's Harness leaves of every consumer; the problems of
-  both stay counted by Harness alone.
+  `share/spend.py`, per Claude request, Harness being the Spend tree's Harness leaves of every consumer; Lost time
+  counts the Harness groups `SHOWN_BY` gives it, Spend none.
 - Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error (Spend: an
   audit due), DIM_RED watch/blind/pending update, DIM no data or
   stale (Speed also without an index dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null). Missing value: DIM `–`.
@@ -63,8 +63,16 @@ LLM ▸     8  reviewers crashed
   Lost time: the current window's `levels`, `min per order · chat` and `min per task · workers`, then the header's `rows`, plain aligned min/day, separators and sub-menus, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title
   (stale, failed, pending) first; Lost time's and Spend's details are Harness's `Lost time:` and `Spend:` subtrees.
+- Each doctor answers one question; the view moves, never the collectors (rule ids, groups, documents, areas and night
+  kinds stay). `SHOWN_BY` in `hammerspoon/doctors.lua` maps a donor's group (and its level-0 `<Group>:` row) to the
+  summary that shows it: Harness's Suite audits, Test flakes, Limiter holds and the row-less Speed, Tests, Wait
+  classes, Hook waits, Hooks, Waits, Slow periods, Collector → Lost time (with the window rows and their chooser);
+  CPU audits, Load (out of Lost time's subtree), Memory guard, Growth → System, appended at the end of its details;
+  LLM's `debt` → Harness. Harness's details drop `Lost time:` and `Spend:`. Counts move through the same table from
+  the doctors' own per-group counts (Harness: the header's `groups`; LLM: `groups`), so each summary's count and
+  issue rows change but the `Doctors: N problems` total never does; a header without `groups` keeps Harness's own.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,
-  three group issues, Speed's status, timestamp, index, its daily series, levels and budget rows. The menu
+  three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows. The menu
   reads it and `problem-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;
   a header-less file shows open Harness ledger rows as `known, awaiting snapshot`.
 

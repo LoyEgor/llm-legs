@@ -24,6 +24,15 @@ local DOCTORS = {
 }
 local CODE_GROUPS = { { key = "dead", name = "Dead" }, { key = "heavy", name = "Heavy" },
   { key = "duplicate", name = "Duplicate" }, { key = "promise", name = "Promise" }, { key = "ledger", name = "Ledger" } }
+-- A donor doctor's group (and its level-0 row "<Group>: …") → the summary that shows it; speed = Lost time.
+local SHOWN_BY = {
+  harness = { ["Suite audits"] = "speed", ["Test flakes"] = "speed", ["Limiter holds"] = "speed", Speed = "speed",
+    Tests = "speed", ["Wait classes"] = "speed", ["Hook waits"] = "speed", Hooks = "speed", Waits = "speed",
+    ["Slow periods"] = "speed", Collector = "speed", ["CPU audits"] = "system", Load = "system",
+    ["Memory guard"] = "system", Growth = "system" },
+  llm = { debt = "harness" },
+}
+local OWN_DOCTOR_ROWS = { ["Lost time"] = true, Spend = true }
 
 local fixTasks, jsonCache, built = {}, {}, nil
 local night, nightTask = { at = 0 }, nil
@@ -822,14 +831,19 @@ local function issueRow(amount, unit, what, format, tone)
     { (unit and " " .. unit or "") .. "  " .. what } }), disabled = true })
 end
 
-local function issueRows(doctor, document)
+local function issueList(doctor, document)
   local issues = {}
   if not document then return issues end
-  local function add(count, what)
-    if count > 0 then issues[#issues + 1] = { count = count, what = what } end
+  local routes = type(document.groups) == "table" and SHOWN_BY[doctor.key] or {}
+  local function add(count, what, group)
+    if count > 0 and not (group and routes[group]) then issues[#issues + 1] = { count = count, what = what } end
   end
   if doctor.key == "harness" then
-    for _, issue in ipairs(document.issues or {}) do add(tonumber(issue[1]) or 0, tostring(issue[2])) end
+    if type(document.groups) == "table" then
+      for group, count in pairs(document.groups) do add(tonumber(count) or 0, tostring(group), group) end
+    else
+      for _, issue in ipairs(document.issues or {}) do add(tonumber(issue[1]) or 0, tostring(issue[2])) end
+    end
   elseif doctor.key == "llm" then
     for _, block in ipairs(document.blocks or {}) do
       for _, problem in ipairs(block.problems or {}) do
@@ -840,7 +854,7 @@ local function issueRows(doctor, document)
       end
     end
     for _, health in ipairs(document.health or {}) do
-      if health.status == "problem" then add(tonumber(health.count) or 1, tostring(health.name)) end
+      if health.status == "problem" then add(tonumber(health.count) or 1, tostring(health.name), health.name) end
     end
   elseif doctor.key == "code" then
     for _, group in ipairs(CODE_GROUPS) do add(tonumber((document.groups or {})[group.key]) or 0, group.name) end
@@ -851,13 +865,57 @@ local function issueRows(doctor, document)
   end
   if #issues == 0 then
     for _, problem in ipairs(document.problems or {}) do
-      if LOUD[problem.state] then add(1, tostring(problem.fact or problem.id)) end
+      if LOUD[problem.state] then add(1, tostring(problem.fact or problem.id), problem.group) end
     end
   end
+  return issues
+end
+
+local function issueRows(issues, incoming)
+  for _, issue in ipairs(incoming or {}) do issues[#issues + 1] = issue end
   table.sort(issues, function(a, b) return a.count > b.count or a.count == b.count and a.what < b.what end)
   local rows = {}
   for index = 1, math.min(3, #issues) do rows[index] = issueRow(issues[index].count, nil, issues[index].what) end
   return rows
+end
+
+-- nil: the row stays; false: dropped, its own doctor shows it; else the summary it moves to.
+local function rowTarget(donor, item)
+  if item.title == "-" then return nil end
+  local plain = plainText(item.title)
+  if donor == "harness" and (plain:match("^%d+ [hd] vs prev ") or plain:match("^window: ")) then return "speed" end
+  local label = plain:match("^([^:]+):")
+  if not label then return nil end
+  if donor == "harness" and OWN_DOCTOR_ROWS[label] then return false end
+  local routes = SHOWN_BY[donor] or {}
+  return routes[label] or routes[label:lower()]
+end
+
+local function placeRows(details, rows, keep)
+  if not rows or #rows == 0 then return details end
+  local at = #details - (keep or 0) + 1
+  table.insert(details, at, { title = "-" })
+  for index, row in ipairs(rows) do table.insert(details, at + index, row) end
+  return details
+end
+
+-- Moves the donor's per-group counts; capped at its count so the Doctors total never changes.
+local function routeCounts(donor, document, count, shift, incoming)
+  local groups = document and type(document.groups) == "table" and document.groups
+  local routes = SHOWN_BY[donor]
+  if not groups or not routes then return end
+  local names = {}
+  for group in pairs(groups) do if routes[group] then names[#names + 1] = group end end
+  table.sort(names)
+  for _, group in ipairs(names) do
+    local take = math.min(math.max(math.floor(tonumber(groups[group]) or 0), 0), count)
+    if take > 0 then
+      local target = routes[group]
+      count = count - take
+      shift[donor], shift[target] = (shift[donor] or 0) - take, (shift[target] or 0) + take
+      incoming[target][#incoming[target] + 1] = { count = take, what = group }
+    end
+  end
 end
 
 local function egorLayer(rows, menu, details)
@@ -915,6 +973,8 @@ local function compute()
       histories[row.doctor][row.day] = math.max(histories[row.doctor][row.day] or 0, tonumber(row.max))
     end
   end
+  local built, lostDetails = {}, {}
+  local moved, shift, incoming = { harness = {}, speed = {}, system = {} }, {}, { harness = {}, speed = {}, system = {} }
   for _, doctor in ipairs(DOCTORS) do
     local ok, entry = pcall(BUILDERS[doctor.key], now)
     if not ok or type(entry) ~= "table" then
@@ -922,6 +982,24 @@ local function compute()
         menu = { { title = infoTitle(tostring(entry), true), disabled = true }, { title = "-" } }, problems = 0,
         status = "error" }
     end
+    local own = {}
+    for _, item in ipairs(entry.menu or {}) do
+      local target = rowTarget(doctor.key, item)
+      if target then table.insert(moved[target], item) elseif target == nil then own[#own + 1] = item end
+    end
+    if doctor.key == "harness" then
+      for _, item in ipairs((harnessSection(entry.menu, "Lost time"))) do
+        local target = rowTarget(doctor.key, item)
+        if target and target ~= "speed" then table.insert(moved[target], item) else lostDetails[#lostDetails + 1] = item end
+      end
+    end
+    local document = doctorDocument(doctor)
+    routeCounts(doctor.key, document, tonumber(entry.problems) or 0, shift, incoming)
+    built[#built + 1] = { doctor = doctor, entry = entry, own = own, document = document }
+  end
+  for _, done in ipairs(built) do
+    local doctor, entry, document = done.doctor, done.entry, done.document
+    local own = placeRows(done.own, moved[doctor.key], 2)
     local run = latestRun(doctor.key)
     local menu = {}
     local oldTitle = plainText(entry.title)
@@ -930,32 +1008,35 @@ local function compute()
       and entry.status ~= "nodata" then
       menu[#menu + 1] = dim(oldTitle)
     end
-    for _, item in ipairs(entry.menu or {}) do menu[#menu + 1] = fitRow(item) end
+    for _, item in ipairs(own) do menu[#menu + 1] = fitRow(item) end
     local ok, quiet = pcall(quietRow, doctor)
     if ok and quiet then menu[#menu + 1] = quiet end
     menu[#menu + 1] = fixItem(doctor.key, doctor.fix, run, now)
     menu[#menu + 1] = fixerRow(run, now)
-    local document = doctorDocument(doctor)
     local stale = oldTitle:find("stale", 1, true) ~= nil
     local status = entry.status
     if status == "ok" and doctor.key == "updater" and document and updatesPending(document) > 0 then status = "watch" end
+    local shown = count + (shift[doctor.key] or 0)
+    if shown > 0 and status == "ok" then status = "problems" elseif shown == 0 and status == "problems" then status = "ok" end
     local summary = { title = summaryTitle((NAMES[doctor.key]:gsub(" doctor$", "")),
-      entry.status ~= "nodata" and entry.status ~= "error" and count or nil, status, histories[doctor.key] or {}, now, stale),
-      menu = egorLayer(issueRows(doctor, document), menu, menu), problems = count, status = entry.status }
+      entry.status ~= "nodata" and entry.status ~= "error" and shown or nil, status, histories[doctor.key] or {}, now, stale),
+      menu = egorLayer(issueRows(issueList(doctor, document), incoming[doctor.key]), menu, menu), problems = shown,
+      status = entry.status }
     if doctor.key == "system" then machine = summary else entries[#entries + 1] = summary end
     if doctor.key == "harness" then
       local metrics = document and type(document.speed) == "table" and document.speed or {}
       local byDay = type(metrics.index_by_day) == "table" and metrics.index_by_day or {}
-      local speedMenu = harnessSection(entry.menu, "Lost time")
-      local speedRows = levelRows(metrics.levels)
+      local speedRows = issueRows({}, incoming.speed)
+      for _, row in ipairs(levelRows(metrics.levels)) do speedRows[#speedRows + 1] = row end
       for _, row in ipairs(lostRows(metrics.rows)) do speedRows[#speedRows + 1] = row end
-      for _, item in ipairs(speedMenu) do
+      for _, item in ipairs(lostDetails) do
         local text = item.title ~= "-" and plainText(item.title) or ""
         if text:match("^Needs Egor") and text ~= "Needs Egor: nothing" then speedRows[#speedRows + 1] = item end
       end
       local lost = tonumber(metrics.index)
       speed = { title = summaryTitle("Lost time", lost, lost and metrics.status or "nodata", byDay, now,
-        stale or not byDay[os.date("%Y-%m-%d", now)], true), menu = egorLayer(speedRows, menu, speedMenu), problems = 0 }
+        stale or not byDay[os.date("%Y-%m-%d", now)], true),
+        menu = egorLayer(speedRows, menu, placeRows(lostDetails, moved.speed, 0)), problems = shift.speed or 0 }
       local cost = document and type(document.spend) == "table" and document.spend or {}
       local spendMenu, spendRows = harnessSection(entry.menu, "Spend", cost.issues, "%", "%.1f")
       local index = cost.status ~= "nodata" and tonumber(cost.index) or nil
