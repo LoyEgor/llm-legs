@@ -1191,6 +1191,21 @@
    "verdict": "kept",
    "zero": "removal saves 1.0 CPU-min/day; loses the wall against a headed Chrome launch (Egor's browser is Dia, 2026-07-29 rule) and every osascript-activate denial",
    "note": "7 ms/run is bash startup (empty #!/bin/bash hook 1.5 of ~2.0 ms rusage); the fast path is one regex on the raw payload and exits; its de-quoting match cannot be a settings if-filter"
+  },
+  {
+   "id": "cpu:hook/eod-sorted-gate.sh",
+   "title": "hook/eod-sorted-gate.sh",
+   "audited_at": "2026-10-13T09:16:09+03:00",
+   "by": "harness-speed-cpu-hook-dia-not-chrome-sh-20261012T235042Z-5729",
+   "cpu_min_day": 0.9,
+   "cpu_s_run": 0.007,
+   "runs_day": 5712,
+   "sources": {
+    "claude-setup/hooks/eod-sorted-gate.sh": "676a06110bfd57f0899b3c7ac39a27d1f4e8f0aa"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 1.0 CPU-min/day; loses the unsorted-nightly-commit gate at commit and PR time (end-report hand-off)",
+   "note": "floor-dominated (2.2 ms rusage vs 1.5 empty bash); fast path exits on a missing last-run.json then one spliced regex on the raw payload; jq and the segment parse already run only past it; its splice match cannot be a settings if-filter"
   }
  ]
 }
