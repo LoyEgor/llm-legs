@@ -68,10 +68,12 @@ echo 'ttys009 /Users/e/.local/bin/claude --resume' >"$PS_FIXTURE"
 CHAT_ARM='HS -q -c ClaudeContinue.startTimerFor("terminal", 15, nil, "/dev/ttys009")'
 
 now=$(date +%s)
+# A reset dated from the moment its fixture is written, never from $now: a slow run drifts past any buffer.
+iso_in() { TZ=UTC0 printf '%(%Y-%m-%dT%H:%M:%SZ)T' "$((EPOCHSECONDS + $1))"; }
 
 # --- who arms: a Claude chat for itself; never a worker, the app or a caller outside every chat ---
 
-write_limits notcom "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
+write_limits notcom "$(iso_in 6000)"
 
 run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" 10 >/dev/null || fail "a bare call from a chat tty exited non-zero"
 grep -q 'HS -q -c ClaudeContinue.startTimerFor("terminal", [0-9]*, nil, "/dev/ttys009")' "$CALLS" ||
@@ -103,14 +105,14 @@ done
 
 # --- account resolution order ---
 
-write_limits notcom "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
+write_limits notcom "$(iso_in 6000)"
 # +30s buffer on every fixture below: the script fetches its own "now" a few seconds
-# after $now was captured here, so exact-minute assertions need slack against that drift.
+# after the fixture was written, so exact-minute assertions need slack against that drift.
 write_limits_other() {
   cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[
-  {"account":"notcom","five_hour":{"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}},
-  {"account":"alona","five_hour":{"resets_at":"$(date -u -r "$((now + 9000 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}
+  {"account":"notcom","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))"}},
+  {"account":"alona","five_hour":{"resets_at":"$(iso_in $((9000 + 30)))"}}
 ]}}}
 EOF
 }
@@ -138,8 +140,8 @@ minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 # A chat walled on its week waits for the week, not for the five hours that reset first.
 cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[{"account":"alona",
-  "five_hour":{"effective_pct":40,"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"},
-  "weekly":{"effective_pct":100,"resets_at":"$(date -u -r "$((now + 9000 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}]}}}
+  "five_hour":{"effective_pct":40,"resets_at":"$(iso_in $((1200 + 30)))"},
+  "weekly":{"effective_pct":100,"resets_at":"$(iso_in $((9000 + 30)))"}}]}}}
 EOF
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=alona "$SCRIPT" terminal 0) || fail "weekly-wall run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
@@ -154,9 +156,9 @@ minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 write_limits_fable() { # weekly-pct
   cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[{"account":"alona",
-  "five_hour":{"effective_pct":40,"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"},
-  "weekly":{"effective_pct":$1,"resets_at":"$(date -u -r "$((now + 9000 + 30))" +%Y-%m-%dT%H:%M:%SZ)"},
-  "fable":{"effective_pct":100,"resets_at":"$(date -u -r "$((now + 5400 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}]}}}
+  "five_hour":{"effective_pct":40,"resets_at":"$(iso_in $((1200 + 30)))"},
+  "weekly":{"effective_pct":$1,"resets_at":"$(iso_in $((9000 + 30)))"},
+  "fable":{"effective_pct":100,"resets_at":"$(iso_in $((5400 + 30)))"}}]}}}
 EOF
 }
 mkdir -p "$WORK/tracks"
@@ -192,10 +194,10 @@ write_limits_gateway() {
   cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{
   "claude":{"accounts":[
-    {"account":"notcom","five_hour":{"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}},
-    {"account":"work4","five_hour":{"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}]},
+    {"account":"notcom","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))"}},
+    {"account":"work4","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))"}}]},
   "codex":{"accounts":[
-    {"account":"work4","five_hour":{"resets_at":"$(date -u -r "$((now + 9000 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}]}}}
+    {"account":"work4","five_hour":{"resets_at":"$(iso_in $((9000 + 30)))"}}]}}}
 EOF
 }
 write_limits_gateway
@@ -234,15 +236,15 @@ out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0) || fail "
 echo "$out" | grep -q "no five_hour.resets_at" || fail "missing cache file should report fallback reason: $out"
 grep -qF "$CHAT_ARM" "$CALLS" || fail "missing cache should arm for 15: $(cat "$CALLS")"
 
-write_limits unknown-account "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
+write_limits unknown-account "$(iso_in 6000)"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0) || fail "account-not-in-fixture run failed"
 echo "$out" | grep -q "no five_hour.resets_at" || fail "account absent from fixture should report fallback reason: $out"
 
 # --- minutes math, including +extra and the 1-minute floor ---
 # +30s buffer on the reset fixtures below guards the exact-minute assertions against
-# drift between capturing $now here and the script fetching its own "now" moments later.
+# drift between writing the fixture and the script fetching its own "now" moments later.
 
-write_limits notcom "$(date -u -r "$((now + 3600 + 30))" +%Y-%m-%dT%H:%M:%SZ)"
+write_limits notcom "$(iso_in $((3600 + 30)))"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0) || fail "60min-window run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "60" ] || fail "60 minutes to reset + 0 extra should be 60 (got $minutes): $out"
@@ -259,14 +261,14 @@ for padded in 08:68 010:70; do
   [ "$minutes" = "${padded#*:}" ] || fail "extra ${padded%%:*} should add decimal minutes (expected ${padded#*:}, got $minutes): $out"
 done
 
-write_limits notcom "$(date -u -r "$((now + 300))" +%Y-%m-%dT%H:%M:%SZ)"
+write_limits notcom "$(iso_in 300)"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal -310) || fail "floor-clamped run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "1" ] || fail "a negative net result should floor at 1 minute (got $minutes): $out"
 
 # --- default extra-minutes is +10 ---
 
-write_limits notcom "$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"
+write_limits notcom "$(iso_in $((1200 + 30)))"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal) || fail "default-extra run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "30" ] || fail "default extra should be +10 (20 to reset + 10 = 30, got $minutes): $out"
@@ -276,7 +278,7 @@ minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 write_limits_bucket() { # stale age-seconds
   cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[{"account":"notcom","five_hour":{
-  "resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)",
+  "resets_at":"$(iso_in $((1200 + 30)))",
   "as_of":$((now - $2)),"stale":$1}}]}}}
 EOF
 }
@@ -301,7 +303,7 @@ grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row the collector marked stal
 # window has already rolled is not stale, and it is the one reading a refresh can actually replace.
 cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[{"account":"notcom","five_hour":{
-  "resets_at":"$(date -u -r "$((now - 300))" +%Y-%m-%dT%H:%M:%SZ)",
+  "resets_at":"$(iso_in -300)",
   "as_of":$((now - 60)),"stale":false,"expired":true}}]}}}
 EOF
 run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 >/dev/null || fail "expired-marked-row run failed"
@@ -327,7 +329,7 @@ for n in 2 3 4; do
   echo '/Users/e/.local/bin/claude PATH=/usr/bin CLAUDE_LIMITS_ACCOUNT=notcom' >"$PS_FIXTURE.env.60$n"
 done
 
-write_limits notcom "$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"
+write_limits notcom "$(iso_in $((1200 + 30)))"
 out=$(run_timer env FAKE_TTY=ttys001 CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0) || fail "all run failed"
 for tty in ttys001 ttys002 ttys003 ttys004; do
   grep -qF "startTimerFor(\"terminal\", 20, nil, \"/dev/$tty\")" "$CALLS" \
@@ -439,9 +441,9 @@ grep -qF '"/dev/ttys007")' "$CALLS" || fail "--to should take a session id too: 
 # The peer's timer is timed off the PEER's five-hour window, read from its own environment.
 cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[
-  {"account":"notcom","five_hour":{"resets_at":"$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"}},
-  {"account":"acct","five_hour":{"resets_at":"$(date -u -r "$((now + 600))" +%Y-%m-%dT%H:%M:%SZ)"}}]},
- "codex":{"accounts":[{"account":"gw","five_hour":{"resets_at":"$(date -u -r "$((now + 1800))" +%Y-%m-%dT%H:%M:%SZ)"}}]}}}
+  {"account":"notcom","five_hour":{"resets_at":"$(iso_in 6000)"}},
+  {"account":"acct","five_hour":{"resets_at":"$(iso_in 600)"}}]},
+ "codex":{"accounts":[{"account":"gw","five_hour":{"resets_at":"$(iso_in 1800)"}}]}}}
 EOF
 printf '%s\n' '/Users/e/.local/bin/claude PATH=/usr/bin CLAUDE_CONFIG_DIR=/Users/e/.claude-profiles/acct CLAUDE_LIMITS_ACCOUNT=acct' \
   >"$PS_FIXTURE.env.501"
@@ -456,7 +458,7 @@ rm -f "$PS_FIXTURE.env.501"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 10 --to peer 2>&1)
 [ $? -ne 0 ] || fail "--to a peer whose environment is unreadable should refuse"
 grep -q HS "$CALLS" && fail "an unreadable peer must not reach hs: $(cat "$CALLS")"
-write_limits notcom "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
+write_limits notcom "$(iso_in 6000)"
 
 # --now fires through the tty's one slot, so a resume timer already waiting there is kept, not replaced.
 printf '{"timers":{"terminal:/dev/ttys007":{"firesAt":%s,"targetTty":"/dev/ttys007"}}}' "$((now + 3600))" \
