@@ -929,8 +929,8 @@ fi
 
 if suite_shard_owns 3 df-speed; then
 # Speed: a harness night takes the loud regressions and Speed's chosen opportunities, the levers of one repository
-# (area speed-<first lever>) in one run. Over the calibration transcripts, a quiet-band contention probe and a
-# heavy llm-legs suite, that is design §6's Night 1: #2, #1, #5 stage 1.
+# (area speed-<first lever>) in one run, over the calibration transcripts, a quiet-band contention probe and a
+# heavy llm-legs suite.
 S="$WORK/speed-cal"
 mkdir -p "$L/tests" && printf 'a\nb\nc' >"$L/tests/test_llm_limits.sh"
 python3 - "$ROOT" "$S" <<'EOF' || fail "the calibration fixture did not build"
