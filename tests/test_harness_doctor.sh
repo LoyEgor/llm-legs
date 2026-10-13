@@ -2130,7 +2130,7 @@ def guard(path):
     ids = [r["id"] for r in ledger["rows"]]
     commits = {}
     for r in ledger["rows"]:
-        assert set(r) == fields, r["id"]
+        assert set(r) - {"ruled_at"} == fields, r["id"]
         assert set(r["same_cause"]) <= set(ids), r["id"]
         if r["status"] in ("fixed", "fixed-pending"):
             assert r["fixes"], "a fixed row names its fix: %s" % r["id"]
