@@ -196,9 +196,8 @@ assert grep -q 'status=PASS step=path-links detail=ok' < <(tail -n 4 "$LOG")
 assert test ! -s "$ALERTS"
 install_light
 
-for _ in $(seq 1 65); do
-  bash "$SCRIPT" run --force || fail "trimming run failed"
-done
+for _ in $(seq 1 70); do printf 'timestamp=old status=PASS failed_step=-\n'; done >"$LOG"
+bash "$SCRIPT" run --force || fail "trimming run failed"
 assert test "$(wc -l <"$LOG" | tr -d ' ')" = 60
 
 # The debounce reads the clock against the daily 10:30 slot, so it runs on a pinned one.
