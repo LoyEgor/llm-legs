@@ -24,7 +24,7 @@ sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
 helper_repos="${NIGHT_RUN_HELPER_REPOS-${NIGHT_RUN_SWEEP_REPOS:+/dev/null}}"
 helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
 KINDS=' fixer vendor debt leftover handoff suite owner-chat trade '
-STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
+STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
 JQ_DONE_JOB='def done_job: .state == "nothing-to-do" or .state == "settled"; def job_branch($n): .branch // "night/\($n)/\(.ref)";'
@@ -63,7 +63,9 @@ wall: a running night's orchestrator stopped by a usage wall (error rate_limit) 
   resumes the night (start --resume) under a new orchestrator; events wall, wall-moved, wall-gave-up
 start opens the orchestrator chat: --cleanup lands finished night branches and runs the debt round
   only; --resume reopens night <id> under a new orchestrator for its unfinished jobs (one with --job,
-  else all plus a cleanup job), the old session kept in previous_sessions
+  else all plus a cleanup job), the old session kept in previous_sessions; a job whose branch a live
+  worker run still works on goes live with run=<run id>, printed `night <id> job <ref> live: worker-run
+  wait <run id>`: waited on, never relaunched
   First it re-checks every answered trade (a blocked-on-egor job) of the other nights: one whose answer is
   carried out goes settled with its evidence; one not carried out becomes a pending trade job
   trade-<ref> of this night, carry giving it a worktree and a brief; an unanswered one stays. Recorded
@@ -84,7 +86,7 @@ survey: the sweep's opening report, default the sweep repositories: per reposito
   --tier T2 --price; due = stable or critical, what the bugs round reads), per linked
   worktree `<branch> · +ahead/-behind main · K dirty · debt N · take|keep (<reason>)`, keep = live or
   held as in leftovers, then `total · …`; --post also sends it to the chat as one report-bus block
-states: pending merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
+states: pending live merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
   A merged job whose branch is gone records what main's last fast-forward of it brought (main's reflog).
@@ -250,10 +252,23 @@ open_nights() { # -> ids of nights whose orchestrator chat still runs
   done
 }
 
-JQ_UNFINISHED='def unfinished: .state == "left" or .state == "pending";'
+JQ_UNFINISHED='def unfinished: .state == "left" or .state == "pending" or .state == "live";'
+
+live_night_runs() { # id -> {"<branch>": "<run id>"} of the worker runs still working on a night/<id>/ branch
+  local root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" entry directory workdir branch
+  while IFS= read -r entry; do
+    directory=${entry%/meta.json}
+    [ ! -e "$directory/exit_code" ] || continue
+    workdir=$(jq -r '.workdir // empty' "$entry" 2>/dev/null)
+    [ -d "$workdir" ] && branch=$(git -C "$workdir" symbolic-ref -q --short HEAD 2>/dev/null) &&
+      [[ $branch == "night/$1/"* ]] || continue
+    supervisor_running "$directory" "$(jq -r '.pid // 0' "$entry" 2>/dev/null)" || continue
+    printf '%s\t%s\n' "$branch" "${directory##*/}"
+  done < <(grep -lF -- "night-$1-" "$root"/*/meta.json 2>/dev/null) | jq -Rn '[inputs | split("\t") | {(.[0]): .[1]}] | add // {}'
+}
 
 resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orchestrator, the old session kept
-  local id=$1 job=$2 file
+  local id=$1 job=$2 file runs
   known_night "$id"
   file=$(night_file "$id")
   if [ -n "$job" ]; then
@@ -262,15 +277,19 @@ resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orc
   else
     jq -e "$JQ_UNFINISHED"' .finished_at == null or any(.jobs[]; unfinished)' "$file" >/dev/null || die "night $id has no unfinished job"
   fi
-  night_set "$id" "$JQ_UNFINISHED$JQ_EVENTS"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
+  runs=$(live_night_runs "$id")
+  night_set "$id" "$JQ_UNFINISHED$JQ_DONE_JOB$JQ_EVENTS"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
     | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .doctor_states_after = null | .doctor_problems_after = null | .note = null
-    | .jobs |= map(if unfinished and ($job == "" or .ref == $job) then .state = "pending" else . end)
-    | if $job == "" and ([.jobs[] | select(.kind == "debt" and .state == "pending")] | length) == 0
+    | .jobs |= map(if unfinished and ($job == "" or .ref == $job) then $runs[job_branch($id)] as $run
+        | if $run then .state = "live" | .run = $run else .state = "pending" | del(.run) end else . end)
+    | if $job == "" and ([.jobs[] | select(.kind == "debt" and (.state == "pending" or .state == "live"))] | length) == 0
       then .jobs += [{kind: "debt", ref: "debt-\([.jobs[] | select(.kind == "debt")] | length + 1)", state: "pending",
         reason: null, branch: null, review: null, commits: [], pushed: false}] else . end
     | events([{phase: "resume", pred: "last"} + (if $job == "" then {} else {scope: $job} end)]; $t)' --arg job "$job" \
-    --argjson opener "$$" --arg t "$(stamp)" ||
+    --arg id "$id" --argjson runs "$runs" --argjson opener "$$" --arg t "$(stamp)" ||
     die "cannot write night $id"
+  jq -r --arg job "$job" '.id as $id | .jobs[] | select(.state == "live" and ($job == "" or .ref == $job))
+    | "night \($id) job \(.ref) live: worker-run wait \(.run)"' "$file"
 }
 
 trade_check() { # check -> its evidence; fails when it does not hold
@@ -374,7 +393,7 @@ cmd_start() {
     chat_open "$nights_dir/$id.command" "$(main_checkout)" "сделай чистку — night run $id$marker" 2>&1); then
     lock
     night_set "$id" '.note = $n | .finished_at = $t | del(.opener)
-      | if $resume == "" then .jobs = [] else .jobs |= map(if .state == "pending" then .state = "left" | .reason = (.reason // $n) else . end) end' \
+      | if $resume == "" then .jobs = [] else .jobs |= map(if .state == "pending" or .state == "live" then .state = "left" | .reason = (.reason // $n) else . end) end' \
       --arg n "orchestrator chat did not open: $opened" --arg t "$(stamp)" --arg resume "$resume"
     [ -n "$resume" ] || all_nights | jq -r --arg id "$id" '.[] | select(any(.jobs[]; .carried.night? == $id)) | .id' |
       while IFS= read -r file; do
@@ -1021,7 +1040,7 @@ cmd_finish() {
       "$(night_file "$id")") and only it finishes the night."
   night_set "$id" "$JQ_EVENTS$JQ_SNAPSHOT"' .finished_at = $t | .doctors_after = snapshot(0) | .doctor_states_after = snapshot(1)
     | .doctor_problems_after = snapshot(2) | .doctors_share = $goals.doctors_share | .backlog = $goals.backlog
-    | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)
+    | .jobs |= map(if .state == "pending" or .state == "live" then .state = "left" | .reason = "no outcome recorded by the close" else . end)
     | events([{phase: "finish", pred: "jobs"}]; $t)' \
     --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" \
     --argjson goals "$(python3 -B "$repo_root/share/night_spend.py" goals 2>/dev/null || echo '{}')" || die "cannot write night $id"
@@ -1371,7 +1390,7 @@ JQ_TOTALS='def totals: [.jobs[] | .state] as $s
      blocked: ($s | map(select(. == "blocked-on-egor")) | length),
      nothing: ($s | map(select(. == "nothing-to-do")) | length),
      settled: ($s | map(select(. == "settled")) | length),
-     pending: ($s | map(select(. == "pending")) | length),
+     pending: ($s | map(select(. == "pending")) | length), live: ($s | map(select(. == "live")) | length),
      unpushed: ([.jobs[] | select(.state == "merged" and .pushed != true)] | length),
      unfinished: ($status == "unfinished"), running: ($status == "running")};
 def hm: if . == null then "-" else fromdateiso8601 | strflocaltime("%H:%M") end;
@@ -1478,6 +1497,7 @@ cmd_report() {
          + "\([.jobs[] | select(.reason == "speed window closed (\($h) h)") | $speed[.ref] // 0] | add // 0) left by the \($h) h window" end),
       (.jobs[] | ([(if .state == "merged" then "landed" else .state end), .kind, .ref]
         + (if .branch and .state != "merged" then [.branch] else [] end)
+        + (if .state == "live" then ["worker \(.run)"] else [] end)
         + (if .kind == "owner-chat" then ["«\(.owner)» \(.via) · \(.handoffs | length) handoffs"] else [] end)
         + (if .handover then ["handed over by \(.handover.by)\(if .handover.owner_verified == false then " (never worked in its worktree)" else "" end) at \(.handover.at | hm): \(.handover.why)"] else [] end)
         + [.commits[] | "\(.repo | split("/") | last)@\(.hash[0:7])"]
@@ -1497,7 +1517,7 @@ cmd_report() {
          + (if (.flaky // []) == [] then "" else " · \(.flaky | length) FLAKY: \(.flaky | join(", "))" end) end),
       ($u | to_entries[] | select(.value | length > 0) | "unverified component · \(.key) · \(.value | join(", "))"),
       ("total · " + ([count($t.merged; "landed"), count($t.left; "left"), count($t.failed; "failed-launch"),
-        count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.settled; "settled"), count($t.pending; "pending"),
+        count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.settled; "settled"), count($t.pending; "pending"), count($t.live; "live"),
         count($t.unpushed; "not pushed")]
         | if length == 0 then "no jobs" else join(" · ") end))' "$file" || return
   repo_debt
@@ -1526,7 +1546,7 @@ cmd_latest() {
           + (if $a and $a != $areas[0].own and $a != ($areas[0].whole[.d] // null) then ": " + ($a | gsub("-"; " ")) else "" end))) // $r end;
     def word: {merged: (if .pushed then "" else "not pushed" end), left: "unfinished",
       "failed-launch": "failed to launch", "blocked-on-egor": "needs you", "nothing-to-do": "nothing to do", settled: "settled",
-      pending: (if $status == "running" then "in progress" else "unfinished" end)}[.state] // .state;
+      pending: (if $status == "running" then "in progress" else "unfinished" end)}[if .state == "live" then "pending" else .state end] // .state;
     def tone: if .state == "failed-launch" or .state == "blocked-on-egor" then 1
       elif .state == "nothing-to-do" or .state == "settled" or (.state == "merged" and .pushed) then 0 else 2 end;
     totals as $t
@@ -1537,8 +1557,8 @@ cmd_latest() {
     | (if (.jobs | length) == 0 then [if .note then "did not start" else "no jobs" end]
        else ["\($done) of \(.jobs | length)"]
          + [count($t.unpushed; "not pushed"),
-            count($t.left + (if $t.running then 0 else $t.pending end); "unfinished"),
-            count(if $t.running then $t.pending else 0 end; "in progress"),
+            count($t.left + (if $t.running then 0 else $t.pending + $t.live end); "unfinished"),
+            count(if $t.running then $t.pending + $t.live else 0 end; "in progress"),
             count($t.failed; "failed to launch"), count($t.blocked; "need you")] end) as $parts
     | "\($when): \($parts | join(" · "))\t\(if $t.failed + $t.blocked > 0 or .note != null then 1
         elif $t.running or ([.jobs[] | tone] | index(2)) then 2 else 0 end)\t\(

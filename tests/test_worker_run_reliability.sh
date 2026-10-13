@@ -32,7 +32,7 @@ reliability_tests() {
   local WORKER_RUN_DIR="$WORK/reliability-runs" WORKER_RUN_IDLE_S=0 WORKER_RUN_SILENT_S=0 WORKER_RUN_WALL_SETTLE_S=0
   local WORKER_RUN_DEADLINE=10 CLAUDE_CODE_SESSION_ID=reliability-launcher
   local PICK_RC=0 PICK_ACCOUNT=rescue STUB_WALL_SLEEP=8 STUB_WALL_TEXT
-  local old_id old_dir result rc started cli_pid child_pid fixture live_pid
+  local old_id old_dir result rc started cli_pid child_pid fixture live_pid wt main_top
   export WORKER_RUN_DIR WORKER_RUN_IDLE_S WORKER_RUN_SILENT_S WORKER_RUN_DEADLINE WORKER_RUN_WALL_SETTLE_S
   export CLAUDE_CODE_SESSION_ID PICK_RC PICK_ACCOUNT STUB_WALL_SLEEP
   mkdir -p "$WORKER_RUN_DIR"
@@ -333,6 +333,39 @@ EOF
     wait "$live_pid" 2>/dev/null || :
     WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
     assert await_exit
+    printf '0\n' >"$fixture/exit_code"
+  fi
+
+  if suite_shard_owns 1 D-worktree; then
+    clear_stub
+    git init -q -b main "$WORK/wt-repo"
+    git -C "$WORK/wt-repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m zero
+    git -C "$WORK/wt-repo" worktree add -q -b night/n/job "$WORK/wt-repo/.claude/worktrees/night-n-job"
+    wt=$(cd "$WORK/wt-repo/.claude/worktrees/night-n-job" && pwd -P) main_top=$(cd "$WORK/wt-repo" && pwd -P)
+    fixture="$WORKER_RUN_DIR/held-worktree"
+    mkdir -p "$fixture"
+    sleep 600 & live_pid=$!
+    jq -cn --argjson pid "$live_pid" --argjson start "$(date +%s)" --arg w "$wt" \
+      '{pid: $pid, pid_started_at: $start, started_at: $start, workdir: $w, role: "workers"}' >"$fixture/meta.json"
+    rc=0
+    "$RUNNER" start codex --brief "$WORK/brief" --workdir "$wt" --account busy >"$WORK/held.out" 2>&1 || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qx "OUTCOME: WORKDIR_BUSY held-worktree" "$WORK/held.out"
+    assert grep -qx "WAIT: worker-run wait held-worktree (as a background Bash)" "$WORK/held.out"
+    mkdir -p "$wt/sub"
+    rc=0
+    "$RUNNER" start codex --brief "$WORK/brief" --workdir "$wt/sub" --account busy >"$WORK/held.out" 2>&1 || rc=$?
+    assert test "$rc" -eq 4
+    WORKER_RUN_RECORD=$fixture WORKER_TEST_WORKDIR=$wt start_ok codex --account busy
+    assert await_done
+    jq --arg w "$main_top" '.workdir = $w' "$fixture/meta.json" >"$WORK/meta.main" && mv "$WORK/meta.main" "$fixture/meta.json"
+    WORKER_TEST_WORKDIR=$main_top start_ok codex --account busy
+    assert await_done
+    jq --arg w "$wt" '.workdir = $w' "$fixture/meta.json" >"$WORK/meta.main" && mv "$WORK/meta.main" "$fixture/meta.json"
+    kill "$live_pid"
+    wait "$live_pid" 2>/dev/null || :
+    WORKER_TEST_WORKDIR=$wt start_ok codex --account busy
+    assert await_done
     printf '0\n' >"$fixture/exit_code"
   fi
 

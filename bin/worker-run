@@ -2518,6 +2518,29 @@ refuse_live_run() { # brief resume
   return 0
 }
 
+# Linked worktrees only: main checkouts and scratch directories take parallel workers by design.
+refuse_busy_worktree() { # workdir
+  local root top git_dir common entry directory other nested=''
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) && top=$(cd "$top" && pwd -P) || return 0
+  git_dir=$(git -C "$top" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 0
+  common=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+  [ "$git_dir" != "$common" ] || return 0
+  root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
+  [ -z "${WORKER_RUN_RECORD:-}" ] || nested=$(cd "$WORKER_RUN_RECORD" 2>/dev/null && pwd -P)
+  while IFS= read -r entry; do
+    directory=${entry%/meta.json}
+    [ ! -e "$directory/exit_code" ] && [ "$(cd "$directory" && pwd -P)" != "$nested" ] || continue
+    other=$(jq -r 'select(.role != "research" and .light != "research") | .workdir // empty' "$entry" 2>/dev/null)
+    [ "$other" = "$top" ] || [[ $other == "$top"/* ]] || continue
+    supervisor_running "$directory" "$(jq -r '.pid // 0' "$entry" 2>/dev/null)" || continue
+    outcome_line "WORKDIR_BUSY ${directory##*/}"
+    printf 'REASON: run %s still works in %s; a second worker there would edit under it\n' "${directory##*/}" "$top"
+    run_wait_line "$directory"
+    exit 4
+  done < <(grep -lF -- "$top" "$root"/*/meta.json 2>/dev/null)
+  return 0
+}
+
 own_headroom_guard() {
   local account=$1 threshold=${WORKER_RUN_OWN_HEADROOM:-80} reading alternative picker pct
   [ "$threshold" != 0 ] || return 0
@@ -2926,6 +2949,7 @@ start_run() {
   fi
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   refuse_live_run "$brief" "$resume"
+  [ "$role" != workers ] || refuse_busy_worktree "$workdir"
   # Paths are re-resolved by the detached supervisor after it cds to workdir, so
   # relative arguments valid here would dangle there — pin them to the caller's cwd.
   for value in "${!images[@]}"; do

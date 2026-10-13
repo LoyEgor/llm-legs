@@ -100,7 +100,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
    - Rerun the five doctors. This settles the ledger's `fixed-pending` rows into each doctor's overlay,
      never the main checkout. Then, in a worktree of llm-legs on `night/<id>/ledger-sync` from main's
      HEAD, `bin/doctor-fix ledger-sync <worktree>` writes the settled fields into its tracked ledgers;
-     commit, land and push that bookkeeping like any branch (nothing printed: nothing to commit).
+     commit, land and push that bookkeeping like any branch (no output: nothing to commit).
    - `night-run finish` writes the morning result, then `span-off`. It also removes every landed,
      clean, not live, not held branch of the sweep repositories with its worktree (see Leftovers); it
      prints each one kept as `live|held|leftover <repo> <branch>: <why>`, records the leftovers under
@@ -115,8 +115,8 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 - Accounts: `chat_open` and every worker take a `worker-pick` claim, so parallel launches spread.
 - Run records: every read-modify-write takes a lock, and run ids are unique under parallel launch.
 - The whole night runs under `caffeinate -i`.
-- Every chat, the orchestrator too, gets `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200` from the global settings `env`:
-  headroom over the default 20; slot admission decides how many run.
+- Every chat gets `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200` (global settings `env`, default 20); slot
+  admission decides how many run.
 
 ## Morning record
 `~/.cache/doctors/nights/<night-id>.json`:
@@ -133,20 +133,19 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
     message), `handoffs[]`; a leftover job `adopted[]` ({repo, branch, worktree, tip,
     night_worktree}), where its branch came from, and `handover` ({by, at, why}) when adopted with `--ready`;
   - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` (its reason the trade, `answer`
-    {words, at, by, done[]} once Egor answered), `settled` (a trade whose answer start found carried out) or `nothing-to-do`;
+    {words, at, by, done[]} once Egor answered), `settled` (a trade whose answer start found carried out), `live` (its worker
+    run, `run`, still worked at resume) or `nothing-to-do`;
   - `branch`, `review` (run id, optional: a night branch gets no review of its own), `commits[]`
     ({repo, hash}), `integration[]` and `pushed` (bool, as verified against the remote, integration included).
-    A merged job whose branch exists records as `commits` only what its branch made: its reflog's `commit`,
-    `commit (amend)`, `commit (cherry-pick)`, `cherry-pick` and `revert` entries (never a merge) plus what it was created with past the night's base, each found on main by
-    author, author time and subject (a rebase or cherry-pick keeps them), else on the branch; any other
-    commit `commits=` lists goes to `integration`, never counted as the job's lines.
+    A merged job whose branch exists records as `commits` only what its branch made (its reflog's non-merge
+    commits plus what it was created with past the night's base, found on main by author, author time and
+    subject, else on the branch); any other commit `commits=` lists goes to `integration`, never counted as the job's lines.
 
 - `suites` (the Close run): `started_at`, `finished_at`, `repos[]` {repo, exit, passed, failed[], log}.
 
-Jobs start `pending`; `finish` turns any still `pending` into `left`. `pushed` is set only after
-the commits are verified on the remote (`ls-remote`, the remote head fetched when it is missing
-locally, plus ancestry); a changed `commits` list clears it until `pushed=true` checks again. A chat that fails to open finishes
-the night at once with a note: red in the menu, never blocking a retry; its `pending` jobs go `left` with that note, and a new
+Jobs start `pending`; `finish` turns any still `pending` or `live` into `left`. `pushed` is set only after
+the commits are verified on the remote (`ls-remote` plus ancestry, a missing head fetched); a changed `commits` list clears it until `pushed=true` checks again. A chat that fails to open finishes
+the night at once with a note: red in the menu, never blocking a retry; its `pending` and `live` jobs go `left` with that note, and a new
 night's carried trades go back to their own nights for the next start.
 
 A night not finished reads `running` while a process carrying its orchestrator's `--session-id`
@@ -158,10 +157,11 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
 ## Continue and Cleanup
 - `night-run start --resume <id> [--job <ref>]` reopens the SAME night for a new orchestrator
   (prompt `сделай чистку — night run <id> resume`): `finished_at`, `doctors_after` and `doctor_states_after` go null, the old
-  `session` is appended to `previous_sessions`, and the unfinished (`left`, `pending`) jobs, or the one
-  `--job` names, go back to `pending` with their reasons kept. Without `--job` a `debt-<n>` job is
-  added when no debt job is pending, so a night not finished yet reopens even with every job closed. The review-flow gate needs no change: it reads the night's
-  `finished_at` and live `session`, so resumed workers commit on their `night/<id>/…` branches again.
+  `session` is appended to `previous_sessions`, and the unfinished (`left`, `pending`, `live`) jobs, or the one
+  `--job` names, go back to `pending` with their reasons kept, or to `live` (with `run`) while a live worker
+  run holds its worktree (start prints `night <id> job <ref> live: worker-run wait <run-id>`). Without `--job` a `debt-<n>` job is
+  added when no debt job is pending or live, so a night not finished yet reopens even with every job closed. The review-flow gate reads the night's
+  `finished_at` and live `session`, so resumed workers commit on their `night/<id>/…` branches.
 - `night-run wall` is the `StopFailure` hook (matcher `rate_limit`, wired in the shared
   `~/.claude/settings.json`): when the stopped chat is a running night's orchestrator it starts a
   detached `night-run failover <id> <session>`, logging to `nights/<id>.failover.log`. The failover

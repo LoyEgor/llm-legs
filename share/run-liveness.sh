@@ -48,7 +48,7 @@ pid_alive_since() { # pid start-epoch (none: unchecked)
   fi
   [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 0
   etime_parse "$elapsed" || return 0
-  printf -v now '%(%s)T' -1
+  now=${EPOCHSECONDS:-$(date +%s)}
   drift=$((now - ETIME_SECONDS - $2))
   [ "${drift#-}" -le "$PID_START_SLACK" ]
 }

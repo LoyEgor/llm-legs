@@ -469,6 +469,36 @@ assert jqe '.finished_at != null and (.note | startswith("orchestrator chat did 
 assert jqe '([.jobs[] | select(.state == "pending")] == []) and (.jobs[] | select(.ref == "debt-2")
   | .state == "left" and (.reason | startswith("orchestrator chat did not open")))' "$R6"
 rm "$DATA/opener-fails"
+# A job whose worker run still works in its worktree is never handed out again: it goes live with that
+# run, printed for the new orchestrator to wait on (2026-10-13: a failover resumed 12 jobs whose old
+# workers still ran as pending). A dead run, or one that ended, frees it.
+git init -q -b main "$WORK/live-repo"
+git -C "$WORK/live-repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m zero
+git -C "$WORK/live-repo" worktree add -q -b "night/$id6/codex" "$WORK/live-repo/.claude/worktrees/night-$id6-codex"
+export WORKER_RUN_DIR="$WORK/runs"
+mkdir -p "$WORKER_RUN_DIR/codex-live" "$WORKER_RUN_DIR/codex-ended"
+sleep 600 & live_pid=$!
+printf '%s\n' "$live_pid" >>"$DATA/orchestrators"
+for fx in codex-live codex-ended; do
+  jq -n --argjson pid "$live_pid" --argjson t "$(date +%s)" --arg w "$WORK/live-repo/.claude/worktrees/night-$id6-codex" \
+    '{pid: $pid, pid_started_at: $t, workdir: $w}' >"$WORKER_RUN_DIR/$fx/meta.json"
+done
+printf '0\n' >"$WORKER_RUN_DIR/codex-ended/exit_code"
+night start --resume "$id6" >"$WORK/out" || fail "resume with a live worker"
+assert [ "$(cat "$WORK/out")" = "night $id6 job codex-e1 live: worker-run wait codex-live
+night $id6 resumed: orchestrator on acct-n" ]
+assert jqe '[.jobs[] | [.ref, .state, .run]] == [["codex-e1", "live", "codex-live"], ["f-done", "nothing-to-do", null],
+  ["debt", "nothing-to-do", null], ["debt-2", "pending", null]]' "$R6"
+assert grep -q "^live · vendor · codex-e1 · night/$id6/codex · worker codex-live" <(body <(night report "$id6"))
+assert grep -q "^codex update · in progress · no outcome" <(night latest --menu)
+stop_chat "$(jq -r .session "$R6")"
+kill "$live_pid"; wait "$live_pid" 2>/dev/null
+night start --resume "$id6" >"$WORK/out" || fail "resume once the worker is gone"
+assert [ "$(cat "$WORK/out")" = "night $id6 resumed: orchestrator on acct-n" ]
+assert jqe '.jobs[0] | .state == "pending" and has("run") == false' "$R6"
+stop_chat "$(jq -r .session "$R6")"
+night finish "$id6" >/dev/null
+unset WORKER_RUN_DIR
 
 # Wall: an orchestrator stopped by a usage wall (StopFailure error rate_limit) has its chat ended and
 # the night resumed on an account worker-pick gives room on (2026-10-06: the orchestrator on notcom

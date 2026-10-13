@@ -257,7 +257,7 @@ BROWSER_REASONS = (
 BROWSER_OWNER_STEP, BROWSER_OTHER = "browser owner step", "browser other"
 IMAGE_ORIGIN.update({word: "ours" for word, _ in BROWSER_REASONS})
 IMAGE_ORIGIN.update({BROWSER_OWNER_STEP: "ours", BROWSER_OTHER: "ours"})
-PRELAUNCH_SKIP = ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN")
+PRELAUNCH_SKIP = ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN", "WORKDIR_BUSY")
 
 
 def action_log():

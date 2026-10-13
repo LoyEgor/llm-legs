@@ -947,7 +947,7 @@ assert set(doctor.FAILURE_ORIGIN.values()) == {"ours", "theirs"} and doctor.IMAG
     ("bad output", "browser not sent", "browser price", "browser profile", "browser upload", "browser download",
      "browser no output", "browser hide", "browser drift", "browser owner step", "browser other", "soft outcome"),
     "ours") | {"ungrounded": "theirs"}
-assert doctor.PRELAUNCH_SKIP == ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN")
+assert doctor.PRELAUNCH_SKIP == ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN", "WORKDIR_BUSY")
 assert doctor.PROFILE_HOME_RE.pattern == r"/\.(?:claude|gemini|codex|grok|opencode)-profiles/|/\.gemini/(?:antigravity/brain|tmp)/"
 assert doctor.MAIN_STATE_RE.pattern == r"/\.gemini/(?:antigravity/brain|tmp)/"
 assert [doctor.is_scratch_path(path) for path in ("/tmp/x", "/private/var/folders/x", "/a/scratchpad/x",
