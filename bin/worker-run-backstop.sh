@@ -64,7 +64,10 @@ EOF
 case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) exit 0 ;; esac
 
 lines=''
-for run in "$run_root"/*/; do
+# Every finished run stays for days; sorting that many names in a UTF-8 locale costs more CPU than testing them.
+run_dirs() { local LC_COLLATE=C; runs=("$run_root"/*/); }
+run_dirs
+for run in "${runs[@]}"; do
   run=${run%/}
   [ ! -e "$run/exit_code" ] && [ -f "$run/state.json" ] || continue
   launcher=""
