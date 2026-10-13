@@ -44,11 +44,13 @@ assert jq -e 'select(.tool == "elevenlabs-isolate" and .kind == "audio" and .rc 
 "$ROOT/bin/elevenlabs-speech" --dest "$WORK/a.wav" --text hi --voice abcdefghij0123456789 --dry-run >"$WORK/out" 2>"$WORK/err"
 "$ROOT/bin/elevenlabs-speech" --help >"$WORK/out" 2>"$WORK/err"
 assert test "$(wc -l <"$IMAGE_LEG_LOG")" -eq 1
-printf '#!/bin/sh\nsleep 2\n' >"$WORK/slow-python"
+printf '#!/bin/sh\nexec sleep 30\n' >"$WORK/slow-python"
 chmod +x "$WORK/slow-python"
 ELEVENLABS_PYTHON="$WORK/slow-python" "$ROOT/bin/elevenlabs-sfx" >/dev/null 2>&1 &
 sleep 0.5
+# The wrapper's TERM trap runs only once its foreground vendor ends, so the vendor is ended after it.
 kill -TERM $!
+pkill -TERM -P $!
 wait $!
 assert jq -e 'select(.tool == "elevenlabs-sfx" and .rc == 143)' "$IMAGE_LEG_LOG" >/dev/null
 
