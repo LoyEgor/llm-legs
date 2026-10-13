@@ -14,17 +14,14 @@ export HOME="$WORK/home" TMPDIR="$WORK/tmp"
 export FAKE_VIDEO_CALLS="$WORK/calls" GEMINI_SFX_VIDEO="$ROOT/tests/fixtures/fake-gemini-video-sfx.sh"
 mkdir -p "$HOME" "$TMPDIR" "$WORK/media" "$WORK/out"
 M=$WORK/media
-ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=2' \
-  -af 'volume=-12dB,adelay=1000|1000,apad=whole_dur=4' -t 4 -c:v libx264 -pix_fmt yuv420p -c:a aac "$M/take.mp4" || exit 1
-ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -t 4 -c:v libx264 -pix_fmt yuv420p "$M/noaudio.mp4" || exit 1
-ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -f lavfi -i anullsrc=r=48000:cl=stereo -t 4 \
-  -c:v libx264 -pix_fmt yuv420p -c:a aac "$M/mute.mp4" || exit 1
-ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=4' \
-  -af 'volume=-75dB' -t 4 -c:v libx264 -pix_fmt yuv420p -c:a aac "$M/faint.mp4" || exit 1
-ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=0.15' \
-  -af 'volume=-20dB,adelay=1500|1500,apad=whole_dur=4' -t 4 -c:v libx264 -pix_fmt yuv420p -c:a aac "$M/short.mp4" || exit 1
-ffmpeg -v error -f lavfi -i testsrc2=size=64x48:rate=24 -t 3 -c:v libx264 -pix_fmt yuv420p "$M/scene.mp4" || exit 1
-ffmpeg -v error -f lavfi -i testsrc2=size=64x48:rate=24 -t 12 -c:v libx264 -pix_fmt yuv420p "$M/long.mp4" || exit 1
+ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -f lavfi -i testsrc2=size=64x48:rate=24 \
+  -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=2' -f lavfi -i anullsrc=r=48000:cl=stereo \
+  -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=4' -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=0.15' \
+  -filter_complex '[0:v]split=5[v1][v2][v3][v4][v5];[1:v]split=2[s1][s2];[2:a]volume=-12dB,adelay=1000|1000,apad=whole_dur=4[a1];[4:a]volume=-75dB[a4];[5:a]volume=-20dB,adelay=1500|1500,apad=whole_dur=4[a5]' \
+  -c:v libx264 -pix_fmt yuv420p -c:a aac \
+  -map '[v1]' -map '[a1]' -t 4 "$M/take.mp4" -map '[v2]' -t 4 "$M/noaudio.mp4" -map '[v3]' -map 3:a -t 4 "$M/mute.mp4" \
+  -map '[v4]' -map '[a4]' -t 4 "$M/faint.mp4" -map '[v5]' -map '[a5]' -t 4 "$M/short.mp4" \
+  -map '[s1]' -t 3 "$M/scene.mp4" -map '[s2]' -t 12 "$M/long.mp4" </dev/null || exit 1
 export FAKE_VIDEO_SOURCE="$M/take.mp4" FAKE_VIDEO_NOAUDIO="$M/noaudio.mp4" FAKE_VIDEO_MUTE="$M/mute.mp4" FAKE_VIDEO_FAINT="$M/faint.mp4"
 export FAKE_VIDEO_SHORT="$M/short.mp4"
 : >"$FAKE_VIDEO_CALLS"
@@ -78,8 +75,9 @@ assert grep -qx 'model=abra_t2v_4s_360p' "$WORK/stdout"
 assert grep -qx 'credits=4' "$WORK/stdout"
 assert grep -qE '^seconds=[0-9]+$' "$WORK/stdout"
 assert test "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of csv=p=0 "$out")" = 'pcm_s16le,48000,2'
-assert near "$(seconds "$out")" 2.1 0.25
-assert grep -qx "duration=$(seconds "$out" | awk '{ printf "%.2f", $1 }')" "$WORK/stdout"
+took=$(seconds "$out")
+assert near "$took" 2.1 0.25
+assert grep -qx "duration=$(awk -v s="$took" 'BEGIN { printf "%.2f", s }')" "$WORK/stdout"
 assert near "$(loudness "$out")" -16 1.5
 assert test -z "$(ls "$TMPDIR")"
 row=$(tail -n 1 "$IMAGE_LEG_LOG")
@@ -89,8 +87,9 @@ assert test "$(jq -c '[.tool, .kind, .rc, .account, .size]' <<<"$row")" = '["gem
 assert sfx --dest "$out" --prompt 'a glass clink' --duration 6 --count 2
 assert grep -qx 'ARG=6' "$FAKE_VIDEO_CALLS"
 assert grep -qx 'credits=10' "$WORK/stdout"
-assert grep -qx "variant=$WORK/out/knock-2.wav duration=$(seconds "$WORK/out/knock-2.wav" | awk '{ printf "%.2f", $1 }')" "$WORK/stdout"
-assert near "$(seconds "$WORK/out/knock-2.wav")" 2.1 0.25
+took=$(seconds "$WORK/out/knock-2.wav")
+assert grep -qx "variant=$WORK/out/knock-2.wav duration=$(awk -v s="$took" 'BEGIN { printf "%.2f", s }')" "$WORK/stdout"
+assert near "$took" 2.1 0.25
 
 : >"$FAKE_VIDEO_CALLS"
 scored="$WORK/out/scene.wav"
@@ -104,7 +103,7 @@ assert grep -qx 'credits=20' "$WORK/stdout"
 assert grep -qx "source=$M/scene.mp4 source_duration=3.00" "$WORK/stdout"
 assert near "$(seconds "$scored")" 4 0.05
 
-for mode in limit:3 login:4 usage:2 crash:1; do
+for mode in login:4 usage:2 crash:1; do
   FAKE_VIDEO_MODE=${mode%%:*} expect_rc "${mode##*:}" --dest "$out" --prompt 'a knock'
 done
 FAKE_VIDEO_MODE=limit expect_rc 3 --dest "$out" --prompt 'a knock'
