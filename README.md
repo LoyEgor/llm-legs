@@ -293,6 +293,7 @@ this list):
 - `bin/gemini-music` → `~/.local/bin/gemini-music` — music through the Gemini app's Lyria tool.
 - `bin/gemini-sfx` → `~/.local/bin/gemini-sfx` — sound effects from a Flow Omni render.
 - `bin/gemini-listen` → `~/.local/bin/gemini-listen` — a Gemini model's judgement of video or audio.
+- `bin/blender-render` → `~/.local/bin/blender-render` — local Blender stills, loops and GLB web models (`docs/blender.md`).
 - `bin/audio-score` → `~/.local/bin/audio-score` — local UTMOS and Audiobox Aesthetics scores per audio file (no account).
 - `bin/gemini-web` → `~/.local/bin/gemini-web` — the hidden Chrome behind the Gemini media scripts (`login <profile>`, which `geminib web <profile>` runs for a roster account).
 - `bin/chatgpt-web` → `~/.local/bin/chatgpt-web` — the same hidden Chrome on chatgpt.com, behind `codex-image --route web` (`login <codex profile>`, which `codexb web <codex profile>` runs for a roster account).
