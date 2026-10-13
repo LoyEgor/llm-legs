@@ -111,14 +111,14 @@
   {
    "id": "suite:llm-legs/test_worker_pick",
    "title": "llm-legs/test_worker_pick",
-   "audited_at": "2026-10-13T15:33:29+03:00",
+   "audited_at": "2026-10-13T17:20:30+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
-   "cpu_run": 97.0,
-   "wall_run": 15.7,
-   "cpu_min_day": 39.74,
-   "wall_min_day": 18.3,
+   "cpu_run": 96.8,
+   "wall_run": 26.3,
+   "cpu_min_day": 41.0,
+   "wall_min_day": 19.8,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
     "llm-legs/tests/test_worker_pick.sh": "38981facb5205d38e33db83d1c1c9be6b69b53a0"
    },
    "verdict": "cut",
@@ -5700,18 +5700,18 @@
   {
    "id": "suite:llm-legs/test_run_suites_journal",
    "title": "llm-legs/test_run_suites_journal",
-   "audited_at": "2026-10-13T15:33:27+03:00",
+   "audited_at": "2026-10-13T17:20:28+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
-   "cpu_run": 15.6,
-   "wall_run": 24.2,
-   "cpu_min_day": 13.27,
-   "wall_min_day": 79.73,
+   "cpu_run": 15.4,
+   "wall_run": 22.7,
+   "cpu_min_day": 13.57,
+   "wall_min_day": 30.61,
    "sources": {
     "llm-legs/tests/affected": "55023ef490c922f3b44dea74eb6ff55b901ac430",
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
     "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
     "llm-legs/tests/slow-suites": "082e0d3bce46707e7b7b7bd14e4d45fff9553470",
-    "llm-legs/tests/test_run_suites_journal.sh": "4e0c90eca2f459b2fd263406f59942c2a8a23f22"
+    "llm-legs/tests/test_run_suites_journal.sh": "34542b44eb658aec7d6ceb72477c06ae5d1dde8a"
    },
    "verdict": "cut",
    "zero": "removal saves ~14 wall-s a run, 16 wall-min/day; loses the only check that run-suites and direct runs journal one row each, the signal and slot paths, tests/affected and the slow layer",
@@ -5720,15 +5720,15 @@
   {
    "id": "suite:llm-legs/test_system_doctor",
    "title": "llm-legs/test_system_doctor",
-   "audited_at": "2026-10-13T15:33:28+03:00",
+   "audited_at": "2026-10-13T17:20:29+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
-   "cpu_run": 7.6,
-   "wall_run": 18.1,
-   "cpu_min_day": 6.93,
-   "wall_min_day": 26.43,
+   "cpu_run": 7.5,
+   "wall_run": 12.0,
+   "cpu_min_day": 7.11,
+   "wall_min_day": 20.5,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_system_doctor.sh": "4d97d6d866d5be50db462de7cbba7cab9b379ca1"
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/test_system_doctor.sh": "332dac9fdcca5312bdddde097de769c89533cd1b"
    },
    "verdict": "cut",
    "zero": "removal saves ~12 wall-s a run, 14.7 wall-min/day; loses every check of the macOS system doctor (probes, judge, harvest, install-agent)",
@@ -5737,14 +5737,14 @@
   {
    "id": "suite:llm-legs/test_llm_limits",
    "title": "llm-legs/test_llm_limits",
-   "audited_at": "2026-10-13T15:33:28+03:00",
+   "audited_at": "2026-10-13T17:20:29+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
-   "cpu_run": 32.2,
-   "wall_run": 19.5,
-   "cpu_min_day": 8.43,
-   "wall_min_day": 15.81,
+   "cpu_run": 33.1,
+   "wall_run": 38.2,
+   "cpu_min_day": 8.92,
+   "wall_min_day": 19.15,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
     "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
     "llm-legs/tests/test_llm_limits.sh": "619b7c8bfd8d8856a1cf40c833aaef577669862f"
    },
@@ -5755,15 +5755,15 @@
   {
    "id": "suite:llm-legs/test_geminib",
    "title": "llm-legs/test_geminib",
-   "audited_at": "2026-10-13T15:33:30+03:00",
+   "audited_at": "2026-10-13T17:20:30+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
-   "cpu_run": 45.8,
-   "wall_run": 40.3,
-   "cpu_min_day": 10.58,
-   "wall_min_day": 18.51,
+   "cpu_run": 46.1,
+   "wall_run": 50.5,
+   "cpu_min_day": 11.3,
+   "wall_min_day": 19.48,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_geminib.sh": "136f130be2b5f3f4e07c7bdb738d297c7a6630aa"
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/test_geminib.sh": "5a371bbb835c0c6ce35b0392e014913bd90851d4"
    },
    "verdict": "cut",
    "zero": "removal saves ~39 wall-s a run, 13.6 wall-min/day; loses geminib routing, roster, keychain, web-login, pool and export-token checks",
