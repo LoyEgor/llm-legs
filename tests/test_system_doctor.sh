@@ -47,6 +47,7 @@ import io
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -535,14 +536,22 @@ os.chmod(busy, 0o755)
 
 
 def install_waits(tries):
-    waits, out, err, sleep = [], io.StringIO(), io.StringIO(), m.time.sleep
+    waits, out, err, real_time = [], io.StringIO(), io.StringIO(), m.time
+
+    # Never the shared time.sleep: subprocess's wait polls through it and would count as bootstrap pauses.
+    class PausesOnly:
+        sleep = staticmethod(waits.append)
+
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
     os.environ.update(SYSTEM_DOCTOR_LAUNCHCTL=busy, BUSY_TRIES=tries)
-    m.time.sleep = waits.append
+    m.time = PausesOnly()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = m.install_agent()
     finally:
-        m.time.sleep = sleep
+        m.time = real_time
         os.environ["SYSTEM_DOCTOR_LAUNCHCTL"] = os.path.join(work, "bin", "launchctl")
         del os.environ["BUSY_TRIES"]
     return rc, out.getvalue(), err.getvalue(), waits
@@ -1164,7 +1173,8 @@ run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch",
 blinds = sorted(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json")), key=os.path.getmtime)
 routed = {p["id"]: p for p in json.load(open(blinds[-1]))["problems"]} if len(blinds) == 2 else {}
 check(run.returncode == 0 and sorted(routed) == ["collector:ssd-sampler"]
-      and routed["collector:ssd-sampler"]["component"]["files"] == [os.path.join(root, "bin", "system-doctor")],
+      and routed["collector:ssd-sampler"]["component"]["files"]
+      == [re.sub(r"/\.claude/worktrees/[^/]+(?=/)", "", os.path.join(os.path.realpath(root), "bin", "system-doctor"))],
       "a blind System collector is a night problem on bin/system-doctor: %s %s" % (routed, run.stderr))
 subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "abandon", json.load(open(blinds[-1]))["id"]], capture_output=True,
                env=env)
