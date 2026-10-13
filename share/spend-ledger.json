@@ -2202,6 +2202,22 @@
    "verdict": "kept",
    "zero": "removal saves 0.5 CPU-s a run (0.0 CPU-min/day); loses the only end-to-end pin that stop-dispatch runs the llm-legs backstop first, never deferred, journals its hold and its failure, and spares a run its live wait owns",
    "note": "7 asserts each red under its mutation (owned-wait deletion in the backstop proven red); 3 dispatches are the minimum for hold/owned/error; HOME and stores isolated; no sleep beyond the live-pid fixture"
+  },
+  {
+   "id": "suite:claude-setup/test_jira_gates",
+   "title": "claude-setup/test_jira_gates",
+   "audited_at": "2026-10-13T06:22:13+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-stop-backstop-20261012T235214Z-2406",
+   "cpu_run": 0.9,
+   "wall_run": 1.6,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.03,
+   "sources": {
+    "claude-setup/tests/test_jira_gates.sh": "211c0325b189355dbb453e02c7d0a8a5157092f7"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.9 CPU-s a run (0.0 CPU-min/day); loses the only pins of jira-mention-gate.sh and demo-link-gate.sh (deny on no addressee, deny on an unlinked demo twin, compare view only against an existing base)",
+   "note": "fixture git isolated by GIT_CONFIG_GLOBAL=/dev/null: the owner's global hooksPath ran the autopush reference-transaction chain on every fixture ref move (1.65 -> 0.90 CPU-s a run, 21 asserts unchanged); detached-HEAD check was vacuous under deletion of the HEAD guard, now red via a HEAD_demo branch"
   }
  ]
 }
