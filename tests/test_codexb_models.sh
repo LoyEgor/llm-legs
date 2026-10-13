@@ -106,7 +106,7 @@ assert_eq "$(bash -c '. "$1/share/worker-model.sh"; worker_model_default_effort 
 medium|high|low|xhigh'
 assert_eq "$(slug_of gpt-5.6-sol)" gpt-5.6-sol
 assert_eq "$(slug_of luna; printf %s $?)" 1
-assert_eq "$(bash -c '. "$1/share/worker-model.sh"; worker_model_codex_split gpt-6.1-astra; worker_model_codex_split gpt-5.5; worker_model_codex_split codex-auto-review' _ "$ROOT")" \
+assert_eq "$(bash -c '. "$1/share/worker-model.sh"; for s in gpt-6.1-astra gpt-5.5 codex-auto-review; do worker_model_codex_split_r "$s"; printf "%s\t%s\n" "$WORKER_MODEL_R" "$_WM_CODEX_VERSION"; done' _ "$ROOT")" \
   "astra${TAB}6.1
 gpt-5.5${TAB}5.5
 codex-auto-review${TAB}-"
@@ -240,5 +240,13 @@ rc=0; bash "$SCRIPT" refuse-model alpha gpt-6.1-astra >/dev/null 2>"$WORK/err" |
 [ "$rc" -eq 2 ] && grep -q '^usage: codexb' "$WORK/err" || fail "assert $asserts: refuse-model exited $rc"
 assert test ! -e "$CODEXB_PROFILES_DIR/.codexb/refused-models"
 : >"$WORK/err"
+
+# --- One jq per cache home, none per row ---
+mkdir -p "$WORK/count"
+printf '#!/usr/bin/env bash\nprintf x >>%q\nexec %q "$@"\n' "$WORK/jq-count" "$(command -v jq)" >"$WORK/count/jq"
+chmod +x "$WORK/count/jq"
+: >"$WORK/jq-count"
+assert_eq "$(PATH="$WORK/count:$PATH" models --family astra)" gpt-6.1-astra
+assert_eq "$(wc -c <"$WORK/jq-count" | tr -d ' ')" 4
 
 printf 'PASS: %s assertions\n' "$asserts"

@@ -189,12 +189,7 @@ worker_model_grok_launch_model() { # model role [chat-pin-file] [account]
 # A codex slug is `gpt-<version>-<family>`; a slug with no word after the version (`gpt-5.5`) or
 # no version at all is a family of its own. `codexb models` ranks by this split and the table keys
 # on the family, so both read this one rule.
-worker_model_codex_split() { # slug -> family<TAB>version (`-` when none)
-  worker_model_codex_split_r "$@"
-  printf '%s\t%s\n' "$WORKER_MODEL_R" "$_WM_CODEX_VERSION"
-}
-
-worker_model_codex_split_r() { # slug -> WORKER_MODEL_R family, _WM_CODEX_VERSION version
+worker_model_codex_split_r() { # slug -> WORKER_MODEL_R family, _WM_CODEX_VERSION version (`-` when none)
   local slug="${1-}"
   if [[ "$slug" =~ ^gpt-([0-9]+(\.[0-9]+)*)-(.+)$ ]]; then
     WORKER_MODEL_R=${BASH_REMATCH[3]}; _WM_CODEX_VERSION=${BASH_REMATCH[1]}

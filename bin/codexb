@@ -600,13 +600,17 @@ models_builtin() { # slug<TAB>label<TAB>priority<TAB>visibility<TAB>efforts
     codex-auto-review 'Codex Auto Review' 43 hide low,medium,high,xhigh,max
 }
 
-models_cache_rows() { # cache -> the builtin's columns, nothing when unusable
-  jq -r '.models | select(type == "array" and length > 0) | .[]
+models_jq_rows='def rows: .models | select(type == "array" and length > 0) | .[]
     | [.slug, (.display_name // .slug), (.priority // 999 | tostring), (.visibility // "list"),
        ([.supported_reasoning_levels[]? | .effort? // . | strings] | join(","))]
-    | select(.[0] | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) | @tsv' "$1" 2>/dev/null
+    | select(.[0] | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) | @tsv;'
+models_cache_rows() { # cache -> the builtin's columns, nothing when unusable
+  jq -r "$models_jq_rows rows" "$1" 2>/dev/null
 }
-cache_epoch() { jq -r '(.fetched_at | strings | sub("\\.[0-9]+"; "") | fromdateiso8601?) // 0' "$1" 2>/dev/null || printf '0\n'; }
+models_cache_summary() { # cache -> client_version<TAB>rows<TAB>fetched epoch, nothing when unusable
+  jq -r "$models_jq_rows"' [rows] as $rows | select($rows | length > 0)
+    | "\(.client_version // "" | tostring)\t\($rows | length)\t\((.fetched_at | strings | sub("\\.[0-9]+"; "") | fromdateiso8601?) // 0)"' "$1" 2>/dev/null
+}
 
 cache_field() { jq -r --arg key "$2" '.[$key] // "" | tostring' "$1" 2>/dev/null; }
 timeout_command() {
@@ -629,14 +633,14 @@ timeout_command() {
 # paid family machine-wide; the day keeps an unused home's list of a model the server has since
 # dropped from outliving every fresher one. fetched_at breaks a tie. No network here.
 models_source() { # -> path of the cache to read, or nothing
-  local path rows='' kept='' row client installed listed
+  local path rows='' kept='' row client installed summary
   if [ -n "${CODEXB_MODELS_CACHE:-}" ]; then
     [ -z "$(models_cache_rows "$CODEXB_MODELS_CACHE")" ] || printf '%s\n' "$CODEXB_MODELS_CACHE"
     return 0
   fi
   for path in "$HOME/.codex/models_cache.json" "$profiles_dir"/*/models_cache.json; do
-    [ -r "$path" ] && listed=$(models_cache_rows "$path") && [ -n "$listed" ] || continue
-    rows+="$(cache_field "$path" client_version)"$'\t'"$(wc -l <<<"$listed" | tr -d ' ')"$'\t'"$(cache_epoch "$path")"$'\t'"$path"$'\n'
+    [ -r "$path" ] && summary=$(models_cache_summary "$path") && [ -n "$summary" ] || continue
+    rows+="$summary"$'\t'"$path"$'\n'
   done
   [ -n "$rows" ] || return 0
   if [ "$(printf '%s' "$rows" | cut -f1 | LC_ALL=C sort -u | wc -l)" -gt 1 ] &&
@@ -676,11 +680,11 @@ account_models_source() { # name -> path, or nothing
 }
 
 models_ranked() { # all(true|false) source-path
-  local slug label priority visibility efforts split
+  local slug label priority visibility efforts
   { if [ -n "$2" ]; then models_cache_rows "$2"; else models_builtin; fi; } |
     while IFS=$'\t' read -r slug label priority visibility efforts; do
-      split=$(worker_model_codex_split "$slug")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$split" "$label" "$efforts" "$priority" "$visibility"
+      worker_model_codex_split_r "$slug"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$WORKER_MODEL_R" "$_WM_CODEX_VERSION" "$label" "$efforts" "$priority" "$visibility"
     done |
     awk -F'\t' -v all="$1" '
       function newer(a, b,   x, y, n, m, i) {
