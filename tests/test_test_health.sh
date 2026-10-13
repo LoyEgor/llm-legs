@@ -203,9 +203,8 @@ check(files["bin/tool-a"]["runs"] == 2 and files["bin/tool-x"]["runs"] == 7,
       "fan-out: priced from the targeted runs holding every suite a file pulls, each run to its widest file: %s"
       % section["fan_out"])
 check(files["bin/tool-x"]["suites"] == 1, "fan-out: a helper a suite sources carries its names into it")
-scan = th.scans([repo], {}, False)[repo]
-check(th.covering(scan)["tool-y"] == {"test_consistency.sh"}, "fan-out: shared-invariants.md names pull test_consistency")
 held = json.load(open(th.cache_path()))
+check(th.covering(held[repo]["scan"])["tool-y"] == {"test_consistency.sh"}, "fan-out: shared-invariants.md names pull test_consistency")
 saved, th.repo_scan = th.repo_scan, lambda top: (_ for _ in ()).throw(AssertionError("rescanned"))
 check(th.scans([repo], held, False)[repo] == held[repo]["scan"], "fan-out: an unchanged repo reads its cached scan")
 write("tests/test_c.sh", "now tool-x too\n")
