@@ -10,7 +10,7 @@ export PICK_RC=0 PICK_ACCOUNT=effortacct
 export STUB_MODEL_USAGE='{"opus":{"canonicalModel":"claude-opus-5-5"},"claude-haiku-4-5-20251001":{"outputTokens":5}}'
 : >"$STUB_DIR/claudeb_drop_effort"
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test "$(grep -c '^CLAUDEB_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=--effort$' "$CALL_LOG")" -eq 1
 assert jq -e '.effort_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
@@ -127,7 +127,7 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=filesacct
 start_ok codex
-assert await_done
+assert await_exit
 assert grep -qx 'RUN-FILES: unknown (no session transcript for codex-session)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
@@ -188,7 +188,7 @@ printf 'MD-GUARD: the orchestrator wrote this one\n\n   Fix the gate wording %01
 start_ok claudeb
 assert test "$(cat "$RUN_DIR/title")" = "Fix the gate wording $(printf '%079d' 0)"
 assert test "$(grep -c '^MD-GUARD' "$RUN_DIR/brief.launch")" = 1
-assert await_done
+assert await_exit
 mv "$WORK/brief.plain" "$WORK/brief"
 # A resumed brief is titled by the task on its RESUME line, the context below only when that is bare.
 brief_title_of() ( eval "$(sed -n '/^brief_title() {/,/^}/p' "$RUNNER")"; brief_title "$1" )
@@ -247,7 +247,7 @@ printf 'brand new\n' >"$DIRT_REPO/bin/created-through-a-redirect"
 mkdir -p "$DIRT_REPO/notes"
 printf 'brand new\n' >"$DIRT_REPO/notes/inside-an-untracked-directory"
 gate_open
-assert await_done
+assert await_exit
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP"
 assert grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/files"
 # What the shell wrote, no record of this run names: a snapshot says a file moved, never who moved
@@ -268,7 +268,7 @@ tool_call Bash command 'sed -i "" s/x/y/ bin/the-co-tenant-was-already-editing-t
 start_gated claudeb --workdir "$DIRT_REPO"
 printf 'the run rewrote it\n' >>"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
 gate_open
-assert await_done
+assert await_exit
 # The floor still SEES a rewrite of a file that was already dirty at launch — that is what the
 # launch-time shas are for — it just answers for it as nobody's rather than as this run's.
 assert grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/dirty"
@@ -282,7 +282,7 @@ tool_call Edit file_path "$DIRT_TOP/tests/tracked-by-the-editor" \
 start_gated claudeb --workdir "$DIRT_REPO"
 printf 'and again\n' >"$DIRT_REPO/bin/somebody-elses-file"
 gate_open
-assert await_done
+assert await_exit
 assert test "$(grep -c '^PARTIAL: ' "$RUN_DIR/files")" -eq 0
 assert test ! -e "$RUN_DIR/dirty"
 
@@ -298,7 +298,7 @@ start_gated claudeb --workdir "$DIRT_REPO"
 printf 'the run wrote this\n' >"$DIRT_REPO/tests/edited-by-the-run"
 printf 'a co-tenant wrote this\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
 gate_open
-assert await_done
+assert await_exit
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: tests/edited-by-the-run' <<<"$report"
@@ -320,7 +320,7 @@ tool_call Edit file_path "$DIRT_TOP/bin/by-a-subagent" \
 start_gated claudeb --workdir "$DIRT_REPO"
 printf 'a subagent wrote this\n' >"$DIRT_REPO/bin/by-a-subagent"
 gate_open
-assert await_done
+assert await_exit
 assert grep -qx 'bin/by-a-subagent' "$RUN_DIR/files"
 assert_fails grep -q 'by-a-subagent' "$RUN_DIR/files-note"
 rm -r "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session"
@@ -337,7 +337,7 @@ start_gated claudeb --workdir "$DIRT_REPO"
 printf 'the run wrote this again\n' >"$DIRT_REPO/tests/edited-by-the-run"
 printf 'a co-tenant wrote this again\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
 gate_open
-assert await_done
+assert await_exit
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: tests/edited-by-the-run' <<<"$report"
@@ -358,7 +358,7 @@ start_gated claudeb --workdir "$DIRT_REPO"
 printf 'once more\n' >"$DIRT_REPO/tests/edited-by-the-run"
 printf 'once more\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
 gate_open
-assert await_done
+assert await_exit
 assert grep -qx 'tests/edited-by-the-run' "$RUN_DIR/files"
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
 assert_fails grep -q 'written-by-a-co-tenant' "$RUN_DIR/produced"
@@ -383,7 +383,7 @@ start_gated claudeb --workdir "$DIRT_REPO"
 printf 'unreadable\n' >"$DIRT_REPO/tests/edited-by-the-run"
 printf 'unreadable\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
 gate_open
-assert await_done
+assert await_exit
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
 assert_fails grep -qx 'tests/edited-by-the-run' "$RUN_DIR/files"
 assert grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/dirty"
@@ -402,7 +402,7 @@ start_gated claudeb --workdir "$DIRT_REPO/tests"
 printf 'from a subdirectory\n' >"$DIRT_REPO/bin/edited-from-a-subdirectory"
 printf 'from a subdirectory\n' >"$DIRT_REPO/tests/named-from-a-subdirectory"
 gate_open
-assert await_done
+assert await_exit
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP/tests"
 assert grep -qx 'named-from-a-subdirectory' "$RUN_DIR/files"
 assert_fails grep -qx 'tests/named-from-a-subdirectory' "$RUN_DIR/files"
@@ -421,7 +421,7 @@ assert test -e "$RUN_DIR/dirty-before"
 rm -f "$RUN_DIR/dirty-before-shas"
 printf 'nobody measured the floor\n' >"$DIRT_REPO/bin/without-a-floor"
 gate_open
-assert await_done
+assert await_exit
 assert test ! -e "$RUN_DIR/dirty"
 
 clear_stub
@@ -429,7 +429,7 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ somewhere' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 start_ok claudeb
-assert await_done
+assert await_exit
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/dirty"
 assert test ! -e "$RUN_DIR/dirty-before"
@@ -464,7 +464,7 @@ EOF
         >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
     fi
     start_ok "$vendor" --workdir "$DIRT_REPO"
-    assert await_done
+    assert await_exit
     path="bin/shell-only-$vendor"
     assert_fails grep -qx "$path" "$RUN_DIR/files"
     assert grep -qx "$path" "$RUN_DIR/dirty"
@@ -506,7 +506,7 @@ EOF
     git -C "$DIRT_REPO" show HEAD:bin/the-co-tenant-was-already-editing-this \
       >"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
     gate_open
-    assert await_done
+    assert await_exit
     assert bash -c '! grep -qx "$1" "$2"' \
       'rule change: restoring a co-tenant path does not establish ownership' \
       'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/files"
@@ -549,7 +549,7 @@ EOF
   tool_call Bash command 'cp -R /tmp/tree bin/guard-tree; cp /tmp/x bin/guard-recorded' \
     >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
   start_ok claudeb --workdir "$DIRT_REPO"
-  assert await_done
+  assert await_exit
   assert grep -qx 'bin/guard-recorded' "$RUN_DIR/files"
   assert grep -qx 'bin/guard-tree/one' "$RUN_DIR/files"
   assert_fails grep -qx 'bin/guard-tree' "$RUN_DIR/files"
@@ -587,7 +587,7 @@ EOF
   tool_call Bash command $'python3 - <<\'EOF\'\nopen("bin/committed-by-run", "w").write("x")\nEOF\ngit add -A bin && git commit -qm "run commits what python wrote"' \
     >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
   start_ok claudeb --workdir "$DIRT_REPO"
-  assert await_done
+  assert await_exit
   assert grep -qx 'bin/committed-by-run' "$RUN_DIR/files"
   assert grep -qx 'RUN-FILE: bin/committed-by-run' <<<"$("$RUNNER" report "$RUN_ID")"
   assert_fails grep -q 'committed-by-other' "$RUN_DIR/files"
@@ -616,7 +616,7 @@ EOF
   tool_call Bash command 'rsync -a /tmp/src/ .' \
     >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
   start_ok claudeb --workdir "$DIRT_REPO"
-  assert await_done
+  assert await_exit
   assert grep -qx 'bin/guard-top-copied' "$RUN_DIR/files"
   assert_fails grep -q 'guard-top-copied' "$RUN_DIR/dirty"
   assert_fails grep -qxF "$(cd "$DIRT_REPO" && pwd -P)" "$RUN_DIR/files-external"
@@ -635,7 +635,7 @@ snapshot_blobs_packed_tests() {
   clear_stub
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
   start_ok claudeb --workdir "$repo"
-  assert await_done
+  assert await_exit
   until git -C "$repo" count-objects -v | grep -qx 'count: 0' || [ "$tries" -ge 300 ]; do
     sleep 0.1
     tries=$((tries + 1))
@@ -658,7 +658,7 @@ knobs_changed_tests() {
   set_config 'codex_effort=high'
   export PICK_ACCOUNT=fast PICK_RC=0
   start_ok codex --workdir "$repo"
-  assert await_done
+  assert await_exit
   git -C "$repo" rev-parse HEAD >"$RUN_DIR/head-before"
   printf 'model: sonnet\n' >"$repo/agents/w.md"
   printf '{\n  "model": "opus",\n  "hooks": {"Stop": []}\n}\n' >"$repo/settings.json"
@@ -683,7 +683,7 @@ knobs_changed_tests() {
   clear_stub
 }
 if suite_shard_owns 3 files-knobs; then knobs_changed_tests; fi
-if suite_shard_owns 3 files-blobs-packed; then snapshot_blobs_packed_tests; fi
+if suite_shard_owns 1 files-blobs-packed; then snapshot_blobs_packed_tests; fi
 
 
 echo "PASS: $asserts asserts; served model and cost, transcript file lists, snapshot and guard attribution, the run title and the injected MD-GUARD"
