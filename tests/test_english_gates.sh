@@ -48,6 +48,23 @@ eq "$(printf '%s' 'Проверь это: “the gate is fine and the whole suit
 python3 -c "print('a' * 200000)" >"$WORK/long-token"
 eq "$(perl -e 'alarm 10; exec @ARGV' "$SHARE" <"$WORK/long-token" | cut -d' ' -f1)" "0"
 eq "$(printf '%s' "$(printf 'Fix the gate. %.0s' {1..30})«сделай ревью» «не парься» «сделай коммит» «подумай как следует»" | "$SHARE" | cut -d' ' -f1)" "0"
+share() { printf '%s' "$1" | "$SHARE"; }
+eq "$(share 'Hello world, this is a report')" "0 23"
+eq "$(share 'Отчёт готов')" "100 10"
+# A straight quote is a string literal, so it is not an exemption: agent("Проверь") is a brief.
+eq "$(share 'He asked for "максимально автономно" and I did it')" "52 39"
+eq "$(share 'He asked for “максимально автономно” and I did it')" "0 19"
+eq "$(share 'He asked for „максимально автономно“ and I did it')" "0 19"
+eq "$(share 'He said "всё готово')" "60 15"
+eq "$(share $'before\n```\nпривет мир вот код\n```\nafter')" "0 11"
+eq "$(share 'the identifier `переменная` is Russian')" "0 22"
+eq "$(share '1234 !!! ---')" "0 0"
+eq "$(share '')" "0 0"
+# Ukrainian is Cyrillic: a gate that only knew the Russian alphabet would wave it through.
+eq "$(share 'Звіт готовий')" "100 11"
+mixed=$(share 'The suite passes, all twenty three asserts green, nothing else changed готово')
+eq "${mixed%% *}" "10"
+eq "$("$SHARE" --max)" "15"
 
 # --- 2. the brief worker-run is handed --------------------------------------
 # The preamble tells the worker who reads it, and it is the FIRST thing said: the rule the reports
