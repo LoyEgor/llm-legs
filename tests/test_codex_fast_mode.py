@@ -31,8 +31,7 @@ class FastModeTests(unittest.TestCase):
             fake_bin = home / "bin"
             fake_bin.mkdir()
             fake = fake_bin / "codex"
-            fake.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
-                            'print(json.dumps([os.environ.get("CODEX_HOME"),sys.argv[1:]]))\n')
+            fake.write_text('#!/bin/sh\nprintf \'%s\\0\' "$CODEX_HOME" "$@"\n')
             fake.chmod(0o755)
             env = dict(os.environ, HOME=str(home), CODEXB_PROFILES_DIR=str(profiles),
                        PATH=str(fake_bin) + os.pathsep + os.environ["PATH"])
@@ -45,17 +44,19 @@ class FastModeTests(unittest.TestCase):
 
             self.assertEqual(run("fast-mode", "alpha"), "off")
             self.assertEqual(run("fast-mode", "alpha", "off"), "off")
+            def launched(*args):
+                home_and_args = run("profile", *args).split("\0")[:-1]
+                return home_and_args[0], home_and_args[1:]
+
             self.assertEqual(run("fast-mode", "alpha"), "off")
-            launched_home, args = json.loads(run("profile", "alpha", "--help"))
+            launched_home, args = launched("alpha", "--help")
             self.assertEqual(Path(launched_home).resolve(), base.resolve())
             self.assertEqual(args, ["--help"])
             self.assertEqual(run("fast-mode", "other"), "off")
-            self.assertEqual(json.loads(run("profile", "other", "--help"))[1],
-                             ["--help"])
+            self.assertEqual(launched("other", "--help")[1], ["--help"])
             self.assertEqual(run("fast-mode", "alpha", "on"), "on")
             self.assertEqual(run("fast-mode", "alpha"), "on")
-            self.assertEqual(json.loads(run("profile", "alpha", "--help"))[1],
-                             ["--help"])
+            self.assertEqual(launched("alpha", "--help")[1], ["--help"])
             self.assertEqual((profiles / ".codexb/fast-mode/alpha").read_text(), "fast\n")
             for name in ("main", "unknown", "../escape"):
                 run("fast-mode", name, "on", success=False)
@@ -101,11 +102,9 @@ class FastModeTests(unittest.TestCase):
             )
             self.assertEqual(run("fast-mode", "disabled"), "off")
             self.assertEqual(run("fast-mode", "disabled", "on"), "on")
-            self.assertEqual(json.loads(run("profile", "disabled", "--help"))[1],
-                             ["--help"])
+            self.assertEqual(launched("disabled", "--help")[1], ["--help"])
 
-            override = json.loads(run("profile", "alpha", "-c", 'service_tier="default"',
-                                      "--disable", "fast_mode", "--help"))
+            override = launched("alpha", "-c", 'service_tier="default"', "--disable", "fast_mode", "--help")
             self.assertEqual(override[1],
                              ["-c", 'service_tier="default"', "--disable", "fast_mode", "--help"])
 
