@@ -92,7 +92,8 @@ store_lock_acquire() {
     tries=$((tries + 1))
     if [ "$tries" -ge "$max" ]; then
       store_lock_waited "$lock (gave up)" "$waited"
-      ! declare -F limit_hit >/dev/null || limit_hit store-lock.retries "$max" count retry-exhausted \
+      # One try is a try-lock, whose refusal is its answer: slot polls and night-run's lock make it every tick.
+      [ "$max" -eq 1 ] || ! declare -F limit_hit >/dev/null || limit_hit store-lock.retries "$max" count retry-exhausted \
         "the write under $1: refused after $max tries behind holder ${store_lock_owner:-unknown}" 'share/store-lock.sh:local max=${LLM_STORE_LOCK_RETRIES'
       return 1
     fi
