@@ -3501,6 +3501,38 @@ assert_eq "" "$(cat "$WORK/timing.err")"
 # The default location is under HOME, which this suite points at its own tree.
 assert test -s "$HOME/.cache/harness-doctor/statusline/$(date +%Y-%m-%d).tsv"
 
+# Away replay: under a fresh away mark (presence.lua) a chat whose transcript has not moved since its
+# last full render repeats that render, timing row `a`; a moved transcript, a stale mark or no
+# transcript renders in full, and a full render while away restamps the cache even when unchanged.
+AWAY_DIR="$WORK/away"
+mkdir -p "$AWAY_DIR/speed/presence"
+away_transcript="$AWAY_DIR/transcript.jsonl"
+: > "$away_transcript"
+away_payload=$(statusline_payload away-sess "{\"transcript_path\":\"$away_transcript\"}")
+away_run() { SPEED_DOCTOR_DIR="$AWAY_DIR/speed" HARNESS_DOCTOR_DIR="$AWAY_DIR/hd" run_statusline "${1:-$away_payload}"; }
+away_last() { tail -1 "$AWAY_DIR/hd/statusline/$(date +%Y-%m-%d).tsv" | cut -f3,5 | tr '\t' ' '; }
+away_mark() { printf '%s\t%s\n' "$(($(date +%s) - 900))" "$(($(date +%s) - $1))" > "$AWAY_DIR/speed/presence/away"; }
+away_full=$(away_run)
+assert_eq "away-sess 0" "$(away_last)"
+printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-away-sess"
+away_mark 30
+assert_eq REPLAYED "$(away_run)"
+assert_eq "away-sess a" "$(away_last)"
+: > "$away_transcript"
+assert_eq "$away_full" "$(away_run)"
+assert_eq "away-sess 0" "$(away_last)"
+: > "$away_transcript"
+assert_eq "$away_full" "$(away_run)"
+assert_eq "away-sess 1" "$(away_last)"
+assert_eq "$away_full" "$(away_run)"
+assert_eq "away-sess a" "$(away_last)"
+printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-away-sess"
+away_mark 600
+assert_eq "$away_full" "$(away_run)"
+away_mark 30
+printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-away-sess"
+assert_eq "$away_full" "$(away_run "$(statusline_payload away-sess)")"
+
 # file_mtime/file_inode/file_size through bash's stat loadable must answer what the stat(1)
 # fallback does, lstat included; a BASH with no lib/bash beside it takes the fallback.
 STAT_DIR="$WORK/stat-helpers"

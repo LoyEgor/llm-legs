@@ -48,6 +48,42 @@ statusline_dir=${statusline_self%/*}
 . "$statusline_dir/../share/codex-accounts.sh"
 . "$statusline_dir/../tests/lib/suite-journal.sh" --lib
 . "$statusline_dir/../share/statusline-probe.sh"
+. "$statusline_dir/../share/presence.sh"
+
+# Render timing for the Harness doctor, which prunes the files itself. One O_APPEND write per
+# render keeps concurrent sessions' lines whole without a lock. $1 = the session, $2 = 1 unchanged, 0 changed,
+# - no session, a away replay.
+statusline_timing_row() {
+  local dir="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/statusline" day end_us cpu_ms
+  printf -v day '%(%Y-%m-%d)T' -1
+  end_us=${EPOCHREALTIME//[!0-9]/}
+  suite_journal_cpu_ms cpu_ms ''
+  printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2" 2>/dev/null \
+    >>"$dir/$day.tsv" ||
+    { mkdir -p "$dir" 2>/dev/null &&
+      printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2" 2>/dev/null \
+        >>"$dir/$day.tsv"; }
+}
+
+# Away replay (docs/statusline-contract.md "Away replay"): while Egor is away, a chat whose transcript
+# has not moved since its last full render repeats that render — no jq, no git, no probe. presence.lua
+# drops the mark within seconds of his return, and the next refresh renders in full.
+statusline_away=0
+if presence_away "$EPOCHSECONDS" && [[ $input =~ \"session_id\"[[:space:]]*:[[:space:]]*\"([^\"/]+)\" ]]; then
+  statusline_away=1
+  away_sid=${BASH_REMATCH[1]}
+  away_render="$statusline_cache_dir/render-$away_sid"
+  away_out=''
+  if [[ $input =~ \"transcript_path\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]] && [ -s "$away_render" ] &&
+    ! [ "${BASH_REMATCH[1]}" -nt "$away_render" ]; then
+    { IFS= read -r -d '' away_out <"$away_render"; } 2>/dev/null
+  fi
+  if [ -n "$away_out" ]; then
+    printf '%s' "$away_out"
+    statusline_timing_row "$away_sid" a
+    exit 0
+  fi
+fi
 
 statusline_parent_dir() {
   local path="$1"
@@ -2328,23 +2364,14 @@ if [ -n "$session_id" ]; then
   { IFS= read -r -d '' statusline_prev < "$statusline_cache_dir/render-$session_id"; } 2>/dev/null
   if [ "$statusline_prev" = "$statusline_out" ]; then
     statusline_same=1
+    # Away, the replay is judged by this file's mtime against the transcript's: a full render stamps it.
+    [ "$statusline_away" = 0 ] || printf '%s' "$statusline_out" 2>/dev/null >"$statusline_cache_dir/render-$session_id"
   else
     statusline_same=0
     printf '%s' "$statusline_out" 2>/dev/null > "$statusline_cache_dir/render-$session_id"
   fi
 fi
 
-# Render timing for the Harness doctor, which prunes the files itself. One O_APPEND write per
-# render keeps concurrent sessions' lines whole without a lock.
-statusline_timing_dir="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/statusline"
-printf -v statusline_day '%(%Y-%m-%d)T' -1
-statusline_end_us=${EPOCHREALTIME//[!0-9]/}
-self_cpu_ms
-statusline_cpu_ms=$cpu_ms
-printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
-  "$statusline_same" 2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv" ||
-  { ensure_dir "$statusline_timing_dir" 2>/dev/null &&
-    printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
-      "$statusline_same" 2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv"; }
+statusline_timing_row "$session_id" "$statusline_same"
 exit "$statusline_rc"
 exit; }

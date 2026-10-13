@@ -117,9 +117,46 @@ check(pcall(presence.tick), "a raising idleTime raised")
 check(#logged == 1, "a failed tick was not logged once")
 fakeHs.host.idleTime = function() return idle end
 
+-- Away mark: written while idle >= 10 min, dropped by the 2 s watch on return with one refresh kick.
+local every, kicks = {}, {}
+fakeHs.timer.doEvery = function(delay, fn)
+  local entry = { delay = delay, fn = fn, stopped = false }
+  every[#every + 1] = entry
+  return { stop = function() entry.stopped = true end }
+end
+fakeHs.task = { new = function(path, _, args)
+  return { start = function() kicks[#kicks + 1] = path .. " " .. table.concat(args, " ") return true end }
+end }
+local mark = dir .. "/away"
+presence = load()
+now, idle = today + 5 * 86400, 900
+presence.tick()
+check(read(mark) == string.format("%d\t%d\n", now - 900, now), "away mark: «" .. tostring(read(mark)) .. "»")
+check(presence.away() and #every == 1 and every[1].delay == 2, "no 2 s return watch armed")
+now, idle = now + 60, 960
+presence.tick()
+check(read(mark) == string.format("%d\t%d\n", now - 960, now) and #every == 1,
+  "the next away minute did not rewrite the mark alone")
+idle = 3
+every[1].fn()
+check(read(mark) == nil and not presence.away() and every[1].stopped, "his return left the mark or the watch")
+check(#kicks == 1 and kicks[1]:find("kickstart", 1, true) and kicks[1]:find("/com.llm-refresh", 1, true),
+  "his return kicked: " .. table.concat(kicks, "; "))
+now = now + 60
+presence.tick()
+check(#kicks == 1, "a present minute with no mark kicked a refresh")
+-- A Hammerspoon reload while away keeps the mark; the first present minute drops it.
+local held = assert(io.open(mark, "w"))
+held:write("1\t2\n")
+held:close()
+presence = load()
+now, idle = now + 60, 4
+presence.tick()
+check(read(mark) == nil and #kicks == 2, "a mark left over a reload outlived his return")
+
 -- Tick cost: fixture files, the real idle and frontmost APIs (read-only).
 local realHs = { fs = hs.fs, host = hs.host, application = hs.application, window = fakeHs.window,
-  timer = { secondsSinceEpoch = function() return now end } }
+  task = fakeHs.task, timer = { secondsSinceEpoch = function() return now end, doEvery = fakeHs.timer.doEvery } }
 presence = load(realHs)
 local runs, worst, total, spent = 200, 0, 0, {}
 for i = 1, runs do

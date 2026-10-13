@@ -367,9 +367,17 @@ own rows are re-read often enough to stay bright, and when no gateway chat is op
 
 Every render appends `<start_us>\t<end_us>\t<session_id>\t<cpu_ms>\t<same>` (`$EPOCHREALTIME`; cpu_ms: bash
 `times` with children, `-` under bash < 5.3; same: 1 if the lines equal the session's last render in
-`render-<sid>`, else 0) to `${HARNESS_DOCTOR_DIR:-~/.cache/harness-doctor}/statusline/<day>.tsv`
+`render-<sid>`, else 0; `a` for an away replay) to `${HARNESS_DOCTOR_DIR:-~/.cache/harness-doctor}/statusline/<day>.tsv`
 for the Harness doctor, which prunes it. One `printf` append, `mkdir -p` on failure, no lock; a failed write
 is silent.
+
+## Away replay (the one sanctioned freeze)
+
+While Egor is away (`share/presence.sh`, shared-invariants row em), a render whose transcript is not newer
+than `render-<sid>` prints that file and exits before jq, git or any probe: nobody reads the line, and every
+payload-derived cache only moves with the transcript. A full render while away restamps `render-<sid>` even
+when unchanged. presence.lua drops the mark within 2 s of his return, so the freeze ends at the next refresh;
+a moved transcript, a stale mark or a payload without `transcript_path` renders in full.
 
 ## Probe snapshots (background, not a rendered segment)
 

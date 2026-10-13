@@ -264,7 +264,7 @@ run_refresh() {
   env HOME="$dir/home" WORKER_PICK_CONFIG_FILE="$dir/home/.claude/worker-model" \
     LLM_REFRESH_COLLECTOR="$STUB" LLM_LIMITS_CACHE="$dir/store.json" \
     LLM_REFRESH_STATE="$dir/state.json" LLM_REFRESH_JOURNAL="$dir/journal.jsonl" \
-    LLM_REFRESH_NOW="$now" STUB_LOG="$dir/calls.log" \
+    LLM_REFRESH_NOW="$now" STUB_LOG="$dir/calls.log" SPEED_DOCTOR_DIR="$dir/speed-doctor" \
     LLM_LIMITS_REFRESH_OPENCODE_GO="$OC_STUB" OC_LOG="$dir/opencode.log" \
     OC_STUB_RESULT="${OC_STUB_RESULT:-clear}" \
     LLM_LIMITS_REFRESH_CLAUDEB="${CB_BIN:-$CB_STUB}" CB_LOG="$dir/claudeb.log" \
@@ -1415,6 +1415,27 @@ for vendor in codex gemini grok; do
     .outcome == "refreshed" and (.accounts_tried | length) == 5)' "$case_dir/journal.jsonl" >/dev/null || \
     fail "the batched $vendor call did not refresh all five accounts"
 done
+pass
+
+# Egor away (presence.lua's fresh mark): Gemini waits GEMINI_AWAY_MIN, Claude keeps its rung; a mark
+# nobody rewrote for minutes (a stopped Hammerspoon) reads as present.
+away_case() { # <name> <mark written s ago> <last attempt s ago>
+  case_dir="$WORK/$1"
+  mkdir -p "$case_dir/home" "$case_dir/speed-doctor/presence"
+  write_store "$case_dir/store.json" "$NOW" 7200 7200 7200
+  write_state "$case_dir/state.json" 15 15 15 "$((NOW - $3))" "$NOW"
+  printf '%s\t%s\n' "$((NOW - 7200))" "$((NOW - $2))" >"$case_dir/speed-doctor/presence/away"
+  run_refresh "$case_dir" "$NOW" || fail "$1 run failed"
+}
+gemini_probed() { grep -q -- '^--refresh-account gemini/' "$case_dir/calls.log"; }
+away_case away 30 1800
+! gemini_probed && jq -e --argjson now "$NOW" '.gemini.last_attempt_epoch == $now - 1800 and
+  .gemini.interval_min == 15 and .claude.last_attempt_epoch == $now' "$case_dir/state.json" >/dev/null || \
+  fail "an away Gemini was probed within the hour, or Claude lost its tick: $(cat "$case_dir/state.json")"
+away_case away-hour 30 3700
+gemini_probed || fail 'an away Gemini went unprobed past the hour'
+away_case away-mark-stale 600 1800
+gemini_probed || fail 'a mark nobody rewrote for 10 min still slowed Gemini'
 pass
 
 [ "$(plutil -extract ProcessType raw "$(dirname "$0")/../launchd/com.llm-refresh.plist")" = Standard ] || \

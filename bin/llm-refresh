@@ -45,6 +45,11 @@ clean_window_elapsed() {
 # the clock — ends a wall.
 OPENCODE_TIGHTEN_WITHIN_S=3600
 
+# While Egor is away (share/presence.sh) Gemini's tick waits at least this long: its probe launches
+# agy once per account and nobody reads the menu. presence.lua kicks a tick the moment he is back.
+# Claude keeps its rung — his call: those polls cost nothing.
+GEMINI_AWAY_MIN=60
+
 # Claim, break, and release semantics live in share/store-lock.sh (sourced below); only the
 # single-attempt acquire is this daemon's own — a tick that finds the lock held simply skips.
 refresh_lock_acquire() {
@@ -147,6 +152,7 @@ repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/limit-hit.sh"
 . "$repo_root/share/processes.sh"
+. "$repo_root/share/presence.sh"
 collector=${LLM_LIMITS_REFRESH_COLLECTOR:-${LLM_REFRESH_COLLECTOR:-$repo_root/llm-limits.sh}}
 opencode_go=${LLM_LIMITS_REFRESH_OPENCODE_GO:-$repo_root/bin/opencode-go}
 if [ -n "${LLM_LIMITS_REFRESH_CLAUDEB:-}" ]; then
@@ -593,6 +599,9 @@ run_tick() {
     ! vendor_paused "$vendor" || continue
     interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' < <(printf '%s\n' "$state"))
     last=$(jq -r --arg vendor "$vendor" '.[$vendor].last_attempt_epoch' < <(printf '%s\n' "$state"))
+    if [ "$vendor" = gemini ] && [ "$interval" -lt "$GEMINI_AWAY_MIN" ] && presence_away "$now"; then
+      interval=$GEMINI_AWAY_MIN
+    fi
     if cadence_due "$interval" "$last" "$now"; then
       due=$(jq -c --arg vendor "$vendor" '. + [$vendor]' < <(printf '%s\n' "$due"))
     fi

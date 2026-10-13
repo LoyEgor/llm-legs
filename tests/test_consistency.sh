@@ -3332,7 +3332,7 @@ assert doc_has "key order \`${dk_keys// /, }\`"
 assert grep -qF 'base .. "/presence"' "$ROOT/hammerspoon/presence.lua"
 assert grep -qF 'os.path.join(state_dir(), "presence")' "$ROOT/bin/speed-doctor"
 assert grep -qF 'string.format("%d\t%d\t%s\n", minute, idle, bundle)' "$ROOT/hammerspoon/presence.lua"
-assert eq "$(grep -cE 'KEEP_DAYS|os\.remove' "$ROOT/hammerspoon/presence.lua")" 0
+assert eq "$(grep -E 'KEEP_DAYS|os\.remove' "$ROOT/hammerspoon/presence.lua" | grep -vcF 'os.remove(markPath())')" 0
 assert grep -qx 'JOURNAL_DAYS = 35' "$ROOT/bin/speed-doctor"
 assert doc_has '`<minute epoch, a multiple of 60><TAB><HID idle s><TAB><frontmost bundle id, or ->`'
 assert doc_has 'Days past 35 go by `JOURNAL_DAYS = 35` in `bin/speed-doctor` `prune_journals` alone'
@@ -3414,6 +3414,14 @@ assert eq "$(cd "$ROOT" && grep -rlIF 'caps-checks.jsonl' bin share | sort | pas
 assert grep -qF 'for row in caps_checks.read():' "$ROOT/bin/updater-doctor"
 assert grep -qF 'FILE = "caps-checks.jsonl"' "$ROOT/share/caps_checks.py"
 assert doc_has '| ek | Media manifest check journal |'
+# Row em: the away mark's path, line, cadence and freshness, as presence.lua writes it and share/presence.sh reads it.
+assert grep -qF 'return dir .. "/away"' "$ROOT/hammerspoon/presence.lua"
+assert grep -qF '/presence/away"; } 2>/dev/null' "$ROOT/share/presence.sh"
+assert grep -qF 'string.format("%d\t%d\n", math.floor(now - idle), math.floor(now))' "$ROOT/hammerspoon/presence.lua"
+assert grep -qx 'local AWAY_S, WATCH_S = 600, 2' "$ROOT/hammerspoon/presence.lua"
+assert grep -qx 'PRESENCE_MARK_FRESH_S=180' "$ROOT/share/presence.sh"
+assert grep -qx 'GEMINI_AWAY_MIN=60' "$ROOT/bin/llm-refresh"
+assert doc_has '| em | Away mark |'
 
 assert grep -Fq 'doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])' "$ROOT/share/time_budget.py"
 assert grep -Fq 'cached.get("version") == BUDGET_VERSION' "$ROOT/share/time_budget.py"
