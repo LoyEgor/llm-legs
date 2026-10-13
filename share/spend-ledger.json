@@ -4396,6 +4396,86 @@
    "verdict": "kept",
    "zero": "removal saves 22.1 wall-min/day, 10.5 CPU-min/day; loses the codex image leg's argument refusals, routing, pinning, composite and web fallback pins",
    "note": "82 end-to-end runs whose spawns are the leg's own jq/magick; already pruned 698defe1; one vacuous check fixed (relative --ref refusal, red under its mutation)"
+  },
+  {
+   "id": "suite:review-bench/test_judge_stats",
+   "title": "review-bench/test_judge_stats",
+   "audited_at": "2026-10-13T13:35:58+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-judge-stats-20261012T235424Z-2856",
+   "cpu_run": 4.9,
+   "wall_run": 10.4,
+   "cpu_min_day": 0.35,
+   "wall_min_day": 0.99,
+   "sources": {
+    "review-bench/tests/test_judge_stats.sh": "716ebf4dea1a67b649f96ebcc0ab67982e925269"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.9 wall-min/day and 0.3 CPU-min/day; loses the blind-judge, verifier-lens and stats pins (101 checks)",
+   "note": "eight time.sleep(1.1) run-stamp waits replaced by an injected clock; 101 checks unchanged; remaining cost is production git/python spawns per review (~45 git x 8 reviews)"
+  },
+  {
+   "id": "suite:review-bench/test_review_cancel",
+   "title": "review-bench/test_review_cancel",
+   "audited_at": "2026-10-13T13:35:59+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-judge-stats-20261012T235424Z-2856",
+   "cpu_run": 6.0,
+   "wall_run": 9.0,
+   "cpu_min_day": 0.4,
+   "wall_min_day": 1.1,
+   "sources": {
+    "review-bench/tests/test_review_cancel.sh": "e6f0361f904745c4ee65869dc2450bd17f0e6d78"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.8 wall-min/day and 0.4 CPU-min/day; loses cancel, wait and Stop-hook pins (79 asserts)",
+   "note": "the two two-second panel waits overlap (-2 s wall); 79 asserts unchanged, waiter-stamp mutation still red; remaining cost is ~35 review-bench CLI launches"
+  },
+  {
+   "id": "suite:review-bench/test_compositions",
+   "title": "review-bench/test_compositions",
+   "audited_at": "2026-10-13T13:36:00+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-judge-stats-20261012T235424Z-2856",
+   "cpu_run": 4.8,
+   "wall_run": 2.8,
+   "cpu_min_day": 0.6,
+   "wall_min_day": 0.86,
+   "sources": {
+    "review-bench/tests/test_compositions.sh": "01dd91ae3d94c1c97151b4d3cda22a9c56aa6381"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.6 wall-min/day and 0.5 CPU-min/day; loses roster, effort, owner-gate, lens and span pins (153 + 21 checks)",
+   "note": "two import-only python processes folded into the main one, same env; vendor_paused opencode check pinned to its fixture value (red under a vetoing mutation); the rest is 13 staffed() launches' own git work"
+  },
+  {
+   "id": "suite:review-bench/test_review_bench_speed",
+   "title": "review-bench/test_review_bench_speed",
+   "audited_at": "2026-10-13T13:36:00+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-judge-stats-20261012T235424Z-2856",
+   "cpu_run": 7.9,
+   "wall_run": 6.5,
+   "cpu_min_day": 0.54,
+   "wall_min_day": 0.67,
+   "sources": {
+    "review-bench/tests/test_review_bench_speed.sh": "f589578ed26b41b6e9448bcddeb55b86ea1dc417"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.6 wall-min/day and 0.5 CPU-min/day; loses the bytecode-cache gate (a package that stops caching reads ratio 1.7)",
+   "note": "median over 3 timed launches instead of 7 per gate (24 launches, was 48); ratios 0.38-0.44 vs cap 0.75; 4 asserts unchanged"
+  },
+  {
+   "id": "suite:review-bench/test_review_owner_gate",
+   "title": "review-bench/test_review_owner_gate",
+   "audited_at": "2026-10-13T13:36:01+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-judge-stats-20261012T235424Z-2856",
+   "cpu_run": 7.3,
+   "wall_run": 5.1,
+   "cpu_min_day": 0.3,
+   "wall_min_day": 0.48,
+   "sources": {
+    "review-bench/tests/test_review_owner_gate.sh": "ee4f8cba5cd93e07b471bc7b87ecac10bceeef32"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.5 wall-min/day and 0.3 CPU-min/day; loses the T3/--max owner gate pins (109 asserts), a hook that runs on every Bash call",
+   "note": "cost is the production gate's own per-event spawns (jq, grep, awk, ~120 gate runs); test-side grep helper swap saved only 3% CPU and was dropped; every case is a distinct parse or grant mutation"
   }
  ]
 }
