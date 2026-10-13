@@ -582,7 +582,7 @@ local weekdays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
 local function resetColumn(stamp)
   local text
   if stamp - ocNow >= 604800 then
-    text = os.date("%b %d", stamp)
+    text = os.date("%b ", stamp) .. tonumber(os.date("%d", stamp))
   elseif os.date("%Y-%m-%d", stamp) ~= os.date("%Y-%m-%d", ocNow) then
     text = weekdays[tonumber(os.date("%w", stamp)) + 1] .. os.date(" %H:%M", stamp)
   else
