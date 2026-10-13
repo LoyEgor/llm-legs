@@ -2,7 +2,7 @@
 
 Multi-account, multi-vendor LLM orchestration on subscriptions.
 
-**Before debugging anything here, read `docs/DIAGNOSTICS.md`.**
+**Before debugging anything here, grep `docs/DIAGNOSTICS.md` for the symptom.**
 
 **Any statusline work is bound by `docs/statusline-contract.md`.**
 

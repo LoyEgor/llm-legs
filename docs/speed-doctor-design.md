@@ -92,7 +92,7 @@ background journals, C11 chat start. Media "interactive" is derived at read time
 
 **Discovery.** An unmeasured component ≥ 1 OM/d (the residual once above 5 % of A) is a §3 blind spot with `would_catch_if`, for the owner chat, never a fixer. Needs-Egor levers are ranked and shown, never taken.
 
-**Baseline** per (metric, ident, band): the trailing 28-day median of daily values. It drops only to a proven fix's after-value (no min-ratchet); raising it is an owner handoff. A shard or rename records an ident map (old → regex of new) in the ledger; comparisons cross it on repo Σ.
+**Baseline** per (metric, ident, band): the trailing 28-day median of daily values, recomputed each run in both directions. A shard or rename records an ident map (old → regex of new) in the ledger; comparisons cross it on repo Σ.
 
 **Proof, by lever class**; a `fixed` row is proven only with its output-equivalence proof beside the saving, else pending (`speed_yield`):
 
@@ -158,7 +158,7 @@ revert.
 - tests: mocked sleeps and clocks, cached fixtures; a shard only when its longest suite exceeds Σ ÷ j for that repo; a serial suite leaves `serial_suite` only after its wall-clock budget becomes an injected clock, proven by a run inside the wave;
 - unattended suites at presence-gated nice 10 (`share/run-suites.sh` `unattended()`), never `ProcessType Background` / `taskpolicy -b` or a static nice on night or worker trees (they starve Speed, research runs and the llm-refresh collector); attended suites at nice 0 with a reserved slot (wall-clock suites, the `serial_suite` list, exempt);
 - routing churn: `llm-limits.sh` skips the store rewrite when content minus timestamps is unchanged; `onStoreChanged` forks worker-pick only when the hash of its routing inputs changes;
-- Hammerspoon refresh throttles, under the one-lever-per-night rule and the Hammerspoon canary;
+- Hammerspoon refresh throttles, under the one-lever-per-night rule;
 - doctor collectors' read paths, proven by that doctor's suite and a phase timing;
 - media: absolute binary paths in the media instructions; `timeout 590 tail -F log | grep -m1 '^exit='` instead of sleep polling; lock-aware atomic pick among eligible accounts for unpinned new requests only; fetch before regenerate; event-driven hiding instead of the 0.2 s `osascript` loop; Chrome reuse within a batch and a clone pre-built after an update;
 - worker-run and night-run orchestration, within the Never list.
@@ -180,4 +180,4 @@ revert.
 5. Output equivalence, every class: identical decisions or results on the replay, recorded as the fix's `equivalence` {compared, data, result}; hooks and gates on ≥ 500 replayed real calls (inputs rebuilt from transcripts); per-decision-class fixtures (deny, malformed input, timeout, Stop and SessionStart payloads); a generated JSON-escape corpus for fast paths; a two-call race test (edit, then commit within 100 ms) for anything detached.
 6. Touched repos' suites green, assertion inventories ≥ base through the requirement map, mutation-checked on the changed seam.
 
-**Unattended safety.** Night isolation rules apply; the single hooks/statusline/Hammerspoon branch lands last; landing follows `docs/fix-orchestrator.md`. Within the hour the close runs a correctness canary: no new hook error, cut or unjournaled hook; decisions unchanged; statusline time segments advance; read-only `menuItems()` calls succeed and the hs-lag probe shows no new stall; the suite failure rate has not risen. Latency reverts only past a pinned ceiling, or > 1.3 × with ≥ 200 band-matched calls. Otherwise the orchestrator reverts the commit and records the job `left`.
+**Unattended safety.** Night isolation rules apply; the single hooks/statusline/Hammerspoon branch lands last; landing follows `docs/fix-orchestrator.md`. No canary runs after landing, so the fix's own proof shows: no new hook error, cut or unjournaled hook; decisions unchanged; statusline time segments advance; read-only `menuItems()` calls succeed and the hs-lag probe shows no new stall; the suite failure rate has not risen; latency stays under its pinned ceiling and within 1.3 × over ≥ 200 band-matched calls.
