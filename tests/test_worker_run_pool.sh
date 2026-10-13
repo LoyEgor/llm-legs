@@ -26,7 +26,7 @@ for vendor in claudeb codex gemini; do
   start_ok "$vendor" --account explicit
   assert meta_account_is explicit
   assert test -e "$HOME/.cache/worker-claims/$vendor/explicit"
-  assert await_done
+  assert await_exit
   rm -f "$pool_dir/disabled"
 done
 
@@ -43,7 +43,7 @@ set_config 'gemini_model=flash38' 'gemini_effort=high'
 export PICK_RC=2
 start_ok gemini --account main
 assert meta_agy_is 'gemini-3.8-flash-high'
-assert await_done
+assert await_exit
 # Every Gemini leg runs high: an effort below it is RAISED with one note on stderr, never refused,
 # and an effort above it is the same word for the same tier.
 for forced in low medium xhigh max; do
@@ -51,21 +51,21 @@ for forced in low medium xhigh max; do
   start_ok gemini --account main --model flash38 --effort "$forced"
   assert meta_agy_is 'gemini-3.8-flash-high'
   assert grep -qx 'gemini effort forced to high' "$WORK/start.err"
-  assert await_done
+  assert await_exit
 done
 # The knob is raised the same way the flag is.
 clear_stub
 set_config 'gemini_model=flash38' 'gemini_effort=low'
 start_ok gemini --account main
 assert meta_agy_is 'gemini-3.8-flash-high'
-assert await_done
+assert await_exit
 set_config 'gemini_model=flash38' 'gemini_effort=high'
 # The other families and Pro, each at the one effort they run.
 for pair in 'flash37:gemini-3.7-flash-high' 'flash36:gemini-3.6-flash-high' 'pro:gemini-3.1-pro-high'; do
   clear_stub
   start_ok gemini --account main --model "${pair%%:*}"
   assert meta_agy_is "${pair#*:}"
-  assert await_done
+  assert await_exit
 done
 # No model named anywhere: the newest Flash family is the default, never `pro` however new it is.
 clear_stub
@@ -73,7 +73,7 @@ set_config 'gemini_effort=high'
 assert test "$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")" = flash38
 start_ok gemini --account main
 assert meta_agy_is 'gemini-3.8-flash-high'
-assert await_done
+assert await_exit
 set_config 'gemini_model=flash38' 'gemini_effort=high'
 # A word the table knows nothing of is a typo, and a typo is still refused rather than raised.
 for bad_effort in ultra tiny; do
@@ -103,7 +103,7 @@ assert test "$rc" -eq 4
 assert grep -q -- '--resume requires --account' "$WORK/resume-noacct.out"
 
 start_ok claudeb --account resumeacct --resume claude-resume
-assert await_done
+assert await_exit
 assert grep -q '^ARG=--resume$' "$CALL_LOG"
 assert grep -q '^ARG=claude-resume$' "$CALL_LOG"
 assert test "$(tail -n1 "$CALL_LOG")" = 'ARG=claude-resume'
@@ -116,23 +116,23 @@ clear_stub
 start_ok claudeb --account resumeacct --resume claude-cold
 assert grep -q 'RESUME-COLD: claudeb' "$WORK/start.err"
 assert grep -q 'context ~151k tokens' "$WORK/start.err"
-assert await_done
+assert await_exit
 
 touch "$claude_transcript"
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-cold
 assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
-assert await_done
+assert await_exit
 
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-missing
 assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
-assert await_done
+assert await_exit
 
 clear_stub
 set_config 'codex_effort=high'
 start_ok codex --account resumeacct --resume codex-resume
-assert await_done
+assert await_exit
 assert grep -q '^CODEX_HOME=.*/\.codex-profiles/resumeacct$' "$CALL_LOG"
 assert grep -q '^ARG=resume$' "$CALL_LOG"
 assert grep -q '^ARG=codex-resume$' "$CALL_LOG"
@@ -147,7 +147,7 @@ clear_stub
 start_ok codex --account resumeacct --resume codex-cold
 assert grep -q 'RESUME-COLD: codex' "$WORK/start.err"
 assert grep -q 'cache TTL ~30m expired' "$WORK/start.err"
-assert await_done
+assert await_exit
 
 touch "$codex_transcript"
 clear_stub
@@ -155,14 +155,14 @@ start_ok codex --account resumeacct --resume codex-cold
 assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
 # A resume with no explicit model keeps the session's own: the config default must not travel.
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
-assert await_done
+assert await_exit
 
 # Explicit --model/--effort override a resumed session; config defaults never do.
 clear_stub
 set_config 'codex_effort=high'
 start_ok codex --account resumeacct --resume codex-resume --model astra --effort low
 assert grep -qx 'TAG: resumeacct · astra · low' "$WORK/start.out"
-assert await_done
+assert await_exit
 assert grep -q '^ARG=resume$' "$CALL_LOG"
 assert grep -q '^ARG=-m$' "$CALL_LOG"
 assert grep -q '^ARG=gpt-6.1-astra$' "$CALL_LOG"
@@ -174,7 +174,7 @@ clear_stub
 mkdir -p "$HOME/.codex-profiles/.codexb/fast-mode"
 printf 'fast\n' >"$HOME/.codex-profiles/.codexb/fast-mode/fastacct"
 start_ok codex --account fastacct
-assert await_done
+assert await_exit
 assert grep -qxF 'ARG=--enable' "$CALL_LOG"
 assert grep -qxF 'ARG=fast_mode' "$CALL_LOG"
 assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
@@ -185,7 +185,7 @@ clear_stub
 mkdir -p "$CODEX_PROFILES_DIR/fastacct"
 jq '.models |= map(del(.service_tiers))' "$CODEXB_MODELS_CACHE" >"$CODEX_PROFILES_DIR/fastacct/models_cache.json"
 start_ok codex --account fastacct
-assert await_done
+assert await_exit
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
 assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
 assert grep -q 'OpenAI offers no Fast for gpt-6.1-astra on fastacct' "$WORK/start.err"
@@ -193,7 +193,7 @@ clear_stub
 jq '.models |= map(.service_tiers = [{"id": "priority", "name": "Fast"}])' "$CODEXB_MODELS_CACHE" \
   >"$CODEX_PROFILES_DIR/fastacct/models_cache.json"
 start_ok codex --account fastacct
-assert await_done
+assert await_exit
 assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
 assert_fails grep -q 'offers no Fast' "$WORK/start.err"
 rm "$CODEX_PROFILES_DIR/fastacct/models_cache.json"
@@ -201,19 +201,19 @@ rm "$CODEX_PROFILES_DIR/fastacct/models_cache.json"
 clear_stub
 printf 'default\n' >"$HOME/.codex-profiles/.codexb/fast-mode/fastacct"
 start_ok codex --account fastacct
-assert await_done
+assert await_exit
 assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
 
 clear_stub
 printf 'garbage\n' >"$HOME/.codex-profiles/.codexb/fast-mode/fastacct"
 start_ok codex --account fastacct
-assert await_done
+assert await_exit
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
 assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
 
 clear_stub
 start_ok codex --account resumeacct
-assert await_done
+assert await_exit
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
 assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
 
@@ -224,7 +224,7 @@ mkdir -p "$CHAT_PINS_DIR"
 printf 'codex_profile=*\ncodex_fast=on\n' >"$CHAT_PINS_DIR/chat-codex-fast"
 CLAUDE_CODE_SESSION_ID=chat-codex-fast start_ok codex --account resumeacct
 assert test "$(jq -r '.fast' "$RUN_DIR/meta.json")" = true
-assert await_done
+assert await_exit
 assert grep -qxF 'ARG=--enable' "$CALL_LOG"
 assert grep -qxF 'ARG=fast_mode' "$CALL_LOG"
 assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
@@ -254,7 +254,7 @@ printf '{}\n' >"$gemini_transcript"
 touch -t 202001010000 "$gemini_transcript"
 start_ok gemini --account resumeacct --resume gemini-resume
 assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
-assert await_done
+assert await_exit
 assert grep -qxF "ARG=$HOME/.claude" "$CALL_LOG"
 assert grep -q '^ARG=--conversation$' "$CALL_LOG"
 assert grep -q '^ARG=gemini-resume$' "$CALL_LOG"
@@ -267,7 +267,7 @@ assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
 clear_stub
 set_config 'codex_effort=high'
 start_ok codex --account options --add-dir "$WORK/extra" --image "$WORK/image.png" --web-search
-assert await_done
+assert await_exit
 assert grep -q '^ARG=--add-dir$' "$CALL_LOG"
 assert grep -q '^ARG=-i$' "$CALL_LOG"
 assert grep -q '^ARG=web_search=live$' "$CALL_LOG"
@@ -282,7 +282,7 @@ mkdir -p "$WORK/rel-extra"
 (cd "$WORK" && "$RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" --account options --add-dir rel-extra --image rel-image.png) >"$WORK/start.out" 2>"$WORK/start.err" || fail "relative-path start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
-assert await_done
+assert await_exit
 assert grep -qxF "ARG=$WORK/rel-extra" "$CALL_LOG"
 assert grep -qxF "ARG=$WORK/rel-image.png" "$CALL_LOG"
 
@@ -299,7 +299,7 @@ set_config 'codex_effort=high'
 (cd "$WORK" && "$RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" --account options --image rel-image.png) >"$WORK/start.out" 2>"$WORK/start.err" || fail "brief-image start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
-assert await_done
+assert await_exit
 assert test "$(grep -cxF "ARG=$WORK/shot.PNG" "$CALL_LOG")" = 1
 assert test "$(grep -cxF "ARG=$WORK/rel-image.png" "$CALL_LOG")" = 1
 assert test "$(grep -cx 'ARG=-i' "$CALL_LOG")" = 2
@@ -317,7 +317,7 @@ mkdir -p "$WORK/header-extra" "$WORK/prose-extra"
 clear_stub
 set_config 'codex_effort=high'
 start_ok codex
-assert await_done
+assert await_exit
 assert grep -qxF "ARG=$WORK/header-extra" "$CALL_LOG"
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$WORK/header-extra" '[$d]')"
 printf 'ACCOUNT: options\nADD-DIR: rel-extra\n\n' >"$WORK/brief"
@@ -341,7 +341,7 @@ mkdir -p "$other/.git"
 clear_stub
 set_config 'codex_effort=high'
 start_ok codex
-assert await_done
+assert await_exit
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$other/.claude/worktrees/task-wt" && pwd -P)" '[$d]')"
 # The 2026-10-03 escape: the brief handed over to a brief file, which listed the repository and named
 # the existing worktree only as `<repo>/.claude/worktrees/<name>`.
@@ -350,7 +350,7 @@ printf 'Repos:\n- %s\n\nReuse `<repo>/.claude/worktrees/task-wt`, not <repo>/.cl
 { printf 'ACCOUNT: options\n\nRead and follow exactly the brief at %s/nested/brief.md — in BOTH repos.\n' "$WORK"; cat "$WORK/brief.plain"; } >"$WORK/brief"
 clear_stub
 start_ok codex
-assert await_done
+assert await_exit
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$other/.claude/worktrees/task-wt" && pwd -P)" '[$d]')"
 # Granted once whichever spelling names it; the roots are read once per brief and the granted set
 # resolved once per launch, not again per worktree name and per candidate.
@@ -363,7 +363,7 @@ chmod +x "$WORK/grep-shim/grep"
 clear_stub
 : >"$WORK/grep.log"
 PATH="$WORK/grep-shim:$PATH" start_ok codex
-assert await_done
+assert await_exit
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$WORK/other-link/.claude/worktrees/task-wt" '[$d]')"
 assert test "$(grep -cxF -- "-qxF -- $(cd "$other/.claude/worktrees/task-wt" && pwd -P)" "$WORK/grep.log")" -eq 0
 assert test "$(grep -cxF -- "-oE /[A-Za-z0-9._~+-][A-Za-z0-9._~+/-]*" "$WORK/grep.log")" -eq 1
@@ -374,7 +374,7 @@ cp "$WORK/brief.plain" "$WORK/brief"
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 start_ok claudeb --account resumeacct --resume claude-granted
-assert await_done
+assert await_exit
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$WORK/inherited" && pwd -P)" '[$d]')"
 assert grep -qxF "ARG=$(cd "$WORK/inherited" && pwd -P)" "$CALL_LOG"
 rm -rf "$WORKER_RUN_DIR/prior-granted"
@@ -389,7 +389,7 @@ jq -n --arg d "$session_repo" '{workdir: $d, add_dirs: []}' >"$WORKER_RUN_DIR/pr
 { printf 'RESUME claude-moved:\nACCOUNT: resumeacct\n\n'; cat "$WORK/brief.plain"; } >"$WORK/brief"
 clear_stub
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test "$(jq -r '.resume' "$RUN_DIR/meta.json")" = claude-moved
 assert grep -q '^ARG=claude-moved$' "$CALL_LOG"
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$session_repo" && pwd -P)" '[$d]')"
@@ -398,7 +398,7 @@ printf 'claude-scratch\n' >"$WORKER_RUN_DIR/prior-workdir/worker-session"
 jq -n --arg d "$WORK/scratch-workdir" '{workdir: $d, add_dirs: []}' >"$WORKER_RUN_DIR/prior-workdir/meta.json"
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-scratch
-assert await_done
+assert await_exit
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = '[]'
 { printf 'RESUME claude-moved:\nACCOUNT: resumeacct\n\n'; cat "$WORK/brief.plain"; } >"$WORK/brief"
 clear_stub
@@ -413,7 +413,7 @@ jq -n '{vendor: "claudeb", add_dirs: []}' >"$WORKER_RUN_DIR/claudeb-1-2-prior/me
 { printf 'RESUME claudeb-1-2-prior:\nACCOUNT: resumeacct\n\n'; cat "$WORK/brief.plain"; } >"$WORK/brief"
 clear_stub
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test "$(jq -r '.resume' "$RUN_DIR/meta.json")" = claude-last
 assert grep -q '^ARG=claude-last$' "$CALL_LOG"
 rm -rf "$WORKER_RUN_DIR/claudeb-1-2-prior"
@@ -430,13 +430,13 @@ ln -s "$HOME/.linked-real" "$HOME/.linked"
 clear_stub
 set_config 'codex_effort=high'
 WORKER_TEST_WORKDIR=$main_work start_ok codex
-assert await_done
+assert await_exit
 assert test "$(jq -c '.add_dirs | sort' "$RUN_DIR/meta.json")" = "$(jq -cn --arg a "$(cd "$other" && pwd -P)" --arg b "$(cd "$HOME/.linked-real" && pwd -P)" '[$a, $b] | sort')"
 git -C "$main_work" commit -q --allow-empty -m init
 git -C "$main_work" worktree add -q "$main_work/.claude/worktrees/night-task" -b night-task
 clear_stub
 WORKER_TEST_WORKDIR=$main_work/.claude/worktrees/night-task start_ok codex
-assert await_done
+assert await_exit
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = '[]'
 cp "$WORK/brief.plain" "$WORK/brief"
 clear_stub
@@ -471,7 +471,7 @@ RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
 assert test "$(jq -r '.pid' "$RUN_DIR/meta.json")" != 0
 assert test ! -e "$RUN_DIR/dirty-before"
 rm -f "$WORK/floor-hold"
-assert await_done
+assert await_exit
 assert grep -qx dirty "$RUN_DIR/dirty-before"
 # One status walk gives the floor both its path list and its blobs.
 assert test "$(awk '/^CLAUDEB_CALL$/ { exit } /^GIT_STATUS$/ { n++ } END { print n + 0 }' "$CALL_LOG")" = 1
@@ -535,7 +535,7 @@ clear_stub
 export PICK_RC=0 PICK_ACCOUNT=servedacct
 export STUB_MODEL_USAGE='{"claude-haiku-4-5-20251001":{"outputTokens":500},"claude-opus-4-8":{"outputTokens":43}}'
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = claude-opus-4-8
 
 # Codex: the rollout's last turn_context model, or the server's reroute after it.
@@ -552,7 +552,7 @@ clear_stub
 export PICK_ACCOUNT=servedcodex2
 printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-6.1-astra"}}' >"$STUB_DIR/codex_rollout"
 start_ok codex
-assert await_done
+assert await_exit
 assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = gpt-6.1-astra
 rm -f "$STUB_DIR/codex_rollout"
 
@@ -576,7 +576,7 @@ jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z" | 
   "$saved_models_cache" >"$HOME/.codex-profiles/otherlist/models_cache.json"
 export PICK_RC=0 PICK_ACCOUNT=ownlist
 start_ok codex --model astra
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
 assert test "$(jq -r '.model_id' "$RUN_DIR/meta.json")" = gpt-6.1-astra
 rm -r "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist"
@@ -597,17 +597,17 @@ export PICK_RC=0 PICK_ACCOUNT=ownlist
 start_ok codex --model astra
 assert_fails grep -q 'offers no Fast' "$WORK/start.err"
 assert jq -e 'any(.cmd[]; . == "gpt-6.1-astra")' "$RUN_DIR/meta.json"
-assert await_done
+assert await_exit
 assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
 clear_stub
 jq '.models |= map(select(.slug | test("astra") | not))' "$saved_models_cache" \
   | jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z"' >"$HOME/.codex-profiles/otherlist/models_cache.json"
 start_ok codex --model astra
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
 clear_stub
 start_ok codex --model astra --account ownlist
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
 rm -r "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist" "$HOME/.codex-profiles/.codexb/fast-mode/ownlist"
 export CODEXB_MODELS_CACHE=$saved_models_cache
@@ -627,7 +627,7 @@ start_ok codex --model astra
 assert grep -qF 'codex/lapsed lists no model of astra' "$WORK/start.err"
 assert grep -q -- '--exclude lapsed$' "$PICK_LOG"
 assert meta_account_is ownlist
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
 # The claim the picker recorded on the account passed over is released; a claim held before stays.
 assert test ! -e "$WORK/claims/codex/lapsed"
@@ -637,7 +637,7 @@ touch "$WORK/claims/codex/lapsed"
 printf '%s\n' '0 lapsed' '0 ownlist' >"$STUB_DIR/pick_queue"
 start_ok codex --model astra
 assert test -e "$WORK/claims/codex/lapsed"
-assert await_done
+assert await_exit
 # A refusal after the pick launches nothing, and the claim the pick took is handed back.
 clear_stub
 set_config 'codex_workers=off'
@@ -656,7 +656,7 @@ start_ok codex --model gpt-6.1-astra
 assert grep -qF 'codex/lapsed lists no model of gpt-6.1-astra' "$WORK/start.err"
 assert grep -qF 'codex/nohome lists no model of gpt-6.1-astra' "$WORK/start.err"
 assert meta_account_is ownlist
-assert await_done
+assert await_exit
 clear_stub
 printf '%s\n' '0 lapsed' '3' >"$STUB_DIR/pick_queue"
 unlisted_rc=0

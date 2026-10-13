@@ -109,18 +109,21 @@ assert [ "$(cat "$WORK/lr-waited")" = "$WORK/lr/2" ]
 assert jqe -s 'length == 1 and .[0].class == "workers" and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "limit"' \
   "$WORK/lr-waits"/*.jsonl
 slot_release "$WORK/lr/2"; kill "$l1"; until_gone "$l1"; rm -rf "$WORK/lr"
-# Under memory pressure the worker pool still takes its whole floor of 5, and only the sixth waits.
+# Under memory pressure the worker pool still takes its whole floor of 5, and only the sixth waits. The
+# room-filled ceiling is 8, not the pool's 40: the cap is asserted through worker_slots above, and every
+# taken slot costs a lock attempt on each slot below it.
 mkdir -p "$WORK/f"
 room 2 150 140 $((guard + 1))
+pool_slots=${pool_slots%-*}-8
 for i in 1 2 3 4 5; do assert [ "$(slot_take "$WORK/f" "$pool_slots" 3600)" = "$WORK/f/$i" ]; done
 slot_take "$WORK/f" "$pool_slots" 3600 >/dev/null
 assert [ "$SLOT_WHY" = 'memory pressure level 2' ] && assert [ ! -e "$WORK/f/6" ]
-# With room it fills to 4 x the cores, 40 here, and the 41st waits for a held slot, not for room.
+# With room it fills to its ceiling, and the next waits for a held slot, not for room.
 room 1 150 140 $((guard + 1))
-for i in $(seq 6 41); do slot_take "$WORK/f" "$pool_slots" 3600 >/dev/null || break; done
-assert [ "$i" = 41 ] && assert [ -e "$WORK/f/40" ] && assert [ ! -e "$WORK/f/41" ]
+for i in $(seq 6 9); do slot_take "$WORK/f" "$pool_slots" 3600 >/dev/null || break; done
+assert [ "$i" = 9 ] && assert [ -e "$WORK/f/8" ] && assert [ ! -e "$WORK/f/9" ]
 assert [ -z "$SLOT_WHY" ]
-for i in $(seq 1 40); do slot_release "$WORK/f/$i"; done; rm -rf "$WORK/f"
+for i in $(seq 1 8); do slot_release "$WORK/f/$i"; done; rm -rf "$WORK/f"
 unset -f sysctl vm_stat
 
 mkdir -p "$WORK/s"
@@ -172,10 +175,10 @@ pids+=("$caller")
 for i in $(seq 1 50); do [ "$(holds_of orphan-limiter)" = 1 ] && break; sleep 0.1; done
 assert [ "$(holds_of orphan-limiter)" = 1 ]
 kill "$caller"; until_gone "$caller"
-kill "$h9"; until_gone "$h9"
-sleep 1
-assert unheld "$WORK/s/1"
+for i in $(seq 1 200); do [ "$(holds_of orphan-limiter)" = 0 ] && break; sleep 0.1; done
 assert [ "$(holds_of orphan-limiter)" = 0 ]
+kill "$h9"; until_gone "$h9"
+assert unheld "$WORK/s/1"
 rm -rf "$WORK/s/1"
 # The caller can die inside the take, past the waiter's check: the wrapper kills it right there.
 mkdir -p "$WORK/o"

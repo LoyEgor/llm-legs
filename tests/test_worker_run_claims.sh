@@ -19,7 +19,7 @@ printf 'initial content\n' >"$INITIAL_REPO/initial"
 git -C "$INITIAL_REPO" add initial
 git -C "$INITIAL_REPO" -c user.name=fixture -c user.email=fixture@example.test commit -qm initial
 gate_open
-assert await_done
+assert await_exit
 assert grep -qx initial "$RUN_DIR/files"
 assert grep -qxF -- $'-\t'"$(git -C "$INITIAL_REPO" rev-parse HEAD:initial)"$'\tinitial\tcommit' "$RUN_DIR/produced"
 
@@ -82,7 +82,7 @@ printf 'landed\n' >"$PROD_REPO/bin/committed-born"
 git -C "$PROD_REPO" add bin/committed bin/committed-born bin/committed-open >/dev/null
 git -C "$PROD_REPO" -c user.email=t@t -c user.name=t commit -qm 'the run committed' >/dev/null
 gate_open
-assert await_done
+assert await_exit
 assert grep -qxF -- "$(blob_of one)$tab$(blob_of two)${tab}bin/modified" "$RUN_DIR/produced"
 # A file born and a file gone are the same row with `-` on the side holding no content: priced off
 # the path alone, a birth reads as an edit of a file that was never there.
@@ -140,7 +140,7 @@ start_gated claudeb --workdir "$CLEAN_REPO"
 assert test ! -s "$RUN_DIR/dirty-before-shas"
 printf 'rewritten\n' >"$CLEAN_REPO/bin/edited"
 gate_open
-assert await_done
+assert await_exit
 assert grep -qxF -- "$(blob_of base)$tab$(blob_of rewritten)${tab}bin/edited" "$RUN_DIR/produced"
 assert git -C "$CLEAN_REPO" cat-file -e "$(blob_of rewritten)"
 
@@ -152,7 +152,7 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Read file_path "$PROD_TOP/bin/untouched" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 start_ok claudeb --workdir "$PROD_REPO"
-assert await_done
+assert await_exit
 assert test -e "$RUN_DIR/produced"
 assert test ! -s "$RUN_DIR/produced"
 
@@ -164,7 +164,7 @@ tool_call Edit file_path "$PROD_TOP/bin/modified" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 unset CLAUDE_CODE_SESSION_ID
 start_ok claudeb --workdir "$PROD_REPO"
-assert await_done
+assert await_exit
 assert test ! -e "$RUN_DIR/launcher"
 assert test ! -e "$RUN_DIR/produced"
 export CLAUDE_CODE_SESSION_ID=chat-abc
@@ -175,7 +175,7 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$WORK/workdir/bin/somewhere" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test ! -e "$RUN_DIR/head-before"
 assert test ! -e "$RUN_DIR/produced"
 
@@ -191,7 +191,7 @@ start_gated claudeb --workdir "$PROD_REPO/tests"
 printf 'in the workdir\n' >"$PROD_REPO/tests/named-here"
 printf 'above the workdir\n' >"$PROD_REPO/bin/named-from-the-top"
 gate_open
-assert await_done
+assert await_exit
 assert grep -qxF -- "-$tab$(blob_of 'in the workdir')${tab}named-here" "$RUN_DIR/produced"
 assert grep -qxF -- "-$tab$(blob_of 'above the workdir')$tab$PROD_TOP/bin/named-from-the-top" \
   "$RUN_DIR/produced"
@@ -471,7 +471,7 @@ for _ in $(seq 1 60); do
 done
 assert test "${cpu:-0}" -ge 2
 gate_open
-assert await_done
+assert await_exit
 # Git sees no edit to an ignored path; the run's own transcript names it, so it is still work.
 clear_stub
 printf 'ignored-live/\n' >>"$DIRT_REPO/.git/info/exclude"
@@ -485,7 +485,7 @@ ignored=$("$RUNNER" wait "$RUN_ID" --max 0)
 assert grep -qx 'STATUS: running' <<<"$ignored"
 assert grep -Eq '^LAST-EDIT: [0-9]$' <<<"$ignored"
 gate_open
-assert await_done
+assert await_exit
 rm -rf "$DIRT_REPO/ignored-live"
 unset CLAUDE_CODE_SESSION_ID
 

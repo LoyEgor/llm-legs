@@ -90,7 +90,7 @@ ANCHORS
   git -C "$repo" add bin/committed >/dev/null
   git -C "$repo" -c user.email=t@t -c user.name=t commit -qm inside >/dev/null
   gate_open
-  assert await_done
+  assert await_exit
   changed=$(anchors_changed)
   assert grep -qx 'bin/heredoc-only' <<<"$changed"
   assert grep -qx 'bin/doomed' <<<"$changed"
@@ -139,7 +139,7 @@ ANCHORS
   assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
   printf 'fixed\n' >>"$other/kept"
   gate_open
-  assert await_done
+  assert await_exit
   fold=$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG" | tail -n 1)
   assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
   assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
@@ -172,7 +172,7 @@ ANCHORS
   # anchors nothing there.
   git -C "$other" worktree remove --force "$other_wt" >/dev/null 2>&1
   gate_open
-  assert await_done
+  assert await_exit
   assert test "$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG")" = \
     "run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat${anchors_tab}--round${anchors_tab}20260901T100000Z-aaaaaaa${anchors_tab}--owned"
   assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo_wt}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
@@ -209,7 +209,7 @@ ANCHORS
   export PATH
   start_gated codex --workdir "$repo" --round 20260901T100000Z-aaaaaaa
   gate_open
-  assert await_done
+  assert await_exit
   PATH=$saved_path
   export PATH
   assert test ! -s "$ANCHOR_LOG"
@@ -217,7 +217,7 @@ ANCHORS
   clear_stub
   export ANCHORS_FAIL=1
   start_ok codex --workdir "$repo" --round 20260901T100000Z-aaaaaaa
-  assert await_done
+  assert await_exit
   assert grep -q "^run-fold$anchors_tab" "$ANCHOR_LOG"
   unset ANCHORS_FAIL
   assert test ! -e "$HOME/.cache/claude/review-debt/gaps"
@@ -232,7 +232,7 @@ ANCHORS
   git -C "$born" init -q .
   git -C "$born" -c user.email=t@t -c user.name=t commit -q --allow-empty -m born
   gate_open
-  assert await_done
+  assert await_exit
   assert_fails grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${born}${anchors_tab}" "$ANCHOR_LOG"
   assert test ! -e "$born/.git/review-anchors.json"
   assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
@@ -241,7 +241,7 @@ ANCHORS
   clear_stub
   : >"$ANCHOR_LOG"
   start_ok claudeb --workdir "$repo"
-  assert await_done
+  assert await_exit
   assert test "$(cat "$STUB_DIR/debt_owner_env")" = anchors-chat
   assert test "$(cat "$STUB_DIR/run_record_env")" = "$RUN_DIR"
 
@@ -455,7 +455,7 @@ outside_worktree_tests() {
   for before in side gone nocmd; do git -C "$elsewhere" worktree add -q "$elsewhere/.claude/worktrees/$before" 2>/dev/null; done
   git -C "$elsewhere" worktree remove --force "$elsewhere/.claude/worktrees/gone"
   gate_open
-  assert await_done
+  assert await_exit
   made_meta=$(jq -c '.worktrees_made' "$RUN_DIR/meta.json")
   assert test "$made_meta" = "$(jq -cn --args '$ARGS.positional | sort' -- "$trees/scratch.x" \
     "$elsewhere/.claude/worktrees/side" "$elsewhere/.claude/worktrees/gone")"
@@ -473,7 +473,7 @@ outside_worktree_tests() {
   PATH="$WORK/gnu-stat:$PATH" WORKER_TEST_WORKDIR=$trees/task start_gated claudeb
   git -C "$elsewhere" worktree add -q "$elsewhere/.claude/worktrees/gnu" 2>/dev/null
   gate_open
-  assert await_done
+  assert await_exit
   assert jq -e --arg t "$elsewhere/.claude/worktrees/gnu" '.worktrees_made == [$t]' "$RUN_DIR/meta.json"
   git -C "$repo" worktree remove --force "$trees/late"
   git -C "$repo" worktree remove --force "$trees/foreign"
