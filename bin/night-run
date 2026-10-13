@@ -86,8 +86,9 @@ report opens with share/time_budget.py's comparison table: this night and the tw
 survey: the sweep's opening report, default the sweep repositories, each repository's executable
   bin/night-snapshot run first (it copies into the tree what lives outside it, for the night's commit; a
   failure is named and the survey goes on): per repository `<name> · debt N
-  lines/M files · due D lines/E files · K dirty · whole|N chunks` (review-bench review --debt [--due] …
-  --tier T2 --price; due = stable or critical, what the bugs round reads), per linked
+  lines/M files · due D lines/E files · fit|legacy unread U lines/F files · K dirty · whole|N chunks`
+  (review-bench review --debt [--due] … --tier T2 --price; due = stable or critical, what the bugs round
+  reads; unread = review-debt --lens, what that lens's round reads, never in the debt), per linked
   worktree `<branch> · +ahead/-behind main · K dirty · debt N · take|keep (<reason>)`, keep = live or
   held as in leftovers, then `total · …`; --post also sends it to the chat as one report-bus block
 states: pending live merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
@@ -1336,6 +1337,17 @@ price_of() { # price-rows path -> lines<TAB>files<TAB>cut, ? when the review cou
   awk -F '\t' -v p="$2" '$1 == p { print $3 "\t" $2 "\t" $4; found = 1; exit } END { if (!found) print "0\t0\twhole" }' <<<"$1"
 }
 
+lens_unread() { # repo -> ` · <lens> unread N lines/M files` per sweep lens, apart from the debt; nothing it cannot say
+  local debt="${NIGHT_RUN_REVIEW_DEBT:-$HOME/.local/bin/review-debt}" lens row
+  [ -x "$debt" ] || return 0
+  for lens in fit legacy; do
+    row=$("$debt" --repo "$1" --lens "$lens" </dev/null 2>/dev/null) || continue
+    [[ "$row" =~ ^LENS=$lens\ UNREAD_LINES=([0-9]+)\ UNREAD_FILES=([0-9]+)$ ]] &&
+      printf ' · %s unread %s lines/%s files' "$lens" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  done
+  return 0
+}
+
 survey_lines() { # price due-price repo... -> the survey's lines
   local price=$1 due=$2 root total=0 dirty lines files cut due_lines due_files branch wt landed ahead behind state why reason take
   shift 2
@@ -1344,8 +1356,8 @@ survey_lines() { # price due-price repo... -> the survey's lines
     total=$((total + dirty))
     IFS=$'\t' read -r lines files cut < <(price_of "$price" "$root")
     IFS=$'\t' read -r due_lines due_files _ < <(price_of "$due" "$root")
-    printf '%s · debt %s lines/%s files · due %s lines/%s files · %s dirty · %s\n' "${root##*/}" "$lines" "$files" \
-      "$due_lines" "$due_files" "$dirty" "$cut"
+    printf '%s · debt %s lines/%s files · due %s lines/%s files%s · %s dirty · %s\n' "${root##*/}" "$lines" "$files" \
+      "$due_lines" "$due_files" "$(lens_unread "$root")" "$dirty" "$cut"
     while IFS=$'\t' read -r _ branch wt landed ahead behind dirty state why; do
       [ "$wt" != - ] && wt=$(cd -P "$wt" 2>/dev/null && pwd) && [ "$wt" != "$root" ] || continue
       total=$((total + dirty))
