@@ -5307,6 +5307,24 @@
    "verdict": "kept",
    "zero": "removal saves 11.5 wall-min/day and 10.7 CPU-min/day; loses every pin of the Speed block (headline, partition, backlog scores, backfill resume, merge into Harness, journal prune)",
    "note": "cost is ~48 speed-doctor spawns at ~0.1 CPU-s of startup each (bytecode is cached); 20 are the half-backfill loop, which has no cheaper setup: the backfill step is time-budgeted (one file at SPEED_DOCTOR_BACKFILL_S=0) and an in-process main() would carry import-time state and lru caches across steps; the cpu<=2.0 check bounds CPU, not wall, and failed in no retained log"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_limits_render",
+   "title": "llm-legs/test_llm_limits_render",
+   "audited_at": "2026-10-13T15:45:47+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-websearch-20261012T235421Z-7d8b",
+   "cpu_run": 39.3,
+   "wall_run": 24.7,
+   "cpu_min_day": 7.87,
+   "wall_min_day": 12.26,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
+    "llm-legs/tests/test_llm_limits_render.sh": "0356dcb8f27097ae19ac245fbe72958819d8d290"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 11.3 wall-min/day and 8.2 CPU-min/day; loses every pin of llm-limits.sh's renderers (sort orders, expired and stale cells, age alarm, usability, plans, reset tiers, worker-wall overlay) that the menubar and worker-pick read",
+   "note": "two whole-second sleeps that ordered rollout mtimes in a home of at most 4 rollouts (the collector reads the 5 newest, picks by event timestamp) removed: 2 s a run; the rest is ~100 full collections at ~0.6 CPU-s each, each a distinct case or renderer; llm-limits.sh has no render-from-JSON mode, adding one is a production change"
   }
  ]
 }
