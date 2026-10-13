@@ -1176,6 +1176,21 @@
    "verdict": "cut",
    "zero": "removal saves ~0.1 CPU-min/day; loses the failover of a walled night orchestrator (2026-10-06: night stood 4 h)",
    "note": "StopFailure rate_limit; 225 runs 10-06..10-13, 7 of them a night orchestrator (wall events), the rest workers; jq -s over all 14 night files (1.6 MB) was most of ~90 CPU-ms; grep -F of the sid first returns before it for the rest: ~29 CPU-ms, ~31 ms wall, identical output; cpu_audit now pins its source llm-legs/bin/night-run"
+  },
+  {
+   "id": "cpu:hook/dia-not-chrome.sh",
+   "title": "hook/dia-not-chrome.sh",
+   "audited_at": "2026-10-13T09:16:00+03:00",
+   "by": "harness-speed-cpu-hook-dia-not-chrome-sh-20261012T235042Z-5729",
+   "cpu_min_day": 0.9,
+   "cpu_s_run": 0.007,
+   "runs_day": 5712,
+   "sources": {
+    "claude-setup/hooks/dia-not-chrome.sh": "ae47acf300c876e1f2688014ce92c75061fb1631"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 1.0 CPU-min/day; loses the wall against a headed Chrome launch (Egor's browser is Dia, 2026-07-29 rule) and every osascript-activate denial",
+   "note": "7 ms/run is bash startup (empty #!/bin/bash hook 1.5 of ~2.0 ms rusage); the fast path is one regex on the raw payload and exits; its de-quoting match cannot be a settings if-filter"
   }
  ]
 }
