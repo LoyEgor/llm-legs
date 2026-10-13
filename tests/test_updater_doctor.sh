@@ -27,7 +27,7 @@ DOCTOR="$ROOT/bin/updater-doctor"
 DOC="$OUT/latest.json"
 mkdir -p "$STATE/fingerprints" "$STATE/events" "$HOME/.codex" "$WORK/profiles/a" "$WORK/grokb"
 
-ago() { date -u -r $((${2:-$(date +%s)} - $1)) +%Y-%m-%dT%H:%M:%SZ; } # seconds [base-epoch]
+ago() { TZ=UTC0 printf "%(%Y-%m-%dT%H:%M:%SZ)T" $((${2:-$EPOCHSECONDS} - $1)); } # seconds [base-epoch]
 H=3600
 D=86400
 
@@ -38,7 +38,7 @@ state() { # grok-checked-seconds-ago
     claude: {result: "install-failed", installed: "2.1.283", latest: "2.1.284", checked_at: $c}}' >"$STATE/state.json"
 }
 state 3600
-logged=$(date +%s)
+logged=$EPOCHSECONDS
 {
   printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((60 * H)) "$logged")"
   printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((36 * H)))"
@@ -94,9 +94,13 @@ cache "$WORK/profiles/old" 0.150.0 '[{"slug":"gpt-4-old","priority":0}]'
 printf '{"models":[{"slug":"grok-4.7"},{"slug":"grok-5"}]}\n' >"$WORK/grokb/models.json"
 
 run() { "$DOCTOR" --quiet || fail "updater-doctor exited non-zero"; }
-problem() { jq -c --arg id "$1" '.problems[] | select(.id == $id)' "$DOC"; }
-has() { [ -n "$(problem "$1")" ]; }
-state_of() { problem "$1" | jq -r .state; }
+has() { jq -e --arg id "$1" 'any(.problems[]; .id == $id)' "$DOC" >/dev/null; }
+state_of() { jq -r --arg id "$1" '.problems[] | select(.id == $id) | .state' "$DOC"; }
+pjq() { # problem-id [jq-args...] filter
+  local id=$1
+  shift
+  jq -e --arg id "$id" "${@:1:$# - 1}" ".problems[] | select(.id == \$id) | (${*: -1})" "$DOC" >/dev/null
+}
 
 start=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
 run
@@ -118,16 +122,16 @@ assert jqe '.status == "problems" and .blind == []' "$DOC"
 assert jqe '[.blind_spots[].id] == ["announced-not-served", "claude-catalog", "per-account-rollout"]' "$DOC"
 
 # One problem per rule, identity-only ids.
-assert jqe '.state == "new" and .fact == "codex 0.158.0 → 0.159.0: changed model ids · waiting 3d for integration" and .value >= 3 and .limit == 0 and .exposure == 4
-  and .evidence[0].ref == "codex-waiting" and (.evidence[0].excerpt | test("\\+gpt-7"))' <<<"$(problem event-waiting:codex-waiting)"
-assert jqe '.state == "new" and .value >= 3 and .limit == 2
-  and .fact == "claude 0.158.0 → 0.159.0: new claude-b · integration chat open 3d, not closed"' <<<"$(problem event-stuck:claude-stuck)"
-assert jqe '.fact == "claude 0.158.0 → 0.159.0: changed help text · waiting 3d for integration"' <<<"$(problem event-waiting:claude-help)"
-assert jqe '.fact == "gemini 0.158.0 → 0.159.0: new gemini-3.8-flash, gemini-3.8-pro, gemini-4-a +1 more · waiting 3d for integration"' <<<"$(problem event-waiting:gemini-waiting)"
+assert pjq event-waiting:codex-waiting '.state == "new" and .fact == "codex 0.158.0 → 0.159.0: changed model ids · waiting 3d for integration" and .value >= 3 and .limit == 0 and .exposure == 4
+  and .evidence[0].ref == "codex-waiting" and (.evidence[0].excerpt | test("\\+gpt-7"))'
+assert pjq event-stuck:claude-stuck '.state == "new" and .value >= 3 and .limit == 2
+  and .fact == "claude 0.158.0 → 0.159.0: new claude-b · integration chat open 3d, not closed"'
+assert pjq event-waiting:claude-help '.fact == "claude 0.158.0 → 0.159.0: changed help text · waiting 3d for integration"'
+assert pjq event-waiting:gemini-waiting '.fact == "gemini 0.158.0 → 0.159.0: new gemini-3.8-flash, gemini-3.8-pro, gemini-4-a +1 more · waiting 3d for integration"'
 assert_fails has event-stuck:grok-fresh
 assert_fails has event-waiting:grok-fresh
 assert_fails has event-waiting:gemini-closed
-assert jqe '.state == "new" and .value == 1' <<<"$(problem probe-broken:grok/ids)"
+assert pjq probe-broken:grok/ids '.state == "new" and .value == 1'
 probed() { # event-id created-ago probe_failures-diff-lines
   event "$1" grok closed "$2" "$2" $(($2 - D))
   printf '### probe_failures\n--- before\n+++ after\n%s\n' "$3" >"$STATE/events/$1.diff"
@@ -138,30 +142,30 @@ probed() { # event-id created-ago probe_failures-diff-lines
 probed grok-probe-old $((10 * D)) '+ids'
 probed grok-probe-new $((2 * D)) "$(printf ' ids\n+catalog')"
 run
-assert [ "$(problem probe-broken:grok/ids | jq -r '.first_seen[:10]')" = "$(date -r $(($(date +%s) - 10 * D)) +%Y-%m-%d)" ]
+assert pjq probe-broken:grok/ids --arg d "$(printf "%(%Y-%m-%d)T" $((EPOCHSECONDS - 10 * D)))" '.first_seen[:10] == $d'
 # A break after a recovery starts anew; an event that broke none of it is no start.
 probed grok-probe-mid $((6 * D)) '-ids'
 probed grok-probe-new $((2 * D)) '+ids'
 run
-assert jqe --arg d "$(date -r $(($(date +%s) - 2 * D)) +%Y-%m-%d)" '.first_seen[:10] == $d and [.evidence[].ref] == ["grok-probe-new"]' <<<"$(problem probe-broken:grok/ids)"
+assert pjq probe-broken:grok/ids --arg d "$(printf "%(%Y-%m-%d)T" $((EPOCHSECONDS - 2 * D)))" '.first_seen[:10] == $d and [.evidence[].ref] == ["grok-probe-new"]'
 rm "$STATE"/events/grok-probe-*
 probed grok-probe-empty $((3 * D)) ''
 run
-assert jqe '.first_seen == .last_seen' <<<"$(problem probe-broken:grok/ids)"
+assert pjq probe-broken:grok/ids '.first_seen == .last_seen'
 rm "$STATE"/events/grok-probe-*
 run
 assert [ "$(state_of catalog-missing:gemini)" = watch ]
 assert_fails has catalog-missing:claude
 assert_fails has catalog-missing:grok
 assert [ "$(state_of foreign-client:codex)" = watch ]
-assert jqe '(.fact | test("ChatGPT.app/codex 0.158.0")) and .value == 1' <<<"$(problem foreign-client:codex)"
-assert jqe '.state == "new" and .value > 24 and .limit == 24 and .count == 3 and .evidence[0].excerpt == "\(.evidence[0].ref) grok busy 1.0.40 -> 1.0.44"' <<<"$(problem cli-behind:grok)"
-assert jqe --arg t "$(date -r $((logged - 60 * H)) +%H:%M)" '.fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t) · 60h"' <<<"$(problem cli-behind:grok)"
-assert jqe --arg t "$(date -r $((logged - H)) +%H:%M)" '.state == "watch" and .fact == "claude 2.1.283 → 2.1.284 waiting: install-failed since \($t)"' <<<"$(problem cli-behind:claude)"
+assert pjq foreign-client:codex '(.fact | test("ChatGPT.app/codex 0.158.0")) and .value == 1'
+assert pjq cli-behind:grok '.state == "new" and .value > 24 and .limit == 24 and .count == 3 and .evidence[0].excerpt == "\(.evidence[0].ref) grok busy 1.0.40 -> 1.0.44"'
+assert pjq cli-behind:grok --arg t "$(printf "%(%H:%M)T" $((logged - 60 * H)))" '.fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t) · 60h"'
+assert pjq cli-behind:claude --arg t "$(printf "%(%H:%M)T" $((logged - H)))" '.state == "watch" and .fact == "claude 2.1.283 → 2.1.284 waiting: install-failed since \($t)"'
 assert_fails has cli-behind:codex
-assert jqe '.state == "new" and (.fact | test("install-failed")) and (.evidence[0].excerpt | test("claude install-failed"))' <<<"$(problem pass-failed:claude)"
+assert pjq pass-failed:claude '.state == "new" and (.fact | test("install-failed")) and (.evidence[0].excerpt | test("claude install-failed"))'
 assert_fails has pass-failed:grok
-assert jqe '.value == "0.160.0" and .limit == "0.159.0"' <<<"$(problem client-too-old:codex/gpt-7)"
+assert pjq client-too-old:codex/gpt-7 '.value == "0.160.0" and .limit == "0.159.0"'
 assert_fails has client-too-old:codex/gpt-5.5
 assert_fails has pass-stale:state
 
@@ -176,7 +180,7 @@ assert jqe '.vendors[2].models == ["gemini-3.8-flash", "gemini-3.8-pro", "gemini
 cp "$STATE/fingerprints/grok.json" "$WORK/grok.json"
 jq 'del(.facets.catalog)' "$WORK/grok.json" >"$STATE/fingerprints/grok.json"
 run
-assert jqe '.state == "watch" and .fact == "grok: catalog not fetched on the last check (catalog)"' <<<"$(problem catalog-missing:grok)"
+assert pjq catalog-missing:grok '.state == "watch" and .fact == "grok: catalog not fetched on the last check (catalog)"'
 mv "$WORK/grok.json" "$STATE/fingerprints/grok.json"
 assert jqe '.vendors[0].events | length == 5 and .[0].id == "codex-waiting" and .[0].changed == ["ids"]
   and (.[0] | keys == (["id", "status", "from", "to", "created_at", "launched_at", "closed_at", "changed"] | sort))' "$DOC"
@@ -186,11 +190,11 @@ state $((40 * H))
 jq --arg t "$(ago $((40 * H)))" 'map_values(.checked_at = $t)' "$STATE/state.json" >"$WORK/s" && mv "$WORK/s" "$STATE/state.json"
 run
 assert jqe '.status == "blind" and .blind == ["pass"]' "$DOC"
-assert jqe '.value >= 40 and .limit == 36' <<<"$(problem pass-stale:state)"
+assert pjq pass-stale:state '.value >= 40 and .limit == 36'
 mv "$STATE/state.json" "$WORK/state.json"
 run
 assert jqe '.status == "blind" and (.blind | index("state.json"))' "$DOC"
-assert jqe '.value == null' <<<"$(problem pass-stale:state)"
+assert pjq pass-stale:state '.value == null'
 mv "$WORK/state.json" "$STATE/state.json"
 state 3600
 
@@ -202,7 +206,7 @@ assert [ "$(jq -r .judge "$DOC")" = "$judge" ]
 ledger() { printf '%s\n' "$1" >"$WORK/ledger.json"; UPDATER_DOCTOR_LEDGER="$WORK/ledger.json" "$DOCTOR" --quiet; }
 ledger '{"owner":"t","rows":[{"id":"U1","title":"t","match":{"rule":"event-waiting","key":"codex-waiting"},"status":"open"}],"blind_spots":[]}'
 assert [ "$(jq -r .judge "$DOC")" != "$judge" ]
-assert jqe '.state == "open" and .ledger == "U1"' <<<"$(problem U1)"
+assert pjq U1 '.state == "open" and .ledger == "U1"'
 assert_fails has event-waiting:codex-waiting
 ledger '{"owner":"t","rows":[{"id":"U2","title":"t","match":{"rule":"pass-failed","key":"claude"},"status":"weather"}],"blind_spots":[]}'
 assert_fails has pass-failed:claude
@@ -239,8 +243,8 @@ mv "$STATE/update.log" "$WORK/update.log"
 printf '%s codex busy 0.159.0 -> 0.159.2\n' "$(ago $((2 * H)))" "$(ago $H)" >"$STATE/update.log"
 run
 mv "$WORK/update.log" "$STATE/update.log"
-assert jqe --arg t "$(date -r $(($(date +%s) - 2 * H)) +%H:%M)" '.state == "watch" and .count == 2 and .fact == "codex 0.159.0 → 0.159.2 waiting: busy since \($t)"' <<<"$(problem cli-behind:codex)"
-assert jqe --arg t "$(date -r $(($(date +%s) - 600)) +%H:%M)" '.state == "watch" and .fact == "claude 2.1.283 → 2.1.284 waiting: busy since \($t)"' <<<"$(problem cli-behind:claude)"
+assert pjq cli-behind:codex --arg t "$(printf "%(%H:%M)T" $((EPOCHSECONDS - 2 * H)))" '.state == "watch" and .count == 2 and .fact == "codex 0.159.0 → 0.159.2 waiting: busy since \($t)"'
+assert pjq cli-behind:claude --arg t "$(printf "%(%H:%M)T" $((EPOCHSECONDS - 600)))" '.state == "watch" and .fact == "claude 2.1.283 → 2.1.284 waiting: busy since \($t)"'
 assert jqe '[.problems[] | select(.rule == "cli-behind" and .state == "watch") | .id] == ["cli-behind:claude", "cli-behind:codex", "cli-behind:grok"]' "$DOC"
 ledger '{"owner":"t","rows":[{"id":"U5","title":"t","match":{"rule":"cli-behind","key":"codex"},"status":"fixed","fixes":[{"at":"2026-01-01T00:00:00Z"}]}],"blind_spots":[]}'
 assert [ "$(state_of U5)" = watch ]
@@ -248,7 +252,7 @@ state 3600
 
 # A failure run starts anew after an update between; a pending update starts anew once the installed version moved.
 mv "$STATE/update.log" "$WORK/update.log"
-t0=$(date +%s)
+t0=$EPOCHSECONDS
 {
   printf '%s claude install-failed 2.1.282 -> 2.1.283\n' "$(ago $((30 * H)) "$t0")"
   printf '%s claude updated 2.1.282 -> 2.1.283\n' "$(ago $((29 * H)) "$t0")"
@@ -258,8 +262,8 @@ t0=$(date +%s)
 } >"$STATE/update.log"
 run
 mv "$WORK/update.log" "$STATE/update.log"
-assert jqe --arg t "$(date -r $((t0 - H)) +%Y-%m-%dT%H:%M:%S)" '.count == 1 and (.first_seen | startswith($t))' <<<"$(problem pass-failed:claude)"
-assert jqe --arg t "$(date -r $((t0 - 2 * H)) +%H:%M)" '.state == "watch" and .count == 1 and .fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t)"' <<<"$(problem cli-behind:grok)"
+assert pjq pass-failed:claude --arg t "$(printf "%(%Y-%m-%dT%H:%M:%S)T" $((t0 - H)))" '.count == 1 and (.first_seen | startswith($t))'
+assert pjq cli-behind:grok --arg t "$(printf "%(%H:%M)T" $((t0 - 2 * H)))" '.state == "watch" and .count == 1 and .fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t)"'
 
 # The native claude is a second install with its own row: behind latest it is a pending update while
 # the npm claude is current, and claude's vendor row names both versions. agy's self-update lag counts
@@ -273,10 +277,10 @@ printf '%s gemini self-update 1.3.0 -> 1.3.1\n' "$(ago $((30 * H)))" "$(ago $((2
 run
 mv "$WORK/update.log" "$STATE/update.log"
 assert_fails has cli-behind:claude
-assert jqe '.state == "watch" and (.fact | startswith("claude-native 2.1.288 → 2.1.295 waiting: install-failed since "))' <<<"$(problem cli-behind:claude-native)"
+assert pjq cli-behind:claude-native '.state == "watch" and (.fact | startswith("claude-native 2.1.288 → 2.1.295 waiting: install-failed since "))'
 assert jqe '.vendors[3] | .installed == "2.1.295" and .native == "2.1.288" and .latest == "2.1.295"' "$DOC"
 assert jqe '.vendors[2] | .installed == "1.3.0" and .latest == "1.3.1" and has("native") == false' "$DOC"
-assert jqe '.state == "new" and .count == 2 and (.fact | startswith("gemini 1.3.0 → 1.3.1 waiting: self-update since ")) and (.fact | endswith(" · 30h"))' <<<"$(problem cli-behind:gemini)"
+assert pjq cli-behind:gemini '.state == "new" and .count == 2 and (.fact | startswith("gemini 1.3.0 → 1.3.1 waiting: self-update since ")) and (.fact | endswith(" · 30h"))'
 assert_fails has pass-failed:gemini
 assert grep -qF 'claude  2.1.295 · native 2.1.288 (latest 2.1.295)' <("$DOCTOR")
 state 3600
@@ -286,7 +290,7 @@ CAPS="$STATE/caps-checks.jsonl"
 REC="$ROOT/share/caps_checks.py"
 run
 assert jqe '[.problems[] | select(.rule == "caps-stale")] == [] and .blind == []' "$DOC"
-t=$(date +%s)
+t=$EPOCHSECONDS
 caps_line() { jq -nc --argjson at "$1" --arg v "$2" --arg s "$3" --arg st "$4" --arg w "${5:-}" '{at: $at, vendor: $v, section: $s, state: $st, what: $w}'; }
 {
   caps_line $((t - 3 * D)) gemini speech stale 'models: +old'
@@ -300,10 +304,10 @@ caps_line() { jq -nc --argjson at "$1" --arg v "$2" --arg s "$3" --arg st "$4" -
   caps_line $((t - H)) gemini flow_music stale 'models: +Lyria 4'
 } >"$CAPS"
 run
-assert jqe --arg d "$(date -r $((t - D)) +%Y-%m-%d)" '.state == "new" and .count == 2 and .value == 2 and .limit == 0 and (.first_seen | startswith($d))
+assert pjq caps-stale:gemini/speech --arg d "$(printf "%(%Y-%m-%d)T" $((t - D)))" '.state == "new" and .count == 2 and .value == 2 and .limit == 0 and (.first_seen | startswith($d))
   and .fact == "gemini manifest .speech stale: voices: +Kore; tags: +whisper · re-verify share/image-caps/gemini.json .speech against the live page/API, bump verified"
-  and [.evidence[].excerpt] == ["voices: +Kore; tags: +whisper", "voices: +Kore"]' <<<"$(problem caps-stale:gemini/speech)"
-assert jqe '.state == "new" and .count == 1' <<<"$(problem caps-stale:gemini/flow_music)"
+  and [.evidence[].excerpt] == ["voices: +Kore; tags: +whisper", "voices: +Kore"]'
+assert pjq caps-stale:gemini/flow_music '.state == "new" and .count == 1'
 assert_fails has caps-stale:elevenlabs/served_models
 assert jqe '.problem_count == ([.problems[] | select(.state == "new" or .state == "open" or .state == "regressed")] | length)
   and ([.problems[] | select(.rule == "caps-stale") | .id] == ["caps-stale:gemini/flow_music", "caps-stale:gemini/speech"])' "$DOC"
@@ -344,14 +348,14 @@ assert [ "$(wc -c <"$CAPS")" -lt 262144 ]
 assert jqe -s '[.[] | select(.vendor == "gemini")] | length == 21 and .[0].at == 1001 and .[-1].what == "last"' "$CAPS"
 assert jqe -s '[.[] | select(.vendor == "codex")] | length == 1' "$CAPS"
 run
-assert jqe --arg d "$(date -r 1001 +%Y-%m-%dT%H:%M:%S)" '.first_seen | startswith($d)' <<<"$(problem caps-stale:gemini/speech)"
+assert pjq caps-stale:gemini/speech --arg d "$(printf "%(%Y-%m-%dT%H:%M:%S)T" 1001)" '.first_seen | startswith($d)'
 rm -f "$CAPS"
 run
 assert jqe '[.problems[] | select(.rule == "caps-stale")] == [] and .blind == []' "$DOC"
 
 # --json prints the document and writes nothing.
 rm -f "$DOC"
-"$DOCTOR" --json | jqe '.doctor == "updater"'
+assert jqe '.doctor == "updater"' <<<"$("$DOCTOR" --json)"
 assert [ ! -e "$DOC" ]
 
 # One collector-runs row per run, keys exactly {doctor, start, wall_s, cpu_s, trigger}.
