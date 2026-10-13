@@ -4652,6 +4652,95 @@
    "verdict": "cut",
    "zero": "removal saves 0.5 CPU-s a run; loses the single-word-door invariant",
    "note": "grant readers computed once for the check and the stale-entry pass; 6 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_harness_doctor",
+   "title": "llm-legs/test_harness_doctor",
+   "audited_at": "2026-10-13T13:08:54+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-harness-doctor-20261012T235314Z-6822",
+   "cpu_run": 12.9,
+   "wall_run": 9.4,
+   "cpu_min_day": 25.7,
+   "wall_min_day": 46.12,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
+    "llm-legs/tests/test_harness_doctor.sh": "e84c754a897d736e726be57b267fa179d07c602f"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~10 wall-min and ~23 CPU-min a day; loses the only replay of harness-doctor's 420 checks (waits, cuts, ledger guards, judge pins), so every doctor change would land unchecked",
+   "note": "11.4 -> 10.9 CPU-s a run, 420 asserts: privacy walk skipped on its proven-clean corpus digest, 4 ledger_guard Pythons -> 1, burn 0.6 -> 0.5 s, 10 ms poll ticks; per-shard CPU 3.2/3.0/3.2/2.7 s so no rebalance; 23 doctor spawns each pay a 70 ms compile, left (module split breaks bin/harness-doctor:line refs)"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_doctor",
+   "title": "llm-legs/test_llm_doctor",
+   "audited_at": "2026-10-13T13:08:54+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-harness-doctor-20261012T235314Z-6822",
+   "cpu_run": 9.6,
+   "wall_run": 9.6,
+   "cpu_min_day": 6.48,
+   "wall_min_day": 10.46,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_llm_doctor.sh": "57bed754db6b44895ae346a1470d859cb89c2fee"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~9 wall-min and ~7 CPU-min a day; loses llm-doctor's 44 checks of bug-vs-weather classes, ledger faults and the pinned judge",
+   "note": "10.5 -> 7.8 CPU-s a run, 503 -> 333 git spawns, 44 asserts: committed-ledger checks on empty checkouts of the named real siblings (was 1.6 CPU-s of real-history walks), llm-doctor batches fix-commit checks per repository and passes pid_started_at to supervisor_running, the --block collect is the menu run; production llm-doctor still walks real histories in _landing (4 git per fix ref) every collect"
+  },
+  {
+   "id": "suite:llm-legs/test_light_research_fanout",
+   "title": "llm-legs/test_light_research_fanout",
+   "audited_at": "2026-10-13T13:08:55+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-harness-doctor-20261012T235314Z-6822",
+   "cpu_run": 10.0,
+   "wall_run": 17.2,
+   "cpu_min_day": 4.15,
+   "wall_min_day": 10.15,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/light_research_harness.sh": "f899061a8acbcd0b2fff73b3575cc67d99f893aa",
+    "llm-legs/tests/test_light_research_fanout.sh": "7d0d038dfdf84bdfc6bae76d54219e1ef86507ee"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~10 wall-min and ~4 CPU-min a day; loses the grok per-repository fan-out, mid-batch failure and cross-repository citation checks",
+   "note": "9.8 -> 8.1 CPU-s a run: the WEB: off fan-out merged into the citation fan-out (6 -> 5 light-research runs), 36 -> 35 asserts (the merged run's second rc check); each run still waits worker-run's integer 1 s poll"
+  },
+  {
+   "id": "suite:llm-legs/test_gemini_listen",
+   "title": "llm-legs/test_gemini_listen",
+   "audited_at": "2026-10-13T13:08:55+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-harness-doctor-20261012T235314Z-6822",
+   "cpu_run": 45.6,
+   "wall_run": 34.1,
+   "cpu_min_day": 7.39,
+   "wall_min_day": 12.86,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_gemini_listen.sh": "79232bc81ecf418cbbc4cddaf4511dbb46635446"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~10 wall-min and ~6 CPU-min a day; loses gemini-listen's 134 checks of validation, proxies, beeps, failure modes and compare",
+   "note": "45.4 -> 42.7 CPU-s a run, 134 asserts: talk.mp3 at 32 kHz (22.05 kHz went green under the fixed-192k mutation and was dropped); the x5.4 wall since af8f8b89 is load (CPU 32 -> 48 s with no listen-path change between a4086b19 and af8f8b89); ~40 product gemini-listen runs of 2-5 s each remain, each ffmpeg-bound"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_limits_refresh",
+   "title": "llm-legs/test_llm_limits_refresh",
+   "audited_at": "2026-10-13T13:08:56+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-harness-doctor-20261012T235314Z-6822",
+   "cpu_run": 30.2,
+   "wall_run": 41.9,
+   "cpu_min_day": 6.97,
+   "wall_min_day": 12.64,
+   "sources": {
+    "llm-legs/tests/affected": "55023ef490c922f3b44dea74eb6ff55b901ac430",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
+    "llm-legs/tests/test_llm_limits_refresh.sh": "458870bd9bf7c73855acc76afc9a4d213ab4476e"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~10 wall-min and ~6 CPU-min a day; loses the claudeb OAuth heal/warm, Codex multi-account refresh, roster and start-windows checks",
+   "note": "every check kept: 11 detached announce collectors a run -> 0 (their CPU sat outside the journal), keychain stub for the collector's plan lookups, the two codex-only refreshes no longer run the installed claudeb against the fixture store; jq 3065 spawns a run are llm-limits.sh's own"
   }
  ]
 }
