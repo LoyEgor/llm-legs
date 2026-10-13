@@ -24,12 +24,16 @@ printf '#!/usr/bin/env bash\nexit 0\n' >"$LLM_LIMITS_ANNOUNCE_CMD"
 printf '#!/usr/bin/env bash\n[ "$1" = find-generic-password ] && exit 44\nexit 0\n' >"$WORK/bin/security"
 chmod +x "$LLM_LIMITS_ANNOUNCE_CMD" "$WORK/bin/security"
 
-# fill <vendor> <name>...: one entry per store and name; held <vendor> <name>: the stores still holding it.
+# fill <vendor> <name>...: one entry per store and name, then "<stores> <stores holding the first name>";
+# held <vendor> <name>: the stores still holding it; tally <vendor> <gone> <kept>: how many stores hold each.
 stores() {
   PYTHONPATH="$ROOT/share" python3 - "$@" <<'PY'
 import json, re, sys
 import account_stores as a
 command, vendor, names = sys.argv[1], sys.argv[2], sys.argv[3:]
+if command == "tally":
+    print(*(sum(1 for store in a.stores(vendor) if name in store.held()) for name in names))
+    sys.exit()
 for store in a.stores(vendor):
     if command == "held":
         print("\n".join(f"{store.label}: {name}" for name in names if name in store.held()))
@@ -53,23 +57,24 @@ for store in a.stores(vendor):
             store.file().parent.mkdir(parents=True, exist_ok=True)
             with store.file().open("a") as handle:
                 handle.write(name + "\n")
+if command == "fill":
+    print(len(a.stores(vendor)), sum(1 for store in a.stores(vendor) if names[0] in store.held()))
 PY
 }
 
 check_vendor() { # vendor tool profile-dir remove-args...
-  local vendor="$1" tool="$2" profile="$3" held out
+  local vendor="$1" tool="$2" profile="$3" total held kept out
   shift 3
   mkdir -p "$profile/gone" "$profile/kept"
   [ "$vendor" != claude ] || printf 'tok' >"$CLAUDEB_DIR/tokens/gone"
-  stores fill "$vendor" gone kept
-  assert test "$(stores held "$vendor" gone | grep -c .)" -ge 3
+  read -r total held <<<"$(stores fill "$vendor" gone kept)"
+  assert test "$held" -ge 3
   out=$(bash "$ROOT/bin/$tool" remove gone "$@" 2>&1) || fail "$tool remove gone: $out"
-  held=$(stores held "$vendor" gone)
-  assert test -z "$held"
+  read -r held kept <<<"$(stores tally "$vendor" gone kept)"
+  assert test "$held" -eq 0
   assert test "$(grep -c "^$tool: purged /" <<<"$out")" -ge 3
   assert test "$(grep -c "purged" <<<"$out")" -eq "$(grep -c "^$tool: purged /" <<<"$out")"
-  assert test "$(stores held "$vendor" kept | grep -c .)" -eq "$(PYTHONPATH="$ROOT/share" python3 -c \
-    'import account_stores, sys; print(len(account_stores.stores(sys.argv[1])))' "$vendor")"
+  assert test "$kept" -eq "$total"
 }
 
 check_vendor codex codexb "$HOME/.codex-profiles" --force
@@ -82,7 +87,7 @@ assert env PYTHONPATH="$ROOT/share" python3 "$ROOT/share/account_stores.py" purg
 assert test "$(python3 "$ROOT/share/account_stores.py" purge codex kept 2>&1; echo "rc=$?")" = \
   "account_stores: kept is still on the codex roster the menubar lists; remove it first
 rc=2"
-stores fill codex ghost
+stores fill codex ghost >/dev/null
 dry=$(python3 "$ROOT/share/account_stores.py" purge codex ghost --dry-run)
 assert test -n "$(stores held codex ghost)"
 assert test "$(grep -c . <<<"$dry")" -eq "$(stores held codex ghost | grep -c .)"
@@ -105,7 +110,7 @@ fail_bash worker_claims_dir
 out=$(BASH_ENV="$WORK/bash-env" python3 "$ROOT/share/account_stores.py" remnants 2>&1; echo "rc=$?")
 assert grep -q '^account_stores: cannot read the claudeb pool paths' <<<"$out"
 assert grep -qx 'rc=1' <<<"$out"
-stores fill codex ghost
+stores fill codex ghost >/dev/null
 fail_bash worker_pool_set_disabled
 out=$(BASH_ENV="$WORK/bash-env" python3 "$ROOT/share/account_stores.py" purge codex ghost 2>&1; echo "rc=$?")
 assert grep -q '^account_stores: cannot rewrite .*/disabled without ghost$' <<<"$out"
