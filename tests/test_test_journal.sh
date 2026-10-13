@@ -223,12 +223,13 @@ done
 assert_eq "$(jq -cn --arg root "$suites_repo" '["full","all","changed","named"] | map({label: "suites", scope: ., repo_root: $root})')" \
   "$(jq -sc 'map({label, scope, repo_root})' "$STATUSLINE_CACHE_DIR/test-scope.jsonl")"
 mkdir -p "$WORK/slow-git"
-printf '#!/bin/bash\ncase " $* " in *" ls-files "*) [ -s %s ] || date +%%s > %s; sleep 3 ;; esac\nexec %s "$@"\n' \
+printf '#!/bin/bash\ncase " $* " in *" ls-files "*) [ -s %s ] || date +%%s > %s; sleep 1 ;; esac\nexec %s "$@"\n' \
   "$WORK/ls-files-at" "$WORK/ls-files-at" "$(command -v git)" > "$WORK/slow-git/git"
 chmod +x "$WORK/slow-git/git"
 : > "$STATUSLINE_CACHE_DIR/test-scope.jsonl"
 launched=$(date +%s)
 # Without an inherited slot the run takes its own after discovery: the marker still carries the launch.
+# Discovery must outlast one whole second: the marker's start is whole seconds, and a shorter slow-down can land in the same one.
 env -u RUN_SUITES_SLOT PATH="$WORK/slow-git:$PATH" RUN_SUITES_TIMES="$WORK/times.tsv" bash "$ROOT/share/run-suites.sh" \
   --repo "$suites_repo" -j 2 --changed >/dev/null 2>&1 || fail "run-suites --changed under a slow git failed"
 assert_eq yes "$(jq -r --argjson launched "$launched" --argjson at "$(cat "$WORK/ls-files-at")" \

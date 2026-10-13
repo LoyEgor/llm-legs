@@ -803,7 +803,7 @@ class ConcurrentLauncherSubprocessTests(unittest.TestCase):
                 proc.stderr.close()
         self.tmp.cleanup()
 
-    def wait_ready(self, count, timeout=5.0):
+    def wait_ready(self, count, timeout=30.0):
         start = time.time()
         while time.time() - start < timeout:
             if len(list(self.ready_dir.glob("ready_*"))) >= count:
@@ -825,9 +825,8 @@ class ConcurrentLauncherSubprocessTests(unittest.TestCase):
         self.env.update(environment or {})
         self.env["TEST_CLAUDE_ARGV"] = str(capture)
         self.env["TEST_ROUTER_ARGV"] = str(router_capture)
-        (self.bin_dir / "ccr").write_text(
-            "#!/usr/bin/env python3\nimport json, os, sys\n"
-            "if 'launch' not in sys.argv: sys.exit(0)\n"
+        (self.bin_dir / "ccr-launch.py").write_text(
+            "import json, os, sys\n"
             "args = sys.argv[1:]\n"
             "with open(os.environ['TEST_ROUTER_ARGV'], 'w') as f: json.dump(args, f)\n"
             "forwarded = args[args.index('--') + 1:]\n"
@@ -836,6 +835,9 @@ class ConcurrentLauncherSubprocessTests(unittest.TestCase):
             "options = forwarded[:forwarded.index('--')] if '--' in forwarded else forwarded\n"
             "assert not any(arg.split('=')[0] in owned for arg in options)\n"
             "os.execvp('claude', ['claude', *forwarded])\n")
+        # Router setup calls (init, provider, model) outnumber the launch six to one: only the launch pays for Python.
+        (self.bin_dir / "ccr").write_text(
+            '#!/bin/sh\nfor arg; do [ "$arg" = launch ] && exec python3 "${0%/*}/ccr-launch.py" "$@"; done\nexit 0\n')
         (self.bin_dir / "claude").write_text(
             "#!/usr/bin/env python3\nimport json, os, sys\n"
             "with open(os.environ['TEST_CLAUDE_ARGV'], 'w') as f: json.dump(sys.argv[1:], f)\n")
