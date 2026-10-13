@@ -5836,6 +5836,24 @@
    "verdict": "cut",
    "zero": "removal saves 3.8 wall-s a run (0.8 wall-min/day); loses the only pins of gemini-speech's flags, exits and the AI Studio speech engine's plan, walls and page reads",
    "note": "every media wrapper exit polls its stderr tee in 5 ms builtin-sleep steps instead of forked 50 ms ones (1.0 sleep-s a run gone), image-leg start/mark stop forking date; SEND_WAIT_S and the FakePage tick sleep kept (the swallowed-Run and streamed-reply deadlines read them); the ffmpeg sine fixture kept (one spawn)"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_pin_gate_runtime",
+   "title": "llm-legs/test_worker_pin_gate_runtime",
+   "audited_at": "2026-10-13T13:08:46+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-legs-routing-20261012T235326Z-6558",
+   "cpu_run": 22.4,
+   "wall_run": 16.4,
+   "cpu_min_day": 1.28,
+   "wall_min_day": 2.27,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_pin_gate_runtime.sh": "7459899401b13f9b62d93607408c1dce835fdf18",
+    "llm-legs/tests/worker_pin_gate_harness.sh": "e98d88b83af1b588ccad44f18b3d9a427d0e96c6"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 16 wall-s a run (0.8 wall-min/day); loses the only pins that a runtime or interpreter writing the worker-model pin is denied and carried text is not",
+   "note": "each model deny primed the table once instead of rebuilding the gemini/grok CLI catalogs per vendor (~6 builds), chat-pin scan skipped without a literal chat-pin, harness contains/lacks without a grep fork; the gate's pure-bash command parse (~0.2 CPU-s a call) is its design, kept; no shard split (moves wall only)"
   }
  ]
 }
