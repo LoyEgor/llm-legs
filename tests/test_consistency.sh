@@ -928,7 +928,7 @@ assert doc_has 'Gemini quota group matching'
 
 # --- Row m: Gemini account discovery and HOME mapping ------------------------
 assert test -r "$GEMINI_ACCOUNTS"
-assert grep -Eq '^\. "\$(\(resolve_root\)|geminib_root)/share/gemini-accounts\.sh"$' "$GEMINIB"
+assert grep -Eq '^[[:space:]]*\. "\$(\(resolve_root\)|geminib_root)/share/gemini-accounts\.sh"$' "$GEMINIB"
 assert grep -Fq '. "$script_dir/share/gemini-accounts.sh"' "$LLMLIMITS"
 assert grep -q '^gemini_account_names()' "$GEMINI_ACCOUNTS"
 assert grep -q '^gemini_account_home()' "$GEMINI_ACCOUNTS"
