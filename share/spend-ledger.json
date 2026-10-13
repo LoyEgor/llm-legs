@@ -2382,6 +2382,22 @@
    "verdict": "cut",
    "zero": "removal saves ~2.9 wall-min/day; loses the only spelling-by-spelling pins of the PreToolUse gate that keeps bare headless vendor launches, agent-owned worker runs and media scripts off the machine",
    "note": "54 script-independent media-loop variants run once instead of per script (249->195 gate spawns, mutations red on kept checks); the checkout's readonly/words libs pinned (old suite green under an exempt-all readonly mutation); x2.4 wall since 92e14e08 is load, the gate is >90% of each check; the suite tests llm-legs MAIN's gate through the symlink"
+  },
+  {
+   "id": "suite:claude-setup/test_english_gates",
+   "title": "claude-setup/test_english_gates",
+   "audited_at": "2026-10-13T06:02:32+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-commit-report-worktrees-20261012T235201Z-02cb",
+   "cpu_run": 9.7,
+   "wall_run": 7.4,
+   "cpu_min_day": 1.09,
+   "wall_min_day": 2.82,
+   "sources": {
+    "claude-setup/tests/test_english_gates.sh": "ec7f93ab56a6a8cbff900c03cd334ab146d6045e"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~2.6 wall-min/day; loses the only pins of english-gate (every tool carrying text to a model, launch briefs read where the call runs, no-jq fail-closed) and compact-auto's Russian focus refusal",
+   "note": "cyrillic-share's measurements moved to llm-legs test_english_gates (tests the branch's own tool, not MAIN's), one wiring check kept, a duplicate and a LONG_QUOTE-covered case dropped: 109->94 asserts, 16 fewer python3 spawns; the live settings.json registration read stays: the file is outside every repo"
   }
  ]
 }
