@@ -79,7 +79,7 @@ for verb in tick ""; do
     SYSTEM_DOCTOR_CACHE_ROOTS="$WORK/caches" SYSTEM_DOCTOR_CACHE_DIRS= SYSTEM_DOCTOR_HOST_TICKS="$WORK/sysfix/host" \
     SYSTEM_DOCTOR_LIBEXEC_DIR="$HOME/.local/libexec" SYSTEM_DOCTOR_AGENT_DIR="$HOME/Library/LaunchAgents" \
     SYSTEM_DOCTOR_RUSAGE="$WORK/sysfix/rusage.json" SYSTEM_DOCTOR_PROCS="$WORK/sysfix/procs.json" WORKER_RUN_DIR="$WORK/runs" \
-    NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SYSTEM_DOCTOR_REPOS_DIR="$WORK" \
+    NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SYSTEM_DOCTOR_REPOS_DIR="$WORK" SYSTEM_DOCTOR_WINDOW_S=0 \
     "$ROOT/bin/system-doctor" $verb >/dev/null || fail "system-doctor ${verb:-judge} failed"
 done
 assert test -z "$(tracked)"
