@@ -5828,7 +5828,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_doctor_fix"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:57:32+03:00",
@@ -5859,11 +5859,25 @@
             "data": "the suite's own fixtures; shard 1 of the base cannot run outside the projects tree (its command-file cd assert), so shards 2-4 compare",
             "result": "419 asserts green; shards 2-4 CPU 43.1 -> 41.8 s; doctor-fix startup 36 -> 20 ms a call (139 calls a run)"
           }
+        },
+        {
+          "at": "2026-10-13T10:27:55+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+          "files": [
+            "llm-legs/tests/test_doctor_fix.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the 4 shards' assert totals before and after, the PASS lines, the `fix runs` newest-first order assert",
+            "data": "the suite's own fixtures, run-all of its covering suites",
+            "result": "457 asserts green over 4 shards, same as before; 3 fixed `sleep 1` waits (3 s idle wall a run in shard 1) replaced by stamped created_at on the earlier records, the asserted newest-first order unchanged"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
       "note": "2026-10-12: post-split runs read 32-48 s a run (10-11/12) against 56-337 s before; the 7-day median still holds the pre-split days. Cut: doctor-fix startup without dirname/basename, close's undecided check in bash. Left: shard 3 (df-speed, 16 CPU-s) is speed-doctor and the calibration fixture's python, chained over one fixture. Measured 2026-10-10 at load 140-200 on 10 cores: wall is CPU times contention (a shard ran 16-26 CPU-s in 3-4 min), so the lever is the longest shard's CPU. Where it went: doctor-fix close and launch calls 38 of 66 CPU-s (python starts 40-70 ms each, ~260 in the suite: per decision-line touches, knobs, fix-faults, per-run knob-lines, snapshot, packet); the speed section 18 s alone, its launches and six snapshot calls chained over one fixture, so it stays one section. Ruled out: sleeps (3 x sleep 1 order run ids by the second, 3 s of a 66 s suite), legacy checks (every section pins a live doctor-fix path), packet batching (one call per run, quiet runs rare). Hidden dependency found: the floor handoff case read night-launch-close's Egor handoff file; it now writes its own.",
       "handoff": null
     },
@@ -6380,7 +6394,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_llm_limits_grok"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T08:45:00+03:00",
@@ -6410,11 +6424,25 @@
             "data": "tests/llm_limits_harness.sh fixtures (every suite sets ELEVENLABS_KEYS to a missing file); 3 rounds of 5 collections per side at load 26-70",
             "result": "identical output; 0.537 -> 0.431 CPU-s a collection (-20 %), ~76 collections a run; red on old: test_llm_limits el_collect with a missing key file"
           }
+        },
+        {
+          "at": "2026-10-13T10:27:55+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+          "files": [
+            "llm-legs/tests/test_llm_limits_grok.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "each of the 4 shards PASS before and after the section moves; the busy-lock case's verdicts",
+            "data": "the suite's own fixtures, SUITE_SHARD=i/4 side by side at load 29-45",
+            "result": "shard wall 28/18/28/30 s -> 14/21/20/22 s (the token-touch block moved from shard 1 to shard 2, callers per shard 24/15/22/24 -> ~13/26/22/24); 0.5 s sleep and the 1 s lock wait gone (a ready-file handshake, -t 0), the same verdicts"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-12",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
       "note": "2026-10-12 (night e2f7): xtrace again showed the wall is ~59 collector calls a run, ~28 % of each collection's wall one ElevenLabs Python that a missing fixture key file can only fail; cut in llm-limits.sh (llm-legs@a1577911). Left: the row's minutes are mostly its run count, 30-50 named runs a day pulled by tests/affected (186+116 of 330 grok runs in 7 d were multi-suite named runs), the fan-out lever and not this suite's wall; a 20 % per-run cut cannot bring 40-50 min/day under the 15 min/day heavy floor. Before: 356 runs, 1.2 wall-min a run, 18 min + 42 w-min/day. Timestamped xtrace: the wall is ~76 llm-limits.sh calls at 4-8 s each under load 90-150, while one empty-HOME call is ~0.45 CPU-s (676 traced lines; forks of file_mtime/worker_model_pinned_account ~70 ms each, elevenlabs_balance.py ~0.8 s even with no keys). No sleeps worth cutting (the hung-touch and busy-lock cases wait ~1.5 s by design), no legacy checks found; hs renderer ~1 s. Shards only split when run-suites' slot_room finds room. Not cut: the collector's own per-call cost (llm-limits.sh forks and the ElevenLabs python start), production code outside this suite; rebalancing blocks further would save only 2 calls on the pole.",
       "handoff": null
     },
@@ -8463,6 +8491,115 @@
       "handoff": null,
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-speed-hooks-cd-guard-sh-20261012T235124Z-5e5e"
+    },
+    {
+      "id": "regression-fix-speed-test-health-heavy-instruction-gate-relay",
+      "title": "Speed fix test_instruction_gate_relay (llm-legs@7dab4ffc) measured slower: its 3 shards were unbalanced and the sibling worker_run_rounds split held a 54 s pole",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T10:27:55+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+          "files": [
+            "llm-legs/tests/test_worker_run_rounds.sh",
+            "llm-legs/tests/test_instruction_gate_relay.sh",
+            "llm-legs/tests/instruction_gate_harness.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "each shard of the suite before and after, assert totals summed (worker_run_rounds 9+96+63 = 168 over 3 shards -> 52+9+27+36+44 = 168 over 5; relay 77+35+43 = 155 -> 56+56+43 = 155), the PASS lines, and a mutation of one expected value",
+            "data": "the suites' own fixtures, SUITE_SHARD=k/N side by side at load 26-53",
+            "result": "worker_run_rounds shard wall 39/54/17 s -> 25-31 s for all 5 at load 53 (pole 54 -> 31); relay shards 12.9/5.0/12.3 s -> 8.7/9.4/13.8 s (shard 1 held 57 of ~105 hook invocations, now ~36); the same asserts green"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+      "note": "Cause: the 7dab4ffc shards were unbalanced, and a sharded wall is its longest shard. worker_run_rounds: measured 39/54/17 s (shard 2, rounds-binding, was the pole, not shard 1 as the review guessed from attempt counts); split both long sections at a clear_stub boundary into 5 shards (binding_env carries the shared fixture lines); every 5-shard shard 25-31 s together at load 53. Relay: shard 3 (in-flight, 43 asserts, ~13 s) remains the pole, so the relay wall barely moved (12.9 -> 13.8 s within noise); the channel blocks moved next to the journal evened shards 1 and 2. The relay's real cost is ~26 CPU-s (12 user + 14 sys) in ~105 hook invocations, so at load x1.24 or heavier the wall tracks CPU share, not shard count; sharding only splits when run-suites' slot_room finds room. span_base now skips instruction_baseline_wait under INSTRUCTION_WATCH_CHAT=all (the hook baselines synchronously there, no pending file exists): ~20 bash starts + 2333-line sources a run, below the CPU noise (11.7+14.6 s before and after). Left: shard 3 of the relay (in-flight) could split further; every hook call is the suite's subject.",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-heavy-test-merge-ledger",
+      "title": "Speed's heavy-suite lever on test_merge_ledger: setup rebuilt the base repository in every scenario, one interpreter per check",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/heavy/llm-legs/test_merge_ledger"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T10:27:55+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+          "files": [
+            "llm-legs/tests/test_merge_ledger.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the suite base vs fix: the PASS line (49 asserts both), the order assert mutated to red",
+            "data": "the suite's own fixtures",
+            "result": "49 asserts green on both; spawns per run: base repo built once and copied for 7 later scenarios (-7 python3, -~21 git), 7 python3 reads folded into one per scenario, 5 check-attr gits into one; wall 2.9 -> 2.3-2.6 s at load 30-100"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+      "note": "Audit: 268 runs of a ~3 s suite; the wall is process spawns (8 scenarios x python3 edit + git init/add/commit/branch, the merge driver's own python3 per rebase). The driver spawns stay (they are the subject). No sleeps, no legacy checks, no split worth it at 3 s.",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-pole-test-doctor-fix",
+      "title": "Speed's long-pole lever on test_doctor_fix: shard 3 (df-speed) is ~21 CPU-s against 12-15 for the others",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/pole/llm-legs/test_doctor_fix"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+      "note": "4 shards already (59/152/128/118 asserts); CPU per shard 12/12/15/21 s, the pole is df-speed (shard 3, ~430 lines). Tried splitting it before its Spend block into shard 4 (the lightest): the second half fails at once (`gate: unbound variable`, later n5 base refs) because the section chains one fixture, $S/harness/latest.json, mutated step by step from the calibration build through the n8..n10 nights; a split needs the first half replayed, which moves the same CPU, not less. Cutting it would mean rewriting the section's fixtures as independent snapshots (a rewrite of ~430 lines, saving <1 min on the pole). Also done here: the 3 sleeps went (sleep-wait finding).",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-pole-test-llm-limits-grok",
+      "title": "Speed's long-pole lever on test_llm_limits_grok: shard 4's busy-lock case waited 1.5 s and sections were unbalanced",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/pole/llm-legs/test_llm_limits_grok"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T10:27:55+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+          "files": [
+            "llm-legs/tests/test_llm_limits_grok.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "each of the 4 shards PASS before and after",
+            "data": "the suite's own fixtures, SUITE_SHARD=i/4 side by side",
+            "result": "shard 4 -1.5 s of fixed sleeps; shard wall 28/18/28/30 s -> 14/21/20/22 s; same asserts"
+          }
+        }
+      ],
+      "same_cause": [
+        "speed-test-health-llm-limits-grok"
+      ],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
+      "note": "Shard 4 (refresh-errors) is the pole now; its sections are not contiguous with shard 1, so more balancing means moving cases across its HOME fixtures (kept last on its own HOME and store by design).",
+      "handoff": null
     }
   ],
   "blind_spots": [
