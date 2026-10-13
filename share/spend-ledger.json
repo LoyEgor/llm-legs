@@ -863,6 +863,89 @@
    "verdict": "kept",
    "zero": "removing the suite saves ~0.1 wall-min/day; loses the [hook-name] prefix guard Token tracking names blocks by and the settings-command-exists check",
    "note": "a planted nameless builder keeps the scan honest; 112 greps and realpaths are per-file counts that need the file; reads live settings.json read-only on purpose (4941 hook errors in a day)"
+  },
+  {
+   "id": "suite:hammerspoon/test_display_mirror",
+   "title": "hammerspoon/test_display_mirror",
+   "audited_at": "2026-10-13T05:30:55+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-display-mirror-20261012T235231Z-674f",
+   "cpu_run": 0.0,
+   "wall_run": 0.0,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "hammerspoon/tests/display_mirror_harness.lua": "a82e0ab74ccfc7097c93d1ad2592e73a9f39545a",
+    "hammerspoon/tests/test_display_mirror.sh": "69414b179b67a44c3b7ecdb2d73d5d6a6c3d0ff9"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0 wall-min/day (0 s a run); loses the pin that Jump's virtual display makes the mirror stand down (red with the branch off)",
+   "note": "2 cases, in-process fakes, no sleeps; Jump-branch mutation red"
+  },
+  {
+   "id": "suite:hammerspoon/test_doctors_menu",
+   "title": "hammerspoon/test_doctors_menu",
+   "audited_at": "2026-10-13T05:30:57+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-display-mirror-20261012T235231Z-674f",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "hammerspoon/tests/test_doctors_menu.sh": "203eac484681dd61f80671eca08a61cbffbdbb89"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0 wall-min/day (0.1 s a run); loses the doctors/LLM-limits menu fallback and wiring pins",
+   "note": "16 checks in one hs call; source-layout wiring pins are the contract, one spawn, no sleeps"
+  },
+  {
+   "id": "suite:hammerspoon/test_handoff",
+   "title": "hammerspoon/test_handoff",
+   "audited_at": "2026-10-13T05:30:58+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-display-mirror-20261012T235231Z-674f",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "hammerspoon/tests/handoff_harness.lua": "d96f7ca81e1da7b9e5189a933ec50358627baa26",
+    "hammerspoon/tests/test_handoff.sh": "9c3a44ebff472379675ba6baebedd5225b9bd94a"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0 wall-min/day (0.1 s a run); loses the pins on the Handoff and pboard heals",
+   "note": "one hs call, fake timers; replay and wedge cooldown mutations red"
+  },
+  {
+   "id": "suite:hammerspoon/test_hs_cli_lock",
+   "title": "hammerspoon/test_hs_cli_lock",
+   "audited_at": "2026-10-13T05:31:00+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-display-mirror-20261012T235231Z-674f",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "hammerspoon/tests/test_hs_cli_lock.sh": "a1766987887d5590553f0cfc58c797bac2605eb8"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0 wall-min/day (0.1 s a run); loses the guard that every live hs call holds /tmp/hs-cli.lock (the SIGTRAP crash class)",
+   "note": "grep only, no hs spawn; an unlocked call in a test turns it red"
+  },
+  {
+   "id": "suite:hammerspoon/test_ipad_mode",
+   "title": "hammerspoon/test_ipad_mode",
+   "audited_at": "2026-10-13T05:31:02+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-display-mirror-20261012T235231Z-674f",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/ipad_mode_harness.lua": "2a8fd44a1a72fab38f1ade6551c86637a7961c83",
+    "hammerspoon/tests/test_ipad_mode.sh": "fb16d1f3621a7dde8b50227c8e224a352f854a79"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0 wall-min/day (0.1 s a run); loses the atomic state-file publish and live-state isolation pins",
+   "note": "removed 4 never-red asserts (unassigned forwarded flag, 3 fake~=saved tautologies); non-atomic publish mutation red"
   }
  ]
 }
