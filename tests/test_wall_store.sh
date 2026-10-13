@@ -21,7 +21,9 @@ check() {
 absent() { [ "${2#*"$1"}" = "$2" ]; }
 present() { ! absent "$@"; }
 reset=$((now + 1800))
-label=$(date -r "$reset" +%H:%M)
+reset_label() { # epoch -> llm-limits' reset text: HH:MM on today's date, else the weekday first
+  if [ "$(date -r "$1" +%F)" = "$(date +%F)" ]; then date -r "$1" +%H:%M; else LC_ALL=C date -r "$1" '+%a %H:%M'; fi
+}
 at=$((now + 5))
 menu_cases="$WORK/menu-cases.lua"
 printf 'return {\n' >"$menu_cases"
@@ -29,10 +31,13 @@ printf 'return {\n' >"$menu_cases"
 # Every surface for one account: statusline, worker-pick, llm-limits JSON/table/plain, and the menu
 # (collected here, rendered in one Hammerspoon call at the end).
 # A wall paints its window row (5h|wk) at 100 % with the shown reset ($5; empty: none known) and
-# never prints $7, a guessed time; the table/plain STATUS re-collects, so it takes its own label $6.
-surfaces() { # name vendor walled [window shown-label status-label guess-label]
-  local name=$1 vendor=$2 walled=$3 window=${4:-} shown=${5-$label} status_label=${6-${5-$label}} guess=${7:-}
-  local status picked rendered format line2 pids=()
+# never prints $7, a guessed time; the table/plain STATUS re-collects, so it takes its own reset $6.
+# The statusline and the menu print HH:MM; worker-pick and the table put the weekday first off today's date.
+surfaces() { # name vendor walled [window shown-epoch status-epoch guess-label]
+  local name=$1 vendor=$2 walled=$3 window=${4:-} shown_at=${5-$reset} status_label guess=${7:-}
+  local shown='' pick_shown='' status picked rendered format line2 pids=()
+  status_label=$(reset_label "${6-$reset}")
+  [ -z "$shown_at" ] || { shown=$(date -r "$shown_at" +%H:%M); pick_shown=$(reset_label "$shown_at"); }
   picked=$(WORKER_PICK_NOW="$now" bash "$ROOT/bin/worker-pick" 2>/dev/null | grep "^$vendor:")
   if [ "$vendor" = codex ]; then
     status=$(printf '%s' '{"model":{"display_name":"GPT"},"context_window":{"used_percentage":1}}' |
@@ -48,7 +53,7 @@ surfaces() { # name vendor walled [window shown-label status-label guess-label]
     if [ "$window" = 5h ] && [ -n "$shown" ]; then check present "5h 100% $shown" "$line2"
     elif [ "$window" = 5h ]; then check grep -Eq '5h 100% (│|$)' <<<"$line2"; fi
     check present WALLED "$picked"
-    if [ -n "$shown" ]; then check present "↺ $shown" "$picked"; else check absent "↺" "$picked"; fi
+    if [ -n "$pick_shown" ]; then check present "↺ $pick_shown" "$picked"; else check absent "↺" "$picked"; fi
   else
     check absent WALLED "$picked"
   fi
@@ -140,8 +145,7 @@ worker_walls_record codex main "" "$at2" || fail 'record timeless wall'
 reset5=$(jq -r "$LIMITS_VIEW_JQ"'.vendors.codex.accounts[0].five_hour.resets_at | limits_store_epoch' "$CACHE")
 check jq -e --argjson r "$reset5" --argjson at "$at2" \
   '.vendors.codex.accounts[0].worker_wall == {resets_at:$r,recorded_at:$at}' "$CACHE" >/dev/null
-label5=$(date -r "$reset5" +%H:%M)
-surfaces codex-timeless codex true 5h "$label5" "$label5" "$(date -r "$((at2 + 3600))" +%H:%M)"
+surfaces codex-timeless codex true 5h "$reset5" "$reset5" "$(date -r "$((at2 + 3600))" +%H:%M)"
 
 # With no future reset known either, the record marks its retry time a guess, and no surface
 # prints it: the store-read ones show the window at 100 % with no time; the re-collecting
@@ -152,7 +156,7 @@ at3=$((at + 30))
 worker_walls_record codex main "" "$at3" || fail 'record guessed wall'
 check jq -e --argjson at "$at3" \
   '.vendors.codex.accounts[0].worker_wall == {resets_at:($at + 3600),recorded_at:$at,guessed:true}' "$CACHE" >/dev/null
-surfaces codex-guessed codex true 5h "" "$label5" "$(date -r "$((at3 + 3600))" +%H:%M)"
+surfaces codex-guessed codex true 5h "" "$reset5" "$(date -r "$((at3 + 3600))" +%H:%M)"
 
 printf '}\n' >>"$menu_cases"
 if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -c 'return "ok"' 2>/dev/null)" = ok ]; then

@@ -6,7 +6,10 @@
 wall_baseline=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json --no-write) || fail "wall baseline failed"
 wall_read=$(jq -r '.vendors.codex.five_hour.as_of' <<<"$wall_baseline")
 wall_reset=$((now + 1800))
-wall_label=$(date -r "$wall_reset" '+%H:%M')
+reset_label() { # epoch -> llm-limits' reset text: HH:MM on today's date, else the weekday first
+  if [ "$(date -r "$1" +%F)" = "$(date +%F)" ]; then date -r "$1" +%H:%M; else LC_ALL=C date -r "$1" '+%a %H:%M'; fi
+}
+wall_label=$(reset_label "$wall_reset")
 for wall_case in newer older expired; do
   wall_written=$((wall_read + 1))
   wall_until=$wall_reset
