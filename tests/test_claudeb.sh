@@ -1481,7 +1481,7 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     wr_glock="$oauth_attempts_file.rl-global"
     wr_rlock="$oauth_attempts_file.rl.wr1"
     mkdir "$wr_glock"
-    ( for _ in $(seq 40); do touch "$wr_glock"; sleep 0.1; done; rmdir "$wr_glock" ) &
+    ( for _ in $(seq 40); do [ ! -e "$wr_glock.release" ] || break; touch "$wr_glock"; sleep 0.1; done; rmdir "$wr_glock" ) &
     wr_holder=$!
     oauth_refresh wr1 "$(svc_of wr1)" "$(security find-generic-password -s "$(svc_of wr1)" -w)" >/dev/null 2>&1 &
     wr_pid=$!
@@ -1497,6 +1497,7 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
       [[ "$wr_mt" =~ ^[0-9]+$ ]] || continue
       if [ "$(($(date +%s) - wr_mt))" -lt 10 ]; then wr_fresh=true; break; fi
     done
+    : >"$wr_glock.release"
     wait "$wr_pid" || true
     wait "$wr_holder" || true
     assert test "$wr_fresh" = true
@@ -2596,7 +2597,7 @@ EOF
   assert test -n "$child"
   assert sh -c "kill -0 $child 2>/dev/null"
   accounts_refresh_kill
-  sleep 0.3
+  for _ in $(seq 1 40); do sh -c "kill -0 $child 2>/dev/null" || break; sleep 0.05; done
   assert_fails sh -c "kill -0 $child 2>/dev/null"
 ) || exit 1
 
@@ -2605,16 +2606,17 @@ EOF
 (
   export CLAUDEB_REFRESH_CONVERGE_S=0
   olog="$WORK/order.log"; : >"$olog"
-  probe_one() { case "$1" in bb) sleep 2 ;; esac; printf 'usage 0 200\n' >"$2/$1.result"; printf '%s done %s\n' "$1" "$(date +%s)" >>"$olog"; }
-  process_probe_result() { printf '%s processed %s\n' "$1" "$(date +%s)" >>"$olog"; }
+  probe_one() {
+    [ "$1" != bb ] || for _ in $(seq 1 100); do grep -q '^aa processed$' "$olog" && break; sleep 0.05; done
+    printf 'usage 0 200\n' >"$2/$1.result"; printf '%s done\n' "$1" >>"$olog"
+  }
+  process_probe_result() { printf '%s processed\n' "$1" >>"$olog"; }
   account_names() { printf '%s\n' aa bb; }
   d="$WORK/order-dir"; mkdir -p "$d"
   probe_accounts "$d" false false false
-  aa_p=$(awk '$1=="aa" && $2=="processed" {print $3}' "$olog")
-  bb_d=$(awk '$1=="bb" && $2=="done" {print $3}' "$olog")
-  assert test -n "$aa_p"
-  assert test -n "$bb_d"
-  assert test "$aa_p" -lt "$bb_d"
+  assert grep -qx 'aa processed' "$olog"
+  assert grep -qx 'bb done' "$olog"
+  assert awk '$0 == "aa processed" { a = NR } $0 == "bb done" { b = NR } END { exit !(a < b) }' "$olog"
 ) || exit 1
 
 # remove: full-inventory cleanup, alive-creds guard + --force, account-state reset.
