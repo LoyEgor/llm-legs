@@ -45,13 +45,19 @@ chat_account_resolve() {
 # `weekly` (every other model). With no argument the chat is a new one, which starts on the default
 # /model saves into the shared settings.json.
 chat_model_bucket() {
+  chat_model_bucket_set "$@"
+  echo "$CHAT_MODEL_BUCKET"
+}
+
+# The same answer in CHAT_MODEL_BUCKET, for a caller that cannot afford a subshell.
+chat_model_bucket_set() {
   local model="${1-}"
   if [ "$#" -eq 0 ]; then
     model=$(jq -r '.model // empty' "${CHAT_MODEL_SETTINGS:-${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/settings.json}" 2>/dev/null) || model=""
   fi
-  case "$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')" in
-    *fable*) echo fable ;;
-    *) echo weekly ;;
+  case $model in
+    *[Ff][Aa][Bb][Ll][Ee]*) CHAT_MODEL_BUCKET=fable ;;
+    *) CHAT_MODEL_BUCKET=weekly ;;
   esac
 }
 

@@ -12,18 +12,28 @@ LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 DENY_AT="${WORKFLOW_GATE_DENY_PCT:-95}"
 WARN_AT="${WORKFLOW_GATE_WARN_PCT:-70}"
 
-input=$(cat) || exit 0
-printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and .tool_name == "Workflow"' >/dev/null 2>&1 || exit 0
+# One jq reads every stdin field, \x1f apart (the script comes last, and carries no \x1f).
+parsed=$(jq -j '[((.hook_event_name == "PreToolUse" and .tool_name == "Workflow") | tostring), (.session_id // ""),
+  (.transcript_path // ""), (.tool_input.scriptPath // ""), (.tool_input.script // "")] | join("\u001f")' 2>/dev/null) || exit 0
+sep=$'\x1f'
+[ "${parsed%%"$sep"*}" = true ] || exit 0
+rest=${parsed#*"$sep"}
+sid=${rest%%"$sep"*}
+rest=${rest#*"$sep"}
+transcript_path=${rest%%"$sep"*}
+rest=${rest#*"$sep"}
+script_path=${rest%%"$sep"*}
+script=${rest#*"$sep"}
 
 # A workflow's agents never pass worker-spawn-hook.sh, and a worker run started or awaited inside one
 # belongs to no chat that waits on it.
-script=$(printf '%s' "$input" | jq -r '.tool_input.script // empty' 2>/dev/null)
-script_path=$(printf '%s' "$input" | jq -r '.tool_input.scriptPath // empty' 2>/dev/null)
 [ -z "$script_path" ] || [ ! -r "$script_path" ] || script="$script
 $(cat "$script_path" 2>/dev/null)"
 # A run is reached by a launch; the same words inside prose (a workflow told to review bin/worker-run)
 # reach nothing.
-launch_word=$(grep -oE 'worker-run[[:space:]]+(start|wait)([^A-Za-z0-9_-]|$)|light-research[[:space:]]+-' <<<"$script" 2>/dev/null | head -n1)
+launch_word=""
+[[ $script == *worker-run* || $script == *light-research* ]] &&
+  launch_word=$(grep -oE 'worker-run[[:space:]]+(start|wait)([^A-Za-z0-9_-]|$)|light-research[[:space:]]+-' <<<"$script" 2>/dev/null | head -n1)
 [ -z "$launch_word" ] || launch_word=$(printf '%s\n' "$launch_word" |
   grep -oE '[a-z]+-[a-z]+(-[a-z]+)?([[:space:]]+(start|wait))?' | head -n1 | tr -s '[:space:]' ' ' | sed 's/ $//')
 if [ -n "$launch_word" ]; then
@@ -32,19 +42,25 @@ if [ -n "$launch_word" ]; then
   exit 0
 fi
 
-gate_root() {
-  local path="${BASH_SOURCE[0]}" directory
+gate_root() { # sets legs_root; a subshell and a dirname per call cost more than the rest of an allow
+  local path="${BASH_SOURCE[0]}" directory origin=$PWD
   while [ -L "$path" ]; do
-    directory=$(cd -P "$(dirname "$path")" && pwd) || return 1
+    directory=${path%/*}
+    [ "$directory" != "$path" ] || directory=.
+    directory=$(cd -P "$directory" && pwd) || return 1
     path=$(readlink "$path")
     [[ "$path" = /* ]] || path="$directory/$path"
   done
-  cd -P "$(dirname "$path")/.." && pwd
+  directory=${path%/*}
+  [ "$directory" != "$path" ] || directory=.
+  cd -P "$directory/.." || return 1
+  legs_root=$PWD
+  cd "$origin"
 }
 # Which vendor and account this chat spends has one answer (share/chat-account.sh): a `claudegpt`
 # chat spends `vendors.codex` under CLAUDEGPT_ACCOUNT and names nothing this gate used to read, so
 # the pressure it warned about was another account's. No resolver, no verdict: fail open.
-legs_root=$(gate_root) || exit 0
+gate_root || exit 0
 [ -r "$legs_root/share/chat-account.sh" ] || exit 0
 . "$legs_root/share/chat-account.sh" || exit 0
 . "$legs_root/share/limit-hit.sh" 2>/dev/null || limit_hit() { :; }
@@ -85,11 +101,11 @@ now=$(date +%s) || exit 0
 # The fan-out's agents inherit the session's model, so its weekly bucket is that model's: the
 # statusline's track records the model of the chat's last reply; a chat with no track yet is a new
 # one, on the default model.
-sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
 tv="" tm=""
 [ -z "$sid" ] || read -r tv _ _ _ _ tm _ 2>/dev/null <"${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/cache-ttl-track-$sid"
-if [ "$tv" = v2 ] && [ -n "$tm" ] && [ "$tm" != - ]; then bucket=$(chat_model_bucket "$tm")
-else bucket=$(chat_model_bucket); fi
+if [ "$tv" = v2 ] && [ -n "$tm" ] && [ "$tm" != - ]; then chat_model_bucket_set "$tm"
+else chat_model_bucket_set; fi
+bucket=$CHAT_MODEL_BUCKET
 # Pressure = max of the general 5h window and that weekly bucket, reset-aware.
 pct=$(jq -r --arg own "$own" --arg vendor "$vendor" --arg bucket "$bucket" --argjson now "$now" '
   def epoch:
@@ -116,7 +132,7 @@ if [ -z "$pct" ]; then
   [ "$own_source" = claudeb-state ] && guessed_note "$own, whose usage this run could not read"
   exit 0
 fi
-pct_int=$(printf '%.0f' "$pct" 2>/dev/null) || exit 0
+printf -v pct_int '%.0f' "$pct" 2>/dev/null || exit 0
 
 if [ "$own_source" = claudeb-state ]; then
   guessed_note "$own at ${pct}%"
@@ -125,7 +141,7 @@ fi
 
 span_live() {
   ( . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" && command -v words_span_live &&
-    words_span_live "$(jq -r '.session_id // ""' <<<"$input")" "$(jq -r '.transcript_path // ""' <<<"$input")" ) >/dev/null 2>&1
+    words_span_live "$sid" "$transcript_path" ) >/dev/null 2>&1
 }
 if [ "$pct_int" -ge "$DENY_AT" ] 2>/dev/null && ! span_live; then
   limit_hit workflow-burn-gate.deny "$DENY_AT" pct skip "a workflow fan-out on $vendor/$own: the chat must shrink or route the work" \
