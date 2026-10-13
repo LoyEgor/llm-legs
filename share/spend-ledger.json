@@ -5290,6 +5290,23 @@
    "verdict": "kept",
    "zero": "removal saves 11.2 wall-min/day and 3.5 CPU-min/day; loses the only end-to-end proof that light-research reaches claudeb, codex and grok with each one's read-only mechanism and that worker-run start light takes the light_edit row",
    "note": "wall is worker-run's launch path (about 3 s a light-research run, 11 launches, each a distinct vendor or entry point) inflated by the wave's nice 10 under load; no redundant or vacuous check; gained the off-row refusal greps from test_worker_run_websearch"
+  },
+  {
+   "id": "suite:llm-legs/test_speed_doctor",
+   "title": "llm-legs/test_speed_doctor",
+   "audited_at": "2026-10-13T15:25:03+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-websearch-20261012T235421Z-7d8b",
+   "cpu_run": 12.6,
+   "wall_run": 18.7,
+   "cpu_min_day": 13.38,
+   "wall_min_day": 43.87,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_speed_doctor.sh": "e84d7508b480f7de077ab35105b2e57ff5bce386"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 11.5 wall-min/day and 10.7 CPU-min/day; loses every pin of the Speed block (headline, partition, backlog scores, backfill resume, merge into Harness, journal prune)",
+   "note": "cost is ~48 speed-doctor spawns at ~0.1 CPU-s of startup each (bytecode is cached); 20 are the half-backfill loop, which has no cheaper setup: the backfill step is time-budgeted (one file at SPEED_DOCTOR_BACKFILL_S=0) and an in-process main() would carry import-time state and lru caches across steps; the cpu<=2.0 check bounds CPU, not wall, and failed in no retained log"
   }
  ]
 }
