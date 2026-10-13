@@ -8162,7 +8162,7 @@
       "status": "fixed-pending",
       "fixes": [
         {
-          "at": "2026-10-12T21:14:11+03:00",
+          "at": "2026-10-13T09:30:00+03:00",
           "by": "d54b8dcf, a8a94560, a85ed518 (owner chats)",
           "files": [
             "claude-setup/hooks/commit-push-gate.sh",
@@ -8175,7 +8175,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
-      "note": "Confirmed and settled by the owner chats on 2026-10-12 before this read: d54b8dcf asks where the commit lands (a chat started in a gated repo no longer gates llm-legs), a8a94560 takes a WORD= quote that names a commit ('Да, давай commit push.' at 16:59Z was refused by the old form), a85ed518 follows a cd behind &&. The only refusal after a85ed518 (18:29Z, arbostar-frs-frontend) is 'one commit per word: push it first', by design. fixes[].at is the last fix's commit time.",
+      "note": "Confirmed and settled by the owner chats on 2026-10-12 before this read: d54b8dcf asks where the commit lands (a chat started in a gated repo no longer gates llm-legs), a8a94560 takes a WORD= quote that names a commit ('Да, давай commit push.' at 16:59Z was refused by the old form), a85ed518 follows a cd behind &&. The only refusal after a85ed518 (18:29Z, arbostar-frs-frontend) is 'one commit per word: push it first', by design. fixes[].at is this review's time: the 02:48 read still carried the pre-fix quotes.",
       "handoff": null
     },
     {
