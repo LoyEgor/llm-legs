@@ -290,9 +290,11 @@ suite_journal_queued=$suite_journal_began suite_journal_slot='' suite_journal_he
 suite_journal_end() { # exit-code -> returns it
   [ -z "${suite_journal_done:-}" ] && [ "${BASHPID:-$$}" = "$$" ] || return "$1"
   suite_journal_done=1
-  local rc=$1 flags=$- name=${suite_journal_test##*/} ended secs cpu began queued complete=true
+  local rc=$1 flags=$- name=${suite_journal_test##*/} ended secs cpu began queued complete=true owner=''
   set +eu
-  [ -z "$suite_journal_slot" ] || (. "$suite_journal_slots" && slot_release "$suite_journal_slot") 2>/dev/null
+  # store_lock_release's owner check, inline: sourcing slots.sh here costs a fork and three files.
+  [ -z "$suite_journal_slot" ] || { read -r owner <"$suite_journal_slot/pid" && [ "$owner" = "$$" ] &&
+    rm -rf "$suite_journal_slot"; } 2>/dev/null
   [ -d "${suite_journal_file%/*}" ] || mkdir -p "${suite_journal_file%/*}" 2>/dev/null
   suite_journal_ms ended
   [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"
