@@ -128,9 +128,12 @@ assert test "$(grep -c "^$WORK/order"$'\t' "$RUN_SUITES_TIMES")" = 4
 # python3, else python3.X on PATH newest first; none at all is one clear line. The toolbox holds
 # every system binary but python, so no real interpreter answers.
 mkdir -p "$WORK/tools" "$WORK/fakepy" "$WORK/py/tests"
+declare -A tool_seen=()
+tools=()
 for f in /usr/bin/* /bin/*; do
-  case "${f##*/}" in python*|pydoc*) ;; *) [ -e "$WORK/tools/${f##*/}" ] || ln -s "$f" "$WORK/tools/${f##*/}" ;; esac
+  case "${f##*/}" in python*|pydoc*) ;; *) [ -n "${tool_seen[${f##*/}]:-}" ] || { tool_seen[${f##*/}]=1; tools+=("$f"); } ;; esac
 done
+ln -s "${tools[@]}" "$WORK/tools/"
 fake_py() { # name has-pytest
   printf '#!/bin/sh\n[ "$1" = -c ] && exit %s\necho "PASS: ran by %s"\n' "$([ "$2" = yes ] && echo 0 || echo 1)" "$1" >"$WORK/fakepy/$1"
   chmod +x "$WORK/fakepy/$1"
