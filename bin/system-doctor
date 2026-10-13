@@ -715,6 +715,7 @@ def summarize(rows):
     out = {"ticks": len(rows), "covered_s": round(covered),
            "births_s": round(mean(r.get("births_s") for r in rows) or 0) if rows else None,
            "kernel": round(mean(r.get("kernel") for r in rows), 3) if mean(r.get("kernel") for r in rows) is not None else None,
+           "busy": round(mean(r.get("busy") for r in rows), 3) if mean(r.get("busy") for r in rows) is not None else None,
            "comp_share_max": max((r.get("comp_share") or 0 for r in rows), default=None),
            "swap_share_max": max((r.get("swap_share") or 0 for r in rows), default=None),
            "ssd_w_b": sum(w for r in rows for label, (_r, w) in (r.get("disk") or {}).items() if label.startswith("internal")),
@@ -2312,7 +2313,7 @@ def document(now, started, persist=True):
         "births_s": round(mean(r.get("births_s") for r in hour)) if mean(r.get("births_s") for r in hour) is not None else None,
         "kernel": round(mean(r.get("kernel") for r in hour), 3) if mean(r.get("kernel") for r in hour) is not None else None,
         "busy": round(mean(r.get("busy") for r in hour), 3) if mean(r.get("busy") for r in hour) is not None else None,
-        "comp_share": latest.get("comp_share"), "comp_gib": latest.get("comp_gib"), "stored_gib": latest.get("stored_gib"),
+        "cores": os.cpu_count(), "comp_share": latest.get("comp_share"), "comp_gib": latest.get("comp_gib"), "stored_gib": latest.get("stored_gib"),
         "mem_gib": latest.get("mem_gib"), "swap_share": latest.get("swap_share"), "swap_used_mb": latest.get("swap_used_mb"),
         "pagein_s": round(mean(r.get("pagein_s") for r in hour) or 0, 1) if hour else None,
         "ssd_gb_day_7d": round(sum(d.get("ssd_w_b") or 0 for d in week) / covered * DAY_S / 1e9, 1) if covered else None,
@@ -2346,6 +2347,16 @@ def document(now, started, persist=True):
                     "hangs": (last_harvest.get("hangs") or [])[:TOP]} if last_harvest else None,
         "footprints": {"own_procs": latest.get("own_procs"), "read": latest.get("usage_read"),
                        "mem_top": latest.get("mem_top") or [], "io_top": merge_top(hour, "io_top")}}
+    shown = [d for d in days if d.get("day", "") > local_day(now - 7 * DAY_S) and (d.get("covered_s") or 0) >= COVER_MIN_S]
+    series = {key: {d["day"]: d[key] for d in shown if d.get(key) is not None}
+              for key in ("busy", "kernel", "births_s", "ssd_gb_day", "swap_gib_day", "comp_share_max")}
+    series["free_gib"] = {}
+    for d in shown:
+        for name, gib in (d.get("free_min_gib") or {}).items():
+            series["free_gib"].setdefault(name, {})[d["day"]] = gib
+    series["logs_gb"] = {local_day(r["t"]): round(r["total_bytes"] / 1e9, 2) for r in logs
+                         if r.get("stores") is not None and r.get("total_bytes") is not None
+                         and local_day(r["t"]) > local_day(now - 7 * DAY_S)}
     cohort = {"covered_days": score["covered_days"], "items": [dict(i, B=round(i["B"], 3)) for i in (score["items"] or [])[:TOP]]
               if score["items"] is not None else None}
     status = "blind" if judge.blind else ("problems" if count else "ok")
@@ -2353,7 +2364,7 @@ def document(now, started, persist=True):
         "contract": 1, "doctor": "system", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge_digest(),
         "status": status, "problem_count": count, "problems": judge.problems,
         "blind_spots": judge.ledger.get("blind_spots") or [], "blind": judge.blind, "measures": measures,
-        "causes": causes, "nightly": nightly_summary(night, crashed), "costs": costs, "collectors": collectors,
+        "days": series, "causes": causes, "nightly": nightly_summary(night, crashed), "costs": costs, "collectors": collectors,
         "cohort": cohort, "log_stores": logstores_view(logs),
         "limits": LIMITS, "self": {"collector_s": round(time.time() - started, 3), "error": None},
     }

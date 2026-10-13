@@ -444,6 +444,24 @@ open(stale, "w").write("{}\n")
 m.document(now, now)
 check(not os.path.exists(stale), "minute rows older than 14 days are deleted")
 
+days_path = os.path.join(work, "state", "days.jsonl")
+kept_days = open(days_path).read()
+with open(days_path, "a") as handle:
+    for back, covered in ((3, 86000), (4, 1800), (9, 86000)):
+        handle.write(json.dumps({"day": m.local_day(now - back * 86400), "covered_s": covered, "busy": 0.5, "kernel": 0.2,
+                                 "births_s": 400, "ssd_gb_day": 250.0, "free_min_gib": {"Data": 60.0}}) + "\n")
+os.makedirs(os.path.join(work, "state", "logstores"), exist_ok=True)
+logs_day = os.path.join(work, "state", "logstores", m.local_day(now - 2 * 86400) + ".jsonl")
+with open(logs_day, "a") as handle:
+    handle.write(json.dumps({"t": now - 2 * 86400, "stores": [], "total_bytes": 4.2e9}) + "\n")
+doc = m.document(now, now)
+series, three = doc["days"], m.local_day(now - 3 * 86400)
+check(series["busy"] == {three: 0.5} and series["births_s"] == {three: 400} and series["free_gib"] == {"Data": {three: 60.0}}
+      and series["logs_gb"].get(m.local_day(now - 2 * 86400)) == 4.2 and doc["measures"]["cores"] == os.cpu_count(),
+      "the days block keeps the last 7 days covered >= 1 h and the log stores' daily totals: %s" % series)
+open(days_path, "w").write(kept_days)
+os.remove(logs_day)
+
 run = cli()
 check(run.returncode == 0 and run.stdout.startswith("System doctor: problems"), "the CLI judge prints its view: %s" % run.stdout)
 latest = json.load(open(os.path.join(work, "state", "latest.json")))
