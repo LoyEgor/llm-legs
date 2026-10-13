@@ -964,6 +964,7 @@ cat >"$FAKE_BIN/review-bench" <<'EOF'
 [ "$1 $3" != "fix --print" ] || { [ ! -e "$DATA/rb-gone-$2" ] || { echo "no round $2" >&2; exit 1; }
   [ ! -e "$DATA/rb-open-$2" ] || cat "$DATA/rb-open-$2"; exit 0; }
 [ ! -e "$DATA/rb-fails" ] || { printf 'reviewing x\nreview-bench: no lens named speed\n' >&2; exit 2; }
+[ ! -e "$DATA/rb-door" ] || { printf 'review-bench: a review launch inside Claude Code runs only as the plain Bash call the review door let through. Nothing was launched.\n' >&2; exit 2; }
 printf '%s\t%s\n' "$PWD" "$*" >>"$DATA/rb-args"
 printf 'reviewing x\nrun id: 20261008T000000Z-abcdef%s\n' "$(wc -l <"$DATA/rb-args" | tr -d ' ')"
 EOF
@@ -1137,6 +1138,13 @@ env "${speed_env[@]}" bash "$FIX" launch harness --night n12 >"$WORK/out" 2>"$WO
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 2 ]
 # A review that does not launch leaves the run its own search, said on stderr.
 tid=$(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out" | cut -f1)
+# A launch the review door refused (run from a script) keeps its line for the chat's own call.
+: >"$DATA/rb-door"
+env "${speed_env[@]}" bash -c "$(lens_line "$tid")" 2>"$WORK/lens-err" && fail "a door-refused lens line passed"
+rm "$DATA/rb-door"
+assert grep -qF "doctor-fix: run $tid: its speed lens was refused at the review door" "$WORK/lens-err"
+assert [ "$(fix lens-lines "$tid")" = "$(lens_line "$tid")" ]
+assert grep -qx 'ROUND: pending' "$(grep -F "$tid" "$WORK/out" | cut -f2)"
 : >"$DATA/rb-fails"
 env "${speed_env[@]}" bash -c "$(lens_line "$tid")" 2>"$WORK/lens-err" || fail "the failed lens line failed: $(cat "$WORK/lens-err")"
 rm "$DATA/rb-fails"

@@ -966,6 +966,8 @@ lens_round() { # id; stdin: its speed-lens launch line's output -> the round on 
   out=$(cat)
   [ -f "$file" ] && jq -e '.lens_launch' "$file" >/dev/null && [ "$(run_state "$id")" = open ] || die "run $id waits for no speed lens"
   round=$(sed -En 's/^run id: ([0-9]{8}T[0-9]{6}Z-[0-9a-f]{7})$/\1/p' <<<"$out" | head -1)
+  [ -n "$round" ] || ! grep -qF 'the review door' <<<"$out" ||
+    die "run $id: its speed lens was refused at the review door, its line kept for lens-lines: run it as the chat's own Bash call"
   locked lens_record "$id" "$round" || die "run $id: its speed lens round was not recorded"
   write_brief "$id" "$(jq -r '.worktrees[0]' "$file")" >/dev/null || die "run $id: its brief does not name round ${round:-none}"
   if [ -z "$round" ]; then
