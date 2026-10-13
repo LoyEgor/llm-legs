@@ -2366,6 +2366,22 @@
    "verdict": "cut",
    "zero": "removal saves ~3.2 wall-min/day; loses the only pins of commit-report's worktree/owner repo row, the unexpanded -C target fallback, the per-call snapshot and the gate+report worktree-behind-a-variable incident (2026-08-28)",
    "note": "GIT_CONFIG_GLOBAL=/dev/null in the shared harness stops the global hooksPath running on every fixture ref move (paired A/B 38->20 s wall, CPU 34->22 s); 2 vacuous asserts on the worker-run store production stopped reading in f530d978 removed (46->44)"
+  },
+  {
+   "id": "suite:claude-setup/test_worker_launch_gate",
+   "title": "claude-setup/test_worker_launch_gate",
+   "audited_at": "2026-10-13T05:41:13+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-commit-report-worktrees-20261012T235201Z-02cb",
+   "cpu_run": 35.1,
+   "wall_run": 45.4,
+   "cpu_min_day": 1.09,
+   "wall_min_day": 2.83,
+   "sources": {
+    "claude-setup/tests/test_worker_launch_gate.sh": "8708af55bd885b911ba942e755f9ac6cb9cb1fc9"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~2.9 wall-min/day; loses the only spelling-by-spelling pins of the PreToolUse gate that keeps bare headless vendor launches, agent-owned worker runs and media scripts off the machine",
+   "note": "54 script-independent media-loop variants run once instead of per script (249->195 gate spawns, mutations red on kept checks); the checkout's readonly/words libs pinned (old suite green under an exempt-all readonly mutation); x2.4 wall since 92e14e08 is load, the gate is >90% of each check; the suite tests llm-legs MAIN's gate through the symlink"
   }
  ]
 }
