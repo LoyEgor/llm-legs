@@ -547,6 +547,13 @@ assert test ! -e "$WORK/old.json"
 assert test "$(cached_rows "$WORK/old-hot.json" '"строка из старого кеша"')" = 1
 assert test "$(cached_rows "$WORK/old-cold.json" '"давний разговор"')" = 1
 
+# --- every start of the tool stays off the gateway account chain it never calls ---
+assert test "$(python3 -c '
+import importlib.machinery, sys
+importlib.machinery.SourceFileLoader("chat_find", sys.argv[1]).load_module()
+print("gateway_auth" in sys.modules)
+' "$SCRIPT")" = False
+
 # --- listing and searching are separate askings ------------------------------
 recent оверлей
 assert test "$RC" -ne 0
