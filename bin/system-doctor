@@ -2376,16 +2376,21 @@ def sampler_docs(since):
 
 
 def ssd_sampled(now):
-    """Internal-disk writes in the root bin/ssd-sampler samples of the last 7 days: {samples, minutes, newest, top:
-    [[proc, dir, share of the internal devices' bytes]], attributed share}; None without a sample."""
+    """Internal-disk writes in the root bin/ssd-sampler samples of the last 7 days, less the sampler's own calibration
+    file (/var/db/ssd-sampler, written by its Python): {samples, minutes, newest, top: [[proc, dir, share of the internal
+    devices' bytes]], attributed share}; None without a sample."""
     docs = sampler_docs(now - 7 * DAY_S)
     device = sum(b for d in docs for label, b in (d.get("devices") or {}).items() if label.startswith("internal:"))
-    if not device:
+    device -= sum((d.get("calibration") or {}).get("seen") or 0 for d in docs)
+    if device <= 0:
         return None
     items = {}
     for d in docs:
+        calibration = (d.get("calibration") or {}).get("seen") or 0
         for proc, _dev, inside, where, written, _events in d.get("rows") or ():
-            if inside:
+            if inside and proc == "Python" and where == "/private/var/db" and calibration:
+                written, calibration = written - min(written, calibration), calibration - min(written, calibration)
+            if inside and written:
                 key = (proc, "swap" if where == "/System/Volumes/VM" else where)
                 items[key] = items.get(key, 0) + written
     top = sorted(items.items(), key=lambda item: (-item[1], item[0]))[:TOP]

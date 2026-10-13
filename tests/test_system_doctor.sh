@@ -1124,16 +1124,18 @@ now = time.time()
 for name, end, devices, rows in (
         ("old", now - 8 * 86400, {"internal:disk0": 10 ** 9}, [["Python", "disk3s1", 1, "~/old", 10 ** 9, 1]]),
         ("v2", now - 60, {"internal:disk0": 10 ** 9}, [["Python", "disk3s1", 1, "/System/Volumes/Data", 10 ** 9, 1]]),
-        ("a", now - 3600, {"internal:disk0": 1000, "external:disk6": 5000},
+        ("a", now - 3600, {"internal:disk0": 1100, "external:disk6": 5000},
          [["kernel_task", "disk3s6", 1, "/System/Volumes/VM", 400, 9], ["Python", "disk7s1", 0, "/Volumes/Work", 5000, 9],
-          ["Python", "disk3s1", 1, "~/.cache/tool", 100, 3]]),
+          ["Python", "disk3s1", 1, "~/.cache/tool", 100, 3], ["Python", "disk3s1", 1, "/private/var/db", 100, 1]]),
         ("b", now - 600, {"internal:disk0": 1000}, [["kernel_task", "disk3s6", 1, "/System/Volumes/VM", 200, 2]])):
-    json.dump({"v": 2 if name == "v2" else 3, "start": end - 600, "end": end, "devices": devices, "rows": rows},
+    json.dump({"v": 2 if name == "v2" else 3, "start": end - 600, "end": end, "devices": devices, "rows": rows,
+               "calibration": {"wrote": 100, "seen": 100 if name == "a" else 0}},
               open(os.path.join(ssd, name + ".json"), "w"))
 sampled = m.document(now, now, persist=False)["measures"]["ssd_sampled"]
 check(sampled == {"samples": 2, "minutes": 20, "newest": now - 600, "attributed": 0.35,
                   "top": [["kernel_task", "swap", 0.3], ["Python", "~/.cache/tool", 0.05]]},
-      "the week's v3 root samples: each process and directory's share of the internal disks' bytes, external rows out: %s"
+      "the week's v3 root samples: each process and directory's share of the internal disks' bytes, external rows and "
+      "the sampler's own calibration file out: %s"
       % sampled)
 open(os.environ["SSD_SAMPLER_PLIST"], "w").close()
 os.utime(os.environ["SSD_SAMPLER_PLIST"], (now - 20 * 3600, now - 20 * 3600))
