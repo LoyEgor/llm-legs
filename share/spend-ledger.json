@@ -1657,6 +1657,21 @@
    "verdict": "kept",
    "zero": "removal saves 0 CPU-min/day (7-day median 0.0; it runs only on days the logo-vectorizer-bench lane evaluates, 1 run a day at most, ~2-4 CPU-min on those days); loses the bench's own tracer/evaluation results (Egor's logo-vectorizer-bench project, outside llm-legs, gitignored tracers/)",
    "note": "bench workload of another repo, bursty on lane-eval days only (c46: Oct 8-9, lostel: Oct 11-12); no harness waits, nothing to cut here; load is weather"
+  },
+  {
+   "id": "cpu:hook/limits-triage-nudge.sh",
+   "title": "hook/limits-triage-nudge.sh",
+   "audited_at": "2026-10-13T09:35:59+03:00",
+   "by": "harness-speed-cpu-hook-limits-triage-nudge-sh-20261012T235048Z-1236",
+   "cpu_min_day": 2.0,
+   "cpu_s_run": 0.017,
+   "runs_day": 5547,
+   "sources": {
+    "claude-setup/hooks/limits-triage-nudge.sh": "1e2a097595f4ab0777eb0e0194e865907be941b3"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.4 CPU-min/day; loses the nudge to read llm-limits --table before any limit theory after a limit-shaped Bash error",
+   "note": "env bash start 8.4 ms + a cat fork 2.5 ms were 12.6 of the 13 CPU-ms a run: now /bin/bash and a read builtin, 3.7 ms on the same payloads, output/exit/state file identical on 406 real-transcript payloads. Wasted is ~all of it (0 of 400 real payloads got a nudge) but the run cannot be skipped: PostToolUse cannot filter on output, merging with word-spend is the declined hook dispatcher (2026-10-05). The other ~20 env-bash hooks pay the same 5.8 ms start floor; each needs its own bash 3.2 check (share/run-liveness.sh uses printf %()T, so no blanket switch)"
   }
  ]
 }
