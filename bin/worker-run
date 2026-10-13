@@ -3194,8 +3194,9 @@ start_run() {
   export WORKER_RUN_RECORD="$directory" WORKER_RUN_ID="$run_id"
 
   supervisor_body='# Double-forked so no bare wait hangs on it, and without WORKER_RUN_ID so end_run_orphans never ends it as an orphan of the run;
+# exec: without it the forked shell running `cd / &&` stays, the id in its env, as the parent of caffeinate, and both end as orphans.
 # From / because, orphaned out of this tree, it would stand in the launcher cwd and the speed gate would refuse this very run.
-command -v caffeinate >/dev/null 2>&1 && (cd / && env -u WORKER_RUN_ID caffeinate -i -w $$ </dev/null >/dev/null 2>&1 &)
+command -v caffeinate >/dev/null 2>&1 && (cd / && exec env -u WORKER_RUN_ID caffeinate -i -w $$ </dev/null >/dev/null 2>&1 &)
 ticks=0
 while [ ! -e "$2/.ready" ]; do
   ticks=$((ticks + 1))

@@ -119,6 +119,7 @@ export CAFFEINATE_LOG="$WORK/caffeinate.calls"
 cat >"$WORK/bin/caffeinate" <<'CAFFEINATE'
 #!/usr/bin/env bash
 printf '%s run-id=%s cwd=%s\n' "$*" "${WORKER_RUN_ID-unset}" "$PWD" >>"$CAFFEINATE_LOG"
+while kill -0 "$3" 2>/dev/null; do sleep 0.1; done
 exit 1
 CAFFEINATE
 printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
