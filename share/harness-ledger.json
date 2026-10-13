@@ -6118,7 +6118,7 @@
         "rule": "opportunity",
         "ident": "hooks/commit-report\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T08:20:00+03:00",
@@ -6137,12 +6137,27 @@
             "data": "700 distinct Bash commands naming git from 695 transcripts of 2026-10-08..10, each as a PostToolUse payload with a named session and tool_use_id, scratch HOME, review-debt and review-bench stubbed, CLAUDE_PROJECT_DIR unset",
             "result": "700/700 identical; 694 leave at the new screen, 6 name a landing or push word and run the unchanged path; paired at load ~90, 250 pairs: 339 -> 88 ms mean, 485 -> 135 ms p95"
           }
+        },
+        {
+          "at": "2026-10-13T06:20:00+03:00",
+          "by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
+          "files": [
+            "claude-setup/hooks/commit-report.sh",
+            "claude-setup/tests/test_commit_report.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "hooks/commit-report.sh at the night base vs the fix: stdout, stderr, exit code and the scratch HOME tree (paths and sizes) per call",
+            "data": "621 PostToolUse payloads rebuilt from the last 400 transcripts (500 spelling no git, 120 spelling it, the largest no-git one), 77 with a write stash for their tool_use_id, scratch HOME, CLAUDE_PROJECT_DIR unset",
+            "result": "621/621 identical; 250 interleaved no-git pairs at load ~200: p50 349 -> 119 ms, mean 430 -> 213 ms"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261010T031904Z-0906",
-      "note": "Before: 15.58 min/day recoverable (latest.json 2026-10-10). hooks/folded 20735 (2026-10-09): 11 249 runs, 33.7 wall-min; by CPU, 7963 under 25 ms (4.1 min: no git or the old screen), 2931 at 25-150 ms (9.6 min: a git call that loaded the 2k-line library to find no landing), 295 over 500 ms (19 min: landings). Fixed: a named call with no write stash, no armed HEAD snapshot and no spliced whole word of push or RJ_LANDING_SUBCOMMANDS leaves before the library; anonymous calls (nocall.* snapshots) and stashed ones keep the full path. RJ_LIB found by expansion (the 10-09 note's dirname/cd forks). Test: test_commit_report no grep/sed/awk on such a call (red on old code) and an armed snapshot with no landing word still reports (red with the snapshot check removed). Left, handed off: the landing tail is the debt probe, review-debt --split missing its cache after every commit (76-82 s llm-legs at load ~39) and killed at the 4 s row budget as `debt unknown`, 197 runs over 4.5 s in 2026-10-08..09, about 10 min/day. Found, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base too (2026-10-10, load ~90). Seen, not changed: the libdown note now waits for a landing call, as it already did for a call naming no git.",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
+      "note": "2026-10-13: 4.7 min/day back (hooks/folded 20738, 2026-10-12: 8155 runs, 11.0 wall-min; 6986 under 50 ms, 157 over 1 s = 6.8 min, the landings). Fixed: a payload spelling no git anywhere (SPLICE_JSON over the raw bytes, comment-gate's screen) whose raw tool_use_id has no write stash leaves before jq: 76 % of 58 866 rebuilt Bash payloads. Left: the landing tail (157 runs/day at ~2.6 s), not traced this run. Before: 15.58 min/day recoverable (latest.json 2026-10-10). hooks/folded 20735 (2026-10-09): 11 249 runs, 33.7 wall-min; by CPU, 7963 under 25 ms (4.1 min: no git or the old screen), 2931 at 25-150 ms (9.6 min: a git call that loaded the 2k-line library to find no landing), 295 over 500 ms (19 min: landings). Fixed: a named call with no write stash, no armed HEAD snapshot and no spliced whole word of push or RJ_LANDING_SUBCOMMANDS leaves before the library; anonymous calls (nocall.* snapshots) and stashed ones keep the full path. RJ_LIB found by expansion (the 10-09 note's dirname/cd forks). Test: test_commit_report no grep/sed/awk on such a call (red on old code) and an armed snapshot with no landing word still reports (red with the snapshot check removed). Left, handed off: the landing tail is the debt probe, review-debt --split missing its cache after every commit (76-82 s llm-legs at load ~39) and killed at the 4 s row budget as `debt unknown`, 197 runs over 4.5 s in 2026-10-08..09, about 10 min/day. Found, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base too (2026-10-10, load ~90). Seen, not changed: the libdown note now waits for a landing call, as it already did for a call naming no git.",
       "handoff": "docs/handoffs/2026-10-10-commit-report-debt-probe.md"
     },
     {
@@ -8707,6 +8722,96 @@
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
       "note": "A/B on one machine 2026-10-13 (git archive of e3d1b510^ and e3d1b510, test_worker_run_attribution twice each, 324 asserts): CPU 32.3/27.5 -> 31.1/27.3 s, wall 85/32 -> 81/35 s: the fix is not slower. The 28 -> 50 wall-s reading is load (x1.46 over the time-matched controls, 1.22 < 1.3) plus main's later worker-run commits. Not reverted.",
+      "handoff": null
+    },
+    {
+      "id": "speed-fan-out-claude-setup-commit-report",
+      "title": "tests/affected pulled test_review_flow_gate (241 s wall, 183 s CPU a run) on every commit-report.sh change for comments naming the hook",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/fan-out/claude-setup/hooks/commit-report\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T05:50:00+03:00",
+          "by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
+          "files": [
+            "claude-setup/tests/test_review_flow_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "share/test_health.py covering() (tests/affected's rule) over claude-setup at the night base vs the fix",
+            "data": "every claude-setup basename (120) and its suites",
+            "result": "2 pairs changed, both dropped: commit-report.sh and test_word_triggers.sh from test_review_flow_gate.sh, which names them only in comments and runs neither (its $ROOT/hooks calls: review-flow-gate, commit-push-gate, word-intake, word-spend, lib/review-journal, lib/splice, lib/readonly-command)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
+      "note": "Pull now: test_commit_report{,_span,_worktrees} and test_review_journal, each runs the hook. Ruled out as a rule change: ignoring comment-only mentions drops 144 links over llm-legs, claude-setup and review-bench, real ones among them (splice.sh in test_hook_long_command, exercised through the hook it names).",
+      "handoff": null
+    },
+    {
+      "id": "speed-fan-out-claude-setup-word-triggers",
+      "title": "tests/affected pulled test_review_flow_gate on every test_word_triggers.sh change for one comment naming the suite",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/fan-out/claude-setup/tests/test_word_triggers\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T05:50:00+03:00",
+          "by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
+          "files": [
+            "claude-setup/tests/test_review_flow_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "share/test_health.py covering() (tests/affected's rule) over claude-setup at the night base vs the fix",
+            "data": "every claude-setup basename (120) and its suites",
+            "result": "2 pairs changed, both dropped, neither run by test_review_flow_gate; test_word_triggers.sh now pulls itself alone"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
+      "note": "Same fix as speed-fan-out-claude-setup-commit-report.",
+      "handoff": null
+    },
+    {
+      "id": "speed-fan-out-llm-legs-instruction-files",
+      "title": "tests/affected pulls 10 suites on a share/instruction-files.sh change",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/fan-out/llm-legs/share/instruction-files\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
+      "note": "Ruled out 2026-10-13: every pulled suite loads the file. The 8 test_instruction_gate* suites source tests/instruction_gate_harness.sh, which sources share/instruction-files.sh (lines 197, 223) and drives the gates that load it (bin/instruction-bloat-gate.sh:32); test_instruction_watch_perf.py runs it by path; test_consistency.sh pins invariant br on it. Workers already skip the slow test_instruction_gate.sh (tests/slow-suites). The tests/affected call itself went 15.4 -> 0.8 s (llm-legs 21c532b0).",
+      "handoff": null
+    },
+    {
+      "id": "speed-idle-claude-setup-word-triggers",
+      "title": "test_word_triggers: 27 s wall on 9 s CPU at p10",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/claude-setup/test_word_triggers"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
+      "note": "Ruled out 2026-10-13: no sleep, timeout, wait or poll in the suite, tests/word_triggers_harness.sh, hooks/word-intake.sh or hooks/lib/words.sh. The idle is ~120 serial `reads` (jq, bash word-intake.sh, python3 words.py, jq) queued for CPU: at load ~160 one read is 0.8-2.1 s wall on ~90 ms CPU (bare jq 478 ms, python3 158 ms); 145-182 s a run then. Running reads concurrently only takes CPU share from co-running suites; batching the grammar in one python skips the hook path the suite exists to drive.",
       "handoff": null
     }
   ],
