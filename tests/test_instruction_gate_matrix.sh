@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/instruction_gate_harness.sh" || exit 1
 profile_link
 docs_link
 alert_log_stub
 
+if suite_shard_owns 1 matrix-settings; then
 echo "== gate matrix: settings.json is out of the deny gate entirely"
 # Not an instruction file — nothing re-reads it into a context window — and the harness rewrites
 # it on every model or permission-mode switch, so a denial here cost Egor a tactical "ok" and
@@ -14,7 +16,8 @@ assert_eq pass "$(GATE_CWD="$HOME/.claude" decision 'echo x > settings.json')"
 assert_eq pass "$(decision "printf x | tee $HOME/.claude/settings.json")"
 assert_eq pass "$(in_span decision "echo y >> $HOME/.claude/settings.json")"
 assert_eq pass "$(decision "python3 -c \"open('$HOME/.claude/settings.json','w').write('{}')\"")"
-
+fi
+if suite_shard_owns 1 matrix-every-session; then
 echo "== gate matrix: the every-session class is denied in the span as much as out of it"
 # The global file, a project file, the local override. Growing or shrinking, span or no span:
 # these ride in the prefix of every session, and no cleanup of them is a model's own call.
@@ -29,7 +32,8 @@ for state in in_span out_span; do
   assert_eq deny "$($state decision "printf tiny | tee $CLAUDE_MD")"
   assert_eq deny "$($state decision "python3 -c \"open('$CLAUDE_MD','w').write('x')\"")"
 done
-
+fi
+if suite_shard_owns 2 matrix-span-reshape; then
 echo "== gate matrix: the span reshapes the on-demand instruction files but never grows them"
 # Egor is away and the model is the only actor, so a write that REPLACES a doc's bytes is the
 # cleanup he left it; an append can only add to a file every later session re-reads. Out of the
@@ -41,7 +45,8 @@ for f in "$HOME/.claude/docs/review-tiers.md" "$HOME/.claude/agents/codex-worker
   assert_eq deny "$(out_span decision "printf shorter > $f")"
   assert_eq deny "$(out_span decision "echo more >> $f")"
 done
-
+fi
+if suite_shard_owns 1 matrix-live-span; then
 echo "== gate matrix: the live span helper lets the span grow the on-demand files and CLAUDE.md too"
 for f in "$HOME/.claude/docs/review-tiers.md" "$HOME/.claude/agents/codex-worker.md" \
          "$HOME/.claude/skills/demo/SKILL.md" "$HOME/.claude/commands/worker.md"; do
@@ -53,7 +58,8 @@ assert_eq pass "$(live_span in_span decision "echo live-more >> $CLAUDE_MD")"
 assert_eq deny "$(live_span out_span decision "echo live-more >> $CLAUDE_MD")"
 assert_contains "orchestrator's to edit" "$(CLAUDEB_WORKER=1 live_span in_span gate "echo live-more >> $CLAUDE_MD" 2>&1)"
 assert_eq deny "$(live_span in_span decision "echo live-more >> $HOME/.claude/review-debt-ignore")"
-
+fi
+if suite_shard_owns 1 matrix-bloat-live; then
 echo "== bloat gate: the live span helper passes growth, out of the span it is still priced"
 bloat_as() { # session transcript path
   local out
@@ -67,7 +73,8 @@ assert_eq pass "$(live_span bloat_as matrix-span "$SPAN_T" "$CLAUDE_MD")"
 assert_eq pass "$(live_span bloat_as matrix-span "$SPAN_T" "$HOME/.claude/docs/review-tiers.md")"
 assert_eq deny "$(live_span bloat_as matrix-plain "$NOSPAN_T" "$HOME/.claude/docs/review-tiers.md")"
 assert_eq deny "$(bloat_as matrix-span "$SPAN_T" "$HOME/.claude/agents/codex-worker.md")"
-
+fi
+if suite_shard_owns 2 matrix-shrink-shapes; then
 echo "== gate matrix: every write shape the gate reads is judged on whether it can shrink"
 assert_eq pass "$(in_span decision "printf x >| $DOC")"
 assert_eq pass "$(in_span decision "printf x | tee $DOC")"
@@ -88,7 +95,8 @@ assert_eq deny "$(in_span decision "perl -e \"open(my \$f, '>>', '$DOC')\"")"
 # the tripwire's to measure.
 assert_eq pass "$(in_span decision "printf x > $HOME/.claude/docs/new-in-span.md")"
 assert_eq deny "$(out_span decision "printf x > $HOME/.claude/docs/new-in-span.md")"
-
+fi
+if suite_shard_owns 3 matrix-compound; then
 echo "== gate matrix: a compound is judged row by row, never one row's class against another's shape"
 # The class used to come off the FIRST destination and the shrink shape off ANY of them, so a
 # command whose later row could shrink a doc carried an earlier row that only grew one.
@@ -118,7 +126,8 @@ assert_contains "$AGENT_DOC" "$msg"
 # read out of a guarded file and lets the write into one through.
 assert_eq deny "$(in_span decision "python3 -c \"import shutil; shutil.copy('/tmp/x.md','$CLAUDE_MD')\"")"
 assert_eq pass "$(in_span decision "python3 -c \"import shutil; shutil.copy('$CLAUDE_MD','/tmp/x.md')\"")"
-
+fi
+if suite_shard_owns 2 matrix-denial-text; then
 echo "== gate matrix: the in-span denial names growth, the standing one names Egor's rule"
 msg=$(in_span gate "echo grow-a >> $DOC" | jq -r '.hookSpecificOutput.permissionDecisionReason')
 assert_contains "ADDS to" "$msg"
@@ -127,7 +136,8 @@ msg=$(out_span gate "echo grow-b >> $DOC" | jq -r '.hookSpecificOutput.permissio
 assert_contains "$(fmt instruction_standing_rule)" "$msg"
 assert_contains "denied whatever its size" "$msg"
 case "$msg" in *"autonomy span"*) fail "the standing denial talks about a span that is not standing" ;; esac
-
+fi
+if suite_shard_owns 3 matrix-debt-ignore; then
 echo "== gate matrix: the review-debt ignore list is denied always, with its own reason"
 for state in in_span out_span; do
   assert_eq deny "$($state decision "echo path >> $HOME/.claude/review-debt-ignore")"
@@ -139,13 +149,15 @@ msg=$(in_span gate "echo one-path >> $HOME/.claude/review-debt-ignore" \
 assert_contains "review debt" "$msg"
 assert_contains "never a model's" "$msg"
 case "$msg" in *"re-read across sessions"*) fail "the debt list was priced like an always-on file" ;; esac
-
+fi
+if suite_shard_owns 2 matrix-commands-dir; then
 echo "== gate matrix: ~/.claude/commands is guarded like every other class directory"
 assert_eq deny "$(decision "echo x > $HOME/.claude/commands/worker.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/commands/brand-new.md")"
 assert_eq deny "$(GATE_CWD="$HOME/.claude/commands" decision 'echo x >> worker.md')"
 assert_eq deny "$(GATE_CWD="$HOME/.claude" decision 'echo x > commands/brand-new.md')"
-
+fi
+if suite_shard_owns 3 matrix-write-target; then
 echo "== gate matrix: a command is judged by its write TARGET, never by a name it carries"
 # A guarded name inside a heredoc body or a quoted run is data being passed along. Reading it as a
 # destination denied ordinary work — a scratchpad note quoting a rule, a commit message — while
@@ -186,6 +198,7 @@ assert_eq deny "$(decision "sh -c \"printf x > $CLAUDE_MD\"")"
 assert_eq pass "$(decision "python3 -c \"open('$WORK/scratch/o.md','w').write('$CLAUDE_MD')\"")"
 assert_eq pass "$(decision "node -e \"fs.writeFileSync('$WORK/scratch/o.md', 'see $CLAUDE_MD')\"")"
 assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','w').write('$WORK/scratch/o.md')\"")"
+fi
 
 echo "== gate matrix: a text naming no interpreter never pays the interpreter greps"
 assert share_call 'for n in ${_INSTRUCTION_INTERP_NAMES//|/ }; do n=${n%%[[]*}
