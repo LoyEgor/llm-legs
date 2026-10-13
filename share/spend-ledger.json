@@ -15,18 +15,20 @@
   {
    "id": "suite:llm-legs/test_instruction_gate",
    "title": "llm-legs/test_instruction_gate",
-   "audited_at": "2026-10-08T03:17:55+03:00",
-   "by": "feat/suite-audit-instruction-gate",
-   "cpu_run": 46.3,
-   "wall_run": 28.4,
-   "cpu_min_day": 69.72,
+   "audited_at": "2026-10-13T13:06:41+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-selfcheck-20261012T235335Z-33ab",
+   "cpu_run": 48.9,
+   "wall_run": 10.9,
+   "cpu_min_day": 11.53,
+   "wall_min_day": 8.88,
    "sources": {
-    "llm-legs/tests/instruction_gate_harness.sh": "8c221c5b4f21b43b2247d00dafb1cf9a9c7345d0",
-    "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
-    "llm-legs/tests/test_instruction_gate.sh": "1d9ca897ba732a4175c6ec8888c9e3a37bc8cb2c"
+    "llm-legs/tests/instruction_gate_harness.sh": "c8b4be84a7ecb660f427a57f7399499efa1f8c56",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_instruction_gate.sh": "94483e6fd6e97ed27e0fdfd634c0ba4a01d5ff93"
    },
-   "verdict": "kept",
-   "note": "kept (re-audit 2026-10-08): 45-52 CPU-s/run (3 runs, load 7-22, 2/3 sys = forks); a stub-gate run of the same 216 asserts costs 5.8 s, so ~88% is the gate's guarded-name slow path (220-380 ms a call, spread over ~40 forking lines, no hotspot; ordinary live calls take the 40 ms path); test-side cuts (one jq per call, 3 duplicate fast-path asserts) are ~4% and would move the harness blob shared by 7 sibling suites, re-queueing their audits; no sleeps or timeouts"
+   "verdict": "cut",
+   "zero": "removal saves 11 wall-s and 40 CPU-s a run; loses the write gate's shell-write deny matrix",
+   "note": "decision and witness from one jq, fixture string in bash, heredoc block moved from the 97-assert shard to the 62-assert one, 3 repeated pass checks cut (the same calls run at 23, 530, 531); shards 77/79/91; witness-write mutation red"
   },
   {
    "id": "startup:nested CLAUDE.md files",
@@ -3322,6 +3324,76 @@
    "verdict": "kept",
    "zero": "removing it saves 0.1 wall-min/day; loses the comment-gate commit-shape verdicts, the no-git zero-fork guard and the span door",
    "note": "15 asserts, each one hook run of ~0.1 s; the cost is the hook, every case a distinct commit shape; nothing redundant or vacuous found (the fork spy goes red when the early exit moves below jq)"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_selfcheck",
+   "title": "llm-legs/test_llm_selfcheck",
+   "audited_at": "2026-10-13T13:06:40+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-selfcheck-20261012T235335Z-33ab",
+   "cpu_run": 22.1,
+   "wall_run": 22.8,
+   "cpu_min_day": 6.28,
+   "wall_min_day": 11.3,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_llm_selfcheck.sh": "c450ffa009b103231c5d62c2070896f3f1ad81f0"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 14 wall-s and 17 CPU-s a run; loses the daily selfcheck's config tripwire, ordered suites, skip list and 60-line log trim guards",
+   "note": "65 full runs for the trim check became one run over a 70-line seeded log (same 70 asserts; tail -n 600 mutation red)"
+  },
+  {
+   "id": "suite:llm-legs/test_chats",
+   "title": "llm-legs/test_chats",
+   "audited_at": "2026-10-13T13:06:40+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-selfcheck-20261012T235335Z-33ab",
+   "cpu_run": 4.9,
+   "wall_run": 11.2,
+   "cpu_min_day": 2.24,
+   "wall_min_day": 7.06,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_chats.sh": "45b58007404ca1fd4c00692e8d111db1bfe7af01"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 10 wall-s a run; loses the picker, filter, mouse and cache-expiry guards",
+   "note": "startup probes gate stubs on file handshakes not 1 s sleeps, finder waits on a release file, cache expiry on a fake clock, bucket tree in one ln (same 129 asserts; blocked-first-paint and sequential-load mutations red)"
+  },
+  {
+   "id": "suite:llm-legs/test_instruction_gate_matrix",
+   "title": "llm-legs/test_instruction_gate_matrix",
+   "audited_at": "2026-10-13T13:06:42+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-selfcheck-20261012T235335Z-33ab",
+   "cpu_run": 25.5,
+   "wall_run": 28.7,
+   "cpu_min_day": 5.34,
+   "wall_min_day": 8.67,
+   "sources": {
+    "llm-legs/tests/instruction_gate_harness.sh": "c8b4be84a7ecb660f427a57f7399499efa1f8c56",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_instruction_gate_matrix.sh": "9b0025e27e78044d903777c4e60baf60cc0abe83"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 17 wall-s and 24 CPU-s a run; loses the span/class matrix of the write and bloat gates",
+   "note": "three shards of 38/42/38 asserts (114 asserts unchanged; each section runs once); critical path from one process to a third of the sections"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_wait_stream",
+   "title": "llm-legs/test_worker_run_wait_stream",
+   "audited_at": "2026-10-13T13:06:43+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-selfcheck-20261012T235335Z-33ab",
+   "cpu_run": 4.2,
+   "wall_run": 8.2,
+   "cpu_min_day": 2.27,
+   "wall_min_day": 6.0,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_wait_stream.sh": "da19f641bf4357541d7412b095aceabb7866c293",
+    "llm-legs/tests/worker_run_harness.sh": "9635feac4fe967a848f80a126580098843087c52"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 8.5 wall-s a run; loses the wait stream's live-transcript, partial-line, reroute and stop guards",
+   "note": "WORKER_RUN_WAIT_POLL_S accepts fractions, the live waits tick at 0.2 s (same 36 asserts; in-loop stream mutation red)"
   }
  ]
 }
