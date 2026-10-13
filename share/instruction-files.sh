@@ -2068,7 +2068,7 @@ _instruction_deny_record() { # hash session
 
 _instruction_deny_record_ok() { # hash session
   local who='' at='' now
-  read -r who at _ <"$(instruction_watch_state)/denied/$1" 2>/dev/null || return 1
+  read -r who at _ 2>/dev/null <"$(instruction_watch_state)/denied/$1" || return 1
   [ "$who" = "${2:--}" ] || return 1
   case "$at" in ''|*[!0-9]*) return 1 ;; esac
   now=$(date +%s)
@@ -2167,7 +2167,7 @@ instruction_baseline_wait() { # pending-file
   [ -e "$1" ] || return 0
   while [ -e "$1" ]; do
     pid=''
-    read -r pid <"$1" 2>/dev/null
+    read -r pid 2>/dev/null <"$1"
     case "$pid" in
       ''|*[!0-9]*) ;;
       *) kill -0 "$pid" 2>/dev/null || break ;;

@@ -605,7 +605,7 @@ load_inflight() {
     [ -f "$f" ] || continue
     name=${f##*/}
     name=${name%%@*}
-    read -r m_start m_id _ m_agent _ <"$f" 2>/dev/null || continue
+    read -r m_start m_id _ m_agent _ 2>/dev/null <"$f" || continue
     instruction_ns_to start "$m_start" || continue
     if [ "$name" = "$own_name" ] && [ -n "$tool_use_id" ] && [ "$m_id" = "${tool_use_id//[^A-Za-z0-9._-]/_}" ]; then
       own_count=$((own_count + 1)); own_file=$f; own_start=$start
@@ -623,7 +623,7 @@ load_inflight() {
     [ -f "$f" ] || continue
     name=${f##*/}
     name=${name%%@*}
-    read -r start m_end _ <"$f" 2>/dev/null || continue
+    read -r start m_end _ 2>/dev/null <"$f" || continue
     case "$start$m_end" in ''|*[!0-9]*) rm -f "$f" 2>/dev/null; continue ;; esac
     if [ $((now_ns - m_end)) -gt 600000000000 ]; then rm -f "$f" 2>/dev/null; continue; fi
     [ "$name" = "$own_name" ] && continue

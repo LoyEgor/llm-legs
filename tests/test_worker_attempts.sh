@@ -86,4 +86,13 @@ chmod +x "$WORK/gnu-stat/stat"
 assert test "$(field '.session' "$JOURNAL.1")" = "01a0-fourth,01a0-fifth"
 assert test "$(field '.session' "$JOURNAL")" = "01a0-sixth"
 
+# A run without attempt or launcher files journals nulls and prints nothing: the supervisor's stderr is
+# the run's err file, and one stray line there reads as worker output to the silence watchdog.
+BARE="$WORK/runs/codex-1790000000-2-bare"
+mkdir -p "$BARE"
+cp "$RUN/meta.json" "$BARE/meta.json"
+bare_err=$( (RUN=$BARE; record 01a0-bare) 2>&1 >/dev/null)
+assert test -z "$bare_err"
+assert test "$(jq -r 'select(.session == "01a0-bare") | [.attempt, .launcher] | map(tostring) | join(" ")' "$JOURNAL")" = "null null"
+
 printf 'OK: worker attempts journal (%d assertions)\n' "$asserts"

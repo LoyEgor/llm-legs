@@ -145,7 +145,7 @@ prune() {
   marker="$cache_root/.tag-prune"
   now=${EPOCHSECONDS:-}
   [ -n "$now" ] || now=$(date +%s 2>/dev/null)
-  read -r marker_mtime <"$marker" 2>/dev/null
+  read -r marker_mtime 2>/dev/null <"$marker"
   marker_mtime=${marker_mtime:-0}
   if [[ "$now" =~ ^[0-9]+$ ]] && [[ "$marker_mtime" =~ ^[0-9]+$ ]] && [ "$((now - marker_mtime))" -gt 3600 ]; then
     find "$cache_root" -type f ! -name '.tag-prune' -mtime +7 -delete >/dev/null 2>&1

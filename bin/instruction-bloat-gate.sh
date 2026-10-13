@@ -346,7 +346,7 @@ note="$STAMP_DIR/$hash.read"
 retry_read_seen() {
   local size='' recorded='' transcript='' now='' target_real='' seen='' cand='' cand_real=''
   [ -f "$note" ] || return 0
-  { IFS= read -r size && IFS= read -r recorded; } <"$note" 2>/dev/null || return 0
+  { IFS= read -r size && IFS= read -r recorded; } 2>/dev/null <"$note" || return 0
   case "$size" in ''|*[!0-9]*) return 0 ;; esac
   transcript=$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null) || return 0
   [ -n "$transcript" ] && [ -f "$transcript" ] && [ "$transcript" = "$recorded" ] || return 0

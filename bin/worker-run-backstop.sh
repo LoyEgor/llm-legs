@@ -87,7 +87,7 @@ named=''
 for f in "$progress"/*.json; do
   [ -f "$f" ] || continue
   body=''
-  IFS= read -r -d '' body <"$f" 2>/dev/null
+  IFS= read -r -d '' body 2>/dev/null <"$f"
   case "$body" in *"\"$session\""*) named=1; break ;; esac
 done
 now=''

@@ -2326,8 +2326,8 @@ journal_worker_attempt() { # directory session
     store_lock_release "$journal.rotating"
   fi
   TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T' -1
-  IFS= read -r attempt <"$directory/attempt" 2>/dev/null || :
-  IFS= read -r launcher <"$directory/launcher" 2>/dev/null || :
+  IFS= read -r attempt 2>/dev/null <"$directory/attempt" || :
+  IFS= read -r launcher 2>/dev/null <"$directory/launcher" || :
   jq -c --arg ts "$ts" --arg run "${directory##*/}" --arg session "$2" \
     --arg attempt "$attempt" --arg launcher "$launcher" \
     '{ts: $ts, run: $run, attempt: (($attempt | tonumber?) // null), session: $session,
@@ -2345,7 +2345,7 @@ journal_worker_run() { # directory status exit-code
   journal="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/runs.jsonl"
   printf -v now '%(%s)T' -1
   reason=$2
-  case "$3" in 143|137) IFS=' ' read -r reason _ <"$directory/killed" 2>/dev/null || reason=$2 ;; esac
+  case "$3" in 143|137) IFS=' ' read -r reason _ 2>/dev/null <"$directory/killed" || reason=$2 ;; esac
   meta_update "$directory" '.ended_at = $now
     | .terminal_reason = (if $reason == "failed" and $code == "4" and ((.cli_starts // []) | length) == 0
         then "no-start" else $reason end)' \
@@ -5419,7 +5419,7 @@ claim_run() {
         family=''
         for sub in "$directory"/families/*; do
           [ -f "$sub/top" ] && [ -f "$sub/head-after" ] || continue
-          IFS= read -r family <"$sub/top" 2>/dev/null || continue
+          IFS= read -r family 2>/dev/null <"$sub/top" || continue
           family=$(cd "$family" 2>/dev/null && pwd -P) || { family=''; continue; }
           [ "$physical" != "${physical#"$family"/}" ] && break
           family=''
@@ -5704,7 +5704,7 @@ fold_family_anchors() { # directory snap repo top launcher round [path...]
 # open, `review-anchors check` reads it as a dead run forever.
 fold_gone_checkout() { # directory anchors-common-file launcher round
   local common workdir=''
-  IFS= read -r common <"$2" 2>/dev/null || common=''
+  IFS= read -r common 2>/dev/null <"$2" || common=''
   case "$common" in */.git) workdir=$(git -C "${common%/.git}" rev-parse --show-toplevel 2>/dev/null) ;; esac
   [ -z "$workdir" ] ||
     review_anchors run-fold --repo "$workdir" --run "${1##*/}" --session "$3" --round "$4" --owned >/dev/null 2>&1 || :
@@ -5731,7 +5731,7 @@ fold_run_anchors() { # directory
   fi
   for sub in "$directory"/families/*; do
     [ -f "$sub/top" ] || continue
-    IFS= read -r top <"$sub/top" 2>/dev/null || continue
+    IFS= read -r top 2>/dev/null <"$sub/top" || continue
     if ! git -C "$top" rev-parse --show-toplevel >/dev/null 2>&1; then
       fold_gone_checkout "$directory" "$sub/anchors-common" "$launcher" "$round"
       continue

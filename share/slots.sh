@@ -123,7 +123,7 @@ holds_in_tree() { # pid -> whether a live limiter hold's holder runs inside that
   for file in "${HARNESS_HOLDS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/holds}"/*.json; do
     [ -e "$file" ] || return 1
     text=''
-    IFS= read -r -d '' text <"$file" 2>/dev/null || :
+    IFS= read -r -d '' text 2>/dev/null <"$file" || :
     # The top-level pid: both writers (limiter-hold.sh, limiter_hold.py) put it before any nested object.
     [[ "$text" =~ \"pid\":[[:space:]]*([0-9]+)[,}[:space:]] ]] || continue
     pid=${BASH_REMATCH[1]}
