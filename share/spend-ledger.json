@@ -1926,6 +1926,36 @@
    "verdict": "cut",
    "zero": "removal saves 0.4 CPU-min/day; loses the once-per-session statusline freshness-contract reminder on statusline file edits",
    "note": "a payload with no statusline substring (118 of 129 sampled) leaves before jq: stdin by read, basename by expansion; 13 -> 7 CPU-ms/run, outputs identical; fork pin in tests/test_statusline_hooks.sh red on the old code (cat jq basename)"
+  },
+  {
+   "id": "hook:ask-run-unfinished.sh",
+   "title": "ask-run-unfinished.sh",
+   "audited_at": "2026-10-13T10:12:21+03:00",
+   "by": "harness-speed-spend-hook-stop-no-notice-20261012T235144Z-508e",
+   "share": 5e-06,
+   "prices": {
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
+   },
+   "sources": {
+    "claude-setup/hooks/stop.d/ask-run-unfinished.sh": "a3c384558b6c0d93befcefaca0b8d5a72ae351a9"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~13 CPU-ms per main-chat stop (claude-setup@c7a01cd) and 71 lines, ~0 tokens; loses the only refusal for this chat's dead or done-never-read review run (the day-long rev ✗ statusline incident it was built for)",
+   "note": "price 3.1k/7d is one firing (2026-10-06, run db26118) of the live-with-no-waiter arm that claude-setup@62caa568 moved to worker-run-backstop.sh on 10-10; the two arms left (dead, done-never-read) never fired in the transcript store (since 2026-08-05: 2 real firings, both the gone live arm; the many other hits are test-fixture run ids in worker transcripts); quiet stops cost CPU not tokens, so nothing left to cut in tokens; whole-hook removal is a guard-vs-catch call with no firings to replay, left to the owner"
+  },
+  {
+   "id": "turns:worker-run light",
+   "title": "worker-run light turns",
+   "audited_at": "2026-10-13T10:12:21+03:00",
+   "by": "harness-speed-spend-hook-stop-no-notice-20261012T235144Z-508e",
+   "share": 5e-06,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves ~3k tokens/7d of main-thread turns; loses every Light launch (the turn is the delegation itself: one worker-run start light Bash call)",
+   "note": "tokenmap procedure() charges each main-thread request its share per worker-run/review-bench call; 3k/7d (from 10k) is a handful of worker-run start light calls (10 in the whole transcript store), each the launch the chat wanted; no cheaper equivalent: the call is already one Bash line and its turn holds the chat's own context, not procedure overhead"
   }
  ]
 }
