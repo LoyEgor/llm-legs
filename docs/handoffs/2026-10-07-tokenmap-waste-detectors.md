@@ -25,9 +25,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Stop re-answers: the forced turn bills the hook only while it keeps to the procedure; its waits' wakes bill it too. — Done in token-map 1869303.
    - Quiet since a fix (re-audit 2026-10-12, worker-run-backstop.sh): 0 blocks since 10-10T02:13Z, yet the row reads ×42 `worse` until the window rolls (10-17); a per-row last-block date would show it.
    - Review waits and retired relays: `procedure` row (worker-run by vendor, review-bench, wakes); Spend `turns:<step>`. — Done in token-map 7a24c2d, llm-legs 503e604e.
-   - Hook-asked calls: Hooks `Calls a hook asked for`. — Done in token-map db663fc, llm-legs f3527bf8.
    - Gate time (spend audit `hook:worker-launch-gate.sh`, 2026-10-12): cost is hook time (749 floor events in 10 days), not tokens.
-   - No-op cd rewrites: own row `cd-guard (cd into the cwd)`. — Done in token-map a0d6b69.
    - Re-write causes: `MCP tool load`; a post-compaction request that cached nothing is no baseline. — Done in token-map e2c86b4.
    - Denied spawns: Startup `Denied spawns, by agent`. — Done in token-map ad0f177.
    - Deferred tool list: schemas by who loaded them; cut-at-source entries apart from Never used. — Done in token-map 2131945.
@@ -36,6 +34,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Gate wall time (spend audit `hook:review-flow-gate.sh`, 2026-10-12): its token price is refusals only (see its ledger row); its cost now is the PreToolUse wait on every Bash call, which only Speed's hook floors see.
    - Guard workarounds (spend audit `hook:worker-git-guard.sh`, 2026-10-12): a block prices the denied call alone; the cp + `git show HEAD:<f> >` restore a worker runs next (53 blocks in 52 sessions, 7 d) books as plain Bash; charge it to the hook as Hook-asked calls do.
    - Per-run delegation (spend audit `turns:worker-run codex`, 2026-10-13): Δ ×17 is ×8 runs (128 vs 16) plus relay waits turned main-thread wakes; a per-run cell (~6.0k) would show the unit Δ.
+   - Rows past their cut (spend audit `hook:worker-relay-hold.sh`, `spawn:grok-worker`, 2026-10-13): both removed at source 2026-10-09 (llm-legs ee185fa8) yet still due for audit while the 7d window holds pre-cut days; a component whose source is gone should read `cut at source`, not rank.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.

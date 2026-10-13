@@ -700,6 +700,88 @@
    "verdict": "kept",
    "zero": "removal (no codex delegation) saves ~0.07 % of spend (534k turns + 233k wakes a week); loses every codex worker run, whose work then runs on Claude accounts",
    "note": "Δ x17 is load and attribution: 128 codex starts in 7 d vs 16 before (x8), and the row exists since token-map 781574d (10-12) with wakes counted only in main-thread waits, the prior window's waits ran in relay subagents; per run ~6.0k main-thread tokens (brief Write, start, one wake, report read), nothing repeated to cut without changing the delegation"
+  },
+  {
+   "id": "hook:dia-not-chrome.sh",
+   "title": "dia-not-chrome.sh",
+   "audited_at": "2026-10-13T06:14:56+03:00",
+   "by": "harness-speed-spend-hook-dia-not-chrome-sh-20261012T235140Z-3ec9",
+   "share": 7.6e-05,
+   "prices": {
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
+   },
+   "sources": {
+    "claude-setup/hooks/dia-not-chrome.sh": "504adf5dd56a42f4933b54d7e204eed260367e1d"
+   },
+   "verdict": "cut",
+   "zero": "removing the hook saves 46.3k limit tokens/7d (0.0 % of spend); loses the wall that keeps Chrome windows off Egor's screen (2 real launch attempts in 14 d: open -na, open -b)",
+   "note": "14d: 20 denials, replay of each denied command through the old and the new hook: 4 were quoted-heredoc bodies (briefs, a README, a patch script spelling 'open -a Google Chrome' out) that now pass (claude-setup 146b2eae, body cut shared with resume-timer-guard in hooks/lib/heredoc-cut.sh), 10 were already fixed by 02793df7..9f43a59c, 4 are headless Chrome-binary launches kept denied (a headless run on the real binary can forward into a running headed Chrome; each cost one retry via chrome-headless-shell), 2 real opens kept"
+  },
+  {
+   "id": "hook:worker-relay-hold.sh",
+   "title": "worker-relay-hold.sh",
+   "audited_at": "2026-10-13T06:15:21+03:00",
+   "by": "harness-speed-spend-hook-dia-not-chrome-sh-20261012T235140Z-3ec9",
+   "share": 5.9e-05,
+   "prices": {
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
+   },
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removing it saves the 35.8k limit tokens/7d its SubagentStop re-answers cost; loses nothing, the relay agents it held are gone",
+   "note": "already cut at source by llm-legs ee185fa8 (2026-10-09, relay-free delegation: hook, relay agents and native spawns removed; no settings entry or agent file remains); its last tokenmap event is 2026-10-09, so the 7d row is the pre-cut days leaving the window"
+  },
+  {
+   "id": "spawn:grok-worker",
+   "title": "spawn grok-worker",
+   "audited_at": "2026-10-13T06:15:22+03:00",
+   "by": "harness-speed-spend-hook-dia-not-chrome-sh-20261012T235140Z-3ec9",
+   "share": 8.2e-05,
+   "prices": {},
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removing the spawn saves its 0.1M limit tokens/7d; loses nothing, the grok-worker relay agent no longer exists",
+   "note": "already cut at source by llm-legs ee185fa8 (2026-10-09, relay agents refused, ~/.claude/agents empty); last grok-worker request 2026-10-08, so the -74 % row is the window sliding off the pre-cut days, live grok runs go through worker-run start"
+  },
+  {
+   "id": "hook:worker-limit-gate.sh",
+   "title": "worker-limit-gate.sh",
+   "audited_at": "2026-10-13T06:15:23+03:00",
+   "by": "harness-speed-spend-hook-dia-not-chrome-sh-20261012T235140Z-3ec9",
+   "share": 5e-05,
+   "prices": {
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
+   },
+   "sources": {
+    "llm-legs/bin/worker-limit-gate.sh": "e15fb89723c7faa22acbf7bdd94a1f9160cc2908"
+   },
+   "verdict": "kept",
+   "zero": "removing the gate saves 30.1k limit tokens/7d (0.0 % of spend); loses the refusal before a spawn on a walled, switched-off or unselectable account, so those starts fail later inside worker-run and cost a worker start plus its relay each",
+   "note": "14d: 14 denials (4 synthetic replay-test rows of 10-08), each real one answered by a different vendor/account or a worker-pick recheck on the next call, denial text one line; replay against old limits state is impossible (the limits snapshot is not recorded), verdict rests on the effect count; the cost is the denied Agent call's own prompt, which a gate cannot avoid without a pre-write check"
+  },
+  {
+   "id": "hook:worker-pin-gate.sh",
+   "title": "worker-pin-gate.sh",
+   "audited_at": "2026-10-13T06:15:24+03:00",
+   "by": "harness-speed-spend-hook-dia-not-chrome-sh-20261012T235140Z-3ec9",
+   "share": 5e-05,
+   "prices": {
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
+   },
+   "sources": {
+    "llm-legs/bin/worker-pin-gate.sh": "33bbef32ea6c49d5f5c84981b8192fb6caf19ee6"
+   },
+   "verdict": "kept",
+   "zero": "removing the gate saves 30.3k limit tokens/7d (-45 % on the week); loses the wall that stops a session moving Egor's account pin or a chat pin, a silent routing change",
+   "note": "14d: 24 denials, replayed through the current gate 15 now pass (the gate was narrowed since) and 9 deny: 5 are interpreter heredocs that really can write the pin (python open() in the body, test_worker_pin_gate covers it, so masking them would open the door), 3 are fixers probing the gate with HOME=mktemp, 1 is cp from a chat-pins dir that the owner's comment (worker-pin-gate.sh:161) keeps denied: false-deny is this door's side; denial text is one line"
   }
  ]
 }
