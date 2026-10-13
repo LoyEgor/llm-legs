@@ -123,6 +123,15 @@ set_versions() { # codex-installed codex-latest grok-installed grok-latest ('' =
 }
 result() { jq -r --arg v "$1" '.[$v].result + " " + .[$v].installed' "$STATE"; }
 run() { : >"$CALLS"; bash "$SCRIPT" run; }
+hold_lock() { # lock-file: HOLDER keeps it from a background lockf, back once the holder says through a fifo it has it
+  rm -f "$WORK/held"
+  mkfifo "$WORK/held"
+  exec 3<>"$WORK/held"
+  lockf -k "$1" sh -c 'echo >"$1"; exec sleep 30' _ "$WORK/held" &
+  HOLDER=$!
+  read -r -t 30 -u 3 || true
+  exec 3<&-
+}
 
 # A client older than the registry is updated, and the model caches are re-read: every codex home
 # holding a login (b has none) and the grok list.
@@ -268,12 +277,7 @@ assert [ "$(result codex)" = "updated 0.158.0" ]
 
 # A second run while one holds the lock does nothing.
 set_versions 0.157.0 0.158.0 1.0.42 1.0.42
-lockf -k "$HOME/.cache/vendor-cli-update/run.lock" sleep 30 &
-HOLDER=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  lockf -k -t 0 "$HOME/.cache/vendor-cli-update/run.lock" true 2>/dev/null || break
-  sleep 0.2
-done
+hold_lock "$HOME/.cache/vendor-cli-update/run.lock"
 assert_fails run 2>/dev/null
 assert_fails grep -q 'npm install' "$CALLS"
 kill "$HOLDER" 2>/dev/null
@@ -342,12 +346,7 @@ for _ in $(seq 1 50); do grep -qF 'request --all' "$CALLS" && break; sleep 0.2; 
 assert grep -qF 'fingerprint request --all' "$CALLS"
 # A second click during the detached pass starts no second pass and no second orchestrator chat.
 for _ in $(seq 1 50); do lockf -k -t 0 "$HOME/.cache/vendor-cli-update/manual.lock" true 2>/dev/null && break; sleep 0.2; done
-lockf -k "$HOME/.cache/vendor-cli-update/manual.lock" sleep 30 &
-HOLDER=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  lockf -k -t 0 "$HOME/.cache/vendor-cli-update/manual.lock" true 2>/dev/null || break
-  sleep 0.2
-done
+hold_lock "$HOME/.cache/vendor-cli-update/manual.lock"
 : >"$CALLS"
 assert grep -qF 'vendor update already running' <(bash "$SCRIPT" now)
 sleep 1

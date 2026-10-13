@@ -59,7 +59,7 @@ timeout_command() {
   return "$rc"
 }
 
-stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+stamp() { TZ=UTC printf '%(%Y-%m-%dT%H:%M:%SZ)T\n' -1; }
 
 node_bin_dir() { # cli -> the npm bin directory that installed it
   local dir found=''
@@ -73,9 +73,31 @@ node_bin_dir() { # cli -> the npm bin directory that installed it
   [ -n "$found" ] && printf '%s\n' "$found"
 }
 
-version_of() { "$@" 2>/dev/null | head -n 1 | LC_ALL=C grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
+version_of() {
+  local out
+  out=$("$@" 2>/dev/null)
+  [[ ${out%%$'\n'*} =~ [0-9]+(\.[0-9]+)+ ]] && printf '%s\n' "${BASH_REMATCH[0]}"
+  return 0
+}
 
-newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; }
+# Plain numeric versions of one length compare in bash; anything else (a pre-release, 1.2 against 1.2.0) is sort -V's call.
+newer() { # a b: a is a later version than b
+  local -a a b
+  local i
+  [ "$1" != "$2" ] || return 1
+  if [[ $1 =~ ^[0-9]+(\.[0-9]+)*$ && $2 =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+    IFS=. read -ra a <<<"$1"
+    IFS=. read -ra b <<<"$2"
+    if [ "${#a[@]}" -eq "${#b[@]}" ]; then
+      for i in "${!a[@]}"; do
+        [ "$((10#${a[i]}))" -ne "$((10#${b[i]}))" ] || continue
+        [ "$((10#${a[i]}))" -gt "$((10#${b[i]}))" ]
+        return
+      done
+    fi
+  fi
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]
+}
 
 # A running client is found by the executable it maps, never by its command line: a worker starts
 # `<nvm>/bin/grok`, a symlink, so no argument names the package it would be replaced from. lsof exits
@@ -94,9 +116,8 @@ busy() { # vendor npm-root
 }
 
 state_apply() { # jq-args...
-  local tmp
-  tmp=$(mktemp "$state_dir/state.XXXXXX") || return 0
-  { [ -s "$state_file" ] && cat "$state_file" || printf '{}\n'; } | jq "$@" >"$tmp" 2>/dev/null &&
+  local tmp="$state_file.$$"
+  if [ -s "$state_file" ]; then jq "$@" "$state_file" >"$tmp" 2>/dev/null; else jq "$@" <<<'{}' >"$tmp" 2>/dev/null; fi &&
     mv -f "$tmp" "$state_file" || rm -f "$tmp"
 }
 
@@ -254,14 +275,14 @@ check_agy() {
 
 due_vendors() { # -> `all` when a full pass is due, else the vendors whose version check is due or whose last result wants a retry
   local due
-  due=$(jq -r --arg vendors "$vendors" --arg checked "$checked" --argjson now "$(date +%s)" --argjson max "$pass_every_s" --argjson check "$check_every_s" '
+  due=$(jq -r --arg vendors "$vendors" --arg checked "$checked" --argjson now "$EPOCHSECONDS" --argjson max "$pass_every_s" --argjson check "$check_every_s" '
     def at($f): $f // "" | try fromdateiso8601 catch 0;
     . as $s | ($vendors | split(" ")) as $v
     | if any($v[]; at($s[.].passed_at) < $now - $max) then "all"
       else $checked | split(" ")[] | select(at($s[.].checked_at) < $now - $check
         or any($s[.].result, $s[. + "-native"].result; IN("busy", "install-failed", "check-failed"))) end' \
     "$state_file" 2>/dev/null) && [ -s "$state_file" ] || due=all
-  printf '%s\n' "$due" | paste -sd ' ' -
+  printf '%s\n' "${due//$'\n'/ }"
 }
 
 # launchd starts `run --if-due` every half hour: a full pass once a day, and in between only the
