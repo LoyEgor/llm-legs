@@ -36,18 +36,21 @@ DATA_DIR="${LLM_LEGS_DATA_DIR:-$PWD/data}"
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 LOG="$DATA_DIR/served-models.jsonl"
 families=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families 2>/dev/null)
-agy_label() { # "<families word> (<tier>)" -> "<agy label> (<tier>)"; anything else unchanged
-  local word="${1%% (*}" label
-  label=$(printf '%s\n' "$families" | awk -F'\t' -v w="$word" '$2 == w { print $4; exit }')
-  if [ -n "$label" ]; then printf '%s\n' "$label${1#"$word"}"; else printf '%s\n' "$1"; fi
+families=${families//$'\t'/$'\x1f'}
+agy_label() { # var "<families word> (<tier>)" -> var = "<agy label> (<tier>)"; anything else unchanged
+  local word="${2%% (*}" label='' f2 f4
+  while IFS=$'\x1f' read -r _ f2 _ f4 _; do
+    [ "$f2" = "$word" ] && { label=$f4; break; }
+  done <<<"$families"
+  if [ -n "$label" ]; then printf -v "$1" '%s' "$label${2#"$word"}"; else printf -v "$1" '%s' "$2"; fi
 }
-pro_label=$(agy_label pro)
+agy_label pro_label pro
 if [ "$pro_label" != pro ]; then
   AGY_MODEL="${AGY_MODEL:-$pro_label (High)}"
   AGY_MODEL_FALLBACK="${AGY_MODEL_FALLBACK:-$pro_label (Low)}"
 fi
-[ -n "${AGY_MODEL:-}" ] && AGY_MODEL=$(agy_label "$AGY_MODEL")
-[ -n "${AGY_MODEL_FALLBACK:-}" ] && AGY_MODEL_FALLBACK=$(agy_label "$AGY_MODEL_FALLBACK")
+[ -n "${AGY_MODEL:-}" ] && agy_label AGY_MODEL "$AGY_MODEL"
+[ -n "${AGY_MODEL_FALLBACK:-}" ] && agy_label AGY_MODEL_FALLBACK "$AGY_MODEL_FALLBACK"
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-5m}"
 WEAK_RE='(^|[^a-z])(flash|lite|nano|mini|small|tiny)([^a-z]|$)'
 # Broad, for stderr only (legacy behavior): stderr is terse, so false positives are unlikely.
