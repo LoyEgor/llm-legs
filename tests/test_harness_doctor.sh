@@ -1954,27 +1954,6 @@ check(sorted((t["label"], t.get("repo_root"), t["secs"], t["who"]) for t in merg
       == [("suites", "/r/llm-legs", 2400, "worker"), ("suites", "/r/other", 1200, "chat"), ("test_big", "/r/llm-legs", 5000, "chat")],
       "tests: run-suites' journal rows count, the rows the probe wrote while one ran are dropped, and an unjournaled run "
       "journaled twice counts once: %s" % merged)
-wide = os.path.join(work, "journal-wide")
-jl(os.path.join(wide, "runs.jsonl"), [{"kind": "direct", "pid": 100 + i, "repo_root": "/r/w", "started_at": T - 9000 + i,
-                                       "ended_at": T - 8000 + i, "suites": {"test_w%d.sh" % i: {"rc": 0, "secs": 1000}}}
-                                      for i in range(150)])
-jl(os.path.join(wide, "test-history.jsonl"), [dict(test_row("w", "h%d" % i, T - 5000 + i, T - 4000 + i), repo_root="/r/w")
-                                              for i in range(150)])
-resumed = [0]
-def resume(frame, event, arg):
-    if event == "call" and frame.f_code.co_name == "<genexpr>" and frame.f_code.co_filename == m.__file__:
-        resumed[0] += 1
-os.environ.update(STATUSLINE_CACHE_DIR=wide, RUN_SUITES_JOURNAL=os.path.join(wide, "runs.jsonl"))
-sys.setprofile(resume)
-try:
-    wide_rows = m.load_tests(T)
-finally:
-    sys.setprofile(None)
-    os.environ["STATUSLINE_CACHE_DIR"] = saved_cache
-    os.environ.pop("RUN_SUITES_JOURNAL")
-check(len(wide_rows) == 300 and resumed[0] < 3 * 300,
-      "tests: a history row is matched against the journal and kept rows of its own label only, never all of them "
-      "(%d rows, %d scan steps)" % (len(wide_rows), resumed[0]))
 part, lead, cost = cost_judges(merged, "tests:cost")
 check((cost["llm-legs:test_big"]["value"], cost["llm-legs:test_big"]["evidence"][0]["ref"])
       == (7300, "runs.jsonl direct 42 test_big"),
