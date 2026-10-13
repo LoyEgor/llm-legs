@@ -1477,6 +1477,21 @@
    "verdict": "kept",
    "zero": "removal saves ~0.1 CPU-min/day; loses Stop-time delivery: a report queued after a turn's last tool call waits for his next message (2 Stop deliveries in 7 d)",
    "note": "isolated 4.2 ms a run vs 2.9 ms for a bare bash; report-flush already exits on builtins when nothing is pending (row cg); dropping the wrapper's dirname saves 0.6 ms a run, ~0.004 CPU-min/day; the journal's 10.5 ms includes stop-dispatch's per-part subshell and timeout fork, which is the dispatcher's, not this hook's"
+  },
+  {
+   "id": "cpu:doctor/updater",
+   "title": "doctor/updater",
+   "audited_at": "2026-10-13T09:31:19+03:00",
+   "by": "harness-speed-cpu-hook-stop-d-ask-span-drill-sh-20261012T235051Z-465d",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.119,
+   "runs_day": 12,
+   "sources": {
+    "llm-legs/bin/updater-doctor": "f89b3022962708f39c4d7f0e4d395e001ae228fa"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.02 CPU-min/day; loses the Updater doctor menu row and night-run's update read (latest.json), which he reads",
+   "note": "runs once per vendor-cli-update pass (launchd 1800 s, a full pass every 2 h, a burst at night prep), 0.1-0.2 CPU-s a run, half of it python start and imports; keying it on its state files' mtimes would save under 0.02 CPU-min/day for a new layer"
   }
  ]
 }
