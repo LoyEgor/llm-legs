@@ -3082,6 +3082,90 @@
    "verdict": "kept",
    "zero": "removal saves ~0.5 s a run; loses 273 checks of the job/slot model that decides who may type into a terminal (target-gone, pid reuse, FIFO keyboard, budgets, compaction and trash consumers)",
    "note": "virtual clock, temp HOME per case, one hs call; targetIsGone disabled -> 3 FAILs; stdin </dev/null added; the live block stops its watchers only if no check throws first (P3, not fixed)"
+  },
+  {
+   "id": "suite:claude-setup/test_review_flow_gate",
+   "title": "claude-setup/test_review_flow_gate",
+   "audited_at": "2026-10-13T11:39:10+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261012T235210Z-48fc",
+   "cpu_run": 198.5,
+   "wall_run": 37.3,
+   "cpu_min_day": 32.61,
+   "wall_min_day": 12.47,
+   "sources": {
+    "claude-setup/tests/test_review_flow_gate.sh": "7c2c4b4624516c53dc37ac0abbc7977e0f4972c7"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 12 wall-min/day and 25 CPU-min/day; loses the commit door's and the review gate's refusal and journal checks (637 asserts)",
+   "note": "commit-push-gate.sh now runs beside the gate only where a call brings its own grants (door sections); CPU 197 -> 179 s a run, 637 asserts unchanged, an always-exit-2 commit-push-gate is red; remaining cost is the gate's own per-call spawns (grep/awk/git), a CPU-audit matter"
+  },
+  {
+   "id": "suite:claude-setup/test_stop_dispatch",
+   "title": "claude-setup/test_stop_dispatch",
+   "audited_at": "2026-10-13T11:39:12+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261012T235210Z-48fc",
+   "cpu_run": 11.1,
+   "wall_run": 15.6,
+   "cpu_min_day": 1.99,
+   "wall_min_day": 5.32,
+   "sources": {
+    "claude-setup/tests/test_stop_dispatch.sh": "abb9475a7b94c402c9b4892b8ebdf8e6a382a014"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 5.7 wall-min/day and 2.3 CPU-min/day; loses the Stop dispatcher's deferral, cap, budget and notice checks (213 asserts)",
+   "note": "the 7b hook-cap and budget waits (real 5 s and 2 s timeouts, kept whole) run as shard 2 beside the rest as shard 1: wall 26 -> 15.7 s on fresh runs, CPU unchanged, 213 asserts (200+13), no-slice-cap mutation red"
+  },
+  {
+   "id": "suite:claude-setup/test_word_triggers",
+   "title": "claude-setup/test_word_triggers",
+   "audited_at": "2026-10-13T11:39:13+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261012T235210Z-48fc",
+   "cpu_run": 9.1,
+   "wall_run": 1.3,
+   "cpu_min_day": 1.53,
+   "wall_min_day": 1.89,
+   "sources": {
+    "claude-setup/tests/test_word_triggers.sh": "9632c0e557e4f55172c58c382264614415f7a9b2",
+    "claude-setup/tests/word_grammar_cases.py": "648d9552b213bbd68473e919692ce1f7cd7671df",
+    "claude-setup/tests/word_triggers_harness.sh": "635a8cbd5279c5f9b1ebca7cdac101c39d2307f7"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 5.5 wall-min/day and 5 CPU-min/day; loses the 135 word grammar rows (stem, verb, quote, machine-text, pin and panel readings)",
+   "note": "the grammar rows run words.cmd_intake in one python process instead of the shell hook per row: CPU 9.2 -> 0.8 s, wall 17 -> 1.6 s, 135 asserts unchanged, a words.py grants mutation red; the hook path stays covered by the later rows and the other test_word_*.sh"
+  },
+  {
+   "id": "suite:claude-setup/test_commit_report",
+   "title": "claude-setup/test_commit_report",
+   "audited_at": "2026-10-13T11:39:14+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261012T235210Z-48fc",
+   "cpu_run": 35.9,
+   "wall_run": 30.8,
+   "cpu_min_day": 3.41,
+   "wall_min_day": 5.78,
+   "sources": {
+    "claude-setup/tests/commit_report_harness.sh": "c9743e48dc3280e9dd5bbb974f08af5873028102",
+    "claude-setup/tests/test_commit_report.sh": "a8d496fb1a769ced4c110e1a4748d332f462a3f1"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 5.2 wall-min/day and 2.7 CPU-min/day; loses the commit and push block, landing, review-row and worktree-scan checks (90 asserts)",
+   "note": "cost is ~90 hook runs, each its own spawns (git/grep/awk/jq), only sleep is the 1 s debt bound a timeout check needs; tests lens fix: run_raw records a non-zero hook exit and each commit_report suite fails on one, since the 16 no-report test -z checks passed when the hook died (crash mutation red after, green before); sections share one fixture history so no shard split"
+  },
+  {
+   "id": "suite:claude-setup/test_commit_report_span",
+   "title": "claude-setup/test_commit_report_span",
+   "audited_at": "2026-10-13T11:39:15+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261012T235210Z-48fc",
+   "cpu_run": 30.4,
+   "wall_run": 27.7,
+   "cpu_min_day": 2.75,
+   "wall_min_day": 4.53,
+   "sources": {
+    "claude-setup/tests/commit_report_harness.sh": "c9743e48dc3280e9dd5bbb974f08af5873028102",
+    "claude-setup/tests/test_commit_report_span.sh": "a715913d9c072336a1aee6d8c257017f963408a5"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 4.3 wall-min/day and 2.3 CPU-min/day; loses the autonomous-span, multi-repository block and no-upstream push checks (63 asserts)",
+   "note": "same cost shape as test_commit_report (hook runs plus fixture repositories, no waits); shares the run_raw hook-exit fix; no cheaper equivalent found without changing the hook, a CPU-audit matter"
   }
  ]
 }
