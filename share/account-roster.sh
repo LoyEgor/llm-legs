@@ -3,7 +3,7 @@
 # intersects it with its own local readiness (a signed-in browser profile, no wall); a local profile
 # alone never makes an account.
 
-account_roster_share=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+account_roster_share=$(cd -P "${BASH_SOURCE[0]%/*}" && pwd)
 . "$account_roster_share/gemini-accounts.sh"
 . "$account_roster_share/codex-accounts.sh"
 

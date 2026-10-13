@@ -127,14 +127,14 @@ worker_pool_disabled_json() {
     return 0
   fi
   if {
-    [ ! -r "$file" ] || cat -- "$file"
+    [ ! -r "$file" ] || while IFS= read -r name || [ -n "$name" ]; do printf '%s\n' "$name"; done <"$file"
     if [ -d "$shield_dir" ]; then
       while IFS= read -r marker; do
         name=${marker##*/}
         worker_pool_valid_name "$name" && printf '%s\n' "$name"
       done < <(find "$shield_dir" -mindepth 1 -maxdepth 1 -print 2>/dev/null)
     fi
-  } | LC_ALL=C sort -u | jq -Rn '[inputs | select(length > 0)]' 2>/dev/null; then
+  } | jq -Rn '[inputs | select(length > 0)] | unique' 2>/dev/null; then
     return 0
   fi
   printf 'worker-pool: %s cannot be read; treating every account as out of the pool\n' "$dir" >&2

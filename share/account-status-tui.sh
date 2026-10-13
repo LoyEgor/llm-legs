@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/limits-view.sh"
+. "${BASH_SOURCE[0]%/*}/limits-view.sh"
 
 account_status_chat_account() {
   local vendor="$1" resolver="$2" pick name
