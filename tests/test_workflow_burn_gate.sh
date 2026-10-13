@@ -18,16 +18,15 @@ denied() { contains "$1" '"permissionDecision":"deny"'; }
 warned() { contains "$1" '"additionalContext"'; }
 
 limits() {
-  jq -nc --arg a "$1" --argjson pct "$2" \
-    '{vendors:{claude:{accounts:[{account:$a,five_hour:{used_pct:$pct}}]}}}' >"$WORK/limits.json"
+  printf '{"vendors":{"claude":{"accounts":[{"account":"%s","five_hour":{"used_pct":%s}}]}}}\n' "$1" "$2" >"$WORK/limits.json"
 }
 
 HOME_DIR="$WORK/home"
 mkdir -p "$HOME_DIR/.claude-profiles/.claudeb"
 
 gate() {
-  jq -cn --arg s "${SESSION_ID-}" '{hook_event_name:"PreToolUse",tool_name:"Workflow",session_id:$s,tool_input:{}}' |
-    env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" WORDS_LIB="${WORDS_LIB_ENV-}" \
+  printf '{"hook_event_name":"PreToolUse","tool_name":"Workflow","session_id":"%s","tool_input":{}}\n' "${SESSION_ID-}" |
+    HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" WORDS_LIB="${WORDS_LIB_ENV-}" \
       CLAUDE_LIMITS_ACCOUNT="${ACCOUNT_ENV-}" CLAUDE_CONFIG_DIR="${CONFIG_DIR_ENV-}" \
       CLAUDEGPT_ACCOUNT="${GATEWAY_ENV-}" \
       bash "$GATE"
@@ -38,8 +37,9 @@ limits alona 40
 ACCOUNT_ENV=alona
 assert lacks "$(gate)" 'additionalContext'
 limits alona 80
-assert warned "$(gate)"
-assert contains "$(gate)" 'alona'
+out=$(gate)
+assert warned "$out"
+assert contains "$out" 'alona'
 limits alona 97
 assert denied "$(gate)"
 # Egor's autonomy span opens the door; the warning still speaks.
@@ -109,9 +109,7 @@ assert lacks "$out" '"permissionDecision"'
 # `claudegpt` runs Claude Code on an OpenAI subscription: the fan-out bills `vendors.codex` under
 # CLAUDEGPT_ACCOUNT, so a Claude row of the same name is a number this session never spends
 # (share/chat-account.sh).
-jq -nc '{vendors:{
-  claude:{accounts:[{account:"work4",five_hour:{used_pct:10}}]},
-  codex:{accounts:[{account:"work4",five_hour:{used_pct:97}}]}}}' >"$WORK/limits.json"
+printf '%s\n' '{"vendors":{"claude":{"accounts":[{"account":"work4","five_hour":{"used_pct":10}}]},"codex":{"accounts":[{"account":"work4","five_hour":{"used_pct":97}}]}}}' >"$WORK/limits.json"
 ACCOUNT_ENV=
 CONFIG_DIR_ENV="$HOME_DIR/.claude"
 GATEWAY_ENV=work4
@@ -123,9 +121,7 @@ ACCOUNT_ENV=work4
 CONFIG_DIR_ENV="$HOME_DIR/.claude-profiles/work4"
 assert denied "$(gate)"
 # And a quiet codex account is quiet, whatever the Claude row of that name reads.
-jq -nc '{vendors:{
-  claude:{accounts:[{account:"work4",five_hour:{used_pct:97}}]},
-  codex:{accounts:[{account:"work4",five_hour:{used_pct:10}}]}}}' >"$WORK/limits.json"
+printf '%s\n' '{"vendors":{"claude":{"accounts":[{"account":"work4","five_hour":{"used_pct":97}}]},"codex":{"accounts":[{"account":"work4","five_hour":{"used_pct":10}}]}}}' >"$WORK/limits.json"
 assert lacks "$(gate)" 'additionalContext'
 GATEWAY_ENV=
 ACCOUNT_ENV=
@@ -133,7 +129,7 @@ CONFIG_DIR_ENV="$HOME_DIR/.claude"
 
 # --- The weekly bucket is the one the session's model spends ------------------------------------
 ACCOUNT_ENV=alona
-jq -nc '{vendors:{claude:{accounts:[{account:"alona",five_hour:{used_pct:10},weekly:{used_pct:97},fable:{used_pct:20}}]}}}' >"$WORK/limits.json"
+printf '%s\n' '{"vendors":{"claude":{"accounts":[{"account":"alona","five_hour":{"used_pct":10},"weekly":{"used_pct":97},"fable":{"used_pct":20}}]}}}' >"$WORK/limits.json"
 TRACKS_DIR="$HOME_DIR/.cache/claude-statusline"
 mkdir -p "$TRACKS_DIR" "$HOME_DIR/.claude"
 printf 'v2 1 alona 1 3600 claude-opus-5-5 u 0 1 alona\n' >"$TRACKS_DIR/cache-ttl-track-opus-sid"
@@ -153,15 +149,15 @@ assert denied "$(gate)"
 SESSION_ID= ACCOUNT_ENV=
 
 # --- Everything else passes through untouched ---------------------------------------------------
-assert lacks "$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{}}' |
-  env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" bash "$GATE")" 'additionalContext'
+assert lacks "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}\n' |
+  HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" bash "$GATE")" 'additionalContext'
 
 # A workflow reaching worker-run is denied whatever the pressure; one of native
 # agents is not, and a script file is read like an inline script.
 limits alona 10
 ACCOUNT_ENV=alona
 wf() { jq -cn --arg s "$1" --arg p "${2:-}" '{hook_event_name:"PreToolUse",tool_name:"Workflow",tool_input:({script:$s} + (if $p == "" then {} else {scriptPath:$p} end))}' |
-  env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" CLAUDE_LIMITS_ACCOUNT="$ACCOUNT_ENV" bash "$GATE"; }
+  HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" CLAUDE_LIMITS_ACCOUNT="$ACCOUNT_ENV" bash "$GATE"; }
 assert denied "$(wf "await agent('run worker-run start codex --brief b')")"
 assert contains "$(wf "await agent('then worker-run wait r1')")" 'reaches `worker-run wait`, but a worker run inside a workflow has no chat waiting on it. Start workers from the chat itself'
 assert lacks "$(wf "await agent('grep the repo')")" 'permissionDecision'
