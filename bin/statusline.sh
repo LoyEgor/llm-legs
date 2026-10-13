@@ -143,7 +143,7 @@ snapshot_lock_acquire() {
 # a linked worktree). Fails on anything without a working tree, as the render's
 # whole repository cluster does.
 repo_dirs() {
-  local out rest common gitdir resolved main_wt
+  local out rest common gitdir resolved main_wt config_text
   out=$(git -C "$1" rev-parse --show-toplevel --git-common-dir --absolute-git-dir 2>/dev/null) || return 1
   REPO_TOP=${out%%$'\n'*}
   rest=${out#*$'\n'}
@@ -165,10 +165,16 @@ repo_dirs() {
   REPO_COMMON="$common"
   if [ "$common" != "$gitdir" ]; then
     REPO_IS_WT=1
-    # The main checkout is NOT derivable from the common dir — `--separate-git-dir`
-    # and a custom `GIT_DIR` both break `<root>/.git`. `worktree list` names it,
-    # main worktree first.
-    main_wt=$(git -C "$1" worktree list --porcelain 2>/dev/null |
+    # Only a plain `<root>/.git` common dir names its root; `--separate-git-dir`, a bare repo and
+    # a `core.worktree` break that, and `worktree list` (main worktree first) then answers.
+    main_wt=""
+    if [ -d "${common%/.git}/.git" ] && [ "${common%/.git}" != "$common" ]; then
+      config_text=$(< "$common/config") 2>/dev/null
+      config_text=${config_text,,}
+      [[ $config_text =~ [[:blank:]]worktree[[:blank:]]*= || $config_text =~ [[:blank:]]bare[[:blank:]]*=[[:blank:]]*(true|yes|on|1) ]] ||
+        main_wt=${common%/.git}
+    fi
+    [ -n "$main_wt" ] || main_wt=$(git -C "$1" worktree list --porcelain 2>/dev/null |
       { IFS= read -r line; printf '%s' "${line#worktree }"; })
     REPO_ROOT=$({ cd "$main_wt" && pwd -P; } 2>/dev/null) || REPO_ROOT=""
     [ -n "$REPO_ROOT" ] || REPO_ROOT="$REPO_TOP"
@@ -177,6 +183,31 @@ repo_dirs() {
     REPO_ROOT="$REPO_TOP"
   fi
   REPO_NAME="${REPO_ROOT##*/}"
+}
+
+dirty_state_key() { # var git-dir status-v2 -> 0 when every entry's stat is older than 2 s (git's own racy-stat rule)
+  local line path n=0 newest=0 key="$2"$'\n'"$3" ino size mtime
+  while IFS= read -r line; do
+    case "$line" in
+      '1 '*) path=${line#* * * * * * * * } ;;
+      '2 '*) path=${line#* * * * * * * * * }; path=${path%%$'\t'*} ;;
+      'u '*) path=${line#* * * * * * * * * * } ;;
+      '? '*) path=${line#\? } ;;
+      *) continue ;;
+    esac
+    [[ "$path" = \"* ]] && return 1
+    n=$((n + 1)); [ "$n" -le 200 ] || return 1
+    path="$active_top/$path"
+    if file_stat_to mtime mtime "$path"; then
+      file_stat_to ino inode "$path"; file_stat_to size size "$path"
+      key+=$'\n'"$ino $size $mtime"
+      [ "$mtime" -le "$newest" ] || newest=$mtime
+    else
+      key+=$'\n-'
+    fi
+  done <<< "$3"
+  [ "$((EPOCHSECONDS - newest))" -ge 2 ] || return 1
+  printf -v "$1" '%s' "$key"
 }
 
 # Where both review journals live: ONE directory per git FAMILY, the common git dir
@@ -878,7 +909,7 @@ head_known=0
 git_status_rc=1
 branch_oid=""; branch_upstream=""; branch_ab=""; branch=""; has_untracked=0; status_dirty=0
 if [ -n "$active_top" ]; then
-  status_v2=$(git -C "$active_top" status --porcelain=v2 --branch --untracked-files=normal --ahead-behind 2>/dev/null)
+  status_v2=$(git -C "$active_top" status --porcelain=v2 --branch --untracked-files=all --ahead-behind 2>/dev/null)
   git_status_rc=$?
   while IFS= read -r status_line; do
     case "$status_line" in
@@ -931,6 +962,16 @@ if [ -n "$active_top" ]; then
     # .cost.total_lines_* — that was a session-lifetime tool-edit counter
     # across all repos, useless for "how much is hanging uncommitted now".
     udiff_add=0; udiff_del=0; f_new=0; f_del=0; f_mod=0; diff_entries=0; diff_creates=0; diff_deletes=0
+    dirty_key=""; dirty_hit=0
+    dirty_cache="$statusline_cache_dir/render-dirty-$session_id"
+    if [ -n "$session_id" ] && dirty_state_key dirty_key "$git_dir" "$status_v2"; then
+      { IFS= read -r -d '' dirty_prev_key && IFS= read -r -d '' dirty_prev_val; } 2>/dev/null < "$dirty_cache"
+      if [ "$dirty_prev_key" = "$dirty_key" ] && [ -n "$dirty_prev_val" ]; then
+        IFS=$'\x1f' read -r udiff_add udiff_del fparts diff_show <<< "$dirty_prev_val"
+        dirty_hit=1
+      fi
+    fi
+    [ "$dirty_hit" = 1 ] || {
     while IFS= read -r diff_line; do
       case "$diff_line" in
         ' create mode '*) diff_creates=$((diff_creates + 1)) ;;
@@ -984,6 +1025,9 @@ if [ -n "$active_top" ]; then
       # Dirty with zero countable lines (binary/mode/rename-only): files only.
       diff_show=files
     fi
+    [ -z "$dirty_key" ] || printf '%s\0%s\x1f%s\x1f%s\x1f%s\0' "$dirty_key" "$udiff_add" "$udiff_del" "$fparts" "$diff_show" \
+      2>/dev/null > "$dirty_cache"
+    }
   fi
 fi
 

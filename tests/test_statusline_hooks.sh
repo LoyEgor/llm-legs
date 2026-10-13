@@ -1528,6 +1528,49 @@ place_set status-sepdir "$TOP_H"
 sepdir_output=$(run_statusline "$(statusline_payload status-sepdir '' "$REPO_G")") || fail "statusline separate-git-dir failed"
 assert grep -Fq "${BLUE}⧉ sep-work" <<< "$sepdir_output"
 
+# Work not done: a plain `<root>/.git` names its main checkout without `worktree list`; the separate git dir above still asks git.
+GIT_COUNT_BIN="$FIXTURES/git-count-bin"
+GIT_COUNT_LOG="$WORK/git-count-log"
+mkdir -p "$GIT_COUNT_BIN"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$GIT_COUNT_LOG" "$(command -v git)" > "$GIT_COUNT_BIN/git"
+chmod +x "$GIT_COUNT_BIN/git"
+run_statusline_counted() { : > "$GIT_COUNT_LOG"; PATH="$GIT_COUNT_BIN:$PATH" run_statusline "$@"; }
+counted_wt_output=$(run_statusline_counted "$(statusline_payload status-in-wt '' "$REPO_E")") || fail "statusline counted worktree failed"
+assert_eq "$in_wt_output" "$counted_wt_output"
+assert_eq 0 "$(grep -c 'worktree list' "$GIT_COUNT_LOG")"
+counted_sep_output=$(run_statusline_counted "$(statusline_payload status-sepdir '' "$REPO_G")") || fail "statusline counted separate-git-dir failed"
+assert_eq "$sepdir_output" "$counted_sep_output"
+assert test "$(grep -c 'worktree list' "$GIT_COUNT_LOG")" -ge 1
+
+# A dirty tree's volume is recounted only when a path's stat or the status text moved: an unchanged tree runs no diff, no
+# ls-files; an edit changes mtime or size; an entry touched in the last 2 s is never reused.
+DIRTY_REPO="$FIXTURES/dirty-cache-repo"
+git init -q -b main "$DIRTY_REPO"
+seq 1 10 > "$DIRTY_REPO/a.txt"
+git -C "$DIRTY_REPO" add a.txt
+git -C "$DIRTY_REPO" -c user.name=t -c user.email=t@t commit -q -m init
+seq 1 13 > "$DIRTY_REPO/a.txt"
+printf 'u1\nu2\n' > "$DIRTY_REPO/u.txt"
+touch -t 202001010000 "$DIRTY_REPO/a.txt" "$DIRTY_REPO/u.txt"
+dirty_payload=$(statusline_payload status-dirty-cache '' "$DIRTY_REPO")
+dirty_first=$(run_statusline_counted "$dirty_payload") || fail "statusline dirty first failed"
+assert grep -Fq "${GREEN}+5${RESET}/${RED}-0${RESET}" <<< "$dirty_first"
+assert test "$(grep -c -e '^-C [^ ]* diff ' "$GIT_COUNT_LOG")" -ge 1
+dirty_second=$(run_statusline_counted "$dirty_payload") || fail "statusline dirty second failed"
+assert_eq "$dirty_first" "$dirty_second"
+assert_eq 0 "$(grep -c -e ' diff \| ls-files ' "$GIT_COUNT_LOG")"
+seq 1 15 > "$DIRTY_REPO/a.txt"
+touch -t 202001010001 "$DIRTY_REPO/a.txt"
+dirty_edited=$(run_statusline_counted "$dirty_payload") || fail "statusline dirty edited failed"
+assert grep -Fq "${GREEN}+7${RESET}/${RED}-0${RESET}" <<< "$dirty_edited"
+assert test "$(grep -c ' diff ' "$GIT_COUNT_LOG")" -ge 1
+seq 1 16 > "$DIRTY_REPO/a.txt"
+for dirty_round in 1 2; do
+  dirty_fresh=$(run_statusline_counted "$dirty_payload") || fail "statusline dirty fresh failed"
+  assert grep -Fq "${GREEN}+8${RESET}/${RED}-0${RESET}" <<< "$dirty_fresh"
+  assert test "$(grep -c ' diff ' "$GIT_COUNT_LOG")" -ge 1
+done
+
 # A foreign repository keeps `»` and always shows its branch.
 place_set status-foreign "$TOP_D"
 foreign_output=$(run_statusline "$(statusline_payload status-foreign)") || fail "statusline foreign repo failed"
