@@ -30,9 +30,12 @@ assert test "$(grep -c 'grok research answer' "$WORK/answer")" = 2
 
 # Every unit of a fan-out launches in the state the prompt asked for: the launcher's own
 # `REPOSITORY:` prefix pushes a re-embedded header out of reach of worker-run's header block.
+# The grok stub answers alike with or without web, so the citation fan-out carries the WEB: off checks.
 printf 'WEB: off\nResearch the repository.\n' >"$WORK/prompt"
 : >"$WORK/vendor.log"
-run --repo "$REPO2"; rc=$?; assert test "$rc" -eq 0
+printf 'repo two only\n' >"$REPO2/unit-only.txt"
+FAKE_GROK_CITATION='unit-only.txt:1 | "repo two only" | claim' run --repo "$REPO2"; rc=$?
+assert test "$rc" -eq 0
 assert test "$(grep -c -- '--disable-web-search' "$WORK/vendor.log")" = 2
 assert grep -qx 'WEB: off' "$WORK/out"
 assert test "$(grep -cx 'WEB: on' "$WORK/out")" = 0
@@ -41,13 +44,9 @@ for off_run in $(sed -n 's/^RUN: //p' "$WORK/out"); do
   assert test "$(grep -ci '^web *:' "$RUNS/$off_run/brief.launch")" = 0
   assert grep -qx 'Research the repository.' "$RUNS/$off_run/brief.launch"
 done
-printf 'Research the repository.\n' >"$WORK/prompt"
-
-printf 'repo two only\n' >"$REPO2/unit-only.txt"
-FAKE_GROK_CITATION='unit-only.txt:1 | "repo two only" | claim' run --repo "$REPO2"; rc=$?
-assert test "$rc" -eq 0
 assert test "$(head -n1 "$WORK/answer")" = 'CITATIONS: 1/2'
 assert grep -qx 'UNVERIFIED:' "$WORK/answer"
+printf 'Research the repository.\n' >"$WORK/prompt"
 
 # A launch that fails mid-batch waits out the units already started and lands their answers under
 # the launch's exit: abandoned, each keeps running on an account of its own with nothing reading it.
