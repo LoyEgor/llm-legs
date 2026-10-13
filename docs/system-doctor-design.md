@@ -261,7 +261,11 @@ once 14 days of series exist. A `log-store` fix is proven when the next scan no 
   (LaunchDaemon `com.egor.ssd-sampler`, owner-consented 2026-10-13, `sudo bin/ssd-sampler install`, copy in
   /usr/local/libexec so no user-writable file runs as root) traces `fs_usage -f diskio` 10 min every 7 h, a 7 h step
   walks every hour of the day in a week. Each sample, `/var/db/ssd-sampler/<start>.json`, carries the device write
-  counters over the trace and the write bytes per (process, disk, directory). `measures.ssd_sampled` sums 7 days:
+  counters over the trace and the write bytes per (process, disk, directory), paths kept from the front (`-F`) with
+  the Data firmlink prefix dropped. v2 samples check their own capture: a 64 MiB fsync'd calibration write against the
+  bytes traced for it, device counters every minute beside the traced bytes of that minute, fs_usage's lag and stderr,
+  and raw lines with no process, device or absolute path. v1 (the first sample: 7% attributed, Data paths cut to
+  `/System/Volumes/Data`) is ignored. `measures.ssd_sampled` sums 7 days:
   each (process, directory) share of the internal devices' bytes and the attributed share; Disk writes scales them to
   GB/d by the week's mean. Blind `ssd-sampler` while the daemon is installed but no sample is younger than 15 h.
 

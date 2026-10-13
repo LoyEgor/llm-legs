@@ -1,12 +1,14 @@
 #!/usr/bin/python3 -I
 """ssd-sampler: who writes which disk, the part the System doctor's uid-bound rusage cannot see (short-lived and
-other uids' processes). As root, `fs_usage -w -f diskio` runs SECS seconds every EVERY_S; its lines are aggregated in
-memory into one JSON per sample in OUT_DIR, which the System doctor reads. Owner consented 2026-10-13.
+other uids' processes). As root, `fs_usage -w -F -f diskio` runs SECS seconds every EVERY_S; its lines are aggregated
+in memory into one JSON per sample in OUT_DIR, which the System doctor reads. Each sample carries its own capture check: a
+CALIBRATION_B write of known size, device counters every TICK_S beside the traced bytes, fs_usage's lag and stderr, and
+raw lines the parse cannot place. Owner consented 2026-10-13.
 
   sudo ssd-sampler install      copy to /usr/local/libexec, load the LaunchDaemon, take the first sample now
   sudo ssd-sampler uninstall
   ssd-sampler aggregate         fs_usage lines on stdin -> rows JSON (tests)"""
-import collections, json, os, plistlib, re, shutil, subprocess, sys, time
+import collections, json, os, plistlib, re, shutil, subprocess, sys, threading, time
 
 LABEL = "com.egor.ssd-sampler"
 INSTALLED = "/usr/local/libexec/ssd-sampler"
@@ -16,33 +18,69 @@ SECS = 600
 EVERY_S = 7 * 3600
 KEEP_DAYS = 30
 ROWS = 200
+TICK_S = 60
+CALIBRATION_B = 64 << 20
+EXAMPLES = 3
+DATA = "/System/Volumes/Data"
+FS_USAGE = "/usr/bin/fs_usage"
 FLOAT = re.compile(r"^\d+\.\d+$")
+TOD = re.compile(r"^(\d\d):(\d\d):(\d\d(?:\.\d+)?)$")
 
 
 def top_dir(path):
+    if path.startswith(DATA + "/"):
+        path = path[len(DATA):]
     dirs = path.split("/")[1:-1]
     if path.startswith("/Users/") and len(dirs) >= 2:
         return "/".join(["~"] + dirs[2:4])
     return "/" + "/".join(dirs[:3])
 
 
-def aggregate(lines, marks=None):
-    """(lines seen, {(proc, dev, dir): [bytes, events]}) of the write events; marks gets one (time, devices) the
-    moment the first line arrives, so device counters span the trace, not fs_usage's setup."""
-    rows, seen = collections.defaultdict(lambda: [0, 0]), 0
+def clock(token):
+    tod = TOD.match(token)
+    return int(tod.group(1)) * 3600 + int(tod.group(2)) * 60 + float(tod.group(3)) if tod else None
+
+
+def odd(stats, kind, raw, nbytes):
+    slot = stats["odd"].setdefault(kind, [0, 0, []])
+    slot[0] += nbytes
+    slot[1] += 1
+    if len(slot[2]) < EXAMPLES:
+        slot[2].append(raw.strip())
+
+
+def aggregate(lines, on_first=None, wall=None):
+    """(stats, {(proc, dev, dir): [bytes, events]}) of the write events. stats carries what tells a short trace from
+    a lossy one: write bytes per call, the event clock span, fs_usage's lag behind it (wall() = local seconds of day),
+    bytes per (event tick, dev), the calibration bytes seen, and raw lines of each kind the parse cannot place."""
+    rows = collections.defaultdict(lambda: [0, 0])
+    stats = {"lines": 0, "first": None, "last": None, "lag_max": 0, "calls": {}, "minutes": {}, "calibration": 0,
+             "odd": {}}
     for raw in lines:
-        if marks is not None and not marks:
-            marks.append((time.time(), devices()))
+        if on_first:
+            on_first()
+            on_first = None
         p = raw.split()
         if len(p) < 4:
             continue
-        seen += 1
+        stats["lines"] += 1
+        tod = clock(p[0])
+        if tod is not None:
+            if stats["first"] is None:
+                stats["first"] = tod
+            stats["last"] = tod
+            if wall:
+                stats["lag_max"] = max(stats["lag_max"], round((wall() - tod + 43200) % 86400 - 43200, 1))
         if "Wr" not in p[1] and "PgOut" not in p[1]:
             continue
+        nbytes = next((int(t[2:], 16) for t in p if t.startswith("B=0x")), 0)
+        call = stats["calls"].setdefault(p[1].split("[")[0], [0, 0])
+        call[0] += nbytes
+        call[1] += 1
         dev = next((t for t in p if t.startswith("/dev/")), None)
         if not dev:
+            odd(stats, "nodev", raw, nbytes)
             continue
-        nbytes = next((int(t[2:], 16) for t in p if t.startswith("B=0x")), 0)
         i, rest = p.index(dev) + 1, []
         while i < len(p) - 1 and not FLOAT.match(p[i]):
             rest.append(p[i])
@@ -53,11 +91,21 @@ def aggregate(lines, marks=None):
         if tail and tail[0] == "W":
             tail = tail[1:]
         proc = re.sub(r"\.\d+$", "", " ".join(tail) or p[-1])
+        if not proc:
+            odd(stats, "noproc", raw, nbytes)
+            proc = "?"
+        if "ssd-sampler/calibration" in path:
+            stats["calibration"] += nbytes
         where = top_dir(path) if path.startswith("/") else "(none)" if not path else "(rel)"
+        if where == "(rel)":
+            odd(stats, "rel", raw, nbytes)
+        if tod is not None and stats["first"] is not None:
+            key = "%d %s" % ((tod - stats["first"]) % 86400 // TICK_S, dev[5:])
+            stats["minutes"][key] = stats["minutes"].get(key, 0) + nbytes
         slot = rows[(proc, dev[5:], where)]
         slot[0] += nbytes
         slot[1] += 1
-    return seen, rows
+    return stats, rows
 
 
 def devices():
@@ -83,23 +131,71 @@ def internal(dev):
         return None
 
 
+def calibrate():
+    path = os.path.join(OUT_DIR, "calibration")
+    with open(path, "wb") as handle:
+        for _ in range(CALIBRATION_B >> 20):
+            handle.write(bytes(1 << 20))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.remove(path)
+
+
 def run():
     if os.geteuid() != 0:
         sys.exit("ssd-sampler: run needs root; launchd runs it")
-    marks = []
-    trace = subprocess.Popen(["/usr/bin/fs_usage", "-w", "-f", "diskio", "-t", str(SECS)], stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, text=True, errors="replace")
-    seen, rows = aggregate(trace.stdout, marks)
+    os.makedirs(OUT_DIR, mode=0o755, exist_ok=True)
+    ticks, errors, done, calibrated = [], collections.deque(maxlen=40), threading.Event(), []
+
+    def tick():
+        ticks.append((time.time(), devices()))
+        try:
+            calibrate()
+            calibrated.append(CALIBRATION_B)
+        except OSError as error:
+            errors.append("calibration: %s\n" % error)
+        while not done.wait(max(0.0, ticks[0][0] + TICK_S * len(ticks) - time.time())):
+            ticks.append((time.time(), devices()))
+
+    ticker = threading.Thread(target=tick, daemon=True)
+    trace = subprocess.Popen([FS_USAGE, "-w", "-F", "-f", "diskio", "-t", str(SECS)], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, errors="replace")
+    reader = threading.Thread(target=lambda: errors.extend(trace.stderr), daemon=True)
+    reader.start()
+    now = time.time()
+    local = time.localtime(now)
+    midnight = now - local.tm_hour * 3600 - local.tm_min * 60 - local.tm_sec - now % 1
+    stats, rows = aggregate(trace.stdout, ticker.start, lambda: time.time() - midnight)
     trace.wait()
-    end, after = time.time(), devices()
-    start, before = marks[0] if marks else (end, after)
+    reader.join(5)
+    done.set()
+    end = time.time()
+    if ticker.is_alive():
+        ticker.join(30)
+    if not ticks:
+        ticks.append((end, devices()))
+    start, before = ticks[0]
+    span = (stats["last"] - stats["first"]) % 86400 if stats["first"] is not None else 0
+    stop, closing = min(ticks, key=lambda t: abs(t[0] - start - span))
     where = {dev: internal(dev) for dev in {key[1] for key in rows}}
     top = sorted(([proc, dev, where[dev], path, b, n] for (proc, dev, path), (b, n) in rows.items()),
                  key=lambda r: -r[4])
-    doc = {"v": 1, "start": round(start), "end": round(end), "lines": seen,
-           "devices": {label: after[label] - before[label] for label in after if label in before},
-           "columns": ["proc", "dev", "internal", "dir", "bytes", "events"], "rows": top[:ROWS]}
-    os.makedirs(OUT_DIR, mode=0o755, exist_ok=True)
+    minutes = []
+    for k in range(len(ticks) - 1):
+        seen = [sum(b for key, b in stats["minutes"].items()
+                    if key.split()[0] == str(k) and where.get(key.split()[1]) == inside) for inside in (1, 0)]
+        wrote = [sum(b - ticks[k][1].get(label, b) for label, b in ticks[k + 1][1].items() if label.startswith(kind))
+                 for kind in ("internal:", "external:")]
+        minutes.append([k, seen[0], wrote[0], seen[1], wrote[1]])
+    doc = {"v": 2, "start": round(start), "end": round(stop), "lines": stats["lines"],
+           "devices": {label: closing[label] - before[label] for label in closing if label in before},
+           "columns": ["proc", "dev", "internal", "dir", "bytes", "events"], "rows": top[:ROWS],
+           "trace": {"span": round(span), "ran": round(end - start), "lag_max": stats["lag_max"],
+                     "exit": trace.returncode, "stderr": "".join(errors)[-2000:]},
+           "calibration": {"wrote": sum(calibrated), "seen": stats["calibration"]},
+           "calls": stats["calls"], "odd": stats["odd"],
+           "minutes_columns": ["minute", "internal seen", "internal device", "external seen", "external device"],
+           "minutes": minutes}
     final = os.path.join(OUT_DIR, time.strftime("%Y%m%dT%H%M%S", time.localtime(start)) + ".json")
     with open(final + ".tmp", "w") as handle:
         json.dump(doc, handle, separators=(",", ":"))
@@ -151,8 +247,8 @@ def uninstall():
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
     if command == "aggregate":
-        seen, rows = aggregate(sys.stdin)
-        json.dump({"lines": seen, "rows": sorted([*k, *v] for k, v in rows.items())}, sys.stdout)
+        stats, rows = aggregate(sys.stdin)
+        json.dump({**stats, "rows": sorted([*k, *v] for k, v in rows.items())}, sys.stdout)
         return
     {"run": run, "install": install, "uninstall": uninstall}.get(command, lambda: sys.exit(__doc__))()
 

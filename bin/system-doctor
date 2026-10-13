@@ -2354,12 +2354,14 @@ def sampler_plist():
 
 
 def ssd_sampled(now):
-    """Internal-disk writes in the root bin/ssd-sampler samples of the last 7 days: {samples, minutes, newest, top:
+    """Internal-disk writes in the root bin/ssd-sampler v2 samples of the last 7 days (v1 cut paths under the Data
+    firmlink and has no capture check): {samples, minutes, newest, top:
     [[proc, dir, share of the internal devices' bytes]], attributed share}; None without a sample."""
     docs = []
     for path in sorted(glob.glob(os.path.join(sampler_dir(), "*.json"))):
         doc = read_json(path)
-        if isinstance(doc, dict) and isinstance(doc.get("end"), (int, float)) and doc["end"] >= now - 7 * DAY_S:
+        if isinstance(doc, dict) and doc.get("v", 0) >= 2 and isinstance(doc.get("end"), (int, float)) \
+                and doc["end"] >= now - 7 * DAY_S:
             docs.append(doc)
     device = sum(b for d in docs for label, b in (d.get("devices") or {}).items() if label.startswith("internal:"))
     if not device:

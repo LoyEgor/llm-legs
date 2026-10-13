@@ -1029,27 +1029,84 @@ lines = "".join(line + "\n" for line in (
     "18:21:20.200000  WrData[A]  D=0x02  B=0x3000  /dev/disk3s1  /Users/someone/.cache/tool/c.json  0.000100 W Python.78",
     "18:21:20.300000  PgOut[A]  D=0x03  B=0x8000  /dev/disk3s6  /System/Volumes/VM/swapfile0  0.000200 W kernel_task.0",
     "18:21:20.400000  RdData[A]  D=0x04  B=0x9000  /dev/disk3s1  /Users/someone/x/y  0.000100 W bash.5",
-    "18:21:20.500000  WrMeta[A]  D=0x05  B=0x1000  /dev/disk7s1  0.000100 W launchd.1"))
+    "18:21:20.500000  WrMeta[A]  D=0x05  B=0x1000  /dev/disk7s1  0.000100 W launchd.1",
+    "18:22:21.000000  WrData[A]  D=0x06  B=0x2000  /dev/disk7s1  /System/Volumes/Data/Volumes/Work/tmp/x/y  0.000100 W Python.9",
+    "18:22:21.100000  WrData[A]  D=0x07  B=0x4000  /dev/disk3s1  /private/var/db/ssd-sampler/calibration  0.000100 W Python.3",
+    "18:22:21.200000  WrData[A]  D=0x08  B=0x1000  /dev/disk3s1  /tmp/z  0.000100 W .4411",
+    "18:22:21.300000  WrData[A]  D=0x09  B=0x1000  /dev/disk3s1  kuku/zz  0.000100 W mds.2",
+    "18:22:21.400000  WrData[A]  D=0x0a  B=0x1000  0.000100 W odd.1"))
 out = json.loads(subprocess.run([os.path.join(root, "bin", "ssd-sampler"), "aggregate"], input=lines, capture_output=True,
                                 text=True, check=True).stdout)
-check(out == {"lines": 5, "rows": [["Python", "disk3s1", "~/.cache/tool", 16384, 2],
-                                   ["kernel_task", "disk3s6", "/System/Volumes/VM", 32768, 1],
-                                   ["launchd", "disk7s1", "(none)", 4096, 1]]},
-      "ssd-sampler keeps write events by process, disk and directory, two levels below a home: %s" % out)
+check(out["lines"] == 10 and out["rows"] == [
+          ["?", "disk3s1", "/tmp", 4096, 1], ["Python", "disk3s1", "/private/var/db", 16384, 1],
+          ["Python", "disk3s1", "~/.cache/tool", 16384, 2], ["Python", "disk7s1", "/Volumes/Work/tmp", 8192, 1],
+          ["kernel_task", "disk3s6", "/System/Volumes/VM", 32768, 1], ["launchd", "disk7s1", "(none)", 4096, 1],
+          ["mds", "disk3s1", "(rel)", 4096, 1]],
+      "ssd-sampler keeps write events by process, disk and directory, two levels below a home, the Data volume's "
+      "firmlink prefix dropped: %s" % out["rows"])
+check(out["calls"] == {"WrData": [53248, 7], "PgOut": [32768, 1], "WrMeta": [4096, 1]} and out["calibration"] == 16384
+      and out["first"] == 18 * 3600 + 21 * 60 + 20.1 and out["last"] == 18 * 3600 + 22 * 60 + 21.4
+      and out["minutes"] == {"0 disk3s1": 16384, "0 disk3s6": 32768, "0 disk7s1": 4096, "1 disk7s1": 8192,
+                             "1 disk3s1": 16384 + 4096 + 4096},
+      "ssd-sampler counts write bytes per call, per tick and device, and the calibration file's: %s" % out)
+check({kind: slot[:2] + [len(slot[2])] for kind, slot in out["odd"].items()}
+      == {"noproc": [4096, 1, 1], "rel": [4096, 1, 1], "nodev": [4096, 1, 1]}
+      and out["odd"]["noproc"][2][0].endswith("W .4411"),
+      "ssd-sampler keeps raw lines with no process, a relative path or no device: %s" % out["odd"])
+fake = os.path.join(os.path.dirname(os.environ["SSD_SAMPLER_DIR"]), "fake-fs-usage")
+open(fake, "w").write("#!/bin/bash\nfor i in 1 2 3 4 5 6; do\n  t=$(/bin/date +%H:%M:%S).$((100000 + i))\n"
+                      "  echo \"$t  WrData[A]  D=0x0$i  B=0x1000  /dev/disk3s1  /Users/someone/.cache/tool/a  0.000100 W Python.7\"\n"
+                      "  echo \"$t  WrData[A]  D=0x1$i  B=0x2000  /dev/disk7s1  /Volumes/Work/x/y/z  0.000100 W rsync.8\"\n"
+                      "  sleep 0.5\ndone\necho 'fs_usage: lost events' >&2\n")
+os.chmod(fake, 0o755)
+probe = subprocess.run([sys.executable, "-I", "-c", """
+import importlib.machinery, json, os, sys, time
+s = importlib.machinery.SourceFileLoader("sampler", sys.argv[1]).load_module()
+s.FS_USAGE, s.TICK_S, s.CALIBRATION_B = sys.argv[2], 1, 2 << 20
+s.os.geteuid = lambda: 0
+s.internal = lambda dev: int(dev.startswith("disk3"))
+count = [0]
+def devices():
+    count[0] += 1
+    return {"internal:disk0": 10 ** 6 * count[0], "external:disk6": 3 * 10 ** 6 * count[0]}
+s.devices = devices
+remove = s.os.remove
+s.os.remove = lambda path: (print("calibration", os.path.getsize(path)) if path.endswith("/calibration") else None,
+                            remove(path))
+s.run()
+""", os.path.join(root, "bin", "ssd-sampler"), fake], capture_output=True, text=True, timeout=60)
+written = [name for name in os.listdir(os.environ["SSD_SAMPLER_DIR"]) if name.endswith(".json")] if os.path.isdir(os.environ["SSD_SAMPLER_DIR"]) else []
+check(probe.returncode == 0 and len(written) == 1 and "calibration %d" % (2 << 20) in probe.stdout,
+      "ssd-sampler run writes the calibration file and one sample off fakes: %s %s %s" % (probe.stdout, probe.stderr[-800:], written))
+if written:
+    sample = json.load(open(os.path.join(os.environ["SSD_SAMPLER_DIR"], written[0])))
+    check(sample["v"] == 2 and sample["calibration"] == {"wrote": 2 << 20, "seen": 0}
+          and sample["trace"]["exit"] == 0 and "lost events" in sample["trace"]["stderr"]
+          and 2 <= sample["trace"]["span"] <= 3 and sample["trace"]["lag_max"] < 2
+          and sample["devices"]["internal:disk0"] > 0 and sample["devices"]["external:disk6"] == 3 * sample["devices"]["internal:disk0"]
+          and sorted(r[:4] for r in sample["rows"]) == [["Python", "disk3s1", 1, "~/.cache/tool"], ["rsync", "disk7s1", 0, "/Volumes/Work/x"]]
+          and len(sample["minutes"]) >= 2 and all(len(m) == 5 for m in sample["minutes"])
+          and sum(m[1] for m in sample["minutes"]) > 0 and sum(m[4] for m in sample["minutes"]) > 0
+          and not os.path.exists(os.path.join(os.environ["SSD_SAMPLER_DIR"], "calibration")),
+          "ssd-sampler run: v2 sample with the calibration write, fs_usage stderr, the traced span, device ticks: %s"
+          % {k: sample[k] for k in ("trace", "calibration", "devices", "minutes")})
+shutil.rmtree(os.environ["SSD_SAMPLER_DIR"], ignore_errors=True)
 ssd = os.environ["SSD_SAMPLER_DIR"]
 os.makedirs(ssd)
 now = time.time()
 for name, end, devices, rows in (
         ("old", now - 8 * 86400, {"internal:disk0": 10 ** 9}, [["Python", "disk3s1", 1, "~/old", 10 ** 9, 1]]),
+        ("v1", now - 60, {"internal:disk0": 10 ** 9}, [["Python", "disk3s1", 1, "/System/Volumes/Data", 10 ** 9, 1]]),
         ("a", now - 3600, {"internal:disk0": 1000, "external:disk6": 5000},
          [["kernel_task", "disk3s6", 1, "/System/Volumes/VM", 400, 9], ["Python", "disk7s1", 0, "/Volumes/Work", 5000, 9],
           ["Python", "disk3s1", 1, "~/.cache/tool", 100, 3]]),
         ("b", now - 600, {"internal:disk0": 1000}, [["kernel_task", "disk3s6", 1, "/System/Volumes/VM", 200, 2]])):
-    json.dump({"v": 1, "start": end - 600, "end": end, "devices": devices, "rows": rows}, open(os.path.join(ssd, name + ".json"), "w"))
+    json.dump({"v": 1 if name == "v1" else 2, "start": end - 600, "end": end, "devices": devices, "rows": rows},
+              open(os.path.join(ssd, name + ".json"), "w"))
 sampled = m.document(now, now, persist=False)["measures"]["ssd_sampled"]
 check(sampled == {"samples": 2, "minutes": 20, "newest": now - 600, "attributed": 0.35,
                   "top": [["kernel_task", "swap", 0.3], ["Python", "~/.cache/tool", 0.05]]},
-      "the week's root samples: each process and directory's share of the internal disks' bytes, external rows out: %s"
+      "the week's v2 root samples: each process and directory's share of the internal disks' bytes, external rows out: %s"
       % sampled)
 open(os.environ["SSD_SAMPLER_PLIST"], "w").close()
 os.utime(os.environ["SSD_SAMPLER_PLIST"], (now - 20 * 3600, now - 20 * 3600))
