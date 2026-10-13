@@ -69,10 +69,10 @@ store_lock_acquire() {
   [[ "$stale" =~ ^[1-9][0-9]*$ ]] || stale=30
   [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || ceiling=3600
   while :; do
-    if mkdir "$lock" 2>/dev/null; then
+    if [ ! -d "$lock" ] && mkdir "$lock" 2>/dev/null; then
       store_lock_claim "$lock" && { store_lock_waited "$lock" "$waited"; return 0; }
     elif [ "$((tries + 1))" -ge "$max" ] || [ "$(((tries + 1) % 20))" -eq 0 ]; then
-      now=$(date +%s) || return 1
+      now=${EPOCHSECONDS:-$(date +%s)} || return 1
       if store_lock_breakable "$lock" "$stale" "$ceiling" "$now"; then
         # Claim by renaming aside: of several racing waiters only one wins the mv, and what it
         # captured is judged again — a racer's live newborn goes back untouched.
