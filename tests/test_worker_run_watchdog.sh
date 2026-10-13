@@ -2,6 +2,9 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 4 wait
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
+# Every case here waits out a watchdog window, and `wait` wakes on the exit through its kqueue: the
+# harness's one-second poll only adds a meta read and a python spawn per waited second.
+unset WORKER_RUN_WAIT_POLL_S
 
 watchdog_tests() {
 if suite_shard_owns 1 wd-deadline; then
