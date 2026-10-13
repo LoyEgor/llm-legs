@@ -1557,9 +1557,10 @@ def logstores(now=None):
     for entry in log_stores.logs(registry):
         rows = steps("store:" + entry["name"], log_stores.measure, entry)
         claims.update((r["path"], r["bytes"]) for r in rows)
+        parts = steps("split:" + entry["name"], log_stores.split, entry, rows, sessions)
         stores.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner"),
                            readers=entry["readers"], group=entry["group"], label=entry["label"], part=entry.get("part"),
-                           parts=steps("split:" + entry["name"], log_stores.split, entry, rows, sessions)))
+                           parts=parts))
     groups = {}
     for store in stores:
         for group, size in store["parts"].items():
@@ -2170,6 +2171,10 @@ def criterion_words(store):
         key, "%s") % value
 
 
+def group_words(store):
+    return {group: "%s days" % days for group, days in (store.get("group_days") or {}).items()} or None
+
+
 def bounded(store):
     return store["cleaner"] == "cap" or store["cleaner"] != "keep" and bool(store.get("criterion"))
 
@@ -2191,10 +2196,11 @@ def judge_logstores(judge, rows):
         if not store.get("over_units"):
             continue
         words = "older than" if (store.get("criterion") or [None])[0] == "days" else "past"
+        keep = criterion_words(store) + "".join(", %s %s" % kv for kv in (group_words(store) or {}).items())
         judge.add("log-store", store["name"], "%s holds %d unit%s (%.2f GB) %s its %s plus slack, the oldest %d days: "
                   "its cleaner (%s) does not keep up" % (
                       store["name"], store["over_units"], "" if store["over_units"] == 1 else "s", store["over_bytes"] / 1e9,
-                      words, criterion_words(store), (now - (store.get("over_oldest_s") or now)) // DAY_S, store["cleaner"]),
+                      words, keep, (now - (store.get("over_oldest_s") or now)) // DAY_S, store["cleaner"]),
                   store["over_units"], 0, "units", 24, store["units"], store["over_units"], store.get("over_oldest_s"),
                   latest["t"], [{"at": iso_time(latest["t"]), "ref": "logstores:%s" % store["name"], "account": None,
                                  "excerpt": "%d units, %.2f GB in all" % (store["units"], store["bytes"] / 1e9)}],
@@ -2253,6 +2259,7 @@ def logstores_view(rows):
             "stores": [{"name": s["name"], "gb": round(s["bytes"] / 1e9, 2), "files": s["files"],
                         "age_d": round((latest["t"] - s["oldest_s"]) / DAY_S, 1) if s.get("oldest_s") else None,
                         "cleaner": s["cleaner"], "keep": criterion_words(s) if s.get("criterion") else None,
+                        "keep_by_group": group_words(s),
                         "over": s.get("over_units"), "readers": s.get("readers"), "group": s.get("group"),
                         "label": s.get("label"), "part": s.get("part"), "parts": {g: round(b / 1e9, 2) for g, b in (s.get("parts") or {}).items()}}
                        for s in stores],

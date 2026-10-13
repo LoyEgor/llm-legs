@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """log-sweep: removes what each `sweep` store of share/log-stores.json is past its criterion: units untouched for
-`days`, beyond `keep_newest` or `max_mb` (oldest first), and truncates files to their last `tail_mb`. A unit some
+`days` (a classified unit of a split store: its group's `group_days`, classes read from every `session` store, swept
+or not), beyond `keep_newest` or `max_mb` (oldest first), and truncates files to their last `tail_mb`. A unit some
 process holds open (an open file or bound socket, a cwd or either inside a directory) is skipped; sockets, FIFOs and
 devices are never units. `--dry-run` prints what it would remove with sizes. One
 summary line per run goes to ~/.cache/log-sweep/sweeps.jsonl, capped. Run daily by `system-doctor logstores`."""
@@ -108,14 +109,20 @@ def record(row):
 
 def sweep(registry, now, dry_run, only=None, say=print):
     stores, items, errors, skipped = {}, [], 0, 0
-    paths = None
+    paths, sessions = None, {}
     for entry in registry.get("stores") or ():
-        if entry["cleaner"] != "sweep" or only and entry["name"] not in only:
+        swept = entry["cleaner"] == "sweep" and not (only and entry["name"] not in only)
+        if not swept and entry.get("split") != "session":
+            continue
+        rows = log_stores.measure(entry)
+        if entry.get("split"):
+            log_stores.split(entry, rows, sessions)
+        if not swept:
             continue
         key, value = log_stores.criterion(entry)
         bases = [glob_base(p) for p in entry["globs"]]
         done = [0, 0]
-        for row, action in log_stores.doomed(entry, log_stores.measure(entry), now):
+        for row, action in log_stores.doomed(entry, rows, now):
             if action == "delete":
                 if paths is None:
                     paths = open_paths()
@@ -141,8 +148,9 @@ def sweep(registry, now, dry_run, only=None, say=print):
             items.append([row["path"], freed])
         if done[0]:
             stores[entry["name"]] = done
-            say("%s: %d unit%s, %.1f MB (%s %s)" % (entry["name"], done[0], "" if done[0] == 1 else "s",
-                                                    done[1] / log_stores.MB, key, value))
+            say("%s: %d unit%s, %.1f MB (%s %s%s)" % (entry["name"], done[0], "" if done[0] == 1 else "s",
+                                                      done[1] / log_stores.MB, key, value, "".join(
+                                                          ", %s %s" % kv for kv in (entry.get("group_days") or {}).items())))
     items.sort(key=lambda item: -item[1])
     return {"t": round(now), "dry_run": dry_run, "units": sum(s[0] for s in stores.values()),
             "bytes": sum(s[1] for s in stores.values()), "stores": stores, "skipped_open": skipped, "errors": errors,

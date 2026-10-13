@@ -40,8 +40,9 @@ def criterion(entry):
 
 def load(path=None):
     """The registry, validated: every store has a name, globs, a kind, a known cleaner and at most one criterion, which a
-    `self` or `sweep` store must have, and a log store lists its readers; every ignore entry has a glob and a reason.
-    Raises ValueError naming the fault."""
+    `self` or `sweep` store must have, and a log store lists its readers; `group_days` only on a split `days` store, each
+    group known and kept no longer than `days`, which an unclassified unit keeps; every ignore entry has a glob and a
+    reason. Raises ValueError naming the fault."""
     path = path or registry_path()
     with open(path, encoding="utf-8") as handle:
         registry = json.load(handle)
@@ -66,6 +67,12 @@ def load(path=None):
                                        or not isinstance(entry.get("part", "-"), str) or entry.get("part") == ""):
             raise ValueError("store %s: a log store needs a group in %s, a label, no split but %s and a part only as a name" % (
                 name, "/".join(GROUPS), "/".join(SPLITS)))
+        by_group = entry.get("group_days")
+        if by_group is not None and not (
+                entry.get("split") and isinstance(entry.get("days"), int) and isinstance(by_group, dict) and by_group
+                and all(g in GROUPS and isinstance(d, int) and 0 < d <= entry["days"] for g, d in by_group.items())):
+            raise ValueError("store %s: group_days needs a split days store and maps groups in %s to days up to its "
+                             "days" % (name, "/".join(GROUPS)))
     for entry in registry.get("ignore") or ():
         if not entry.get("glob") or not entry.get("why"):
             raise ValueError("ignore entry %r: needs a glob and a why" % entry)
@@ -139,11 +146,13 @@ def measure(entry):
 
 def doomed(entry, rows, now, slack=False):
     """The units the store's criterion removes, as (row, "delete" | "truncate"); with slack, the ones past the
-    criterion plus its slack, which a working cleaner never leaves behind."""
+    criterion plus its slack, which a working cleaner never leaves behind. A unit split() classified keeps its
+    group's `group_days`, any other the store's `days`."""
     key, value = criterion(entry)
     if key == "days":
-        limit = now - (value + (SLACK["days"] if slack else 0)) * DAY_S
-        return [(r, "delete") for r in rows if r["newest"] < limit]
+        by_group = entry.get("group_days") or {}
+        extra = SLACK["days"] if slack else 0
+        return [(r, "delete") for r in rows if r["newest"] < now - (by_group.get(r.get("class"), value) + extra) * DAY_S]
     newest_first = sorted(rows, key=lambda r: (-r["newest"], r["path"]))
     if key == "keep_newest":
         return [(r, "delete") for r in newest_first[value + (SLACK["keep_newest"] if slack else 0):]]
@@ -165,7 +174,8 @@ def summary(entry, rows, now):
     over = [r for r, _action in doomed(entry, rows, now, slack=True) if r["bytes"]]
     key, value = criterion(entry)
     return {"name": entry["name"], "cleaner": entry["cleaner"], "criterion": [key, value] if key else None,
-            "bytes": sum(r["bytes"] for r in rows), "files": sum(r["files"] for r in rows), "units": len(rows),
+            "group_days": entry.get("group_days"), "bytes": sum(r["bytes"] for r in rows),
+            "files": sum(r["files"] for r in rows), "units": len(rows),
             "oldest_s": round(min(r["newest"] for r in rows)) if rows else None,
             "over_units": len(over), "over_bytes": sum(r["bytes"] for r in over),
             "over_oldest_s": round(min(r["newest"] for r in over)) if over else None}
@@ -188,9 +198,9 @@ def session_class(path):
 
 
 def split(entry, rows, sessions):
-    """{group: bytes} of the store's units. A `session` store's file is classified by session_class and recorded in
-    `sessions` under the session id ending its name, which a later `session-id` store's unit named by that id
-    inherits, so the registry lists the `session` stores first."""
+    """{group: bytes} of the store's units, each row's `class` set for doomed(). A `session` store's file is classified
+    by session_class and recorded in `sessions` under the session id ending its name, which a later `session-id`
+    store's unit named by that id inherits, so the registry lists the `session` stores first."""
     parts = {}
     for row in rows:
         name = os.path.basename(row["path"])
@@ -199,6 +209,7 @@ def split(entry, rows, sessions):
             sessions[os.path.splitext(name)[0][-36:]] = found
         else:
             found = sessions.get(name) if entry.get("split") else None
+        row["class"] = found
         group = found or entry["group"]
         parts[group] = parts.get(group, 0) + row["bytes"]
     return parts

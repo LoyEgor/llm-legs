@@ -215,6 +215,13 @@ new. Writers stay free: no format or location standard, we only measure and clea
   Scan rows carry `groups`; the view adds per-group size and growth against the oldest grouped scan ≥ 20 h back.
   The view's stores are objects (`name gb files age_d cleaner keep over readers group label parts`), never positional
   lists: Hammerspoon's JSON decoder drops a null and shifts every later field of a list.
+- **Retention by class** (Egor, 2026-10-13): my chats 180 days, workers 15 (Spend and Lost time compare 7 days with
+  the 7 before, plus a day), Antigravity's audio copies 2. A split `days` store carries `group_days` (`load()` refuses
+  it elsewhere, or above the store's `days`); an unclassified unit keeps the store's `days`, the safe side.
+  `split()` sets each row's class before `doomed()`, so log-sweep and the doctor's `over_units` read one criterion;
+  log-sweep classifies every `session` store, swept or not, for the `session-id` stores. Claude's transcripts, session
+  dirs and rewind history are `sweep` (Claude Code also prunes chats at `cleanupPeriodDays` 180). The view adds
+  `keep_by_group` (`{group: words}`) beside the store's default `keep`.
 - **Collector** `logstores`, daily after 04:00 (or after 36 h), detached like the others: `bin/log-sweep` (every
   `sweep` store, any kind), then every log store's bytes, files, units and oldest unit, and what lies past its
   criterion plus slack (2 days, 1 unit, 25 %, 2× the tail). Rows in `logstores/<day>.jsonl` (90 days).

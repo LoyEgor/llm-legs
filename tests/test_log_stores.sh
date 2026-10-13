@@ -335,6 +335,58 @@ check(os.path.exists(os.path.join(home, "vheld/d1")) and not os.path.exists(os.p
 check(sorted(os.listdir(os.path.join(tmpw, "sheld"))) == ["d1", "old.log"] and held_run["skipped_open"] == 3,
       "a /private/tmp/... file or dir is held by lsof's /tmp/... spelling: %s" % held_run)
 
+# ---- retention by class: workers 15 days, chats and unclassified units 180, a session dir follows its transcript
+logged = dict(named, kind="log", readers=[], name="a", globs=["~/a"], cleaner="sweep")
+check("group_days" in (raises({"stores": [dict(logged, days=180, group_days={"workers": 15})]}) or "")
+      and "group_days" in (raises({"stores": [dict(logged, split="session", days=10, group_days={"workers": 15})]}) or "")
+      and "group_days" in (raises({"stores": [dict(logged, split="session", days=180, group_days={"bots": 15})]}) or "")
+      and "group_days" in (raises({"stores": [dict(logged, split="session", max_mb=9, group_days={"workers": 15})]}) or "")
+      and raises({"stores": [dict(logged, split="session", days=180, group_days={"workers": 15})]}) is None,
+      "group_days needs a split days store, known groups and no group kept longer than an unclassified unit")
+shipped = {e["name"]: e for e in real["stores"]}
+check(all(shipped[n]["cleaner"] == "sweep" and shipped[n]["days"] == 180
+          and shipped[n].get("group_days") == {"workers": 15, "my chats": 180}
+          for n in ("claude-transcripts", "claude-session-dirs", "claude-file-history", "codex-sessions"))
+      and [shipped[n]["days"] for n in ("antigravity-conversations", "antigravity-brain", "grok-sessions",
+                                        "antigravity-brain-media")] == [15, 15, 15, 2],
+      "shipped retention: chats 180 days, workers 15, Antigravity's audio copies 2")
+claude_lines = {"1": ({"entrypoint": "sdk-cli"}, 16), "2": ({"entrypoint": "cli"}, 16), "3": ({"entrypoint": "cli"}, 181),
+                "4": (None, 16), "5": ({"entrypoint": "sdk-cli"}, 10)}
+for digit, (origin, days) in claude_lines.items():
+    put("cl/p/%s.jsonl" % (digit * 36), age_days=days,
+        text="".join(json.dumps(r) + "\n" for r in [{"type": "mode"}] + ([origin] if origin else [])).encode())
+    put("cx/rollout-x-%s.jsonl" % (digit * 36), age_days=days, text=(json.dumps(
+        {"type": "session_meta", "payload": {"originator": "codex_exec" if origin and origin["entrypoint"] == "sdk-cli"
+                                             else "codex_cli_rs"}}) if origin else "{}").encode() + b"\n")
+for digit in "126":
+    put("cl/p/%s/subagents/a.jsonl" % (digit * 36), age_days=16)
+    age("cl/p/%s/subagents" % (digit * 36), 16)
+    age("cl/p/%s" % (digit * 36), 16)
+classed = {"days": 180, "group_days": {"workers": 15, "my chats": 180}, "cleaner": "sweep"}
+kept_registry = registry([dict(classed, name="cl", split="session", globs=["~/cl/*/*.jsonl"]),
+                          dict(classed, name="cldirs", split="session-id", globs=["~/cl/*/*"], exclude=["*.jsonl"]),
+                          dict(classed, name="cx", split="session", globs=["~/cx/*"])])
+with open(os.path.join(work, "open-paths"), "w") as handle:
+    handle.write("p1\n")
+dry = log_sweep("--dry-run", "--store", "cldirs", "--store", "cx")
+would = sorted(os.path.relpath(line.split()[-1], home) for line in dry.stdout.splitlines() if line.startswith("  delete"))
+check(would == ["cl/p/" + "1" * 36, "cx/rollout-x-%s.jsonl" % ("1" * 36), "cx/rollout-x-%s.jsonl" % ("3" * 36)],
+      "a worker unit 16 days old goes, a chat 16 days old stays, a chat 181 days old goes, an unclassified unit is kept "
+      "as a chat, a session dir follows its transcript's class even when only the dirs are swept: %s" % would)
+check("(days 180, workers 15, my chats 180)" in dry.stdout, "the sweep line names the per-group days: %s" % dry.stdout)
+sessions, judged = {}, []
+for entry in kept_registry["stores"]:
+    rows = ls.measure(entry)
+    ls.split(entry, rows, sessions)
+    judged += [os.path.relpath(r["path"], home) for r, _a in ls.doomed(entry, rows, now + 2 * DAY + 60, slack=True)]
+classed_run = json.loads(log_sweep("--json").stdout)
+check(sorted(judged) == sorted(would + ["cl/p/%s.jsonl" % ("1" * 36), "cl/p/%s.jsonl" % ("3" * 36)])
+      and classed_run["units"] == 5 and classed_run["stores"]["cl"][0] == 2,
+      "the judge's criterion plus slack, 2 days on, names exactly what the sweep removes: %s %s" % (judged, classed_run))
+check(sorted(os.listdir(os.path.join(home, "cl/p"))) == sorted(
+          ["2" * 36, "6" * 36] + ["%s.jsonl" % (d * 36) for d in "245"]),
+      "the real sweep keeps chats, unclassified and young worker units: %s" % os.listdir(os.path.join(home, "cl/p")))
+
 # ---- system-doctor logstores collector and judge
 loader = importlib.machinery.SourceFileLoader("system_doctor", os.path.join(root, "bin", "system-doctor"))
 spec = importlib.util.spec_from_loader("system_doctor", loader)
@@ -350,10 +402,16 @@ registry([{"name": "s", "globs": ["~/logs/*"], "exclude": ["*/keep", "*.jsonl"],
            "part": "versions"},
           {"name": "u", "globs": ["~/unread/*"], "cleaner": "sweep", "days": 7, "readers": [], "writer": "Vendor"},
           {"name": "uk", "globs": ["~/kept/*"], "cleaner": "keep", "readers": [], "writer": "Vendor"},
+          dict(classed, name="cxd", split="session", globs=["~/cxd/*"], writer="Codex CLI", owner="third-party"),
           {"name": "a", "kind": "app", "globs": ["~/appdata/*"], "cleaner": "keep"}],
          ignore=[{"glob": "~/ignored", "why": "test"}],
          scan={"roots": ["~", "~/cache"], "depth": 3, "min_mb": 200, "grow_mb_day": 50, "floor_mb": 10, "budget_s": 60})
 put("unread/trace.jsonl", 100, 1)
+for digit, origin in (("7", "codex_exec"), ("8", "codex_cli_rs")):
+    put("cxd/rollout-x-%s.jsonl" % (digit * 36), age_days=20,
+        text=json.dumps({"type": "session_meta", "payload": {"originator": origin}}).encode() + b"\n")
+with open(os.path.join(work, "open-paths"), "a") as handle:
+    handle.write("n%s/cxd/rollout-x-%s.jsonl\n" % (home, "7" * 36))
 put("kept/trace.jsonl", 100, 1)
 put("appdata/vm/disk.img", 5000)
 with open(os.path.join(work, "du-lines"), "w") as handle:
@@ -365,7 +423,7 @@ stores = {s["name"]: s for s in row["stores"]}
 check(row.get("sweep", {}).get("errors") == 0 and stores["s"]["over_units"] == 2 and stores["v"]["over_units"] == 2,
       "the collector sweeps, then measures every store: %s" % row)
 check(row["unread"] == ["u", "uk"], "the row lists every unread store, bounded or not: %s" % row.get("unread"))
-check(set(stores) == {"s", "v", "u", "uk"} and row["total_bytes"] == sum(s["bytes"] for s in stores.values()),
+check(set(stores) == {"s", "v", "u", "uk", "cxd"} and row["total_bytes"] == sum(s["bytes"] for s in stores.values()),
       "an app store is neither measured nor counted in the total: %s" % sorted(stores))
 check([u["path"] for u in row["unregistered"]] == ["~/cache/stray"] and row["scan"]["cut"] == [],
       "the fallback names the uncovered 300 MB dir as ~/…, never the ignored one or an app store's: %s" % row["unregistered"])
@@ -375,8 +433,10 @@ judge = m.Judge(later, None)
 logs = m.tick_rows(now - 9 * DAY, later, "logstores")
 m.judge_logstores(judge, logs)
 found = {p["id"]: p for p in judge.problems}
-check(set(found) == {"log-store:s", "log-store:v", "log-unread:uk", "unregistered-store:~/cache/stray"},
+check(set(found) == {"log-store:s", "log-store:v", "log-store:cxd", "log-unread:uk", "unregistered-store:~/cache/stray"},
       "problems: %s" % sorted(found))
+check(stores["cxd"]["over_units"] == 1 and "180 days, workers 15 days, my chats 180 days" in found["log-store:cxd"]["fact"],
+      "the collector judges a held 20-day worker unit past its 15 days, never the 20-day chat: %s" % stores["cxd"])
 check("read by nobody and never deleted" in found["log-unread:uk"]["fact"] and found["log-unread:uk"]["cause"] is None,
       "a log no one reads and nothing deletes is its own problem, a swept one is not: %s" % found["log-unread:uk"])
 check(found["log-store:s"]["cause"]["name"] == "worker-run" and found["log-store:s"]["cause"]["owner"] == "own"
@@ -416,6 +476,9 @@ check("logstores" not in judge.blind, "a fresh full scan sees")
 check(m.logstores_due(None, now) and not m.logstores_due(now - 3600, now) and m.logstores_due(now - 37 * 3600, now),
       "the scan is due once a day after the nightly hour, or after 36 h")
 view = m.logstores_view(logs)
+views = {s["name"]: s for s in view["stores"]}
+check(views["cxd"]["keep"] == "180 days" and views["cxd"]["keep_by_group"] == {"workers": "15 days", "my chats": "180 days"}
+      and views["s"]["keep_by_group"] is None, "keep_by_group reaches the view beside the store's default keep: %s" % views["cxd"])
 check(view["stores"][0]["name"] in ("s", "v") and view["unregistered"][0]["path"] == "~/cache/stray", "the document's log_stores view")
 check(view["groups"] and view["groups"][0][0] == "workers" and view["groups"][0][2] is None and view["groups_since"] is None
       and [view["stores"][0][k] for k in ("group", "label")] == ["workers", view["stores"][0]["name"]]
