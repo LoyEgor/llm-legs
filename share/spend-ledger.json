@@ -1730,6 +1730,22 @@
    "verdict": "kept",
    "zero": "removal saves 2.4 CPU-min/day; loses every Gemini leg: review cells, workers, light research and the quota reads",
    "note": "not a loop or poll: the System hours journal shows agy CPU on 4 of the last 7 days only (737, 727, 203, 143 CPU-s; 3.5-13 concurrent process-min in one hour each), the vendor CLI's own language server working a Gemini leg or review cell at ~70-80% of a core; the 2.4 is the 7-day median, one burst. No timer or schedule of ours starts it idle, no cheaper equivalent for a vendor binary doing the work"
+  },
+  {
+   "id": "cpu:statusline/ports",
+   "title": "statusline/ports",
+   "audited_at": "2026-10-13T10:08:10+03:00",
+   "by": "harness-speed-cpu-statusline-ports-20261012T235115Z-60e6",
+   "cpu_min_day": 30.5,
+   "cpu_s_run": 0.067,
+   "runs_day": 22441,
+   "sources": {
+    "llm-legs/bin/statusline-ports-probe.sh": "61861ca6f2b38557bca6807fcc82b512ed6916d4",
+    "llm-legs/share/statusline-probe.sh": "05c77ec75541917a02b0a52a0c688041750898a7"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 30.5 CPU-min/day; loses the live dev-server ports segment Egor reads in the statusline (bright/dim per tree, 2026-09-04)",
+   "note": "per-run CPU 74.5->34 ms (llm-legs, 82 worktrees) and 48->30 ms (one tree) on captured live ps/lsof snapshots with identical records: root walk cached per start pid, worktree list re-run only when <common>/worktrees/ entries change, prune marker read without stat fork; 99.95% of runs (6531/6534 on 2026-10-13) publish unchanged output, but listeners have no event a shell can wait on, so the 15 s poll stays; the per-rebuild ps retake after lsof (40 ms) and the 27 ms lsof cwd pass were left: skipping either changes ownership answers"
   }
  ]
 }
