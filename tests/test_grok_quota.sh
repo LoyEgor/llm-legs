@@ -7,9 +7,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPER="$ROOT/grok-quota.py"
 WORK="$(mktemp -d)"
-SERVER_PID=''
+SERVER_PID='' RUNNER_PID=''
 cleanup() {
   [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
+  [ -z "$RUNNER_PID" ] || kill "$RUNNER_PID" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -30,8 +31,7 @@ import threading
 import time
 
 HEADER_LOG = sys.argv[1]
-PORT_FILE = sys.argv[2]
-RESET_LOG = sys.argv[3]
+RESET_LOG = sys.argv[2]
 
 
 def varint(value):
@@ -239,20 +239,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-with open(PORT_FILE, "w") as handle:
-    handle.write(str(server.server_address[1]))
+print(server.server_address[1], flush=True)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 while True:
     time.sleep(3600)
 PY
 
-python3 "$WORK/server.py" "$HEADER_LOG" "$WORK/port" "$RESET_LOG" &
+exec 3< <(python3 "$WORK/server.py" "$HEADER_LOG" "$RESET_LOG")
 SERVER_PID=$!
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  [ -s "$WORK/port" ] && break
-  sleep 0.2
-done
-PORT=$(cat "$WORK/port" 2>/dev/null || true)
+PORT=''
+read -r -t 10 -u 3 PORT || true
 [ -n "$PORT" ] || fail "the local billing stand-in never bound a port"
 BASE="http://127.0.0.1:$PORT"
 
@@ -273,15 +269,76 @@ write_auth() {
 write_auth "$PROFILES/supergrok" "$TOKEN" "$REFRESH"
 write_auth "$PROFILES/second" "$TOKEN"
 
+# Each run is the helper's __main__ in a fresh fork of one interpreter that preloaded the stdlib: a
+# python3 start per run was most of this suite's CPU. DIRECT=1 runs the real CLI instead.
+cat >"$WORK/runner.py" <<'PY'
+import argparse, json, os, re, runpy, shutil, subprocess, sys, time, traceback  # noqa: F401
+import http.client, ssl, urllib.error, urllib.request  # noqa: F401
+from datetime import datetime, timezone  # noqa: F401
+from pathlib import Path  # noqa: F401
+
+helper, requests, replies = sys.argv[1:]
+base = dict(os.environ)
+
+
+def child(fields):
+    out, err, *rest = fields
+    split = rest.index("--")
+    os.environ.clear()
+    os.environ.update(base)
+    os.environ.update(pair.split("=", 1) for pair in rest[:split])
+    for path, fd in ((out, 1), (err, 2)):
+        os.dup2(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), fd)
+    sys.argv = [helper] + rest[split + 1:]
+    code = 0
+    try:
+        runpy.run_path(helper, run_name="__main__")
+    except SystemExit as done:
+        code = done.code
+        if code is not None and not isinstance(code, int):
+            print(code, file=sys.stderr)
+            code = 1
+    except BaseException:
+        traceback.print_exc()
+        code = 1
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code or 0)
+
+
+with open(requests) as inbox, open(replies, "w") as outbox:
+    for line in iter(inbox.readline, ""):
+        pid = os.fork()
+        if pid == 0:
+            child(line.rstrip("\n").split("\t"))
+        outbox.write("%d\n" % os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+        outbox.flush()
+PY
+mkfifo "$WORK/requests" "$WORK/replies"
+python3 "$WORK/runner.py" "$HELPER" "$WORK/requests" "$WORK/replies" &
+RUNNER_PID=$!
+exec 4<>"$WORK/requests" 5<>"$WORK/replies"
+
 # The reset read is a second endpoint the helper calls on its own, so every invocation must point
 # it at this stand-in too — a default left in place would reach the real service from a test.
 run() {
-  local route=$1
+  local route=$1 rc text=''
   shift
-  env HOME="$WORK/home" GROK_QUOTA_ENDPOINT="$BASE/$route?format=credits" \
-    GROK_RESETS_ENDPOINT="$BASE/${RESETS_ROUTE:-resets-one}" \
-    GROK_QUOTA_CLIENT_VERSION=9.9.9 \
-    python3 "$HELPER" --profiles-dir "$PROFILES" "$@" 2>"$WORK/last.err"
+  local env=(HOME="$WORK/home" LIMIT_HITS_LOG="$WORK/limit-hits.jsonl" GROK_QUOTA_ENDPOINT="$BASE/$route?format=credits"
+    GROK_RESETS_ENDPOINT="$BASE/${RESETS_ROUTE:-resets-one}" GROK_QUOTA_CLIENT_VERSION=9.9.9
+    ${GROK_RESETS_TIMEOUT+GROK_RESETS_TIMEOUT="$GROK_RESETS_TIMEOUT"})
+  if [ -n "${DIRECT:-}" ]; then
+    env "${env[@]}" python3 "$HELPER" --profiles-dir "$PROFILES" "$@" 2>"$WORK/last.err"
+    return
+  fi
+  local IFS=$'\t' request
+  request="$WORK/last.out	$WORK/last.err	${env[*]}	--	--profiles-dir	$PROFILES"
+  [ "$#" -eq 0 ] || request+="	$*"
+  printf '%s\n' "$request" >&4
+  read -r -t 60 -u 5 rc || fail "the helper runner did not answer"
+  IFS= read -r -d '' text <"$WORK/last.out" || true
+  printf '%s' "$text"
+  return "$rc"
 }
 
 no_secret() {
@@ -313,6 +370,7 @@ pass
 
 out=$(run busy --account supergrok); rc=$?
 [ "$rc" -eq 0 ] || fail "measured read: expected exit 0, got $rc"
+busy_out=$out busy_reset=$(tail -n 1 "$RESET_LOG")
 jq -e '.accounts[0] | .used_pct == 61.2 and .build_pct == 18.5 and
   .plan_type == "SUBSCRIPTION_TIER_SUPERGROK" and .period == "USAGE_PERIOD_TYPE_WEEKLY"' \
   <<<"$out" >/dev/null || fail "measured body lost the percent, tier or Build split: $out"
@@ -401,7 +459,7 @@ for route in boom garbage; do
   no_secret "$out" "reporting a $route response"
   no_traceback "reporting a $route response"
 done
-out=$(run slow --account supergrok --timeout 1); rc=$?
+out=$(run slow --account supergrok --timeout 0.2); rc=$?
 [ "$rc" -eq 1 ] || fail "timeout: expected exit 1, got $rc"
 jq -e '.accounts[0] | (.error | type) == "string" and (has("auth") | not)' <<<"$out" >/dev/null \
   || fail "a timeout was not reported as a transient error: $out"
@@ -461,7 +519,7 @@ pass
 
 # Stdout is JSON and nothing else, the same contract codex-quota.py and agy-quota.py hold: every
 # reader of a vendor collector parses, and a human form would be a fourth surface to keep in step.
-out=$(run busy --account supergrok)
+out=$(DIRECT=1 run busy --account supergrok)
 jq -e '.accounts | length == 1' <<<"$out" >/dev/null || fail "stdout was not a JSON payload: $out"
 [ "$(wc -l <<<"$out" | tr -d ' ')" -eq 1 ] || fail "stdout carried more than the payload: $out"
 grep -q 'wk 61.2%' <<<"$out" && fail "the removed human form is still printed: $out"
@@ -602,12 +660,11 @@ no_traceback "reading a degraded weekly period"
 pass
 
 # The reset consumable, read through a second service: a count and the instant the grant expires.
-out=$(run busy --account supergrok); rc=$?
-[ "$rc" -eq 0 ] || fail "reset read: expected exit 0, got $rc"
+out=$busy_out
 jq -e '.accounts[0] | .reset_credits == 1 and
   .reset_credits_expires_at == "2026-09-12T18:49:00Z" and .used_pct == 61.2' <<<"$out" >/dev/null \
   || fail "one available reset was not published with its expiry: $out"
-last_reset=$(tail -n 1 "$RESET_LOG")
+last_reset=$busy_reset
 jq -e --arg token "$TOKEN" '.headers |
   .authorization == ("Bearer " + $token) and
   .["content-type"] == "application/grpc-web+proto" and .["x-grpc-web"] == "1"' \
@@ -649,7 +706,7 @@ pass
 
 # The reset read owns its own timeout, so a hanging reset service cannot delay or fail the usage
 # reading the whole pool is ranked on.
-out=$(RESETS_ROUTE=resets-slow GROK_RESETS_TIMEOUT=1 run busy --account supergrok); rc=$?
+out=$(RESETS_ROUTE=resets-slow GROK_RESETS_TIMEOUT=0.2 run busy --account supergrok); rc=$?
 [ "$rc" -eq 0 ] || fail "hanging reset service: expected exit 0, got $rc"
 jq -e '.accounts[0] | .used_pct == 61.2 and .auth == "ok" and
   (has("reset_credits") | not)' <<<"$out" >/dev/null \
