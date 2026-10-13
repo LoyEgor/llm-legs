@@ -4741,6 +4741,92 @@
    "verdict": "cut",
    "zero": "removal saves ~10 wall-min and ~6 CPU-min a day; loses the claudeb OAuth heal/warm, Codex multi-account refresh, roster and start-windows checks",
    "note": "every check kept: 11 detached announce collectors a run -> 0 (their CPU sat outside the journal), keychain stub for the collector's plan lookups, the two codex-only refreshes no longer run the installed claudeb against the fixture store; jq 3065 spawns a run are llm-limits.sh's own"
+  },
+  {
+   "id": "suite:llm-legs/test_media_run",
+   "title": "llm-legs/test_media_run",
+   "audited_at": "2026-10-13T13:16:38+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-media-run-20261012T235341Z-58c0",
+   "cpu_run": 1.5,
+   "wall_run": 2.1,
+   "cpu_min_day": 0.24,
+   "wall_min_day": 0.92,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_media_run.sh": "eb64257c151ffc9b36063ea20ca185f7214397ff"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.8 wall-min/day and 0.2 CPU-min/day; loses the manifest-driven media-run door's argument, vendor-list and work-pointer checks",
+   "note": "jq forks 7 -> 3 per one-vendor run (one jq over all manifests, per-file fallback on a broken one), worker_media_tag moved to share/image-caps.sh so no call parses worker-model.sh; asserts 30 -> 32, fork count and broken manifest pinned"
+  },
+  {
+   "id": "suite:llm-legs/test_store_lock",
+   "title": "llm-legs/test_store_lock",
+   "audited_at": "2026-10-13T13:16:38+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-media-run-20261012T235341Z-58c0",
+   "cpu_run": 4.9,
+   "wall_run": 4.2,
+   "cpu_min_day": 0.58,
+   "wall_min_day": 0.89,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_store_lock.sh": "54aff3c91aab82e05d74686caf0a4a9c03b3a8d9"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.7 wall-min/day and 0.5 CPU-min/day; loses the store-lock concurrency, stale-lock and owner-claim checks",
+   "note": "no ElevenLabs keys file in the fixture env: six python3 balance starts gone (shim-asserted), collector wait counts signals by glob; PASS line unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_image_cutout",
+   "title": "llm-legs/test_image_cutout",
+   "audited_at": "2026-10-13T13:16:39+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-media-run-20261012T235341Z-58c0",
+   "cpu_run": 6.1,
+   "wall_run": 10.0,
+   "cpu_min_day": 0.27,
+   "wall_min_day": 0.6,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_image_cutout.sh": "24a85b06ae55df61852ac395641db9cf7a97ac2a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.6 wall-min/day and 0.3 CPU-min/day; loses the image-cutout flag, keep/drop, edge and holes checks against real Vision output",
+   "note": "swiftc compile (about 8 s a cold run) kept in a test cache keyed on source hash + swiftc version, one magick per file for alpha probes, plain decal run read once; 77 asserts unchanged, every mutation red"
+  },
+  {
+   "id": "suite:llm-legs/test_geminib_capacity",
+   "title": "llm-legs/test_geminib_capacity",
+   "audited_at": "2026-10-13T13:16:40+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-media-run-20261012T235341Z-58c0",
+   "cpu_run": 3.6,
+   "wall_run": 10.5,
+   "cpu_min_day": 0.21,
+   "wall_min_day": 0.81,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_geminib_capacity.sh": "21358970d115f7ac0ebe95ad6e322bee9c548c98"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.7 wall-min/day and 0.2 CPU-min/day; loses the 503 fallback walk, hold, watcher kill and signal-cleanup checks of bin/geminib",
+   "note": "wall is the product watcher's own 1 s poll and 2 s TERM-to-KILL grace across the fallback and signal cases (races), plus about 0.3 s a geminib spawn; no sleep may shorten, nothing redundant"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_pin_gate_shell",
+   "title": "llm-legs/test_worker_pin_gate_shell",
+   "audited_at": "2026-10-13T13:16:41+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-media-run-20261012T235341Z-58c0",
+   "cpu_run": 16.2,
+   "wall_run": 12.1,
+   "cpu_min_day": 1.12,
+   "wall_min_day": 2.08,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_pin_gate_shell.sh": "c425990179e173d3d38b056d5177028409bafcb6",
+    "llm-legs/tests/worker_pin_gate_harness.sh": "3d529055ec656800276ec74881f34ac75ab6a90a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.6 wall-min/day and 0.4 CPU-min/day; loses the shell-door pin-write classification checks (76 asserts)",
+   "note": "gate: a denial primes the model catalogs once (jq forks 7 -> 5 a denied call), a call naming no chat-pin skips the chat-pin table read, harness asserts by glob not grep; CPU 18.2 -> 13.0 s a direct run, 76 asserts unchanged, fork asserts red on the old gate"
   }
  ]
 }
