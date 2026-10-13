@@ -5096,14 +5096,14 @@
   {
    "id": "suite:llm-legs/test_night_report_trial",
    "title": "llm-legs/test_night_report_trial",
-   "audited_at": "2026-10-13T13:48:05+03:00",
+   "audited_at": "2026-10-13T16:15:47+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
-   "cpu_run": 1.0,
-   "wall_run": 0.5,
+   "cpu_run": 1.1,
+   "wall_run": 0.6,
    "cpu_min_day": 0.06,
-   "wall_min_day": 0.07,
+   "wall_min_day": 0.08,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
     "llm-legs/tests/test_night_report_trial.sh": "578dc85fa5aeda30c84207e59f45465cfa8d0b63"
    },
    "verdict": "cut",
@@ -5113,14 +5113,14 @@
   {
    "id": "suite:llm-legs/test_self_edit_guard",
    "title": "llm-legs/test_self_edit_guard",
-   "audited_at": "2026-10-13T13:48:06+03:00",
+   "audited_at": "2026-10-13T16:15:47+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
    "cpu_run": 0.4,
    "wall_run": 0.9,
    "cpu_min_day": 0.02,
    "wall_min_day": 0.06,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
     "llm-legs/tests/test_self_edit_guard.sh": "ffd38b0422198c16de3ad1bd2994f6f240009ef6"
    },
    "verdict": "cut",
@@ -5130,14 +5130,14 @@
   {
    "id": "suite:llm-legs/test_agent_launchers_live",
    "title": "llm-legs/test_agent_launchers_live",
-   "audited_at": "2026-10-13T13:48:07+03:00",
+   "audited_at": "2026-10-13T16:15:48+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
    "cpu_run": 0.7,
    "wall_run": 0.1,
    "cpu_min_day": 0.04,
    "wall_min_day": 0.06,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
     "llm-legs/tests/test_agent_launchers_live.sh": "16eb34bc909bd30a48e4b23a3d9412cff32cdb32"
    },
    "verdict": "cut",
@@ -5147,15 +5147,15 @@
   {
    "id": "suite:llm-legs/test_limit_hits",
    "title": "llm-legs/test_limit_hits",
-   "audited_at": "2026-10-13T13:48:07+03:00",
+   "audited_at": "2026-10-13T16:15:49+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
-   "cpu_run": 1.0,
+   "cpu_run": 1.1,
    "wall_run": 0.8,
-   "cpu_min_day": 0.1,
-   "wall_min_day": 0.18,
+   "cpu_min_day": 0.13,
+   "wall_min_day": 0.24,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
-    "llm-legs/tests/test_limit_hits.sh": "68498986d43a2458819cec01737e66904989c944"
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/test_limit_hits.sh": "41072057a7d6a9ac2169ea2a48c2408d6e76fa07"
    },
    "verdict": "cut",
    "zero": "removal saves ~0.6 wall-s a run; loses the limit-hit writers, expired() and the Harness Limits section rules",
@@ -5164,7 +5164,7 @@
   {
    "id": "suite:llm-legs/test_presence",
    "title": "llm-legs/test_presence",
-   "audited_at": "2026-10-13T13:48:08+03:00",
+   "audited_at": "2026-10-13T16:15:50+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
    "cpu_run": 0.1,
    "wall_run": 0.1,
@@ -5172,7 +5172,7 @@
    "wall_min_day": 0.04,
    "sources": {
     "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
-    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
     "llm-legs/tests/presence_harness.lua": "dba7446a860d708921ca50c57561e79cf9b2c370",
     "llm-legs/tests/test_presence.sh": "cc29b8634b4ae165df215b060fb2730e12695dc5"
    },
