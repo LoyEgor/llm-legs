@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 3
+# shards: 3 wait
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 # `wait` wakes on the exit through its kqueue: the harness's one-second poll only adds a meta read and
 # a python spawn per second these watchdog and wall windows are waited out.
