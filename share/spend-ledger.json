@@ -2035,7 +2035,7 @@
   {
    "id": "cpu:statusline/unpushed",
    "title": "statusline/unpushed",
-   "audited_at": "2026-10-13T10:01:26+03:00",
+   "audited_at": "2026-10-13T10:23:29+03:00",
    "by": "harness-speed-cpu-statusline-unpushed-20261012T235121Z-6500",
    "cpu_min_day": 1.4,
    "cpu_s_run": 0.421,
@@ -2045,7 +2045,7 @@
    },
    "verdict": "cut",
    "zero": "removal saves 1.4 CPU-min/day; loses the red unpushed alarm on a chat's own commit the upstream lacks, which Egor reads",
-   "note": "15s TTL re-asked the gate under an unchanged key (2000+ runs/day at <15s gaps on 10-06/07, ~0.1 CPU-s per examined commit, mostly jq over 1.3 MB review-anchors.json); key now covers claude-writes too, re-ask after 100s; recent days 0.05-0.4 CPU-min/day, all runs key changes (same=0 20/20)"
+   "note": "15s TTL re-asked the gate under an unchanged key (2000+ runs/day at <15s gaps on 10-06/07, ~0.1 CPU-s per examined commit, mostly jq over the 1.3 MB anchors store); key now covers the claude-writes journal too, re-ask after 100s; recent days 0.05-0.4 CPU-min/day, every run a key change (same=0 20/20)"
   },
   {
    "id": "cpu:hook/report-flush.sh",
