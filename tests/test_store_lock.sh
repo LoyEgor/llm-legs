@@ -29,10 +29,16 @@ common_env=(HOME="$HOME_FIXTURE" GEMINIB_PROFILES_DIR="$PROFILES"
   LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_CACHES"
   LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-main.json"
   LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_CODEX_REFRESH=0
-  LLM_LIMITS_CACHE="$CACHE" LLM_STORE_LOCK_DELAY=0.02 LLM_STORE_LOCK_RETRIES=6000
+  ELEVENLABS_KEYS="$WORK/no-elevenlabs-keys" LLM_LIMITS_CACHE="$CACHE" LLM_STORE_LOCK_DELAY=0.02 LLM_STORE_LOCK_RETRIES=6000
   LLM_STORE_LOCK_STALE_SECONDS=600)
 
 env "${common_env[@]}" bash "$SCRIPT" --json >/dev/null || fail "fixture cache creation failed"
+# No ElevenLabs keys file means no balance read: the collector starts no interpreter for it.
+mkdir "$WORK/pyshim"
+printf '#!/usr/bin/env bash\ncase "$*" in *elevenlabs_balance*) : >"%s/eleven-read" ;; esac\nexec %s "$@"\n' "$WORK" "$(command -v python3)" >"$WORK/pyshim/python3"
+chmod +x "$WORK/pyshim/python3"
+env "${common_env[@]}" PATH="$WORK/pyshim:$PATH" bash "$SCRIPT" --json >/dev/null || fail "keyless collector run failed"
+[ ! -e "$WORK/eleven-read" ] || fail "the collector read the ElevenLabs balance with no keys file"
 cache_tmp="$WORK/limits-with-errors.json"
 "$REAL_JQ" '.vendors.gemini.accounts |= map(
   if .account == "a" or .account == "b"
@@ -65,11 +71,15 @@ env "${common_env[@]}" PATH="$JQ_BIN:$PATH" LLM_TEST_REAL_JQ="$REAL_JQ" \
   >"$WORK/b.out" 2>"$WORK/b.err" &
 pid_b=$!
 SECONDS=0
+shopt -s nullglob
 while [ "$SECONDS" -lt 120 ]; do
-  [ "$(find "$SIGNALS" -type f | wc -l | tr -d ' ')" -ge 2 ] && break
+  signals=("$SIGNALS"/*)
+  [ "${#signals[@]}" -ge 2 ] && break
   sleep 0.02
 done
-[ "$(find "$SIGNALS" -type f | wc -l | tr -d ' ')" -ge 2 ] || fail "collectors did not read the shared initial state"
+signals=("$SIGNALS"/*)
+shopt -u nullglob
+[ "${#signals[@]}" -ge 2 ] || fail "collectors did not read the shared initial state"
 kill -0 "$pid_a" 2>/dev/null || fail "first collector skipped the live lock"
 kill -0 "$pid_b" 2>/dev/null || fail "second collector skipped the live lock"
 rmdir "$CACHE.lock"
