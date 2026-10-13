@@ -4228,6 +4228,86 @@
    "verdict": "kept",
    "zero": "removal saves 6.7 wall-min/day and 2.9 CPU-min/day; loses the only pins of light-research --attach (a finished run, a quota-walled batch with rc 3, a whole batch re-assembled from its units table)",
    "note": "12.7 s at load ~140, 11.1 s of it three production light-research runs (finished, quota-walled rc 3, batch) through worker-run start/wait with fakes, each a distinct behaviour; the attaches are 0.0x s each; no sleeps, no fixture rebuilt, no check another suite makes; tests-lens sweep clean"
+  },
+  {
+   "id": "suite:review-bench/test_review_anchors",
+   "title": "review-bench/test_review_anchors",
+   "audited_at": "2026-10-13T13:42:42+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-anchors-20261012T235432Z-2c55",
+   "cpu_run": 39.1,
+   "wall_run": 29.5,
+   "cpu_min_day": 2.51,
+   "wall_min_day": 4.14,
+   "sources": {
+    "review-bench/tests/test_review_anchors.sh": "ca1f000b56f582497609ce130ac9ac7f6a9acea5"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~4 wall-min/day; loses the only end-to-end pins of review-debt pricing, the anchor floor/cap and the scratch cleanup under SIGTERM",
+   "note": "review-bench@2531d05: rels() O(n) dict dedupe + per-parent resolve (30k-path run-fold 113 -> 12 s), fixture geminib/grokb caches (live grokb/geminib no longer run per review-debt call), one floored template repo copied instead of 19 builds, R6 anchor backdated instead of sleep 1; 74 asserts, floor and cap mutations red, CPU 52 -> 37 s a run"
+  },
+  {
+   "id": "suite:review-bench/test_review_recovery",
+   "title": "review-bench/test_review_recovery",
+   "audited_at": "2026-10-13T13:42:42+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-anchors-20261012T235432Z-2c55",
+   "cpu_run": 43.3,
+   "wall_run": 30.3,
+   "cpu_min_day": 2.27,
+   "wall_min_day": 3.63,
+   "sources": {
+    "review-bench/tests/test_review_recovery.py": "d5448e9c7115b1dccfdaf73613f436c0cd103741"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~3 wall-min/day; loses the only pins of relaunch/finish-partial recovery and per-vendor transport crash handling",
+   "note": "review-bench@2090f88: private HOME per test (the integrity scan hashed the live ~/.claude config twice a panel, 115 of 192 s), STATUSLINE_PLACE_BIN=/usr/bin/true (it appended to the live ~/.cache/claude-statusline/place-recovery-owner), REVIEW_CELLS_WAIT_S=0, no global git config; 34 tests, --finish-partial mutation red, 160 -> 53 s and CPU 56 -> 26 s at load 168"
+  },
+  {
+   "id": "suite:review-bench/test_cell_runtime",
+   "title": "review-bench/test_cell_runtime",
+   "audited_at": "2026-10-13T13:42:43+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-anchors-20261012T235432Z-2c55",
+   "cpu_run": 11.7,
+   "wall_run": 14.2,
+   "cpu_min_day": 0.72,
+   "wall_min_day": 1.6,
+   "sources": {
+    "review-bench/tests/test_cell_runtime.sh": "8526471c9dcc28ce28f0da729022f301a011d17b"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~1.4 wall-min/day; loses the only proof under the real Seatbelt that cells cannot write live roots or read the reviewed repo",
+   "note": "review-bench@f495710 fixed two load flakes (10 s hang bound -> HANG_S 120; ps state E counts as killed; dropped group-kill mutation red); cost kept: 21 of 32 s are five vendor launches under the real Seatbelt, 53 tests"
+  },
+  {
+   "id": "suite:review-bench/test_consistency",
+   "title": "review-bench/test_consistency",
+   "audited_at": "2026-10-13T13:42:43+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-anchors-20261012T235432Z-2c55",
+   "cpu_run": 3.7,
+   "wall_run": 3.0,
+   "cpu_min_day": 1.01,
+   "wall_min_day": 1.41,
+   "sources": {
+    "review-bench/tests/test_consistency.sh": "b9c2b768d41f3cb2ce7601452b33818463c51f90"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~1.4 wall-min/day; loses the cross-implementation pins of docs/shared-invariants.md",
+   "note": "review-bench@034f25d: GIT_CONFIG_GLOBAL=/dev/null (global hooksPath chain shims fired on its fixture commits), REVIEW_CELLS_WAIT_S=0 (staffed-cell checks probed live worker_slots/slot_room); 371 asserts, lens_excluded_paths mutation red, CPU 4.2 -> 3.5 s a run; the rest is 353 source-pin greps and six python blocks, kept"
+  },
+  {
+   "id": "suite:review-bench/test_frontier",
+   "title": "review-bench/test_frontier",
+   "audited_at": "2026-10-13T13:42:44+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-anchors-20261012T235432Z-2c55",
+   "cpu_run": 7.7,
+   "wall_run": 11.7,
+   "cpu_min_day": 0.55,
+   "wall_min_day": 1.16,
+   "sources": {
+    "review-bench/tests/test_frontier.sh": "e6e97021012371c6a7b3b0f7d9bd549bb91c2761"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~1 wall-min/day; loses the frontier/task-lens composition, exclusion, chat-judge and report-bus pins",
+   "note": "review-bench@5828b67: dropped time.sleep(1.1) before six panels (6.6 s a run; 134 checks pass with all runs frozen into one second), REVIEW_CELLS_WAIT_S=0; chat-judge mutation red; wall 17.6 -> 10-13.6 s, CPU unchanged"
   }
  ]
 }
