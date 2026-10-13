@@ -291,8 +291,12 @@ run_refresh() {
 hang_tree_dead() {
   local pid
   [ -s "$1/hang.pids" ] || return 1
-  sleep 1
-  for pid in $(cat "$1/hang.pids"); do ! kill -0 "$pid" 2>/dev/null || return 1; done
+  for _ in $(seq 1 20); do
+    for pid in $(cat "$1/hang.pids"); do kill -0 "$pid" 2>/dev/null && break; pid=''; done
+    [ -n "$pid" ] || return 0
+    sleep 0.05
+  done
+  return 1
 }
 
 NOW=2000000000

@@ -8874,6 +8874,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
       "note": "Traced at load 70-147: 62 bin/image-fanout runs ~0.7 s each (43 s, its own startup and forks; the scheduler's idle tick is 0.1 s) and ~38 s of deliberate timing windows. Kept, each the length its check needs: the 1.5 s launch gap under FANOUT_SLEEP=2 (gap >= 1.2), the 8 s kill grace of the linger section (l - f >= 7 against a 1 s busy retry, b - a < 5), the lazy-spare runs (2 s / 0.8 s), memory admission's 0.5 s negative window; scaling the grace down would let b - a < 5 no longer prove the retry is not stalled by it.",
       "handoff": null
+    },
+    {
+      "id": "speed-test-idle-llm-refresh-tree-poll",
+      "title": "test_llm_refresh idles 39 s a run: hang_tree_dead slept a fixed 1 s before each of its 8 checks",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_llm_refresh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T14:00:00+03:00",
+          "by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
+          "files": [
+            "llm-legs/tests/test_llm_refresh.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "hang_tree_dead's sleep 1 then one kill -0 pass vs a 0.05 s poll until every hang.pids pid is gone, 20 tries; kill_hung_holder killing the owner alone (no tree) as the mutation",
+            "data": "xtrace-timed direct runs at load 150-170",
+            "result": "67 tests green before and after; time inside hang_tree_dead 7.10 s -> 0.16 s a run; the mutation fails 'a live holder past the ceiling was left running' on the new poll"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
+      "note": "Traced at load 150-170: 67 bin/llm-refresh runs at ~1.7 s each are the bulk of the wall (the script's own forks, CPU under load). Kept: supervisor-term's 5 s negative window past its 4 s ceiling (the watchdog must be seen not to fire), the hung-holder case's 5 s TERM-to-KILL grace of process_tree_end (production constant; the holder ignores TERM on purpose), the batched case's STUB_CALL_SECONDS=2 (it measures serial against batched collector calls).",
+      "handoff": null
     }
   ],
   "blind_spots": [
