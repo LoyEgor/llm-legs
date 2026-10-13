@@ -94,8 +94,13 @@ span_turn 'tidy the instruction docs' > "$NOSPAN_T"
 # writes the span markers `rj_autonomous` answers from. The fixture arms through that same intake,
 # so the phrase above is still what decides, and the two states are checked here rather than being
 # discovered as a whole matrix answering out-span.
+# Re-syncing the session it just synced off an unchanged transcript returns at words.py's same-key check.
 arm_span() { # session transcript
+  local key
+  key="$1|$2|$(stat -f '%z %Fm' "$2" 2>/dev/null)"
+  [ "$key" != "${ARMED_KEY:-}" ] || return 0
   bash -c '. "$1"; words_sync "$2" "$3"' _ "$JOURNAL_LIB" "$1" "$2"
+  ARMED_KEY=$key
 }
 arm_span matrix-span "$SPAN_T"
 arm_span matrix-plain "$NOSPAN_T"
@@ -205,7 +210,8 @@ bloat_decision() {
   [ -n "$out" ] || { printf 'pass\n'; return 0; }
   printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
 }
-fmt() { ( . "$ROOT/share/instruction-files.sh"; "$@" ); }
+. "$ROOT/share/instruction-files.sh" || fail "share/instruction-files.sh failed to source"
+fmt() { ( "$@" ); }
 DOC="$HOME/.claude/docs/review-tiers.md"
 tool_payload() { # event sid tool key value transcript
   jq -cn --arg e "$1" --arg s "$2" --arg n "$3" --arg k "$4" --arg v "$5" --arg t "$6" --arg c "$WORK" \
@@ -231,7 +237,7 @@ watch_sid() { # sid arg; WATCH_BASH picks the interpreter
 }
 grow_cmd="perl -pi -e 's/\$/ a line no human asked for/' $DOC"
 share_call() { # snippet arg... → the shared module, sourced, answering
-  bash -c '. "$1" || exit 1; shift; eval "$1"' _ "$ROOT/share/instruction-files.sh" "$@"
+  ( set +u; eval "$1" )
 }
 # Outside INSTRUCTION_WATCH_CHAT=all the baseline lands behind the hook, before the session's first
 # writing call: a fixture's own write, standing for another process, waits for it the same way.
