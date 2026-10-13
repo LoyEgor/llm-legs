@@ -240,6 +240,7 @@ CHAT_PIN_CALL_RE="(^|[;&|({\`'\"])[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space
 
 chat_pin_off_account() { # command → the switched-off account a `chat-pin <name>` in it pins
   local scan segment rest name resolved
+  [[ $1 == *chat-pin* ]] || return 1
   load_share instruction-files.sh instruction_split_commands || return 1
   load_share worker-model.sh worker_model_chat_pin_vendors || return 1
   scan=$(printf '%s' "$1" | instruction_shell_scan 2>/dev/null) || scan=''
