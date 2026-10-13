@@ -17,10 +17,3 @@ Cardinal rules:
 
 Cross-implementation invariants (bash/jq/Lua/prose) are guarded by `docs/shared-invariants.md` +
 `bash tests/test_consistency.sh`.
-
-## launchd / autostart jobs
-Every LaunchAgent created or modified for Egor must be identifiable in macOS Login Items by a
-meaningful name: ProgramArguments points at a wrapper in `~/.local/libexec/<descriptive-name>`
-(e.g. `llm-refresh-heartbeat`, `memlogd`) that `exec`s the real interpreter+script — never bare
-`python3`/`bash`/`node` as the visible program. Keep repo plists consistent with it. Renaming or
-toggling a Login Item reloads the job (SIGTERM + restart) — harmless service restarts are expected.
