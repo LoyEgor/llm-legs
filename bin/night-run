@@ -410,6 +410,10 @@ tree_commit() { # dir message what -> commit on HEAD of the checkout as it stand
   while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
     read -r _ _ _ sha status <<<"$meta"
     [ "$status" != D ] || continue
+    if [ "$status" = A ] && [ "${path##*/}" = .DS_Store ]; then
+      drops+=("$path")
+      continue
+    fi
     reason=''
     if [ "$status" = A ]; then
       case ${path##*/} in .env | *.pem | *.key | id_*) reason='an untracked secret name' ;; esac

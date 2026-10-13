@@ -388,8 +388,11 @@ printf 'pem\n' >"$WORK/snap/keys/server.pem"
 printf 'key\n' >"$WORK/snap/k.key"
 printf 'ssh\n' >"$WORK/snap/keys/id_ed25519"
 head -c 6291456 /dev/zero >"$WORK/snap/big.bin"
+printf 'finder\n' >"$WORK/snap/.DS_Store"
+printf 'finder\n' >"$WORK/snap/keys/.DS_Store"
 git init -q -b main "$WORK/clean"
 git -C "$WORK/clean" -c user.email=t@t -c user.name=t commit -q --allow-empty -m root
+printf 'finder\n' >"$WORK/clean/.DS_Store"
 printf '%s\n' "$WORK/snap" "$WORK/clean" >"$WORK/sweep-repos"
 id6=$(ls -t "$NIGHTS" | sed -n 's/\.json$//p' | head -1)
 before_status=$(git -C "$WORK/snap" status --porcelain)
@@ -400,6 +403,9 @@ assert [ "$(git -C "$WORK/snap" show "refs/night/$id6/base:untracked")" = new ]
 for dropped in .env keys/server.pem k.key keys/id_ed25519 big.bin; do
   assert_fails git -C "$WORK/snap" cat-file -e "refs/night/$id6/base:$dropped" 2>/dev/null
   assert grep -qF "the base of $WORK/snap drops $dropped: " "$WORK/base.err"
+done
+for dropped in .DS_Store keys/.DS_Store; do
+  assert_fails git -C "$WORK/snap" cat-file -e "refs/night/$id6/base:$dropped" 2>/dev/null
 done
 assert grep -qxF "night-run: the base of $WORK/snap drops big.bin: a 6 MB blob" "$WORK/base.err"
 assert [ "$(wc -l <"$WORK/base.err" | tr -d ' ')" = 5 ]
