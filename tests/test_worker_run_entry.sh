@@ -352,7 +352,7 @@ own_headroom_tests() (
   rc=0
   "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --account com >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
   assert test "$rc" -ne 0
-  assert grep -qE 'wait for the 5h reset at [0-9]{2}:[0-9]{2}' "$WORK/start.err"
+  assert grep -qE 'wait for the 5h reset at ((Sun|Mon|Tue|Wed|Thu|Fri|Sat) )?[0-9]{2}:[0-9]{2}' "$WORK/start.err"
   assert test ! -s "$CALL_LOG"
   export CLAUDEGPT_ACCOUNT=com
   start_ok claudeb --account com
