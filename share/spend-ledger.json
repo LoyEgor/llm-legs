@@ -6031,6 +6031,91 @@
    "verdict": "kept",
    "zero": "removal saves 0.2 wall-min/day; loses the log-store registry and log-sweep checks",
    "note": "already cut by 9f66c47a (log-sweep subprocesses parallel); only the direct-run tree digest remained, now cached"
+  },
+  {
+   "id": "suite:llm-legs/test_chat_account",
+   "title": "llm-legs/test_chat_account",
+   "audited_at": "2026-10-13T11:53:25+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-account-20261012T235242Z-393c",
+   "cpu_run": 0.2,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.03,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "2f7ebc81681900cada1641b9d5b73eb691823cba",
+    "llm-legs/tests/test_chat_account.sh": "f4a2851fba40938a5500e2368efdce875a953f5a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.25 wall-s and 0.15 CPU-s a run; loses the only pin of chat-account.sh's precedence (gateway > env > config dir > fallback) and its sourced CHAT_ACCOUNT_SOURCE contract",
+   "note": "14 env execs dropped (subshell unset + exec bash); PASS 14 asserts unchanged; 10-run bench under load 346 -> 266 ms a run; gateway-sentinel and config-dir-source mutations red"
+  },
+  {
+   "id": "suite:llm-legs/test_menu_refresh_marker",
+   "title": "llm-legs/test_menu_refresh_marker",
+   "audited_at": "2026-10-13T11:53:25+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-account-20261012T235242Z-393c",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.03,
+   "wall_min_day": 0.04,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "2f7ebc81681900cada1641b9d5b73eb691823cba",
+    "llm-legs/tests/test_menu_refresh_marker.sh": "430ac9ebdcdf8ba633e95fea20429b3fb6e6dac6"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.15 wall-s and 0.09 CPU-s a run; loses the gate that every hammerspoon task spawn is a busySource-marked refresh or an exempt one",
+   "note": "three python3 starts -> one over the live tree and both mutated copies; checks unchanged, each red under its mutation; 10-run bench under load 266 -> 192 ms a run"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_pool_shield",
+   "title": "llm-legs/test_worker_pool_shield",
+   "audited_at": "2026-10-13T11:53:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-account-20261012T235242Z-393c",
+   "cpu_run": 0.3,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.03,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "2f7ebc81681900cada1641b9d5b73eb691823cba",
+    "llm-legs/tests/test_worker_pool_shield.sh": "b5d9fd898a1f1099787622da358b2d1cc5e94cc7"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.2 wall-s and 0.25 CPU-s a run; loses the shield marker roundtrip, enable/enable --all override and name-escape rejection pins",
+   "note": "kept: the two claudeb enable starts are the asserted behaviour (review F9 false); 32 asserts, no sleep, no fixture rebuild, no vacuous check found"
+  },
+  {
+   "id": "suite:llm-legs/test_audio_score",
+   "title": "llm-legs/test_audio_score",
+   "audited_at": "2026-10-13T11:53:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-account-20261012T235242Z-393c",
+   "cpu_run": 0.2,
+   "wall_run": 0.3,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.02,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "2f7ebc81681900cada1641b9d5b73eb691823cba",
+    "llm-legs/tests/test_audio_score.sh": "d6bd04de3eb703a2f42df69e622db0795396f4bd"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.3 wall-s and 0.2 CPU-s a run; loses audio-score's argument refusals and its text/JSON output shape",
+   "note": "kept: 6 refusal runs exit before uv, 2 stubbed-uv runs are the CLI wiring; each refusal check red with its guard deleted (the fake engine would exit 0); no sleep, no live state"
+  },
+  {
+   "id": "suite:llm-legs/test_hs_cli_lock",
+   "title": "llm-legs/test_hs_cli_lock",
+   "audited_at": "2026-10-13T11:53:27+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chat-account-20261012T235242Z-393c",
+   "cpu_run": 0.2,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.03,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "2f7ebc81681900cada1641b9d5b73eb691823cba",
+    "llm-legs/tests/test_hs_cli_lock.sh": "12ab12eb55fc5f787c68c3cc508a886a3b128d35"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.2 wall-s and 0.2 CPU-s a run; loses the gate that every live hs call in tests holds /tmp/hs-cli.lock (Hammerspoon SIGTRAP crashes 2026-10-02/03/08)",
+   "note": "kept: 7 grep forks over tests/*.sh, a self-test of the call pattern; no sleep or fixture; nothing cheaper keeps the scan"
   }
  ]
 }
