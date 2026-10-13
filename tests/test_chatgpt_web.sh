@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 4
 # The ChatGPT web image route: share/chatgpt_web.py on gemini_web's hidden-Chrome core, and
 # `codex-image --route web` in front of it. Playwright is faked; fixture stores only, under a temp HOME.
 set -u
@@ -23,7 +24,8 @@ assert_fails() {
 REAL_MAGICK=$(command -v magick) || fail "magick is required for this suite"
 UV_CACHE_DIR=${UV_CACHE_DIR:-$(uv cache dir 2>/dev/null)}
 export UV_CACHE_DIR
-export HOME="$WORK/home" PYTHONDONTWRITEBYTECODE=1
+unset PYTHONDONTWRITEBYTECODE
+export HOME="$WORK/home" PYTHONPYCACHEPREFIX="$WORK/pycache"
 export CHATGPT_WEB_DIR="$WORK/home/.chatgpt-web" GEMINI_WEB_DIR="$WORK/home/.gemini-web"
 export GEMINI_WEB_CHROME="$WORK/no-chrome.app"
 export CODEX_PROFILES_DIR="$WORK/codex-profiles" CODEXB_PROFILES_DIR="$WORK/codex-profiles"
@@ -32,6 +34,7 @@ sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }
 mkdir -p "$HOME/.codex" "$CODEX_PROFILES_DIR"/{alpha,beta,gamma,acct} "$CODEX_PROFILES_DIR/.codexb" "$CHATGPT_WEB_DIR"
 : >"$WORKER_PICK_CONFIG_FILE"
 
+if suite_shard_owns 1 engine; then
 # --- the engine on a faked page ---------------------------------------------------------------------
 assert python3 - "$ROOT/share" <<'EOF'
 import argparse, base64, contextlib, io, json, os, re, sys, time, types
@@ -1127,11 +1130,11 @@ held = hold("beta")
 started = time.time()
 code, out = run(ok, lock_wait=5)
 assert code == 0 and tried == ["alpha"] and time.time() - started < 2, (code, tried, time.time() - started)
-code, reason = run(ok, account="beta", lock_wait=0.3)
+code, reason = run(ok, account="beta", lock_wait=0.05)
 assert code == 5 and tried == [] and reason.startswith("account busy: timed out waiting for beta.lock"), reason
 held += hold("alpha")
 started = time.time()
-code, reason = run(ok, lock_wait=0.3)
+code, reason = run(ok, lock_wait=0.05)
 assert code == 5 and tried == [] and "beta.lock" in reason and time.time() - started < 3, (code, reason)
 threading.Timer(0.4, held[0].close).start()
 waited = gw.lock_waited
@@ -1205,12 +1208,14 @@ python3 -c 'import fcntl, sys, time; h = open(sys.argv[1], "w"); fcntl.flock(h, 
   "$CHATGPT_WEB_DIR/locks/alpha.lock" >"$WORK/held" &
 holder=$!
 until grep -q held "$WORK/held" 2>/dev/null; do sleep 0.1; done
-assert test "$(IMAGE_JOB_ID=j-9 engine_rc generate --prompt x --dest "$WORK/x.png" --account alpha --lock-wait 0.2)" = 5
-assert jq -e '.code == 5 and .sent == false and .job == "j-9" and .phases == {} and .lock_wait_s >= 0.2
+assert test "$(IMAGE_JOB_ID=j-9 engine_rc generate --prompt x --dest "$WORK/x.png" --account alpha --lock-wait 0.05)" = 5
+assert jq -e '.code == 5 and .sent == false and .job == "j-9" and .phases == {} and .lock_wait_s >= 0.05
   and (.reason | startswith("account busy: timed out waiting for alpha.lock"))' "$WORK/engine.out" >/dev/null
 kill "$holder"
 wait "$holder" 2>/dev/null
+fi
 
+if suite_shard_owns 2 login; then
 # --- login --wait, the step `<vendor>b web` holds on (both engines, one gw.cmd_login) -----------------
 # The fake Chrome exits at once and leaves its profile lock with a process that lives 3 s, as a real
 # one handing its window to a running Chrome does: the wait ends only when that process is gone.
@@ -1239,6 +1244,7 @@ for engine in "gemini_web main" "chatgpt_web alpha"; do
     assert test "$(grep -c '^https://' "$CHATGPT_WEB_DIR/profiles/alpha.argv")" -eq 1
   fi
 done
+fi
 
 # --- codex-image --route web ------------------------------------------------------------------------
 FAKE_WEB="$WORK/fake-chatgpt-web"
@@ -1252,8 +1258,7 @@ dest=''
 while [ "$#" -gt 0 ]; do case "$1" in --dest) dest=$2; shift 2 ;; *) shift ;; esac; done
 chat=0b6f1d2e-1111-4222-8333-944455556666
 case "${WEB_MODE:-ok}" in
-  ok) "$REAL_MAGICK" -size 64x48 'xc:#00FF00' -fill blue -draw 'circle 32,24 32,10' "PNG24:$dest" ;;
-  alpha) "$REAL_MAGICK" -size 64x48 xc:none -fill blue -draw 'circle 32,24 32,10' "PNG32:$dest" ;;
+  ok|alpha) cp "$WEB_CALLS.${WEB_MODE:-ok}.png" "$dest" ;;
   limit) printf '{"ok": false, "code": 3, "reason": "ChatGPT image limit on alpha: resets in 2 hours", "account": "alpha"}\n'; exit 3 ;;
   login) printf '{"ok": false, "code": 4, "reason": "no ChatGPT account is signed in; run: codexb web <account>"}\n'; exit 4 ;;
   usage) printf '{"ok": false, "code": 2, "reason": "chat x lives on beta, not alpha"}\n'; exit 2 ;;
@@ -1264,6 +1269,8 @@ esac
 printf '{"ok": true, "account": "alpha", "chat": "%s", "format": "png"}\n' "$chat"
 EOF
 chmod +x "$FAKE_WEB"
+"$REAL_MAGICK" -size 64x48 'xc:#00FF00' -fill blue -draw 'circle 32,24 32,10' "PNG24:$WEB_CALLS.ok.png"
+"$REAL_MAGICK" -size 64x48 xc:none -fill blue -draw 'circle 32,24 32,10' "PNG32:$WEB_CALLS.alpha.png"
 cat >"$WORK/fake-codex" <<'EOF'
 #!/usr/bin/env bash
 printf 'cli\n' >>"$CLI_CALLS"
@@ -1283,7 +1290,9 @@ image_rc() {
     bash "$ROOT/bin/codex-image" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
   printf '%s' "$?"
 }
+CHAT=1c7a2b3d-aaaa-4bbb-8ccc-ddddeeeeffff
 
+if suite_shard_owns 3 codex-image; then
 assert test "$(image_rc --dest "$OUT/a.png" --prompt badge --route nope)" = 2
 assert test ! -e "$WEB_CALLS"
 assert test "$(image_rc --dest "$OUT/a.png" --prompt badge --route web --resume my-thread)" = 2
@@ -1298,7 +1307,6 @@ assert test -s "$CLI_CALLS"
 assert test ! -e "$WEB_CALLS"
 assert jq -se '.[-1] | .tool == "codex-image" and .route == "cli"' "$IMAGE_LEG_LOG" >/dev/null
 
-CHAT=1c7a2b3d-aaaa-4bbb-8ccc-ddddeeeeffff
 assert test "$(image_rc --route web --dest "$OUT/a.png" --prompt 'a round badge' --ref "$WORK/r1.png" \
   --ref "$WORK/r2.png" --resume "$CHAT" --account alpha --size 512x512)" = 0
 assert test ! -e "$CLI_CALLS"
@@ -1448,7 +1456,9 @@ rm -f "$OUT/n.png"
 assert test "$(image_rc --route web --dest "$OUT/n.png" --resume "$CHAT" --remove-bg)" = 1
 assert grep -q 'Remove BG returned no transparency' "$IMAGE_ERR"
 assert test ! -e "$OUT/n.png"
+fi
 
+if suite_shard_owns 4 composite; then
 # Composite: on by default for --region/--point, against the input snapshot; the fake paints a blue
 # circle over x 18..46 of 64 onto green, so the green input shows wherever the mask did not reach.
 WEB_CHAT=0b6f1d2e-1111-4222-8333-944455556666
@@ -1498,5 +1508,6 @@ assert test -s "$CLI_CALLS"
 
 # Every web-only tool in the manifest is one this suite drives and the CLI refuses.
 assert test "$(jq -c '.web_only | keys' "$ROOT/share/image-caps/codex.json")" = '["point","reaspect","region","remove_bg"]'
+fi
 
 echo "PASS: $asserts asserts; one hidden-Chrome core (gemini_web's module, clone app and its locks, off-screen parking, snapshot path, no second copy), the codex roster, image-limit text read as a wall with its end and nothing else, the live session and plan replies, Work mode switched to Chat, new chat vs resume (the older image never taken), the gallery blob read in-page, a stale draft removed and refs uploaded one by one in order before the prompt, limit -> 3 with the chat kept for a resume, signed out -> 4, a profile bound to another login refused unsent with its email masked, rotation least recently started first (a resume never stamps) with walls, busy locks and the codex pool, resume pinned to its owner, and codex-image --route web: dispatch, flags, prompt mapping, the CLI route's output block, exit codes and the image-leg route; one sentence builder words --aspect/--size/--transparent/--region identically on both routes, the aspect= fit line (a miss kept, never cropped), --region web-only through a clamped Markup stroke that must take, re-aspect only through the viewer's Resize (exit 2 with the offered ratios), --point as Comment pins alone (each kept before the next, off the toolbar, no other text), --remove-bg as one Remove BG click with no instruction and delivered only with alpha, composite on by default for --region/--point (opt-out, explicit on either route, never with --remove-bg/--transparent) with lineage through --resume and --ref, every web-only flag refused by the CLI naming --route web, and a signed-out verdict only on 401/403"
