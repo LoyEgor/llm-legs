@@ -3964,6 +3964,90 @@
    "verdict": "cut",
    "zero": "removing the suite saves 2.5 wall-min/day and 1.6 CPU-min/day; loses the revert-class git guard decision coverage",
    "note": "bash payloads, no env hops, three shards, guard skips the heredoc mask without <<; 97 assertions"
+  },
+  {
+   "id": "suite:llm-legs/test_report_frame_guard",
+   "title": "llm-legs/test_report_frame_guard",
+   "audited_at": "2026-10-13T14:05:28+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-report-frame-guard-20261012T235400Z-4fe5",
+   "cpu_run": 1.9,
+   "wall_run": 1.4,
+   "cpu_min_day": 0.17,
+   "wall_min_day": 0.27,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_report_frame_guard.sh": "4c0b1b06bc3d4fdfc1d4c95db4cf0d8b7b2e62ca"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.2 wall-min/day; loses the pin that only share/report_frame.py draws a frame and that the three repositories' producers still reach it",
+   "note": "one xargs grep per repository instead of one grep per file, sources listed once: 9 asserts unchanged, a drawn frame still red, 3.5s to 1.8s and 2.0 to 1.0 CPU-s; ruled out: the tree hash of tests/lib/suite-journal.sh (suite_journal_content) costs about 0.1s a direct exit and is the journal's tree contract (row ec: equal exactly when the tested content is), so it stays"
+  },
+  {
+   "id": "suite:llm-legs/test_codex_fast_mode",
+   "title": "llm-legs/test_codex_fast_mode",
+   "audited_at": "2026-10-13T14:05:30+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-report-frame-guard-20261012T235400Z-4fe5",
+   "cpu_run": 1.5,
+   "wall_run": 1.4,
+   "cpu_min_day": 0.15,
+   "wall_min_day": 0.25,
+   "sources": {
+    "llm-legs/tests/test_codex_fast_mode.py": "2cf0f120ab87b3befdc2d0e4e539fb2395aa2a8f"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.2 wall-min/day; loses the per-account Fast Mode isolation and launch-flag pin of codexb",
+   "note": "fake codex is a sh printf instead of a python3 start, 6 fewer interpreter starts: 2 tests unchanged, an always-on --disable fast_mode mutation still red"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_tag_marks",
+   "title": "llm-legs/test_worker_tag_marks",
+   "audited_at": "2026-10-13T14:05:31+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-report-frame-guard-20261012T235400Z-4fe5",
+   "cpu_run": 0.4,
+   "wall_run": 0.0,
+   "cpu_min_day": 0.16,
+   "wall_min_day": 0.22,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_tag_marks.sh": "e06383503823f3d6c6e073aa14131ce0131fad28"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.2 wall-min/day; loses the fork tag prefix, seed-spend and builtins-only exit pins of worker-tag-hook",
+   "note": "payloads built in bash instead of 14 jq runs, 16 to 20 asserts (the hourly prune is now pinned, red on the old hook); the hook itself spawns no date, stat or sed per tagged call"
+  },
+  {
+   "id": "suite:llm-legs/test_doc_refs",
+   "title": "llm-legs/test_doc_refs",
+   "audited_at": "2026-10-13T14:05:32+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-report-frame-guard-20261012T235400Z-4fe5",
+   "cpu_run": 0.5,
+   "wall_run": 0.4,
+   "cpu_min_day": 0.19,
+   "wall_min_day": 0.39,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_doc_refs.sh": "095b026bc0e7be226164883a2252e5ed1adae06f"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.2 wall-min/day; loses the dead-backticked-path check over docs, CLAUDE.md and share/*.md",
+   "note": "kept: 2 python runs, 0.3s of git ls-files across 18 sibling repos; a parallel Popen probe saved nothing measurable, so share/doc_refs.py stays as is"
+  },
+  {
+   "id": "suite:llm-legs/test_image_matte",
+   "title": "llm-legs/test_image_matte",
+   "audited_at": "2026-10-13T14:05:33+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-report-frame-guard-20261012T235400Z-4fe5",
+   "cpu_run": 2.7,
+   "wall_run": 1.7,
+   "cpu_min_day": 0.21,
+   "wall_min_day": 0.29,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_image_matte.sh": "98b135282b9ee7566fbc82d59736f5e5d0c4611d"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.2 wall-min/day; loses the Remove BG matte pin (input pixels inside the subject, alpha, unregistered skip, exit 1, explicit --composite only)",
+   "note": "reads folded into one magick per image and a cutout built in one call, 28 asserts unchanged, ~18 to ~11 magick launches; replacing rgb=toned in share/image_matte.py is still red; ruled out: lazy cv2/numpy imports in share/image_matte.py save one import only on the missing-input path no production call takes, and its except clause needs cv2.error"
   }
  ]
 }
