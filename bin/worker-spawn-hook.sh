@@ -41,17 +41,10 @@ esac
 subagent=${fields[2]-}
 description=${fields[3]-}
 prompt=${fields[4]-}
-session_account() {
-  local acct=${CLAUDE_LIMITS_ACCOUNT:-}
-  if [ -z "$acct" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
-    acct=$(basename "$CLAUDE_CONFIG_DIR")
-  fi
-  printf '%s' "${acct:-main}"
-}
-model_short() { # model id
-  local model=${1#claude-}
-  printf '%s' "${model%%-*}"
-}
+account=${CLAUDE_LIMITS_ACCOUNT:-}
+if [ -z "$account" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
+  account=$(basename "$CLAUDE_CONFIG_DIR")
+fi
 model=${fields[5]-}
 if [ -z "$model" ]; then
   transcript=${fields[6]-}
@@ -59,8 +52,8 @@ if [ -z "$model" ]; then
     jq -rR 'fromjson? | select(type == "object" and .type == "assistant") | .message | objects | .model // empty' 2>/dev/null |
     tail -n1)
 fi
-model=$(model_short "$model")
-prefix="fork · ${model:-inherit} · $(session_account)"
+model=${model#claude-} model=${model%%-*}
+prefix="fork · ${model:-inherit} · ${account:-main}"
 
 title=$description
 [[ $title =~ ^[A-Za-z0-9_.?-]+(\ [a-z]+)?(\ ·\ [A-Za-z0-9_.?-]+){1,3}(:\ |\ —\ ) ]] && title=${title#"${BASH_REMATCH[0]}"}
@@ -78,7 +71,8 @@ if [ -d "$pending_dir" ] || mkdir -p "$pending_dir" 2>/dev/null; then
   umask 077
   tmp_pending="$pending_dir/.pending-$subagent.tmp.$$"
   first_line=${prompt%%$'\n'*}
-  spawn_hash=$(printf '%s\n' "$first_line" | if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi 2>/dev/null)
+  if command -v sha256sum >/dev/null; then spawn_hash=$(sha256sum <<<"$first_line" 2>/dev/null)
+  else spawn_hash=$(shasum -a 256 <<<"$first_line" 2>/dev/null); fi
   { printf '%s\n' "$prefix"; printf 'spawn=%s\n' "${spawn_hash:0:16}"; } > "$tmp_pending" 2>/dev/null &&
     mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null
   [ ! -e "$tmp_pending" ] || rm -f "$tmp_pending" 2>/dev/null
@@ -87,12 +81,12 @@ fi
 updated="$prefix: $title"
 [ "$updated" != "$description" ] || exit 0
 
-printf '%s' "$input" | jq -c --arg description "$updated" '
+jq -c --arg description "$updated" '
   {hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
     updatedInput: (.tool_input | .description = $description)
   }}
-' 2>/dev/null
+' <<<"$input" 2>/dev/null
 exit 0
 exit; }
