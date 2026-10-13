@@ -2532,7 +2532,7 @@ EOF
   assert test ! -e "$net_log"
 
   rm -f "$net_log"
-  PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" status --plain --live >/dev/null 2>&1 || true
+  PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" CLAUDEB_REFRESH_CONVERGE_S=0 bash "$SCRIPT" status --plain --live >/dev/null 2>&1 || true
   assert test -s "$net_log"
 ) || exit 1
 
