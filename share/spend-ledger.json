@@ -416,6 +416,22 @@
    },
    "verdict": "kept",
    "note": "7d to 10-11: 53 blocks in 52 worker sessions (one repeat), each followed by a different call, ~1.5k each, priced mostly as the denied call's own output (tokenmap BLOCK_VALUE), the ~100-token reason ~7%; 9 were the --ours/--theirs conflict class cd8d51e6 fixed 10-10 (none recorded since 08:28Z), 2 harmless stash create/-h forms fixed in 91093929 (replay of 779 worker git commands: only those differ); the other 42 are its purpose (own-vs-foreign WIP is undecidable here); the one source lever, a TEST LOOP clause naming the cp + git show restore for mutation checks (~25 blocks), adds ~20 tokens to every brief (611 relays/7d) re-read each turn, more than it saves"
+  },
+  {
+   "id": "suite:review-bench/test_limits_registry",
+   "title": "review-bench/test_limits_registry",
+   "audited_at": "2026-10-13T05:28:01+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-limits-registry-20261012T235427Z-46e9",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "review-bench/tests/test_limits_registry.sh": "e528e1e7c2cbee8a7047707b9d6172f28bf76dec"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.1 wall-s a run (0.0 wall-min/day); loses limits.json held to the code both ways (unregistered or unused names, call and registry where disagreeing, empty fields)",
+   "note": "one python3 spawn, no sleep, nothing to cut; tests lens: every check red under its mutation, but tests/affected never selected it for the 10 files holding limit_hit calls, fixed by a self-checked callers list (review-bench@6ec2377); not fixed, missing checks only: call unit vs registry unit, sorted registry, a where drifted by a line inserted above its constant (llm-legs resolves file:ANCHOR at hit time, review-bench spells raw lines)"
   }
  ]
 }
