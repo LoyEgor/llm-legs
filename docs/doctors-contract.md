@@ -313,7 +313,7 @@ Harness doctor (added 2026-09-29 by its owner chat):
 - Proof of a fix is the `fact` of a `fixed-pending` problem: `fixed · E events since · M matched`, or
   `unproven · …` while E < 20. E is the row's rules' exposure (quiet verdicts included) over
   non-overlapping windows that started after the fix; M counts the runs that judged a regression. The
-  rate proof and Speed's rules: `docs/doctor-fix.md`, Proof.
+  rate proof and Speed's rules: `bin/harness-doctor` (`speed_proof`, `PROOF_MIN_PREDICTED`).
 - `count` is the number of events the rule judged bad in its window: calls, hook runs, batches,
   cuts, test runs, journal lines, load samples over the limit (the hour's), the latest store sample,
   the stuck spool's files, a slow collector run. It is `null` where the rule judges a median over

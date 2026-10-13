@@ -213,7 +213,7 @@ JQ_PROBLEM_NORM='def norm_problem: (.fact // "") as $f
       or (.proof | if type == "object" then .verdict else null end) == "proven") then "proved"
     elif .state == "fixed-pending" or .rule == "fix-proof" then "pending" else .state end;'
 
-# proved: a fix the doctor proved (harness `fixed · …` per docs/doctor-fix.md's Proof, the System doctor's
+# proved: a fix the doctor proved (harness `fixed · …`, the System doctor's
 # `proof.verdict` proven; the LLM doctor drops a proved row instead); pending: a fix awaiting its commit or its proof.
 doctor_snapshot() { # -> doctor_read's object, each doctor's value [problem count, states, problems]; JQ_SNAPSHOT splits it
   doctor_read "$JQ_PROBLEM_NORM"' [(try (.problem_count // null) catch null),

@@ -138,7 +138,7 @@ Egor (2026-10-13): fixing everything is a utopia; night 3131's launch burst wall
   ones in `previous_sessions`;
 - `doctors_before` and `doctors_after` (problem counts), and `doctor_states_before`/`doctor_states_after`:
   per doctor the problems of its `latest.json` by ledger state, `proved` (a harness fix proven,
-  `fixed · …` per `docs/doctor-fix.md` Proof), `pending` (`fixed-pending` or rule `fix-proof`), `open`,
+  `fixed · …`), `pending` (`fixed-pending` or rule `fix-proof`), `open`,
   `new`, `regressed`. `report` prints one line per doctor,
   `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
 - `jobs[]`, each with:

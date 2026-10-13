@@ -7,14 +7,9 @@ autonomously and go deep. Updater release events follow
 
 ## 0. Entry
 
-- Run `bin/doctor-fix show <run id>` (the brief carries it). Per problem: the snapshot, its
-  ledger row, earlier runs' decisions, the component with its files and rule line, each file's first
-  and last 5 commits, and the handoffs, invariant rows and memory files naming it. These ids are your
-  scope; a problem that appeared after launch goes into the report for the next run.
-- Its `known, quiet` rows are open ledger rows the doctor's window did not see: check in the code
-  whether each cause still stands, then fix it or write in the row's `note` why not. They need no
-  decision line.
-- Read this common part and your own doctor's section below; skip the other doctors' sections.
+- Run `bin/doctor-fix show <run id>` (the brief carries it). Its ids are your scope; a problem that
+  appeared after launch goes into the report for the next run.
+- Its `known, quiet` rows need no decision line.
 
 ## 1. Purpose before fixes
 
@@ -43,7 +38,7 @@ recorded `component: unverified`, shown by `doctor-fix show` and `night-run repo
 | `ruled-out` | not a bug of ours | the reason in the row's `note`; `close` turns a harness row `ruled-out` until an occurrence after the ruling reopens it |
 | `weather` | vendor-side or external | an `open` row narrowed to this cause, the reason in its `note` |
 | `blind-spot` | cannot be measured yet | a ledger `blind_spots` row with `would_catch_if` |
-| `handoff` | research cannot settle it here, or it would loosen the judge; to Egor only as a trade (`Cost:`/`Loss:`/`Recommendation:` lines); never test speed or `menu_build` (`close` refuses it) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line and the row's `handoff` pointing at it. It is addressed to the next night, whose `night-run carry` makes it a job; a chat is its addressee only while live right now |
+| `handoff` | research cannot settle it here, or it would loosen the judge; to Egor only as a trade (`Cost:`/`Loss:`/`Recommendation:` lines) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line and the row's `handoff` pointing at it. It is addressed to the next night, whose `night-run carry` makes it a job; a chat is its addressee only while live right now |
 
 Clear bugs are fixed, never handed off. A fixer never writes a `not-a-bug` or `weather` row: the owner
 dismisses.
@@ -69,36 +64,23 @@ job (your section says what it counts); never wait for it.
   there and in the `ADD-DIR:` worktrees at its top, one per other repository the components name (every
   sweep repository for a run holding test speed or a log-audit reading), on the same branch and base. A
   change in any other repository is a handoff. Never write a main checkout: hooks and other chats read it.
-- Commit on your branch (one long line). Never push, review or merge: the orchestrator checks the branch,
-  has you fix findings and lands it.
-- Never ask Egor anything and never stop on a question: decide, or hand off (§2).
-- Markdown is net zero: `close` refuses a worktree whose `*.md` bytes (committed, untracked, deleted) grew
-  since the base; cut stale lines (`~/.claude/docs/context-file-hygiene.md`).
-- Tests use fixtures only. Never point one at `~/.claude-profiles/.claudeb`, and never mutate the
-  live Hammerspoon singleton.
+- Commits are one long line. Never review or merge: the orchestrator checks the branch, has you fix
+  findings and lands it.
+- Never touch a model, effort or thinking knob: `close` refuses any such added or removed line
+  (`docs/doctors-contract.md` §4).
 - A hook or gate change gets an adversarial edge-case critique (missed catches, false catches)
   before it counts as done. A worker's "done" is a claim: diff every test it changed against HEAD.
 - Comments near zero. Never generate an image.
-- No deadline ends a run. A worker the `worker-run` watchdog stopped for no progress is hung: the
-  orchestrator abandons its run, which closes no more, and its branch stays unlanded.
 
 ## 5. Close
 
-1. Close, from the worktree, reruns `bin/<doctor>-doctor --json` there itself into
-   `<runs>/<id>.d/latest.json` (live journals, your branch's code and ledger, nothing shared written),
-   never the shared `latest.json`; the judge is compared with your branch's base, so a limit or
-   dismissal you changed shows.
-2. Write a decisions file with one line per problem id of the run:
+1. Write a decisions file with one line per problem id of the run:
    `id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence`. `evidence` is a
    test name, a `file:line`, a document fact or a handoff path. If `judge` moved since launch, add
    `judge<TAB>changed<TAB>purpose<TAB>why`, the purpose a file of the judge (the doctor or its
    ledger) or a commit that changed one.
-3. Run `bin/doctor-fix close <run id> --decisions <file> <one-line note>`. It refuses until every
-   id is decided, every citation resolves and touches its component, and every `fixed` id reads
-   `fixed-pending` or is gone in the doctor's document, which must not read `status: error`; it
-   refuses an abandoned or failed run, or one whose `ROUND:` has open findings. A launch on a `status: error` document snapshots one
-   problem, `collector:error`, whose component is the doctor itself.
-4. Rewrite the `Status:` line of every handoff you settled.
+2. Run the brief's close command; it prints each refusal.
+3. Rewrite the `Status:` line of every handoff you settled.
 
 ## 6. Report
 
@@ -143,40 +125,20 @@ pattern. Anything wider is a ledger fault: the row judges nothing and shows as `
   `HARNESS_DOCTOR_NOW=<epoch>`. `bash tests/test_harness_doctor.sh` replays the committed fixture
   `tests/fixtures/harness-calibration/` and pins its problem ids.
 
-Proof (the doctor's, later): `fixed · E events since · 0 matched` with E ≥ 20 (`PROOF_MIN_EXPOSURE`), E the
-events the check examined for the row's idents (a check with no hit leaves a quiet verdict) summed over
-non-overlapping windows after the fix's `at`; else `fixed · 0 matched in D d, P predicted at R/d before the fix`
-with P ≥ 3 (`PROOF_MIN_PREDICTED`), R the last red count per window seen before the fix; with neither,
-`unproven · no exposure measured, no rate before the fix`. A quiet row alone proves nothing. Speed's rules
-(`regression`, `opportunity`) read Speed's proof: `back under its limit in Speed's last 24 h`
-(48 h for `regression`), `output-equivalent by its replay`. Record a `fixes[]` entry with
-`in: null` and status `fixed-pending`; the doctor fills `in` once every listed file is committed.
-Never edit `in` by hand.
-
-### Test speed and menu delays are yours
-
-`test_long_pole`, `test_daily_cost`, `test_slow`, `suites_at_once`, `test_hang` and `menu_build` are fixed by the
-run that holds them, never handed off: `close` refuses a `handoff` line for them. Test speed: split a
-long pole into independent suite files `tests/run-all` runs in parallel, cut redundant cases, make
-timing asserts load-robust, cache fixtures, in any sweep repository (a run holding one gets a
-worktree in each); every assert keeps its coverage. A hung suite (`test_hang`) is the same: fix why it
-blocks (stdin from /dev/null, a timeout on a waiting child, a tty probe) until the doctor reads no
-`test_hang` row for it. Menu delays: the packet names the menu's build
-files (`hammerspoon/automation_menu.lua`, `llm-legs/hammerspoon/llm-limits.lua`).
+Record a `fixes[]` entry with `in: null` and status `fixed-pending`; the doctor fills `in` once every
+listed file is committed. Never edit `in` by hand.
 
 ### Speed: same intelligence, less waiting
 
 A `speed-<lever>` run holds a kind's batch of one context, best first, and closes on its first decided
 row, the rest staying open; each row keeps its own decision line and proof, and carries its lever, saving and proof in `opportunity` and
-`docs/speed-doctor-design.md` §5 bounds what may change. Never touch a model, effort or thinking knob: `close` refuses any such added or
-removed line and names it (`docs/doctors-contract.md` §4).
+`docs/speed-doctor-design.md` §5 bounds what may change.
 
 ### Spend: same result, fewer tokens
 
 A `speed-spend-<component>` run audits one component of the Spend block; its brief carries the five steps and
 `bin/speed-doctor --spend-audit` records the row in `share/spend-ledger.json` with the share and its Harness cells'
-prices at audit; it is proven once the share or that price in `harness_index.cells` falls. Model, effort and thinking are
-never the lever.
+prices at audit; it is proven once the share or that price in `harness_index.cells` falls.
 
 ### Suite and CPU audits: same output, less CPU
 
@@ -227,12 +189,11 @@ cross-repository brief — triage it with a model or detail row, never by dismis
 
 `machinery:closure_pending` rounds of the sweep repositories (`~/.claude/sweep-repos`) are yours to
 settle, not the owner's or Egor's; the class row itself stays `open`. A round of any other project is
-never touched, read or listed: its project is Egor's (2026-10-01). `review-bench doctor --json` lists
+never touched, read or listed: its project is Egor's. `review-bench doctor --json` lists
 them (`id`, `repo`, `session`); `review-bench fix <id> --print` prints a round's unsettled findings. Per round:
 
 - Skip it while its chat is live (a `~/.claude/sessions/*.json` with its `sessionId` whose `pid` is alive)
-  and the round is under 24 h old; an older one is yours even in a live chat, which has moved on (a
-  chat held its round 4 days, 2026-10-12).
+  and the round is under 24 h old; an older one is yours even in a live chat, which has moved on.
 - Judge each finding against the code in `repo` now, read-only:
   - resolved → `review-bench record <id> --verdicts <file>` with a row
     `{"kind":"fixer","finding":<index>,"outcome":"fixed"}`;
@@ -261,9 +222,7 @@ the reason (`^Upload files opened no file chooser`).
 - Now, writing nothing: `bin/llm-doctor --json | jq '.problems'`; at a given time prefix
   `LLM_DOCTOR_NOW=<epoch>`; from fixtures `bash tests/test_llm_doctor.sh`.
 
-Proof (the doctor's, later): `fixed Nd · E since · 0 matched` with E ≥ 10 (`PROOF_MIN`) final legs
-of the row's block (and model) that STARTED after the last fix's `at`, or after its `in` reached
-main when that came later. Record a `fixes[]` entry
+Record a `fixes[]` entry
 `{at, by, files, in: null, regressed_at: null}` (`files` as `repo/path`, one repository per entry)
 and status `fixed-pending`; the doctor fills `in` once git shows every file committed after `at`.
 Never edit `in` by hand. A regressed fix keeps its entry (set `regressed_at`); the re-fix is a new one.
@@ -285,8 +244,6 @@ snapshot hands you, top-K by judged value (`docs/doctors-contract.md` §4): dead
 hooks and always-loaded text, duplicate mechanisms, promises no code keeps (`kind: broken` with `fix: code | claim`, or
 `untested`), each with the judge's `plan` and `proofs`. A promise fix lands a test red without it, or rewrites the claim
 to what the code does and says why the code stays; an overclaim fix makes the mechanism print a receipt.
-A `code-doctor --repo` document of a repository outside sweep-repos is report-only (`launch code`
-refuses it, its snapshot is empty, `check` fails): its problems are for Egor to read.
 
 ### Read first, in this order
 1. Each problem's `plan`, `proofs` and units in `latest.json`, and the judgment in
@@ -300,15 +257,10 @@ refuses it, its snapshot is empty, `check` fails): its problems are for Egor to 
   point, no rollup hits and a quoted reason. Run the suites of every repository you touched.
   The check reads the run's own snapshot, never the live document; a run whose worktree is gone fails it.
 - A unit that changed since the base is not yours: its verdict went back to the judge.
-- After a landed cleanup, `bin/code-doctor record-fix <cause> --by <run id> --files … --lines-removed N`
-  (plus `--mechanism`, `--canonical`, `--replaced` when one module now owns the job), so the doctor
-  reads it `fixed-pending`, counts the yield, and review-bench's fit lens learns the canonical module.
 
 ### Never
-- Edit through a symlink into another repository, or a registration outside the repositories (the
-  night judge settles dangling PATH links and LaunchAgents; you edit an in-repo settings file).
-- Delete both copies' old paths of a cross-repository merge in one night: the shared module and the
-  callers land first (ledger row `merges: [{stage: "migrated", night}]`), the old copy on a later night.
+- Edit a registration outside the repositories (the night judge settles dangling PATH links and
+  LaunchAgents; you edit an in-repo settings file).
 - Loosen `LIMITS`, the ledger's protections or a verdict: that is a handoff to the owner.
 
 ## System doctor
@@ -318,11 +270,5 @@ top cause is an own script of the sweep repositories; Apple and third-party caus
 
 - Read each problem's `fact` and `cause` in `~/.cache/system-doctor/latest.json`, its `causes`
   (births and CPU by script) and the packet's levers. Find what makes that script spawn or burn CPU.
-- Output-equivalent changes only; never touch a model, effort or thinking knob (close refuses one).
-- Record a fix as a ledger row `{id, title, status: "fixed-pending", match: {rule, key, cause},
-  fixes: [{at, by, files, in: null, regressed_at: null}]}`. Close runs `bin/system-doctor check
-  --record`: a `fixed` births/CPU cause needs that row and 30 sightings in the 7 days before.
-- Proof is the doctor's (design, Proof): `bin/system-doctor check <cause>`. Not proven stays open
-  with its numbers for the next run.
 - The judge (`LIMITS`, `PROOF`, the ledger's dismissals, `tests/test_system_doctor.sh` pins) is not
   yours to loosen: a handoff to the owner.
