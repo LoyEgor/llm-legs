@@ -2740,6 +2740,88 @@
    "verdict": "cut",
    "zero": "removal saves ~0.8 wall-s a run; loses the report renderer guard",
    "note": "stdlib python starts with -S, refused-value case reads loop's last run; 15 asserts kept"
+  },
+  {
+   "id": "suite:hammerspoon/test_claude_chat_switch",
+   "title": "hammerspoon/test_claude_chat_switch",
+   "audited_at": "2026-10-13T11:29:54+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-claude-chat-switch-20261012T235227Z-08cf",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/claude_chat_switch_harness.lua": "021534574d2e62097eb1b112f651596033021cd4",
+    "hammerspoon/tests/test_claude_chat_switch.sh": "19f998ffaa92fa224d407a2fa996c0b6c7a0bbed"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.6 wall-s a run (one locked hs -c, no sleeps, 2 execs); loses the only pins of the wait_pid wrapper wait, its budget starting at the inner chat's death, bare-shell no-cd and the missing-launcher refusal",
+   "note": "21 checks each red under its own claude_chat_switch.lua mutation (wait_pid polled, wrapperWaited vs waited, cd on bare_shell, launcher guard); module loaded in its own env with _G stubbed, so the live Hammerspoon gains nothing; wall is the single hs IPC"
+  },
+  {
+   "id": "suite:hammerspoon/test_claude_keys_bin",
+   "title": "hammerspoon/test_claude_keys_bin",
+   "audited_at": "2026-10-13T11:29:55+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-claude-chat-switch-20261012T235227Z-08cf",
+   "cpu_run": 0.3,
+   "wall_run": 1.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/test_claude_keys_bin.sh": "f6441fcc00fed68cf92e95f754b000d9deb8e188"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 1.7 wall-s a run (about 38 bash spawns: claude-keys/claude-latency plus a fake hs each, no sleeps); loses the exit-code contract of both wrappers: unknown subcommand 2 with no hs call, '!' marker nonzero per subcommand, unreachable/Lua-error nonzero",
+   "note": "fake hs on PATH, no live Hammerspoon; each per-subcommand case pins its own branch's '!module not loaded'; the canned start-failed case only re-proves the generic '!' path (P3, the snippet greps carry the on read-back), kept: cutting it saves ~0.1 s"
+  },
+  {
+   "id": "suite:hammerspoon/test_clipboard_history",
+   "title": "hammerspoon/test_clipboard_history",
+   "audited_at": "2026-10-13T11:29:56+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-claude-chat-switch-20261012T235227Z-08cf",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/test_clipboard_history.sh": "7a7167544f6d9e6947b3f736b312f19d44ed1b6d"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.6 wall-s a run (one locked hs -c); loses every pin of M.place/M.fit: per-screen frame memory, shrink-and-center onto a smaller screen, return of the desktop frame",
+   "note": "10 pure-function checks on clipboard_history.place, each red under a place/fit mutation; loadfile without start(), no hs calls, no live state; wall is the hs IPC"
+  },
+  {
+   "id": "suite:hammerspoon/test_compact_boundary",
+   "title": "hammerspoon/test_compact_boundary",
+   "audited_at": "2026-10-13T11:29:56+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-claude-chat-switch-20261012T235227Z-08cf",
+   "cpu_run": 0.0,
+   "wall_run": 0.5,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/claude_compact_boundary_harness.lua": "863234f0d4a55628de06d923419710c0971ca2f2",
+    "hammerspoon/tests/test_compact_boundary.sh": "6ac02017d55c2b3eb7c528a0c964da9a7d39f4dc"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.55 wall-s a run (one locked hs -c, virtual clock, no sleeps); loses the boundary matcher's 7 transcript shapes and the watch/give-up/pre-typed disarm/resume checks that pin the 2026-08-10 incident",
+   "note": "wall unchanged (one hs IPC); tests lens P1 leak fixed in hammerspoon@f701214: the matcher was a plain dofile in the live Hammerspoon, arming the real 15 s startup reconcile on the live pending file and leaving _G.CLAUDE_COMPACT_ROOT; now FakeHs.loadCompact, PASS 7/41 unchanged, trigger mutation red; dead COMPACT_NOTIFY export cut"
+  },
+  {
+   "id": "suite:hammerspoon/test_config_reload",
+   "title": "hammerspoon/test_config_reload",
+   "audited_at": "2026-10-13T11:29:57+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-claude-chat-switch-20261012T235227Z-08cf",
+   "cpu_run": 0.0,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "hammerspoon/tests/test_config_reload.sh": "9facb6e38930cb10b1bd68a21665491f28830f4c"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.6 wall-s a run (one locked hs -c); loses the quiet-period debounce, compile hold, tests/.claude exclusions, stop() and the init.lua wiring pins",
+   "note": "18 checks on injected opts, each red under its config_reload.lua mutation; the >= load-second tie has no check (a missing test, not a lens finding); no live state touched"
   }
  ]
 }
