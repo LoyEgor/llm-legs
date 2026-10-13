@@ -5092,6 +5092,93 @@
    "verdict": "cut",
    "zero": "removing it saves 7.6 wall-min/day; loses the shard fan-out, one-verdict, -j sharing and layout pins",
    "note": "fixture sleeps (1 s, 3 s) now only in the five runs that check overlap or wall (~30 s of ~37 a run were sleeps in runs checking neither); shard-layout sweep no longer forks a subshell per test file; 77 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_night_report_trial",
+   "title": "llm-legs/test_night_report_trial",
+   "audited_at": "2026-10-13T13:48:05+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
+   "cpu_run": 1.0,
+   "wall_run": 0.5,
+   "cpu_min_day": 0.06,
+   "wall_min_day": 0.07,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/test_night_report_trial.sh": "578dc85fa5aeda30c84207e59f45465cfa8d0b63"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.5 wall-s a run; loses the sonnet trial's report rows, revert and blame checks",
+   "note": "10 git hash-object forks replaced by in-process sha1 blob ids; 11 asserts unchanged, revert-check mutation red"
+  },
+  {
+   "id": "suite:llm-legs/test_self_edit_guard",
+   "title": "llm-legs/test_self_edit_guard",
+   "audited_at": "2026-10-13T13:48:06+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
+   "cpu_run": 0.4,
+   "wall_run": 0.9,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.06,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/test_self_edit_guard.sh": "ffd38b0422198c16de3ad1bd2994f6f240009ef6"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.9 wall-s a run; loses the mid-run in-place edit guard of bin/ and share/ scripts (2026-10-06 land EOF incident)",
+   "note": "sleep-0.05 ready/go polls replaced by a FIFO handshake with a 60 s bound; 26 asserts unchanged, CLOSE='}' mutation red"
+  },
+  {
+   "id": "suite:llm-legs/test_agent_launchers_live",
+   "title": "llm-legs/test_agent_launchers_live",
+   "audited_at": "2026-10-13T13:48:07+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
+   "cpu_run": 0.7,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.04,
+   "wall_min_day": 0.06,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/test_agent_launchers_live.sh": "16eb34bc909bd30a48e4b23a3d9412cff32cdb32"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.6 wall-s a run; loses the live check that every launcher an agent names resolves in ~/.local/bin",
+   "note": "no fork per bin name or link: agent files read once, names matched in-process as literal words, links from one find -lname; CPU 0.70->0.23 s, fixture output equal except a BRE '.' false match now gone"
+  },
+  {
+   "id": "suite:llm-legs/test_limit_hits",
+   "title": "llm-legs/test_limit_hits",
+   "audited_at": "2026-10-13T13:48:07+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
+   "cpu_run": 1.0,
+   "wall_run": 0.8,
+   "cpu_min_day": 0.1,
+   "wall_min_day": 0.18,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/test_limit_hits.sh": "68498986d43a2458819cec01737e66904989c944"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.6 wall-s a run; loses the limit-hit writers, expired() and the Harness Limits section rules",
+   "note": "expired() probe timeout 0.2->0.02 s, three Limits checks share one interpreter loading bin/harness-doctor once; 13 asserts, expired() exit status now checked; mutations red"
+  },
+  {
+   "id": "suite:llm-legs/test_presence",
+   "title": "llm-legs/test_presence",
+   "audited_at": "2026-10-13T13:48:08+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.04,
+   "sources": {
+    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
+    "llm-legs/tests/lib/suite-journal.sh": "ae5590ff438450c4ca6393de2011802e91652568",
+    "llm-legs/tests/presence_harness.lua": "dba7446a860d708921ca50c57561e79cf9b2c370",
+    "llm-legs/tests/test_presence.sh": "cc29b8634b4ae165df215b060fb2730e12695dc5"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.1 wall-s a run; loses presence.lua line shape, no-window-API, write-failure and tick-cost checks",
+   "note": "one bounded hs call over a stubbed harness, 15 checks, 0.1 wall-s: nothing cheaper without losing the real-Hammerspoon run"
   }
  ]
 }
