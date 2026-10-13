@@ -8971,7 +8971,9 @@
           "at": "2026-10-13T14:30:00+03:00",
           "by": "night fixer harness-speed-test-health-idle-llm-legs-test-gemini-listen-20261012T235441Z-4d3f",
           "files": [
-            "llm-legs/bin/gemini-listen"
+            "llm-legs/bin/gemini-listen",
+            "llm-legs/tests/test_gemini_listen.sh",
+            "llm-legs/tests/fixtures/fake-geminib-listen.sh"
           ],
           "in": null,
           "regressed_at": null,
@@ -8985,7 +8987,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-gemini-listen-20261012T235441Z-4d3f",
-      "note": "No sleep or poll anywhere in the suite or bin/gemini-listen: the 15 s idle is 241 ffmpeg/ffprobe spawns each queued behind load ~100 (CPU 8 s). Fixed the product's own redundancy: an audio file got duration_of, stream_of a and a rate/channels probe, now one ffprobe (audio_probe). Remaining spawns are ffmpeg beep/convert and the fixture's silencedetect, one per call, each a check. Measuring standalone: a suite run outside run-all waits for a run-suites slot first (suite-journal.sh slot_wait); export RUN_SUITES_SLOT=x to time the body alone.",
+      "note": "No sleep or poll anywhere in the suite or bin/gemini-listen: the 15 s idle is 241 ffmpeg/ffprobe spawns each queued behind load ~100 (CPU 8 s). Fixed the product's own redundancy: an audio file got duration_of, stream_of a and a rate/channels probe, now one ffprobe (audio_probe). Remaining spawns are ffmpeg beep/convert and the fixture's silencedetect, one per call, each a check. Measuring standalone: a suite run outside run-all waits for a run-suites slot first (suite-journal.sh slot_wait); export RUN_SUITES_SLOT=x to time the body alone. Also fixed a latent race the suite hit once under load (assert 127, rc 141): first_line was `printf answer | awk 'NF { print; exit }'` under pipefail, so a multi-line answer let awk quit while printf still wrote and SIGPIPE killed the run; now awk reads to the end. Test: FAKE_GEMINIB_MODE=big (300 KB answer) rc 141 on the old line, rc 0 now.",
       "handoff": null
     },
     {

@@ -164,6 +164,8 @@ assert test "$(grep -c '^PWD=' "$FAKE_GEMINIB_CALLS")" -eq 2
 : >"$FAKE_GEMINIB_CALLS"
 FAKE_GEMINIB_MODE=text-once expect_rc 0 'q' "$M/tone.wav" --account explicit
 assert grep -qx 'calls=2' "$WORK/err"
+FAKE_GEMINIB_MODE=big expect_rc 0 'q' "$M/tone.wav" --account explicit
+assert grep -qx 'The pitch steps up at 3 s.' "$WORK/stdout"
 FAKE_GEMINIB_MODE=no-record expect_rc 1 'q' "$M/still.png" --account explicit
 assert grep -q 'agy kept no record of session listen-session' "$WORK/err"
 FAKE_GEMINIB_MODE=no-audio expect_rc 1 'q' "$M/tone.wav" --account explicit --model flash

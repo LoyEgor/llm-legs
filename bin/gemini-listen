@@ -342,7 +342,7 @@ while :; do
   observed_model=$(jq -r '[.[] | select(.event == "init") | .init.model // empty] | last // empty' "$events")
   answer=$(jq -r '[.[] | select(.event == "result") | .result.response // empty] | last // ""' "$events")
   jq -r '.[] | (.result.error // empty), (.step_update.tool_info.error // empty) | .. | strings' "$events" >"$tmp_dir/errors"
-  first_line=$(printf '%s\n' "$answer" | awk 'NF { print; exit }' | tr -d '\r*`')
+  first_line=$(printf '%s\n' "$answer" | awk 'NF && !done { print; done = 1 }' | tr -d '\r*`')
   last_line=$(printf '%s\n' "$answer" | awk 'NF { line = $0 } END { print line }' | tr -d '\r')
 
   # Stream events echo the prompt, so of stdout only the lines that are not events count.

@@ -77,6 +77,7 @@ case "$mode" in
   empty) response='' ;;
   *) response=$(printf '%sHeard a tone in [file1](file://%s).\nThe pitch steps up at 3 s.' "$beeps" "${paths[0]}") ;;
 esac
+[ "$mode" != big ] || response+=$'\n'$(head -c 300000 /dev/zero | tr '\0' x | fold -w 80)
 # Prefers the caller's file FAKE_GEMINIB_WINNER wherever it stands, else always the first one.
 if grep -q 'WINNER: first' "$FAKE_GEMINIB_PROMPT"; then
   verdict=first
