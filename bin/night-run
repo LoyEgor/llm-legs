@@ -75,13 +75,14 @@ start opens the orchestrator chat: --cleanup lands finished night branches and r
 Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
 report opens with share/time_budget.py's comparison table: this night and the two previous finished
   nights with jobs, a column each, oldest left, facts only, – where a value has no source, a blank line
-  after it; then share/night_spend.py's header: duration, jobs, the orchestrator's worker runs and
+  after it, then its per-direction (P1, P2, closed, fixer spend, nights to plateau) and improvement-pool
+  blocks; then share/night_spend.py's header: duration, jobs, the orchestrator's worker runs and
   hours, its review rounds, token spend of fixers, reviews and orchestrator in Opus-equivalent tokens
   by model, priced by token-map's pricing.py (TOKENMAP_ROOT), against the previous finished night;
   then share/night_churn.py's churn, the jobs, and last share/time_budget.py's ledger (worker wall split
   into model, slot queue and own tests; lines by jobs and outside them; problems; spend and what was
-  deferred) with the trend of the last 7 nights; --post sends the comparison table to the chat as one
-  report-bus block instead of printing it, so the final message has no table to retype
+  deferred) with the trend of the last 7 nights; --post sends the three blocks to the chat as report-bus
+  blocks instead of printing them, so the final message has no table to retype
 survey: the sweep's opening report, default the sweep repositories, each repository's executable
   bin/night-snapshot run first (it copies into the tree what lives outside it, for the night's commit; a
   failure is named and the survey goes on): per repository `<name> · debt N
@@ -1313,11 +1314,11 @@ frame_rows() { # word -> lines `<label> · <segment> · …` on stdin as one rep
       | (capture("^(?<i> *)(?<l>.*)$") | [.i + (.l | split(" · ")[0]), (.l | split(" · ")[1:] | pack)])]}'
 }
 
-table_block() { # time_budget.py table -> its block document, the cells right-aligned in compact columns
-  jq -Rsc '[split("\n")[] | select(. != "") | [splits(" {3,}")]] as $raw | ($raw[0] | length) as $n
+table_block() { # time_budget.py table|directions|pool [word] -> its block document, the cells right-aligned in compact columns
+  jq -Rsc --arg word "${2:-}" '[split("\n")[] | select(. != "") | [splits(" {3,}")]] as $raw | ($raw[0] | length) as $n
     | [$raw[] | .[0:1] + [range($n - length) | ""] + .[1:]] as $t
     | [range(1; $t[0] | length) as $c | [$t[][$c] // "" | length] | max] as $w
-    | {word: "night · \($t[0][-1])", rows: [$t[] | [.[0], ([.[1:] | to_entries[]
+    | {word: (if $word == "" then "night · \($t[0][-1])" else $word end), rows: [$t[] | [.[0], ([.[1:] | to_entries[]
         | ($w[.key] - (.value | length)) as $pad | (if $pad > 0 then " " * $pad else "" end) + .value] | join("  "))]]}' <<<"$1"
 }
 
@@ -1506,7 +1507,7 @@ suites_wait() { # night file -> once its suites run finished, died or NIGHT_RUN_
 }
 
 cmd_report() {
-  local file unverified speed run post=false id='' table live=false
+  local file unverified speed run post=false id='' table ways pool live=false
   while [ $# -gt 0 ]; do
     case $1 in
       --post) post=true ;;
@@ -1527,11 +1528,17 @@ cmd_report() {
     [ ! -f "$run" ] || jq -c --arg r "$ref" "$JQ_SPEED_RUN"' select(speed_run) | {($r): (.problems | length)}' "$run"
   done | jq -sc 'add // {}')
   table=$(python3 -B "$repo_root/share/time_budget.py" table "$repo_root/bin/worker-run" "$file") || die "no comparison table for $file"
+  ways=$(python3 -B "$repo_root/share/time_budget.py" directions "$repo_root/bin/worker-run" "$file") || ways=''
+  pool=$(python3 -B "$repo_root/share/time_budget.py" pool) || pool=''
   if $post; then
     table_block "$table" | post_block night-report
+    [ -z "$ways" ] || table_block "$ways" "night · directions" | post_block night-directions
+    [ -z "$pool" ] || table_block "$pool" "night · improvement pool" | post_block night-pool
     printf 'table · posted to the chat as the night block; the final message does not retype it\n\n'
   else
     printf '%s\n\n' "$table"
+    [ -z "$ways" ] || printf '%s\n\n' "$ways"
+    [ -z "$pool" ] || printf '%s\n\n' "$pool"
   fi
   python3 -B "$repo_root/share/night_spend.py" "$repo_root/bin/worker-run" "$file" || die "no spend header for $file"
   python3 -B "$repo_root/share/night_churn.py" "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
@@ -1620,7 +1627,8 @@ cmd_latest() {
       (.jobs[] | "\([name, word, (.reason // empty | flat | gist)] | map(select(. != null and . != "")) | join(" · "))\t\(
         tone)\t\(.reason // "" | flat)\t\(
         .ref | flat)\t\(.kind)\t\(if unfinished and ($t.running | not) then 1 else 0 end)")' \
-    "$(night_file "$id")"
+    "$(night_file "$id")" || return
+  python3 -B "$repo_root/share/handoffs.py" --night "$(night_file "$id")" 2>/dev/null || true
 }
 
 orchestrator_moved() { # id session -> true once the night has another orchestrator or is finished

@@ -951,6 +951,24 @@ tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4\t0\t0\n")
 nightRow = doctors.menuItems()[8]
 check(nightRow and text(nightRow.title) == "Last night 30 Sep: 4 of 4" and dimmed(nightRow.title)
   and nightRow.disabled, "a clean night with no job rows is dim")
+-- Handoffs under the night: a glyph, an aligned count and a word per phase, each title one level down, its doc below.
+do
+  local handoffLines = { "Last night 30 Sep: 1 of 1\t0\t0\n", "LLM fixer\t0\t\tllm-x\tfixer\t0\n",
+    "handoff\tdone\tcarried\t/r/docs/handoffs/2026-09-29-carried.md\n", "handoff\tegor\this call\t/r/docs/handoffs/b.md\n" }
+  for index = 1, 10 do handoffLines[#handoffLines + 1] = "handoff\tqueued\tnext " .. index .. "\t/r/docs/handoffs/n" .. index .. ".md\n" end
+  doctors.refreshNight()
+  tasks[#tasks]:finish(0, table.concat(handoffLines))
+  local nightJobs = doctors.menuItems()[8].menu or {}
+  local done, queued, egor = nightJobs[3] or {}, nightJobs[4] or {}, nightJobs[5] or {}
+  check(#nightJobs == 5 and nightJobs[2].title == "-" and text(done.title) == "✓  1  done" and dimmed(done.title)
+    and text(queued.title) == "→ 10  queued" and not dimmed(queued.title) and not red(queued.title)
+    and text(egor.title) == "!  1  To: Egor" and red(egor.title),
+    "phases in order, counts aligned, red only for To: Egor: " .. table.concat((function()
+      local out = {} for _, item in ipairs(nightJobs) do out[#out + 1] = text(item.title) end return out end)(), " | "))
+  local carried = (done.menu or {})[1] or {}
+  check(#(queued.menu or {}) == 10 and text(carried.title) == "carried" and carried.menu
+    and text(carried.menu[1].title) == "/r/docs/handoffs/2026-09-29-carried.md", "each handoff's title, its doc path below it")
+end
 
 -- Run everything: bin/night-run start behind a confirmation; off while a night runs.
 items = doctors.menuItems()

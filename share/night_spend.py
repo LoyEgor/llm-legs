@@ -364,6 +364,7 @@ def kind_spend(night, worker_run):
     kinds = {"fixers": collections.Counter(), "reviews": collections.Counter(),
              "orchestrator": collections.Counter()}
     models, hours, blind, seen, walled = collections.Counter(), 0.0, 0, set(), collections.Counter()
+    refs, worktree = collections.Counter(), f"night-{night.get('id')}-"
     listed = list(night_runs(low, high, sessions))
     found = transcripts(worker_run, [run for run, *_ in listed
                                      if not os.path.isfile(read(f"{RUNS}/{run}/session-file"))])
@@ -377,6 +378,9 @@ def kind_spend(night, worker_run):
             blind += 1
         else:
             kinds["fixers"] += usage
+            base = os.path.basename(str(meta.get("workdir") or ""))
+            if base.startswith(worktree):
+                refs[base[len(worktree):]] += weighted(usage)
             if ended_on_wall(run):
                 walled += usage
     rounds = 0
@@ -388,7 +392,7 @@ def kind_spend(night, worker_run):
         if path:
             kinds["orchestrator"] += claude_usage(str(path), seen, (low, high))
     return {"low": low, "high": high, "running": not night.get("finished_at"), "models": models,
-            "hours": hours, "blind": blind, "rounds": rounds, "kinds": kinds, "walled": weighted(walled),
+            "hours": hours, "blind": blind, "rounds": rounds, "kinds": kinds, "walled": weighted(walled), "refs": refs,
             "total": sum(weighted(total) for total in kinds.values())}
 
 
@@ -440,20 +444,31 @@ def backlog():
 
 
 def goals_now():
+    import handoffs
     import night_priority
 
     rows = backlog()
-    rows["p12"] = night_priority.backlog()["p12"]
+    found = night_priority.backlog()
+    rows.update(p12=found["p12"], open=found["open"], trades=len(handoffs.egor_trades()))
     return {"doctors_share": doctors_share(), "backlog": rows}
 
 
-def night_goals(night):
-    """A night's stored goals; a running one reads them now. A night older than the stored field keeps its doctor rows."""
+def night_goals(night, newest=False):
+    """A night's stored goals; a running one reads them now. A night older than the stored field keeps its doctor rows;
+    the newest night, finished before a field was stored, reads that field now."""
     if "backlog" in night or night.get("finished_at"):
         stored = {"doctors_share": night.get("doctors_share"), "backlog": dict(night.get("backlog") or {})}
         after = night.get("doctors_after") or {}
         if stored["backlog"].get("doctors") is None and after and all(isinstance(after.get(d), int) for d in DOCTOR_NAMES):
             stored["backlog"]["doctors"] = sum(after[d] for d in DOCTOR_NAMES)
+        if newest and not {"p12", "open", "trades"} <= set(stored["backlog"]):
+            import handoffs
+            import night_priority
+
+            found = night_priority.backlog()
+            stored["backlog"].setdefault("p12", found["p12"])
+            stored["backlog"].setdefault("open", found["open"])
+            stored["backlog"].setdefault("trades", len(handoffs.egor_trades()))
         return stored
     return goals_now()
 

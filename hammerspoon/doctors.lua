@@ -437,6 +437,29 @@ end
 
 function M.refreshUpdater() refreshDoctor("updater", {}, updaterTitle, updaterPath) end
 
+local HANDOFF_PHASES = { { "done", "✓", "done" }, { "queued", "→", "queued" }, { "egor", "!", "To: Egor" } }
+
+local function handoffRows(handoffs)
+  local groups, width, rows = {}, 1, {}
+  for _, handoff in ipairs(handoffs) do
+    groups[handoff.phase] = groups[handoff.phase] or {}
+    table.insert(groups[handoff.phase], handoff)
+    width = math.max(width, #tostring(#groups[handoff.phase]))
+  end
+  for _, phase in ipairs(HANDOFF_PHASES) do
+    local group = groups[phase[1]]
+    if group then
+      local titles = {}
+      for _, handoff in ipairs(group) do
+        titles[#titles + 1] = fitRow({ title = infoTitle(handoff.title), menu = detailRows(handoff.path) })
+      end
+      rows[#rows + 1] = fitRow({ title = infoTitle(phase[2] .. string.format(" %" .. width .. "d  ", #group) .. phase[3],
+        phase[1] == "egor", phase[1] == "done"), menu = titles })
+    end
+  end
+  return rows
+end
+
 local function nightEntry()
   local jobs, resumable, others = {}, 0, 0
   local idle = not night.running and not running(fixTasks.night)
@@ -451,6 +474,11 @@ local function nightEntry()
     end
     item.disabled = not item.menu or nil
     jobs[#jobs + 1] = fitRow(item)
+  end
+  local handoffs = handoffRows(night.handoffs or {})
+  if #handoffs > 0 then
+    if #jobs > 0 then jobs[#jobs + 1] = { title = "-" } end
+    for _, row in ipairs(handoffs) do jobs[#jobs + 1] = row end
   end
   if resumable > 0 then
     jobs[#jobs + 1] = { title = "-" }
@@ -469,17 +497,19 @@ function M.refreshNight()
     local lines = {}
     for line in (code == 0 and stdout or ""):gmatch("[^\n]+") do lines[#lines + 1] = line end
     local text, tone, busy, id = (lines[1] or ""):match("^([^\t]*)\t([012])\t?([01]?)\t?([^\t]*)")
-    local jobs = {}
+    local jobs, handoffs = {}, {}
     for index = 2, #lines do
       local fields = {}
       for field in (lines[index] .. "\t"):gmatch("([^\t]*)\t") do fields[#fields + 1] = field end
-      if fields[2] == "0" or fields[2] == "1" or fields[2] == "2" then
+      if fields[1] == "handoff" and #fields >= 4 then
+        handoffs[#handoffs + 1] = { phase = fields[2], title = fields[3], path = fields[4] }
+      elseif fields[2] == "0" or fields[2] == "1" or fields[2] == "2" then
         jobs[#jobs + 1] = { text = fields[1], red = fields[2] == "1", quiet = fields[2] == "0", detail = fields[3] or "",
           ref = fields[4], kind = fields[5], resumable = fields[6] == "1" and fields[4] ~= nil and fields[4] ~= "" }
       end
     end
     night = { at = os.time(), text = text ~= "" and text or nil, red = tone == "1", quiet = tone == "0",
-      running = busy == "1", jobs = jobs, id = id ~= "" and id or nil }
+      running = busy == "1", jobs = jobs, handoffs = handoffs, id = id ~= "" and id or nil }
   end, { "latest", "--menu" })
   if not ok or not task then night.at = os.time() return end
   task:setEnvironment(limits.diagnosticsEnvironment())

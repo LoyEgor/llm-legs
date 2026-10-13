@@ -468,7 +468,101 @@ def owner_of(path):
     return dict(pick or {}, path=handoff["path"], ledger=ledger, evidence=scores)
 
 
+def handoff_docs(repos=None):
+    """{basename: (path, status)} of every handoff doc of the sweep repositories."""
+    out = {}
+    for repo in sweep_repos() if repos is None else repos:
+        for path in sorted(glob.glob(os.path.join(repo, "docs", "handoffs", "*.md"))):
+            out.setdefault(os.path.basename(path), (path, status_of(head(path)).strip()))
+    return out
+
+
+def phase(status):
+    """A handoff doc's Status as done, queued (open for a night) or egor (a trade awaiting his word)."""
+    word = status.lower()
+    return "egor" if word.startswith("trade") else "queued" if word.startswith("open") else "done"
+
+
+def short_title(path):
+    return re.sub(r"^\d{4}-\d{2}-\d{2}-", "", os.path.basename(path)[:-3]).replace("-", " ")
+
+
+def egor_trades(repos=None):
+    """Every open trade addressed to Egor, one per handoff it names, else per row: unanswered blocked-on-egor night
+    jobs, handoffs whose Status reads trade, audit rows with verdict trade and doctor rows that need his word. A row
+    whose named handoff is settled is answered. [{key, title, path}] sorted by key."""
+    import night_priority
+    import spend
+
+    docs = handoff_docs(repos)
+    found = {}
+
+    def add(row, key, title, path):
+        named = next((n for text in strings(row) for n in NAMED_RE.findall(text) if n in docs), None)
+        if named:
+            if phase(docs[named][1]) == "done":
+                return
+            key, title, path = "handoff:" + named, short_title(named), docs[named][0]
+        found.setdefault(key, {"key": key, "title": title, "path": path})
+
+    for name, (path, status) in docs.items():
+        if phase(status) == "egor":
+            add({}, "handoff:" + name, short_title(name), path)
+    nights = os.path.join(night_priority.doctors_dir(), "nights")
+    for night_path in sorted(glob.glob(os.path.join(nights, "*.json"))):
+        night = night_priority.read_json(night_path, {}) or {}
+        for job in night.get("jobs") or () if isinstance(night, dict) else ():
+            if job.get("state") == "blocked-on-egor" and not (job.get("answer") or {}).get("words"):
+                ref = str(job.get("ref") or "?")
+                add(dict(job, named="handoffs/%s.md" % ref[len("handoff-"):] if ref.startswith("handoff-") else ""),
+                    "night:%s:%s" % (night.get("id"), ref), str(job.get("reason") or ref).split(":")[0], night_path)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ledger = spend.ledger_path(root)
+    for row in spend.load_ledger(root).values():
+        if row.get("verdict") == "trade":
+            add(row, "audit:" + row["id"], str(row.get("title") or row["id"]), ledger)
+    for doctor in night_priority.DOCTORS:
+        doc = night_priority.doctor_doc(doctor)
+        for problem in list(doc.get("problems") or ()) + list((doc.get("speed") or {}).get("problems") or ()):
+            if isinstance(problem, dict) and problem.get("state") != "fixed-pending" and (
+                    problem.get("needs_egor") or (problem.get("opportunity") or {}).get("needs_egor")):
+                add(problem, "%s:%s" % (doctor, problem.get("id")), str(problem.get("title") or problem.get("id")),
+                    night_priority.doctor_path(doctor))
+    return sorted(found.values(), key=lambda t: t["key"])
+
+
+def night_handoffs(night_path, repos=None):
+    """The Last night block's rows: each handoff the night carried or that waits for the next one, as
+    (phase, title, path): done (settled or landed), queued (open) and egor (every open trade, egor_trades)."""
+    night = {}
+    try:
+        with open(night_path) as handle:
+            night = json.load(handle)
+    except (OSError, ValueError):
+        pass
+    docs = handoff_docs(repos)
+    names = []
+    for job in night.get("jobs") or ():
+        ref = str(job.get("ref") or "")
+        paths = job.get("handoffs") or [job.get("path") or (job.get("from") or {}).get("path")
+                                        or (ref[len("handoff-"):] + ".md" if job.get("kind") == "handoff" else None)]
+        names += [os.path.basename(p) for p in paths if p]
+    names += [name for name, (_, status) in docs.items() if phase(status) == "queued"]
+    trades = egor_trades(repos)
+    asked = {t["path"] for t in trades}
+    rows = [(phase(docs[name][1]), short_title(name), docs[name][0]) for name in dict.fromkeys(names)
+            if name in docs and docs[name][0] not in asked]
+    return rows + [("egor", t["title"], t["path"]) for t in trades]
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--trades"]:
+        print(json.dumps(egor_trades(), ensure_ascii=False))
+        sys.exit(0)
+    if sys.argv[1:2] == ["--night"] and len(sys.argv) == 3:
+        for row in night_handoffs(sys.argv[2]):
+            print("\t".join(["handoff"] + [" ".join(str(v).split()) for v in row]))
+        sys.exit(0)
     if sys.argv[1:2] == ["--owner"]:
         for path in sys.argv[2:]:
             print(json.dumps(owner_of(path), ensure_ascii=False))

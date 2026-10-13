@@ -6,6 +6,8 @@ problem counts. Measurement only: it reads existing journals and gates nothing.
   time_budget.py day [--hours H] [--json]       the last H hours (24), its bands, holes, tests and levers
   time_budget.py night <worker-run> <night.json> the night's ledger line, its time split and the 7-night trend
   time_budget.py table <worker-run> <night.json> the night against the two previous finished nights with jobs
+  time_budget.py directions <worker-run> <night.json>  open P1/P2, closed, fixer spend and nights to plateau a direction
+  time_budget.py pool                            the audit and harness ledgers by class: open, done, proven, kept, trade
 """
 
 import argparse
@@ -1314,7 +1316,7 @@ def ledger_row(worker_run, path, night):
     states = night.get("doctor_states_after") or {}
     debt = [j for j in night.get("jobs") or () if j.get("kind") == "debt"]
     spent = night_spend.spend(night, worker_run)
-    return {"id": night.get("id"), "started": low, "ended": high, "hours": round((high - low) / 3600.0, 1),
+    return {"id": night.get("id"), "started": low, "directions": directions(night, path, spent), "ended": high, "hours": round((high - low) / 3600.0, 1),
             "finished": bool(night.get("finished_at")), "runs": n_runs, "wall_s": round(wall),
             "split_s": {k: round(v) for k, v in split.items() if v},
             "lines": lines_of(night),
@@ -1351,6 +1353,9 @@ def cached_row(worker_run, path):
             write_json(ledger_cache(night["id"], path), row)
         elif "model_mix" not in row:
             row["model_mix"] = night_spend.mix(night_spend.spend(night, worker_run))
+            write_json(ledger_cache(night["id"], path), row)
+        if "directions" not in row:
+            row["directions"] = directions(night, path, night_spend.spend(night, worker_run) if newest(path) else None)
             write_json(ledger_cache(night["id"], path), row)
         stale = [i for i in row.get("improvements") or () if "files" not in i]
         if stale:
@@ -1491,7 +1496,7 @@ def table_column(worker_run, path, night, goals, was):
         ("vs all-Opus", show(mix.get("vs_opus"), "\u00d7%.2f")),
         ("landed", str(states["merged"])),
         ("left", str(states["left"])),
-        ("needs Egor", str(states["blocked-on-egor"])),
+        ("needs Egor", str((goals.get("backlog") or {}).get("trades", states["blocked-on-egor"]))),
         ("worker runs", show(runs)),
         ("worker wall", hours(wall)),
         ("model active", "%d %%" % pct(split.get("model", 0), wall) if wall else dash),
@@ -1512,10 +1517,127 @@ def table_column(worker_run, path, night, goals, was):
     ]
 
 
+CLOSED = ("merged", "nothing-to-do", "settled")
+
+
+def newest(path):
+    started = read_json(path, {}).get("started_at") or ""
+    return all((read_json(other, {}).get("started_at") or "") <= started
+               for other in glob.glob(os.path.join(os.path.dirname(path), "*.json")))
+
+
+def directions(night, path, spent):
+    """{direction: {p1, p2, closed, spend}}: the P1/P2 rows the doctors held at the close, the night's jobs landed or
+    ruled out, and % of its fixer spend (None without a spend reading)."""
+    import night_priority
+
+    stored = night.get("backlog") or {}
+    opened = stored["open"] if "open" in stored else night_priority.backlog()["open"] if (
+        not night.get("finished_at") or newest(path)) else None
+    fixers = night_spend.weighted(spent["kinds"]["fixers"]) if spent else 0
+    out = {way: {"p1": None if opened is None else (opened.get(way) or [0, 0])[0],
+                 "p2": None if opened is None else (opened.get(way) or [0, 0])[1],
+                 "closed": 0, "spend": 0.0 if fixers else None} for way in night_priority.DIRECTIONS}
+    for job in night.get("jobs") or ():
+        way = job.get("direction") or night_priority.job(job.get("kind"), job.get("ref"))["direction"]
+        row = out.setdefault(way, {"p1": None, "p2": None, "closed": 0, "spend": 0.0 if fixers else None})
+        row["closed"] += job.get("state") in CLOSED
+        if fixers:
+            row["spend"] = round(row["spend"] + 100.0 * spent["refs"].get(job.get("ref"), 0) / fixers, 1)
+    return out
+
+
+def plateau_nights(way, rows):
+    """Nights until the direction's P1+P2 reach zero at its closed-per-night over the recorded nights; a dash when its
+    backlog grew or nothing closes."""
+    recorded = [r["directions"].get(way) or {} for r in rows if r and isinstance(r.get("directions"), dict)]
+    if not recorded or recorded[-1].get("p1") is None:
+        return "\u2013"
+    opened = lambda d: None if d.get("p1") is None else d["p1"] + d["p2"]
+    now = opened(recorded[-1])
+    first = next((opened(d) for d in recorded if opened(d) is not None), now)
+    rate = sum(d.get("closed", 0) for d in recorded) / float(len(recorded))
+    if now == 0:
+        return "0"
+    if now > first or not rate:
+        return "\u2013"
+    return "%d" % -(-now // rate)
+
+
+def aligned(heads, rows):
+    """Right-aligned columns three spaces apart under a blank label head, as the comparison table."""
+    width = max(len(r[0]) for r in rows)
+    widths = [max([len(h)] + [len(r[i + 1]) for r in rows]) for i, h in enumerate(heads)]
+    out = [" " * width + "".join("   " + h.rjust(w) for h, w in zip(heads, widths))]
+    return out + [r[0].ljust(width) + "".join("   " + v.rjust(w) for v, w in zip(r[1:], widths)) for r in rows]
+
+
+def direction_lines(worker_run, path):
+    import night_priority
+
+    trend = [cached_row(worker_run, p) for _, p, _ in nights_upto(path)[-TREND_DAYS:]]
+    row = (trend[-1] or {}).get("directions") or {} if trend else {}
+    show = lambda v, f="%d": "\u2013" if v is None else f % v
+    rows = []
+    for way in list(night_priority.DIRECTIONS) + sorted(set(row) - set(night_priority.DIRECTIONS)):
+        d = row.get(way) or {}
+        if not any((d.get("p1"), d.get("p2"), d.get("closed"), d.get("spend"))):
+            continue
+        rows.append([way, show(d.get("p1")), show(d.get("p2")), show(d.get("closed")), show(d.get("spend"), "%.0f %%"),
+                     plateau_nights(way, trend)])
+    return aligned(["P1", "P2", "\u2713", "fixers", "to plateau"], rows) if rows else []
+
+
+POOL = ("spend", "suite", "cpu", "harness", "logs")
+POOL_COLUMNS = ("open", "done", "proven", "kept", "trade")
+
+
+def pool_counts():
+    """{class: {open, done, proven, kept, trade}} over the audit ledger (spend, suite, CPU rows), the harness ledger
+    (its log_audit rows as logs) and the Speed document's due selections and proofs."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = {c: dict.fromkeys(POOL_COLUMNS, 0) for c in POOL}
+    speed = (read_json(os.path.join(harness_dir(), "latest.json"), {}) or {}).get("speed") or {}
+    for cls, section in (("spend", "spend"), ("suite", "suites"), ("cpu", "cpu")):
+        part = speed.get(section) or {}
+        out[cls]["open"] = len(part.get("selection") or ())
+        out[cls]["proven"] = sum(1 for p in (part.get("proofs") or {}).values() if isinstance(p, dict) and (
+            p.get("proven") or isinstance(p.get("before"), (int, float)) and isinstance(p.get("after"), (int, float))
+            and p["after"] < p["before"]))
+    for row in spend_block.load_ledger(root).values():
+        cls = {"suite": "suite", "cpu": "cpu"}.get(row["id"].split(":", 1)[0], "spend")
+        verdict = {"cut": "done"}.get(row.get("verdict"), row.get("verdict"))
+        if verdict in POOL_COLUMNS:
+            out[cls][verdict] += 1
+    asked = {os.path.basename(t["path"]) for t in handoffs.egor_trades()}
+    ledger = read_json(os.environ.get("HARNESS_LEDGER") or os.path.join(root, "share", "harness-ledger.json"), {}) or {}
+    for row in ledger.get("rows") or ():
+        cls = "logs" if str(row.get("id")).startswith("log_audit:") else "harness"
+        status = row.get("status")
+        if os.path.basename(str(row.get("handoff") or "")) in asked and status == "open":
+            out[cls]["trade"] += 1
+        elif status == "open":
+            out[cls]["open"] += 1
+        elif status in ("fixed", "fixed-pending"):
+            out[cls]["done"] += 1
+            out[cls]["proven"] += status == "fixed"
+        elif status in ("not-a-bug", "ruled-out", "weather"):
+            out[cls]["kept"] += 1
+    return out
+
+
+def pool_lines():
+    counts = pool_counts()
+    rows = [[c] + [str(counts[c][k]) for k in POOL_COLUMNS] for c in POOL if any(counts[c].values())]
+    if not rows:
+        return []
+    return aligned(list(POOL_COLUMNS), rows + [["total"] + [str(sum(counts[c][k] for c in POOL)) for k in POOL_COLUMNS]])
+
+
 def table_lines(worker_run, path):
     """This night against the two previous finished nights with jobs, oldest left, a column per night."""
     nights = finished_before(path, count=3) + nights_upto(path)[-1:]
-    goals = [night_spend.night_goals(night) for _, _, night in nights]
+    goals = [night_spend.night_goals(night, i == len(nights) - 1 and newest(p)) for i, (_, p, night) in enumerate(nights)]
     if len(nights) > 3:
         nights = nights[1:]
     else:
@@ -1532,13 +1654,7 @@ def table_lines(worker_run, path):
         column.insert(at, ("to plateau", plateau if i == len(columns) - 1 else ""))
     if all(dict(c)["Fable spend"] == "\u2013" for c in columns):
         columns = [[cell for cell in c if cell[0] != "Fable spend"] for c in columns]
-    labels = [label for label, _ in columns[0]]
-    width = max(len(label) for label in labels)
-    widths = [max([len(head)] + [len(v) for _, v in column]) for head, column in zip(heads, columns)]
-    out = [" " * width + "".join("   " + head.rjust(w) for head, w in zip(heads, widths))]
-    for i, label in enumerate(labels):
-        out.append(label.ljust(width) + "".join("   " + column[i][1].rjust(w) for column, w in zip(columns, widths)))
-    return out
+    return aligned(heads, [[label] + [column[i][1] for column in columns] for i, (label, _) in enumerate(columns[0])])
 
 
 def main(argv):
@@ -1553,7 +1669,17 @@ def main(argv):
     table = sub.add_parser("table")
     table.add_argument("worker_run")
     table.add_argument("path")
+    ways = sub.add_parser("directions")
+    ways.add_argument("worker_run")
+    ways.add_argument("path")
+    sub.add_parser("pool")
     args = parser.parse_args(argv)
+    if args.command == "directions":
+        print("\n".join(direction_lines(args.worker_run, args.path) + [""]))
+        return 0
+    if args.command == "pool":
+        print("\n".join(pool_lines() + [""]))
+        return 0
     if args.command == "night":
         night_report(args.worker_run, args.path)
         return 0

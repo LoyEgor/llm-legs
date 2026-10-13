@@ -70,7 +70,7 @@ jq -Rn --arg s "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: "n1", started_at: $s, fini
   jobs: ([inputs | {kind: "fixer", ref: ., state: "pending", reason: null}]
     + [{kind: "vendor", ref: "updater-release-20261001T020000Z-abcd", branch: "night/n1/codex", state: "pending", reason: null}])}' \
   <"$VOCAB/refs" >"$VOCAB/doctors/nights/n1.json"
-DOCTORS_DIR="$VOCAB/doctors" bash "$ROOT/bin/night-run" latest --menu | tail -n +2 | awk -F'\t' '$5 != "doctor"' | cut -f1 >"$VOCAB/labels.txt"
+HOME="$VOCAB/home" DOCTORS_DIR="$VOCAB/doctors" SPEND_LEDGER="$VOCAB/spend-ledger.json" bash "$ROOT/bin/night-run" latest --menu | tail -n +2 | awk -F'\t' '$5 != "doctor"' | cut -f1 >"$VOCAB/labels.txt"
 [ "$(wc -l <"$VOCAB/labels.txt" | tr -d ' ')" = 16 ] || fail "night-run labels: $(tr '\n' ' ' <"$VOCAB/labels.txt")"
 
 source=nil only=false baseline=nil

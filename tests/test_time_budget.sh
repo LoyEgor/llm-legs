@@ -773,6 +773,104 @@ finished = dict(running, finished_at="2026-10-03T08:00:00Z", doctors_after={n: 1
 check(night_spend.night_goals(finished) == {"doctors_share": None, "backlog": {"doctors": 5}},
       "a finished night without stored goals keeps only its doctor rows, never today's values")
 
+# needs Egor counts every open trade addressed to him once, from every store that holds one: an unanswered
+# blocked-on-egor job, a handoff whose Status reads trade, audit rows with verdict trade, a doctor row that needs his
+# word; rows naming one handoff are one trade, and a row whose handoff is settled is answered.
+import handoffs
+os.environ["DOCTORS_DIR"] = os.path.join(work, "egor")
+os.environ["SPEND_LEDGER"] = os.path.join(work, "egor-spend-ledger.json")
+os.environ["HARNESS_LEDGER"] = os.path.join(work, "egor-harness-ledger.json")
+egor_nights = os.path.join(work, "egor", "nights")
+os.makedirs(egor_nights)
+os.makedirs(os.path.join(work, "repo", "docs", "handoffs"))
+for name, status in (("hook", "open"), ("done", "settled 2026-10-02: cut"), ("ask", "trade for Egor")):
+    with open(os.path.join(work, "repo", "docs", "handoffs", "2026-10-01-%s.md" % name), "w") as handle:
+        handle.write("# x\n\nStatus: %s\n" % status)
+json.dump({"rows": [
+    {"id": "cpu:a", "verdict": "trade", "note": "handoff docs/handoffs/2026-10-01-hook.md: settings, Egor's step"},
+    {"id": "cpu:b", "verdict": "trade", "note": "same filter, docs/handoffs/2026-10-01-hook.md"},
+    {"id": "suite:r/test_lone", "title": "r/test_lone", "verdict": "trade", "note": "a coverage trade"},
+    {"id": "cpu:c", "verdict": "trade", "note": "answered in docs/handoffs/2026-10-01-done.md"},
+    {"id": "cpu:d", "verdict": "cut"}, {"id": "suite:r/test_k", "verdict": "kept"}]},
+    open(os.environ["SPEND_LEDGER"], "w"))
+os.environ["CODE_DOCTOR_DIR"] = os.path.join(work, "egor-code")
+os.makedirs(os.environ["CODE_DOCTOR_DIR"])
+json.dump({"problem_count": 1, "problems": [{"id": "reg:x", "state": "new", "needs_egor": True,
+                                             "trade": "see docs/handoffs/2026-10-01-ask.md"}]},
+          open(os.path.join(os.environ["CODE_DOCTOR_DIR"], "latest.json"), "w"))
+egor = {"id": "e1", "started_at": "2026-10-04T02:00:00Z", "finished_at": "2026-10-04T08:00:00Z",
+        "backlog": {"debt": 1}, "jobs": [
+            {"kind": "trade", "ref": "trade-q", "state": "blocked-on-egor", "reason": "keep the floor: cost 2 min"},
+            {"kind": "fixer", "ref": "harness-q", "state": "blocked-on-egor", "reason": "x",
+             "answer": {"words": "do it", "at": "2026-10-04T09:00:00Z"}}]}
+json.dump(egor, open(os.path.join(egor_nights, "e1.json"), "w"))
+trades = handoffs.egor_trades()
+check([t["key"] for t in trades] == ["audit:suite:r/test_lone", "handoff:2026-10-01-ask.md", "handoff:2026-10-01-hook.md",
+                                     "night:e1:trade-q"], "one trade per handoff, answered and settled ones out: %s" % trades)
+T.cached_row = lambda worker_run, path: {}
+egor_cells = {re.split(" {3,}", l)[0]: re.split(" {3,}", l)[1:]
+              for l in T.table_lines("/usr/bin/false", os.path.join(egor_nights, "e1.json"))[1:]}
+check(egor_cells["needs Egor"] == ["4"], "needs Egor is every open trade, not the night's blocked jobs: %s" % egor_cells)
+egor["backlog"]["trades"] = 1
+json.dump(egor, open(os.path.join(egor_nights, "e1.json"), "w"))
+check(dict(T.table_column("/usr/bin/false", os.path.join(egor_nights, "e1.json"), egor,
+                          night_spend.night_goals(egor, True), {}))["needs Egor"] == "1",
+      "a night that stored its trades at the close keeps that count")
+T.cached_row = kept_row
+
+# The per-direction block: open P1/P2 the night closed on, its jobs landed or ruled out, the share of its fixer
+# spend (each run by the night worktree it ran in) and the nights to plateau at the closed-per-night rate.
+os.environ["WORKER_RUN_DIR"] = night_spend.RUNS = os.path.join(work, "dir-runs")
+for run, ref in (("codex-%d-1-aaaa" % (D0 + 100), "harness-a"), ("codex-%d-2-bbbb" % (D0 + 200), "speed-b")):
+    os.makedirs(os.path.join(night_spend.RUNS, run))
+    shutil.copy(rollout, os.path.join(night_spend.RUNS, run, "rollout.jsonl"))
+    for file, body in (("launcher", "dir-s\n"), ("session-file", os.path.join(night_spend.RUNS, run, "rollout.jsonl") + "\n"),
+                       ("meta.json", json.dumps({"vendor": "codex", "workdir": "/r/.claude/worktrees/night-d2-" + ref}))):
+        with open(os.path.join(night_spend.RUNS, run, file), "w") as handle:
+            handle.write(body)
+way_night = {"id": "d2", "started_at": iso(D0), "finished_at": iso(D0 + 3600), "session": "dir-s",
+             "backlog": {"open": {"tests": [2, 1], "speed": [0, 3]}}, "jobs": [
+                 {"kind": "fixer", "ref": "harness-a", "direction": "tests", "state": "merged"},
+                 {"kind": "fixer", "ref": "harness-c", "direction": "tests", "state": "nothing-to-do"},
+                 {"kind": "fixer", "ref": "speed-b", "direction": "speed", "state": "left"},
+                 {"kind": "vendor", "ref": "ev-1", "state": "merged"}]}
+spent = night_spend.spend(way_night, "/usr/bin/false")
+check(sorted(spent["refs"]) == ["harness-a", "speed-b"] and spent["refs"]["harness-a"] > 0,
+      "fixer spend by the night worktree each run worked in: %s" % dict(spent["refs"]))
+ways = T.directions(way_night, os.path.join(egor_nights, "d2.json"), spent)
+check(ways["tests"] == {"p1": 2, "p2": 1, "closed": 2, "spend": 50.0} and ways["updater"]["closed"] == 1
+      and ways["speed"] == {"p1": 0, "p2": 3, "closed": 0, "spend": 50.0} and ways["bugs"]["p1"] == 0,
+      "open P1/P2 from the close, closed = landed or nothing to do, a vendor job by its kind: %s" % ways)
+rows = lambda *d: [{"directions": {"tests": dict(zip(("p1", "p2", "closed"), x))}} for x in d]
+check([T.plateau_nights("tests", rows(*d)) for d in (
+    [(5, 4, 1), (4, 3, 3)], [(3, 3, 1), (4, 3, 1)], [(None, None, 2), (0, 0, 2)], [(2, 2, 0)], [(None, None, 1)])]
+      == ["4", "–", "0", "–", "–"],
+      "nights to plateau: open over closed a night; a dash when it grew, nothing closes or nothing is known")
+T.cached_row = lambda worker_run, path: {"directions": ways} if path.endswith("d2.json") else None
+json.dump(way_night, open(os.path.join(egor_nights, "d2.json"), "w"))
+block = T.direction_lines("/usr/bin/false", os.path.join(egor_nights, "d2.json"))
+check(block[0].split() == ["P1", "P2", "✓", "fixers", "to", "plateau"]
+      and [l.split()[0] for l in block[1:]] == ["speed", "tests", "updater"]
+      and block[2].split() == ["tests", "2", "1", "2", "50", "%", "2"] and len({len(l) for l in block}) == 1,
+      "a row per direction with work, aligned, all-zero rows left out:\n" + "\n".join(block))
+T.cached_row = kept_row
+
+# The improvement pool: the audit and harness ledgers and Speed's due selections and proofs, a row per class.
+json.dump({"rows": [{"id": "a", "status": "open"}, {"id": "b", "status": "fixed"}, {"id": "c", "status": "fixed-pending"},
+                    {"id": "log_audit:x", "status": "ruled-out"},
+                    {"id": "d", "status": "open", "handoff": "docs/handoffs/2026-10-01-hook.md"}]},
+          open(os.environ["HARNESS_LEDGER"], "w"))
+os.makedirs(os.path.join(work, "pool-harness"))
+os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "pool-harness")
+json.dump({"speed": {"suites": {"selection": ["s1", "s2"], "proofs": {"r/test_k": {"proven": True}}},
+                     "cpu": {"selection": [], "proofs": {"d": {"before": 9.0, "after": 3.0}}}}},
+          open(os.path.join(work, "pool-harness", "latest.json"), "w"))
+pool = {l.split()[0]: l.split()[1:] for l in T.pool_lines()[1:]}
+check(T.pool_lines()[0].split() == ["open", "done", "proven", "kept", "trade"]
+      and pool == {"suite": ["2", "0", "1", "1", "1"], "cpu": ["0", "1", "1", "0", "3"], "harness": ["1", "2", "1", "0", "1"],
+                   "logs": ["0", "0", "0", "1", "0"], "total": ["3", "3", "3", "2", "5"]},
+      "a row per class, totals last: %s" % pool)
+
 kept_journal = os.path.join(work, "kept", "runs.jsonl")
 lines(kept_journal, [{"ended_at": 1, "queued_at": 0}])
 opened = []

@@ -62,9 +62,24 @@ def worker_runs_dir():
     return os.environ.get("WORKER_RUN_DIR") or os.path.expanduser("~/.cache/claude-worker-runs")
 
 
-def doctor_doc(name, default=None):
+def doctor_path(name):
     root = os.environ.get("%s_DOCTOR_DIR" % name.upper()) or os.path.expanduser("~/.cache/%s-doctor" % name)
-    doc = read_json(os.path.join(root, "latest.json"), None)
+    return os.path.join(root, "latest.json")
+
+
+_DOCS = {}
+
+
+def doctor_doc(name, default=None):
+    path = doctor_path(name)
+    try:
+        stat = os.stat(path)
+        stamp = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        stamp = None
+    if _DOCS.get(path, (False,))[0] != stamp:
+        _DOCS[path] = (stamp, read_json(path, None))
+    doc = _DOCS[path][1]
     return doc if isinstance(doc, dict) else ({} if default is None else default)
 
 
@@ -187,11 +202,11 @@ def job(kind, ref):
 
 
 def backlog():
-    by = {}
+    by, split = {}, {}
     for doctor in DOCTORS:
         doc = doctor_doc(doctor, False)
         if doc is False:
-            return {"p12": None, "by": by}
+            return {"p12": None, "by": by, "open": None}
         for problem in doc.get("problems") or ():
             if not isinstance(problem, dict) or problem.get("state") == "fixed-pending" or problem.get(
                     "state") == "watch" and not (problem.get("speed") and problem.get("rule") in SPEED_ROWS):
@@ -199,7 +214,8 @@ def backlog():
             way, level = priority(doctor, problem)[:2]
             if level != "P3":
                 by[way] = by.get(way, 0) + 1
-    return {"p12": sum(by.values()), "by": by}
+                split.setdefault(way, [0, 0])[PRIORITIES.index(level)] += 1
+    return {"p12": sum(by.values()), "by": by, "open": split}
 
 
 # ---------------------------------------------------------------- admission

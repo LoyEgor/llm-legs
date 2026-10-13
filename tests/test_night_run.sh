@@ -29,7 +29,7 @@ export HOME DATA OPENED
 unset WORDS_DIR WORDS_ROOT
 export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR="$WORK/harness" \
   UPDATER_DOCTOR_DIR="$WORK/updater" NIGHT_RUN_OPENER="$FAKE_BIN/opener" NIGHT_RUN_WORKER_PICK="$FAKE_BIN/worker-pick" \
-  NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos"
+  NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SPEND_LEDGER="$WORK/spend-ledger.json" HARNESS_LEDGER="$WORK/harness-ledger.json"
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 mkdir -p "$FAKE_BIN" "$DATA" "$HOME" "$WORK/llm" "$WORK/harness" "$WORK/updater"
 : >"$OPENED"
@@ -53,7 +53,7 @@ chmod +x "$FAKE_BIN"/*
 
 night() { bash "$ROOT/bin/night-run" "$@"; }
 # The report under its comparison table, which a blank line closes.
-body() { sed '1,/^$/d' "$@"; }
+body() { sed -n '/^duration · /,$p' "$@"; }
 record() { printf '%s/%s.json' "$NIGHTS" "$1"; }
 doc() { jq -n --argjson n "$2" --argjson p "${3:-[]}" '{contract: 1, problem_count: $n, problems: $p}' >"$WORK/$1/latest.json"; }
 stop_chat() { pkill -f -- "--session-id $1"; while pgrep -f -- "--session-id $1" >/dev/null; do sleep 0.1; done; }
@@ -219,7 +219,8 @@ assert grep -qxF "$(printf 'harness-r1 · failed to launch · opener\t1\topener\
 assert grep -qxF "$(printf 'cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\tp1\tdebt\t0')" "$WORK/menu"
 assert grep -qxF "$(printf 'cleanup p2 · in progress\t2\t\tp2\tdebt\t0')" "$WORK/menu"
 assert [ -z "$(cut -f5 "$WORK/menu" | grep -x doctor)" ]
-assert [ "$(wc -l <"$WORK/menu" | tr -d ' ')" = 13 ]
+assert grep -qxF "$(printf 'handoff\tegor\tstep 10 needs his word\t%s' "$R")" "$WORK/menu"
+assert [ "$(wc -l <"$WORK/menu" | tr -d ' ')" = 14 ]
 
 # finish: doctors after, pending becomes left with a reason; a second finish refuses.
 doc llm 1
@@ -321,6 +322,21 @@ assert grep -qxF "total · 2 landed · 1 not pushed" <(night report)
 night job "$id2" set f1 state=nothing-to-do >/dev/null
 night job "$id2" set v1 state=nothing-to-do >/dev/null
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
+# Handoffs under the last night: those it carried by their doc's Status, those open for the next one, then every
+# open trade addressed to Egor (a trade doc, an audit row with verdict trade), each with its doc path.
+HO="$WORK/repo/docs/handoffs"
+mkdir -p "$HO"
+printf 'Status: settled 2026-01-02: done\n' >"$HO/2026-01-01-carried.md"
+printf 'Status: open\n' >"$HO/2026-01-01-next-thing.md"
+printf 'Status: trade for Egor\n' >"$HO/2026-01-01-his-call.md"
+printf '{"rows": [{"id": "cpu:x", "title": "hook x", "verdict": "trade", "note": "a coverage trade"}]}' >"$SPEND_LEDGER"
+cp "$(record "$id2")" "$WORK/night-copy"
+jq --arg p "$HO/2026-01-01-carried.md" '.jobs += [{kind: "handoff", ref: "handoff-2026-01-01-carried", state: "merged",
+  pushed: true, path: $p}]' "$WORK/night-copy" >"$(record "$id2")"
+assert [ "$(night latest --menu | grep $'^handoff\t')" = "$(printf 'handoff\tdone\tcarried\t%s\nhandoff\tqueued\tnext thing\t%s\nhandoff\tegor\thook x\t%s\nhandoff\tegor\this call\t%s' \
+  "$HO/2026-01-01-carried.md" "$HO/2026-01-01-next-thing.md" "$SPEND_LEDGER" "$HO/2026-01-01-his-call.md")" ]
+mv "$WORK/night-copy" "$(record "$id2")"
+rm -r "$WORK/repo/docs" "$SPEND_LEDGER"
 
 # Per job the code lines its commits add and remove, test paths left out, summed over its commits.
 mkdir -p "$WORK/repo/bin" "$WORK/repo/tests" "$WORK/repo/tools"
@@ -1252,7 +1268,7 @@ Opus spend          –       –       –
 vs all-Opus         –       –       –
 landed              2       1       1
 left                1       0       0
-needs Egor          0       1       0
+needs Egor          0       1       1
 worker runs         3       2       0
 worker wall    10.0 h       –   0.0 h
 model active     10 %       –       –
@@ -1277,6 +1293,10 @@ assert [ "$(head -1 "$WORK/table-block" | wc -w | tr -d ' ')" = 6 ]
 assert grep -qxE 'suites ✓/✗ +– +– +15/1' "$WORK/table-block"
 assert_fails grep -qE '[0-9a-f]{7,}' "$WORK/table-block"
 assert [ "$(body "$WORK/table-report" | head -1)" = "duration · 05 Feb 00:00 – 05 Feb 03:30 · 3.5 h" ]
+# Behind the table, the per-direction block: open P1, P2, closed tonight, share of fixer spend, nights to plateau.
+sed '1,/^$/d' "$WORK/table-report" | sed '/^$/,$d' >"$WORK/ways-block"
+assert [ "$(cat "$WORK/ways-block")" = "          P1   P2   ✓   fixers   to plateau
+harness    –    –   1        –            –" ]
 
 # Fixture night on the per-repository count: review-bench's review-anchors/review-debt and
 # claude-setup's span-off, from their checkouts (REVIEW_BENCH_ROOT, CLAUDE_SETUP_ROOT).
@@ -1417,7 +1437,7 @@ assert [ "$(cat "$DATA/snap-ran")" = ran ]
 assert grep -q "snap/bin/night-snapshot failed" "$WORK/snap.err"
 night report --post >"$WORK/report-post" || fail "report --post"
 assert [ "$(head -1 "$WORK/report-post")" = 'table · posted to the chat as the night block; the final message does not retype it' ]
-night report | sed '1,/^$/d' | cmp -s - <(sed '1,/^$/d' "$WORK/report-post") || fail "report --post prints the rest of the report"
+night report | body | cmp -s - <(body "$WORK/report-post") || fail "report --post prints the rest of the report"
 assert [ "$(wc -l <"$DATA/bus-docs" | tr -d " ")" = 1 ]
 night report >"$WORK/report" || fail "report"
 table=$(sed '/^$/q' "$WORK/report")
@@ -1428,6 +1448,13 @@ assert jqe --arg w "night · $(head -1 <<<"$table" | sed -E 's/.* {3,}//')" \
 assert grep -qE '^post --kind notice --id night-report-[0-9]+-[0-9]+$' "$DATA/bus-args"
 rendered=$(python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs") || fail "the report block renders"
 assert [ "$(wc -l <<<"$rendered" | tr -d ' ')" = "$(($(jq '.rows | length' "$DATA/bus-docs") + 2))" ]
+rm "$DATA/bus-docs"
+TZ=UTC DOCTORS_DIR="$TB/doctors" WORKER_RUN_DIR="$TB/runs" CLAUDEB_PROFILES_ROOT="$TB/profiles" \
+  WORKER_STATS_DIR="$TB/stats" NIGHT_RUN_SWEEP_REPOS="$TB/sweep-repos" CHAT_NAME_ROOTS="$TB/profiles" \
+  CHAT_NAMES_CACHE="$TB/chat-names.json" night report --post 20260205T000000Z-abcd >"$WORK/ways-post" || fail "ways --post"
+assert jqe -s '[.[].word] == ["night · 5 Feb", "night · directions"] and [.[1].rows[][0]] == ["", "harness"]' "$DATA/bus-docs"
+assert_fails grep -qF 'to plateau' "$WORK/ways-post"
+tail -1 "$DATA/bus-docs" | python3 "$ROOT/share/report_frame.py" block >/dev/null || fail "the directions block renders"
 unset NIGHT_RUN_REPORT_BUS
 
 # Speed window: a Speed fixer's first start past 6 h of the night's start leaves its job and abandons its

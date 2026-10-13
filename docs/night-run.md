@@ -250,51 +250,49 @@ failed price prints `?`); keep is `live` or `held` by the same predicate as `lef
 repository outside the sweep list too. `--post` sends the same lines as one report-bus `notice` block
 (word `survey`), so the sweep's messages carry facts printed by the machine.
 
-`night-run report [<id>] [--post]` prints it narrowly. First the comparison table from `share/time_budget.py table`,
-the numbers block of the morning message, which `--post` also sends to the chat as one report-bus
-`notice` block (word `night · <date>`, cells right-aligned in compact columns): one column per night, this one and the two
-previous finished nights that had jobs (a night with none is skipped), oldest left, local dates as heads
-(with the time when two share a date). Rows are facts the stores already hold: duration;
-Opus-eq spend in total and by fixers / reviews / orchestrator; merged, left and blocked-on-egor jobs;
-worker runs, their wall, model-active share, hours queued for slots and in their own tests (the ledger's
-split); each doctor's problem count before → after; lines changed by the night's jobs (code and tests);
-week-old lines rewritten; the full suites run's PASS/FAIL, summed over repositories. A value with no
-source is `–`. No ids, no chat names;
-a blank line closes it. Then a mechanical header from `share/night_spend.py`: duration; jobs landed / left /
-other by kind; the worker runs the night's orchestrator sessions launched inside its window, by vendor/served
-model, with wall hours; the review rounds of the night's session; spend of fixers, reviews and orchestrator in
-Opus-eq by model, with its ratio to the newest earlier finished night, e.g. `spend fixers · 1.2M Opus-eq (opus
-0.5M · sonnet 0.4M · haiku 0.3M)`. Prices are token-map's `tokenmap/pricing.py` (`TOKENMAP_ROOT` overrides;
-absent, the report fails), Opus input = 1; sources are each run's transcript (a message counted once across a
-RESUME), the benches' usage journals and the orchestrator transcript inside the window. Then one line per job,
-then the totals. A job with commits
-shows `code +A/-R`: lines its commits add and remove, test paths (`tests/`, `test_*`) left out;
-`code ?` when a commit cannot be read. Information only: no threshold. Then `debt now` per sweep
-repository: `review-debt --repo --split` at report time (`NIGHT_RUN_REVIEW_DEBT`), the whole and the due
-part, `unknown` when unreadable.
+`night-run report [<id>] [--post]` prints it narrowly. First the morning numbers blocks, each closed by a blank line, no
+ids or chat names, `–` for no source; `--post` sends each to the chat as a report-bus `notice` block instead:
+- `time_budget.py table` (word `night · <date>`): this night and the two previous finished nights with jobs,
+  oldest left, local dates as heads (with the time when two share one). Rows: duration;
+  Opus-eq spend in total and by fixers / reviews / orchestrator; merged, left jobs; `needs Egor`, every open trade
+  to him once (`handoffs.py --trades`: unanswered blocked-on-egor jobs, handoffs whose Status reads trade, audit rows
+  with verdict `trade`, doctor rows with `needs_egor`; rows naming one handoff are one, a settled one none), stored
+  at the close; worker runs, wall, model share, slot queue, own tests; problems per doctor; job lines; week-old
+  rewrites; suites ✓/✗.
+- `time_budget.py directions` (`night · directions`): per direction open P1, P2 at the close, ✓ jobs landed or ruled
+  out, % of fixer spend (runs by night worktree), nights to plateau (open / closed a night over the nights that
+  recorded it, `–` once grown or none closed); all-zero rows left out; kept in the ledger row's `directions`.
+- `time_budget.py pool` (`night · improvement pool`): open, done, proven, kept, trade per class, totals last: spend,
+  suite, cpu (audit ledger, Speed's due selections and proofs), harness, logs (harness ledger).
 
-Behind the spend lines, an observational churn block from `share/night_churn.py` measures whether the
-night did real work or churn: per-branch review rounds versus other rounds; problems touched again without
-proof and regressions across doctor runs against the night's problem snapshots (`doctor_problems_before`
-and `doctor_problems_after`); fixer spend on runs that left every decided problem unproven; and lines deleted
-tonight that were written in the 7 days prior (with earlier night commits noted). It gates nothing.
+Then `share/night_spend.py`'s header: duration; jobs landed / left / other by kind; the worker runs the
+orchestrator sessions launched in the window, by vendor/served model, with wall hours; the session's review rounds;
+spend of fixers, reviews and orchestrator in Opus-eq by model against the newest earlier finished night, priced by
+token-map's `tokenmap/pricing.py` (`TOKENMAP_ROOT`; absent, the report fails), Opus input = 1, from each run's
+transcript (a message once across a RESUME), the benches' usage journals and the orchestrator transcript in the window. Then a line per job and the
+totals; a job with commits shows `code +A/-R` (test paths `tests/`, `test_*` left out), `code ?` when a commit is
+unreadable. Then `debt now` per sweep repository: `review-debt --repo --split` (`NIGHT_RUN_REVIEW_DEBT`), whole and
+due, `unknown` when unreadable.
 
-Last, the ledger from `share/time_budget.py night`: one line for the night (duration; worker wall from each
-run's `pid_started_at`, never the slot-restamped `started_at`, split into model time, slot queue and the run's
-own suites from the run-suites journal; code and test lines of the job commits and of other commits on the
-sweep repositories' HEAD inside the window; week-old rewrites; problems before → after, proved, regressed,
-touched again without proof; spend, plus what was deferred: a debt round left or absent), then one trend line
-per night for the last 7, oldest first, and their problem direction. A finished night's row is cached in
-`${DOCTORS_DIR}/night-ledger/<id>.json`, so it outlives the 7-day run directories and 8-day event files;
-a cached row without `spend_unit` `Opus-eq` has its spend re-priced live once (a pruned store reads lower). The `roi ·` lines close it: each improvement
-job (a fixer whose problem is a Speed or time row) as what · spend · lines · before → after unit · verdict · gain a
-day, then the night's and the trend's totals (rules in `docs/speed-doctor-design.md` §3 ROI).
+Behind the spend lines, `share/night_churn.py`'s churn block, gating nothing: per-branch versus other review rounds;
+problems touched again without proof and regressions against `doctor_problems_before`/`_after`; fixer spend on runs
+leaving every decided problem unproven; lines deleted tonight written in the prior 7 days.
 
-The Doctors menu shows the last night on one row from `night-run latest --menu`, such as
-`Last night 30 Sep: 11 of 13 · 2 unfinished`; its submenu lists every job, done or unfinished, with
-the reason in a few words and the whole reason one level down. The state is the color, not words: a
-job done and pushed is a dim name alone (one with nothing to do keeps those words), one still owing work (unfinished, in
-progress, not pushed) is plain with its word, red only where Egor is needed: a job blocked on him
-or a failed launch. Output: a title line `text\ttone\trunning\tid`, then one
-`text\ttone\treason\tref\tkind\tresumable` line per job (`tone` 0 dim, 2 plain, 1 red;
-`resumable` 1 for an unfinished job of a night that does not run).
+Last, `share/time_budget.py night`'s ledger: one line for the night (duration; worker wall from each run's
+`pid_started_at`, never the restamped `started_at`, split into model, slot queue and own suites; code and test lines
+of the job commits and of other commits on the sweep HEADs in the window; week-old rewrites; problems before → after,
+proved, regressed, touched again without proof; spend and what was deferred), then a trend line per night for the
+last 7, oldest first, and their problem direction. A finished night's row is cached in
+`${DOCTORS_DIR}/night-ledger/<id>.json` (outliving 7-day runs and 8-day events); one without `spend_unit` `Opus-eq`
+is re-priced live once, one without `directions` gains them once. The `roi ·` lines close it: each improvement job (a
+fixer on a Speed or time row) as what · spend · lines · before → after unit · verdict · gain a day, then the night's
+and the trend's totals (`docs/speed-doctor-design.md` §3 ROI).
+
+The Doctors menu's last-night row comes from `night-run latest --menu`, e.g. `Last night 30 Sep: 11 of 13 · 2
+unfinished`; its submenu lists every job with its reason in a few words (whole one level down), then `✓ done`,
+`→ queued` and red `! To: Egor` handoff rows with a count, each title one level down to its doc (`handoffs.py
+--night`: the night's carried handoffs by their Status, open ones, the trades). Color is the state: done and pushed
+is a dim name (nothing to do keeps those words), owing work (unfinished, in progress, not pushed) plain with its word,
+red only where Egor is needed (blocked on him, failed launch). Output: `text\ttone\trunning\tid`, then
+`text\ttone\treason\tref\tkind\tresumable` per job (`tone` 0 dim, 2 plain, 1 red; `resumable` 1 for an unfinished
+job of a night not running), then `handoff\tphase\ttitle\tpath` per handoff.
