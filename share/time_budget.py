@@ -72,7 +72,7 @@ UNITS = {"suite_run": ("wall-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_R
          "suite_wait": ("s/wait", 20, 0.4, "min/day", 60.0), "slot": ("s/wait", 20, 0.4, "min/day", 60.0),
          "locks": ("s/wait", 20, 0.4, "min/day", 60.0), "refusal": ("s/day", REFUSAL_PROOF_DAYS, REFUSAL_PROOF_RATIO, "min/day", 60.0)}
 UNIT_STAT = {"refusal": statistics.mean}
-LOAD_MATCHED, LOAD_CONTROLS = ("suite_run", "hooks", "stop"), 3
+LOAD_MATCHED, LOAD_CONTROLS = ("suite_run", "hooks", "stop"), suite_audit.LOAD_CONTROLS
 SLOWER_RATIO = 1.3
 MEASURERS = ("bin/harness-doctor", "bin/speed-doctor", "share/suite_audit.py", "share/time_budget.py")
 MEASURER_SUITES = {"test_" + os.path.splitext(os.path.basename(p))[0].replace("-", "_") for p in MEASURERS}

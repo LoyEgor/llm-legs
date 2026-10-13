@@ -2,11 +2,13 @@
 repositories priced and ranked at wall-min/day over 7 days of run-suites' journal (every runner), CPU-min/day beside
 it: a suite idles most of its wall, so CPU alone misses it. A run's wall is its fastest of the last 20 passing runs
 (`wall_floor`): contention swamps the median. Test health's dead suites join the queue. An audit is due when never
-done, when the suite or a tests/ helper it names has another blob than at audit, or when its wall per run reached 2x
-the audit's; a rise of 2x and 30 s between commits, or a new suite over 3x the median suite per run, is due at once
-and names its commit. Audit rows live in Spend's ledger (share/spend-ledger.json) as
-`suite:<repo>/<label>`."""
+done, when the suite or a tests/ helper it names has another blob than at audit that a Speed audit run did not land
+(spend.moved), or when its wall per run reached 2x the audit's; a rise of 2x and 30 s between commits beyond the
+machine's slowdown over the same spans (`load`), or a new suite over 3x the median suite per run, is due at once and
+names its commit. A suite under FLOOR_MIN_DAY wall-min/day is never due but dead, and the head counts the ones that
+floor skipped. Audit rows live in Spend's ledger (share/spend-ledger.json) as `suite:<repo>/<label>`."""
 
+import bisect
 import datetime
 import os
 import re
@@ -27,7 +29,9 @@ WALL_RISE = 2.0
 JUMP_S = 30.0
 NEW_HEAVY = 3.0
 SIDE_RUNS = 3
+LOAD_CONTROLS = 3
 SHOWN = 10
+FLOOR_MIN_DAY = 1.0
 # The fastest of 5 passing runs against the fastest of the 20 before it on the same suite: p5 0.65 across runs.jsonl
 # (2026-10-02..09), so a smaller ratio is no noise; the median's p5 is 0.27, and its p95 rise 3.2 (CPU's: 0.76, 1.27).
 # The fastest of 20 against the 20 before rises past 1.9 in 5 % of windows over 20 s, hence WALL_RISE.
@@ -125,8 +129,9 @@ def passing(history):
     return [h for h in history if h["ok"]] or history
 
 
-def jump(history):
-    """The first run of a commit after which every run's wall stayed >= 2x and >= 30 s over the fastest before it."""
+def jump(history, load=lambda before, after: 1.0):
+    """The first run of a commit after which every run's wall stayed >= 2x and >= 30 s over the fastest before it,
+    the after side divided by load(before runs, after runs)."""
     history = passing(history)
     walls = [h["wall"] for h in history]
     if len(walls) < 2 * SIDE_RUNS or max(walls) < JUMP_S:
@@ -139,10 +144,49 @@ def jump(history):
         if i < SIDE_RUNS or len(walls) - i < SIDE_RUNS:
             continue
         before, after = min(walls[:i]), min(walls[i:])
-        if after >= WALL_RISE * before and after - before >= JUMP_S and (not best or after - before > best[0]):
-            best = (after - before, h, before, after)
+        if after >= WALL_RISE * before and after - before >= JUMP_S:
+            factor = load(history[:i], history[i:])
+            if after / factor >= WALL_RISE * before and after / factor - before >= JUMP_S \
+                    and (not best or after / factor - before > best[0]):
+                best = (after / factor - before, h, before, after, factor)
     return best and {"at": best[1]["end"], "head": best[1]["head"], "before": round(best[2], 1),
-                     "after": round(best[3], 1), "prev": history[history.index(best[1]) - 1]["head"]}
+                     "after": round(best[3], 1), "load": round(best[4], 2),
+                     "prev": history[history.index(best[1]) - 1]["head"]}
+
+
+def controls(found, lo):
+    """{key: (ends, walls, changes)}: each run suite's passing runs and the commit times since lo of its sources."""
+    changed = {}
+    for top in {c["top"] for c in found}:
+        at = None
+        for line in git(top, "log", "--since=@%d" % lo, "--format=@%ct", "--name-only").splitlines():
+            if line.startswith("@") and line[1:].isdigit():
+                at = float(line[1:])
+            elif line and at:
+                changed.setdefault((top, line), []).append(at)
+    out = {}
+    for c in found:
+        if c["history"]:
+            runs_ = passing(c["history"])
+            out[c["key"]] = ([h["end"] for h in runs_], [h["wall"] for h in runs_],
+                             [t for p in c["sources"] for t in changed.get((c["top"], os.path.relpath(p, c["top"])), ())])
+    return out
+
+
+def load(controls, key, before, after):
+    """The machine's slowdown across a rise's two sides: the median, over the other suites whose sources no commit
+    changed between the runs compared, of their fastest run in the after side's span over their fastest in the before
+    side's since their last change, SIDE_RUNS runs a side; 1 under LOAD_CONTROLS of them or when they ran no slower."""
+    spans = [[before[0]["end"], before[-1]["end"]], [after[0]["end"], after[-1]["end"]]]
+    ratios = []
+    for other, (ends, walls, changes) in controls.items():
+        last = max((t for t in changes if t <= spans[1][1]), default=0.0)
+        if other == key or last > spans[0][1]:
+            continue
+        sides = [walls[bisect.bisect_left(ends, max(lo, last)):bisect.bisect_right(ends, hi)] for lo, hi in spans]
+        if min(map(len, sides)) >= SIDE_RUNS and min(sides[0]) > 0:
+            ratios.append(min(sides[1]) / min(sides[0]))
+    return max(1.0, statistics.median(ratios)) if len(ratios) >= LOAD_CONTROLS else 1.0
 
 
 def price(rows, found):
@@ -200,23 +244,24 @@ def culprit(c, rise):
     return commit(c["top"], found or rise["head"])
 
 
-def due(c, row, held, median, new, dead=None):
+def due(c, row, held, median, new, dead=None, timed=None, memo=None):
     """(reason, at once, since): since is when the reason arose, so an audit recorded after it settles it."""
     audited = epoch((row or {}).get("audited_at")) or 0.0
     if dead and (not row or audited < dead["since"]):
         return dead.get("kind", "dead") + ": " + dead["reason"], False, dead["since"]
-    rise = jump(c["history"])
+    rise = jump(c["history"], lambda before, after: load(timed or {}, c["key"], before, after))
     if rise and rise["at"] > audited:
         c["commit"] = culprit(c, rise)
-        return ("wall a run ×%.1f (%d → %d s) since %s" % (rise["after"] / rise["before"] if rise["before"] else 0,
-                                                         rise["before"], rise["after"], c["commit"]), True, rise["at"])
+        return ("wall a run ×%.1f (%d → %d s%s) since %s" % (
+            rise["after"] / rise["load"] / rise["before"] if rise["before"] else 0, rise["before"], rise["after"],
+            ", machine ×%.1f" % rise["load"] if rise["load"] > 1 else "", c["commit"]), True, rise["at"])
     new = not row and median and c["wall_floor"] > NEW_HEAVY * median and new.get(c["path"])
     if new:
         c["commit"] = commit(c["top"], new[0])
         return "new suite at ×%.1f the median suite a run, added in %s" % (c["wall_floor"] / median, c["commit"]), True, new[1]
     if not row:
         return "never audited", False, 0.0
-    if spend.moved(row, held):
+    if spend.moved(row, held, os.path.dirname(c["top"].rstrip("/")), memo):
         return "source changed", False, changed_at(c["top"], c["sources"], held, row)
     then = row.get("wall_run")
     if isinstance(then, (int, float)) and then > 0 and c["wall_floor"] >= WALL_RISE * then:
@@ -276,16 +321,21 @@ def collect(now, journal, root, dead=None):
     ledger = spend.load_ledger(root)
     median = statistics.median([c["wall_floor"] for c in found if c["runs"]] or [0.0])
     at = datetime.datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds")
-    reasons, new = {}, {}
+    reasons, new, memo = {}, {}, {}
     for top in {c["top"] for c in found if c["wall_floor"] > NEW_HEAVY * median}:
         new.update(adds(top, lo))
     for c in found:
         c["sources"] = sources(c["path"])
+    timed, skipped = controls(found, lo), 0
+    for c in found:
         row = ledger.get(ROW + c["key"])
         held = spend.blobs(c["sources"]) if row else {}
         held = None if held is None else {spend.repo_path(p, os.path.dirname(c["top"].rstrip("/"))): h
                                           for p, h in held.items()}
-        reasons[c["key"]] = due(c, row, held, median, new, dead.get(c["key"]))
+        reasons[c["key"]] = due(c, row, held, median, new, dead.get(c["key"]), timed, memo)
+        if reasons[c["key"]] and c["wall_min_day"] < FLOOR_MIN_DAY and c["key"] not in dead:
+            reasons[c["key"]] = None
+            skipped += 1
         if row and not reasons[c["key"]]:
             out["proofs"][c["key"]] = dict(proof(c, row), verdict=row.get("verdict"), audited_at=row.get("audited_at"))
     queue = sorted((c for c in found if reasons[c["key"]]), key=lambda c: (-c["wall_min_day"], c["key"]))
@@ -296,8 +346,9 @@ def collect(now, journal, root, dead=None):
     workers = sum(c["wall_p50"] for c in found for h in c["history"] if h["worker"])
     out.update(status="watch" if queue else "ok", cpu_min_day=round(cpu, 1), wall_min_day=round(total, 1),
                components=[{k: c[k] for k in ("key", "wall_min_day", "cpu_min_day", "p50", "runs")} for c in found],
-               head="%d due · %.0f wall-min/day, %.0f CPU-min/day over %d suites · workers %d %%%s" % (
-                   len(queue), total, cpu, len(found), round(100 * workers / (total * WINDOW_D * 60)) if total else 0,
+               head="%d due%s · %.0f wall-min/day, %.0f CPU-min/day over %d suites · workers %d %%%s" % (
+                   len(queue), " · %d under %g wall-min/day skipped" % (skipped, FLOOR_MIN_DAY) if skipped else "",
+                   total, cpu, len(found), round(100 * workers / (total * WINDOW_D * 60)) if total else 0,
                    " · next: " + queue[0]["key"] if queue else ""))
     out["menu"] = lines(found, ledger, reasons, out["proofs"])
     return out
@@ -308,7 +359,8 @@ def lines(found, ledger, reasons, proofs):
     for c in found[:SHOWN]:
         why, row = reasons[c["key"]], ledger.get(ROW + c["key"])
         tail = "audit due: " + why[0] if why else "%s %s · %s" % (row.get("verdict"), str(row.get("audited_at"))[:10],
-                                                                 proof_text(proofs[c["key"]]))
+                                                                 proof_text(proofs[c["key"]])) if row else \
+            "under the %g wall-min/day floor" % FLOOR_MIN_DAY
         out.append([0, "" if why else "d", False, "%6.1f wall-min/day · %5.1f CPU-min/day · %4s wall-s a run · %s · %s" % (
             c["wall_min_day"], c["cpu_min_day"], fmt(c["wall_floor"]), c["key"], tail)])
     rest = found[SHOWN:]

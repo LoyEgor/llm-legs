@@ -334,7 +334,10 @@ Harness doctor (added 2026-09-29 by its owner chat):
   (`harness_index.sources`) by its share of Fee. `spend.selection` lists every due
   audit, area `speed-spend-<component>`; `spend.proofs` (share, part price at audit) feed night `roi` lines.
   `cpu` (`share/cpu_audit.py`): `cpu:<component>` rows, group `CPU audits`, own, wasted CPU-min/day, due as
-  Spend's.
+  Spend's, never under 1 CPU-min/day (`FLOOR_MIN_DAY`; the head counts the rows it skipped). In every audit block a
+  source moved only by `merge …harness-speed-…` landings (main's reflog) since the audit's run started, or since the
+  last main commit holding its recorded blob, reopens nothing (`spend.moved`); any other commit or an uncommitted
+  edit does.
   Its `tests` (`share/test_health.py`, design § Test health) is the Test health block in Speed's menu lines and
   `opportunity:test-health/...` problems in min/day, its lines over their usual `regression:test-health/<line>` rows;
   its `candidates` (dead and pinned suites) feed `suites`.
@@ -342,7 +345,10 @@ Harness doctor (added 2026-09-29 by its owner chat):
   suite of the sweep and night helper repositories priced at wall-min/day, CPU-min/day beside it (its last 20 runs' median wall and CPU times its runs over 7 days of run-suites' journal, every
   runner), due when a Test health candidate is dead or pinned and unaudited since, never audited, the suite or a tests/ helper it names has another blob, or wall
   a run (the fastest of the last 20 passing runs; CPU stays a column) ≥ 2× the audit's; every run after a commit ≥ 2× and ≥ 30 s
-  over the fastest before it, or a new suite (not a split) over 3× the median suite a run, is due at once and names its commit. `suites.selection` is the queue by wall-min/day; a night takes the first its red test rules do not hold, area `speed-suite-audit-<repo>-<suite>`,
+  over the fastest before it once divided by the machine's slowdown (`load`: the median, over ≥ 3 suites whose sources
+  no commit changed between the runs compared, of their fastest after over fastest before; ≥ 1), or a new suite (not
+  a split) over 3× the median suite a run, is due at once and names its commit. A suite under 1 wall-min/day
+  (`FLOOR_MIN_DAY`) is never due unless dead or pinned; the head counts the ones skipped. `suites.selection` is the queue by wall-min/day; a night takes the first its red test rules do not hold, area `speed-suite-audit-<repo>-<suite>`,
   brief header `STRONG: yes` (worker-run refuses Light and Gemini Flash). Audits are `suite:<repo>/<suite>` rows of
   `share/spend-ledger.json` (`bin/speed-doctor --suite-audit`), proven once the fastest of 5 runs after it reads ≤ 0.65× its wall a run (its fastest of 20).
   A night's `roi` line proves a suite, hook or wait improvement per unit (median wall-s a run, hook ms a call,

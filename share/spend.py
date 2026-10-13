@@ -19,6 +19,7 @@ GROUP = "Spend"
 DAYS_KEPT = 35
 VERDICTS = ("cut", "kept", "trade")
 TOKENMAP_S = 180
+SPEED_LANDING = re.compile(r"^merge \S*harness-speed-")
 
 
 def tracking_path(home):
@@ -130,18 +131,111 @@ def blobs(paths):
     return dict(zip(real, hashes)) if len(hashes) == len(real) else None
 
 
-def moved(row, held):
-    """held None: git could not hash, so nothing moved; a source recorded None was absent at audit (a cut)."""
+def moved(row, held, repos=None, memo=None):
+    """held None: git could not hash, so nothing moved; a source recorded None was absent at audit (a cut). Given
+    repos (the directory the source keys are under), a source only Speed audit runs moved does not count."""
     if held is None:
         return False
     recorded = row.get("sources") if isinstance(row.get("sources"), dict) else {}
-    return {p: h for p, h in recorded.items() if h is not None} != held
+    recorded = {p: h for p, h in recorded.items() if h is not None}
+    if recorded == held or repos is None:
+        return recorded != held
+    return foreign({p for p in set(recorded) | set(held) if recorded.get(p) != held.get(p)}, recorded,
+                   run_start(row), repos, {} if memo is None else memo)
 
 
-def due(component, row, held):
+def run_start(row):
+    """When the audit's run started, off the UTC stamp in its `by` (a night worktree is main as of then), else its
+    audit time."""
+    audited = epoch(row.get("audited_at"))
+    stamp = re.search(r"\d{8}T\d{6}Z", str(row.get("by") or ""))
+    started = datetime.datetime.strptime(stamp.group(), "%Y%m%dT%H%M%SZ").replace(
+        tzinfo=datetime.timezone.utc).timestamp() if stamp else None
+    return min(started, audited) if started and audited else audited
+
+
+def foreign(keys, recorded, since, repos, memo):
+    """Whether anything but a Speed audit run moved these sources (keys under repos) since its run started: a moved
+    source counts unless every commit main took after the last one holding its recorded blob (none: every one since)
+    came in a Speed audit landing, at least one did, and it has no uncommitted change. An audit records its night
+    worktree's blobs, so its own rebased landing, sibling audits' edits and siblings landed on main after the
+    worktree's base always differ from them. Unknown (no audit time, a path outside repos, no reflog) reads as
+    moved."""
+    if not since:
+        return True
+    for key in keys:
+        name, _, rel = key.partition("/")
+        found = None if os.path.isabs(key) or not rel else landings(os.path.join(repos, name), since, memo)
+        if found is None or rel in found["dirty"] or any(rel.startswith(d) for d in found["dirty"] if d.endswith("/")):
+            return True
+        moves = [m for m in found["files"].get(rel, ()) if m[0] >= since]
+        held = [i for i, m in enumerate(moves) if m[2] == recorded.get(key)]
+        after = moves[held[-1] + 1:] if held else moves
+        if not after or not all(m[1] for m in after):
+            return True
+    return False
+
+
+def landings(top, since, memo):
+    """{"files": {path: [(landed_at, by_speed, blob)]}, "dirty": {path}} of top's main checkout: every commit main
+    took after `since`, oldest first, with the blob it left each path at, off main's reflog: a move lands the
+    first-parent commits after the move before it; a `merge …harness-speed-…` move is a Speed audit run's landing.
+    None without a reflog."""
+    held = memo.get(top)
+    if held is not None and held[0] <= since:
+        return held[1]
+    memo[top] = (since, None)
+    ref = git_lines(top, "symbolic-ref", "-q", "HEAD")
+    moves = []
+    for line in git_lines(top, "log", "-g", "--date=unix", "--format=%H %gd %gs", ref[0]) or () if ref else ():
+        stamp = re.match(r"(\w+) \S*@\{(\d+)\} ?(.*)", line)
+        if stamp:
+            moves.append((stamp.group(1), int(stamp.group(2)), bool(SPEED_LANDING.match(stamp.group(3)))))
+    kept = [m for m in moves if m[1] >= since]
+    base = next((m[0] for m in moves if m[1] < since), None)
+    if not kept or base is None and len(kept) < 2:
+        return None
+    if base is None:
+        base = kept.pop()[0]
+    order, files = [], {}
+    for line in git_lines(top, "log", "--first-parent", "-m", "--no-renames", "--no-abbrev", "--format=%x01%H",
+                          "--raw", "%s..%s" % (base, kept[0][0])) or ():
+        if line.startswith("\x01"):
+            order.append(line[1:])
+        elif line.startswith(":") and "\t" in line and order:
+            files.setdefault(order[-1], []).append((line.split("\t", 1)[1], line.split()[3]))
+    status = git_lines(top, "status", "--porcelain", "--no-renames")
+    if status is None:
+        return None
+    order.reverse()
+    pos, landed = {c: i for i, c in enumerate(order)}, {}
+    for sha, at, speed in reversed(kept):
+        i = pos.get(sha, -1)
+        while i >= 0 and order[i] not in landed:
+            landed[order[i]] = (at, speed)
+            i -= 1
+    out = {"files": {}, "dirty": {line[3:] for line in status if len(line) > 3}}
+    for commit in order:
+        for path, blob in files.get(commit, ()) if commit in landed else ():
+            out["files"].setdefault(path, []).append(landed[commit] + (blob,))
+    memo[top] = (since, out)
+    return out
+
+
+def git_lines(top, *args):
+    try:
+        out = subprocess.run(["git", "-C", top] + list(args), capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as error:
+        limit_hit.expired("probe.git", error, "main's landings in %s: sources read as moved" % top,
+                          'share/spend.py:["git", "-C", top] + list(args)')
+        return None
+    return out.stdout.splitlines() if out.returncode == 0 else None
+
+
+def due(component, row, held, repos=None, memo=None):
     if not row:
         return "never audited"
-    if moved(row, held):
+    if moved(row, held, repos, memo):
         return "source changed"
     if row.get("verdict") == "cut" and (epoch(component.get("last")) or 0) > (epoch(row.get("audited_at")) or 0):
         return "still loading after the cut"
@@ -289,8 +383,9 @@ def collect(now, state, write, home, repos, root, local_day):
     found = components(payload, repos)
     rows = load_ledger(root)
     held = blobs([s for c in found if c["key"] in rows for s in c["sources"]])
+    memo = {}
     reasons = {c["key"]: due(c, rows.get(c["key"]), None if held is None else {
-        repo_path(s, repos): h for s, h in held.items() if s in c["sources"]}) for c in found}
+        repo_path(s, repos): h for s, h in held.items() if s in c["sources"]}, repos, memo) for c in found}
     proofs = {c["key"]: proof(c, rows[c["key"]], index, made) for c in found
               if c["key"] in rows and not reasons.get(c["key"])}
     at = datetime.datetime.fromtimestamp(made).astimezone().isoformat(timespec="seconds")

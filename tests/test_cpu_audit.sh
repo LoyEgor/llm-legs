@@ -2,7 +2,8 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/cpu_audit.py, the CPU audits block of the Speed doctor, off fixture statusline render and probe journals,
 # System doctor hours and doctor collector runs: each component's median over the days its own journal holds, the
-# rank, own processes only, the due rules (never, a source blob, x1.5 CPU-min/day), the zero option a record must
+# rank, own processes only, the due rules (never, a source blob a Speed landing did not move, x1.5
+# CPU-min/day, never under 1 CPU-min/day), the zero option a record must
 # carry, a kept audit closing its row with its proof, the restate a night close reads, and no live System hours under
 # a fixture Harness directory. Fixture directories only.
 set -u
@@ -13,7 +14,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 asserts=$(python3 - "$ROOT" "$WORK" <<'EOF'
-import datetime, json, os, sys, time
+import datetime, json, os, subprocess, sys, time
 
 root, work = sys.argv[1], sys.argv[2]
 count = [0]
@@ -77,19 +78,21 @@ check(shown["statusline/render"] == 1.5 and shown["statusline/work"] is None and
       and "statusline/render · 2.5 CPU-min/day · 1.5 wasted ·" in first["problems"][1]["fact"],
       "wasted is the median CPU of runs whose output equalled the previous one, unknown without a same column: %s"
       % shown)
-check(first["selection"] == ["cpu:" + k for k, _ in ranked]
+check(first["selection"] == ["cpu:" + k for k, v in ranked if v >= 1]
       and {p["cpu"]["due"] for p in first["problems"]} == {"never audited"}
       and all(p["rule"] == "cpu_audit" and p["unit"] == "% CPU" and p["group"] == "CPU audits"
-              for p in first["problems"]),
-      "every component never audited is due, no minimum, queued in rank order: %s" % first["selection"])
+              for p in first["problems"])
+      and first["menu"][-1][3].endswith("statusline/ports · under the 1 CPU-min/day floor"),
+      "every component never audited is due at 1 CPU-min/day or more, queued in rank order; one under it is never "
+      "due: %s" % first["selection"])
 check([os.path.relpath(s, repos) for s in first["problems"][1]["cpu"]["sources"]] == ["llm-legs/bin/statusline.sh"]
       and [os.path.relpath(s, repos) for s in first["problems"][3]["cpu"]["sources"]]
       == ["llm-legs/bin/statusline-work-probe.sh", "llm-legs/share/statusline-probe.sh"]
-      and [os.path.relpath(s, repos) for s in first["problems"][5]["cpu"]["sources"]] == ["claude-setup/hooks/gate.sh"]
+      and [os.path.relpath(s, repos) for s in cpu_audit.sources("hook/gate.sh", repos)] == ["claude-setup/hooks/gate.sh"]
       and [os.path.relpath(s, repos) for s in first["problems"][0]["cpu"]["sources"]] == ["hammerspoon/init.lua"],
       "a component names the sources a fixer opens: %s" % [p["cpu"]["sources"] for p in first["problems"]])
-check(first["head"] == "7 due · 18 CPU-min/day over 7 components · next: process/Hammerspoon",
-      "the block head: %s" % first["head"])
+check(first["head"] == "4 due · 3 under 1 CPU-min/day skipped · 18 CPU-min/day over 7 components · next: "
+      "process/Hammerspoon", "the block head counts the components the floor skipped: %s" % first["head"])
 
 state = {}
 collect(state)
@@ -127,6 +130,26 @@ write(os.path.join(repos, "llm-legs/bin/statusline.sh"), ["v2"])
 moved = {p["cpu"]["component"]: p["cpu"]["due"] for p in collect()["problems"]}
 check(moved.get("statusline/render") == "source changed", "a source with another blob reopens the audit: %s" % moved)
 record("statusline/render", "removal saves 2.5 CPU-min/day; loses every statusline")
+legs = os.path.join(repos, "llm-legs")
+git = lambda *args: subprocess.run(["git", "-C", legs] + list(args), check=True, capture_output=True, env=dict(
+    os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
+git("init", "-q")
+git("add", "-A")
+git("commit", "-qm", "v2")
+git("checkout", "-qb", "night/n/harness-speed-cpu-statusline-render-20261012T235118Z-55c2")
+write(os.path.join(legs, "bin/statusline.sh"), ["v3"])
+git("commit", "-qam", "the render audit's own rebased landing")
+git("checkout", "-q", "-")
+git("merge", "-q", "--ff-only", "night/n/harness-speed-cpu-statusline-render-20261012T235118Z-55c2")
+landed = {p["cpu"]["component"]: p["cpu"]["due"] for p in collect()["problems"]}
+write(os.path.join(legs, "bin/statusline.sh"), ["v4"])
+git("commit", "-qam", "a chat's edit")
+check("statusline/render" not in landed
+      and {p["cpu"]["component"]: p["cpu"]["due"] for p in collect()["problems"]}.get("statusline/render")
+      == "source changed",
+      "a source a Speed audit landing moved leaves its audit closed; a commit main took any other way reopens it: %s"
+      % landed)
+record("statusline/render", "removal saves 2.5 CPU-min/day; loses every statusline")
 render(1, "00000")
 risen = {p["cpu"]["component"]: p["cpu"]["due"] for p in collect()["problems"]}
 check(risen.get("statusline/render") == "CPU-min/day ×1.6 since audit",
@@ -150,4 +173,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the CPU audits block misjudged its fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; CPU audits price each component by its median over the days its own journal holds, rank own components (every own process System kept, hooks by script), price wasted CPU off the same column, judge audits due by never/source blob/x1.5 CPU-min/day, refuse a record with no zero option, close a kept audit with its proof and settle it for a night close, and never read live System hours under a fixture Harness directory\n' "$asserts"
+printf 'PASS: %s asserts; CPU audits price each component by its median over the days its own journal holds, rank own components (every own process System kept, hooks by script), price wasted CPU off the same column, judge audits due by never/source blob/x1.5 CPU-min/day over a 1 CPU-min/day floor (a Speed landing reopens nothing), refuse a record with no zero option, close a kept audit with its proof and settle it for a night close, and never read live System hours under a fixture Harness directory\n' "$asserts"

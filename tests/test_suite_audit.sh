@@ -2,7 +2,8 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/suite_audit.py, the Suite audits block of the Harness doctor, and time_budget's per-unit proof, off a fixture
 # repository and run-suites journal: pricing over every runner, the due rules (never, a source
-# blob, 2x wall a run, a rise between commits naming its commit, a new heavy suite, a split that is not new), the
+# blob a Speed landing did not move, 2x wall a run, a rise between commits beyond the machine's load naming its
+# commit, a new heavy suite, a split that is not new, a 1 wall-min/day floor), the
 # night's queue, a kept audit closing it with its proof, the restate a night close reads, the Harness menu block and
 # a night improvement proven per unit (suite wall a run, hook ms a call, gate recovery s a day; test health by its suite or file) once N samples follow it. Fixture directories
 # only.
@@ -117,6 +118,8 @@ ledger([])
 sys.path.insert(0, os.path.join(root, "share"))
 import suite_audit
 import time_budget
+
+suite_audit.FLOOR_MIN_DAY = 0.0
 
 
 def collect(now=NOW):
@@ -235,6 +238,38 @@ check(document["problem_count"] == 0 and all(p["group"] == "Suite audits" and p[
       and "1\t\t\t   2.0 wall-min/day ·   2.0 CPU-min/day ·   40 wall-s a run · alpha/test_heavy · audit due: %s"
       % heavy["due"] in lines,
       "Harness lays Suite audits beside Spend: watch rows counted nowhere, its block: %s" % lines[2:6])
+
+suite_audit.FLOOR_MIN_DAY = 1.0
+floored = suite_audit.collect(NOW, os.environ["RUN_SUITES_JOURNAL"], root, {"alpha/test_light": {
+    "reason": "names a gone file", "since": NOW - 60, "top": repo, "path": os.path.join(repo, "tests", "test_light.sh")}})
+suite_audit.FLOOR_MIN_DAY = 0.0
+check(floored["selection"] == ["suite_audit:alpha:test_heavy", "suite_audit:alpha:test_light"]
+      and floored["head"].startswith("2 due · 7 under 1 wall-min/day skipped · ")
+      and any(l[3].endswith("alpha/test_mid · under the 1 wall-min/day floor") for l in floored["menu"]),
+      "a suite under 1 wall-min/day is never due whatever its reason, a dead one aside, and the head counts the ones "
+      "skipped: %s %s" % (floored["selection"], floored["head"]))
+sides = [[NOW - back * 86400 + 60 + i * 600 for i in range(3)] for back in (6, 2)]
+machine = lambda after: [row(t, {n: cpu(w) for n in ("test_a", "test_b", "test_c")}, cheap)
+                         for side, w in zip(sides, (10, after)) for t in side]
+save(journal + machine(25))
+busy = {p["suite"]["component"]: p["suite"] for p in collect()["problems"]}["alpha/test_heavy"]
+save(journal + machine(12))
+slower = {p["suite"]["component"]: p["suite"] for p in collect()["problems"]}["alpha/test_heavy"]
+save(journal)
+check(busy["due"] == "never audited" and not busy["at_once"]
+      and slower["due"] == "wall a run ×2.1 (40 → 100 s, machine ×1.2) since %s «heavy waits a minute»" % dear[:7],
+      "a rise counts only beyond the machine's slowdown, the median of the untouched suites' over the same spans: 40 "
+      "→ 100 s while they ran 10 → 25 s is no rise, while they ran 10 → 12 s still one: %s / %s" % (busy, slower))
+spans = [{"end": 0.0}, {"end": 100.0}], [{"end": 200.0}, {"end": 300.0}]
+side = lambda w0, w1, changes: ([10.0, 20.0, 30.0, 210.0, 220.0, 230.0], [w0] * 3 + [w1] * 3, changes)
+late = ([10.0, 20.0, 30.0, 60.0, 70.0, 80.0, 210.0, 220.0, 230.0], [1.0] * 3 + [2.0] * 3 + [4.0] * 3, [50.0])
+mixed = dict({"u%d" % i: side(1.0, 2.0, []) for i in range(3)}, **{"t%d" % i: side(1.0, 1.0, [150.0]) for i in range(4)})
+check(suite_audit.load(mixed, "x", *spans) == 2.0
+      and suite_audit.load({"u": side(1.0, 2.0, []), "l1": late, "l2": late}, "x", *spans) == 2.0
+      and suite_audit.load(mixed, "u0", *spans) == 1.0
+      and suite_audit.load({k: side(2.0, 1.0, []) for k in ("a", "b", "c")}, "x", *spans) == 1.0,
+      "the load leaves out suites changed between the runs compared, reads a suite changed inside the before span "
+      "since its change, needs 3 controls besides the suite itself, and never reads under 1")
 
 item = {"ref": "night-x", "ids": ["test_slow:alpha:test_mid"], "class": time_budget.improvement_class(
     "suite_audit", "suite_audit:alpha:test_mid"), "spend_m": 1.5, "lines": [3, 9], "merged": True}
@@ -412,8 +447,27 @@ check(time_budget.improvement_class("opportunity", "opportunity:refusal/g.sh") =
                                  NOW + 3 * 86400)["proven"] is None,
       "a gate's refusal fix is proven by its recovery seconds a day, a silent day counting 0, a week after the night: "
       "%s %s" % (fixed, still))
+save(journal)
+fresh = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "fine",
+                           "removal saves 20 s a run; loses its checks", "night-x", [], NOW)
+ledger([dict(fresh, audited_at=datetime.datetime.fromtimestamp(NOW - 3600).astimezone().isoformat())])
+night_branch = "night/n/harness-speed-suite-audit-alpha-test-mid-20261012T235210Z-48fc"
+git("checkout", "-qb", night_branch)
+write("tests/helper.sh", "helper sped up\n")
+git("commit", "-qam", "the audit's own landing", at=NOW - 1800)
+git("checkout", "-q", "-")
+git("merge", "-q", "--ff-only", night_branch, at=NOW - 1800)
+reason = lambda: {p["suite"]["component"]: p["suite"]["due"] for p in collect()["problems"]}.get("alpha/test_mid")
+landed = reason()
+write("tests/helper.sh", "a local edit\n")
+dirty = reason()
+write("tests/helper.sh", "a chat's edit\n")
+git("commit", "-qam", "a chat's edit", at=NOW - 900)
+check(landed is None and dirty == reason() == "source changed",
+      "a helper only a Speed audit landing moved leaves the audit closed; an uncommitted edit or a commit main took any "
+      "other way reopens it: %s %s" % (landed, dirty))
 print(count[0])
 EOF
 ) || { printf 'FAIL: the Suite audits block misjudged its fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; Suite audits price every suite over every runner, judge audits due by never/source blob/2x wall a run, a rise between commits or a new heavy suite at once naming its commit (a split is not new), queue the night, close a kept audit with its proof, settle it for a night close, lay their block in Harness; a night improvement is proven per unit (suite wall a run, hook ms a call, gate recovery s a day; test health by its suite or file) once N samples follow it\n' "$asserts"
+printf 'PASS: %s asserts; Suite audits price every suite over every runner, judge audits due by never/source blob/2x wall a run over a 1 wall-min/day floor, a load-matched rise between commits or a new heavy suite at once naming its commit (a split is not new), queue the night, close a kept audit with its proof, settle it for a night close, lay their block in Harness; a night improvement is proven per unit (suite wall a run, hook ms a call, gate recovery s a day; test health by its suite or file) once N samples follow it\n' "$asserts"

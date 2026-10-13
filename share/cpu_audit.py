@@ -2,8 +2,9 @@
 median of its last 7 settled days (today alone before any), from journals the components already write: statusline
 renders and background probes, the System doctor's hourly CPU of own processes, doctor collector runs, hook runs.
 Wasted is the CPU of runs whose output equalled the previous run's (the statusline journals' same column). Due when
-never audited, a source has another blob than at audit, or CPU-min/day reached spend.SHARE_RISE x the audit's; no
-minimum. Rows live in Spend's ledger as `cpu:<component>`."""
+never audited, a source has another blob than at audit that a Speed audit run did not land (spend.moved), or
+CPU-min/day reached spend.SHARE_RISE x the audit's; never under FLOOR_MIN_DAY CPU-min/day, whatever the reason, and
+the head counts the rows that floor skipped. Rows live in Spend's ledger as `cpu:<component>`."""
 
 import datetime
 import glob
@@ -18,6 +19,7 @@ GROUP = "CPU audits"
 ROW = "cpu:"
 WINDOW_D = 7
 SHOWN = 10
+FLOOR_MIN_DAY = 1.0
 STATUSLINE = "llm-legs/bin/statusline.sh"
 PROBE_SOURCES = {"work": ("llm-legs/bin/statusline-work-probe.sh", "llm-legs/share/statusline-probe.sh"),
                  "ports": ("llm-legs/bin/statusline-ports-probe.sh", "llm-legs/share/statusline-probe.sh")}
@@ -139,10 +141,10 @@ def components(journals, today, repos):
     return sorted(out, key=lambda c: (-c["cpu_min_day"], c["key"]))
 
 
-def due(c, row, held):
+def due(c, row, held, repos, memo):
     if not row:
         return "never audited"
-    if spend.moved(row, held):
+    if spend.moved(row, held, repos, memo):
         return "source changed"
     then = row.get("cpu_min_day")
     if isinstance(then, (int, float)) and then > 0 and c["cpu_min_day"] >= spend.SHARE_RISE * then:
@@ -177,8 +179,11 @@ def collect(now, state, harness_dir, speed_dir, collector_rows, hook_runs, root,
         return out
     rows = spend.load_ledger(root)
     held = spend.blobs([s for c in found if ROW + c["key"] in rows for s in c["sources"]])
+    memo = {}
     reasons = {c["key"]: due(c, rows.get(ROW + c["key"]), None if held is None else {
-        spend.repo_path(s, repos): h for s, h in held.items() if s in c["sources"]}) for c in found}
+        spend.repo_path(s, repos): h for s, h in held.items() if s in c["sources"]}, repos, memo) for c in found}
+    skipped = [c["key"] for c in found if reasons[c["key"]] and c["cpu_min_day"] < FLOOR_MIN_DAY]
+    reasons.update(dict.fromkeys(skipped))
     at = datetime.datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds")
     out["problems"] = [problem(c, reasons[c["key"]], at) for c in found if reasons[c["key"]]]
     out["selection"] = [p["id"] for p in out["problems"]]
@@ -190,13 +195,18 @@ def collect(now, state, harness_dir, speed_dir, collector_rows, hook_runs, root,
     total = sum(c["cpu_min_day"] for c in found)
     out.update(status="watch" if out["problems"] else "ok", cpu_min_day=round(total, 1),
                components=[{k: c[k] for k in ("key", "cpu_min_day", "wasted_min_day", "runs_day", "cpu_s_run")} for c in found],
-               head="%d due · %.0f CPU-min/day over %d components%s" % (
-                   len(out["problems"]), total, len(found), " · next: " + out["problems"][0]["cpu"]["key"]
-                   if out["problems"] else ""))
+               head="%d due%s · %.0f CPU-min/day over %d components%s" % (
+                   len(out["problems"]), floor_text(len(skipped), "CPU-min/day"), total, len(found),
+                   " · next: " + out["problems"][0]["cpu"]["key"] if out["problems"] else ""))
     out["menu"] = [[0, "" if reasons[c["key"]] else "d", False, "%6.1f CPU-min/day · %6s wasted · %7d runs a day · %s · %s" % (
         c["cpu_min_day"], wasted(c), c["runs_day"], c["key"], "audit due: " + reasons[c["key"]] if reasons[c["key"]] else
-        proof_text(out["proofs"][c["key"]]))] for c in found[:SHOWN]]
+        proof_text(out["proofs"][c["key"]]) if c["key"] in out["proofs"] else "under the %g CPU-min/day floor" % FLOOR_MIN_DAY)]
+        for c in found[:SHOWN]]
     return out
+
+
+def floor_text(skipped, unit):
+    return " · %d under %g %s skipped" % (skipped, FLOOR_MIN_DAY, unit) if skipped else ""
 
 
 def proof_text(shown):
