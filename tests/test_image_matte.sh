@@ -10,15 +10,25 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/out" "$WORK/err" >&2 2>/dev/nu
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 UV=$(command -v uv || printf /opt/homebrew/bin/uv)
 matte() { "$UV" run -q --script "$ROOT/share/image_matte.py" "$@" >"$WORK/out" 2>"$WORK/err"; }
-pixel() { magick "$1" -alpha off -depth 8 -format "%[pixel:p{$2}]" info:; }
-alpha_at() { magick "$1" -alpha extract -depth 8 -format "%[fx:int(255*p{$2}+0.5)]" info:; }
+pixels() { # image x,y... -> its size, then each point's colour, alpha dropped, space-separated
+  local format='%wx%h' point image=$1
+  shift
+  for point; do format+=" %[pixel:p{$point}]"; done
+  magick "$image" -alpha off -depth 8 -format "$format" info:
+}
+alphas() { # image x,y... -> each point's alpha 0..255, space-separated
+  local format='' point image=$1
+  shift
+  for point; do format+="%[fx:int(255*p{$point}+0.5)] "; done
+  magick "$image" -alpha extract -depth 8 -format "$format" info:
+}
 channel_gap() { # image-a image-b x,y -> largest channel difference in 0..255
   magick "$1" "$2" -alpha off -crop "1x1+${3%,*}+${3#*,}" +repage -compose difference -composite \
     -format '%[fx:int(255*max(max(r,g),b)+0.5)]' info:
 }
 cutout_of() { # source dest: a Remove BG stand-in, reframed (x1.08, shifted), brighter, an ellipse of alpha
-  magick "$1" -virtual-pixel edge -distort SRT '240,180 1.08 0 252,170' -modulate 108 "$WORK/cut-rgb.png"
-  magick "$WORK/cut-rgb.png" \( -size 480x360 xc:black -fill white -draw 'ellipse 252,170 162,119 0,360' \) \
+  magick "$1" -virtual-pixel edge -distort SRT '240,180 1.08 0 252,170' -modulate 108 +write "$WORK/cut-rgb.png" \
+    \( -size 480x360 xc:black -fill white -draw 'ellipse 252,170 162,119 0,360' \) \
     -alpha off -compose CopyOpacity -composite "PNG32:$2"
 }
 
@@ -26,12 +36,15 @@ magick -size 480x360 -seed 3 xc: +noise Random -blur 0x2.5 -auto-level -alpha of
 cutout_of "$WORK/base.png" "$WORK/cut.png"
 assert matte --base "$WORK/base.png" --edited "$WORK/cut.png" --out "$WORK/out.png"
 assert grep -Eqx 'composite=matte changed=[0-9.]+%' "$WORK/out"
-assert test "$(magick identify -format '%wx%h' "$WORK/out.png")" = 480x360
-assert test "$(pixel "$WORK/out.png" 240,180)" = "$(pixel "$WORK/base.png" 240,180)"
-assert test "$(pixel "$WORK/out.png" 180,150)" = "$(pixel "$WORK/base.png" 180,150)"
-assert test "$(alpha_at "$WORK/out.png" 240,180)" = 255
-assert test "$(alpha_at "$WORK/out.png" 6,6)" = 0
-assert test "$(alpha_at "$WORK/out.png" 470,350)" = 0
+read -r size got_a got_b <<<"$(pixels "$WORK/out.png" 240,180 180,150)"
+read -r _ want_a want_b <<<"$(pixels "$WORK/base.png" 240,180 180,150)"
+read -r alpha_in alpha_corner alpha_far <<<"$(alphas "$WORK/out.png" 240,180 6,6 470,350)"
+assert test "$size" = 480x360
+assert test "$got_a" = "$want_a"
+assert test "$got_b" = "$want_b"
+assert test "$alpha_in" = 255
+assert test "$alpha_corner" = 0
+assert test "$alpha_far" = 0
 assert test "$(channel_gap "$WORK/out.png" "$WORK/base.png" 384,180)" -le 14
 assert test "$(channel_gap "$WORK/cut-rgb.png" "$WORK/base.png" 240,180)" -gt 0
 
@@ -61,7 +74,8 @@ assert grep -Eqx 'composite=matte changed=[0-9.]+%' "$WORK/out"
 assert grep -qx "rendered=$WORK/asked.rendered.png" "$WORK/out"
 assert grep -Eqx '\{"kind":"matte","changed":[0-9.]+,"reason":null\}' "$WORK/out"
 assert cmp "$WORK/cut.png" "$WORK/asked.rendered.png"
-assert test "$(pixel "$WORK/asked.png" 240,180)" = "$(pixel "$WORK/base.png" 240,180)"
+read -r _ asked_a <<<"$(pixels "$WORK/asked.png" 240,180)"
+assert test "$asked_a" = "$want_a"
 assert take "$WORK/default.png"
 assert test "$(grep -c '^composite=' "$WORK/out")" -eq 0
 assert grep -qx '{"kind":"skipped","changed":null,"reason":"transparent"}' "$WORK/out"
