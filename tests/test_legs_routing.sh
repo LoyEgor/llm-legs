@@ -120,9 +120,9 @@ cp "$ROOT/tests/fixtures/codexb-models.json" "$WORK/home/.codex-profiles/codex-w
 export CODEXB_MODELS_NO_REFRESH=1
 # The slug the roster names for the codex leg under this hermetic HOME; never a literal here, so a
 # roster release does not edit this test.
-ROSTER_CODEX="$(env HOME="$WORK/home" CODEXB_PROFILES_DIR="$WORK/home/.codex-profiles" \
-  bash -c '. "$1/share/worker-model.sh" && worker_model_codex_slug "$(worker_model_default_model codex)" codex-worker' \
-  _ "$ROOT" 2>/dev/null | head -1)"
+IFS=$'\t' read -r ROSTER_CODEX ROSTER_FAMILY < <(env HOME="$WORK/home" CODEXB_PROFILES_DIR="$WORK/home/.codex-profiles" \
+  bash -c '. "$1/share/worker-model.sh" && slug=$(worker_model_codex_slug "$(worker_model_default_model codex)" codex-worker | head -1) &&
+    worker_model_codex_family_r "$slug" && printf "%s\t%s\n" "$slug" "$WORKER_MODEL_R"' _ "$ROOT" 2>/dev/null)
 assert test -n "$ROSTER_CODEX"
 BARE_PATH="$BARE_BIN:$SYSTEM_PATH"
 PICK_BARE_PATH="$PICK_BARE_BIN:$SYSTEM_PATH"
@@ -193,7 +193,6 @@ assert grep -q $'\t-m\tgpt-explicit-fixture\t' "$CALL_LOG"
 assert jq -e '.requested == "gpt-explicit-fixture"' "$WORK/explicit-codex/served-models.jsonl" >/dev/null
 
 # A family word runs that family's newest roster slug; a word the roster does not know passes through.
-ROSTER_FAMILY="$(bash -c '. "$1/share/worker-model.sh" && worker_model_codex_family "$2"' _ "$ROOT" "$ROSTER_CODEX")"
 STUB_PICK_ACCOUNT=codex-worker
 for spec in "$ROSTER_FAMILY:$ROSTER_CODEX" "nofamily-fixture:nofamily-fixture"; do
   IFS=: read -r word slug <<<"$spec"

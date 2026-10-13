@@ -35,6 +35,10 @@ set -uo pipefail
 DATA_DIR="${LLM_LEGS_DATA_DIR:-$PWD/data}"
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 LOG="$DATA_DIR/served-models.jsonl"
+# Listing model labels spends no quota and must not depend on a selectable account.
+if [ "${1:-}" = --list-models ]; then
+  agy models; exit $?
+fi
 families=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families 2>/dev/null)
 families=${families//$'\t'/$'\x1f'}
 agy_label() { # var "<families word> (<tier>)" -> var = "<agy label> (<tier>)"; anything else unchanged
@@ -68,10 +72,6 @@ is_weak() { printf '%s' "$1" | grep -qiE "$WEAK_RE"; }
 
 ACCOUNT=main
 GEMINI_CMD=(agy)
-# Listing model labels spends no quota and must not depend on a selectable account.
-if [ "${1:-}" = --list-models ]; then
-  agy models; exit $?
-fi
 # `geminib families` answers from its built-in list when it has nothing else, so a missing `pro` row
 # is a broken reader: the default would pin the nameless model " (High)". `--list-models` above
 # stays reachable — it is how an empty list is diagnosed.
@@ -103,8 +103,6 @@ else
 fi
 
 case "${1:-}" in
-  --list-models)
-    "${GEMINI_CMD[@]}" models; exit $? ;;
   --probe)
     if [ "${GEMINI_CMD[0]}" = agy ] && ! command -v agy >/dev/null 2>&1; then
       echo "gemini leg: agy CLI not installed — leg unavailable" >&2
