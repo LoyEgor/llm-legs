@@ -3166,6 +3166,82 @@
    "verdict": "kept",
    "zero": "removal saves 4.3 wall-min/day and 2.3 CPU-min/day; loses the autonomous-span, multi-repository block and no-upstream push checks (63 asserts)",
    "note": "same cost shape as test_commit_report (hook runs plus fixture repositories, no waits); shares the run_raw hook-exit fix; no cheaper equivalent found without changing the hook, a CPU-audit matter"
+  },
+  {
+   "id": "cpu:statusline/render",
+   "title": "statusline/render",
+   "audited_at": "2026-10-13T10:36:04+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261012T235118Z-55c2",
+   "cpu_min_day": 228.7,
+   "cpu_s_run": 0.088,
+   "runs_day": 115894,
+   "sources": {
+    "llm-legs/bin/statusline.sh": "69977398f6b5caf0a995f0adeeb1e60bec138993"
+   },
+   "verdict": "cut",
+   "zero": "removing the render saves 228.7 CPU-min/day and loses the whole statusline Egor reads; the cut keeps it at ~25% less",
+   "note": "main checkout from <root>/.git, dirty diff volume reused while stat-identical (llm-legs@823bf61b)"
+  },
+  {
+   "id": "cpu:statusline/work",
+   "title": "statusline/work",
+   "audited_at": "2026-10-13T10:36:09+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261012T235118Z-55c2",
+   "cpu_min_day": 103.3,
+   "cpu_s_run": 0.086,
+   "runs_day": 66477,
+   "sources": {
+    "llm-legs/bin/statusline-work-probe.sh": "08275673c12039f97a4bbe7a5715763753faa31f",
+    "llm-legs/share/statusline-probe.sh": "05c77ec75541917a02b0a52a0c688041750898a7"
+   },
+   "verdict": "cut",
+   "zero": "removing the probe saves 103 CPU-min/day and loses the work/orphan segments; the cut keeps them at ~25% less",
+   "note": "orphan walk gated by a needle regex, run-dir scan unsorted and stat-free, output md5-identical (llm-legs@05b9e179)"
+  },
+  {
+   "id": "cpu:doctor/harness",
+   "title": "doctor/harness",
+   "audited_at": "2026-10-13T10:36:14+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261012T235118Z-55c2",
+   "cpu_min_day": 42.7,
+   "cpu_s_run": 11.549,
+   "runs_day": 213,
+   "sources": {
+    "llm-legs/bin/harness-doctor": "462c3c0a0a677fbbc12f4e495addb4af387f44a8"
+   },
+   "verdict": "cut",
+   "zero": "removing the collector saves 42.7 CPU-min/day and loses every harness doctor row; the cut keeps it at ~40% less",
+   "note": "load_tests bucketed dedupe 4.5s->0.4s, local_day memo, landing memo (llm-legs@7f349b7f)"
+  },
+  {
+   "id": "cpu:statusline/debt",
+   "title": "statusline/debt",
+   "audited_at": "2026-10-13T10:36:19+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261012T235118Z-55c2",
+   "cpu_min_day": 77.2,
+   "cpu_s_run": 2.585,
+   "runs_day": 1460,
+   "sources": {
+    "llm-legs/bin/statusline.sh": "69977398f6b5caf0a995f0adeeb1e60bec138993"
+   },
+   "verdict": "trade",
+   "zero": "removing the segment saves 77 CPU-min/day and loses the repository-debt number Egor sees on the strip",
+   "note": "moved-key floor 15s->60s saves up to ~45%, handoff docs/handoffs/2026-10-13-debt-moved-key-floor.md"
+  },
+  {
+   "id": "cpu:process/Hammerspoon",
+   "title": "process/Hammerspoon",
+   "audited_at": "2026-10-13T10:36:22+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261012T235118Z-55c2",
+   "cpu_min_day": 92.0,
+   "cpu_s_run": 251.844,
+   "runs_day": 21,
+   "sources": {
+    "hammerspoon/init.lua": "39587cd9c02462311091c7a8b0660bce8c0d61d5"
+   },
+   "verdict": "trade",
+   "zero": "removing Hammerspoon saves 92 CPU-min/day and loses the menubar and every hotkey",
+   "note": "100 ms Terminal AX tab poll dominates timers, handoff docs/handoffs/2026-10-13-hammerspoon-ax-poll.md"
   }
  ]
 }
