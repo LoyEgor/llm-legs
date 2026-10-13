@@ -2218,6 +2218,22 @@
    "verdict": "cut",
    "zero": "removal saves 0.9 CPU-s a run (0.0 CPU-min/day); loses the only pins of jira-mention-gate.sh and demo-link-gate.sh (deny on no addressee, deny on an unlinked demo twin, compare view only against an existing base)",
    "note": "fixture git isolated by GIT_CONFIG_GLOBAL=/dev/null: the owner's global hooksPath ran the autopush reference-transaction chain on every fixture ref move (1.65 -> 0.90 CPU-s a run, 21 asserts unchanged); detached-HEAD check was vacuous under deletion of the HEAD guard, now red via a HEAD_demo branch"
+  },
+  {
+   "id": "suite:claude-setup/test_readonly_command",
+   "title": "claude-setup/test_readonly_command",
+   "audited_at": "2026-10-13T06:26:59+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-stop-backstop-20261012T235214Z-2406",
+   "cpu_run": 1.5,
+   "wall_run": 2.0,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.03,
+   "sources": {
+    "claude-setup/tests/test_readonly_command.sh": "66c18d0ea48f341cb65865f53ed88c48dd5cc631"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 1.5 CPU-s a run (0.0 CPU-min/day); loses the 171-case classification table of rc_readonly_command under both bashes, the guard that a write never skips the review snapshot and the instruction tripwire",
+   "note": "cost is production's one awk per classification (171 x 2 bashes), both bashes needed; the loose >=168 case floor was tightened to the table's exact count (proven red under an early exit 0 on the last two cases); no leak, no sleep"
   }
  ]
 }
