@@ -2266,6 +2266,89 @@
    "verdict": "kept",
    "zero": "removal saves 0.1 CPU-s a run (0.0 CPU-min/day); loses the only checks that global CLAUDE.md slash commands, PATH executables and ~/.hammerspoon paths resolve, the strict per-repo location of its path refs, the commit-choice wording guard, and the dead-ref sweep of every global/skills/agents/docs md",
    "note": "0.1 s, one awk plus one python3 doc_refs run; its path cases overlap doc_refs.py but are stricter (bin/ must be llm-legs, bare .sh must be hooks/), slash commands, executables and ~/.hammerspoon are its alone; reads live ~/.claude and PATH by design (it checks the installed refs)"
+  },
+  {
+   "id": "suite:claude-setup/test_word_journal",
+   "title": "claude-setup/test_word_journal",
+   "audited_at": "2026-10-13T11:22:35+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-journal-20261012T235221Z-38b8",
+   "cpu_run": 8.7,
+   "wall_run": 10.1,
+   "cpu_min_day": 0.54,
+   "wall_min_day": 0.96,
+   "sources": {
+    "claude-setup/tests/test_word_journal.sh": "c2c8b16edc80c273175620860217c21556cadd4e",
+    "claude-setup/tests/word_triggers_harness.sh": "766edf8c053e50d820d0eafe4f68f7b4d94655f5"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~7 wall-s and ~7.5 CPU-s a run; loses the only end-to-end pins of quote attestation, the word journal's rows, the table-driven door and the reset arm",
+   "note": "claude-setup@1eb246f7: answered()'s 18 cases in one python3 (18 spawns to 1, each case still its own assert), one jq per captured context, the guess intake repeating silent2's prompt merged into silent2's check (127 to 126), contains/lacks by builtins; CPU 8.5 to 7.6 s a run, 4 mutations red"
+  },
+  {
+   "id": "suite:claude-setup/test_word_notices",
+   "title": "claude-setup/test_word_notices",
+   "audited_at": "2026-10-13T11:22:36+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-journal-20261012T235221Z-38b8",
+   "cpu_run": 8.0,
+   "wall_run": 5.3,
+   "cpu_min_day": 0.36,
+   "wall_min_day": 0.45,
+   "sources": {
+    "claude-setup/tests/test_word_notices.sh": "737e955eb3010d409a20c3a194bbf08d61c4cb3f",
+    "claude-setup/tests/word_triggers_harness.sh": "766edf8c053e50d820d0eafe4f68f7b4d94655f5"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~5 wall-s and ~7.7 CPU-s a run; loses every pin of the notice lines, chat-find wording and the span switch's grammar",
+   "note": "claude-setup@1eb246f7: one intake per distinct prompt (three 'сделай ревью' and two span intakes gave the same note), one jq per chat-find context, contains by builtin; 147 asserts unchanged, grep 37 to 9, CPU 8.4 to 7.8 s a run"
+  },
+  {
+   "id": "suite:claude-setup/test_context_nudge",
+   "title": "claude-setup/test_context_nudge",
+   "audited_at": "2026-10-13T11:22:37+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-journal-20261012T235221Z-38b8",
+   "cpu_run": 5.1,
+   "wall_run": 6.5,
+   "cpu_min_day": 0.17,
+   "wall_min_day": 0.26,
+   "sources": {
+    "claude-setup/tests/test_context_nudge.sh": "b71ef08fb476fc0001189c2b6a3956520d8d4751"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~6 wall-s and ~5 CPU-s a run; loses the stage thresholds, window resolution, boundary handling, sweep and the fork-free quiet path of a hook every tool call pays",
+   "note": "claude-setup@1eb246f7: expect_stage reads the output with one jq and matches by builtins (three jq and four greps a stage before), wording needles by builtins, PASS prose cut to the count; 178 asserts unchanged, grep 188 to 59, jq 372 to 316, CPU 4.8 to 4.2 s a run, 6 mutations red"
+  },
+  {
+   "id": "suite:claude-setup/test_word_lifetime",
+   "title": "claude-setup/test_word_lifetime",
+   "audited_at": "2026-10-13T11:22:37+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-journal-20261012T235221Z-38b8",
+   "cpu_run": 8.0,
+   "wall_run": 6.4,
+   "cpu_min_day": 0.25,
+   "wall_min_day": 0.42,
+   "sources": {
+    "claude-setup/tests/test_word_lifetime.sh": "325d50534751fa8c294c8ecfada308e521f390b7",
+    "claude-setup/tests/word_triggers_harness.sh": "766edf8c053e50d820d0eafe4f68f7b4d94655f5"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~6 wall-s and ~7 CPU-s a run; loses every pin of a grant's one lifetime (runs, cancel, SIGKILLed writer, sticky cap, sweep span)",
+   "note": "kept: read through the tests lens, no vacuous or redundant check; its spawns are the intake/door/spend calls under test (python3 67, jq 613 mostly inside the hooks), no sleep"
+  },
+  {
+   "id": "suite:claude-setup/test_eod_commits",
+   "title": "claude-setup/test_eod_commits",
+   "audited_at": "2026-10-13T11:22:38+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-journal-20261012T235221Z-38b8",
+   "cpu_run": 4.9,
+   "wall_run": 5.0,
+   "cpu_min_day": 0.12,
+   "wall_min_day": 0.17,
+   "sources": {
+    "claude-setup/tests/test_eod_commits.sh": "193ca29addd67a5d9e859cd9900201266c6730d5"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~6 wall-s and ~5 CPU-s a run; loses the eod notice and sorted gate pins, their fork-free fast paths and the 16 KB payload bound",
+   "note": "kept: read through the tests lens, every run is the hook under test; the 4 s alarm has ~1000x margin (the hook takes ~4 ms on the 16 KB payload, the old bug minutes); setup checks on git are cheap"
   }
  ]
 }
