@@ -1431,11 +1431,11 @@ rm "$DATA/bus-docs" "$DATA/bus-args"
 # What each sweep lens has not read sits beside the debt, never added into it.
 cat >"$FAKE_BIN/review-debt" <<'EOF'
 #!/usr/bin/env bash
-[ "$4" = fit ] && echo "LENS=fit UNREAD_LINES=900 UNREAD_FILES=7" || exit 2
+[ "$4" = fit ] && echo "LENS=fit CHANGED_LINES=60 CHANGED_FILES=2 COVERAGE_LINES=900 COVERAGE_FILES=7" || exit 2
 EOF
 chmod +x "$FAKE_BIN/review-debt"
 assert [ "$(NIGHT_RUN_REVIEW_DEBT="$FAKE_BIN/review-debt" night survey "$SV/repo" | sed -n '1p;$p')" = \
-  "repo · debt 40 lines/3 files · due 30 lines/1 files · fit unread 900 lines/7 files · 1 dirty · 2 chunks
+  "repo · debt 40 lines/3 files · due 30 lines/1 files · fit changed 60 lines/2 files · coverage 900 lines/7 files · 1 dirty · 2 chunks
 total · debt 52 lines/4 files · due 30 lines/1 files · 3 dirty · 2 chunks" ]
 # A repository's bin/night-snapshot runs before it is surveyed; a failing one is named, not fatal.
 git init -q -b main "$SV/snap" && mkdir "$SV/snap/bin"

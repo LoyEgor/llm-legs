@@ -37,7 +37,8 @@ WEEK_DAYS = 7.0
 EXPIRY_MIN_PCT = 5.0
 
 KINDS = {"vendor": ("updater", "P1"), "leftover": ("harness", "P1"), "trade": ("harness", "P1"),
-         "suite": ("tests", "P1"), "debt": ("fit", "P1"), "handoff": ("harness", "P2"), "owner-chat": ("harness", "P2")}
+         "suite": ("tests", "P1"), "debt": ("fit", "P1"), "handoff": ("harness", "P2"), "owner-chat": ("harness", "P2"),
+         "coverage": ("fit", "P3")}
 WALL_DAY_S_RULES = ("test_daily_cost", "wait_class")
 SPEED_ROWS = ("opportunity", "suite_audit", "cpu_audit", "spend_audit")
 
@@ -196,6 +197,8 @@ def job(kind, ref):
         way, level, value, unit, norm = run_job(ref)
     else:
         way, level = KINDS.get(kind, ("harness", "P2"))
+        if kind == "coverage" and ref.startswith("coverage-legacy"):
+            way = "legacy"
         value, unit, norm = None, None, 1.0
     return {"direction": way, "priority": level,
             "value": {"n": value, "unit": unit, "norm": round(norm, 3)}}

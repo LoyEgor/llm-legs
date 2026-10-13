@@ -131,10 +131,16 @@ rc=0; night admit "$id" f-small claudeb "$LIVE" >"$WORK/out" 2>&1 || rc=$?
 assert test "$rc" -eq 3
 assert grep -q 'deferred' "$WORK/out"
 assert jqe '.state == "pending" and .admission.state == "deferred"' <<<"$(job f-small)"
+# A lens coverage slice is a P3 job of its lens's direction, admitted the same way.
+night job "$id" add coverage coverage-legacy-1 >/dev/null || fail "job add coverage"
+assert jqe '.priority == "P3" and .direction == "legacy"' <<<"$(job coverage-legacy-1)"
+rc=0; night admit "$id" coverage-legacy-1 claudeb "$LIVE" >/dev/null 2>&1 || rc=$?
+assert test "$rc" -eq 3
 limits 0 10 1
 live_pid
 night admit "$id" f-small claudeb "$LIVE" >/dev/null || fail "a P3 with expiring weekly room was not admitted"
 assert jqe '.admission.state == "admitted"' <<<"$(job f-small)"
+night admit "$id" coverage-legacy-1 claudeb "$LIVE" >/dev/null || fail "a coverage slice with expiring weekly room was not admitted"
 
 # The night's spend on walls: a run whose last attempt walled counts, one rescued after a wall does not.
 mkdir -p "$WORKER_RUN_DIR/claudeb-1-1-a" "$WORKER_RUN_DIR/claudeb-1-1-b"

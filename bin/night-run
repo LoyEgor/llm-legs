@@ -23,7 +23,7 @@ sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
 # a faked sweep list means a test: the real helpers would get its night refs
 helper_repos="${NIGHT_RUN_HELPER_REPOS-${NIGHT_RUN_SWEEP_REPOS:+/dev/null}}"
 helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
-KINDS=' fixer vendor debt leftover handoff suite owner-chat trade '
+KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage '
 STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
@@ -44,7 +44,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade> <ref> [--branch B] [--ready "<why>" [--repo R]...]
+       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage> <ref> [--branch B] [--ready "<why>" [--repo R]...]
        night-run carry <id>
        night-run suites <id> [--wait]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed, suites, answer, done)
@@ -86,9 +86,10 @@ report opens with share/time_budget.py's comparison table: this night and the tw
 survey: the sweep's opening report, default the sweep repositories, each repository's executable
   bin/night-snapshot run first (it copies into the tree what lives outside it, for the night's commit; a
   failure is named and the survey goes on): per repository `<name> · debt N
-  lines/M files · due D lines/E files · fit|legacy unread U lines/F files · K dirty · whole|N chunks`
-  (review-bench review --debt [--due] … --tier T2 --price; due = stable or critical, what the bugs round
-  reads; unread = review-debt --lens, what that lens's round reads, never in the debt), per linked
+  lines/M files · due D lines/E files · fit|legacy changed U lines/F files · coverage C lines/G files · K dirty ·
+  whole|N chunks` (review-bench review --debt [--due] … --tier T2 --price; due = stable or critical, what the
+  bugs round reads; changed and coverage = review-debt --lens, what that lens's round and its --coverage
+  slices read, never in the debt), per linked
   worktree `<branch> · +ahead/-behind main · K dirty · debt N · take|keep (<reason>)`, keep = live or
   held as in leftovers, then `total · …`; --post also sends it to the chat as one report-bus block
 states: pending live merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
@@ -1337,13 +1338,13 @@ price_of() { # price-rows path -> lines<TAB>files<TAB>cut, ? when the review cou
   awk -F '\t' -v p="$2" '$1 == p { print $3 "\t" $2 "\t" $4; found = 1; exit } END { if (!found) print "0\t0\twhole" }' <<<"$1"
 }
 
-lens_unread() { # repo -> ` · <lens> unread N lines/M files` per sweep lens, apart from the debt; nothing it cannot say
+lens_unread() { # repo -> ` · <lens> changed N lines/M files · coverage C lines/D files` per sweep lens, apart from the debt
   local debt="${NIGHT_RUN_REVIEW_DEBT:-$HOME/.local/bin/review-debt}" lens row
   [ -x "$debt" ] || return 0
   for lens in fit legacy; do
     row=$("$debt" --repo "$1" --lens "$lens" </dev/null 2>/dev/null) || continue
-    [[ "$row" =~ ^LENS=$lens\ UNREAD_LINES=([0-9]+)\ UNREAD_FILES=([0-9]+)$ ]] &&
-      printf ' · %s unread %s lines/%s files' "$lens" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    [[ "$row" =~ ^LENS=$lens\ CHANGED_LINES=([0-9]+)\ CHANGED_FILES=([0-9]+)\ COVERAGE_LINES=([0-9]+)\ COVERAGE_FILES=([0-9]+)$ ]] &&
+      printf ' · %s changed %s lines/%s files · coverage %s lines/%s files' "$lens" "${BASH_REMATCH[@]:1:4}"
   done
   return 0
 }

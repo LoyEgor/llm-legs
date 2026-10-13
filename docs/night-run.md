@@ -114,7 +114,9 @@ Egor (2026-10-13): fixing everything is a utopia; night 3131's launch burst wall
 - `worker-run` asks `night-run admit` before a night worker's slot: P1, then P2, by norm per expected cost (7 days'
   median night-run tokens × 10 % per 1M); running Claude fixers hold at most the pool's 5h room. A P3 runs only from
   weekly room its burn leaves unused at reset (≥ 5 %), else it ends unlaunched (`admission.deferred`, job `pending`,
-  no hold on the debt pass, `finish` keeps the reason). Waits are `night-admission` holds.
+  no hold on the debt pass, `finish` keeps the reason). Waits are `night-admission` holds. A `coverage` job
+  (`coverage-<fit|legacy>-<n>`, P3) is one `review-bench review --debt --lens <l> --coverage … --foreground`
+  slice, launched in the shell whose `$$` it was admitted with: `night-run admit <id> <ref> claudeb $$ && …`.
 - Plateau = the P1+P2 backlog at zero (`night_priority.py backlog`, the table's `P1+P2` row); P3 never counts.
 - `spend on walls` (report, table row `on walls`, Harness `night_walled` red > 5 %): fixer spend in walled runs.
 - Finding is not a job: `log-audit run` and out-of-doctor hunts are never admitted or cut; a class a dig confirms
@@ -142,7 +144,7 @@ Egor (2026-10-13): fixing everything is a utopia; night 3131's launch burst wall
   `new`, `regressed`. `report` prints one line per doctor,
   `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
 - `jobs[]`, each with:
-  - `kind` (fixer, vendor, debt, leftover, handoff, suite, owner-chat, trade) and `ref` (run id, event id,
+  - `kind` (fixer, vendor, debt, leftover, handoff, suite, owner-chat, trade, coverage) and `ref` (run id, event id,
     review round or `leftover-<slug>`); an owner-chat job carries `owner`, `session`, `via` (open,
     message), `handoffs[]`; a leftover job `adopted[]` ({repo, branch, worktree, tip,
     night_worktree}), where its branch came from, and `handover` ({by, at, why}) when adopted with `--ready`;
