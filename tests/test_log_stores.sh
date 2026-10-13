@@ -106,8 +106,11 @@ check("needs readers" in (raises({"stores": [dict(named, name="a", globs=["~/a"]
       "a log store lists its readers, [] allowed")
 check("needs a group" in (raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap", "kind": "log", "readers": []}]}) or "")
       and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[], group="logs")]})
-      and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[], split="x")]}),
-      "a log store needs a known group, a label and a known split")
+      and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[], split="x")]})
+      and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[], part="")]})
+      and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[], part=["x"])]})
+      and raises({"stores": [dict(named, name="a", globs=["~/a"], cleaner="cap", kind="log", readers=[], part="x")]}) is None,
+      "a log store needs a known group, a label and a known split; a part is a name")
 check(all(e["group"] in ls.GROUPS and e["label"] for e in real["stores"] if e["kind"] == "log")
       and [e["name"] for e in real["stores"] if e.get("split") == "session"][:1] == ["claude-transcripts"]
       and min(i for i, e in enumerate(real["stores"]) if e.get("split") == "session-id")
@@ -343,7 +346,8 @@ put("logs/s4/a.txt", 100, 80)
 age("logs/s4", 80)
 registry([{"name": "s", "globs": ["~/logs/*"], "exclude": ["*/keep", "*.jsonl"], "cleaner": "self", "days": 60,
            "writer": "worker-run", "owner": "own"},
-          {"name": "v", "globs": ["~/vers/*"], "cleaner": "self", "keep_newest": 2, "writer": "Vendor", "owner": "third-party"},
+          {"name": "v", "globs": ["~/vers/*"], "cleaner": "self", "keep_newest": 2, "writer": "Vendor", "owner": "third-party",
+           "part": "versions"},
           {"name": "u", "globs": ["~/unread/*"], "cleaner": "sweep", "days": 7, "readers": [], "writer": "Vendor"},
           {"name": "uk", "globs": ["~/kept/*"], "cleaner": "keep", "readers": [], "writer": "Vendor"},
           {"name": "a", "kind": "app", "globs": ["~/appdata/*"], "cleaner": "keep"}],
@@ -414,8 +418,10 @@ check(m.logstores_due(None, now) and not m.logstores_due(now - 3600, now) and m.
 view = m.logstores_view(logs)
 check(view["stores"][0]["name"] in ("s", "v") and view["unregistered"][0]["path"] == "~/cache/stray", "the document's log_stores view")
 check(view["groups"] and view["groups"][0][0] == "workers" and view["groups"][0][2] is None and view["groups_since"] is None
-      and [view["stores"][0][k] for k in ("group", "label")] == ["workers", view["stores"][0]["name"]],
-      "groups and labels reach the view, no growth from one scan")
+      and [view["stores"][0][k] for k in ("group", "label")] == ["workers", view["stores"][0]["name"]]
+      and {s["name"]: s["part"] for s in view["stores"]}.get("v") == "versions"
+      and {s["name"]: s["part"] for s in view["stores"]}.get("s") is None,
+      "groups, labels and parts reach the view, no growth from one scan")
 grown = [dict(logs[-1], t=logs[-1]["t"] - 2 * DAY, groups={"workers": 1e9, "temp": 5e9}),
          dict(logs[-1], groups={"workers": 3e9})]
 view = m.logstores_view(grown)

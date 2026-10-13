@@ -76,7 +76,8 @@ LLM ▸     8  reviewers crashed
   the name RED when a loud problem of its rules sits inside, DIM_RED for a watch or pending fix or a blind collector,
   else GREEN. Inside, each rule's problem tones the measure it judges (a problem with no measure row gets its own row),
   lists carry human names (worker-run → workers, test suites → tests, helpers by their app), log groups open their
-  stores by label and retention; Apple's own problems are RED and counted like any other. The moved Harness rows show
+  labels as `size · retention · label` (the group's own retention for a split store; a label of several stores spans
+  their days and opens one such row per registry `part`; no readers); Apple's own problems are RED and counted like any other. The moved Harness rows show
   in their section by label and count (CPU audits, Load → Processor; Memory guard → Memory; Growth → Logs); a problem
   of a rule no section owns follows the sections. The menu only places and formats what the document says.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,

@@ -1558,7 +1558,7 @@ def logstores(now=None):
         rows = steps("store:" + entry["name"], log_stores.measure, entry)
         claims.update((r["path"], r["bytes"]) for r in rows)
         stores.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner"),
-                           readers=entry["readers"], group=entry["group"], label=entry["label"],
+                           readers=entry["readers"], group=entry["group"], label=entry["label"], part=entry.get("part"),
                            parts=steps("split:" + entry["name"], log_stores.split, entry, rows, sessions)))
     groups = {}
     for store in stores:
@@ -2254,7 +2254,7 @@ def logstores_view(rows):
                         "age_d": round((latest["t"] - s["oldest_s"]) / DAY_S, 1) if s.get("oldest_s") else None,
                         "cleaner": s["cleaner"], "keep": criterion_words(s) if s.get("criterion") else None,
                         "over": s.get("over_units"), "readers": s.get("readers"), "group": s.get("group"),
-                        "label": s.get("label"), "parts": {g: round(b / 1e9, 2) for g, b in (s.get("parts") or {}).items()}}
+                        "label": s.get("label"), "part": s.get("part"), "parts": {g: round(b / 1e9, 2) for g, b in (s.get("parts") or {}).items()}}
                        for s in stores],
             "unregistered": latest.get("unregistered"), "unread": latest.get("unread"), "sweep": latest.get("sweep"),
             "scan": latest.get("scan")}

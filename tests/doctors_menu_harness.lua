@@ -1205,11 +1205,21 @@ do
     nightly = { as_of_s = now - 3600, reports = { crash = 4, fault = 1 }, unclean_reboots_7d = 0, smart = "Verified",
       processes = { { "crash", "Google Chrome", 3, "third-party" }, { "crash", "bash", 1, "own" } }, caches = {} },
     log_stores = { total_gb = 20, growth_gb_day_7d = 0.4,
-      groups = { { "workers", 12, 1.5 }, { "my chats", 3, 0.2 }, { "LLM apps", 1.3 } },
+      groups = { { "workers", 12, 1.5 }, { "my chats", 3, 0.2 }, { "LLM apps", 1.3 }, { "our tools", 1.8 } },
       stores = {
         { name = "claude-transcripts", gb = 14, cleaner = "self", keep = "30 days", readers = { "chat-find" },
-          group = "workers", label = "Claude", parts = { workers = 11, ["my chats"] = 3 } },
+          keep_by_group = { workers = "15 days", ["my chats"] = "180 days" },
+          group = "workers", label = "Claude", part = "transcripts", parts = { workers = 11, ["my chats"] = 3 } },
+        { name = "antigravity-conversations", gb = 5, cleaner = "sweep", keep = "15 days", readers = { "token-map" },
+          group = "workers", label = "Gemini", part = "conversations", parts = { workers = 5 } },
+        { name = "antigravity-brain-media", gb = 1.5, cleaner = "sweep", keep = "2 days", readers = {},
+          group = "workers", label = "Gemini", part = "audio", parts = { workers = 1.5 } },
         { name = "worker-runs", gb = 1, cleaner = "self", keep = "10 days", group = "workers", label = "run logs" },
+        { name = "tokenmap", gb = 1.7, cleaner = "self", keep = "8192 MB", group = "our tools", label = "token map",
+          part = "database" },
+        { name = "gemini-usage", gb = 0.07, cleaner = "self", keep = "30 days", group = "our tools", label = "token map",
+          part = "Gemini usage" },
+        { name = "append-logs", gb = 0.03, cleaner = "sweep", keep = "last 5 MB", group = "our tools", label = "service logs" },
         { name = "codex-log-db", gb = 0.26, cleaner = "keep", readers = {}, group = "LLM apps", label = "Codex log" },
         { name = "codex-thread-history", gb = 1.04, cleaner = "keep", group = "LLM apps", label = "Codex history" } },
       unregistered = { { path = "~/Library/Caches/ru.keepcoder.Telegram/x", mb = 490, residual_mb = 490 } },
@@ -1234,11 +1244,27 @@ do
   check(rowMatching(memory, "^ +3 GB +Claude ×4$") and rowMatching(memory, "^ +2 GB +Chrome ×6$"),
     "Memory: resident memory by human name with its process count")
   local workers, apps = rowMatching(logs, "^ +12 GB +%+1%.5  workers$"), rowMatching(logs, "LLM apps$", "R")
-  check(workers and rowMatching(workers.menu, "^ +11 GB +Claude  30 d$") and rowMatching(workers.menu, "^ +1 GB +run logs  10 d$")
-    and rowMatching(rowMatching(logs, "my chats$").menu, "^ +3 GB +Claude  30 d$")
-    and apps and rowMatching(apps.menu, "^ +0%.3 GB +Codex log  kept$", "R") and rowMatching(apps.menu, "^ +1%.0 GB +Codex history  kept$")
+  local gemini = workers and rowMatching(workers.menu, "^ +6%.5 GB +2–15 d  Gemini$")
+  local tokenmap = rowMatching(rowMatching(logs, "our tools$").menu, "^ +1%.8 GB +token map$")
+  check(workers and rowMatching(workers.menu, "^ +11 GB +15 d  Claude$") and rowMatching(workers.menu, "^ +1 GB +10 d  run logs$")
+    and rowMatching(rowMatching(logs, "my chats$").menu, "^ +3 GB +180 d  Claude$")
+    and apps and rowMatching(apps.menu, "^ +0%.3 GB +∞  Codex log$", "R") and rowMatching(apps.menu, "^ +1%.0 GB +∞  Codex history$")
     and rowMatching(rowMatching(logs, "unknown$", "R").menu, "Telegram$", "R"),
-    "Logs: groups with growth, stores by label and retention split across groups, unread and unknown RED")
+    "Logs: groups with growth, each label with its size and retention per group, unread and unknown RED")
+  check(gemini and #(gemini.menu or {}) == 2 and rowMatching(gemini.menu, "^ +5 GB +15 d  conversations$")
+    and rowMatching(gemini.menu, "^ +1%.5 GB +2 d  audio$")
+    and tokenmap and rowMatching(tokenmap.menu, "^ +1%.7 GB +8 GB  database$")
+    and rowMatching(tokenmap.menu, "^ +0%.1 GB +30 d  Gemini usage$")
+    and rowMatching(rowMatching(logs, "our tools$").menu, "^ +0%.0 GB +5 MB  service logs$"),
+    "Logs: a label of several stores spans their retention and opens one row per part")
+  local readers = false
+  for _, group in ipairs(logs) do
+    for _, label in ipairs(group.menu or {}) do
+      for _, item in ipairs(label.menu or {}) do readers = readers or text(item.title):match("chat%-find") ~= nil end
+      readers = readers or rowMatching(workers.menu, "^ +11 GB .*Claude$").menu ~= nil
+    end
+  end
+  check(not readers, "Logs: no reader names, a one-store label without a problem opens nothing")
   check(rowMatching(crashes, "^ +7 /day +Siri$", "R") and rowMatching(crashes, "Hammerspoon$", "r")
     and rowMatching(rowMatching(crashes, "^app crashes ").menu, "^ +3 /8 d +Chrome$"),
     "Crashes: Apple's loop RED by its short name, a pending fix DIM_RED, crashes by process")

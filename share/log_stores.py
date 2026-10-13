@@ -62,8 +62,9 @@ def load(path=None):
         if entry["kind"] == "log" and not (isinstance(readers, list) and all(isinstance(r, str) and r for r in readers)):
             raise ValueError("store %s: a log store needs readers, a list of program names or []" % name)
         if entry["kind"] == "log" and (entry.get("group") not in GROUPS or not entry.get("label")
-                                       or entry.get("split", SPLITS[0]) not in SPLITS):
-            raise ValueError("store %s: a log store needs a group in %s, a label and no split but %s" % (
+                                       or entry.get("split", SPLITS[0]) not in SPLITS
+                                       or not isinstance(entry.get("part", "-"), str) or entry.get("part") == ""):
+            raise ValueError("store %s: a log store needs a group in %s, a label, no split but %s and a part only as a name" % (
                 name, "/".join(GROUPS), "/".join(SPLITS)))
     for entry in registry.get("ignore") or ():
         if not entry.get("glob") or not entry.get("why"):

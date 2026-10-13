@@ -859,6 +859,7 @@ local function amount(value)
 end
 
 local function keepWords(words)
+  words = words:gsub("^last ", "")
   local mb = tonumber(words:match("^(%d+) MB$"))
   if mb and mb >= 1024 then return amount(mb / 1024) .. " GB" end
   return (words:gsub(" days?$", " d"))
@@ -936,6 +937,27 @@ end
 
 local function listRow(value, unit, label, tone, menu)
   return row({ { padded(value, 5) }, { " " .. string.format("%-5s", unit) .. "  " }, { label, tone } }, menu)
+end
+
+local function keepRow(gb, keep, name, tone, menu)
+  return row({ { padded(amount(gb), 5) }, { " GB  " }, { padded(keep, 7), style.DIM }, { "  " }, { name, tone } }, menu)
+end
+
+local function retention(store, group)
+  local words = type(store.keep_by_group) == "table" and store.keep_by_group[group] or store.keep
+  if type(words) == "string" then return keepWords(words) end
+  return store.cleaner == "keep" and "∞" or store.cleaner == "cap" and "app" or ""
+end
+
+local function keepSpan(parts)
+  local seen, low, high = {}, math.huge, 0
+  for _, part in ipairs(parts) do
+    seen[part.keep] = true
+    local days = tonumber(part.keep:match("^(%d+) d$"))
+    low, high = days and low and math.min(low, days), math.max(high, days or 0)
+  end
+  if next(seen, next(seen)) == nil then return parts[1].keep end
+  return low and string.format("%d–%d d", low, high) or ""
 end
 
 local function scaled(history, factor)
@@ -1143,33 +1165,36 @@ local function systemSections(document, now, moved, incoming)
           local gb = tonumber(parts[group[1]]) or next(parts) == nil and store.group == group[1] and tonumber(store.gb)
           if gb then
             local label = tostring(store.label or store.name)
-            if not labels[label] then labels[label], order[#order + 1] = { gb = 0, keep = {}, readers = {}, problems = {} }, label end
+            if not labels[label] then labels[label], order[#order + 1] = { gb = 0, parts = {} }, label end
             local entry = labels[label]
-            entry.gb = entry.gb + gb
-            local keep = type(store.keep) == "string" and keepWords(store.keep)
-              or store.cleaner == "keep" and "kept" or store.cleaner == "cap" and "app cap" or nil
-            if keep and not entry.keep[keep] then entry.keep[keep], entry.keep[#entry.keep + 1] = true, keep end
-            for _, reader in ipairs(list(store.readers)) do
-              if not entry.readers[reader] then entry.readers[reader], entry.readers[#entry.readers + 1] = true, reader end
-            end
+            local part = { name = tostring(store.part or label), gb = gb, keep = retention(store, group[1]), problems = {} }
             for _, rule in ipairs({ "log-store", "log-unread" }) do
               local problem = pick(rule .. ":" .. tostring(store.name))
               if problem then
-                entry.problems[#entry.problems + 1] = problem
-                entry.tone = louder(entry.tone, problemTone(problem))
+                part.problems[#part.problems + 1] = problem
+                part.tone = louder(part.tone, problemTone(problem))
               end
             end
+            entry.gb, entry.tone = entry.gb + gb, louder(entry.tone, part.tone)
+            entry.parts[#entry.parts + 1] = part
           end
         end
         table.sort(order, function(a, b) return labels[a].gb > labels[b].gb end)
         local menu = {}
         for _, label in ipairs(order) do
           local entry = labels[label]
+          table.sort(entry.parts, function(a, b) return a.gb > b.gb end)
           local sub = {}
-          for _, reader in ipairs(entry.readers) do sub[#sub + 1] = dim(reader) end
-          for _, problem in ipairs(entry.problems) do problemMenu(problem, sub) end
-          menu[#menu + 1] = listRow(amount(entry.gb), "GB", label .. (#entry.keep > 0 and "  " .. table.concat(entry.keep, " · ") or ""),
-            entry.tone, sub)
+          for _, part in ipairs(entry.parts) do
+            local problems = {}
+            for _, problem in ipairs(part.problems) do problemMenu(problem, problems) end
+            if #entry.parts > 1 then
+              sub[#sub + 1] = keepRow(part.gb, part.keep, part.name, part.tone, problems)
+            else
+              sub = problems
+            end
+          end
+          menu[#menu + 1] = keepRow(entry.gb, keepSpan(entry.parts), label, entry.tone, sub)
           tone = louder(tone, entry.tone)
         end
         local change = tonumber(group[3])
