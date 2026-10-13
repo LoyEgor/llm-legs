@@ -8036,6 +8036,21 @@
       "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-idle-review-bench-test-review-bench-20261012T235445Z-7074",
       "note": "2026-10-13: p10 wall 62 s on 19 s CPU, idle 42 s; the 82 s direct run at load 95 held 31 CPU-s, the rest a run-queue wait that no suite lever owns, plus 52 s of requested time.sleep, 99 % of it run_streamed's 0.25 s poll tick (each fixture cell's exit waited out the rest of a tick; the doctor's PATH-shim profile never sees a Python sleep, so no profiled run bounded it). Fixed: an Event the cell's reaper thread sets; production gains the same ~90 ms per cell exit. Ruled out: the select/communicate waits of the ~980 subprocess.run calls (bin/review-bench and rbench start-up, ~1.2 s wall for 0.15 s CPU at load 95 is the scheduler, not a sleep), the suite's own 0.05 s fixture polls (0.6 s requested). Not done: the stall-fixture sleeps that ARE the premise (hanger.sh, stall_s=1, sleeper.sh at body 1231-1290), the suite's 9.3k-line single process (a split into shards is the long-pole row's lever and the doctor's heavy floor reads the run count). Blind spot: the idle bound reads requested sleeps of shimmed binaries only.",
       "handoff": null
+    },
+    {
+      "id": "growth-ungated:~/.claude/plugins/cache/claude-plugins-official/vercel/0.50.0",
+      "title": "vercel/0.50.0 (39 files) grew with no gate seeing it",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/cache/claude\\-plugins\\-official/vercel/0\\.50\\.0$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Ruled out 2026-10-13: real growth, Egor's own install of the vercel plugin (installed_plugins.json installedAt 2026-10-12T15:56:31Z, +538280 B in 39 files at 15:57:49Z); no transcript in ~/.claude/projects or any profile holds a model-issued `claude plugin install` or a /plugin command, so no gate could ever see it. The row did its job: the plugin was enabled at user scope, putting its skills into every chat; the owner chat «Updater doctor» disabled it at user scope and enabled it only in /Volumes/Work/Sites/Rentiva local scope (2026-10-12T21:20Z). The per-file split (39 rows for one install) was fixed in llm-legs@7f2b3661 (install_root). Ruled out as causes: worktree landing, vendor org sync (vendor_synced covers only skills|plugins/synced), upstream git delivery. A new growth of this version dir reopens it.",
+      "handoff": null,
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-guards-20261012T235022Z-385b"
     }
   ],
   "blind_spots": [
@@ -8325,6 +8340,13 @@
       "reason": "2026-10-13 test_review_bench: 52 s of requested time.sleep (run_streamed's 0.25 s poll tick) sat under 'no profiled run bounds it'; found only with a time.sleep tally by call site",
       "since": "2026-10-13",
       "would_catch_if": "run-suites --profile ran Python suites with a sitecustomize that logs time.sleep seconds by call site, as it does the PATH shims"
+    },
+    {
+      "id": "plugin-enable-scope",
+      "what": "a plugin's every-chat context cost follows its enabledPlugins scope, not its cache bytes",
+      "reason": "2026-10-13: Guards price ~/.claude/plugins/cache growth whether the plugin is enabled at user scope (every chat) or only in one project's local settings; enabling an already-installed plugin user-wide adds every-chat context with no file growth, so nothing fires (vercel 0.50.0, scoped to Rentiva on 2026-10-12)",
+      "since": "2026-10-13",
+      "would_catch_if": "Guards journaled enabledPlugins flips in ~/.claude/settings.json and priced the enabled plugin's SKILL.md frontmatter on a user-scope enable"
     }
   ]
 }
