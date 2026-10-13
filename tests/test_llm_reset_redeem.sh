@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 # bin/llm-reset-redeem against local stand-ins for both backends: a fake grok.com and a fake
 # `codex` binary. Neither vendor's real write is ever called, because it spends a one-per-period
 # consumable on the owner's own account. Every profile, token and collector here is a fixture.
@@ -25,7 +26,15 @@ ROTATED='grok-rotated-token-SENTINEL'
 REFRESH='grok-refresh-token-SENTINEL'
 CALL_LOG="$WORK/calls.log"
 STATE="$WORK/state"
+REFRESH_LOG="$WORK/refresh.log"
+cat >"$WORK/fake-collector.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$REFRESH_LOG"
+exit \${FAKE_COLLECTOR_RC:-0}
+EOF
+chmod +x "$WORK/fake-collector.sh"
 
+if suite_shard_owns 1 grok; then
 cat >"$WORK/server.py" <<'PY'
 import http.server
 import json
@@ -147,9 +156,9 @@ PY
 printf 'one\n' >"$STATE"
 python3 "$WORK/server.py" "$CALL_LOG" "$WORK/port" "$STATE" &
 SERVER_PID=$!
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+for ((tick = 0; tick < 80; tick++)); do
   [ -s "$WORK/port" ] && break
-  sleep 0.2
+  sleep 0.05
 done
 PORT=$(cat "$WORK/port" 2>/dev/null || true)
 [ -n "$PORT" ] || fail "the local ConsumerUiSvc stand-in never bound a port"
@@ -163,14 +172,7 @@ write_auth() {
 }
 write_auth "$TOKEN"
 
-REFRESH_LOG="$WORK/refresh.log"
 GROKB_LOG="$WORK/grokb.log"
-cat >"$WORK/fake-collector.sh" <<EOF
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >>"$REFRESH_LOG"
-exit \${FAKE_COLLECTOR_RC:-0}
-EOF
-chmod +x "$WORK/fake-collector.sh"
 # The one sanctioned way to renew a grok token: the vendor's own CLI, which rewrites auth.json as a
 # side effect of any authenticated subcommand. Never a hand-rolled POST to the token endpoint.
 cat >"$WORK/fake-grokb.sh" <<EOF
@@ -322,8 +324,10 @@ grep -q 'grokb add never-logged-in' "$WORK/last.err" \
   || fail "a logged-out profile was not told to log in: $(cat "$WORK/last.err")"
 [ ! -s "$GROKB_LOG" ] || fail "a logged-out profile was touched instead of asked to log in"
 pass
+fi
 
 # --- codex: the same contract over the app-server channel, against a fake `codex` binary ---
+if suite_shard_owns 1 codex; then
 CODEX_STATE="$WORK/codex-state"
 CODEX_CALL_LOG="$WORK/codex-calls.log"
 CREDIT_ID='RateLimitResetCredit_fixture'
@@ -481,6 +485,7 @@ out=$(codex_redeem codex/main); rc=$?
   || fail "an ambiguous consume was retried: $(cat "$CODEX_CALL_LOG")"
 [ ! -s "$REFRESH_LOG" ] || fail "a redeem that never landed still refreshed the account"
 pass
+fi
 
 # --- claude: the cedar_ember program over a local stand-in for api.anthropic.com ---
 CLAUDE_TOKEN='claude-access-token-SENTINEL-must-never-be-printed'
@@ -599,9 +604,9 @@ PY
 printf 'one\n' >"$CLAUDE_STATE"
 python3 "$WORK/claude-server.py" "$CLAUDE_CALL_LOG" "$WORK/claude-port" "$CLAUDE_STATE" &
 CLAUDE_SERVER_PID=$!
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+for ((tick = 0; tick < 80; tick++)); do
   [ -s "$WORK/claude-port" ] && break
-  sleep 0.2
+  sleep 0.05
 done
 [ -s "$WORK/claude-port" ] || fail "the local api.anthropic.com stand-in never bound a port"
 CLAUDE_BASE="http://127.0.0.1:$(cat "$WORK/claude-port")"
@@ -619,6 +624,7 @@ claude_no_secret() {
   return 0
 }
 
+if suite_shard_owns 1 claude; then
 # One read of the usage body with the program asked for, one write naming the program, the grant
 # the read handed back and a request id in the shape the server accepts, then the targeted refresh.
 printf 'one\n' >"$CLAUDE_STATE"
@@ -738,8 +744,10 @@ out=$(claude_redeem claude/nokeychain); rc=$?
 [ "$rc" -eq 3 ] || fail "claude without a keychain entry: expected exit 3, got $rc"
 [ ! -s "$CLAUDE_CALL_LOG" ] || fail "a profile with no keychain entry still called the service"
 pass
+fi
 
 # --- auto-redeem: armed only by Egor's own words, fired at the account's main weekly wall ---
+if suite_shard_owns 2 auto; then
 AUTO="$WORK/auto"
 ARM="$AUTO/claudeb/reset-arm/claude-notcom"
 SESSION="$AUTO/projects/-Volumes-proj/chat.jsonl"
@@ -994,13 +1002,19 @@ env HOME="$CLAUDE_HOME" PATH="$WORK/bin:$PATH" CLAUDE_RESETS_ENDPOINT="$CLAUDE_B
   LLM_RESET_REDEEM_COLLECTOR="$WORK/fake-collector.sh" "$REDEEM" --fire-armed 2>/dev/null
 [ ! -s "$CLAUDE_CALL_LOG" ] || fail "a fixture cache fired an arm in the default store"
 pass
+fi
 
 # Every run leaves a line where the other bin tools log, and none of them carries a token.
+for log in "$WORK/claudeb/reset-redeem.log" "$WORK/auto/claudeb/reset-redeem.log"; do
+  [ -e "$log" ] || continue
+  grep -q "$TOKEN" "$log" && fail "the log carries an access token"
+  grep -q "$CLAUDE_TOKEN" "$log" && fail "the log carries the claude token"
+done
+if suite_shard_owns 1 log; then
 [ -s "$WORK/claudeb/reset-redeem.log" ] || fail "no run was logged"
-grep -q "$TOKEN" "$WORK/claudeb/reset-redeem.log" && fail "the log carries an access token"
-grep -q "$CLAUDE_TOKEN" "$WORK/claudeb/reset-redeem.log" && fail "the log carries the claude token"
 grep -q 'grok/supergrok' "$WORK/claudeb/reset-redeem.log" \
   || fail "the log does not name what was redeemed"
 pass
+fi
 
 printf 'PASS: %s llm-reset-redeem tests\n' "$passed"

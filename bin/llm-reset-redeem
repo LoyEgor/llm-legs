@@ -31,9 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "share"))
 import account_roster  # noqa: E402
 import chat_names  # noqa: E402
-import claude_resets  # noqa: E402
 import codex_appserver  # noqa: E402
-import grok_resets  # noqa: E402
 import limit_hit  # noqa: E402
 
 EXIT_REDEEMED = 0
@@ -106,6 +104,8 @@ def refresh(target: str) -> bool:
 
 
 def redeem_grok(account: str, target: str) -> int:
+    import grok_resets
+
     module = poller("grok-quota")
     profiles_dir = Path(os.environ.get("GROKB_PROFILES_DIR", "~/.grok-profiles")).expanduser()
     try:
@@ -308,6 +308,8 @@ CLAUDE_OUTCOMES = {"reset": EXIT_REDEEMED, "already_used": EXIT_REDEEMED,
 
 
 def redeem_claude(account: str, target: str) -> int:
+    import claude_resets
+
     hint = f"press Refresh in the menubar or open Claude Code on {account}, then try again"
     try:
         token = claude_resets.access_token(account)
