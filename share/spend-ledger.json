@@ -2016,6 +2016,21 @@
    "verdict": "cut",
    "zero": "removal saves ~6.9 CPU-min/day; loses the shell half of the instruction gate (redirect/tee/copy/interpreter writes to CLAUDE.md and the guarded docs) and the inflight marks instruction-watch attributes bytes by",
    "note": "floor ~20 CPU-ms (bash + 4 sourced libs + jq + readonly awk, each needed, half the calls exit there); judge_interp's three heavy interpreter greps now skipped on texts naming no interpreter (-1.6 of ~32 CPU-ms a run on 150 live payloads, identical output); the >=100 ms tail is real interpreter/heredoc parsing of python scripts run by path"
+  },
+  {
+   "id": "cpu:hook/context-nudge.sh",
+   "title": "hook/context-nudge.sh",
+   "audited_at": "2026-10-13T10:01:15+03:00",
+   "by": "harness-speed-cpu-doctor-speed-20261012T235033Z-1231",
+   "cpu_min_day": 6.1,
+   "cpu_s_run": 0.043,
+   "runs_day": 7034,
+   "sources": {
+    "claude-setup/hooks/context-nudge.sh": "52f8b7c6f082cb4be9dcc1a9fd9381d2d495c0b7"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~6.8 CPU-min/day; loses the staged auto-compact warnings and the focus line the PreCompact summarizer gets",
+   "note": "~half the runs exit on the byte-bound skip at the ~24 CPU-ms bash+jq floor; scans cost ~9 CPU-ms (64 KB tail jq), 7% of tool-result moments need the 1 MB tail (~56 CPU-ms): a 256 KB step would catch 1% of 385 sampled moments; an incremental whole-file fold would differ from the tail window on old usage lines (found, not fixed)"
   }
  ]
 }
