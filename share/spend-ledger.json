@@ -432,6 +432,54 @@
    "verdict": "kept",
    "zero": "removal saves 0.1 wall-s a run (0.0 wall-min/day); loses limits.json held to the code both ways (unregistered or unused names, call and registry where disagreeing, empty fields)",
    "note": "one python3 spawn, no sleep, nothing to cut; tests lens: every check red under its mutation, but tests/affected never selected it for the 10 files holding limit_hit calls, fixed by a self-checked callers list (review-bench@6ec2377); not fixed, missing checks only: call unit vs registry unit, sorted registry, a where drifted by a line inserted above its constant (llm-legs resolves file:ANCHOR at hit time, review-bench spells raw lines)"
+  },
+  {
+   "id": "suite:claude-setup/test_limit_hit_writers",
+   "title": "claude-setup/test_limit_hit_writers",
+   "audited_at": "2026-10-13T05:28:04+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-limit-hit-writers-20261012T235204Z-071a",
+   "cpu_run": 0.5,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "claude-setup/tests/test_limit_hit_writers.sh": "cc8c0d0593edd2fdbcfcc3696ca6a4a918eb179b"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.0 wall-min/day (0.2 s a run); loses the single-write and journal-off guards of both limit_hit writers",
+   "note": "0.2 s, 3 spawns-free asserts; fixed the vacuous /dev/null check (shell guard removal stayed green: row <1000 B) with a >1000 B row, now red under both guard mutations and the dd->printf mutation (4/5 runs)"
+  },
+  {
+   "id": "suite:claude-setup/test_limits_registry",
+   "title": "claude-setup/test_limits_registry",
+   "audited_at": "2026-10-13T05:28:07+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-limit-hit-writers-20261012T235204Z-071a",
+   "cpu_run": 0.1,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "claude-setup/tests/test_limits_registry.sh": "6aa8aa40835419cd3592e8cc9db3dabfd1f67eb8"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.0 wall-min/day (0.2 s a run); loses the two-way limit_hit call vs limits.json drift guard",
+   "note": "one python walk, 217 asserts; where-drift, missing entry, unused entry and bad line mutations all red"
+  },
+  {
+   "id": "suite:claude-setup/test_pr_auto_reviewers",
+   "title": "claude-setup/test_pr_auto_reviewers",
+   "audited_at": "2026-10-13T05:28:08+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-limit-hit-writers-20261012T235204Z-071a",
+   "cpu_run": 0.1,
+   "wall_run": 0.3,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "claude-setup/tests/test_pr_auto_reviewers.sh": "67a9cc63d9fd6d31ac06e5721a59eebf68bdc65c"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.0 wall-min/day (0.3 s a run); loses the pr-auto-reviewers failure-reporting and repo-scope guard",
+   "note": "fixed vacuous gh pr create filter (removal stayed green) by folding a gh pr view of the frontend PR into the not-touched assert; 4 asserts unchanged, 6 hook mutations red"
   }
  ]
 }
