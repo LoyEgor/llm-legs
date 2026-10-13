@@ -66,6 +66,8 @@ await_file -s "$STUB_DIR/claudeb.settings"
 hook_command=$(printf '%q' "$(realpath "$HOOK")")
 assert test "$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$STUB_DIR/claudeb.settings")" = "$hook_command"
 assert test "$(jq -r '.hooks.PostToolUse[0].matcher' "$STUB_DIR/claudeb.settings")" = '*'
+assert jq -e --arg home "$HOME" '.claudeMdExcludes | index($home + "/.claude-profiles/*/CLAUDE.md") != null and all(test("CLAUDE\\.md$"))' \
+  "$STUB_DIR/claudeb.settings" >/dev/null
 assert jq -e --arg hook "$hook_command" \
   '.cmd | index("--settings") as $i | $i != null and (.[$i + 1] | fromjson | .hooks.PostToolUse[0].hooks[0].command == $hook)' \
   "$RUN_DIR/meta.json" >/dev/null
