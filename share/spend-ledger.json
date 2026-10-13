@@ -782,6 +782,87 @@
    "verdict": "kept",
    "zero": "removing the gate saves 30.3k limit tokens/7d (-45 % on the week); loses the wall that stops a session moving Egor's account pin or a chat pin, a silent routing change",
    "note": "14d: 24 denials, replayed through the current gate 15 now pass (the gate was narrowed since) and 9 deny: 5 are interpreter heredocs that really can write the pin (python open() in the body, test_worker_pin_gate covers it, so masking them would open the door), 3 are fixers probing the gate with HOME=mktemp, 1 is cp from a chat-pins dir that the owner's comment (worker-pin-gate.sh:161) keeps denied: false-deny is this door's side; denial text is one line"
+  },
+  {
+   "id": "suite:claude-setup/test_word_doors",
+   "title": "claude-setup/test_word_doors",
+   "audited_at": "2026-10-13T05:58:43+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-doors-20261012T235217Z-2f8b",
+   "cpu_run": 8.3,
+   "wall_run": 6.4,
+   "cpu_min_day": 0.16,
+   "wall_min_day": 0.86,
+   "sources": {
+    "claude-setup/tests/test_word_doors.sh": "06729909ea0c365027fff134ea65ae60772c21c6",
+    "claude-setup/tests/word_triggers_harness.sh": "a8945609552fd08917dc61eb5afb113b739590b9"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves ~0.1 wall-min/day; loses the word door, spend and cancel end-to-end pins",
+   "note": "removed one vacuous check (heredoc naming a commit ran in an ungated temp repo, so commit-push-gate exited 0 at rf_any_gated; test_review_flow_gate owns it, red under a heredoc-as-commands mutation by probe); the rest is hook spawns (531 jq, 62 git) of real doors, none cuttable; 93 to 92 asserts"
+  },
+  {
+   "id": "suite:claude-setup/test_words_one_module",
+   "title": "claude-setup/test_words_one_module",
+   "audited_at": "2026-10-13T05:58:55+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-doors-20261012T235217Z-2f8b",
+   "cpu_run": 1.0,
+   "wall_run": 0.8,
+   "cpu_min_day": 0.05,
+   "wall_min_day": 0.06,
+   "sources": {
+    "claude-setup/tests/test_words_one_module.sh": "fe03c97a9e47b2aff0413179ede5e94b65b163f8"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves ~0.1 wall-min/day; loses the one-grammar scan of every wired hook",
+   "note": "own_words python3 spawned per hook file (35) is one spawn over all files; 39 asserts unchanged, planted Russian alternation in word-intake.sh still red"
+  },
+  {
+   "id": "suite:claude-setup/test_hook_time",
+   "title": "claude-setup/test_hook_time",
+   "audited_at": "2026-10-13T05:59:00+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-doors-20261012T235217Z-2f8b",
+   "cpu_run": 0.8,
+   "wall_run": 1.5,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.07,
+   "sources": {
+    "claude-setup/tests/test_hook_time.sh": "a589be96aa9d5d4e1772ab98bd03045b1cd99d3f"
+   },
+   "verdict": "cut",
+   "zero": "removing the suite saves ~0.1 wall-min/day; loses hook-time.sh row, exit status and every-hook-sources-it pins",
+   "note": "per-hook greps (89) are two greps over hooks/*.sh; 82 asserts unchanged, a hook without the source line and one with its own EXIT trap still red; the bash-spin and bash 3.2/5 fixtures stay (a CPU-us check and a shell matrix)"
+  },
+  {
+   "id": "suite:claude-setup/test_pr_mattermost",
+   "title": "claude-setup/test_pr_mattermost",
+   "audited_at": "2026-10-13T05:59:09+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-doors-20261012T235217Z-2f8b",
+   "cpu_run": 2.1,
+   "wall_run": 3.1,
+   "cpu_min_day": 0.06,
+   "wall_min_day": 0.1,
+   "sources": {
+    "claude-setup/tests/test_pr_mattermost.sh": "f7cbb8836882e05c180f42ca70bb21cdf47fdef8"
+   },
+   "verdict": "kept",
+   "zero": "removing the suite saves ~0.1 wall-min/day; loses the frontend-PR announce hold, draft/undo/other-repo reads and the zero-fork fast path",
+   "note": "read through the tests lens: every negative has a positive twin, the fork spy has its positive control; 113 jq spawns are the hook parse plus payload builders; no vacuous check, no cheaper equivalent"
+  },
+  {
+   "id": "suite:claude-setup/test_hook_deny_names",
+   "title": "claude-setup/test_hook_deny_names",
+   "audited_at": "2026-10-13T05:59:16+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-word-doors-20261012T235217Z-2f8b",
+   "cpu_run": 0.8,
+   "wall_run": 0.6,
+   "cpu_min_day": 0.03,
+   "wall_min_day": 0.06,
+   "sources": {
+    "claude-setup/tests/test_hook_deny_names.sh": "85e8aaa052b14656b8d0eadd6425596aba99fce8"
+   },
+   "verdict": "kept",
+   "zero": "removing the suite saves ~0.1 wall-min/day; loses the [hook-name] prefix guard Token tracking names blocks by and the settings-command-exists check",
+   "note": "a planted nameless builder keeps the scan honest; 112 greps and realpaths are per-file counts that need the file; reads live settings.json read-only on purpose (4941 hook errors in a day)"
   }
  ]
 }
