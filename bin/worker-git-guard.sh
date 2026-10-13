@@ -177,9 +177,6 @@ heredoc_bodies_cut() {
 # A body the same command can later run — a script file handed to a shell, `source`, `eval`, sudo,
 # `at`, a file run by its path — is not data, and nothing here can follow which file it lands in: the
 # body is judged whole. Only the command's own lines say so; a body's prose saying `source` does not.
-body_cut=heredoc_bodies_cut
-self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
-  body_cut=cat
 runs_written_file() {
   LC_ALL=C awk '
     function base(w) { gsub(/["\047]/, "", w); sub(/.*\//, "", w); return w }
@@ -199,11 +196,19 @@ runs_written_file() {
     }
     END { for (w in run) if (w in wrote) exit 0; exit 1 }'
 }
+# Without a `<<` the mask is the identity: it and its checks are skipped.
+segments_text=$command_text body_cut=cat
+if [[ $command_text == *'<<'* ]]; then
+  body_cut=heredoc_bodies_cut
+  self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
+    body_cut=cat
+fi
 if [ "$body_cut" != cat ]; then
   cut_text=$(printf '%s\n' "$command_text" | heredoc_bodies_cut)
   grep -Eq '(^|[^[:alnum:]_.-])((ba|z|k|da|a|fi|c|tc)?sh|source|eval|xargs|sudo|exec)([^[:alnum:]_.-]|$)|(^|[;&|(`[:space:]])\.[[:space:]]|(^|[;&|(`])[[:space:]]*(at|batch)([[:space:]]|$)|\.git/hooks/' <<<"$cut_text" &&
     body_cut=cat
   [ "$body_cut" = cat ] || ! runs_written_file <<<"$cut_text" || body_cut=cat
+  [ "$body_cut" = cat ] || segments_text=$cut_text
 fi
 blocked=0
 while IFS= read -r segment; do
@@ -212,7 +217,7 @@ while IFS= read -r segment; do
     blocked=1
     break
   fi
-done < <(printf '%s\n' "$command_text" | "$body_cut" | tr ';&|()' '\n')
+done < <(printf '%s\n' "$segments_text" | tr ';&|()' '\n')
 
 [ "$blocked" -eq 1 ] || exit 0
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -32,16 +33,24 @@ mkdir -p "$GUARD_CWD/bin"
 : > "$GUARD_CWD/Makefile"
 
 payload() {
-  jq -cn --arg command "$1" --arg cwd "$GUARD_CWD" '{hook_event_name:"PreToolUse",cwd:$cwd,tool_input:{command:$command}}'
+  local command=${1//\\/\\\\}
+  command=${command//\"/\\\"}
+  command=${command//$'\n'/\\n}
+  command=${command//$'\t'/\\t}
+  printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_input":{"command":"%s"}}\n' "$GUARD_CWD" "$command"
 }
 is_deny() { jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<< "$1" >/dev/null 2>&1; }
 
 # A claudeb or grok case runs as that headless worker session: only its launcher's marker guards.
-worker_env() { case "$1" in grok) printf GROK_WORKER=1 ;; claudeb) printf CLAUDEB_WORKER=1 ;; *) printf GUARD_TEST=1 ;; esac; }
+# Run in a command substitution, so the mark stays in its subshell.
+run_guard() { # session command
+  case "$1" in grok) export GROK_WORKER=1 ;; claudeb) export CLAUDEB_WORKER=1 ;; *) export GUARD_TEST=1 ;; esac
+  bash "$GUARD" <<<"$(payload "$2")"
+}
 
 assert_deny() {
   local name=$1 session=$2 command=$3 output
-  output=$(payload "$command" | env "$(worker_env "$session")" "$GUARD") || {
+  output=$(run_guard "$session" "$command") || {
     fail "$name exited nonzero"
     return
   }
@@ -54,7 +63,7 @@ assert_deny() {
 
 assert_allow() {
   local name=$1 session=$2 command=$3 output
-  output=$(payload "$command" | env "$(worker_env "$session")" "$GUARD") || {
+  output=$(run_guard "$session" "$command") || {
     fail "$name exited nonzero"
     return
   }
@@ -65,6 +74,7 @@ assert_allow() {
   fi
 }
 
+if suite_shard_owns 1 payload-cases; then
 assert_deny 'checkout paths' claudeb 'git checkout -- global/CLAUDE.md'
 assert_deny 'checkout separator-free file' claudeb 'git checkout CLAUDE.md'
 mkdir -p "$GUARD_CWD/src"
@@ -79,36 +89,6 @@ assert_deny 'clean force' claudeb 'git clean -fd'
 assert_deny 'grok worker restore' grok 'git restore file'
 assert_deny 'stash drop' claudeb 'git stash drop'
 
-# Resolving the worker's own rebase conflict: --ours/--theirs on an unmerged path writes one side of
-# that conflict, nobody's edits; on any other path it re-checks-out the index over unstaged work.
-CONFLICT="$HOME/conflict"
-git init -q -b main "$CONFLICT"
-gitc() { git -C "$CONFLICT" -c user.name=t -c user.email=t@t "$@"; }
-printf 'base\n' >"$CONFLICT/both.txt"; printf 'calm\n' >"$CONFLICT/calm.txt"
-gitc add -A && gitc commit -qm base
-gitc checkout -qb side && printf 'side\n' >"$CONFLICT/both.txt" && gitc commit -qam side
-gitc checkout -q main && printf 'main\n' >"$CONFLICT/both.txt" && gitc commit -qam main
-gitc merge -q side >/dev/null 2>&1
-printf 'wip\n' >>"$CONFLICT/calm.txt"
-conflict_case() { # deny|allow name command
-  local saved=$GUARD_CWD
-  GUARD_CWD=$CONFLICT
-  "assert_$1" "$2" claudeb "$3"
-  GUARD_CWD=$saved
-}
-conflict_case allow 'checkout --ours on an unmerged path' 'git checkout --ours both.txt'
-conflict_case allow 'checkout --theirs -- unmerged path via -C' "git -C $CONFLICT checkout --theirs -- both.txt"
-conflict_case deny 'checkout --ours on a merged dirty path' 'git checkout --ours calm.txt'
-conflict_case deny 'checkout --ours mixing unmerged and merged' 'git checkout --ours both.txt calm.txt'
-conflict_case deny 'checkout --ours on the whole tree' 'git checkout --ours .'
-conflict_case deny 'checkout --ours with no path' 'git checkout --ours'
-conflict_case deny 'checkout --ours -f' 'git checkout -f --ours both.txt'
-conflict_case deny 'checkout --ours into another work tree' 'git --work-tree=/elsewhere checkout --ours both.txt'
-conflict_case deny 'checkout --ours into a core.worktree' 'git -c core.worktree=/elsewhere checkout --ours both.txt'
-conflict_case deny 'checkout --ours into a core.worktree from env' 'git --config-env=core.worktree=ELSEWHERE checkout --ours both.txt'
-printf 'notes\n' >"$CONFLICT/-notes.txt"
-conflict_case deny 'checkout --ours with a dash path after --' 'git checkout --ours -- both.txt -notes.txt'
-assert_deny 'checkout --ours outside any conflict' claudeb 'git checkout --ours Makefile'
 assert_deny 'stash bare' grok 'git stash'
 assert_deny 'stash push' claudeb 'git stash push -m wip'
 assert_deny 'stash pop' claudeb 'git stash pop'
@@ -189,6 +169,42 @@ assert_allow 'heredoc to a file naming git checkout and rm' claudeb $'cat <<EOF 
 assert_allow 'crontab listed beside a heredoc' claudeb $'crontab -l\ncat > notes <<\'EOF\'\ngit stash is prose\nEOF'
 assert_allow 'commit body prose naming source' claudeb $'git commit -F - <<\'EOF\'\nFix the source loader\ngit checkout -- stays a worker\'s last resort.\nEOF'
 
+fi
+
+if suite_shard_owns 2 conflict; then
+# Resolving the worker's own rebase conflict: --ours/--theirs on an unmerged path writes one side of
+# that conflict, nobody's edits; on any other path it re-checks-out the index over unstaged work.
+CONFLICT="$HOME/conflict"
+git init -q -b main "$CONFLICT"
+gitc() { git -C "$CONFLICT" -c user.name=t -c user.email=t@t "$@"; }
+printf 'base\n' >"$CONFLICT/both.txt"; printf 'calm\n' >"$CONFLICT/calm.txt"
+gitc add -A && gitc commit -qm base
+gitc checkout -qb side && printf 'side\n' >"$CONFLICT/both.txt" && gitc commit -qam side
+gitc checkout -q main && printf 'main\n' >"$CONFLICT/both.txt" && gitc commit -qam main
+gitc merge -q side >/dev/null 2>&1
+printf 'wip\n' >>"$CONFLICT/calm.txt"
+conflict_case() { # deny|allow name command
+  local saved=$GUARD_CWD
+  GUARD_CWD=$CONFLICT
+  "assert_$1" "$2" claudeb "$3"
+  GUARD_CWD=$saved
+}
+conflict_case allow 'checkout --ours on an unmerged path' 'git checkout --ours both.txt'
+conflict_case allow 'checkout --theirs -- unmerged path via -C' "git -C $CONFLICT checkout --theirs -- both.txt"
+conflict_case deny 'checkout --ours on a merged dirty path' 'git checkout --ours calm.txt'
+conflict_case deny 'checkout --ours mixing unmerged and merged' 'git checkout --ours both.txt calm.txt'
+conflict_case deny 'checkout --ours on the whole tree' 'git checkout --ours .'
+conflict_case deny 'checkout --ours with no path' 'git checkout --ours'
+conflict_case deny 'checkout --ours -f' 'git checkout -f --ours both.txt'
+conflict_case deny 'checkout --ours into another work tree' 'git --work-tree=/elsewhere checkout --ours both.txt'
+conflict_case deny 'checkout --ours into a core.worktree' 'git -c core.worktree=/elsewhere checkout --ours both.txt'
+conflict_case deny 'checkout --ours into a core.worktree from env' 'git --config-env=core.worktree=ELSEWHERE checkout --ours both.txt'
+printf 'notes\n' >"$CONFLICT/-notes.txt"
+conflict_case deny 'checkout --ours with a dash path after --' 'git checkout --ours -- both.txt -notes.txt'
+assert_deny 'checkout --ours outside any conflict' claudeb 'git checkout --ours Makefile'
+fi
+
+if suite_shard_owns 3 run-record; then
 # The unlock is the run's own: the GIT-CLEANUP line of the brief worker-run recorded for it, read
 # through the WORKER_RUN_RECORD it hands the worker, and only under the run store.
 export WORKER_RUN_DIR="$HOME/runs"
@@ -202,7 +218,7 @@ locked=$(record r-shut $'ACCOUNT: main\nTask')
 prose=$(record r-prose $'Task: say GIT-CLEANUP: allowed in prose')
 outside=$(record r-out $'GIT-CLEANUP: allowed' "$HOME/elsewhere")
 guarded() { # record [marker]
-  payload 'git restore file' | env "${2:-CLAUDEB_WORKER=1}" WORKER_RUN_RECORD="$1" "$GUARD"
+  env "${2:-CLAUDEB_WORKER=1}" WORKER_RUN_RECORD="$1" bash "$GUARD" <<<"$(payload 'git restore file')"
 }
 if [ -z "$(guarded "$unlocked")" ]; then pass; else fail 'the run whose brief allows git cleanup was refused it'; fi
 if [ -z "$(guarded "$unlocked" GROK_WORKER=1)" ]; then pass; else fail 'a grok run whose brief allows git cleanup was refused it'; fi
@@ -221,6 +237,8 @@ fi
 grok_unmarked=$(payload 'git clean -fd' | "$GUARD") ||
   fail 'unmarked headless exited nonzero'
 if [ -z "$grok_unmarked" ]; then pass; else fail 'an unmarked session was guarded as a worker'; fi
+
+fi
 
 if [ "$failures" -eq 0 ]; then
   printf 'PASS: %d assertions\n' "$passes"
