@@ -316,6 +316,18 @@ check(spiked_heavy == {"test-health/heavy/alpha/test_a", "test-health/heavy/alph
       and spiked["heavy"][1]["label"] == "test_b" and abs(spiked["heavy"][1]["min_day"] - 1000 / 60.0) < 0.1,
       "heavy: a suite first run 2 days ago, heavy both days, is priced over its own days and ranks heavy: %s %s"
       % (sorted(spiked_heavy), spiked["heavy"]))
+cut_a = lambda t: T - 3.5 * 86400 if t == "test-health/heavy/alpha/test_a" else None
+quiet = {f["target"] for f in th.collect(NOW, spike, [repo], since=cut_a)["findings"] if f["class"] == "heavy"}
+with open(spike, "a") as handle:
+    for back in (0.3, 0.6, 1.3, 1.6, 2.5):
+        handle.write(json.dumps({"kind": "suites", "started_at": T - back * 86400 - 2000, "ended_at": T - back * 86400
+                                 - 800, "repo": repo, "repo_root": repo, "scope": "named", "j": 1, "suites": {
+                                     "test_a.sh": {"rc": 0, "secs": 3000, "cpu_s": 2900}}}) + "\n")
+grown = {f["target"] for f in th.collect(NOW, spike, [repo], since=cut_a)["findings"] if f["class"] == "heavy"}
+check("test-health/heavy/alpha/test_a" not in quiet and "test-health/heavy/alpha/test_a" in grown
+      and "test-health/heavy/alpha/test_b" in quiet,
+      "heavy: after its own fix a suite returns only on more CPU a run than before it, never on wall alone: %s %s"
+      % (sorted(quiet), sorted(grown)))
 
 mini, M = os.path.join(work, "mini.jsonl"), NOW - 3600
 

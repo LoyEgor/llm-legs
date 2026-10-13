@@ -1,6 +1,6 @@
 # Hand-off: dismiss opportunity:test-health/retests and test-health/serial
 
-Status: open
+Status: settled 20261012T233034Z-3131: retests not-a-bug (Egor's 10-07 no-rebuild, the line stays measured); serial closed, its cause gone since 10-06 (row note; it leaves the window 10-13 18:32)
 To: «Harness Doctor»
 
 Rows `speed-test-health-retests` and `speed-test-health-serial` in `share/harness-ledger.json` hold

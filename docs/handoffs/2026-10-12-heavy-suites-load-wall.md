@@ -1,6 +1,6 @@
 # Heavy test_consistency / test_harness_doctor are load wall, not suite work
 
-Status: open — To: «Harness Doctor» (`share/harness-ledger.json` `owner`)
+Status: settled 20261012T233034Z-3131: kept the wall price (Lost time is wall-clock overhead), gated the reopening instead: after its own fix a heavy suite returns only at 1.5x its CPU a run before that fix, so load-inflated wall alone stays quiet (test_test_health red on old code; both rows fixed-pending)
 
 From night fixer `harness-speed-test-health-heavy-llm-legs-test-consistency-20261012T010239Z-1189`, 2026-10-12.
 Rows `speed-test-health-heavy-test-consistency`, `speed-heavy-test-harness-doctor`.

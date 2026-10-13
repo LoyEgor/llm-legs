@@ -587,10 +587,26 @@ def heavy_keys(window, now, born):
     return {k for k, (day_s, _, _) in per_class(window, "work", now, born).items() if day_s / 60.0 >= HEAVY_MIN_DAY}
 
 
-def findings(window, suites, files, now, born, since=lambda target: None):
+def cpu_run(execs):
+    timed = [e["cpu"] for e in sorted(execs, key=lambda e: e["end"]) if e["ok"] and e["cpu"]][-suite_audit.RECENT_RUNS:]
+    return statistics.median(timed) if len(timed) >= suite_audit.SIDE_RUNS else None
+
+
+def same_work(history, key, cut, runs):
+    """Whether a heavy suite's CPU a run since its own fix landed stays under BAND times the runs' before it: its wall
+    since is contention, nothing a suite audit cuts."""
+    if not cut:
+        return False
+    before = cpu_run(e for e in history if (e["repo"], e["name"]) == key and e["end"] < cut)
+    after = cpu_run(runs)
+    return bool(before and after) and after < BAND * before
+
+
+def findings(window, suites, files, now, born, since=lambda target: None, history=()):
     """Each minute of the window's suite wall in at most one finding: retests, flaky, idle, long pole, serial,
     heavy suites (their work at HEAVY_MIN_DAY or more), then fan-out on the rest. A suite's finding is charged only
-    for its runs from since(its target) on, the time its own fix landed."""
+    for its runs from since(its target) on, the time its own fix landed; a heavy one returns only on more CPU a run
+    than before that fix (same_work over history, every run loaded)."""
     out = []
     days = lambda runs: len({time_budget.local_day(e["end"]) for e in runs})
     retest = [e for e in window if e["repeat"]]
@@ -627,7 +643,8 @@ def findings(window, suites, files, now, born, since=lambda target: None):
                 out.append(finding("pole", "pole/%s/%s" % (repo, short), secs, worker, len(runs), days(runs),
                                    "%s · %s: the long pole of %d runs, the other slots idle while it runs" % (
                                        short, repo, len(runs)), files_of))
-            elif cls == "work" and secs / 60.0 >= HEAVY_MIN_DAY:
+            elif cls == "work" and secs / 60.0 >= HEAVY_MIN_DAY and not same_work(history, (repo, name),
+                                                                                  cuts[(repo, name)], runs):
                 out.append(finding("heavy", "heavy/%s/%s" % (repo, short), secs, worker, len(runs), days(runs),
                                    "%s · %s: %d runs, %s wall-min a run after retests, flakes, idle and its pole; audit: "
                                    "legacy checks, over-complicated, splittable, sleeps" % (
@@ -762,7 +779,7 @@ def collect(now, journal, tops=None, write=False, lo=None, since=lambda target: 
     current = measure(rows, recent, landed, lo, now)
     normal, days = usual(rows, recent, landed, now)
     queued = dict(pinned(tops, scanned, stats, edits), **dead(tops, scanned, execs, journal_lo, now))
-    found = findings(window, stats, files, now, born, since)
+    found = findings(window, stats, files, now, born, since, execs)
     out.update(status="watch" if any(red_line(k, current[k], normal[k], m) for k, _, _, m in LINES) else "ok",
                now=current, usual=normal, usual_days=days, findings=found, regressions=regressions(current, normal),
                heavy=[dict({k: s[k] for k in ("repo", "label", "runs", "wall_s", "avg_s", "red", "judged", "flaky",

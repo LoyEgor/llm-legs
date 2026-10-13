@@ -6466,7 +6466,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_harness_doctor"
       },
-      "status": "open",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:40:00+03:00",
@@ -6481,12 +6481,27 @@
             "data": "the suite's own fixtures at load ~200 on 10 cores; the committed ledger (203 fixes with a commit in llm-legs, claude-setup, review-bench, usage-ai-report) plus two mutants naming a missing llm-legs and claude-setup commit",
             "result": "407 asserts green both ways; shards 65 + 253 + 21 + 68 = 407, sections disjoint (suite_shard_owns refuses a repeated name); the guard green on the ledger and red on both mutants; wall 110 s before, 80 s unsharded, 24-26 s sharded (longest shard 25-38 s at load ~200, CPU 13 s)"
           }
+        },
+        {
+          "at": "2026-10-13T03:05:00+03:00",
+          "by": "night 20261012T233034Z-3131 Harness Doctor",
+          "files": [
+            "llm-legs/share/test_health.py",
+            "llm-legs/tests/test_test_health.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "heavy findings of test_health.collect, old vs new code, with the 10-10 fixes as cuts",
+            "data": "the live run-suites journal, 30 days loaded, 2026-10-13 03:00",
+            "result": "the same 16 heavy findings both ways; the two fixed suites stay quiet both ways tonight, the gate keeps them so on a loaded night (test_test_health)"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-12",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-consistency-20261012T010239Z-1189",
-      "note": "Before: 865 runs, 0.6 wall-min a run, 32 min + 41 w-min/day. Profile at load ~200: 15 s python CPU over 43 calls, wall ~7x CPU; 22 doctor runs ~0.35 s CPU each (module compile ~0.08 s of it, not cached for a script run), the classes block 3.1 s, the ledger guard 2.3 s (now 0.15 s), the calibration-transcript gzip|jq scan 0.6 s CPU / ~5 s wall. Kept: the four 0.1-0.3 s canary sleeps in the classes block, negative checks that need a window; a deeper legacy-assert read of the 2600 lines was not done. 2026-10-12 ruled out as suite work: 12.5 CPU-s a run, the doctor's own runs (0.35-0.65 s CPU each, 72 ms compiling the 306 KB script; module loads already use bin/__pycache__); 180 of 238 runs in 2.5 d ran unsharded at 28-58 s because slot_room refused shards under load, 58 sharded at 4 s. Not the suite's: a production run over the real ledger makes ~550 git calls (share/fix_commit.py _landing/file_commits via last_fix_at -> fix_held_from, lru_cache per process only, ~17 s wall), see blind spot fix-commit-git-per-run. Proposal to price heavy on CPU per run: handoff.",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-13 (Harness Doctor): owner's call, not the CPU price the handoff proposed (Lost time stays wall-clock overhead): after its own fix landed, a heavy suite's finding returns only when its CPU a run (median of the last 20 passing) reaches 1.5x the runs' before that fix (test_health.same_work), so contention-inflated wall alone no longer reopens it; live journal, the 10-10 fixes as cuts: CPU a run 15.5 -> 19.7 s (test_consistency), 10.4 -> 11.2 s (test_harness_doctor), both under 1.5x. test_test_health red on the old code. Before: 865 runs, 0.6 wall-min a run, 32 min + 41 w-min/day. Profile at load ~200: 15 s python CPU over 43 calls, wall ~7x CPU; 22 doctor runs ~0.35 s CPU each (module compile ~0.08 s of it, not cached for a script run), the classes block 3.1 s, the ledger guard 2.3 s (now 0.15 s), the calibration-transcript gzip|jq scan 0.6 s CPU / ~5 s wall. Kept: the four 0.1-0.3 s canary sleeps in the classes block, negative checks that need a window; a deeper legacy-assert read of the 2600 lines was not done. 2026-10-12 ruled out as suite work: 12.5 CPU-s a run, the doctor's own runs (0.35-0.65 s CPU each, 72 ms compiling the 306 KB script; module loads already use bin/__pycache__); 180 of 238 runs in 2.5 d ran unsharded at 28-58 s because slot_room refused shards under load, 58 sharded at 4 s. Not the suite's: a production run over the real ledger makes ~550 git calls (share/fix_commit.py _landing/file_commits via last_fix_at -> fix_held_from, lru_cache per process only, ~17 s wall), see blind spot fix-commit-git-per-run. Proposal to price heavy on CPU per run: handoff.",
       "handoff": "docs/handoffs/2026-10-12-heavy-suites-load-wall.md"
     },
     {
@@ -6832,7 +6847,7 @@
         "rule": "opportunity",
         "ident": "^test-health/heavy/llm-legs/test_consistency$"
       },
-      "status": "open",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:55:00+03:00",
@@ -6847,12 +6862,27 @@
             "data": "one run each at load ~200; a false assert planted in shard 2's section",
             "result": "1784 = 547 + 104 + 1133, all rc 0; CPU 22.4 s both ways; longest shard 98 s vs 248 s unsharded; the planted assert turns shard 2 red"
           }
+        },
+        {
+          "at": "2026-10-13T03:05:00+03:00",
+          "by": "night 20261012T233034Z-3131 Harness Doctor",
+          "files": [
+            "llm-legs/share/test_health.py",
+            "llm-legs/tests/test_test_health.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "heavy findings of test_health.collect, old vs new code, with the 10-10 fixes as cuts",
+            "data": "the live run-suites journal, 30 days loaded, 2026-10-13 03:00",
+            "result": "the same 16 heavy findings both ways; the two fixed suites stay quiet both ways tonight, the gate keeps them so on a loaded night (test_test_health)"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-12",
-      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-test-consistency-20261012T010239Z-1189",
-      "note": "Before: 1138 runs/7 d, 0.7 wall-min a run; 22.4 CPU-s a run (spend-ledger suite audit 2026-10-09 already took the grep forks), the rest behavioural probes (worker-pick roles/pause, llm-refresh ticks, llm-limits OpenCode snapshots, the light gate) kept whole. It is the pole of 128 of 670 named runs in 7 d and never of a full run (sum/j 800-1100 s there, design 5 shard rule), so it is sharded `# shards: 3` into five sections (rows a-m and al-am, ai-ak, n-cl and an-ek), cross-section site constants hoisted above them; modelled max(longest, sum/j) saving over the 7 d of runs: ~10 min/day. Ruled out: the per-probe $(<file) read (bash 5.3, ~1 ms a 300 KB file, no fork), sleeps (none), legacy checks (dead-code lens 926070a3 already swept). Not reached: a direct `bash tests/test_consistency.sh` (CLAUDE.md's own command) stays serial, and run-suites shards only while slot_room finds room. 2026-10-12 ruled out as suite work: 21-22 CPU-s a run (1.7 s test shell, the rest spread over product probes: worker-pick 62 calls, worker-limit-gate 0.48 s x 28, llm-refresh ticks ~2 s x 2, no hot spot); 277 of 340 runs in 2.5 d ran unsharded at 24-38 s because slot_room refused shards under load, 63 sharded at 9 s. A grep content cache measured flat. Proposal to price heavy on CPU per run: handoff.",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-13 (Harness Doctor): owner's call, not the CPU price the handoff proposed (Lost time stays wall-clock overhead): after its own fix landed, a heavy suite's finding returns only when its CPU a run (median of the last 20 passing) reaches 1.5x the runs' before that fix (test_health.same_work), so contention-inflated wall alone no longer reopens it; live journal, the 10-10 fixes as cuts: CPU a run 15.5 -> 19.7 s (test_consistency), 10.4 -> 11.2 s (test_harness_doctor), both under 1.5x. test_test_health red on the old code. Before: 1138 runs/7 d, 0.7 wall-min a run; 22.4 CPU-s a run (spend-ledger suite audit 2026-10-09 already took the grep forks), the rest behavioural probes (worker-pick roles/pause, llm-refresh ticks, llm-limits OpenCode snapshots, the light gate) kept whole. It is the pole of 128 of 670 named runs in 7 d and never of a full run (sum/j 800-1100 s there, design 5 shard rule), so it is sharded `# shards: 3` into five sections (rows a-m and al-am, ai-ak, n-cl and an-ek), cross-section site constants hoisted above them; modelled max(longest, sum/j) saving over the 7 d of runs: ~10 min/day. Ruled out: the per-probe $(<file) read (bash 5.3, ~1 ms a 300 KB file, no fork), sleeps (none), legacy checks (dead-code lens 926070a3 already swept). Not reached: a direct `bash tests/test_consistency.sh` (CLAUDE.md's own command) stays serial, and run-suites shards only while slot_room finds room. 2026-10-12 ruled out as suite work: 21-22 CPU-s a run (1.7 s test shell, the rest spread over product probes: worker-pick 62 calls, worker-limit-gate 0.48 s x 28, llm-refresh ticks ~2 s x 2, no hot spot); 277 of 340 runs in 2.5 d ran unsharded at 24-38 s because slot_room refused shards under load, 63 sharded at 9 s. A grep content cache measured flat. Proposal to price heavy on CPU per run: handoff.",
       "handoff": "docs/handoffs/2026-10-12-heavy-suites-load-wall.md"
     },
     {
@@ -7928,12 +7958,12 @@
         "rule": "opportunity",
         "ident": "test-health/retests"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
-      "note": "Ruled out as a lever 2026-10-12: pass reuse on identical inputs was built and dropped by Egor on 2026-10-07 (an exact key saves about 1 % of suite CPU, 7 % at most; the repeats count different worktrees on one base commit) and must not be rebuilt; design §5 also allows reuse only on unchanged source, fixture, environment and scope digests, which the journal's tree does not carry. 326 repeats, 28 a chat or the night after its worker's green run. Dismissal proposed to the owner.",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-13 (Harness Doctor): not a bug, dismissed by the owner: pass reuse is Egor's 2026-10-07 no-rebuild, so the lever cannot be pulled; the retests line stays measured. Ruled out as a lever 2026-10-12: pass reuse on identical inputs was built and dropped by Egor on 2026-10-07 (an exact key saves about 1 % of suite CPU, 7 % at most; the repeats count different worktrees on one base commit) and must not be rebuilt; design §5 also allows reuse only on unchanged source, fixture, environment and scope digests, which the journal's tree does not carry. 326 repeats, 28 a chat or the night after its worker's green run. Dismissal proposed to the owner.",
       "handoff": "docs/handoffs/2026-10-12-test-health-retests-serial.md"
     },
     {
@@ -7946,9 +7976,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-12",
-      "reviewed_by": "night 20261012T005404Z-e2f7 harness-speed-test-health-heavy-llm-legs-test-night-run-20261012T010244Z-0a29",
-      "note": "Ruled out 2026-10-12: all 15 one-slot multi-suite runs ended 2026-10-05/06 (12 worker runs at -j 1 in feat-* worktrees, the last 10-06 03:54; 3 full runs of a tmp fixture repo the live journal took before 33eb4e77 stopped run-suites passing RUN_SUITES_JOURNAL on); none since, so the row leaves the 168 h window by 2026-10-13 18:32. run-suites' own -j never goes under 2 (slots_from_cores 2 2). Dismissal proposed to the owner.",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-13 (Harness Doctor): closed by the owner, its cause gone: no one-slot multi-suite run since 2026-10-06 and run-suites never goes under -j 2; the finding leaves the window 2026-10-13 18:32, so any serial finding after that is a new one. Ruled out 2026-10-12: all 15 one-slot multi-suite runs ended 2026-10-05/06 (12 worker runs at -j 1 in feat-* worktrees, the last 10-06 03:54; 3 full runs of a tmp fixture repo the live journal took before 33eb4e77 stopped run-suites passing RUN_SUITES_JOURNAL on); none since, so the row leaves the 168 h window by 2026-10-13 18:32. run-suites' own -j never goes under 2 (slots_from_cores 2 2). Dismissal proposed to the owner.",
       "handoff": "docs/handoffs/2026-10-12-test-health-retests-serial.md"
     },
     {
