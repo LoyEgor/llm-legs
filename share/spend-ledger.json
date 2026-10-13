@@ -2046,6 +2046,66 @@
    "verdict": "cut",
    "zero": "removal saves 1.4 CPU-min/day; loses the red unpushed alarm on a chat's own commit the upstream lacks, which Egor reads",
    "note": "15s TTL re-asked the gate under an unchanged key (2000+ runs/day at <15s gaps on 10-06/07, ~0.1 CPU-s per examined commit, mostly jq over 1.3 MB review-anchors.json); key now covers claude-writes too, re-ask after 100s; recent days 0.05-0.4 CPU-min/day, all runs key changes (same=0 20/20)"
+  },
+  {
+   "id": "cpu:hook/report-flush.sh",
+   "title": "hook/report-flush.sh",
+   "audited_at": "2026-10-13T10:19:44+03:00",
+   "by": "harness-speed-cpu-statusline-unpushed-20261012T235121Z-6500",
+   "cpu_min_day": 1.2,
+   "cpu_s_run": 0.007,
+   "runs_day": 7739,
+   "sources": {
+    "claude-setup/hooks/report-flush.sh": "3efdc7bf8dc9b53d351ce2884ef95f4cefc6e800"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.3 CPU-min/day; loses every report delivery into chats (report-bus flush on PostToolUse/UserPromptSubmit), which Egor reads",
+   "note": "floor of a /bin/bash 3.2 hook with hook-time is 3.6 ms; 1.1 ms of the 1.8 ms over it was the delivered/ glob of the over-200 check, now re-read only when the dir moved (delivered.counted); 400 real payloads 5.6-5.9 -> 4.5-4.7 ms, output identical; rest (512-byte read, regex, pending globs) ~0.5 ms"
+  },
+  {
+   "id": "cpu:hook/pr-ready-mattermost.sh",
+   "title": "hook/pr-ready-mattermost.sh",
+   "audited_at": "2026-10-13T10:19:51+03:00",
+   "by": "harness-speed-cpu-statusline-unpushed-20261012T235121Z-6500",
+   "cpu_min_day": 1.0,
+   "cpu_s_run": 0.008,
+   "runs_day": 5547,
+   "sources": {
+    "claude-setup/hooks/pr-ready-mattermost.sh": "200178605403bb97480662f49c5badd34e27d687"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.1 CPU-min/day; loses the held stop that makes a chat announce a ready frontend PR in Mattermost",
+   "note": "jq forked on every Bash call before the gh pr screen; the raw payload is now screened with SPLICE_JSON first: 10.5 -> 5.6 ms a run on 400 real payloads, output identical; a hook if-filter (CC 2.1.296 supports if: Bash(...)) would skip the bash start too but misses spliced forms, not tried"
+  },
+  {
+   "id": "cpu:hook/pr-auto-reviewers.sh",
+   "title": "hook/pr-auto-reviewers.sh",
+   "audited_at": "2026-10-13T10:19:57+03:00",
+   "by": "harness-speed-cpu-statusline-unpushed-20261012T235121Z-6500",
+   "cpu_min_day": 1.0,
+   "cpu_s_run": 0.009,
+   "runs_day": 5547,
+   "sources": {
+    "claude-setup/hooks/pr-auto-reviewers.sh": "1915b9a2bbedabed242163749d0d688fdca485cd"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.2 CPU-min/day; loses the automatic reviewer request on Egor's arbostar-frs-frontend PRs",
+   "note": "IN=$(cat) forked on every Bash call; read builtin: 7.5 -> 5.2 ms a run on 400 real payloads, output identical; merging it into pr-ready-mattermost would save one bash start (~3.5 ms) more but they differ on drafts and workers, not done"
+  },
+  {
+   "id": "cpu:hook/resume-timer-guard.sh",
+   "title": "hook/resume-timer-guard.sh",
+   "audited_at": "2026-10-13T10:20:04+03:00",
+   "by": "harness-speed-cpu-statusline-unpushed-20261012T235121Z-6500",
+   "cpu_min_day": 1.0,
+   "cpu_s_run": 0.008,
+   "runs_day": 5712,
+   "sources": {
+    "claude-setup/hooks/resume-timer-guard.sh": "767fd5dd97fc9f605282cd83469bfbbaac12f365"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 1.1 CPU-min/day; loses the deny that keeps a model from arming the Hammerspoon resume timer unasked (f0cc3feb)",
+   "note": "5.3 ms a run on 400 real PreToolUse payloads against a 3.6 ms bash 3.2 + hook-time floor; the rest is the payload read and the fork-free spliced screen of 75919831 (regex build 0.6 ms, ~0.07 CPU-min/day, not worth a literal regex)"
   }
  ]
 }
