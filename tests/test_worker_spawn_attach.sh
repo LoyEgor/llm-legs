@@ -42,8 +42,9 @@ assert_has 'the codex-worker relay is retired. Delegate from this chat' "$(reaso
 for relay in claudeb codex gemini grok light; do
   out=$(spawn "$relay-worker" $'ACCOUNT: a1\nFix it.' "u-$relay")
   assert_eq deny "$(jq -r '.hookSpecificOutput.permissionDecision' <<<"$out")"
-  assert_has "the $relay-worker relay is retired. Delegate from this chat: write the brief with the Write tool (a heredoc ends early at its delimiter); Bash \`worker-run start $relay --brief <file> --workdir <dir>\`" "$(reason <<<"$out")"
-  assert_has 'then Bash with run_in_background `worker-run wait <run-id>`; on its completion notification, `worker-run report <run-id>`' "$(reason <<<"$out")"
+  why=$(reason <<<"$out")
+  assert_has "the $relay-worker relay is retired. Delegate from this chat: write the brief with the Write tool (a heredoc ends early at its delimiter); Bash \`worker-run start $relay --brief <file> --workdir <dir>\`" "$why"
+  assert_has 'then Bash with run_in_background `worker-run wait <run-id>`; on its completion notification, `worker-run report <run-id>`' "$why"
 done
 assert_has 'Run `light-research --prompt-file <file> --out <answer-file> --repo <abs>` as a Bash with run_in_background' \
   "$(spawn light-research 'Where is X?' u-lr | reason)"
