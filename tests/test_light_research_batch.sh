@@ -28,14 +28,10 @@ rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-quota"; rc=$?; assert test
 assert grep -q '^OUTCOME: GEMINI_USAGE_LIMIT$' "$WORK/out"; assert test ! -e "$WORK/answer"
 rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-unavail"; rc=$?; assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/out"; assert test ! -e "$WORK/answer"
-printf 'APIERR-Q: agy >= 1.2.6 exits 3 on a model API failure that is no quota wall.
-' >"$WORK/prompt-apierr"
-rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-apierr"; rc=$?; assert test "$rc" -eq 4
-assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/out"; assert test ! -e "$WORK/answer"
+printf 'APIERR-Q: agy >= 1.2.6 exits 3 on a model API failure that is no quota wall.\n' >"$WORK/prompt-apierr"
 printf 'CREDITS-Q: agy >= 1.2.15 words a spent plan as a credits shortfall.\n' >"$WORK/prompt-credits"
-rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-credits"; rc=$?; assert test "$rc" -eq 3
-assert grep -q '^OUTCOME: GEMINI_USAGE_LIMIT$' "$WORK/out"; assert test ! -e "$WORK/answer"
-rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-unavail" --prompt-file "$WORK/prompt-quota"; rc=$?; assert test "$rc" -eq 3
+rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-apierr" --prompt-file "$WORK/prompt-credits"; rc=$?; assert test "$rc" -eq 3
+assert test "$(grep '^OUTCOME:' "$WORK/out" | tr '\n' ' ')" = 'OUTCOME: GEMINI_UNAVAILABLE OUTCOME: GEMINI_USAGE_LIMIT '
 assert test ! -e "$WORK/answer"
 
 # A later launch refused: the units already launched still land their answers under their own

@@ -44,7 +44,7 @@ set_config 'grok_model=grok-4.6' 'grok_effort=high'
 start_ok grok
 assert grep -qx 'TAG: grokacct · grok-4.6 · high' "$WORK/start.out"
 assert grep -qx 'grokacct · grok-4.6 · high' "$RUN_DIR/tag"
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=-m' "$CALL_LOG"
 assert grep -qx 'ARG=grok-4.6' "$CALL_LOG"
 assert grep -qx 'ARG=--reasoning-effort' "$CALL_LOG"
@@ -60,7 +60,7 @@ set_config 'grok_model=auto' 'grok_effort=high'
 CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok
 assert grep -qx 'TAG: grokacct · grok-4.7-build-fast · high' "$WORK/start.out"
 assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = grok-4.7-build-fast
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=-m' "$CALL_LOG"
 assert grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
 # The chat's fast swap is judged against the picked account's own catalog too.
@@ -68,7 +68,7 @@ mkdir -p "$GROKB_PROFILES_DIR/grokacct"
 printf '{"models":{"grok-4.7":{},"grok-4.6":{}}}\n' >"$GROKB_PROFILES_DIR/grokacct/models_cache.json"
 clear_stub
 CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok
-assert await_done
+assert await_exit
 assert_fails grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
 assert grep -q 'grok: grokacct lists no grok-4.7-build-fast now' "$WORK/start.err"
 rm -f "$GROKB_PROFILES_DIR/grokacct/models_cache.json"
@@ -79,7 +79,7 @@ clear_stub
 set_config 'grok_model=grok-4.6' 'grok_effort=high'
 CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok
 assert grep -qx 'TAG: grokacct · grok-4.6 · high' "$WORK/start.out"
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=grok-4.6' "$CALL_LOG"
 
 # Research is not a worker leg and never takes it (Egor).
@@ -88,14 +88,14 @@ set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok'
 CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok --role research
 assert grep -qx 'TAG: grokacct · grok · high' "$WORK/start.out"
 assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = auto
-assert await_done
+assert await_exit
 
 # Another chat's fast line is not this chat's.
 clear_stub
 set_config 'grok_model=auto' 'grok_effort=high'
 CLAUDE_CODE_SESSION_ID=chat-plain start_ok grok
 assert grep -qx 'TAG: grokacct · grok · high' "$WORK/start.out"
-assert await_done
+assert await_exit
 rm -f "$CHAT_PINS_DIR/chat-fast"
 
 # The account's own Fast Mode swaps the model after the effort was checked on `auto`: the swapped
@@ -119,13 +119,13 @@ mkdir -p "$GROKB_PROFILES_DIR/grokacct"
 printf '{"models":{"grok-4.7":{},"grok-4.6":{}}}\n' >"$GROKB_PROFILES_DIR/grokacct/models_cache.json"
 clear_stub
 start_ok grok
-assert await_done
+assert await_exit
 assert_fails grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
 assert grep -q 'grok: grokacct lists no grok-4.7-build-fast now' "$WORK/start.err"
 printf '{"models":{"grok-4.7":{},"grok-4.7-build-fast":{}}}\n' >"$GROKB_PROFILES_DIR/grokacct/models_cache.json"
 clear_stub
 start_ok grok
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
 rm -f "$GROKB_PROFILES_DIR/.grokb/fast-mode/grokacct" "$GROKB_PROFILES_DIR/grokacct/models_cache.json"
 
@@ -133,7 +133,7 @@ rm -f "$GROKB_PROFILES_DIR/.grokb/fast-mode/grokacct" "$GROKB_PROFILES_DIR/groka
 # clamped here, and only an effort no grok has is refused before launch.
 clear_stub
 start_ok grok --effort xhigh
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=xhigh' "$CALL_LOG"
 clear_stub
 rc=0
@@ -146,7 +146,7 @@ clear_stub
 set_config 'grok_effort=high'
 export WORKER_RUN_GROK_MAX_TURNS=7
 start_ok grok
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=--max-turns' "$CALL_LOG"
 assert grep -qx 'ARG=7' "$CALL_LOG"
 assert test "$(jq -r '.max_turns' "$RUN_DIR/meta.json")" = 7
@@ -155,14 +155,14 @@ assert test "$(jq -r '.max_turns' "$RUN_DIR/meta.json")" = 7
 clear_stub
 export WORKER_RUN_GROK_MAX_TURNS=nonsense
 start_ok grok
-assert await_done
+assert await_exit
 assert test "$(grep -c '^ARG=--max-turns$' "$CALL_LOG")" -eq 0
 assert test "$(jq -r 'has("max_turns")' "$RUN_DIR/meta.json")" = false
 unset WORKER_RUN_GROK_MAX_TURNS
 
 clear_stub
 start_ok grok --web-search
-assert await_done
+assert await_exit
 assert test "$(grep -c '^ARG=--disable-web-search$' "$CALL_LOG")" -eq 0
 
 # 1.0.13 grants directories through --cwd alone and attaches no images, so those flags are refused
@@ -221,7 +221,7 @@ set_config 'grok_effort=high' 'grok_profile=grokpin'
 start_ok grok
 assert meta_account_is grokpin
 assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
-assert await_done
+assert await_exit
 
 # A vendor the picker can read NOTHING about — no accounts, no usage snapshot — is not a walled one:
 # its quota may be untouched, and this whole system exists so nothing reports a limit it has no data

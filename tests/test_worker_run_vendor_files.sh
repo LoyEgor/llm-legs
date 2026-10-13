@@ -44,7 +44,7 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
   agy_shell 'git status --short 2>/dev/null' "$agy_workdir"
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
-assert await_done
+assert await_exit
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 2' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/agy-written' <<<"$report"
@@ -64,7 +64,7 @@ clear_stub
 AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 agy_write write_to_file 'bin/agy-relative' >"$AGY_TRANSCRIPT"
 start_ok gemini
-assert await_done
+assert await_exit
 AGY_RUN_DIR=$RUN_DIR
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
@@ -171,7 +171,7 @@ agy_write write_to_file "$agy_workdir/bin/agy-before-the-resume" >"$AGY_TRANSCRI
 AGY_TS=$(agy_iso "$run_started")
 AGY_TS="${AGY_TS%Z}.123Z"
 agy_write write_to_file "$agy_workdir/bin/agy-at-the-start" >>"$AGY_TRANSCRIPT"
-assert await_done
+assert await_exit
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/agy-at-the-start' <<<"$report"
@@ -232,7 +232,7 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
   agy_write write_to_file "$WORK/extra/agy-also-here"
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
-assert await_done
+assert await_exit
 assert test ! -e "$RUN_DIR/workdir-escape"
 assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$(transcript_report "$RUN_DIR")")" -eq 0
 
@@ -276,7 +276,7 @@ CX_TS=$(iso $(($(date +%s) + 60)))
   cx_call write_stdin '{"session_id":1,"chars":"","yield_time_ms":1000}'
 } >"$CX_ROLLOUT"
 start_ok codex
-assert await_done
+assert await_exit
 CX_RUN_DIR=$RUN_DIR
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 4' <<<"$report"
@@ -443,7 +443,7 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 cx_exec "var workdir = '$WORK/extra'; await tools.exec_command({cmd: 'git status', workdir: '$WORK/extra'}); var workdir = '$cx_workdir'; await tools.exec_command({cmd: 'ls', workdir});" \
   >"$CX_ROLLOUT"
 start_ok codex
-assert await_done
+assert await_exit
 assert test ! -e "$RUN_DIR/workdir-escape"
 assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$(transcript_report "$RUN_DIR")")" -eq 0
 
@@ -465,7 +465,7 @@ for cx_tree in cx-made cx-foreign; do
   start_gated codex
   [ "$cx_tree" = cx-foreign ] || git -C "$cx_other" worktree add -q "$cx_other/.claude/worktrees/$cx_tree" 2>/dev/null
   gate_open
-  assert await_done
+  assert await_exit
   if [ "$cx_tree" = cx-made ]; then
     assert jq -e --arg t "$cx_other/.claude/worktrees/cx-made" '.worktrees_made == [$t]' "$RUN_DIR/meta.json"
     assert test ! -e "$RUN_DIR/workdir-escape"
@@ -542,7 +542,7 @@ CX_TS=$(iso $((run_started - 7200)))
 cx_patch_event "$cx_workdir/bin/cx-before-the-resume" '' true >"$CX_ROLLOUT"
 CX_TS=$(iso "$run_started")
 cx_patch_event "$cx_workdir/bin/cx-at-the-start" '' true >>"$CX_ROLLOUT"
-assert await_done
+assert await_exit
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/cx-at-the-start' <<<"$report"
@@ -573,7 +573,7 @@ PICK_ACCOUNT=rescue STUB_WALL_SESSION=wall-session CLAUDE_CODE_SESSION_ID=chat-a
 printf 'walled attempt\n' >"$DIRT_REPO/bin/cx-walled-attempt"
 printf 'rescue attempt\n' >"$DIRT_REPO/bin/cx-rescue-attempt"
 gate_open
-assert await_done
+assert await_exit
 assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$("$RUNNER" report "$RUN_ID")"
 assert grep -qx 'bin/cx-walled-attempt' "$RUN_DIR/files"
 assert grep -qx 'bin/cx-rescue-attempt' "$RUN_DIR/files"
@@ -592,7 +592,7 @@ export PICK_ACCOUNT=recordacct
 clear_stub
 export STUB_CODE=9 STUB_ERROR='plain failure'
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $(jq -r '.workdir' "$RUN_DIR/meta.json")"
 unset STUB_CODE STUB_ERROR
 
@@ -601,7 +601,7 @@ unset STUB_CODE STUB_ERROR
 # absence for "this run wrote nothing", which is the one answer that is certainly wrong.
 clear_stub
 start_ok claudeb
-assert await_done
+assert await_exit
 jq '.workdir = null' "$RUN_DIR/meta.json" >"$WORK/meta.noworkdir" &&
   mv "$WORK/meta.noworkdir" "$RUN_DIR/meta.json"
 rm -f "$RUN_DIR/files"
@@ -614,12 +614,12 @@ assert test "$(grep -c '^WORKDIR: ' "$RUN_DIR/files")" -eq 0
 clear_stub
 unset CLAUDE_CODE_SESSION_ID
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test ! -e "$RUN_DIR/launcher"
 export CLAUDE_CODE_SESSION_ID='../elsewhere'
 clear_stub
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test ! -e "$RUN_DIR/launcher"
 unset CLAUDE_CODE_SESSION_ID
 # An id the vendor never printed is never guessed at either: no file at all, which reads as "this
@@ -627,7 +627,7 @@ unset CLAUDE_CODE_SESSION_ID
 clear_stub
 export STUB_SESSION=''
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test ! -e "$RUN_DIR/worker-session"
 unset STUB_SESSION
 
@@ -639,7 +639,7 @@ clear_stub
 export STUB_SESSION=resumed-session STUB_SLEEP=0.5
 CLAUDE_LAUNCHER_SESSION=chat-resume start_ok claudeb --account resumeacct --resume resumed-session
 assert test "$(cat "$RUN_DIR/worker-session")" = resumed-session
-assert await_done
+assert await_exit
 # And once per id, however many times the record is rewritten over it.
 assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 1
 # Its one attempt line is written at launch.

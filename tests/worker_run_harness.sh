@@ -417,6 +417,15 @@ start_ok() {
   await_launched
 }
 
+# Forkless read of an integer key from meta.json (jq pretty print), for the pid polls.
+meta_num() { # key file
+  local text
+  META_NUM=''
+  { text=$(<"$2"); } 2>/dev/null || return 1
+  [[ $text =~ \"$1\":[[:space:]]*([0-9]+) ]] || return 1
+  META_NUM=${BASH_REMATCH[1]}
+}
+
 # The floor is taken by the supervisor before its CLI starts: a fixture write before that is no run's.
 await_launched() {
   local tick
@@ -452,7 +461,7 @@ await_done() {
       sleep 0.05
     done
     if [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] && [ $((index % 5)) -ne 0 ]; then
-      pid=$(jq -r '.pid // 0' "$WORKER_RUN_DIR/$RUN_ID/meta.json" 2>/dev/null) || pid=0
+      meta_num pid "$WORKER_RUN_DIR/$RUN_ID/meta.json" && pid=$META_NUM || pid=0
       [ "${pid:-0}" -le 0 ] 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || continue
     fi
     output=$("$RUNNER" wait "$RUN_ID" --max 0)
@@ -471,7 +480,7 @@ await_exit() {
   for tick in $(seq 1 "${AWAIT_EXIT_TICKS:-6000}"); do
     [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 0
     if [ $((tick % 20)) -eq 0 ]; then
-      pid=$(jq -r '.pid // 0' "$WORKER_RUN_DIR/$RUN_ID/meta.json" 2>/dev/null) || pid=0
+      meta_num pid "$WORKER_RUN_DIR/$RUN_ID/meta.json" && pid=$META_NUM || pid=0
       [ "${pid:-0}" -le 0 ] 2>/dev/null || kill -0 "$pid" 2>/dev/null || [ -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 1
     fi
     sleep 0.05
