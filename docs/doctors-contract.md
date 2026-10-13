@@ -423,7 +423,7 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
 - Machine rules `spawn`, `kernel`, `compressor`, `swap`, `swap-writes`, `ssd-writes`, `free-space`,
   `hammerspoon-crash`, `job-crash`, `unclean-reboot`, the job rule `job-loop`, the standing-cost
   rule `cohort`, the log rules `log-store`, `log-growth`, `unregistered-store`, `log-unread` (registry
-  `share/log-stores.json`) and `orphan-profile`; ids `<rule>:<key>` (`machine`, a volume, a job name, a cohort
+  `share/log-stores.json`), `orphan-profile` and `profile-size`; ids `<rule>:<key>` (`machine`, a volume, a job name, a cohort
   item's name, a log store's name, `total`, a directory path). A ledger
   row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.
 - Own problem keys: `label` (the menu's short name), `severity` (`review` | `heavy`) and `cause`
@@ -436,6 +436,7 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   `costs.tick`, `log_stores` (total, growth, per store, unregistered, sweep, `apps` (an app store with a criterion
   against it), `profiles`: every LLM profile dir
   `{label, name, path, mb, age_d, status[, owner]}`, status `menu` | `off` | `home` | `unknown`, owner `llm-doctor`
-  on a browser profile), `limits`.
+  on a browser profile; a path gone since the scan is left out; `tidied`: what `system-doctor tidy` moved to the
+  Trash within 7 days `{path, mb, age_d, why}`), `limits`.
 - `doctor-fix launch system` snapshots only fix-target causes (plus ledger and collector faults);
   close runs `bin/system-doctor check --record` (design, Phase 2).

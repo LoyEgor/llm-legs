@@ -1221,7 +1221,9 @@ do
         fact = "fixed", proof = { why = "the fix has not landed in main" }, cause = { name = "Hammerspoon" } },
       { id = "ledger:x", rule = "ledger", label = "ledger", state = "new", value = 1, unit = "rows", fact = "row x" },
       { id = "orphan-profile:~/.gemini-profiles/Library", rule = "orphan-profile", label = "LLM profile off the menu",
-        state = "new", value = 12, limit = 0, unit = "MB", fact = "~/.gemini-profiles/Library is no gemini account" } },
+        state = "new", value = 12, limit = 0, unit = "MB", fact = "~/.gemini-profiles/Library is no gemini account" },
+      { id = "profile-size:~/.gemini-web/profiles/rawilimo", rule = "profile-size", label = "LLM profile too big",
+        state = "new", value = 4468, limit = 3072, unit = "MB", fact = "rawilimo holds 4.5 GB" } },
     measures = { births_s = 2600, kernel = 0.2, busy = 0.5, cores = 10, comp_gib = 2, mem_gib = 24, swap_used_mb = 1024,
       swap_gib_day = 3, ssd_gb_day_7d = 150, ssd_read_gb_day_7d = 900, free_gib = { Data = 20, Work = 400 },
       ssd_sampled = { samples = 3, minutes = 30, attributed = 0.6, top = { { "kernel_task", "swap", 0.4 },
@@ -1259,7 +1261,10 @@ do
         { label = "gemini-web", name = "abel", path = "~/.gemini-web/profiles/abel", mb = 1300, age_d = 40.5, status = "menu" },
         { label = "codex", name = "main", path = "~/.codex", mb = 1650, age_d = 3, status = "home" },
         { label = "home", name = ".kimi-work", path = "~/.kimi-work", mb = 137, age_d = 85, status = "unknown" },
-        { label = "gemini", name = "Library", path = "~/.gemini-profiles/Library", mb = 12, age_d = 4.8, status = "off" } },
+        { label = "gemini", name = "Library", path = "~/.gemini-profiles/Library", mb = 12, age_d = 4.8, status = "off" },
+        { label = "gemini-web", name = "rawilimo", path = "~/.gemini-web/profiles/rawilimo", mb = 4468, age_d = 8.1,
+          status = "menu", owner = "llm-doctor" } },
+      tidied = { { path = "~/.cursor-tutor", mb = 1, age_d = 0.3, why = "a tutorial folder idle for 463 days" } },
       sweep = { bytes = 500000000, errors = 0 } } })
   local first = loadDoctors().menuItems()[7].menu
   local order, tones = true, { "R", "g", "g", "R", "R", "R" }
@@ -1307,17 +1312,21 @@ do
     end
   end
   check(not readers, "Logs: no reader names, a one-store label without a problem opens nothing")
-  local profiles = rowMatching(first[4].menu, "^ +4%.8 GB +LLM profiles$", "R")
+  local profiles = rowMatching(first[4].menu, "^ +9%.3 GB +LLM profiles$", "R")
   local shown = {}
-  for index, item in ipairs(profiles and profiles.menu or {}) do shown[index] = text(item.title) end
-  check(profiles and #shown == 5 and shown[1]:match("^ +0%.0 GB +4 d  gemini/Library$")
-    and rowMatching(profiles.menu, "Library$", "R").menu ~= nil and shown[2]:match("^ +0%.1 GB +85 d  %? ~/%.kimi%-work$")
-    and shown[3]:match("^ +1%.6 GB +3 d  ⌂ codex/main$") and shown[4]:match("^ +1%.7 GB +<1 d  codex/com$")
-    and shown[5]:match("^ +1%.3 GB +40 d  gemini%-web/abel$")
-    and sameColor(colorAt(profiles.menu[5].title, utf8.len(shown[5])), palette.DIM)
-    and not colorAt(profiles.menu[4].title, utf8.len(shown[4])),
-    "Disk space: LLM profiles by size and last change, the one off the menu RED first, unknown ? and default home ⌂, idle 30 d DIM: "
-      .. table.concat(shown, " | "))
+  for index, item in ipairs(profiles and profiles.menu or {}) do shown[index] = item.title == "-" and "-" or text(item.title) end
+  check(profiles and #shown == 8 and shown[1]:match("^ +4%.5 GB +8 d  gemini%-web/rawilimo$")
+    and rowMatching(profiles.menu, "rawilimo$", "R").menu ~= nil
+    and shown[2]:match("^ +0%.0 GB +4 d  gemini/Library$")
+    and rowMatching(profiles.menu, "Library$", "R").menu ~= nil and shown[3]:match("^ +0%.1 GB +85 d  %? ~/%.kimi%-work$")
+    and shown[4]:match("^ +1%.6 GB +3 d  ⌂ codex/main$") and shown[5]:match("^ +1%.7 GB +<1 d  codex/com$")
+    and shown[6]:match("^ +1%.3 GB +40 d  gemini%-web/abel$")
+    and sameColor(colorAt(profiles.menu[6].title, utf8.len(shown[6])), palette.DIM)
+    and not colorAt(profiles.menu[5].title, utf8.len(shown[5]))
+    and shown[7] == "-" and shown[8]:match("^ +0%.0 GB +<1 d  🗑 ~/%.cursor%-tutor$")
+    and sameColor(colorAt(profiles.menu[8].title, utf8.len(shown[8])), palette.DIM),
+    "Disk space: LLM profiles by size and last change, a flagged one (off the menu, too big) RED first, unknown ? and "
+    .. "default home ⌂, idle 30 d DIM, then what the night moved to the Trash 🗑: " .. table.concat(shown, " | "))
   check(rowMatching(crashes, "^ +7 /day +Siri$", "R") and rowMatching(crashes, "Hammerspoon$", "r")
     and rowMatching(rowMatching(crashes, "^app crashes ").menu, "^ +3 /8 d +Chrome$"),
     "Crashes: Apple's loop RED by its short name, a pending fix DIM_RED, crashes by process")

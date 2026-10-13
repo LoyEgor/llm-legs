@@ -1194,6 +1194,111 @@ for rel in {r.split("/")[0] for r in made}:
 os.environ.clear()
 os.environ.update(saved_env)
 
+# ---- phase 3: a profile too big, a vanished one, and the night's tidy judge moving garbage to the Trash
+now = time.time()
+def tree(rel, age_days=40, name="f"):
+    folder = os.path.join(home, rel)
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, name)
+    open(path, "w").write("x")
+    at = now - age_days * 86400
+    os.utime(path, (at, at))
+for rel in (".kimi-work/bin", ".kimi-fresh", ".gemini-profiles/Bad_Name", ".gemini-web/profiles/abel/Model"):
+    tree(rel)
+tree(".kimi-fresh", 1, "new")
+tree(".gemini-web/profiles/abel/Default", 40, "Cookies")
+census = [{"label": "home", "name": ".kimi-work", "path": "~/.kimi-work", "mb": 137, "age_d": 40, "status": "unknown"},
+          {"label": "home", "name": ".kimi-fresh", "path": "~/.kimi-fresh", "mb": 1, "age_d": 40, "status": "unknown"},
+          {"label": "home", "name": ".kimi-new", "path": "~/.kimi-new", "mb": 1, "age_d": 2, "status": "unknown"},
+          {"label": "gemini", "name": "Bad_Name", "path": "~/.gemini-profiles/Bad_Name", "mb": 1, "age_d": 9, "status": "off"},
+          {"label": "gemini-web", "name": "abel", "path": "~/.gemini-web/profiles/abel", "mb": 5000, "age_d": 1,
+           "status": "menu", "owner": "llm-doctor"},
+          {"label": "gemini", "name": "main", "path": "~/.gemini", "mb": 5000, "age_d": 1, "status": "home"},
+          {"label": "gemini", "name": "gone", "path": "~/.gemini-profiles/gone", "mb": 9000, "age_d": 99, "status": "off"}]
+os.makedirs(os.path.join(home, ".gemini"), exist_ok=True)
+judge = m.Judge(now, None)
+m.judge_logstores(judge, [{"t": now, "stores": [], "profiles": census}])
+sized = sorted(p["id"] for p in judge.problems if p["rule"] in ("profile-size", "orphan-profile"))
+check(sized == ["orphan-profile:~/.gemini-profiles/Bad_Name", "profile-size:~/.gemini-web/profiles/abel"],
+      "a profile past 3 GB is a problem, a default home never, a vanished path neither: %s" % sized)
+check([p["path"] for p in m.logstores_view([{"t": now, "stores": [], "total_bytes": 0, "profiles": census}])["profiles"]]
+      == ["~/.kimi-work", "~/.kimi-fresh", "~/.gemini-profiles/Bad_Name", "~/.gemini-web/profiles/abel", "~/.gemini"],
+      "the menu drops a profile deleted since the scan")
+tidy_was, du_was, state_was = dict(m.TIDY), os.environ["SYSTEM_DOCTOR_DU"], os.environ["SYSTEM_DOCTOR_DIR"]
+m.TIDY["child_mb"] = 0
+os.environ.update(SYSTEM_DOCTOR_DU="/usr/bin/du", SYSTEM_DOCTOR_DIR=os.path.join(work, "tidy-state"))
+candidates = m.tidy_candidates(census, now, [{"t": now - 86400, "path": "~/.kimi-kept", "verdict": "keep"}])
+check([(c["path"], c["kind"]) for c in candidates] == [("~/.kimi-work", "dir"), ("~/.gemini-profiles/Bad_Name", "dir"),
+                                                        ("~/.gemini-web/profiles/abel/Model", "inside")],
+      "candidates: an idle unknown dir, a profile off the menu, a folder without credentials inside one too big; never "
+      "a dir with a file changed this week, a home, a menu profile itself or a vanished path: %s" % candidates)
+fake = os.path.join(work, "fake-worker-run")
+open(fake, "w").write("""#!/bin/bash
+case $1 in
+  start) [ -e "$FAKE_TIDY_FAIL" ] && { echo boom >&2; exit 1; }; while [ "$1" != --brief ]; do shift; done; cp "$2" "$FAKE_TIDY_BRIEF"; echo "RUN: r1" ;;
+  wait) echo "STATUS: done" ;;
+  report) printf 'STATUS: done\\nRESULT:\\n'; cat "$FAKE_TIDY_VERDICTS" ;;
+esac
+""")
+os.chmod(fake, 0o755)
+os.environ.update(SYSTEM_DOCTOR_WORKER_RUN=fake, FAKE_TIDY_BRIEF=os.path.join(work, "tidy-brief.md"),
+                  FAKE_TIDY_VERDICTS=os.path.join(work, "tidy-verdicts"), FAKE_TIDY_FAIL=os.path.join(work, "tidy-fail"))
+open(os.environ["FAKE_TIDY_VERDICTS"], "w").write("\n".join(json.dumps(v) for v in (
+    {"path": "~/.kimi-work", "verdict": "garbage", "why": "an abandoned CLI"},
+    {"path": "~/.gemini-profiles/Bad_Name", "verdict": "keep", "why": "holds a keychain"},
+    {"path": "~/.gemini-web/profiles/abel/Model", "verdict": "garbage", "why": "Chrome downloads it again"},
+    {"path": "~/.kimi-odd", "verdict": "delete", "why": "a word the brief never offered"},
+    {"path": "~/Documents", "verdict": "garbage", "why": "invented"})) + "\n")
+m.append_row("logstores", {"t": now - 60, "stores": [], "profiles": census})
+dry = m.tidy(now, dry_run=True)
+check([r["action"] for r in dry] == ["dry run", "kept", "dry run"] and os.path.isdir(os.path.join(home, ".kimi-work"))
+      and not os.path.exists(os.path.join(os.environ["SYSTEM_DOCTOR_DIR"], "tidy.jsonl")),
+      "a dry run judges and moves or records nothing: %s" % dry)
+brief = open(os.environ["FAKE_TIDY_BRIEF"]).read()
+check(brief.startswith("ROUND: none\n") and "## ~/.kimi-work" in brief and "- bin 0 MB" in brief
+      and "inside the profile ~/.gemini-web/profiles/abel" in brief and "Cookies" not in brief,
+      "the brief names each candidate with its top folders: %s" % brief[-600:])
+tree(".kimi-odd/bin")
+m.append_row("logstores", {"t": now - 50, "stores": [], "profiles": census + [
+    {"label": "home", "name": ".kimi-odd", "path": "~/.kimi-odd", "mb": 1, "age_d": 40, "status": "unknown"}]})
+done = m.tidy(now)
+trash = os.listdir(os.path.join(home, ".Trash"))
+check([(r["path"], r["action"]) for r in done] == [("~/.kimi-work", "trashed"), ("~/.gemini-profiles/Bad_Name", "kept"),
+                                                    ("~/.gemini-web/profiles/abel/Model", "trashed")]
+      and sorted(t.split(" ")[0] for t in trash) == [".kimi-work", "Model"]
+      and not os.path.exists(os.path.join(home, ".kimi-work")) and os.path.isdir(os.path.join(home, ".gemini-web/profiles/abel/Default"))
+      and os.path.isdir(os.path.join(home, ".gemini-profiles/Bad_Name")) and os.path.isdir(os.path.join(home, ".kimi-odd")),
+      "garbage goes to the Trash, a kept, invented or unknown-word path stays: %s %s" % (done, trash))
+view = m.logstores_view([{"t": now - 60, "stores": [], "total_bytes": 0, "profiles": census}])
+check([t["path"] for t in view["tidied"]] == ["~/.kimi-work", "~/.gemini-web/profiles/abel/Model"]
+      and "~/.kimi-work" not in [p["path"] for p in view["profiles"]],
+      "the menu lists what went to the Trash this week, gone from the profiles: %s" % view["tidied"])
+again = m.tidy_candidates(census, now, m.read_jsonl(os.path.join(os.environ["SYSTEM_DOCTOR_DIR"], "tidy.jsonl")))
+check(again == [], "a kept verdict is not asked again, a trashed path is gone: %s" % again)
+tree(".kimi-late", 40)
+late = {"path": "~/.kimi-late", "kind": "dir", "mb": 1}
+check(m.refusal(late, now) is None, "an idle dir passes the move's re-check")
+tree(".kimi-late", 0, "touched")
+check(m.refusal(late, now) == "changed within 7 days", "a dir written after the listing is refused at the move")
+os.symlink(os.path.join(home, ".kimi-late"), os.path.join(home, ".kimi-link"))
+check(m.refusal({"path": "~/.kimi-link", "kind": "dir"}, now) == "gone or a link", "a link is never moved")
+census.append({"label": "home", "name": ".kimi-other", "path": "~/.kimi-other", "mb": 1, "age_d": 40, "status": "unknown"})
+tree(".kimi-other/bin")
+m.append_row("logstores", {"t": now - 30, "stores": [], "profiles": census})
+open(os.environ["FAKE_TIDY_FAIL"], "w").close()
+failed = m.tidy(now)
+check(len(failed) == 1 and failed[0]["action"] == "judge failed" and "boom" in failed[0]["why"]
+      and os.path.isdir(os.path.join(home, ".kimi-other")), "a failed judge moves nothing and says why: %s" % failed)
+m.TIDY.clear()
+m.TIDY.update(tidy_was)
+os.environ.update(SYSTEM_DOCTOR_DU=du_was, SYSTEM_DOCTOR_DIR=state_was)
+for rel in (".kimi-fresh", ".kimi-odd", ".gemini-profiles", ".gemini-web", ".gemini", ".kimi-late", ".kimi-link", ".kimi-other", ".Trash"):
+    path = os.path.join(home, rel)
+    os.remove(path) if os.path.islink(path) else shutil.rmtree(path)
+shutil.rmtree(os.path.join(work, "tidy-state"))
+for key in ("SYSTEM_DOCTOR_WORKER_RUN", "FAKE_TIDY_BRIEF", "FAKE_TIDY_VERDICTS", "FAKE_TIDY_FAIL"):
+    del os.environ[key]
+
 # ---- phase 3: the cohort score at its edges, amortized over >= 7 days
 check(m.COHORT["cpu_s"] == 864 and m.COHORT["wakes"] == 86400 and m.COHORT["writes_b"] == m.GIB and m.COHORT["reads_b"] == 100 * m.GIB
       and m.COHORT["footprint_b"] == 512 * 2 ** 20 and m.COHORT["births"] == 86400 and m.COHORT["launches"] == 1440

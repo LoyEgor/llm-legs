@@ -872,7 +872,7 @@ local SECTIONS = {
   { name = "Processor", rules = { "spawn", "kernel", "cohort" }, blind = { "ticks", "census" } },
   { name = "Memory", rules = { "compressor", "swap", "swap-writes" }, blind = { "ticks", "footprints" } },
   { name = "Disk writes", rules = { "ssd-writes" }, blind = { "ticks", "footprints", "ssd-sampler" } },
-  { name = "Disk space", rules = { "free-space", "orphan-profile" }, blind = { "ticks", "nightly" } },
+  { name = "Disk space", rules = { "free-space", "orphan-profile", "profile-size" }, blind = { "ticks", "nightly" } },
   { name = "Logs", rules = { "log-store", "log-growth", "unregistered-store", "log-unread" }, blind = { "logstores" } },
   { name = "Crashes", rules = { "hammerspoon-crash", "job-crash", "job-loop", "unclean-reboot" },
     blind = { "nightly", "dumpstate", "harvest" } },
@@ -1201,9 +1201,12 @@ local function systemSections(document, now, moved, incoming)
     for _, found in ipairs(list(logs.profiles)) do
       if type(found) == "table" and type(found.path) == "string" then profiles[#profiles + 1] = found end
     end
-    local RANK = { off = 1, unknown = 2, home = 3, menu = 4 }
+    local RANK, flagged = { off = 1, unknown = 2, home = 3, menu = 4 }, {}
+    for _, found in ipairs(profiles) do
+      flagged[found] = found.status == "off" and pick("orphan-profile:" .. found.path) or pick("profile-size:" .. found.path)
+    end
     table.sort(profiles, function(a, b)
-      local ra, rb = RANK[a.status] or 5, RANK[b.status] or 5
+      local ra, rb = flagged[a] and 0 or RANK[a.status] or 5, flagged[b] and 0 or RANK[b.status] or 5
       if ra ~= rb then return ra < rb end
       if (tonumber(a.mb) or 0) ~= (tonumber(b.mb) or 0) then return (tonumber(a.mb) or 0) > (tonumber(b.mb) or 0) end
       return a.path < b.path
@@ -1212,13 +1215,25 @@ local function systemSections(document, now, moved, incoming)
     for _, found in ipairs(profiles) do
       local mb, age = tonumber(found.mb), tonumber(found.age_d)
       total = total + (mb or 0)
-      local problem = found.status == "off" and pick("orphan-profile:" .. found.path) or nil
+      local problem = flagged[found]
       loud = loud or problem
       local name = found.label == "home" and found.path or tostring(found.label) .. "/" .. tostring(found.name)
       local mark = ({ unknown = "? ", home = "⌂ " })[found.status] or ""
       local tone = problem and problemTone(problem) or (found.status ~= "menu" or (age and age >= 30)) and style.DIM or nil
       lines[#lines + 1] = keepRow(mb and mb / 1000 or 0, age and (age < 1 and "<1 d" or string.format("%d d", math.floor(age))) or "",
         mark .. name, tone, problem and problemMenu(problem) or nil)
+    end
+    local gone = {}
+    for _, found in ipairs(list(logs.tidied)) do
+      if type(found) == "table" and type(found.path) == "string" then
+        local mb, age = tonumber(found.mb), tonumber(found.age_d)
+        gone[#gone + 1] = keepRow(mb and mb / 1000 or 0, age and (age < 1 and "<1 d" or string.format("%d d", math.floor(age))) or "",
+          "🗑 " .. found.path, style.DIM)
+      end
+    end
+    if #gone > 0 then
+      if #lines > 0 then lines[#lines + 1] = { title = "-" } end
+      for _, line in ipairs(gone) do lines[#lines + 1] = line end
     end
     if #lines > 0 then
       rows[#rows + 1] = { title = "-" }

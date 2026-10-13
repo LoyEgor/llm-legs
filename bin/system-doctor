@@ -86,7 +86,7 @@ RULE_LABELS = {"spawn": "new processes", "job-loop": "job relaunch loop", "cohor
                "hammerspoon-crash": "Hammerspoon crash", "job-crash": "job crashes", "unclean-reboot": "unclean reboot",
                "free-space": "low disk space", "log-store": "log cleaner broken", "log-growth": "LLM logs growing",
                "unregistered-store": "unregistered log store", "log-unread": "log read by nobody",
-               "orphan-profile": "LLM profile off the menu"}
+               "orphan-profile": "LLM profile off the menu", "profile-size": "LLM profile too big"}
 COUNTED = ("new", "open", "regressed")
 DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
@@ -1574,6 +1574,11 @@ PROFILE_ROOTS = (("claude", "claude", ".claude-profiles", None), ("codex", "code
                  ("gemini", "gemini", ".gemini-profiles", ".gemini"), ("grok", "grok", ".grok-profiles", ".grok"))
 LLM_DIR = re.compile(r"claude|codex|gemini|grok|opencode|chatgpt|openai|anthropic|antigravity|agy|kimi|ollama|cursor|qwen|"
                      r"deepseek|mistral|llm", re.I)
+# tidy: what the night's cheap judge may call garbage, and the guards around the move to the Trash.
+TIDY = {"idle_days": 30, "active_days": 7, "profile_mb": 3072, "child_mb": 500, "remember_days": 90, "shown_days": 7,
+        "model": "sonnet", "effort": "low", "wall_s": 1800, "top": 12}
+SECRET_FILE = re.compile(r"^(Cookies|Login Data|Web Data|auth\.json|oauth_creds\.json|credentials.*|.*\.keychain-db|"
+                         r"\.keychain-password|.*token.*)$", re.I)
 
 
 def account_roster(vendor):
@@ -1667,6 +1672,202 @@ def llm_profiles(sizes, registry, now):
                     p == path or p.startswith(path + "/") or path.startswith(p + "/") for p in known):
                 add("home", entry.name, path, "unknown")
     return rows
+
+
+def untilde(path):
+    return HOME + path[1:] if path == "~" or path.startswith("~/") else path
+
+
+def newest_file(path, cap=200000):
+    """The newest mtime of any file under path: a deletion (log-sweep) moves a directory's mtime, never a file's."""
+    newest, stack, seen = 0.0, [path], 0
+    while stack and seen < cap:
+        top = stack.pop()
+        with contextlib.suppress(OSError), os.scandir(top) as entries:
+            for entry in entries:
+                seen += 1
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+    return newest
+
+
+def secret_inside(path, depth=3):
+    """The first credential file (a cookie jar, a login, a token, a keychain) within depth levels of path, or None."""
+    stack = [(path, 0)]
+    while stack:
+        top, level = stack.pop()
+        with contextlib.suppress(OSError), os.scandir(top) as entries:
+            for entry in entries:
+                if SECRET_FILE.match(entry.name):
+                    return entry.path
+                if level < depth and entry.is_dir(follow_symlinks=False):
+                    stack.append((entry.path, level + 1))
+    return None
+
+
+def children_mb(path):
+    found = log_stores.parse_du(machine_probe.run("du", ["-k", "-x", "-d", "1", path], timeout=300))
+    return {child: kb // 1024 for child, kb in found.items() if child != path}
+
+
+def tidy_candidates(profiles, now, ledger):
+    """What the judge may call garbage: a named profile off the menu, an unknown LLM dir idle idle_days, and each
+    child_mb directory without credentials inside a profile over profile_mb; never one a verdict kept within
+    remember_days, nor one whose files changed within active_days."""
+    kept = {r["path"] for r in ledger if r.get("verdict") == "keep" and (r.get("t") or 0) >= now - TIDY["remember_days"] * DAY_S}
+    found = []
+    for row in profiles:
+        path = untilde(row["path"])
+        if not os.path.isdir(path) or os.path.islink(path):
+            continue
+        idle = (row.get("age_d") or 0) >= TIDY["idle_days"]
+        if row["status"] == "off" and not row.get("owner") or row["status"] == "unknown" and idle:
+            found.append({"path": row["path"], "kind": "dir", "status": row["status"], "label": row["label"], "mb": row.get("mb")})
+        elif row["status"] != "home" and (row.get("mb") or 0) > TIDY["profile_mb"]:
+            for child, mb in sorted(children_mb(path).items(), key=lambda kv: -kv[1]):
+                if mb >= TIDY["child_mb"] and os.path.isdir(child) and not secret_inside(child):
+                    found.append({"path": tilde(child), "kind": "inside", "status": row["status"], "label": row["label"],
+                                  "mb": mb, "profile": row["path"]})
+    out = []
+    for candidate in found:
+        newest = newest_file(untilde(candidate["path"]))
+        candidate["file_age_d"] = round((now - newest) / DAY_S, 1) if newest else None
+        if candidate["path"] not in kept and (newest == 0 or candidate["file_age_d"] >= TIDY["active_days"]):
+            out.append(candidate)
+    return out
+
+
+def tidy_brief(candidates):
+    lines = ["ROUND: none", "# System doctor tidy: %d candidates" % len(candidates), "",
+             "Each directory below on Egor's Mac looks like a leftover of an LLM tool: a profile no menubar account owns, "
+             "an LLM-named folder in his home nothing registers and nobody touched for a month, or a big folder inside one "
+             "LLM profile. Decide each on its own. `garbage`: an obvious leftover nothing needs - a test's temp dir, a "
+             "tool he stopped using long ago, a model or cache its app downloads again by itself. `keep`: anything in "
+             "use, holding work, settings or a login someone would miss, or anything you cannot tell. Read only: list, "
+             "du, read files, grep the repositories under /Volumes/Work/Projects for the name; change, move or delete "
+             "nothing, the doctor moves what you call garbage to the Trash.",
+             "", "Answer with one JSON line per candidate and nothing else on those lines:",
+             '{"path": "<the path as given>", "verdict": "garbage" | "keep", "why": "<one short sentence>"}']
+    for c in candidates:
+        lines += ["", "## %s" % c["path"], "",
+                  "%s · %s · %s MB · newest file %s days old" % (
+                      "a folder inside the profile " + c["profile"] if c["kind"] == "inside" else "the whole directory",
+                      "an LLM-named folder no tool registers" if c["label"] == "home" else
+                      "a %s profile, status %s" % (c["label"], c["status"]), c["mb"], c.get("file_age_d"))]
+        if c["kind"] == "dir":
+            top = sorted(children_mb(untilde(c["path"])).items(), key=lambda kv: -kv[1])[:TIDY["top"]]
+            lines += ["- %s %d MB" % (os.path.basename(child), mb) for child, mb in top]
+    return "\n".join(lines) + "\n"
+
+
+def worker_run_cmd():
+    return os.environ.get("SYSTEM_DOCTOR_WORKER_RUN") or os.path.join(ROOT_DIR, "bin", "worker-run")
+
+
+def tidy_judge(brief_file):
+    """(run id, the run's RESULT text, error): one cheap worker-run judgment, waited on at most wall_s."""
+    started = time.time()
+    done = subprocess.run([worker_run_cmd(), "start", "claudeb", "--model", TIDY["model"], "--effort", TIDY["effort"],
+                           "--brief", brief_file, "--workdir", ROOT_DIR], capture_output=True, text=True)
+    run_id = next((line[5:].strip() for line in done.stdout.splitlines() if line.startswith("RUN: ")), None)
+    if done.returncode != 0 or not run_id:
+        said = " | ".join(part.strip() for part in (done.stderr, done.stdout) if part.strip())
+        return None, "", "worker-run start rc %d: %s" % (done.returncode, said[-300:] or "no output")
+    waited = subprocess.run([worker_run_cmd(), "wait", run_id, "--max", str(TIDY["wall_s"])], capture_output=True, text=True).stdout
+    collector_runs.worker_launched("system", started, "SYSTEM_DOCTOR_DIR", run_id, waited)
+    report = subprocess.run([worker_run_cmd(), "report", run_id], capture_output=True, text=True).stdout
+    status = re.search(r"^STATUS: (\w+)", report, re.M)
+    if not status or status.group(1) != "done":
+        return run_id, "", "run %s %s" % (run_id, status.group(1) if status else "unreported")
+    return run_id, report.split("RESULT:\n", 1)[1] if "RESULT:\n" in report else "", None
+
+
+def tidy_verdicts(text):
+    found = {}
+    for line in text.splitlines():
+        line = line.strip().strip("`")
+        if not line.startswith("{"):
+            continue
+        with contextlib.suppress(ValueError):
+            item = json.loads(line)
+            if isinstance(item, dict) and item.get("verdict") in ("garbage", "keep") and isinstance(item.get("path"), str):
+                found[item["path"]] = item
+    return found
+
+
+def trash(path, now):
+    """Moves path into the user's Trash under a dated name and returns where; never deletes."""
+    folder = os.path.join(HOME, ".Trash")
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, "%s %s" % (os.path.basename(path), time.strftime("%Y-%m-%d %H.%M.%S", time.localtime(now))))
+    os.rename(path, target)
+    return target
+
+
+def refusal(candidate, now):
+    path = untilde(candidate["path"])
+    if not os.path.isdir(path) or os.path.islink(path):
+        return "gone or a link"
+    real = os.path.realpath(path)
+    if not real.startswith(HOME + "/") or real.startswith(os.path.join(HOME, ".Trash")):
+        return "outside the home"
+    if candidate["kind"] == "inside" and secret_inside(path):
+        return "holds credentials"
+    newest = newest_file(path)
+    if newest and newest > now - TIDY["active_days"] * DAY_S:
+        return "changed within %d days" % TIDY["active_days"]
+    return None
+
+
+def tidy(now=None, dry_run=False):
+    """Judges the newest census's garbage candidates through one cheap worker run and moves what it calls garbage
+    to the Trash; every verdict lands in tidy.jsonl, a kept one is not asked again for remember_days."""
+    now = time.time() if now is None else now
+    rows = [r for r in tick_rows(now - 2 * DAY_S, now, "logstores") if r.get("profiles") is not None]
+    ledger_path = os.path.join(state_dir(), "tidy.jsonl")
+    candidates = tidy_candidates(rows[-1]["profiles"], now, read_jsonl(ledger_path)) if rows else []
+    if not candidates:
+        return []
+    folder = os.path.join(state_dir(), "tidy")
+    os.makedirs(folder, exist_ok=True)
+    brief_file = os.path.join(folder, time.strftime("%Y%m%dT%H%M%S", time.localtime(now)) + ".md")
+    with open(brief_file, "w", encoding="utf-8") as handle:
+        handle.write(tidy_brief(candidates))
+    run_id, text, error = tidy_judge(brief_file)
+    if error:
+        return [{"t": round(now), "path": None, "action": "judge failed", "why": error, "run": run_id}]
+    verdicts, out = tidy_verdicts(text), []
+    for candidate in candidates:
+        verdict = verdicts.get(candidate["path"])
+        if not verdict:
+            continue
+        row = {"t": round(now), "path": candidate["path"], "kind": candidate["kind"], "mb": candidate["mb"],
+               "verdict": verdict["verdict"], "why": clip(str(verdict.get("why") or ""), 200), "run": run_id}
+        if verdict["verdict"] != "garbage":
+            row["action"] = "kept"
+        elif dry_run:
+            row["action"] = "dry run"
+        else:
+            refused = refusal(candidate, now)
+            if refused:
+                row["action"] = "refused: " + refused
+            else:
+                try:
+                    row.update(action="trashed", to=tilde(trash(untilde(candidate["path"]), now)))
+                except OSError as exc:
+                    row["action"] = "refused: %s" % exc
+        out.append(row)
+    if not dry_run:
+        with open(ledger_path, "a", encoding="utf-8") as handle:
+            handle.writelines(json.dumps(row, ensure_ascii=False) + "\n" for row in out)
+    return out
+
+
+def tidied(now):
+    return [r for r in read_jsonl(os.path.join(state_dir(), "tidy.jsonl"))
+            if r.get("action") == "trashed" and (r.get("t") or 0) >= now - TIDY["shown_days"] * DAY_S]
 
 
 def logstores(now=None):
@@ -2401,6 +2602,14 @@ def judge_logstores(judge, rows):
             [{"at": iso_time(latest["t"]), "ref": "du:%s" % found["path"], "account": None,
               "excerpt": "%d MB in the directory, %d MB of it in no store" % (found["mb"], found["residual_mb"])}])
     for found in latest.get("profiles") or ():
+        if not os.path.lexists(untilde(found["path"])):
+            continue
+        mb = found.get("mb") or 0
+        if found.get("status") != "home" and mb > TIDY["profile_mb"]:
+            judge.add("profile-size", found["path"], "%s holds %.1f GB, over the %d GB one profile takes" % (
+                found["path"], mb / 1000, TIDY["profile_mb"] // 1024), mb, TIDY["profile_mb"], "MB", 24, mb, 1,
+                latest["t"], latest["t"], [{"at": iso_time(latest["t"]), "ref": "du:%s" % found["path"], "account": None,
+                                            "excerpt": "%d MB, last change %s days ago" % (mb, found.get("age_d"))}])
         if found.get("status") == "off" and not found.get("owner"):
             judge.add("orphan-profile", found["path"], "%s is no %s account in the menu: %s MB, last change %s days ago" % (
                 found["path"], found["label"], found.get("mb", "?"), found.get("age_d", "?")), found.get("mb") or 0, 0, "MB",
@@ -2443,7 +2652,10 @@ def logstores_view(rows):
                         "label": s.get("label"), "part": s.get("part"), "parts": {g: round(b / 1e9, 2) for g, b in (s.get("parts") or {}).items()}}
                        for s in stores],
             "unregistered": latest.get("unregistered"), "unread": latest.get("unread"), "sweep": latest.get("sweep"),
-            "scan": latest.get("scan"), "profiles": latest.get("profiles")}
+            "scan": latest.get("scan"),
+            "profiles": [p for p in latest.get("profiles") or () if os.path.lexists(untilde(p["path"]))],
+            "tidied": [{"path": r["path"], "mb": r.get("mb"), "age_d": round((time.time() - r["t"]) / DAY_S, 1),
+                        "why": r.get("why")} for r in tidied(time.time())]}
 
 
 def judge_collectors(judge, rows, launches, harvests, censuses, logs=()):
@@ -2819,7 +3031,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="system-doctor", description=__doc__.split("\n")[0])
     parser.add_argument("command", nargs="?", default="judge",
                         choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check",
-                                 "census", "dumpstate", "harvest", "logstores"))
+                                 "census", "dumpstate", "harvest", "logstores", "tidy"))
     parser.add_argument("cause", nargs="?", help="check: the cause (a script's basename) whose fix to prove")
     parser.add_argument("--json", action="store_true", help="judge: print the document and write nothing")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
@@ -2827,6 +3039,7 @@ def main(argv=None):
     parser.add_argument("--since", help="check: when the fix landed, epoch or ISO (default: its ledger fix's commit)")
     parser.add_argument("--record", help="check: a doctor-fix run record to gate at close, with --decisions")
     parser.add_argument("--decisions", help="check --record: the close's decisions file")
+    parser.add_argument("--dry-run", action="store_true", help="tidy: judge and print, move and record nothing")
     args = parser.parse_args(argv)
     started = time.time()
     if args.command == "check":
@@ -2867,6 +3080,13 @@ def main(argv=None):
         if not args.quiet:
             print(json.dumps({k: v for k, v in row.items() if not isinstance(v, list) or len(v) <= TOP}, ensure_ascii=False))
         return 0
+    if args.command == "tidy":
+        with single("tidy") as mine:
+            rows = tidy(dry_run=args.dry_run) if mine else []
+        if not args.quiet:
+            for row in rows:
+                print("%s\t%s\t%s MB\t%s" % (row["action"], row.get("path") or "-", row.get("mb", "-"), row.get("why") or ""))
+        return 1 if rows and rows[0]["action"] == "judge failed" else 0
     if args.command == "agent":
         RECORD = bool(agent())
         return 0
