@@ -1041,6 +1041,66 @@
    "verdict": "cut",
    "zero": "removal saves 2.0 CPU-min/day; loses the nudge that stops a comment-heavy staged diff in ~/Arbostar work repos at git commit (the minimal-comment policy), which only acts on ~5% of its runs",
    "note": "purpose: gate of d9a7d614/66a1829; 19.5% of runs are git calls without commit paying 33.7 ms (jq + 2140-line review-journal source + 3 awk); now 4.6 ms behind a commit screen, replay over 2340 captured git calls screened out no commit; floor of a /bin/bash hook is 3.8 ms; residual: repo-local alias of commit not seen"
+  },
+  {
+   "id": "cpu:hook/edit-conflict-notice.sh",
+   "title": "hook/edit-conflict-notice.sh",
+   "audited_at": "2026-10-13T09:12:59+03:00",
+   "by": "harness-speed-cpu-hook-comment-gate-sh-20261012T235036Z-0eab",
+   "cpu_min_day": 1.4,
+   "cpu_s_run": 0.135,
+   "runs_day": 575,
+   "sources": {
+    "claude-setup/hooks/edit-conflict-notice.sh": "95bbc81ed2e5ebde0d02ad9ec7140150824df063"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.0 CPU-min/day; loses the one-line notice before an edit over another live chat's or worker run's uncommitted file (a co-tenant would overwrite foreign WIP unwarned)",
+   "note": "purpose: b397638d notice once per episode; on an own dirty file (the common run) live_run_holder walked all 1892 worker-run records (~45 ms of ~110); now an index of unswept runs (19 of 1892, rebuilt when the store mtime passes it): 110 -> 65 ms, verdicts equal to the old hook on finished/live/swept runs; test_edit_conflict_notice 195; residual is git status, jq, journal reads (floor of a /bin/bash hook 3.8 ms)"
+  },
+  {
+   "id": "cpu:hook/worker-git-guard.sh",
+   "title": "hook/worker-git-guard.sh",
+   "audited_at": "2026-10-13T09:13:03+03:00",
+   "by": "harness-speed-cpu-hook-comment-gate-sh-20261012T235036Z-0eab",
+   "cpu_min_day": 1.6,
+   "cpu_s_run": 0.014,
+   "runs_day": 5712,
+   "sources": {
+    "llm-legs/bin/worker-git-guard.sh": "7b06747ee7e9a95e7c7227d1f78bf2f8cb56139f"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.9 CPU-min/day; loses the denial of revert-class git commands (checkout/restore/reset/clean/stash) from workers over foreign WIP, 53 blocks in 7d",
+   "note": "purpose: 4dca5d4b; body already screens a worker's ordinary call before any process (cd8d51e6, 7190 runs, none start jq); the CPU was the #!/usr/bin/env bash start of Homebrew bash 5.3 (~8 ms CPU/run more than /bin/bash 3.2): shebang now /bin/bash, 200 no-op runs 2.2 s -> 0.7 s CPU, body unchanged, test_worker_git_guard 97 under 3.2"
+  },
+  {
+   "id": "cpu:hook/worker-tag-hook.sh",
+   "title": "hook/worker-tag-hook.sh",
+   "audited_at": "2026-10-13T09:13:06+03:00",
+   "by": "harness-speed-cpu-hook-comment-gate-sh-20261012T235036Z-0eab",
+   "cpu_min_day": 1.5,
+   "cpu_s_run": 0.013,
+   "runs_day": 5712,
+   "sources": {
+    "llm-legs/bin/worker-tag-hook.sh": "4532d2a70d074625f272d3b83dd9ad38f891b183"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.8 CPU-min/day; loses the fork · model · account tag on a fork's Bash descriptions in the activity line (who spends quota)",
+   "note": "purpose: 12a29da8; a non-fork call already exits at the raw-payload case before jq; the CPU was the env bash -> Homebrew bash 5.3 start: shebang now /bin/bash, 200 no-op runs 2.2 s -> 0.7 s CPU, body unchanged, test_worker_tag_marks 16 also under 3.2; same lever fits every other #!/usr/bin/env bash hook (31 files in claude-setup hooks and llm-legs bin/worker-*); their own CPU audit rows find it"
+  },
+  {
+   "id": "cpu:hook/word-gate.sh",
+   "title": "hook/word-gate.sh",
+   "audited_at": "2026-10-13T09:13:09+03:00",
+   "by": "harness-speed-cpu-hook-comment-gate-sh-20261012T235036Z-0eab",
+   "cpu_min_day": 1.2,
+   "cpu_s_run": 0.01,
+   "runs_day": 5712,
+   "sources": {
+    "claude-setup/hooks/word-gate.sh": "e0c69b8e93441d139d890f77b306bdca3b5ab7d4"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 1.5 CPU-min/day; loses the claim of Egor's word grant for every word-gated step (git commit, review-bench, ...): the settle would find no grant and the step would be refused",
+   "note": "purpose: fa375c28 one door for word triggers; already /bin/bash with a builtins screen; 6.5 ms/run vs a 3 ms floor, 2.5 of the 3.5 above it is the 231-line families read loop; a derived-program cache keyed on -nt of the table and the script would save ~0.3 CPU-min/day for a new cache file and invalidation: not worth the state"
   }
  ]
 }
