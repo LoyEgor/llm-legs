@@ -147,7 +147,7 @@ check jq -e --argjson at "$at3" \
 surfaces codex-guessed codex true 5h "" "$label5" "$(date -r "$((at3 + 3600))" +%H:%M)"
 
 printf '}\n' >>"$menu_cases"
-if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 3 -c 'return "ok"' 2>/dev/null)" = ok ]; then
+if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -c 'return "ok"' 2>/dev/null)" = ok ]; then
   checks=$((checks + 1))
   menu_out=$(hs_bounded 600 -c "return assert(loadfile([[$ROOT/tests/llm_limits_renderer_harness.lua]]))([[$menu_cases]])" 2>&1)
   [ "$menu_out" = 'PASS: wall store menu' ] || { printf 'FAIL: menu: %s\n' "$menu_out" >&2; failures=$((failures + 1)); }

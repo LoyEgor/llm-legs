@@ -725,7 +725,7 @@ fi
 if suite_shard_owns 6 renderer-gemini-credits; then
 . "$ROOT/tests/lib/hs-bounded.sh"
 
-if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 3 -c 'return "ok"' 2>/dev/null)" = ok ]; then
+if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -c 'return "ok"' 2>/dev/null)" = ok ]; then
   renderer_output=$(hs_bounded 600 -c "_G.HS_ROOT = [[${HS_ROOT:-$HOME/.hammerspoon}]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null) \
     || fail "Hammerspoon renderer contract checks threw"
   [ "$renderer_output" = "PASS: Hammerspoon projection contract" ] \
