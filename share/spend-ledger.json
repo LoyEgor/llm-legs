@@ -2510,6 +2510,86 @@
    "verdict": "cut",
    "zero": "removal saves 0.3 wall-min/day; loses the guard of bin/worker-limit-gate.sh verdicts (100% hard wall, router account, explicit ACCOUNT refusals, toggle note)",
    "note": "7 repeated hook runs gone (the judged output feeds the text asserts), mktemp-free briefs, case instead of grep, one redundant silent-allow assert removed (first expect_routed allow is the same empty output); 64 asserts, 3 mutations red"
+  },
+  {
+   "id": "suite:claude-setup/test_ask_span_drill",
+   "title": "claude-setup/test_ask_span_drill",
+   "audited_at": "2026-10-13T11:25:57+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-ask-span-drill-20261012T235154Z-7c0e",
+   "cpu_run": 2.8,
+   "wall_run": 2.4,
+   "cpu_min_day": 0.23,
+   "wall_min_day": 0.34,
+   "sources": {
+    "claude-setup/tests/test_ask_span_drill.sh": "f91a1f8e1bd5f44502b1b096d31a05cf1516f79a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~3 wall-s a run (0.3 wall-min/day); loses the only pins on ask-span-drill's span ask, checklist naming, cron/ScheduleWakeup holds and the STOP_HELD silence",
+   "note": "3 dispatcher-generic asserts cut (relay, busy, stop_hook_active; test_stop_dispatch red under each mutation), 30->27, ~0.2 s within load noise; wall is ~2 Python starts per in-span stop (words sync + wake) x 14 stops, production path; an in-process cmd_wake driver for the 10 wake cases would save ~1.5 s but rewrites the case setup (registry, transcripts) - not taken"
+  },
+  {
+   "id": "suite:claude-setup/test_words_log",
+   "title": "claude-setup/test_words_log",
+   "audited_at": "2026-10-13T11:25:57+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-ask-span-drill-20261012T235154Z-7c0e",
+   "cpu_run": 3.7,
+   "wall_run": 3.5,
+   "cpu_min_day": 0.22,
+   "wall_min_day": 0.4,
+   "sources": {
+    "claude-setup/tests/test_words_log.sh": "9854f8e86102d45ec26a8c687fd2359ba6d39e59"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~6 wall-s a run on main (0.3 wall-min/day at 3.5 s before 5397c6d); loses words-log listing/marks/stats, the journal's reading parser, unprompted/late/queued-message rows and the only check that the detached late re-check keeps polling past its first look",
+   "note": "main's 5397c6d added sleep 3 + up to 15 x 1 s poll: a race check (a re-check that looks once is green with a shorter gap), not shortened; 42 Python starts are words_journal.py/words.py/words-log entry points; merging the 5 readings() spawns into one saves ~0.25 s, not worth the churn; no vacuous check found"
+  },
+  {
+   "id": "suite:claude-setup/test_dia_not_chrome",
+   "title": "claude-setup/test_dia_not_chrome",
+   "audited_at": "2026-10-13T11:25:58+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-ask-span-drill-20261012T235154Z-7c0e",
+   "cpu_run": 4.5,
+   "wall_run": 2.5,
+   "cpu_min_day": 0.15,
+   "wall_min_day": 0.27,
+   "sources": {
+    "claude-setup/tests/test_dia_not_chrome.sh": "04f0084061fb09a8441fb2bb3590f52f3bdfd700"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~2.5 wall-s a run (0.2 wall-min/day); loses every pin of the Chrome-launch gate's spellings, the heredoc-data rule and its no-fork/linear-time guards",
+   "note": "88 cases each a distinct spelling through the one bash hook (jq in + hook + jq out); the hook has no sourceable classifier; fixed the vacuous fail-open loop (exit code only, the gate denies with exit 0) to read the verdict, red under a deny-on-unreadable mutation; the -lt 20 s timing assert kept as the cubic-substitution incident guard"
+  },
+  {
+   "id": "suite:claude-setup/test_chat_switch_link",
+   "title": "claude-setup/test_chat_switch_link",
+   "audited_at": "2026-10-13T11:25:58+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-ask-span-drill-20261012T235154Z-7c0e",
+   "cpu_run": 6.8,
+   "wall_run": 6.4,
+   "cpu_min_day": 0.15,
+   "wall_min_day": 0.28,
+   "sources": {
+    "claude-setup/tests/test_chat_switch_link.sh": "012c9bc02da39134efcb572d8094897956f43fb4"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~3-8 wall-s a run (0.2 wall-min/day); loses the only pins on the chat-switch resume line, stash, --front/--self registry walk and claudegpt launcher",
+   "note": "a no-name chat-name stub on PATH: every hook call ran the live ~/.local/bin/chat-name (llm-legs main checkout), one Python start each, and the id-fallback assert leaned on it; 35 asserts unchanged, id-fallback mutation red; the default CHAT_SWITCH_LINK_RESUME (llm-legs share/chat_resume.py) stays, it is the hook's production resolver"
+  },
+  {
+   "id": "suite:claude-setup/test_resume_timer_guard",
+   "title": "claude-setup/test_resume_timer_guard",
+   "audited_at": "2026-10-13T11:25:58+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-ask-span-drill-20261012T235154Z-7c0e",
+   "cpu_run": 5.9,
+   "wall_run": 4.7,
+   "cpu_min_day": 0.2,
+   "wall_min_day": 0.29,
+   "sources": {
+    "claude-setup/tests/test_resume_timer_guard.sh": "1e3f1bf6e8915f1b95a533127a79e8f0e3d49711"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~4.7 wall-s a run (0.2 wall-min/day); loses every pin of resume-timer-guard's allowed/denied timer shapes and the door's no-grant pass",
+   "note": "word-gate.sh ran after every passing case though it prints nothing since b50e5bf; now only in the no-grant block whose claim it is, the intake setup that fed it gone (phrase pinned in test_word_triggers, grant mint in test_word_doors); 66 asserts unchanged, a denying door red here and in test_word_doors; wall 8.5 -> 6.4 s under load"
   }
  ]
 }
