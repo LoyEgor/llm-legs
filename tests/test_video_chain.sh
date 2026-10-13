@@ -5,7 +5,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/video-chain"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'kill ${join_pid:-} 2>/dev/null; rm -rf "$WORK"' EXIT
 asserts=0
 fail() {
   echo "FAIL: $*" >&2
@@ -32,6 +32,9 @@ ffmpeg -v error -f lavfi -i color=c=gray:s=320x180:d=2:r=24 -c:v libx264 -pix_fm
 BUSY="$WORK/busy.mp4"
 ffmpeg -v error -f lavfi -i testsrc2=s=640x360:d=2:r=30 -f lavfi -i sine=f=440:d=3 -c:v libx264 -pix_fmt yuv420p \
   -c:a aac "$BUSY" || fail "no busy fixture"
+# The join's encode is the longest process here and shares no file with the checks before it.
+"$SCRIPT" join "$WORK/joined.mp4" "$BUSY" "$STILL" "$RED_BLUE" >"$WORK/join.out" 2>"$WORK/join.err" &
+join_pid=$!
 
 assert run last-frame "$RED_BLUE" "$WORK/last.png"
 assert out "frame=$WORK/last.png"
@@ -54,7 +57,8 @@ assert test "$(stream "$WORK/strip.png" v:0 stream=width,height)" = 1440,270
 assert test "$(rc end-motion "$BUSY" --tail soon)" = 2
 assert test "$(rc end-motion)" = 2
 
-assert run join "$WORK/joined.mp4" "$BUSY" "$STILL" "$RED_BLUE"
+assert wait "$join_pid"
+cp "$WORK/join.out" "$WORK/out"; cp "$WORK/join.err" "$WORK/err"
 assert out "dest=$WORK/joined.mp4"
 assert out 'size=640x360'
 assert out 'clips=3'
