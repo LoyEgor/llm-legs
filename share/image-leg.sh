@@ -66,11 +66,16 @@ image_leg_exit() {
   [ -n "${IMAGE_LEG_TOOL:-}" ] || return 0
   if [ -n "${IMAGE_LEG_ERR:-}" ]; then
     exec 2>&9 9>&- || true
-    for index in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-      [ -n "$IMAGE_LEG_TEE" ] || { sleep 0.1; break; }
-      kill -0 "$IMAGE_LEG_TEE" 2>/dev/null || break
-      sleep 0.05
-    done
+    if [ -n "${IMAGE_LEG_SKIP:-}" ]; then
+      :
+    elif [ -z "$IMAGE_LEG_TEE" ]; then
+      sleep 0.1
+    else
+      for ((index = 0; index < 100; index++)); do
+        kill -0 "$IMAGE_LEG_TEE" 2>/dev/null || break
+        sleep 0.01
+      done
+    fi
     err=$(tail -c 2000 "$IMAGE_LEG_ERR" 2>/dev/null) || err=''
     rm -f "$IMAGE_LEG_ERR" || true
   fi
