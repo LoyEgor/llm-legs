@@ -140,26 +140,24 @@ assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $session 
 assert_fails fix launch llm 2>"$WORK/err"
 assert grep -qF "run $id of the llm doctor is still open" "$WORK/err"
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
-jq --arg t "$(date -u -r $(($(now) - 13 * 3600)) +%Y-%m-%dT%H:%M:%SZ)" '.launched_at = $t' "$R" >"$WORK/r" && mv "$WORK/r" "$R"
-sleep 1
+jq --arg t "$(date -u -r $(($(now) - 13 * 3600)) +%Y-%m-%dT%H:%M:%SZ)" '.launched_at = $t | .created_at = $t' "$R" >"$WORK/r" && mv "$WORK/r" "$R"
 fix launch llm >"$WORK/out" 2>&1 || fail "launch over an old run failed"
 assert grep -qF "run $id abandoned: open for 13 h" "$WORK/out"
 assert jqe '.abandoned_at != null and .closed_at == null' "$R"
 id2=$(awk -F'\t' 'NF == 3 { print $1 }' "$WORK/out")
 assert [ -n "$id2" ] && assert [ "$id2" != "$id" ]
 R2=$(record "$id2")
+jq --arg t "$(date -u -r $(($(now) - 20)) +%Y-%m-%dT%H:%M:%SZ)" '.created_at = $t' "$R2" >"$WORK/r" && mv "$WORK/r" "$R2"
 WT2=$(jq -r '.worktrees[0]' "$R2")
-# Another doctor's open run is no obstacle. Runs list newest first, by the second they were made.
-sleep 1
+# Another doctor's open run is no obstacle.
 ddoc harness "$(now)" problems 1 h1
 fix launch harness >"$WORK/out" || fail "launch harness failed"
 hid=$(awk -F'\t' 'NF == 3 { print $1 }' "$WORK/out")
 assert grep -qE '^harness-doctor-' <<<"$hid"
 assert [ "$(tail -n 1 "$WORK/out")" = "harness fixer opened: 1 runs in one orchestrator chat" ]
 # A chat that does not open fails every run it would have dispatched.
-sleep 1
 : >"$DATA/opener-fails"
-jq '.launched_at = "2026-01-01T00:00:00Z"' "$(record "$hid")" >"$WORK/r" && mv "$WORK/r" "$(record "$hid")"
+jq --arg t "$(date -u -r $(($(now) - 10)) +%Y-%m-%dT%H:%M:%SZ)" '.launched_at = "2026-01-01T00:00:00Z" | .created_at = $t' "$(record "$hid")" >"$WORK/r" && mv "$WORK/r" "$(record "$hid")"
 assert_fails fix launch harness 2>"$WORK/err" >/dev/null
 rm "$DATA/opener-fails"
 assert grep -qF 'the harness fixer did not open' "$WORK/err"

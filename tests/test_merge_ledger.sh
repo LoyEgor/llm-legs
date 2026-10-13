@@ -18,11 +18,12 @@ git config --global user.name t && git config --global user.email t@t && git con
 DRIVER=${MERGE_LEDGER_DRIVER:-"$ROOT/share/merge_ledger.py"}
 L=share/spend-ledger.json
 
+has_line() { case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac; return 1; }
+attrs=$(git -C "$ROOT" check-attr merge linguist-generated -- share/{spend,harness,doctor,code,system,updater}-ledger.json)
 for name in spend harness doctor code system updater; do
-  assert test "$(git -C "$ROOT" check-attr merge "share/$name-ledger.json")" = "share/$name-ledger.json: merge: ledger-rows"
+  assert has_line "$attrs" "share/$name-ledger.json: merge: ledger-rows"
 done
-assert test "$(git -C "$ROOT" check-attr linguist-generated share/harness-ledger.json)" = \
-  "share/harness-ledger.json: linguist-generated: set"
+assert has_line "$attrs" "share/harness-ledger.json: linguist-generated: set"
 
 edit() { # file python-statements-over-d: rewrite a ledger in the indent-1 layout
   python3 - "$1" "$2" <<'EOF'
@@ -36,20 +37,40 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write(json.dumps(d, ensure_ascii=False, indent=1) + "\n")
 EOF
 }
-ids() { python3 -c 'import json,sys; print(" ".join(r["id"] for r in json.load(open(sys.argv[1]))["rows"]))' "$1"; }
-field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(r for r in d["rows"] if r["id"] == sys.argv[2])[sys.argv[3]])' "$@"; }
-top() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]))' "$@"; }
-valid() { python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null; }
+facts() { # one interpreter reads the merged ledger; fact <key> picks a line of its answer
+  F=$(python3 - "$R/$L" <<'EOF'
+import json, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+try:
+    d = json.loads(text)
+except ValueError:
+    print("valid=False")
+    sys.exit()
+print("valid=True")
+print("ids=" + " ".join(r["id"] for r in d["rows"]))
+print("canon=%s" % (json.dumps(d, ensure_ascii=False, indent=1) + "\n" == text))
+print("owner=%s" % d.get("owner"))
+print("blind_spots=%s" % d.get("blind_spots"))
+print("bs=" + " ".join(b["id"] + "=" + b["what"] for b in d.get("blind_spots") or []))
+for r in d["rows"]:
+    print("value-%s=%s" % (r["id"], r["value"]))
+EOF
+)
+}
+fact() { sed -n "s/^$1=//p" <<<"$F"; }
 
 setup() { # name -> a repository at $R with the base ledger on main and branch feature at the same commit
   R="$WORK/$1"
-  mkdir -p "$R/share"
-  git -C "$R" init -q
-  grep 'merge=ledger-rows' "$ROOT/.gitattributes" >"$R/.gitattributes"
-  printf '{\n "owner": "Harness Doctor",\n "rows": []\n}\n' >"$R/$L"
-  edit "$R/$L" 'd["rows"] = [row("r1"), row("r2"), row("r3")]'
-  git -C "$R" add -A && git -C "$R" commit -qm base
-  git -C "$R" branch feature
+  if [ ! -d "$WORK/base-repo" ]; then
+    mkdir -p "$WORK/base-repo/share"
+    git -C "$WORK/base-repo" init -q
+    grep 'merge=ledger-rows' "$ROOT/.gitattributes" >"$WORK/base-repo/.gitattributes"
+    printf '{\n "owner": "Harness Doctor",\n "rows": []\n}\n' >"$WORK/base-repo/$L"
+    edit "$WORK/base-repo/$L" 'd["rows"] = [row("r1"), row("r2"), row("r3")]'
+    git -C "$WORK/base-repo" add -A && git -C "$WORK/base-repo" commit -qm base
+    git -C "$WORK/base-repo" branch feature
+  fi
+  cp -R "$WORK/base-repo" "$R"
 }
 on() { git -C "$R" switch -q "$1"; }
 save() { git -C "$R" commit -qam "$1"; }
@@ -62,10 +83,11 @@ on main; edit "$R/$L" 'd["rows"].append(row("main-new"))'; save main
 on feature; edit "$R/$L" 'd["rows"].append(row("feature-new"))'; save feature
 git -C "$R" show main:"$L" >"$WORK/main.json"
 assert rebase
-assert valid "$R/$L"
-assert test "$(ids "$R/$L")" = "r1 r2 r3 main-new feature-new"
+facts
+assert test "$(fact valid)" = True
+assert test "$(fact ids)" = "r1 r2 r3 main-new feature-new"
 assert test -z "$(diff "$WORK/main.json" "$R/$L" | grep "^<")"
-assert test "$(python3 -c 'import json,sys; t=open(sys.argv[1]).read(); print(json.dumps(json.loads(t), ensure_ascii=False, indent=1) + "\n" == t)' "$R/$L")" = True
+assert test "$(fact canon)" = True
 assert grep -q '"title": "ряд feature-new"' "$R/$L"
 
 setup stale
@@ -73,17 +95,19 @@ on main; edit "$R/$L" 'd["rows"] = [r for r in d["rows"] if r["id"] != "r1"] + [
 save main
 on feature; edit "$R/$L" 'd["rows"].append(row("y")); d["rows"] = [r for r in d["rows"] if r["id"] != "r3"]'; save feature
 assert rebase
-assert test "$(field "$R/$L" r1 value)" = v2
-assert test "$(ids "$R/$L")" = "r2 r1 y"
-assert test "$(top "$R/$L" owner)" = "main owner"
+facts
+assert test "$(fact value-r1)" = v2
+assert test "$(fact ids)" = "r2 r1 y"
+assert test "$(fact owner)" = "main owner"
 
 setup newer-on-branch
 on main; edit "$R/$L" 'd["rows"].append(row("y")); d["blind_spots"] = []'; save main
 on feature; edit "$R/$L" 'd["rows"][0]["value"] = "v2"'; save feature
 assert rebase
-assert test "$(field "$R/$L" r1 value)" = v2
-assert test "$(ids "$R/$L")" = "r1 r2 r3 y"
-assert test "$(top "$R/$L" blind_spots)" = "[]"
+facts
+assert test "$(fact value-r1)" = v2
+assert test "$(fact ids)" = "r1 r2 r3 y"
+assert test "$(fact blind_spots)" = "[]"
 
 setup blind-spots
 on main; edit "$R/$L" 'd["blind_spots"] = [{"id": "b1", "what": "base"}]'; save main
@@ -91,8 +115,9 @@ git -C "$R" branch -f feature main
 on main; edit "$R/$L" 'd["blind_spots"].append({"id": "b-main", "what": "m"})'; save main
 on feature; edit "$R/$L" 'd["blind_spots"][0]["what"] = "feature"; d["blind_spots"].append({"id": "b-feat", "what": "f"})'; save feature
 assert rebase
-assert valid "$R/$L"
-assert test "$(python3 -c 'import json,sys; print(" ".join(b["id"] + "=" + b["what"] for b in json.load(open(sys.argv[1]))["blind_spots"]))' "$R/$L")" = "b1=feature b-main=m b-feat=f"
+facts
+assert test "$(fact valid)" = True
+assert test "$(fact bs)" = "b1=feature b-main=m b-feat=f"
 
 setup both-changed
 on main; edit "$R/$L" 'd["rows"][1]["value"] = "main"; d["rows"].append(row("m"))'; save main

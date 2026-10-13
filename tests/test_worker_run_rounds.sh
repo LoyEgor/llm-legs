@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 3
+# shards: 5
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 AWAIT_EXIT_TICKS=10000
@@ -111,6 +111,8 @@ assert grep -qx 'OUTCOME: GEMINI_USAGE_LIMIT' "$WORK/wait.out"
 assert meta_account_is walledg
 assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 0
 
+fi
+if suite_shard_owns 2 rounds-walls-b; then
 # An explicit --account is spent first, then the pool: a wall moves the same brief on.
 clear_stub
 set_config 'codex_effort=high'
@@ -215,21 +217,23 @@ assert meta_account_is walled2
 assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
 fi
-
-if suite_shard_owns 2 rounds-binding; then
+binding_env() {
 set_config 'codex_effort=high'
 export PICK_ACCOUNT=deleg PICK_RC=0
 DELEG_BENCHES="$HOME/.claude-profiles/.claudeb/worker-stats/benches"
-mkdir -p "$DELEG_BENCHES/20260801T130000Z-def4560"
-
-# A fixing worker's brief names the review round it fixes — line 1, or line 2 under a RESUME
-# line — and the run record keeps it: review-bench closes the round on what that run produced.
-clear_stub
-mkdir -p "$DELEG_BENCHES/20260801T140000Z-0a1b2c3"
+mkdir -p "$DELEG_BENCHES/20260801T130000Z-def4560" "$DELEG_BENCHES/20260801T140000Z-0a1b2c3"
 round_start() {
   "$RUNNER" start codex --brief "$WORK/round-brief" --workdir "$WORK/workdir" "$@" \
     >"$WORK/round.out" 2>"$WORK/round.err"
 }
+}
+
+if suite_shard_owns 3 rounds-binding-a; then
+binding_env
+
+# A fixing worker's brief names the review round it fixes — line 1, or line 2 under a RESUME
+# line — and the run record keeps it: review-bench closes the round on what that run produced.
+clear_stub
 printf 'ROUND: 20260801T140000Z-0a1b2c3\nFix the confirmed findings.\n' >"$WORK/round-brief"
 round_start || fail "round start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
@@ -333,6 +337,9 @@ assert_fails grep -q 'STUB FIX RULE' "$RUN_DIR/brief.launch"
 assert_fails grep -q 'ROUND: line' "$WORK/round.err"
 await_exit || fail "the settled brief-text run never finished"
 
+fi
+if suite_shard_owns 4 rounds-binding-b; then
+binding_env
 # A member id of a chunked round is one token to the scan as well as to the validator: the prose of
 # a chunk's fix brief names `<round>-<n>`, and a scan blind to the suffix would ask nothing.
 clear_stub
@@ -440,7 +447,7 @@ assert await_exit
 
 fi
 
-if suite_shard_owns 3 rounds-sonnet-trial; then
+if suite_shard_owns 5 rounds-sonnet-trial; then
 DELEG_BENCHES="$HOME/.claude-profiles/.claudeb/worker-stats/benches"
 # TEMP-SONNET-TRIAL(fixers): while the marker is live, a claudeb fixer of a fit or legacy round with no explicit
 # model runs sonnet at the table's effort; any other lens, an explicit model, an effort sonnet lacks, or a spent or

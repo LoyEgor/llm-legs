@@ -167,6 +167,8 @@ jq -e '(.vendors.grok | type) == "object" and (.vendors.grok.accounts // []) == 
   (.vendors.grok | has("refresh_error") | not)' \
   <<<"$grok_empty" >/dev/null || fail "a grok leg with no accounts was reported as a failed refresh"
 
+fi
+if suite_shard_owns 2 grok-touch-and-auth-age; then
 # --- Grok: the token touch lives in the collector, so the heartbeat's targeted re-poll and the
 # menu's Hard refresh share one path. A token past its own `expires_at` earns one
 # `grokb <account> exec models` before the poll; the poll alone writes the verdict.
@@ -238,8 +240,6 @@ grep -q 'no grokb at' "$WORK/grok-touch.err" || fail "a missing grokb went unrep
 grep -q -- '--account second' "$GROK_SENTINEL" || fail "a missing grokb cost the account its poll"
 rm -f "$GROK_SECOND_AUTH"
 
-fi
-if suite_shard_owns 2 grok-auth-age; then
 # needs_login is the one state no automated path can leave; expired is the CLI's own to heal.
 GROK_AUTH_CACHE="$WORK/grok-auth.json"
 grok_auth_env=("${grok_env[@]}")
@@ -790,10 +790,11 @@ jq -e '.auth_needed == true and (.auth_checked_at | type) == "number" and
   (.groups[0].buckets | length) == 2' "$GEMINI_FLAKY_CACHE" >/dev/null \
   || fail "the confirmed Gemini logout lost its verdict time or the prior buckets"
 printf '%s\n' "$gemini_cache_saved" >"$GEMINI_FLAKY_CACHE"
-/usr/bin/lockf -k "$GEMINI_FLAKY_DIR/.auth-probe.lock" sleep 5 &
+rm -f "$WORK/gemini-lock-held"
+/usr/bin/lockf -k "$GEMINI_FLAKY_DIR/.auth-probe.lock" sh -c ': >"$1"; sleep 5' sh "$WORK/gemini-lock-held" &
 gemini_lock_holder=$!
-sleep 0.5
-gemini_busy=$(run_gemini_flaky 2 1) || [ $? -eq 3 ] || fail "Gemini refresh with a busy probe lock failed"
+for _ in $(seq 500); do [ -e "$WORK/gemini-lock-held" ] && break; sleep 0.01; done
+gemini_busy=$(run_gemini_flaky 2 0) || [ $? -eq 3 ] || fail "Gemini refresh with a busy probe lock failed"
 kill "$gemini_lock_holder" 2>/dev/null; wait "$gemini_lock_holder" 2>/dev/null
 [ "$(cat "$GEMINI_FLAKY_COUNT")" = 1 ] || fail "a busy probe lock did not stop the confirming probe"
 jq -e '(.vendors.gemini | has("auth_needed") | not) and

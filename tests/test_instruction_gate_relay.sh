@@ -149,6 +149,8 @@ assert_contains "under MD-PROPOSAL in your RETURN" "$ctx"
 case "$ctx" in *'leave it for his next turn'*) fail "a relay worker in the span was answered as if it were Egor" ;; esac
 assert_eq "tier doc" "$(cat "$DOC")"
 
+fi
+if suite_shard_owns 2 channels-and-journal; then
 # A headless worker can start with a PATH that misses Homebrew, and stock /bin/bash is 3.2:
 # there `local -A` is not an error but a silent downgrade to an indexed array, where every
 # path key evaluates as arithmetic to index 0 and the comparison reads the wrong row.
@@ -231,9 +233,6 @@ assert_eq "" "$(raw_check sid-off Bash command "$grow_cmd" "$SPAN_T")"
 assert_eq "tier doc" "$(cat "$DOC")"
 export INSTRUCTION_WATCH_CHAT=all
 
-fi
-if suite_shard_owns 2 journal-and-inflight; then
-export INSTRUCTION_WATCH_CHAT=all
 echo "== journal: the bound trims what Hammerspoon receipted, and says so when it must drop more"
 TRIM_STATE="$WORK/trim"
 trim_plant() { # unreceipted receipted
