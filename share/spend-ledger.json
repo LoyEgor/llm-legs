@@ -5254,6 +5254,24 @@
    "verdict": "cut",
    "zero": "removal saves 5.7 CPU-min/day; loses the nightly scan, Spend/Token tracking exports and the page",
    "note": "html page queries on temp_store MEMORY + mmap: 78 -> 63 CPU-s, page identical on same index and clock; scan (116 CPU-s warm) is the cost of recomputing 7 days and 8 weeks per generation, a pie.export memo shared with html is the next lever"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_websearch",
+   "title": "llm-legs/test_worker_run_websearch",
+   "audited_at": "2026-10-13T14:56:59+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-websearch-20261012T235421Z-7d8b",
+   "cpu_run": 45.7,
+   "wall_run": 28.7,
+   "cpu_min_day": 16.43,
+   "wall_min_day": 33.25,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_websearch.sh": "398fda3fe334fd60e5d7a27838c516d6b5077a79",
+    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 11.7 wall-min/day and 15.2 CPU-min/day; loses the only per-vendor guard that every web-search entry point (flag, header, role, light) reaches the CLI argv from share/web-search.sh",
+   "note": "await_exit for grid launches (wait report was redundant with the asserted report) and the lowercase-header launch per vendor folded into one parser check; CPU 74 -> 57 s, asserts 231 -> 212 with every removed check red under two parser mutations"
   }
  ]
 }
