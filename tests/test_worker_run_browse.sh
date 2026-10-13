@@ -360,6 +360,17 @@ EOF
   assert grep -qx 'CANARY: lost CANARY_WALLED' <<<"$out"
   assert jq -se '[.[] | select(.account == "extra")][-1].outcome == "CANARY_WALLED"
     and ([.[] | select(.account == "lost")][-1].outcome == "CANARY_WALLED")' "$log" >/dev/null
+  # 9d: a Local State macOS will not let a LaunchAgent's canary read: profiles come from the registry
+  cp "$bt/tabs" "$bt/tabs.9d"
+  printf 'https://example.com/#worker-run=Profile-1\nhttps://example.com/?wr=tok-9d\n' >"$bt/tabs"
+  chmod 000 "$bt/chrome/Local State"
+  rc=0; seen=$(browse --seen tok-9d --account com) || rc=$?
+  mv -f "$bt/tabs.9d" "$bt/tabs"
+  rc=0; out=$(WORKER_RUN_WORKER_PICK="$bt/stub/worker-pick" browse --canary) || rc=$?
+  chmod 600 "$bt/chrome/Local State"
+  assert grep -qx 'SEEN: chrome' <<<"$seen"
+  assert grep -qx 'CANARY: com BROWSER_OK' <<<"$out"
+  assert grep -qF 'profile="Profile 1" (Profile 1)' "$bt/prompt-com"
   fi
 
   if suite_shard_owns 2 browse-canary-codex; then
@@ -422,6 +433,12 @@ EOF
   codex_canary ok nosubmit
   assert test "$rc" -eq 1
   assert grep -qx 'CANARY: codex/cx CANARY_NO_RECEIPT' <<<"$out"
+  chmod 000 "$bt/chrome/Local State"
+  codex_canary ok ok
+  chmod 600 "$bt/chrome/Local State"
+  assert test "$rc" -eq 1
+  assert grep -qx "CANARY: codex/cx CANARY_NOT_STARTED — Chrome's Local State is unreadable: Permission denied" <<<"$out"
+  assert test ! -s "$bt/codex.log"
   codex_canary ok ok broken
   assert test "$rc" -eq 1
   assert grep -qx 'CANARY: codex/cx CANARY_NOT_STARTED — cua_repl registration failed: fake registration failure' <<<"$out"

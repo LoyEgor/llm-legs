@@ -5881,12 +5881,21 @@ browse_profile() { # account -> its Chrome profile directory, or nothing
   email=$(browse_email "$1")
   [ -n "$dir" ] || [ -z "$email" ] || dir=$(jq -r --arg e "$email" '.profile.info_cache // {} | to_entries
     | map(select((.value.user_name // "" | ascii_downcase) == ($e | ascii_downcase))) | .[0].key // empty' \
-    "$(browse_chrome_data)/Local State" 2>/dev/null)
+    "$(browse_chrome_data)/Local State" 2>/dev/null) || dir=$(browse_registry | jq -r --arg a "$1" '.[$a].chrome_profile // empty')
   printf '%s\n' "$dir"
 }
 
 browse_profile_label() { # directory
-  printf '"%s" (%s)\n' "$(jq -r --arg d "$1" '.profile.info_cache[$d].name // $d' "$(browse_chrome_data)/Local State" 2>/dev/null)" "$1"
+  local name
+  name=$(jq -r --arg d "$1" '.profile.info_cache[$d].name // $d' "$(browse_chrome_data)/Local State" 2>/dev/null) || name=$1
+  printf '"%s" (%s)\n' "$name" "$1"
+}
+
+# macOS App Data protection denies Chrome's data to a LaunchAgent's process tree (the Harness doctor's canary):
+# profiles then come from the registry, and the Codex browser list names none.
+browse_chrome_unreadable() { # -> why Chrome's Local State cannot be read, or nothing
+  local why
+  why=$(head -c 1 "$(browse_chrome_data)/Local State" 2>&1 >/dev/null) || printf "Chrome's Local State is unreadable: %s\n" "${why##*: }"
 }
 
 browse_chrome_running() { "${BROWSE_PGREP:-pgrep}" -x 'Google Chrome' >/dev/null 2>&1; }
@@ -6207,7 +6216,7 @@ browse_codex_session() { # account profile-label task scratch-directory -> scrat
 # One codex leg per canary: the first account the browser list ranks `ok` drives the first enrolled `ok` profile
 # whose window opens through the Codex extension, judged by the same receipt. Run after the claudeb legs, so no
 # profile carries both extensions' sessions at once.
-browse_canary_codex() { # work-directory port listing
+browse_canary_codex() { # work-directory port listing [unreadable-reason]
   local work=$1 port=$2 account outcome reason dir='' label='' tag error=''
   account=$(awk -F'\t' '$1 == "codex" && $4 == "ok" { print $2; exit }' <<<"$3")
   if [ -z "$account" ]; then
@@ -6223,6 +6232,8 @@ browse_canary_codex() { # work-directory port listing
     account=$(awk -F'\t' '$1 == "codex" { print $2; exit }' <<<"$3")
     [ -n "$account" ] || { printf 'CANARY: codex skipped — no codex account\n'; return 0; }
     error="no codex account can serve: $(awk -F'\t' '$1 == "codex" { printf "%s%s %s", sep, $2, $4; sep = ", " }' <<<"$3")"
+  elif [ -n "${4:-}" ]; then
+    error=$4
   else
     while IFS= read -r dir; do
       browse_window "$dir" && { label=$(browse_profile_label "$dir"); break; }
@@ -6253,7 +6264,7 @@ browse_canary_codex() { # work-directory port listing
 # Each enrolled account in the claudeb worker pool fills and submits a form on a listener only this canary
 # runs; the server's own receipt is the verdict, never the worker's word.
 browse_canary() {
-  local work port account dir rc=0 tag child answer walled listing
+  local work port account dir rc=0 tag child answer walled listing unreadable
   local -a children=()
   [ -z "$(chrome_runs)" ] || { printf 'CANARY: skipped — a browser run is live\n'; return 0; }
   mkdir -p "$(browse_dir)" && touch "$(browse_dir)/canary.stamp"
@@ -6291,6 +6302,7 @@ PY
   port=$(cat "$work/port" 2>/dev/null) || { printf 'CANARY: failed — its form server did not start\n'; return 1; }
   listing=$("${WORKER_RUN_WORKER_PICK:-$SCRIPT_DIRECTORY/worker-pick}" --list --role browser 2>/dev/null)
   walled=$(awk -F'\t' '$1 == "claudeb" && $4 == "walled" { print $2 }' <<<"$listing")
+  unreadable=$(browse_chrome_unreadable)
   while IFS=$'\t' read -r account dir; do
     tag="canary-$account-$(date +%s)"
     if ! worker_pool_refuse_headless claudeb "$account" "$(worker_model_pin_csv < <(worker_model_pins claudeb))" 2>/dev/null; then
@@ -6325,7 +6337,7 @@ PY
     children+=("$!")
   done < <(browse_registry | jq -r 'to_entries[] | select((.value.chrome_profile // "") != "") | [.key, .value.chrome_profile] | @tsv')
   for child in "${children[@]}"; do wait "$child" || rc=1; done
-  browse_canary_codex "$work" "$port" "$listing" || rc=1
+  browse_canary_codex "$work" "$port" "$listing" "$unreadable" || rc=1
   return "$rc"
 }
 
