@@ -2590,6 +2590,71 @@
    "verdict": "cut",
    "zero": "removal saves ~4.7 wall-s a run (0.2 wall-min/day); loses every pin of resume-timer-guard's allowed/denied timer shapes and the door's no-grant pass",
    "note": "word-gate.sh ran after every passing case though it prints nothing since b50e5bf; now only in the no-grant block whose claim it is, the intake setup that fed it gone (phrase pinned in test_word_triggers, grant mint in test_word_doors); 66 asserts unchanged, a denying door red here and in test_word_doors; wall 8.5 -> 6.4 s under load"
+  },
+  {
+   "id": "suite:hammerspoon/test_menu_cache",
+   "title": "hammerspoon/test_menu_cache",
+   "audited_at": "2026-10-13T11:29:52+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-menu-cache-20261012T235239Z-0abf",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "hammerspoon/tests/test_menu_cache.sh": "bf048888272f8f278b185cb716b8566e0099d177"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.1 wall-s a run; loses the pin that a click builds no section and reads no file (mutation-checked in fb9aa82)",
+   "note": "40 checks, one hs spawn, no sleeps; no vacuous check found; menu-style read from the main llm-legs checkout is a placement note only"
+  },
+  {
+   "id": "suite:hammerspoon/test_tracking_menu",
+   "title": "hammerspoon/test_tracking_menu",
+   "audited_at": "2026-10-13T11:29:53+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-menu-cache-20261012T235239Z-0abf",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "hammerspoon/tests/test_tracking_menu.sh": "938c0d6a7ad97d795a25d210af975ccd6e7c3c17"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.2 wall-s a run; loses the healthy/throwing/missing-module paths of trackingMenuItem and the burst-alert pointer",
+   "note": "17 checks, one hs spawn; source-slice and prose pins are deliberate wiring contracts"
+  },
+  {
+   "id": "suite:hammerspoon/test_send_actions",
+   "title": "hammerspoon/test_send_actions",
+   "audited_at": "2026-10-13T11:29:54+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-menu-cache-20261012T235239Z-0abf",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "hammerspoon/tests/send_actions_harness.lua": "6d72fd13ab61f2c942d6489d3a41ef0df7ba95a8",
+    "hammerspoon/tests/test_send_actions.sh": "1ec3f5ed4c2e8fefde56949513a4cfd2f68e25be"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.3 wall-s a run; loses paste-path matrix, FIFO delivery, stall recovery and chord gating",
+   "note": "pure-Lua harness with injected clock and timers, no sleeps; every assert names a real defect"
+  },
+  {
+   "id": "suite:hammerspoon/test_reports_menu",
+   "title": "hammerspoon/test_reports_menu",
+   "audited_at": "2026-10-13T11:29:55+03:00",
+   "by": "harness-speed-suite-audit-hammerspoon-test-menu-cache-20261012T235239Z-0abf",
+   "cpu_run": 0.0,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "hammerspoon/tests/test_reports_menu.sh": "9913fc23bdd3494e7585656e5630605418f38511"
+   },
+   "verdict": "cut",
+   "zero": "removal saves the real end-report note python spawn and live notes.json/fs reads per run, about 0.2 wall-s; loses an unasserted print of the live menu rows",
+   "note": "dropped the live-hs api.menu() block (real hs.task ran end-report note); 61 checks unchanged; tabStopType mutation red (via hs NSException crash, so avoid repeating it)"
   }
  ]
 }
