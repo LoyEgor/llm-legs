@@ -68,7 +68,7 @@ code_tags=$(grep -rhoE 'TEMP-[A-Z][A-Z0-9_-]*\([a-z0-9_-]+\)' "$ROOT" \
   --exclude-dir=.git --exclude-dir=.claude --exclude=EXPERIMENTS.json 2>/dev/null | sort -u || true)
 while IFS= read -r tag; do
   [ -n "$tag" ] || continue
-  printf '%s\n' "$registered_tags" | grep -qxF "$tag" \
+  case $'\n'"$registered_tags"$'\n' in *$'\n'"$tag"$'\n'*) ;; *) false ;; esac \
     || fail "unregistered experiment tag in code: $tag — add it to EXPERIMENTS.json with started/review_by/how_to_remove"
   asserts=$((asserts + 1))
 done <<EOF
@@ -76,7 +76,7 @@ $code_tags
 EOF
 while IFS= read -r tag; do
   [ -n "$tag" ] || continue
-  printf '%s\n' "$code_tags" | grep -qxF "$tag" \
+  case $'\n'"$code_tags"$'\n' in *$'\n'"$tag"$'\n'*) ;; *) false ;; esac \
     || fail "EXPERIMENTS.json lists $tag but no such tag remains in code: finish the removal and delete the entry"
   asserts=$((asserts + 1))
 done <<EOF
