@@ -103,7 +103,7 @@ the cause is our own):
 | `compressor` | every tick of 10 min ≥ 33% of RAM | — |
 | `swap` | latest tick ≥ 50% of swap allocated | — |
 | `swap-writes` | 24 h swap-outs ≥ 20 GiB/day (≥ 1 h covered) | — |
-| `ssd-writes` | 7-day mean > 200 GB/day (cause: top disk-writes report) | > 400 |
+| `ssd-writes` | 7-day mean > 200 GB/day (cause: the week's top own writer by the day cohorts' rusage bytes, else the top writer, else the top disk-writes report; levers: write fewer bytes for the same output) | > 400 |
 | `free-space` | a volume < 25 GiB free (Data's cause: the biggest cache, report-only) | < 10 |
 | `hammerspoon-crash` | ≥ 1 crash in the day before the nightly pass | — |
 | `job-crash` | ≥ 1 crash/day of a job launchd relaunches | — |
@@ -122,15 +122,17 @@ the cause is our own):
   trades model, effort or thinking (close refuses a knob change, as for Harness).
 - **Proof** (`PROOF`, in the judge digest). A fix is a ledger row matching `{rule, key, cause}`, status
   `fixed-pending`, with a `fixes[]` entry. Close runs `system-doctor check --record`: the row exists and
-  a births/CPU cause has a baseline. The document then proves it once the fix's commit is in main
+  a births/CPU or SSD-writes cause has a baseline. The document then proves it once the fix's commit is in main
   (`fix_commit`, `fix_landed`):
   - `spawn`, `kernel`: the cause's attributed births/s and CPU cores after landing against the 7 days
     before. The window scales with the cause's cadence: 30 sightings at the baseline's rate (covered
     seconds ÷ ticks it was seen in), at least 2 h and at most 7 days, so a per-render script proves in
     2 h and a nightly one waits the week. Fewer than 30 sightings before is no baseline: refused.
     Proven when births or CPU fell ≥ 25 % and neither rose > 25 %.
-  - crash, reboot and disk-writes rules: no report of the cause's kind since landing for 7 days;
-    any report refuses it.
+  - `ssd-writes`: the same window and test on the cause's written MB/h (minute rows' `io_top`).
+  - crash and reboot rules: no report of the cause's kind since landing for 7 days; any report refuses it.
+- **Blind collectors reach the night**: doctor-fix turns each name in the document's `blind` into a
+  `collector:<name>` problem on bin/system-doctor; one that needs root (ssd-sampler) ends as Egor's handoff.
   - Proven reads `watch` (`proof.verdict`, counted `proved` by the night report) for 7 days; refused
     reads `open` with the numbers; pending reads `fixed-pending`. `system-doctor check <cause>` prints
     the same proof (exit 0 proven, 1 refused, 3 pending).

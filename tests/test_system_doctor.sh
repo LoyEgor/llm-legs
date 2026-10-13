@@ -393,6 +393,14 @@ reports = {"reports": [{"at": now, "kind": "diskwrites", "name": "python3.13", "
 ssd = judged(days=day_rows(201), night=reports)[0].get("ssd-writes:internal")
 check(ssd and ssd["severity"] == "review" and ssd["cause"]["name"] == "python3.13" and ssd["exposure"] == 3,
       "SSD writes 201 GB/day over the week fire with the top disk-writes report: %s" % ssd)
+writers = [dict(d, cohort=[["Google Chrome", "third-party", 0, 0, 90e9, 0, 0, 0, 1],
+                          ["llm-legs/bin/statusline.sh", "own", 0, 0, 50e9, 0, 0, 0, 1]]) for d in day_rows(201)]
+ssd = judged(days=writers, night=reports)[0]["ssd-writes:internal"]
+check(ssd["cause"] == {"name": "llm-legs/bin/statusline.sh", "share": 0.25, "owner": "own", "fix_target": True,
+                       "files": ["llm-legs/bin/statusline.sh"]},
+      "SSD writes name the week's top own writer by measured bytes over a bigger third-party one and the reports: %s"
+      % ssd["cause"])
+check(m.levers(ssd["cause"]["name"], "ssd-writes") == [m.RULE_LEVERS["ssd-writes"]], "an SSD-writes cause carries the write levers")
 check("ssd-writes:internal" not in judged(days=day_rows(200))[0], "SSD writes 200 GB/day stay quiet")
 check(judged(days=day_rows(401))[0]["ssd-writes:internal"]["severity"] == "heavy", "SSD writes 401 GB/day are heavy")
 old = [{"day": m.local_day(now - 9 * 86400), "covered_s": 86400, "ssd_w_b": 900e9}]
@@ -592,6 +600,15 @@ write_ticks(series(since - 6 * 3600, 360, 60, 6, 0.0) + series(since, 180, 60, 2
 check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "proven", "births alone dropping by 25 %% or more proves it")
 write_ticks(series(since - 6 * 3600, 360, 60, 6, 1.0) + series(since, 180, 60, 2, 3.0))
 check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "refused", "fewer births bought with more CPU is no proof")
+wrote = [dict(r, io_top=[["statusline.sh", 6e8 if r["t"] < since else 1e8, 0, 0, "own"]])
+         for r in series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 5, 6.0)]
+write_ticks(wrote)
+found = m.proof("statusline.sh", "ssd-writes", since, now)
+check(found["verdict"] == "proven" and found["before"]["mb_h"] == 36000 and found["after"]["mb_h"] == 6000
+      and found["why"].startswith("writes 36000.0 -> 6000.0 MB/h"),
+      "an SSD-writes fix is proven by its written bytes alone, births and CPU unchanged: %s" % found)
+write_ticks([dict(r, io_top=[["statusline.sh", 6e8, 0, 0, "own"]]) for r in wrote])
+check(m.proof("statusline.sh", "ssd-writes", since, now)["verdict"] == "refused", "unchanged written bytes refuse an SSD-writes fix")
 sparse = [r if i % 30 == 0 else dict(r, births_top=[["xpcproxy", 10, "apple"]], cpu_top=[])
           for i, r in enumerate(series(since - 6 * 86400, 6 * 1440, 60, 5, 6.0))]
 write_ticks(sparse + series(since, 180, 60, 0, 0.0))
@@ -1117,7 +1134,7 @@ for name, body in (("claudeb", "exit 0"), ("worker-pick", "printf 'acct\\n'"), (
 write_ticks(minutes(10, births_s=1500, births_seen=10, births_top=[["statusline.sh", 7, "own"], ["xpcproxy", 3, "apple"]],
                     kernel=0.6))
 json.dump({"owner": "System doctor", "rows": [], "blind_spots": []}, open(os.environ["SYSTEM_DOCTOR_LEDGER"], "w"))
-os.remove(os.path.join(work, "state", "nightly.json"))
+json.dump({"as_of_s": time.time()}, open(os.path.join(work, "state", "nightly.json"), "w"))
 check(cli().returncode == 0, "the judge writes a fresh document")
 fixer_repo = os.path.join(work, "fixer-repo")
 subprocess.run(["git", "init", "-q", "-b", "main", fixer_repo], check=True)
@@ -1140,6 +1157,19 @@ run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "abandon"
 run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
 check(run.returncode != 0 and "nothing to fix" in run.stderr and len(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json"))) == 1,
       "an Apple cause is never in a fixer snapshot: %s" % run.stderr)
+open(os.environ["SSD_SAMPLER_PLIST"], "w").close()
+os.utime(os.environ["SSD_SAMPLER_PLIST"], (time.time() - 20 * 3600, time.time() - 20 * 3600))
+check(cli().returncode == 0, "the judge rewrites the document with a stale sampler")
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
+blinds = sorted(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json")), key=os.path.getmtime)
+routed = {p["id"]: p for p in json.load(open(blinds[-1]))["problems"]} if len(blinds) == 2 else {}
+check(run.returncode == 0 and sorted(routed) == ["collector:ssd-sampler"]
+      and routed["collector:ssd-sampler"]["component"]["files"] == [os.path.join(root, "bin", "system-doctor")],
+      "a blind System collector is a night problem on bin/system-doctor: %s %s" % (routed, run.stderr))
+subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "abandon", json.load(open(blinds[-1]))["id"]], capture_output=True,
+               env=env)
+os.remove(os.environ["SSD_SAMPLER_PLIST"])
+os.remove(blinds[-1])
 os.makedirs(os.path.join(work, "state", "launchd"), exist_ok=True)
 at = time.time()
 with open(os.path.join(work, "state", "launchd", m.local_day(at) + ".jsonl"), "w") as handle:

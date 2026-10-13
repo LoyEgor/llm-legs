@@ -421,7 +421,8 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.
 - Own problem keys: `label` (the menu's short name), `severity` (`review` | `heavy`) and `cause`
   `{name, share, owner, fix_target, files}`; `fix_target` is true only for an own cause whose name is a
-  file of a sweep repository (`files`, `repo/path`); every other cause is report-only. A proven,
+  file of a sweep repository (`files`, `repo/path`); every other cause is report-only. doctor-fix adds a
+  `collector:<name>` problem per name in the document's `blind`. A proven,
   refused or pending fix carries `proof` `{verdict, why, since, ...}`.
 - `status` is `blind` while the newest tick is older than 10 min or the nightly pass older than 36 h
   (own key `blind`). Own keys: `measures`, `causes` (births and CPU by cause), `nightly`,

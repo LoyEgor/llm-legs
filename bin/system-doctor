@@ -229,10 +229,15 @@ def source_path(rel):
 
 RULE_LEVERS = {"job-loop": "find why it exits (its own log, not launchd's), back off before exiting non-zero, keep its "
                            "KeepAlive and interval no tighter than its work needs",
-               "cohort": "cut its dominant term (the fact names it) without changing what it outputs"}
+               "cohort": "cut its dominant term (the fact names it) without changing what it outputs",
+               "ssd-writes": "write fewer bytes for the same output: SQLite temp_store=MEMORY and no VACUUM or full-table "
+                             "rewrite per run, rewrite only changed rows or files, append instead of rewriting a whole file, "
+                             "no copy of a database or tree to read it once"}
 
 
 def levers(name, rule):
+    if rule == "ssd-writes":
+        return [RULE_LEVERS[rule]]
     found = [text for names, text in LEVERS if name in names or os.path.basename(name) in names]
     return found or ([SPAWN_LEVER] if rule in RATE_RULES else [RULE_LEVERS[rule]] if rule in RULE_LEVERS else [])
 
@@ -1762,20 +1767,23 @@ def cause_words(found):
 
 def tag_rates(rows, name):
     """Births/s and CPU cores attributed to one cause over minute rows, and the ticks it was seen in."""
-    covered = births = cpu = 0.0
+    covered = births = cpu = written = 0.0
     seen = 0
     for row in rows:
         if not row.get("dt"):
             continue
         born = sum(e[1] for e in row.get("births_top") or () if e[0] == name)
         spent = sum(e[1] for e in row.get("cpu_top") or () if e[0] == name)
+        wrote = sum(e[1] for e in row.get("io_top") or () if e[0] == name)
         covered += row["dt"]
         if row.get("births_s") is not None and row.get("births_seen"):
             births += row["births_s"] * born / row["births_seen"] * row["dt"]
         cpu += spent
-        seen += bool(born or spent)
+        written += wrote
+        seen += bool(born or spent or wrote)
     return {"covered_s": round(covered), "seen": seen, "births_s": round(births / covered, 1) if covered else None,
-            "cores": round(cpu / covered, 3) if covered else None}
+            "cores": round(cpu / covered, 3) if covered else None,
+            "mb_h": round(written / covered * HOUR_S / 1e6, 1) if covered else None}
 
 
 def fix_since(row):
@@ -1811,7 +1819,7 @@ def proof(name, rule, since, now, night=None, memo=None):
             return dict(out, verdict="pending", why="%s quiet for %.1f of %d days" % (name, covered / DAY_S,
                                                                                        PROOF["reports_s"] // DAY_S))
         return dict(out, verdict="proven", why="%s quiet for %d days" % (name, PROOF["reports_s"] // DAY_S))
-    if rule in REPORT_KINDS:
+    if rule in REPORT_KINDS and rule != "ssd-writes":
         night = night if night is not None else read_json(os.path.join(state_dir(), "nightly.json"), {}) or {}
         after = sorted({str(r.get("ref") or r.get("at")) for r in night.get("reports") or () if r.get("at", 0) >= since
                         and r.get("kind") in REPORT_KINDS[rule] and r.get("name") == name})
@@ -1838,17 +1846,19 @@ def proof(name, rule, since, now, night=None, memo=None):
             memo[key] = before
     after = tag_rates([r for r in rows if r["t"] >= since], name)
     out = {"before": before, "after": after}
-    if before["seen"] < PROOF["sightings"] or not (before["births_s"] or before["cores"]):
+    terms = ("mb_h",) if rule == "ssd-writes" else ("births_s", "cores")
+    if before["seen"] < PROOF["sightings"] or not any(before.get(k) for k in terms):
         return dict(out, verdict="refused", why="no measurable baseline: %s seen in %d ticks of the %d days before, "
                     "needs %d" % (name, before["seen"], PROOF["baseline_s"] // DAY_S, PROOF["sightings"]))
     need = min(PROOF["max_s"], max(PROOF["min_s"], PROOF["sightings"] * before["covered_s"] / before["seen"]))
     out["need_s"] = round(need)
-    words = "births %s -> %s /s · CPU %s -> %s cores · %.1f of %.1f h after" % (
-        before["births_s"], after["births_s"], before["cores"], after["cores"], after["covered_s"] / 3600.0,
-        need / 3600.0)
+    words = ("writes %s -> %s MB/h" % (before.get("mb_h"), after.get("mb_h")) if rule == "ssd-writes" else
+             "births %s -> %s /s · CPU %s -> %s cores" % (before["births_s"], after["births_s"], before["cores"],
+                                                          after["cores"])) + " · %.1f of %.1f h after" % (
+        after["covered_s"] / 3600.0, need / 3600.0)
     if after["covered_s"] < need:
         return dict(out, verdict="pending", why=words)
-    pairs = [(before[k], after[k] or 0) for k in ("births_s", "cores") if before[k]]
+    pairs = [(before[k], after.get(k) or 0) for k in terms if before.get(k)]
     fell = any(b2 <= b1 * (1 - PROOF["drop"]) for b1, b2 in pairs)
     rose = any(b2 > b1 * (1 + PROOF["drop"]) for b1, b2 in pairs)
     return dict(out, verdict="proven" if fell and not rose else "refused", why=words)
@@ -2011,15 +2021,16 @@ def judge_ticks(judge, rows, days):
     if week:
         value = sum(d.get("ssd_w_b") or 0 for d in week) / covered * DAY_S / 1e9
         if value > LIMITS["ssd_gb_day"]:
-            causes = merge_top([{"x": [[r["name"], 1, r["owner"]] for r in judge.reports
-                                        if r["kind"] == "diskwrites"]}], "x")
+            writers = ssd_writers(week)
+            causes = merge_top([{"x": [[r["name"], 1, r["owner"]] for r in judge.reports if r["kind"] == "diskwrites"]}], "x")
             judge.add("ssd-writes", "internal", "the internal SSD took %.0f GB of writes a day over %d day%s, limit %d" % (
                 value, len(week), "" if len(week) == 1 else "s", LIMITS["ssd_gb_day"]), round(value, 1),
                 LIMITS["ssd_gb_day"], "GB/day", 24 * 7, len(week), None, None, now,
                 [{"at": None, "ref": "day:%s" % d["day"], "account": None,
                   "excerpt": "%s %.0f GB/day over %.1f h" % (d["day"], d.get("ssd_gb_day") or 0, d["covered_s"] / 3600)}
                  for d in week[::-1]], heavy=value > LIMITS["ssd_heavy_gb_day"],
-                found=cause(causes[0], sum(c[1] for c in causes)) if causes else None)
+                found=cause(writers[0], sum(d.get("ssd_w_b") or 0 for d in week)) if writers else
+                cause(causes[0], sum(c[1] for c in causes)) if causes else None)
     if latest and now - latest["t"] <= TICK_STALE_S:
         for name, gib in sorted((latest.get("free_gib") or {}).items()):
             if gib < LIMITS["free_gib"]:
@@ -2030,6 +2041,18 @@ def judge_ticks(judge, rows, days):
                           gib, LIMITS["free_gib"], "GiB", None, 1, 1, latest["t"], latest["t"],
                           [tick_evidence(latest, "df %s free %.1f GiB" % (name, gib))],
                           heavy=gib < LIMITS["free_heavy_gib"], found=found)
+
+
+def ssd_writers(week):
+    """[[tag, bytes written over the week, owner]] from the day cohorts' rusage, the top own writer first so the night
+    gets a cause it can fix; [] when no day measured a writer."""
+    written = {}
+    for day in week:
+        for row in day.get("cohort") or ():
+            if len(row) > 4 and row[4]:
+                written[(row[0], row[1])] = written.get((row[0], row[1]), 0) + row[4]
+    ranked = sorted(([tag, b, owner] for (tag, owner), b in written.items()), key=lambda r: (r[2] != "own", -r[1], r[0]))
+    return ranked
 
 
 def judge_nightly(judge, night):
@@ -2524,7 +2547,7 @@ def check(name, rule=None, since=None, now=None):
 
 def check_record(record_file, decisions_file, now=None):
     """Close gate of a System fixer run: each `fixed` problem has a fixed-pending ledger row naming its cause with a
-    fix record, and a births/CPU cause has a baseline a later proof can measure. Returns the faults."""
+    fix record, and a births/CPU or SSD-writes cause has a baseline a later proof can measure. Returns the faults."""
     now = time.time() if now is None else now
     record = read_json(record_file, {}) or {}
     worktree = ([w for w in record.get("worktrees") or () if isinstance(w, str)] or [None])[0]
@@ -2547,10 +2570,10 @@ def check_record(record_file, decisions_file, now=None):
             faults.append("%s: fixed, but no fixed-pending ledger row matches {rule: %s, cause: %s} with a fixes[] entry: "
                           "the doctor proves a fix of that cause only through such a row" % (parts[0], rule, name))
             continue
-        if rule in RATE_RULES:
+        if rule in RATE_RULES + ("ssd-writes",):
             found = proof(name, rule, now, now)
             if found["verdict"] == "refused":
-                faults.append("%s: %s, so no births/s or CPU drop can prove this fix" % (parts[0], found["why"]))
+                faults.append("%s: %s, so no births/s, CPU or write drop can prove this fix" % (parts[0], found["why"]))
     return faults
 
 
