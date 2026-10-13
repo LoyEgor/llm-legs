@@ -20,7 +20,8 @@ mkdir -p "$HOME" "$WORK/rs" "$REPO/tests"
 git -C "$REPO" init -q
 git -C "$REPO" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
 
-# Each section logs its name and how many shard bodies run beside it; shard 3 outlasts shard 1 by 2 s.
+# Each section logs its name and how many shard bodies run beside it; with NAP=1 shard 3 outlasts shard 1 by 2 s.
+# Only the runs that check overlap or wall time set it.
 cat >"$REPO/tests/test_sharded.sh" <<EOF
 #!/usr/bin/env bash
 # shards: 3
@@ -30,9 +31,9 @@ section() { printf '%s\\n' "\$1" >>"$WORK/sections"; ran=\$((ran + 1)); }
 echo setup
 mkdir "$WORK/live.\$\$"; trap 'rmdir "$WORK/live.\$\$"' EXIT
 ls -d "$WORK"/live.* | wc -l | tr -d ' ' >>"$WORK/concurrent"
-if suite_shard_owns 1 a; then section a; sleep 1; fi
+if suite_shard_owns 1 a; then section a; [ -z "\${NAP:-}" ] || sleep 1; fi
 if suite_shard_owns 2 b; then section b; i=0; while [ "\$i" -lt 200000 ]; do i=\$((i + 1)); done; fi
-if suite_shard_owns 3 c; then section c; sleep 3; [ -z "\${FAIL_C:-}" ] || { echo "c failed"; exit 5; }; fi
+if suite_shard_owns 3 c; then section c; [ -z "\${NAP:-}" ] || sleep 3; [ -z "\${FAIL_C:-}" ] || { echo "c failed"; exit 5; }; fi
 if suite_shard_owns 1 d; then section d; fi
 bash "$WORK/child.sh"
 echo "PASS: \$ran sections run"
@@ -49,7 +50,7 @@ sections() { sort "$WORK/sections" | tr '\n' ' '; }
 row() { tail -1 "$RUN_SUITES_JOURNAL"; }
 
 # Three jobs, one row: the suite's wall is its slowest shard's, its CPU every shard's, each section once.
-run RUN_SUITES_SHARDS=on -- -j 3
+run RUN_SUITES_SHARDS=on NAP=1 -- -j 3
 assert test "$?" = 0
 assert grep -q '1 suites, 3 jobs, -j 3' "$WORK/out"
 assert test "$(sections)" = 'a b c d '
@@ -74,12 +75,12 @@ assert grep -qx 'test_sharded.sh  PASS .*  PASS: 4 sections run' "$WORK/out"
 assert test "$(sort -u "$WORK/child")" = ''
 
 # The shards share the run's -j: at -j 2 never three at once.
-run RUN_SUITES_SHARDS=on -- -j 2
+run RUN_SUITES_SHARDS=on NAP=1 -- -j 2
 assert test "$(sections)" = 'a b c d '
 assert test "$(sort -n "$WORK/concurrent" | tail -1)" -le 2
 # So do the shards of a serial-tail suite.
 cp "$REPO/tests/test_sharded.sh" "$REPO/tests/test_review_flow_gate.sh"
-run RUN_SUITES_SHARDS=on -- -j 2 test_review_flow_gate.sh
+run RUN_SUITES_SHARDS=on NAP=1 -- -j 2 test_review_flow_gate.sh
 assert test "$(sections)" = 'a b c d '
 assert test "$(sort -n "$WORK/concurrent" | tail -1)" -le 2
 rm "$REPO/tests/test_review_flow_gate.sh"
@@ -118,7 +119,7 @@ run PATH="$WORK/bin:$PATH" -- -j 3
 assert grep -q '1 suites, 3 jobs' "$WORK/out"
 assert test "$(sections)" = 'a b c d '
 : >"$WORK/concurrent"
-PATH="$WORK/bin:$PATH" bash "$REPO/tests/test_sharded.sh" >/dev/null 2>&1
+NAP=1 PATH="$WORK/bin:$PATH" bash "$REPO/tests/test_sharded.sh" >/dev/null 2>&1
 assert test "$(sort -n "$WORK/concurrent" | tail -1)" = 3
 printf '2 50.00 1.00 100000\n' >"$WORK/room"
 run PATH="$WORK/bin:$PATH" -- -j 3
@@ -127,7 +128,7 @@ sed -i '' 's/^# shards: 3 wait$/# shards: 3/' "$REPO/tests/test_sharded.sh"
 
 # A direct run splits alike: one journal row, every shard's output, the failing one last.
 : >"$WORK/sections"; : >"$WORK/concurrent"; : >"$WORK/child"
-RUN_SUITES_SHARDS=on bash "$REPO/tests/test_sharded.sh" >"$WORK/out" 2>&1
+NAP=1 RUN_SUITES_SHARDS=on bash "$REPO/tests/test_sharded.sh" >"$WORK/out" 2>&1
 assert test "$?" = 0
 assert test "$(sections)" = 'a b c d '
 assert test "$(sort -n "$WORK/concurrent" | tail -1)" = 3
@@ -174,7 +175,8 @@ shard_layout() { # suite -> fails with the reason unless every shard 1..N owns a
 }
 sharded=0
 for suite in "$ROOT"/tests/test_*.sh ${CLAUDE_SETUP_ROOT:+"$CLAUDE_SETUP_ROOT"/tests/test_*.sh}; do
-  [ "$(suite_shard_count "$suite")" -gt 1 ] || continue
+  suite_shard_count "$suite" >/dev/null
+  [ "$suite_shard_n" -gt 1 ] || continue
   sharded=$((sharded + 1))
   assert shard_layout "$suite"
 done
