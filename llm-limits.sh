@@ -2056,8 +2056,12 @@ for shield_vendor in claude codex gemini grok; do
 done
 
 # Live experiments travel with the data so consumers need no repo knowledge.
-experiments_json=$(experiments_active_lines "$(experiments_registry_path "$script_dir")" \
-  | jq -Rsc 'split("\n") | map(select(length > 0))')
+experiments_all() {
+  experiments_active_lines "$(experiments_registry_path "$script_dir")"
+  # claude-setup's trials (its hooks) are announced here too; a test's own registry stands alone.
+  [ -n "${EXPERIMENTS_REGISTRY:-}" ] || experiments_active_lines "${script_dir%/*}/claude-setup/EXPERIMENTS.json"
+}
+experiments_json=$(experiments_all | jq -Rsc 'split("\n") | map(select(length > 0))')
 [ -n "$experiments_json" ] || experiments_json='[]'
 
 # Every completed heartbeat tick rewrites its state file; a sleeping Mac runs no tick to miss.
@@ -2460,17 +2464,13 @@ if [ "$write_cache" -eq 1 ]; then
   fi
 fi
 
-experiments_banner() {
-  experiments_active_lines "$(experiments_registry_path "$script_dir")"
-}
-
 if [ "$format" = json ]; then
   printf '%s\n' "$result"
 elif [ "$format" = table ]; then
-  experiments_banner
+  experiments_all
   render_table
 else
-  experiments_banner
+  experiments_all
   plain_dim=''
   plain_rst=''
   plain_red=''
