@@ -21,13 +21,20 @@ quota_helper="${GEMINIB_QUOTA_CMD:-$geminib_root/agy-quota.py}"
 gemini_base_home=$base_home
 gemini_profiles_dir=$profiles_dir
 gemini_accounts_cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$base_home/.llm-limits-gemini}"
-. "$geminib_root/share/gemini-accounts.sh"
-. "$geminib_root/share/account-roster.sh"
-. "$geminib_root/share/worker-pool.sh"
-. "$geminib_root/share/worker-model.sh"
-. "$geminib_root/share/account-announce.sh"
-. "$geminib_root/share/limit-hit.sh"
-pool_dir=$(worker_pool_dir gemini)
+# `<name> exec` runs an account below whatever the name, so it always needs the account libraries.
+case "${1:-}" in
+  families|review-flash) [ "${2:-}" = exec ] && accounts_needed=true || accounts_needed=false ;;
+  *) accounts_needed=true ;;
+esac
+if [ "$accounts_needed" = true ]; then
+  . "$geminib_root/share/gemini-accounts.sh"
+  . "$geminib_root/share/account-roster.sh"
+  . "$geminib_root/share/worker-pool.sh"
+  . "$geminib_root/share/worker-model.sh"
+  . "$geminib_root/share/account-announce.sh"
+  . "$geminib_root/share/limit-hit.sh"
+  pool_dir=$(worker_pool_dir gemini)
+fi
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }

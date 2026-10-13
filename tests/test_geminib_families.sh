@@ -34,7 +34,7 @@ AGY
 chmod +x "$AGY_BIN"
 CACHE="$GEMINIB_CACHE_DIR/models.json"
 TAB=$(printf '\t')
-calls() { if [ -f "$AGY_CALLS" ]; then wc -l <"$AGY_CALLS" | tr -d ' '; else printf 0; fi; }
+calls() { local n=0 line; [ ! -f "$AGY_CALLS" ] || while IFS= read -r line; do n=$((n + 1)); done <"$AGY_CALLS"; printf '%s' "$n"; }
 families() { bash "$SCRIPT" families "$@" 2>"$WORK/err"; }
 age_cache() { # seconds
   local stamp=$(($(date +%s) - $1))
@@ -61,8 +61,9 @@ assert_eq "$(families)" "$expected"
 assert_eq "$(calls)" 1
 
 # --- --json: the same rows as a list of objects ---
-assert_eq "$(families --json | jq -r '.[] | [.family, .slug, .agy_prefix, .label] | @tsv')" "$expected"
-assert_eq "$(families --json | jq -r '.[3] | keys | join(",")')" 'agy_prefix,family,label,slug'
+json=$(families --json)
+assert_eq "$(jq -r '.[] | [.family, .slug, .agy_prefix, .label] | @tsv' <<<"$json")" "$expected"
+assert_eq "$(jq -r '.[3] | keys | join(",")' <<<"$json")" 'agy_prefix,family,label,slug'
 
 # --- --refresh asks agy even inside the TTL, and a rollout reaches every reader ---
 {
@@ -164,6 +165,12 @@ assert pin --clear
 assert_eq "$(bash "$SCRIPT" review-flash flash37 extra 2>&1 >/dev/null; printf 'rc=%s' "$?")" \
   "usage: geminib review-flash [<slug>|--clear]
 rc=2"
+
+# --- families and review-flash load no account library: a lone geminib answers both ---
+mkdir -p "$WORK/lone/bin"
+cp "$SCRIPT" "$WORK/lone/bin/geminib"
+assert_eq "$(bash "$WORK/lone/bin/geminib" families 2>"$WORK/err" | cut -f2 | tr '\n' ,)" 'flash38,flash37,flash36,pro,'
+assert_eq "$(bash "$WORK/lone/bin/geminib" review-flash 2>"$WORK/err")" "flash38${TAB}default"
 
 # --- Usage ---
 assert_eq "$(bash "$SCRIPT" families --bogus 2>&1 >/dev/null; printf 'rc=%s' "$?")" "usage: geminib families [--json] [--refresh]
