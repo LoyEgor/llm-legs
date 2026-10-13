@@ -31,6 +31,10 @@ cat >"$FAKE_BIN/agy" <<'AGY'
 #!/usr/bin/env python3
 import os, sys, time
 args = sys.argv[1:]
+if args == ["models"]:
+    for version, kind in (("3.8", "Flash"), ("3.7", "Flash"), ("3.6", "Flash"), ("3.1", "Pro")):
+        print("gemini-%s-%s-high\tGemini %s %s (High)" % (version, kind.lower(), version, kind))
+    sys.exit(0)
 model = args[args.index("--model") + 1]
 log = args[args.index("--log-file") + 1]
 prompt = args[args.index("--print") + 1]
