@@ -49,12 +49,15 @@ printf '#!/bin/sh\n: >"%s/ready/${0##*/}-$2"\nwhile :; do sleep 1; done\n' "$WOR
 cp "$WORK/bin/worker-run" "$WORK/bin/review-bench"
 chmod +x "$WORK/bin/worker-run" "$WORK/bin/review-bench"
 ready() { local name i; for name in "$@"; do
-  for i in $(seq 1000); do [ -e "$WORK/ready/$name" ] && break; sleep 0.01; done
+  for ((i = 0; i < 1000; i++)); do [ -e "$WORK/ready/$name" ] && break; sleep 0.01; done
   [ -e "$WORK/ready/$name" ] || fail "line ${BASH_LINENO[0]}: $name never started"; done; }
 wait_on() { rm -f "$WORK/ready/$1-$2"; "$WORK/bin/$1" wait "$2" & WAIT_PIDS="${WAIT_PIDS:-} $!"; ready "$1-$2"; }
 # The whole tree is stopped before any kill: a loop whose sleep dies first starts its next wait, an orphan that
 # holds the suite's output open for good.
-end_waits() { local p; for p in $WAIT_PIDS; do process_tree_end "$p" 0; done; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
+end_waits() { local pids pass
+  kill -STOP $WAIT_PIDS 2>/dev/null
+  for pass in 1 2; do pids=$(process_tree $WAIT_PIDS); kill -STOP $pids 2>/dev/null; done
+  pids_end 0 $pids; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
 wait_on worker-run r1x
 assert_eq "" "$(stop)"
 assert_eq block "$(WORKER_RUN_BACKSTOP_CHAT_PID=$LIVE_PID stop | jq -r .decision)"
@@ -176,7 +179,7 @@ ln -s "$(command -v bash)" "$WORK/bin/claude"
 WORKER_RUN_DIR="$WORK/runs-chat"
 run r16 s1 codex
 assert_eq "" "$(unset WORKER_RUN_BACKSTOP_CHAT_PID; PATH="$WORK/shim:$PATH" HOOK="$HOOK" WORK="$WORK" "$WORK/bin/claude" -c '
-  "$WORK/bin/worker-run" wait r16 & w=$!
+  "$WORK/bin/worker-run" wait r16 >/dev/null & w=$!
   until [ -e "$WORK/ready/worker-run-r16" ]; do sleep 0.01; done
   bash -c "jq -cn \"{hook_event_name:\\\"Stop\\\",session_id:\\\"s1\\\"}\" | bash \"\$HOOK\""
   kill $w')"

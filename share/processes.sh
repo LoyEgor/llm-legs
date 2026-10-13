@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-process_tree() { # pid -> the pid and every descendant, one line each, parents first
-  process_listing | awk -v root="$1" '
+process_tree() { # pid... -> each pid and every descendant, one line each, parents first, off one listing
+  process_listing | awk -v roots="$*" '
     { kids[$2] = kids[$2] " " $1 }
-    END { queue[n = 1] = root
+    END { n = split(roots, queue, " ")
           for (i = 1; i <= n; i++) { print queue[i]; m = split(kids[queue[i]], k, " "); for (j = 1; j <= m; j++) queue[++n] = k[j] } }'
 }
 
