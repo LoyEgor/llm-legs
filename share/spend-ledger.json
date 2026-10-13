@@ -2912,6 +2912,91 @@
    "verdict": "kept",
    "zero": "removal saves 33.8 wall-min/day; loses the statusline segment contract checks (1610 asserts)",
    "note": "profile: 4407 jq 3221 grep 2030 git 2088 bash spawns over 4 shards; 31 sleeps are 0.05s polls and 0.2-0.3s negative waits a race check depends on; shards rebalanced in 17ad6614; no assert-neutral cut found"
+  },
+  {
+   "id": "suite:llm-legs/test_codexb_models",
+   "title": "llm-legs/test_codexb_models",
+   "audited_at": "2026-10-13T11:48:10+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-codexb-models-20261012T235256Z-7553",
+   "cpu_run": 5.4,
+   "wall_run": 3.6,
+   "cpu_min_day": 0.69,
+   "wall_min_day": 1.01,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/test_codexb_models.sh": "1707b48b6d2d50b4cf5bde0717e352ab31056149"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.1 wall-min/day; loses the cv contract of codexb models (ranking by client, window, --own refresh, family refusals)",
+   "note": "codexb models reads each cache home in one jq and splits slugs without subshells (1daa133b): jq 25 -> 13 a call, test pins 4; suite-journal hashes the tree from a per-file digest cache (25984c35); 78 asserts unchanged; every case is a distinct CLI path, no redundant check found"
+  },
+  {
+   "id": "suite:llm-legs/test_time_budget",
+   "title": "llm-legs/test_time_budget",
+   "audited_at": "2026-10-13T11:48:11+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-codexb-models-20261012T235256Z-7553",
+   "cpu_run": 0.8,
+   "wall_run": 0.9,
+   "cpu_min_day": 1.21,
+   "wall_min_day": 2.75,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/test_time_budget.sh": "5c8c45ae6e0589d3389480a252ac1ea83e070b8e"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.1 wall-min/day; loses the time budget split, night ledger line and problem-day rows",
+   "note": "in-process problem_day instead of a python3 -c interpreter, no discarded rev-parse in commit(); 81 asserts unchanged, guard mutation red"
+  },
+  {
+   "id": "suite:llm-legs/test_chat_find",
+   "title": "llm-legs/test_chat_find",
+   "audited_at": "2026-10-13T11:48:13+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-codexb-models-20261012T235256Z-7553",
+   "cpu_run": 5.7,
+   "wall_run": 4.6,
+   "cpu_min_day": 0.79,
+   "wall_min_day": 1.06,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/test_chat_find.sh": "6229a7e710f21d8cacb015bf986549f1521411c7"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.1 wall-min/day; loses chat-find's last-real-message, quote, hidden-errand and cache contracts",
+   "note": "one coproc fixture writer (python3 spawns 118 -> 67, corpus byte-identical), duplicate search reused, 76 literal grep asserts in-shell, cache_sig via stat; chat-find start skips gateway_auth (+1 proof assert); mutations red"
+  },
+  {
+   "id": "suite:llm-legs/test_gemini_probe",
+   "title": "llm-legs/test_gemini_probe",
+   "audited_at": "2026-10-13T11:48:14+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-codexb-models-20261012T235256Z-7553",
+   "cpu_run": 1.9,
+   "wall_run": 8.0,
+   "cpu_min_day": 0.22,
+   "wall_min_day": 1.04,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/test_gemini_probe.sh": "a2853db673a4b5b7161dabc28f8a84dbd6589aea"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 1.1 wall-min/day; loses probe states, fallback-off, timeout kill and weather tagging",
+   "note": "fake agy answers 'agy models' so the families cache fills once instead of a geminib families spawn per probe and weather run; CPU a run 2.7 -> 1.7 s, 40 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_elevenlabs_media",
+   "title": "llm-legs/test_elevenlabs_media",
+   "audited_at": "2026-10-13T11:48:15+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-codexb-models-20261012T235256Z-7553",
+   "cpu_run": 1.8,
+   "wall_run": 3.3,
+   "cpu_min_day": 0.37,
+   "wall_min_day": 0.9,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/test_elevenlabs_media.sh": "3d330b3820199b7c10156f80151ce7bb89f952d6"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.9 wall-min/day; loses the pre-request refusals, leg logging, balance and models-check contracts",
+   "note": "SIGTERM fixture ends its vendor right after signalling the wrapper instead of sleeping out a 2 s child; race margin unchanged, TERM-trap mutation red, 19 asserts"
   }
  ]
 }
