@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/spend.py, the Spend block of the Harness doctor, off a fixture tracking.json: tokenmap's harness_index as the
-# headline, components summed per hook script over tokenmap's three Hooks sections, only harness-owned ones targeted
-# (re-writes by tokenmap's avoidable flag), stale or no index -> nodata, the due rules, the night's ranked queue, the
+# headline, the menus check and every Fee index source as components, stale or no index -> nodata, the due rules, the night's ranked queue, the
 # restate a night close reads, the audit record and its proof, the roi line, the day backfill and the Harness menu.
 # Fixture directories only.
 set -u
@@ -28,17 +27,13 @@ def check(cond, what):
 sys.path.insert(0, os.path.join(root, "share"))
 import spend
 
-hooks = os.path.join(work, "repos", "setup", "hooks")
-os.makedirs(os.path.join(hooks, "stop.d"))
-for name, text in (("gate.sh", 'echo "gate ran this in a subshell"\n'), ("stop-dispatch.sh", "run stop.d\n"),
-                   ("stop.d/drill.sh", "echo drill\n"), ("other.sh", "echo other\n")):
-    with open(os.path.join(hooks, name), "w") as handle:
-        handle.write(text)
-os.makedirs(os.path.join(work, "home", ".claude"))
-with open(os.path.join(work, "home", ".claude", "settings.json"), "w") as handle:
-    json.dump({"hooks": {"PreToolUse": [{"hooks": [{"command": os.path.join(hooks, "gate.sh")}]}],
-                         "Stop": [{"hooks": [{"command": os.path.join(hooks, "stop-dispatch.sh")}]}]}}, handle)
-scripts = [os.path.join(hooks, "gate.sh"), os.path.join(hooks, "stop-dispatch.sh")]
+repos = os.path.join(work, "repos")
+menu_files = [os.path.join(repos, p) for p in ("token-map/tokenmap/tracking.py", "llm-legs/hammerspoon/doctors.lua",
+                                                "llm-legs/bin/harness-doctor", "llm-legs/bin/system-doctor")]
+for path in menu_files + [os.path.join(repos, "llm-legs", "bin", "worker-run")]:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as handle:
+        handle.write("menu\n")
 NOW = time.time()
 
 
@@ -46,74 +41,36 @@ def stamp(t):
     return datetime.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
 
 
-def rows(title, items):
-    return {"title": title, "rows": [{"label": l, "cells": c, **({"dim": True} if d else {})} for l, c, d in items]}
-
-
-def payload(made=NOW - 3600, idle_avoidable=False, hook_price=300.0, index=True, value=0.4612, definition="d1"):
-    causes = rows("By cause", [("expired (1h+ idle)", ["70k", "50k"], 0), ("expired (5m ttl)", ["30k", "<0.1M"], 0)])
-    for cause, avoidable in zip(causes["rows"], (idle_avoidable, True)):
-        cause["avoidable"] = avoidable
-    harness = {"definition": definition, "value": value, "change": "-54%", "tone": "better", "coverage": 0.113, "cells": [
-        {"consumer": "Chat", "leaf": "Hooks", "units": [100, 50], "price": [hook_price, 200.0], "points": -0.1},
-        {"consumer": "Chat", "leaf": "prefix: CLAUDE.md + memory", "units": [100, 50], "price": [60.0, 50.0],
-         "points": 0.1},
-        {"consumer": "Workers", "leaf": "Relays", "units": [40, 20], "price": [50.0, 50.0], "points": 0.0}]}
+def payload(made=NOW - 3600, hook_price=300.0, index=True, value=0.4612, definition="d1", hooks_charged=100e3):
+    harness = {"definition": definition, "value": value, "change": "-54%", "tone": "better", "coverage": 0.113,
+               "claude": 4e6, "sources": [
+                   {"group": "Workers", "source": "Delegation", "plain": [400e3, 300e3], "charged": 300e3},
+                   {"group": "Tests & checks", "source": "Hooks", "plain": [100e3, 50e3], "charged": hooks_charged},
+                   {"group": "Scripts", "source": "Advisor", "plain": [500e3, 0], "charged": 25e3}],
+               "cells": [
+        {"consumer": "Chat", "leaf": "Hooks", "source": "Hooks", "units": [100, 50], "price": [hook_price, 200.0],
+         "points": -0.1},
+        {"consumer": "Chat", "leaf": "prefix: CLAUDE.md + memory", "source": "CLAUDE.md & memory", "units": [100, 50],
+         "price": [60.0, 50.0], "points": 0.1},
+        {"consumer": "Workers", "leaf": "Delegation", "source": "Delegation", "units": [40, 20], "price": [50.0, 50.0],
+         "points": 0.0}]}
     return {"generated_at": stamp(made), "data_through": stamp(NOW), "stale_after_hours": 26,
-            **({"harness_index": harness} if index else {}), "rows": [
-        {"key": "spend", "cur": 1e6, "prev": 5e5},
-        {"key": "bench", "cur": 2e5, "prev": 1e5},
-        {"key": "hooks", "sections": [
-            rows("Blocked calls", [("gate.sh", ["10k", "5k"], 0), ("17 more", ["3k", "1k"], 1)]),
-            rows("Stop-hook re-answers", [("Stop [drill.sh]", ["20k", "0"], 0)]),
-            rows("Injected text", [("PreToolUse:Bash · gate ran this", ["30k", "10k"], 0)]),
-            rows("Calls a hook asked for", [("other.sh", ["5k", "0"], 0)])]},
-        {"key": "resumes", "cur": 5e4, "prev": 1e4},
-        {"key": "rewrites", "sections": [causes]},
-        {"key": "startup", "cur": 1.2e5, "prev": 1.1e5, "sections": [rows("Per context that loads it (avg)", [
-            ("CLAUDE.md + memory index", ["6.0k", "5.0k"], 0), ("system + tools (not in total)", ["7.9k", "7.1k"], 1),
-            ("skill listing", ["4.0k", "5.0k"], 0), ("nested CLAUDE.md files", ["10.0k", "1.0k"], 0)]),
-            rows("Main contexts, total by part", [
-                ("CLAUDE.md + memory index", ["60k", "50k"], 0), ("system + tools (not in total)", ["79k", "71k"], 1),
-                ("skill listing", ["39k", "49k"], 0), ("nested CLAUDE.md files", ["1k", "1k"], 0)]),
-            rows("Subagent spawns, by agent", [
-                ("claudeb-worker", ["20k", "10k"], 0)])]},
-        {"key": "procedure", "sections": [rows("By step", [("worker-run codex", ["12k", "0"], 0)])]},
-        {"key": "hidden", "sections": [rows("Compaction summaries, by zone", [("worker", ["5k", "1k"], 0),
-                                                                             ("chat", ["150k", "4k"], 0)])]},
-        {"key": "thinking", "cur": 3e5, "prev": 1e5}]}
+            **({"harness_index": harness} if index else {}), "rows": [{"key": "spend", "cur": 1e6, "prev": 5e5}]}
 
 
-files = spend.hook_files(scripts)
-found = {c["key"]: c for c in spend.components(payload(), files, spend.file_texts())}
-gate = found["hook:gate.sh"]
-check(gate["cur"] == 40000 and gate["sources"] == [os.path.realpath(os.path.join(hooks, "gate.sh"))]
-      and gate["share"] == 4.0 and gate["delta"] == "+33%",
-      "a hook script sums its Blocked calls and Injected text rows, the text resolved by its opening words, with "
-      "tokenmap's share and its Δ on the outside-review-bench basis: %s" % gate)
-check(found["hook:drill.sh"]["cur"] == 20000 and found["hook:drill.sh"]["sources"]
-      == [os.path.realpath(os.path.join(hooks, "stop.d", "drill.sh"))],
-      "a Stop-hook re-answer names its script in brackets; a stop.d part beside the dispatcher resolves: %s"
-      % found["hook:drill.sh"])
-check(found["hook:other.sh"]["cur"] == 5000, "a call a hook asked for is that hook's: %s" % found.get("hook:other.sh"))
-check(not [k for k in found if "17 more" in k or "system + tools" in k] and "thinking" not in found,
-      "the dim tail rows and the model's own spend (thinking) are no component: %s" % sorted(found))
-check(found["startup:CLAUDE.md + memory index"]["share"] == 6.0 and found["startup:nested CLAUDE.md files"]["share"] == 0.1
-      and found["compaction"]["share"] == 15.5
-      and found["spawn:claudeb-worker"]["share"] == 2.0 and found["spawn:claudeb-worker"]["target"]
-      and found["turns:worker-run codex"]["share"] == 1.2 and found["turns:worker-run codex"]["target"]
-      and found["resumes"]["share"] == 5.0 and not found["rewrites:expired (1h+ idle)"]["target"]
-      and found["rewrites:expired (5m ttl)"]["target"] and not found["compaction"]["target"],
-      "spawns are their own components and startup parts split the rest by tokenmap's main-context totals, never "
-      "by the per-context averages that inflate a rarely loaded part; compaction sums "
-      "its zones and, like a cause tokenmap does not flag avoidable, is shown, never targeted: %s"
-      % {k: (c["share"], c["target"]) for k, c in found.items()})
-flipped = {c["key"]: c["target"] for c in spend.components(payload(idle_avoidable=True), files, spend.file_texts())}
-check(flipped["rewrites:expired (1h+ idle)"] and found["rewrites:expired (5m ttl)"]["target"],
-      "the avoidable flag is read from tracking.json: flipping it in the fixture makes the cause a target")
-check(found["rewrites:expired (5m ttl)"]["prev"] == 5e4 and found["rewrites:expired (5m ttl)"]["delta"] == "-70%",
-      "a below-threshold cell (<0.1M) is a small spend, never zero, so its Δ is a change, not new: %s"
-      % found["rewrites:expired (5m ttl)"])
+found = spend.components(payload(), repos)
+check(found[0]["key"] == "menus" and found[0]["sources"] == sorted(menu_files) and found[0]["share"] == 0.0,
+      "the menus check comes first, its sources the Token tracking and Doctors menu code, never another bin/ "
+      "program: %s" % found[0])
+found = {c["key"]: c for c in found}
+check([k for k in found][1:] == ["fee:Delegation", "fee:Hooks", "fee:Advisor"]
+      and found["fee:Delegation"]["share"] == 70.588 and found["fee:Delegation"]["basis"] == 0.075
+      and found["fee:Delegation"]["label"] == "Delegation (Workers)" and found["fee:Delegation"]["delta"] == "+33%"
+      and found["fee:Advisor"]["share"] == 5.882 and found["fee:Advisor"]["delta"] == "new",
+      "every Fee source of tokenmap's index is a component, largest charge first: its share of Fee as the menu shows "
+      "it, its share of Claude spend as the basis, the plain Δ: %s" % found)
+check([c["key"] for c in spend.components(payload(index=False), repos)] == ["menus"],
+      "no Fee index, no Fee components")
 
 ledger = os.path.join(work, "spend-ledger.json")
 os.environ["SPEND_LEDGER"] = ledger
@@ -125,24 +82,20 @@ with open(ledger, "w") as handle:
 def collect(made=NOW - 3600, state=None, write=False, **fixture):
     with open(os.environ["SPEND_TRACKING"], "w") as handle:
         json.dump(payload(made, **fixture), handle)
-    return spend.collect(NOW, state if state is not None else {}, write, scripts, os.path.join(work, "home"),
-                         os.path.join(work, "repos"), root, lambda t: time.strftime("%Y-%m-%d", time.localtime(t)))
+    return spend.collect(NOW, state if state is not None else {}, write, os.path.join(work, "home"), repos, root, lambda t: time.strftime("%Y-%m-%d", time.localtime(t)))
 
 
 out = collect()
 ids = [p["id"] for p in out["problems"]]
 check(out["status"] == "watch" and out["index"] == 0.46 and out["change"] == "-54%" and "tone" not in out
       and out["head"] == "Fee index 0.46 (-54%%) · Fee 11.3 %% of spend · %d audits due" % len(ids)
-      and ids[:3] == ["spend:startup:CLAUDE.md + memory index", "spend:resumes", "spend:hook:gate.sh"]
-      and "spend:rewrites:expired (1h+ idle)" not in ids and "spend:compaction" not in ids
-      and "spend:spawn:claudeb-worker" in ids
+      and ids == ["spend:menus", "spend:fee:Delegation", "spend:fee:Hooks", "spend:fee:Advisor"]
       and all(p["rule"] == "spend_audit" and p["state"] == "watch" and p["fact"].endswith("audit due: never audited")
-              for p in out["problems"]),
-      "the headline is tokenmap's harness index; every harness-owned component never audited is due, ranked by "
-      "share, the largest (compaction) never among them: %s %s" % (out["head"], ids))
-check([p["id"] for p in collect(idle_avoidable=True)["problems"]][0] == "spend:rewrites:expired (1h+ idle)",
-      "a cause tokenmap flags avoidable becomes a target and, the largest, the first audit")
-check(out["selection"] == ids and out["issues"][0] == [6.0, "startup CLAUDE.md + memory index"],
+              for p in out["problems"])
+      and out["problems"][1]["fact"] == "70.6 % of Fee · Delegation (Workers) · Δ +33% · audit due: never audited",
+      "the headline is tokenmap's harness index; the menus check and every Fee source never audited are due, the "
+      "menus first, then by share of Fee: %s %s" % (out["head"], ids))
+check(out["selection"] == ids and out["issues"][0] == [70.588, "Delegation (Workers)"],
       "the night's queue is every due audit, largest first; bin/doctor-fix takes its slot share: %s" % out["selection"])
 stale_keys = [(r["id"], z) for r in json.load(open(os.path.join(root, "share", "spend-ledger.json")))["rows"]
               for z in r.get("prices") or {} if " · " not in z]
@@ -162,43 +115,47 @@ thin = collect(value=None)
 check(thin["index"] is None and thin["head"].startswith("Fee index: too little use · ") and thin["problems"],
       "a null index has no value while its audits stay due: %s" % thin["head"])
 
-source = gate["sources"][0]
-key = spend.repo_path(source, os.path.join(work, "repos"))
+menus, hooks = found["menus"], found["fee:Hooks"]
+source = menu_files[0]
+key = spend.repo_path(source, repos)
 blob = spend.blobs([source])[source]
-row = {"id": "hook:gate.sh", "sources": {key: blob}, "share": gate["basis"]}
-check(key == "setup/hooks/gate.sh" and spend.due(gate, None, {key: blob}) == "never audited"
-      and spend.due(gate, row, {key: blob}) is None
-      and spend.due(gate, row, {key: "0" * 40}) == "source changed"
-      and spend.due(gate, dict(row, share=gate["basis"] / 1.5), {key: blob}) == "share ×1.5 since audit"
-      and spend.due(gate, dict(row, share=gate["basis"] / 1.4), {key: blob}) is None
-      and spend.due(found["resumes"], {"sources": {}, "share": found["resumes"]["basis"]}, {}) is None
-      and spend.due(found["resumes"], {"sources": {}, "share": found["resumes"]["basis"] / 2}, {}) == "share ×2.0 since audit",
-      "due: never audited, a source blob moved, a share at 1.5x its audit share; unchanged is not due, and a "
-      "component with no source file is due only by its share")
-check(spend.due(found["resumes"], {"sources": {}, "share": 0.0}, {}) is None,
-      "an audit recorded at share 0 (no spend outside review-bench) is never due by share, not ×inf forever")
+held = {spend.repo_path(s, repos): h for s, h in spend.blobs(menus["sources"]).items()}
+row = {"id": "menus", "sources": dict(held), "share": 0.0}
+check(key == "token-map/tokenmap/tracking.py" and spend.due(menus, None, held) == "never audited"
+      and spend.due(menus, row, held) is None
+      and spend.due(menus, row, dict(held, **{key: "0" * 40})) == "source changed"
+      and spend.due(hooks, {"sources": {}, "share": hooks["basis"] / 1.5}, {}) == "share ×1.5 since audit"
+      and spend.due(hooks, {"sources": {}, "share": hooks["basis"] / 1.4}, {}) is None
+      and spend.due(hooks, {"sources": {}, "share": hooks["basis"]}, {}) is None,
+      "due: never audited, a source blob moved, a share of Claude spend at 1.5x its audit share; unchanged is not "
+      "due, and a Fee source, with no source file, is due only by its share")
+check(spend.due(hooks, {"sources": {}, "share": 0.0}, {}) is None,
+      "an audit recorded at share 0 is never due by share, not ×inf forever")
 path = os.environ["PATH"]
 os.environ["PATH"] = os.path.join(work, "no-git")
 unhashed = spend.blobs([source])
 os.environ["PATH"] = path
-check(unhashed is None and spend.due(gate, row, None) is None
-      and spend.due(found["resumes"], {"sources": {key: None}, "share": found["resumes"]["basis"]}, {}) is None
-      and spend.due(found["resumes"], {"sources": {key: None}, "share": found["resumes"]["basis"]}, {key: blob})
-      == "source changed",
+check(unhashed is None and spend.due(menus, row, None) is None
+      and spend.due(hooks, {"sources": {key: None}, "share": hooks["basis"]}, {}) is None
+      and spend.due(hooks, {"sources": {key: None}, "share": hooks["basis"]}, {key: blob}) == "source changed",
       "a git that cannot hash leaves every source unmoved, never all due at once; a source recorded absent (a cut "
       "deleted it) and still absent has not moved, one back has")
 
 with open(ledger, "w") as handle:
-    json.dump({"owner": "Harness Doctor", "rows": [row, {"id": "resumes", "sources": {},
-                                                       "share": found["resumes"]["basis"] / 2}]}, handle)
-again = collect()
-due_ids = {p["id"]: p["spend"]["due"] for p in again["problems"]}
-check("spend:hook:gate.sh" not in due_ids and due_ids.get("spend:resumes") == "share ×2.0 since audit",
-      "the collector reads its ledger: the audited unchanged hook leaves the list, the risen share returns: %s" % due_ids)
+    json.dump({"owner": "Harness Doctor", "rows": [row, {"id": "fee:Hooks", "sources": {},
+                                                       "share": hooks["basis"] / 2}]}, handle)
+due_ids = {p["id"]: p["spend"]["due"] for p in collect()["problems"]}
+check("spend:menus" not in due_ids and due_ids.get("spend:fee:Hooks") == "share ×2.0 since audit",
+      "the collector reads its ledger: the checked unchanged menus leave the list, the risen share returns: %s" % due_ids)
+with open(os.path.join(repos, "llm-legs", "bin", "code-doctor"), "w") as handle:
+    handle.write("menu\n")
+check({p["id"]: p["spend"]["due"] for p in collect()["problems"]}.get("spend:menus") == "source changed",
+      "a new doctor is a menu change: the menus check is due again")
+os.remove(os.path.join(repos, "llm-legs", "bin", "code-doctor"))
 with open(source, "a") as handle:
     handle.write("# changed\n")
-check({p["id"]: p["spend"]["due"] for p in collect()["problems"]}.get("spend:hook:gate.sh") == "source changed",
-      "an audited hook whose script changed is due again")
+check({p["id"]: p["spend"]["due"] for p in collect()["problems"]}.get("spend:menus") == "source changed",
+      "a changed menu file makes the menus check due again")
 
 measured = out["problems"][0]
 audited = {measured["spend"]["component"]: {"audited_at": stamp(spend.epoch(measured["last_seen"]) + 60)}}
@@ -208,30 +165,29 @@ check(spend.restate([measured], audited) == [] and spend.restate([measured], {})
 
 with open(ledger, "w") as handle:
     json.dump({"owner": "Harness Doctor", "rows": []}, handle)
-recorded = spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "kept",
+recorded = spend.record(root, os.path.join(work, "home"), repos, "fee:Hooks", "kept",
                         "fires rarely, every block changed the call", "removal saves 0.4 %; loses every block", "night-x", [])
+checked = spend.record(root, os.path.join(work, "home"), repos, "menus", "kept", "every new row reaches a doctor",
+                       "removal saves 0; loses the night's view of new menu rows", "night-x", [])
 stored = json.load(open(ledger))["rows"]
-check(stored == [recorded] and recorded["verdict"] == "kept" and recorded["share"] == gate["basis"]
-      and recorded["zero"] == "removal saves 0.4 %; loses every block"
-      and recorded["sources"] == {key: spend.blobs([source])[source]} and recorded["by"] == "night-x"
-      and recorded["prices"] == {"Chat · Hooks": 300.0}
-      and spend.part_prices(json.load(open(os.environ["SPEND_TRACKING"]))["harness_index"], "spawn:claudeb-worker")
-      == {"Workers · Relays": [40.0, 50.0]}
-      and spend.part_prices(json.load(open(os.environ["SPEND_TRACKING"]))["harness_index"], "rewrites:expired (5m ttl)")
-      == {},
-      "the audit record holds each source's blob, the share at audit on tokenmap's Δ basis, its harness_index cells' "
-      "prices by consumer and leaf (a re-write cause is Cold cache, never priced), the verdict: %s" % recorded)
+index = json.load(open(os.environ["SPEND_TRACKING"]))["harness_index"]
+check(stored == [recorded, checked] and recorded["verdict"] == "kept" and recorded["share"] == hooks["basis"]
+      and recorded["zero"] == "removal saves 0.4 %; loses every block" and recorded["sources"] == {}
+      and recorded["by"] == "night-x" and recorded["prices"] == {"Chat · Hooks": 300.0}
+      and checked["sources"] == {spend.repo_path(s, repos): h for s, h in spend.blobs(menus["sources"]).items()}
+      and checked["prices"] == {}
+      and spend.part_prices(index, "fee:Delegation") == {"Workers · Delegation": [40.0, 50.0]},
+      "the audit record holds the share at audit on the Claude-spend basis, the prices of the index cells the source "
+      "is made of, by consumer and leaf, and for the menus check each menu file's blob: %s %s" % (recorded, checked))
 try:
-    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "maybe", "",
-                 "removal saves all", "", [])
+    spend.record(root, os.path.join(work, "home"), repos, "fee:Hooks", "maybe", "", "removal saves all", "", [])
     refused = False
 except SystemExit:
     refused = True
 check(refused, "a verdict other than cut, kept or trade is refused")
 before_zero = open(ledger).read()
 try:
-    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "kept", "", " ",
-                 "", [])
+    spend.record(root, os.path.join(work, "home"), repos, "fee:Hooks", "kept", "", " ", "", [])
     refused = False
 except SystemExit:
     refused = True
@@ -240,8 +196,7 @@ check(refused and open(ledger).read() == before_zero,
 before_git = open(ledger).read()
 os.environ["PATH"] = os.path.join(work, "no-git")
 try:
-    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "kept", "",
-                 "removal saves all", "", [])
+    spend.record(root, os.path.join(work, "home"), repos, "menus", "kept", "", "removal saves all", "", [])
     refused = False
 except SystemExit:
     refused = True
@@ -254,7 +209,7 @@ with open(ledger, "w") as handle:
     handle.write(kept.replace('"rows": [', '"rows": [\n<<<<<<< ours', 1))
 broken = open(ledger).read()
 try:
-    spend.save_row(root, {"id": "resumes", "verdict": "kept"})
+    spend.save_row(root, {"id": "fee:Hooks", "verdict": "kept"})
     refused = False
 except SystemExit:
     refused = True
@@ -264,7 +219,7 @@ with open(ledger, "w") as handle:
     handle.write(kept)
 before = collect()
 later = time.time() + 60
-same, cheaper = (collect(made=later, hook_price=price)["proofs"].get("hook:gate.sh") for price in (300.0, 150.0))
+same, cheaper = (collect(made=later, hook_price=price)["proofs"].get("fee:Hooks") for price in (300.0, 150.0))
 check(before["proofs"] == {} and any(l[3].endswith("· kept %s · not measured since" % recorded["audited_at"][:10])
                                      for l in before["menu"])
       and same == {"share": 1.0, "price": 1.0, "proven": False, "verdict": "kept", "audited_at": recorded["audited_at"]}
@@ -276,12 +231,12 @@ import time_budget
 os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "harness")
 os.makedirs(os.environ["HARNESS_DOCTOR_DIR"])
 with open(os.path.join(work, "harness", "latest.json"), "w") as handle:
-    json.dump({"speed": {"spend": {"proofs": {"hook:gate.sh": cheaper}}}}, handle)
-item = {"ref": "night-x", "class": time_budget.improvement_class("spend_audit", "spend:hook:gate.sh"), "spend_m": 1.5,
+    json.dump({"speed": {"spend": {"proofs": {"fee:Hooks": cheaper}}}}, handle)
+item = {"ref": "night-x", "class": time_budget.improvement_class("spend_audit", "spend:fee:Hooks"), "spend_m": 1.5,
         "lines": [3, 9], "merged": True}
 check("spend_audit" in time_budget.IMPROVEMENT_RULES
       and time_budget.roi_lines([{"started": NOW - 86400, "hours": 2.0, "improvements": [item]}], NOW)
-      == ["roi · night-x · hook:gate.sh · 1.5M · +3/-9 lines · share ×1.0 · price ×0.5 of audit · proven"],
+      == ["roi · night-x · fee:Hooks · 1.5M · +3/-9 lines · share ×1.0 · price ×0.5 of audit · proven"],
       "a night's Spend audit reads its proof in the roi lines, out of the minute totals")
 
 fake = os.path.join(work, "tokenmap")
@@ -353,8 +308,8 @@ spent = [p for p in document["problems"] if p["rule"] == "spend_audit"]
 check(document["problem_count"] == 0 and spent and all(p["group"] == "Spend" and p["speed"] for p in spent)
       and lines[2].startswith("0\t\t\tLost time: ok")
       and "0\t\t\tSpend: watch · Fee index 0.46 (-54%%) · Fee 11.3 %% of spend · %d audits due" % len(spent) in lines
-      and "1\t\t\t6.0 % · startup CLAUDE.md + memory index · Δ -40% · audit due: never audited" in lines
-      and "1\td\t\t15.5 % · compaction summaries · Δ ×16 · never targeted" in lines
+      and "1\t\t\tToken tracking and Doctors menus against what the night reads · audit due: never audited" in lines
+      and "1\t\t\t70.6 % of Fee · Delegation (Workers) · Δ +33% · audit due: never audited" in lines
       and header["spend"] == {k: section[k] for k in ("as_of_s", "status", "index", "index_by_day", "change",
                                                       "issues")},
       "Harness lays Spend beside Lost time: watch rows counted nowhere, its block and its header: %s" % lines[:6])
@@ -362,4 +317,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the Spend block misjudged its fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; Spend heads with tokenmap'"'"'s harness index, prices harness components off tracking.json per hook script, targets only harness-owned ones, reads stale or no index as nodata, judges audits due by never/source blob/1.5x share, selects one, settles an audited one for a night close, records audits with their proof and roi line and backfills one day a run\n' "$asserts"
+printf 'PASS: %s asserts; Spend heads with tokenmap'"'"'s harness index, audits the menus check and every Fee index source off tracking.json, reads stale or no index as nodata, judges audits due by never/source blob/1.5x share, selects one, settles an audited one for a night close, records audits with their proof and roi line and backfills one day a run\n' "$asserts"

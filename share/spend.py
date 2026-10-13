@@ -1,5 +1,6 @@
 
 import datetime
+import glob
 import json
 import os
 import re
@@ -9,16 +10,10 @@ import time
 from fix_commit import main_checkout
 import limit_hit
 
-LEAVES = {"hook": ("Hooks", "attachment: hook context"),
-          "startup:CLAUDE.md + memory index": ("prefix: CLAUDE.md + memory", "attachment: CLAUDE.md + memory"),
-          "startup:skill listing": ("attachment: skill listing",),
-          "startup:agent listing": ("attachment: agent listing",),
-          "startup:MCP instructions": ("attachment: MCP instructions",),
-          "startup:deferred tool list": ("attachment: deferred tool schemas",),
-          "startup:nested CLAUDE.md files": ("attachment: memory files",),
-          "spawn:claudeb-worker": ("Relays",)}
+MENUS = "menus"
+MENU_FILES = ("token-map/tokenmap/tracking.py", "token-map/tokenmap/pie.py", "llm-legs/hammerspoon/token-tracking.lua",
+              "llm-legs/hammerspoon/doctors.lua", "llm-legs/bin/*-doctor")
 SHARE_RISE = 1.5
-HOOK_SECTIONS = ("Blocked calls", "Stop-hook re-answers", "Injected text", "Calls a hook asked for")
 RULE = "spend_audit"
 GROUP = "Spend"
 DAYS_KEPT = 35
@@ -71,48 +66,6 @@ def epoch(text):
         return None
 
 
-def amount(cell):
-    found = re.fullmatch(r"(<?)([\d,.]+)\s*([kM]?)", str(cell or "").strip())
-    return float(found.group(2).replace(",", "")) * {"": 1, "k": 1e3, "M": 1e6}[found.group(3)] \
-        * (0.5 if found.group(1) else 1) if found else 0.0
-
-
-def section(row, title):
-    return [item for part in (row or {}).get("sections") or () if part.get("title") == title
-            for item in part.get("rows") or () if not item.get("dim")]
-
-
-def hook_files(scripts):
-    files = {}
-    tops = sorted({os.path.dirname(os.path.realpath(s)) for s in scripts if s})
-    for folder in tops + sorted(os.path.join(t, d) for t in tops for d in os.listdir(t)
-                                if d.endswith(".d") and os.path.isdir(os.path.join(t, d))):
-        for name in sorted(os.listdir(folder)):
-            if os.path.isfile(os.path.join(folder, name)):
-                files.setdefault(name, os.path.realpath(os.path.join(folder, name)))
-    return files
-
-
-def script_name(label, files, texts):
-    """tokenmap's hook label (`name`, `Event [tag]`, `Event · opening words`) -> the script's file name; opening words
-    resolve only when exactly one hook file holds them (tokenmap folds digits to N), else the label stays its own."""
-    tag = re.search(r"\[([^\]]+)\]", label)
-    _, dot, tail = label.partition(" · ")
-    name = tag.group(1) if tag else tail if dot else label
-    for candidate in (name, name + ".sh"):
-        if candidate in files:
-            return candidate
-    if tag or re.fullmatch(r"[\w.-]+\.(?:sh|py)", name):
-        return name
-    if dot and tail:
-        pattern = re.compile(r"\s+".join(re.sub(r"(?<![A-Za-z])N(?![A-Za-z])", r"\\d+", re.escape(word))
-                                         for word in tail.split()))
-        hits = [n for n, path in files.items() if pattern.search(texts(path))]
-        if len(hits) == 1:
-            return hits[0]
-    return label
-
-
 def file_texts():
     cache = {}
 
@@ -134,54 +87,21 @@ def delta(cur, prev):
     return "×%d" % round(ratio) if ratio >= 10 else "%+d%%" % round((ratio - 1) * 100)
 
 
-def components(payload, files, texts):
-    rows = {r.get("key"): r for r in payload.get("rows") or () if isinstance(r, dict)}
-    spend, bench = rows.get("spend") or {}, rows.get("bench") or {}
-    total = float(spend.get("cur") or 0)
-    base = [float(spend.get(k) or 0) - float(bench.get(k) or 0) for k in ("cur", "prev")]
-    found = {}
-
-    def add(key, label, cur, prev, sources=(), target=True):
-        c = found.setdefault(key, {"key": key, "label": label, "cur": 0.0, "prev": 0.0, "sources": set(),
-                                   "target": target})
-        c["cur"], c["prev"] = c["cur"] + cur, c["prev"] + prev
-        c["sources"].update(sources)
-
-    for title in HOOK_SECTIONS:
-        for item in section(rows.get("hooks"), title):
-            name = script_name(str(item.get("label") or ""), files, texts)
-            cells = item.get("cells") or ["", ""]
-            add("hook:" + name, name, amount(cells[0]), amount(cells[1]), [files[name]] if name in files else ())
-    if rows.get("resumes"):
-        add("resumes", "worker cold resumes", float(rows["resumes"].get("cur") or 0),
-            float(rows["resumes"].get("prev") or 0))
-    for item in section(rows.get("rewrites"), "By cause"):
-        label = str(item.get("label") or "")
-        add("rewrites:" + label, "re-writes " + label, amount(item["cells"][0]), amount(item["cells"][1]),
-            target=item.get("avoidable") is True)
-    startup = rows.get("startup") or {}
-    spawns = section(startup, "Subagent spawns, by agent")
-    for item in spawns:
-        add("spawn:" + str(item.get("label")), "spawn " + str(item.get("label")), amount(item["cells"][0]),
-            amount(item["cells"][1]))
-    for item in section(rows.get("procedure"), "By step"):
-        add("turns:" + str(item.get("label")), str(item.get("label")) + " turns", amount(item["cells"][0]),
-            amount(item["cells"][1]))
-    contexts = [max(float(startup.get(k) or 0) - sum(amount(i["cells"][side]) for i in spawns), 0.0)
-                for side, k in ((0, "cur"), (1, "prev"))]
-    parts = section(startup, "Main contexts, total by part")
-    sums = [sum(amount(i["cells"][side]) for i in parts) for side in (0, 1)]
-    for item in parts:
-        add("startup:" + str(item.get("label")), "startup " + str(item.get("label")),
-            *[contexts[side] * amount(item["cells"][side]) / sums[side] if sums[side] else 0.0 for side in (0, 1)])
-    for item in section(rows.get("hidden"), "Compaction summaries, by zone"):
-        add("compaction", "compaction summaries", amount(item["cells"][0]), amount(item["cells"][1]), target=False)
-    out = []
-    for c in [c for c in found.values() if c["cur"] > 0]:
-        basis = c["cur"] / base[0] if base[0] > 0 else 0.0
-        out.append(dict(c, sources=sorted(c["sources"]), share=round(100 * c["cur"] / total, 3) if total else 0.0,
-                        basis=round(basis, 6), delta=delta(basis, c["prev"] / base[1] if base[1] > 0 else 0.0)))
-    return sorted(out, key=lambda c: (-c["share"], c["key"]))
+def components(payload, repos):
+    """The menus check first, then every Fee source of tokenmap's Fee index, largest first: its share of Fee as the menu
+    shows it, its basis (share of Claude spend) for the due and proof rules, its plain Δ."""
+    index = harness_index(payload) or {}
+    sources = [s for s in index.get("sources") or () if isinstance(s, dict)]
+    fee, claude = sum(float(s["charged"]) for s in sources), float(index.get("claude") or 0)
+    menus = sorted({f for pattern in MENU_FILES for f in glob.glob(os.path.join(repos, pattern))})
+    out = [{"key": MENUS, "label": "Token tracking and Doctors menus against what the night reads", "sources": menus,
+            "share": 0.0, "basis": 0.0, "delta": ""}]
+    for s in sorted(sources, key=lambda s: -float(s["charged"])):
+        out.append({"key": "fee:" + s["source"], "label": "%s (%s)" % (s["source"], s["group"]), "sources": [],
+                    "share": round(100 * float(s["charged"]) / fee, 3) if fee else 0.0,
+                    "basis": round(float(s["charged"]) / claude, 6) if claude else 0.0,
+                    "delta": delta(*map(float, s["plain"]))})
+    return out
 
 
 def repo_path(path, repos):
@@ -233,12 +153,12 @@ def index_value(index):
 
 
 def part_prices(index, key):
-    """The cells of tokenmap's harness_index (the Spend tree's Harness leaves per consumer) a component belongs to:
-    {"consumer · leaf": [requests, price]} of this window. Cold cache (re-writes) is no Harness leaf, so no price."""
-    leaves = LEAVES.get(key) or LEAVES.get(key.split(":", 1)[0]) or ()
+    """The cells of tokenmap's harness_index a Fee source is made of: {"consumer · leaf": [tasks, price]} of this
+    window. The menus check has none."""
+    source = key[len("fee:"):] if key.startswith("fee:") else None
     return {"%s · %s" % (c.get("consumer"), c.get("leaf")): [float(c["units"][0]), float(c["price"][0])]
             for c in (index or {}).get("cells") or ()
-            if isinstance(c, dict) and c.get("leaf") in leaves
+            if isinstance(c, dict) and source and c.get("source") == source
             and isinstance(c.get("units"), list) and isinstance(c.get("price"), list)}
 
 
@@ -305,10 +225,14 @@ def backfill(history, closed, through, now, local_day, home):
             return
 
 
+def named(c):
+    return c["label"] if c["key"] == MENUS else "%.1f %% of Fee · %s · Δ %s" % (c["share"], c["label"], c["delta"])
+
+
 def problem(c, why, at):
-    fact = "%s · %.1f %% of spend · Δ %s · audit due: %s" % (c["label"], c["share"], c["delta"], why)
+    fact = "%s · audit due: %s" % (named(c), why)
     return {"id": "spend:" + c["key"], "rule": RULE, "state": "watch", "fact": fact, "value": c["share"],
-            "limit": None, "unit": "% of spend", "window_h": 168, "exposure": 0, "count": None,
+            "limit": None, "unit": "% of Fee", "window_h": 168, "exposure": 0, "count": None,
             "first_seen": at, "last_seen": at, "evidence": [], "ledger": None, "group": GROUP,
             "spend": {"component": c["key"], "label": c["label"], "sources": c["sources"], "share": c["share"],
                       "basis": c["basis"], "delta": c["delta"], "due": why}}
@@ -318,16 +242,15 @@ def lines(found, rows, reasons, proofs):
     out = []
     for c in found:
         row, shown = rows.get(c["key"]), proofs.get(c["key"])
-        tail = "never targeted" if not c["target"] else "audit due: " + reasons[c["key"]] if reasons.get(c["key"]) \
+        tail = "audit due: " + reasons[c["key"]] if reasons.get(c["key"]) \
             else "%s %s · %s" % (row.get("verdict"), str(row.get("audited_at"))[:10], proof_text(shown))
-        out.append([0, "" if reasons.get(c["key"]) else "d", False,
-                    "%.1f %% · %s · Δ %s · %s" % (c["share"], c["label"], c["delta"], tail)])
+        out.append([0, "" if reasons.get(c["key"]) else "d", False, "%s · %s" % (named(c), tail)])
     return out
 
 
-def collect(now, state, write, scripts, home, repos, root, local_day):
+def collect(now, state, write, home, repos, root, local_day):
     """The `spend` section: status, tokenmap's harness index as the value with its daily history, problems (one per
-    harness-owned component whose audit is due), the night's queue (bin/doctor-fix takes its slot share),
+    component whose audit is due: the menus check, each Fee source), the night's queue (bin/doctor-fix takes its slot share),
     audit proofs, menu lines. A stale or missing tracking.json or harness_index reads nodata: never an old number as
     current."""
     history = state["index_by_day"] = {d: v for d, v in (state.get("index_by_day") or {}).items()
@@ -352,21 +275,17 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
         history.clear()
         closed.clear()
         state["index_definition"] = index.get("definition")
-    files, texts = hook_files(scripts), file_texts()
-    found = components(payload, files, texts)
+    found = components(payload, repos)
     rows = load_ledger(root)
-    held = blobs([s for c in found if c["target"] and c["key"] in rows for s in c["sources"]])
-    reasons = {}
-    for c in found:
-        if c["target"]:
-            reasons[c["key"]] = due(c, rows.get(c["key"]), None if held is None else {
-                repo_path(s, repos): h for s, h in held.items() if s in c["sources"]})
+    held = blobs([s for c in found if c["key"] in rows for s in c["sources"]])
+    reasons = {c["key"]: due(c, rows.get(c["key"]), None if held is None else {
+        repo_path(s, repos): h for s, h in held.items() if s in c["sources"]}) for c in found}
     proofs = {c["key"]: proof(c, rows[c["key"]], index, made) for c in found
-              if c["target"] and c["key"] in rows and not reasons.get(c["key"])}
+              if c["key"] in rows and not reasons.get(c["key"])}
     at = datetime.datetime.fromtimestamp(made).astimezone().isoformat(timespec="seconds")
     out["problems"] = [problem(c, reasons[c["key"]], at) for c in found if reasons.get(c["key"])]
     out["selection"] = [p["id"] for p in out["problems"]]
-    out["issues"] = [[p["value"], p["spend"]["label"]] for p in out["problems"][:3]]
+    out["issues"] = [[p["value"], p["spend"]["label"]] for p in out["problems"] if p["spend"]["component"] != MENUS][:3]
     value = index_value(index)
     out.update(status="watch" if out["problems"] else "ok", index=value, change=index.get("change"),
                proofs={k: v for k, v in proofs.items() if v})
@@ -404,15 +323,14 @@ def zero_option(text):
     return str(text).strip()
 
 
-def record(root, home, repos, scripts, key, verdict, note, zero, by, worktrees):
+def record(root, home, repos, key, verdict, note, zero, by, worktrees):
     if verdict not in VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(VERDICTS))
     zero = zero_option(zero)
     payload = read_json(tracking_path(home), None)
     if not isinstance(payload, dict):
         raise SystemExit("no tracking.json at %s" % tracking_path(home))
-    files = hook_files(scripts)
-    c = next((c for c in components(payload, files, file_texts()) if c["key"] == key), None)
+    c = next((c for c in components(payload, repos) if c["key"] == key), None)
     if not c:
         raise SystemExit("no Spend component %s in tracking.json" % key)
     return save_row(root, {

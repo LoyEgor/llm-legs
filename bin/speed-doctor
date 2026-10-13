@@ -1042,7 +1042,7 @@ def judge_digest(ledger):
         digest.update(handle.read())
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
     digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SLICE_LEVER, NO_SLICE_LEVER, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
-                              TIME_LEVERS, spend.SHARE_RISE, spend.LEAVES, cpu_audit.WINDOW_D, suite_audit.WALL_RISE, suite_audit.JUMP_S,
+                              TIME_LEVERS, spend.SHARE_RISE, spend.MENU_FILES, cpu_audit.WINDOW_D, suite_audit.WALL_RISE, suite_audit.JUMP_S,
                               suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.ROWS, TEST_HEALTH_LEVERS, test_health.LINES, test_health.BAND,
                               test_health.IDLE_RATIO, test_health.IDLE_MIN_S, test_health.DEAD_D],
                              sort_keys=True).encode())
@@ -1357,8 +1357,7 @@ def collect(write, now):
         "tests": tests,
     }
     try:
-        document["spend"] = spend.collect(now, state, write, [H.hook_script(h["command"]) for h in H.settings_hooks()],
-                                          H.base_home(), H.repos_dir(), ROOT_DIR, H.local_day)
+        document["spend"] = spend.collect(now, state, write, H.base_home(), H.repos_dir(), ROOT_DIR, H.local_day)
     except Exception as exc:
         document["spend"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
     problems += document["spend"].pop("problems")
@@ -1542,8 +1541,8 @@ def main():
     args = parser.parse_args()
     now, started = now_s(), time.time()
     if args.spend_audit:
-        row = spend.record(ROOT_DIR, H.base_home(), H.repos_dir(), [H.hook_script(h["command"]) for h in H.settings_hooks()],
-                           args.spend_audit, args.verdict, args.note, args.zero, args.by, args.worktree)
+        row = spend.record(ROOT_DIR, H.base_home(), H.repos_dir(), args.spend_audit, args.verdict, args.note, args.zero,
+                           args.by, args.worktree)
         print(json.dumps(row, ensure_ascii=False))
         return 0
     if args.suite_audit:
