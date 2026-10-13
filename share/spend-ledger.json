@@ -1492,6 +1492,21 @@
    "verdict": "kept",
    "zero": "removal saves ~0.02 CPU-min/day; loses the Updater doctor menu row and night-run's update read (latest.json), which he reads",
    "note": "runs once per vendor-cli-update pass (launchd 1800 s, a full pass every 2 h, a burst at night prep), 0.1-0.2 CPU-s a run, half of it python start and imports; keying it on its state files' mtimes would save under 0.02 CPU-min/day for a new layer"
+  },
+  {
+   "id": "cpu:hook/commit-push-gate.sh",
+   "title": "hook/commit-push-gate.sh",
+   "audited_at": "2026-10-13T09:45:12+03:00",
+   "by": "harness-speed-cpu-hook-stop-d-ask-span-drill-sh-20261012T235051Z-465d",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.083,
+   "runs_day": 154,
+   "sources": {
+    "claude-setup/hooks/commit-push-gate.sh": "0d25e6046f47a82587b11e9a39d494518d1fe249"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.6 CPU-min on a work-repo day (82 ms on each Bash call there); loses the commit and push door Egor kept for his work repositories (85098651), so a commit there lands with no word of his",
+   "note": "provable-absence prefilter shared with review-flow-gate (claude-setup@888eb23): 45% of real work-repo calls were already read-only, 34% more now skip the parse, 21% still parse; 45.6 -> 26.5 ms a call; the remaining floor is cat, jq and the readlink/dirname resolve every PreToolUse gate pays"
   }
  ]
 }
