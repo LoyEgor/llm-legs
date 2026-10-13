@@ -2414,6 +2414,22 @@
    "verdict": "cut",
    "zero": "removal saves ~2.2 wall-min/day; loses the only pins of edit-conflict-notice's one-verdict FOREIGN WIP notice (registry liveness, worker-run holders, anti-repeat key, verdict journal and --stats)",
    "note": "edit() journal snapshot by builtins instead of 4 cp forks a call (312 forks a run); load-flaky 60m-old case aged at the case; vacuous --stats empty-store check made exact (old green with the branch deleted); 195 asserts; CPU flat, x3 wall is load"
+  },
+  {
+   "id": "suite:claude-setup/test_compact_switch",
+   "title": "claude-setup/test_compact_switch",
+   "audited_at": "2026-10-13T11:13:27+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-commit-report-worktrees-20261012T235201Z-02cb",
+   "cpu_run": 21.9,
+   "wall_run": 34.9,
+   "cpu_min_day": 0.73,
+   "wall_min_day": 1.79,
+   "sources": {
+    "claude-setup/tests/test_compact_switch.sh": "322945c07554110dd2f96f26f24876584ec5b3a2"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~1.0 wall-min/day; loses the only pins of compact-auto's switch-mode choice, lost-reply recovery from job records, disarm retry and the four Hammerspoon entry-point signatures",
+   "note": "no-op sleep on PATH for confirm_disarm cases (fake hs writes records synchronously): sleep ~28 -> 0 s, A/B 50.8 -> 22.2 s, 161 asserts; retry and record-poll mutations red on cancel-late; rest is the hook's own 575 python3 spawns (production)"
   }
  ]
 }
