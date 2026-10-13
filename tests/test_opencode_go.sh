@@ -242,7 +242,7 @@ assert_fails grep -q 'retrying in' "$WORK/err"
 
 # Escalating on the last buffered attempt must still send the stream.
 reset_calls
-{ printf '500|-|0\n'; printf '500|-|3\n'; printf '200|%s|0\n' "$WORK/answer.sse"; } >"$CURL_PLAN"
+{ printf '500|-|0\n'; printf '500|-|2\n'; printf '200|%s|0\n' "$WORK/answer.sse"; } >"$CURL_PLAN"
 out=$(OPENCODE_GO_SLOW_SWITCH_S=2 "$SCRIPT" run glm-5.2 hello --retries 2 2>"$WORK/err") \
   || fail "escalation on the last attempt never streamed: $(cat "$WORK/err")"
 assert test "$out" = STREAMED

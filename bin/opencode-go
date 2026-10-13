@@ -43,8 +43,9 @@ resolve_root() {
   done
   cd -P "$(dirname "$source")/.." && pwd
 }
-. "$(resolve_root)/share/account-roster.sh"
-. "$(resolve_root)/share/limit-hit.sh"
+share_dir=$(resolve_root)/share
+. "$share_dir/account-roster.sh"
+. "$share_dir/limit-hit.sh"
 roster_profiles() { account_roster opencode; }
 # Whether a recorded wall still stands is llm-limits.sh's to decide; this file only writes down
 # what one finished request showed. A stated horizon is capped here, once, by the window it
