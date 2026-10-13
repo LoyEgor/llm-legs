@@ -252,9 +252,10 @@ check(time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["text"] == "20 → 
       "one lucky fast run after the night proves nothing: a suite compares medians, never the fastest run")
 controls = ("test_a", "test_b", "test_c")
 busy = [row(NOW + 60 + i, {n: cpu(4) for n in controls}, cheap) for i in range(5)]
+busy += [row(NOW - 5 * 86400 + 3000 + i * 600, {n: cpu(2) for n in controls}, cheap) for i in range(5)]
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(24)}, split) for i in range(5)] + busy)
 loaded = time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)
-save(journal + [row(NOW + 60 + i, {"test_mid": cpu(25)}, split) for i in range(5)] + busy[:3])
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(25)}, split) for i in range(5)] + busy[:3] + busy[5:])
 check(loaded["text"] == "20 → 24 wall-s/run · load ×2.00 · proven · 0.2 suite-min/day" and loaded["load"] == 2.0
       and time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["text"] == "20 → 25 wall-s/run · not proven",
       "a suite is judged against the suites the fix never named in the same windows: 20 → 24 s while three untouched "
@@ -286,6 +287,23 @@ check(slow == [{"ref": "night-x", "night": "n-slow", "ids": ["test_slow:alpha:te
       and time_budget.slower_fixes(slow_night, NOW + 600) == [],
       "a landed fix whose own suite ran over 1.3x its wall after it is measured slower, naming its job's commits; a "
       "measurement fix never is, nor a suite as slow as the untouched ones beside it: %s" % slow)
+save(journal + [row(NOW + 3600 + i, {"test_mid": cpu(30)}, split) for i in range(5)] + busy[5:]
+     + [row(NOW + 60 + i, {n: cpu(2) for n in controls}, cheap) for i in range(10)]
+     + [row(NOW + 3600 + i, {n: cpu(4) for n in controls}, cheap) for i in range(5)])
+check(time_budget.slower_fixes(slow_night, NOW + 4000) == [],
+      "a suite is load-matched against the untouched suites' runs between its own compared runs, not their first runs "
+      "after the night: 20 → 30 s an hour later, while they ran 2 → 4 s, is no slowdown")
+whole = dict(code, ids=["time_floor:suite_run"])
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(20), "test_a": cpu(10)}, split) for i in range(5)])
+check(time_budget.unit_proof(whole, NOW - 30, NOW, NOW + 600)["slower"] == {}
+      and time_budget.runtime_change(dict(whole, files=[["alpha", "share/time_budget.py"],
+                                                        ["alpha", "tests/test_time_budget.sh"]])) is False,
+      "a fix naming no suite whose code is suite files only is judged on those suites (test_a 2 → 10 s is not its "
+      "slowdown); a measurer with its own suite changes no unit's runtime")
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(10, shards=4) if i % 2 else cpu(60)}, split) for i in range(10)])
+check(time_budget.slower_fixes(slow_night, NOW + 600) == []
+      and time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["after"] == 10,
+      "a sharded suite is measured on its sharded runs: the whole runs of a full machine (60 s) are no slowdown")
 save(journal + later)
 check(time_budget.roi_lines([night, dict(night, improvements=[dict(item, ref="night-y")])], NOW + 600)[0]
       == "roi · night-y · alpha/test_mid · 1.5M · +3/-9 · 20 → 8.0 wall-s/run · proven · shared with night-x",

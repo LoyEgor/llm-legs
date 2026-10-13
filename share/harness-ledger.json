@@ -8600,6 +8600,114 @@
       "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51-20261012T235129Z-6324",
       "note": "Shard 4 (refresh-errors) is the pole now; its sections are not contiguous with shard 1, so more balancing means moving cases across its HOME fixtures (kept last on its own HOME and store by design).",
       "handoff": null
+    },
+    {
+      "id": "regression-fix-70d1-measurer-suite",
+      "title": "A measurement fix judged slower on every suite: its measurer's own suite counted as runtime code",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-time-floor-suite-run-20261009T024805Z-70d1"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T10:25:46+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
+          "files": [
+            "llm-legs/share/time_budget.py",
+            "llm-legs/tests/test_suite_audit.sh",
+            "llm-legs/docs/speed-doctor-design.md"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
+      "note": "llm-legs@51ee5aa5 changed only share/time_budget.py, tests/test_time_budget.sh, a handoff and the ledger; runtime_change took the measurer's own suite as runtime for an unnamed suite_run fix, so it was judged on all 7307 suite runs and a changed mix read 12 unrelated suites slower. Now a measurer's suite is runtime only when it is the named unit (MEASURER_SUITES), and an unnamed fix whose code is tests/test_* only is judged on those suites (own_suites). Live replay: no slower row.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-10e1-load-window",
+      "title": "test_codex_image read slower: load matched against the controls' first runs after the night, hours from its own",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-test-health-heavy-llm-legs-test-codex-image-20261010T031917Z-10e1"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T10:25:46+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
+          "files": [
+            "llm-legs/share/time_budget.py",
+            "llm-legs/tests/test_suite_audit.sh",
+            "llm-legs/docs/speed-doctor-design.md"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
+      "note": "A/B on one machine 2026-10-13 (git archive of 698defe1^ and 698defe1, test_codex_image twice each): CPU 26.9/27.0 -> 23.8/25.5 s, wall 59/59 -> 55/61 s; the journal's CPU a run fell too (~28 -> ~24 s) while wall swung 25-443 s with load. load_factor took the untouched suites' first N runs after the night (a quiet morning, x0.81) against a suite that ran hours later; it now takes their runs inside the named suite's compared time spans (x1.09 live). Not reverted: the fix is not slower.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-3689-unsharded-runs",
+      "title": "test_review_flow_gate read slower: whole runs of a full machine mixed into a sharded suite's samples",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-test-health-heavy-claude-setup-test-review-flow-gate-20261010T031914Z-3689"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T10:25:46+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
+          "files": [
+            "llm-legs/share/suite_audit.py",
+            "llm-legs/tests/test_suite_audit.sh",
+            "llm-legs/docs/speed-doctor-design.md"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
+      "note": "claude-setup@aaf399b8 took it from 2 to 4 shards: sharded runs went 89 -> 57 s median wall (CPU 180-240 -> 185-210 s, same work). run-suites shards only while slot_room finds room, so on a full machine it runs whole (390-855 s, journal rows without shards); those mixed into the after side read 76 -> 101. suite_audit.samples now keeps a sharded suite's sharded runs only. Not reverted.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-37e2-load-window",
+      "title": "test_worker_run_attribution read slower under load the controls were matched in other windows for",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T10:25:46+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
+          "files": [
+            "llm-legs/share/time_budget.py",
+            "llm-legs/tests/test_suite_audit.sh",
+            "llm-legs/docs/speed-doctor-design.md"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-time-floor-suite-run-20261009t024805z-70d1-20261012T235131Z-357e",
+      "note": "A/B on one machine 2026-10-13 (git archive of e3d1b510^ and e3d1b510, test_worker_run_attribution twice each, 324 asserts): CPU 32.3/27.5 -> 31.1/27.3 s, wall 85/32 -> 81/35 s: the fix is not slower. The 28 -> 50 wall-s reading is load (x1.46 over the time-matched controls, 1.22 < 1.3) plus main's later worker-run commits. Not reverted.",
+      "handoff": null
     }
   ],
   "blind_spots": [

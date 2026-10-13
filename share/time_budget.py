@@ -75,6 +75,7 @@ UNIT_STAT = {"refusal": statistics.mean}
 LOAD_MATCHED, LOAD_CONTROLS = ("suite_run", "hooks", "stop"), 3
 SLOWER_RATIO = 1.3
 MEASURERS = ("bin/harness-doctor", "bin/speed-doctor", "share/suite_audit.py", "share/time_budget.py")
+MEASURER_SUITES = {"test_" + os.path.splitext(os.path.basename(p))[0].replace("-", "_") for p in MEASURERS}
 WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("workers", "review-cells"), "locks": WAIT_CLASSES}
 UNIT_BEFORE_DAYS = 7
 SETTLE_S = 24 * 3600
@@ -946,10 +947,28 @@ def hook_key(command):
     return (os.path.basename(word) + " " + rest).strip()
 
 
+def bookkeeping(path):
+    base = os.path.basename(path)
+    return path.endswith(".md") or path.startswith("docs/") or (base.endswith(".json") and "ledger" in base)
+
+
+def own_suites(item):
+    """The suites an unnamed suite fix changed when they are all the code it changed: it can slow no other suite."""
+    out = set()
+    for repo, path in item.get("files") or () if item["class"] == "suite_run" else ():
+        stem, ext = os.path.splitext(os.path.basename(path))
+        if bookkeeping(path) or path in MEASURERS:
+            continue
+        if os.path.dirname(path) != "tests" or not stem.startswith("test_") or ext not in (".sh", ".py"):
+            return set()
+        out.add("%s/%s" % (repo, stem))
+    return out
+
+
 def runtime_change(item):
     """Whether a fix's commits changed code its measured unit runs: never by ledgers, docs, the measurers (their
     baselines and windows) or tests, save a suite unit's own suite and test helpers; None when its files are unknown.
-    A unit's measurer is runtime only for that measurer's own suite."""
+    A unit's measurer, and the measurer's own suite, are runtime only when that suite is the unit."""
     files = item.get("files")
     if files is None:
         return None
@@ -957,9 +976,10 @@ def runtime_change(item):
     for _, path in files:
         base = os.path.basename(path)
         stem = os.path.splitext(base)[0]
-        if path.endswith(".md") or path.startswith("docs/") or (base.endswith(".json") and "ledger" in base):
+        if bookkeeping(path):
             continue
-        if path in MEASURERS and "test_" + stem.replace("-", "_") not in suites:
+        if (path in MEASURERS and "test_" + stem.replace("-", "_") not in suites
+                or is_test(path) and stem in MEASURER_SUITES and stem not in suites):
             continue
         if is_test(path) and (item["class"] != "suite_run" or suites and base.startswith("test_")
                               and stem not in suites):
@@ -1003,7 +1023,7 @@ def unit_samples(item, lo, hi):
     name and arguments), per gate (its recovery seconds in each whole day back from hi, 0 on a day it refused nothing,
     so fewer refusals prove as well as faster recoveries), per wait class."""
     if item["class"] == "suite_run":
-        return suite_audit.samples(suites_path(), lo, hi)
+        return suite_audit.samples(suites_path(), lo, hi, timed=True)
     out = collections.defaultdict(list)
     if item["class"] == "refusal":
         rows, events, days = refusal_rows(lo - REFUSAL_CAP_S, hi), event_rows(lo, hi, ("c", "t")), []
@@ -1037,12 +1057,26 @@ def unit_gone(item, named, after, need, ended, now):
             and sum(len(v) for v in after.values()) >= need)
 
 
-def load_factor(item, before, after, named, need, stat):
+def load_factor(item, before, after, named, need, stat, when=None):
     """How much slower the machine ran the units the fix never touched over the same windows: the median of their
-    after/before stat over the unnamed suites or hooks with N samples on both sides, 1 under LOAD_CONTROLS of them."""
+    after/before stat over the unnamed suites or hooks with N samples on both sides, 1 under LOAD_CONTROLS of them.
+    Suites (`when`: their (end, wall) samples) run hours apart, so a suite's controls are the other suites' runs
+    between the first and the last named sample the proof compares on each side."""
     if item["class"] not in LOAD_MATCHED:
         return 1.0
     ratios = []
+    if when:
+        spans = [[], []]
+        for key in named:
+            n = min(len(after.get(key) or ()), len(before.get(key) or ()))
+            if n and len(after[key]) >= need:
+                spans[0] += [t for t, _ in when[0][key][-n:]]
+                spans[1] += [t for t, _ in when[1][key][:n]]
+        for key in set(when[1]) - set(named) if spans[0] else ():
+            sides = [[w for t, w in when[i].get(key) or () if min(spans[i]) <= t <= max(spans[i])] for i in (0, 1)]
+            if min(map(len, sides)) >= need and stat(sides[0]) > 0:
+                ratios.append(stat(sides[1]) / stat(sides[0]))
+        return statistics.median(ratios) if len(ratios) >= LOAD_CONTROLS else 1.0
     for key, values in after.items():
         if key not in named and len(values) >= need and before.get(key) and stat(before[key]) > 0:
             n = min(len(values), len(before[key]))
@@ -1052,10 +1086,10 @@ def load_factor(item, before, after, named, need, stat):
 
 def unit_proof(item, started, ended, now):
     """A landed improvement whose class has a natural unit, proven from the journals once N samples follow the night:
-    per key (the keys its ids name, else every suite, hook script, gate's day or wait class) the median of the first M
-    samples after the night against the newest M before it, M the smaller side, weighted by M, so a changed mix of
-    suites or hooks reads as no gain. A named suite or hook is judged against the `load_factor` of the unnamed ones in
-    the same windows, so a busy morning after the night reads as no slowdown. A proven gain sums, over the keys proven
+    per key (the keys its ids name, else the suites it alone changed (`own_suites`), else every suite, hook script,
+    gate's day or wait class) the median of the first M samples after the night against the newest M before it, M the
+    smaller side, weighted by M, so a changed mix of suites or hooks reads as no gain. A named suite or hook is judged
+    against the `load_factor` of the unnamed ones in the same windows, so a busy morning reads as no slowdown. A proven gain sums, over the keys proven
     on their own (`keys`), the key's load-matched delta times its samples a day in the UNIT_BEFORE_DAYS before the
     night. No sample or a zero median before the night, or a fix that cuts runs (`counted`), keeps the day totals; a
     named unit that no longer exists is `gone`."""
@@ -1063,15 +1097,19 @@ def unit_proof(item, started, ended, now):
     if not unit or counted(item):
         return None
     label, need, ratio, daily, scale = unit
-    named = unit_names(item)
+    named = unit_names(item) or own_suites(item)
     before = unit_samples(item, started - UNIT_BEFORE_DAYS * 86400, started)
     after = unit_samples(item, ended, now)
+    when = None
+    if item["class"] == "suite_run":
+        when = (before, after)
+        before, after = ({k: [w for _, w in v] for k, v in d.items()} for d in when)
     stat = UNIT_STAT.get(item["class"], statistics.median)
     load = 1.0
     if named:
         if unit_gone(item, named, after, need, ended, now):
             return {"proven": False, "gone": True, "text": "%s no longer exists" % ", ".join(sorted(named))}
-        load = load_factor(item, before, after, named, need, stat)
+        load = load_factor(item, before, after, named, need, stat, when)
         before, after = ({k: v for k, v in d.items() if k in named} for d in (before, after))
     before = {k: v for k, v in before.items() if v and stat(v) > 0}
     if not before:
