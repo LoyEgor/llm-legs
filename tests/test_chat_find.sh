@@ -28,6 +28,8 @@ mkdir -p "$HOME" "$WORK/runs"
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+has() { [[ $OUT == *"$1"* ]]; }
+lacks() { [[ $OUT != *"$1"* ]]; }
 
 CORPUS="$WORK/projects/-tmp-proj"
 mkdir -p "$CORPUS"
@@ -35,13 +37,21 @@ mkdir -p "$CORPUS"
 # emit <file> <python-dict-literal> [compact|spaced] — appends one transcript line.
 # Claude Code writes compact JSON; "spaced" proves the byte prefilter does not
 # depend on that, since a transcript is only ever as regular as its writer.
-emit() {
-  local file=$1 expr=$2 style=${3:-compact}
-  python3 -c "
+# One writer serves every line; the ack keeps each line on disk before the next touch, chmod or run.
+coproc EMITTER { python3 -c '
 import json, sys
-sep = (',', ':') if sys.argv[2] == 'compact' else None
-print(json.dumps(eval(sys.argv[1]), ensure_ascii=False, separators=sep))
-" "$expr" "$style" >> "$file"
+lines = (line.decode("utf-8", "surrogateescape").rstrip("\n") for line in sys.stdin.buffer)
+for file in lines:
+    style, expr = next(lines), next(lines)
+    sep = (",", ":") if style == "compact" else None
+    with open(file, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(eval(expr), ensure_ascii=False, separators=sep) + "\n")
+    print("ok", flush=True)
+'; }
+emit() {
+  local ack
+  printf '%s\n%s\n%s\n' "$1" "${3:-compact}" "$2" >&"${EMITTER[1]}"
+  read -r -u "${EMITTER[0]}" ack && [ "$ack" = ok ] || fail "emit: no ack for $1"
 }
 
 said() {  # said <file> <ts> <role> <text> [style]
@@ -59,11 +69,7 @@ REAL="$CORPUS/11111111-1111-1111-1111-111111111111.jsonl"
 said "$REAL" 2026-01-20T09:00:00.000Z user 'почему оверлей моргает при подключении'
 said "$REAL" 2026-01-20T09:01:00.000Z assistant 'смотрю логи оверлея'
 said "$REAL" 2026-01-20T09:02:00.000Z user 'ок, оставим так'
-python3 -c "
-import json
-print(json.dumps({'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-20T09:03:00.000Z',
-                  'message':{'role':'user','content':[{'type':'tool_result','content':'x' * 900000}]}},
-                 separators=(',', ':')))" >> "$REAL"
+emit "$REAL" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-20T09:03:00.000Z','message':{'role':'user','content':[{'type':'tool_result','content':'x' * 900000}]}}"
 # ...and it was opened again today without a word being said: the false visit that
 # makes file mtime useless as an indicator.
 touch "$REAL"
@@ -151,19 +157,20 @@ run() { OUT=$("$SCRIPT" --account acct --root "$WORK/projects" "$@" 2>&1); RC=$?
 
 # --- the spoken match wins and carries its real date ------------------------
 run оверлей
+OVERLAY_OUT=$OUT
 assert test "$RC" -eq 0
-assert grep -q 'LAST 2026-01-20 09:02' <<<"$OUT"
-assert grep -q "resume:      cd '/tmp/proj' && claudeb profile acct --resume 11111111-1111-1111-1111-111111111111" <<<"$OUT"
+assert has 'LAST 2026-01-20 09:02'
+assert has "resume:      cd '/tmp/proj' && claudeb profile acct --resume 11111111-1111-1111-1111-111111111111"
 # his own words, quoted back, not a paraphrase
-assert grep -q 'почему оверлей моргает' <<<"$OUT"
-assert grep -q 'opened with: почему оверлей моргает' <<<"$OUT"
+assert has 'почему оверлей моргает'
+assert has 'opened with: почему оверлей моргает'
 
 # --- a false visit must not pass for a fresh conversation -------------------
-assert test -z "$(grep -o "LAST $(date +%Y-%m-%d)" <<<"$OUT")"
+assert lacks "LAST $(date +%Y-%m-%d)"
 
 # --- a prompt whose text came in blocks is findable -------------------------
-assert grep -q '4444-4444' <<<"$OUT"
-assert grep -q 'вот скриншот, оверлей съезжает' <<<"$OUT"
+assert has '4444-4444'
+assert has 'вот скриншот, оверлей съезжает'
 
 # --- the list is a strict timeline of last real messages ---------------------
 DATES=$(grep -o 'LAST [0-9-]* [0-9:]*' <<<"$OUT")
@@ -174,100 +181,100 @@ assert test "$(grep -n '6666-6666' <<<"$OUT" | cut -d: -f1)" \
   -gt "$(grep -n '4444-4444' <<<"$OUT" | cut -d: -f1)"
 
 # --- the name he gave a chat is printed, last custom name winning ------------
-assert grep -q 'name:        Оверлей: финальное имя' <<<"$OUT"
-assert test -z "$(grep -o 'черновое имя' <<<"$OUT")"
-assert test -z "$(grep -o 'name:        Guessed overlay name' <<<"$OUT")"
+assert has 'name:        Оверлей: финальное имя'
+assert lacks 'черновое имя'
+assert lacks 'name:        Guessed overlay name'
 # with no name of his own, the model's guess is what there is
-assert grep -q 'name:        Machine guess about' <<<"$OUT"
+assert has 'name:        Machine guess about'
 # an unnamed chat gets no name line at all
 assert test "$(grep -c 'name:        ' <<<"$OUT")" -eq 2
 
 # --- a name he typed is searchable; a machine guess never stands alone -------
 run финальное
-assert grep -q '7777-7777' <<<"$OUT"
+assert has '7777-7777'
 # nothing was said about it, so nothing is quoted and no hit is invented
-assert grep -q '· name match ·' <<<"$OUT"
-assert test -z "$(grep -o 'said:' <<<"$OUT")"
-assert test -z "$(grep -o '1 hit' <<<"$OUT")"
+assert has '· name match ·'
+assert lacks 'said:'
+assert lacks '1 hit'
 # the rest of the block still identifies the chat
-assert grep -q 'name:        Оверлей: финальное имя' <<<"$OUT"
-assert grep -q 'opened with: оверлей и тени хедера' <<<"$OUT"
-assert grep -q 'resume:      cd ' <<<"$OUT"
+assert has 'name:        Оверлей: финальное имя'
+assert has 'opened with: оверлей и тени хедера'
+assert has 'resume:      cd '
 run гадание
-assert grep -q 'no chat matched' <<<"$OUT"
+assert has 'no chat matched'
 # A name resolved from anywhere but this transcript never conjures a row of its own: an
 # errand carries its launcher's name, and a search for that name answers with the chat and
 # not with every errand the chat ever sent.
 run --agents финальное
-assert grep -q '7777-7777' <<<"$OUT"
-assert test -z "$(grep -o 'dddd-dddd' <<<"$OUT")"
+assert has '7777-7777'
+assert lacks 'dddd-dddd'
 
 # --- a message quoting a name-event marker is still conversation -------------
 run парситься
-assert grep -q '9999-9999' <<<"$OUT"
-assert grep -q 'said:        событие' <<<"$OUT"
+assert has '9999-9999'
+assert has 'said:        событие'
 
-run оверлей
+OUT=$OVERLAY_OUT
 
 # --- tool output, subagents and machinery are not conversation --------------
-assert test -z "$(grep -o '2222-2222' <<<"$OUT")"
-assert test -z "$(grep -o '3333-3333' <<<"$OUT")"
-assert test -z "$(grep -o '5555-5555' <<<"$OUT")"
+assert lacks '2222-2222'
+assert lacks '3333-3333'
+assert lacks '5555-5555'
 
 # --- a worker run is the errand, never the chat that sent it ----------------
-assert test -z "$(grep -o 'dddd-dddd' <<<"$OUT")"
-assert grep -q '1 headless run hidden' <<<"$OUT"
+assert lacks 'dddd-dddd'
+assert has '1 headless run hidden'
 run --agents оверлей
-assert grep -q 'dddd-dddd' <<<"$OUT"
-assert test -z "$(grep -o 'headless run hidden' <<<"$OUT")"
+assert has 'dddd-dddd'
+assert lacks 'headless run hidden'
 # Shown, it is shown as the chat that launched it and never under the name the errand
 # gave itself — a name he has never seen on anything he could go back to.
 assert test "$(grep -c 'name:        Оверлей: финальное имя' <<<"$OUT")" -eq 2
-assert test -z "$(grep -o 'Errand: наладка' <<<"$OUT")"
+assert lacks 'Errand: наладка'
 # And a run whose matched line says nothing about what it is stays hidden all the same, then
 # stands there under no name at all: the tail is what classifies it, here as in the listing.
 run пересборка
-assert grep -q 'no chat matched' <<<"$OUT"
-assert grep -q '1 headless run hidden' <<<"$OUT"
+assert has 'no chat matched'
+assert has '1 headless run hidden'
 run --agents пересборка
-assert grep -q 'ffff-ffff' <<<"$OUT"
-assert test -z "$(grep -o 'Errand: чужая' <<<"$OUT")"
+assert has 'ffff-ffff'
+assert lacks 'Errand: чужая'
 # the note counts only what --agents would actually reveal: a run the same --days
 # still drops is not a hidden one
 run --days 1 оверлей
-assert grep -q 'no chat matched' <<<"$OUT"
-assert test -z "$(grep -o 'headless run hidden' <<<"$OUT")"
+assert has 'no chat matched'
+assert lacks 'headless run hidden'
 # widening to tool output does not un-hide the errand, nor does a transcript that
 # never held a spoken line
 run --all оверлей
-assert test -z "$(grep -o 'dddd-dddd' <<<"$OUT")"
-assert test -z "$(grep -o 'eeee-eeee' <<<"$OUT")"
+assert lacks 'dddd-dddd'
+assert lacks 'eeee-eeee'
 run --agents --all оверлей
-assert grep -q 'eeee-eeee' <<<"$OUT"
+assert has 'eeee-eeee'
 
 # --all widens to what tools printed
-assert grep -q '2222-2222' <<<"$OUT"
+assert has '2222-2222'
 
 # ...including a tool result whose content arrives as text blocks rather than one string
 LISTED="$CORPUS/15151515-1515-1515-1515-151515151515.jsonl"
 emit "$LISTED" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-14T10:00:00.000Z','message':{'role':'user','content':[{'type':'tool_result','content':[{'type':'text','text':'блочный вывод инструмента'}]}]}}"
 said "$LISTED" 2026-01-14T10:01:00.000Z user 'спасибо'
 run --all блочный
-assert grep -q '1515-1515' <<<"$OUT"
+assert has '1515-1515'
 # ...but what a tool printed never quotes as what he typed
 ECHOED="$CORPUS/16161616-1616-1616-1616-161616161616.jsonl"
 said "$ECHOED" 2026-01-13T10:00:00.000Z user 'найди слово эхолот в конфиге'
 emit "$ECHOED" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-13T10:01:00.000Z','message':{'role':'user','content':[{'type':'tool_result','content':'config.lua: эхолот = true'}]}}"
 run --all эхолот
-assert grep -q 'said:        найди слово эхолот' <<<"$OUT"
+assert has 'said:        найди слово эхолот'
 
 # --- a quote or a backslash he typed is found in the escaped JSON it is stored as ---------
 ESCAPED="$CORPUS/17171717-1717-1717-1717-171717171717.jsonl"
 printf '%s\n' '{"type":"user","cwd":"/tmp/proj","timestamp":"2026-01-12T10:00:00.000Z","message":{"role":"user","content":"открой C:\\temp\\журнал и \"кавычки\" тоже"}}' >"$ESCAPED"
 run 'C:\temp\журнал'
-assert grep -q '1717-1717' <<<"$OUT"
+assert has '1717-1717'
 run '"кавычки"'
-assert grep -q '1717-1717' <<<"$OUT"
+assert has '1717-1717'
 
 # --- an unreadable transcript costs its own hits, never the search -------------
 LOCKED="$CORPUS/18181818-1818-1818-1818-181818181818.jsonl"
@@ -277,26 +284,26 @@ run оверлей
 chmod 600 "$LOCKED"
 rm -f "$LOCKED"
 assert test "$RC" -eq 0
-assert grep -q '1111-1111' <<<"$OUT"
+assert has '1111-1111'
 
 # --- nothing found says so, and says how to widen ---------------------------
 run абракадабра
 assert test "$RC" -eq 0
-assert grep -q 'no chat matched' <<<"$OUT"
-assert grep -q -- '--all' <<<"$OUT"
+assert has 'no chat matched'
+assert has '--all'
 
 # --- --days cuts by the last real message, not by mtime ---------------------
 run --days 1 оверлей
-assert grep -q 'no chat matched' <<<"$OUT"
+assert has 'no chat matched'
 # 0 is a real bound, not a missing one
 run --days 0 оверлей
-assert grep -q 'no chat matched' <<<"$OUT"
+assert has 'no chat matched'
 
 # --- no usable profile falls back to a runnable command --------------------
 # "main" is not a claudeb profile, so `claudeb profile main` would be refused.
 OUT=$(env -u CLAUDE_LIMITS_ACCOUNT HOME="$(mktemp -d)" "$SCRIPT" --root "$WORK/projects" оверлей 2>&1)
-assert grep -q 'claude --resume 11111111' <<<"$OUT"
-assert test -z "$(grep -o 'profile main' <<<"$OUT")"
+assert has 'claude --resume 11111111'
+assert lacks 'profile main'
 
 # --- listing mode: the same timeline, with no term to search for -------------
 # A headless run — a worker or a review bench. Hundreds of these are written for
@@ -327,30 +334,30 @@ said "$STUB" 2026-01-30T10:00:00.000Z user '<command-name>/clear</command-name>'
 # Claude model, which is the one answer that looks right and is not.
 run шлюзовой
 assert test "$RC" -eq 0
-assert grep -q "resume:      cd '/tmp/proj' && claudegpt p work4 --model astra --resume 99999999-9999-9999-9999-999999999999" <<<"$OUT"
+assert has "resume:      cd '/tmp/proj' && claudegpt p work4 --model astra --resume 99999999-9999-9999-9999-999999999999"
 
 recent() { OUT=$("$SCRIPT" --root "$WORK/projects" --cache "$WORK/cache.json" --recent "$@" 2>&1); RC=$?; }
 
 recent
 assert test "$RC" -eq 0
 # every chat that spoke is listed, ordered by its last real message
-assert grep -q 'bbbb-bbbb' <<<"$OUT"
-assert grep -q '1111-1111' <<<"$OUT"
+assert has 'bbbb-bbbb'
+assert has '1111-1111'
 # the name stands beside the session id, and the last real message keeps the line above it
 assert grep -q '^  77777777-7777-7777-7777-777777777777  Оверлей: финальное имя$' <<<"$OUT"
 assert grep -q 'оверлей и тени хедера$' <<<"$OUT"
 DATES=$(grep -o '^2026-[0-9-]* [0-9:]*' <<<"$OUT")
 assert test "$DATES" = "$(sort -r <<<"$DATES")"
 # the model column names the gateway alias the way every other surface does
-assert grep -q 'Astra' <<<"$OUT"
+assert has 'Astra'
 # the false visit still cannot pass for a fresh conversation
 assert test -z "$(grep -o "^$(date +%Y-%m-%d)" <<<"$OUT")"
 # a /clear stub never held a message, so it is not a chat
-assert test -z "$(grep -o 'cccc-cccc' <<<"$OUT")"
+assert lacks 'cccc-cccc'
 # headless runs stay out until asked for
-assert test -z "$(grep -o 'aaaa-aaaa' <<<"$OUT")"
+assert lacks 'aaaa-aaaa'
 recent --agents
-assert grep -q 'aaaa-aaaa' <<<"$OUT"
+assert has 'aaaa-aaaa'
 # A listed errand is its launcher's chat, and one no record names has no name at all.
 assert grep -q '^  dddddddd-dddd-dddd-dddd-dddddddddddd  Оверлей: финальное имя$' <<<"$OUT"
 assert grep -q '^  aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$' <<<"$OUT"
@@ -365,7 +372,7 @@ printf '{"pid":1,"sessionId":"11111111-1111-1111-1111-111111111111","name":"proj
 printf '{"pid":2,"sessionId":"22222222-2222-2222-2222-222222222222","name":"живой чат без события имени"}\n' \
   >"$HOME/.claude-profiles/com/sessions/2.json"
 recent --agents --all
-assert test -z "$(grep -o 'proj-59' <<<"$OUT")"
+assert lacks 'proj-59'
 assert grep -q '^  22222222-2222-2222-2222-222222222222  живой чат без события имени$' <<<"$OUT"
 rm -f "$HOME/.claude-profiles/com/sessions/1.json" "$HOME/.claude-profiles/com/sessions/2.json"
 
@@ -378,7 +385,7 @@ print(row['model'], row['ctx'], row['branch'], row['cwd'], row['at'] < 177000000
 print(row['uuid'], row['ttl'], int(row['spoke']))
 " <<<"$OUT")" = "claude-opus-5 42000 main /tmp/proj True
 reply-b 3600 1769680860"
-assert test -z "$(grep -o 'Login expired' <<<"$OUT")"
+assert lacks 'Login expired'
 assert test "$(python3 -c "
 import json, sys
 row = [r for r in json.load(sys.stdin) if r['session'].startswith('eeee')][0]
@@ -394,10 +401,10 @@ recent --json
 assert test "$OUT" = "$FIRST"
 said "$RICH" 2026-02-11T10:00:00.000Z user 'ещё одна правка'
 recent
-assert grep -q '2026-02-11 10:00' <<<"$OUT"
+assert has '2026-02-11 10:00'
 
 # --- the cache is rewritten only when a row changed ----------------------------
-cache_sig() { python3 -c 'import os, sys; s = os.stat(sys.argv[1]); print(s.st_ino, s.st_mtime_ns)' "$1"; }
+cache_sig() { stat -f '%i %Fm' "$1"; }
 cached_rows() {  # cached_rows <cache file> <row text as JSON> — prints how many rows say it
   python3 -c '
 import importlib.machinery, json, sys
@@ -412,7 +419,7 @@ assert test "$RC" -eq 0
 assert test "$(cache_sig "$HOTC")" = "$BEFORE"
 said "$RICH" 2026-02-12T10:00:00.000Z user 'и последняя правка'
 recent
-assert grep -q '2026-02-12 10:00' <<<"$OUT"
+assert has '2026-02-12 10:00'
 assert test "$(cache_sig "$HOTC")" != "$BEFORE"
 assert test "$(cached_rows "$HOTC" '"и последняя правка"')" = 1
 # A JS-side cut can leave half a surrogate pair in a transcript; the cache write must survive
@@ -425,13 +432,13 @@ assert test "$(cached_rows "$HOTC" '"обрезано \ud83d"')" = 1
 # ...and printed, by every output path, it costs that one character and never the listing.
 recent --json
 assert test "$RC" -eq 0
-assert grep -q 'обрезано' <<<"$OUT"
+assert has 'обрезано'
 recent
 assert test "$RC" -eq 0
-assert grep -q 'обрезано' <<<"$OUT"
+assert has 'обрезано'
 run обрезано
 assert test "$RC" -eq 0
-assert grep -q 'said:        обрезано' <<<"$OUT"
+assert has 'said:        обрезано'
 rm -f "$CUT"
 # A deletion that is the run's only change still rewrites the cache without the row.
 recent --days 1
@@ -444,7 +451,7 @@ said "$COMPACTED" 2026-02-12T13:00:00.000Z user 'последнее слово �
 emit "$COMPACTED" "{'type':'user','isCompactSummary':True,'isVisibleInTranscriptOnly':True,'cwd':'/tmp/proj','timestamp':'2026-02-12T13:05:00.000Z','message':{'role':'user','content':'This session is being continued from a previous conversation.'}}"
 recent
 assert grep -q '2026-02-12 13:00 .*последнее слово до сжатия$' <<<"$OUT"
-assert test -z "$(grep -o 'This session is being continued' <<<"$OUT")"
+assert lacks 'This session is being continued'
 
 # --- below a project directory only --agents looks ----------------------------
 # Real nested transcripts are sidechain subagents that never list anyway; this one speaks, so
@@ -454,9 +461,9 @@ mkdir -p "$(dirname "$NESTED")"
 said "$NESTED" 2026-02-12T12:00:00.000Z user 'вложенная реплика'
 recent
 assert test "$RC" -eq 0
-assert test -z "$(grep -o 'вложенная реплика' <<<"$OUT")"
+assert lacks 'вложенная реплика'
 recent --agents
-assert grep -q 'вложенная реплика' <<<"$OUT"
+assert has 'вложенная реплика'
 
 # --- the week window reads the hot file alone; cold is for wide runs ----------
 # Two chats whose files were last written in January: the first wide run files them cold.
@@ -467,7 +474,7 @@ REVIVED="$CORPUS/14141414-1414-1414-1414-141414141414.jsonl"
 said "$REVIVED" 2026-01-03T10:00:00.000Z user 'старый чат'
 touch -t 202601031001 "$REVIVED"
 recent
-assert grep -q 'давний разговор' <<<"$OUT"
+assert has 'давний разговор'
 assert test "$(cached_rows "$COLDC" '"давний разговор"')" = 1
 assert test "$(cached_rows "$HOTC" '"давний разговор"')" = 0
 assert test "$(cached_rows "$COLDC" '"старый чат"')" = 1
@@ -496,9 +503,9 @@ recent --all
 assert test "$RC" -eq 0
 assert test "$(cached_rows "$COLDC" '"старый чат"')" = 0
 assert test "$(grep -c 'старый чат' <<<"$OUT")" = 1
-assert grep -q 'старый чат ожил' <<<"$OUT"
-assert grep -q 'давний разговор' <<<"$OUT"
-assert grep -q 'правка на неделе' <<<"$OUT"
+assert has 'старый чат ожил'
+assert has 'давний разговор'
+assert has 'правка на неделе'
 # A hot row that aged past the cutoff is demoted by the week run too, not only by a wide one.
 python3 -c '
 import importlib.machinery, sys
@@ -535,7 +542,7 @@ with open(os.path.join(sys.argv[1], "old.json"), "w", encoding="utf-8") as handl
 EOF
 OUT=$("$SCRIPT" --root "$WORK/projects" --cache "$WORK/old.json" --recent 2>&1); RC=$?
 assert test "$RC" -eq 0
-assert grep -q 'строка из старого кеша' <<<"$OUT"
+assert has 'строка из старого кеша'
 assert test ! -e "$WORK/old.json"
 assert test "$(cached_rows "$WORK/old-hot.json" '"строка из старого кеша"')" = 1
 assert test "$(cached_rows "$WORK/old-cold.json" '"давний разговор"')" = 1
@@ -543,9 +550,9 @@ assert test "$(cached_rows "$WORK/old-cold.json" '"давний разговор
 # --- listing and searching are separate askings ------------------------------
 recent оверлей
 assert test "$RC" -ne 0
-assert grep -q 'takes no search terms' <<<"$OUT"
+assert has 'takes no search terms'
 OUT=$("$SCRIPT" --root "$WORK/projects" 2>&1); RC=$?
 assert test "$RC" -ne 0
-assert grep -q -- '--recent' <<<"$OUT"
+assert has '--recent'
 
 echo "PASS: chat-find ($asserts assertions)"
