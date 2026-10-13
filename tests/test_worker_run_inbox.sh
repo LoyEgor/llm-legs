@@ -120,7 +120,7 @@ assert test "$said" = 'queued: the worker reads it at its next tool call'
 tool_call_done 1
 assert test ! -s "$STUB_DIR/context-1"
 assert test ! -e "$RUN_DIR/inbox.delivered"
-await_done
+await_exit
 unset STUB_NO_RECORD
 assert grep -q '— queued for RESUME: the run ended before its next tool call$' <<<"$("$RUNNER" report "$RUN_ID")"
 
@@ -131,7 +131,7 @@ jq 'del(.inbox_settings)' "$RUN_DIR/meta.json" >"$RUN_DIR/meta.unwired" && mv -f
 said=$(WORKER_RUN_SAY_WAIT_S=0 "$RUNNER" say "$RUN_ID" 'unwired')
 assert test "$said" = 'queued for RESUME: claudeb takes no message mid-run'
 tool_call_done 1
-await_done
+await_exit
 
 # --- the hook: a subagent's tool call leaves the message for the session ----------------------------
 printf '{"at":"2026-10-06T10:00:00+0000","by":"t","text":"for the session"}\n' >"$RUN_DIR/inbox"
@@ -164,7 +164,7 @@ start_gated codex
 said=$("$RUNNER" say "$RUN_ID" 'also cover the empty case')
 assert test "$said" = 'queued for RESUME: codex takes no message mid-run'
 gate_open
-await_done
+await_exit
 first_run=$RUN_ID
 assert grep -q '— queued for RESUME: codex takes no message mid-run$' <<<"$("$RUNNER" report "$first_run")"
 late_rc=0
@@ -184,7 +184,7 @@ assert grep -q '— queued for RESUME: codex takes no message mid-run$' <<<"$("$
 "$RUNNER" start codex --brief "$WORK/resume-brief" --workdir "$WORK/workdir" --account fast \
   >"$WORK/start.out" 2>"$WORK/start.err" || fail "resume start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
-await_done
+await_exit
 assert test "$(grep -c 'Message from the chat that launched you (.*): also cover the empty case' "$STUB_DIR/codex.stdin")" -eq 1
 assert grep -q '^RESUME codex-session: continue$' "$STUB_DIR/codex.stdin"
 assert grep -qF "— delivered at " <<<"$("$RUNNER" report "$first_run")"
@@ -192,7 +192,7 @@ assert grep -qF " via RESUME $RUN_ID" <<<"$("$RUNNER" report "$first_run")"
 "$RUNNER" start codex --brief "$WORK/resume-brief" --workdir "$WORK/workdir" --account fast \
   >"$WORK/start.out" 2>"$WORK/start.err" || fail "second resume start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
-await_done
+await_exit
 assert_fails grep -q 'also cover the empty case' "$STUB_DIR/codex.stdin"
 
 # --- `say <text>` reaches the one live run of this chat ---------------------------------------------
@@ -217,8 +217,8 @@ assert grep -q "^$two_run  " "$WORK/say-several.err"
 assert_fails grep -q 'which one' "$WORKER_RUN_DIR/$one_run/inbox"
 assert test ! -e "$WORKER_RUN_DIR/$two_run/inbox"
 gate_open
-await_done
+await_exit
 RUN_ID=$one_run
-await_done
+await_exit
 
 echo "PASS: $asserts asserts; worker-run say: hook wired per claudeb launch, delivery once at the next tool call, RESUME carry, finished-run refusal, chat-scoped say, no fork on an empty inbox"
