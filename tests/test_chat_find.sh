@@ -562,4 +562,16 @@ OUT=$("$SCRIPT" --root "$WORK/projects" 2>&1); RC=$?
 assert test "$RC" -ne 0
 assert has '--recent'
 
+# --- a search prints five candidates unless asked for more ---------------------
+mkdir -p "$WORK/projects/-tmp-many"
+for i in 1 2 3 4 5 6; do
+  said "$WORK/projects/-tmp-many/many-$i.jsonl" "2020-02-0${i}T10:00:00Z" user "квазар номер $i"
+done
+OUT=$("$SCRIPT" --root "$WORK/projects" квазар 2>&1)
+assert test "$(grep -c '^LAST ' <<<"$OUT")" -eq 5
+assert has '6 chat(s) matched, 5 shown'
+assert lacks 'file mtime is not it'
+OUT=$("$SCRIPT" --root "$WORK/projects" --limit 6 квазар 2>&1)
+assert test "$(grep -c '^LAST ' <<<"$OUT")" -eq 6
+
 echo "PASS: chat-find ($asserts assertions)"

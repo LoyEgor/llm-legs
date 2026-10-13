@@ -640,7 +640,7 @@ def main():
                         help="also match and list headless runs — workers, benches, subagents")
     parser.add_argument("--days", type=float, help="only chats whose last message is within N days")
     parser.add_argument("--limit", type=int, default=None,
-                        help="candidates to print (default 8 when searching, all with --recent)")
+                        help="candidates to print (default 5 when searching, all with --recent)")
     parser.add_argument("--all", action="store_true", help="also match tool output and file contents")
     parser.add_argument("--account", default=None, help="claudeb profile for the resume line")
     parser.add_argument("--root", default=ROOT, help=argparse.SUPPRESS)
@@ -664,7 +664,7 @@ def main():
     if not args.terms:
         die("nothing to search for (pass words, or --recent to list every chat)")
     if args.limit is None:
-        args.limit = 8
+        args.limit = 5
 
     started = time.time()
     found, names = scan_matches(args.terms, args.all, args.root)
@@ -719,8 +719,7 @@ def main():
         print("  resume:      cd %s && %s" % ("'" + (cwd or ".").replace("'", "'\\''") + "'", launcher))
         print()
 
-    print("%d chat(s) matched, %d shown, %.1fs%s — LAST is the last real message; file mtime is not it "
-          "(opening a chat bumps mtime with nothing said)"
+    print("%d chat(s) matched, %d shown, %.1fs%s"
           % (len(rows), len(shown), time.time() - started, hidden_note(headless)))
 
 
