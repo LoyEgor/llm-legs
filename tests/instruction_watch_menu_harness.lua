@@ -220,6 +220,7 @@ local ok, err = pcall(function()
         bulkFiles[#bulkFiles + 1] = string.format("/tmp/bulk/deep/nested/dir/file%04d.md", i)
         bulkParts[#bulkParts + 1] = "CHANGED " .. bulkFiles[#bulkFiles] .. " (+1 bytes)"
     end
+    local preBulk = readFile(fixture .. "/events.jsonl") or ""
     appendEvent("bulklegacy", os.date("!%Y-%m-%dT%H:%M:%SZ"), table.concat(bulkParts, ", "), bulkFiles)
     local bulkStart = os.clock()
     local bulkItems = M.menuItems()
@@ -229,6 +230,9 @@ local ok, err = pcall(function()
     check(bulkRow ~= nil and plain(bulkRow.title):find("+1,512 B", 1, true) ~= nil,
         "a legacy record's per-file deltas were not read off its summary: "
         .. (bulkRow and plain(bulkRow.title) or "no row"))
+    local preBulkHandle = assert(io.open(fixture .. "/events.jsonl", "w"))
+    preBulkHandle:write(preBulk)
+    preBulkHandle:close()
 
     local ratesPath = fixture .. "/read-rates.json"
     local indexed = "/tmp/project/CLAUDE.md"
@@ -834,11 +838,12 @@ local ok, err = pcall(function()
         "the next tick did not retry the failed unloaded scan")
 
     local healthy = tonumber((readFile(heartbeat) or ""):match("since=(%d+)")) or os.time()
-    while os.time() <= healthy do os.execute("sleep 0.2") end
-    local failedFrom = os.time()
+    local failedFrom = healthy + 1
+    os.time = function(t) if t then return realTime(t) end return math.max(realTime(), failedFrom) end
     io = failing("list")
     M.watchTick()
     io = plainIo
+    os.time = realTime
     local downBeat = readFile(heartbeat) or ""
     check(downBeat:find("error=", 1, true) ~= nil and (tonumber(downBeat:match("since=(%d+)")) or 0) >= failedFrom,
         "a watcher that began failing after it started reports down since its start: " .. downBeat)

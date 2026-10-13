@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/instruction_gate_harness.sh" || exit 1
 profile_link
 docs_link
 alert_rec_stub
 chat_name_stub
 mkdir -p "$PROJ"
-
-echo "== bypasses: every shell spelling of a write onto a guarded file is refused, the neighbours pass"
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/projects/p/memory" "$WORK/repo2/.claude/agents" \
          "$WORK/repo2/.claude/local" \
          "$WORK/repo2/skills/foo"
+
+if suite_shard_owns 1 bypass-spellings; then
+echo "== bypasses: every shell spelling of a write onto a guarded file is refused, the neighbours pass"
 printf 'policy\n' > "$HOME/.claude/hooks/policy.md"
 # The ordinary stash stays on top: the bare `stash pop` case below must land in notes.txt.
 GL="$WORK/gitland"
@@ -132,7 +134,9 @@ assert_eq pass "$(GATE_CWD="$GM/.claude/worktrees/cut" decision 'git merge feat'
 printf '{"at":%s,"gate":"bloat","decision":"passed","sid":"s","file":"%s","real":"","delta":11,"detail":""}\n' \
   "$(date +%s)" "$gm/.claude/worktrees/feat/CLAUDE.md" >>"$INSTRUCTION_WATCH_STATE/gates.jsonl"
 assert_eq pass "$(GATE_CWD="$GM" decision 'git merge --ff-only feat')"
+fi
 
+if suite_shard_owns 2 bypass-hooks; then
 echo "== bypasses: the bloat gate prices every spelling and every edit tool"
 mkdir -p "$HOME/.claude/rules" "$HOME/.claude/skills-on-demand/s"
 printf 'x\n' > "$HOME/.claude/rules/r.md"
@@ -309,7 +313,9 @@ jq -cn --arg p "$CLAUDE_MD" '{tool_name:"Edit",tool_input:{file_path:$p}}' \
   | bash "$FG/bin/instruction-bloat-gate.sh" >/dev/null 2>&1 || rc=$?
 assert_eq 2 "$rc"
 assert_eq "fault share/instruction-files.sh missing" "$(gj_last '"\(.decision) \(.detail)"')"
+fi
 
+if suite_shard_owns 3 bypass-tripwire-menu; then
 echo "== tripwire: a finished call's window still names its writer to a longer call beside it"
 printf 'tier doc\n' > "$DOC"
 span_base sid-cwa >/dev/null
@@ -438,5 +444,6 @@ chmod +x "$WORK/find-shim/find"
 repo_out=$(PATH="$WORK/find-shim:$PATH" bash -c "$watch_script" _ "$ROOT" "$HOME" "$claim_state" repo "$WORK/plain" "$WORK/gitrepo")
 assert_eq "$WORK/gitrepo/CLAUDE.md" "$repo_out"
 assert [ ! -e "$WORK/find.log" ]
+fi
 
 echo "OK ($asserts assertions)"
