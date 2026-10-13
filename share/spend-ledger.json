@@ -554,6 +554,58 @@
    "verdict": "kept",
    "zero": "removing it saves ~0 limit tokens (the component no longer appears in tokenmap's 7d hooks table; -90 % since passes_on_edit and the earlier cuts); loses the one-line fact of whose uncommitted WIP an edit lands on, the guard against two chats clobbering one file",
    "note": "29 notices in 7d (worker-live 17, live-idle 6, live-busy 2, dead 2, live-stalled 1, unknown 1; 14d 462), once per file per session by its anti-repeat marker; an Edit under an edits-on-top verdict passes with context instead of a block and a retry (passes_on_edit), so only Write and live-busy or named-run verdicts still pay a retry; each verdict names owner and action and is its own decision, shorter wording would save well under 1k tokens a week; nothing left to cut"
+  },
+  {
+   "id": "cpu:hook/stop.d/ask-word-reading.sh",
+   "title": "hook/stop.d/ask-word-reading.sh",
+   "audited_at": "2026-10-13T05:22:48+03:00",
+   "by": "harness-speed-cpu-hook-stop-d-ask-word-reading-sh-20261012T235054Z-062a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.036,
+   "runs_day": 8,
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 0.023 CPU-s a run, ~102 runs a day, ~2.3 CPU-s/day (0.0 CPU-min/day); loses the forced re-answer of a missing reading line, which cost Egor turns and tokens and which he ordered removed",
+   "note": "already cut: claude-setup@4c7eaf02 (2026-10-10) removed the hook; hook-runs journal holds 0 runs after 2026-10-09 (25 that day), the 7-day median ages out by itself"
+  },
+  {
+   "id": "cpu:hook/worker-inbox-hook.sh",
+   "title": "hook/worker-inbox-hook.sh",
+   "audited_at": "2026-10-13T05:23:11+03:00",
+   "by": "harness-speed-cpu-hook-stop-d-ask-word-reading-sh-20261012T235054Z-062a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.04,
+   "runs_day": 2,
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 4 runs x 0.041 CPU-s = 0.16 CPU-s/day; loses delivery of worker-run say messages to the running worker session (the only path: PostToolUse additionalContext)",
+   "note": "journaled runs are only those past the builtins-only early exit (inbox.new present), each delivers a message: no run is output-equal to the previous; source already minimal (one jq, one mkdir lock)"
+  },
+  {
+   "id": "cpu:process/driver.py",
+   "title": "process/driver.py",
+   "audited_at": "2026-10-13T05:24:28+03:00",
+   "by": "harness-speed-cpu-hook-stop-d-ask-word-reading-sh-20261012T235054Z-062a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 166.572,
+   "runs_day": 2,
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves the bench's 2 runs a day x 166.6 CPU-s but the 7-day median is 0.0 CPU-min/day; loses the logo-vectorizer-bench tracer runs (Egor's benchmark work)",
+   "note": "not a harness component: logo-vectorizer-bench tracers/*/driver.py, hours journal names it across c46-*/champ* dirs; benchmark load is weather, no harness source to change"
+  },
+  {
+   "id": "cpu:process/inkvec",
+   "title": "process/inkvec",
+   "audited_at": "2026-10-13T05:25:09+03:00",
+   "by": "harness-speed-cpu-hook-stop-d-ask-word-reading-sh-20261012T235054Z-062a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 160.438,
+   "runs_day": 1,
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 1 run a day x 160.4 CPU-s, 7-day median 0.0 CPU-min/day; loses the inkvec tracer runs of logo-vectorizer-bench (Egor's benchmark work)",
+   "note": "not a harness component: inkvec binary run by logo-vectorizer-bench tracers (hours journal 2026-10-09/12/13), benchmark load is weather"
   }
  ]
 }

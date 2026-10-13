@@ -7950,7 +7950,10 @@
         {
           "at": "2026-10-12T17:48:32+03:00",
           "by": "night fixer harness-browser-20261012T235000Z-56b7",
-          "files": ["llm-legs/bin/worker-run", "llm-legs/tests/test_worker_run_browse.sh"],
+          "files": [
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_browse.sh"
+          ],
           "in": null,
           "regressed_at": null
         }
@@ -7973,7 +7976,12 @@
         {
           "at": "2026-10-13T00:50:33+03:00",
           "by": "night fixer harness-browser-20261012T235000Z-56b7",
-          "files": ["llm-legs/bin/worker-run", "llm-legs/bin/harness-doctor", "llm-legs/tests/test_worker_run_browse.sh", "llm-legs/tests/test_harness_doctor.sh"],
+          "files": [
+            "llm-legs/bin/worker-run",
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_worker_run_browse.sh",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
           "in": null,
           "regressed_at": null
         }
@@ -8258,6 +8266,13 @@
       "reason": "share/fix_commit.py _landing/file_commits run ~550 git calls a run over the 518 KB ledger (via last_fix_at -> fix_held_from), cached per process only, ~17 s wall at load; test_harness_doctor's HARNESS_REPOS_DIR holds no real repositories, so no suite or speed row sees it (2026-10-12, measured by harness-speed-test-health-heavy-llm-legs-test-consistency-20261012T010239Z-1189)",
       "since": "2026-10-12",
       "would_catch_if": "the doctor timed its own fix-landing resolution, or cached landings across runs keyed by commit"
+    },
+    {
+      "id": "cpu-audit-llm-legs-hook-sources",
+      "what": "a CPU audit of a hook that lives in llm-legs/bin (worker-inbox-hook.sh, worker-spawn-hook.sh)",
+      "reason": "share/cpu_audit.py sources() maps every hook to claude-setup/hooks/<name>, so these audits record sources {} (2026-10-13) and never turn due when the script changes; a hook with fewer than a day of journal runs (worker-spawn-hook, 2 runs a day) also drops out of the window and cannot be recorded",
+      "since": "2026-10-13",
+      "would_catch_if": "sources() tried llm-legs/bin/<name> after claude-setup/hooks/<name>"
     }
   ]
 }
