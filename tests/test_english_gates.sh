@@ -45,7 +45,7 @@ eq "$(printf 'Проверь что всё работает и почини те
 eq "$(printf '%s' 'Egor said «положи в /tmp/out» then keep going with the tests.' | "$SHARE" | cut -d' ' -f1)" "0"
 eq "$(printf '%s' 'Fix the gate and run the suite: да/нет/может/быть' | "$SHARE" | cut -d' ' -f1)" "37"
 eq "$(printf '%s' 'Проверь это: “the gate is fine and the whole suite passes on main”' | "$SHARE" | cut -d' ' -f1)" "20"
-python3 -c "print('a' * 200000)" >"$WORK/long-token"
+perl -e 'print "a" x 200000, "\n"' >"$WORK/long-token"
 eq "$(perl -e 'alarm 10; exec @ARGV' "$SHARE" <"$WORK/long-token" | cut -d' ' -f1)" "0"
 eq "$(printf '%s' "$(printf 'Fix the gate. %.0s' {1..30})«сделай ревью» «не парься» «сделай коммит» «подумай как следует»" | "$SHARE" | cut -d' ' -f1)" "0"
 share() { printf '%s' "$1" | "$SHARE"; }
@@ -85,10 +85,10 @@ printf '%s\n' "$LONG_QUOTE" >"$WORK/brief-long-quote"
 printf '%s\n' "$ONE_WORD" >"$WORK/brief-one-word"
 
 out=$(start "$WORK/brief-ru")
+status=$?
 has "$out" 'brief has Russian (100% Cyrillic)'
 has "$out" 'the reader is a model'
-start "$WORK/brief-ru" >/dev/null 2>&1
-eq "$?" "4"
+eq "$status" "4"
 # Nothing was launched: the refusal comes before a run directory exists.
 eq "$(find "$WORK" -name 'meta.json' | wc -l | tr -d ' ')" "0"
 
@@ -145,11 +145,11 @@ TIMER="$ROOT/bin/claude-resume-timer"
 timer() { PATH=/usr/bin:/bin RESUME_TIMER_CYRILLIC_SHARE="$SHARE" "$TIMER" terminal 10 -m "$1" 2>&1; }
 a; [ -x "$TIMER" ] || fail "bin/claude-resume-timer is not executable"
 out=$(timer 'продолжай работу')
+status=$?
 has "$out" 'text is in Russian (100% Cyrillic outside «…»/code)'
 has "$out" 'its reader is a model'
 # The refusal comes before Hammerspoon is reached, so nothing was armed.
-timer 'продолжай работу' >/dev/null 2>&1
-eq "$?" "2"
+eq "$status" "2"
 hasnt "$(timer 'continue')" 'text is in Russian'
 hasnt "$(timer 'Egor asked for «максимально автономно» — keep going')" 'text is in Russian'
 hasnt "$(PATH=/usr/bin:/bin RESUME_TIMER_CYRILLIC_SHARE=/nonexistent "$TIMER" terminal 10 -m 'продолжай' 2>&1)" 'text is in Russian'
