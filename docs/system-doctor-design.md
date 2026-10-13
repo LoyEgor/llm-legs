@@ -80,7 +80,9 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
   - DiagnosticReports headers (first 4 KB) by kind (crash, fault, hang, jetsam, panic, diskwrites,
     cpu_resource, wakeups, shutdownStall), process and owner, 8 days back;
   - relaunched launchd jobs (KeepAlive or StartInterval);
-  - `last reboot shutdown` (an unclean boot is a boot whose previous record is a boot);
+  - `last reboot shutdown` (an unclean boot is a boot whose previous record is a boot, unless the first login's
+    loginwindow line says `firstLoginAfterPanic:0, firstLoginAfterHardRestart:0`: `last` records a shutdown only for
+    the CLI, so menu and Software Update restarts read as boot after boot; each boot asked once, `boots.json`);
   - the biggest caches under ~ (`du`, 120 s budget, sizes only);
   - SMART via `diskutil info`.
 - **Retention:** minute rows 14 days, hourly rollups (`hours/<day>.jsonl`) 90 days, daily rows

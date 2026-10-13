@@ -23,7 +23,7 @@ printf -- '--\n' >"$WORK/repos/hammerspoon/init.lua"
 git -C "$WORK/repos/llm-legs" init -q && git -C "$WORK/repos/hammerspoon" init -q
 printf '%s\n' "$WORK/repos/llm-legs" "$WORK/repos/hammerspoon" >"$WORK/sweep-repos"
 export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SYSTEM_DOCTOR_REPOS_DIR="$WORK/repos"
-for name in ps vm_stat sysctl ioreg df last diskutil launchctl; do
+for name in ps vm_stat sysctl ioreg df last diskutil launchctl log; do
   printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"$SYSTEM_DOCTOR_FIX/%s.calls"\ncase " $* " in *" -S "*) cat "$SYSTEM_DOCTOR_FIX/%s-children" ;; *) cat "$SYSTEM_DOCTOR_FIX/%s" 2>/dev/null ;; esac\n' \
     "$name" "$name" "$name" >"$WORK/bin/$name"
   chmod +x "$WORK/bin/$name"
@@ -265,7 +265,25 @@ check(len(night["unclean"]) == 2 and night["boots"] == 2, "unclean = a boot afte
 check(night["caches"] == [["uv", 22.0], ["small", 1.0]], "cache sizes in GiB, the root itself skipped: %s" % night["caches"])
 check(night["smart"] == "Verified" and "info disk0" in open(os.path.join(fix, "diskutil.calls")).read(),
       "SMART of the internal disk via diskutil: %s" % night["smart"])
-check(set(night["steps"]) == {"jobs", "reports", "last", "caches", "smart"}, "nightly step costs: %s" % night["steps"])
+check(set(night["steps"]) == {"jobs", "reports", "last", "boots", "caches", "smart"}, "nightly step costs: %s" % night["steps"])
+check(open(os.path.join(fix, "log.calls")).read().count("firstLoginAfterHardRestart") == 2,
+      "each boot after a boot asks the login log once")
+put("log", "2026-10-11 13:08:14.543 Df loginwindow[179:9ef] [com.apple.loginwindow.logging:TAL] -[PersistentAppsSupport "
+    "checkTALLoginOptions] |      firstLoginAfterPanic:0, firstLoginAfterHardRestart:0, lastTALLogoutPrefSetting:0\n")
+cleared = m.nightly()
+put("log", "loginwindow firstLoginAfterPanic:0, firstLoginAfterHardRestart:1\n")
+cached = m.nightly()
+check(cleared["unclean"] == [] and cached["unclean"] == []
+      and open(os.path.join(fix, "log.calls")).read().count("firstLoginAfterHardRestart") == 4,
+      "a GUI or Software Update restart its login log calls clean is no unclean reboot, asked once and kept: %s"
+      % cleared["unclean"])
+os.remove(os.path.join(work, "state", "boots.json"))
+check(len(m.nightly()["unclean"]) == 2,
+      "a hard restart in the login log stays unclean")
+os.remove(os.path.join(work, "state", "boots.json"))
+os.remove(os.path.join(fix, "log"))
+m.nightly()
+os.remove(os.path.join(fix, "log.calls"))
 last_saved = open(os.path.join(fix, "last")).read()
 put("last", "reboot    ~                         Wed Dec 30 10:00\nreboot    ~                         Sun Dec 20 10:00\n")
 january = time.mktime((2027, 1, 3, 12, 0, 0, 0, 0, -1))

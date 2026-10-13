@@ -996,6 +996,29 @@ def unclean_reboots(events):
             if kind == "reboot" and older_kind == "reboot"]
 
 
+def hard_restart(at):
+    """True or False from the first login's loginwindow line after the boot at `at`, None when the log has none:
+    `last` writes a shutdown record only for the shutdown and reboot CLIs, so a menu or Software Update restart
+    reads as a boot after a boot."""
+    window = [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(at + offset)) for offset in (-60, 1800)]
+    out = machine_probe.run("log", ["show", "--style", "compact", "--start", window[0], "--end", window[1], "--predicate",
+                                    'process == "loginwindow" AND eventMessage CONTAINS "firstLoginAfterHardRestart"'],
+                            timeout=120)
+    found = re.search(r"firstLoginAfterPanic:(\d+), firstLoginAfterHardRestart:(\d+)", out)
+    return None if not found else found.group(1) != "0" or found.group(2) != "0"
+
+
+def confirmed_unclean(candidates):
+    """The candidates the login log does not clear, each boot asked once: its verdict is kept in boots.json."""
+    path = os.path.join(state_dir(), "boots.json")
+    known = read_json(path, {}) or {}
+    for at in candidates:
+        if str(round(at)) not in known:
+            known[str(round(at))] = hard_restart(at)
+    write_json(path, {key: value for key, value in known.items() if value is not None})
+    return [at for at in candidates if known.get(str(round(at))) is not False]
+
+
 def cache_sizes(deadline):
     sizes, skipped = [], []
     for root in cache_roots():
@@ -1043,7 +1066,7 @@ def nightly(now=None):
     events = steps("last", boot_events, now)
     caches = steps("caches", cache_sizes, time.time() + CACHE_BUDGET_S)
     smart = steps("smart", smart_status)
-    unclean = unclean_reboots(events)
+    unclean = steps("boots", confirmed_unclean, [at for at in unclean_reboots(events) if at >= now - 31 * DAY_S])
     result = {"as_of_s": round(now), "reports": reports, "unclean": [round(at) for at in unclean if at >= now - 31 * DAY_S],
               "boots": sum(1 for _at, kind in events if kind == "reboot" and _at >= now - REBOOT_DAYS * DAY_S),
               "relaunched": len(jobs), "caches": caches, "smart": smart, "steps": steps.out}
