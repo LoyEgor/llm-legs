@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import limit_hit
-from fix_commit import NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir
+from fix_commit import LANDED_FILE, NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir, use_memo
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import command as probe_command, host_ticks, spawn_pid, sysctl
 import cpu_audit
@@ -6239,6 +6239,7 @@ def collect(write, now):
     if write:
         os.makedirs(folder, exist_ok=True)
     state = read_json(os.path.join(folder, "state.json"), {})
+    use_memo(os.path.join(folder, LANDED_FILE), write)
     ledger, ledger_raw = load_ledger()
     faults = ledger_faults(ledger)
     faulty = {w for w, _ in faults}

@@ -1051,6 +1051,25 @@ late_git(1000, "merge", "-q", "--no-ff", "-m", "land two", "night/n/two")
 assert [doctor.fix_landed("late@" + ref, late_repos) for ref in (two_fix, open_fix, other_fix)] \
     == [now - 1000, None, now - 8000]
 assert doctor.fix_held_from({"in": "late@" + open_fix}, now - 5000, late_repos) == float("inf")
+# A landing time a writing run read is reused by the next run with no git; a dry run saves nothing.
+import fix_commit
+memo = os.path.join(unit, "memo", fix_commit.LANDED_FILE)
+def memo_run(write):
+    fix_commit._landing.cache_clear()
+    fix_commit.use_memo(memo, write)
+    calls, real_run = [], doctor.subprocess.run
+    doctor.subprocess.run = lambda *a, **k: calls.append(a[0][3:5]) or real_run(*a, **k)
+    try:
+        landed = fix_commit.fix_landed("late@" + two_fix, late_repos)
+    finally:
+        doctor.subprocess.run = real_run
+    if fix_commit._memo["dirty"]:
+        fix_commit._memo_save()
+    return landed, len(calls)
+assert memo_run(False)[1] and not os.path.exists(memo)
+assert memo_run(True)[1] and os.path.exists(memo)
+assert memo_run(True) == (now - 1000, 0)
+fix_commit.use_memo(None, False)
 # A fix with `in` null holds from its landing too: absent from main (a night branch) it regresses nothing,
 # committed there it dates from that commit, poured uncommitted it holds from its `at`.
 for name in ("a.sh", "b.sh", "c.sh"):
