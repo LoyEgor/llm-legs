@@ -1391,6 +1391,47 @@
    "verdict": "kept",
    "zero": "removal saves 0.2 CPU-s a run; loses the CPU audit ranking, due rules and zero-option guard",
    "note": "one python run over fixtures, 13 asserts, no sleeps or repeated fixtures"
+  },
+  {
+   "id": "cpu:process/q852-crops",
+   "title": "process/q852-crops",
+   "audited_at": "2026-10-13T09:48:11+03:00",
+   "by": "harness-speed-cpu-process-q852-crops-20261012T235112Z-33ce",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 158.53,
+   "runs_day": 0,
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves nothing recurring: one 158.5 CPU-s process in one hour (2026-10-06T09), no source file or repeat anywhere in /Volumes/Work/Projects; loses nothing",
+   "note": "one-off ad-hoc process (a crop script of a chat), not a repeating component; ages out of the 7-day window on 2026-10-14; 0.0 is the median over days it never ran"
+  },
+  {
+   "id": "cpu:process/transcriptions-gpt/transcriber/__main__.py",
+   "title": "process/transcriptions-gpt/transcriber/__main__.py",
+   "audited_at": "2026-10-13T09:48:18+03:00",
+   "by": "harness-speed-cpu-process-q852-crops-20261012T235112Z-33ce",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 45.55,
+   "runs_day": 0,
+   "sources": {
+    "transcriptions-gpt/transcriber/__main__.py": "608b90d71dd8d685625c74fc87e464f1234e562a"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~9 CPU-s/h idle (live ps -S over 60 s: 0.15 s; ~3.6 CPU-min/day, 0.25% of a core); loses hotkey dictation and its warm-mic latency, which Egor uses daily",
+   "note": "idle daemon: main loop wakes every 0.2 s (events.get timeout) for 2 os.stat settings mtimes + idle_keepalive, all other threads blocked (sample 10 s: kevent/recvfrom/cond_wait); cpu_own history before 2026-10-13 holds only top-N hours so the day median reads 0, real ~9 CPU-s/h; cheaper lever is a 1-2 s tick in transcriptions-gpt (other repo, latency-contract tests) worth <=3 CPU-min/day; the repo's real burner is overlay.py (22 CPU-min/day, own row)"
+  },
+  {
+   "id": "cpu:process/worker-run",
+   "title": "process/worker-run",
+   "audited_at": "2026-10-13T09:48:26+03:00",
+   "by": "harness-speed-cpu-process-q852-crops-20261012T235112Z-33ce",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 146.713,
+   "runs_day": 0,
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves this legacy key's two rows only (2026-10-06 273 s, 2026-10-07 167 s); loses nothing, the key is the old basename tag; removing worker-run itself loses all worker delegation",
+   "note": "legacy tag: system-doctor tagged it worker-run until 2026-10-07, since llm-legs/bin/worker-run (same script) which is the live row (1789 CPU-s on 2026-10-13 alone, 781/803 s in hours 05/06 over ~5000 births an hour, i.e. forks of the 6170-line bash; one idle supervisor+wait pair costs ~0.03 CPU-s per 30 s) and needs its own audit with births per subcommand; this key leaves the window on 2026-10-14"
   }
  ]
 }
