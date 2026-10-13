@@ -145,6 +145,19 @@ stream_of() { # file type
 duration_of() {
   "$ffprobe_cmd" -v error -show_entries format=duration -of csv=p=0 "$1" 2>/dev/null | head -n 1
 }
+audio_probe() { # file; sets codec rate channels seconds from one ffprobe
+  local key value
+  codec='' rate='' channels='' seconds=''
+  while IFS== read -r key value; do
+    case "$key" in
+      codec_name) codec=$value ;;
+      sample_rate) rate=$value ;;
+      channels) channels=$value ;;
+      duration) seconds=$value ;;
+    esac
+  done < <("$ffprobe_cmd" -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels:format=duration \
+    -of default=nw=1 "$1" 2>/dev/null)
+}
 size_of() { stat -f %z "$1"; }
 
 # Video over the limit: 720p at the bitrate that fits, re-encoded once lower when x264 overshoots.
@@ -167,14 +180,12 @@ video_proxy() { # source dest seconds
 # (2026-10-07); a Pro reply must count these beeps. Flash miscounts them under a long question, so it
 # gets none.
 with_beeps() { # source dest beeps ffmpeg-output-args...
-  local source=$1 dest=$2 beeps=$3 rate channels
+  local source=$1 dest=$2 beeps=$3
   shift 3
   if [ "$beeps" -eq 0 ]; then
     "$ffmpeg_cmd" -v error -y -i "$source" -map 0:a:0 "$@" "$dest" || say "ffmpeg could not convert $source" 1
     return
   fi
-  IFS=, read -r rate channels < <("$ffprobe_cmd" -v error -select_streams a:0 -show_entries stream=sample_rate,channels \
-    -of csv=p=0 "$source" | head -n 1)
   "$ffmpeg_cmd" -v error -y -i "$source" -filter_complex \
     "aevalsrc='if(gte(t,1)*lt(mod(t-1,0.6),0.2)*lt(t-1,0.6*$beeps),0.5*sin(2*PI*1000*t),0)':s=$rate:d=$(awk -v n="$beeps" 'BEGIN { print 1.3 + 0.6 * n }'),aformat=channel_layouts=${channels}c[beeps];[0:a:0][beeps]concat=n=2:v=0:a=1" \
     "$@" "$dest" || say "ffmpeg could not add the test beeps to $source" 1
@@ -206,7 +217,7 @@ for file in "${media[@]}"; do
   bytes=$(size_of "$file")
   kind=$(kind_of "$file" "$ext")
   [ -n "$kind" ] || say "$file has no picture or sound ffprobe can read"
-  seconds=$(duration_of "$file")
+  if [ "$kind" = audio ]; then audio_probe "$file"; else seconds=$(duration_of "$file"); fi
   if [ "$kind" != image ]; then
     [[ "$seconds" =~ ^[0-9.]+$ ]] || say "ffprobe reads no duration in $file"
     seconds=$(awk -v s="$seconds" 'BEGIN { printf "%.1f", s }')
@@ -220,7 +231,6 @@ for file in "${media[@]}"; do
     # agy refuses flac, aac, m4a and aiff as unsupported mime types, so the lossless copy is always wav.
     beeps=0
     [ "$beeps_on" != true ] || beeps=$((RANDOM % 3 + 2))
-    codec=$(stream_of "$file" a)
     [[ "$ext" = wav && "$codec" =~ ^pcm_ ]] || codec=pcm_s16le
     send="$tmp_dir/media/file$index.wav"
     with_beeps "$file" "$send" "$beeps" -c:a "$codec"
