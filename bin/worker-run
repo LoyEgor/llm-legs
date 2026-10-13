@@ -306,8 +306,6 @@ RUN_SLOT=''
   fail 'share/worker-claims.sh is missing: worker-run cannot release a claim on an account it passed over'
 . "$SCRIPT_DIRECTORY/../share/worker-inbox.sh" ||
   fail 'share/worker-inbox.sh is missing: worker-run cannot pass a message to a run'
-# TEMP-SONNET-TRIAL(fixers)
-. "$SCRIPT_DIRECTORY/../share/sonnet-trial.sh" || fail 'share/sonnet-trial.sh is missing'
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 
@@ -2613,7 +2611,7 @@ start_run() {
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
   local light_offrow=false inbox_settings='' resolved_add_dirs resolved_read
-  local trial_lens='' # TEMP-SONNET-TRIAL(fixers)
+  local fit_round=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session launcher_pid entry
   local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
   local web_search_state='' brief_cyrillic=''
@@ -2918,19 +2916,18 @@ start_run() {
     explicit_model=$model
     model=${model:-$config_model}
   else
-    # TEMP-SONNET-TRIAL(fixers)
     if [ -z "$model" ] && [ "$vendor" = claudeb ] && [ -z "$light" ] && [ -n "$review_round" ]; then
-      trial_lens=$(sonnet_trial_lens "$(review_bench_dir "$review_round")") || trial_lens=''
+      case $(jq -r '.lens // empty' "$(review_bench_dir "$review_round")/meta.json" 2>/dev/null) in
+        fit | legacy | legacy-*) fit_round=1 ;;
+      esac
     fi
     model=${model:-$(config_value "${vendor}_model")}
     model=${model:-$(worker_model_default_model "$vendor")}
-    # TEMP-SONNET-TRIAL(fixers)
-    if [ -n "$trial_lens" ] && [ "$model" = opus ] &&
+    # Fixers of fit and legacy rounds run Sonnet where the default is Opus (Egor, 2026-10-13); bugs rounds keep Opus.
+    if [ -n "$fit_round" ] && [ "$model" = opus ] &&
       worker_model_effort_allowed claudeb sonnet "${effort:-$(worker_model_default_effort claudeb sonnet)}" workers; then
       model=sonnet
       effort=${effort:-$(worker_model_default_effort claudeb sonnet)}
-    else
-      trial_lens=''
     fi
   fi
   # Fast is the chat pin's modifier and it is WORKERS ONLY (Egor): a research or light leg carries
@@ -3228,13 +3225,12 @@ start_run() {
   add_dirs_json=$(jq -cn --args '$ARGS.positional' -- "${add_dirs[@]}") || fail 'could not encode add-dir metadata'
   images_json=$(jq -cn --args '$ARGS.positional' -- "${images[@]}") || fail 'could not encode image metadata'
   started=$(date +%s)
-  # TEMP-SONNET-TRIAL(fixers): trial_lens
   jq -cn --arg vendor "$vendor" --arg account "$account" --arg model "$model" --arg effort "$effort" \
     --arg agy_model "$agy_model" --arg grok_turns "$grok_turns" --arg model_id "$model_id" \
     --arg workdir "$workdir" --arg resume "$resume" --arg cli "$cli" \
     --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" --arg role "$role" --arg explicit_account "$explicit_account" \
     --arg research_timeout "$research_timeout" --arg sandbox_exec "$sandbox_exec" --arg review_round "$review_round" \
-    --arg round_source "$round_source" --arg trial_lens "$trial_lens" \
+    --arg round_source "$round_source" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" --argjson computer "$computer" --argjson chat_fast "$chat_fast" \
@@ -3248,7 +3244,6 @@ start_run() {
      + if $light != "" then {light:$light} else {} end
      + if $inbox_settings != "" then {inbox_settings:$inbox_settings} else {} end
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
-     + if $trial_lens != "" then {trial:"sonnet-fixes",trial_lens:$trial_lens} else {} end
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account,browser_target:$browser_target,browser_profile:$browser_profile} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $model_id != "" then {model_id:$model_id} else {} end

@@ -11,15 +11,69 @@ import collections
 import glob
 import os
 import re
+import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import night_spend  # noqa: E402
-import sonnet_trial  # noqa: E402
 from spend import read_json  # noqa: E402
 
 LENS = re.compile(r"^(fit|legacy(-.*)?|speed)$")
+
+NO_BLOB = re.compile(r"^(0+|e69de29bb2d1d6434b8b29ae775ad8c2e48c5391)$")
+
+
+def git(top, *args):
+    if not top:
+        return None
+    done = subprocess.run(["git", "-C", top, *args], capture_output=True, text=True, errors="replace")
+    return done.stdout if done.returncode == 0 else None
+
+
+def iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def main_blob(top, path):
+    return (git(top, "rev-parse", "--verify", "-q", "main:" + path) or "").strip() or None
+
+
+def fix_record(top, fixes, ended, rows, commits=None):
+    """rows: (before, after, path) of the fix in top; commits: its landing commits, else found by the after blobs."""
+    found = set(commits or ())
+    if commits is None:
+        for before, after, path in rows:
+            if not NO_BLOB.match(after) and after != before:
+                found |= set((git(top, "log", "main", "--format=%H", "--since=" + iso(ended - 86400),
+                                  "--find-object=" + after, "--", path) or "").split())
+    return {"top": top, "fixes": fixes, "ended": ended, "commits": found, "paths": {p for _, _, p in rows},
+            "landed": bool(found), "reverted": bool(found) and any(
+                not NO_BLOB.match(before) and before != after and main_blob(top, path) == before
+                for before, after, path in rows)}
+
+
+def fixed_findings(directory):
+    return [r.get("finding") for r in night_spend.rows(f"{directory}/verdicts.jsonl")
+            if r.get("kind") == "fixer" and r.get("outcome") == "fixed"]
+
+
+def directory_fix(directory, meta, began, fixes):
+    workdir = str(meta.get("workdir") or "")
+    top = (git(workdir, "rev-parse", "--show-toplevel") or "").strip()
+    if not top and "/.claude/worktrees/" in workdir:
+        top = (git(workdir.split("/.claude/worktrees/")[0], "rev-parse", "--show-toplevel") or "").strip()
+    rows = [tuple(line.split("\t")[:3]) for line in night_spend.read(f"{directory}/produced").splitlines()
+            if line.count("\t") >= 2]
+    ended = meta.get("ended_at") or began
+    record = fix_record(top, fixes, ended, rows)
+    # A debt job commits its round's fixers together: a later fixer's edit replaces an earlier one's blob.
+    if not record["landed"] and meta.get("review_round") and rows:
+        commits = set((git(top, "log", "main", "--format=%H", "--since=" + iso(ended - 86400), "-F",
+                           "--grep=" + meta["review_round"], "--", *{p for _, _, p in rows}) or "").split())
+        if commits:
+            record = fix_record(top, fixes, ended, rows, commits)
+    return record
 
 
 def family(spec):
@@ -71,10 +125,10 @@ def round_line(bench, meta, started):
             confirmed[family(row["rater"])] += 1
     fixes = collections.Counter()
     for directory, run_meta, began in fixer_runs(os.path.basename(bench), started):
-        fixed = sonnet_trial.fixed_findings(directory)
+        fixed = fixed_findings(directory)
         if not fixed:
             continue
-        record = sonnet_trial.directory_fix(directory, run_meta, began, len(fixed))
+        record = directory_fix(directory, run_meta, began, len(fixed))
         haiku = sum(1 for i in fixed if isinstance(i, int) and 0 <= i < len(judged) and is_haiku(judged[i]["rater"]))
         outcome = "reverted" if record["reverted"] else "landed" if record["landed"] else "unlanded"
         fixes["fixed"] += len(fixed)

@@ -447,41 +447,34 @@ assert await_exit
 
 fi
 
-if suite_shard_owns 5 rounds-sonnet-trial; then
+if suite_shard_owns 5 rounds-sonnet-fixers; then
 DELEG_BENCHES="$HOME/.claude-profiles/.claudeb/worker-stats/benches"
-# TEMP-SONNET-TRIAL(fixers): while the marker is live, a claudeb fixer of a fit or legacy round with no explicit
-# model runs sonnet at the table's effort; any other lens, an explicit model, an effort sonnet lacks, or a spent or
-# missing marker keeps opus.
-roster_add claudeb trialacct
-export PICK_RC=0 PICK_ACCOUNT=trialacct SONNET_TRIAL_MARKER="$WORK/sonnet-trial.json"
+# A claudeb fixer of a fit or legacy round with no explicit model runs sonnet at the table's effort (Egor, 2026-10-13);
+# any other lens, an explicit model or an effort sonnet lacks keeps opus.
+roster_add claudeb fixacct
+export PICK_RC=0 PICK_ACCOUNT=fixacct
 set_config 'claudeb_model=opus'
-trial_bench() { mkdir -p "$DELEG_BENCHES/$1" && jq -n --arg l "$2" 'if $l == "" then {} else {lens: $l} end' >"$DELEG_BENCHES/$1/meta.json"; }
-trial_bench 20260802T100000Z-1f17a00 fit
-trial_bench 20260802T100000Z-1e9ac00 legacy-b
-trial_bench 20260802T100000Z-0b0950f ''
-trial_bench 20260802T100000Z-5eed000 speed
-trial_model() { # round [header line...] -> model effort trial trial_lens of the run's meta
+round_bench() { mkdir -p "$DELEG_BENCHES/$1" && jq -n --arg l "$2" 'if $l == "" then {} else {lens: $l} end' >"$DELEG_BENCHES/$1/meta.json"; }
+round_bench 20260802T100000Z-1f17a00 fit
+round_bench 20260802T100000Z-1e9ac00 legacy-b
+round_bench 20260802T100000Z-0b0950f ''
+round_bench 20260802T100000Z-5eed000 speed
+round_model() { # round [header line...] -> model effort of the run's meta
   clear_stub
   { [ $# -lt 2 ] || printf '%s\n' "${@:2}"; printf 'ROUND: %s\n\nFix the findings.\n' "$1"; } >"$WORK/round-brief"
   "$RUNNER" start claudeb --brief "$WORK/round-brief" --workdir "$WORK/workdir" >"$WORK/round.out" 2>"$WORK/round.err" ||
-    fail "trial start failed: $(<"$WORK/round.err")"
+    fail "fixer start failed: $(<"$WORK/round.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-  await_exit || fail "the trial run never finished"
-  jq -r '[.model, .effort, (.trial // "-"), (.trial_lens // "-")] | join(" ")' "$(sed -n 's/^DIR: //p' "$WORK/round.out")/meta.json"
+  await_exit || fail "the fixer run never finished"
+  jq -r '[.model, .effort] | join(" ")' "$(sed -n 's/^DIR: //p' "$WORK/round.out")/meta.json"
 }
-jq -n --argjson u $(($(date +%s) + 3600)) '{id: "sonnet-fixes", until: $u}' >"$SONNET_TRIAL_MARKER"
-assert test "$(trial_model 20260802T100000Z-1f17a00)" = "sonnet high sonnet-fixes fit"
+assert test "$(round_model 20260802T100000Z-1f17a00)" = "sonnet high"
 assert grep -qx 'ARG=sonnet' "$CALL_LOG"
-assert test "$(trial_model 20260802T100000Z-1e9ac00 'EFFORT: high')" = "sonnet high sonnet-fixes legacy-b"
-assert test "$(trial_model 20260802T100000Z-0b0950f)" = "opus high - -"
-assert test "$(trial_model 20260802T100000Z-5eed000)" = "opus high - -"
-assert test "$(trial_model 20260802T100000Z-1f17a00 'MODEL: opus')" = "opus high - -"
-assert test "$(trial_model 20260802T100000Z-1f17a00 'EFFORT: xhigh')" = "opus xhigh - -"
-jq -n --argjson u $(($(date +%s) - 1)) '{id: "sonnet-fixes", until: $u}' >"$SONNET_TRIAL_MARKER"
-assert test "$(trial_model 20260802T100000Z-1f17a00)" = "opus high - -"
-rm -f "$SONNET_TRIAL_MARKER"
-assert test "$(trial_model 20260802T100000Z-1f17a00)" = "opus high - -"
-unset SONNET_TRIAL_MARKER
+assert test "$(round_model 20260802T100000Z-1e9ac00 'EFFORT: high')" = "sonnet high"
+assert test "$(round_model 20260802T100000Z-0b0950f)" = "opus high"
+assert test "$(round_model 20260802T100000Z-5eed000)" = "opus high"
+assert test "$(round_model 20260802T100000Z-1f17a00 'MODEL: opus')" = "opus high"
+assert test "$(round_model 20260802T100000Z-1f17a00 'EFFORT: xhigh')" = "opus xhigh"
 fi
 
 echo "PASS: $asserts asserts; blank briefs, pinned walls, limits-driven picks, delegation and review rounds"

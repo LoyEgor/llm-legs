@@ -26,7 +26,6 @@ VERDICTS=' fixed ruled-out weather blind-spot handoff '
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/test-scope.sh"
 . "$repo_root/share/worktree.sh"
-. "$repo_root/share/sonnet-trial.sh" # TEMP-SONNET-TRIAL(fixers)
 
 JQ_EPOCH='def epoch: if type == "number" then . elif type == "string" then
   ((capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})([.][0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
@@ -787,7 +786,7 @@ if __name__ == "__main__":
         if doctor in ("harness", "system"):
             knobs(record_file)
         fix_faults(record_file, doctor)
-    elif command == "levels":  # TEMP-SONNET-TRIAL(fixers)
+    elif command == "levels":
         print("\n".join("\t".join(row) for row in levels(read_json(sys.argv[2], {}))))
     elif command == "owed":
         print("\n".join(owed_measurement(read_json(sys.argv[2], {}))))
@@ -895,7 +894,7 @@ write_brief() { # id worktree -> the brief file
   case $doctor in llm) title=LLM ;; harness) title=Harness ;; code) title=Code ;; system) title=System ;; *) title=Updater ;; esac
   {
     ! jq -e --arg rules ' suite_audit cpu_audit ' "$JQ_HAS_RULES" "$file" >/dev/null || printf 'STRONG: yes\n'
-    ! jq -e '.trial.arm == "sonnet"' "$file" >/dev/null || printf 'MODEL: sonnet\n' # TEMP-SONNET-TRIAL(fixers)
+    jq -r 'if .model then "MODEL: \(.model)" else empty end' "$file"
     printf 'ROUND: %s\n' "$(jq -r 'if .lens_launch then "pending" else .lens_round // "none" end' "$file")"
     jq -r '.worktrees[1:][] | "ADD-DIR: \(.)"' "$file"
     printf 'Working directory: %s\n\n# Fixer run %s\n\n' "$wt" "$id"
@@ -1054,9 +1053,9 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
     esac
     pending_id=$id
     [ -z "$knobs" ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$knobs"
-    # TEMP-SONNET-TRIAL(fixers)
-    if [[ $area == speed-* ]] && sonnet_trial_live && [[ $(py levels "$(record_file "$id")") != *$'\t'P1* ]]; then
-      locked record_set "$id" '.trial = {id: "sonnet-fixes", arm: "sonnet"}'
+    # A Speed run without a P1 row (>=15 wall-min/day) runs Sonnet (Egor, 2026-10-13).
+    if [[ $area == speed-* ]] && [[ $(py levels "$(record_file "$id")") != *$'\t'P1* ]]; then
+      locked record_set "$id" '.model = "sonnet"'
     fi
     if [ -n "$night" ]; then branch="night/$night/$id" base="refs/night/$night/base"
     else branch="doctor-fix/$id" base="refs/doctor-fix/$id/base"; fi
