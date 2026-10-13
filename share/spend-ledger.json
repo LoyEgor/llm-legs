@@ -5431,6 +5431,93 @@
    "verdict": "cut",
    "zero": "removal saves 3.0 wall-min/day; loses the Flow Music route, refusals and engine guard",
    "note": "49 refusals eight at a time, wav fixture by printf, bytecode cached under WORK, fan-out children shell fakes, image-leg EXIT trap polls the tee every 10 ms; 129 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_suite_audit",
+   "title": "llm-legs/test_suite_audit",
+   "audited_at": "2026-10-13T15:21:22+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-suite-audit-20261012T235409Z-7ba4",
+   "cpu_run": 6.9,
+   "wall_run": 4.6,
+   "cpu_min_day": 5.14,
+   "wall_min_day": 16.66,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_suite_audit.sh": "c5035f3834bcbf9b3b9330841d3771c98257ce6a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 6.7 wall-s and 8.1 CPU-s a run; loses the only check of suite pricing, due rules, the night queue and per-unit roi proof",
+   "note": "fixture leaked to live stores: roi_lines' saved_min_day read the live .claudeb worker journal and every live transcript (35 of 42 s at load 180); env isolated like test_time_budget: CPU 8.1 -> 1.2 s a run, 34 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_ledger_untouched",
+   "title": "llm-legs/test_ledger_untouched",
+   "audited_at": "2026-10-13T15:21:23+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-suite-audit-20261012T235409Z-7ba4",
+   "cpu_run": 2.2,
+   "wall_run": 6.0,
+   "cpu_min_day": 2.68,
+   "wall_min_day": 10.7,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_ledger_untouched.sh": "9b18f3d65dcb99147f98a7e1e7d3c8f5dd358749"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 4.0 wall-s a run; loses row ej's guard that no measuring doctor run writes a tracked ledger",
+   "note": "the system-doctor tick slept its default 2 s ps window; SYSTEM_DOCTOR_WINDOW_S=0 as test_system_doctor: about 2 s a run off, 15 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_backstop",
+   "title": "llm-legs/test_worker_run_backstop",
+   "audited_at": "2026-10-13T15:21:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-suite-audit-20261012T235409Z-7ba4",
+   "cpu_run": 5.8,
+   "wall_run": 6.3,
+   "cpu_min_day": 3.4,
+   "wall_min_day": 5.15,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_backstop.sh": "cdd0c239a47c69f81fbacb33f17ea12795302be3"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 4.7 wall-s a run; loses the Stop backstop's ownership, holds and fork-budget checks",
+   "note": "end_waits did 2 ps listings + 1 ps per pid (19 a run): multi-root process_tree, one pids_end per call; r16 stub's orphan sleep held $(...) up to 1 s; seq forks gone; 38 asserts unchanged, owned-wait mutation red; rest is the hook's own forks (~20 per held stop, product lever, not cut)"
+  },
+  {
+   "id": "suite:llm-legs/test_instruction_gate_span",
+   "title": "llm-legs/test_instruction_gate_span",
+   "audited_at": "2026-10-13T15:21:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-suite-audit-20261012T235409Z-7ba4",
+   "cpu_run": 23.1,
+   "wall_run": 30.5,
+   "cpu_min_day": 4.78,
+   "wall_min_day": 10.63,
+   "sources": {
+    "llm-legs/tests/instruction_gate_harness.sh": "bfa4721349e83348a498536b6e9a82873e2749a9",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_instruction_gate_span.sh": "3314e0262f6b97d1b875e8700cf763b05255e7f1"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 16 wall-s a run; loses the tripwire's span revert/attribution and the one-parse scan checks",
+   "note": "share_call re-exec'd bash and re-parsed instruction-files.sh per probe (~86 a run), arm_span re-synced unchanged sessions: module sourced once, subshell probes, same-key arm skipped; bash 251 -> 143, python3 61 -> 36 a run, 128 asserts unchanged, mutation red; the rest is the hooks' own runtime (~0.3-0.5 s a call at load)"
+  },
+  {
+   "id": "suite:llm-legs/test_light_research_citations",
+   "title": "llm-legs/test_light_research_citations",
+   "audited_at": "2026-10-13T15:21:25+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-suite-audit-20261012T235409Z-7ba4",
+   "cpu_run": 4.2,
+   "wall_run": 8.5,
+   "cpu_min_day": 1.7,
+   "wall_min_day": 5.68,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/light_research_harness.sh": "f899061a8acbcd0b2fff73b3575cc67d99f893aa",
+    "llm-legs/tests/test_light_research_citations.sh": "e71e0952e9ff7f08175db344a75ec5078e4486d7"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 5.6 wall-s a run; loses the citation check, LINKS count, capital-scheme links and WEB: header refusal checks, none covered elsewhere",
+   "note": "5 light-research runs, each a distinct answer/header shape; worker-run wait already wakes on exit_file_wait (no 1 s poll paid); merging the 3 citation answers would lose the links-only 0/0 header case; the per-run cost is worker-run's own launch"
   }
  ]
 }
