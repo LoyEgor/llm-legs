@@ -162,10 +162,8 @@ done
 
 # Every sharded suite of this repository and claude-setup: literal indexes within its header, unique
 # names, and no shard left owning nothing.
-shard_layout() { # suite -> fails with the reason unless every shard 1..N owns a section
-  local n
-  n=$(suite_shard_count "$1")
-  awk -v n="$n" -v f="$1" '
+shard_layout() { # suite, after suite_shard_count on it -> fails with the reason unless every shard 1..N owns a section
+  awk -v n="$suite_shard_n" -v f="$1" '
     /^[[:space:]]*if !? *suite_shard_owns/ {
       if (!match($0, /suite_shard_owns [1-9][0-9]* [^ ;]+;/)) { print f ": a section with no literal shard and name: " $0; bad = 1; next }
       split(substr($0, RSTART, RLENGTH - 1), w, " ")
@@ -177,12 +175,14 @@ shard_layout() { # suite -> fails with the reason unless every shard 1..N owns a
 }
 sharded=0
 for suite in "$ROOT"/tests/test_*.sh ${CLAUDE_SETUP_ROOT:+"$CLAUDE_SETUP_ROOT"/tests/test_*.sh}; do
-  [ "$(suite_shard_count "$suite")" -gt 1 ] || continue
+  suite_shard_count "$suite" >/dev/null
+  [ "$suite_shard_n" -gt 1 ] || continue
   sharded=$((sharded + 1))
   assert shard_layout "$suite"
 done
 assert test "$sharded" -ge 3
 printf '#!/usr/bin/env bash\n# shards: 2\nif suite_shard_owns 1 a; then :; fi\n' >"$WORK/empty-shard.sh"
+suite_shard_count "$WORK/empty-shard.sh" >/dev/null
 assert test "$(shard_layout "$WORK/empty-shard.sh")" = "$WORK/empty-shard.sh: shard 2 owns nothing"
 # A suite narrowed to one case keeps the shared guards: a shard its header does not declare is refused.
 assert_fails env WORKER_RUN_TEST_CASE=R1 SUITE_SHARD=1/9 bash "$ROOT/tests/test_worker_run_reliability.sh"
