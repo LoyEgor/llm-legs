@@ -278,5 +278,8 @@ done >"$WORK/count-forks.sh"
 jq -cn '{hook_event_name: "PreToolUse", session_id: "s", tool_name: "Bash", tool_input: {command: "ls -la | head -5"}}' |
   BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$GATE" bash >/dev/null 2>&1
 assert [ ! -s "$WORK/forks" ]
+jq -cn '{hook_event_name: "PreToolUse", session_id: "s", tool_name: "Edit", tool_input: {file_path: "/tmp/plain.txt", old_string: "a", new_string: "b"}}' |
+  BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$GATE" write >/dev/null 2>&1
+assert [ ! -s "$WORK/forks" ]
 
 printf 'PASS: %s asserts; ~/.claude/worker-model takes no `*_model=`, effort or light row the table does not list, by Edit/Write or by any shell write the door reads as reaching it however the path is spelled, while a read passes and a pin move passes, word or none, here and at `use`; the chat pins are written only through `chat-pin`\n' "$asserts"

@@ -18,9 +18,9 @@ set -u
 
 MODE="${1:-}"
 IFS= read -r -d '' input
-# Every Bash call pays this door: one naming neither the pin file nor the chat-pins directory forks
-# nothing.
-if [ "$MODE" = bash ]; then
+# Every Bash call and every Write/Edit pays this door: one naming neither the pin file nor the
+# chat-pins directory forks nothing.
+if [ "$MODE" = bash ] || [ "$MODE" = write ]; then
   case $input in
     *worker-model* | *chat-pin*) ;;
     *) [ -n "${CHAT_PINS_DIR:-}" ] && [[ $input == *"${CHAT_PINS_DIR##*/}"* ]] || exit 0 ;;
