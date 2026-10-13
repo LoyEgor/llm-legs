@@ -32,24 +32,33 @@ flow_image_flags() {
     return 0
   fi
   [ "$route" = flow ] || flow_image_say "--route is cli or flow"
-  model=${model:-$(flow_image_caps .default_model)}
-  [ -n "$(flow_image_caps ".models[\"$model\"] // empty")" ] ||
-    flow_image_say "--model on --route flow is one of: $(flow_image_caps '.models | keys_unsorted | join(", ")')"
-  [[ "$count" =~ ^[0-9]+$ ]] && [ -n "$(flow_image_caps ".counts | index($count) // empty")" ] ||
-    flow_image_say "--count on --route flow is $(flow_image_caps '.counts | "\(min)-\(max)"')"
+  local default_model model_ok models count_ok counts aspect_ok aspects refs_max upscale_ok upscales
+  {
+    IFS= read -r default_model; IFS= read -r model_ok; IFS= read -r models; IFS= read -r count_ok
+    IFS= read -r counts; IFS= read -r aspect_ok; IFS= read -r aspects; IFS= read -r refs_max
+    IFS= read -r upscale_ok; IFS= read -r upscales
+  } < <(jq -r --arg model "$model" --arg count "$count" --arg aspect "$aspect" --arg upscale "$upscale" '.flow_image |
+    .default_model, (if .models[if $model == "" then .default_model else $model end] then 1 else "" end),
+    (.models | keys_unsorted | join(", ")),
+    ((($count | tonumber?) // null) as $n | if $n != null and (.counts | index($n)) != null then 1 else "" end),
+    (.counts | "\(min)-\(max)"), (if (.aspects | index($aspect)) != null then 1 else "" end), (.aspects | join(",")),
+    .refs_max, (if .upscale[$upscale] then 1 else "" end), (.upscale | keys | join("|"))' \
+    "$(image_caps_file "$root" gemini)")
+  model=${model:-$default_model}
+  [ -n "$model_ok" ] || flow_image_say "--model on --route flow is one of: $models"
+  [[ "$count" =~ ^[0-9]+$ ]] && [ -n "$count_ok" ] || flow_image_say "--count on --route flow is $counts"
   aspect_asked=''
   if [ -n "$aspect" ] && { [ -z "$resume" ] || [ "$aspect_given" = true ]; }; then
     [[ "$aspect" =~ ^[1-9][0-9]*:[1-9][0-9]*$ ]] ||
-      flow_image_say "--aspect is W:H; --route flow maps it to the nearest of: $(flow_image_caps '.aspects | join(" ")')"
-    if [ -z "$(flow_image_caps ".aspects | index(\"$aspect\") // empty")" ]; then
+      flow_image_say "--aspect is W:H; --route flow maps it to the nearest of: ${aspects//,/ }"
+    if [ -z "$aspect_ok" ]; then
       aspect_asked=$aspect
-      aspect=$(image_caps_nearest_aspect "$aspect" "$(flow_image_caps '.aspects | join(",")')")
+      aspect=$(image_caps_nearest_aspect "$aspect" "$aspects")
     fi
   fi
-  [ "${#refs[@]}" -le "$(flow_image_caps .refs_max)" ] ||
-    flow_image_say "--route flow takes at most $(flow_image_caps .refs_max) --ref images"
-  [ -z "$upscale" ] || [ -n "$(flow_image_caps ".upscale[\"$upscale\"] // empty")" ] ||
-    flow_image_say "--upscale is $(flow_image_caps '.upscale | keys | join("|")') (4K needs a higher Google plan)"
+  [ "${#refs[@]}" -le "$refs_max" ] || flow_image_say "--route flow takes at most $refs_max --ref images"
+  [ -z "$upscale" ] || [ -n "$upscale_ok" ] ||
+    flow_image_say "--upscale is $upscales (4K needs a higher Google plan)"
   [ -z "$resume" ] || { [ "$count" = 1 ] && [ "${#refs[@]}" -eq 0 ]; } ||
     flow_image_say "--resume on --route flow edits one image in its Flow editor; it takes no --count or --ref"
 }
