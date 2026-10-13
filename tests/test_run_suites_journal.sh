@@ -130,6 +130,8 @@ R2="$WORK/r2"
 new_repo "$R2"
 suite "$R2" test_quick.sh 'exit 0'
 suite "$R2" test_wait.sh "echo \$\$ >\"$WORK/wait-pid\"; while [ ! -e \"$WORK/release\" ]; do sleep 0.2; done"
+# Two suites still running hold the slot to the signal: down to one, the run frees it on its own.
+cp "$R2/tests/test_wait.sh" "$R2/tests/test_wait_b.sh"
 bash "$ROOT/share/run-suites.sh" --repo "$R2" -j 2 >/dev/null 2>&1 &
 pid=$!
 for _ in $(seq 1 300); do
@@ -154,9 +156,9 @@ sig, target, cmd = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
 for inherited in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(inherited, signal.SIG_DFL)
 p = subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-for _ in range(600):
+for _ in range(3000):
     if os.path.exists(os.environ["READY"]): break
-    time.sleep(0.05)
+    time.sleep(0.01)
 at = time.time()
 os.killpg(p.pid, sig) if target == "group" else p.send_signal(sig)
 rc = p.wait()
