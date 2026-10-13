@@ -383,8 +383,8 @@ horizon = int(re.search(r"^REVIEWERS_TOKEN_HORIZON_S=(\d+)$", Path(sys.argv[2]).
 assert horizon == catalog.RATER_TIMEOUT_S + cell_runtime._TOKEN_MARGIN_S
 assert horizon >= judge.JUDGE_TIMEOUT_S + cell_runtime._TOKEN_MARGIN_S
 HORIZONPY
-assert doc_has 'Panel cell lifetime'
-assert doc_has 'PANEL_CELL_GRACE_S = 60'
+assert grep -Fq 'Panel cell lifetime' "$REVIEW_ROOT/docs/shared-invariants.md"
+assert grep -Fq 'PANEL_CELL_GRACE_S = 60' "$REVIEW_ROOT/docs/shared-invariants.md"
 assert grep -Fq 'PANEL_CELL_GRACE_S = 60' "$RB_CATALOG"
 assert grep -Fq 'return self.alone_at is None or now < self.alone_at + _catalog.PANEL_CELL_GRACE_S' "$RB_LAUNCH"
 assert grep -Fq '_launch.bind_panel_lifetime(run_dir, submitted_raters)' "$RB_CLI"
