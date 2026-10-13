@@ -1217,15 +1217,16 @@ fi
 
 if suite_shard_owns 2 login; then
 # --- login --wait, the step `<vendor>b web` holds on (both engines, one gw.cmd_login) -----------------
-# The fake Chrome exits at once and leaves its profile lock with a process that lives 3 s, as a real
-# one handing its window to a running Chrome does: the wait ends only when that process is gone.
+# The fake Chrome exits at once and leaves its profile lock with a process that lives 2 s, as a real
+# one handing its window to a running Chrome does: the wait ends only when that process is gone, which
+# the 1.5 s poll that sees Chrome's own exit cannot have seen.
 LOGIN_APP="$WORK/login-chrome.app"
 mkdir -p "$LOGIN_APP/Contents/MacOS"
 cat >"$LOGIN_APP/Contents/MacOS/Google Chrome" <<'EOF'
 #!/usr/bin/env bash
 profile=${1#--user-data-dir=}
 printf '%s\n' "$@" >"$profile.argv"
-sleep 3 </dev/null >/dev/null 2>&1 &
+sleep 2 </dev/null >/dev/null 2>&1 &
 ln -sfn "host-$!" "$profile/SingletonLock"
 EOF
 chmod +x "$LOGIN_APP/Contents/MacOS/Google Chrome"
@@ -1234,7 +1235,11 @@ for engine in "gemini_web main" "chatgpt_web alpha"; do
   started=$SECONDS
   login_out=$(GEMINI_WEB_CHROME="$LOGIN_APP" python3 "$ROOT/share/$1.py" login --wait "$2" 2>"$WORK/login.err")
   assert test "$?" -eq 0
-  assert test "$((SECONDS - started))" -ge 3
+  assert test "$((SECONDS - started))" -ge 2
+  [ "$1" = gemini_web ] && holder=$GEMINI_WEB_DIR || holder=$CHATGPT_WEB_DIR
+  holder=$(readlink "$holder/profiles/$2/SingletonLock")
+  assert test -n "${holder#host-}"
+  assert_fails ps -p "${holder#host-}" >/dev/null
   assert jq -e --arg account "$2" '.ok and .account == $account and (.login | type) == "boolean"' <<<"$login_out" >/dev/null
   if [ "$1" = gemini_web ]; then
     assert grep -q "sign main in in the Chrome window that opened (Google in the first tab, then in the Flow Music tab Log in → Continue with Google → Agree → Grant access), then quit it with Cmd+Q" "$WORK/login.err"
