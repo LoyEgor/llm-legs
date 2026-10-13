@@ -476,6 +476,12 @@ assert_fails bash "$SCRIPT" add main >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add Bad >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add alpha >/dev/null 2>&1
 
+# A prompt after 11 s of silence, the way a loaded machine delays one: it is answered, not hung on.
+# Started past the bare `wait` above, which would sit out its 11 s, and awaited at the end.
+timeout 60 python3 "$ROOT/tests/fixtures/answer-pty.py" y bash -c 'sleep 11; read -rp "late? [y/N] " a; echo "late=$a"' \
+  >"$WORK/late-prompt" 2>&1 &
+late_prompt=$!
+
 custom_profiles="$WORK/custom-profiles"
 custom_output=$(GEMINIB_PROFILES_DIR="$custom_profiles" bash "$SCRIPT" add override) \
   || fail "add with profiles override failed"
@@ -569,10 +575,6 @@ notty_output=$(bash "$SCRIPT" p notty </dev/null 2>&1) || fail "profile notty fa
 assert grep -qx "CALL home=$HOME/.gemini-profiles/notty argc=0" "$AGY_CALLS"
 if grep -q "web routes" <<<"$notty_output" || grep -q login "$WEB_CALLS"; then fail "no tty, yet it asked"; fi
 on_tty() { python3 "$ROOT/tests/fixtures/answer-pty.py" "$@"; }
-# A prompt after 11 s of silence, the way a loaded machine delays one: it is answered, not hung on.
-timeout 60 python3 "$ROOT/tests/fixtures/answer-pty.py" y bash -c 'sleep 11; read -rp "late? [y/N] " a; echo "late=$a"' \
-  >"$WORK/late-prompt" 2>&1 &
-late_prompt=$!
 for child in 'exec </dev/null >/dev/null 2>&1; exec sleep 120' 'while :; do echo x; sleep 0.5; done'; do
   ANSWER_PTY_DEADLINE_S=2 timeout 30 python3 "$ROOT/tests/fixtures/answer-pty.py" y bash -c "$child" \
     >/dev/null 2>"$WORK/pty-deadline"
@@ -594,8 +596,6 @@ if grep -q "web routes" <<<"$again_output" || test -s "$WEB_CALLS"; then fail "a
 signed_output=$(WEB_ACCOUNTS='{"ok": true, "accounts": [{"account": "ttysigned", "login": true}]}' \
   on_tty y bash "$SCRIPT" p ttysigned)
 if grep -q "web routes" <<<"$signed_output" || grep -q login "$WEB_CALLS"; then fail "a signed-in web profile was offered"; fi
-wait "$late_prompt" || fail "a prompt after a long silence hung answer-pty: $(cat "$WORK/late-prompt")"
-assert grep -q '^late=y' "$WORK/late-prompt"
 
 for reserved in profile p run add remove list status pick help login agy-launch web; do
   assert_fails bash "$SCRIPT" profile "$reserved" </dev/null >/dev/null 2>&1
@@ -1280,4 +1280,7 @@ assert_fails test -e "$XPORT_OUT/unknown"
 assert jq -se --arg home "$XPORT_HOME" 'all(.[]; .home == $home)
   and (.[0:2] | map(.args[0])) == ["unlock-keychain", "find-generic-password"]' "$XPORT_LOG" >/dev/null
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, geminib web (a roster-gated gemini-web login held until its window is quit, then status: ready with the credits or the reason and exit 4; offered once after a first login on a tty, default no; flow/f gone and free as names), worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion, and keychain-first export-token with HOME-pinned read/unlock, 0600 nested access-only output retaining ID tokens, trusted-side refresh without profile writes (a wrong-first embedded client secret skipped on invalid_client), safe grant and lifetime refusals, no overwrite, and nested/flat legacy fallback only for an absent keychain item"
+wait "$late_prompt" || fail "a prompt after a long silence hung answer-pty: $(cat "$WORK/late-prompt")"
+assert grep -q '^late=y' "$WORK/late-prompt"
+
+echo "PASS:$asserts asserts; base and isolated HOME routing, geminib web (a roster-gated gemini-web login held until its window is quit, then status: ready with the credits or the reason and exit 4; offered once after a first login on a tty, default no; flow/f gone and free as names), worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion, and keychain-first export-token with HOME-pinned read/unlock, 0600 nested access-only output retaining ID tokens, trusted-side refresh without profile writes (a wrong-first embedded client secret skipped on invalid_client), safe grant and lifetime refusals, no overwrite, and nested/flat legacy fallback only for an absent keychain item"
