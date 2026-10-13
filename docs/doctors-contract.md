@@ -344,7 +344,7 @@ Harness doctor (added 2026-09-29 by its owner chat):
   Its `suites` (`share/suite_audit.py`) adds `suite_audit:<repo>:<suite>` problems, group `Suite audits`, `watch`: every
   suite of the sweep and night helper repositories priced at wall-min/day, CPU-min/day beside it (its last 20 runs' median wall and CPU times its runs over 7 days of run-suites' journal, every
   runner), due when a Test health candidate is dead or pinned and unaudited since, never audited, the suite or a tests/ helper it names has another blob, or wall
-  a run (the fastest of the last 20 passing runs; CPU stays a column) ≥ 2× the audit's; every run after a commit ≥ 2× and ≥ 30 s
+  a run held ≥ 2× the audit's by every newest passing run over 2 days (`HELD_S`; CPU stays a column); every run after a commit, over 2 days, ≥ 2× and ≥ 30 s
   over the fastest before it once divided by the machine's slowdown (`load`: the median, over ≥ 3 suites whose sources
   no commit changed between the runs compared, of their fastest after over fastest before; ≥ 1), or a new suite (not
   a split) over 3× the median suite a run, is due at once and names its commit. A suite under 1 wall-min/day

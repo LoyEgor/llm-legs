@@ -93,10 +93,10 @@ def cpu(value, rc=0, **extra):
 
 
 journal = [row(NOW - 6 * 86400 + i * 600, {"test_heavy": cpu(40)}, cheap) for i in range(6)]
-journal += [row(NOW - 2 * 86400 + i * 600, {"test_heavy": cpu(100)}, new) for i in range(6)]
+journal += [row(NOW - 3 * 86400 + 3600 + i * 36000, {"test_heavy": cpu(100)}, new) for i in range(6)]
 journal += [row(NOW - 86400 + i * 600, {"test_new": cpu(60)}, new) for i in range(3)]
 journal += [row(NOW - 3600 + i * 60, {"test_part": cpu(60)}, split) for i in range(4)]
-journal += [row(NOW - 5 * 86400 + i * 600, {"test_mid": cpu(20)}, cheap, worker=(i == 0)) for i in range(10)]
+journal += [row(NOW - 5 * 86400 + i * 30000, {"test_mid": cpu(20)}, cheap, worker=(i == 0)) for i in range(10)]
 journal += [row(NOW - 4 * 86400, {"test_light": cpu(2, rc=1)}, cheap),
             row(NOW - 8 * 86400, {"test_mid": cpu(999)}, cheap)]
 journal += [row(NOW - 4 * 86400 + i, {n: cpu(2) for n in ("test_light", "test_a", "test_b", "test_c", "test_d")}, cheap)
@@ -196,6 +196,15 @@ rose = {p["suite"]["component"]: p for p in collect()["problems"]}.get("alpha/te
 check(rose and rose["suite"]["due"] == "wall a run ×2.0 since audit"
       and suite_audit.restate([rose], {"suite:alpha/test_mid": dict(recorded, wall_run=20 / 2.0)}) == [rose],
       "wall a run at 2x the audit's is due again, and the audit it rose over does not settle it for a night close")
+one_day = [r for r in journal if not {"test_heavy.sh", "test_mid.sh"} & set(r["suites"])]
+one_day += [row(NOW - 6 * 86400 + i * 600, {"test_heavy": cpu(40)}, cheap) for i in range(6)]
+one_day += [row(NOW - 2 * 86400 + i * 600, {"test_heavy": cpu(100)}, new) for i in range(6)]
+one_day += [row(NOW - 5 * 86400 + i * 600, {"test_mid": cpu(20)}, cheap) for i in range(10)]
+save(one_day)
+spiked = {p["suite"]["component"]: p["suite"]["due"] for p in collect()["problems"]}
+save(journal)
+check(spiked.get("alpha/test_heavy") == "never audited" and "alpha/test_mid" not in spiked,
+      "a rise held for one day is no rise, between commits or since the audit: it must span 2 days: %s" % spiked)
 dropped = dict(recorded, sources=dict(recorded["sources"], **{"alpha/tests/gone.sh": "0" * 40}))
 ledger([dropped])
 gone = {p["suite"]["component"]: p for p in collect()["problems"]}.get("alpha/test_mid")
@@ -293,7 +302,7 @@ check(time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["text"] == "20 → 
       "one lucky fast run after the night proves nothing: a suite compares medians, never the fastest run")
 controls = ("test_a", "test_b", "test_c")
 busy = [row(NOW + 60 + i, {n: cpu(4) for n in controls}, cheap) for i in range(5)]
-busy += [row(NOW - 5 * 86400 + 3000 + i * 600, {n: cpu(2) for n in controls}, cheap) for i in range(5)]
+busy += [row(NOW - 5 * 86400 + 150000 + i * 30000, {n: cpu(2) for n in controls}, cheap) for i in range(5)]
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(24)}, split) for i in range(5)] + busy)
 loaded = time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(25)}, split) for i in range(5)] + busy[:3] + busy[5:])
@@ -411,7 +420,7 @@ for r in late:
 check(time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/late.sh"]}, NOW - 30, NOW, NOW + 600)["text"]
       == "100 → 100 ms/call · not proven",
       "a drop that came before the night is not its gain: the first N calls after it against the newest N before it")
-flat = [{"wall": w, "cpu": 20.0, "head": h, "end": NOW + i, "ok": True}
+flat = [{"wall": w, "cpu": 20.0, "head": h, "end": NOW + i * 36000, "ok": True}
         for i, (w, h) in enumerate([(40.0, "a")] * 6 + [(100.0, "b")] * 6)]
 check(suite_audit.jump(flat) and suite_audit.jump(flat)["before"] == 40 and suite_audit.proof(
     {"history": [dict(f, wall=30.0) for f in flat[:5]]},

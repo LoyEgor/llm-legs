@@ -3,13 +3,14 @@ repositories priced and ranked at wall-min/day over 7 days of run-suites' journa
 it: a suite idles most of its wall, so CPU alone misses it. A run's wall is its fastest of the last 20 passing runs
 (`wall_floor`): contention swamps the median. Test health's dead suites join the queue. An audit is due when never
 done, when the suite or a tests/ helper it names has another blob than at audit that a Speed audit run did not land
-(spend.moved), or when its wall per run reached 2x the audit's; a rise of 2x and 30 s between commits beyond the
-machine's slowdown over the same spans (`load`), or a new suite over 3x the median suite per run, is due at once and
-names its commit. A suite under FLOOR_MIN_DAY wall-min/day is never due but dead, and the head counts the ones that
-floor skipped. Audit rows live in Spend's ledger (share/spend-ledger.json) as `suite:<repo>/<label>`."""
+(spend.moved), or when its wall per run held >= 2x the audit's over HELD_S (2 days); a rise of 2x and 30 s between
+commits beyond the machine's slowdown over the same spans (`load`), held over HELD_S, or a new suite over 3x the
+median suite per run, is due at once and names its commit. A suite under FLOOR_MIN_DAY wall-min/day is never due but
+dead, and the head counts the ones that floor skipped. Audit rows live in Spend's ledger (share/spend-ledger.json) as `suite:<repo>/<label>`."""
 
 import bisect
 import datetime
+import itertools
 import os
 import re
 import statistics
@@ -29,6 +30,7 @@ WALL_RISE = 2.0
 JUMP_S = 30.0
 NEW_HEAVY = 3.0
 SIDE_RUNS = 3
+HELD_S = 2 * 86400
 LOAD_CONTROLS = 3
 SHOWN = 10
 FLOOR_MIN_DAY = 1.0
@@ -131,7 +133,7 @@ def passing(history):
 
 def jump(history, load=lambda before, after: 1.0):
     """The first run of a commit after which every run's wall stayed >= 2x and >= 30 s over the fastest before it,
-    the after side divided by load(before runs, after runs)."""
+    the after side divided by load(before runs, after runs) and spanning HELD_S, so a one-day spike is no rise."""
     history = passing(history)
     walls = [h["wall"] for h in history]
     if len(walls) < 2 * SIDE_RUNS or max(walls) < JUMP_S:
@@ -144,7 +146,7 @@ def jump(history, load=lambda before, after: 1.0):
         if i < SIDE_RUNS or len(walls) - i < SIDE_RUNS:
             continue
         before, after = min(walls[:i]), min(walls[i:])
-        if after >= WALL_RISE * before and after - before >= JUMP_S:
+        if after >= WALL_RISE * before and after - before >= JUMP_S and history[-1]["end"] - h["end"] >= HELD_S:
             factor = load(history[:i], history[i:])
             if after / factor >= WALL_RISE * before and after / factor - before >= JUMP_S \
                     and (not best or after / factor - before > best[0]):
@@ -264,9 +266,17 @@ def due(c, row, held, median, new, dead=None, timed=None, memo=None):
     if spend.moved(row, held, os.path.dirname(c["top"].rstrip("/")), memo):
         return "source changed", False, changed_at(c["top"], c["sources"], held, row)
     then = row.get("wall_run")
-    if isinstance(then, (int, float)) and then > 0 and c["wall_floor"] >= WALL_RISE * then:
-        return "wall a run ×%.1f since audit" % (c["wall_floor"] / then), False, max(c["history"][-1]["end"], audited + 1)
+    held = held_rise(c["history"], WALL_RISE * then) if isinstance(then, (int, float)) and then > 0 else None
+    if held:
+        return "wall a run ×%.1f since audit" % (held / then), False, max(c["history"][-1]["end"], audited + 1)
     return None
+
+
+def held_rise(history, bar):
+    """The fastest wall of the newest passing runs that all read >= bar, once they span HELD_S: a rise held over three
+    days, never a one-day spike."""
+    streak = list(itertools.takewhile(lambda h: h["wall"] >= bar, reversed(passing(history))))
+    return min(h["wall"] for h in streak) if streak and streak[0]["end"] - streak[-1]["end"] >= HELD_S else None
 
 
 def proof(c, row):
