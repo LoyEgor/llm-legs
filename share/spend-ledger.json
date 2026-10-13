@@ -1672,6 +1672,21 @@
    "verdict": "cut",
    "zero": "removal saves 2.4 CPU-min/day; loses the nudge to read llm-limits --table before any limit theory after a limit-shaped Bash error",
    "note": "env bash start 8.4 ms + a cat fork 2.5 ms were 12.6 of the 13 CPU-ms a run: now /bin/bash and a read builtin, 3.7 ms on the same payloads, output/exit/state file identical on 406 real-transcript payloads. Wasted is ~all of it (0 of 400 real payloads got a nudge) but the run cannot be skipped: PostToolUse cannot filter on output, merging with word-spend is the declined hook dispatcher (2026-10-05). The other ~20 env-bash hooks pay the same 5.8 ms start floor; each needs its own bash 3.2 check (share/run-liveness.sh uses printf %()T, so no blanket switch)"
+  },
+  {
+   "id": "cpu:hook/stop-dispatch.sh",
+   "title": "hook/stop-dispatch.sh",
+   "audited_at": "2026-10-13T09:36:20+03:00",
+   "by": "harness-speed-cpu-hook-limits-triage-nudge-sh-20261012T235048Z-1236",
+   "cpu_min_day": 1.8,
+   "cpu_s_run": 0.31,
+   "runs_day": 311,
+   "sources": {
+    "claude-setup/hooks/stop-dispatch.sh": "a1d24a66a5e66415fd4a91e2dac19c763fd6b9eb"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.4 CPU-min/day; loses every Stop guard: the ask deferral while the chat works, the worker-run backstop, the report drain, the word notices",
+   "note": "own overhead of ~280 CPU-ms a stop: the run-root scan sorted ~1900 finished run names in a UTF-8 locale (LC_COLLATE=C in dispatcher and backstop, ~25-35 ms) and a jq on an empty backstop answer; busy verdict identical, test_stop_dispatch 213 and test_stop_backstop 7 asserts pass. 98.3% of stops end all-silent (1050 of 1068 in the journal) so nearly all CPU is wasted but unavoidable per stop. NOT fixed, for the next fixer: the parts are ~55% of the CPU and notice-word-journal (temporary scaffolding per its header) and notice-chat-names each spawn python3 (~45 ms) every stop, the backstop is 40 ms (env bash, 3.2 unusable: printf %()T)"
   }
  ]
 }
