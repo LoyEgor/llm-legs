@@ -27,12 +27,14 @@ readers() { # root -> repo-relative files in bin/ and share/ reading a grant out
   done)
 }
 
-check() { # root -> 0 when every grant reader is listed
-  local root=$1 file bad=0
+check() { # root [readers] -> 0 when every grant reader is listed
+  local root=$1 found=${2-} file bad=0
+  [ "$#" -gt 1 ] || found=$(readers "$root")
   while IFS= read -r file; do
+    [ -n "$file" ] || continue
     awk -F '\t' -v f="$file" '$1 == f { found = 1 } END { exit !found }' <<<"$ALLOWED" ||
       { printf 'reads a grant unlisted: %s\n' "$file"; bad=1; }
-  done < <(readers "$root")
+  done <<<"$found"
   return "$bad"
 }
 
@@ -40,13 +42,14 @@ listed_still_read() { # every allowlist entry still reads a grant, so no stale e
   local file
   while IFS=$'\t' read -r file _; do
     [ -n "$file" ] || continue
-    readers "$ROOT" | grep -qxF -- "$file" || { printf 'stale allowlist entry: %s\n' "$file"; return 1; }
+    grep -qxF -- "$file" <<<"$root_readers" || { printf 'stale allowlist entry: %s\n' "$file"; return 1; }
   done <<<"$ALLOWED"
 }
 
 quiet_check() { check "$1" >/dev/null; }
 
-assert check "$ROOT"
+root_readers=$(readers "$ROOT")
+assert check "$ROOT" "$root_readers"
 assert listed_still_read
 
 mkdir -p "$WORK/plant/bin" "$WORK/plant/share"
