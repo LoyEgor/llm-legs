@@ -8813,6 +8813,37 @@
       "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
       "note": "Ruled out 2026-10-13: no sleep, timeout, wait or poll in the suite, tests/word_triggers_harness.sh, hooks/word-intake.sh or hooks/lib/words.sh. The idle is ~120 serial `reads` (jq, bash word-intake.sh, python3 words.py, jq) queued for CPU: at load ~160 one read is 0.8-2.1 s wall on ~90 ms CPU (bare jq 478 ms, python3 158 ms); 145-182 s a run then. Running reads concurrently only takes CPU share from co-running suites; batching the grammar in one python skips the hook path the suite exists to drive.",
       "handoff": null
+    },
+    {
+      "id": "speed-flaky-test-harness-doctor",
+      "title": "test_harness_doctor went red under /usr/bin/python3 (3.9) and green under Homebrew's on the same tree: at_epoch's fromisoformat refused a Z suffix",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/flaky/llm-legs/test_harness_doctor"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T06:40:00+03:00",
+          "by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_harness_doctor per shard under /usr/bin/python3 3.9.6 and Homebrew python3 3.14.7, before and after; at_epoch on Z, offset and None stamps",
+            "data": "the suite's own fixtures, SUITE_SHARD=1..4/4 and unsharded, at load 120-160",
+            "result": "before: 3.9 red in shard 2 (ruled-out row reopened) and shard 4 (calibration assert 7, a fixes[].at read as None), 3.14 green; after: every shard green on both, 421 asserts; on 3.11+ fromisoformat already read Z, so the 3.14 output is unchanged"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
+      "note": "The three flaky reds (2026-10-10 09:38, 09:50, 10:13, all pre-shard trees) were worker shells whose PATH lacked /opt/homebrew/bin, per each worker's own report; the rerun with Homebrew first passed. launchd/harness-doctor falls back to /usr/bin/python3, so the doctor must judge the same there; the hd-launchd check pins at_epoch under it. Also fixed: the canary check read browse-calls as soon as it existed, before the stub's echo wrote it (now waits on canary.stamp, written last), the self-reload poll's 10 s deadline (now 30 s, exits early when green), and the hang-case TMPDIR restore that raised TypeError when TMPDIR was unset. Ruled out: HARNESS_DOCTOR_FAKE_SAMPLE=\"\" reaching the live sampler (an empty value returns no sample at once, bin/harness-doctor take_sample).",
+      "handoff": null
     }
   ],
   "blind_spots": [

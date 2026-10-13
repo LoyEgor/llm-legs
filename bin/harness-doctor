@@ -5533,8 +5533,8 @@ def judge_digest(ledger_raw):
 
 def at_epoch(text):
     try:
-        return datetime.datetime.fromisoformat(text).timestamp()
-    except (TypeError, ValueError):
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
         return None
 
 

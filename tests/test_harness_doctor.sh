@@ -1123,7 +1123,9 @@ hang_runs = [hang_run("suites", T - 600, {"test_tty.sh": {"rc": 124, "secs": 360
              hang_run("direct", T - 50, {"test_new.sh": {"rc": 137, "secs": 9000}}, signal=9)]
 saved_tmp, os.environ["TMPDIR"] = os.environ.get("TMPDIR"), hang_logs
 hang_part = m.tests_section(slow_mix, T, (), hang_runs)
-os.environ["TMPDIR"] = saved_tmp
+os.environ.pop("TMPDIR")
+if saved_tmp is not None:
+    os.environ["TMPDIR"] = saved_tmp
 hang_v = {v["ident"]: v for v in m.all_verdicts([hang_part]) if v["rule"] == "test_hang"}
 tty = hang_v.get("hang-repo:test_tty", {})
 check(tty.get("level") == "red" and tty.get("value") == 1 and tty.get("bad") == 1 and tty.get("exposure") == 1
@@ -1550,7 +1552,7 @@ put(launchctl_log, "")
 os.environ["XPC_SERVICE_NAME"] = "com.test.self"
 rc, out = redeployed()[:2]
 os.environ.pop("XPC_SERVICE_NAME")
-for _ in range(200):
+for _ in range(600):
     reloads = open(launchctl_log).read().split()
     if len(reloads) >= 4:
         break
@@ -1677,16 +1679,13 @@ B(T)
 time.sleep(0.3)
 check(not os.path.exists(calls), "Browser: a read-only run never starts the canary")
 B(T, write=True)
-for _ in range(50):
-    if os.path.exists(calls):
-        break
-    time.sleep(0.1)
-check(open(calls).read().split() == ["browse", "--canary"], "Browser: a writing run starts the canary when its stamp is stale")
-os.remove(calls)
-for _ in range(50):
+for _ in range(600):
     if os.path.exists(os.path.join(runs, "browse", "canary.stamp")):
         break
-    time.sleep(0.1)
+    time.sleep(0.05)
+check(os.path.exists(calls) and open(calls).read().split() == ["browse", "--canary"],
+      "Browser: a writing run starts the canary when its stamp is stale")
+os.remove(calls)
 B(T, write=True)
 time.sleep(0.3)
 check(not os.path.exists(calls), "Browser: a fresh canary stamp holds the next start")
@@ -2709,6 +2708,17 @@ os.execv = lambda path, argv: print(json.dumps(argv, separators=(",", ":")))
 module.exec_speed()
 EOF
 )" "Speed runs at its caller's priority: a night prep or menu waiting on Harness never waits on a taskpolicy -b band"
+# launchd/harness-doctor falls back to /usr/bin/python3 (3.9), whose fromisoformat refuses a Z suffix.
+if [ -x /usr/bin/python3 ]; then
+assert_eq '1767225600.0 None' "$(/usr/bin/python3 - "$DOCTOR" <<'EOF'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+print(module.at_epoch("2026-01-01T00:00:00Z"), module.at_epoch(None))
+EOF
+)" "the wrapper's fallback interpreter reads a ledger's Z stamps, so ruled_at and fixes[].at judge the same on every python3"
+fi
 fi
 
 printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock in a LaunchAgent that is never starved, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"
