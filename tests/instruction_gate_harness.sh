@@ -191,6 +191,7 @@ price() { gate "echo priced-$1 > $2" | jq -r '.hookSpecificOutput.permissionDeci
 
 BLOAT_STAMPS="$HOME/.cache/bloat-gate"
 export INSTRUCTION_BLOAT_GATE_STAMPS="$BLOAT_STAMPS"
+rep() { local s; printf -v s '%*s' "$2" ''; printf '%s\n' "${s// /$1}"; }
 printf -v big '%400s' ''
 big=${big// /y}
 bloat() {

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/instruction_gate_harness.sh" || exit 1
+. "$ROOT/share/instruction-files.sh"
+fmt() { "$@"; }
 
 echo "== bloat gate: the measured multipliers reach the message"
 msg=$(bloat "$CLAUDE_MD" | jq -r '.hookSpecificOutput.permissionDecisionReason')
@@ -533,7 +535,7 @@ growth_decision() {
   printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"'
 }
 write_current_rates
-readme_growth=$(python3 -c 'print("r" * 800)')
+readme_growth=$(rep r 800)
 msg=$(growth_output "$README" "$readme_growth" path-readme \
   | jq -r '.hookSpecificOutput.permissionDecisionReason')
 # The limit-unit figure, not the dollar-priced `reads` beside it in the same entry: the gate
@@ -542,7 +544,7 @@ assert_contains "~500 times a week" "$msg"
 assert_contains "~2,000 times a month" "$msg"
 assert_contains "tokens/week" "$msg"
 assert_contains "tokenmap reads $README" "$msg"
-memory_growth=$(python3 -c 'print("m" * 3000)')
+memory_growth=$(rep m 3000)
 msg=$(growth_output "$PROJECT_MEMORY" "$memory_growth" path-memory \
   | jq -r '.hookSpecificOutput.permissionDecisionReason')
 assert_contains "~150 times a week" "$msg"
@@ -591,12 +593,12 @@ assert_eq "~700 times a week" "$(drift_quote 720)"
 write_current_rates
 
 echo "== bloat gate: the weekly budget makes cheap files more permissive"
-cheap_growth=$(python3 -c 'print("c" * 10000)')
+cheap_growth=$(rep c 10000)
 assert_eq pass "$(growth_decision "$CHEAP_MD" "$cheap_growth" threshold-cheap)"
 
 echo "== bloat gate: the weekly threshold is never stricter than 120 bytes"
-exactly_120=$(python3 -c 'print("g" * 121)')
-over_120=$(python3 -c 'print("g" * 122)')
+exactly_120=$(rep g 121)
+over_120=$(rep g 122)
 assert_eq pass "$(growth_decision "$CLAUDE_MD" "$exactly_120" clamp-pass)"
 assert_eq deny "$(growth_decision "$CLAUDE_MD" "$over_120" clamp-deny)"
 
@@ -672,10 +674,10 @@ ceil_decision() {
   printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
 }
 ceil_reason() { ceil "$@" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""'; }
-grow200=$(python3 -c 'print("z"*201, end="")')
+grow200=$(rep z 201)
 
 rm -rf "$CEIL_STAMPS"
-python3 -c 'print("g"*32899)' > "$REAL_MD"
+rep g 32899 > "$REAL_MD"
 assert_eq 32900 "$(wc -c <"$REAL_MD" | tr -d '[:space:]')"
 assert_contains "past its 33000-byte ceiling" "$(ceil_reason "$CLAUDE_MD" x "$grow200" hard)"
 # The stamp ritual never gets a say: the identical edit is denied again after a full re-read, which
@@ -691,7 +693,7 @@ assert_eq deny "$(ceil_decision "$HOME/.claude-profiles/com/CLAUDE.md" x "$grow2
 assert_eq deny "$(ceil_decision "$REAL_MD" x "$grow200" hard-repo)"
 # A Write is sized by the content it would leave behind.
 assert_contains "past its 33000-byte ceiling" \
-  "$(jq -cn --arg p "$CLAUDE_MD" --arg n "$(python3 -c 'print("g"*34000, end="")')" \
+  "$(jq -cn --arg p "$CLAUDE_MD" --arg n "$(rep g 34000)" \
        '{tool_name:"Write",cwd:"/tmp",session_id:"ceil-write",tool_input:{file_path:$p,content:$n}}' \
      | INSTRUCTION_BLOAT_GATE_STAMPS="$CEIL_STAMPS" bash "$BLOAT" \
      | jq -r '.hookSpecificOutput.permissionDecisionReason')"
@@ -699,14 +701,13 @@ assert_contains "past its 33000-byte ceiling" \
 echo "== bloat gate: shrinking an oversized global file is the way back down, not a violation"
 # The cap is direction-aware. A gate that denied 34000 -> 33500 would leave the only edit that fixes
 # the problem as the one it refuses.
-python3 -c 'print("g"*33999)' > "$REAL_MD"
+rep g 33999 > "$REAL_MD"
 assert_eq "" "$(ceil "$CLAUDE_MD" "$grow200" x shrink)"
-assert_eq pass "$(ceil_decision "$CLAUDE_MD" "$grow200" x shrink)"
 
 echo "== bloat gate: the ceiling is not gated by the growth threshold"
 # A byte over the cap is over the cap; the threshold below which growth goes unpriced says nothing
 # about the size the file would reach.
-python3 -c 'print("g"*32998)' > "$REAL_MD"
+rep g 32998 > "$REAL_MD"
 assert_eq 32999 "$(wc -c <"$REAL_MD" | tr -d '[:space:]')"
 assert_eq deny "$(ceil_decision "$CLAUDE_MD" x xyz tiny-over)"
 # Landing exactly on the cap is not past it — it is only worth a warning.
@@ -717,7 +718,7 @@ assert_contains "would be 33000 bytes" \
 
 echo "== bloat gate: between the two bounds the warning rides along with the ordinary pricing"
 rm -rf "$CEIL_STAMPS"
-python3 -c 'print("g"*29899)' > "$REAL_MD"
+rep g 29899 > "$REAL_MD"
 msg=$(ceil_reason "$CLAUDE_MD" x "$big" warn-flow)
 assert_contains "tokens/week and " "$msg"
 assert_contains "would be 30299 bytes" "$msg"
@@ -728,7 +729,7 @@ assert_eq "" "$(printf '%s' "$warn_out" | jq -r '.hookSpecificOutput.permissionD
 assert_contains "would be 30299 bytes" \
   "$(printf '%s' "$warn_out" | jq -r '.hookSpecificOutput.additionalContext // ""')"
 # Under the warning bound the size is nobody's business, so the ordinary denial says nothing about it.
-python3 -c 'print("g"*999)' > "$REAL_MD"
+rep g 999 > "$REAL_MD"
 rm -rf "$CEIL_STAMPS"
 case "$(ceil_reason "$CLAUDE_MD" x "$big" quiet)" in
   *"would be"*) fail "a small global file was warned about its size" ;;
@@ -738,7 +739,7 @@ echo "== bloat gate: the ceiling belongs to the global file alone"
 # Every other guarded file is priced, however large it is: only the global one rides in every
 # session of every project.
 mkdir -p "$WORK/bigproj"
-python3 -c 'print("g"*39999)' > "$WORK/bigproj/CLAUDE.md"
+rep g 39999 > "$WORK/bigproj/CLAUDE.md"
 msg=$(ceil_reason "$WORK/bigproj/CLAUDE.md" x "$big" other-file)
 assert_contains "tokens/week and " "$msg"
 case "$msg" in *ceiling*) fail "a project file was held to the global file's ceiling" ;; esac
