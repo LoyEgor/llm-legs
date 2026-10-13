@@ -434,6 +434,7 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
 - `status` is `blind` while the newest tick is older than 10 min or the nightly pass older than 36 h
   (own key `blind`). Own keys: `measures`, `causes` (births and CPU by cause), `nightly`,
   `costs.tick`, `log_stores` (total, growth, per store, unregistered, sweep, `profiles`: every LLM profile dir
-  `{label, name, path, mb, age_d, status}`, status `menu` | `off` | `home` | `unknown`), `limits`.
+  `{label, name, path, mb, age_d, status[, owner]}`, status `menu` | `off` | `home` | `unknown`, owner `llm-doctor`
+  on a browser profile), `limits`.
 - `doctor-fix launch system` snapshots only fix-target causes (plus ledger and collector faults);
   close runs `bin/system-doctor check --record` (design, Phase 2).

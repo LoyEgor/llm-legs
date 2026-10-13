@@ -1145,6 +1145,55 @@ check("ssd-sampler" in m.document(now + 16 * 3600, now + 16 * 3600, persist=Fals
 os.remove(os.environ["SSD_SAMPLER_PLIST"])
 shutil.rmtree(ssd)
 
+# ---- phase 3: LLM profiles on disk against the menubar roster
+saved_env = dict(os.environ)
+for key in list(os.environ):
+    if key.startswith(("CLAUDEB_", "CODEXB_", "GEMINIB_", "GROKB_", "LLM_LIMITS_", "OPENCODE_GO")):
+        del os.environ[key]
+home = os.environ["HOME"]
+os.environ["CLAUDEB_DIR"] = os.path.join(home, ".claude-profiles", ".claudeb")
+made = [".gemini-profiles/abel/.gemini", ".gemini-profiles/Bad_Name/x", ".gemini-profiles/.geminib-state",
+        ".gemini/antigravity", ".grok/bin", ".codex-profiles/a/sessions", ".kimi-work/w", ".claude/projects/p",
+        ".cursor-tutor/t", ".notes/n", ".codex/sessions", ".llm-limits.json.lock"]
+web = next(folder for vendor, label, folder in m.account_stores() if label == "gemini-web browser profile")
+quota = next(folder for vendor, label, folder in m.account_stores() if label == "quota cache")
+made += [os.path.relpath(os.path.join(web, name), home) for name in ("abel", "zed")] + [os.path.relpath(quota, home)]
+for rel in made:
+    os.makedirs(os.path.join(home, rel), exist_ok=True)
+old = time.time() - 9 * 86400
+for top, dirs, files in os.walk(os.path.join(home, ".kimi-work")):
+    for name in dirs + files + [""]:
+        os.utime(os.path.join(top, name) if name else top, (old, old))
+roster = m.account_roster
+m.account_roster = lambda vendor: None if vendor == "grok" else roster(vendor) - {"main"} if vendor == "codex" else roster(vendor)
+census = m.llm_profiles({os.path.join(home, ".gemini-profiles", "abel"): 2048},
+                        {"stores": [{"globs": ["~/.claude/projects/*/*.jsonl", "~/*.log"]}], "ignore": [{"glob": "~/.cursor-tutor"}]},
+                        time.time())
+m.account_roster = roster
+by_path = {r["path"]: r for r in census}
+check({p: r["status"] for p, r in by_path.items()} == {
+          "~/.codex-profiles/a": "menu", "~/.codex": "home", "~/.gemini": "menu", "~/.gemini-profiles/abel": "menu",
+          "~/.gemini-profiles/Bad_Name": "off", "~/.grok": "unknown", "~/.kimi-work": "unknown",
+          m.tilde(os.path.join(web, "abel")): "menu", m.tilde(os.path.join(web, "zed")): "off"}
+      and by_path[m.tilde(os.path.join(web, "zed"))].get("owner") == "llm-doctor"
+      and not by_path["~/.gemini-profiles/Bad_Name"].get("owner"),
+      "every profile against its vendor's roster (a name the roster rejects is off the menu, a main home it dropped "
+      "home, an unreadable roster unknown, a browser profile off it the llm doctor's remnant), and LLM-named home "
+      "directories no profile root, account store or registry entry knows but a lock, a glob at HOME's top registering none of them: %s" % census)
+check(by_path["~/.gemini-profiles/abel"]["mb"] == 2 and by_path["~/.kimi-work"]["mb"] is None
+      and 8.9 < by_path["~/.kimi-work"]["age_d"] < 9.1 and by_path["~/.gemini-profiles/abel"]["age_d"] < 0.1,
+      "a profile carries its du size and its last change: %s" % census)
+judge = m.Judge(time.time(), None)
+m.judge_logstores(judge, [{"t": time.time(), "stores": [], "profiles": census}])
+orphans = {p["id"]: p for p in judge.problems if p["rule"] == "orphan-profile"}
+check(list(orphans) == ["orphan-profile:~/.gemini-profiles/Bad_Name"] and orphans["orphan-profile:~/.gemini-profiles/Bad_Name"]["cause"] is None,
+      "only a named profile off the menu is a problem, for the owner to decide (no fixer), a browser profile left to the "
+      "llm doctor: %s" % list(orphans))
+for rel in {r.split("/")[0] for r in made}:
+    shutil.rmtree(os.path.join(home, rel))
+os.environ.clear()
+os.environ.update(saved_env)
+
 # ---- phase 3: the cohort score at its edges, amortized over >= 7 days
 check(m.COHORT["cpu_s"] == 864 and m.COHORT["wakes"] == 86400 and m.COHORT["writes_b"] == m.GIB and m.COHORT["reads_b"] == 100 * m.GIB
       and m.COHORT["footprint_b"] == 512 * 2 ** 20 and m.COHORT["births"] == 86400 and m.COHORT["launches"] == 1440

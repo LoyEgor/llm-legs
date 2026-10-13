@@ -837,7 +837,7 @@ local SECTIONS = {
   { name = "Processor", rules = { "spawn", "kernel", "cohort" }, blind = { "ticks", "census" } },
   { name = "Memory", rules = { "compressor", "swap", "swap-writes" }, blind = { "ticks", "footprints" } },
   { name = "Disk writes", rules = { "ssd-writes" }, blind = { "ticks", "footprints", "ssd-sampler" } },
-  { name = "Disk space", rules = { "free-space" }, blind = { "ticks", "nightly" } },
+  { name = "Disk space", rules = { "free-space", "orphan-profile" }, blind = { "ticks", "nightly" } },
   { name = "Logs", rules = { "log-store", "log-growth", "unregistered-store", "log-unread" }, blind = { "logstores" } },
   { name = "Crashes", rules = { "hammerspoon-crash", "job-crash", "job-loop", "unclean-reboot" },
     blind = { "nightly", "dumpstate", "harvest" } },
@@ -1161,6 +1161,33 @@ local function systemSections(document, now, moved, incoming)
     if #caches > 0 then
       rows[#rows + 1] = { title = "-" }
       for _, line in ipairs(caches) do rows[#rows + 1] = line end
+    end
+    local profiles, total, loud = {}, 0, nil
+    for _, found in ipairs(list(logs.profiles)) do
+      if type(found) == "table" and type(found.path) == "string" then profiles[#profiles + 1] = found end
+    end
+    local RANK = { off = 1, unknown = 2, home = 3, menu = 4 }
+    table.sort(profiles, function(a, b)
+      local ra, rb = RANK[a.status] or 5, RANK[b.status] or 5
+      if ra ~= rb then return ra < rb end
+      if (tonumber(a.mb) or 0) ~= (tonumber(b.mb) or 0) then return (tonumber(a.mb) or 0) > (tonumber(b.mb) or 0) end
+      return a.path < b.path
+    end)
+    local lines = {}
+    for _, found in ipairs(profiles) do
+      local mb, age = tonumber(found.mb), tonumber(found.age_d)
+      total = total + (mb or 0)
+      local problem = found.status == "off" and pick("orphan-profile:" .. found.path) or nil
+      loud = loud or problem
+      local name = found.label == "home" and found.path or tostring(found.label) .. "/" .. tostring(found.name)
+      local mark = ({ unknown = "? ", home = "⌂ " })[found.status] or ""
+      local tone = problem and problemTone(problem) or (found.status ~= "menu" or (age and age >= 30)) and style.DIM or nil
+      lines[#lines + 1] = keepRow(mb and mb / 1000 or 0, age and (age < 1 and "<1 d" or string.format("%d d", math.floor(age))) or "",
+        mark .. name, tone, problem and problemMenu(problem) or nil)
+    end
+    if #lines > 0 then
+      rows[#rows + 1] = { title = "-" }
+      rows[#rows + 1] = listRow(amount(total / 1000), "GB", "LLM profiles", loud and problemTone(loud) or nil, lines)
     end
     if type(nightly.smart) == "string" and nightly.smart ~= "Verified" then
       rows[#rows + 1] = row({ { "SMART  " .. nightly.smart, style.RED } })

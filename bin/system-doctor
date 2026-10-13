@@ -24,6 +24,7 @@ import time
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import account_roster as roster_reader  # noqa: E402
 import collector_runs  # noqa: E402
 import limit_hit  # noqa: E402
 import log_stores  # noqa: E402
@@ -84,7 +85,8 @@ RULE_LABELS = {"spawn": "new processes", "job-loop": "job relaunch loop", "cohor
                "swap": "swap full", "ssd-writes": "SSD writes", "swap-writes": "swap writes",
                "hammerspoon-crash": "Hammerspoon crash", "job-crash": "job crashes", "unclean-reboot": "unclean reboot",
                "free-space": "low disk space", "log-store": "log cleaner broken", "log-growth": "LLM logs growing",
-               "unregistered-store": "unregistered log store", "log-unread": "log read by nobody"}
+               "unregistered-store": "unregistered log store", "log-unread": "log read by nobody",
+               "orphan-profile": "LLM profile off the menu"}
 COUNTED = ("new", "open", "regressed")
 DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
@@ -1568,6 +1570,105 @@ def previous_scan(now):
     return {log_stores.expand(p): v for p, v in (best.get("dirs") or {}).items()}, (now - best["t"]) / DAY_S
 
 
+PROFILE_ROOTS = (("claude", "claude", ".claude-profiles", None), ("codex", "codex", ".codex-profiles", ".codex"),
+                 ("gemini", "gemini", ".gemini-profiles", ".gemini"), ("grok", "grok", ".grok-profiles", ".grok"))
+LLM_DIR = re.compile(r"claude|codex|gemini|grok|opencode|chatgpt|openai|anthropic|antigravity|agy|kimi|ollama|cursor|qwen|"
+                     r"deepseek|mistral|llm", re.I)
+
+
+def account_roster(vendor):
+    """The menubar's roster of one vendor (share/account_roster.py), or None when it cannot be read."""
+    try:
+        return set(roster_reader.roster(vendor, fresh=True))
+    except roster_reader.Unreadable:
+        return None
+
+
+def account_stores():
+    """share/account_stores.py's per-account folders as (vendor, label, folder): its browser profiles are profiles here
+    and every folder is known; their off-roster names are the llm doctor's remnants, never this doctor's problem."""
+    import account_stores as table
+    found = []
+    for vendor in table.VENDORS:
+        with contextlib.suppress(OSError):
+            for store in table.stores(vendor):
+                if hasattr(store, "folder"):
+                    found.append((vendor, store.label, str(store.folder())))
+    return found
+
+
+def last_change(path, file_depth=3):
+    """Newest mtime over a tree's directories and its files down to file_depth: a new file moves its directory's,
+    a database or cookie jar rewritten in place sits near the top."""
+    newest, stack = 0.0, [(path, 0)]
+    while stack:
+        top, depth = stack.pop()
+        try:
+            newest = max(newest, os.stat(top).st_mtime)
+            with os.scandir(top) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append((entry.path, depth + 1))
+                    elif depth < file_depth and entry.is_file(follow_symlinks=False):
+                        newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+def llm_profiles(sizes, registry, now):
+    """Every LLM account profile on disk against its vendor's menubar roster, and every LLM-named directory in HOME no
+    profile root, account store or share/log-stores.json entry knows: [{label, name, path, mb, age_d, status[, owner]}].
+    status: `menu`; `off`, a named profile the menu lacks (a typo, a removed account's leftover); `home`, a vendor's
+    default home, which also holds apps and binaries, so its absence from the menu proves nothing; `unknown`, the roster
+    unreadable or a directory nothing registers. owner `llm-doctor`: a browser profile, whose off-roster name is a
+    remnant there."""
+    rows, rosters, known = [], {}, set()
+
+    def roster(vendor):
+        if vendor not in rosters:
+            rosters[vendor] = account_roster(vendor)
+        return rosters[vendor]
+
+    def add(label, name, path, status, **extra):
+        kb, changed = sizes.get(path), last_change(path)
+        rows.append({"label": label, "name": name, "path": tilde(path), "mb": round(kb / 1024) if kb is not None else None,
+                     "age_d": round((now - changed) / DAY_S, 1) if changed else None, "status": status, **extra})
+
+    def profiles(label, vendor, top, **extra):
+        names = roster(vendor)
+        known.add(top)
+        with contextlib.suppress(OSError):
+            for entry in sorted(os.scandir(top), key=lambda e: e.name):
+                if entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+                    add(label, entry.name, entry.path, "unknown" if names is None else "menu" if entry.name in names else "off",
+                        **extra)
+
+    for label, vendor, root, main in PROFILE_ROOTS:
+        names, home = roster(vendor), os.path.join(HOME, main) if main else None
+        if home and os.path.isdir(home):
+            known.add(home)
+            add(label, "main", home, "unknown" if names is None else "menu" if "main" in names else "home")
+        profiles(label, vendor, os.path.join(HOME, root))
+    for vendor, label, folder in account_stores():
+        if label.endswith(" browser profile"):
+            profiles(label.split()[0], vendor, folder, owner="llm-doctor")
+        known.add(folder)
+    patterns = [g for store in registry.get("stores") or () for g in store.get("globs") or ()]
+    patterns += [i["glob"] for i in registry.get("ignore") or () if isinstance(i, dict) and i.get("glob")]
+    for pattern in patterns:
+        known.add(log_stores.expand(pattern.split("*", 1)[0].rstrip("/") if "*" in pattern else pattern))
+    known.discard(HOME)
+    with contextlib.suppress(OSError):
+        for entry in sorted(os.scandir(HOME), key=lambda e: e.name):
+            path = entry.path
+            if entry.name.startswith(".") and not entry.name.endswith(".lock") and entry.is_dir(follow_symlinks=False) \
+                    and LLM_DIR.search(entry.name) and not any(
+                    p == path or p.startswith(path + "/") or path.startswith(p + "/") for p in known):
+                add("home", entry.name, path, "unknown")
+    return rows
+
+
 def logstores(now=None):
     """Daily: bin/log-sweep, then every registered log store's size, files, oldest unit and what lies past its
     criterion plus slack, and the du fallback naming each directory no store or ignore entry covers that holds
@@ -1618,6 +1719,7 @@ def logstores(now=None):
                       "the log scan's sizes and new-store findings under %s" % ", ".join(cut),
                       'bin/system-doctor:deadline = time.time() + scan.get("budget_s", 600)',
                       observed=round(time.time() - deadline + scan.get("budget_s", 600)))
+    row["profiles"] = steps("profiles", llm_profiles, sizes, registry, now)
     old, old_days = previous_scan(now)
     claims = steps("apps", log_stores.app_claims, registry, sizes) | claims
     reported, dirs = steps("fallback", log_stores.unregistered, sizes, roots, depth, claims,
@@ -2292,6 +2394,13 @@ def judge_logstores(judge, rows):
             found["residual_mb"], scan.get("min_mb", 200), "MB", 24, found["mb"], 1, latest["t"], latest["t"],
             [{"at": iso_time(latest["t"]), "ref": "du:%s" % found["path"], "account": None,
               "excerpt": "%d MB in the directory, %d MB of it in no store" % (found["mb"], found["residual_mb"])}])
+    for found in latest.get("profiles") or ():
+        if found.get("status") == "off" and not found.get("owner"):
+            judge.add("orphan-profile", found["path"], "%s is no %s account in the menu: %s MB, last change %s days ago" % (
+                found["path"], found["label"], found.get("mb", "?"), found.get("age_d", "?")), found.get("mb") or 0, 0, "MB",
+                24, found.get("mb"), 1, latest["t"], latest["t"],
+                [{"at": iso_time(latest["t"]), "ref": "roster:%s" % found["label"], "account": None,
+                  "excerpt": "share/account-roster.sh lists no %s %s" % (found["label"], found["name"])}])
 
 
 def registry_scan():
@@ -2328,7 +2437,7 @@ def logstores_view(rows):
                         "label": s.get("label"), "part": s.get("part"), "parts": {g: round(b / 1e9, 2) for g, b in (s.get("parts") or {}).items()}}
                        for s in stores],
             "unregistered": latest.get("unregistered"), "unread": latest.get("unread"), "sweep": latest.get("sweep"),
-            "scan": latest.get("scan")}
+            "scan": latest.get("scan"), "profiles": latest.get("profiles")}
 
 
 def judge_collectors(judge, rows, launches, harvests, censuses, logs=()):

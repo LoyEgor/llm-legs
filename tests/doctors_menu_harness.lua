@@ -1192,7 +1192,9 @@ do
         unit = "abnormal exits/day", cause = { name = "com.apple.Siri.agent", owner = "apple" }, fact = "Siri loops" },
       { id = "hs-cli-dead-port", rule = "hammerspoon-crash", label = "Hammerspoon crash", state = "fixed-pending",
         fact = "fixed", proof = { why = "the fix has not landed in main" }, cause = { name = "Hammerspoon" } },
-      { id = "ledger:x", rule = "ledger", label = "ledger", state = "new", value = 1, unit = "rows", fact = "row x" } },
+      { id = "ledger:x", rule = "ledger", label = "ledger", state = "new", value = 1, unit = "rows", fact = "row x" },
+      { id = "orphan-profile:~/.gemini-profiles/Library", rule = "orphan-profile", label = "LLM profile off the menu",
+        state = "new", value = 12, limit = 0, unit = "MB", fact = "~/.gemini-profiles/Library is no gemini account" } },
     measures = { births_s = 2600, kernel = 0.2, busy = 0.5, cores = 10, comp_gib = 2, mem_gib = 24, swap_used_mb = 1024,
       swap_gib_day = 3, ssd_gb_day_7d = 150, ssd_read_gb_day_7d = 900, free_gib = { Data = 20, Work = 400 },
       ssd_sampled = { samples = 3, minutes = 30, attributed = 0.6, top = { { "kernel_task", "swap", 0.4 },
@@ -1225,9 +1227,15 @@ do
         { name = "codex-log-db", gb = 0.26, cleaner = "keep", readers = {}, group = "LLM apps", label = "Codex log" },
         { name = "codex-thread-history", gb = 1.04, cleaner = "keep", group = "LLM apps", label = "Codex history" } },
       unregistered = { { path = "~/Library/Caches/ru.keepcoder.Telegram/x", mb = 490, residual_mb = 490 } },
+      profiles = {
+        { label = "codex", name = "com", path = "~/.codex-profiles/com", mb = 1700, age_d = 0.2, status = "menu" },
+        { label = "gemini-web", name = "abel", path = "~/.gemini-web/profiles/abel", mb = 1300, age_d = 40.5, status = "menu" },
+        { label = "codex", name = "main", path = "~/.codex", mb = 1650, age_d = 3, status = "home" },
+        { label = "home", name = ".kimi-work", path = "~/.kimi-work", mb = 137, age_d = 85, status = "unknown" },
+        { label = "gemini", name = "Library", path = "~/.gemini-profiles/Library", mb = 12, age_d = 4.8, status = "off" } },
       sweep = { bytes = 500000000, errors = 0 } } })
   local first = loadDoctors().menuItems()[7].menu
-  local order, tones = true, { "R", "g", "g", "r", "R", "R" }
+  local order, tones = true, { "R", "g", "g", "R", "R", "R" }
   for index, name in ipairs({ "Processor", "Memory", "Disk writes", "Disk space", "Logs", "Crashes" }) do
     order = order and first[index] and span(first[index].title, 1, 13) == string.format("%-13s", name)
       and first[index].menu ~= nil and toneOf(first[index].title) == tones[index]
@@ -1272,6 +1280,17 @@ do
     end
   end
   check(not readers, "Logs: no reader names, a one-store label without a problem opens nothing")
+  local profiles = rowMatching(first[4].menu, "^ +4%.8 GB +LLM profiles$", "R")
+  local shown = {}
+  for index, item in ipairs(profiles and profiles.menu or {}) do shown[index] = text(item.title) end
+  check(profiles and #shown == 5 and shown[1]:match("^ +0%.0 GB +4 d  gemini/Library$")
+    and rowMatching(profiles.menu, "Library$", "R").menu ~= nil and shown[2]:match("^ +0%.1 GB +85 d  %? ~/%.kimi%-work$")
+    and shown[3]:match("^ +1%.6 GB +3 d  ⌂ codex/main$") and shown[4]:match("^ +1%.7 GB +<1 d  codex/com$")
+    and shown[5]:match("^ +1%.3 GB +40 d  gemini%-web/abel$")
+    and sameColor(colorAt(profiles.menu[5].title, utf8.len(shown[5])), palette.DIM)
+    and not colorAt(profiles.menu[4].title, utf8.len(shown[4])),
+    "Disk space: LLM profiles by size and last change, the one off the menu RED first, unknown ? and default home ⌂, idle 30 d DIM: "
+      .. table.concat(shown, " | "))
   check(rowMatching(crashes, "^ +7 /day +Siri$", "R") and rowMatching(crashes, "Hammerspoon$", "r")
     and rowMatching(rowMatching(crashes, "^app crashes ").menu, "^ +3 /8 d +Chrome$"),
     "Crashes: Apple's loop RED by its short name, a pending fix DIM_RED, crashes by process")

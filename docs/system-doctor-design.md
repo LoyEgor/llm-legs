@@ -245,7 +245,16 @@ new. Writers stay free: no format or location standard, we only measure and clea
 | `log-store` | a store holds units past its criterion plus slack, or log-sweep failed (cause: log-sweep, or the `self` writer) | — |
 | `log-growth` | the total of all stores grew ≥ 1 GiB/day over ≥ 5 days of the newest 7 and grew in the last day | ≥ 3 GiB/day |
 | `unregistered-store` | a directory the fallback names (key: its path), report-only | — |
+| `orphan-profile` | a named CLI profile dir its vendor's menubar roster lacks (key: its path), no cause: deleting it is Egor's call | — |
 | `log-unread` | a log store with `readers: []` holding bytes and nothing deleting it (cleaner `keep`, or no criterion and not `cap`): written, read by nobody, unbounded (no cause; the fix is a reader, a criterion or less writing); every unread store, bounded or not, stays listed in the row's `unread` | — |
+
+**LLM profiles** (Egor, 2026-10-13: show every profile the menubar lacks, say unknown where it cannot tell): the same scan lists every profile dir under `~/.claude-profiles`, `~/.codex-profiles`,
+`~/.gemini-profiles`, `~/.grok-profiles`, every browser profile `share/account_stores.py` lists and each vendor's main
+home, sized from the scan's du, aged by the newest mtime 3 levels down, against `share/account_roster.py`. `menu`: the
+roster lists it; `off`: a named profile the roster lacks (rule `orphan-profile`; a browser profile off it carries
+`owner: llm-doctor`, whose `remnant:` problem it already is); `home`: a main home the roster dropped, never a problem
+(the CLI or app still writes it); `unknown`: the roster could not be read, or a home dot-dir with an LLM name that no
+root, home, account store or registry glob covers. Disk space lists them all, off first.
 
 `log-growth` threshold: with every big store under a criterion the total plateaus; 1 GiB/day sits under the biggest
 single inflow measured (tmp session scratch, ~1.3 GB/day) and above a retention-limited store's daily swing; re-tune
