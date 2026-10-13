@@ -1177,9 +1177,11 @@ assert [ "$(wc -l <"$DATA/rb-args" | tr -d ' ')" = 1 ]
 brief=$(cut -f2 "$WORK/out")
 for step in '1. Why it exists' '2. Price per day' '3. Effect' 'a Sonnet judge (never Haiku) reads a sample' \
   '4. A cheaper equivalent' 'replaying last week' '5. Spend tokenmap cannot see' 'bin/speed-doctor --spend-audit' \
-  '--zero <removal saves X; loses Y>'; do
+  '--zero <removal saves X; loses Y>' 'starting `tokenmap gap:`'; do
   assert grep -qF -- "$step" "$brief"
 done
+# Parallel spend audits each own their ledger row; one shared handoff line conflicted at every landing.
+assert_fails grep -qF 'docs/handoffs/' "$brief"
 # Suite audits: a night takes every queued suite the night's red test rules do not already hold, a repository's in one
 # run in rank order, whose brief refuses a Light or Gemini Flash worker and carries the audit's steps once.
 jq --argjson s "$(now)" --arg l "$L" '.as_of_s = $s | .speed.spend.selection = []

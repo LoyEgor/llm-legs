@@ -5747,7 +5747,7 @@ EOF
   fi
   cat <<EOF
 - Fill and submit forms through JavaScript (\`form.elements[...]\`), never a click, then read the effect back and check every value you set; an unconfirmed submit ends \`OUTCOME: BROWSER_CLICK_UNVERIFIED\`.
-- Never \`switch_browser\`, log in, or launch, quit or script a browser yourself. A site that needs Egor himself to sign in ends \`OUTCOME: BROWSER_OWNER_LOGIN site=<site>\` (leave its sign-in tab open); anything else the task needs that this forbids ends \`OUTCOME: HARNESS_NEEDS_REPAIR reason=<what>\`.
+- Never \`switch_browser\`, log in, or launch, quit or script a browser yourself. A site that needs Egor himself to sign in or authorize ends \`OUTCOME: BROWSER_OWNER_LOGIN site=<site>\` (leave its tab open; a consent button that stays disabled is his: never force or poll it); anything else the task needs that this forbids ends \`OUTCOME: HARNESS_NEEDS_REPAIR reason=<what>\`.
 - Close your tabs once the task is done (leave the work tab open when you stop for Egor) and end \`OUTCOME: BROWSER_OK\`.
 EOF
 }
