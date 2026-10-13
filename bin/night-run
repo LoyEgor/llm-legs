@@ -82,7 +82,9 @@ report opens with share/time_budget.py's comparison table: this night and the tw
   into model, slot queue and own tests; lines by jobs and outside them; problems; spend and what was
   deferred) with the trend of the last 7 nights; --post sends the comparison table to the chat as one
   report-bus block instead of printing it, so the final message has no table to retype
-survey: the sweep's opening report, default the sweep repositories: per repository `<name> · debt N
+survey: the sweep's opening report, default the sweep repositories, each repository's executable
+  bin/night-snapshot run first (it copies into the tree what lives outside it, for the night's commit; a
+  failure is named and the survey goes on): per repository `<name> · debt N
   lines/M files · due D lines/E files · K dirty · whole|N chunks` (review-bench review --debt [--due] …
   --tier T2 --price; due = stable or critical, what the bugs round reads), per linked
   worktree `<branch> · +ahead/-behind main · K dirty · debt N · take|keep (<reason>)`, keep = live or
@@ -1381,6 +1383,10 @@ cmd_survey() {
     done <"$sweep_repos"
   fi
   [ ${#repos[@]} -gt 0 ] || die "no repositories to survey"
+  for dir in "${repos[@]}"; do
+    [ -x "$dir/bin/night-snapshot" ] || continue
+    "$dir/bin/night-snapshot" >&2 || printf 'night-run: %s/bin/night-snapshot failed; surveying without it\n' "$dir" >&2
+  done
   price=$(debt_price "${repos[@]}")
   out=$(survey_lines "$price" "$(debt_price --due "${repos[@]}")" "${repos[@]}")
   printf '%s\n' "$out"

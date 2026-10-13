@@ -1408,6 +1408,13 @@ assert jqe '.word == "survey" and .rows == [["repo", ["debt 40 lines/3 files", "
   ["total", ["debt 52 lines/4 files", "due 30 lines/1 files · 3 dirty · 2 chunks"]]]' "$DATA/bus-docs"
 python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs" >/dev/null || fail "the survey block renders"
 rm "$DATA/bus-docs" "$DATA/bus-args"
+# A repository's bin/night-snapshot runs before it is surveyed; a failing one is named, not fatal.
+git init -q -b main "$SV/snap" && mkdir "$SV/snap/bin"
+printf '#!/bin/sh\necho ran >>"%s/snap-ran"\nexit 1\n' "$DATA" >"$SV/snap/bin/night-snapshot"
+chmod +x "$SV/snap/bin/night-snapshot"
+night survey "$SV/snap" >/dev/null 2>"$WORK/snap.err" || fail "survey stopped on a failing snapshot: $(cat "$WORK/snap.err")"
+assert [ "$(cat "$DATA/snap-ran")" = ran ]
+assert grep -q "snap/bin/night-snapshot failed" "$WORK/snap.err"
 night report --post >"$WORK/report-post" || fail "report --post"
 assert [ "$(head -1 "$WORK/report-post")" = 'table · posted to the chat as the night block; the final message does not retype it' ]
 night report | sed '1,/^$/d' | cmp -s - <(sed '1,/^$/d' "$WORK/report-post") || fail "report --post prints the rest of the report"
