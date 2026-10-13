@@ -47,7 +47,11 @@ jq -n '{models: ({"grok-4.7": ["xhigh","high","medium","low"], "grok-4.7-build-f
 
 CACHE="$GROKB_CACHE_DIR/models.json"
 TAB=$(printf '\t')
-calls() { if [ -f "$GROK_CALLS" ]; then wc -l <"$GROK_CALLS" | tr -d ' '; else printf 0; fi; }
+calls() {
+  local n=0
+  if [ -f "$GROK_CALLS" ]; then while IFS= read -r _; do n=$((n + 1)); done <"$GROK_CALLS"; fi
+  printf '%s' "$n"
+}
 models() { bash "$SCRIPT" models "$@" 2>"$WORK/err"; }
 age_cache() { # seconds
   local stamp=$(($(date +%s) - $1))
@@ -77,8 +81,9 @@ assert_eq "$(models)" "$expected"
 assert_eq "$(calls)" 1
 
 # --- --json: the same rows as a list of objects ---
-assert_eq "$(models --json | jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label, (.efforts | join(","))] | @tsv')" "$expected"
-assert_eq "$(models --json | jq -r '.[3] | keys | join(",")')" 'default,efforts,label,slug'
+json=$(models --json)
+assert_eq "$(jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label, (.efforts | join(","))] | @tsv' <<<"$json")" "$expected"
+assert_eq "$(jq -r '.[3] | keys | join(",")' <<<"$json")" 'default,efforts,label,slug'
 
 # --- --refresh asks grok inside the TTL, and a new release reaches every reader ---
 printf 'Default model: grok-5\n\nAvailable models:\n  * grok-5 (default)\n  - grok-4.7\n' >"$GROK_MODELS_OUT"

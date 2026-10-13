@@ -30,10 +30,7 @@ resolve_root() {
 
 grokb_root=$(resolve_root)
 . "$grokb_root/share/worker-pool.sh"
-. "$grokb_root/share/worker-model.sh"
-. "$grokb_root/share/account-announce.sh"
 . "$grokb_root/share/account-roster.sh"
-. "$grokb_root/share/limit-hit.sh"
 pool_dir=$(worker_pool_dir grok)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
@@ -647,6 +644,12 @@ export_token() {
   chmod 600 "$target"
   printf 'source=auth.json expires_at=%s\n' "$expires_at"
 }
+
+if [ "${1:-}" != models ]; then
+  . "$grokb_root/share/worker-model.sh"
+  . "$grokb_root/share/account-announce.sh"
+  . "$grokb_root/share/limit-hit.sh"
+fi
 
 if [ "${2:-}" = exec ] && [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] && account_exists "${1:-}"; then
   name="$1"
