@@ -47,7 +47,7 @@ CACHE_VERSION = 1
 FOLD_HOPS = 4
 
 _UNSET = object()
-# His worktrees always live at `<repo>/.claude/worktrees/<branch>` (global rule), so the repo a
+# His worktrees always live at `<repo>/.claude/worktrees/<branch>` (the harness default), so the repo a
 # worktree cwd belongs to is the prefix before it.
 WORKTREES = os.sep + os.path.join(".claude", "worktrees") + os.sep
 
