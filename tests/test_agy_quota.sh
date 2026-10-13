@@ -113,7 +113,8 @@ suite_journal_secs nologin_took "$took"
 stub_dead=1
 while read -r pid; do
   [ -n "$pid" ] || continue
-  kill -0 "$pid" 2>/dev/null && stub_dead=0
+  for _ in $(seq 40); do kill -0 "$pid" 2>/dev/null || continue 2; sleep 0.05; done
+  stub_dead=0
 done <"$WORK/stub.pids"
 assert test "$stub_dead" -eq 1
 
