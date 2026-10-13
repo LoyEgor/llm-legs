@@ -1776,6 +1776,81 @@
    "verdict": "trade",
    "zero": "removal saves 22.2 CPU-min/day; loses the dictation pill Egor watches while recording and transcribing",
    "note": "60 FPS NSTimer only while the pill is shown (invalidated when fully hidden; 0.0% CPU idle), but advance() calls setNeedsDisplay every tick, so every frame is a full Python drawRect; change-gated redraw handed off (docs/handoffs/2026-10-13-overlay-redraw-cpu.md): transcriptions-gpt had no worktree in this run; FPS is a visible trade, not touched"
+  },
+  {
+   "id": "cpu:process/llm-legs/bin/harness-doctor",
+   "title": "process/llm-legs/bin/harness-doctor",
+   "audited_at": "2026-10-13T09:50:34+03:00",
+   "by": "harness-speed-cpu-process-llm-legs-bin-harness-doctor-20261012T235104Z-2d37",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 86.16,
+   "runs_day": 0,
+   "sources": {
+    "llm-legs/bin/harness-doctor": "2dfd18b5140d445fd281b51ce145d375d1d96ffa"
+   },
+   "verdict": "cut",
+   "zero": "removal saves its 5-minute collector (doctor/harness 42.7 CPU-min/day; this process row is a sampled view of the same runs, 0.0 median); loses the Harness doctor block and its menu, which Egor reads",
+   "note": "launchd every 300 s, ~10 CPU-s a run; profile on live stores: last_fix_at -> share/fix_commit.py _landing ran 4 git calls per landed fix ref (140 refs) every run, 7.1 CPU-s; b37200ee keeps landings in harness state while HEAD's first-parent line grows (0.5 CPU-s, identical for 283 rows). load_tests quadratic dedup (2.2 -> 0.2 CPU-s) is d9f92c86 of run 1231, not repeated here. Left: _found/file_commits per run 0.5 CPU-s; Speed's own LANDED_HELD (d9f92c86) duplicates keep_landings and lacks the rewrite check: switch Speed to keep_landings when both land"
+  },
+  {
+   "id": "cpu:process/llm-legs/bin/speed-doctor",
+   "title": "process/llm-legs/bin/speed-doctor",
+   "audited_at": "2026-10-13T09:50:37+03:00",
+   "by": "harness-speed-cpu-process-llm-legs-bin-harness-doctor-20261012T235104Z-2d37",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 94.355,
+   "runs_day": 0,
+   "sources": {
+    "llm-legs/bin/speed-doctor": "cde358f4f4cce33e5262eeef84a6bdcce0ab9a6d"
+   },
+   "verdict": "kept",
+   "zero": "removal saves the Speed collector exec'd by every Harness run (doctor/speed 9.9 CPU-min/day; this row is a sampled view, 0.0 median); loses the Speed block, CPU audits and night Speed queue",
+   "note": "its CPU is doctor/speed's collector run, audited and cut by night run harness-speed-cpu-doctor-speed-20261012T235033Z-1231 (d9f92c86, 15 -> 4.6 CPU-s a run); nothing further here to avoid a second edit of the same code"
+  },
+  {
+   "id": "cpu:process/llm-legs/bin/worker-run",
+   "title": "process/llm-legs/bin/worker-run",
+   "audited_at": "2026-10-13T09:50:39+03:00",
+   "by": "harness-speed-cpu-process-llm-legs-bin-harness-doctor-20261012T235104Z-2d37",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 130.572,
+   "runs_day": 1,
+   "sources": {
+    "llm-legs/bin/worker-run": "48f420fd63411100c12bc999e12b8604702d360f"
+   },
+   "verdict": "cut",
+   "zero": "removal saves nothing usable: every delegated worker run goes through it; loses all worker runs",
+   "note": "night CPU (780 CPU-s/h at 02-03Z) was queued launches in slot_wait: 106 room-limited waiters polling every 15 s, each poll a date+stat per held slot via store_lock_acquire plus slot_room; 1cb6fdfe skips a live holder under its own ceiling off one stat of the pool (74 -> 16 ms CPU a poll on the live pool, rest is slot_room 10 ms) and holds_in_tree drops its jq and per-hop ps; steady watchdog and wait polls measured 0.4 CPU-s/min over 8 live runs, left"
+  },
+  {
+   "id": "cpu:process/llm-legs/share/run-suites.sh",
+   "title": "process/llm-legs/share/run-suites.sh",
+   "audited_at": "2026-10-13T09:50:41+03:00",
+   "by": "harness-speed-cpu-process-llm-legs-bin-harness-doctor-20261012T235104Z-2d37",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 52.94,
+   "runs_day": 0,
+   "sources": {
+    "llm-legs/share/run-suites.sh": "a3074b0628a59a5d10d653cb7e2f40991b85c688"
+   },
+   "verdict": "cut",
+   "zero": "removal saves nothing usable: every suite run and its slot cap go through it; loses parallel suites and their journal",
+   "note": "night CPU is its slot_wait: 51 limit-path waiters at 03Z polling every 2 s over 3-4 held slots; same 1cb6fdfe slot_take (62 -> 4.6 ms CPU a poll on 4 live holders); per-suite watchers already use the loadable sleep builtin"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/results/lanes/a1-softfit/probe.py",
+   "title": "process/logo-vectorizer-bench/results/lanes/a1-softfit/probe.py",
+   "audited_at": "2026-10-13T09:50:43+03:00",
+   "by": "harness-speed-cpu-process-llm-legs-bin-harness-doctor-20261012T235104Z-2d37",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 85.28,
+   "runs_day": 0,
+   "sources": {
+    "logo-vectorizer-bench/results/lanes/a1-softfit/probe.py": "a8a80bb8475e56828c0e4713e42c6b5bb7a23ddd"
+   },
+   "verdict": "kept",
+   "zero": "removal saves one past run (85 CPU-s once, 10-12T23); loses a research probe of the live logo-vectorizer chat",
+   "note": "kept: one-shot research probe of logo-vectorizer-bench (results/ untracked by .gitignore), ran once, no timer, loop or launchd; same as the tracers/* rows kept tonight"
   }
  ]
 }
