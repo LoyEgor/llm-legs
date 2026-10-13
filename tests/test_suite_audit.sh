@@ -29,6 +29,12 @@ def check(cond, what):
 NOW = time.time()
 repo = os.path.join(work, "repos", "alpha")
 os.makedirs(os.path.join(repo, "tests", "lib"))
+for name in ("CLAUDEB_DIR", "CHAT_NAME_ROOTS", "XDG_CACHE_HOME", "RUN_SUITES_TIMES"):
+    os.environ.pop(name, None)
+os.makedirs(os.path.join(work, "home"))
+os.environ.update({"HOME": os.path.join(work, "home"), "WORKER_STATS_DIR": os.path.join(work, "stats"),
+                   "WORKER_RUN_DIR": os.path.join(work, "runs"), "INSTRUCTION_WATCH_STATE": os.path.join(work, "watch"),
+                   "DOCTORS_DIR": os.path.join(work, "doctors")})
 os.environ.update({"NIGHT_RUN_SWEEP_REPOS": os.path.join(work, "sweep-repos"), "NIGHT_RUN_HELPER_REPOS": os.devnull,
                    "SPEND_LEDGER": os.path.join(work, "spend-ledger.json"),
                    "RUN_SUITES_JOURNAL": os.path.join(work, "runs.jsonl"),
