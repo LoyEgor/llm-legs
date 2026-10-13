@@ -456,7 +456,8 @@ registry([{"name": "s", "globs": ["~/logs/*"], "exclude": ["*/keep", "*.jsonl"],
           {"name": "u", "globs": ["~/unread/*"], "cleaner": "sweep", "days": 7, "readers": [], "writer": "Vendor"},
           {"name": "uk", "globs": ["~/kept/*"], "cleaner": "keep", "readers": [], "writer": "Vendor"},
           dict(classed, name="cxd", split="session", globs=["~/cxd/*"], writer="Codex CLI", owner="third-party"),
-          {"name": "a", "kind": "app", "globs": ["~/appdata/*"], "cleaner": "keep"}],
+          {"name": "a", "kind": "app", "globs": ["~/appdata/*"], "cleaner": "keep"},
+          {"name": "ac", "kind": "app", "globs": ["~/appcap/*"], "cleaner": "cap", "max_mb": 1, "writer": "Browser"}],
          ignore=[{"glob": "~/ignored", "why": "test"}],
          scan={"roots": ["~", "~/cache"], "depth": 3, "min_mb": 200, "grow_mb_day": 50, "floor_mb": 10, "budget_s": 60})
 put("unread/trace.jsonl", 100, 1)
@@ -467,6 +468,8 @@ with open(os.path.join(work, "open-paths"), "a") as handle:
     handle.write("n%s/cxd/rollout-x-%s.jsonl\n" % (home, "7" * 36))
 put("kept/trace.jsonl", 100, 1)
 put("appdata/vm/disk.img", 5000)
+for days in (3, 2, 1):
+    put("appcap/p%d/blob" % days, 1 << 20, days)
 with open(os.path.join(work, "du-lines"), "w") as handle:
     handle.write("".join("%d\t%s\n" % (kb, path) for path, kb in (
         (home + "/cache/stray", 300 * K), (home + "/cache", 300 * K), (home + "/ignored", 900 * K),
@@ -477,7 +480,9 @@ check(row.get("sweep", {}).get("errors") == 0 and stores["s"]["over_units"] == 2
       "the collector sweeps, then measures every store: %s" % row)
 check(row["unread"] == ["u", "uk"], "the row lists every unread store, bounded or not: %s" % row.get("unread"))
 check(set(stores) == {"s", "v", "u", "uk", "cxd"} and row["total_bytes"] == sum(s["bytes"] for s in stores.values()),
-      "an app store is neither measured nor counted in the total: %s" % sorted(stores))
+      "an app store is never counted in the total: %s" % sorted(stores))
+check([(a["name"], a["units"], a["over_units"]) for a in row["apps"]] == [("ac", 3, 2)],
+      "an app store with a criterion is measured against it apart, one without is not: %s" % row.get("apps"))
 check([u["path"] for u in row["unregistered"]] == ["~/cache/stray"] and row["scan"]["cut"] == [],
       "the fallback names the uncovered 300 MB dir as ~/…, never the ignored one or an app store's: %s" % row["unregistered"])
 check(os.path.exists(os.path.join(work, "state", "logscan", m.local_day(now) + ".json")), "the scan is kept for growth")
@@ -486,8 +491,11 @@ judge = m.Judge(later, None)
 logs = m.tick_rows(now - 9 * DAY, later, "logstores")
 m.judge_logstores(judge, logs)
 found = {p["id"]: p for p in judge.problems}
-check(set(found) == {"log-store:s", "log-store:v", "log-store:cxd", "log-unread:uk", "unregistered-store:~/cache/stray"},
-      "problems: %s" % sorted(found))
+check(set(found) == {"log-store:s", "log-store:v", "log-store:cxd", "log-store:ac", "log-unread:uk",
+                     "unregistered-store:~/cache/stray"}, "problems: %s" % sorted(found))
+check(found["log-store:ac"]["cause"]["fix_target"] is False and "1 MB" in found["log-store:ac"]["fact"]
+      and "Browser" in m.log_firing(logs[-1], "log-store"),
+      "an app past its own cap is a report-only cleaner problem, proven only once a scan stops firing it: %s" % found["log-store:ac"])
 check(stores["cxd"]["over_units"] == 1 and "180 days, workers 15 days, my chats 180 days" in found["log-store:cxd"]["fact"],
       "the collector judges a held 20-day worker unit past its 15 days, never the 20-day chat: %s" % stores["cxd"])
 check("read by nobody and never deleted" in found["log-unread:uk"]["fact"] and found["log-unread:uk"]["cause"] is None,
@@ -497,7 +505,7 @@ check(found["log-store:s"]["cause"]["name"] == "worker-run" and found["log-store
 check(found["log-store:v"]["cause"]["fix_target"] is False and "newest 2" in found["log-store:v"]["fact"],
       "a third-party cleaner is report-only")
 check(found["unregistered-store:~/cache/stray"]["cause"] is None, "an unregistered store names no cause, its path is the key")
-failed = dict(logs[-1], sweep={"error": "exit 1: registry: boom"}, stores=[], unregistered=[])
+failed = dict(logs[-1], sweep={"error": "exit 1: registry: boom"}, stores=[], apps=[], unregistered=[])
 judge = m.Judge(now, None)
 m.judge_logstores(judge, [failed])
 check([p["id"] for p in judge.problems] == ["log-store:log-sweep"] and judge.problems[0]["cause"]["name"] == "log-sweep",

@@ -1694,6 +1694,12 @@ def logstores(now=None):
         stores.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner"),
                            readers=entry["readers"], group=entry["group"], label=entry["label"], part=entry.get("part"),
                            parts=parts))
+    apps = []
+    for entry in registry.get("stores") or ():
+        if entry.get("kind") == "app" and log_stores.criterion(entry)[0]:
+            rows = steps("app:" + entry["name"], log_stores.measure, entry)
+            apps.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner")))
+    row["apps"] = apps
     groups = {}
     for store in stores:
         for group, size in store["parts"].items():
@@ -2306,7 +2312,7 @@ def store_cause(store):
 def log_firing(row, rule):
     """The causes a log-store scan row still fires `rule` for."""
     if rule == "log-store":
-        found = {store_cause(s)["name"] for s in row.get("stores") or () if s.get("over_units")}
+        found = {store_cause(s)["name"] for s in [*(row.get("stores") or ()), *(row.get("apps") or ())] if s.get("over_units")}
         sweep = row.get("sweep") or {}
         return found | ({"log-sweep"} if sweep.get("error") or sweep.get("errors") else set())
     return set()
@@ -2346,8 +2352,8 @@ def bounded(store):
 
 
 def judge_logstores(judge, rows):
-    """A store holding units past its criterion plus slack (its cleaner is broken), a failed sweep, a log store no
-    program reads and nothing deletes, the total of all log stores growing log_growth_gib_day a day over 7 days and still growing, and each
+    """A log store, or an app store with a criterion, holding units past it plus slack (its cleaner is broken), a
+    failed sweep, a log store no program reads and nothing deletes, the total of all log stores growing log_growth_gib_day a day over 7 days and still growing, and each
     directory the du fallback names."""
     now = judge.now
     rows = [r for r in rows if r.get("stores") is not None]
@@ -2358,7 +2364,7 @@ def judge_logstores(judge, rows):
     if sweep.get("error") or sweep.get("errors"):
         judge.add("log-store", "log-sweep", "log-sweep failed: %s" % (sweep.get("error") or "%d removals failed" % sweep["errors"]),
                   1, 0, "runs", 24, 1, 1, latest["t"], latest["t"], [], found=store_cause({"cleaner": "sweep"}))
-    for store in latest["stores"]:
+    for store in [*latest["stores"], *(latest.get("apps") or ())]:
         if not store.get("over_units"):
             continue
         words = "older than" if (store.get("criterion") or [None])[0] == "days" else "past"

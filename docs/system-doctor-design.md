@@ -207,7 +207,8 @@ new. Writers stay free: no format or location standard, we only measure and clea
   `bin/log-sweep`, `cap` the app caps, `keep` measured only) and at most one criterion (`days`, `max_mb`,
   `keep_newest`, `tail_mb`; `self` and `sweep` need one), each with its `why`. `kind` is `log` (a tool writes it on
   its own and it accumulates: the only kind the doctor counts) or `app` (app data, binaries, browser profiles,
-  outputs: listed so the fallback skips it, never measured). A log store lists its `readers`, found by grepping our
+  outputs: listed so the fallback skips it, never counted; one carrying a criterion is measured against it apart, row
+  `apps`, so an app's cap or self cleaner that stops keeping up fires `log-store` like a log's). A log store lists its `readers`, found by grepping our
   repos, or `[]`. Logs token-map reads keep 30 days (it shows 4 weeks); session scratch and top-level tmp sandboxes
   (`"type": "dir"`, own directories only) and loose /tmp files (`"type": "file"`, own regular files only) 7 days
   idle; unread logs the shortest that still serves debugging. A socket, FIFO or device is never a unit; a unit some
