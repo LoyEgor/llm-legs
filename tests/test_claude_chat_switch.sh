@@ -16,21 +16,20 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 # Resolved before the stub `hs` goes on PATH; the wall harness needs the real one.
 REAL_HS="$(command -v hs || true)"
-# The wall harness drives a CHECKOUT's module wherever the Lua lives — this repository first, then
-# the hammerspoon repository beside it — and the install under ~/.hammerspoon only when neither is
-# there: in a worktree or a sealed clone the installed copy is somebody else's, and a broken branch
+# The wall harness drives a CHECKOUT's module: the hammerspoon repository beside this one, and the
+# install under ~/.hammerspoon only when it is not there: in a worktree or a sealed clone the installed copy is somebody else's, and a broken branch
 # edit would pass on it.
 . "$ROOT/share/test-scope.sh"
 . "$ROOT/tests/lib/hs-bounded.sh"
 PROJECTS=$(git_projects "$ROOT")
 if [ -z "${CHAT_SWITCH_LUA:-}" ]; then
-  for lua_home in "$ROOT/hammerspoon/config" "$PROJECTS/hammerspoon" "$HOME/.hammerspoon"; do
+  for lua_home in "$PROJECTS/hammerspoon" "$HOME/.hammerspoon"; do
     [ -r "$lua_home/claude_chat_switch.lua" ] || continue
     CHAT_SWITCH_LUA="$lua_home/claude_chat_switch.lua"
     break
   done
 fi
-CHAT_SWITCH_LUA="${CHAT_SWITCH_LUA:-$ROOT/hammerspoon/config/claude_chat_switch.lua}"
+CHAT_SWITCH_LUA="${CHAT_SWITCH_LUA:-$PROJECTS/hammerspoon/claude_chat_switch.lua}"
 
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -59,7 +58,7 @@ mkdir -p "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/olx" \
 # Stub hs: record the raw args (script always calls `hs -c "<lua>"`) and answer the
 # way a real arm does — a module console line first, the sentinel last.
 cat >"$FAKE_BIN/hs" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/bash
 printf '%s\n' "$*" > "$HS_CAPTURE"
 [ "${STUB_HS_FAIL:-0}" -eq 0 ] || exit 99
 printf '[claude-chat-switch]\tarmed\tprofile=x\narmed\n'
@@ -72,7 +71,7 @@ EOF
 STUB_LSTART="Sat Aug  1 11:11:04 2026"
 export STUB_LSTART
 cat >"$FAKE_BIN/ps" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/bash
 for arg in "$@"; do pid=$arg; done
 case "$*" in
   '-t '*)
@@ -82,9 +81,9 @@ case "$*" in
       if [ -n "${STUB_PS_EXECUTABLES:-}" ]; then
         printf '%s\n' "$STUB_PS_EXECUTABLES"
       elif [ -n "${SELF_TABLE:-}" ]; then
-        awk '{print $1, $4}' "$SELF_TABLE"
+        while read -r pid_col _ _ comm_col _ || [ -n "$pid_col" ]; do printf '%s %s\n' "$pid_col" "$comm_col"; done <"$SELF_TABLE"
       else
-        printf '%s\n' "$STUB_PS_TABLE" | awk '{print $1, $4}'
+        while read -r pid_col _ _ comm_col _ || [ -n "$pid_col" ]; do printf '%s %s\n' "$pid_col" "$comm_col"; done <<<"$STUB_PS_TABLE"
       fi
     elif [ -n "${SELF_TABLE:-}" ]; then
       cat "$SELF_TABLE"
@@ -114,14 +113,14 @@ case "$*" in
 esac
 EOF
 cat >"$FAKE_BIN/osascript" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/bash
 case "$*" in
   *frontmost*) echo "${STUB_FRONT_APP:-Terminal}" ;;
   *) echo /dev/ttys009 ;;
 esac
 EOF
 cat >"$FAKE_BIN/lsof" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/bash
 [ -z "${STUB_CWD:-}" ] || printf 'p100\nn%s\n' "$STUB_CWD"
 EOF
 chmod +x "$FAKE_BIN/hs" "$FAKE_BIN/ps" "$FAKE_BIN/osascript" "$FAKE_BIN/lsof"
@@ -289,16 +288,9 @@ done
 # and never given a second, browser-driven gateway login.
 CODEX_ONLY="$HOME/.codex-profiles/burkhartor"
 mkdir -p "$CODEX_ONLY"
-python3 - "$CODEX_ONLY/auth.json" <<'PYEOF'
-import base64, json, sys, time
-def segment(payload):
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-token = f"{segment({'alg': 'none'})}.{segment({'exp': int(time.time()) + 86400})}.sig"
-json.dump({"auth_mode": "chatgpt", "last_refresh": "2026-09-11T15:32:38Z",
-           "tokens": {"access_token": token, "id_token": token,
-                      "refresh_token": "fixture-refresh", "account_id": "acct-burkhartor"}},
-          open(sys.argv[1], "w"))
-PYEOF
+token=eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig
+printf '{"auth_mode": "chatgpt", "last_refresh": "2026-09-11T15:32:38Z", "tokens": {"access_token": "%s", "id_token": "%s", "refresh_token": "fixture-refresh", "account_id": "acct-burkhartor"}}' \
+  "$token" "$token" >"$CODEX_ONLY/auth.json"
 GWSID="cccccccc-dddd-eeee-ffff-000000000000"
 
 run_switch -- --gateway nope "$GWSID"
