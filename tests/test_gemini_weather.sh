@@ -27,31 +27,34 @@ mkdir -p "$BENCH" "$WORKER_RUN_DIR" "$GEMINIB_CACHE_DIR/logs" "$GEMINIB_CACHE_DI
   "$GEMINIB_PROFILES_DIR/alpha/.gemini/antigravity-cli/log"
 
 # mklog <path> <model line> <seconds before NOW of each step, oldest first> [503:<seconds before NOW>]...
+# Queues a log; mklog_flush writes the queue in one interpreter start, in order.
 # Stamps are agy's glog shape in local time; the file mtime is the newest event, as agy leaves it.
-mklog() {
-  python3 - "$NOW" "$@" <<'PY'
+cat >"$WORK/mklog.py" <<'PY'
 import os, sys, time
-now = int(sys.argv[1]); path = sys.argv[2]; model = sys.argv[3]; events = sys.argv[4:]
+now = int(sys.argv[1])
 def stamp(offset):
     epoch = now - offset
     return time.strftime("I%m%d %H:%M:%S", time.localtime(epoch)) + ".123456"
-first = max(int(e.split(":")[-1]) for e in events) + 5 if events else 5
-lines = ["%s       1 printmode.go:174] Print mode: starting (promptLength=6, model=\"%s\", conversationID=\"\")" % (stamp(first), model),
-         "%s       1 model_resolver.go:93] Resolving model %s" % (stamp(first), model)]
-for number, event in enumerate(events):
-    if event.startswith("503:"):
-        offset = int(event[4:])
-        lines.append("%s     707 run.go:389] Run: attempt 1 failed (UNAVAILABLE (code 503): No capacity available for model %s on the server), retrying in 4s" % (stamp(offset), model))
-    else:
-        offset = int(event)
-        lines.append("%s    1186 http_helpers.go:299] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse Trace: 0x1 ResponseID: %s-%d" % (stamp(offset), os.path.basename(path), number))
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w") as handle:
-    handle.write("\n".join(lines) + "\n")
-newest = min(int(e.split(":")[-1]) for e in events) if events else first
-os.utime(path, (now - newest, now - newest))
+for spec in open(sys.argv[2]):
+    path, model, *events = spec.rstrip("\n").split("\t")[:-1]
+    first = max(int(e.split(":")[-1]) for e in events) + 5 if events else 5
+    lines = ["%s       1 printmode.go:174] Print mode: starting (promptLength=6, model=\"%s\", conversationID=\"\")" % (stamp(first), model),
+             "%s       1 model_resolver.go:93] Resolving model %s" % (stamp(first), model)]
+    for number, event in enumerate(events):
+        if event.startswith("503:"):
+            offset = int(event[4:])
+            lines.append("%s     707 run.go:389] Run: attempt 1 failed (UNAVAILABLE (code 503): No capacity available for model %s on the server), retrying in 4s" % (stamp(offset), model))
+        else:
+            offset = int(event)
+            lines.append("%s    1186 http_helpers.go:299] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse Trace: 0x1 ResponseID: %s-%d" % (stamp(offset), os.path.basename(path), number))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as handle:
+        handle.write("\n".join(lines) + "\n")
+    newest = min(int(e.split(":")[-1]) for e in events) if events else first
+    os.utime(path, (now - newest, now - newest))
 PY
-}
+mklog() { { printf '%s\t' "$@"; printf '\n'; } >>"$WORK/mklog.queue"; }
+mklog_flush() { python3 -S "$WORK/mklog.py" "$NOW" "$WORK/mklog.queue" && rm -f "$WORK/mklog.queue"; }
 
 # Healthy 3.7: two runs at 3 s a step, one in a worker run dir whose meta names its log.
 mklog "$BENCH/agy-agy-flash37-high.log" gemini-3.7-flash-high 600 597 594 591
@@ -67,10 +70,11 @@ mklog "$GEMINIB_PROFILES_DIR/alpha/.gemini/antigravity-cli/log/cli-1.log" gemini
 mklog "$BENCH/agy-agy-pro-high.log" 'Gemini 3.1 Pro (High)' 2400 2396 2392
 # Window cut-off: a 3.6 run from two hours ago, 503 included, must not count anywhere.
 mklog "$BENCH/agy-agy-flash36-old.log" gemini-3.6-flash-high 7300 7290 503:7200
-# The same run copied to a second root is one run, not two.
-cp -p "$BENCH/agy-agy-flash37-high.log" "$GEMINIB_CACHE_DIR/logs/copy.log"
 # A quota poll: agy's own log with no model and no step belongs to no family.
 mklog "$GEMINIB_PROFILES_DIR/alpha/.gemini/antigravity-cli/log/cli-2.log" ''
+mklog_flush
+# The same run copied to a second root is one run, not two.
+cp -p "$BENCH/agy-agy-flash37-high.log" "$GEMINIB_CACHE_DIR/logs/copy.log"
 
 python3 - "$BENCH/meta.json" "$NOW" <<'PYFIX'
 import json, sys
@@ -94,7 +98,22 @@ with open(sys.argv[1], "w") as handle:
 PYFIX
 
 json=$("$WEATHER" --json) || fail "gemini-weather --json exited nonzero"
-family() { jq -r --arg f "$1" --arg k "$2" '.families[] | select(.family == $f) | .[$k] | tostring' <<<"$json"; }
+# The cold call left an empty family list behind (no agy here), which every later run would fetch
+# again through geminib: the cache the real one writes after a fetch holds the builtin rows.
+printf '%s\n' '{"fetched_at":'"$NOW"',"attempted_at":'"$NOW"',"families":[
+{"family":"gemini-3.8-flash","slug":"flash38","agy_prefix":"gemini-3.8-flash","label":"Gemini 3.8 Flash"},
+{"family":"gemini-3.7-flash","slug":"flash37","agy_prefix":"gemini-3.7-flash","label":"Gemini 3.7 Flash"},
+{"family":"gemini-3.6-flash","slug":"flash36","agy_prefix":"gemini-3.6-flash","label":"Gemini 3.6 Flash"},
+{"family":"gemini-3.1-pro","slug":"pro","agy_prefix":"gemini-3.1-pro","label":"Gemini 3.1 Pro"}]}' \
+  >"$GEMINIB_CACHE_DIR/models.json"
+flat=$(jq -r '.families[] | .family as $f | to_entries[] | "\($f) \(.key) \(.value | tostring)"' <<<"$json")
+family() {
+  local f k v
+  while read -r f k v; do
+    [ "$f $k" = "$1 $2" ] && { printf '%s\n' "$v"; return; }
+  done <<<"$flat"
+  printf 'null\n'
+}
 
 assert_eq "$(jq -r '[.families[].family] | join(",")' <<<"$json")" \
   'gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.1-pro'
@@ -149,6 +168,7 @@ assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.7-flash") | "\(.st
 # A capacity relaunch appends the next family's attempt to the same log: each attempt keeps its own.
 mklog "$GEMINIB_CACHE_DIR/logs/relaunch.log" gemini-3.8-flash-high 503:100
 mklog "$WORK/second.log" gemini-3.7-flash-high 90 87
+mklog_flush
 cat "$WORK/second.log" >>"$GEMINIB_CACHE_DIR/logs/relaunch.log"
 touch -r "$WORK/second.log" "$GEMINIB_CACHE_DIR/logs/relaunch.log"
 relaunch=$("$WEATHER" --json)
