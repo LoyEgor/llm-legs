@@ -4325,6 +4325,77 @@
    "verdict": "cut",
    "zero": "removal saves 22.9 wall-min/day, 12.9 CPU-min/day; loses the only end-to-end pins of memlogd's incident state machine, rotation, lock and the memory guard's kill rule on real process groups",
    "note": "seam fakes (date/jq/stat) on PATH only for the 5 cases naming their variables, contention-probe forks off outside the machine case, two 1 s tick sleeps replaced by injected clocks; CPU 32->25.5 s a run, 333 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_grok_outcomes",
+   "title": "llm-legs/test_worker_run_grok_outcomes",
+   "audited_at": "2026-10-13T14:08:15+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-memlogd-20261012T235344Z-1eea",
+   "cpu_run": 20.5,
+   "wall_run": 25.9,
+   "cpu_min_day": 9.38,
+   "wall_min_day": 25.36,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_grok_outcomes.sh": "d3284d1377d00aa14dd7f694190813ba0dfbc84f",
+    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 22.8 wall-min/day, 9.3 CPU-min/day; loses the only pins of grok outcome classes (walls vs transient vs auth vs max-turns vs cancelled), denials and grok file lists",
+   "note": "five cases reading only the record wait for exit instead of a full wait report; CPU 23->22 s a run, 102 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_watchdog",
+   "title": "llm-legs/test_worker_run_watchdog",
+   "audited_at": "2026-10-13T14:08:16+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-memlogd-20261012T235344Z-1eea",
+   "cpu_run": 21.3,
+   "wall_run": 37.8,
+   "cpu_min_day": 10.9,
+   "wall_min_day": 23.74,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_watchdog.sh": "6ee35f94756153ca03433557328b478f12ba255e",
+    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 22.6 wall-min/day, 10.5 CPU-min/day; loses every pin of the deadline, idle and silent watchdogs, signal kills and transcript discovery through symlinks",
+   "note": "waits at worker-run's own 5 s poll (kqueue wakes wait at exit since 1ba424f1); CPU 21.8->18.4 s a run at equal wall, 74 asserts; wall is the race windows, kept"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_reliability",
+   "title": "llm-legs/test_worker_run_reliability",
+   "audited_at": "2026-10-13T14:08:18+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-memlogd-20261012T235344Z-1eea",
+   "cpu_run": 24.4,
+   "wall_run": 30.1,
+   "cpu_min_day": 16.37,
+   "wall_min_day": 57.76,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_reliability.sh": "329f1e68f72064da008fd0ac9dad844d9237c343",
+    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 22.6 wall-min/day, 15.3 CPU-min/day; loses the pins of live-edit tracking, duplicate and resume-busy refusals, wall reroutes and records, supervisor TERM cleanup",
+   "note": "5 s wait poll and seven runs waiting for exit instead of a wait report; CPU 23.8->20.6 s a run, 90 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_codex_image",
+   "title": "llm-legs/test_codex_image",
+   "audited_at": "2026-10-13T14:08:20+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-memlogd-20261012T235344Z-1eea",
+   "cpu_run": 26.0,
+   "wall_run": 24.4,
+   "cpu_min_day": 10.66,
+   "wall_min_day": 44.32,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_codex_image.sh": "c0f46950f79e42787beced283af0d3a9c38e7ca6"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 22.1 wall-min/day, 10.5 CPU-min/day; loses the codex image leg's argument refusals, routing, pinning, composite and web fallback pins",
+   "note": "82 end-to-end runs whose spawns are the leg's own jq/magick; already pruned 698defe1; one vacuous check fixed (relative --ref refusal, red under its mutation)"
   }
  ]
 }
