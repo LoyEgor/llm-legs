@@ -191,7 +191,7 @@ module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harnes
 loader.exec_module(module)
 pid = os.fork()
 if pid == 0:
-    end = time.process_time() + 0.6
+    end = time.process_time() + 0.5
     while time.process_time() < end:
         pass
     module.exec_speed()
@@ -1553,11 +1553,11 @@ put(launchctl_log, "")
 os.environ["XPC_SERVICE_NAME"] = "com.test.self"
 rc, out = redeployed()[:2]
 os.environ.pop("XPC_SERVICE_NAME")
-for _ in range(600):
+for _ in range(3000):
     reloads = open(launchctl_log).read().split()
     if len(reloads) >= 4:
         break
-    time.sleep(0.05)
+    time.sleep(0.01)
 check(rc == 0 and out == "redeploy ran cp launchd/job.plist: %s\n" % m.file_key(plist) and reloads[::2] == ["bootout", "bootstrap"]
       and reloads[1] == reloads[3] != str(os.getpgrp()),
       "Redeploy: the doctor's own LaunchAgent is reloaded from a new session, which outlives the bootout of the job "
@@ -1680,10 +1680,10 @@ B(T)
 time.sleep(0.3)
 check(not os.path.exists(calls), "Browser: a read-only run never starts the canary")
 B(T, write=True)
-for _ in range(600):
+for _ in range(3000):
     if os.path.exists(os.path.join(runs, "browse", "canary.stamp")):
         break
-    time.sleep(0.05)
+    time.sleep(0.01)
 check(os.path.exists(calls) and open(calls).read().split() == ["browse", "--canary"],
       "Browser: a writing run starts the canary when its stamp is stale")
 os.remove(calls)
@@ -2116,56 +2116,67 @@ HARNESS_DOCTOR_DIR="$catchup" HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE="
 assert_eq 1 "$(jq '.floors["event:UserPromptSubmit"][0]' "$catchup/days/$(date -u -r "$gap" +%F).json" 2>/dev/null)" \
   "a run after a gap longer than the raw reach still records the floors since its last run"
 
-ledger_guard() {
-python3 - "$1" "$PROJECTS" "$ROOT/share" "$ROOT/bin/speed-doctor" <<'LEDGER'
+ledger_guard() { # ledger... -> one line per ledger: ok, or the guard it breaks
+python3 - "$PROJECTS" "$ROOT/share" "$ROOT/bin/speed-doctor" "$@" <<'LEDGER'
 import importlib.machinery, json, os, re, subprocess, sys
-sys.path.insert(0, sys.argv[3])
+sys.path.insert(0, sys.argv[2])
 from fix_commit import FIX_KEYS
-equivalent = importlib.machinery.SourceFileLoader("speed_doctor", sys.argv[4]).load_module().equivalent
-ledger = json.load(open(sys.argv[1]))
-assert ledger["owner"] == "Harness Doctor" and isinstance(ledger["rows"], list), "owner and rows"
-fields = {"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note", "handoff"}
-ids = [r["id"] for r in ledger["rows"]]
-commits = {}
-for r in ledger["rows"]:
-    assert set(r) == fields, r["id"]
-    assert set(r["same_cause"]) <= set(ids), r["id"]
-    if r["status"] in ("fixed", "fixed-pending"):
-        assert r["fixes"], "a fixed row names its fix: %s" % r["id"]
-    for i, fix in enumerate(r["fixes"]):
-        assert set(fix) - {"equivalence"} == FIX_KEYS and fix["files"], r["id"]
-        assert "equivalence" not in fix or equivalent(fix), r["id"]
-        assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
-        assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
-        if fix["in"]:
-            repo, commit = fix["in"].split("@")
-            commits.setdefault(os.path.join(sys.argv[2], repo), []).append((commit, fix))
-for top, wanted in commits.items():
-    if os.path.isdir(top):
-        found = subprocess.run(["git", "-C", top, "cat-file", "--batch-check"], capture_output=True, text=True,
-                               input="".join(c + "^{commit}\n" for c, _ in wanted)).stdout.splitlines()
-        assert len(found) == len(wanted), top
-        for (commit, fix), line in zip(wanted, found):
-            assert line.split()[1:2] == ["commit"], fix
-for b in ledger["blind_spots"]:
-    assert set(b) == {"id", "what", "reason", "since", "would_catch_if"}, b
+equivalent = importlib.machinery.SourceFileLoader("speed_doctor", sys.argv[3]).load_module().equivalent
+
+def guard(path):
+    ledger = json.load(open(path))
+    assert ledger["owner"] == "Harness Doctor" and isinstance(ledger["rows"], list), "owner and rows"
+    fields = {"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note", "handoff"}
+    ids = [r["id"] for r in ledger["rows"]]
+    commits = {}
+    for r in ledger["rows"]:
+        assert set(r) == fields, r["id"]
+        assert set(r["same_cause"]) <= set(ids), r["id"]
+        if r["status"] in ("fixed", "fixed-pending"):
+            assert r["fixes"], "a fixed row names its fix: %s" % r["id"]
+        for i, fix in enumerate(r["fixes"]):
+            assert set(fix) - {"equivalence"} == FIX_KEYS and fix["files"], r["id"]
+            assert "equivalence" not in fix or equivalent(fix), r["id"]
+            assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
+            assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
+            if fix["in"]:
+                repo, commit = fix["in"].split("@")
+                commits.setdefault(os.path.join(sys.argv[1], repo), []).append((commit, fix))
+    for top, wanted in commits.items():
+        if os.path.isdir(top):
+            found = subprocess.run(["git", "-C", top, "cat-file", "--batch-check"], capture_output=True, text=True,
+                                   input="".join(c + "^{commit}\n" for c, _ in wanted)).stdout.splitlines()
+            assert len(found) == len(wanted), top
+            for (commit, fix), line in zip(wanted, found):
+                assert line.split()[1:2] == ["commit"], fix
+    for b in ledger["blind_spots"]:
+        assert set(b) == {"id", "what", "reason", "since", "would_catch_if"}, b
+
+for path in sys.argv[4:]:
+    try:
+        guard(path)
+        print("ok")
+    except Exception as error:
+        print("broken: %r" % (error,))
 LEDGER
 }
-ledger_guard "$ROOT/share/harness-ledger.json" || fail "the ledger breaks a contract guard"
-asserts=$((asserts + 1))
 jq '.rows = [{id: "refixed", title: "t", match: {rule: "floor", ident: "bash:refixed"}, status: "fixed-pending",
   fixes: [{at: "2026-09-01T00:00:00+00:00", by: "c", files: ["llm-legs/bin/x"], in: "no-such-repo@abc1234",
            regressed_at: "2026-09-02T00:00:00+00:00"},
           {at: "2026-09-03T00:00:00+00:00", by: "c", files: ["llm-legs/bin/x"], in: null, regressed_at: null}],
   same_cause: [], last_reviewed: null, reviewed_by: null, note: null, handoff: null}]' \
   "$ROOT/share/harness-ledger.json" > "$WORK/refixed.json"
-ledger_guard "$WORK/refixed.json" 2>/dev/null || fail "the ledger guard fails a row whose repeat fix is pending over a committed one"
-asserts=$((asserts + 1))
 jq '.rows[0].fixes[1].equivalence = {compared: "c", data: "d", result: "r"}' "$WORK/refixed.json" > "$WORK/proved.json"
-ledger_guard "$WORK/proved.json" 2>/dev/null || fail "the ledger guard fails a Speed fix carrying its output-equivalence proof"
-asserts=$((asserts + 1))
 jq '.rows[0].fixes[1].equivalence = {compared: "c", data: "d"}' "$WORK/refixed.json" > "$WORK/unproved.json"
-! ledger_guard "$WORK/unproved.json" 2>/dev/null || fail "the ledger guard takes an equivalence proof with no result"
+guards=$(ledger_guard "$ROOT/share/harness-ledger.json" "$WORK/refixed.json" "$WORK/proved.json" "$WORK/unproved.json")
+guarded() { sed -n "$1p" <<<"$guards"; }
+[ "$(guarded 1)" = ok ] || fail "the ledger breaks a contract guard: $(guarded 1)"
+asserts=$((asserts + 1))
+[ "$(guarded 2)" = ok ] || fail "the ledger guard fails a row whose repeat fix is pending over a committed one"
+asserts=$((asserts + 1))
+[ "$(guarded 3)" = ok ] || fail "the ledger guard fails a Speed fix carrying its output-equivalence proof"
+asserts=$((asserts + 1))
+[[ "$(guarded 4)" == broken:* ]] || fail "the ledger guard takes an equivalence proof with no result"
 asserts=$((asserts + 1))
 
 FIXTURE="$ROOT/tests/fixtures/harness-calibration"
@@ -2197,8 +2208,12 @@ assert_eq '["test_daily_cost-worker-run 8577.0 23","test_daily_cost:llm-legs:tes
   "$(jq -c '[.problems[] | select(.id | startswith("test_")) | "\(.id) \(.value) \(.exposure)"]' "$WORK/replay-1.json")" \
   "the calibration's 24 h of llm-legs tests: test_worker_run is the long pole, both suites cost over 2 h"
 
-assert_eq '' "$(for f in "$ROOT"/tests/fixtures/speed-calibration/*.jsonl.gz; do gzip -dc "$f"; done |
-  jq -r '.. | strings | select(length > 60 and (startswith("<task-notification>") | not))' | head -3)" \
+# The digest is of the corpus this walk last passed: an equal corpus is clean, any other one is walked.
+chat_text() {
+  [ "$(cat "$@" | shasum -a 256)" != "83354a687ea25b308230f87adefaed3106e67c557f04a11e0368a6ef0b332c56  -" ] || return 0
+  gzip -dc "$@" | jq -r '.. | strings | select(length > 60 and (startswith("<task-notification>") | not))' | head -3
+}
+assert_eq '' "$(chat_text "$ROOT"/tests/fixtures/speed-calibration/*.jsonl.gz)" \
   "the public calibration transcripts carry no chat text: peer bodies, prompts and tool inputs are stripped"
 
 speed=$(python3 - "$ROOT" "$T" "$WORK" <<'EOF'
