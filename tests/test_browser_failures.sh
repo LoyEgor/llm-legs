@@ -295,7 +295,10 @@ with tempfile.TemporaryDirectory() as scratch:
         time.sleep(0.15)
         flushed[0].touch(); flushed[1].touch()
         touched = time.time()
-        time.sleep(1.0)
+        for _ in range(250):
+            if killed:
+                break
+            time.sleep(0.02)
     assert [k[:2] for k in killed] == [(4242, gw.signal.SIGKILL)], killed
     assert killed[0][2] - touched >= 0.3, "killed inside the grace"
 gw.os.killpg, gw.FLUSH_GRACE_S = real_killpg, real_grace
@@ -356,7 +359,7 @@ def hold(*names):
         fcntl.flock(handles[name], fcntl.LOCK_EX)
     return handles
 held = hold("busy-a", "busy-b")
-threading.Timer(0.6, held["busy-b"].close).start()
+threading.Timer(0.2, held["busy-b"].close).start()
 started = time.monotonic()
 picks = gw.claimed(["busy-a", "busy-b"], 8)
 account, refusal = next(picks)
@@ -366,8 +369,8 @@ picks.close()
 assert not gw.busy("busy-b") and gw.busy("busy-a")
 held = {**held, **hold("busy-b")}
 waited = gw.lock_waited
-refused = [(name, refusal.code) for name, refusal in gw.claimed(["busy-a", "busy-b"], 1.0)]
-assert refused == [("busy-a", 5), ("busy-b", 5)] and gw.lock_waited - waited < 1.8, (refused, gw.lock_waited - waited)
+refused = [(name, refusal.code) for name, refusal in gw.claimed(["busy-a", "busy-b"], 0.5)]
+assert refused == [("busy-a", 5), ("busy-b", 5)] and gw.lock_waited - waited < 0.9, (refused, gw.lock_waited - waited)
 for handle in held.values():
     handle.close()
 
