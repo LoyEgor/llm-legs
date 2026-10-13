@@ -9082,6 +9082,51 @@
       "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
       "note": "Traced (xtrace sleep sums): shard 1's idle was browse_session's and the codex canary's `while kill -0; sleep 1` poll, 14 x 1 s for sessions that end in milliseconds; now one watchdog (sleep BROWSE_SESSION_S, kill, limit_hit) beside a `wait` on the session, ended by process_tree_end as llm-refresh's supervise_tick does. Left: browse_window/browse_seen 0.5 s polls (4+4 a run, the not-shown paths by design: BROWSE_WINDOW_WAIT=6, BROWSE_SEEN_WAIT=2), the canary form server's 0.1 s port poll, and shard 2's await_done 0.05 s polls (worker-run start/wait per run, shared by every worker_run suite). BROWSE_SESSION_S's timeout path has no suite case (probe only).",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-worker-run-claims",
+      "title": "test_worker_run_claims idle wall over its CPU: no sleep of its own, the wait is worker-run's runs",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/idle/llm-legs/test_worker_run_claims$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
+      "note": "2026-10-13 traced at load ~130 (xtrace sleep sums, 83 s whole): requested sleeps 60 s `sleep 60 &` (a live-supervisor stand-in killed at once: blind spot test-health-nominal-sleep-bound, the packet's 'bounded by the sleeps' line), await_done 431 x 0.05 s and await_launched 120 x 0.05 s (event polls on the run's exit_code/cli_pid), 31 x 0.2 s for the stub's session-file, 3 x 0.5 s for the burn stub's CPU; worker-run itself sleeps nowhere on these paths. worker-run's supervisor is `nohup setsid` detached (bin/worker-run:3229) and reparented once `start` returns, so its CPU and its stub CLI's never enter the suite's cpu_s and the idle class reads them as idle (blind spot test-health-idle-detached-cpu). Ruled out: no fixed sleep to turn into an event wait; launches already cut 18 -> 14 (1c9fe669).",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-slots",
+      "title": "test_slots idle wall over its CPU: race premises, killed holders and run-suites' 5 s owner poll",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/idle/llm-legs/test_slots$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
+      "note": "2026-10-13 traced (96 s whole under xtrace, 154 asserts): 3 x `sleep 300` holders killed at once (blind spot test-health-nominal-sleep-bound); 3 x `sleep 1` are premises (tests/test_slots.sh:165 gives the orphaned waiter time to wrongly take the freed slot; :217 and :276 make the whole-second `started_at - queued_at >= 1` and `.seconds >= 1` asserts hold); ~5 s at :363 is share/run-suites.sh:570's owner watch (`while sleep 5`, builtin sleep) noticing exit_code. Ruled out: cut the owner poll to 1 s saves ~4 s x ~10 runs/day of this suite, costs a jq + ps pid_alive_since check every second instead of every 5 in every slotted worker run's run-suites; the 0.1 s loops are event polls.",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-worker-run-grok-outcomes",
+      "title": "test_worker_run_grok_outcomes idle wall over its CPU: no sleep of its own, the wait is worker-run's runs",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/idle/llm-legs/test_worker_run_grok_outcomes$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
+      "note": "2026-10-13 traced unsharded at load ~130 (73 s, 102 asserts, trace on its own fd): the only sleeps are await_done 390 x 0.05 s and await_launched 116 x 0.05 s, event polls on worker-run's 17 stub runs. worker-run's supervisor is `nohup setsid` detached (bin/worker-run:3229) and reparented once `start` returns, so its CPU and its stub CLI's never enter the suite's cpu_s and the idle class reads them as idle (blind spot test-health-idle-detached-cpu). Ruled out: no sleep or poll to cut; launches already cut 31 -> 17 (9e6e62a8).",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -9441,6 +9486,13 @@
       "reason": "suite wall of test_instruction_gate_tripwire/bloat is the hooks under test, which run before every Edit/Write and after every tool call; gate_journal and the wc|tr pairs are cut, the awk/jq pipelines of instruction-watch.sh and share/instruction-files.sh are not. Ruled out as not worth it: a stat-keyed digest cache for suite_journal_content (about 90 ms a direct run, mostly python start and git ls-files) and a bash JSON builder for the harness's jq payloads (needs a byte-identical escaper to be safe)",
       "since": "2026-10-13",
       "would_catch_if": "the hook journal priced each hook's spawn count per call next to its wall, so a CPU audit of instruction-watch and instruction-bloat-gate ranks them"
+    },
+    {
+      "id": "test-health-idle-detached-cpu",
+      "what": "the idle of opportunity:test-health/idle for a suite whose work runs in detached processes (worker-run supervisors and their CLIs, setsid'd and reparented)",
+      "reason": "2026-10-13 test_worker_run_claims and _grok_outcomes read 29-30 s idle a run with no sleep of their own: the suite's cpu_s counts only reaped children, so the supervisors' CPU reads as idle",
+      "since": "2026-10-13",
+      "would_catch_if": "the suite journal added the CPU of the worker runs it started (their supervisors' rusage at delivery, kept in each run's meta.json) to its cpu_s"
     }
   ]
 }
