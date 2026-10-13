@@ -50,7 +50,8 @@ FIXTURES="$WORK/fixtures"
 TMPDIR="$WORK/runtime-tmp"
 CLAUDEB_FIX="$WORK/claudeb"
 export HOME TMPDIR
-unset HARNESS_DOCTOR_DIR SPEED_DOCTOR_DIR CLAUDEB_DIR
+# CLAUDE_CONFIG_DIR too: a suite run from a chat inherits that chat's account and its server flags.
+unset HARNESS_DOCTOR_DIR SPEED_DOCTOR_DIR CLAUDEB_DIR CLAUDE_CONFIG_DIR
 mkdir -p "$HOME/.claude" "$FIXTURES" "$TMPDIR" "$CLAUDEB_FIX/limits"
 CODEX_FIX="$HOME/.codex-profiles"
 mkdir -p "$CODEX_FIX/work4" "$CODEX_FIX/.codexb/fast-mode"
@@ -3002,6 +3003,20 @@ t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 1h; t_stamp ctx-bk1
 bk1_out=$(run_statusline "$(statusline_payload ctx-bk1 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 bk1_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 3600)) +%H:%M)
 assert grep -Fq "${DIM}→${bk1_death}${RESET}" <<< "$bk1_out"
+
+# An account under Anthropic's cache keepalive: its 5m bucket is touched alive for the flag's window,
+# so twenty minutes on it still reads warm until the window ends, with no downgrade warning.
+KA_CFG="$WORK/keepalive-profile"; mkdir -p "$KA_CFG"
+printf '%s\n' '{"cachedGrowthBookFeatures":{"tengu_sequential_cloud":{"enabled":true,"touchIntervalSeconds":30,"activityWindowMinutes":60}}}' \
+  > "$KA_CFG/.claude.json"
+t_reset; t_assist $((NOW - 1200)) fixmodel 100000 500 5m; t_stamp ctx-keepalive
+ka_out=$(CLAUDE_CONFIG_DIR="$KA_CFG" run_statusline "$(statusline_payload ctx-keepalive "$(warm_extra "$TRANSCRIPT" 20 100000)")")
+ka_death=$(TZ=Europe/Kyiv date -r $((NOW - 1200 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${ka_death}${RESET}" <<< "$ka_out"
+assert test "${ka_out#*↓5m}" = "$ka_out"
+printf '%s\n' '{"cachedGrowthBookFeatures":{"tengu_sequential_cloud":{"enabled":false}}}' > "$KA_CFG/.claude.json"
+ka_off=$(CLAUDE_CONFIG_DIR="$KA_CFG" run_statusline "$(statusline_payload ctx-keepalive "$(warm_extra "$TRANSCRIPT" 20 100000)")")
+assert test "${ka_off#*→}" = "$ka_off"
 
 t_reset; t_assist $((NOW - 50)) fixmodel 50000 500 -; t_stamp ctx-no-bucket
 printf '7200\n' > "$HOME/.claude/statusline-cache-ttl"

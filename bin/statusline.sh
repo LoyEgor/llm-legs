@@ -1613,6 +1613,23 @@ if [ -n "$track" ] && [ "$track_ready" = 1 ] \
     || rm -f "$track.tmp.$$" 2>/dev/null
 fi
 
+# Anthropic's cache keepalive (server flag tengu_sequential_cloud, on for some accounts since
+# 2026-10-13): the main thread writes a 5-minute cache and the CLI touches it every ~30 s while the
+# chat saw activity inside the flag's window, so that 5m bucket lives as long as the window and is
+# no downgrade. The flag is read from the account's own cached server flags.
+keepalive=0
+if [ "$warm_ttl" = 300 ]; then
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_json="$CLAUDE_CONFIG_DIR/.claude.json"
+  else claude_json="$HOME/.claude.json"
+  fi
+  keepalive_secs=$(jq -r '.cachedGrowthBookFeatures.tengu_sequential_cloud
+    | if type == "object" and .enabled != false then (.activityWindowMinutes // 60) * 60 else 0 end
+    | floor' "$claude_json" 2>/dev/null) || keepalive_secs=0
+  if [ "${keepalive_secs:-0}" -gt 300 ] 2>/dev/null; then
+    warm_ttl=$keepalive_secs; keepalive=1
+  fi
+fi
+
 cache_state=unknown
 if [ -z "$model_id" ]; then
   cache_state=unknown
@@ -1641,7 +1658,7 @@ if [ "$cache_state" = warm ]; then
   TZ=Europe/Kyiv printf -v death_time '%(%H:%M)T' "$((warm_ts + warm_ttl))" 2>/dev/null
   if [ -n "$death_time" ]; then
     ctx_tokens_part=" ${DIM}→${death_time}${RESET}"
-    [ "$warm_ttl" -lt 3600 ] 2>/dev/null && ctx_warn_part="${YELLOW}↓5m${RESET}"
+    [ "$keepalive" = 0 ] && [ "$warm_ttl" -lt 3600 ] 2>/dev/null && ctx_warn_part="${YELLOW}↓5m${RESET}"
   fi
 elif [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -ge 0 ] 2>/dev/null; then
   ctx_tokens_k=$(( (ctx_tokens + 500) / 1000 ))
