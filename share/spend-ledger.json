@@ -946,6 +946,86 @@
    "verdict": "cut",
    "zero": "removal saves ~0 wall-min/day (0.1 s a run); loses the atomic state-file publish and live-state isolation pins",
    "note": "removed 4 never-red asserts (unassigned forwarded flag, 3 fake~=saved tautologies); non-atomic publish mutation red"
+  },
+  {
+   "id": "suite:review-bench/test_panel_preparation",
+   "title": "review-bench/test_panel_preparation",
+   "audited_at": "2026-10-13T05:47:49+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-panel-preparation-20261012T235429Z-346b",
+   "cpu_run": 4.0,
+   "wall_run": 3.6,
+   "cpu_min_day": 0.25,
+   "wall_min_day": 0.5,
+   "sources": {
+    "review-bench/tests/test_panel_preparation.sh": "c1242a6adab933574e065d31843ef72700180ede"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.3 wall-min/day; loses the clone-sharing, seal-count and cmd_run cleanup/observation-order pins of the panel preparation",
+   "note": "fixture repo built once per class: git spawns 235->175 (CPU 5.6->~4 s) with one new behaviour check (cmd_run whose panel dies still takes the final observation); 11 checks"
+  },
+  {
+   "id": "suite:review-bench/test_integrity",
+   "title": "review-bench/test_integrity",
+   "audited_at": "2026-10-13T05:47:56+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-panel-preparation-20261012T235429Z-346b",
+   "cpu_run": 2.0,
+   "wall_run": 2.9,
+   "cpu_min_day": 0.1,
+   "wall_min_day": 0.21,
+   "sources": {
+    "review-bench/tests/test_integrity.sh": "2f6b4fa7b71d9d487d02299904b192f51fa8ac38"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.1 wall-min/day; loses the run-level integrity observation pins (coverage, ignored files, symlinks, one baseline/final pair)",
+   "note": "template checkout copied per test: git spawns 110->50, CPU 3.0->1.9 s; two source-text greps of cli.py/launch.py (call counts, retired names) removed, now pinned by behaviour in test_panel_preparation (way-out finalize, two observations per run), both mutations red; 31->29 checks"
+  },
+  {
+   "id": "suite:review-bench/test_review_anchors_argv",
+   "title": "review-bench/test_review_anchors_argv",
+   "audited_at": "2026-10-13T05:48:07+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-panel-preparation-20261012T235429Z-346b",
+   "cpu_run": 2.0,
+   "wall_run": 2.4,
+   "cpu_min_day": 0.11,
+   "wall_min_day": 0.22,
+   "sources": {
+    "review-bench/tests/test_review_anchors_argv.sh": "031f9f1e26685f6478bef23d26a49d668f24e085"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.2 wall-min/day; loses the ARG_MAX pin of the run-fold (E2BIG, ledger H16)",
+   "note": "three inline python3 spawns merged into one (python3 10->8), 3 asserts unchanged, pathspec mutation still red; the sleep 1 orders whole-second stamps and stays; the rest is review-anchors' own work over 1700 paths"
+  },
+  {
+   "id": "suite:review-bench/test_agy_bare",
+   "title": "review-bench/test_agy_bare",
+   "audited_at": "2026-10-13T05:48:19+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-panel-preparation-20261012T235429Z-346b",
+   "cpu_run": 2.9,
+   "wall_run": 3.7,
+   "cpu_min_day": 0.15,
+   "wall_min_day": 0.28,
+   "sources": {
+    "review-bench/tests/test_agy_bare.sh": "fb5f1e495b4610a1dcf619becb5a5a9be4c6fd90"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.2 wall-min/day; loses the bare-agy clone-reading, unchunked, not-plan-mode and cell-clock pins",
+   "note": "tests lens read: no vacuous/leaking check found; 125 git spawns are production seal_overlay_clone per run_agy call, the seal is the subject of the clock checks; no sleeps"
+  },
+  {
+   "id": "suite:review-bench/test_experiments_registry",
+   "title": "review-bench/test_experiments_registry",
+   "audited_at": "2026-10-13T05:48:29+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-panel-preparation-20261012T235429Z-346b",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "review-bench/tests/test_experiments_registry.sh": "dd7fbbb2a80c92673f8ff2e6e51bffae6c1483fa"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.0 wall-min/day; loses the standing experiment-overdue reminder",
+   "note": "0.1 s a run, one jq-per-field pass; the overdue failure is the owner reminder and must not be weakened"
   }
  ]
 }
