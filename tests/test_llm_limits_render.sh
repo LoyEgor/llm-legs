@@ -65,7 +65,6 @@ rc=$?
 bare=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT") || fail "bare piped collection failed"
 jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini","grok","opencode"])' <<<"$bare" >/dev/null || fail "piped bare invocation must emit schema-1 JSON"
 
-sleep 1
 TRUNCATED="$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-truncated.jsonl"
 printf '{"padding":"%0700d"}\n' 0 >"$TRUNCATED"
 printf '{"timestamp":"2026-07-11T12:00:00Z","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":88,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":44,"window_minutes":10080,"resets_at":%s},"plan_type":"plus"}}}\n' "$((now + 3000))" "$((now + 4000))" >>"$TRUNCATED"
@@ -91,7 +90,6 @@ jq -e '.vendors.codex.five_hour.used_pct == 17 and .vendors.codex.weekly.used_pc
 # Passive snapshot whose 5h reset already passed: flagged expired, table keeps the last
 # known value and reset time (dimmed only on a TTY, so piped output stays escape-free),
 # sort treats the stale 100% as 0. The fresh weekly window stays unflagged.
-sleep 1
 printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":44,"window_minutes":10080,"resets_at":%s},"plan_type":"plus"}}}\n' \
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$((now - 600))" "$((now + 4000))" \
   >"$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-expired.jsonl"
