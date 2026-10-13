@@ -1279,6 +1279,19 @@
    "verdict": "kept",
    "zero": "removal saves 3.3 CPU-min/day; loses every headless worker run, which is the work itself (the night's fixers, reviews, benches)",
    "note": "the claude CLI under worker-run, vendor code with no source of ours; CPU is bursty with the night's worker count (30 CPU-min in the 03:00 hour of 10-13, near 0 otherwise), a CPU-per-token cost of the model session; the lever would be model/effort, which are Egor's alone"
+  },
+  {
+   "id": "cpu:hook/cd-guard.sh",
+   "title": "hook/cd-guard.sh",
+   "audited_at": "2026-10-13T09:10:54+03:00",
+   "by": "harness-speed-cpu-doctor-llm-20261012T235029Z-047a",
+   "cpu_min_day": 0.7,
+   "cpu_s_run": 0.029,
+   "runs_day": 3972,
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 3.0 CPU-min/day (5885 Bash calls a day x 0.032 CPU-s); loses nothing: Claude Code's native CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 resets the cwd itself",
+   "note": "already cut: claude-setup@55f0a219 (2026-10-12 05:27, on main) deleted hooks/cd-guard.sh and its test and unwired it; the row is the 7-day median still holding the days it ran and falls to 0 as they leave the window; no run of it exists after the cut"
   }
  ]
 }
