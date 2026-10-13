@@ -248,9 +248,8 @@ before=$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')
 assert "$DOCTOR" --dry-run --json >"$WORK/doc.json"
 assert test "$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')" = "$before"
 # --json only prints: the menu's cache keeps its own window.
-assert "$DOCTOR" --block reviewers --json >"$WORK/doc-block.json"
 RUNS="$WORK/doctors-runs"
-DOCTORS_DIR="$RUNS" DOCTOR_TRIGGER=menu "$DOCTOR" --dry-run --json </dev/null >/dev/null
+assert env DOCTORS_DIR="$RUNS" DOCTOR_TRIGGER=menu "$DOCTOR" --block reviewers --json </dev/null >/dev/null
 assert jq -es 'length == 1 and (.[0] | (keys == ["cpu_s", "doctor", "start", "trigger", "wall_s"])
   and .doctor == "llm" and .trigger == "menu" and .wall_s > 0 and .cpu_s > 0)' "$RUNS/collector-runs.jsonl" >/dev/null
 assert test "$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')" = "$before"
@@ -497,9 +496,10 @@ assert env LLM_LIMITS_CACHE="$WORK/stale-raw.json" "$DOCTOR" --dry-run --json >"
 assert jq -e '[.problems[] | select(.rule == "account-stale")] == []' "$WORK/unmarked.json" >/dev/null
 # Days the bench store covers whole are frozen to disk; the older image day stays as it was.
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -name '*.json' | wc -l | tr -d ' ')" -ge 3
-assert grep -q '"image|grok-image|failed|bad output|ours|X4": 5' "$LLM_DOCTOR_DIR/daily/$(python3 -c 'import time,sys; print(time.strftime("%Y-%m-%d", time.localtime(int(sys.argv[1]) - 10 * 86400)))' "$NOW").json"
-assert python3 -c 'import json,sys; json.load(open(sys.argv[1]))["blocks"]' "$LLM_DOCTOR_DIR/latest.json"
-assert grep -q '"image|grok-image|walled|||": 2' "$LLM_DOCTOR_DIR/daily/$(python3 -c 'import time,sys; print(time.strftime("%Y-%m-%d", time.localtime(int(sys.argv[1]) - 10 * 86400)))' "$NOW").json"
+image_day=$(date -r $((NOW - 10 * 86400)) +%Y-%m-%d)
+assert grep -q '"image|grok-image|failed|bad output|ours|X4": 5' "$LLM_DOCTOR_DIR/daily/$image_day.json"
+assert jq -e '.blocks' "$LLM_DOCTOR_DIR/latest.json" >/dev/null
+assert grep -q '"image|grok-image|walled|||": 2' "$LLM_DOCTOR_DIR/daily/$image_day.json"
 assert env TZ=Europe/Kyiv python3 - "$DOCTOR" <<'PY'
 import calendar, importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("llm_doctor", sys.argv[1])
@@ -543,7 +543,7 @@ UNIT="$WORK/unit"
 mkdir -p "$UNIT"
 assert env LLM_LIMITS_ACTION_LOG="$UNIT/actions.log" WORKER_RUN_DIR="$UNIT/runs" IMAGE_LEG_LOG="$UNIT/legs.jsonl" \
   WORKER_STATS_DIR="$UNIT/stats" python3 - "$DOCTOR" "$NOW" "$UNIT" <<'PY'
-import contextlib, importlib.machinery, importlib.util, io, json, os, shutil, sys, time
+import contextlib, importlib.machinery, importlib.util, io, json, os, shutil, subprocess, sys, time
 loader = importlib.machinery.SourceFileLoader("llm_doctor", sys.argv[1])
 spec = importlib.util.spec_from_loader("llm_doctor", loader)
 doctor = importlib.util.module_from_spec(spec)
@@ -887,7 +887,16 @@ os.remove(harness)
 
 # The judge's short ruling has its own ledger row, never R1's review-cell shapes.
 os.environ["LLM_DOCTOR_LEDGER"] = os.path.join(os.path.dirname(os.path.dirname(sys.argv[1])), "share", "doctor-ledger.json")
-fixture_repos = os.environ.pop("LLM_DOCTOR_REPOS")
+# The committed ledger is read against the repositories it names among the real siblings, each an empty
+# checkout: its rows' file roots resolve as there, without walking the real histories per fix.
+committed = json.load(open(os.environ["LLM_DOCTOR_LEDGER"]))
+fixture_repos, real_repos = os.environ["LLM_DOCTOR_REPOS"], doctor.siblings_dir(doctor.ROOT_DIR)
+sibling_repos = os.path.join(unit, "sibling-repos")
+for name in {str(path).strip("/").partition("/")[0] for row in committed["rows"] for fix in row.get("fixes") or ()
+             for path in fix.get("files") or ()}:
+    if name and os.path.isdir(os.path.join(real_repos, name, ".git")):
+        subprocess.run(["git", "init", "-q", os.path.join(sibling_repos, name)], check=True)
+os.environ["LLM_DOCTOR_REPOS"] = sibling_repos
 ledger = doctor.load_ledger()
 os.environ["LLM_DOCTOR_REPOS"] = fixture_repos
 short = doctor.leg("reviewers", "judge", "opus", now, "failed", "bad output", "bad output", "ours",
@@ -900,8 +909,7 @@ assert (doctor.ledger_match(ledger, tool_event) or {}).get("id") != "N5"
 unseen = doctor.leg("reviewers", "review", "astra", now, "failed", "pool empty", "pool empty", "ours")
 assert doctor.judge_leg_state(ledger, unseen) == ("new", None)
 assert doctor.leg_id(unseen, None) == "leg-failure:reviewers/pool empty"
-committed = json.load(open(os.environ["LLM_DOCTOR_LEDGER"]))
-os.environ.pop("LLM_DOCTOR_REPOS")
+os.environ["LLM_DOCTOR_REPOS"] = sibling_repos
 assert doctor.ledger_faults(committed) == [], doctor.ledger_faults(committed)
 os.environ["LLM_DOCTOR_REPOS"] = fixture_repos
 

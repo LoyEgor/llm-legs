@@ -1063,10 +1063,10 @@ def worker_legs(cutoff, now):
                   "session": (read_text(os.path.join(run_dir, "launcher")) or "").strip()}
         if exit_text is None and not killed:
             if now - started < NO_EXIT_S:
-                if now - started >= NEAR_SHARE * NO_EXIT_S and supervisor_gone(run_dir, meta.get("pid") or ""):
+                if now - started >= NEAR_SHARE * NO_EXIT_S and supervisor_gone(run_dir, meta):
                     near_miss("NO_EXIT_S", now - started, "s", now, "run:%s" % name)
                 continue
-            if not supervisor_gone(run_dir, meta.get("pid") or ""):
+            if not supervisor_gone(run_dir, meta):
                 continue
             ended = mtime_of(os.path.join(run_dir, "out")) or started
             boot = min((at for at in reboots(now)
@@ -1138,14 +1138,17 @@ def reboots(now):
     return _REBOOTS[0]
 
 
-def supervisor_gone(run_dir, pid):
-    script = '. "$1" || exit 2; supervisor_running "$2" "$3"'
+def supervisor_gone(run_dir, meta):
+    script = '. "$1" || exit 2; supervisor_running "$2" "$3" "$4"'
+    began = meta.get("pid_started_at")
+    began = "" if began is None or began is False else str(began)
     try:
         return subprocess.run(["bash", "-c", script, "bash", os.path.join(ROOT_DIR, "share", "run-liveness.sh"),
-                               run_dir, str(pid)], capture_output=True, timeout=10).returncode == 1
+                               run_dir, str(meta.get("pid") or ""), began],
+                              capture_output=True, timeout=10).returncode == 1
     except (OSError, subprocess.SubprocessError) as error:
         limit_hit.expired("probe.helper", error, "the supervisor check of %s: read as still running" % run_dir,
-                          "bin/llm-doctor:run_dir, str(pid)], capture_output=True, timeout=10)")
+                          'bin/llm-doctor:run_dir, str(meta.get("pid") or ""), began]')
         return False
 
 
@@ -2337,24 +2340,39 @@ def git_out(root, *args):
     return done.stdout if done.returncode == 0 else None
 
 
+def missing_commits(values):
+    """{fix `repo@hash`: why it names no commit} over `values`, one git per repository; a value that names one,
+    or whose git is not here to answer, is absent."""
+    wanted, faults = {}, {}
+    for value in values:
+        repo, commit = FIX_IN_RE.match(value).groups()
+        wanted.setdefault(repo, []).append((value, commit))
+    for repo, pairs in wanted.items():
+        root = os.path.join(repos_dir(), repo)
+        pairs = [pair for pair in pairs if not memo_get("commit", root + "@" + pair[1])]
+        if not pairs or not os.path.isdir(root):
+            continue
+        try:
+            done = subprocess.run(["git", "-C", root, "cat-file", "--batch-check"], capture_output=True, text=True,
+                                  input="".join(commit + "^{commit}\n" for _, commit in pairs), timeout=10)
+        except (OSError, subprocess.SubprocessError) as error:
+            limit_hit.expired("probe.git", error, "the check that %d fixes name commits of %s: passed unchecked"
+                              % (len(pairs), repo), 'bin/llm-doctor:"cat-file", "--batch-check"], capture_output')
+            continue
+        found = done.stdout.splitlines()
+        if done.returncode or len(found) != len(pairs):
+            continue
+        for (value, commit), line in zip(pairs, found):
+            if line.split()[1:2] == ["commit"]:
+                memo_put("commit", root + "@" + commit, True)
+            else:
+                faults[value] = "%s is no commit of %s" % (commit, repo)
+    return faults
+
+
 def missing_commit(value):
     """Why a fix's `repo@hash` names no commit, or None (also when git is not here to answer)."""
-    repo, commit = FIX_IN_RE.match(value).groups()
-    root = os.path.join(repos_dir(), repo)
-    if not os.path.isdir(root):
-        return None
-    if memo_get("commit", root + "@" + commit):
-        return None
-    try:
-        done = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "--quiet", commit + "^{commit}"],
-                              capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError) as error:
-        limit_hit.expired("probe.git", error, "the check that %s is a commit of %s: passed unchecked" % (commit, repo),
-                          'bin/llm-doctor:"rev-parse", "--verify", "--quiet", commit')
-        return None
-    if done.returncode == 0:
-        memo_put("commit", root + "@" + commit, True)
-    return "%s is no commit of %s" % (commit, repo) if done.returncode == 1 else None
+    return missing_commits([value]).get(value)
 
 
 def drop_row(ledger, row):
@@ -2369,9 +2387,11 @@ def settle_fixes(ledger):
     a row naming no commit judges nothing. Returns {row id: repo@hash} for the rows it settled and the
     `(row id, why)` faults it found."""
     settled, faults = {}, []
+    absent = missing_commits([fix["in"] for row in ledger["by_id"].values() for fix in row.get("fixes") or []
+                              if fix.get("in")])
     for row in list(ledger["by_id"].values()):
         fixes = row.get("fixes") or []
-        missing = [fault for fault in (missing_commit(fix["in"]) for fix in fixes if fix.get("in")) if fault]
+        missing = [absent[fix["in"]] for fix in fixes if fix.get("in") in absent]
         if missing:
             faults.extend((row["id"], fault) for fault in missing)
             drop_row(ledger, row)
