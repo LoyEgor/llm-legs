@@ -138,14 +138,21 @@ append_write_tool_result() {
 
 # What the harness does with a denial: its reason lands in the transcript as an is_error
 # tool_result behind the harness's own `PreToolUse:<tool> hook error: ` prefix, the witness a retry
-# stamp is honoured beside.
+# stamp is honoured beside. One jq reads the decision and builds the witness: GATE_DEC is the
+# decision (empty when the output is no JSON), the witness line is appended only on a deny.
 harness_deny() { # transcript gate-output tool
-  [ -n "$1" ] && [ -n "$2" ] || return 0
-  printf '%s' "$2" | jq -c --arg p "PreToolUse:${3:-Write} hook error: " '
-    select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason
-    | select(. != null and . != "")
-    | {type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:($p + tostring)}]}}' \
-    2>/dev/null >> "$1"
+  GATE_DEC=pass
+  [ -n "$2" ] || return 0
+  local res
+  res=$(printf '%s' "$2" | jq -r --arg p "PreToolUse:${3:-Write} hook error: " '
+    (.hookSpecificOutput.permissionDecision // "pass"),
+    (select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason
+      | select(. != null and . != "")
+      | {type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:($p + tostring)}]}} | tojson)' \
+    2>/dev/null)
+  GATE_DEC=${res%%$'\n'*}
+  [ -n "$1" ] && [ "$res" != "$GATE_DEC" ] && printf '%s\n' "${res#*$'\n'}" >> "$1"
+  return 0
 }
 
 gate() {
@@ -158,10 +165,10 @@ gate() {
 }
 
 decision() {
-  local out
-  out=$(gate "$1")
-  [ -n "$out" ] || { printf 'pass\n'; return 0; }
-  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
+  local out rc
+  out=$(bash_payload "$1" | bash "$WRITE_GATE")
+  harness_deny "${GATE_TRANSCRIPT:-$WRITE_TRANSCRIPT}" "$out" Bash
+  printf '%s\n' "$GATE_DEC"
 }
 
 # A stamp is only consumable once it has aged past the moment it was created, so a retry in a
@@ -182,7 +189,8 @@ price() { gate "echo priced-$1 > $2" | jq -r '.hookSpecificOutput.permissionDeci
 
 BLOAT_STAMPS="$HOME/.cache/bloat-gate"
 export INSTRUCTION_BLOAT_GATE_STAMPS="$BLOAT_STAMPS"
-big=$(python3 -c 'print("y"*400)')
+printf -v big '%400s' ''
+big=${big// /y}
 bloat() {
   jq -cn --arg p "$1" --arg n "$big" \
     '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \

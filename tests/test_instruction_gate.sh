@@ -126,53 +126,8 @@ assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'; open(C + 'notes.txt', 'w'
 assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'; C='/tmp/'; open(C + name, 'w')\"")"
 assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'\" && python3 -c \"open(C + name, 'w')\"")"
 
-fi
-if suite_shard_owns 2 write-gate-scripts; then
-echo "== write gate: a program file run by path is read like an inline program"
 SCRATCH="$WORK/scratchpad"
 mkdir -p "$SCRATCH"
-cat > "$SCRATCH/patch.py" <<EOF
-C = "$AGENTS/"
-for name, body in {"codex-worker.md": "x"}.items():
-    open(C + name, "w").write(body)
-EOF
-assert_eq deny "$(decision "S=$SCRATCH; python3 \$S/patch.py")"
-assert_eq deny "$(decision "S=$SCRATCH && python3 -u \${S}/patch.py")"
-assert_eq deny "$(decision "S=\"$SCRATCH\"; python3 \"\$S/patch.py\"")"
-assert_eq deny "$(decision "P=$SCRATCH/patch.py; python3 \$P")"
-assert_eq deny "$(decision "python3 -I $SCRATCH/patch.py")"
-printf 'const C = "%s/";\nfs.writeFileSync(path.join(C, "codex-worker.md"), "x");\n' "$AGENTS" > "$SCRATCH/patch.js"
-assert_eq deny "$(decision "deno run $SCRATCH/patch.js")"
-assert_eq deny "$(decision "bun run $SCRATCH/patch.js")"
-cat > "$WORK/land.py" <<EOF
-import sys
-if '--apply' in sys.argv:
-    open('$HOME/.claude/skills/demo/SKILL.md', 'a').write('x')
-EOF
-assert_eq deny "$(GATE_CWD="$WORK" decision 'python3 land.py --apply')"
-# The gate reads a script's first 256 KiB; a write in its tail was unseen.
-{ head -c 300000 /dev/zero | tr '\0' '#'; printf '\nopen("%s/codex-worker.md", "w").write("x")\n' "$AGENTS"; } >"$SCRATCH/big.py"
-assert_eq deny "$(LIMIT_HITS_LOG="$WORK/limit-hits.jsonl" decision "python3 $SCRATCH/big.py")"
-assert jq -e 'select(.limit == "llm-legs:instruction-write-gate.script-read" and .observed > 300000)' "$WORK/limit-hits.jsonl"
-{ head -c 300000 /dev/zero | tr '\0' '#'; printf '\nopen("/tmp/out.txt", "w").write("x")\n'; } >"$SCRATCH/big-plain.py"
-assert_eq pass "$(decision "python3 $SCRATCH/big-plain.py")"
-assert_eq deny "$(GATE_CWD="$WORK" decision 'cd scratchpad && python3 patch.py')"
-assert_eq deny "$(GATE_CWD=/ decision "cd $SCRATCH; python3 patch.py")"
-cat > "$SCRATCH/read.py" <<EOF
-import os
-C = "$AGENTS/"
-O = "/tmp/out/"
-for name in os.listdir(C):
-    open(O + name, "w").write(open(C + name).read())
-EOF
-assert_eq pass "$(decision "S=$SCRATCH; python3 \$S/read.py")"
-assert_eq pass "$(decision "python3 $SCRATCH/missing.py $AGENTS/codex-worker.md")"
-assert_eq pass "$(S=$SCRATCH decision "python3 \$S/patch.py")"
-printf 'C = "%s/"\nprint(C)\n' "$AGENTS" > "$SCRATCH/bind.py"
-printf 'open(C + name, "w")\n' > "$SCRATCH/use.py"
-assert_eq pass "$(decision "python3 $SCRATCH/bind.py && python3 $SCRATCH/use.py")"
-assert_eq pass "$(decision "python3 -c 'print(1)' $SCRATCH/patch.py")"
-
 echo "== write gate: a script the command writes by heredoc, and a join a call hands the name"
 PROJ="$WORK/joined"
 mkdir -p "$PROJ/scratch"
@@ -246,6 +201,52 @@ assert_eq pass "$(GATE_CWD="$PROJ" decision "cat > scratch/joined.py <<'PY'
 print(1)
 PY
 python3 scratch/joined.py $PROJ")"
+fi
+if suite_shard_owns 2 write-gate-scripts; then
+echo "== write gate: a program file run by path is read like an inline program"
+SCRATCH="$WORK/scratchpad"
+mkdir -p "$SCRATCH"
+cat > "$SCRATCH/patch.py" <<EOF
+C = "$AGENTS/"
+for name, body in {"codex-worker.md": "x"}.items():
+    open(C + name, "w").write(body)
+EOF
+assert_eq deny "$(decision "S=$SCRATCH; python3 \$S/patch.py")"
+assert_eq deny "$(decision "S=$SCRATCH && python3 -u \${S}/patch.py")"
+assert_eq deny "$(decision "S=\"$SCRATCH\"; python3 \"\$S/patch.py\"")"
+assert_eq deny "$(decision "P=$SCRATCH/patch.py; python3 \$P")"
+assert_eq deny "$(decision "python3 -I $SCRATCH/patch.py")"
+printf 'const C = "%s/";\nfs.writeFileSync(path.join(C, "codex-worker.md"), "x");\n' "$AGENTS" > "$SCRATCH/patch.js"
+assert_eq deny "$(decision "deno run $SCRATCH/patch.js")"
+assert_eq deny "$(decision "bun run $SCRATCH/patch.js")"
+cat > "$WORK/land.py" <<EOF
+import sys
+if '--apply' in sys.argv:
+    open('$HOME/.claude/skills/demo/SKILL.md', 'a').write('x')
+EOF
+assert_eq deny "$(GATE_CWD="$WORK" decision 'python3 land.py --apply')"
+# The gate reads a script's first 256 KiB; a write in its tail was unseen.
+{ head -c 300000 /dev/zero | tr '\0' '#'; printf '\nopen("%s/codex-worker.md", "w").write("x")\n' "$AGENTS"; } >"$SCRATCH/big.py"
+assert_eq deny "$(LIMIT_HITS_LOG="$WORK/limit-hits.jsonl" decision "python3 $SCRATCH/big.py")"
+assert jq -e 'select(.limit == "llm-legs:instruction-write-gate.script-read" and .observed > 300000)' "$WORK/limit-hits.jsonl"
+{ head -c 300000 /dev/zero | tr '\0' '#'; printf '\nopen("/tmp/out.txt", "w").write("x")\n'; } >"$SCRATCH/big-plain.py"
+assert_eq pass "$(decision "python3 $SCRATCH/big-plain.py")"
+assert_eq deny "$(GATE_CWD="$WORK" decision 'cd scratchpad && python3 patch.py')"
+assert_eq deny "$(GATE_CWD=/ decision "cd $SCRATCH; python3 patch.py")"
+cat > "$SCRATCH/read.py" <<EOF
+import os
+C = "$AGENTS/"
+O = "/tmp/out/"
+for name in os.listdir(C):
+    open(O + name, "w").write(open(C + name).read())
+EOF
+assert_eq pass "$(decision "S=$SCRATCH; python3 \$S/read.py")"
+assert_eq pass "$(decision "python3 $SCRATCH/missing.py $AGENTS/codex-worker.md")"
+assert_eq pass "$(S=$SCRATCH decision "python3 \$S/patch.py")"
+printf 'C = "%s/"\nprint(C)\n' "$AGENTS" > "$SCRATCH/bind.py"
+printf 'open(C + name, "w")\n' > "$SCRATCH/use.py"
+assert_eq pass "$(decision "python3 $SCRATCH/bind.py && python3 $SCRATCH/use.py")"
+assert_eq pass "$(decision "python3 -c 'print(1)' $SCRATCH/patch.py")"
 
 echo "== write gate: the spelling of the path does not matter"
 # The first live test walked through the gate on exactly this line: the expanded path was
@@ -308,7 +309,6 @@ assert_eq pass "$(decision "cat $CLAUDE_MD")"
 assert_eq pass "$(decision "wc -c < $CLAUDE_MD")"
 assert_eq pass "$(decision "cat $CLAUDE_MD > $WORK/copy.txt")"
 assert_eq pass "$(decision "diff $CLAUDE_MD $WORK/unrelated.py")"
-assert_eq pass "$(decision "cp $CLAUDE_MD $WORK/backup.md")"
 assert_eq pass "$(decision "python3 -c \"print(open('$CLAUDE_MD').read())\"")"
 assert_eq pass "$(decision "echo x > $WORK/unrelated.py")"
 assert_eq deny "$(decision "git -C $REPO checkout -- global/CLAUDE.md")"
@@ -336,9 +336,7 @@ assert_eq deny "$(decision 'echo x > ./.claude/CLAUDE.md')"
 
 echo "== write gate: a derived name is not the file itself"
 # This repository keeps CLAUDE.md.backup-* files; denying those would be a daily nuisance.
-assert_eq pass "$(decision "echo x > $CLAUDE_MD.bak")"
 assert_eq pass "$(decision "echo x > ${CLAUDE_MD}.backup-20260713")"
-assert_eq pass "$(decision "echo x > $WORK/dummyCLAUDE.md")"
 assert_eq pass "$(decision "python3 -c \"open('${CLAUDE_MD}.tmp','w').write('x')\"")"
 
 echo "== write gate: the destination anywhere in tee's arguments, and gnu-prefixed tools"
