@@ -1277,7 +1277,7 @@ assert grep -Fq -- '--print-timeout 360m' "$ROOT/$DOC"
 assert eq "$(grep -c 'workdir_activity_stamp' "$WORKER_RUN")" 3
 assert grep -Fq 'workdir_activity_stamp' "$ROOT/$DOC"
 # An idle kill needs positive evidence, and either watchdog names itself.
-assert grep -Fq '= y ] && [ $(($(date +%s) - idle_since))' "$WORKER_RUN"
+assert grep -Fq '= y ] && [ $((wd_clock - idle_since))' "$WORKER_RUN"
 assert grep -Fq 'KILLED: idle watchdog' "$WORKER_RUN"
 assert grep -Fq 'KILLED: deadline' "$WORKER_RUN"
 assert grep -Fq 'KILLED: idle watchdog' "$ROOT/$DOC"
