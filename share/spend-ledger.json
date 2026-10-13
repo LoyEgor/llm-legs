@@ -5258,20 +5258,20 @@
   {
    "id": "suite:llm-legs/test_worker_run_websearch",
    "title": "llm-legs/test_worker_run_websearch",
-   "audited_at": "2026-10-13T14:56:59+03:00",
+   "audited_at": "2026-10-13T15:54:20+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-worker-run-websearch-20261012T235421Z-7d8b",
-   "cpu_run": 45.7,
+   "cpu_run": 48.2,
    "wall_run": 28.7,
-   "cpu_min_day": 16.43,
-   "wall_min_day": 33.25,
+   "cpu_min_day": 17.92,
+   "wall_min_day": 41.29,
    "sources": {
     "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_worker_run_websearch.sh": "398fda3fe334fd60e5d7a27838c516d6b5077a79",
+    "llm-legs/tests/test_worker_run_websearch.sh": "3c62e467aa40d025617b6c76da1a222cfe09ddcc",
     "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
    },
    "verdict": "cut",
    "zero": "removal saves 11.7 wall-min/day and 15.2 CPU-min/day; loses the only per-vendor guard that every web-search entry point (flag, header, role, light) reaches the CLI argv from share/web-search.sh",
-   "note": "await_exit for grid launches (wait report was redundant with the asserted report) and the lowercase-header launch per vendor folded into one parser check; CPU 74 -> 57 s, asserts 231 -> 212 with every removed check red under two parser mutations"
+   "note": "await_exit for grid launches (the wait report was redundant with the asserted report), the lowercase-header launch per vendor folded into one parser check, the off-row light refusal moved to test_light_research_vendors; CPU 74 -> 56 s, asserts 231 -> 207, every removed check red under parser or refusal-text mutations"
   },
   {
    "id": "suite:llm-legs/test_light_research_vendors",
@@ -5325,6 +5325,23 @@
    "verdict": "cut",
    "zero": "removal saves 11.3 wall-min/day and 8.2 CPU-min/day; loses every pin of llm-limits.sh's renderers (sort orders, expired and stale cells, age alarm, usability, plans, reset tiers, worker-wall overlay) that the menubar and worker-pick read",
    "note": "two whole-second sleeps that ordered rollout mtimes in a home of at most 4 rollouts (the collector reads the 5 newest, picks by event timestamp) removed: 2 s a run; the rest is ~100 full collections at ~0.6 CPU-s each, each a distinct case or renderer; llm-limits.sh has no render-from-JSON mode, adding one is a production change"
+  },
+  {
+   "id": "suite:llm-legs/test_gemini_image",
+   "title": "llm-legs/test_gemini_image",
+   "audited_at": "2026-10-13T15:54:19+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-websearch-20261012T235421Z-7d8b",
+   "cpu_run": 35.2,
+   "wall_run": 62.9,
+   "cpu_min_day": 7.12,
+   "wall_min_day": 31.55,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_gemini_image.sh": "3711e877c6522737d3138104a91b63617139fb27"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 10.8 wall-min/day and 5.5 CPU-min/day; loses every pin of the agy image route (argument refusals, account isolation, resume, brain rescue, quota, chroma, composite, edit lineage, output contract, flow-to-cli fallback)",
+   "note": "90 gemini-image calls, each a distinct case (25 cheap refusals at ~0.2 s); a generation's 1-2.4 s is production work: the delivery magick convert (~0.25 s), the stderr tee drain (image-leg.sh:70-72), the provenance python3 read, ~15 jq; the fake's own magick render is 0.02 s, not worth a cache"
   }
  ]
 }
