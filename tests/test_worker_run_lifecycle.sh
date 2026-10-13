@@ -51,7 +51,7 @@ export PICK_ACCOUNT=fast PICK_RC=0
 start_ok codex --model default
 assert grep -qx 'TAG: fast · astra · high' "$WORK/start.out"
 assert grep -qx 'fast · astra · high' "$RUN_DIR/tag"
-assert await_done
+assert await_exit
 assert jq -e 'has("launcher_pid") | not' "$RUN_DIR/meta.json" >/dev/null
 # A run in a night worktree names the chat that launched it: the speed gate, asked by its detached supervisor,
 # skips that chat's own processes.
@@ -63,7 +63,7 @@ ln -s /bin/bash "$WORK/claude"
 chat=$!
 wait "$chat"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out") RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
-assert await_done
+assert await_exit
 assert [ "$(jq -r '.launcher_pid' "$RUN_DIR/meta.json")" = "$chat" ]
 
 # A running run whose vendor has already surfaced its id reports it mid-flight,
@@ -79,7 +79,7 @@ assert grep -q '^SESSION: gemini-conversation$' <<<"$running_wait"
 running_report=$("$RUNNER" report "$RUN_ID")
 assert grep -q '^STATUS: running$' <<<"$running_report"
 assert grep -q '^SESSION: gemini-conversation$' <<<"$running_report"
-assert await_done
+assert await_exit
 unset STUB_SLEEP
 printf 'server.go:1017] Created conversation relaunched-conversation\n' >>"$RUN_DIR/log"
 assert grep -q '^SESSION: relaunched-conversation$' <<<"$("$RUNNER" report "$RUN_ID")"
@@ -94,7 +94,7 @@ for vendor in claudeb codex gemini; do
   start_ok "$vendor" --account explicit
   assert meta_account_is explicit
   assert test ! -s "$PICK_LOG"
-  assert await_done
+  assert await_exit
 
   clear_stub
   export PICK_ACCOUNT=picked PICK_RC=0
@@ -104,14 +104,14 @@ for vendor in claudeb codex gemini; do
   # not derive a second exclusion layer from worker-run's live-run registry.
   assert grep -qx -- "--account $vendor --claim" "$PICK_LOG"
   assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
-  assert await_done
+  assert await_exit
 
   clear_stub
   export PICK_ACCOUNT=ignored PICK_RC=2
   start_ok "$vendor"
   assert meta_account_is pinned
   assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
-  assert await_done
+  assert await_exit
 done
 fi
 
@@ -131,7 +131,7 @@ WORKER_TEST_WORKDIR="$light_workdir" start_ok light
 assert meta_account_is picked
 assert grep -qx -- '--account claudeb --role light --claim' "$PICK_LOG"
 assert jq -e '.model == "sonnet" and .light == "edit"' "$RUN_DIR/meta.json" >/dev/null
-assert await_done
+assert await_exit
 
 # With Light off (Egor's menu) there is no light leg: `start light` is refused before any account is
 # asked, and research is a plain run on the vendor's own default model, off the light row or not.
@@ -148,7 +148,7 @@ assert test ! -s "$PICK_LOG"
 printf 'test brief\nsecond line\n' >"$WORK/brief"
 start_ok claudeb --role research
 assert jq -e '.model == "opus" and (has("light") | not)' "$RUN_DIR/meta.json" >/dev/null
-assert await_done
+assert await_exit
 
 # Legacy picker stderr remains visible but has no routing or report semantics.
 clear_stub
@@ -158,7 +158,7 @@ start_ok codex
 assert meta_account_is picked
 assert grep -qxF "$PICK_STDERR" "$WORK/start.err"
 assert jq -e 'has("session_reserve") | not' "$RUN_DIR/meta.json" >/dev/null
-assert await_done
+assert await_exit
 assert grep -q '^ACCOUNT: picked (codex)$' <<<"$("$RUNNER" report "$RUN_ID")"
 unset PICK_STDERR
 
@@ -175,7 +175,7 @@ set_config 'codex_effort=medium'
 PATH="$WORK/jq-count:$PATH" start_ok codex
 assert test "$(wc -l <"$WORK/jq-count/reads")" -eq $((2 * lookup_reads))
 assert test "$lookup_reads" -gt 0
-assert await_done
+assert await_exit
 
 for vendor in codex gemini; do
   clear_stub
@@ -183,7 +183,7 @@ for vendor in codex gemini; do
   export PICK_RC=2 PICK_ACCOUNT=ignored
   start_ok "$vendor"
   assert meta_account_is main
-  assert await_done
+  assert await_exit
   assert grep -qx DONE "$RUN_DIR/outcome"
 done
 
@@ -269,7 +269,7 @@ for vendor in claudeb codex gemini; do
   export PICK_ACCOUNT=ignored PICK_RC=2
   start_ok "$vendor"
   assert meta_account_is explicit
-  assert await_done
+  assert await_exit
   clear_stub
   rc=0
   "$RUNNER" start "$vendor" --brief "$WORK/brief" --account other \
@@ -283,7 +283,7 @@ for vendor in claudeb codex gemini; do
   export PICK_ACCOUNT=picked PICK_RC=0
   start_ok "$vendor" --account explicit
   assert meta_account_is explicit
-  assert await_done
+  assert await_exit
 done
 
 # A vendor pin (`*`) covers every pool account the limits store carries, and a chat's own pin file
@@ -295,7 +295,7 @@ set_config 'codex_workers=off' 'codex_profile=*' 'codex_effort=medium'
 export PICK_ACCOUNT=ignored PICK_RC=2
 start_ok codex --account explicit
 assert meta_account_is explicit
-assert await_done
+assert await_exit
 clear_stub
 rc=0
 roster_add codex ghost
@@ -315,7 +315,7 @@ assert grep -q 'codex is switched off for workers' "$WORK/role-chat.err"
 clear_stub
 CLAUDE_CODE_SESSION_ID=chat-pin-test start_ok codex --account other
 assert meta_account_is other
-assert await_done
+assert await_exit
 # «воркер на все» (open=all) opens the switched-off vendor to a named account in that chat alone.
 printf 'open=all
 ' >"$CHAT_PINS_DIR/chat-open-all"
@@ -323,7 +323,7 @@ set_config 'codex_workers=off' 'codex_effort=medium'
 clear_stub
 CLAUDE_CODE_SESSION_ID=chat-open-all start_ok codex --account explicit
 assert meta_account_is explicit
-assert await_done
+assert await_exit
 clear_stub
 rc=0
 CLAUDE_CODE_SESSION_ID=chat-pin-test "$RUNNER" start codex --brief "$WORK/brief" --account explicit   >"$WORK/role-open.out" 2>"$WORK/role-open.err" || rc=$?
@@ -345,7 +345,7 @@ assert meta_account_is cu
 assert jq -e '.computer == true' "$RUN_DIR/meta.json" >/dev/null
 assert grep -q 'Computer Use Preamble' "$RUN_DIR/brief.launch"
 assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
-assert await_done
+assert await_exit
 for computer_bad in 'claudeb --computer' 'codex --computer --browser'; do
   clear_stub
   rc=0
@@ -378,7 +378,9 @@ for browser_args in '' '--account cu'; do
 done
 unset PICK_ACCOUNT PICK_RC
 set_config
+fi
 
+if suite_shard_owns 2 lifecycle-orphans-pack; then
 # A process the run spawned that launchd adopted before the run ended ends with the run, a stopped one
 # too (live 2026-10-05: a `bash -x tests/test_slots.sh` stopped on a tty read held its landed worktree),
 # with its children; one carrying another run's id, a nested run's below it, none, or this id in its
@@ -446,7 +448,7 @@ EOF
 chmod +x "$WORK/bin/git"
 clear_stub
 WORKER_TEST_WORKDIR=$pack_repo start_ok claudeb
-assert await_done
+assert await_exit
 for tick in $(seq 1 100); do [ ! -e "$STUB_DIR/pack.done" ] || break; sleep 0.1; done
 rm -f "$WORK/bin/git"
 assert test -e "$STUB_DIR/pack.done"
