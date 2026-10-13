@@ -213,11 +213,11 @@ night job "$id" set p1 state=blocked-on-egor reason="step 10 needs his word" >/d
 night latest --menu >"$WORK/menu"
 started=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$R")
 assert [ "$(head -1 "$WORK/menu")" = "$(printf 'Night run since %s: 2 of 12 · 1 unfinished · 7 in progress · 1 failed to launch · 1 need you\t1\t1\t%s' "$started" "$id")" ]
-assert grep -qxF "$(printf 'LLM fixer\t0\t\tllm-20260930T010203Z\tfixer\t0')" "$WORK/menu"
-assert grep -qxF "$(printf 'cleanup debt-round · unfinished · hung\t2\thung: idle 1800\tdebt-round\tdebt\t0')" "$WORK/menu"
-assert grep -qxF "$(printf 'harness-r1 · failed to launch · opener\t1\topener\tharness-r1\tfixer\t0')" "$WORK/menu"
-assert grep -qxF "$(printf 'cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\tp1\tdebt\t0')" "$WORK/menu"
-assert grep -qxF "$(printf 'cleanup p2 · in progress\t2\t\tp2\tdebt\t0')" "$WORK/menu"
+assert grep -qxF "$(printf 'LLM fixer\t0\t\tllm-20260930T010203Z\tfixer\t0\tpool')" "$WORK/menu"
+assert grep -qxF "$(printf 'cleanup debt-round · unfinished · hung\t2\thung: idle 1800\tdebt-round\tdebt\t0\tfit')" "$WORK/menu"
+assert grep -qxF "$(printf 'harness-r1 · failed to launch · opener\t1\topener\tharness-r1\tfixer\t0\tharness')" "$WORK/menu"
+assert grep -qxF "$(printf 'cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\tp1\tdebt\t0\tfit')" "$WORK/menu"
+assert grep -qxF "$(printf 'cleanup p2 · in progress\t2\t\tp2\tdebt\t0\tfit')" "$WORK/menu"
 assert [ -z "$(cut -f5 "$WORK/menu" | grep -x doctor)" ]
 assert grep -qxF "$(printf 'handoff\tegor\tstep 10 needs his word\t%s' "$R")" "$WORK/menu"
 assert [ "$(wc -l <"$WORK/menu" | tr -d ' ')" = 14 ]
@@ -316,7 +316,7 @@ assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t
 night report | body | sed -n 9p | grep -q "^night $id2 " || fail "report without an id reads the latest night"
 night job "$id2" set v1 state=merged "commits=repo:$local_hash" >/dev/null
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 · 1 not pushed\t2\t0\t%s' "$day2" "$id2")" ]
-assert grep -qxF "$(printf 'v1 update · not pushed\t2\t\tv1\tvendor\t0')" <(night latest --menu)
+assert grep -qxF "$(printf 'v1 update · not pushed\t2\t\tv1\tvendor\t0\tupdater')" <(night latest --menu)
 assert grep -qxF "landed · vendor · v1 · repo@${local_hash:0:7} · code +0/-0 · not pushed" <(night report)
 assert grep -qxF "total · 2 landed · 1 not pushed" <(night report)
 night job "$id2" set f1 state=nothing-to-do >/dev/null
@@ -446,8 +446,8 @@ night job "$id6" add fixer f-done >/dev/null
 night job "$id6" set f-done state=nothing-to-do >/dev/null
 night job "$id6" add debt debt >/dev/null
 night job "$id6" set debt state=left reason=hung >/dev/null
-assert grep -qxF "$(printf 'codex update · unfinished · hung\t2\thung: idle 1800, branch night/x/codex\tcodex-e1\tvendor\t1')" <(night latest --menu)
-assert grep -qxF "$(printf 'f-done · nothing to do\t0\t\tf-done\tfixer\t0')" <(night latest --menu)
+assert grep -qxF "$(printf 'codex update · unfinished · hung\t2\thung: idle 1800, branch night/x/codex\tcodex-e1\tvendor\t1\tupdater')" <(night latest --menu)
+assert grep -qxF "$(printf 'f-done · nothing to do\t0\t\tf-done\tfixer\t0\tharness')" <(night latest --menu)
 assert [ "$(night latest --menu | head -1 | cut -f4)" = "$id6" ]
 old_session=$(jq -r .session "$R6")
 assert_fails night start --job codex-e1 2>/dev/null
@@ -466,7 +466,7 @@ assert_fails night start --resume "$id6" 2>"$WORK/err"
 assert grep -qF "night $id6 is still running" "$WORK/err"
 assert_fails night start --cleanup 2>/dev/null
 assert [ "$(night latest --menu | head -1 | cut -f3)" = 1 ]
-assert grep -q "^codex update · in progress · hung	2	.*	codex-e1	vendor	0$" <(night latest --menu)
+assert grep -q "^codex update · in progress · hung	2	.*	codex-e1	vendor	0	updater$" <(night latest --menu)
 stop_chat "$new_session"
 night start --resume "$id6" >/dev/null || fail "resume every unfinished job"
 assert jqe --arg o "$old_session" --arg n "$new_session" '.previous_sessions == [$o, $n]
@@ -479,7 +479,7 @@ night finish "$id6" >/dev/null
 night job "$id6" set debt state=nothing-to-do >/dev/null
 night start --resume "$id6" >/dev/null || fail "resume adds the cleanup a done one no longer covers"
 assert jqe '[.jobs[] | select(.kind == "debt") | [.ref, .state]] == [["debt", "nothing-to-do"], ["debt-2", "pending"]]' "$R6"
-assert grep -q "^cleanup · in progress	2		debt-2	debt	0$" <(night latest --menu)
+assert grep -q "^cleanup · in progress	2		debt-2	debt	0	fit$" <(night latest --menu)
 stop_chat "$(jq -r .session "$R6")"
 touch "$DATA/opener-fails"
 assert_fails night start --resume "$id6" 2>/dev/null
@@ -772,7 +772,7 @@ assert jqe --arg r "$WORK/repo" --arg w "$wt/stale-dirty" --arg n "$nwt" --arg t
     branch: "night/'"$idc"'/leftover-stale-dirty", review: null, commits: [], pushed: false,
     direction: "harness", priority: "P1", value: {n: null, unit: null, norm: 1},
     adopted: [{repo: $r, branch: "stale-dirty", worktree: $w, tip: $t, night_worktree: $n}]}' "$(record "$idc")"
-assert grep -q "^leftover stale-dirty · unfinished	2		leftover-stale-dirty	leftover	1$" <(night latest --menu)
+assert grep -q "^leftover stale-dirty · unfinished	2		leftover-stale-dirty	leftover	1	harness$" <(night latest --menu)
 night job "$idc" add leftover stale-bare >"$WORK/out" || fail "adopt a bare leftover"
 assert [ "$(git -C "$WORK/repo" rev-parse "night/$idc/leftover-stale-bare")" = "$side_hash" ]
 assert [ -d "$wt/night-$idc-leftover-stale-bare" ]
@@ -1583,7 +1583,8 @@ assert jqe --arg n "$tid" '[.jobs[] | [.ref, .state, (.settled.night // null), (
 assert jqe --arg n "$tid" '[.jobs[] | [.kind, .ref, .state, .branch, .answer.words, .from.night, .from.ref, .from.trade]] == [
     ["trade", "trade-t-todo", "pending", "night/\($n)/trade-t-todo", "raise it", "tn", "t-todo", "Cost: c. Loss: l. Recommendation: r."],
     ["trade", "trade-t-bare", "pending", "night/\($n)/trade-t-bare", "look at it", "tn", "t-bare", "Cost: c. Loss: l. Recommendation: r."]]
-  and [.events[] | select(.phase == "add") | .job] == ["trade-t-todo", "trade-t-bare"]' "$(record "$tid")"
+  and [.events[] | select(.phase == "add") | .job] == ["trade-t-todo", "trade-t-bare"]
+  and ([.jobs[] | "\(.direction) \(.priority)"] | unique) == ["harness P1"]' "$(record "$tid")"
 night report tn >"$WORK/report" || fail "report of the trade night"
 assert grep -qF "settled · fixer · t-done · Cost: c. Loss: l. Recommendation: r. · settled by night tn: commit trades@" "$WORK/report"
 assert grep -qxF "blocked-on-egor · fixer · t-todo · Cost: c. Loss: l. Recommendation: r. · answered, carried to night $tid as trade-t-todo" "$WORK/report"

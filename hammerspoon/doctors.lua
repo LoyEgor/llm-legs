@@ -465,8 +465,45 @@ local function handoffRows(handoffs)
   return rows
 end
 
+local JOB_STATES = { { "done", "✓" }, { "open", "→" }, { "red", "!" } }
+
+local function jobState(job) return job.red and "red" or job.quiet and "done" or "open" end
+
+-- A direction per row, its jobs one level down; a count column per state, blank where none.
+local function directionRows(groups)
+  local name, digits = 1, { done = 1, open = 1, red = 1 }
+  for _, group in ipairs(groups) do
+    name = math.max(name, cells(group.way))
+    for key in pairs(digits) do digits[key] = math.max(digits[key], #tostring(group[key])) end
+  end
+  table.sort(groups, function(a, b)
+    if (a.red > 0) ~= (b.red > 0) then return a.red > 0 end
+    if (a.open > 0) ~= (b.open > 0) then return a.open > 0 end
+    if #a.items ~= #b.items then return #a.items > #b.items end
+    return a.way < b.way
+  end)
+  local rows = {}
+  for _, group in ipairs(groups) do
+    local text = string.format("%-" .. name .. "s", group.way)
+    for _, state in ipairs(JOB_STATES) do
+      local count, width = group[state[1]], digits[state[1]]
+      text = text .. "  " .. (count > 0 and state[2] .. string.rep(" ", width + 1 - #tostring(count)) .. count
+        or string.rep(" ", width + 2))
+    end
+    table.sort(group.items, function(a, b)
+      if a.rank ~= b.rank then return a.rank < b.rank end
+      return a.index < b.index
+    end)
+    local menu = {}
+    for _, entry in ipairs(group.items) do menu[#menu + 1] = entry.item end
+    rows[#rows + 1] = fitRow({ title = infoTitle(text:gsub("%s+$", ""), group.red > 0,
+      group.red == 0 and group.open == 0), menu = menu })
+  end
+  return rows
+end
+
 local function nightEntry()
-  local jobs, resumable, others = {}, 0, 0
+  local jobs, groups, byWay, resumable, others = {}, {}, {}, 0, 0
   local idle = not night.running and not running(fixTasks.night)
   for index, job in ipairs(night.jobs) do
     local item = { title = infoTitle(job.text, job.red, job.quiet) }
@@ -478,12 +515,23 @@ local function nightEntry()
       item.menu[#item.menu + 1] = { title = infoTitle("Continue this job"), fn = function() M.resumeNight(job.ref) end }
     end
     item.disabled = not item.menu or nil
-    jobs[#jobs + 1] = fitRow(item)
+    if job.way and job.way ~= "" then
+      local group = byWay[job.way]
+      if not group then
+        group = { way = job.way, done = 0, open = 0, red = 0, items = {} }
+        byWay[job.way], groups[#groups + 1] = group, group
+      end
+      local state = jobState(job)
+      group[state] = group[state] + 1
+      group.items[#group.items + 1] = { item = fitRow(item), index = index,
+        rank = state == "red" and 1 or state == "open" and 2 or 3 }
+    else
+      jobs[#jobs + 1] = fitRow(item)
+    end
   end
-  local handoffs = handoffRows(night.handoffs or {})
-  if #handoffs > 0 then
-    if #jobs > 0 then jobs[#jobs + 1] = { title = "-" } end
-    for _, row in ipairs(handoffs) do jobs[#jobs + 1] = row end
+  for _, section in ipairs({ handoffRows(night.handoffs or {}), directionRows(groups) }) do
+    if #section > 0 and #jobs > 0 then jobs[#jobs + 1] = { title = "-" } end
+    for _, row in ipairs(section) do jobs[#jobs + 1] = row end
   end
   if resumable > 0 then
     jobs[#jobs + 1] = { title = "-" }
@@ -510,7 +558,8 @@ function M.refreshNight()
         handoffs[#handoffs + 1] = { phase = fields[2], title = fields[3], path = fields[4] }
       elseif fields[2] == "0" or fields[2] == "1" or fields[2] == "2" then
         jobs[#jobs + 1] = { text = fields[1], red = fields[2] == "1", quiet = fields[2] == "0", detail = fields[3] or "",
-          ref = fields[4], kind = fields[5], resumable = fields[6] == "1" and fields[4] ~= nil and fields[4] ~= "" }
+          ref = fields[4], kind = fields[5], resumable = fields[6] == "1" and fields[4] ~= nil and fields[4] ~= "",
+          way = fields[7] }
       end
     end
     night = { at = os.time(), text = text ~= "" and text or nil, red = tone == "1", quiet = tone == "0",

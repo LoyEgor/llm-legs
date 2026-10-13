@@ -978,6 +978,28 @@ do
   check(#(queued.menu or {}) == 10 and text(carried.title) == "carried" and carried.menu
     and text(carried.menu[1].title) == "/r/docs/handoffs/2026-09-29-carried.md", "each handoff's title, its doc path below it")
 end
+-- Jobs with a direction: one row per direction, ✓ → ! counts aligned, red first, then owing, its jobs one level down.
+do
+  doctors.refreshNight()
+  tasks[#tasks]:finish(0, "Last night 30 Sep: 3 of 5 · 1 unfinished · 1 need you\t1\t0\tn-1\n"
+    .. "Harness fixer: a\t0\t\th-a\tfixer\t0\tspeed\n"
+    .. "Harness fixer: b · unfinished\t2\t\th-b\tfixer\t1\tspeed\n"
+    .. "Harness fixer: c\t0\t\th-c\tfixer\t0\tspeed\n"
+    .. "suite x · nothing to do\t0\t\ts-x\tsuite\t0\ttests\n"
+    .. "cleanup · needs you\t1\tword\tdebt\tdebt\t0\tfit\n"
+    .. "handoff\tegor\this call\t/r/docs/handoffs/b.md\n")
+  local rows = doctors.menuItems()[8].menu or {}
+  local titles = {}
+  for _, item in ipairs(rows) do titles[#titles + 1] = text(item.title) end
+  check(table.concat(titles, "|") == "! 1  To: Egor|-|fit              ! 1|speed  ✓ 2  → 1|tests  ✓ 1|-|"
+    .. "Continue unfinished (1 job) + cleanup", "directions under the handoffs: " .. table.concat(titles, "|"))
+  check(red(rows[3].title) and not red(rows[4].title) and not dimmed(rows[4].title) and dimmed(rows[5].title),
+    "a direction is red where Egor is needed, plain while it owes work, dim when done")
+  local speed = {}
+  for _, item in ipairs(rows[4].menu or {}) do speed[#speed + 1] = text(item.title) end
+  check(table.concat(speed, "|") == "Harness fixer: b · unfinished|Harness fixer: a|Harness fixer: c",
+    "a direction's jobs, owing ones first: " .. table.concat(speed, "|"))
+end
 
 -- Run everything: bin/night-run start behind a confirmation; off while a night runs.
 items = doctors.menuItems()

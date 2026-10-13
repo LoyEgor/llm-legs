@@ -293,9 +293,9 @@ resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orc
         | if $run then .state = "live" | .run = $run else .state = "pending" | del(.run) end else . end)
     | if $job == "" and ([.jobs[] | select(.kind == "debt" and (.state == "pending" or .state == "live"))] | length) == 0
       then .jobs += [{kind: "debt", ref: "debt-\([.jobs[] | select(.kind == "debt")] | length + 1)", state: "pending",
-        reason: null, branch: null, review: null, commits: [], pushed: false}] else . end
+        reason: null, branch: null, review: null, commits: [], pushed: false} + $prio] else . end
     | events([{phase: "resume", pred: "last"} + (if $job == "" then {} else {scope: $job} end)]; $t)' --arg job "$job" \
-    --arg id "$id" --argjson runs "$runs" --argjson opener "$$" --arg t "$(stamp)" ||
+    --arg id "$id" --argjson runs "$runs" --argjson opener "$$" --arg t "$(stamp)" --argjson prio "$(kind_priority debt)" ||
     die "cannot write night $id"
   jq -r --arg job "$job" '.id as $id | .jobs[] | select(.state == "live" and ($job == "" or .ref == $job))
     | "night \($id) job \(.ref) live: worker-run wait \(.run)"' "$file"
@@ -342,6 +342,10 @@ trade_settle() { # night ref by (locked) -> 0 settled with its evidence, 1 answe
   printf 'trade %s %s settled: %s\n' "$night" "$ref" "$(jq -r 'join("; ")' <<<"$evidence")"
 }
 
+kind_priority() { # kind -> its {direction, priority, value} as job add stamps it, {} when unknown
+  python3 -B "$repo_root/share/night_priority.py" job "$1" "$1" 2>/dev/null | grep . || echo '{}'
+}
+
 trades_recheck() { # id (locked) -> per answered trade of the other nights: settled with its evidence, or carried into night id
   local id=$1 night ref job new rc
   while IFS=$'\t' read -r night ref; do
@@ -353,8 +357,8 @@ trades_recheck() { # id (locked) -> per answered trade of the other nights: sett
     ! jq -e --arg r "$new" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null || new="$new-${night##*-}"
     night_set "$id" "$JQ_EVENTS"' .jobs += [{kind: "trade", ref: $n, state: "pending", reason: null, branch: "night/\($id)/\($n)",
         review: null, commits: [], pushed: false, answer: $j.answer,
-        from: {night: $night, ref: $j.ref, kind: $j.kind, trade: $j.reason, path: ($j.path // null)}}]
-      | events([{phase: "add", job: $n, kind: "trade"}]; $t)' \
+        from: {night: $night, ref: $j.ref, kind: $j.kind, trade: $j.reason, path: ($j.path // null)}} + $prio]
+      | events([{phase: "add", job: $n, kind: "trade"}]; $t)' --argjson prio "$(kind_priority trade)" \
       --arg n "$new" --arg id "$id" --arg night "$night" --argjson j "$job" --arg t "$(stamp)" || die "cannot write night $id"
     night_set "$night" "$JQ_EVENTS"' .jobs |= map(if .ref == $r then .carried = {at: $t, night: $id, ref: $n} else . end)
       | events([{phase: "trade-carried", job: $r, night: $id}]; $t)' \
@@ -1625,7 +1629,7 @@ cmd_latest() {
       (if .note then "orchestrator chat did not open\t1\t\(.note | flat)" else empty end),
       (.jobs[] | "\([name, word, (.reason // empty | flat | gist)] | map(select(. != null and . != "")) | join(" · "))\t\(
         tone)\t\(.reason // "" | flat)\t\(
-        .ref | flat)\t\(.kind)\t\(if unfinished and ($t.running | not) then 1 else 0 end)")' \
+        .ref | flat)\t\(.kind)\t\(if unfinished and ($t.running | not) then 1 else 0 end)\t\(.direction // "")")' \
     "$(night_file "$id")" || return
   python3 -B "$repo_root/share/handoffs.py" --night "$(night_file "$id")" 2>/dev/null || true
 }

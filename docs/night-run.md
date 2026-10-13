@@ -289,10 +289,10 @@ fixer on a Speed or time row) as what · spend · lines · before → after unit
 and the trend's totals (`docs/speed-doctor-design.md` §3 ROI).
 
 The Doctors menu's last-night row comes from `night-run latest --menu`, e.g. `Last night 30 Sep: 11 of 13 · 2
-unfinished`; its submenu lists every job with its reason in a few words (whole one level down), then `✓ done`,
-`→ queued` and red `! To: Egor` handoff rows with a count, each title one level down to its doc (`handoffs.py
---night`: the night's carried handoffs by their Status, open ones, the trades). Color is the state: done and pushed
-is a dim name (nothing to do keeps those words), owing work (unfinished, in progress, not pushed) plain with its word,
-red only where Egor is needed (blocked on him, failed launch). Output: `text\ttone\trunning\tid`, then
-`text\ttone\treason\tref\tkind\tresumable` per job (`tone` 0 dim, 2 plain, 1 red; `resumable` 1 for an unfinished
-job of a night not running), then `handoff\tphase\ttitle\tpath` per handoff.
+unfinished`; its submenu: `✓ done`, `→ queued`, red `! To: Egor` handoff rows with a count, each title one level
+down to its doc (`handoffs.py --night`: carried handoffs by Status, open ones, trades), then a row per job direction
+with `✓ → !` job counts (red first, then owing), its jobs and their reasons below.
+Color is the state: done and pushed is a dim name, owing work (unfinished, in progress, not pushed) plain with its
+word, red only where Egor is needed (blocked on him, failed launch). Output: `text\ttone\trunning\tid`, then
+`text\ttone\treason\tref\tkind\tresumable\tdirection` per job (`tone` 0 dim, 2 plain, 1 red; `resumable` 1 for an
+unfinished job of a night not running), then `handoff\tphase\ttitle\tpath` per handoff.
