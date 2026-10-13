@@ -6744,9 +6744,9 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-worker-run-reliability-20261010T031951Z-1829",
-      "note": "suite_journal CPU counts only reaped children: the detached worker-run supervisors and stub CLIs every case starts are outside it, so most of the 55 s 'idle' is their work plus the watchdog's 1 s hops (hop = window/10, floor 1 s), not sleeps. worker-run wait already wakes on exit_code by kqueue (exit_file_wait) and await_done polls at 0.05 s. Deliberate sleeps that stay, each the length its check needs: R1 6 s of live edits past WORKER_RUN_IDLE_S=3; A-echo 5 s of stderr past WALL_SETTLE_S=3; A-quoted 3 watchdog ticks over a quoted limit line; B 3 s silent run under SILENT_S=0; R2-redeem's 2 s pin clear inside the watchdog (widens the mark/fire window da1b836c made it red on). Cut: R2-redeem's foreground record slept that same 2 s for nothing (-2 s a run); the rest of the wall is cut by running the 19 independent sections as 3 shards like the sibling test_worker_run_watchdog/files suites. A sub-second watchdog hop for tests would be a new knob in bin/worker-run: cut 1 s hop latency saves ~800 ms x ~10 detections a run, costs a test-only switch in the supervisor (not taken: no bulk). Seen at load 177 under /bin/bash 3.2 with xtrace: R1 killed by its 3 s idle watchdog between the last edit and the gated stub's exit; not reproduced under Homebrew bash.",
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-run-suites-shards-20261012T235443Z-0940",
+      "note": "suite_journal CPU counts only reaped children: the detached worker-run supervisors and stub CLIs every case starts are outside it, so most of the 55 s 'idle' is their work plus the watchdog's 1 s hops (hop = window/10, floor 1 s), not sleeps. worker-run wait already wakes on exit_code by kqueue (exit_file_wait) and await_done polls at 0.05 s. Deliberate sleeps that stay, each the length its check needs: R1 6 s of live edits past WORKER_RUN_IDLE_S=3; A-echo 5 s of stderr past WALL_SETTLE_S=3; A-quoted 3 watchdog ticks over a quoted limit line; B 3 s silent run under SILENT_S=0; R2-redeem's 2 s pin clear inside the watchdog (widens the mark/fire window da1b836c made it red on). Cut: R2-redeem's foreground record slept that same 2 s for nothing (-2 s a run); the rest of the wall is cut by running the 19 independent sections as 3 shards like the sibling test_worker_run_watchdog/files suites. A sub-second watchdog hop for tests would be a new knob in bin/worker-run: cut 1 s hop latency saves ~800 ms x ~10 detections a run, costs a test-only switch in the supervisor (not taken: no bulk). Seen at load 177 under /bin/bash 3.2 with xtrace: R1 killed by its 3 s idle watchdog between the last edit and the gated stub's exit; not reproduced under Homebrew bash. 2026-10-13 re-measured at load ~150 after the shards: 46/51/51 s a shard, balanced; shard 1's D (31.5 s) is six whole start -> await_done cycles with no sleep (the old-live fixture's `sleep 600` is killed), shard 2's B (17 s) holds the deliberate STUB_SLEEP/SILENT windows above. Ruled out again: detached supervisor CPU the suite's `times` cannot see (blind spot test-health-idle-detached-cpu).",
       "handoff": null
     },
     {
@@ -9127,6 +9127,96 @@
       "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
       "note": "2026-10-13 traced unsharded at load ~130 (73 s, 102 asserts, trace on its own fd): the only sleeps are await_done 390 x 0.05 s and await_launched 116 x 0.05 s, event polls on worker-run's 17 stub runs. worker-run's supervisor is `nohup setsid` detached (bin/worker-run:3229) and reparented once `start` returns, so its CPU and its stub CLI's never enter the suite's cpu_s and the idle class reads them as idle (blind spot test-health-idle-detached-cpu). Ruled out: no sleep or poll to cut; launches already cut 31 -> 17 (9e6e62a8).",
       "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-run-suites-shards",
+      "title": "test_run_suites_shards idles on its fixture shards' sleeps",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_run_suites_shards"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T14:25:47+03:00",
+          "by": "night fixer harness-speed-test-health-idle-llm-legs-test-run-suites-shards-20261012T235443Z-0940",
+          "files": [
+            "llm-legs/tests/test_run_suites_shards.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert inventory and the concurrency and wall checks, old fixture sleeps vs the AT_ONCE barrier",
+            "data": "old (base) and new suite side by side at load ~180; mutations of share/run-suites.sh: shards ignoring the -j cap, shard walls summed instead of maxed",
+            "result": "76 = 76 asserts; both mutations red on the new suite (assert 11 `test 3 -le 2`, assert 6 secs < sum); 13.2 vs 13.1 CPU-s; wall 104.8 -> 66.6 s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-run-suites-shards-20261012T235443Z-0940",
+      "note": "Before: p10 24 s on 3 CPU-s was the 2026-10-08 suite; now 45-88 s a run on ~12 CPU-s. Of that, ~50 s was the fixture's own sleeps: 14 fixture runs at 3-4 s each (shard 1 `sleep 1`, shard 3 `sleep 3`), there to keep the shards overlapping for the concurrency checks. run-suites itself already waits on events (`wait -n`). Fixed: an AT_ONCE=N start barrier holds the shards until N are live (or one passed that peak, 30 s bound paid only on failure), shard 1's sleep cut and shard 3's 3 s -> 1 s. A direct run's queue for a run-suites slot (435 s once at night load) is excluded by the journal and not this row.",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-chatgpt-web",
+      "title": "test_chatgpt_web's login --wait holder outlives its poll",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_chatgpt_web"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T14:25:47+03:00",
+          "by": "night fixer harness-speed-test-health-idle-llm-legs-test-run-suites-shards-20261012T235443Z-0940",
+          "files": [
+            "llm-legs/tests/test_chatgpt_web.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "login --wait section: 3 s holder + elapsed >= 3 vs 2 s holder + elapsed >= 2 + holder gone",
+            "data": "old (base) and new suite side by side at load ~199; mutation of share/gemini_web.py cmd_login's wait loop to `while chrome.poll() is None`",
+            "result": "219 -> 223 asserts; the mutation red through the holder-gone assert; 21.8 vs 21.6 CPU-s; wall 94.0 -> 91.9 s"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-run-suites-shards-20261012T235443Z-0940",
+      "note": "The suite's one sleep-bound wait: login --wait for both engines against a fake profile-lock holder of 3 s, seen by gw.cmd_login's LOGIN_POLL_S=1.5 poll at 4.5 s each. Fixed: holder 2 s (returns on the 3.0 s poll) and the proof that the wait held for the lock is the holder gone at return, which also catches a loop that drops profile_in_use (the elapsed >= 2 check alone let it pass). Left, not sleeps: ~15 codex-image composites pay image_composite.py's scipy.ndimage import (~1 s wall on 0.16 CPU-s, see speed-test-health-idle-grok-image), magick, and machine load; the 0.6 s calm-close and TEARDOWN_S 0.3 waits are what their checks need.",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-light-research-vendors",
+      "title": "test_light_research_vendors reads as idle on worker-run's detached work",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_light_research_vendors"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-run-suites-shards-20261012T235443Z-0940",
+      "note": "2026-10-13 ruled out as sleeps: none in the suite or tests/light_research_harness.sh. Each `run`/`wr` is a worker-run start whose detached supervisor does the work outside the suite's reaped-children `times`; one claudeb research call's run-dir files at load ~197 land back to back 50-600 ms apart over ~4.3 s (no 1 s hop; the vendor stub ~0.7 s), and worker-run wait wakes on exit_code by kqueue (exit_file_wait; WORKER_RUN_WAIT_POLL_S=1 is only its fallback). Same cause as speed-test-idle-worker-run-reliability; blind spot test-health-idle-detached-cpu.",
+      "handoff": null
+    },
+    {
+      "id": "speed-test-health-idle-grok-image",
+      "title": "test_grok_image's idle is image_composite.py's scipy import",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_grok_image"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-run-suites-shards-20261012T235443Z-0940",
+      "note": "2026-10-13 ruled out as sleeps: nested xtrace of the whole suite at load ~150 (67 s): 23 s in 66 `uv run --script share/image_composite.py` composites, ~1.2 s wall on ~0.3 CPU-s each. uv adds nothing (verbose: cached script env, no resolution; --offline interleaved A/B equal; bare python equal); `import scipy.ndimage` alone is ~0.9-1.1 s wall on 0.16 CPU-s (its _support_alternative_backends pulls scipy.special and scipy.linalg). image-leg.sh's tee drain polls at 0.05 s (3.4 s over 58 exits at load). Cheapest cut: cut scipy from image_composite.py saves ~1000 ms x ~80 composite calls a run (this suite and test_chatgpt_web), costs rewriting gaussian_filter, label and the binary morphology in numpy with masks that must replay pixel-identical: not taken, a production quality risk for a test-only gain.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -9490,7 +9580,7 @@
     {
       "id": "test-health-idle-detached-cpu",
       "what": "the idle of opportunity:test-health/idle for a suite whose work runs in detached processes (worker-run supervisors and their CLIs, setsid'd and reparented)",
-      "reason": "2026-10-13 test_worker_run_claims and _grok_outcomes read 29-30 s idle a run with no sleep of their own: the suite's cpu_s counts only reaped children, so the supervisors' CPU reads as idle",
+      "reason": "2026-10-13 test_worker_run_claims and _grok_outcomes read 29-30 s idle a run with no sleep of their own: the suite's cpu_s counts only reaped children, so the supervisors' CPU reads as idle; 2026-10-10 (worker_run_reliability, worker_run_pool) and 2026-10-13 (light_research_vendors) fixers each re-dug it to find no sleep",
       "since": "2026-10-13",
       "would_catch_if": "the suite journal added the CPU of the worker runs it started (their supervisors' rusage at delivery, kept in each run's meta.json) to its cpu_s"
     }
