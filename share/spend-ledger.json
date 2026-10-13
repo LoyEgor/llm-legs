@@ -5768,6 +5768,23 @@
    "verdict": "cut",
    "zero": "removal saves ~39 wall-s a run, 13.6 wall-min/day; loses geminib routing, roster, keychain, web-login, pool and export-token checks",
    "note": "11 s late-prompt answer-pty case overlaps the rest of the suite (started past the bare wait, awaited at the end): ~4-7 s a run; sleep unchanged, red under a 10 s silence cutoff; 2 s pty deadlines and 1 s parallel probes kept as race checks; 427 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_legs_routing",
+   "title": "llm-legs/test_legs_routing",
+   "audited_at": "2026-10-13T06:30:29+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-legs-routing-20261012T235326Z-6558",
+   "cpu_run": 3.3,
+   "wall_run": 3.4,
+   "cpu_min_day": 0.64,
+   "wall_min_day": 1.04,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_legs_routing.sh": "49423f9316f1f375c8008c75d160f709fec5d61e"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 3.1 wall-s a run (0.9 wall-min/day); loses the only end-to-end check that the three ask_* legs route through worker-pick accounts, refuse an unselectable pool and fall back to bare CLIs",
+   "note": "geminib families skipped on --list-models, 7 subshells per codexb models call gone (12 calls a run), one roster bash+source chain gone; the 3-vendor loops are wiring, kept"
   }
  ]
 }
