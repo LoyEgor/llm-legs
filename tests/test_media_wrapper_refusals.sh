@@ -23,18 +23,33 @@ assert_fails() {
   fi
 }
 
+has_line() { [[ $'\n'$1 == *$'\n'"$2"* ]]; }
+wrapper_shape() { # file -> shape_first (first non-comment line), shape_tail (last two lines joined)
+  local line first='' seen='' prev='' last=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$seen" ] || case $line in '#'*) ;; *) first=$line seen=1 ;; esac
+    prev=$last last=$line
+  done <"$1"
+  shape_first=$first shape_tail="$prev $last "
+}
+
 wrappers=()
+candidates=()
 for script in $(jq -r '.scripts // {} | .[]' "$ROOT"/share/image-caps/*.json | sort -u); do
-  ! grep -q image_leg_help "$ROOT/bin/$script" || wrappers+=("$script")
+  candidates+=("$ROOT/bin/$script")
 done
+while IFS= read -r script; do
+  wrappers+=("${script##*/}")
+done < <(grep -l image_leg_help "${candidates[@]}")
 assert test "${#wrappers[@]}" -ge 9
 for wrapper in "${wrappers[@]}"; do
   help_rc=0
   help_out=$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --help 2>/dev/null) || help_rc=$?
   assert test "$help_rc" -eq 0
-  assert grep -q "^usage: $wrapper " <<<"$help_out"
-  assert test "$(grep -v '^#' "$ROOT/bin/$wrapper" | head -n 1)" = '{'
-  assert test "$(tail -n 2 "$ROOT/bin/$wrapper" | tr '\n' ' ')" = 'exit } '
+  assert has_line "$help_out" "usage: $wrapper "
+  wrapper_shape "$ROOT/bin/$wrapper"
+  assert test "$shape_first" = '{'
+  assert test "$shape_tail" = 'exit } '
 done
 assert test ! -s "$IMAGE_LEG_LOG"
 
@@ -58,9 +73,9 @@ for wrapper in "${wrappers[@]}"; do
     refusal_err=$(IMAGE_LEG_LOG="$refusal_log" HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" "${args[@]}" 2>&1 >/dev/null) ||
       refusal_rc=$?
     assert test "$refusal_rc" -eq 2
-    assert test "$(head -n 1 <<<"$refusal_err")" = "$want"
+    assert test "${refusal_err%%$'\n'*}" = "$want"
     assert test "$(jq -r '.err | split("\n") | map(select(startswith("'"$wrapper"': "))) | first' "$refusal_log")" = "$want"
-    [ "${case_args%%|*}" = DEST ] || assert grep -q "^usage: $wrapper " <<<"$refusal_err"
+    [ "${case_args%%|*}" = DEST ] || assert has_line "$refusal_err" "usage: $wrapper "
   done
   assert_fails grep -nE '(^|[^-_[:alnum:]])usage[[:space:]]*(;|\)|$)' <(grep -vE 'usage\(\)|image_leg_help usage' "$ROOT/bin/$wrapper")
 done
