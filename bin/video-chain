@@ -88,14 +88,20 @@ end_motion() {
 
 join_clips() {
   [ "$#" -ge 3 ] || usage
-  local out=$1 width height fps index=0 inputs=() graph='' pairs='' clip length
+  local out=$1 width height fps index=0 inputs=() graph='' pairs='' clip length row rows=()
   shift
   case "$(printf '%s' "${out##*.}" | tr '[:upper:]' '[:lower:]')" in mp4) ;; *) usage ;; esac
-  for clip in "$@"; do need_clip "$clip"; done
-  IFS=, read -r width height fps <<<"$(probe "$1" stream=width,height,r_frame_rate)"
+  for clip in "$@"; do
+    [ -f "$clip" ] || say "$clip is not a file"
+    row=$(probe "$clip" stream=width,height,r_frame_rate,duration) || row=
+    [[ "$row" =~ ^[0-9] ]] || say "ffprobe finds no video stream in $clip"
+    rows+=("$row")
+  done
+  IFS=, read -r width height fps _ <<<"${rows[0]}"
   for clip in "$@"; do
     inputs+=(-i "$clip")
-    length=$(seconds_of "$clip")
+    length=${rows[index]##*,}
+    [[ "$length" =~ ^[0-9.]+$ ]] || length=$(seconds_of "$clip")
     graph+="[$index:v]scale=$width:$height:force_original_aspect_ratio=decrease,pad=$width:$height:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=$fps,format=yuv420p[v$index];"
     # concat pairs audio with video per segment, so every segment's audio is cut or padded to its video.
     if [ -n "$(probe_audio "$clip")" ]; then
