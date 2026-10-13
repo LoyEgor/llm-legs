@@ -2398,6 +2398,22 @@
    "verdict": "cut",
    "zero": "removal saves ~2.6 wall-min/day; loses the only pins of english-gate (every tool carrying text to a model, launch briefs read where the call runs, no-jq fail-closed) and compact-auto's Russian focus refusal",
    "note": "cyrillic-share's measurements moved to llm-legs test_english_gates (tests the branch's own tool, not MAIN's), one wiring check kept, a duplicate and a LONG_QUOTE-covered case dropped: 109->94 asserts, 16 fewer python3 spawns; the live settings.json registration read stays: the file is outside every repo"
+  },
+  {
+   "id": "suite:claude-setup/test_edit_conflict_notice",
+   "title": "claude-setup/test_edit_conflict_notice",
+   "audited_at": "2026-10-13T06:29:39+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-commit-report-worktrees-20261012T235201Z-02cb",
+   "cpu_run": 18.7,
+   "wall_run": 15.1,
+   "cpu_min_day": 1.03,
+   "wall_min_day": 2.19,
+   "sources": {
+    "claude-setup/tests/test_edit_conflict_notice.sh": "8aff13d61389fa9c446e28c34b30a20b4a82560b"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~2.2 wall-min/day; loses the only pins of edit-conflict-notice's one-verdict FOREIGN WIP notice (registry liveness, worker-run holders, anti-repeat key, verdict journal and --stats)",
+   "note": "edit() journal snapshot by builtins instead of 4 cp forks a call (312 forks a run); load-flaky 60m-old case aged at the case; vacuous --stats empty-store check made exact (old green with the branch deleted); 195 asserts; CPU flat, x3 wall is load"
   }
  ]
 }
