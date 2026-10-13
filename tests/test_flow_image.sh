@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 # The Flow route of gemini-image: wrapper flags, refusals, takes and footer on a fake engine, then the engine's
 # rotation, start stamps, resume pinning, plan refusals and reply parsing on fixtures. Fixture stores only.
 set -u
@@ -21,6 +22,7 @@ M=$WORK/media
 magick -size 1200x896 xc:steelblue "$M/a.jpg" || exit 1
 magick -size 1200x896 xc:tomato "$M/b.jpg" || exit 1
 magick -size 64x64 xc:gray "$M/ref.png" || exit 1
+magick -size 1000x750 pattern:checkerboard -fill tomato -draw 'circle 500,375 500,200' "$M/scene.png" || exit 1
 export FAKE_A="$M/a.jpg" FAKE_B="$M/b.jpg"
 cat >"$FLOW_IMAGE_ENGINE" <<'EOF'
 #!/usr/bin/env bash
@@ -87,8 +89,9 @@ expect_rc() {
   assert test "$result" -eq "$expected"
 }
 
-# Every refusal exits 2 with one line before the engine starts.
 dest="$WORK/out/pic.jpg"
+if suite_shard_owns 1 takes; then
+# Every refusal exits 2 with one line before the engine starts.
 refs11=()
 for _ in $(seq 11); do refs11+=(--ref "$M/ref.png"); done
 for flags in "--route cli --model pro" "--route cli --count 2" "--route cli --upscale 2k" "--route web" \
@@ -213,7 +216,9 @@ done
 assert test "$(grep -n '^variant=' "$WORK/stdout" | cut -d: -f1)" -lt "$(grep -n "^rendered=$WORK/out/takes-2" "$WORK/stdout" | cut -d: -f1)"
 assert test -z "$(ls "$TMPDIR")"
 rm -f "$TMPDIR"/uv-*.lock
+fi
 
+if suite_shard_owns 2 resume-and-editor; then
 # A resume pins its account and sends no aspect it was not given.
 : >"$FAKE_CALLS"
 assert image --route flow --dest "$WORK/out/edit.jpg" --prompt 'make it red' --model nb2 --resume wf1 --account flowacct
@@ -266,7 +271,6 @@ assert jq -e --arg job "$(sed -n 's/^job=//p' "$WORK/stdout")" \
 assert test -z "$(ls "$TMPDIR")"
 
 # The Image Editor ops refuse before the engine starts, one line each.
-magick -size 1000x750 pattern:checkerboard -fill tomato -draw 'circle 500,375 500,200' "$M/scene.png" || exit 1
 magick -size 1600x900 xc:khaki "$M/wide.png" || exit 1
 png="$WORK/out/tool.png"
 : >"$FAKE_CALLS"
@@ -370,7 +374,9 @@ assert test "$(bash -c '. "$1/share/flow-image.sh"; flow_image_outpaint_bands 10
 assert image --dest "$png" --ref "$M/scene.png" --aspect 16:9 --prompt 'a wider view'
 assert grep -qx generate "$FAKE_CALLS"
 assert test -z "$(ls "$TMPDIR")"
+fi
 
+if suite_shard_owns 1 engine; then
 # The engine on fixtures.
 assert python3 - "$ROOT" "$WORK" <<'PY'
 import argparse, contextlib, io, json, math, os, sys, time, types, urllib.parse
@@ -654,10 +660,10 @@ def failover(accounts, pinned, lock_wait):
 held = hold("old")
 code, line, took = failover(["old", "new"], False, 5)
 assert code == 0 and ran == ["new"] and took < 2, (code, ran, took)
-code, line, took = failover(["old"], True, 0.2)
+code, line, took = failover(["old"], True, 0.01)
 assert code == 5 and ran == [] and line["reason"].startswith("account busy: timed out waiting for old.lock"), line
 held += hold("new")
-code, line, took = failover(["old", "new"], False, 0.2)
+code, line, took = failover(["old", "new"], False, 0.01)
 assert code == 5 and ran == [] and line["code"] == 5, (code, line)
 for handle in held:
     handle.close()
@@ -1090,6 +1096,7 @@ assert.deepStrictEqual(find('retry'), [textRetry]);
 JS
 else
   printf 'SKIP failed-card finder: no node on PATH\n' >&2
+fi
 fi
 
 echo "PASS test_flow_image ($asserts asserts)"
