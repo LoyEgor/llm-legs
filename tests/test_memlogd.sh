@@ -19,8 +19,11 @@ assert_fails() {
   fi
 }
 
+# Fakes driven by a variable live in SEAM_BIN, on PATH only for a run naming one (run_memlogd's case
+# list): elsewhere they are pass-through bash forks, hundreds a suite run.
 FAKE_BIN="$WORK/bin"
-mkdir -p "$FAKE_BIN"
+SEAM_BIN="$WORK/seam-bin"
+mkdir -p "$FAKE_BIN" "$SEAM_BIN"
 TICK_FILE="$WORK/tick"
 AVAIL_FILE="$WORK/avail"
 SWAP_TICK="$WORK/swap-tick"
@@ -60,7 +63,7 @@ cat >"$FAKE_BIN/notifyutil" <<'EOF'
 printf 'com.apple.system.thermalpressurelevel %s\n' "${THERMAL:-0}"
 EOF
 
-cat >"$FAKE_BIN/jq" <<'EOF'
+cat >"$SEAM_BIN/jq" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${JQ_FAILS:-}" ] || exit 1
 exec /usr/bin/jq "$@"
@@ -150,7 +153,7 @@ EOF
 
 # A frames file that vanished between the glob and the stat: the real stat answers for the files
 # that are still there and fails, whatever form the daemon asks in.
-cat >"$FAKE_BIN/stat" <<'EOF'
+cat >"$SEAM_BIN/stat" <<'EOF'
 #!/usr/bin/env bash
 set -u
 if [ -n "${VANISH_FILE:-}" ]; then
@@ -171,7 +174,7 @@ EOF
 
 # Only the bare `date +%F` of a case that declares a day sequence is answered here; every other
 # form, the daemon's own `date -v-Nd +%F` cutoff included, is the real date.
-cat >"$FAKE_BIN/date" <<'EOF'
+cat >"$SEAM_BIN/date" <<'EOF'
 #!/usr/bin/env bash
 set -u
 if [ "$#" -eq 1 ] && [ "$1" = "+%F" ] && [ -n "${DAY_FILE:-}" ]; then
@@ -200,8 +203,8 @@ if [ "$#" -eq 3 ] && [ "$1" = "-r" ] && [ "$3" = "+%Y-%m-%dT%H%M%S" ] && [ -n "$
 fi
 exec /bin/date "$@"
 EOF
-chmod +x "$FAKE_BIN/vm_stat" "$FAKE_BIN/sysctl" "$FAKE_BIN/ps" "$FAKE_BIN/date" "$FAKE_BIN/stat" \
-  "$FAKE_BIN/notifyutil" "$FAKE_BIN/jq"
+chmod +x "$FAKE_BIN/vm_stat" "$FAKE_BIN/sysctl" "$FAKE_BIN/ps" "$SEAM_BIN/date" "$SEAM_BIN/stat" \
+  "$FAKE_BIN/notifyutil" "$SEAM_BIN/jq"
 PATH="$FAKE_BIN:$PATH"
 export PATH
 
@@ -242,9 +245,10 @@ BUS_LOG="$WORK/bus.log"
 : >"$BUS_LOG"
 export BUS_LOG
 run_memlogd() {
-  local dir="$1"; shift
+  local dir="$1" seams=''; shift
+  case " $* " in *' DAY_FILE='*|*' EPOCH_FILE='*|*' FRAME_STAMP='*|*' JQ_FAILS='*|*' VANISH_FILE='*) seams="$SEAM_BIN:" ;; esac
   run_day=$(date +%F)
-  env MEMLOGD_DIR="$dir" MEMLOGD_SYNC=0 MEMLOGD_QUIET_INTERVAL=0 MEMLOGD_INCIDENT_INTERVAL=0 \
+  env PATH="$seams$PATH" MEMLOGD_PROBE_FORKS=0 MEMLOGD_DIR="$dir" MEMLOGD_SYNC=0 MEMLOGD_QUIET_INTERVAL=0 MEMLOGD_INCIDENT_INTERVAL=0 \
     WORKER_RUN_DIR="$EMPTY_REGISTRY/runs" WORKER_STATS_DIR="$EMPTY_REGISTRY/stats" \
     CHAT_LOAD_SESSIONS="$EMPTY_REGISTRY/sessions" CHAT_NAME_ROOTS="$WORK/transcripts" \
     CHAT_NAMES_CACHE="$WORK/chat-names.json" CHAT_LOAD_REPORT_BUS="$FAKE_BIN/report-bus" GUARD_SCOPE='' \
@@ -279,15 +283,16 @@ assert_fails grep -q 'INCIDENT' "$quiet_log"
 # --- machine sampler: its own day file, swap-in rate from deltas, the probe once a minute ---------
 MACHINE_DIR="$WORK/machine"
 printf '1000 1000 1600' >"$WORK/swapins"
+printf '2000000000 2000000001 2000000002' >"$WORK/machine-epochs"
 probes 8192 1024
-assert run_memlogd "$MACHINE_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_QUIET_INTERVAL=1 MEMLOGD_MACHINE_INTERVAL=0 \
-  LOADAVG=3.25 THERMAL=2 SWAPINS_FILE="$WORK/swapins"
+assert run_memlogd "$MACHINE_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_PROBE_FORKS= MEMLOGD_MACHINE_INTERVAL=0 \
+  LOADAVG=3.25 THERMAL=2 SWAPINS_FILE="$WORK/swapins" EPOCH_FILE="$WORK/machine-epochs" EPOCH_TICK="$WORK/machine-epoch-tick"
 machine_log="$MACHINE_DIR/machine/$run_day.log"
 assert test "$(wc -l <"$machine_log")" -eq 3
 assert grep -qE '^[0-9]{10} load1=3.25 ncpu=8 swap_mb=1024 swapin_pages_s=-1 thermal=2 boot=1790882097 probe_ms=[0-9]+$' \
   <(sed -n 1p "$machine_log")
 assert grep -qE ' swapin_pages_s=0 thermal=2 boot=1790882097$' <(sed -n 2p "$machine_log")
-assert grep -qE ' swapin_pages_s=(600|300|200) thermal=2 boot=1790882097$' <(sed -n 3p "$machine_log")
+assert grep -qE ' swapin_pages_s=600 thermal=2 boot=1790882097$' <(sed -n 3p "$machine_log")
 assert test "$(grep -c ' probe_ms=' "$machine_log")" -eq 1
 assert test "$(wc -l <"$(log_file "$MACHINE_DIR")")" -eq 3
 
@@ -1109,7 +1114,10 @@ register_session chat-anon "$LEAF_ROOT" idle
 retitle chat-anon ''
 MENU_DIR="$WORK/guard-menu"
 probes 8192 1024
-assert guard_run "$MENU_DIR" MEMLOGD_MAX_TICKS=2 MEMLOGD_QUIET_INTERVAL=1 HEAVY_PIDS="$LONG_CLI=1048576"
+menu_now=$(date +%s)
+printf '%s %s' "$menu_now" "$((menu_now + 1))" >"$WORK/menu-epochs"
+assert guard_run "$MENU_DIR" MEMLOGD_MAX_TICKS=2 HEAVY_PIDS="$LONG_CLI=1048576" \
+  EPOCH_FILE="$WORK/menu-epochs" EPOCH_TICK="$WORK/menu-epoch-tick"
 menu=$(chats_json "$MENU_DIR")
 assert jq -e '.title | test("^Chats/other  [0-9.]+/[0-9.]+ cores · [0-9]+/[0-9]+ GB$")' "$menu"
 assert jq -e '.rows[0].text | test("^CPU +[0-9.]+ chats \\+ +[0-9.]+ other = +[0-9.]+ of [0-9]+ cores$")' "$menu"
