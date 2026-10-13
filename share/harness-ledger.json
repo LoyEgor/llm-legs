@@ -8844,6 +8844,36 @@
       "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
       "note": "The three flaky reds (2026-10-10 09:38, 09:50, 10:13, all pre-shard trees) were worker shells whose PATH lacked /opt/homebrew/bin, per each worker's own report; the rerun with Homebrew first passed. launchd/harness-doctor falls back to /usr/bin/python3, so the doctor must judge the same there; the hd-launchd check pins at_epoch under it. Also fixed: the canary check read browse-calls as soon as it existed, before the stub's echo wrote it (now waits on canary.stamp, written last), the self-reload poll's 10 s deadline (now 30 s, exits early when green), and the hang-case TMPDIR restore that raised TypeError when TMPDIR was unset. Ruled out: HARNESS_DOCTOR_FAKE_SAMPLE=\"\" reaching the live sampler (an empty value returns no sample at once, bin/harness-doctor take_sample).",
       "handoff": null
+    },
+    {
+      "id": "speed-test-idle-image-fanout-chrome-hold",
+      "title": "test_image_fanout idles 46 s a run: the launch-spacing Chrome fakes held a fixed 5 s each",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/llm-legs/test_image_fanout"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T13:55:00+03:00",
+          "by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
+          "files": [
+            "llm-legs/tests/test_image_fanout.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the chromey and chromeown launch-spacing sections, the fake's fixed sleep 5 vs a hold until another account's START (5 s cap); gap_open's Chrome check deleted as the mutation",
+            "data": "xtrace-timed direct runs at load 70-147",
+            "result": "359 asserts green before and after; the two sections 11.6 s -> 3.3 s a run; with the Chrome check deleted the chromey assert reads g=7.4 s and fails, as it did with the fixed sleep"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
+      "note": "Traced at load 70-147: 62 bin/image-fanout runs ~0.7 s each (43 s, its own startup and forks; the scheduler's idle tick is 0.1 s) and ~38 s of deliberate timing windows. Kept, each the length its check needs: the 1.5 s launch gap under FANOUT_SLEEP=2 (gap >= 1.2), the 8 s kill grace of the linger section (l - f >= 7 against a 1 s busy retry, b - a < 5), the lazy-spare runs (2 s / 0.8 s), memory admission's 0.5 s negative window; scaling the grace down would let b - a < 5 no longer prove the retry is not stalled by it.",
+      "handoff": null
     }
   ],
   "blind_spots": [

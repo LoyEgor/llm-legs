@@ -57,7 +57,8 @@ ln -s /bin/sleep "$FAKE_BIN/chromefake"
 
 # Account names pick the fake's behaviour: walled 3, disabled 4, broken 1, busy 5 (busyonce: the
 # first call only), hang/stubborn start a child and never finish (stubborn ignores TERM), slow* and
-# fast* sleep before delivering, chromey starts a process named like Chrome and stays up (chromeown
+# fast* sleep before delivering, chromey starts a process named like Chrome and stays up until
+# another account starts, 5 s at most (chromeown
 # in a session of its own, as Playwright starts Chrome; chromeorphan's ignores TERM and outlives
 # the wrapper), webwall is a usage limit on every route but --route cli, lingers ignores TERM on
 # its first call only.
@@ -101,8 +102,13 @@ case "$account" in
     wait
     ;;
   slow*|fast*) sleep "${FANOUT_SLEEP:-0.5}" ;;
-  chromey) "$(dirname "$0")/chromefake" 8 & sleep 5 ;;
-  chromeown) own_session "$(dirname "$0")/chromefake" 8 & sleep 5 ;;
+  chromey|chromeown)
+    if [ "$account" = chromey ]; then "$(dirname "$0")/chromefake" 8 & else own_session "$(dirname "$0")/chromefake" 8 & fi
+    for _ in $(seq 100); do
+      ! awk -v a="$account" '$1 == "START" && $2 != a { f = 1 } END { exit !f }' "$FANOUT_CALLS" || break
+      sleep 0.05
+    done
+    ;;
   chromeorphan)
     ( trap '' TERM; own_session "$(dirname "$0")/chromefake" 300 ) &
     printf '%s\n' "$!" >"$FANOUT_CHILDREN/chromeorphan.pid"
