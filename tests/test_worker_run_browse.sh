@@ -226,13 +226,13 @@ EOF
   printf 'ACCOUNT: com\nfill the form\n' >"$WORK/brief"
   clear_stub
   start_ok claudeb --browser
-  assert await_done
+  assert await_exit
   assert jq -e '.browser_target == "chrome"' "$RUN_DIR/meta.json" >/dev/null
   # with no account named, the picker is steered off accounts not enrolled ok
   printf 'BROWSER: chrome\nfill the form\n' >"$WORK/brief"
   clear_stub
   PICK_ACCOUNT=com start_ok claudeb
-  assert await_done
+  assert await_exit
   assert grep -q -- '--exclude .*extra' "$PICK_LOG"
   assert test "$(jq -r '.account' "$RUN_DIR/meta.json")" = com
 
@@ -246,7 +246,7 @@ EOF
   : >"$bt/up/Dia"
   clear_stub
   start_ok claudeb
-  assert await_done
+  assert await_exit
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Dia / com)'
   assert grep -q -- '--target dia`' "$RUN_DIR/browser-preamble"
   assert jq -e '.browser_target == "dia"' "$RUN_DIR/meta.json" >/dev/null
@@ -303,7 +303,7 @@ EOF
   jq '{lost: .lost} + .' "$registry" >"$registry.tmp" && mv "$registry.tmp" "$registry"
   clear_stub
   start_ok codex
-  assert await_done
+  assert await_exit
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Codex / Google Chrome)'
   assert grep -q '"Work" (Profile 1), "Spare" (Profile 3)' "$RUN_DIR/browser-preamble"
   unset BROWSE_CUA_SYNC BROWSE_SKIP_PROCESSES BT_SYNC_MODE
@@ -355,6 +355,10 @@ EOF
   assert grep -qx 'CANARY: lost CANARY_WALLED' <<<"$out"
   assert jq -se '[.[] | select(.account == "extra")][-1].outcome == "CANARY_WALLED"
     and ([.[] | select(.account == "lost")][-1].outcome == "CANARY_WALLED")' "$log" >/dev/null
+  fi
+
+  if suite_shard_owns 2 browse-canary-codex; then
+  enrolled
   # 9c: one codex leg: the browser list's first `ok` codex account drives the first open `ok` profile through the
   # Codex extension, judged by the same receipt; a wall is weather, an out-of-pool account is skipped unlaunched
   cat >"$bt/stub/codex" <<EOF
@@ -618,7 +622,7 @@ EOF
   assert grep -qxF 'args = ["/after-failed-add/launch.mjs"]' "$SYNC_TEST_HOME/config.toml"
   fi
 
-  if suite_shard_owns 1 chrome-applescript-js; then
+  if suite_shard_owns 2 chrome-applescript-js; then
   # 10: chrome-applescript-js edits Preferences only with Chrome quit and no worker run on Chrome
   local cj="$BT_WORK/cj" holder
   mkdir -p "$cj/data/Profile 1" "$cj/runs/browse" "$cj/runs/on-chrome" "$cj/runs/on-dia" "$cj/bin"

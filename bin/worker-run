@@ -5725,7 +5725,7 @@ browse_seen() { # token target [account]
     if [ "$2" = dia ]; then "${BROWSE_DIA_JS:-$SCRIPT_DIRECTORY/dia-js}" --list 2>/dev/null; else browse_chrome_urls; fi |
       awk -v RS= -v t="$1" -v m="$marker" 'index($0, t) && (m == "" || index("\n" $0 "\n", "\n" m "\n")) { f = 1 } END { exit !f }' &&
       { printf 'SEEN: %s\n' "$2"; return 0; }
-    sleep 0.5
+    [ "$((i + 1))" -ge "${BROWSE_SEEN_WAIT:-20}" ] || sleep 0.5
   done
   printf 'SEEN: none\n'
   limit_hit worker-run.browse-wait "${BROWSE_SEEN_WAIT:-20}" count skip "the $2 extension never showed token $1${3:+ for $3}: the device is unproven" \
