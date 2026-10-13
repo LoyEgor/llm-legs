@@ -4308,6 +4308,23 @@
    "verdict": "cut",
    "zero": "removal saves ~1 wall-min/day; loses the frontier/task-lens composition, exclusion, chat-judge and report-bus pins",
    "note": "review-bench@5828b67: dropped time.sleep(1.1) before six panels (6.6 s a run; 134 checks pass with all runs frozen into one second), REVIEW_CELLS_WAIT_S=0; chat-judge mutation red; wall 17.6 -> 10-13.6 s, CPU unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_memlogd",
+   "title": "llm-legs/test_memlogd",
+   "audited_at": "2026-10-13T13:14:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-memlogd-20261012T235344Z-1eea",
+   "cpu_run": 31.1,
+   "wall_run": 44.9,
+   "cpu_min_day": 13.38,
+   "wall_min_day": 26.18,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_memlogd.sh": "b49400f79c0e9aa72e5d85ed9a50a14e2ecf29f2"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 22.9 wall-min/day, 12.9 CPU-min/day; loses the only end-to-end pins of memlogd's incident state machine, rotation, lock and the memory guard's kill rule on real process groups",
+   "note": "seam fakes (date/jq/stat) on PATH only for the 5 cases naming their variables, contention-probe forks off outside the machine case, two 1 s tick sleeps replaced by injected clocks; CPU 32->25.5 s a run, 333 asserts"
   }
  ]
 }
