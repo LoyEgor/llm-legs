@@ -2733,7 +2733,7 @@
         "rule": "opportunity",
         "ident": "chat/hooks"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-05T19:30:06+03:00",
@@ -2766,13 +2766,28 @@
             "data": "3000 unique Bash commands (seed 7) of the last 2 days' transcripts and 4721 generated spellings (spliced cp/mv/rm/tee/touch/ln/sed/git/gated words; 70 redirect corners: x2>f, \"a b\"2>f, a\\ 2>f, a\\<newline>2>f, &2>f, (2>f), &>f, >|f, 12>f, sed -'i'); whole-hook replay on 793 of them; /bin/bash 3.2, scratch HOME, git stubbed to fail so no live claude-writes was reached",
             "result": "0 of 1066+549 cleared calls disagree with the base; 793/793 identical; screen clears 36% of real write calls (549 of 1530, 85% of what the base found idle with no target); paired 250 real calls at load ~240: wall 265 -> 194 ms mean, p50 paired delta 60 ms, CPU 44 -> 34 ms"
           }
+        },
+        {
+          "at": "2026-10-13T09:30:00+03:00",
+          "by": "night fixer harness-speed-chat-hooks-20261012T235027Z-2d8d",
+          "files": [
+            "claude-setup/hooks/lib/review-journal.sh",
+            "claude-setup/tests/test_review_flow_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "rj_snapshot_heads' per-top HEAD: base `git -C <top> rev-parse --verify --quiet HEAD` vs rj_head_of (one `git worktree list --porcelain` per family, rev-parse on any miss), top and sha per line",
+            "data": "the live repository set a commit call snapshots (rj_repo_set over rj_journal_homes + the call's dirs) from llm-legs and from claude-setup: 140-150 tops over the 4 journal-home families (hammerspoon, llm-legs, claude-setup, review-bench), every night worktree of 2026-10-13 included, one unborn-HEAD hammerspoon worktree among them; /bin/bash 3.2; plus the 7-worktree fixture of tests/test_review_flow_gate.sh",
+            "result": "identical on 5 of 6 runs; the one difference was a hammerspoon commit landing between the two reads (the next runs identical); 800-960 ms -> 70-84 ms per snapshot at load 20-36; fixture: rev-parse forks 7 -> 0 (red on the old code)"
+          }
         }
       ],
       "same_cause": [],
-      "note": "2026-10-09 (night fixer harness-speed-chat-hooks-20261009T024744Z-4103): the 10-05 fix (rf_door_idle) skipped the door's parse but still loaded the 2.1k-line library, computed the owner and ran rj_command_paths' awk on every idle write call. Now a pre-library screen (rf_door_idle plus rf_writes_none, a superset of rj_command_paths' targets: a `>` other than `>&`/a lone `2>`, cp/mv/rm/tee/touch/ln, sed beside -i) exits before the library; RJ_LIB is found without dirname/cd forks and jq reads the payload itself (tojson hands `input` back), so every call, read-only included, saves 4 forks and 2 execs. RJ_LANDING_SUBCOMMANDS/RJ_GATED_SUBCOMMANDS moved to hooks/lib/splice.sh for the screen. Pre-Bash floor setters on 2026-10-08 (first-order gain if zero, hooks/*.tsv): instruction-write-gate.sh 400 s, statusline-workdir-hook.sh 144 s, review-flow-gate.sh 130 s, worker-launch-gate.sh 91 s; the next lever is instruction-write-gate (blind spot speed-lever-hook-static). Found, not fixed (not this component): commit-report.sh and commit-push-gate.sh still find RJ_LIB with the dirname/cd forks. 2026-10-05: fixed with rf_door_idle (claude-setup@a9f0773). Found then, still so: the review family is read off the raw text, so re\"\"view-bench re\"\"view passes this door; review-bench's nonce check still refuses it.",
+      "note": "2026-10-13 (night fixer harness-speed-chat-hooks-20261012T235027Z-2d8d): not a third fast path for the same cost. folded hooks/20739.tsv put review-flow-gate at mean 1357 ms (p50 365, p99 30 s) at night; the commit-call HEAD snapshot forked one rev-parse per worktree of every journal-home family (212 snapshots, 12.9k tops in 24 h, max 171), ~5 ms each, so ~1 min/day of Pre-Bash wait. Ruled out: reading HEAD and loose refs off the files (an earlier attempt of this run) saves nothing, since the night branches sit in packed-refs and fell back to git; a bash glob over one growing string for the lookup is quadratic in bash 3.2 (34 s). Found, not this component: commit-report.sh (Post) may still read HEAD per snapshot top. The lever row stays static (blind spot speed-lever-hook-static). 2026-10-09: the 10-05 fix (rf_door_idle) skipped the door's parse but still loaded the 2.1k-line library, computed the owner and ran rj_command_paths' awk on every idle write call. Now a pre-library screen (rf_door_idle plus rf_writes_none, a superset of rj_command_paths' targets: a `>` other than `>&`/a lone `2>`, cp/mv/rm/tee/touch/ln, sed beside -i) exits before the library; RJ_LIB is found without dirname/cd forks and jq reads the payload itself (tojson hands `input` back), so every call, read-only included, saves 4 forks and 2 execs. RJ_LANDING_SUBCOMMANDS/RJ_GATED_SUBCOMMANDS moved to hooks/lib/splice.sh for the screen. Pre-Bash floor setters on 2026-10-08 (first-order gain if zero, hooks/*.tsv): instruction-write-gate.sh 400 s, statusline-workdir-hook.sh 144 s, review-flow-gate.sh 130 s, worker-launch-gate.sh 91 s; the next lever is instruction-write-gate (blind spot speed-lever-hook-static). Found, not fixed (not this component): commit-report.sh and commit-push-gate.sh still find RJ_LIB with the dirname/cd forks. 2026-10-05: fixed with rf_door_idle (claude-setup@a9f0773). Found then, still so: the review family is read off the raw text, so re\"\"view-bench re\"\"view passes this door; review-bench's nonce check still refuses it.",
       "handoff": null,
-      "last_reviewed": "2026-10-09",
-      "reviewed_by": "night fixer harness-speed-chat-hooks-20261009T024744Z-4103"
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-chat-hooks-20261012T235027Z-2d8d"
     },
     {
       "id": "limiter-hold-logo-bench-throttle",
@@ -8081,6 +8096,36 @@
       "handoff": null,
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night fixer harness-guards-20261012T235022Z-385b"
+    },
+    {
+      "id": "speed-test-idle-stop-dispatch",
+      "title": "test_stop_dispatch waits ~21 s a run on ~9 s of its own CPU",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/idle/claude-setup/test_stop_dispatch"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T09:30:00+03:00",
+          "by": "night fixer harness-speed-chat-hooks-20261012T235027Z-2d8d",
+          "files": [
+            "claude-setup/tests/test_stop_dispatch.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert inventory and outcomes, base vs HEAD; the hanging-hook case still red if the dispatcher ignored the per-hook cap (its elapsed bound and its limit hit's value, now the cap of 1)",
+            "data": "unsharded direct runs and tests/run-all at load 17-24",
+            "result": "213 asserts both; 30.6-33.2 s -> 21-27.6 s wall"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night fixer harness-speed-chat-hooks-20261012T235027Z-2d8d",
+      "note": "xtrace gaps (PS4 with EPOCHREALTIME): the hanging ask waited the 5 s default HOOK_CAP (now STOP_DISPATCH_HOOK_CAP=1); three word-journal stops with no reading line each polled WORDS_FLUSH_WAIT's 1.5 s (now 0; no assert exercises the poll). Stay, each the length its check needs: the budget case's 2 s (STOP_DISPATCH_BUDGET=1 would let a SECONDS tick before the prerun skip the notices); the ordering cases' two 0.5 s sleeps (the race they would expose); the chat-name resolver's two kills at chat_names.py's hard 1.0 s BUDGET_SECONDS (cut 1 s x 2 a run, costs a test-only knob in lib/chat_names.py: not taken). Fixed alongside: the budget case flaked at load ~20 when the real worker-run-backstop.sh spent 1 s of the 2 s budget; it runs with no backstop now. The rest of the idle is process start-up under load (~400 forks).",
+      "handoff": null
     }
   ],
   "blind_spots": [
