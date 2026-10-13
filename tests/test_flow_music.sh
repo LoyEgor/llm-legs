@@ -11,13 +11,14 @@ WORK="$(cd -P "$WORK" && pwd)"
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/err" >&2 2>/dev/null; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
-export HOME="$WORK/home" TMPDIR="$WORK/tmp" GEMINI_WEB_DIR="$WORK/home/.gemini-web" PYTHONDONTWRITEBYTECODE=1
+export HOME="$WORK/home" TMPDIR="$WORK/tmp" GEMINI_WEB_DIR="$WORK/home/.gemini-web" PYTHONPYCACHEPREFIX="$WORK/pycache"
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" FAKE_CALLS="$WORK/calls" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 export FLOW_MUSIC_ENGINE="$WORK/flow-engine" GEMINI_MUSIC_ENGINE="$WORK/app-engine"
 mkdir -p "$HOME" "$TMPDIR" "$WORK/media" "$WORK/out" "$GEMINI_WEB_DIR"
 mkdir -p "$HOME/.gemini-profiles"/{good,poor,gone,walled,flagged,fresh,dry,flaky}
 M=$WORK/media
-ffmpeg -v error -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -ac 2 -c:a pcm_s16le "$M/take.wav" || exit 1
+{ printf 'RIFF\044\334\005\000WAVEfmt \020\000\000\000\001\000\002\000\200\273\000\000\000\356\002\000\004\000\020\000data\000\334\005\000'
+  head -c 384000 /dev/zero; } >"$M/take.wav"
 printf 'ID3fake' >"$M/ref.mp3"
 printf 'not audio' >"$M/ref.txt"
 export FAKE_WAV="$M/take.wav"
@@ -61,6 +62,20 @@ chmod +x "$FLOW_MUSIC_ENGINE" "$GEMINI_MUSIC_ENGINE"
 : >"$WORK/err"
 
 music() { bash "$ROOT/bin/gemini-music" "$@" >"$WORK/stdout" 2>"$WORK/err"; }
+# Refusals read only their own arguments and run before any engine: eight at a time, each into its own
+# files, judged after the wait.
+mkdir "$WORK/par"
+par_n=0
+refuse() { # args...: a run expected to exit 2
+  local n=$((++par_n))
+  { bash "$ROOT/bin/gemini-music" "$@" >"$WORK/par/$n.out" 2>"$WORK/par/$n.err"; echo $? >"$WORK/par/$n.rc"; } &
+  [ $((n % 8)) -ne 0 ] || wait
+}
+refused() { # wait, then assert every run since the last call exited 2
+  local n
+  wait
+  for ((n = 1; n <= par_n; n++)); do assert test "$(<"$WORK/par/$n.rc")" = 2; done
+}
 expect_rc() {
   local expected=$1 result=0
   shift
@@ -73,8 +88,10 @@ out="$WORK/out/song.wav"
 for flags in "--format wav" "--lyrics la" "--bpm 90" "--seed 3" "--stems" "--ref-audio $M/ref.mp3" "--accounts 2" \
   "--route app --model lyria-3-pro" "--model lyria-9" "--route web"; do
   # shellcheck disable=SC2086
-  expect_rc 2 --dest "$out" --prompt 'a theme' $flags
+  refuse --dest "$out" --prompt 'a theme' $flags
 done
+refused
+par_n=0
 expect_rc 2 --dest "$out" --prompt 'a theme' --duration 75
 assert grep -q -- '--length short.*--route flow takes --duration' "$WORK/err"
 expect_rc 2 --dest "$out" --prompt 'a theme' --stems
@@ -87,8 +104,10 @@ for flags in "--route flow --dest $WORK/out/song.mp4" "--route flow --dest $out 
   "--route flow --dest $out --ref-image $M/ref.mp3" "--route flow --dest $out --accounts 5" \
   "--route flow --dest $out --accounts 0" "--route flow --dest $out --accounts 2 --account com"; do
   # shellcheck disable=SC2086
-  expect_rc 2 --prompt 'a theme' $flags
+  refuse --prompt 'a theme' $flags
 done
+refused
+par_n=0
 assert test ! -s "$FAKE_CALLS"
 music --dest "$out" --prompt x --bogus || true
 for flag in --route --model --format --duration --lyrics --bpm --seed --ref-audio --stems --accounts; do
@@ -143,8 +162,8 @@ cp "$M/take.wav" "$M/made.wav"
 while IFS='|' read -r said flags; do
   flags=${flags//REF_TXT/$M/ref.txt}
   # shellcheck disable=SC2086
-  expect_rc 2 --dest "$out" ${flags//MADE/$M/made.wav}
-  assert grep -qF -- "$said" "$WORK/err"
+  refuse --dest "$out" ${flags//MADE/$M/made.wav}
+  printf '%s' "$said" >"$WORK/par/$par_n.said"
 done <<'EOF'
 add --edit|--mode cover --prompt x
 --edit needs --mode|--edit song --account flowacct --prompt x
@@ -168,6 +187,9 @@ a library song lives on one account: no --accounts|--edit song --account flowacc
 --edit takes an mp3, wav|--edit REF_TXT --mode cover --prompt x
 is a Flow Music song on flowacct, not other|--edit MADE --account other --mode cover --prompt x
 EOF
+refused
+for ((n = 1; n <= par_n; n++)); do assert grep -qF -- "$(<"$WORK/par/$n.said")" "$WORK/par/$n.err"; done
+par_n=0
 assert test ! -s "$FAKE_CALLS"
 
 # A library title, a Flow take by its file (its .txt names title and account) and any other audio reach the engine.
@@ -188,19 +210,24 @@ assert test -z "$(grep -x -- '--account' "$FAKE_CALLS")"
 
 # The engine on fakes.
 cat >"$WORK/child" <<'EOF'
-#!/usr/bin/env python3
-import json, sys
-argv = sys.argv[1:]
-account = argv[argv.index("--account") + 1]
-open(sys.argv[0] + ".calls", "a").write(" ".join(argv) + "\n")
-code = {"good": 0, "dry": 0, "poor": 3, "gone": 4, "flaky": 1}[account]
-if code:
-    print(json.dumps({"ok": False, "reason": f"{account} failed with {code}"}))
-elif "--dry-run" in argv:
-    print(json.dumps({"ok": True, "dry_run": True, "account": account, "controls": {"model": "Lyria 3.5"}}))
-else:
-    print(json.dumps({"ok": True, "account": account, "takes": [{"audio": "/x.mp3", "account": account}]}))
-sys.exit(code)
+#!/bin/bash
+account=''
+for arg in "$@"; do
+  [ "${prev:-}" != --account ] || account=$arg
+  prev=$arg
+done
+printf '%s\n' "$*" >>"$0.calls"
+case $account in
+  good|dry) code=0 ;; poor) code=3 ;; gone) code=4 ;; flaky) code=1 ;; *) exit 70 ;;
+esac
+if [ "$code" -ne 0 ]; then
+  printf '{"ok": false, "reason": "%s failed with %s"}\n' "$account" "$code"
+elif [[ " $* " == *" --dry-run "* ]]; then
+  printf '{"ok": true, "dry_run": true, "account": "%s", "controls": {"model": "Lyria 3.5"}}\n' "$account"
+else
+  printf '{"ok": true, "account": "%s", "takes": [{"audio": "/x.mp3", "account": "%s"}]}\n' "$account" "$account"
+fi
+exit "$code"
 EOF
 chmod +x "$WORK/child"
 export FLOW_MUSIC_CHILD="$WORK/child"
@@ -1250,9 +1277,11 @@ assert rows == [("fresh", ""), ("stale", "Remix: +Stretch -Trim; models: +Lyria 
 
 child = os.path.join(work, "caps-child")
 with open(child, "w") as out:
-    out.write("#!/usr/bin/env python3\nimport json, sys\nargv = sys.argv[1:]\naccount = argv[argv.index('--account') + 1]\n"
-              "caps = {'one': ['models: +Lyria 4'], 'two': ['Remix: -Trim']}[account]\n"
-              "print(json.dumps({'ok': True, 'dry_run': True, 'account': account, 'controls': {}, 'caps': caps}))\n")
+    out.write(r'''#!/bin/bash
+for arg in "$@"; do [ "${prev:-}" != --account ] || account=$arg; prev=$arg; done
+case $account in one) caps='["models: +Lyria 4"]' ;; two) caps='["Remix: -Trim"]' ;; esac
+printf '{"ok": true, "dry_run": true, "account": "%s", "controls": {}, "caps": %s}\n' "$account" "$caps"
+''')
 os.chmod(child, 0o755)
 os.environ["FLOW_MUSIC_CHILD"] = child
 args = types.SimpleNamespace(prompt="p", out_dir=os.path.join(work, "capsfan"), model="lyria-3.5", format="mp3", count=1,
