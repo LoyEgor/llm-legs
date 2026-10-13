@@ -26,7 +26,14 @@ worker_pick=${MEDIA_RUN_WORKER_PICK:-$root/bin/worker-pick}
 command -v jq >/dev/null 2>&1 || { printf 'media-run: jq is required\n' >&2; exit 1; }
 
 vendors_of() { # kind -> the vendors whose manifest names a script for it, one per line
-  local manifest
+  local manifest named
+  # One jq over every manifest; a manifest jq cannot read aborts that run, so the loop below judges them one by one.
+  if named=$(jq -r --arg kind "$1" 'select(.scripts[$kind] // empty | strings) | input_filename' "$caps_dir"/*.json 2>/dev/null); then
+    while IFS= read -r manifest; do
+      [ -z "$manifest" ] || { manifest=${manifest##*/}; printf '%s\n' "${manifest%.json}"; }
+    done <<<"$named"
+    return 0
+  fi
   for manifest in "$caps_dir"/*.json; do
     [ -f "$manifest" ] || continue
     jq -e --arg kind "$1" '.scripts[$kind] // empty | strings' "$manifest" >/dev/null 2>&1 &&
@@ -150,8 +157,7 @@ if [ "$dry_run" = true ] && { [ "$kind" = image ] || [ "$kind" = video ]; } && !
   printf '\n'
   exit 0
 fi
-media_tag=$(set +eu; . "$root/share/worker-model.sh" 2>/dev/null && worker_media_tag "$vendors" "$kind" "$*" 2>/dev/null) ||
-  media_tag=''
+media_tag=$(set +eu; worker_media_tag "$vendors" "$kind" "$*" 2>/dev/null) || media_tag=''
 label=gen
 for arg in "$@"; do
   case "$arg" in --ref | --ref=* | --resume | --resume=* | --edit | --edit=* | --extend | --extend=* | --for-video | --for-video=*) label=edit ;; esac

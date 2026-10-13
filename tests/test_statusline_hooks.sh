@@ -5529,7 +5529,7 @@ rmdir "$TR_HOME_CACHE/tr-locked/.claim.lock"
 
 # The media tag of a media-run job says what runs where, off the launch's own flags: the route for
 # codex images (the manifest's first route when none is named) and music, the model for Flow video.
-media_tag_of() { ( . "$ROOT/share/worker-model.sh" && worker_media_tag "$@" ); }
+media_tag_of() { ( . "$ROOT/share/image-caps.sh" && worker_media_tag "$@" ); }
 assert_eq "img·$(jq -r '.routes[0]' "$ROOT/share/image-caps/codex.json")" "$(media_tag_of codex image '--dest /tmp/a.png --prompt x')"
 assert_eq 'img·cli' "$(media_tag_of codex image '--route cli --dest /tmp/a.png --prompt x')"
 assert_eq 'img·web' "$(media_tag_of codex image '--route web --dest /tmp/a.png --prompt x')"

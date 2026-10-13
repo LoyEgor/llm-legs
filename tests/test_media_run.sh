@@ -162,6 +162,20 @@ run image --vendor zeta -- --dest /tmp/a.png --dry-run
 [ "$rc" = 0 ] && same_args zeta-image --dest /tmp/a.png --dry-run || fail "an image script's own --dry-run did not reach it"
 ok
 
+# One jq reads every manifest; a manifest that is not JSON drops only its own vendor.
+printf '{bad\n' >"$CAPS/aaa-broken.json"
+run image --vendors all -- --dest-dir /tmp/fan --prompt x
+same_args image-fanout --vendors codex,gemini,grok,zeta --dest-dir /tmp/fan --prompt x || fail "a broken manifest hid a vendor after it or itself ran"
+ok
+rm -f "$CAPS/aaa-broken.json"
+mkdir -p "$WORK/shim"
+printf '#!/usr/bin/env bash\nprintf x >>"%s/jq-forks"\nexec %s "$@"\n' "$WORK" "$(command -v jq)" >"$WORK/shim/jq"
+chmod +x "$WORK/shim/jq"
+: >"$WORK/jq-forks"
+PATH="$WORK/shim:$PATH" run image --vendor zeta -- --dest /tmp/a.png --prompt x
+[ "$rc" = 0 ] && [ "$(wc -c <"$WORK/jq-forks")" -le 3 ] || fail "a one-vendor run forked jq $(wc -c <"$WORK/jq-forks") times"
+ok
+
 # No vendor literal in the door itself.
 [ -z "$(grep -nE 'codex|gemini|grok' "$MEDIA_RUN")" ] || fail "media-run names a vendor: $(grep -nE 'codex|gemini|grok' "$MEDIA_RUN")"
 ok
