@@ -159,14 +159,17 @@ collector-runs row (`trigger background:<name>`) and keeps its own `self` wall/C
   (launchd 300 s/100k lines, DAS 150 s/1.2M — it logs ~88k lines/h — hangs 60 s/20k); a cut source resumes after its last line. Kept: launchd
   exits per label (runs, wall, longest, abnormal exits, exit kinds), DAS starts/completions/decisions per activity,
   spindump spins and slow-HID per app.
-- **Own footprints and disk counters** per tick (`proc_pid_rusage` v2 of our own live processes, ~2 ms):
-  `mem_top` footprints, `io_top` bytes written/read and idle wakeups since the last tick. The tick's `ps` also reads
+- **Footprints and disk counters** per tick (`proc_pid_rusage` v2 of every live process of this uid — own, Chrome,
+  claude, Dia, Figma; ~500 reads, ~6 ms wall, ~2 ms CPU, ~3 CPU-s/day): `mem_top` footprints, `io_top` bytes
+  written/read and idle wakeups since the last tick; `usage_blind` names the listed items holding another uid's
+  process, whose counters need root. The tick's `ps` also reads
   `rss` of every process: `rss_top` (by tag, with its process count) and `rss_total`, so Chrome, Claude.app and Apple
   daemons show beside our own.
 - **Cohort score** (`cohort_sums` per day row, `cohort_score`): per item over the newest day rows covering ≥ 7 days
   (≤ 14 back), `B = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB × pressure, S/86400, L/1440)` per covered day;
-  pressure = compressor ≥ 25 % of RAM or ≥ 2,000 swap-outs/s. Under 7 covered days nothing is scored. Apple and
-  third-party items list W, D, R, M as unknown (`foreign-cohort-terms`).
+  pressure = compressor ≥ 25 % of RAM or ≥ 2,000 swap-outs/s. Under 7 covered days nothing is scored. An item whose
+  rusage some covered day missed (a process of another uid, a day row from before 2026-10-13) lists W, D, R, M as
+  unknown (`foreign-cohort-terms`); the day row's ninth field marks it.
 - **Self-cost and blindness.** `costs` carries runs, wall and CPU per collector over 24 h; `collectors` names any blind
   one: `footprints` (own processes but no counters read), `dumpstate` (no snapshot for 3 h), `harvest` (none for
   12 h, or a source failed), `census` (its last run polled nothing).

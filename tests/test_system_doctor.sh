@@ -960,23 +960,34 @@ m.judge_launchd(judge, [], [{"t": now + 30 * 3600 - 60, "launchd": [["com.x.dies
 check([p["id"] for p in judge.problems] == ["job-loop:com.x.dies"] and judge.problems[0]["value"] == 3,
       "the log's abnormal exits alone name a dying job: %s" % judge.problems)
 
-# ---- phase 3: own footprints and disk counters per tick
-put("ps", ps_rows(base))
-put("ps-children", ps_rows(base + newborns))
-json.dump({"100": [300 << 20, 1000, 5000, 7], "300": [100 << 20, 10, 20, 1]}, open(os.path.join(fix, "rusage.json"), "w"))
+# ---- phase 3: footprints and disk counters of every process of this uid per tick
+chrome = [(500, 1, os.getuid(), "0:00.10", start, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")]
+put("ps", ps_rows(base + chrome))
+put("ps-children", ps_rows(base + chrome + newborns))
+json.dump({"100": [300 << 20, 1000, 5000, 7], "300": [100 << 20, 10, 20, 1], "400": [50 << 20, 0, 0, 0],
+           "500": [200 << 20, 0, 0, 0]}, open(os.path.join(fix, "rusage.json"), "w"))
 for name in os.listdir(os.path.join(work, "state", "ticks")):
     os.remove(os.path.join(work, "state", "ticks", name))
 os.remove(state_path)
 first = json.loads(cli("tick").stdout)
-json.dump({"100": [310 << 20, 3000, 9000, 17], "300": [100 << 20, 10, 20, 1]}, open(os.path.join(fix, "rusage.json"), "w"))
+json.dump({"100": [310 << 20, 3000, 9000, 17], "300": [100 << 20, 10, 20, 1], "400": [50 << 20, 9, 9 << 20, 9],
+           "500": [200 << 20, 100, 6000, 3]}, open(os.path.join(fix, "rusage.json"), "w"))
 row = json.loads(cli("tick").stdout)
-check(row["own_procs"] == 2 and row["usage_read"] == 2 and row["mem_top"] == [["statusline.sh", 310 << 20, "own"],
+check(row["own_procs"] == 2 and row["usage_read"] == 3 and row["mem_top"] == [["statusline.sh", 310 << 20, "own"],
+                                                                             ["Google Chrome", 200 << 20, "third-party"],
                                                                              ["Hammerspoon", 100 << 20, "own"]],
-      "footprints of own processes by tag: %s" % row)
-check(row["io_top"] == [["statusline.sh", 4000, 2000, 10, "own"]], "disk bytes written, read and idle wakeups since the last tick: %s" % row["io_top"])
+      "footprints of this uid's processes by tag, another uid's never read: %s" % row)
+check(row["io_top"] == [["Google Chrome", 6000, 100, 3, "third-party"], ["statusline.sh", 4000, 2000, 10, "own"]],
+      "disk bytes written, read and idle wakeups since the last tick, a same-uid app's too: %s" % row["io_top"])
+check(row["usage_blind"] == [["xpcproxy", "apple"]], "a listed item with another uid's process is usage-blind: %s" % row["usage_blind"])
 check(first["io_top"] == [], "the first tick has no deltas")
-check(row["rss_total"] == (8 * 2048 + 1024) << 10 and ["Hammerspoon", 2048 << 10, 1, "own"] in row["rss_top"],
+check(row["rss_total"] == (9 * 2048 + 1024) << 10 and ["Hammerspoon", 2048 << 10, 1, "own"] in row["rss_top"],
       "resident memory of every process on the machine, summed by tag with its process count: %s" % row["rss_top"])
+read = {(r[0], r[1]): r[8] for r in m.cohort_sums([row])}
+check(read == {("Google Chrome", "third-party"): 1, ("statusline.sh", "own"): 1, ("Hammerspoon", "own"): 1, ("xpcproxy", "apple"): 0},
+      "the day's cohort marks which items' rusage every row read: %s" % read)
+check({r[0]: r[8] for r in m.cohort_sums([row, {k: v for k, v in row.items() if k != "usage_blind"}])}["Google Chrome"] == 0,
+      "a day holding a row from before every same-uid process was read leaves a third-party item unread")
 saved_rusage = open(os.path.join(fix, "rusage.json")).read()
 json.dump({}, open(os.path.join(fix, "rusage.json"), "w"))
 row = json.loads(cli("tick").stdout)
@@ -1019,6 +1030,13 @@ launches = [{"t": now - 3600, "jobs": [{"name": "com.apple.thing", "owner": "app
 apple = score([], launches)[("com.apple.thing", "apple")]
 check(abs(apple["B"] - 1) < 1e-9 and apple["unknown"] == ["W", "D", "R", "M"] and set(apple["terms"]) == {"C", "S", "L"},
       "1,440 launches a day scores 1; an Apple item's W, D, R and M are unknown: %s" % apple)
+chrome = [score([["Chrome", "third-party", 0, 0, m.GIB, 0, 0, 0] + flag])[("Chrome", "third-party")] for flag in ([1], [0], [])]
+check(chrome[0]["unknown"] == [] and abs(chrome[0]["B"] - 1) < 1e-9 and chrome[0]["terms"]["D"] == 1
+      and all(c["unknown"] == ["W", "D", "R", "M"] and c["B"] == 0 for c in chrome[1:]),
+      "a third-party item read on every day scores its 1 GB a day; one unread, or from before, keeps W D R M unknown: %s" % chrome)
+mixed = m.cohort_score([{"day": d["day"], "covered_s": 86400, "cohort": [["Chrome", "third-party", 0, 0, m.GIB, 0, 0, 0, i > 0]]}
+                        for i, d in enumerate(week([]))], [], now)["items"][0]
+check(mixed["unknown"] == ["W", "D", "R", "M"], "one unread day of seven keeps the item's W D R M unknown: %s" % mixed)
 check(score([["edge", "own", 864 * 5, 0, 0, 0, 0, 0]])[("edge", "own")]["B"] == 5, "5x the CPU divisor is B 5")
 short = score([["edge", "own", 864 * 100, 0, 0, 0, 0, 0]], days=6)
 check(short == {"covered_days": 6.0, "items": None}, "under 7 covered days nothing is scored: %s" % short)

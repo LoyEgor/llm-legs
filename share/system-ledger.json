@@ -51,7 +51,7 @@
     {
       "id": "ssd-writers",
       "what": "which short-lived or other users' process writes the internal SSD",
-      "reason": "Each tick reads the disk counters of our own live processes (proc_pid_rusage), but a process that dies between ticks takes its counters along, and other users' counters need root; the 2026-10-04 privileged sample put ~76% of writes on our own short-lived processes",
+      "reason": "Each tick reads the disk counters of this uid's live processes (proc_pid_rusage), but a process that dies between ticks takes its counters along, and other users' counters need root; the 2026-10-04 privileged sample put ~76% of writes on our own short-lived processes",
       "since": "2026-10-06",
       "would_catch_if": "a consented privileged sample (fs_usage or per-process rusage of every uid)"
     },
@@ -64,8 +64,8 @@
     },
     {
       "id": "foreign-cohort-terms",
-      "what": "idle wakeups, disk bytes and footprints of Apple and third-party items",
-      "reason": "proc_pid_rusage of other users' processes needs root, so their cohort score counts CPU, births and launches only and lists W, D, R and M as unknown",
+      "what": "idle wakeups, disk bytes and footprints of items running under another uid (root and _-user Apple daemons, privileged helpers)",
+      "reason": "proc_pid_rusage of another uid's processes needs root, so those items' cohort score counts CPU, births and launches only and lists W, D, R and M as unknown; every process of this uid (Chrome, claude, Dia, Figma) is read since 2026-10-13",
       "since": "2026-10-06",
       "would_catch_if": "a consented privileged sample"
     },

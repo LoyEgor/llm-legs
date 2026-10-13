@@ -469,11 +469,12 @@ def causer(key, procs, by_pid):
     return (chain[0][2], chain[0][3]) if chain else ("launchd", "apple")
 
 
-def own_usage(procs):
-    """{key: (footprint, read B, written B, idle wakeups)} of the own processes proc_pid_rusage can read."""
-    out = {}
+def readable_usage(procs):
+    """{key: (footprint, read B, written B, idle wakeups)} of the own processes and every other process of this uid:
+    proc_pid_rusage reads them without root."""
+    uid, out = os.getuid(), {}
     for key, entry in procs.items():
-        if entry[3] == "own":
+        if entry[3] == "own" or entry[5] == uid:
             found = machine_probe.proc_rusage(entry[4])
             if found:
                 out[key] = found
@@ -567,7 +568,7 @@ def tick(now=None):
     mem = steps("sysctl", memory_sysctls)
     disks = steps("ioreg", disk_counters)
     volumes = steps("df", free_space)
-    usage = steps("rusage", own_usage, last)
+    usage = steps("rusage", readable_usage, last)
 
     gap = now - previous["t"] if isinstance(previous.get("t"), (int, float)) else None
     joined = gap is not None and 0 < gap <= TICK_GAP_S and previous.get("boot") == mem["boot"]
@@ -665,6 +666,9 @@ def tick(now=None):
     row["rss_top"] = top_rows([[tag, size, count, owner] for (tag, owner), (size, count) in resident.items()])
     row["rss_total"] = sum(size for size, _count in resident.values())
     row["io_top"] = top_rows([[tag, w, r, k, owner] for (tag, owner), (w, r, k) in moved.items() if w or r or k])
+    foreign = {(entry[2], entry[3]) for entry in last.values() if entry[3] != "own" and entry[5] != os.getuid()}
+    listed = {(entry[0], entry[-1]) for key in ("cpu_top", "births_top", "io_top", "mem_top") for entry in row[key]}
+    row["usage_blind"] = sorted(list(item) for item in foreign & listed)
 
     state = {"t": now, "boot": mem["boot"], "ticks": ticks, "vm": vm, "disks": disks,
              "procs": {key: [first[key][1], entry[1], old_procs[key][2] if joined and len(old_procs.get(key) or ()) >= 4
@@ -1653,12 +1657,16 @@ def pressured(row):
 
 
 def cohort_sums(rows):
-    """[[tag, owner, cpu-s, births, written B, read B, idle wakes, footprint B·s under pressure]] over minute rows."""
-    items = {}
+    """[[tag, owner, cpu-s, births, written B, read B, idle wakes, footprint B·s under pressure, read]] over minute
+    rows; read is 1 when every row saw the item's rusage: own, or no process of another uid and no row from before
+    every same-uid process was read (no usage_blind)."""
+    items, blind, legacy = {}, set(), False
     for row in rows:
         dt = row.get("dt")
         if not dt:
             continue
+        legacy = legacy or "usage_blind" not in row
+        blind.update((tag, owner) for tag, owner in row.get("usage_blind") or ())
         for entry in row.get("cpu_top") or ():
             items.setdefault((entry[0], entry[-1]), [0.0] * 6)[0] += entry[1]
         if row.get("births_s") is not None and row.get("births_seen"):
@@ -1672,7 +1680,8 @@ def cohort_sums(rows):
         if pressured(row):
             for entry in row.get("mem_top") or ():
                 items.setdefault((entry[0], entry[-1]), [0.0] * 6)[5] += entry[1] * dt
-    out = [[tag, owner] + [round(v, 1) for v in values] for (tag, owner), values in items.items()]
+    out = [[tag, owner] + [round(v, 1) for v in values] + [int(owner == "own" or not legacy and (tag, owner) not in blind)]
+           for (tag, owner), values in items.items()]
     out.sort(key=lambda r: (-max(r[2] / COHORT["cpu_s"], r[3] / COHORT["births"], r[4] / COHORT["writes_b"],
                                  r[5] / COHORT["reads_b"], r[6] / COHORT["wakes"], r[7] / DAY_S / COHORT["footprint_b"]),
                                r[0]))
@@ -1682,7 +1691,8 @@ def cohort_sums(rows):
 def cohort_score(days, launches, now):
     """{covered_days, items} of B_i = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB x pressure, S/86400, L/1440)
     per item over the newest day rows covering >= 7 days (14 back at most); items None while fewer are covered.
-    Only own processes' rusage is readable: W, D, R and M of other items are unknown and never certify a low B."""
+    rusage reads only this uid's processes: W, D, R and M of an item whose rusage some covered day missed (an Apple
+    daemon of another uid, a launchd job seen only by dumpstate) are unknown and never certify a low B."""
     chosen, covered = [], 0
     for day in sorted(days, key=lambda d: d.get("day", ""), reverse=True):
         if day.get("day", "") < local_day(now - COHORT["lookback_days"] * DAY_S) or covered >= COHORT["days"] * DAY_S:
@@ -1693,12 +1703,14 @@ def cohort_score(days, launches, now):
     if covered < COHORT["days"] * DAY_S:
         return {"covered_days": round(span, 2), "items": None}
     since = time.mktime(time.strptime(chosen[-1]["day"], "%Y-%m-%d"))
-    sums = {}
+    sums, measured = {}, {}
     for day in chosen:
         for entry in day.get("cohort") or ():
             slot = sums.setdefault((entry[0], entry[1]), [0.0] * 7)
             for index, value in enumerate(entry[2:8]):
                 slot[index] += value
+            seen = entry[8] if len(entry) > 8 else entry[1] == "own"
+            measured[(entry[0], entry[1])] = measured.get((entry[0], entry[1]), True) and bool(seen)
     for row in launches:
         if row.get("t", 0) >= since:
             for job in row.get("jobs") or ():
@@ -1706,7 +1718,7 @@ def cohort_score(days, launches, now):
     items = []
     for (name, owner), (cpu, births, written, read, wakes, held, runs) in sums.items():
         per_day = {"C": cpu / span, "S": births / span, "L": runs / span}
-        if owner == "own":
+        if owner == "own" or measured.get((name, owner)):
             per_day.update(W=wakes / span, D=written / span, R=read / span, M=held / covered)
         terms = {key: per_day[key] / COHORT[unit] for key, unit, _words in TERMS if key in per_day}
         score = max(terms.values())
