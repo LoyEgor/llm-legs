@@ -85,7 +85,9 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
   - SMART via `diskutil info`.
 - **Retention:** minute rows 14 days, hourly rollups (`hours/<day>.jsonl`) 90 days, daily rows
   (`days.jsonl`) forever.
-- **Document** `~/.cache/system-doctor/latest.json`, in the shape of `docs/doctors-contract.md`.
+- **Document** `~/.cache/system-doctor/latest.json`, in the shape of `docs/doctors-contract.md`. Its `days` block
+  holds `{series: {day: value}}` for the last 7 days covered ≥ 1 h (busy, kernel, births_s, ssd_gb_day, swap_gib_day,
+  comp_share_max, free_gib per volume, logs_gb), the menu's sparklines and usual values.
   The ledger is `share/system-ledger.json`. The menu row is System, after Speed.
 
 Problem rules (`LIMITS`; each names its top attributed cause where known; `fix_target` only when
@@ -155,7 +157,9 @@ collector-runs row (`trigger background:<name>`) and keeps its own `self` wall/C
   exits per label (runs, wall, longest, abnormal exits, exit kinds), DAS starts/completions/decisions per activity,
   spindump spins and slow-HID per app.
 - **Own footprints and disk counters** per tick (`proc_pid_rusage` v2 of our own live processes, ~2 ms):
-  `mem_top` footprints, `io_top` bytes written/read and idle wakeups since the last tick.
+  `mem_top` footprints, `io_top` bytes written/read and idle wakeups since the last tick. The tick's `ps` also reads
+  `rss` of every process: `rss_top` (by tag, with its process count) and `rss_total`, so Chrome, Claude.app and Apple
+  daemons show beside our own.
 - **Cohort score** (`cohort_sums` per day row, `cohort_score`): per item over the newest day rows covering ≥ 7 days
   (≤ 14 back), `B = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB × pressure, S/86400, L/1440)` per covered day;
   pressure = compressor ≥ 25 % of RAM or ≥ 2,000 swap-outs/s. Under 7 covered days nothing is scored. Apple and
@@ -202,6 +206,12 @@ new. Writers stay free: no format or location standard, we only measure and clea
   process holds open (lsof, compared as realpaths: lsof prints `/private/var/…` and bound sockets as `/tmp/…`) is
   never swept.
   `ignore` lists what is clearly not an LLM log, each with a reason; nothing is ignored silently.
+- **Groups** (2026-10-13): each log store has a menu `group` (workers, temp, review bench, our tools, my chats, LLM
+  apps: whose work leaves it, so every byte counts once) and a short `label`. `split: session` classifies each unit by
+  its session's `entrypoint` (Claude) or `originator` (Codex) in its first 256 lines: headless (`sdk-cli`,
+  `codex_exec`) is workers, interactive is my chats, none stays in the store's group; `split: session-id` (session dirs,
+  rewind history) inherits the class of the transcript its name carries. Uncached: 1.6 s wall, 0.6 CPU-s a scan.
+  Scan rows carry `groups`; the view adds per-group size and growth against the oldest grouped scan ≥ 20 h back.
 - **Collector** `logstores`, daily after 04:00 (or after 36 h), detached like the others: `bin/log-sweep` (every
   `sweep` store, any kind), then every log store's bytes, files, units and oldest unit, and what lies past its
   criterion plus slack (2 days, 1 unit, 25 %, 2× the tail). Rows in `logstores/<day>.jsonl` (90 days).
