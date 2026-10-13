@@ -65,19 +65,19 @@ check(found[0]["key"] == "menus" and found[0]["sources"] == sorted(menu_files) a
       "program: %s" % found[0])
 found = {c["key"]: c for c in found}
 check([k for k in found][1:] == ["fee:Delegation", "fee:Hooks", "fee:Advisor"]
-      and found["fee:Delegation"]["share"] == 70.588 and found["fee:Delegation"]["basis"] == 0.075
+      and found["fee:Delegation"]["share"] == 7.5 and found["fee:Delegation"]["basis"] == 0.075
       and found["fee:Delegation"]["label"] == "Delegation (Workers)" and found["fee:Delegation"]["delta"] == "+33%"
-      and found["fee:Advisor"]["share"] == 5.882 and found["fee:Advisor"]["delta"] == "new",
-      "every Fee source of tokenmap's index is a component, largest charge first: its share of Fee as the menu shows "
-      "it, its share of Claude spend as the basis, the plain Δ: %s" % found)
+      and found["fee:Advisor"]["share"] == 0.625 and found["fee:Advisor"]["delta"] == "new",
+      "every Fee source of tokenmap's index is a component, largest charge first: its share of Claude spend as the "
+      "menu shows it and as the basis, the plain Δ: %s" % found)
 check([c["key"] for c in spend.components(payload(index=False), repos)] == ["menus"],
       "no Fee index, no Fee components")
 leaky = payload()
 leaky["harness_index"]["loaded"] = [{"source": "Browser check", "runs": 38, "last": "2026-10-13T13:47:49Z",
                                      "tokens": 50e3}]
 leak = spend.components(leaky, repos)[1]
-check(leak["key"] == "loaded:Browser check" and leak["share"] == 5.0 and leak["basis"] == 0.0125
-      and spend.named(leak) == "5.0 % of Fee · Browser check loaded the harness configuration · 38 runs, last "
+check(leak["key"] == "loaded:Browser check" and leak["share"] == 1.25 and leak["basis"] == 0.0125
+      and spend.named(leak) == "1.2 % of Claude spend · Browser check loaded the harness configuration · 38 runs, last "
                                 "2026-10-13T13:47:49Z"
       and spend.due(leak, None, {}) == "never audited"
       and spend.due(leak, {"verdict": "cut", "audited_at": "2026-10-13T12:00:00+00:00", "share": 0.0125}, {})
@@ -123,10 +123,10 @@ check(out["status"] == "watch" and out["index"] == 0.46 and out["change"] == "-5
       and ids == ["spend:menus", "spend:fee:Delegation", "spend:fee:Hooks", "spend:fee:Advisor"]
       and all(p["rule"] == "spend_audit" and p["state"] == "watch" and p["fact"].endswith("audit due: never audited")
               for p in out["problems"])
-      and out["problems"][1]["fact"] == "70.6 % of Fee · Delegation (Workers) · Δ +33% · audit due: never audited",
+      and out["problems"][1]["fact"] == "7.5 % of Claude spend · Delegation (Workers) · Δ +33% · audit due: never audited",
       "the headline is tokenmap's harness index; the menus check and every Fee source never audited are due, the "
-      "menus first, then by share of Fee: %s %s" % (out["head"], ids))
-check(out["selection"] == ids and out["issues"][0] == [70.588, "Delegation (Workers)"],
+      "menus first, then by share of Claude spend: %s %s" % (out["head"], ids))
+check(out["selection"] == ids and out["issues"][0] == [7.5, "Delegation (Workers)"],
       "the night's queue is every due audit, largest first; bin/doctor-fix takes its slot share: %s" % out["selection"])
 stale_keys = [(r["id"], z) for r in json.load(open(os.path.join(root, "share", "spend-ledger.json")))["rows"]
               for z in r.get("prices") or {} if " · " not in z]
@@ -352,7 +352,7 @@ check(document["problem_count"] == 0 and spent and all(p["group"] == "Spend" and
       and lines[2].startswith("0\t\t\tLost time: ok")
       and "0\t\t\tSpend: watch · Fee index 0.46 (-54%%) · Fee 11.3 %% of spend · %d audits due" % len(spent) in lines
       and "1\t\t\tToken tracking and Doctors menus against what the night reads · audit due: never audited" in lines
-      and "1\t\t\t70.6 % of Fee · Delegation (Workers) · Δ +33% · audit due: never audited" in lines
+      and "1\t\t\t7.5 % of Claude spend · Delegation (Workers) · Δ +33% · audit due: never audited" in lines
       and header["spend"] == {k: section[k] for k in ("as_of_s", "status", "index", "index_by_day", "change",
                                                       "issues")},
       "Harness lays Spend beside Lost time: watch rows counted nowhere, its block and its header: %s" % lines[:6])

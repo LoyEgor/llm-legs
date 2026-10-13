@@ -91,18 +91,17 @@ def delta(cur, prev):
 
 def components(payload, repos):
     """The menus check first, then each harness job whose latest run loaded Egor's configuration (tokenmap's
-    harness_index.loaded), then every Fee source of tokenmap's Fee index, largest first: its share of Fee as the menu
-    shows it, its basis (share of Claude spend) for the due and proof rules, its plain Δ."""
+    harness_index.loaded), then every Fee source of tokenmap's Fee index, largest first: its share of Claude spend as
+    the menu shows it, the same as its basis for the due and proof rules, its plain Δ."""
     index = harness_index(payload) or {}
     sources = [s for s in index.get("sources") or () if isinstance(s, dict)]
-    fee, claude = sum(float(s["charged"]) for s in sources), float(index.get("claude") or 0)
+    claude = float(index.get("claude") or 0)
     menus = sorted({f for pattern in MENU_FILES for f in glob.glob(os.path.join(repos, pattern))})
     out = [{"key": MENUS, "label": "Token tracking and Doctors menus against what the night reads", "sources": menus,
             "share": 0.0, "basis": 0.0, "delta": ""}]
-    plain = sum(float(s["plain"][0]) for s in sources)
     for leak in index.get("loaded") or ():
         out.append({"key": "loaded:" + leak["source"], "label": "%s loaded the harness configuration" % leak["source"],
-                    "sources": [], "share": round(100 * float(leak["tokens"]) / plain, 3) if plain else 0.0,
+                    "sources": [], "share": round(100 * float(leak["tokens"]) / claude, 3) if claude else 0.0,
                     "basis": round(float(leak["tokens"]) / claude, 6) if claude else 0.0,
                     "delta": "%d runs, last %s" % (leak["runs"], leak["last"]), "last": leak["last"]})
     workers = worker_md_leak()
@@ -110,7 +109,7 @@ def components(payload, repos):
         out.append(workers)
     for s in sorted(sources, key=lambda s: -float(s["charged"])):
         out.append({"key": "fee:" + s["source"], "label": "%s (%s)" % (s["source"], s["group"]), "sources": [],
-                    "share": round(100 * float(s["charged"]) / fee, 3) if fee else 0.0,
+                    "share": round(100 * float(s["charged"]) / claude, 3) if claude else 0.0,
                     "basis": round(float(s["charged"]) / claude, 6) if claude else 0.0,
                     "delta": delta(*map(float, s["plain"]))})
     return out
@@ -351,13 +350,14 @@ def backfill(history, closed, through, now, local_day, home):
 def named(c):
     if c["key"] == MENUS:
         return c["label"]
-    return "%.1f %% of Fee · %s · %s%s" % (c["share"], c["label"], "" if "last" in c else "Δ ", c["delta"])
+    return "%.*f %% of Claude spend · %s · %s%s" % (1 if c["share"] >= 1 else 2, c["share"], c["label"],
+                                                     "" if "last" in c else "Δ ", c["delta"])
 
 
 def problem(c, why, at):
     fact = "%s · audit due: %s" % (named(c), why)
     return {"id": "spend:" + c["key"], "rule": RULE, "state": "watch", "fact": fact, "value": c["share"],
-            "limit": None, "unit": "% of Fee", "window_h": 168, "exposure": 0, "count": None,
+            "limit": None, "unit": "% of Claude spend", "window_h": 168, "exposure": 0, "count": None,
             "first_seen": at, "last_seen": at, "evidence": [], "ledger": None, "group": GROUP,
             "spend": {"component": c["key"], "label": c["label"], "sources": c["sources"], "share": c["share"],
                       "basis": c["basis"], "delta": c["delta"], "due": why}}
