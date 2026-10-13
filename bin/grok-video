@@ -30,19 +30,14 @@ image_leg_start grok-video video observed_model
 
 caps() { image_caps_get "$root" grok "$1"; }
 
-container=$(caps '.video.container')
-refs_max=$(caps '.video.refs_max')
-voices_max=$(caps '.video.voices_max')
-keyframes_max=$(caps '.video.keyframes_max')
-single_durations=$(caps '.video.durations | join("|")')
-reference_min=$(caps '.video.reference_duration.min')
-reference_max=$(caps '.video.reference_duration.max')
-default_duration=$(caps '.video.reference_duration.default')
-resolutions=$(caps '.video.resolutions | join("|")')
-default_resolution=$(caps '.video.resolution_default')
-video_aspects=$(caps '.video.aspects | join("|")')
-single_tool=$(caps '.video.tools.single_ref')
-multi_tool=$(caps '.video.tools.multi_ref')
+{
+  IFS= read -r container; IFS= read -r refs_max; IFS= read -r voices_max; IFS= read -r keyframes_max
+  IFS= read -r single_durations; IFS= read -r reference_min; IFS= read -r reference_max
+  IFS= read -r default_duration; IFS= read -r resolutions; IFS= read -r default_resolution
+  IFS= read -r video_aspects; IFS= read -r single_tool; IFS= read -r multi_tool
+} < <(caps '.video | .container, .refs_max, .voices_max, .keyframes_max, (.durations | join("|")),
+  .reference_duration.min, .reference_duration.max, .reference_duration.default,
+  (.resolutions | join("|")), .resolution_default, (.aspects | join("|")), .tools.single_ref, .tools.multi_ref')
 
 usage() {
   image_leg_cause "$@"
