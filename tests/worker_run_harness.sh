@@ -529,10 +529,11 @@ transcript_report() (
     for name in compute_transcript_files compute_transcript_rows session_id session_transcript codex_home grok_home \
         grok_end_field grok_session_dir_matches classify_tool_rows resolve_tool_path \
         writes_through_shell gemini_tool_rows codex_tool_rows grok_tool_rows transcript_files \
-        listing_spelling transcript_wrote_through_shell workdir_escape_line; do
+        listing_spelling transcript_wrote_through_shell workdir_escape_line file_lstat meta_unchanged; do
       sed -n "/^$name() {/,/^}/p" "$RUNNER"
     done >"$WORK/transcript-report.fns"
-    sed -n '/^SHELL_FLOOR_PARTIAL=/p; /^GEMINI_WRITE_TOOLS=/p' "$RUNNER" >>"$WORK/transcript-report.fns"
+    sed -n '/^SHELL_FLOOR_PARTIAL=/p; /^GEMINI_WRITE_TOOLS=/p; /^STAT_BUILTIN=/p; /^enable -f .*\/stat" stat/p' \
+      "$RUNNER" >>"$WORK/transcript-report.fns"
   fi
   . "$WORK/transcript-report.fns"
   compute_transcript_files "$directory"
