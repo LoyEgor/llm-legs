@@ -11,7 +11,12 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/out" "$WORK/err" >&2 2>/dev/nu
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 cutout() { XDG_CACHE_HOME="$WORK/cache" "$CUTOUT" "$@" >"$WORK/out" 2>"$WORK/err"; }
 exits() { local want=$1; shift; cutout "$@"; [ $? -eq "$want" ]; }
-alpha_at() { magick "$1" -format "%[fx:int(255*p{$2}.a+0.5)]" info:; }
+alphas() { # image x,y... -> each point's alpha as 0..255, joined by /
+  local image=$1 format='' point
+  shift
+  for point; do format+="${format:+/}%[fx:int(255*p{$point}.a+0.5)]"; done
+  magick "$image" -format "$format" info:
+}
 
 magick -size 64x48 xc:white "$WORK/plain.png"
 in="$WORK/plain.png" dest="$WORK/out.png"
@@ -65,7 +70,19 @@ for tool in dirname uname; do ln -s "$(command -v "$tool")" "$WORK/noswiftc/$too
 assert env PATH="$WORK/noswiftc" "$BASH" "$CUTOUT" --in "$in" --dest "$dest" --keep 1,0.3 --drop .5,1.0 --holes
 assert grep -qx "$ROOT/share/image-cutout.swift --in $in --dest $dest --edge soft --keep 1,0.3 --drop .5,1.0 --holes" "$WORK/swift.log"
 
+src_hash=$(shasum -a 256 "$ROOT/share/image-cutout.swift" | cut -c1-16)
+warm=''
+if command -v swiftc >/dev/null 2>&1; then
+  warm="${XDG_CACHE_HOME:-$HOME/.cache}/image-cutout-test/$src_hash-$(swiftc --version 2>&1 | shasum -a 256 | cut -c1-16)"
+  if [ -x "$warm/image-cutout" ]; then
+    mkdir -p "$WORK/cache/image-cutout/$src_hash" && cp "$warm/image-cutout" "$WORK/cache/image-cutout/$src_hash/"
+  fi
+fi
 assert exits 1 --in "$in" --dest "$dest"
+if [ -n "$warm" ] && [ ! -x "$warm/image-cutout" ] && [ -x "$WORK/cache/image-cutout/$src_hash/image-cutout" ]; then
+  mkdir -p "$warm" && cp "$WORK/cache/image-cutout/$src_hash/image-cutout" "$warm/image-cutout.$$" &&
+    mv -f "$warm/image-cutout.$$" "$warm/image-cutout"
+fi
 assert grep -q 'Vision found no subject' "$WORK/err"
 assert test ! -e "$dest"
 
@@ -78,15 +95,15 @@ assert test "$(grep -c '^instance=[12] center=' "$WORK/out")" -eq 2
 assert grep -Eq '^dest=[^ ]+/dry.png size=640x480 instances=2/2 transparent=0\.[0-9]{3} seconds=[0-9.]+$' "$WORK/out"
 assert cutout --in "$two" --dest "$WORK/all.png"
 assert grep -q ' instances=2/2 ' "$WORK/out"
-assert test "$(alpha_at "$WORK/all.png" 160,240)/$(alpha_at "$WORK/all.png" 480,240)/$(alpha_at "$WORK/all.png" 10,10)" = 255/255/0
+assert test "$(alphas "$WORK/all.png" 160,240 480,240 10,10)" = 255/255/0
 assert cutout --in "$two" --dest "$WORK/left.png" --keep 0.25,0.5
 assert grep -q ' instances=1/2 ' "$WORK/out"
-assert test "$(alpha_at "$WORK/left.png" 160,240)/$(alpha_at "$WORK/left.png" 480,240)" = 255/0
+assert test "$(alphas "$WORK/left.png" 160,240 480,240)" = 255/0
 assert cutout --in "$two" --dest "$WORK/near.png" --keep 0.97,0.5
-assert test "$(alpha_at "$WORK/near.png" 160,240)/$(alpha_at "$WORK/near.png" 480,240)" = 0/255
+assert test "$(alphas "$WORK/near.png" 160,240 480,240)" = 0/255
 assert cutout --in "$two" --dest "$WORK/dropped.png" --drop 0.25,0.5
 assert grep -q ' instances=1/2 ' "$WORK/out"
-assert test "$(alpha_at "$WORK/dropped.png" 160,240)/$(alpha_at "$WORK/dropped.png" 480,240)" = 0/255
+assert test "$(alphas "$WORK/dropped.png" 160,240 480,240)" = 0/255
 assert exits 1 --in "$two" --dest "$WORK/none.png" --keep 0.25,0.5 --drop 0.26,0.5
 assert grep -q 'leave no instance' "$WORK/err"
 
@@ -95,11 +112,11 @@ magick -size 640x480 gradient:'#e6e0d4'-'#cfc4b0' -fill '#80522f' -draw 'rectang
   -fill '#2f6aa8' -draw 'ellipse 260,290 110,90 0,360' -fill '#d02020' -draw 'circle 490,340 490,380' "$table"
 assert cutout --in "$table" --dest "$WORK/table-all.png"
 assert grep -q ' instances=2/2 ' "$WORK/out"
-assert test "$(alpha_at "$WORK/table-all.png" 260,290)/$(alpha_at "$WORK/table-all.png" 490,340)/$(alpha_at "$WORK/table-all.png" 10,10)/$(alpha_at "$WORK/table-all.png" 600,420)" = 255/255/0/0
+assert test "$(alphas "$WORK/table-all.png" 260,290 490,340 10,10 600,420)" = 255/255/0/0
 assert cutout --in "$table" --dest "$WORK/table-ball.png" --keep 0.766,0.71
-assert test "$(alpha_at "$WORK/table-ball.png" 260,290)/$(alpha_at "$WORK/table-ball.png" 490,340)" = 0/255
+assert test "$(alphas "$WORK/table-ball.png" 260,290 490,340)" = 0/255
 assert cutout --in "$table" --dest "$WORK/table-pot.png" --drop 0.766,0.71
-assert test "$(alpha_at "$WORK/table-pot.png" 260,290)/$(alpha_at "$WORK/table-pot.png" 490,340)" = 255/0
+assert test "$(alphas "$WORK/table-pot.png" 260,290 490,340)" = 255/0
 
 magick -seed 7 -size 400x300 plasma:fractal -colorspace gray +level 10%,30% -fill '#1d3a24' -tint 60 -alpha off "$WORK/bg.png"
 magick -size 400x300 xc:black -fill white -draw 'roundrectangle 60,60 340,240 30,30' -fill black \
@@ -146,7 +163,7 @@ open(sys.argv[2], "wb").write(data[:2] + exif + data[2:])
 PY
 assert cutout --in "$WORK/rotated.jpg" --dest "$WORK/rotated.png" --keep 0.5,0.25
 assert grep -q ' size=480x640 instances=1/2 ' "$WORK/out"
-assert test "$(alpha_at "$WORK/rotated.png" 240,160)/$(alpha_at "$WORK/rotated.png" 240,480)" = 255/0
+assert test "$(alphas "$WORK/rotated.png" 240,160 240,480)" = 255/0
 
 opaque_counts() { # output -> "<opaque pink pixels>/<pink pixels> <opaque background pixels inside the frame>"
   magick "$WORK/shape.png" -depth 8 gray:"$WORK/shape.g"
@@ -160,8 +177,8 @@ pink = [k for k in range(len(s)) if s[k] == 255]
 print(f"{sum(1 for k in pink if a[k] == 255)}/{len(pink)} {sum(1 for k in inner if s[k] == 0 and a[k] >= 128)}")
 PY
 }
-assert cutout --in "$decal" --dest "$WORK/kept-holes.png"
-read -r pink_plain holes_plain < <(opaque_counts "$WORK/kept-holes.png")
+read -r pink_plain holes_plain < <(opaque_counts "$WORK/soft.png")
+assert test "${pink_plain%/*}" -gt 0
 assert cutout --in "$decal" --dest "$WORK/holes.png" --holes
 assert grep -Eq ' holes=0\.[0-9]{3} seconds=' "$WORK/out"
 read -r pink_holes holes_left < <(opaque_counts "$WORK/holes.png")
