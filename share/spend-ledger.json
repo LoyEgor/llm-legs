@@ -5342,6 +5342,95 @@
    "verdict": "kept",
    "zero": "removal saves 10.8 wall-min/day and 5.5 CPU-min/day; loses every pin of the agy image route (argument refusals, account isolation, resume, brain rescue, quota, chroma, composite, edit lineage, output contract, flow-to-cli fallback)",
    "note": "90 gemini-image calls, each a distinct case (25 cheap refusals at ~0.2 s); a generation's 1-2.4 s is production work: the delivery magick convert (~0.25 s), the stderr tee drain (image-leg.sh:70-72), the provenance python3 read, ~15 jq; the fake's own magick render is 0.02 s, not worth a cache"
+  },
+  {
+   "id": "suite:llm-legs/test_merge_ledger",
+   "title": "llm-legs/test_merge_ledger",
+   "audited_at": "2026-10-13T13:28:25+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-merge-ledger-20261012T235347Z-7422",
+   "cpu_run": 2.2,
+   "wall_run": 2.8,
+   "cpu_min_day": 2.0,
+   "wall_min_day": 3.03,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_merge_ledger.sh": "a9df12152d296593541bf01c2e49037457d13d5a"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 3.3 wall-min/day; loses the row-wise ledger merge driver's guard (parallel night branches would conflict or drop rows unseen)",
+   "note": "check-attr in one call, base ledger built once, read-only probes in one python -S call; python starts 41 to 29, 49 asserts, driver mutation red"
+  },
+  {
+   "id": "suite:llm-legs/test_wall_store",
+   "title": "llm-legs/test_wall_store",
+   "audited_at": "2026-10-13T13:28:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-merge-ledger-20261012T235347Z-7422",
+   "cpu_run": 16.0,
+   "wall_run": 14.8,
+   "cpu_min_day": 3.32,
+   "wall_min_day": 6.0,
+   "sources": {
+    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
+    "llm-legs/tests/llm_limits_renderer_harness.lua": "730912ccd37608673598ef3c9ee08a2d102a97a3",
+    "llm-legs/tests/test_wall_store.sh": "41330befd8c3fe243237e4a2d15fbe2df0534f5e"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 3.2 wall-min/day; loses the worker-wall store, surfaces and menu guard (a walled account would paint or route wrong unseen)",
+   "note": "the three collector renders per surface run concurrently; 90 asserts, mutation of the walled label red; 28 s to 15 s on a loaded box; also llm_limits_renderer_harness.lua compiles llm-limits.lua once (2.8 ms a parse measured, small)"
+  },
+  {
+   "id": "suite:llm-legs/test_claude_chat_switch",
+   "title": "llm-legs/test_claude_chat_switch",
+   "audited_at": "2026-10-13T13:28:28+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-merge-ledger-20261012T235347Z-7422",
+   "cpu_run": 11.6,
+   "wall_run": 9.2,
+   "cpu_min_day": 1.99,
+   "wall_min_day": 3.08,
+   "sources": {
+    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_claude_chat_switch.sh": "ac11507efa7ff7ea59c30afb8c5407bad9290c13"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 3.1 wall-min/day; loses the chat-switch resume, gateway and exit-wall guard",
+   "note": "stubs on /bin/bash, awk replaced by a read loop, codex fixture token a literal, module resolved from the hammerspoon repo only (dead config/ path removed); 185 assertions and 64 wall checks unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_report_bus",
+   "title": "llm-legs/test_report_bus",
+   "audited_at": "2026-10-13T13:28:29+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-merge-ledger-20261012T235347Z-7422",
+   "cpu_run": 14.6,
+   "wall_run": 14.1,
+   "cpu_min_day": 1.87,
+   "wall_min_day": 3.43,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_report_bus.sh": "d8f357596b435fc89dde014fa6c6d6f136cd18ba"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 3.1 wall-min/day; loses delivery, retention and signal-in-lock-wait guard of the report bus",
+   "note": "sleep 1 replaced by a sleep shim that signals the bus in its first lock poll (mutation of the interrupted-before-queued report red), count() and fixtures in builtins; 166 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_flow_music",
+   "title": "llm-legs/test_flow_music",
+   "audited_at": "2026-10-13T13:28:30+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-merge-ledger-20261012T235347Z-7422",
+   "cpu_run": 7.3,
+   "wall_run": 9.1,
+   "cpu_min_day": 1.42,
+   "wall_min_day": 2.67,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_flow_music.sh": "3436ee9f53e9b48182faef1e5b1e40095ec0da7f"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 3.0 wall-min/day; loses the Flow Music route, refusals and engine guard",
+   "note": "49 refusals eight at a time, wav fixture by printf, bytecode cached under WORK (0.23 s to 0.07 s a python start), fan-out children shell fakes, image-leg EXIT trap polls the tee every 10 ms (about 37 ms a refusal); 129 asserts"
   }
  ]
 }
