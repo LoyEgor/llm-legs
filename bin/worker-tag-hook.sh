@@ -143,12 +143,14 @@ fi
 
 prune() {
   marker="$cache_root/.tag-prune"
-  now=$(date +%s 2>/dev/null)
-  marker_mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || printf '0')
+  now=${EPOCHSECONDS:-}
+  [ -n "$now" ] || now=$(date +%s 2>/dev/null)
+  read -r marker_mtime <"$marker" 2>/dev/null
+  marker_mtime=${marker_mtime:-0}
   if [[ "$now" =~ ^[0-9]+$ ]] && [[ "$marker_mtime" =~ ^[0-9]+$ ]] && [ "$((now - marker_mtime))" -gt 3600 ]; then
     find "$cache_root" -type f ! -name '.tag-prune' -mtime +7 -delete >/dev/null 2>&1
     find "$cache_root" -mindepth 1 -type d -empty ! \( -name .claim.lock -mmin -60 \) -delete >/dev/null 2>&1
-    touch "$marker" 2>/dev/null
+    printf '%s\n' "$now" >"$marker" 2>/dev/null
   fi
 }
 
@@ -157,7 +159,8 @@ if [ "${description:0:${#tag_prefix}}" = "$tag_prefix" ]; then
   prune; exit 0
 fi
 # Strip a stale tag-shaped prefix so prefixes never stack.
-description=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.-]+){1,3} — //')
+stale_tag='^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.-]+){1,3} — '
+if [[ $description =~ $stale_tag ]]; then description=${description:${#BASH_REMATCH[0]}}; fi
 if [ -n "$description" ]; then
   updated_description="$tag — $description"
 else
