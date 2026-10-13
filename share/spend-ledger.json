@@ -5179,6 +5179,81 @@
    "verdict": "kept",
    "zero": "removal saves ~0.1 wall-s a run; loses presence.lua line shape, no-window-API, write-failure and tick-cost checks",
    "note": "one bounded hs call over a stubbed harness, 15 checks, 0.1 wall-s: nothing cheaper without losing the real-Hammerspoon run"
+  },
+  {
+   "id": "cpu:hook/worker-launch-gate.sh",
+   "title": "hook/worker-launch-gate.sh",
+   "audited_at": "2026-10-13T14:04:36+03:00",
+   "by": "harness-speed-cpu-hook-worker-launch-gate-sh-20261012T235059Z-61a5",
+   "cpu_min_day": 5.0,
+   "cpu_s_run": 0.042,
+   "runs_day": 5719,
+   "sources": {
+    "llm-legs/bin/worker-launch-gate.sh": "21298508ba81e11fdc3c8521f442b69a103328dc"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 6.0 CPU-min/day; loses the gate on worker launches (forged-token, schedule, owned-run and launch checks)",
+   "note": "raw-payload screen before jq, assigned-name check for $=, one union grep for operand-only launchers: 54 -> 13 process starts, mean CPU 0.040 -> 0.023 s, output identical on 2060 real calls and 3968 fuzz cases; bash 3.2 shebang ruled out (cubic ${//})"
+  },
+  {
+   "id": "cpu:hook/worker-edit-guard.sh",
+   "title": "hook/worker-edit-guard.sh",
+   "audited_at": "2026-10-13T14:04:55+03:00",
+   "by": "harness-speed-cpu-hook-worker-launch-gate-sh-20261012T235059Z-61a5",
+   "cpu_min_day": 3.7,
+   "cpu_s_run": 0.036,
+   "runs_day": 5712,
+   "sources": {
+    "claude-setup/hooks/worker-edit-guard.sh": "5c61e1f0078775efd7aadf58c135876e41583cdb"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 5.0 CPU-min/day; loses the shell-write guard for workers",
+   "note": "runs under /bin/bash (3.3 ms start) and reads-only commands exit before jq; non-worker 7 -> 1.6-3.5 ms, worker path 50 -> 30 ms, output identical on fuzz and corpus"
+  },
+  {
+   "id": "cpu:hook/english-gate.sh",
+   "title": "hook/english-gate.sh",
+   "audited_at": "2026-10-13T14:05:12+03:00",
+   "by": "harness-speed-cpu-hook-worker-launch-gate-sh-20261012T235059Z-61a5",
+   "cpu_min_day": 3.0,
+   "cpu_s_run": 0.023,
+   "runs_day": 6299,
+   "sources": {
+    "claude-setup/hooks/english-gate.sh": "3b9158f3461a2e854074213e2c3394d225f49d67"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 3.6 CPU-min/day; loses the English-only gate on model-facing text",
+   "note": "plain Bash payloads exit before jq via a raw-JSON screen: plain call 12.2 -> 7.0 ms, corpus mean -4%; heavy path (rc_readonly awk, journal sourcing) unchanged"
+  },
+  {
+   "id": "cpu:doctor/system",
+   "title": "doctor/system",
+   "audited_at": "2026-10-13T14:05:33+03:00",
+   "by": "harness-speed-cpu-hook-worker-launch-gate-sh-20261012T235059Z-61a5",
+   "cpu_min_day": 4.8,
+   "cpu_s_run": 2.144,
+   "runs_day": 160,
+   "sources": {
+    "llm-legs/bin/system-doctor": "1013c4681500ecbd2142aef3e387af8dc94fc72d"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 4.8 CPU-min/day; loses births/kernel/swap ticks, launchd exits, DAS verdicts and log-store growth the System doctor reads",
+   "note": "harvest's launchd log show filters processID == 1: 3 h window 1866 lines byte-identical, 23.1 -> 14.5 CPU-s; daily du walk and per-minute ps pair are the measurement and stay"
+  },
+  {
+   "id": "cpu:process/token-map/tokenmap/__main__.py",
+   "title": "process/token-map/tokenmap/__main__.py",
+   "audited_at": "2026-10-13T14:05:54+03:00",
+   "by": "harness-speed-cpu-hook-worker-launch-gate-sh-20261012T235059Z-61a5",
+   "cpu_min_day": 5.7,
+   "cpu_s_run": 243.388,
+   "runs_day": 3,
+   "sources": {
+    "token-map/tokenmap/__main__.py": "dbdd066172160ef2d47b29f0caa00e27c62ebc20"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 5.7 CPU-min/day; loses the nightly scan, Spend/Token tracking exports and the page",
+   "note": "html page queries on temp_store MEMORY + mmap: 78 -> 63 CPU-s, page identical on same index and clock; scan (116 CPU-s warm) is the cost of recomputing 7 days and 8 weeks per generation, a pie.export memo shared with html is the next lever"
   }
  ]
 }
