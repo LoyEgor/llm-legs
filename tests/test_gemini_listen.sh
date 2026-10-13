@@ -120,7 +120,8 @@ assert grep -qx "audio=delivered file2: $M/long.wav" "$WORK/err"
 assert test "$(grep -c BEEPS "$FAKE_GEMINIB_PROMPT")" -eq 0
 assert grep -q 'reply with the single line NO_AUDIO <file number>' "$FAKE_GEMINIB_PROMPT"
 
-ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=44100 -t 840 -c:a libmp3lame -b:a 96k "$M/talk.mp3" || exit 1
+# 840 s keeps the bitrate under its 192k cap; 32 kHz still decodes to a wav over view_max_bytes and takes 192k.
+ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=32000 -t 840 -c:a libmp3lame -b:a 32k "$M/talk.mp3" || exit 1
 assert listen 'what is said?' "$M/talk.mp3" --account explicit
 assert grep -qE "^proxy=file1\.mp3 [0-9]+ bytes from [0-9]+: $M/talk\.mp3$" "$WORK/err"
 
