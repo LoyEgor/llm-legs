@@ -5785,6 +5785,23 @@
    "verdict": "cut",
    "zero": "removal saves 3.1 wall-s a run (0.9 wall-min/day); loses the only end-to-end check that the three ask_* legs route through worker-pick accounts, refuse an unselectable pool and fall back to bare CLIs",
    "note": "geminib families skipped on --list-models, 7 subshells per codexb models call gone (12 calls a run), one roster bash+source chain gone; the 3-vendor loops are wiring, kept"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_model_roles",
+   "title": "llm-legs/test_worker_model_roles",
+   "audited_at": "2026-10-13T06:31:44+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-legs-routing-20261012T235326Z-6558",
+   "cpu_run": 1.3,
+   "wall_run": 2.4,
+   "cpu_min_day": 0.4,
+   "wall_min_day": 0.9,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_model_roles.sh": "191e400a169e43ee3d503c7d2e3830b1a72a956b"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.4 wall-s a run (0.9 wall-min/day); loses the only pins of worker_model_set_role's veto writes, its session gate and the pin writers' one critical section",
+   "note": "1.6 s of fixed lock-hold sleep replaced by an arrival handshake (holder waits for the rival's lockf call, 10 s bound); the race now holds under any load, mutation (pin read before lockf) red"
   }
  ]
 }
