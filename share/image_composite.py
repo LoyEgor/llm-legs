@@ -20,20 +20,6 @@ import shutil
 import sys
 import tempfile
 
-import numpy as np
-from PIL import Image
-from scipy import ndimage
-
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import limit_hit  # noqa: E402
-
-GLOBAL_LIMIT = 0.60
-ASPECT_TOLERANCE = 0.01
-FLOOR = 6.0
-WORK_SIDE = 640
-SRGB_TO_XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
-D65 = np.array([0.9505, 1.0, 1.089])
-
 
 def parse_region(text: str) -> tuple[float, float, float, float]:
     values = [float(part) for part in text.split(",")]
@@ -50,6 +36,45 @@ def parse_point(text: str) -> tuple[float, float]:
     if not (0 <= x <= 1 and 0 <= y <= 1):
         raise ValueError(text)
     return x, y
+
+
+def parse_arguments() -> tuple[argparse.Namespace, str | tuple | list]:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--base", required=True)
+    parser.add_argument("--edited", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--mask", default="auto", help="auto or x,y,w,h fractions")
+    parser.add_argument("--point", action="append", default=[], help="x,y fractions (=text ignored)")
+    parser.add_argument("--mask-out")
+    args = parser.parse_args()
+    try:
+        if args.point:
+            if args.mask != "auto":
+                parser.error("--point and a --mask rectangle exclude each other")
+            source = [parse_point(point) for point in args.point]
+        else:
+            source = "auto" if args.mask == "auto" else parse_region(args.mask)
+    except ValueError as error:
+        parser.error(f"bad fraction: {error}")
+    return args, source
+
+
+# A usage error exits before numpy, Pillow and scipy load: keep this line above their imports.
+ARGUMENTS = parse_arguments() if __name__ == "__main__" else None
+
+import numpy as np
+from PIL import Image
+from scipy import ndimage
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import limit_hit  # noqa: E402
+
+GLOBAL_LIMIT = 0.60
+ASPECT_TOLERANCE = 0.01
+FLOOR = 6.0
+WORK_SIDE = 640
+SRGB_TO_XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+D65 = np.array([0.9505, 1.0, 1.089])
 
 
 def disk(radius: int) -> np.ndarray:
@@ -249,23 +274,7 @@ def save(image: Image.Image, out: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--base", required=True)
-    parser.add_argument("--edited", required=True)
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--mask", default="auto", help="auto or x,y,w,h fractions")
-    parser.add_argument("--point", action="append", default=[], help="x,y fractions (=text ignored)")
-    parser.add_argument("--mask-out")
-    args = parser.parse_args()
-    try:
-        if args.point:
-            if args.mask != "auto":
-                parser.error("--point and a --mask rectangle exclude each other")
-            source = [parse_point(point) for point in args.point]
-        else:
-            source = "auto" if args.mask == "auto" else parse_region(args.mask)
-    except ValueError as error:
-        parser.error(f"bad fraction: {error}")
+    args, source = ARGUMENTS
     try:
         print(composite(args.base, args.edited, args.out, source, args.mask_out))
     except (OSError, ValueError) as error:

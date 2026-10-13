@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,6 +12,12 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 UV=$(command -v uv || printf /opt/homebrew/bin/uv)
 compose() { "$UV" run -q --script "$ROOT/share/image_composite.py" "$@" >"$WORK/out" 2>"$WORK/err"; }
 pixel() { magick "$1" -depth 8 -format "%[pixel:p{$2}]" info:; }
+pixels() { # image x,y... -> one pixel a line, from one magick
+  local image=$1 format=''
+  shift
+  for at in "$@"; do format+="%[pixel:p{$at}]\n"; done
+  magick "$image" -depth 8 -format "$format" info:
+}
 channel_gap() { # image-a image-b x,y -> largest channel difference in 0..255
   magick "$1" "$2" -crop "1x1+${3%,*}+${3#*,}" +repage -compose difference -composite \
     -format '%[fx:int(255*max(max(r,g),b)+0.5)]' info:
@@ -25,6 +32,10 @@ drift() { magick "$1" -channel R -evaluate add 5% -channel G -evaluate add 2% +c
 # A tint, not a solid fill: the change must stand out against the drift only once that is subtracted.
 magick "$base" \( +clone -crop 61x61+250+250 +repage -fill '#d02020' -colorize 25% \) -geometry +250+250 -composite "$WORK/intended.png"
 drift "$WORK/intended.png" "$WORK/local.png"
+magick "$base" -fill '#2040d0' -draw 'rectangle 0,0 399,330' "$WORK/global.png"
+magick "$WORK/local.png" -crop 400x300+0+0 +repage "$WORK/wide.png"
+
+if suite_shard_owns 1 composite-cli; then
 assert compose --base "$base" --edited "$WORK/local.png" --out "$WORK/local-out.png"
 assert grep -Eq '^composite=auto changed=([1-9]|10)\.[0-9]%$' "$WORK/out"
 assert test "$(pixel "$WORK/local-out.png" 10,10)" = "$(pixel "$base" 10,10)"
@@ -50,7 +61,6 @@ assert compose --base "$base" --edited "$WORK/shift.png" --out "$WORK/shift-out.
 assert grep -qx 'composite=refused reason=no-local-change changed=0.0% kind=auto' "$WORK/out"
 assert cmp "$WORK/shift.png" "$WORK/shift-out.png"
 
-magick "$base" -fill '#2040d0' -draw 'rectangle 0,0 399,330' "$WORK/global.png"
 assert compose --base "$base" --edited "$WORK/global.png" --out "$WORK/global-out.png"
 assert grep -Eq '^composite=refused reason=global changed=(6[0-9]|[7-9][0-9]|100)\.[0-9]% kind=auto$' "$WORK/out"
 assert cmp "$WORK/global.png" "$WORK/global-out.png"
@@ -61,8 +71,11 @@ assert grep -Eq '^composite=region changed=(19\.[5-9]|20\.[0-5])%$' "$WORK/out"
 assert within "$WORK/region-out.png" "$WORK/recoloured.png" 280,200 1
 assert within "$WORK/region-out.png" "$WORK/recoloured.png" 210,110 1
 assert within "$WORK/region-out.png" "$WORK/recoloured.png" 350,290 1
-for outside in 190,200 280,310 370,200 280,90; do
-  assert test "$(pixel "$WORK/region-out.png" "$outside")" = "$(pixel "$base" "$outside")"
+outsides=(190,200 280,310 370,200 280,90)
+mapfile -t kept < <(pixels "$base" "${outsides[@]}")
+mapfile -t got < <(pixels "$WORK/region-out.png" "${outsides[@]}")
+for i in "${!outsides[@]}"; do
+  assert test "${got[i]}" = "${kept[i]}"
 done
 assert compose --base "$base" --edited "$WORK/recoloured.png" --out "$WORK/wide-out.png" --mask 0,0,0.9,0.9
 assert grep -qx 'composite=refused reason=global changed=81.0% kind=region' "$WORK/out"
@@ -77,12 +90,14 @@ assert test "$(pixel "$WORK/points-out.png" 325,85)" = "$(pixel "$base" 325,85)"
 compose --base "$base" --edited "$WORK/two.png" --out "$WORK/bad.png" --mask 0.5,0.5,0.6,0.2
 assert test $? -eq 2
 assert test ! -e "$WORK/bad.png"
+fi
 
 # Lineage: the sidecar chain and the session index, through the shared helpers.
 export IMAGE_LEG_LOG="$WORK/legs/legs.jsonl"
 sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }
 lineage() { (account=acct; . "$ROOT/share/image-leg.sh"; image_leg_lineage "$@") >"$WORK/out" 2>"$WORK/err"; }
 session_input() { (. "$ROOT/share/image-leg.sh"; image_leg_session_input "$@"); }
+if suite_shard_owns 2 lineage-aspect; then
 cp "$base" "$WORK/gen.png"
 stale=$(sidecar "$WORK/gen.png")
 mkdir -p "${stale%/*}"
@@ -127,16 +142,16 @@ rm "$WORK/e1.png"
 assert test -z "$(session_input gemini conv-1)"
 
 # Aspect: an edited image of another shape is no edit of this input, delivered as is.
-magick "$WORK/local.png" -crop 400x300+0+0 +repage "$WORK/wide.png"
 assert compose --base "$base" --edited "$WORK/wide.png" --out "$WORK/wide-out.png"
 assert grep -qx 'composite=skipped reason=aspect-changed from=400x400 to=400x300' "$WORK/out"
 assert cmp "$WORK/wide.png" "$WORK/wide-out.png"
+fi
 
 # The shared default decision (share/image-leg.sh): every vendor, the same state, the same answer.
 decide() { # vendor resume repaint render dest [ref...]; env ASK, OFF, MASK (a wrapper's --region)
   local vendor=$1 resume=$2 repaint=$3 render=$4 dest=$5
   shift 5
-  (IMAGE_LEG_TOOL='' account=acct
+  (IMAGE_LEG_TOOL='' account=acct PATH="$WORK/memo-bin:$PATH"
     . "$ROOT/share/image-leg.sh"
     trap image_leg_exit EXIT
     IMAGE_LEG_COMPOSITE_ASK=${ASK:-} IMAGE_LEG_COMPOSITE_OFF=${OFF:-}
@@ -147,6 +162,24 @@ decide() { # vendor resume repaint render dest [ref...]; env ASK, OFF, MASK (a w
     image_leg_lineage "$vendor" cli "$dest" none prompt '' '' \
       ${IMAGE_LEG_COMPOSITE_INPUT:+"$IMAGE_LEG_COMPOSITE_INPUT"} "$@") >"$WORK/out" 2>"$WORK/err"
 }
+if suite_shard_owns 3 shared-decision; then
+# The composite never sees the vendor: the second and third vendor of a scenario replay the first one's result for the same inputs.
+mkdir "$WORK/memo-bin" "$WORK/memo"
+cat >"$WORK/memo-bin/uv" <<'SHIM'
+#!/usr/bin/env bash
+[ "$5$7$9" = --base--edited--out ] || exec "$REAL_UV" "$@"
+key=$({ cksum <"$6"; cksum <"$8"; printf '%s\n' "$4" "${@:11}"; } | cksum | tr -d ' ')
+if [ -f "$MEMO/$key.line" ]; then
+  cp "$MEMO/$key.out" "${10}" && cat "$MEMO/$key.line"
+  exit
+fi
+line=$("$REAL_UV" "$@") || exit
+printf '%s\n' "$line" >"$MEMO/$key.line"
+cp "${10}" "$MEMO/$key.out"
+printf '%s\n' "$line"
+SHIM
+chmod +x "$WORK/memo-bin/uv"
+export REAL_UV="$UV" MEMO="$WORK/memo"
 cp "$base" "$WORK/input.png"
 cp "$base" "$WORK/input2.png"
 for vendor in codex gemini grok; do
@@ -244,5 +277,6 @@ done
 assert grep -q 'image_leg_composite_take "$1" "$out" variant' "$ROOT/share/image-leg.sh"
 assert grep -q '^  image_leg_variants "$root" "$dest" "$flow_result" id ' "$ROOT/share/flow-image.sh"
 assert grep -q '^  image_leg_variants "$root" "$dest" "$web_result" chat ' "$ROOT/bin/codex-image"
+fi
 
 printf 'PASS: %s asserts; local paste with its edge, re-render grain and specks, drift-only no mask, global refusal, rectangle fractions, points, aspect change, lineage depth/root/session, and the shared default decision identical on codex/gemini/grok (resume/single-ref composited with the render kept, several inputs/new generation/unknown input/aspect skipped, transparent and --no-composite silent, global refused, explicit --composite forced or refused before spending)\n' "$asserts"
