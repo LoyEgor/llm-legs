@@ -5943,6 +5943,94 @@
    "verdict": "cut",
    "zero": "removal saves 18 wall-min/day; loses the refresh heartbeat tick, timeout and lock pins",
    "note": "dropped timed batched-vendors baseline run and its timing assert (per-vendor call count asserts stay), hang checks 100 s headroom over 120 s hang (collector-timeout mutation red): 75->72.5 CPU-s, 67 tests unchanged; remaining cost is ~5500 jq spawns of bin/llm-refresh itself"
+  },
+  {
+   "id": "suite:llm-legs/test_no_hardcoded_models",
+   "title": "llm-legs/test_no_hardcoded_models",
+   "audited_at": "2026-10-13T14:04:20+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-no-hardcoded-models-20261012T235354Z-3f99",
+   "cpu_run": 0.9,
+   "wall_run": 0.7,
+   "cpu_min_day": 0.23,
+   "wall_min_day": 0.3,
+   "sources": {
+    "llm-legs/tests/hardcode-allowlist.txt": "b2054a427da71493dfb3c519083ee7c4cf9cd9f5",
+    "llm-legs/tests/lib/suite-journal.sh": "3225e8c7078a40acb1f57dd21ddd9409af1fc3c7",
+    "llm-legs/tests/test_no_hardcoded_models.sh": "53cab56d35fe06473c3895f491fcde71b03b9702"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.3 wall-min/day; loses the model-id guard of shared-invariants row cr",
+   "note": "digit-free lines skipped in the awk scan (grok-imagine- exception covered by a fixture line, mutation red), fixture trees listed once per state; 7 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_dia_js",
+   "title": "llm-legs/test_dia_js",
+   "audited_at": "2026-10-13T14:04:22+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-no-hardcoded-models-20261012T235354Z-3f99",
+   "cpu_run": 1.6,
+   "wall_run": 2.1,
+   "cpu_min_day": 0.16,
+   "wall_min_day": 0.48,
+   "sources": {
+    "llm-legs/tests/dia_flag_watch_harness.lua": "6051f58120fa95edb19779ea8f2b8328dfb092ca",
+    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
+    "llm-legs/tests/lib/suite-journal.sh": "3225e8c7078a40acb1f57dd21ddd9409af1fc3c7",
+    "llm-legs/tests/test_dia_js.sh": "ac033ae86f266317f8e72cd5d5b8250d2bbb0671"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.3 wall-min/day; loses dia-js tab/relaunch/watcher checks",
+   "note": "stuck-Dia case runs with DIA_JS_WAIT_S=0 (no 0-1 s poll); direct-run tree digest cached per checkout; 51 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_attempts",
+   "title": "llm-legs/test_worker_attempts",
+   "audited_at": "2026-10-13T14:04:23+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-no-hardcoded-models-20261012T235354Z-3f99",
+   "cpu_run": 0.5,
+   "wall_run": 0.4,
+   "cpu_min_day": 0.19,
+   "wall_min_day": 0.29,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "3225e8c7078a40acb1f57dd21ddd9409af1fc3c7",
+    "llm-legs/tests/test_worker_attempts.sh": "49dbbba7a33e6ee958438cd2f83d243b7f289e0e"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.3 wall-min/day; loses the worker-attempts journal and rotation checks",
+   "note": "worker-run extracted and sourced once, journal_worker_attempt on builtins (read, printf %()T, no head/date/tr), checks read via builtins; 18 asserts unchanged, rotation mutation red"
+  },
+  {
+   "id": "suite:llm-legs/test_grokb_models",
+   "title": "llm-legs/test_grokb_models",
+   "audited_at": "2026-10-13T14:04:24+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-no-hardcoded-models-20261012T235354Z-3f99",
+   "cpu_run": 2.5,
+   "wall_run": 1.8,
+   "cpu_min_day": 0.19,
+   "wall_min_day": 0.31,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "3225e8c7078a40acb1f57dd21ddd9409af1fc3c7",
+    "llm-legs/tests/test_grokb_models.sh": "adee61a792817ff275a2786f5be3620968b911b6"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.2 wall-min/day; loses grok model-list TTL/fallback checks",
+   "note": "bin/grokb models path sources only pool+roster libs, calls() without forks, one models --json; 63 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_log_stores",
+   "title": "llm-legs/test_log_stores",
+   "audited_at": "2026-10-13T14:04:25+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-no-hardcoded-models-20261012T235354Z-3f99",
+   "cpu_run": 0.3,
+   "wall_run": 0.6,
+   "cpu_min_day": 0.09,
+   "wall_min_day": 0.3,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "3225e8c7078a40acb1f57dd21ddd9409af1fc3c7",
+    "llm-legs/tests/test_log_stores.sh": "d9df500090b33533c8c8b005f5479b571d6b8da9"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.2 wall-min/day; loses the log-store registry and log-sweep checks",
+   "note": "already cut by 9f66c47a (log-sweep subprocesses parallel); only the direct-run tree digest remained, now cached"
   }
  ]
 }
