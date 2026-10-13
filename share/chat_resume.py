@@ -12,7 +12,6 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import gateway_auth  # noqa: E402
 
 GATEWAY_PREFIX = "anthropic.ccr."
 # The launcher's two aliases and the label a model column shows for them; bin/statusline.sh
@@ -154,6 +153,7 @@ def model_label(model_id):
 def is_gateway_account(name):
     # A usable gateway target is not a directory under the gateway store: an OpenAI
     # account signed in under codexb is one too. share/gateway_auth.py owns that rule.
+    import gateway_auth
     return bool(name) and bool(ACCOUNT_OK.match(name)) and gateway_auth.is_gateway_account(name)
 
 
@@ -163,6 +163,7 @@ def is_claudeb_profile(name):
 
 
 def gateway_accounts():
+    import gateway_auth
     return gateway_auth.account_names()
 
 
