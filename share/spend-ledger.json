@@ -5518,6 +5518,23 @@
    "verdict": "kept",
    "zero": "removal saves 5.6 wall-s a run; loses the citation check, LINKS count, capital-scheme links and WEB: header refusal checks, none covered elsewhere",
    "note": "5 light-research runs, each a distinct answer/header shape; worker-run wait already wakes on exit_file_wait (no 1 s poll paid); merging the 3 citation answers would lose the links-only 0/0 header case; the per-run cost is worker-run's own launch"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_reset_redeem",
+   "title": "llm-legs/test_llm_reset_redeem",
+   "audited_at": "2026-10-13T12:31:48+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-reset-redeem-20261012T235332Z-5e50",
+   "cpu_run": 10.1,
+   "wall_run": 12.9,
+   "cpu_min_day": 1.44,
+   "wall_min_day": 2.56,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_llm_reset_redeem.sh": "7bf9592bf676e72a2c91bc185c0971d8e9939c55"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 13 wall-s and 10 CPU-s a run (4.0 wall-min/day); loses every guard on spending a one-per-period reset: exactly-once writes, idempotency keys, the soonest grant, ambiguous-write no-retry, the word-armed auto-redeem and the lock wait",
+   "note": "two shards (grok+codex+claude / auto) sharing one claude stand-in; 0.05 s port polls in the same 4 s deadline; network modules imported lazily in the bin; 43 asserts; codex 3 s timeout and the 1.5 s lock hold kept (race and load margins)"
   }
  ]
 }
