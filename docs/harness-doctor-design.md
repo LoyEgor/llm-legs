@@ -618,7 +618,8 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   `CANARY_NOT_STARTED`, its evidence the row's `error` (the session's first error line, written by the canary);
   a newest `CANARY_OUT_OF_POOL` or `CANARY_WALLED` row marks the account `out of the worker pool` or `walled`
   (weather, per the 429 doctrine), never judged, no 7-day watch, not counted among the 72 h failures; neither is
-  `BROWSER_OWNER_LOGIN` (a sign-in or consent only Egor gives); `browser-repair` is red for a 72 h workaround, `HARNESS_NEEDS_REPAIR` or `missing`; `browser-applescript-js`
+  `BROWSER_OWNER_LOGIN` (a sign-in or consent only Egor gives) or the codex leg's `CANARY_OWNER_GRANT` (macOS denies
+  the LaunchAgent's tree Chrome's Local State: his App Data grant, see DIAGNOSTICS); `browser-repair` is red for a 72 h workaround, `HARNESS_NEEDS_REPAIR` or `missing`; `browser-applescript-js`
   watches a Dia without its JS flag. A writing run starts `worker-run browse --canary` (`HARNESS_BROWSE_CMD`)
   detached when `browse/canary.stamp` is older than 23 h; the canary's receipts land in the same log. Account rows read
   claudeb rows only (`vendor` not `codex`); one `Codex` row shows the newest codex canary leg (`<account> · <profile> ·

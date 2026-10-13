@@ -6233,7 +6233,9 @@ browse_canary_codex() { # work-directory port listing [unreadable-reason]
     [ -n "$account" ] || { printf 'CANARY: codex skipped — no codex account\n'; return 0; }
     error="no codex account can serve: $(awk -F'\t' '$1 == "codex" { printf "%s%s %s", sep, $2, $4; sep = ", " }' <<<"$3")"
   elif [ -n "${4:-}" ]; then
-    error=$4
+    browse_log "canary-codex-$account-$(date +%s)" codex "$account" '' chrome '' CANARY_OWNER_GRANT false "$4"
+    printf "CANARY: codex/%s skipped — waits for Egor's macOS grant: %s\n" "$account" "$4"
+    return 0
   else
     while IFS= read -r dir; do
       browse_window "$dir" && { label=$(browse_profile_label "$dir"); break; }

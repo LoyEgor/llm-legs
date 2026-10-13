@@ -433,11 +433,14 @@ EOF
   codex_canary ok nosubmit
   assert test "$rc" -eq 1
   assert grep -qx 'CANARY: codex/cx CANARY_NO_RECEIPT' <<<"$out"
+  # a Local State macOS denies the LaunchAgent's tree: only Egor's grant gives the Codex browser list its profiles
   chmod 000 "$bt/chrome/Local State"
   codex_canary ok ok
   chmod 600 "$bt/chrome/Local State"
-  assert test "$rc" -eq 1
-  assert grep -qx "CANARY: codex/cx CANARY_NOT_STARTED — Chrome's Local State is unreadable: Permission denied" <<<"$out"
+  assert test "$rc" -eq 0
+  assert grep -qx "CANARY: codex/cx skipped — waits for Egor's macOS grant: Chrome's Local State is unreadable: Permission denied" <<<"$out"
+  assert jq -se '[.[] | select(.vendor == "codex")][-1] | .outcome == "CANARY_OWNER_GRANT" and .account == "cx"
+    and .error == "Chrome'"'"'s Local State is unreadable: Permission denied"' "$log" >/dev/null
   assert test ! -s "$bt/codex.log"
   codex_canary ok ok broken
   assert test "$rc" -eq 1

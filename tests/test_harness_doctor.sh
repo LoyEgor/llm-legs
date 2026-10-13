@@ -1738,6 +1738,12 @@ part, cells = codex_log({"ts": stamp(T - 300), "run": "canary-codex-cx-3", "vend
                          "outcome": "CANARY_WALLED"})
 check(not any(ident.startswith("codex/") for _, ident in judged(part)) and " walled " in cells["Codex"][0],
       "Browser: a walled codex leg is weather: shown, never judged")
+part, cells = codex_log({"ts": stamp(T - 300), "run": "canary-codex-cx-4", "vendor": "codex", "account": "cx",
+                         "outcome": "CANARY_OWNER_GRANT", "error": "Chrome's Local State is unreadable: Operation not permitted"})
+check(not any(ident.startswith("codex/") for _, ident in judged(part)) and cells["Codex"][1] == ""
+      and " waits for Egor's macOS grant " in cells["Codex"][0]
+      and [r["dim"] for r in part["rows"] if r["cells"][0] == "Codex"] == [True],
+      "Browser: a codex leg macOS denies Chrome's data waits for Egor's grant: a dim row, never judged")
 shutil.rmtree(runs)
 for beat, beat_at, ident in ((None, T, "never-started"), ("roots=2\n", T - 1000, "stale"),
                              ("roots=2\nerror=fsevents gone\n", T - 30, "error"), ("roots=0\n", T - 30, "no-root")):

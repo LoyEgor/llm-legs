@@ -4552,7 +4552,7 @@ def deploys_section(now):
 
 BROWSER_REPAIR = ("HARNESS_NEEDS_REPAIR", "missing")
 BROWSER_SKIPS = {"CANARY_OUT_OF_POOL": "out of the worker pool", "CANARY_WALLED": "walled",
-                 "BROWSER_OWNER_LOGIN": "waits for Egor's sign-in"}
+                 "BROWSER_OWNER_LOGIN": "waits for Egor's sign-in", "CANARY_OWNER_GRANT": "waits for Egor's macOS grant"}
 BROWSER_CANARY_S = 23 * 3600
 BROWSER_QUIET_S = 7 * 86400
 
