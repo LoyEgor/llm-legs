@@ -5718,7 +5718,7 @@
         "rule": "opportunity",
         "ident": "background/hs lag"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:30:00+03:00",
@@ -5734,12 +5734,31 @@
             "data": "live repositories and ~/Downloads, read-only, 2 runs each side",
             "result": "the five git repositories' 60 files identical; only ~/Downloads' 5 walked files (its CLAUDE.md stays watched through the ranked list, 2 nested SKILL.md, 2 inside Xcode-beta.app) drop, which the tripwire never lists either (instruction_repo_root: a session's git toplevel only); scan 8.3-11.2 s -> 1.4-1.5 s at current load"
           }
+        },
+        {
+          "at": "2026-10-13T09:10:00+03:00",
+          "by": "night fixer harness-speed-background-hs-lag-20261012T235024Z-2084",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua",
+            "llm-legs/hammerspoon/llm-limits.lua",
+            "llm-legs/hammerspoon/doctors.lua",
+            "llm-legs/tests/instruction_watch_menu_harness.lua",
+            "llm-legs/tests/llm_limits_renderer_harness.lua",
+            "llm-legs/tests/doctors_menu_harness.lua"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the watcher's list scan, instruction_visible_paths vs instruction_visible_cached over one state copy, cold and warm; the menus' titles over unchanged cached reads (menu harnesses)",
+            "data": "live ~/.claude and the live ranked.txt copied to a temp state dir, read-only; fixture menus",
+            "result": "449 listed paths byte-identical uncached, cached cold and cached warm (34 ms uncached, 14 ms warm hit at idle); the tick's listing and repo scans now run as hs.task so the main thread no longer waits on them, events meanwhile queue and replay (journaled once in the harness); every menu title the harnesses compare is unchanged"
+          }
         }
       ],
       "same_cause": [],
       "last_reviewed": "2026-10-10",
       "reviewed_by": "night fixer harness-speed-background-hs-lag-20261010T031902Z-7608",
-      "note": "Before: background/hs lag 27.62 OM/d (latest.json 2026-10-10, 168 h); hs-lag journal 10-09: 1860 rows, 3670 s. A 2-3 s stall every 120 s on a fixed phase, ending at the watcher heartbeat's mtime: ~25 min/day (10-09), plus many 13-17 s stalls under load. Traced in Hammerspoon (io.popen timed inside one watchTick): list 148 ms, repo 2944-3044 ms; repo got ~/Downloads (a ranked ~/Downloads/CLAUDE.md made its parent a root) and, not a git repo, instruction_repo_files fell back to a find walk of it. M.pump runs watchTick too, so every hook poke and journal change paid it again. Not fixed here, left to the next run of this lever: the Automation menu's 5 s section refresh (~/.hammerspoon/automation_menu.lua REFRESH_S) stalls 1-1.8 s per refresh while active, ~7 min/day (10-09); the tick still runs list+repo synchronously (~0.5 s idle) and pump re-runs a tick on every poke, an hs.task move would need the menu harness's synchronous M.pump/M.watchTick asserts reworked.",
+      "note": "Before: background/hs lag 27.62 OM/d (latest.json 2026-10-10, 168 h); hs-lag journal 10-09: 1860 rows, 3670 s. A 2-3 s stall every 120 s on a fixed phase, ending at the watcher heartbeat's mtime: ~25 min/day (10-09), plus many 13-17 s stalls under load. Traced in Hammerspoon (io.popen timed inside one watchTick): list 148 ms, repo 2944-3044 ms; repo got ~/Downloads (a ranked ~/Downloads/CLAUDE.md made its parent a root) and, not a git repo, instruction_repo_files fell back to a find walk of it. M.pump runs watchTick too, so every hook poke and journal change paid it again. Not fixed here, left to the next run of this lever: the Automation menu's 5 s section refresh (~/.hammerspoon/automation_menu.lua REFRESH_S) stalls 1-1.8 s per refresh while active, ~7 min/day (10-09); the tick still runs list+repo synchronously (~0.5 s idle) and pump re-runs a tick on every poke, an hs.task move would need the menu harness's synchronous M.pump/M.watchTick asserts reworked. Run 20261012T235024Z-2084 (2026-10-13): the tick's list+repo scans run as hs.task (events meanwhile queue and replay), list keeps its visible-set cache under watcher/, one tick per recorded change, markdown outside the listing's rule under a repo root schedules no relist, marks/receipts/event submenus/realpaths are not re-read; LLM Limits builds read busyNow instead of two extra refreshState passes and keep store/worker-model/doctor snapshot/catalog/gemini-web/chats reads on a path+inode+mtime+size key (never within the file's mtime second); the five doctors share one runs/ listing. Not timed live (no before/after ms on the live Hammerspoon); the geminiMediaState Cookies io.open stays (an existence check is one syscall either way).",
       "handoff": null
     },
     {
