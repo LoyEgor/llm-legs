@@ -1702,6 +1702,21 @@
    "verdict": "cut",
    "zero": "removal saves 2.4 CPU-min/day; loses the settling of word-door claims on what the call left (grants would never spend)",
    "note": "10-11 -> 4.2 CPU-ms a run: no cat, dirname or cd/pwd forks (library found by parameter expansion), already /bin/bash; exit, output and store dir identical on 406 real-transcript payloads incl. claim files. Fast path still forks $(words_root) once (~1 ms), left to keep one source of the store path. Wasted is ~all runs (almost no call holds a claim) but PostToolUse cannot filter on claims"
+  },
+  {
+   "id": "cpu:hook/review-owner-gate.sh",
+   "title": "hook/review-owner-gate.sh",
+   "audited_at": "2026-10-13T09:36:25+03:00",
+   "by": "harness-speed-cpu-hook-limits-triage-nudge-sh-20261012T235048Z-1236",
+   "cpu_min_day": 1.8,
+   "cpu_s_run": 0.015,
+   "runs_day": 5712,
+   "sources": {
+    "review-bench/bin/review-owner-gate.sh": "3090a19847f14389a5caaf888da4c0b1c2a39b12"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 2.1 CPU-min/day; loses the denial of T3 and --max launches Egor has not named",
+   "note": "already builtin-only for a command naming no review-bench; the cost was env bash's start (8.4 ms vs 2.6 on /bin/bash): 5.9 -> 2.0 CPU-ms on the same payload, verdicts identical on 306 real-transcript PreToolUse payloads, test_review_owner_gate 109 asserts pass under 3.2. Wasted is ~all runs (denies are rare) but PreToolUse cannot filter on the command text"
   }
  ]
 }
