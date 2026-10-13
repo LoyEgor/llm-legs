@@ -25,6 +25,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Per-run delegation (spend audit `turns:worker-run codex`, 2026-10-13): Δ ×17 is ×8 runs (128 vs 16) plus relay waits turned main-thread wakes; a per-run cell (~6.0k) would show the unit Δ.
    - Rows past their cut (spend audit `hook:worker-relay-hold.sh`, `spawn:grok-worker`, 2026-10-13): both removed at source 2026-10-09 (llm-legs ee185fa8) yet still due for audit while the 7d window holds pre-cut days; a component whose source is gone should read `cut at source`, not rank.
    - Gaps from 2026-10-13 on: `jq -r '.rows[] | select(.note | test("tokenmap gap:")) | .id' share/spend-ledger.json`; a done one gets `Done in token-map <sha>` in its row's note.
+   - Retry after a denial (spend audit `hook:english-gate.sh`, 2026-10-13): a brief written by a script or `/dev/null` stays denied; the re-run books as plain Bash, charge it to the hook.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.

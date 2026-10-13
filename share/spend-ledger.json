@@ -328,40 +328,38 @@
   {
    "id": "hook:worker-launch-gate.sh",
    "title": "worker-launch-gate.sh",
-   "audited_at": "2026-10-12T04:04:19+03:00",
-   "by": "harness-speed-spend-hook-worker-launch-gate-sh-20261012T010235Z-36be",
-   "share": 0.000253,
+   "audited_at": "2026-10-13T10:28:47+03:00",
+   "by": "harness-speed-spend-hook-worker-launch-gate-sh-20261012T235146Z-213d",
+   "share": 0.000231,
    "prices": {
-    "Workers · Hooks": 496.64621242756425,
-    "Workers · attachment: hook context": 2879.5939310547787,
-    "Doctors · attachment: hook context": 696.6429838946558,
-    "Doctors · Hooks": 252.30745007151472,
-    "Reviewers · Hooks": 4.96130445842753
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
    },
    "sources": {
-    "llm-legs/bin/worker-launch-gate.sh": "7031f346e8c88a5666ec54c8c4a77dd93f44b432"
+    "llm-legs/bin/worker-launch-gate.sh": "186e8440acce89154585359e36c8ea256e81bd9c"
    },
    "verdict": "kept",
-   "note": "0.0 % of spend; denies bare headless launches that would be unowned workers (routing-contract rule 4); its cost is hook time, not tokens; no cheaper equivalent proven"
+   "zero": "removing it saves its hook wall time and 140k limit-tokens/7d (0.0 %), mostly 10-06..10-08 relay-replay probes; loses the stop on bare headless vendor launches, worker-run from agents, foreground worker-run wait and media past media-run, each of which changed the next call (105 of 109 denials in 7 d were followed by a different call)",
+   "note": "kept: denials fell 34/day (10-06) to 3/day (10-12) after the relay-free launch cut the ACCOUNT-consistency check (no longer in the source; 36+ of the 7 d denials); the remaining ones are real launches, nested worker-run, foreground waits; source change since the last audit is 6eaf97b4 (crontab -l with a redirect passes: a false catch cut) and the wait/launch wording; no cheaper equivalent proven"
   },
   {
    "id": "hook:instruction-write-gate.sh",
    "title": "instruction-write-gate.sh",
-   "audited_at": "2026-10-12T04:08:16+03:00",
-   "by": "harness-speed-spend-hook-instruction-write-gate-sh-20261012T010230Z-2e77",
-   "share": 0.000106,
+   "audited_at": "2026-10-13T10:29:04+03:00",
+   "by": "harness-speed-spend-hook-worker-launch-gate-sh-20261012T235146Z-213d",
+   "share": 0.000117,
    "prices": {
-    "Workers · Hooks": 496.64621242756425,
-    "Workers · attachment: hook context": 2879.5939310547787,
-    "Doctors · attachment: hook context": 696.6429838946558,
-    "Doctors · Hooks": 252.30745007151472,
-    "Reviewers · Hooks": 4.96130445842753
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
    },
    "sources": {
-    "llm-legs/bin/instruction-write-gate.sh": "91318b0fab61b1a3a9639170e16618d17ecac529"
+    "llm-legs/bin/instruction-write-gate.sh": "d169757f46435c45aed8c372c716ed960aa35b82"
    },
    "verdict": "kept",
-   "note": "kept: 70.2k/7d (0.0 %) is 30 blocked shell writes; 24 were real instruction-file writes (python open(...,'w'), cp, git checkout) and each changed the outcome (next call Read+Edit or an MD-PROPOSAL); 6 false denials were variable-held fixture paths ($D/$R/$W/.../CLAUDE.md, even D=$(mktemp -d)) in sessions testing the gate itself: the gate denies a guarded basename behind any unresolved variable, which also catches cp x $P/global/CLAUDE.md on a real checkout, so exempting variables loses real catches for ~14k/week; denial text is ~10 % of the price (the rest is the denied command x5) and carries the per-file cost figures; +153 % is night-sweep SKILL.md shell edits; wall time 286->33 ms mean since 87288698"
+   "zero": "removing it saves 71k limit-tokens/7d (0.0 %) and its hook time; loses the stop on shell writes into instruction files: of 32 denials in 7 d, 29 were real python/cp/sed writes into SKILL.md, global/CLAUDE.md, review-tiers.md or a memory file, each followed by Read+Edit or an MD-PROPOSAL",
+   "note": "kept: +112% is night-sweep SKILL.md and global/*.md edits routed through python heredocs (8 denials on 10-12, all main chats); 2 are gate self-test fixtures behind $R/r (variable-held path, kept denied on purpose: exempting variables loses cp x $P/global/CLAUDE.md); sources changed since the last audit (00647ddf, d2815e9a) only read more of a big script, no new denial class"
   },
   {
    "id": "spawn:subagent",
@@ -377,21 +375,20 @@
   {
    "id": "hook:review-flow-gate.sh",
    "title": "review-flow-gate.sh",
-   "audited_at": "2026-10-12T04:17:01+03:00",
-   "by": "harness-speed-spend-hook-review-flow-gate-sh-20261012T010231Z-55c3",
-   "share": 0.000189,
+   "audited_at": "2026-10-13T10:29:05+03:00",
+   "by": "harness-speed-spend-hook-worker-launch-gate-sh-20261012T235146Z-213d",
+   "share": 9.7e-05,
    "prices": {
-    "Workers · Hooks": 496.64621242756425,
-    "Workers · attachment: hook context": 2879.5939310547787,
-    "Doctors · attachment: hook context": 696.6429838946558,
-    "Doctors · Hooks": 252.30745007151472,
-    "Reviewers · Hooks": 4.96130445842753
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
    },
    "sources": {
-    "claude-setup/hooks/review-flow-gate.sh": "0c9199b2ad9482a7ad0b5cc8c51d0b48b2eebd4a"
+    "claude-setup/hooks/review-flow-gate.sh": "f2be59d31feecb65d0f26c1a2f47a8083e77bfc2"
    },
-   "verdict": "cut",
-   "note": "price is refusals only; replay of last week's 53 refusals: 51 pass on current code (word door open b50e5bf, quoted-message false catch 5cb3dc1, comment false catch claude-setup@9a58b25), 2 stay by design (unreadable-binary launches)"
+   "verdict": "kept",
+   "zero": "removing it saves 58.6k limit-tokens/7d (0.0 %) and its PreToolUse wall time on every Bash call; loses the hold of every review launch for Egor's word (10 of the 15 refusals in 7 d) and the unreadable-binary door (4)",
+   "note": "kept: 15 refusals in 7 d (11 on 10-09 in one review-launch session), 1 on 10-10, none since; the false-catch classes (quoted message, comment) went in 5cb3dc1/9a58b25; sources changed since the last audit only by limit-hit instrumentation (b61758b) and the comment scan"
   },
   {
    "id": "hook:worker-git-guard.sh",
@@ -2822,6 +2819,40 @@
    "verdict": "kept",
    "zero": "removal saves 0.6 wall-s a run (one locked hs -c); loses the quiet-period debounce, compile hold, tests/.claude exclusions, stop() and the init.lua wiring pins",
    "note": "18 checks on injected opts, each red under its config_reload.lua mutation; the >= load-second tie has no check (a missing test, not a lens finding); no live state touched"
+  },
+  {
+   "id": "hook:english-gate.sh",
+   "title": "english-gate.sh",
+   "audited_at": "2026-10-13T10:28:49+03:00",
+   "by": "harness-speed-spend-hook-worker-launch-gate-sh-20261012T235146Z-213d",
+   "share": 9.6e-05,
+   "prices": {
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
+   },
+   "sources": {
+    "claude-setup/hooks/english-gate.sh": "3d3de7ad4e24a2dfe8f38181ad2a8423a7ed0c7b"
+   },
+   "verdict": "cut",
+   "zero": "removing it saves 58.4k limit-tokens/7d (0.0 %) and its hook time; loses the stop on Russian in text written for a model (the rule's goal) and the unreadable-brief fail-closed denial",
+   "note": "cut: 21 denials in 7 d, 16 followed by a different call; most were the unreadable-brief class of 10-07/10-08 (already fixed in f4c8eb9/5bdb22c); one false catch left (a brief heredoc-written to $S/... then cd $S) fixed in claude-setup@7c3fab62, red on old code in test_english_gates.sh; a script-written brief (mkbrief.py) and /dev/null stay denied by design"
+  },
+  {
+   "id": "hook:PreToolUse:Bash · cd-guard",
+   "title": "PreToolUse:Bash · cd-guard",
+   "audited_at": "2026-10-13T10:28:49+03:00",
+   "by": "harness-speed-spend-hook-worker-launch-gate-sh-20261012T235146Z-213d",
+   "share": 8.7e-05,
+   "prices": {
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
+   },
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removing the hook whole saved its Injected note (53k tokens + 13k the no-op-cd note in 7 d) and ~100 ms wall per Bash call; loses nothing: Claude Code's CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 resets the cwd silently",
+   "note": "cut already: hook deleted in claude-setup@55f0a219 and unwired in settings.json; last injected note 2026-10-12T01:43Z, the 7 d window still holds the earlier ones and rolls off by 10-19"
   }
  ]
 }
