@@ -2106,6 +2106,86 @@
    "verdict": "kept",
    "zero": "removal saves 1.1 CPU-min/day; loses the deny that keeps a model from arming the Hammerspoon resume timer unasked (f0cc3feb)",
    "note": "5.3 ms a run on 400 real PreToolUse payloads against a 3.6 ms bash 3.2 + hook-time floor; the rest is the payload read and the fork-free spliced screen of 75919831 (regex build 0.6 ms, ~0.07 CPU-min/day, not worth a literal regex)"
+  },
+  {
+   "id": "suite:claude-setup/test_precompact_preserve",
+   "title": "claude-setup/test_precompact_preserve",
+   "audited_at": "2026-10-13T11:10:05+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-precompact-preserve-20261012T235206Z-54b8",
+   "cpu_run": 0.7,
+   "wall_run": 0.7,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.03,
+   "sources": {
+    "claude-setup/tests/test_precompact_preserve.sh": "2e951dfe7a06ca388517662ae337910991671a0c"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~1 wall-s a run; loses the only pins on precompact-preserve's auto-compact focus/drop instructions and its session-id traversal guard",
+   "note": "traversal bait moved where ../sess-b reaches (red with the session-id guard deleted); WORDS_DIR and nudge state kept in the suite's temp, no live-cache fallback; 38 asserts unchanged"
+  },
+  {
+   "id": "suite:claude-setup/test_hook_long_command",
+   "title": "claude-setup/test_hook_long_command",
+   "audited_at": "2026-10-13T11:10:05+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-precompact-preserve-20261012T235206Z-54b8",
+   "cpu_run": 0.2,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.01,
+   "sources": {
+    "claude-setup/tests/test_hook_long_command.sh": "4180cefc32ee6574eb6139d60620837f0d889811"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.2 wall-s a run; loses the linearity pins on five hooks' command screens (the cubic ${cmd//} regression)",
+   "note": "CLAUDEB_WORKER/GROK_WORKER unset so worker runs reach pr-ready-mattermost's screen (red on the cubic mutation); limit-hit log in the suite's temp dir; 5 asserts"
+  },
+  {
+   "id": "suite:claude-setup/test_task_rows_wiring",
+   "title": "claude-setup/test_task_rows_wiring",
+   "audited_at": "2026-10-13T11:10:05+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-precompact-preserve-20261012T235206Z-54b8",
+   "cpu_run": 0.0,
+   "wall_run": 0.0,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "claude-setup/tests/test_task_rows_wiring.sh": "807a3f30d31f53fbcdbf29ded1f4599e7401300e"
+   },
+   "verdict": "cut",
+   "zero": "removal saves <0.1 wall-s a run; loses the retired-relay-agent and Stop-ask wiring pins",
+   "note": "12 -> 9 asserts: a self-matching comment grep (llm-legs test_worker_run_backstop.sh:39 red on its mutation) and two review-bench sentence pins duplicating test_stop_dispatch.sh:961/963"
+  },
+  {
+   "id": "suite:claude-setup/test_chat_keystroke_ownership",
+   "title": "claude-setup/test_chat_keystroke_ownership",
+   "audited_at": "2026-10-13T11:10:05+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-precompact-preserve-20261012T235206Z-54b8",
+   "cpu_run": 0.2,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.01,
+   "sources": {
+    "claude-setup/tests/test_chat_keystroke_ownership.sh": "a791c7e6998d21a0230a25622533116c64cc2051"
+   },
+   "verdict": "trade",
+   "zero": "removal saves ~0.3 wall-s a run; loses the only guard that chat modules type through chat_gate",
+   "note": "mutations red; it globs the hammerspoon main checkout so no hammerspoon change selects it and worktree edits go unseen: move to hammerspoon, docs/handoffs/2026-10-13-keystroke-ownership-placement.md"
+  },
+  {
+   "id": "suite:claude-setup/test_experiments_registry",
+   "title": "claude-setup/test_experiments_registry",
+   "audited_at": "2026-10-13T11:10:06+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-precompact-preserve-20261012T235206Z-54b8",
+   "cpu_run": 0.1,
+   "wall_run": 0.1,
+   "cpu_min_day": 0.0,
+   "wall_min_day": 0.0,
+   "sources": {
+    "claude-setup/tests/test_experiments_registry.sh": "a4b4e77cd7efe1c513a595566e8c9e507cde9dd4"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.1 wall-s a run; loses the overdue-experiment reminder and the tag round-trip",
+   "note": "tag-present grep excluded .claude (worktree copies kept a removed block green; red on that mutation after the fix); 2 asserts with the empty registry, 0.1 s, nothing to cut"
   }
  ]
 }
