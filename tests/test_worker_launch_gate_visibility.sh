@@ -206,7 +206,8 @@ for plain in 'crontab -l' 'crontab -u me -l' 'crontab -l 2>/dev/null | grep -i a
   "rg 'gemini|claude ' docs" $'cat > /tmp/t.md <<EOF\n| codex | 40% |\nEOF' 'grep -c "agy\|gemini" share/*.py'; do
   expect_as pass '{}' "$plain"
 done
-
+fi
+if suite_shard_owns 3 wlg-askers; then
 # The deny names the way that works, the same for the chat and an agent: the chat's own worker run.
 for asker in '{}' "$AGENT"; do
   expect_as deny "$asker" 'claude -p hi' 'A worker is a worker run the chat starts itself: `worker-run start <vendor> --brief <file> --workdir <dir>`'
@@ -214,12 +215,16 @@ for asker in '{}' "$AGENT"; do
 done
 printf 'light_paused=on\n' >"$WORK/light-toggle"
 WORKER_PICK_CONFIG_FILE="$WORK/light-toggle" expect_as deny '{}' 'claude -p hi' "worker-pick's START line names the vendor"
+fi
+if suite_shard_owns 2 wlg-sanctioned-stdin; then
 
 # A sanctioned launcher reading its stdin is still that launcher.
 expect_as pass '{}' 'yes | claudeb revive acct1'
 expect_as pass '{}' 'printf y | claudeb warm'
 expect_as deny '{}' 'yes | claudeb -p hi'
 
+fi
+if suite_shard_owns 1 wlg-multiline; then
 # A quoted operand spanning lines is one word: its later lines are neither commands nor pipes.
 for multi in $'git commit -m "Subject\n\nat least one run (at most once)"' \
   $'gh pr create --body "batch jobs\n(at most once)"' $'python3 -c "import x\nbatch = rows"' \
@@ -281,6 +286,13 @@ for lone in 'worker-run report cb-1' ' worker-run say cb-1 done' 'worker-run cla
   asserts=$((asserts + 1))
   [ "$(tr '\n' ' ' <"$WORK/starts")" = "jq " ] || fail "[$lone] started: $(tr '\n' ' ' <"$WORK/starts")"
 done
+# A launcher word that holds none of a check's own literals forks none of that check's pipeline:
+# 22 process starts on 2026-10-13, 53 before.
+jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_input:{command:"cd /w && claude --version"}}' >"$WORK/word.json"
+: >"$WORK/starts"
+PATH="$WORK/shim:$PATH" bash "$GATE" <"$WORK/word.json" >/dev/null 2>&1
+asserts=$((asserts + 1))
+[ "$(wc -l <"$WORK/starts")" -lt 30 ] || fail "a launcher word with no check's literal started $(wc -l <"$WORK/starts" | tr -d ' ') processes"
 for chained in 'worker-run report cb-1; claude -p hi' 'worker-run report cb-1 && codex exec hi' $'worker-run report cb-1\nclaude -p hi' \
   'worker-run report cb-1 | claude -p' 'worker-run say cb-1 $(claude -p hi)' 'worker-run stop cb-1 `codex exec hi`'; do
   expect deny '' "$chained"

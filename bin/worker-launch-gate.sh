@@ -288,7 +288,10 @@ first_hit() { # regex
   hit=$(grep -Eo "$1" <<<"$scan" 2>/dev/null) || return 0
   printf '%s\n' "${hit%%$'\n'*}" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//'
 }
-forged=$(grep -Eo "$FORGED_TOKEN_RE" <<<"$scan" 2>/dev/null | head -n1 | grep -Eo '(REVIEW_BENCH_DOOR)=$')
+# Each check below forks only once its regex's own literals stand in the text it reads.
+forged=''
+[[ $scan != *REVIEW_BENCH_DOOR=* ]] ||
+  forged=$(grep -Eo "$FORGED_TOKEN_RE" <<<"$scan" 2>/dev/null | head -n1 | grep -Eo '(REVIEW_BENCH_DOOR)=$')
 [ -z "$forged" ] ||
   deny "Blocked: \`${forged%=}\` is stamped by the hooks alone — it names the review Egor's word opened — and a command setting it by hand forges that owner. A review is launched plainly from the chat's own shell on his word."
 # A Monitor is a background command like any other, so every check below reads it too. The review
@@ -318,15 +321,18 @@ if [ -n "$agent_id" ] || [ "${CLAUDEB_WORKER:-}" = 1 ]; then
 fi
 # An unbounded wait in a foreground call dies at the Bash timeout while the run keeps spending, and
 # nothing wakes the chat when it ends.
-if [ "$tool" = Bash ] && [ "$(input_field .tool_input.run_in_background)" != true ]; then
+if [ "$tool" = Bash ] && [[ $scan == *worker-run* || $scan == *light-research* ]] &&
+    [ "$(input_field .tool_input.run_in_background)" != true ]; then
   foreground_hit=$(grep -Ev -e "${VENDOR_WORD}worker-run[[:space:]]+wait[[:space:]].*--max([[:space:]=]|$)" <<<"$scan" 2>/dev/null |
     grep -Eo "${VENDOR_WORD}(worker-run[[:space:]]+wait|light-research)${EDGE}" | head -n1 |
     tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
   [ -z "$foreground_hit" ] ||
     deny "Blocked: \`${foreground_hit}\` blocks until the run ends, and a foreground Bash call is killed at its timeout (600 s at most) while the run keeps spending and nothing wakes this chat. Run the identical call with \`run_in_background: true\`: its completion notification wakes this chat."
 fi
-legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_FREE_RE" | head -n1 |
-  grep -Eo "$OWNED_LEGS_RE" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
+legs_hit=''
+[[ $scan != *ask_* && $scan != *-probe* ]] ||
+  legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_FREE_RE" | head -n1 |
+    grep -Eo "$OWNED_LEGS_RE" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$legs_hit" ] || span_live ||
   deny "Blocked: \`${legs_hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record naming the account. A question for a model is ${DIRECT_ASK}; a live probe is Egor's to run — hand him the paste-ready command for his own terminal."
 HELP_TAIL='([[:space:]]+[0-9]*[<>]+[[:space:]]*[^[:space:]]*)*[[:space:]]*$'
@@ -334,17 +340,23 @@ HELP_TAIL='([[:space:]]+[0-9]*[<>]+[[:space:]]*[^[:space:]]*)*[[:space:]]*$'
 # that reads as help yet runs the script with other arguments.
 image_help_re="^[[:space:]]*([^[:space:]/]*/)*${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
 image_help_re="${image_help_re%"$EDGE"}[[:space:]]+(-h|--help)${HELP_TAIL}"
-typed=$(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]")
-literal=()
-while IFS= read -r line; do literal+=("$line"); done <<<"$scan_literal"
-image_scan=$(i=0
-  while IFS= read -r line; do
-    [ "$line" = "${literal[i]-}" ] && [[ $line =~ $image_help_re ]] && grep -Fxq -- "$line" <<<"$typed" ||
-      printf '%s\n' "$line"
-    i=$((i + 1))
-  done <<<"$scan")
-image_hit=$(scan=$image_scan; first_hit "$OWNED_IMAGE_RE")
-[ -n "$image_hit" ] || image_hit=$(first_hit "$MEDIA_ENGINE_RE")
+typed=''
+typed_lines() { [ -n "$typed" ] || typed=$(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]"); }
+image_hit=''
+case $scan in
+  *-image* | *grok-video* | *gemini-* | *elevenlabs-* | *image-fanout* | *chatgpt-web*)
+    typed_lines
+    literal=()
+    while IFS= read -r line; do literal+=("$line"); done <<<"$scan_literal"
+    image_scan=$(i=0
+      while IFS= read -r line; do
+        [ "$line" = "${literal[i]-}" ] && [[ $line =~ $image_help_re ]] && grep -Fxq -- "$line" <<<"$typed" ||
+          printf '%s\n' "$line"
+        i=$((i + 1))
+      done <<<"$scan")
+    image_hit=$(scan=$image_scan; first_hit "$OWNED_IMAGE_RE")
+    [ -n "$image_hit" ] || image_hit=$(first_hit "$MEDIA_ENGINE_RE") ;;
+esac
 [ -z "$image_hit" ] ||
   deny "Blocked: \`${image_hit}\` runs media past \`media-run\`, the one door that renders the account it spends: load the media skill, write the prompt yourself and run \`media-run <kind> --vendor <v> -- <the script's own args>\` (\`media-run --help\` lists the kinds) (several vendors, \`--takes\` or \`--jobs\` fan out). Quoting one inside a heredoc body is not running it."
 
@@ -352,10 +364,13 @@ unsanctioned=$(grep -Ev "$SANCTIONED_RE" <<<"$scan")
 launch_ask="A worker is ${DIRECT_ASK}"
 # A vendor CLI fed on stdin runs headless with no print flag, and a scheduler runs its command later,
 # where no gate reads it.
-piped=$(grep -Eo "(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(${VENDOR_BINS})([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)" <<<"$unsplit" 2>/dev/null |
+piped=''
+[[ $unsplit != *'|'* ]] || piped=$(grep -Eo "(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(${VENDOR_BINS})([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)" <<<"$unsplit" 2>/dev/null |
   grep -Ev "[|][[:space:]]*claudeb[[:space:]]+(revive|warm)[[:space:]]*\$" | head -n1 | sed -E 's/^[^|]*[|][[:space:]]*//' | tr -s '[:space:]' ' ' | sed -e 's/ $//')
 [ -z "$piped" ] || deny "Blocked: a pipe into \`${piped}\` runs it headless on its stdin — a bare vendor launch. ${launch_ask}."
-scheduled=$(grep -E "$SCHEDULE_RE" <<<"$scan" 2>/dev/null |
+scheduled=''
+schedule_line=$'\n''[[:space:]]*(at|batch|crontab)[[:space:]]'
+[[ ! $'\n'$scan$'\n' =~ $schedule_line ]] || scheduled=$(grep -E "$SCHEDULE_RE" <<<"$scan" 2>/dev/null |
   grep -Ev '^[[:space:]]*crontab([[:space:]]+-u[[:space:]]+[^[:space:]]+)?[[:space:]]+-l([[:space:]]+[0-9]?>>?(&[0-9]|[^[:space:]&|;]+)?)*[[:space:]]*$' | head -n1 |
   tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$scheduled" ] || span_live || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
@@ -363,8 +378,9 @@ scheduled=$(grep -E "$SCHEDULE_RE" <<<"$scan" 2>/dev/null |
 # after it (`gemini help -p "fix x"`) is a headless launch. A help line is exempt only as a segment
 # that held no quote or backslash before stripping: `sh -c "claude -p 'ls -h'"` strips to a help line.
 HELP_RE="${VENDOR_WORD}(${VENDOR_BINS})(${SUBCOMMAND}(-h|--help)${HELP_TAIL}|[[:space:]]+help([[:space:]]+[^[:space:]-][^[:space:]]*)*${HELP_TAIL})"
-help_lines=$(grep -E "$HELP_RE" <<<"$unsanctioned" |
-  grep -Fx -f <(printf '%s\n' "$typed"))
+help_lines=''
+[[ $unsanctioned != *-h* && $unsanctioned != *help* ]] || { typed_lines; help_lines=$(grep -E "$HELP_RE" <<<"$unsanctioned" |
+  grep -Fx -f <(printf '%s\n' "$typed")); }
 [ -z "$help_lines" ] || unsanctioned=$(grep -Fxv -f <(printf '%s\n' "$help_lines") <<<"$unsanctioned")
 launch_any=()
 for launch_re in "${LAUNCH_RES[@]}"; do launch_any+=(-e "$launch_re"); done
