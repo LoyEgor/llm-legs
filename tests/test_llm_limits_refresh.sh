@@ -5,6 +5,11 @@
 home_fixture_after_first_suite
 seed_claudeb_store
 seed_gemini_cache
+# Collector runs look up each fixture account's plan in the keychain and claudeb announces each probe
+# with a detached collector: a keychain with no items and no announcements keep both off the machine.
+NO_KEYCHAIN="$WORK/no-keychain"
+mkdir -p "$NO_KEYCHAIN" && printf '#!/bin/sh\nexit 44\n' >"$NO_KEYCHAIN/security" && chmod +x "$NO_KEYCHAIN/security"
+export PATH="$NO_KEYCHAIN:$PATH" LLM_LIMITS_ANNOUNCE_SUPPRESS=1
 
 CLAUDEB_BIN="$ROOT/bin/claudeb"
 OAUTH_HOME="$WORK/oauth-home"
@@ -209,7 +214,7 @@ EOF
 chmod +x "$WORK/fake-codex-quota-weekly"
 weekly_only=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota-weekly" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
-  bash "$SCRIPT" --refresh --no-write 2>/dev/null) || fail "weekly-only codex refresh failed"
+  LLM_LIMITS_CLAUDEB_CMD=/usr/bin/false bash "$SCRIPT" --refresh --no-write 2>/dev/null) || fail "weekly-only codex refresh failed"
 jq -e '.vendors.codex.available == true and .vendors.codex.five_hour.used_pct == null and
   .vendors.codex.weekly.used_pct == 0 and .vendors.codex.source == "codex-app-server" and
   (.vendors.codex | has("refresh_error") | not)' <<<"$weekly_only" >/dev/null \
@@ -221,7 +226,7 @@ awk '$1 == "codex" {print}' <<<"$weekly_only_table" | grep -Eq '^codex +- +0%' \
   || fail "weekly-only codex table did not render unknown 5h and weekly percentage"
 codex_restored=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
-  bash "$SCRIPT" --refresh --no-write 2>/dev/null) || fail "codex fixture restore failed"
+  LLM_LIMITS_CLAUDEB_CMD=/usr/bin/false bash "$SCRIPT" --refresh --no-write 2>/dev/null) || fail "codex fixture restore failed"
 refresh_failed=$(CLAUDEB_SENTINEL="$SENTINEL" LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
   PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh 2>/dev/null)
 rc=$?
