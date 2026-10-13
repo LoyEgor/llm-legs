@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 3
+# shards: 5
 # Guards docs/shared-invariants.md: values duplicated across independent
 # implementations (bash/jq/Lua/prose) must not drift apart. Each check
 # re-extracts the live value from every site and asserts they agree with each
@@ -88,12 +88,14 @@ GEMINIB="$ROOT/bin/geminib"
 OPENCODE_GO="$ROOT/bin/opencode-go"
 LLMREFRESH="$ROOT/bin/llm-refresh"
 CHATNAMES="$ROOT/share/chat_names.py"
+RJOURNAL="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+FLOW_GATE="$FAMILY_SETUP_ROOT/hooks/review-flow-gate.sh"
 
 # Value the doc declares canonical, extracted from its own table so a drifted
 # doc is caught too.
 doc_has() { grep -Fq -- "$1" "$ROOT/$DOC"; }
 
-if suite_shard_owns 1 rows-a-m; then
+if suite_shard_owns 2 rows-a-m; then
 # Every row is `| id | invariant | canonical value | implementation sites |`, and a row that lost
 # a separator renders its sites as part of the value — invisible to a reader looking for the file.
 short_rows=$(awk '/^\| [0-9a-z]+ \|/ { line = $0; gsub(/\\\|/, "", line)
@@ -1580,9 +1582,6 @@ assert grep -Fq -- "/Library/Logs/$HS_LABEL.log" "$HS_GUARD"
 assert grep -Fq -- "$HS_LABEL" "$ROOT/docs/DIAGNOSTICS.md"
 assert doc_has 'Hammerspoon launchd agent identity'
 
-RJOURNAL="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
-FLOW_GATE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/review-flow-gate.sh"
-
 # The review floor's one home is review-bench store.REVIEW_FLOOR_LINES; span-off and the sweep mirror it.
 review_floor=$(sed -n 's/^REVIEW_FLOOR_LINES = \([0-9][0-9]*\)$/\1/p' "$RB_STORE")
 assert test -n "$review_floor"
@@ -1724,7 +1723,7 @@ assert eq "$(grep -rlF 'claude-chat-pins' "$ROOT/bin" "$ROOT/share" "$ROOT/llm-l
 assert grep -Fq "CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok" "$ROOT/llm-limits.sh"
 fi
 
-if suite_shard_owns 2 rows-ai-ak; then
+if suite_shard_owns 1 rows-ai-ak; then
 # --- Row ai: usage wall record ------------------------------------------------
 # Two processes write this file in two languages — bin/opencode-go at the 429 it sees, bin/review-bench
 # for every side — so the record shape and the one rule they must spell alike, the per-window ceiling
@@ -2148,7 +2147,7 @@ assert doc_has 'read as one of three states and never two'
 assert doc_has 'The tick lock is handed back for the duration of the probe'
 fi
 
-if suite_shard_owns 1 rows-al-am; then
+if suite_shard_owns 5 rows-al-am; then
 # --- Row al: OpenCode rows in the limits store --------------------------------
 # The Go plan states no usage figure, so whether a wall still stands is the only reading there is
 # and llm-limits.sh computes it once. Every other surface renders those rows; a second answer to
@@ -2380,7 +2379,7 @@ else
 fi
 fi
 
-if suite_shard_owns 3 rows-an-ek; then
+if suite_shard_owns 4 rows-an-ek; then
 # --- Row an: launching-chat pid walk ------------------------------------------
 # One walk, the bench's, at run start: the top statusline that walked again at render time for an
 # old document went with its review segment, so a second walk reappearing there would answer a
