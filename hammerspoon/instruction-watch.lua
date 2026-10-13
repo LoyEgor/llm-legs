@@ -65,6 +65,12 @@ local function journalPath() return stateDir .. "/events.jsonl" end
 local function receiptPath(id) return stateDir .. "/receipts/" .. id end
 local function rankedPath() return stateDir .. "/ranked.txt" end
 
+local function journalStamp()
+    local attrs = hs.fs.attributes(journalPath())
+    if not attrs then return nil end
+    return tostring(attrs.size) .. "/" .. tostring(attrs.modification)
+end
+
 local function readFile(path)
     local handle = io.open(path, "r")
     if not handle then return nil end
@@ -119,12 +125,26 @@ local function readJournal()
     return events, events
 end
 
+-- Receipts are written once and nothing deletes one of a journaled record, so a read one is kept while
+-- the directory stays as it was (a hand removal moves its mtime) and has settled for a second.
+local receiptCache = { key = nil, ids = {} }
+
+local function syncReceipts()
+    local attrs = hs.fs.attributes(stateDir .. "/receipts")
+    local settled = attrs and type(attrs.modification) == "number" and os.time() > attrs.modification
+    local key = settled and string.format("%s:%s:%s:%s", stateDir, attrs.ino or "", attrs.modification, attrs.size or "")
+    if key ~= receiptCache.key or not key then receiptCache = { key = key or nil, ids = {} } end
+end
+
 local function receiptFor(id)
+    local hit = receiptCache.ids[id]
+    if hit then return hit end
     local body = readFile(receiptPath(id))
     if not body then return nil end
     local ok, decoded = pcall(hs.json.decode, body)
-    if ok and type(decoded) == "table" then return decoded end
-    return { at = "?" }
+    local receipt = ok and type(decoded) == "table" and decoded or { at = "?" }
+    if receiptCache.key then receiptCache.ids[id] = receipt end
+    return receipt
 end
 
 local function ensureReceiptDir()
@@ -181,9 +201,13 @@ function M.pump()
     watchStart()
     watchTick()
     local result = { delivered = 0, alerted = 0, stale = 0 }
+    -- Taken before the read, so an append in between still moves the stamp and pumps again; the
+    -- journal event this pump's own read answers then finds nothing new.
+    lastSeen = journalStamp()
     local _, events = readJournal()
     if #events == 0 then return result end
     if not ensureReceiptDir() then return result end
+    syncReceipts()
     pcall(resolveChatNames, events)
     local now = os.time()
     local pending = {}
@@ -455,13 +479,13 @@ root=$1 home=$2 state=$3 mode=$4
 shift 4
 . "$root/share/instruction-files.sh" 2>/dev/null || exit 2
 command -v jq >/dev/null 2>&1 || exit 2
+eval "$(sed -En '/^(hash_of|shq|snap_key|keep_revert|watch_mark_key|clear_gone_marks|release_marks|watch_claim)\(\) \{/,/^\}/p' "$root/bin/instruction-watch.sh")"
 for f in hash_of shq snap_key keep_revert watch_mark_key clear_gone_marks release_marks watch_claim; do
-  eval "$(sed -n '/^'"$f"'() {/,/^}/p' "$root/bin/instruction-watch.sh")"
   declare -F "$f" >/dev/null || exit 3
 done
 SNAP_DIR=$state/snapshot REVERT_DIR=$state/reverts SNAP_MAX_BYTES=1048576 ALERT_DIR=$state/alerts STATE_DIR=$state
 case $mode in
-  list) instruction_visible_paths "$home" "$state/ranked.txt" '' ;;
+  list) instruction_visible_cached "$home" "$state/ranked.txt" '' "$state/watcher" ;;
   unloaded)
     [ $# -gt 0 ] || exit 0
     printf '%s\n' "$@" | _INSTRUCTION_HOME=$home _INSTRUCTION_UNLOADED_ERE=$INSTRUCTION_HOME_UNLOADED_ERE \
@@ -560,7 +584,7 @@ function limit_hit.hit(name, value, unit, action, lost, where, observed)
     end)
 end
 
--- This read blocks Hammerspoon's main thread, so the scan's whole process group dies past SCAN_LIMIT_S.
+-- A synchronous read blocks Hammerspoon's main thread, so the scan's whole process group dies past SCAN_LIMIT_S.
 -- LC_ALL=C: with no locale in a launchd app's environment, bash's setlocale asks CoreFoundation, which
 -- deadlocks in a forked pipeline subshell (2026-10-01: the menubar froze 35 minutes).
 local SCAN_LIMIT_S = 20
@@ -569,22 +593,57 @@ if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
 $SIG{ALRM} = sub { kill 'TERM', -$pid; select(undef, undef, undef, 0.5); kill 'KILL', -$pid };
 alarm $limit; waitpid($pid, 0); exit($? & 127 ? 124 : $? >> 8)]]
 
-local function runScan(mode, args)
-    if not ROOT then return nil, "repository root unresolved" end
+local function scanCommand(mode, args)
     local parts = { "PATH=" .. WATCH_PATH .. ":$PATH; export PATH; LC_ALL=C; export LC_ALL; exec /usr/bin/perl -e",
         shellQuote(SCAN_GUARD), tostring(SCAN_LIMIT_S), "bash -c", shellQuote(WATCH_SCRIPT),
         "instruction-watcher", shellQuote(ROOT), shellQuote(homeDir()), shellQuote(stateDir), mode }
     for _, arg in ipairs(args or {}) do parts[#parts + 1] = shellQuote(arg) end
-    local handle = io.popen(table.concat(parts, " ") .. " 2>/dev/null")
-    if not handle then return nil, "cannot start bash" end
-    local out = handle:read("*a")
-    local ok, _, code = handle:close()
+    return table.concat(parts, " ") .. " 2>/dev/null"
+end
+
+local function scanResult(mode, out, ok, code)
     if code == 124 then
         limit_hit.hit("instruction-watch.scan-timeout", SCAN_LIMIT_S, "s", "kill",
             "the instruction watcher's " .. mode .. " scan: this tick's view of the watched files", "hammerspoon/instruction-watch.lua:local SCAN_LIMIT_S")
     end
     if not ok then return nil, "scan " .. mode .. " exited " .. tostring(code) end
     return out
+end
+
+local function runScan(mode, args)
+    if not ROOT then return nil, "repository root unresolved" end
+    local handle = io.popen(scanCommand(mode, args))
+    if not handle then return nil, "cannot start bash" end
+    local out = handle:read("*a")
+    local ok, _, code = handle:close()
+    return scanResult(mode, out, ok, code)
+end
+
+-- The listing scans run every tick as a task, so the main thread never waits on them. false (the test
+-- harness) reads them synchronously through runScan; a function replaces the task launch.
+local scanLauncher = nil
+local scanTasks = {}
+
+local function launchTask(command, onExit)
+    local task
+    task = hs.task.new("/bin/bash", function(code, stdout)
+        scanTasks[task] = nil
+        onExit(stdout, code)
+    end, { "-c", command })
+    if not task or not task:start() then return false end
+    scanTasks[task] = true
+    return true
+end
+
+local function runScanAsync(mode, args, done)
+    if scanLauncher == false or not (scanLauncher or (hs.task and hs.task.new)) then
+        return done(runScan(mode, args))
+    end
+    if not ROOT then return done(nil, "repository root unresolved") end
+    local launched = (scanLauncher or launchTask)(scanCommand(mode, args), function(stdout, code)
+        done(scanResult(mode, stdout, code == 0, code))
+    end)
+    if not launched then return done(nil, "cannot start bash") end
 end
 
 local function outputLines(out)
@@ -678,32 +737,41 @@ local function writeHeartbeat()
         failure and (" error=" .. failure) or ""))
 end
 
+-- A mark or closed entry is read once: its name carries the call, and a row already kept is never
+-- overwritten, so only names not seen on the previous refresh cost a read.
 local function refreshInflight()
-    local dir, present, now = stateDir .. "/inflight", {}, os.time()
+    local dir, present, now, known, kept = stateDir .. "/inflight", {}, os.time(), W.known or {}, {}
     if hs.fs.attributes(dir, "mode") == "directory" then
         for name in hs.fs.dir(dir) do
             if name ~= "." and name ~= ".." then
-                local epoch, callId = (readFile(dir .. "/" .. name) or ""):match("^(%d+%.?%d*)%s+(%S+)")
-                if epoch then
-                    local key = name .. "|" .. callId
-                    present[key] = true
-                    W.inflight[key] = W.inflight[key] or { sid = name:match("^(.-)@") or name, start = tonumber(epoch) }
+                local key = known["i|" .. name]
+                if not key then
+                    local epoch, callId = (readFile(dir .. "/" .. name) or ""):match("^(%d+%.?%d*)%s+(%S+)")
+                    if epoch then
+                        key = name .. "|" .. callId
+                        W.inflight[key] = W.inflight[key] or { sid = name:match("^(.-)@") or name, start = tonumber(epoch) }
+                    end
                 end
+                if key then present[key], kept["i|" .. name] = true, key end
             end
         end
     end
     local closed = stateDir .. "/closed"
     if hs.fs.attributes(closed, "mode") == "directory" then
         for name in hs.fs.dir(closed) do
-            local first, last = (readFile(closed .. "/" .. name) or ""):match("^(%d+)%s+(%d+)")
-            if first then
-                local key = "closed|" .. name
-                present[key] = true
-                W.inflight[key] = W.inflight[key] or { sid = name:match("^(.-)@") or name,
-                    start = tonumber(first) / 1e9, ended = tonumber(last) / 1e9 }
+            local key = known["c|" .. name]
+            if not key then
+                local first, last = (readFile(closed .. "/" .. name) or ""):match("^(%d+)%s+(%d+)")
+                if first then
+                    key = "closed|" .. name
+                    W.inflight[key] = W.inflight[key] or { sid = name:match("^(.-)@") or name,
+                        start = tonumber(first) / 1e9, ended = tonumber(last) / 1e9 }
+                end
             end
+            if key then present[key], kept["c|" .. name] = true, key end
         end
     end
+    W.known = kept
     for key, row in pairs(W.inflight) do
         if not present[key] and not row.ended then row.ended = now end
         if row.ended and now - row.ended > 600 then W.inflight[key] = nil end
@@ -903,82 +971,108 @@ local function attributionEvent(paths)
     return false
 end
 
-local function watchRefresh()
-    local out, err = runScan("list")
-    if not out then W.error = err; return false end
-    local list, seen, seenReal = {}, {}, {}
-    local function add(path)
-        if path == "" or seen[path] then return end
-        local real = realOf(path)
-        if seenReal[real] then return end
-        seen[path], seenReal[real] = true, true
-        list[#list + 1] = path
-    end
-    for _, line in ipairs(outputLines(out)) do add(line) end
-    local claudeDir = homeDir() .. "/.claude"
-    local repoRoots, repos = {}, {}
-    for _, path in ipairs(list) do
-        if not under(path, claudeDir) then
-            local root = path:match("^(.-)/%.claude/")
-            local base = (path:match("[^/]+$") or ""):lower()
-            if not root and (base == "claude.md" or base == "claude.local.md" or base == "skill.md") then
-                root = path:match("^(.*)/[^/]+$")
-            end
-            if root and root ~= "" and not repoRoots[root] then
-                repoRoots[root] = true
-                repos[#repos + 1] = root
+-- `done(ok)` runs once the listing scans are in; `sync` (the start, which has nothing to render
+-- until it ends) reads them in place instead of as tasks.
+local function watchRefresh(done, sync)
+    local mine = W
+    local scan = sync and function(mode, args, onScan) onScan(runScan(mode, args)) end or runScanAsync
+    scan("list", nil, function(out, err)
+        if W ~= mine then return end
+        if not out then W.error = err; return done(false) end
+        local memo = {}
+        local function real(path)
+            local known = memo[path]
+            if known == nil then known = realOf(path); memo[path] = known end
+            return known
+        end
+        local list, seen, seenReal = {}, {}, {}
+        local function add(path)
+            if path == "" or seen[path] then return end
+            local resolved = real(path)
+            if seenReal[resolved] then return end
+            seen[path], seenReal[resolved] = true, true
+            list[#list + 1] = path
+        end
+        for _, line in ipairs(outputLines(out)) do add(line) end
+        local claudeDir = homeDir() .. "/.claude"
+        local repoRoots, repos = {}, {}
+        for _, path in ipairs(list) do
+            if not under(path, claudeDir) then
+                local root = path:match("^(.-)/%.claude/")
+                local base = (path:match("[^/]+$") or ""):lower()
+                if not root and (base == "claude.md" or base == "claude.local.md" or base == "skill.md") then
+                    root = path:match("^(.*)/[^/]+$")
+                end
+                if root and root ~= "" and not repoRoots[root] then
+                    repoRoots[root] = true
+                    repos[#repos + 1] = root
+                end
             end
         end
-    end
-    if #repos > 0 then
-        for _, line in ipairs(outputLines(runScan("repo", repos))) do add(line) end
-    end
-    local candidates = { realOf(claudeDir) }
-    for _, root in ipairs(repos) do candidates[#candidates + 1] = realOf(root) end
-    -- ~/.claude's class directories are symlinks into another repository, and FSEvents reports a
-    -- write at the target, so a file reached through a link is watched at the link's target.
-    for _, path in ipairs(list) do
-        local real, covered = realOf(path), false
-        for _, root in ipairs(candidates) do if under(real, root) then covered = true; break end end
-        if not covered then
-            local top = under(path, claudeDir) and path:sub(#claudeDir + 2):match("^[^/]+")
-            local linked = top and realOf(claudeDir .. "/" .. top)
-            if linked and hs.fs.attributes(linked, "mode") == "directory" and under(real, linked) then
-                candidates[#candidates + 1] = linked
-            else
-                candidates[#candidates + 1] = real:match("^(.*)/[^/]+$")
+        local function finish(repoOut)
+            if repoOut then
+                for _, line in ipairs(outputLines(repoOut)) do add(line) end
             end
-        end
-    end
-    table.sort(candidates, function(a, b) return #a < #b end)
-    local roots = {}
-    for _, candidate in ipairs(candidates) do
-        local nested = false
-        for _, kept in ipairs(roots) do if under(candidate, kept) then nested = true; break end end
-        if not nested and hs.fs.attributes(candidate, "mode") == "directory" then roots[#roots + 1] = candidate end
-    end
-    local wanted = {}
-    for _, root in ipairs(roots) do
-        wanted[root] = true
-        if not W.watchers[root] then
-            local ok, watcherObj = pcall(hs.pathwatcher.new, root, function(paths) M.watchEvent(paths) end)
-            if ok and watcherObj then
-                watcherObj:start()
-                W.watchers[root] = watcherObj
+            local candidates = { real(claudeDir) }
+            W.repoReal = {}
+            for _, root in ipairs(repos) do
+                candidates[#candidates + 1] = real(root)
+                W.repoReal[#W.repoReal + 1] = real(root)
             end
+            -- ~/.claude's class directories are symlinks into another repository, and FSEvents reports a
+            -- write at the target, so a file reached through a link is watched at the link's target.
+            for _, path in ipairs(list) do
+                local resolved, covered = real(path), false
+                for _, root in ipairs(candidates) do if under(resolved, root) then covered = true; break end end
+                if not covered then
+                    local top = under(path, claudeDir) and path:sub(#claudeDir + 2):match("^[^/]+")
+                    local linked = top and real(claudeDir .. "/" .. top)
+                    if linked and hs.fs.attributes(linked, "mode") == "directory" and under(resolved, linked) then
+                        candidates[#candidates + 1] = linked
+                    else
+                        candidates[#candidates + 1] = resolved:match("^(.*)/[^/]+$")
+                    end
+                end
+            end
+            table.sort(candidates, function(a, b) return #a < #b end)
+            local roots = {}
+            for _, candidate in ipairs(candidates) do
+                local nested = false
+                for _, kept in ipairs(roots) do if under(candidate, kept) then nested = true; break end end
+                if not nested and hs.fs.attributes(candidate, "mode") == "directory" then roots[#roots + 1] = candidate end
+            end
+            local wanted = {}
+            for _, root in ipairs(roots) do
+                wanted[root] = true
+                if not W.watchers[root] then
+                    local ok, watcherObj = pcall(hs.pathwatcher.new, root, function(paths) M.watchEvent(paths) end)
+                    if ok and watcherObj then
+                        watcherObj:start()
+                        W.watchers[root] = watcherObj
+                    end
+                end
+            end
+            for root, watcherObj in pairs(W.watchers) do
+                if not wanted[root] then watcherObj:stop(); W.watchers[root] = nil end
+            end
+            W.list, W.listedBefore, W.listedAt = list, W.listedAt, os.time()
+            W.byReal = {}
+            for _, path in ipairs(watchPaths()) do
+                W.byReal[path] = path
+                W.byReal[real(path)] = path
+                if W.prev[path] and W.prev[path].real then W.byReal[W.prev[path].real] = path end
+            end
+            done(true)
         end
-    end
-    for root, watcherObj in pairs(W.watchers) do
-        if not wanted[root] then watcherObj:stop(); W.watchers[root] = nil end
-    end
-    W.list, W.listedBefore, W.listedAt = list, W.listedAt, os.time()
-    W.byReal = {}
-    for _, path in ipairs(watchPaths()) do
-        W.byReal[path] = path
-        W.byReal[realOf(path)] = path
-        if W.prev[path] and W.prev[path].real then W.byReal[W.prev[path].real] = path end
-    end
-    return true
+        if #repos > 0 then
+            scan("repo", repos, function(repoOut)
+                if W ~= mine then return end
+                finish(repoOut)
+            end)
+        else
+            finish(nil)
+        end
+    end)
 end
 
 -- watchPaths keeps every snapshot row watched, so a row under a tree the list now prunes
@@ -995,18 +1089,41 @@ local function pruneUnloaded(rows)
     end
 end
 
+-- The listing runs as tasks, so the tick spans several run-loop turns with W.busy held; the events
+-- FSEvents delivers meanwhile wait in W.queued and replay when it ends.
 watchTick = function()
     if not W or W.busy then return end
-    W.busy = true
-    pcall(function()
-        refreshInflight()
-        if watchRefresh() then watchCheck(watchPaths(), false, "", "change", W.listedBefore) end
-        if W.pruneError then pruneUnloaded(W.prev) end
-        if W.dirty then writeSnapshot() end
-    end)
-    if W then
+    local mine = W
+    mine.busy = true
+    local finished = false
+    local function finish()
+        if finished or W ~= mine then return end
+        finished = true
         writeHeartbeat()
-        W.busy = false
+        mine.busy = false
+        local queued = mine.queued
+        mine.queued = nil
+        if queued then
+            local paths = {}
+            for path in pairs(queued) do paths[#paths + 1] = path end
+            table.sort(paths)
+            M.watchEvent(paths)
+        end
+    end
+    local function proceed(ok)
+        if W ~= mine then return end
+        pcall(function()
+            if ok then watchCheck(watchPaths(), false, "", "change", W.listedBefore) end
+            if W.pruneError then pruneUnloaded(W.prev) end
+            if W.dirty then writeSnapshot() end
+        end)
+        finish()
+    end
+    if not pcall(function()
+        refreshInflight()
+        watchRefresh(proceed)
+    end) then
+        finish()
     end
 end
 
@@ -1023,7 +1140,9 @@ watchStart = function()
     local snapshot = readSnapshot()
     local ok = pcall(function()
         refreshInflight()
-        if not watchRefresh() then return end
+        local listed = false
+        watchRefresh(function(ok) listed = ok end, true)
+        if not listed then return end
         if snapshot then pruneUnloaded(snapshot) end
         local paths, seen = {}, {}
         for _, path in ipairs(W.list) do seen[path] = true; paths[#paths + 1] = path end
@@ -1072,9 +1191,22 @@ local function watchStop()
     W = nil
 end
 
+-- Under a repository root the listing's own rule decides (share/instruction-files.sh
+-- _instruction_candidate_pl): every other markdown there can never enter the set, and each would cost a
+-- full tick. Elsewhere (~/.claude and the link targets of its class directories) any markdown counts.
+local function repoCandidate(rel)
+    local base = rel:match("[^/]+$") or ""
+    if base == "claude.md" or base == "claude.local.md" or base == "skill.md" then return true end
+    if not rel:find("/.claude/", 1, true) or rel:find("/.claude/local/", 1, true) then return false end
+    return base == "review-debt-ignore" or base:match("%.md$") ~= nil or base:match("%.markdown$") ~= nil
+end
+
 local function instructionLike(path)
     local lower = tostring(path):lower()
     if lower:find("/.claude/projects/", 1, true) then return false end
+    for _, root in ipairs(W and W.repoReal or {}) do
+        if under(lower, root:lower()) then return repoCandidate(lower:sub(#root + 1)) end
+    end
     return lower:match("%.md$") or lower:match("%.markdown$") or lower:match("/review%-debt%-ignore$")
         or lower:match("/settings%.json$")
 end
@@ -1082,7 +1214,12 @@ end
 -- An event always hashes: hs.fs mtimes are whole seconds, so a same-size rewrite inside that second
 -- leaves the fingerprint the tick compares untouched.
 function M.watchEvent(paths)
-    if not W or W.busy then return end
+    if not W then return end
+    if W.busy then
+        W.queued = W.queued or {}
+        for _, path in ipairs(paths or {}) do W.queued[path] = true end
+        return
+    end
     W.busy = true
     pcall(function()
         local wanted, seen, unknown = {}, {}, false
@@ -1217,17 +1354,19 @@ end
 
 local function renderStyle()
     local color = dimColor()
+    local key = table.concat({ tostring(color.red), tostring(color.green), tostring(color.blue),
+        tostring(color.alpha), tostring(color.name) }, "/")
     return function(text, dim, red)
         return hs.styledtext.new(text, { font = menuStyle.MONO, color = red and menuStyle.RED or (dim and color or nil) })
-    end
+    end, key
 end
 local function eventTime(event)
     return menuStyle.clock(parseIso(event.at))
 end
 
-local function eventMenu(event, receipt, cache, style)
+local function eventMenu(event, cache, style, bytes, verb)
     local items = { { title = style(chatLabel(event)), disabled = true } }
-    local bytes, verb, rows = deltas(event), verbs(event), {}
+    local rows = {}
     for index, file in ipairs(event.files or {}) do
         local key = rateKey(cache, file)
         local entry = key and cache.entries[key]
@@ -1270,6 +1409,20 @@ local function eventMenu(event, receipt, cache, style)
     return items
 end
 
+-- A journal record never changes, so its submenu is built again only when what it prints does: the
+-- rates, the chat's label (resolved asynchronously) or the dim colour.
+local eventMenus = {}
+
+local function cachedEventMenu(used, event, cache, style, styleKey, bytes, verb)
+    local key = table.concat({ tostring(ratesStamp), chatLabel(event), styleKey }, "\0")
+    local hit = eventMenus[event.id]
+    if not (hit and hit.key == key) then
+        hit = { key = key, items = eventMenu(event, cache, style, bytes, verb) }
+    end
+    used[event.id] = hit
+    return hit.items
+end
+
 local function watcherState()
     local path = heartbeatPath()
     local born = hs.fs.attributes(path, "modification")
@@ -1292,8 +1445,10 @@ end
 
 function M.menuItems()
     local events, all = readJournal()
-    local cache, style = rates(), renderStyle()
-    local items = {}
+    syncReceipts()
+    local cache = rates()
+    local style, styleKey = renderStyle()
+    local items, usedMenus = {}, {}
     local watcherText, down = watcherState()
     if down then items[1] = { title = style(watcherText, false, true), disabled = true } end
     -- Widths follow this render's content: a column nobody fills takes no room and leaves no
@@ -1301,8 +1456,7 @@ function M.menuItems()
     local rows, fileWidth, byteWidth, priceWidth = {}, 0, 0, 0
     for index = #events, math.max(1, #events - MENU_ROWS + 1), -1 do
         local event = events[index]
-        local receipt = receiptFor(event.id)
-        local files, bytes = event.files or {}, deltas(event)
+        local files, bytes, verbList = event.files or {}, deltas(event), verbs(event)
         local more = #files > 1 and (" +" .. (#files - 1) .. " more") or ""
         local path = clip(shortPath(files[1] or "?"), FILE_WIDTH - cells(more))
         if event.kind == "dropped" or #files == 0 then path, more = shortSummary(event), "" end
@@ -1313,11 +1467,11 @@ function M.menuItems()
             if price ~= nil then totalPrice = (totalPrice or 0) + price end
         end
         -- A legacy ADDED/DELETED record carries no number; the verb says what the blank would not.
-        local row = { event = event, receipt = receipt, path = path, more = more,
+        local row = { event = event, path = path, more = more, deltas = bytes, verbs = verbList,
                       bytes = signed(totalBytes, BYTE_UNITS), price = priceText(totalPrice),
                       red = event.kind == "stamp-forged" }
-        local verb = verbs(event)[1]
-        for _, other in pairs(verbs(event)) do if other ~= verb then verb = nil end end
+        local verb = verbList[1]
+        for _, other in pairs(verbList) do if other ~= verb then verb = nil end end
         if verb and verb ~= "changed" and (totalBytes == nil or totalBytes == 0) then
             row.bytes, row.verb = verb, true
         end
@@ -1339,8 +1493,10 @@ function M.menuItems()
         if priceWidth > 0 and row.price ~= "" then
             title = title .. style(tail .. "  " .. pad(row.price, priceWidth, true), false, red)
         end
-        items[#items + 1] = { title = title, menu = eventMenu(row.event, row.receipt, cache, style) }
+        items[#items + 1] = { title = title,
+            menu = cachedEventMenu(usedMenus, row.event, cache, style, styleKey, row.deltas, row.verbs) }
     end
+    eventMenus = usedMenus
     if #rows == 0 then
         items[#items + 1] = { title = "No changes recorded", disabled = true }
     end
@@ -1375,12 +1531,6 @@ function M.menuItems()
         end,
     }
     return menuStyle.mono(items, tostring)
-end
-
-local function journalStamp()
-    local attrs = hs.fs.attributes(journalPath())
-    if not attrs then return nil end
-    return tostring(attrs.size) .. "/" .. tostring(attrs.modification)
 end
 
 -- FSEvents on the state directory, which also holds the snapshot and revert copies the hook writes
@@ -1445,6 +1595,10 @@ end
 function M.setChatResolver(fn)
     chatResolverFn = fn or runChatResolver
     chatNames, chatPending, chatRerun = nil, false, false
+end
+
+function M.setScanLauncher(fn)
+    scanLauncher = fn
 end
 
 function M.setAlert(fn)

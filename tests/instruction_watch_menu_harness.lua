@@ -51,6 +51,7 @@ local function restore()
     M.setPasteboard(nil)
     M.setOpenCommand(nil)
     M.setChatResolver(nil)
+    M.setScanLauncher(nil)
     M.setRatesPath(nil)
     M.setHome(nil)
     M.setStateDir(nil)
@@ -543,6 +544,7 @@ local ok, err = pcall(function()
     check(type(wf) == "table", "no watcher fixture was passed")
     if type(wf) ~= "table" then return end
     M.stop()
+    M.setScanLauncher(false)
     M.setStateDir(wf.state)
     M.setHome(wf.home)
     M.setRatesPath(wf.state .. "/no-rates.json")
@@ -737,6 +739,8 @@ local ok, err = pcall(function()
         "tripwire then watcher did not leave exactly the tripwire's one record: " .. (#marked - before))
     check(#alerts - alertsBefore == 1, "tripwire then watcher alerted " .. (#alerts - alertsBefore) .. " times")
     write(settings, '{"model":"haiku","hooks":{"x":1}}\n', "w")
+    check((readFile(wf.state .. "/watcher/visible-none") or ""):find("^#2\t") ~= nil,
+        "the listing scan did not keep its visible-set cache under watcher/: every tick walked the tree")
     fire(settings)
     check(#records() == before + 1, "a model switch in settings.json was journaled by the watcher")
 
@@ -914,6 +918,125 @@ local ok, err = pcall(function()
     check(#bounded == 400 and last.kind == "dropped" and last.count == 2,
         "the watcher's append past the bound dropped records without a dropped record: " .. #bounded)
     check(readFile(wf.state .. "/receipts/flood0003") ~= nil, "a record behind the newest 200 was never receipted")
+
+    local function lastId() local all = records(); return all[#all] and all[#all].id end
+    local function titles(items, out)
+        for _, item in ipairs(items) do
+            out[#out + 1] = item.title and plain(item.title) or ""
+            if type(item.menu) == "table" then titles(item.menu, out) end
+        end
+        return out
+    end
+
+    -- A markdown file the listing can never take costs no relisting tick; one it can take still does.
+    local relists, relistFn, realAfter = 0, nil, hs.timer.doAfter
+    hs.timer.doAfter = function(delay, fn)
+        if delay == 3 then relists, relistFn = relists + 1, fn end
+        return { stop = function() end }
+    end
+    local repoReal = hs.fs.pathToAbsolute(wf.repo)
+    fire(repoReal .. "/docs/handoffs/note.md")
+    check(relists == 0, "a repository markdown outside the listing's rule scheduled a relisting tick: " .. relists)
+    fire(repoReal .. "/sub/CLAUDE.md")
+    check(relists == 1, "a new repository CLAUDE.md scheduled no relisting tick: " .. relists)
+    hs.timer.doAfter = realAfter
+    if relistFn then relistFn() end
+
+    -- One recorded change is one full tick, whichever of the hook's poke and the journal's FSEvent comes
+    -- first.
+    local listCalls = 0
+    local countedIo = io
+    io = setmetatable({ popen = function(command, ...)
+        if command:find(quoted(wf.state) .. " list ", 1, true) then listCalls = listCalls + 1 end
+        return countedIo.popen(command, ...)
+    end }, { __index = countedIo })
+    write(wf.state .. "/events.jsonl", hs.json.encode({ id = "pumped01", at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        sid = "", kind = "change", summary = "CHANGED /tmp/pumped.md (+1 bytes)", files = { "/tmp/pumped.md" },
+        bytes = { 1 } }) .. "\n")
+    M.pump()
+    fireState(wf.state .. "/events.jsonl")
+    io = countedIo
+    check(listCalls == 1, "one recorded change ran " .. listCalls .. " full ticks")
+
+    -- A mark or closed entry is read once, however many attribution events follow.
+    local callMark = wf.state .. "/inflight/aaaa0000-0000-4000-8000-0000000000ee@toolu_once"
+    write(callMark, string.format("%d.000000000 toolu_once Bash /tmp\n", os.time()), "w")
+    write(wf.state .. "/closed/aaaa0000-0000-4000-8000-0000000000ee@toolu_done",
+        string.format("%d %d\n", (os.time() - 5) * 1000000000, (os.time() - 4) * 1000000000), "w")
+    fireState(wf.state .. "/inflight/call")
+    local markOpens = 0
+    io = setmetatable({ open = function(path, ...)
+        if tostring(path):find("-0000000000ee@toolu_", 1, true) then
+            markOpens = markOpens + 1
+        end
+        return countedIo.open(path, ...)
+    end }, { __index = countedIo })
+    fireState(wf.state .. "/inflight/call")
+    fireState(wf.state .. "/closed/call")
+    io = countedIo
+    os.remove(callMark)
+    os.remove(wf.state .. "/closed/aaaa0000-0000-4000-8000-0000000000ee@toolu_done")
+    check(markOpens == 0, "marks already read were read again by later attribution events: " .. markOpens)
+
+    -- A receipt already read is not read again while its directory stands as it was; a hand removal re-delivers.
+    os.execute("touch -t 202001010000 " .. quoted(wf.state .. "/receipts"))
+    M.pump()
+    local receiptOpens = 0
+    io = setmetatable({ open = function(path, ...)
+        if tostring(path):find("/receipts/", 1, true) then receiptOpens = receiptOpens + 1 end
+        return countedIo.open(path, ...)
+    end }, { __index = countedIo })
+    M.pump()
+    M.menuItems()
+    io = countedIo
+    check(receiptOpens == 0, "receipts were read again with their directory unchanged: " .. receiptOpens)
+    local alertsBeforeRemoval = #alerts
+    os.remove(wf.state .. "/receipts/pumped01")
+    M.pump()
+    check(#alerts == alertsBeforeRemoval + 1, "a receipt removed by hand did not deliver its record again")
+
+    -- A record's submenu is built once while what it prints holds still, and renders the same.
+    local firstMenu = M.menuItems()
+    local secondMenu = M.menuItems()
+    local shared = 0
+    for index, item in ipairs(firstMenu) do
+        if item.menu and secondMenu[index] and secondMenu[index].menu == item.menu then shared = shared + 1 end
+    end
+    check(shared > 0, "the record submenus were rebuilt on every render")
+    check(table.concat(titles(firstMenu, {}), "\n") == table.concat(titles(secondMenu, {}), "\n"),
+        "a cached submenu rendered other titles")
+
+    -- The listing runs as a task: the tick returns at once, a change FSEvents reports meanwhile waits for
+    -- the scan and is journaled once.
+    local pendingScans = {}
+    M.setScanLauncher(function(command, onExit)
+        pendingScans[#pendingScans + 1] = { command = command, onExit = onExit }
+        return true
+    end)
+    local seenBefore = lastId()
+    write(doc, "queued while scanning\n")
+    M.watchTick()
+    M.watchTick()
+    check(#pendingScans == 1 and pendingScans[1].command:find(quoted(wf.state) .. " list ", 1, true) ~= nil,
+        "a tick did not hand its listing to one task: " .. #pendingScans)
+    fire(doc)
+    check(lastId() == seenBefore, "an event during the scan was handled before the scan ended")
+    while #pendingScans > 0 do
+        local scan = table.remove(pendingScans, 1)
+        local handle = assert(io.popen(scan.command))
+        local out = handle:read("*a")
+        handle:close()
+        scan.onExit(out, 0)
+    end
+    local queuedChanges = 0
+    for _, record in ipairs(records()) do
+        if record.kind == "change" and type(record.bytes) == "table" and record.bytes[1] == #"queued while scanning\n"
+            and record.files[1] == doc then
+            queuedChanges = queuedChanges + 1
+        end
+    end
+    check(queuedChanges == 1, "a change made during the scan was journaled " .. queuedChanges .. " times")
+    M.setScanLauncher(false)
 
     M.stop()
     M.setHome(nil)
