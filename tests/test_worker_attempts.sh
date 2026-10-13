@@ -20,20 +20,24 @@ jq -n '{vendor: "codex", account: "first", role: "research", light: "research", 
 printf '1\n' >"$RUN/attempt"
 printf 'chat-session\n' >"$RUN/launcher"
 
+. "$ROOT/share/store-lock.sh"
+source <(sed -n "/^record_worker_session() {/,/^}/p;/^file_bytes() {/,/^}/p;/^journal_worker_attempt() {/,/^}/p" "$ROOT/bin/worker-run")
 record() { # session
-  FAKE_SESSION="$1" ROTATE_BYTES="${ROTATE_BYTES:-16777216}" bash -c '
-    . "$1/share/store-lock.sh"
-    source <(sed -n "/^record_worker_session() {/,/^}/p;/^file_bytes() {/,/^}/p;/^journal_worker_attempt() {/,/^}/p" "$1/bin/worker-run")
-    WORKER_ATTEMPTS_ROTATE_BYTES=$ROTATE_BYTES
+  (
+    set +u
+    FAKE_SESSION="$1"
+    WORKER_ATTEMPTS_ROTATE_BYTES="${ROTATE_BYTES:-16777216}"
     session_id() { printf "%s\n" "$FAKE_SESSION"; }
-    record_worker_session "$2"
-  ' _ "$ROOT" "$RUN"
+    record_worker_session "$RUN"
+  )
 }
+lines() { local n=0; while IFS= read -r _; do n=$((n + 1)); done <"$1"; printf '%s' "$n"; }
+field() { jq -r "$1" "$2" | paste -sd, -; }
 
 record 01a0-first
 record 01a0-first
-assert test "$(wc -l <"$JOURNAL" | tr -d ' ')" = 1
-line=$(head -n1 "$JOURNAL")
+assert test "$(lines "$JOURNAL")" = 1
+read -r line <"$JOURNAL"
 assert test "$(jq -r '[.run, .attempt, .session, .vendor, .account, .role, .light, .launcher, .agent] | map(tostring) | join(" ")' <<<"$line")" \
   = "codex-1790000000-1-abcd 1 01a0-first codex first research research chat-session null"
 assert jq -e '.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$")' <<<"$line" >/dev/null
@@ -43,42 +47,43 @@ assert jq -e '.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$")' <<<"$line" 
 jq '.account = "second"' "$RUN/meta.json" >"$RUN/meta.tmp" && mv "$RUN/meta.tmp" "$RUN/meta.json"
 printf '2\n' >"$RUN/attempt"
 record 01a0-second
-assert test "$(jq -r '.account' "$JOURNAL" | paste -sd, -)" = "first,second"
-assert test "$(jq -r '.attempt' "$JOURNAL" | paste -sd, -)" = "1,2"
+assert test "$(field '.account' "$JOURNAL")" = "first,second"
+assert test "$(field '.attempt' "$JOURNAL")" = "1,2"
 
 # An id nothing named leaves no line.
 record -
-assert test "$(wc -l <"$JOURNAL" | tr -d ' ')" = 2
+assert test "$(lines "$JOURNAL")" = 2
 
 # Past the bound the journal moves to one older segment, which replaces the previous one.
 ROTATE_BYTES=10 record 01a0-third
 assert test -f "$JOURNAL.1"
-assert test "$(jq -r '.session' "$JOURNAL.1" | paste -sd, -)" = "01a0-first,01a0-second"
-assert test "$(jq -r '.session' "$JOURNAL")" = "01a0-third"
+assert test "$(field '.session' "$JOURNAL.1")" = "01a0-first,01a0-second"
+assert test "$(field '.session' "$JOURNAL")" = "01a0-third"
 assert test ! -d "$JOURNAL.rotating"
 
 # A lock a killed rotation left behind does not stop the next one.
 mkdir "$JOURNAL.rotating" && touch -t 202001010000 "$JOURNAL.rotating"
 ROTATE_BYTES=10 record 01a0-fourth
-assert test "$(jq -r '.session' "$JOURNAL.1")" = "01a0-third"
-assert test "$(jq -r '.session' "$JOURNAL")" = "01a0-fourth"
+assert test "$(field '.session' "$JOURNAL.1")" = "01a0-third"
+assert test "$(field '.session' "$JOURNAL")" = "01a0-fourth"
 assert test ! -d "$JOURNAL.rotating"
 
 # A live holder's lock is neither broken nor released: that attempt appends without rotating.
 mkdir "$JOURNAL.rotating" && printf '%s\n' "$$" >"$JOURNAL.rotating/pid"
 touch -t "$(date -v-10M +%Y%m%d%H%M)" "$JOURNAL.rotating"
 ROTATE_BYTES=10 record 01a0-fifth
-assert test "$(jq -r '.session' "$JOURNAL.1")" = "01a0-third"
-assert test "$(jq -r '.session' "$JOURNAL" | paste -sd, -)" = "01a0-fourth,01a0-fifth"
-assert test "$(cat "$JOURNAL.rotating/pid")" = "$$"
+assert test "$(field '.session' "$JOURNAL.1")" = "01a0-third"
+assert test "$(field '.session' "$JOURNAL")" = "01a0-fourth,01a0-fifth"
+read -r holder <"$JOURNAL.rotating/pid"
+assert test "$holder" = "$$"
 rm -rf "$JOURNAL.rotating"
 
 # GNU stat first on PATH reads `-f` as filesystem mode: the size read still rotates the journal.
 mkdir -p "$WORK/gnu-stat"
 printf '#!/bin/bash\n[ "$1" = -f ] && { printf "  File: \\"%%s\\"\\n    ID: 0 Namelen: 255\\n" "$3"; exit 1; }\nexec /usr/bin/stat "$@"\n' >"$WORK/gnu-stat/stat"
 chmod +x "$WORK/gnu-stat/stat"
-PATH="$WORK/gnu-stat:$PATH" ROTATE_BYTES=10 record 01a0-sixth
-assert test "$(jq -r '.session' "$JOURNAL.1" | paste -sd, -)" = "01a0-fourth,01a0-fifth"
-assert test "$(jq -r '.session' "$JOURNAL")" = "01a0-sixth"
+(PATH="$WORK/gnu-stat:$PATH"; ROTATE_BYTES=10 record 01a0-sixth)
+assert test "$(field '.session' "$JOURNAL.1")" = "01a0-fourth,01a0-fifth"
+assert test "$(field '.session' "$JOURNAL")" = "01a0-sixth"
 
 printf 'OK: worker attempts journal (%d assertions)\n' "$asserts"

@@ -2267,8 +2267,8 @@ WORKER_ATTEMPTS_ROTATE_BYTES=16777216
 
 file_bytes() { # path
   local bytes
-  bytes=$(wc -c 2>/dev/null <"$1" | tr -d '[:space:]')
-  printf '%s\n' "${bytes:-0}"
+  bytes=$(wc -c 2>/dev/null <"$1")
+  printf '%s\n' "$((${bytes:-0}))"
 }
 
 # tokenmap zones every worker session from this journal: the run directory is pruned after seven
@@ -2277,7 +2277,7 @@ file_bytes() { # path
 # second writer may have rotated between the size read and the mkdir, and a lock older than a
 # minute is a killed rotation's, which would otherwise stop every later one.
 journal_worker_attempt() { # directory session
-  local directory="$1" journal
+  local directory="$1" journal ts attempt='' launcher=''
   journal="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/worker-attempts.jsonl"
   mkdir -p "${journal%/*}" 2>/dev/null || return 0
   if [ "$(file_bytes "$journal")" -gt "$WORKER_ATTEMPTS_ROTATE_BYTES" ] \
@@ -2290,9 +2290,11 @@ journal_worker_attempt() { # directory session
     fi
     store_lock_release "$journal.rotating"
   fi
-  jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "${directory##*/}" --arg session "$2" \
-    --arg attempt "$(head -n1 "$directory/attempt" 2>/dev/null)" \
-    --arg launcher "$(head -n1 "$directory/launcher" 2>/dev/null)" \
+  TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+  IFS= read -r attempt <"$directory/attempt" 2>/dev/null || :
+  IFS= read -r launcher <"$directory/launcher" 2>/dev/null || :
+  jq -c --arg ts "$ts" --arg run "${directory##*/}" --arg session "$2" \
+    --arg attempt "$attempt" --arg launcher "$launcher" \
     '{ts: $ts, run: $run, attempt: (($attempt | tonumber?) // null), session: $session,
       vendor, account, role, light: (.light // null), model, workdir,
       launcher: (($launcher | select(. != "")) // null)}' \

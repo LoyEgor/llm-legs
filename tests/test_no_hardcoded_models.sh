@@ -51,6 +51,7 @@ scan() {
       text = line
       for (i = 1; i <= words; i++)
         while ((at = index(text, word[i])) > 0) text = substr(text, 1, at - 1) substr(text, at + length(word[i]))
+      if (text !~ /[0-9]/ && index(text, "grok-imagine-") == 0) return
       gsub(/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/, "", text)
       if (text !~ re) return
       verdict = "HIT"
@@ -94,7 +95,7 @@ trap 'rm -rf "$scratch"' EXIT
 fixture="$scratch/legs" bench="$scratch/bench"
 mkdir -p "$fixture/bin" "$fixture/share" "$fixture/tests" "$fixture/docs" "$bench/share/rbench"
 printf '#!/bin/bash\nmodel="claude-opus-5-5"\n' >"$fixture/bin/x"
-printf '# gpt-6-sol was newest\nhost=127.0.0.1\n# pin: cheapest probe\n# still the pin comment\nprobe=claude-haiku-4-5\nua="cli/2.1.280"\nkeep=grok-4.7\nlead=flash37 # TEMP-%s(x)\nnext=flash37\nlast=flash37\n' \
+printf '# gpt-6-sol was newest\nhost=127.0.0.1\n# pin: cheapest probe\n# still the pin comment\nprobe=claude-haiku-4-5\nua="cli/2.1.280"\nkeep=grok-4.7\nlead=flash37 # TEMP-%s(x)\nnext=flash37\nlast=flash37\nimg=grok-imagine-video\n' \
   PROBE >"$fixture/share/y.sh"
 printf 'model="gpt-6-sol"\n' >"$fixture/tests/test_z.sh"
 printf 'gemini-3.8-flash\n' >"$fixture/docs/d.sh"
@@ -102,8 +103,11 @@ printf 'use flash38\n' >"$fixture/share/n.md"
 printf 'cell = "glm-5.2"\nrename = "old-gpt-5-x"\n' >"$bench/share/rbench/c.py"
 for tree in "$fixture" "$bench"; do git -C "$tree" init -q && git -C "$tree" add -A; done
 printf 'share/*.sh cli/[0-9] # UA\n[KNOWN_DEBT]\nshare/y.sh ^keep= # debt\n' >"$fixture/allow.txt"
+list_fixture() { fixture_files=$(list_files "$fixture" '' "${LEGS_SPEC[@]}"); }
+list_fixture
+bench_files=$(list_files "$bench" 'review-bench/' share/rbench)
 fixture_scan() {
-  { list_files "$fixture" '' "${LEGS_SPEC[@]}"; list_files "$bench" 'review-bench/' share/rbench; } |
+  printf '%s\n%s\n' "$fixture_files" "$bench_files" |
     EXPERIMENT_WORDS=old-gpt-5-x scan "$fixture/allow.txt"
 }
 assert eq "$(fixture_scan)" \
@@ -112,8 +116,9 @@ HIT share/n.md:1: use flash38
 DEBT share/y.sh:7: keep=grok-4.7
 HIT share/y.sh:9: next=flash37
 HIT share/y.sh:10: last=flash37
+HIT share/y.sh:11: img=grok-imagine-video
 HIT review-bench/share/rbench/c.py:1: cell = "glm-5.2"'
-rm "$fixture/bin/x" && git -C "$fixture" add -A
+rm "$fixture/bin/x" && git -C "$fixture" add -A && list_fixture
 assert eq "$(fixture_scan | grep -c '^HIT bin/')" 0
 printf 'bin/* gpt # never matches\nbin/q no-reason\n' >>"$fixture/allow.txt"
 assert eq "$(fixture_scan | grep -E '^(STALE|BAD)')" \
