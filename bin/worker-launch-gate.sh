@@ -95,6 +95,7 @@ OWNED_LEGS_RE="${VENDOR_WORD}(ask_(claude|codex|gemini)\.sh|codex-fast-probe|gem
 LEGS_FREE_RE='[[:space:]]--(extract-served-model|help)([[:space:]]|$)'
 REVIEW_LAUNCH_RE="${VENDOR_WORD}review-bench[[:space:]]+(review|run)${EDGE}"
 REVIEW_IDLE_RE='[[:space:]](--help|-h|--price)([[:space:]]|$)'
+PIPED_RE="(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(${VENDOR_BINS})([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)"
 SCHEDULE_RE='^[[:space:]]*(at|batch|crontab)([[:space:]]|$)'
 DIRECT_ASK="a worker run the chat starts itself: \`worker-run start <vendor> --brief <file> --workdir <dir>\` (worker-pick's START line names the vendor), then \`worker-run wait <run-id>\` as a background Bash and \`worker-run report <run-id>\` when it ends"
 # The owner token review-bench checks is the hooks' to stamp; a command setting it by hand is a
@@ -114,8 +115,55 @@ span_live() {
     words_span_live "$(jq -r '.session_id // ""' <<<"$input")" "$(jq -r '.transcript_path // ""' <<<"$input")" ) >/dev/null 2>&1
 }
 
+# Every check below needs one of these words in the text it reads: each is a check's own literal with
+# its command-position prefix dropped, which can only match more; a check added below needs its
+# literal here too.
+MAY_LAUNCH_RES=("(${VENDOR_BINS})${EDGE}" 'worker-run|review-bench|light-research|REVIEW_BENCH_DOOR'
+  "${UNREADABLE_RUN_RE#"$VENDOR_WORD"}" "${OWNED_LEGS_RE#"$VENDOR_WORD"}" "${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
+  "${MEDIA_ENGINE_RE#"$VENDOR_WORD"}")
+# The same words read off the raw command with builtins, before any fork: quotes and backslashes go
+# as the full scan drops them, separators become spaces where the scan breaks lines, and a `$` beside
+# an `=` may expand into any word — the scan expands only a name the command itself assigns, so that
+# is the pair asked for. Only a word the scan joins out of a quoted space reads differently,
+# and the shell runs no such word.
+may_launch() {
+  local text=${cmd//[\'\"\\]/} re
+  text=${text//[;|&()\`]/ }
+  if [[ $text == *'$'* && $text == *=* ]]; then
+    local rest=$text
+    re='([A-Za-z_][A-Za-z0-9_]*)='
+    while [[ $rest =~ $re ]]; do
+      [[ $text == *'$'"${BASH_REMATCH[1]}"* || $text == *'${'"${BASH_REMATCH[1]}"* ]] && return 0
+      rest=${rest#*"${BASH_REMATCH[0]}"}
+    done
+  fi
+  re="(^|[[:space:]])${SCHEDULE_RE#^}"
+  [[ $text =~ $re ]] && return 0
+  for re in "${MAY_LAUNCH_RES[@]}"; do
+    [[ $text =~ $re ]] && return 0
+  done
+  return 1
+}
+# The payload itself is screened before jq reads it: a call whose text names no launcher at all —
+# nearly every call — is judged by the same may_launch regexes over the raw JSON, so the common
+# call forks nothing. The JSON escapes are undone as far as the screen needs: `\\` pairs go first
+# (left to right, as JSON pairs them) and a backslash is stripped anyway, an escaped quote is the
+# quote it stands for and is stripped too, a bare quote is a string's edge and a boundary, the
+# whitespace escapes are whitespace, and a `\u` escape may spell any letter, so it takes the full path.
+raw_screen() {
+  local raw=${input//'\\'/}
+  case $raw in *mcp__codex__* | *'\u'*) return 1 ;; esac
+  raw=${raw//'\"'/}
+  raw=${raw//'"'/ }
+  cmd=${raw//\\[ntrbf]/ }
+  may_launch && return 1
+  cmd=''
+  return 0
+}
+
 command -v jq >/dev/null 2>&1 || exit 0
 IFS= read -r -d '' input || :
+raw_screen && exit 0
 parsed=$(jq -rn '[inputs] as $docs | $docs[] | select(.hook_event_name == "PreToolUse")
   | [.agent_id, .tool_input.run_in_background] as $more
   | [.tool_name // "", .tool_input.command // "",
@@ -139,27 +187,6 @@ input_field() { # jq path -> what `jq -r '<path> // empty'` prints for it (`// f
   fi
 }
 
-# Every check below needs one of these words in the text it reads: each is a check's own literal with
-# its command-position prefix dropped, which can only match more; a check added below needs its
-# literal here too.
-MAY_LAUNCH_RES=("(${VENDOR_BINS})${EDGE}" 'worker-run|review-bench|light-research|REVIEW_BENCH_DOOR'
-  "${UNREADABLE_RUN_RE#"$VENDOR_WORD"}" "${OWNED_LEGS_RE#"$VENDOR_WORD"}" "${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
-  "${MEDIA_ENGINE_RE#"$VENDOR_WORD"}")
-# The same words read off the raw command with builtins, before any fork: quotes and backslashes go
-# as the full scan drops them, separators become spaces where the scan breaks lines, and a `$` beside
-# an `=` may expand into any word. Only a word the scan joins out of a quoted space reads differently,
-# and the shell runs no such word.
-may_launch() {
-  local text=${cmd//[\'\"\\]/} re
-  text=${text//[;|&()\`]/ }
-  case $text in *'$'*=* | *=*'$'*) return 0 ;; esac
-  re="(^|[[:space:]])${SCHEDULE_RE#^}"
-  [[ $text =~ $re ]] && return 0
-  for re in "${MAY_LAUNCH_RES[@]}"; do
-    [[ $text =~ $re ]] && return 0
-  done
-  return 1
-}
 # `[[:blank:]]`, never `[[:space:]]`: a newline is a chain separator.
 SAFE_RUN_RE='^[[:blank:]]*worker-run[[:blank:]]+(report|say|claim|stop)([[:blank:]]+[A-Za-z0-9._/@%+=:,-]+)+[[:blank:]]*$'
 case "$tool" in Bash | Monitor) [[ ! $cmd =~ $SAFE_RUN_RE ]] && may_launch || exit 0 ;; esac
@@ -282,6 +309,16 @@ may_launch_args=(-e "$SCHEDULE_RE")
 for re in "${MAY_LAUNCH_RES[@]}"; do may_launch_args+=(-e "$re"); done
 grep -Eq "${may_launch_args[@]}" <<<"$unsplit"$'\n'"$scan" 2>/dev/null
 [ $? -ne 1 ] || exit 0
+# Every check below is one of these regexes read at command position, so a text matching none of
+# them denies nothing: an operand that merely names a launcher (`git log -- bin/worker-run`) ends here.
+# A check added below needs its regex here too.
+hit_args=(-e "$FORGED_TOKEN_RE" -e "$SCHEDULE_RE" -e "$OWNED_RUN_RE" -e "$UNREADABLE_RUN_RE" -e "$OWNED_LEGS_RE"
+  -e "$OWNED_IMAGE_RE" -e "$MEDIA_ENGINE_RE" -e "$REVIEW_LAUNCH_RE" -e "$WORKER_REVIEW_RE"
+  -e "${VENDOR_WORD}(worker-run|review-bench)[[:space:]]+wait${EDGE}")
+for re in "${LAUNCH_RES[@]}"; do hit_args+=(-e "$re"); done
+hit_args+=(-e "$PIPED_RE")
+grep -Eq "${hit_args[@]}" <<<"$unsplit"$'\n'"$scan" 2>/dev/null
+[ $? -ne 1 ] || exit 0
 
 first_hit() { # regex
   local hit
@@ -365,7 +402,7 @@ launch_ask="A worker is ${DIRECT_ASK}"
 # A vendor CLI fed on stdin runs headless with no print flag, and a scheduler runs its command later,
 # where no gate reads it.
 piped=''
-[[ $unsplit != *'|'* ]] || piped=$(grep -Eo "(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(${VENDOR_BINS})([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)" <<<"$unsplit" 2>/dev/null |
+[[ $unsplit != *'|'* ]] || piped=$(grep -Eo "$PIPED_RE" <<<"$unsplit" 2>/dev/null |
   grep -Ev "[|][[:space:]]*claudeb[[:space:]]+(revive|warm)[[:space:]]*\$" | head -n1 | sed -E 's/^[^|]*[|][[:space:]]*//' | tr -s '[:space:]' ' ' | sed -e 's/ $//')
 [ -z "$piped" ] || deny "Blocked: a pipe into \`${piped}\` runs it headless on its stdin — a bare vendor launch. ${launch_ask}."
 scheduled=''

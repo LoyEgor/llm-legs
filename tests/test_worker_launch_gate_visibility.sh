@@ -266,8 +266,8 @@ for spliced in "'cl''aude' -p hi" 'c\laude -p hi' 'a=cla; ${a}ude -p hi' 'cd /tm
   expect deny '' "$spliced"
 done
 
-# A write call naming no launcher word leaves after its one payload read, before any other process
-# (floor-bash-other-hooks): 15 process starts a call on 2026-10-05, about 60 before 2026-10-04.
+# A call whose payload names no launcher word leaves before any process starts, jq included, and one
+# that only names a launcher as an operand stops at the first scan, 14 starts at most where it took 54.
 mkdir -p "$WORK/shim"
 for bin in jq cat awk sed grep tr realpath head; do
   printf '#!/bin/bash\necho %s >>"%s"\nexec "%s" "$@"\n' "$bin" "$WORK/starts" "$(command -v "$bin")" >"$WORK/shim/$bin"
@@ -278,7 +278,7 @@ jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",
 : >"$WORK/starts"
 PATH="$WORK/shim:$PATH" bash "$GATE" <"$WORK/plain.json" >/dev/null 2>&1
 asserts=$((asserts + 1))
-[ "$(tr '\n' ' ' <"$WORK/starts")" = "jq " ] || fail "a plain write call started: $(tr '\n' ' ' <"$WORK/starts")"
+[ ! -s "$WORK/starts" ] || fail "a plain write call started: $(tr '\n' ' ' <"$WORK/starts")"
 for lone in 'worker-run report cb-1' ' worker-run say cb-1 done' 'worker-run claim cb-1 --paths bin/x' 'worker-run stop cb-1'; do
   jq -cn --arg c "$lone" '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_input:{command:$c}}' >"$WORK/lone.json"
   : >"$WORK/starts"
@@ -293,6 +293,25 @@ jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_inpu
 PATH="$WORK/shim:$PATH" bash "$GATE" <"$WORK/word.json" >/dev/null 2>&1
 asserts=$((asserts + 1))
 [ "$(wc -l <"$WORK/starts")" -lt 30 ] || fail "a launcher word with no check's literal started $(wc -l <"$WORK/starts" | tr -d ' ') processes"
+starts_of() { # command -> the processes the gate started
+  jq -cn --arg c "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_input:{command:$c}}' >"$WORK/lone.json"
+  : >"$WORK/starts"
+  PATH="$WORK/shim:$PATH" bash "$GATE" <"$WORK/lone.json" >/dev/null 2>&1
+  tr '\n' ' ' <"$WORK/starts"
+}
+asserts=$((asserts + 2))
+[ -z "$(starts_of 'python3 x.py --out=$HOME/f > out.txt')" ] || fail "a \$ beside an = with no assigned name used started: $(starts_of 'python3 x.py --out=$HOME/f > out.txt')"
+operand=$(starts_of 'mkdir -p d && echo codex > d/note.txt')
+[ "$(wc -w <<<"$operand")" -le 14 ] || fail "a launcher named as an operand ran the whole scan: $operand"
+# The raw-payload screen reads the JSON as the shell would see the command: a vendor at the string's edge,
+# one spelled with a \u escape, one after a newline escape and one split by an escaped backslash.
+for payload in '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi | claude"},"cwd":"/w"}' \
+  '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"\u0063laude -p x"}}' \
+  '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo ok\nclaude -p x"}}' \
+  '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cla\\ude -p x"}}'; do
+  asserts=$((asserts + 1))
+  [ "$(printf '%s' "$payload" | bash "$GATE" 2>/dev/null | jq -r '.hookSpecificOutput.permissionDecision // "pass"')" = deny ] || fail "[$payload] was not denied"
+done
 for chained in 'worker-run report cb-1; claude -p hi' 'worker-run report cb-1 && codex exec hi' $'worker-run report cb-1\nclaude -p hi' \
   'worker-run report cb-1 | claude -p' 'worker-run say cb-1 $(claude -p hi)' 'worker-run stop cb-1 `codex exec hi`'; do
   expect deny '' "$chained"
