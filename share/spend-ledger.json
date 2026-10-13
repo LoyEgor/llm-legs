@@ -5854,6 +5854,95 @@
    "verdict": "cut",
    "zero": "removal saves 16 wall-s a run (0.8 wall-min/day); loses the only pins that a runtime or interpreter writing the worker-model pin is denied and carried text is not",
    "note": "each model deny primed the table once instead of rebuilding the gemini/grok CLI catalogs per vendor (~6 builds), chat-pin scan skipped without a literal chat-pin, harness contains/lacks without a grep fork; the gate's pure-bash command parse (~0.2 CPU-s a call) is its design, kept; no shard split (moves wall only)"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_grok",
+   "title": "llm-legs/test_worker_run_grok",
+   "audited_at": "2026-10-13T15:25:38+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261012T235418Z-2b4c",
+   "cpu_run": 17.2,
+   "wall_run": 30.0,
+   "cpu_min_day": 8.64,
+   "wall_min_day": 29.84,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_grok.sh": "a791ec33eeac5bdda234760b9501f574803c1f6d",
+    "llm-legs/tests/worker_run_harness.sh": "e2f6e95f6dcc5be46652bfd8fb25fa2f8e978acb"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 18 wall-min/day; loses the grok launch/model/effort/turn-cap/flag pins (109 asserts), so none removed",
+   "note": "await_exit instead of wait reports in 13 cases, forkless meta poll: 27->20 CPU-s, 109 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_vendor_files",
+   "title": "llm-legs/test_worker_run_vendor_files",
+   "audited_at": "2026-10-13T15:25:39+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261012T235418Z-2b4c",
+   "cpu_run": 23.6,
+   "wall_run": 31.6,
+   "cpu_min_day": 8.1,
+   "wall_min_day": 32.58,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_vendor_files.sh": "bf20fd19c0f1fd65ea35a0e3241b7d0b62ad8bc5",
+    "llm-legs/tests/worker_run_harness.sh": "e2f6e95f6dcc5be46652bfd8fb25fa2f8e978acb"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 16.5 wall-min/day; loses gemini/codex transcript file-list, launcher and stale/recycled-run pins (146 asserts), none removed",
+   "note": "await_exit in 15 cases, forkless meta poll: 40->30 CPU-s, jq 2255->1693, 146 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_rounds",
+   "title": "llm-legs/test_worker_run_rounds",
+   "audited_at": "2026-10-13T15:25:39+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261012T235418Z-2b4c",
+   "cpu_run": 19.1,
+   "wall_run": 17.2,
+   "cpu_min_day": 10.35,
+   "wall_min_day": 44.01,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_run_rounds.sh": "a00b33be2067243a2171459ee7e3828f31d8af78",
+    "llm-legs/tests/worker_run_harness.sh": "e2f6e95f6dcc5be46652bfd8fb25fa2f8e978acb"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 17.6 wall-min/day; loses blank-brief, pinned-wall, pick and review-round pins (168 asserts), none removed",
+   "note": "only the shared harness meta poll without jq changed: 29.5->27.6 CPU-s, jq 2470->2150, 168 asserts unchanged; suite already uses await_exit"
+  },
+  {
+   "id": "suite:llm-legs/test_light_research_batch",
+   "title": "llm-legs/test_light_research_batch",
+   "audited_at": "2026-10-13T15:25:39+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261012T235418Z-2b4c",
+   "cpu_run": 18.4,
+   "wall_run": 28.9,
+   "cpu_min_day": 8.22,
+   "wall_min_day": 38.61,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/light_research_harness.sh": "f899061a8acbcd0b2fff73b3575cc67d99f893aa",
+    "llm-legs/tests/test_light_research_batch.sh": "e8537aa9f3cbab034fe0ae74db9015b79c781532"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 16 wall-min/day; loses batch citation header and worst-outcome-wins pins",
+   "note": "apierr/credits/unavail+quota cases folded into one run: 19->15.5 CPU-s; 40->35 asserts, removed ones covered by credits-class and INTERNAL-class mutations red in the merged assert"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_refresh",
+   "title": "llm-legs/test_llm_refresh",
+   "audited_at": "2026-10-13T15:25:40+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261012T235418Z-2b4c",
+   "cpu_run": 48.1,
+   "wall_run": 90.9,
+   "cpu_min_day": 9.73,
+   "wall_min_day": 30.47,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_llm_refresh.sh": "2bb5fdf021dfe1616b3615edd7fe815514cc64e7"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 18 wall-min/day; loses the refresh heartbeat tick, timeout and lock pins",
+   "note": "dropped timed batched-vendors baseline run and its timing assert (per-vendor call count asserts stay), hang checks 100 s headroom over 120 s hang (collector-timeout mutation red): 75->72.5 CPU-s, 67 tests unchanged; remaining cost is ~5500 jq spawns of bin/llm-refresh itself"
   }
  ]
 }
