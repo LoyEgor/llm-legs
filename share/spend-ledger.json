@@ -2001,6 +2001,21 @@
    "verdict": "kept",
    "zero": "removal saves ~7.8 CPU-min/day; loses the commit/push landing block and the uncommitted/review-debt lines every chat reads after a landing",
    "note": "73% of CPU is ~1.1 CPU-s landings in review-bench's review-debt probe (open repricing point already in docs/handoffs/2026-10-10-commit-report-debt-probe.md); ~75% of runs are a 13 ms bash+jq floor, a raw-payload pre-jq exit would save ~0.4 CPU-min/day against a JSON-escape/tool_use_id parsing risk in a landing hook"
+  },
+  {
+   "id": "cpu:hook/instruction-write-gate.sh",
+   "title": "hook/instruction-write-gate.sh",
+   "audited_at": "2026-10-13T09:59:18+03:00",
+   "by": "harness-speed-cpu-doctor-speed-20261012T235033Z-1231",
+   "cpu_min_day": 5.9,
+   "cpu_s_run": 0.047,
+   "runs_day": 5712,
+   "sources": {
+    "llm-legs/bin/instruction-write-gate.sh": "b2aaf6c35fd3ab30abe9f8e9ec0e28987b699fac"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~6.9 CPU-min/day; loses the shell half of the instruction gate (redirect/tee/copy/interpreter writes to CLAUDE.md and the guarded docs) and the inflight marks instruction-watch attributes bytes by",
+   "note": "floor ~20 CPU-ms (bash + 4 sourced libs + jq + readonly awk, each needed, half the calls exit there); judge_interp's three heavy interpreter greps now skipped on texts naming no interpreter (-1.6 of ~32 CPU-ms a run on 150 live payloads, identical output); the >=100 ms tail is real interpreter/heredoc parsing of python scripts run by path"
   }
  ]
 }
