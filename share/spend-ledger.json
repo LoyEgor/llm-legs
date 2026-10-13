@@ -3654,6 +3654,90 @@
    "verdict": "cut",
    "zero": "removal saves 1.2 wall-min/day; loses the every-vendor remove store-emptying pins",
    "note": "check_vendor two account_stores starts per vendor instead of five; 40 asserts"
+  },
+  {
+   "id": "suite:llm-legs/test_limits_view_budget",
+   "title": "llm-legs/test_limits_view_budget",
+   "audited_at": "2026-10-13T06:36:47+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-limits-view-budget-20261012T235329Z-30cc",
+   "cpu_run": 0.2,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.02,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_limits_view_budget.sh": "18bae82f415f000ce32d14205530fc555ef8df26"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.2 s a run (0.0 min/day); loses the pins on limits_days_remaining/limits_daily_budget/limits_stale_watch (null vs 0, clamp, 0.25-day floor)",
+   "note": "52 asserts in ~70 in-process jq spawns; each pins a distinct jq-def case, batching them would save ms; pure-defs tautology assert is cheap P3, kept"
+  },
+  {
+   "id": "suite:llm-legs/test_night_report_haiku",
+   "title": "llm-legs/test_night_report_haiku",
+   "audited_at": "2026-10-13T06:36:48+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-limits-view-budget-20261012T235329Z-30cc",
+   "cpu_run": 0.4,
+   "wall_run": 0.3,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.02,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_night_report_haiku.sh": "d672764fae08754146a18b34245a965d000d1635"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.3 s a run (0.0 min/day); loses the haiku trial line pins (family folding, landed/reverted/unlanded fixes) and the night-run wiring grep",
+   "note": "one fixture build + one haiku_trial.py spawn; TEMP-HAIKU-TRIAL removed whole by the haiku-review-cells experiment, not by speed work"
+  },
+  {
+   "id": "suite:llm-legs/test_py39_annotations",
+   "title": "llm-legs/test_py39_annotations",
+   "audited_at": "2026-10-13T06:36:49+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-limits-view-budget-20261012T235329Z-30cc",
+   "cpu_run": 0.7,
+   "wall_run": 0.4,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.02,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_py39_annotations.sh": "259602b0795425603b5cec2b6922cb7589a48c6a"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.4 s a run (0.0 min/day); loses the guard that launchd's /usr/bin/python3 3.9 can import every share/ and bin/ Python file",
+   "note": "one ast scan over share/ and bin/ plus a 4-file fixture proving the scanner catches old.py/bin/tool and passes ok.py/quoted.py; mutation of modern() goes red on the fixture assert"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_claims",
+   "title": "llm-legs/test_worker_claims",
+   "audited_at": "2026-10-13T06:36:51+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-limits-view-budget-20261012T235329Z-30cc",
+   "cpu_run": 0.3,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.02,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_claims.sh": "8873533f896c13cbc2aa3be181bb0716dc3b2e1f"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.2 s a run (0.0 min/day); loses claim TTL, stale-sibling independence, symlink-escape pruning and invalid-name rejection pins",
+   "note": "46 asserts, mostly in-process function calls in one sourced shell, no sleeps; nothing to cut"
+  },
+  {
+   "id": "suite:llm-legs/test_claude_parser",
+   "title": "llm-legs/test_claude_parser",
+   "audited_at": "2026-10-13T06:36:52+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-limits-view-budget-20261012T235329Z-30cc",
+   "cpu_run": 0.3,
+   "wall_run": 0.2,
+   "cpu_min_day": 0.01,
+   "wall_min_day": 0.02,
+   "sources": {
+    "llm-legs/tests/test_claude_parser.py": "0580547274b8ec685f3f966f306482553d2e4301"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.2 s a run (0.0 min/day); loses the served-model extraction pins (requested alias over auxiliary haiku, dominant fallback, canonicalModel, fail closed)",
+   "note": "4 CLI spawns of ask_claude.sh --extract-served-model, one per distinct path; the CLI is the only entry so spawns are the wiring; kept"
   }
  ]
 }
