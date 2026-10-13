@@ -4,6 +4,7 @@ and writes ~/.cache/code-doctor/latest.json in the shape of docs/doctors-contrac
 candidates use no LLM; only `judge` reads candidates, through worker-run, under a token and wall budget."""
 
 import argparse
+import collections
 import datetime
 import fnmatch
 import glob
@@ -1069,12 +1070,13 @@ class Graph:
         self.indexes = indexes
         self.ledger = ledger
         self.files = {}
-        self.by_base, self.by_stem, self.by_real, self.pkg, self.real = {}, {}, {}, {}, {}
+        self.by_base, self.by_stem, self.by_real, self.pkg, self.real, self.by_repo = {}, {}, {}, {}, {}, {}
         for repo, doc in indexes.items():
             top = doc["top"]
             for rel, record in doc["files"].items():
                 fid = "%s/%s" % (repo, rel)
                 self.files[fid] = record
+                self.by_repo.setdefault(repo, []).append(fid)
                 base = os.path.basename(rel)
                 self.by_base.setdefault(base, []).append(fid)
                 stem = os.path.splitext(base)[0]
@@ -1085,6 +1087,7 @@ class Graph:
                 if base == "__init__.py":
                     self.pkg.setdefault(os.path.basename(os.path.dirname(rel)), []).append(fid)
         self.tops = {repo: doc["top"] for repo, doc in indexes.items()}
+        self.globbed = {}
         self.aliases = None
 
     def local(self, repo, rel):
@@ -1203,10 +1206,11 @@ class Graph:
     def glob_targets(self, source, spec):
         folder, prefix, suffix = spec
         repo, here = source.split("/", 1)[0], os.path.dirname(source.split("/", 1)[1])
-        out = []
-        for fid in self.files:
-            if fid.split("/", 1)[0] != repo:
-                continue
+        key = (repo, here if folder == "@here" else None, folder, prefix, suffix)
+        if key in self.globbed:
+            return self.globbed[key]
+        out = self.globbed[key] = []
+        for fid in self.by_repo.get(repo, ()):
             rel = fid.split("/", 1)[1]
             parent, base = os.path.split(rel)
             if folder == "@here":
@@ -2018,13 +2022,21 @@ def code_token_counts(graph):
     return counts
 
 
-def symbol_mentions(graph, fid, name):
-    try:
+def symbol_mentions(graph, fid, name, runs=None):
+    """Mentions of NAME as a whole [\\w-] run; `runs` holds one file's run counts across its symbols."""
+    def read():
         with open(os.path.join(graph.top_of(fid), fid.split("/", 1)[1]), errors="replace") as handle:
-            text = handle.read()
+            return handle.read()
+    try:
+        if not re.fullmatch(r"[\w-]+", name):
+            return len(re.findall(r"(?<![\w-])%s(?![\w-])" % re.escape(name), read()))
+        if runs is None:
+            runs = {}
+        if fid not in runs:
+            runs[fid] = collections.Counter(re.findall(r"[\w-]+", read()))
+        return runs[fid][name]
     except OSError:
         return 2
-    return len(re.findall(r"(?<![\w-])%s(?![\w-])" % re.escape(name), text))
 
 
 def build_candidates():
@@ -2065,11 +2077,12 @@ def build_candidates():
             signals.append({"group": "dead", "rule": "unreachable", "units": [span], "protected": protected[span["unit"]],
                             "detail": "no entry point reaches %s" % span["unit"], "value": 0})
     token_counts = code_token_counts(graph)
+    mention_runs = {}
     for span in dead_symbols(graph, live, token_counts):
         if span["unit"] in protected or span["file"] in protected:
             continue
         name = span["unit"].rsplit("#", 1)[1].rsplit(".", 1)[-1].rsplit(":", 1)[-1]
-        if symbol_mentions(graph, span["file"], name) <= 1:
+        if symbol_mentions(graph, span["file"], name, mention_runs) <= 1:
             signals.append({"group": "dead", "rule": "uncalled", "units": [span],
                             "detail": "%s is defined and never called" % span["unit"], "value": span["lines"]})
     for span, row in retired_hits(graph):
