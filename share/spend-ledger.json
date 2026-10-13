@@ -1221,6 +1221,21 @@
    "verdict": "trade",
    "zero": "removal saves 1.0 CPU-min/day; loses the block on a global hyperframes skills install into ~/.claude/skills (every chat would pay for them)",
    "note": "handoff docs/handoffs/2026-10-13-hook-if-filter.md: a settings if-filter (Bash(*skills*), Bash(*hyperframes*init*)) skips the spawn for ~all commands; settings.json registrations are Never-list, Egor's step"
+  },
+  {
+   "id": "cpu:hook/chat-switch-link.sh",
+   "title": "hook/chat-switch-link.sh",
+   "audited_at": "2026-10-13T09:16:27+03:00",
+   "by": "harness-speed-cpu-hook-dia-not-chrome-sh-20261012T235042Z-5729",
+   "cpu_min_day": 0.8,
+   "cpu_s_run": 0.007,
+   "runs_day": 5712,
+   "sources": {
+    "claude-setup/hooks/chat-switch-link.sh": "9ff39435c536b1108bb795a0051a7494c41ae632"
+   },
+   "verdict": "trade",
+   "zero": "removal saves 0.9 CPU-min/day; loses the printed resume line and ~/.claude/last-chat-switch stash when a chat switch fails (the chat is unreachable without it)",
+   "note": "handoff docs/handoffs/2026-10-13-hook-if-filter.md: if-filter Bash(*claude-chat-switch*) skips the spawn for ~all commands; its own work is a substring test that exits at once; settings registrations are Egor's step"
   }
  ]
 }
