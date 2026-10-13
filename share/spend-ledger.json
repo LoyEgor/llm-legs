@@ -4,13 +4,13 @@
   {
    "id": "resumes",
    "title": "worker cold resumes",
-   "audited_at": "2026-10-08T01:21:43+03:00",
-   "by": "harness-speed-spend-resumes-20261007T214023Z-1d4d",
+   "audited_at": "2026-10-14T00:49:34+03:00",
+   "by": "egor-2026-10-14",
    "share": 0.016485,
    "prices": {},
    "sources": {},
-   "verdict": "kept",
-   "note": "7d to 2026-10-07: 36 main-context RESUMEs (11.2M, 89%) each carry a new brief into a 60-260k context the chat chose to keep (CLAUDE.md same-session rule), cache past Claude Code's own 1h TTL; the only cheaper path, a fresh worker with a distilled brief, drops that context and cannot replay to identical decisions; 115 image-gen sidechain 5m expiries (1.4M, 11%) already gone at source (claude-setup 4f0dcd0 1h TTL, 01f7357 agent removed); worker-run's RESUME-COLD warning prints after the decision into the relay, which never forwards it, so it changes nothing"
+   "verdict": "cut",
+   "note": "Egor cut it 2026-10-14 over the 2026-10-08 keep: worker-run refuses a claudeb RESUME idle past 55 min (codex 25 min) or into a context of 150k+, and the chat writes a fresh brief from what the session left. 7 days to 2026-10-13: cold resumes 2.2 % of Claude spend (Doctors 1.75, Workers 0.47), median 199k re-written against 31k for a fresh worker's first request; resumes into 150k+ compacted 21 of 47 times."
   },
   {
    "id": "suite:llm-legs/test_instruction_gate",

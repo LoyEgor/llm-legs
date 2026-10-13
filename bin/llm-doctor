@@ -1176,7 +1176,7 @@ def prelaunch_legs(cutoff, now):
         elif outcome.endswith("_UNAVAILABLE"):
             legs.append(leg(block, "worker", model, at, "failed", "pool empty", "unavailable at launch",
                             "ours", **common))
-        elif outcome in ("MODEL_REFUSED", "EFFORT_REFUSED"):
+        elif outcome in ("MODEL_REFUSED", "EFFORT_REFUSED", "RESUME_REFUSED"):
             legs.append(leg(block, "worker", model, at, "off", "refused", outcome.lower().replace("_", " "),
                             "", **common))
     return legs, earliest

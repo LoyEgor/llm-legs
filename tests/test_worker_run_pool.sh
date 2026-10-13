@@ -112,21 +112,35 @@ mkdir -p "$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture"
 claude_transcript="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-cold.jsonl"
 printf '%s\n' '{"message":{"usage":{"input_tokens":1}}}' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":150000,"cache_creation_input_tokens":500}}}' >"$claude_transcript"
 touch -t 202001010000 "$claude_transcript"
-clear_stub
-start_ok claudeb --account resumeacct --resume claude-cold
-assert grep -q 'RESUME-COLD: claudeb' "$WORK/start.err"
-assert grep -q 'context ~151k tokens' "$WORK/start.err"
-assert await_exit
-
+refused_resume() { # vendor session reason
+  local rc=0
+  clear_stub
+  "$RUNNER" start "$1" --brief "$WORK/brief" --workdir "$WORK/workdir" --account resumeacct --resume "$2" >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -q "RESUME $2 refused: $3" "$WORK/start.err"
+  assert grep -q 'Nothing was launched' "$WORK/start.err"
+  assert grep -qx 'OUTCOME: RESUME_REFUSED' "$WORK/start.out"
+  assert test ! -s "$CALL_LOG"
+}
+# Idle past the 1h cache: the whole context would be written again.
+refused_resume claudeb claude-cold 'idle .*~151k context again'
+# Warm, but at 151k near compaction.
 touch "$claude_transcript"
+refused_resume claudeb claude-cold 'its context is ~151k, near compaction'
+
+claude_small="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-small.jsonl"
+printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":90000,"cache_creation_input_tokens":500}}}' >"$claude_small"
+touch -t "$(date -v-50M +%Y%m%d%H%M)" "$claude_small"
 clear_stub
-start_ok claudeb --account resumeacct --resume claude-cold
-assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
+start_ok claudeb --account resumeacct --resume claude-small
+assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
 assert await_exit
+touch -t "$(date -v-60M +%Y%m%d%H%M)" "$claude_small"
+refused_resume claudeb claude-small 'idle 1h0m, past its ~1h cache'
 
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-missing
-assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
+assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
 assert await_exit
 
 clear_stub
@@ -143,16 +157,12 @@ mkdir -p "$CODEX_PROFILES_DIR/resumeacct/sessions/fixture"
 codex_transcript="$CODEX_PROFILES_DIR/resumeacct/sessions/fixture/rollout-codex-cold.jsonl"
 printf '%04000d\n' 0 >"$codex_transcript"
 touch -t 202001010000 "$codex_transcript"
-clear_stub
-start_ok codex --account resumeacct --resume codex-cold
-assert grep -q 'RESUME-COLD: codex' "$WORK/start.err"
-assert grep -q 'cache TTL ~30m expired' "$WORK/start.err"
-assert await_exit
+refused_resume codex codex-cold 'idle .*past its ~30m cache'
 
 touch "$codex_transcript"
 clear_stub
 start_ok codex --account resumeacct --resume codex-cold
-assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
+assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
 # A resume with no explicit model keeps the session's own: the config default must not travel.
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
 assert await_exit
@@ -253,7 +263,7 @@ gemini_transcript="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/gemini-res
 printf '{}\n' >"$gemini_transcript"
 touch -t 202001010000 "$gemini_transcript"
 start_ok gemini --account resumeacct --resume gemini-resume
-assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
+assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
 assert await_exit
 assert grep -qxF "ARG=$HOME/.claude" "$CALL_LOG"
 assert grep -q '^ARG=--conversation$' "$CALL_LOG"

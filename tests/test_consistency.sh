@@ -848,7 +848,7 @@ assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
 assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-59]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
 # Refused BEFORE the account is resolved: a pick already made is quota already claimed.
 assert test "$(grep -n 'refuse_unlisted_model "$vendor" "$model"' "$WORKER_RUN" | cut -d: -f1)" \
-  -lt "$(grep -n 'warn_cold_resume "$vendor" "$account" "$resume"' "$WORKER_RUN" | cut -d: -f1)"
+  -lt "$(grep -n 'refuse_stale_resume "$vendor" "$account" "$resume"' "$WORKER_RUN" | cut -d: -f1)"
 # Prose sites, each naming the same four allowed models and the refusal by name.
 for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   "$ROOT/docs/DIAGNOSTICS.md" "$WORKER_COMMAND"; do
