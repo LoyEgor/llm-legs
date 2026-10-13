@@ -3,10 +3,10 @@
 
 image_caps_dir() { printf '%s/share/image-caps' "$1"; }
 
-image_caps_file() { printf '%s/%s.json' "$(image_caps_dir "$1")" "$2"; }
+image_caps_file() { printf '%s/share/image-caps/%s.json' "$1" "$2"; }
 
 image_caps_get() { # root vendor jq-filter
-  jq -r "$3" "$(image_caps_file "$1" "$2")"
+  jq -r "$3" "$1/share/image-caps/$2.json"
 }
 
 # The tool schema lives in the CLI binary, so a CLI version other than the verified one means the
