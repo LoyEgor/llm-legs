@@ -31,10 +31,10 @@ printf "#!/usr/bin/env bash\nprintf '%%s\\n' \"\$*\" >>\"\$ANNOUNCE_LOG\"\n" >"$
 chmod +x "$LLM_LIMITS_ANNOUNCE_CMD"
 wait_announce() {
   local expected="$1" tries=0
-  while [ "$tries" -lt 50 ]; do
+  while [ "$tries" -lt 500 ]; do
     grep -qxF -- "$expected" "$ANNOUNCE_LOG" 2>/dev/null && return 0
     tries=$((tries + 1))
-    sleep 0.1
+    sleep 0.01
   done
   return 1
 }

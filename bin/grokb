@@ -4,6 +4,32 @@ set -euo pipefail
 
 profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
 
+reserved_name() {
+  case "$1" in
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-token|models) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+check_new_name() {
+  if [ -z "$1" ] || ! [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ "$1" = main ] || reserved_name "$1"; then
+    printf 'usage: grokb add <name> (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens; not reserved words or "main")\n' >&2
+    exit 2
+  fi
+}
+
+refuse_reserved_profile() {
+  if [ ! -d "$profiles_dir/$1" ] && reserved_name "$1"; then
+    printf "grokb: invalid profile name '%s'\n" "$1" >&2
+    exit 2
+  fi
+}
+
+case "${1:-}" in
+  add) [ "$#" -ne 2 ] || check_new_name "$2" ;;
+  profile|p|run) [ "$#" -lt 2 ] || ! [[ "$2" =~ ^[a-z0-9][a-z0-9-]*$ ]] || refuse_reserved_profile "$2" ;;
+esac
+
 # The heartbeat runs under launchd, whose PATH has no nvm, and `grok` is an npm global under
 # ~/.nvm — so a bare name there is "command not found", and the token touch it asks for never runs.
 resolve_grok_bin() {
@@ -85,13 +111,6 @@ account_home() {
 
 account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
 
-reserved_name() {
-  case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-token|models) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # Same two shapes grok-quota.py's auth_entry accepts: a top-level key field, or the first
 # nested object that has one. A single-entry wrapper is the common case, not the only one.
 auth_fields() {
@@ -132,10 +151,7 @@ credentials_alive() {
 
 add_account() {
   local name="${1:-}" directory rc=0
-  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ "$name" = main ] || reserved_name "$name"; then
-    printf 'usage: grokb add <name> (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens; not reserved words or "main")\n' >&2
-    exit 2
-  fi
+  check_new_name "$name"
   directory="$profiles_dir/$name"
   if [ -e "$directory" ] || [ -L "$directory" ]; then
     printf 'grokb: account already exists: %s\n' "$name" >&2
@@ -477,7 +493,7 @@ run_account() {
   directory="$profiles_dir/$name"
   if [ ! -d "$directory" ]; then
     if [ "$allow_create" != true ]; then printf 'grokb: unknown account: %s\n' "$name" >&2; exit 2; fi
-    if reserved_name "$name"; then printf "grokb: invalid profile name '%s'\n" "$name" >&2; exit 2; fi
+    refuse_reserved_profile "$name"
     mkdir -p "$directory"
     created=true
     printf "grokb: new profile '%s' created at %s — Grok will report if login is required.\n" \
