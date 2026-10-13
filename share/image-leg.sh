@@ -2,12 +2,16 @@
 # llm-doctor reads for its Image block. Recording never changes a wrapper's status or output.
 
 image_leg_start() { # tool kind [served-model-variable]
-  IMAGE_LEG_TOOL=$1 IMAGE_LEG_KIND=$2 IMAGE_LEG_MODEL_VAR=${3:-} IMAGE_LEG_STARTED=$(date +%s)
+  local stamp
+  IMAGE_LEG_TOOL=$1 IMAGE_LEG_KIND=$2 IMAGE_LEG_MODEL_VAR=${3:-} IMAGE_LEG_STARTED=${EPOCHSECONDS:-$(date +%s)}
   IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0 IMAGE_LEG_SIZE='' IMAGE_LEG_ROUTE='' IMAGE_LEG_SKIP=''
   IMAGE_LEG_COMPOSITE_ASK='' IMAGE_LEG_COMPOSITE_OFF='' IMAGE_LEG_COMPOSITE_BASE='' IMAGE_LEG_COMPOSITE_LINES=''
   IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_FALLBACK_REASON='' IMAGE_LEG_PHASES='' IMAGE_LEG_LOAD='' IMAGE_LEG_REQUESTED='' IMAGE_LEG_DELIVERED=''
   IMAGE_LEG_FIT='' IMAGE_LEG_LOCK_WAIT='' IMAGE_LEG_EDIT=''
-  IMAGE_JOB_ID=${IMAGE_JOB_ID:-$1-$(date -u +%Y%m%dT%H%M%SZ)-$$}
+  if [ -z "${IMAGE_JOB_ID:-}" ]; then
+    TZ=UTC0 printf -v stamp '%(%Y%m%dT%H%M%SZ)T' "$IMAGE_LEG_STARTED" 2>/dev/null || stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    IMAGE_JOB_ID=$1-$stamp-$$
+  fi
   export IMAGE_JOB_ID
   trap image_leg_exit EXIT
   # Untrapped, a SIGTERM still runs the EXIT trap but with the interrupted command's `$?`: two runs
@@ -41,7 +45,7 @@ image_leg_log_path() {
 image_leg_mark() { # [size]
   local now
   [ -n "${IMAGE_LEG_TOOL:-}" ] || return 0
-  now=$(date +%s)
+  now=${EPOCHSECONDS:-$(date +%s)}
   IMAGE_LEG_QUEUED=$((now - IMAGE_LEG_STARTED)) IMAGE_LEG_STARTED=$now IMAGE_LEG_SIZE=${1:-}
 }
 
@@ -71,9 +75,10 @@ image_leg_exit() {
     elif [ -z "$IMAGE_LEG_TEE" ]; then
       sleep 0.1
     else
-      for ((index = 0; index < 100; index++)); do
+      enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
+      for ((index = 0; index < 200; index++)); do
         kill -0 "$IMAGE_LEG_TEE" 2>/dev/null || break
-        sleep 0.01
+        sleep 0.005
       done
     fi
     err=$(tail -c 2000 "$IMAGE_LEG_ERR" 2>/dev/null) || err=''
