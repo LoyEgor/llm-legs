@@ -56,7 +56,7 @@ Quality rule (Egor): the speed of the current setup at the same intelligence. No
 
 | area · metric | unit / OM | source | traps |
 |---|---|---|---|
-| chat · turns | A split by the partition; TTFR from dequeue; thinking s; compaction s; context cost Σ 0.7 s/100 k × (context − 50 k); cache misses × s; residual | C1 | usage repeats per block line (dedupe by `requestId`); `compactMetadata` is a JSON object (string fallback); TTFR at xhigh inflated by completion-time logging; the 09-23..28 incident |
+| chat · turns | A split by the partition; TTFR from dequeue; thinking s; compaction s; context cost Σ 0.7 s/100 k × (context − 50 k); cache misses × s; residual | C1 | usage repeats per block line (dedupe by `requestId`); `compactMetadata` is a JSON object (string fallback); TTFR at xhigh inflated by completion-time logging |
 | chat · call waits, slow periods | moved `wait`, `local_slow` | Harness `c` events | as Harness |
 | chat · start | launch → ready, by SessionStart source (startup/resume/compact), cold/warm | C11 | compact starts belong to compaction |
 | delegation · blocked | B on the critical path; `result-turn` | C1 `d` rows + C3 | `started_at` is restamped on purpose (slot wait, reroute): queue = `pid_started_at → cli_starts[0]`; owner-decision pauses and `blocked-on-egor` stop the clock; deadline kills are a waste metric followed to a usable result |
@@ -169,7 +169,7 @@ revert.
 - an assertion removed without a witness test or a requirement dropped across shards (requirement-to-case map); a timing assert loosened beyond load-robust; a suite moved to `--all`;
 - caps in `share/run-suites.sh` / `share/slots.sh` or a machine-wide suite budget (nested runs would need token lending); worker slots; `WORKER_RUN_DEADLINE`, `WORKER_RUN_IDLE_S`, `WORKER_RUN_SILENT_S`, `WALL_SETTLE`; straggler cutoffs, dropped raters, review-bench tier efforts; a night deadline; the pre-landing suite gate; the one-debt-round rule;
 - orphan sweeps keyed on PPID 1 or a name; unregistering LaunchAgents (homebrew mysql, redis, php, nginx, transcriptions-gpt become needs-Egor rows with measured CPU); `git gc --prune` (unreachable `-w` blobs are load-bearing; only a niced `git maintenance run --task=loose-objects`);
-- paid media runs; breaking resume or explicit-account affinity; suite pass reuse (Egor dropped it; never rebuilt);
+- paid media runs; breaking resume or explicit-account affinity; suite pass reuse;
 - a baseline or limit raised, or a score floor on the night pick; robot curl refresh; silent account rotation.
 
 **Proof obligations of a `fixed` line:**
