@@ -790,6 +790,21 @@ check(probe_view["probes"] == {"ports": {"runs_day": 1.0, "cpu_min_day": 0.01}, 
       "each statusline probe kind counts its runs and CPU inside the window, a row without CPU as a run only")
 check(module.background_share(probe_view, {}) == 1.0,
       "the probes' CPU is the statusline's background share")
+later = os.path.join(kick_dir, "statusline-probes", "2026-10-02.tsv")
+with open(later, "w") as handle:
+    handle.write("%d\t9\t6000\twork\n" % ((mid + 86400) * 1e6))
+module.background_view({}, mid, mid + 2 * 86400, [], 2.0)
+module.PROBE_HELD.update(json.loads(json.dumps(module.PROBE_DAYS)))
+module.PROBE_DAYS.clear()
+module.TSV_DAYS.clear()
+with open(later) as handle:
+    text = handle.read()
+with open(later, "w") as handle:
+    handle.write(text.replace("work", "wxrk") + "%d\t9\t600\tports\n" % ((mid + 86460) * 1e6))
+resumed = module.background_view({}, mid, mid + 2 * 86400, [], 2.0)["probes"]
+check("wxrk" not in resumed and resumed["work"]["runs_day"] == 2.0 and resumed["ports"]["runs_day"] == 1.0,
+      "a probe day file wholly inside the window resumes its tally at the last run's byte: rows read before are "
+      "never parsed again: %s" % resumed)
 labelled = module.machine_view({"2026-10-01": {"label_cpu_s": {"l%d" % i: 90.0 for i in range(10)}}}, 0.0)
 check(len(labelled["label_cpu_s"]) == 8
       and abs(module.background_share(probe_view, labelled) - 1.01 / (1.01 + 900 / 60.0 / 1.5)) < 1e-9,

@@ -107,9 +107,12 @@ def days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_da
         if isinstance(r.get("start"), (int, float)) and r.get("doctor") and local_day(r["start"]) >= lo:
             add(out.setdefault("collector", {}).setdefault(local_day(r["start"]), {}), "doctor/" + str(r["doctor"]),
                 cpu_s(r.get("cpu_s"), 1), None)
+    minutes = {}
     for end, key, _ms, _failed, _start, _ppid, cpu_ms in hook_runs:
-        if local_day(end) >= lo:
-            add(out.setdefault("hooks", {}).setdefault(local_day(end), {}), "hook/" + str(key).split(" ")[0],
+        minute = int(end // 60)
+        day = minutes.get(minute) or minutes.setdefault(minute, local_day(end))
+        if day >= lo:
+            add(out.setdefault("hooks", {}).setdefault(day, {}), "hook/" + str(key).split(" ")[0],
                 cpu_s(cpu_ms, 1000), None)
     return out
 

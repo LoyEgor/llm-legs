@@ -76,7 +76,7 @@ def sources(path):
     for sub in ("", "lib"):
         here = os.path.join(folder, sub)
         for name in sorted(os.listdir(here)) if os.path.isdir(here) else ():
-            if not name.startswith(("test_", "e2e_")) and os.path.isfile(os.path.join(here, name)) \
+            if not name.startswith(("test_", "e2e_")) and name in text and os.path.isfile(os.path.join(here, name)) \
                     and re.search(r"(?<![\w.-])%s(?![\w-])" % re.escape(name), text):
                 out.append(os.path.join(here, name))
     return out

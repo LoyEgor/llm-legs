@@ -231,6 +231,82 @@ def wait_rows(lo, hi):
     return [r for r in out if r["started"] < hi and r["started"] + r["seconds"] > lo]
 
 
+_REFUSALS, _REFUSALS_HELD = {}, []
+
+
+def refusal_scan_path():
+    return os.path.join(harness_dir(), "refusal-scan.json")
+
+
+def transcript_refusals(path, size):
+    """A transcript's refusals in line order: ("blocked", at, uuid, event, gate) or ("denied", at, tool_use_id, gate).
+    A transcript only grows, so the scan resumes at the byte its last complete line ended at, kept across runs; a
+    file whose first bytes changed was replaced and is read whole."""
+    if not _REFUSALS_HELD:
+        held = read_json(refusal_scan_path(), None)
+        _REFUSALS_HELD.append(held if isinstance(held, dict) else {})
+    entry = _REFUSALS.get(path) or _REFUSALS_HELD[0].get(path)
+    offset, head, found = entry if isinstance(entry, list) and len(entry) == 3 else (0, "", [])
+    if offset > size:
+        offset, found = 0, []
+    if offset < size:
+        with open(path, "rb") as handle:
+            if offset and handle.read(len(head)).decode("latin-1") != head:
+                offset, found = 0, []
+            handle.seek(offset)
+            data = handle.read(size - offset)
+        end = data.rfind(b"\n") + 1
+        found = found + parse_refusals(data[:end])
+        head = head if offset else data[:64].decode("latin-1")
+        offset += end
+    _REFUSALS[path] = [offset, head, found]
+    return found
+
+
+def save_refusals():
+    if _REFUSALS:
+        write_json(refusal_scan_path(), _REFUSALS)
+
+
+def parse_refusals(data):
+    found = []
+    for raw in data.splitlines():
+        if b'"hook_blocking_error"' not in raw and (b"PreToolUse:" not in raw or b"hook error:" not in raw):
+            continue
+        line = raw.decode("utf-8", "replace")
+        blocking = '"hook_blocking_error"' in line
+        try:
+            entry = json.loads(line)
+            at = night_spend.dt.datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).timestamp()
+        except (ValueError, KeyError, TypeError):
+            continue
+        item = entry.get("attachment") if blocking else None
+        if isinstance(item, dict) and item.get("type") == "hook_blocking_error":
+            error = item.get("blockingError")
+            text = error.get("blockingError") if isinstance(error, dict) else error
+            match = re.match(r"\[([^\]]+)\]", text if isinstance(text, str) else "")
+            event = str(item.get("hookEvent") or "")
+            found.append(("blocked", at, entry.get("uuid"), event, os.path.basename(match[1]) if match else
+                          "unknown-%s-hook" % (event.lower() or "blocking")))
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result" or not block.get("is_error"):
+                continue
+            body = block.get("content")
+            if isinstance(body, list):
+                body = "\n".join(b.get("text", "") for b in body if isinstance(b, dict))
+            if not isinstance(body, str):
+                continue
+            match = re.match(r"^PreToolUse:[\w]+ hook error: (?:\[([^\]]+)\])?", body)
+            if match:
+                found.append(("denied", at, str(block.get("tool_use_id") or "")[-10:],
+                              os.path.basename(match[1]) if match[1] else "unknown-hook"))
+    return found
+
+
 def refusal_rows(lo, hi):
     rows = [r for r in night_spend.rows(gates_path()) if r.get("decision") in GATE_REFUSALS
             and lo <= (num(r.get("at")) or 0) < hi]
@@ -238,63 +314,33 @@ def refusal_rows(lo, hi):
     for r in rows:
         journal[str(r.get("sid") or "")[:8]].append(r)
     seen = set()
-    for path, (session, _) in handoffs.transcripts(lo).items():
+    for path, (session, stamp) in handoffs.transcripts(lo).items():
         sid = session[:8]
         try:
-            with open(path, errors="replace") as handle:
-                for line in handle:
-                    blocking = '"hook_blocking_error"' in line
-                    if not blocking and ("PreToolUse:" not in line or "hook error:" not in line):
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        at = night_spend.dt.datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).timestamp()
-                    except (ValueError, KeyError, TypeError):
-                        continue
-                    if not lo <= at < hi:
-                        continue
-                    item = entry.get("attachment") if blocking else None
-                    if isinstance(item, dict) and item.get("type") == "hook_blocking_error":
-                        event = str(item.get("hookEvent") or "")
-                        key = entry.get("uuid") or (sid, at, event)
-                        if event == "PreToolUse" or key in seen:
-                            continue
-                        seen.add(key)
-                        error = item.get("blockingError")
-                        text = error.get("blockingError") if isinstance(error, dict) else error
-                        match = re.match(r"\[([^\]]+)\]", text if isinstance(text, str) else "")
-                        rows.append({"at": at, "sid": sid, "tool_use_id": "", "decision": "blocked", "event": event,
-                                     "gate": os.path.basename(match[1]) if match else
-                                     "unknown-%s-hook" % (event.lower() or "blocking")})
-                        continue
-                    content = (entry.get("message") or {}).get("content")
-                    if not isinstance(content, list):
-                        continue
-                    for block in content:
-                        if not isinstance(block, dict) or block.get("type") != "tool_result" or not block.get("is_error"):
-                            continue
-                        body = block.get("content")
-                        if isinstance(body, list):
-                            body = "\n".join(b.get("text", "") for b in body if isinstance(b, dict))
-                        if not isinstance(body, str):
-                            continue
-                        match = re.match(r"^PreToolUse:[\w]+ hook error: (?:\[([^\]]+)\])?", body)
-                        if not match:
-                            continue
-                        tid = str(block.get("tool_use_id") or "")[-10:]
-                        key = (sid, tid or at)
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        duplicates = [r for r in journal[sid] if not r.get("tool_use_id")
-                                      and abs((num(r["at"]) or 0) - at) <= 2]
-                        if duplicates:
-                            min(duplicates, key=lambda r: abs(float(r["at"]) - at))["tool_use_id"] = tid
-                            continue
-                        gate = os.path.basename(match[1]) if match[1] else "unknown-hook"
-                        rows.append({"at": at, "sid": sid, "tool_use_id": tid, "gate": gate, "decision": "denied"})
+            found = transcript_refusals(path, int(stamp.split(":", 1)[0]))
         except OSError:
             continue
+        for kind, at, ident, *rest in found:
+            if not lo <= at < hi:
+                continue
+            if kind == "blocked":
+                event, gate = rest
+                key = ident or (sid, at, event)
+                if event == "PreToolUse" or key in seen:
+                    continue
+                seen.add(key)
+                rows.append({"at": at, "sid": sid, "tool_use_id": "", "decision": "blocked", "event": event,
+                             "gate": gate})
+                continue
+            key = (sid, ident or at)
+            if key in seen:
+                continue
+            seen.add(key)
+            duplicates = [r for r in journal[sid] if not r.get("tool_use_id") and abs((num(r["at"]) or 0) - at) <= 2]
+            if duplicates:
+                min(duplicates, key=lambda r: abs(float(r["at"]) - at))["tool_use_id"] = ident
+                continue
+            rows.append({"at": at, "sid": sid, "tool_use_id": ident, "gate": rest[0], "decision": "denied"})
     return rows
 
 
@@ -703,6 +749,7 @@ def section(now, write=True):
         return {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}
     if write:
         write_block(doc)
+        save_refusals()
     return doc
 
 

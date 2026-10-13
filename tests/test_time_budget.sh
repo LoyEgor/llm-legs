@@ -179,7 +179,26 @@ check(extra_cost["count"] == 4 and extra_cost["by_gate_s"]["cd-guard.sh"] == 1
       "profile subagent transcripts use the parent session, deduplicate copied calls and retain unnamed hooks")
 os.unlink(profile)
 os.unlink(transcript)
-blocks = os.path.join(work, "home", ".claude", "projects", "fixture", "recover5-full.jsonl")
+resumed = os.path.join(work, "home", ".claude", "projects", "fixture", "resume1-full.jsonl")
+denial = lambda t, tid: {"timestamp": iso(D0 + t), "message": {"content": [
+    {"type": "tool_result", "tool_use_id": tid, "is_error": True, "content": "PreToolUse:Bash hook error: [cd-guard.sh] x"}]}}
+lines(resumed, [{"timestamp": iso(D0 + 400), "type": "user"}, denial(500, "resume1")])
+resumed_ids = lambda: [r["tool_use_id"] for r in T.refusal_rows(D0 + 490, D0 + 530) if r["sid"].startswith("resume1")]
+resumed_ids()
+T.save_refusals()
+T._REFUSALS.clear()
+T._REFUSALS_HELD.clear()
+with open(resumed, "rb") as handle:
+    text = handle.read()
+with open(resumed, "wb") as handle:
+    handle.write(text.replace(b"hook error", b"hook_error") + (json.dumps(denial(510, "resume2")) + "\n").encode())
+check(resumed_ids() == ["resume1", "resume2"],
+      "a transcript scan resumes at the last run's byte: refusals read before are never parsed again")
+with open(resumed, "wb") as handle:
+    handle.write(text.replace(b"user", b"usex").replace(b"hook error", b"hook_error"))
+check(resumed_ids() == [], "a transcript whose first bytes changed was replaced and is read whole")
+os.unlink(resumed)
+blocks =os.path.join(work, "home", ".claude", "projects", "fixture", "recover5-full.jsonl")
 stop = {"timestamp": iso(D0 + 600), "uuid": "stop-1", "attachment": {
     "type": "hook_blocking_error", "hookEvent": "Stop", "hookName": "Stop",
     "blockingError": {"blockingError": "[~/.claude/hooks/ask-span-drill.sh]: write the reading line"}}}
