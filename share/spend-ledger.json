@@ -2186,6 +2186,22 @@
    "verdict": "cut",
    "zero": "removal saves ~0.1 wall-s a run; loses the overdue-experiment reminder and the tag round-trip",
    "note": "tag-present grep excluded .claude (worktree copies kept a removed block green; red on that mutation after the fix); 2 asserts with the empty registry, 0.1 s, nothing to cut"
+  },
+  {
+   "id": "suite:claude-setup/test_stop_backstop",
+   "title": "claude-setup/test_stop_backstop",
+   "audited_at": "2026-10-13T06:20:27+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-stop-backstop-20261012T235214Z-2406",
+   "cpu_run": 0.5,
+   "wall_run": 0.6,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.04,
+   "sources": {
+    "claude-setup/tests/test_stop_backstop.sh": "5e60fbf434b23bc0d283ab4ed9423606a552e68a"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0.5 CPU-s a run (0.0 CPU-min/day); loses the only end-to-end pin that stop-dispatch runs the llm-legs backstop first, never deferred, journals its hold and its failure, and spares a run its live wait owns",
+   "note": "7 asserts each red under its mutation (owned-wait deletion in the backstop proven red); 3 dispatches are the minimum for hold/owned/error; HOME and stores isolated; no sleep beyond the live-pid fixture"
   }
  ]
 }
