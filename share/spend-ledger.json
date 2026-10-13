@@ -1582,6 +1582,81 @@
    "verdict": "cut",
    "zero": "removal saves ~0.1 CPU-min/day; loses the stop that refuses to leave this chat's dead or never-read review run standing",
    "note": "one jq per progress document plus a jq -rs on every stop, while stale cancelled documents of other chats stay; a builtin read keeps only documents holding this session's id (claude-setup@9e19d92), ~20 -> ~13 CPU-ms, same output on the real documents"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/results/lanes/coord/tools/lostel.py",
+   "title": "process/logo-vectorizer-bench/results/lanes/coord/tools/lostel.py",
+   "audited_at": "2026-10-13T09:37:56+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-results-lanes-coord-tools-lostel-py-20261012T235107Z-319a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 138.208,
+   "runs_day": 1,
+   "sources": {
+    "logo-vectorizer-bench/results/lanes/coord/tools/lostel.py": "07b38705420d4604b12947c215e0f7b77b1ed8f5"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0 CPU-min/day (7-day median 0.0; it runs only on days the logo-vectorizer-bench lane evaluates, 1 run a day at most, ~2-4 CPU-min on those days); loses the bench's own tracer/evaluation results (Egor's logo-vectorizer-bench project, outside llm-legs, gitignored tracers/)",
+   "note": "bench workload of another repo, bursty on lane-eval days only (c46: Oct 8-9, lostel: Oct 11-12); no harness waits, nothing to cut here; load is weather"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/c46-edge/driver.py",
+   "title": "process/logo-vectorizer-bench/tracers/c46-edge/driver.py",
+   "audited_at": "2026-10-13T09:38:02+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-results-lanes-coord-tools-lostel-py-20261012T235107Z-319a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 221.462,
+   "runs_day": 1,
+   "sources": {
+    "logo-vectorizer-bench/tracers/c46-edge/driver.py": "3b65b1619eb6723802dfa335735aed3cd6711b32"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0 CPU-min/day (7-day median 0.0; it runs only on days the logo-vectorizer-bench lane evaluates, 1 run a day at most, ~2-4 CPU-min on those days); loses the bench's own tracer/evaluation results (Egor's logo-vectorizer-bench project, outside llm-legs, gitignored tracers/)",
+   "note": "bench workload of another repo, bursty on lane-eval days only (c46: Oct 8-9, lostel: Oct 11-12); no harness waits, nothing to cut here; load is weather"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/c46-hist/driver.py",
+   "title": "process/logo-vectorizer-bench/tracers/c46-hist/driver.py",
+   "audited_at": "2026-10-13T09:38:05+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-results-lanes-coord-tools-lostel-py-20261012T235107Z-319a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 178.14,
+   "runs_day": 1,
+   "sources": {
+    "logo-vectorizer-bench/tracers/c46-hist/driver.py": "ba8d457df5b13a751a2144f5adc31f2ac9ad05fd"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0 CPU-min/day (7-day median 0.0; it runs only on days the logo-vectorizer-bench lane evaluates, 1 run a day at most, ~2-4 CPU-min on those days); loses the bench's own tracer/evaluation results (Egor's logo-vectorizer-bench project, outside llm-legs, gitignored tracers/)",
+   "note": "bench workload of another repo, bursty on lane-eval days only (c46: Oct 8-9, lostel: Oct 11-12); no harness waits, nothing to cut here; load is weather"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/c46-pad/driver.py",
+   "title": "process/logo-vectorizer-bench/tracers/c46-pad/driver.py",
+   "audited_at": "2026-10-13T09:38:08+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-results-lanes-coord-tools-lostel-py-20261012T235107Z-319a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 96.264,
+   "runs_day": 1,
+   "sources": {
+    "logo-vectorizer-bench/tracers/c46-pad/driver.py": "64c905462406c7b9e168b1bc48c2091feec551b4"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0 CPU-min/day (7-day median 0.0; it runs only on days the logo-vectorizer-bench lane evaluates, 1 run a day at most, ~2-4 CPU-min on those days); loses the bench's own tracer/evaluation results (Egor's logo-vectorizer-bench project, outside llm-legs, gitignored tracers/)",
+   "note": "bench workload of another repo, bursty on lane-eval days only (c46: Oct 8-9, lostel: Oct 11-12); no harness waits, nothing to cut here; load is weather"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/c46-soft/driver.py",
+   "title": "process/logo-vectorizer-bench/tracers/c46-soft/driver.py",
+   "audited_at": "2026-10-13T09:38:12+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-results-lanes-coord-tools-lostel-py-20261012T235107Z-319a",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 200.108,
+   "runs_day": 1,
+   "sources": {
+    "logo-vectorizer-bench/tracers/c46-soft/driver.py": "128199a6007db8cbfe74b656f4a544d19fb6cfe2"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 0 CPU-min/day (7-day median 0.0; it runs only on days the logo-vectorizer-bench lane evaluates, 1 run a day at most, ~2-4 CPU-min on those days); loses the bench's own tracer/evaluation results (Egor's logo-vectorizer-bench project, outside llm-legs, gitignored tracers/)",
+   "note": "bench workload of another repo, bursty on lane-eval days only (c46: Oct 8-9, lostel: Oct 11-12); no harness waits, nothing to cut here; load is weather"
   }
  ]
 }
