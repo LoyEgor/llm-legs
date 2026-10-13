@@ -103,7 +103,7 @@
     {
       "id": "ssd-writers",
       "what": "which short-lived or other users' process writes the internal SSD",
-      "reason": "Each tick reads the disk counters of this uid's live processes (proc_pid_rusage), but a process that dies between ticks takes its counters along, and other users' counters need root; the 2026-10-04 privileged sample put ~76% of writes on our own short-lived processes. Since 2026-10-13 the root bin/ssd-sampler (owner-consented, installed by `sudo bin/ssd-sampler install`) traces 10 min every 7 h and Disk writes lists its shares; between samples the gap stays",
+      "reason": "Each tick reads the disk counters of this uid's live processes (proc_pid_rusage), but a process that dies between ticks takes its counters along, and other users' counters need root; the 2026-10-04 privileged sample put ~76% of writes on our own short-lived processes. Since 2026-10-13 the root bin/ssd-sampler (owner-consented, installed by `sudo bin/ssd-sampler install`) traces up to 2 min every 3.5 h (cut at 20 s lag, past which fs_usage drops events) and Disk writes lists its shares; between samples the gap stays",
       "since": "2026-10-06",
       "would_catch_if": "a continuous privileged trace (fs_usage or endpoint security) instead of 10-min samples"
     },

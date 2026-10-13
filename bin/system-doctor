@@ -1697,7 +1697,8 @@ def cohort_score(days, launches, now):
     """{covered_days, items} of B_i = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB x pressure, S/86400, L/1440)
     per item over the newest day rows covering >= 7 days (14 back at most); items None while fewer are covered.
     rusage reads only this uid's processes: W, D, R and M of an item whose rusage some covered day missed (an Apple
-    daemon of another uid, a launchd job seen only by dumpstate) are unknown and never certify a low B."""
+    daemon of another uid, a launchd job seen only by dumpstate) are unknown and never certify a low B. The root
+    sampler runs as another uid through Apple's fs_usage, so each sample's own cost joins as the own SAMPLER_TAG."""
     chosen, covered = [], 0
     for day in sorted(days, key=lambda d: d.get("day", ""), reverse=True):
         if day.get("day", "") < local_day(now - COHORT["lookback_days"] * DAY_S) or covered >= COHORT["days"] * DAY_S:
@@ -1720,6 +1721,12 @@ def cohort_score(days, launches, now):
         if row.get("t", 0) >= since:
             for job in row.get("jobs") or ():
                 sums.setdefault((job["name"], job["owner"]), [0.0] * 7)[6] += job["runs"]
+    for doc in sampler_docs(since):
+        cost = doc.get("cost") or {}
+        slot = sums.setdefault((SAMPLER_TAG, "own"), [0.0] * 7)
+        slot[0] += cost.get("cpu_s") or 0
+        slot[2] += cost.get("wrote_b") or 0
+        slot[5] += (cost.get("rss_max_b") or 0) * (cost.get("ran_s") or 0)
     items = []
     for (name, owner), (cpu, births, written, read, wakes, held, runs) in sums.items():
         per_day = {"C": cpu / span, "S": births / span, "L": runs / span}
@@ -2345,6 +2352,9 @@ def judge_collectors(judge, rows, launches, harvests, censuses, logs=()):
         judge.blind.append("logstores")
 
 
+SAMPLER_TAG = "llm-legs/bin/ssd-sampler"
+
+
 def sampler_dir():
     return os.environ.get("SSD_SAMPLER_DIR") or "/var/db/ssd-sampler"
 
@@ -2353,16 +2363,22 @@ def sampler_plist():
     return os.environ.get("SSD_SAMPLER_PLIST") or "/Library/LaunchDaemons/com.egor.ssd-sampler.plist"
 
 
-def ssd_sampled(now):
-    """Internal-disk writes in the root bin/ssd-sampler v2 samples of the last 7 days (v1 cut paths under the Data
-    firmlink and has no capture check): {samples, minutes, newest, top:
-    [[proc, dir, share of the internal devices' bytes]], attributed share}; None without a sample."""
+def sampler_docs(since):
+    """The root bin/ssd-sampler samples ending after since, v3 on: v1 cut Data-volume paths, v2 kept tracing after
+    fs_usage began dropping events and carries no cost."""
     docs = []
     for path in sorted(glob.glob(os.path.join(sampler_dir(), "*.json"))):
         doc = read_json(path)
-        if isinstance(doc, dict) and doc.get("v", 0) >= 2 and isinstance(doc.get("end"), (int, float)) \
-                and doc["end"] >= now - 7 * DAY_S:
+        if isinstance(doc, dict) and doc.get("v", 0) >= 3 and isinstance(doc.get("end"), (int, float)) \
+                and doc["end"] >= since:
             docs.append(doc)
+    return docs
+
+
+def ssd_sampled(now):
+    """Internal-disk writes in the root bin/ssd-sampler samples of the last 7 days: {samples, minutes, newest, top:
+    [[proc, dir, share of the internal devices' bytes]], attributed share}; None without a sample."""
+    docs = sampler_docs(now - 7 * DAY_S)
     device = sum(b for d in docs for label, b in (d.get("devices") or {}).items() if label.startswith("internal:"))
     if not device:
         return None

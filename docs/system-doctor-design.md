@@ -259,13 +259,19 @@ once 14 days of series exist. A `log-store` fix is proven when the next scan no 
 - Other users' footprints stay blind without a consented privileged sample (ledger `foreign-cohort-terms`).
   Short-lived and other users' disk writes are sampled, not traced (ledger `ssd-writers`): the root `bin/ssd-sampler`
   (LaunchDaemon `com.egor.ssd-sampler`, owner-consented 2026-10-13, `sudo bin/ssd-sampler install`, copy in
-  /usr/local/libexec so no user-writable file runs as root) traces `fs_usage -f diskio` 10 min every 7 h, a 7 h step
-  walks every hour of the day in a week. Each sample, `/var/db/ssd-sampler/<start>.json`, carries the device write
-  counters over the trace and the write bytes per (process, disk, directory), paths kept from the front (`-F`) with
-  the Data firmlink prefix dropped. v2 samples check their own capture: a 64 MiB fsync'd calibration write against the
-  bytes traced for it, device counters every minute beside the traced bytes of that minute, fs_usage's lag and stderr,
-  and raw lines with no process, device or absolute path. v1 (the first sample: 7% attributed, Data paths cut to
-  `/System/Volumes/Data`) is ignored. `measures.ssd_sampled` sums 7 days:
+  /usr/local/libexec so no user-writable file runs as root) traces `fs_usage -f diskio` up to 2 min every 3.5 h, a
+  3.5 h step walks every half hour of the day in a week. fs_usage loses events once it lags behind them: the v2 sample
+  (2026-10-13, 10 min) traced the whole 64 MiB calibration and every byte for 2 min, a tenth by minute 9, at 6 min lag
+  and 3.5 GB RSS. So a sample ends at 20 s of lag, 768 MiB of fs_usage RSS, or its timeout plus 60 s (watchdog kill).
+  Each sample, `/var/db/ssd-sampler/<start>.json`, carries the device write counters over the traced span and the
+  write bytes per (process, disk, directory), paths kept from the front (`-F`), the Data firmlink prefix dropped,
+  slashless system paths rooted, the per-user temp folder named `$TMPDIR`. It checks its own capture (a 16 MiB fsync'd
+  calibration write against the bytes traced for it, device counters every 10 s beside that tick's traced bytes,
+  fs_usage's lag, cut, exit and stderr, raw lines with no process, device or absolute path) and carries its own cost
+  (CPU s of itself and fs_usage, peak RSS, run time, bytes written). The sampler runs as root through Apple's fs_usage,
+  which the ticks tag Apple and cannot read, so `cohort_score` adds each sample's cost as the own item
+  `llm-legs/bin/ssd-sampler` (C, D, and M as peak RSS x run time) and the night tunes it like any own tool at B >= 1.
+  Only v3 samples count (v1 cut Data paths, v2 traced past its drops). `measures.ssd_sampled` sums 7 days:
   each (process, directory) share of the internal devices' bytes and the attributed share; Disk writes scales them to
   GB/d by the week's mean. Blind `ssd-sampler` while the daemon is installed but no sample is younger than 15 h.
 
