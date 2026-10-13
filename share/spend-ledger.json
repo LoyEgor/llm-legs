@@ -1956,6 +1956,21 @@
    "verdict": "kept",
    "zero": "removal saves ~3k tokens/7d of main-thread turns; loses every Light launch (the turn is the delegation itself: one worker-run start light Bash call)",
    "note": "tokenmap procedure() charges each main-thread request its share per worker-run/review-bench call; 3k/7d (from 10k) is a handful of worker-run start light calls (10 in the whole transcript store), each the launch the chat wanted; no cheaper equivalent: the call is already one Bash line and its turn holds the chat's own context, not procedure overhead"
+  },
+  {
+   "id": "cpu:doctor/speed",
+   "title": "doctor/speed",
+   "audited_at": "2026-10-13T09:29:46+03:00",
+   "by": "harness-speed-cpu-doctor-speed-20261012T235033Z-1231",
+   "cpu_min_day": 9.9,
+   "cpu_s_run": 4.653,
+   "runs_day": 215,
+   "sources": {
+    "llm-legs/bin/speed-doctor": "6dbcee90be9abd08a7be53727c83bfc0f7eb8fd8"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 9.9 CPU-min/day; loses the Speed block (owner minutes, opportunities, Spend/Suite/CPU audits, the night's Speed queue), which Egor reads in the menu",
+   "note": "runs after every 5-min Harness run (launchd StartInterval 300); profiled on copies of the live stores: quadratic load_tests, transcript refusal rescans x3, 1.4M strftime, 208 git calls, 800k probe rows x2 were the CPU; all cut with identical output, 15 -> 4.6 CPU-s a run"
   }
  ]
 }
