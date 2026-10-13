@@ -1535,7 +1535,7 @@
             "llm-legs/tests/test_instruction_gate_tripwire.sh"
           ],
           "in": "llm-legs@852dc4ed",
-          "regressed_at": null
+          "regressed_at": "2026-10-13T06:38:27+03:00"
         }
       ],
       "same_cause": [],
@@ -1569,7 +1569,7 @@
             "claude-setup/hooks/stop.d/ask-run-unfinished.sh"
           ],
           "in": "claude-setup@62caa56",
-          "regressed_at": null
+          "regressed_at": "2026-10-13T06:38:27+03:00"
         }
       ],
       "same_cause": [],
@@ -2194,7 +2194,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/night\\-sweep$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -2227,7 +2227,7 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/tests/test_instruction_gate_bypasses.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6f01e217",
           "regressed_at": null
         }
       ],
@@ -2733,7 +2733,7 @@
         "rule": "opportunity",
         "ident": "chat/hooks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T19:30:06+03:00",
@@ -2774,7 +2774,7 @@
             "claude-setup/hooks/lib/review-journal.sh",
             "claude-setup/tests/test_review_flow_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@8cf56b4",
           "regressed_at": null,
           "equivalence": {
             "compared": "rj_snapshot_heads' per-top HEAD: base `git -C <top> rev-parse --verify --quiet HEAD` vs rj_head_of (one `git worktree list --porcelain` per family, rev-parse on any miss), top and sha per line",
@@ -3578,7 +3578,7 @@
         "rule": "worker_orphans",
         "ident": "worker-run"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T04:07:58+03:00",
@@ -3627,8 +3627,8 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/worker_run_harness.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@1c394a26",
+          "regressed_at": "2026-10-13T18:12:03+03:00"
         }
       ],
       "same_cause": [],
@@ -4251,7 +4251,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/docs$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T03:09:16+03:00",
@@ -4271,7 +4271,7 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/tests/test_instruction_gate_bypasses.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6f01e217",
           "regressed_at": null
         }
       ],
@@ -4314,7 +4314,7 @@
             "llm-legs/tests/test_night_run.sh"
           ],
           "in": "llm-legs@06c1915c",
-          "regressed_at": null
+          "regressed_at": "2026-10-12T21:51:33+03:00"
         }
       ],
       "same_cause": [],
@@ -4746,7 +4746,7 @@
         "rule": "opportunity",
         "ident": "chat/tests"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4769,7 +4769,7 @@
           "files": [
             "llm-legs/tests/test_llm_refresh.sh"
           ],
-          "in": null,
+          "in": "llm-legs@b7cd7d09",
           "regressed_at": null,
           "equivalence": {
             "compared": "test_llm_refresh base vs fix: PASS line and assert count (67 llm-refresh tests both); hang_tree_dead's own poll landed first in llm-legs@0be65b0f (row speed-test-idle-llm-refresh-tree-poll), this entry is the supervisor-term window alone",
@@ -4844,7 +4844,7 @@
             "llm-legs/tests/test_run_suites_shards.sh"
           ],
           "in": "llm-legs@f081980f",
-          "regressed_at": null
+          "regressed_at": "2026-10-13T17:22:56+03:00"
         }
       ],
       "same_cause": [],
@@ -5174,7 +5174,7 @@
         "rule": "log_audit",
         "ident": "sharding-statusline-suite-gaps"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:21:00+03:00",
@@ -5184,7 +5184,7 @@
             "llm-legs/tests/test_statusline_hooks.sh",
             "llm-legs/share/run-suites.sh"
           ],
-          "in": null,
+          "in": "llm-legs@3f4cfb23",
           "regressed_at": null
         }
       ],
@@ -5201,7 +5201,7 @@
         "rule": "log_audit",
         "ident": "review-judge-skipped-rounds"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:21:00+03:00",
@@ -5210,7 +5210,7 @@
             "review-bench/share/rbench/judge.py",
             "review-bench/tests/test_judge_stats.sh"
           ],
-          "in": null,
+          "in": "review-bench@8332e27",
           "regressed_at": null
         }
       ],
@@ -5227,7 +5227,7 @@
         "rule": "log_audit",
         "ident": "review-launch-misreads"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:21:00+03:00",
@@ -5237,7 +5237,7 @@
             "review-bench/share/rbench/scope.py",
             "review-bench/tests/test_review_bench_rounds.sh"
           ],
-          "in": null,
+          "in": "review-bench@8332e27",
           "regressed_at": null
         }
       ],
@@ -5659,7 +5659,7 @@
         "rule": "regression",
         "ident": "test-health/targeted"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T02:01:17+03:00",
@@ -5668,7 +5668,7 @@
             "llm-legs/share/affected-suites.sh",
             "llm-legs/docs/fix-orchestrator.md"
           ],
-          "in": null,
+          "in": "llm-legs@3e34ec7a",
           "regressed_at": null
         }
       ],
@@ -5742,7 +5742,7 @@
         "rule": "opportunity",
         "ident": "background/hs lag"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:30:00+03:00",
@@ -5770,7 +5770,7 @@
             "llm-legs/tests/llm_limits_renderer_harness.lua",
             "llm-legs/tests/doctors_menu_harness.lua"
           ],
-          "in": null,
+          "in": "llm-legs@626b60b0",
           "regressed_at": null,
           "equivalence": {
             "compared": "the watcher's list scan, instruction_visible_paths vs instruction_visible_cached over one state copy, cold and warm; the menus' titles over unchanged cached reads (menu harnesses)",
@@ -5852,7 +5852,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_doctor_fix"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:57:32+03:00",
@@ -5890,7 +5890,7 @@
           "files": [
             "llm-legs/tests/test_doctor_fix.sh"
           ],
-          "in": null,
+          "in": "llm-legs@49359fee",
           "regressed_at": null,
           "equivalence": {
             "compared": "the 4 shards' assert totals before and after, the PASS lines, the `fix runs` newest-first order assert",
@@ -6142,7 +6142,7 @@
         "rule": "opportunity",
         "ident": "hooks/commit-report\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T08:20:00+03:00",
@@ -6169,7 +6169,7 @@
             "claude-setup/hooks/commit-report.sh",
             "claude-setup/tests/test_commit_report.sh"
           ],
-          "in": null,
+          "in": "claude-setup@0b430d5",
           "regressed_at": null,
           "equivalence": {
             "compared": "hooks/commit-report.sh at the night base vs the fix: stdout, stderr, exit code and the scratch HOME tree (paths and sizes) per call",
@@ -6433,7 +6433,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_llm_limits_grok"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T08:45:00+03:00",
@@ -6470,7 +6470,7 @@
           "files": [
             "llm-legs/tests/test_llm_limits_grok.sh"
           ],
-          "in": null,
+          "in": "llm-legs@49359fee",
           "regressed_at": null,
           "equivalence": {
             "compared": "each of the 4 shards PASS before and after the section moves; the busy-lock case's verdicts",
@@ -6567,7 +6567,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_harness_doctor"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:40:00+03:00",
@@ -6590,7 +6590,7 @@
             "llm-legs/share/test_health.py",
             "llm-legs/tests/test_test_health.sh"
           ],
-          "in": null,
+          "in": "llm-legs@1f0715cc",
           "regressed_at": null,
           "equivalence": {
             "compared": "heavy findings of test_health.collect, old vs new code, with the 10-10 fixes as cuts",
@@ -6963,7 +6963,7 @@
         "rule": "opportunity",
         "ident": "^test-health/heavy/llm-legs/test_consistency$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:55:00+03:00",
@@ -6986,7 +6986,7 @@
             "llm-legs/share/test_health.py",
             "llm-legs/tests/test_test_health.sh"
           ],
-          "in": null,
+          "in": "llm-legs@1f0715cc",
           "regressed_at": null,
           "equivalence": {
             "compared": "heavy findings of test_health.collect, old vs new code, with the 10-10 fixes as cuts",
@@ -7008,7 +7008,7 @@
         "rule": "opportunity",
         "ident": "time/wrapup"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:35:00+03:00",
@@ -7032,7 +7032,7 @@
           "files": [
             "llm-legs/bin/worker-run"
           ],
-          "in": null,
+          "in": "llm-legs@a67d6d70",
           "regressed_at": null,
           "equivalence": {
             "compared": "transcript_wrote_through_shell at the night base vs the fix: its exit status (0 floor, 1 read-only, 2 unreadable) over a window of Bash calls",
@@ -7281,7 +7281,7 @@
         "rule": "log_audit",
         "ident": "known-red-suites-rediagnosed"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T07:30:00+03:00",
@@ -7301,7 +7301,7 @@
             "token-map/tokenmap/tracking.py",
             "token-map/tests/test_tracking.py"
           ],
-          "in": null,
+          "in": "token-map@8c1f694",
           "regressed_at": null
         }
       ],
@@ -7830,7 +7830,7 @@
         "rule": "log_audit",
         "ident": "test-harness-second-menu-copy"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-12T04:30:00+03:00",
@@ -7838,7 +7838,7 @@
           "files": [
             "llm-legs/tests/token_tracking_menu_harness.lua"
           ],
-          "in": null,
+          "in": "llm-legs@af8f8b89",
           "regressed_at": null
         }
       ],
@@ -8060,7 +8060,7 @@
         "rule": "word-miss",
         "ident": "review"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T06:10:00+03:00",
@@ -8071,7 +8071,7 @@
             "claude-setup/tests/test_words_log.sh",
             "claude-setup/tests/test_word_journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@5397c6d",
           "regressed_at": null
         }
       ],
@@ -8118,7 +8118,7 @@
         "rule": "browser-canary-start",
         "ident": "^codex/rawilimo$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-12T17:48:32+03:00",
@@ -8127,7 +8127,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_browse.sh"
           ],
-          "in": null,
+          "in": "llm-legs@7f2b3661",
           "regressed_at": null
         }
       ],
@@ -8144,7 +8144,7 @@
         "rule": "browser-repair",
         "ident": "^runs$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T00:50:33+03:00",
@@ -8155,7 +8155,7 @@
             "llm-legs/tests/test_worker_run_browse.sh",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@e65c62e7",
           "regressed_at": null
         }
       ],
@@ -8172,7 +8172,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/review-bench/test_review_bench"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T05:50:00+03:00",
@@ -8182,7 +8182,7 @@
             "review-bench/share/rbench/catalog.py",
             "review-bench/tests/test_review_bench.sh"
           ],
-          "in": null,
+          "in": "review-bench@ceb9b12",
           "regressed_at": null,
           "equivalence": {
             "compared": "run_streamed's loop before and after: the stall, duration and hold checks run on the same STALL_POLL_S tick, the one change is that a cell's exit wakes the loop at once (a reaper thread sets an Event) instead of after the rest of a time.sleep; the interrupt check keeps its assertion (the group is killed, the descendant dies) and interrupts through Popen.poll",
@@ -8204,13 +8204,14 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/cache/claude\\-plugins\\-official/vercel/0\\.50\\.0$"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "note": "Ruled out 2026-10-13: real growth, Egor's own install of the vercel plugin (installed_plugins.json installedAt 2026-10-12T15:56:31Z, +538280 B in 39 files at 15:57:49Z); no transcript in ~/.claude/projects or any profile holds a model-issued `claude plugin install` or a /plugin command, so no gate could ever see it. The row did its job: the plugin was enabled at user scope, putting its skills into every chat; the owner chat «Updater doctor» disabled it at user scope and enabled it only in /Volumes/Work/Sites/Rentiva local scope (2026-10-12T21:20Z). The per-file split (39 rows for one install) was fixed in llm-legs@7f2b3661 (install_root). Ruled out as causes: worktree landing, vendor org sync (vendor_synced covers only skills|plugins/synced), upstream git delivery. A new growth of this version dir reopens it.",
       "handoff": null,
       "last_reviewed": "2026-10-13",
-      "reviewed_by": "night fixer harness-guards-20261012T235022Z-385b"
+      "reviewed_by": "night fixer harness-guards-20261012T235022Z-385b",
+      "ruled_at": "2026-10-13T06:07:23Z"
     },
     {
       "id": "speed-test-idle-stop-dispatch",
@@ -8219,7 +8220,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/claude-setup/test_stop_dispatch"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T09:30:00+03:00",
@@ -8227,7 +8228,7 @@
           "files": [
             "claude-setup/tests/test_stop_dispatch.sh"
           ],
-          "in": null,
+          "in": "claude-setup@62a1e0e",
           "regressed_at": null,
           "equivalence": {
             "compared": "assert inventory and outcomes, base vs HEAD; the hanging-hook case still red if the dispatcher ignored the per-hook cap (its elapsed bound and its limit hit's value, now the cap of 1)",
@@ -8249,7 +8250,7 @@
         "rule": "log_audit",
         "ident": "browser-worker-human-step-handling"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T09:30:00+03:00",
@@ -8257,7 +8258,7 @@
           "files": [
             "llm-legs/bin/worker-run"
           ],
-          "in": null,
+          "in": "llm-legs@918cee8e",
           "regressed_at": null
         }
       ],
@@ -8274,7 +8275,7 @@
         "rule": "log_audit",
         "ident": "commit-push-gate-misjudges"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T09:30:00+03:00",
@@ -8283,7 +8284,7 @@
             "claude-setup/hooks/commit-push-gate.sh",
             "claude-setup/hooks/lib/words.py"
           ],
-          "in": null,
+          "in": "claude-setup@9b23ade",
           "regressed_at": null
         }
       ],
@@ -8300,13 +8301,14 @@
         "rule": "log_audit",
         "ident": "commit-sweeps-foreign-wip"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: conduct against stated rules. The 35-file commit was a worker the chat launched in the shared llm-legs checkout (not a worktree, which global CLAUDE.md asks for parallel writers) that built its list from git status; the TEMP-GEMFALLBACK hunks sat in the same file as the commit's own edits, which no path-level gate can split; 'commit all' (0fccbc9) was Egor's own order. A commit-time foreign-WIP refusal from the claude-writes journal would be a new gate; process before guards.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:fee-index-unreadable-rework",
@@ -8315,13 +8317,14 @@
         "rule": "log_audit",
         "ident": "fee-index-unreadable-rework"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: token-map's design rounds with Egor (token-map is no sweep repository). Its one mechanical part is settled: tokenmap/tracking.py calls chat-name by absolute path (~/.local/bin/chat-name) and journals tracking.chat-name-timeout (token-map 8c1f694). The 'new' label read right for a source with no history.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:jump-ipad-unverified-fixes",
@@ -8330,13 +8333,14 @@
         "rule": "log_audit",
         "ident": "jump-ipad-unverified-fixes"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: chat conduct in the hammerspoon chat; the Jump settings writer was a scratchpad script, no hook, gate or launcher of a sweep repository.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:lens-tuning-past-stop",
@@ -8345,13 +8349,14 @@
         "rule": "log_audit",
         "ident": "lens-tuning-past-stop"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: chat conduct (the token-map chat ran v2/v3 and reruns, edited its own ad-hoc severity map and started a chunked run itself); no review-bench command forced any of it.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:long-runs-without-progress-signal",
@@ -8360,13 +8365,14 @@
         "rule": "log_audit",
         "ident": "long-runs-without-progress-signal"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: logo-vectorizer-bench's own trace and judging lanes (bench/throttle.py), not a sweep repository, as row lane-idle-between-rounds ruled; the 86-min gap after a background notice is the Vector Magic chat's sequencing (machine sleep unconfirmed).",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:md-compact-skill-rework",
@@ -8375,13 +8381,14 @@
         "rule": "log_audit",
         "ident": "md-compact-skill-rework"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: settled with Egor live; claude-setup bd436c1f (22:32 2026-10-12) leaves one word, the context picking add-and-compress or compress. The rework was the chat's design rounds.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:night-landing-contention",
@@ -8390,13 +8397,14 @@
         "rule": "log_audit",
         "ident": "night-landing-contention"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: docs/fix-orchestrator.md step 4 lands one branch at a time; the e2f7 orchestrator landed in parallel and pushed by hand beside the autopush hook (the 'cannot lock ref' reject), and killed its own waiters by pattern. 66 parallel suite runs are load (weather). Landing stays plain git (row landing-wrapper-rebuilt, not a bug).",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:night-stalls-on-account-limit",
@@ -8420,7 +8428,7 @@
         "rule": "log_audit",
         "ident": "shared-ledger-handoff-conflicts"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T09:30:00+03:00",
@@ -8428,7 +8436,7 @@
           "files": [
             "llm-legs/bin/doctor-fix"
           ],
-          "in": null,
+          "in": "llm-legs@918cee8e",
           "regressed_at": null
         }
       ],
@@ -8447,13 +8455,14 @@
         "rule": "log_audit",
         "ident": "speed-batching-design-churn"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: design rounds with Egor in the Updater doctor chat, settled in c888ba47 and 6b323c5e (size from cost per closed row, no count cap); memory batch-by-shared-context.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:speed-fixers-wrong-lever",
@@ -8462,13 +8471,14 @@
         "rule": "log_audit",
         "ident": "speed-fixers-wrong-lever"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: each heavy-suite brief carried its earlier run's verdict (doctor-fix show 'earlier … fixed'); re-profiling it was conduct. Run count as the lever is the suite and CPU audits' --zero pricing since e65c62e7, which replaced the heavy-row levers.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:tests-affected-over-selection",
@@ -8477,13 +8487,14 @@
         "rule": "log_audit",
         "ident": "tests-affected-over-selection"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out as a selector fault: share/spend-ledger.json now selects its 6 readers and a docs md 1 suite; bin/claudeb (77) and bin/worker-run (52) match because those suites stub or name them, and path-anchored matching was measured and rejected (506ed8cc); workers skip the slow layer (c4adcbb8). Rerunning the whole set after one red suite is conduct: run-all names the failures.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "log_audit:worker-suite-run-waits",
@@ -8492,13 +8503,14 @@
         "rule": "log_audit",
         "ident": "worker-suite-run-waits"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: the 15-25 min foreground caps were wide selections under 66 parallel runs (load, weather); the 46x30 s grep poll and the hung xtrace profile were the workers' own commands. Raising caps or a sleep ban would be a one-incident guard (process before guards).",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-13T06:21:01Z"
     },
     {
       "id": "speed-refusal-cd-guard",
@@ -8538,7 +8550,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012T010240Z-2f51"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T10:27:55+03:00",
@@ -8548,7 +8560,7 @@
             "llm-legs/tests/test_instruction_gate_relay.sh",
             "llm-legs/tests/instruction_gate_harness.sh"
           ],
-          "in": null,
+          "in": "llm-legs@49359fee",
           "regressed_at": null,
           "equivalence": {
             "compared": "each shard of the suite before and after, assert totals summed (worker_run_rounds 9+96+63 = 168 over 3 shards -> 52+9+27+36+44 = 168 over 5; relay 77+35+43 = 155 -> 56+56+43 = 155), the PASS lines, and a mutation of one expected value",
@@ -8570,7 +8582,7 @@
         "rule": "opportunity",
         "ident": "test-health/heavy/llm-legs/test_merge_ledger"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T10:27:55+03:00",
@@ -8578,7 +8590,7 @@
           "files": [
             "llm-legs/tests/test_merge_ledger.sh"
           ],
-          "in": null,
+          "in": "llm-legs@49359fee",
           "regressed_at": null,
           "equivalence": {
             "compared": "the suite base vs fix: the PASS line (49 asserts both), the order assert mutated to red",
@@ -8615,7 +8627,7 @@
         "rule": "opportunity",
         "ident": "test-health/pole/llm-legs/test_llm_limits_grok"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T10:27:55+03:00",
@@ -8623,7 +8635,7 @@
           "files": [
             "llm-legs/tests/test_llm_limits_grok.sh"
           ],
-          "in": null,
+          "in": "llm-legs@49359fee",
           "regressed_at": null,
           "equivalence": {
             "compared": "each of the 4 shards PASS before and after",
@@ -8647,7 +8659,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-time-floor-suite-run-20261009T024805Z-70d1"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T10:25:46+03:00",
@@ -8657,7 +8669,7 @@
             "llm-legs/tests/test_suite_audit.sh",
             "llm-legs/docs/speed-doctor-design.md"
           ],
-          "in": null,
+          "in": "llm-legs@0114c359",
           "regressed_at": null
         }
       ],
@@ -8674,7 +8686,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-test-health-heavy-llm-legs-test-codex-image-20261010T031917Z-10e1"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T10:25:46+03:00",
@@ -8684,7 +8696,7 @@
             "llm-legs/tests/test_suite_audit.sh",
             "llm-legs/docs/speed-doctor-design.md"
           ],
-          "in": null,
+          "in": "llm-legs@0114c359",
           "regressed_at": null
         }
       ],
@@ -8701,7 +8713,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-test-health-heavy-claude-setup-test-review-flow-gate-20261010T031914Z-3689"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T10:25:46+03:00",
@@ -8711,7 +8723,7 @@
             "llm-legs/tests/test_suite_audit.sh",
             "llm-legs/docs/speed-doctor-design.md"
           ],
-          "in": null,
+          "in": "llm-legs@0114c359",
           "regressed_at": null
         }
       ],
@@ -8728,7 +8740,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-test-health-heavy-llm-legs-test-llm-limits-grok-20261012T010241Z-37e2"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T10:25:46+03:00",
@@ -8738,7 +8750,7 @@
             "llm-legs/tests/test_suite_audit.sh",
             "llm-legs/docs/speed-doctor-design.md"
           ],
-          "in": null,
+          "in": "llm-legs@0114c359",
           "regressed_at": null
         }
       ],
@@ -8755,7 +8767,7 @@
         "rule": "opportunity",
         "ident": "test-health/fan-out/claude-setup/hooks/commit-report\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T05:50:00+03:00",
@@ -8763,7 +8775,7 @@
           "files": [
             "claude-setup/tests/test_review_flow_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@3a6e15b",
           "regressed_at": null,
           "equivalence": {
             "compared": "share/test_health.py covering() (tests/affected's rule) over claude-setup at the night base vs the fix",
@@ -8785,7 +8797,7 @@
         "rule": "opportunity",
         "ident": "test-health/fan-out/claude-setup/tests/test_word_triggers\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T05:50:00+03:00",
@@ -8793,7 +8805,7 @@
           "files": [
             "claude-setup/tests/test_review_flow_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@3a6e15b",
           "regressed_at": null,
           "equivalence": {
             "compared": "share/test_health.py covering() (tests/affected's rule) over claude-setup at the night base vs the fix",
@@ -8845,7 +8857,7 @@
         "rule": "opportunity",
         "ident": "test-health/flaky/llm-legs/test_harness_doctor"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T06:40:00+03:00",
@@ -8854,7 +8866,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@0b5a0060",
           "regressed_at": null,
           "equivalence": {
             "compared": "test_harness_doctor per shard under /usr/bin/python3 3.9.6 and Homebrew python3 3.14.7, before and after; at_epoch on Z, offset and None stamps",
@@ -8876,7 +8888,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/llm-legs/test_image_fanout"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T13:55:00+03:00",
@@ -8884,7 +8896,7 @@
           "files": [
             "llm-legs/tests/test_image_fanout.sh"
           ],
-          "in": null,
+          "in": "llm-legs@956a64a4",
           "regressed_at": null,
           "equivalence": {
             "compared": "the chromey and chromeown launch-spacing sections, the fake's fixed sleep 5 vs a hold until another account's START (5 s cap); gap_open's Chrome check deleted as the mutation",
@@ -8906,7 +8918,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/llm-legs/test_llm_refresh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T14:00:00+03:00",
@@ -8914,7 +8926,7 @@
           "files": [
             "llm-legs/tests/test_llm_refresh.sh"
           ],
-          "in": null,
+          "in": "llm-legs@0be65b0f",
           "regressed_at": null,
           "equivalence": {
             "compared": "hang_tree_dead's sleep 1 then one kill -0 pass vs a 0.05 s poll until every hang.pids pid is gone, 20 tries; kill_hung_holder killing the owner alone (no tree) as the mutation",
@@ -8936,7 +8948,7 @@
         "rule": "hook-error",
         "ident": "stop-dispatch\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T00:40:16+03:00",
@@ -8945,7 +8957,7 @@
             "claude-setup/hooks/stop-dispatch.sh",
             "claude-setup/tests/test_stop_dispatch.sh"
           ],
-          "in": null,
+          "in": "claude-setup@62a1e0e",
           "regressed_at": null
         }
       ],
@@ -8962,7 +8974,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_codexb"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-12T18:27:50+03:00",
@@ -8972,7 +8984,7 @@
             "llm-legs/tests/test_codexb.sh",
             "llm-legs/tests/test_run_suites_timeout.sh"
           ],
-          "in": null,
+          "in": "llm-legs@18481754",
           "regressed_at": null
         }
       ],
@@ -8989,7 +9001,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/llm-legs/test_gemini_listen"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T14:30:00+03:00",
@@ -8999,7 +9011,7 @@
             "llm-legs/tests/test_gemini_listen.sh",
             "llm-legs/tests/fixtures/fake-geminib-listen.sh"
           ],
-          "in": null,
+          "in": "llm-legs@5bf2fc9d",
           "regressed_at": null,
           "equivalence": {
             "compared": "suite asserts and its spawn log through a PATH shim, before vs after",
@@ -9021,7 +9033,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/llm-legs/test_grok_video"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T14:30:00+03:00",
@@ -9029,7 +9041,7 @@
           "files": [
             "llm-legs/tests/test_grok_video.sh"
           ],
-          "in": null,
+          "in": "llm-legs@48c64c92",
           "regressed_at": null,
           "equivalence": {
             "compared": "suite asserts before vs after",
@@ -9051,7 +9063,7 @@
         "rule": "opportunity",
         "ident": "^test-health/pole/llm-legs/test_consistency$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T14:10:00+03:00",
@@ -9059,7 +9071,7 @@
           "files": [
             "llm-legs/tests/test_consistency.sh"
           ],
-          "in": null,
+          "in": "llm-legs@26c801d8",
           "regressed_at": null,
           "equivalence": {
             "compared": "old `# shards: 3` vs new `# shards: 5` on the same tree, all shards in parallel, alternating",
@@ -9083,7 +9095,7 @@
         "rule": "opportunity",
         "ident": "^test-health/idle/llm-legs/test_worker_run_browse$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T14:45:00+03:00",
@@ -9092,7 +9104,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/limits.json"
           ],
-          "in": null,
+          "in": "llm-legs@edf498dd",
           "regressed_at": null,
           "equivalence": {
             "compared": "bin/worker-run at the branch base vs this fix, test_worker_run_browse's 3 shards in parallel, alternating",
@@ -9159,7 +9171,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/llm-legs/test_run_suites_shards"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T14:25:47+03:00",
@@ -9167,7 +9179,7 @@
           "files": [
             "llm-legs/tests/test_run_suites_shards.sh"
           ],
-          "in": null,
+          "in": "llm-legs@fe0aef8e",
           "regressed_at": null,
           "equivalence": {
             "compared": "assert inventory and the concurrency and wall checks, old fixture sleeps vs the AT_ONCE barrier",
@@ -9189,7 +9201,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/llm-legs/test_chatgpt_web"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T14:25:47+03:00",
@@ -9197,7 +9209,7 @@
           "files": [
             "llm-legs/tests/test_chatgpt_web.sh"
           ],
-          "in": null,
+          "in": "llm-legs@1aba4ba4",
           "regressed_at": null,
           "equivalence": {
             "compared": "login --wait section: 3 s holder + elapsed >= 3 vs 2 s holder + elapsed >= 2 + holder gone",
