@@ -726,13 +726,13 @@ pass
 case_dir="$WORK/supervisor-term"
 mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$NOW" 60 60 60
-STUB_PASSIVE_HANG=1 LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT=60 LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS=4 \
+STUB_PASSIVE_HANG=1 LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT=60 LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS=2 \
   run_refresh "$case_dir" "$NOW" &
 runner=$!
 for _ in $(seq 1 30); do [ -s "$case_dir/hang.pids" ] && break; sleep 0.1; done
 kill -TERM "$runner"
 wait "$runner" 2>/dev/null
-sleep 5
+sleep 4
 hang_tree_dead "$case_dir" || fail 'a terminated supervisor left its tick running'
 ! jq -eR 'fromjson | select(.vendor == "tick" and .outcome == "hung")' "$case_dir/journal.jsonl" >/dev/null 2>&1 ||
   fail 'the watchdog of a terminated supervisor outlived it and journaled a hung tick'
