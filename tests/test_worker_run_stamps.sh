@@ -50,7 +50,7 @@ for flags in '' '--model default'; do
   clear_stub
   # shellcheck disable=SC2086
   start_ok codex --account model $flags
-  assert await_done
+  assert await_exit
   assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
 done
 # A resume is not that run: `exec resume` keeps the session's own model and nothing sends the
@@ -58,7 +58,7 @@ done
 assert model_refused codex gpt-5.6-nova --account resumeacct --resume codex-resume --model gpt-5.6-nova
 clear_stub
 start_ok codex --account resumeacct --resume codex-resume
-assert await_done
+assert await_exit
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
 printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 
@@ -67,26 +67,26 @@ set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
   'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
 clear_stub
 start_ok claudeb --model opus
-assert await_done
+assert await_exit
 clear_stub
 start_ok codex --model astra
-assert await_done
+assert await_exit
 for spec in 'claudeb:sonnet' 'claudeb:haiku --effort low' 'codex:terra'; do
   clear_stub
   # shellcheck disable=SC2086
   start_ok "${spec%%:*}" --model ${spec#*:}
-  assert await_done
+  assert await_exit
 done
 clear_stub
 start_ok gemini --account main --model flash38
 assert meta_agy_is 'gemini-3.8-flash-high'
-assert await_done
+assert await_exit
 clear_stub
 start_ok grok --model grok-4.6
-assert await_done
+assert await_exit
 clear_stub
 start_ok grok --model auto
-assert await_done
+assert await_exit
 fi
 
 if suite_shard_owns 2 stamps-relay-owner; then
@@ -110,7 +110,7 @@ stamp_relay() { # tag vendor [start-args...]
   [ -z "$keep_session" ] || export STUB_SESSION="$keep_session"
   export CLAUDE_CODE_SESSION_ID="stamp-chat-$tag"
   start_ok "$vendor" "$@"
-  await_done || fail "the $vendor stamping run never finished"
+  await_exit || fail "the $vendor stamping run never finished"
   unset CLAUDE_CODE_SESSION_ID
   assert test "$(cat "$STUB_DIR/relay_owner" 2>/dev/null)" = "stamp-chat-$tag"
 }
@@ -186,8 +186,8 @@ fix_owned_tests() {
   printf 'other\n' >>"$b/theirs.txt"
   : >"$STUB_GATE"
   unset STUB_GATE
-  RUN_ID=$fixer; assert await_done
-  RUN_ID=$other; assert await_done
+  RUN_ID=$fixer; assert await_exit
+  RUN_ID=$other; assert await_exit
   assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$a" own.txt)"
   assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$b" own.txt)"
   assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$a" extra.txt)"
@@ -243,7 +243,7 @@ fix_nonrepo_tests() {
   printf 'fixed\n' >>"$c/shell.txt"
   printf 'other\n' >>"$c/theirs.txt"
   gate_open
-  assert await_done
+  assert await_exit
   unset STUB_EDIT_PATH STUB_TRANSCRIPT_SESSION STUB_SESSION
   assert grep -qx "fix:$round:$RUN_ID" <<<"$(fix_kinds "$c" own.txt)"
   assert_fails grep -q '^fix:' <<<"$(fix_kinds "$c" shell.txt)"
@@ -308,7 +308,7 @@ printf 'C\n' >"$ATTR_REPO/bin/rewritten-open"
 git -C "$ATTR_REPO" add bin/rewritten-open
 git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'the run committed C' >/dev/null
 gate_open
-assert await_done
+assert await_exit
 assert grep -qxF -- "$(attr_blob D)$tab$(attr_blob C)${tab}bin/rewritten-open" "$RUN_DIR/produced"
 assert_fails grep -q $'\tbin/rewritten-open\tcommit$' "$RUN_DIR/produced"
 assert_fails grep -qxF -- "$(attr_blob B)$tab$(attr_blob C)${tab}bin/rewritten-open${tab}commit" "$RUN_DIR/produced"
@@ -333,7 +333,7 @@ start_gated claudeb --workdir "$WORK/run-clone"
 git -C "$WORK/run-clone" fetch -q origin && git -C "$WORK/run-clone" merge --ff-only -q FETCH_HEAD
 printf 'ours\n' >"$WORK/run-clone/bin/ours"
 gate_open
-assert await_done
+assert await_exit
 assert grep -q 'bin/ours' "$RUN_DIR/produced"
 assert_fails grep -q 'from-upstream' "$RUN_DIR/produced"
 assert_fails grep -qx 'bin/from-upstream' "$RUN_DIR/files"
@@ -362,7 +362,7 @@ tool_call Edit file_path "$ATTR_TOP/bin/keep" \
 start_gated claudeb --workdir "$ATTR_REPO"
 printf 'dash\n' >"$ATTR_REPO/-odd-name"
 gate_open
-assert await_done
+assert await_exit
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert_fails grep -q -- '-odd-name' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/produced"
@@ -375,7 +375,7 @@ tool_call Edit file_path "$ATTR_TOP/bin/keep" \
 start_gated claudeb --workdir "$ATTR_REPO"
 printf 'kept-by-run\n' >"$ATTR_REPO/bin/keep"
 gate_open
-assert await_done
+assert await_exit
 assert_fails grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert grep -qx 'bin/keep' "$RUN_DIR/files"
 assert_fails grep -q -- '-odd-name' "$RUN_DIR/files" "$RUN_DIR/produced"
@@ -388,7 +388,7 @@ tool_call Edit file_path "$ATTR_TOP/bin/keep" \
 start_gated claudeb --workdir "$ATTR_REPO"
 printf 'rewritten\n' >"$ATTR_REPO/-odd-name"
 gate_open
-assert await_done
+assert await_exit
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/produced"
 # The launching chat can still name what the unknown snapshot could not.
@@ -418,7 +418,7 @@ ln -sf new-file "$ATTR_REPO/link-file"
 ln -s missing "$ATTR_REPO/dangling"
 ln -s target-dir "$ATTR_REPO/new-link-dir"
 gate_open
-assert await_done
+assert await_exit
 link_prev=$(printf '%s' old-file | git -C "$ATTR_REPO" hash-object --stdin)
 link_cur=$(printf '%s' new-file | git -C "$ATTR_REPO" hash-object --stdin)
 dang_cur=$(printf '%s' missing | git -C "$ATTR_REPO" hash-object --stdin)
@@ -444,7 +444,7 @@ printf 'during-run\n' >"$ATTR_REPO/bin/keep"
 printf 'tabbed\n' >"$ATTR_REPO/bin/has${tab}tab"
 printf 'nl\n' >"$ATTR_REPO/bin/has"$'\n'"nl"
 gate_open
-assert await_done
+assert await_exit
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $ATTR_TOP"
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
@@ -472,7 +472,7 @@ tool_call Edit file_path "$WT_TOP/bin/in-wt" \
 start_gated claudeb --workdir "$WT_DIR"
 printf 'run-edit\n' >"$WT_DIR/bin/in-wt"
 gate_open
-assert await_done
+assert await_exit
 assert test "$(cat "$RUN_DIR/head-before")" = "$WT_HEAD"
 assert grep -qx 'bin/in-wt' "$RUN_DIR/files"
 assert grep -qxF -- "$WT_PREV$tab$(attr_blob run-edit)${tab}bin/in-wt" "$RUN_DIR/produced"
@@ -495,7 +495,7 @@ start_gated claudeb --workdir "$ATTR_REPO"
 git -C "$ATTR_REPO" mv bin/renamed-from bin/renamed-to
 git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'rename inside the run' >/dev/null
 gate_open
-assert await_done
+assert await_exit
 rename_blob=$(attr_blob same-blob)
 assert grep -qx 'bin/renamed-from' "$RUN_DIR/files"
 assert grep -qx 'bin/renamed-to' "$RUN_DIR/files"
@@ -512,7 +512,7 @@ tool_call Edit file_path "$ATTR_TOP/bin/keep" \
 start_gated claudeb --workdir "$ATTR_REPO"
 printf 'killed-edit\n' >"$ATTR_REPO/bin/keep"
 gate_open
-assert await_done
+assert await_exit
 assert test -f "$RUN_DIR/dirty-before-shas"
 assert test -f "$RUN_DIR/head-before"
 rm -f "$RUN_DIR/head-after" "$RUN_DIR/dirty-after-shas" "$RUN_DIR/files" "$RUN_DIR/produced"
@@ -533,14 +533,14 @@ assert test ! -s "$CALL_LOG"
 
 clear_stub
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 0
 assert jq -e '.chrome == false' "$RUN_DIR/meta.json" >/dev/null
 
 export BROWSE_PGREP=true
 clear_stub
 start_ok claudeb --browser --target dia
-assert await_done
+assert await_exit
 assert grep -qx 'ARG=--chrome' "$CALL_LOG"
 assert jq -e '.chrome == true' "$RUN_DIR/meta.json" >/dev/null
 assert jq -e '.cmd | index("--chrome") != null' "$RUN_DIR/meta.json" >/dev/null
@@ -548,7 +548,7 @@ assert jq -e '.cmd | index("--chrome") != null' "$RUN_DIR/meta.json" >/dev/null
 clear_stub
 : >"$STUB_DIR/claudeb_drop_effort"
 start_ok claudeb --browser --target dia
-assert await_done
+assert await_exit
 assert test "$(grep -c '^CLAUDEB_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 2
 assert jq -e '.effort_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
@@ -580,7 +580,7 @@ assert jq -se --arg r "$RUN_ID" --argjson m "$(cat "$RUN_DIR/meta.json")" 'map(s
 clear_stub
 printf 'wall\n' >"$STUB_DIR/wall_accounts"
 PICK_ACCOUNT=rescue start_ok codex --account wall
-assert await_done
+assert await_exit
 assert jq -e '(.cli_starts | length) == 2 and .attempt_rcs[0] != 0 and .attempt_rcs[1] == 0
   and .started_at >= .cli_starts[0] and .walled_accounts == ["wall"] and .terminal_reason == "done"' \
   "$RUN_DIR/meta.json" >/dev/null
