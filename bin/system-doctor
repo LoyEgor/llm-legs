@@ -61,7 +61,7 @@ COLLECT = {"storm_s": 2000, "storm_min": 2, "storm_kernel": 0.50, "census_s": 60
            "loop_runs_h": 60, "loop_heavy_runs_h": 360, "loop_dt_s": 1800, "job_exits_day": 3, "job_exits_heavy_day": 24}
 LOGS = {"sweep_timeout_s": 1800, "compare_min_s": 20 * 3600, "keep_scan_days": 14, "growth_min_days": 5,
         "stale_s": 36 * 3600}
-HARVEST = (("launchd", 'process == "launchd" AND eventMessage CONTAINS "ran for"', 300, 100000),
+HARVEST = (("launchd", 'processID == 1 AND eventMessage CONTAINS "ran for"', 300, 100000),
            ("das", 'subsystem == "com.apple.duetactivityscheduler" AND category IN {"scoring", "lifecycle", "BGSTHelper"}',
             150, 1200000),
            ("hangs", 'process == "spindump" AND subsystem == "com.apple.spindump"', 60, 20000))

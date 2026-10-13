@@ -898,7 +898,7 @@ check(all(row["sources"][s]["cut"] is None and row["sources"][s]["to"] == round(
       "a first harvest reads 11 h back to now: %s" % row["sources"])
 calls = open(os.path.join(fix, "log.calls")).read().splitlines()
 check(len(calls) == 3 and all(c.startswith("show --style compact --start ") and " --predicate " in c for c in calls)
-      and 'process == "launchd" AND eventMessage CONTAINS "ran for"' in calls[0], "log show per source with its predicate: %s" % calls)
+      and 'processID == 1 AND eventMessage CONTAINS "ran for"' in calls[0], "log show per source with its predicate: %s" % calls)
 text = "".join(open(f).read() for f in glob.glob(os.path.join(work, "state", "harvest", "*.jsonl")))
 check("secret" not in text and "sent by" not in text and "not sampling" not in text and "Max allowed" not in text,
       "the harvest keeps counters, never message bodies")
