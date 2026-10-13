@@ -111,17 +111,19 @@
   {
    "id": "suite:llm-legs/test_worker_pick",
    "title": "llm-legs/test_worker_pick",
-   "audited_at": "2026-10-08T04:01:43+03:00",
-   "by": "feat/suite-audit-worker-pick",
-   "cpu_run": 78.9,
-   "wall_run": 61.0,
-   "cpu_min_day": 52.53,
+   "audited_at": "2026-10-13T15:33:29+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
+   "cpu_run": 97.0,
+   "wall_run": 15.7,
+   "cpu_min_day": 39.74,
+   "wall_min_day": 18.3,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
-    "llm-legs/tests/test_worker_pick.sh": "67e3163f53027cbcbae87f8f63b76611842ed9c4"
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_worker_pick.sh": "38981facb5205d38e33db83d1c1c9be6b69b53a0"
    },
-   "verdict": "kept",
-   "note": "kept: only fork-free contains/not_contains + load_case helper, 977 asserts, 83.45 -> 82.54 CPU-s/run (-1.1%); every render is an exit check; the lever is product: worker-pick's own ~0.13 CPU-s per start x ~470 cases"
+   "verdict": "cut",
+   "zero": "removal saves ~16 wall-s and 94 CPU-s a run, 13.8 wall-min/day; loses the routing-contract golden output and 1012 routing checks",
+   "note": "worker-pick run spawns 32.6 -> 20.6 processes (worker_pool_disabled_json read+jq unique instead of cat+sort per vendor; account-roster/account-status-tui dirname -> BASH_SOURCE%/*), answers equal; rest is the catalog helpers each pick launches, a worker-pick production change; 1012 asserts unchanged"
   },
   {
    "id": "suite:llm-legs/test_night_run",
@@ -5694,6 +5696,78 @@
    "verdict": "cut",
    "zero": "removal saves 18.8 wall-min/day and 7.5 CPU-min/day; loses the only coverage of image-fanout planning, scheduling, spares, memory admission and launch spacing",
    "note": "Chrome fakes gated on the next START not sleep 5 (mutation red), work dirs computed once, duplicate dry-run dropped, a vacuous assert_fails fixed, lazy-spare gap assert load-robust; 359 asserts. Open: bin/image-fanout caps_get runs one jq per manifest read (~1660 jq a run), a planner refactor"
+  },
+  {
+   "id": "suite:llm-legs/test_run_suites_journal",
+   "title": "llm-legs/test_run_suites_journal",
+   "audited_at": "2026-10-13T15:33:27+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
+   "cpu_run": 15.6,
+   "wall_run": 24.2,
+   "cpu_min_day": 13.27,
+   "wall_min_day": 79.73,
+   "sources": {
+    "llm-legs/tests/affected": "55023ef490c922f3b44dea74eb6ff55b901ac430",
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
+    "llm-legs/tests/slow-suites": "082e0d3bce46707e7b7b7bd14e4d45fff9553470",
+    "llm-legs/tests/test_run_suites_journal.sh": "4e0c90eca2f459b2fd263406f59942c2a8a23f22"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~14 wall-s a run, 16 wall-min/day; loses the only check that run-suites and direct runs journal one row each, the signal and slot paths, tests/affected and the slow layer",
+   "note": "pids_end polls its grace at 0.1 s (3 signal cases a run ~0.9 s sooner, same in production stops); affected_filter batched (tests/affected 2.9 -> 0.7 CPU-s); vacuous slot-on-signal assert fixed (two waiting suites); 168 asserts unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_system_doctor",
+   "title": "llm-legs/test_system_doctor",
+   "audited_at": "2026-10-13T15:33:28+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
+   "cpu_run": 7.6,
+   "wall_run": 18.1,
+   "cpu_min_day": 6.93,
+   "wall_min_day": 26.43,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_system_doctor.sh": "4d97d6d866d5be50db462de7cbba7cab9b379ca1"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~12 wall-s a run, 14.7 wall-min/day; loses every check of the macOS system doctor (probes, judge, harvest, install-agent)",
+   "note": "install-agent retry cases in-process with time.sleep recorded: two CLI spawns and 4 s of real sleep gone, the retry pause now pinned (was green without it); write_ticks one open per day; 227 checks unchanged"
+  },
+  {
+   "id": "suite:llm-legs/test_llm_limits",
+   "title": "llm-legs/test_llm_limits",
+   "audited_at": "2026-10-13T15:33:28+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
+   "cpu_run": 32.2,
+   "wall_run": 19.5,
+   "cpu_min_day": 8.43,
+   "wall_min_day": 15.81,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
+    "llm-legs/tests/test_llm_limits.sh": "619b7c8bfd8d8856a1cf40c833aaef577669862f"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~20 wall-s a run, 14.3 wall-min/day; loses the collector's schema, account, removal, refresh-failure and render contract checks",
+   "note": "x2.6 trigger is load: 5954 jq spawns a run at a80dbc5b and HEAD alike, same CPU under the same load; ~60 distinct collections at ~40 jq each, no sleep, no hot spot; the lever is a collector rewrite (ledger test_daily_cost-llm-limits), not the suite"
+  },
+  {
+   "id": "suite:llm-legs/test_geminib",
+   "title": "llm-legs/test_geminib",
+   "audited_at": "2026-10-13T15:33:30+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
+   "cpu_run": 45.8,
+   "wall_run": 40.3,
+   "cpu_min_day": 10.58,
+   "wall_min_day": 18.51,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/test_geminib.sh": "136f130be2b5f3f4e07c7bdb738d297c7a6630aa"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~39 wall-s a run, 13.6 wall-min/day; loses geminib routing, roster, keychain, web-login, pool and export-token checks",
+   "note": "11 s late-prompt answer-pty case overlaps the rest of the suite (started past the bare wait, awaited at the end): ~4-7 s a run; sleep unchanged, red under a 10 s silence cutoff; 2 s pty deadlines and 1 s parallel probes kept as race checks; 427 asserts unchanged"
   }
  ]
 }
