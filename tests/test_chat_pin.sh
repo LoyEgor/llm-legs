@@ -40,6 +40,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts should have failed: $*"; }
 contains() { grep -Fq -- "$2" <<<"$1"; }
+pin() { pin_out=$("$PIN" "$@"); } # a set prints the state a bare `chat-pin` would show
 chat_is() { [ "$(cat "$CHAT" 2>/dev/null)" = "$1" ]; }
 exits() { # code command...
   local want=$1 got
@@ -52,9 +53,9 @@ exits() { # code command...
 # --- Outside a session ------------------------------------------------------------------------
 unset CLAUDECODE
 assert contains "$("$PIN")" 'no chat pin'
-assert "$PIN" codex
+assert pin codex
 assert chat_is 'codex_profile=*'
-assert contains "$("$PIN")" 'every codex pool account (*)'
+assert contains "$pin_out" 'every codex pool account (*)'
 # One line, replaced: a second pin never stands beside the first.
 assert "$PIN" claude
 assert chat_is 'claudeb_profile=*'
@@ -65,21 +66,21 @@ assert chat_is 'grok_profile=*'
 assert "$PIN" claudeb
 assert chat_is 'claudeb_profile=*'
 # «воркер на все»: one line that opens every vendor and pins none.
-assert "$PIN" all
+assert pin all
 assert chat_is 'open=all'
-assert contains "$("$PIN")" 'opens every vendor for workers and reviews'
+assert contains "$pin_out" 'opens every vendor for workers and reviews'
 assert "$PIN" все
 assert chat_is 'open=all'
 
 # --- Fast is a modifier of the pin: two lines, written and replaced together ---------------------
-assert "$PIN" grok-fast
+assert pin grok-fast
 assert chat_is 'grok_profile=*
 grok_fast=on'
-assert contains "$("$PIN")" 'every grok pool account (*) · fast'
+assert contains "$pin_out" 'every grok pool account (*) · fast'
 # The plain vendor pin is what turns fast off.
-assert "$PIN" grok
+assert pin grok
 assert chat_is 'grok_profile=*'
-assert_fails contains "$("$PIN")" 'fast'
+assert_fails contains "$pin_out" 'fast'
 assert "$PIN" codex-fast
 assert chat_is 'codex_profile=*
 codex_fast=on'
@@ -92,10 +93,10 @@ assert "$PIN" auto
 assert_fails test -e "$CHAT"
 
 # --- An account name finds its vendor through the live pool -------------------------------------
-assert "$PIN" beta
+assert pin beta
 assert chat_is 'codex_profile=beta'
-assert contains "$("$PIN")" 'pins workers to beta (codex)'
-assert contains "$("$PIN")" 'its reviews may use codex too'
+assert contains "$pin_out" 'pins workers to beta (codex)'
+assert contains "$pin_out" 'its reviews may use codex too'
 assert "$PIN" alpha
 assert chat_is 'claudeb_profile=alpha'
 assert "$PIN" delta
@@ -108,15 +109,15 @@ for missing in nobody gone 'bad/name' '-x'; do
   assert chat_is 'grok_profile=delta'
 done
 # Switched off in the menu: this chat alone may still spend it, and the pin says so.
-assert "$PIN" benched
+assert pin benched
 assert chat_is 'codex_profile=benched'
-assert contains "$("$PIN")" 'benched stays switched off in the menu: only this chat spends it'
+assert contains "$pin_out" 'benched stays switched off in the menu: only this chat spends it'
 mkdir -p "$CODEXB_PROFILES_DIR/.codexb/shielded" && : >"$CODEXB_PROFILES_DIR/.codexb/shielded/benched"
 assert "$PIN" auto
 assert exits 2 "$PIN" benched
 rm -rf "$CODEXB_PROFILES_DIR/.codexb/shielded"
-assert "$PIN" delta
-assert_fails contains "$("$PIN")" 'switched off'
+assert pin delta
+assert_fails contains "$pin_out" 'switched off'
 # <vendor>:<account> settles a name several pools share, live or switched off.
 assert exits 2 "$PIN" shared
 assert contains "$(cat "$WORK/out")" 'name it as <vendor>:shared'
@@ -132,9 +133,9 @@ assert contains "$("$PIN" foo:alpha 2>&1)" 'unknown vendor: foo'
 mkdir -p "$CLAUDEB_DIR" && printf 'shared\n' >"$CLAUDEB_DIR/disabled"
 assert "$PIN" shared
 assert chat_is 'codex_profile=shared'
-assert "$PIN" claude:shared
+assert pin claude:shared
 assert chat_is 'claudeb_profile=shared'
-assert contains "$("$PIN")" 'shared stays switched off in the menu'
+assert contains "$pin_out" 'shared stays switched off in the menu'
 rm -f "$CLAUDEB_DIR/disabled"
 # An unreadable disabled file fails closed: every account of that pool reads as switched off.
 assert "$PIN" codex:beta
@@ -181,8 +182,8 @@ assert "$PIN" all
 assert chat_is 'open=all'
 assert "$PIN" auto
 assert_fails test -e "$CHAT"
-assert "$PIN" grok
-assert contains "$("$PIN")" 'every grok pool account (*)'
+assert pin grok
+assert contains "$pin_out" 'every grok pool account (*)'
 assert "$PIN" grok-fast
 
 # --- The pin reaches the one resolver every reader uses -----------------------------------------
