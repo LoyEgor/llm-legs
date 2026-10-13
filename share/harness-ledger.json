@@ -6526,7 +6526,7 @@
         "rule": "opportunity",
         "ident": "hooks/cd-guard\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T08:10:00+03:00",
@@ -6542,13 +6542,28 @@
             "data": "99.9k unique Bash calls of the last 7 days' transcripts (all profiles), payloads rebuilt compact with cwd/session as recorded: 3000+2000 sampled (seed 11), 2000 more cd-bearing; 1210 generated spellings (control-char/NBSP/U+2028 separators, \\u-escaped letters, ensure_ascii and spaced-key payloads, quoted/escaped/prefixed cd, heredocs, review launches, fork agents, odd payloads); scratch HOME, CLAUDE_PROJECT_DIR unset",
             "result": "7000/7000 real calls identical (old: 2378 allow, 2613 rewrite, 9 deny of the first 5000); generated 1205/1210 identical, the 5 others old allow because tr died on 'Illegal byte sequence' (backslash before a multibyte char), now rewrite as the guard specifies (pinned in test_cd_guard); screen exits 63% of real calls before any fork; paired 300 real calls at load 74-103: 128 -> 52 ms mean, p95 193 -> 138, paired delta p50 77 ms"
           }
+        },
+        {
+          "at": "2026-10-12T05:30:00+03:00",
+          "by": "night 20261012T233034Z-3131 harness-speed-hooks-cd-guard-sh-20261012T235124Z-5e5e, recording claude-setup@55f0a219",
+          "files": [
+            "claude-setup/hooks/cd-guard.sh",
+            "claude-setup/tests/test_cd_guard.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "cd-guard's per-call work before the retirement (11.6k Bash runs/day, 99 ms wall; rewrites of a chat's cd into a subshell; denies of fork agents and review launches) vs Claude Code's native cwd reset under CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1",
+            "data": "live probe recorded in docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md: after a persisted cd the next call printed the project directory, after EnterWorktree the worktree, no reset note; ~/.claude/settings.json sets the flag and no longer wires the hook; the hook and its suite are deleted in claude-setup@55f0a219",
+            "result": "the cwd the next call sees is the one the hook gave (session checkout, worktree after EnterWorktree); no cd rewrite, no per-call fork cost; the fork deny has no caller left (relay agents were deleted in ee185fa8 and the launch gate refuses them)"
+          }
         }
       ],
       "same_cause": [],
-      "note": "2026-10-12 (Harness Doctor): cd-guard retired: Claude Code's own CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 resets the cwd after every call, so the hook's 99 ms per call and its rewrites are gone; see row speed-time-hooks-commit-report-owned-walk. Before (hooks/*.tsv): 20733 6818 runs mean 51 ms, 20734 10019 runs 41 ms, 20735 11625 runs 99 ms (19.2 min), cpu ~33 ms each; Speed 15.75 min/day. Bash alone costs ~13 ms, hook-time+read ~20 ms; the rest was cat, jq and awk on every call and tr, a second jq on every cd. Work-not-done proof: test_cd_guard's PATH shim sees no cat/jq/awk/tr on a cd-free call (red on base). Left: cd-bearing calls (37%) still pay jq+awk and the rewrites a bash -n exec, which must stay (an original that does not parse is denied, only a parser knows). Found, not done: 26% of cd calls (9.0k of 34.5k) cd into the cwd itself (`cd <worktree> && ...`); allowing those untouched would drop their rewrite and note, but it changes a decision class, so it waits for the owner. opportunity:refusal/cd-guard.sh (0.62 min/day) is the fork deny re-plan, not touched.",
+      "note": "2026-10-12 (Harness Doctor): cd-guard retired: Claude Code's own CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 resets the cwd after every call, so the hook's 99 ms per call and its rewrites are gone; see row speed-time-hooks-commit-report-owned-walk. Before (hooks/*.tsv): 20733 6818 runs mean 51 ms, 20734 10019 runs 41 ms, 20735 11625 runs 99 ms (19.2 min), cpu ~33 ms each; Speed 15.75 min/day. Bash alone costs ~13 ms, hook-time+read ~20 ms; the rest was cat, jq and awk on every call and tr, a second jq on every cd. Work-not-done proof: test_cd_guard's PATH shim sees no cat/jq/awk/tr on a cd-free call (red on base). Left: cd-bearing calls (37%) still pay jq+awk and the rewrites a bash -n exec, which must stay (an original that does not parse is denied, only a parser knows). Found, not done: 26% of cd calls (9.0k of 34.5k) cd into the cwd itself (`cd <worktree> && ...`); allowing those untouched would drop their rewrite and note, but it changes a decision class, so it waits for the owner. opportunity:refusal/cd-guard.sh (0.62 min/day) is the fork deny re-plan, not touched. 2026-10-13 (night 20261012T233034Z-3131): both Speed rows of cd-guard (hooks/ and refusal/) were open at launch only from the 24 h journal still holding runs before the retirement (claude-setup@55f0a219, 2026-10-12 04:45); the hook no longer runs, so the window drains by itself.",
       "handoff": null,
-      "last_reviewed": "2026-10-12",
-      "reviewed_by": "Harness Doctor"
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-hooks-cd-guard-sh-20261012T235124Z-5e5e"
     },
     {
       "id": "speed-test-health-heavy-worker-run-lifecycle",
@@ -8384,6 +8399,37 @@
       "reviewed_by": "night 20261012T233034Z-3131 harness-doctor-20261012T235017Z-29e1",
       "note": "Ruled out: the 15-25 min foreground caps were wide selections under 66 parallel runs (load, weather); the 46x30 s grep poll and the hung xtrace profile were the workers' own commands. Raising caps or a sleep ban would be a one-incident guard (process before guards).",
       "handoff": null
+    },
+    {
+      "id": "speed-refusal-cd-guard",
+      "title": "Speed's refusal lever: cd-guard's fork deny and the re-plan after it",
+      "match": {
+        "rule": "opportunity",
+        "ident": "refusal/cd-guard\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-12T05:30:00+03:00",
+          "by": "night 20261012T233034Z-3131 harness-speed-hooks-cd-guard-sh-20261012T235124Z-5e5e, recording claude-setup@55f0a219",
+          "files": [
+            "claude-setup/hooks/cd-guard.sh",
+            "claude-setup/tests/test_cd_guard.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "cd-guard's per-call work before the retirement (11.6k Bash runs/day, 99 ms wall; rewrites of a chat's cd into a subshell; denies of fork agents and review launches) vs Claude Code's native cwd reset under CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1",
+            "data": "live probe recorded in docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md: after a persisted cd the next call printed the project directory, after EnterWorktree the worktree, no reset note; ~/.claude/settings.json sets the flag and no longer wires the hook; the hook and its suite are deleted in claude-setup@55f0a219",
+            "result": "the cwd the next call sees is the one the hook gave (session checkout, worktree after EnterWorktree); no cd rewrite, no per-call fork cost; the fork deny has no caller left (relay agents were deleted in ee185fa8 and the launch gate refuses them)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "The 0.62 min/day was the deny of fork agents and review launches that cd-guard kept after the relays went; retired with the hook (claude-setup@55f0a219): no cd-guard, no deny, no re-plan. Nothing else of this row's cause remains: the launch gate's own refusals are rows launch-gate-refusals-first-attempt and speed-refusal-*.",
+      "handoff": null,
+      "last_reviewed": "2026-10-13",
+      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-hooks-cd-guard-sh-20261012T235124Z-5e5e"
     }
   ],
   "blind_spots": [
@@ -8694,6 +8740,13 @@
       "reason": "2026-10-13 CPU audit of notice-reports.sh: 4.2 ms a run isolated against 10.5 ms journalled; part_time stamps inside the subshell that forks timeout, so ~7 parts x ~5 ms a stop belong to the dispatcher and no row names it",
       "since": "2026-10-13",
       "would_catch_if": "stop-dispatch journalled its own per-stop CPU (times around the dispatch minus the parts' own) as hook/stop-dispatch.sh, and part_time stamped inside the timeout child"
+    },
+    {
+      "id": "spend-retired-hook-cell",
+      "what": "a Spend component row for a hook that is no longer wired",
+      "reason": "spend:hook:PreToolUse:Bash · cd-guard reads 0.0 % of spend, `never audited`, a week after claude-setup@55f0a219 deleted the hook: the 168 h tokenmap window still holds its recorded hook output, and nothing marks a component whose source is gone (2026-10-13, harness-speed-hooks-cd-guard-sh-20261012T235124Z-5e5e)",
+      "since": "2026-10-13",
+      "would_catch_if": "the Spend collector dropped a hook component whose script no longer exists in settings.json or the hooks directory, or its due text read `retired`"
     }
   ]
 }
