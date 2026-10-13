@@ -12,7 +12,7 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
 export HOME="$WORK/home" XDG_CACHE_HOME="$WORK/xdg" HARNESS_HOLDS_DIR="$WORK/holds" STATUSLINE_CACHE_DIR="$WORK/sl" \
   RUN_SUITES_TIMES="$WORK/rs/times.tsv" RUN_SUITES_SLOTS_DIR="$WORK/slots" RUN_SUITES_JOURNAL="$WORK/rs/runs.jsonl" \
-  RUN_SUITES_SUITE_FLOOR=1
+  RUN_SUITES_SUITE_FLOOR=1 RUN_SUITES_KILL_GRACE=1
 unset RUN_SUITES_SLOT SUITE_JOURNAL SUITE_JOURNAL_PID WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION
 REPO="$WORK/repo"
 mkdir -p "$HOME" "$WORK/rs" "$REPO/tests"
@@ -60,26 +60,23 @@ assert test "$rc" = 4
 assert grep -qF 'RUN_SUITES_SUITE_FLOOR must be whole seconds' "$WORK/out"
 
 # The watcher polls without forking a sleep per poll: only the suite's own `sleep 1` reaches PATH.
+# A suite never inherits the caller's stdin, or a stub stdio server reading it to EOF hangs the run.
 printf '#!/usr/bin/env bash\nsleep 1\necho ok\n' >"$REPO/tests/test_brief.sh"
 mkdir -p "$WORK/sleep-shim"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/sleeps"\nexec /bin/sleep "$@"\n' "$WORK" >"$WORK/sleep-shim/sleep"
 chmod +x "$WORK/sleep-shim/sleep"
-rc=0
-PATH="$WORK/sleep-shim:$PATH" bash "$ROOT/share/run-suites.sh" --repo "$REPO" test_brief.sh >"$WORK/out" 2>&1 || rc=$?
-assert test "$rc" = 0
-assert grep -qx 1 "$WORK/sleeps"
-assert test "$(grep -cvx 1 "$WORK/sleeps")" = 0
-
-# A suite never inherits the caller's stdin, or a stub stdio server reading it to EOF hangs the run.
 printf '#!/usr/bin/env bash\nread -r -t 1 _\n[ "$?" = 1 ] || { echo "stdin left open"; exit 1; }\necho ok\n' \
   >"$REPO/tests/test_stdin.sh"
 exec {held}< <(sleep 60)
 holder=$!
 rc=0
-bash "$ROOT/share/run-suites.sh" --repo "$REPO" test_stdin.sh <&"$held" >"$WORK/out" 2>&1 || rc=$?
+PATH="$WORK/sleep-shim:$PATH" bash "$ROOT/share/run-suites.sh" --repo "$REPO" test_brief.sh test_stdin.sh <&"$held" >"$WORK/out" 2>&1 || rc=$?
 kill "$holder" 2>/dev/null
 exec {held}<&-
 assert test "$rc" = 0
+assert grep -qE '^test_brief\.sh +PASS ' "$WORK/out"
+assert grep -qx 1 "$WORK/sleeps"
+assert test "$(grep -cvx 1 "$WORK/sleeps")" = 0
 assert grep -qE '^test_stdin\.sh +PASS ' "$WORK/out"
 
 printf 'PASS: %s asserts\n' "$asserts"

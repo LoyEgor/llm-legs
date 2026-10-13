@@ -794,7 +794,7 @@
   "run-suites.kill-grace": {
     "value": 10,
     "unit": "s",
-    "where": "share/run-suites.sh:192",
+    "where": "share/run-suites.sh:195",
     "set_by": "night 1d06bf49",
     "why": "A timed-out suite's tree gets 10 s between TERM and KILL to clean up.",
     "normal": "Only beside a suite TIMEOUT; processes ignoring TERM leave their own cleanup undone."

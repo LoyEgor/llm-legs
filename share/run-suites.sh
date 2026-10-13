@@ -59,7 +59,8 @@ finds room; `# shards: N wait`, a suite that mostly sleeps, needs only memory ro
 
 A suite running past its bound is killed with its whole process tree and reads FAIL 124, TIMEOUT:
 5 x the p90 of its last 50 passes in the journal, never under RUN_SUITES_SUITE_FLOOR (default 1800 s,
-doubled for tests/slow-suites), twice that floor before it has 3 passes.
+doubled for tests/slow-suites), twice that floor before it has 3 passes; RUN_SUITES_KILL_GRACE
+(default 10 s) is the wait between its TERM and KILL.
 
 A named or --changed run starts first the suites red in its checkout's last journaled run covering its
 set; once they all finished and one is red again it stops the rest: they read STOP, the run FAIL, and
@@ -144,6 +145,8 @@ times_key=$repo
 [ "${common:-}" = "${common%/.git}/.git" ] && times_key=${common%/.git}
 suite_floor=${RUN_SUITES_SUITE_FLOOR:-1800}
 [[ $suite_floor =~ ^[1-9][0-9]*$ ]] || fail "RUN_SUITES_SUITE_FLOOR must be whole seconds: $suite_floor"
+kill_grace=${RUN_SUITES_KILL_GRACE:-10}
+[[ $kill_grace =~ ^[1-9][0-9]*$ ]] || fail "RUN_SUITES_KILL_GRACE must be whole seconds: $kill_grace"
 slow_listed=$'\n'$(cat "$repo/tests/slow-suites" 2>/dev/null)$'\n'
 declare -A pass_p90=()
 history_rows=0
@@ -189,12 +192,12 @@ fi
 suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound or the run stops
   local deadline=$((SECONDS + $2))
   while kill -0 "$1" 2>/dev/null; do
-    if [ -e "$logdir/stop" ]; then process_tree_end "$1" 10; return; fi
+    if [ -e "$logdir/stop" ]; then process_tree_end "$1" "$kill_grace"; return; fi
     if [ "$SECONDS" -ge "$deadline" ]; then
-      : >"$3"; process_tree_end "$1" 10
-      [ "${pids_end_killed:-0}" -eq 0 ] || limit_hit run-suites.kill-grace 10 s kill \
-        "${3##*/}: $pids_end_killed processes ignored TERM for 10 s and were KILLed, with no cleanup of their own" \
-        'share/run-suites.sh:process_tree_end "$1" 10'
+      : >"$3"; process_tree_end "$1" "$kill_grace"
+      [ "${pids_end_killed:-0}" -eq 0 ] || limit_hit run-suites.kill-grace "$kill_grace" s kill \
+        "${3##*/}: $pids_end_killed processes ignored TERM for $kill_grace s and were KILLed, with no cleanup of their own" \
+        'share/run-suites.sh:process_tree_end "$1" "$kill_grace"'
       return
     fi
     sleep 2
@@ -365,7 +368,7 @@ on_signal() { # number name
   local job
   run_signal=$1
   # Background suites ignore SIGINT and never see a TERM sent to this pid alone; ended before the slot frees.
-  for job in $(jobs -p); do process_tree_end "$job" 10 & done
+  for job in $(jobs -p); do process_tree_end "$job" "$kill_grace" & done
   wait
   finish_run
   trap - EXIT "$2"
