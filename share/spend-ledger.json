@@ -1507,6 +1507,81 @@
    "verdict": "cut",
    "zero": "removal saves ~0.6 CPU-min on a work-repo day (82 ms on each Bash call there); loses the commit and push door Egor kept for his work repositories (85098651), so a commit there lands with no word of his",
    "note": "provable-absence prefilter shared with review-flow-gate (claude-setup@888eb23): 45% of real work-repo calls were already read-only, 34% more now skip the parse, 21% still parse; 45.6 -> 26.5 ms a call; the remaining floor is cat, jq and the readlink/dirname resolve every PreToolUse gate pays"
+  },
+  {
+   "id": "cpu:hook/word-intake.sh",
+   "title": "hook/word-intake.sh",
+   "audited_at": "2026-10-13T09:43:18+03:00",
+   "by": "harness-speed-cpu-hook-word-intake-sh-20261012T235057Z-0e5b",
+   "cpu_min_day": 0.3,
+   "cpu_s_run": 0.041,
+   "runs_day": 393,
+   "sources": {
+    "claude-setup/hooks/word-intake.sh": "a8e24168d097a6f939d0dfc57d6b53e12a3f94dd"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.4 CPU-min/day; loses every word grant and the prompt's word context block (review, commit, push, span doors stay shut)",
+   "note": "python3 start (~20 ms) is the floor; words.py loaded hashlib (OpenSSL, ~2.5 ms/prompt) though intake hashes nothing: imported on use (claude-setup@ed1abe0), same output and store on 46 real prompts"
+  },
+  {
+   "id": "cpu:hook/stop.d/notice-chat-names.sh",
+   "title": "hook/stop.d/notice-chat-names.sh",
+   "audited_at": "2026-10-13T09:43:32+03:00",
+   "by": "harness-speed-cpu-hook-word-intake-sh-20261012T235057Z-0e5b",
+   "cpu_min_day": 0.2,
+   "cpu_s_run": 0.039,
+   "runs_day": 311,
+   "sources": {
+    "claude-setup/hooks/stop.d/notice-chat-names.sh": "13f40a7f3c20ea11f092fa550406408e699be1c8"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.3 CPU-min/day; loses the net that names a chat Egor was shown by raw id (Egor 2026-08-28)",
+   "note": "ran python3 and tailed the transcript on every stop; Claude Code 2.1.296 hands last_assistant_message in the Stop payload, and only ~10% of real last messages hold an 8-hex run: a builtin prefilter skips python3 on the rest, ~52 -> ~8 CPU-ms (claude-setup@8c6de86), same output on 200 real transcripts"
+  },
+  {
+   "id": "cpu:hook/eod-commits-notice.sh",
+   "title": "hook/eod-commits-notice.sh",
+   "audited_at": "2026-10-13T09:43:35+03:00",
+   "by": "harness-speed-cpu-hook-word-intake-sh-20261012T235057Z-0e5b",
+   "cpu_min_day": 0.1,
+   "cpu_s_run": 0.011,
+   "runs_day": 393,
+   "sources": {
+    "claude-setup/hooks/eod-commits-notice.sh": "4f8929560a70a8b2b673abad2c7d67eb460cd8df"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.1 CPU-min/day; loses the prompt notice that an end-report nightly commit in this repo still needs sorting",
+   "note": "already prescreens last-run.json with builtins (d3734843); only the realpath+dirname forks of its lib path stood, now ${0%/*} as eod-sorted-gate (claude-setup@06ffc5b); the rest is bash start and hook-time, shared by every hook"
+  },
+  {
+   "id": "cpu:hook/stop.d/ask-pr-mattermost.sh",
+   "title": "hook/stop.d/ask-pr-mattermost.sh",
+   "audited_at": "2026-10-13T09:43:38+03:00",
+   "by": "harness-speed-cpu-hook-word-intake-sh-20261012T235057Z-0e5b",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.011,
+   "runs_day": 187,
+   "sources": {
+    "claude-setup/hooks/stop.d/ask-pr-mattermost.sh": "77a0ec230e90bc842a3ff943ca43c672e5db3f1b"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.1 CPU-min/day; loses the stop that holds a ready frontend PR until it is announced in Mattermost",
+   "note": "two jq forks ran before the pending check though ~/.local/state/mm-pr/pending is empty on nearly every stop; a glob now exits first (claude-setup@8a26345), same exits on every payload, test_pr_mattermost 32 PASS"
+  },
+  {
+   "id": "cpu:hook/stop.d/ask-run-unfinished.sh",
+   "title": "hook/stop.d/ask-run-unfinished.sh",
+   "audited_at": "2026-10-13T09:43:41+03:00",
+   "by": "harness-speed-cpu-hook-word-intake-sh-20261012T235057Z-0e5b",
+   "cpu_min_day": 0.1,
+   "cpu_s_run": 0.019,
+   "runs_day": 187,
+   "sources": {
+    "claude-setup/hooks/stop.d/ask-run-unfinished.sh": "a3c384558b6c0d93befcefaca0b8d5a72ae351a9"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.1 CPU-min/day; loses the stop that refuses to leave this chat's dead or never-read review run standing",
+   "note": "one jq per progress document plus a jq -rs on every stop, while stale cancelled documents of other chats stay; a builtin read keeps only documents holding this session's id (claude-setup@9e19d92), ~20 -> ~13 CPU-ms, same output on the real documents"
   }
  ]
 }
