@@ -2234,6 +2234,22 @@
    "verdict": "kept",
    "zero": "removal saves 1.5 CPU-s a run (0.0 CPU-min/day); loses the 171-case classification table of rc_readonly_command under both bashes, the guard that a write never skips the review snapshot and the instruction tripwire",
    "note": "cost is production's one awk per classification (171 x 2 bashes), both bashes needed; the loose >=168 case floor was tightened to the table's exact count (proven red under an early exit 0 on the last two cases); no leak, no sleep"
+  },
+  {
+   "id": "suite:claude-setup/test_session_trash",
+   "title": "claude-setup/test_session_trash",
+   "audited_at": "2026-10-13T06:33:46+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-stop-backstop-20261012T235214Z-2406",
+   "cpu_run": 1.4,
+   "wall_run": 2.0,
+   "cpu_min_day": 0.02,
+   "wall_min_day": 0.03,
+   "sources": {
+    "claude-setup/tests/test_session_trash.sh": "e7269c4f9a8cf2ff32acc8acb6f9217eb5cb4637"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 1.4 CPU-s a run (0.0 CPU-min/day); loses every pin of session-trash.sh: stub detection, registry liveness (pid 0, dangling and half-written registries, failed scan reads live), sweep trashing and marker aging, the late-session snapshot race and the detached tail's cwd and run id",
+   "note": "cost is production's python3 per liveness scan, marker scan and move; the 5 s pgrep poll exits on first hit; the WORKER_RUN_ID source check was vacuous under 'nohup env \"$0\"' and now reads every detached tail; TZ unpinned but the 1 h marker margin only matters in a DST fall-back hour and this machine's zone (+03) has none"
   }
  ]
 }
