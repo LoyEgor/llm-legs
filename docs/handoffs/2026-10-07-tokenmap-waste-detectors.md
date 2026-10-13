@@ -21,12 +21,10 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 7. **Startup that is never used.** Done in token-map b044500 (`Unused startup`, read by Spend's startup audits).
 8. **Frontier model on a small task.** Shown only, never a cut. Done in token-map 93c2a59 (`Frontier model, small task`: opus or fable contexts that ended within 5 requests, never toned).
 9. **Export which causes are avoidable.** Harness `share/spend.py` (llm-legs 90cae246) copies tokenmap's unavoidable cache re-write causes (`expired (1h+ idle)` and the others from FINDINGS §26). Put an `avoidable` flag on each cause row in `tracking.json`, so the doctor reads it rather than keeping a copy. — Done in token-map 3e3b078; the Spend side is in `2026-10-07-harness-index.md`.
-   - Account switch on resume (`credential_org` names a new org): avoidable `account switch` cause. — Done in token-map e2c86b4.
    - Auto-memory prompt section: carved into `CLAUDE.md + memory index` from `prompt_snapshot`. — Done in token-map 1869303.
    - Stop re-answers: the forced turn bills the hook only while it keeps to the procedure; its waits' wakes bill it too. — Done in token-map 1869303.
    - Quiet since a fix (re-audit 2026-10-12, worker-run-backstop.sh): 0 blocks since 10-10T02:13Z, yet the row reads ×42 `worse` until the window rolls (10-17); a per-row last-block date would show it.
    - Review waits and retired relays: `procedure` row (worker-run by vendor, review-bench, wakes); Spend `turns:<step>`. — Done in token-map 7a24c2d, llm-legs 503e604e.
-   - Skill listing per entry: priced from every listing hash. — Done in token-map 63f4458.
    - Hook-asked calls: Hooks `Calls a hook asked for`. — Done in token-map db663fc, llm-legs f3527bf8.
    - Gate time (spend audit `hook:worker-launch-gate.sh`, 2026-10-12): cost is hook time (749 floor events in 10 days), not tokens.
    - No-op cd rewrites: own row `cd-guard (cd into the cwd)`. — Done in token-map a0d6b69.
@@ -37,6 +35,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
    - Skill forks (spend audit `spawn:subagent`, 2026-10-12): `subagent` is the fallback for a sidechain with no `attributionAgent`; all 49 of the 7 d are Claude Code's forked `/code-review` in review-bench skill cells: label them by the parent's Skill name. Pre-10-09 forks sit in `raw-events` rows with `agent_type` NULL, which `SUB_CLAUDE` drops, so the row reads `Δ new` on old load.
    - Gate wall time (spend audit `hook:review-flow-gate.sh`, 2026-10-12): its token price is refusals only (see its ledger row); its cost now is the PreToolUse wait on every Bash call, which only Speed's hook floors see.
    - Guard workarounds (spend audit `hook:worker-git-guard.sh`, 2026-10-12): a block prices the denied call alone; the cp + `git show HEAD:<f> >` restore a worker runs next (53 blocks in 52 sessions, 7 d) books as plain Bash; charge it to the hook as Hook-asked calls do.
+   - Per-run delegation (spend audit `turns:worker-run codex`, 2026-10-13): Δ ×17 is ×8 runs (128 vs 16) plus relay waits turned main-thread wakes; a per-run cell (~6.0k) would show the unit Δ.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.

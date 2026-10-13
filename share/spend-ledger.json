@@ -166,21 +166,20 @@
   {
    "id": "hook:worker-run-backstop.sh",
    "title": "worker-run-backstop.sh",
-   "audited_at": "2026-10-12T04:07:06+03:00",
-   "by": "harness-speed-spend-hook-worker-run-backstop-sh-20261012T010236Z-74c0",
-   "share": 0.000793,
+   "audited_at": "2026-10-13T06:11:04+03:00",
+   "by": "harness-speed-spend-hook-context-nudge-sh-20261012T235137Z-4f74",
+   "share": 0.000593,
    "prices": {
-    "Workers · Hooks": 496.64621242756425,
-    "Workers · attachment: hook context": 2879.5939310547787,
-    "Doctors · attachment: hook context": 696.6429838946558,
-    "Doctors · Hooks": 252.30745007151472,
-    "Reviewers · Hooks": 4.96130445842753
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
    },
    "sources": {
-    "llm-legs/bin/worker-run-backstop.sh": "1238782d78778709a013cd206f9b82866e94bea2"
+    "llm-legs/bin/worker-run-backstop.sh": "f36aa0590f065e18ebe0b1548e09ed52356dd6da"
    },
    "verdict": "kept",
-   "note": "re-audit after b4b13f07/fea5e1fd (hold narrowed to any live wait, --unowned cut): stop-gate journal and transcripts show 0 holds and 0 errors since 2026-10-10T02:13Z (~47 h); the 526k 7-day cell is the relay-era blocks of 10-05..10-10 already judged in the 10-10 audit, rolling out of the window by 10-17; quiet stops cost hook time, not tokens; nothing left to cut"
+   "zero": "removal saves ~0.03 % of spend (360k Stop re-answers, all before 10-10T02:33Z); loses the hold that keeps a chat from ending with a live worker-run wait unread",
+   "note": "re-audit after llm-legs@e2f0a939 (chat_pid reads the shared claude_ancestor helper instead of its own ps walk: same pid, token-neutral); tokenmap events: last backstop block 2026-10-10T02:32Z, 0 since (~3 d); the 360k cell is the 10-06..10-10 blocks already judged in the 10-10/10-12 audits, out of the window by 10-17"
   },
   {
    "id": "spawn:review-waiter",
@@ -207,21 +206,20 @@
   {
    "id": "hook:context-nudge.sh",
    "title": "context-nudge.sh",
-   "audited_at": "2026-10-10T08:19:09+03:00",
-   "by": "harness-speed-spend-hook-context-nudge-sh-20261010T031907Z-4017",
-   "share": 0.000469,
+   "audited_at": "2026-10-13T06:11:01+03:00",
+   "by": "harness-speed-spend-hook-context-nudge-sh-20261012T235137Z-4f74",
+   "share": 0.002341,
    "prices": {
-    "Workers · attachment: hook context": 56.33763507716477,
-    "Workers · Hooks": 13.357765001847183,
-    "Chat · Hooks": 45.77301711581157,
-    "Chat · attachment: hook context": 52.02714453550694,
-    "Reviewers · Hooks": 0.054084720651576476
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
    },
    "sources": {
-    "claude-setup/hooks/context-nudge.sh": "1982993beb06e387dba4489830c7d6e2d558cc68"
+    "claude-setup/hooks/context-nudge.sh": "52f8b7c6f082cb4be9dcc1a9fd9381d2d495c0b7"
    },
    "verdict": "kept",
-   "note": "0.033 % of spend (~370k limit tokens/7 d, ~250 a firing, priced as text resent until the cut); 1469 real firings/7 d, 96 % of compact cycles clean (one stage1 + one stage2), the focus Write follows 98 % of stage1 and 92 % of stage2 nudges; the only cheaper equivalent is shorter wording, which test_context_nudge.sh pins from the manual-compact/wrap-up incident (claude-setup@03b25e0b) and no replay can prove output-equivalent, for at most ~0.013 % of spend; repeat firings (~3 %, window change or re-arm) and skipping stage2 after a fresh focus Write (176/685) change decisions; hook_success twins are not charged (tokenmap excludes their stdout)"
+   "zero": "removal saves ~0.12 % of spend (1.18M hook-asked focus Writes + 0.24M injected text a week); loses the focus line PreCompact hands the auto-compact summarizer and the warning before a mid-turn cut",
+   "note": "re-audit after claude-setup@b61758b (limit_hit_once to ~/.cache/limits/hits.jsonl when the tail holds no usage line: nothing reaches the model, token-neutral); share x5 vs the 10-10 audit is tokenmap's new Calls a hook asked for section (token-map db663fc) pricing the focus Writes it asks, 1195 in 7 d (574 stage1, 466 stage2), Δ -18 %; sieve: 0 of 466 stage2 re-Writes repeat the stage1 line exactly, 5 near (>=90 % words), so the refresh carries new state and skipping it changes the summarizer's input; wording pinned by test_context_nudge.sh (claude-setup@03b25e0b)"
   },
   {
    "id": "rewrites:unexplained",
@@ -259,21 +257,18 @@
   {
    "id": "hook:cd-guard.sh",
    "title": "cd-guard.sh",
-   "audited_at": "2026-10-10T08:11:29+03:00",
-   "by": "harness-speed-hooks-cd-guard-sh-20261010T031903Z-0d2c",
-   "share": 0.002493,
+   "audited_at": "2026-10-13T06:11:05+03:00",
+   "by": "harness-speed-spend-hook-context-nudge-sh-20261012T235137Z-4f74",
+   "share": 0.0004,
    "prices": {
-    "Workers · attachment: hook context": 56.33763507716477,
-    "Workers · Hooks": 13.357765001847183,
-    "Chat · Hooks": 45.77301711581157,
-    "Chat · attachment: hook context": 52.02714453550694,
-    "Reviewers · Hooks": 0.054084720651576476
+    "Workers · attachment: hook context": 2069.92358282222,
+    "Workers · Hooks": 406.3251446902627,
+    "Reviewers · Hooks": 4.812316336552829
    },
-   "sources": {
-    "claude-setup/hooks/cd-guard.sh": "cbdb5b5cf7037d8292da8e77f4a85215b27e2a34"
-   },
+   "sources": {},
    "verdict": "cut",
-   "note": "Exists to keep a cd from moving the prompt-embedded cwd (claude-setup@2ea2cb72, rewrite since 4a65439d). Price 0.175% of spend (Injected text 1.64M, Blocked calls 324k a week) plus Speed 15.75 min/day. Effect: the rewrite note tells the model its cd did not stick (kept); the deny carries the fix. Cut: note 'cd-guard ran this in a subshell: the working directory did not change.' -> 'cd-guard: ran in a subshell, cwd unchanged.', deny reason ~40% shorter, no fork on cd-free calls; replay 7000 real calls identical decisions (claude-setup@c5a2a69). Next lever: no-op cds into the cwd (26% of cd calls), owner's call."
+   "zero": "removal done: saves its 0.02 % left in the window (242.7k blocked calls before 10-12) and all future spend; loses nothing, Claude Code keeps the cwd itself under CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1",
+   "note": "retired in claude-setup@55f0a21 (hook and test_cd_guard deleted, unwired from ~/.claude/settings.json; handoff 2026-10-10-cd-guard-native-cwd-reset settled 20261012T005404Z-e2f7); the remaining cells are pre-retirement and leave the 7 d window by 10-19"
   },
   {
    "id": "hook:word-intake.sh",
@@ -681,6 +676,30 @@
    "verdict": "kept",
    "zero": "removal saves 0.0 CPU-min/day median (2 of 7 days: 197, 438 CPU-s); loses the newest candidate under evaluation (driver byte-equal to champ50-pad's, the candidate differs in its sibling modules)",
    "note": "kept: one-shot research iteration of the live chat «Vector Magic macOS ARM migration» (each tracers/<name> dir is one candidate, 394 dirs, untracked by .gitignore tracers/*); no timer, loop or launchd: started by hand per eval set through bench/throttle.py slots; the project, not this file, is the recurring burner (26 process/logo-vectorizer-bench/* keys in 7 d, 6.6-61.5 CPU-min/day); no lever here: this file's runs are done and the next iteration is a new file"
+  },
+  {
+   "id": "rewrites:account switch",
+   "title": "re-writes account switch",
+   "audited_at": "2026-10-13T06:11:03+03:00",
+   "by": "harness-speed-spend-hook-context-nudge-sh-20261012T235137Z-4f74",
+   "share": 0.001813,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal (every RESUME pinned to its old account) saves ~0.09 % of spend (1.03M a week); loses worker-pick's limits routing on resumes, which then land on an account it ranked lower or out of headroom",
+   "note": "3 events in 7 d, 1.03M: all worker-run RESUMEs whose brief carried worker-pick's ACCOUNT on another org after 27-38 min idle (claude-setup word-triggers 10-09, logo-vectorizer-bench lane c46-pad, night stop-hooks fixer); same-org the 1 h cache would have held; worker-run requires --account on --resume (bin/worker-run:2890) and warns only past 1 h idle; kept: the same 10-10 finding (rewrites:idle 5-60min row), pinning overrides limits routing for <0.1 % of spend"
+  },
+  {
+   "id": "turns:worker-run codex",
+   "title": "worker-run codex turns",
+   "audited_at": "2026-10-13T06:11:03+03:00",
+   "by": "harness-speed-spend-hook-context-nudge-sh-20261012T235137Z-4f74",
+   "share": 0.00088,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal (no codex delegation) saves ~0.07 % of spend (534k turns + 233k wakes a week); loses every codex worker run, whose work then runs on Claude accounts",
+   "note": "Δ x17 is load and attribution: 128 codex starts in 7 d vs 16 before (x8), and the row exists since token-map 781574d (10-12) with wakes counted only in main-thread waits, the prior window's waits ran in relay subagents; per run ~6.0k main-thread tokens (brief Write, start, one wake, report read), nothing repeated to cut without changing the delegation"
   }
  ]
 }
