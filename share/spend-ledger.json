@@ -1101,6 +1101,81 @@
    "verdict": "kept",
    "zero": "removal saves 1.5 CPU-min/day; loses the claim of Egor's word grant for every word-gated step (git commit, review-bench, ...): the settle would find no grant and the step would be refused",
    "note": "purpose: fa375c28 one door for word triggers; already /bin/bash with a builtins screen; 6.5 ms/run vs a 3 ms floor, 2.5 of the 3.5 above it is the 231-line families read loop; a derived-program cache keyed on -nt of the table and the script would save ~0.3 CPU-min/day for a new cache file and invalidation: not worth the state"
+  },
+  {
+   "id": "cpu:hook/compact-auto.sh",
+   "title": "hook/compact-auto.sh",
+   "audited_at": "2026-10-13T09:15:07+03:00",
+   "by": "harness-speed-cpu-hook-compact-auto-sh-20261012T235039Z-2606",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.082,
+   "runs_day": 23,
+   "sources": {
+    "claude-setup/hooks/compact-auto.sh": "697b9fc8d18210e094444804a1f1c1d37a706c90"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.04 CPU-min/day; loses the model return after an armed compact and the disarm of a stale arm",
+   "note": "SessionStart matcher compact; 88 of 91 runs 10-06..10-12 found no mark; two python3 starts (session_id, source) were 36 of ~50 ms; merged into one: ~83 -> ~52 CPU-ms a run, identical stdout/exit/log on 5 payload classes; mark-file parse (7 python3) runs on the 3% armed path only, left"
+  },
+  {
+   "id": "cpu:hook/demo-link-gate.sh",
+   "title": "hook/demo-link-gate.sh",
+   "audited_at": "2026-10-13T09:15:09+03:00",
+   "by": "harness-speed-cpu-hook-compact-auto-sh-20261012T235039Z-2606",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.035,
+   "runs_day": 0,
+   "sources": {
+    "claude-setup/hooks/demo-link-gate.sh": "b37c476f25418402914e4bd0d60c18747f280b74"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.0 CPU-min/day (1 run in 7 d); loses the deny of a Jira create/edit that omits an existing _demo branch link",
+   "note": "PreToolUse on Atlassian create/edit only; 1 run 10-06..10-12 at 35 CPU-ms (jq + two git show-ref); nothing to cut"
+  },
+  {
+   "id": "cpu:hook/jira-mention-gate.sh",
+   "title": "hook/jira-mention-gate.sh",
+   "audited_at": "2026-10-13T09:15:11+03:00",
+   "by": "harness-speed-cpu-hook-compact-auto-sh-20261012T235039Z-2606",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.013,
+   "runs_day": 0,
+   "sources": {
+    "claude-setup/hooks/jira-mention-gate.sh": "a18270fc631492c74f4c11050a5ac701e6f00f3e"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.0 CPU-min/day (1 run in 7 d); loses the deny of an addressee-less Jira comment",
+   "note": "PreToolUse on Atlassian comment/create/edit; 1 run 10-06..10-12 at 13 CPU-ms (two jq); nothing to cut"
+  },
+  {
+   "id": "cpu:hook/precompact-preserve.sh",
+   "title": "hook/precompact-preserve.sh",
+   "audited_at": "2026-10-13T09:15:15+03:00",
+   "by": "harness-speed-cpu-hook-compact-auto-sh-20261012T235039Z-2606",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.03,
+   "runs_day": 23,
+   "sources": {
+    "claude-setup/hooks/precompact-preserve.sh": "4f5ef770801017e0cbba392aa88916e08b81c063"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~0.01 CPU-min/day; loses the summarizer's preserve/drop instructions and the session focus line on every auto-compact",
+   "note": "PreCompact; 30 runs/day at ~26-34 CPU-ms: one jq parse, a focus-file read, the words lib only for auto; constant text is its purpose (read once per compaction); nothing cheaper worth a change"
+  },
+  {
+   "id": "cpu:hook/night-run",
+   "title": "hook/night-run",
+   "audited_at": "2026-10-13T09:15:28+03:00",
+   "by": "harness-speed-cpu-hook-compact-auto-sh-20261012T235039Z-2606",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.046,
+   "runs_day": 18,
+   "sources": {
+    "llm-legs/bin/night-run": "a95d1ec54688abe0d72bebe97a116ffe444c400d"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.1 CPU-min/day; loses the failover of a walled night orchestrator (2026-10-06: night stood 4 h)",
+   "note": "StopFailure rate_limit; 225 runs 10-06..10-13, 7 of them a night orchestrator (wall events), the rest workers; jq -s over all 14 night files (1.6 MB) was most of ~90 CPU-ms; grep -F of the sid first returns before it for the rest: ~29 CPU-ms, ~31 ms wall, identical output; cpu_audit now pins its source llm-legs/bin/night-run"
   }
  ]
 }
