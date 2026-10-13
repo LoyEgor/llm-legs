@@ -48,6 +48,18 @@ load_share() { # module-file probe-function
 
 load_model_list() { load_share worker-model.sh worker_model_allows; }
 
+# Each check below runs in its own $(...), where an unprimed lookup reforks bin/geminib and bin/grokb.
+prime_models() { # [text] -> the catalogues it names primed, every one without a text
+  local scope
+  case ${1-gemini grok} in
+    *gemini*grok* | *grok*gemini*) scope='' ;;
+    *gemini*) scope=gemini ;;
+    *grok*) scope=grok ;;
+    *) return 0 ;;
+  esac
+  load_model_list && worker_model_prime "$scope"
+}
+
 # The `*_model=` spellings in a text that name a model no implementation worker may run, one
 # `<vendor>=<model>` per line. One reader for both doors: a Write's content carries them a line at
 # a time and a shell command carries them inside quotes, so the pairs are matched wherever they
@@ -85,7 +97,7 @@ disallowed_light_rows() { # text
 
 deny_light_row() {
   local vendor list=''
-  load_model_list || :
+  prime_models || :
   for vendor in claudeb codex gemini grok; do
     list="${list:+$list; }${vendor} $(worker_model_allowed_list "$vendor" light 2>/dev/null)"
   done
@@ -119,7 +131,7 @@ disallowed_efforts() {
 }
 
 deny_model() {
-  load_model_list || :
+  prime_models || :
   deny "Blocked: $(tr '\n' ' ' <<<"$1" | sed 's/ $//') in ~/.claude/worker-model. The table models are $(worker_model_allowed_summary default). No grant unlocks an unlisted model; worker-run refuses it with OUTCOME: MODEL_REFUSED before an account is spent."
 }
 
@@ -282,6 +294,7 @@ case "$MODE" in
           else $current[:$at] + ($edit.new_string // "") + $current[$at + ($old | length):] end
         end')
     fi
+    prime_models "$pending" || :
     offending=$(disallowed_models "$pending")
     [ -z "$offending" ] || deny_model "$offending"
     offending=$(disallowed_efforts "$pending" "$model_text")
@@ -737,6 +750,7 @@ case "$MODE" in
     # standing on the search side of a substitution — is not one it stores. The raw command rides
     # along because the scan drops heredoc bodies, and `cat > pin <<EOF` stores exactly that body.
     pending=$(drop_replaced "$scan"; drop_replaced "$cmd")
+    prime_models "$pending" || :
     offending=$(disallowed_models "$pending")
     [ -z "$offending" ] || deny_model "$offending"
     offending=$(disallowed_efforts "$pending" "$pending

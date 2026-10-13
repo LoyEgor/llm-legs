@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 # bin/worker-pin-gate.sh: what ~/.claude/worker-model may hold — no model, effort or light row the
 # table does not list, written by Edit/Write or by a shell write alike — and the chat pins written
 # only through `chat-pin`. A pin move itself passes, here and through worker_model_pin_account.
 # The shell door's parse is test_worker_pin_gate_shell.sh and _runtime.sh.
 . "$(dirname "$0")/worker_pin_gate_harness.sh" || exit 1
 
+if suite_shard_owns 1 pg-paths-and-chat-pins; then
 literal_failures=0
 literal_case() {
   local name=$1 expected=$2 command=$3
@@ -98,8 +100,9 @@ done
 printf '%s\n' '{"vendors": {"claude": {"accounts": [{"account": "offacct"}, {"account": "onacct"}, {"account": "main"}]}, "codex": {}}}' \
   >"$HOME/.llm-limits.json"
 mkdir -p "$CLAUDEB_DIR" "$HOME/.codex-profiles/.codexb" && printf 'offacct\n' >"$CLAUDEB_DIR/disabled"
-assert denied "$(bash_event 'chat-pin offacct')"
-assert contains "$(bash_event 'chat-pin offacct')" '`! chat-pin claude:offacct`'
+off_deny=$(bash_event 'chat-pin offacct')
+assert denied "$off_deny"
+assert contains "$off_deny" '`! chat-pin claude:offacct`'
 assert denied "$(bash_event '~/.local/bin/chat-pin offacct && echo ok')"
 assert allowed "$(bash_event 'chat-pin onacct')"
 assert denied "$(bash_event 'chat-pin claude:offacct')"
@@ -132,7 +135,9 @@ assert denied "$(write_event "$WORK/pins-fixture/s")"
 assert denied "$(bash_event "echo codex_profile=beta > $WORK/pins-fixture/s")"
 assert allowed "$(bash_event "cat $WORK/pins-fixture/s")"
 unset CHAT_PINS_DIR
+fi
 
+if suite_shard_owns 2 pg-command-path-and-models; then
 # --- The command path: worker_model_pin_account moves the pin for a session too ------------------
 . "$ROOT/share/worker-model.sh"
 accounts() { printf 'alpha\nbeta\n'; }
@@ -186,6 +191,12 @@ model_deny=$(write_event "$PIN_FILE" 'claudeb_model=sonnet')
 assert contains "$model_deny" 'claudeb=sonnet'
 assert contains "$model_deny" 'claudeb opus|fable; codex astra|sol; gemini flash38|flash37|flash36|pro; grok auto|grok-4.7|grok-4.7-build-fast|grok-4.6|grok-4.5'
 assert lacks "$model_deny" 'is Egor'
+# A denial reads each catalogue once, however many lookups its checks and its summary make.
+printf '[[ $0 == */geminib || $0 == */grokb ]] && printf "%%s\\n" "${0##*/}" >>"$CATALOGUES"\n' >"$WORK/count-catalogues.sh"
+: >"$WORK/catalogues"
+jq -cn --arg p "$PIN_FILE" '{hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {file_path: $p, content: "gemini_model=flash35"}}' |
+  BASH_ENV="$WORK/count-catalogues.sh" CATALOGUES="$WORK/catalogues" "$GATE" write >/dev/null
+assert [ "$(sort "$WORK/catalogues" | uniq -c | tr -s ' ')" = "$(printf ' 1 geminib\n 1 grokb')" ]
 assert denied "$(write_event "$PIN_FILE" 'claudeb_profile=beta
 claudeb_model=sonnet
 ')"
@@ -195,6 +206,9 @@ for bad in claudeb_model=sonnet gemini_model=flash35; do
   assert denied "$bash_model_deny"
   assert contains "$bash_model_deny" "${bad/_model=/=}"
 done
+fi
+
+if suite_shard_owns 3 pg-allowed-efforts-light; then
 # The allowed models pass, and so does an edit that REMOVES a cheap one: an Edit is judged on what
 # it would leave behind.
 printf 'worker=auto\nclaudeb_model=opus\n' >"$PIN_FILE"
@@ -270,7 +284,7 @@ assert allowed "$(write_event "$PIN_FILE" "$(printf 'worker=codex\ncodex_profile
 assert denied "$(write_event "$PIN_FILE" "$(printf 'worker=auto\ncodex_profile=alpha,beta\nclaudeb_model=sonnet\n')")"
 assert allowed "$(edit_event "$PIN_FILE" 'codex_profile=alpha,beta' 'codex_profile=opus')"
 
-# Every Bash call pays this door: one naming neither the pin file nor the chat pins forks nothing.
+# Every Bash, Write and Edit call pays this door: one naming neither the pin file nor the chat pins forks nothing.
 for tool in cat jq grep sed basename dirname; do
   printf '%s() { printf "%s\\n" >>"$FORKS"; command %s "$@"; }\n' "$tool" "$tool" "$tool"
 done >"$WORK/count-forks.sh"
@@ -281,5 +295,6 @@ assert [ ! -s "$WORK/forks" ]
 jq -cn '{hook_event_name: "PreToolUse", session_id: "s", tool_name: "Edit", tool_input: {file_path: "/tmp/plain.txt", old_string: "a", new_string: "b"}}' |
   BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$GATE" write >/dev/null 2>&1
 assert [ ! -s "$WORK/forks" ]
+fi
 
 printf 'PASS: %s asserts; ~/.claude/worker-model takes no `*_model=`, effort or light row the table does not list, by Edit/Write or by any shell write the door reads as reaching it however the path is spelled, while a read passes and a pin move passes, word or none, here and at `use`; the chat pins are written only through `chat-pin`\n' "$asserts"
