@@ -70,10 +70,12 @@ done
 # The whole library, not its head file: the span moved into `words.sh`, which review-journal.sh
 # sources from its OWN directory — deployed alone, every in-span row of the matrix below silently
 # answers out-span.
+lib_parts=()
 for part in review-journal.sh words.sh words.py word-families.json readonly-command.sh; do
   [ -r "${JOURNAL_LIB%/*}/$part" ] || fail "$part not readable beside review-journal.sh"
-  ln -s "${JOURNAL_LIB%/*}/$part" "$HOME/.claude/hooks/lib/$part"
+  lib_parts+=("${JOURNAL_LIB%/*}/$part")
 done
+ln -s "${lib_parts[@]}" "$HOME/.claude/hooks/lib/"
 
 # Two transcripts: one whose last turn of Egor's arms the span, one whose does not. The phrase is
 # his own trigger wording, which is the only reason a file here carries Cyrillic — and it stands
