@@ -5592,19 +5592,19 @@
   {
    "id": "suite:llm-legs/test_flow_image",
    "title": "llm-legs/test_flow_image",
-   "audited_at": "2026-10-13T13:40:12+03:00",
+   "audited_at": "2026-10-13T14:18:03+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-llm-reset-redeem-20261012T235332Z-5e50",
-   "cpu_run": 22.2,
+   "cpu_run": 22.4,
    "wall_run": 21.4,
-   "cpu_min_day": 2.17,
-   "wall_min_day": 6.82,
+   "cpu_min_day": 2.24,
+   "wall_min_day": 8.22,
    "sources": {
     "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
     "llm-legs/tests/test_flow_image.sh": "9f112992fbffee04dae9ef1275a069894218d40f"
    },
    "verdict": "cut",
    "zero": "removal saves 21 wall-s and 19 CPU-s a run (3.4 wall-min/day); loses the Flow route's refusals, takes, composites, resume lineage, Image Editor ops and the engine's rotation, locks and reply parsing",
-   "note": "two shards (takes+engine / resume+editor), held-lock failover waits 0.01 s, image-leg tee poll 0.01 s; composites (uv numpy/scipy) and per-pixel magick probes kept: production work each check reads"
+   "note": "two shards (takes+engine / resume+editor), held-lock failover waits 0.01 s, image-leg tee poll 0.01 s, flow flags read the manifest in one jq; composites (uv numpy/scipy) and per-pixel magick probes kept: production work each check reads"
   }
  ]
 }
