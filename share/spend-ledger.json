@@ -2430,6 +2430,86 @@
    "verdict": "cut",
    "zero": "removal saves ~1.0 wall-min/day; loses the only pins of compact-auto's switch-mode choice, lost-reply recovery from job records, disarm retry and the four Hammerspoon entry-point signatures",
    "note": "no-op sleep on PATH for confirm_disarm cases (fake hs writes records synchronously): sleep ~28 -> 0 s, A/B 50.8 -> 22.2 s, 161 asserts; retry and record-poll mutations red on cancel-late; rest is the hook's own 575 python3 spawns (production)"
+  },
+  {
+   "id": "suite:claude-setup/test_autopush",
+   "title": "claude-setup/test_autopush",
+   "audited_at": "2026-10-13T11:48:20+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-autopush-20261012T235157Z-054f",
+   "cpu_run": 10.3,
+   "wall_run": 15.4,
+   "cpu_min_day": 0.44,
+   "wall_min_day": 1.16,
+   "sources": {
+    "claude-setup/tests/test_autopush.sh": "0332360c36584079d86b2942a4f235c3e6e6b9df"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.8 wall-min/day; loses the only guard of git-hooks/reference-transaction (every commit's push, retry back-off, removed-worktree and stale-lease handling)",
+   "note": "the 1 s retry back-off cases overlap (stale-info with the two worktree removals, three transient rejections in three clones) and settle polls with builtins; 52 asserts, retry/worktree mutations red, ~21 s -> ~16.5 s"
+  },
+  {
+   "id": "suite:claude-setup/test_memory_prune",
+   "title": "claude-setup/test_memory_prune",
+   "audited_at": "2026-10-13T11:48:22+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-autopush-20261012T235157Z-054f",
+   "cpu_run": 10.6,
+   "wall_run": 8.2,
+   "cpu_min_day": 0.28,
+   "wall_min_day": 0.53,
+   "sources": {
+    "claude-setup/tests/test_memory_prune.sh": "6898eb81b2046b68217625f5ec86054a59adfe52"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.7 wall-min/day; loses the guard of hooks/memory-prune.sh archiving rules (merged-PR settle, cold files, gh budget, cache, silent failures)",
+   "note": "cold-cache count read from the first dry run, returning-name case writes its archive, exit status from the asserted run, stderr accumulates over every call (dry-run stderr write was green); 65 asserts, 4 mutations red, CPU -20%"
+  },
+  {
+   "id": "suite:claude-setup/test_review_journal",
+   "title": "claude-setup/test_review_journal",
+   "audited_at": "2026-10-13T11:48:23+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-autopush-20261012T235157Z-054f",
+   "cpu_run": 4.1,
+   "wall_run": 3.1,
+   "cpu_min_day": 0.36,
+   "wall_min_day": 0.7,
+   "sources": {
+    "claude-setup/tests/test_review_journal.sh": "1cca2953236afb1250670d93918c8afa4280934b"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.5 wall-min/day; loses the guard of hooks/lib/review-journal.sh HEAD snapshots, writes journal ownership and segment parsing",
+   "note": "COMMIT_JOURNAL_HOMES now a fixture: HEAD snapshots no longer walked the three real repositories' worktrees (1 s a snapshot, live-state read); one assert pins it; 118 asserts, CPU -30%"
+  },
+  {
+   "id": "suite:claude-setup/test_worker_edit_guard",
+   "title": "claude-setup/test_worker_edit_guard",
+   "audited_at": "2026-10-13T11:48:25+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-autopush-20261012T235157Z-054f",
+   "cpu_run": 8.6,
+   "wall_run": 11.7,
+   "cpu_min_day": 0.27,
+   "wall_min_day": 0.57,
+   "sources": {
+    "claude-setup/tests/test_worker_edit_guard.sh": "f66184e03fc2056b61cac1c8fa75d2e75d86532c"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.4 wall-min/day; loses the guard of hooks/worker-edit-guard.sh (a worker's shell writes denied or recorded, symlink escapes)",
+   "note": "one jq reads decision and reason instead of two jq and a grep per case, payload built with builtins (identical to the jq payload for every case); 152 assertions, message/decision/in-place mutations red, CPU -14%"
+  },
+  {
+   "id": "suite:claude-setup/test_worker_limit_gate",
+   "title": "claude-setup/test_worker_limit_gate",
+   "audited_at": "2026-10-13T11:48:25+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-autopush-20261012T235157Z-054f",
+   "cpu_run": 5.0,
+   "wall_run": 2.8,
+   "cpu_min_day": 0.18,
+   "wall_min_day": 0.45,
+   "sources": {
+    "claude-setup/tests/test_worker_limit_gate.sh": "df5147003769a017f837ab4863589d30f4c5eed6"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 0.3 wall-min/day; loses the guard of bin/worker-limit-gate.sh verdicts (100% hard wall, router account, explicit ACCOUNT refusals, toggle note)",
+   "note": "7 repeated hook runs gone (the judged output feeds the text asserts), mktemp-free briefs, case instead of grep, one redundant silent-allow assert removed (first expect_routed allow is the same empty output); 64 asserts, 3 mutations red"
   }
  ]
 }
