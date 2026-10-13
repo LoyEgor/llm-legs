@@ -45,6 +45,32 @@
           "regressed_at": null
         }
       ]
+    },
+    {
+      "id": "token-map-scan-writes",
+      "title": "token-map rewrote every request of a grown transcript on each scan and scattered rebuild commits across parts(component)",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "ssd-writes",
+        "key": "internal",
+        "cause": "token-map/tokenmap/__main__.py"
+      },
+      "note": "Top own SSD writer, 197 GB of 2,313 GB internal writes 10-06..10-13 (day cohorts' rusage). Measured in-process on DB clones: incremental scan 1,436 -> 17.5 MB, rates temp files 63.7 -> 1.0 MB, scan --reset 17.2-20.3 -> 12.7 GB; rows and schema equal old vs new. Commit batches of 1000 files (rebuild 10.1 GB) rejected: a 100 s transaction risks the 120 s tokenmap lock timeout.",
+      "fixes": [
+        {
+          "at": "2026-10-13T20:41:27+03:00",
+          "by": "system chat worker",
+          "files": [
+            "token-map/tokenmap/db.py",
+            "token-map/tokenmap/ingest.py",
+            "token-map/tokenmap/cli.py",
+            "token-map/tests/test_ingest.py",
+            "token-map/tests/test_cli.py"
+          ],
+          "in": "token-map@825b88f",
+          "regressed_at": null
+        }
+      ]
     }
   ],
   "blind_spots": [
