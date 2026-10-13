@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs
 import handoffs
 import limit_hit
-from fix_commit import FIX_KEYS, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, load_merged, record_settled, siblings_dir, unrooted_files
+from fix_commit import FIX_KEYS, LANDED_FILE, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, load_merged, memo_get, memo_put, record_settled, use_memo, siblings_dir, unrooted_files
 from spend import read_json, read_jsonl
 
 
@@ -2343,6 +2343,8 @@ def missing_commit(value):
     root = os.path.join(repos_dir(), repo)
     if not os.path.isdir(root):
         return None
+    if memo_get("commit", root + "@" + commit):
+        return None
     try:
         done = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "--quiet", commit + "^{commit}"],
                               capture_output=True, text=True, timeout=10)
@@ -2350,6 +2352,8 @@ def missing_commit(value):
         limit_hit.expired("probe.git", error, "the check that %s is a commit of %s: passed unchecked" % (commit, repo),
                           'bin/llm-doctor:"rev-parse", "--verify", "--quiet", commit')
         return None
+    if done.returncode == 0:
+        memo_put("commit", root + "@" + commit, True)
     return "%s is no commit of %s" % (commit, repo) if done.returncode == 1 else None
 
 
@@ -2591,6 +2595,7 @@ def main(argv):
     now_override = os.environ.get("LLM_DOCTOR_NOW")
     now = float(now_override) if now_override else time.time()
     write = not (args.dry_run or args.json)
+    use_memo(os.path.join(doctor_dir(), LANDED_FILE), write)
     try:
         report = collect(args.window, now, write_daily=write)
     except Exception as error:  # noqa: BLE001 - a collector failure is written as the document's own error

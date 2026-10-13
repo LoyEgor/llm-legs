@@ -1,6 +1,7 @@
 """The commit that settles a doctor ledger fix `{at, files: ["<repo>/<path>", ...], in}`, shared by
 llm-doctor and harness-doctor, and the overlay those settled fields live in until a commit carries them:
 a measuring run never writes the tracked ledger (shared-invariants row ej)."""
+import atexit
 import datetime
 import functools
 import json
@@ -14,6 +15,50 @@ FIX_KEYS = frozenset({"at", "by", "files", "in", "regressed_at"})
 SETTLED_FILE = "ledger-settled.json"
 SETTLED_KEYS = ("in", "regressed_at")
 RULED = "ruled"
+LANDED_FILE = "fix-landings.json"
+
+_memo = {"path": None, "write": False, "rows": None, "dirty": False}
+
+
+def use_memo(path, write):
+    """Remember what history cannot take back (a commit that exists, a commit that reached HEAD and when) in `path`
+    across runs; only a run with `write` saves it, so a dry run leaves its directory untouched."""
+    _memo.update(path=path, write=write, rows=None, dirty=False)
+
+
+def _memo_rows():
+    if _memo["rows"] is None:
+        try:
+            with open(_memo["path"], encoding="utf-8") as handle:
+                rows = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            rows = {}
+        _memo["rows"] = rows if isinstance(rows, dict) else {}
+    return _memo["rows"]
+
+
+def memo_get(kind, key):
+    return _memo_rows().get(kind, {}).get(key) if _memo["path"] else None
+
+
+def memo_put(kind, key, value):
+    if _memo["path"] and memo_get(kind, key) != value:
+        _memo_rows().setdefault(kind, {})[key] = value
+        if _memo["write"] and not _memo["dirty"]:
+            _memo["dirty"] = True
+            atexit.register(_memo_save)
+
+
+def _memo_save():
+    temporary = "%s.tmp.%d" % (_memo["path"], os.getpid())
+    try:
+        os.makedirs(os.path.dirname(_memo["path"]), exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(_memo["rows"], handle, sort_keys=True)
+        os.replace(temporary, _memo["path"])
+    except OSError:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def read_settled(path):
@@ -220,6 +265,10 @@ def _landing(ref, repos):
     top = os.path.join(repos, repo)
     if not commit or not os.path.isdir(top):
         return None
+    key = "%s@%s" % (top, commit)
+    remembered = memo_get("landed", key)
+    if remembered is not None:
+        return remembered
     def git(*args):
         return subprocess.run(["git", "-C", top] + list(args), capture_output=True, text=True, timeout=10)
     try:
@@ -244,7 +293,9 @@ def _landing(ref, repos):
         parts = entry.split()
         if len(parts) > 2 and parts[1] in descendants:
             oldest = parts
-    return int(oldest[0]) if oldest and oldest[2] != words[1] else int(words[0])
+    landed = int(oldest[0]) if oldest and oldest[2] != words[1] else int(words[0])
+    memo_put("landed", key, landed)
+    return landed
 
 
 NOT_LANDED = float("inf")
