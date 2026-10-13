@@ -335,6 +335,59 @@ check(os.path.exists(os.path.join(home, "vheld/d1")) and not os.path.exists(os.p
 check(sorted(os.listdir(os.path.join(tmpw, "sheld"))) == ["d1", "old.log"] and held_run["skipped_open"] == 3,
       "a /private/tmp/... file or dir is held by lsof's /tmp/... spelling: %s" % held_run)
 
+# ---- command stores: the shipped uv cache clean, once every `days`, through a fake uv on PATH
+uvc = {"name": "uvc", "kind": "app", "globs": ["~/.cache/uv"], "cleaner": "command", "command": ["uv", "cache", "clean"]}
+check("command store" in (raises({"stores": [dict(uvc, max_mb=9)]}) or "")
+      and "command store" in (raises({"stores": [dict(uvc, days=30, kind="log", readers=[], **named)]}) or "")
+      and "command store" in (raises({"stores": [dict(uvc, days=30, command="uv cache clean")]}) or "")
+      and "command store" in (raises({"stores": [dict(uvc, days=30, command=[])]}) or "")
+      and raises({"stores": [dict(uvc, days=30)]}) is None,
+      "a command store is an app store with days and an argv list")
+uv_store = {e["name"]: e for e in real["stores"]}["uv-cache"]
+check(uv_store["cleaner"] == "command" and uv_store["command"] == ["uv", "cache", "clean"]
+      and uv_store["days"] == 30 and uv_store["globs"] == ["~/.cache/uv"]
+      and "~/.cache/uv" not in [e["glob"] for e in real["ignore"]],
+      "the shipped uv cache is cleaned by uv itself every 30 days, claimed as a store instead of ignored")
+with open(os.path.join(work, "path", "uv"), "w") as handle:
+    handle.write('#!/bin/bash\necho "$*" >>"%s/uv-calls"\n[ -e "%s/uv-fail" ] && { echo locked >&2; exit 2; }\n'
+                 'rm -rf "$HOME/.cache/uv"/*\n' % (work, work))
+os.chmod(os.path.join(work, "path", "uv"), 0o755)
+put(".cache/uv/archive-v0/blob", 4096)
+cache_bytes = ls.unit_stats(os.path.join(home, ".cache/uv"))["bytes"]
+registry([dict(uvc, days=30), {"name": "o", "globs": ["~/other/*"], "cleaner": "sweep", "days": 60}])
+
+
+def uv_calls():
+    try:
+        return open(os.path.join(work, "uv-calls")).read().splitlines()
+    except OSError:
+        return []
+
+
+runs_path = os.path.join(work, "sweep", "commands.json")
+dry = log_sweep("--dry-run")
+check(dry.returncode == 0 and uv_calls() == [] and not os.path.exists(runs_path)
+      and "run" in dry.stdout and "uv cache clean" in dry.stdout and "uvc: 1 unit" in dry.stdout,
+      "a dry run names the due command with the cache's size, runs nothing, records no run: %s" % dry.stdout)
+open(os.path.join(work, "uv-fail"), "w").close()
+failed = log_sweep("--json")
+os.remove(os.path.join(work, "uv-fail"))
+check(failed.returncode == 1 and json.loads(failed.stdout)["errors"] == 1 and "uvc" not in json.loads(failed.stdout)["stores"]
+      and not os.path.exists(runs_path) and os.path.exists(os.path.join(home, ".cache/uv/archive-v0/blob")),
+      "a failing command is a sweep error and stays due: %s" % failed.stdout)
+cleaned = json.loads(log_sweep("--json").stdout)
+check(uv_calls() == ["cache clean", "cache clean"] and cleaned["errors"] == 0
+      and cleaned["stores"]["uvc"] == [1, cache_bytes - ls.unit_stats(os.path.join(home, ".cache/uv"))["bytes"]]
+      and cleaned["stores"]["uvc"][1] >= 4096 and [os.path.join(home, ".cache/uv"), cleaned["stores"]["uvc"][1]] in cleaned["largest"]
+      and abs(json.load(open(runs_path))["uvc"] - now) < 600,
+      "a due command runs, its freed bytes count in the result, its run is recorded: %s" % cleaned)
+again = json.loads(log_sweep("--json").stdout)
+only_other = sweep_mod.sweep(ls.load(), now + 31 * DAY, False, {"o"}, lambda *_: None)
+check(len(uv_calls()) == 2 and "uvc" not in again["stores"] and "uvc" not in only_other["stores"] and len(uv_calls()) == 2,
+      "the command waits its days and is skipped when --store names another store")
+later = sweep_mod.sweep(ls.load(), now + 31 * DAY, False, None, lambda *_: None)
+check(len(uv_calls()) == 3 and later["errors"] == 0 and "uvc" in later["stores"], "it runs again once 30 days passed: %s" % later)
+
 # ---- retention by class: workers 15 days, chats and unclassified units 180, a session dir follows its transcript
 logged = dict(named, kind="log", readers=[], name="a", globs=["~/a"], cleaner="sweep")
 check("group_days" in (raises({"stores": [dict(logged, days=180, group_days={"workers": 15})]}) or "")

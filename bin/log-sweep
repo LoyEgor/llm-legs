@@ -3,7 +3,8 @@
 `days` (a classified unit of a split store: its group's `group_days`, classes read from every `session` store, swept
 or not), beyond `keep_newest` or `max_mb` (oldest first), and truncates files to their last `tail_mb`. A unit some
 process holds open (an open file or bound socket, a cwd or either inside a directory) is skipped; sockets, FIFOs and
-devices are never units. `--dry-run` prints what it would remove with sizes. One
+devices are never units. A `command` store's argv runs once its last successful run (~/.cache/log-sweep/commands.json)
+is `days` old, the bytes it freed counted like a removal. `--dry-run` prints what it would remove or run with sizes. One
 summary line per run goes to ~/.cache/log-sweep/sweeps.jsonl, capped. Run daily by `system-doctor logstores`."""
 
 import argparse
@@ -23,6 +24,7 @@ import log_stores  # noqa: E402
 
 RECORD_MAX_BYTES = 256 * 1024
 RECORD_ITEMS = 20
+COMMAND_TIMEOUT_S = 1200  # under system-doctor's LOGS["sweep_timeout_s"], which kills the whole sweep
 
 
 def state_dir():
@@ -91,6 +93,13 @@ def remove(path):
         os.remove(path)
 
 
+def write(path, text):
+    temporary = "%s.%d.tmp" % (path, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(temporary, path)
+
+
 def record(row):
     path = os.path.join(state_dir(), "sweeps.jsonl")
     try:
@@ -101,17 +110,66 @@ def record(row):
     lines.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
     while len(lines) > 1 and sum(len(line) + 1 for line in lines) > RECORD_MAX_BYTES:
         lines.pop(0)
-    temporary = "%s.%d.tmp" % (path, os.getpid())
-    with open(temporary, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")
-    os.replace(temporary, path)
+    write(path, "\n".join(lines) + "\n")
+
+
+def command_runs():
+    try:
+        with open(os.path.join(state_dir(), "commands.json"), encoding="utf-8") as handle:
+            runs = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return runs if isinstance(runs, dict) else {}
+
+
+def run_command(entry, now, dry_run, say):
+    """[[unit, bytes freed]] of a `command` store whose last successful run is `days` old or never happened ([] when
+    not due; a dry run reports the units' size and runs nothing), None when the command fails."""
+    runs = command_runs()
+    last = runs.get(entry["name"])
+    if isinstance(last, (int, float)) and last > now - entry["days"] * log_stores.DAY_S:
+        return []
+    argv = entry["command"]
+    before = log_stores.measure(entry)
+    if dry_run:
+        say("  %-8s %8.1f MB  %s" % ("run", sum(r["bytes"] for r in before) / log_stores.MB, " ".join(argv)))
+        return [[r["path"], r["bytes"]] for r in before]
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=COMMAND_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as error:
+        say("log-sweep: %s: %s" % (" ".join(argv), error))
+        return None
+    if out.returncode:
+        say("log-sweep: %s: exit %d: %s" % (" ".join(argv), out.returncode, out.stderr.strip()[-300:]))
+        return None
+    runs[entry["name"]] = round(now)
+    write(os.path.join(state_dir(), "commands.json"), json.dumps(runs, sort_keys=True) + "\n")
+    after = {r["path"]: r["bytes"] for r in log_stores.measure(entry)}
+    return [[r["path"], max(0, r["bytes"] - after.get(r["path"], 0))] for r in before]
 
 
 def sweep(registry, now, dry_run, only=None, say=print):
     stores, items, errors, skipped = {}, [], 0, 0
     paths, sessions = None, {}
+
+    def tally(entry, done):
+        if not done:
+            return
+        key, value = log_stores.criterion(entry)
+        stores[entry["name"]] = [len(done), sum(freed for _path, freed in done)]
+        items.extend(done)
+        say("%s: %d unit%s, %.1f MB (%s %s%s)" % (entry["name"], len(done), "" if len(done) == 1 else "s",
+                                                  stores[entry["name"]][1] / log_stores.MB, key, value, "".join(
+                                                      ", %s %s" % kv for kv in (entry.get("group_days") or {}).items())))
+
     for entry in registry.get("stores") or ():
-        swept = entry["cleaner"] == "sweep" and not (only and entry["name"] not in only)
+        chosen = not (only and entry["name"] not in only)
+        if entry["cleaner"] == "command":
+            done = run_command(entry, now, dry_run, say) if chosen else []
+            errors += done is None
+            tally(entry, done)
+            continue
+        swept = entry["cleaner"] == "sweep" and chosen
         if not swept and entry.get("split") != "session":
             continue
         rows = log_stores.measure(entry)
@@ -119,9 +177,9 @@ def sweep(registry, now, dry_run, only=None, say=print):
             log_stores.split(entry, rows, sessions)
         if not swept:
             continue
-        key, value = log_stores.criterion(entry)
+        _key, value = log_stores.criterion(entry)
         bases = [glob_base(p) for p in entry["globs"]]
-        done = [0, 0]
+        done = []
         for row, action in log_stores.doomed(entry, rows, now):
             if action == "delete":
                 if paths is None:
@@ -143,14 +201,8 @@ def sweep(registry, now, dry_run, only=None, say=print):
                     errors += 1
                     say("log-sweep: %s %s: %s" % (action, row["path"], error))
                     continue
-            done[0] += 1
-            done[1] += freed
-            items.append([row["path"], freed])
-        if done[0]:
-            stores[entry["name"]] = done
-            say("%s: %d unit%s, %.1f MB (%s %s%s)" % (entry["name"], done[0], "" if done[0] == 1 else "s",
-                                                      done[1] / log_stores.MB, key, value, "".join(
-                                                          ", %s %s" % kv for kv in (entry.get("group_days") or {}).items())))
+            done.append([row["path"], freed])
+        tally(entry, done)
     items.sort(key=lambda item: -item[1])
     return {"t": round(now), "dry_run": dry_run, "units": sum(s[0] for s in stores.values()),
             "bytes": sum(s[1] for s in stores.values()), "stores": stores, "skipped_open": skipped, "errors": errors,

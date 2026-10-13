@@ -13,13 +13,13 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 DAY_S = 86400
 MB = 1 << 20
 KB = 1024
-CLEANERS = ("self", "sweep", "cap", "keep")
+CLEANERS = ("self", "sweep", "cap", "keep", "command")
 CRITERIA = ("days", "max_mb", "keep_newest", "tail_mb")
 KINDS = ("log", "app")
 GROUPS = ("workers", "temp", "review bench", "our tools", "my chats", "LLM apps")
 SPLITS = ("session", "session-id")
 HEADLESS = ("sdk-cli", "sdk-ts", "sdk-py", "codex_exec")
-NEEDS_CRITERION = ("self", "sweep")
+NEEDS_CRITERION = ("self", "sweep", "command")
 SLACK = {"days": 2, "keep_newest": 1, "max_mb": 1.25, "tail_mb": 2.0}
 
 
@@ -40,7 +40,8 @@ def criterion(entry):
 
 def load(path=None):
     """The registry, validated: every store has a name, globs, a kind, a known cleaner and at most one criterion, which a
-    `self` or `sweep` store must have, and a log store lists its readers; `group_days` only on a split `days` store, each
+    `self`, `sweep` or `command` store must have, and a log store lists its readers; a `command` store is an app store
+    whose criterion is `days` and whose `command` is an argv list; `group_days` only on a split `days` store, each
     group known and kept no longer than `days`, which an unclassified unit keeps; every ignore entry has a glob and a
     reason. Raises ValueError naming the fault."""
     path = path or registry_path()
@@ -59,6 +60,11 @@ def load(path=None):
             raise ValueError("store %s: %s needs exactly one of %s" % (name, entry["cleaner"], "/".join(CRITERIA)))
         if entry.get("kind") not in KINDS:
             raise ValueError("store %s: needs a kind in %s" % (name, "/".join(KINDS)))
+        argv = entry.get("command")
+        if entry["cleaner"] == "command" and not (
+                entry["kind"] == "app" and isinstance(entry.get("days"), int) and entry["days"] > 0
+                and isinstance(argv, list) and argv and all(isinstance(a, str) and a for a in argv)):
+            raise ValueError("store %s: a command store is an app store with days and a command argv list" % name)
         readers = entry.get("readers")
         if entry["kind"] == "log" and not (isinstance(readers, list) and all(isinstance(r, str) and r for r in readers)):
             raise ValueError("store %s: a log store needs readers, a list of program names or []" % name)
