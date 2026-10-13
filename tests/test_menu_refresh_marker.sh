@@ -42,6 +42,7 @@ EXEMPT = {
     ("token-tracking.lua", "M.setTask"): "the factory",
     ("token-tracking.lua", "M.menuItems"): "opens the token map page",
     ("instruction-watch.lua", "runOpenCommand"): "a click action",
+    ("instruction-watch.lua", "launchTask"): "the watcher's own listing scan every tick, no menu is refreshing",
     ("instruction-watch.lua", "runChatResolver"): "a chat-name lookup for rows already shown",
     ("instruction-watch.lua", "M.menuItems"): "reveals the change log in Finder",
     ("dia-flag-watch.lua", "M.check"): "no menu",

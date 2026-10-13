@@ -841,7 +841,7 @@ assert eq "$(grok_launch_acct auto workers "$CONSISTENCY_CACHE/grok-no-pin" slow
 assert eq "$(grok_launch_acct auto workers "$CONSISTENCY_CACHE/grok-no-pin" prioacct)" grok-4.7-build-fast
 for fast_offered in grokFastOffered codexFastOffered; do
   fast_body=$(awk -v start="^function M[.]$fast_offered[(]" '$0 ~ start { on = 1 } on { print } on && /^end$/ { exit }' "$HAMMER")
-  assert grep -Fq 'readTextFile(path)' <<<"$fast_body"
+  assert grep -Fq 'readJsonTable(path)' <<<"$fast_body"
   assert test "$(grep -Fc 'io.open' <<<"$fast_body")" = 0
 done
 assert eq "$(grok_launch_acct auto research "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" auto

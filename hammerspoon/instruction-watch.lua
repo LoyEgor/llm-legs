@@ -636,7 +636,7 @@ local function launchTask(command, onExit)
 end
 
 local function runScanAsync(mode, args, done)
-    if scanLauncher == false or not (scanLauncher or (hs.task and hs.task.new)) then
+    if scanLauncher == false or not (scanLauncher or hs.task) then
         return done(runScan(mode, args))
     end
     if not ROOT then return done(nil, "repository root unresolved") end
