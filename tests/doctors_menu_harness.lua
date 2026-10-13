@@ -1194,7 +1194,9 @@ do
         fact = "fixed", proof = { why = "the fix has not landed in main" }, cause = { name = "Hammerspoon" } },
       { id = "ledger:x", rule = "ledger", label = "ledger", state = "new", value = 1, unit = "rows", fact = "row x" } },
     measures = { births_s = 2600, kernel = 0.2, busy = 0.5, cores = 10, comp_gib = 2, mem_gib = 24, swap_used_mb = 1024,
-      swap_gib_day = 3, ssd_gb_day_7d = 150, ssd_read_gb_day_7d = 900, free_gib = { Data = 20, Work = 400 } },
+      swap_gib_day = 3, ssd_gb_day_7d = 150, ssd_read_gb_day_7d = 900, free_gib = { Data = 20, Work = 400 },
+      ssd_sampled = { samples = 3, minutes = 30, attributed = 0.6, top = { { "kernel_task", "swap", 0.4 },
+        { "Python", "~/.cache/x", 0.1 }, { "tiny", "/x", 0.0001 } } } },
     days = { busy = { [trendDay(-2)] = 0.4, [trendDay(-1)] = 0.2, [trendDay(0)] = 0.5 } },
     causes = { births = { { "llm-legs/bin/worker-run", 0.3, "own" }, { "llm-legs/share/run-suites.sh", 0.2, "own" },
         { "(bash)", 0.1, "third-party" }, { "review-bench/tests/test_x.sh", 0.1, "own" }, { "bash", 0.05, "third-party" } },
@@ -1243,6 +1245,11 @@ do
     and rowMatching(processor, "^ +0%.50 cores +Chrome$"), "Processor: starts by human cause name, CPU by process")
   check(rowMatching(memory, "^ +3 GB +Claude ×4$") and rowMatching(memory, "^ +2 GB +Chrome ×6$"),
     "Memory: resident memory by human name with its process count")
+  local writes = first[3].menu
+  check(rowMatching(writes, "^root samples  3 × 10 min$") and rowMatching(writes, "^ +60 GB/d +kernel_task  swap$")
+    and rowMatching(writes, "^ +15 GB/d +Python  ~/%.cache/x$") and not rowMatching(writes, "tiny")
+    and rowMatching(writes, "^ +60 GB/d +unattributed$"),
+    "Disk writes: root samples as process and directory in GB/d of the week, then the unattributed rest")
   local workers, apps = rowMatching(logs, "^ +12 GB +%+1%.5  workers$"), rowMatching(logs, "LLM apps$", "R")
   local gemini = workers and rowMatching(workers.menu, "^ +6%.5 GB +2–15 d  Gemini$")
   local tokenmap = rowMatching(rowMatching(logs, "our tools$").menu, "^ +1%.8 GB +token map$")

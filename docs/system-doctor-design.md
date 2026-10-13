@@ -254,8 +254,14 @@ once 14 days of series exist. A `log-store` fix is proven when the next scan no 
 - **Felt score** for scheduling levers (stalls, slow HID) — the hang and DAS counters feed no rule yet.
 - **Cohort proof** on its own dominant term (M, D, R, L) instead of births/CPU.
 - **Retention of `collector-runs.jsonl`:** 30 days.
-- Short-lived and other users' disk I/O and footprints stay blind without a consented privileged sample
-  (ledger `ssd-writers`, `foreign-cohort-terms`).
+- Other users' footprints stay blind without a consented privileged sample (ledger `foreign-cohort-terms`).
+  Short-lived and other users' disk writes are sampled, not traced (ledger `ssd-writers`): the root `bin/ssd-sampler`
+  (LaunchDaemon `com.egor.ssd-sampler`, owner-consented 2026-10-13, `sudo bin/ssd-sampler install`, copy in
+  /usr/local/libexec so no user-writable file runs as root) traces `fs_usage -f diskio` 10 min every 7 h, a 7 h step
+  walks every hour of the day in a week. Each sample, `/var/db/ssd-sampler/<start>.json`, carries the device write
+  counters over the trace and the write bytes per (process, disk, directory). `measures.ssd_sampled` sums 7 days:
+  each (process, directory) share of the internal devices' bytes and the attributed share; Disk writes scales them to
+  GB/d by the week's mean. Blind `ssd-sampler` while the daemon is installed but no sample is younger than 15 h.
 
 ## Levers (own code, output-equivalent; every one needs a before/after on this collector)
 

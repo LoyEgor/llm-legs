@@ -1,0 +1,161 @@
+#!/usr/bin/python3 -I
+"""ssd-sampler: who writes which disk, the part the System doctor's uid-bound rusage cannot see (short-lived and
+other uids' processes). As root, `fs_usage -w -f diskio` runs SECS seconds every EVERY_S; its lines are aggregated in
+memory into one JSON per sample in OUT_DIR, which the System doctor reads. Owner consented 2026-10-13.
+
+  sudo ssd-sampler install      copy to /usr/local/libexec, load the LaunchDaemon, take the first sample now
+  sudo ssd-sampler uninstall
+  ssd-sampler aggregate         fs_usage lines on stdin -> rows JSON (tests)"""
+import collections, json, os, plistlib, re, shutil, subprocess, sys, time
+
+LABEL = "com.egor.ssd-sampler"
+INSTALLED = "/usr/local/libexec/ssd-sampler"
+PLIST = "/Library/LaunchDaemons/%s.plist" % LABEL
+OUT_DIR = os.environ.get("SSD_SAMPLER_DIR") or "/var/db/ssd-sampler"
+SECS = 600
+EVERY_S = 7 * 3600
+KEEP_DAYS = 30
+ROWS = 200
+FLOAT = re.compile(r"^\d+\.\d+$")
+
+
+def top_dir(path):
+    dirs = path.split("/")[1:-1]
+    if path.startswith("/Users/") and len(dirs) >= 2:
+        return "/".join(["~"] + dirs[2:4])
+    return "/" + "/".join(dirs[:3])
+
+
+def aggregate(lines, marks=None):
+    """(lines seen, {(proc, dev, dir): [bytes, events]}) of the write events; marks gets one (time, devices) the
+    moment the first line arrives, so device counters span the trace, not fs_usage's setup."""
+    rows, seen = collections.defaultdict(lambda: [0, 0]), 0
+    for raw in lines:
+        if marks is not None and not marks:
+            marks.append((time.time(), devices()))
+        p = raw.split()
+        if len(p) < 4:
+            continue
+        seen += 1
+        if "Wr" not in p[1] and "PgOut" not in p[1]:
+            continue
+        dev = next((t for t in p if t.startswith("/dev/")), None)
+        if not dev:
+            continue
+        nbytes = next((int(t[2:], 16) for t in p if t.startswith("B=0x")), 0)
+        i, rest = p.index(dev) + 1, []
+        while i < len(p) - 1 and not FLOAT.match(p[i]):
+            rest.append(p[i])
+            i += 1
+        path = " ".join(rest)
+        last = max((i for i, t in enumerate(p) if FLOAT.match(t) and i > 1), default=len(p) - 2)
+        tail = p[last + 1:]
+        if tail and tail[0] == "W":
+            tail = tail[1:]
+        proc = re.sub(r"\.\d+$", "", " ".join(tail) or p[-1])
+        where = top_dir(path) if path.startswith("/") else "(none)" if not path else "(rel)"
+        slot = rows[(proc, dev[5:], where)]
+        slot[0] += nbytes
+        slot[1] += 1
+    return seen, rows
+
+
+def devices():
+    """{`internal:<bsd>` or `external:<bsd>`: bytes written}, the System doctor's disk_counters labels."""
+    out = subprocess.run(["/usr/sbin/ioreg", "-r", "-c", "IOBlockStorageDevice", "-w0", "-d", "3", "-l"],
+                         capture_output=True, text=True, errors="replace").stdout
+    disks = {}
+    for block in re.split(r"(?m)^\+-o ", out)[1:]:
+        location = re.search(r'"Physical Interconnect Location"="(\w+)"', block)
+        wrote = re.search(r'"Bytes \(Write\)"=(\d+)', block)
+        bsd = re.search(r'"BSD Name" = "(disk\d+)"', block)
+        if wrote:
+            disks["%s:%s" % ((location.group(1) if location else "unknown").lower(), bsd.group(1) if bsd else "?")] = \
+                int(wrote.group(1))
+    return disks
+
+
+def internal(dev):
+    info = subprocess.run(["/usr/sbin/diskutil", "info", "-plist", dev], capture_output=True).stdout
+    try:
+        return int(bool(plistlib.loads(info).get("Internal")))
+    except Exception:
+        return None
+
+
+def run():
+    if os.geteuid() != 0:
+        sys.exit("ssd-sampler: run needs root; launchd runs it")
+    marks = []
+    trace = subprocess.Popen(["/usr/bin/fs_usage", "-w", "-f", "diskio", "-t", str(SECS)], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, errors="replace")
+    seen, rows = aggregate(trace.stdout, marks)
+    trace.wait()
+    end, after = time.time(), devices()
+    start, before = marks[0] if marks else (end, after)
+    where = {dev: internal(dev) for dev in {key[1] for key in rows}}
+    top = sorted(([proc, dev, where[dev], path, b, n] for (proc, dev, path), (b, n) in rows.items()),
+                 key=lambda r: -r[4])
+    doc = {"v": 1, "start": round(start), "end": round(end), "lines": seen,
+           "devices": {label: after[label] - before[label] for label in after if label in before},
+           "columns": ["proc", "dev", "internal", "dir", "bytes", "events"], "rows": top[:ROWS]}
+    os.makedirs(OUT_DIR, mode=0o755, exist_ok=True)
+    final = os.path.join(OUT_DIR, time.strftime("%Y%m%dT%H%M%S", time.localtime(start)) + ".json")
+    with open(final + ".tmp", "w") as handle:
+        json.dump(doc, handle, separators=(",", ":"))
+    os.chmod(final + ".tmp", 0o644)
+    os.replace(final + ".tmp", final)
+    for name in os.listdir(OUT_DIR):
+        path = os.path.join(OUT_DIR, name)
+        if name.endswith(".json") and os.path.getmtime(path) < end - KEEP_DAYS * 86400:
+            os.remove(path)
+
+
+def launchctl(*args):
+    return subprocess.run(["/bin/launchctl", *args], capture_output=True, text=True)
+
+
+def install():
+    if os.geteuid() != 0:
+        sys.exit("ssd-sampler: install needs root: sudo %s install" % os.path.realpath(__file__))
+    os.makedirs(os.path.dirname(INSTALLED), mode=0o755, exist_ok=True)
+    shutil.copyfile(os.path.realpath(__file__), INSTALLED + ".tmp")
+    os.chown(INSTALLED + ".tmp", 0, 0)
+    os.chmod(INSTALLED + ".tmp", 0o755)
+    os.replace(INSTALLED + ".tmp", INSTALLED)
+    os.makedirs(OUT_DIR, mode=0o755, exist_ok=True)
+    with open(PLIST, "wb") as handle:
+        plistlib.dump({"Label": LABEL, "ProgramArguments": [INSTALLED, "run"], "StartInterval": EVERY_S,
+                       "StandardErrorPath": os.path.join(OUT_DIR, "errors.log")}, handle)
+    os.chmod(PLIST, 0o644)
+    launchctl("bootout", "system/" + LABEL)
+    loaded = launchctl("bootstrap", "system", PLIST)
+    if loaded.returncode:
+        sys.exit("ssd-sampler: launchctl bootstrap failed: %s" % loaded.stderr.strip())
+    launchctl("kickstart", "system/" + LABEL)
+    print("Installed %s: a %d-min disk-write sample every %d h, the first one now (ready in ~%d min); samples in %s."
+          % (LABEL, SECS // 60, EVERY_S // 3600, SECS // 60 + 1, OUT_DIR))
+
+
+def uninstall():
+    if os.geteuid() != 0:
+        sys.exit("ssd-sampler: uninstall needs root")
+    launchctl("bootout", "system/" + LABEL)
+    for path in (PLIST, INSTALLED):
+        if os.path.exists(path):
+            os.remove(path)
+    shutil.rmtree(OUT_DIR, ignore_errors=True)
+    print("Removed %s, its program and its samples." % LABEL)
+
+
+def main():
+    command = sys.argv[1] if len(sys.argv) > 1 else "run"
+    if command == "aggregate":
+        seen, rows = aggregate(sys.stdin)
+        json.dump({"lines": seen, "rows": sorted([*k, *v] for k, v in rows.items())}, sys.stdout)
+        return
+    {"run": run, "install": install, "uninstall": uninstall}.get(command, lambda: sys.exit(__doc__))()
+
+
+if __name__ == "__main__":
+    main()

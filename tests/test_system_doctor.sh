@@ -16,6 +16,7 @@ export SYSTEM_DOCTOR_DIAG_DIRS="$WORK/diag" SYSTEM_DOCTOR_AGENTS_DIRS="$WORK/age
 export SYSTEM_DOCTOR_CACHE_ROOTS="$WORK/caches/.cache" SYSTEM_DOCTOR_CACHE_DIRS= SYSTEM_DOCTOR_HOST_TICKS="$FIX/host"
 export SYSTEM_DOCTOR_LIBEXEC_DIR="$HOME/.local/libexec" SYSTEM_DOCTOR_AGENT_DIR="$HOME/Library/LaunchAgents"
 export SYSTEM_DOCTOR_RUSAGE="$FIX/rusage.json" SYSTEM_DOCTOR_PROCS="$FIX/procs.json" WORKER_RUN_DIR="$WORK/runs"
+export SSD_SAMPLER_DIR="$WORK/ssd" SSD_SAMPLER_PLIST="$WORK/ssd-sampler.plist"
 printf '{"owner": "System doctor", "rows": [], "blind_spots": []}\n' >"$SYSTEM_DOCTOR_LEDGER"
 mkdir -p "$WORK/repos/llm-legs/bin" "$WORK/repos/hammerspoon"
 for name in statusline.sh memlogd vendor-fingerprint worker-run; do printf '#!/bin/bash\n' >"$WORK/repos/llm-legs/bin/$name"; done
@@ -994,6 +995,41 @@ row = json.loads(cli("tick").stdout)
 doc = m.document(time.time(), time.time(), persist=False)
 check(row["usage_read"] == 0 and "footprints" in doc["blind"], "unreadable own footprints are a blind collector: %s" % doc["blind"])
 open(os.path.join(fix, "rusage.json"), "w").write(saved_rusage)
+
+lines = "".join(line + "\n" for line in (
+    "18:21:20.100000  WrData[A]  D=0x01  B=0x1000  /dev/disk3s1  /Users/someone/.cache/tool/a/b.json  0.000100 W Python.77",
+    "18:21:20.200000  WrData[A]  D=0x02  B=0x3000  /dev/disk3s1  /Users/someone/.cache/tool/c.json  0.000100 W Python.78",
+    "18:21:20.300000  PgOut[A]  D=0x03  B=0x8000  /dev/disk3s6  /System/Volumes/VM/swapfile0  0.000200 W kernel_task.0",
+    "18:21:20.400000  RdData[A]  D=0x04  B=0x9000  /dev/disk3s1  /Users/someone/x/y  0.000100 W bash.5",
+    "18:21:20.500000  WrMeta[A]  D=0x05  B=0x1000  /dev/disk7s1  0.000100 W launchd.1"))
+out = json.loads(subprocess.run([os.path.join(root, "bin", "ssd-sampler"), "aggregate"], input=lines, capture_output=True,
+                                text=True, check=True).stdout)
+check(out == {"lines": 5, "rows": [["Python", "disk3s1", "~/.cache/tool", 16384, 2],
+                                   ["kernel_task", "disk3s6", "/System/Volumes/VM", 32768, 1],
+                                   ["launchd", "disk7s1", "(none)", 4096, 1]]},
+      "ssd-sampler keeps write events by process, disk and directory, two levels below a home: %s" % out)
+ssd = os.environ["SSD_SAMPLER_DIR"]
+os.makedirs(ssd)
+now = time.time()
+for name, end, devices, rows in (
+        ("old", now - 8 * 86400, {"internal:disk0": 10 ** 9}, [["Python", "disk3s1", 1, "~/old", 10 ** 9, 1]]),
+        ("a", now - 3600, {"internal:disk0": 1000, "external:disk6": 5000},
+         [["kernel_task", "disk3s6", 1, "/System/Volumes/VM", 400, 9], ["Python", "disk7s1", 0, "/Volumes/Work", 5000, 9],
+          ["Python", "disk3s1", 1, "~/.cache/tool", 100, 3]]),
+        ("b", now - 600, {"internal:disk0": 1000}, [["kernel_task", "disk3s6", 1, "/System/Volumes/VM", 200, 2]])):
+    json.dump({"v": 1, "start": end - 600, "end": end, "devices": devices, "rows": rows}, open(os.path.join(ssd, name + ".json"), "w"))
+sampled = m.document(now, now, persist=False)["measures"]["ssd_sampled"]
+check(sampled == {"samples": 2, "minutes": 20, "newest": now - 600, "attributed": 0.35,
+                  "top": [["kernel_task", "swap", 0.3], ["Python", "~/.cache/tool", 0.05]]},
+      "the week's root samples: each process and directory's share of the internal disks' bytes, external rows out: %s"
+      % sampled)
+open(os.environ["SSD_SAMPLER_PLIST"], "w").close()
+os.utime(os.environ["SSD_SAMPLER_PLIST"], (now - 20 * 3600, now - 20 * 3600))
+check("ssd-sampler" not in m.document(now, now, persist=False)["blind"], "a sample younger than 15 h keeps the sampler seen")
+check("ssd-sampler" in m.document(now + 16 * 3600, now + 16 * 3600, persist=False)["blind"],
+      "an installed sampler with no sample for 15 h is a blind collector")
+os.remove(os.environ["SSD_SAMPLER_PLIST"])
+shutil.rmtree(ssd)
 
 # ---- phase 3: the cohort score at its edges, amortized over >= 7 days
 check(m.COHORT["cpu_s"] == 864 and m.COHORT["wakes"] == 86400 and m.COHORT["writes_b"] == m.GIB and m.COHORT["reads_b"] == 100 * m.GIB

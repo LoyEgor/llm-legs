@@ -77,7 +77,9 @@ LLM ▸     8  reviewers crashed
   else GREEN. Inside, each rule's problem tones the measure it judges (a problem with no measure row gets its own row),
   lists carry human names (worker-run → workers, test suites → tests, helpers by their app), log groups open their
   labels as `size · retention · label` (the group's own retention for a split store; a label of several stores spans
-  their days and opens one such row per registry `part`; no readers); Apple's own problems are RED and counted like any other. The moved Harness rows show
+  their days and opens one such row per registry `part`; no readers); Disk writes lists the root samples
+  (`measures.ssd_sampled`) after the rusage rows as `process  directory` in GB/d, the week's mean times each share, and
+  the unattributed rest DIM; Apple's own problems are RED and counted like any other. The moved Harness rows show
   in their section by label and count (CPU audits, Load → Processor; Memory guard → Memory; Growth → Logs); a problem
   of a rule no section owns follows the sections. The menu only places and formats what the document says.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,

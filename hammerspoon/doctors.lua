@@ -836,7 +836,7 @@ end
 local SECTIONS = {
   { name = "Processor", rules = { "spawn", "kernel", "cohort" }, blind = { "ticks", "census" } },
   { name = "Memory", rules = { "compressor", "swap", "swap-writes" }, blind = { "ticks", "footprints" } },
-  { name = "Disk writes", rules = { "ssd-writes" }, blind = { "ticks", "footprints" } },
+  { name = "Disk writes", rules = { "ssd-writes" }, blind = { "ticks", "footprints", "ssd-sampler" } },
   { name = "Disk space", rules = { "free-space" }, blind = { "ticks", "nightly" } },
   { name = "Logs", rules = { "log-store", "log-growth", "unregistered-store", "log-unread" }, blind = { "logstores" } },
   { name = "Crashes", rules = { "hammerspoon-crash", "job-crash", "job-loop", "unclean-reboot" },
@@ -1116,6 +1116,21 @@ local function systemSections(document, now, moved, incoming)
     }
     for _, item in ipairs(byName(list(footprints.io_top), function(r) return human(r[1]) end, function(r) return r[2] end)) do
       if item.value > 0 then rows[#rows + 1] = listRow(rounded(item.value / 1e6), "MB/h", item.name) end
+    end
+    local sampled, week = type(m.ssd_sampled) == "table" and m.ssd_sampled or nil, tonumber(m.ssd_gb_day_7d)
+    if sampled and week then
+      rows[#rows + 1] = { title = "-" }
+      rows[#rows + 1] = { title = infoTitle(string.format("root samples  %s × %s min", tostring(sampled.samples),
+        tostring(math.floor((tonumber(sampled.minutes) or 0) / math.max(1, tonumber(sampled.samples) or 1) + 0.5))),
+        false, true), disabled = true }
+      for _, item in ipairs(list(sampled.top)) do
+        local share = type(item) == "table" and tonumber(item[3])
+        if share and share * week >= 0.05 then
+          rows[#rows + 1] = listRow(amount(share * week), "GB/d", tostring(item[1]) .. "  " .. tostring(item[2]))
+        end
+      end
+      local rest = 1 - (tonumber(sampled.attributed) or 0)
+      if rest * week >= 0.05 then rows[#rows + 1] = listRow(amount(rest * week), "GB/d", "unattributed", style.DIM) end
     end
     local reported = nightRows("diskwrites", "/8 d")
     if #reported > 0 then

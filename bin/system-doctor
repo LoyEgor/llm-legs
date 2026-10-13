@@ -2323,6 +2323,47 @@ def judge_collectors(judge, rows, launches, harvests, censuses, logs=()):
         judge.blind.append("logstores")
 
 
+def sampler_dir():
+    return os.environ.get("SSD_SAMPLER_DIR") or "/var/db/ssd-sampler"
+
+
+def sampler_plist():
+    return os.environ.get("SSD_SAMPLER_PLIST") or "/Library/LaunchDaemons/com.egor.ssd-sampler.plist"
+
+
+def ssd_sampled(now):
+    """Internal-disk writes in the root bin/ssd-sampler samples of the last 7 days: {samples, minutes, newest, top:
+    [[proc, dir, share of the internal devices' bytes]], attributed share}; None without a sample."""
+    docs = []
+    for path in sorted(glob.glob(os.path.join(sampler_dir(), "*.json"))):
+        doc = read_json(path)
+        if isinstance(doc, dict) and isinstance(doc.get("end"), (int, float)) and doc["end"] >= now - 7 * DAY_S:
+            docs.append(doc)
+    device = sum(b for d in docs for label, b in (d.get("devices") or {}).items() if label.startswith("internal:"))
+    if not device:
+        return None
+    items = {}
+    for d in docs:
+        for proc, _dev, inside, where, written, _events in d.get("rows") or ():
+            if inside:
+                key = (proc, "swap" if where == "/System/Volumes/VM" else where)
+                items[key] = items.get(key, 0) + written
+    top = sorted(items.items(), key=lambda item: (-item[1], item[0]))[:TOP]
+    return {"samples": len(docs), "minutes": round(sum(d["end"] - d.get("start", d["end"]) for d in docs) / 60),
+            "newest": max(d["end"] for d in docs), "top": [[proc, where, round(b / device, 3)] for (proc, where), b in top],
+            "attributed": round(min(1.0, sum(items.values()) / device), 3)}
+
+
+def judge_sampler(judge, sampled):
+    """Blind while the sampler's LaunchDaemon is installed but neither it nor a sample is younger than 15 h."""
+    try:
+        installed = os.path.getmtime(sampler_plist())
+    except OSError:
+        return
+    if max(installed, sampled["newest"] if sampled else 0) < judge.now - 15 * HOUR_S:
+        judge.blind.append("ssd-sampler")
+
+
 def report_evidence(report):
     return {"at": iso_time(report["at"]), "ref": report["ref"], "account": None,
             "excerpt": "%s %s (%s)" % (report["kind"], report["name"], report["owner"])}
@@ -2362,6 +2403,8 @@ def document(now, started, persist=True):
     logs = tick_rows(now - 9 * DAY_S, now, "logstores")
     judge_logstores(judge, logs)
     judge_collectors(judge, rows, launches, harvests, censuses, logs)
+    sampled = ssd_sampled(now)
+    judge_sampler(judge, sampled)
     judge.apply_ledger()
     if persist and json.dumps(judge.memo, sort_keys=True) != judge.memo_read:
         write_json(proofs_path(), judge.memo)
@@ -2382,7 +2425,7 @@ def document(now, started, persist=True):
         "ssd_gb_day_7d": round(sum(d.get("ssd_w_b") or 0 for d in week) / covered * DAY_S / 1e9, 1) if covered else None,
         "ssd_read_gb_day_7d": round(sum(d.get("ssd_r_b") or 0 for d in week) / covered * DAY_S / 1e9, 1) if covered else None,
         "swap_gib_day": today.get("swap_gib_day"), "free_gib": latest.get("free_gib") or {},
-        "days_measured": len(week)}
+        "days_measured": len(week), "ssd_sampled": sampled}
     seen_total = sum(r.get("births_seen") or 0 for r in hour)
     causes = {"births": [[tag, round(n / seen_total, 3) if seen_total else None, owner]
                          for tag, n, owner in merge_top(hour, "births_top", width=8)],
