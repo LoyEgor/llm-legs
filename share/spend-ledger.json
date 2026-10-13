@@ -1986,6 +1986,21 @@
    "verdict": "kept",
    "zero": "removal saves 9.1 CPU-min/day; loses the place journal behind the statusline's shown tree (where a chat's changes go), which Egor reads on every render",
    "note": "measured on 336 payloads rebuilt from transcripts: bash floor ~5 ms, jq parse ~10 ms (Post), statusline-place ~7.5 ms on adds (1/3 of Post); rejected: jq-free Edit/Write path (<10% of calls, ~0.2 CPU-min/day), trigger-word Post-Bash fast path (7% of commands lack every trigger), Pre-Bash worktree-substring exit (137/150 payloads carry worktree paths)"
+  },
+  {
+   "id": "cpu:hook/commit-report.sh",
+   "title": "hook/commit-report.sh",
+   "audited_at": "2026-10-13T09:37:22+03:00",
+   "by": "harness-speed-cpu-doctor-speed-20261012T235033Z-1231",
+   "cpu_min_day": 6.4,
+   "cpu_s_run": 0.055,
+   "runs_day": 5547,
+   "sources": {
+    "claude-setup/hooks/commit-report.sh": "12ec54181990a2ba4c907dc3288eb5a0a5db4a52"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~7.8 CPU-min/day; loses the commit/push landing block and the uncommitted/review-debt lines every chat reads after a landing",
+   "note": "73% of CPU is ~1.1 CPU-s landings in review-bench's review-debt probe (open repricing point already in docs/handoffs/2026-10-10-commit-report-debt-probe.md); ~75% of runs are a 13 ms bash+jq floor, a raw-payload pre-jq exit would save ~0.4 CPU-min/day against a JSON-escape/tool_use_id parsing risk in a landing hook"
   }
  ]
 }
