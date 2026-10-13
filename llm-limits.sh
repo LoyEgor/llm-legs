@@ -100,6 +100,7 @@ done
 script_dir=$(cd "$(dirname "$script_path")" && pwd)
 . "$script_dir/share/store-lock.sh"
 . "$script_dir/share/limit-hit.sh"
+. "$script_dir/share/run-bounded.sh"
 
 chunk_bytes=${LLM_LIMITS_CHUNK_BYTES:-4194304}
 case "$chunk_bytes" in
@@ -222,45 +223,15 @@ reset_iso_or_empty() {
   [ -z "$epoch" ] || epoch_iso "$epoch"
 }
 
-run_bounded() {
-  local seconds=$1 pid watchdog_pid timeout_cmd rc
-  shift
-  timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-  if [ -n "$timeout_cmd" ]; then
-    "$timeout_cmd" "$seconds" "$@" >/dev/null 2>&1
-    return $?
-  fi
-  "$@" >/dev/null 2>&1 &
-  pid=$!
-  (sleep "$seconds"; kill "$pid" 2>/dev/null || true) &
-  watchdog_pid=$!
-  wait "$pid" 2>/dev/null; rc=$?
-  kill "$watchdog_pid" 2>/dev/null || true
-  wait "$watchdog_pid" 2>/dev/null || true
-  return "$rc"
-}
-
 # Like run_bounded, but for the claude refresh/heal/start-windows path specifically:
 # a bound expiring must be reported as an explicit "timed out" cause (never a silent
 # kill folded into a clean exit), and claudeb's own diagnostic stderr (skip reasons,
 # backoff notices) must reach the invoking terminal/log instead of being discarded.
 run_bounded_claude() {
-  local seconds=$1 phase=$2 pid watchdog_pid timeout_cmd rc errfile stderr_text
+  local seconds=$1 phase=$2 rc=0 errfile stderr_text
   shift 2
   errfile=$(mktemp "${TMPDIR:-/tmp}/llm-limits-claude-err.XXXXXX") || errfile=/dev/null
-  timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-  if [ -n "$timeout_cmd" ]; then
-    "$timeout_cmd" "$seconds" "$@" >/dev/null 2>"$errfile"
-    rc=$?
-  else
-    "$@" >/dev/null 2>"$errfile" &
-    pid=$!
-    (sleep "$seconds"; kill "$pid" 2>/dev/null || true) &
-    watchdog_pid=$!
-    wait "$pid" 2>/dev/null; rc=$?
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
-  fi
+  run_bounded "$seconds" "$@" >/dev/null 2>"$errfile" || rc=$?
   stderr_text=$(cat "$errfile" 2>/dev/null || true)
   rm -f "$errfile"
   [ -z "$stderr_text" ] || printf '%s\n' "$stderr_text" >&2
@@ -570,7 +541,7 @@ grok_touch_expired() { # <account>...
       continue
     fi
     printf 'llm-limits.sh: Grok account %s: token touch\n' "$account" >&2
-    run_bounded "$grok_touch_timeout" "$grokb_cmd" "$account" exec models || case $? in
+    run_bounded "$grok_touch_timeout" "$grokb_cmd" "$account" exec models >/dev/null 2>&1 || case $? in
       124|143) limit_hit llm-limits.grok-touch-timeout "$grok_touch_timeout" s kill \
         "the token touch of grok/$account: its expired token stays unrotated until the next pass" 'llm-limits.sh:grok_touch_timeout=${' ;;
     esac
@@ -943,7 +914,7 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused ge
       elif [ "$gemini_5h_reset" -le "$now_epoch" ]; then
         if [ -x "$agy_bin" ]; then
           (export HOME="$gemini_home" PATH="$script_dir/share/no-browser:$PATH"; cd "${AGY_WORKDIR:-$script_dir}" &&
-            run_bounded 120 "$agy_bin" --print 'Reply with exactly: ok' || case $? in
+            run_bounded 120 "$agy_bin" --print 'Reply with exactly: ok' >/dev/null 2>&1 || case $? in
               124|143) limit_hit llm-limits.agy-window-start 120 s kill \
                 "the 5h window start of gemini/$gemini_account: the window stays unstarted until the next pass" \
                 "llm-limits.sh:run_bounded 120 \"\$agy_bin\"" ;;
@@ -1491,7 +1462,7 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused co
           codex_args+=(-m "$LLM_LIMITS_CODEX_MODEL")
         fi
         codex_args+=('Reply with exactly: ok')
-        run_bounded 60 "$codex_cmd" "${codex_args[@]}" || case $? in
+        run_bounded 60 "$codex_cmd" "${codex_args[@]}" >/dev/null 2>&1 || case $? in
           124|143) limit_hit llm-limits.codex-window-start 60 s kill \
             "the codex 5h window start: the window stays unstarted until the next pass" 'llm-limits.sh:run_bounded 60 "$codex_cmd"' ;;
         esac
