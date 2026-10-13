@@ -1432,6 +1432,36 @@
    "verdict": "kept",
    "zero": "removal saves this legacy key's two rows only (2026-10-06 273 s, 2026-10-07 167 s); loses nothing, the key is the old basename tag; removing worker-run itself loses all worker delegation",
    "note": "legacy tag: system-doctor tagged it worker-run until 2026-10-07, since llm-legs/bin/worker-run (same script) which is the live row (1789 CPU-s on 2026-10-13 alone, 781/803 s in hours 05/06 over ~5000 births an hour, i.e. forks of the 6170-line bash; one idle supervisor+wait pair costs ~0.03 CPU-s per 30 s) and needs its own audit with births per subcommand; this key leaves the window on 2026-10-14"
+  },
+  {
+   "id": "cpu:hook/stop.d/notice-word-attested.sh",
+   "title": "hook/stop.d/notice-word-attested.sh",
+   "audited_at": "2026-10-13T09:29:50+03:00",
+   "by": "harness-speed-cpu-hook-stop-d-ask-span-drill-sh-20261012T235051Z-465d",
+   "cpu_min_day": 0.1,
+   "cpu_s_run": 0.018,
+   "runs_day": 311,
+   "sources": {
+    "claude-setup/hooks/stop.d/notice-word-attested.sh": "094c1df4c3068f5ba760396e0154fd7c43504a00"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.1 CPU-min/day; loses his words being told back when a step ran on a WORD= quote (b50e5bff kept it on purpose when the door opened; 0 notices since 2026-10-05)",
+   "note": "one jq and a builtin glob where two jq and ls ran (claude-setup@c1a80ce): 18.5 -> 10.4 ms a run, 754 Stop payloads identical"
+  },
+  {
+   "id": "cpu:hook/stop.d/ask-span-drill.sh",
+   "title": "hook/stop.d/ask-span-drill.sh",
+   "audited_at": "2026-10-13T09:30:00+03:00",
+   "by": "harness-speed-cpu-hook-stop-d-ask-span-drill-sh-20261012T235051Z-465d",
+   "cpu_min_day": 0.0,
+   "cpu_s_run": 0.013,
+   "runs_day": 187,
+   "sources": {
+    "claude-setup/hooks/stop.d/ask-span-drill.sh": "8c581ffb36e3a3a60f6030b18f36dc2319e9d677"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.05 CPU-min/day; loses the one nudge a stop inside his autonomous span gets (3 asks in 7 d), so a span ends on any early stop",
+   "note": "one jq where two or three ran (claude-setup@6248538): 17.9 -> 14.0 ms a run, 754 Stop payloads identical; the 1/3 of runs the dispatcher defers cost nothing; span-on runs pay two python calls (sync, wake), rare"
   }
  ]
 }
