@@ -412,9 +412,10 @@ check("logstores" not in judge.blind, "a fresh full scan sees")
 check(m.logstores_due(None, now) and not m.logstores_due(now - 3600, now) and m.logstores_due(now - 37 * 3600, now),
       "the scan is due once a day after the nightly hour, or after 36 h")
 view = m.logstores_view(logs)
-check(view["stores"][0][0] in ("s", "v") and view["unregistered"][0]["path"] == "~/cache/stray", "the document's log_stores view")
+check(view["stores"][0]["name"] in ("s", "v") and view["unregistered"][0]["path"] == "~/cache/stray", "the document's log_stores view")
 check(view["groups"] and view["groups"][0][0] == "workers" and view["groups"][0][2] is None and view["groups_since"] is None
-      and view["stores"][0][8:10] == ["workers", view["stores"][0][0]], "groups and labels reach the view, no growth from one scan")
+      and [view["stores"][0][k] for k in ("group", "label")] == ["workers", view["stores"][0]["name"]],
+      "groups and labels reach the view, no growth from one scan")
 grown = [dict(logs[-1], t=logs[-1]["t"] - 2 * DAY, groups={"workers": 1e9, "temp": 5e9}),
          dict(logs[-1], groups={"workers": 3e9})]
 view = m.logstores_view(grown)

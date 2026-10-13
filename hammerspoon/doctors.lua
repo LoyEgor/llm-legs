@@ -798,7 +798,7 @@ local function ratio(value)
 end
 local function padded(text, width) return string.rep(" ", width - cells(text)) .. text end
 
-local function summaryTitle(name, value, status, history, now, stale, indexed)
+local function trend(history, now)
   local days, prior, high = {}, {}, 0
   local date = os.date("*t", now)
   for index = 1, 7 do
@@ -812,18 +812,454 @@ local function summaryTitle(name, value, status, history, now, stale, indexed)
   end
   table.sort(prior)
   local median = #prior > 0 and (prior[math.floor((#prior + 1) / 2)] + prior[math.ceil((#prior + 1) / 2)]) / 2 or nil
+  local bars = {}
+  for index = 1, 7 do
+    local amount = days[index]
+    bars[index] = amount == nil and { " " }
+      or { BARS[amount == 0 and 1 or math.max(2, math.ceil(amount / high * 8))], style.DIM }
+  end
+  return bars, median
+end
+
+local function summaryTitle(name, value, status, history, now, stale, indexed)
+  local bars, median = trend(history, now)
   local tone = (stale or status == "nodata") and style.DIM
     or (status == "error" or status == "problems") and style.RED
     or (status == "blind" or status == "watch") and style.DIM_RED or GREEN
   local segments = { { string.format("%-9s", name), tone }, { " " },
     value and { padded((indexed and ratio or rounded)(value), 4) } or { padded(MISSING, 4), style.DIM }, { "  " } }
-  for index = 1, 7 do
-    local amount = days[index]
-    segments[#segments + 1] = amount == nil and { " " }
-      or { BARS[amount == 0 and 1 or math.max(2, math.ceil(amount / high * 8))], style.DIM }
-  end
+  for _, bar in ipairs(bars) do segments[#segments + 1] = bar end
   segments[#segments + 1] = { " " .. padded(median and (indexed and ratio or rounded)(median) or MISSING, 4), style.DIM }
   return styled(segments)
+end
+
+local SECTIONS = {
+  { name = "Processor", rules = { "spawn", "kernel", "cohort" }, blind = { "ticks", "census" } },
+  { name = "Memory", rules = { "compressor", "swap", "swap-writes" }, blind = { "ticks", "footprints" } },
+  { name = "Disk writes", rules = { "ssd-writes" }, blind = { "ticks", "footprints" } },
+  { name = "Disk space", rules = { "free-space" }, blind = { "ticks", "nightly" } },
+  { name = "Logs", rules = { "log-store", "log-growth", "unregistered-store", "log-unread" }, blind = { "logstores" } },
+  { name = "Crashes", rules = { "hammerspoon-crash", "job-crash", "job-loop", "unclean-reboot" },
+    blind = { "nightly", "dumpstate", "harvest" } },
+}
+local MOVED_TO = { ["CPU audits"] = "Processor", Load = "Processor", ["Memory guard"] = "Memory", Growth = "Logs" }
+local QUIET = { ["not-a-bug"] = true, weather = true, fixed = true }
+local TAG_NAMES = { ["worker-run"] = "workers", ["(bash)"] = "shell", bash = "shell", zsh = "shell", sh = "shell",
+  claude = "Claude", codex = "Codex", node = "node", ["Google Chrome"] = "Chrome", Browser = "Dia" }
+local REPORT_NAMES = { crash = "app crashes", fault = "faults", jetsam = "memory kills", hang = "hangs",
+  panic = "panics", shutdownStall = "slow shutdown", other = "other" }
+local REPORT_ORDER = { "crash", "hang", "fault", "jetsam", "panic", "shutdownStall", "other" }
+local GB_PER_GIB = 1.073741824
+
+local function list(value) return type(value) == "table" and value or {} end
+
+local function amount(value)
+  if value == math.floor(value) then return string.format("%d", value) end
+  return value < 9.95 and string.format("%.1f", value) or rounded(value)
+end
+
+local function keepWords(words)
+  local mb = tonumber(words:match("^(%d+) MB$"))
+  if mb and mb >= 1024 then return amount(mb / 1024) .. " GB" end
+  return (words:gsub(" days?$", " d"))
+end
+
+local function human(tag)
+  tag = tostring(tag)
+  local repo = tag:match("^([%w._-]+)/.")
+  local base = tag:match("([^/]+)$") or tag
+  if base:match("^test_.+%.sh$") or base == "run-suites.sh" then
+    return (repo and repo ~= "llm-legs") and repo .. " tests" or "tests"
+  end
+  if repo and repo ~= "llm-legs" then return repo end
+  base = base:gsub("%.%a+$", ""):gsub(" Helper.*$", ""):gsub("^com%.apple%.", "")
+  if TAG_NAMES[base] then return TAG_NAMES[base] end
+  return repo and (base:gsub("[-_]", " ")) or base
+end
+
+local function pathName(path)
+  path = tostring(path)
+  for part in path:gmatch("[^/]+") do
+    local app = part:match("^%l+%.[%w-]+%.([%w-]+)$")
+    if app then return app end
+  end
+  return ((path:match("([^/]+)/*$") or path):gsub("^%.", ""))
+end
+
+local function byName(rows, nameOf, valueOf, countOf)
+  local merged, order = {}, {}
+  for _, row in ipairs(rows) do
+    if type(row) == "table" then
+      local name, value = nameOf(row), tonumber(valueOf(row)) or 0
+      if not merged[name] then merged[name], order[#order + 1] = { name = name, value = 0, count = 0 }, name end
+      merged[name].value = merged[name].value + value
+      merged[name].count = merged[name].count + (countOf and tonumber(countOf(row)) or 1)
+    end
+  end
+  local out = {}
+  for _, name in ipairs(order) do out[#out + 1] = merged[name] end
+  table.sort(out, function(a, b) return a.value > b.value end)
+  return out
+end
+
+local function problemTone(problem)
+  if not problem then return nil end
+  if LOUD[problem.state] then return style.RED end
+  if not QUIET[problem.state] then return style.DIM_RED end
+end
+
+local function louder(a, b)
+  if a == style.RED or b == style.RED then return style.RED end
+  return a or b
+end
+
+local function sized(menu)
+  return #menu > 0 and menu or nil
+end
+
+local function row(segments, menu)
+  return fitRow({ title = styled(segments), menu = sized(menu or {}), disabled = #(menu or {}) == 0 or nil })
+end
+
+local function measureRow(label, value, unit, tone, history, now, menu)
+  local segments = { { string.format("%-13s", label), tone },
+    value and { " " .. padded(amount(value), 5) } or { " " .. padded(MISSING, 5), style.DIM },
+    { " " .. (history and string.format("%-7s", unit) or unit) } }
+  if history then
+    local bars, median = trend(history, now)
+    segments[#segments + 1] = { " " }
+    for _, bar in ipairs(bars) do segments[#segments + 1] = bar end
+    segments[#segments + 1] = { " " .. padded(median and amount(median) or MISSING, 5), style.DIM }
+  end
+  return row(segments, menu)
+end
+
+local function listRow(value, unit, label, tone, menu)
+  return row({ { padded(value, 5) }, { " " .. string.format("%-5s", unit) .. "  " }, { label, tone } }, menu)
+end
+
+local function scaled(history, factor)
+  local out = {}
+  for day, value in pairs(list(history)) do
+    if tonumber(value) then out[day] = tonumber(value) * factor end
+  end
+  return out
+end
+
+local function limitText(problem)
+  local limit = tonumber(problem.limit)
+  if not limit or problem.unit == "bytes" then return nil end
+  if problem.unit == "share" then return string.format("limit %d %%", math.floor(limit * 100 + 0.5)) end
+  return "limit " .. amount(limit) .. (problem.unit and " " .. tostring(problem.unit) or "")
+end
+
+local function problemMenu(problem, menu)
+  menu = menu or {}
+  if not problem then return menu end
+  local rows = {}
+  local limit = limitText(problem)
+  if limit then rows[#rows + 1] = dim(limit) end
+  local proof = type(problem.proof) == "table" and problem.proof.why
+  if type(proof) == "string" then
+    for _, line in ipairs(detailRows(proof)) do rows[#rows + 1] = line end
+  end
+  for _, item in ipairs(list(problem.evidence)) do
+    if type(item) == "table" and type(item.excerpt) == "string" then rows[#rows + 1] = fitRow(dim(item.excerpt)) end
+  end
+  if #rows > 0 and #menu > 0 then menu[#menu + 1] = { title = "-" } end
+  for _, line in ipairs(rows) do menu[#menu + 1] = line end
+  return menu
+end
+
+local function problemValue(problem)
+  local value = tonumber(problem.value)
+  if not value then return MISSING, "" end
+  if problem.unit == "bytes" then return amount(value / 1e9), "GB" end
+  if problem.unit == "share" then return rounded(value * 100), "%" end
+  local unit = tostring(problem.unit or "")
+  return amount(value), unit:match("/day$") and "/day" or unit
+end
+
+local function problemName(problem)
+  local cause = type(problem.cause) == "table" and problem.cause or {}
+  local name = cause.label or cause.name
+  if not name and type(problem.id) == "string" then name = problem.id:match("^[^:]+:(.+)$") end
+  return name and human(name) or tostring(problem.label or problem.rule or problem.id)
+end
+
+local function movedRows(moved, incoming)
+  local counts, bySection, loose = {}, {}, {}
+  for _, issue in ipairs(incoming or {}) do counts[issue.what] = (counts[issue.what] or 0) + issue.count end
+  for _, item in ipairs(moved or {}) do
+    local plain = item.title ~= "-" and plainText(item.title) or ""
+    local label, rest = plain:match("^([^:]+):%s*(.*)$")
+    if label then
+      local count = counts[label] or 0
+      local tone = count > 0 and style.RED or rest:match("^watch") and style.DIM_RED or nil
+      local shown = listRow(count > 0 and tostring(count) or "", "", label, tone, item.menu)
+      local section = MOVED_TO[label]
+      if section then
+        bySection[section] = bySection[section] or {}
+        table.insert(bySection[section], { row = shown, tone = tone })
+      else
+        loose[#loose + 1] = shown
+      end
+    end
+  end
+  return bySection, loose
+end
+
+local function systemSections(document, now, moved, incoming)
+  local m, days = list(document.measures), list(document.days)
+  local causes, footprints = list(document.causes), list(list(document.collectors).footprints)
+  local nightly, logs = list(document.nightly), list(document.log_stores)
+  local reports, processes = list(nightly.reports), list(nightly.processes)
+  local cores = tonumber(m.cores)
+  local blind = {}
+  for _, name in ipairs(list(document.blind)) do blind[name] = true end
+  local all, used = {}, {}
+  for _, problem in ipairs(list(document.problems)) do
+    if type(problem) == "table" then all[#all + 1] = problem end
+  end
+  local function pick(id)
+    for _, problem in ipairs(all) do
+      if problem.id == id and not used[problem] then used[problem] = true return problem end
+    end
+  end
+  local function nightRows(kind, unit)
+    local out = {}
+    for _, item in ipairs(byName(processes, function(r) return human(r[2]) end,
+        function(r) return r[1] == kind and r[3] or 0 end)) do
+      if item.value > 0 then out[#out + 1] = listRow(rounded(item.value), unit, item.name) end
+    end
+    return out
+  end
+  local bySection, loose = movedRows(moved, incoming)
+  local build = {}
+
+  build.Processor = function()
+    local kernel, spawn = pick("kernel:machine"), pick("spawn:machine")
+    local born = {}
+    for _, item in ipairs(byName(list(causes.births), function(r) return human(r[1]) end, function(r) return r[2] end)) do
+      born[#born + 1] = listRow(rounded(item.value * 100), "%", item.name)
+    end
+    local rows = {
+      measureRow("kernel", cores and tonumber(m.kernel) and m.kernel * cores, "cores", problemTone(kernel),
+        cores and scaled(days.kernel, cores) or {}, now, problemMenu(kernel)),
+      measureRow("starts", tonumber(m.births_s), "/s", problemTone(spawn), list(days.births_s), now,
+        problemMenu(spawn, born)),
+      { title = "-" },
+    }
+    for _, item in ipairs(byName(list(causes.cpu), function(r) return human(r[1]) end, function(r) return r[2] end)) do
+      rows[#rows + 1] = listRow(string.format("%.2f", item.value), "cores", item.name)
+    end
+    local reported = {}
+    for _, kind in ipairs({ "cpu_resource", "wakeups" }) do
+      for _, line in ipairs(nightRows(kind, "/8 d")) do reported[#reported + 1] = line end
+    end
+    if #reported > 0 then
+      rows[#rows + 1] = { title = "-" }
+      for _, line in ipairs(reported) do rows[#rows + 1] = line end
+    end
+    return rows, cores and tonumber(m.busy) and m.busy * cores, "cores", cores and scaled(days.busy, cores) or {}
+  end
+
+  build.Memory = function()
+    local compressor, swap, writes = pick("compressor:machine"), pick("swap:machine"), pick("swap-writes:machine")
+    local mem = tonumber(m.mem_gib)
+    local rows = {
+      measureRow("compressed", tonumber(m.comp_gib), "GB", problemTone(compressor),
+        mem and scaled(days.comp_share_max, mem) or {}, now, problemMenu(compressor)),
+      measureRow("swap", tonumber(m.swap_used_mb) and m.swap_used_mb / 1024, "GB", problemTone(swap), nil, now,
+        problemMenu(swap)),
+      measureRow("swap writes", tonumber(m.swap_gib_day), "GB/d", problemTone(writes), list(days.swap_gib_day), now,
+        problemMenu(writes)),
+      measureRow("processes", tonumber(footprints.rss_total) and footprints.rss_total / 2 ^ 30, "GB", nil, nil, now),
+      { title = "-" },
+    }
+    for _, item in ipairs(byName(list(footprints.rss_top), function(r) return human(r[1]) end, function(r) return r[2] end,
+        function(r) return r[3] end)) do
+      rows[#rows + 1] = listRow(amount(item.value / 2 ^ 30), "GB", item.name .. (item.count > 1 and " ×" .. item.count or ""))
+    end
+    return rows, tonumber(m.comp_gib), "GB", mem and scaled(days.comp_share_max, mem) or {}
+  end
+
+  build["Disk writes"] = function()
+    local ssd = pick("ssd-writes:internal")
+    local today = tonumber(list(days.ssd_gb_day)[os.date("%Y-%m-%d", now)])
+    local rows = {
+      measureRow("week", tonumber(m.ssd_gb_day_7d), "GB/d", problemTone(ssd), nil, now, problemMenu(ssd)),
+      measureRow("reads", tonumber(m.ssd_read_gb_day_7d), "GB/d", nil, nil, now),
+      { title = "-" },
+    }
+    for _, item in ipairs(byName(list(footprints.io_top), function(r) return human(r[1]) end, function(r) return r[2] end)) do
+      if item.value > 0 then rows[#rows + 1] = listRow(rounded(item.value / 1e6), "MB/h", item.name) end
+    end
+    local reported = nightRows("diskwrites", "/8 d")
+    if #reported > 0 then
+      rows[#rows + 1] = { title = "-" }
+      for _, line in ipairs(reported) do rows[#rows + 1] = line end
+    end
+    return rows, today, "GB/d", list(days.ssd_gb_day)
+  end
+
+  build["Disk space"] = function()
+    local rows, volumes, least = {}, {}, nil
+    for name in pairs(list(m.free_gib)) do volumes[#volumes + 1] = name end
+    table.sort(volumes)
+    for _, name in ipairs(volumes) do
+      local gib = tonumber(m.free_gib[name])
+      local free = pick("free-space:" .. name)
+      local history = scaled(list(days.free_gib)[name], GB_PER_GIB)
+      rows[#rows + 1] = measureRow(name, gib and gib * GB_PER_GIB, "GB", problemTone(free), history, now,
+        problemMenu(free))
+      if gib and (not least or gib < least.gib) then least = { gib = gib, history = history } end
+    end
+    local caches = {}
+    for _, cache in ipairs(list(nightly.caches)) do
+      if type(cache) == "table" and tonumber(cache[2]) then
+        caches[#caches + 1] = listRow(amount(cache[2] * GB_PER_GIB), "GB", pathName(cache[1]))
+      end
+    end
+    if #caches > 0 then
+      rows[#rows + 1] = { title = "-" }
+      for _, line in ipairs(caches) do rows[#rows + 1] = line end
+    end
+    if type(nightly.smart) == "string" and nightly.smart ~= "Verified" then
+      rows[#rows + 1] = row({ { "SMART  " .. nightly.smart, style.RED } })
+    end
+    return rows, least and least.gib * GB_PER_GIB, "GB", least and least.history or {}
+  end
+
+  build.Logs = function()
+    local growth = pick("log-growth:total")
+    local rows = { measureRow("growth", tonumber(logs.growth_gb_day_7d), "GB/d", problemTone(growth), nil, now,
+      problemMenu(growth)), { title = "-" } }
+    for _, group in ipairs(list(logs.groups)) do
+      if type(group) == "table" then
+        local labels, order, tone = {}, {}, nil
+        for _, store in ipairs(list(logs.stores)) do
+          local parts = type(store) == "table" and type(store.parts) == "table" and store.parts or {}
+          local gb = tonumber(parts[group[1]]) or next(parts) == nil and store.group == group[1] and tonumber(store.gb)
+          if gb then
+            local label = tostring(store.label or store.name)
+            if not labels[label] then labels[label], order[#order + 1] = { gb = 0, keep = {}, readers = {}, problems = {} }, label end
+            local entry = labels[label]
+            entry.gb = entry.gb + gb
+            local keep = type(store.keep) == "string" and keepWords(store.keep)
+              or store.cleaner == "keep" and "kept" or store.cleaner == "cap" and "app cap" or nil
+            if keep and not entry.keep[keep] then entry.keep[keep], entry.keep[#entry.keep + 1] = true, keep end
+            for _, reader in ipairs(list(store.readers)) do
+              if not entry.readers[reader] then entry.readers[reader], entry.readers[#entry.readers + 1] = true, reader end
+            end
+            for _, rule in ipairs({ "log-store", "log-unread" }) do
+              local problem = pick(rule .. ":" .. tostring(store.name))
+              if problem then
+                entry.problems[#entry.problems + 1] = problem
+                entry.tone = louder(entry.tone, problemTone(problem))
+              end
+            end
+          end
+        end
+        table.sort(order, function(a, b) return labels[a].gb > labels[b].gb end)
+        local menu = {}
+        for _, label in ipairs(order) do
+          local entry = labels[label]
+          local sub = {}
+          for _, reader in ipairs(entry.readers) do sub[#sub + 1] = dim(reader) end
+          for _, problem in ipairs(entry.problems) do problemMenu(problem, sub) end
+          menu[#menu + 1] = listRow(amount(entry.gb), "GB", label .. (#entry.keep > 0 and "  " .. table.concat(entry.keep, " · ") or ""),
+            entry.tone, sub)
+          tone = louder(tone, entry.tone)
+        end
+        local change = tonumber(group[3])
+        rows[#rows + 1] = row({ { padded(amount(tonumber(group[2]) or 0), 5) }, { " GB" },
+          change and { padded((change >= 0 and "+" or "") .. amount(change), 6), style.DIM } or { padded("", 6) },
+          { "  " }, { tostring(group[1]), tone } }, menu)
+      end
+    end
+    local unknown, unknownMenu, unknownTone = 0, {}, nil
+    for _, dir in ipairs(list(logs.unregistered)) do
+      if type(dir) == "table" then
+        local problem = pick("unregistered-store:" .. tostring(dir.path))
+        local mb = tonumber(dir.residual_mb or dir.mb) or 0
+        unknown = unknown + mb
+        unknownTone = louder(unknownTone, problemTone(problem))
+        unknownMenu[#unknownMenu + 1] = listRow(amount(mb / 1000), "GB", pathName(dir.path), problemTone(problem),
+          problemMenu(problem, { dim(tostring(dir.path)) }))
+      end
+    end
+    if #unknownMenu > 0 then
+      rows[#rows + 1] = row({ { padded(amount(unknown / 1000), 5) }, { " GB" }, { padded("", 6) },
+        { "  " }, { "unknown", unknownTone } }, unknownMenu)
+    end
+    local sweep = list(logs.sweep)
+    if tonumber(sweep.bytes) then
+      rows[#rows + 1] = { title = "-" }
+      rows[#rows + 1] = listRow(amount(sweep.bytes / 1e9), "GB", "swept",
+        (tonumber(sweep.errors) or 0) > 0 and style.RED or nil)
+    end
+    return rows, tonumber(logs.total_gb), "GB", list(days.logs_gb)
+  end
+
+  build.Crashes = function()
+    local reboot = pick("unclean-reboot:machine")
+    local rows = { measureRow("reboots", tonumber(nightly.unclean_reboots_7d), "/7 d", problemTone(reboot), nil, now,
+      problemMenu(reboot)) }
+    for _, kind in ipairs(REPORT_ORDER) do
+      local count = tonumber(reports[kind])
+      if count then
+        rows[#rows + 1] = measureRow(REPORT_NAMES[kind], count, "/8 d", nil, nil, now, nightRows(kind, "/8 d"))
+      end
+    end
+    return rows, tonumber(reports.crash), "/8 d", nil
+  end
+
+  local out = {}
+  for _, section in ipairs(SECTIONS) do
+    local rows, value, unit, history = build[section.name]()
+    local tone, extra = nil, {}
+    for _, problem in ipairs(all) do
+      for _, rule in ipairs(section.rules) do
+        if problem.rule == rule then
+          tone = louder(tone, problemTone(problem))
+          if not used[problem] and problemTone(problem) then
+            used[problem] = true
+            local shown, shownUnit = problemValue(problem)
+            extra[#extra + 1] = listRow(shown, shownUnit, problemName(problem), problemTone(problem), problemMenu(problem))
+          end
+        end
+      end
+    end
+    if #extra > 0 then
+      rows[#rows + 1] = { title = "-" }
+      for _, line in ipairs(extra) do rows[#rows + 1] = line end
+    end
+    for index, item in ipairs(bySection[section.name] or {}) do
+      if index == 1 and rows[#rows].title ~= "-" then rows[#rows + 1] = { title = "-" } end
+      rows[#rows + 1] = item.row
+      tone = louder(tone, item.tone)
+    end
+    for _, name in ipairs(section.blind) do
+      if blind[name] and tone ~= style.RED then tone = style.DIM_RED end
+    end
+    local tidy = {}
+    for _, line in ipairs(rows) do
+      if line.title ~= "-" or #tidy > 0 and tidy[#tidy].title ~= "-" then tidy[#tidy + 1] = line end
+    end
+    if #tidy > 0 and tidy[#tidy].title == "-" then tidy[#tidy] = nil end
+    local header = measureRow(section.name, value, unit, tone or GREEN, history, now, tidy)
+    out[#out + 1] = header
+  end
+  for _, problem in ipairs(all) do
+    if not used[problem] and problemTone(problem) then
+      local shown, shownUnit = problemValue(problem)
+      out[#out + 1] = listRow(shown, shownUnit, tostring(problem.label or problem.rule or problem.id),
+        problemTone(problem), problemMenu(problem))
+    end
+  end
+  for _, line in ipairs(loose) do out[#out + 1] = line end
+  return out
 end
 
 local function issueRow(amount, unit, what, format, tone)
@@ -916,6 +1352,17 @@ local function routeCounts(donor, document, count, shift, incoming)
       incoming[target][#incoming[target] + 1] = { count = take, what = group }
     end
   end
+end
+
+local function firstRows(doctor, document, now, moved, incoming)
+  if doctor.key == "system" and document then
+    local ok, rows = pcall(systemSections, document, now, moved.system, incoming.system)
+    if ok then return rows end
+    local fallback = issueRows(issueList(doctor, document), incoming.system)
+    table.insert(fallback, 1, fitRow({ title = infoTitle(tostring(rows), true), disabled = true }))
+    return fallback
+  end
+  return issueRows(issueList(doctor, document), incoming[doctor.key])
 end
 
 local function egorLayer(rows, menu, details)
@@ -1020,7 +1467,7 @@ local function compute()
     if shown > 0 and status == "ok" then status = "problems" elseif shown == 0 and status == "problems" then status = "ok" end
     local summary = { title = summaryTitle((NAMES[doctor.key]:gsub(" doctor$", "")),
       entry.status ~= "nodata" and entry.status ~= "error" and shown or nil, status, histories[doctor.key] or {}, now, stale),
-      menu = egorLayer(issueRows(issueList(doctor, document), incoming[doctor.key]), menu, menu), problems = shown,
+      menu = egorLayer(firstRows(doctor, document, now, moved, incoming), menu, menu), problems = shown,
       status = entry.status }
     if doctor.key == "system" then machine = summary else entries[#entries + 1] = summary end
     if doctor.key == "harness" then

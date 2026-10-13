@@ -44,6 +44,24 @@ local function allMenlo(menu)
   end
   return true
 end
+local function toneOf(title)
+  local c = color(title)
+  if not c then return nil end
+  if (c.red or 0) > 0.8 and (c.green or 1) < 0.4 then return (c.alpha or 1) < 0.9 and "r" or "R" end
+  if (c.green or 0) > 0.5 and (c.red or 1) < 0.2 then return "g" end
+end
+local function lastTone(title)
+  local runs = type(title) ~= "string" and title:asTable() or {}
+  local last = runs[#runs]
+  return type(last) == "table" and toneOf(title:sub(last.starts, last.ends)) or nil
+end
+local function rowMatching(menu, pattern, tone)
+  for _, item in ipairs(menu or {}) do
+    if item.title ~= "-" and text(item.title):match(pattern) and (tone == nil or lastTone(item.title) == tone) then
+      return item
+    end
+  end
+end
 local function find(menu, prefix)
   for _, item in ipairs(menu or {}) do
     if item.title ~= "-" and text(item.title):sub(1, #prefix) == prefix then return item end
@@ -336,8 +354,9 @@ check(plainRow(lost[3].menu[4], "   0 min/day  dead, hung") and plainRow(rulesRo
   and rulesRow.menu[5].title == "-" and plainRow(rulesRow.menu[6], "  13 min/day  commit-report.sh"),
   "delegation and harness rules open their parts, a gate under its refusals, the heaviest hooks last")
 check(issue(trendItems[6].menu, 1, " 1.9 %  compaction summaries"), "Spend issue row: the due component by its share")
-check(issue(trendItems[7].menu, 1, "   1  new processes") and issue(trendItems[7].menu, 2, "   1  swap full")
-  and not find(trendItems[7].menu, "   1  low disk space"), "System issue rows: one per loud problem by its short name")
+check(span(trendItems[7].menu[1].title, 1, 9) == "Processor" and red(trendItems[7].menu[1].title)
+  and span(trendItems[7].menu[2].title, 1, 6) == "Memory" and red(trendItems[7].menu[2].title)
+  and not find(trendItems[7].menu, "   1  new processes"), "System's first level: its sections, RED where a loud problem sits")
 local function rawInDisabled(menu)
   for _, item in ipairs(menu or {}) do
     if item.disabled and type(item.title) ~= "string" then
@@ -375,7 +394,7 @@ local function captionless(menu)
 end
 for index = 1, 7 do
   local menu = trendItems[index].menu or {}
-  local ok, caption = captionless(menu)
+  local ok, caption = captionless({ table.unpack(menu, index == 7 and 7 or 1) })
   check(ok and #menu > 0 and text(menu[#menu].title) == "LLM details",
     "Egor's layer of " .. names[index] .. " holds issue rows, Fix, fixer and LLM details only: " .. tostring(caption))
 end
@@ -1140,13 +1159,85 @@ do
     .. table.concat({ value(items[1]), value(items[2]), value(items[7]), value(items[5]) }, " "))
   check(issue(items[5].menu, 1, "   4  Tests") and issue(items[5].menu, 2, "   1  Suite audits")
     and issue(items[2].menu, 1, "   1  Stop hooks") and issue(items[2].menu, 2, "   1  debt")
-    and issue(items[7].menu, 1, "   2  CPU audits") and issue(items[7].menu, 2, "   1  Load")
-    and issue(items[7].menu, 3, "   1  swap full") and not find(items[1].menu, "   1  debt"), "issue rows follow the moved counts")
+    and red(items[7].menu[1].title) and rowMatching(items[7].menu[1].menu, "^    2 +CPU audits$", "R")
+    and rowMatching(items[7].menu[1].menu, "^    1 +Load$", "R") and red(items[7].menu[2].title)
+    and rowMatching(items[7].menu[2].menu, "^ +Memory guard$") and rowMatching(items[7].menu[5].menu, "^ +Growth$")
+    and not find(items[1].menu, "   1  debt"), "issue rows follow the moved counts, System's inside its sections")
   harnessFile(false)
   items = regrouped.menuItems()
   check(value(items[2]) == "10" and issue(items[2].menu, 1, "   4  Tests") and text(regrouped.title()) == "Doctors: 13 problems"
     and not issue(items[5].menu, 1, "   4  Tests"), "a header without groups keeps Harness's own count and issues: "
     .. tostring(value(items[2])))
+end
+
+-- System's first level: six fixed sections over its own document, each problem toned in its section.
+do
+  local siri, telegram = "job-loop:com.apple.Siri.agent", "unregistered-store:~/Library/Caches/ru.keepcoder.Telegram/x"
+  write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s = now, status = "problems",
+    problem_count = 6, blind_spots = {}, blind = {},
+    problems = {
+      { id = "spawn:machine", rule = "spawn", label = "new processes", state = "new", value = 2600, limit = 1000,
+        unit = "/s", fact = "2,600 new processes a second", evidence = { { excerpt = "births 2700/s" } } },
+      { id = "free-space:Data", rule = "free-space", label = "low disk space", state = "watch", value = 20, limit = 25,
+        unit = "GiB", fact = "Data 20 GiB" },
+      { id = "log-unread:codex-log-db", rule = "log-unread", label = "log read by nobody", state = "new",
+        value = 260000000, limit = 0, unit = "bytes", fact = "codex-log-db read by nobody" },
+      { id = telegram, rule = "unregistered-store", label = "unregistered log store", state = "new", value = 490,
+        limit = 200, unit = "MB", fact = "Telegram downloads" },
+      { id = siri, rule = "job-loop", label = "job relaunch loop", state = "new", value = 7, limit = 3,
+        unit = "abnormal exits/day", cause = { name = "com.apple.Siri.agent", owner = "apple" }, fact = "Siri loops" },
+      { id = "hs-cli-dead-port", rule = "hammerspoon-crash", label = "Hammerspoon crash", state = "fixed-pending",
+        fact = "fixed", proof = { why = "the fix has not landed in main" }, cause = { name = "Hammerspoon" } },
+      { id = "ledger:x", rule = "ledger", label = "ledger", state = "new", value = 1, unit = "rows", fact = "row x" } },
+    measures = { births_s = 2600, kernel = 0.2, busy = 0.5, cores = 10, comp_gib = 2, mem_gib = 24, swap_used_mb = 1024,
+      swap_gib_day = 3, ssd_gb_day_7d = 150, ssd_read_gb_day_7d = 900, free_gib = { Data = 20, Work = 400 } },
+    days = { busy = { [trendDay(-2)] = 0.4, [trendDay(-1)] = 0.2, [trendDay(0)] = 0.5 } },
+    causes = { births = { { "llm-legs/bin/worker-run", 0.3, "own" }, { "llm-legs/share/run-suites.sh", 0.2, "own" },
+        { "(bash)", 0.1, "third-party" }, { "review-bench/tests/test_x.sh", 0.1, "own" }, { "bash", 0.05, "third-party" } },
+      cpu = { { "Google Chrome Helper (Renderer)", 0.5, 0, "third-party" }, { "WindowServer", 0.3, 0, "apple" } } },
+    collectors = { footprints = { rss_total = 12 * 2 ^ 30, io_top = {}, rss_top = {
+      { "claude", 3 * 2 ^ 30, 4, "third-party" }, { "Google Chrome Helper (Renderer)", 2 ^ 30, 5, "third-party" },
+      { "Google Chrome", 2 ^ 30, 1, "third-party" } } } },
+    nightly = { as_of_s = now - 3600, reports = { crash = 4, fault = 1 }, unclean_reboots_7d = 0, smart = "Verified",
+      processes = { { "crash", "Google Chrome", 3, "third-party" }, { "crash", "bash", 1, "own" } }, caches = {} },
+    log_stores = { total_gb = 20, growth_gb_day_7d = 0.4,
+      groups = { { "workers", 12, 1.5 }, { "my chats", 3, 0.2 }, { "LLM apps", 1.3 } },
+      stores = {
+        { name = "claude-transcripts", gb = 14, cleaner = "self", keep = "30 days", readers = { "chat-find" },
+          group = "workers", label = "Claude", parts = { workers = 11, ["my chats"] = 3 } },
+        { name = "worker-runs", gb = 1, cleaner = "self", keep = "10 days", group = "workers", label = "run logs" },
+        { name = "codex-log-db", gb = 0.26, cleaner = "keep", readers = {}, group = "LLM apps", label = "Codex log" },
+        { name = "codex-thread-history", gb = 1.04, cleaner = "keep", group = "LLM apps", label = "Codex history" } },
+      unregistered = { { path = "~/Library/Caches/ru.keepcoder.Telegram/x", mb = 490, residual_mb = 490 } },
+      sweep = { bytes = 500000000, errors = 0 } } })
+  local first = loadDoctors().menuItems()[7].menu
+  local order, tones = true, { "R", "g", "g", "r", "R", "R" }
+  for index, name in ipairs({ "Processor", "Memory", "Disk writes", "Disk space", "Logs", "Crashes" }) do
+    order = order and first[index] and span(first[index].title, 1, 13) == string.format("%-13s", name)
+      and first[index].menu ~= nil and toneOf(first[index].title) == tones[index]
+  end
+  check(order, "System's sections in a fixed order, each toned by its worst problem, Apple's Siri loop RED")
+  check(text(first[1].title) == string.format("%-13s %5s %-7s %s %5s", "Processor", "5", "cores", "    ▇▄█", "3"),
+    "a section row: name, value with its unit, seven DIM bars, the usual: " .. text(first[1].title))
+  check(rowMatching({ first[7] }, "^ +1 rows +ledger$", "R") and text(first[8].title):match("^Fix —"),
+    "a problem no section owns shows after the sections")
+  local processor, memory, logs, crashes = first[1].menu, first[2].menu, first[5].menu, first[6].menu
+  local starts = rowMatching(processor, "^starts ", nil)
+  check(starts and toneOf(starts.title) == "R" and rowMatching(starts.menu, "^ +30 %% +workers$")
+    and rowMatching(starts.menu, "^ +20 %% +tests$") and rowMatching(starts.menu, "^ +15 %% +shell$")
+    and rowMatching(starts.menu, "^ +10 %% +review%-bench tests$") and rowMatching(starts.menu, "^limit 1000 /s$")
+    and rowMatching(processor, "^ +0%.50 cores +Chrome$"), "Processor: starts by human cause name, CPU by process")
+  check(rowMatching(memory, "^ +3 GB +Claude ×4$") and rowMatching(memory, "^ +2 GB +Chrome ×6$"),
+    "Memory: resident memory by human name with its process count")
+  local workers, apps = rowMatching(logs, "^ +12 GB +%+1%.5  workers$"), rowMatching(logs, "LLM apps$", "R")
+  check(workers and rowMatching(workers.menu, "^ +11 GB +Claude  30 d$") and rowMatching(workers.menu, "^ +1 GB +run logs  10 d$")
+    and rowMatching(rowMatching(logs, "my chats$").menu, "^ +3 GB +Claude  30 d$")
+    and apps and rowMatching(apps.menu, "^ +0%.3 GB +Codex log  kept$", "R") and rowMatching(apps.menu, "^ +1%.0 GB +Codex history  kept$")
+    and rowMatching(rowMatching(logs, "unknown$", "R").menu, "Telegram$", "R"),
+    "Logs: groups with growth, stores by label and retention split across groups, unread and unknown RED")
+  check(rowMatching(crashes, "^ +7 /day +Siri$", "R") and rowMatching(crashes, "Hammerspoon$", "r")
+    and rowMatching(rowMatching(crashes, "^app crashes ").menu, "^ +3 /8 d +Chrome$"),
+    "Crashes: Apple's loop RED by its short name, a pending fix DIM_RED, crashes by process")
 end
 
 -- One vocabulary: each night label tests/test_doctors_menu.sh made through bin/doctor-fix and

@@ -88,7 +88,8 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
 - **Document** `~/.cache/system-doctor/latest.json`, in the shape of `docs/doctors-contract.md`. Its `days` block
   holds `{series: {day: value}}` for the last 7 days covered ≥ 1 h (busy, kernel, births_s, ssd_gb_day, swap_gib_day,
   comp_share_max, free_gib per volume, logs_gb), the menu's sparklines and usual values.
-  The ledger is `share/system-ledger.json`. The menu row is System, after Speed.
+  The ledger is `share/system-ledger.json`. The menu row is System, last of the doctors; its first level is six
+  sections (Processor, Memory, Disk writes, Disk space, Logs, Crashes), `docs/doctors-contract.md` "Menu layout".
 
 Problem rules (`LIMITS`; each names its top attributed cause where known; `fix_target` only when
 the cause is our own):
@@ -212,6 +213,8 @@ new. Writers stay free: no format or location standard, we only measure and clea
   `codex_exec`) is workers, interactive is my chats, none stays in the store's group; `split: session-id` (session dirs,
   rewind history) inherits the class of the transcript its name carries. Uncached: 1.6 s wall, 0.6 CPU-s a scan.
   Scan rows carry `groups`; the view adds per-group size and growth against the oldest grouped scan ≥ 20 h back.
+  The view's stores are objects (`name gb files age_d cleaner keep over readers group label parts`), never positional
+  lists: Hammerspoon's JSON decoder drops a null and shifts every later field of a list.
 - **Collector** `logstores`, daily after 04:00 (or after 36 h), detached like the others: `bin/log-sweep` (every
   `sweep` store, any kind), then every log store's bytes, files, units and oldest unit, and what lies past its
   criterion plus slack (2 days, 1 unit, 25 %, 2× the tail). Rows in `logstores/<day>.jsonl` (90 days).

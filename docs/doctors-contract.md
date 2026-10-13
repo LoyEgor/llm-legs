@@ -67,10 +67,18 @@ LLM ▸     8  reviewers crashed
   kinds stay). `SHOWN_BY` in `hammerspoon/doctors.lua` maps a donor's group (and its level-0 `<Group>:` row) to the
   summary that shows it: Harness's Suite audits, Test flakes, Limiter holds and the row-less Speed, Tests, Wait
   classes, Hook waits, Hooks, Waits, Slow periods, Collector → Lost time (with the window rows and their chooser);
-  CPU audits, Load (out of Lost time's subtree), Memory guard, Growth → System, appended at the end of its details;
+  CPU audits, Load (out of Lost time's subtree), Memory guard, Growth → System, kept at the end of its details;
   LLM's `debt` → Harness. Harness's details drop `Lost time:` and `Spend:`. Counts move through the same table from
   the doctors' own per-group counts (Harness: the header's `groups`; LLM: `groups`), so each summary's count and
   issue rows change but the `Doctors: N problems` total never does; a header without `groups` keeps Harness's own.
+- System's first level is six fixed sections instead of issue rows: Processor, Memory, Disk writes, Disk space, Logs,
+  Crashes, each `name (13) · value (5) · unit (7) · 7 DIM bars · usual (5)` from the document's `measures` and `days`,
+  the name RED when a loud problem of its rules sits inside, DIM_RED for a watch or pending fix or a blind collector,
+  else GREEN. Inside, each rule's problem tones the measure it judges (a problem with no measure row gets its own row),
+  lists carry human names (worker-run → workers, test suites → tests, helpers by their app), log groups open their
+  stores by label and retention; Apple's own problems are RED and counted like any other. The moved Harness rows show
+  in their section by label and count (CPU audits, Load → Processor; Memory guard → Memory; Growth → Logs); a problem
+  of a rule no section owns follows the sections. The menu only places and formats what the document says.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,
   three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows. The menu
   reads it and `problem-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;

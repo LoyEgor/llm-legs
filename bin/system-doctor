@@ -2250,11 +2250,12 @@ def logstores_view(rows):
             "groups": [[group, round(size / 1e9, 2),
                         round((size - then["groups"].get(group, 0)) / 1e9, 2) if then else None] for group, size in groups],
             "groups_since": iso_time(then["t"]) if then else None,
-            "stores": [[s["name"], round(s["bytes"] / 1e9, 2), s["files"],
-                        round((latest["t"] - s["oldest_s"]) / DAY_S, 1) if s.get("oldest_s") else None, s["cleaner"],
-                        criterion_words(s) if s.get("criterion") else None, s.get("over_units"),
-                        s.get("readers"), s.get("group"), s.get("label"),
-                        {g: round(b / 1e9, 2) for g, b in (s.get("parts") or {}).items()}] for s in stores],
+            "stores": [{"name": s["name"], "gb": round(s["bytes"] / 1e9, 2), "files": s["files"],
+                        "age_d": round((latest["t"] - s["oldest_s"]) / DAY_S, 1) if s.get("oldest_s") else None,
+                        "cleaner": s["cleaner"], "keep": criterion_words(s) if s.get("criterion") else None,
+                        "over": s.get("over_units"), "readers": s.get("readers"), "group": s.get("group"),
+                        "label": s.get("label"), "parts": {g: round(b / 1e9, 2) for g, b in (s.get("parts") or {}).items()}}
+                       for s in stores],
             "unregistered": latest.get("unregistered"), "unread": latest.get("unread"), "sweep": latest.get("sweep"),
             "scan": latest.get("scan")}
 
