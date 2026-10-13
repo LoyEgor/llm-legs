@@ -1761,6 +1761,21 @@
    "verdict": "cut",
    "zero": "removal saves 19.1 CPU-min/day; loses the tripwire that reports and puts back shell writes to instruction files, the only guard after the Edit/Write gate",
    "note": "hit path (~20-115 ms) is the tripwire's own stat of every watched file and is kept; misses from ~/.claude moves (plugin sync renames, 240-400 ms, ~12% of checks) now revalidate one level instead of rebuilding: 310->151 ms on a forced move, identical watched set; an FSEvents watcher instead of the per-call poll is the remaining lever, not tried (a new daemon)"
+  },
+  {
+   "id": "cpu:process/transcriptions-gpt/transcriber/overlay.py",
+   "title": "process/transcriptions-gpt/transcriber/overlay.py",
+   "audited_at": "2026-10-13T10:19:23+03:00",
+   "by": "harness-speed-cpu-statusline-ports-20261012T235115Z-60e6",
+   "cpu_min_day": 22.2,
+   "cpu_s_run": 153.109,
+   "runs_day": 7,
+   "sources": {
+    "transcriptions-gpt/transcriber/overlay.py": "4296f7ac4196cc4fccf755fd9ad8207b52b30f5b"
+   },
+   "verdict": "trade",
+   "zero": "removal saves 22.2 CPU-min/day; loses the dictation pill Egor watches while recording and transcribing",
+   "note": "60 FPS NSTimer only while the pill is shown (invalidated when fully hidden; 0.0% CPU idle), but advance() calls setNeedsDisplay every tick, so every frame is a full Python drawRect; change-gated redraw handed off (docs/handoffs/2026-10-13-overlay-redraw-cpu.md): transcriptions-gpt had no worktree in this run; FPS is a visible trade, not touched"
   }
  ]
 }
