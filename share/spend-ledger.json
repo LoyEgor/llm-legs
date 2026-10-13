@@ -3242,6 +3242,86 @@
    "verdict": "trade",
    "zero": "removing Hammerspoon saves 92 CPU-min/day and loses the menubar and every hotkey",
    "note": "100 ms Terminal AX tab poll dominates timers, handoff docs/handoffs/2026-10-13-hammerspoon-ax-poll.md"
+  },
+  {
+   "id": "suite:claude-setup/test_worker_pin_gate",
+   "title": "claude-setup/test_worker_pin_gate",
+   "audited_at": "2026-10-13T11:30:28+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-worker-pin-gate-20261012T235224Z-1292",
+   "cpu_run": 6.1,
+   "wall_run": 4.9,
+   "cpu_min_day": 0.14,
+   "wall_min_day": 0.26,
+   "sources": {
+    "claude-setup/tests/test_worker_pin_gate.sh": "b026fb73ea422120ec5ce8f88f321c205ed1cc84"
+   },
+   "verdict": "cut",
+   "zero": "removing it saves 0.2 wall-min/day; loses the claude-setup symlink resolution of hooks/worker-pin-gate.sh (load_share through the link, the hook-time source) and the 26 shapes llm-legs' shell suite does not repeat",
+   "note": "marker is an unlisted effort (a deny no longer builds the table summary, ~half a deny's cost); 14 checks repeated by llm-legs test_worker_pin_gate_shell.sh on the same hook leave; 40 -> 26 asserts, 5 mutations red there"
+  },
+  {
+   "id": "suite:claude-setup/test_report_flush",
+   "title": "claude-setup/test_report_flush",
+   "audited_at": "2026-10-13T11:30:29+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-worker-pin-gate-20261012T235224Z-1292",
+   "cpu_run": 1.4,
+   "wall_run": 1.7,
+   "cpu_min_day": 0.06,
+   "wall_min_day": 0.1,
+   "sources": {
+    "claude-setup/tests/test_report_flush.sh": "fdae7d0b4555d11b7b78df4c3420b671c09d7592"
+   },
+   "verdict": "cut",
+   "zero": "removing it saves 0.1 wall-min/day; loses the report-flush forwarding, fork-parent fast path, delivered cap, settings wiring and the bus dedup guarantee",
+   "note": "stub report-bus and path helper in bash+jq, 23 python starts fewer (CPU 1.8 -> 1.1 s); the trailing-bytes check was vacuous (no trailing byte in any payload), now red under two mutations; 47 asserts"
+  },
+  {
+   "id": "suite:claude-setup/test_slash_collision",
+   "title": "claude-setup/test_slash_collision",
+   "audited_at": "2026-10-13T11:30:30+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-worker-pin-gate-20261012T235224Z-1292",
+   "cpu_run": 1.7,
+   "wall_run": 1.5,
+   "cpu_min_day": 0.1,
+   "wall_min_day": 0.15,
+   "sources": {
+    "claude-setup/tests/test_slash_collision.sh": "78f3c0fde4b760fb56a763c9dfbf347ad9f270b5"
+   },
+   "verdict": "cut",
+   "zero": "removing it saves 0.1 wall-min/day; loses the built-in name list guard, the repo audit and every gate verdict",
+   "note": "deny() runs the gate once for both asserts, 9 gate runs fewer, 65 asserts; the dead flag is a detector false positive ($ROOT/commands/model.md is a Write target the gate must deny, not a file the suite reads)"
+  },
+  {
+   "id": "suite:claude-setup/test_skill_install_scope_gate",
+   "title": "claude-setup/test_skill_install_scope_gate",
+   "audited_at": "2026-10-13T11:30:31+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-worker-pin-gate-20261012T235224Z-1292",
+   "cpu_run": 7.7,
+   "wall_run": 5.6,
+   "cpu_min_day": 0.16,
+   "wall_min_day": 0.21,
+   "sources": {
+    "claude-setup/tests/test_skill_install_scope_gate.sh": "ece70d87a46a56c65ca67aae8d1ad1aeaf5649d2"
+   },
+   "verdict": "kept",
+   "zero": "removing it saves 0.1 wall-min/day; loses the 113 deny/pass shapes of the HYPERFRAMES_SKIP_SKILLS and global-install gate, each from an incident commit",
+   "note": "113 distinct command shapes through one ~40 ms hook run each (jq, perl x3, rj_segments); no batching without changing the hook, no check proven covered elsewhere; hook cost is a CPU audit's"
+  },
+  {
+   "id": "suite:claude-setup/test_comment_gate",
+   "title": "claude-setup/test_comment_gate",
+   "audited_at": "2026-10-13T11:30:32+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-worker-pin-gate-20261012T235224Z-1292",
+   "cpu_run": 1.5,
+   "wall_run": 1.6,
+   "cpu_min_day": 0.05,
+   "wall_min_day": 0.08,
+   "sources": {
+    "claude-setup/tests/test_comment_gate.sh": "cee2ac559b686883671bc0c173822ea4df3d291d"
+   },
+   "verdict": "kept",
+   "zero": "removing it saves 0.1 wall-min/day; loses the comment-gate commit-shape verdicts, the no-git zero-fork guard and the span door",
+   "note": "15 asserts, each one hook run of ~0.1 s; the cost is the hook, every case a distinct commit shape; nothing redundant or vacuous found (the fork spy goes red when the early exit moves below jq)"
   }
  ]
 }

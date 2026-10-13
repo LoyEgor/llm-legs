@@ -9144,6 +9144,13 @@
       "reason": "hs -c reads a non-tty stdin to EOF; run-suites gives /dev/null but an agent shell's stdin is an open socket, so the client never exits and every live-hs suite on the machine waits in lockf (2026-10-13: a test_compact_boundary client held it 12 min, the waiters' wall showed only as slow suites); hammerspoon test_ipad_mode, test_send_actions, test_handoff, test_display_mirror, test_claude_chat_switch and test_compact_boundary still call hs without </dev/null, test_hs_cli_lock.sh checks the lock only",
       "since": "2026-10-13",
       "would_catch_if": "test_hs_cli_lock.sh also failed an hs call line without </dev/null, or the lock wait inside lockf were journaled with the holder's command"
+    },
+    {
+      "id": "suite-dead-path-is-a-gate-target",
+      "what": "the dead-suite scan reads a double-quoted $ROOT/<path> in a suite as a file the suite needs",
+      "reason": "claude-setup test_slash_collision names $ROOT/commands/model.md as the Write target the slash-collision gate must deny; the path is meant to be absent, so the suite read 'gone from the repo' and was queued for audit as dead (2026-10-13, harness-speed-suite-audit-claude-setup-test-worker-pin-gate-20261012T235224Z-1292)",
+      "since": "2026-10-13",
+      "would_catch_if": "repo_scan's dead check skipped a $ROOT path the suite passes as a payload to the hook under test (a deny assert beside it) rather than reads, creates or removes"
     }
   ]
 }
