@@ -31,7 +31,7 @@ chmod +x "$FAKE_BIN/llm-limits"
 write_limits() {
   local account="$1" resets_at="$2"
   cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
-{"vendors":{"claude":{"accounts":[{"account":"$account","five_hour":{"resets_at":"$resets_at"}}]}}}
+{"vendors":{"claude":{"accounts":[{"account":"$account","five_hour":{"resets_at":"$resets_at","as_of":$EPOCHSECONDS,"stale":false}}]}}}
 EOF
 }
 
@@ -111,8 +111,8 @@ write_limits notcom "$(iso_in 6000)"
 write_limits_other() {
   cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[
-  {"account":"notcom","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))"}},
-  {"account":"alona","five_hour":{"resets_at":"$(iso_in $((9000 + 30)))"}}
+  {"account":"notcom","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))","as_of":$EPOCHSECONDS,"stale":false}},
+  {"account":"alona","five_hour":{"resets_at":"$(iso_in $((9000 + 30)))","as_of":$EPOCHSECONDS,"stale":false}}
 ]}}}
 EOF
 }
@@ -140,7 +140,7 @@ minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 # A chat walled on its week waits for the week, not for the five hours that reset first.
 cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[{"account":"alona",
-  "five_hour":{"effective_pct":40,"resets_at":"$(iso_in $((1200 + 30)))"},
+  "five_hour":{"effective_pct":40,"resets_at":"$(iso_in $((1200 + 30)))","as_of":$EPOCHSECONDS,"stale":false},
   "weekly":{"effective_pct":100,"resets_at":"$(iso_in $((9000 + 30)))"}}]}}}
 EOF
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=alona "$SCRIPT" terminal 0) || fail "weekly-wall run failed"
@@ -156,7 +156,7 @@ minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 write_limits_fable() { # weekly-pct
   cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[{"account":"alona",
-  "five_hour":{"effective_pct":40,"resets_at":"$(iso_in $((1200 + 30)))"},
+  "five_hour":{"effective_pct":40,"resets_at":"$(iso_in $((1200 + 30)))","as_of":$EPOCHSECONDS,"stale":false},
   "weekly":{"effective_pct":$1,"resets_at":"$(iso_in $((9000 + 30)))"},
   "fable":{"effective_pct":100,"resets_at":"$(iso_in $((5400 + 30)))"}}]}}}
 EOF
@@ -194,10 +194,10 @@ write_limits_gateway() {
   cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{
   "claude":{"accounts":[
-    {"account":"notcom","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))"}},
-    {"account":"work4","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))"}}]},
+    {"account":"notcom","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))","as_of":$EPOCHSECONDS,"stale":false}},
+    {"account":"work4","five_hour":{"resets_at":"$(iso_in $((1200 + 30)))","as_of":$EPOCHSECONDS,"stale":false}}]},
   "codex":{"accounts":[
-    {"account":"work4","five_hour":{"resets_at":"$(iso_in $((9000 + 30)))"}}]}}}
+    {"account":"work4","five_hour":{"resets_at":"$(iso_in $((9000 + 30)))","as_of":$EPOCHSECONDS,"stale":false}}]}}}
 EOF
 }
 write_limits_gateway
@@ -427,6 +427,8 @@ printf '{"pid":502,"sessionId":"sid-shell","name":"shell"}' >"$FIXTURE_HOME/.cla
 echo ttys007 >"$PS_FIXTURE.pid.501"
 echo ttys008 >"$PS_FIXTURE.pid.502"
 printf '%s\n' 'ttys009 /Users/e/.local/bin/claude --resume' 'ttys007 /Users/e/.local/bin/claude' 'ttys008 -zsh' >"$PS_FIXTURE"
+# A row any limits read would refresh, or the no-LLM_LIMITS check below passes on a fresh fixture alone.
+write_limits_bucket true 60
 
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to peer --now -m 'next pass') \
   || fail "--to --now run failed"
@@ -441,9 +443,9 @@ grep -qF '"/dev/ttys007")' "$CALLS" || fail "--to should take a session id too: 
 # The peer's timer is timed off the PEER's five-hour window, read from its own environment.
 cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
 {"vendors":{"claude":{"accounts":[
-  {"account":"notcom","five_hour":{"resets_at":"$(iso_in 6000)"}},
-  {"account":"acct","five_hour":{"resets_at":"$(iso_in 600)"}}]},
- "codex":{"accounts":[{"account":"gw","five_hour":{"resets_at":"$(iso_in 1800)"}}]}}}
+  {"account":"notcom","five_hour":{"resets_at":"$(iso_in 6000)","as_of":$EPOCHSECONDS,"stale":false}},
+  {"account":"acct","five_hour":{"resets_at":"$(iso_in 600)","as_of":$EPOCHSECONDS,"stale":false}}]},
+ "codex":{"accounts":[{"account":"gw","five_hour":{"resets_at":"$(iso_in 1800)","as_of":$EPOCHSECONDS,"stale":false}}]}}}
 EOF
 printf '%s\n' '/Users/e/.local/bin/claude PATH=/usr/bin CLAUDE_CONFIG_DIR=/Users/e/.claude-profiles/acct CLAUDE_LIMITS_ACCOUNT=acct' \
   >"$PS_FIXTURE.env.501"
