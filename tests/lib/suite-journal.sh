@@ -82,38 +82,72 @@ suite_journal_content() { # repo [since-ms] -> suite_journal_tree, '' once a fil
     (cd "$1" && git ls-files -z --cached --others --exclude-standard 2>/dev/null && printf '\0') |
     python3 -S -c '
 import hashlib
+import marshal
 import os
 import stat
 import sys
+import time
 
 try:
     os.chdir(sys.argv[1])
-    since = float(sys.argv[2]) / 1000 if len(sys.argv) > 2 and sys.argv[2] else None
+    since = float(sys.argv[2]) / 1000 if sys.argv[2] else None
     paths = sys.stdin.buffer.read()
     if not paths.endswith(b"\0"):
         raise OSError("not a git tree")
-    tree = hashlib.sha256()
+    entries = []
     for path in sorted(set(paths.split(b"\0")) - {b""}):
         try:
             info = os.lstat(path)
         except FileNotFoundError:
             continue
-        mode = info.st_mode
         if since is not None and info.st_mtime > since:
             raise OSError("changed during the run")
+        entries.append((path, info))
+    store = os.path.join(sys.argv[3], hashlib.sha256(os.fsencode(sys.argv[1])).hexdigest()[:16])
+    settled = time.time_ns() - 2_000_000_000
+    try:
+        with open(store, "rb") as handle:
+            known = marshal.load(handle)
+    except Exception:
+        known = {}
+    if not isinstance(known, dict):
+        known = {}
+    kept = {}
+    tree = hashlib.sha256()
+    for path, info in entries:
+        mode = info.st_mode
         if stat.S_ISLNK(mode):
-            kind, data = b"link", os.readlink(path)
+            kind, digest = b"link", hashlib.sha256(os.readlink(path)).digest()
         elif stat.S_ISREG(mode):
             kind = b"exec" if mode & 0o111 else b"file"
-            with open(path, "rb") as handle:
-                data = handle.read()
+            key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, mode)
+            seen = known.get(path)
+            if isinstance(seen, tuple) and len(seen) == 2 and seen[0] == key:
+                digest = seen[1]
+            else:
+                with open(path, "rb") as handle:
+                    digest = hashlib.sha256(handle.read()).digest()
+            if info.st_mtime_ns < settled:
+                kept[path] = (key, digest)
         else:
             raise OSError("unsupported tree entry")
-        tree.update(path + b"\0" + kind + b"\0" + hashlib.sha256(data).digest())
+        tree.update(path + b"\0" + kind + b"\0" + digest)
     print(tree.hexdigest()[:16])
+    if kept != known:
+        try:
+            os.makedirs(sys.argv[3], exist_ok=True)
+            with open(store + ".%d" % os.getpid(), "wb") as handle:
+                marshal.dump(kept, handle)
+            os.replace(store + ".%d" % os.getpid(), store)
+            for name in os.listdir(sys.argv[3]):
+                old = os.path.join(sys.argv[3], name)
+                if os.lstat(old).st_mtime < time.time() - 7 * 86400:
+                    os.unlink(old)
+        except OSError:
+            pass
 except OSError:
     pass
-' "$1" "${2:-}"
+' "$1" "${2:-}" "${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/tree-digests"
   ) || suite_journal_tree=''
 }
 
@@ -129,7 +163,7 @@ suite_journal_digest() { # suite-name... in sorted order -> suite_journal_set
 suite_journal_suite() { # name rc secs cpu-secs [wall-bound [json-members]] -> appended to suite_journal_suites
   local name
   suite_journal_str name "$1"
-  suite_journal_suites="${suite_journal_suites:+$suite_journal_suites,}$name:{\"rc\":$2,\"secs\":$3,\"cpu_s\":${4:-null},\"forks\":null${5:+,\"bound\":$5}${6:+,$6}}"
+  suite_journal_suites="${suite_journal_suites:+$suite_journal_suites,}$name:{\"rc\":$2,\"secs\":$3,\"cpu_s\":${4:-null}${5:+,\"bound\":$5}${6:+,$6}}"
 }
 
 # kind pid queued started ended repo repo-root head scope worker-run session j slot signal complete [skipped-slow names [reason [stopped names]]]

@@ -55,6 +55,21 @@ suite_journal_content "$TREE_REPO"; assert test "$untracked" != "$suite_journal_
 rm "$TREE_REPO/tracked"
 suite_journal_content "$TREE_REPO"; assert test "$edited" != "$suite_journal_tree"
 suite_journal_content "$HOME"; assert test -z "$suite_journal_tree"
+DIGESTS="$XDG_CACHE_HOME/run-suites/tree-digests/$(printf %s "$TREE_REPO" | shasum -a 256 | cut -c1-16)"
+printf old >"$TREE_REPO/settled"; touch -t 202001010000 "$TREE_REPO/settled"; printf fresh >"$TREE_REPO/fresh"
+suite_journal_content "$TREE_REPO"; settled=$suite_journal_tree
+assert test -s "$DIGESTS"
+assert python3 -c '
+import marshal, sys
+known = marshal.load(open(sys.argv[1], "rb"))
+assert b"fresh" not in known
+known[b"settled"] = (known[b"settled"][0], bytes(32))
+marshal.dump(known, open(sys.argv[1], "wb"))' "$DIGESTS"
+suite_journal_content "$TREE_REPO"; assert test "$settled" != "$suite_journal_tree"
+printf new >"$TREE_REPO/settled"; touch -t 202001010000 "$TREE_REPO/settled"
+suite_journal_content "$TREE_REPO"; cached=$suite_journal_tree
+XDG_CACHE_HOME="$WORK/no-digests" suite_journal_content "$TREE_REPO"; assert test "$cached" = "$suite_journal_tree"
+assert test "$settled" != "$cached"
 REPO="$WORK/repo"
 new_repo "$REPO"
 SHA=$(git -C "$REPO" rev-parse HEAD)
@@ -73,7 +88,7 @@ assert jqe --argjson keys "$KEYS" --arg repo "$REPO" --arg sha "$SHA" --arg slot
   and .worker_run == "wr-7" and .session == "sess-7" and .j == 2 and (.slot | startswith($slots))
   and .signal == null and .complete == true and (.suite_set | test("^[0-9a-f]{8}$"))
   and (.suites | keys) == ["test_cpu.sh","test_env.sh","test_fail.sh"]
-  and ([.suites[].rc] == [0,0,3]) and all(.suites[]; (.secs | type == "number") and (.cpu_s | type == "number") and .forks == null)
+  and ([.suites[].rc] == [0,0,3]) and all(.suites[]; (.secs | type == "number") and (.cpu_s | type == "number") and (has("forks") | not))
   and .suites["test_cpu.sh"].cpu_s > 0 and .suites["test_cpu.sh"].secs > 0' "$JOURNAL"
 run_pid=$(jq -r .pid "$JOURNAL")
 assert test "$(cat "$WORK/env.out")" = "SUITE_JOURNAL_PID=$run_pid"
@@ -187,7 +202,7 @@ for b in /bin/bash "$BASH"; do
     and all(.[]; (keys == $keys) and .kind == "direct" and .scope == "direct" and .j == 1 and (.slot | startswith($slots))
       and .signal == null and .complete == true and .repo == $repo and .repo_root == $repo and .head == $sha
       and .queued_at <= .started_at and .started_at <= .ended_at and (.suites | keys) == ["test_trap.sh"]
-      and (.suites["test_trap.sh"] | (.cpu_s | type == "number") and (.secs | type == "number") and .forks == null))
+      and (.suites["test_trap.sh"] | (.cpu_s | type == "number") and (.secs | type == "number") and (has("forks") | not)))
     and [.[].suites["test_trap.sh"].rc] == [0,1,5]' "$WORK/h/.cache/run-suites/runs.jsonl"
 done
 assert test ! -e "$WORK/elsewhere"
