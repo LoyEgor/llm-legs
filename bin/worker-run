@@ -958,7 +958,7 @@ RESUME_IDLE_CLAUDEB=3300
 RESUME_IDLE_CODEX=1500
 RESUME_CONTEXT_CAP=150000
 refuse_stale_resume() {
-  local vendor="$1" account="$2" resume="$3" transcript threshold ttl now mtime idle tokens token_k idle_text why=''
+  local vendor="$1" account="$2" resume="$3" transcript threshold ttl now mtime idle tokens token_k idle_text why='' usage
   [ -n "$resume" ] || return 0
   case "$vendor" in
     claudeb) threshold=$RESUME_IDLE_CLAUDEB; ttl=1h ;;
@@ -972,7 +972,9 @@ refuse_stale_resume() {
   idle=$((now - mtime))
   tokens=''
   if [ "$vendor" = claudeb ]; then
-    tokens=$(jq -r 'select(.message.usage) | (.message.usage | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))' "$transcript" 2>/dev/null | tail -n1)
+    usage='select(.message.usage) | (.message.usage | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))'
+    tokens=$(tail -c 262144 "$transcript" 2>/dev/null | sed 1d | jq -r "$usage" 2>/dev/null | tail -n1)
+    [[ "$tokens" =~ ^[0-9]+$ ]] || tokens=$(jq -r "$usage" "$transcript" 2>/dev/null | tail -n1)
     [[ "$tokens" =~ ^[0-9]+$ ]] || tokens=''
   fi
   [ -n "$tokens" ] || tokens=$(($(stat -f %z "$transcript" 2>/dev/null || echo 0) / 4))
@@ -2100,10 +2102,11 @@ compute_snapshot_files() { # directory workdir
 # The paths whose content is not what `dirty-before` recorded for them: rewritten by this run, or
 # gone. A floor written before the shas existed lists paths alone, and every one of them reads as
 # unchanged — the old behaviour, which is what a record written by an older worker-run must keep.
-workdir_rewritten_paths() { # directory workdir
+workdir_rewritten_paths() { # directory workdir [its dirty shas, already hashed]
   local before="$1/dirty-before-shas"
   [ -s "$before" ] || return 0
-  workdir_dirty_shas "$2" 2>/dev/null | AWK_BEFORE=$before awk -F'\t' '
+  if [ "$#" -ge 3 ]; then [ -z "$3" ] || printf '%s\n' "$3"; else workdir_dirty_shas "$2" 2>/dev/null; fi |
+    AWK_BEFORE=$before awk -F'\t' '
     BEGIN { while ((getline line < ENVIRON["AWK_BEFORE"]) > 0) { split(line, f, "\t"); was[f[2]] = f[1] } }
     NF == 2 && ($2 in was) && was[$2] != $1 { print $2 }
   '
@@ -2113,7 +2116,12 @@ workdir_rewritten_paths() { # directory workdir
 # dirty at launch and holding different content since. Read twice over — by the dirt record at the
 # end, and by the liveness row of a run still going — and one definition, or the two disagree about
 # what this run has touched.
-workdir_gained_paths() { # directory workdir
+workdir_gained_paths() { # directory workdir [its dirty paths and shas, one pass already read]
+  if [ "$#" -ge 4 ]; then
+    { comm -23 <([ -z "$3" ] || printf '%s\n' "$3") <(sort -u "$1/dirty-before" 2>/dev/null)
+      workdir_rewritten_paths "$1" "$2" "$4"; } | sort -u
+    return
+  fi
   { comm -23 <(workdir_dirty_paths "$2") \
              <(sort -u "$1/dirty-before" 2>/dev/null)
     workdir_rewritten_paths "$1" "$2"; } | sort -u
@@ -4292,7 +4300,7 @@ run_files() {
 }
 
 readonly_report_hint() {
-  local directory="$1" workdir gained marker root month started marker_month count=0 code
+  local directory="$1" workdir gained marker root month started marker_month count=0 code listing paths shas
   [ -f "$directory/exit_code" ] || return 0
   code=$(tr -d '[:space:]' <"$directory/exit_code")
   [ "$(terminal_status "$directory" "$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)" "$code")" = done ] ||
@@ -4305,9 +4313,11 @@ readonly_report_hint() {
   [ -z "$RUN_FILES_REASON" ] && [ -z "$RUN_FILES_LIST" ] || return 0
   [ -f "$directory/dirty-before" ] || return 0
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
-  workdir_dirty_paths "$workdir" >/dev/null 2>&1 || return 0
-  workdir_dirty_shas "$workdir" >/dev/null 2>&1 || return 0
-  gained=$(workdir_gained_paths "$directory" "$workdir")
+  listing=$(mktemp "${TMPDIR:-/tmp}/worker-run-dirty.XXXXXX") || return 0
+  shas=$(workdir_dirty_shas "$workdir" "" "$listing" 2>/dev/null) && [ -f "$listing" ] || { rm -f "$listing"; return 0; }
+  paths=$(<"$listing")
+  rm -f "$listing"
+  gained=$(workdir_gained_paths "$directory" "$workdir" "$paths" "$shas")
   [ -z "$gained" ] || return 0
   # Git sees no edit to an ignored path (a bench whose tracers/ and results/ are .gitignored), so the
   # run's own editor and shell calls get the last word before it is called read-only.
@@ -5064,12 +5074,17 @@ supervisor_stoppable() { # directory
 # A TaskStop of a background wait ends only the wait: the run is detached so a new wait can adopt it.
 stop_command() {
   [ "$#" -eq 1 ] || usage
-  local directory ticks=0
+  local directory ticks=0 pid started
   directory=$(run_path "$1")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
   if supervisor_stoppable "$directory"; then
-    kill -TERM "$(jq -r '.pid' "$directory/meta.json")" 2>/dev/null
-    while supervisor_stoppable "$directory" && [ "$ticks" -lt 300 ]; do sleep 0.1; ticks=$((ticks + 1)); done
+    { read -r pid; read -r started; } < <(jq -r '(.pid // ""), (.pid_started_at // "")' "$directory/meta.json" 2>/dev/null)
+    kill -TERM "$pid" 2>/dev/null
+    while [ ! -e "$directory/exit_code" ] && supervisor_running "$directory" "$pid" "$started" &&
+        { [ -n "$started" ] || ! run_overdue "$directory"; } && [ "$ticks" -lt 300 ]; do
+      sleep 0.1
+      ticks=$((ticks + 1))
+    done
   fi
   wait_run "$1" --max 0
 }
