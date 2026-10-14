@@ -2875,20 +2875,20 @@
   {
    "id": "suite:llm-legs/test_doctor_fix",
    "title": "llm-legs/test_doctor_fix",
-   "audited_at": "2026-10-13T12:03:51+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261012T235259Z-64f2",
-   "cpu_run": 86.7,
-   "wall_run": 34.9,
-   "cpu_min_day": 130.01,
-   "wall_min_day": 92.47,
+   "audited_at": "2026-10-14T07:19:03+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
+   "cpu_run": 97.9,
+   "wall_run": 22.4,
+   "cpu_min_day": 170.32,
+   "wall_min_day": 94.06,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
     "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
-    "llm-legs/tests/test_doctor_fix.sh": "b73c2ed3c667b04f30cc857ade3b226633b66090"
+    "llm-legs/tests/test_doctor_fix.sh": "df20a512f118f04115424ad0f179fcbe11c2cfd5"
    },
    "verdict": "kept",
-   "zero": "removal saves 44.4 wall-min/day; loses every doctor-fix launch/close/record check (457 asserts) that pins the fixer machinery",
-   "note": "profiled: 142 doctor-fix calls, launch x34 ~1.2s each of ~64s serial, ~0.7s of each in launch's python snapshot (module import of the doctors, speed-doctor ~0.45s), a production-side cost not a test cut; already 4 shards; no check merged without losing asserts"
+   "zero": "removal saves 72.9 wall-min/day; loses 478 asserts pinning doctor-fix launch, close, record and briefs",
+   "note": "wall is shard 3 (df-speed: 18 sequential night launches, 62 of 4 shards' 23/26/62/18 s at load 60-110); each launch is ~60 forks (record_set lock+jq, python subcommands packet/snapshot ~0.3 s idle each); state chains through the section so no split; F7 lock retry 0.01 s on shard 1; PASS 478"
   },
   {
    "id": "suite:llm-legs/test_vendor_fingerprint",
