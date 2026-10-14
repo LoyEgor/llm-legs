@@ -174,7 +174,8 @@ TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "
                "proof": "orchestration"},
     "heavy": {"lever": "audit the suite (legacy checks, over-complication, a split, sleeps) and cut its wall, every "
                        "requirement kept", "saving": 0.3, "confidence": "estimated"},
-    "fan-out": {"lever": "tests/affected pulls only the suites that exercise the file", "saving": 0.3,
+    "fan-out": {"lever": "the file's selection sheds the suites with no catch in 90 days: narrow what makes them its "
+                         "own (share/suite_select.py), or audit the suites", "saving": 0.5,
                 "confidence": "estimated", "proof": "orchestration"}}.items()}
 ADHOC_LEVERS = {k: {"component": "adhoc/" + k, "lever": v, "effort": "S", "confidence": "measured", "saving": 1.0,
                     "night_cost_h": 0.0, "proof": "net", "quality": "equivalent"} for k, v in {

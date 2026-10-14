@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Suites covering changed files: a suite whose text, or a tests/ helper it names, mentions a file's
-# basename; test_consistency.sh too when docs/shared-invariants.md names one. A heuristic: a suite
-# that never names the file is missed. Sourced by run-suites.sh (--changed); run, it is tests/affected:
+# Suites covering changed files, chosen by share/suite_select.py: a file's own suites (the suite itself, a suite
+# whose name holds its stem, a suite or tests/ helper it names that holds its repo path, imports or requires it, or
+# does so for a repo file importing or sourcing it) plus the suites test_catches credits with a whole catch on it over
+# 90 days, or with any credit when they also name it; a file with neither keeps the name rule (a suite or helper
+# naming its basename). A suite only naming a file leaves targeted runs: the night's full run keeps it.
+# test_consistency.sh too when docs/shared-invariants.md names one. Sourced by
+# run-suites.sh (--changed); run, it is tests/affected:
 #   affected-suites.sh --repo <dir> [file...]   (no file: every file changed against HEAD, untracked or
 #                                                committed on this branch since main)
 #   affected-suites.sh --repo <dir> --slow-refresh   the slow layer recomputed from the run-suites journal
@@ -16,42 +20,30 @@ live_suite() {
   esac
 }
 
-affected_names() { # repo [file...] -> basenames, one a line
+affected_names() { # repo [file...] -> paths, one a line
   local repo=$1 file base
   shift
   if [ "$#" -eq 0 ]; then
     { git -C "$repo" diff --name-only HEAD 2>/dev/null
       git -C "$repo" ls-files --others --exclude-standard 2>/dev/null
       base=$(git -C "$repo" merge-base main HEAD 2>/dev/null) && git -C "$repo" diff --name-only "$base" HEAD 2>/dev/null
-    } | sort -u | while IFS= read -r file; do
-      [ -n "$file" ] && printf '%s\n' "${file##*/}"
-    done
+    } | sort -u | grep -v '^$'
     return
   fi
-  for file in "$@"; do [ -n "$file" ] && printf '%s\n' "${file##*/}"; done
+  for file in "$@"; do [ -n "$file" ] && printf '%s\n' "$file"; done
 }
 
-affected_filter() { # repo names-file <suite paths -> the suites naming one of the names
-  local repo=$1 names=$2 entry helper hits named listed invariants consistency
-  local -a entries=() helpers=()
-  while IFS= read -r entry; do [ -z "$entry" ] || entries+=("$entry"); done
-  for helper in "$repo"/tests/*; do
-    [ -f "$helper" ] || continue
-    case "${helper##*/}" in (test_*|e2e_*) ;; (*) helpers+=("$helper") ;; esac
-  done
-  if [ "${#entries[@]}" -gt 0 ]; then
-    hits=$(grep -lwF -f "$names" -- "${entries[@]}" 2>/dev/null)
-    named=''
-    [ "${#helpers[@]}" -eq 0 ] || named=$(grep -lwF -f "$names" -- "${helpers[@]}" 2>/dev/null | sed 's,.*/,,')
-    [ -z "$named" ] || hits+=$'\n'$(grep -lF -- "$named" "${entries[@]}" 2>/dev/null)
-    hits=$'\n'$hits$'\n' listed=$'\n'$(<"$names")$'\n'
-    for entry in "${entries[@]}"; do
-      [[ $listed == *$'\n'"${entry##*/}"$'\n'* || $hits == *$'\n'"$entry"$'\n'* ]] && printf '%s\n' "$entry"
-    done
-  fi
-  invariants="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/docs/shared-invariants.md"
-  consistency="${invariants%/docs/*}/tests/test_consistency.sh"
-  [ -r "$invariants" ] && [ -r "$consistency" ] && grep -qwF -f "$names" -- "$invariants" && printf '%s\n' "$consistency"
+affected_filter() { # repo paths-file <suite paths -> the suites covering one of the paths
+  local repo=$1 names=$2 share select invariants consistency suites
+  share=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+  select=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/suite_select.py
+  suites=$(cat)
+  printf '%s\n' "$suites" | python3 -B "$select" "$repo" "$names" ||
+    { printf 'affected: suite_select.py failed, every suite selected\n' >&2; printf '%s\n' "$suites"; }
+  invariants="${share%/*}/docs/shared-invariants.md"
+  consistency="${share%/*}/tests/test_consistency.sh"
+  [ -r "$invariants" ] && [ -r "$consistency" ] && sed 's,.*/,,' "$names" | grep -qwF -f - -- "$invariants" &&
+    printf '%s\n' "$consistency"
   return 0
 }
 
@@ -65,7 +57,7 @@ slow_layer_split() { # repo names-file suite-path... -> slow_kept (array) and sl
     [ "$#" -eq 0 ] || slow_kept=("$@")
     return 0
   fi
-  slow=$'\n'$(<"$repo/tests/slow-suites")$'\n' edited=$'\n'$(<"$names")$'\n'
+  slow=$'\n'$(<"$repo/tests/slow-suites")$'\n' edited=$'\n'$(sed 's,.*/,,' "$names")$'\n'
   for entry in "$@"; do
     name=${entry##*/}
     if [[ $slow == *$'\n'"$name"$'\n'* && $edited != *$'\n'"$name"$'\n'* ]]; then

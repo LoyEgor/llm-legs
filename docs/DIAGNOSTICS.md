@@ -209,7 +209,8 @@ Transient upstream 429s go to the Claude CLI, which owns retries; nothing here w
 
 ## How to test
 
-`tests/run-all $(tests/affected <file>…)` runs the suites covering those files; the full run is the
+`tests/run-all $(tests/affected <file>…)` runs the suites covering those files: their own suites and those with a
+catch on them (`share/suite_select.py`); a suite only naming a file runs in the full run, which is the
 night's, and the runner refuses it from a worker or a chat. `share/run-suites.sh` usage covers shards,
 timeouts and the slow layer; each suite's header says what it covers. No test ever calls a vendor's
 real reset-redeem write.

@@ -43,10 +43,10 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
                 naming no suite and no --changed is refused (exit 3); the full run is the night's
   --full        a chat's full run anyway, only on Egor's explicit word; never inside a worker
   -j <n>        parallel jobs (default: cores / 2, minimum 2)
-  --changed     only suites whose text, or a tests/ helper file they name, mentions the basename
-                of a path in `git diff --name-only HEAD`, an untracked file or a commit of this branch
-                since main. A HEURISTIC: a suite that exercises a file it never names by basename is
-                missed; the day lands on it and the night's full run is the final gate.
+  --changed     only the suites tests/affected selects (share/suite_select.py) for a path in
+                `git diff --name-only HEAD`, an untracked file or a commit of this branch since main:
+                each file's own suites and those with a catch on it; a suite only naming a file is
+                left to the night's full run, the final gate.
   --all         also run the suites skipped by default because they read live machine state
                 (llm-legs e2e_surfaces.sh, test_instruction_rates_live.sh)
   --profile     each suite's calls of jq python3 lua git sleep date sed grep awk mktemp bash go through

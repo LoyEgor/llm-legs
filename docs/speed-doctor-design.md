@@ -130,6 +130,21 @@ sum past the wall. Nothing here deletes a test: dead and pinned suites go to Sui
 same repository is a catch when the caller's transcript edited code between them; its own new test, the same tree,
 test-only edits, no own edit and non-Claude callers are not. A suite with no catch in 90 days since its first journaled
 day queues as `uncaught`, which the audit deletes whole (Egor, 2026-10-14).
+Selection (`share/suite_select.py` behind `tests/affected` and `run-all --changed`; Egor, 2026-10-14: evidence, not
+name mentions): a file's own suites (the suite itself; a suite whose name holds its stem; a suite, or a tests/ helper it
+names, holding its repo path, importing or requiring it; for a file with none of those, the own suites of a repo file
+importing, sourcing, requiring or running it: applied to every file this one level grew a hub library from ≤ 6 suites
+to 46-79 for 5 % of catch credit, all of it already evidence) plus the suites credited with a whole catch on it in 90
+days, or with any credit when they also name it (any credit alone added 5.5 CPU-h/day, mostly 1/11 shares of
+many-file episodes). A file with neither keeps the name rule. A suite only naming a file runs in the night's full run
+only, the landing included: there it cost 0.43 of 5.0 CPU-h/day for one catch in 483 landings over 9 days, which the
+full run finds the same night. Proof 2026-10-14, 7 days, 1898 targeted runs, each run's files inferred as the widest
+changed files whose old selection it held whole: 461 dropped (file, suite) pairs on 413 files, none credited with a
+catch on that file; targeted CPU 18.0 → 17.1 h/day (−1.56 dropped, +0.66 added).
+Fan-out: a targeted run prices a changed file when it held half the suites the file selects (only 12 of worker-run's
+runs held all of them); each exec goes to one such file, the one most like the run (shared over joint suites), the
+narrowest on a tie. The top 3 files by minutes a day on selected suites with no catch in 90 days are
+`fan-out/<repo>/<path>` findings for the night.
 
 **Tool mining** (`share/tool_mining.py`, Speed's `adhoc` key). Once a local day (~3 s) it clusters the day's ad-hoc
 Bash scripts by the first `CLUSTERS` pattern matched. Cost: writing (chars at the measured write rate) + calls × median

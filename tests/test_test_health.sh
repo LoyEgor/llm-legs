@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/test_health.py off a fixture repository and run-suites journal: each class (wait as a union per caller,
-# exact repeats by tree, post-worker retests, runs per landed change, fan-out through tests/affected's reading with
-# its cache, idle on the fastest runs, red and flaky, contention and slot queue, heavy, dead), the usual and its red
-# lines, Speed's opportunities from the findings and suite_audit's queue of dead suites. Fixture directories only.
+# exact repeats by tree, post-worker retests, runs per landed change, fan-out through tests/affected's selection,
+# the scan cache, idle on the fastest runs, red and flaky, contention and slot queue, heavy, dead), the usual and its
+# red lines, Speed's opportunities from the findings and suite_audit's queue of dead suites. Fixture directories only.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -241,14 +241,17 @@ check(more["now"]["repeats"] == 1 and "retests" not in {r["key"] for r in more["
       "retests: a profiled run journals what a plain green one cannot, so it repeats only a profiled run; days before "
       "with no tree journaled leave the line unmeasured, never red: %s %s" % (more["now"]["repeats"], more["regressions"]))
 files = {f["path"]: f for f in section["fan_out"]}
-check(files["bin/tool-a"]["suites"] == 2 and files["bin/tool-a"]["changes"] == 3,
-      "fan-out: tool-a pulls the two suites naming it as a word, never the live e2e suite: %s" % files.get("bin/tool-a"))
-check(files["bin/tool-a"]["runs"] == 2 and files["bin/tool-x"]["runs"] == 7,
-      "fan-out: priced from the targeted runs holding every suite a file pulls, each run to its widest file: %s"
-      % section["fan_out"])
-check(files["bin/tool-x"]["suites"] == 1, "fan-out: a helper a suite sources carries its names into it")
+check(files["bin/tool-a"]["suites"] == 1 and files["bin/tool-a"]["changes"] == 3,
+      "fan-out: tool-a pulls the suite running it, never test_c only naming it as a word nor the live e2e suite: %s"
+      % files.get("bin/tool-a"))
+check(files["bin/tool-a"]["runs"] == 12 and files["bin/tool-x"]["runs"] == 8,
+      "fan-out: priced from the suites each targeted run held, each exec to the one file selecting it that shares the "
+      "most suites with its run: %s" % section["fan_out"])
+check(files["bin/tool-x"]["suites"] == 1,
+      "fan-out: a file no suite runs keeps the name rule, a helper a suite sources carrying its names into it")
 held = json.load(open(th.cache_path()))
-check(th.covering(held[repo]["scan"])["tool-y"] == {"test_consistency.sh"}, "fan-out: shared-invariants.md names pull test_consistency")
+check(th.pulls(repo, held[repo]["scan"], ["bin/tool-y"], {}, NOW)["bin/tool-y"] == {"test_consistency.sh"},
+      "fan-out: shared-invariants.md names pull test_consistency")
 saved, th.repo_scan = th.repo_scan, lambda top: (_ for _ in ()).throw(AssertionError("rescanned"))
 check(th.scans([repo], held, False)[repo] == held[repo]["scan"], "fan-out: an unchanged repo reads its cached scan")
 write("bin/tool-a", "edited\n")

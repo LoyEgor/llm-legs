@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import limit_hit  # noqa: E402
 import night_spend  # noqa: E402
 import suite_audit  # noqa: E402
+import suite_select  # noqa: E402
 import test_catches  # noqa: E402
 import time_budget  # noqa: E402
 from time_budget import num  # noqa: E402
@@ -38,6 +39,7 @@ BAND = 1.5
 IDLE_RATIO, IDLE_MIN_S, IDLE_RUNS = 2.0, 10.0, 5
 RED_SHARE = 0.25
 HEAVY_MIN_DAY = 15.0
+HELD_SHARE = 0.5
 PIN_MIN, PIN_EDITS, PIN_REDS = 5, 2, 2
 NIGHT_OPEN_H = 16
 FULL_SCOPES = ("full", "all")
@@ -350,7 +352,7 @@ def regressions(now, normal):
             for key, text, unit, least in LINES if red_line(key, now[key], normal[key], least)]
 
 
-# ---------------------------------------------------------------- fan-out: tests/affected, cached by blob
+# ---------------------------------------------------------------- fan-out: tests/affected's selection
 
 
 def candidates(text):
@@ -401,8 +403,8 @@ def pins(text, invariants):
 
 
 def repo_scan(top):
-    """{"suites": {suite: [names it covers]}, "helpers", "invariants", "dead": {suite: [paths]}, "pins": {suite: n},
-    "slow": [suites]} as share/affected-suites.sh reads tests/, over every repo file basename."""
+    """{"suites": [suites], "invariants": [basenames shared-invariants.md holds], "dead": {suite: [paths]},
+    "pins": {suite: n}, "slow": [suites]} of a repo's tests/."""
     folder = os.path.join(top, "tests")
     try:
         entries = sorted(os.listdir(folder))
@@ -412,9 +414,7 @@ def repo_scan(top):
     listed = git(top, "ls-files")
     known = set(listed.split("\n")) if listed is not None else set()
     names = {os.path.basename(p) for p in known if p}
-    helpers = {n: candidates(read(os.path.join(folder, n))) & names for n in files
-               if not n.startswith(("test_", "e2e_"))}
-    out = {"suites": {}, "dead": {}, "invariants": [], "pins": {},
+    out = {"suites": [], "dead": {}, "invariants": [], "pins": {},
            "slow": sorted(set(read(os.path.join(top, SLOW)).split()))}
     invariants = os.path.join(top, "docs", "shared-invariants.md")
     if os.path.isfile(invariants) and os.path.isfile(os.path.join(folder, "test_consistency.sh")):
@@ -424,11 +424,7 @@ def repo_scan(top):
                 name.endswith(".sh")) or name in LIVE:
             continue
         text = read(os.path.join(folder, name))
-        seen = candidates(text) & names
-        for helper, words in helpers.items():
-            if helper in text:
-                seen |= words
-        out["suites"][name] = sorted(seen | {name})
+        out["suites"].append(name)
         gone = gone_refs(top, text, known)
         if gone:
             out["dead"][name] = gone
@@ -463,14 +459,23 @@ def scans(tops, cache, write):
     return out
 
 
-def covering(scan):
-    """{basename: [suites]} from a scan."""
-    out = collections.defaultdict(set)
-    for suite, names in scan["suites"].items():
-        for name in names:
-            out[name].add(suite)
-    for name in scan["invariants"]:
-        out[name].add("test_consistency.sh")
+def pulls(top, scan, paths, held, now, cache=None):
+    """{path: frozenset of suites tests/affected selects for it}: share/suite_select.py's choice, plus test_consistency
+    for a name shared-invariants.md holds; kept in cache[top] while HEAD, the ledger's days, the paths and both readers
+    are unchanged."""
+    key = hashlib.sha1("\n".join([read(os.path.abspath(__file__)), read(os.path.abspath(suite_select.__file__)),
+                                  git(top, "rev-parse", "HEAD") or "", str(held.get("through")),
+                                  time_budget.local_day(now)] + list(paths)).encode()).hexdigest()
+    entry = (cache or {}).get(top)
+    kept = entry.get("pulls") if isinstance(entry, dict) else None
+    if isinstance(kept, dict) and kept.get("key") == key:
+        return {path: frozenset(suites) for path, suites in kept["sets"].items()}
+    out = {}
+    for path, c in suite_select.select(top, paths, scan["suites"], now, held).items():
+        out[path] = frozenset(c["own"] | c["evidence"] | c["fallback"] |
+                              ({"test_consistency.sh"} if os.path.basename(path) in scan["invariants"] else set()))
+    if isinstance(entry, dict):
+        entry["pulls"] = {"key": key, "sets": {path: sorted(suites) for path, suites in out.items()}}
     return out
 
 
@@ -485,11 +490,14 @@ def changes(top, lo):
     return stamps, paths
 
 
-def fan_out(tops, scanned, rows, heavy, lo, hi):
-    """The changed files whose tests/affected pull costs the most suite minutes a day, priced from the targeted runs
-    that held every suite the file pulls (each run to the widest such file), on suites no heavy row prices; every
-    commit time and {top: {path: commits}}."""
+def fan_out(tops, scanned, rows, heavy, held, lo, hi, cache=None):
+    """The changed files whose tests/affected selection (share/suite_select.py) costs the most suite minutes a day. A
+    targeted run prices a file when it held HELD_SHARE of the suites the file selects (a worker drops the slow layer);
+    each of its execs goes to one such file selecting it, the one most like the run (shared suites over joint), the
+    narrowest on a tie: no exec is priced twice. Minutes on suites a heavy row prices are shown apart; `zero_min_day`
+    is the part on suites with no catch over the catch window. Every commit time and {top: {path: commits}}."""
     files, landed, edits = [], [], {}
+    caught = test_catches.summary(held, hi, suite_select.CATCH_D)[1]
     for top in tops:
         stamps, paths = changes(top, lo)
         landed += stamps
@@ -497,36 +505,46 @@ def fan_out(tops, scanned, rows, heavy, lo, hi):
         scan = scanned.get(top)
         if not scan:
             continue
-        repo, cover = os.path.basename(top.rstrip("/")), covering(scan)
-        pulled = {}
-        for path, count in paths.items():
-            suites = frozenset(cover.get(os.path.basename(path), ()))
-            if suites and os.path.exists(os.path.join(top, path)):
-                pulled[path] = (suites, count)
-        found = {path: {"repo": repo, "top": top, "path": path, "changes": count, "suites": len(suites), "runs": 0,
-                        "wall_s": 0.0, "heavy_s": 0.0} for path, (suites, count) in pulled.items()}
-        parts = {path: ([], []) for path in found}
-        sets = collections.defaultdict(list)
+        repo = os.path.basename(top.rstrip("/"))
+        changed = sorted(p for p in paths if os.path.exists(os.path.join(top, p)))
+        pulled = {p: suites for p, suites in pulls(top, scan, changed, held, hi, cache).items() if suites}
+        pulling = collections.defaultdict(list)
+        for p, suites in pulled.items():
+            for name in suites:
+                pulling[name].append(p)
+        zero = {n for n in scan["suites"] if "%s/%s" % (repo, os.path.splitext(n)[0]) not in caught}
+        found = {p: {"repo": repo, "top": top, "path": p, "changes": paths[p], "suites": len(suites),
+                     "zero_suites": len(suites & zero), "runs": 0, "wall_s": 0.0, "heavy_s": 0.0}
+                 for p, suites in pulled.items()}
+        parts = {p: ([], [], []) for p in found}
         for r in rows:
-            if r["repo"] == repo and r["kind"] == "suites" and r["scope"] in TARGETED and lo <= r["end"] < hi:
-                sets[frozenset(e["name"] for e in r["execs"])].append(r)
-        widest = sorted(pulled.items(), key=lambda kv: (-len(kv[1][0]), -kv[1][1], kv[0]))
-        for held, runs in sets.items():
-            owner = next((path for path, (suites, _) in widest if suites <= held), None)
-            if owner is None:
+            if r["repo"] != repo or r["kind"] != "suites" or r["scope"] not in TARGETED or not lo <= r["end"] < hi:
                 continue
-            f, suites = found[owner], pulled[owner][0]
-            f["runs"] += len(runs)
-            for r in runs:
-                for e in r["execs"]:
-                    if e["name"] in suites:
-                        is_heavy = (repo, e["name"]) in heavy
-                        f["heavy_s" if is_heavy else "wall_s"] += e["cost"].get("work", 0.0)
-                        parts[owner][is_heavy].append((e["end"], e["cost"].get("work", 0.0)))
-        for path, f in found.items():
+            ran = {e["name"] for e in r["execs"]}
+            shared = collections.Counter(p for name in ran for p in pulling.get(name, ()))
+            like = {p: n / float(len(pulled[p]) + len(ran) - n) for p, n in shared.items()
+                    if n >= HELD_SHARE * len(pulled[p])}
+            owning, owners = {}, set()
+            for p in sorted(like, key=lambda p: (-like[p], len(pulled[p]), -paths[p], p)):
+                for name in pulled[p] & ran:
+                    owning.setdefault(name, p)
+            for e in r["execs"]:
+                owner = owning.get(e["name"])
+                if owner is None:
+                    continue
+                owners.add(owner)
+                is_heavy, work = (repo, e["name"]) in heavy, e["cost"].get("work", 0.0)
+                found[owner]["heavy_s" if is_heavy else "wall_s"] += work
+                parts[owner][is_heavy].append((e["end"], work))
+                if not is_heavy and e["name"] in zero:
+                    parts[owner][2].append((e["end"], work))
+            for owner in owners:
+                found[owner]["runs"] += 1
+        for p, f in found.items():
             f.update(suite_min=round((f["wall_s"] + f["heavy_s"]) / 60.0 / f["runs"], 1) if f["runs"] else 0.0,
-                     min_day=round(per_day(parts[path][False], hi) / 60.0, 1),
-                     heavy_min_day=round(per_day(parts[path][True], hi) / 60.0, 1),
+                     min_day=round(per_day(parts[p][0], hi) / 60.0, 1),
+                     heavy_min_day=round(per_day(parts[p][1], hi) / 60.0, 1),
+                     zero_min_day=round(per_day(parts[p][2], hi) / 60.0, 1),
                      usual_min_day=round(f["wall_s"] / 60.0 / STATS_D, 1))
             files.append(f)
     files.sort(key=lambda f: (-f["min_day"], -f["runs"], -f["suites"], f["path"]))
@@ -670,14 +688,16 @@ def findings(window, suites, files, now, born, since=lambda target: None, histor
                            len({id(e["row"]) for e in serial}), days(serial),
                            "%d multi-suite runs on one slot, their suites one after another" % len(
                                {id(e["row"]) for e in serial}), ["llm-legs/share/run-suites.sh"]))
-    for f in files[:3]:
-        if f["runs"]:
-            out.append(finding("fan-out", "fan-out/%s/%s" % (f["repo"], f["path"]), f["min_day"] * 60.0, 0.0, f["runs"],
-                               STATS_D, "%s · %s: %d suites, %d targeted runs held them all (%s suite-min a run), "
-                               "%d changes in %d days; +%s min/day on heavy suites priced there" % (
-                                   f["path"], f["repo"], f["suites"], f["runs"], plain(f["suite_min"]), f["changes"],
-                                   STATS_D, plain(f["heavy_min_day"])),
-                               ["llm-legs/share/affected-suites.sh", "%s/%s" % (f["repo"], f["path"])], "estimated"))
+    for f in sorted((f for f in files if f["suites"] > 1), key=lambda f: (-f["zero_min_day"], f["path"]))[:3]:
+        if f["zero_min_day"] > 0:
+            out.append(finding("fan-out", "fan-out/%s/%s" % (f["repo"], f["path"]), f["zero_min_day"] * 60.0, 0.0,
+                               f["runs"], STATS_D, "%s · %s: selects %d suites, %d with no catch in %d days, %s of "
+                               "its %s min/day on them over %d targeted runs, %d changes in %d days; +%s min/day on "
+                               "heavy suites priced there" % (
+                                   f["path"], f["repo"], f["suites"], f["zero_suites"], suite_select.CATCH_D,
+                                   plain(f["zero_min_day"]), plain(f["min_day"]), f["runs"], f["changes"], STATS_D,
+                                   plain(f["heavy_min_day"])),
+                               ["llm-legs/share/suite_select.py", "%s/%s" % (f["repo"], f["path"])], "estimated"))
     return out
 
 
@@ -729,10 +749,12 @@ def block(now, normal, stats, files, found, queued, hours, catches):
         elif key == "per_change":
             emit(2, "%5d changes landed in %d h" % (now["landed"], round(hours)), "d")
         elif key == "targeted" and files:
-            emit(2, "suites  runs  suite-min  changes  min/day  file · median day of %d" % STATS_D, "d")
+            emit(2, "suites  uncaught  runs  suite-min  changes  min/day  uncaught  file · median day of %d" % STATS_D,
+                 "d")
             for f in files[:SHOWN]:
-                emit(2, "%6d %5d %10s %8d %8s  %s · %s" % (f["suites"], f["runs"], plain(f["suite_min"]), f["changes"],
-                                                           plain(f["min_day"]), f["path"], f["repo"]), "d")
+                emit(2, "%6d %9d %5d %10s %8d %8s %9s  %s · %s" % (
+                    f["suites"], f["zero_suites"], f["runs"], plain(f["suite_min"]), f["changes"], plain(f["min_day"]),
+                    plain(f["zero_min_day"]), f["path"], f["repo"]), "d")
         elif key in ("idle", "pole"):
             shown = sorted(rows["idle"] if key == "idle" else rows["pole"] + rows["serial"], key=lambda f: -f["min_day"])
             if shown:
@@ -800,11 +822,15 @@ def collect(now, journal, tops=None, write=False, lo=None, since=lambda target: 
     allocate(rows, stats, statistics.median(multi) if multi else 1)
     heavy = heavy_keys(window, now, born)
     cache = time_budget.read_json(cache_path(), {})
-    scanned = scans(tops, cache if isinstance(cache, dict) else {}, write)
-    files, landed, edits = fan_out(tops, scanned, rows, heavy, stats_lo, now)
+    cache = cache if isinstance(cache, dict) else {}
+    scanned = scans(tops, cache, write)
+    held = test_catches.fold(now, journal, write)
+    before = json.dumps(cache, sort_keys=True)
+    files, landed, edits = fan_out(tops, scanned, rows, heavy, held, stats_lo, now, cache)
+    if write and json.dumps(cache, sort_keys=True) != before:
+        time_budget.write_json(cache_path(), {k: v for k, v in cache.items() if k in scanned})
     current = measure(rows, recent, landed, lo, now)
     normal, days = usual(rows, recent, landed, now, current)
-    held = test_catches.fold(now, journal, write)
     listed = suite_audit.suites(tops)
     queued = dict(test_catches.uncaught(held, listed, now), **pinned(tops, scanned, stats, edits))
     queued.update(dead(tops, scanned, execs, journal_lo, now))
