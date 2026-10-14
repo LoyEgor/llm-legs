@@ -38,7 +38,6 @@ surfaces() { # name vendor walled [window shown-epoch status-epoch guess-label]
   local shown='' pick_shown='' status picked rendered format line2 pids=()
   status_label=$(reset_label "${6-$reset}")
   [ -z "$shown_at" ] || { shown=$(date -r "$shown_at" +%H:%M); pick_shown=$(reset_label "$shown_at"); }
-  picked=$(WORKER_PICK_NOW="$now" bash "$ROOT/bin/worker-pick" --all 2>/dev/null | grep "^$vendor:")
   if [ "$vendor" = codex ]; then
     status=$(printf '%s' '{"model":{"display_name":"GPT"},"context_window":{"used_percentage":1}}' |
       CLAUDEGPT_ACCOUNT=main STATUSLINE_NOW="$now" COLUMNS= bash "$ROOT/bin/statusline.sh")
@@ -47,7 +46,20 @@ surfaces() { # name vendor walled [window shown-epoch status-epoch guess-label]
       STATUSLINE_NOW="$now" COLUMNS= bash "$ROOT/bin/statusline.sh")
   fi
   line2=$(sed -n '2p' <<<"$status" | sed $'s/\033\[[0-9;]*m//g')
+  WORKER_PICK_NOW="$now" bash "$ROOT/bin/worker-pick" --all 2>/dev/null >"$WORK/render.pick" &
+  pids[${#pids[@]}]=$!
+  for format in json table plain; do
+    bash "$SCRIPT" --"$format" --no-write >"$WORK/render.$format" &
+    pids[${#pids[@]}]=$!
+  done
   check absent walled "$status"
+  wait "${pids[0]}"
+  pids=("${pids[@]:1}")
+  for format in json table plain; do
+    wait "${pids[0]}" || fail "$name: render $format"
+    pids=("${pids[@]:1}")
+  done
+  picked=$(grep "^$vendor:" "$WORK/render.pick")
   if [ "$walled" = true ]; then
     check present "$window 100%" "$line2"
     if [ "$window" = 5h ] && [ -n "$shown" ]; then check present "5h 100% $shown" "$line2"
@@ -61,14 +73,6 @@ surfaces() { # name vendor walled [window shown-epoch status-epoch guess-label]
     check absent "$guess" "$line2"
     check absent "$guess" "$picked"
   fi
-  for format in json table plain; do
-    bash "$SCRIPT" --"$format" --no-write >"$WORK/render.$format" &
-    pids[${#pids[@]}]=$!
-  done
-  for format in json table plain; do
-    wait "${pids[0]}" || fail "$name: render $format"
-    pids=("${pids[@]:1}")
-  done
   for format in json table plain; do
     rendered=$(<"$WORK/render.$format")
     [ "$format" = json ] || rendered=$(grep "^$vendor" <<<"$rendered")
