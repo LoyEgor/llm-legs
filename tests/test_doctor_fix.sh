@@ -239,6 +239,29 @@ jq '.rows = [{id: "R1", fixes: [{at: "2026-09-01T00:00:00+00:00", by: "c", files
   "$WORK/ledger-kept" >"$WORK/ledgers/llm.json"
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
 assert grep -qxF "ledger $WORK/ledgers/llm.json: row R1 fixes[0] files bin/x name no repository under $WORK/projects: every fix file is repo/path" "$WORK/err"
+# An adhoc tool lands only with its bench: the tool at most the ad-hoc median's wall and output bytes.
+adhoc_ledger() { # bench json; R2 keeps the run open whatever R1 reads
+  jq --argjson b "$1" '.rows = [{id: "R1", match: {rule: "opportunity", ident: "adhoc/ledger-query"}, fixes: [{at: "2026-09-01T00:00:00+00:00",
+    by: "c", files: ["llm-legs/bin/x"], in: null, regressed_at: null} + (if $b == null then {} else {bench: $b} end)]},
+    {id: "R2", fixes: [{at: "2026-09-01T00:00:00+00:00", by: "c", files: ["llm-legs/bin/x"], in: null}]}]' \
+    "$WORK/ledger-kept" >"$WORK/ledgers/llm.json"
+}
+bench='{"command": "\\bbin/x\\b", "hint_b": 120, "calls": "the two quoted calls on harness", "adhoc_wall_s": 0.4, "adhoc_out_b": 900, "tool_wall_s": 0.1, "tool_out_b": 300}'
+adhoc_ledger null
+assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
+assert grep -qF "ledger $WORK/ledgers/llm.json: row R1 fixes[0]: no bench {command, hint_b, calls, adhoc_wall_s, adhoc_out_b, tool_wall_s, tool_out_b}: an adhoc fix lands only with its bench" "$WORK/err"
+adhoc_ledger "$(jq -c '.tool_wall_s = 0.9' <<<"$bench")"
+assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
+assert grep -qF "row R1 fixes[0]: the tool's wall 0.9 s is over the ad-hoc median's 0.4 s" "$WORK/err"
+adhoc_ledger "$(jq -c '.tool_out_b = 5000' <<<"$bench")"
+assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
+assert grep -qF "row R1 fixes[0]: the tool prints 5000 bytes, over the ad-hoc median's 900, with no reason" "$WORK/err"
+adhoc_ledger "$(jq -c '.tool_out_b = 5000 | .reason = "the rows carry their notes, which the job reads"' <<<"$bench")"
+assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
+assert_fails grep -qF "row R1 fixes[0]" "$WORK/err" && assert grep -qF "row R2 fixes[0] lacks regressed_at" "$WORK/err"
+adhoc_ledger "$bench"
+assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
+assert_fails grep -qF "row R1 fixes[0]" "$WORK/err" && assert grep -qF "row R2 fixes[0] lacks regressed_at" "$WORK/err"
 cp "$WORK/ledger-kept" "$WORK/ledgers/llm.json"
 # A day run's markdown is net zero against its own base, like a night run's; the main checkout's is not the run's.
 printf '%0500d\n' 0 >"$WT2/DAY.md"

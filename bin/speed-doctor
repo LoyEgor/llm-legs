@@ -54,7 +54,8 @@ PROOF = {"latency": "paired replay, >= 200 pairs, then 3 band-matched days", "fr
          "elimination": "zero occurrences and a parent drop", "contention": "probe slowdown at matched load",
          "tail": "attended aggregate and p95", "tests": "suite CPU-s per (suite set, sha), 3 complete runs",
          "orchestration": "fixture replay plus the passive window", "media": "offline local-phase benches",
-         "adoption": "the cluster's calls per 1000 Bash calls after landing at most %s of before" % tool_mining.ADOPTED}
+         "net": "the job's minutes and tokens per 1000 Bash calls (residual ad-hoc calls, substitutes, the tool's calls, "
+                "the hint once a session), load-matched, both below before"}
 OUTPUT_PROOF = "identical decisions or results on the replay, recorded as the fix's equivalence {compared, data, result}"
 LEVERS = [
     {"component": "chat/hooks", "lever": "provable-absence fast path for the hook setting the Pre-Bash floor",
@@ -175,7 +176,7 @@ TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "
     "fan-out": {"lever": "tests/affected pulls only the suites that exercise the file", "saving": 0.3,
                 "confidence": "estimated", "proof": "orchestration"}}.items()}
 ADHOC_LEVERS = {k: {"component": "adhoc/" + k, "lever": v, "effort": "S", "confidence": "measured", "saving": 1.0,
-                    "night_cost_h": 0.0, "proof": "adoption", "quality": "equivalent"} for k, v in {
+                    "night_cost_h": 0.0, "proof": "net", "quality": "equivalent"} for k, v in {
     "tool": "a command for the job, its hint where the script would start",
     "hint": "the hint toward the tool that already does the job, where the script would start"}.items()}
 ADHOC_WHAT = {"tool": "ad-hoc scripts · build one command for the job: %s · then its hint",
@@ -982,6 +983,36 @@ def test_regressions(tests, ledger, now):
     return out
 
 
+def net_line(target, n):
+    if n["state"] == "pending":
+        return "%s · pending · %d days before, %d after" % (target, n["days"][0], n["days"][1])
+    return "%s · %s → %s min/day · saves %s · cost ×%s%s · %s" % (
+        target, fmt(n["min_before"]), fmt(n["min_after"]), fmt(n["saved_min_day"]),
+        "–" if n["cost"] is None else n["cost"], " · load ×%s" % n["load"] if n["load"] != 1.0 else "", n["state"])
+
+
+def adhoc_regressions(adhoc, ledger, now):
+    """A landed adhoc fix whose job now costs more minutes or tokens than its scripts did (tool_mining.net) as a
+    regression row the night fixes or cuts, its expected gain the minutes a day over before."""
+    out = []
+    for target, n in sorted((adhoc.get("net") or {}).items()):
+        if n["state"] != "worse":
+            continue
+        row = H.ledger_row(ledger, "regression", target)
+        out.append({"id": row["id"] if row else "regression:%s" % target, "rule": "regression",
+                    "state": H.ledger_state(row, 48, now), "fact": "tool worse than its scripts: " + net_line(target, n),
+                    "value": n["min_after"], "limit": n["min_before"], "unit": "min/day", "window_h": 24,
+                    "exposure": None, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
+                    "ledger": row["id"] if row else None, "group": "adhoc", "component": target,
+                    "expected_min_day": max(0.0, -n["saved_min_day"]), "band": "before", "ident": target})
+    return out
+
+
+def last_bench(ledger, target):
+    fixes = (H.ledger_row(ledger, "opportunity", target) or {}).get("fixes") or ()
+    return next((f["bench"] for f in reversed(fixes) if isinstance(f, dict) and isinstance(f.get("bench"), dict)), None)
+
+
 def moved_opportunities(component_om, days, now, covered=WINDOW_D):
     """The heavy-test and hot-hook rules bin/code-doctor judged until 2026-10-03: one opportunity per suite or hook,
     priced at its share of the attended test or hook minutes. A suite whose keep row or head names a requirement
@@ -1310,10 +1341,12 @@ def collect(write, now):
         o for o in test_opportunities(tests) if o["opportunity"]["om_day"] >= LIMITS["worth_om_day"]]
     problems += test_regressions(tests, ledger, now)
     try:
-        adhoc = tool_mining.collect(now, write, since=lambda target: landed_end(ledger, target))
+        adhoc = tool_mining.collect(now, write, since=lambda target: landed_end(ledger, target),
+                                    bench=lambda target: last_bench(ledger, target))
     except Exception as exc:
-        adhoc = {"status": "error", "head": H.error_line(exc), "findings": [], "adoption": {}}
+        adhoc = {"status": "error", "head": H.error_line(exc), "findings": [], "net": {}}
     opportunities += adhoc_opportunities(adhoc)
+    problems += adhoc_regressions(adhoc, ledger, now)
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
     why = {}
@@ -1481,9 +1514,8 @@ def menu_lines(document):
         sum(f["calls"] for f in adhoc.get("findings") or ()), adhoc.get("bash_calls") or 0, adhoc.get("scan_s"))
          if "bash_calls" in adhoc else
          "Ad-hoc scripts: " + str(adhoc.get("head") or "not measured"), red=adhoc.get("status") == "error")
-    for target, a in sorted((adhoc.get("adoption") or {}).items()):
-        emit(1, "%s · per 1000 Bash calls %s → %s · %s" % (target, a["before"] if a["before"] is not None else "–",
-                                                          a["after"] if a["after"] is not None else "–", a["state"]), "d")
+    for target, n in sorted((adhoc.get("net") or {}).items()):
+        emit(1, net_line(target, n), "d", red=n["state"] == "worse")
     last = document["night"]["last"]
     emit(0, "Night: last %s · first landing %s" % (hours(last["wall_h"]), hours(last["first_landing_h"]))
          if last else "Night: no finished night")

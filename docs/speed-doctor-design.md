@@ -126,10 +126,10 @@ its first journaled run falls inside the seven. Each row's wall splits once (`al
 sum past the wall. Nothing here deletes a test: dead and pinned suites go to Suite audits' queue.
 
 **Tool mining** (`share/tool_mining.py`, Speed's `adhoc` key). Once a local day (~3 s) it clusters the day's ad-hoc
-Bash scripts (chats, subagents, workers, codex) by the first `CLUSTERS` pattern matched. Cost: writing (characters at
-the measured write rate) + calls × median exec. Over `FLOOR_MIN_DAY` writing min/day (a 1 h fix repaid in 7 days) in ≥
-3 sessions: `opportunity:adhoc/<key>`, saving its writing: a command plus hint, or the hint alone where `covered_by`
-names a tool. Proof (`speed_proof`): calls per 1000 Bash calls after landing ≤ `ADOPTED` × before.
+Bash scripts by the first `CLUSTERS` pattern matched. Cost: writing (chars at the measured write rate) + calls × median
+exec. Over `FLOOR_MIN_DAY` writing min/day in ≥ 3 sessions: `opportunity:adhoc/<key>`, a command plus hint, or the hint
+alone where `covered_by` names a tool. A fix lands only with a bench (`bench_faults`). Proof (`net`): job min and tokens
+per 1000 Bash calls both below before; worse in either: `regression:adhoc/<key>`.
 
 **ROI** (`night-run report`, `roi ·` lines; the mechanics are `share/time_budget.py`'s). Each Speed or time row of a
 fixer job is an improvement of its own, with an even share of the job's spend. A gain is proven per unit against
