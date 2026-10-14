@@ -9856,6 +9856,274 @@
       "reviewed_by": "night tool-ideas 20261014T013750Z-8004",
       "note": "Evidence: ~/.claude/projects transcripts 2026-10-07..14: 371 tests/run-all calls whose previous call was a separate tests/affected = 53 pairs/day (30 d: 486 pairs, 2232 affected calls); folding each into one call saves a turn (4.8 s median gap, 3.7 s for these pairs) plus the separate exec (tests/affected 0.46 s here): 53 x 5.3 s = 4.6 min/day. The two-step form is what the worker preamble and the night briefs spell ('tests/affected <file>... lists them', 'Run the suites tests/affected names in one tests/run-all call'). Build: share/run-suites.sh --affected takes file paths, calls the repo's tests/affected (reuse, no second heuristic; its slow-layer skip notice passes through) and proceeds as a named run; the preamble and brief wording name the flag instead of the pair. Proof: test_run_suites_* fixture: --affected on a file runs exactly tests/affected's suites; Speed counts affected->run-all pairs per 1000 suite runs before against after, net of the wording bytes.",
       "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_agy_quota",
+      "title": "test_agy_quota · llm-legs: 8 worker Bash timeouts at 120-205 s while still queued for a run-suites slot",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_agy_quota"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T07:58:48+03:00",
+          "by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: 8 rows 2026-10-13 06:09-06:24 (pids 44362..32872), 120-205 s, cpu 0.01-1.8 s, slot null; worker claudeb-1791857509-61134-1111 ran the suite in a loop while the slots were full (its other waits that hour 44-441 s, reason limit/room); a slot-free run is 2.5 s wall, 0.7 s cpu (median of 29).",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_gemini_quota_detect",
+      "title": "test_gemini_quota_detect · llm-legs: a worker Bash timeout at 181 s while still queued for a run-suites slot",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_gemini_quota_detect"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T07:58:48+03:00",
+          "by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: pid 43097 2026-10-13 14:50, 181 s, cpu 0.01 s, slot null, worker claudeb-1791886469-48437-215f, whose other suite waits that hour ran 6-523 s (reason limit).",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_grok_quota",
+      "title": "test_grok_quota · llm-legs: a worker Bash timeout at 600 s while still queued for a run-suites slot",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_grok_quota"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T07:58:48+03:00",
+          "by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: pid 91987 2026-10-13 12:46:30-12:56:30, 600 s, cpu 20.9 s (more than a full run's max 13.6 s: the slot wait's polling at load 120-160 costs ~16-35 ms CPU a second, 6.6 s over 400 s measured on test_harness_doctor's), slot null; the same worker's next run queued 101 s (wait row 12:56:45) and then ran in 2 s.",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_harness_doctor",
+      "title": "test_harness_doctor · llm-legs: two worker Bash timeouts (599 s, 400 s) while still queued for a run-suites slot",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_harness_doctor"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T07:58:48+03:00",
+          "by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: pids 9982 (599 s, cpu 0.01 s) and 64289 (400 s, cpu 6.5 s) 2026-10-13 05:56-06:25, slot null; the worker's transcript shows 'run-suites: waiting for one of 3-4 slots' and '1.80s user 4.81s system 1% cpu 6:40.62 total' for the second at load 122-161.",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_ledger_untouched",
+      "title": "test_ledger_untouched · llm-legs: a worker Bash timeout at 147 s while still queued for a run-suites slot",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_ledger_untouched"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T07:58:48+03:00",
+          "by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: pid 73980 2026-10-13 15:31, 147 s, cpu 0.01 s, slot null, worker claudeb-1791892934-72412-4ba7, whose suite waits that hour ran 17-199 s (reason limit).",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_media_run",
+      "title": "test_media_run · llm-legs: a worker Bash timeout at 300 s while still queued for a run-suites slot",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_media_run"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T07:58:48+03:00",
+          "by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: pid 31866 2026-10-13 12:47:41-12:52:41, 300 s, cpu 10.3 s, slot null; the worker (claudeb-1791883918-97130-4ad3) then exported SUITE_JOURNAL_PID to skip the slot and the same run (its mutation check on the old bin/media-run) finished in 13 s; its two earlier runs printed 'waiting for one of 3-4 slots' and queued 55 s and 110 s.",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_doctors_menu",
+      "title": "test_doctors_menu · llm-legs: a 1500 s Bash timeout queued for a run-suites slot, and two 600 s waits on /tmp/hs-cli.lock",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_doctors_menu"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T07:58:48+03:00",
+          "by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: direct pid 75543 2026-10-13 13:42-14:07, 1500 s, cpu 0.008 s, slot null, worker claudeb-1791886457-36284-44c8 (its suite waits that hour 37-830 s, reason limit): fixed by 6b095a8a. The two 600 s rows inside run-suites runs 63792 and 75960 (cpu 0.6 s, rc 1) are the /tmp/hs-cli.lock holder of rows test_hang-llm-legs-test_presence and its siblings, ruled out there. Rerun 2026-10-14 with the lock free: 3 s, 313 checks.",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_store_lock",
+      "title": "test_store_lock · llm-legs: two racing stale-lock breakers both held the lock, and the winners waited out 120 s",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_store_lock"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T07:58:48+03:00",
+          "by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+          "files": [
+            "llm-legs/share/store-lock.sh",
+            "llm-legs/tests/test_store_lock.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Run 41185 (2026-10-13 17:18-17:20, full run, load ~150): 136 s, cpu 22.6 s, rc 1, log 'racing waiters did not settle on a single stale-lock winner'; every racer prints enter or lost, so 136 s means two entered and each waited its 120 s for a third 'lost'. The cause is store_lock_acquire's rename-aside break: a breaker that judged the old lock stale could mv a racer's live newborn aside and put it back only onto a free path, and a newcomer's mkdir in that gap took the lock while the racer still held it (rm -rf of the captured newborn). 6b095a8a breaks under <lock>.break and re-judges the lock in place; the capture case now adds a newcomer mid-break (red on the old code: 'lost its owner to a newcomer: two holders'), the winners stop once all 4 racers resolved, and cleanup kills the sleep 600 owners (a failed assert kept a caller's | tail pipe open 10 min). 5 consecutive runs at load 160 passed; 11 checks.",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_dia_js",
+      "title": "test_dia_js · llm-legs: 614 s waiting on /tmp/hs-cli.lock behind a foreign hs client",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_dia_js"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: the suite waited its 600 s lockf bound on /tmp/hs-cli.lock and failed, cpu under 2.2 s. The holder was no suite: chat doctors-regroup's ad-hoc `lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c \"return loadfile([[/tmp/regroup-mut/live.lua]])(...)\"` (2026-10-13 12:54:13Z, its Bash call killed by its 25-min timeout 13:19:15Z; `hs -t 10 -c 'return 1+1'` answered in 3.2 s right after), which also cost run 63792's test_doctors_menu 600 s. Why that client outlived its -t 120 is unsettled: its Bash stdin is probably /dev/null (this worker's is), and its next call, same live.lua with fixture paths, returned in 1.6 s. Ruled out here: killing a holder past its -t from a waiter (a client killed while Hammerspoon still runs its command is the SIGTRAP crash of system-ledger hammerspoon-crash), and failing fast on such a holder (a waiter queued before the holder passed its bound still fails past 5x its usual and reads as a hang). Rerun 2026-10-14 with the lock free: 6 s, 51 asserts. Run 75960, 2026-10-13 15:58-16:08 local: wall 615 s, cpu 2.2 s, lockf wait ~600 s.",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_e2e_isolated",
+      "title": "test_e2e_isolated · llm-legs: 600 s waiting on /tmp/hs-cli.lock behind a foreign hs client",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_e2e_isolated"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: the suite waited its 600 s lockf bound on /tmp/hs-cli.lock and failed, cpu under 2.2 s. The holder was no suite: chat doctors-regroup's ad-hoc `lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c \"return loadfile([[/tmp/regroup-mut/live.lua]])(...)\"` (2026-10-13 12:54:13Z, its Bash call killed by its 25-min timeout 13:19:15Z; `hs -t 10 -c 'return 1+1'` answered in 3.2 s right after), which also cost run 63792's test_doctors_menu 600 s. Why that client outlived its -t 120 is unsettled: its Bash stdin is probably /dev/null (this worker's is), and its next call, same live.lua with fixture paths, returned in 1.6 s. Ruled out here: killing a holder past its -t from a waiter (a client killed while Hammerspoon still runs its command is the SIGTRAP crash of system-ledger hammerspoon-crash), and failing fast on such a holder (a waiter queued before the holder passed its bound still fails past 5x its usual and reads as a hang). Rerun 2026-10-14 with the lock free: 2 s. Run 75960: wall 600 s, cpu 0.08 s, lockf wait 600 s.",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_presence",
+      "title": "test_presence · llm-legs: 600 s waiting on /tmp/hs-cli.lock behind a foreign hs client",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_presence"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: the suite waited its 600 s lockf bound on /tmp/hs-cli.lock and failed, cpu under 2.2 s. The holder was no suite: chat doctors-regroup's ad-hoc `lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c \"return loadfile([[/tmp/regroup-mut/live.lua]])(...)\"` (2026-10-13 12:54:13Z, its Bash call killed by its 25-min timeout 13:19:15Z; `hs -t 10 -c 'return 1+1'` answered in 3.2 s right after), which also cost run 63792's test_doctors_menu 600 s. Why that client outlived its -t 120 is unsettled: its Bash stdin is probably /dev/null (this worker's is), and its next call, same live.lua with fixture paths, returned in 1.6 s. Ruled out here: killing a holder past its -t from a waiter (a client killed while Hammerspoon still runs its command is the SIGTRAP crash of system-ledger hammerspoon-crash), and failing fast on such a holder (a waiter queued before the holder passed its bound still fails past 5x its usual and reads as a hang). Rerun 2026-10-14 with the lock free: 0 s, 28 checks. Run 75960: wall 600 s, cpu 0.09 s, lockf wait 600 s.",
+      "handoff": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_token_tracking_menu",
+      "title": "test_token_tracking_menu · llm-legs: 600 s waiting on /tmp/hs-cli.lock behind a foreign hs client",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_token_tracking_menu"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
+      "note": "Not a suite hang: the suite waited its 600 s lockf bound on /tmp/hs-cli.lock and failed, cpu under 2.2 s. The holder was no suite: chat doctors-regroup's ad-hoc `lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c \"return loadfile([[/tmp/regroup-mut/live.lua]])(...)\"` (2026-10-13 12:54:13Z, its Bash call killed by its 25-min timeout 13:19:15Z; `hs -t 10 -c 'return 1+1'` answered in 3.2 s right after), which also cost run 63792's test_doctors_menu 600 s. Why that client outlived its -t 120 is unsettled: its Bash stdin is probably /dev/null (this worker's is), and its next call, same live.lua with fixture paths, returned in 1.6 s. Ruled out here: killing a holder past its -t from a waiter (a client killed while Hammerspoon still runs its command is the SIGTRAP crash of system-ledger hammerspoon-crash), and failing fast on such a holder (a waiter queued before the holder passed its bound still fails past 5x its usual and reads as a hang). Rerun 2026-10-14 with the lock free: 1 s. Run 75960: wall 600 s, cpu 0.08 s, lockf wait 600 s.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -10184,7 +10452,7 @@
     {
       "id": "hs-cli-lock-holder-outside-run-all",
       "what": "a live-hs suite run directly (bash tests/test_x.sh from an agent shell) that blocks while holding /tmp/hs-cli.lock",
-      "reason": "hs -c reads a non-tty stdin to EOF; run-suites gives /dev/null but an agent shell's stdin is an open socket, so the client never exits and every live-hs suite on the machine waits in lockf (2026-10-13: a test_compact_boundary client held it 12 min, the waiters' wall showed only as slow suites); hammerspoon test_ipad_mode, test_send_actions, test_handoff, test_display_mirror, test_claude_chat_switch and test_compact_boundary still call hs without </dev/null, test_hs_cli_lock.sh checks the lock only",
+      "reason": "hs -c reads a non-tty stdin to EOF; run-suites gives /dev/null but an agent shell's stdin is an open socket, so the client never exits and every live-hs suite on the machine waits in lockf (2026-10-13: a test_compact_boundary client held it 12 min, the waiters' wall showed only as slow suites); hammerspoon test_ipad_mode, test_send_actions, test_handoff, test_display_mirror, test_claude_chat_switch and test_compact_boundary still call hs without </dev/null, test_hs_cli_lock.sh checks the lock only; 2026-10-13 12:54-13:19Z an ad-hoc `lockf ... hs -t 120 -c` of chat doctors-regroup held it 25 min and six live-hs suites of run 75960 (test_dia_js, test_doctors_menu, test_e2e_isolated, test_hs_env_guard, test_presence, test_token_tracking_menu) failed at their 600 s bound; that client's stdin was probably /dev/null, so stdin is not the only way a holder outlives its -t",
       "since": "2026-10-13",
       "would_catch_if": "test_hs_cli_lock.sh also failed an hs call line without </dev/null, or the lock wait inside lockf were journaled with the holder's command"
     },
