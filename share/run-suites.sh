@@ -13,6 +13,14 @@ if ! eval "$have_wait_n"; then
 fi
 {
 set -u
+# A PATH that finds macOS's python3 (3.9) first (a worker's or launchd's) turns every suite's `X | None` into a
+# TypeError a Homebrew shell never sees: red, then green on the same tree.
+if [ "$(python3 -c 'import sys; print(sys.version_info < (3, 10))' 2>/dev/null)" = True ]; then
+  for modern_dir in /opt/homebrew/bin /usr/local/bin; do
+    [ "$("$modern_dir/python3" -c 'import sys; print(sys.version_info < (3, 10))' 2>/dev/null)" = False ] &&
+      { PATH="$modern_dir:$PATH"; break; }
+  done
+fi
 # Every suite's watcher polls for its whole life: a forked `sleep` per poll, and a killed watcher's
 # in-flight sleep kept the run's output pipe open past its end.
 enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :

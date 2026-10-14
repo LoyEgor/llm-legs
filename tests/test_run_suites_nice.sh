@@ -155,4 +155,16 @@ assert test "$(grep -c 'no python with pytest' <<<"$out")" = 1
 out=$(PATH="$WORK/fakepy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
 assert grep -q '2 PASS' <<<"$out"
 
-printf 'PASS: %s asserts; run-suites runs a worker'\''s or session-less wave at nice 10 and a chat'\''s own run and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B else the main checkout, a python suite runs under a python that imports pytest, and a run leaves its progress pointer only while it lasts\n' "$asserts"
+# A PATH whose python3 is too old for the suites (macOS's 3.9) gets the Homebrew one in front for them.
+mkdir -p "$WORK/oldpy" "$WORK/pyrepo/tests"
+printf '#!/bin/sh\necho True\n' >"$WORK/oldpy/python3"
+chmod +x "$WORK/oldpy/python3"
+printf '#!/usr/bin/env bash\necho "PASS: python=$(command -v python3)"\n' >"$WORK/pyrepo/tests/test_py.sh"
+out=$(PATH="$WORK/oldpy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/pyrepo" 2>&1)
+if [ "$(/opt/homebrew/bin/python3 -c 'import sys; print(sys.version_info < (3, 10))' 2>/dev/null)" = False ]; then
+  assert grep -q 'PASS: python=/opt/homebrew/bin/python3' <<<"$out"
+fi
+out=$(PATH="$WORK/fakepy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/pyrepo" 2>&1)
+assert grep -q 'PASS: python=' <<<"$out"
+
+printf 'PASS: %s asserts; run-suites runs a worker'\''s or session-less wave at nice 10 and a chat'\''s own run and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B else the main checkout, a python suite runs under a python that imports pytest, a python3 older than 3.10 on PATH gets Homebrew'\''s in front, and a run leaves its progress pointer only while it lasts\n' "$asserts"
