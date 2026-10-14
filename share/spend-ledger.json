@@ -2945,36 +2945,36 @@
   {
    "id": "suite:llm-legs/test_time_budget",
    "title": "llm-legs/test_time_budget",
-   "audited_at": "2026-10-13T11:48:11+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-codexb-models-20261012T235256Z-7553",
-   "cpu_run": 0.8,
-   "wall_run": 0.9,
-   "cpu_min_day": 1.21,
-   "wall_min_day": 2.75,
+   "audited_at": "2026-10-14T09:18:54+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-wall-store-20261014T021727Z-2b73",
+   "cpu_run": 0.9,
+   "wall_run": 1.0,
+   "cpu_min_day": 1.67,
+   "wall_min_day": 3.71,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
-    "llm-legs/tests/test_time_budget.sh": "5c8c45ae6e0589d3389480a252ac1ea83e070b8e"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_time_budget.sh": "0b46f048712bb767e57e142f97c67a211d0361e3"
    },
    "verdict": "cut",
-   "zero": "removal saves 1.1 wall-min/day; loses the time budget split, night ledger line and problem-day rows",
-   "note": "in-process problem_day instead of a python3 -c interpreter, no discarded rev-parse in commit(); 81 asserts unchanged, guard mutation red"
+   "zero": "removal saves 1.8 wall-min/day; loses time_budget's ledger, roi, hook-proof and speed-row checks",
+   "note": "night CLI check in-process via T.main, output diffed line for line vs the subprocess; 95 asserts unchanged; CPU 1.07 -> 0.91 s"
   },
   {
    "id": "suite:llm-legs/test_chat_find",
    "title": "llm-legs/test_chat_find",
-   "audited_at": "2026-10-13T11:48:13+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-codexb-models-20261012T235256Z-7553",
-   "cpu_run": 5.7,
+   "audited_at": "2026-10-14T09:18:54+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-wall-store-20261014T021727Z-2b73",
+   "cpu_run": 4.8,
    "wall_run": 4.6,
-   "cpu_min_day": 0.79,
-   "wall_min_day": 1.06,
+   "cpu_min_day": 0.75,
+   "wall_min_day": 1.18,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
-    "llm-legs/tests/test_chat_find.sh": "6229a7e710f21d8cacb015bf986549f1521411c7"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_chat_find.sh": "a42bccc70307f820ac27c28cb029cd6e2347bb15"
    },
    "verdict": "cut",
-   "zero": "removal saves 1.1 wall-min/day; loses chat-find's last-real-message, quote, hidden-errand and cache contracts",
-   "note": "one coproc fixture writer (python3 spawns 118 -> 67, corpus byte-identical), duplicate search reused, 76 literal grep asserts in-shell, cache_sig via stat; chat-find start skips gateway_auth (+1 proof assert); mutations red"
+   "zero": "removal saves 1.1 wall-min/day; loses chat-find's last-message, quote, cache and name-resolution checks",
+   "note": "cached_rows probes share one interpreter, two json checks one python3; 139 assertions unchanged; python3 execs 70 -> 63"
   },
   {
    "id": "suite:llm-legs/test_gemini_probe",
@@ -3390,20 +3390,20 @@
   {
    "id": "suite:llm-legs/test_worker_run_wait_stream",
    "title": "llm-legs/test_worker_run_wait_stream",
-   "audited_at": "2026-10-13T13:06:43+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-llm-selfcheck-20261012T235335Z-33ab",
-   "cpu_run": 4.2,
-   "wall_run": 8.2,
-   "cpu_min_day": 2.27,
-   "wall_min_day": 6.0,
+   "audited_at": "2026-10-14T09:18:53+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-wall-store-20261014T021727Z-2b73",
+   "cpu_run": 3.9,
+   "wall_run": 6.1,
+   "cpu_min_day": 2.93,
+   "wall_min_day": 6.88,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_worker_run_wait_stream.sh": "da19f641bf4357541d7412b095aceabb7866c293",
-    "llm-legs/tests/worker_run_harness.sh": "9635feac4fe967a848f80a126580098843087c52"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_worker_run_wait_stream.sh": "92ae375002254b688e40fdf4e0f80ebe24ee5574",
+    "llm-legs/tests/worker_run_harness.sh": "6dfacbec6146cb456359d6ba018c5c2427aad826"
    },
    "verdict": "cut",
-   "zero": "removal saves 8.5 wall-s a run; loses the wait stream's live-transcript, partial-line, reroute and stop guards",
-   "note": "WORKER_RUN_WAIT_POLL_S accepts fractions, the live waits tick at 0.2 s (same 36 asserts; in-loop stream mutation red)"
+   "zero": "removal saves 5.0 wall-min/day; loses the streamed-wait checks (row once, partial line, codex rollout lookup once, reroute)",
+   "note": "poll 0.05 s and await 0.05 s with its 10 s bound, caffeinate stub on the builtin sleep, await_launched forkless; 40 asserts unchanged; python3 fork-fallback mutation red; wall 7.2 -> 6-10 s at load 25-100"
   },
   {
    "id": "suite:llm-legs/test_gemini_music",
@@ -3632,21 +3632,21 @@
   {
    "id": "suite:llm-legs/test_test_health",
    "title": "llm-legs/test_test_health",
-   "audited_at": "2026-10-13T11:34:25+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-claude-session-driver-20261012T235252Z-66bf",
-   "cpu_run": 2.5,
+   "audited_at": "2026-10-14T09:18:53+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-wall-store-20261014T021727Z-2b73",
+   "cpu_run": 2.8,
    "wall_run": 3.1,
-   "cpu_min_day": 1.33,
-   "wall_min_day": 2.23,
+   "cpu_min_day": 2.66,
+   "wall_min_day": 4.5,
    "sources": {
     "llm-legs/tests/affected": "55023ef490c922f3b44dea74eb6ff55b901ac430",
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
     "llm-legs/tests/slow-suites": "082e0d3bce46707e7b7b7bd14e4d45fff9553470",
-    "llm-legs/tests/test_test_health.sh": "c5e55fa3cbf518c0cfe7dcff872f3f637e785751"
+    "llm-legs/tests/test_test_health.sh": "bbe4f4db3ebeeada70b0e2b422b24734e8deb782"
    },
    "verdict": "cut",
-   "zero": "removal saves 1.3 wall-min/day; loses the test-health scan pins",
-   "note": "covering assert reads the first collect's cached scan; the affected_filter cut landed on main as 3e34ec7a; 50 asserts"
+   "zero": "removal saves 2.9 wall-min/day; loses test_health's class findings (waits, repeats, retests, fan-out, idle, red/flaky, heavy, dead)",
+   "note": "setup history one git fast-import, python3 -S; 51 asserts unchanged; git execs 42 -> 36, CPU 3.18 -> 1.95 s, wall 5.2 -> 3.3 s"
   },
   {
    "id": "suite:llm-legs/test_account_purge",
@@ -5365,22 +5365,22 @@
   {
    "id": "suite:llm-legs/test_wall_store",
    "title": "llm-legs/test_wall_store",
-   "audited_at": "2026-10-13T15:37:35+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-merge-ledger-20261012T235347Z-7422",
-   "cpu_run": 16.8,
-   "wall_run": 14.8,
-   "cpu_min_day": 4.05,
-   "wall_min_day": 18.97,
+   "audited_at": "2026-10-14T09:18:53+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-wall-store-20261014T021727Z-2b73",
+   "cpu_run": 16.3,
+   "wall_run": 10.9,
+   "cpu_min_day": 6.48,
+   "wall_min_day": 6.46,
    "sources": {
-    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
-    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
+    "llm-legs/tests/lib/hs-bounded.sh": "abc9297ec5a1863ccaf079c5e292328537bb270e",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
     "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
-    "llm-legs/tests/llm_limits_renderer_harness.lua": "fe900ac99c81fad3b2e34136ad8b8e6933d76b58",
-    "llm-legs/tests/test_wall_store.sh": "16226f60b81de8f495038ed8a746e2db34c18b28"
+    "llm-legs/tests/llm_limits_renderer_harness.lua": "8644113125d60ce689bb49503a9f75171514d252",
+    "llm-legs/tests/test_wall_store.sh": "9b3ec8123f5524b44d21d711898fa08a84b342bd"
    },
    "verdict": "cut",
-   "zero": "removal saves 3.2 wall-min/day; loses the worker-wall store, surfaces and menu guard (a walled account would paint or route wrong unseen)",
-   "note": "the three collector renders per surface run concurrently; 90 asserts, walled-label mutation red; renderer harness bytecode load came from main ff624b63"
+   "zero": "removal saves 5.8 wall-min/day; loses the wall store's record/carry/supersede/lapse checks across statusline, worker-pick, llm-limits JSON/table/plain and the menu",
+   "note": "worker-pick --all runs beside the three llm-limits renders per surface; 90 asserts unchanged; wall 18 -> 16-18 s at load 25-100, unproven by wall"
   },
   {
    "id": "suite:llm-legs/test_claude_chat_switch",
@@ -5437,19 +5437,19 @@
   {
    "id": "suite:llm-legs/test_suite_audit",
    "title": "llm-legs/test_suite_audit",
-   "audited_at": "2026-10-13T15:21:22+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-suite-audit-20261012T235409Z-7ba4",
-   "cpu_run": 6.9,
-   "wall_run": 4.6,
-   "cpu_min_day": 5.14,
-   "wall_min_day": 16.66,
+   "audited_at": "2026-10-14T09:18:54+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-wall-store-20261014T021727Z-2b73",
+   "cpu_run": 1.8,
+   "wall_run": 1.7,
+   "cpu_min_day": 2.02,
+   "wall_min_day": 4.0,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_suite_audit.sh": "c5035f3834bcbf9b3b9330841d3771c98257ce6a"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_suite_audit.sh": "25fe84712bdb4a715bb9132552b3e5fec1944262"
    },
    "verdict": "cut",
-   "zero": "removal saves 6.7 wall-s and 8.1 CPU-s a run; loses the only check of suite pricing, due rules, the night queue and per-unit roi proof",
-   "note": "fixture leaked to live stores: roi_lines' saved_min_day read the live .claudeb worker journal and every live transcript (35 of 42 s at load 180); env isolated like test_time_budget: CPU 8.1 -> 1.2 s a run, 34 asserts unchanged"
+   "zero": "removal saves 2.1 wall-min/day; loses suite_audit's pricing, due/proof, hook and roi-line checks",
+   "note": "fixture history one fast-import + one rev-list, hook rows appended per day file; 47 asserts unchanged; git execs 132 -> 124, wall 5.3 -> 3.7 s; collect() memo rejected (one collect per process in production)"
   },
   {
    "id": "suite:llm-legs/test_ledger_untouched",
@@ -5772,19 +5772,19 @@
   {
    "id": "suite:llm-legs/test_legs_routing",
    "title": "llm-legs/test_legs_routing",
-   "audited_at": "2026-10-13T06:30:29+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-legs-routing-20261012T235326Z-6558",
-   "cpu_run": 3.3,
-   "wall_run": 3.4,
-   "cpu_min_day": 0.64,
-   "wall_min_day": 1.04,
+   "audited_at": "2026-10-14T09:18:54+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-wall-store-20261014T021727Z-2b73",
+   "cpu_run": 3.5,
+   "wall_run": 3.1,
+   "cpu_min_day": 0.85,
+   "wall_min_day": 1.78,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_legs_routing.sh": "49423f9316f1f375c8008c75d160f709fec5d61e"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_legs_routing.sh": "4dcc2c3b660fd35a99caea7b871eb63203fb067f"
    },
-   "verdict": "cut",
-   "zero": "removal saves 3.1 wall-s a run (0.9 wall-min/day); loses the only end-to-end check that the three ask_* legs route through worker-pick accounts, refuse an unselectable pool and fall back to bare CLIs",
-   "note": "geminib families skipped on --list-models, 7 subshells per codexb models call gone (12 calls a run), one roster bash+source chain gone; the 3-vendor loops are wiring, kept"
+   "verdict": "kept",
+   "zero": "removal saves 1.6 wall-min/day; loses the routing of every ask_* leg through its role's accounts and the stripped-launch checks",
+   "note": "no finding named it; 129 asserts, 11 s at load 25-100: its 144 bash/161 grep/47 mktemp are the legs' own wrappers launching under test, last cut was 10514a88"
   },
   {
    "id": "suite:llm-legs/test_worker_model_roles",
@@ -6155,19 +6155,19 @@
   {
    "id": "suite:llm-legs/test_grokb",
    "title": "llm-legs/test_grokb",
-   "audited_at": "2026-10-13T17:27:44+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-log-audit-20261012T235339Z-0122",
+   "audited_at": "2026-10-14T09:18:53+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-wall-store-20261014T021727Z-2b73",
    "cpu_run": 4.4,
-   "wall_run": 6.2,
-   "cpu_min_day": 1.77,
-   "wall_min_day": 4.1,
+   "wall_run": 4.2,
+   "cpu_min_day": 2.2,
+   "wall_min_day": 3.81,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
-    "llm-legs/tests/test_grokb.sh": "bec368806907ead795a35e823960ef8080b3ce60"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_grokb.sh": "66b54b0724d19df06da6c0a4fa62f8dc7a96ae86"
    },
    "verdict": "cut",
-   "zero": "removal saves 2.3 wall-min/day; loses grok profile creation/login, pool gating, reserved-name refusals and pinned launch env pins (152 asserts)",
-   "note": "0b31d96b: grokb refuses malformed/reserved names before sourcing its five libraries, wait_announce polls 0.01 s under the same 5 s bound; 152 asserts; mutations red (reserved list, withheld announce)"
+   "zero": "removal saves 2.8 wall-min/day; loses grokb's profile, login, pin, fast-mode and launch-environment checks",
+   "note": "wait_announce on a read loop and builtin sleep, no grep/sleep fork per 10 ms tick; 161 asserts unchanged"
   },
   {
    "id": "suite:llm-legs/test_grok_quota",
