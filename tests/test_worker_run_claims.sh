@@ -1,11 +1,47 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3 wait
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
 mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
 dirt_repo_init
 
+PROD_REPO="$WORK/produced-repo"
+mkdir -p "$PROD_REPO/bin" "$PROD_REPO/tests"
+git -C "$PROD_REPO" init -q .
+printf 'one\n' >"$PROD_REPO/bin/modified"
+printf 'here\n' >"$PROD_REPO/bin/deleted"
+printf 'before\n' >"$PROD_REPO/bin/committed"
+printf 'orig\n' >"$PROD_REPO/bin/committed-open"
+printf 'never moved\n' >"$PROD_REPO/bin/untouched"
+printf 'orig\n' >"$PROD_REPO/bin/co-tenant-open"
+# A filename holding a BACKSLASH, which is a legal name git records verbatim. Handed to awk through
+# `-v` it arrives with its escapes expanded, so the floor lookup matched no row and the link was
+# priced from HEAD's blob instead of from the content the co-tenant left standing.
+PROD_ESC='bin/back\slash'
+printf 'orig\n' >"$PROD_REPO/$PROD_ESC"
+git -C "$PROD_REPO" add -A >/dev/null
+git -C "$PROD_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+PROD_TOP=$(cd "$PROD_REPO" && pwd -P)
+PROD_BASE=$(git -C "$PROD_REPO" rev-parse HEAD)
+tab=$'\t'
+blob_of() { printf '%s\n' "$1" | git -C "$PROD_REPO" hash-object --stdin; }
+terminal_state() { jq -e '.phase == "done" or .phase == "failed"' "$RUN_DIR/state.json" >/dev/null; }
+legacy_claim_dirt() {
+  local path
+  printf 'WORKDIR: %s\nPARTIAL: legacy transcript listing\n' "$(jq -r '.workdir' "$RUN_DIR/meta.json")" >"$RUN_DIR/files"
+  printf 'WORKDIR: %s\n' "$DIRT_TOP" >"$RUN_DIR/dirty"
+  for path in "$@"; do printf '%s\n' "$path" >>"$RUN_DIR/dirty"; done
+  rm -f "$RUN_DIR/dirty-after-shas" "$RUN_DIR/head-after"
+}
+legacy_claim_record() {
+  legacy_claim_dirt "$@"
+  "$RUNNER" wait "$RUN_ID" --max 0 >"$WORK/wait.out"
+}
+refusal() { REFUSAL=$("$@" 2>&1 >/dev/null); }
+
+if suite_shard_owns 1 claims-produced; then
 clear_stub
 INITIAL_REPO="$WORK/initial-repo"
 mkdir -p "$INITIAL_REPO"
@@ -28,26 +64,6 @@ assert grep -qxF -- $'-\t'"$(git -C "$INITIAL_REPO" rev-parse HEAD:initial)"$'\t
 # links that reader walks — `<prev>\t<cur>\t<path>`, with a fourth field `commit` on the transitions
 # the run's own commits made — so ownership follows the BLOB and no longer a path and an epoch.
 clear_stub
-PROD_REPO="$WORK/produced-repo"
-mkdir -p "$PROD_REPO/bin" "$PROD_REPO/tests"
-git -C "$PROD_REPO" init -q .
-printf 'one\n' >"$PROD_REPO/bin/modified"
-printf 'here\n' >"$PROD_REPO/bin/deleted"
-printf 'before\n' >"$PROD_REPO/bin/committed"
-printf 'orig\n' >"$PROD_REPO/bin/committed-open"
-printf 'never moved\n' >"$PROD_REPO/bin/untouched"
-printf 'orig\n' >"$PROD_REPO/bin/co-tenant-open"
-# A filename holding a BACKSLASH, which is a legal name git records verbatim. Handed to awk through
-# `-v` it arrives with its escapes expanded, so the floor lookup matched no row and the link was
-# priced from HEAD's blob instead of from the content the co-tenant left standing.
-PROD_ESC='bin/back\slash'
-printf 'orig\n' >"$PROD_REPO/$PROD_ESC"
-git -C "$PROD_REPO" add -A >/dev/null
-git -C "$PROD_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
-PROD_TOP=$(cd "$PROD_REPO" && pwd -P)
-PROD_BASE=$(git -C "$PROD_REPO" rev-parse HEAD)
-tab=$'\t'
-blob_of() { printf '%s\n' "$1" | git -C "$PROD_REPO" hash-object --stdin; }
 # A co-tenant's live edit, standing before this run was launched: it is what the run's own rewrite is
 # measured against, and the one case HEAD's blob answers wrongly.
 printf 'egor was here\n' >"$PROD_REPO/bin/co-tenant-open"
@@ -168,7 +184,9 @@ assert await_exit
 assert test ! -e "$RUN_DIR/launcher"
 assert test ! -e "$RUN_DIR/produced"
 export CLAUDE_CODE_SESSION_ID=chat-abc
+fi
 
+if suite_shard_owns 2 claims-legacy; then
 # A workdir in no repository has no blobs to name, and neither record is invented for it.
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
@@ -205,7 +223,7 @@ tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-content' \
 start_gated claudeb --workdir "$PROD_REPO"
 printf 'claimed content\n' >"$PROD_REPO/bin/claimed-content"
 gate_open
-assert await_done
+assert await_exit && assert terminal_state
 assert_fails grep -q 'bin/claimed-content' "$RUN_DIR/produced"
 assert grep -qx 'bin/claimed-content' "$RUN_DIR/dirty"
 assert "$RUNNER" claim "$RUN_ID" --paths bin/claimed-content >/dev/null
@@ -218,16 +236,6 @@ assert grep -qxF -- "-$tab$(blob_of 'claimed content')${tab}bin/claimed-content"
 assert test "$(grep -cF 'bin/claimed-content' "$RUN_DIR/produced")" -eq 1
 
 
-legacy_claim_record() {
-  local path
-  printf 'WORKDIR: %s\nPARTIAL: legacy transcript listing\n' "$(jq -r '.workdir' "$RUN_DIR/meta.json")" >"$RUN_DIR/files"
-  printf 'WORKDIR: %s\n' "$DIRT_TOP" >"$RUN_DIR/dirty"
-  for path in "$@"; do printf '%s\n' "$path" >>"$RUN_DIR/dirty"; done
-  rm -f "$RUN_DIR/dirty-after-shas" "$RUN_DIR/head-after"
-  "$RUNNER" wait "$RUN_ID" --max 0 >"$WORK/wait.out"
-}
-refusal() { REFUSAL=$("$@" 2>&1 >/dev/null); }
-
 # --- Naming what the run could not name -----------------------------------------------------------
 # A run that worked through the shell lists nothing and its work is owned by nobody. The launching
 # chat is the one reader who knows which of the paths that changed in the run's window are its
@@ -236,7 +244,7 @@ refusal() { REFUSAL=$("$@" 2>&1 >/dev/null); }
 clear_stub
 export CLAUDE_CODE_SESSION_ID=chat-abc
 start_ok claudeb --workdir "$DIRT_REPO"
-assert await_done
+assert await_exit && assert terminal_state
 printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-one"
 printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-two"
 legacy_claim_record 'bin/claimed-one' 'bin/claimed-two'
@@ -364,7 +372,7 @@ assert_fails grep -q '^UNNAMED: ' <<<"$("$RUNNER" wait "$RUN_ID" --max 0)"
 for capped in one two three; do
   printf 'through the shell\n' >"$DIRT_REPO/bin/capped-$capped"
 done
-legacy_claim_record 'bin/capped-one' 'bin/capped-two' 'bin/capped-three'
+legacy_claim_dirt 'bin/capped-one' 'bin/capped-two' 'bin/capped-three'
 CAPPED_COUNT=$(grep -cv '^WORKDIR: ' "$RUN_DIR/dirty")
 assert test "$CAPPED_COUNT" -ge 3
 capped_line=$(WORKER_RUN_UNNAMED_INLINE_MAX=1 "$RUNNER" wait "$RUN_ID" --max 0 | grep '^UNNAMED: ')
@@ -386,7 +394,7 @@ assert eval "\"$RUNNER\" $(sed 's/.*claim yours: worker-run //' <<<"$capped_full
 # exact command is refused whole and not one of its paths is claimed.
 clear_stub
 start_ok claudeb --workdir "$DIRT_REPO/tests"
-assert await_done
+assert await_exit && assert terminal_state
 printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-from-a-subdirectory"
 legacy_claim_record 'bin/claimed-from-a-subdirectory'
 assert grep -qxF "UNNAMED: 1 path(s) changed in this run's window that no record names — claim yours: worker-run claim $RUN_ID --paths $DIRT_TOP/bin/claimed-from-a-subdirectory" \
@@ -405,7 +413,7 @@ assert_fails "$RUNNER" claim "$RUN_ID" --paths /etc/hosts
 for capped in one two three; do
   printf 'through the shell\n' >"$DIRT_REPO/bin/capped-sub-$capped"
 done
-legacy_claim_record 'bin/capped-sub-one' 'bin/capped-sub-two' 'bin/capped-sub-three'
+legacy_claim_dirt 'bin/capped-sub-one' 'bin/capped-sub-two' 'bin/capped-sub-three'
 capped_sub_line=$(WORKER_RUN_UNNAMED_INLINE_MAX=1 "$RUNNER" wait "$RUN_ID" --max 0 \
   | grep '^UNNAMED: ')
 assert grep -qF -e "--paths $DIRT_TOP/<row>" <<<"$capped_sub_line"
@@ -418,7 +426,9 @@ while IFS= read -r capped_row; do
   assert grep -qxF "$DIRT_TOP/$capped_row" "$RUN_DIR/files"
 done <<<"$capped_sub_rows"
 assert test ! -e "$RUN_DIR/dirty"
+fi
 
+if suite_shard_owns 3 claims-liveness; then
 # A run whose own list is complete has nothing for anyone to claim, so the line is never printed.
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
@@ -464,6 +474,7 @@ assert test "$(grep -c '^LAST-EDIT: \|^CPU-SECONDS: ' "$WORK/wait.out")" -eq 0
 # The CLI leads a process group of its own, and its CPU is the worker's.
 clear_stub
 STUB_BURN=1 start_gated claudeb --workdir "$DIRT_REPO"
+sleep 1.5
 for _ in $(seq 1 60); do
   cpu=$("$RUNNER" wait "$RUN_ID" --max 0 | sed -n 's/^CPU-SECONDS: //p')
   [ "${cpu:-0}" -lt 2 ] || break
@@ -487,6 +498,7 @@ assert grep -Eq '^LAST-EDIT: [0-9]$' <<<"$ignored"
 gate_open
 assert await_exit
 rm -rf "$DIRT_REPO/ignored-live"
+fi
 unset CLAUDE_CODE_SESSION_ID
 
 

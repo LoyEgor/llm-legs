@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3 wait
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
@@ -22,18 +23,22 @@ forks() { : >"$WORK/calls"; PATH="$WORK/shim:$PATH" "$@" >/dev/null || :; grep -
 
 holder() { # dir count -> pid of a process holding one slot until killed
   # A waiter's probe locks a free slot for a moment before it finds no room: one try could lose it to that.
-  bash -c '. "$1/share/slots.sh"; until slot_take "$2" "$3" 3600 >/dev/null; do sleep 0.1; done; exec sleep 300' _ "$ROOT" "$1" "$2" \
-    >/dev/null 2>&1 &
+  local fifo
+  fifo=$(mktemp -u "$WORK/holder.XXXXXX") && mkfifo "$fifo" && exec 9<>"$fifo" || return 1
+  bash -c '. "$1/share/slots.sh"; until slot_take "$2" "$3" 3600 >/dev/null; do sleep 0.1; done; echo $$ >"$4"; exec sleep 300' \
+    _ "$ROOT" "$1" "$2" "$fifo" >/dev/null 2>&1 &
   printf '%s\n' "$!" >>"$WORK/holders"
-  local i
-  for i in $(seq 1 300); do [ "$(cat "$1"/*/pid 2>/dev/null | grep -cx "$!")" = 1 ] && break; sleep 0.1; done
+  read -r -t 30 -u 9 _ || :
+  exec 9<&-
+  rm -f "$fifo"
   printf '%s\n' "$!"
 }
 unheld() { local pid=''; read -r pid 2>/dev/null <"$1/pid"; ! kill -0 "$pid" 2>/dev/null; }
-until_gone() { local i; for i in $(seq 1 100); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
+until_gone() { local i; for i in $(seq 1 1000); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.01; done; return 1; }
 holds_of() { cat "$HARNESS_HOLDS_DIR"/"$1"-*.json 2>/dev/null | jq -s length; }
 waits_of() { cat "$HARNESS_WAITS_DIR"/*.jsonl 2>/dev/null | jq -sc --arg c "$1" 'map(select(.class == $c))'; }
 
+if suite_shard_owns 1 slots-room; then
 sysctl() { echo 12; }
 assert [ "$(slots_from_cores 1000 2 4)" = 2 ]
 assert [ "$(slots_from_cores 1 2 4)" = 4 ]
@@ -217,7 +222,9 @@ assert_fails holds_in_tree "$other"
 kill "$leaf"; until_gone "$leaf"
 assert_fails holds_in_tree "$tree"
 rm -f "$HARNESS_HOLDS_DIR"/x-*.json
+fi
 
+if suite_shard_owns 2 slots-run-suites; then
 mkdir -p "$WORK/repo/tests"
 printf '#!/usr/bin/env bash\necho "PASS: slot=$RUN_SUITES_SLOT"\n' >"$WORK/repo/tests/test_a.sh"
 export RUN_SUITES_SLOTS_DIR="$WORK/rs" RUN_SUITES_SLOTS=1
@@ -392,7 +399,9 @@ assert kill -0 "$free_run"
 wait "$free_run" || fail "an ownerless run failed: $(cat "$WORK/ownerless.out")"
 assert jqe -s --argjson p "$free_run" 'map(select(.pid == $p)) | length == 1
   and (.[0] | has("reason") | not) and .[0].complete and .[0].suites["test_free.sh"].rc == 0' "$WORK/runs.jsonl"
+fi
 
+if suite_shard_owns 3 slots-worker-run; then
 # worker-run: a run waits for one of WORKER_SLOTS, its deadline counted from the slot; its slot goes
 # when it ends.
 git -C "$WORK" init -q night && git -C "$WORK/night" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
@@ -490,5 +499,5 @@ assert [ "$(head -n 1 "$WORK/gate-calls" | cut -d ' ' -f 1)" = admit ]
 assert [ ! -e "$WORKER_SLOTS_DIR/1" ]
 # A slot taken or refused at once is no wait: slot polling never journals a lock row.
 assert jqe 'length == 0' <(waits_of lock)
-
+fi
 printf 'PASS: test_slots.sh (%s asserts)\n' "$asserts"
