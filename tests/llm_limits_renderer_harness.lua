@@ -382,7 +382,7 @@ end
 
 -- The dim tone is the system's own tertiaryLabelColor, the colour macOS paints the disabled
 -- percentage rows with, resolved by AppKit in the menu's appearance. Any literal alpha of
--- ours would read as a second gray beside those rows; tests/test_llm_limits.sh fails on one.
+-- ours would read as a second gray beside those rows; tests/test_llm_limits_renderer.sh fails on one.
 local function isDimmed(attributes)
   return isSystemDim(attributes and attributes.color)
 end
@@ -2392,7 +2392,7 @@ automationEnv.ClaudeContinue = {
     }
   end,
 }
-local hsRoot = assert(_G.HS_ROOT, "HS_ROOT unset: test_llm_limits.sh injects the Hammerspoon root")
+local hsRoot = assert(_G.HS_ROOT, "HS_ROOT unset: test_llm_limits_renderer.sh injects the Hammerspoon root")
 local automationChunk, automationError = loadfile(
   hsRoot .. "/automation_menu.lua", "t", automationEnv)
 assert(automationChunk, automationError)

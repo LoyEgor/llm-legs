@@ -162,6 +162,48 @@ check jq -e --argjson at "$at3" \
   '.vendors.codex.accounts[0].worker_wall == {resets_at:($at + 3600),recorded_at:$at,guessed:true}' "$CACHE" >/dev/null
 surfaces codex-guessed codex true 5h "" "$reset5" "$(date -r "$((at3 + 3600))" +%H:%M)"
 
+# Codex walls with a bare clock time and a trailing dot; read as now+1h, worker-pick freed the
+# account hours before its real reset.
+wall_now=$(date +%s)
+reset_2341=$(date -j -f '%Y-%m-%d %H:%M:%S' "$(date +%F) 23:41:00" +%s)
+[ "$reset_2341" -gt "$((wall_now - 300))" ] || reset_2341=$(date -j -v+1d -f '%Y-%m-%d %H:%M:%S' "$(date +%F) 23:41:00" +%s)
+for text in 'try again at 11:41 PM.' '11:41PM' '23:41'; do
+  check test "$(WORKER_WALLS_NOW=$wall_now worker_walls_parse_reset "$text")" = "$reset_2341"
+done
+passed=$(( (wall_now - 3600) / 60 * 60 ))
+rolled=$(worker_walls_parse_reset "$(date -r "$passed" +%H:%M)")
+check test "$rolled" -gt "$wall_now"
+check test "$(( rolled - passed ))" -ge 82800
+check test "$(( rolled - passed ))" -le 90000
+this_minute=$(worker_walls_parse_reset "try again at $(date -r "$(( wall_now / 60 * 60 ))" '+%I:%M %p')")
+check test "$this_minute" -le "$wall_now"
+check test "$(worker_walls_kind codex "$this_minute")" = unknown
+
+# Real wall wordings read as their reset, never now+1h: claude's zone suffix, comma and bare hour,
+# codex's dated retry behind a transcript's `git reset --hard`, gemini's compound duration, ISO UTC.
+wall_reset() { printf '%b\n' "$1" >"$WORK/wall.out"; WORKER_WALLS_NOW=$wall_now worker_walls_parse_reset "$(worker_walls_extract_reset "$WORK/wall.out")"; }
+at() { date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s; }
+tomorrow=$(date -j -v+1d +%Y-%m-%d)
+kiev_2240=$(TZ=Europe/Kiev date -j -f '%Y-%m-%d %H:%M:%S' "$(TZ=Europe/Kiev date +%F) 22:40:00" +%s)
+[ "$kiev_2240" -gt "$((wall_now - 300))" ] || kiev_2240=$((kiev_2240 + 86400))
+check test "$(wall_reset '{"result":"You'\''ve hit your session limit · resets 10:40pm (Europe/Kiev)","is_error":true}')" = "$kiev_2240"
+check test "$(wall_reset "You've hit your weekly limit · resets $(date -j -v+1d '+%b %e' | tr -s ' '), 9am")" = "$(at "$tomorrow 09:00:00")"
+check test "$(wall_reset "\"result\":\"You've hit your weekly limit · resets $(date -j -v+1d '+%b %e' | tr -s ' ') at 10pm (Europe/Kiev)\"")" = \
+  "$(TZ=Europe/Kiev date -j -f '%Y-%m-%d %H:%M:%S' "$(TZ=Europe/Kiev date -j -v+1d +%F) 22:00:00" +%s)"
+three_pm=$(at "$(date +%F) 15:00:00")
+[ "$three_pm" -gt "$((wall_now - 300))" ] || three_pm=$(at "$tomorrow 15:00:00")
+check test "$(wall_reset 'resets 3pm')" = "$three_pm"
+check test "$(wall_reset "run \`git reset --hard\` first\nor try again at $(date -j -v+2d '+%b %eth, %Y 3:52 AM' | tr -s ' ').")" = \
+  "$(at "$(date -j -v+2d +%F) 03:52:00")"
+gemini=$(wall_reset 'Individual quota reached. Resets in 1h40m8s.')
+check test "$(( gemini - wall_now ))" -ge 6008
+check test "$(( gemini - wall_now ))" -le 6068
+iso=$(date -u -j -v+1d +%Y-%m-%dT15:00:00)
+check test "$(wall_reset "resets ${iso}Z")" = "$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$iso" +%s)"
+check test -z "$(printf 'Connection reset by peer\npreset: 5\nretry at most once\n' >"$WORK/wall.out"; worker_walls_extract_reset "$WORK/wall.out")"
+dec31=$(at "$(date +%Y)-12-31 10:00:00")
+check test "$(WORKER_WALLS_NOW=$dec31 worker_walls_parse_reset 'resets Jan 2 3:00 PM')" = "$(date -j -v+1y -f '%Y-%m-%d %H:%M:%S' "$(date +%Y)-01-02 15:00:00" +%s)"
+
 printf '}\n' >>"$menu_cases"
 if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -c 'return "ok"' 2>/dev/null)" = ok ]; then
   checks=$((checks + 1))
@@ -171,4 +213,4 @@ else
   echo "SKIP (hs unavailable): wall store menu"
 fi
 [ "$failures" -eq 0 ] || exit 1
-printf 'PASS: %s wall-store assertions (store, menu, statusline, worker-pick, JSON/table/plain)\n' "$checks"
+printf 'PASS: %s wall-store assertions (store, menu, statusline, worker-pick, JSON/table/plain, reset wordings)\n' "$checks"

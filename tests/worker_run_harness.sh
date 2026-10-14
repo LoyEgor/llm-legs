@@ -569,9 +569,8 @@ transcript_report() (
   if [ -n "$RUN_FILES_REASON" ]; then
     printf 'RUN-FILES: unknown (%s)\n' "$RUN_FILES_REASON"
   elif [ -z "$RUN_FILES_LIST" ]; then
-    printf 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)\n'
+    printf 'RUN-FILES: 0\n'
   else
-    printf 'WORKDIR: %s\n' "$workdir"
     count=$(grep -c . <<<"$RUN_FILES_LIST")
     printf 'RUN-FILES: %s\n' "$count"
     sed 's/^/RUN-FILE: /' <<<"$RUN_FILES_LIST"

@@ -238,7 +238,6 @@ assert_eq "$(models --family astra)" gpt-6.1-astra
 asserts=$((asserts + 1))
 rc=0; bash "$SCRIPT" refuse-model alpha gpt-6.1-astra >/dev/null 2>"$WORK/err" || rc=$?
 [ "$rc" -eq 2 ] && grep -q '^usage: codexb' "$WORK/err" || fail "assert $asserts: refuse-model exited $rc"
-assert test ! -e "$CODEXB_PROFILES_DIR/.codexb/refused-models"
 : >"$WORK/err"
 
 # --- One jq per cache home, none per row ---

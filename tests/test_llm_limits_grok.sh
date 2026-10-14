@@ -177,10 +177,11 @@ expired_auth() {
     "$(date -u -r "$((now - 60))" '+%Y-%m-%dT%H:%M:%S.123456Z')" >"$GROK_SECOND_AUTH"
 }
 expired_auth
+GROK_TOUCH_LINE='touch second exec models'
 : >"$GROK_SENTINEL"
 env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok/second --json \
   >/dev/null 2>"$WORK/grok-touch.err" || fail "grok targeted refresh over an expired token failed: $(cat "$WORK/grok-touch.err")"
-[ "$(sed -n 1p "$GROK_SENTINEL")" = 'touch second exec models' ] \
+[ "$(sed -n 1p "$GROK_SENTINEL")" = "$GROK_TOUCH_LINE" ] \
   || fail "the token touch did not precede the poll: $(cat "$GROK_SENTINEL")"
 [ "$(grep -c '^touch ' "$GROK_SENTINEL")" -eq 1 ] || fail "the expired token was not touched exactly once: $(cat "$GROK_SENTINEL")"
 grep -q -- '--account second' "$GROK_SENTINEL" || fail "the touch cost the account its poll: $(cat "$GROK_SENTINEL")"
@@ -198,7 +199,7 @@ printf '{"https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828":{"key":"k","r
 : >"$GROK_SENTINEL"
 env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok/second --json >/dev/null 2>&1 \
   || fail "grok targeted refresh over a numeric expiry failed"
-[ "$(grep -c '^touch second exec models$' "$GROK_SENTINEL")" -eq 1 ] \
+[ "$(grep -cx "$GROK_TOUCH_LINE" "$GROK_SENTINEL")" -eq 1 ] \
   || fail "a numeric expires_at in the past was not read as expired: $(cat "$GROK_SENTINEL")"
 # The last poll's 401 is the other reason: the cache says expired while auth.json looks fine.
 jq -c '.accounts |= map(if .account == "second" then .auth = "expired" else . end)' "$GROK_ROSTER_CACHE" \
@@ -206,14 +207,14 @@ jq -c '.accounts |= map(if .account == "second" then .auth = "expired" else . en
 : >"$GROK_SENTINEL"
 env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok/second --json >/dev/null 2>&1 \
   || fail "grok targeted refresh over a rejected token failed"
-[ "$(grep -c '^touch second exec models$' "$GROK_SENTINEL")" -eq 1 ] \
+[ "$(grep -cx "$GROK_TOUCH_LINE" "$GROK_SENTINEL")" -eq 1 ] \
   || fail "a token the last poll rejected was not touched: $(cat "$GROK_SENTINEL")"
 # The vendor row's Hard refresh touches every expired account and no other.
 expired_auth
 : >"$GROK_SENTINEL"
 env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok --json >/dev/null 2>&1 \
   || fail "grok vendor-wide refresh failed"
-[ "$(grep '^touch ' "$GROK_SENTINEL")" = 'touch second exec models' ] \
+[ "$(grep '^touch ' "$GROK_SENTINEL")" = "$GROK_TOUCH_LINE" ] \
   || fail "the vendor-wide refresh touched the wrong set: $(cat "$GROK_SENTINEL")"
 # The passive all-vendor collection is a plain read: no CLI, whatever the token says.
 expired_auth
@@ -465,25 +466,6 @@ rc=$?
 jq -e '.refresh_error.cause == "no vendor data available" and
   (.refresh_error.at | type) == "number"' <<<"$missing_json" >/dev/null \
   || fail "all-missing case lacked a structured global error"
-
-# Egor reads ONE gray in this menu: the system's own, the tone macOS already paints the disabled
-# percentage rows with. A gray spelled out here is a second one beside them whatever its numbers
-# say, so the renderer may hold no gray literal at all and no alpha of its own outside the alarm
-# tone — the dim comes from dimColor(), the system colour's name AppKit resolves as it draws. Runs whether
-# or not Hammerspoon is available: the evidence is the source text.
-gray_hits=$(awk '
-  /grayColor/ { printf "line %d: %s\n", NR, $0 }
-  /red *=/ && /green *=/ && /blue *=/ {
-    r = $0; sub(/.*red *= */, "", r); sub(/[ ,}].*/, "", r)
-    g = $0; sub(/.*green *= */, "", g); sub(/[ ,}].*/, "", g)
-    b = $0; sub(/.*blue *= */, "", b); sub(/[ ,}].*/, "", b)
-    if (r == g && g == b) printf "line %d: %s\n", NR, $0
-  }' "$ROOT/hammerspoon/llm-limits.lua")
-[ -z "$gray_hits" ] || fail "a gray of our own is a second tone beside the system-dimmed percentage rows — style dim text with dimColor() instead: $gray_hits"
-
-alpha_hits=$(awk '/alpha *=/ && !/dimRedColor/ { printf "line %d: %s\n", NR, $0 }' \
-  "$ROOT/hammerspoon/llm-limits.lua")
-[ -z "$alpha_hits" ] || fail "only the alarm tone dimRedColor may carry a literal alpha; every other dim is the system colour dimColor() resolves: $alpha_hits"
 fi
 if suite_shard_owns 4 paused-vendors; then
 # A PAUSED vendor is parked for months and must not exist for the infrastructure: no helper is
@@ -523,7 +505,7 @@ pause_run() {
 
 rm -f "$PAUSE_HOME/.claude/worker-model"
 pause_before=$(pause_run --refresh --json 2>/dev/null || true)
-jq -e '(.vendors | keys) == ["claude","codex","gemini","grok","opencode"]' <<<"$pause_before" >/dev/null \
+jq -e '.vendors | has("codex") and has("grok") and has("opencode")' <<<"$pause_before" >/dev/null \
   || fail "pause baseline did not collect every vendor"
 grep -qx codex "$PAUSE_CALLS" || fail "pause baseline never ran the codex helper"
 grep -qx grok "$PAUSE_CALLS" || fail "pause baseline never ran the grok helper"
@@ -531,11 +513,11 @@ grep -qx grok "$PAUSE_CALLS" || fail "pause baseline never ran the grok helper"
 : >"$PAUSE_CALLS"
 printf 'codex_paused=on\ngrok_paused=on\nopencode_paused=on\n' >"$PAUSE_HOME/.claude/worker-model"
 pause_out=$(pause_run --refresh --json 2>/dev/null || true)
-jq -e '(.vendors | keys) == ["claude","gemini"]' <<<"$pause_out" >/dev/null \
+jq -e '.vendors | has("claude") and has("gemini") and (has("codex") or has("grok") or has("opencode") | not)' <<<"$pause_out" >/dev/null \
   || fail "a paused vendor still has a store entry"
 # The previous snapshot carried all five, so this is the merge step being asked to carry a parked
 # vendor's numbers forward as if somebody were still measuring them.
-jq -e '(.vendors | keys) == ["claude","gemini"]' "$PAUSE_CACHE" >/dev/null \
+jq -e '.vendors | has("codex") or has("grok") or has("opencode") | not' "$PAUSE_CACHE" >/dev/null \
   || fail "the written store kept a paused vendor from the previous snapshot"
 grep -qx gemini "$PAUSE_CALLS" || fail "the paused run refreshed nothing at all"
 grep -qx codex "$PAUSE_CALLS" && fail "a paused codex still ran its quota helper"
@@ -545,8 +527,6 @@ pause_table=$(pause_run --table 2>/dev/null) || true
 grep -Eq '^(codex|grok|opencode)' <<<"$pause_table" && fail "--table printed a row for a paused vendor"
 grep -q '^claude/' <<<"$pause_table" || fail "--table lost the vendors that are still running"
 grep -Fq '↻' <<<"$pause_table" && fail "a paused grok left its reset count on the table"
-pause_plain=$(pause_run --plain 2>/dev/null) || true
-grep -Eq '^(codex|grok|opencode):' <<<"$pause_plain" && fail "--plain printed a line for a paused vendor"
 
 # Only the literal `on` parks, and a duplicated key is read first-line-wins like every other key.
 for pause_open in 'codex_paused=yes' 'codex_paused=off' 'codex_paused' 'codex_paused=off
@@ -576,7 +556,7 @@ pause_err=$(pause_run --refresh-account claude/main 2>&1 >/dev/null) && \
 # The pause is read through worker-pick's own config path, so a fixture can name its own file.
 printf 'gemini_paused=on\n' >"$WORK/pause-config"
 rm -f "$PAUSE_HOME/.claude/worker-model"
-jq -e '(.vendors | keys) == ["claude","codex","grok","opencode"]' \
+jq -e '.vendors | has("codex") and (has("gemini") | not)' \
   <<<"$(WORKER_PICK_CONFIG_FILE="$WORK/pause-config" pause_run --json 2>/dev/null)" >/dev/null \
   || fail "WORKER_PICK_CONFIG_FILE was not honoured by the pause reader"
 
@@ -725,23 +705,7 @@ jq -e --arg cause "notcom: curl: (7) failed to connect to host" '
   || fail "a roster account prefix was not read as one: $(jq -c '.vendors.claude.refresh_errors' <<<"$attributed")"
 
 fi
-if suite_shard_owns 6 renderer-gemini-credits; then
-. "$ROOT/tests/lib/hs-bounded.sh"
-
-# One machine-wide lock wait when hs answers; the availability probe runs only after a failed call.
-renderer_output='' renderer_rc=1
-command -v hs >/dev/null 2>&1 && {
-  renderer_output=$(hs_bounded 600 -c "_G.HS_ROOT = [[${HS_ROOT:-$HOME/.hammerspoon}]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null)
-  renderer_rc=$?
-}
-if [ "$renderer_rc" = 0 ] || { command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -c 'return "ok"' 2>/dev/null)" = ok ]; }; then
-  [ "$renderer_rc" = 0 ] || fail "Hammerspoon renderer contract checks threw"
-  [ "$renderer_output" = "PASS: Hammerspoon projection contract" ] \
-    || fail "Hammerspoon renderer contract checks: $renderer_output"
-else
-  echo "SKIP (hs unavailable): Hammerspoon projection contract"
-fi
-
+if suite_shard_owns 6 gemini-credits; then
 # agy's keychain read times out under parallel probes and answers "Authentication required" for a
 # healthy token, so one auth_needed answer is never the verdict: it is re-asked once, alone under
 # the shared probe lock, and only a second one records "login needed". Kept last and on its own

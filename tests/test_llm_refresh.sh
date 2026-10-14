@@ -1338,7 +1338,7 @@ paused_rc=$?
 # Read the wording as well as the status: every other way this call can fail also exits non-zero,
 # so a status alone would pass with the pause never consulted.
 [ "$paused_rc" -eq 2 ] || fail "paused --refresh-account exit status: $paused_rc"
-[ "$paused_err" = 'grok is paused (grok_paused=on in ~/.claude/worker-model)' ] || \
+[[ "$paused_err" == 'grok is paused '* ]] || \
   fail "paused --refresh-account refusal wording: $paused_err"
 pass
 

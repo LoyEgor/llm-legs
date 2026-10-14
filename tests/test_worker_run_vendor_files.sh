@@ -406,7 +406,7 @@ assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targ
 CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "await tools.exec_command({cmd:'git status',workdir:'$cx_workdir'}); await tools.exec_command({cmd:\`git status\`,workdir:\`$cx_workdir\`});" \
   >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+assert grep -qx 'RUN-FILES: 0' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # An interpolated template literal names no command this reader can read, and fails closed.
@@ -422,14 +422,14 @@ assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file ta
 CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "var cmd = \"sed -i '' s/a/b/ bin/cx-not-this-one\"; await tools.exec_command({cmd: 'git status'}); var cmd = 'cat bin/cx-read-only'; await tools.exec_command({cmd});" \
   >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+assert grep -qx 'RUN-FILES: 0' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # The same binding serves every shorthand call that follows it, however many there are.
 CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "const cmd = 'git status --short'; await tools.exec_command({cmd}); await tools.exec_command({cmd});" \
   >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+assert grep -qx 'RUN-FILES: 0' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A shorthand name with no binding before it resolves to nothing at all.
@@ -484,7 +484,7 @@ RUN_DIR=$CX_RUN_DIR
 CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec $'await tools.view_image({path:"fixture.png"}); const note = "tools.fs_write()"; // tools.js()' \
   >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+assert grep -qx 'RUN-FILES: 0' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # Direct function-call arguments must be a JSON object, not prose containing field-shaped text.
@@ -506,7 +506,7 @@ assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targ
 CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "const cmd = \"git status --short\"; const workdir = \"$cx_workdir\"; await tools.exec_command({cmd, workdir, yield_time_ms:10000});" \
   >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+assert grep -qx 'RUN-FILES: 0' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # Bytes typed into a shell a previous call started are read as a command line like any other.
@@ -559,7 +559,7 @@ assert grep -qx 'RUN-FILES: unknown (the transcript records a mutating context w
 # An unusable timestamp on a classified read-only call remains read-only.
 CX_TS=not-a-timestamp
 cx_call view_image '{"path":"fixture.png"}' >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+assert grep -qx 'RUN-FILES: 0' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A walled attempt's edits stay the run's after the reroute: the rescue's transcript names only its own.

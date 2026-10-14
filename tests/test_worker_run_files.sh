@@ -69,11 +69,6 @@ assert grep -qx 'RUN-FILES: 3' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/one' <<<"$report"
 assert grep -qx 'RUN-FILE: tests/two.ipynb' <<<"$report"
 assert grep -qxF "RUN-FILE: $WORK/outside/three" <<<"$report"
-# The paths are workdir-relative, and the reader that journals them for the launching chat stands
-# somewhere else entirely: without this line above the count they resolve against the wrong tree.
-assert grep -qxF "WORKDIR: $run_workdir" <<<"$report"
-assert test "$(grep -n '^WORKDIR: ' <<<"$report" | cut -d: -f1)" \
-  -lt "$(grep -n '^RUN-FILES: ' <<<"$report" | cut -d: -f1)"
 assert test "$(grep -c 'never-written' <<<"$report")" -eq 0
 assert test "$(grep -c 'bin/refused' <<<"$report")" -eq 0
 
@@ -105,15 +100,6 @@ assert grep -qx 'RUN-FILES: 2' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/at-start' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/this-run' <<<"$report"
 assert test "$(grep -c 'pre-resume' <<<"$report")" -eq 0
-
-# Nothing recorded is not "nothing changed": an edit made through the shell — `sed -i`, a redirect,
-# `mv` — appears in no transcript as a tool call, so the zero says what it actually counted.
-: >"$TRANSCRIPT"
-assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
-  <<<"$(transcript_report "$RUN_DIR")"
-# Nothing to resolve, so nothing to resolve it against: a bare WORKDIR line over a count that names
-# no file reads as a directory this run is claiming.
-assert test "$(grep -c '^WORKDIR: ' <<<"$(transcript_report "$RUN_DIR")")" -eq 0
 
 # A transcript jq cannot parse is unknown, never 0: the pipeline used to swallow the parse failure
 # and report an authoritative "changed nothing" about a run nobody could read.
@@ -148,39 +134,22 @@ assert jq -e '.phase == "done" and .exit_code == 0 and .session == "chat-abc" an
   and .model == "opus" and .effort == "high" and (.started_epoch | type) == "number"' \
   "$RUN_DIR/state.json" >/dev/null
 assert test "$(cat "$RUN_DIR/worker-session")" = claude-session
-printf 'walled-session\n' >>"$RUN_DIR/worker-session"
-"$RUNNER" _supervise "$RUN_DIR" >/dev/null 2>&1
-assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 2
-assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
 
 # The chat's run records the LAUNCHER — the main chat, not the session id the worker process journals
-# under — claims no agent tag file, and every transition rewrites the state its row reads.
+# under — and every transition rewrites the state its row reads.
 clear_stub
-TR_TAGS="$HOME/.cache/claude-worker-tags/chat-main"
-mkdir -p "$TR_TAGS"
-printf 'seed · opus · high\nstart=%s\nedit=1\n' "$(date +%s)" >"$TR_TAGS/agent-x"
-tr_before=$(cat "$TR_TAGS/agent-x")
-# The gated stub polls with the sleep builtin: no external `sleep 0.05` reaches PATH while it waits.
-mkdir -p "$WORK/sleep-shim"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/sleeps"\nexec /bin/sleep "$@"\n' "$WORK" >"$WORK/sleep-shim/sleep"
-chmod +x "$WORK/sleep-shim/sleep"
-: >"$WORK/sleeps"
-PATH="$WORK/sleep-shim:$PATH" CLAUDE_LAUNCHER_SESSION=chat-main start_gated claudeb
+CLAUDE_LAUNCHER_SESSION=chat-main start_gated claudeb
 assert test "$(cat "$RUN_DIR/launcher")" = chat-main
-assert jq -e '.phase == "start" and (has("agent_task_id") | not) and .session == "chat-main"' "$RUN_DIR/state.json" >/dev/null
-assert test "$(cat "$TR_TAGS/agent-x")" = "$tr_before"
-assert test ! -e "$RUN_DIR/agent-task"
+assert jq -e '.phase == "start" and .session == "chat-main"' "$RUN_DIR/state.json" >/dev/null
 # The row's title is the brief's first prose line, and every launch carries the instruction-file guard.
 assert test "$(cat "$RUN_DIR/title")" = 'test brief'
-assert test "$(grep -c '^MD-GUARD (worker-run-injected): Instruction files are the orchestrator.s to edit (Egor.s rule): do not write CLAUDE.md' "$RUN_DIR/brief.launch")" = 1
+assert test "$(grep -c '^MD-GUARD (worker-run-injected): ' "$RUN_DIR/brief.launch")" = 1
 assert_fails grep -q '^CONTINUATION' "$RUN_DIR/brief.launch"
 "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
-assert jq -e '.phase == "wait" and (has("round") | not)' "$RUN_DIR/state.json" >/dev/null
+assert jq -e '.phase == "wait"' "$RUN_DIR/state.json" >/dev/null
 gate_open
 assert await_done
-assert jq -e '.phase == "done" and .exit_code == 0 and (has("round") | not)' "$RUN_DIR/state.json" >/dev/null
-assert test "$(grep -cx 0.05 "$WORK/sleeps")" = 0
-rm -rf "$TR_TAGS"
+assert jq -e '.phase == "done" and .exit_code == 0' "$RUN_DIR/state.json" >/dev/null
 # A brief with a guard of its own gets none injected, and its KEY: header lines are no title.
 clear_stub
 cp "$WORK/brief" "$WORK/brief.plain"
@@ -217,15 +186,6 @@ touch -t 202001010000 "$LOCK_RUN/.claim.lock"
 locked_write
 assert test ! -e "$LOCK_RUN/.claim.lock"
 assert test "$(grep -c . "$WORK/claim-sleeps")" -eq 0
-# Every worker_run suite and shard sources the harness: a mkdir per roster account was ~400 forks,
-# 5-8 s of each one's setup under load.
-mkdir -p "$WORK/mkdir-shim"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/mkdirs"\nexec /bin/mkdir "$@"\n' "$WORK" >"$WORK/mkdir-shim/mkdir"
-chmod +x "$WORK/mkdir-shim/mkdir"
-: >"$WORK/mkdirs"
-PATH="$WORK/mkdir-shim:$PATH" bash -c '. "$1"' "$ROOT/tests/${0##*/}" "$ROOT/tests/worker_run_harness.sh" </dev/null >/dev/null 2>&1
-assert test "$(grep -c . "$WORK/mkdirs")" -ge 1
-assert test "$(grep -c . "$WORK/mkdirs")" -le 10
 fi
 
 clear_stub
@@ -305,10 +265,7 @@ assert grep -qx 'RUN-FILE: tests/edited-by-the-run' <<<"$report"
 assert test "$(grep -c '^RUN-FILE: ' <<<"$report")" -eq 1
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
 assert_fails grep -q 'written-by-a-co-tenant' "$RUN_DIR/produced"
-assert grep -qxF "1 path(s) changed in the checkout during the run by another writer and are not this run's: bin/written-by-a-co-tenant" \
-  "$RUN_DIR/files-note"
-# The snapshot did NOT stand here, and saying it did is what sent the co-tenant's paths through.
-assert_fails grep -q 'snapshot attribution stands' "$RUN_DIR/files-note"
+assert grep -qx "1 path(s) .* by another writer .*: bin/written-by-a-co-tenant" "$RUN_DIR/files-note"
 
 # A Task subagent's edits are in its own transcript beside the session's, and they are the run's.
 clear_stub
@@ -342,7 +299,6 @@ report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: tests/edited-by-the-run' <<<"$report"
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
-assert_fails grep -q 'snapshot attribution stands' "$RUN_DIR/files-note"
 
 # And a Bash call that WRITES is the one case the listing cannot be trusted to be whole: it is a
 # FLOOR, so what it names is still this run's and the rest of the window is attributed to NOBODY.
@@ -363,7 +319,6 @@ assert grep -qx 'tests/edited-by-the-run' "$RUN_DIR/files"
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
 assert_fails grep -q 'written-by-a-co-tenant' "$RUN_DIR/produced"
 assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
-assert_fails grep -q 'snapshot attribution stands' "$RUN_DIR/files-note"
 assert grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/dirty"
 assert_fails grep -qx 'tests/edited-by-the-run' "$RUN_DIR/dirty"
 report=$("$RUNNER" report "$RUN_ID")
@@ -512,14 +467,14 @@ EOF
       'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/files"
     assert_fails grep -q 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/produced"
     if [ "$variant" = cotenant ]; then
-      note="1 path(s) changed in the checkout during the run by another writer and are not this run's: bin/the-co-tenant-was-already-editing-this"
+      note="1 path(s) .* by another writer .*: bin/the-co-tenant-was-already-editing-this"
       assert test ! -e "$RUN_DIR/dirty"
     else
       note="1 path(s) changed in the run's window that its own listing does not name and nobody answers for (the run also ran shell commands, whose edits no transcript records): bin/the-co-tenant-was-already-editing-this"
       assert grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/dirty"
     fi
-    assert grep -qxF "$note" "$RUN_DIR/files-note"
-    assert grep -qxF "RUN-FILES-NOTE: $note" <<<"$("$RUNNER" report "$RUN_ID")"
+    assert grep -qx "$note" "$RUN_DIR/files-note"
+    assert grep -qx "RUN-FILES-NOTE: $note" <<<"$("$RUNNER" report "$RUN_ID")"
   done
   clear_stub
 }

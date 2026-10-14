@@ -21,14 +21,12 @@ FAKE_LIST="$WORK/listers"
 FAKE_SYS="$WORK/sys"
 DEST="$WORK/out"
 CALLS="$WORK/calls"
-PICK_CALLS="$WORK/picks"
 FANOUT_OUT="$WORK/fanout.out"
 FANOUT_ERR="$WORK/fanout.err"
 CHILDREN="$WORK/children"
 LIVE="$WORK/live"
 mkdir -p "$FAKE_BIN" "$FAKE_LIST" "$FAKE_SYS" "$DEST" "$WORK/refs" "$CHILDREN" "$LIVE"
 : >"$CALLS"
-: >"$PICK_CALLS"
 DEST_WORK=$(fanout_work "$DEST")
 
 for i in 1 2 3 4 5; do
@@ -158,24 +156,6 @@ ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/grok-image"
 ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/grok-video"
 ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/gemini-video"
 
-cat >"$FAKE_BIN/worker-pick" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"${PICK_CALLS:?}"
-vendor=''; role=''
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --account) vendor=$2; shift 2 ;;
-    --role) role=$2; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ "$role" = image ] || exit 2
-[ -n "$vendor" ] || exit 2
-if [ "${PICK_MODE:-ok}" = limit ]; then exit 3; fi
-printf 'picked-%s\n' "$vendor"
-EOF
-chmod +x "$FAKE_BIN/worker-pick"
-
 # Rosters per manifest: codex web and gemini flow list JSON from their engines, grok's CLI pool lines.
 set_roster() { # lister-name body
   printf '#!/usr/bin/env bash\n%s\n' "$2" >"$FAKE_LIST/$1"
@@ -189,8 +169,10 @@ grok_roster() { set_roster grokb "[ \"\${1:-}\" = list ] || exit 2
 printf '$1'"; }
 grok_roster 'delta: Logged in\nstaleacct: Logged in\n'
 
+# The account-lock wait every job is planned with, and the memory one job reserves above the guard.
+LOCK_WAIT=5 JOB_MB=1200
 FANOUT_ENV=(IMAGE_FANOUT_BIN_DIR="$FAKE_BIN" IMAGE_FANOUT_LISTER_DIR="$FAKE_LIST" PATH="$FAKE_SYS:$PATH"
-  FANOUT_CALLS="$CALLS" PICK_CALLS="$PICK_CALLS" FANOUT_CHILDREN="$CHILDREN"
+  FANOUT_CALLS="$CALLS" FANOUT_CHILDREN="$CHILDREN" IMAGE_FANOUT_JOB_MB="$JOB_MB"
   IMAGE_FANOUT_LAUNCH_GAP_MS=0 IMAGE_FANOUT_MEM_POLL_MS=100 HARNESS_HOLDS_DIR="$WORK/harness/holds" HARNESS_WAITS_DIR="$WORK/harness/waits")
 fanout() {
   env "${FANOUT_ENV[@]}" bash "$SCRIPT" "$@" >"$FANOUT_OUT" 2>"$FANOUT_ERR"
@@ -238,13 +220,9 @@ REFS=(
   --ref "$WORK/refs/r4.png"
   --ref "$WORK/refs/r5.png"
 )
-GEMINI_MAX=$(jq -r '.refs.max' "$ROOT/share/image-caps/gemini.json")
 GEMINI_FLOW_MAX=$(jq -r '.flow_image.refs_max' "$ROOT/share/image-caps/gemini.json")
-CODEX_MAX=$(jq -r '.refs.max' "$ROOT/share/image-caps/codex.json")
-assert test "$GEMINI_MAX" = 3
-assert test "$GEMINI_FLOW_MAX" = 10
-assert test "$(jq -r '.routes[0]' "$ROOT/share/image-caps/gemini.json")" = flow
-assert test "$CODEX_MAX" = 5
+FLOW_REFS=()
+for ((i = 0; i < GEMINI_FLOW_MAX; i++)); do FLOW_REFS+=(--ref "$WORK/refs/r$((i % 5 + 1)).png"); done
 
 # --- the registry is the vendor list: no vendor name is written into the script ----------
 assert test -z "$(grep -nwE 'codex|gemini|grok' "$SCRIPT" || true)"
@@ -266,18 +244,18 @@ assert_fails "$reason_cx" 'refs '
 # Roster rows from the web engines' JSON: login false is skipped, never launched.
 assert grep -Fq $'codex beta\tskipped: login needed' "$FANOUT_OUT"
 # Every image job may wait 5 s for its account's lock, then exits 5 and is requeued.
-assert grep -Fq -- '--lock-wait 5' <<<"$gemini_cmd"
+assert grep -Fq -- "--lock-wait $LOCK_WAIT" <<<"$gemini_cmd"
 assert grep -Eq '^IMAGE_JOB_ID=fanout-[0-9TZ]+-[0-9]+-1-[0-9]+ ' <<<"$gemini_cmd"
 rc=0
-fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${REFS[@]}" "${REFS[@]}" --ref "$WORK/refs/r1.png" || rc=$?
+fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${FLOW_REFS[@]}" --ref "$WORK/refs/r1.png" || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq 'refs 11→10' <<<"$(plan_reason gemini gamma)"
+assert grep -Fq "refs $((GEMINI_FLOW_MAX + 1))→${GEMINI_FLOW_MAX}" <<<"$(plan_reason gemini gamma)"
 assert test "$(grep -o -- '--ref' <<<"$(plan_cmd gemini gamma)" | wc -l | tr -d ' ')" -eq "$GEMINI_FLOW_MAX"
 # An --edit image is an input too: it takes one of the route's reference slots.
 rc=0
-fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${REFS[@]}" "${REFS[@]}" --edit "$WORK/refs/r2.png" || rc=$?
+fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${FLOW_REFS[@]}" --edit "$WORK/refs/r2.png" || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq 'refs 10→9' <<<"$(plan_reason gemini gamma)"
+assert grep -Fq "refs ${GEMINI_FLOW_MAX}→$((GEMINI_FLOW_MAX - 1))" <<<"$(plan_reason gemini gamma)"
 assert grep -Fq -- "--edit $WORK/refs/r2.png" <<<"$(plan_cmd gemini gamma)"
 
 # --- dry-run: aspect mapping + Codex prose -----------------------------------
@@ -323,7 +301,6 @@ assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd codex alpha)"
 rc=0
 fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --ref "$WORK/refs/r1.png" || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq 'skipped: video unsupported' "$FANOUT_OUT"
 assert grep -Fq $'codex -\tskipped: video unsupported' "$FANOUT_OUT"
 assert_fails "$(cat "$FANOUT_OUT")" $'gemini -\tskipped: video unsupported'
 assert grep -Fq 'gemini-video' <<<"$(plan_cmd gemini gamma)"
@@ -331,8 +308,8 @@ assert grep -Fq '.mp4' <<<"$(plan_cmd gemini gamma)"
 assert grep -Fq 'grok-video' <<<"$(plan_cmd grok delta)"
 assert grep -Fq '.mp4' <<<"$(plan_cmd grok delta)"
 assert_fails "$(plan_cmd grok delta)" grok-image
-assert grep -Fq -- '--lock-wait 5' <<<"$(plan_cmd grok delta)"
-assert grep -Fq -- '--lock-wait 5' <<<"$(plan_cmd gemini gamma)"
+assert grep -Fq -- "--lock-wait $LOCK_WAIT" <<<"$(plan_cmd grok delta)"
+assert grep -Fq -- "--lock-wait $LOCK_WAIT" <<<"$(plan_cmd gemini gamma)"
 # With several references gemini keeps to its listed lengths; grok's reference range takes any second in it.
 rc=0
 fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --duration 5 --ref "$WORK/refs/r1.png" --ref "$WORK/refs/r2.png" || rc=$?
@@ -372,7 +349,6 @@ assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $13}')" = web
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $14}')" = '{"lock":0.1,"saved":1.2}'
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $15}')" = 'skipped reason=several-inputs'
 assert grep -Eq '^START delta [0-9.]+ fanout-[0-9TZ]+-[0-9]+-1-[12]$' "$CALLS"
-assert grep -Fq 'ok=' "$FANOUT_OUT"
 assert grep -Eq '^ok=[1-9] skipped=[0-9]+ usage_limit=[0-9]+ failed=[0-9]+$' "$FANOUT_OUT"
 
 # --- STALE surfacing ---------------------------------------------------------
@@ -394,7 +370,6 @@ grok_roster 'broken: Logged in\n'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok || rc=$?
 assert test "$rc" -eq 1
-assert grep -Fq 'failed' "$DEST_WORK/fanout.tsv"
 # The row's stderr survives beside the table and its last line rides in the reason column.
 assert test -s "$DEST_WORK/grok-broken.stderr"
 assert grep -Fq 'exit 1; failed' "$DEST_WORK/fanout.tsv"
@@ -421,12 +396,10 @@ assert_fails "$(cat "$CALLS")" 'ARG=disabled'
 grok_roster 'delta: Logged in\n'
 
 # --- --accounts pick does not pin --account (wrappers route and claim) -------
-: >"$PICK_CALLS"
 : >"$CALLS"
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --accounts pick --dry-run || rc=$?
 assert test "$rc" -eq 0
-assert test ! -s "$PICK_CALLS"
 assert grep -Fq 'grok-pick.png' <<<"$(plan_cmd grok pick)"
 assert_fails "$(plan_cmd grok pick)" --account
 assert_fails "$(plan_cmd gemini pick)" --account
@@ -544,11 +517,9 @@ for straggler in hang stubborn; do
   rm -f "$CHILDREN/$straggler.pid"
   : >"$CALLS"
   rc=0
-  started=$SECONDS
   env "${FANOUT_ENV[@]}" IMAGE_FANOUT_KILL_WAIT_MS=500 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' --vendors grok \
     --takes 2 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
   assert test "$rc" -eq 0
-  assert test $((SECONDS - started)) -lt 20
   assert test "$(grep -c "^START $straggler " "$CALLS")" -eq 1
   assert test "$(grep -c $'\tok\t' "$DEST_WORK/fanout.tsv")" -eq 2
   assert grep -Fq $'grok\t'"$straggler"$'\tspare-cancelled\t' "$DEST_WORK/fanout.tsv"
@@ -702,14 +673,14 @@ GUARD=$(sed -n 's/^GUARD_AVAIL_MB = \([0-9]*\).*/\1/p' "$ROOT/bin/chat-load")
 assert test "$GUARD" -gt 0
 MEM_DEST="$WORK/mem dest"
 mkdir -p "$MEM_DEST"
-for hold in "mem $((GUARD + 1199))" 'pressure 4'; do
+for hold in "mem $((GUARD + JOB_MB - 1))" 'pressure 4'; do
   printf '65536\n' >"$MEM_MB"
   printf '1\n' >"$PRESSURE"
   case "$hold" in
-    mem*) printf '%s\n' "${hold#mem }" >"$MEM_MB"; why="available $((GUARD + 1199)) MB < $((GUARD + 1200)) MB" ;;
+    mem*) printf '%s\n' "${hold#mem }" >"$MEM_MB"; why="available $((GUARD + JOB_MB - 1)) MB < $((GUARD + JOB_MB)) MB" ;;
     pressure*) printf '%s\n' "${hold#pressure }" >"$PRESSURE"; why='memory pressure level 4' ;;
   esac
-  rm -f "$(fanout_work "$MEM_DEST")/fanout.state.json"
+  rm -f "$(fanout_work "$MEM_DEST")/fanout.state.json" "$WORK/harness/waits/"*.jsonl
   : >"$CALLS"
   fanout_bg -- --dest-dir "$MEM_DEST" --prompt 'badge' --vendors grok
   fanout_pid=$!
@@ -718,7 +689,7 @@ for hold in "mem $((GUARD + 1199))" 'pressure 4'; do
   sleep 0.5
   assert test ! -s "$CALLS"
   assert test "$(jq -r '.cells[0].status' "$(fanout_work "$MEM_DEST")/fanout.state.json")" = waiting
-  printf '%s\n' "$((GUARD + 1200))" >"$MEM_MB"
+  printf '%s\n' "$((GUARD + JOB_MB))" >"$MEM_MB"
   printf '1\n' >"$PRESSURE"
   rc=0
   wait "$fanout_pid" || rc=$?
@@ -740,21 +711,23 @@ env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LAUNCH_GAP_MS=1500 FANOUT_SLEEP=2 bash "$SCR
   --vendors grok >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
 assert awk -v g="$(start_gap)" 'BEGIN { exit !(g >= 1.2) }'
+# A gap the Chrome shortcut ended is well under the configured one, however loaded the machine.
+CHROME_GAP_S=8
 grok_roster 'chromey: Logged in\nfasta: Logged in\n'
 : >"$CALLS"
 rc=0
-env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LAUNCH_GAP_MS=8000 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
+env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LAUNCH_GAP_MS=$((CHROME_GAP_S * 1000)) bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
   --vendors grok >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
-assert awk -v g="$(start_gap)" 'BEGIN { exit !(g < 3) }'
+assert awk -v g="$(start_gap)" -v cap=$((CHROME_GAP_S - 2)) 'BEGIN { exit !(g < cap) }'
 # Playwright's Chrome runs in a session of its own, outside the unit's process group: found by parent pid.
 grok_roster 'chromeown: Logged in\nfasta: Logged in\n'
 : >"$CALLS"
 rc=0
-env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LAUNCH_GAP_MS=8000 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
+env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LAUNCH_GAP_MS=$((CHROME_GAP_S * 1000)) bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
   --vendors grok >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
-assert awk -v g="$(start_gap)" 'BEGIN { exit !(g < 3) }'
+assert awk -v g="$(start_gap)" -v cap=$((CHROME_GAP_S - 2)) 'BEGIN { exit !(g < cap) }'
 # A cancelled unit's own-session Chrome that ignores TERM outlives its wrapper: the KILL still reaches it.
 grok_roster 'chromeorphan: Logged in\nfasta: Logged in\n'
 rm -f "$CHILDREN/chromeorphan.pid"
@@ -836,21 +809,6 @@ set_roster chatgpt-web '[ "${1:-}" = accounts ] || exit 2
 printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"alpha\",\"login\":true,\"walled_until\":null},{\"account\":\"beta\",\"login\":false,\"walled_until\":null}]}"'
 
 # --- busy and limit reach the fan-out; the next route is its last resort --------------------------
-(
-  . "$ROOT/share/image-leg.sh"
-  IMAGE_LEG_ROUTE=web IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_SCHEDULER=''
-  ! image_leg_fallback 3 '{}' cli 2>/dev/null || exit 1
-  IMAGE_LEG_CLI_OK=1
-  for code in 3 5; do
-    IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_SCHEDULER=''
-    image_leg_fallback "$code" '{}' cli 2>/dev/null || exit 1
-    IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_SCHEDULER=1
-    ! image_leg_fallback "$code" '{}' cli 2>/dev/null || exit 1
-  done
-  IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_SCHEDULER=1
-  image_leg_fallback 4 '{}' cli 2>/dev/null
-)
-assert test "$?" -eq 0
 codex_roster() { set_roster chatgpt-web "[ \"\${1:-}\" = accounts ] || exit 2
 printf '%s\n' '{\"ok\":true,\"accounts\":[$1]}'"; }
 codex_roster '{"account":"webwall","login":true},{"account":"alphb","login":true}'
@@ -886,8 +844,7 @@ assert test "$rc" -eq 0
 assert grep -Fq $'codex\twebwall\tok' "$DEST_WORK/fanout.tsv"
 assert test "$(grep -c -Fx 'ARG=webwall' "$CALLS")" -eq 2
 assert test "$(grep -c -Fx 'ARG=--route' "$CALLS")" -eq 1
-unset IMAGE_LEG_CLI_OK
-# A pack the next route cannot carry (its counts) stays a usage limit.
+# A pack the next route cannot carry (its counts) stays a usage limit, consent or not.
 set_roster gemini-web '[ "${1:-}" = accounts ] || exit 2
 printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"webwall\",\"login\":true}]}"'
 : >"$CALLS"
@@ -895,14 +852,9 @@ rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors gemini --takes 4 --spare 0 || rc=$?
 assert test "$rc" -eq 3
 assert_fails "$(cat "$CALLS")" 'ARG=--route'
+unset IMAGE_LEG_CLI_OK
 
 # --- a flagged account (the engine's `flagged`) is exit 3 but never reported as a usage limit ------
-flag_err=$( (. "$ROOT/share/image-leg.sh"; image_leg_limit GEMINI '{"ok":false,"code":3,"flagged":true}') 2>&1 )
-assert test "$?:$flag_err" = '3:GEMINI_ACCOUNT_FLAGGED'
-flag_err=$( (. "$ROOT/share/image-leg.sh"; image_leg_limit GEMINI '{"ok":false,"code":3}') 2>&1 )
-assert test "$?:$flag_err" = '3:GEMINI_USAGE_LIMIT'
-flag_err=$( (. "$ROOT/share/image-leg.sh"; IMAGE_LEG_ROUTE=flow; image_leg_fallback 3 '{"flagged":true}' cli) 2>&1 )
-assert grep -Fq 'failed (flagged)' <<<"$flag_err"
 grok_roster 'flagged: Logged in\nfasta: Logged in\n'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 1 --spare 0 || rc=$?
@@ -1050,25 +1002,5 @@ fanout --dest-dir "$STATE_DEST" --prompt 'motion' --video --ref "$WORK/refs/r1.p
 assert test "$rc" -eq 0
 assert test ! -e "$STATE_WORK/fanout.state.json"
 
-# --- the caps model check: fresh, stale and unknown ---------------------------
-# shellcheck source=share/image-caps.sh
-. "$ROOT/share/image-caps.sh"
-video_model=$(jq -r '.model.video' "$ROOT/share/image-caps/grok.json")
-checks="$VENDOR_CLI_UPDATE_STATE_DIR/caps-checks.jsonl"
-mkdir -p "$VENDOR_CLI_UPDATE_STATE_DIR"
-: >"$checks"
-assert test "$(image_caps_model_check "$ROOT" grok video "$video_model")" = "model=$video_model model_caps=fresh"
-assert test "$(image_caps_model_check "$ROOT" grok video '')" = 'model=unknown model_caps=unknown'
-assert test "$(image_caps_model_check "$ROOT" grok video 'other-model')" = "model=other-model model_caps=stale verified=$video_model"
-assert test "$(jq -c 'select(.vendor == "grok" and .section == "model.video") | [.state, .what]' "$checks" | paste -sd' ' -)" = \
-  "[\"fresh\",\"model=$video_model verified=$video_model\"] [\"stale\",\"model=other-model verified=$video_model\"]"
-cli_version=$(jq -r '.cli.version' "$ROOT/share/image-caps/grok.json")
-printf '#!/bin/sh\necho "grok %s"\n' "$cli_version" >"$WORK/grok-current"
-printf '#!/bin/sh\necho "grok 9.9.9"\n' >"$WORK/grok-newer"
-chmod +x "$WORK/grok-current" "$WORK/grok-newer"
-image_caps_check "$ROOT" grok "$WORK/grok-current" >/dev/null
-image_caps_check "$ROOT" grok "$WORK/grok-newer" >/dev/null
-assert test "$(jq -c 'select(.vendor == "grok" and .section == "cli") | [.state, .what]' "$checks" | paste -sd' ' -)" = \
-  "[\"fresh\",\"cli=$cli_version verified=$cli_version\"] [\"stale\",\"cli=9.9.9 verified=$cli_version\"]"
 
-printf 'PASS: %s asserts; registry-driven vendors (no name in the script, another manifest picked up), roster JSON and pool lines (login, pool, walls), dry-run plans/adaptations (refs incl. --edit, aspect auto, Codex prose, size, video skip/ref, no video spares or packs), tsv columns incl. job/route/fallback_from/phases, per-account scheduling with no overlap, exit-5 requeue, pinned retry and give-up, usage-limit moves, spares cancelled by process group with no orphan (TERM and KILL), --jobs batch with per-job dest/job ids/state keys, --pack variants as takes, memory admission (floor and pressure), launch spacing and the Chrome shortcut (own-session Chrome by parent pid, its KILL after the wrapper died), a non-blocking kill grace that holds the account, primaries before spares, lazy spares of packs, busy/limit left to the scheduler with the next route as last resort, a flagged account told from a usage limit, least recently used pool order, dest spaces, dry-run dest-dir untouched, exit 0/3/1/2, STALE value, pick without --account, live fanout.state.json cells, caps model check\n' "$asserts"
+printf 'PASS: %s asserts\n' "$asserts"

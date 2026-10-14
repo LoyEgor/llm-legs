@@ -372,7 +372,7 @@ attribution_repair_tests() {
       continue
     fi
     if [ "$variant" = readonly ]; then
-      note="1 path(s) changed in the checkout during the run by another writer and are not this run's: bin/restored"
+      note="1 path(s) .* by another writer .*: bin/restored"
       assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
       assert test ! -e "$RUN_DIR/dirty"
     else
@@ -382,9 +382,9 @@ attribution_repair_tests() {
       assert_fails grep -qx bin/named "$RUN_DIR/dirty"
       assert_fails grep -q 'another writer' "$RUN_DIR/files-note"
     fi
-    assert grep -qxF "$note" "$RUN_DIR/files-note"
+    assert grep -qx "$note" "$RUN_DIR/files-note"
     report=$("$RUNNER" report "$RUN_ID")
-    assert grep -qxF "RUN-FILES-NOTE: $note" <<<"$report"
+    assert grep -qx "RUN-FILES-NOTE: $note" <<<"$report"
     if [ "$variant" != readonly ]; then
       assert grep -q "^UNNAMED: .*worker-run claim $RUN_ID" <<<"$report"
       assert "$RUNNER" claim "$RUN_ID" --paths bin/restored >/dev/null

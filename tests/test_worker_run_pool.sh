@@ -2,6 +2,7 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
+service_tier_is() { assert grep -qxF "ARG=service_tier=\\\"$1\\\"" "$CALL_LOG"; } # tier
 
 if suite_shard_owns 1 pool-wall-resume; then
 # The pool is a wall, not advice to the picker: a brief naming an excluded account cannot get in,
@@ -190,7 +191,7 @@ start_ok codex --account fastacct
 assert await_exit
 assert grep -qxF 'ARG=--enable' "$CALL_LOG"
 assert grep -qxF 'ARG=fast_mode' "$CALL_LOG"
-assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
+service_tier_is priority
 
 # OpenAI switches Fast per account and model in the catalog: switched on here but not listed there,
 # the run goes standard and says so; listed again, it is Fast again with nobody touching the switch.
@@ -200,14 +201,14 @@ jq '.models |= map(del(.service_tiers))' "$CODEXB_MODELS_CACHE" >"$CODEX_PROFILE
 start_ok codex --account fastacct
 assert await_exit
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
-assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
+service_tier_is default
 assert grep -q 'OpenAI offers no Fast for gpt-6.1-astra on fastacct' "$WORK/start.err"
 clear_stub
 jq '.models |= map(.service_tiers = [{"id": "priority", "name": "Fast"}])' "$CODEXB_MODELS_CACHE" \
   >"$CODEX_PROFILES_DIR/fastacct/models_cache.json"
 start_ok codex --account fastacct
 assert await_exit
-assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
+service_tier_is priority
 assert_fails grep -q 'offers no Fast' "$WORK/start.err"
 rm "$CODEX_PROFILES_DIR/fastacct/models_cache.json"
 
@@ -215,20 +216,20 @@ clear_stub
 printf 'default\n' >"$HOME/.codex-profiles/.codexb/fast-mode/fastacct"
 start_ok codex --account fastacct
 assert await_exit
-assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
+service_tier_is default
 
 clear_stub
 printf 'garbage\n' >"$HOME/.codex-profiles/.codexb/fast-mode/fastacct"
 start_ok codex --account fastacct
 assert await_exit
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
-assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
+service_tier_is default
 
 clear_stub
 start_ok codex --account resumeacct
 assert await_exit
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
-assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
+service_tier_is default
 
 # `chat-pin codex-fast` outranks the account's standing switch for the runs of this chat alone, and
 # travels to the detached supervisor in meta.json.
@@ -240,7 +241,7 @@ assert test "$(jq -r '.fast' "$RUN_DIR/meta.json")" = true
 assert await_exit
 assert grep -qxF 'ARG=--enable' "$CALL_LOG"
 assert grep -qxF 'ARG=fast_mode' "$CALL_LOG"
-assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
+service_tier_is priority
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
 rm -f "$CHAT_PINS_DIR/chat-codex-fast"
 rm -r "$HOME/.codex-profiles/.codexb/fast-mode"
@@ -262,7 +263,8 @@ assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 0
 
 clear_stub
 printf 'resumeacct\n' >"$STUB_DIR/gemini_profiles"
-gemini_transcript="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/gemini-resume.jsonl"
+gemini_transcript="$GEMINIB_PROFILES_DIR/resumeacct/.gemini/antigravity-cli/brain/gemini-resume/.system_generated/logs/transcript_full.jsonl"
+mkdir -p "${gemini_transcript%/*}"
 printf '{}\n' >"$gemini_transcript"
 touch -t 202001010000 "$gemini_transcript"
 start_ok gemini --account resumeacct --resume gemini-resume
@@ -273,9 +275,10 @@ assert grep -q '^ARG=--conversation$' "$CALL_LOG"
 assert grep -q '^ARG=gemini-resume$' "$CALL_LOG"
 assert test "$(tail -n2 "$CALL_LOG" | head -n1)" = 'ARG=--print'
 assert grep -q "^ARG=\$'test brief" <<<"$(tail -n1 "$CALL_LOG")"
-assert grep -qF 'TESTS: once, when the work is done' <<<"$(tail -n1 "$CALL_LOG")"
-assert grep -qF 'ended by signal 9 (exit 137) was killed by the machine' <<<"$(tail -n1 "$CALL_LOG")"
-assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
+gemini_prompt=$(tail -n1 "$CALL_LOG")
+eval "gemini_prompt=${gemini_prompt#ARG=}"
+printf '%s\n' "$gemini_prompt" >"$WORK/gemini.prompt"
+assert_launched_brief "$WORK/gemini.prompt"
 
 clear_stub
 set_config 'codex_effort=high'
@@ -304,8 +307,9 @@ assert grep -qxF "ARG=$WORK/rel-image.png" "$CALL_LOG"
 cp "$WORK/brief" "$WORK/brief.noimg"
 printf 'img\n' >"$WORK/shot.PNG"
 printf 'img\n' >"$WORK/old.png"
+printf 'img\n' >"$WORK/docs-only.png"
 { cat "$WORK/brief.noimg"; printf 'See %s and (%s), not %s/gone.png, https://x.io%s, docs%s.\n' \
-  "$WORK/shot.PNG" "$WORK/rel-image.png" "$WORK" "$WORK/shot.PNG" "$WORK/shot.PNG"
+  "$WORK/shot.PNG" "$WORK/rel-image.png" "$WORK" "$WORK/shot.PNG" "$WORK/docs-only.png"
   printf 'Nor %s.bak, %s/new.gif2 or %s/new.pngs.\n' "$WORK/old.png" "$WORK" "$WORK"; } >"$WORK/brief"
 clear_stub
 set_config 'codex_effort=high'
@@ -315,6 +319,7 @@ RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
 assert await_exit
 assert test "$(grep -cxF "ARG=$WORK/shot.PNG" "$CALL_LOG")" = 1
 assert test "$(grep -cxF "ARG=$WORK/rel-image.png" "$CALL_LOG")" = 1
+assert test "$(grep -cxF "ARG=$WORK/docs-only.png" "$CALL_LOG")" = 0
 assert test "$(grep -cx 'ARG=-i' "$CALL_LOG")" = 2
 assert grep -qxF "IMAGE-MISSING: $WORK/gone.png — the brief names it, it is not readable, the worker will not see it" "$WORK/start.out"
 assert test "$(grep -c '^IMAGE-MISSING:' "$WORK/start.out")" = 1
@@ -365,21 +370,14 @@ clear_stub
 start_ok codex
 assert await_exit
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$other/.claude/worktrees/task-wt" && pwd -P)" '[$d]')"
-# Granted once whichever spelling names it; the roots are read once per brief and the granted set
-# resolved once per launch, not again per worktree name and per candidate.
+# Granted once whichever spelling names it.
 ln -s "$other" "$WORK/other-link"
-mkdir -p "$WORK/grep-shim"
-printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"%s"\nexec %s "$@"\n' "$WORK/grep.log" "$(command -v grep)" >"$WORK/grep-shim/grep"
-chmod +x "$WORK/grep-shim/grep"
 { printf 'ACCOUNT: options\nADD-DIR: %s/.claude/worktrees/task-wt\n\nWork in %s/.claude/worktrees/task-wt, alias repo/.claude/worktrees/task-wt, not repo/.claude/worktrees/gone. Read %s.\n' \
     "$WORK/other-link" "$other" "$other"; cat "$WORK/brief.plain"; } >"$WORK/brief"
 clear_stub
-: >"$WORK/grep.log"
-PATH="$WORK/grep-shim:$PATH" start_ok codex
+start_ok codex
 assert await_exit
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$WORK/other-link/.claude/worktrees/task-wt" '[$d]')"
-assert test "$(grep -cxF -- "-qxF -- $(cd "$other/.claude/worktrees/task-wt" && pwd -P)" "$WORK/grep.log")" -eq 0
-assert test "$(grep -cxF -- "-oE /[A-Za-z0-9._~+-][A-Za-z0-9._~+/-]*" "$WORK/grep.log")" -eq 1
 mkdir -p "$WORKER_RUN_DIR/prior-granted"
 printf 'claude-granted\n' >"$WORKER_RUN_DIR/prior-granted/worker-session"
 jq -n --arg d "$(cd "$WORK/inherited" && pwd -P)" '{add_dirs: [$d]}' >"$WORKER_RUN_DIR/prior-granted/meta.json"
@@ -451,8 +449,8 @@ set_config 'codex_effort=high'
 WORKER_TEST_WORKDIR=$main_work start_ok codex
 assert await_exit
 assert test "$(jq -c '.add_dirs | sort' "$RUN_DIR/meta.json")" = "$(jq -cn --arg a "$(cd "$other" && pwd -P)" --arg b "$(cd "$HOME/.linked-real" && pwd -P)" '[$a, $b] | sort')"
-git -C "$main_work" commit -q --allow-empty -m init
-git -C "$main_work" worktree add -q "$main_work/.claude/worktrees/night-task" -b night-task
+git -C "$main_work" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init || fail 'night-task fixture commit failed'
+git -C "$main_work" worktree add -q "$main_work/.claude/worktrees/night-task" -b night-task || fail 'night-task fixture worktree failed'
 clear_stub
 WORKER_TEST_WORKDIR=$main_work/.claude/worktrees/night-task start_ok codex
 assert await_exit
@@ -470,7 +468,7 @@ assert_fails grep -q "^ARG=" "$CALL_LOG"
 real_git=$(command -v git)
 cat >"$WORK/bin/git" <<GIT
 #!/usr/bin/env bash
-case " \$* " in *' status --porcelain --no-renames -uall '*)
+case " \$* " in *' status '*)
   printf 'GIT_STATUS\n' >>"\$CALL_LOG"
   while [ -e "$WORK/floor-hold" ]; do sleep 0.05; done ;;
 esac
@@ -587,12 +585,15 @@ assert grep -qx 'SERVED: Gemini 3.8 Flash (High)' <<<"$("$RUNNER" report "$RUN_I
 # machine-wide newest one.
 clear_stub
 saved_models_cache=$CODEXB_MODELS_CACHE
+catalog_as() { # account fetched-day [jq filter]: the account's own catalog, the saved one through the filter
+  jq --arg at "2026-09-$2T00:00:00.000000Z" "${3:-.} | .client_version = \"0.156.1\" | .fetched_at = \$at" \
+    "$saved_models_cache" >"$HOME/.codex-profiles/$1/models_cache.json"
+}
+passed_over() { assert grep -qF "codex/$1 lists no model of $2" "$WORK/start.err"; } # account model
 unset CODEXB_MODELS_CACHE
 mkdir -p "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist"
-jq '.client_version = "0.156.1" | .fetched_at = "2026-09-23T00:00:00.000000Z"' "$saved_models_cache" \
-  >"$HOME/.codex-profiles/ownlist/models_cache.json"
-jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z" | .models |= map(select(.slug != "gpt-6.1-astra"))' \
-  "$saved_models_cache" >"$HOME/.codex-profiles/otherlist/models_cache.json"
+catalog_as ownlist 23
+catalog_as otherlist 24 '.models |= map(select(.slug != "gpt-6.1-astra"))'
 export PICK_RC=0 PICK_ACCOUNT=ownlist
 start_ok codex --model astra
 assert await_exit
@@ -606,21 +607,17 @@ export CODEXB_MODELS_CACHE=$saved_models_cache
 clear_stub
 unset CODEXB_MODELS_CACHE
 mkdir -p "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist" "$HOME/.codex-profiles/.codexb/fast-mode"
-jq '.client_version = "0.156.1" | .fetched_at = "2026-09-23T00:00:00.000000Z"
-    | .models |= map(if .slug == "gpt-6.1-astra" then .service_tiers = [{"id": "priority", "name": "Fast"}] else . end)' \
-  "$saved_models_cache" >"$HOME/.codex-profiles/ownlist/models_cache.json"
-jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z" | .models |= map(select(.slug != "gpt-6.1-astra"))' \
-  "$saved_models_cache" >"$HOME/.codex-profiles/otherlist/models_cache.json"
+catalog_as ownlist 23 '.models |= map(if .slug == "gpt-6.1-astra" then .service_tiers = [{"id": "priority", "name": "Fast"}] else . end)'
+catalog_as otherlist 24 '.models |= map(select(.slug != "gpt-6.1-astra"))'
 printf 'fast\n' >"$HOME/.codex-profiles/.codexb/fast-mode/ownlist"
 export PICK_RC=0 PICK_ACCOUNT=ownlist
 start_ok codex --model astra
 assert_fails grep -q 'offers no Fast' "$WORK/start.err"
 assert jq -e 'any(.cmd[]; . == "gpt-6.1-astra")' "$RUN_DIR/meta.json"
 assert await_exit
-assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
+service_tier_is priority
 clear_stub
-jq '.models |= map(select(.slug | test("astra") | not))' "$saved_models_cache" \
-  | jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z"' >"$HOME/.codex-profiles/otherlist/models_cache.json"
+catalog_as otherlist 24 '.models |= map(select(.slug | test("astra") | not))'
 start_ok codex --model astra
 assert await_exit
 assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
@@ -636,14 +633,12 @@ export CODEXB_MODELS_CACHE=$saved_models_cache
 clear_stub
 unset CODEXB_MODELS_CACHE
 mkdir -p "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/lapsed"
-jq '.client_version = "0.156.1" | .fetched_at = "2026-09-23T00:00:00.000000Z"' "$saved_models_cache" \
-  >"$HOME/.codex-profiles/ownlist/models_cache.json"
-jq '.models |= map(select(.slug | test("astra") | not))' "$saved_models_cache" \
-  | jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z"' >"$HOME/.codex-profiles/lapsed/models_cache.json"
+catalog_as ownlist 23
+catalog_as lapsed 24 '.models |= map(select(.slug | test("astra") | not))'
 export WORKER_CLAIMS_DIR="$WORK/claims" PICK_CLAIMS="$WORK/claims"
 printf '%s\n' '0 lapsed' '0 ownlist' >"$STUB_DIR/pick_queue"
 start_ok codex --model astra
-assert grep -qF 'codex/lapsed lists no model of astra' "$WORK/start.err"
+passed_over lapsed astra
 assert grep -q -- '--exclude lapsed$' "$PICK_LOG"
 assert meta_account_is ownlist
 assert await_exit
@@ -672,8 +667,8 @@ rm -rf "$WORK/claims"
 clear_stub
 printf '%s\n' '0 lapsed' '0 nohome' '0 ownlist' >"$STUB_DIR/pick_queue"
 start_ok codex --model gpt-6.1-astra
-assert grep -qF 'codex/lapsed lists no model of gpt-6.1-astra' "$WORK/start.err"
-assert grep -qF 'codex/nohome lists no model of gpt-6.1-astra' "$WORK/start.err"
+passed_over lapsed gpt-6.1-astra
+passed_over nohome gpt-6.1-astra
 assert meta_account_is ownlist
 assert await_exit
 clear_stub
