@@ -238,6 +238,12 @@ held = json.load(open(th.cache_path()))
 check(th.covering(held[repo]["scan"])["tool-y"] == {"test_consistency.sh"}, "fan-out: shared-invariants.md names pull test_consistency")
 saved, th.repo_scan = th.repo_scan, lambda top: (_ for _ in ()).throw(AssertionError("rescanned"))
 check(th.scans([repo], held, False)[repo] == held[repo]["scan"], "fan-out: an unchanged repo reads its cached scan")
+write("bin/tool-a", "edited\n")
+git("commit", "-qam", "edit a tool", at=NOW - 90)
+try:
+    check(th.scans([repo], held, False)[repo] == held[repo]["scan"], "fan-out: an edit outside tests/ reads its cached scan")
+except AssertionError:
+    check(False, "fan-out: an edit outside tests/ reads its cached scan")
 write("tests/test_c.sh", "now tool-x too\n")
 git("commit", "-qam", "touch a suite", at=NOW - 60)
 try:
@@ -246,7 +252,7 @@ try:
 except AssertionError:
     check(True, "fan-out: a new blob rescans")
 th.repo_scan = saved
-git("reset", "-q", "--hard", "HEAD~1")
+git("reset", "-q", "--hard", "HEAD~2")
 
 pinned = section["candidates"].get("alpha/test_pinned") or {}
 check(pinned.get("kind") == "pins" and pinned["reason"].startswith("6 source-text pins, its suite edited in 2 commits"),

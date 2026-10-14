@@ -408,10 +408,11 @@ def repo_scan(top):
     except OSError:
         return None
     files = [n for n in entries if os.path.isfile(os.path.join(folder, n))]
-    helpers = {n: candidates(read(os.path.join(folder, n))) for n in files if not n.startswith(("test_", "e2e_"))}
     listed = git(top, "ls-files")
     known = set(listed.split("\n")) if listed is not None else set()
     names = {os.path.basename(p) for p in known if p}
+    helpers = {n: candidates(read(os.path.join(folder, n))) & names for n in files
+               if not n.startswith(("test_", "e2e_"))}
     out = {"suites": {}, "dead": {}, "invariants": [], "pins": {},
            "slow": sorted(set(read(os.path.join(top, SLOW)).split()))}
     invariants = os.path.join(top, "docs", "shared-invariants.md")
@@ -422,11 +423,11 @@ def repo_scan(top):
                 name.endswith(".sh")) or name in LIVE:
             continue
         text = read(os.path.join(folder, name))
-        seen = candidates(text)
+        seen = candidates(text) & names
         for helper, words in helpers.items():
             if helper in text:
                 seen |= words
-        out["suites"][name] = sorted(seen & names | {name})
+        out["suites"][name] = sorted(seen | {name})
         gone = gone_refs(top, text, known)
         if gone:
             out["dead"][name] = gone
@@ -437,14 +438,18 @@ def repo_scan(top):
 
 
 def scans(tops, cache, write):
-    """{top: repo_scan}, reused while `git ls-files -s` of the repo (every blob) and this reader are unchanged."""
+    """{top: repo_scan}, reused while this reader, the repo's path list and the blobs repo_scan reads (tests/,
+    shared-invariants.md, the .gitignore files check-ignore reads) are unchanged: an edit elsewhere never rescans."""
     out, changed = {}, False
     reader = read(os.path.abspath(__file__))
     for top in tops:
         listed = git(top, "ls-files", "-s")
         if listed is None:
             continue
-        key = hashlib.sha1((reader + listed).encode()).hexdigest()
+        lines = [line if path.startswith("tests/") or path == "docs/shared-invariants.md"
+                 or os.path.basename(path) == ".gitignore" else path
+                 for line in listed.split("\n") for path in [line.partition("\t")[2]]]
+        key = hashlib.sha1((reader + "\n".join(lines)).encode()).hexdigest()
         held = cache.get(top)
         if isinstance(held, dict) and held.get("key") == key and isinstance(held.get("scan"), dict):
             out[top] = held["scan"]
@@ -775,12 +780,13 @@ def collect(now, journal, tops=None, write=False, lo=None, since=lambda target: 
     journal_lo = first_end(journal)
     label(execs)
     recent = [e for e in execs if e["end"] >= first]
+    rows = [r for r in rows if r["end"] >= first]
     stats_lo = now - STATS_D * 86400
     window = [e for e in recent if stats_lo <= e["end"] < now]
     born = first_runs(execs)
     stats = per_suite(window, now, born)
     multi = [r["j"] for r in rows if r["n"] >= 2 and r["j"] > 1 and r["end"] >= stats_lo]
-    allocate([r for r in rows if r["end"] >= first], stats, statistics.median(multi) if multi else 1)
+    allocate(rows, stats, statistics.median(multi) if multi else 1)
     heavy = heavy_keys(window, now, born)
     cache = time_budget.read_json(cache_path(), {})
     scanned = scans(tops, cache if isinstance(cache, dict) else {}, write)
