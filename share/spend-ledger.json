@@ -2285,19 +2285,19 @@
   {
    "id": "suite:claude-setup/test_word_journal",
    "title": "claude-setup/test_word_journal",
-   "audited_at": "2026-10-13T11:22:35+03:00",
-   "by": "harness-speed-suite-audit-claude-setup-test-word-journal-20261012T235221Z-38b8",
-   "cpu_run": 8.7,
-   "wall_run": 10.1,
-   "cpu_min_day": 0.54,
-   "wall_min_day": 0.96,
+   "audited_at": "2026-10-14T08:38:27+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261014T021723Z-5939",
+   "cpu_run": 8.3,
+   "wall_run": 6.9,
+   "cpu_min_day": 0.81,
+   "wall_min_day": 1.63,
    "sources": {
-    "claude-setup/tests/test_word_journal.sh": "c2c8b16edc80c273175620860217c21556cadd4e",
-    "claude-setup/tests/word_triggers_harness.sh": "766edf8c053e50d820d0eafe4f68f7b4d94655f5"
+    "claude-setup/tests/test_word_journal.sh": "16dcdd7eef4d58a707d949e9987b845dabac42c5",
+    "claude-setup/tests/word_triggers_harness.sh": "7615d58e46f6420a0aa2b70779c6300b72520cdd"
    },
    "verdict": "cut",
-   "zero": "removal saves ~7 wall-s and ~7.5 CPU-s a run; loses the only end-to-end pins of quote attestation, the word journal's rows, the table-driven door and the reset arm",
-   "note": "claude-setup@1eb246f7: answered()'s 18 cases in one python3 (18 spawns to 1, each case still its own assert), one jq per captured context, the guess intake repeating silent2's prompt merged into silent2's check (127 to 126), contains/lacks by builtins; CPU 8.5 to 7.6 s a run, 4 mutations red"
+   "zero": "removal saves 1.3 wall-min/day and 0.7 CPU-min/day; loses the only end-to-end pins of quote attestation, the word journal rows, the table-driven door and the reset arm",
+   "note": "2 shards (quote+sync+journal, table+tool door+reset): wall 13-15 s -> 6-8 s back to back, CPU 7.7 s flat, 127 asserts = 67+60, silent notice-word-journal / grantless word-intake / open word-gate mutations red"
   },
   {
    "id": "suite:claude-setup/test_word_notices",
@@ -2417,18 +2417,18 @@
   {
    "id": "suite:claude-setup/test_edit_conflict_notice",
    "title": "claude-setup/test_edit_conflict_notice",
-   "audited_at": "2026-10-13T06:29:39+03:00",
-   "by": "harness-speed-suite-audit-claude-setup-test-commit-report-worktrees-20261012T235201Z-02cb",
-   "cpu_run": 18.7,
-   "wall_run": 15.1,
-   "cpu_min_day": 1.03,
-   "wall_min_day": 2.19,
+   "audited_at": "2026-10-14T08:38:26+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261014T021723Z-5939",
+   "cpu_run": 17.6,
+   "wall_run": 11.4,
+   "cpu_min_day": 1.42,
+   "wall_min_day": 2.11,
    "sources": {
-    "claude-setup/tests/test_edit_conflict_notice.sh": "8aff13d61389fa9c446e28c34b30a20b4a82560b"
+    "claude-setup/tests/test_edit_conflict_notice.sh": "28b59d5b8d8e4587d142d8835fc0b45122629b74"
    },
    "verdict": "cut",
-   "zero": "removal saves ~2.2 wall-min/day; loses the only pins of edit-conflict-notice's one-verdict FOREIGN WIP notice (registry liveness, worker-run holders, anti-repeat key, verdict journal and --stats)",
-   "note": "edit() journal snapshot by builtins instead of 4 cp forks a call (312 forks a run); load-flaky 60m-old case aged at the case; vacuous --stats empty-store check made exact (old green with the branch deleted); 195 asserts; CPU flat, x3 wall is load"
+   "zero": "removal saves 1.6 wall-min/day; loses the only pins of edit-conflict-notice's one-verdict FOREIGN WIP notice (registry liveness, worker-run holders, anti-repeat key, verdict journal, --stats)",
+   "note": "3 shards (before workers, workers, ledger+registry+journal): wall 25 s -> 12 s back to back, CPU flat ~18 s, 196 asserts = 63+61+72, live_run_holder/registry_load/same_owner mutations red in their shards"
   },
   {
    "id": "suite:claude-setup/test_compact_switch",
@@ -3098,18 +3098,18 @@
   {
    "id": "suite:claude-setup/test_review_flow_gate",
    "title": "claude-setup/test_review_flow_gate",
-   "audited_at": "2026-10-13T11:39:10+03:00",
-   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261012T235210Z-48fc",
-   "cpu_run": 198.5,
-   "wall_run": 37.3,
-   "cpu_min_day": 32.61,
-   "wall_min_day": 12.47,
+   "audited_at": "2026-10-14T08:38:23+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261014T021723Z-5939",
+   "cpu_run": 181.6,
+   "wall_run": 38.7,
+   "cpu_min_day": 36.33,
+   "wall_min_day": 15.05,
    "sources": {
-    "claude-setup/tests/test_review_flow_gate.sh": "7c2c4b4624516c53dc37ac0abbc7977e0f4972c7"
+    "claude-setup/tests/test_review_flow_gate.sh": "2d2ff2527f366167a9d59e74714903a6bea6e72f"
    },
    "verdict": "cut",
-   "zero": "removal saves 12 wall-min/day and 25 CPU-min/day; loses the commit door's and the review gate's refusal and journal checks (637 asserts)",
-   "note": "commit-push-gate.sh now runs beside the gate only where a call brings its own grants (door sections); CPU 197 -> 179 s a run, 637 asserts unchanged, an always-exit-2 commit-push-gate is red; remaining cost is the gate's own per-call spawns (grep/awk/git), a CPU-audit matter"
+   "zero": "removal saves 13 wall-min/day and 31 CPU-min/day; loses the commit door's and the review gate's refusal and journal checks (653 asserts)",
+   "note": "door calls naming no review/cancel/run word run commit-push-gate.sh alone (review-flow-gate refuses only a cancel or an unreadable review/run word): CPU 187/184 s -> 135/131 s a run, 653 asserts unchanged, 4 mutations red; the night-orchestrator stand-in is /bin/sleep (the --profile sleep shim dropped its exec -a argv and failed every profiled run) and is awaited until pgrep lists it"
   },
   {
    "id": "suite:claude-setup/test_stop_dispatch",
@@ -3130,20 +3130,20 @@
   {
    "id": "suite:claude-setup/test_word_triggers",
    "title": "claude-setup/test_word_triggers",
-   "audited_at": "2026-10-13T11:39:13+03:00",
-   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261012T235210Z-48fc",
-   "cpu_run": 9.1,
+   "audited_at": "2026-10-14T08:38:25+03:00",
+   "by": "harness-speed-suite-audit-claude-setup-test-review-flow-gate-20261014T021723Z-5939",
+   "cpu_run": 9.0,
    "wall_run": 1.3,
-   "cpu_min_day": 1.53,
-   "wall_min_day": 1.89,
+   "cpu_min_day": 1.46,
+   "wall_min_day": 1.79,
    "sources": {
-    "claude-setup/tests/test_word_triggers.sh": "9632c0e557e4f55172c58c382264614415f7a9b2",
-    "claude-setup/tests/word_grammar_cases.py": "648d9552b213bbd68473e919692ce1f7cd7671df",
-    "claude-setup/tests/word_triggers_harness.sh": "635a8cbd5279c5f9b1ebca7cdac101c39d2307f7"
+    "claude-setup/tests/test_word_triggers.sh": "f7e860217c27f7135e69ba3ae14fc018cda74233",
+    "claude-setup/tests/word_grammar_cases.py": "96d988dd6146bd913bad938349e849f5412e4475",
+    "claude-setup/tests/word_triggers_harness.sh": "7615d58e46f6420a0aa2b70779c6300b72520cdd"
    },
-   "verdict": "cut",
-   "zero": "removal saves 5.5 wall-min/day and 5 CPU-min/day; loses the 135 word grammar rows (stem, verb, quote, machine-text, pin and panel readings)",
-   "note": "the grammar rows run words.cmd_intake in one python process instead of the shell hook per row: CPU 9.2 -> 0.8 s, wall 17 -> 1.6 s, 135 asserts unchanged, a words.py grants mutation red; the hook path stays covered by the later rows and the other test_word_*.sh"
+   "verdict": "kept",
+   "zero": "removal saves 1.7 wall-min/day and 1.4 CPU-min/day; loses the 139 word grammar rows and the hook-path rows",
+   "note": "already cut by 04a5d6f: 1.9 s wall, 0.9 CPU-s, 139 asserts, execs bash 5 python3 6 jq 9; the packet's 9.0 CPU-s a run is runs of heads from before the cut; nothing left to cut"
   },
   {
    "id": "suite:claude-setup/test_commit_report",
