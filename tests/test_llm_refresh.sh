@@ -744,11 +744,11 @@ holder="$case_dir/llm-refresh-holder"
 printf '#!/usr/bin/env bash\ntrap "" TERM\nsleep 60 &\nprintf "%%s %%s\\n" "$$" "$!" >"$1"\nwait\n' >"$holder"
 chmod +x "$holder"
 "$holder" "$case_dir/hang.pids" &
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$case_dir/hang.pids" ] && break; sleep 0.2; done
+for _ in {1..40}; do [ -s "$case_dir/hang.pids" ] && break; sleep 0.05; done
 read -r holder_pid _ <"$case_dir/hang.pids"
 printf '%s\n' "$holder_pid" >"$case_dir/state.json.lock/pid"
 touch -t 200001010000 "$case_dir/state.json.lock"
-run_refresh "$case_dir" "$NOW" || fail 'hung-holder run failed'
+LLM_LIMITS_REFRESH_HOLDER_GRACE_SECONDS=1 run_refresh "$case_dir" "$NOW" || fail 'hung-holder run failed'
 hang_tree_dead "$case_dir" || fail 'a live holder past the ceiling was left running'
 jq -eR --arg pid "$holder_pid" 'fromjson | select(.vendor == "tick" and .outcome == "hung" and
   (.detail | contains("tick pid " + $pid + " held the lock")))' \
@@ -764,7 +764,7 @@ holder="$case_dir/llm-refresh-holder"
 printf '#!/usr/bin/env bash\ntrap "rm -rf \\"$2\\"; exit 129" TERM\nsleep 60 &\nprintf "%%s %%s\\n" "$$" "$!" >"$1"\nwait\n' >"$holder"
 chmod +x "$holder"
 "$holder" "$case_dir/hang.pids" "$case_dir/state.json.lock" &
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$case_dir/hang.pids" ] && break; sleep 0.2; done
+for _ in {1..40}; do [ -s "$case_dir/hang.pids" ] && break; sleep 0.05; done
 read -r holder_pid _ <"$case_dir/hang.pids"
 printf '%s\n' "$holder_pid" >"$case_dir/state.json.lock/pid"
 touch -t 200001010000 "$case_dir/state.json.lock"

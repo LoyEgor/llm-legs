@@ -121,7 +121,7 @@ kill_hung_holder() {
   case "$owner" in ''|*[!0-9]*) return 0 ;; esac
   [ "$owner" != "$$" ] && kill -0 "$owner" 2>/dev/null || return 0
   ps -o command= -p "$owner" 2>/dev/null | grep -q 'llm-refresh' || return 0
-  process_tree_end "$owner" 5
+  process_tree_end "$owner" "$holder_grace"
   limit_hit llm-refresh.tick-ceiling "$tick_ceiling" s kill "hung refresh tick pid $owner and its process tree: that tick's readings" \
     'bin/llm-refresh:tick_ceiling=${' "$((current - mtime))"
   journal_attempt tick 0 '[]' hung \
@@ -173,6 +173,8 @@ collector_timeout=${LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT:-1800}
 [[ "$collector_timeout" =~ ^[1-9][0-9]*$ ]] || collector_timeout=1800
 tick_ceiling=${LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS:-3600}
 [[ "$tick_ceiling" =~ ^[1-9][0-9]*$ ]] || tick_ceiling=3600
+holder_grace=${LLM_LIMITS_REFRESH_HOLDER_GRACE_SECONDS:-5}
+[[ "$holder_grace" =~ ^[1-9][0-9]*$ ]] || holder_grace=5
 store=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
 state_file=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
 journal_file=${LLM_LIMITS_REFRESH_JOURNAL:-${LLM_REFRESH_JOURNAL:-$HOME/.llm-limits-refresh.jsonl}}
