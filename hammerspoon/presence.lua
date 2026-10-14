@@ -6,6 +6,7 @@ local M = {}
 -- Readers (share/presence.sh, M.away) take a mark left unwritten for minutes as present. presence/away-off turns
 -- the whole mode off (Egor asks a chat; no menu item): while it exists no mark is written.
 -- presence/last-away keeps "<left epoch>\t<back epoch>" of the last span a mark covered: the menu shows it as proof.
+-- A span under a minute (a click undone at once) is no away: the last real one stays.
 local AWAY_S, WATCH_S, GRACE_S = 600, 2, 30
 local REFRESH_KICK = 'exec /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.llm-refresh"'
 
@@ -60,6 +61,11 @@ function M.lastAway()
   if left then return tonumber(left), tonumber(back) end
 end
 
+-- M.since(): the epoch the current away began; nil while present.
+function M.since()
+  return watch and awaySince
+end
+
 function M.back()
   local was = watch ~= nil
   if watch then watch:stop() end
@@ -69,9 +75,10 @@ function M.back()
   if handle then handle:close() end
   local removed = os.remove(markPath())
   if removed then
-    local span = left and io.open(lastPath(), "w")
+    local now = hs.timer.secondsSinceEpoch()
+    local span = left and now - tonumber(left) >= 60 and io.open(lastPath(), "w")
     if span then
-      span:write(string.format("%s\t%d\n", left, math.floor(hs.timer.secondsSinceEpoch())))
+      span:write(string.format("%s\t%d\n", left, math.floor(now)))
       span:close()
     end
     local task = hs.task.new("/bin/sh", nil, { "-c", REFRESH_KICK })

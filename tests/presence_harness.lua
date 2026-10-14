@@ -197,6 +197,13 @@ presence.back()
   check(not presence.away() and read(mark) == nil, "input after the grace kept the click's away")
   local left, back = presence.lastAway()
   check(left == clicked and back == now, "the click's span was not kept: " .. tostring(left) .. " " .. tostring(back))
+  now = now + 60
+  presence.goAway()
+  check(presence.since() == now, "away since: " .. tostring(presence.since()))
+  now = now + 3
+  presence.back()
+  local keptLeft = presence.lastAway()
+  check(keptLeft == clicked and presence.since() == nil, "a click undone at once replaced the last away span")
   presence.setEnabled(false)
   presence.goAway()
   check(not presence.away() and read(mark) == nil, "a click marked away while the mode is off")
