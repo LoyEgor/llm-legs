@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -55,6 +56,34 @@ expect_rc() {
 args=(--dest "$WORK/output/result.png" --prompt 'a blue badge')
 printf 'reference\n' >"$WORK/reference.jpg"
 ref="$WORK/reference.jpg"
+export FLOW_CALLS="$WORK/flow-engine-calls"
+cat >"$WORK/bin/fake-flow" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$FLOW_CALLS"
+fail() { printf '{"ok": false, "reason": "%s", "account": "flowacct"%s}\n' "$2" "$3"; exit "$1"; }
+case "${FLOW_MODE:-unset}" in
+  signin) fail 4 'no browser login' ', "sent": false' ;;
+  busy) fail 5 'every Flow account is busy' ', "sent": false' ;;
+  limit) fail 3 'every Flow account is walled' ', "sent": false' ;;
+  unsent) fail 1 'Flow UI drift before the prompt' ', "sent": false' ;;
+  sent) fail 1 'no image came back' ', "sent": true' ;;
+  limit-sent) fail 3 'walled after the prompt went' ', "sent": true' ;;
+  unknown) fail 1 'crashed' '' ;;
+  refused) fail 1 'Flow refused the image: PUBLIC_ERROR_UNSAFE' ', "sent": false' ;;
+  *) exit 99 ;;
+esac
+EOF
+chmod +x "$WORK/bin/fake-flow"
+flow_run() { # mode args...
+  local mode=$1
+  shift
+  rm -f "$FLOW_CALLS"
+  : >"$FAKE_GEMINIB_CALLS"
+  flow_rc=0
+  FLOW_MODE=$mode image_run "$@" || flow_rc=$?
+}
+
+if suite_shard_owns 1 gemini-image-refusals-resume-lineage; then
 expect_rc 2 --dest relative.png --prompt badge
 expect_rc 2 "${args[@]}" --aspect 5:4
 expect_rc 2 "${args[@]}" --ref "$ref" --ref "$ref" --ref "$ref" --ref "$ref"
@@ -149,7 +178,9 @@ assert image_run --dest "$WORK/output/step2.png" --prompt 'moon pendant' --ref "
 assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=2 root=$result"
 assert test "$(jq -c '[.edits[] | [.prompt, .region, .points, .route, .vendor, .account]]' "$(sidecar "$WORK/output/step2.png")")" = \
   '[["red hair",null,[],"cli","gemini","explicit"],["moon pendant",null,[],"cli","gemini","explicit"]]'
+fi
 
+if suite_shard_owns 2 gemini-image-composite; then
 "$REAL_MAGICK" -size 256x192 xc:'#00FF00' "$WORK/green.png"
 assert image_run --dest "$WORK/output/composite.png" --prompt 'add a blue patch' --ref "$WORK/green.png" --composite --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
@@ -199,7 +230,9 @@ assert test ! -e "$WORK/output/outpaint.rendered.png"
 assert image_run --dest "$WORK/output/both.png" --prompt 'merge' --ref "$WORK/green.png" --ref "$WORK/square.png" --account explicit
 assert grep -qx 'composite=skipped reason=several-inputs' "$WORK/out"
 expect_rc 2 "${args[@]}" --ref "$WORK/green.png" --composite --no-composite --account explicit
+fi
 
+if suite_shard_owns 3 gemini-image-stream-quota-chroma; then
 for mode in stream rescue init-only subagent; do
   FAKE_GEMINIB_MODE=$mode assert image_run "${args[@]}" --account explicit
   assert grep -qx 'session=fixture-session' "$WORK/out"
@@ -248,7 +281,9 @@ assert test "$(sips -g hasAlpha "$WORK/output/result.png" | awk '/hasAlpha:/ {pr
 CLAUDE_LAUNCHER_SESSION=launching-chat assert image_run "${args[@]}" --account explicit
 assert grep -qx 'CLAUDE_LAUNCHER_SESSION=launching-chat' "$FAKE_GEMINIB_CALLS"
 assert test -z "$(find "$TMPDIR" -name 'gemini-image.*' -print -quit)"
+fi
 
+if suite_shard_owns 3 gemini-image-manifest-copy-families; then
 mkdir -p "$WORK/repo/bin" "$WORK/repo/share/image-caps"
 cp "$ROOT/bin/gemini-image" "$WORK/repo/bin/"
 printf '#!/usr/bin/env bash\nexec bash "%s" "$@"\n' "$ROOT/bin/geminib" >"$WORK/repo/bin/geminib"
@@ -279,37 +314,14 @@ mkdir -p "$WORK/bare-log"
 assert test -f "$WORK/bare-log/legs.jsonl"
 assert test "$(jq -r '"\(.tool) \(.rc)"' "$WORK/bare-log/legs.jsonl")" = 'probe 4'
 
+unset SCRIPT
+fi
+
 # Flow is routes[0]: a route-level failure there (sign-in, busy, limit, unsent) reruns a request the cli
 # route can express on agy; anything sent, refused or unknown, Flow-only flags and --route stay Flow's.
-unset SCRIPT
+if suite_shard_owns 1 gemini-image-flow-fallback; then
 route_args=()
-export FLOW_CALLS="$WORK/flow-engine-calls"
-cat >"$WORK/bin/fake-flow" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$@" >"$FLOW_CALLS"
-fail() { printf '{"ok": false, "reason": "%s", "account": "flowacct"%s}\n' "$2" "$3"; exit "$1"; }
-case "${FLOW_MODE:-unset}" in
-  signin) fail 4 'no browser login' ', "sent": false' ;;
-  busy) fail 5 'every Flow account is busy' ', "sent": false' ;;
-  limit) fail 3 'every Flow account is walled' ', "sent": false' ;;
-  unsent) fail 1 'Flow UI drift before the prompt' ', "sent": false' ;;
-  sent) fail 1 'no image came back' ', "sent": true' ;;
-  limit-sent) fail 3 'walled after the prompt went' ', "sent": true' ;;
-  unknown) fail 1 'crashed' '' ;;
-  refused) fail 1 'Flow refused the image: PUBLIC_ERROR_UNSAFE' ', "sent": false' ;;
-  *) exit 99 ;;
-esac
-EOF
-chmod +x "$WORK/bin/fake-flow"
 export FLOW_IMAGE_ENGINE="$WORK/bin/fake-flow"
-flow_run() { # mode args...
-  local mode=$1
-  shift
-  rm -f "$FLOW_CALLS"
-  : >"$FAKE_GEMINIB_CALLS"
-  flow_rc=0
-  FLOW_MODE=$mode image_run "$@" || flow_rc=$?
-}
 for trigger in signin:sign-in:4 busy:busy:5 limit:limit:3 unsent:not-sent:1; do
   flow_run "${trigger%%:*}" "${args[@]}" --account explicit
   assert test "$flow_rc" -eq "${trigger##*:}"
@@ -355,7 +367,11 @@ assert grep -qx 'ACCOUNT_BUSY account=flowacct' "$WORK/err"
 flow_run signin "${args[@]}" --lock-wait -1
 assert test "$flow_rc" -eq 2
 assert test ! -e "$FLOW_CALLS"
+fi
 
+if suite_shard_owns 2 gemini-image-edit; then
+route_args=()
+export FLOW_IMAGE_ENGINE="$WORK/bin/fake-flow"
 # --edit is the composite base and the first reference on both routes; the other refs are references only.
 "$REAL_MAGICK" -size 16x12 'xc:#00FF00' "PNG24:$WORK/edit-base.png"
 "$REAL_MAGICK" -size 16x12 'xc:#FF0000' "PNG24:$WORK/style-a.png"
@@ -376,5 +392,6 @@ assert jq -e '.composite.kind == "auto" and .size == 4' <<<"$(tail -n 1 "$IMAGE_
 expect_rc 2 "${args[@]}" "${edit_args[@]}" --ref "$ref" --account explicit
 expect_rc 2 "${args[@]}" --edit "$WORK/edit-base.png" --resume fixture-session --account explicit
 assert grep -q -- '--edit names the image to edit' "$WORK/err"
+fi
 
 printf 'PASS: %s asserts; manifest limits, account isolation, stream paths, resume, brain rescue, model provenance, quota, chroma, no Flash family, composite, edit lineage, output contract, flow-to-cli fallback only on sign-in/busy/limit/unsent for a cli-expressible request, exit 5 ACCOUNT_BUSY, --lock-wait forwarded, and --edit as composite base and first reference\n' "$asserts"
