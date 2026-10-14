@@ -9163,12 +9163,27 @@
         "rule": "opportunity",
         "ident": "^test-health/idle/llm-legs/test_worker_run_claims$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T08:54:02+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-zz-probe-relay-20261014T021749Z-6edd",
+          "files": [
+            "llm-legs/tests/test_worker_run_claims.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "every assert of the suite, whole run vs the 3 shards' summed PASS lines, base vs fix",
+            "data": "the suite's own fixtures (tests/worker_run_harness.sh stubs)",
+            "result": "139 -> 142 asserts (the three unread `await_done` are now `await_exit` plus a state.json phase done/failed assert), shards sum to the unsharded count; no other assert changed; wall 56.9 s -> 20.3 s at the same load; the CPU probe still fails (CPU-SECONDS >= 2) on a stub that burns no CPU"
+          }
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-13",
-      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
-      "note": "2026-10-13 traced at load ~130 (xtrace sleep sums, 83 s whole): requested sleeps 60 s `sleep 60 &` (a live-supervisor stand-in killed at once: blind spot test-health-nominal-sleep-bound, the packet's 'bounded by the sleeps' line), await_done 431 x 0.05 s and await_launched 120 x 0.05 s (event polls on the run's exit_code/cli_pid), 31 x 0.2 s for the stub's session-file, 3 x 0.5 s for the burn stub's CPU; worker-run itself sleeps nowhere on these paths. worker-run's supervisor is `nohup setsid` detached (bin/worker-run:3229) and reparented once `start` returns, so its CPU and its stub CLI's never enter the suite's cpu_s and the idle class reads them as idle (blind spot test-health-idle-detached-cpu). Ruled out: no fixed sleep to turn into an event wait; launches already cut 18 -> 14 (1c9fe669).",
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-zz-probe-relay-20261014T021749Z-6edd",
+      "note": "2026-10-14 fixed: the idle was 14 serial worker-run lifecycles, now 3 shards (claims-produced, claims-legacy, claims-liveness) with three unread wait reports cut. 2026-10-13 traced at load ~130 (xtrace sleep sums, 83 s whole): requested sleeps 60 s `sleep 60 &` (a live-supervisor stand-in killed at once: blind spot test-health-nominal-sleep-bound, the packet's 'bounded by the sleeps' line), await_done 431 x 0.05 s and await_launched 120 x 0.05 s (event polls on the run's exit_code/cli_pid), 31 x 0.2 s for the stub's session-file, 3 x 0.5 s for the burn stub's CPU; worker-run itself sleeps nowhere on these paths. worker-run's supervisor is `nohup setsid` detached (bin/worker-run:3229) and reparented once `start` returns, so its CPU and its stub CLI's never enter the suite's cpu_s and the idle class reads them as idle (blind spot test-health-idle-detached-cpu). Ruled out: no fixed sleep to turn into an event wait; launches already cut 18 -> 14 (1c9fe669).",
       "handoff": null
     },
     {
@@ -9178,12 +9193,27 @@
         "rule": "opportunity",
         "ident": "^test-health/idle/llm-legs/test_slots$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T08:54:02+03:00",
+          "by": "night fixer harness-speed-test-health-heavy-llm-legs-zz-probe-relay-20261014T021749Z-6edd",
+          "files": [
+            "llm-legs/tests/test_slots.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "every assert of the suite, whole run vs the 3 shards' summed PASS lines, base vs fix",
+            "data": "the suite's own fixtures (stubbed sysctl/vm_stat, sleep-300 holders, run-suites and worker-run fixtures)",
+            "result": "159 -> 159 asserts, shards sum to the unsharded count; the holder reads its pid from a fifo (the old check was the slot's pid file holding the same pid) and until_gone ticks 0.01 s over the same 10 s bound; wall 29.7 s -> 15.0 s; 3 parallel runs green"
+          }
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-13",
-      "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-pole-llm-legs-test-consistency-20261012T235447Z-6c87",
-      "note": "2026-10-13 traced (96 s whole under xtrace, 154 asserts): 3 x `sleep 300` holders killed at once (blind spot test-health-nominal-sleep-bound); 3 x `sleep 1` are premises (tests/test_slots.sh:165 gives the orphaned waiter time to wrongly take the freed slot; :217 and :276 make the whole-second `started_at - queued_at >= 1` and `.seconds >= 1` asserts hold); ~5 s at :363 is share/run-suites.sh:570's owner watch (`while sleep 5`, builtin sleep) noticing exit_code. Ruled out: cut the owner poll to 1 s saves ~4 s x ~10 runs/day of this suite, costs a jq + ps pid_alive_since check every second instead of every 5 in every slotted worker run's run-suites; the 0.1 s loops are event polls.",
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-test-health-heavy-llm-legs-zz-probe-relay-20261014T021749Z-6edd",
+      "note": "2026-10-14 fixed: 3 shards (slots-room, slots-run-suites, slots-worker-run) overlap the sleep-bound sections; the holder's pid poll is a fifo read. 2026-10-13 traced (96 s whole under xtrace, 154 asserts): 3 x `sleep 300` holders killed at once (blind spot test-health-nominal-sleep-bound); 3 x `sleep 1` are premises (tests/test_slots.sh:165 gives the orphaned waiter time to wrongly take the freed slot; :217 and :276 make the whole-second `started_at - queued_at >= 1` and `.seconds >= 1` asserts hold); ~5 s at :363 is share/run-suites.sh:570's owner watch (`while sleep 5`, builtin sleep) noticing exit_code. Ruled out: cut the owner poll to 1 s saves ~4 s x ~10 runs/day of this suite, costs a jq + ps pid_alive_since check every second instead of every 5 in every slotted worker run's run-suites; the 0.1 s loops are event polls.",
       "handoff": null
     },
     {
