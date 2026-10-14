@@ -13,6 +13,7 @@ jqe() { jq -e "$@" >/dev/null; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
 export HARNESS_HOLDS_DIR="$WORK/holds" HARNESS_WAITS_DIR="$WORK/waits" SLOTS_POLL_S=0.2 STATUSLINE_CACHE_DIR="$WORK/sl" RUN_SUITES_TIMES="$WORK/times.tsv"
 unset RUN_SUITES_SLOT WORKER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 . "$ROOT/share/slots.sh"
 mkdir -p "$WORK/shim"
 for tool in date stat jq ps; do
@@ -34,7 +35,7 @@ holder() { # dir count -> pid of a process holding one slot until killed
   printf '%s\n' "$!"
 }
 unheld() { local pid=''; read -r pid 2>/dev/null <"$1/pid"; ! kill -0 "$pid" 2>/dev/null; }
-until_gone() { local i; for i in $(seq 1 1000); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.01; done; return 1; }
+until_gone() { local i; for i in {1..1000}; do kill -0 "$1" 2>/dev/null || return 0; sleep 0.01; done; return 1; }
 holds_of() { cat "$HARNESS_HOLDS_DIR"/"$1"-*.json 2>/dev/null | jq -s length; }
 waits_of() { cat "$HARNESS_WAITS_DIR"/*.jsonl 2>/dev/null | jq -sc --arg c "$1" 'map(select(.class == $c))'; }
 
