@@ -6201,6 +6201,159 @@
    "verdict": "kept",
    "zero": "removal saves 2.2 wall-min/day; loses the instruction-watch enumeration-reuse, quiet-check one-stat, unloaded-tree, budget and inventory pins (18 tests)",
    "note": "tests lens read: live state isolated (HOME, STATE, LOG, ALERT, CLAUDEB_DIR fixtures), no sleeps, unloaded-tree mutation red; wall is ~30 change-reporting hook runs (~0.3 s each nominal, diffuse forks in the production hook) each pinning a distinct incident; the 6 in-loop quiet checks cost ~0.3 s and pin the per-arrival refresh, not worth weakening"
+  },
+  {
+   "id": "fee:Relays",
+   "title": "Relays (Workers)",
+   "audited_at": "2026-10-14T05:41:19+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.003962,
+   "prices": {
+    "Workers · Relays": 11730.348271541026,
+    "Reviewers · Relays": 607.0227894257064
+   },
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves the remaining 0.40 % of Claude spend (6.9M limit tokens/7 d, all pre-cut); loses nothing: the relay agents are retired",
+   "note": "cut at source by llm-legs@ee185fa8 (2026-10-09, relay-free delegation: worker-spawn-hook denies claudeb/codex/gemini/grok-worker and review-waiter, the chat runs worker-run/review-bench wait as background Bash); tokenmap weeks: Oct 12-18 0, Oct 5-11 18.8M, Sep 28-Oct 4 59.9M, so the 7 d 6.9M is the 10-07..10-09 days leaving the window; Workers price per task 64.5k -> 11.7k, Reviewers 6.7k -> 0.6k; no relay spawn remains to cut"
+  },
+  {
+   "id": "fee:Review startup",
+   "title": "Review startup (Reviewers)",
+   "audited_at": "2026-10-14T05:41:29+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.013346,
+   "prices": {
+    "Reviewers · Review startup": 14178.450427466403
+   },
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 1.3 % of Claude spend (15.6M limit tokens/7 d); loses every Claude review cell, whose cold start this is",
+   "note": "the +398 % is load, per cell flat: 1097 cells vs 222 (x4.9, legacy-a..i bench panels and speed/fit rounds) at 14.2k vs 14.1k a cell; cut at source by review-bench@35f6562 (2026-10-13 19:58 +03, Fee cuts hunt panel 20261013T161141Z-6d68fce): Workflow, ListAgents, ScheduleWakeup, CronCreate, Write, Edit, NotebookEdit denied, --disable-slash-commands without the skill brief, CLAUDE_CODE_DISABLE_AUTO_MEMORY in every cell, so the window holds pre-cut cells; what remains is the system prompt and read-only tool schemas a bare cell needs; token-map@348008e (10-14) re-split the stream-only first write (startup 1.84 -> 1.32 %)"
+  },
+  {
+   "id": "fee:Worker startup",
+   "title": "Worker startup (Workers)",
+   "audited_at": "2026-10-14T05:41:37+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.011351,
+   "prices": {
+    "Workers · Worker startup": 19376.260896459644
+   },
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 1.1 % of Claude spend (10.2M limit tokens/7 d); loses every delegated Claude worker, whose cold start and rewrites this is",
+   "note": "falling per task 29.4k -> 19.4k (-34 %, 528 vs 671 tasks) after cuts at source: llm-legs@ee185fa8 (10-09 relay spawns gone), @863668df (10-13 19:37 +03, Workflow and ListAgents off headless claudeb workers), @9864be9d (10-14, worker-run refuses a RESUME idle past 55 min or into 150k+); tool use in 1198 worker transcripts 10-07..10-14: Agent 16 sessions (all subagent replay/instruction-load probes the task asked for), Skill 2 (both media, which the listing triggers), ToolSearch 47, so no other schema or listing leaves without changing a recorded decision; the skill listing is the Skills list source (Workers 0.14 %)"
+  },
+  {
+   "id": "fee:Delegation",
+   "title": "Delegation (Workers)",
+   "audited_at": "2026-10-14T05:41:47+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.022368,
+   "prices": {
+    "Workers · Delegation": 17878.78318792304,
+    "Reviewers · Delegation": 247.4260638537018,
+    "Background · Delegation": 0.0
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 2.2 % of Claude spend (22.9M limit tokens/7 d); loses delegation itself: the chat writing briefs and reading worker answers, and the worker reading its brief",
+   "note": "kept: what it is made of is the delegated task own prompt and answer, which a bare Agent call pays too, at a near-minimal harness frame: in 288 chat transcripts 10-07..10-14 worker-run start prints a median 233 B (124 tok avg), wait is the background-task notice (77 tok), report is the worker RETURN under a RESULT: header (590 tok avg); review-bench steps 100-940 tok; the worker side is brief.launch (median 6.0 kB, 1189 non-fixer briefs) of which BRIEF_PREAMBLE+MD-GUARD+EDITS fence are ~2.8 kB, each clause tied to a dated incident, no exact duplicate of the brief body (MD-GUARD is skipped when the brief has one); Δ -30 % is claudeb-worker (8.4M -> 3.2M, relay retired ee185fa8) leaving the window; Workers price per task 16.4k -> 17.9k (+9 %), inside noise of brief length; tokenmap gap: a brief that embeds its work material (log-audit chunk briefs, ~200 kB of transcript skeletons, zone worker) counts whole as Delegation head"
+  },
+  {
+   "id": "fee:Project docs",
+   "title": "Project docs (Context)",
+   "audited_at": "2026-10-14T05:42:20+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.01647,
+   "prices": {
+    "Reviewers · Project docs": 9703.94913379803,
+    "Workers · Project docs": 10392.21886334556
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 1.6 % of Claude spend (18.9M limit tokens/7 d); loses chats, workers and review cells reading the project contracts and designs their CLAUDE.md binds the work to",
+   "note": "kept: the +35 % is the new Reviewers cell (10.6M, shell reads in review-bench clones; 0 over the 222 cells of the window before, so attribution plus x4.9 cells, the legacy-a..i bench) while Workers fell 15.3k -> 10.4k a task (-32 %) and Chat -25 %; in 1850 cell transcripts the top reads are statusline-contract.md (353 reads, 473k first-seen tok) and shared-invariants.md (371, 458k), the two contracts llm-legs/CLAUDE.md binds statusline and cross-implementation work to, then README, claudegpt.md, DIAGNOSTICS.md, CLAUDE.md; a reviewer judging a diff against the contract is the review itself; narrowing which cells read them is review-bench lens/prompt wording or the orchestrator CLAUDE.md, not a llm-legs change; tokenmap gap: shell reads carry no path (Inside shows only shell reads · <repo>), so the menu cannot name the doc"
+  },
+  {
+   "id": "fee:CLAUDE.md & memory",
+   "title": "CLAUDE.md & memory (Context)",
+   "audited_at": "2026-10-14T05:42:21+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.014867,
+   "prices": {
+    "Reviewers · prefix: CLAUDE.md + memory": 1811.2023058242007,
+    "Reviewers · attachment: CLAUDE.md + memory": 1043.0765472723047,
+    "Workers · attachment: CLAUDE.md + memory": 12265.286292185603,
+    "Background · attachment: CLAUDE.md + memory": 2529.83445026737,
+    "Background · prefix: CLAUDE.md + memory": 375.64957114714053,
+    "Workers · prefix: CLAUDE.md + memory": 1406.9778736577223
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 1.5 % of Claude spend (14.4M limit tokens/7 d); loses the project CLAUDE.md rules and the memory index (Egor doctrines) in every chat, worker and job",
+   "note": "kept, same parts as startup:CLAUDE.md + memory index (kept 2026-10-13, d8520e7f): Workers price per task flat 13.2k -> 12.3k, Chat -24 %; claudeb workers already drop the user CLAUDE.md (worker-run claudeMdExcludes, loaded:Workers watches it) and keep the project CLAUDE.md and the memory index (llm-legs MEMORY.md 10.5 kB in every profile), which workers act on (16 of 1198 worker sessions 10-07..10-14 read a memory file the index points to; MD-GUARD bars them from writing it); the Reviewers cell (3.1M, new) is cut at source by review-bench@35f6562 (10-13, CLAUDE_CODE_DISABLE_AUTO_MEMORY in every cell), leaving the window; tokenmap gap: Inside splits the instruction part by the files instruction_files(cwd) lists now, ignoring claudeMdExcludes, so ~/.claude/CLAUDE.md shows 9.1M of which the worker share was never loaded"
+  },
+  {
+   "id": "fee:Doc reads",
+   "title": "Doc reads (Context)",
+   "audited_at": "2026-10-14T05:42:48+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.007116,
+   "prices": {
+    "Reviewers · Doc reads": 2195.6820231673423,
+    "Workers · Doc reads": 2438.072155449838
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.71 % of Claude spend (7.0M limit tokens/7 d); loses chats, workers and cells reading the harness files (skills, docs, scripts) their task names",
+   "note": "kept: flat (+1 %) while Workers fell 4.9k -> 2.4k a task (-50 %) and Chat -10 %; the new Reviewers cell (2.4M) is shell reads in review clones of the harness repos under review; top named items are night-sweep SKILL.md (323k, the night procedure the chat follows) and claude-setup/global/CLAUDE.md (224k, chats editing it); no exact duplicate read to remove from llm-legs; tokenmap gap: as Project docs, shell reads carry no path"
+  },
+  {
+   "id": "fee:Review summary",
+   "title": "Review summary (Reviewers)",
+   "audited_at": "2026-10-14T05:42:48+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.006005,
+   "prices": {
+    "Reviewers · Review summary": 5833.769199844259
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.60 % of Claude spend (6.4M limit tokens/7 d); loses the lens, task, contract and rubric each review cell is told to judge by",
+   "note": "kept: the +525 % is x4.9 cells (1097 vs 222, legacy-a..i bench and speed/fit rounds on Egor word) at 5.8k vs 4.6k a cell, the +26 % being token-map@348008e (10-14) moving the prompt part of stream-only first writes out of Review startup into the wrap by byte share; the wrap is the cell instructions a bare code-review prompt carries too, and its wording lives in review-bench (lenses, prompts), not llm-legs; review-bench@eb72f90 (10-13) already shortened the fit answer contract"
+  },
+  {
+   "id": "fee:Hooks",
+   "title": "Hooks (Tests & checks)",
+   "audited_at": "2026-10-14T05:42:48+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.003448,
+   "prices": {
+    "Workers · attachment: hook context": 1789.4501067018982,
+    "Workers · Hooks": 452.30476519984194,
+    "Reviewers · Hooks": 4.38241022809141
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.34 % of Claude spend (2.7M limit tokens/7 d); loses the context-nudge focus refresh before an auto-compact, word grants, the instruction write gate and the pre-cut cd-guard notes",
+   "note": "kept: every part is audited on its own and current: cd-guard 1.0M (cut, claude-setup@55f0a21 10-12, leaving the window: the -53 %), context-nudge Context is at + URGENT 1.1M (kept 2026-10-13), word-intake 0.4M (kept 10-12), instruction-write-gate 0.08M (kept 10-13); Workers price per task 4.1k -> 1.8k, Chat -30 %; all live hooks are claude-setup sources, so any further cut is that repository"
+  },
+  {
+   "id": "fee:Tests",
+   "title": "Tests (Tests & checks)",
+   "audited_at": "2026-10-14T05:42:57+03:00",
+   "by": "harness-speed-spend-fee-delegation-20261014T021720Z-5b72",
+   "share": 0.013907,
+   "prices": {
+    "Workers · Tests": 19133.63759705689,
+    "Reviewers · Tests": 31.103922744421553
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 1.4 % of Claude spend (12.3M limit tokens/7 d); loses every test run a worker or chat reads before it commits (red-on-old-code, covering suites, PASS counts)",
+   "note": "kept: the output is already minimal, its cost is the runs riding the context afterwards: in 1198 worker transcripts 10-07..10-14, 1239 tests/run-all calls average 312-344 tok (run-suites prints one table row a suite plus a 30-line tail per failure) and 2739 direct suite runs 185-209 tok (2380 already piped through tail/grep), ~0.9M first-seen tok in all, ~3.3 runs a worker session, which the preamble TEST LOOP already bounds; no quieter form keeps the pass/fail and the failure tail; Workers price per task 15.6k -> 19.1k (+23 %) is not traced to one cause here (output form unchanged), so the next audit compares runs per worker session"
   }
  ]
 }
