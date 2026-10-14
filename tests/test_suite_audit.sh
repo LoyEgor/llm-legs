@@ -46,9 +46,21 @@ with open(os.environ["NIGHT_RUN_SWEEP_REPOS"], "w") as handle:
     handle.write(repo + "\n")
 
 
+pending, history = {}, []
+
+
 def write(rel, text):
     with open(os.path.join(repo, rel), "w") as handle:
         handle.write(text)
+    pending[rel] = text
+
+
+def commit_pending(message, at):
+    """One commit of the files written since the last, as a fast-import record: the history lands in one process."""
+    files = "".join("M 644 inline %s\ndata %d\n%s\n" % (rel, len(text.encode()), text) for rel, text in pending.items())
+    history.append("commit refs/heads/main\ncommitter t <t@t> %d +0000\ndata %d\n%s\n%s" % (
+        at, len(message.encode()) + 1, message, files))
+    pending.clear()
 
 
 def git(*args, at=None):
@@ -57,7 +69,7 @@ def git(*args, at=None):
                           check=True).stdout.strip()
 
 
-git("init", "-q")
+git("init", "-q", "-b", "main")
 write("tests/helper.sh", "helper\n")
 write("tests/lib/common.sh", "common\n")
 write("tests/unused.sh", "unused\n")
@@ -65,21 +77,17 @@ write("tests/test_heavy.sh", "check 1\n")
 write("tests/test_mid.sh", ". helper.sh\n. lib/common.sh\n" + "".join("case %d\n" % i for i in range(20)))
 for name in ("test_light", "test_a", "test_b", "test_c", "test_d"):
     write("tests/%s.sh" % name, "ok\n")
-git("add", "-A")
-git("commit", "-qm", "suites", at=NOW - 10 * 86400)
-cheap = git("rev-parse", "HEAD")
+commit_pending("suites", NOW - 10 * 86400)
 write("tests/test_heavy.sh", "check 1\nsleep 60\n")
-git("commit", "-qam", "heavy waits a minute", at=NOW - 3 * 86400)
-dear = git("rev-parse", "HEAD")
+commit_pending("heavy waits a minute", NOW - 3 * 86400)
 write("tests/test_new.sh", "slow\n" * 10)
-git("add", "-A")
-git("commit", "-qm", "a new slow suite", at=NOW - 2 * 86400)
-new = git("rev-parse", "HEAD")
+commit_pending("a new slow suite", NOW - 2 * 86400)
 write("tests/test_part.sh", "".join("case %d\n" % i for i in range(10)))
 write("tests/test_mid.sh", ". helper.sh\n. lib/common.sh\n" + "".join("case %d\n" % i for i in range(10, 20)))
-git("add", "-A")
-git("commit", "-qm", "split test_mid", at=NOW - 86400)
-split = git("rev-parse", "HEAD")
+commit_pending("split test_mid", NOW - 86400)
+subprocess.run(["git", "-C", repo, "fast-import", "--quiet"], input="".join(history), text=True, check=True)
+cheap, dear, new, split = git("rev-list", "--reverse", "HEAD").split()
+git("reset", "-q")
 
 
 def row(end, suites, head, worker=False, **extra):
@@ -408,6 +416,15 @@ for day in {time_budget.local_day(r[1]) for r in hooks}:
     with open(os.path.join(events, day + ".jsonl"), "w") as handle:
         handle.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in hooks
                              if time_budget.local_day(r[1]) == day))
+def append_events(rows):
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(time_budget.local_day(r[1]), []).append(r)
+    for day, day_rows in by_day.items():
+        with open(os.path.join(events, day + ".jsonl"), "a") as handle:
+            handle.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in day_rows))
+
+
 both = ["opportunity:hooks/gate.sh", "opportunity:hooks/other.sh fast"]
 shown = time_budget.unit_proof({"class": "hooks", "ids": both}, NOW - 30, NOW, NOW + 600)
 check(shown["text"] == "600 → 90 ms/call · proven · 0.1 min/day" and shown["samples"] == 100
@@ -437,18 +454,14 @@ check(shown[0] == "roi · night-h2 · gate.sh, other.sh fast · 1.0M · +1/-1 ·
 late = [["h", NOW - 5000 + i, "~", "PreToolUse", "late.sh", 1000, "Bash", "x"] for i in range(100)]
 late += [["h", NOW - 1000 + i, "~", "PreToolUse", "late.sh", 100, "Bash", "x"] for i in range(50)]
 late += [["h", NOW + 60 + i, "~", "PreToolUse", "late.sh", 100, "Bash", "x"] for i in range(50)]
-for r in late:
-    with open(os.path.join(events, time_budget.local_day(r[1]) + ".jsonl"), "a") as handle:
-        handle.write(json.dumps(r, separators=(",", ":")) + "\n")
+append_events(late)
 check(time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/late.sh"]}, NOW - 30, NOW, NOW + 600)["text"]
       == "100 → 100 ms/call · not proven",
       "a drop that came before the night is not its gain: the first N calls after it against the newest N before it")
 far = NOW + 20 * 86400
 skew = [["h", far - 3600 + i, "~", "PreToolUse", "skew.sh", 1 if i < 24 else 10000, "Bash", "x"] for i in range(50)]
 skew += [["h", far + 60 + i, "~", "PreToolUse", "skew.sh", 1, "Bash", "x"] for i in range(50)]
-for r in skew:
-    with open(os.path.join(events, time_budget.local_day(r[1]) + ".jsonl"), "a") as handle:
-        handle.write(json.dumps(r, separators=(",", ":")) + "\n")
+append_events(skew)
 check(time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/skew.sh"]}, far - 30, far, far + 600)["text"]
       == "10000 → 1.0 ms/call · 1.2 over the 0.6 min/day before: unmeasured",
       "a proof can never gain more than its measure's whole day before the night: a median of 10 s over 24 calls of "
@@ -459,10 +472,8 @@ fix, judged = {"ref": "night-f", "class": "hooks", "ids": ["opportunity:hooks/fi
                "merged": True}, {}
 for name, at, control in (("in band", NOW + 40 * 86400, 100), ("no control", NOW + 60 * 86400, None),
                           ("quieter", NOW + 80 * 86400, 40)):
-    for r in hook_rows(at, "fix.sh", 1000, 100) + [r for c in ("c1.sh", "c2.sh", "c3.sh") if control
-                                                   for r in hook_rows(at, c, 100, control)]:
-        with open(os.path.join(events, time_budget.local_day(r[1]) + ".jsonl"), "a") as handle:
-            handle.write(json.dumps(r, separators=(",", ":")) + "\n")
+    append_events(hook_rows(at, "fix.sh", 1000, 100) + [r for c in ("c1.sh", "c2.sh", "c3.sh") if control
+                                                        for r in hook_rows(at, c, 100, control)])
     time_budget.roi_lines([dict(night, id=name, started=at - 30, ended=at, improvements=[fix])], at + 600, verdicts=judged)
 check(judged == {"in band": {0: {"pending": False, "gain": 0.1, "proven": True, "slower": False}},
                  "no control": {0: {"pending": False, "gain": 0.0, "proven": False, "slower": False}},
@@ -471,9 +482,7 @@ check(judged == {"in band": {0: {"pending": False, "gain": 0.1, "proven": True, 
       "100 → 100 ms, never with fewer than 3 of them (load fixed at 1) nor beside ones at 100 → 40 ms (load ×0.40, "
       "outside the suite proof ratio either way): %s" % judged)
 mixed_at, credited = NOW + 100 * 86400, collections.Counter()
-for r in hook_rows(mixed_at, "fix.sh", 1000, 100) + hook_rows(mixed_at, "slow.sh", 100, 200):
-    with open(os.path.join(events, time_budget.local_day(r[1]) + ".jsonl"), "a") as handle:
-        handle.write(json.dumps(r, separators=(",", ":")) + "\n")
+append_events(hook_rows(mixed_at, "fix.sh", 1000, 100) + hook_rows(mixed_at, "slow.sh", 100, 200))
 mixed = time_budget.unit_proof(dict(fix, ids=["opportunity:hooks/fix.sh", "opportunity:hooks/slow.sh"]),
                                mixed_at - 30, mixed_at, mixed_at + 600)
 time_budget.roi_lines([dict(night, started=mixed_at - 30, ended=mixed_at, improvements=[
