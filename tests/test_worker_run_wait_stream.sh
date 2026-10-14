@@ -74,7 +74,7 @@ assert [ "$(cat "$RUN/tokens" 2>/dev/null)" = "$priced" ]
 # the rewritten first line stays unprinted), keeps a partial last line for the next read, and counts
 # the tokens on its first and last read only.
 row() { jq -nc --arg ts "$(iso "$(date +%s)")" --arg text "$1" '{type:"assistant",timestamp:$ts,message:{content:[{type:"text",text:$text}]}}'; }
-await() { local i; for i in $(seq 100); do grep -Fq -- "$1" "$WORK/live.out" && return 0; sleep 0.1; done; fail "no [$1] in $(cat "$WORK/live.out")"; }
+await() { local i; for i in $(seq 200); do grep -Fq -- "$1" "$WORK/live.out" && return 0; sleep 0.05; done; fail "no [$1] in $(cat "$WORK/live.out")"; }
 # The tail shim logs the transcript's size as its read starts: a size past the last byte written
 # proves a read began after it.
 printf '#!/bin/bash\nprintf "tail %%s\\n" "$(stat -f %%z "${@: -1}" 2>/dev/null)" >>"%s"\nexec %q "$@"\n' \
@@ -96,7 +96,7 @@ jq -c --argjson p "$live" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at
   mv "$WORK/m" "$RUN/meta.json"
 row alpha-row >"$WORK/session.jsonl"
 : >"$CALLS"
-PATH="$WORK/tick-shim:$WORK/jq-shim:$PATH" WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$ID" >"$WORK/live.out" 2>&1 &
+PATH="$WORK/tick-shim:$WORK/jq-shim:$PATH" WORKER_RUN_WAIT_POLL_S=0.05 "$RUNNER" wait "$ID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await alpha-row
 row bravo-row >"$WORK/session.jsonl"
@@ -116,10 +116,10 @@ assert [ "$(grep -c 'charlie-row' <<<"$live_out")" = 1 ]
 assert [ "$(grep -c 'delta-row' <<<"$live_out")" = 1 ]
 assert [ "$(grep -c "^python3 - .* $ID claudeb " "$CALLS")" = 2 ]
 # The wait's ticks start no sleep process.
-assert [ "$(grep -c '^sleep 0.2$' "$CALLS")" = 0 ]
+assert [ "$(grep -c '^sleep 0.05$' "$CALLS")" = 0 ]
 # Nor any to wait for the exit, to probe the supervisor or to re-read an unchanged meta.json: one
 # watcher for the whole wait, ps once before it arms and once after, one read of the record.
-assert [ "$(grep -cFx "python3 - $RUN 0.2" "$CALLS")" = 0 ]
+assert [ "$(grep -cFx "python3 - $RUN 0.05" "$CALLS")" = 0 ]
 assert [ "$(grep -c '^python3 -c ' "$CALLS")" = 1 ]
 assert [ "$(grep -c '^ps ' "$CALLS")" = 2 ]
 assert [ "$(grep -c '^jq -r .vendor, .account, .workdir' "$CALLS")" = 1 ]
@@ -137,7 +137,7 @@ sleep 300 &
 live=$!
 jq -c --argjson p "$live" --argjson t "$now" '.pid = $p | .pid_started_at = $t' "$CRUN/meta.json" >"$WORK/m" && mv "$WORK/m" "$CRUN/meta.json"
 : >"$CALLS"
-WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
+WORKER_RUN_WAIT_POLL_S=0.05 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await '$ ls'
 # Two more reads of the rollout, each proven by a row written after the one before it was streamed.
@@ -158,7 +158,7 @@ live=$!
 jq -c --argjson p "$live" --argjson t "$now" '.pid = $p | .pid_started_at = $t | .account = "main"' "$CRUN/meta.json" >"$WORK/m" &&
   mv "$WORK/m" "$CRUN/meta.json"
 printf 'session id: abc123\n' >"$CRUN/err"
-WORKER_RUN_WAIT_POLL_S=0.2 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
+WORKER_RUN_WAIT_POLL_S=0.05 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await '$ ls'
 mkdir -p "$HOME/.codex-profiles/next/sessions"
