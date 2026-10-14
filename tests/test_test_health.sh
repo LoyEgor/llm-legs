@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-asserts=$(python3 - "$ROOT" "$WORK" <<'EOF'
+asserts=$(python3 -S - "$ROOT" "$WORK" <<'EOF'
 import importlib.machinery, importlib.util, json, os, subprocess, sys, time
 
 root, work = sys.argv[1], sys.argv[2]
@@ -41,10 +41,22 @@ import suite_audit  # noqa: E402
 import test_health as th  # noqa: E402
 
 
+pending, history = {}, []
+
+
 def write(rel, text):
     os.makedirs(os.path.dirname(os.path.join(repo, rel)), exist_ok=True)
     with open(os.path.join(repo, rel), "w") as handle:
         handle.write(text)
+    pending[rel] = text
+
+
+def commit_pending(message, at):
+    """One commit of the files written since the last, as a fast-import record: the history lands in one process."""
+    files = "".join("M 644 inline %s\ndata %d\n%s\n" % (rel, len(text.encode()), text) for rel, text in pending.items())
+    history.append("commit refs/heads/main\ncommitter t <t@t> %d +0000\ndata %d\n%s\n%s" % (
+        at, len(message.encode()) + 1, message, files))
+    pending.clear()
 
 
 def git(*args, at=None):
@@ -54,7 +66,7 @@ def git(*args, at=None):
 
 
 os.makedirs(repo)
-git("init", "-q")
+git("init", "-q", "-b", "main")
 write("bin/tool-a", "a\n")
 write("bin/tool-x", "x\n")
 write("bin/tool-y", "y\n")
@@ -78,16 +90,17 @@ write("docs/notes.md", "notes\n")
 pin = "assert grep -qF 'line %d' \"$ROOT/docs/notes.md\"\n"
 write("tests/test_pinned.sh", "".join(pin % i for i in range(4)) + "assert grep -q z \"$ROOT/bin/tool-z\"\n"
       "assert grep -q z \"$WORK/out\"\n")
-git("add", "-A")
-git("commit", "-qm", "suites", at=NOW - 20 * 86400)
+commit_pending("suites", NOW - 20 * 86400)
 for i, at in enumerate((NOW - 3 * 86400, NOW - 2 * 86400, NOW - 3600)):
     write("bin/tool-a", "a%d\n" % i)
-    git("commit", "-qam", "tool-a %d" % i, at=at)
+    commit_pending("tool-a %d" % i, at)
 for i, at in enumerate((NOW - 4 * 86400, NOW - 2.5 * 86400)):
     write("tests/test_pinned.sh", "".join(pin % k for k in range(5 + i)) + "assert grep -q z \"$ROOT/bin/tool-z\"\n")
-    git("commit", "-qam", "pin %d" % i, at=at)
+    commit_pending("pin %d" % i, int(at))
 write("bin/tool-x", "x1\n")
-git("commit", "-qam", "tool-x", at=NOW - 7200)
+commit_pending("tool-x", NOW - 7200)
+subprocess.run(["git", "-C", repo, "fast-import", "--quiet"], input="".join(history), text=True, check=True)
+git("reset", "-q")
 os.makedirs(os.path.join(work, "doctors", "nights"))
 iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 with open(os.path.join(work, "doctors", "nights", "n1.json"), "w") as handle:
