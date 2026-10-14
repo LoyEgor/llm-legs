@@ -3368,7 +3368,21 @@ end
 -- open). It must never start a collector: the collector writes the store, which
 -- would re-fire this watcher forever.
 -- A suppressed change still schedules one trailing re-render, or the burst's last write is lost.
+-- While Egor is away (presence.lua) nobody reads the menu: a change only marks the routing table stale,
+-- and his return refreshes it once. The Auto menu hands Presence in (M.presence) and reports its changes
+-- (M.presenceChanged), so a harness that loads this module never reads or joins the live one.
+local routingStaleWhileAway = false
+
+local function awayNow()
+  local presence = M.presence
+  return presence and presence.away and presence.away() or false
+end
+
 local function onStoreChanged()
+  if awayNow() then
+    routingStaleWhileAway = true
+    return
+  end
   local now = os.time()
   if not M.shouldRerenderOnStoreChange(now, lastStoreRenderEpoch) then
     if not M.storeRerenderTimer and hs.timer and hs.timer.doAfter then
@@ -3389,8 +3403,20 @@ local function onStoreChanged()
 end
 
 local function onWorkerModelChanged()
+  if awayNow() then
+    routingStaleWhileAway = true
+    return
+  end
   M.refreshRouting()
   notifyRefreshState()
+end
+
+function M.presenceChanged()
+  if routingStaleWhileAway and not awayNow() then
+    routingStaleWhileAway = false
+    M.refreshRouting()
+    notifyRefreshState()
+  end
 end
 
 -- A local pathwatcher is garbage-collected and silently stops firing; hold the

@@ -2566,6 +2566,37 @@ do
   watchHs.timer = nil
 end
 
+-- Away (presence.lua, handed in by the Auto menu): store and worker-model changes only mark the routing
+-- table stale and his return refreshes it once; a module no menu handed Presence to never gates.
+;(function()
+  local function settle()
+    local seen = 0
+    while seen < #watchTasks do
+      seen = #watchTasks
+      watchTasks[seen].callback(0, routingText)
+    end
+  end
+  settle()
+  local away = true
+  watchModule.presence = { away = function() return away end }
+  local tasks, notifies = #watchTasks, watchNotifies
+  watchClock.now = 4000; watchCallbacks[watchModule.cachePath]()
+  watchCallbacks[watchModule.workerModelPath]()
+  assert(#watchTasks == tasks and watchNotifies == notifies,
+    "a store or worker-model change while away refreshed the unseen menu")
+  watchModule.presenceChanged()
+  assert(#watchTasks == tasks, "a presence change while still away refreshed routing")
+  away = false
+  watchModule.presenceChanged()
+  assert(#watchTasks == tasks + 1 and watchNotifies == notifies + 1,
+    "the return from away did not refresh the stale routing table once")
+  settle()
+  tasks = #watchTasks
+  watchModule.presenceChanged()
+  assert(#watchTasks == tasks, "a presence change with nothing stale refreshed routing again")
+  watchModule.presence = nil
+end)()
+
 -- The vendor section header is a control, not a caption: it carries the vendor's role switches and
 -- a free vendor-scoped refresh, and it names the vendor like every other surface. Pool membership
 -- is per account only — a whole-vendor switch was one click from emptying the pool by accident.
