@@ -701,6 +701,9 @@ run_with_deadline() {
       fi
     done
     [ -n "$reason" ] || reason="deadline $DEADLINE"
+    # Written only over a live child, so `killed` names the kill whatever the exit code: codex exits 0
+    # on TERM, and that idle kill journaled as done counted its cut jobs as orphans (live 2026-10-14).
+    kill -0 "$child" 2>/dev/null || exit 0
     [ -z "$directory" ] || printf '%s\n' "$reason" >"$directory/killed" 2>/dev/null || :
     case $reason in
       'deadline '*) limit_hit worker-run.deadline "$DEADLINE" s kill "run ${directory##*/} ($vendor) killed while still served: its unfinished work" \
@@ -2374,7 +2377,7 @@ journal_worker_run() { # directory status exit-code
   journal="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/runs.jsonl"
   printf -v now '%(%s)T' -1
   reason=$2
-  case "$3" in 143|137) IFS=' ' read -r reason _ 2>/dev/null <"$directory/killed" || reason=$2 ;; esac
+  IFS=' ' read -r reason _ 2>/dev/null <"$directory/killed" || reason=$2
   meta_update "$directory" '.ended_at = $now
     | .terminal_reason = (if $reason == "failed" and $code == "4" and ((.cli_starts // []) | length) == 0
         then "no-start" else $reason end)' \
@@ -3514,11 +3517,9 @@ reroute_lines() {
 
 # Which watchdog ended a run, where one did: a bare exit 143 reads as a vendor failure, and the two
 # answers differ — an idle kill means the worker stopped writing and whatever it finished is on
-# disk, the ceiling means it was still being served when the clock ran out. Signal exits only, so
-# the marker a watchdog writes as it races a run finishing on its own cannot mislabel that run.
-killed_line() { # directory code
+# disk, the ceiling means it was still being served when the clock ran out.
+killed_line() { # directory
   local reason
-  case "$2" in 143|137) ;; *) return 0 ;; esac
   reason=$(head -n1 "$1/killed" 2>/dev/null) || return 0
   case "$reason" in
     'silent '*) printf 'KILLED: silent — no output in %ss\n' "${reason#silent }" ;;
@@ -3539,12 +3540,12 @@ print_outcome() {
     printf 'REASON: cancelled — grok ended the session before its first turn; capacity weather, not a wall: pause and relaunch once\n'
     return 0
   fi
-  if [ "$code" = 0 ]; then outcome_line DONE "$directory" >/dev/null; return 0; fi
+  if [ "$code" = 0 ]; then killed_line "$directory"; outcome_line DONE "$directory" >/dev/null; return 0; fi
   if [ "$(jq -r '.role // "workers"' "$directory/meta.json" 2>/dev/null)" = research ] && [ -s "$directory/research-outcome" ]; then
     outcome_line "$(cat "$directory/research-outcome")" "$directory"
     return 0
   fi
-  killed_line "$directory" "$code"
+  killed_line "$directory"
   if has_limit_signature "$directory" "$vendor"; then
     outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT" "$directory"
     # The chat reads these lines as they are, so the wall's SCOPE lives here, not in prose.

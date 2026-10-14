@@ -68,6 +68,20 @@ assert jq -se --arg r "$RUN_ID" 'map(select(.run == $r)) | length == 1 and .[0].
   "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
 fi
 
+if suite_shard_owns 3 wd-idle-exit0; then
+# Codex exits 0 on the watchdog's TERM: the run is still journaled as the idle kill it was, so the
+# harness doctor's orphan rule does not count the jobs cut with it as left behind.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=wedged STUB_SLEEP=60 STUB_TERM_EXIT0=1 WORKER_RUN_IDLE_S=2 WORKER_RUN_DEADLINE=600
+start_ok codex
+unset STUB_SLEEP STUB_TERM_EXIT0 WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+idle0_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^KILLED: idle watchdog — nothing this run writes changed for 2s' <<<"$idle0_wait"
+assert jq -se --arg r "$RUN_ID" 'map(select(.run == $r)) | length == 1 and .[0].reason == "idle" and .[0].exit_code == 0' \
+  "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
+fi
+
 if suite_shard_owns 3 wd-patient; then
 # WORKER_RUN_IDLE_S=0 disarms the idle half alone: the same silent stub runs to its own end.
 clear_stub
