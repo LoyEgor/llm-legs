@@ -178,7 +178,7 @@ check(stored == [recorded] and recorded["id"] == "suite:alpha/test_mid" and reco
 again = collect()
 check("alpha/test_mid" not in {p["suite"]["component"] for p in again["problems"]}
       and again["proofs"]["alpha/test_mid"]["runs"] == 0
-      and any(l[3].endswith("alpha/test_mid · kept %s · 0 of 5 runs since" % recorded["audited_at"][:10])
+      and any(l[3].startswith("alpha/test_mid               0.5 wall-min/day ·") and l[3].endswith("wall-s a run · kept %s · 0 of 5 runs since" % recorded["audited_at"][:10])
               and l[1] == "d" for l in again["menu"]),
       "a kept audit closes the suite: no longer due, its menu row dim with the verdict: %s" % again["menu"])
 check(suite_audit.restate([due["alpha/test_mid"]], {"suite:alpha/test_mid": recorded}) == []
@@ -244,7 +244,7 @@ lines = h.menu_text(document).splitlines()
 check(document["problem_count"] == 0 and all(p["group"] == "Suite audits" and p["speed"] for p in document["problems"])
       and "0\t\t\tSuite audits: watch · %s" % section["head"] in lines
       and section["head"].startswith("9 due · 4 wall-min/day, 4 CPU-min/day over 9 suites · workers 1 % · next: alpha/test_heavy")
-      and "1\t\t\t   2.0 wall-min/day ·   2.0 CPU-min/day ·   40 wall-s a run · alpha/test_heavy · audit due: %s"
+      and "1\t\t\talpha/test_heavy             2.0 wall-min/day ·   2.0 CPU-min/day ·   40 wall-s a run · audit due: %s"
       % heavy["due"] in lines,
       "Harness lays Suite audits beside Spend: watch rows counted nowhere, its block: %s" % lines[2:6])
 
@@ -254,7 +254,7 @@ floored = suite_audit.collect(NOW, os.environ["RUN_SUITES_JOURNAL"], root, {"alp
 suite_audit.FLOOR_MIN_DAY = 0.0
 check(floored["selection"] == ["suite_audit:alpha:test_heavy", "suite_audit:alpha:test_light"]
       and floored["head"].startswith("2 due · 7 under 1 wall-min/day skipped · ")
-      and any(l[3].endswith("alpha/test_mid · under the 1 wall-min/day floor") for l in floored["menu"]),
+      and any(l[3].startswith("alpha/test_mid ") and l[3].endswith(" wall-s a run · under the 1 wall-min/day floor") for l in floored["menu"]),
       "a suite under 1 wall-min/day is never due whatever its reason, a dead one aside, and the head counts the ones "
       "skipped: %s %s" % (floored["selection"], floored["head"]))
 sides = [[NOW - back * 86400 + 60 + i * 600 for i in range(3)] for back in (6, 2)]

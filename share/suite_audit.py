@@ -371,8 +371,8 @@ def lines(found, ledger, reasons, proofs):
         tail = "audit due: " + why[0] if why else "%s %s · %s" % (row.get("verdict"), str(row.get("audited_at"))[:10],
                                                                  proof_text(proofs[c["key"]])) if row else \
             "under the %g wall-min/day floor" % FLOOR_MIN_DAY
-        out.append([0, "" if why else "d", False, "%6.1f wall-min/day · %5.1f CPU-min/day · %4s wall-s a run · %s · %s" % (
-            c["wall_min_day"], c["cpu_min_day"], fmt(c["wall_floor"]), c["key"], tail)])
+        out.append([0, "" if why else "d", False, "%s %6.1f wall-min/day · %5.1f CPU-min/day · %4s wall-s a run · %s" % (
+            spend.menu_name(c["key"]), c["wall_min_day"], c["cpu_min_day"], fmt(c["wall_floor"]), tail)])
     rest = found[SHOWN:]
     if rest:
         out.append([0, "d", False, "%d more suites · %.1f wall-min/day · %d due" % (

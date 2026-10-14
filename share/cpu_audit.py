@@ -198,8 +198,8 @@ def collect(now, state, harness_dir, speed_dir, collector_rows, hook_runs, root,
                head="%d due%s · %.0f CPU-min/day over %d components%s" % (
                    len(out["problems"]), floor_text(len(skipped), "CPU-min/day"), total, len(found),
                    " · next: " + out["problems"][0]["cpu"]["key"] if out["problems"] else ""))
-    out["menu"] = [[0, "" if reasons[c["key"]] else "d", False, "%6.1f CPU-min/day · %6s wasted · %7d runs a day · %s · %s" % (
-        c["cpu_min_day"], wasted(c), c["runs_day"], c["key"], "audit due: " + reasons[c["key"]] if reasons[c["key"]] else
+    out["menu"] = [[0, "" if reasons[c["key"]] else "d", False, "%s %6.1f CPU-min/day · %7d runs a day · %6s wasted · %s" % (
+        spend.menu_name(c["key"]), c["cpu_min_day"], c["runs_day"], wasted(c), "audit due: " + reasons[c["key"]] if reasons[c["key"]] else
         proof_text(out["proofs"][c["key"]]) if c["key"] in out["proofs"] else "under the %g CPU-min/day floor" % FLOOR_MIN_DAY)]
         for c in found[:SHOWN]]
     return out

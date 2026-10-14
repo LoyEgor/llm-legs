@@ -74,7 +74,7 @@ check(ranked == [("process/Hammerspoon", 10.0), ("statusline/render", 2.5), ("pr
       "processes only (every one System kept), hooks by script, ranked: %s" % ranked)
 shown = {c["key"]: c["wasted_min_day"] for c in first["components"]}
 check(shown["statusline/render"] == 1.5 and shown["statusline/work"] is None and shown["statusline/ports"] is None
-      and "   1.5 wasted ·       2 runs a day · statusline/render" in first["menu"][1][3]
+      and first["menu"][1][3].startswith("statusline/render            2.5 CPU-min/day ·       2 runs a day ·    1.5 wasted · ")
       and "statusline/render · 2.5 CPU-min/day · 1.5 wasted ·" in first["problems"][1]["fact"],
       "wasted is the median CPU of runs whose output equalled the previous one, unknown without a same column: %s"
       % shown)
@@ -82,7 +82,7 @@ check(first["selection"] == ["cpu:" + k for k, v in ranked if v >= 1]
       and {p["cpu"]["due"] for p in first["problems"]} == {"never audited"}
       and all(p["rule"] == "cpu_audit" and p["unit"] == "% CPU" and p["group"] == "CPU audits"
               for p in first["problems"])
-      and first["menu"][-1][3].endswith("statusline/ports · under the 1 CPU-min/day floor"),
+      and first["menu"][-1][3].startswith("statusline/ports ") and first["menu"][-1][3].endswith(" wasted · under the 1 CPU-min/day floor"),
       "every component never audited is due at 1 CPU-min/day or more, queued in rank order; one under it is never "
       "due: %s" % first["selection"])
 check([os.path.relpath(s, repos) for s in first["problems"][1]["cpu"]["sources"]] == ["llm-legs/bin/statusline.sh"]
@@ -120,7 +120,7 @@ check("cpu:statusline/render" not in kept["selection"] and kept["proofs"]["statu
       and rows["cpu:statusline/render"]["zero"] == "removal saves 2.5 CPU-min/day; loses every statusline"
       and rows["cpu:statusline/render"]["sources"] == {"llm-legs/bin/statusline.sh":
                                                         rows["cpu:statusline/render"]["sources"]["llm-legs/bin/statusline.sh"]}
-      and any("statusline/render · kept " in m[3] for m in kept["menu"]),
+      and any(m[3].startswith("statusline/render ") and " wasted · kept " in m[3] for m in kept["menu"]),
       "a kept audit closes its row and shows its proof: %s" % kept["proofs"])
 stale = [p for p in first["problems"] if p["cpu"]["component"] == "statusline/render"]
 check(cpu_audit.restate(stale + first["problems"][:1], rows) == first["problems"][:1],

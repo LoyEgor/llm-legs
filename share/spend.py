@@ -347,6 +347,19 @@ def backfill(history, closed, through, now, local_day, home):
             return
 
 
+NAME_CELLS = 25
+
+
+def menu_name(key):
+    """An audit row's name leads it in one padded column: the doctors menu clips a row at 64 cells (doctors.lua
+    ROW_CELLS), so a name printed after the numbers never showed. Leading path segments go first when it is long."""
+    parts = key.split("/")
+    while len(parts) > 1 and len("/".join(parts)) > NAME_CELLS:
+        parts.pop(0)
+    name = "/".join(parts)
+    return (name if len(name) <= NAME_CELLS else name[:NAME_CELLS - 1] + "…").ljust(NAME_CELLS)
+
+
 def named(c):
     if c["key"] == MENUS:
         return c["label"]
