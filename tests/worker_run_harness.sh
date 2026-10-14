@@ -419,8 +419,11 @@ start_ok() {
   local vendor="$1"
   shift
   "$RUNNER" start "$vendor" --brief "${WORKER_TEST_BRIEF:-$WORK/brief}" --workdir "${WORKER_TEST_WORKDIR:-$WORK/workdir}" "$@" >"$WORK/start.out" 2>"$WORK/start.err" || fail "start $vendor failed: $(<"$WORK/start.err")"
-  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
-  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+  local line
+  RUN_ID='' RUN_DIR=''
+  while IFS= read -r line; do
+    case $line in 'RUN: '*) RUN_ID=${line#RUN: } ;; 'DIR: '*) RUN_DIR=${line#DIR: } ;; esac
+  done <"$WORK/start.out"
   await_launched
 }
 
