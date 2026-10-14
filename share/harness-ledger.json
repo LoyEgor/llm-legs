@@ -10218,6 +10218,187 @@
       "reviewed_by": "night fixer harness-speed-test-health-flaky-review-bench-test-consistency-20261014T021747Z-5f97",
       "note": "Its only flaky red in the window is the 2026-10-13 06:39 run-all beside test_consistency, both from the same python 3.9 shell.",
       "handoff": null
+    },
+    {
+      "id": "regression-fix-6324-coverage-growth",
+      "title": "test_doctor_fix read slower: later coverage commits, not the shard fix",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012T235129Z-6324"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "Shard 3 timed at 49359fee^ -> 49359fee -> HEAD: 39.8 -> 39.4 -> 38.1 s wall (cpu 25.4 s, ~12.7 s waits on launched subprocesses at load ~50): the fix is not slower. The 31 -> 43 wall-s reading follows CPU growth (median 76 -> 89 s) from coverage commits landed after it (997f1d1a, 6280c424, c50ef462). Not reverted.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-05eb-wait-journal-watcher",
+      "title": "test_wait_journal read slower: its armed() handshake waited for a watcher shape cb6a178b had changed",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-suite-audit-llm-legs-test-image-composite-20261012T235317Z-05eb"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T08:15:00+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+          "files": [
+            "llm-legs/tests/test_wait_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_wait_journal before and after the armed() pattern change",
+            "data": "same 26 asserts; the old pattern made the suite red under the new fail-on-no-watcher check",
+            "result": "20.7 -> 2.0 s wall, same asserts"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "armed() waited for a 'python3 - ' heredoc watcher; cb6a178b made the kqueue watcher a coproc 'python3 -c', so both handshakes burned their full 5 s bound (2.5 s/run before 2026-10-13 15:49Z, ~19 s after). It now matches select.kqueue and fails when no watcher comes up.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-5503-leaked-worktrees",
+      "title": "commit-report read slower while ~77 leaked doctor-fix worktrees inflated the review-debt probe",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-hooks-commit-report-sh-20261012T235126Z-5503"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "The slow window is 2026-10-13 15Z-00Z (hourly medians 4.4-5.2 s); review-debt walked ~77 leaked doctor-fix worktrees until the row budget cut it. llm-legs@944ffc1c (in base) cleared them: 01-03Z hours read 1.47/1.37/0.80 s, overall 1964 -> 1522 ms median; the live repo now holds 25 worktrees and 0 refs/doctor-fix, review-debt --split takes 0.48 s wall (~0.95 s cpu). The fix itself is not the cause. Not reverted.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-6a0b-system-doctor-waits",
+      "title": "test_system_doctor read slower: four ssd-sampler probes waited one after another",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T08:15:00+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+          "files": [
+            "llm-legs/tests/test_system_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_system_doctor before and after the probe pool and one-clock stamps",
+            "data": "299 checks both sides; 3 concurrent copies at load ~130 PASS each",
+            "result": "31.0 -> 25.7 s wall at load ~46, same checks"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "The four ssd-sampler probes (run, lag, rss, timeout) now run at once in a 4-thread pool, each with its own fake fs_usage and SSD_SAMPLER_DIR; the timeout probe fires at 0.2 + 0.2 s; the run probe's fake stamps come from one clock read, so load no longer stretches the traced span.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-1ca2-load",
+      "title": "test_grok_image read slower under load, same CPU",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-suite-audit-llm-legs-test-grok-image-20261012T235310Z-1ca2"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "CPU median 24.5 -> 24.8 s before/after the fix (n=14/54) while the wall median rose 58 -> 116 s with load; the latest direct run was 76.9 s wall at ~20 s cpu. The fix did no more work. Not reverted; this run also trimmed grok-image's own forks (caps check beside the generation, one jq stream pass, one sips read).",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-336a-watchdog-shards",
+      "title": "test_worker_run_watchdog read slower: shard 1 carried 45 s of sections, and the caffeinate stub forked sleep",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-test-health-idle-llm-legs-test-worker-run-watchdog-20261010T031952Z-336a"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T08:15:00+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+          "files": [
+            "llm-legs/tests/test_worker_run_watchdog.sh",
+            "llm-legs/tests/worker_run_harness.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_worker_run_watchdog shards before and after the section move and stub builtin",
+            "data": "asserts 10+14+15+35 = 74 = the full run's, every section in exactly one shard",
+            "result": "longest shard 44.8 -> 36.4 s at load ~45, same 74 asserts"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "wd-lastwords moved from shard 1 to shard 2 (longest shard 44.8 -> 39.8 s by section sums; shards ran 36.4/34.2/33.3/29.4 s), and the harness's caffeinate stub loads the sleep builtin, so its supervisor poll stops forking /bin/sleep ten times a second.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-3f99-noise",
+      "title": "test_log_stores read 0.7 -> 1.2 s: sub-second noise",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-suite-audit-llm-legs-test-no-hardcoded-models-20261012T235354Z-3f99"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "0.8 -> 1.1 s wall, cpu 0.3 -> 0.4 s across the fix: a sub-second suite read under load; 0.1 suite-min/day. Not reverted.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-4fe5-noise",
+      "title": "test_worker_tag_marks read 0.5 -> 0.7 s: noise, CPU flat",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-suite-audit-llm-legs-test-report-frame-guard-20261012T235400Z-4fe5"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "0.5 -> 0.7 s wall with cpu flat at 0.4 s; c0126f01 in this run made the hook it covers faster. Not reverted.",
+      "handoff": null
+    },
+    {
+      "id": "regression-fix-46e9-noise",
+      "title": "test_limits_registry read 0.1 -> 0.1 s: no change",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-suite-audit-review-bench-test-limits-registry-20261012T235427Z-46e9"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-regression-fix-harness-speed-test-health-heavy-llm-legs-test-instruction-gate-relay-20261012t010240z-2f51-20261012t235129z-6324-20261014T021705Z-174d",
+      "note": "0.1 -> 0.1 s wall, 0.0 suite-min/day: nothing measurable changed. Not reverted.",
+      "handoff": null
     }
   ],
   "blind_spots": [
