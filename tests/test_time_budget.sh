@@ -419,10 +419,20 @@ check(T.problem_trend(NOW) == {"code": {"2026-01-10": 0}, "llm": {"2026-01-10": 
 saved = {k: os.environ.pop(k, None) for k in ("DOCTORS_DIR", "LLM_DOCTOR_DIR")}
 os.environ["LLM_DOCTOR_DIR"] = os.path.join(work, "llm")
 collector_runs.problem_day("llm", {"problem_count": 5}, "LLM_DOCTOR_DIR")
-del os.environ["LLM_DOCTOR_DIR"]
+os.environ["SPEED_DOCTOR_DIR"] = os.path.join(work, "speed")
+collector_runs.record("speed", time.time())
+del os.environ["LLM_DOCTOR_DIR"], os.environ["SPEED_DOCTOR_DIR"]
 os.environ.update({k: v for k, v in saved.items() if v is not None})
 check(not os.path.exists(os.path.join(work, "home", ".cache", "doctors")),
-      "a fixture doctor directory with no DOCTORS_DIR never reaches the default journal")
+      "a fixture doctor directory with no DOCTORS_DIR never reaches the default journal, a problem day nor a run")
+# A doctor exec'd by another journals its own CPU: the base handed across execv is subtracted.
+exec_runs = os.path.join(work, "exec-runs")
+for base in ("", "1e6"):
+    subprocess.run([sys.executable, "-c", "import sys, time; sys.path.insert(0, sys.argv[1]); import collector_runs; "
+                    "collector_runs.record('speed', time.time())", os.path.join(root, "share")],
+                   env=dict(os.environ, DOCTORS_DIR=exec_runs, DOCTOR_CPU_BASE=base), check=True)
+cpu = [json.loads(line)["cpu_s"] for line in open(os.path.join(exec_runs, "collector-runs.jsonl"))]
+check(cpu[0] > 0 and cpu[1] == 0, "a run's cpu_s is its CPU less the inherited DOCTOR_CPU_BASE: %s" % cpu)
 
 nights = os.path.join(work, "doctors", "nights")
 os.makedirs(nights)

@@ -116,9 +116,11 @@ fail_run() { # id note (locked)
 }
 
 new_record() { # doctor area night (locked) -> id
-  local id file tmp hex
+  local id file tmp hex first=${DOCTOR_FIX_FIRST_HEX:-}
   while :; do
     printf -v hex '%04x' "$RANDOM"
+    # The suite's seam: a pinned first suffix makes the claim below meet a taken id on purpose.
+    [ -z "$first" ] || { hex=$first; first=''; }
     id="$1-$2-$(date -u +%Y%m%dT%H%M%SZ)-$hex"
     file=$(record_file "$id")
     (set -C && : >"$file") 2>/dev/null && break

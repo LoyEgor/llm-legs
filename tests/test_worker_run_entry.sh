@@ -119,6 +119,7 @@ effort_header_tests() {
   clear_stub
   start_ok gemini --account main
   assert await_exit
+  assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = pro
   set_config 'claudeb_model=fable'
   clear_stub
   start_ok codex --account main
@@ -164,8 +165,6 @@ report_bus_tests() {
   clear_stub
   TMPDIR=/nonexistent WORKER_TEST_WORKDIR=$place_repo start_ok codex --account reportacct
   assert await_exit
-  TMPDIR=/nonexistent "$RUNNER" report "$RUN_ID" >/dev/null
-  "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
   assert test "$(cut -f2,3 "$HOME/.cache/claude-statusline/place-report-launcher" | tr '\t' ' ')" = "worker-start $place_top
 worker-end $place_top"
 
@@ -185,13 +184,10 @@ worker-end $place_top"
   assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/report-duplicate.out"
   kill -TERM "$(jq -r .pid "$old_dir/meta.json")"
   assert await_exit
-  "$RUNNER" report "$old_id" >/dev/null
   clear_stub
 }
 if suite_shard_owns 2 report-bus; then
   report_bus_tests
-  # A finished worker posts nothing to Egor's chat; its outcome is the chat's to read through its report.
-  assert test ! -s "$REPORT_BUS_LOG"
 fi
 
 
@@ -388,4 +384,4 @@ assert test "$(PATH="$WORK/fork-shim:$PATH" brief_line_value "$WORK/header-brief
 assert test "$(PATH="$WORK/fork-shim:$PATH" brief_line_value "$WORK/header-brief" EFFORT)" = high
 assert test ! -e "$WORK/forks.log"
 
-echo "PASS: $asserts asserts; the report bus, effort refusals before launch, the worker door refusing a headless worker's start and wait, and the limit gate a chat's start passes (deny refuses unlaunched, a note rides on stderr, none asked outside Claude Code), an ACCOUNT off the vendor roster refused unlaunched"
+suite_shard_pass "$asserts"

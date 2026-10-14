@@ -26,6 +26,22 @@ command -v claudeb >/dev/null 2>&1 || fail "claudeb not on PATH"
 command -v jq >/dev/null 2>&1 || fail "jq not on PATH"
 command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH (needed to parse ISO timestamps)"
 
+# The installed copies test_consistency.sh reads only as repository sources and a committed fixture.
+E2E_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+. "$E2E_ROOT/share/test-scope.sh"
+E2E_PROJECTS=$(git_projects "$E2E_ROOT")
+cmp -s "$HOME/.claude/commands/worker.md" "$E2E_PROJECTS/claude-setup/commands/worker.md" \
+  || fail "installed ~/.claude/commands/worker.md differs from claude-setup/commands/worker.md"
+cmp -s "$HOME/.claude/hooks/worker-launch-gate.sh" "$E2E_ROOT/bin/worker-launch-gate.sh" \
+  || fail "installed ~/.claude/hooks/worker-launch-gate.sh differs from bin/worker-launch-gate.sh"
+[ "$(cd "$HOME/.hammerspoon" && pwd -P)" = "$(cd "$E2E_PROJECTS/hammerspoon" && pwd -P)" ] \
+  || fail "~/.hammerspoon is not the hammerspoon checkout beside llm-legs"
+hook_triples='[.hooks | to_entries[] | .key as $e | .value[] | .matcher as $m | .hooks[] | [$e, $m, .command]]'
+jq -e --slurpfile live "$HOME/.claude/settings.json" "$hook_triples - (\$live[0] | $hook_triples) == []" \
+  "$E2E_ROOT/tests/fixtures/claude-settings.json" >/dev/null \
+  || fail "~/.claude/settings.json lacks a hook registration tests/fixtures/claude-settings.json holds"
+pass "installed worker.md, launch gate, Hammerspoon root and hook registrations match the suites' sources"
+
 iso2epoch() {
   python3 -c 'import sys,datetime; value=sys.argv[1]; print(int(float(value)) if value.replace(".", "", 1).isdigit() else int(datetime.datetime.fromisoformat(value.replace("Z","+00:00")).timestamp()))' "$1"
 }
@@ -791,7 +807,6 @@ pass "CLI surface: --table rows for claude/codex/gemini, bare JSON schema fields
 # snapshots without re-probing. A concurrent refresh (or a bucket crossing a staleness /
 # expiry boundary between the two reads) can shift a cell, so a mismatch retries on a
 # fresh sync; a persistent disagreement fails loudly.
-E2E_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$E2E_ROOT/share/limits-view.sh"
 consistency_attempt() {
   local json status hasfab a row expected cells

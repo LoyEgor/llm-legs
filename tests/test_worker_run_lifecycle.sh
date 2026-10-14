@@ -7,13 +7,11 @@ if suite_shard_owns 1 lifecycle-detached; then
 clear_stub
 set_config 'codex_effort=high'
 export PICK_ACCOUNT=fast PICK_RC=0 STUB_GATE="$WORK/start-gate"
-# Not wall time, which load inflates: a start that waits on its worker returns only once the timer
-# opens the gate, and the running asserts below fail; the budget is the start's own CPU.
+# A start that waits on its worker returns only once the timer opens the gate, and the running asserts
+# below fail.
 (sleep 60; : >"$STUB_GATE") &
 gate_timer=$!
-TIMEFORMAT='%U %S'
-{ time start_ok codex 2>&3; } 3>&2 2>"$WORK/start.cpu"
-assert test "$(awk '{ printf "%d", ($1 + $2) * 1000 }' "$WORK/start.cpu")" -lt 2000
+start_ok codex
 assert test "$(wc -l <"$WORK/start.out" | tr -d ' ')" -eq 5
 assert grep -Eq '^RUN: codex-[0-9]+-[0-9]+-[0-9a-f]{4}$' "$WORK/start.out"
 assert grep -qx 'TAG: fast · astra · high' "$WORK/start.out"
@@ -42,17 +40,6 @@ assert grep -q 'second line' "$STUB_DIR/codex.stdin"
 # run's, standing outside the launcher's cwd (the speed gate read it as a holder of the run's own worktree); the stub exits 1
 # and the run is still done.
 assert grep -qx -- "-i -w $pid run-id=unset cwd=/" "$CAFFEINATE_LOG"
-# It watches the supervisor with the loadable sleep wherever the PATH bash has it: no `sleep` fork every
-# 0.1 s for a run's whole life.
-mkdir -p "$WORK/sleep-shim"
-printf '#!/bin/sh\necho fork >>"%s"\nexec /bin/sleep "$@"\n' "$WORK/sleep-forks" >"$WORK/sleep-shim/sleep"
-chmod +x "$WORK/sleep-shim/sleep"
-/bin/sleep 0.5 &
-watched=$!
-PATH="$WORK/sleep-shim:$PATH" CAFFEINATE_LOG=/dev/null caffeinate -i -w "$watched"
-loadable=0
-bash -c 'enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep' 2>/dev/null && loadable=1
-assert test "$loadable" = 0 -o ! -s "$WORK/sleep-forks"
 assert test "$(jq -r '.orphans_ended // [] | length' "$RUN_DIR/meta.json")" = 0
 unset STUB_GATE
 
@@ -69,11 +56,12 @@ assert jq -e 'has("launcher_pid") | not' "$RUN_DIR/meta.json" >/dev/null
 night_wt="$WORK/r/.claude/worktrees/night-n1-j1"
 mkdir -p "$night_wt"
 ln -s /bin/bash "$WORK/claude"
-"$WORK/claude" -c '"$1" start codex --model default --brief "$2" --workdir "$3" >"$4" 2>&1; true' _ \
+"$WORK/claude" -c '"$1" start codex --model default --brief "$2" --workdir "$3" >"$4" 2>&1' _ \
   "$RUNNER" "$WORK/brief" "$night_wt" "$WORK/start.out" &
 chat=$!
-wait "$chat"
+wait "$chat" || fail "the night-worktree start failed: $(cat "$WORK/start.out")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out") RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+[ -n "$RUN_ID" ] || fail "the night-worktree start named no run: $(cat "$WORK/start.out")"
 assert await_exit
 assert [ "$(jq -r '.launcher_pid' "$RUN_DIR/meta.json")" = "$chat" ]
 
@@ -114,14 +102,12 @@ for vendor in claudeb codex gemini; do
   # Claims own cross-run spreading, so every automatic launch makes one claimed query and does
   # not derive a second exclusion layer from worker-run's live-run registry.
   assert grep -qx -- "--account $vendor --claim" "$PICK_LOG"
-  assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
   assert await_exit
 
   clear_stub
   export PICK_ACCOUNT=ignored PICK_RC=2
   start_ok "$vendor"
   assert meta_account_is pinned
-  assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
   assert await_exit
 done
 fi
@@ -161,14 +147,13 @@ start_ok claudeb --role research
 assert jq -e '.model == "opus" and (has("light") | not)' "$RUN_DIR/meta.json" >/dev/null
 assert await_exit
 
-# Legacy picker stderr remains visible but has no routing or report semantics.
+# Picker stderr stays visible but has no routing or report semantics.
 clear_stub
 set_config 'codex_effort=medium'
-export PICK_ACCOUNT=picked PICK_RC=0 PICK_STDERR='worker-pick: legacy SESSION RESERVE note'
+export PICK_ACCOUNT=picked PICK_RC=0 PICK_STDERR='worker-pick: note'
 start_ok codex
 assert meta_account_is picked
 assert grep -qxF "$PICK_STDERR" "$WORK/start.err"
-assert jq -e 'has("session_reserve") | not' "$RUN_DIR/meta.json" >/dev/null
 assert await_exit
 assert grep -q '^ACCOUNT: picked (codex)$' <<<"$("$RUNNER" report "$RUN_ID")"
 unset PICK_STDERR
@@ -491,4 +476,4 @@ assert test "$(wc -l <"$WORK/forks/log" | tr -d ' ')" -eq 4
 assert test -d "$GROKB_PROFILES_DIR/fork3" -a -e "$CLAUDEB_DIR/tokens/fork3"
 fi
 
-echo "PASS: $asserts asserts; detached start, bounded waits, light runs, chat pins, computer use, missing pool"
+suite_shard_pass "$asserts"

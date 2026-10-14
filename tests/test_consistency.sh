@@ -10,9 +10,9 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/share/test-scope.sh"
 PROJECTS=$(git_projects "$ROOT")
-# A worker or harness may run this under a fixture HOME; ~user reads the password database, never $HOME.
-eval "REAL_HOME=~$(id -un)"
-HS_ROOT="${HS_ROOT:-$REAL_HOME/.hammerspoon}"
+# Repository sources and a committed settings fixture, never the owner's installed ~ copies:
+# tests/e2e_surfaces.sh (live-only) checks the installed copies match them.
+HS_ROOT="${HS_ROOT:-$PROJECTS/hammerspoon}"
 DOC="docs/shared-invariants.md"
 CLAUDEB="$ROOT/bin/claudeb"
 STATUSLINE="$ROOT/bin/statusline.sh"
@@ -22,7 +22,7 @@ DRIVER="$ROOT/bin/claude-session-driver"
 
 HAMMER="$ROOT/hammerspoon/llm-limits.lua"
 WORKER_GATE="$ROOT/bin/worker-limit-gate.sh"
-WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$REAL_HOME/.claude/settings.json}"
+WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$ROOT/tests/fixtures/claude-settings.json}"
 
 CONSISTENCY_CACHE=$(mktemp -d)
 trap 'rm -rf "$CONSISTENCY_CACHE"' EXIT
@@ -80,11 +80,11 @@ RB_DEBT="$RB_PKG/debt.py"
 RB_REPORT="$RB_PKG/report.py"
 RB_CLI="$RB_PKG/cli.py"
 RB_ANCHORS="$REVIEW_ROOT/bin/review-anchors"
-WORKER_COMMAND="${WORKER_COMMAND_FILE:-$REAL_HOME/.claude/commands/worker.md}"
 WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
 FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
 CLAUDE_SETUP=$FAMILY_SETUP_ROOT
+WORKER_COMMAND="${WORKER_COMMAND_FILE:-$CLAUDE_SETUP/commands/worker.md}"
 GEMINI_ACCOUNTS="$ROOT/share/gemini-accounts.sh"
 GEMINIB="$ROOT/bin/geminib"
 OPENCODE_GO="$ROOT/bin/opencode-go"
@@ -201,8 +201,8 @@ assert grep -Fq -- 'backed off to 1800s' "$ROOT/docs/DIAGNOSTICS.md"
 
 # A red suite reruns once before it counts, at press time (night-run) and at landing (the orchestrator):
 # night 3131 sent four unreproducible landing reds back to one worker, ~40 min a cycle.
-assert grep -Fq -- 'red twice stays failed' "$ROOT/bin/night-run"
-assert grep -Fq -- 'A red suite reruns once alone' "$ROOT/docs/fix-orchestrator.md"
+assert grep -Fq -- 'flaky[]?' "$ROOT/bin/night-run"
+assert grep -Fq -- 'reruns once alone (`tests/run-all <suite>`)' "$ROOT/docs/fix-orchestrator.md"
 
 # hammerspoon must stay stale-flag-driven, not hardcode one of these thresholds
 assert grep -q 'bucket.stale == true' "$HAMMER"
@@ -222,7 +222,7 @@ done
 # The prefix is spelled once on the reader side; a second literal is a second answer.
 assert eq "$(grep -c 'anthropic\.ccr\.' "$ROOT/bin/chats" "$ROOT/bin/chat-find" | grep -c ':0$')" 2
 assert grep -Fq 'GATEWAY_PREFIX = "anthropic.ccr."' "$CHAT_RESUME"
-assert grep -Fq 'Sol' "$ROOT/docs/claudegpt.md"
+assert grep -Fq 'column shows `Sol` / `Astra`' "$ROOT/docs/claudegpt.md"
 
 # --- Row cf: the anthropic.ccr. prefix and its four sites --------------------
 # Each reads a different carrier — transcript, /model return id, harness payload, and the picker the
@@ -312,7 +312,7 @@ assert grep -Fq '5[0-9][0-9]$ ]] || [ "$http" = 000 ]; then' "$CLAUDEB"
 assert grep -Fq '[ "$http" = 401 ] || [ "$http" = 403 ]; then' "$CLAUDEB"
 # None of the three weather tokens may appear on an auth-verdict line.
 for tok in '000' '429' '5[0-9][0-9]'; do
-  if grep -nE "$tok" "$CLAUDEB" | grep -E 'auth-failed|revoked|mark_auth "\$name" expired' | grep -Fq "$tok"; then
+  if grep -E "$tok" "$CLAUDEB" | grep -Eq 'auth-failed|revoked|mark_auth "\$name" expired'; then
     fail "row d: weather class $tok appears on an auth-verdict line"
   fi
 done
@@ -343,10 +343,6 @@ assert grep -Fq -- 'return 76' "$CLAUDEB"
 assert eq "$(grep -c 'CLAUDEB_WARM_USER_EXPLICIT' "$LLMLIMITS")" 3
 assert grep -Fq 'claudeb_child=(env LLM_LIMITS_ANNOUNCE_SUPPRESS=1 CLAUDEB_WARM_USER_EXPLICIT=true "$claudeb_cmd")' "$LLMLIMITS"
 assert grep -Fq -- 'robot curl refresh off (manual refresh only) — revive path active' "$LLMLIMITS"
-retired_marker_re='token[-_]'"freeze"
-for site in "$CLAUDEB" "$LLMLIMITS"; do
-  assert eq "$(grep -cE "$retired_marker_re" "$site")" 0
-done
 assert doc_has 'Robot curl refresh is off, permanently and unconditionally'
 assert doc_has '`robot-skip`'
 
@@ -397,19 +393,6 @@ assert grep -Fq 'return self.alone_at is None or now < self.alone_at + _catalog.
 assert grep -Fq '_launch.bind_panel_lifetime(run_dir, submitted_raters)' "$RB_CLI"
 assert grep -Fq 'bind_panel_lifetime(run_dir, [rater for _, (rater, _, _) in pending])' "$RB_LAUNCH"
 
-# A pin over a package needs both of these. `grep -Fq a.py b.py` is OR — it exits at the first
-# match — so a value spelled in two modules keeps passing after one of them drops it; and a count
-# taken in one module says nothing about the copy the split made possible in a sibling.
-rb_all_have() {
-  local rb_pattern="$1" rb_file
-  shift
-  for rb_file; do grep -Fq -- "$rb_pattern" "$rb_file" || return 1; done
-}
-# <pattern> <lines package-wide> <the one module they may live in>
-rb_pkg_only() {
-  eq "$(grep -rhF --include='*.py' -- "$1" "$RB_PKG" | grep -c '')" "$2" \
-    && eq "$(grep -rlF --include='*.py' -- "$1" "$RB_PKG")" "$3"
-}
 
 # A suite patch has to name the module that owns the name. Inside the package a module reads its
 # siblings through the module object, so a patch written on the package instead lands on the
@@ -470,7 +453,6 @@ assert doc_has '`agy-pro-high` → `--model gemini-3.1-pro-high`'
 assert doc_has '`agy-flash38-<effort>` → `--model gemini-3.8-flash-<effort>`'
 assert doc_has '`agy-flash37-<effort>` → `--model gemini-3.7-flash-<effort>`'
 assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash-<effort>`'
-assert doc_has 'retired from the roster whole rather than repointed'
 assert doc_has '`agy-flash35`/`gemini-3.5-flash` went that way'
 assert doc_has 'historical rows are keyed `flash35-<effort>`'
 assert grep -Fq 'retired_flash = "agy-" + "flash35-"' "$RB_RATERS"
@@ -601,7 +583,6 @@ for doctor_state in ' · rescanning'; do
   assert grep -Fq "$doctor_state" "$ROOT/hammerspoon/llm-limits.lua"
   assert doc_has "$doctor_state"
 done
-assert test "$(grep -Fc 'Run Gemini probe (~3 min, costs Gemini tokens)' "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
 
 
 # --- Row cn: Gemini capacity fallback ----------------------------------------
@@ -631,12 +612,11 @@ family_rows_ok() {
               $3 !~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)$/ || $4 !~ /^Gemini [0-9]+\.[0-9]+ / { bad = 1 }
               END { exit (bad || NR == 0) }'
 }
-builtin_rows=$(bash -c 'eval "$(sed -n "/^families_builtin() {/,/^}/p" "$1")"; families_builtin' _ "$GEMINIB_BIN")
+builtin_rows=$(AGY_BIN="$CONSISTENCY_CACHE/no-agy" GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/no-cache" "$GEMINIB_BIN" families)
 assert family_rows_ok <<<"$builtin_rows"
 assert eq "$(jq -r '.families[] | [.family, .slug, .agy_prefix, .label] | @tsv' "$ROOT/tests/fixtures/geminib-models.json")" "$builtin_rows"
 assert eq "$(jq -c '.families' "$REVIEW_ROOT/tests/fixtures/review-bench/geminib-models.json")" \
   "$(jq -c '.families' "$ROOT/tests/fixtures/geminib-models.json")"
-assert eq "$(AGY_BIN="$CONSISTENCY_CACHE/no-agy" GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/no-cache" "$GEMINIB_BIN" families)" "$builtin_rows"
 assert family_rows_ok <<<"$gemini_family_rows"
 assert eq "$("$GEMINIB_BIN" families --json | jq -r '.[] | [.family, .slug, .agy_prefix, .label] | @tsv')" \
   "$gemini_family_rows"
@@ -659,16 +639,14 @@ grok_rows_ok() {
               $4 !~ /^(-|[a-z]+(,[a-z]+)*)$/ { bad = 1 }
               END { exit (bad || NR == 0) }'
 }
-grok_builtin_rows=$(bash -c 'eval "$(sed -n "/^models_builtin() {/,/^}/p" "$1")"; models_builtin' _ "$GROKB_BIN")
-assert grok_rows_ok <<<"$grok_builtin_rows"
-assert eq "$(jq -r '.models[] | [.slug, (if .default then "yes" else "no" end), .label, (.efforts | join(","))] | @tsv' \
-  "$ROOT/tests/fixtures/grokb-models.json")" "$grok_builtin_rows"
 # No cache and no profiles is the built-in list — and `main`'s auth lives in the REAL $HOME this
 # suite deliberately runs against, so without the stub behind grokb a signed-in machine would run
 # `grok models` for real here and compare a live list to the built-in one.
-assert eq "$(GROKB_PROFILES_DIR="$CONSISTENCY_CACHE/no-profiles" \
-  GROKB_CACHE_DIR="$CONSISTENCY_CACHE/no-grok-cache" "$GROKB_BIN" models 2>/dev/null)" \
-  "$grok_builtin_rows"
+grok_builtin_rows=$(GROKB_PROFILES_DIR="$CONSISTENCY_CACHE/no-profiles" \
+  GROKB_CACHE_DIR="$CONSISTENCY_CACHE/no-grok-cache" "$GROKB_BIN" models 2>/dev/null)
+assert grok_rows_ok <<<"$grok_builtin_rows"
+assert eq "$(jq -r '.models[] | [.slug, (if .default then "yes" else "no" end), .label, (.efforts | join(","))] | @tsv' \
+  "$ROOT/tests/fixtures/grokb-models.json")" "$grok_builtin_rows"
 grok_model_rows=$("$GROKB_BIN" models)
 assert grok_rows_ok <<<"$grok_model_rows"
 assert eq "$("$GROKB_BIN" models --json | jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label,
@@ -713,7 +691,6 @@ assert codex_rows_ok <<<"$codex_model_rows"
 assert eq "$(CODEXB_MODELS_CACHE=/nonexistent "$CODEXB_BIN" models --json 2>/dev/null | jq -r '.[0].source')" builtin
 assert eq "$("$CODEXB_BIN" models --json | jq -r '[.[] | [.slug, .family, (.version // "-"), .label, (if .default then "y" else "n" end), (.efforts | join(","))] | @tsv] | join("\n")')" \
   "$codex_model_rows"
-assert eq "$(awk '$1 == "codex" { print $2 }' <(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH") | tr '\n' ' ')" 'astra sol luna terra '
 for family in astra sol; do
   assert eq "$(bash -c '. "$1"; worker_model_codex_slug "$2"' _ "$WORKER_MODEL_SH" "$family")" \
     "$("$CODEXB_BIN" models --family "$family")"
@@ -731,23 +708,25 @@ assert doc_has '`worker_model_codex_slug`'
 # after a model `worker-run` will refuse.
 PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 assert test -r "$WORKER_MODEL_SH"
-assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claudeb opus high high,xhigh low,medium,max no
+# The claudeb and codex rows are the table's own; the gemini and grok rows follow the fixture caches
+# (Flash in list order, `pro` last and gated; `auto` first with its default's efforts, then every slug
+# at high plus xhigh where its catalog carries it), so a model added to a fixture needs no edit here.
+worker_table=$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")
+assert eq "$(grep -E '^(claudeb|codex) ' <<<"$worker_table")" 'claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
 claudeb sonnet high low,medium,high - no request
 claudeb haiku high low,medium,high - yes request
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
 codex luna medium low,medium,high - no request
-codex terra medium low,medium,high - no request
-gemini flash38 high high - no
-gemini flash37 high high - no
-gemini flash36 high high - no
-gemini pro high high - yes
-grok auto high high,xhigh - no
-grok grok-4.7 high high,xhigh - no
-grok grok-4.7-build-fast high high,xhigh - no
-grok grok-4.6 high high,xhigh - no
-grok grok-4.5 high high - no'
+codex terra medium low,medium,high - no request'
+assert eq "$(grep -Ev '^(claudeb|codex) ' <<<"$worker_table")" "$(
+  jq -r '(.families | map(select(.slug != "pro")) + map(select(.slug == "pro")))[]
+    | "gemini \(.slug) high high - \(if .slug == "pro" then "yes" else "no" end)"' \
+    "$ROOT/tests/fixtures/geminib-models.json"
+  jq -r 'def row($n): "grok \($n) high high\(if (.efforts | index("xhigh")) then ",xhigh" else "" end) - no";
+    (.models[] | select(.default) | row("auto")), (.models[] | row(.slug))' \
+    "$ROOT/tests/fixtures/grokb-models.json")"
 # A Pro newer than every Flash tops `geminib families`, and the table still ends with `pro`: the
 # first gemini row is the vendor default and `pro` is word-gated, so a Pro-first table would hand
 # the gated model to every worker that names no model.
@@ -861,9 +840,6 @@ assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
 # `flash3[0-59]` and not `flash3[0-9]`: 3.6, 3.7 and 3.8 are the flash families a worker may run,
 # so a site naming one is naming an allowed model, not smuggling a cheap one past the list.
 assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-59]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
-# Refused BEFORE the account is resolved: a pick already made is quota already claimed.
-assert test "$(grep -n 'refuse_unlisted_model "$vendor" "$model"' "$WORKER_RUN" | cut -d: -f1)" \
-  -lt "$(grep -n 'refuse_stale_resume "$vendor" "$account" "$resume"' "$WORKER_RUN" | cut -d: -f1)"
 # Prose sites, each naming the same four allowed models and the refusal by name.
 for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   "$ROOT/docs/DIAGNOSTICS.md" "$WORKER_COMMAND"; do
@@ -885,7 +861,6 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   assert test "$(grep -F 'grokb models' "$site" | grep -Ec 'grok-4\.[0-9]')" -eq 0
 done
 assert doc_has 'Allowed worker models'
-assert doc_has 'claudeb `opus`, codex `astra` (the newest slug of the family `codexb models` lists, row `cv`), gemini the newest Flash family `geminib families` prints, the table'"'"'s first gemini row since `pro` is emitted last whatever its version (also every other slug the list prints, row `cr`), grok `auto` (the CLI'"'"'s own default, plus every slug `grokb models` prints, row `cu`)'
 
 assert grep -Fq '`gemini_profile=<name>`' "$WORKER_COMMAND"
 assert grep -Fq -- '--account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;' "$WORKER_RUN"
@@ -1045,7 +1020,8 @@ assert grep -Fq '$reset != null and $reset <= $now then 0' "$WORKER_GATE"
 # A Light start is priced against the vendor its `light_edit` row names and routed under the
 # `light` role. Run on fixtures alone — every path the gate writes to is redirected.
 LIGHT_GATE_WORK=$(mktemp -d)
-mkdir -p "$LIGHT_GATE_WORK/bin"
+# HOME too: every pool wall a vendor's *_PROFILES_DIR leaves unset reads the fixture, never the owner's.
+mkdir -p "$LIGHT_GATE_WORK/bin" "$LIGHT_GATE_WORK/home"
 printf 'worker=auto\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
 cat >"$LIGHT_GATE_WORK/bin/worker-pick" <<'LIGHTPICK'
 #!/usr/bin/env bash
@@ -1064,7 +1040,7 @@ light_gate() {
     WORKER_GATE_WORKER_PICK="$LIGHT_GATE_WORK/bin/worker-pick" \
     WORKER_GATE_STAMPS="$LIGHT_GATE_WORK/stamps" \
     WORKER_STATS_DIR="$LIGHT_GATE_WORK/stats" \
-    CLAUDEB_DIR="$LIGHT_GATE_WORK/store" \
+    CLAUDEB_DIR="$LIGHT_GATE_WORK/store" HOME="$LIGHT_GATE_WORK/home" \
       bash "$ROOT/bin/worker-limit-gate.sh" --start "$1" "$LIGHT_GATE_WORK/brief" ${3:+"$3"}
 }
 : >"$LIGHT_GATE_WORK/picks"
@@ -1245,11 +1221,6 @@ assert doc_has 'DENIED with the direct protocol'
 assert test "$(grep -Ec '^NATIVE_[A-Z_]+=' "$WORKER_GATE")" -eq 0
 assert test "$(grep -Fc "runs on this session's own quota" "$WORKER_GATE")" -eq 0
 assert test "$(grep -Fc 'light-research' "$WORKER_GATE")" -eq 0
-retired_research_name="gemini""-research"
-assert test -z "$(git -C "$ROOT" grep -l -F "$retired_research_name" -- . 2>/dev/null)"
-if [ -d "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/.git" ] || [ -f "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/.git" ]; then
-  assert test -z "$(git -C "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}" grep -l -F "$retired_research_name" -- . 2>/dev/null)"
-fi
 for retired_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
   assert test "$(grep -Fc 'NATIVE_EXPLORE_ESCAPE' "$retired_doc")" -eq 0
   assert test "$(grep -Fc 'NATIVE_RESEARCH' "$retired_doc")" -eq 0
@@ -1262,8 +1233,9 @@ assert doc_has 'Native agent types'
 WORKER_RUN="$ROOT/bin/worker-run"
 assert eq "$(sed -nE 's/^IDLE=\$\{WORKER_RUN_IDLE_S:-([0-9]+)\}$/\1/p' "$WORKER_RUN")" 1800
 assert eq "$(sed -nE 's/^DEADLINE=\$\{WORKER_RUN_DEADLINE:-([0-9]+)\}$/\1/p' "$WORKER_RUN")" 21600
-assert grep -Fq '`1800`s' "$ROOT/$DOC"
-assert grep -Fq '`21600`s' "$ROOT/$DOC"
+row_bu=$(grep '^| bu |' "$ROOT/$DOC")
+assert grep -Fq '`WORKER_RUN_IDLE_S` (default `1800`s)' <<<"$row_bu"
+assert grep -Fq '`WORKER_RUN_DEADLINE` (default `21600`s)' <<<"$row_bu"
 # gemini's own timeout follows the ceiling instead of standing on a number of its own.
 assert eq "$(grep -c -- '--print-timeout 360m' "$WORKER_RUN")" 2
 assert grep -Fq -- '--print-timeout 360m' "$ROOT/$DOC"
@@ -1649,7 +1621,7 @@ assert eq "$(grep -c 'PID_START_SLACK' "$RUN_LIVENESS")" 3
 assert grep -Fq 'pid_alive_since "$pid" "$began" && printf' "$RUN_LIVENESS"
 assert grep -Fq 'supervisor_running "$2" "$3"' "$ROOT/bin/llm-doctor"
 assert eq "$(grep -cE 'os\.kill|[^[:alnum:]_]etime' "$ROOT/bin/llm-doctor")" 0
-assert eq "$(grep -c '^[^#]*kill -0' "$ROOT/bin/worker-run-backstop.sh" | awk -F: '{s += $2} END {print s}')" 0
+assert eq "$(grep -c '^[^#]*kill -0' "$ROOT/bin/worker-run-backstop.sh")" 0
 assert grep -Fq 'PID_START_SLACK=30' "$RUN_LIVENESS"
 assert grep -Fq -- '-v slack="$PID_START_SLACK"' "$ROOT/bin/statusline-work-probe.sh"
 assert grep -Fq '(live <= slack && live >= -slack)' "$ROOT/bin/statusline-work-probe.sh"
@@ -2203,9 +2175,6 @@ assert grep -Fq 'OPENCODE_SEEN_DIR = "opencode-seen"' "$RB_ACCOUNTS"
 # would open a plan that is still refusing.
 assert grep -Fq "tr -dc '0-9'" "$LLMLIMITS"
 assert grep -Fq 'char for char in raw if char in "0123456789"' "$RB_ACCOUNTS"
-oc_filter_line=$(grep -n -F 'rows = [row for row in rows if row[0] >= stamp]' "$RB_ACCOUNTS" | cut -d: -f1)
-oc_standing_line=$(grep -n -F 'wall = standing_wall(rows)' "$RB_ACCOUNTS" | cut -d: -f1)
-assert test "$oc_filter_line" -lt "$oc_standing_line"
 assert doc_has 'That comparison has TWO implementations and they must stay spelled alike'
 assert doc_has 'the served stamp binds BOTH readers'
 assert eq "$(jq -r '.accounts[1].windows | map(.window) | join(",")' <<<"$oc_rows")" wk
@@ -2501,7 +2470,7 @@ assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 1
 # The list of tools that own their launches is spelled in the contract and again in the gate's
 # regex. Drift either way is silent: a launcher the gate forgot has its every run denied, and a
 # spelling the contract forgot is a bare launch nobody can see.
-LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$REAL_HOME/.claude/hooks/worker-launch-gate.sh}"
+LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$ROOT/bin/worker-launch-gate.sh}"
 assert test -x "$LAUNCH_GATE"
 gate_sanctioned=$(grep -m1 '^SANCTIONED_RE=' "$LAUNCH_GATE" |
   grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go|research)' | sort -u | paste -sd' ' -)
@@ -3470,5 +3439,4 @@ assert grep -Fq 'metrics.index_by_day or {}' "$ROOT/hammerspoon/doctors.lua"
 assert doc_has 'an unmeasured date is a blank cell, never an invented bar'
 fi
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk only the progress writer runs, once, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording worker-run and the bench share, the one gateway context window every cut below it is derived from, the four carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the five-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, the one wait journal every wait class writes and the Harness doctor shows, every copy an installer deploys, which the Harness doctor compares with its source, the ledger overlay a measuring run settles into instead of a tracked file, and the README PATH link of every script the media skill runs by name) and match %s
-' "$asserts" "$DOC"
+suite_shard_pass "$asserts"

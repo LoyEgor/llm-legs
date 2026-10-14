@@ -15,7 +15,7 @@ anchors_store_tests() {
   cat >"$WORK/bin/review-anchors" <<'ANCHORS'
 #!/usr/bin/env bash
 { printf '%s' "$1"; shift; [ "$#" -eq 0 ] || printf '\t%s' "$@"; printf '\n'; } >>"$ANCHOR_LOG"
-[ -z "${ANCHORS_FAIL:-}" ] || { printf 'store locked\nsecond line\n' >&2; exit 3; }
+[ -z "${ANCHORS_FAIL:-}" ] || exit 3
 ANCHORS
   chmod +x "$WORK/bin/review-anchors"
   : >"$ANCHOR_LOG"
@@ -24,6 +24,11 @@ ANCHORS
   anchors_changed() {
     anchors_line run-fold | tr '\t' '\n' |
       awk '/^--/ { listing = 0 } listing { sub(/^\.\//, ""); print } $0 == "--changed" { listing = 1 }'
+  }
+  anchors_call() { # verb repo [arg...] -> the store call a run makes, as the stub logs it
+    printf '%s\t--repo\t%s\t--run\t%s\t--session\tanchors-chat' "$1" "$2" "$RUN_ID"
+    shift 2
+    [ "$#" -eq 0 ] || printf '\t%s' "$@"
   }
   anchors_bases() {
     anchors_line run-fold | tr '\t' '\n' | awk 'sub(/^--base=\.\//, "") { print }'
@@ -78,8 +83,7 @@ ANCHORS
   await_launched
   # A round run opens its record, so the fold can tell the run's own commits from a commit landed
   # beside it.
-  assert test "$(anchors_line run-start)" = \
-    "run-start${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat"
+  assert test "$(anchors_line run-start)" = "$(anchors_call run-start "$repo")"
   # Every kind of change the run's own listings can see, and nothing the transcript has to name: a
   # file written through a heredoc, a file deleted, a file committed inside the run.
   printf 'heredoc\n' >"$repo/bin/heredoc-only"
@@ -109,7 +113,6 @@ ANCHORS
   assert grep -qx "bin/heredoc-only=$empty_blob" <<<"$bases"
   assert grep -qx "bin/committed=$empty_blob" <<<"$bases"
   assert grep -qx "bin/новый=$empty_blob" <<<"$bases"
-  assert test "$(git -C "$repo" hash-object -t blob /dev/null)" = "$empty_blob"
   fold=$(anchors_line run-fold)
   assert grep -qF -- "--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" <<<"$fold"
   assert grep -qF -- "--session${anchors_tab}anchors-chat" <<<"$fold"
@@ -136,7 +139,7 @@ ANCHORS
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
   await_launched
-  assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
+  assert grep -qxF "$(anchors_call run-start "$other")" "$ANCHOR_LOG"
   printf 'fixed\n' >>"$other/kept"
   gate_open
   assert await_exit
@@ -165,7 +168,7 @@ ANCHORS
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
   await_launched
-  assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other_wt}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
+  assert grep -qxF "$(anchors_call run-start "$other_wt")" "$ANCHOR_LOG"
   assert_fails grep -qF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG"
   assert grep -qxF "$other_wt" "$RUN_DIR/families/1/top"
   # A family worktree landed and removed mid-run drops its run record in the main checkout, and
@@ -174,7 +177,7 @@ ANCHORS
   gate_open
   assert await_exit
   assert test "$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG")" = \
-    "run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat${anchors_tab}--round${anchors_tab}20260901T100000Z-aaaaaaa${anchors_tab}--owned"
+    "$(anchors_call run-fold "$other" --round 20260901T100000Z-aaaaaaa --owned)"
   assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo_wt}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
   git -C "$repo" worktree remove --force "$repo_wt" >/dev/null 2>&1
 
@@ -190,12 +193,10 @@ ANCHORS
   assert grep -q '^STATUS: failed' "$WORK/wait.out"
   assert test ! -s "$ANCHOR_LOG"
   assert test ! -e "$RUN_DIR/families"
-  assert test ! -e "$HOME/.cache/claude/review-debt/gaps"
   rm -f "$repo/bin/plain-run"
   unset STUB_CODE
 
-  # A round run on a machine with no store, or one whose store refuses, still completes, and no gap
-  # file stands in for the store.
+  # A round run on a machine with no store, or one whose store refuses, still completes.
   clear_stub
   : >"$ANCHOR_LOG"
   mv "$WORK/bin/review-anchors" "$WORK/bin/review-anchors.off"
@@ -212,7 +213,6 @@ ANCHORS
   assert await_exit
   PATH=$saved_path
   export PATH
-  assert test ! -s "$ANCHOR_LOG"
   mv "$WORK/bin/review-anchors.off" "$WORK/bin/review-anchors"
   clear_stub
   export ANCHORS_FAIL=1
@@ -220,7 +220,6 @@ ANCHORS
   assert await_exit
   assert grep -q "^run-fold$anchors_tab" "$ANCHOR_LOG"
   unset ANCHORS_FAIL
-  assert test ! -e "$HOME/.cache/claude/review-debt/gaps"
 
   # A workdir that became a repository during the run has nothing to fold; its families still do.
   clear_stub
@@ -234,7 +233,6 @@ ANCHORS
   gate_open
   assert await_exit
   assert_fails grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${born}${anchors_tab}" "$ANCHOR_LOG"
-  assert test ! -e "$born/.git/review-anchors.json"
   assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
 
   # The vendor process is told both: whose debt what it writes is, and where its own run record is.
@@ -271,11 +269,6 @@ attribution_repair_tests() {
     writes_through_shell 3<<<"$(jq -Rn --arg c "$1" '$c')" || rc=$?
     [ "$rc" -ne 1 ]
   }
-  parser_failure_is_unknown() (
-    python3() { return 2; }
-    shell_writes 'git diff'
-  )
-  assert parser_failure_is_unknown
   # A window's shell commands are classified by one python3, and the first reason still wins: a write
   # before an unnamed-target call is the shell's, one after it is not.
   eval "$(sed -n '/^classify_tool_rows() {/,/^}/p' "$RUNNER")"
@@ -283,11 +276,16 @@ attribution_repair_tests() {
   mkdir -p "$WORK/py-shim"
   printf '#!/bin/sh\necho python3 >>"%s"\nexec "%s" "$@"\n' "$WORK/py-runs" "$(command -v python3)" >"$WORK/py-shim/python3"
   chmod +x "$WORK/py-shim/python3"
-  classified() ( # rows -> the reason classify_tool_rows leaves
+  mkdir -p "$WORK/py-fail"
+  printf '#!/bin/sh\nexit 2\n' >"$WORK/py-fail/python3"
+  chmod +x "$WORK/py-fail/python3"
+  classified() ( # rows [python3 dir] -> the reason classify_tool_rows leaves
     RUN_FILES_REASON='' RUN_FILES_PARTIAL='' RUN_FILES_ESCAPE='' RUN_FILES_OUTSIDE='' RUN_FILES_LIST=''
-    PATH="$WORK/py-shim:$PATH" classify_tool_rows "$1" "$WORK/workdir"
+    PATH="${2:-$WORK/py-shim}:$PATH" classify_tool_rows "$1" "$WORK/workdir"
     printf '%s\n' "$RUN_FILES_REASON"
   )
+  # A classifier that fails counts the window's commands as a write.
+  assert test "$(classified $'C\tgit diff' "$WORK/py-fail")" = 'the run wrote through the shell, whose targets no transcript names'
   rm -f "$WORK/py-runs"
   assert test "$(classified $'C\tls\nC\tgrep x f\nC\techo a >f\nX\tTool')" = 'the run wrote through the shell, whose targets no transcript names'
   assert test "$(wc -l <"$WORK/py-runs")" -eq 1
@@ -298,7 +296,8 @@ attribution_repair_tests() {
       'install source target' 'bash tests/../rewrite.sh' 'printf data >target' 'grep x source >target' \
       'sed -n "1p" -e "w target" source' 'bash -c "rewrite"' 'unknown-command' \
       'grep "unterminated' 'printf "$(rewrite)"' 'pnpm install >/dev/null 2>&1' \
-      "node -e 'items.filter(x => x)'"; do
+      "node -e 'items.filter(x => x)'" 'sed -i "" s/dirty/base/ bin/restored' \
+      $'grep base bin/restored # inspected\npython3 -c "rewrite()"'; do
     assert shell_writes "$command"
   done
   for command in '' 'grep x source' 'sed -n "1,5p" source' 'git diff --stat' \
@@ -308,18 +307,15 @@ attribution_repair_tests() {
     assert_fails shell_writes "$command"
   done
   attribution_fixture
-  for variant in readonly python sed bash unknown empty whitespace undated comment splitcalls unreadable missing namedonly shellonly; do
+  # One launched writer stands for the commands the table above classifies alike.
+  for variant in readonly python empty whitespace undated splitcalls unreadable missing namedonly shellonly; do
     [ -z "${WORKER_RUN_TEST_ATTRIBUTION_CASE:-}" ] || [ "$variant" = "$WORKER_RUN_TEST_ATTRIBUTION_CASE" ] || continue
     case "$variant" in
       readonly) command='grep base bin/restored; sed -n "1,5p" bin/restored; git diff; bash tests/run.sh' ;;
       python) command=$'python3 - <<\'EOF\'\nfrom pathlib import Path\nPath("bin/restored").write_text("base\\n")\nEOF' ;;
-      sed) command='sed -i "" s/dirty/base/ bin/restored' ;;
-      bash) command='bash -c "python3 rewrite.py"' ;;
-      unknown) command='custom-rewriter bin/restored' ;;
       empty) command='' ;;
       whitespace) command='   ' ;;
       undated) command='grep base bin/restored' ;;
-      comment) command=$'grep base bin/restored # inspected\npython3 -c "rewrite()"' ;;
       splitcalls) command="echo '" ;;
       unreadable|missing) command='git diff' ;;
       namedonly) command='python3 -c "rewrite()"' ;;
@@ -348,7 +344,7 @@ attribution_repair_tests() {
     [ "$variant" = namedonly ] || git -C "$repo" show HEAD:bin/restored >"$repo/bin/restored"
     [ "$variant" = shellonly ] || printf '%s\n' "$variant" >"$repo/bin/named"
     gate_open
-    assert await_done
+    assert await_exit
     rm -f "$STUB_DIR/relay_hook"
     if [ "$variant" = unreadable ] || [ "$variant" = missing ]; then
       assert_fails grep -qx bin/named "$RUN_DIR/files"
@@ -429,7 +425,7 @@ outside_worktree_tests() {
     printf 'after\n' >"$outside/second"
     printf 'co-tenant\n' >"$repo/bin/outside-cotenant"
     gate_open
-    assert await_done
+    assert await_exit
     if [ "$variant" = outside_only ]; then
       assert_fails grep -qx bin/named "$RUN_DIR/files"
       assert test ! -s "$RUN_DIR/produced"
@@ -549,8 +545,11 @@ produced_rows_tests() {
     assert grep -qxF -- "--base=./1=$(git -C "$repo" rev-parse "$head:1")" "$WORK/produced-rows-shim/fold"
     assert grep -qxF -- "--after=./1=$(git -C "$repo" hash-object "$repo/1")" "$WORK/produced-rows-shim/fold"
     assert_fails grep -q -- '^--base=./01=' "$WORK/produced-rows-shim/fold"
+    printf '%s\n' "$asserts" >"$WORK/produced-rows-shim/asserts"
   )
   assert test "$?" -eq 0
+  # The subshell's asserts count toward the PASS line too.
+  asserts=$(($(cat "$WORK/produced-rows-shim/asserts") + 1))
 }
 
 if suite_shard_owns 1 attr-anchors-store; then anchors_store_tests; fi

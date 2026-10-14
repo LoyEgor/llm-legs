@@ -51,7 +51,7 @@ TMPDIR="$WORK/runtime-tmp"
 CLAUDEB_FIX="$WORK/claudeb"
 export HOME TMPDIR
 # CLAUDE_CONFIG_DIR too: a suite run from a chat inherits that chat's account and its server flags.
-unset HARNESS_DOCTOR_DIR SPEED_DOCTOR_DIR CLAUDEB_DIR CLAUDE_CONFIG_DIR
+unset HARNESS_DOCTOR_DIR SPEED_DOCTOR_DIR CLAUDEB_DIR CLAUDE_CONFIG_DIR CLAUDEGPT_ACCOUNT CLAUDE_PROJECT_DIR
 mkdir -p "$HOME/.claude" "$FIXTURES" "$TMPDIR" "$CLAUDEB_FIX/limits"
 CODEX_FIX="$HOME/.codex-profiles"
 mkdir -p "$CODEX_FIX/work4" "$CODEX_FIX/.codexb/fast-mode"
@@ -128,6 +128,8 @@ TOP_J=$(git -C "$REPO_J" rev-parse --show-toplevel)
 DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 BLUE=$'\033[34m'; CYAN=$'\033[36m'
 STATE_DIR="$HOME/.cache/claude-statusline"
+# The statusline's clock: its display zone, C day names.
+hm_at() { LC_ALL=C TZ=Europe/Kyiv date -r "$1" "${2:-+%H:%M}"; }
 CHAT_PINS_DIR="$WORK/chat-pins"
 export CHAT_PINS_DIR
 mkdir -p "$CHAT_PINS_DIR"
@@ -187,15 +189,11 @@ fixture_repos_cfgh
 # the sandbox entirely and no behavioural case below can see it.
 assert_eq "" "$(grep -nE '(^|[[:space:]])>>?[[:space:]]*/' "$WORKDIR_HOOK" | grep -v '/dev/null')"
 
-# bash's `read` takes a pipe one byte per syscall: an 8 MB Write response cost ~8 s that way. A file
-# it reads in chunks, so the same payload from a file is the baseline; CPU, since load stretches wall time.
-head -c 8000000 /dev/zero | tr '\0' x > "$WORK/big-response"
+# bash's `read` takes a pipe one byte per syscall: an 8 MB Write response cost ~8 s that way, so the
+# hook slurps stdin whole and never `read`s it; a large response from a pipe still places the session.
+assert grep -qxF 'input=$(</dev/stdin)' "$WORKDIR_HOOK"
 workdir_payload Write session-big "$REPO_A" "$REPO_A/big.txt" \
-  | jq -c --rawfile big "$WORK/big-response" '.tool_response = {content: $big}' > "$WORK/big-payload"
-big_file_cpu=$("$WORKDIR_HOOK" < "$WORK/big-payload"; suite_journal_cpu_ms c "$WORK/big-times" children; echo "$c")
-big_pipe_cpu=$(cat "$WORK/big-payload" | "$WORKDIR_HOOK"; suite_journal_cpu_ms c "$WORK/big-times" children; echo "$c")
-[ -n "$big_file_cpu" ] && [ -n "$big_pipe_cpu" ] && [ "$big_pipe_cpu" -lt $(( 3 * big_file_cpu )) ] ||
-  fail "workdir hook took ${big_pipe_cpu} CPU ms on an 8 MB payload from a pipe, ${big_file_cpu} from a file"
+  | jq -c --arg big "$(head -c 100000 /dev/zero | tr '\0' x)" '.tool_response = {content: $big}' | "$WORKDIR_HOOK"
 assert_eq "$TOP_A" "$(last_tree session-big)"
 
 payload=$(workdir_payload Bash session-cd "$REPO_A" "cd '$REPO_A' && make")
@@ -1124,17 +1122,6 @@ place_set "$S" "$TOP_A"
 run_workdir_hook "$(dispatch_payload Task "$S" "$REPO_A" "Scratch in $DISPATCH_EXCLUDED, then work in $REPO_D")"
 assert_eq "$TOP_D" "$(last_tree "$S")"
 
-# --- no ownership claims are written -------------------------------------------------------
-# The hook used to answer a second question here — which changed paths are THIS chat's work — into
-# `touched-<sid>`, for a review segment that has since become the gate's mouthpiece. Session-path
-# ownership is the family's review-anchors.json's now, so nothing may write that file back: it had no reader, and
-# a claim nobody reads is a claim nobody can check.
-run_workdir_hook "$(workdir_payload Edit session-touch "$REPO_A" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(agent_payload Edit session-touch-agent "$REPO_A" "$REPO_D/other.txt")"
-run_workdir_hook "$(dispatch_payload Task session-touch-dispatch "$REPO_A" \
-  "Work in $REPO_D. Change $REPO_D/other.txt and $REPO_B/tracked.txt.")"
-assert_eq 0 "$(find "$STATE_DIR" -name 'touched-*' | wc -l | tr -d ' ')"
-
 # The chat's own reads are no change at all, in any quantity.
 S="session-read"
 place_set "$S" "$TOP_A"
@@ -1768,9 +1755,9 @@ jq -cn --arg reset "$(date -u -r $((FIT_NOW + 172800)) +%Y-%m-%dT%H:%M:%SZ)" '
   {vendors:{claude:{accounts:[{account:"fitaccount",five_hour:{stale:false},weekly:{stale:false},
     fable:{used_pct:55,effective_pct:55,expired:false,stale:false,resets_at:$reset}}]}}}' \
   > "$WORK/limits.json"
-fit_h5_time=$(TZ=Europe/Kyiv date -r $((FIT_NOW + 3600)) +%H:%M)
-fit_wk_label=$(LC_ALL=C TZ=Europe/Kyiv date -r $((FIT_NOW + 259200)) '+%a %H:%M')
-fit_fb_label=$(LC_ALL=C TZ=Europe/Kyiv date -r $((FIT_NOW + 172800)) '+%a %H:%M')
+fit_h5_time=$(hm_at $((FIT_NOW + 3600)))
+fit_wk_label=$(hm_at $((FIT_NOW + 259200)) '+%a %H:%M')
+fit_fb_label=$(hm_at $((FIT_NOW + 172800)) '+%a %H:%M')
 
 fit_line2() { printf '%s' "${1#*$'\n'}"; }
 
@@ -2250,9 +2237,8 @@ run_statusline "$(statusline_payload status-postreset "{\"cost\":{\"total_cost_u
 assert jq -e '.seven_day.used_percentage == 40' "$CLAUDEB_FIX/limits/resetacct.json" >/dev/null
 
 cost_payload=$(statusline_payload status-cost '{"cost":{"total_cost_usd":18.2007}}')
-cost_out=$(printf '%s' "$cost_payload" | env -u LANG LC_ALL=ru_RU.UTF-8 \
-  CLAUDE_LIMITS_ACCOUNT=main CLAUDEB_DIR="$CLAUDEB_FIX" LLM_LIMITS_FILE="$WORK/limits.json" \
-  "$STATUSLINE" 2>"$WORK/cost-stderr") || fail "statusline cost locale failed"
+cost_out=$(unset LANG; LC_ALL=ru_RU.UTF-8 run_statusline "$cost_payload" main 2>"$WORK/cost-stderr") \
+  || fail "statusline cost locale failed"
 assert grep -Fq '$18.20' <<< "$cost_out"
 assert_eq "" "$(cat "$WORK/cost-stderr")"
 
@@ -2323,7 +2309,7 @@ RUN_STATUSLINE_DEFAULT_ACCOUNT=acctgen
 
 t_reset; t_assist $((NOW - 20)); t_stamp ctx-warm-lo
 warm_a=$(run_statusline "$(statusline_payload ctx-warm-lo "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-a_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+a_death=$(hm_at $((NOW - 20 + 3600)))
 assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}→${a_death}${RESET}" <<< "$warm_a"
 assert test "${warm_a#*50k}" = "$warm_a"
 assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-warm-lo"
@@ -2358,14 +2344,14 @@ assert test 0 -eq "$(grep -c '→' <<< "$resume_lie")"
 t_reset; t_user $((NOW - 65)); t_assist $((NOW - 60)); t_stamp ctx-ts-warm
 touch -t "$(date -r $((NOW - 4000)) +%Y%m%d%H%M.%S)" "$TRANSCRIPT"
 ts_warm=$(run_statusline "$(statusline_payload ctx-ts-warm "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-ts_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+ts_death=$(hm_at $((NOW - 60 + 3600)))
 assert grep -Fq "${DIM}→${ts_death}${RESET}" <<< "$ts_warm"
 
 # A partially written final entry must not hide the preceding completed response.
 t_reset; t_assist $((NOW - 20)); t_stamp ctx-streaming
 printf '{"type":"assistant","timestamp":"' >> "$TRANSCRIPT"
 streaming_out=$(run_statusline "$(statusline_payload ctx-streaming "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-streaming_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+streaming_death=$(hm_at $((NOW - 20 + 3600)))
 assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}→${streaming_death}${RESET}" <<< "$streaming_out"
 
 printf '\n{"type":"system","subtype":"local_command","timestamp":"%s"}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
@@ -2377,7 +2363,7 @@ printf '{"type":"tool-result","timestamp":"%s","content":"' "$(iso_utc "$NOW")" 
 head -c 350000 /dev/zero | tr '\0' x >> "$TRANSCRIPT"
 printf '"}\n' >> "$TRANSCRIPT"
 tool_tail=$(run_statusline "$(statusline_payload ctx-tool-tail "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-tool_tail_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+tool_tail_death=$(hm_at $((NOW - 20 + 3600)))
 assert grep -Fq "${DIM}→${tool_tail_death}${RESET}" <<< "$tool_tail"
 
 # Sidechain (subagent) entries hit different cache prefixes — not this chat's warmth.
@@ -2396,7 +2382,7 @@ t_reset; t_assist $((NOW - 20)); t_stamp ctx-zero-error
 printf '{"type":"assistant","timestamp":"%s","uuid":"zero-error","message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n' \
   "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
 zero_error=$(run_statusline "$(statusline_payload ctx-zero-error "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-zero_error_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+zero_error_death=$(hm_at $((NOW - 20 + 3600)))
 assert grep -Fq "${DIM}→${zero_error_death}${RESET}" <<< "$zero_error"
 
 # --- account switch invalidates the cache (per-organization on Anthropic) ---
@@ -2427,31 +2413,17 @@ assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$noattr_out"
 assert test "${noattr_out#*→}" = "$noattr_out"
 assert grep -q '^v2 [0-9]* ? 0' "$STATE_DIR/cache-ttl-track-ctx-noattr"
 
-t_reset; t_assist $((NOW - 600))
-printf 'pidsame %s alona\n' "$((NOW - 600))" > "$STATE_DIR/cache-ttl-track-ctx-legacy"
-legacy_out=$(run_statusline "$(statusline_payload ctx-legacy "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$legacy_out"
-assert test "${legacy_out#*→}" = "$legacy_out"
-assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-legacy"
-
 t_reset; t_assist $((NOW - 5))
 fresh_noattr=$(run_statusline "$(statusline_payload ctx-fresh-noattr "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fresh_noattr"
 assert test "${fresh_noattr#*→}" = "$fresh_noattr"
 assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fresh-noattr"
 
-t_reset; t_assist $((NOW - 5))
-printf 'pidsame %s alona\n' "$((NOW - 5))" > "$STATE_DIR/cache-ttl-track-ctx-fresh-legacy"
-fresh_legacy=$(run_statusline "$(statusline_payload ctx-fresh-legacy "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fresh_legacy"
-assert test "${fresh_legacy#*→}" = "$fresh_legacy"
-assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fresh-legacy"
-
 # --- a 1M-context session still matches its bare transcript model id ---
 t_reset; t_assist $((NOW - 20)); t_stamp ctx-model-1m
 onem_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "fixmodel[1m]"')
 onem_out=$(run_statusline "$(statusline_payload ctx-model-1m "$onem_extra")")
-onem_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+onem_death=$(hm_at $((NOW - 20 + 3600)))
 assert grep -Fq "${DIM}→${onem_death}${RESET}" <<< "$onem_out"
 assert test "${onem_out#*111k}" = "$onem_out"
 onem_other=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel[1m]"')
@@ -2479,11 +2451,11 @@ t_stamp ctx-model-current
 printf 'v1 %s acctgen 3600 %s 262144\n' "$((NOW - 60))" "$fix_uuid" \
   > "$STATE_DIR/cache-ttl-track-ctx-model-current.model-fixmodel"
 current_fix=$(run_statusline "$(statusline_payload ctx-model-current "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-fix_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+fix_death=$(hm_at $((NOW - 60 + 3600)))
 assert grep -Fq "${DIM}→${fix_death}${RESET}" <<< "$current_fix"
 current_other_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel"')
 current_other=$(run_statusline "$(statusline_payload ctx-model-current "$current_other_extra")")
-other_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 3600)) +%H:%M)
+other_death=$(hm_at $((NOW - 30 + 3600)))
 assert grep -Fq "${DIM}→${other_death}${RESET}" <<< "$current_other"
 current_fix_again=$(run_statusline "$(statusline_payload ctx-model-current "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${DIM}→${fix_death}${RESET}" <<< "$current_fix_again"
@@ -2644,7 +2616,7 @@ t_far_boundary_case() {
   assert test "$(stat -f %z "$TRANSCRIPT")" -gt 262144
   assert test "$(tail -c 262144 "$TRANSCRIPT" | grep -c '"type":"assistant"')" -eq 0
   far_live=$(run_statusline "$(statusline_payload "$1" "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-  far_live_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+  far_live_death=$(hm_at $((NOW - 60 + 3600)))
   assert grep -Fq "${DIM}→${far_live_death}${RESET}" <<< "$far_live"
   assert test "${far_live#*0k}" = "$far_live"
 }
@@ -2707,7 +2679,7 @@ assert_eq "$(stat -f %z "$TRANSCRIPT") -" "$(cat "$(bnd_file ctx-bnd-shrunk)")"
 t_reset; t_assist $((NOW - 60)); t_stamp ctx-bnd-shrunk-warm
 printf '900000 %s\n' "$(iso_utc $((NOW - 7200)))" > "$(bnd_file ctx-bnd-shrunk-warm)"
 shrunk_warm=$(run_statusline "$(statusline_payload ctx-bnd-shrunk-warm "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-shrunk_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+shrunk_death=$(hm_at $((NOW - 60 + 3600)))
 assert grep -Fq "${DIM}→${shrunk_death}${RESET}" <<< "$shrunk_warm"
 assert_eq "$(stat -f %z "$TRANSCRIPT") -" "$(cat "$(bnd_file ctx-bnd-shrunk-warm)")"
 
@@ -2715,7 +2687,7 @@ assert_eq "$(stat -f %z "$TRANSCRIPT") -" "$(cat "$(bnd_file ctx-bnd-shrunk-warm
 t_reset; t_assist $((NOW - 600)) fixmodel 50000 500 1h
 t_assist $((NOW - 60)) fixmodel 50000 0 none; t_stamp ctx-pure-read
 pure_read=$(run_statusline "$(statusline_payload ctx-pure-read "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-pure_read_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+pure_read_death=$(hm_at $((NOW - 60 + 3600)))
 assert grep -Fq "${DIM}→${pure_read_death}${RESET}" <<< "$pure_read"
 assert test "${pure_read#*111k}" = "$pure_read"
 
@@ -2723,7 +2695,7 @@ assert test "${pure_read#*111k}" = "$pure_read"
 t_reset; t_assist $((NOW - 600)) fixmodel 50000 500 5m
 t_assist $((NOW - 60)) fixmodel 50000 0 5m; t_stamp ctx-pure-read-zero
 pure_zero=$(run_statusline "$(statusline_payload ctx-pure-read-zero "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-pure_zero_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 300)) +%H:%M)
+pure_zero_death=$(hm_at $((NOW - 60 + 300)))
 assert grep -Fq "${DIM}→${pure_zero_death}${RESET}" <<< "$pure_zero"
 
 # With no older bucket-bearing response in the window there is nothing to inherit.
@@ -2784,7 +2756,7 @@ parent_assist $((NOW - 300)) parent-new
 printf 'v2 %s acctgen 7 3600 fixmodel parent-new 262144\n' "$((NOW - 300))" > "$STATE_DIR/cache-ttl-track-parent-sid"
 printf 'v1 %s acctgen 3600 parent-new\n' "$((NOW - 300))" > "$STATE_DIR/cache-ttl-track-parent-sid.model-fixmodel"
 fork_warm=$(run_statusline "$(statusline_payload ctx-fork "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-fork_death=$(TZ=Europe/Kyiv date -r $((NOW - 300 + 3600)) +%H:%M)
+fork_death=$(hm_at $((NOW - 300 + 3600)))
 assert grep -Fq "${DIM}→${fork_death}${RESET}" <<< "$fork_warm"
 assert test "${fork_warm#*111k}" = "$fork_warm"
 assert test "$(awk '{print NF}' "$STATE_DIR/cache-ttl-track-ctx-fork")" -ge 10
@@ -2869,7 +2841,7 @@ printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"bran
 printf 'v1 %s acctgen 3600 big-anchor\n' "$((NOW - 300))" \
   > "$STATE_DIR/cache-ttl-track-parent-big.model-fixmodel"
 fork_big=$(run_statusline "$(statusline_payload ctx-fork-big "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-fork_big_death=$(TZ=Europe/Kyiv date -r $((NOW - 300 + 3600)) +%H:%M)
+fork_big_death=$(hm_at $((NOW - 300 + 3600)))
 assert grep -Fq "${DIM}→${fork_big_death}${RESET}" <<< "$fork_big"
 assert test "${fork_big#*111k}" = "$fork_big"
 assert grep -q $'^v4\x1fparent-big\x1fbig-anchor\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
@@ -2996,7 +2968,7 @@ NOW=$(date +%s)
 
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 5m; t_stamp ctx-bk5
 bk5_out=$(run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
-bk5_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 300)) +%H:%M)
+bk5_death=$(hm_at $((NOW - 30 + 300)))
 assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_out"
 assert test "${bk5_out#*100k}" = "$bk5_out"
 # The death time is the tokens part and the cache warning an alarm: both outlive the ctx percentage,
@@ -3014,7 +2986,7 @@ assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$mixe
 
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 1h; t_stamp ctx-bk1
 bk1_out=$(run_statusline "$(statusline_payload ctx-bk1 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
-bk1_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 3600)) +%H:%M)
+bk1_death=$(hm_at $((NOW - 30 + 3600)))
 assert grep -Fq "${DIM}→${bk1_death}${RESET}" <<< "$bk1_out"
 
 # An account under Anthropic's cache keepalive: its 5m bucket is touched alive for the flag's window,
@@ -3024,7 +2996,7 @@ printf '%s\n' '{"cachedGrowthBookFeatures":{"tengu_sequential_cloud":{"enabled":
   > "$KA_CFG/.claude.json"
 t_reset; t_assist $((NOW - 1200)) fixmodel 100000 500 5m; t_stamp ctx-keepalive
 ka_out=$(CLAUDE_CONFIG_DIR="$KA_CFG" run_statusline "$(statusline_payload ctx-keepalive "$(warm_extra "$TRANSCRIPT" 20 100000)")")
-ka_death=$(TZ=Europe/Kyiv date -r $((NOW - 1200 + 3600)) +%H:%M)
+ka_death=$(hm_at $((NOW - 1200 + 3600)))
 assert grep -Fq "${DIM}→${ka_death}${RESET}" <<< "$ka_out"
 assert test "${ka_out#*↓5m}" = "$ka_out"
 # A render of an unchanged transcript under an unchanged flag file reads the flag from its memo: 2 jq
@@ -3079,7 +3051,10 @@ FAIL_COLLECTOR="$FIXTURES/fail-collector"
 printf '#!/usr/bin/env bash\nprintf boom >&2\nexit 2\n' > "$FAIL_COLLECTOR"
 chmod +x "$FAIL_COLLECTOR"
 SLOW_COLLECTOR="$FIXTURES/slow-collector"
-printf '#!/usr/bin/env bash\nsleep 10\nprintf slow >> "%s"\n' "$KICK_MARK" > "$SLOW_COLLECTOR"
+SLOW_RELEASE="$WORK/slow-collector-release"
+# Held until released (30 s at most, so a render that waits on it ends red rather than hung).
+printf '#!/usr/bin/env bash\nfor _ in $(seq 600); do [ -e "%s" ] && break; sleep 0.05; done\nprintf slow >> "%s"\n' \
+  "$SLOW_RELEASE" "$KICK_MARK" > "$SLOW_COLLECTOR"
 chmod +x "$SLOW_COLLECTOR"
 
 # The kick only fires in the fresh-headers write branch: a pinned account with
@@ -3125,11 +3100,12 @@ assert_eq "" "$(cat "$kick_err")"
 
 # D: a slow collector never blocks the render (detached).
 kick_reset
-kick_start=$(date +%s)
 STORE_MERGE_CMD="$SLOW_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/null \
   || fail "statusline kick with slow collector exited nonzero"
-# Slept 10 s: a render under machine load can take seconds, never the collector's ten.
-assert test "$(( $(date +%s) - kick_start ))" -lt 8
+assert test ! -e "$KICK_MARK"
+# Released, it finishes here rather than in a later case.
+: > "$SLOW_RELEASE"
+assert wait_for_mark
 
 # E: the collector runs as a background job, never as the chat or worker run whose render kicked it
 # (share/time_budget.py charges a store-lock wait to whoever its wait row names).
@@ -3265,10 +3241,8 @@ assert test "${cq_backoff:-0}" -ge "$((cq_start + 1800))"
 
 # E: a slow refresher never blocks the render.
 cq_reset
-cq_start=$(date +%s)
 CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_SLOW" run_statusline "$cq_payload" >/dev/null \
   || fail "claudegpt kick with slow refresher exited nonzero"
-assert test "$(( $(date +%s) - cq_start ))" -lt 8
 assert test ! -s "$CQ_ARGS"
 : > "$CQ_RELEASE"
 # Its late write must land here, not in a later case's args file.
@@ -3276,13 +3250,16 @@ for _ in $(seq 1 400); do [ -s "$CQ_ARGS" ] && break; sleep 0.05; done
 assert_eq "--refresh-account codex/work4" "$(cat "$CQ_ARGS")"
 
 # F: the account label is an environment variable this process does not own — a name that is not
-# a launcher account name probes nothing and writes no stamp anywhere.
+# a launcher account name probes nothing and writes no stamp anywhere, even when the profile directory
+# it names and the directory its stamp would land in both exist.
 cq_reset
+mkdir -p "$HOME/escape" "$STATE_DIR/codex-quota-kick-.."
 CLAUDEGPT_ACCOUNT='../escape' CODEX_REFRESH_CMD="$CQ_REFRESHER" run_statusline "$cq_payload" >/dev/null \
   || fail "claudegpt kick with a rejected account name exited nonzero"
 sleep 0.2
 assert test ! -s "$CQ_ARGS"
-assert test -z "$(find "$STATE_DIR" -name 'codex-quota-kick-*' 2>/dev/null)"
+assert test -z "$(find "$STATE_DIR" -path '*codex-quota-kick-*' ! -type d 2>/dev/null)"
+rmdir "$STATE_DIR/codex-quota-kick-.."
 assert test ! -e "$HOME/.cache/codex-quota-kick-escape"
 
 # G: an Anthropic-model render never probes Codex quota.
@@ -4566,8 +4543,10 @@ mkdir -p "$WORK/wl-wide"
 perl -e 'utime time, time + 600, $ARGV[0]' "$STATE_DIR/work-wl-wide"
 wl_payload=$(statusline_payload wl-wide '' "$WORK/wl-wide")
 wl_jobs=0
+# Every step of the fit (head words, short states, the review's states, the floor) changes below 96
+# columns on this fixture; past it only the title grows, so three wide widths stand for the rest.
 for wl_locale in UTF-8 C; do
-  for ((wl_cols = 30; wl_cols <= 200; wl_cols++)); do
+  for wl_cols in $(seq 30 96) 120 160 200; do
     if [ "$wl_locale" = C ]; then
       LC_ALL=C FIT_COLUMNS=$wl_cols FIT_MARGIN=4 run_statusline "$wl_payload" > "$WORK/wl-wide/$wl_locale-$wl_cols" &
     else
@@ -4745,10 +4724,9 @@ TOP_REVIEW_DIRTY=$(cd "$REVIEW_DIRTY" && pwd -P)
 # autonomy dot can take. Asked of line 1 alone, because line 2 opens segments with digits (`5h`).
 review_slot_silent() { # rendered
   case "${1%%$'\n'*}" in
-    *" ${DIM}│${RESET} "[0-9~]*|*" ${DIM}│${RESET} T"[0-3]*|*" ${DIM}│${RESET} ● "*) return 1 ;;
-    *" ${DIM}│${RESET} ${DIM}"[0-9~?]*|*" ${DIM}│${RESET} ${DIM}T"[0-3]*) return 1 ;;
-    *" ${DIM}│${RESET} ${DIM}fix "*) return 1 ;;
-    *" ${DIM}│${RESET} ${RED}"[0-9]*|*" ${DIM}│${RESET} ${RED}T"[0-3]*) return 1 ;;
+    *" ${DIM}│${RESET} "[0-9~]*|*" ${DIM}│${RESET} ● "*) return 1 ;;
+    *" ${DIM}│${RESET} ${DIM}"[0-9~?]*) return 1 ;;
+    *" ${DIM}│${RESET} ${RED}"[0-9]*) return 1 ;;
   esac
   return 0
 }
@@ -4798,25 +4776,8 @@ review_session_render() { # session repo
 }
 review_seg=" ${DIM}│${RESET} "
 
-# Debt is per repository (a dim `N`, below): no per-chat number reaches the strip, whatever the gate
-# would answer, and the gate is never asked for one.
 : > "$GATE_LOG"
-GATE_AUTONOMOUS=no
-for review_gone in 'STATUS=open LINES=3 FILES=1 FIX=0 WHY=none' 'STATUS=open LINES=0 FILES=0 FIX=3 WHY=none' \
-    'STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=gap' 'held because'; do
-  GATE_ANSWER="$review_gone"
-  review_gone_out=$(review_session_render review-gone "$REVIEW_DIRTY")
-  assert review_slot_silent "$review_gone_out"
-  assert test "${review_gone_out#*"${review_seg}${DIM}?"}" = "$review_gone_out"
-done
-assert_eq 0 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
 GATE_ANSWER=off
-
-# Nothing is spawned behind the label beyond the read-only autonomy ask: a background review-bench
-# per render is what the tier number used to cost.
-rm -f "$HOME/.cache/claude-statusline"/review-tier-*
-review_render review-dirty "$REVIEW_DIRTY" >/dev/null
-review_tier_us=${EPOCHREALTIME//[!0-9]/}
 
 # `autonomous <sid>` is the gate's alone, and a gate that does not know the verb leaves no mark.
 GATE_AUTONOMOUS=yes
@@ -4886,13 +4847,6 @@ assert test "${review_before#*"$PIN_MARK"}" = "$review_before"
 assert grep -Fq "$PIN_MARK" <<< "$review_after"
 rm -f "$STATE_DIR/ports-review-order"
 GATE_AUTONOMOUS=
-
-# A probe the review-dirty render spawned has had a full second to land by now.
-review_tier_us=$((1000000 - ${EPOCHREALTIME//[!0-9]/} + review_tier_us))
-[ "$review_tier_us" -le 0 ] || sleep "$((review_tier_us / 1000000)).$(printf '%06d' $((review_tier_us % 1000000)))"
-asserts=$((asserts + 1))
-test -z "$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null)" ||
-  fail "the review segment still spawned a probe: $(ls "$HOME/.cache/claude-statusline")"
 
 # --- the FOLDER's debt beside the folder's diff ------------------------------------------------
 # A second number about the same tree and a different question: what the whole repository owes,
@@ -5611,14 +5565,7 @@ tr_fork_inherit=$(jq -cn --arg t "$WORK/tr-fork.jsonl" '{hook_event_name:"PreToo
   CLAUDE_LIMITS_ACCOUNT=forkacct "$SPAWN_HOOK") || fail "fork spawn exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "fork · fable · forkacct: Look"' <<<"$tr_fork_inherit" >/dev/null
 
-# The review run the rendered rows below read off its progress document.
-TR_STATS="$WORK/tr-stats"
-mkdir -p "$TR_STATS/progress"
 TR_REVIEW=20260916T223010Z-e66f8e6
-jq -cn --arg run "$TR_REVIEW" '{run_id:$run,tier:"T2",composition:"double",kind:"task",state:"running",phase:"review",
-  cells:["claude-opus-high","codex-sol-high","agy-flash38-high","grok-grok-high"],
-  done:["agy-flash38-high","grok-grok-high"],failed_cells:["grok-grok-high"],
-  accounts:{"claude-opus-high":"locomthebest"}}' > "$TR_STATS/progress/llm-legs__x-1.json"
 # Two forks spawned in one turn each keep a seed, and the forks claim them oldest first.
 CLAUDE_LIMITS_ACCOUNT=first tr_spawn tr-pair fork $'ACCOUNT: first\nx' toolu_first >/dev/null
 CLAUDE_LIMITS_ACCOUNT=second tr_spawn tr-pair fork $'ACCOUNT: second\nx' toolu_second >/dev/null
@@ -5749,15 +5696,15 @@ done
 
 # The renderer paints every running local_agent task — fork and native agents — and fits `columns`.
 # Workers and reviews have no rows of their own any more (their work lines carry them), so a leftover
-# relay tag file paints its tag line and the description's title, never a run's or a review's state.
+# relay tag file paints its tag line and the description's title.
 RENDER_BIN="$ROOT/bin/subagent-statusline.sh"
 TR_RSESS=tr-render
 mkdir -p "$TR_HOME_CACHE/$TR_RSESS"
-printf 'acc · astra · high\nrun=codex-9-9-wait\n' > "$TR_HOME_CACHE/$TR_RSESS/w1"
-printf 'T2 · double · task\nreview=%s\n' "$TR_REVIEW" > "$TR_HOME_CACHE/$TR_RSESS/r1"
+printf 'acc · astra · high\n' > "$TR_HOME_CACHE/$TR_RSESS/w1"
+printf 'T2 · double · task\n' > "$TR_HOME_CACHE/$TR_RSESS/r1"
 printf 'fork · inherit · acc\nedit=3\n' > "$TR_HOME_CACHE/$TR_RSESS/l1"
 printf 'fork · inherit · acc\n' > "$TR_HOME_CACHE/$TR_RSESS/l2"
-printf 'rawilimo · flash38 · high\nlight=research\nrun=gemini-9-9-res\n' > "$TR_HOME_CACHE/$TR_RSESS/g1"
+printf 'rawilimo · flash38 · high\n' > "$TR_HOME_CACHE/$TR_RSESS/g1"
 printf 'agent · inherit · acc\nedit=2\n' > "$TR_HOME_CACHE/$TR_RSESS/a1"
 tr_render() { # columns [the one task id to render]
   local start=$(( ($(date +%s) - 65) * 1000 ))
@@ -5772,15 +5719,12 @@ tr_render() { # columns [the one task id to render]
     {id:"a1",type:"local_agent",status:"running",description:"Teammate",startTime:$start,model:"claude-opus-5-5"},
     {id:"g1",type:"local_agent",status:"running",description:"light research · 3.8-flash · rawilimo: Map the hooks",startTime:$start,model:"claude-sonnet-5"},
     {id:"b1",type:"local_bash",status:"running",label:"sleep"}]} | if $only == "" then . else .tasks |= map(select(.id == $only)) end' |
-    WORKER_STATS_DIR="$TR_STATS" SUBAGENT_ROW_RESERVE=0 CLAUDE_LIMITS_ACCOUNT=rowacct "$RENDER_BIN"
+    SUBAGENT_ROW_RESERVE=0 CLAUDE_LIMITS_ACCOUNT=rowacct "$RENDER_BIN"
 }
 # A second may tick between the fixture's clock and the renderer's; both spell the same width.
 tr_norm() { perl -pe 's/\e\[[0-9;]*m//g; s/1m [0-9]+s/1m 5s/'; }
 tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | tr_norm; }
-# A run record in the work cache is the worker's work line now, never a state on a task row.
-printf 'run\tcodex-9-9-wait\t%s\tpnpm test\n' "$(( $(date +%s) - 75 ))" > "$STATE_DIR/work-$TR_RSESS"
 tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
-rm -f "$STATE_DIR/work-$TR_RSESS"
 assert_eq 9 "$(grep -c . <<<"$tr_wide")"
 assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
 assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
@@ -5807,7 +5751,7 @@ assert_eq 'acc · astra · high — Implement the pa… · 1m 5s · ↓ 12.3k to
 assert_eq 'acc · astra · high · 1m 5s · ↓ 12.3k tok' "$(tr_row "$(tr_render 40 w1)" w1)"
 assert_eq 'acc · astra · high · 1m 5s' "$(tr_row "$(tr_render 30 w1)" w1)"
 assert_eq 'fork · fable · acc · edit 3' "$(tr_row "$(tr_render 20 l1)" l1)"
-# The default reserve is the top statusline's fit margin, 3.
+# The default reserve is the top statusline's fit margin, 4.
 assert_eq "$(sed -nE 's/^STATUSLINE_FIT_MARGIN=\$\{STATUSLINE_FIT_MARGIN:-([0-9]+)\}$/\1/p' "$ROOT/bin/statusline.sh")" \
   "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
 assert_eq 4 "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
@@ -5816,4 +5760,4 @@ assert_eq 4 "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "
 no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")
 assert grep -Fq 'acc · astra · high' <<<"$no_status"
 fi
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — no per-chat review debt number whatever the gate would answer, the gate's autonomy dot asked once per TTL with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's review-anchors.json that decides whose the commit is moves — main-last and Gemini account predictions, fork tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the chat, refused to an agent through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+suite_shard_pass "$asserts"

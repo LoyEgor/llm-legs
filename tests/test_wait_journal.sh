@@ -34,6 +34,17 @@ env -u LC_ALL LC_NUMERIC=ru_RU.UTF-8 bash -c '[[ $EPOCHREALTIME == *,* ]] || exi
 assert jqe -s 'map(select(.source == "comma-locale")) | length == 1 and .[0].seconds >= 2' "$W/$(date +%Y-%m-%d).jsonl"
 assert [ -z "$(ls "$HARNESS_HOLDS_DIR")" ]
 assert [ ! -e "$W/2100-01-01.jsonl" ]
+# A non-finite until is written as null, and neither writer fails its caller on an unwritable directory or leaves a .tmp.
+writer="$WORK/writer-holds"
+assert [ "$(HARNESS_HOLDS_DIR="$writer" python3 -c 'import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import limiter_hold as h
+path = h.hold_raise("w", "job", "why", until=float("inf"), key=1)
+os.environ["HARNESS_HOLDS_DIR"] = "/dev/null/holds"
+print(json.dumps(json.load(open(path))["until"]), h.hold_raise("w", "job", "why"))' "$ROOT/share")" = 'null None' ]
+assert [ "$(HARNESS_HOLDS_DIR=/dev/null/holds bash -ec 'source "$1"; file=$(hold_raise w job why); hold_clear /dev/null/x
+  HARNESS_HOLDS_DIR=$2; file=$(hold_raise w job why soon 2); echo "ok$(ls "$2" | grep -c "\.tmp$" | sed "s/^0$//"): $(jq -c .until "$file")"' \
+  _ "$ROOT/share/limiter-hold.sh" "$writer" 2>&1)" = 'ok: null' ]
 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import limiter_hold as h
 h.wait_note("poll", "worker-run wait r1", 1767945600, 3); h.wait_note("poll", "x", "bad")
 h.hold_clear(h.hold_raise("workers", "job", "busy"))' "$ROOT/share"

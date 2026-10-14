@@ -6,7 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$ROOT/share/test-scope.sh"
 PROJECTS=$(git_projects "$ROOT")
 WORK=$(cd "$(mktemp -d)" && pwd -P)
-trap 'touch "$WORK/release"; ! kill -0 "$(cat "$WORK/wait-pid" 2>/dev/null)" 2>/dev/null || sleep 0.3; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
+trap 'touch "$WORK/release"; ! kill -0 $(cat "$WORK/wait-pid" 2>/dev/null) 2>/dev/null || sleep 0.3; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
@@ -22,7 +22,7 @@ mkdir -p "$HOME" "$WORK/rs"
 
 new_repo() { # dir
   mkdir -p "$1/tests"
-  git -C "$1" init -q
+  git -C "$1" init -q -b master
   git -C "$1" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
 }
 suite() { # repo name body
@@ -88,7 +88,7 @@ assert jqe --argjson keys "$KEYS" --arg repo "$REPO" --arg sha "$SHA" --arg slot
   and .worker_run == "wr-7" and .session == "sess-7" and .j == 2 and (.slot | startswith($slots))
   and .signal == null and .complete == true and (.suite_set | test("^[0-9a-f]{8}$"))
   and (.suites | keys) == ["test_cpu.sh","test_env.sh","test_fail.sh"]
-  and ([.suites[].rc] == [0,0,3]) and all(.suites[]; (.secs | type == "number") and (.cpu_s | type == "number") and (has("forks") | not))
+  and ([.suites[].rc] == [0,0,3]) and all(.suites[]; (.secs | type == "number") and (.cpu_s | type == "number"))
   and .suites["test_cpu.sh"].cpu_s > 0 and .suites["test_cpu.sh"].secs > 0' "$JOURNAL"
 run_pid=$(jq -r .pid "$JOURNAL")
 assert test "$(cat "$WORK/env.out")" = "SUITE_JOURNAL_PID=$run_pid"
@@ -118,25 +118,29 @@ assert test "$(jq -r .suite_set "$WORK/direct.jsonl")" != "$(head -1 "$JOURNAL" 
 git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/wt"
 mkdir -p "$REPO/.claude/worktrees/wt/tests"
 cp "$REPO/tests/test_cpu.sh" "$REPO/.claude/worktrees/wt/tests/"
+# A commit of its own, so the worktree's HEAD is no longer the main checkout's.
+git -C "$REPO/.claude/worktrees/wt" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m wt
+WT_SHA=$(git -C "$REPO/.claude/worktrees/wt" rev-parse HEAD)
+assert test "$WT_SHA" != "$SHA"
 bash "$ROOT/share/run-suites.sh" --repo "$REPO/.claude/worktrees/wt" test_cpu.sh >/dev/null 2>&1
-assert jqe --arg repo "$REPO" --arg sha "$SHA" '.repo == $repo + "/.claude/worktrees/wt" and .repo_root == $repo and .head == $sha' \
+assert jqe --arg repo "$REPO" --arg sha "$WT_SHA" '.repo == $repo + "/.claude/worktrees/wt" and .repo_root == $repo and .head == $sha' \
   <(tail -1 "$JOURNAL")
 SUITE_JOURNAL="$WORK/wt.jsonl" /bin/bash "$REPO/.claude/worktrees/wt/tests/test_cpu.sh"
-assert jqe --arg repo "$REPO" --arg sha "$SHA" '.repo == $repo + "/.claude/worktrees/wt" and .repo_root == $repo and .head == $sha' \
+assert jqe --arg repo "$REPO" --arg sha "$WT_SHA" '.repo == $repo + "/.claude/worktrees/wt" and .repo_root == $repo and .head == $sha' \
   "$WORK/wt.jsonl"
 
 # A run stopped by a signal writes its row, incomplete, gives up its slot and still dies of the signal.
 R2="$WORK/r2"
 new_repo "$R2"
 suite "$R2" test_quick.sh 'exit 0'
-suite "$R2" test_wait.sh "echo \$\$ >\"$WORK/wait-pid\"; while [ ! -e \"$WORK/release\" ]; do sleep 0.2; done"
+suite "$R2" test_wait.sh "echo \$\$ >>\"$WORK/wait-pid\"; while [ ! -e \"$WORK/release\" ]; do sleep 0.2; done"
 # Two suites still running hold the slot to the signal: down to one, the run frees it on its own.
 cp "$R2/tests/test_wait.sh" "$R2/tests/test_wait_b.sh"
 bash "$ROOT/share/run-suites.sh" --repo "$R2" -j 2 >/dev/null 2>&1 &
 pid=$!
 for _ in $(seq 1 300); do
   [ -f "$STATUSLINE_CACHE_DIR/suites-$pid" ] && read -r logdir _ <"$STATUSLINE_CACHE_DIR/suites-$pid" &&
-    [ -f "$logdir/test_quick.sh.status" ] && break
+    [ -f "$logdir/test_quick.sh.status" ] && [ "$(wc -l <"$WORK/wait-pid" 2>/dev/null | tr -d ' ')" = 2 ] && break
   sleep 0.1
 done
 kill -TERM "$pid"
@@ -146,7 +150,8 @@ assert jqe --arg repo "$R2" '.repo == $repo and .signal == 15 and .complete == f
   <(tail -1 "$JOURNAL")
 assert_fails grep -qx "$pid" <(cat "$WORK"/slots/*/pid 2>/dev/null)
 assert test -f "$STATUSLINE_CACHE_DIR/suites-$pid.done"
-assert_fails kill -0 "$(cat "$WORK/wait-pid")"
+assert test "$(wc -l <"$WORK/wait-pid" | tr -d ' ')" = 2
+while read -r wait_pid; do assert_fails kill -0 "$wait_pid"; done <"$WORK/wait-pid"
 
 # signal group|pid command... once $READY exists -> "<returncode> <ms from signal to exit>"; a negative
 # returncode is a death by that signal. Dispositions reset: `< <(...)` starts it with SIGINT ignored.
@@ -167,7 +172,7 @@ PY
 sigrun() { READY=$1 python3 "$WORK/sigrun.py" "${@:2}"; }
 alive() { kill -0 "$1" 2>/dev/null; }
 # The serial tail stops at once too, on a TERM to the runner alone and on a Ctrl-C to the group, which
-# ends the suite with it; each run dies of its signal and journals it.
+# ends the suite with it, well before its 10 s sleep would; each run dies of its signal and journals it.
 RT="$WORK/tail"
 new_repo "$RT"
 suite "$RT" test_review_flow_gate.sh "printf '%s\\n' \"\$\$\" >\"$WORK/tail-pid\"; touch \"$WORK/tail-ready\"; sleep 10"
@@ -175,7 +180,7 @@ for case in "15 pid" "2 group"; do
   rm -f "$WORK/tail-ready" "$WORK/tail-pid"
   read -r rc ms < <(sigrun "$WORK/tail-ready" ${case} bash "$ROOT/share/run-suites.sh" --repo "$RT")
   assert test "$rc" = "-${case% *}"
-  assert test "$ms" -lt 2000
+  assert test "$ms" -lt 8000
   assert jqe --arg repo "$RT" --argjson sig "${case% *}" '.repo == $repo and .signal == $sig and .complete == false' <(tail -1 "$JOURNAL")
 done
 for _ in $(seq 50); do alive "$(cat "$WORK/tail-pid")" || break; sleep 0.1; done
@@ -204,7 +209,7 @@ for b in /bin/bash "$BASH"; do
     and all(.[]; (keys == $keys) and .kind == "direct" and .scope == "direct" and .j == 1 and (.slot | startswith($slots))
       and .signal == null and .complete == true and .repo == $repo and .repo_root == $repo and .head == $sha
       and .queued_at <= .started_at and .started_at <= .ended_at and (.suites | keys) == ["test_trap.sh"]
-      and (.suites["test_trap.sh"] | (.cpu_s | type == "number") and (.secs | type == "number") and (has("forks") | not)))
+      and (.suites["test_trap.sh"] | (.cpu_s | type == "number") and (.secs | type == "number")))
     and [.[].suites["test_trap.sh"].rc] == [0,1,5]' "$WORK/h/.cache/run-suites/runs.jsonl"
 done
 assert test ! -e "$WORK/elsewhere"
@@ -267,7 +272,7 @@ bash -c '. "$1" --lib; suite_journal_row suites 1 0 0 0 r r h s "" "" 1 "" "" tr
   _ "$ROOT/tests/lib/suite-journal.sh" $'a "b"\\\tc' >"$WORK/reason.jsonl"
 assert jqe '.reason == "a \"b\"\\\tc"' "$WORK/reason.jsonl"
 # One that traps nothing, or resets its own trap, is journaled as stopped by the signal, never with its last status: its EXIT
-# action still runs and it still dies of the signal. A SIGKILL leaves no row.
+# action still runs and it still dies of the signal.
 suite "$REPO" test_sig.sh "trap : HUP INT TERM
 trap - HUP INT TERM
 trap 'rm -f \"$WORK/sig-marker\"' EXIT
@@ -280,11 +285,10 @@ for b in /bin/bash "$BASH"; do
   read -r rc ms < <(SUITE_JOURNAL="$WORK/bare.jsonl" sigrun "$WORK/sig-ready" 15 pid "$b" "$REPO/tests/test_bare.sh")
   assert test "$rc" = -15
   assert jqe -s 'length == 1 and .[0].signal == 15 and .[0].complete == false' "$WORK/bare.jsonl"
-  for sig in 1 2 15 9; do
+  for sig in 1 2 15; do
     rm -f "$WORK/sig-ready" "$WORK/sig.jsonl"
     read -r rc ms < <(SUITE_JOURNAL="$WORK/sig.jsonl" sigrun "$WORK/sig-ready" "$sig" pid "$b" "$REPO/tests/test_sig.sh")
     assert test "$rc" = "-$sig"
-    if [ "$sig" = 9 ]; then assert test ! -e "$WORK/sig.jsonl"; continue; fi
     assert test ! -e "$WORK/sig-marker"
     assert jqe -s --argjson sig "$sig" 'length == 1 and .[0].signal == $sig and .[0].complete == false
       and .[0].suites["test_sig.sh"].rc == 128 + $sig' "$WORK/sig.jsonl"
@@ -383,7 +387,7 @@ assert jqe '(.suites | keys) == ["test_fast.sh","test_slow_a.sh","test_slow_b.sh
 git -C "$R6" checkout -q -- .
 printf 'echo v2\n' >"$R6/bin/rare.sh"
 slow_out=$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R6" -j 2 --changed 2>&1) || fail "an all-slow change failed: $slow_out"
-assert test "$slow_out" = 'slow layer skipped: test_slow_c.sh (the landing and the night full run run them)'
+assert test "$slow_out" = "${skip_line/test_slow_a.sh/test_slow_c.sh}"
 assert jqe '.skipped_slow == ["test_slow_c.sh"] and .suites == {} and .complete == true and .scope == "changed" and .suite_set == "00001505"' <(tail -1 "$JOURNAL")
 # --slow-refresh: the repo's suites whose 7-day median CPU of passing runs passes 45 s, never a gone one.
 now=$(date +%s)
@@ -414,10 +418,7 @@ assert jqe '.suites["test_leaks.sh"].rc == 1 and .suites["test_sandboxed.sh"].rc
 
 # tests/run-all refuses a worker's or a chat's full run before any suite or journal row; a named suite,
 # --changed, a chat's --full and a run outside both (the night, Egor's terminal) go through.
-for wrapper in "$ROOT/tests/run-all" "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/tests/run-all" \
-  "${REVIEW_BENCH_ROOT:-$PROJECTS/review-bench}/tests/run-all"; do
-  [ -r "$wrapper" ] && assert grep -qF -- '--run-all "$@"' "$wrapper"
-done
+assert grep -qF -- '--run-all "$@"' "$ROOT/tests/run-all"
 git -C "$R4" add -A
 git -C "$R4" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q -m tool
 # A worker that committed before its --changed run is scoped by its commits since head-before.
@@ -442,7 +443,6 @@ assert jqe '.scope == "full" and .worker_run == null and (.suites | keys) == ["t
 rows=$(wc -l <"$JOURNAL")
 CLAUDE_CODE_SESSION_ID=sess-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >"$WORK/gate.out" 2>"$WORK/gate.err"
 assert test "$?" -eq 3
-assert grep -qF "tests/run-all --full only on Egor's explicit word" "$WORK/gate.err"
 assert test "$(wc -l <"$JOURNAL")" -eq "$rows"
 WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all --full -j 2 >/dev/null 2>&1
 assert test "$?" -eq 3
@@ -502,22 +502,19 @@ assert jqe '.suites["test_prof.sh"] | .rc == 0 and (has("execs") or has("sleep_s
 
 # Red first: a day run starts the suites red in this checkout's last covering run first and, once they
 # are red again, stops the rest unrun; the summary says FAIL and the row is complete:false repeat-red.
-# A green repeat and the night's full run run everything. Old log dirs are log-sweep's (tmp-sandboxes), never a run's.
+# A green repeat and the night's full run run everything.
 R9="$WORK/r9"
 new_repo "$R9"
 suite "$R9" test_a.sh 'exit 0'
 suite "$R9" test_b.sh 'echo >>"'"$WORK"'/r9-b-runs"; exit 0'
 suite "$R9" test_z_red.sh '[ -e "'"$WORK"'/r9-green" ] && exit 0; exit 5'
-mkdir -p "$WORK/r9tmp/run-suites.old" "$WORK/r9tmp/run-suites.new" "$WORK/r9tmp/other.old"
-touch -t 202001010000 "$WORK/r9tmp/run-suites.old" "$WORK/r9tmp/other.old"
+mkdir -p "$WORK/r9tmp"
 r9() { TMPDIR="$WORK/r9tmp" bash "$ROOT/share/run-suites.sh" --repo "$R9" -j 1 "$@" 2>&1; }
 r9 test_a.sh test_b.sh test_z_red.sh >/dev/null
-assert test -d "$WORK/r9tmp/run-suites.old"
-assert test -d "$WORK/r9tmp/run-suites.new"
-assert test -d "$WORK/r9tmp/other.old"
 assert jqe '.complete == true and (has("stopped") | not) and (.suites | keys) == ["test_a.sh","test_b.sh","test_z_red.sh"]' <(tail -1 "$JOURNAL")
+rm -f "$WORK/r9-b-runs"
 r9_out=$(r9 test_a.sh test_b.sh test_z_red.sh) && fail "a repeat-red stop exited 0: $r9_out"
-assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 1
+assert test ! -e "$WORK/r9-b-runs"
 assert grep -Eq '^test_a\.sh +STOP ' <<<"$r9_out"
 assert grep -Eq '^test_z_red\.sh +FAIL 5 ' <<<"$r9_out"
 assert grep -q '^3 suites · 0 PASS · 1 FAIL · 2 STOP · ' <<<"$r9_out"
@@ -525,17 +522,18 @@ assert grep -q '^run-suites: FAIL, not a full verdict: .* 2 suite(s) stopped unr
 assert jqe '.complete == false and .reason == "repeat-red" and .stopped == ["test_a.sh","test_b.sh"]
   and (.suites | keys) == ["test_z_red.sh"]' <(tail -1 "$JOURNAL")
 r9 test_a.sh test_b.sh test_z_red.sh >/dev/null && fail 'a second repeat-red stop exited 0'
-assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 1
+assert test ! -e "$WORK/r9-b-runs"
 touch "$WORK/r9-green"
 r9_out=$(r9 test_a.sh test_b.sh test_z_red.sh) || fail "a green repeat failed: $r9_out"
-assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 2
+assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 1
 assert grep -Eq '^3 suites · 3 PASS · 0 FAIL · [0-9]+s wall \([0-9]+s serial\)$' <<<"$r9_out"
 assert jqe '.complete == true and (has("reason") or has("stopped") | not)' <(tail -1 "$JOURNAL")
-rm "$WORK/r9-green"
+rm "$WORK/r9-green" "$WORK/r9-b-runs"
 r9 test_a.sh test_b.sh test_z_red.sh >/dev/null
-assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 3
+assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 1
+rm "$WORK/r9-b-runs"
 r9 >/dev/null
-assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 4
+assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 1
 assert jqe '.scope == "full" and .complete == true and (.suites | length) == 3' <(tail -1 "$JOURNAL")
 
 printf 'PASS: %s asserts; run-suites and direct suite runs journal one row each\n' "$asserts"

@@ -214,13 +214,19 @@ suite_shard_owns() { # shard section -> whether this run executes the section
     exit 2
   fi
   suite_shard_seen="$suite_shard_seen $2"
-  [ -n "$suite_shard" ] || return 0
+  [ -n "$suite_shard" ] || { suite_sections_ran="${suite_sections_ran:-} $2"; return 0; }
   if ! [[ $suite_shard =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || [ "${BASH_REMATCH[2]}" != "$suite_shard_n" ] ||
       [ "${BASH_REMATCH[1]}" -gt "$suite_shard_n" ]; then
     printf 'suite_shard_owns: SUITE_SHARD=%s is none of the %s shards %s declares\n' "$suite_shard" "$suite_shard_n" "$suite_shard_top" >&2
     exit 2
   fi
-  [ "${suite_shard%/*}" = "$1" ]
+  [ "${suite_shard%/*}" = "$1" ] || return 1
+  suite_sections_ran="${suite_sections_ran:-} $2"
+}
+
+# A suite's closing lines: the sections this run executed, then the count the shard merge sums.
+suite_shard_pass() { # asserts
+  printf 'sections:%s\nPASS: %s asserts\n' "${suite_sections_ran:- (none)}" "$1"
 }
 
 # The whole suite's last line: shard lines alike but for their first number are one line with the

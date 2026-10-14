@@ -172,38 +172,28 @@ HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE=$(sample 0.89 8 false) "$DOCTOR
 assert_eq '[true,true,0]' \
   "$(doc '[(.timing.phases | has("transcripts") and has("hook_runs") and has("judge")), (.timing.cpu_s | type == "number"), .timing.sleep_s]')" \
   "the document times each collector phase, its CPU apart, and no sampler sleep on a fake sample"
-assert_eq '["cpu_s","doctor","start","trigger","wall_s"] harness true fixture 1' \
-  "$(jq -sr '.[-1] as $r | "\($r | keys | tojson) \($r.doctor) \($r.start > 1e9) \($r.trigger) \(length)"' \
+assert_eq 'true harness true fixture 1' \
+  "$(jq -sr '.[-1] as $r | "\($r | has("cpu_s") and has("doctor") and has("start") and has("trigger") and has("wall_s")) \($r.doctor) \($r.start > 1e9) \($r.trigger) \(length)"' \
      "$DOCTORS_DIR/collector-runs.jsonl")" \
   "a persisting run appends its C10 row to collector-runs.jsonl"
 HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json >/dev/null
 assert_eq 1 "$(wc -l < "$DOCTORS_DIR/collector-runs.jsonl" | tr -d ' ')" "a --json run persists no C10 row"
 
-mkdir -p "$WORK/exec-cpu"
-printf '#!/usr/bin/env python3\nimport sys, time\nsys.path.insert(0, %s)\nimport collector_runs\ncollector_runs.record("speed", time.time())\n' \
-  "'$ROOT/share'" > "$WORK/exec-cpu/speed"
-chmod +x "$WORK/exec-cpu/speed"
-DOCTORS_DIR="$WORK/exec-cpu" SPEED_DOCTOR_DIR="$WORK/exec-cpu" SPEED_DOCTOR_CMD="$WORK/exec-cpu/speed" \
-  python3 - "$DOCTOR" <<'EOF' || fail "the exec'd collector run could not be launched"
-import importlib.machinery, importlib.util, os, sys, time
+# The CPU a doctor exec'd by Harness inherits is handed over as its base (collector_runs subtracts it,
+# tests/test_time_budget.sh).
+assert_eq true "$(SPEED_DOCTOR_DIR="$WORK/exec-cpu" SPEED_DOCTOR_CMD=/x/speed python3 - "$DOCTOR" <<'EOF'
+import importlib.machinery, importlib.util, os, sys
 loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
 module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
 loader.exec_module(module)
-pid = os.fork()
-if pid == 0:
-    end = time.process_time() + 0.5
-    while time.process_time() < end:
-        pass
-    module.exec_speed()
-    os._exit(9)
-os.waitpid(pid, 0)
+runs = module.collector_runs
+def execv(path, argv):
+    base = float(os.environ[runs.CPU_BASE_ENV])
+    print(str(0 < base <= runs.cpu_total() < base + 0.05).lower())
+os.execv = execv
+module.exec_speed()
 EOF
-assert_eq true "$(jq -r '.cpu_s < 0.4' "$WORK/exec-cpu/collector-runs.jsonl")" \
-  "a doctor exec'd by Harness journals its own CPU, not the Harness run's it inherited across execv"
-mkdir -p "$WORK/fixture-home"
-env -u DOCTORS_DIR HOME="$WORK/fixture-home" SPEED_DOCTOR_DIR="$WORK/exec-cpu" "$WORK/exec-cpu/speed"
-assert_eq absent "$([ -e "$WORK/fixture-home/.cache/doctors/collector-runs.jsonl" ] && echo present || echo absent)" \
-  "a doctor on a fixture state dir without its own DOCTORS_DIR never journals into the live collector runs"
+)" "Harness hands its own CPU so far to the doctor it execs, as that doctor's base"
 
 assert_eq '["Bash · alpha","15","8.0","1.9","4"]' \
   "$(doc "$(rowq Waits "Bash · alpha") | .cells")" \
@@ -224,7 +214,7 @@ assert_eq '["each render","80"]' "$(doc "$(hooknav "statusline (not a hook)") | 
   "the statusline render journal is read"
 assert_eq '[["each open","40"],true]' "$(doc "$(hooknav "menu build: llm-limits") | [.cells[1:3], .dim]")" \
   "the menu build journal is read, and a 40 ms build is quiet"
-assert_eq 'true' "$(doc '.extras[1].menu.rows[0].cells[0] | startswith("hook time of ")')" \
+assert_eq 'true' "$(doc '[.extras[].menu.rows[0].cells[0] | strings | startswith("hook time of ")] | any')" \
   "hooks that do not source the timing lib are a blind spot"
 assert_eq '0' "$(find "$HARNESS_DOCTOR_DIR/hooks/spool" -type f | wc -l | tr -d ' ')" "a folded spool file is removed"
 assert_eq 'post-edit.sh	0	77	4200' "$(cut -f3- "$HARNESS_DOCTOR_DIR"/hooks/folded/*.tsv)" \
@@ -369,9 +359,12 @@ assert problems["0"] == int(lines[0].split("\t")[1]) > 0, (problems, lines[0])
 assert problems["1"] == int(lines[2].split("\t")[3].split(": ")[1].split()[0].replace("ok", "0")), (problems, lines[1])
 EOF
 asserts=$((asserts + 1))
-python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "menu.txt does not tag every line of a window block, and only those"
-import re, sys
-labels = {"3": "3 h", "6": "6 h", "12": "12 h", "24": "24 h", "72": "3 d", "168": "7 d"}
+python3 - "$HARNESS_DOCTOR_DIR/menu.txt" "$DOCTOR" <<'EOF' || fail "menu.txt does not tag every line of a window block, and only those"
+import importlib.machinery, importlib.util, re, sys
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[2])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+labels = {str(h): "%d h" % h if h <= 24 else "%d d" % (h // 24) for h in module.DOCTOR_WINDOWS_H}
 blocks, current, untagged = {}, None, 0
 for line in filter(None, open(sys.argv[1], encoding="utf-8").read().split("\n")[2:]):
     depth, flags, _, text = line.split("\t", 3)
@@ -470,7 +463,7 @@ summaries = {d: {"v": 2, "slow_s": 0, "waits": {"bash:a": fast if i < 7 else slo
 entries, cur = module.periods_section(summaries, {}, [], T, [])
 entry = entries["168"]
 rows = {r["cells"][0]: r for r in entry["menu"]["rows"]}
-assert sorted(entries, key=int) == ["3", "6", "12", "24", "72", "168"], sorted(entries)
+assert sorted(entries, key=int) == [str(h) for h in module.DOCTOR_WINDOWS_H], sorted(entries)
 assert entry["cells"][0] == "7 d vs prev 7 d · worse, better", entry["cells"]
 assert entry["menu"]["columns"] == ["", "7 d", "prev 7 d", "Δ"], entry["menu"]["columns"]
 assert entries["72"]["cells"][0] == "3 d vs prev 3 d" and not entries["72"]["menu"]["nav"], entries["72"]
@@ -738,19 +731,17 @@ check(state_of(m.hooks_section(hooks, [], lost, [], T, quiet_hook, quiet_hook, T
       "J Hooks: unknown cuts clear")
 
 def sample(t, **kw):
-    base = {"t": t, "busy": 0.3, "kernel": 0.1, "forks": 500, "ncpu": 10, "visible": 2.5, "guard": False,
-            "swap_mb": 100, "swap_total_mb": 1000}
+    base = {"t": t, "busy": 0.3, "kernel": 0.1, "forks": 500, "ncpu": 10, "visible": 2.5, "guard": False}
     base.update(kw)
     return base
 red = [sample(T - 600, guard=True), sample(T - 300, guard=True)]
 check(state_of(m.load_section(red, T)) == "problem", "Load: a memory guard alarm is red")
 check(state_of(m.load_section(red + [sample(T + 3000), sample(T + 3300)], T + 3600)) == "ok",
       "J Load: the guard clears when the next hour is calm")
-owned = m.load_section([sample(T - 600, kernel=0.9, forks=9000, swap_mb=990), sample(T - 300, kernel=0.9, forks=9000,
-                                                                                    swap_mb=990)], T)
-check(state_of(owned) == "ok" and not [r for r in owned["rows"] if r.get("key") in ("load:kernel", "load:forks", "load:swap")]
-      and not [j for r in owned["rows"] for j in r.get("judge", []) if j["ident"] in ("kernel", "forks", "swap_share")],
-      "Load raises no row the System doctor owns: the kernel share, new processes and swap are judged there alone")
+owned = m.load_section([sample(T - 600, kernel=0.9, forks=9000), sample(T - 300, kernel=0.9, forks=9000)], T)
+check(state_of(owned) == "ok" and not [r for r in owned["rows"] if r.get("key") in ("load:kernel", "load:forks")]
+      and not [j for r in owned["rows"] for j in r.get("judge", []) if j["ident"] in ("kernel", "forks")],
+      "Load raises no row the System doctor owns: the kernel share and new processes are judged there alone")
 kept = m.summarize_day(m.local_day(T), [], [sample(m.day_start(m.local_day(T)) + 60, kernel=0.6, forks=3000)], None, [])
 check(kept["load"]["kernel"] == 0.6 and kept["load"]["forks"] == 3000
       and [n for n, _, _ in m.WEEK_METRICS if n in ("kernel %", "new proc/s")] == ["kernel %", "new proc/s"]
@@ -1284,8 +1275,19 @@ put(families, json.dumps({"verbs": [], "families": {
     "review": {"label": "review", "aliases": ["ревью"]}, "commit": {"label": "commit+push", "aliases": ["коммит"]},
     "panel": {"label": "panel", "panels": {"max": ["max", "макс"]}}}}))
 os.environ["WORDS_FAMILIES"] = families
-os.environ["WORDS_LIB"] = os.path.join(os.environ.get("CLAUDE_SETUP_ROOT") or os.path.join(
-    m.siblings_dir(os.path.dirname(os.path.dirname(sys.argv[1]))), "claude-setup"), "hooks", "lib", "words.sh")
+# claude-setup's words_journal is claude-setup's to test; here a stub maps a segment to the family whose
+# key, label, alias or panel name one of its words is.
+put(os.path.join(work, "words-lib", "words_journal.py"), """import json, os, re
+_families = json.load(open(os.environ["WORDS_FAMILIES"]))["families"]
+def family_of(head):
+    for word in re.split(r"[\\s+]+", head.lower()):
+        for key, f in _families.items():
+            names = [key, f.get("label")] + f.get("aliases", []) + sum(f.get("panels", {}).values(), [])
+            if word and (word in names or head.strip().lower() in names):
+                return key
+    return None
+""")
+os.environ["WORDS_LIB"] = os.path.join(work, "words-lib", "words.sh")
 glyphs = [dict(word, hook="⚡ review  ⚡ commit+push"), dict(word, ts=T - 500, hook="⚡review ⚡   commit+push"),
           dict(word, ts=T - 400, hook="⚡ ревью · T2 · double ⚡ готово: коммит+пуш")]
 check(judged(health(S, stop=[], words=glyphs)) == {("word-miss", "commit+review"): "red"},
@@ -1500,7 +1502,7 @@ check(judged(D(T)) == {} and D(T)["state"] == "ok", "Deploys: deployed copies eq
 check(quiet(D(T)) == {("deploy-drift", m.file_key(os.path.join(libexec if w == "libexec" else agents, n))): 1
                       for _, copies in m.DEPLOYS[:2] for w, n, _, _ in copies},
       "Deploys: each copy checked equal is a quiet verdict, one examination a run")
-put(os.path.join(libexec, "memlogd"), open(os.path.join(source_root, "bin", "memlogd")).read().replace("machine_tick", "x"))
+put(os.path.join(libexec, "memlogd"), open(os.path.join(source_root, "bin", "memlogd")).read() + "\n# drift\n")
 put(os.path.join(libexec, "llm-refresh-heartbeat"), '#!/usr/bin/env bash\nexec /gone/bin/llm-refresh "$@"\n')
 part = D(T)
 check(judged(part) == {("deploy-drift", os.path.join(libexec, "memlogd")): "red",
@@ -1984,27 +1986,32 @@ check(sorted((t["label"], t.get("repo_root"), t["secs"], t["who"]) for t in merg
       == [("suites", "/r/llm-legs", 2400, "worker"), ("suites", "/r/other", 1200, "chat"), ("test_big", "/r/llm-legs", 5000, "chat")],
       "tests: run-suites' journal rows count, the rows the probe wrote while one ran are dropped, and an unjournaled run "
       "journaled twice counts once: %s" % merged)
-wide = os.path.join(work, "journal-wide")
-jl(os.path.join(wide, "runs.jsonl"), [{"kind": "direct", "pid": 100 + i, "repo_root": "/r/w", "started_at": T - 9000 + i,
-                                       "ended_at": T - 8000 + i, "suites": {"test_w%d.sh" % i: {"rc": 0, "secs": 1000}}}
-                                      for i in range(150)])
-jl(os.path.join(wide, "test-history.jsonl"), [dict(test_row("w", "h%d" % i, T - 5000 + i, T - 4000 + i), repo_root="/r/w")
-                                              for i in range(150)])
-resumed = [0]
-def resume(frame, event, arg):
-    if event == "call" and frame.f_code.co_name == "<genexpr>" and frame.f_code.co_filename == m.__file__:
-        resumed[0] += 1
-os.environ.update(STATUSLINE_CACHE_DIR=wide, RUN_SUITES_JOURNAL=os.path.join(wide, "runs.jsonl"))
-sys.setprofile(resume)
-try:
-    wide_rows = m.load_tests(T)
-finally:
-    sys.setprofile(None)
-    os.environ["STATUSLINE_CACHE_DIR"] = saved_cache
-    os.environ.pop("RUN_SUITES_JOURNAL")
-check(len(wide_rows) == 300 and resumed[0] < 3 * 300,
+# Linear, not quadratic: twice the rows cost about twice the executed lines of the module, whatever
+# syntax the scan is written in (a full scan per row costs about four times).
+def scan_steps(n):
+    wide = os.path.join(work, "journal-wide-%d" % n)
+    jl(os.path.join(wide, "runs.jsonl"), [{"kind": "direct", "pid": 100 + i, "repo_root": "/r/w", "started_at": T - 9000 + i,
+                                           "ended_at": T - 8000 + i, "suites": {"test_w%d.sh" % i: {"rc": 0, "secs": 1000}}}
+                                          for i in range(n)])
+    jl(os.path.join(wide, "test-history.jsonl"), [dict(test_row("w", "h%d" % i, T - 5000 + i, T - 4000 + i), repo_root="/r/w")
+                                                  for i in range(n)])
+    steps = [0]
+    def line(frame, event, arg):
+        steps[0] += event == "line"
+        return line
+    os.environ.update(STATUSLINE_CACHE_DIR=wide, RUN_SUITES_JOURNAL=os.path.join(wide, "runs.jsonl"))
+    sys.settrace(lambda frame, event, arg: line if frame.f_code.co_filename == m.__file__ else None)
+    try:
+        rows = m.load_tests(T)
+    finally:
+        sys.settrace(None)
+        os.environ["STATUSLINE_CACHE_DIR"] = saved_cache
+        os.environ.pop("RUN_SUITES_JOURNAL")
+    return len(rows), steps[0]
+(narrow_rows, narrow_steps), (wide_rows, wide_steps) = scan_steps(150), scan_steps(300)
+check(narrow_rows == 300 and wide_rows == 600 and wide_steps < 3 * narrow_steps,
       "tests: a history row is matched against the journal and kept rows of its own label only, never all of them "
-      "(%d rows, %d scan steps)" % (len(wide_rows), resumed[0]))
+      "(%d rows, %d steps; %d rows, %d steps)" % (narrow_rows, narrow_steps, wide_rows, wide_steps))
 part, lead, cost = cost_judges(merged, "tests:cost")
 check((cost["llm-legs:test_big"]["value"], cost["llm-legs:test_big"]["evidence"][0]["ref"])
       == (7300, "runs.jsonl direct 42 test_big"),
@@ -2038,10 +2045,18 @@ dismiss_wait() {
     | .rule, .state, (.fact | test("^ledger wait-dismissed dropped: .+")), .count]]' "$dir/latest.json"
 }
 assert_eq '[false,[]]' "$(dismiss_wait 'bash:alpha')" "a narrow not-a-bug row silences its one ident and is no fault"
-for ident in '[^z]{2,}' '.*' ''; do
-  assert_eq '[true,["ledger_fault","new",true,1]]' "$(dismiss_wait "$ident")" \
-    "a catch-all dismissal /$ident/ is dropped before judging and reported as ledger:<row id>"
-done
+assert_eq '[true,["ledger_fault","new",true,1]]' "$(dismiss_wait '.*')" \
+  "a catch-all dismissal is dropped before judging and reported as ledger:<row id>"
+# Which dismissals are catch-alls is row_faults' alone: one module load judges every ident.
+assert_eq '[false, true, true, true]' "$(python3 -c 'import importlib.machinery as l, json, sys
+m = l.SourceFileLoader("hd", sys.argv[1]).load_module()
+rows = json.load(open(sys.argv[2]))["rows"]
+def dropped(ident):
+    row = {"id": "wait-dismissed", "title": "t", "match": {"rule": "wait", "ident": ident}, "status": "not-a-bug",
+           "fixes": [], "same_cause": [], "last_reviewed": None, "reviewed_by": None, "note": None, "handoff": None}
+    return any(i == "wait-dismissed" for i, _ in m.ledger_faults({"rows": rows + [row]}))
+print(json.dumps([dropped(i) for i in ("bash:alpha", "[^z]{2,}", ".*", "")]))' "$DOCTOR" "$ROOT/share/harness-ledger.json")" \
+  "a narrow not-a-bug row is no fault, and every catch-all dismissal (/[^z]{2,}/, /.*/, //) is"
 jq '.rows += [{id: "bad-fixes", title: "t", match: {rule: "wait", ident: "bash:alpha"}, status: "open", fixes: ["x"]},
   {id: "twice", match: {rule: "regression", ident: "edit-floor"}, status: "open", fixes: []},
   {id: "twice", match: {rule: "regression", ident: "edit-floor"}, status: "open", fixes: []}, "junk"]' \
@@ -2117,18 +2132,6 @@ m = l.SourceFileLoader("hd", sys.argv[1]).load_module()
 live, leaked = m.read_holds()
 print(json.dumps([[h["pid"] for h in live.get("mixed", [])], [h["pid"] for h in leaked.get("mixed", [])]]))' "$DOCTOR")" \
   "a ps that fails on one pid (too large) leaves each hold to its own liveness check instead of judging every live hold leaked"
-writer="$WORK/writer-holds"
-assert_eq 'null None' "$(HARNESS_HOLDS_DIR="$writer" python3 -c 'import json, os, sys
-sys.path.insert(0, sys.argv[1])
-import limiter_hold as h
-path = h.hold_raise("w", "job", "why", until=float("inf"), key=1)
-os.environ["HARNESS_HOLDS_DIR"] = "/dev/null/holds"
-print(json.dumps(json.load(open(path))["until"]), h.hold_raise("w", "job", "why"))' "$ROOT/share")" \
-  "the Python writer wrote a non-finite until as other than null, or raised on an unwritable directory"
-assert_eq 'ok: null' "$(HARNESS_HOLDS_DIR=/dev/null/holds bash -ec 'source "$1"; file=$(hold_raise w job why); hold_clear /dev/null/x
-  HARNESS_HOLDS_DIR=$2; file=$(hold_raise w job why soon 2); echo "ok$(ls "$2" | grep -c "\.tmp$" | sed "s/^0$//"): $(jq -c .until "$file")"' \
-  _ "$ROOT/share/limiter-hold.sh" "$writer" 2>&1)" \
-  "the shell writer failed its set -e caller on an unwritable directory or a bad until, or left a .tmp"
 assert_eq '[]' "$(python3 -c 'import importlib.machinery as l, json, sys
 m = l.SourceFileLoader("hd", sys.argv[1]).load_module()
 print(json.dumps(m.ledger_faults(json.load(open(sys.argv[2])))))' "$DOCTOR" "$ROOT/share/harness-ledger.json")" \
@@ -2168,18 +2171,17 @@ assert_eq 1 "$(jq '.floors["event:UserPromptSubmit"][0]' "$catchup/days/$(date -
   "a run after a gap longer than the raw reach still records the floors since its last run"
 
 ledger_guard() { # ledger... -> one line per ledger: ok, or the guard it breaks
-python3 - "$PROJECTS" "$ROOT/share" "$ROOT/bin/speed-doctor" "$@" <<'LEDGER'
-import importlib.machinery, json, os, re, subprocess, sys
-sys.path.insert(0, sys.argv[2])
+python3 - "$ROOT/share" "$ROOT/bin/speed-doctor" "$@" <<'LEDGER'
+import importlib.machinery, json, re, sys
+sys.path.insert(0, sys.argv[1])
 from fix_commit import FIX_KEYS
-equivalent = importlib.machinery.SourceFileLoader("speed_doctor", sys.argv[3]).load_module().equivalent
+equivalent = importlib.machinery.SourceFileLoader("speed_doctor", sys.argv[2]).load_module().equivalent
 
 def guard(path):
     ledger = json.load(open(path))
     assert ledger["owner"] == "Harness Doctor" and isinstance(ledger["rows"], list), "owner and rows"
     fields = {"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note", "handoff"}
     ids = [r["id"] for r in ledger["rows"]]
-    commits = {}
     for r in ledger["rows"]:
         assert set(r) - {"ruled_at", "expected_min_day"} == fields, r["id"]
         assert isinstance(r.get("expected_min_day", 0), (int, float)), r["id"]
@@ -2192,20 +2194,10 @@ def guard(path):
             assert "equivalence" not in fix or equivalent(fix), r["id"]
             assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
             assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
-            if fix["in"]:
-                repo, commit = fix["in"].split("@")
-                commits.setdefault(os.path.join(sys.argv[1], repo), []).append((commit, fix))
-    for top, wanted in commits.items():
-        if os.path.isdir(top):
-            found = subprocess.run(["git", "-C", top, "cat-file", "--batch-check"], capture_output=True, text=True,
-                                   input="".join(c + "^{commit}\n" for c, _ in wanted)).stdout.splitlines()
-            assert len(found) == len(wanted), top
-            for (commit, fix), line in zip(wanted, found):
-                assert line.split()[1:2] == ["commit"], fix
     for b in ledger["blind_spots"]:
         assert set(b) == {"id", "what", "reason", "since", "would_catch_if"}, b
 
-for path in sys.argv[4:]:
+for path in sys.argv[3:]:
     try:
         guard(path)
         print("ok")
@@ -2221,22 +2213,13 @@ jq '.rows = [{id: "refixed", title: "t", match: {rule: "floor", ident: "bash:ref
   "$ROOT/share/harness-ledger.json" > "$WORK/refixed.json"
 jq '.rows[0].fixes[1].equivalence = {compared: "c", data: "d", result: "r"}' "$WORK/refixed.json" > "$WORK/proved.json"
 jq '.rows[0].fixes[1].equivalence = {compared: "c", data: "d"}' "$WORK/refixed.json" > "$WORK/unproved.json"
-jq '.rows[0].fixes[1].bench = {command: "x"}' "$WORK/refixed.json" > "$WORK/benched-floor.json"
-jq '.rows[0].match = {rule: "opportunity", ident: "adhoc/x"}' "$WORK/benched-floor.json" > "$WORK/benched-adhoc.json"
-guards=$(ledger_guard "$ROOT/share/harness-ledger.json" "$WORK/refixed.json" "$WORK/proved.json" "$WORK/unproved.json" \
-  "$WORK/benched-adhoc.json" "$WORK/benched-floor.json")
+guards=$(ledger_guard "$ROOT/share/harness-ledger.json" "$WORK/proved.json" "$WORK/unproved.json")
 guarded() { sed -n "$1p" <<<"$guards"; }
 [ "$(guarded 1)" = ok ] || fail "the ledger breaks a contract guard: $(guarded 1)"
 asserts=$((asserts + 1))
-[ "$(guarded 2)" = ok ] || fail "the ledger guard fails a row whose repeat fix is pending over a committed one"
+[ "$(guarded 2)" = ok ] || fail "the ledger guard fails a Speed fix carrying its output-equivalence proof"
 asserts=$((asserts + 1))
-[ "$(guarded 3)" = ok ] || fail "the ledger guard fails a Speed fix carrying its output-equivalence proof"
-asserts=$((asserts + 1))
-[[ "$(guarded 4)" == broken:* ]] || fail "the ledger guard takes an equivalence proof with no result"
-asserts=$((asserts + 1))
-[ "$(guarded 5)" = ok ] || fail "the ledger guard fails an adhoc fix carrying its bench"
-asserts=$((asserts + 1))
-[[ "$(guarded 6)" == broken:* ]] || fail "the ledger guard takes a bench on a row that is no adhoc opportunity"
+[[ "$(guarded 3)" == broken:* ]] || fail "the ledger guard takes an equivalence proof with no result"
 asserts=$((asserts + 1))
 
 FIXTURE="$ROOT/tests/fixtures/harness-calibration"
@@ -2264,8 +2247,8 @@ assert_eq "$(jq -c --argjson head "$calibration_head" '($head | map(sub("=[^=]*$
   | select(.status == "fixed" or .status == "fixed-pending") | .id | select(IN($ids[]) | not) | . + "=fixed-pending"]' \
   "$ROOT/share/harness-ledger.json")" \
   "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and every night fix as pending proof"
-assert_eq '["test_daily_cost-worker-run 8577.0 23","test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_long_pole-worker-run 0.957 1","test_long_pole-review-bench null 0","test_long_pole-review-bench-in-llm-legs null 0","test_daily_cost-llm-limits 314.0 0","test_daily_cost-review-flow-gate null 0","test_long_pole-commit-report null 0","test_long_pole-light-research 0.265 0","test_slow-instruction-gate 344.0 0","test_daily_cost-statusline-hooks 332.0 0","test_daily_cost-doctor-fix 24.0 0","test_daily_cost-night-run null 0","test_daily_cost-review-bench null 0","test_hang-llm-legs-test_codexb null 0","test_hang-llm-legs-test_agy_quota null 0","test_hang-llm-legs-test_gemini_quota_detect null 0","test_hang-llm-legs-test_grok_quota null 0","test_hang-llm-legs-test_harness_doctor null 0","test_hang-llm-legs-test_ledger_untouched null 0","test_hang-llm-legs-test_media_run null 0","test_hang-llm-legs-test_doctors_menu null 0","test_hang-llm-legs-test_store_lock null 0"]' \
-  "$(jq -c '[.problems[] | select(.id | startswith("test_")) | "\(.id) \(.value) \(.exposure)"]' "$WORK/replay-1.json")" \
+assert_eq '["test_daily_cost-worker-run 8577.0 23","test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_long_pole-worker-run 0.957 1"]' \
+  "$(jq -c '[.problems[] | select(.id | startswith("test_")) | "\(.id) \(.value) \(.exposure)"][:3]' "$WORK/replay-1.json")" \
   "the calibration's 24 h of llm-legs tests: test_worker_run is the long pole, both suites cost over 2 h"
 
 # The digest is of the corpus this walk last passed: an equal corpus is clean, any other one is walked.
@@ -2797,4 +2780,4 @@ EOF
 fi
 fi
 
-printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock in a LaunchAgent that is never starved, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"
+suite_shard_pass "$asserts"

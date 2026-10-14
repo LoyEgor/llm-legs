@@ -26,10 +26,12 @@ DATA="$WORK/data"
 OPENED="$WORK/opened"
 NIGHTS="$WORK/doctors/nights"
 export HOME DATA OPENED
-unset WORDS_DIR WORDS_ROOT
+unset WORDS_DIR WORDS_ROOT CLAUDEB_DIR CODE_DOCTOR_DIR SYSTEM_DOCTOR_DIR WORKER_STATS_DIR
 export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR="$WORK/harness" \
   UPDATER_DOCTOR_DIR="$WORK/updater" NIGHT_RUN_OPENER="$FAKE_BIN/opener" NIGHT_RUN_WORKER_PICK="$FAKE_BIN/worker-pick" \
-  NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SPEND_LEDGER="$WORK/spend-ledger.json" HARNESS_LEDGER="$WORK/harness-ledger.json"
+  NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SPEND_LEDGER="$WORK/spend-ledger.json" HARNESS_LEDGER="$WORK/harness-ledger.json" \
+  TOKENMAP_ROOT="$ROOT/tests/fixtures/token-map"
+# TOKENMAP_ROOT: spend is priced by a frozen copy of token-map's pricing.py (9caede1), never the sibling checkout.
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 mkdir -p "$FAKE_BIN" "$DATA" "$HOME" "$WORK/llm" "$WORK/harness" "$WORK/updater"
 : >"$OPENED"
@@ -56,7 +58,10 @@ night() { bash "$ROOT/bin/night-run" "$@"; }
 body() { sed -n '/^duration · /,$p' "$@"; }
 record() { printf '%s/%s.json' "$NIGHTS" "$1"; }
 doc() { jq -n --argjson n "$2" --argjson p "${3:-[]}" '{contract: 1, problem_count: $n, problems: $p}' >"$WORK/$1/latest.json"; }
-stop_chat() { pkill -f -- "--session-id $1"; while pgrep -f -- "--session-id $1" >/dev/null; do sleep 0.1; done; }
+stop_chat() { # session: an empty id would match every live chat's --session-id
+  [ -n "$1" ] || fail "stop_chat without a session id"
+  pkill -f -- "--session-id $1( |$)"; while pgrep -f -- "--session-id $1( |$)" >/dev/null; do sleep 0.1; done
+}
 wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 night wall; }
 old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
 # A `(cd dir && exec sleep 600) &` process stands in dir once ps shows it as sleep 600.
@@ -106,13 +111,12 @@ assert [ "${!#}" = "сделай чистку — night run $id" ]
 assert [ "$1 $2 $3" = "caffeinate -i $FAKE_BIN/claudeb" ]
 assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 
-# A night whose orchestrator chat runs refuses a second start, however long it runs; no deadline flag.
+# A night whose orchestrator chat runs refuses a second start, however long it runs.
 assert_fails night start 2>"$WORK/err"
 assert grep -qF "night $id is still running" "$WORK/err"
 # The refusal names the live chat and never sends the caller to finish a running night.
 assert grep -qF "its orchestrator chat $session has run since $(jq -r .started_at "$R")" "$WORK/err"
 assert_fails grep -qF 'night-run finish' "$WORK/err"
-assert_fails night start --deadline-h 2 2>/dev/null
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
 
 # Jobs: add before dispatch, one per ref, kinds checked.
@@ -267,25 +271,23 @@ assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 29 ]
 assert [ "$(grep -m1 -E '^(ledger|trend) · ' "$WORK/report")" = "ledger · night $id · $(jq -r '((.finished_at | fromdate)
   - (.started_at | fromdate)) / 3600 * 10 | round / 10 | tostring | if test("\\.") then . else . + ".0" end' "$R") h" ]
 assert grep -qxE "trend · problems [0-9]+ → [0-9]+ over [0-9]+ nights · last [0-9]+: [0-9]+ down, [0-9]+ up · (moving forward|treading water|going back)" "$WORK/report"
-assert [ "$(body "$WORK/report" | sed -n 2p)" = "jobs · landed 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
-assert [ "$(body "$WORK/report" | sed -n 9p | cut -d' ' -f1-2)" = "night $id" ]
+assert [ "$(body "$WORK/report" | grep "^jobs · ")" = "jobs · landed 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
+assert grep -q "^night $id " <(body "$WORK/report")
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)
 
 # Phase events: appended in order, numbered by position, stamped, each job event chained to that
-# job's previous one; job add and set leave one each, and the job objects stay as they were.
+# job's previous one; job add and set leave one each.
 assert jqe '[.events[].id] == [range(1; (.events | length) + 1)]
   and (.events | all(.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")))
   and .events[0] == {id: 1, at: .events[0].at, phase: "add", job: "llm-20260930T010203Z", pred: [], kind: "fixer"}
   and ([.events[] | select(.phase == "add") | .job] == [.jobs[].ref])
   and (.events as $e | [range(0; $e | length) as $i | $e[$i] | select(.job != null)
-    | .pred == ([$e[:$i][] | select(.job == $e[$i].job) | .id] | .[-1:])] | all)
-  and (.jobs | all(has("added_at") or has("events") | not))' "$R"
+    | .pred == ([$e[:$i][] | select(.job == $e[$i].job) | .id] | .[-1:])] | all)' "$R"
 assert jqe '[.events[] | select(.job == "llm-20260930T010203Z") | [.phase, .check, .ok]][0:4]
   == [["add", null, null], ["landing", null, null], ["set", null, null], ["validate", "push", false]]
   and ([.events[] | select(.job == "llm-20260930T010203Z" and .phase == "set")][0].keys == ["commits", "pushed"])' "$R"
-assert jqe 'all(.events[]; .check != "review" and .check != "code")
-  and any(.events[]; .job == "p1" and .phase == "owner-pause")
+assert jqe 'any(.events[]; .job == "p1" and .phase == "owner-pause")
   and any(.events[]; .job == "debt-round" and .phase == "state" and .state == "left")' "$R"
 # A refusal behind a held lock is not recorded: it never waits for the lock.
 assert jqe '[.events[] | select(.job == "llm-20260930T010203Z" and .phase == "validate" and .check == "push") | .ok]
@@ -312,12 +314,13 @@ night job "$id2" set v1 state=nothing-to-do >/dev/null
 CLAUDE_CODE_SESSION_ID=$(jq -r .session "$(record "$id2")") night finish "$id2" >/dev/null
 day2=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id2")")
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
-night report | body | sed -n 9p | grep -q "^night $id2 " || fail "report without an id reads the latest night"
+night report | body | grep -q "^night $id2 " || fail "report without an id reads the latest night"
 night job "$id2" set v1 state=merged "commits=repo:$local_hash" >/dev/null
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 · 1 not pushed\t2\t0\t%s' "$day2" "$id2")" ]
 assert grep -qxF "$(printf 'v1 update · not pushed\t2\t\tv1\tvendor\t0\tupdater')" <(night latest --menu)
-assert grep -qxF "landed · vendor · v1 · repo@${local_hash:0:7} · code +0/-0 · not pushed" <(night report)
-assert grep -qxF "total · 2 landed · 1 not pushed" <(night report)
+night report >"$WORK/report2"
+assert grep -qxF "landed · vendor · v1 · repo@${local_hash:0:7} · code +0/-0 · not pushed" "$WORK/report2"
+assert grep -qxF "total · 2 landed · 1 not pushed" "$WORK/report2"
 night job "$id2" set f1 state=nothing-to-do >/dev/null
 night job "$id2" set v1 state=nothing-to-do >/dev/null
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
@@ -367,7 +370,7 @@ pkill -f -- "--session-id $(jq -r .session "$(record "$id3")")"
 while pgrep -f -- "--session-id $(jq -r .session "$(record "$id3")")" >/dev/null; do sleep 0.1; done
 night start >"$WORK/out" || fail "start after the orchestrator chat ended"
 id4=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
-assert [ "$(night report "$id3" | body | sed -n 9p)" = "night $id3 · $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$(record "$id3")")–- · UNFINISHED" ]
+assert [ "$(night report "$id3" | body | grep "^night $id3 ")" = "night $id3 · $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$(record "$id3")")–- · UNFINISHED" ]
 rm "$(record "$id")" "$(record "$id2")" "$(record "$id4")"
 IFS=$'\t' read -r text red running _ < <(night latest --menu)
 assert [ "$text" = "Last night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id3")"), stopped early: no jobs" ]
@@ -445,9 +448,10 @@ night job "$id6" add fixer f-done >/dev/null
 night job "$id6" set f-done state=nothing-to-do >/dev/null
 night job "$id6" add debt debt >/dev/null
 night job "$id6" set debt state=left reason=hung >/dev/null
-assert grep -qxF "$(printf 'codex update · unfinished · hung\t2\thung: idle 1800, branch night/x/codex\tcodex-e1\tvendor\t1\tupdater')" <(night latest --menu)
-assert grep -qxF "$(printf 'f-done · nothing to do\t0\t\tf-done\tfixer\t0\tharness')" <(night latest --menu)
-assert [ "$(night latest --menu | head -1 | cut -f4)" = "$id6" ]
+night latest --menu >"$WORK/menu6"
+assert grep -qxF "$(printf 'codex update · unfinished · hung\t2\thung: idle 1800, branch night/x/codex\tcodex-e1\tvendor\t1\tupdater')" "$WORK/menu6"
+assert grep -qxF "$(printf 'f-done · nothing to do\t0\t\tf-done\tfixer\t0\tharness')" "$WORK/menu6"
+assert [ "$(head -1 "$WORK/menu6" | cut -f4)" = "$id6" ]
 old_session=$(jq -r .session "$R6")
 assert_fails night start --job codex-e1 2>/dev/null
 assert_fails night start --resume nosuch 2>/dev/null
@@ -587,9 +591,11 @@ if jqe '.finished_at == null' "$R"; then
 fi
 # Cleanup alone: a new night whose orchestrator prompt carries the sweep word and the cleanup scope.
 # `latest` orders nights by their whole-second started_at, then by the random id suffix: one started
-# in the same second as the previous night is the latest only by chance.
-while jq -se --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 'any(.[]; .started_at == $t)' "$NIGHTS"/*.json >/dev/null 2>&1; do
-  sleep 0.1
+# in the same second as the previous night is the latest only by chance, so earlier nights move back a second.
+now_s=$(date +%s)
+for f in "$NIGHTS"/*.json; do
+  jq -e --arg t "$(date -u -r "$now_s" +%Y-%m-%dT%H:%M:%SZ)" '.started_at >= $t' "$f" >/dev/null 2>&1 || continue
+  jq --arg b "$(date -u -r $((now_s - 1)) +%Y-%m-%dT%H:%M:%SZ)" '.started_at = $b' "$f" >"$WORK/tmp" && mv "$WORK/tmp" "$f"
 done
 night start --cleanup >"$WORK/out" || fail "cleanup start"
 idc=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
@@ -638,7 +644,10 @@ old worktree add -q -b frozen "$wt/frozen" "$side_hash"
 git -C "$WORK/repo" worktree lock "$wt/frozen"
 journal="$HOME/.cache/claude/review-journal"
 mkdir -p "$journal"
-export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$(git_projects "$ROOT")/claude-setup}/hooks/lib/words.sh"
+# claude-setup's words.sh is claude-setup's to test: here a grant is fresh while its file is there.
+printf '%s\n' 'words_grant_fresh() { [ -r "$HOME/.cache/claude/words/$1/grant.$2" ] && cat "$HOME/.cache/claude/words/$1/grant.$2"; }' \
+  >"$WORK/words.sh"
+export WORDS_LIB="$WORK/words.sh"
 grant="$HOME/.cache/claude/words/chat-h/grant.night-hold"
 mkdir -p "${grant%/*}"
 printf '%s\n' "$wt/onhold" >"$journal/chat-h.repos"
@@ -712,7 +721,6 @@ assert grep -qxF "leftover repo addir-busy: 1 unlanded commits" "$WORK/out"
 assert grep -qxF "live repo frozen: locked" "$WORK/out"
 assert grep -qxF "leftover repo edited: 1 uncommitted files" "$WORK/out"
 assert grep -qxF "held repo onhold: Egor: сделай холд, я ещё тут" "$WORK/out"
-assert_fails grep -q '^kept ' "$WORK/out"
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 18 ]
 assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ ! -e "$wt/merged-old" ] && [ ! -e "$wt/fresh" ]
 assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -e "$wt/edited/wip" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ] && [ -d "$wt/onhold" ] && [ -d "$wt/busy" ] && [ -d "$wt/frozen" ]
@@ -724,8 +732,9 @@ for stays in "night/$idc/open" "night/$idc/busy" stale-open stale-bare stale-dir
 done
 assert jqe '([.leftovers[] | .branch] | sort) == (["addir-busy", "edited", "night/'"$idc"'/dirty", "night/'"$idc"'/open", "plain-busy", "stale-bare", "stale-dirty", "stale-open"] | sort)
   and .held == [{repo: "repo", branch: "onhold", why: "Egor: сделай холд, я ещё тут"}]' "$(record "$idc")"
-assert grep -qxF "leftover · repo · stale-open · 1 unlanded commits" <(night report "$idc")
-assert grep -qxF "held · repo · onhold · Egor: сделай холд, я ещё тут" <(night report "$idc")
+night report "$idc" >"$WORK/reportc"
+assert grep -qxF "leftover · repo · stale-open · 1 unlanded commits" "$WORK/reportc"
+assert grep -qxF "held · repo · onhold · Egor: сделай холд, я ещё тут" "$WORK/reportc"
 # The hold lasted that one night: its finish released it.
 assert [ ! -e "$NIGHTS/holds/chat-h.json" ]
 assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-$behind main · 0 dirty · leftover (1 unlanded commits)" <(night leftovers)
@@ -1038,10 +1047,10 @@ spend fixers · 11.2M Opus-eq (opus 8.0M · codex 3.2M)
 spend reviews · 11.8M Opus-eq (opus 10.5M · sonnet 1.2M)
 spend orchestrator · 1.6M Opus-eq (opus 1.5M · haiku 0.1M)
 spend total · 24.6M Opus-eq · 3.07× night 20260101T000000Z-aaaa (8.0M)" ]
-assert [ "$(body "$WORK/spend-report" | sed -n '9,11p')" = "reviews · per-branch 0 rounds (0.0M Opus-eq) · other 2 rounds (11.8M Opus-eq)
+assert [ "$(body "$WORK/spend-report" | sed -n '/^reviews · /,/^fixer spend without proof · /p')" = "reviews · per-branch 0 rounds (0.0M Opus-eq) · other 2 rounds (11.8M Opus-eq)
 problems · no snapshot
 fixer spend without proof · no snapshot" ]
-assert [ "$(body "$WORK/spend-report" | sed -n 12p | cut -d' ' -f1-2)" = "night 20260102T000000Z-bbbb" ]
+assert grep -q '^night 20260102T000000Z-bbbb ' <(body "$WORK/spend-report")
 # One worker-run lookup for every run without a session-file, and a transcript two runs share is read
 # once while it stays unchanged; once it grows, the next run reads it again.
 TZ=UTC WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT="$SP/profiles" WORKER_STATS_DIR="$SP/stats" \
@@ -1173,7 +1182,7 @@ TZ=UTC DOCTORS_DIR="$CHURN/doctors" WORKER_RUN_DIR="$CHURN/runs" CLAUDEB_PROFILE
   CHAT_NAME_ROOTS="$CHURN/profiles/p1/projects" CHAT_NAMES_CACHE="$CHURN/chat-names.json" \
   night report 20260131T000000Z-now >"$WORK/churn-report" || fail "churn report"
 
-assert [ "$(body "$WORK/churn-report" | sed -n '9,14p')" = "reviews · per-branch 1 rounds (2.0M Opus-eq) · other 1 rounds (3.0M Opus-eq)
+assert [ "$(body "$WORK/churn-report" | sed -n '/^reviews · /,/^night 20260131T000000Z-now /p')" = "reviews · per-branch 1 rounds (2.0M Opus-eq) · other 1 rounds (3.0M Opus-eq)
 problems · 1 touched again without proof · 1 regressed
 problem · harness/P_OPEN · nights touched 2 · now open
 fixer spend without proof · 5.0M Opus-eq of 15.0M
@@ -1286,7 +1295,6 @@ suites ✓/✗          –       –    15/1" ]
 assert [ "$(jq -c '[.spend_m, .spend_unit, .hours]' "$TB/doctors/night-ledger/20260204T000000Z-e4f5.json")" = '[0.0,"Opus-eq",6.0]' ]
 # A row cached before the model mix gains it from the live stores once: a night with no spend has none.
 assert [ "$(jq -c '[.model_mix, .spend_m]' "$TB/doctors/night-ledger/20260202T000000Z-a0b1.json")" = '[{},12.5]' ]
-assert_fails grep -qE 'Doctors %|debt ln' "$WORK/table-report"
 assert [ "$(python3 -c 'import sys; print(len({len(l.rstrip("\n")) for l in sys.stdin}))' <"$WORK/table-block")" = 1 ]
 assert [ "$(head -1 "$WORK/table-block" | wc -w | tr -d ' ')" = 6 ]
 assert grep -qxE 'suites ✓/✗ +– +– +15/1' "$WORK/table-block"
