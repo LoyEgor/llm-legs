@@ -5252,11 +5252,8 @@ produced_commit_rows() { # top rel head-before [after]
       }'
 }
 
-# The content this run PRODUCED, which is what a debt reader prices: one row per link, so ownership
-# follows the BLOB and no longer a path and an epoch. Written only for a run that answers to a chat
-# and worked in a git tree — content nobody owns is what `dirty` is for — and written even when it
-# is empty, since its presence is this run answering for its own content and its absence is what
-# sends the sweep back to the listing.
+# TEMP-HAIKU-TRIAL(report): `produced` is read only by share/haiku_trial.py and time_budget's dead_runs (which
+# files/HEAD already decide); its write here and claim's append go with that experiment, the foreign split stays.
 record_produced() { # directory workdir
   local directory="$1" workdir="$2" top rel head after foreign commits
   RUN_FOREIGN_NOTE=''

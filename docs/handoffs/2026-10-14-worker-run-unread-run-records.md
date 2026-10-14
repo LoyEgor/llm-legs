@@ -1,6 +1,6 @@
 # Hand-off: worker-run run records nobody reads
 
-Status: open
+Status: settled 20261014T013750Z-8004: none is unread (snapshot+files-external: files and run-fold; dirty: UNNAMED/claim; dirty-before: LAST-EDIT/read-only hint; head-before: run-suites, knobs, time_budget; produced: haiku_trial), nothing deleted; row am cut to the reader map, produced tagged TEMP-HAIKU-TRIAL
 To: next night, a harness fixer
 
 Since the anchors store took over debt attribution (`3abe0bf8`), the worker-to-launcher fold is
