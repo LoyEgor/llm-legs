@@ -64,12 +64,13 @@ IFS= read -r -d '' input || :
 
 fields=$(jq -j 'if type != "object" then error else
   [(.tool_name // ""), (.session_id // ""), (.tool_use_id // "" | tostring), (.cwd // ""), (.agent_id // "" | tostring),
+   (.transcript_path // "" | tostring),
    (if (.tool_input | type == "object") and (.tool_input.file_path | type == "string") then "ok" else "" end),
    (.tool_input.file_path? // "" | tostring)]
   | join("\u001f") end' <<<"$input" 2>/dev/null) && [ -n "$fields" ] ||
   { gate_journal bloat fault '' '' '' 'payload does not parse'
     echo "instruction bloat gate: the hook payload does not parse" >&2; exit 2; }
-IFS=$'\x1f' read -r -d '' tool_name sid tool_use_id payload_cwd agent_id path_ok file_path <<<"$fields" || :
+IFS=$'\x1f' read -r -d '' tool_name sid tool_use_id payload_cwd agent_id transcript_path path_ok file_path <<<"$fields" || :
 file_path=${file_path%$'\n'}
 # Before any decision: the tripwire attributes bytes to this call by the mark's time, and deny()
 # takes the mark back, since a denied call never runs.
@@ -181,7 +182,7 @@ if [ -z "$class_reads" ]; then
 fi
 payload_fault() { gate_journal bloat fault "$sid" "$file_path" '' 'edit payload unreadable'; exit 0; }
 
-# All sizes in UTF-8 bytes via files + wc -c; jq's `length` counts codepoints
+# All sizes in UTF-8 bytes (wc -c, utf8bytelength); jq's `length` counts codepoints
 # and silently understates multibyte (Cyrillic) growth against the threshold.
 if [ "$tool_name" = "Write" ]; then
   jq -j '.tool_input.content // ""' "$input_file" >"$tmp_dir/new" 2>/dev/null || payload_fault
@@ -195,19 +196,16 @@ else
   else
     edits='[.tool_input]'
   fi
-  jq -e "($edits | type == \"array\") and all($edits[]; (.old_string | type == \"string\") and (.new_string | type == \"string\"))" \
-    "$input_file" >/dev/null 2>&1 || payload_fault
-  n_edits=$(jq -r "$edits | length" "$input_file" 2>/dev/null) || payload_fault
+  # One jq for every edit: old and new UTF-8 byte sizes and replace_all, a line each.
+  sizes=$(jq -r "if ($edits | type == \"array\") and all($edits[]; (.old_string | type == \"string\") and (.new_string | type == \"string\"))
+    then $edits[] | [(.old_string | utf8bytelength), (.new_string | utf8bytelength), (.replace_all // false | tostring)] | @tsv
+    else error end" "$input_file" 2>/dev/null) || payload_fault
   delta=0
   i=0
-  while [ "$i" -lt "$n_edits" ]; do
-    jq -j --argjson i "$i" "$edits[\$i].old_string" "$input_file" >"$tmp_dir/old" 2>/dev/null || payload_fault
-    jq -j --argjson i "$i" "$edits[\$i].new_string" "$input_file" >"$tmp_dir/new" 2>/dev/null || payload_fault
-    old_len=$(wc -c <"$tmp_dir/old") && old_len=${old_len// /}
-    new_len=$(wc -c <"$tmp_dir/new") && new_len=${new_len// /}
+  while [ -n "$sizes" ] && IFS=$'\t' read -r old_len new_len replace_all; do
     one=$((new_len - old_len))
-    replace_all=$(jq -r --argjson i "$i" "$edits[\$i].replace_all // false" "$input_file" 2>/dev/null) || payload_fault
     if [ "$replace_all" = "true" ] && [ -f "$file_path" ] && [ "$old_len" -gt 0 ]; then
+      jq -j --argjson i "$i" "$edits[\$i].old_string" "$input_file" >"$tmp_dir/old" 2>/dev/null || payload_fault
       count=$(perl -e '
         local $/; open my $f, "<", $ARGV[0] or exit; my $hay = <$f>;
         open my $n, "<", $ARGV[1] or exit; my $needle = <$n>;
@@ -220,7 +218,7 @@ else
     fi
     delta=$((delta + one))
     i=$((i + 1))
-  done
+  done <<<"$sizes"
 fi
 
 # The global file's ceiling, checked before the retry stamp is ever consulted: the audit-then-retry
@@ -314,7 +312,8 @@ threshold=$THRESHOLD_BYTES
 # A weekly rate of zero under a positive monthly one cannot happen while the export rescales one
 # from the other, and if it ever does it is a broken measurement, not a free file: the derived
 # threshold is skipped and the base one still applies. Passing on it waived the gate outright.
-weekly_zero=$(jq -nr --argjson reads "${weekly_reads:-0}" '$reads == 0' 2>/dev/null) || weekly_zero=false
+weekly_zero=false
+[ "$rate_state" != measured ] || weekly_zero=$(jq -nr --argjson reads "${weekly_reads:-0}" '$reads == 0' 2>/dev/null) || weekly_zero=false
 if [ "$rate_state" = measured ] && [ "$weekly_zero" != true ]; then
   # Snapped down to a coarse ladder for the same reason the displayed rate is: a threshold
   # recomputed from a sliding window would otherwise move a few bytes every night, and the
@@ -327,13 +326,12 @@ if [ "$rate_state" = measured ] && [ "$weekly_zero" != true ]; then
   [ "$derived" -gt "$threshold" ] 2>/dev/null && threshold=$derived
 fi
 [ "$delta" -gt "$threshold" ] 2>/dev/null || pass passed "threshold $threshold"
-instruction_span_live "$sid" "$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null)" && pass span-pass
+instruction_span_live "$sid" "$transcript_path" && pass span-pass
 
 # The session is part of the key, exactly as it is in the write gate: approval Egor gave in one
 # chat is not approval a parallel or later one inherits for the same edit.
 # -S sorts the keys: the retry is the same edit, but nothing promises it arrives with its JSON
 # keys in the same order, and an unsorted fingerprint would deny the very retry it exists to pass.
-sid=$(jq -r '.session_id // ""' "$input_file" 2>/dev/null) || sid=''
 hash=$(printf '%s\n%s\n%s\n' "$sid" "$file_path" "$(jq -Sc '.tool_input' "$input_file" 2>/dev/null)" | shasum -a 256 | cut -c1-16)
 note="$STAMP_DIR/$hash.read"
 
@@ -348,7 +346,7 @@ retry_read_seen() {
   [ -f "$note" ] || return 0
   { IFS= read -r size && IFS= read -r recorded; } 2>/dev/null <"$note" || return 0
   case "$size" in ''|*[!0-9]*) return 0 ;; esac
-  transcript=$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null) || return 0
+  transcript=$transcript_path
   [ -n "$transcript" ] && [ -f "$transcript" ] && [ "$transcript" = "$recorded" ] || return 0
   # A transcript shorter than the byte the note remembers was truncated or rotated under the same
   # name, and every read this gate could have verified went with it: the tail is empty from here
@@ -383,7 +381,7 @@ SEEN
   return 1
 }
 
-instruction_stamp_ready "$STAMP_DIR" "$hash" "$sid" "$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null)"
+instruction_stamp_ready "$STAMP_DIR" "$hash" "$sid" "$transcript_path"
 stamp_rc=$?
 if [ "$stamp_rc" = 3 ]; then
   instruction_inflight_clear "$sid"
@@ -408,7 +406,7 @@ fi
 # always the newest denial. A file that does not exist yet has nothing to re-read, and leaving the
 # note unwritten is what lets that retry pass on its own.
 if [ -f "$file_path" ]; then
-  transcript_now=$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null) || transcript_now=''
+  transcript_now=$transcript_path
   if [ -n "$transcript_now" ] && [ -f "$transcript_now" ]; then
     size_now=$(wc -c <"$transcript_now" 2>/dev/null) && size_now=${size_now// /}
     case "$size_now" in

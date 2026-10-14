@@ -99,20 +99,17 @@ retry_payload() {
                   else {file_path:$p, old_string:"x", new_string:$n} end)}
     + (if $t == "" then {} else {transcript_path:$t} end)'
 }
+# harness_deny parses the decision into GATE_DEC either way; only a live transcript gets the error.
 retry_bloat() {
-  local out rc
+  local out rc transcript=
   out=$(retry_payload "$@" | INSTRUCTION_BLOAT_GATE_STAMPS="$RETRY_STAMPS" bash "$BLOAT")
   rc=$?
-  [ ! -f "$4" ] || harness_deny "$4" "$out" "$3"
+  [ ! -f "$4" ] || transcript=$4
+  harness_deny "$transcript" "$out" "$3"
   [ -z "$out" ] || printf '%s\n' "$out"
   return "$rc"
 }
-retry_decision() {
-  local out
-  out=$(retry_bloat "$@")
-  [ -n "$out" ] || { printf 'pass\n'; return 0; }
-  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
-}
+retry_decision() { retry_bloat "$@" >/dev/null; printf '%s\n' "$GATE_DEC"; }
 retry_reason() {
   retry_bloat "$@" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""'
 }
@@ -601,6 +598,8 @@ exactly_120=$(rep g 121)
 over_120=$(rep g 122)
 assert_eq pass "$(growth_decision "$CLAUDE_MD" "$exactly_120" clamp-pass)"
 assert_eq deny "$(growth_decision "$CLAUDE_MD" "$over_120" clamp-deny)"
+# Bytes, not characters: 61 two-byte letters are 121 bytes of growth though only 60 characters.
+assert_eq deny "$(growth_decision "$CLAUDE_MD" "$(rep ж 61)" clamp-multibyte)"
 
 echo "== bloat gate: a Markdown file the export proves cheap passes without a word"
 # A note that says "not gated" changes nothing the model does, and it rode on every scratch file.
