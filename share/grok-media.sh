@@ -83,6 +83,27 @@ grok_media_session_id() { # stream-file
   printf '%s\n' "${id:-none}"
 }
 
+# grok_media_stream_path and grok_media_session_id off one jq pass: sets grok_media_path (empty when no
+# readable file) and grok_media_session (none when the stream names none).
+grok_media_stream_read() { # stream-file type[,type...]
+  local tag value
+  grok_media_path='' grok_media_session=''
+  while IFS=$'\t' read -r tag value; do
+    if [ "$tag" = s ]; then grok_media_session=$value; else grok_media_path=$value; fi
+  done < <(jq -Rr --arg types "$2" '
+    ($types | split(",")) as $wanted |
+    fromjson? |
+    (.sessionId // empty | "s\t\(.)"),
+    (select(.type == "tool_call_update") |
+      .rawOutput // empty |
+      (.type // "") as $tag |
+      select($wanted | index($tag)) |
+      .path // empty | "p\t\(.)")
+  ' "$1" 2>/dev/null)
+  [[ "$grok_media_path" = /* ]] && [ -f "$grok_media_path" ] || grok_media_path=''
+  grok_media_session=${grok_media_session:-none}
+}
+
 # Only a persistent wall is a wall. A transient "rate limited, retrying" is weather and must stay
 # an ordinary failure, or every hiccup reroutes the pool.
 grok_media_failure_class() { # stream-file stderr-file -> limit|pool|unknown
@@ -111,34 +132,39 @@ grok_media_model_override() { # grok-home key
   printf '%s\n' "$value"
 }
 
-grok_media_sync_model_override() { # grok-home key model
-  [ -n "$1" ] && [ -d "$1" ] && [ -n "$3" ] || return 1
-  python3 - "$1/config.toml" "$2" "$3" <<'PY'
+grok_media_sync_model_override() { # grok-home model key... -> each key pinned to model, in one write
+  [ -n "$1" ] && [ -d "$1" ] && [ -n "$2" ] && [ $# -gt 2 ] || return 1
+  python3 - "$1/config.toml" "$2" "${@:3}" <<'PY'
 import os, re, sys, tempfile
-path, key, model = sys.argv[1:4]
-want = f'{key} = "{model}"\n'
+path, model, keys = sys.argv[1], sys.argv[2], sys.argv[3:]
 lines = open(path).read().splitlines(True) if os.path.exists(path) else []
-table, header, found = None, None, None
-for i, line in enumerate(lines):
-    m = re.match(r'\s*\[([^\[\]]+)\]\s*(#.*)?$', line)
-    if m:
-        table = m.group(1).strip()
-        if table == "features":
-            header = i
-        continue
-    m = re.match(r'\s*(features\.)?' + re.escape(key) + r'\s*=\s*["\']([^"\']*)["\']', line)
-    if m and ((table == "features" and not m.group(1)) or (table is None and m.group(1))):
-        found = (i, m.group(2), bool(m.group(1)))
-if found:
-    if found[1] == model:
-        sys.exit(0)
-    lines[found[0]] = ("features." if found[2] else "") + want
-elif header is not None:
-    lines.insert(header + 1, want)
-else:
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    lines += (["\n"] if lines else []) + ["[features]\n", want]
+changed = False
+for key in keys:
+    want = f'{key} = "{model}"\n'
+    table, header, found = None, None, None
+    for i, line in enumerate(lines):
+        m = re.match(r'\s*\[([^\[\]]+)\]\s*(#.*)?$', line)
+        if m:
+            table = m.group(1).strip()
+            if table == "features":
+                header = i
+            continue
+        m = re.match(r'\s*(features\.)?' + re.escape(key) + r'\s*=\s*["\']([^"\']*)["\']', line)
+        if m and ((table == "features" and not m.group(1)) or (table is None and m.group(1))):
+            found = (i, m.group(2), bool(m.group(1)))
+    if found:
+        if found[1] == model:
+            continue
+        lines[found[0]] = ("features." if found[2] else "") + want
+    elif header is not None:
+        lines.insert(header + 1, want)
+    else:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines += (["\n"] if lines else []) + ["[features]\n", want]
+    changed = True
+if not changed:
+    sys.exit(0)
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".config.toml.")
 with os.fdopen(fd, "w") as out:
     out.writelines(lines)
