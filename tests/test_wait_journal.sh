@@ -61,9 +61,12 @@ sup=$!
 for r in r1 r2; do jq -n --argjson p "$sup" --argjson t "$(date +%s)" '{vendor: "none", pid: $p, started_at: $t}' >"$RUNS/$r/meta.json"; done
 printf '0\n' >"$RUNS/r2/exit_code"
 perl -e 'utime(time - 5, time - 5, $ARGV[0])' "$RUNS/r2/exit_code"
-armed() { # pid: the wait's kqueue python is up; a wait that never arms is written to after 5 s, so the lag check still fails it
+armed() { # pid: the wait's kqueue watcher (its coproc python) is up; one not up within 5 s fails the suite
   local n=0
-  until pgrep -P "$1" -f 'ython[0-9.]* - ' >/dev/null || [ $((n += 1)) -gt 100 ]; do /bin/sleep 0.05; done
+  until pgrep -P "$1" -f 'select\.kqueue' >/dev/null; do
+    [ $((n += 1)) -le 100 ] || fail "the wait's kqueue watcher never came up (pgrep pattern stale?)"
+    /bin/sleep 0.05
+  done
 }
 env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER WORKER_RUN_DIR="$RUNS" WORKER_RUN_WAIT_POLL_S=1 \
   bash "$ROOT/bin/worker-run" wait r2 --max 30 >"$WORK/wait-r2.out" 2>&1
