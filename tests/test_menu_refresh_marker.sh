@@ -45,6 +45,7 @@ EXEMPT = {
     ("instruction-watch.lua", "runChatResolver"): "a chat-name lookup for rows already shown",
     ("instruction-watch.lua", "M.menuItems"): "reveals the change log in Finder",
     ("dia-flag-watch.lua", "M.check"): "no menu",
+    ("presence.lua", "M.back"): "a launchctl kick of the collector on return from away, no menu is refreshing",
 }
 SPAWN = re.compile(r"hs\.task\.new\b|\btaskFn\(|\bnewCollectorTask\(")
 DEFINE = re.compile(r"^(?:local\s+)?function\s+([\w.:]+)|^(?:local\s+)?([\w.]+)\s*=\s*function\b")
