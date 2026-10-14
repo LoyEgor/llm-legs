@@ -4,6 +4,8 @@
 # night-run carry and suites: open handoffs and the previous night's failed suites become night jobs;
 # the full run at Close records its result for the report.
 set -u
+# The polls below tick every 0.1 s: a forked sleep each, the builtin none.
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(cd -P "$(mktemp -d)" && pwd)"
 trap 'rm -rf "$WORK"' EXIT
