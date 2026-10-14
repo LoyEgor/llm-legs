@@ -3,7 +3,7 @@
 # shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
-if suite_shard_owns 1 pool-wall-resume-fast; then
+if suite_shard_owns 1 pool-wall-resume; then
 # The pool is a wall, not advice to the picker: a brief naming an excluded account cannot get in,
 # and only the vendor pin overrides.
 for vendor in claudeb codex gemini; do
@@ -177,7 +177,10 @@ assert grep -q '^ARG=resume$' "$CALL_LOG"
 assert grep -q '^ARG=-m$' "$CALL_LOG"
 assert grep -q '^ARG=gpt-6.1-astra$' "$CALL_LOG"
 assert grep -q '^ARG=model_reasoning_effort=low$' "$CALL_LOG"
+fi
 
+if suite_shard_owns 2 pool-fast-mode; then
+set_config 'codex_effort=high'
 # Fast Mode is per account and has to reach the worker launch, not only the menu: codexb writes
 # the marker, and every codex command line is the only place a tier can still be applied.
 clear_stub
