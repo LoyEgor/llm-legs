@@ -104,10 +104,16 @@ put_installs() { # vendor
   done | LC_ALL=C sort -u | put_pairs installs
 }
 
-put() { jq -c --arg k "$1" '{k: $k, v: .}' >>"$work/facets.jsonl"; }
-put_raw() { jq -Rsc --arg k "$1" '{k: $k, v: .}' >>"$work/facets.jsonl"; }
-put_lines() { jq -Rnc --arg k "$1" '{k: $k, v: [inputs]}' >>"$work/facets.jsonl"; }
-put_pairs() { jq -Rnc --arg k "$1" '{k: $k, v: ([inputs | split("\t") | {(.[0]): .[1]}] | add // {})}' >>"$work/facets.jsonl"; }
+# A facet's input waits in its own file: the snapshot's one jq reads them all.
+facet() { # kind facet [file] -> stdin, or the file, is the facet's input
+  local name="f_${2//[^A-Za-z0-9]/_}" file=${3:-}
+  [ -n "$file" ] || { file=$work/$name; cat >"$file"; }
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$name" "$file" >>"$work/facets.tsv"
+}
+put() { facet json "$1" "${2:-}"; }
+put_raw() { facet raw "$1"; }
+put_lines() { facet lines "$1" "${2:-}"; }
+put_pairs() { facet pairs "$1"; }
 fail() { printf '%s\t%s\n' "$1" "$2" >>"$work/failed.tsv"; }
 
 put_text() { # facet command...
@@ -153,11 +159,12 @@ unglue() { # sorted ids -> the same ids cut off their glued neighbours
 
 # A rule change must never read as a release, so the stored side is compared through the same rule.
 reunglue() { # fingerprint file
-  local ids tmp
-  jq -e '.facets.ids | type == "array"' "$1" >/dev/null 2>&1 || return 0
-  ids=$(jq -r '.facets.ids[]' "$1" | unglue | jq -R . | jq -s -c .) || return 0
+  local old ids tmp
+  old=$(jq -r '.facets.ids | if type == "array" then .[] else error end' "$1" 2>/dev/null) || return 0
+  ids=$(printf '%s' "$old" | unglue)
+  [ "$ids" != "$old" ] || return 0
   tmp=$(mktemp "$1.XXXXXX") || return 0
-  jq --argjson ids "$ids" '.facets.ids = $ids' "$1" >"$tmp" && mv -f "$tmp" "$1" || rm -f "$tmp"
+  jq --arg ids "$ids" '.facets.ids = ($ids | if . == "" then [] else split("\n") end)' "$1" >"$tmp" && mv -f "$tmp" "$1" || rm -f "$tmp"
 }
 
 put_ids() { # vendor
@@ -171,7 +178,7 @@ put_ids() { # vendor
     unglue >"$work/ids"
   # An empty dump means the binary moved or changed format, not that the vendor dropped its models.
   [ -s "$work/ids" ] || { fail ids local; return 0; }
-  put_lines ids <"$work/ids"
+  put_lines ids "$work/ids"
 }
 
 put_docs() { # facet directory
@@ -188,7 +195,7 @@ codex_facets() {
   put_text 'help: codex exec --help' codex exec --help
   NO_COLOR=1 timeout_command 60 codex features list 2>/dev/null </dev/null |
     awk 'NF > 1 { $NF = ""; sub(/ +$/, ""); print }' | jq -Rn '[inputs]' >"$work/features"
-  if [ "$(jq length "$work/features" 2>/dev/null || printf 0)" -gt 0 ]; then put features <"$work/features"; else fail features local; fi
+  if [ "$(jq length "$work/features" 2>/dev/null || printf 0)" -gt 0 ]; then put features "$work/features"; else fail features local; fi
   while IFS= read -r home; do homes+=("$home"); done < <(codex_homes "$version")
   if [ "${#homes[@]}" -gt 0 ]; then
     # Accounts are served different catalogs (A/B defaults, priorities) and ~/.codex drops in and out
@@ -228,8 +235,7 @@ codex_facets() {
   fi
   jq -r '.codex.divergence // [] | .[]' "$state_dir/state.json" 2>/dev/null >"$work/divergence"
   LC_ALL=C grep $'^catalog\t' "$work/divergence" | put_lines divergence
-  LC_ALL=C grep $'^client\t' "$work/divergence" |
-    jq -Rnc '{k: "foreign_clients", v: ([inputs | split("\t") | {(.[1]): .[2]}] | add // {})}' >>"$work/facets.jsonl"
+  LC_ALL=C grep $'^client\t' "$work/divergence" | cut -f2,3 | put_pairs foreign_clients
 }
 
 grok_facets() {
@@ -246,7 +252,7 @@ grok_facets() {
 gemini_facets() {
   put_text 'help: agy --help' agy --help
   if timeout_command 30 agy models </dev/null 2>/dev/null | LC_ALL=C grep -E $'^[a-z0-9][a-z0-9._-]*\t' >"$work/models"; then
-    put_lines catalog <"$work/models"
+    put_lines catalog "$work/models"
     cut -f1 "$work/models" >"$work/served"
   else
     fail catalog remote
@@ -264,24 +270,32 @@ claude_facets() {
 }
 
 snapshot() { # vendor -> {vendor, version, facets, failed}
-  local vendor=$1 version work
+  local vendor=$1 version work args=() kind name file
   command -v "$(cli_of "$vendor")" >/dev/null 2>&1 || return 1
   version=$(version_of timeout_command 30 "$(cli_of "$vendor")" --version)
   [ -n "$version" ] || return 1
   work=$(mktemp -d "${TMPDIR:-/tmp}/vendor-fingerprint.XXXXXX") || return 1
-  : >"$work/facets.jsonl"
+  : >"$work/facets.tsv"
   : >"$work/failed.tsv"
   : >"$work/served"
   printf '%s' "$version" | put_raw version
   put_installs "$vendor"
   "${vendor}_facets"
   put_ids "$vendor"
-  jq -n --arg vendor "$vendor" --arg version "$version" \
-    --slurpfile facets "$work/facets.jsonl" --rawfile failed "$work/failed.tsv" --rawfile served "$work/served" \
-    '{vendor: $vendor, version: $version,
+  while IFS=$'\t' read -r kind _ name file; do
+    if [ "$kind" = json ]; then args+=(--slurpfile "$name" "$file"); else args+=(--rawfile "$name" "$file"); fi
+  done <"$work/facets.tsv"
+  jq -n --arg vendor "$vendor" --arg version "$version" ${args[@]+"${args[@]}"} \
+    --rawfile facets "$work/facets.tsv" --rawfile failed "$work/failed.tsv" --rawfile served "$work/served" \
+    'def lines: [splits("\n")] | if .[-1] == "" then .[:-1] else . end;
+     {vendor: $vendor, version: $version,
       served: ($served | split("\n") | map(select(length > 0)) | if length == 0 then null
                else . + map(sub("-(minimal|low|medium|high|xhigh)$"; "")) | unique end),
-      facets: ($facets | map({(.k): .v}) | add // {}),
+      facets: (reduce ($facets | lines[] | split("\t")) as [$kind, $k, $n] ({}; . as $all | $ARGS.named[$n] as $v
+        | try (if $kind == "json" then (if $v == [] then . else . + {($k): $v[-1]} end)
+          elif $kind == "lines" then . + {($k): ($v | lines)}
+          elif $kind == "pairs" then . + {($k): ([$v | lines[] | split("\t") | {(.[0]): .[1]}] | add // {})}
+          else . + {($k): $v} end) catch $all)),
       failed: ($failed | split("\n") | map(select(length > 0) | split("\t") | {facet: .[0], where: .[1]}))}'
   rm -rf "$work"
 }

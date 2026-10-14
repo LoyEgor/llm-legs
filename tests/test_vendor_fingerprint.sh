@@ -157,8 +157,8 @@ mkdir -p "$WORK/jq-count"
 printf '#!/usr/bin/env bash\necho >>%q\nexec %q "$@"\n' "$WORK/jq-count/runs" "$(command -v jq)" >"$WORK/jq-count/jq"
 chmod +x "$WORK/jq-count/jq"
 PATH="$WORK/jq-count:$PATH" check_all || fail "check exited non-zero"
-# Each facet is one jq, not a parse-slurp-wrap chain of three (94 before).
-assert [ "$(wc -l <"$WORK/jq-count/runs")" -le 56 ]
+# A snapshot's facets are one jq over their input files, not one jq each (56 before, 94 before that).
+assert [ "$(wc -l <"$WORK/jq-count/runs")" -le 29 ]
 for vendor in codex grok gemini claude; do assert test -s "$STATE/fingerprints/$vendor.json"; done
 assert [ "$(events)" = 0 ]
 assert [ ! -s "$OPENED" ]
