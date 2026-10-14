@@ -181,10 +181,15 @@ ADHOC_LEVERS = {k: {"component": "adhoc/" + k, "lever": v, "effort": "S", "confi
                     "night_cost_h": 0.0, "proof": "net", "quality": "equivalent"} for k, v in {
     "tool": "a command for the job, its hint where the script would start",
     "hint": "the hint toward the tool that already does the job, where the script would start"}.items()}
+ADHOC_HOME = ("in %s, its hint in that project's CLAUDE.md or a skill, never an always-loaded file; a repository "
+              "outside the night's gets it as a handoff to its owner chat")
 ADHOC_WHAT = {"tool": "ad-hoc scripts · build one command for the job: %s · then its hint",
               "hint": "ad-hoc scripts · %s already does the job: %s · the hint only, no new tool"}
-validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()) + list(TEST_HEALTH_LEVERS.values())
-                + list(ADHOC_LEVERS.values()))
+UNUSED_LEVER = {"component": "tool", "lever": "delete the tool and its hint; a tool other code or Egor runs keeps its "
+                "file, only the hint goes", "effort": "S", "confidence": "measured", "saving": 1.0, "night_cost_h": 0.0,
+                "proof": "elimination", "quality": "equivalent"}
+validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER, UNUSED_LEVER] + list(TIME_LEVERS.values())
+                + list(TEST_HEALTH_LEVERS.values()) + list(ADHOC_LEVERS.values()))
 
 
 def state_dir():
@@ -932,22 +937,49 @@ def test_opportunities(tests):
 
 def adhoc_opportunities(adhoc):
     """Tool mining's clusters over its floor (share/tool_mining.py), saving their writing minutes: a new command and
-    its hint, or only the hint where a tool already does the job."""
+    its hint, or only the hint where a tool already does the job; both in the project a job recurring in fewer than
+    FLOOR_PROJECTS projects belongs to."""
     out = []
     for f in adhoc.get("findings") or ():
         kind = "hint" if f["covered_by"] else "tool"
         lever = dict(ADHOC_LEVERS[kind], saving=f["write_min_day"] / f["min_day"] if f["min_day"] else 0.0)
+        if f.get("project") is not None:
+            lever["lever"] += " · " + ADHOC_HOME % f["project"]
         o = target_opportunity(f["target"], f["min_day"], lever, f["calls"], seen_days=f["days"])
         fields = o["opportunity"]
         fields.update(worker_min_day=round(f["worker_min_day"] * lever["saving"], 2), kind=kind,
                       what=ADHOC_WHAT[kind] % ((f["covered_by"], f["job"]) if f["covered_by"] else f["job"]),
-                      calls_day=f["calls"], sessions=f["sessions"], per_1k=f["per_1k"], examples=f["examples"])
-        o["fact"] = "%s · %d calls/day in %d sessions · %s → saves %s · %s%s" % (
-            f["job"], f["calls"], f["sessions"], per_day(f["min_day"], f["worker_min_day"]),
+                      calls_day=f["calls"], sessions=f["sessions"], per_1k=f["per_1k"], examples=f["examples"],
+                      project=f.get("project"))
+        o["fact"] = "%s · %d calls/day in %d sessions%s · %s → saves %s · %s%s" % (
+            f["job"], f["calls"], f["sessions"], " of " + f["project"] if f.get("project") is not None else "",
+            per_day(f["min_day"], f["worker_min_day"]),
             per_day(fields["saving"], fields["worker_min_day"]), fields["levers"][0],
             " · %s" % f["covered_by"] if f["covered_by"] else "")
         out.append(o)
     return out
+
+
+def unused_opportunities(adhoc):
+    """Tool mining's unused tools (share/tool_mining.py `adoption`): a hint the sessions load for a tool no call ran
+    in its USE_DAYS days, priced at the hint's minutes; deleting both saves them."""
+    out = []
+    for u in adhoc.get("unused") or ():
+        target = "tool/" + u["key"]
+        o = target_opportunity(target, u["hint_min_day"] or 0.0, dict(UNUSED_LEVER, component=target), 0,
+                               seen_days=WINDOW_D)
+        o["opportunity"].update(what="unused tool · %s · delete it and its hint" % u["key"], path=u["path"],
+                                hint_b=u["hint_b"], hint_tok_day=u["hint_tok_day"], age_d=u["age_d"])
+        o["fact"] = "%s · 0 calls in %d days%s · %s d old · hint %d B in %d sessions/day, %d tokens/day · %s · %s" % (
+            u["key"], u["days"], " · typed %s/day" % fmt(u["slash_day"]) if u.get("slash_day") else "", fmt(u["age_d"]),
+            u["hint_b"], u["hint_sessions"], u["hint_tok_day"], per_day(u["hint_min_day"] or 0.0), UNUSED_LEVER["lever"])
+        out.append(o)
+    return out
+
+
+def parked(ledger, target):
+    row = H.ledger_row(ledger, "opportunity", target) or {}
+    return row.get("status") == "ruled-out" or bool(row.get("handoff"))
 
 
 def without_moved_heavy(opportunities, tests):
@@ -1326,10 +1358,11 @@ def collect(write, now):
     problems += test_regressions(tests, ledger, now)
     try:
         adhoc = tool_mining.collect(now, write, since=lambda target: landed_end(ledger, target),
-                                    bench=lambda target: last_bench(ledger, target))
+                                    bench=lambda target: last_bench(ledger, target),
+                                    parked=lambda target: parked(ledger, target))
     except Exception as exc:
         adhoc = {"status": "error", "head": H.error_line(exc), "findings": [], "net": {}}
-    opportunities += adhoc_opportunities(adhoc)
+    opportunities += adhoc_opportunities(adhoc) + unused_opportunities(adhoc)
     problems += adhoc_regressions(adhoc, ledger, now)
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)

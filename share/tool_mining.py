@@ -6,7 +6,9 @@ Clusters over the floor become Speed's `adhoc/<key>` opportunities: a new tool p
 `covered_by` names a tool that already does the job. Proof is net (`net`): the job's whole cost per 1000 Bash calls,
 minutes and Opus-eq tokens, before the fix against after: the cluster's residual calls, substitutes (ad-hoc calls an
 earlier cluster took that match this one's pattern), the tool's own calls (its bench's `command`) and the hint's
-always-loaded bytes once a session. A fix lands only with a bench (`bench_faults`).
+always-loaded bytes once a session. A fix lands only with a bench (`bench_faults`). Adoption (`adoption`): each
+model-facing tool's calls a day over USE_DAYS; one with a hint and no call is unused, Speed's `opportunity:tool/...`.
+A cluster recurring in fewer than FLOOR_PROJECTS projects is that project's job (`home`): its tool and hint go there.
 
   tool_mining.py [--to T] [--calls]   T in epoch seconds; --calls prints each matched call
 """
@@ -19,11 +21,13 @@ import json
 import os
 import re
 import statistics
+import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chat_names  # noqa: E402
+import handoffs  # noqa: E402
 import time_budget  # noqa: E402
 
 WINDOW_S = 86400
@@ -31,6 +35,7 @@ HISTORY_D = 35
 BUILD_H, PAYBACK_D = 1.0, 7
 FLOOR_MIN_DAY = round(60.0 * BUILD_H / PAYBACK_D, 1)
 FLOOR_SESSIONS = 3
+FLOOR_PROJECTS = 3
 NET_DAYS = 7
 OUTPUT_EQ, CHARS_PER_TOKEN = 5.0, 3.2
 BENCH = ("command", "hint_b", "calls", "adhoc_wall_s", "adhoc_out_b", "tool_wall_s", "tool_out_b")
@@ -76,10 +81,27 @@ CLUSTERS = (
     ("text-other", "other text processing", None, r""),
 )
 CATCH_ALL = ("json-other", "text-other")
+ROW_SKIP = ("file-edit", "file-read")
+CANDIDATE_ROWS = 5
+USE_DAYS = 30
+UNUSED = "🗑"
+NO_TOOL = "–"
+COMMAND = (r"(?:^|[;&|(`\n]|\$\()\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env|command|exec|time|nohup|timeout\s+\S+"
+           r"|nice(?:\s+-n\s*-?\d+)?)\s+)*(?:[\w.~/-]*/)?(%s)(?![\w.-])")
+BACKTICK = re.compile(r"`([^`\n]+)`")
+SLASH = re.compile(r"<command-name>/?([\w:.-]+)</command-name>")
+FRONT = re.compile(r"\A---\n(.*?)\n---", re.S)
+HEREDOC = re.compile(r"""(?ms)^[ \t]*cat\s*>\s*(['"]?)(\S+?)\1\s*<<-?\s*['"]?(\w+)['"]?[^\n]*\n(.*?)\n[ \t]*\3[ \t]*$""")
+SCRATCH = re.compile(r"^(?:(?:/private)?/tmp/|/var/folders/|\$\{?TMPDIR\}?/|~/\.cache/|/Users/[^/]+/\.cache/)|/scratchpad/")
+SCRATCH_WRITE = re.compile(rb'"file_path":"(?:(?:/private)?/tmp/|/var/folders/|/Users/[^/"]+/\.cache/|[^"]*/scratchpad/)')
+SLASH_LINE_B = 20000
+SCRIPT = re.compile(r"\.(?:py|sh|bash|zsh|js|mjs|cjs|pl|rb|jq|awk|lua)$")
 RULES = [(key, job, tool, re.compile(pattern)) for key, job, tool, pattern in CLUSTERS]
 TS = re.compile(rb'"timestamp":"([0-9T:.+-]+Z?)"')
 MSG = re.compile(rb'"message":\{[^{]*?"id":"(msg_\w+)"')
 RESULT = re.compile(rb'"tool_use_id":"(\w+)"')
+CWD = re.compile(rb'"cwd":"([^"]+)"')
+REPOS = {}
 CODEX_CMD = re.compile(r"""exec_command\(\{\s*cmd:\s*("(?:[^"\\]|\\.)*")""")
 
 
@@ -91,7 +113,10 @@ def projects_roots():
     """CLAUDE_PROJECTS_DIR alone where set (a fixture), else every Claude transcript root: claudeb profiles' too."""
     if os.environ.get("CLAUDE_PROJECTS_DIR"):
         return [projects_dir()]
-    return [str(root) for root in chat_names.transcript_roots()]
+    roots = {}
+    for root in chat_names.transcript_roots():
+        roots.setdefault(os.path.realpath(root), str(root))
+    return list(roots.values())
 
 
 def codex_dir():
@@ -101,6 +126,123 @@ def codex_dir():
 def cache_path():
     return os.path.join(os.environ.get("SPEED_DOCTOR_DIR") or time_budget.home(".cache", "speed-doctor"),
                         "tool-mining.json")
+
+
+def bin_dir():
+    return time_budget.env_path("TOOL_BIN_DIR", ".local", "bin")
+
+
+def claude_dir():
+    return time_budget.env_path("TOOL_CLAUDE_DIR", ".claude")
+
+
+def command_re(names):
+    return re.compile(COMMAND % "|".join(map(re.escape, sorted(names, key=len, reverse=True)))) if names else None
+
+
+def used(cmd, names):
+    return {m.group(1) for m in names.finditer(cmd)} if names else set()
+
+
+def front(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            head = FRONT.match(handle.read(8192))
+    except OSError:
+        return None
+    out = {}
+    for line in head.group(1).splitlines() if head else ():
+        key, sep, value = line.partition(":")
+        if sep and not line[:1].isspace():
+            out[key.strip()] = value.strip().strip("\"'")
+    return out
+
+
+def born(repo, paths):
+    """{path: epoch of the commit that added it}, renames counted as adds."""
+    try:
+        text = subprocess.run(["git", "-C", repo, "log", "--no-renames", "--diff-filter=A", "--format=%x00%at",
+                               "--name-only", "--"] + sorted(paths), capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    out, at = {}, None
+    for line in text.splitlines():
+        if line.startswith("\0"):
+            at = int(line[1:])
+        elif line and at:
+            out[line] = at
+    return out
+
+
+def facing(now):
+    """Every model-facing tool with a hint, {kind/name: {path, hint_b, hint_in, born}}: a ~/.local/bin command into a
+    sweep repository that a backticked command in an always-loaded CLAUDE.md starts (a line naming several splits its
+    bytes), and a skill or command a model may invoke, its name and description in every session's skill list.
+    `hint_in` splits the bytes by who loads them: "*" every session, a repository path its sessions. `born` is the
+    commit that added its file, `now` while uncommitted."""
+    repos = [os.path.realpath(r) for r in handoffs.sweep_repos()]
+    owner = lambda path: next((r for r in repos if path.startswith(r + os.sep)), None)
+    tools = {}
+    for entry in sorted(os.listdir(bin_dir())) if os.path.isdir(bin_dir()) else ():
+        path = os.path.realpath(os.path.join(bin_dir(), entry))
+        if owner(path) and os.path.isfile(path):
+            tools["bin/" + entry] = {"path": path, "hint_b": 0.0, "hint_in": collections.Counter()}
+    skills = glob.glob(os.path.join(claude_dir(), "skills", "*", "SKILL.md"))
+    for path in sorted(skills + glob.glob(os.path.join(claude_dir(), "commands", "*.md"))):
+        meta, real = front(path), os.path.realpath(path)
+        if meta is None or not owner(real) or meta.get("disable-model-invocation") == "true":
+            continue
+        name = meta.get("name") or os.path.basename(os.path.dirname(path) if path in skills else path[:-3])
+        hint_b = float(len(("- %s: %s" % (name, meta.get("description") or "")).encode()))
+        tools["skill/" + name] = {"path": real, "hint_b": hint_b, "hint_in": {"*": hint_b}}
+    names = command_re([k[4:] for k in tools if k.startswith("bin/")])
+    for where, path in [("*", os.path.join(claude_dir(), "CLAUDE.md"))] + [(r, os.path.join(r, "CLAUDE.md")) for r in repos]:
+        try:
+            with open(path, "rb") as handle:
+                lines = handle.read().decode("utf-8", "replace").splitlines(True)
+        except OSError:
+            continue
+        for line in lines:
+            named = {n for span in BACKTICK.findall(line) for n in used(span, names)}
+            for n in named:
+                tools["bin/" + n]["hint_b"] += len(line.encode()) / len(named)
+                tools["bin/" + n]["hint_in"][where] += len(line.encode()) / len(named)
+    out = {k: dict(v, hint_b=round(v["hint_b"]), hint_in={w: round(b) for w, b in v["hint_in"].items()}, born=int(now))
+           for k, v in tools.items() if v["hint_b"]}
+    for repo in repos:
+        mine = {os.path.relpath(v["path"], repo): v for v in out.values() if owner(v["path"]) == repo}
+        for rel, at in born(repo, mine).items() if mine else ():
+            if rel in mine:
+                mine[rel]["born"] = at
+    return out
+
+
+def project(cwd):
+    """The repository a session worked in, a worktree's main checkout; the directory itself outside any."""
+    if cwd not in REPOS:
+        top, at = None, cwd
+        while not top and at != os.path.dirname(at):
+            git = os.path.join(at, ".git")
+            if os.path.isfile(git):
+                try:
+                    with open(git, errors="replace") as handle:
+                        gitdir = handle.read().partition("gitdir:")[2].strip()
+                except OSError:
+                    gitdir = ""
+                top = gitdir.split(os.sep + ".git" + os.sep)[0] if os.sep + ".git" + os.sep in gitdir else at
+            elif os.path.isdir(git):
+                top = at
+            at = os.path.dirname(at)
+        REPOS[cwd] = os.path.realpath(top or cwd)
+    return REPOS[cwd]
+
+
+def window(day, n):
+    """The n local days ending at `day`, oldest first."""
+    days = [day]
+    while len(days) < n:
+        days.append(time_budget.local_day(time_budget.day_bounds(days[-1])[0] - 1))
+    return days[::-1]
 
 
 def epoch(text):
@@ -137,10 +279,10 @@ def text_b(content):
         if isinstance(content, list) else 0
 
 
-def kept(cmd, tools, at, session, worker, out):
+def kept(cmd, tools, at, session, worker, out, script=False):
     """The call of a benched tool (`tool`: its target) or an ad-hoc call, appended to `out`; None for any other."""
     tool = next((target for target, rule in tools.items() if rule.search(cmd)), None)
-    if not tool and not adhoc(cmd):
+    if not tool and not script and not adhoc(cmd):
         return None
     call = {"session": session, "worker": worker, "ts": at, "cmd": cmd, "exec_s": 0.0, "out_b": 0}
     if tool:
@@ -149,11 +291,22 @@ def kept(cmd, tools, at, session, worker, out):
     return call
 
 
-def claude_calls(path, lo, hi, out, rate, tools=None):
+def count(uses, at, keys):
+    for key in keys:
+        uses[time_budget.local_day(at)][key] += 1
+
+
+def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None):
     """Ad-hoc and benched-tool Bash calls of one Claude Code transcript: {session, worker, ts, cmd, exec_s, out_b}. A
-    tool_use block written right after another block of the same message adds (chars, seconds) to the write rate."""
+    tool_use block written right after another block of the same message adds (chars, seconds) to the write rate.
+    A script file written into a scratch place (a `cat >` heredoc or the Write tool) is ad hoc in the first Bash call
+    naming its path outside that heredoc, its text that call's. `uses` counts per local day the `names` commands a Bash
+    call runs, Skill calls and, apart (`slash/`), the user's slash commands. A call's project is the repository of the
+    session's launch cwd (`project`), the transcript's project directory without one."""
     session = os.path.splitext(os.path.basename(path))[0]
-    worker, pending, prev = "/subagents/" in path, {}, b""
+    worker, pending, prev, written = "/subagents/" in path, {}, b"", {}
+    where = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(path))) if worker else os.path.dirname(path))
+    launched = False
     try:
         handle = open(path, "rb")
     except OSError:
@@ -162,18 +315,38 @@ def claude_calls(path, lo, hi, out, rate, tools=None):
         for n, line in enumerate(handle):
             if n < 40 and b"RUN-TOKEN: " in line:
                 worker = True
-            if b'"name":"Bash"' in line and b'"tool_use"' in line:
+            if b'"tool_use"' in line and (b'"name":"Bash"' in line or uses is not None and b'"name":"Skill"' in line
+                                          or b'"name":"Write"' in line and SCRATCH_WRITE.search(line)):
                 try:
                     record = json.loads(line)
                 except ValueError:
                     prev = line
                     continue
                 at = epoch(record.get("timestamp") or "")
+                if not launched and record.get("cwd"):
+                    launched, where = True, project(record["cwd"])
                 blocks = (record.get("message") or {}).get("content")
                 for block in blocks if isinstance(blocks, list) else ():
-                    if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("name") != "Bash":
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    if block.get("name") == "Skill" and uses is not None and at and lo <= at < hi:
+                        count(uses, at, ["skill/" + str((block.get("input") or {}).get("skill") or "").lstrip("/")])
+                    if block.get("name") == "Write":
+                        target = str((block.get("input") or {}).get("file_path") or "")
+                        if SCRATCH.search(target) and SCRIPT.search(target):
+                            written[target] = str((block.get("input") or {}).get("content") or "")
+                    if block.get("name") != "Bash":
                         continue
                     cmd = str((block.get("input") or {}).get("command") or "")
+                    rest, own = cmd, set()
+                    for _, target, _, body in HEREDOC.findall(cmd):
+                        if SCRATCH.search(target) and SCRIPT.search(target):
+                            written[target] = body
+                            own.add(target)
+                    if written and "<<" in cmd:
+                        rest = HEREDOC.sub("", cmd)
+                    runs = [t for t in written if t in rest]
+                    bodies = [b for t, b in ((t, written.pop(t)) for t in runs) if t not in own]
                     same = MSG.search(prev)
                     if same and same.group(1) == ((record.get("message") or {}).get("id") or "").encode():
                         before = TS.search(prev)
@@ -183,9 +356,12 @@ def claude_calls(path, lo, hi, out, rate, tools=None):
                             rate[1] += at - start
                     if at and lo <= at < hi:
                         rate[2] += 1
-                        rate[3].add(session)
-                        call = kept(cmd, tools or {}, at, session, worker, out)
+                        rate[3][session] = where
+                        if uses is not None:
+                            count(uses, at, ["bin/" + n for n in used(cmd, names)])
+                        call = kept("\n".join([cmd] + bodies), tools or {}, at, session, worker, out, bool(runs))
                         if call:
+                            call["project"] = where
                             pending[block.get("id")] = call
             elif pending and b'"tool_use_id"' in line:
                 ids = [i for i in (f.group(1).decode() for f in RESULT.finditer(line)) if i in pending]
@@ -205,19 +381,33 @@ def claude_calls(path, lo, hi, out, rate, tools=None):
                     call["out_b"] = sizes.get(ident, 0)
                     if end and end >= call["ts"]:
                         call["exec_s"] = end - call["ts"]
+            elif uses is not None and len(line) < SLASH_LINE_B and b"<command-name>" in line and b'"type":"user"' in line:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    record = {}
+                content = (record.get("message") or {}).get("content")
+                at = epoch(record.get("timestamp") or "")
+                slash = SLASH.search(content) if isinstance(content, str) else None
+                if slash and at and lo <= at < hi:
+                    count(uses, at, ["slash/" + slash.group(1)])
             prev = line
 
 
-def codex_calls(path, lo, hi, out, rate, tools=None):
-    """Ad-hoc and benched-tool commands of one codex rollout's exec calls; codex runs only as a worker."""
+def codex_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None):
+    """Ad-hoc and benched-tool commands of one codex rollout's exec calls; codex runs only as a worker, in its session's
+    cwd."""
     session = os.path.basename(path)[-42:-6]
-    pending = {}
+    pending, where = {}, "codex"
     try:
         handle = open(path, "rb")
     except OSError:
         return
     with handle:
-        for line in handle:
+        for n, line in enumerate(handle):
+            cwd = CWD.search(line) if n == 0 else None
+            if cwd:
+                where = project(cwd.group(1).decode("utf-8", "replace"))
             if b'"custom_tool_call"' in line and b"exec_command" in line:
                 try:
                     record = json.loads(line)
@@ -234,10 +424,12 @@ def codex_calls(path, lo, hi, out, rate, tools=None):
                     except ValueError:
                         continue
                     rate[2] += 1
-                    rate[3].add(session)
+                    rate[3][session] = where
+                    if uses is not None:
+                        count(uses, at, ["bin/" + n for n in used(cmd, names)])
                     call = kept(cmd, tools or {}, at, session, True, out)
                     if call:
-                        call["share"] = 1.0 / len(literals)
+                        call.update(share=1.0 / len(literals), project=where)
                         pending.setdefault(payload.get("call_id"), []).append(call)
             elif pending and b'"custom_tool_call_output"' in line:
                 try:
@@ -253,16 +445,22 @@ def codex_calls(path, lo, hi, out, rate, tools=None):
                         call["exec_s"] = (end - call["ts"]) * share
 
 
-def scan(lo, hi, tools=None):
+class Dropped(list):
+    def append(self, item):
+        pass
+
+
+def scan(lo, hi, tools=None, names=None, uses=None, keep=True):
     """(ad-hoc and benched-tool calls in [lo, hi), all Bash calls in it, write rate in chars a second or None, the
-    sessions that made a Bash call); `tools` maps a target to the pattern of its tool's calls."""
-    calls, rate = [], [0, 0.0, 0, set()]
+    sessions that made a Bash call per project); `tools` maps a target to the pattern of its tool's calls; `uses` (day -> Counter)
+    gets the model-facing tools' calls; `keep` False drops the calls themselves."""
+    calls, rate = [] if keep else Dropped(), [0, 0.0, 0, {}]
     for root in projects_roots():
         for path in files(root, "*/*.jsonl", lo) + files(root, "*/*/subagents/*.jsonl", lo):
-            claude_calls(path, lo, hi, calls, rate, tools)
+            claude_calls(path, lo, hi, calls, rate, tools, names, uses)
     for path in files(codex_dir(), "*/sessions/*/*/*/rollout-*.jsonl", lo):
-        codex_calls(path, lo, hi, calls, rate, tools)
-    return calls, rate[2], (rate[0] / rate[1] if rate[1] else None), len(rate[3])
+        codex_calls(path, lo, hi, calls, rate, tools, names, uses)
+    return calls, rate[2], (rate[0] / rate[1] if rate[1] else None), collections.Counter(rate[3].values())
 
 
 def part(group):
@@ -271,13 +469,13 @@ def part(group):
             "out_b": sum(c.get("out_b") or 0 for c in group)}
 
 
-def day_of(calls, bash, chars_s, hi, sessions=0):
-    """One scanned window's numbers per cluster: calls, sessions, minutes (the scripts' writing plus calls times the
+def day_of(calls, bash, chars_s, hi, sessions=None):
+    """One scanned window's numbers per cluster: calls, sessions, sessions per project, minutes (the scripts' writing plus calls times the
     median exec, as an edit and its suite run often share one call), worker minutes, the writing part, two examples,
     characters and output bytes; per cluster its substitutes (`shadow`: ad-hoc calls an earlier cluster took that
-    match its pattern) and per benched target its tool's calls (`tools`)."""
+    match its pattern) and per benched target its tool's calls (`tools`); the day's sessions, also per project."""
     out = {"bash_calls": bash, "chars_s": round(chars_s, 1) if chars_s else None, "to_s": int(hi), "clusters": {},
-           "sessions": sessions, "shadow": {}, "tools": {}}
+           "sessions": sum((sessions or {}).values()), "projects": dict(sessions or {}), "shadow": {}, "tools": {}}
     grouped, shadow, tools = (collections.defaultdict(list) for _ in range(3))
     order = [key for key, _, _, _ in RULES]
     for call in calls:
@@ -295,6 +493,8 @@ def day_of(calls, bash, chars_s, hi, sessions=0):
         worker = [w + median / 60.0 for w, c in zip(write, group) if c["worker"]]
         shown = sorted((c["cmd"] for c in group if len(c["cmd"]) >= 40), key=len)[:2]
         out["clusters"][key] = dict(part(group), sessions=len({c["session"] for c in group}),
+                                    projects=dict(collections.Counter(
+                                        p for _, p in {(c["session"], c.get("project", "")) for c in group})),
                                     min=round(sum(write) + len(group) * median / 60.0, 2),
                                     worker_min=round(sum(worker), 2), write_min=round(sum(write), 2),
                                     examples=[" ⏎ ".join(c.splitlines())[:200] for c in shown])
@@ -403,11 +603,27 @@ def ledger_faults(ledger):
     return faults
 
 
+def over_floor(c):
+    return c["write_min"] >= FLOOR_MIN_DAY and c["sessions"] >= FLOOR_SESSIONS
+
+
+def recurs(c):
+    return sorted(p for p, n in (c.get("projects") or {}).items() if n >= FLOOR_SESSIONS)
+
+
+def home(c):
+    """The project a cluster's job belongs to, its tool and hint there: the one with most of its sessions; None when it
+    recurs (FLOOR_SESSIONS sessions) in FLOOR_PROJECTS projects, a harness tool's job."""
+    projects = c.get("projects") or {}
+    return None if len(recurs(c)) >= FLOOR_PROJECTS else max(sorted(projects), key=projects.get, default="")
+
+
 def findings(day, history, since=lambda target: None, bench=lambda target: None):
-    """({target: net} of every cluster whose fix landed, the clusters over the floor worst writing minutes first); a
-    landed cluster is charged only on a window that began after its landing."""
+    """({target: net} of every cluster whose fix landed, the clusters over the floor worst writing minutes first, each
+    with the project it belongs to, None for the harness's); a landed cluster is charged only on a window that began
+    after its landing."""
     out, nets = [], {}
-    recent = [d for k, d in sorted(history.items())[-7:]]
+    recent = [d for k, d in sorted(history.items()) if "clusters" in d][-7:]
     for key, job, tool, _ in RULES:
         target = "adhoc/" + key
         landed = since(target)
@@ -416,9 +632,10 @@ def findings(day, history, since=lambda target: None, bench=lambda target: None)
         c = day["clusters"].get(key)
         if not c or key in CATCH_ALL or landed and day["to_s"] - WINDOW_S < landed:
             continue
-        if c["write_min"] >= FLOOR_MIN_DAY and c["sessions"] >= FLOOR_SESSIONS:
+        if over_floor(c):
             out.append({"key": key, "target": target, "job": job, "covered_by": tool, "calls": c["calls"],
-                        "sessions": c["sessions"], "min_day": c["min"], "worker_min_day": c["worker_min"],
+                        "sessions": c["sessions"], "projects": len(recurs(c)), "project": home(c),
+                        "min_day": c["min"], "worker_min_day": c["worker_min"],
                         "write_min_day": c["write_min"], "per_1k": round(per_1k(day, key), 1),
                         "days": sum(1 for d in recent if key in d["clusters"]), "examples": c["examples"],
                         **({"net": nets[target]} if target in nets else {})})
@@ -437,26 +654,119 @@ def tool_rules(bench):
     return out
 
 
-def collect(now, write=False, since=lambda target: None, bench=lambda target: None):
+def backfill(history, day, names):
+    """The model-facing tools' calls of the USE_DAYS - 1 days before `day`, once, in one pass: each day's `uses`."""
+    days = window(day, USE_DAYS)[:-1]
+    uses = collections.defaultdict(collections.Counter)
+    scan(time_budget.day_bounds(days[0])[0], time_budget.day_bounds(day)[0], names=names, uses=uses, keep=False)
+    for d in days:
+        history.setdefault(d, {"to_s": int(time_budget.day_bounds(d)[1])})["uses"] = dict(uses.get(d) or {})
+    return days[0]
+
+
+def adoption(history, day, tools, now):
+    """Each model-facing tool's calls a day over the USE_DAYS days to `day` its history covers (a skill's typed slash
+    uses apart: they need no hint), its age and hint; `unused` when the window is whole, the tool is older than it and
+    no model call ran it. Its hint, read once by each session that loads it (`hint_in`), is priced in Opus-eq tokens and
+    as minutes at the write rate (an output character is OUTPUT_EQ input ones)."""
+    seen = [history[d]["uses"] for d in window(day, USE_DAYS) if "uses" in (history.get(d) or {})]
+    calls = collections.Counter()
+    for u in seen:
+        calls.update(u)
+    last = history.get(day) or {}
+    rate, projects = last.get("chars_s"), dict(last.get("projects") or {}, **{"*": last.get("sessions") or 0})
+    out = {}
+    for key, tool in sorted(tools.items()):
+        age = (now - tool["born"]) / 86400.0
+        loads = sum(b * projects.get(where, 0) for where, b in tool["hint_in"].items())
+        slash = calls["slash/" + key[6:]] if key.startswith("skill/") else 0
+        out[key] = {"calls_day": round(calls[key] / len(seen), 2) if seen else None, "days": len(seen),
+                    "slash_day": round(slash / len(seen), 2) if seen else None,
+                    "age_d": round(age, 1), "hint_b": tool["hint_b"], "path": tool["path"],
+                    "hint_sessions": round(loads / tool["hint_b"]) if tool["hint_b"] else 0,
+                    "hint_tok_day": round(loads / CHARS_PER_TOKEN),
+                    "hint_min_day": round(loads / (OUTPUT_EQ * rate) / 60.0, 2) if rate else None,
+                    "unused": len(seen) >= USE_DAYS and age >= USE_DAYS and not calls[key]}
+    return out
+
+
+def minutes(c, rate):
+    return (c.get("chars") or 0) / rate / 60.0 + (c.get("calls") or 0) * (c.get("exec_s") or 0.0) / 60.0 if rate else 0.0
+
+
+def menu_row(cache):
+    """Lost time's ad-hoc row, beside the overhead, never in it: the last scanned day's clusters but the edits and reads
+    the Edit and Read tools own. Repeated jobs, the night's target: clusters over the floor not ruled out or handed off,
+    and every cluster a built tool serves, as [tool min/day, cluster, [], residual min/day] (NO_TOOL while none is
+    built), the heaviest CANDIDATE_ROWS of the unbuilt; one-off, never a target: each ruled-out or handed-off cluster,
+    then the catch-alls and clusters under the floor as one row; then every unused tool, [0, name, [], UNUSED]."""
+    history = cache.get("history") or {}
+    scanned = [d for d in history if "clusters" in history[d]]
+    if not scanned:
+        return None
+    last = history[max(scanned)]
+    built, parked = set(cache.get("built") or ()), set(cache.get("parked") or ())
+    tools, rate = last.get("tools") or {}, last.get("chars_s")
+    repeated, candidates, oneoff, rest = [], [], [], 0.0
+    for key in sorted(set(last["clusters"]) | {t[6:] for t in built}):
+        c = last["clusters"].get(key) or {"write_min": 0, "sessions": 0}
+        target, m = "adhoc/" + key, round(c.get("min") or 0, 1)
+        if key in ROW_SKIP:
+            continue
+        if target in built:
+            repeated.append([round(minutes(tools.get(target) or {}, rate), 1), key, [], m])
+        elif target in parked:
+            oneoff.append([m, key, []])
+        elif key not in CATCH_ALL and over_floor(c):
+            candidates.append([NO_TOOL, key, [], m])
+        else:
+            rest += c.get("min") or 0
+    jobs = round(sum(r[3] for r in repeated + candidates), 1)
+    repeated = sorted(repeated, key=lambda r: -r[3]) + sorted(candidates, key=lambda r: -r[3])[:CANDIDATE_ROWS]
+    oneoff = sorted(oneoff, key=lambda r: -r[0]) + ([[round(rest, 1), "other", []]] if rest else [])
+    unused = [[0, ("/" if key.startswith("skill/") else "") + key.split("/", 1)[1], [], UNUSED]
+              for key in cache.get("unused") or ()]
+    groups = [[jobs, "repeated jobs", repeated],
+              [round(sum(r[0] for r in oneoff), 1), "one-off", oneoff]]
+    total = round(sum(c.get("min") or 0 for k, c in last["clusters"].items() if k not in ROW_SKIP), 1)
+    return [total, "ad-hoc scripts", groups + (["-"] + unused if unused else [])]
+
+
+def collect(now, write=False, since=lambda target: None, bench=lambda target: None, parked=lambda target: False):
     """The `adhoc` section: the scan of the local day before `now`'s, done once a local day (the first Speed run after
-    midnight, before the night starts), the per-day history, the findings, each landed fix's net and the scan's own
-    seconds; `bench` gives a target's last fix bench, whose command marks its tool's calls."""
+    midnight, before the night starts), the per-day history with the model-facing tools' calls (backfilled once over
+    USE_DAYS), the findings, each landed fix's net, each tool's adoption and the scan's own seconds; `bench` gives a
+    target's last fix bench, whose command marks its tool's calls; `parked` a target ruled out or handed off. The
+    cache keeps what the menu row needs (`menu_row`)."""
     started = time.monotonic()
     cache = time_budget.read_json(cache_path(), {})
-    history = (cache.get("history") if isinstance(cache, dict) else None) or {}
+    cache = cache if isinstance(cache, dict) else {}
+    history = cache.get("history") or {}
     hi = time_budget.day_bounds(time_budget.local_day(now))[0]
     day = time_budget.local_day(hi - 1)
-    scan_s = cache.get("scan_s") if isinstance(cache, dict) else None
-    if "shadow" not in (history.get(day) or {}):
-        calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, tool_rules(bench))
-        history[day] = day_of(calls, bash, chars_s, hi, sessions)
-        scan_s = round(time.monotonic() - started, 2)
-        history = {d: v for d, v in history.items() if d >= time_budget.local_day(hi - HISTORY_D * 86400)}
-        if write:
-            time_budget.write_json(cache_path(), {"history": history, "scan_s": scan_s})
+    fresh = not {"shadow", "uses"} <= set(history.get(day) or {})
+    if fresh:
+        cache["facing"] = facing(now)
+        names = command_re([k[4:] for k in cache["facing"] if k.startswith("bin/")])
+        uses = collections.defaultdict(collections.Counter)
+        calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, tool_rules(bench), names, uses)
+        history[day] = dict(day_of(calls, bash, chars_s, hi, sessions), uses=dict(uses.get(day) or {}))
+        cache["scan_s"] = round(time.monotonic() - started, 2)
+        if write and not cache.get("uses_from"):
+            cache["uses_from"] = backfill(history, day, names)
+        cache["history"] = {d: v for d, v in history.items() if d >= time_budget.local_day(hi - HISTORY_D * 86400)}
+    tools = adoption(history, day, cache.get("facing") or {}, now)
+    marks = {"built": sorted("adhoc/" + k for k, _, _, _ in RULES if since("adhoc/" + k)
+                             and (bench("adhoc/" + k) or {}).get("command")),
+             "parked": sorted("adhoc/" + k for k, _, _, _ in RULES if parked("adhoc/" + k)),
+             "unused": sorted(k for k, t in tools.items() if t["unused"])}
+    if write and (fresh or any(cache.get(k) != v for k, v in marks.items())):
+        cache.update(marks)
+        time_budget.write_json(cache_path(), cache)
     nets, found = findings(history[day], history, since, bench)
-    return {"day": day, "scan_s": scan_s, "bash_calls": history[day]["bash_calls"], "chars_s": history[day]["chars_s"],
-            "floor_min_day": FLOOR_MIN_DAY, "findings": found, "net": nets}
+    return {"day": day, "scan_s": cache.get("scan_s"), "bash_calls": history[day]["bash_calls"],
+            "chars_s": history[day]["chars_s"], "floor_min_day": FLOOR_MIN_DAY, "findings": found, "net": nets,
+            "tools": tools, "unused": [dict(tools[k], key=k) for k in marks["unused"]]}
 
 
 def main(argv):
@@ -475,8 +785,9 @@ def main(argv):
     print("%d Bash calls, %d ad hoc, write rate %s chars/s, scan %.1f s" % (
         bash, len(calls), round(chars_s or 0, 1), time.monotonic() - started))
     for key, c in sorted(day["clusters"].items(), key=lambda kv: -kv[1]["write_min"]):
-        print("%-16s %5d calls %4d sessions %6.1f min/day (%5.1f writing, %5.1f worker)" % (
-            key, c["calls"], c["sessions"], c["min"], c["write_min"], c["worker_min"]))
+        print("%-16s %5d calls %4d sessions %3d projects %6.1f min/day (%5.1f writing, %5.1f worker)%s" % (
+            key, c["calls"], c["sessions"], len(recurs(c)), c["min"], c["write_min"], c["worker_min"],
+            " · " + home(c) if home(c) is not None else ""))
     return 0
 
 

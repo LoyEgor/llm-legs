@@ -9799,7 +9799,7 @@
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night fixer harness-speed-adhoc-logo-bench-20261014T021655Z-40b5",
       "note": "2026-10-14 ruled out: 772 calls in 66 sessions, 708 by workers in logo-vectorizer-bench: lane workers' research scripts over files each lane invents (summary.json, replay-equivalence.json, named-labels.json, closure.json, probe outputs), tracer module probes, coordinator brief heredocs; no repeated job one command serves (56 read verdicts.csv or key.json, already tallied by the bench's own bench/judge_tally.py and results/lanes/coord/tools/majority.py). The data and its tools live in logo-vectorizer-bench, outside every night worktree (one commit, results/ and its coord tools unversioned), owned by its live coordinator chat; Speed already keeps bench workers outside the workers' wall (time_budget BENCH_WORKDIR, 9641a8ab) and CPU audits kept its processes for the same reason (62b742df, fb91d205); tool_mining.scan does not apply BENCH_WORKDIR, a measure question for the owner. 16 calls match only the pattern's .venv/bin/python alternative and belong to other repositories (the packet's second quote is an llm-legs speed-doctor --help check). Measured: 1307.8 s exec wall/day; 21 of 24 sampled read-only calls replayed under a write-denying sandbox-exec: 16.3 s logged, 6.7 s wall, 3.8 s cpu; tried grouping the scripts by shape (paths, numbers, strings normalized): 772 calls -> 604 shapes, the largest 31.",
-      "handoff": null
+      "handoff": "docs/handoffs/2026-10-14-logo-bench-own-tools.md"
     },
     {
       "id": "speed-adhoc-logo-verdict",
@@ -9814,7 +9814,7 @@
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night fixer harness-speed-adhoc-logo-bench-20261014T021655Z-40b5",
       "note": "2026-10-14 ruled out here: 491 calls in 41 sessions, all judge workers launched by logo-vectorizer-bench results/lanes/coord/tools/judge.sh with mkbrief.py briefs ('Append each row ... as soon as you judge that panel', return 'judged N/M: A x, B y, tie z'): 373 echo >> verdicts.csv plus a python3 or cut|sort|uniq tally (~390 chars, 1942 of 145854 chars the rows), 118 cat >> heredocs whose rows are 66 % of their chars and are the judgment itself. The lever is the bench's: one command there appending a row and printing judged N/M with the A/B/tie counts, named in mkbrief.py's Output paragraph; that tree is unversioned and owned by its live coordinator chat, so no night worktree can land it. Measured: 162.9 s exec wall/day; 10 sampled appends replayed on a /tmp copy: 3.25 s logged, 0.10 s wall, 0.08 s cpu; the day's cost is the writing (15 w-min/day).",
-      "handoff": null
+      "handoff": "docs/handoffs/2026-10-14-logo-bench-own-tools.md"
     },
     {
       "id": "hook-error-notice-connections-kill",

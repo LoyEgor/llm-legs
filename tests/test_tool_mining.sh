@@ -86,8 +86,9 @@ check(got == [("file-edit", "chat1", False, 30.0), ("ledger-query", "agent-1", T
               ("logo-verdict", "01a13467-57f7-76f2-923a-86bffc845202", True, 2.0)],
       "ad-hoc calls in the window with their cluster, session, worker flag (RUN-TOKEN, subagent, codex) and exec "
       "seconds (a codex exec split over its commands); ls, a commit heredoc and a call before the window are out: %s" % got)
-check(bash_calls == 9 and sessions == 4,
-      "every Bash call in the window counts toward the per-1000 base, every session making one: %s %s" % (bash_calls, sessions))
+check(bash_calls == 9 and sessions == {"-p": 3, "codex": 1},
+      "every Bash call in the window counts toward the per-1000 base, every session making one by project (the "
+      "transcript's project directory without a cwd): %s %s" % (bash_calls, sessions))
 check(sorted(c["out_b"] for c in calls) == [2] * 5,
       "each call keeps the bytes of its output (a codex exec's split over its commands): %s" % [c["out_b"] for c in calls])
 # Without CLAUDE_PROJECTS_DIR the scan reads every Claude transcript root, a claudeb profile's too.
@@ -129,6 +130,11 @@ history = {t.time_budget.local_day(HI - 1): day}
 adopted, found = t.findings(day, history)
 check([f["key"] for f in found] == ["ledger-query"] and found[0]["covered_by"] is None and not adopted,
       "a cluster over the floor in fewer than %d sessions stays out: %s" % (t.FLOOR_SESSIONS, found))
+check(found[0]["project"] == "-p" and found[0]["projects"] == 1,
+      "a job recurring in fewer than %d projects is its project's: %s" % (t.FLOOR_PROJECTS, found))
+check(t.home({"projects": {"a": 3, "b": 3, "c": 3}}) is None and t.home({"projects": {"a": 3, "b": 9, "c": 2, "d": 1}}) == "b",
+      "a job is the harness's once it recurs (%d sessions) in %d projects, else the project with most of its sessions"
+      % (t.FLOOR_SESSIONS, t.FLOOR_PROJECTS))
 check(round(60.0 * t.BUILD_H / t.PAYBACK_D, 1) == 8.6, "the floor is a one-hour fix paid back inside the week")
 
 collected = t.collect(NOW, write=True)
@@ -212,7 +218,7 @@ speed_doctor = os.path.join(root, "bin", "speed-doctor")
 spec = importlib.util.spec_from_loader("speed_doctor", importlib.machinery.SourceFileLoader("speed_doctor", speed_doctor))
 s = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(s)
-f = t.findings(day, history)[1][0]
+f = dict(t.findings(day, history)[1][0], project=None)
 rows = s.adhoc_opportunities({"findings": [f, dict(f, key="file-edit", target="adhoc/file-edit",
                                                     covered_by="the Edit tool", job="edit a file")]})
 o = rows[0]["opportunity"]
@@ -223,6 +229,10 @@ check(rows[0]["id"] == "opportunity:adhoc/ledger-query" and o["kind"] == "tool"
       "Speed prices an adhoc row at its writing minutes, a new command for it: %s" % rows[0])
 check(rows[1]["opportunity"]["kind"] == "hint" and "the Edit tool already does the job" in rows[1]["opportunity"]["what"]
       and rows[1]["fact"].endswith("· the Edit tool"), "a cluster a tool already covers gets the hint only: %s" % rows[1])
+own = s.adhoc_opportunities({"findings": [dict(f, project="/x/bench")]})[0]
+check(own["fact"].startswith("read doctor ledger rows · 3 calls/day in 3 sessions of /x/bench · ")
+      and own["opportunity"]["project"] == "/x/bench" and "in /x/bench, its hint in that project's CLAUDE.md" in own["fact"],
+      "a project's own job puts its command and hint in that project, a handoff outside the night's: %s" % own["fact"])
 
 h = s.H
 entry = {"match": {"rule": "opportunity", "ident": "adhoc/ledger-query"}, "fixes": [{"in": "x"}]}
@@ -242,6 +252,119 @@ check(line == "adhoc/ledger-query · 5.2 → 1.5 min/day · saves 3.7 · cost ×
 other = {"match": {"rule": "opportunity", "ident": "chat/hooks"}, "fixes": [{"in": "x"}]}
 check(h.speed_proof(other, speed("proven"), 0) == (False, "no output-equivalence record on the fix"),
       "another opportunity keeps its output-equivalence proof")
+
+import subprocess  # noqa: E402
+repo, bins, cdir = (os.path.join(work, n) for n in ("repo", "bin", "claude"))
+for rel, text in (("bin/foo", "#!/bin/sh\n"), ("bin/bar", "#!/bin/sh\n"), ("skills/s/SKILL.md", "---\nname: s\ndescription: \"do s\"\n---\nbody\n"),
+                  ("commands/c.md", "---\ndescription: do c\n---\n"), ("commands/q.md", "---\ndescription: q\ndisable-model-invocation: true\n---\n")):
+    os.makedirs(os.path.dirname(os.path.join(repo, rel)), exist_ok=True)
+    open(os.path.join(repo, rel), "w").write(text)
+git = lambda *a: subprocess.run(["git", "-C", repo] + list(a), check=True, capture_output=True,
+                                env=dict(os.environ, GIT_AUTHOR_DATE="@1700000000 +0000", GIT_COMMITTER_DATE="@1700000000 +0000"))
+git("init", "-q")
+git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".")
+git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "tools")
+os.makedirs(bins)
+os.makedirs(cdir)
+for name in ("foo", "bar"):
+    os.symlink(os.path.join(repo, "bin", name), os.path.join(bins, name))
+os.symlink("/usr/bin/true", os.path.join(bins, "ext"))
+os.symlink(os.path.join(repo, "skills"), os.path.join(cdir, "skills"))
+os.symlink(os.path.join(repo, "commands"), os.path.join(cdir, "commands"))
+LINE = "Run `foo --x` first; bar and foo-bar are prose.\n"
+open(os.path.join(cdir, "CLAUDE.md"), "w").write("# rules\n" + LINE)
+open(os.path.join(repo, "CLAUDE.md"), "w").write("Use `bar`.\n")
+open(os.path.join(work, "sweep"), "w").write(repo + "\n")
+os.environ.update({"TOOL_BIN_DIR": bins, "TOOL_CLAUDE_DIR": cdir, "NIGHT_RUN_SWEEP_REPOS": os.path.join(work, "sweep")})
+tools = t.facing(NOW)
+REPO = os.path.realpath(repo)
+check(sorted(tools) == ["bin/bar", "bin/foo", "skill/c", "skill/s"] and tools["bin/foo"]["hint_b"] == len(LINE)
+      and tools["bin/foo"]["hint_in"] == {"*": len(LINE)} and tools["bin/bar"]["hint_in"] == {REPO: 11}
+      and tools["skill/s"]["hint_b"] == len("- s: do s") and all(v["born"] == 1700000000 for v in tools.values()),
+      "model-facing tools: a sweep repository's command a backticked CLAUDE.md command names (its line's bytes, loaded "
+      "by every session from the global file, by its repository's from the repository's), each skill a model may invoke "
+      "(its listed name and description), born at the commit adding it: %s" % tools)
+
+names = t.command_re(["foo", "bar"])
+day0 = t.time_budget.local_day(T0)
+SCRIPT, RUNS = "print('x')\n" * 3, "cat > /tmp/y.py <<'EOF'\nprint(2)\nEOF\npython3 /tmp/y.py"
+transcript(os.path.join(work, "projects2", "-p", "u1.jsonl"), [
+    bash(T0, "cd /x && FOO=1 timeout 5 foo --x | jq . && foo-bar; " + repo + "/bin/foo", "msg_U", "toolu_u1"),
+    {"type": "assistant", "timestamp": iso(T0 + 1), "message": {"id": "msg_K", "content": [
+        {"type": "tool_use", "id": "toolu_k", "name": "Skill", "input": {"skill": "s"}},
+        {"type": "tool_use", "id": "toolu_w", "name": "Write", "input": {"file_path": "/tmp/x.py", "content": SCRIPT}}]}},
+    {"type": "user", "timestamp": iso(T0 + 2), "message": {"role": "user", "content": "<command-name>/c</command-name>"}},
+    bash(T0 + 3, "python3 /tmp/x.py", "msg_R", "toolu_r"), result(T0 + 9, "toolu_r"),
+    bash(T0 + 10, "python3 /tmp/x.py", "msg_R2", "toolu_r2"),
+    bash(T0 + 11, RUNS, "msg_Y", "toolu_y")])
+os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(work, "projects2")
+uses = t.collections.defaultdict(t.collections.Counter)
+got = t.scan(HI - t.WINDOW_S, HI, names=names, uses=uses)[0]
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+check(dict(uses[day0]) == {"bin/foo": 1, "skill/s": 1, "slash/c": 1},
+      "a call counts each command it runs once, by binary name through env, wrappers and paths; Skill calls and typed "
+      "slash commands apart: %s" % dict(uses[day0]))
+check([(c["cmd"], c["exec_s"]) for c in got] == [("python3 /tmp/x.py\n" + SCRIPT, 6.0), (RUNS, 0.0)],
+      "a scratch script written by the Write tool or a cat heredoc is ad hoc in the first call running it, its text "
+      "that call's once: %s" % got)
+
+hist = {d: {"uses": {"bin/foo": 1} if d == day0 else {}} for d in t.window(day0, t.USE_DAYS)}
+hist[day0].update(sessions=10, chars_s=10.0, projects={REPO: 4, "/y": 6})
+tools = {"bin/foo": dict(tools["bin/foo"], born=NOW - 40 * 86400), "skill/s": dict(tools["skill/s"], born=NOW - 40 * 86400),
+         "skill/c": dict(tools["skill/c"], born=NOW - 20 * 86400), "bin/bar": dict(tools["bin/bar"], born=NOW - 20 * 86400)}
+got = t.adoption(hist, day0, tools, NOW)
+check([k for k, v in got.items() if v["unused"]] == ["skill/s"] and got["bin/foo"]["calls_day"] == round(1 / 30.0, 2)
+      and got["skill/s"]["hint_tok_day"] == round(9 * 10 / t.CHARS_PER_TOKEN)
+      and got["skill/s"]["hint_min_day"] == round(9 * 10 / (t.OUTPUT_EQ * 10.0) / 60.0, 2),
+      "a tool with a hint and no call in %d whole days is unused once older than them; its hint priced once a session: "
+      "%s" % (t.USE_DAYS, got))
+check(got["bin/bar"]["hint_tok_day"] == round(11 * 4 / t.CHARS_PER_TOKEN) and got["bin/bar"]["hint_sessions"] == 4,
+      "a repository's hint is charged to its sessions only: %s" % got["bin/bar"])
+hist.pop(t.window(day0, t.USE_DAYS)[0])
+check(not any(v["unused"] for v in t.adoption(hist, day0, tools, NOW).values()), "a window short of its days finds none")
+
+C = lambda m, w=9.0, n=3: {"min": m, "write_min": w, "sessions": n}
+cache = {"history": {day0: {"chars_s": 10.0, "tools": {"adhoc/ledger-query": {"calls": 6, "chars": 600, "exec_s": 10.0}},
+                            "clusters": {"ledger-query": C(16.8), "tokenmap": C(24.4), "logo-bench": C(45.5),
+                                         "limits": C(4.6, 1.0, 1), "json-other": C(23.8), "text-other": C(49.8, 20.0, 9),
+                                         "file-edit": C(217.4)}}},
+         "built": ["adhoc/ledger-query", "adhoc/doctor-state"], "parked": ["adhoc/logo-bench"], "unused": ["skill/s", "bin/foo"]}
+check(t.menu_row(cache) == [164.9, "ad-hoc scripts", [
+    [41.2, "repeated jobs", [[2.0, "ledger-query", [], 16.8], [0.0, "doctor-state", [], 0.0], ["–", "tokenmap", [], 24.4]]],
+    [123.7, "one-off", [[45.5, "logo-bench", []], [78.2, "other", []]]], "-",
+    [0, "/s", [], "🗑"], [0, "foo", [], "🗑"]]],
+      "the ad-hoc row: repeated jobs (each built tool's min/day beside its residual, then unbuilt clusters over the "
+      "floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), the unused tools: %s"
+      % t.menu_row(cache))
+unused = s.unused_opportunities({"unused": [dict(got["skill/s"], key="skill/s")]})
+check([o["id"] for o in unused] == ["opportunity:tool/skill/s"] and unused[0]["group"] == "tool"
+      and unused[0]["fact"].startswith("skill/s · 0 calls in 30 days · 40 d old · hint 9 B in 10 sessions/day")
+      and unused[0]["opportunity"]["quality"] == "equivalent",
+      "Speed turns an unused tool into a night row deleting it and its hint: %s" % unused)
+tree = os.path.join(repo, ".claude", "worktrees", "w")
+git("worktree", "add", "-q", tree)
+cwd = lambda row, path: dict(row, cwd=path)
+transcript(os.path.join(work, "projects3", "-q", "v1.jsonl"), [
+    cwd(bash(T0, QUERY, "msg_V", "toolu_v1"), os.path.join(tree, "bin")), cwd(bash(T0 + 5, QUERY, "msg_V2", "toolu_v2"), "/tmp")])
+transcript(os.path.join(codex, "acct", "sessions", "2026", "10", "13", "rollout-2026-10-13T11-00-00-01a13467-57f7-76f2-923a-86bffc845203.jsonl"), [
+    {"timestamp": iso(T0), "type": "session_meta", "payload": {"cwd": tree}},
+    {"timestamp": iso(T0 + 1), "type": "response_item",
+     "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c", "input": js}}])
+os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(work, "projects3")
+got = t.scan(HI - t.WINDOW_S, HI)
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+check([c["project"] for c in got[0]] == [REPO] * 3 and got[3] == {REPO: 2},
+      "a session's project is its launch cwd's repository, a worktree's main checkout, a later cd aside: %s %s" % (
+          [c["project"] for c in got[0]], got[3]))
+alias = os.path.join(os.environ["HOME"], ".claude-profiles", "alias", "projects")
+os.makedirs(os.path.join(os.environ["HOME"], ".claude"), exist_ok=True)
+os.symlink(os.path.dirname(os.path.dirname(profile)), os.path.join(os.environ["HOME"], ".claude", "projects"))
+os.makedirs(os.path.dirname(alias))
+os.symlink(os.path.dirname(os.path.dirname(profile)), alias)
+del os.environ["CLAUDE_PROJECTS_DIR"]
+roots = t.projects_roots()
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+check(len(roots) == 1, "a transcript root two profiles link to is read once: %s" % roots)
 print(count[0])
 EOF
 ) || exit 1

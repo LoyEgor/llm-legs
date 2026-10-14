@@ -114,7 +114,7 @@ the work, in min/day: each class is the union of its intervals, so parallel runs
 (`overhead_s`) is the union of all classes, never their sum. No floors, free-machine deductions or "could save"
 estimates; a class exists only where its intervals are already journaled. Suite seconds are blocking seconds: those
 their owner generated beside them (inside its turns or run, outside its calls) leave. An `ad-hoc scripts` row sits beside
-the overhead, never in it or the index: tool_mining's last day, every cluster but `file-edit`/`file-read`, top 5 apart.
+the overhead, never in it or the index: tool_mining's `menu_row`, every cluster but `file-edit`/`file-read`.
 
 **Lost time index** (Egor; the title number). Fee per unit of work against the previous 7 days, Paasche per stratum as
 token-map's `_price_index`; 1.00 = the same, no norms or thresholds. It must not move with volume, parallelism,
@@ -146,11 +146,23 @@ runs held all of them); each exec goes to one such file, the one most like the r
 narrowest on a tie. The top 3 files by minutes a day on selected suites with no catch in 90 days are
 `fan-out/<repo>/<path>` findings for the night.
 
-**Tool mining** (`share/tool_mining.py`, Speed's `adhoc` key). Once a local day (~3 s) it clusters the day's ad-hoc
-Bash scripts by the first `CLUSTERS` pattern matched. Cost: writing (chars at the measured write rate) + calls × median
-exec. Over `FLOOR_MIN_DAY` writing min/day in ≥ 3 sessions: `opportunity:adhoc/<key>`, a command plus hint, or the hint
-alone where `covered_by` names a tool. A fix lands only with a bench (`bench_faults`). Proof (`net`): job min and tokens
-per 1000 Bash calls both below before; worse in either: `regression:adhoc/<key>`.
+**Tool mining** (`share/tool_mining.py`, Speed's `adhoc` key). Once a local day (~5 s) it clusters the day's ad-hoc
+Bash scripts by the first `CLUSTERS` pattern matched; a scratch script file (`cat >` heredoc or Write into /tmp, $TMPDIR,
+~/.cache, a scratchpad) counts in the first call running it. Cost: writing (chars at the measured write rate) + calls ×
+median exec. Over `FLOOR_MIN_DAY` writing min/day in ≥ 3 sessions: `opportunity:adhoc/<key>`, a command plus hint, or
+the hint alone where `covered_by` names a tool. A harness tool only for a job recurring (≥ 3 sessions) in ≥ 3 projects
+(a session's launch cwd repository); else the job is its project's (`home`): tool and hint go there, a handoff
+outside the night's (Egor, 2026-10-14: no tools for one chat's need). A fix lands only with a bench (`bench_faults`). Proof (`net`): job min
+and tokens per 1000 Bash calls both below before; worse in either: `regression:adhoc/<key>`. A lever in a repository
+outside the night's is a handoff to its owner chat (`close` accepts one citing that repository), never an open row.
+Adoption (Egor, 2026-10-14: tools are judged by use, not script volume): per model-facing tool with a hint (`facing`:
+a ~/.local/bin command a backticked CLAUDE.md command names, a model-invocable skill) its Bash/Skill calls a day, kept
+per day (`uses`, backfilled once over 30 days, ~30 s); typed slash uses apart, they need no hint. Hint and no model call
+in 30 whole days, older than 30 days: `opportunity:tool/<kind>/<name>`, priced at the hint's bytes once per session loading it (an
+output char = `OUTPUT_EQ` input ones at the write rate); the fix deletes tool and hint, or only the hint where other
+code or Egor runs it. Menu (`menu_row`): repeated jobs (the night's target: built tools as tool | residual min/day,
+unbuilt clusters over the floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), unused
+tools as 0 | 🗑.
 
 **ROI** (`roi ·` lines, `share/time_budget.py`). Each Speed or time row of a fixer job is an improvement with an
 even share of the job's spend, proven per unit against the 7 days before, never by an earlier drop, only beside 3+

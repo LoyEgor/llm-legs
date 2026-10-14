@@ -661,6 +661,14 @@ printf 'floor:tool\thandoff\tclaude-setup/hooks/gate.sh\tdocs/handoffs/2026-10-0
 assert_fails fix close "$hw" --decisions "$WORK/fl" "floors" 2>"$WORK/err"
 assert_fails grep -qF "refused" "$WORK/err"
 assert grep -qF "line 3 (bogus): verdict 'nope'" "$WORK/err"
+# A lever in a repository outside the night's leaves as a handoff to that repository's owner chat.
+git init -q "$WORK/projects/bench"
+printf '# lever\n\nStatus: open\nTo: «Bench owner»\n\nOne command in `%s/tools`.\n' "$WORK/projects/bench" >"$WORK/docs/handoffs/2026-10-02-bench.md"
+sed -n 1p "$WORK/fl" >"$WORK/fl2"
+printf 'floor:tool\thandoff\tclaude-setup/hooks/gate.sh\tdocs/handoffs/2026-10-02-bench.md\nbogus\tnope\tx\ty\n' >>"$WORK/fl2"
+assert_fails fix close "$hw" --decisions "$WORK/fl2" "floors" 2>"$WORK/err"
+assert_fails grep -qF "refused" "$WORK/err"
+assert grep -qF "line 3 (bogus): verdict 'nope'" "$WORK/err"
 rm "$DATA/harness-doc.json"
 load=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-load-/ {print $1}')
 assert jqe '.problems[0].id == "load:host" and .problems[0].component.files == []' "$(record "$load")"

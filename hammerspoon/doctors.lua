@@ -1659,11 +1659,21 @@ local function levelRows(levels)
   return out
 end
 
+-- A built tool's min/day beside its job's residual scripts; a glyph or MISSING where a column has no number.
+local function pairCell(value, width)
+  local n = tonumber(value)
+  if not n then return { padded(tostring(value), width), style.DIM } end
+  return { padded(n == 0 and "0" or n < 9.95 and string.format("%.1f", n) or rounded(n), width) }
+end
+
 local function lostRows(rows)
   local out = {}
   for _, r in ipairs(type(rows) == "table" and rows or {}) do
     if r == "-" then
       out[#out + 1] = { title = "-" }
+    elseif type(r) == "table" and r[4] ~= nil then
+      out[#out + 1] = fitRow({ title = styled({ pairCell(r[1], 4), pairCell(r[4], 5),
+        { " min/day  " .. tostring(r[2]) } }), disabled = true })
     elseif type(r) == "table" and tonumber(r[1]) then
       local row = issueRow(tonumber(r[1]), "min/day", tostring(r[2]), nil, false)
       local sub = lostRows(r[3])
