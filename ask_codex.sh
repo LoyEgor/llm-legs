@@ -85,10 +85,10 @@ esac
 MODEL_ARGS=()
 [ -n "$REQUESTED" ] && MODEL_ARGS=(-m "$REQUESTED")
 
-ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
+# A fresh private empty cwd per call: a shared predictable one could carry planted project config.
+ERRF="$(mktemp)"; STUB_DIR="$(mktemp -d)"; trap 'rm -f "$ERRF"; rm -rf "$STUB_DIR"' EXIT
 LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STUB_DIR="${TMPDIR:-/tmp}/llm-legs-stub"
-mkdir -p "$STUB_DIR" && cd "$STUB_DIR" || exit 1
+cd "$STUB_DIR" || exit 1
 STRIP_ARGS=(--ignore-user-config)
 for feature in shell_tool unified_exec apps browser_use browser_use_external computer_use goals hooks \
   image_generation multi_agent plugins skill_search sleep_tool tool_suggest view_image; do

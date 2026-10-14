@@ -32,7 +32,7 @@ def number(value):
 
 def located(where):
     """`file:ANCHOR` -> `file:N`, N the first line of the repo file holding ANCHOR; anything else as given."""
-    path, _, anchor = str(where or "").rpartition(":")
+    path, _, anchor = str(where or "").partition(":")
     if not path or not anchor or anchor.isdigit():
         return where
     try:

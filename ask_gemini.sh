@@ -127,10 +127,10 @@ if [ "${GEMINI_CMD[0]}" = agy ] && ! command -v agy >/dev/null 2>&1; then
   exit 1
 fi
 
-ERRF="$(mktemp)"; LOGF="$(mktemp)"; trap 'rm -f "$ERRF" "$LOGF"' EXIT
+# A fresh private empty cwd per call: a shared predictable one could carry planted project config.
+ERRF="$(mktemp)"; LOGF="$(mktemp)"; STUB_DIR="$(mktemp -d)"; trap 'rm -f "$ERRF" "$LOGF"; rm -rf "$STUB_DIR"' EXIT
 LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STUB_DIR="${TMPDIR:-/tmp}/llm-legs-stub"
-mkdir -p "$STUB_DIR" && cd "$STUB_DIR" || exit 1
+cd "$STUB_DIR" || exit 1
 quota_hit=0
 served_other=0
 reset_hint=""

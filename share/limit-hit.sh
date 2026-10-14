@@ -17,7 +17,7 @@ limit_hit_num() { # var value -> the value when it is a plain number, else null
 limit_hit_bytes() { local LC_ALL=C; limit_hit_n=${#1}; }
 
 limit_hit_where() { # where -> limit_hit_at: `file:ANCHOR` becomes `file:N`, N the first line of the repo file holding ANCHOR
-  local file=${1%:*} anchor=${1##*:} root n
+  local file=${1%%:*} anchor=${1#*:} root n
   limit_hit_at=$1
   case $anchor in *[!0-9]*) ;; *) return 0 ;; esac
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)

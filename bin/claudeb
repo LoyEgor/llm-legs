@@ -570,7 +570,7 @@ oauth_attempt_update() {
       if [ "$stale_retake" = false ] && [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 30 ]; then
         stale_retake=true
         limit_hit claudeb.lock-stale 30 s break "oauth-attempts lock broken by age: its holder, if alive, now races this writer" \
-          'bin/claudeb:-gt 30 ]; then' "$((now - lock_mtime))"
+          'bin/claudeb:lock_mtime))" -gt 30 ]; then' "$((now - lock_mtime))"
         rm -rf "$lock" || return 0
         continue
       fi

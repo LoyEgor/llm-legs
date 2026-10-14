@@ -122,7 +122,8 @@ if printf '%s' "$MODEL" | grep -qiE "$BLOCKED_RE"; then
   exit 4
 fi
 
-ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
+# A fresh private empty cwd per call: a shared predictable one could carry a planted .claude/settings.json.
+ERRF="$(mktemp)"; STUB_DIR="$(mktemp -d)"; trap 'rm -f "$ERRF"; rm -rf "$STUB_DIR"' EXIT
 # The ${ARR[@]+...} expansion is the set -u-safe form (bare "${ARR[@]}" on an empty array aborts
 # under nounset in bash < 4.4, e.g. /bin/bash 3.2 in a bare cron PATH).
 TOOLS=""
@@ -130,8 +131,7 @@ ARGS=()
 if [ "${CLAUDE_ALLOW_WEB:-0}" = "1" ]; then TOOLS="$ALLOWED_TOOLS"; ARGS=(--allowedTools "$ALLOWED_TOOLS"); fi
 [ -n "${CLAUDE_EFFORT:-}" ] && ARGS+=(--effort "$CLAUDE_EFFORT")
 LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STUB_DIR="${TMPDIR:-/tmp}/llm-legs-stub"
-mkdir -p "$STUB_DIR" && cd "$STUB_DIR" || exit 1
+cd "$STUB_DIR" || exit 1
 set +e
 # --safe-mode still reads settings files: --setting-sources project keeps the account's user settings out.
 OUT="$("${CLAUDE_CMD[@]}" -p "$PROMPT" --output-format json --model "$MODEL" \

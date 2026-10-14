@@ -30,6 +30,12 @@ assert_eq "llm-legs:probe.sh|5|count|drop|two lines \"quoted\"|bin/worker-run:$(
   "bash writer line"
 assert_eq "other:probe.sh bin/worker-run:12" "$(jq -r 'select(.limit == "other:probe.sh") | "\(.limit) \(.where)"' "$WORK/hits.jsonl")"
 
+# A `file:VAR:-default` anchor holds a colon of its own: the file ends at the first colon.
+( . "$ROOT/share/limit-hit.sh"; LIMIT_HITS_LOG="$WORK/colon.jsonl" limit_hit colon.sh 10 count retry-exhausted x 'bin/claudeb:CLAUDEB_LOCK_RETRIES:-10' )
+LIMIT_HITS_LOG="$WORK/colon.jsonl" python3 "$ROOT/share/limit_hit.py" colon.py 10 count retry-exhausted x 'bin/claudeb:CLAUDEB_LOCK_RETRIES:-10'
+n=$(anchor_line bin/claudeb 'CLAUDEB_LOCK_RETRIES:-10')
+assert_eq "bin/claudeb:$n bin/claudeb:$n" "$(jq -r .where "$WORK/colon.jsonl" | paste -sd' ' -)" "file:VAR:-default anchor resolves in both writers"
+
 long=$(printf 'ж%.0s' $(seq 1 5000))
 LIMIT_HITS_LOG="$WORK/long.jsonl" python3 "$ROOT/share/limit_hit.py" long.py 1 s kill "$long" bin/claudeb:1
 ( . "$ROOT/share/limit-hit.sh"; LIMIT_HITS_LOG="$WORK/long.jsonl" limit_hit long.sh 1 s kill "$long" bin/claudeb:1 )

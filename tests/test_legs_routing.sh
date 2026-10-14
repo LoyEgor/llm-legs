@@ -150,7 +150,8 @@ for spec in \
       assert grep -q $'^claudeb\tprofile\tclaude-worker\t-p\troute claude\t' "$CALL_LOG"
       assert grep -q $'\t--safe-mode\t--disable-slash-commands\t--tools\t\t' "$CALL_LOG"
       assert test "$(grep -c -- '--allowedTools' "$CALL_LOG")" -eq 0
-      assert test "$(basename "$(cat "$CALL_LOG.cwd")")" = llm-legs-stub ;;
+      assert test -n "$(cat "$CALL_LOG.cwd")"
+      assert test ! -e "$(cat "$CALL_LOG.cwd")" ;;  # a fresh per-call cwd, gone after the call
   esac
   assert grep -q "args=--account $leg" "$PICK_LOG"
   assert grep -q -- "--role reviewers$" "$PICK_LOG"
