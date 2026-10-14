@@ -2911,20 +2911,20 @@
   {
    "id": "suite:llm-legs/test_statusline_hooks",
    "title": "llm-legs/test_statusline_hooks",
-   "audited_at": "2026-10-13T12:03:56+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261012T235259Z-64f2",
-   "cpu_run": 110.9,
-   "wall_run": 39.2,
-   "cpu_min_day": 100.58,
-   "wall_min_day": 105.29,
+   "audited_at": "2026-10-14T08:05:10+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
+   "cpu_run": 103.5,
+   "wall_run": 33.3,
+   "cpu_min_day": 103.45,
+   "wall_min_day": 46.73,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
     "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
-    "llm-legs/tests/test_statusline_hooks.sh": "2be417e6a227cb958b320113a3c9c6d431b3cdc9"
+    "llm-legs/tests/test_statusline_hooks.sh": "c4a75057e4d019d0a73f1c4a3a37e636f7f4190e"
    },
    "verdict": "kept",
-   "zero": "removal saves 33.8 wall-min/day; loses the statusline segment contract checks (1610 asserts)",
-   "note": "profile: 4407 jq 3221 grep 2030 git 2088 bash spawns over 4 shards; 31 sleeps are 0.05s polls and 0.2-0.3s negative waits a race check depends on; shards rebalanced in 17ad6614; no assert-neutral cut found"
+   "zero": "removal saves 41.1 wall-min/day; loses 1.7k asserts pinning the statusline render, workdir place journal, probes and launch gates",
+   "note": "shards balanced (100/116/112/102 s at load 148); the 342-render width sweep is 5 s of shard 3 (16-way parallel), not its critical path; heaviest blocks are product hook runs (place detector 132 workdir-hook calls 73 s); no assert-neutral cut"
   },
   {
    "id": "suite:llm-legs/test_codexb_models",
