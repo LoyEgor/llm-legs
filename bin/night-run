@@ -1668,6 +1668,7 @@ cmd_latest() {
         .ref | flat)\t\(.kind)\t\(if unfinished and ($t.running | not) then 1 else 0 end)\t\(.direction // "")")' \
     "$(night_file "$id")" || return
   python3 -B "$repo_root/share/handoffs.py" --night "$(night_file "$id")" 2>/dev/null || true
+  python3 -B "$repo_root/share/time_budget.py" speed "$repo_root/bin/worker-run" "$(night_file "$id")" 2>/dev/null || true
 }
 
 orchestrator_moved() { # id session -> true once the night has another orchestrator or is finished

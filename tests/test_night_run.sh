@@ -1293,10 +1293,10 @@ assert [ "$(head -1 "$WORK/table-block" | wc -w | tr -d ' ')" = 6 ]
 assert grep -qxE 'suites ✓/✗ +– +– +15/1' "$WORK/table-block"
 assert_fails grep -qE '[0-9a-f]{7,}' "$WORK/table-block"
 assert [ "$(body "$WORK/table-report" | head -1)" = "duration · 05 Feb 00:00 – 05 Feb 03:30 · 3.5 h" ]
-# Behind the table, the per-direction block: open P1, P2, closed tonight, share of fixer spend, nights to plateau.
+# Behind the table, the per-direction block: P1, P2, P3 jobs done/total, share of fixer spend, nights to plateau.
 sed '1,/^$/d' "$WORK/table-report" | sed '/^$/,$d' >"$WORK/ways-block"
-assert [ "$(cat "$WORK/ways-block")" = "          P1   P2   ✓   fixers   to plateau
-harness    –    –   1        –            –" ]
+assert [ "$(cat "$WORK/ways-block")" = "          P1      P2   P3   fixers   to plateau
+harness        ✓ 1/1             –            –" ]
 
 # Fixture night on the per-repository count: review-bench's review-anchors/review-debt and
 # claude-setup's span-off, from their checkouts (REVIEW_BENCH_ROOT, CLAUDE_SETUP_ROOT).

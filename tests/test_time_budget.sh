@@ -36,7 +36,7 @@ commit $((D0 + 900)) "Day work"
 echo "$REPO" >"$WORK/sweep-repos"
 
 asserts=$(python3 - "$ROOT" "$WORK" "$D0" "$JOB" <<'EOF'
-import json, os, shutil, subprocess, sys, time
+import contextlib, io, json, os, shutil, subprocess, sys, time
 
 root, work, D0, job = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
 sys.path.insert(0, os.path.join(root, "share"))
@@ -485,10 +485,7 @@ check(out[10:14] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.
       "the ROI ledger: each Speed or time fixer job with its spend, lines and the min/day its class lost less over "
       "up to 3 settled days after a full day of the change than before it; other fixers are no improvement: %s"
       % out[10:])
-check(out[14:] == ["Скорость", "  suite slot wait · +1.0 min/day", "  night · gained 1.0 min/day",
-                   "  last 2 nights · gained 1.0 min/day"],
-      "the report ends with the morning message's «Скорость» block, quoted as is: the night's measured gains from the "
-      "roi lines, the night's and the trend's totals, never a fixer's own words: %s" % out[14:])
+check(out[14:] == [], "the reported night's own fixes never reach the morning's «Скорость» block: %s" % out[14:])
 item = {"class": "suite_wait", "merged": True}
 check(T.saved_min_day(item, D0 + 11000, D0 + 86400 * 2.5) is None
       and T.saved_min_day(dict(item, **{"class": "slot"}), D0 + 11000, D0 + 86400 * 9) == 0.0
@@ -505,6 +502,46 @@ shown = T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, r
                                                                         **{"class": None})]}], D0 + 86400 * 2.5)
 check(shown[0] == "roi · r · harness total · 2.0M · +1/-1 lines · pending a full day",
       "an improvement whose class is None measures the harness total, never crashes the ROI lines: %s" % shown)
+early = {"id": "E1", "started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=1.0, lines=[1, 1])]}
+pend = {"id": "E2", "started": D0 + 86400 * 8, "hours": 3.0,
+        "improvements": [dict(item, ref="r2", spend_m=1.0, lines=[1, 1], **{"class": "slot"})]}
+tonight = {"id": "T", "started": D0 + 86400 * 8.5, "hours": 3.0,
+           "improvements": [dict(item, ref="r3", spend_m=1.0, lines=[1, 1], **{"class": "slot"})]}
+morning = lambda rows, at: T.speed_block(rows, at, (lambda v: (T.roi_lines(rows, at, verdicts=v), v)[1])({}))
+check(morning([early, tonight], D0 + 86400 * 9) == ["Скорость", "  10 Jan   +1.0 min/day   ✓ 1",
+                                                    "  7 d      +1.0 min/day   ✓ 1"]
+      and morning([early, pend, tonight], D0 + 86400 * 9) == ["Скорость", "  7 d   +1.0 min/day   ✓ 1"]
+      and morning([tonight], D0 + 86400 * 9) == [],
+      "the morning's «Скорость»: a row per earlier night whose proofs matured since the night before the reported one "
+      "closed, in min/day, then the trend's matured total; one matured before that close only counts in the total, "
+      "pending ones nowhere, the reported night never")
+verdict = lambda gain, proven, slower, pending=False: {"pending": pending, "gain": gain, "proven": proven, "slower": slower}
+check(T.speed_block([dict(early, improvements=[]), tonight], D0, {
+    "E1": {0: verdict(2.5, True, False), 1: verdict(-0.4, False, True), 2: verdict(9.0, True, False, True)},
+    "T": {0: verdict(30.0, True, False)}}) == ["Скорость", "  10 Jan   +2.1 min/day   ✓ 1   ! 1",
+                                              "  7 d      +2.1 min/day   ✓ 1   ! 1"],
+      "a night's row sums its matured fixes' min/day, counts ✓ proven and ! measured slower (regression rows)")
+nights_speed = os.path.join(work, "speed-nights")
+os.makedirs(nights_speed)
+json.dump({"id": "S1", "started_at": iso(D0), "finished_at": iso(D0 + 10800)}, open(os.path.join(nights_speed, "S1.json"), "w"))
+json.dump({"id": "S2", "started_at": iso(D0 + 86400)}, open(os.path.join(nights_speed, "S2.json"), "w"))
+kept = T.cached_row, T.now_s
+T.cached_row, T.now_s = (lambda worker_run, p: dict(early, id="S1")), (lambda: D0 + 86400 * 9)
+first = T.speed_row("/usr/bin/false", os.path.join(nights_speed, "S1.json"))
+printed = io.StringIO()
+with contextlib.redirect_stdout(printed):
+    T.main(["speed", "/usr/bin/false", os.path.join(nights_speed, "S1.json")])
+printed = printed.getvalue()
+T.cached_row = lambda worker_run, p: None
+again = T.speed_row("/usr/bin/false", os.path.join(nights_speed, "S1.json"))
+T.now_s = lambda: D0 + 86400 * 9 + T.SPEED_ROW_S
+later = T.speed_row("/usr/bin/false", os.path.join(nights_speed, "S1.json"))
+running_row = T.speed_row("/usr/bin/false", os.path.join(nights_speed, "S2.json"))
+T.cached_row, T.now_s = kept
+check(first == {"at": D0 + 86400 * 9, "items": 1, "gain": 1.0, "proven": 1, "slower": 0, "pending": 0}
+      and printed == "speed\t1.0\t1\t0\t0\n" and again == first and later["items"] == 0 and running_row is None,
+      "the menu's speed row of a finished night: min/day, proven, slower, pending of its fixes over its trend, read "
+      "again once SPEED_ROW_S passed, none while the night runs: %s %r" % (first, printed))
 L = D0 + 20 * 86400 + 43200
 for back in (1, 2, 3):
     T.write_json(T.day_cache_path(T.local_day(L - back * 86400)),
@@ -830,9 +867,10 @@ for run, ref in (("codex-%d-1-aaaa" % (D0 + 100), "harness-a"), ("codex-%d-2-bbb
             handle.write(body)
 way_night = {"id": "d2", "started_at": iso(D0), "finished_at": iso(D0 + 3600), "session": "dir-s",
              "backlog": {"open": {"tests": [2, 1], "speed": [0, 3]}}, "jobs": [
-                 {"kind": "fixer", "ref": "harness-a", "direction": "tests", "state": "merged"},
-                 {"kind": "fixer", "ref": "harness-c", "direction": "tests", "state": "nothing-to-do"},
-                 {"kind": "fixer", "ref": "speed-b", "direction": "speed", "state": "left"},
+                 {"kind": "fixer", "ref": "harness-a", "direction": "tests", "priority": "P1", "state": "merged"},
+                 {"kind": "fixer", "ref": "harness-c", "direction": "tests", "priority": "P3", "state": "nothing-to-do"},
+                 {"kind": "fixer", "ref": "harness-d", "direction": "tests", "priority": "P3", "state": "left"},
+                 {"kind": "fixer", "ref": "speed-b", "direction": "speed", "priority": "P2", "state": "left"},
                  {"kind": "vendor", "ref": "ev-1", "state": "merged"}]}
 spent = night_spend.spend(way_night, "/usr/bin/false")
 check(sorted(spent["refs"]) == ["harness-a", "speed-b"] and spent["refs"]["harness-a"] > 0,
@@ -849,10 +887,14 @@ check([T.plateau_nights("tests", rows(*d)) for d in (
 T.cached_row = lambda worker_run, path: {"directions": ways} if path.endswith("d2.json") else None
 json.dump(way_night, open(os.path.join(egor_nights, "d2.json"), "w"))
 block = T.direction_lines("/usr/bin/false", os.path.join(egor_nights, "d2.json"))
-check(block[0].split() == ["P1", "P2", "✓", "fixers", "to", "plateau"]
+check(block[0].split() == ["P1", "P2", "P3", "fixers", "to", "plateau"]
       and [l.split()[0] for l in block[1:]] == ["speed", "tests", "updater"]
-      and block[2].split() == ["tests", "2", "1", "2", "50", "%", "2"] and len({len(l) for l in block}) == 1,
-      "a row per direction with work, aligned, all-zero rows left out:\n" + "\n".join(block))
+      and block[1].split() == ["speed", "0/1", "50", "%", "–"] and block[1].index("0/1") + 1 == block[0].index("P2")
+      and block[2].index("1/2") + 1 == block[0].index("P3")
+      and block[2].split() == ["tests", "✓", "1/1", "1/2", "50", "%", "2"]
+      and block[3].split() == ["updater", "✓", "1/1", "0", "%", "0"] and len({len(l) for l in block}) == 1,
+      "a row per direction with jobs: done/total of its P1, P2, P3 jobs (a vendor job by its kind), ✓ once all are "
+      "done, blank for none, aligned:\n" + "\n".join(block))
 T.cached_row = kept_row
 
 # The improvement pool: the audit and harness ledgers and Speed's due selections and proofs, a row per class.

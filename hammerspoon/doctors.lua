@@ -502,6 +502,36 @@ local function directionRows(groups)
   return rows
 end
 
+local GREEN = style.tone(style.GREEN, false)
+local TONES = { [style.RED] = "r", [style.DIM_RED] = "d", [style.DIM] = "m", [GREEN] = "g" }
+local styledCache, styledCount = {}, 0
+
+local function styled(segments)
+  local key = {}
+  for index, segment in ipairs(segments) do key[index] = (TONES[segment[2]] or "-") .. segment[1] end
+  key = table.concat(key, "\0")
+  if styledCache[key] then return styledCache[key] end
+  local title
+  for _, segment in ipairs(segments) do
+    local text, tone = segment[1], segment[2]
+    local piece = tone == GREEN and hs.styledtext.new(text, { font = style.MONO, color = tone })
+      or infoTitle(text, tone == style.RED, tone == style.DIM or tone == style.DIM_RED, tone == style.DIM_RED)
+    title = title and title .. piece or piece
+  end
+  if styledCount >= 256 then styledCache, styledCount = {}, 0 end
+  styledCache[key], styledCount = title, styledCount + 1
+  return title
+end
+
+-- The night's landed fixes as their proofs mature: min/day gained, ✓ proven, red ! measured slower, → still pending.
+local function speedRow(speed)
+  local segments = { { string.format("%+.1f min/day", speed.gain), speed.gain > 0 and GREEN or nil } }
+  for _, part in ipairs({ { "✓", speed.proven }, { "!", speed.slower, style.RED }, { "→", speed.pending } }) do
+    if part[2] > 0 then segments[#segments + 1] = { "  " .. part[1] .. " " .. part[2], part[3] } end
+  end
+  return fitRow({ title = styled(segments), disabled = true })
+end
+
 local function nightEntry()
   local jobs, groups, byWay, resumable, others = {}, {}, {}, 0, 0
   local idle = not night.running and not running(fixTasks.night)
@@ -538,6 +568,10 @@ local function nightEntry()
     jobs[#jobs + 1] = { title = infoTitle(others > 0 and "Continue unfinished (" .. plural(others, "job") .. ") + cleanup"
       or "Continue the unfinished cleanup"), fn = function() M.resumeNight(nil) end }
   end
+  if night.speed then
+    if #jobs > 0 then table.insert(jobs, 1, { title = "-" }) end
+    table.insert(jobs, 1, speedRow(night.speed))
+  end
   return { title = infoTitle(night.text, night.red, night.quiet), menu = #jobs > 0 and jobs or nil,
     disabled = #jobs == 0 or nil, problems = 0 }
 end
@@ -550,11 +584,14 @@ function M.refreshNight()
     local lines = {}
     for line in (code == 0 and stdout or ""):gmatch("[^\n]+") do lines[#lines + 1] = line end
     local text, tone, busy, id = (lines[1] or ""):match("^([^\t]*)\t([012])\t?([01]?)\t?([^\t]*)")
-    local jobs, handoffs = {}, {}
+    local jobs, handoffs, speed = {}, {}, nil
     for index = 2, #lines do
       local fields = {}
       for field in (lines[index] .. "\t"):gmatch("([^\t]*)\t") do fields[#fields + 1] = field end
-      if fields[1] == "handoff" and #fields >= 4 then
+      if fields[1] == "speed" and #fields >= 5 and tonumber(fields[2]) then
+        speed = { gain = tonumber(fields[2]), proven = tonumber(fields[3]) or 0, slower = tonumber(fields[4]) or 0,
+          pending = tonumber(fields[5]) or 0 }
+      elseif fields[1] == "handoff" and #fields >= 4 then
         handoffs[#handoffs + 1] = { phase = fields[2], title = fields[3], path = fields[4] }
       elseif fields[2] == "0" or fields[2] == "1" or fields[2] == "2" then
         jobs[#jobs + 1] = { text = fields[1], red = fields[2] == "1", quiet = fields[2] == "0", detail = fields[3] or "",
@@ -563,7 +600,7 @@ function M.refreshNight()
       end
     end
     night = { at = os.time(), text = text ~= "" and text or nil, red = tone == "1", quiet = tone == "0",
-      running = busy == "1", jobs = jobs, handoffs = handoffs, id = id ~= "" and id or nil }
+      running = busy == "1", jobs = jobs, handoffs = handoffs, speed = speed, id = id ~= "" and id or nil }
   end, { "latest", "--menu" })
   if not ok or not task then night.at = os.time() return end
   task:setEnvironment(limits.diagnosticsEnvironment())
@@ -854,27 +891,6 @@ local NAMES = { llm = "LLM doctor", harness = "Harness doctor", updater = "Updat
 
 local BARS = { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" }
 local MISSING = "–"
-
-local GREEN = style.tone(style.GREEN, false)
-local TONES = { [style.RED] = "r", [style.DIM_RED] = "d", [style.DIM] = "m", [GREEN] = "g" }
-local styledCache, styledCount = {}, 0
-
-local function styled(segments)
-  local key = {}
-  for index, segment in ipairs(segments) do key[index] = (TONES[segment[2]] or "-") .. segment[1] end
-  key = table.concat(key, "\0")
-  if styledCache[key] then return styledCache[key] end
-  local title
-  for _, segment in ipairs(segments) do
-    local text, tone = segment[1], segment[2]
-    local piece = tone == GREEN and hs.styledtext.new(text, { font = style.MONO, color = tone })
-      or infoTitle(text, tone == style.RED, tone == style.DIM or tone == style.DIM_RED, tone == style.DIM_RED)
-    title = title and title .. piece or piece
-  end
-  if styledCount >= 256 then styledCache, styledCount = {}, 0 end
-  styledCache[key], styledCount = title, styledCount + 1
-  return title
-end
 
 local function rounded(value) return string.format("%d", math.floor(value + 0.5)) end
 local function ratio(value)

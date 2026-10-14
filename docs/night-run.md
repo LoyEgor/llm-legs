@@ -240,35 +240,34 @@ N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
   that fails stays `left`, and a later Cleanup takes it like any other night branch.
 
 `night-run survey [--post] [<repo>...]` is the sweep's opening report (repositories default to the sweep
-list; a name resolves through it, a path need not be in it). Per repository `<name> · debt N lines/M
+list). Per repository `<name> · debt N lines/M
 files · due D lines/E files · K dirty · whole|N chunks`, then per linked worktree `  <branch> · +ahead/-behind main · K dirty ·
 debt N · take|keep|drop (<reason>)`, closing `total · …`. Debt and the chunk column come from one `review-bench
 review --debt --repo <A> … --tier T2 --price`, the due part (stable or critical, what the bugs round
 reads) from the same with `--due` (launches nothing; a checkout it does not list owes 0, a
-failed price prints `?`); keep is `live` or `held` by the same predicate as `leftovers`, for a
-repository outside the sweep list too. `--post` sends the same lines as one report-bus `notice` block
-(word `survey`), so the sweep's messages carry facts printed by the machine.
+failed price prints `?`); keep is `live` or `held` by the same predicate as `leftovers`. `--post` sends the same
+lines as one report-bus `notice` block (word `survey`).
 
-`night-run report [<id>] [--post]` prints it narrowly. First the morning numbers blocks, each closed by a blank line, no
+`night-run report [<id>] [--post]` prints it. First the morning numbers blocks, each closed by a blank line, no
 ids or chat names, `–` for no source; `--post` sends each to the chat as a report-bus `notice` block instead:
 - `time_budget.py table` (word `night · <date>`): this night and the two previous finished nights with jobs,
-  oldest left, local dates as heads (with the time when two share one). Rows: duration;
+  oldest left, local dates as heads (with the time if two share one). Rows: duration;
   Opus-eq spend in total and by fixers / reviews / orchestrator; merged, left jobs; `needs Egor`, every open trade
   to him once (`handoffs.py --trades`: unanswered blocked-on-egor jobs, handoffs whose Status reads trade, audit rows
   with verdict `trade`, doctor rows with `needs_egor`; rows naming one handoff are one, a settled one none), stored
   at the close; worker runs, wall, model share, slot queue, own tests; problems per doctor; job lines; week-old
   rewrites; suites ✓/✗.
-- `time_budget.py directions` (`night · directions`): per direction open P1, P2 at the close, ✓ jobs landed or ruled
-  out, % of fixer spend (runs by night worktree), nights to plateau (open / closed a night over the nights that
-  recorded it, `–` once grown or none closed); all-zero rows left out; kept in the ledger row's `directions`.
+- `time_budget.py directions` (`night · directions`): per direction its P1, P2, P3 jobs done/total (`✓` all done; class
+  as stamped, else its kind's), % of fixer spend (runs by night worktree), nights to plateau (open P1+P2 at the close /
+  closed a night, `–` once grown or none closed; the ledger row's `directions`); rows without jobs or spend left out.
 - `time_budget.py pool` (`night · improvement pool`): open, done, proven, kept, trade per class, totals last: spend,
   suite, cpu (audit ledger, Speed's due selections and proofs), harness, logs (harness ledger).
 
-Then `share/night_spend.py`'s header: duration; jobs landed / left / other by kind; the worker runs the
-orchestrator sessions launched in the window, by vendor/served model, with wall hours; the session's review rounds;
+Then `share/night_spend.py`'s header: duration; jobs by state and kind; the worker runs the
+orchestrator sessions launched in the window, by vendor/served model, with wall hours; the review rounds;
 spend of fixers, reviews and orchestrator in Opus-eq by model against the newest earlier finished night, priced by
 token-map's `tokenmap/pricing.py` (`TOKENMAP_ROOT`; absent, the report fails), Opus input = 1, from each run's
-transcript (a message once across a RESUME), the benches' usage journals and the orchestrator transcript in the window. Then a line per job and the
+transcript (a message once across a RESUME), the benches' usage journals and the orchestrator transcript. Then a line per job and the
 totals; a job with commits shows `code +A/-R` (test paths `tests/`, `test_*` left out), `code ?` when a commit is
 unreadable. Then `debt now` per sweep repository: `review-debt --repo --split` (`NIGHT_RUN_REVIEW_DEBT`), whole and
 due, `unknown` when unreadable.
@@ -278,20 +277,23 @@ problems touched again without proof and regressions against `doctor_problems_be
 leaving every decided problem unproven; lines deleted tonight written in the prior 7 days.
 
 Last, `share/time_budget.py night`'s ledger: one line for the night (duration; worker wall from each run's
-`pid_started_at`, never the restamped `started_at`, split into model, slot queue and own suites; code and test lines
+`pid_started_at`, split into model, slot queue and own suites; code and test lines
 of the job commits and of other commits on the sweep HEADs in the window; week-old rewrites; problems before → after,
-proved, regressed, touched again without proof; spend and what was deferred), then a trend line per night for the
-last 7, oldest first, and their problem direction. A finished night's row is cached in
-`${DOCTORS_DIR}/night-ledger/<id>.json` (outliving 7-day runs and 8-day events); one without `spend_unit` `Opus-eq`
-is re-priced live once, one without `directions` gains them once. The `roi ·` lines close it: each improvement job (a
-fixer on a Speed or time row) as what · spend · lines · before → after unit · verdict · gain a day, then the night's
-and the trend's totals (`docs/speed-doctor-design.md` §3 ROI).
+proved, regressed, touched again without proof; spend, what was deferred), then a trend line per night for the
+last 7 and their problem direction. A finished night's row is cached in
+`${DOCTORS_DIR}/night-ledger/<id>.json` (outlives runs and events); one without `spend_unit` `Opus-eq`
+is re-priced live once, one without `directions` gains them once. Then the `roi ·` lines: per improvement job (a
+fixer on a Speed or time row) what · spend · lines · before → after unit · verdict · gain a day, the night's and the
+trend's totals (`docs/speed-doctor-design.md` §3 ROI). Last the morning's «Скорость»: per earlier night the proofs
+matured since the night before closed (date, min/day incl. suite-min, ✓ proven, ! slower = regression rows), then
+the 7-night total.
 
 The Doctors menu's last-night row comes from `night-run latest --menu`, e.g. `Last night 30 Sep: 11 of 13 · 2
-unfinished`; its submenu: `✓ done`, `→ queued`, red `! To: Egor` handoff rows with a count, each title one level
-down to its doc (`handoffs.py --night`: carried handoffs by Status, open ones, trades), then a row per job direction
-with `✓ → !` job counts (red first, then owing), its jobs and their reasons below.
-Color is the state: done and pushed is a dim name, owing work (unfinished, in progress, not pushed) plain with its
-word, red only where Egor is needed (blocked on him, failed launch). Output: `text\ttone\trunning\tid`, then
+unfinished`; its submenu: once finished, the night's fixes as proofs mature (`time_budget.py speed`, hourly:
+min/day, ✓ proven, red ! slower, → pending), `✓ done`, `→ queued`, red `! To: Egor` handoff rows with a count, each
+title down to its doc (`handoffs.py --night`), then a row per job direction with `✓ → !` job counts (red first, then
+owing), its jobs and reasons below.
+Color is the state: done and pushed is a dim name, owing work plain with its word, red only where Egor is needed
+(blocked on him, failed launch). Output: `text\ttone\trunning\tid`, then
 `text\ttone\treason\tref\tkind\tresumable\tdirection` per job (`tone` 0 dim, 2 plain, 1 red; `resumable` 1 for an
-unfinished job of a night not running), then `handoff\tphase\ttitle\tpath` per handoff.
+unfinished job of a night not running), `handoff\tphase\ttitle\tpath` per handoff, `speed\tmin/day\t✓\t!\t→`.

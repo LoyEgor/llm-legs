@@ -1000,6 +1000,24 @@ do
   check(table.concat(speed, "|") == "Harness fixer: b · unfinished|Harness fixer: a|Harness fixer: c",
     "a direction's jobs, owing ones first: " .. table.concat(speed, "|"))
 end
+-- The night's speed row first: its fixes' min/day GREEN once gained, ✓ proven, red ! slower, → still pending.
+do
+  doctors.refreshNight()
+  tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 1\t0\t0\tn-1\nHarness fixer: a\t0\t\th-a\tfixer\t0\tspeed\n"
+    .. "speed\t2.5\t3\t1\t4\n")
+  local rows = doctors.menuItems()[8].menu or {}
+  local first = rows[1] or {}
+  local runs = first.title and first.title:asTable() or {}
+  check(#rows == 3 and text(first.title) == "+2.5 min/day  ✓ 3  ! 1  → 4" and first.disabled and rows[2].title == "-"
+    and text(rows[3].title) == "speed  ✓ 1" and runs[2].attributes.color.green > 0.6 and not runs[3].attributes.color
+    and red(first.title:sub(runs[4].starts)) and not runs[5].attributes.color and allMenlo({ first }),
+    "the speed row heads the night: " .. text(first.title or ""))
+  doctors.refreshNight()
+  tasks[#tasks]:finish(0, "Last night 30 Sep: 0 of 0\t0\t0\tn-1\nspeed\t0.0\t0\t0\t7\n")
+  local only = doctors.menuItems()[8]
+  check(only and not only.disabled and #(only.menu or {}) == 1 and text(only.menu[1].title) == "+0.0 min/day  → 7"
+    and colorAt(only.menu[1].title, 1) == nil, "a night whose proofs all pend: plain zero and the pending count")
+end
 
 -- Run everything: bin/night-run start behind a confirmation; off while a night runs.
 items = doctors.menuItems()

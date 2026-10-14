@@ -318,17 +318,15 @@ code = dict(item, files=[["alpha", "tests/test_mid.sh"]])
 slow_night = [(night_file, dict(night, id="n-slow", improvements=[code, dict(code, ref="night-m", files=[["alpha", "a.md"]])]))]
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)])
 slow = time_budget.slower_fixes(slow_night, NOW + 600)
-slow_wins, won = [], []
-time_budget.roi_lines([slow_night[0][1]], NOW + 600, wins=slow_wins)
+slow_wins, won = {}, {}
+time_budget.roi_lines([slow_night[0][1]], NOW + 600, verdicts=slow_wins)
 save(journal + later)
-time_budget.roi_lines([dict(night, improvements=[item, dict(item, ref="night-m", files=[["alpha", "a.md"]])])], NOW + 600,
-                      wins=won)
-check(slow_wins == ["alpha/test_mid · 20 → 30 wall-s/run · slower: a regression row next night",
-                    "night · gained 0.0 min/day", "last 1 nights · gained 0.0 min/day"]
-      and won == ["alpha/test_mid · 20 → 8.0 wall-s/run · +0.3 suite-min/day",
-                  "night · gained 0.0 min/day · 0.3 suite-min/day", "last 1 nights · gained 0.0 min/day · 0.3 suite-min/day"],
-      "the «Скорость» lines are the roi lines' own measures: a proven gain with its span, a fix measured slower named "
-      "as such, a measurement fix never: %s %s" % (slow_wins, won))
+time_budget.roi_lines([dict(night, id="n-won", improvements=[item, dict(item, ref="night-m", files=[["alpha", "a.md"]])])],
+                      NOW + 600, verdicts=won)
+check(slow_wins == {"n-slow": {0: {"pending": False, "gain": 0.0, "proven": False, "slower": True}}}
+      and won == {"n-won": {0: {"pending": False, "gain": 0.3, "proven": True, "slower": False}}},
+      "the «Скорость» verdicts are the roi lines' own measures: a proven gain in its daily measure, a fix measured "
+      "slower as such, a measurement fix never: %s %s" % (slow_wins, won))
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)])
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)] + busy)
 check(slow == [{"ref": "night-x", "night": "n-slow", "ids": ["test_slow:alpha:test_mid"], "loss": 0.2,
