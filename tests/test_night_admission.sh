@@ -134,6 +134,7 @@ assert jqe '.state == "pending" and .admission.state == "deferred"' <<<"$(job f-
 # A lens coverage slice is a P3 job of its lens's direction, admitted the same way.
 night job "$id" add coverage coverage-legacy-1 >/dev/null || fail "job add coverage"
 assert jqe '.priority == "P3" and .direction == "legacy"' <<<"$(job coverage-legacy-1)"
+assert [ "$(python3 -B "$ROOT/share/night_priority.py" job coverage coverage-tests-1 | jq -c '[.direction, .priority]')" = '["tests","P3"]' ]
 rc=0; night admit "$id" coverage-legacy-1 claudeb "$LIVE" >/dev/null 2>&1 || rc=$?
 assert test "$rc" -eq 3
 limits 0 10 1

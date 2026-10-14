@@ -1,5 +1,5 @@
-"""The mechanical header of `night-run report`: duration, jobs, worker runs, review rounds and token
-spend by kind and model in Opus-equivalent tokens, the total compared against the previous finished night.
+"""The mechanical header of `night-run report`: duration, jobs, worker runs, review rounds (each tests round's fix
+line), token spend by kind and model in Opus-equivalent tokens, the total compared against the previous finished night.
 
 A usage Counter maps a model label (Claude family or vendor) to Opus-eq tokens, priced by token-map's
 `tokenmap/pricing.py` the way its menu weighs a model: one Opus input token is 1.
@@ -323,6 +323,17 @@ def night_benches(low, high, sessions):
         yield bench
 
 
+def tests_round_lines(low, high, sessions):
+    """`tests round · <id> · <its fix>` per tests-lens round of the night: review-bench's `report --line fix`."""
+    for bench in night_benches(low, high, sessions):
+        if (read_json(f"{bench}/meta.json") or {}).get("lens") != "tests":
+            continue
+        name = os.path.basename(bench)
+        proc = subprocess.run(["review-bench", "report", name, "--line", "fix"], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL)
+        yield f"tests round · {proc.stdout.strip() if proc.returncode == 0 else name + ' · no fix line'}"
+
+
 def spend(night, worker_run):
     global all_opus
     all_opus = 0.0
@@ -520,6 +531,8 @@ def main():
           + (" (" + ", ".join(f"{n} {model}" for model, n in sorted(now["models"].items())) + ")" if now["models"] else "")
           + f" · {now['hours']:.1f} h wall-clock" + (f" · {now['blind']} without a transcript" if now["blind"] else ""))
     print(f"review rounds · {now['rounds']}")
+    for line in tests_round_lines(*window(night)):
+        print(line)
     for kind, total in now["kinds"].items():
         print(f"spend {kind} · {mega(weighted(total))} {UNIT}{by_model(total)}")
     if now.get("walled"):

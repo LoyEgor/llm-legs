@@ -188,8 +188,8 @@ def job(kind, ref):
         way, level, value, unit, norm = run_job(ref)
     else:
         way, level = KINDS.get(kind, ("harness", "P2"))
-        if kind == "coverage" and ref.startswith("coverage-legacy"):
-            way = "legacy"
+        if kind == "coverage" and ref.startswith(("coverage-legacy", "coverage-tests")):
+            way = ref.split("-")[1]
         value, unit, norm = None, None, 1.0
     return {"direction": way, "priority": level,
             "value": {"n": value, "unit": unit, "norm": round(norm, 3)}}

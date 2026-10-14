@@ -83,7 +83,7 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
 4. **Per branch, as soon as its worker returns**: `docs/fix-orchestrator.md`, then `night-run job set …
    state=merged commits=… pushed=true`. No per-branch review (Egor, 2026-10-03: ~60% of a night's spend). Merges into main are serial and short; everything else is parallel.
 5. **Debt pass, after the landings** (the `debt` job, once no other job is `pending`): night-sweep
-   step 3 once — one fit round, one legacy round, then one bugs round, each ONE chunked round across all sweep
+   step 3 once — one fit, one legacy and one tests round, then one bugs round, each ONE chunked round across all sweep
    repositories, over the press-time debt plus everything the night landed — then one fix pass, the
    commit and push, and the recount. The 150-line floor stays: a round review-bench refuses is skipped.
 6. **No deadline** (Egor, 2026-09-30: a 4 h deadline left a debt round's findings unfixed till noon).
@@ -113,7 +113,7 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
   median night-run tokens × 10 % per 1M); running Claude fixers hold at most the pool's 5h room. A P3 runs only from
   weekly room its burn leaves unused at reset (≥ 5 %), else it ends unlaunched (`admission.deferred`, job `pending`,
   no hold on the debt pass, `finish` keeps the reason). Waits are `night-admission` holds. A `coverage` job
-  (`coverage-<fit|legacy>-<n>`, P3) is one `review-bench review --debt --lens <l> --coverage … --foreground`
+  (`coverage-<fit|legacy|tests>-<n>`, P3, the lens's direction) is one `review-bench review --debt --lens <l> --coverage … --foreground`
   slice: `night-run admit <id> <ref> claudeb $$ && …`.
 - Plateau: the P1+P2 backlog at zero (`night_priority.py backlog`, table row `P1+P2`); P3 never counts.
 - `spend on walls` (report, table row `on walls`, Harness `night_walled` red > 5 %): fixer spend in walled runs.

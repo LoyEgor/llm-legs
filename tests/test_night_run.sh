@@ -49,6 +49,7 @@ cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" != review ] || { printf '%s\n' "$*" >>"$DATA/price-args"
   case " $* " in *' --due '*) cat "$DATA/price-due" >&2 ;; *) cat "$DATA/price" >&2 ;; esac; exit 0; }
+[ "$1 $3 $4" != "report --line fix" ] || { printf '%s · -12 test lines\n' "$2"; exit 0; }
 exit 2
 EOF
 chmod +x "$FAKE_BIN"/*
@@ -1029,7 +1030,7 @@ printf '%s\n' "$row" >"$B/claude-usage-opus-high~c0~a1.jsonl"
 printf '{"id": "j1", "model": "claude-sonnet-5", "cache_read": 5000000, "output": 400000}\n' >"$B/claude-usage-judge~b1.jsonl"
 printf '{"model": "opus", "total_tokens": 5400000}\n' >"$B/usage-judge~b1.jsonl"
 printf '{"model": "opus", "total_tokens": 5400000}\n' >"$B/usage-judge.jsonl"
-bench 20260102T010000Z-2222222 '{}'
+bench 20260102T010000Z-2222222 '{"lens": "tests"}'
 printf '{"model": "opus", "total_tokens": 3000000}\n' >"$SP/stats/benches/20260102T010000Z-2222222/usage-judge.jsonl"
 bench 20260102T011500Z-3333333 '{"session": "S2"}'
 printf '%s\n' "$row" >"$SP/stats/benches/20260102T011500Z-3333333/claude-usage-x.jsonl"
@@ -1039,10 +1040,11 @@ TZ=UTC DOCTORS_DIR="$SP/doctors" WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT
   WORKER_STATS_DIR="$SP/stats" CODEX_PROFILES_DIR="$SP/codex" CHAT_NAME_ROOTS="$SP/profiles/p2/projects:$SP/profiles/p1/projects" \
   CHAT_NAMES_CACHE="$SP/chat-names.json" night report 20260102T000000Z-bbbb >"$WORK/spend-report" ||
   fail "spend report"
-assert [ "$(body "$WORK/spend-report" | head -8)" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
+assert [ "$(body "$WORK/spend-report" | head -9)" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
 jobs · landed 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
 agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 3.0 h wall-clock · 1 without a transcript
 review rounds · 2
+tests round · 20260102T010000Z-2222222 · -12 test lines
 spend fixers · 11.2M Opus-eq (opus 8.0M · codex 3.2M)
 spend reviews · 11.8M Opus-eq (opus 10.5M · sonnet 1.2M)
 spend orchestrator · 1.6M Opus-eq (opus 1.5M · haiku 0.1M)
@@ -1439,11 +1441,12 @@ rm "$DATA/bus-docs" "$DATA/bus-args"
 # What each sweep lens has not read sits beside the debt, never added into it.
 cat >"$FAKE_BIN/review-debt" <<'EOF'
 #!/usr/bin/env bash
+[ "$4" = tests ] && echo "LENS=tests CHANGED_LINES=5 CHANGED_FILES=1 COVERAGE_LINES=80 COVERAGE_FILES=3" && exit
 [ "$4" = fit ] && echo "LENS=fit CHANGED_LINES=60 CHANGED_FILES=2 COVERAGE_LINES=900 COVERAGE_FILES=7" || exit 2
 EOF
 chmod +x "$FAKE_BIN/review-debt"
 assert [ "$(NIGHT_RUN_REVIEW_DEBT="$FAKE_BIN/review-debt" night survey "$SV/repo" | sed -n '1p;$p')" = \
-  "repo · debt 40 lines/3 files · due 30 lines/1 files · fit changed 60 lines/2 files · coverage 900 lines/7 files · 1 dirty · 2 chunks
+  "repo · debt 40 lines/3 files · due 30 lines/1 files · fit changed 60 lines/2 files · coverage 900 lines/7 files · tests changed 5 lines/1 files · coverage 80 lines/3 files · 1 dirty · 2 chunks
 total · debt 52 lines/4 files · due 30 lines/1 files · 3 dirty · 2 chunks" ]
 # A repository's bin/night-snapshot runs before it is surveyed; a failing one is named, not fatal.
 git init -q -b main "$SV/snap" && mkdir "$SV/snap/bin"

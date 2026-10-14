@@ -79,7 +79,7 @@ report opens with share/time_budget.py's comparison table: this night and the tw
   nights with jobs, a column each, oldest left, facts only, – where a value has no source, a blank line
   after it, then its per-direction (P1, P2, closed, fixer spend, nights to plateau) and improvement-pool
   blocks; then share/night_spend.py's header: duration, jobs, the orchestrator's worker runs and
-  hours, its review rounds, token spend of fixers, reviews and orchestrator in Opus-equivalent tokens
+  hours, its review rounds (a tests round: review-bench report --line fix), token spend of fixers, reviews and orchestrator in Opus-equivalent tokens
   by model, priced by token-map's pricing.py (TOKENMAP_ROOT), against the previous finished night;
   then share/night_churn.py's churn, the jobs, and last share/time_budget.py's ledger (worker wall split
   into model, slot queue and own tests; lines by jobs and outside them; problems; spend and what was
@@ -88,7 +88,7 @@ report opens with share/time_budget.py's comparison table: this night and the tw
 survey: the sweep's opening report, default the sweep repositories, each repository's executable
   bin/night-snapshot run first (it copies into the tree what lives outside it, for the night's commit; a
   failure is named and the survey goes on): per repository `<name> · debt N
-  lines/M files · due D lines/E files · fit|legacy changed U lines/F files · coverage C lines/G files · K dirty ·
+  lines/M files · due D lines/E files · fit|legacy|tests changed U lines/F files · coverage C lines/G files · K dirty ·
   whole|N chunks` (review-bench review --debt [--due] … --tier T2 --price; due = stable or critical, what the
   bugs round reads; changed and coverage = review-debt --lens, what that lens's round and its --coverage
   slices read, never in the debt), per linked
@@ -1364,7 +1364,7 @@ price_of() { # price-rows path -> lines<TAB>files<TAB>cut, ? when the review cou
 lens_unread() { # repo -> ` · <lens> changed N lines/M files · coverage C lines/D files` per sweep lens, apart from the debt
   local debt="${NIGHT_RUN_REVIEW_DEBT:-$HOME/.local/bin/review-debt}" lens row
   [ -x "$debt" ] || return 0
-  for lens in fit legacy; do
+  for lens in fit legacy tests; do
     row=$("$debt" --repo "$1" --lens "$lens" </dev/null 2>/dev/null) || continue
     [[ "$row" =~ ^LENS=$lens\ CHANGED_LINES=([0-9]+)\ CHANGED_FILES=([0-9]+)\ COVERAGE_LINES=([0-9]+)\ COVERAGE_FILES=([0-9]+)$ ]] &&
       printf ' · %s changed %s lines/%s files · coverage %s lines/%s files' "$lens" "${BASH_REMATCH[@]:1:4}"
