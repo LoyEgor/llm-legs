@@ -2161,8 +2161,9 @@ def guard(path):
         assert set(r["same_cause"]) <= set(ids), r["id"]
         if r["status"] in ("fixed", "fixed-pending"):
             assert r["fixes"], "a fixed row names its fix: %s" % r["id"]
+        adhoc = r["match"]["rule"] == "opportunity" and r["match"]["ident"].startswith("adhoc/")
         for i, fix in enumerate(r["fixes"]):
-            assert set(fix) - {"equivalence"} == FIX_KEYS and fix["files"], r["id"]
+            assert set(fix) - {"equivalence"} - ({"bench"} if adhoc else set()) == FIX_KEYS and fix["files"], r["id"]
             assert "equivalence" not in fix or equivalent(fix), r["id"]
             assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
             assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
@@ -2195,7 +2196,10 @@ jq '.rows = [{id: "refixed", title: "t", match: {rule: "floor", ident: "bash:ref
   "$ROOT/share/harness-ledger.json" > "$WORK/refixed.json"
 jq '.rows[0].fixes[1].equivalence = {compared: "c", data: "d", result: "r"}' "$WORK/refixed.json" > "$WORK/proved.json"
 jq '.rows[0].fixes[1].equivalence = {compared: "c", data: "d"}' "$WORK/refixed.json" > "$WORK/unproved.json"
-guards=$(ledger_guard "$ROOT/share/harness-ledger.json" "$WORK/refixed.json" "$WORK/proved.json" "$WORK/unproved.json")
+jq '.rows[0].fixes[1].bench = {command: "x"}' "$WORK/refixed.json" > "$WORK/benched-floor.json"
+jq '.rows[0].match = {rule: "opportunity", ident: "adhoc/x"}' "$WORK/benched-floor.json" > "$WORK/benched-adhoc.json"
+guards=$(ledger_guard "$ROOT/share/harness-ledger.json" "$WORK/refixed.json" "$WORK/proved.json" "$WORK/unproved.json" \
+  "$WORK/benched-adhoc.json" "$WORK/benched-floor.json")
 guarded() { sed -n "$1p" <<<"$guards"; }
 [ "$(guarded 1)" = ok ] || fail "the ledger breaks a contract guard: $(guarded 1)"
 asserts=$((asserts + 1))
@@ -2204,6 +2208,10 @@ asserts=$((asserts + 1))
 [ "$(guarded 3)" = ok ] || fail "the ledger guard fails a Speed fix carrying its output-equivalence proof"
 asserts=$((asserts + 1))
 [[ "$(guarded 4)" == broken:* ]] || fail "the ledger guard takes an equivalence proof with no result"
+asserts=$((asserts + 1))
+[ "$(guarded 5)" = ok ] || fail "the ledger guard fails an adhoc fix carrying its bench"
+asserts=$((asserts + 1))
+[[ "$(guarded 6)" == broken:* ]] || fail "the ledger guard takes a bench on a row that is no adhoc opportunity"
 asserts=$((asserts + 1))
 
 FIXTURE="$ROOT/tests/fixtures/harness-calibration"

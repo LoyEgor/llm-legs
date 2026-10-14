@@ -9675,6 +9675,41 @@
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
       "note": "Blind spot: two workers in the 05:44-06:34 load window on 10-13 got a login-only PATH (~/.zprofile's; /opt/homebrew/bin comes only from ~/.zshrc, so python3 was /usr/bin's 3.9), most likely a Claude Code shell snapshot that failed under load; nothing records a worker Bash's environment (blind spot worker-bash-env-unrecorded). One of them found and fixed a real 3.9 fromisoformat bug in the production /usr/bin/python3 fallback. The zsh-isms (==, unsplit lists) each cost one failed call, self-corrected (conduct).",
       "handoff": null
+    },
+    {
+      "id": "speed-adhoc-doctor-state",
+      "title": "Models write a jq or python script to look up problems in a doctor's latest.json",
+      "match": {
+        "rule": "opportunity",
+        "ident": "adhoc/doctor-state"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T06:10:00+03:00",
+          "by": "night 20261014T013750Z-8004 harness-speed-adhoc-logo-bench-20261014T021655Z-40b5",
+          "files": [
+            "llm-legs/bin/doctor-fix",
+            "llm-legs/docs/doctor-fix.md"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "bench": {
+            "command": "\\bdoctor-fix problems\\b",
+            "hint_b": 96,
+            "calls": "2026-10-13's problem lookups, verbatim, 2 jq and 2 python3 like the cluster's 29/25 mix, against today's ~/.cache/{harness,system}-doctor/latest.json (1.2 MB harness), 41 interleaved runs each: jq '.problems[] | select(.id|test(\"^opportunity:(time/refusal|chat/tests|delegation/reviews|refusal/)\"))' | head -200 (0.033 s 5402 B) vs problems harness <that regex> (0.036 s 1156 B); jq -c '.problems[] | select(.id|test(\"test-health/idle\")) | {id,state,ledger,value,limit,exposure,evidence}' | cut -c1-700 (0.033 s 1213 B) vs problems harness test-health/idle (0.035 s 2595 B); python3 json.dumps(p)[:1200] of ids with stall|limit (0.047 s 9056 B) vs problems harness 'stall|limit' (0.030 s 2599 B); python3 state/rule/label/fact of every system problem (0.035 s 4120 B) vs problems system . (0.018 s 4797 B). The subcommand answers before doctor-fix's main block in /bin/bash: under env and Homebrew bash it took 0.048-0.088 s",
+            "adhoc_wall_s": 0.034,
+            "adhoc_out_b": 4761,
+            "tool_wall_s": 0.033,
+            "tool_out_b": 2597
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-adhoc-logo-bench-20261014T021655Z-40b5",
+      "note": "2026-10-14: the command covers the cluster's lookups of problems by id (55 of 329 calls name latest.json and problems; 112 read the harness cache); the rest is research over the doctors' journals (system-doctor hours/ticks, harness hooks/waits/statusline tsv, collector-runs.jsonl), each a different question, left as scripts. A ledger lookup in the same shape (doctor-fix ledger <name> [regex]) was built and dropped: ledger-query's calls are 56 % bare jq on a 0.35-0.66 MB file, and any wrapper ran 3-5 ms over that median (0.034 vs 0.029 s at 41 runs), which bench_faults refuses.",
+      "handoff": null
     }
   ],
   "blind_spots": [

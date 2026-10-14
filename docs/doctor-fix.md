@@ -105,7 +105,7 @@ store growth.
 
 ### Read first, in this order
 
-1. `~/.cache/harness-doctor/latest.json`: `status`, `problems[]` (`id`, `rule`, `state`, `value`
+1. `~/.cache/harness-doctor/latest.json` (`bin/doctor-fix problems harness <id regex>`): `status`, `problems[]` (`id`, `rule`, `state`, `value`
    against `limit`, `exposure`, `evidence[].ref`), `blind_spots[]`, `self`. `status: error` means
    the collector failed: `self.error` names the exception and its line; fix that first.
 2. `share/harness-ledger.json`: the row named by a problem's `ledger` (the packet shows it).
@@ -268,7 +268,8 @@ to what the code does and says why the code stays; an overclaim fix makes the me
 Owner: `share/system-ledger.json` `owner`. Design: `docs/system-doctor-design.md`. Scope: problems whose
 top cause is an own script of the sweep repositories; Apple and third-party causes never reach you.
 
-- Read each problem's `fact` and `cause` in `~/.cache/system-doctor/latest.json`, its `causes`
+- Read each problem's `fact` and `cause` in `~/.cache/system-doctor/latest.json` (`bin/doctor-fix problems
+  system <id regex>`), its `causes`
   (births and CPU by script) and the packet's levers. Find what makes that script spawn or burn CPU.
 - The judge (`LIMITS`, `PROOF`, the ledger's dismissals, `tests/test_system_doctor.sh` pins) is not
   yours to loosen: a handoff to the owner.

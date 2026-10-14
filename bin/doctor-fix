@@ -1,4 +1,22 @@
-#!/usr/bin/env bash
+#!/bin/bash
+doctor_env() { # doctor -> REPLY: the env var of its state dir
+  case $1 in llm) REPLY=LLM_DOCTOR_DIR ;; harness) REPLY=HARNESS_DOCTOR_DIR ;; updater) REPLY=UPDATER_DOCTOR_DIR ;; code) REPLY=CODE_DOCTOR_DIR ;; system) REPLY=SYSTEM_DOCTOR_DIR ;; *) return 1 ;; esac
+}
+
+# problems answers here, in /bin/bash (7 ms to start against 23 for env and Homebrew's), before the block below,
+# which bash parses whole (~30 ms) before its first line: the lookup costs no more than the script it replaces.
+if [ "${1:-}" = problems ] && [ $# -ge 2 ] && [ $# -le 3 ] && doctor_env "$2"; then
+  rows_file=${!REPLY:-$HOME/.cache/$2-doctor}/latest.json
+  [ -f "$rows_file" ] || { printf 'doctor-fix: no %s\n' "$rows_file" >&2; exit 1; }
+  exec jq -r --arg re "${3:-}" '[(.problems // [])[], (.blind_spots // [])[] | select($re == "" or (.id | test($re)))]
+    | if length == 1 and $re != "" then .[0] | tojson
+      else .[] | [.id, .state // "blind spot", if $re == "" then empty else .fact // .what // "" end] | @tsv end' "$rows_file"
+fi
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$modern_bash" ] && exec "$modern_bash" "$0" "$@"
+  done
+fi
 {
 set -u
 
@@ -71,14 +89,9 @@ locked() { # command... -> runs it under the runs-dir lock
   return "$status"
 }
 
-doctor_env() { # doctor -> the env var of its state dir
-  case $1 in llm) printf 'LLM_DOCTOR_DIR' ;; harness) printf 'HARNESS_DOCTOR_DIR' ;; updater) printf 'UPDATER_DOCTOR_DIR' ;; code) printf 'CODE_DOCTOR_DIR' ;; system) printf 'SYSTEM_DOCTOR_DIR' ;; *) return 1 ;; esac
-}
-
 doc_path() { # doctor -> its latest.json
-  local var
-  var=$(doctor_env "$1") || return 1
-  printf '%s/latest.json\n' "${!var:-$HOME/.cache/$1-doctor}"
+  doctor_env "$1" || return 1
+  printf '%s/latest.json\n' "${!REPLY:-$HOME/.cache/$1-doctor}"
 }
 
 doc_judge() { jq -r '.judge // ""' "${2:-$(doc_path "$1")}" 2>/dev/null; }
@@ -1486,6 +1499,7 @@ usage: doctor-fix launch llm|harness|updater|code|system [--night <night-id>]
        doctor-fix launch all --night <night-id>   (every doctor in roster order; one that fails prints a line, the rest still launch)
        doctor-fix show <id>
        doctor-fix runs [llm|harness|updater|code|system] [--open] [--json]
+       doctor-fix problems llm|harness|updater|code|system [<id regex>]   (its latest.json problems and blind spots, id and state each; with a regex its fact too, one match whole as JSON)
        doctor-fix close <id> --decisions <file> <note...>   (reruns the doctor in the run's worktree)
        doctor-fix abandon <id> [--reason TEXT]
        doctor-fix lens-lines <ref>...   (the speed-lens launch line of each run whose brief reads ROUND: pending)
@@ -1506,6 +1520,7 @@ case "${1:-}" in
   record-close) record_close "${@:2}" ;;
   show) show_run "${2:-}" ;;
   runs) list_runs "${@:2}" ;;
+  problems) usage ;;
   close) close_run "${@:2}" ;;
   lens-lines) [ $# -ge 2 ] || usage; lens_lines "${@:2}" ;;
   lens-round) [ $# -eq 2 ] || usage; lens_round "$2" ;;
