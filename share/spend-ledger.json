@@ -1270,17 +1270,17 @@
   {
    "id": "cpu:doctor/llm",
    "title": "doctor/llm",
-   "audited_at": "2026-10-13T09:09:54+03:00",
-   "by": "harness-speed-cpu-doctor-llm-20261012T235029Z-047a",
-   "cpu_min_day": 3.3,
-   "cpu_s_run": 4.042,
-   "runs_day": 59,
+   "audited_at": "2026-10-14T08:37:46+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 3.5,
+   "cpu_s_run": 3.956,
+   "runs_day": 62,
    "sources": {
-    "llm-legs/bin/llm-doctor": "fccb7a8c0c4592fe6591a9ada9eab1a57ae2c7ec"
+    "llm-legs/bin/llm-doctor": "b7855566554b13b7f5b31d34635276d733dbca1a"
    },
-   "verdict": "cut",
-   "zero": "removal saves 3.3 CPU-min/day; loses the menubar LLM doctor row and the night's llm fixer packets (leg failures, weather blocks)",
-   "note": "runs on menu open (59/day, event-keyed already); 3.0 of 4 CPU-s were 186 git subprocesses re-proving landed fixes; landing and commit existence are memoised in fix-landings.json: 1.4 CPU-s per write run, problems identical on the same inputs"
+   "verdict": "kept",
+   "zero": "removal saves 3.5 CPU-min/day; loses the menubar LLM doctor row and the night's llm fixer packets (leg failures, weather blocks)",
+   "note": "profiled live (--json --dry-run): no function over 15% of the run, the cost is reading ~20000 bench-store files and 500k size comparisons in mark_slow; its landings memo is warm since 2026-10-13 (llm-doctor audit); a per-file parse cache would save ~1 CPU-min/day for a second state file to keep honest: left"
   },
   {
    "id": "cpu:process/claude",
@@ -1765,17 +1765,17 @@
   {
    "id": "cpu:hook/instruction-watch.sh",
    "title": "hook/instruction-watch.sh",
-   "audited_at": "2026-10-13T10:18:36+03:00",
-   "by": "harness-speed-cpu-statusline-ports-20261012T235115Z-60e6",
-   "cpu_min_day": 16.3,
-   "cpu_s_run": 0.119,
-   "runs_day": 6467,
+   "audited_at": "2026-10-14T08:37:05+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 19.8,
+   "cpu_s_run": 0.147,
+   "runs_day": 10081,
    "sources": {
-    "llm-legs/bin/instruction-watch.sh": "bba55ecd177bca9e8dece2ee8b17ade45fd9637b"
+    "llm-legs/bin/instruction-watch.sh": "20e7686c7925811b21cbab75a723e97415c7f72d"
    },
-   "verdict": "cut",
-   "zero": "removal saves 19.1 CPU-min/day; loses the tripwire that reports and puts back shell writes to instruction files, the only guard after the Edit/Write gate",
-   "note": "hit path (~20-115 ms) is the tripwire's own stat of every watched file and is kept; misses from ~/.claude moves (plugin sync renames, 240-400 ms, ~12% of checks) now revalidate one level instead of rebuilding: 310->151 ms on a forced move, identical watched set; an FSEvents watcher instead of the per-call poll is the remaining lever, not tried (a new daemon)"
+   "verdict": "kept",
+   "zero": "removal saves ~20 CPU-min/day; loses the tripwire that reports, and inside the autonomy span puts back, shell writes to instruction files — the only guard after the Edit/Write gate",
+   "note": "xtrace of one hit on a scratch state: 8 ms library source (bash start 7 ms of its own), 23 ms stat of the watched files, 15 ms stat of the directories, 12 ms awk join, 9 ms git rev-parse --show-toplevel, 5 ms jq; every step is the tripwire's own read, not a repeat. The rev-parse could be a walk up for .git but differs on an empty or invalid .git, ~7% of a call for a change in what a guard sees: left; an FSEvents watcher in place of the per-call poll stays the one lever, a new daemon (Egor's trade, not tried)"
   },
   {
    "id": "cpu:process/transcriptions-gpt/transcriber/overlay.py",
@@ -1975,17 +1975,17 @@
   {
    "id": "cpu:doctor/speed",
    "title": "doctor/speed",
-   "audited_at": "2026-10-13T09:29:46+03:00",
-   "by": "harness-speed-cpu-doctor-speed-20261012T235033Z-1231",
-   "cpu_min_day": 9.9,
-   "cpu_s_run": 4.653,
-   "runs_day": 215,
+   "audited_at": "2026-10-14T08:35:51+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 12.3,
+   "cpu_s_run": 5.988,
+   "runs_day": 207,
    "sources": {
-    "llm-legs/bin/speed-doctor": "6dbcee90be9abd08a7be53727c83bfc0f7eb8fd8"
+    "llm-legs/bin/speed-doctor": "b4e01d49de4d5d4bb1c7193b1d484b064a0607d8"
    },
    "verdict": "cut",
-   "zero": "removal saves 9.9 CPU-min/day; loses the Speed block (owner minutes, opportunities, Spend/Suite/CPU audits, the night's Speed queue), which Egor reads in the menu",
-   "note": "runs after every 5-min Harness run (launchd StartInterval 300); profiled on copies of the live stores: quadratic load_tests, transcript refusal rescans x3, 1.4M strftime, 208 git calls, 800k probe rows x2 were the CPU; all cut with identical output, 15 -> 4.6 CPU-s a run"
+   "zero": "removal saves 12.3 CPU-min/day; loses the Speed block (owner minutes, opportunities, Spend/Suite/CPU audits, the night's Speed queue) which Egor reads in the menu",
+   "note": "Suite audits spawned log -1 and status --porcelain per due suite every run (170 suites, 340 git processes): the last commit of a path is kept per HEAD in the state's fix-landings.json and dirtiness comes from one status listing, any path it does not name asked git as before (llm-legs@4b13fc9e): warm run 14.2 -> 10.3 CPU-s at load 130, suite_audit.collect identical on the live stores; adds() 3 log --numstat calls (0.5 CPU-s), hook_changed_day 37 log calls and spend.landings 68 calls left: their answers move with the since-window or the reflog"
   },
   {
    "id": "cpu:hook/statusline-workdir-hook.sh",
@@ -2035,17 +2035,17 @@
   {
    "id": "cpu:hook/context-nudge.sh",
    "title": "hook/context-nudge.sh",
-   "audited_at": "2026-10-13T10:01:15+03:00",
-   "by": "harness-speed-cpu-doctor-speed-20261012T235033Z-1231",
-   "cpu_min_day": 6.1,
-   "cpu_s_run": 0.043,
-   "runs_day": 7034,
+   "audited_at": "2026-10-14T08:38:09+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 6.9,
+   "cpu_s_run": 0.045,
+   "runs_day": 10938,
    "sources": {
-    "claude-setup/hooks/context-nudge.sh": "52f8b7c6f082cb4be9dcc1a9fd9381d2d495c0b7"
+    "claude-setup/hooks/context-nudge.sh": "e310df6784bd1c7dbd859ec1f776f9672bb557ba"
    },
    "verdict": "kept",
-   "zero": "removal saves ~6.8 CPU-min/day; loses the staged auto-compact warnings and the focus line the PreCompact summarizer gets",
-   "note": "~half the runs exit on the byte-bound skip at the ~24 CPU-ms bash+jq floor; scans cost ~9 CPU-ms (64 KB tail jq), 7% of tool-result moments need the 1 MB tail (~56 CPU-ms): a 256 KB step would catch 1% of 385 sampled moments; an incremental whole-file fold would differ from the tail window on old usage lines (found, not fixed)"
+   "zero": "removal saves ~6.9 CPU-min/day; loses the staged auto-compact warnings and the focus line the PreCompact summarizer gets",
+   "note": "due again because claude-setup@4f81a9e (the focus-off experiment, 2026-10-13 20:40) moved the source; the cost did not: 41.5 ms a run on 10-14 against 45 on 10-13, ~half the runs exit on the byte-bound skip at the 24 ms bash+jq floor, the rest scan a 64 KB tail (~9 ms), 7% need the 1 MB tail; no cheaper cut gives the same warnings"
   },
   {
    "id": "cpu:statusline/unpushed",
@@ -3182,17 +3182,17 @@
   {
    "id": "cpu:statusline/render",
    "title": "statusline/render",
-   "audited_at": "2026-10-13T10:36:04+03:00",
-   "by": "harness-speed-cpu-statusline-render-20261012T235118Z-55c2",
+   "audited_at": "2026-10-14T08:38:33+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
    "cpu_min_day": 228.7,
-   "cpu_s_run": 0.088,
-   "runs_day": 115894,
+   "cpu_s_run": 0.104,
+   "runs_day": 107200,
    "sources": {
-    "llm-legs/bin/statusline.sh": "69977398f6b5caf0a995f0adeeb1e60bec138993"
+    "llm-legs/bin/statusline.sh": "c5a969efce8bfa5f52ba5bf00a38a731fab7dee7"
    },
    "verdict": "cut",
-   "zero": "removing the render saves 228.7 CPU-min/day and loses the whole statusline Egor reads; the cut keeps it at ~25% less",
-   "note": "main checkout from <root>/.git, dirty diff volume reused while stat-identical (llm-legs@823bf61b)"
+   "zero": "removal saves 228.7 CPU-min/day; loses the whole statusline strip, the one per-chat state Egor reads while working",
+   "note": "one jq answers the four limits sections (4 spawns -> 1) and the lock mkdir is the bash loadable: 94 -> 84 CPU-ms a render, stdout and limits files identical to HEAD on 1416 cases (llm-legs@fff92feb). Left: the rev-parse fast path, the rl_merge skip and a split parse of the 2400-line script (bash start 9 ms + parse 10 ms + git status 13 ms of ~80), each under 5 ms for a behaviour risk; the 7-day median still carries pre-away days (the away replay of 2026-10-14 makes an away render ~21 ms); the work (131 CPU-min on 10-13) and ports (35) probes are their own rows' work"
   },
   {
    "id": "cpu:statusline/work",
@@ -3213,32 +3213,32 @@
   {
    "id": "cpu:doctor/harness",
    "title": "doctor/harness",
-   "audited_at": "2026-10-13T10:36:14+03:00",
-   "by": "harness-speed-cpu-statusline-render-20261012T235118Z-55c2",
-   "cpu_min_day": 42.7,
-   "cpu_s_run": 11.549,
-   "runs_day": 213,
+   "audited_at": "2026-10-14T08:35:42+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 47.4,
+   "cpu_s_run": 13.158,
+   "runs_day": 205,
    "sources": {
-    "llm-legs/bin/harness-doctor": "462c3c0a0a677fbbc12f4e495addb4af387f44a8"
+    "llm-legs/bin/harness-doctor": "5670e852724ea78491cdf90bdc14dd58789e0f98"
    },
    "verdict": "cut",
-   "zero": "removing the collector saves 42.7 CPU-min/day and loses every harness doctor row; the cut keeps it at ~40% less",
-   "note": "load_tests bucketed dedupe 4.5s->0.4s, local_day memo, landing memo (llm-legs@7f349b7f)"
+   "zero": "removal saves 47.4 CPU-min/day; loses every harness doctor row and its menu, which Egor reads",
+   "note": "the fix-landings memo was never saved: a successful run ends in os.execv into Speed, which skips atexit, so every run re-proved 158 landed fixes with 632 git calls; now flushed before the exec, and hang detection reads the suite passes once instead of 677 scans (llm-legs@81b4d0e5): a write run on a copy of the live state 14.3 -> 5.2 CPU-s, last_fix_at 8.6 -> 0.24 s identical on 332 rows, usual_secs identical on 40005 asks"
   },
   {
    "id": "cpu:statusline/debt",
    "title": "statusline/debt",
-   "audited_at": "2026-10-13T10:36:19+03:00",
-   "by": "harness-speed-cpu-statusline-render-20261012T235118Z-55c2",
-   "cpu_min_day": 77.2,
-   "cpu_s_run": 2.585,
-   "runs_day": 1460,
+   "audited_at": "2026-10-14T08:35:21+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 85.8,
+   "cpu_s_run": 3.117,
+   "runs_day": 1767,
    "sources": {
-    "llm-legs/bin/statusline.sh": "69977398f6b5caf0a995f0adeeb1e60bec138993"
+    "llm-legs/bin/statusline.sh": "c5a969efce8bfa5f52ba5bf00a38a731fab7dee7"
    },
-   "verdict": "trade",
-   "zero": "removing the segment saves 77 CPU-min/day and loses the repository-debt number Egor sees on the strip",
-   "note": "moved-key floor 15s->60s saves up to ~45%, handoff docs/handoffs/2026-10-13-debt-moved-key-floor.md"
+   "verdict": "cut",
+   "zero": "removal saves 85.8 CPU-min/day; loses the repository-debt number on the strip",
+   "note": "the review-debt answer is the git family's, so a walk also publishes it under the family and a top that would walk adopts a family answer under 15 s old (llm-legs@be3d5520: 1218 of 2313 walks started within 15 s of another ending); the moved-key floor 15 -> 60 s stays Egor's trade, handoff docs/handoffs/2026-10-13-debt-moved-key-floor.md"
   },
   {
    "id": "cpu:process/Hammerspoon",
@@ -5230,17 +5230,17 @@
   {
    "id": "cpu:doctor/system",
    "title": "doctor/system",
-   "audited_at": "2026-10-13T14:05:33+03:00",
-   "by": "harness-speed-cpu-hook-worker-launch-gate-sh-20261012T235059Z-61a5",
-   "cpu_min_day": 4.8,
-   "cpu_s_run": 2.144,
-   "runs_day": 160,
+   "audited_at": "2026-10-14T08:38:19+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 5.2,
+   "cpu_s_run": 2.607,
+   "runs_day": 171,
    "sources": {
-    "llm-legs/bin/system-doctor": "1013c4681500ecbd2142aef3e387af8dc94fc72d"
+    "llm-legs/bin/system-doctor": "234168e1dab4fa737a421e0216721895c4a6bc54"
    },
-   "verdict": "cut",
-   "zero": "removal saves 4.8 CPU-min/day; loses births/kernel/swap ticks, launchd exits, DAS verdicts and log-store growth the System doctor reads",
-   "note": "harvest's launchd log show filters processID == 1: 3 h window 1866 lines byte-identical, 23.1 -> 14.5 CPU-s; daily du walk and per-minute ps pair are the measurement and stay"
+   "verdict": "kept",
+   "zero": "removal saves 5.2 CPU-min/day; loses births/kernel/swap ticks, launchd exits, DAS verdicts and log-store growth the System doctor reads",
+   "note": "agent ticks 2.2 CPU-s x 89 and harvest 33 s x 3-4 a day are the measurement; the daily log-stores du walk is 70-110 CPU-s (1.5 min/day); 10-13 holds eight logstores rows (13:30-23:40) against one scheduled: logstores_due fires once a local day or at 36 h stale, so the extra runs were started by hand outside the schedule (who by not shown in the journal; the 7-day median absorbs them)"
   },
   {
    "id": "cpu:process/token-map/tokenmap/__main__.py",
@@ -6516,6 +6516,36 @@
    "verdict": "cut",
    "zero": "removal saves 9.9 wall-min/day; loses 443 asserts on codexb accounts, web, quota and image routes",
    "note": "cut: first audit; 3 shards, sleep_s 0, spawns are codexb's own (python3 70, jq 616); wait_announce polls every 20 ms on the builtin sleep, same 5 s bound"
+  },
+  {
+   "id": "cpu:statusline/autonomy",
+   "title": "statusline/autonomy",
+   "audited_at": "2026-10-14T08:35:32+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 13.2,
+   "cpu_s_run": 0.029,
+   "runs_day": 25347,
+   "sources": {
+    "llm-legs/bin/statusline.sh": "c5a969efce8bfa5f52ba5bf00a38a731fab7dee7"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 13.2 CPU-min/day; loses the autonomy dot that says Egor's word stands for the chat",
+   "note": "the gate's answer is a pure function of two marker files, so a refresh past the 15 s TTL restamps the cache while both are unmoved and the gate answered under 90 s ago (llm-legs@86c4bd67): 24053 of 25182 refreshes on 10-13 (95.5 %) republished the same answer; the gate's own autonomous runs (6.6 CPU-min/day of hook/review-flow-gate.sh) fall with it"
+  },
+  {
+   "id": "cpu:hook/review-flow-gate.sh",
+   "title": "hook/review-flow-gate.sh",
+   "audited_at": "2026-10-14T08:37:15+03:00",
+   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
+   "cpu_min_day": 10.6,
+   "cpu_s_run": 0.032,
+   "runs_day": 26503,
+   "sources": {
+    "claude-setup/hooks/review-flow-gate.sh": "6360e7d9877f3ec4b0050df8ae1ed3c1b086fa49"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~10.6 CPU-min/day; loses the door in front of review launches, the autonomy and unpushed answers the statusline reads, and the writes journal",
+   "note": "27334 of its runs a day were the statusline's autonomous question (14.4 ms, 6.6 CPU-min): the statusline now asks only when a span marker moved or its answer is 90 s old, ~85% fewer (llm-legs@86c4bd67); the PreToolUse path (18572 runs, 68 ms, fast exits for read-only and write-free calls already in place) and unpushed (456 runs, 404 ms: three git calls plus one per own commit, 3.1 CPU-min) were left, a change there moves what the gate refuses"
   }
  ]
 }
