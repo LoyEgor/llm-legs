@@ -4054,42 +4054,42 @@
   {
    "id": "suite:llm-legs/test_instruction_gate_bypasses",
    "title": "llm-legs/test_instruction_gate_bypasses",
-   "audited_at": "2026-10-13T12:57:25+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-bypasses-20261012T235320Z-268b",
-   "cpu_run": 27.6,
-   "wall_run": 21.5,
-   "cpu_min_day": 10.57,
-   "wall_min_day": 22.93,
+   "audited_at": "2026-10-14T07:45:07+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261014T021733Z-1dfb",
+   "cpu_run": 27.8,
+   "wall_run": 14.2,
+   "cpu_min_day": 11.17,
+   "wall_min_day": 10.24,
    "sources": {
-    "llm-legs/tests/instruction_gate_harness.sh": "f5bbd52b0fc805aa3860ca1f4a9583a5ec3431b9",
-    "llm-legs/tests/instruction_watch_menu_harness.lua": "680bf46aa82bacd0395739d89f6294f6a7c23ae7",
-    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_instruction_gate_bypasses.sh": "a368c9bd62884d6924496b04ef31f6d8b712c6e5"
+    "llm-legs/tests/instruction_gate_harness.sh": "89fea23091a838c092ec822be81d6fb0915811b2",
+    "llm-legs/tests/instruction_watch_menu_harness.lua": "1005a1b7310aa9273d4d59bcf8f9abeb738a51e8",
+    "llm-legs/tests/lib/hs-bounded.sh": "abc9297ec5a1863ccaf079c5e292328537bb270e",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_instruction_gate_bypasses.sh": "10f64dadd02d9dba393c1abbe2c06ac2cf17db2b"
    },
    "verdict": "cut",
-   "zero": "removal saves 13.6 wall-min/day; loses the only check of every shell spelling of a write onto a guarded file, the merge-landing pricing and the instruction-watch menu contract",
-   "note": "3 shards (60 s serial -> 20/18/20 s at load 60), menu harness drops the 1,502-file record after its check, down-since clock injected; harness printf/ln cuts"
+   "zero": "removal saves 14 wall-s a run; loses bypass spellings, landing, hook and menu transport coverage",
+   "note": "stash/merge landings to shard 3: shard CPU 13.7/11.4/3.8 -> 10.9/11.2/6.3 s; menu harness hs.fs.touch; M.start no duplicate tick (F2, F3, F7); F0 measured 11 loads 0.15 s, not taken"
   },
   {
    "id": "suite:llm-legs/test_llm_limits_grok",
    "title": "llm-legs/test_llm_limits_grok",
-   "audited_at": "2026-10-13T12:57:26+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-bypasses-20261012T235320Z-268b",
-   "cpu_run": 32.9,
-   "wall_run": 12.2,
-   "cpu_min_day": 27.86,
-   "wall_min_day": 17.99,
+   "audited_at": "2026-10-14T07:45:06+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261014T021733Z-1dfb",
+   "cpu_run": 34.1,
+   "wall_run": 11.8,
+   "cpu_min_day": 29.8,
+   "wall_min_day": 15.21,
    "sources": {
-    "llm-legs/tests/lib/hs-bounded.sh": "6c8fa53d2089491308a94a7af2fb40bd68958c01",
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/hs-bounded.sh": "abc9297ec5a1863ccaf079c5e292328537bb270e",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
     "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
-    "llm-legs/tests/llm_limits_renderer_harness.lua": "da58fe1cfc9373c101b61c2dd38b4af45ffacf9a",
-    "llm-legs/tests/test_llm_limits_grok.sh": "cb8237eec485624660555df885678eaf107c3608"
+    "llm-legs/tests/llm_limits_renderer_harness.lua": "8644113125d60ce689bb49503a9f75171514d252",
+    "llm-legs/tests/test_llm_limits_grok.sh": "6a398bca180303fcfaf34fe35de24535c52bee71"
    },
    "verdict": "cut",
-   "zero": "removal saves 13.4 wall-min/day; loses the Grok weekly quota, paused-vendor, refresh_errors and flaky Gemini verdict checks and the renderer contract",
-   "note": "6 shards (long pole 34 -> 22 s at higher load), renderer bytecode once (1.13 -> 0.51 s in live hs), lock ready-file handshake; hs probe 600 s closes a silent SKIP"
+   "zero": "removal saves 12 wall-s a run; loses grok quota, shield, refresh_errors, flaky gemini login and renderer contract coverage",
+   "note": "age/credits and claude split become own sections, shard CPU max 10.3 -> 6.2 s; one empty-home run; one hs lock hold (F5, F10, F11)"
   },
   {
    "id": "suite:llm-legs/test_code_doctor",
@@ -5009,20 +5009,20 @@
   {
    "id": "suite:llm-legs/test_instruction_gate_tripwire",
    "title": "llm-legs/test_instruction_gate_tripwire",
-   "audited_at": "2026-10-13T12:38:32+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-tripwire-20261012T235323Z-6327",
-   "cpu_run": 25.0,
-   "wall_run": 31.1,
-   "cpu_min_day": 7.31,
-   "wall_min_day": 12.57,
+   "audited_at": "2026-10-14T07:45:05+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261014T021733Z-1dfb",
+   "cpu_run": 25.7,
+   "wall_run": 24.9,
+   "cpu_min_day": 9.99,
+   "wall_min_day": 15.78,
    "sources": {
-    "llm-legs/tests/instruction_gate_harness.sh": "8dbd7a2fe3c4a63670fb944839d7c248fd07c1f6",
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_instruction_gate_tripwire.sh": "8327f68745fa4ccd79c8470454fe50a64ee87789"
+    "llm-legs/tests/instruction_gate_harness.sh": "89fea23091a838c092ec822be81d6fb0915811b2",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_instruction_gate_tripwire.sh": "aae956d5169435a75cefacd4028b262d155cc0f9"
    },
-   "verdict": "cut",
-   "zero": "removing it saves 9.3 wall-min/day; loses the tripwire's detect/restore/alert/dedupe pins (the hook that reports writes that went around the gates)",
-   "note": "alert polls 0.2->0.02 s and the fixed 0.4 s settle tail replaced by a journal-count wait plus 0.1 s (-1.2 s sleep a run), fmt/python-free harness; the rest of the wall is ~678 awk and ~359 jq spawns inside the watch hook itself (CPU audit territory)"
+   "verdict": "kept",
+   "zero": "removal saves 25 wall-s a run; loses the instruction tripwire's detection and one-alert-per-change checks",
+   "note": "F9 not taken: alert_settle's 0.4 s tail catches a doubled detached poke; removing it needs a production launch record only for the test"
   },
   {
    "id": "suite:llm-legs/test_instruction_gate_bloat",
@@ -5296,19 +5296,19 @@
   {
    "id": "suite:llm-legs/test_speed_doctor",
    "title": "llm-legs/test_speed_doctor",
-   "audited_at": "2026-10-13T15:25:03+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-websearch-20261012T235421Z-7d8b",
-   "cpu_run": 12.6,
-   "wall_run": 18.7,
-   "cpu_min_day": 13.38,
-   "wall_min_day": 43.87,
+   "audited_at": "2026-10-14T07:45:04+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261014T021733Z-1dfb",
+   "cpu_run": 12.2,
+   "wall_run": 9.4,
+   "cpu_min_day": 13.71,
+   "wall_min_day": 20.14,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_speed_doctor.sh": "e84d7508b480f7de077ab35105b2e57ff5bce386"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_speed_doctor.sh": "6332875dda7419b462fbdcc57732e3eb5b651e07"
    },
    "verdict": "kept",
-   "zero": "removal saves 11.5 wall-min/day and 10.7 CPU-min/day; loses every pin of the Speed block (headline, partition, backlog scores, backfill resume, merge into Harness, journal prune)",
-   "note": "cost is ~48 speed-doctor spawns at ~0.1 CPU-s of startup each (bytecode is cached); 20 are the half-backfill loop, which has no cheaper setup: the backfill step is time-budgeted (one file at SPEED_DOCTOR_BACKFILL_S=0) and an in-process main() would carry import-time state and lru caches across steps; the cpu<=2.0 check bounds CPU, not wall, and failed in no retained log"
+   "zero": "removal saves 9.4 wall-s a run; loses the Speed block's calibration, persistence and lever checks",
+   "note": "wall 30.4 s at load ~90, cpu 13.1 s, 0 s sleep; 48 python3 (25 bin/speed-doctor runs test state carried across runs: resume, backfill, dedup), 41 git (hook-history fixture and hook_changed_day)"
   },
   {
    "id": "suite:llm-legs/test_llm_limits_render",
@@ -5331,19 +5331,19 @@
   {
    "id": "suite:llm-legs/test_gemini_image",
    "title": "llm-legs/test_gemini_image",
-   "audited_at": "2026-10-13T15:54:19+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-websearch-20261012T235421Z-7d8b",
-   "cpu_run": 35.2,
-   "wall_run": 62.9,
-   "cpu_min_day": 7.12,
-   "wall_min_day": 31.55,
+   "audited_at": "2026-10-14T07:45:03+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261014T021733Z-1dfb",
+   "cpu_run": 33.4,
+   "wall_run": 29.1,
+   "cpu_min_day": 7.15,
+   "wall_min_day": 16.15,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_gemini_image.sh": "3711e877c6522737d3138104a91b63617139fb27"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_gemini_image.sh": "3d2df86f0b680495b01045ea1eaf031e09d0a9e2"
    },
-   "verdict": "kept",
-   "zero": "removal saves 10.8 wall-min/day and 5.5 CPU-min/day; loses every pin of the agy image route (argument refusals, account isolation, resume, brain rescue, quota, chroma, composite, edit lineage, output contract, flow-to-cli fallback)",
-   "note": "90 gemini-image calls, each a distinct case (25 cheap refusals at ~0.2 s); a generation's 1-2.4 s is production work: the delivery magick convert (~0.25 s), the stderr tee drain (image-leg.sh:70-72), the provenance python3 read, ~15 jq; the fake's own magick render is 0.02 s, not worth a cache"
+   "verdict": "cut",
+   "zero": "removal saves 41 wall-s a run; loses agy image route, composite, resume, quota and flow fallback coverage",
+   "note": "3 shards over 6 self-contained sections by CPU 11.8/10.5/9.9 s (F6); 285 asserts; side by side 32 vs 67 s"
   },
   {
    "id": "suite:llm-legs/test_merge_ledger",
@@ -5647,38 +5647,38 @@
   {
    "id": "suite:llm-legs/test_worker_run_lifecycle",
    "title": "llm-legs/test_worker_run_lifecycle",
-   "audited_at": "2026-10-13T15:32:48+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261012T235415Z-3d64",
-   "cpu_run": 34.9,
-   "wall_run": 30.9,
-   "cpu_min_day": 21.84,
-   "wall_min_day": 38.47,
+   "audited_at": "2026-10-14T07:45:03+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261014T021733Z-1dfb",
+   "cpu_run": 29.1,
+   "wall_run": 17.1,
+   "cpu_min_day": 21.29,
+   "wall_min_day": 21.22,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_worker_run_lifecycle.sh": "155012c0348693112944c5d6a58f8c74689ae28e",
-    "llm-legs/tests/worker_run_harness.sh": "2789037258a2d333630df211f2f1845ddd1116d3"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_worker_run_lifecycle.sh": "09433ec4507c81121d9dda0f68bc15b07d5e7cdd",
+    "llm-legs/tests/worker_run_harness.sh": "16f1e87a782de6d48849b3a628f5594f4e4c19a9"
    },
    "verdict": "cut",
-   "zero": "removal saves 20.7 wall-min/day and 21.0 CPU-min/day; loses detached start, bounded waits, orphan ending, pack and missing-pool coverage",
-   "note": "18 of 19 runs end on await_exit (orphan case keeps await_done), gemini mid-flight case gated not STUB_SLEEP=2, orphans+pack to shard 2 (64/48/76 -> 36/36/34 s); 230 asserts"
+   "zero": "removal saves 17 wall-s a run; loses detached start, wait, light, pin, orphan and pack coverage",
+   "note": "pack case launches first so its 2 s git maintenance overlaps the orphan case (F23); 230 asserts"
   },
   {
    "id": "suite:llm-legs/test_worker_run_files",
    "title": "llm-legs/test_worker_run_files",
-   "audited_at": "2026-10-13T15:32:49+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261012T235415Z-3d64",
-   "cpu_run": 32.3,
-   "wall_run": 27.9,
-   "cpu_min_day": 18.01,
-   "wall_min_day": 37.8,
+   "audited_at": "2026-10-14T07:45:03+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261014T021733Z-1dfb",
+   "cpu_run": 26.4,
+   "wall_run": 23.9,
+   "cpu_min_day": 17.14,
+   "wall_min_day": 20.18,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_worker_run_files.sh": "b79c475834ece3e366bd6ae5724eed31caf72dd0",
-    "llm-legs/tests/worker_run_harness.sh": "2789037258a2d333630df211f2f1845ddd1116d3"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_worker_run_files.sh": "aa79876e1ef344dd9a42f01333b8cc94f2180758",
+    "llm-legs/tests/worker_run_harness.sh": "16f1e87a782de6d48849b3a628f5594f4e4c19a9"
    },
    "verdict": "cut",
-   "zero": "removal saves 18.9 wall-min/day and 17.8 CPU-min/day; loses run file attribution (transcript, snapshot, guard, commits) coverage",
-   "note": "21 of 23 runs end on await_exit (two state.json phase=done cases keep await_done), blobs-packed to shard 1 (48/62/70 -> 36/44/48 s); 258 asserts"
+   "zero": "removal saves 24 wall-s a run; loses transcript file list, snapshot and attribution coverage",
+   "note": "recordacct case awaits exit_code: complete_run writes phase done before exit_code (F19); 258 asserts"
   },
   {
    "id": "suite:llm-legs/test_image_fanout",
@@ -5858,20 +5858,20 @@
   {
    "id": "suite:llm-legs/test_worker_run_grok",
    "title": "llm-legs/test_worker_run_grok",
-   "audited_at": "2026-10-13T15:25:38+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261012T235418Z-2b4c",
-   "cpu_run": 17.2,
-   "wall_run": 30.0,
-   "cpu_min_day": 8.64,
-   "wall_min_day": 29.84,
+   "audited_at": "2026-10-14T07:45:02+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-20261014T021733Z-1dfb",
+   "cpu_run": 13.9,
+   "wall_run": 17.6,
+   "cpu_min_day": 8.37,
+   "wall_min_day": 22.75,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_worker_run_grok.sh": "a791ec33eeac5bdda234760b9501f574803c1f6d",
-    "llm-legs/tests/worker_run_harness.sh": "e2f6e95f6dcc5be46652bfd8fb25fa2f8e978acb"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_worker_run_grok.sh": "1c85f918ba975460fde315bf73fa4aa7aad97dbf",
+    "llm-legs/tests/worker_run_harness.sh": "16f1e87a782de6d48849b3a628f5594f4e4c19a9"
    },
    "verdict": "cut",
-   "zero": "removal saves 18 wall-min/day; loses the grok launch/model/effort/turn-cap/flag pins (109 asserts), so none removed",
-   "note": "await_exit instead of wait reports in 13 cases, forkless meta poll: 27->20 CPU-s, 109 asserts unchanged"
+   "zero": "removal saves 21 wall-s a run; loses grok launch, fast mode, effort, turn-cap and flag coverage",
+   "note": "3 shards by CPU 6.0/5.1/5.4 s, 111 asserts; harness: caffeinate and grow stubs sleep builtin, bash-match polls, one-sed transcript fns (F21, F25-F29); grokb collision case kept as stub-contract check"
   },
   {
    "id": "suite:llm-legs/test_worker_run_vendor_files",
