@@ -221,23 +221,20 @@ caps_get() { # vendor jq-filter
   image_caps_get "$caps_root" "$1" "$2"
 }
 
-# The manifest block that holds a route's limits; the cli route's are top-level.
+# The manifest block that holds a route's limits, as route=block; the cli route's are top-level.
+route_blocks='flow=flow_image web=web'
 route_block() {
-  case "$1" in
-    flow) printf 'flow_image' ;;
-    web) printf 'web' ;;
-    *) printf '' ;;
-  esac
+  local pair
+  for pair in $route_blocks; do [ "${pair%%=*}" != "$1" ] || printf '%s' "${pair#*=}"; done
 }
+route_block_jq=''
+for pair in $route_blocks; do route_block_jq+="if \$route == \"${pair%%=*}\" then .${pair#*=} el"; done
+route_block_jq+='se null end'
 
-route_get() { # vendor jq-path-under-block top-level-fallback-filter
-  local vendor=$1 path=$2 fallback=$3 block
-  block=$(route_block "$(caps_get "$vendor" '.routes[0] // empty')")
-  if [ -n "$block" ]; then
-    caps_get "$vendor" "if .$block$path != null then .$block$path else $fallback end"
-  else
-    caps_get "$vendor" "$fallback"
-  fi
+# One manifest read: the first route's block is picked inside the same jq.
+route_get() { # vendor jq-path-under-block top-level-fallback-filter [then-filter]
+  caps_get "$1" "((.routes[0] // null) as \$route | $route_block_jq) as \$block
+    | (if \$block != null and (\$block | $2) != null then \$block | $2 else $3 end)${4:+ | $4}"
 }
 
 reduce_ratio() { # W:H or WxH
@@ -285,8 +282,7 @@ aspect_list_for() { # vendor nrefs
   fi
   local list_kind=generate
   [ "$nrefs" -gt 0 ] && list_kind=edit
-  route_get "$vendor" '.aspects' ".aspects | if . == null then empty else (.$list_kind // .generate // []) end" |
-    jq -r 'join(",")'
+  route_get "$vendor" '.aspects' ".aspects | if . == null then empty else (.$list_kind // .generate // []) end" 'join(",")'
 }
 
 join_adapt() {
@@ -298,23 +294,26 @@ join_adapt() {
   printf '%s' "$out"
 }
 
-kv_last() { # key files...
-  local key=$1
+kv_last() { # "key ..." files... -> the last value of each key, a line each in key order
+  local keys=$1
   shift
-  awk -v key="$key" '
+  awk -v keys="$keys" '
+    BEGIN { nk = split(keys, key, " ") }
     /^variant=/ { next }
     {
-      prefix = key "="
       n = split($0, a, /[[:space:]]+/)
-      for (i = 1; i <= n; i++) {
-        if (index(a[i], prefix) == 1) val = substr(a[i], length(prefix) + 1)
-      }
-      if (index($0, prefix) == 1) {
-        rest = substr($0, length(prefix) + 1)
-        if (rest !~ / [^ ]+=/) val = rest
+      for (k = 1; k <= nk; k++) {
+        prefix = key[k] "="
+        for (i = 1; i <= n; i++) {
+          if (index(a[i], prefix) == 1) val[k] = substr(a[i], length(prefix) + 1)
+        }
+        if (index($0, prefix) == 1) {
+          rest = substr($0, length(prefix) + 1)
+          if (rest !~ / [^ ]+=/) val[k] = rest
+        }
       }
     }
-    END { print val }
+    END { for (k = 1; k <= nk; k++) print val[k] }
   ' "$@"
 }
 
@@ -567,7 +566,7 @@ spare_count() { # vendor takes
 pack_size() { # vendor -> takes per launch, within the first route's counts (all of them by default)
   local max
   [ "$kind" = image ] && [ "$pack" != 1 ] || { printf 1; return; }
-  max=$(route_get "$1" '.counts' 'null' | jq -r 'if type == "array" then max else 1 end' 2>/dev/null) || max=1
+  max=$(route_get "$1" '.counts' 'null' 'if type == "array" then max else 1 end' 2>/dev/null) || max=1
   [[ "$max" =~ ^[0-9]+$ ]] && [ "$max" -ge 1 ] || max=1
   if [ -n "$pack" ] && [ "$pack" -le "$max" ]; then printf '%s' "$pack"; else printf '%s' "$max"; fi
 }
@@ -627,9 +626,8 @@ plan_group() { # request vendor
   n_used=${#used_refs[@]}
   [ -z "$r_edit" ] || n_used=$((n_used + 1))
 
-  exact_size=$(caps_get "$vendor" '.exact_size')
-  transparent_mode=$(caps_get "$vendor" '.transparent // empty')
-  aspects_null=$(caps_get "$vendor" '.aspects | if . == null then "yes" else "no" end')
+  { IFS= read -r exact_size; IFS= read -r transparent_mode; IFS= read -r aspects_null; } < <(caps_get "$vendor" \
+    '(.exact_size | tostring), (.transparent // "" | tostring), (.aspects | if . == null then "yes" else "no" end)')
   [ "$video" = false ] || aspects_null=no
 
   if [ "$video" = false ] && [ "${rq_transparent[r]}" = true ]; then
@@ -1166,6 +1164,8 @@ try_launch() { # -> 0 when a unit was launched; primary takes before spares
 }
 
 if [ "$dry_run" = false ]; then
+  # The idle tick below is ~10 a second for the whole run: bash's own sleep, not a fork each.
+  enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
   refresh_state
   while :; do
     reap
@@ -1237,18 +1237,10 @@ count_status() {
     combined=(/dev/null)
     [ ! -f "$dir/out" ] || combined+=("$dir/out")
     [ ! -f "$dir/err" ] || combined+=("$dir/err")
-    got_dest=$(kv_last dest "${combined[@]}")
-    got_size=$(kv_last size "${combined[@]}")
-    got_session=$(kv_last session "${combined[@]}")
-    got_model=$(kv_last model "${combined[@]}")
-    got_model_caps=$(kv_last model_caps "${combined[@]}")
-    got_caps=$(kv_last caps "${combined[@]}")
-    got_account=$(kv_last account "${combined[@]}")
-    got_job=$(kv_last job "${combined[@]}")
-    got_route=$(kv_last route "${combined[@]}")
-    got_fallback=$(kv_last fallback_from "${combined[@]}")
-    got_phases=$(kv_last phases "${combined[@]}")
-    got_failed=$(kv_last failed "${combined[@]}")
+    { IFS= read -r got_dest; IFS= read -r got_size; IFS= read -r got_session; IFS= read -r got_model
+      IFS= read -r got_model_caps; IFS= read -r got_caps; IFS= read -r got_account; IFS= read -r got_job
+      IFS= read -r got_route; IFS= read -r got_fallback; IFS= read -r got_phases; IFS= read -r got_failed
+    } < <(kv_last 'dest size session model model_caps caps account job route fallback_from phases failed' "${combined[@]}")
     got_composite=$(awk '/^composite=/ && prev !~ /^variant=/ {print substr($0, 11); exit} {prev = $0}' "${combined[@]}" |
       tr '\t' ' ')
     [ -n "$got_dest" ] || got_dest=${u_dest[u]}
