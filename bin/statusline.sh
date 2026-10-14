@@ -40,8 +40,9 @@ limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 statusline_loadables="${BASH%/bin/*}/lib/bash"
 enable -f "$statusline_loadables/rmdir" rmdir 2>/dev/null
 enable -f "$statusline_loadables/mkdir" mkdir 2>/dev/null
-if ! { enable -f "$statusline_loadables/realpath" realpath 2>/dev/null &&
-  realpath -a statusline_self "${BASH_SOURCE[0]}" >/dev/null 2>&1; }; then
+statusline_realpath=''
+enable -f "$statusline_loadables/realpath" realpath 2>/dev/null && statusline_realpath=1
+if ! { [ -n "$statusline_realpath" ] && realpath -a statusline_self "${BASH_SOURCE[0]}" >/dev/null 2>&1; }; then
   statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
 fi
 statusline_dir=${statusline_self%/*}
@@ -174,6 +175,12 @@ snapshot_lock_acquire() {
   return "$rc"
 }
 
+phys_dir() { # var dir: `cd dir && pwd -P` through the realpath loadable, for a dir with no `..` in it
+  local -a phys
+  [ -d "$2" ] && [ -x "$2" ] && realpath -q -a phys "$2" 2>/dev/null && [ -n "${phys[0]}" ] || return 1
+  printf -v "$1" '%s' "${phys[0]}"
+}
+
 # One git call per directory for everything the render needs about its repository:
 # REPO_TOP (this working tree), REPO_COMMON (identity — shared by all worktrees of
 # a repo), REPO_ROOT (the main checkout), REPO_NAME, REPO_IS_WT (this directory is
@@ -194,11 +201,16 @@ repo_dirs() {
     *) common="$1/$common" ;;
   esac
   # All three must be compared with each other (identity, worktree detection, the
-  # `.claude/worktrees` prefix test), so all three are resolved the same way. One
-  # subshell for the lot: the paths are absolute, so the `cd`s do not compound.
-  resolved=$({ cd "$common" && pwd -P && cd "$gitdir" && pwd -P && cd "$REPO_TOP" && pwd -P; } 2>/dev/null)
-  { IFS= read -r common; IFS= read -r gitdir; IFS= read -r REPO_TOP; } <<< "$resolved"
-  [ -n "$common" ] && [ -n "$gitdir" ] && [ -n "$REPO_TOP" ] || return 1
+  # `.claude/worktrees` prefix test), so all three are resolved the same way: as `cd && pwd -P`
+  # would, by the realpath loadable with no fork where no `..` lets a logical walk differ, else one
+  # subshell for the lot (the paths are absolute, so the `cd`s do not compound).
+  if [ -n "$statusline_realpath" ] && [[ "$common$gitdir$REPO_TOP" != *'/..'* ]]; then
+    phys_dir common "$common" && phys_dir gitdir "$gitdir" && phys_dir REPO_TOP "$REPO_TOP" || return 1
+  else
+    resolved=$({ cd "$common" && pwd -P && cd "$gitdir" && pwd -P && cd "$REPO_TOP" && pwd -P; } 2>/dev/null)
+    { IFS= read -r common; IFS= read -r gitdir; IFS= read -r REPO_TOP; } <<< "$resolved"
+    [ -n "$common" ] && [ -n "$gitdir" ] && [ -n "$REPO_TOP" ] || return 1
+  fi
   REPO_COMMON="$common"
   if [ "$common" != "$gitdir" ]; then
     REPO_IS_WT=1
@@ -213,7 +225,11 @@ repo_dirs() {
     fi
     [ -n "$main_wt" ] || main_wt=$(git -C "$1" worktree list --porcelain 2>/dev/null |
       { IFS= read -r line; printf '%s' "${line#worktree }"; })
-    REPO_ROOT=$({ cd "$main_wt" && pwd -P; } 2>/dev/null) || REPO_ROOT=""
+    if [ -n "$statusline_realpath" ] && [[ "$main_wt" = /* && "$main_wt" != *'/..'* ]]; then
+      phys_dir REPO_ROOT "$main_wt" || REPO_ROOT=""
+    else
+      REPO_ROOT=$({ cd "$main_wt" && pwd -P; } 2>/dev/null) || REPO_ROOT=""
+    fi
     [ -n "$REPO_ROOT" ] || REPO_ROOT="$REPO_TOP"
   else
     REPO_IS_WT=0
@@ -600,7 +616,7 @@ pct_colored() { # var pct dim warn
 # \x1f (unit separator) instead of tab: bash `read` collapses consecutive tab
 # delimiters (tab is IFS-whitespace), which misaligns fields whenever a middle
 # one (e.g. effort, commonly empty) is blank.
-IFS=$'\x1f' read -r model model_id effort ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw rl_json transcript_path < <(printf '%s' "$input" | jq -r '
+IFS=$'\x1f' read -r model model_id effort ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw rl_json transcript_path < <(jq -r '
   def num0: if . == null then "" else (.+0|round|tostring) end;
   def str0: if . == null then "" else tostring end;
   [ (.model.display_name // "?"),
@@ -616,7 +632,7 @@ IFS=$'\x1f' read -r model model_id effort ctx_size dir_path current_dir session_
     (.cost.total_cost_usd | str0),
     ((.rate_limits // null) | if . == null then "" else tojson end),
     (.transcript_path // "")
-  ] | join("")')
+  ] | join("")' <<< "$input")
 
 # The harness marks a 1M-context session by suffixing its model id
 # (claude-opus-5[1m]) while the transcript records the bare id the server

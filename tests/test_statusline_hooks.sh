@@ -1619,6 +1619,19 @@ fi
 printf '{}' > "$WORK/limits.json"
 if suite_shard_owns 2 render-branch; then
 fixture_repos_klm
+# Work not done: a linked worktree's dirs resolve without a forked `cd && pwd -P` where the realpath
+# loadable is there, to the same physical paths.
+: > "$WORK/repo-dirs-forks"
+repo_dirs_out=$(
+  statusline_realpath=''
+  enable -f "${BASH%/bin/*}/lib/bash/realpath" realpath 2>/dev/null && statusline_realpath=1
+  eval "$(sed -n '/^phys_dir() {/,/^}/p;/^repo_dirs() {/,/^}/p' "$STATUSLINE")"
+  rd_top=$BASHPID
+  pwd() { [ -z "$statusline_realpath" ] || [ "$BASHPID" = "$rd_top" ] || printf fork >> "$WORK/repo-dirs-forks"; builtin pwd "$@"; }
+  repo_dirs "$REPO_E" && printf '%s|%s|%s|%s' "$REPO_TOP" "$REPO_COMMON" "$REPO_ROOT" "$REPO_IS_WT"
+)
+assert_eq "$TOP_E|$TOP_A/.git|$TOP_A|1" "$repo_dirs_out"
+assert_eq "" "$(< "$WORK/repo-dirs-forks")"
 # Outside a worktree the branch always shows, detached HEAD as `@sha`.
 detached_output=$(run_statusline "$(statusline_payload status-detached '' "$REPO_K")") || fail "statusline detached failed"
 assert grep -Fq "@$SHORT_SHA" <<< "$detached_output"
