@@ -88,9 +88,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-13",
-   "reviewed_by": "Night fixer llm-reviewers-20261012T234952Z-633a",
-   "note": "kept apart from R1, which is about review-cell shapes. 2026-10-01: the cause still stands in code: review-bench judge.py parse_judge_answer refuses a partial answer whole, and the batch's ruled claims go to the manual path with the missing ones. Since 2e32983 (2026-09-22) a session judges at most JUDGE_BATCH_CLAIMS = 40 claims and none fell short in the window. Keeping a batch's ruled part is a design change for the owner, not a bug fix. 2026-10-02 to 2026-10-13: unchanged in review-bench share/rbench/judge.py (:186 raises `the judge ruled on N of M claims`, JUDGE_BATCH_CLAIMS = 40 at :26, last touched 8332e27); no occurrence in any window.",
+   "last_reviewed": "2026-10-14",
+   "reviewed_by": "Night fixer llm-reviewers-20261014T021628Z-2c78",
+   "note": "kept apart from R1, which is about review-cell shapes. 2026-10-01: the cause still stands in code: review-bench judge.py parse_judge_answer refuses a partial answer whole, and the batch's ruled claims go to the manual path with the missing ones. Since 2e32983 (2026-09-22) a session judges at most JUDGE_BATCH_CLAIMS = 40 claims and none fell short in the window. Keeping a batch's ruled part is a design change for the owner, not a bug fix. 2026-10-02 to 2026-10-14: unchanged in review-bench share/rbench/judge.py (:186 raises `the judge ruled on N of M claims`, JUDGE_BATCH_CLAIMS = 40 at :26, last touched 8332e27); no occurrence in any window.",
    "handoff": null
   },
   {
@@ -671,9 +671,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-13",
-   "reviewed_by": "Night fixer llm-reviewers-20261012T234952Z-633a",
-   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the rest were real unfinished rounds. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open. 2026-10-02 to 2026-10-10: every pending round was a live owner chat or a finding still holding in main; no machinery cause. 2026-10-12: 4 pending, 3 settled (resolved in main, code gone, fixed on that night's branch), 1 skipped for its live chat; no machinery cause. 2026-10-13: 1 pending, 20261012T182035Z-acd829b (7 h, llm-legs + claude-setup) skipped: under 24 h and its chat «Token spending tracking and optimization» is live (pid 24100); no machinery cause.",
+   "last_reviewed": "2026-10-14",
+   "reviewed_by": "Night fixer llm-reviewers-20261014T021628Z-2c78",
+   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the rest were real unfinished rounds. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open. 2026-10-02 to 2026-10-10: every pending round was a live owner chat or a finding still holding in main; no machinery cause. 2026-10-12: 4 pending, 3 settled (resolved in main, code gone, fixed on that night's branch), 1 skipped for its live chat; no machinery cause. 2026-10-14: 1 pending, 20261012T182035Z-acd829b (32 h, skipped on 10-13 for its live chat under 24 h) settled: findings 3-6 resolved in claude-setup main, 9 by llm-legs@768d6ce7; closure fixed; no machinery cause.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -2134,6 +2134,22 @@
    "last_reviewed": "2026-10-09",
    "reviewed_by": "Night fixer llm-reviewers-20261009T024643Z-3362",
    "note": "bench:20261008T013007Z-2bc6e3c/opus-high#0 and #2#1 (locomthebest), 06:10 local: `… 429,\"result\":\"You've hit your session limit · resets 6:20am\"`. At run time SIDE_WALL claude (accounts.is_429_error) saw the whole JSON and walled the account; only the word was wrong. Fixed: `you['’]ve hit your (session|weekly) limit` in the walled pattern of panel.py FAILURE_REASONS and its llm-doctor copy (test_llm_doctor.sh and test_review_bench.sh, red on the old code); a bare `hit your session limit` (a grep pattern echoed in a log) stays unclassified.",
+   "handoff": null
+  },
+  {
+   "id": "R19",
+   "block": "reviewers",
+   "match": {
+    "word": "unclassified",
+    "detail": "execvp\\(\\) of '[^']+' failed: No such file"
+   },
+   "title": "a cell's vendor CLI was not on PATH: the cell seatbelt could not exec it",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-14",
+   "reviewed_by": "Night fixer llm-reviewers-20261014T021628Z-2c78",
+   "note": "weather (machine-wide, not ours): bench:20261013T170701Z-6c08a20/sol-high#3 (rawilimo) and #2#5 (egbogd), 20:07 local, `sandbox-exec: execvp() of 'codex' failed`. An Arbostar chat ran `nvm install 24.21.0 && nvm alias default 24.21.0` at 18:13 for that repo's engines pin; the global vendor CLIs stayed in v24.14.1, so `codex` (review-bench store.command_path falls back to PATH) was gone until claude/codex/grok were reinstalled into v24.21.0 at 20:22. Both cells were recovered, 0 s lost. Ruled out: a review-bench launch fault (sandbox_command execs the PATH name as given), the updater (no codex install that day in vendor-cli-update/update.log). Not built: a prelaunch CLI-on-PATH check, since a missing CLI fails at exec in under a second and the panel restaffs it.",
    "handoff": null
   },
   {
