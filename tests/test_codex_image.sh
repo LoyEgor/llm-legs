@@ -150,14 +150,14 @@ ln -s "$ROOT/share" "$MIRROR/share"
 cp "$SCRIPT" "$MIRROR/bin/codex-image"
 cat >"$WORK/slow-codex" <<EOF
 #!/usr/bin/env bash
-[ "\${1-}" = --version ] || { : >"$WORK/codex-started"; while [ ! -e "$WORK/wrapper-edited" ] && [ -d "$WORK" ]; do sleep 0.1; done; }
+[ "\${1-}" = --version ] || { : >"$WORK/codex-started"; while [ ! -e "$WORK/wrapper-edited" ] && [ -d "$WORK" ]; do sleep 0.02; done; }
 exec "$FIXTURE" "\$@"
 EOF
 chmod +x "$WORK/slow-codex"
 SCRIPT="$MIRROR/bin/codex-image" FIXTURE="$WORK/slow-codex" \
   image_run --dest "$OUTPUT_DIR/edited-mid-run.png" --prompt badge --account explicit &
 run_pid=$!
-for _ in $(seq 600); do [ -e "$WORK/codex-started" ] && break; sleep 0.1; done
+for _ in $(seq 3000); do [ -e "$WORK/codex-started" ] && break; sleep 0.02; done
 assert test -e "$WORK/codex-started"
 yes 'exit 97' | head -n 20000 >"$MIRROR/bin/codex-image"
 : >"$WORK/wrapper-edited"
@@ -357,6 +357,10 @@ printf 'reference\n' >"$WORK/reference.png"
 assert image_run --dest "$OUTPUT_DIR/edited.png" --prompt 'make the badge blue' \
   --ref "$WORK/reference.png" --account explicit
 assert test ! -s "$PICK_CALLS"
+# A reference that is no image fails its composite, and the edit is still delivered as generated.
+assert grep -qx 'composite=failed' "$IMAGE_OUT"
+assert grep -q 'composite failed; the edited image is delivered as generated' "$IMAGE_ERR"
+assert test -s "$OUTPUT_DIR/edited.png"
 assert grep -q 'call view_image on each path below first' "$FAKE_CODEX_PROMPT"
 assert grep -q 'referenced_image_paths' "$FAKE_CODEX_PROMPT"
 assert grep -q 'leave num_last_images_to_include unset' "$FAKE_CODEX_PROMPT"
@@ -414,7 +418,7 @@ assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=0 root=$OUTPUT_DIR/first.p
 : >"$FAKE_CODEX_CALLS"
 : >"$PICK_CALLS"
 rm -rf "$WORK/media-starts"
-assert image_run --dest "$OUTPUT_DIR/resumed.png" --prompt 'now make it bluer' --resume "$RESUME_ID"
+assert image_run --dest "$OUTPUT_DIR/resumed.png" --prompt 'now make it bluer' --resume "$RESUME_ID" --no-composite
 assert test ! -s "$PICK_CALLS"
 assert grep -qx 'ARG=resume' "$FAKE_CODEX_CALLS"
 assert grep -qx "ARG=$RESUME_ID" "$FAKE_CODEX_CALLS"
@@ -472,7 +476,7 @@ assert grep -q '0 accounts hold session' "$IMAGE_ERR"
 FAKE_CODEX_MODE=newthread
 export FAKE_CODEX_MODE
 assert image_run --dest "$OUTPUT_DIR/newthread.png" --prompt bluer \
-  --resume "$RESUME_ID" --account other
+  --resume "$RESUME_ID" --account other --no-composite
 assert grep -q "resume $RESUME_ID opened a new thread" "$IMAGE_ERR"
 assert grep -qx 'session=01a09aaa-1111-7000-8000-00000000000a' "$IMAGE_OUT"
 FAKE_CODEX_MODE=image
@@ -560,7 +564,7 @@ for signal_rc in TERM:143 HUP:129; do
     trap "image_leg_exit" EXIT; sleep 30' _ "$ROOT" 2>/dev/null &
   leg_pid=$!
   leg_ready=0
-  for _ in $(seq 600); do pgrep -qP "$leg_pid" sleep && { leg_ready=1; break; }; sleep 0.1; done
+  for _ in $(seq 3000); do pgrep -qP "$leg_pid" sleep && { leg_ready=1; break; }; sleep 0.02; done
   [ "$leg_ready" -eq 1 ] || fail "killed-leg $signal_rc: the leg never reached its sleep within 60 s"
   kill -"${signal_rc%:*}" "$leg_pid"
   pkill -"${signal_rc%:*}" -P "$leg_pid" sleep
