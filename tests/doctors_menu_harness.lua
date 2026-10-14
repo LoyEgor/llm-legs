@@ -281,7 +281,7 @@ local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" }
         { 13, "commit-report.sh" } } },
       { 26, "usage walls", {} }, { 19, "compaction", {} }, { 75, "unmeasured", {} }, { 1051, "system active", {} },
       { 310, "ad-hoc scripts", { { 156, "repeated jobs", { { 0.4, "doctor-state", {}, 18.6 }, { "–", "tokenmap", {}, 24.4 } } },
-        "-", { 0, "/trash", {}, "🗑" } } } } },
+        "-", { 0, "/trash", {}, "○" } } } } },
   spend = { status = "watch", as_of_s = now, index = 0.46, index_by_day = spendDays(series),
     issues = { { 1.888, "compaction summaries" } } } }
 local function trendHarness()
@@ -369,7 +369,7 @@ check(plainRow(lost[3].menu[4], "   0 min/day  dead, hung") and plainRow(rulesRo
 local adhoc = lost[9]
 check(plainRow(adhoc, " 310 min/day  ad-hoc scripts") and plainRow(adhoc.menu[1], " 156 min/day  repeated jobs")
   and plainRow(adhoc.menu[1].menu[1], " 0.4   19 min/day  doctor-state") and plainRow(adhoc.menu[1].menu[2], "   –   24 min/day  tokenmap")
-  and adhoc.menu[2].title == "-" and plainRow(adhoc.menu[3], "   0    🗑 min/day  /trash") and adhoc.menu[3].disabled,
+  and adhoc.menu[2].title == "-" and plainRow(adhoc.menu[3], "   0    ○ min/day  /trash") and adhoc.menu[3].disabled,
   "ad-hoc rows: a built tool's min/day beside its job's residual, a dash where no tool is built, an unused tool 0 beside its glyph: "
   .. text(adhoc.menu[1].menu[1].title))
 check(issue(trendItems[6].menu, 1, " 1.9 %  compaction summaries"), "Spend issue row: the due component by its share")

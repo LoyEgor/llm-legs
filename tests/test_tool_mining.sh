@@ -328,13 +328,14 @@ cache = {"history": {day0: {"chars_s": 10.0, "tools": {"adhoc/ledger-query": {"c
                             "clusters": {"ledger-query": C(16.8), "tokenmap": C(24.4), "logo-bench": C(45.5),
                                          "limits": C(4.6, 1.0, 1), "json-other": C(23.8), "text-other": C(49.8, 20.0, 9),
                                          "file-edit": C(217.4)}}},
-         "built": ["adhoc/ledger-query", "adhoc/doctor-state"], "parked": ["adhoc/logo-bench"], "unused": ["skill/s", "bin/foo"]}
+         "built": ["adhoc/ledger-query", "adhoc/doctor-state"], "parked": ["adhoc/logo-bench"], "unused": ["skill/s", "bin/foo"], "kept": ["skill/s"]}
 check(t.menu_row(cache) == [164.9, "ad-hoc scripts", [
     [41.2, "repeated jobs", [[2.0, "ledger-query", [], 16.8], [0.0, "doctor-state", [], 0.0], ["–", "tokenmap", [], 24.4]]],
     [123.7, "one-off", [[45.5, "logo-bench", []], [78.2, "other", []]]], "-",
-    [0, "/s", [], "🗑"], [0, "foo", [], "🗑"]]],
+    [0, "/s", [], "○"], [0, "foo", [], "🗑"]]],
       "the ad-hoc row: repeated jobs (each built tool's min/day beside its residual, then unbuilt clusters over the "
-      "floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), the unused tools: %s"
+      "floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), the unused tools, ○ where "
+      "the fix keeps the file, 🗑 where it deletes it: %s"
       % t.menu_row(cache))
 unused = s.unused_opportunities({"unused": [dict(got["skill/s"], key="skill/s")]})
 check([o["id"] for o in unused] == ["opportunity:tool/skill/s"] and unused[0]["group"] == "tool"

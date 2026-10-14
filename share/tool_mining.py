@@ -85,6 +85,7 @@ ROW_SKIP = ("file-edit", "file-read")
 CANDIDATE_ROWS = 5
 USE_DAYS = 30
 UNUSED = "🗑"
+HINT_OFF = "○"
 NO_TOOL = "–"
 COMMAND = (r"(?:^|[;&|(`\n]|\$\()\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env|command|exec|time|nohup|timeout\s+\S+"
            r"|nice(?:\s+-n\s*-?\d+)?)\s+)*(?:[\w.~/-]*/)?(%s)(?![\w.-])")
@@ -142,6 +143,14 @@ def command_re(names):
 
 def used(cmd, names):
     return {m.group(1) for m in names.finditer(cmd)} if names else set()
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
 
 
 def front(path):
@@ -664,6 +673,26 @@ def backfill(history, day, names):
     return days[0]
 
 
+def elsewhere(name, path):
+    """Whether anything but a model runs the bin tool `name`: another code file of a sweep repository, a LaunchAgent,
+    Hammerspoon or Egor's shell history."""
+    word = re.compile(r"(?<![\w.-])%s(?![\w.-])" % re.escape(name))
+    for repo in handoffs.sweep_repos():
+        try:
+            found = subprocess.run(["git", "-C", repo, "grep", "-l", "-I", "-F", "-e", name, "--", "."] + [
+                ":!tests/", ":!docs/", ":!*.md", ":!*.json", ":!*.jsonl"], capture_output=True, text=True,
+                timeout=20).stdout.split("\n")
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for rel in filter(None, found):
+            full = os.path.join(repo, rel)
+            if os.path.realpath(full) != os.path.realpath(path) and word.search(read(full)):
+                return True
+    files = glob.glob(time_budget.home("Library", "LaunchAgents", "*.plist")) + \
+        glob.glob(time_budget.home(".hammerspoon", "**", "*.lua"), recursive=True) + [time_budget.home(".zsh_history")]
+    return any(word.search(read(f)) for f in files)
+
+
 def adoption(history, day, tools, now):
     """Each model-facing tool's calls a day over the USE_DAYS days to `day` its history covers (a skill's typed slash
     uses apart: they need no hint), its age and hint; `unused` when the window is whole, the tool is older than it and
@@ -699,7 +728,8 @@ def menu_row(cache):
     the Edit and Read tools own. Repeated jobs, the night's target: clusters over the floor not ruled out or handed off,
     and every cluster a built tool serves, as [tool min/day, cluster, [], residual min/day] (NO_TOOL while none is
     built), the heaviest CANDIDATE_ROWS of the unbuilt; one-off, never a target: each ruled-out or handed-off cluster,
-    then the catch-alls and clusters under the floor as one row; then every unused tool, [0, name, [], UNUSED]."""
+    then the catch-alls and clusters under the floor as one row; then every unused tool, [0, name, [], HINT_OFF] where its fix keeps the file (a skill, a bin tool something
+    else runs: `elsewhere`), else [0, name, [], UNUSED]."""
     history = cache.get("history") or {}
     scanned = [d for d in history if "clusters" in history[d]]
     if not scanned:
@@ -724,7 +754,8 @@ def menu_row(cache):
     jobs = round(sum(r[3] for r in repeated + candidates), 1)
     repeated = sorted(repeated, key=lambda r: -r[3]) + sorted(candidates, key=lambda r: -r[3])[:CANDIDATE_ROWS]
     oneoff = sorted(oneoff, key=lambda r: -r[0]) + ([[round(rest, 1), "other", []]] if rest else [])
-    unused = [[0, ("/" if key.startswith("skill/") else "") + key.split("/", 1)[1], [], UNUSED]
+    keeps = set(cache.get("kept") or ())
+    unused = [[0, ("/" if key.startswith("skill/") else "") + key.split("/", 1)[1], [], HINT_OFF if key in keeps else UNUSED]
               for key in cache.get("unused") or ()]
     groups = [[jobs, "repeated jobs", repeated],
               [round(sum(r[0] for r in oneoff), 1), "one-off", oneoff]]
@@ -760,6 +791,7 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
                              and (bench("adhoc/" + k) or {}).get("command")),
              "parked": sorted("adhoc/" + k for k, _, _, _ in RULES if parked("adhoc/" + k)),
              "unused": sorted(k for k, t in tools.items() if t["unused"])}
+    marks["kept"] = [k for k in marks["unused"] if k.startswith("skill/") or elsewhere(k[4:], tools[k]["path"])]
     if write and (fresh or any(cache.get(k) != v for k, v in marks.items())):
         cache.update(marks)
         time_budget.write_json(cache_path(), cache)

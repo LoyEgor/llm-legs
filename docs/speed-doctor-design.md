@@ -162,7 +162,8 @@ in 30 whole days, older than 30 days: `opportunity:tool/<kind>/<name>`, priced a
 output char = `OUTPUT_EQ` input ones at the write rate); the fix deletes tool and hint, or only the hint where other
 code or Egor runs it. Menu (`menu_row`): repeated jobs (the night's target: built tools as tool | residual min/day,
 unbuilt clusters over the floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), unused
-tools as 0 | 🗑.
+tools as 0 | ○ where the fix keeps the file (a skill, a bin tool other code, a LaunchAgent, Hammerspoon or Egor's
+shell history runs: `elsewhere`), 0 | 🗑 where it deletes it.
 
 **ROI** (`roi ·` lines, `share/time_budget.py`). Each Speed or time row of a fixer job is an improvement with an
 even share of the job's spend, proven per unit against the 7 days before, never by an earlier drop, only beside 3+
