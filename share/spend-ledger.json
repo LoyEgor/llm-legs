@@ -128,21 +128,22 @@
   {
    "id": "suite:llm-legs/test_night_run",
    "title": "llm-legs/test_night_run",
-   "audited_at": "2026-10-13T12:03:54+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261012T235259Z-64f2",
-   "cpu_run": 91.5,
-   "wall_run": 23.5,
-   "cpu_min_day": 73.19,
-   "wall_min_day": 37.29,
+   "audited_at": "2026-10-14T08:00:35+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
+   "cpu_run": 133.6,
+   "wall_run": 34.5,
+   "cpu_min_day": 123.46,
+   "wall_min_day": 61.92,
    "sources": {
+    "llm-legs/tests/.DS_Store": null,
     "llm-legs/tests/affected": "55023ef490c922f3b44dea74eb6ff55b901ac430",
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
     "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
-    "llm-legs/tests/test_night_run.sh": "4de2ff6f88d5712b337992db4c13795347350a58"
+    "llm-legs/tests/test_night_run.sh": "8954f089196dd273b9ecaa43ab706a9fe0fc7aee"
    },
-   "verdict": "kept",
-   "zero": "removal saves 39.0 wall-min/day; loses night-run leftover/worktree/handoff checks (484 asserts)",
-   "note": "sleeps are process-presence holders (sleep 600, killed) and 0.1s polls for a race; 19 git inits are one scenario repo each; profile sleep_s counts requested not slept seconds; no assert-neutral cut found"
+   "verdict": "cut",
+   "zero": "removal saves 43.8 wall-min/day; loses 502 asserts pinning night start, jobs, leftovers, finish, prune and the night report",
+   "note": "process-bound (one lsof per night-run call, 35 in shard 3, none repeated): fixed sleeps 0.3+0.5+0.5 s and two lsof cwd polls became a ps exec-settled wait, parallel writers retry the lock at 0.01 s; cwd listing memo ruled out (no command lists twice); PASS 502"
   },
   {
    "id": "startup:CLAUDE.md + memory index",
