@@ -36,9 +36,10 @@ limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 
 # Never $0: `bash bin/statusline.sh` would double the directory, and the harness may invoke a
 # symlink — realpath resolves both to the script's real home.
-# rmdir and realpath loadables, never mkdir's: its -p chmods every existing parent and fails on /var.
+# rmdir, mkdir and realpath loadables; mkdir -p stays /bin/mkdir (the loadable's -p chmods every existing parent and fails on /var).
 statusline_loadables="${BASH%/bin/*}/lib/bash"
 enable -f "$statusline_loadables/rmdir" rmdir 2>/dev/null
+enable -f "$statusline_loadables/mkdir" mkdir 2>/dev/null
 if ! { enable -f "$statusline_loadables/realpath" realpath 2>/dev/null &&
   realpath -a statusline_self "${BASH_SOURCE[0]}" >/dev/null 2>&1; }; then
   statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
@@ -60,7 +61,7 @@ statusline_timing_row() {
   suite_journal_cpu_ms cpu_ms ''
   printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2" 2>/dev/null \
     >>"$dir/$day.tsv" ||
-    { mkdir -p "$dir" 2>/dev/null &&
+    { /bin/mkdir -p "$dir" 2>/dev/null &&
       printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2" 2>/dev/null \
         >>"$dir/$day.tsv"; }
 }
@@ -128,7 +129,7 @@ else
 fi
 file_mtime_to() { file_stat_to "$1" mtime "$2"; }
 file_size_to() { file_stat_to "$1" size "$2"; }
-ensure_dir() { [ -d "$1" ] || mkdir -p "$1"; }
+ensure_dir() { [ -d "$1" ] || /bin/mkdir -p "$1"; }
 
 # Stock macOS ships neither `timeout` nor `gtimeout`, and a probe with no deadline outlives the 120s
 # after which its lock counts as dead — so a second probe starts while the first still walks. An
@@ -750,18 +751,42 @@ fi
 
 now=${STATUSLINE_NOW:-$EPOCHSECONDS}
 h5_absent=false; h5_pct=""; h5_reset=""; h5_dim=""; wk_pct=""; wk_reset=""; wk_dim=""; wk_origin=""
+h5_stale=""; wk_stale=""; fable_found=""; fable_pct=""; fable_reset=""; fable_dim=""; store_stale_txt=""
+want_rl=0; want_claude=0; want_codex=0; limits_mtime=0
 if [ -n "$rl_json" ]; then
   # Legacy raw-headers caches carry no as_of; the cache file's mtime is the honest lower bound
   # (captured before any rewrite this render did), and a payload without either is as fresh as
   # this render.
   [[ "$rl_mtime" =~ ^[0-9]+$ ]] || rl_mtime="$now"
-  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin h5_absent < <(jq -r \
-    --argjson now "$now" --argjson mtime "$rl_mtime" \
-    --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" "$LIMITS_VIEW_JQ"'
+  want_rl=1
+fi
+if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
+  file_mtime_to limits_mtime "$limits_file"
+  [[ "$limits_mtime" =~ ^[0-9]+$ ]] || limits_mtime=0
+  want_codex=1
+elif [ -n "$acct" ] && [ "$acct" != main ]; then
+  want_claude=1
+fi
+wall_vendor=claude
+wall_account=$acct
+if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then wall_vendor=codex; wall_account=$CLAUDEGPT_ACCOUNT; fi
+
+# ONE jq answers every limits view of this render, four lines, an unwanted or failed one empty: the
+# rate-limit payload's windows (a), the claude account's store row (b), the gateway account's (c) and
+# the store's wall window (d). Each section is the program a jq of its own used to run, over the same
+# input, so a section that errors or finds nothing prints an empty line, as its jq printed nothing; the
+# store file is read once, and unreadable or invalid it leaves b, c and d empty.
+limits_lines=$(jq -nr --arg rl "$rl_json" --argjson want_rl "$want_rl" --argjson want_claude "$want_claude" \
+  --argjson want_codex "$want_codex" --argjson now "$now" --argjson rl_mtime "${rl_mtime:-0}" \
+  --argjson limits_mtime "$limits_mtime" --argjson sthr "$LIMITS_STALE_ROUTING" \
+  --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
+  --arg acct "$acct" --arg gpt "${CLAUDEGPT_ACCOUNT:-}" --arg wall_v "$wall_vendor" --arg wall_a "$wall_account" \
+  "$LIMITS_VIEW_JQ"'
+  def sl_a:
     (.auth.status == "expired") as $auth_expired
     | def bucket($b; $thr):
         if ($b | type) != "object" then ["", "", ""] else
-          (if ($b.as_of | type) == "number" then $b.as_of else $mtime end) as $asof
+          (if ($b.as_of | type) == "number" then $b.as_of else $rl_mtime end) as $asof
           | (if ($b.resets_at | type) == "number" then $b.resets_at else null end) as $reset
           | limits_bucket_expired($now; $reset) as $expired
           | limits_bucket_stale($now; $thr; $auth_expired; ($b.origin // ""); $asof) as $stale
@@ -775,47 +800,24 @@ if [ -n "$rl_json" ]; then
       (limits_window_absent(.five_hour //
         (if .auth_needed == true or (.auth.status | IN("failed", "expired"))
          then {stale:true} else null end)) | tostring)]
-    | join("\u001f")' <<< "$rl_json" 2>/dev/null)
-fi
-
-# Rendering a header-origin week would print a percentage nobody measured — and one every
-# other surface discards (shared-invariants n). Show `?` instead.
-[ "$wk_origin" = headers ] && { wk_pct=""; wk_reset=""; }
-
-h5_stale=""; wk_stale=""; fable_found=""; fable_pct=""; fable_reset=""; fable_dim=""; store_stale_txt=""
-if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$acct" ] && [ "$acct" != main ]; then
-  IFS=$'\x1f' read -r h5_stale wk_stale fable_found fable_pct fable_reset fable_dim store_stale_txt < <(jq -r \
-    --arg account "$acct" --argjson now "$now" --argjson sthr "$LIMITS_STALE_ROUTING" "$LIMITS_VIEW_JQ"'
-    (try ([.vendors.claude.accounts[]? | select(.account == $account)][0] as $a |
+    | join("\u001f");
+  def sl_b:
+    (try ([.vendors.claude.accounts[]? | select(.account == $acct)][0] as $a |
       if $a == null then ["", ""]
       else [($a.five_hour.stale == true | tostring), ($a.weekly.stale == true | tostring)] end
       | join("\u001f")) catch "\u001f")
     + "\u001f"
-    + (try (first(.vendors.claude.accounts[]? | select(.account == $account) | .fable // empty
+    + (try (first(.vendors.claude.accounts[]? | select(.account == $acct) | .fable // empty
         | ["1", (if .effective_pct == null then "" else (.effective_pct | round | tostring) end),
            (.resets_at | limits_store_epoch | if . == null then "" else (floor | tostring) end),
            (if .stale == true or .expired == true then "1" else "" end)]
         | join("\u001f")) // "\u001f\u001f\u001f")
        catch "\u001f\u001f\u001f")
     + "\u001f"
-    + (try (first(.vendors.claude.accounts[]? | select(.account == $account) | select(.fable != null)
-        | limits_store_stale_text(.; $now; $sthr)) // "") catch "")
-  ' "$limits_file" 2>/dev/null)
-  if [ -n "$rl_json" ] && [ -n "$rl_from_cache" ]; then
-    [ "$h5_stale" = true ] && h5_dim=1
-    [ "$wk_stale" = true ] && wk_dim=1
-  fi
-fi
-
-
-if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
-  file_mtime_to limits_mtime "$limits_file"
-  [[ "$limits_mtime" =~ ^[0-9]+$ ]] || limits_mtime=0
-  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim h5_absent store_stale_txt < <(jq -r \
-    --arg account "$CLAUDEGPT_ACCOUNT" --argjson now "$now" --argjson mtime "$limits_mtime" \
-    --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
-    --argjson sthr "$LIMITS_STALE_ROUTING" "$LIMITS_VIEW_JQ"'
-    [.vendors.codex.accounts[]? | select(.account == $account)][0] as $a
+    + (try (first(.vendors.claude.accounts[]? | select(.account == $acct) | select(.fable != null)
+        | limits_store_stale_text(.; $now; $sthr)) // "") catch "");
+  def sl_c:
+    [.vendors.codex.accounts[]? | select(.account == $gpt)][0] as $a
     | def bucket($b; $thr):
         if ($b | type) != "object" then ["", "", ""] else
           ($b.resets_at | limits_store_epoch) as $reset
@@ -825,25 +827,49 @@ if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
                   or limits_reset_ancient($now; $reset) then "" else ($reset | tostring) end),
               (if $b.stale == true or $b.expired == true or $expired
                   or limits_bucket_stale($now; $thr; ($a.auth.status == "expired");
-                       ($b.origin // ""); ($b.as_of // $mtime))
-                  or ($now - $mtime) > $thr then "1" else "" end) ]
+                       ($b.origin // ""); ($b.as_of // $limits_mtime))
+                  or ($now - $limits_mtime) > $thr then "1" else "" end) ]
         end;
     bucket($a.five_hour; $thr5) + bucket($a.weekly; $thrw)
     + [($a != null and limits_window_absent($a.five_hour) | tostring)]
-    + [limits_store_stale_text($a; $now; $sthr)] | join("\u001f")
-  ' "$limits_file" 2>/dev/null)
+    + [limits_store_stale_text($a; $now; $sthr)] | join("\u001f");
+  def sl_d:
+  first(.vendors[$wall_v] | (.accounts // [.])[]? | select((.account // "main") == $wall_a) |
+    limits_wall_view(.; $now) | select(. != null)) |
+  "\(.window) \(.resets_at // "" | if type == "number" then floor else . end)"
+;
+  (try [input] catch null) as $doc
+  | ($doc != null) as $ok
+  | $doc[0] as $L
+  | [ (if $want_rl == 1 then first(try ($rl | fromjson | sl_a) catch "") // "" else "" end),
+      (if $want_claude == 1 and $ok then first(try ($L | sl_b) catch "") // "" else "" end),
+      (if $want_codex == 1 and $ok then first(try ($L | sl_c) catch "") // "" else "" end),
+      (if $ok then first(try ($L | sl_d) catch "") // "" else "" end) ]
+  | map(split("\n")[0] // "")[]
+' "$limits_file" 2>/dev/null)
+{ IFS= read -r limits_a; IFS= read -r limits_b; IFS= read -r limits_c; IFS= read -r limits_d; } <<< "$limits_lines"
+
+[ "$want_rl" = 1 ] && IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin h5_absent <<< "$limits_a"
+
+# Rendering a header-origin week would print a percentage nobody measured — and one every
+# other surface discards (shared-invariants n). Show `?` instead.
+[ "$wk_origin" = headers ] && { wk_pct=""; wk_reset=""; }
+
+if [ "$want_claude" = 1 ]; then
+  IFS=$'\x1f' read -r h5_stale wk_stale fable_found fable_pct fable_reset fable_dim store_stale_txt <<< "$limits_b"
+  if [ -n "$rl_json" ] && [ -n "$rl_from_cache" ]; then
+    [ "$h5_stale" = true ] && h5_dim=1
+    [ "$wk_stale" = true ] && wk_dim=1
+  fi
+fi
+
+if [ "$want_codex" = 1 ]; then
+  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim h5_absent store_stale_txt <<< "$limits_c"
   codex_quota_kick "$CLAUDEGPT_ACCOUNT" "$now"
 fi
 
-wall_vendor=claude
-wall_account=$acct
-if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then wall_vendor=codex; wall_account=$CLAUDEGPT_ACCOUNT; fi
 store_wall_window=''; store_wall_reset=''
-read -r store_wall_window store_wall_reset < <(jq -r --arg v "$wall_vendor" --arg a "$wall_account" --argjson now "$now" "$LIMITS_VIEW_JQ"'
-  first(.vendors[$v] | (.accounts // [.])[]? | select((.account // "main") == $a) |
-    limits_wall_view(.; $now) | select(. != null)) |
-  "\(.window) \(.resets_at // "" | if type == "number" then floor else . end)"
-' "$limits_file" 2>/dev/null)
+read -r store_wall_window store_wall_reset <<< "$limits_d"
 case "$store_wall_window" in
   five_hour) h5_pct=100; h5_dim=''; h5_absent=false; h5_reset=$store_wall_reset ;;
   weekly) wk_pct=100; wk_dim=''; wk_reset=$store_wall_reset ;;

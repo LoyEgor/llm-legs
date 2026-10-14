@@ -179,7 +179,7 @@ assert eq "$(grep -cE -- '-gt (1800|21600)\b' "$STATUSLINE")" 0
 # the menu and judges its own table with it, the statusline sources it, none carries a literal
 assert grep -Fq -- '--argjson stale_after "$LIMITS_STALE_ROUTING"' "$LLMLIMITS"
 assert eq "$(grep -c -- '--argjson stale_thr "$LIMITS_STALE_ROUTING"' "$LLMLIMITS")" 2
-assert eq "$(grep -c -- '--argjson sthr "$LIMITS_STALE_ROUTING"' "$STATUSLINE")" 2
+assert eq "$(grep -c -- '--argjson sthr "$LIMITS_STALE_ROUTING"' "$STATUSLINE")" 1
 assert grep -Fq 'tonumber(limits.account_stale_after_s)' "$ROOT/hammerspoon/llm-limits.lua"
 assert eq "$(grep -cE '\b7200\b' "$ROOT/hammerspoon/llm-limits.lua")" 0
 

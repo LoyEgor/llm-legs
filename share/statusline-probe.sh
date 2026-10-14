@@ -48,7 +48,7 @@ probe_journal() { # kind start_us
   suite_journal_cpu_ms cpu ''
   printf -v day '%(%Y-%m-%d)T' -1
   printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$(( (end_us - $2) / 1000 ))" "${cpu:--}" "$1" "${probe_same:--}" 2>/dev/null >> "$dir/$day.tsv" ||
-    { mkdir -p "$dir" 2>/dev/null &&
+    { /bin/mkdir -p "$dir" 2>/dev/null &&
       printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$(( (end_us - $2) / 1000 ))" "${cpu:--}" "$1" "${probe_same:--}" 2>/dev/null >> "$dir/$day.tsv"; }
   return 0
 }
