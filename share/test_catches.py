@@ -17,7 +17,7 @@ import night_spend
 import time_budget
 from time_budget import num
 
-VERSION = 1
+VERSION = 2
 UNCAUGHT_D = 90
 SETTLE_S = 3600
 LOOKBACK_D = 3
@@ -31,6 +31,8 @@ PATHISH = re.compile(r"[\w.~/@+-]*[\w-]\.(?:py|sh|lua|js|mjs|ts|tsx|json|jsonl|m
                      r"txt|html|css)\b|(?:[\w.-]+/)*(?:bin|tests|share|hooks|lib|launchd)/[\w.@+-]+")
 TEMP = ("/tmp/", "/private/", "/var/folders/", "/dev/", "~/.cache/", "/.cache/")
 VARIABLE = re.compile(r"\$\{?\w+\}?[^\s;&|<>()'\"]*|%s")
+PATH = re.compile(r"^[\w~./@+-]*[A-Za-z][\w~./@+-]*$")
+SYSTEM = re.compile(r"^(?:/usr|/bin|/sbin|/opt|/System|/Library)?/?(?:usr/)?(?:s?bin|lib)/(?:bash|sh|zsh|env|python3?)$|^/(?:usr|opt|System)/")
 TEST_NAME = re.compile(r"^test_|_test\.|\.test\.|\.spec\.")
 WORKER_ID = re.compile(r"^[a-z]+-\d{10}-\d+-[0-9a-f]{4}$")
 WORKER_RUN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "worker-run")
@@ -47,10 +49,11 @@ def is_test(path):
 
 def bash_paths(command):
     command = VARIABLE.sub(" ", command)
-    out = REDIRECT.findall(command)
-    for segment in SEGMENT.split(command) if not re.search(r"<<", command) else [command]:
+    heredoc = "<<" in command
+    out = [p for p in REDIRECT.findall(command.split("\n", 1)[0] if heredoc else command) if PATH.match(p)]
+    for segment in [command] if heredoc else SEGMENT.split(command):
         if WRITER.search(segment):
-            out += PATHISH.findall(segment)
+            out += [p for p in PATHISH.findall(segment) if not SYSTEM.match(p)]
     return out
 
 
@@ -125,17 +128,29 @@ def episodes(rows):
 
 
 def judge(name, red, green, wrote):
+    """(class, the code paths edited between the red and the green)."""
     if wrote is None:
-        return "unread"
+        return "unread", []
     red_end, green_start = num(red.get("ended_at")), num(green.get("started_at")) or num(green.get("ended_at"))
     if any(at <= red_end and os.path.basename(p) == name for at, p in wrote):
-        return "own"
+        return "own", []
     if red.get("tree") and red.get("tree") == green.get("tree"):
-        return "same"
+        return "same", []
     between = [p for at, p in wrote if red_end <= at <= green_start]
-    if any(not is_test(p) for p in between):
-        return "caught"
-    return "test" if between else "none"
+    code = [p for p in between if not is_test(p)]
+    return ("caught", code) if code else ("test" if between else "none", [])
+
+
+def in_repo(root, path):
+    """The path relative to the repository root, a worktree of it included; None outside it."""
+    if not path.startswith("/"):
+        rel = path[2:] if path.startswith("./") else path
+    elif path.startswith(root + "/"):
+        rel = path[len(root) + 1:]
+        rel = rel.split("/", 3)[3] if rel.startswith(".claude/worktrees/") and rel.count("/") >= 3 else rel
+    else:
+        return None
+    return None if rel.startswith((".claude/", ".git/")) else rel
 
 
 def key(root, name):
@@ -143,7 +158,8 @@ def key(root, name):
 
 
 def fold(now, journal, write=False):
-    """The ledger with every settled day folded in: {days: {day: {class: episodes, catches: {suite: n}}},
+    """The ledger with every settled day folded in: {days: {day: {class: episodes, catches: {suite: n},
+    fixed: {suite: {path: n}}}},
     suites: {suite: {first, last}}, through}."""
     held = time_budget.read_json(ledger_path(), {})
     if not isinstance(held, dict) or held.get("version") != VERSION:
@@ -179,16 +195,20 @@ def fold(now, journal, write=False):
     for caller, root, name, red, green in found:
         if caller not in wrote:
             wrote[caller] = edits(paths[caller]) if paths.get(caller) else None
-        cls = judge(name, red, green, wrote[caller])
-        d = held["days"].setdefault(time_budget.local_day(green["ended_at"]), {"catches": {}})
+        cls, code = judge(name, red, green, wrote[caller])
+        d = held["days"].setdefault(time_budget.local_day(green["ended_at"]), {"catches": {}, "fixed": {}})
         d[cls] = d.get(cls, 0) + 1
         if cls == "caught":
             k = key(root, name)
             d["catches"][k] = d["catches"].get(k, 0) + 1
+            fixed = d.setdefault("fixed", {}).setdefault(k, {})
+            rels = {in_repo(root, p) for p in code} - {None}
+            for rel in rels:
+                fixed[rel] = round(fixed.get(rel, 0) + 1.0 / len(rels), 3)
             s = held["suites"].setdefault(k, {"first": time_budget.local_day(green["ended_at"])})
             s["last"] = max(s.get("last") or "", time_budget.local_day(green["ended_at"]))
     for d in pending:
-        held["days"].setdefault(d, {"catches": {}})
+        held["days"].setdefault(d, {"catches": {}, "fixed": {}})
     held["days"] = {d: v for d, v in held["days"].items() if d >= time_budget.local_day(now - 2 * UNCAUGHT_D * 86400)}
     held["through"] = pending[-1]
     if write:
@@ -205,6 +225,19 @@ def summary(held, now, days):
             counts.update({c: d.get(c, 0) for c in CLASSES})
             caught.update(d.get("catches") or {})
     return counts, caught
+
+
+def fixers(held, now, days):
+    """{(repo, path): {suite key: credit}}: the suites whose red a code edit of that file fixed, over `days`; an
+    episode's one catch is shared evenly among the code files edited in it."""
+    cut = time_budget.local_day(now - days * 86400)
+    out = collections.defaultdict(collections.Counter)
+    for day, d in held.get("days", {}).items():
+        if day > cut:
+            for k, paths in (d.get("fixed") or {}).items():
+                for rel, n in paths.items():
+                    out[(k.split("/", 1)[0], rel)][k] += n
+    return out
 
 
 def uncaught(held, suites, now):
