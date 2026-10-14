@@ -2715,6 +2715,10 @@ start_run() {
       add_dirs+=("$value")
     done < <(brief_add_dirs "$brief")
   fi
+  # 2026-10-13: a night script passed a whole two-line worker-session file; the CLI refused it after launch.
+  case "$resume" in *[[:space:]]*)
+    fail "--resume takes one session id, not '${resume//$'\n'/ | }': pass the run id and worker-run resumes its last session. Nothing was launched and no account was spent." ;;
+  esac
   if worker_light_off; then
     if [ "$vendor" = light ]; then
       outcome_line LIGHT_OFF

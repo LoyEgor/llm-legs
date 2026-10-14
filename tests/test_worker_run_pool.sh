@@ -428,6 +428,12 @@ assert test "$(jq -r '.resume' "$RUN_DIR/meta.json")" = claude-last
 assert grep -q '^ARG=claude-last$' "$CALL_LOG"
 rm -rf "$WORKER_RUN_DIR/claudeb-1-2-prior"
 cp "$WORK/brief.plain" "$WORK/brief"
+clear_stub
+rc=0
+"$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --account resumeacct --resume "$(printf 'claude-first\nclaude-last')" >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -qF -- '--resume takes one session id' "$WORK/start.err"
+assert_fails grep -q "^ARG=" "$CALL_LOG"
 
 # The W7 escapes of 2026-10-09: day briefs from a main-checkout workdir named the second repository's
 # main checkout by root only in prose. From a task worktree the same brief grants nothing.

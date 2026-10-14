@@ -1218,7 +1218,7 @@
     "detail": "^wrote [^/]+$"
    },
    "title": "a run wrote another repository's main checkout or a non-repository directory that its brief authorized only in prose, or escaped through a tracked symlink, so worker-run granted it nothing and the write read as escaped",
-   "status": "fixed",
+   "status": "fixed-pending",
    "fixes": [
     {
      "at": "2026-10-04T16:52:41+03:00",
@@ -1243,6 +1243,16 @@
       "llm-legs/share/worker-policy.md"
      ],
      "in": "llm-legs@6594c10d",
+     "regressed_at": "2026-10-13T14:13:54+03:00"
+    },
+    {
+     "at": "2026-10-14T05:32:23+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "claude-setup/hooks/worker-edit-guard.sh",
+      "claude-setup/tests/test_worker_edit_guard.sh"
+     ],
+     "in": null,
      "regressed_at": null
     }
    ],
@@ -1250,9 +1260,9 @@
     "W3",
     "W5"
    ],
-   "last_reviewed": "2026-10-10",
+   "last_reviewed": "2026-10-14",
    "reviewed_by": "LLM doctor",
-   "note": "2026-10-10 (night 20261010T031219Z-4c4e): the 7 regressions (2026-10-09) were all one day chat («Token spending tracking and optimization»), relays already retired, writing Egor's own main checkouts its briefs named only as 'Repos: <a> and <b> (main checkouts; commit on main in each)' (or by `~/.hammerspoon`, or inherited through RESUME). worker-run now grants, to a run whose workdir is itself a main checkout, every other repository root the brief or a *.md it names gives by absolute or ~/ path (tests/test_worker_run_pool.sh, red on the old code). The 2026-10-01 objection holds: night and fixer runs work in task worktrees, so a main checkout their prose names stays ungranted. Replayed on the 7: 6 read granted; 28f0 still escapes, rightly: it wrote ~/.hammerspoon/automation_menu.lua, a repository its brief never named. Ruled out: the relay retirement (46879c63) itself; relays never inferred grants either. Uncovered: a granted root written through a symlinked alias (the doctor compares path strings). 2026-10-04: worker-edit-guard denies a worker's shell write that crosses a symlink under its tree into another checkout, unless an ADD-DIR grant covers the target; Edit/Write stay unhooked by Egor's decision (40 ms on every edit for one escape seen), so the W5 escape check is their only guard. 2026-10-04: relays drop the redundant --resume flag and take --workdir from the directory the brief works in; tests/test_consistency.sh pins both. Split from W5 on 2026-10-03, which matches only legs up to its fix. 2026-10-01: 7ea3 (review-bench main, brief 'Repos: ... review-bench at <path>'), 7c1f (hammerspoon main, brief 'Code: <path>'), 3f6b (video/alona/R7-A/clips.json, workdir video/harness): day briefs authorizing a main-checkout write in prose only, from a repository workdir. Not inferred in worker-run on purpose: night and fixer briefs name main checkouts to forbid writes there. 2026-10-02: 1632 (night fixer harness-hooks-5607) is a genuine escape caught right: an edit through claude-setup's absolute symlink hooks/worker-run-backstop.sh landed in llm-legs main (docs/handoffs/2026-10-03-path-shape-tilde.md). Detail is project_of of the first outside path: a main-checkout file yields its basename, a task worktree repo/worktree (W3). 2026-10-04 recheck: cause stands by design; the template/brief-file grant added for W3 resolves only existing .claude/worktrees/<name> trees, never a main checkout.",
+   "note": "2026-10-14 (night 20261014T013750Z-8004): of the 4 (2026-10-13/14), 30d1 (night fixer, 'wrote doctor-fix') was no write: it replayed a corpus of other sessions' Bash payloads through worker-edit-guard from its own shell, which inherits WORKER_RUN_RECORD, so the guard appended their main-checkout targets to the live run's shell-writes. The guard now ignores a payload whose session_id differs from the record's session (subagents share it) (claude-setup tests/test_worker_edit_guard.sh, mutation-checked). The other 3 escape as worker-policy.md specifies, each a brief-author slip, none recurring: 72b0 (day, llm-legs main workdir) wrote review-bench main, named only as the bare word 'review-bench'; 21a8 (task worktree) wrote ~/.claude/settings.json, a non-repository file its brief asked for in prose; 69be (token-map main) put a DB copy in /Volumes/Work/tmp/tm-measure, a directory it created itself for 'a temp dir', outside is_scratch_path. Not built: bare-name or file-path grant inference (prose names repositories to read far more often; the 2026-10-01 objection); a scratch root for /Volumes/Work/tmp would loosen the judge for one run. 2026-10-10 (night 20261010T031219Z-4c4e): the 7 regressions (2026-10-09) were all one day chat («Token spending tracking and optimization»), relays already retired, writing Egor's own main checkouts its briefs named only as 'Repos: <a> and <b> (main checkouts; commit on main in each)' (or by `~/.hammerspoon`, or inherited through RESUME). worker-run now grants, to a run whose workdir is itself a main checkout, every other repository root the brief or a *.md it names gives by absolute or ~/ path (tests/test_worker_run_pool.sh, red on the old code). The 2026-10-01 objection holds: night and fixer runs work in task worktrees, so a main checkout their prose names stays ungranted. Replayed on the 7: 6 read granted; 28f0 still escapes, rightly: it wrote ~/.hammerspoon/automation_menu.lua, a repository its brief never named. Ruled out: the relay retirement (46879c63) itself; relays never inferred grants either. Uncovered: a granted root written through a symlinked alias (the doctor compares path strings). 2026-10-04: worker-edit-guard denies a worker's shell write that crosses a symlink under its tree into another checkout, unless an ADD-DIR grant covers the target; Edit/Write stay unhooked by Egor's decision (40 ms on every edit for one escape seen), so the W5 escape check is their only guard. 2026-10-04: relays drop the redundant --resume flag and take --workdir from the directory the brief works in; tests/test_consistency.sh pins both. Split from W5 on 2026-10-03, which matches only legs up to its fix. 2026-10-01: 7ea3 (review-bench main, brief 'Repos: ... review-bench at <path>'), 7c1f (hammerspoon main, brief 'Code: <path>'), 3f6b (video/alona/R7-A/clips.json, workdir video/harness): day briefs authorizing a main-checkout write in prose only, from a repository workdir. Not inferred in worker-run on purpose: night and fixer briefs name main checkouts to forbid writes there. 2026-10-02: 1632 (night fixer harness-hooks-5607) is a genuine escape caught right: an edit through claude-setup's absolute symlink hooks/worker-run-backstop.sh landed in llm-legs main (docs/handoffs/2026-10-03-path-shape-tilde.md). Detail is project_of of the first outside path: a main-checkout file yields its basename, a task worktree repo/worktree (W3). 2026-10-04 recheck: cause stands by design; the template/brief-file grant added for W3 resolves only existing .claude/worktrees/<name> trees, never a main checkout.",
    "handoff": null
   },
   {
@@ -2188,8 +2198,8 @@
     "word": "unclassified",
     "detail": "--resume requires a valid session ID"
    },
-   "title": "a RESUME brief named the worker-run run id instead of its session, so the CLI refused --resume and the run failed at once",
-   "status": "fixed",
+   "title": "a RESUME named no single session (a run id, or a whole multi-line worker-session file), so the CLI refused --resume and the run failed at once",
+   "status": "fixed-pending",
    "fixes": [
     {
      "at": "2026-10-10T08:06:48+03:00",
@@ -2198,13 +2208,23 @@
       "llm-legs/bin/worker-run"
      ],
      "in": "llm-legs@6594c10d",
+     "regressed_at": "2026-10-13T16:28:17+03:00"
+    },
+    {
+     "at": "2026-10-14T05:32:23+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run",
+      "llm-legs/tests/test_worker_run_pool.sh"
+     ],
+     "in": null,
      "regressed_at": null
     }
    ],
    "same_cause": [],
-   "last_reviewed": "2026-10-10",
+   "last_reviewed": "2026-10-14",
    "reviewed_by": "LLM doctor",
-   "note": "2026-10-10 (night 20261010T031219Z-4c4e): 2aff (2026-10-09, chat «Чистка night run 20261009T023738Z-817e») carried 'RESUME claudeb-1791580306-76633-3433:'. worker-run start now resolves a run id of the same vendor to the last session its worker-session file records, and refuses one that recorded none (tests/test_worker_run_pool.sh, red on the old code).",
+   "note": "2026-10-14 (night 20261014T013750Z-8004): the 3 regressions (2026-10-13 16:28-17:12, night 3131's orchestrator) were no run id: its scratch resume.sh passed --resume \"$(cat worker-session)\", two session lines joined by a newline, which worker-run launched and the CLI refused (the orchestrator switched to tail -1 mid-night). worker-run start now refuses a --resume holding whitespace before any launch (tests/test_worker_run_pool.sh, mutation-checked). 2026-10-10 (night 20261010T031219Z-4c4e): 2aff (2026-10-09, chat «Чистка night run 20261009T023738Z-817e») carried 'RESUME claudeb-1791580306-76633-3433:'. worker-run start now resolves a run id of the same vendor to the last session its worker-session file records, and refuses one that recorded none (tests/test_worker_run_pool.sh, red on the old code).",
    "handoff": null
   },
   {
@@ -2264,6 +2284,23 @@
    "reviewed_by": "Night image fixer",
    "note": "4 codex-image legs 04:05Z 2026-10-09, rc 2 in 0 s, none spent: a night harness-speed fixer (chat-media run 0b86) timing `media-run image --vendor codex -- --dry-run --dest … --prompt …`. I35's gemini-image refusals were the same call. The media skill sends dry runs to image-fanout, which the launch gate refuses by name, and a one-vendor media-run execs the script, so no one-vendor dry run existed. Fix: media-run answers --dry-run itself (account and the resolved command, exit 0, no leg, no pointer) for an image or video script with no --dry-run case; audio kinds and any script with its own case still get theirs (tests/test_media_run.sh, red on the old media-run). The skill line «codex-image and gemini-image refuse --dry-run» goes stale: claude-setup's to change.",
    "handoff": null
+  },
+  {
+   "id": "W12",
+   "block": "workers",
+   "match": {
+    "word": "crashed",
+    "detail": "^crashed$",
+    "until": "2026-10-13T14:10:00+03:00"
+   },
+   "title": "codex: OpenAI's stream disconnected before completion after 5 reconnects, and the codex_core rollout-record ERROR after it reads as crashed",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-14",
+   "reviewed_by": "LLM doctor",
+   "handoff": null,
+   "note": "2026-10-14 (night 20261014T013750Z-8004): codex-1791880551-65626-32dd (egbogd, sol, 2026-10-13 14:06) ended 'stream disconnected before completion: An error occurred while processing your request' (request d44f0014-...), vendor-side; its last err line 'ERROR codex_core::session: failed to record rollout items: thread ... not found' is a consequence and matches the crashed word. The only text-classified crashed worker in 30 days, so no vocabulary change (a move to theirs is the owner's, panel.py and llm-doctor copies); until bounds the row to this one leg. Recurring: give 'stream disconnected before completion' a theirs word. Ruled out: CODEX_UNAVAILABLE is worker-run's generic codex failure outcome, no vendor verdict."
   }
  ],
  "blind_spots": [
