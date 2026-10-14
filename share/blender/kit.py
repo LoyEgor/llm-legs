@@ -264,6 +264,9 @@ def import_svg(path, width=2.0, depth=0.12, bevel=0.01, upright=True):
     data.resolution_u = 32
     data.extrude = depth / 2
     data.bevel_depth = bevel
+    # A bevel grows the outline by its depth, closing a logo's narrow cuts and counters; the
+    # negative offset keeps the bevelled solid on the SVG's own outline.
+    data.offset = -bevel
     data.bevel_resolution = 6
     bpy.ops.object.convert(target="MESH")
     obj = bpy.context.view_layer.objects.active
