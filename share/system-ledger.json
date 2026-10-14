@@ -99,123 +99,27 @@
       ]
     },
     {
-      "id": "memlogd-forked-sleep",
-      "title": "memlogd forked a sleep that lived each whole 15 s interval under launchd's bash 3.2",
-      "status": "fixed-pending",
-      "match": {
-        "rule": "cohort",
-        "key": "memlogd",
-        "cause": "memlogd"
-      },
-      "note": "launchd's PATH (/usr/bin:/bin) ran it on macOS bash 3.2, which has no loadable sleep, so each tick forked `sleep 15`: a newborn every 2 s window catches, so each one was charged at the tick's scale (4.4 attributed births/s outside suites, 39 % in suites). It now re-execs into bash 5 and loads the sleep builtin; vm_stat/ps text reach awk by here-string. Under env -i PATH=/usr/bin:/bin it runs on bash 5.3.9 with no child while sleeping, same log lines.",
-      "fixes": [
-        {
-          "at": "2026-10-14T03:50:00+03:00",
-          "by": "system fixer system-system-20261014T001850Z-4f07",
-          "files": [
-            "llm-legs/bin/memlogd",
-            "llm-legs/tests/test_slots.sh"
-          ],
-          "in": "llm-legs@dc3ad859",
-          "regressed_at": null
-        }
-      ]
-    },
-    {
       "id": "cohort-hammerspoon-tab-poll",
-      "title": "Hammerspoon's Terminal tab poll spawns osascript and ps -t while Terminal is frontmost",
+      "title": "Hammerspoon's own CPU: the 100 ms Terminal tab poll",
       "status": "open",
       "match": {
         "rule": "cohort",
         "key": "Hammerspoon",
         "cause": "Hammerspoon"
       },
-      "note": "3.7 attributed births/s outside suites, 54 % of its births in suites (hs CLI calls). claude_cmd_keys.lua runs osascript (ttyRefreshAfter 1 s) and /bin/ps -t (refreshAfter 0.35 s) off its 0.1 s refreshTimer: Egor's Cmd-key input feature, an open trade.",
+      "note": "B 7.1 by C, 6,127 cpu-s a day. Own CPU 130-510 s an hour on 10-13/14, its reaped children (the poll's osascript and ps -t) 1-7 s an hour, so the cost is the AX walk itself: Egor's Cmd-key input feature, an open trade.",
       "handoff": "llm-legs/docs/handoffs/2026-10-13-hammerspoon-ax-poll.md"
     },
     {
-      "id": "cohort-worker-run-under-test",
-      "title": "worker-run is charged the births of the suites that drive it",
-      "status": "open",
-      "match": {
-        "rule": "cohort",
-        "key": "llm-legs/bin/worker-run",
-        "cause": "llm-legs/bin/worker-run"
-      },
-      "note": "88 % of its attributed births fall in suite ticks; 10.9/s outside them. A stub lifecycle (start 131, supervise/await 68, wait 35, report 49) execs 255 binaries; × 485 runs on 10-13 ≈ 1.4 births/s, against 91 attributed: the tick scale. Its slot_wait polls were cut by the 10-13 Harness CPU audit.",
-      "handoff": "llm-legs/docs/handoffs/2026-10-14-system-cohort-attribution.md"
-    },
-    {
-      "id": "cohort-run-suites-under-test",
-      "title": "run-suites.sh is charged the births of the suites it runs",
-      "status": "open",
-      "match": {
-        "rule": "cohort",
-        "key": "llm-legs/share/run-suites.sh",
-        "cause": "llm-legs/share/run-suites.sh"
-      },
-      "note": "96 % of its attributed births fall in suite ticks: they are the suites'. Its slot_wait was cut by the 10-13 Harness CPU audit.",
-      "handoff": "llm-legs/docs/handoffs/2026-10-14-system-cohort-attribution.md"
-    },
-    {
-      "id": "cohort-llm-limits-under-test",
-      "title": "llm-limits.sh is charged the births of the suites that drive it",
-      "status": "open",
-      "match": {
-        "rule": "cohort",
-        "key": "llm-legs/llm-limits.sh",
-        "cause": "llm-legs/llm-limits.sh"
-      },
-      "note": "78 % of its attributed births fall in suite ticks; 2.5/s outside them. `--table --no-write` finishes in under 8 s; write mode was not profiled.",
-      "handoff": "llm-legs/docs/handoffs/2026-10-14-system-cohort-attribution.md"
-    },
-    {
       "id": "cohort-statusline-renders",
-      "title": "statusline.sh births: renders plus the suites that drive it",
+      "title": "statusline.sh render CPU",
       "status": "open",
       "match": {
         "rule": "cohort",
         "key": "llm-legs/bin/statusline.sh",
         "cause": "llm-legs/bin/statusline.sh"
       },
-      "note": "41-59 % of its attributed births fall in suite ticks; 2.1/s outside them. Its CPU is priced by the statusline journal (cohort_sums since 7fcf0fc1) and the away replay (3332845a).",
-      "handoff": "llm-legs/docs/handoffs/2026-10-14-system-cohort-attribution.md"
-    },
-    {
-      "id": "cohort-test-driven-scripts",
-      "title": "doctor-fix, night-run, light-research and codex-image are charged their suites' births",
-      "status": "open",
-      "match": {
-        "rule": "cohort",
-        "key": "llm-legs/bin/doctor-fix",
-        "cause": "llm-legs/bin/doctor-fix"
-      },
-      "note": "94-100 % of the attributed births of doctor-fix, night-run, light-research and codex-image fall in suite ticks; one row each would repeat this.",
-      "handoff": "llm-legs/docs/handoffs/2026-10-14-system-cohort-attribution.md"
-    },
-    {
-      "id": "cohort-small-own-scripts",
-      "title": "own scripts at 0.16-1.2 attributed births/s outside suites",
-      "status": "open",
-      "match": {
-        "rule": "cohort",
-        "key": "llm-legs/share/affected-suites.sh",
-        "cause": "llm-legs/share/affected-suites.sh"
-      },
-      "note": "Outside suite ticks: affected-suites 1.2/s, worker-pick 1.0, llm-refresh 0.9, review-debt 0.58, harness-doctor 0.56 (cut by the 10-13 Harness CPU audit), reference-transaction 0.48, commit-push-gate 0.29, instruction-watch 0.16; each newborn the window sees counts at the tick scale, so these are upper bounds.",
-      "handoff": "llm-legs/docs/handoffs/2026-10-14-system-cohort-attribution.md"
-    },
-    {
-      "id": "cohort-legacy-tags",
-      "title": "pre-ba52e8be bare tags and system-doctor's launch day still score",
-      "status": "ruled-out",
-      "match": {
-        "rule": "cohort",
-        "key": "worker-run",
-        "cause": "worker-run"
-      },
-      "note": "worker-run, run-suites.sh, llm-limits.sh, statusline.sh, night-run, test_statusline_hooks.sh and test_consistency.sh are the bare tags before ba52e8be (2026-10-07 20:54) switched to repo paths: births on 10-06/07 only, 0 since 10-08; system-doctor's 1.74 M births are all on 10-06. They leave the 7-day window by 10-15.",
-      "handoff": "llm-legs/docs/handoffs/2026-10-14-system-cohort-attribution.md"
+      "note": "B 3.2 by C, 2,740 cpu-s a day: the statusline journal's renders (cohort_sums since 7fcf0fc1), all of real chat sessions, none from suites; 10-13 had 157,749 renders, 17,132 cpu-s, ~109 ms each. The 3 s refresh stays (Egor's decision); the lever is per-render cost, the away replay (3332845a) the first cut."
     }
   ],
   "blind_spots": [
@@ -257,7 +161,7 @@
     {
       "id": "suite-orphans",
       "what": "processes a SIGKILLed suite leaves behind, reparented to launchd",
-      "reason": "Their cause is the nearest live ancestor, launchd, so the tick tags them by their own name (`bash`): a test_slots waiter of night 3131 polled `sleep 0.2` for 13.6 h (~5 births/s) before this run killed it; nothing names the suite that started it",
+      "reason": "Their cause is the nearest live ancestor, launchd, so the tick tags them and the children they reap by their own name (`bash`): a test_slots waiter of night 3131 polled `sleep 0.2` for 13.6 h before a System fixer killed it; nothing names the suite that started it",
       "since": "2026-10-14",
       "would_catch_if": "suites exported a run tag their children carry (env or process group) and the tick read it"
     }
