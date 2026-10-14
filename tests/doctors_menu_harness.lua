@@ -101,8 +101,18 @@ local function iso(epoch) return os.date("!%Y-%m-%dT%H:%M:%SZ", epoch) end
 -- watching or collecting anything.
 local tasks, alerts, dialogs, answer = {}, {}, {}, "Cancel"
 local lagTimers, fakeClock, fakeUp = {}, nil, nil
+-- json.refused: every text hs.json.decode refused, each an ERROR line in the live Hammerspoon console.
+-- Kept on the table: the main chunk is at Lua's 200-local limit.
 local fakeHs = setmetatable({
   pathwatcher = false,
+  json = (function()
+    local refused = {}
+    return setmetatable({ refused = refused, decode = function(text)
+      local value = hs.json.decode(text)
+      if value == nil then refused[#refused + 1] = text end
+      return value
+    end }, { __index = hs.json })
+  end)(),
   timer = setmetatable({
     doEvery = function(interval, fn)
       lagTimers[#lagTimers + 1] = { interval = interval, fn = fn }
@@ -502,10 +512,10 @@ local realRead, heavyReads = hs.json.read, 0
 fakeHs.json = setmetatable({ read = function(path, ...)
   if path == dir .. "/harness-doctor/latest.json" then heavyReads = heavyReads + 1 end
   return realRead(path, ...)
-end }, { __index = hs.json })
+end }, { __index = fakeHs.json })
 loadDoctors().menuItems()
 check(heavyReads == 0, "no Harness latest.json decode")
-fakeHs.json = nil
+fakeHs.json = getmetatable(fakeHs.json).__index
 write("/harness-ledger.json", { rows = {
   { id = "H1", status = "open", title = "reported cause" }, { id = "H2", status = "open", title = "quiet cause" } } })
 write("/harness-doctor/latest.json", { status = "problems", problems = { { ledger = "H1" } } })
@@ -593,6 +603,8 @@ remove("/doctors/problem-days.jsonl")
 remove("/code-doctor/latest.json")
 remove("/harness-doctor/latest.json")
 tasks, alerts = {}, {}
+check(#fakeHs.json.refused == 0, "a problem-days line that is no JSON object reached hs.json.decode, an ERROR in the live console: "
+  .. table.concat(fakeHs.json.refused, " | "))
 if onlyTrends then
   os.execute("rm -rf '" .. dir .. "'")
   return #failures > 0 and "FAIL: " .. table.concat(failures, "; ") or "PASS: " .. checks .. " trend checks"

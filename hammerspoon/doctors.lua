@@ -160,7 +160,9 @@ local function readJson(path, format)
     local rows = {}
     for line in handle:lines() do
       if format == "header" and not line:match("^[TH]\t") then break end
-      local payload = format == "header" and line:match("^H\t(.*)") or format == "days" and line
+      -- A line that is no whole object is skipped before hs.json.decode: LuaSkin logs every failed
+      -- decode to the console as an ERROR, pcall or not.
+      local payload = format == "header" and line:match("^H\t(.*)") or format == "days" and line:match("^{.*}$")
       if payload then
         local valid, row = pcall(hs.json.decode, payload)
         if valid and type(row) == "table" then
