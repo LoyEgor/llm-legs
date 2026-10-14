@@ -4350,20 +4350,20 @@
   {
    "id": "suite:llm-legs/test_worker_run_watchdog",
    "title": "llm-legs/test_worker_run_watchdog",
-   "audited_at": "2026-10-13T14:08:16+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-memlogd-20261012T235344Z-1eea",
-   "cpu_run": 21.3,
-   "wall_run": 37.8,
-   "cpu_min_day": 10.9,
-   "wall_min_day": 23.74,
+   "audited_at": "2026-10-14T08:52:44+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
+   "cpu_run": 16.3,
+   "wall_run": 38.6,
+   "cpu_min_day": 11.13,
+   "wall_min_day": 29.9,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_worker_run_watchdog.sh": "6ee35f94756153ca03433557328b478f12ba255e",
-    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_worker_run_watchdog.sh": "735b44dc438d363491d9a241dbab0723a4d57686",
+    "llm-legs/tests/worker_run_harness.sh": "a036bbbb40ef5d261ed9eafaa6559428e4c73635"
    },
    "verdict": "cut",
-   "zero": "removal saves 22.6 wall-min/day, 10.5 CPU-min/day; loses every pin of the deadline, idle and silent watchdogs, signal kills and transcript discovery through symlinks",
-   "note": "waits at worker-run's own 5 s poll (kqueue wakes wait at exit since 1ba424f1); CPU 21.8->18.4 s a run at equal wall, 74 asserts; wall is the race windows, kept"
+   "zero": "removal saves 27.7 wall-min/day; loses 74 asserts pinning deadlines, idle and silent kills, signals",
+   "note": "stub-window bound: wd-answered to shard 2 (max shard 72 -> 65 s), dirt_repo_init only in wd-editing, wd-signal one report; PASS 74"
   },
   {
    "id": "suite:llm-legs/test_worker_run_reliability",
@@ -4500,20 +4500,20 @@
   {
    "id": "suite:llm-legs/test_worker_run_claims",
    "title": "llm-legs/test_worker_run_claims",
-   "audited_at": "2026-10-13T14:44:07+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-slots-20261012T235407Z-0a16",
-   "cpu_run": 21.6,
-   "wall_run": 47.5,
-   "cpu_min_day": 11.38,
-   "wall_min_day": 45.14,
+   "audited_at": "2026-10-14T08:52:40+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
+   "cpu_run": 19.7,
+   "wall_run": 20.2,
+   "cpu_min_day": 12.55,
+   "wall_min_day": 38.44,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_worker_run_claims.sh": "9e10414b7ec089bad862a8e4792e91a3e4f7c9fd",
-    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_worker_run_claims.sh": "2b8672cbfc546ac33b4263a48ad28485da2a5f08",
+    "llm-legs/tests/worker_run_harness.sh": "a036bbbb40ef5d261ed9eafaa6559428e4c73635"
    },
    "verdict": "cut",
-   "zero": "removal saves 28.3 wall-min/day; loses produced/claims/UNNAMED/long-run attribution checks",
-   "note": "9 cases wait on exit_code instead of building a wait report they never read; 139 asserts unchanged"
+   "zero": "removal saves 30.5 wall-min/day; loses 139 asserts pinning worker-run claims, produced and unnamed files, liveness rows",
+   "note": "launch-and-report bound: two redundant terminal reports before legacy_claim_record's own wait -> await_exit; burn stub capped at ~3 CPU-s; harness polls forkless (await_launched regex, clear_stub); PASS 139"
   },
   {
    "id": "suite:llm-legs/test_worker_run_pool",
@@ -4536,38 +4536,38 @@
   {
    "id": "suite:llm-legs/test_worker_run_attribution",
    "title": "llm-legs/test_worker_run_attribution",
-   "audited_at": "2026-10-13T14:44:08+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-slots-20261012T235407Z-0a16",
-   "cpu_run": 32.9,
-   "wall_run": 47.0,
-   "cpu_min_day": 17.01,
-   "wall_min_day": 55.04,
+   "audited_at": "2026-10-14T08:52:42+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
+   "cpu_run": 29.9,
+   "wall_run": 30.4,
+   "cpu_min_day": 18.5,
+   "wall_min_day": 35.95,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
     "llm-legs/tests/test_worker_run_attribution.sh": "7c88663f989bfd49ef3ae19cf3ef497504cafe54",
-    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+    "llm-legs/tests/worker_run_harness.sh": "a036bbbb40ef5d261ed9eafaa6559428e4c73635"
    },
-   "verdict": "cut",
-   "zero": "removal saves 25.6 wall-min/day; loses review-anchors store and attribution repair checks",
-   "note": "9 cases wait on exit_code instead of a wait report; the 3 reading it keep await_done; 324 asserts unchanged"
+   "verdict": "kept",
+   "zero": "removal saves 28.6 wall-min/day; loses 324 asserts pinning the review-anchors store and attribution repair",
+   "note": "shards measured 84/96 s at load ~90, not 5x apart; moving attr-repair variants needs each start state pinned for <=6 s; per-command python in classify_tool_rows is a product batch left open; harness polls now forkless; PASS 324"
   },
   {
    "id": "suite:llm-legs/test_worker_run_entry",
    "title": "llm-legs/test_worker_run_entry",
-   "audited_at": "2026-10-13T14:44:09+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-slots-20261012T235407Z-0a16",
-   "cpu_run": 25.3,
-   "wall_run": 31.5,
-   "cpu_min_day": 15.48,
-   "wall_min_day": 32.95,
+   "audited_at": "2026-10-14T08:52:45+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
+   "cpu_run": 24.7,
+   "wall_run": 28.3,
+   "cpu_min_day": 17.3,
+   "wall_min_day": 35.03,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_worker_run_entry.sh": "5f6bcf1831b7437b50a06b2e2c63ff07d4b18c51",
-    "llm-legs/tests/worker_run_harness.sh": "41d6dbf6a5e707072b70194a8be21000fe09d554"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_worker_run_entry.sh": "2af570618db998d98a4d91e02bc4f5385099919d",
+    "llm-legs/tests/worker_run_harness.sh": "a036bbbb40ef5d261ed9eafaa6559428e4c73635"
    },
-   "verdict": "kept",
-   "zero": "removal saves 25.5 wall-min/day; loses effort/model refusals before launch, report bus, door and roster checks",
-   "note": "already cut by 81ec4488 (await_exit) and sharded 4 ways in 975b359f; remaining wall is worker-run start forks per case, nothing check-equal to drop"
+   "verdict": "cut",
+   "zero": "removal saves 26.0 wall-min/day; loses 254 asserts pinning the report bus, effort and model refusals, the worker door",
+   "note": "launch bound: model_effort_tests' header/refusal half its own shard-2 section (shard 1 21 -> 14 launches, 104 -> 93 s at load ~100), door poll one wait after await_exit; PASS 254"
   },
   {
    "id": "suite:llm-legs/test_token_tracking_menu",
