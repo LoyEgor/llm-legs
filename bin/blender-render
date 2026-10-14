@@ -9,6 +9,10 @@
 
 The output extension picks the job: .png a still, .mp4 an H.264 loop, .mov ProRes 4444 with
 alpha, .webm VP9 with alpha (web), .glb a Draco-compressed mesh for three.js.
+Each render (doctor, logo, run) first takes a slot of the machine-wide `blender` pool: one Blender always runs,
+another only while available memory holds one more run's footprint (median peak of the last 9 runs, 9.5 GB
+until measured; ~/.cache/blender-render, BLENDER_RENDER_DIR); a waiter prints
+`blender: waiting for a slot (N running, room R)` and raises a limiter hold.
 Guide: llm-legs docs/blender.md.
 """
 
@@ -17,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -28,20 +33,153 @@ SHARE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))
 ASSETS = os.path.expanduser(os.environ.get("BLENDER_ASSETS", "~/.local/share/blender-assets"))
 VIDEO = {".mp4", ".mov", ".webm"}
 SIZE_RE = re.compile(r"^(\d{2,5})x(\d{2,5})$")
+sys.path.insert(0, os.path.dirname(SHARE))
+import machine_probe  # noqa: E402
 
 
 class Usage(Exception):
     pass
 
 
+# One headless Blender holds ~9.3 GB phys_footprint, mostly wired Metal memory that cannot swap: two at once
+# took a 24 GB Mac to 22.4 GB used and 5.5 GB swap (2026-10-14). Every launch takes a slot of the machine-wide
+# `blender` pool (share/slots.sh): one always runs, another only while available memory holds one more run's
+# expected footprint (the median peak of the recent runs) over the memory guard's line.
+STATE = os.path.expanduser(os.environ.get("BLENDER_RENDER_DIR", "~/.cache/blender-render"))
+DEFAULT_FOOTPRINT_MB = 9728
+RECENT_RUNS = 9
+SLOT_CEILING_S = 24 * 3600
+# The slot's owner is this bash's $$, which execs into Blender: the slot ends with Blender, however it ends.
+ADMIT = r'''
+. "$1" || exit 75
+dir=$2 count=$3 what=$4 log=$5 self=$6
+shift 6
+said=''
+slot_room_mb() { "$self" slot-need "$$" "$dir" 2>/dev/null; }
+waiting() { # once: what is running and how many Blenders memory admits now
+  local running room=${count#*-} avail need
+  [ -z "$said" ] || return 0
+  said=1
+  running=$(slots_held "$dir")
+  if [[ "$SLOT_WHY" =~ ^available\ ([0-9]+)\ MB\ [\<]\ ([0-9]+)\ MB ]]; then
+    avail=${BASH_REMATCH[1]} need=${BASH_REMATCH[2]}
+    room=$((running + 1 - (need - avail + BLENDER_FOOTPRINT_MB - 1) / BLENDER_FOOTPRINT_MB))
+  elif [ -n "$SLOT_WHY" ]; then
+    room=$running
+  fi
+  [ "$room" -ge 1 ] || room=1
+  printf 'blender: waiting for a slot (%s running, room %s)\n' "$running" "$room" >&3
+}
+exec 3>&2
+slot_wait "$dir" "$count" "$SLOT_CEILING_S" blender "$what" waiting >/dev/null 2>&1 || {
+  printf 'blender: no slot taken\n' >&2
+  exit 75
+}
+exec "$@" >"$log" 2>&1
+'''
+
+
+def peaks_file():
+    return os.path.join(STATE, "peaks.jsonl")
+
+
+def footprint_mb():
+    """The median peak footprint of the recent successful runs, DEFAULT_FOOTPRINT_MB until one is measured."""
+    try:
+        with open(peaks_file()) as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        lines = []
+    peaks = []
+    for line in lines[-RECENT_RUNS:]:
+        try:
+            peaks.append(float(json.loads(line)["mb"]))
+        except (ValueError, KeyError, TypeError):
+            pass
+    return round(statistics.median(peaks)) if peaks else DEFAULT_FOOTPRINT_MB
+
+
+def record_peak(mb, what):
+    os.makedirs(STATE, exist_ok=True)
+    with open(peaks_file(), "a") as handle:
+        handle.write(json.dumps({"at": int(time.time()), "mb": round(mb), "what": what}) + "\n")
+    with open(peaks_file()) as handle:
+        lines = handle.read().splitlines()
+    if len(lines) > 10 * RECENT_RUNS:
+        with open(peaks_file() + ".tmp", "w") as handle:
+            handle.write("\n".join(lines[-RECENT_RUNS:]) + "\n")
+        os.replace(peaks_file() + ".tmp", peaks_file())
+
+
+def slots_dir():
+    return os.path.join(STATE, "slots")
+
+
+def holders(directory):
+    """(slot, pid) of every slot a live process holds."""
+    found = []
+    for slot in os.listdir(directory) if os.path.isdir(directory) else []:
+        try:
+            pid = int(open(os.path.join(directory, slot, "pid")).read().strip())
+            os.kill(pid, 0)
+        except (OSError, ValueError):
+            continue
+        found.append((slot, pid))
+    return found
+
+
+def release(directory, pid):
+    """store_lock_release for the slot Blender held as `pid`: a dead owner's slot is free to the next taker
+    anyway, but a recycled pid would hold it to the ceiling."""
+    for slot in os.listdir(directory) if os.path.isdir(directory) else []:
+        try:
+            owner = open(os.path.join(directory, slot, "pid")).read().strip()
+        except OSError:
+            continue
+        if owner == str(pid):
+            shutil.rmtree(os.path.join(directory, slot), ignore_errors=True)
+
+
+def slot_need(args):
+    """MB one more Blender needs: its expected footprint, plus what each running one has yet to take of its own
+    (a Blender just launched has not allocated yet, so available memory does not show it)."""
+    expected = footprint_mb()
+    need = expected
+    for _slot, pid in holders(args.dir):
+        if pid != args.pid:
+            usage = machine_probe.proc_rusage(pid)
+            need += max(0, expected - (usage[0] / 1048576 if usage else 0))
+    print(round(need))
+    return 0
+
+
 def blender(script, args, log):
-    """Run a bpy script in the background with share/blender on sys.path; the log goes to `log`."""
+    """Run a bpy script in the background with share/blender on sys.path, once the machine-wide `blender` pool
+    admits it; the log goes to `log`."""
     command = [BLENDER, "-b", "--factory-startup", "--python-exit-code", "3",
                "--python-expr", "import sys; sys.path.insert(0, %r)" % SHARE, "-P", script, "--", *args]
-    with open(log, "w") as out:
-        result = subprocess.run(command, stdout=out, stderr=subprocess.STDOUT)
-    text = open(log).read()
-    return result.returncode, text
+    expected = footprint_mb()
+    memsize = machine_probe.sysctl("hw.memsize")[0]
+    ceiling = max(1, int(memsize) // 1048576 // expected) if memsize.strip().isdigit() else 1
+    directory = slots_dir()
+    what = "blender-render %s" % os.path.basename(script)
+    self = os.path.realpath(__file__)
+    env = dict(os.environ, BLENDER_FOOTPRINT_MB=str(expected), SLOT_CEILING_S=str(SLOT_CEILING_S))
+    process = subprocess.Popen(["bash", "-c", ADMIT, "_", os.path.join(os.path.dirname(SHARE), "slots.sh"),
+                                directory, "1-%d" % ceiling, what, log, self, *command], env=env)
+    peak = 0
+    while True:
+        try:
+            code = process.wait(timeout=1)
+            break
+        except subprocess.TimeoutExpired:
+            usage = machine_probe.proc_rusage(process.pid)
+            peak = max(peak, usage[0] if usage else 0)
+    release(directory, process.pid)
+    if code == 0 and peak:
+        record_peak(peak / 1048576, what)
+    text = open(log).read() if os.path.exists(log) else ""
+    return code, text
 
 
 def fail(log_text, code):
@@ -281,6 +419,11 @@ def main():
     e.add_argument("--out", required=True)
     e.add_argument("--fps", type=int, default=30)
     e.set_defaults(run=encode_command)
+
+    n = commands.add_parser("slot-need")  # slot_room_mb of the blender pool, called from ADMIT
+    n.add_argument("pid", type=int)
+    n.add_argument("dir")
+    n.set_defaults(run=slot_need)
 
     args = parser.parse_args()
     if getattr(args, "rest", None) and args.rest[0] == "--":

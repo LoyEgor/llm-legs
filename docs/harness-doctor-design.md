@@ -679,8 +679,10 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   finds room; a direct `bash tests/x.sh` outside any slot is one such run, held to its end by
   `tests/lib/suite-journal.sh`, and exports the slot a nested run inherits) and `workers` (every `worker-run` run, `WORKER_SLOTS`: cores / 2
   clamped 2–8 always, up to 4 × the cores capped at 40 while `slot_room` finds room; a nested run inherits
-  `WORKER_SLOT`; `run_suites_slots` and `worker_slots` in `share/slots.sh`). Room only adds slots above the old defaults. Room = memory pressure normal, available
-  memory above `bin/chat-load` `GUARD_AVAIL_MB` + `SLOTS_ROOM_MB` (1500), and load1 within the cores of
+  `WORKER_SLOT`; `run_suites_slots` and `worker_slots` in `share/slots.sh`) and `blender` (every Blender
+  `bin/blender-render` launches: 1 always, up to RAM ÷ one run's footprint while `slot_room` finds room; its
+  `slot_room_mb` names the footprint plus what running Blenders have yet to allocate, `docs/blender.md`). Room only adds slots above the old defaults. Room = memory pressure normal, available
+  memory above `bin/chat-load` `GUARD_AVAIL_MB` + `SLOTS_ROOM_MB` (1500; a pool's `slot_room_mb` when defined), and load1 within the cores of
   load15 (the benchmark's base). A worker run's `started_at` stays its launch; its deadline clock is
   `slot_at`. A queued suite run is
   no test yet (no `suites-<pid>` pointer); the `worker-run` watchdog counts a live hold in its run's

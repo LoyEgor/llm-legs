@@ -49,6 +49,18 @@ once (run `doctor` right after updating), cached afterwards. Then a `--preview` 
 full 2048×1152 still at 384 samples ~110 s. Video renders every frame — run long ones with
 `run_in_background: true`; 6 s at 30 fps is 180 frames, ~3 s a frame at `--preview`.
 
+## One Blender at a time, unless memory holds two
+
+A render holds ~9.3 GB phys_footprint, mostly wired Metal memory that cannot swap: two at once took the
+24 GB Mac to 22.4 GB used and 5.5 GB swap (2026-10-14). Every Blender launch (`doctor`'s probe, `logo`, `run`)
+first takes a slot of the machine-wide `blender` pool (`share/slots.sh`, `~/.cache/blender-render/slots`,
+`BLENDER_RENDER_DIR`). One always runs; another only while
+`available MB ≥ GUARD_AVAIL_MB + footprint + Σ (footprint − current footprint) over running Blenders` (the sum
+covers a Blender just launched that has not allocated yet), and at most RAM ÷ footprint. The footprint is the median
+peak phys_footprint of the last 9 successful runs (`peaks.jsonl`, sampled each second), 9.5 GB until measured.
+A waiter prints `blender: waiting for a slot (N running, room R)` once, raises the `blender` limiter hold and
+journals its wait (`docs/harness-doctor-design.md` §12). So queue renders freely: they run one after another.
+
 ## With the rest of the media chain
 
 - A transparent PNG goes straight into a layout, a page or `magick` composites; `image-cutout` is
