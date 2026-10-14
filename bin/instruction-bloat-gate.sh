@@ -312,16 +312,15 @@ threshold=$THRESHOLD_BYTES
 # A weekly rate of zero under a positive monthly one cannot happen while the export rescales one
 # from the other, and if it ever does it is a broken measurement, not a free file: the derived
 # threshold is skipped and the base one still applies. Passing on it waived the gate outright.
-weekly_zero=false
-[ "$rate_state" != measured ] || weekly_zero=$(jq -nr --argjson reads "${weekly_reads:-0}" '$reads == 0' 2>/dev/null) || weekly_zero=false
-if [ "$rate_state" = measured ] && [ "$weekly_zero" != true ]; then
+if [ "$rate_state" = measured ]; then
   # Snapped down to a coarse ladder for the same reason the displayed rate is: a threshold
   # recomputed from a sliding window would otherwise move a few bytes every night, and the
   # boundary between a passing and a denied edit is exactly where that must not happen.
-  derived=$(jq -nr --argjson budget "$WEEKLY_TOKEN_BUDGET" --argjson reads "$weekly_reads" \
+  # A zero weekly rate derives 0, so the base threshold stands.
+  derived=$(jq -nr --argjson budget "$WEEKLY_TOKEN_BUDGET" --argjson reads "${weekly_reads:-0}" \
     --argjson per_token "$CHARS_PER_TOKEN" \
-    '[120, 250, 500, 1000, 2000, 5000, 10000, 25000, 50000, 100000]
-     | map(select(. <= ($budget * $per_token / $reads))) | last // 120' 2>/dev/null) || derived=''
+    'if $reads == 0 then 0 else [120, 250, 500, 1000, 2000, 5000, 10000, 25000, 50000, 100000]
+     | map(select(. <= ($budget * $per_token / $reads))) | last // 120 end' 2>/dev/null) || derived=''
   case "$derived" in ''|*[!0-9]*) derived=$THRESHOLD_BYTES ;; esac
   [ "$derived" -gt "$threshold" ] 2>/dev/null && threshold=$derived
 fi
@@ -421,16 +420,6 @@ unpriced() {
   gate_journal bloat fault "$sid" "$file_path" "$delta" "price not computable: $1"
   deny price "Instruction-bloat gate: +${delta} bytes to ${file_path}, a file LLMs re-read across sessions; its price could not be computed. Re-read the WHOLE file, cut what is stale or duplicated so the edit nets out, or ask Egor with the byte delta; after that Read the same edit passes once. $(instruction_denial_tag "$hash")"
 }
-tokens=$(jq -nr --argjson d "$delta" --argjson c "$CHARS_PER_TOKEN" '($d / $c) | round' 2>/dev/null) || unpriced tokens
-case "$tokens" in ''|*[!0-9]*) unpriced tokens ;; esac
-# Multiplied from the SHOWN rate, not the measured one. The denial orders its reader to quote all
-# three figures to Egor verbatim, so the token count, the re-read count and the cost have to be a
-# sentence he can multiply out; snapping the product to the ladder a second time broke that —
-# 1.3k tokens at 3,000 reads printed as 3M, not the 3.9M the two numbers beside it promise.
-cost() {
-  instruction_format_tokens "$(jq -nr --argjson t "$tokens" --argjson r "$1" '($t * $r) | round' 2>/dev/null)"
-}
-tokens_shown=$(instruction_format_tokens "$tokens")
 if [ "$rate_state" != measured ]; then
   # Both headlines carry a weekly figure because the report the denial demands names one, and a
   # reader told to quote it verbatim and forbidden to derive its own has nowhere else to get it.
@@ -439,8 +428,17 @@ if [ "$rate_state" != measured ]; then
   monthly_display=$(display_rate "$reads") || unpriced 'monthly rate'
   weekly_display=$(display_rate "$(jq -nr --argjson n "$reads" '$n * 7 / 30' 2>/dev/null)") || unpriced 'weekly rate'
 fi
-weekly=$(cost "$weekly_display") || unpriced 'weekly cost'
-monthly=$(cost "$monthly_display") || unpriced 'monthly cost'
+# Multiplied from the SHOWN rate, not the measured one. The denial orders its reader to quote all
+# three figures to Egor verbatim, so the token count, the re-read count and the cost have to be a
+# sentence he can multiply out; snapping the product to the ladder a second time broke that —
+# 1.3k tokens at 3,000 reads printed as 3M, not the 3.9M the two numbers beside it promise.
+{ read -r tokens; read -r weekly_cost; read -r monthly_cost; } < <(jq -nr --argjson d "$delta" \
+  --argjson c "$CHARS_PER_TOKEN" --argjson w "$weekly_display" --argjson m "$monthly_display" \
+  '(($d / $c) | round) as $t | $t, ($t * $w | round), ($t * $m | round)' 2>/dev/null)
+case "$tokens" in ''|*[!0-9]*) unpriced tokens ;; esac
+tokens_shown=$(instruction_format_tokens "$tokens")
+weekly=$(instruction_format_tokens "$weekly_cost") || unpriced 'weekly cost'
+monthly=$(instruction_format_tokens "$monthly_cost") || unpriced 'monthly cost'
 weekly_shown=$(instruction_times "$(instruction_format_count "$weekly_display")")
 monthly_shown=$(instruction_times "$(instruction_format_count "$monthly_display")")
 if [ "$rate_state" = measured ]; then
