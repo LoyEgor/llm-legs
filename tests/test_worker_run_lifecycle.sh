@@ -396,10 +396,24 @@ gone() { # pid
   for tick in $(seq 1 100); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done
   return 1
 }
-trap 'orphan_cleanup; rm -rf "$WORK"' EXIT
-clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_ACCOUNT=picked PICK_RC=0
+# The run's own loose-object pack outlives it unended (live 2026-10-07: 14 runs ended their own pack);
+# its 2 s run overlaps the orphan case below.
+pack_repo="$WORK/pack-repo"
+git init -q "$pack_repo" && git -C "$pack_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+cat >"$WORK/bin/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" maintenance "*) printf '%s\n' "\${WORKER_RUN_ID-}" >"$STUB_DIR/pack.id"; sleep 2; : >"$STUB_DIR/pack.done" ;; esac
+exec $(command -v git) "\$@"
+EOF
+chmod +x "$WORK/bin/git"
+clear_stub
+WORKER_TEST_WORKDIR=$pack_repo start_ok claudeb
+assert await_exit
+pack_meta=$RUN_DIR/meta.json
+trap 'orphan_cleanup; rm -rf "$WORK"' EXIT
+clear_stub
 cat >"$STUB_DIR/relay_hook" <<'EOF'
 #!/usr/bin/env bash
 cd /
@@ -436,24 +450,11 @@ assert grep -qx 'ENDED: 6 processes the run left running outside its tree, ended
   <<<"$("$RUNNER" report "$RUN_ID")"
 orphan_cleanup
 trap 'rm -rf "$WORK"' EXIT
-
-# The run's own loose-object pack outlives it unended (live 2026-10-07: 14 runs ended their own pack).
-pack_repo="$WORK/pack-repo"
-git init -q "$pack_repo" && git -C "$pack_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
-cat >"$WORK/bin/git" <<EOF
-#!/usr/bin/env bash
-case " \$* " in *" maintenance "*) printf '%s\n' "\${WORKER_RUN_ID-}" >"$STUB_DIR/pack.id"; sleep 2; : >"$STUB_DIR/pack.done" ;; esac
-exec $(command -v git) "\$@"
-EOF
-chmod +x "$WORK/bin/git"
-clear_stub
-WORKER_TEST_WORKDIR=$pack_repo start_ok claudeb
-assert await_exit
 for tick in $(seq 1 100); do [ ! -e "$STUB_DIR/pack.done" ] || break; sleep 0.1; done
 rm -f "$WORK/bin/git"
 assert test -e "$STUB_DIR/pack.done"
 assert test -z "$(cat "$STUB_DIR/pack.id")"
-assert jq -e '(.orphans_ended // []) == []' "$RUN_DIR/meta.json" >/dev/null
+assert jq -e '(.orphans_ended // []) == []' "$pack_meta" >/dev/null
 unset PICK_ACCOUNT PICK_RC
 set_config
 fi
