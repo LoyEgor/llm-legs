@@ -235,6 +235,8 @@ fi
 if suite_shard_owns 2 nc-periodic; then
 # A periodic kind is carried once no night ran it to an end within its days, from the llm-legs sweep repository,
 # on a strong model with web search, with its brief from share/briefs.
+# Its own nights directory: an unsharded run would also carry N0's failed suites.
+export DOCTORS_DIR="$WORK/periodic/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
 P="$WORK/periodic/llm-legs"
 git init -q -b main "$P" && gt -C "$P" commit -q --allow-empty -m init
 printf '%s\n' "$P" >"$WORK/sweep-periodic"
@@ -256,6 +258,7 @@ assert grep -qF '## Tool ideas — monthly, harness direction' "$NIGHTS/P2.$ref.
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2b.out" 2>/dev/null || fail "a second carry failed"
 assert [ ! -s "$WORK/p2b.out" ]
 assert [ "$(python3 "$ROOT/share/night_priority.py" job vendor-watch v | jq -c '[.direction, .priority]')" = '["updater","P2"]' ]
+export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi
 
 if suite_shard_owns 3 nc-owner-deferred; then
