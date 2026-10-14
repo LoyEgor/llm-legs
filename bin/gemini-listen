@@ -217,7 +217,7 @@ for file in "${media[@]}"; do
   bytes=$(size_of "$file")
   kind=$(kind_of "$file" "$ext")
   [ -n "$kind" ] || say "$file has no picture or sound ffprobe can read"
-  if [ "$kind" = audio ]; then audio_probe "$file"; else seconds=$(duration_of "$file"); fi
+  case "$kind" in audio) audio_probe "$file" ;; video) seconds=$(duration_of "$file") ;; esac
   if [ "$kind" != image ]; then
     [[ "$seconds" =~ ^[0-9.]+$ ]] || say "ffprobe reads no duration in $file"
     seconds=$(awk -v s="$seconds" 'BEGIN { printf "%.1f", s }')
@@ -233,9 +233,17 @@ for file in "${media[@]}"; do
     [ "$beeps_on" != true ] || beeps=$((RANDOM % 3 + 2))
     [[ "$ext" = wav && "$codec" =~ ^pcm_ ]] || codec=pcm_s16le
     send="$tmp_dir/media/file$index.wav"
-    with_beeps "$file" "$send" "$beeps" -c:a "$codec"
-    if [ "$(size_of "$send")" -gt "$limit_bytes" ]; then
-      rm "$send"
+    # The wav is at least (whole seconds - 1) x rate x channels x sample width: one that cannot fit is not written to be measured.
+    width=1
+    [ "$codec" != pcm_s16le ] || width=2
+    over=false
+    if [[ "$rate" =~ ^[0-9]+$ && "$channels" =~ ^[0-9]+$ ]] && [ $(((${seconds%.*} - 1) * rate * channels * width)) -gt "$limit_bytes" ]; then
+      over=true
+    else
+      with_beeps "$file" "$send" "$beeps" -c:a "$codec"
+      [ "$(size_of "$send")" -le "$limit_bytes" ] || { rm "$send"; over=true; }
+    fi
+    if [ "$over" = true ]; then
       send="$tmp_dir/media/file$index.$proxy_ext"
       kbps=$(awk -v b="$((limit_bytes * 9 / 10))" -v s="$seconds" 'BEGIN { k = int(b * 8 / (s + 4) / 1000); print (k > 192 ? 192 : k) }')
       [ "$kbps" -ge 32 ] || say "$file is too long to send as one audio file; cut it into parts"

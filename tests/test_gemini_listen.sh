@@ -121,8 +121,14 @@ assert test "$(grep -c BEEPS "$FAKE_GEMINIB_PROMPT")" -eq 0
 assert grep -q 'reply with the single line NO_AUDIO <file number>' "$FAKE_GEMINIB_PROMPT"
 
 # 840 s keeps the bitrate under its 192k cap; 32 kHz still decodes to a wav over view_max_bytes and takes 192k.
-ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=32000 -t 840 -c:a libmp3lame -b:a 32k "$M/talk.mp3" || exit 1
-assert listen 'what is said?' "$M/talk.mp3" --account explicit
+ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=32000 -t 840 -c:a libmp3lame -compression_level 9 -b:a 32k "$M/talk.mp3" || exit 1
+printf '#!/bin/sh\nfor last; do :; done\nprintf "%%s\\n" "$last" >>"%s/ffmpeg.dests"\nexec ffmpeg "$@"\n' "$WORK" >"$WORK/ffmpeg-spy"
+chmod +x "$WORK/ffmpeg-spy"
+: >"$WORK/ffmpeg.dests"
+GEMINI_LISTEN_FFMPEG="$WORK/ffmpeg-spy" assert listen 'what is said?' "$M/talk.mp3" --account explicit
+# a wav that cannot fit is never written to be measured: the one ffmpeg run is the mp3 proxy
+assert test "$(wc -l <"$WORK/ffmpeg.dests" | tr -d ' ')" -eq 1
+assert grep -q '/file1\.mp3$' "$WORK/ffmpeg.dests"
 assert grep -qE "^proxy=file1\.mp3 [0-9]+ bytes from [0-9]+: $M/talk\.mp3$" "$WORK/err"
 
 FAKE_GEMINIB_MODE=skip-view expect_rc 1 'q' "$M/clip.mp4" "$M/tone.wav" --account explicit
