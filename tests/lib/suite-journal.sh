@@ -300,6 +300,13 @@ suite_journal_end() { # exit-code -> returns it
   [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"
   [ -n "$suite_journal_queued" ] || suite_journal_queued=$(( ended - SECONDS * 1000 ))
   [ -n "$suite_journal_began" ] || suite_journal_began=$(( ended - (SECONDS - suite_journal_waited) * 1000 ))
+  # Stopped in its slot wait, the suite never started: the queue is a run-suites wait (the hold slot_wait
+  # raised as this pid, journaled here when the wait died with it), never suite seconds.
+  if [ -n "${suite_journal_queuing:-}" ]; then
+    suite_journal_began=$ended
+    ( . "${suite_journal_slots%/*}/limiter-hold.sh" &&
+      hold_clear "${HARNESS_HOLDS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/holds}/run-suites-$$.json" ) 2>/dev/null
+  fi
   suite_journal_cpu cpu "$suite_journal_file.$$.times"
   [ -z "$suite_journal_signal" ] || { rc=$(( 128 + suite_journal_signal )); complete=false; }
   suite_journal_digest "$name"
@@ -366,9 +373,11 @@ builtin trap 'suite_journal_die 15' TERM
 # A direct run is a one-suite run-suites run: it waits for a run-suites slot and holds it to its end.
 # A nested or run-suites suite never gets here, and a run-suites run inside inherits the slot.
 if [ -z "$suite_journal_held" ]; then
+  suite_journal_queuing=1
   suite_journal_slot=$(. "$suite_journal_slots" && slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
     "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suite ${suite_journal_test##*/} of $suite_journal_repo") ||
     suite_journal_slot=''
+  suite_journal_queuing=''
   if [ -n "$suite_journal_slot" ]; then
     export RUN_SUITES_SLOT=$suite_journal_slot
     suite_journal_held=$suite_journal_slot suite_journal_waited=$SECONDS

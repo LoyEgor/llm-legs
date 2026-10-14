@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/llm-limits.sh"
 WORK="$(mktemp -d)"
 cleanup() {
+  # A failed assert leaves the `sleep 600` lock owners holding the caller's stdout pipe open.
+  kill $(jobs -p) 2>/dev/null
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -150,7 +152,7 @@ for _ in 1 2 3 4; do
       store_lock_acquire "$2" || { printf "lost %s\n" "$$" >>"$3"; exit 0; }
       printf "enter %s\n" "$$" >>"$3"
       SECONDS=0
-      while [ "$(grep -c "^lost" "$3")" -lt 3 ] && [ "$SECONDS" -lt 120 ]; do sleep 0.05; done
+      while [ "$(grep -c "^lost\|^enter" "$3")" -lt 4 ] && [ "$SECONDS" -lt 120 ]; do sleep 0.05; done
       printf "leave %s\n" "$$" >>"$3"
       store_lock_release "$2"' _ "$ROOT" "$RACE_LOCK" "$RACE_LOG" "$GO" &
 done
@@ -166,15 +168,22 @@ mkdir "$CAPTURE_LOCK"
 sleep 600 &
 capture_pid=$!
 printf '%s\n' "$capture_pid" >"$CAPTURE_LOCK/pid"
+# The first probe sees an ancient lock, the next a racer's newborn; a newcomer tries mkdir right then.
 env LLM_STORE_LOCK_STALE_SECONDS=60 LLM_STORE_LOCK_RETRIES=2 LLM_STORE_LOCK_DELAY=0.02 \
   bash -c '. "$1/share/store-lock.sh"
-    store_lock_mtime() { case "$1" in *.break.*) date +%s ;; *) printf "0\n" ;; esac; }
+    capture=$2
+    store_lock_mtime() {
+      if mkdir "$capture.probed" 2>/dev/null; then printf "0\n"; return; fi
+      mkdir "$capture.newcomer" 2>/dev/null && mkdir "$capture" 2>/dev/null && printf "%s\n" "$$" >"$capture/pid"
+      date +%s
+    }
     store_lock_acquire "$2"' _ "$ROOT" "$CAPTURE_LOCK" \
-  && fail "acquire kept a lock a racer had recreated between the staleness probe and the capture"
-[ -d "$CAPTURE_LOCK" ] || fail "the captured newborn lock was discarded instead of restored"
-grep -qx "$capture_pid" "$CAPTURE_LOCK/pid" || fail "the restored lock lost its owner"
-[ -z "$(find "$WORK" -maxdepth 1 -name 'capture.lock.break.*')" ] || \
-  fail "a captured lock directory was left aside"
+  && fail "acquire kept a lock a racer had recreated between the staleness probe and the break"
+[ -d "$CAPTURE_LOCK" ] || fail "the racer's newborn lock was discarded"
+grep -qx "$capture_pid" "$CAPTURE_LOCK/pid" || fail "the racer's newborn lock lost its owner to a newcomer: two holders"
+[ -z "$(find "$WORK" -maxdepth 1 -name 'capture.lock.break*')" ] || \
+  fail "a lock directory was left aside"
+rm -rf "$CAPTURE_LOCK.probed" "$CAPTURE_LOCK.newcomer"
 kill "$capture_pid" 2>/dev/null
 wait "$capture_pid" 2>/dev/null
 rm -rf "$CAPTURE_LOCK"

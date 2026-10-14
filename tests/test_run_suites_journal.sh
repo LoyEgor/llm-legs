@@ -224,6 +224,23 @@ for b in /bin/bash "$BASH"; do
   wait "$pid"
 done
 assert jqe -s 'length == 2 and all(.[]; .signal == 15 and .complete == false and .suites["test_term.sh"].rc == 143)' "$WORK/term.jsonl"
+# One stopped while it still waits for its slot never started: no suite seconds, the queue a run-suites wait.
+sleep 60 &
+slot_holder=$!
+mkdir -p "$WORK/full/1" && printf '%s\n' "$slot_holder" >"$WORK/full/1/pid"
+SUITE_JOURNAL="$WORK/queued.jsonl" RUN_SUITES_SLOTS_DIR="$WORK/full" RUN_SUITES_SLOTS=1 HARNESS_WAITS_DIR="$WORK/queued-waits" \
+  bash "$REPO/tests/test_cpu.sh" 2>/dev/null &
+pid=$!
+for _ in $(seq 1 100); do ls "$HARNESS_HOLDS_DIR"/run-suites-"$pid".json >/dev/null 2>&1 && break; sleep 0.1; done
+sleep 0.3
+kill -TERM "$pid"
+wait "$pid"
+kill "$slot_holder"
+assert jqe -s 'length == 1 and .[0].signal == 15 and .[0].slot == null and .[0].queued_at < .[0].started_at
+  and .[0].started_at == .[0].ended_at and .[0].suites["test_cpu.sh"].rc == 143 and .[0].suites["test_cpu.sh"].secs == 0' "$WORK/queued.jsonl"
+assert jqe -s --argjson pid "$pid" 'length == 1 and .[0].class == "run-suites" and .[0].pid == $pid and .[0].seconds >= 0.3' \
+  "$WORK"/queued-waits/*.jsonl
+assert test ! -e "$HARNESS_HOLDS_DIR/run-suites-$pid.json"
 # `trap - EXIT HUP` gives HUP back to the journal, never ignores it; a test's own signal action still reads its $?.
 # HUP, not INT: run-suites starts suites in the background, where INT is ignored and untrappable; a HUP
 # ignored on entry (a detached `nohup` run) is untrappable too, so the disposition is reset first.

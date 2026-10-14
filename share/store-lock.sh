@@ -59,7 +59,7 @@ store_lock_broke() { # lock stale ceiling
 }
 
 store_lock_acquire() {
-  local lock=$1 tries=0 now captured waited=''
+  local lock=$1 tries=0 now waited=''
   local max=${LLM_STORE_LOCK_RETRIES:-240}
   local delay=${LLM_STORE_LOCK_DELAY:-0.25}
   local stale=${LLM_STORE_LOCK_STALE_SECONDS:-30}
@@ -74,18 +74,21 @@ store_lock_acquire() {
     elif [ "$((tries + 1))" -ge "$max" ] || [ "$(((tries + 1) % 20))" -eq 0 ]; then
       now=${EPOCHSECONDS:-$(date +%s)} || return 1
       if store_lock_breakable "$lock" "$stale" "$ceiling" "$now"; then
-        # Claim by renaming aside: of several racing waiters only one wins the mv, and what it
-        # captured is judged again — a racer's live newborn goes back untouched.
-        captured="${lock}.break.$$"
-        if mv "$lock" "$captured" 2>/dev/null; then
-          if store_lock_breakable "$captured" "$stale" "$ceiling" "$now"; then
-            rm -rf "$captured"
-            store_lock_broke "$lock" "$stale" "$ceiling"
-            continue
+        # One breaker at a time, under a lock of its own, judges the holder again and removes it. A lock
+        # is never moved aside: a racer's live newborn captured and put back left a gap a newcomer's
+        # mkdir filled, and both held the lock.
+        if mkdir "$lock.break" 2>/dev/null; then
+          if store_lock_claim "$lock.break"; then
+            if store_lock_breakable "$lock" "$stale" "$ceiling" "${EPOCHSECONDS:-$now}"; then
+              rm -rf "$lock"
+              rm -rf "$lock.break"
+              store_lock_broke "$lock" "$stale" "$ceiling"
+              continue
+            fi
+            rm -rf "$lock.break"
           fi
-          # mv into an existing directory would nest, so restore only onto a free path.
-          [ -e "$lock" ] || mv "$captured" "$lock" 2>/dev/null
-          rm -rf "$captured" 2>/dev/null
+        elif store_lock_breakable "$lock.break" "$stale" "$ceiling" "$now"; then
+          rm -rf "$lock.break"
         fi
       fi
     fi
