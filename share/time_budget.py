@@ -38,16 +38,17 @@ CLASSES = (("suite_run", "suites running"), ("suite_wait", "suite slot wait"), (
            ("wrapup", "worker wrap-up"), ("retries", "retries and relaunches"), ("dead", "dead worker runs"),
            ("hung", "watchdog-killed idle tails"), ("hooks", "hooks"), ("stop", "stop hooks"),
            ("refusal", "gate refusal recovery"), ("locks", "locks and polls"), ("walled", "usage-wall relaunches"),
-           ("compaction", "compaction"), ("other", "unmeasured"))
+           ("compaction", "compaction"), ("wait_loop", "wait overshoot"), ("other", "unmeasured"))
 WAITS = "wait_loop"
-LABEL = dict(CLASSES, **{WAITS: "wait loops"})
+LABEL = dict(CLASSES)
 WAIT_SHAPES = 5
+TOOL_ROWS = 5
 ROWS = (("tests", (("running", "suite_run"), ("queued", "suite_wait"))),
-        ("delegation", (("worker queue", "slot"), ("wrap-up", "wrapup"), ("retries", "retries"),
-                        ("dead, hung", "dead", "hung"))),
-        ("harness rules", (("hooks", "hooks", "stop"), ("gate refusals", "refusal"), ("locks", "locks"))),
+        ("waiting for workers", (("worker queue", "slot"), ("wrap-up", "wrapup"), ("retries", "retries"),
+                                 ("dead, hung", "dead", "hung"))),
+        ("hooks and gates", (("hooks", "hooks", "stop"), ("gate refusals", "refusal"), ("locks", "locks"))),
         ("usage walls", (("usage walls", "walled"),)), ("compaction", (("compaction", "compaction"),)),
-        ("unmeasured", (("unmeasured", "other"),)))
+        ("wait overshoot", (("wait overshoot", WAITS),)), ("unmeasured", (("unmeasured", "other"),)))
 WATCHDOG_KILLS = ("idle", "silent")
 WAIT_CLASSES = ("lock", "poll")
 GATE_REFUSALS = ("denied", "relay-refused")
@@ -55,7 +56,7 @@ REFUSAL_CAP_S = 300
 HISTORY_DAYS = 6
 TREND_DAYS = 7
 TREND_RECENT = 3
-BUDGET_VERSION = 4
+BUDGET_VERSION = 5
 STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"))
 WORKER_OVERHEAD = ("slot", "retries", "walled", "wrapup", "dead", "hung", "suite_run", "suite_wait")
 INDEX_DAYS, INDEX_MIN_UNITS = 7, 20
@@ -201,7 +202,7 @@ def event_day(day):
         out = collections.defaultdict(list)
         with open(path, "rb") as handle:
             for line in handle:
-                if line[2:3] in (b"t", b"c", b"h", b"w") and line[3:5] == b'",':
+                if line[2:3] in (b"t", b"c", b"h", b"w", b"u") and line[3:5] == b'",':
                     try:
                         out[line[2:3].decode()].append(json.loads(line))
                     except ValueError:
@@ -210,8 +211,9 @@ def event_day(day):
     return _DAYS[key]
 
 
-def event_rows(lo, hi, kinds=("t", "c", "h", "w")):
-    """Harness's derived event rows (`t` owner turns, `c` tool calls, `h` hook runs, `w` wait calls) of the local
+def event_rows(lo, hi, kinds=("t", "c", "h", "w", "u")):
+    """Harness's derived event rows (`t` owner turns, `c` tool calls, `h` hook runs, `w` wait calls, `u` harness tool
+    calls) of the local
     days the window touches; a turn or call is filed under its start day, so the day before is read too."""
     out = collections.defaultdict(list)
     day, last = local_day(lo - 86400), local_day(hi)
@@ -541,14 +543,28 @@ def wait_overshoot(rows, owner, suites, sessions, runs, lo, hi):
         if not ends and not every:
             unknown[target] += length(clip([(start, end)], lo, hi))
         own = minus(clip([(end - lost, end)], lo, hi), counted[sid])
-        counted[sid] += own
+        counted[sid] = union(counted[sid] + own)
         over[target][shape] += length(own)
         if owner[sid][0] == "chat" and target != "other":
             chat_fg += length(clip([(start, end)], lo, hi))
-    return {"seconds": None if not rows else round(sum(sum(c.values()) for c in over.values()), 1),
+    return {"seconds": None if not rows else round(sum(sum(c.values()) for c in over.values()), 1), "spans": counted,
             "on": {t: [round(sum(c.values()), 1), [[k, round(v, 1)] for k, v in c.most_common(WAIT_SHAPES) if v]]
                    for t, c in over.items()},
             "unknown": {t: round(v, 1) for t, v in unknown.items()}, "chat_foreground": round(chat_fg, 1)}
+
+
+def tool_time(rows, owner, taken, lo, hi):
+    """Wall seconds of the harness's own tools (Harness's `u` rows: the commands and skills tool mining's adoption
+    lists) of chats and workers, each tool's calls unioned and clipped, less the spans tests and waiting for workers
+    already hold; None while the window holds no `u` row. Beside the overhead, never in it."""
+    spans = collections.defaultdict(list)
+    for u in rows or ():
+        if owner.get(str(u[2])[:8]) and u[3] > lo and u[1] < hi:
+            spans[u[5]].append((u[1], u[3]))
+    taken = union(taken)
+    every = minus(clip([x for v in spans.values() for x in v], lo, hi), taken)
+    return {"seconds": round(length(every), 1) if rows else None,
+            "by": {k: round(length(minus(clip(v, lo, hi), taken)), 1) for k, v in spans.items()}}
 
 
 def budget(lo, hi):
@@ -627,11 +643,16 @@ def budget(lo, hi):
             spans["locks"].append((w["started"], w["started"] + w["seconds"]))
             agents[owner.get(w["caller"]) or owner.get(w["caller"][:8])].append(spans["locks"][-1])
     waits = wait_overshoot(events.get("w"), owner, suites, sessions, runs, lo, hi)
+    for sid, own in waits.pop("spans").items():
+        spans[WAITS] += own
+        agents[owner[sid]] += own
     recovery = refusal_cost(lo, hi, events)
     spans["refusal"] = recovery.pop("spans")
     for sid, own in recovery.pop("by_sid").items():
         agents[owner.get(sid)] += own
     spans = {k: clip(v, lo, hi) for k, v in spans.items()}
+    tools = tool_time(events.get("u"), owner, [x for k in dict(ROWS)["tests"] + dict(ROWS)["waiting for workers"]
+                                               for c in k[1:] for x in spans.get(c, ())], lo, hi)
 
     def seconds(keys):
         return round(length(union(x for k in keys for x in spans.get(k, ()))) + sum(unplaced[k] for k in keys), 1)
@@ -647,8 +668,8 @@ def budget(lo, hi):
         strata["out_s"] = {"suites": round(length(clip(outside, lo, hi)), 1), "unmeasured": seconds(("other",))}
 
     hooks = sorted(((length(clip(v, lo, hi)), k) for k, v in by_hook.items()), key=lambda x: (-x[0], x[1]))
-    found = dict({k: seconds((k,)) for k, _ in CLASSES}, **{WAITS: waits["seconds"] or 0})
-    return {"lo": lo, "hi": hi, "version": BUDGET_VERSION, "seconds": found, "waits": waits,
+    found = {k: seconds((k,)) for k, _ in CLASSES}
+    return {"lo": lo, "hi": hi, "version": BUDGET_VERSION, "seconds": found, "waits": waits, "tools": tools,
             "overhead_s": seconds([k for k, _ in CLASSES]), "active_s": round(length(clip(active, lo, hi)), 1),
             "rows": {row: seconds([k for part in parts for k in part[1:]]) for row, parts in ROWS},
             "parts": {part[0]: seconds(part[1:]) for _, parts in ROWS for part in parts},
@@ -771,12 +792,32 @@ def problem_trend(now):
     return {d: dict(sorted(v.items())) for d, v in sorted(out.items())}
 
 
+def order_path():
+    return os.path.join(harness_dir(), "lost-order.json")
+
+
+def frozen(rows, write):
+    """Lost time's rows in an order set once by size and kept (Egor, 2026-10-14: a row never re-sorts live); a row
+    first seen goes before the first placed row smaller than it that day and keeps that place."""
+    saved = read_json(order_path(), {})
+    order = [l for l in (saved.get("order") if isinstance(saved, dict) else None) or () if isinstance(l, str)]
+    size = {r[1]: r[0] for r in rows}
+    placed = list(order)
+    for label in sorted((l for l in size if l not in order), key=lambda l: -size[l]):
+        at = next((i for i, l in enumerate(order) if l in size and size[l] < size[label]), len(order))
+        order.insert(at, label)
+    if write and order != placed:
+        write_json(order_path(), {"order": order})
+    return sorted(rows, key=lambda r: order.index(r[1]))
+
+
 def document(now, hours=24.0, write=True):
     lo = now - hours * 3600
     b = budget(lo, now)
     scale = lambda secs, digits=1: round(secs / 60.0 * 24.0 / hours, digits)
     gates = list(b["refusal_cost"]["by_gate_s"].items())
-    rows = [[scale(b["overhead_s"]), "overhead", []]]
+    rows = []
+    waits, tools = b["waits"], b["tools"]
     for row, parts in ROWS:
         sub = []
         for part in parts if len(parts) > 1 else ():
@@ -784,21 +825,31 @@ def document(now, hours=24.0, write=True):
             if part[1] == "refusal":
                 sub += [[scale(s), "  " + gate] for gate, s in gates[:5] if scale(s) >= 1]
         hooks = [[scale(s), key.split("/", 1)[1]] for key, s in list(b["hooks_by_hook"].items())[:5] if scale(s) >= 1]
-        if row == "harness rules" and hooks:
+        if row == "hooks and gates" and hooks:
             sub += ["-"] + hooks
+        if row == "wait overshoot":
+            if waits["seconds"] is None:
+                continue
+            unknown = sorted(waits["unknown"].items(), key=lambda kv: -kv[1])
+            sub = [[scale(total), target, [[scale(secs), shape] for shape, secs in shapes if scale(secs) >= 0.1]]
+                   for target, (total, shapes) in sorted(waits["on"].items(), key=lambda kv: -kv[1][0])
+                   if scale(total) >= 0.1] + [
+                "-", [scale(sum(v for _, v in unknown)), "end unknown", [[scale(v), t] for t, v in unknown]],
+                [scale(waits["chat_foreground"]), "chat foreground", []]]
         rows.append([scale(b["rows"][row]), row, sub])
     import tool_mining
-    adhoc = tool_mining.menu_row(read_json(tool_mining.cache_path()) or {})
-    rows += [adhoc] if adhoc else []
-    waits = b["waits"]
-    if waits["seconds"] is not None:
-        unknown = sorted(waits["unknown"].items(), key=lambda kv: -kv[1])
-        rows.append([scale(waits["seconds"]), LABEL[WAITS], [
-            [scale(total), target, [[scale(secs), shape] for shape, secs in shapes if scale(secs) >= 0.1]]
-            for target, (total, shapes) in sorted(waits["on"].items(), key=lambda kv: -kv[1][0]) if scale(total) >= 0.1] + [
-            "-", [scale(sum(v for _, v in unknown)), "end unknown", [[scale(v), t] for t, v in unknown]],
-            [scale(waits["chat_foreground"]), "chat foreground", []]]])
-    rows.append([scale(b["active_s"]), "system active", []])
+    cache = read_json(tool_mining.cache_path()) or {}
+    adhoc = tool_mining.menu_row(cache)
+    rows += [adhoc + [{"dim": True}]] if adhoc else []
+    if tools["seconds"] is not None:
+        named = sorted(((scale(v), k.split("/", 1)[1] if k.startswith("bin/") else "/" + k.split("/", 1)[1])
+                        for k, v in tools["by"].items()), key=lambda r: -r[0])
+        rest = round(sum(v for v, _ in named[TOOL_ROWS:]), 1)
+        rows.append([scale(tools["seconds"]), "our tools", [list(r) for r in named[:TOOL_ROWS] if r[0] >= 0.1]
+                     + ([[rest, "the rest"]] if rest >= 0.1 else []), {"dim": True}])
+    rows = frozen(rows, write) + ["-", [scale(b["active_s"]), "system active", []]]
+    unused = tool_mining.unused_row(cache)
+    rows += ["-", unused] if unused else []
     doc = {"window_h": hours, "as_of_s": int(now), "lost_min_day": scale(b["overhead_s"]) if measured(b) else None,
            "rows": rows, "classes_min_day": {k: scale(v) for k, v in b["seconds"].items()},
            "waits_min_day": {"overshoot": scale(waits["seconds"]), "end_unknown": scale(sum(waits["unknown"].values())),
@@ -816,9 +867,10 @@ def document(now, hours=24.0, write=True):
                       if current and current["window"][s][1] else None, label] for s, label in STRATA]
     if write:
         prune_days(now)
-    doc["lines"] = ["%d min/day %s" % (round(v), label) + "".join(
-        " · %s %d" % (part[0], round(scale(b["parts"][part[0]]))) for part in dict(ROWS).get(label, ()) if label != part[0])
-        for v, label, _ in rows] if doc["lost_min_day"] is not None else ["Lost time: nothing measured in the last %d h" % hours]
+    doc["lines"] = ["%d min/day %s" % (round(r[0]), r[1]) + "".join(
+        " · %s %d" % (part[0], round(scale(b["parts"][part[0]]))) for part in dict(ROWS).get(r[1], ()) if r[1] != part[0])
+        for r in rows if r != "-" and not r[3:4] == [{"count": True}]] if doc["lost_min_day"] is not None else [
+        "Lost time: nothing measured in the last %d h" % hours]
     return doc
 
 

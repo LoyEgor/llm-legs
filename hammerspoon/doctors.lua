@@ -1671,11 +1671,19 @@ local function lostRows(rows)
   for _, r in ipairs(type(rows) == "table" and rows or {}) do
     if r == "-" then
       out[#out + 1] = { title = "-" }
-    elseif type(r) == "table" and r[4] ~= nil then
+    elseif type(r) == "table" and r[4] ~= nil and type(r[4]) ~= "table" then
       out[#out + 1] = fitRow({ title = styled({ pairCell(r[1], 4), pairCell(r[4], 5),
         { " min/day  " .. tostring(r[2]) } }), disabled = true })
+    elseif type(r) == "table" and type(r[4]) == "table" and r[4].count and tonumber(r[1]) then
+      local row = issueRow(tonumber(r[1]), nil, tostring(r[2]), nil, false)
+      local sub = lostRows(r[3])
+      if #sub > 0 then row.menu, row.disabled = sub, nil end
+      out[#out + 1] = row
     elseif type(r) == "table" and tonumber(r[1]) then
-      local row = issueRow(tonumber(r[1]), "min/day", tostring(r[2]), nil, false)
+      local row = type(r[4]) == "table" and r[4].dim
+        and fitRow({ title = styled({ { padded(rounded(tonumber(r[1])), 4), style.DIM },
+          { " min/day  " .. tostring(r[2]), style.DIM } }), disabled = true })
+        or issueRow(tonumber(r[1]), "min/day", tostring(r[2]), nil, false)
       local sub = lostRows(r[3])
       if #sub > 0 then row.menu, row.disabled = sub, nil end
       out[#out + 1] = row

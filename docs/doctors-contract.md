@@ -60,7 +60,7 @@ LLM ▸     8  reviewers crashed
   load graph the model). Every bar is DIM, never RED.
 - `usual` is the median of measured completed dates, never today; index rows have none.
 - A doctor's first level: up to three issue rows (RED count, the problem's own short name;
-  Lost time: the current window's `levels`, `min per order · chat` and `min per task · workers`, then the header's `rows`, plain aligned min/day, separators and sub-menus, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
+  Lost time: the current window's `levels`, `min per order · chat` and `min per task · workers`, then the header's `rows`, plain aligned min/day, separators and sub-menus, a row flagged `{"dim": true}` (outside the index: model-written scripts, our tools) DIM whole, a `{"count": true}` row (Unused tools) a bare count opening its rows, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title
   (stale, failed, pending) first; Lost time's and Spend's details are Harness's `Lost time:` and `Spend:` subtrees.
 - Each doctor answers one question; the view moves, never the collectors (rule ids, groups, documents, areas and night

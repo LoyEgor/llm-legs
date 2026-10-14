@@ -96,7 +96,7 @@ LIMITS = {
     "worker_orphans": 3,
     "night_walled_pct": 5,
 }
-WAIT_RED_S = {"lock": 60, "poll": 30, "night-suites": 1200}
+WAIT_RED_S = {"lock": 60, "poll": 30, "night-suites": 1200, "blender": 3600}
 WAIT_DAYS = 15
 
 SYNC_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "SessionStart",
@@ -602,10 +602,11 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
                 pend[block["id"]] = [t, name, 1 if trivial_bash(command) else 0, None if subagent else at // 1024]
                 media = media_tool(str(command or ""))
                 waiting = None if (block.get("input") or {}).get("run_in_background") else wait_call(command)
-                if media or waiting:
-                    pend[block["id"]] += [media, waiting]
+                ours = our_tool(name, block.get("input") or {})
+                if media or waiting or ours:
+                    pend[block["id"]] += [media, waiting, ours]
             elif block.get("type") == "tool_result" and block.get("tool_use_id") in pend:
-                start, name, trivial, kb, phase, waiting = (pend.pop(block["tool_use_id"]) + [None, None])[:6]
+                start, name, trivial, kb, phase, waiting, ours = (pend.pop(block["tool_use_id"]) + [None] * 3)[:7]
                 who = session_kind(rec)
                 if "act" in rec:
                     c1_add(rec["act"], start, t)
@@ -614,6 +615,8 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
                 if waiting:
                     end = t if waiting[4] is None else min(t, start + waiting[4])
                     events.append(["w", round(start, 3), session, round(end, 3), block["tool_use_id"][-10:]] + waiting[:4])
+                if ours:
+                    events.append(["u", round(start, 3), session, round(t, 3), block["tool_use_id"][-10:], ours])
                 events.append(["c", round(start, 3), project, name, trivial, round(max(0.0, t - start), 3),
                                who, block["tool_use_id"][-10:], session, kb])
     for key in [k for k, v in pend.items() if v[0] < last_t - PENDING_TTL_S]:
@@ -660,6 +663,32 @@ def heredoc_masked(text):
                           "bin/harness-doctor:input=text, capture_output=True, text=True, timeout=10")
         return text
     return done.stdout if done.returncode == 0 else text
+
+
+@functools.lru_cache(maxsize=1)
+def our_tools():
+    """The harness tools tool mining's adoption lists (`facing`): a pattern of its bin commands, its skill keys; none
+    for a fixture Harness directory with no SPEED_DOCTOR_DIR of its own."""
+    import tool_mining
+    if os.environ.get("HARNESS_DOCTOR_DIR") and not os.environ.get("SPEED_DOCTOR_DIR"):
+        return None, set()
+    try:
+        with open(tool_mining.cache_path()) as handle:
+            facing = json.load(handle).get("facing") or {}
+    except (OSError, ValueError, AttributeError):
+        facing = {}
+    return (tool_mining.command_re([k[4:] for k in facing if k.startswith("bin/")]),
+            {k for k in facing if k.startswith("skill/")})
+
+
+def our_tool(name, given):
+    """`bin/<name>` for the first listed command a Bash call runs, `skill/<name>` for a listed skill, else None."""
+    names, skills = our_tools()
+    if name == "Bash" and names:
+        found = names.search(str(given.get("command") or ""))
+        return "bin/" + found.group(1) if found else None
+    skill = "skill/%s" % given.get("skill")
+    return skill if name == "Skill" and skill in skills else None
 
 
 def wait_call(command):
@@ -5502,8 +5531,8 @@ def menu_text(document):
                                                           "issues") if k in speed["spend"]}
     heavy = [[h["min_day"], h["label"]] for h in ((speed.get("tests") or {}).get("heavy") or ())[:8]
              if h.get("min_day") is not None]
-    rows = [[v, label, sub + (["-"] + heavy if label == "tests" and heavy else [])]
-            for v, label, sub in (speed.get("budget") or {}).get("rows") or ()]
+    rows = [r if r == "-" or r[1] != "tests" or not heavy else [r[0], r[1], r[2] + ["-"] + heavy] + r[3:]
+            for r in (speed.get("budget") or {}).get("rows") or ()]
     if rows:
         header["speed"]["rows"] = rows
     menu.lines.append("H\t" + json.dumps(header, separators=(",", ":")))

@@ -224,7 +224,7 @@ rows = s.adhoc_opportunities({"findings": [f, dict(f, key="file-edit", target="a
 o = rows[0]["opportunity"]
 check(rows[0]["id"] == "opportunity:adhoc/ledger-query" and o["kind"] == "tool"
       and abs(o["recoverable_min_day"] - f["write_min_day"]) < 0.011 and o["quality"] == "equivalent"
-      and o["what"].startswith("ad-hoc scripts · build one command for the job: read doctor ledger rows")
+      and o["what"].startswith("model-written scripts · build one command for the job: read doctor ledger rows")
       and o["examples"] == f["examples"] and o["proof"][0] == s.PROOF["net"],
       "Speed prices an adhoc row at its writing minutes, a new command for it: %s" % rows[0])
 check(rows[1]["opportunity"]["kind"] == "hint" and "the Edit tool already does the job" in rows[1]["opportunity"]["what"]
@@ -329,14 +329,16 @@ cache = {"history": {day0: {"chars_s": 10.0, "tools": {"adhoc/ledger-query": {"c
                                          "limits": C(4.6, 1.0, 1), "json-other": C(23.8), "text-other": C(49.8, 20.0, 9),
                                          "file-edit": C(217.4)}}},
          "built": ["adhoc/ledger-query", "adhoc/doctor-state"], "parked": ["adhoc/logo-bench"], "unused": ["skill/s", "bin/foo"], "kept": ["skill/s"]}
-check(t.menu_row(cache) == [164.9, "ad-hoc scripts", [
+check(t.menu_row(cache) == [164.9, "model-written scripts", [
     [41.2, "repeated jobs", [[2.0, "ledger-query", [], 16.8], [0.0, "doctor-state", [], 0.0], ["–", "tokenmap", [], 24.4]]],
-    [123.7, "one-off", [[45.5, "logo-bench", []], [78.2, "other", []]]], "-",
-    [0, "/s", [], "○"], [0, "foo", [], "🗑"]]],
-      "the ad-hoc row: repeated jobs (each built tool's min/day beside its residual, then unbuilt clusters over the "
-      "floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), the unused tools, ○ where "
-      "the fix keeps the file, 🗑 where it deletes it: %s"
+    [123.7, "one-off", [[45.5, "logo-bench", []], [78.2, "other", []]]]]],
+      "the model-written scripts row: repeated jobs (each built tool's min/day beside its residual, then unbuilt "
+      "clusters over the floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row): %s"
       % t.menu_row(cache))
+check(t.unused_row(cache) == [2, "Unused tools", [[0, "/s", [], "○"], [0, "foo", [], "🗑"]], {"count": True}]
+      and t.unused_row(dict(cache, unused=[])) is None,
+      "the unused tools under a row counting them, ○ where the fix keeps the file, 🗑 where it deletes it: %s"
+      % t.unused_row(cache))
 unused = s.unused_opportunities({"unused": [dict(got["skill/s"], key="skill/s")]})
 check([o["id"] for o in unused] == ["opportunity:tool/skill/s"] and unused[0]["group"] == "tool"
       and unused[0]["fact"].startswith("skill/s · 0 calls in 30 days · 40 d old · hint 9 B in 10 sessions/day")

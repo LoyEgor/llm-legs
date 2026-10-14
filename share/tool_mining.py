@@ -31,6 +31,7 @@ import handoffs  # noqa: E402
 import time_budget  # noqa: E402
 
 WINDOW_S = 86400
+HOUR_S = 3600
 HISTORY_D = 35
 BUILD_H, PAYBACK_D = 1.0, 7
 FLOOR_MIN_DAY = round(60.0 * BUILD_H / PAYBACK_D, 1)
@@ -723,44 +724,76 @@ def minutes(c, rate):
     return (c.get("chars") or 0) / rate / 60.0 + (c.get("calls") or 0) * (c.get("exec_s") or 0.0) / 60.0 if rate else 0.0
 
 
+def hours_of(cache, now, rules):
+    """{hour start: {"clusters": {key: min}, "tools": {target: min}}} of the WINDOW_S of whole hours before `now`'s,
+    each scanned once: one scan from the first hour missing, split by its calls' hour."""
+    top = int(now // HOUR_S * HOUR_S)
+    hours = {int(k): v for k, v in (cache.get("hours") or {}).items() if top - WINDOW_S <= int(k) < top}
+    missing = [h for h in range(top - WINDOW_S, top, HOUR_S) if h not in hours]
+    if missing:
+        calls, _, chars_s, _ = scan(missing[0], top, rules)
+        by = collections.defaultdict(list)
+        for call in calls:
+            by[int(call["ts"] // HOUR_S * HOUR_S)].append(call)
+        for h in missing:
+            d = day_of(by.get(h, []), 0, chars_s, h + HOUR_S)
+            hours[h] = {"clusters": {k: round(c["min"], 2) for k, c in d["clusters"].items()},
+                        "tools": {t: round(minutes(p, chars_s), 2) for t, p in d["tools"].items()}}
+    return {str(h): hours[h] for h in sorted(hours)}
+
+
 def menu_row(cache):
-    """Lost time's ad-hoc row, beside the overhead, never in it: the last scanned day's clusters but the edits and reads
-    the Edit and Read tools own. Repeated jobs, the night's target: clusters over the floor not ruled out or handed off,
-    and every cluster a built tool serves, as [tool min/day, cluster, [], residual min/day] (NO_TOOL while none is
-    built), the heaviest CANDIDATE_ROWS of the unbuilt; one-off, never a target: each ruled-out or handed-off cluster,
-    then the catch-alls and clusters under the floor as one row; then every unused tool, [0, name, [], HINT_OFF] where its fix keeps the file (a skill, a bin tool something
-    else runs: `elsewhere`), else [0, name, [], UNUSED]."""
+    """Lost time's model-written scripts row, beside the overhead, never in it: the clusters but the edits and reads
+    the Edit and Read tools own, in min over the last 24 whole hours (`hours`, else the last scanned day), sorted as
+    the last scanned day decides. Repeated jobs, the night's target: clusters over the floor not ruled out or handed
+    off, and every cluster a built tool serves, as [tool min/day, cluster, [], residual min/day] (NO_TOOL while none
+    is built), the heaviest CANDIDATE_ROWS of the unbuilt; one-off, never a target: each ruled-out or handed-off
+    cluster, then the catch-alls and clusters under the floor as one row."""
     history = cache.get("history") or {}
     scanned = [d for d in history if "clusters" in history[d]]
     if not scanned:
         return None
     last = history[max(scanned)]
     built, parked = set(cache.get("built") or ()), set(cache.get("parked") or ())
-    tools, rate = last.get("tools") or {}, last.get("chars_s")
+    hours = list((cache.get("hours") or {}).values())
+    if hours:
+        mins, tool_min = collections.Counter(), collections.Counter()
+        for h in hours:
+            mins.update(h.get("clusters") or {})
+            tool_min.update(h.get("tools") or {})
+    else:
+        mins = {k: c.get("min") or 0 for k, c in last["clusters"].items()}
+        tool_min = {t: minutes(p, last.get("chars_s")) for t, p in (last.get("tools") or {}).items()}
     repeated, candidates, oneoff, rest = [], [], [], 0.0
-    for key in sorted(set(last["clusters"]) | {t[6:] for t in built}):
+    for key in sorted(set(last["clusters"]) | set(mins) | {t[6:] for t in built}):
         c = last["clusters"].get(key) or {"write_min": 0, "sessions": 0}
-        target, m = "adhoc/" + key, round(c.get("min") or 0, 1)
+        target, m = "adhoc/" + key, round(mins.get(key) or 0, 1)
         if key in ROW_SKIP:
             continue
         if target in built:
-            repeated.append([round(minutes(tools.get(target) or {}, rate), 1), key, [], m])
+            repeated.append([round(tool_min.get(target) or 0, 1), key, [], m])
         elif target in parked:
             oneoff.append([m, key, []])
         elif key not in CATCH_ALL and over_floor(c):
             candidates.append([NO_TOOL, key, [], m])
         else:
-            rest += c.get("min") or 0
+            rest += mins.get(key) or 0
     jobs = round(sum(r[3] for r in repeated + candidates), 1)
     repeated = sorted(repeated, key=lambda r: -r[3]) + sorted(candidates, key=lambda r: -r[3])[:CANDIDATE_ROWS]
     oneoff = sorted(oneoff, key=lambda r: -r[0]) + ([[round(rest, 1), "other", []]] if rest else [])
+    groups = [[jobs, "repeated jobs", repeated],
+              [round(sum(r[0] for r in oneoff), 1), "one-off", oneoff]]
+    total = round(sum(v for k, v in mins.items() if k not in ROW_SKIP), 1)
+    return [total, "model-written scripts", groups]
+
+
+def unused_row(cache):
+    """Every unused tool, [0, name, [], HINT_OFF] where its fix keeps the file (a skill, a bin tool something else
+    runs: `elsewhere`), else [0, name, [], UNUSED], under a row counting them; None without one."""
     keeps = set(cache.get("kept") or ())
     unused = [[0, ("/" if key.startswith("skill/") else "") + key.split("/", 1)[1], [], HINT_OFF if key in keeps else UNUSED]
               for key in cache.get("unused") or ()]
-    groups = [[jobs, "repeated jobs", repeated],
-              [round(sum(r[0] for r in oneoff), 1), "one-off", oneoff]]
-    total = round(sum(c.get("min") or 0 for k, c in last["clusters"].items() if k not in ROW_SKIP), 1)
-    return [total, "ad-hoc scripts", groups + (["-"] + unused if unused else [])]
+    return [len(unused), "Unused tools", unused, {"count": True}] if unused else None
 
 
 def collect(now, write=False, since=lambda target: None, bench=lambda target: None, parked=lambda target: False):
@@ -768,7 +801,7 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
     midnight, before the night starts), the per-day history with the model-facing tools' calls (backfilled once over
     USE_DAYS), the findings, each landed fix's net, each tool's adoption and the scan's own seconds; `bench` gives a
     target's last fix bench, whose command marks its tool's calls; `parked` a target ruled out or handed off. The
-    cache keeps what the menu row needs (`menu_row`)."""
+    cache keeps what the menu rows need (`menu_row`, `unused_row`), the last 24 hours' clusters (`hours_of`) too."""
     started = time.monotonic()
     cache = time_budget.read_json(cache_path(), {})
     cache = cache if isinstance(cache, dict) else {}
@@ -787,7 +820,8 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
             cache["uses_from"] = backfill(history, day, names)
         cache["history"] = {d: v for d, v in history.items() if d >= time_budget.local_day(hi - HISTORY_D * 86400)}
     tools = adoption(history, day, cache.get("facing") or {}, now)
-    marks = {"built": sorted("adhoc/" + k for k, _, _, _ in RULES if since("adhoc/" + k)
+    hours = hours_of(cache, now, tool_rules(bench)) if write else cache.get("hours")
+    marks = {"hours": hours, "built": sorted("adhoc/" + k for k, _, _, _ in RULES if since("adhoc/" + k)
                              and (bench("adhoc/" + k) or {}).get("command")),
              "parked": sorted("adhoc/" + k for k, _, _, _ in RULES if parked("adhoc/" + k)),
              "unused": sorted(k for k, t in tools.items() if t["unused"])}

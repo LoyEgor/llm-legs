@@ -113,14 +113,21 @@ Proven reads `fixed · −X <unit> · ≈Y OM/d`. A later regression stamps `reg
 the work, in min/day: each class is the union of its intervals, so parallel runs count once; the overhead
 (`overhead_s`) is the union of all classes, never their sum. No floors, free-machine deductions or "could save"
 estimates; a class exists only where its intervals are already journaled. Suite seconds are blocking seconds: those
-their owner generated beside them (inside its turns or run, outside its calls) leave. An `ad-hoc scripts` row sits beside
-the overhead, never in it or the index: tool_mining's `menu_row`, every cluster but `file-edit`/`file-read`. So does
-`wait loops` (class `wait_loop`, Speed's `time/wait_loop`, the ledger row `tool-idea-wait-until`; Egor: a wait costs
-what it awaits, only its overshoot is lost): Harness's `w` rows, Bash calls waiting by fixed sleeps or a followed log,
+their owner generated beside them (inside its turns or run, outside its calls) leave. Lost time's tree (Egor, 2026-10-14) shows the
+last 24 h for every row, no overhead subtotal: tests (running, queued, heaviest suites), waiting for workers, hooks and
+gates (hooks, gate refusals, locks), usage walls, compaction, wait overshoot, unmeasured, and two rows outside the
+index, DIM: `model-written scripts` (tool_mining's `menu_row`, every cluster but `file-edit`/`file-read`, summed over
+the last 24 whole hours `hours_of` keeps, sorted as the last scanned day decides) and `our tools` (Harness's `u` rows:
+the wall time of the bin commands and skills the adoption lists, top 5 then the rest, unioned and clipped as the
+classes, less the spans tests and waiting for workers already hold). Row names are stable: the night report cites
+them. The rows are ordered once by size, the day each first appears, and frozen (`lost-order.json`), never re-sorted
+live. Then system active, then `Unused tools ▸`, their count (tool_mining's `unused_row`). `wait overshoot` (class `wait_loop`,
+Speed's `time/wait_loop`, the ledger row `tool-idea-wait-until`; Egor: a wait costs what it awaits, only its overshoot
+is lost) is in the overhead and the index: Harness's `w` rows, Bash calls waiting by fixed sleeps or a followed log,
 counted from the awaited end (the session's last suite, a named worker run) to the call's exit, else half a poll
 loop's sleep; a plain `sleep N` with no known end counts nothing and is listed as `end unknown`; `chat foreground`
 lists a chat's whole foreground waits on a job, info only. It opens by what they wait on and each one's top shapes.
-No `w` row in a day: no value, never 0.
+No `w` row in a day: no value, never 0, no row.
 
 **Lost time index** (Egor; the title number). Fee per unit of work against the previous 7 days, Paasche per stratum as
 token-map's `_price_index`; 1.00 = the same, no norms or thresholds. It must not move with volume, parallelism,

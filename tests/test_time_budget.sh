@@ -264,8 +264,8 @@ day = T.budget(D0, D0 + 86400)
 check(day["seconds"] == dict(dict.fromkeys(T.LABEL, 0), suite_run=2100, suite_wait=1000, slot=601, retries=400,
                              hooks=100, stop=20, locks=40, other=649)
       and day["active_s"] == 9000 and day["runs"] == 2
-      and {k: day["rows"][k] for k in ("tests", "delegation", "harness rules", "unmeasured")}
-      == {"tests": 3100, "delegation": 1001, "harness rules": 160, "unmeasured": 649},
+      and {k: day["rows"][k] for k in ("tests", "waiting for workers", "hooks and gates", "unmeasured")}
+      == {"tests": 3100, "waiting for workers": 1001, "hooks and gates": 160, "unmeasured": 649},
       "each class is the union of its spans: suites from every caller, a review round's slot queue too, hook rows and "
       "a turn's Stop seconds at its end, locks a chat paid (a background job's never), a review round's unsplit rest "
       "and a turn's unexplained seconds unmeasured; a row is the union of its classes: %s %s"
@@ -276,7 +276,7 @@ lines(os.path.join(work, "twin-stats", "runs.jsonl"), [run, review, dict(run, ru
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "twin-stats")
 pair = T.budget(D0, D0 + 86400)
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
-check(pair["runs"] == 3 and pair["rows"]["delegation"] == day["rows"]["delegation"]
+check(pair["runs"] == 3 and pair["rows"]["waiting for workers"] == day["rows"]["waiting for workers"]
       and pair["overhead_s"] == day["overhead_s"],
       "two runs queued and retried side by side count once: %s %s" % (pair["rows"], pair["overhead_s"]))
 check(day["overhead_s"] == 4290 and sum(day["seconds"].values()) == 4910,
@@ -303,13 +303,14 @@ doc = T.document(NOW)
 check(doc["refusal_cost"]["unmeasured_by_gate"] == {"unknown": 1} and doc["refusal_cost"]["min_day"] == 0
       and doc["refusals"] == 1 and doc["worker_runs"] == 2,
       "JSON reports the refusal count and its cost coverage")
-check(doc["lost_min_day"] == 71.5 and doc["lines"][0] == "72 min/day overhead" and doc["rows"] == [
-          [71.5, "overhead", []], [51.7, "tests", [[35.0, "running"], [16.7, "queued"]]],
-          [16.7, "delegation", [[10.0, "worker queue"], [0.0, "wrap-up"], [6.7, "retries"], [0.0, "dead, hung"]]],
-          [2.7, "harness rules", [[2.0, "hooks"], [0.0, "gate refusals"], [0.7, "locks"], "-", [1.7, "gate"]]],
-          [0.0, "usage walls", []], [0.0, "compaction", []], [10.8, "unmeasured", []], [150.0, "system active", []]],
-      "the day document: overhead first, each row with its parts, gates and the heaviest hooks under theirs, system "
-      "active last: %s" % doc["rows"])
+check(doc["lost_min_day"] == 71.5 and doc["lines"][0] == "52 min/day tests · running 35 · queued 17" and doc["rows"] == [
+          [51.7, "tests", [[35.0, "running"], [16.7, "queued"]]],
+          [16.7, "waiting for workers", [[10.0, "worker queue"], [0.0, "wrap-up"], [6.7, "retries"], [0.0, "dead, hung"]]],
+          [10.8, "unmeasured", []],
+          [2.7, "hooks and gates", [[2.0, "hooks"], [0.0, "gate refusals"], [0.7, "locks"], "-", [1.7, "gate"]]],
+          [0.0, "usage walls", []], [0.0, "compaction", []], "-", [150.0, "system active", []]],
+      "the day document: each row with its parts, gates and the heaviest hooks under theirs, by size the first day "
+      "seen, system active last: %s" % doc["rows"])
 check("tests" not in doc and not any(l.startswith("Tests:") for l in doc["lines"]),
       "test time is share/test_health.py's block, never a second line here")
 
@@ -358,8 +359,8 @@ lines(os.path.join(work, "dead-stats", "runs.jsonl"), [dead_row])
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "dead-stats")
 died = T.budget(D0, D0 + 86400)
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
-check(died["seconds"]["dead"] == 600 and died["dead_runs"] == [DEAD] and died["rows"]["delegation"] == 610,
-      "dead worker runs are a delegation class: %s" % died["seconds"])
+check(died["seconds"]["dead"] == 600 and died["dead_runs"] == [DEAD] and died["rows"]["waiting for workers"] == 610,
+      "dead worker runs are a waiting-for-workers class: %s" % died["seconds"])
 
 queue_turn = ["t", D0 + 3950, "sessQ", D0 + 4400, "n", [0, 0, 0], 0, [], [], {"gen": 50, "queue": 300, "test": 100},
               {}, []]
@@ -398,8 +399,8 @@ lines(os.path.join(work, "tail-stats", "runs.jsonl"), [dict(run, attempt_secs=[3
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "tail-stats")
 tail = T.budget(D0, D0 + 86400)
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
-check(tail["seconds"]["wrapup"] == 1000 and tail["rows"]["delegation"] == 2000,
-      "a wrap-up tail is a delegation class: %s" % tail["rows"])
+check(tail["seconds"]["wrapup"] == 1000 and tail["rows"]["waiting for workers"] == 2000,
+      "a wrap-up tail is a waiting-for-workers class: %s" % tail["rows"])
 section = T.section(NOW)
 check(open(os.path.join(work, "harness", "budget.txt")).read().splitlines() == section["lines"]
       and not os.path.exists(T.day_cache_path("2026-01-10")),

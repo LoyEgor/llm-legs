@@ -274,14 +274,16 @@ writeDays(series)
 local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" } },
   speed = { status = "ok", as_of_s = now, index = 0.93, index_by_day = spendDays(series),
     levels = { { 1.24, "min per order · chat" }, { 12, "min per task · workers" } },
-    rows = { { 573, "overhead", {} },
+    rows = {
       { 542, "tests", { { 540, "running" }, { 122, "queued" }, "-", { 283, "test_worker_run_pool" }, { 7.4, "test_fast" } } },
-      { 120, "delegation", { { 105, "worker queue" }, { 9.5, "wrap-up" }, { 4.2, "retries" }, { 0, "dead, hung" } } },
-      { 35, "harness rules", { { 24.5, "hooks" }, { 9.5, "gate refusals" }, { 6, "  write-gate.sh" }, { 1.6, "locks" }, "-",
+      { 120, "waiting for workers", { { 105, "worker queue" }, { 9.5, "wrap-up" }, { 4.2, "retries" }, { 0, "dead, hung" } } },
+      { 75, "unmeasured", {} },
+      { 35, "hooks and gates", { { 24.5, "hooks" }, { 9.5, "gate refusals" }, { 6, "  write-gate.sh" }, { 1.6, "locks" }, "-",
         { 13, "commit-report.sh" } } },
-      { 26, "usage walls", {} }, { 19, "compaction", {} }, { 75, "unmeasured", {} }, { 1051, "system active", {} },
-      { 310, "ad-hoc scripts", { { 156, "repeated jobs", { { 0.4, "doctor-state", {}, 18.6 }, { "–", "tokenmap", {}, 24.4 } } },
-        "-", { 0, "/trash", {}, "○" } } } } },
+      { 310, "model-written scripts", { { 156, "repeated jobs", { { 0.4, "doctor-state", {}, 18.6 }, { "–", "tokenmap", {}, 24.4 } } } },
+        { dim = true } },
+      { 26, "usage walls", {} }, { 19, "compaction", {} }, "-", { 1051, "system active", {} },
+      "-", { 1, "Unused tools", { { 0, "/trash", {}, "○" } }, { count = true } } } },
   spend = { status = "watch", as_of_s = now, index = 0.46, index_by_day = spendDays(series),
     issues = { { 1.888, "compaction summaries" } } } }
 local function trendHarness()
@@ -354,24 +356,27 @@ check(plainRow(lost[1], " 1.2 min per order · chat") and plainRow(lost[2], "  1
   and lost[1].disabled and lost[2].disabled, "Lost time opens with the current window's level per stratum, aligned: "
   .. text(lost[1].title))
 lost = { table.unpack(lost, 3) }
-check(plainRow(lost[1], " 573 min/day  overhead") and lost[1].disabled and not lost[1].menu
-  and plainRow(lost[5], "  26 min/day  usage walls") and plainRow(lost[7], "  75 min/day  unmeasured")
-  and plainRow(lost[8], "1051 min/day  system active") and lost[8].disabled,
-  "Lost time's rows: overhead first, system active last, one unit, never red: " .. text(lost[1].title))
-local testsRow, rulesRow = lost[2], lost[4]
+check(plainRow(lost[3], "  75 min/day  unmeasured") and lost[3].disabled and not lost[3].menu
+  and plainRow(lost[6], "  26 min/day  usage walls") and lost[8].title == "-"
+  and plainRow(lost[9], "1051 min/day  system active") and lost[9].disabled,
+  "Lost time's rows in the order given, system active after a line, one unit, never red: " .. text(lost[3].title))
+local testsRow, rulesRow = lost[1], lost[4]
 check(plainRow(testsRow, " 542 min/day  tests") and not testsRow.disabled and plainRow(testsRow.menu[1], " 540 min/day  running")
   and plainRow(testsRow.menu[2], " 122 min/day  queued") and testsRow.menu[3].title == "-"
   and plainRow(testsRow.menu[4], " 283 min/day  test_worker_run_pool") and plainRow(testsRow.menu[5], "   7 min/day  test_fast")
   and #testsRow.menu == 5, "Lost time's tests row opens running, queued, then the heaviest suites")
-check(plainRow(lost[3].menu[4], "   0 min/day  dead, hung") and plainRow(rulesRow.menu[3], "   6 min/day    write-gate.sh")
+check(plainRow(lost[2].menu[4], "   0 min/day  dead, hung") and plainRow(rulesRow.menu[3], "   6 min/day    write-gate.sh")
   and rulesRow.menu[5].title == "-" and plainRow(rulesRow.menu[6], "  13 min/day  commit-report.sh"),
-  "delegation and harness rules open their parts, a gate under its refusals, the heaviest hooks last")
-local adhoc = lost[9]
-check(plainRow(adhoc, " 310 min/day  ad-hoc scripts") and plainRow(adhoc.menu[1], " 156 min/day  repeated jobs")
-  and plainRow(adhoc.menu[1].menu[1], " 0.4   19 min/day  doctor-state") and plainRow(adhoc.menu[1].menu[2], "   –   24 min/day  tokenmap")
-  and adhoc.menu[2].title == "-" and plainRow(adhoc.menu[3], "   0    ○ min/day  /trash") and adhoc.menu[3].disabled,
-  "ad-hoc rows: a built tool's min/day beside its job's residual, a dash where no tool is built, an unused tool 0 beside its glyph: "
+  "waiting for workers and hooks and gates open their parts, a gate under its refusals, the heaviest hooks last")
+local adhoc = lost[5]
+check(plainRow(adhoc, " 310 min/day  model-written scripts") and sameColor(colorAt(adhoc.title, 1), palette.DIM)
+  and sameColor(colorAt(adhoc.title, 14), palette.DIM) and plainRow(adhoc.menu[1], " 156 min/day  repeated jobs")
+  and plainRow(adhoc.menu[1].menu[1], " 0.4   19 min/day  doctor-state") and plainRow(adhoc.menu[1].menu[2], "   –   24 min/day  tokenmap"),
+  "a row outside the index is DIM whole; a built tool's min/day beside its job's residual, a dash where no tool is built: "
   .. text(adhoc.menu[1].menu[1].title))
+check(lost[10].title == "-" and plainRow(lost[11], "   1  Unused tools") and lost[11].menu
+  and plainRow(lost[11].menu[1], "   0    ○ min/day  /trash") and lost[11].menu[1].disabled,
+  "Unused tools open under a row counting them, an unused tool 0 beside its glyph: " .. text(lost[11].title))
 check(issue(trendItems[6].menu, 1, " 1.9 %  compaction summaries"), "Spend issue row: the due component by its share")
 check(span(trendItems[7].menu[1].title, 1, 9) == "Processor" and red(trendItems[7].menu[1].title)
   and span(trendItems[7].menu[2].title, 1, 6) == "Memory" and red(trendItems[7].menu[2].title)

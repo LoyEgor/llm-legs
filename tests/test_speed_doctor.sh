@@ -268,10 +268,12 @@ heavy = {"heavy": [{"label": "test_%d" % i, "min_day": 100.0 - i} for i in range
 rows_header = json.loads(next(l for l in h.menu_text({
     "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
     "speed": {"status": "ok", "tests": heavy, "budget": {"rows": [
-        [95.3, "overhead", []], [40.0, "tests", [[30.0, "running"], [12.0, "queued"]]], [1.0, "usage walls", []]]}}}
+        [40.0, "tests", [[30.0, "running"], [12.0, "queued"]]], [3.0, "our tools", [], {"dim": True}], "-",
+        [1.0, "system active", []], "-", [1, "Unused tools", [[0, "x", [], "○"]], {"count": True}]]}}}
     ).splitlines() if l.startswith("H\t"))[2:])["speed"]["rows"]
-check(rows_header == [[95.3, "overhead", []], [40.0, "tests", [[30.0, "running"], [12.0, "queued"], "-"]
-                                                + [[100.0 - i, "test_%d" % i] for i in range(8)]], [1.0, "usage walls", []]],
+check(rows_header == [[40.0, "tests", [[30.0, "running"], [12.0, "queued"], "-"] + [[100.0 - i, "test_%d" % i] for i in range(8)]],
+                      [3.0, "our tools", [], {"dim": True}], "-", [1.0, "system active", []], "-",
+                      [1, "Unused tools", [[0, "x", [], "○"]], {"count": True}]],
       "the menu header carries the time budget's rows as they are, the tests row closing on the 8 heaviest suites: %s"
       % rows_header)
 saved_env, saved = dict(os.environ), (module.with_time, module.time_budget.section)
@@ -632,7 +634,7 @@ check(out.returncode == 0 and headline(first) == headline(doc) and counted_once(
       "a persisting run lays its section into Harness's latest.json and the top of its menu.txt and writes neither "
       "file of its own; with no baseline the wait keeps its own verdict and counts under Speed: %s" % menu_txt[:2])
 budget = first.get("budget") or {}
-check(budget.get("lines") and budget["lines"][0].endswith(" min/day overhead")
+check(budget.get("lines") and budget["lines"][-1].endswith(" min/day system active")
       and open(os.path.join(harness_dir, "budget.txt")).read().splitlines() == budget["lines"],
       "a persisting run carries the time budget in its section and writes its plain-words block: %s" % budget.get("lines"))
 with open(os.path.join(work, "doctors", "problem-days.jsonl")) as handle:
