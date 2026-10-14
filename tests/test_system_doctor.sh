@@ -39,6 +39,7 @@ chmod +x "$WORK/bin/du"
 export SYSTEM_DOCTOR_DU="$WORK/bin/du"
 
 python3 - "$ROOT" "$WORK" <<'PY'
+import concurrent.futures
 import contextlib
 import glob
 import importlib.machinery
@@ -1121,11 +1122,11 @@ check({kind: slot[:2] + [len(slot[2])] for kind, slot in out["odd"].items()}
 work = os.path.dirname(os.environ["SSD_SAMPLER_DIR"])
 
 
-def sample_off(script, **patch):
-    fake = os.path.join(work, "fake-fs-usage")
+def sample_off(tag, script, **patch): # -> probe, sample, seconds taken, its sample directory
+    fake, out = os.path.join(work, "fake-fs-usage-" + tag), os.environ["SSD_SAMPLER_DIR"] + "-" + tag
     open(fake, "w").write("#!/bin/bash\n" + script)
     os.chmod(fake, 0o755)
-    shutil.rmtree(os.environ["SSD_SAMPLER_DIR"], ignore_errors=True)
+    shutil.rmtree(out, ignore_errors=True)
     began = time.time()
     probe = subprocess.run([sys.executable, "-I", "-c", """
 import importlib.machinery, json, os, sys, time
@@ -1144,17 +1145,26 @@ remove = s.os.remove
 s.os.remove = lambda path: (print("calibration", os.path.getsize(path)) if path.endswith("/calibration") else None,
                             remove(path))
 s.run()
-""", os.path.join(root, "bin", "ssd-sampler"), fake, json.dumps(patch)], capture_output=True, text=True, timeout=60)
-    names = [n for n in os.listdir(os.environ["SSD_SAMPLER_DIR"]) if n.endswith(".json")] \
-        if os.path.isdir(os.environ["SSD_SAMPLER_DIR"]) else []
-    sample = json.load(open(os.path.join(os.environ["SSD_SAMPLER_DIR"], names[0]))) if len(names) == 1 else None
-    return probe, sample, time.time() - began
+""", os.path.join(root, "bin", "ssd-sampler"), fake, json.dumps(patch)], capture_output=True, text=True, timeout=60,
+                           env=dict(os.environ, SSD_SAMPLER_DIR=out))
+    took = time.time() - began
+    names = [n for n in os.listdir(out) if n.endswith(".json")] if os.path.isdir(out) else []
+    sample = json.load(open(os.path.join(out, names[0]))) if len(names) == 1 else None
+    return probe, sample, took, out
 
 
 LINE = ('  echo "$t  WrData[A]  D=0x01  B=0x1000  /dev/disk3s1  /Users/someone/.cache/tool/a  0.000100 W Python.7"\n'
         '  echo "$t  WrData[A]  D=0x11  B=0x2000  /dev/disk7s1  /Volumes/Work/x/y/z  0.000100 W rsync.8"\n')
-probe, sample, took = sample_off("for i in 1 2 3 4 5 6; do\n  t=$(/bin/date +%H:%M:%S).$((100000 + i))\n" + LINE +
-                                 "  sleep 0.5\ndone\necho 'fs_usage: lost events' >&2\n")
+# The four runs wait on real time, never on each other: they run side by side, each with its own fake and directory.
+with concurrent.futures.ThreadPoolExecutor(4) as pool:
+    sampled_off = [
+        pool.submit(sample_off, "span", "for i in 1 2 3 4 5 6; do\n  t=$(/bin/date +%H:%M:%S).$((100000 + i))\n" + LINE +
+                    "  sleep 0.5\ndone\necho 'fs_usage: lost events' >&2\n"),
+        pool.submit(sample_off, "lag", "t=$(/bin/date -v-60S +%H:%M:%S).100000\n" + LINE + LINE + "exec /bin/sleep 30\n"),
+        pool.submit(sample_off, "rss", "for i in $(seq 1 40); do\n  t=$(/bin/date +%H:%M:%S).100000\n" + LINE +
+                    "  sleep 0.25\ndone\n", RSS_CUT_B=1),
+        pool.submit(sample_off, "timeout", "exec /bin/sleep 30\n", SECS=1, GRACE_S=1)]
+probe, sample, took, out = sampled_off[0].result()
 check(probe.returncode == 0 and sample and "calibration %d" % (2 << 20) in probe.stdout,
       "ssd-sampler run writes the calibration file and one sample off fakes: %s %s" % (probe.stdout, probe.stderr[-800:]))
 if sample:
@@ -1167,20 +1177,21 @@ if sample:
           and sum(t[1] for t in sample["ticks"]) > 0 and sum(t[4] for t in sample["ticks"]) > 0
           and sample["cost"]["cpu_s"] >= 0 and sample["cost"]["rss_max_b"] > 2 ** 20 and sample["cost"]["ran_s"] >= 2
           and sample["cost"]["wrote_b"] == 2 << 20
-          and not os.path.exists(os.path.join(os.environ["SSD_SAMPLER_DIR"], "calibration")),
+          and not os.path.exists(os.path.join(out, "calibration")),
           "ssd-sampler run: a v3 sample with the calibration write, fs_usage stderr, the traced span, device ticks and "
           "its own cost: %s" % {k: sample[k] for k in ("trace", "calibration", "devices", "ticks", "cost")})
-probe, sample, took = sample_off("t=$(/bin/date -v-60S +%H:%M:%S).100000\n" + LINE + LINE + "exec /bin/sleep 30\n")
+probe, sample, took, out = sampled_off[1].result()
 check(sample and sample["trace"]["cut"] == "lag" and sample["lines"] == 1 and sample["rows"] == [] and took < 8,
       "ssd-sampler stops a trace that lags 20 s behind its events, where the kernel starts dropping them: %s %.1f s %s"
       % (sample and sample["trace"], took, probe.stderr[-400:]))
-probe, sample, took = sample_off("for i in $(seq 1 40); do\n  t=$(/bin/date +%H:%M:%S).100000\n" + LINE + "  sleep 0.25\ndone\n",
-                                 RSS_CUT_B=1)
+probe, sample, took, out = sampled_off[2].result()
 check(sample and sample["trace"]["cut"] == "rss" and took < 8,
       "ssd-sampler stops fs_usage past its memory cap: %s %.1f s %s" % (sample and sample["trace"], took, probe.stderr[-400:]))
-probe, sample, took = sample_off("exec /bin/sleep 30\n", SECS=1, GRACE_S=1)
+probe, sample, took, out = sampled_off[3].result()
 check(sample and sample["lines"] == 0 and took < 10 and sample["trace"]["exit"] not in (0, None),
       "ssd-sampler kills an fs_usage that outlives its timeout: %s %.1f s" % (sample and sample["trace"], took))
+for run in sampled_off:
+    shutil.rmtree(run.result()[3], ignore_errors=True)
 shutil.rmtree(os.environ["SSD_SAMPLER_DIR"], ignore_errors=True)
 ssd = os.environ["SSD_SAMPLER_DIR"]
 os.makedirs(ssd)
@@ -1850,12 +1861,11 @@ except ValueError as error:
 check(raised == "first" and time.monotonic() - began < 10,
       "an on_line that raises kills the probe instead of waiting it out: %r after %.1fs" % (raised, time.monotonic() - began))
 
-child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "", "--flag"],
-                         env=dict(os.environ, PROBE_SECRET="secret"))
+# The child's first line comes from its own code, so its argv is final by then.
+child = subprocess.Popen([sys.executable, "-c", "import time; print(flush=True); time.sleep(30)", "", "--flag"],
+                         env=dict(os.environ, PROBE_SECRET="secret"), stdout=subprocess.PIPE)
 try:
-    deadline = time.monotonic() + 10
-    while "--flag" not in m.machine_probe._argv(child.pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
+    child.stdout.readline()
     seen = m.machine_probe._argv(child.pid)
 finally:
     child.kill()
