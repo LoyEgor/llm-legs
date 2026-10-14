@@ -66,7 +66,11 @@ worker_pool_is_disabled() {
   [ ! -e "$1/shielded/$name" ] || return 0
   [ -e "$file" ] || return 1
   if [ -f "$file" ] && [ -r "$file" ]; then
-    grep -qxF -- "$name" "$file" && return 0
+    # Asked once per account by the collect and pin loops: a whole-line match with no grep fork.
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ "$line" != "$name" ] || return 0
+    done <"$file"
     return 1
   fi
   printf 'worker-pool: %s cannot be read; treating every account as out of the pool\n' "$file" >&2
@@ -141,19 +145,25 @@ worker_pool_disabled_json() {
   printf 'null'
 }
 
+# Read on every collect for each vendor, so built in the shell: a glob, no find/sort/jq. Readers ask
+# membership only; a name JSON cannot carry verbatim (a control character) answers null, every account shielded.
 worker_pool_shielded_json() {
-  local dir="$1" shield_dir="$1/shielded" marker name
+  local dir="$1" shield_dir="$1/shielded" marker name json=''
   [ -e "$shield_dir" ] || { printf '[]'; return 0; }
   if [ ! -d "$shield_dir" ] || [ ! -r "$shield_dir" ] || [ ! -x "$shield_dir" ]; then
     printf 'worker-pool: %s cannot be read; treating every account as shielded\n' "$shield_dir" >&2
     printf 'null'
     return 0
   fi
-  while IFS= read -r marker; do
+  for marker in "$shield_dir"/* "$shield_dir"/.[!.]*; do
+    [ -e "$marker" ] || [ -L "$marker" ] || continue
     name=${marker##*/}
-    worker_pool_valid_name "$name" && printf '%s\n' "$name"
-  done < <(find "$shield_dir" -mindepth 1 -maxdepth 1 -print 2>/dev/null) |
-    LC_ALL=C sort -u | jq -Rn '[inputs | select(length > 0)]' 2>/dev/null || printf 'null'
+    worker_pool_valid_name "$name" || continue
+    [[ "$name" != *[[:cntrl:]]* ]] || { printf 'null'; return 0; }
+    name=${name//\\/\\\\} name=${name//\"/\\\"}
+    json+=${json:+,}\"$name\"
+  done
+  printf '[%s]' "$json"
 }
 
 worker_pool_marker_epoch() {

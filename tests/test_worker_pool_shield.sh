@@ -29,6 +29,8 @@ assert test "$(worker_pool_marker_epoch claudeb shielded alpha)" = "$epoch"
 assert worker_pool_is_disabled "$CLAUDEB_DIR" alpha
 assert jq -e 'index("alpha") != null' <<<"$(worker_pool_disabled_json "$CLAUDEB_DIR")" >/dev/null
 assert jq -e 'index("alpha") != null' <<<"$(worker_pool_shielded_json "$CLAUDEB_DIR")" >/dev/null
+# Every collect asks it once per vendor: built in the shell, it needs no find, sort or jq.
+assert test "$(PATH=/nonexistent worker_pool_shielded_json "$CLAUDEB_DIR")" = '["alpha"]'
 assert worker_pool_shield_clear claudeb alpha
 assert_fails worker_pool_shield_active claudeb alpha
 
