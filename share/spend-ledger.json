@@ -5721,19 +5721,19 @@
   {
    "id": "suite:llm-legs/test_system_doctor",
    "title": "llm-legs/test_system_doctor",
-   "audited_at": "2026-10-13T17:20:29+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b",
-   "cpu_run": 7.5,
-   "wall_run": 12.0,
-   "cpu_min_day": 7.11,
-   "wall_min_day": 20.5,
+   "audited_at": "2026-10-14T08:19:31+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
+   "cpu_run": 11.2,
+   "wall_run": 21.5,
+   "cpu_min_day": 14.91,
+   "wall_min_day": 50.69,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
-    "llm-legs/tests/test_system_doctor.sh": "332dac9fdcca5312bdddde097de769c89533cd1b"
+    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/test_system_doctor.sh": "1e3aee45faa089de27f4289a042a2dad45d0096a"
    },
    "verdict": "cut",
-   "zero": "removal saves ~12 wall-s a run, 14.7 wall-min/day; loses every check of the macOS system doctor (probes, judge, harvest, install-agent)",
-   "note": "install-agent retry cases in-process with time.sleep recorded: two CLI spawns and 4 s of real sleep gone, the retry pause now pinned (was green without it); write_ticks one open per day; 227 checks unchanged"
+   "zero": "removal saves 32.0 wall-min/day; loses 299 checks pinning the system doctor tick, nightly, rules, judge and ssd-sampler",
+   "note": "real-time bound: the four ssd-sampler fake-fs_usage runs now run side by side (8.9 s -> ~4.4 s; A/B 25.4/18.4 -> 16.4 s at load 25-32); 35 cli() runs pay ~0.19 s compile each, the product entry the suite must drive; PASS 299"
   },
   {
    "id": "suite:llm-legs/test_llm_limits",
