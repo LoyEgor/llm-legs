@@ -196,7 +196,7 @@ render_interactive_accounts() {
   while IFS=$'\x1f' read -r name h5 wk fable h5_mk wk_mk fable_mk hreset wreset age h5_dim wk_dim fable_dim disabled; do
     age_text="$age"
     if [ "$accounts_mode" = live ] && [ -n "$accounts_live_age" ]; then
-      age_text=$("$accounts_live_age" "$name" "$age")
+      "$accounts_live_age" "$name" "$age"  # sets age_text in this shell: no fork per row
     fi
     marker=' '
     [ "$name" = "$accounts_picked" ] && marker='*'

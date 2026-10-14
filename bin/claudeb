@@ -2552,12 +2552,12 @@ claudeb_status_refresh() {
   claudeb_status_probe "$1"
 }
 
-claudeb_status_age() {
-  local state age="$2"
-  state=$(cat "$accounts_probe_dir/$1.display" 2>/dev/null || true)
+claudeb_status_age() { # name age -> age_text, the row's AGE cell
+  local state=''
+  read -r state 2>/dev/null <"$accounts_probe_dir/$1.display"
   case "$state" in
-    live|'live*'|'auth!'|login) printf '%s' "$state" ;;
-    *) printf '%s!' "$age" ;;
+    live|'live*'|'auth!'|login) age_text=$state ;;
+    *) age_text="$2!" ;;
   esac
 }
 
