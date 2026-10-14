@@ -62,16 +62,19 @@ agent_prompt_key() {
 # An agent that knows its spawn key takes only the seed carrying that key, and a denied or cancelled
 # spawn leaves its seed behind: an agent without a key takes only a fresh seed.
 pick_seed() {
-  local key seed seed_key mtime now stale=''
-  key=$(agent_prompt_key)
-  now=$(date +%s)
+  local key='' keyed='' seed seed_key line mtime now='' stale=''
   while IFS= read -r seed; do
     [ -f "$seed" ] || continue
-    seed_key=$(sed -n 's/^spawn=//p' "$seed" 2>/dev/null | head -n1)
+    [ -n "$keyed" ] || { key=$(agent_prompt_key); keyed=1; }
     if [ -n "$key" ]; then
+      seed_key=''
+      while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in spawn=*) seed_key=${line#spawn=}; break ;; esac
+      done 2>/dev/null <"$seed"
       [ "$key" = "$seed_key" ] && { printf '%s' "$seed"; return 0; }
       continue
     fi
+    [ -n "$now" ] || now=${EPOCHSECONDS:-$(date +%s)}
     mtime=$(stat -f %m "$seed" 2>/dev/null || stat -c %Y "$seed" 2>/dev/null) || continue
     [ "$((now - mtime))" -le "$SEED_MAX_AGE_S" ] || { stale=$((now - mtime)); continue; }
     printf '%s' "$seed"
