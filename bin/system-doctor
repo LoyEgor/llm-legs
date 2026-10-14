@@ -94,13 +94,14 @@ DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
 DAY_S = 86400
 GIB = 1 << 30
-COHORT = {"cpu_s": 864, "wakes": 86400, "writes_b": GIB, "reads_b": 100 * GIB, "footprint_b": 512 << 20, "births": 86400,
-          "launches": 1440, "review": 1, "heavy": 5, "days": 7, "lookback_days": 14, "pressure_comp": 0.25,
+COHORT = {"cpu_s": 864, "wakes": 86400, "writes_b": GIB, "reads_b": 100 * GIB, "footprint_b": 512 << 20, "launches": 1440,
+          "review": 1, "heavy": 5, "days": 7, "lookback_days": 14, "pressure_comp": 0.25,
           "pressure_swapouts_s": 2000, "watch_rows": 6, "items_day": 100}
 # Claude Code spawns and reaps every statusline render, so the ticks see renders only as claude's reaped-child CPU
 STATUSLINE_REAPER = "claude"
+# B's terms. Births (per_day S) are a hint only: C holds the reaped children's CPU, where a start's cost lands
 TERMS = (("C", "cpu_s", "%.0f cpu-s"), ("W", "wakes", "%.0f idle wakes"), ("D", "writes_b", "%.1f GB written"),
-         ("R", "reads_b", "%.1f GB read"), ("M", "footprint_b", "%.0f MiB held under pressure"), ("S", "births", "%.0f births"),
+         ("R", "reads_b", "%.1f GB read"), ("M", "footprint_b", "%.0f MiB held under pressure"),
          ("L", "launches", "%.0f launches"))
 BACKGROUND = {"min_b": 0.01, "items": 60, "origins": 4000}
 HARNESS = "harness"
@@ -134,7 +135,9 @@ VALUE_OPTS = {"python": {"-X", "-W"}, "shell": {"-o", "-O", "+O"}, "node": {"-r"
               "uv": {"--with", "--python", "-p", "--project", "--directory"}, "osascript": {"-l"}}
 ARGV_WORDS = 8
 OWN_APPS = {"Hammerspoon", "hs"}
-CAUSER_APPS = {"claude", "Hammerspoon", "memlogd"}
+# The LLM CLIs by the tag the ticks see (codex and grok native, agy): what runs below one is its work, never the launcher's
+LLM_CLIS = {"claude", "codex", "grok", "agy"}
+CAUSER_APPS = {"Hammerspoon", "memlogd"} | LLM_CLIS
 APPLE_PREFIXES = ("/System/", "/usr/", "/bin/", "/sbin/", "/Library/Apple/")
 CRASH_TYPES = {"309": "crash", "109": "crash", "298": "jetsam", "288": "hang", "409": "hang", "210": "panic"}
 DIAG_EVENTS = {"disk writes": "diskwrites", "cpu usage": "cpu_resource", "wakeups": "wakeups"}
@@ -486,7 +489,7 @@ def ps_snapshot(with_children, known=None):
 
 
 def causer(key, procs, by_pid):
-    """The nearest own script or app above a newborn; else its parent's name."""
+    """The nearest own script, app or LLM CLI above a newborn; else its parent's name."""
     chain, pid = [], procs[key][0]
     while pid > 1 and len(chain) < 12 and pid in by_pid:
         entry = procs[by_pid[pid]]
@@ -657,7 +660,7 @@ def tick(now=None):
     old_procs = previous.get("procs") or {}
     old_usage = previous.get("usage") or {}
     old_by_pid = {int(key.split("@", 1)[0]): key for key in old_procs}
-    charged = {}
+    charged, clis = {}, {}
     for key, kept in old_procs.items():
         if key not in last and len(kept) >= 4:
             # the reaper is the nearest ancestor still alive: a dead parent's lifetime held the child's
@@ -666,6 +669,8 @@ def tick(now=None):
                 parent, hops = old_procs[old_by_pid[parent]][3], hops + 1
             mine = max(0.0, kept[1] - kept[2]) + (kept[4] if len(kept) > 4 else 0.0)
             charged[parent] = charged.get(parent, 0.0) + mine
+            if len(kept) > 6:
+                clis[parent] = (kept[5], kept[6])
     for key, entry in last.items():
         before = old_procs.get(key)
         if not joined or key not in first or before is None:
@@ -680,9 +685,13 @@ def tick(now=None):
         # also floors a shrunk counter (a restarted process) at 0
         reaped -= min(reaped, charged.pop(entry[4], 0.0))
         reaped_by[key] = reaped
-        if spent + reaped > 0:
-            slot = cpu.setdefault((entry[2], entry[3]), [0.0, 0.0])
-            slot[0] += spent + reaped
+        # what a launcher reaped beyond the ticks' charge when an LLM CLI below it died is the CLI's last stretch
+        cli = clis.get(entry[4]) if entry[2] not in LLM_CLIS else None
+        if spent > 0:
+            cpu.setdefault((entry[2], entry[3]), [0.0, 0.0])[0] += spent
+        if reaped > 0:
+            slot = cpu.setdefault(cli or (entry[2], entry[3]), [0.0, 0.0])
+            slot[0] += reaped
             slot[1] += reaped
     row["cpu_top"] = top_rows([[tag, round(s, 2), round(r, 2), owner] for (tag, owner), (s, r) in cpu.items()])
     row["cpu_own"] = top_rows([[tag, round(s, 2), round(r, 2), owner] for (tag, owner), (s, r) in cpu.items()
@@ -718,6 +727,7 @@ def tick(now=None):
                              else entry[1], entry[0],
                              round(reaped_by.get(key, 0.0) + ((old_procs[key][4] if len(old_procs[key]) > 4 else 0.0)
                                                               if joined and key in old_procs else 0.0), 3)]
+                             + (entry[2:4] if entry[2] in LLM_CLIS else [])
                        for key, entry in last.items() if key in first},
              "usage": {key: [read, written, wakes, children] for key, (_f, read, written, wakes, children) in usage.items()},
              "recent": (previous.get("recent") or [])[-2:] + [{"t": round(now, 1), "births_s": row["births_s"],
@@ -2079,15 +2089,16 @@ def cohort_sums(rows):
                 items.setdefault((entry[0], entry[-1]), [0.0] * 6)[5] += entry[1] * dt
     out = [[tag, owner] + [round(v, 1) for v in values] + [int(owner == "own" or not legacy and (tag, owner) not in blind)]
            for (tag, owner), values in items.items()]
-    out.sort(key=lambda r: (-max(r[2] / COHORT["cpu_s"], r[3] / COHORT["births"], r[4] / COHORT["writes_b"],
+    out.sort(key=lambda r: (-max(r[2] / COHORT["cpu_s"], r[4] / COHORT["writes_b"],
                                  r[5] / COHORT["reads_b"], r[6] / COHORT["wakes"], r[7] / DAY_S / COHORT["footprint_b"]),
                                r[0]))
     return out[:COHORT["items_day"]]
 
 
 def cohort_score(days, launches, now):
-    """{covered_days, items} of B_i = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB x pressure, S/86400, L/1440)
-    per item over the newest day rows covering >= 7 days (14 back at most); items None while fewer are covered.
+    """{covered_days, items} of B_i = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB x pressure, L/1440) per item
+    over the newest day rows covering >= 7 days (14 back at most); items None while fewer are covered. per_day also
+    carries S, births a day, unscored.
     rusage reads only this uid's processes: W, D, R and M of an item whose rusage some covered day missed (an Apple
     daemon of another uid, a launchd job seen only by dumpstate) are unknown and never certify a low B. The root
     sampler runs as another uid through Apple's fs_usage, so each sample's own cost joins as the own SAMPLER_TAG."""
@@ -2359,8 +2370,9 @@ def explain_brief(items):
             lines.append("- launchd job %s (%s), %s%s%s" % (job["label"], job["plist"], job["schedule"],
                                                             ", its file is gone" if job["missing"] else "",
                                                             ", not loaded" if job["loaded"] is False else ""))
-        if item["terms"]:
-            top = max(item["terms"], key=lambda k: item["terms"][k])
+        scored = [k for k in item["terms"] if k in words]  # a latest.json from before S left B may still carry S
+        if scored:
+            top = max(scored, key=lambda k: item["terms"][k])
             lines.append("- costs %.2f of its limit a day, mostly %s a day" % (
                 item["B"], words[top] % (item["per_day"][top] / {"D": 1e9, "R": 1e9, "M": 1 << 20}.get(top, 1))))
     return "\n".join(lines) + "\n"
@@ -2510,7 +2522,7 @@ def proof(name, rule, since, now, night=None, memo=None):
             memo[key] = before
     after = tag_rates([r for r in rows if r["t"] >= since], name)
     out = {"before": before, "after": after}
-    terms = {"ssd-writes": ("mb_h",), "cohort": ("births_s", "cores", "mb_h")}.get(rule, ("births_s", "cores"))
+    terms = {"ssd-writes": ("mb_h",), "cohort": ("cores", "mb_h")}.get(rule, ("births_s", "cores"))
     if before["seen"] < PROOF["sightings"] or not any(before.get(k) for k in terms):
         return dict(out, verdict="refused", why="no measurable baseline: %s seen in %d ticks of the %d days before, "
                     "needs %d" % (name, before["seen"], PROOF["baseline_s"] // DAY_S, PROOF["sightings"]))

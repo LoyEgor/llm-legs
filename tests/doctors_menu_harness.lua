@@ -1252,7 +1252,7 @@ do
         unit = "B", cause = { name = "ghost", owner = "third-party" }, fact = "ghost 2× its limit" } },
     background = { covered_days = 7, groups = {
       { name = "harness", B = 92, items = {
-        { name = "llm-legs/bin/worker-run", B = 92, terms = { S = 92, C = 0.5 }, per_day = { S = 7948800, C = 432 },
+        { name = "llm-legs/bin/worker-run", B = 92, terms = { C = 92, L = 0.5 }, per_day = { S = 7948800, C = 79488, L = 720 },
           unknown = { "W", "D" }, place = "~/Projects/llm-legs/bin/worker-run", about = "starts the cheap workers" } } },
       { name = "find-truth", B = 0.3, items = {
         { name = "find-truth/pipeline/run_watch.sh", B = 0, terms = {}, per_day = {}, unknown = {},
@@ -1369,17 +1369,20 @@ do
     "Crashes: Apple's loop RED by its short name, a pending fix DIM_RED, crashes by process")
   local background = first[7].menu
   local harness, findTruth = rowMatching(background, "^ +92%.0 ×  harness  1$"), rowMatching(background, "^ +0%.30 ×  find%-truth  3$")
-  local workerRun = harness and rowMatching(harness.menu, "^ +92%.0 ×  starts +llm%-legs/bin/worker%-run$", "R")
+  local workerRun = harness and rowMatching(harness.menu, "^ +92%.0 ×  cpu +llm%-legs/bin/worker%-run$", "R")
   local runs = {}
   for index, item in ipairs(workerRun and workerRun.menu or {}) do runs[index] = item.title == "-" and "-" or text(item.title) end
+  local starts = workerRun and workerRun.menu[5]
   check(text(first[7].title):match("^Background +1 over") and workerRun and runs[1] == "starts the cheap workers"
-    and runs[2] == "~/Projects/llm-legs/bin/worker-run" and runs[3] == "-" and runs[4]:match("^ +7%.2 min/d +cpu +0%.50×$")
-    and runs[5]:match("^ +92 /s +starts +92%.0×$") and runs[6]:match("^ +– +writes wakeups$") and #runs == 6
-    and rowMatching(workerRun.menu, "starts +92%.0×$", "R") and not rowMatching(workerRun.menu, "cpu +0%.50×$", "R")
+    and runs[2] == "~/Projects/llm-legs/bin/worker-run" and runs[3] == "-" and runs[4]:match("^ +1325 min/d +cpu +92%.0×$")
+    and runs[5]:match("^ +92 /s +starts$") and runs[6]:match("^ +720 /d +launches +0%.50×$")
+    and runs[7]:match("^ +– +writes wakeups$") and #runs == 7
+    and rowMatching(workerRun.menu, "cpu +92%.0×$", "R") and not rowMatching(workerRun.menu, "launches +0%.50×$", "R")
+    and sameColor(colorAt(starts.title, 4), palette.DIM) and sameColor(colorAt(starts.title, 15), palette.DIM)
     and sameColor(colorAt(harness.title, 10), palette.RED) and sameColor(colorAt(findTruth.title, 10), palette.DIM),
     "Background: groups by their heaviest program with the count over its limit, a program by its dominant term with "
-    .. "what it is, where it lives and each term per day and as a share of its limit, unmeasured terms on one row: "
-    .. table.concat(runs, " | "))
+    .. "what it is, where it lives and each term per day and as a share of its limit, starts DIM with no share, "
+    .. "unmeasured terms on one row: " .. table.concat(runs, " | "))
   check(findTruth and rowMatching(findTruth.menu, "^ +0 ×  +○ pipeline/run_watch%.sh$")
     and rowMatching(findTruth.menu, "^ +0 ×  +✗ gone%.sh$") and rowMatching(findTruth.menu, "^ +0%.30 ×  cpu +live%.sh$")
     and rowMatching(rowMatching(findTruth.menu, "run_watch").menu, "^com%.ft%.watch · daily 09:30 · not loaded$")

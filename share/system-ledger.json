@@ -117,7 +117,7 @@
     {
       "id": "foreign-cohort-terms",
       "what": "idle wakeups, disk bytes and footprints of items running under another uid (root and _-user Apple daemons, privileged helpers)",
-      "reason": "proc_pid_rusage of another uid's processes needs root, so those items' cohort score counts CPU, births and launches only and lists W, D, R and M as unknown; every process of this uid (Chrome, claude, Dia, Figma) is read since 2026-10-13",
+      "reason": "proc_pid_rusage of another uid's processes needs root, so those items' cohort score counts CPU and launches only and lists W, D, R and M as unknown; every process of this uid (Chrome, claude, Dia, Figma) is read since 2026-10-13",
       "since": "2026-10-06",
       "would_catch_if": "a consented privileged sample"
     },

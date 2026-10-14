@@ -170,6 +170,24 @@ row = json.loads(second.stdout)
 check(isinstance(row["births_s"], int) and row["births_seen"] == 4, "births counted: %s" % row)
 check(row["births_top"] == [["statusline.sh", 2, "own"], ["Hammerspoon", 1, "own"], ["xpcproxy", 1, "apple"]],
       "births attributed to the nearest own script or app above the newborn: %s" % row["births_top"])
+
+
+def chain_causers(cli_tag):
+    """A worker's chain: worker-run (own) -> the CLI -> zsh -c -> git, and run-suites.sh -> bash; worker-run -> jq."""
+    procs = {"10": [1, 0, "llm-legs/bin/worker-run", "own", 10, me_uid, "script"], "11": [10, 0, cli_tag, "third-party", 11, me_uid, None],
+             "12": [11, 0, "zsh", "apple", 12, me_uid, "inline"], "13": [12, 0, "git", "apple", 13, me_uid, None],
+             "14": [12, 0, "llm-legs/share/run-suites.sh", "own", 14, me_uid, "script"],
+             "15": [14, 0, "bash", "apple", 15, me_uid, None], "16": [10, 0, "jq", "third-party", 16, me_uid, None]}
+    by_pid = {entry[4]: key for key, entry in procs.items()}
+    return [m.causer(key, procs, by_pid) for key in ("13", "15", "16")]
+
+
+me_uid = os.getuid()
+causers = {tag: chain_causers(tag) for tag in ("claude", "codex", "grok", "agy")}
+check(all(found == [(tag, "third-party"), ("llm-legs/share/run-suites.sh", "own"), ("llm-legs/bin/worker-run", "own")]
+          for tag, found in causers.items()),
+      "a command below an LLM CLI is the CLI's, an own script below it its own, and the launcher above keeps only what "
+      "it spawns itself: %s" % causers)
 check(row["cpu_top"] == [["statusline.sh", 10.0, 9.0, "own"], ["Hammerspoon", 1.0, 0.0, "own"]],
       "statusline.sh's CPU = its own ps time plus its rusage's reaped-children growth; a shrunk counter adds none: %s"
       % row["cpu_top"])
@@ -197,23 +215,38 @@ row = json.loads(cli("tick").stdout)
 check(row["dt"] is None and row["kernel"] is None and row["cpu_top"] == [] and "disk" not in row,
       "a new boot starts a fresh series: %s" % row)
 saved = {name: open(os.path.join(fix, name)).read() for name in ("ps", "ps-children")}
-lives, me = [], os.getuid()
+me = os.getuid()
 parent_row = (100, 1, 501, "0:01.00", start, "/bin/bash %s/bin/statusline.sh" % own)
-# (child's ps time, grandchild's ps time, rusage reaped-children CPU of [parent, child])
-for child, grandchild, reaped in (("0:02.00", None, [0.0, 0.0]), ("0:07.00", None, [0.0, 0.0]), (None, None, [8.0, 0.0]),
-                                  ("0:00.00", "0:00.00", [8.0, 0.0]), ("0:01.00", "0:02.00", [8.0, 0.5]),
-                                  (None, None, [15.5, 0.0])):
-    rows = [parent_row] + ([(600, 100, me, child, born, "/opt/homebrew/bin/claude -p")] if child else []) \
-        + ([(700, 600, me, grandchild, born, "/opt/homebrew/bin/claude -p")] if grandchild else [])
-    put("ps", ps_rows(rows))
-    put("ps-children", ps_rows(rows))
-    put("rusage.json", json.dumps({"100": [0, 0, 0, 0, reaped[0]], "600": [0, 0, 0, 0, reaped[1]], "700": [0, 0, 0, 0, 0.0]}))
-    lives.append(json.loads(cli("tick").stdout)["cpu_top"])
-check(lives[1:3] == [[["claude", 5.0, 0.0, "third-party"]], [["statusline.sh", 3.0, 3.0, "own"]]],
+
+
+def reaped_ticks(child_exe):
+    """cpu_top of six ticks: a child_exe child under an own launcher lives, dies, then dies with a helper grandchild."""
+    lives = []
+    # (child's ps time, grandchild's ps time, rusage reaped-children CPU of [parent, child])
+    for child, grandchild, reaped in (("0:02.00", None, [0.0, 0.0]), ("0:07.00", None, [0.0, 0.0]), (None, None, [8.0, 0.0]),
+                                      ("0:00.00", "0:00.00", [8.0, 0.0]), ("0:01.00", "0:02.00", [8.0, 0.5]),
+                                      (None, None, [15.5, 0.0])):
+        rows = [parent_row] + ([(600, 100, me, child, born, child_exe)] if child else []) \
+            + ([(700, 600, me, grandchild, born, "/opt/homebrew/bin/helper -p")] if grandchild else [])
+        put("ps", ps_rows(rows))
+        put("ps-children", ps_rows(rows))
+        put("rusage.json", json.dumps({"100": [0, 0, 0, 0, reaped[0]], "600": [0, 0, 0, 0, reaped[1]], "700": [0, 0, 0, 0, 0.0]}))
+        lives.append(json.loads(cli("tick").stdout)["cpu_top"])
+    return lives
+
+
+lives = reaped_ticks("/opt/homebrew/bin/helper -p")
+check(lives[1:3] == [[["helper", 5.0, 0.0, "third-party"]], [["statusline.sh", 3.0, 3.0, "own"]]],
       "a child reaped after living through ticks charges its parent only the CPU its own ticks never did: %s" % lives)
-check(lives[4] == [["claude", 3.5, 0.5, "third-party"]] and lives[5] == [["statusline.sh", 4.0, 4.0, "own"]],
+check(lives[4] == [["helper", 3.5, 0.5, "third-party"]] and lives[5] == [["statusline.sh", 4.0, 4.0, "own"]],
       "a grandchild dead with its parent counts against the nearest live ancestor, its parent's reaped CPU included: %s"
       % lives[3:])
+lives = reaped_ticks("/Users/x/.nvm/lib/node_modules/@openai/codex/vendor/bin/codex exec")
+check(lives[1:3] == [[["codex", 5.0, 0.0, "third-party"]], [["codex", 3.0, 3.0, "third-party"]]]
+      and lives[4] == [["helper", 2.0, 0.0, "third-party"], ["codex", 1.5, 0.5, "third-party"]]
+      and lives[5] == [["codex", 4.0, 4.0, "third-party"]],
+      "what an own launcher reaps beyond the ticks' charge when an LLM CLI below it dies is the CLI's, never the "
+      "launcher's: %s" % lives)
 os.remove(os.path.join(fix, "rusage.json"))
 for name, text in saved.items():
     put(name, text)
@@ -623,6 +656,10 @@ write_ticks(series(since - 6 * 3600, 360, 60, 6, 0.0) + series(since, 180, 60, 2
 check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "proven", "births alone dropping by 25 %% or more proves it")
 write_ticks(series(since - 6 * 3600, 360, 60, 6, 1.0) + series(since, 180, 60, 2, 3.0))
 check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "refused", "fewer births bought with more CPU is no proof")
+write_ticks(series(since - 6 * 3600, 360, 60, 6, 1.0) + series(since, 180, 60, 2, 1.0))
+found = m.proof("statusline.sh", "cohort", since, now)
+check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "proven" and found["verdict"] == "refused"
+      and "births" not in found["why"], "a cohort fix whose births fell but CPU held is no proof, B has no births: %s" % found)
 wrote = [dict(r, io_top=[["statusline.sh", 6e8 if r["t"] < since else 1e8, 0, 0, "own"]])
          for r in series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 5, 6.0)]
 write_ticks(wrote)
@@ -1400,9 +1437,10 @@ check(sorted(jobs) == ["Dup", "Hammerspoon", "com.dup.b", "com.env.set", "find-t
 m.write_json(os.path.join(bg, "state", "origins.json"), {"claude": home + "/.local/share/claude/versions/2.1"})
 m.write_json(m.about_path(), {"Dup": {"about": "a dup app", "t": now}})
 score = {"covered_days": 7.0, "items": [
-    {"name": "llm-legs/bin/worker-run", "owner": "own", "B": 92.0, "terms": {"S": 92.0, "C": 0.5},
-     "per_day": {"S": 7948800.0, "C": 432.0}, "unknown": []},
-    {"name": "claude", "owner": "third-party", "B": 3.0, "terms": {"S": 3.0}, "per_day": {"S": 259200.0}, "unknown": ["W", "D"]},
+    {"name": "llm-legs/bin/worker-run", "owner": "own", "B": 92.0, "terms": {"C": 92.0, "L": 0.5},
+     "per_day": {"S": 7948800.0, "C": 79488.0, "L": 720.0}, "unknown": []},
+    {"name": "claude", "owner": "third-party", "B": 3.0, "terms": {"L": 3.0}, "per_day": {"S": 259200.0, "L": 4320.0},
+     "unknown": ["W", "D"]},
     {"name": "claude", "owner": "own", "B": 2.0, "terms": {"C": 2.0}, "per_day": {"C": 1728.0}, "unknown": ["W"]},
     {"name": "WindowServer", "owner": "apple", "B": 1.5, "terms": {"C": 1.5}, "per_day": {"C": 1296.0}, "unknown": []},
     {"name": "com.dup.a", "owner": "third-party", "B": 0.5, "terms": {"L": 0.5}, "per_day": {"L": 720.0}, "unknown": []},
@@ -1423,7 +1461,8 @@ check([(g["name"], g["B"], [i["name"] for i in g["items"]]) for g in view["group
       "groups by their heaviest item: a group past its row cap keeps its jobs and items at the limit, a launches row "
       "named by label joins its job, the same name of two owners is one row, a quiet non-job item is dropped: %s"
       % [(g["name"], [i["name"] for i in g["items"]]) for g in view["groups"]])
-check(found["claude"]["terms"] == {"S": 3.0, "C": 2.0} and found["claude"]["unknown"] == ["W"]
+check(found["claude"]["terms"] == {"L": 3.0, "C": 2.0} and found["claude"]["per_day"]["S"] == 259200.0
+      and found["claude"]["unknown"] == ["W"]
       and found["claude"]["place"] == "~/.local/share/claude/versions/2.1" and found["claude"]["job"] is None
       and found["Dup"]["terms"] == {"C": 0.2, "L": 0.5} and found["Dup"]["about"] == "a dup app"
       and found["Dup"]["job"] == {"label": "com.dup.a", "plist": plists + "/com.dup.a.plist", "schedule": "on demand",
@@ -1452,7 +1491,7 @@ check([(r["name"], r["action"]) for r in dry] == [("llm-legs/bin/worker-run", "d
       "a dry run asks and records nothing: %s" % dry)
 brief = open(os.environ["FAKE_TIDY_BRIEF"]).read()
 check(brief.startswith("ROUND: none\n") and "## llm-legs/bin/worker-run" in brief
-      and "- costs 92.00 of its limit a day, mostly 7948800 births a day" in brief
+      and "- costs 92.00 of its limit a day, mostly 79488 cpu-s a day" in brief
       and "- launchd job com.dup.b (%s/com.dup.b.plist), on demand, its file is gone" % plists in brief
       and "## Dup\n" not in brief, "the brief names each item with its group, place, job and cost: %s" % brief[-700:])
 done = m.explain(now)
@@ -1482,7 +1521,7 @@ shutil.rmtree(os.path.join(repos_real, "find-truth"))
 
 # ---- phase 3: the cohort score at its edges, amortized over >= 7 days
 check(m.COHORT["cpu_s"] == 864 and m.COHORT["wakes"] == 86400 and m.COHORT["writes_b"] == m.GIB and m.COHORT["reads_b"] == 100 * m.GIB
-      and m.COHORT["footprint_b"] == 512 * 2 ** 20 and m.COHORT["births"] == 86400 and m.COHORT["launches"] == 1440
+      and m.COHORT["footprint_b"] == 512 * 2 ** 20 and "births" not in m.COHORT and m.COHORT["launches"] == 1440
       and m.COHORT["review"] == 1 and m.COHORT["heavy"] == 5 and m.COHORT["days"] == 7, "the cohort divisors are the design's: %s" % m.COHORT)
 
 
@@ -1495,7 +1534,7 @@ def score(entries, launches=(), days=7, covered=86400):
     return {(i["name"], i["owner"]): i for i in found["items"]} if found["items"] is not None else found
 
 
-for index, (term, total) in enumerate((("C", 864), ("S", 86400), ("D", m.GIB), ("R", 100 * m.GIB), ("W", 86400))):
+for index, (term, total) in enumerate((("C", 864), ("D", m.GIB), ("R", 100 * m.GIB), ("W", 86400))):
     values = [0.0] * 6
     values[["C", "S", "D", "R", "W"].index(term)] = total
     at = score([["edge", "own"] + values])[("edge", "own")]
@@ -1503,6 +1542,10 @@ for index, (term, total) in enumerate((("C", 864), ("S", 86400), ("D", m.GIB), (
     under[["C", "S", "D", "R", "W"].index(term)] = total * 0.999
     check(abs(at["B"] - 1) < 1e-9 and at["terms"][term] == 1 and score([["edge", "own"] + under])[("edge", "own")]["B"] < 1,
           "%s at its divisor a day scores B 1, just under it less: %s" % (term, at))
+born = score([["worker-run", "own", 432, 86400 * 92, 0, 0, 0, 0]])[("worker-run", "own")]
+check(abs(born["B"] - 0.5) < 1e-9 and "S" not in born["terms"] and born["per_day"]["S"] == 86400 * 92
+      and "S" not in born["unknown"],
+      "92 births a second score nothing, a start's cost is its parent's C; births stay in per_day as a hint: %s" % born)
 held = score([["fat", "own", 0, 0, 0, 0, 0, 512 * 2 ** 20 * 86400]])[("fat", "own")]
 half = score([["fat", "own", 0, 0, 0, 0, 0, 512 * 2 ** 20 * 43200]])[("fat", "own")]
 check(abs(held["B"] - 1) < 1e-9 and abs(half["B"] - 0.5) < 1e-9,
@@ -1511,9 +1554,12 @@ crowded = [{"t": now, "dt": 60, "comp_share": 0.5, "cpu_top": [["busy%d" % i, 1.
             "mem_top": [["fat", 2 ** 30, "own"]]}]
 check("fat" in [r[0] for r in m.cohort_sums(crowded)],
       "the day's cut ranks memory held under pressure beside the other terms: %s" % m.cohort_sums(crowded)[-1])
+spawny = [dict(crowded[0], mem_top=[], births_s=1000, births_seen=10, births_top=[["spawny", 10, "own"]])]
+check("spawny" not in [r[0] for r in m.cohort_sums(spawny)],
+      "the day's cut never ranks by births, which no B scores: %s" % m.cohort_sums(spawny)[:2])
 launches = [{"t": now - 3600, "jobs": [{"name": "com.apple.thing", "owner": "apple", "runs": 1440 * 7}]}]
 apple = score([], launches)[("com.apple.thing", "apple")]
-check(abs(apple["B"] - 1) < 1e-9 and apple["unknown"] == ["W", "D", "R", "M"] and set(apple["terms"]) == {"C", "S", "L"},
+check(abs(apple["B"] - 1) < 1e-9 and apple["unknown"] == ["W", "D", "R", "M"] and set(apple["terms"]) == {"C", "L"},
       "1,440 launches a day scores 1; an Apple item's W, D, R and M are unknown: %s" % apple)
 chrome = [score([["Chrome", "third-party", 0, 0, m.GIB, 0, 0, 0] + flag])[("Chrome", "third-party")] for flag in ([1], [0], [])]
 check(chrome[0]["unknown"] == [] and abs(chrome[0]["B"] - 1) < 1e-9 and chrome[0]["terms"]["D"] == 1
@@ -1532,7 +1578,7 @@ for name, v, cost in (("a", 3, {"cpu_s": 864 * 7, "rss_max_b": 0, "ran_s": 120, 
     json.dump({"v": v, "start": now - 3600, "end": now - 3480, "devices": {}, "rows": [], "cost": cost},
               open(os.path.join(os.environ["SSD_SAMPLER_DIR"], name + ".json"), "w"))
 sampler = score([])[(m.SAMPLER_TAG, "own")]
-check(abs(sampler["B"] - 1) < 1e-9 and sampler["terms"] == {"C": 1, "S": 0, "L": 0, "W": 0, "D": 0.5, "R": 0, "M": 0.5},
+check(abs(sampler["B"] - 1) < 1e-9 and sampler["terms"] == {"C": 1, "L": 0, "W": 0, "D": 0.5, "R": 0, "M": 0.5},
       "the root sampler's own cost from its v3 samples is an own cohort item: %s" % sampler)
 for name in ("b", "c"):
     os.remove(os.path.join(os.environ["SSD_SAMPLER_DIR"], name + ".json"))
@@ -1572,6 +1618,8 @@ check(found["cohort:bench.py"]["state"] == "watch" and not found["cohort:bench.p
 many = cohort_problems([], [{"t": now - 3600, "jobs": [{"name": "com.apple.%d" % i, "owner": "apple", "runs": 1440 * 7 * (i + 1)}
                                                        for i in range(10)]}])
 check(len(many) == 6, "at most 6 watched items: %d" % len(many))
+check(cohort_problems([["worker-run", "own", 432, 86400 * 92, 0, 0, 0, 0]]) == {},
+      "an item at 92 births a second but half its CPU limit is no cohort problem")
 
 for sub in ("launchd", "harvest", "census"):
     shutil.rmtree(os.path.join(work, "state", sub), ignore_errors=True)

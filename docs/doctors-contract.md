@@ -85,7 +85,8 @@ LLM ▸     8  reviewers crashed
   `B × · group · item count`, RED with a loud problem inside, DIM under its limit, its value the groups at or over
   it; an item reads `B × · dominant term · name` (the group's prefix dropped, `✗` its job's file gone, `○` a job
   launchd does not hold with B 0) and opens its `about`, `place`, `label · schedule · state`, then each term per day
-  and as a share of its limit, the unmeasured terms on one DIM row. The menu only places and formats what the
+  and as a share of its limit, starts (`per_day.S`, unscored: B has no S) per second on a DIM row with no share,
+  the unmeasured terms on one DIM row. The menu only places and formats what the
   document says.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,
   three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows. The menu
@@ -443,7 +444,8 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   `{label, name, path, mb, age_d, status[, owner]}`, status `menu` | `off` | `home` | `unknown`, owner `llm-doctor`
   on a browser profile; a path gone since the scan is left out; `tidied`: what `system-doctor tidy` moved to the
   Trash within 7 days `{path, mb, age_d, why}`), `background` `{covered_days, groups: [{name, B, items: [{name,
-  owner, B, terms, per_day, unknown, place, job, about}]}]}` (B null before 7 covered days; `per_day.C` includes
+  owner, B, terms, per_day, unknown, place, job, about}]}]}` (B null before 7 covered days; `terms` C W D R M L,
+  `per_day` those plus S, births a day, which no B reads; `per_day.C` includes
   reaped children's CPU, the statusline journal's on `llm-legs/bin/statusline.sh`, not `claude`; `job` `{label, plist,
   schedule, missing, loaded}`, `loaded` null before any dumpstate), `limits`.
 - `doctor-fix launch system` snapshots only fix-target causes (plus ledger and collector faults);

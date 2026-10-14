@@ -60,7 +60,8 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
   `tick-state.json`.
   - **Births/s:** the PID delta between two `ps` probes ~2 s apart, modulo 99,999.
   - **Births attribution:** newborns alive at the window's end, each charged to the nearest own
-    script or own app above it.
+    script, own app or LLM CLI (`LLM_CLIS`: claude, codex, grok, agy) above it, so a worker's tool commands are its
+    CLI's as in an interactive chat, and the own launcher above (worker-run) keeps only what it spawns itself.
   - **Tags.** An interpreter (`bash`, `python3`, `node`, …) is tagged by the script its argv runs: the
     first non-option argument (relative ones against the process's working directory), a `-m` module's
     file (else its name), and inline code (`-c`, `-e`, `-`) takes its parent's script through inline
@@ -74,8 +75,10 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
     `mach_timebase_info`) per `pid@lstart` of this uid, added to the parent's tag: the CPU of children born and dead
     between ticks (Hammerspoon's ~1 osascript/s and ~3 ps/s: own ~92, children ~104 CPU-min/day on 2026-10-14). It
     holds a reaped child's whole lifetime, so what the ticks already charged that child (own and reaped) comes off the
-    nearest ancestor still alive; a shrunk counter reads 0. macOS `ps -S` adds nothing (Δ`ps -S` − Δ`ps` was noise
-    until 2026-10-14). Another uid's parents stay blind.
+    nearest ancestor still alive; a shrunk counter reads 0. When an LLM CLI below that ancestor died, the rest (the
+    CLI's last stretch since its last tick) is the CLI's, not the launcher's (`tick-state.json` keeps a CLI's tag
+    on its proc). macOS `ps -S` adds nothing (Δ`ps -S` − Δ`ps` was noise until 2026-10-14). Another uid's parents
+    stay blind.
   - **Kernel and busy shares** from host CPU ticks.
   - **Memory:** compressor size and share of RAM, swap use, page-in and swap-in rates, and swap-out
     bytes from `vm_stat` and `sysctl`.
@@ -173,8 +176,10 @@ collector-runs row (`trigger background:<name>`) and keeps its own `self` wall/C
   `rss` of every process: `rss_top` (by tag, with its process count) and `rss_total`, so Chrome, Claude.app and Apple
   daemons show beside our own.
 - **Cohort score** (`cohort_sums` per day row, `cohort_score`): per item over the newest day rows covering ≥ 7 days
-  (≤ 14 back), `B = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB × pressure, S/86400, L/1440)` per covered day;
-  pressure = compressor ≥ 25 % of RAM or ≥ 2,000 swap-outs/s. C holds each item's reaped-child CPU. Claude Code reaps
+  (≤ 14 back), `B = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB × pressure, L/1440)` per covered day;
+  pressure = compressor ≥ 25 % of RAM or ≥ 2,000 swap-outs/s. C holds each item's reaped-child CPU, where a process
+  start's cost lands, so births (S, `per_day` only) are an unscored hint: they neither rank, head, count nor flag an
+  item (2026-10-14: worker-run read 91× by S alone, its own tests and git, beside Hammerspoon's 8× by CPU). Claude Code reaps
   every statusline render, so `cohort_sums` moves the Harness statusline journal's `cpu_ms` (shared-invariants row
   `da`, renders ending inside a covered tick span) from `claude`'s reaped CPU to `llm-legs/bin/statusline.sh`
   (2026-10-13: 286 CPU-min/day, where the ticks saw 0). Under 7 covered days nothing is scored. An item whose
@@ -192,7 +197,8 @@ New rules (fixer routing and proof as phase 2; an own cause with a sweep-repo fi
 | `cohort` | B ≥ 1; non-own items read `watch`, never remove (at most 6 rows) | B ≥ 5 |
 
 A `job-loop` fix is proven after 7 quiet days of snapshots; a looping snapshot since landing refuses it. A `cohort`
-fix is proven on its births/CPU, so an item dominated by M, D, R or L is not measured by its proof yet.
+fix is proven on its CPU and written bytes, never its births, so an item dominated by M, R or L is not measured by its
+proof yet.
 
 Measured once on 2026-10-06 at ~350 births/s (real machine, temp state dirs):
 

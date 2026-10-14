@@ -931,6 +931,8 @@ local SECTIONS = {
 local TERMS = { { "C", "cpu", "min/d", 1 / 60 }, { "S", "starts", "/s", 1 / 86400 }, { "D", "writes", "GB/d", 1e-9 },
   { "R", "reads", "GB/d", 1e-9 }, { "M", "memory", "MB", 1e-6 }, { "W", "wakeups", "/s", 1 / 86400 },
   { "L", "launches", "/d", 1 } }
+-- Per day but no B term: a start's cost already lands in C, so starts show DIM with no share.
+local UNSCORED = { S = true }
 local MOVED_TO = { ["CPU audits"] = "Processor", Load = "Processor", ["Memory guard"] = "Memory", Growth = "Logs" }
 local QUIET = { ["not-a-bug"] = true, weather = true, fixed = true }
 local TAG_NAMES = { ["worker-run"] = "workers", ["(bash)"] = "shell", bash = "shell", zsh = "shell", sh = "shell",
@@ -1412,7 +1414,12 @@ local function systemSections(document, now, moved, incoming)
       for _, key in ipairs(list(item.unknown)) do unknown[key] = true end
       for _, term in ipairs(TERMS) do
         local per, share = tonumber(list(item.per_day)[term[1]]), tonumber(list(item.terms)[term[1]])
-        if per and (share or 0) >= 0.01 then
+        if UNSCORED[term[1]] then
+          if per and per * term[4] >= 0.01 then
+            menu[#menu + 1] = row({ { padded(amount(per * term[4]), 5), style.DIM },
+              { " " .. string.format("%-5s", term[3]) .. "  ", style.DIM }, { term[2], style.DIM } })
+          end
+        elseif per and (share or 0) >= 0.01 then
           menu[#menu + 1] = row({ { padded(amount(per * term[4]), 5) }, { " " .. string.format("%-5s", term[3]) .. "  " },
             { string.format("%-9s", term[2]) }, { padded(times(share or 0) .. "×", 6),
               (share or 0) >= 1 and (problemTone(problem) or style.RED) or style.DIM } })
@@ -1436,7 +1443,7 @@ local function systemSections(document, now, moved, incoming)
         flagged[item.name] = nil
         local top, high = nil, 0
         for key, share in pairs(list(item.terms)) do
-          if tonumber(share) and share > high then top, high = key, share end
+          if tonumber(share) and share > high and not UNSCORED[key] then top, high = key, share end
         end
         local word = ""
         for _, term in ipairs(TERMS) do
