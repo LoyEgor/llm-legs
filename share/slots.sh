@@ -29,7 +29,11 @@ slot_room() { # -> fails, printing why, while one more holder would crowd the ma
   if [[ "${level:-}" =~ ^[0-9]+$ ]] && [ "$level" -gt 1 ]; then printf 'memory pressure level %s\n' "$level"; return 1; fi
   declare -F available_mb >/dev/null ||
     eval "$(sed -n '/^available_mb() {/,/^}/p' "${BASH_SOURCE[0]%/*}/../bin/memlogd" 2>/dev/null)"
-  guard=$(sed -n 's/^GUARD_AVAIL_MB = \([0-9][0-9]*\).*/\1/p' "${BASH_SOURCE[0]%/*}/../bin/chat-load" 2>/dev/null | head -n 1)
+  # chat-load's constant sits near its top: a read loop finds it with no fork.
+  while IFS= read -r guard; do
+    [[ "$guard" =~ ^GUARD_AVAIL_MB\ =\ ([0-9]+) ]] && { guard=${BASH_REMATCH[1]}; break; }
+    guard=''
+  done 2>/dev/null <"${BASH_SOURCE[0]%/*}/../bin/chat-load"
   guard=$((${guard:-0} + ${SLOTS_ROOM_MB:-1500}))
   if declare -F available_mb >/dev/null; then
     avail=$(available_mb "$(vm_stat 2>/dev/null || true)")
