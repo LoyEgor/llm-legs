@@ -28,9 +28,9 @@ printf '{"owner": "LLM owner", "owners": {"reviewers": "R", "workers": "W", "lig
   >"$LLM_DOCTOR_LEDGER"
 
 # The engine's own lines, snapshot included, written into the image-leg log the way image-leg.sh records them.
-assert python3 - "$ROOT" "$IMAGE_LEG_LOG" "$NOW" <<'PY'
+assert python3 - "$ROOT" "$IMAGE_LEG_LOG" "$NOW" "$HOME" <<'PY'
 import contextlib, importlib.machinery, importlib.util, io, json, os, re, sys
-root, log, now = sys.argv[1], sys.argv[2], int(sys.argv[3])
+root, log, now, home = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 sys.path.insert(0, os.path.join(root, "share"))
 import gemini_web as gw
 loader = importlib.machinery.SourceFileLoader("doctor", os.path.join(root, "bin", "llm-doctor"))
@@ -392,15 +392,8 @@ assert len(logged) == 1 and logged[0]["event"] == "toasts" and logged[0]["accoun
     and logged[0]["route"] == "flow" \
     and logged[0]["texts"] == ["Not enough AI credits on this plan", "Copied", "Video ready"], logged
 assert "sessionStorage.setItem('gwToasts'" in gw.TOAST_LOG and "[role=alert]" in gw.TOAST_LOG
-PY
 
-assert python3 - "$ROOT" "$NOW" "$HOME" <<'PY'
-import importlib.machinery, importlib.util, os, sys
-root, now, home = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-loader = importlib.machinery.SourceFileLoader("doctor", os.path.join(root, "bin", "llm-doctor"))
-spec = importlib.util.spec_from_loader("doctor", loader)
-doctor = importlib.util.module_from_spec(spec)
-loader.exec_module(doctor)
+# The legs the doctor reads back off those lines, through the module loaded above.
 legs, _ = doctor.image_legs(now - 86400, now)
 got = [(leg["model"], leg["attempt"], leg["class"], leg["reason"], leg["account"]) for leg in legs]
 assert got == [
