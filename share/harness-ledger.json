@@ -647,7 +647,7 @@
         "rule": "hook-error",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T09:35:00+03:00",
@@ -680,7 +680,7 @@
             "llm-legs/share/run-liveness.sh",
             "llm-legs/tests/test_worker_run_backstop.sh"
           ],
-          "in": null,
+          "in": "llm-legs@d5cc8b63",
           "regressed_at": null,
           "equivalence": {
             "compared": "whole hook output, base vs fix, under /bin/bash 3.2 and Homebrew bash 5",
@@ -3594,7 +3594,7 @@
         "rule": "worker_orphans",
         "ident": "worker-run"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T04:07:58+03:00",
@@ -3654,7 +3654,7 @@
             "llm-legs/tests/worker_run_harness.sh",
             "llm-legs/tests/test_worker_run_watchdog.sh"
           ],
-          "in": null,
+          "in": "llm-legs@dcfb2f42",
           "regressed_at": null
         }
       ],
@@ -4392,7 +4392,7 @@
             "llm-legs/hammerspoon/llm-limits.lua"
           ],
           "in": "llm-legs@67632717",
-          "regressed_at": null
+          "regressed_at": "2026-10-14T01:00:00+03:00"
         }
       ],
       "same_cause": [],
@@ -5712,7 +5712,7 @@
         "rule": "regression",
         "ident": "test-health/pole"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T08:05:00+03:00",
@@ -5732,7 +5732,7 @@
             "llm-legs/share/test_health.py",
             "llm-legs/tests/test_test_health.sh"
           ],
-          "in": null,
+          "in": "llm-legs@249855b8",
           "regressed_at": null
         }
       ],
@@ -8165,7 +8165,7 @@
             "llm-legs/tests/test_worker_run_browse.sh"
           ],
           "in": "llm-legs@7f2b3661",
-          "regressed_at": null
+          "regressed_at": "2026-10-14T01:25:18+03:00"
         }
       ],
       "same_cause": [],
@@ -9163,7 +9163,7 @@
         "rule": "opportunity",
         "ident": "^test-health/idle/llm-legs/test_worker_run_claims$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T08:54:02+03:00",
@@ -9171,7 +9171,7 @@
           "files": [
             "llm-legs/tests/test_worker_run_claims.sh"
           ],
-          "in": null,
+          "in": "llm-legs@226b5a3b",
           "regressed_at": null,
           "equivalence": {
             "compared": "every assert of the suite, whole run vs the 3 shards' summed PASS lines, base vs fix",
@@ -9193,7 +9193,7 @@
         "rule": "opportunity",
         "ident": "^test-health/idle/llm-legs/test_slots$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T08:54:02+03:00",
@@ -9201,7 +9201,7 @@
           "files": [
             "llm-legs/tests/test_slots.sh"
           ],
-          "in": null,
+          "in": "llm-legs@226b5a3b",
           "regressed_at": null,
           "equivalence": {
             "compared": "every assert of the suite, whole run vs the 3 shards' summed PASS lines, base vs fix",
@@ -9328,13 +9328,14 @@
         "rule": "limit_hit",
         "ident": "^claude\\-setup:stop\\-dispatch\\.hook\\-kill$"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-limits-20261014T021654Z-0129",
       "note": "2026-10-14 ruled out as a hang of ours: the one kill in 577 runs of the hook (born claude-setup@4fcd4bba 2026-10-13 11:27Z), 15:36:37Z in a stop where the parallel notices also ran long (chat-names 1.96 s, word-journal 1.42 s) on a saturated machine (samples.jsonl 15:32Z busy 0.99, kernel 0.48, 1191 forks). `connections check` is 0.11-0.15 s wall on ~0.1 CPU-s (cProfile: 2394 stats, 61 opens, 28 JSON decodes, nothing waits); the only blocking calls are edit_registry's flock (reached only when something new is found, which then prints a notice) and rb_emit, and the slow runs of the same 15:25-17:05Z window (4.31, 3.46, 2.58 s on 0.11-0.14 CPU-s) were all silent, so the wall was on the read-only path. Ruled out: lock contention (no sync between the owner chat's 11:14Z migration and 16:51Z: no sync.log, last-sync.json/lock mtimes), the 929 dead $TMPDIR project keys it stats (3 ms, unchanged under 4 mktemp/rmdir churn loops), CPU saturation (10 busy loops: 0.10-0.26 s), the extra imports (15 vs chat_names' 9 dylibs; concurrent.futures+subprocess ~25 ms). Unattributed: why its wall/CPU ran 10-36x in that window against 2-7x for its siblings (blind spot hook-off-cpu-wait). A kill of any hook with usual under 1 s at the 5 s cap reads over LIMIT_FAULT_X by construction.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-14T02:30:36Z"
     },
     {
       "id": "regression-test-health-wait-night-volume",
@@ -9343,7 +9344,7 @@
         "rule": "regression",
         "ident": "test-health/wait_night"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T06:40:00+03:00",
@@ -9352,7 +9353,7 @@
             "llm-legs/share/test_health.py",
             "llm-legs/tests/test_test_health.sh"
           ],
-          "in": null,
+          "in": "llm-legs@249855b8",
           "regressed_at": null
         }
       ],
@@ -9372,7 +9373,7 @@
         "rule": "regression",
         "ident": "test-health/wait_chat"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T06:40:00+03:00",
@@ -9381,7 +9382,7 @@
             "llm-legs/share/test_health.py",
             "llm-legs/tests/test_test_health.sh"
           ],
-          "in": null,
+          "in": "llm-legs@249855b8",
           "regressed_at": null
         }
       ],
@@ -9401,7 +9402,7 @@
         "rule": "regression",
         "ident": "test-health/idle"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T06:40:00+03:00",
@@ -9410,7 +9411,7 @@
             "llm-legs/share/test_health.py",
             "llm-legs/tests/test_test_health.sh"
           ],
-          "in": null,
+          "in": "llm-legs@249855b8",
           "regressed_at": null
         }
       ],
@@ -9445,7 +9446,7 @@
         "rule": "log_audit",
         "ident": "doctor-fix-close-verdict-circular"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T05:25:00+03:00",
@@ -9453,7 +9454,7 @@
           "files": [
             "llm-legs/bin/doctor-fix"
           ],
-          "in": null,
+          "in": "llm-legs@2580854c",
           "regressed_at": null
         }
       ],
@@ -9470,7 +9471,7 @@
         "rule": "log_audit",
         "ident": "duplicate-fixes-sibling-branches"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [
         "log_audit:parallel-fixers-duplicate-work"
@@ -9478,7 +9479,8 @@
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
       "note": "Ruled out: the class of row parallel-fixers-duplicate-work (owner not-a-bug: fixers run in parallel by design and a duplicate folds at the landing rebase). The quoted overlaps (chunks 012, 025, 028, 030) were cross-kind rows on one component, a suite or CPU audit beside a speed row, each settled at its rebase (an emptied commit dropped).",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-14T03:16:11Z"
     },
     {
       "id": "log_audit:find-root-for-lens-path",
@@ -9487,7 +9489,7 @@
         "rule": "log_audit",
         "ident": "find-root-for-lens-path"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T06:00:00+03:00",
@@ -9495,7 +9497,7 @@
           "files": [
             "llm-legs/bin/doctor-fix"
           ],
-          "in": null,
+          "in": "llm-legs@2580854c",
           "regressed_at": null
         }
       ],
@@ -9512,7 +9514,7 @@
         "rule": "log_audit",
         "ident": "foreground-probe-hits-bash-cap"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [
         "log_audit:hung-commands-25min-timeout",
@@ -9521,7 +9523,8 @@
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
       "note": "Ruled out: of 48 timeouts most fell 05:28-06:31 on 10-13 at load 176-240 (weather, row suites-timeout-under-night-load); the rest were workers' own commands, ~16 wide suite runs, ~12 shim, mutation or fuzz loops, 3 transcript-wide finds and 3 live hs or Lua probes, conduct already ruled in rows hung-commands-25min-timeout and foreground-call-hangs-25min.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-14T03:16:11Z"
     },
     {
       "id": "log_audit:gate-text-match-false-positives",
@@ -9530,7 +9533,7 @@
         "rule": "log_audit",
         "ident": "gate-text-match-false-positives"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T05:55:00+03:00",
@@ -9538,7 +9541,7 @@
           "files": [
             "claude-setup/hooks/resume-timer-guard.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a83a9b9",
           "regressed_at": null
         }
       ],
@@ -9558,7 +9561,7 @@
         "rule": "log_audit",
         "ident": "hs-ipc-unbounded-lock"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T05:40:00+03:00",
@@ -9572,7 +9575,7 @@
             "hammerspoon/tests/test_send_actions.sh",
             "hammerspoon/tests/test_hs_cli_lock.sh"
           ],
-          "in": null,
+          "in": "hammerspoon@fd6d145",
           "regressed_at": null
         }
       ],
@@ -9589,7 +9592,7 @@
         "rule": "log_audit",
         "ident": "landing-conflicts-red-resume"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T06:10:00+03:00",
@@ -9597,7 +9600,7 @@
           "files": [
             "llm-legs/docs/fix-orchestrator.md"
           ],
-          "in": null,
+          "in": "llm-legs@72a4b977",
           "regressed_at": null
         }
       ],
@@ -9616,7 +9619,7 @@
         "rule": "log_audit",
         "ident": "night-admission-idle-free-capacity"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [
         "log_audit:night-stalls-on-account-limit"
@@ -9624,7 +9627,8 @@
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
       "note": "Ruled out: the quoted owner-chat research (night e2f7, 10-12) found no bug: notcom at 87 % over the 80 % guard, com walled weekly, locomthebest out of the pool, codex, Gemini and Grok off by Egor's menu. Weather as row night-stalls-on-account-limit.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-14T03:16:11Z"
     },
     {
       "id": "log_audit:night-fanout-no-headroom-check",
@@ -9633,13 +9637,14 @@
         "rule": "log_audit",
         "ident": "night-fanout-no-headroom-check"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
       "note": "Ruled out: the reading no longer holds, settled before this read by llm-legs@4482c995 (10-13 17:03): night admission holds running Claude fixers within the pool's 5h room (docs/night-run.md 'Priority and admission'). The quoted walls (10-13 03:26, 06:38, 14:31-14:53) all predate it, and no fixer wall follows it in the window. Not a fixes[] row: the audit stamps its quotes with its own read time (blind spot log-audit-evidence-read-time).",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-14T03:16:11Z"
     },
     {
       "id": "log_audit:night-started-without-egor-go",
@@ -9648,13 +9653,14 @@
         "rule": "log_audit",
         "ident": "night-started-without-egor-go"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
       "note": "Ruled out: the 02:30 start followed Egor's own 'launch the night once the lens is ready' (chunk-050, 02:37); the 02:48 continuation was the span doctrine (hooks/stop.d/ask-span-drill.sh: the orchestrator's self-declared wait blocked on nothing, and Egor's 02:34 was a question, not a stop); the 04:03 launch on a readiness question was one model misreading with no hook involved (night is no word-family alias), recorded as the memory 'Finish now, not at night'. A start gate for one incident would be a guard before process.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-14T03:16:11Z"
     },
     {
       "id": "log_audit:review-bench-rater-pin-break",
@@ -9663,13 +9669,14 @@
         "rule": "log_audit",
         "ident": "review-bench-rater-pin-break"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
       "note": "Ruled out: the reading no longer holds, settled before this read by review-bench@4288f13 (10-13 22:46; not a fixes[] row, blind spot log-audit-evidence-read-time): tier rosters staff the newest Flash from geminib families and no Pro row, so no static pin names a model a vendor catalog drops; the round that crashed at 13:10 (20261013T000450Z-76aa944) now reads with fix --print, exit 0. The 11 silent relaunch failures were the orchestrator's own dispatch script.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-14T03:16:11Z"
     },
     {
       "id": "log_audit:run-suites-slot-queue-under-load",
@@ -9678,7 +9685,7 @@
         "rule": "log_audit",
         "ident": "run-suites-slot-queue-under-load"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T05:35:00+03:00",
@@ -9686,7 +9693,7 @@
           "files": [
             "llm-legs/bin/pkill"
           ],
-          "in": null,
+          "in": "llm-legs@c73de8f7",
           "regressed_at": null
         }
       ],
@@ -9705,13 +9712,14 @@
         "rule": "log_audit",
         "ident": "stale-doctor-rows-reproved"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
       "note": "Ruled out: by design. fixed-pending needs a fixes[] row the fixer records, so a component already fixed is re-proved by reading its commit; measured 1 min (56b7, 05:06-05:07) and 7 min (5e5e, 09:53-10:00). Dropping the evidence for retired components would change the judge, which is not a fixer's.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-14T03:16:11Z"
     },
     {
       "id": "log_audit:workers-route-around-denials",
@@ -9750,7 +9758,7 @@
         "rule": "opportunity",
         "ident": "adhoc/doctor-state"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T06:10:00+03:00",
@@ -9759,7 +9767,7 @@
             "llm-legs/bin/doctor-fix",
             "llm-legs/docs/doctor-fix.md"
           ],
-          "in": null,
+          "in": "llm-legs@2580854c",
           "regressed_at": null,
           "bench": {
             "command": "\\bdoctor-fix problems\\b",
@@ -9894,7 +9902,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_agy_quota"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -9903,7 +9911,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@816bd668",
           "regressed_at": null
         }
       ],
@@ -9920,7 +9928,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_gemini_quota_detect"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -9929,7 +9937,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@816bd668",
           "regressed_at": null
         }
       ],
@@ -9946,7 +9954,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_grok_quota"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -9955,7 +9963,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@816bd668",
           "regressed_at": null
         }
       ],
@@ -9972,7 +9980,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_harness_doctor"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -9981,7 +9989,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@816bd668",
           "regressed_at": null
         }
       ],
@@ -9998,7 +10006,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_ledger_untouched"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -10007,7 +10015,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@816bd668",
           "regressed_at": null
         }
       ],
@@ -10024,7 +10032,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_media_run"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -10033,7 +10041,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@816bd668",
           "regressed_at": null
         }
       ],
@@ -10050,7 +10058,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_doctors_menu"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -10059,7 +10067,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@816bd668",
           "regressed_at": null
         }
       ],
@@ -10076,7 +10084,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_store_lock"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -10085,7 +10093,7 @@
             "llm-legs/share/store-lock.sh",
             "llm-legs/tests/test_store_lock.sh"
           ],
-          "in": null,
+          "in": "llm-legs@816bd668",
           "regressed_at": null
         }
       ],
@@ -10162,7 +10170,7 @@
         "rule": "opportunity",
         "ident": "test-health/flaky/review-bench/test_consistency"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T09:25:00+03:00",
@@ -10171,7 +10179,7 @@
             "llm-legs/share/run-suites.sh",
             "llm-legs/tests/test_run_suites_nice.sh"
           ],
-          "in": null,
+          "in": "llm-legs@4ef3b2bb",
           "regressed_at": null,
           "equivalence": {
             "compared": "the suite journal's red/green pairs on one tree for test_consistency and test_review_bench, and the worker transcript of the 2026-10-13 pair (assert 66 `eq ok,ok,...` after `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`)",
@@ -10193,7 +10201,7 @@
         "rule": "opportunity",
         "ident": "test-health/flaky/review-bench/test_review_bench"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T09:25:00+03:00",
@@ -10202,7 +10210,7 @@
             "llm-legs/share/run-suites.sh",
             "llm-legs/tests/test_run_suites_nice.sh"
           ],
-          "in": null,
+          "in": "llm-legs@4ef3b2bb",
           "regressed_at": null,
           "equivalence": {
             "compared": "the same red/green pair as speed-flaky-test-consistency-review-bench: one run-all of both suites, both red in 3 s under the worker's PATH",
@@ -10241,7 +10249,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-suite-audit-llm-legs-test-image-composite-20261012T235317Z-05eb"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T08:15:00+03:00",
@@ -10249,7 +10257,7 @@
           "files": [
             "llm-legs/tests/test_wait_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@0a247c7f",
           "regressed_at": null,
           "equivalence": {
             "compared": "test_wait_journal before and after the armed() pattern change",
@@ -10286,7 +10294,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-suite-audit-llm-legs-test-run-suites-journal-20261012T235402Z-6a0b"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T08:15:00+03:00",
@@ -10294,7 +10302,7 @@
           "files": [
             "llm-legs/tests/test_system_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@7f8fba95",
           "regressed_at": null,
           "equivalence": {
             "compared": "test_system_doctor before and after the probe pool and one-clock stamps",
@@ -10331,7 +10339,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-test-health-idle-llm-legs-test-worker-run-watchdog-20261010T031952Z-336a"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T08:15:00+03:00",
@@ -10340,7 +10348,7 @@
             "llm-legs/tests/test_worker_run_watchdog.sh",
             "llm-legs/tests/worker_run_harness.sh"
           ],
-          "in": null,
+          "in": "llm-legs@3b938410",
           "regressed_at": null,
           "equivalence": {
             "compared": "test_worker_run_watchdog shards before and after the section move and stub builtin",

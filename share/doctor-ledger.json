@@ -1218,7 +1218,7 @@
     "detail": "^wrote [^/]+$"
    },
    "title": "a run wrote another repository's main checkout or a non-repository directory that its brief authorized only in prose, or escaped through a tracked symlink, so worker-run granted it nothing and the write read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T16:52:41+03:00",
@@ -1252,7 +1252,7 @@
       "claude-setup/hooks/worker-edit-guard.sh",
       "claude-setup/tests/test_worker_edit_guard.sh"
      ],
-     "in": null,
+     "in": "claude-setup@8a4485d",
      "regressed_at": null
     }
    ],
@@ -2199,7 +2199,7 @@
     "detail": "--resume requires a valid session ID"
    },
    "title": "a RESUME named no single session (a run id, or a whole multi-line worker-session file), so the CLI refused --resume and the run failed at once",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-10T08:06:48+03:00",
@@ -2217,7 +2217,7 @@
       "llm-legs/bin/worker-run",
       "llm-legs/tests/test_worker_run_pool.sh"
      ],
-     "in": null,
+     "in": "llm-legs@80b38221",
      "regressed_at": null
     }
    ],
