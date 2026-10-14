@@ -10,7 +10,13 @@ knobs. A forced reboot is the one outcome this exists to prevent; lag and heavy 
 Trigger, both halves required, evaluated once per tick:
 
 - system available RAM < **3072 MB**, AND
-- the **fattest chat job** > **1536 MB**, weighed as the summed RSS of its members.
+- the **fattest chat job** > **1536 MB**, weighed as the summed physical footprint of its members.
+
+A member's weight is its `ri_phys_footprint` (`proc_pid_rusage`, one syscall per attributed pid), the
+memory `top` and Activity Monitor show; a pid it cannot read (another user's, gone) keeps its RSS
+from `ps`. RSS alone missed wired GPU memory: a headless Cycles render on Metal holds ~9 GB at
+0.2 GB RSS, so on 2026-10-14 two of them were credited 0.6 GB and the guard ranked them below a
+1.8 GB job. Tests weigh pids from `CHAT_LOAD_FOOTPRINT` (a JSON `{pid: KB}`) instead.
 
 A **job** is one process group launched by one chat — every Bash call a chat makes is its own group
 — minus every protected process, every process of another user (its kill could only fail) and every
@@ -101,7 +107,9 @@ runaway.
 - **A cold allocation never trips it and never froze the machine either.** 48 GB mapped and touched
   once does not move `avail` off ~4.3 GB: the kernel pages it out and the resident size stays small.
 - **A hot working set trips it immediately**, which is the shape that does freeze this machine.
-- **RSS counts resident pages only**, so the ceiling is a statement about *hot* memory.
+- **RSS counts resident pages only**, so the ceiling was a statement about *hot* memory. The
+  footprint the guard weighs now also counts compressed and wired pages (GPU buffers), so a job
+  whose memory was swapped out still weighs what it would take back.
 
 ## The memguard file
 
@@ -112,7 +120,8 @@ append-only, one line per kill:
 MEMGUARD <epoch> avail_mb=<n> tree_rss_mb=<n> agent=<id> root_pid=<n> killed=<pid,pid,...>
 ```
 
-`agent` is the `worker-run` run id, or `<bench run id>/<cell artifact>`; `root_pid` the nearest
+`tree_rss_mb` (and the `KILLED` line's `job_rss_mb`) is the job's summed footprint; the key predates
+it and stays for `worker-run`'s reader. `agent` is the `worker-run` run id, or `<bench run id>/<cell artifact>`; `root_pid` the nearest
 registered ancestor of the killed pids. `worker-run report` and `wait` print it on every shape,
 running included:
 
@@ -128,7 +137,7 @@ guard.
 `~/Library/Logs/memlogd/chats.json`, rewritten every tick and read by `appendChats` in
 `hammerspoon/llm-limits.lua`. Title `Chats/other  <cores>/<cores> cores · <GB>/<GB> GB`; inside,
 the CPU and RAM split (CPU from the delta of each process's cumulative CPU time between ticks; RAM
-used = total − available, chats' RSS capped at it, other = the rest), the guard row, one aligned
+used = total − available, chats' footprints capped at it, other = the rest), the guard row, one aligned
 line per chat — state, title shortened to 22 columns keeping a trailing PR/phase number, cores, GB,
 a 15-minute CPU spark scaled to the performance cores — and what inside "other" chats may cause
 indirectly (screen = WindowServer, kernel = kernel_task, signing = syspolicyd + trustd). States:

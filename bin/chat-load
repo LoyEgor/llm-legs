@@ -45,8 +45,15 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 SHARED = [HERE, os.path.join(os.path.dirname(HERE), "share")]
 REPORT_BUS = os.environ.get("CHAT_LOAD_REPORT_BUS") or os.path.join(HERE, "report-bus")
 REPORT_FRAME = next((path for path in (os.path.join(d, "report_frame.py") for d in SHARED) if os.path.exists(path)), "")
+# Tests weigh pids from a JSON {pid: KB} in place of proc_pid_rusage; a pid it does not name keeps its RSS.
+FOOTPRINT_PATH = os.environ.get("CHAT_LOAD_FOOTPRINT")
 
 libc = ctypes.CDLL(None, use_errno=True)
+libc.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+
+
+class RusageV2(ctypes.Structure):
+    _fields_ = [("uuid", ctypes.c_uint8 * 16), ("values", ctypes.c_uint64 * 18)]
 
 
 def sysctl_int(name):
@@ -118,6 +125,21 @@ def process_table():
                       "age": clock(fields[6]), "start": taken - clock(fields[6]), "zombie": fields[7].startswith("Z"),
                       "comm": os.path.basename(fields[8].strip())}
     return table
+
+
+def footprints(table, pids):
+    """Weighs each pid by its phys footprint (rusage_info_v2), what `top` and Activity Monitor show as its
+    memory: RSS misses wired GPU memory, and a Cycles render on Metal holds ~9 GB at 0.2 GB RSS. One
+    syscall per pid; one that cannot be read (another user's, gone) keeps its RSS."""
+    fixture = read_json(FOOTPRINT_PATH, {}) if FOOTPRINT_PATH else None
+    usage = RusageV2()
+    for pid in pids:
+        if fixture is not None:
+            kb = fixture.get(str(pid))
+        else:
+            kb = usage.values[7] // 1024 if libc.proc_pid_rusage(pid, 2, ctypes.byref(usage)) == 0 else None
+        if type(kb) is int:
+            table[pid]["kb"] = kb
 
 
 def read_json(path, default):
@@ -296,7 +318,7 @@ def guard(now, avail, table, envs, tops, sessions, protected, roots, titles, las
         command = command[:159] + "…"
     body = json.dumps({"word": "memory guard", "rows": [
         ["stopped", f"{command} (pid {heaviest}) and the rest of its process group {pgid}: "
-                    f"{len(members)} processes, {job_mb / 1024:.1f} GB resident"],
+                    f"{len(members)} processes, {job_mb / 1024:.1f} GB of memory"],
         ["why", f"the Mac was down to {avail} MB of available RAM and this was the largest job any chat "
                 "was running; left alone it would have frozen the machine into a forced reboot"],
         ["this is", "not a crash and not a broken system: the machine is healthy and the task is still solvable"],
@@ -561,6 +583,7 @@ def sample(now, avail, swap):
         protected.add(pid)
         protected.update(lineage(pid, table))
     tops = attribute(table, envs, sessions)
+    footprints(table, [pid for pid in tops if not table[pid]["zombie"]])
     failure = ""
     try:
         event = guard(now, avail, table, envs, tops, sessions, protected, roots, state["titles"], prev.get("guard"))
