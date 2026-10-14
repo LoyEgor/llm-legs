@@ -55,9 +55,12 @@ web_search_quoted() { # argv words on stdin
 # The state's whole argv as one adjacent run, never word by word: `-c` is codex's ordinary config
 # flag and stands in both states and elsewhere in the command, so a per-word search reads a state
 # the run was never launched in.
-web_search_sequence_present() { # vendor state
-  local needle haystack
-  needle=$(web_search_args "$1" "$2" | web_search_quoted | paste -sd $'\x1f' -)
+web_search_sequence_present() { # the state's argv words, one per line
+  local needle='' haystack word quoted
+  while IFS= read -r word; do
+    printf -v quoted '%q' "$word"
+    needle+=${needle:+$'\x1f'}$quoted
+  done <<<"$1"
   [ -n "$needle" ] || return 1
   if [ "$WEB_SEARCH_ENTRY" = light ]; then
     # A Light edit run launches inside the write sandbox, which denies every path outside the Light
@@ -73,10 +76,12 @@ web_search_sequence_present() { # vendor state
 }
 
 web_search_assert() { # vendor state
-  local target="$1" want="$2" other=on
+  local target="$1" want="$2" other=on want_words other_words
   [ "$want" = off ] || other=off
-  [ -z "$(web_search_args "$target" "$want")" ] || assert web_search_sequence_present "$target" "$want"
-  [ -z "$(web_search_args "$target" "$other")" ] || assert_fails web_search_sequence_present "$target" "$other"
+  want_words=$(web_search_args "$target" "$want")
+  other_words=$(web_search_args "$target" "$other")
+  [ -z "$want_words" ] || assert web_search_sequence_present "$want_words"
+  [ -z "$other_words" ] || assert_fails web_search_sequence_present "$other_words"
   assert test "$(jq -r '.web_search' "$RUN_DIR/meta.json")" = "$([ "$want" = on ] && printf true || printf false)"
   # Named where a reader looks, not only in meta.json: the launch line and the report.
   assert grep -qx "WEB: $want" "$WORK/start.out"
@@ -223,7 +228,10 @@ if suite_shard_owns 3 ws-grok-research-fence; then
   web_search_launch "$WORK/websearch/plain" grok
   assert test "$(grep -cF 'READ-ONLY TREE' "$RUN_DIR/brief.launch")" = 0
   assert test "$(grep -cF 'EDITS: change repository files only' "$RUN_DIR/brief.launch")" = 0
+fi
 
+if suite_shard_owns 4 ws-grok-nongit; then
+  set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok' 'light_edit=grok'
   # Grok research digests non-git trees and catches edits outside git repos.
   nongit="$WORK/websearch/scratchpad"
   mkdir -p "$nongit"
@@ -267,6 +275,10 @@ EOF
     assert test "$(non_git_tree_digest "$nongit")" != "$clean"
   )
   assert test "$?" -eq 0
+fi
+
+if suite_shard_owns 2 ws-claudeb-edits; then
+  web_search_config claudeb
   # A claudeb worker is told up front what worker-edit-guard would otherwise refuse call by call.
   web_search_launch "$WORK/websearch/plain" claudeb
   assert grep -qF 'EDITS: change repository files only through the Edit and Write tools' "$RUN_DIR/brief.launch"
