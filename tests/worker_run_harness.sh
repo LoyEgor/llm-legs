@@ -118,6 +118,7 @@ REVIEWBENCH
 export CAFFEINATE_LOG="$WORK/caffeinate.calls"
 cat >"$WORK/bin/caffeinate" <<'CAFFEINATE'
 #!/usr/bin/env bash
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 printf '%s run-id=%s cwd=%s\n' "$*" "${WORKER_RUN_ID-unset}" "$PWD" >>"$CAFFEINATE_LOG"
 while kill -0 "$3" 2>/dev/null; do sleep 0.1; done
 exit 1
@@ -434,9 +435,10 @@ meta_num() { # key file
 
 # The floor is taken by the supervisor before its CLI starts: a fixture write before that is no run's.
 await_launched() {
-  local tick
+  local tick text
   for tick in $(seq 1 400); do
-    { [ -e "$RUN_DIR/exit_code" ] || grep -Eqs '"cli_pid": *"?[0-9]' "$RUN_DIR/meta.json"; } && return 0
+    [ ! -e "$RUN_DIR/exit_code" ] || return 0
+    { text=$(<"$RUN_DIR/meta.json"); } 2>/dev/null && [[ $text =~ \"cli_pid\":\ *\"?[0-9] ]] && return 0
     sleep 0.05
   done
 }
