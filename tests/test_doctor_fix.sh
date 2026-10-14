@@ -326,7 +326,7 @@ assert_fails fix record updater --branch b --problems grok-1 2>/dev/null
 fix record-close "$nid" --decisions "$WORK/ujson" "grok-1: integrated" || fail "record-close of a night vendor run failed"
 
 # Parallel record writes never share an id.
-for n in 1 2 3 4 5 6; do fix record updater --branch "b-$n" --worktree w --problems "e-$n" >"$DATA/par-$n" & done
+for n in 1 2 3 4 5 6; do LLM_STORE_LOCK_DELAY=0.01 fix record updater --branch "b-$n" --worktree w --problems "e-$n" >"$DATA/par-$n" & done
 wait
 assert [ "$(cat "$DATA"/par-* | sort -u | grep -cE '^updater-release-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$')" = 6 ]
 for n in 1 2 3 4 5 6; do assert jqe --arg b "b-$n" '.branch == $b' "$(record "$(cat "$DATA/par-$n")")"; done
