@@ -10546,6 +10546,13 @@
       "reason": "2026-10-14: review-bench 93 of 151 calls only carry the repo path (edits, cProfile, shims), 41 read worker-run meta.json (worker-run's data); 4608 of its 5133 s and 4955 of tokenmap's 5433 s are 30 s+ profiling runs of CPU audits; the real jobs are 8 store.state_dir lookups and 55 tracking.json jq reads (0.4-1.3 s, ~1 KB each), which a hint's always-loaded bytes outweigh; the packet lists no component file, so the fixer got no ADD-DIR worktree of the owning repository",
       "since": "2026-10-14",
       "would_catch_if": "tool_mining separated a cluster's calls by job (the data file read, not the working directory) and named the owning repository's file as the component"
+    },
+    {
+      "id": "dead-runs-walled-pool",
+      "what": "how many dead worker runs started their CLI on an account whose session limit was already recorded",
+      "reason": "Night 20261014T013750Z-8004 (time/dead 3.4 min/day): 67 dead runs on 2026-10-13, all notcom, outcome CLAUDEB_USAGE_LIMIT in two bursts (launched 00:18Z and 02:06Z, `session limit` resets 5am and 10am Kiev), each 13 s of CLI start plus 11 s wrap-up (867 s dead, 719 s wrap-up) after about 1.5 h in the slot queue. the runs were neither pinned nor resumed and none recorded a reroute (walled_accounts empty), so the pick offered no other account: a pool-wide limit, weather. The row left the window by itself (dead 0.0 min/day); a re-read of the recorded wall after the slot grant, before supervise_claudeb, would save about 24 s per run (0.1 min/day over the week), a change in worker-run's launch path with no replay that keeps decisions identical, so not built",
+      "since": "2026-10-14",
+      "would_catch_if": "the run journal recorded, per run, whether its account's wall was already in worker-walls at the slot grant, so a pool-wide limit burst separates from a run that died on a wall nobody could have known"
     }
   ]
 }
