@@ -2,10 +2,10 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # hammerspoon/menu-style.lua is the only palette: no other menu module builds a colour, and every
 # palette is exactly PALETTE: RED and GREEN opaque, DIM_RED and DIM_GREEN each at one shared alpha,
-# and the only other colour literals are the calibrated INACTIVE_ ones. A disabled row takes those
-# through M.tone(color, true): every module with disabled rows passes its tree through M.mono, which
-# retones them, and a module whose titles skip that walk (M.toned) sends every RED and DIM_RED through
-# tone(). GREEN and DIM_GREEN go through tone() everywhere.
+# and the only other colour literals are the calibrated per-theme LOOK (DIM_ and INACTIVE_). A row
+# takes those through M.tone(color, inactive): every module with disabled rows passes its tree through
+# M.mono, which retones them, and a module whose titles skip that walk (M.toned) sends every RED and
+# DIM_RED through tone(). GREEN and DIM_GREEN go through tone() everywhere.
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -102,9 +102,9 @@ def check(style_path, modules):
 
     with open(style_path, encoding="utf-8") as handle:
         style = handle.read()
-    if (not re.search(r"^function M\.tone\(color, inactive\)$", style, re.M) or "local INACTIVE_GREEN = {" not in style
-            or "local INACTIVE_RED = {" not in style or "item.title = inactiveTitle(item.title)" not in style):
-        problems.append("menu-style.lua: M.tone(color, inactive), its INACTIVE_GREEN/INACTIVE_RED or mono's retone are gone")
+    if (not re.search(r"^function M\.tone\(color, inactive\)$", style, re.M) or "local LOOK = {" not in style
+            or not re.search(r"^  dark = \{$", style, re.M) or "item.title = retoned(item.title" not in style):
+        problems.append("menu-style.lua: M.tone(color, inactive), its per-theme LOOK or mono's retone are gone")
     palette = {}
     for name, body in re.findall(r"^M\.([A-Z_]+)\s*=\s*\{([^}]*)\}", style, re.M):
         fields = dict(re.findall(r"(\w+)\s*=\s*(\"[^\"]*\"|[-0-9.]+)", body))
@@ -128,8 +128,8 @@ def check(style_path, modules):
             problems.append("menu-style.lua: DIM_GREEN must be GREEN at DIM_RED's alpha")
         for number, line in enumerate(style.splitlines(), 1):
             if re.search(r"\{\s*red\s*=", line) and not re.match(
-                    r"(M\.(%s)|local INACTIVE_(GREEN|RED)) = \{" % "|".join(PALETTE), line):
-                problems.append(f"menu-style.lua:{number}: a colour outside the palette and its calibrated INACTIVE_"
+                    r"(M\.(%s)|    (DIM|INACTIVE)_(GREEN|RED)) = \{" % "|".join(PALETTE), line):
+                problems.append(f"menu-style.lua:{number}: a colour outside the palette and its calibrated LOOK"
                                 f" values ({line.strip()}); a new look is Egor's call and is measured on the real menu")
         for name, fields in palette.items():
             alpha = float(fields.get("alpha", 1))
@@ -161,7 +161,7 @@ case "$untoned" in *"M.tone(color, inactive)"*) ;; *) fail "a palette without M.
 case "$added" in *"Egor's call"*) ;; *) fail "an invented palette colour passed: $added" ;; esac
 case "$shade" in *"GREEN's alpha 0.3"*) ;; *) fail "an invented alpha passed: $shade" ;; esac
 case "$dimshade" in *"DIM_GREEN must be GREEN at DIM_RED's alpha"*) ;; *) fail "a DIM_GREEN off DIM_RED's alpha passed: $dimshade" ;; esac
-case "$stray" in *"a colour outside the palette and its calibrated INACTIVE_"*) ;; *) fail "an uncalibrated colour in menu-style.lua passed: $stray" ;; esac
+case "$stray" in *"a colour outside the palette and its calibrated LOOK"*) ;; *) fail "an uncalibrated colour in menu-style.lua passed: $stray" ;; esac
 case "$dimgreen" in *"dimgreen.lua:1: a raw GREEN"*) ;; *) fail "a raw DIM_GREEN outside tone() passed: $dimgreen" ;; esac
 case "$dimgreen" in *"dimgreen.lua:2:"*) fail "DIM_GREEN through tone() was rejected: $dimgreen" ;; esac
 echo "OK: menu-style.lua is the only palette"

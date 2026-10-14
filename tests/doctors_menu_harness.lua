@@ -1,6 +1,7 @@
 local vocab, source, onlyTrends, baseline = ...
 local root = debug.getinfo(1, "S").source:match("^@(.+)/tests/[^/]+$")
 assert(root, "harness path is unavailable")
+local palette = dofile(root .. "/hammerspoon/menu-style.lua")
 
 local failures, checks = {}, 0
 local function check(ok, message)
@@ -13,9 +14,26 @@ local function color(title)
   local runs = title:asTable()
   return runs[2] and runs[2].attributes and runs[2].attributes.color
 end
-local function red(title)
+local function near(c, want)
+  for _, key in ipairs({ "red", "green", "blue", "alpha" }) do
+    if math.abs((c[key] or 1) - (want[key] or 1)) > 1e-3 then return false end
+  end
+  return true
+end
+-- "R" full red (a disabled row's INACTIVE_RED too: the most a disabled row shows), "r" the enabled dim
+-- red, "g" green; each as menu-style tones it for the current theme.
+local function toneOf(title)
   local c = color(title)
-  return c ~= nil and (c.red or 0) > 0.8 and (c.green or 1) < 0.4
+  if type(c) ~= "table" or c.list then return nil end
+  if near(c, palette.RED) or near(c, palette.tone(palette.RED, true)) then return "R" end
+  if near(c, palette.tone(palette.DIM_RED, false)) then return "r" end
+  for _, green in ipairs({ palette.GREEN, palette.tone(palette.GREEN, true), palette.tone(palette.DIM_GREEN, false) }) do
+    if near(c, green) then return "g" end
+  end
+end
+local function red(title)
+  local tone = toneOf(title)
+  return tone == "R" or tone == "r"
 end
 local function dimmed(title) return color(title) ~= nil and not red(title) end
 local function details(menu)
@@ -43,12 +61,6 @@ local function allMenlo(menu)
     if item.menu and not allMenlo(item.menu) then return false end
   end
   return true
-end
-local function toneOf(title)
-  local c = color(title)
-  if not c then return nil end
-  if (c.red or 0) > 0.8 and (c.green or 1) < 0.4 then return (c.alpha or 1) < 0.9 and "r" or "R" end
-  if (c.green or 0) > 0.5 and (c.red or 1) < 0.2 then return "g" end
 end
 local function lastTone(title)
   local runs = type(title) ~= "string" and title:asTable() or {}
@@ -112,7 +124,6 @@ local fakeHs = setmetatable({
   end },
 }, { __index = hs })
 
-local palette = dofile(root .. "/hammerspoon/menu-style.lua")
 local function treeRequire(name)
   if name == "menu-style" then return palette end
   return require(name)
@@ -596,7 +607,7 @@ local pendingRow = { id = "cli-behind:codex", rule = "cli-behind", state = "watc
 write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
   problem_count = 0, problems = { pendingRow }, blind_spots = {}, vendors = {} })
 local pending = doctors.menuItems()[3]
-check(text(pending.title) == summary("Updater", 0) and red(pending.title) and color(pending.title).alpha == 0.55,
+check(text(pending.title) == summary("Updater", 0) and toneOf(pending.title) == "r",
   "a pending update is never a plain ok: " .. text(pending.title))
 check(text(details(pending.menu)[1].title) == "Updater doctor: update pending"
   and text(details(pending.menu)[2].title) == pendingRow.fact and dimmed(details(pending.menu)[2].title), "the pending update is a watch row")

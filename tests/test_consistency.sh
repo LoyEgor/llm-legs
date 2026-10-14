@@ -3175,9 +3175,12 @@ for f in "$HS_ROOT"/*.lua; do [ -f "$f" ] && menu_lua+=("$f"); done
 menu_reds=$(perl -0ne 'while (/\{\s*red\s*=\s*([0-9.]+)\s*,\s*green\s*=\s*([0-9.]+)\s*,\s*blue\s*=\s*([0-9.]+)/g) {
   print "$ARGV $1 $2 $3\n" if $1 >= 0.5 && $2 < 0.4 && $3 < 0.4 }' "${menu_lua[@]}")
 assert [ -n "$menu_reds" ]
-assert test -z "$(grep -v ' 0.9 0.25 0.2$' <<<"$menu_reds" | grep -vxF "$ROOT/hammerspoon/menu-style.lua 0.92 0.17 0.08")"
-assert grep -Fxq 'local INACTIVE_RED = { red = 0.92, green = 0.17, blue = 0.08 }' "$ROOT/hammerspoon/menu-style.lua"
-assert doc_has '`INACTIVE_RED` `{ red = 0.92, green = 0.17, blue = 0.08 }`'
+menu_style_lua="$ROOT/hammerspoon/menu-style.lua"
+assert test -z "$(grep -v ' 0.9 0.25 0.2$' <<<"$menu_reds" | grep -vxF -e "$menu_style_lua 0.92 0.17 0.08" \
+  -e "$menu_style_lua 0.55 0 0" -e "$menu_style_lua 0.557 0.278 0.275")"
+assert grep -Fxq '    INACTIVE_RED = { red = 0.92, green = 0.17, blue = 0.08 },' "$menu_style_lua"
+assert grep -Fxq '    INACTIVE_RED = { red = 0.55, green = 0, blue = 0 },' "$menu_style_lua"
+assert doc_has '`INACTIVE_RED` `{ red = 0.92, green = 0.17, blue = 0.08 }` light, `{ red = 0.55, green = 0, blue = 0 }` dark'
 assert test -z "$(grep -l 'systemRedColor' "${menu_lua[@]}")"
 menu_fontless=$(perl -0ne 'while (/hs\.styledtext\.new\(((?:[^()]++|\((?1)\))*)\)/g) { my $a = $1;
   print "$ARGV: $a\n" if $a =~ /,\s*[\{a-zA-Z]/ && $a !~ /font|attributes/ }' "${menu_lua[@]}")
