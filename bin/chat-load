@@ -455,6 +455,7 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
     rated = 0 < dt <= 120
     before = prev.get("procs", {})
     procs, chat_cpu, chat_kb, machine, other = {}, {}, {}, 0.0, dict.fromkeys([k for k, _ in OTHER_KINDS], 0.0)
+    other_kb = 0
     for pid, row in table.items():
         if row["cpu"] < 0 or row["age"] < 0:
             continue
@@ -474,6 +475,8 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
             if not row["zombie"]:
                 chat_kb[top] = chat_kb.get(top, 0) + row["kb"]
         else:
+            if not row["zombie"]:
+                other_kb += row["kb"]
             for kind, names in OTHER_KINDS:
                 if row["comm"] in names:
                     other[kind] += used
@@ -501,10 +504,11 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
     rate = (lambda seconds: seconds / dt) if rated else (lambda seconds: None)
     chats_cores, machine_cores = rate(sum(chat_cpu.values())), rate(machine)
     used_mb = total_mb - avail if avail >= 0 and total_mb else None
-    chats_mb = sum(chat_kb.values()) / 1024
-    if used_mb is not None:
-        chats_mb = min(chats_mb, used_mb)
-    other_mb = used_mb - chats_mb if used_mb is not None else None
+    # Footprints count compressed and swapped pages at their uncompressed size, so they sum past RAM used
+    # (live 2026-10-14: 34.7 GB of footprints on 21.7 GB used + 6.1 GB swap). Chats and other are both
+    # footprint sums, and the total is their shown parts added, so the row always adds up.
+    chats_mb, other_mb = sum(chat_kb.values()) / 1024, other_kb / 1024
+    mem_gb = round(chats_mb / 1024, 1) + round(other_mb / 1024, 1)
 
     def cores(value, width):
         return f"{value:{width}.1f}" if value is not None else "–".rjust(width)
@@ -517,8 +521,8 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
     rows = [
         {"text": f"CPU  {cores(chats_cores, 4)} chats + {cores(other_cores, 4)} other = "
                  f"{cores(machine_cores, 4)} of {ncpu} cores", "dim": True},
-        {"text": f"RAM  {gb(chats_mb, 4)} chats + {gb(other_mb, 4)} other = {gb(used_mb, 4)} of "
-                 f"{total_mb / 1024:.0f} GB · swap {max(swap, 0) / 1024:.1f}", "dim": True},
+        {"text": f"Mem  {gb(chats_mb, 4)} chats + {gb(other_mb, 4)} other = {mem_gb:4.1f} GB · RAM {gb(used_mb, 0)} of "
+                 f"{total_mb / 1024:.0f} · swap {max(swap, 0) / 1024:.1f}", "dim": True},
     ]
     event = state.get("guard")
     alarm = bool(event) and now - event["at"] < GUARD_SHOWN_S
@@ -583,7 +587,7 @@ def sample(now, avail, swap):
         protected.add(pid)
         protected.update(lineage(pid, table))
     tops = attribute(table, envs, sessions)
-    footprints(table, [pid for pid in tops if not table[pid]["zombie"]])
+    footprints(table, [pid for pid, row in table.items() if not row["zombie"]])
     failure = ""
     try:
         event = guard(now, avail, table, envs, tops, sessions, protected, roots, state["titles"], prev.get("guard"))

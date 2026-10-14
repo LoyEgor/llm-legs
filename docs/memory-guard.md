@@ -136,8 +136,11 @@ guard.
 
 `~/Library/Logs/memlogd/chats.json`, rewritten every tick and read by `appendChats` in
 `hammerspoon/llm-limits.lua`. Title `Chats/other  <cores>/<cores> cores · <GB>/<GB> GB`; inside,
-the CPU and RAM split (CPU from the delta of each process's cumulative CPU time between ticks; RAM
-used = total − available, chats' footprints capped at it, other = the rest), the guard row, one aligned
+the CPU and memory split (CPU from the delta of each process's cumulative CPU time between ticks;
+`Mem <chats> chats + <other> other = <sum> GB · RAM <used> of <total> · swap <swap>`: chats and other
+are footprint sums of every process, the sum their shown parts added, beside RAM used = total −
+available; footprints count compressed and swapped pages at their uncompressed size, so the sum runs
+past RAM used, and capping chats at it read other as 0.0 while two renders ran), the guard row, one aligned
 line per chat — state, title shortened to 22 columns keeping a trailing PR/phase number, cores, GB,
 a 15-minute CPU spark scaled to the performance cores — and what inside "other" chats may cause
 indirectly (screen = WindowServer, kernel = kernel_task, signing = syspolicyd + trustd). States:
