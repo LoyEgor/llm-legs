@@ -271,6 +271,23 @@ attribution_repair_tests() {
     writes_through_shell 'git diff'
   )
   assert parser_failure_is_unknown
+  # A window's shell commands are classified by one python3, and the first reason still wins: a write
+  # before an unnamed-target call is the shell's, one after it is not.
+  eval "$(sed -n '/^classify_tool_rows() {/,/^}/p' "$RUNNER")"
+  eval "$(grep '^SHELL_FLOOR_PARTIAL=' "$RUNNER")"
+  mkdir -p "$WORK/py-shim"
+  printf '#!/bin/sh\necho python3 >>"%s"\nexec "%s" "$@"\n' "$WORK/py-runs" "$(command -v python3)" >"$WORK/py-shim/python3"
+  chmod +x "$WORK/py-shim/python3"
+  classified() ( # rows -> the reason classify_tool_rows leaves
+    RUN_FILES_REASON='' RUN_FILES_PARTIAL='' RUN_FILES_ESCAPE='' RUN_FILES_OUTSIDE='' RUN_FILES_LIST=''
+    PATH="$WORK/py-shim:$PATH" classify_tool_rows "$1" "$WORK/workdir"
+    printf '%s\n' "$RUN_FILES_REASON"
+  )
+  rm -f "$WORK/py-runs"
+  assert test "$(classified $'C\tls\nC\tgrep x f\nC\techo a >f\nX\tTool')" = 'the run wrote through the shell, whose targets no transcript names'
+  assert test "$(wc -l <"$WORK/py-runs")" -eq 1
+  assert test "$(classified $'C\tls\nX\tTool\nC\techo a >f')" = 'the transcript records a call whose file targets it does not name: Tool'
+  assert test -z "$(classified $'C\tls\nC\tgrep x f')"
   for command in 'python3 -c "rewrite()"' 'python3 -' 'tee target' 'perl -pi -e s/a/b/ target' \
       'git apply changes.patch' 'patch -p1' 'mv source target' 'cp source target' \
       'install source target' 'bash tests/../rewrite.sh' 'printf data >target' 'grep x source >target' \

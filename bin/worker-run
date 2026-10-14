@@ -3581,9 +3581,11 @@ print_outcome() {
 SHELL_FLOOR_PARTIAL='the run also ran shell commands, whose edits no transcript records'
 
 writes_through_shell() { # command-line | no argument: the JSON-encoded command lines on fd 3, 0 once any writes
+  # WRITES_FIRST_RAW=1, no argument: raw command lines on fd 3; prints the 1-based index of the first that writes, 0 for none.
   local rc
   python3 - "$@" <<'PY'
 import json
+import os
 import re
 import shlex
 import sys
@@ -3640,6 +3642,10 @@ def writes(command):
     return False
 
 
+if os.environ.get("WRITES_FIRST_RAW"):
+    with open(3, encoding="utf-8", errors="surrogateescape", newline="\n") as lines:
+        print(next((index for index, line in enumerate(lines, 1) if writes(line.rstrip("\n"))), 0))
+    sys.exit(0)
 if len(sys.argv) > 1:
     sys.exit(0 if writes(sys.argv[1]) else 1)
 try:
@@ -3679,7 +3685,7 @@ resolve_tool_path() { # path workdir
 }
 
 classify_tool_rows() { # rows workdir
-  local rows="$1" workdir="$2" line tag value paths='' places='' shell=false inside=0 outside='' dir=''
+  local rows="$1" workdir="$2" line tag value paths='' places='' shell=false inside=0 outside='' dir='' commands='' first
   local unexpanded_target_re='(^|/)(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|`[^`]+`)(/|$)'
   [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
   while IFS= read -r line; do
@@ -3705,8 +3711,8 @@ classify_tool_rows() { # rows workdir
       C)
         [ -n "$value" ] || continue
         shell=true
-        [ -n "$RUN_FILES_REASON" ] || ! writes_through_shell "$value" ||
-          RUN_FILES_REASON='the run wrote through the shell, whose targets no transcript names'
+        # Classified once after the loop, one python3 for the window: each comes before any reason set so far.
+        [ -n "$RUN_FILES_REASON" ] || commands+="$value"$'\n'
         ;;
       D)
         [ -z "$value" ] || places+="$(resolve_tool_path "$value" "$workdir")"$'\n'
@@ -3721,6 +3727,11 @@ classify_tool_rows() { # rows workdir
         ;;
     esac
   done <<<"$rows"
+  # A command collected came before every reason the loop set, so a write among them wins; a failed classifier is a write.
+  if [ -n "$commands" ]; then
+    first=$(WRITES_FIRST_RAW=1 writes_through_shell 3<<<"${commands%$'\n'}") && [[ $first =~ ^[0-9]+$ ]] || first=1
+    [ "$first" = 0 ] || RUN_FILES_REASON='the run wrote through the shell, whose targets no transcript names'
+  fi
   # Live-reproduced 2026-08-24: handed a workdir agy does not trust, agy worked in the first
   # --add-dir instead and said nothing — every path it touched was somewhere else entirely. Not
   # "a path outside the workdir", which is ordinary (a worker reads ~/.claude, writes /tmp): the
