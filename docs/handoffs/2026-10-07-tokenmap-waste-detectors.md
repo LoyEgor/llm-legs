@@ -1,6 +1,6 @@
 # Tokenmap: detectors for spend that buys nothing
 
-Status: open — the 2026-10-13 items (per-run delegation, rows past their cut) remain; the 2026-10-12 sub-items are in token-map b75220a (deny-forced reads, guard restores, skill-fork labels, quiet date); both gate-time items are Speed's per-hook floors
+Status: settled 20261014T013750Z-8004: per-run delegation, retry after a denial and the three gaps done in token-map e427b8b; rows past their cut closed, Spend components are Fee sources since llm-legs 5e55c09d, a removed source drops out of the index
 
 From «Updater doctor», 2026-10-07.
 
@@ -22,10 +22,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 8. **Frontier model on a small task.** Shown only, never a cut. Done in token-map 93c2a59 (`Frontier model, small task`: opus or fable contexts that ended within 5 requests, never toned).
 9. **Export which causes are avoidable.** Harness `share/spend.py` (llm-legs 90cae246) copies tokenmap's unavoidable cache re-write causes (`expired (1h+ idle)` and the others from FINDINGS §26). Put an `avoidable` flag on each cause row in `tracking.json`, so the doctor reads it rather than keeping a copy. — Done in token-map 3e3b078; the Spend side is in `2026-10-07-harness-index.md`.
    - Done or settled sub-items: `git log -p` of this file.
-   - Per-run delegation (spend audit `turns:worker-run codex`, 2026-10-13): Δ ×17 is ×8 runs (128 vs 16) plus relay waits turned main-thread wakes; a per-run cell (~6.0k) would show the unit Δ.
-   - Rows past their cut (spend audit `hook:worker-relay-hold.sh`, `spawn:grok-worker`, 2026-10-13): both removed at source 2026-10-09 (llm-legs ee185fa8) yet still due for audit while the 7d window holds pre-cut days; a component whose source is gone should read `cut at source`, not rank.
    - Gaps from 2026-10-13 on: `jq -r '.rows[] | select(.note | test("tokenmap gap:")) | .id' share/spend-ledger.json`; a done one gets `Done in token-map <sha>` in its row's note.
-   - Retry after a denial (spend audit `hook:english-gate.sh`, 2026-10-13): a brief written by a script or `/dev/null` stays denied; the re-run books as plain Bash, charge it to the hook.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.

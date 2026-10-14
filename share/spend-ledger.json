@@ -161,7 +161,7 @@
    "sources": {},
    "verdict": "kept",
    "zero": "removal saves ~2.2 % of Claude spend; loses every global and project rule (language, commits, shared checkout, cardinal store rules) and the memory index workers and chats cite",
-   "note": "kept (re-audit 2026-10-13): the x1.7 is load: main contexts loading it ~930 -> ~2530/7d while the part per context fell 13.8k -> 9.3k (-33%) and the Workers cell price per unit 13.4k -> 12.7k (-5%); the only new cell is Reviewers (999 bench cells x ~0.9k, the reviewed checkout CLAUDE.md, none before 10-09); Unused startup lists no CLAUDE.md or memory entry; workers act on the index (10-09 audit: 43/675 cite a slug) and instruction files are the orchestrator to cut; tokenmap gap: Reviewers CLAUDE.md + memory (999 cells x ~0.9k, none before 10-09) is the reviewed checkout CLAUDE.md, unpriced before"
+   "note": "kept (re-audit 2026-10-13): the x1.7 is load: main contexts loading it ~930 -> ~2530/7d while the part per context fell 13.8k -> 9.3k (-33%) and the Workers cell price per unit 13.4k -> 12.7k (-5%); the only new cell is Reviewers (999 bench cells x ~0.9k, the reviewed checkout CLAUDE.md, none before 10-09); Unused startup lists no CLAUDE.md or memory entry; workers act on the index (10-09 audit: 43/675 cite a slug) and instruction files are the orchestrator to cut; Reviewers CLAUDE.md + memory before 10-09 (stream-only cells) Done in token-map e427b8b"
   },
   {
    "id": "suite:llm-legs/test_consistency",
@@ -3759,7 +3759,7 @@
    "sources": {},
    "verdict": "kept",
    "zero": "removal saves ~0.4 %; loses delegation from chats (no worker launch, wait or report), so all chat work runs on the chat model",
-   "note": "kept: the chats own delegation procedure at its minimum turns per run (start, background wait, wake, report; 130 of ~390 wakes go straight to report, and a wait printing the result would still cost the turn reading the background output); start+wait in one background call (25 of 297 starts) would hide refusals and the run id until the wake for ~3k a start; the delta is the 10-09 relay retirement moving relay spend here (relays 2.45M -> 0.16M, spawn claudeb-worker 10.1M -> 4.9M); the step also holds worker-run browse (browser driving, ~0.3M) and greps of worker-run source; tokenmap gap: step worker-run holds worker-run browse (browser driving, ~0.3M of 4M/7 d) and greps of worker-run source"
+   "note": "kept: the chats own delegation procedure at its minimum turns per run (start, background wait, wake, report; 130 of ~390 wakes go straight to report, and a wait printing the result would still cost the turn reading the background output); start+wait in one background call (25 of 297 starts) would hide refusals and the run id until the wake for ~3k a start; the delta is the 10-09 relay retirement moving relay spend here (relays 2.45M -> 0.16M, spawn claudeb-worker 10.1M -> 4.9M); the step also holds worker-run browse (browser driving, ~0.3M) and greps of worker-run source; worker-run browse is its own step: Done in token-map e427b8b (a grep left in the step also polls a run dir, which is procedure)"
   },
   {
    "id": "turns:worker-run claudeb",
@@ -3771,7 +3771,7 @@
    "sources": {},
    "verdict": "kept",
    "zero": "removal saves ~0.3 %; loses claudeb delegation from chats (launch, wait, report, say, claim)",
-   "note": "kept: the same procedure for runs whose id names claudeb (7 d: start 664k, wait 558k, report 503k, wake 330k, say+claim 300k; one wait and one report per run id for most of ~100 chat starts); x21 is tokenmap PROCEDURE_VENDOR filing wait/report under the vendor only when the run id carries it plus the 10-09 relay retirement, not more turns per run; cheaper launch shapes rejected under turns:worker-run; tokenmap gap: PROCEDURE_VENDOR files wait/report under a vendor only when the run id names it"
+   "note": "kept: the same procedure for runs whose id names claudeb (7 d: start 664k, wait 558k, report 503k, wake 330k, say+claim 300k; one wait and one report per run id for most of ~100 chat starts); x21 is tokenmap PROCEDURE_VENDOR filing wait/report under the vendor only when the run id carries it plus the 10-09 relay retirement, not more turns per run; cheaper launch shapes rejected under turns:worker-run; wait/report over $r take the vendor of the run ids named: Done in token-map e427b8b"
   },
   {
    "id": "turns:review-bench",
