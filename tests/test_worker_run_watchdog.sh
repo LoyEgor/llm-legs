@@ -192,7 +192,7 @@ assert test ! -s "$RUN_DIR/out"
 assert test ! -s "$RUN_DIR/err"
 fi
 
-if suite_shard_owns 1 wd-answered; then
+if suite_shard_owns 2 wd-answered; then
 # Found already holding the launch's first answer, then frozen: one long first tool call, no hung start.
 clear_stub
 set_config 'claudeb_profile=pinned'
@@ -269,6 +269,7 @@ clear_stub
 set_config 'claudeb_profile=pinned'
 export PICK_RC=0 PICK_ACCOUNT=picked STUB_SLEEP=14 STUB_TRANSCRIPT_SESSION=frozen-transcript \
   STUB_TRANSCRIPT_ACCOUNT=picked STUB_EDIT_PATH=bin/the-worker-is-mid-edit WORKER_RUN_IDLE_S=3 WORKER_RUN_DEADLINE=600
+dirt_repo_init
 start_ok claudeb --workdir "$DIRT_REPO"
 unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
 unset STUB_EDIT_PATH
@@ -367,10 +368,11 @@ assert grep -q '^STATUS: failed$' <<<"$signal_wait"
 assert grep -q '^KILLED: signal TERM' <<<"$signal_wait"
 assert grep -qx term "$RUN_DIR/killed"
 assert jq -e '.terminal_reason == "term"' "$RUN_DIR/meta.json" >/dev/null
-assert grep -q '^KILLED: signal TERM' <<<"$("$RUNNER" report "$RUN_ID")"
+signal_report=$("$RUNNER" report "$RUN_ID")
+assert grep -q '^KILLED: signal TERM' <<<"$signal_report"
 # A stopped run is no vendor verdict, in the report or the outcome record llm-doctor reads.
 assert grep -qx 'OUTCOME: STOPPED' <<<"$signal_wait"
-assert grep -qx 'OUTCOME: STOPPED' <<<"$("$RUNNER" report "$RUN_ID")"
+assert grep -qx 'OUTCOME: STOPPED' <<<"$signal_report"
 assert_fails grep -Eq '_(UNAVAILABLE|FAILED)' <<<"$signal_wait"
 assert test "$(cat "$RUN_DIR/outcome")" = STOPPED
 assert_fails kill -0 "$stub_pid"
@@ -420,7 +422,6 @@ assert test -z "$leftover"
 fi
 }
 
-dirt_repo_init
 watchdog_tests
 
 echo "PASS: $asserts asserts; the watchdog: deadlines, idle and silent kills, signals"

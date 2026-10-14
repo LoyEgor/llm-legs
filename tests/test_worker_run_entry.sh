@@ -64,6 +64,15 @@ model_effort_tests() {
   assert await_exit
   assert grep -qx 'ARG=fable' "$CALL_LOG"
   assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = low
+  set_config
+  clear_stub
+}
+
+# Its own section: the header and refusal cases launch few runs, and model_effort_tests' launches alone fill a shard.
+effort_header_tests() {
+  local spec vendor model effort
+  set_config 'claudeb_model=fable'
+  export PICK_RC=0 PICK_ACCOUNT=picked
   # The brief's EFFORT: is the run's effort like its ACCOUNT: and MODEL:, and a flag that contradicts
   # a header line refuses: a relay's dropped `--effort` once launched a Fable `EFFORT: high` brief on low.
   cp "$WORK/brief" "$WORK/brief.noheader"
@@ -246,12 +255,10 @@ GATE
   clear_stub
   CLAUDECODE=1 LIMIT_GATE_MODE=note start_ok claudeb
   assert grep -Fqx 'worker-run: note: Claude account picked is at 90%.' "$WORK/start.err"
-  local output index
-  for index in $(seq 1 100); do
-    output=$(CLAUDECODE=1 "$RUNNER" wait "$RUN_ID" --max 0)
-    grep -q '^STATUS: done\|^STATUS: failed' <<<"$output" && break
-    sleep 0.05
-  done
+  local output
+  # The exit code paces the poll; one `wait` through the door reads the end, not one a tick.
+  await_exit || fail "the noted claudeb run never exited"
+  output=$(CLAUDECODE=1 "$RUNNER" wait "$RUN_ID" --max 0)
   assert grep -q '^STATUS: done' <<<"$output"
   assert test "$(cat "$STUB_DIR/background_env")" = "1 1500000 1500000"
   assert grep -q '^CLAUDEB_CALL$' "$CALL_LOG"
@@ -362,6 +369,7 @@ own_headroom_tests() (
 
 if suite_shard_owns 4 own-headroom; then own_headroom_tests || exit 1; fi
 if suite_shard_owns 1 model-effort; then model_effort_tests; fi
+if suite_shard_owns 2 effort-header; then effort_header_tests; fi
 if suite_shard_owns 3 door-nested-roster; then
   worker_door_tests
   nested_model_tests

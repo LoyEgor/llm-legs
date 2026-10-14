@@ -229,7 +229,11 @@ if [ -n "${STUB_TRANSCRIPT_GROW:-}" ] && [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; 
 else
   [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 fi
-[ -z "${STUB_BURN:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do :; done
+# A burn stops at ~3 CPU-seconds, past the 2 its probe waits for, and then waits on the gate like any gated stub.
+[ -z "${STUB_BURN:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do
+  for _ in {1..20000}; do :; done
+  times >"$STUB_GATE.times" && read -r burnt _ <"$STUB_GATE.times" && burnt=${burnt#*m} && [ "${burnt%%.*}" -lt 3 ] || break
+done
 [ -z "${STUB_GATE:-}" ] || enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 [ -z "${STUB_GATE:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do sleep 0.05; done
 has_effort=false
@@ -404,13 +408,18 @@ clear_stub() {
     STUB_EDIT_PATH STUB_PICK_WALL STUB_BURN STUB_WALL_SESSION \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_GEMINI_LABEL STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS STUB_MODEL_USAGE
-  rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
+  local stale gone=()
+  for stale in "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
     "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
     "$STUB_DIR/wall_accounts" "$STUB_DIR/pick_queue" "$STUB_DIR/grok_wall_accounts" \
     "$STUB_DIR/grok_auth" "$STUB_DIR/grok_transient" "$STUB_DIR/grok_denied" \
     "$STUB_DIR/grok_max_turns" "$STUB_DIR/grok_cancelled" "$STUB_DIR/grok_cancelled_worked" \
-    "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"
+    "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"; do
+    [ ! -e "$stale" ] && [ ! -L "$stale" ] || gone+=("$stale")
+  done
+  # Forkless at ~390 call sites: rm only what a case left, the store read without grep.
+  [ "${#gone[@]}" -eq 0 ] || rm -f "${gone[@]}"
   local store=${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}
   [ ! -f "$store" ] || [[ $(<"$store") != *worker_wall* ]] || { jq 'walk(if type == "object" then del(.worker_wall) else . end)' "$store" >"$store.next" &&
     mv "$store.next" "$store"; }

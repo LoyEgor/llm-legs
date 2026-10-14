@@ -42,6 +42,17 @@ assert grep -q 'second line' "$STUB_DIR/codex.stdin"
 # run's, standing outside the launcher's cwd (the speed gate read it as a holder of the run's own worktree); the stub exits 1
 # and the run is still done.
 assert grep -qx -- "-i -w $pid run-id=unset cwd=/" "$CAFFEINATE_LOG"
+# It watches the supervisor with the loadable sleep wherever the PATH bash has it: no `sleep` fork every
+# 0.1 s for a run's whole life.
+mkdir -p "$WORK/sleep-shim"
+printf '#!/bin/sh\necho fork >>"%s"\nexec /bin/sleep "$@"\n' "$WORK/sleep-forks" >"$WORK/sleep-shim/sleep"
+chmod +x "$WORK/sleep-shim/sleep"
+/bin/sleep 0.5 &
+watched=$!
+PATH="$WORK/sleep-shim:$PATH" CAFFEINATE_LOG=/dev/null caffeinate -i -w "$watched"
+loadable=0
+bash -c 'enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep' 2>/dev/null && loadable=1
+assert test "$loadable" = 0 -o ! -s "$WORK/sleep-forks"
 assert test "$(jq -r '.orphans_ended // [] | length' "$RUN_DIR/meta.json")" = 0
 unset STUB_GATE
 
