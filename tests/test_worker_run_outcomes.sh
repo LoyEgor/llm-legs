@@ -402,9 +402,8 @@ assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
 clear_stub
 set_config 'codex_effort=high'
 cp "$RUNNER" "$SELF_RUNNER"
-export PICK_RC=0 PICK_ACCOUNT=selfedit STUB_SLEEP=3
-start_ok codex
-unset STUB_SLEEP
+export PICK_RC=0 PICK_ACCOUNT=selfedit
+start_gated codex
 (sleep 0.5; printf 'garbage )(\n' >>"$SELF_RUNNER") &
 appender=$!
 rc=0
@@ -413,6 +412,7 @@ wait "$appender"
 assert test "$rc" -eq 0
 assert test "$(grep -ci 'syntax error' "$WORK/selfedit-wait.err")" -eq 0
 assert grep -q '^STATUS: running$' "$WORK/selfedit-wait.out"
+gate_open
 assert await_exit
 
 # Run dirs older than 7 days are pruned on start; fresh dirs survive.
