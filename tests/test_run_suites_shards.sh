@@ -21,8 +21,8 @@ git -C "$REPO" init -q
 git -C "$REPO" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
 
 # Each section logs its name and how many shard bodies run beside it; under AT_ONCE=N the bodies hold
-# until N are live (or one passed that peak), so overlap never rides on sleeps, and shard 3 outlasts the rest
-# by 1 s. Only the runs that check overlap or wall time set it.
+# until N are live (or one passed that peak), so overlap never rides on sleeps. Only the runs that check
+# overlap set it; under SLOW_C shard 3 outlasts the rest by 1 s, set only where wall time is checked.
 cat >"$REPO/tests/test_sharded.sh" <<EOF
 #!/usr/bin/env bash
 # shards: 3
@@ -36,7 +36,7 @@ until [ "\$(ls -d "$WORK"/live.* | wc -l)" -ge "\${AT_ONCE:-1}" ] || [ -e "$WORK
 : >"$WORK/peak"
 if suite_shard_owns 1 a; then section a; fi
 if suite_shard_owns 2 b; then section b; i=0; while [ "\$i" -lt 200000 ]; do i=\$((i + 1)); done; fi
-if suite_shard_owns 3 c; then section c; [ -z "\${AT_ONCE:-}" ] || sleep 1; [ -z "\${FAIL_C:-}" ] || { echo "c failed"; exit 5; }; fi
+if suite_shard_owns 3 c; then section c; [ -z "\${SLOW_C:-}" ] || sleep 1; [ -z "\${FAIL_C:-}" ] || { echo "c failed"; exit 5; }; fi
 if suite_shard_owns 1 d; then section d; fi
 bash "$WORK/child.sh"
 echo "PASS: \$ran sections run"
@@ -53,7 +53,7 @@ sections() { sort "$WORK/sections" | tr '\n' ' '; }
 row() { tail -1 "$RUN_SUITES_JOURNAL"; }
 
 # Three jobs, one row: the suite's wall is its slowest shard's, its CPU every shard's, each section once.
-run RUN_SUITES_SHARDS=on AT_ONCE=3 -- -j 3
+run RUN_SUITES_SHARDS=on AT_ONCE=3 SLOW_C=1 -- -j 3
 assert test "$?" = 0
 assert grep -q '1 suites, 3 jobs, -j 3' "$WORK/out"
 assert test "$(sections)" = 'a b c d '
@@ -130,7 +130,7 @@ sed -i '' 's/^# shards: 3 wait$/# shards: 3/' "$REPO/tests/test_sharded.sh"
 
 # A direct run splits alike: one journal row, every shard's output, the failing one last.
 : >"$WORK/sections"; : >"$WORK/concurrent"; : >"$WORK/child"; rm -f "$WORK/peak"
-RUN_SUITES_SHARDS=on AT_ONCE=3 bash "$REPO/tests/test_sharded.sh" >"$WORK/out" 2>&1
+RUN_SUITES_SHARDS=on AT_ONCE=3 SLOW_C=1 bash "$REPO/tests/test_sharded.sh" >"$WORK/out" 2>&1
 assert test "$?" = 0
 assert test "$(sections)" = 'a b c d '
 assert test "$(sort -n "$WORK/concurrent" | tail -1)" = 3
