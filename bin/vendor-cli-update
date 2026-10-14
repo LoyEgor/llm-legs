@@ -294,16 +294,17 @@ run_all() { # [--if-due]
   if [ -z "${VENDOR_CLI_UPDATE_LOCKED:-}" ]; then
     exec env VENDOR_CLI_UPDATE_LOCKED=1 lockf -k -t 0 "$state_dir/run.lock" "$script_path" run "$@"
   fi
-  # The caches the divergence check reads were written before the refresh, by the client this pass may replace.
-  bin_dir=$(node_bin_dir codex) && codex_before=$(version_of "$bin_dir/codex" --version)
   if [ "${1:-}" = --if-due ]; then
     due=$(due_vendors)
-    if [ "$due" != all ]; then
-      [ -n "$due" ] || return 0
-      for vendor in $due; do update_vendor "$vendor"; done
-      jq -e --arg due "$due" 'any(($due | split(" "))[] as $v | .[$v, $v + "-native"].result?; . == "updated")' "$state_file" >/dev/null ||
-        { run_doctor; return 0; }
-    fi
+    [ -n "$due" ] || return 0
+  fi
+  # The caches the divergence check reads were written before the refresh, by the client this pass may replace;
+  # read after a tick with nothing due has returned, never after an update.
+  bin_dir=$(node_bin_dir codex) && codex_before=$(version_of "$bin_dir/codex" --version)
+  if [ "$due" != all ]; then
+    for vendor in $due; do update_vendor "$vendor"; done
+    jq -e --arg due "$due" 'any(($due | split(" "))[] as $v | .[$v, $v + "-native"].result?; . == "updated")' "$state_file" >/dev/null ||
+      { run_doctor; return 0; }
   fi
   [ "$due" = all ] && update_vendor gemini
   for vendor in $vendors; do

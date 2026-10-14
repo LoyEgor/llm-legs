@@ -345,7 +345,7 @@ assert grep -qF 'vendor update started' <(bash "$SCRIPT" now)
 for _ in $(seq 1 50); do grep -qF 'request --all' "$CALLS" && break; sleep 0.2; done
 assert grep -qF 'fingerprint request --all' "$CALLS"
 # A second click during the detached pass starts no second pass and no second orchestrator chat.
-for _ in $(seq 1 50); do lockf -k -t 0 "$HOME/.cache/vendor-cli-update/manual.lock" true 2>/dev/null && break; sleep 0.2; done
+# hold_lock's own lockf blocks until the detached pass lets manual.lock go.
 hold_lock "$HOME/.cache/vendor-cli-update/manual.lock"
 : >"$CALLS"
 assert grep -qF 'vendor update already running' <(bash "$SCRIPT" now)
