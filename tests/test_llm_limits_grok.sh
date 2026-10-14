@@ -131,7 +131,6 @@ grok_crash=$(env "${grok_env[@]}" FAKE_GROK_CASE=helper_crash \
   bash "$SCRIPT" --refresh-account grok --json 2>/dev/null) || fail "grok crash refresh collection failed"
 jq -e '.vendors.grok.refresh_error.cause | test("the helper died before printing")' \
   <<<"$grok_crash" >/dev/null || fail "the grok helper's stderr never reached the reported cause"
-env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok --json >/dev/null 2>&1
 
 # A name that is on no roster must not be read at all: the helper would answer needs_login for the
 # empty directory it resolves to, and that verdict is written straight into the store and the menu.
@@ -342,7 +341,6 @@ grok_credits_stale=$(env "${grok_age_env[@]}" FAKE_GROK_CASE=stale_resets FAKE_G
 jq -e '.vendors.grok.accounts[0] | .reset_credits == 2 and .reset_credits_stale == true and
   .weekly.stale == false' <<<"$grok_credits_stale" >/dev/null \
   || fail "an old grok reset-credit reading was not marked stale: $grok_credits_stale"
-
 fi
 if suite_shard_owns 3 grok-rows; then
 # The real helper against a dead endpoint: the access token in auth.json may reach neither the
