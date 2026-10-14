@@ -1556,6 +1556,8 @@ def table_column(worker_run, path, night, goals, was):
         ("  on walls", show(kinds.get("walled_pct"), "%.0f %%")),
         ("  reviews", show(kinds.get("reviews"), "%.1fM")),
         ("  night chat", show(kinds.get("orchestrator"), "%.1fM")),
+        ("  per landed", show(row["spend_m"] / states["merged"]
+                              if row.get("spend_m") is not None and states["merged"] else None, "%.2fM")),
         ("Opus spend", show(mix.get("opus"), "%.0f %%")),
         ("Fable spend", show(mix.get("fable"), "%.0f %%")),
         ("vs all-Opus", show(mix.get("vs_opus"), "\u00d7%.2f")),

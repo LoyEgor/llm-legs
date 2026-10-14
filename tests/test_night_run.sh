@@ -1264,6 +1264,7 @@ spend           12.5M    0.0M    0.0M
   on walls          –       –       –
   reviews        3.0M    0.0M    0.0M
   night chat     1.5M    0.0M    0.0M
+  per landed    6.25M   0.00M   0.00M
 Opus spend          –       –       –
 vs all-Opus         –       –       –
 landed              2       1       1
