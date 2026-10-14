@@ -335,6 +335,17 @@ assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" 
 assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" share/limiter-hold.sh)" = "$ROOT/tests/test_consistency.sh"
 assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" nowhere-named.txt)"
 assert test "$(/bin/bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" = "$R4/tests/test_tool_part.sh"
+# A module its package's __init__ imports runs in every suite importing the package, beside its own suite.
+R4P="$WORK/r4p"
+new_repo "$R4P"
+mkdir -p "$R4P/share/pkg"
+printf 'from .mod import x\n' >"$R4P/share/pkg/__init__.py"
+printf 'x = 1\n' >"$R4P/share/pkg/mod.py"
+suite "$R4P" test_mod.sh 'python3 -c "import mod"; exit 0'
+suite "$R4P" test_pkg_whole.sh 'python3 -c "import pkg"; exit 0'
+suite "$R4P" test_unrelated.sh 'exit 0'
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4P" share/pkg/mod.py)" = \
+  "$R4P/tests/test_mod.sh"$'\n'"$R4P/tests/test_pkg_whole.sh"
 # tests/affected greps every suite at once: 32 suites cost a fixed handful of grep forks, never ~3 a suite.
 FAN="$WORK/fan"
 mkdir -p "$FAN/tests" "$WORK/grep-shim"

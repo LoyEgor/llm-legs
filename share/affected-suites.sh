@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Suites covering changed files, chosen by share/suite_select.py: a file's own suites (the suite itself, a suite
-# whose name holds its stem, a suite or tests/ helper it names that holds its repo path, imports or requires it, or
+# whose name holds its stem, a suite or tests/ helper it names that holds its repo path, imports or requires it or
+# the package whose __init__ names it, or
 # does so for a repo file importing or sourcing it) plus the suites test_catches credits with a whole catch on it over
 # 90 days, or with any credit when they also name it; a file with neither keeps the name rule (a suite or helper
 # naming its basename). A suite only naming a file leaves targeted runs: the night's full run keeps it.

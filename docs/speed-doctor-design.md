@@ -132,7 +132,7 @@ test-only edits, no own edit and non-Claude callers are not. A suite with no cat
 day queues as `uncaught`, which the audit deletes whole (Egor, 2026-10-14).
 Selection (`share/suite_select.py` behind `tests/affected` and `run-all --changed`; Egor, 2026-10-14: evidence, not
 name mentions): a file's own suites (the suite itself; a suite whose name holds its stem; a suite, or a tests/ helper it
-names, holding its repo path, importing or requiring it; for a file with none of those, the own suites of a repo file
+names, holding its repo path, importing or requiring it, or importing the package whose `__init__` names it; for a file with none of those, the own suites of a repo file
 importing, sourcing, requiring or running it: applied to every file this one level grew a hub library from ≤ 6 suites
 to 46-79 for 5 % of catch credit, all of it already evidence) plus the suites credited with a whole catch on it in 90
 days, or with any credit when they also name it (any credit alone added 5.5 CPU-h/day, mostly 1/11 shares of

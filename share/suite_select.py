@@ -3,8 +3,9 @@ selection follows evidence, not name mentions). A file's suites are its own plus
 WHOLE catches on it over CATCH_D days, or with any credit when they also name it. Own: the file itself when it is a
 suite; a suite whose name holds the file's stem; a suite, or a tests/ helper it names, that holds the file's repo path,
 imports its module or requires it; for a file with none of those, the same for a repo file that imports, sources,
-requires or runs it, one level. A file with no own suite and no catch keeps the name rule: a suite, or a helper it
-names, naming its basename as a word.
+requires or runs it, one level. A module its package's __init__ names counts as imported by a suite importing the
+package. A file with no own suite and no catch keeps the name rule: a suite, or a helper it names, naming its basename
+as a word.
 
   suite_select.py <top> <paths-file>   suite paths on stdin, the ones covering the paths on stdout
 """
@@ -81,6 +82,18 @@ def patterns(rel):
     return re.compile("|".join(held)), re.compile("|".join(load)), re.compile(r"(?<!\w)%s(?!\w)" % re.escape(base))
 
 
+@functools.lru_cache(maxsize=None)
+def package(top, rel):
+    """rel's package spelled as a module (share/pkg.py for share/pkg/mod.py) when its __init__ names rel."""
+    folder = os.path.dirname(rel)
+    init = os.path.join(top, folder, "__init__.py")
+    if not rel.endswith(".py") or not folder or not os.path.isfile(init):
+        return None
+    if os.path.basename(rel) != "__init__.py" and not re.search(r"(?<!\w)%s(?!\w)" % re.escape(stem(rel)), read(init)):
+        return None
+    return folder + ".py"
+
+
 def lines(text, needle):
     """Each line of text holding needle, once."""
     i = text.find(needle)
@@ -155,7 +168,8 @@ def select(top, rels, names, now=None, held=None):
         found = holding(texts, rel) | {n for n in names if users.intersection(via[n])} | named(names, rel)
         if rel.startswith("tests/") and rel.count("/") == 1 and os.path.basename(rel) in helpers:
             found |= {n for n in names if os.path.basename(rel) in via[n]}
-        return found
+        pkg = package(top, rel)
+        return found | direct(pkg) if pkg else found
 
     owns = {rel: direct(rel) | ({os.path.basename(rel)} & set(names)) for rel in rels}
     out = {}
