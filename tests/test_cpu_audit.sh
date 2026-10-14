@@ -66,13 +66,19 @@ def collect(state=None):
     return cpu_audit.collect(NOW, {} if state is None else state, harness, speed, collector, hooks, root, repos, day)
 
 
+def comps(state=None):
+    return cpu_audit.components(cpu_audit.days(NOW, {} if state is None else state, harness, speed, collector, hooks, day),
+                                day(NOW), repos)
+
+
 first = collect()
-ranked = [(c["key"], c["cpu_min_day"]) for c in first["components"]]
+first_components = comps()
+ranked = [(c["key"], c["cpu_min_day"]) for c in first_components]
 check(ranked == [("process/Hammerspoon", 10.0), ("statusline/render", 2.5), ("process/tool.py", 2.0),
                  ("statusline/work", 2.0), ("doctor/harness", 0.5), ("hook/gate.sh", 0.5), ("statusline/ports", 0.0)],
       "each component's CPU-min/day is the median over the settled days its own journal holds, today aside, own "
       "processes only (every one System kept), hooks by script, ranked: %s" % ranked)
-shown = {c["key"]: c["wasted_min_day"] for c in first["components"]}
+shown = {c["key"]: c["wasted_min_day"] for c in first_components}
 check(shown["statusline/render"] == 1.5 and shown["statusline/work"] is None and shown["statusline/ports"] is None
       and first["menu"][1][3].startswith("statusline/render            2.5 CPU-min/day ·       2 runs a day ·    1.5 wasted · ")
       and "statusline/render · 2.5 CPU-min/day · 1.5 wasted ·" in first["problems"][1]["fact"],
@@ -100,7 +106,7 @@ oldest = os.path.join(speed, "statusline-probes", D(5) + ".tsv")
 held = os.stat(oldest)
 write(oldest, ["1\t500\t990000\twork"])
 os.utime(oldest, ns=(held.st_atime_ns, held.st_mtime_ns))
-check(collect(state)["components"] == first["components"] and len(state["cpu_files"]) == 9,
+check(comps(state) == first_components and len(state["cpu_files"]) == 9,
       "a day file whose size and mtime hold is read from the state: %s" % sorted(state["cpu_files"]))
 write(oldest, ["1\t500\t120000\twork"])
 
@@ -167,7 +173,7 @@ check("cpu_audit" in time_budget.IMPROVEMENT_RULES and time_budget.timed({"impro
       "a night's CPU audit reads its proof in the roi lines, out of the minute totals: %s" % roi)
 
 os.environ.pop("SYSTEM_DOCTOR_DIR")
-check(cpu_audit.system_dir() is None and "process/Hammerspoon" not in [c["key"] for c in collect()["components"]],
+check(cpu_audit.system_dir() is None and "process/Hammerspoon" not in [c["key"] for c in comps()],
       "a fixture Harness directory with no System directory of its own never reads the live hours")
 print(count[0])
 EOF

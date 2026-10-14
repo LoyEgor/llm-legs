@@ -34,10 +34,10 @@
   "ask-gemini.print-timeout": {
     "value": 300,
     "unit": "s",
-    "where": "ask_gemini.sh:50",
+    "where": "ask_gemini.sh:152",
     "set_by": "chat 16ed7ef4",
-    "why": "The legacy gemini leg answers short questions; 5 min means agy hung.",
-    "normal": "0 hits; the wrapper is legacy."
+    "why": "The gemini leg answers short questions; 5 min means agy hung.",
+    "normal": "0 hits."
   },
   "chatgpt-web.load": {
     "value": 45,
@@ -90,7 +90,7 @@
   "claude-session-driver.capture": {
     "value": 262144,
     "unit": "bytes",
-    "where": "bin/claude-session-driver:247",
+    "where": "bin/claude-session-driver:30",
     "set_by": "chat 0067e246",
     "why": "A revive session's log keeps its last 256 KiB; the login and exit markers sit at the end.",
     "normal": "Rare; a long chatty revive trims its start."
@@ -178,7 +178,7 @@
   "doctor-fix.doc-age": {
     "value": 7200,
     "unit": "s",
-    "where": "bin/doctor-fix:705",
+    "where": "bin/doctor-fix:836",
     "set_by": "night 100ca1bf",
     "why": "A fix run must act on a doctor document at most 2 h old, or it fixes a stale picture.",
     "normal": "0 hits; the night refreshes doctors first."
@@ -186,7 +186,7 @@
   "doctor-fix.open-run": {
     "value": 43200,
     "unit": "s",
-    "where": "bin/doctor-fix:722",
+    "where": "bin/doctor-fix:853",
     "set_by": "night 100ca1bf",
     "why": "An unclosed fix run older than 12 h is dead and stops holding its area.",
     "normal": "Rare; a crashed fixer chat."
@@ -250,7 +250,7 @@
   "gemini-listen.print-timeout": {
     "value": 540,
     "unit": "s",
-    "where": "bin/gemini-listen:314",
+    "where": "bin/gemini-listen:345",
     "set_by": "night e961a078",
     "why": "One listen attempt transcribes a clip; 540 s means agy stalled.",
     "normal": "Rare; agy capacity weather."
@@ -410,7 +410,7 @@
   "image-composite.global": {
     "value": 60,
     "unit": "pct",
-    "where": "share/image_composite.py:30",
+    "where": "share/image_composite.py:72",
     "set_by": "night 1cda77fd",
     "why": "An edit that changed over 60 % of the image is global, so a region composite would paste a mismatched patch.",
     "normal": "Common for prompts that restyle the whole image; frequent hits on region edits mean the model redraws everything."
@@ -738,7 +738,7 @@
   "probe.du": {
     "value": 60,
     "unit": "s",
-    "where": "bin/harness-doctor:2444",
+    "where": "bin/harness-doctor:2457",
     "set_by": "chat 3566f928",
     "why": "A store's du walks its tree in seconds; past a minute the size reads as unknown rather than holding the doctor.",
     "normal": "Rare, under heavy disk load; every run means the store grew past what du walks in a minute."
@@ -746,7 +746,7 @@
   "probe.git": {
     "value": 10,
     "unit": "s",
-    "where": "bin/llm-doctor:2332",
+    "where": "bin/llm-doctor:2337",
     "set_by": "night 100ca1bf",
     "why": "A doctor's git read (log, status, rev-parse, ls-files, hash-object; 5-60 s per site) answers in well under a second; the bound keeps a locked or huge repo from holding the doctor, which reads no answer.",
     "normal": "Rare; a cluster means the machine was saturated, repeated hits at one where mean that repository is slow or locked."
@@ -754,7 +754,7 @@
   "probe.helper": {
     "value": 10,
     "unit": "s",
-    "where": "bin/harness-doctor:634",
+    "where": "bin/harness-doctor:646",
     "set_by": "night 84f84c71",
     "why": "A Python doctor reads a bash helper of this repo (heredoc masks, write classes, slots, pools, store rows) through one bash -c that answers in milliseconds; 10-30 s means that shell wedged.",
     "normal": "0 hits; any hit is a helper that hangs or a machine past saturation."
@@ -762,7 +762,7 @@
   "probe.launchctl": {
     "value": 30,
     "unit": "s",
-    "where": "bin/harness-doctor:4417",
+    "where": "bin/harness-doctor:4522",
     "set_by": "night 12d5b84a",
     "why": "A redeploy's launchctl bootout or bootstrap returns in seconds; 30 s means launchd is stuck and the job may stay unloaded.",
     "normal": "0 hits; a hit leaves a LaunchAgent possibly unloaded until the next redeploy."
@@ -770,7 +770,7 @@
   "probe.ps": {
     "value": 5,
     "unit": "s",
-    "where": "bin/harness-doctor:2137",
+    "where": "bin/harness-doctor:2149",
     "set_by": "chat e5bd8fd1",
     "why": "A process-table read (ps, lsof, last, a clone sweep's listings; 5-120 s per site) answers in well under a second; past its bound the caller reads no processes.",
     "normal": "Rare, under a process storm; repeated hits mean the machine was past saturation at those times."
@@ -794,7 +794,7 @@
   "spend.tokenmap": {
     "value": 180,
     "unit": "s",
-    "where": "share/spend.py:26",
+    "where": "share/spend.py:21",
     "set_by": "night 90cae246",
     "why": "One day's tokenmap tracking read; past 180 s the backfill retries next run.",
     "normal": "Rare under load."

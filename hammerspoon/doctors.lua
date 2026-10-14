@@ -465,19 +465,19 @@ local function handoffRows(handoffs)
   return rows
 end
 
-local JOB_STATES = { { "done", "✓" }, { "open", "→" }, { "red", "!" } }
+local JOB_STATES = { { "done", "✓" }, { "open", "→" }, { "alert", "!" } }
 
-local function jobState(job) return job.red and "red" or job.quiet and "done" or "open" end
+local function jobState(job) return job.red and "alert" or job.quiet and "done" or "open" end
 
 -- A direction per row, its jobs one level down; a count column per state, blank where none.
 local function directionRows(groups)
-  local name, digits = 1, { done = 1, open = 1, red = 1 }
+  local name, digits = 1, { done = 1, open = 1, alert = 1 }
   for _, group in ipairs(groups) do
     name = math.max(name, cells(group.way))
     for key in pairs(digits) do digits[key] = math.max(digits[key], #tostring(group[key])) end
   end
   table.sort(groups, function(a, b)
-    if (a.red > 0) ~= (b.red > 0) then return a.red > 0 end
+    if (a.alert > 0) ~= (b.alert > 0) then return a.alert > 0 end
     if (a.open > 0) ~= (b.open > 0) then return a.open > 0 end
     if #a.items ~= #b.items then return #a.items > #b.items end
     return a.way < b.way
@@ -496,8 +496,8 @@ local function directionRows(groups)
     end)
     local menu = {}
     for _, entry in ipairs(group.items) do menu[#menu + 1] = entry.item end
-    rows[#rows + 1] = fitRow({ title = infoTitle(text:gsub("%s+$", ""), group.red > 0,
-      group.red == 0 and group.open == 0), menu = menu })
+    rows[#rows + 1] = fitRow({ title = infoTitle(text:gsub("%s+$", ""), group.alert > 0,
+      group.alert == 0 and group.open == 0), menu = menu })
   end
   return rows
 end
@@ -548,13 +548,13 @@ local function nightEntry()
     if job.way and job.way ~= "" then
       local group = byWay[job.way]
       if not group then
-        group = { way = job.way, done = 0, open = 0, red = 0, items = {} }
+        group = { way = job.way, done = 0, open = 0, alert = 0, items = {} }
         byWay[job.way], groups[#groups + 1] = group, group
       end
       local state = jobState(job)
       group[state] = group[state] + 1
       group.items[#group.items + 1] = { item = fitRow(item), index = index,
-        rank = state == "red" and 1 or state == "open" and 2 or 3 }
+        rank = state == "alert" and 1 or state == "open" and 2 or 3 }
     else
       jobs[#jobs + 1] = fitRow(item)
     end
@@ -950,7 +950,6 @@ local TERMS = { { "C", "cpu", "min/d", 1 / 60 }, { "S", "starts", "/s", 1 / 8640
 -- Per day but no B term: a start's cost already lands in C, so starts show DIM with no share.
 local UNSCORED = { S = true }
 local MOVED_TO = { ["CPU audits"] = "Processor", Load = "Processor", ["Memory guard"] = "Memory", Growth = "Logs" }
-local QUIET = { ["not-a-bug"] = true, weather = true, fixed = true }
 local TAG_NAMES = { ["worker-run"] = "workers", ["(bash)"] = "shell", bash = "shell", zsh = "shell", sh = "shell",
   claude = "Claude", codex = "Codex", node = "node", ["Google Chrome"] = "Chrome", Browser = "Dia" }
 local REPORT_NAMES = { crash = "app crashes", fault = "faults", jetsam = "memory kills", hang = "hangs",
@@ -1013,7 +1012,7 @@ end
 local function problemTone(problem)
   if not problem then return nil end
   if LOUD[problem.state] then return style.RED end
-  if not QUIET[problem.state] then return style.DIM_RED end
+  return style.DIM_RED
 end
 
 local function louder(a, b)
@@ -1117,7 +1116,7 @@ local function problemName(problem)
 end
 
 local function movedRows(moved, incoming)
-  local counts, bySection, loose = {}, {}, {}
+  local counts, bySection = {}, {}
   for _, issue in ipairs(incoming or {}) do counts[issue.what] = (counts[issue.what] or 0) + issue.count end
   for _, item in ipairs(moved or {}) do
     local plain = item.title ~= "-" and plainText(item.title) or ""
@@ -1127,15 +1126,11 @@ local function movedRows(moved, incoming)
       local tone = count > 0 and style.RED or rest:match("^watch") and style.DIM_RED or nil
       local shown = listRow(count > 0 and tostring(count) or "", "", label, tone, item.menu)
       local section = MOVED_TO[label]
-      if section then
-        bySection[section] = bySection[section] or {}
-        table.insert(bySection[section], { row = shown, tone = tone })
-      else
-        loose[#loose + 1] = shown
-      end
+      bySection[section] = bySection[section] or {}
+      table.insert(bySection[section], { row = shown, tone = tone })
     end
   end
-  return bySection, loose
+  return bySection
 end
 
 local function systemSections(document, now, moved, incoming)
@@ -1163,7 +1158,7 @@ local function systemSections(document, now, moved, incoming)
     end
     return out
   end
-  local bySection, loose = movedRows(moved, incoming)
+  local bySection = movedRows(moved, incoming)
   local build = {}
 
   build.Processor = function()
@@ -1528,7 +1523,6 @@ local function systemSections(document, now, moved, incoming)
         problemTone(problem), problemMenu(problem))
     end
   end
-  for _, line in ipairs(loose) do out[#out + 1] = line end
   return out
 end
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Sonnet reads the day's chat and worker transcripts for what no doctor rule catches.
+"""Haiku reads the day's chat and worker transcripts for what no doctor rule catches.
 
 `run` skeletonizes every transcript written since the last full read (share/log_skeleton.py), packs
-the skeletons into chunks, has one Sonnet run per chunk on a Claude account read them in parallel,
-and one more merge their findings. The findings land in findings.json, which the Harness doctor
+the skeletons into chunks, has one Haiku run per chunk on a Claude account read them in parallel,
+and one Sonnet run merge their findings. The findings land in findings.json, which the Harness doctor
 turns into problems for the night's fixer."""
 import argparse
 import datetime

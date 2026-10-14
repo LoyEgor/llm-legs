@@ -3589,10 +3589,9 @@ print_outcome() {
 # The allowlist below treats test entry points as read-only; unclassified shell programs are a floor.
 SHELL_FLOOR_PARTIAL='the run also ran shell commands, whose edits no transcript records'
 
-writes_through_shell() { # command-line | no argument: the JSON-encoded command lines on fd 3, 0 once any writes
-  # WRITES_FIRST_RAW=1, no argument: raw command lines on fd 3; prints the 1-based index of the first that writes, 0 for none.
-  local rc
-  python3 - "$@" <<'PY'
+writes_through_shell() { # the JSON-encoded command lines on fd 3: 0 once any writes, 1 none, 2 unparsable
+  # WRITES_FIRST_RAW=1: raw command lines on fd 3; prints the 1-based index of the first that writes, 0 for none.
+  python3 - <<'PY'
 import json
 import os
 import re
@@ -3655,8 +3654,6 @@ if os.environ.get("WRITES_FIRST_RAW"):
     with open(3, encoding="utf-8", errors="surrogateescape", newline="\n") as lines:
         print(next((index for index, line in enumerate(lines, 1) if writes(line.rstrip("\n"))), 0))
     sys.exit(0)
-if len(sys.argv) > 1:
-    sys.exit(0 if writes(sys.argv[1]) else 1)
 try:
     with open(3, encoding="utf-8", errors="replace") as lines:
         found = any(writes(json.loads(line).replace("\0", "").rstrip("\n")) for line in lines if line.strip())
@@ -3664,9 +3661,6 @@ except ValueError:
     sys.exit(2)
 sys.exit(0 if found else 1)
 PY
-  rc=$?
-  [ "$#" -ne 0 ] || return "$rc"
-  [ "$rc" -ne 1 ]
 }
 
 resolve_tool_path() { # path workdir

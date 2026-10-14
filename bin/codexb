@@ -684,7 +684,7 @@ models_ranked() { # all(true|false) source-path
   { if [ -n "$2" ]; then models_cache_rows "$2"; else models_builtin; fi; } |
     while IFS=$'\t' read -r slug label priority visibility efforts; do
       worker_model_codex_split_r "$slug"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$WORKER_MODEL_R" "$_WM_CODEX_VERSION" "$label" "$efforts" "$priority" "$visibility"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$WORKER_MODEL_R" "$_WM_CODEX_VERSION" "$label" "$efforts" "$priority" "$visibility"
     done |
     awk -F'\t' -v all="$1" '
       function newer(a, b,   x, y, n, m, i) {

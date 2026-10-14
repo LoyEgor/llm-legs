@@ -1181,9 +1181,9 @@ assert doctor.load_merged(path, doctor.settled_path())["rows"][1]["status"] == "
 
 # A commit git cannot vouch for is a fault only when git says so, and such a row judges nothing.
 os.environ["LLM_DOCTOR_REPOS"] = late_repos
-assert doctor.missing_commit("late@" + branch_fix) is None and doctor.missing_commit("late@deadbee")
+assert doctor.missing_commits(["late@" + branch_fix]).get("late@" + branch_fix) is None and doctor.missing_commits(["late@deadbee"]).get("late@deadbee")
 os.environ["PATH"] = unit
-assert doctor.missing_commit("late@deadbee") is None
+assert doctor.missing_commits(["late@deadbee"]).get("late@deadbee") is None
 os.environ["PATH"] = saved_path
 bogus = fixture_ledger([entry(narrow, "fixed", fixes=[dict(fix_at(7200, "late@deadbee"), files=["late/x.py"])])])
 _, bogus_faults = doctor.settle_fixes(bogus)

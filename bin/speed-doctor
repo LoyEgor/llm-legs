@@ -60,7 +60,7 @@ PROOF = {"latency": "paired replay, >= 200 pairs, then 3 band-matched days", "fr
 OUTPUT_PROOF = "identical decisions or results on the replay, recorded as the fix's equivalence {compared, data, result}"
 LEVERS = [
     {"component": "chat/hooks", "lever": "provable-absence fast path for the hook setting the Pre-Bash floor",
-     "effort": "S", "confidence": "measured", "saving": 0.77, "night_cost_h": 0.0, "proof": "latency", "hooks": True,
+     "effort": "S", "confidence": "measured", "saving": 0.77, "night_cost_h": 0.0, "proof": "latency",
      "hook": "review-flow-gate.sh", "quality": "equivalent"},
     {"component": "machine/contention", "lever": "background QoS for unattended work, attended suite priority",
      "effort": "S", "confidence": "estimated", "saving": 0.6, "night_cost_h": 0.0, "proof": "contention",
@@ -72,7 +72,7 @@ LEVERS = [
      "effort": "M", "confidence": "estimated", "saving": 0.5, "night_cost_h": 0.0, "proof": "tail",
      "quality": "equivalent"},
     {"component": "chat/start", "lever": "instruction-watch baseline off the start path",
-     "effort": "S", "confidence": "estimated", "saving": 0.5, "night_cost_h": 0.0, "proof": "latency", "hooks": True,
+     "effort": "S", "confidence": "estimated", "saving": 0.5, "night_cost_h": 0.0, "proof": "latency",
      "hook": "instruction-watch.sh baseline", "quality": "equivalent"},
     {"component": "delegation/media", "lever": "lock-aware account pick, event-driven hiding",
      "effort": "M", "confidence": "unmeasured", "saving": 0.2, "night_cost_h": 0.0, "proof": "media",
@@ -81,10 +81,10 @@ LEVERS = [
      "effort": "S", "confidence": "unmeasured", "saving": 0.3, "night_cost_h": 0.0, "proof": "tail",
      "quality": "risk"},
     {"component": "background/statusline", "lever": "segment caches, contract-safe idle reprint",
-     "effort": "M", "confidence": "unmeasured", "saving": 0.4, "night_cost_h": 0.0, "proof": "frequency", "hooks": True,
+     "effort": "M", "confidence": "unmeasured", "saving": 0.4, "night_cost_h": 0.0, "proof": "frequency",
      "quality": "equivalent"},
     {"component": "background/hs lag", "lever": "Hammerspoon main-thread work off its timers: async tasks, cached builds",
-     "effort": "M", "confidence": "measured", "saving": 0.5, "night_cost_h": 0.0, "proof": "tail", "hooks": True,
+     "effort": "M", "confidence": "measured", "saving": 0.5, "night_cost_h": 0.0, "proof": "tail",
      "quality": "equivalent"},
 ]
 SLICE_LEVER = {"effort": "M", "confidence": "unmeasured", "saving": 0.3, "night_cost_h": 0.0, "proof": "tail",
@@ -149,11 +149,11 @@ KEEP_WORDS = C.KEEP_WORDS
 TEST_LEVER = {"component": "chat/tests", "lever": "speed up the suite and keep every check", "effort": "M",
               "confidence": "estimated", "saving": 0.3, "night_cost_h": 0.0, "proof": "tests", "quality": "equivalent"}
 HOOK_LEVER = {"component": "chat/hooks", "lever": "fast path for the hook", "effort": "S", "confidence": "estimated",
-              "saving": 0.5, "night_cost_h": 0.0, "proof": "latency", "hooks": True, "quality": "equivalent"}
+              "saving": 0.5, "night_cost_h": 0.0, "proof": "latency", "quality": "equivalent"}
 TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "estimated", "saving": 1.0,
                          "night_cost_h": 0.0, "proof": "orchestration", "quality": "equivalent"}, **v) for k, v in {
-    "hooks": {"lever": "fast path for the slowest hooks", "proof": "latency", "hooks": True},
-    "stop": {"lever": "Stop hooks off the turn's critical path", "proof": "latency", "hooks": True},
+    "hooks": {"lever": "fast path for the slowest hooks", "proof": "latency"},
+    "stop": {"lever": "Stop hooks off the turn's critical path", "proof": "latency"},
     "suite_wait": {"lever": "a covering suite starts while the machine has room, never queued by the slot count alone"},
     "slot": {"lever": "a worker slot lent while its holder runs its own suites"},
     "retries": {"lever": "fewer failed attempts before a worker's last start"},
@@ -161,7 +161,7 @@ TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "
     "wrapup": {"lever": "a worker's result is published before its file attribution and anchor folding finish"},
     "hung": {"lever": "a hung worker is caught sooner (no CPU, no transcript growth) and resumed"},
     "locks": {"lever": "shorter lock holds and polls"},
-    "refusal": {"lever": "fewer gate refusals and a faster turn after one", "proof": "latency", "hooks": True}}.items()}
+    "refusal": {"lever": "fewer gate refusals and a faster turn after one", "proof": "latency"}}.items()}
 TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "confidence": "measured",
                                "night_cost_h": 0.0, "proof": "tests", "quality": "equivalent"}, **v) for k, v in {
     "retests": {"lever": "a suite green on the same tree, or on its worker's last run, is not run again",
@@ -773,7 +773,7 @@ def opportunity_fields(om_day, lever):
             "night_cost_h": lever["night_cost_h"], "score": score_of(saving, confidence, effort, lever["night_cost_h"]),
             "levers": [lever["lever"]], "needs_egor": bool(lever.get("needs_egor")),
             "proof": [PROOF[lever["proof"]], OUTPUT_PROOF],
-            "hooks": bool(lever.get("hooks")), "quality": lever["quality"],
+            "quality": lever["quality"],
             "quality_evidence": lever.get("quality_evidence"), "recoverable_min_day": saving,
             **({"hook": lever["hook"]} if lever.get("hook") else {})}
 

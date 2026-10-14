@@ -13,7 +13,7 @@ grok_media_grok_bin() {
 grok_media_valid_account() { [[ "${1-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; }
 
 # Sets grok_media_account. Returns 3 on a wall (the caller exits 3 with GROK_USAGE_LIMIT already
-# on stderr), 1 on anything else. A wall must never be reported as a plain failure and a plain
+# on stderr), 2 when the explicitly requested account is off the roster, 1 on anything else. A wall must never be reported as a plain failure and a plain
 # failure must never be reported as a wall: callers reroute off 3 as if the quota were spent.
 grok_media_select_account() { # tool root worker-pick-cmd profiles-dir requested-account [resume-id]
   local tool=$1 root=$2 worker_pick_cmd=$3 profiles_dir=$4 requested=${5-} resume=${6-}

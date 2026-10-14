@@ -364,9 +364,9 @@ EOF
   cp "$bt/tabs" "$bt/tabs.9d"
   printf 'https://example.com/#worker-run=Profile-1\nhttps://example.com/?wr=tok-9d\n' >"$bt/tabs"
   chmod 000 "$bt/chrome/Local State"
-  rc=0; seen=$(browse --seen tok-9d --account com) || rc=$?
+  seen=$(browse --seen tok-9d --account com) || true
   mv -f "$bt/tabs.9d" "$bt/tabs"
-  rc=0; out=$(WORKER_RUN_WORKER_PICK="$bt/stub/worker-pick" browse --canary) || rc=$?
+  out=$(WORKER_RUN_WORKER_PICK="$bt/stub/worker-pick" browse --canary) || true
   chmod 600 "$bt/chrome/Local State"
   assert grep -qx 'SEEN: chrome' <<<"$seen"
   assert grep -qx 'CANARY: com BROWSER_OK' <<<"$out"

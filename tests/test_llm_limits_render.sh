@@ -387,7 +387,7 @@ exp_table=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV
 ! grep -Fq 'EXPERIMENT trial-x' <<<"$exp_table" || fail "--table announced an in-date experiment"
 printf '[{"id":"undated","what":"fixture experiment with no review date","started":"2026-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
 exp_undated=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
-jq -e '.experiments == ["EXPERIMENT undated until  — temporary, see EXPERIMENTS.json"]' <<<"$exp_undated" >/dev/null \
+jq -e '.experiments == ["EXPERIMENT undated — temporary, see EXPERIMENTS.json"]' <<<"$exp_undated" >/dev/null \
   || fail "an experiment without review_by must keep announcing (it can never go OVERDUE)"
 printf '[{"id":"spent","what":"fixture experiment whose review date has passed","started":"2026-01-01","review_by":"2026-01-02","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
 exp_past=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)

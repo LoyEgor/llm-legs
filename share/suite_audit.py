@@ -471,13 +471,13 @@ def record(root, journal, key, verdict, note, zero, by, worktrees, now):
         "verdict": verdict, "zero": zero, "note": note})
 
 
-def samples(journal, lo, hi, named=(), timed=False):
-    """{repo/label: [wall-s a run]} of passing runs in [lo, hi), only the named suites when any; (end, wall) if timed.
+def samples(journal, lo, hi, timed=False):
+    """{repo/label: [wall-s a run]} of passing runs in [lo, hi); (end, wall) if timed.
     A suite sharded in the window keeps its sharded runs only: run-suites runs it whole only on a full machine."""
     found = {}
     for r in runs(journal, lo):
         key = "%s/%s" % (r["repo"], os.path.splitext(r["name"])[0])
-        if r["end"] < hi and r["ok"] and (not named or key in named):
+        if r["end"] < hi and r["ok"]:
             found.setdefault(key, []).append(r)
     return {key: [(r["end"], r["wall"]) if timed else r["wall"] for r in [r for r in rs if r["sharded"]] or rs]
             for key, rs in found.items()}

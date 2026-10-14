@@ -474,7 +474,6 @@ unpushed_marker() { # toplevel session now
           rmdir "$lock" 2>/dev/null' EXIT
         answer=off
         [ -n "$(run_bounded 10 "$gate" unpushed "$top" "$sid" 2>/dev/null | head -1)" ] && answer=unpushed
-        [ -z "$fam" ] || probe_publish "$fam" "$answer"$'\n'
         probe_publish "$cache" "$key"$'\n'"$answer"
         probe_journal unpushed "$refresh_start_us"
       ) >/dev/null 2>&1 &

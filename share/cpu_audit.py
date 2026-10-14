@@ -167,7 +167,7 @@ def problem(c, why, at):
 
 def collect(now, state, harness_dir, speed_dir, collector_rows, hook_runs, root, repos, local_day):
     """The `cpu` section: components ranked by CPU-min/day, one problem per due audit, the night's queue, menu lines."""
-    out = {"status": "nodata", "as_of_s": int(now), "problems": [], "selection": [], "issues": [], "proofs": {},
+    out = {"status": "nodata", "as_of_s": int(now), "problems": [], "selection": [], "proofs": {},
            "menu": [], "head": "no CPU journal over %d days" % WINDOW_D}
     found = components(days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_day), local_day(now),
                        repos)
@@ -183,14 +183,12 @@ def collect(now, state, harness_dir, speed_dir, collector_rows, hook_runs, root,
     at = datetime.datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds")
     out["problems"] = [problem(c, reasons[c["key"]], at) for c in found if reasons[c["key"]]]
     out["selection"] = [p["id"] for p in out["problems"]]
-    out["issues"] = [[c["cpu_min_day"], c["key"]] for c in found if reasons[c["key"]]][:3]
     out["proofs"] = {c["key"]: {"before": rows[ROW + c["key"]].get("cpu_min_day"), "after": c["cpu_min_day"],
                                 "verdict": rows[ROW + c["key"]].get("verdict"),
                                 "audited_at": rows[ROW + c["key"]].get("audited_at")}
                      for c in found if ROW + c["key"] in rows and not reasons[c["key"]]}
     total = sum(c["cpu_min_day"] for c in found)
     out.update(status="watch" if out["problems"] else "ok", cpu_min_day=round(total, 1),
-               components=[{k: c[k] for k in ("key", "cpu_min_day", "wasted_min_day", "runs_day", "cpu_s_run")} for c in found],
                head="%d due%s · %.0f CPU-min/day over %d components%s" % (
                    len(out["problems"]), floor_text(len(skipped), "CPU-min/day"), total, len(found),
                    " · next: " + out["problems"][0]["cpu"]["key"] if out["problems"] else ""))

@@ -5,7 +5,6 @@ accounts' room (docs/night-run.md, Priority and admission).
   night_priority.py admit <night.json> <ref> <vendor> <pid>  one admission decision, the night file rewritten:
                                                            prints `admit|wait|defer<TAB>why`; the accounts' readings on stdin
   night_priority.py backlog                                {"p12": open P1+P2 rows, "by": {direction: n}} over the doctors
-  night_priority.py replay <night.json> <readings.json>    the jobs a launch burst would start, by priority
 """
 
 import glob
@@ -21,7 +20,7 @@ import cpu_audit  # noqa: E402
 import night_spend  # noqa: E402
 from spend import read_json  # noqa: E402
 
-DIRECTIONS = ("speed", "tests", "cpu", "spend", "legacy", "fit", "bugs", "logs", "harness", "updater", "pool")
+DIRECTIONS = ("speed", "tests", "cpu", "spend", "legacy", "fit", "logs", "harness", "updater", "pool")
 PRIORITIES = ("P1", "P2", "P3")
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 
@@ -30,7 +29,6 @@ WALL_P2_MIN_DAY = 1.0
 CPU_P2_MIN_DAY = 30.0
 SPEND_P1_SHARE = 0.5
 SPEND_P2_SHARE = 0.1
-BUGS_STABLE_DAYS = 7
 
 RUN_COST_PCT_PER_MTOK = 10.0
 DEFAULT_RUN_COST_PCT = 7.0
@@ -102,8 +100,6 @@ def direction(doctor, problem):
         return "spend"
     if rule == "log_audit":
         return "logs"
-    if problem.get("severity") and rule.startswith("bug"):
-        return "bugs"
     if rule in time_budget.IMPROVEMENT_RULES or problem.get("speed") or rule.startswith(("hook_", "wait_", "floor")):
         return "tests" if time_budget.improvement_class(rule, str(problem.get("id") or "")) in (
             "suite_run", "suite_wait") else "speed"
@@ -147,9 +143,6 @@ def priority(doctor, problem):
         return way, "P1", None, None, 1.0
     if way in ("legacy", "fit", "harness"):
         return way, "P2", None, None, 1.0
-    if way == "bugs":
-        stable = (num(problem.get("stable_days")) or 0) >= BUGS_STABLE_DAYS
-        return way, "P2" if stable and problem.get("severity") == "critical" else "P3", None, None, 0.5
     if way == "cpu":
         if doctor == "system":
             return way, "P2" if problem.get("severity") == "heavy" else "P3", None, None, 0.5
@@ -363,24 +356,6 @@ def admit(path, ref, vendor, pid):
     print("%s\t%s" % (verdict, why))
 
 
-def replay(path, readings_path):
-    """The jobs a burst of every pending fixer would start at once under admission: counts by priority."""
-    night = read_json(path, {}) or {}
-    readings = read_json(readings_path, []) or []
-    jobs = [dict(j, **job(j.get("kind"), j.get("ref")), admission=None, state="pending") for j in night.get("jobs") or ()
-            if j.get("kind") == "fixer"]
-    trial = {"jobs": jobs}
-    prices = costs(time.time())
-    started = []
-    for i, j in enumerate(sorted(jobs, key=lambda j: rank(j, prices.get(j["direction"], prices["*"])))):
-        verdict = decide(trial, j["ref"], "claudeb", 10 ** 6 + i, readings, time.time(), prices,
-                         live=lambda pid: pid is not None and pid >= 10 ** 6)[0]
-        if verdict == "admit":
-            started.append(j)
-    count = lambda rows: {p: sum(1 for j in rows if j["priority"] == p) for p in PRIORITIES}
-    print(json.dumps({"jobs": count(jobs), "started": count(started), "cost": prices, "room": room(readings, time.time())}))
-
-
 def main(argv):
     if argv[:1] == ["job"] and len(argv) == 3:
         print(json.dumps(job(argv[1], argv[2])))
@@ -388,8 +363,6 @@ def main(argv):
         admit(*argv[1:])
     elif argv == ["backlog"]:
         print(json.dumps(backlog()))
-    elif argv[:1] == ["replay"] and len(argv) == 3:
-        replay(argv[1], argv[2])
     else:
         sys.stderr.write(__doc__)
         return 2

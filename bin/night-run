@@ -399,8 +399,8 @@ cmd_start() {
     [ ! -e "$file" ] || die "night id $id is taken"
     jq -n --arg id "$id" --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" \
       --argjson opener "$$" "$JQ_SNAPSHOT"'{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
-        doctors_before: snapshot(0), doctors_after: null, doctor_states_before: snapshot(1), doctor_states_after: null,
-        doctor_problems_before: snapshot(2), doctor_problems_after: null, jobs: [],
+        doctors_before: snapshot(0), doctors_after: null, doctor_states_after: null,
+        doctor_problems_after: null, jobs: [],
         opener: $opener}' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
       { rm -f "$file.tmp"; die "cannot write $file"; }
   fi

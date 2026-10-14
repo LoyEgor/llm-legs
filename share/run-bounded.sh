@@ -1,11 +1,11 @@
 # run_bounded SECONDS COMMAND...: COMMAND's rc, 124 when `timeout` cut it; stdio stays the caller's.
 # RUN_BOUNDED_ON_TIMEOUT names a function called with SECONDS COMMAND... on 124. Stock macOS ships
-# neither `timeout` nor `gtimeout`; an EMPTY RUN_BOUNDED_TIMEOUT_BIN forces the watchdog, unset finds one.
+# neither `timeout` nor `gtimeout`, so a watchdog stands in where none is found.
 
 run_bounded() {
   local seconds=$1 bin pid watchdog rc=0
   shift
-  bin=${RUN_BOUNDED_TIMEOUT_BIN-$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)}
+  bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
   if [ -n "$bin" ]; then
     "$bin" "$seconds" "$@" || rc=$?
   else

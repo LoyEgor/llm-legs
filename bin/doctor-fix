@@ -458,7 +458,7 @@ def snapshot(doctor, doc_file, night=None):
             if pid in speed:
                 ranks[pid] = time_budget.speed_rank(admission)
         if rule == "log_audit":
-            entry["component"]["what"] = ("a Sonnet reading of the transcripts (bin/log-audit): find the quoted lines in them and "
+            entry["component"]["what"] = ("a Haiku reading of the transcripts (bin/log-audit): find the quoted lines in them and "
                                           "confirm the cause before any fix; a reading that does not hold is ruled-out; a confirmed class gets "
                                           "a doctor meter (a Harness rule) in the same fix")
             entry["quotes"] = ["%s: %s" % (e.get("ref"), e.get("excerpt")) for e in dicts(problem.get("evidence"))]

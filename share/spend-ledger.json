@@ -135,7 +135,6 @@
    "cpu_min_day": 123.46,
    "wall_min_day": 61.92,
    "sources": {
-    "llm-legs/tests/.DS_Store": null,
     "llm-legs/tests/affected": "55023ef490c922f3b44dea74eb6ff55b901ac430",
     "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
     "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
@@ -341,7 +340,7 @@
     "Reviewers · Hooks": 4.96130445842753
    },
    "sources": {},
-   "verdict": "kept",
+   "verdict": "cut",
    "note": "The note is the already-shortened rewrite note of hook:cd-guard.sh (claude-setup@c5a2a69, audited 2026-10-10); 0.1% of spend, shrinking. Whole hook, note included, goes when docs/handoffs/2026-10-10-cd-guard-native-cwd-reset.md lands (CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, ~/.claude/settings.json, not writable by a relay); shortening a note that is deleted next is churn"
   },
   {
@@ -2172,8 +2171,8 @@
    "note": "12 -> 9 asserts: a self-matching comment grep (llm-legs test_worker_run_backstop.sh:39 red on its mutation) and two review-bench sentence pins duplicating test_stop_dispatch.sh:961/963"
   },
   {
-   "id": "suite:claude-setup/test_chat_keystroke_ownership",
-   "title": "claude-setup/test_chat_keystroke_ownership",
+   "id": "suite:hammerspoon/test_chat_keystroke_ownership",
+   "title": "hammerspoon/test_chat_keystroke_ownership",
    "audited_at": "2026-10-13T11:10:05+03:00",
    "by": "harness-speed-suite-audit-claude-setup-test-precompact-preserve-20261012T235206Z-54b8",
    "cpu_run": 0.2,
@@ -2181,7 +2180,7 @@
    "cpu_min_day": 0.0,
    "wall_min_day": 0.01,
    "sources": {
-    "claude-setup/tests/test_chat_keystroke_ownership.sh": "a791c7e6998d21a0230a25622533116c64cc2051"
+    "hammerspoon/tests/test_chat_keystroke_ownership.sh": "12c8b111676f718d6a5e887d4b188ed231ec29e7"
    },
    "verdict": "trade",
    "zero": "removal saves ~0.3 wall-s a run; loses the only guard that chat modules type through chat_gate",
@@ -3880,7 +3879,7 @@
     "llm-legs/tests/test_geminib_families.sh": "67db219769185f25e40ab6d4569a8818da4112bc"
    },
    "verdict": "cut",
-   "zero": "removal saves 0.1 wall-min/day; loses the one Gemini family list and review-flash pin every consumer reads",
+   "zero": "removal saves 0.1 wall-min/day; loses the one Gemini family list every consumer reads",
    "note": "geminib families/review-flash skip the account libraries and worker_pool_dir (10faa19d), families --json run once; A/B 2.08-2.47 -> 1.78-2.10 s wall, 1.50 -> 1.27 CPU-s; 53 asserts; old geminib red on the lone-copy pin"
   },
   {
@@ -5095,23 +5094,6 @@
    "verdict": "cut",
    "zero": "removing it saves 7.6 wall-min/day; loses the shard fan-out, one-verdict, -j sharing and layout pins",
    "note": "fixture sleeps (1 s, 3 s) now only in the five runs that check overlap or wall (~30 s of ~37 a run were sleeps in runs checking neither); shard-layout sweep no longer forks a subshell per test file; 77 asserts unchanged"
-  },
-  {
-   "id": "suite:llm-legs/test_night_report_trial",
-   "title": "llm-legs/test_night_report_trial",
-   "audited_at": "2026-10-13T16:15:47+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-night-report-trial-20261012T235350Z-3707",
-   "cpu_run": 1.1,
-   "wall_run": 0.6,
-   "cpu_min_day": 0.06,
-   "wall_min_day": 0.08,
-   "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "8b9b1f17193cacf05d86d03ff93d0a61a21981e4",
-    "llm-legs/tests/test_night_report_trial.sh": "578dc85fa5aeda30c84207e59f45465cfa8d0b63"
-   },
-   "verdict": "cut",
-   "zero": "removal saves ~0.5 wall-s a run; loses the sonnet trial's report rows, revert and blame checks",
-   "note": "10 git hash-object forks replaced by in-process sha1 blob ids; 11 asserts unchanged, revert-check mutation red"
   },
   {
    "id": "suite:llm-legs/test_self_edit_guard",

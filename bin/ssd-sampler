@@ -9,8 +9,7 @@ sample ends at LAG_CUT_S of lag, RSS_CUT_B of fs_usage memory or SECS + GRACE_S 
 2026-10-13.
 
   sudo ssd-sampler install      copy to /usr/local/libexec, load the LaunchDaemon, take the first sample now
-  sudo ssd-sampler uninstall
-  ssd-sampler aggregate         fs_usage lines on stdin -> rows JSON (tests)"""
+  sudo ssd-sampler uninstall"""
 import collections, json, os, plistlib, re, resource, shutil, subprocess, sys, threading, time
 
 LABEL = "com.egor.ssd-sampler"
@@ -286,10 +285,6 @@ def uninstall():
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
-    if command == "aggregate":
-        stats, rows = aggregate(sys.stdin)
-        json.dump({**stats, "rows": sorted([*k, *v] for k, v in rows.items())}, sys.stdout)
-        return
     {"run": run, "install": install, "uninstall": uninstall}.get(command, lambda: sys.exit(__doc__))()
 
 

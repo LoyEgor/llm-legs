@@ -262,7 +262,7 @@ local function rawInDisabled(menu)
         if item.disabled and type(item.title) ~= "string" then
             for _, run in ipairs(item.title:asTable()) do
                 local shown = type(run) == "table" and run.attributes and run.attributes.color
-                for _, raw in ipairs({ menuStyle.RED, menuStyle.DIM_RED, menuStyle.GREEN, menuStyle.DIM_GREEN }) do
+                for _, raw in ipairs({ menuStyle.RED, menuStyle.DIM_RED, menuStyle.GREEN }) do
                     local same = type(shown) == "table"
                     for _, key in ipairs({ "red", "green", "blue", "alpha" }) do
                         same = same and math.abs((shown[key] or 1) - (raw[key] or 1)) <= 1e-6
@@ -276,12 +276,12 @@ local function rawInDisabled(menu)
     end
 end
 local probe = {}
-for index, color in ipairs({ menuStyle.RED, menuStyle.DIM_RED, menuStyle.GREEN, menuStyle.DIM_GREEN }) do
+for index, color in ipairs({ menuStyle.RED, menuStyle.DIM_RED, menuStyle.GREEN }) do
     probe[index] = { title = hs.styledtext.new("x " .. index, { font = menuStyle.MONO, color = color }), disabled = true }
 end
 menuStyle.mono(probe, tostring)
 check(not rawInDisabled(probe) and painted(probe[2], "x 2", menuStyle.tone(menuStyle.RED, true))
-    and painted(probe[4], "x 4", menuStyle.tone(menuStyle.GREEN, true)),
+    and painted(probe[3], "x 3", menuStyle.tone(menuStyle.GREEN, true)),
     "mono does not retone every palette colour of a disabled row")
 local rawRow = rawInDisabled(items)
 check(not rawRow, "a disabled row kept a raw palette colour instead of tone(…, true): " .. tostring(rawRow))

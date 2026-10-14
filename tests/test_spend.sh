@@ -42,11 +42,11 @@ def stamp(t):
     return datetime.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
 
 
-def payload(made=NOW - 3600, hook_price=300.0, index=True, value=0.4612, definition="d1", hooks_charged=100e3):
+def payload(made=NOW - 3600, hook_price=300.0, index=True, value=0.4612, definition="d1"):
     harness = {"definition": definition, "value": value, "change": "-54%", "tone": "better", "coverage": 0.113,
                "claude": 4e6, "sources": [
                    {"group": "Workers", "source": "Delegation", "plain": [400e3, 300e3], "charged": 300e3},
-                   {"group": "Tests & checks", "source": "Hooks", "plain": [100e3, 50e3], "charged": hooks_charged},
+                   {"group": "Tests & checks", "source": "Hooks", "plain": [100e3, 50e3], "charged": 100e3},
                    {"group": "Scripts", "source": "Advisor", "plain": [500e3, 0], "charged": 25e3}],
                "cells": [
         {"consumer": "Chat", "leaf": "Hooks", "source": "Hooks", "units": [100, 50], "price": [hook_price, 200.0],

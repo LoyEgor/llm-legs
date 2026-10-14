@@ -34,13 +34,13 @@ class Usage(Exception):
     pass
 
 
-def blender(script, args=(), log=None):
+def blender(script, args, log):
     """Run a bpy script in the background with share/blender on sys.path; the log goes to `log`."""
     command = [BLENDER, "-b", "--factory-startup", "--python-exit-code", "3",
                "--python-expr", "import sys; sys.path.insert(0, %r)" % SHARE, "-P", script, "--", *args]
-    with open(log or os.devnull, "w") as out:
+    with open(log, "w") as out:
         result = subprocess.run(command, stdout=out, stderr=subprocess.STDOUT)
-    text = open(log).read() if log else ""
+    text = open(log).read()
     return result.returncode, text
 
 

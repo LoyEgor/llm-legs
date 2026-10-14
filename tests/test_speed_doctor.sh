@@ -368,7 +368,7 @@ module.time_budget.cached_row, module.time_budget.roi_lines, module.time_budget.
     lambda worker_run, path: {"night": os.path.basename(path)},
     lambda rows, now, gains: calls.append([r["night"] for r in rows]) or gains.update({"job-a": 2.004}),
     lambda pairs, now: [{"ref": "job-a", "nights": len(pairs)}])
-reads = [module.roi_read(state, HI) for state in [{}]] if not os.path.isdir(nights) else None
+reads = [module.roi_read({}, HI)]
 os.makedirs(nights, exist_ok=True)
 for name in ("20261001T000000Z-aaaa.json", "20261002T000000Z-bbbb.json"):
     with open(os.path.join(nights, name), "w") as handle:

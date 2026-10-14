@@ -88,12 +88,9 @@ R=$(record "$id")
 if suite_shard_owns 1 nr-start-to-sweep; then
 assert [ -n "$id" ]
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
-  "doctors_before", "doctors_after", "doctor_states_before", "doctor_states_after",
-  "doctor_problems_before", "doctor_problems_after", "jobs"] | sort)' "$R"
-assert jqe '.doctor_states_before == {llm: {proved: 0, pending: 0, open: 0, new: 0, regressed: 0},
-  harness: {proved: 0, pending: 0, open: 1, new: 1, regressed: 1}, updater: null, code: null, system: null} and .doctor_states_after == null' "$R"
-assert jqe '.doctor_problems_before == {llm: {}, harness: {h1: "new", h2: "open", h3: "regressed", h4: "watch"},
-  updater: null, code: null, system: null} and .doctor_problems_after == null' "$R"
+  "doctors_before", "doctors_after", "doctor_states_after",
+  "doctor_problems_after", "jobs"] | sort)' "$R"
+assert jqe '.doctor_states_after == null and .doctor_problems_after == null' "$R"
 assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null, code: null, system: null} and .doctors_after == null and .jobs == []
   and .finished_at == null and .account == "acct-n"' "$R"
 session=$(jq -r .session "$R")
@@ -1141,7 +1138,6 @@ printf '{"id": "run-prev", "doctor": "harness", "decisions": [{"id": "P_OPEN"}, 
 jq -n --arg h "$h_rewrite" --arg r "$CHURN/repo" '{id: "20260131T000000Z-now", started_at: "2026-01-31T00:00:00Z",
   finished_at: "2026-01-31T02:00:00Z", session: "S_NOW", account: null, command: null, note: null,
   doctors_before: {}, doctors_after: null,
-  doctor_problems_before: {harness: {P_OPEN: "open", P_PROVED: "open"}},
   doctor_problems_after: {harness: {P_OPEN: "open", P_PROVED: "proved", P_REG: "regressed"}},
   jobs: [
     {ref: "run-unproven", kind: "fixer", state: "merged", branch: "night/20260131T000000Z-now/run-unproven",

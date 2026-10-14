@@ -1101,8 +1101,9 @@ lines = "".join(line + "\n" for line in (
     "18:22:21.300000  WrData[A]  D=0x09  B=0x1000  /dev/disk3s1  kuku/zz  0.000100 W mds.2",
     "18:22:21.400000  WrData[A]  D=0x0a  B=0x1000  0.000100 W odd.1",
     "18:22:21.500000  WrData[AT1]  D=0x0b  B=0x1000  /dev/disk3s1  private/var/folders/hh/q3x/T/tmpa/render.png  0.000100 W resvg.5"))
-out = json.loads(subprocess.run([os.path.join(root, "bin", "ssd-sampler"), "aggregate"], input=lines, capture_output=True,
-                                text=True, check=True).stdout)
+sampler = importlib.machinery.SourceFileLoader("ssd_sampler", os.path.join(root, "bin", "ssd-sampler")).load_module()
+stats, sampled = sampler.aggregate(io.StringIO(lines))
+out = json.loads(json.dumps({**stats, "rows": sorted([*k, *v] for k, v in sampled.items())}))
 check(out["lines"] == 11 and out["rows"] == [
           ["?", "disk3s1", "/tmp", 4096, 1], ["Python", "disk3s1", "/private/var/db", 16384, 1],
           ["Python", "disk3s1", "~/.cache/tool", 16384, 2], ["Python", "disk7s1", "/Volumes/Work/tmp", 8192, 1],

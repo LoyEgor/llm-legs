@@ -307,8 +307,6 @@ check(doc["lost_min_day"] == 71.5 and doc["lines"][0] == "72 min/day overhead" a
       "active last: %s" % doc["rows"])
 check("tests" not in doc and not any(l.startswith("Tests:") for l in doc["lines"]),
       "test time is share/test_health.py's block, never a second line here")
-check(dict(T.unit_samples({"class": "slot"}, D0, D0 + 86400)) == {"workers": [600], "review-cells": [45]},
-      "the slot class's unit samples are the one admission's waits: the workers pool's and the review cells'")
 
 DEAD = "claudeb-%d-5-dddd" % (D0 + 30000)
 dead_row = {"run": DEAD, "status": "failed", "round": None, "pid_started_at": D0 + 30000, "started_at": D0 + 30000,
@@ -490,8 +488,8 @@ check(out[10:14] == ["roi · harness-x-20260110T000000Z · worker wrap-up · 0.0
       % out[10:])
 check(out[14:] == [], "the reported night's own fixes never reach the morning's «Скорость» block: %s" % out[14:])
 item = {"class": "wrapup", "merged": True}
-check(T.saved_min_day(item, D0 + 11000, D0 + 86400 * 2.5) is None
-      and T.saved_min_day(dict(item, **{"class": "retries"}), D0 + 11000, D0 + 86400 * 9) == 0.0
+check(T.day_totals_state(item, D0 + 11000, D0 + 86400 * 2.5) is None
+      and T.day_totals_state(dict(item, **{"class": "retries"}), D0 + 11000, D0 + 86400 * 9) == T.MEASURED
       and T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1],
                                                                           **{"class": "retries"})]}], D0 + 86400 * 9)
       == ["roi · r · retries and relaunches · 2.0M · +1/-1 lines · day totals: unmeasured",
@@ -511,18 +509,18 @@ pend = {"id": "E2", "started": D0 + 86400 * 8, "hours": 3.0,
         "improvements": [dict(item, ref="r2", spend_m=1.0, lines=[1, 1], **{"class": "slot"})]}
 tonight = {"id": "T", "started": D0 + 86400 * 8.5, "hours": 3.0,
            "improvements": [dict(item, ref="r3", spend_m=1.0, lines=[1, 1], **{"class": "slot"})]}
-morning = lambda rows, at: T.speed_block(rows, at, (lambda v: (T.roi_lines(rows, at, verdicts=v), v)[1])({}))
+morning = lambda rows, at: T.speed_block(rows, (lambda v: (T.roi_lines(rows, at, verdicts=v), v)[1])({}))
 verdict = lambda gain, proven, slower, pending=False: {"pending": pending, "gain": gain, "proven": proven, "slower": slower}
 won = {"E1": {0: verdict(1.0, True, False)}}
 check(morning([early, tonight], D0 + 86400 * 9) == ["Скорость", "  7 d   +0.0 min/day"]
-      and T.speed_block([early, tonight], D0 + 86400 * 9, won) == ["Скорость", "  10 Jan   +1.0 min/day   ✓ 1",
+      and T.speed_block([early, tonight], won) == ["Скорость", "  10 Jan   +1.0 min/day   ✓ 1",
                                                                   "  7 d      +1.0 min/day   ✓ 1"]
-      and T.speed_block([early, pend, tonight], D0 + 86400 * 9, won) == ["Скорость", "  7 d   +1.0 min/day   ✓ 1"]
+      and T.speed_block([early, pend, tonight], won) == ["Скорость", "  7 d   +1.0 min/day   ✓ 1"]
       and morning([tonight], D0 + 86400 * 9) == [],
       "the morning's «Скорость»: a row per earlier night whose proofs matured since the night before the reported one "
       "closed, in min/day, then the trend's matured total; one matured before that close only counts in the total, "
       "pending ones nowhere, the reported night never; the day totals' 1.0 min/day has no load control, never a gain")
-check(T.speed_block([dict(early, improvements=[]), tonight], D0, {
+check(T.speed_block([dict(early, improvements=[]), tonight], {
     "E1": {0: verdict(2.5, True, False), 1: verdict(-0.4, False, True), 2: verdict(9.0, True, False, True)},
     "T": {0: verdict(30.0, True, False)}}) == ["Скорость", "  10 Jan   +2.1 min/day   ✓ 1   ! 1",
                                               "  7 d      +2.1 min/day   ✓ 1   ! 1"],
@@ -555,7 +553,7 @@ for back in (1, 2, 3):
                  {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 0}, "overhead_s": 0, "active_s": 0})
     T.write_json(T.day_cache_path(T.local_day(L + back * 86400)),
                  {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 60}, "overhead_s": 60, "active_s": 5000})
-check(T.saved_min_day(dict(item, **{"class": "slot"}), L, L + 86400 * 9) == T.UNMEASURED
+check(T.day_totals_state(dict(item, **{"class": "slot"}), L, L + 86400 * 9) == T.UNMEASURED
       and T.roi_lines([{"started": L, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1],
                                                                          **{"class": "retries"})]}], L + 86400 * 9)
       == ["roi · r · retries and relaunches · 2.0M · +1/-1 lines · unmeasured before or after it",
@@ -596,7 +594,7 @@ for back in (1, 2, 3):
                  {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 120}, "overhead_s": 120, "active_s": 6000})
     T.write_json(T.day_cache_path(T.local_day(Q + back * 86400)),
                  {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 60}, "overhead_s": 60, "active_s": 3000})
-check(T.saved_min_day(dict(item, **{"class": "slot"}), Q, Q + 86400 * 9) == 0.0,
+check(T.day_totals_state(dict(item, **{"class": "slot"}), Q, Q + 86400 * 9) == T.MEASURED,
       "a quieter week after a fix is no gain: the class's seconds per active second, times the active seconds a day "
       "before it")
 suite = lambda files, ids=("suite_audit:llm-legs:test_gate",): T.runtime_change(
@@ -736,7 +734,7 @@ with open(debt, "w") as handle:
     handle.write("#!/bin/sh\nprintf 'LINES=7 FILES=3 DUE_LINES=2 DUE_FILES=1\\n'\n")
 os.chmod(debt, 0o755)
 os.environ["NIGHT_RUN_REVIEW_DEBT"] = debt
-for name, count_ in zip(night_spend.DOCTOR_NAMES, (1, 2, 0, 3, 0)):
+for name, count_ in zip(("llm", "harness", "updater", "code", "system"), (1, 2, 0, 3, 0)):
     os.environ[name.upper() + "_DOCTOR_DIR"] = os.path.join(work, "goal-" + name)
     os.makedirs(os.path.join(work, "goal-" + name), exist_ok=True)
     doc = {"problem_count": count_}
@@ -745,12 +743,12 @@ for name, count_ in zip(night_spend.DOCTOR_NAMES, (1, 2, 0, 3, 0)):
         doc["problems"] = [{"id": "h%d" % i, "rule": "hook-error", "state": "new"} for i in range(6)] + [
             {"id": "s", "rule": "suite_audit", "state": "watch", "speed": True, "value": 0.2, "unit": "wall-min/day"}]
     json.dump(doc, open(os.path.join(work, "goal-" + name, "latest.json"), "w"))
-check(night_spend.backlog() == {"debt": 7, "speed": 3, "doctors": 6}, "backlog now: %s" % night_spend.backlog())
+check(night_spend.backlog() == {"debt": 7, "speed": 3}, "backlog now: %s" % night_spend.backlog())
 goal_dir = os.path.join(work, "goal-nights")
 os.makedirs(goal_dir)
 for id_, day, backlog_, share in (("n9", 30, {"debt": 25}, None),
-                                  ("n1", 1, {"debt": 20, "speed": 5, "doctors": 9, "p12": 9}, 30.0),
-                                  ("n2", 2, {"debt": 14, "speed": 4, "doctors": 8, "p12": 8}, 26.5)):
+                                  ("n1", 1, {"debt": 20, "speed": 5, "p12": 9}, 30.0),
+                                  ("n2", 2, {"debt": 14, "speed": 4, "p12": 8}, 26.5)):
     json.dump({"id": id_, "started_at": "2026-%s:00:00Z" % ("09-30T02" if day == 30 else "10-0%dT02" % day),
                "finished_at": "2026-%s:00:00Z" % ("09-30T08" if day == 30 else "10-0%dT08" % day),
                "jobs": [{"ref": "x"}], "doctors_share": share and {"share": share}, "backlog": backlog_},
@@ -813,9 +811,9 @@ check(night_spend.mix(night_spend.spend(mix_night, "/usr/bin/false")) == {"opus"
       "Fable counts on its own: %s" % night_spend.mix(night_spend.spend(mix_night, "/usr/bin/false")))
 check(night_spend.all_opus is None and night_spend.weighted(night_spend.bench_usage(bench)) > 0
       and night_spend.all_opus is None, "outside spend() nothing accumulates the Opus basis")
-finished = dict(running, finished_at="2026-10-03T08:00:00Z", doctors_after={n: 1 for n in night_spend.DOCTOR_NAMES})
-check(night_spend.night_goals(finished) == {"doctors_share": None, "backlog": {"doctors": 5}},
-      "a finished night without stored goals keeps only its doctor rows, never today's values")
+finished = dict(running, finished_at="2026-10-03T08:00:00Z", doctors_after={n: 1 for n in ("llm", "harness", "updater", "code", "system")})
+check(night_spend.night_goals(finished) == {"doctors_share": None, "backlog": {}},
+      "a finished night without stored goals keeps no backlog row, never today's values")
 
 # needs Egor counts every open trade addressed to him once, from every store that holds one: an unanswered
 # blocked-on-egor job, a handoff whose Status reads trade, audit rows with verdict trade, a doctor row that needs his
@@ -884,7 +882,7 @@ check(sorted(spent["refs"]) == ["harness-a", "speed-b"] and spent["refs"]["harne
       "fixer spend by the night worktree each run worked in: %s" % dict(spent["refs"]))
 ways = T.directions(way_night, os.path.join(egor_nights, "d2.json"), spent)
 check(ways["tests"] == {"p1": 2, "p2": 1, "closed": 2, "spend": 50.0} and ways["updater"]["closed"] == 1
-      and ways["speed"] == {"p1": 0, "p2": 3, "closed": 0, "spend": 50.0} and ways["bugs"]["p1"] == 0,
+      and ways["speed"] == {"p1": 0, "p2": 3, "closed": 0, "spend": 50.0} and ways["logs"]["p1"] == 0,
       "open P1/P2 from the close, closed = landed or nothing to do, a vendor job by its kind: %s" % ways)
 rows = lambda *d: [{"directions": {"tests": dict(zip(("p1", "p2", "closed"), x))}} for x in d]
 check([T.plateau_nights("tests", rows(*d)) for d in (

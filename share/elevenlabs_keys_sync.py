@@ -69,7 +69,3 @@ def main() -> int:
             temp.unlink(missing_ok=True)
             raise
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

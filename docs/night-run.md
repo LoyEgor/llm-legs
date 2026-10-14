@@ -108,7 +108,7 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
 ## Priority and admission
 - `night-run job add` stamps each job `direction`, `priority` P1|P2|P3, `value` {n, unit, norm}
   (`share/night_priority.py`: a fixer by its best row, other kinds by `KINDS`); bars: speed, tests, logs P1 ≥ 15 wall-min/day, P2 ≥ 1; cpu P2 ≥ 30 CPU-min/day, never P1; spend P1 ≥ 0.5 %,
-  P2 ≥ 0.1 %; pool, updater P1; legacy, fit, harness, vendor-watch, tool-ideas P2; bugs P2 only critical on code stable 7 days; unpriced P2.
+  P2 ≥ 0.1 %; pool, updater P1; legacy, fit, harness, vendor-watch, tool-ideas P2; unpriced P2.
 - `worker-run` asks `night-run admit` before a night worker's slot: P1, then P2, by norm per expected cost (7 days'
   median night-run tokens × 10 % per 1M); running Claude fixers hold at most the pool's 5h room. A P3 runs only from
   weekly room its burn leaves unused at reset (≥ 5 %), else it ends unlaunched (`admission.deferred`, job `pending`,
@@ -135,7 +135,7 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
 `~/.cache/doctors/nights/<night-id>.json`:
 - `id`, `started_at`, `finished_at`, the orchestrator's `session` and, once resumed, the earlier
   ones in `previous_sessions`;
-- `doctors_before` and `doctors_after` (problem counts), and `doctor_states_before`/`doctor_states_after`:
+- `doctors_before` and `doctors_after` (problem counts), and `doctor_states_after`:
   per doctor the problems of its `latest.json` by ledger state, `proved` (a harness fix proven,
   `fixed · …`), `pending` (`fixed-pending` or rule `fix-proof`), `open`,
   `new`, `regressed`. `report` prints one line per doctor,
@@ -253,7 +253,7 @@ ids or chat names, `–` for no source; `--post` sends each to the chat as a rep
 - `time_budget.py table` (word `night · <date>`): this night and the two previous finished nights with jobs,
   oldest left, local dates as heads (with the time if two share one). Rows: duration;
   Opus-eq spend in total and by fixers / reviews / orchestrator; merged, left jobs; `needs Egor`, every open trade
-  to him once (`handoffs.py --trades`: unanswered blocked-on-egor jobs, handoffs whose Status reads trade, audit rows
+  to him once (`handoffs.egor_trades()`: unanswered blocked-on-egor jobs, handoffs whose Status reads trade, audit rows
   with verdict `trade`, doctor rows with `needs_egor`; rows naming one handoff are one, a settled one none), stored
   at the close; worker runs, wall, model share, slot queue, own tests; problems per doctor; job lines; week-old
   rewrites; suites ✓/✗.
@@ -273,7 +273,7 @@ unreadable. Then `debt now` per sweep repository: `review-debt --repo --split` (
 due, `unknown` when unreadable.
 
 Behind the spend lines, `share/night_churn.py`'s churn block, gating nothing: per-branch versus other review rounds;
-problems touched again without proof and regressions against `doctor_problems_before`/`_after`; fixer spend on runs
+problems touched again without proof and regressions in `doctor_problems_after`; fixer spend on runs
 leaving every decided problem unproven; lines deleted tonight written in the prior 7 days.
 
 Last, `share/time_budget.py night`'s ledger: one line for the night (duration; worker wall from each run's

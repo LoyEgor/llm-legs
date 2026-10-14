@@ -49,7 +49,7 @@ end
 -- not reach a row at all.
 local KNOWN_COLORS = {}
 local palette = assert(loadfile(root .. "/hammerspoon/menu-style.lua"))()
-for _, color in ipairs({ dimTone(0), dimTone(1), palette.RED, palette.DIM_RED, palette.GREEN, palette.DIM_GREEN,
+for _, color in ipairs({ dimTone(0), dimTone(1), palette.RED, palette.DIM_RED, palette.GREEN,
     palette.tone(palette.GREEN, true), palette.tone(palette.RED, true) }) do
   KNOWN_COLORS[colorKey(color)] = true
 end
@@ -348,7 +348,6 @@ end
 
 local toned = { inactiveRed = colorKey(palette.tone(palette.RED, true)), raw = {
   [colorKey(palette.RED)] = true, [colorKey(palette.DIM_RED)] = true, [colorKey(palette.GREEN)] = true,
-  [colorKey(palette.DIM_GREEN)] = true,
 } }
 local function isRed(attributes)
   local color = attributes and attributes.color
@@ -2949,7 +2948,6 @@ local function doctorModule(...)
     { __index = module, __newindex = module })
 end
 
--- The review Flash pin row, as a pseudo-row so the submenu helpers read it.
 local doctorFixture = {
   schema = 1,
   vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },

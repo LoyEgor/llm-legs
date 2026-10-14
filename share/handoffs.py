@@ -552,9 +552,6 @@ def night_handoffs(night_path, repos=None):
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--trades"]:
-        print(json.dumps(egor_trades(), ensure_ascii=False))
-        sys.exit(0)
     if sys.argv[1:2] == ["--night"] and len(sys.argv) == 3:
         for row in night_handoffs(sys.argv[2]):
             print("\t".join(["handoff"] + [" ".join(str(v).split()) for v in row]))

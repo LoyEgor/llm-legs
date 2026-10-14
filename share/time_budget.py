@@ -88,6 +88,7 @@ UNIT_BEFORE_DAYS = 7
 SETTLE_S = 24 * 3600
 KEEP_DAYS = 35
 UNMEASURED = "unmeasured"
+MEASURED = "measured"
 SPEED_ROW_S = 3600
 
 
@@ -1003,11 +1004,10 @@ def class_day(day, key, now):
     return (b["seconds"].get(key, 0) if key else b["overhead_s"]), b["active_s"]
 
 
-def saved_min_day(item, landed, now):
-    """Minutes per day the class lost after a full day of the change against as many measured days before it (up to
-    ROI_DAYS): its seconds per active second on each side times the active seconds a day before it, so a quieter or
-    busier day after reads as no gain. None while pending, UNMEASURED once settled days exist but no measured one on a
-    side, a number otherwise (<= 0 is spend without result)."""
+def day_totals_state(item, landed, now):
+    """Whether the class's day totals can judge a change: None while pending (no full settled day after it),
+    UNMEASURED once settled days exist but no measured one on a side, MEASURED otherwise. The totals carry no load
+    control, so the roi lines never print a gain from them."""
     day = local_day(landed)
     before = [class_day(local_day(day_bounds(day)[0] - back * 86400 + 3600), item["class"], now)
               for back in range(1, ROI_DAYS + 1)]
@@ -1020,15 +1020,12 @@ def saved_min_day(item, landed, now):
     before, after = [v for v in before if v is not None], [v for v in after if v is not None]
     if not after or not before:
         return UNMEASURED
-    n = min(len(before), len(after))
-    before, after = before[:n], after[:n]
-    share = [sum(v[0] for v in side) / sum(v[1] for v in side) for side in (before, after)]
-    return round((share[0] - share[1]) * sum(v[1] for v in before) / n / 60.0, 1)
+    return MEASURED
 
 
 def unit_samples(item, lo, hi, memo=None):
     """{key: [values]} of the class's natural unit in [lo, hi): per suite (repo/label), per hook (its script's base
-    name and arguments), per wait class; read once a window into `memo`."""
+    name and arguments); read once a window into `memo`."""
     if memo is None:
         return read_samples(item, lo, hi)
     key = (item["class"], lo, hi)
@@ -1045,9 +1042,6 @@ def read_samples(item, lo, hi):
         for h in event_rows(lo, hi, ("h",)).get("h", ()):
             if len(h) > 5 and lo <= h[1] < hi and num(h[5]) is not None and (h[3] == "Stop") == (item["class"] == "stop"):
                 out[hook_key(str(h[4]))].append(h[5])
-    for w in wait_rows(lo, hi) if item["class"] in WAIT_OF else ():
-        if w.get("class") in WAIT_OF[item["class"]] and w["started"] >= lo:
-            out[w["class"]].append(w["seconds"])
     return out
 
 
@@ -1070,8 +1064,6 @@ def load_factor(item, before, after, named, need, stat, when=None):
     after/before stat over the unnamed suites or hooks with N samples on both sides, None under LOAD_CONTROLS of them.
     Suites (`when`: their (end, wall) samples) run hours apart, so a suite's controls are the other suites' runs
     between the first and the last named sample the proof compares on each side."""
-    if item["class"] not in LOAD_MATCHED:
-        return None
     ratios = []
     if when:
         spans = [[], []]
@@ -1208,7 +1200,7 @@ def unit_proof(item, started, ended, now, memo=None):
         return None
     label, need, ratio, daily, scale = unit
     named = unit_names(item) or own_suites(item)
-    if not named and item["class"] in LOAD_MATCHED:
+    if not named:
         return {"proven": None, "unmeasured": True, "text": "no unit named, no load control: unmeasured"}
     before = unit_samples(item, started - UNIT_BEFORE_DAYS * 86400, started, memo)
     after = unit_samples(item, ended, now, memo)
@@ -1218,12 +1210,10 @@ def unit_proof(item, started, ended, now, memo=None):
         before, after = ({k: [w for _, w in v] for k, v in d.items()} for d in when)
     stat = statistics.median
     whole = sum(map(sum, before.values())) / UNIT_BEFORE_DAYS / scale
-    factor = None
-    if named:
-        if unit_gone(item, named, after, need, ended, now):
-            return {"proven": False, "gone": True, "text": "%s no longer exists" % ", ".join(sorted(named))}
-        factor = load_factor(item, before, after, named, need, stat, when)
-        before, after = ({k: v for k, v in d.items() if k in named} for d in (before, after))
+    if unit_gone(item, named, after, need, ended, now):
+        return {"proven": False, "gone": True, "text": "%s no longer exists" % ", ".join(sorted(named))}
+    factor = load_factor(item, before, after, named, need, stat, when)
+    before, after = ({k: v for k, v in d.items() if k in named} for d in (before, after))
     before = {k: v for k, v in before.items() if v and stat(v) > 0}
     if not before:
         return None
@@ -1361,7 +1351,7 @@ def roi_lines(rows, now, gains=None, verdicts=None):
                     out.append("roi · %s · %s · %.1fM · %+d/-%d · %s" % (
                         item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1], shown["text"]))
                 continue
-            gain = saved_min_day(item, ended, now) if item["merged"] else None
+            gain = day_totals_state(item, ended, now) if item["merged"] else None
             if gain is None:
                 spend, pending = spend + item["spend_m"], pending + item["merged"]
             else:
@@ -1398,7 +1388,7 @@ def matured(found):
     return [round(sum(v["gain"] for v in done), 1), sum(v["proven"] for v in done), sum(v["slower"] for v in done)]
 
 
-def speed_block(rows, now, verdicts):
+def speed_block(rows, verdicts):
     """The morning message's «Скорость» part, quoted as is, only what the roi lines measured (`verdicts` of the rows
     at now): a row per earlier night whose fixes' proofs matured since the night before the reported one closed, then
     their trend's total; the reported night's own fixes never show."""
@@ -1598,7 +1588,7 @@ def night_report(worker_run, path):
     if trend and trend[-1]:
         print("\n".join(ledger_lines(trend[-1])))
     now, verdicts = now_s(), {}
-    for line in trend_lines(trend) + roi_lines(trend, now, verdicts=verdicts) + speed_block(trend, now, verdicts):
+    for line in trend_lines(trend) + roi_lines(trend, now, verdicts=verdicts) + speed_block(trend, verdicts):
         print(line)
 
 

@@ -6,8 +6,8 @@ procedure, a cheaper route to the same output. Speed never trades intelligence: 
 effort or thinking.
 
 1. Read, all of it from the last 30 days:
-   - the tool-mining clusters, from the store its doc names (`grep -rl 'tool-mining' docs/`); none yet:
-     say so and go on;
+   - the tool-mining clusters, from `~/.cache/speed-doctor/tool-mining.json` (`share/tool_mining.py`'s `cache_path()`); missing or
+     empty: say so and go on;
    - the improvement pool: `python3 share/time_budget.py pool`, the open rows of `share/harness-ledger.json`
      and `share/spend-ledger.json`, so no idea repeats a row;
    - a sample of transcripts: ten worker runs (`~/.cache/claude-worker-runs/*/`) and ten chats

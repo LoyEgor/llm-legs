@@ -185,7 +185,7 @@ def backdrop(color="#F2F0EA", width=40.0, depth=18.0, height=14.0, radius=4.0, r
         angle = math.pi / 2 * i / steps
         profile.append((radius * math.sin(angle), z + radius * (1 - math.cos(angle))))
     profile.append((radius, z + height))
-    verts, faces = [], []
+    verts = []
     for x in (-width / 2, width / 2):
         verts.extend((x, y, zz) for y, zz in profile)
     count = len(profile)

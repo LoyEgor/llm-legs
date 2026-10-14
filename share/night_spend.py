@@ -397,7 +397,6 @@ def kind_spend(night, worker_run):
 
 
 DASH = "\u2013"
-DOCTOR_NAMES = ("llm", "harness", "updater", "code", "system")
 
 
 def doctors_share():
@@ -420,8 +419,8 @@ def doctor_dir(name):
 
 
 def backlog():
-    """What the night still has to process: review-debt lines over the sweep repositories (fit and legacy read them all), Speed's selected rows,
-    the doctors' open rows; None where a source is unreadable."""
+    """What the night still has to process: review-debt lines over the sweep repositories (fit and legacy read them all), Speed's selected rows;
+    None where a source is unreadable."""
     import handoffs
 
     debt = os.environ.get("NIGHT_RUN_REVIEW_DEBT") or f"{HOME}/.local/bin/review-debt"
@@ -438,9 +437,7 @@ def backlog():
             break
         lines += int(found["LINES"])
     selection = (read_json(f"{doctor_dir('harness')}/latest.json", {}).get("speed") or {}).get("selection")
-    counts = [read_json(f"{doctor_dir(name)}/latest.json", {}).get("problem_count") for name in DOCTOR_NAMES]
-    return {"debt": lines, "speed": len(selection) if isinstance(selection, list) else None,
-            "doctors": sum(counts) if all(isinstance(c, int) for c in counts) else None}
+    return {"debt": lines, "speed": len(selection) if isinstance(selection, list) else None}
 
 
 def goals_now():
@@ -454,13 +451,10 @@ def goals_now():
 
 
 def night_goals(night, newest=False):
-    """A night's stored goals; a running one reads them now. A night older than the stored field keeps its doctor rows;
+    """A night's stored goals; a running one reads them now. A night older than the stored field keeps what it stored;
     the newest night, finished before a field was stored, reads that field now."""
     if "backlog" in night or night.get("finished_at"):
         stored = {"doctors_share": night.get("doctors_share"), "backlog": dict(night.get("backlog") or {})}
-        after = night.get("doctors_after") or {}
-        if stored["backlog"].get("doctors") is None and after and all(isinstance(after.get(d), int) for d in DOCTOR_NAMES):
-            stored["backlog"]["doctors"] = sum(after[d] for d in DOCTOR_NAMES)
         if newest and not {"p12", "open", "trades"} <= set(stored["backlog"]):
             import handoffs
             import night_priority

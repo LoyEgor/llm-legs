@@ -2370,11 +2370,6 @@ def missing_commits(values):
     return faults
 
 
-def missing_commit(value):
-    """Why a fix's `repo@hash` names no commit, or None (also when git is not here to answer)."""
-    return missing_commits([value]).get(value)
-
-
 def drop_row(ledger, row):
     ledger["by_id"].pop(row["id"], None)
     ledger["rows"] = [other for other in ledger["rows"] if other is not row]

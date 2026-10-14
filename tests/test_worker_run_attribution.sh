@@ -266,9 +266,14 @@ attribution_fixture() { # sets the caller's repo and outside
 attribution_repair_tests() {
   local repo outside command variant report note
   eval "$(sed -n '/^writes_through_shell() {/,/^}/p' "$RUNNER")"
+  shell_writes() { # command -> 0 unless the classifier answers "no write" (1); a parser failure counts as a write
+    local rc=0
+    writes_through_shell 3<<<"$(jq -Rn --arg c "$1" '$c')" || rc=$?
+    [ "$rc" -ne 1 ]
+  }
   parser_failure_is_unknown() (
     python3() { return 2; }
-    writes_through_shell 'git diff'
+    shell_writes 'git diff'
   )
   assert parser_failure_is_unknown
   # A window's shell commands are classified by one python3, and the first reason still wins: a write
@@ -294,13 +299,13 @@ attribution_repair_tests() {
       'sed -n "1p" -e "w target" source' 'bash -c "rewrite"' 'unknown-command' \
       'grep "unterminated' 'printf "$(rewrite)"' 'pnpm install >/dev/null 2>&1' \
       "node -e 'items.filter(x => x)'"; do
-    assert writes_through_shell "$command"
+    assert shell_writes "$command"
   done
   for command in '' 'grep x source' 'sed -n "1,5p" source' 'git diff --stat' \
       'bash tests/test_worker_run.sh' 'git status --short 2>/dev/null' \
       'grep x source | head -n 3' 'git diff 2>&1' \
       "printf '%s' 'a >= b' 'x => x'"; do
-    assert_fails writes_through_shell "$command"
+    assert_fails shell_writes "$command"
   done
   attribution_fixture
   for variant in readonly python sed bash unknown empty whitespace undated comment splitcalls unreadable missing namedonly shellonly; do

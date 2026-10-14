@@ -36,7 +36,7 @@ experiments_active_lines() {
       case "$marker" in "~/"*) marker="$home/${marker#\~/}" ;; esac
       experiments_marker_live "$marker" || continue
     fi
-    printf 'EXPERIMENT %s until %s — temporary, see EXPERIMENTS.json\n' "$id" "$review"
+    printf 'EXPERIMENT %s — temporary, see EXPERIMENTS.json\n' "$id"
   done < <(jq -r '.[]? | [(.id // ""), (.review_by // ""), (.state_marker // "")] | @tsv' "$registry" 2>/dev/null)
 }
 
