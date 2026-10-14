@@ -357,9 +357,9 @@ Harness doctor (added 2026-09-29 by its owner chat):
   (`FLOOR_MIN_DAY`) is never due unless dead or pinned; the head counts the ones skipped. `suites.selection` is the queue by wall-min/day; a night takes the first its red test rules do not hold, area `speed-suite-audit-<repo>-<suite>`,
   brief header `STRONG: yes` (worker-run refuses Light and Gemini Flash). Audits are `suite:<repo>/<suite>` rows of
   `share/spend-ledger.json` (`bin/speed-doctor --suite-audit`), proven once the fastest of 5 runs after it reads ≤ 0.65× its wall a run (its fastest of 20).
-  A night's `roi` line proves a suite, hook or wait improvement per unit (median wall-s a run, hook ms a call,
-  a gate's recovery s a day, s a wait) once N samples follow the night (`time_budget.UNITS`), load-matched or
-  `unmeasured`, as are day totals (other classes, retests, flaky, fan-out).
+  A night's `roi` line proves a suite or hook fix per unit (median wall-s a run, hook ms a call) once N samples
+  follow it (`time_budget.UNITS`), a wait, refusal or run cut per unit of work (`VOLUME`), load-matched or
+  `unmeasured`, as are day totals (other classes).
 
 LLM doctor (added 2026-09-29 by its owner chat):
 - `as_of` is ISO as §1 says; the epoch stays under the doctor's own key `as_of_s`, which the menu

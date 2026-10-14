@@ -132,9 +132,9 @@ alone where `covered_by` names a tool. A fix lands only with a bench (`bench_fau
 per 1000 Bash calls both below before; worse in either: `regression:adhoc/<key>`.
 
 **ROI** (`roi ·` lines, `share/time_budget.py`). Each Speed or time row of a fixer job is an improvement with an
-even share of the job's spend, proven per unit against the 7 days before, never by count or an earlier drop, only
-beside 3+ untouched units at load 0.65-1.54×; else (no named unit, wait, refusal, day totals, over the measure's
-whole day) `unmeasured`. A key is claimed once, by the earliest proof; later ones read `shared with <ref>`. Commits
+even share of the job's spend, proven per unit against the 7 days before, never by an earlier drop, only beside 3+
+untouched units at load 0.65-1.54×; waits, refusals, run cuts per unit of work (`VOLUME`); else (no named unit, day
+totals, gain over the whole day) `unmeasured`. A key is claimed once, by the earliest proof; later ones read `shared with <ref>`. Commits
 touching only measurers and their suites, ledgers, docs or other suites: `measurement fix`. No gain: `spend without
 result`, never a revert or a gate; a fix > 1.3× slower, load-matched or not: `regression:fix/<job>`.
 

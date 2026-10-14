@@ -49,9 +49,6 @@ WATCHDOG_KILLS = ("idle", "silent")
 WAIT_CLASSES = ("lock", "poll")
 GATE_REFUSALS = ("denied", "relay-refused")
 REFUSAL_CAP_S = 300
-# A gate's recovery seconds a day swing to 0 and back on unchanged code (p5 of mean(3 days)/mean(5 before) is 0 over
-# the events of 2026-10-01..09), so only a gate that cost nothing for a week after the night proves.
-REFUSAL_PROOF_RATIO, REFUSAL_PROOF_DAYS = 0.0, 7
 HISTORY_DAYS = 6
 TREND_DAYS = 7
 TREND_RECENT = 3
@@ -71,10 +68,15 @@ IMPROVEMENT_RULES = ("opportunity", "regression", spend_block.RULE, suite_audit.
 # ratio is p5 of median(N)/median(the samples before) on unchanged code over the journals of 2026-09-29..10-07, so a
 # lower ratio is no noise.
 UNITS = {"suite_run": ("wall-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_RATIO, "suite-min/day", 60.0),
-         "hooks": ("ms/call", 50, 0.55, "min/day", 60000.0), "stop": ("ms/call", 50, 0.55, "min/day", 60000.0),
-         "suite_wait": ("s/wait", 20, 0.4, "min/day", 60.0), "slot": ("s/wait", 20, 0.4, "min/day", 60.0),
-         "locks": ("s/wait", 20, 0.4, "min/day", 60.0), "refusal": ("s/day", REFUSAL_PROOF_DAYS, REFUSAL_PROOF_RATIO, "min/day", 60.0)}
-UNIT_STAT = {"refusal": statistics.mean}
+         "hooks": ("ms/call", 50, 0.55, "min/day", 60000.0), "stop": ("ms/call", 50, 0.55, "min/day", 60000.0)}
+# (unit, the work it is per, the gain's daily unit) of the classes that swing with the day's work: a wait per run that
+# queues (locks and polls are worker-run waits), a gate refusal per tool call, a suite run a run cut saves per Bash
+# call. The ratio is the lowest 3-day-after/7-day-before rate on the journals of 2026-10-04..13 save the locks', which
+# two lock fixes cut to 0.11: refusals per 1000 calls at 0.42.
+VOLUME = {"suite_wait": ("s/suite run", "suites", "min/day"), "slot": ("s/worker run", "workers", "min/day"),
+          "locks": ("s/worker run", "workers", "min/day"), "refusal": ("refusals/1k calls", "calls", "min/day"),
+          "runs": ("runs/1k Bash", "bash", "suite-min/day")}
+VOLUME_RATIO = 0.4
 LOAD_MATCHED, LOAD_CONTROLS = ("suite_run", "hooks", "stop"), suite_audit.LOAD_CONTROLS
 LOAD_BAND = (suite_audit.PROOF_RATIO, 1 / suite_audit.PROOF_RATIO)
 SLOWER_RATIO = 1.3
@@ -1025,11 +1027,10 @@ def saved_min_day(item, landed, now):
 
 def unit_samples(item, lo, hi, memo=None):
     """{key: [values]} of the class's natural unit in [lo, hi): per suite (repo/label), per hook (its script's base
-    name and arguments), per gate (its recovery seconds in each whole day back from hi, 0 on a day it refused nothing,
-    so fewer refusals prove as well as faster recoveries), per wait class; read once a window into `memo`."""
+    name and arguments), per wait class; read once a window into `memo`."""
     if memo is None:
         return read_samples(item, lo, hi)
-    key = (item["class"], lo, hi, tuple(sorted(unit_names(item))) if item["class"] == "refusal" else ())
+    key = (item["class"], lo, hi)
     if key not in memo:
         memo[key] = dict(read_samples(item, lo, hi))
     return memo[key]
@@ -1039,14 +1040,6 @@ def read_samples(item, lo, hi):
     if item["class"] == "suite_run":
         return suite_audit.samples(suites_path(), lo, hi, timed=True)
     out = collections.defaultdict(list)
-    if item["class"] == "refusal":
-        rows, events, days = refusal_rows(lo - REFUSAL_CAP_S, hi), event_rows(lo, hi, ("c", "t")), []
-        while hi - 86400 * (len(days) + 1) >= lo:
-            end = hi - 86400 * len(days)
-            days.append(refusal_cost(end - 86400, end, events, rows)["by_gate_s"])
-        for gate in set(unit_names(item)).union(*days) if days else ():
-            out[gate] = [d.get(gate, 0.0) for d in reversed(days)]
-        return out
     if item["class"] in ("hooks", "stop"):
         for h in event_rows(lo, hi, ("h",)).get("h", ()):
             if len(h) > 5 and lo <= h[1] < hi and num(h[5]) is not None and (h[3] == "Stop") == (item["class"] == "stop"):
@@ -1098,20 +1091,119 @@ def load_factor(item, before, after, named, need, stat, when=None):
     return statistics.median(ratios) if len(ratios) >= LOAD_CONTROLS else None
 
 
+def volume_days(kind, lo, hi):
+    """[volume, {key: [count, seconds]}] of each whole day from lo: the work a VOLUME kind is per, and its wait
+    classes' waits, gates' refusals and recovery, or suites' runs and wall."""
+    days = [[0, collections.defaultdict(lambda: [0, 0.0])] for _ in range(int(round((hi - lo) / 86400)))]
+
+    def add(at, key=None, seconds=0.0, volume=0):
+        if lo <= at < lo + 86400 * len(days):
+            day = days[int((at - lo) // 86400)]
+            day[0] += volume
+            if key is not None:
+                day[1][key][0] += 1
+                day[1][key][1] += seconds
+
+    unit = VOLUME[kind][1]
+    events = event_rows(lo, hi, ("c", "t")) if unit in ("calls", "bash") else {}
+    for c in events.get("c", ()):
+        add(c[1], volume=unit == "calls" or c[3] == "Bash")
+    for r in suite_audit.runs(suites_path(), lo) if unit == "suites" or kind == "runs" else ():
+        add(r["end"], "%s/%s" % (r["repo"], os.path.splitext(r["name"])[0]) if kind == "runs" else None, r["wall"],
+            unit == "suites")
+    for r in worker_runs(lo, hi) if unit == "workers" else ():
+        add(num(r.get("pid_started_at")) or num(r.get("started_at")) or hi, volume=1)
+    for w in wait_rows(lo, hi) if kind in WAIT_OF else ():
+        if w.get("class") in WAIT_OF[kind]:
+            add(w["started"], w["class"], w["seconds"])
+    if kind == "refusal":
+        rows = refusal_rows(lo - REFUSAL_CAP_S, hi)
+        for r in rows:
+            add(num(r.get("at")) or 0, r.get("gate") or "unknown")
+        for i, day in enumerate(days):
+            for gate, seconds in refusal_cost(lo + 86400 * i, lo + 86400 * (i + 1), events, rows)["by_gate_s"].items():
+                day[1][gate][1] += seconds
+    return days
+
+
+def volume_proof(item, started, ended, now, memo=None):
+    """A wait, refusal or run-cut fix per unit of the day's work (VOLUME), its whole days after the night (ROI_DAYS up
+    to UNIT_BEFORE_DAYS) against the UNIT_BEFORE_DAYS before it, so a quieter or busier day reads as no gain: per key
+    (the gates or suites its ids name, else every wait class, gate, or all suites as one) the class's seconds per unit
+    of work. A wait is wall, judged against the suites' `load_factor` like a suite; a refusal or a run is a count priced
+    at its seconds before the night, which no load moves. A day before it with no work or none of the class (a journal
+    not yet kept), or one after it with no work, reads `unmeasured`."""
+    kind = "runs" if counted(item) else item["class"]
+    label, unit, daily = VOLUME[kind]
+    days = min(UNIT_BEFORE_DAYS, int((now - ended) // 86400))
+    if days < ROI_DAYS:
+        return {"proven": None, "text": "%s: %d of %d days since" % (label, max(days, 0), ROI_DAYS)}
+    memo = {} if memo is None else memo
+    windows = ((started - UNIT_BEFORE_DAYS * 86400, started), (ended, ended + days * 86400))
+    for lo, hi in windows:
+        if (kind, lo, hi) not in memo:
+            memo[(kind, lo, hi)] = volume_days(kind, lo, hi)
+    sides = [memo[(kind, lo, hi)] for lo, hi in windows]
+    if (any(not v or not any(c for c, _ in keys.values()) for v, keys in sides[0])
+            or any(not v for v, _ in sides[1])):
+        return {"proven": None, "unmeasured": True, "text": "%s: a day with no journal: unmeasured" % label}
+    named = unit_names(item)
+    (vb, before), (va, after) = [(sum(v for v, _ in side), collections.defaultdict(lambda: [0, 0.0])) for side in sides]
+    for side, total in ((sides[0], before), (sides[1], after)):
+        for _, keys in side:
+            for key, (count, seconds) in keys.items():
+                key = key if kind != "runs" or key in named else "*"
+                total[key][0] += count
+                total[key][1] += seconds
+    keys = [k for k in (named & set(before) if kind != "runs" and named else before) if before[k][0] and before[k][1] > 0]
+    if not keys:
+        return None
+    wait = kind in WAIT_OF
+    factor = load = 1.0
+    if wait:
+        controls = [{k: [w for _, w in v] for k, v in suite_audit.samples(suites_path(), lo, hi, timed=True).items()}
+                    for lo, hi in windows]
+        factor = load_factor({"class": "suite_run"}, controls[0], controls[1], set(), suite_audit.PROOF_RUNS,
+                             statistics.median)
+        load = factor or 1.0
+    rate_b = {k: before[k][1] / vb for k in keys}
+    rate_a = {k: (after[k][1] if wait else after[k][0] * before[k][1] / before[k][0]) / va for k in keys}
+    per = 1000.0 if unit in ("calls", "bash") else 1.0
+    was, now_ = (sum(side[k][1 if wait else 0] for k in keys) / v * per for side, v in ((before, vb), (after, va)))
+    proven = sum(rate_a.values()) <= VOLUME_RATIO * sum(rate_b.values()) * load
+    a_day = vb / UNIT_BEFORE_DAYS / 60.0
+    gains = {k: (rate_b[k] - rate_a[k] / load) * a_day for k in keys
+             if rate_a[k] <= VOLUME_RATIO * rate_b[k] * load} if proven else {}
+    gain = round(sum(gains.values()), 1)
+    slower = {k: (rate_a[k] / load - rate_b[k]) * a_day for k in keys if rate_a[k] > SLOWER_RATIO * rate_b[k] * load}
+    span = "%s → %s %s%s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label,
+                             " · load ×%.2f" % load if load != 1.0 else "")
+    if factor is None or not LOAD_BAND[0] <= factor <= LOAD_BAND[1]:
+        if not slower:
+            return {"proven": None, "unmeasured": True, "span": span, "text": "%s · %s: unmeasured" % (
+                span, "no load control" if factor is None else "load outside ×%.2f-%.2f" % LOAD_BAND)}
+        proven, gains, gain = False, {}, 0.0
+    return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": va, "span": span,
+            "gain": gain, "daily": daily, "gains": gains, "load": round(load, 2), "slower": slower,
+            "text": "%s · %s" % (span, "proven · %.1f %s" % (gain, daily) if proven else "not proven")}
+
+
 def unit_proof(item, started, ended, now, memo=None):
     """A landed improvement whose class has a natural unit, proven from the journals once N samples follow the night:
-    per key (the keys its ids name, else the suites it alone changed (`own_suites`), else every suite, hook script,
-    gate's day or wait class) the median of the first M samples after the night against the newest M before it, M the
+    per key (the keys its ids name, else the suites it alone changed (`own_suites`), else every suite or hook script)
+    the median of the first M samples after the night against the newest M before it, M the
     smaller side, weighted by M, so a changed mix of suites or hooks reads as no gain. A named suite or hook is judged
     against the `load_factor` of the unnamed ones in the same windows, so a busy morning reads as no slowdown. A proven gain sums, over the keys proven
     on their own (`keys`), the key's load-matched delta times its samples a day in the UNIT_BEFORE_DAYS before the
-    night. No sample or a zero median before the night, or a fix that cuts runs (`counted`), keeps the day totals; a
-    named unit that no longer exists is `gone`. A load-matched class with no named unit has no control, a gain over
+    night. Waits, refusals and fixes that cut runs (`counted`) prove per unit of work (`volume_proof`). No sample or a
+    zero median before the night keeps the day totals; a named unit that no longer exists is `gone`. A load-matched class with no named unit has no control, a gain over
     the measure's whole day before the night is no gain, and so is a verdict without a load factor from LOAD_CONTROLS
     controls inside LOAD_BAND (the suite proof ratio either way), which machine load alone could give: all read
     `unmeasured`, save a key measured slower, so a regression never hides."""
+    if counted(item) or item["class"] in VOLUME:
+        return volume_proof(item, started, ended, now, memo)
     unit = UNITS.get(item["class"])
-    if not unit or counted(item):
+    if not unit:
         return None
     label, need, ratio, daily, scale = unit
     named = unit_names(item) or own_suites(item)
@@ -1123,7 +1215,7 @@ def unit_proof(item, started, ended, now, memo=None):
     if item["class"] == "suite_run":
         when = (before, after)
         before, after = ({k: [w for _, w in v] for k, v in d.items()} for d in when)
-    stat = UNIT_STAT.get(item["class"], statistics.median)
+    stat = statistics.median
     whole = sum(map(sum, before.values())) / UNIT_BEFORE_DAYS / scale
     factor = None
     if named:

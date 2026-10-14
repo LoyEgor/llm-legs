@@ -5,7 +5,7 @@
 # blob a Speed landing did not move, 2x wall a run, a rise between commits beyond the machine's load naming its
 # commit, a new heavy suite, a split that is not new, a 1 wall-min/day floor), the
 # night's queue, a kept audit closing it with its proof, the restate a night close reads, the Harness menu block and
-# a night improvement proven per unit (suite wall a run, hook ms a call, gate recovery s a day; test health by its suite or file) once N samples follow it. Fixture directories
+# a night improvement proven per unit (suite wall a run, hook ms a call; waits, refusals and run cuts per unit of work; test health by its suite or file) once N samples follow it. Fixture directories
 # only.
 set -u
 
@@ -422,10 +422,11 @@ check(shown["text"] == "600 → 90 ms/call · proven · 0.1 min/day" and shown["
       and time_budget.unit_proof({"class": "hooks", "ids": both[:1]}, NOW - 30, NOW + 100, NOW + 600)["proven"] is None
       and time_budget.unit_proof({"class": "hooks", "ids": ["regression:hooks"]}, NOW - 30, NOW, NOW + 600)["unmeasured"]
       and time_budget.unit_proof({"class": "retries", "ids": []}, NOW - 30, NOW, NOW + 600) is None
-      and time_budget.unit_proof({"class": "slot", "ids": []}, NOW - 30, NOW, NOW + 600) is None,
+      and time_budget.unit_proof({"class": "slot", "ids": []}, NOW - 30, NOW, NOW + 600)["text"]
+      == "s/worker run: 0 of 3 days since",
       "a hook improvement reads ms a call per script (Stop hooks apart, only the hooks its ids name) from 50 calls "
       "after it, its gain each key's ms saved × its calls a day in the 7 days before; a named hook absent a full day is gone; a class with no "
-      "unit, or no sample of it before the night, keeps the day totals; a hook fix naming none has no control: %s" % shown)
+      "unit keeps the day totals, a wait class waits for its days; a hook fix naming none has no control: %s" % shown)
 h1 = {"ref": "night-h1", "class": "hooks", "ids": ["opportunity:hooks/other.sh fast"], "spend_m": 1.0,
       "lines": [1, 1], "merged": True}
 shown = time_budget.roi_lines([dict(night, improvements=[h1]),
@@ -493,29 +494,71 @@ fan = dict(item, ids=["opportunity:test-health/fan-out/alpha/share/x.sh"], files
 check(time_budget.unit_names(idle) == {"alpha/test_mid"} and time_budget.unit_names(fan) == {"alpha/share/x.sh"}
       and time_budget.roi_lines([dict(night, improvements=[idle])], NOW + 600)[0]
       == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · 20 → 8.0 wall-s/run · proven · 0.3 suite-min/day"
-      and time_budget.unit_proof(fan, NOW - 30, NOW, NOW + 600) is None
-      and time_budget.unit_proof(dict(item, ids=["opportunity:test-health/retests"]), NOW - 30, NOW, NOW + 600) is None
+      and time_budget.unit_proof(dict(item, ids=["opportunity:test-health/retests"]), NOW - 30, NOW, NOW + 600)["text"]
+      == "runs/1k Bash: 0 of 3 days since"
       and time_budget.roi_lines([dict(night, improvements=[fan])], NOW + 600)[0]
-      == "roi · night-x · alpha/share/x.sh · 1.5M · +3/-9 lines · pending a full day",
-      "a test health fix is proven on the suite it names, and one that cuts runs (retests, a file's fan-out) on the "
-      "class's day totals, the file named: %s" % time_budget.roi_lines([dict(night, improvements=[idle, fan])], NOW + 600))
-gates = []
-for start, gate in ((NOW - 30 - 7 * 86400, "g.sh"), (NOW - 30 - 7 * 86400, "other.sh"), (NOW + 60, "other.sh")):
-    gates += [{"at": start + (k + 0.5) * 86400, "sid": "%s%03d" % (gate[:5], k), "gate": gate, "tool_use_id": ""} for k in range(7)]
+      == "roi · night-x · alpha/share/x.sh · 1.5M · +3/-9 · runs/1k Bash: 0 of 3 days since",
+      "a test health fix is proven on the suite it names, and one that cuts runs (retests, a file's fan-out) on "
+      "suite runs per 1000 Bash calls, the file named: %s" % time_budget.roi_lines([dict(night, improvements=[idle, fan])], NOW + 600))
+V, DAY = NOW + 300 * 86400, 86400
+sides = ([V - 30 - (7 - k) * DAY for k in range(7)], [V + k * DAY for k in range(3)])
+spread = lambda starts, n: [s + 60 + i * (DAY - 120) / n for s in starts for i in range(n)]
+kept = (time_budget.wait_rows, time_budget.worker_runs, time_budget.event_rows, time_budget.refusal_rows)
+
+
+def world(runs, waits, control=10.0, gap=False):
+    """Worker runs and their slot waits (count, seconds) a day before and after the night, and three untouched suites
+    at 10 s a run before and `control` after it."""
+    starts = [t for side, n in zip(sides, runs) for t in spread(side, n)
+              if not gap or not sides[0][2] <= t < sides[0][3]]
+    rows = [{"class": "workers", "started": t, "seconds": s} for side, (n, s) in zip(sides, waits) for t in spread(side, n)]
+    time_budget.worker_runs = lambda lo, hi: [{"pid_started_at": t} for t in starts if lo <= t < hi]
+    time_budget.wait_rows = lambda lo, hi: [dict(r) for r in rows if lo <= r["started"] < hi]
+    save([row(t, {n: cpu(w) for n in ("test_a", "test_b", "test_c")}, cheap)
+          for side, w in zip(sides, (10.0, control)) for t in spread(side, 2)] if control else [])
+    return time_budget.unit_proof({"class": "slot", "ids": ["opportunity:time/slot"]}, V - 30, V, V + 3 * DAY + 60)
+
+
+fixed, judged = world((10, 20), ((10, 60), (20, 6))), {}
+time_budget.roi_lines([{"id": "w", "started": V - 30, "ended": V, "hours": 0.0, "improvements": [
+    {"ref": "night-w", "class": "slot", "ids": ["opportunity:time/slot"], "spend_m": 1.0, "lines": [1, 1],
+     "merged": True}]}], V + 3 * DAY + 60, verdicts=judged)
+quieter, slower = world((10, 2), ((10, 60), (2, 60))), world((10, 20), ((10, 60), (20, 200)))
+check(fixed["text"] == "60 → 6.0 s/worker run · proven · 9.0 min/day"
+      and judged == {"w": {0: {"pending": False, "gain": 9.0, "proven": True, "slower": False}}}
+      and quieter["text"] == "60 → 60 s/worker run · not proven"
+      and slower["proven"] is False and set(slower["slower"]) == {"workers"}
+      and world((10, 20), ((10, 60), (20, 6)), None)["text"] == "60 → 6.0 s/worker run · no load control: unmeasured"
+      and world((10, 20), ((10, 60), (20, 6)), 4.0)["text"]
+      == "60 → 6.0 s/worker run · load ×0.40 · load outside ×0.65-1.54: unmeasured"
+      and world((10, 20), ((10, 60), (20, 6)), gap=True)["text"] == "s/worker run: a day with no journal: unmeasured"
+      and time_budget.unit_proof({"class": "slot", "ids": []}, V - 30, V, V + 2 * DAY + 60)["text"]
+      == "s/worker run: 2 of 3 days since",
+      "a wait fix proves per run that queues over 3 whole days after the night against the 7 before, judged against "
+      "the untouched suites' load: 600 → 120 s of waits a day on twice the runs proves 9.0 min/day, on a fifth of "
+      "them (a quieter day) nothing; without 3 controls, outside the band or over a day with no runs it is unmeasured; "
+      "a rise per run is slower: %s %s %s" % (fixed, quieter, slower))
+gates = [{"at": t, "sid": "%s%06d" % (gate[0], i), "gate": gate, "tool_use_id": ""}
+         for gate, counts in (("g.sh", (5, 0)), ("other.sh", (5, 10)))
+         for i, t in enumerate(t for side, n in zip(sides, counts) for t in spread(side, n))]
 calls = [["c", g["at"] + 30, "~", "Bash", 0, 1, "c", "ok%d" % i, g["sid"], 1] for i, g in enumerate(gates)]
-for c in calls:
-    with open(os.path.join(events, time_budget.local_day(c[1]) + ".jsonl"), "a") as handle:
-        handle.write(json.dumps(c, separators=(",", ":")) + "\n")
+calls += [["c", t, "~", "Bash", 0, 1, "c", "f%d" % i, "filler00", 1]
+          for i, t in enumerate(t for side, n in zip(sides, (100, 200)) for t in spread(side, n))]
 time_budget.refusal_rows = lambda lo, hi: [dict(g) for g in gates if lo <= g["at"] < hi]
-week = NOW + 7 * 86400 + 120
-fixed = time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/g.sh"]}, NOW - 30, NOW, week)
-still = time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/other.sh"]}, NOW - 30, NOW, week)
+time_budget.event_rows = lambda lo, hi, kinds=("t", "c", "h"): {"c": [c for c in calls if lo - DAY <= c[1] < hi], "t": []}
+save([row(t, {"test_x": cpu(30)}, cheap) for side, n in zip(sides, (10, 2)) for t in spread(side, n)])
+gate = lambda name: time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/" + name]}, V - 30, V,
+                                           V + 3 * DAY + 60)
+cut = time_budget.unit_proof({"class": "suite_run", "ids": ["opportunity:test-health/flaky/alpha/test_x"]}, V - 30, V,
+                             V + 3 * DAY + 60)
 check(time_budget.improvement_class("opportunity", "opportunity:refusal/g.sh") == "refusal"
-      and fixed["text"] == "30 → 0.0 s/day · no load control: unmeasured" and still["span"] == "30 → 30 s/day"
-      and time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/g.sh"]}, NOW - 30, NOW,
-                                 NOW + 3 * 86400)["text"] == "s/day: 3 of 7 since",
-      "a gate's refusal fix reads its recovery seconds a day, a silent day counting 0, a week after the night; "
-      "with no load control the drop is unmeasured, never proven: %s %s" % (fixed, still))
+      and gate("g.sh")["text"] == "45 → 0.0 refusals/1k calls · proven · 2.5 min/day"
+      and gate("other.sh")["text"] == "45 → 48 refusals/1k calls · not proven" and not gate("other.sh")["slower"]
+      and cut["text"] == "91 → 9.5 runs/1k Bash · proven · 4.5 suite-min/day",
+      "a gate's refusals and a run cut's suite runs are counts per 1000 tool or Bash calls, priced at their seconds "
+      "before the night, so no load moves them: a gate silent after it proves its 30 s recoveries, one refusing twice "
+      "as often on twice the calls is neither proven nor slower: %s %s %s" % (gate("g.sh"), gate("other.sh"), cut))
+time_budget.wait_rows, time_budget.worker_runs, time_budget.event_rows, time_budget.refusal_rows = kept
 save(journal)
 fresh = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "fine",
                            "removal saves 20 s a run; loses its checks", "night-x", [], NOW)
@@ -539,4 +582,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the Suite audits block misjudged its fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; Suite audits price every suite over every runner, judge audits due by never/source blob/2x wall a run over a 1 wall-min/day floor, a load-matched rise between commits or a new heavy suite at once naming its commit (a split is not new), queue the night, close a kept audit with its proof, settle it for a night close, lay their block in Harness; a night improvement is proven per unit (suite wall a run, hook ms a call, gate recovery s a day; test health by its suite or file) once N samples follow it\n' "$asserts"
+printf 'PASS: %s asserts; Suite audits price every suite over every runner, judge audits due by never/source blob/2x wall a run over a 1 wall-min/day floor, a load-matched rise between commits or a new heavy suite at once naming its commit (a split is not new), queue the night, close a kept audit with its proof, settle it for a night close, lay their block in Harness; a night improvement is proven per unit (suite wall a run, hook ms a call; waits, refusals and run cuts per unit of work; test health by its suite or file) once N samples follow it\n' "$asserts"

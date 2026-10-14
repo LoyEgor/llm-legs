@@ -437,13 +437,13 @@ for item in (night, older):
     with open(os.path.join(nights, item["id"] + ".json"), "w") as handle:
         json.dump(item, handle)
 os.makedirs(os.path.join(work, "doctors", "runs"))
-for ref, problem in (("harness-x-20260110T000000Z", {"id": "opportunity:chat/queue", "rule": "opportunity"}),
+for ref, problem in (("harness-x-20260110T000000Z", {"id": "opportunity:time/wrapup", "rule": "opportunity"}),
                      ("harness-y-20260110T000000Z", {"id": "test_slow:repo:test_x", "rule": "test_slow"}),
                      ("llm-z-20260110T000000Z", {"id": "leg-failure:codex/x", "rule": "leg-failure"})):
     T.write_json(os.path.join(work, "doctors", "runs", ref + ".json"), {"problems": [problem]})
 for back, wait in ((-3, 100), (-2, 100), (-1, 100), (1, 40), (2, 40), (3, 40), (4, 9000)):
     T.write_json(T.day_cache_path(T.local_day(D0 + back * 86400)),
-                 {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"suite_wait": wait}, "overhead_s": wait, "active_s": 5000})
+                 {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"wrapup": wait}, "overhead_s": wait, "active_s": 5000})
 check(night_spend.spend(night, "/usr/bin/false")["hours"] == 2.5,
       "the night report's worker wall starts at each run's pid, not its restamped started_at")
 rollout = os.path.join(work, "codex-rollout.jsonl")
@@ -478,7 +478,7 @@ audit = [{"problems": p, "started": D0 + i * 86400, "hours": 1.0, "split_s": {},
 check(T.trend_lines(audit)[-1] == "trend · problems 32 → 24 over 7 nights · last 3: 1 down, 2 up · going back",
       "the trend never reads forward while the recent nights each ended with more problems than they began with: %s"
       % T.trend_lines(audit)[-1])
-check(out[10:14] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · day totals: unmeasured",
+check(out[10:14] == ["roi · harness-x-20260110T000000Z · worker wrap-up · 0.0M · +5/-1 lines · day totals: unmeasured",
                    "roi · harness-y-20260110T000000Z · repo/test_x · 0.0M · +0/-0 lines · not landed",
                    "roi · night: improvements 0.0M · gained 0.0 min/day · 1 unmeasured",
                    "roi · last 2 nights: improvements 0.0M · gained 0.0 min/day"],
@@ -487,12 +487,12 @@ check(out[10:14] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.
       "never a gain; other fixers are no improvement: %s"
       % out[10:])
 check(out[14:] == [], "the reported night's own fixes never reach the morning's «Скорость» block: %s" % out[14:])
-item = {"class": "suite_wait", "merged": True}
+item = {"class": "wrapup", "merged": True}
 check(T.saved_min_day(item, D0 + 11000, D0 + 86400 * 2.5) is None
-      and T.saved_min_day(dict(item, **{"class": "slot"}), D0 + 11000, D0 + 86400 * 9) == 0.0
+      and T.saved_min_day(dict(item, **{"class": "retries"}), D0 + 11000, D0 + 86400 * 9) == 0.0
       and T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1],
-                                                                          **{"class": "slot"})]}], D0 + 86400 * 9)
-      == ["roi · r · worker slot queue · 2.0M · +1/-1 lines · day totals: unmeasured",
+                                                                          **{"class": "retries"})]}], D0 + 86400 * 9)
+      == ["roi · r · retries and relaunches · 2.0M · +1/-1 lines · day totals: unmeasured",
           "roi · night: improvements 0.0M · gained 0.0 min/day · 1 unmeasured",
           "roi · last 1 nights: improvements 0.0M · gained 0.0 min/day"],
       "a change pends until it ran a full settled day; its day totals then have no load control: unmeasured, its "
@@ -555,8 +555,8 @@ for back in (1, 2, 3):
                  {"settled": True, "version": T.BUDGET_VERSION, "seconds": {"slot": 60}, "overhead_s": 60, "active_s": 5000})
 check(T.saved_min_day(dict(item, **{"class": "slot"}), L, L + 86400 * 9) == T.UNMEASURED
       and T.roi_lines([{"started": L, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1],
-                                                                         **{"class": "slot"})]}], L + 86400 * 9)
-      == ["roi · r · worker slot queue · 2.0M · +1/-1 lines · unmeasured before or after it",
+                                                                         **{"class": "retries"})]}], L + 86400 * 9)
+      == ["roi · r · retries and relaunches · 2.0M · +1/-1 lines · unmeasured before or after it",
           "roi · night: improvements 0.0M · gained 0.0 min/day · 1 unmeasured",
           "roi · last 1 nights: improvements 0.0M · gained 0.0 min/day"],
       "days stored as zeros before measurement started are unmeasured: the ROI settles as unmeasured, never pending, "
@@ -583,7 +583,7 @@ check([(i["ids"], i["class"], i["spend_m"], i["lines"]) for i in batch]
 twice, yielded = [dict(item, ref=ref, spend_m=1.0, lines=[1, 1], ids=[]) for ref in ("r1", "r2")], collections.Counter()
 check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": twice[:1]},
                    {"started": D0 + 3600, "hours": 3.0, "improvements": twice[1:]}], D0 + 86400 * 9, yielded)
-      == ["roi · r2 · suite slot wait · 1.0M · +1/-1 lines · day totals: unmeasured",
+      == ["roi · r2 · worker wrap-up · 1.0M · +1/-1 lines · day totals: unmeasured",
           "roi · night: improvements 0.0M · gained 0.0 min/day · 1 unmeasured",
           "roi · last 2 nights: improvements 0.0M · gained 0.0 min/day"] and yielded == {},
       "a class-level drop in the day totals credits no fix over the trend, the earliest neither, nor its fixer job in "
