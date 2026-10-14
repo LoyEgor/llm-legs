@@ -330,7 +330,7 @@ Drive Egor'"'"'s Mac apps through Codex Computer Use: the CUA REPL `js` tool, wh
 - Close the windows and tabs you opened once the task is complete, unless the brief says to keep them; a stop for Egor'"'"'s input leaves them open.
 - Computer Use refuses some URLs (vendor policy, checked on the frontmost browser tab, even one Egor opened): when it stops the session for a disallowed URL, end with `OUTCOME: COMPUTER_UNAVAILABLE reason=disallowed-url url=<that tab'"'"'s URL>`.
 - Return the evidence the brief asks for and end with: `OUTCOME: COMPUTER_OK` or `OUTCOME: COMPUTER_UNAVAILABLE reason=<text>`'
-CLAUDEB_DENIED_TOOLS=ScheduleWakeup,CronCreate,Workflow,ListAgents
+CLAUDEB_DENIED_TOOLS=ScheduleWakeup,CronCreate,Workflow,ListAgents,Agent
 # The harness's own prompt steers a bypass-mode model toward sed and heredocs, which worker-edit-guard
 # only records; said up front, a text edit stays an Edit call the transcript names.
 CLAUDEB_EDIT_FENCE='EDITS: change repository files only through the Edit and Write tools where an edit can do it; a cp, mv, rsync or redirect with no Edit form is recorded for the run, never refused.'
@@ -1108,8 +1108,9 @@ supervise_claudeb() {
   # Into `access` and not into `command`: the effort-drop retry below rebuilds the command from it,
   # and a web-search state left behind there relaunches the run with a capability it was denied.
   # A wake-up scheduled in a -p session ends the turn and nothing ever fires it: the run exits 0
-  # "waiting on" suites it never reads, its work uncommitted. Workflow and ListAgents are a chat's
-  # fan-out, never a headless worker's; their schemas rode every cold start and context rewrite.
+  # "waiting on" suites it never reads, its work uncommitted. Workflow, ListAgents and Agent are a
+  # chat's fan-out, never a headless worker's: worker-spawn-hook.sh refuses every Agent type it can
+  # name (95 attempts, no spawn, in 7 days), so the tool is withheld and no turn is spent on the refusal.
   while IFS= read -r value; do access+=("$value"); done < <(web_search_claudeb_args "$(web_search_meta_state "$meta")" "$CLAUDEB_DENIED_TOOLS")
   value=$(jq -r '.inbox_settings // empty' "$meta")
   [ -z "$value" ] || access+=(--settings "$value")
