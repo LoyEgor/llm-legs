@@ -6354,6 +6354,151 @@
    "verdict": "kept",
    "zero": "removal saves 1.4 % of Claude spend (12.3M limit tokens/7 d); loses every test run a worker or chat reads before it commits (red-on-old-code, covering suites, PASS counts)",
    "note": "kept: the output is already minimal, its cost is the runs riding the context afterwards: in 1198 worker transcripts 10-07..10-14, 1239 tests/run-all calls average 312-344 tok (run-suites prints one table row a suite plus a 30-line tail per failure) and 2739 direct suite runs 185-209 tok (2380 already piped through tail/grep), ~0.9M first-seen tok in all, ~3.3 runs a worker session, which the preamble TEST LOOP already bounds; no quieter form keeps the pass/fail and the failure tail; Workers price per task 15.6k -> 19.1k (+23 %) is not traced to one cause here (output form unchanged), so the next audit compares runs per worker session"
+  },
+  {
+   "id": "fee:Checks",
+   "title": "Checks (Tests & checks)",
+   "audited_at": "2026-10-14T07:40:26+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.003401,
+   "prices": {
+    "Workers · Checks": 262.19154809828774,
+    "Reviewers · Checks": 1.0846465538135681
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.34 % of Claude spend; loses worker-pick routing, llm-limits headroom reads and chat-find/chat-name lookups the chats act on",
+   "note": "median call 0.8-1.2k chars, p90 3.9-5.2k (worker-pick 495 calls, llm-limits 419, chat-name 94, 7d, chat transcripts), each answers a routing or resume-line question the next call acts on; Δ +11% is chat-find (955k, 74 calls/week, the chat-name resume-line doctrine) and llm-limits lookups, whose output llm-legs f8e1bdfe already cut today (5 candidates, shorter footer); worker-pick -26%, review-debt -75%, review-flow-gate -65%; no replay shows an equal-decision cheaper form"
+  },
+  {
+   "id": "fee:Focus",
+   "title": "Focus (Context)",
+   "audited_at": "2026-10-14T07:40:27+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.003312,
+   "prices": {
+    "Workers · Focus": 2270.790170372545
+   },
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 0.33 % of Claude spend (~1,200 focus Writes a week); loses the focus line a compaction summary may carry, which experiment focus-off tests",
+   "note": "already off whole: Egor's experiment focus-off (claude-setup 4f81a9e, 2026-10-13, review 2026-10-20, marker ~/.cache/claude-experiments/focus-off.json present) stops context-nudge staged warnings, focus Writes and precompact-preserve focus lines; the audit window 10-07..10-13 mostly predates it (Δ -48%, Workers -62%), so the cut shows in the next window; the experiment is removed or kept whole at its review, never by this audit"
+  },
+  {
+   "id": "fee:Skills list",
+   "title": "Skills list (Context)",
+   "audited_at": "2026-10-14T07:40:51+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.002479,
+   "prices": {
+    "Reviewers · attachment: skill listing": 722.5495628412626,
+    "Workers · attachment: skill listing": 2364.922659439609,
+    "Background · attachment: skill listing": 216.70257167092169
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.25 % of Claude spend; loses model-invoked skills (media, experiment, code-review, claude-api, update-config)",
+   "note": "re-audit of startup:skill listing (kept 10-10): Δ -17% and Workers -47%; listed entries the model invoked in 30 days: review-bench 19, wut-ticket 12, media 9, experiment 7, before-commit 6, comment-review 3, ds-review 3; never invoked: anthropic-skills:arbostar-feature-spec and wut-ticket-draft (account-synced, 269k of 2.4M = 0.03 % of spend) and worker (typed 6 times); hiding them needs skillOverrides user-invocable-only in the unversioned ~/.claude/settings.json, which a worker may not write: exact keys proposed to the orchestrator in the run report"
+  },
+  {
+   "id": "fee:Tool schemas",
+   "title": "Tool schemas (Context)",
+   "audited_at": "2026-10-14T07:40:52+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.001925,
+   "prices": {
+    "Workers · attachment: deferred tool schemas": 764.2011835379595,
+    "Background · attachment: deferred tool schemas": 36.546736257050995,
+    "Reviewers · attachment: deferred tool schemas": 0.0
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.19 % of Claude spend; loses the Jira and Confluence tools workers and chats call",
+   "note": "re-audit of startup:deferred tool list (kept 10-10): Δ -50% (Workers -73%) as contexts begun before the 10-05 disableClaudeAiConnectors cut age out; the top Inside rows are atlassian tools (used, ToolSearch-loaded); never-used built-ins (PushNotification, RemoteTrigger, ExitWorktree, NotebookEdit, DesignSync) are ~135k of 1.7M, a settings deny for 0.015 % of spend"
+  },
+  {
+   "id": "fee:MCP instructions",
+   "title": "MCP instructions (Context)",
+   "audited_at": "2026-10-14T07:40:53+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.001135,
+   "prices": {
+    "Workers · attachment: MCP instructions": 1438.2698181797734,
+    "Background · attachment: MCP instructions": 25.600219491588
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.11 % of Claude spend; loses atlassian MCP instructions the Jira tools in workers rely on",
+   "note": "re-audit of startup:MCP instructions (kept 10-12): Δ -60% (Claude Docs, Figma, claude.ai Atlassian gone at source); only atlassian own text remains (977k of 1.0M); a headless --strict-mcp-config would drop Jira tools from wut-ticket and Arbostar workers and has no replay with identical decisions; unchanged since 10-12"
+  },
+  {
+   "id": "fee:Memory",
+   "title": "Memory (Context)",
+   "audited_at": "2026-10-14T07:40:54+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.000947,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.10 % of Claude spend; loses the on-demand recall of memory files and the MEMORY.md read an index edit requires",
+   "note": "Read and cat of memory files in 211 chat tool results, 7d (629k chars): MEMORY.md 54k is the Read the Edit tool demands before an index edit, the rest are recalls of slugs the index named, the memory protocol itself; startup memory injection is audited under startup:CLAUDE.md + memory index (kept 10-13); Δ +42% on a 0.6M base is more chats opening the index, not a larger read"
+  },
+  {
+   "id": "fee:Skills",
+   "title": "Skills (Context)",
+   "audited_at": "2026-10-14T07:40:54+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.000712,
+   "prices": {
+    "Reviewers · Skills": 257.3524999993969,
+    "Workers · Skills": 0.0
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.07 % of Claude spend; loses media, experiment and before-commit skill bodies on invocation",
+   "note": "bodies load only when invoked (media 9, experiment 7, before-commit 6 in 30 days); media 11.5k and experiment 4.5k bytes were compacted by claude-setup def095f on 10-13, after this window; before-commit (295k, new) is a project skill of another repo outside the four sweep repos"
+  },
+  {
+   "id": "fee:Doctor metrics",
+   "title": "Doctor metrics (Tests & checks)",
+   "audited_at": "2026-10-14T07:40:55+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.000631,
+   "prices": {
+    "Workers · Doctor metrics": 612.9455888561675
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.06 % of Claude spend; loses the doctors' own readings every night fixer and the Doctors menu act on",
+   "note": "speed-doctor and harness-doctor runs by night fixers (323k Workers, 223k Chat), median output 1.1-1.5k chars, p90 5-7k, each read decides a problem row; Δ +92% tracks the number of doctor fixer runs (Workers per task 0.6k vs 0.2k), no repeated identical read found worth a cap; no equal-decision cheaper form replayed"
+  },
+  {
+   "id": "fee:Daily note",
+   "title": "Daily note (Scripts)",
+   "audited_at": "2026-10-14T07:41:07+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.000647,
+   "prices": {
+    "Background · Daily note": 3059.2663934426228
+   },
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 0.07 % of Claude spend; loses the daily find-truth note",
+   "note": "already cut at source after this window: llm-legs 761cf189 (10-13) makes every ask_* leg the stripped launch (empty cwd, --safe-mode, no tool schemas unless web is declared) and find-truth f9b4199 declares the web the note needs; replay of the 2026-10-12 note gave the same judge_needed on 22.7k Opus context instead of 71.3k; per run -9% in the window predates it, runs 15 vs 6 are reruns; the price shows in the next window"
+  },
+  {
+   "id": "fee:Advisor",
+   "title": "Advisor (Scripts)",
+   "audited_at": "2026-10-14T07:41:08+03:00",
+   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
+   "share": 0.000824,
+   "prices": {
+    "Background · Advisor": 7790.42349726776
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.08 % of Claude spend; loses the daily advisor read",
+   "note": "already on the stripped launch (llm-legs 761cf189 default; find-truth f9b4199 dropped its CLAUDE_MINIMAL_CONTEXT opt-in); the 10-12 replays (research/script-context-2026-10-12.md) with the context cut gave more tokens on both and equal decisions on 1 of 2, so no cheaper equivalent exists; per run -9%, runs 14 vs 6 (cause of the extra runs not traced: advisor_today.sh is one launchd job a day, reruns assumed)"
   }
  ]
 }
