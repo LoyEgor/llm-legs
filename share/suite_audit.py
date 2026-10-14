@@ -17,6 +17,7 @@ import statistics
 import subprocess
 import time
 
+import fix_commit
 import handoffs
 import limit_hit
 import night_spend
@@ -222,6 +223,62 @@ def epoch(text):
     return spend.epoch(text) if text else None
 
 
+_tops = {}
+
+
+def top_state(top):
+    """`(HEAD, dirty names)` of a checkout, read once a run: what a path's last commit and its being dirty are
+    answered from. Names None where git could not say, so every path asks git itself."""
+    if top not in _tops:
+        head = git(top, "rev-parse", "HEAD")
+        try:
+            status = subprocess.run(["git", "-C", top, "status", "--porcelain", "-z"], capture_output=True, text=True,
+                                    timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            status = None
+        names = None
+        if status is not None and status.returncode == 0:
+            names, fields, i = set(), status.stdout.split("\0"), 0
+            while i < len(fields):
+                field, i = fields[i], i + 1
+                if len(field) > 3:
+                    names.add(field[3:])
+                    if "R" in field[:2] or "C" in field[:2]:
+                        names.update(fields[i:i + 1])
+                        i += 1
+        _tops[top] = (head, names)
+    return _tops[top]
+
+
+def last_commit_at(top, rel):
+    """`git log -1 --format=%ct -- rel`, kept per (checkout, path) for as long as HEAD holds: a path's last commit is
+    a function of HEAD alone."""
+    head = top_state(top)[0]
+    kept = fix_commit.memo_get("stamp", "%s|%s" % (top, rel)) if head else None
+    if kept and kept[0] == head:
+        return kept[1]
+    try:
+        out = subprocess.run(["git", "-C", top, "log", "-1", "--format=%ct", "--", rel], capture_output=True, text=True,
+                             timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return git(top, "log", "-1", "--format=%ct", "--", rel)
+    if out.returncode:
+        return ""
+    if head:
+        fix_commit.memo_put("stamp", "%s|%s" % (top, rel), [head, out.stdout.strip()])
+    return out.stdout.strip()
+
+
+def dirty_at(top, rel):
+    """`git status --porcelain -- rel`, asked only where the checkout's one listing names the path, a directory over
+    it or a file under it: a path the listing never touches prints nothing."""
+    names = top_state(top)[1]
+    if names is not None and not any(n == rel or (n.endswith("/") and rel.startswith(n)) or n.startswith(rel + "/")
+                                     for n in names):
+        return ""
+    return git(top, "status", "--porcelain", "--", rel)
+
+
 def changed_at(top, paths, held, row):
     """When a moved source last changed: its last commit (a dropped one's removal), or its mtime while the change is
     uncommitted, now when a dropped one has neither."""
@@ -230,8 +287,8 @@ def changed_at(top, paths, held, row):
     for path in set(paths) | {os.path.join(base, k) for k in recorded if k not in held}:
         key = spend.repo_path(path, base)
         if recorded.get(key) != held.get(key):
-            stamp = git(top, "log", "-1", "--format=%ct", "--", os.path.relpath(path, top))
-            dirty = git(top, "status", "--porcelain", "--", os.path.relpath(path, top))
+            stamp = last_commit_at(top, os.path.relpath(path, top))
+            dirty = dirty_at(top, os.path.relpath(path, top))
             at.append(os.path.getmtime(path) if (dirty or not stamp.isdigit()) and os.path.exists(path)
                       else float(stamp) if stamp.isdigit() and not dirty else time.time())
     return max(at, default=0.0)
@@ -320,6 +377,7 @@ def collect(now, journal, root, dead=None):
     wall-min/day), audit proofs and menu lines. `dead` ({repo/label: {reason, since, top, path}}, share/
     test_health.py) queues those suites too, a run or none. No journal row in the window reads nodata."""
     lo = now - WINDOW_D * 86400
+    _tops.clear()
     rows = runs(journal, lo)
     out = {"status": "nodata", "as_of_s": int(now), "problems": [], "selection": [], "issues": [], "proofs": {},
            "menu": [], "head": "no suite run in run-suites' journal over %d days" % WINDOW_D}

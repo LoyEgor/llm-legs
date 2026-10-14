@@ -24,6 +24,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 import cpu_audit  # noqa: E402
+import fix_commit  # noqa: E402
 import spend  # noqa: E402
 import suite_audit  # noqa: E402
 import test_health  # noqa: E402
@@ -1191,6 +1192,7 @@ def hours(h):
 def collect(write, now):
     started, cpu_start = time.monotonic(), H.cpu_s()
     folder = state_dir()
+    fix_commit.use_memo(os.path.join(folder, fix_commit.LANDED_FILE), write)
     state = H.read_json(os.path.join(folder, "state.json"), {})
     LANDED_HELD.update(state.get("landed") or {})
     PROBE_HELD.update(state.get("probe_days") or {})

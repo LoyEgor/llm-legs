@@ -578,6 +578,61 @@ git("commit", "-qam", "a chat's edit", at=NOW - 900)
 check(landed is None and dirty == reason() == "source changed",
       "a helper only a Speed audit landing moved leaves the audit closed; an uncommitted edit or a commit main took any "
       "other way reopens it: %s %s" % (landed, dirty))
+# A path's last commit and its being dirty come from one HEAD read and one status listing a run, the same answers git
+# gives path by path; the last commit is kept across runs while HEAD holds and asked again once it moves.
+import fix_commit
+stamp_top = os.path.join(work, "stamp-top")
+os.makedirs(os.path.join(stamp_top, "tests", "dir"))
+sgit = lambda *a, at=None: subprocess.run(["git", "-C", stamp_top] + list(a), capture_output=True, text=True, check=True,
+                                           env=dict(os.environ, **({"GIT_AUTHOR_DATE": "@%d" % at, "GIT_COMMITTER_DATE": "@%d" % at} if at else {}))).stdout.strip()
+sgit("init", "-q")
+for name in ("a.sh", "b.sh", "c.sh", "d.sh", "dir/e.sh"):
+    with open(os.path.join(stamp_top, "tests", name), "w") as handle:
+        handle.write("one\n")
+sgit("add", "-A")
+sgit("commit", "-qm", "files", at=1700000000)
+sgit("mv", "tests/c.sh", "tests/c2.sh")
+with open(os.path.join(stamp_top, "tests", "a.sh"), "w") as handle:
+    handle.write("two\n")
+with open(os.path.join(stamp_top, "tests", "b.sh"), "w") as handle:
+    handle.write("staged\n")
+sgit("add", "tests/b.sh")
+os.remove(os.path.join(stamp_top, "tests", "d.sh"))
+os.makedirs(os.path.join(stamp_top, "tests", "fresh"))
+for name in ("tests/fresh/x.sh", "tests/untracked.sh"):
+    with open(os.path.join(stamp_top, name), "w") as handle:
+        handle.write("new\n")
+rels = ["tests/a.sh", "tests/b.sh", "tests/c.sh", "tests/c2.sh", "tests/d.sh", "tests/dir/e.sh", "tests/dir", "tests",
+        "tests/fresh/x.sh", "tests/fresh", "tests/untracked.sh", "tests/none.sh", "../elsewhere/f.sh"]
+asked = lambda *a: [subprocess.run(["git", "-C", stamp_top] + list(a) + ["--", r], capture_output=True, text=True).stdout.strip()
+                    for r in rels]
+suite_audit._tops.clear()
+fix_commit.use_memo(os.path.join(work, "stamps.json"), True)
+check([suite_audit.dirty_at(stamp_top, r) for r in rels] == asked("status", "--porcelain")
+      and [suite_audit.last_commit_at(stamp_top, r) for r in rels] == asked("log", "-1", "--format=%ct")
+      and sum(bool(suite_audit.dirty_at(stamp_top, r)) for r in rels) == 9,
+      "dirty and last-commit answers equal git's per path for a modified, staged, renamed, deleted, untracked and "
+      "untracked-directory path, a directory and one outside the checkout")
+fix_commit.memo_flush()
+fix_commit.use_memo(os.path.join(work, "stamps.json"), False)
+suite_audit._tops.clear()
+spawned, real_run = [], subprocess.run
+subprocess.run = lambda cmd, *a, **k: spawned.append(cmd[3]) or real_run(cmd, *a, **k)
+try:
+    again = [suite_audit.last_commit_at(stamp_top, r) for r in rels]
+    clean = [suite_audit.dirty_at(stamp_top, "tests/none.sh"), suite_audit.dirty_at(stamp_top, "../elsewhere/f.sh")]
+    held_calls, expected = list(spawned), asked("log", "-1", "--format=%ct")
+    with open(os.path.join(stamp_top, "tests", "dir", "e.sh"), "w") as handle:
+        handle.write("three\n")
+    sgit("commit", "-qam", "moves HEAD", at=1700100000)
+    suite_audit._tops.clear()
+    moved = suite_audit.last_commit_at(stamp_top, "tests/dir/e.sh")
+finally:
+    subprocess.run = real_run
+check(again == expected and held_calls.count("log") == 1 and "status" in held_calls and clean == ["", ""]
+      and moved == "1700100000",
+      "a later run asks git for no last commit while HEAD holds (only the one path git cannot answer), and a moved HEAD "
+      "asks again: %s %s" % (held_calls, moved))
 print(count[0])
 EOF
 ) || { printf 'FAIL: the Suite audits block misjudged its fixture\n' >&2; exit 1; }
