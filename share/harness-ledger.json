@@ -9268,6 +9268,108 @@
       "reviewed_by": "night 20261014T013750Z-8004 harness-limits-20261014T021654Z-0129",
       "note": "2026-10-14 ruled out as a hang of ours: the one kill in 577 runs of the hook (born claude-setup@4fcd4bba 2026-10-13 11:27Z), 15:36:37Z in a stop where the parallel notices also ran long (chat-names 1.96 s, word-journal 1.42 s) on a saturated machine (samples.jsonl 15:32Z busy 0.99, kernel 0.48, 1191 forks). `connections check` is 0.11-0.15 s wall on ~0.1 CPU-s (cProfile: 2394 stats, 61 opens, 28 JSON decodes, nothing waits); the only blocking calls are edit_registry's flock (reached only when something new is found, which then prints a notice) and rb_emit, and the slow runs of the same 15:25-17:05Z window (4.31, 3.46, 2.58 s on 0.11-0.14 CPU-s) were all silent, so the wall was on the read-only path. Ruled out: lock contention (no sync between the owner chat's 11:14Z migration and 16:51Z: no sync.log, last-sync.json/lock mtimes), the 929 dead $TMPDIR project keys it stats (3 ms, unchanged under 4 mktemp/rmdir churn loops), CPU saturation (10 busy loops: 0.10-0.26 s), the extra imports (15 vs chat_names' 9 dylibs; concurrent.futures+subprocess ~25 ms). Unattributed: why its wall/CPU ran 10-36x in that window against 2-7x for its siblings (blind spot hook-off-cpu-wait). A kill of any hook with usual under 1 s at the 5 s cap reads over LIMIT_FAULT_X by construction.",
       "handoff": null
+    },
+    {
+      "id": "regression-test-health-wait-night-volume",
+      "title": "Test health wait_night over its usual: a busier night or morning read as a regression",
+      "match": {
+        "rule": "regression",
+        "ident": "test-health/wait_night"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T06:40:00+03:00",
+          "by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
+          "files": [
+            "llm-legs/share/test_health.py",
+            "llm-legs/tests/test_test_health.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "regression-test-health-wait-chat-volume",
+        "regression-test-health-idle-volume"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
+      "note": "Test health judged its minutes lines as raw totals against the median day, so the night's volume read as a regression; it now judges minutes a suite run of the line's class against the usual at today's runs (speed-doctor-design §2: a regression is a unit metric). 24 h to 2026-10-14 05:20: 3514 w-min/day over 537. Night 3131 (2026-10-13) ran 192 night callers and 7167 suite runs (31-96 callers, 1112-4621 runs on 10-06..10-12) at 29.8 s wait a run against 24-48 s (median 27): 3344 at today's runs, inside the band. Queue share 27 % against 24 %. Ruled out: a slot or lock slowdown (wait a run flat).",
+      "handoff": null
+    },
+    {
+      "id": "regression-test-health-wait-chat-volume",
+      "title": "Test health wait_chat over its usual: a busier night or morning read as a regression",
+      "match": {
+        "rule": "regression",
+        "ident": "test-health/wait_chat"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T06:40:00+03:00",
+          "by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
+          "files": [
+            "llm-legs/share/test_health.py",
+            "llm-legs/tests/test_test_health.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "regression-test-health-wait-night-volume",
+        "regression-test-health-idle-volume"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
+      "note": "Test health judged its minutes lines as raw totals against the median day, so the night's volume read as a regression; it now judges minutes a suite run of the line's class against the usual at today's runs (speed-doctor-design §2: a regression is a unit metric). 24 h to 2026-10-14 05:20: 223 min/day over 92. 2026-10-14's morning chats ran 637 suite runs by 06:00 (470-1485 a whole day before) at 8.6 s wait a run against 7.9-13 s: 237 at today's runs, inside the band.",
+      "handoff": null
+    },
+    {
+      "id": "regression-test-health-idle-volume",
+      "title": "Test health idle over its usual: a busier night or morning read as a regression",
+      "match": {
+        "rule": "regression",
+        "ident": "test-health/idle"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T06:40:00+03:00",
+          "by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
+          "files": [
+            "llm-legs/share/test_health.py",
+            "llm-legs/tests/test_test_health.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "regression-test-health-wait-night-volume",
+        "regression-test-health-wait-chat-volume"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
+      "note": "Test health judged its minutes lines as raw totals against the median day, so the night's volume read as a regression; it now judges minutes a suite run of the line's class against the usual at today's runs (speed-doctor-design §2: a regression is a unit metric). 24 h to 2026-10-14 05:20: 116 min/day over 60, 9499 suite runs against 2366-7309 a day: 85 at today's runs, inside the band; per-suite idle stays priced by the opportunity:test-health/idle rows.",
+      "handoff": null
+    },
+    {
+      "id": "regression-test-health-retests-night-reruns",
+      "title": "Test health retests over its usual: Speed's night fixers rerunning green content",
+      "match": {
+        "rule": "regression",
+        "ident": "test-health/retests"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
+      "note": "24 h to 2026-10-14 05:20: 540 min/day over 2.5, 653 repeats; 467 min the night's workers (night 3131), 52 chats at night, 18 by day. Two measurement faults fixed in llm-legs/share/test_health.py by this run: the usual took 10-06..10-08 as 0 though no row journaled a tree before 2026-10-09 (now unmeasured), and a --profile run, which the suite-audit brief orders, read as a repeat of a plain green run (112 min; now only a profiled green). Still red: 466 against 78 at today's runs. By worktree: suite audits 333 min, test-health and regression fixers 104, other night jobs 42, main 37. By shape: same caller rerunning green content directly 204 min (median 17 s after its green: flake hunts as `for i in 1..8; bash tests/x.sh` and env variants like PATH=/usr/bin, e.g. 1983b0bf on test_harness_doctor, claudeb-1791857509-61134-1111 30 runs of test_agy_quota under load), another caller's green first 151 (14 fixers on night base tree d7a0644b, 79 min), multi-suite reruns 94, named single reruns 37. Open questions for the owner: design §1 counts unattended work 0, yet this line counts the night's worker runs; and a deliberate flake or timing rerun is indistinguishable from a wasted one (blind spot test-health-retests-intent). Not tried: a cached-verdict skip in run-suites (would break flake hunts and timing runs).",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -9648,6 +9750,13 @@
       "reason": "notice-connections.sh ran 1-5 s on 0.1-0.3 CPU-s through 2026-10-13 15:25-17:05Z while its sibling notices ran 2-7x their CPU, and nothing in the code waits; hook-time rows carry only wall and cpu_us, and a timeout kill's cpu_us lacks the killed hook's children (timeout signals the group, the orphaned python is never reaped by the timed shell), so the killed run read 17 ms",
       "since": "2026-10-14",
       "would_catch_if": "hook-time recorded per run its involuntary context switches and block-input counts (getrusage of the waited children), or a slow run over its cap left a spindump/sample of its process group"
+    },
+    {
+      "id": "test-health-retests-intent",
+      "what": "which repeats of green content were deliberate: a flake hunt, a timing run or the same suite under another environment (PATH, python3)",
+      "reason": "the suite journal keys a run by tree and suite only, so test_health.label calls every rerun of green content a retest; on 2026-10-13 most of the night's 467 retest minutes were Speed fixers reproducing flakes or timing suites",
+      "since": "2026-10-14",
+      "would_catch_if": "the suite journal carried the run's reason (a --repeat N flag for hunts, the python3 and PATH of the run) so a deliberate rerun reads as its own class"
     }
   ]
 }
