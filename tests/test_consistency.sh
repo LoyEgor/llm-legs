@@ -3422,12 +3422,12 @@ assert doc_has '| ek | Media manifest check journal |'
 # Row em: the away mark's path, line, cadence and freshness, as presence.lua writes it and share/presence.sh reads it.
 assert grep -qF 'return dir .. "/away"' "$ROOT/hammerspoon/presence.lua"
 assert grep -qF '/presence/away"; } 2>/dev/null' "$ROOT/share/presence.sh"
-assert grep -qF 'string.format("%d\t%d\n", math.floor(now - idle), math.floor(now))' "$ROOT/hammerspoon/presence.lua"
-assert grep -qx 'local AWAY_S, WATCH_S = 600, 2' "$ROOT/hammerspoon/presence.lua"
+assert grep -qF 'string.format("%d\t%d\n", awaySince, math.floor(now))' "$ROOT/hammerspoon/presence.lua"
+assert grep -qx 'local AWAY_S, WATCH_S, GRACE_S = 600, 2, 30' "$ROOT/hammerspoon/presence.lua"
 assert grep -qx 'PRESENCE_MARK_FRESH_S=180' "$ROOT/share/presence.sh"
 assert grep -qx 'GEMINI_AWAY_MIN=60' "$ROOT/bin/llm-refresh"
 assert grep -qF 'return dir .. "/away-off"' "$ROOT/hammerspoon/presence.lua"
-assert grep -qF 'if idle >= AWAY_S and M.enabled() then markAway(now, idle) else M.back() end' "$ROOT/hammerspoon/presence.lua"
+assert grep -qF 'if M.enabled() and (idle >= AWAY_S or stillAway(now, idle)) then markAway(now, idle) else M.back() end' "$ROOT/hammerspoon/presence.lua"
 assert doc_has '| em | Away mark |'
 
 assert grep -Fq 'doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])' "$ROOT/share/time_budget.py"

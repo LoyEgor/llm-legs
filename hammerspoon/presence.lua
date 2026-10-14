@@ -1,14 +1,15 @@
 local M = {}
 
--- Away mark: once HID input has been idle AWAY_S, presence/away holds "<last input epoch>\t<written epoch>",
--- rewritten each minute; a WATCH_S watch drops it the moment input returns and kicks a limits refresh.
--- Readers (share/presence.sh, M.away) take a mark left unwritten for minutes as present. Egor's switch
--- (Auto ▸ Away Mode) is presence/away-off: while it exists no mark is written, so every consumer runs as present.
+-- Away mark: once HID input has been idle AWAY_S, or at once when Egor clicks Auto ▸ Away Mode (M.goAway),
+-- presence/away holds "<left epoch>\t<written epoch>", rewritten each minute; a WATCH_S watch drops it the moment
+-- input returns (after a click, input in its first GRACE_S does not count) and kicks a limits refresh.
+-- Readers (share/presence.sh, M.away) take a mark left unwritten for minutes as present. presence/away-off turns
+-- the whole mode off (Egor asks a chat; no menu item): while it exists no mark is written.
 -- presence/last-away keeps "<left epoch>\t<back epoch>" of the last span a mark covered: the menu shows it as proof.
-local AWAY_S, WATCH_S = 600, 2
+local AWAY_S, WATCH_S, GRACE_S = 600, 2, 30
 local REFRESH_KICK = 'exec /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.llm-refresh"'
 
-local timer, watch, lastMinute
+local timer, watch, lastMinute, awaySince
 local listeners = {}
 
 local function presenceDir()
@@ -62,7 +63,7 @@ end
 function M.back()
   local was = watch ~= nil
   if watch then watch:stop() end
-  watch = nil
+  watch, awaySince = nil, nil
   local handle = io.open(markPath())
   local left = handle and (handle:read("l") or ""):match("^(%d+)\t")
   if handle then handle:close() end
@@ -93,17 +94,23 @@ function M.setEnabled(on)
   notify()
 end
 
+-- Away holds while no input came since awaySince + GRACE_S: for an idle mark awaySince is the last input itself.
+local function stillAway(now, idle)
+  return awaySince ~= nil and idle >= now - awaySince - GRACE_S
+end
+
 local function markAway(now, idle)
+  awaySince = awaySince or math.floor(now - idle)
   local path = markPath()
   local handle = io.open(path .. ".tmp", "w")
   if not handle then return end
-  handle:write(string.format("%d\t%d\n", math.floor(now - idle), math.floor(now)))
+  handle:write(string.format("%d\t%d\n", awaySince, math.floor(now)))
   handle:close()
   os.rename(path .. ".tmp", path)
   if not watch then
     watch = hs.timer.doEvery(WATCH_S, function()
       local ok, seconds = pcall(hs.host.idleTime)
-      if ok and seconds and seconds < AWAY_S then M.back() end
+      if ok and seconds and not stillAway(hs.timer.secondsSinceEpoch(), seconds) then M.back() end
     end)
     notify()
   end
@@ -130,9 +137,17 @@ function M.tick()
       handle:write(string.format("%d\t%d\t%s\n", minute, idle, bundle))
       handle:close()
     end
-    if idle >= AWAY_S and M.enabled() then markAway(now, idle) else M.back() end
+    if M.enabled() and (idle >= AWAY_S or stillAway(now, idle)) then markAway(now, idle) else M.back() end
   end)
   if not ok then print("presence: tick failed: " .. tostring(err)) end
+end
+
+-- Egor's click on Auto ▸ Away Mode: away from now on, not after AWAY_S of idle.
+function M.goAway()
+  if watch or not M.enabled() then return end
+  local now = hs.timer.secondsSinceEpoch()
+  awaySince = math.floor(now)
+  markAway(now, 0)
 end
 
 local function schedule()

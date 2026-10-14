@@ -177,6 +177,32 @@ presence.tick()
 check(presence.away() and read(mark) ~= nil and changes == 5, "switched on, the next away minute did not mark")
 presence.back()
 
+-- His click on Auto ▸ Away Mode: away at once; input in its first 30 s keeps it, input later ends it.
+;(function()
+  now, idle = now + 60, 0
+  local clicked = now
+  presence.goAway()
+  check(presence.away() and read(mark) == string.format("%d\t%d\n", clicked, clicked),
+    "a click did not mark away at once: «" .. tostring(read(mark)) .. "»")
+  local returnWatch = every[#every]
+  now, idle = clicked + 20, 5
+  returnWatch.fn()
+  check(presence.away(), "input inside the grace ended the click's away")
+  now, idle = clicked + 60, 45
+  presence.tick()
+  check(presence.away() and read(mark) == string.format("%d\t%d\n", clicked, now),
+    "the minute after a click dropped or moved the mark: «" .. tostring(read(mark)) .. "»")
+  now, idle = clicked + 90, 1
+  returnWatch.fn()
+  check(not presence.away() and read(mark) == nil, "input after the grace kept the click's away")
+  local left, back = presence.lastAway()
+  check(left == clicked and back == now, "the click's span was not kept: " .. tostring(left) .. " " .. tostring(back))
+  presence.setEnabled(false)
+  presence.goAway()
+  check(not presence.away() and read(mark) == nil, "a click marked away while the mode is off")
+  presence.setEnabled(true)
+end)()
+
 -- Tick cost: fixture files, the real idle and frontmost APIs (read-only).
 local realHs = { fs = hs.fs, host = hs.host, application = hs.application, window = fakeHs.window,
   task = fakeHs.task, timer = { secondsSinceEpoch = function() return now end, doEvery = fakeHs.timer.doEvery } }
