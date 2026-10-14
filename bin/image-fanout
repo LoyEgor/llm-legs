@@ -96,7 +96,7 @@ done
 case "$accounts_mode" in all|pick) ;; *) usage ;; esac
 if [ -n "$jobs_file" ]; then
   [ "$request_flags" = false ] || usage_error '--jobs carries each request: drop --prompt, --ref, --edit, --aspect, --size and --transparent'
-  [[ "$jobs_file" = /* ]] && [ -f "$jobs_file" ] || usage
+  [[ "$jobs_file" = /* ]] && [ -f "$jobs_file" ] || usage_error "--jobs must name an existing file by absolute path: $jobs_file"
 else
   [ -n "$prompt" ] || usage
 fi

@@ -61,7 +61,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --vendor) [ "$#" -ge 2 ] || usage; vendor=$2; shift 2 ;;
     --vendors) [ "$#" -ge 2 ] || usage; vendors_arg=$2; shift 2 ;;
-    --jobs) [ "$#" -ge 2 ] || usage; jobs=$2; shift 2 ;;
+    --jobs) [ "$#" -ge 2 ] || usage; jobs=$2; [[ "$jobs" = /* ]] || jobs=$PWD/$jobs; shift 2 ;;
     --) shift; break ;;
     -h|--help) usage ;;
     *) printf 'media-run: unknown option %s before -- (the script'\''s own args go after --)\n' "$1" >&2; usage ;;

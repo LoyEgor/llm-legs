@@ -144,6 +144,14 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$gemini_base_home/.gemini-profiles}
 . "$root/share/gemini-accounts.sh"
 . "$root/share/flow-image.sh"
 tool_input=''
+# An --edit with no --aspect keeps its input's shape (the nearest edit aspect): the 1:1 default squared
+# a 4:5 photo, so its composite was skipped (live, 2026-10-15).
+if [ -n "$edit" ] && [ "$aspect_given" = false ] && [ -z "$tool_op" ]; then
+  edit_ratio=$(sips -g pixelWidth -g pixelHeight "$edit" 2>/dev/null |
+    awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {if (w && h) print w ":" h}')
+  [ -z "$edit_ratio" ] ||
+    aspect=$(image_caps_nearest_aspect "$edit_ratio" "$(image_caps_get "$root" gemini '.aspects.edit | join(",")')")
+fi
 route_given=$route aspect_before=$aspect model_given=$model
 if [ -n "$tool_op" ]; then flow_image_tool_route; else flow_image_route; fi
 IMAGE_LEG_ROUTE=$route

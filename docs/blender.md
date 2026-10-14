@@ -65,8 +65,10 @@ journals its wait (`docs/harness-doctor-design.md` §12). So queue renders freel
 
 - A transparent PNG goes straight into a layout, a page or `magick` composites; `image-cutout` is
   not needed.
-- A render can seed AI work: `media-run image -- --edit <render>` to restyle around it, or a
-  still as `--first-frame` for `media-run video` when the motion is too organic for Blender.
+- A render can seed AI work: `media-run image -- --edit <render>` keeping every shape, position and
+  the camera while the model replaces material and light (Blender's exact geometry, the model's finish;
+  the media skill's Editing section), or a still as `--first-frame` for `media-run video` when the
+  motion is too organic for Blender.
 - Web: `.glb` loads in three.js (`GLTFLoader` + `DRACOLoader`) or `<model-viewer>`; `.webm` with
   alpha plays over any page background in Chromium and Firefox; Safari's WebM alpha is unreliable, so
   for it render the `.mp4` over the page's own background color (`--backdrop '#<page bg>'`).
