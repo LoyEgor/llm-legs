@@ -1261,8 +1261,13 @@ priced_cut() { # evidence -> whether it prices the cheapest cut: cut <what> save
 }
 
 review_refusal() { # round -> why the run's review round keeps it open, empty when it is settled
-  local open err
+  local open err own="${WORKER_RUN_RECORD:-}/verdicts.jsonl"
   err=$(mktemp) || { printf 'cannot ask review-bench about round %s\n' "$1"; return; }
+  # worker-run folds a run's verdicts.jsonl only once it exits, so a fixer closing its own run records them first.
+  if [ -n "${WORKER_RUN_RECORD:-}" ] && jq -se 'length > 0 and all(.kind == "fixer" and (has("rater") | not))' "$own" >/dev/null 2>&1 &&
+     ! "${DOCTOR_FIX_REVIEW_BENCH:-review-bench}" record "$1" --verdicts "$own" >/dev/null 2>"$err"; then
+    printf 'review round %s refused this run'"'"'s verdicts.jsonl: %s\n' "$1" "$(tr '\n' ' ' <"$err")"; rm -f "$err"; return
+  fi
   open=$("${DOCTOR_FIX_REVIEW_BENCH:-review-bench}" fix "$1" --print 2>"$err") || {
     printf 'review round %s cannot be read: %s\n' "$1" "$(tr '\n' ' ' <"$err")"; rm -f "$err"; return; }
   rm -f "$err"

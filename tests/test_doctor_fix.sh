@@ -983,6 +983,8 @@ EOF
 speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json" DOCTOR_FIX_REVIEW_BENCH="$FAKE_BIN/review-bench" WORKER_SLOTS=4)
 cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
+[ "$1" != record ] || { [ "$(jq -r .finding "$4")" = 0 ] || { echo "finding 9 is not confirmed" >&2; exit 1; }
+  rm -f "$DATA/rb-open-$2"; exit 0; }
 [ "$1 $3" != "fix --print" ] || { [ ! -e "$DATA/rb-gone-$2" ] || { echo "no round $2" >&2; exit 1; }
   [ ! -e "$DATA/rb-open-$2" ] || cat "$DATA/rb-open-$2"; exit 0; }
 [ ! -e "$DATA/rb-fails" ] || { printf 'reviewing x\nreview-bench: no lens named speed\n' >&2; exit 2; }
@@ -1105,7 +1107,15 @@ jq '.lens_round = "rb-lens"' "$(record "$sid")" >"$WORK/lens.json" && mv "$WORK/
 printf 'ROUND: rb-lens\n\n  0  P2  a.txt  defect\n' >"$DATA/rb-open-rb-lens"
 assert_fails fix close "$sid" --decisions "$WORK/sd" "a speed diff" 2>"$WORK/err"
 assert grep -qxF "review round rb-lens has open findings: fix them (review-bench fix rb-lens --brief <file>) or close the round (review-bench close rb-lens --nofix --reason '<why>')" "$WORK/err"
-rm "$DATA/rb-open-rb-lens" && : >"$DATA/rb-gone-rb-lens"
+# The fixer's own verdicts.jsonl, folded only after its run exits, settles the round at its close.
+mkdir -p "$WORK/lensrun" && printf '{"kind":"fixer","finding":9,"outcome":"fixed"}\n' >"$WORK/lensrun/verdicts.jsonl"
+WORKER_RUN_RECORD="$WORK/lensrun" fix close "$sid" --decisions "$WORK/sd" "a speed diff" 2>"$WORK/err" && fail "a refused verdict closed the run"
+assert grep -qxF "review round rb-lens refused this run's verdicts.jsonl: finding 9 is not confirmed " "$WORK/err"
+printf '{"kind":"fixer","finding":0,"outcome":"fixed"}\n' >"$WORK/lensrun/verdicts.jsonl"
+: >"$WORK/none"
+WORKER_RUN_RECORD="$WORK/lensrun" fix close "$sid" --decisions "$WORK/none" "nothing reached" 2>"$WORK/err" && fail "an undecided run closed"
+assert_fails grep -qF 'review round rb-lens' "$WORK/err"
+: >"$DATA/rb-gone-rb-lens"
 assert_fails fix close "$sid" --decisions "$WORK/sd" "a speed diff" 2>"$WORK/err"
 assert grep -qxF "review round rb-lens cannot be read: no round rb-lens " "$WORK/err"
 rm "$DATA/rb-gone-rb-lens"
