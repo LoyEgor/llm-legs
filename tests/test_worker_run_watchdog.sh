@@ -25,7 +25,7 @@ assert jq -e --argjson l "$launched" '.terminal_reason == "deadline" and .starte
   and .started_at <= .cli_starts[0] and .ended_at >= .started_at + 1 and .attempt_rcs == [143]' "$RUN_DIR/meta.json" >/dev/null
 fi
 
-if suite_shard_owns 1 wd-lastwords; then
+if suite_shard_owns 2 wd-lastwords; then
   # A run the deadline ended has no final answer, and its report carries its last messages instead.
   clear_stub
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
