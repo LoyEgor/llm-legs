@@ -86,7 +86,7 @@ slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the 
       printf '%s: waiting for one of %s slots under %s\n' "$limiter" "$count" "$dir" >&2
     fi
     [ $# -eq 0 ] || "$@"
-    if [ "$reason" = room ]; then sleep "${SLOTS_ROOM_POLL_S:-15}"; else sleep "${SLOTS_POLL_S:-2}"; fi
+    if [ "$reason" = room ]; then slot_floor_wait "$dir" "${count%-*}" "$ceiling" && break; else sleep "${SLOTS_POLL_S:-2}"; fi
     # Run as $(slot_wait …), this loop outlives a killed caller and would take a slot for nobody.
     kill -0 "$$" 2>/dev/null || { slot_wait_end "$dir" "$count" "$hold" "$reason"; return 1; }
     [ -z "${SLOT_OWNER_ENDED:-}" ] || ! $SLOT_OWNER_ENDED || { slot_wait_end "$dir" "$count" "$hold" owner-ended; return 1; }
@@ -95,6 +95,19 @@ slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the 
   kill -0 "$$" 2>/dev/null || { slot_release "$SLOT_TAKEN"; slot_wait_end "$dir" "$count" "$hold" "$reason"; return 1; }
   slot_wait_end "$dir" "$count" "$hold" "$reason"
   printf '%s\n' "$SLOT_TAKEN"
+}
+
+# A floor slot needs no room: while room is lacking, the floor is scanned every SLOTS_POLL_S and the
+# room judged again only after SLOTS_ROOM_POLL_S.
+slot_floor_wait() { # dir floor ceiling-seconds -> succeeds once a floor slot was taken within one room poll
+  local ticks
+  ticks=$(awk -v r="${SLOTS_ROOM_POLL_S:-15}" -v p="${SLOTS_POLL_S:-2}" 'BEGIN { n = p > 0 ? int(r / p) : 1; print (n < 1 ? 1 : n) }')
+  while [ "$ticks" -gt 0 ]; do
+    sleep "${SLOTS_POLL_S:-2}"
+    ticks=$((ticks - 1))
+    slot_take "$1" "$2" "$3" >/dev/null && return 0
+  done
+  return 1
 }
 
 slot_wait_end() { # dir count hold reason -> journals the hold's wait with the count allowed and held at its end

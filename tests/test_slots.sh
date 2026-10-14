@@ -115,6 +115,19 @@ assert [ "$(cat "$WORK/lr-waited")" = "$WORK/lr/2" ]
 assert jqe -s 'length == 1 and .[0].class == "workers" and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "limit"' \
   "$WORK/lr-waits"/*.jsonl
 slot_release "$WORK/lr/2"; kill "$l1"; until_gone "$l1"; rm -rf "$WORK/lr"
+# A waiter refused for room takes a floor slot freed under it on the next floor poll, not the next room poll.
+mkdir -p "$WORK/fl"
+room 2 150 140 $((guard + 1))
+f1=$(holder "$WORK/fl" 1)
+(SLOTS_ROOM_POLL_S=60 slot_wait "$WORK/fl" 1-2 3600 floor-limiter "a floor job" >"$WORK/fl-waited") &
+waiter=$!
+for i in $(seq 1 50); do [ "$(holds_of floor-limiter)" = 1 ] && break; sleep 0.1; done
+kill "$f1"; until_gone "$f1"
+freed=$SECONDS
+wait "$waiter" || fail "slot_wait never took the floor slot freed under it"
+assert [ "$(cat "$WORK/fl-waited")" = "$WORK/fl/1" ]
+assert [ $((SECONDS - freed)) -lt 20 ]
+slot_release "$WORK/fl/1"; rm -rf "$WORK/fl"
 # Under memory pressure the worker pool still takes its whole floor of 5, and only the sixth waits. The
 # room-filled ceiling is 8, not the pool's 40: the cap is asserted through worker_slots above, and every
 # taken slot costs a lock attempt on each slot below it.
