@@ -43,19 +43,21 @@ assert() {
 }
 eq() { [ "$1" = "$2" ] || return 1; }
 # ~1100 `grep -Fq <one-line literal> <file>` probes were a fork each and most of this suite's CPU:
-# that one form is answered in-process, every other grep goes to the binary.
+# that form and its whole-line `-x` twin are answered in-process, every other grep goes to the binary.
+# Stdin stays with the binary: bash reads a pipe a byte at a time, slower than the fork past ~10 KB.
 grep() {
-  local LC_ALL=C text pattern file
+  local LC_ALL=C text pattern file line=''
   case "$#:${1-}:${2-}" in
     4:-Fq:-- | 4:-qF:--) pattern=$3 file=$4 ;;
     3:-Fq:* | 3:-qF:*) [[ $2 == -* ]] || pattern=$2 file=$3 ;;
+    3:-Fxq:* | 3:-Fqx:* | 3:-qFx:* | 3:-qxF:* | 3:-xFq:* | 3:-xqF:*) [[ $2 == -* ]] || pattern=$2 file=$3 line=$'\n' ;;
   esac
   if [ -z "${pattern-}" ] || [[ $pattern == *$'\n'* || $file == -* ]] || [ ! -f "$file" ] || [ ! -r "$file" ]; then
     command grep "$@"
     return
   fi
   text=$(<"$file")
-  [[ $text == *"$pattern"* ]]
+  [[ $line$text$line == *"$line$pattern$line"* ]]
 }
 
 REVIEW_ROOT="${REVIEW_ROOT:-$PROJECTS/review-bench}"
@@ -211,7 +213,7 @@ assert grep -q 'bucket.stale == true' "$HAMMER"
 # same chat two different models in two columns Egor reads side by side.
 CHAT_RESUME="$ROOT/share/chat_resume.py"
 for alias in sol astra; do
-  label=$(python3 -c 'import sys; print(sys.argv[1].capitalize())' "$alias")
+  label=${alias^}
   assert grep -Fq "anthropic.ccr.$alias) model=$label ;;" "$STATUSLINE"
   assert grep -Fq "\"$alias\": \"$label\"" "$CHAT_RESUME"
   assert grep -Fq "\"$alias\"" <(grep '^FAMILIES = ' "$ROOT/bin/claudegpt")
@@ -475,10 +477,16 @@ assert grep -Fq 'retired_flash = "agy-" + "flash35-"' "$RB_RATERS"
 assert grep -Fq 'return "flash35-" + rater[len(retired_flash):]' "$RB_RATERS"
 # Every family the bench can launch resolves to its slug in the tag hook: a family the statusline
 # cannot name shows the configured default instead of the model the run is actually spending.
+# `geminib families` is read once here and reused below; the resolutions come from one shell.
+gemini_family_rows=$("$ROOT/bin/geminib" families)
+fam_resolved=$(bash -c '. "$1"; while IFS=$'"'"'\t'"'"' read -r _ slug prefix _ <&3; do
+  printf "%s\t%s\n" "$(worker_model_gemini_family "$prefix-high" | cut -f2)" "$(worker_model_gemini_family "$slug" | cut -f1)"
+done 3<<<"$2"' _ "$ROOT/share/worker-model.sh" "$gemini_family_rows")
 while IFS=$'\t' read -r fam_family fam_slug fam_prefix _; do
-  assert eq "$(bash -c '. "$1"; worker_model_gemini_family "$2" | cut -f2' _ "$ROOT/share/worker-model.sh" "$fam_prefix-high")" "$fam_slug"
-  assert eq "$(bash -c '. "$1"; worker_model_gemini_family "$2" | cut -f1' _ "$ROOT/share/worker-model.sh" "$fam_slug")" "$fam_family"
-done < <("$ROOT/bin/geminib" families)
+  IFS=$'\t' read -r got_slug got_family <&3 || got_slug='' got_family=''
+  assert eq "$got_slug" "$fam_slug"
+  assert eq "$got_family" "$fam_family"
+done <<<"$gemini_family_rows" 3<<<"$fam_resolved"
 assert doc_has 'Every cell omits `--effort`'
 assert test "$(sed -n '/^def run_agy(/,/^def /p' "$RB_LAUNCH" | grep -Fc '"--effort"')" -eq 0
 assert doc_has 'Antigravity review cell invocation mapping'
@@ -501,7 +509,7 @@ assert test "$(grep -Ec 'flash3[0-59]:(high|medium|low)' "$WORKER_RUN")" -eq 0
 assert grep -Fq 'printf '\''gemini effort forced to high\n'\'' >&2' "$WORKER_RUN"
 gemini_default_model=$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")
 assert grep -Fq "\`gemini_model=<slug>\` (a slug \`geminib families\` prints), and \`gemini_effort=high\`" "$WORKER_COMMAND"
-assert eq "$gemini_default_model" "$("$ROOT/bin/geminib" families | awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }')"
+assert eq "$gemini_default_model" "$(awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }' <<<"$gemini_family_rows")"
 assert grep -Fq 'Gemini runs at `high` only' "$WORKER_COMMAND"
 assert test "$(grep -Ec 'flash3[0-9] low/medium/high|gemini_effort=low\|medium\|high' "$WORKER_COMMAND")" -eq 0
 assert grep -Fq 'conf_get gemini_model; gm_model=${conf_val:-$(worker_model_default_model gemini)}' "$WORKERPICK"
@@ -629,9 +637,9 @@ assert eq "$(jq -r '.families[] | [.family, .slug, .agy_prefix, .label] | @tsv' 
 assert eq "$(jq -c '.families' "$REVIEW_ROOT/tests/fixtures/review-bench/geminib-models.json")" \
   "$(jq -c '.families' "$ROOT/tests/fixtures/geminib-models.json")"
 assert eq "$(AGY_BIN="$CONSISTENCY_CACHE/no-agy" GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/no-cache" "$GEMINIB_BIN" families)" "$builtin_rows"
-assert family_rows_ok < <("$GEMINIB_BIN" families)
+assert family_rows_ok <<<"$gemini_family_rows"
 assert eq "$("$GEMINIB_BIN" families --json | jq -r '.[] | [.family, .slug, .agy_prefix, .label] | @tsv')" \
-  "$("$GEMINIB_BIN" families)"
+  "$gemini_family_rows"
 printf '#!/usr/bin/env bash\ncat "%s"\n' "$ROOT/tests/fixtures/agy-models.txt" >"$CONSISTENCY_CACHE/agy-models"
 chmod +x "$CONSISTENCY_CACHE/agy-models"
 assert eq "$(AGY_BIN="$CONSISTENCY_CACHE/agy-models" GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/fixture-fetch" "$GEMINIB_BIN" families --refresh)" "$builtin_rows"
@@ -661,12 +669,13 @@ assert eq "$(jq -r '.models[] | [.slug, (if .default then "yes" else "no" end), 
 assert eq "$(GROKB_PROFILES_DIR="$CONSISTENCY_CACHE/no-profiles" \
   GROKB_CACHE_DIR="$CONSISTENCY_CACHE/no-grok-cache" "$GROKB_BIN" models 2>/dev/null)" \
   "$grok_builtin_rows"
-assert grok_rows_ok < <("$GROKB_BIN" models)
+grok_model_rows=$("$GROKB_BIN" models)
+assert grok_rows_ok <<<"$grok_model_rows"
 assert eq "$("$GROKB_BIN" models --json | jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label,
     (.efforts | if length == 0 then "-" else join(",") end)] | @tsv')" \
-  "$("$GROKB_BIN" models)"
+  "$grok_model_rows"
 # Exactly one default, and it is the one the cache document names.
-assert eq "$("$GROKB_BIN" models | awk -F'\t' '$2 == "yes" { print $1 }')" \
+assert eq "$(awk -F'\t' '$2 == "yes" { print $1 }' <<<"$grok_model_rows")" \
   "$(jq -r '.default' "$GROKB_CACHE_DIR/models.json")"
 # The quota cache is a different file with a different shape; nothing in this list may read it.
 assert test "$(sed -n '/^models_ttl_s=/,/^show_models() {/p' "$GROKB_BIN" | grep -Fc 'llm-limits-grok')" -eq 0
@@ -699,10 +708,11 @@ codex_rows_ok() {
               END { exit (bad || NR == 0 || defaults != 1) }'
 }
 assert codex_rows_ok < <(CODEXB_MODELS_CACHE=/nonexistent "$CODEXB_BIN" models 2>/dev/null)
-assert codex_rows_ok < <("$CODEXB_BIN" models)
+codex_model_rows=$("$CODEXB_BIN" models)
+assert codex_rows_ok <<<"$codex_model_rows"
 assert eq "$(CODEXB_MODELS_CACHE=/nonexistent "$CODEXB_BIN" models --json 2>/dev/null | jq -r '.[0].source')" builtin
 assert eq "$("$CODEXB_BIN" models --json | jq -r '[.[] | [.slug, .family, (.version // "-"), .label, (if .default then "y" else "n" end), (.efforts | join(","))] | @tsv] | join("\n")')" \
-  "$("$CODEXB_BIN" models)"
+  "$codex_model_rows"
 assert eq "$(awk '$1 == "codex" { print $2 }' <(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH") | tr '\n' ' ')" 'astra sol luna terra '
 for family in astra sol; do
   assert eq "$(bash -c '. "$1"; worker_model_codex_slug "$2"' _ "$WORKER_MODEL_SH" "$family")" \
@@ -2001,12 +2011,16 @@ pause_pick() {
     WORKER_PICK_NOW=1000000 "CLAUDEB_DIR=$PAUSE_WORK/claudeb" \
     "$WORKERPICK" --account "$1" 2>&1 >/dev/null
 }
-bench_paused_note() {
-  python3 -c 'import os, sys
+# One interpreter for all four notes: `paused_note` is a pure function of the side.
+bench_paused_notes=$(python3 -c 'import os, sys
 sys.path.insert(0, os.environ["RBENCH_SHARE"])
 import rbench as rb
-side = next(s for s, v in rb.SIDE_VENDOR.items() if v == sys.argv[1])
-print(rb.paused_note(side))' "$1"
+for vendor in sys.argv[1:]:
+    side = next(s for s, v in rb.SIDE_VENDOR.items() if v == vendor)
+    print(vendor + "\t" + rb.paused_note(side))' claudeb codex gemini grok)
+bench_paused_note() {
+  local vendor note
+  while IFS=$'\t' read -r vendor note; do [ "$vendor" != "$1" ] || printf '%s\n' "$note"; done <<<"$bench_paused_notes"
 }
 for vendor in claudeb codex gemini grok; do
   printf '%s_paused=on\n' "$vendor" >"$PAUSE_MODEL"
