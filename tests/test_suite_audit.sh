@@ -14,7 +14,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 asserts=$(python3 - "$ROOT" "$WORK" <<'EOF'
-import datetime, importlib.machinery, importlib.util, json, os, subprocess, sys, time
+import collections, datetime, importlib.machinery, importlib.util, json, os, subprocess, sys, time
 
 root, work = sys.argv[1], sys.argv[2]
 count = [0]
@@ -283,6 +283,8 @@ check(suite_audit.load(mixed, "x", *spans) == 2.0
 item = {"ref": "night-x", "ids": ["test_slow:alpha:test_mid"], "class": time_budget.improvement_class(
     "suite_audit", "suite_audit:alpha:test_mid"), "spend_m": 1.5, "lines": [3, 9], "merged": True}
 night = {"started": NOW - 30, "ended": NOW, "hours": 0.0, "improvements": [item]}
+later += [row(t, {n: cpu(2) for n in ("test_a", "test_b", "test_c")}, cheap)
+          for i in range(5) for t in (NOW + 60 + i, NOW - 5 * 86400 + 150000 + i * 30000)]
 save(journal + later[:4])
 check(item["class"] == "suite_run" and time_budget.roi_lines([night], NOW + 600)[0]
       == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · wall-s/run: 4 of 5 since",
@@ -306,11 +308,17 @@ busy += [row(NOW - 5 * 86400 + 150000 + i * 30000, {n: cpu(2) for n in controls}
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(24)}, split) for i in range(5)] + busy)
 loaded = time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(25)}, split) for i in range(5)] + busy[:3] + busy[5:])
-check(loaded["text"] == "20 → 24 wall-s/run · load ×2.00 · proven · 0.2 suite-min/day" and loaded["load"] == 2.0
-      and time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["text"] == "20 → 25 wall-s/run · not proven",
-      "a suite is judged against the suites the fix never named in the same windows: 20 → 24 s while three untouched "
-      "suites ran 2 → 4 s is a gain, priced at 20 - 24/2 s a run; under 3 such suites with N runs, none is matched: %s"
-      % loaded)
+thin = time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(18)}, split) for i in range(5)] + busy[5:]
+     + [dict(r, suites={k: cpu(3) for k in r["suites"]}) for r in busy[:5]])
+brisk = time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)
+check(brisk["text"] == "20 → 18 wall-s/run · load ×1.50 · proven · 0.2 suite-min/day" and brisk["load"] == 1.5
+      and loaded["text"] == "20 → 24 wall-s/run · load ×2.00 · load outside ×0.65-1.54: unmeasured"
+      and loaded["proven"] is None and thin["text"] == "20 → 25 wall-s/run · no load control: unmeasured",
+      "a suite is judged against the suites the fix never named in the same windows: 20 → 18 s while three untouched "
+      "suites ran 2 → 3 s is a gain, priced at 20 - 18/1.5 s a run; beside ones at 2 → 4 s (outside the proof ratio "
+      "either way) or under 3 such suites with N runs the machine alone could prove it, unmeasured: %s %s %s"
+      % (brisk, loaded, thin))
 night_file = os.path.join(work, "night-slow.json")
 with open(night_file, "w") as handle:
     json.dump({"jobs": [{"ref": "night-x", "commits": [{"repo": "alpha", "hash": "0123456789abcdef"}]}]}, handle)
@@ -345,12 +353,14 @@ check(time_budget.slower_fixes(slow_night, NOW + 4000) == [],
       "after the night: 20 → 30 s an hour later, while they ran 2 → 4 s, is no slowdown")
 whole = dict(code, ids=["time_floor:suite_run"])
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(20), "test_a": cpu(10)}, split) for i in range(5)])
-check(time_budget.unit_proof(whole, NOW - 30, NOW, NOW + 600)["slower"] == {}
+check(not time_budget.unit_proof(whole, NOW - 30, NOW, NOW + 600).get("slower")
       and time_budget.runtime_change(dict(whole, files=[["alpha", "share/time_budget.py"],
                                                         ["alpha", "tests/test_time_budget.sh"]])) is False,
       "a fix naming no suite whose code is suite files only is judged on those suites (test_a 2 → 10 s is not its "
       "slowdown); a measurer with its own suite changes no unit's runtime")
-save(journal + [row(NOW + 60 + i, {"test_mid": cpu(10, shards=4) if i % 2 else cpu(60)}, split) for i in range(10)])
+save(journal + [row(NOW + 60 + i, dict({"test_mid": cpu(10, shards=4) if i % 2 else cpu(60)},
+                                       **{n: cpu(2) for n in ("test_a", "test_b", "test_c")}), split) for i in range(10)]
+     + later[6::2])
 check(time_budget.slower_fixes(slow_night, NOW + 600) == []
       and time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["after"] == 10,
       "a sharded suite is measured on its sharded runs: the whole runs of a full machine (60 s) are no slowdown")
@@ -392,6 +402,8 @@ hooks += [["h", NOW - 3000 + i, "~", "PreToolUse", "~/.claude/hooks/other.sh fas
 hooks += [["h", NOW + 60 + i, "~", "PreToolUse", "~/.claude/hooks/other.sh fast", 100, "Bash", "x"]
           for i in range(50)]
 hooks += [["h", NOW - 3000 + i, "~", "PreToolUse", "~/.claude/hooks/gone.sh", 1000, "Bash", "x"] for i in range(50)]
+hooks += [["h", t + i, "~", "PreToolUse", c, 100, "Bash", "x"] for c in ("s1.sh", "s2.sh", "s3.sh")
+          for t in (NOW - 3600, NOW + 60) for i in range(50)]
 for day in {time_budget.local_day(r[1]) for r in hooks}:
     with open(os.path.join(events, day + ".jsonl"), "w") as handle:
         handle.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in hooks
@@ -457,7 +469,18 @@ check(judged == {"in band": {0: {"pending": False, "gain": 0.1, "proven": True, 
       "a «Скорость» gain is load-matched: 1000 → 100 ms/call proves 0.1 min/day beside three untouched hooks at "
       "100 → 100 ms, never with fewer than 3 of them (load fixed at 1) nor beside ones at 100 → 40 ms (load ×0.40, "
       "outside the suite proof ratio either way): %s" % judged)
-flat = [{"wall": w, "cpu": 20.0, "head": h, "end": NOW + i * 36000, "ok": True}
+mixed_at, credited = NOW + 100 * 86400, collections.Counter()
+for r in hook_rows(mixed_at, "fix.sh", 1000, 100) + hook_rows(mixed_at, "slow.sh", 100, 200):
+    with open(os.path.join(events, time_budget.local_day(r[1]) + ".jsonl"), "a") as handle:
+        handle.write(json.dumps(r, separators=(",", ":")) + "\n")
+mixed = time_budget.unit_proof(dict(fix, ids=["opportunity:hooks/fix.sh", "opportunity:hooks/slow.sh"]),
+                               mixed_at - 30, mixed_at, mixed_at + 600)
+time_budget.roi_lines([dict(night, started=mixed_at - 30, ended=mixed_at, improvements=[
+    dict(fix, ids=["opportunity:hooks/fix.sh", "opportunity:hooks/slow.sh"])])], mixed_at + 600, credited)
+check(mixed["proven"] is False and set(mixed["slower"]) == {"slow.sh"} and not any(credited.values()),
+      "a fix of two hooks with no untouched hook beside them, one 1000 → 100 ms and one 100 → 200 ms, is never proven "
+      "or credited, its slower hook still a regression: %s %s" % (mixed, credited))
+flat =[{"wall": w, "cpu": 20.0, "head": h, "end": NOW + i * 36000, "ok": True}
         for i, (w, h) in enumerate([(40.0, "a")] * 6 + [(100.0, "b")] * 6)]
 check(suite_audit.jump(flat) and suite_audit.jump(flat)["before"] == 40 and suite_audit.proof(
     {"history": [dict(f, wall=30.0) for f in flat[:5]]},
@@ -488,11 +511,11 @@ week = NOW + 7 * 86400 + 120
 fixed = time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/g.sh"]}, NOW - 30, NOW, week)
 still = time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/other.sh"]}, NOW - 30, NOW, week)
 check(time_budget.improvement_class("opportunity", "opportunity:refusal/g.sh") == "refusal"
-      and fixed["text"] == "30 → 0.0 s/day · proven · 0.5 min/day" and still["proven"] is False
+      and fixed["text"] == "30 → 0.0 s/day · no load control: unmeasured" and still["span"] == "30 → 30 s/day"
       and time_budget.unit_proof({"class": "refusal", "ids": ["opportunity:refusal/g.sh"]}, NOW - 30, NOW,
-                                 NOW + 3 * 86400)["proven"] is None,
-      "a gate's refusal fix is proven by its recovery seconds a day, a silent day counting 0, a week after the night: "
-      "%s %s" % (fixed, still))
+                                 NOW + 3 * 86400)["text"] == "s/day: 3 of 7 since",
+      "a gate's refusal fix reads its recovery seconds a day, a silent day counting 0, a week after the night; "
+      "with no load control the drop is unmeasured, never proven: %s %s" % (fixed, still))
 save(journal)
 fresh = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "fine",
                            "removal saves 20 s a run; loses its checks", "night-x", [], NOW)

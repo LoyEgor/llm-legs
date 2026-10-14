@@ -36,7 +36,7 @@ commit $((D0 + 900)) "Day work"
 echo "$REPO" >"$WORK/sweep-repos"
 
 asserts=$(python3 - "$ROOT" "$WORK" "$D0" "$JOB" <<'EOF'
-import contextlib, io, json, os, shutil, subprocess, sys, time
+import collections, contextlib, io, json, os, shutil, subprocess, sys, time
 
 root, work, D0, job = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
 sys.path.insert(0, os.path.join(root, "share"))
@@ -478,12 +478,13 @@ audit = [{"problems": p, "started": D0 + i * 86400, "hours": 1.0, "split_s": {},
 check(T.trend_lines(audit)[-1] == "trend · problems 32 → 24 over 7 nights · last 3: 1 down, 2 up · going back",
       "the trend never reads forward while the recent nights each ended with more problems than they began with: %s"
       % T.trend_lines(audit)[-1])
-check(out[10:14] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · saves 1.0 min/day",
+check(out[10:14] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · day totals: unmeasured",
                    "roi · harness-y-20260110T000000Z · repo/test_x · 0.0M · +0/-0 lines · not landed",
-                   "roi · night: improvements 0.0M · gained 1.0 min/day",
-                   "roi · last 2 nights: improvements 0.0M · gained 1.0 min/day"],
-      "the ROI ledger: each Speed or time fixer job with its spend, lines and the min/day its class lost less over "
-      "up to 3 settled days after a full day of the change than before it; other fixers are no improvement: %s"
+                   "roi · night: improvements 0.0M · gained 0.0 min/day · 1 unmeasured",
+                   "roi · last 2 nights: improvements 0.0M · gained 0.0 min/day"],
+      "the ROI ledger: each Speed or time fixer job with its spend and lines; the 1.0 min/day its class lost less over "
+      "up to 3 settled days after a full day of the change than before it has no load control, so it is unmeasured, "
+      "never a gain; other fixers are no improvement: %s"
       % out[10:])
 check(out[14:] == [], "the reported night's own fixes never reach the morning's «Скорость» block: %s" % out[14:])
 item = {"class": "suite_wait", "merged": True}
@@ -491,10 +492,11 @@ check(T.saved_min_day(item, D0 + 11000, D0 + 86400 * 2.5) is None
       and T.saved_min_day(dict(item, **{"class": "slot"}), D0 + 11000, D0 + 86400 * 9) == 0.0
       and T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1],
                                                                           **{"class": "slot"})]}], D0 + 86400 * 9)
-      == ["roi · r · worker slot queue · 2.0M · +1/-1 lines · spend without result",
-          "roi · night: improvements 2.0M · gained 0.0 min/day",
-          "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · spend without result so far"],
-      "a change pends until it ran a full settled day; no measured gain reads spend without result")
+      == ["roi · r · worker slot queue · 2.0M · +1/-1 lines · day totals: unmeasured",
+          "roi · night: improvements 0.0M · gained 0.0 min/day · 1 unmeasured",
+          "roi · last 1 nights: improvements 0.0M · gained 0.0 min/day"],
+      "a change pends until it ran a full settled day; its day totals then have no load control: unmeasured, its "
+      "spend out of the return")
 check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1])]}],
                   D0 + 86400 * 2.5)[-1] == "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · nothing measured yet",
       "while every change still pends the cumulative line says nothing was measured, never spend without result")
@@ -578,14 +580,14 @@ check([(i["ids"], i["class"], i["spend_m"], i["lines"]) for i in batch]
       == [(["opportunity:hooks/gate.sh"], "hooks", 1.5, [4, 2]), (["test_slow:alpha:test_mid"], "suite_run", 1.5, [4, 2])],
       "a fixer of several Speed rows is one improvement per row, each in its own class with an even share of the spend: %s"
       % batch)
-twice =[dict(item, ref=ref, spend_m=1.0, lines=[1, 1], ids=[]) for ref in ("r1", "r2")]
+twice, yielded = [dict(item, ref=ref, spend_m=1.0, lines=[1, 1], ids=[]) for ref in ("r1", "r2")], collections.Counter()
 check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": twice[:1]},
-                   {"started": D0 + 3600, "hours": 3.0, "improvements": twice[1:]}], D0 + 86400 * 9)
-      == ["roi · r2 · suite slot wait · 1.0M · +1/-1 lines · shared with r1",
-          "roi · night: improvements 1.0M · gained 0.0 min/day",
-          "roi · last 2 nights: improvements 2.0M · gained 1.0 min/day · 0.5 min/day per 1M"],
-      "one class-level drop is claimed once over the trend: the earliest fix takes it, a later one of the class reads "
-      "shared and adds nothing")
+                   {"started": D0 + 3600, "hours": 3.0, "improvements": twice[1:]}], D0 + 86400 * 9, yielded)
+      == ["roi · r2 · suite slot wait · 1.0M · +1/-1 lines · day totals: unmeasured",
+          "roi · night: improvements 0.0M · gained 0.0 min/day · 1 unmeasured",
+          "roi · last 2 nights: improvements 0.0M · gained 0.0 min/day"] and yielded == {},
+      "a class-level drop in the day totals credits no fix over the trend, the earliest neither, nor its fixer job in "
+      "Speed's yield (night 7b98's machine-contention fix took 152.8 min/day a quieter machine gave): %s" % yielded)
 Q = D0 + 40 * 86400 + 43200
 for back in (1, 2, 3):
     T.write_json(T.day_cache_path(T.local_day(Q - back * 86400)),

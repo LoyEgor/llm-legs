@@ -1106,9 +1106,10 @@ def unit_proof(item, started, ended, now, memo=None):
     against the `load_factor` of the unnamed ones in the same windows, so a busy morning reads as no slowdown. A proven gain sums, over the keys proven
     on their own (`keys`), the key's load-matched delta times its samples a day in the UNIT_BEFORE_DAYS before the
     night. No sample or a zero median before the night, or a fix that cuts runs (`counted`), keeps the day totals; a
-    named unit that no longer exists is `gone`. A load-matched class with no named unit has no control, and a gain over
-    the measure's whole day before the night is no gain: both read `unmeasured`. `matched`: a load factor from
-    LOAD_CONTROLS controls inside LOAD_BAND (the suite proof ratio either way), else machine load alone could prove it."""
+    named unit that no longer exists is `gone`. A load-matched class with no named unit has no control, a gain over
+    the measure's whole day before the night is no gain, and so is a verdict without a load factor from LOAD_CONTROLS
+    controls inside LOAD_BAND (the suite proof ratio either way), which machine load alone could give: all read
+    `unmeasured`, save a key measured slower, so a regression never hides."""
     unit = UNITS.get(item["class"])
     if not unit or counted(item):
         return None
@@ -1144,7 +1145,7 @@ def unit_proof(item, started, ended, now, memo=None):
     was = sum(weight[k] * pair[k][0] for k in keys) / total
     now_ = sum(weight[k] * pair[k][1] for k in keys) / total
     proven = now_ <= ratio * was * load
-    gains = {k: (pair[k][0] - pair[k][1] / load) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
+    gains ={k: (pair[k][0] - pair[k][1] / load) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
              if pair[k][1] <= ratio * pair[k][0] * load} if proven else {}
     gain = round(sum(gains.values()), 1)
     slower = {k: (pair[k][1] / load - pair[k][0]) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
@@ -1154,9 +1155,13 @@ def unit_proof(item, started, ended, now, memo=None):
     if gain > whole:
         return {"proven": None, "unmeasured": True, "span": span,
                 "text": "%s · %.1f over the %.1f %s before: unmeasured" % (span, gain, whole, daily)}
+    if factor is None or not LOAD_BAND[0] <= factor <= LOAD_BAND[1]:
+        if not slower:
+            return {"proven": None, "unmeasured": True, "span": span, "text": "%s · %s: unmeasured" % (
+                span, "no load control" if factor is None else "load outside ×%.2f-%.2f" % LOAD_BAND)}
+        proven, gains, gain = False, {}, 0.0
     return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total), "span": span,
             "gain": gain, "daily": daily, "gains": gains, "load": round(load, 2), "slower": slower,
-            "matched": factor is not None and LOAD_BAND[0] <= factor <= LOAD_BAND[1],
             "text": "%s · %s" % (span, "proven · %.1f %s" % (gain, daily) if proven else "not proven")}
 
 
@@ -1180,16 +1185,15 @@ def plural(n, word, many):
 
 
 def roi_lines(rows, now, gains=None, verdicts=None):
-    """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against the
-    minutes per day saved once the change ran a full day, or, for a class with a natural unit, its per-unit proof
-    times the unit's daily exposure since the night, in the unit's own daily measure. A fix that changed no code its
-    unit runs (`runtime_change`), or whose named unit no longer exists, is a measurement fix and never a gain. No gain
-    reads 'spend without result', never a revert. A Spend audit reads its proof from Harness's latest.json instead
-    and stays out of the minute totals. A gain is claimed once over the trend: the earliest positive claim of a key
-    (a proven suite, hook or wait class, or a whole class from the day totals) takes it, a later one gains only its
-    unclaimed keys and names the owner as `shared with`; `gains` collects each fixer job's min/day, `verdicts` each
-    landed fix's {night: {index: {pending, gain, proven, slower}}} for `speed_block`, where only a load-matched
-    (`matched`) per-unit proof in min/day gains or proves: day totals have no load control, suite-min/day no wait."""
+    """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against its
+    load-matched per-unit proof (`unit_proof`) times the unit's daily exposure since the night, in the unit's own
+    daily measure; the class's day totals once the change ran a full day have no load control, so they read
+    unmeasured. A fix that changed no code its unit runs (`runtime_change`), or whose named unit no longer exists, is
+    a measurement fix and never a gain. No gain reads 'spend without result', never a revert. A Spend audit reads its
+    proof from Harness's latest.json instead and stays out of the minute totals. A gain is claimed once over the
+    trend: the earliest proven key takes it, a later one gains only its unclaimed keys and names the owner as `shared
+    with`; `gains` collects each fixer job's min/day, `verdicts` each landed fix's {night: {index: {pending, gain,
+    proven, slower}}} for `speed_block`, where suite-min/day, no wait, neither gains nor proves."""
     out, total_spend, total_saved, total_proven, measured, proofs, memo = [], 0.0, 0.0, 0, 0, None, {}
     total_other, claims = collections.Counter(), {}
 
@@ -1256,7 +1260,7 @@ def roi_lines(rows, now, gains=None, verdicts=None):
                             gains[item["ref"]] += shown["gain"]
                     else:
                         other[shown["daily"]] += shown["gain"]
-                worth = shown["gain"] if shown.get("daily") == "min/day" and shown.get("matched") else 0.0
+                worth = shown["gain"] if shown.get("daily") == "min/day" else 0.0
                 seen[index] = {"pending": shown["proven"] is None, "gain": worth,
                                "proven": bool(shown["proven"] and worth > 0),
                                "slower": bool(shown["proven"] is False and shown.get("slower") and change)}
@@ -1265,18 +1269,10 @@ def roi_lines(rows, now, gains=None, verdicts=None):
                         item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1], shown["text"]))
                 continue
             gain = saved_min_day(item, ended, now) if item["merged"] else None
-            owner = claim(item, ["*"])[1] if gain not in (None, UNMEASURED) and gain > 0 else None
-            if gain == UNMEASURED:
-                unmeasured += 1
-            else:
-                spend += item["spend_m"]
             if gain is None:
-                pending += item["merged"]
-            elif gain != UNMEASURED:
-                saved += 0 if owner else gain
-                if gains is not None and not owner:
-                    gains[item["ref"]] += gain
-                measured += 1
+                spend, pending = spend + item["spend_m"], pending + item["merged"]
+            else:
+                unmeasured += 1
             if item["merged"]:
                 seen[index] = {"pending": gain is None, "gain": 0.0, "proven": False, "slower": False}
             if row is rows[-1]:
@@ -1284,8 +1280,7 @@ def roi_lines(rows, now, gains=None, verdicts=None):
                     item["ref"][:40], what, item["spend_m"], item["lines"][0],
                     item["lines"][1], "not landed" if not item["merged"] else "pending a full day" if gain is None
                     else "unmeasured before or after it" if gain == UNMEASURED
-                    else "shared with %s" % owner[:40] if owner
-                    else "saves %.1f min/day" % gain if gain > 0 else "spend without result"))
+                    else "day totals: unmeasured"))
         if row is rows[-1] and timed(row):
             out.append("roi · night: improvements %.1fM · %s%s%s%s%s" % (
                 spend, gained(saved, other), plural(proven, "proven per unit", "proven per unit"),
