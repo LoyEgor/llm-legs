@@ -105,10 +105,9 @@ def thresholds(magnitude: np.ndarray) -> tuple[float, float]:
     return low, max(2 * low, 15.0)
 
 
-def changed_regions(base: np.ndarray, edited: np.ndarray) -> np.ndarray | None:
-    """None when the edit is global."""
-    side = min(base.shape[:2])
-    magnitude, raw = difference(base, edited)
+def changed_regions(magnitude: np.ndarray, raw: np.ndarray) -> np.ndarray | None:
+    """From difference()'s pair; None when the edit is global."""
+    side = min(magnitude.shape)
     if (raw > FLOOR).mean() > GLOBAL_LIMIT:
         return None
     low, high = thresholds(magnitude)
@@ -165,10 +164,11 @@ def feather(hard: np.ndarray) -> np.ndarray:
     return ndimage.gaussian_filter(hard.astype(np.float32), sigma)
 
 
-def border_offset(base: np.ndarray, edited: np.ndarray, hard: np.ndarray) -> np.ndarray:
+def border_offset(base: np.ndarray, edited: np.ndarray, hard: np.ndarray, raw: np.ndarray) -> np.ndarray:
+    """raw: difference(base, edited)[1]."""
     side = min(hard.shape)
     # A drawn rectangle can cut through the edit itself; only drift-sized differences are colour to match.
-    drifted = difference(base, edited)[1] <= 2 * FLOOR
+    drifted = raw <= 2 * FLOOR
     ring = ndimage.binary_dilation(hard, disk(side / 50)) & ~hard & drifted
     if not ring.any():
         return np.zeros(base.shape, np.float32)
@@ -216,13 +216,16 @@ def composite(base: str, edited: str, out: str, mask_source, mask_out: str | Non
         deliver(edited, out)
         return (f"composite=skipped reason=aspect-changed from={base_image.width}x{base_image.height}"
                 f" to={edited_image.width}x{edited_image.height}")
-    edited_image = opened(edited, base_image.size)
+    if edited_image.size != base_image.size:
+        edited_image = edited_image.resize(base_image.size, Image.Resampling.LANCZOS)
     small_base, small_edited = as_float(working(base_image)), as_float(working(edited_image))
+    change = None  # difference(small_base, small_edited), computed once
     if isinstance(mask_source, tuple):
         kind, hard = "region", rectangle(small_base.shape[:2], mask_source)
     else:
         kind = "auto" if mask_source == "auto" else "points"
-        hard = changed_regions(small_base, small_edited)
+        change = difference(small_base, small_edited)
+        hard = changed_regions(*change)
         if hard is not None:
             hard = tidy(hard if kind == "auto" else near_points(hard, list(mask_source)))
     refusal = ""
@@ -232,7 +235,7 @@ def composite(base: str, edited: str, out: str, mask_source, mask_out: str | Non
         refusal = "no-local-change"
     if refusal:
         deliver(edited, out)
-        share = (difference(small_base, small_edited)[1] > FLOOR).mean() if hard is None else hard.mean()
+        share = (change[1] > FLOOR).mean() if hard is None else hard.mean()
         if refusal == "global":
             limit_hit.hit("image-composite.global", GLOBAL_LIMIT * 100, "pct", "fallback",
                           f"the region composite of {os.path.basename(out)}: the whole edited image was delivered",
@@ -244,7 +247,8 @@ def composite(base: str, edited: str, out: str, mask_source, mask_out: str | Non
     if target:
         base_image = opened(target, base_image.size)
         small_base = as_float(working(base_image))
-    offset = border_offset(small_base, small_edited, hard)
+        change = None
+    offset = border_offset(small_base, small_edited, hard, (change or difference(small_base, small_edited))[1])
     offset_full = np.stack([resized(offset[..., c], base_image.size[::-1]) for c in range(3)], axis=2)
     patch = np.clip(as_float(edited_image) + offset_full, 0, 1)
     blended = as_float(base_image) * (1 - alpha[..., None]) + patch * alpha[..., None]
