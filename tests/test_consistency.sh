@@ -3429,6 +3429,19 @@ assert grep -qx 'GEMINI_AWAY_MIN=60' "$ROOT/bin/llm-refresh"
 assert grep -qF 'return dir .. "/away-off"' "$ROOT/hammerspoon/presence.lua"
 assert grep -qF 'if M.enabled() and (idle >= AWAY_S or stillAway(now, idle)) then markAway(now, idle) else M.back() end' "$ROOT/hammerspoon/presence.lua"
 assert doc_has '| em | Away mark |'
+# Row en: every Chrome launched for automation is one of the two bundles Show Chrome reads; a launch spelling
+# beyond the counted ones fails here until it is (Egor saw a clone window with no Show Chrome, 2026-10-14).
+chrome_launch_re='launch_persistent_context|\.launch\(|launch_server|connect_over_cdp|puppeteer|selenium|chrome_binary\(|Google Chrome\.app|-[ab][[:space:]]+['\''"]?(com\.google\.Chrome|Google Chrome)|application (id )?\\?"(Google Chrome|com\.google\.Chrome)"'
+assert eq "$(cd "$ROOT" && command grep -rcIE --exclude='*.json' --exclude='*.md' "$chrome_launch_re" bin share |
+  command grep -v ':0$' | sort | paste -sd' ' -)" "bin/chrome-applescript-js:4 bin/worker-run:2 share/gemini_web.py:5"
+assert grep -Fq 'str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False, args=flags,' "$ROOT/share/gemini_web.py"
+assert grep -Fq 'CLONE_ID = "com.google.Chrome.gemini-web"' "$ROOT/share/gemini_web.py"
+assert grep -Fq 'info["CFBundleIdentifier"] = CLONE_ID' "$ROOT/share/gemini_web.py"
+assert grep -Fq 'CLONE_SHOWN = CLONE_ROOT / "windows-shown"' "$ROOT/share/gemini_web.py"
+assert grep -Fq 'local CHROME_CLONE_ID = "com.google.Chrome.gemini-web"' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'local flag = geminiWebDir() .. "/windows-shown"' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'local chrome = hs.application.get("com.google.Chrome")' "$ROOT/hammerspoon/llm-limits.lua"
+assert doc_has '| en | Automation Chrome |'
 
 assert grep -Fq 'doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])' "$ROOT/share/time_budget.py"
 assert grep -Fq 'cached.get("version") == BUDGET_VERSION' "$ROOT/share/time_budget.py"

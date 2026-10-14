@@ -30,6 +30,12 @@ local harnessClock = nil
 -- The gemini-web store the fake io.open and hs.fs.dir serve under GEMINI_WEB_DIR: path -> document;
 -- nil is no store at all. Nothing under a real ~/.gemini-web is ever served.
 local geminiWebFake = { root = "/fixture/gemini-web", files = nil }
+-- The automation Chromes Show Chrome reads: `real` the fake com.google.Chrome (nil: not running), `clones`
+-- the running gemini-web clone apps, `live` what browse/chrome-live holds (nil: absent), `removed` every
+-- path the module hands os.remove, `screen` the one display.
+local chromeFake = { real = nil, clones = {}, live = nil, removed = {}, screen = {
+  fullFrame = function() return { x = 0, y = 0, w = 1344, h = 1008 } end,
+  frame = function() return { x = 0, y = 30, w = 1344, h = 978 } end } }
 
 -- The renderer dims with the system colour's name, {System, tertiaryLabelColor}, left for AppKit to
 -- resolve in the menu's own appearance (black at 0.26 on a light menu, white on a dark one).
@@ -126,6 +132,11 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     workerModel, fsAttributes, interfaceStyle, doctorSnapshot, llmDoctor)
   local mock = {
     alert = { show = alertFn or function() end },
+    application = {
+      get = function(id) return id == "com.google.Chrome" and chromeFake.real or nil end,
+      applicationsForBundleID = function(id) return id == "com.google.Chrome.gemini-web" and chromeFake.clones or {} end,
+    },
+    screen = { allScreens = function() return { chromeFake.screen } end, mainScreen = function() return chromeFake.screen end },
     dialog = { blockAlert = function(...)
       table.insert(dialogCalls, { ... })
       return dialogAnswer
@@ -220,6 +231,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         end
         contents = "GEMINI_WEB:" .. path
       end
+      if path:match("/browse/chrome%-live$") then
+        if chromeFake.live == nil then return nil end
+        contents = chromeFake.live
+      end
       if path:match("/memlogd/chats%.json$") then
         if chatsFake.snapshot == nil then return nil end
         contents = "CHATS_SNAPSHOT"
@@ -264,6 +279,8 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     env.os = setmetatable({ time = timeFn }, { __index = os })
   end
   if holdFake.getenv then env.os = setmetatable({ getenv = holdFake.getenv }, { __index = env.os or os }) end
+  env.os = setmetatable({ remove = function(path) table.insert(chromeFake.removed, path); return true end },
+    { __index = env.os or os })
   env._G = env
   local chunk, err = load(moduleBytes, "@" .. modulePath, "b", env)
   assert(chunk, err)
@@ -4627,6 +4644,68 @@ end)()
   for _, item in ipairs(loadModule(fixture, nil, now).menuItems()) do
     assert(titleText(item) ~= "ElevenLabs", "a store without ElevenLabs readings still drew the section")
   end
+end)()
+
+-- Show Chrome answers for the media tools' Chrome clone as for a worker-run browser run, read from the
+-- running clone with no chrome-live (Egor saw a clone window and no checkbox, 2026-10-14): a parked window
+-- reads unchecked and one on screen checked, and a click moves the clone's windows on or off screen,
+-- writing or removing windows-shown; beside a live real Chrome both go the same way.
+;(function()
+  local root, tasks, removed = "/fixture/gemini-web", {}, chromeFake.removed
+  local function window(x, standard)
+    local w = { at = { x = x, y = 30, w = 800, h = 600 }, moves = {} }
+    function w.frame(self) return { x = self.at.x, y = self.at.y, w = self.at.w, h = self.at.h } end
+    function w.isStandard() return standard ~= false end
+    function w.setTopLeft(self, point) self.moves[#self.moves + 1] = "off"; self.at.x, self.at.y = point.x, point.y end
+    function w.setFrame(self, frame, duration)
+      self.moves[#self.moves + 1] = string.format("%d,%d,%dx%d/%s", frame.x, frame.y, frame.w, frame.h, duration)
+      self.at = frame
+    end
+    return w
+  end
+  local function item()
+    holdFake.getenv = function(name)
+      if name == "GEMINI_WEB_DIR" then return root end
+      return os.getenv(name)
+    end
+    local module = loadModule({}, captureTasks(tasks), nil, nil, nil, nil,
+      function(path) return path == modulePath:gsub("/hammerspoon/[^/]+$", "/bin/worker-run") and { mode = "file" } or nil end)
+    holdFake.getenv = nil
+    return module.chromeToggleItem(), module
+  end
+  assert(item() == nil, "Show Chrome appeared with no automation Chrome running")
+  local parked, bubble, second = window(-760), window(200, false), window(-760)
+  chromeFake.clones = { { allWindows = function() return { parked, bubble } end },
+    { allWindows = function() return { second } end } }
+  local toggle, module = item()
+  assert(toggle and toggle.title == "Show Chrome" and toggle.checked == false,
+    "a running clone with its windows parked did not give an unchecked Show Chrome without chrome-live")
+  toggle.fn()
+  assert(parked.moves[1] == "0,30,800x600/0" and second.moves[1] == "30,60,800x600/0" and #bubble.moves == 0
+      and module.__writes[root .. "/windows-shown"] and #tasks == 0 and #removed == 0,
+    "showing did not move each clone window onto the screen or write windows-shown: "
+      .. tostring(parked.moves[1]) .. " " .. tostring(second.moves[1]))
+  toggle = item()
+  assert(toggle.checked == true, "a clone window on screen did not read as shown")
+  toggle.fn()
+  assert(parked.moves[2] == "off" and second.moves[2] == "off" and removed[1] == root .. "/windows-shown",
+    "hiding did not move the clone windows off screen or remove windows-shown")
+  chromeFake.real, chromeFake.live = { isHidden = function() return false end }, "run-1\n"
+  toggle = item()
+  toggle.fn()
+  assert(toggle.checked == true and tasks[1] and tasks[1].args[1] == "browse" and tasks[1].args[2] == "--hide"
+      and parked.moves[3] == "off",
+    "beside a shown real Chrome the click did not hide both: " .. table.concat(tasks[1] and tasks[1].args or {}, " "))
+  chromeFake.clones = {}
+  item().fn()
+  assert(tasks[2] and tasks[2].args[2] == "--toggle", "the real Chrome alone no longer runs browse --toggle")
+  -- Enrolment, the canary and --window open real Chrome windows outside any run: visible is enough.
+  chromeFake.live = nil
+  toggle = item()
+  assert(toggle and toggle.checked == true, "a visible real Chrome with no live run gave no Show Chrome")
+  chromeFake.real = { isHidden = function() return true end }
+  assert(item() == nil, "a hidden real Chrome with no live run still gave Show Chrome")
+  chromeFake.real = nil
 end)()
 
 return "PASS: Hammerspoon projection contract"

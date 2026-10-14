@@ -1883,13 +1883,73 @@ function M.harnessDoctorEntry()
     problems = failed and 0 or red, status = status }
 end
 
+-- Show Chrome answers for every automation Chrome (docs/browser-runs.md; shared-invariants row en), read
+-- from the processes so no producer can forget to say so: the real Chrome, which stays running between
+-- runs, while it is not hidden (enrolment, the canary and --window open windows outside any run) or
+-- browse/chrome-live lists a worker-run browser run; the media tools' clone (share/gemini_web.py)
+-- whenever one runs.
+-- The clone is LSBackgroundOnly, which macOS never hides: its windows move on and off screen over AX,
+-- and windows-shown beside the clone tells park_window to leave a page opened meanwhile where it is.
+local CHROME_CLONE_ID = "com.google.Chrome.gemini-web"
+
+local function cloneWindows()
+  local apps, windows = hs.application.applicationsForBundleID(CHROME_CLONE_ID) or {}, {}
+  for _, app in ipairs(apps) do
+    for _, window in ipairs(app:allWindows() or {}) do
+      if window:isStandard() then windows[#windows + 1] = window end
+    end
+  end
+  return apps, windows
+end
+
+-- A parked window keeps a 40 px sliver on screen, so a window is shown when its centre is on one.
+local function windowOnScreen(window)
+  local frame = window:frame()
+  local x, y = frame.x + frame.w / 2, frame.y + frame.h / 2
+  for _, screen in ipairs(hs.screen.allScreens() or {}) do
+    local area = screen:fullFrame()
+    if x >= area.x and x < area.x + area.w and y >= area.y and y < area.y + area.h then return true end
+  end
+  return false
+end
+
+local function setCloneWindowsShown(show)
+  local flag = geminiWebDir() .. "/windows-shown"
+  local _, windows = cloneWindows()
+  if not show then
+    os.remove(flag)
+    for _, window in ipairs(windows) do window:setTopLeft({ x = -30000, y = -30000 }) end
+    return
+  end
+  local file = io.open(flag, "w")
+  if file then file:close() end
+  local area = hs.screen.mainScreen():frame()
+  for index, window in ipairs(windows) do
+    local frame = window:frame()
+    local w, h = math.min(frame.w, area.w), math.min(frame.h, area.h)
+    local step = 30 * (index - 1)
+    window:setFrame({ x = area.x + math.min(step, area.w - w), y = area.y + math.min(step, area.h - h),
+      w = w, h = h }, 0)
+  end
+end
+
 function M.chromeToggleItem()
   local live = readTextFile(os.getenv("HOME") .. "/.cache/claude-worker-runs/browse/chrome-live")
   local chrome = hs.application.get("com.google.Chrome")
   local path, args = harnessAction("worker-run\31browse\31--toggle")
-  if not (live and live:find("%S") and chrome and path) then return nil end
-  return { title = "Show Chrome", checked = not chrome:isHidden(),
-    fn = function() startDiagnosticsTask("harnessActionTask", path, args) end }
+  local real = chrome and path and (not chrome:isHidden() or live and live:find("%S")) and chrome or nil
+  local clones, windows = cloneWindows()
+  if not real and #clones == 0 then return nil end
+  local shown = real ~= nil and not real:isHidden()
+  for _, window in ipairs(windows) do shown = shown or windowOnScreen(window) end
+  return { title = "Show Chrome", checked = shown, fn = function()
+    if real then
+      -- Beside a clone the click sets both one way: --toggle would flip a real Chrome already there.
+      startDiagnosticsTask("harnessActionTask", path,
+        #clones == 0 and args or { "browse", shown and "--hide" or "--show" })
+    end
+    if #clones > 0 then setCloneWindowsShown(not shown) end
+  end }
 end
 
 local function appendChats(menu)

@@ -245,6 +245,12 @@ assert cdp.sent == [("Browser.getWindowForTarget", None),
 assert cdp.detached and warned == [], warned
 gw.park_window("com", ParkContext(CDP(fail="Browser.setWindowBounds")), "page-2")
 assert warned == [("com", "could not move the automation Chrome off screen: Target closed details")], warned
+# Show Chrome has the clone's windows on screen: a page opened meanwhile stays there.
+gw.CLONE_SHOWN.write_text("")
+cdp = CDP()
+gw.park_window("com", ParkContext(cdp), "page-3")
+assert cdp.sent == [], cdp.sent
+gw.CLONE_SHOWN.unlink()
 with tempfile.TemporaryDirectory() as scratch:
     prefs_path = gw.Path(scratch) / "Default" / "Preferences"
     gw.reset_exit_type("com", gw.Path(scratch))
