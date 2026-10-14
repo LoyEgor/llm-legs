@@ -2,8 +2,9 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # bin/pkill (and bin/pgrep, a link to it) refuses an option placed after the first pattern and
 # otherwise execs the real tool with its arguments untouched. The real tool is always a fake
-# that prints its argv: this suite never lists or signals a real process.
+# that prints its argv: this suite never lists a real process and signals only its own sleeps.
 set -u
+unset WORKER_RUN_ID
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -97,6 +98,45 @@ chmod +x "$WORK/count/tr"
 PATH="$WORK/count:$PATH" run pkill -SIGTERM -f "$PAT"
 assert [ ! -e "$WORK/execs" ]
 
+# A worker run in a worktree leaves alone the matches working in another worktree or the main checkout.
+R="$(cd "$WORK" && pwd -P)/repo" MINE="$(cd "$WORK" && pwd -P)/repo/.claude/worktrees/mine"
+mkdir -p "$WORK/real2" "$MINE" "$R/.claude/worktrees/other"
+git -C "$MINE" init -q
+printf '#!/bin/bash\ncat "%s/pids"\n' "$WORK" >"$WORK/real2/pgrep"
+printf '#!/bin/bash\nprintf ran >>"%s/real.log"\n' "$WORK" >"$WORK/real2/pkill"
+chmod +x "$WORK/real2/pgrep" "$WORK/real2/pkill"
+spawn() { # cwd -> SPAWNED, a sleep working there
+  (cd "$1" && exec sleep 1000) & SPAWNED=$!
+  until [ "$(ps -o comm= -p "$SPAWNED")" = sleep ]; do sleep 0.05; done
+}
+wpkill() { (cd "$1" && WORKER_RUN_ID=run-mine PKILL_GUARD_REAL_DIR="$WORK/real2" "$WORK/path/pkill" "${@:2}") >"$OUT" 2>"$ERR"; }
+spawn "$R/.claude/worktrees/other"; other=$SPAWNED
+spawn "$R"; chat=$SPAWNED
+mine=''
+trap 'kill "$other" "$chat" $mine 2>/dev/null; rm -rf "$WORK"' EXIT
+for sig in '' -KILL; do
+  spawn "$MINE"; mine=$SPAWNED
+  printf '%s\n' "$mine" "$other" "$chat" >"$WORK/pids"
+  rm -f "$WORK/real.log"
+  wpkill "$MINE" $sig -f "$PAT"
+  assert eq "$?" 0
+  assert [ ! -e "$WORK/real.log" ]
+  { wait "$mine"; } 2>/dev/null
+  assert eq "$?" "$([ -n "$sig" ] && echo 137 || echo 143)"
+  assert kill -0 "$other"
+  assert kill -0 "$chat"
+  assert grep -qxF "pkill: left alone 2 matching process(es) working in another checkout: $other in $R/.claude/worktrees/other, $chat in $R" "$ERR"
+done
+printf '%s\n' "$other" >"$WORK/pids"
+wpkill "$MINE" -f "$PAT"
+assert eq "$?" 1
+assert kill -0 "$other"
+wpkill "$R" -f "$PAT"
+assert [ -e "$WORK/real.log" ]
+rm -f "$WORK/real.log"
+(cd "$MINE" && PKILL_GUARD_REAL_DIR="$WORK/real2" "$WORK/path/pkill" -f "$PAT")
+assert [ -e "$WORK/real.log" ]
+
 ln -s "$ROOT/bin/pkill" "$WORK/path/pkill-other"
 rm -f "$WORK/real.log"
 "$WORK/path/pkill-other" -f "$PAT" >"$OUT" 2>"$ERR"
@@ -108,4 +148,4 @@ for tool in pkill pgrep; do
   assert grep -qF -- "- \`bin/$tool\` → \`~/.local/bin/$tool\`" "$ROOT/README.md"
 done
 
-printf 'PASS: %s asserts; pkill and pgrep refuse an option after the first pattern and pass everything else through untouched\n' "$asserts"
+printf 'PASS: %s asserts; pkill and pgrep refuse an option after the first pattern and pass everything else through untouched; pkill in a worker worktree leaves the processes of other checkouts alone\n' "$asserts"

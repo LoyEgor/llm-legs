@@ -34,6 +34,7 @@ if [ "$tool" = pkill ] && [ "$n" -gt 0 ]; then
       shopt -u nocasematch ;;
   esac
 fi
+first=$i
 while [ "$i" -lt "$n" ]; do
   arg=${args[$i]}
   i=$((i + 1))
@@ -57,6 +58,37 @@ while [ "$i" -lt "$n" ]; do
   case "${args[$i]}" in -*) refuse "${args[$i]}" ;; esac
   i=$((i + 1))
 done
+
+# A worker run in a worktree leaves alone the matches working in another worktree or in the main
+# checkout: a pattern like `pkill -f run-all` also ended seven other runs' suites (night 3131, 14:07).
+top=''
+[ "$tool" != pkill ] || [ -z "${WORKER_RUN_ID:-}" ] || [ "$n" -le "$first" ] || top=$(git rev-parse --show-toplevel 2>/dev/null)
+case $top in
+  */.claude/worktrees/?*)
+    pids=$("${real%/*}/pgrep" "${args[@]:first}" 2>/dev/null) || exec "$real" "$@"
+    case $pids in *[!0-9$'\n']*) exec "$real" "$@" ;; esac
+    name=${top##*/} main=${top%/.claude/worktrees/*} own=() foreign=() far=' ' pid=''
+    while read -r field; do
+      case $field in
+        p*) pid=${field#p} ;;
+        n*)
+          case ${field#n}/ in
+            */.claude/worktrees/"$name"/*) ;;
+            */.claude/worktrees/*|"$main"/*) foreign+=("$pid in ${field#n}") far+="$pid " ;;
+          esac ;;
+      esac
+    done < <(/usr/sbin/lsof -a -d cwd -p "$(paste -sd, - <<<"$pids")" -Fn 2>/dev/null)
+    for pid in $pids; do
+      case $far in *" $pid "*) ;; *) [ "$pid" = $$ ] || own+=("$pid") ;; esac
+    done
+    [ ${#foreign[@]} -eq 0 ] ||
+      printf '%s: left alone %s matching process(es) working in another checkout: %s\n' \
+        "$tool" "${#foreign[@]}" "$(IFS=,; printf '%s' "${foreign[*]}" | sed 's/,/, /g')" >&2
+    [ ${#own[@]} -gt 0 ] || exit 1
+    sig=TERM
+    [ "$first" -eq 0 ] || sig=$(printf '%s' "${args[0]#-}" | tr '[:lower:]' '[:upper:]')
+    exec /bin/kill -"${sig#SIG}" "${own[@]}" ;;
+esac
 
 exec "$real" "$@"
 exit; }
