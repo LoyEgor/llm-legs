@@ -9792,6 +9792,70 @@
       "reviewed_by": "night fixer harness-stop-hooks-20261014T021757Z-6b9c",
       "note": "2026-10-14 ruled out as a hang of ours: the same one kill (2026-10-13 15:36:44Z, chat c0f23f02) that row limit_hit:claude-setup:stop-dispatch.hook-kill measured (llm-legs@d9c59236): 1 of 577 runs, busy 0.99 and kernel 0.48, the read-only path of `connections check` waits on nothing, lock contention, dead $TMPDIR keys and its imports measured out; blind spot hook-off-cpu-wait. No kill since in 801 stops.",
       "handoff": null
+    },
+    {
+      "id": "tool-idea-run-all-attach",
+      "title": "run-suites outlives the caller's Bash cap: the run continues detached and the next `tests/run-all --attach <run>` call waits on it, so a killed call never reruns the suites",
+      "match": {
+        "rule": "tool_idea",
+        "ident": "tool-idea/run-all-attach"
+      },
+      "status": "open",
+      "expected_min_day": 194,
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night tool-ideas 20261014T013750Z-8004",
+      "note": "Evidence: ~/.claude/projects transcripts 2026-10-07..14: 64 foreground tests/run-all|run-suites calls ended 'Command timed out after Nm' (41 at timeout=1500000, the claudeb worker cap bin/worker-run:1120), 61 of them followed by another run-all within 15 calls; those 61 killed calls held 1360 min = 8.7 reruns/day x 22.3 min lost each = 194 min/day of worker wall (30 d: 337 timed-out suite calls, 3860 min). Causes vary (slot waits under night load, wide selections, slow suites: RUN_SUITES_SUITE_FLOOR 1800 s is above the 1500 s worker cap, so a suite past 25 min is always killed by Claude Code, never by run-suites' own bound), which is why rows log_audit:worker-suite-run-waits (ruled-out: load), log_audit:foreground-run-all-10min-cap and log_audit:runall-foreground-timeout-cap (fixed by raising the cap) never removed the rerun; this tool removes the lost work whatever the cause. Native route checked: CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 (bin/worker-run:1116) stays, -p still drops background shells ~5 s after its result (claude-code issue 65498, CLI 2.1.299 here). Build: share/run-suites.sh starts its run body in its own session (python3 os.setsid, macOS has no setsid(1)) writing the existing per-suite logs and table under a run dir; the foreground waits until BASH_MAX_TIMEOUT_MS (exported by worker-run) minus a margin, then prints 'still running: tests/run-all --attach <dir>' and exits with a distinct code, never a FAIL; --attach waits on the same run and prints its table. Reuse the slot hold, owner_watch and journal unchanged. Proof: test_run_suites_timeout-style fixture with a cap shorter than a sleeping suite: the attach prints the suite's PASS and the journal holds one run, not two; Speed reads timed-out-then-rerun calls per 1000 suite runs before against after.",
+      "handoff": null
+    },
+    {
+      "id": "tool-idea-wait-until",
+      "title": "bin/wait-until: block until a pid exits, a pgrep pattern clears, a glob reaches N files or a log matches a regex, capped at the Bash cap, so a worker stops polling background jobs with fixed sleeps",
+      "match": {
+        "rule": "tool_idea",
+        "ident": "tool-idea/wait-until"
+      },
+      "status": "open",
+      "expected_min_day": 121,
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night tool-ideas 20261014T013750Z-8004",
+      "note": "Evidence: ~/.claude/projects transcripts: foreground Bash calls with sleep >= 30 s followed by a status check (ls|wc of an out dir, tail of a log, pgrep/ps): 2026-10-07..14 44.7 wait episodes/day (logo-vectorizer-bench out counts 8.4/day, median last poll 600 s; log/pid waits 36.3/day, median 115 s); the job ends at an unknown point of the last fixed sleep, so each episode overshoots half its last poll: 47.9 + 73.5 = 121 min/day of wall (30 d: 75 episodes/day, 188 min/day; 141 polls/day, 160 sleeps killed at the cap). Sample: the 10 longest worker runs of 30 d (7 logo-vectorizer-bench lanes) spent 1955 min in sleep calls, e.g. 'sleep 1500; ls out/c46-pad | wc -l' timing out at 25 min, and a trace that ended 16:27:07 read at 16:33:43. Root: claudeb workers run with CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 (bin/worker-run:1116), so no completion notification exists; rows log_audit:hung-commands-25min-timeout and log_audit:sleep-poll-loops-waiting ruled the sleeps model conduct (no component), which a tool, not a ban, answers. Build: one bin/wait-until (bash, no fork per poll beyond the check; 2 s poll; default max = BASH_MAX_TIMEOUT_MS minus 30 s; prints the condition met or 'timeout after S' and exit 0/1), named once in BRIEF_PREAMBLE's TEST LOOP clause next to the suite wording; grep found no existing wait helper (worker-run wait covers worker runs only). Proof: its suite with a fixture pid/glob/log; Speed counts fixed-sleep poll episodes and their seconds per 1000 Bash calls before against after, net of the preamble bytes.",
+      "handoff": null
+    },
+    {
+      "id": "tool-idea-red-on-old",
+      "title": "bin/red-on-old <ref> <file>... -- <cmd>: swap the named files to <ref>, run the covering command, always restore, print red/green for both sides, replacing the hand-made revert/run/restore mutation check",
+      "match": {
+        "rule": "tool_idea",
+        "ident": "tool-idea/red-on-old"
+      },
+      "status": "open",
+      "expected_min_day": 13,
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night tool-ideas 20261014T013750Z-8004",
+      "note": "Evidence: ~/.claude/projects transcripts 2026-10-07..14: 209 in-place swaps of old code (git show REF:P > P with the same path, git checkout REF -- P, git stash) = 29.9 episodes/day, each spanning 6.4 assistant turns until the restore (cp back, stash pop, git checkout HEAD --); one call instead saves 5.4 turns x 4.8 s (median tool_result -> next turn gap over 203k turns of 30 d) = 12.9 min/day (30 d: 11.2 episodes/day, 6.8 turns). The worker preamble prescribes exactly this dance (bin/worker-run BRIEF_PREAMBLE: 'a mutation check is one run of the covering suite (revert -> fails -> restore)') and every P1/P2 fix needs a red-on-old-code test, so the rate follows the night's fix count. A forgotten restore in a shared checkout is the side risk the trap removes. Build: bin/red-on-old in bash: copy the current files to a mktemp dir, git show <ref>:<path> over each, run the command, restore by trap on EXIT/INT/TERM, rerun the command on the restored tree, print 'old: FAIL n / new: PASS n' from the command's exit codes; no git index use (memory rule never stage in the shared index). Name it in BRIEF_PREAMBLE in place of the parenthesised steps. Proof: a fixture repo suite asserting the tree is byte-identical after a killed run; Speed counts in-place swap episodes per 1000 Bash calls before against after.",
+      "handoff": null
+    },
+    {
+      "id": "tool-idea-run-all-affected",
+      "title": "tests/run-all --affected <file>...: resolve the covering suites through tests/affected and run them in the same call",
+      "match": {
+        "rule": "tool_idea",
+        "ident": "tool-idea/run-all-affected"
+      },
+      "status": "open",
+      "expected_min_day": 4.6,
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night tool-ideas 20261014T013750Z-8004",
+      "note": "Evidence: ~/.claude/projects transcripts 2026-10-07..14: 371 tests/run-all calls whose previous call was a separate tests/affected = 53 pairs/day (30 d: 486 pairs, 2232 affected calls); folding each into one call saves a turn (4.8 s median gap, 3.7 s for these pairs) plus the separate exec (tests/affected 0.46 s here): 53 x 5.3 s = 4.6 min/day. The two-step form is what the worker preamble and the night briefs spell ('tests/affected <file>... lists them', 'Run the suites tests/affected names in one tests/run-all call'). Build: share/run-suites.sh --affected takes file paths, calls the repo's tests/affected (reuse, no second heuristic; its slow-layer skip notice passes through) and proceeds as a named run; the preamble and brief wording name the flag instead of the pair. Proof: test_run_suites_* fixture: --affected on a file runs exactly tests/affected's suites; Speed counts affected->run-all pairs per 1000 suite runs before against after, net of the wording bytes.",
+      "handoff": null
     }
   ],
   "blind_spots": [
