@@ -9611,7 +9611,7 @@
       "status": "fixed-pending",
       "fixes": [
         {
-          "at": "2026-10-13T22:40:00+03:00",
+          "at": "2026-10-13T22:46:00+03:00",
           "by": "harness-doctor-20261014T021638Z-65a1",
           "files": [
             "review-bench/share/rbench/catalog.py"
