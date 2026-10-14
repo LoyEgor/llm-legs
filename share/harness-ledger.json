@@ -9851,8 +9851,8 @@
       "id": "tool-idea-wait-until",
       "title": "bin/wait-until: block until a pid exits, a pgrep pattern clears, a glob reaches N files or a log matches a regex, capped at the Bash cap, so a worker stops polling background jobs with fixed sleeps",
       "match": {
-        "rule": "tool_idea",
-        "ident": "tool-idea/wait-until"
+        "rule": "opportunity",
+        "ident": "time/wait_loop"
       },
       "status": "open",
       "expected_min_day": 121,

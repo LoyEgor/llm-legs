@@ -1030,7 +1030,8 @@ do
   local first = rows[1] or {}
   local runs = first.title and first.title:asTable() or {}
   check(#rows == 3 and text(first.title) == "+2.5 min/day  ✓ 3  ! 1  → 4" and first.disabled and rows[2].title == "-"
-    and text(rows[3].title) == "speed  ✓ 1" and runs[2].attributes.color.green > 0.6 and not runs[3].attributes.color
+    and text(rows[3].title) == "speed  ✓ 1" and near(runs[2].attributes.color, palette.tone(palette.GREEN, true))
+    and not runs[3].attributes.color
     and red(first.title:sub(runs[4].starts)) and not runs[5].attributes.color and allMenlo({ first }),
     "the speed row heads the night: " .. text(first.title or ""))
   doctors.refreshNight()

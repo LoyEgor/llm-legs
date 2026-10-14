@@ -211,6 +211,15 @@ C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|e
 MEDIA_TOOLS = ("media-run", "codex-image", "gemini-image", "grok-image", "image-fanout", "gemini-video", "grok-video",
                "video-chain", "gemini-music", "gemini-sfx", "gemini-listen", "gemini-speech", "chatgpt-web", "gemini-web")
 MEDIA_TOOL = re.compile(r"(?<![\w.-])(%s)(?![\w.-])" % "|".join(MEDIA_TOOLS))
+WAIT_SLEEP = re.compile(r"(?:^|[;&|({\n]|\b(?:do|then|else))\s*(?:command\s+)?sleep\s+(\d+(?:\.\d+)?)\b")
+WAIT_FOLLOW = re.compile(r"(?:^|[;&|(\n]|\b(?:do|then))\s*(?:timeout\s+\S+\s+)?tail\s+(?:-\w+\s+)*-[fF]\b")
+WAIT_LOOP = re.compile(r"\b(?:while|until|for)\b[^;\n]*(?:;|\n)\s*do\b|\b(?:while|until)\b.*?\bdo\b", re.S)
+WAIT_ON = (("suite", re.compile(r"run-all|run-suites|\btests/|\bsuite")),
+           ("worker", re.compile(r"\bworker|claudeb-|codex-|grok-")),
+           ("pid", re.compile(r"\bkill\s+-0\b|\bpgrep\b|\bps\s")),
+           ("log", re.compile(r"\btail\b|\.log\b|\.out\b|\bgrep\b")),
+           ("files", re.compile(r"\bls\b|\bwc\b|\bfind\b|\btest\s+-|\[\s+-[defs]\b")))
+WAIT_RUN = re.compile(r"\b(?:claudeb|codex|grok|gemini|agy|opencode)[a-z]*-\d{10}-\d+-[0-9a-f]{4}\b")
 HEREDOC_SCRIPT = r">[[:space:]]*[^[:space:]]+\.(sh|bash)([^[:alnum:]_]|$)"
 HEREDOC_SHELL_FED = (r"(^|[[:space:];&|(])(bash|sh|zsh)([[:space:]]+-[^[:space:]]+)*[[:space:]]*$|" + HEREDOC_SCRIPT,
                      r"[|][[:space:]]*(bash|sh|zsh)([[:space:]]|$)|" + HEREDOC_SCRIPT)
@@ -592,15 +601,19 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
                 command = (block.get("input") or {}).get("command") if name == "Bash" else None
                 pend[block["id"]] = [t, name, 1 if trivial_bash(command) else 0, None if subagent else at // 1024]
                 media = media_tool(str(command or ""))
-                if media:
-                    pend[block["id"]].append(media)
+                waiting = None if (block.get("input") or {}).get("run_in_background") else wait_call(command)
+                if media or waiting:
+                    pend[block["id"]] += [media, waiting]
             elif block.get("type") == "tool_result" and block.get("tool_use_id") in pend:
-                start, name, trivial, kb, phase = (pend.pop(block["tool_use_id"]) + [None, None])[:5]
+                start, name, trivial, kb, phase, waiting = (pend.pop(block["tool_use_id"]) + [None, None])[:6]
                 who = session_kind(rec)
                 if "act" in rec:
                     c1_add(rec["act"], start, t)
                 if phase:
                     events.append(["g", round(start, 3), session, round(t, 3), block["tool_use_id"][-10:], phase])
+                if waiting:
+                    end = t if waiting[4] is None else min(t, start + waiting[4])
+                    events.append(["w", round(start, 3), session, round(end, 3), block["tool_use_id"][-10:]] + waiting[:4])
                 events.append(["c", round(start, 3), project, name, trivial, round(max(0.0, t - start), 3),
                                who, block["tool_use_id"][-10:], session, kb])
     for key in [k for k, v in pend.items() if v[0] < last_t - PENDING_TTL_S]:
@@ -647,6 +660,25 @@ def heredoc_masked(text):
                           "bin/harness-doctor:input=text, capture_output=True, text=True, timeout=10")
         return text
     return done.stdout if done.returncode == 0 else text
+
+
+def wait_call(command):
+    """A Bash call waiting by fixed sleeps or a followed log: [what it waits on, its shape, a poll loop's sleep
+    seconds (else None), the worker runs it names, the seconds a plain sleep can wait (None for a loop or a followed
+    log, which wait the whole call)], else None. Heredoc bodies are no wait."""
+    text = command or ""
+    if not WAIT_SLEEP.search(text) and not WAIT_FOLLOW.search(text):
+        return None
+    if "<<" in text:
+        text = heredoc_masked(text)
+    sleeps, follow = [float(n) for n in WAIT_SLEEP.findall(text)], WAIT_FOLLOW.search(text)
+    if not sleeps and not follow:
+        return None
+    loop = bool(sleeps) and WAIT_LOOP.search(text)
+    target = next((name for name, pattern in WAIT_ON if pattern.search(text)), "other")
+    shape = ("loop, sleep %g" if loop else "sleep %g") % max(sleeps) if sleeps else "tail -f"
+    return [target, shape, max(sleeps) if loop else None, sorted(set(WAIT_RUN.findall(text))),
+            None if loop or follow else sum(sleeps)]
 
 
 @functools.lru_cache(maxsize=4096)

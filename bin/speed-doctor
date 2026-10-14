@@ -161,7 +161,9 @@ TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "
     "wrapup": {"lever": "a worker's result is published before its file attribution and anchor folding finish"},
     "hung": {"lever": "a hung worker is caught sooner (no CPU, no transcript growth) and resumed"},
     "locks": {"lever": "shorter lock holds and polls"},
-    "refusal": {"lever": "fewer gate refusals and a faster turn after one", "proof": "latency"}}.items()}
+    "refusal": {"lever": "fewer gate refusals and a faster turn after one", "proof": "latency"},
+    "wait_loop": {"lever": "a wait that ends with its job (a pid, a pattern, a file count, a log line) instead of fixed "
+                           "sleeps"}}.items()}
 TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "confidence": "measured",
                                "night_cost_h": 0.0, "proof": "tests", "quality": "equivalent"}, **v) for k, v in {
     "retests": {"lever": "a suite green on the same tree, or on its worker's last run, is not run again",

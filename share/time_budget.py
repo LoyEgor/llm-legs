@@ -39,7 +39,9 @@ CLASSES = (("suite_run", "suites running"), ("suite_wait", "suite slot wait"), (
            ("hung", "watchdog-killed idle tails"), ("hooks", "hooks"), ("stop", "stop hooks"),
            ("refusal", "gate refusal recovery"), ("locks", "locks and polls"), ("walled", "usage-wall relaunches"),
            ("compaction", "compaction"), ("other", "unmeasured"))
-LABEL = dict(CLASSES)
+WAITS = "wait_loop"
+LABEL = dict(CLASSES, **{WAITS: "wait loops"})
+WAIT_SHAPES = 5
 ROWS = (("tests", (("running", "suite_run"), ("queued", "suite_wait"))),
         ("delegation", (("worker queue", "slot"), ("wrap-up", "wrapup"), ("retries", "retries"),
                         ("dead, hung", "dead", "hung"))),
@@ -53,7 +55,7 @@ REFUSAL_CAP_S = 300
 HISTORY_DAYS = 6
 TREND_DAYS = 7
 TREND_RECENT = 3
-BUDGET_VERSION = 3
+BUDGET_VERSION = 4
 STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"))
 WORKER_OVERHEAD = ("slot", "retries", "walled", "wrapup", "dead", "hung", "suite_run", "suite_wait")
 INDEX_DAYS, INDEX_MIN_UNITS = 7, 20
@@ -199,7 +201,7 @@ def event_day(day):
         out = collections.defaultdict(list)
         with open(path, "rb") as handle:
             for line in handle:
-                if line[2:3] in (b"t", b"c", b"h") and line[3:5] == b'",':
+                if line[2:3] in (b"t", b"c", b"h", b"w") and line[3:5] == b'",':
                     try:
                         out[line[2:3].decode()].append(json.loads(line))
                     except ValueError:
@@ -208,8 +210,8 @@ def event_day(day):
     return _DAYS[key]
 
 
-def event_rows(lo, hi, kinds=("t", "c", "h")):
-    """Harness's derived event rows (`t` owner turns, `c` tool calls, `h` hook runs) of the local
+def event_rows(lo, hi, kinds=("t", "c", "h", "w")):
+    """Harness's derived event rows (`t` owner turns, `c` tool calls, `h` hook runs, `w` wait calls) of the local
     days the window touches; a turn or call is filed under its start day, so the day before is read too."""
     out = collections.defaultdict(list)
     day, last = local_day(lo - 86400), local_day(hi)
@@ -514,13 +516,49 @@ def run_split(run, lo, hi, suites, calls):
     return out
 
 
+def wait_overshoot(rows, owner, suites, sessions, runs, lo, hi):
+    """Wait calls' overshoot (Harness's `w` rows of chats and workers, bench workers aside): a wait costs what it waits
+    for, so only the time after the awaited end until the call exits is lost. That end is known when the call ends after
+    its session's last suite (target `suite`) or a worker run it names ended; else a poll loop counts half its sleep and a
+    plain sleep nothing, listed as end unknown at its whole length. A session's overlapping overshoots count once. Chat
+    foreground waits on a job (any target but `other`) are listed whole, info only. `seconds` is None while the window
+    holds no `w` row."""
+    ended = {r.get("run"): num(r.get("ended_at")) for r in runs}
+    suite_ends = collections.defaultdict(list)
+    for r in suites:
+        sid = sessions.get(r.get("worker_run")) if r.get("worker_run") else str(r.get("session") or "")[:8]
+        suite_ends[sid].append(r["ended_at"])
+    over, unknown, chat_fg, counted = (collections.defaultdict(collections.Counter), collections.Counter(), 0.0,
+                                       collections.defaultdict(list))
+    for w in sorted(rows or (), key=lambda w: w[1]):
+        sid, start, end = str(w[2])[:8], w[1], w[3]
+        if not owner.get(sid) or end <= lo or start >= hi:
+            continue
+        target, shape, every, named = (list(w[5:9]) + [None, None, None, None])[:4]
+        ends = [e for e in (suite_ends.get(sid, ()) if target == "suite" else ()) if start < e <= end]
+        ends += [ended[n] for n in named or () if ended.get(n) and start < ended[n] <= end]
+        lost = end - max(ends) if ends else min(end - start, every / 2.0) if every else 0.0
+        if not ends and not every:
+            unknown[target] += length(clip([(start, end)], lo, hi))
+        own = minus(clip([(end - lost, end)], lo, hi), counted[sid])
+        counted[sid] += own
+        over[target][shape] += length(own)
+        if owner[sid][0] == "chat" and target != "other":
+            chat_fg += length(clip([(start, end)], lo, hi))
+    return {"seconds": None if not rows else round(sum(sum(c.values()) for c in over.values()), 1),
+            "on": {t: [round(sum(c.values()), 1), [[k, round(v, 1)] for k, v in c.most_common(WAIT_SHAPES) if v]]
+                   for t, c in over.items()},
+            "unknown": {t: round(v, 1) for t, v in unknown.items()}, "chat_foreground": round(chat_fg, 1)}
+
+
 def budget(lo, hi):
     """Overhead over [lo, hi) as wall-clock seconds: each class is the union of its spans, so parallel runs count once.
     Suites come from run-suites' journal for every caller, less the seconds their owner generated beside them (inside
     its turns or run, outside its calls, when its session has any: a background suite blocks nobody), hooks from Harness's hook rows and a turn's Stop seconds
     at its end, refusals from `refusal_cost`, locks and polls from the waits a chat or worker paid, and the rest from
     each worker run's split. A turn's compaction and unexplained seconds have no position, so they add to the union.
-    `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither. `strata` is the
+    `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither. Wait loops (`waits`,
+    beside the overhead, never in it) are `wait_overshoot`. `strata` is the
     index's per-day input: each stratum's overhead summed over its agents, every agent's own spans unioned, and its
     units; None for a day before the journals record (`horizon`)."""
     events = event_rows(lo, hi)
@@ -529,6 +567,7 @@ def budget(lo, hi):
                         hi + 86400)
     spans, unplaced, active, dead = collections.defaultdict(list), collections.Counter(), [], dead_runs(runs)
     agents, compact, owner, units, outside = collections.defaultdict(list), collections.Counter(), {}, collections.Counter(), []
+    sessions = {}
     chained = {name for found in resumers(lo).values() for _, name in found} if runs else set()
     calls, turns, split_runs = collections.defaultdict(list), collections.defaultdict(list), set()
     for c in events.get("c", ()):
@@ -543,6 +582,7 @@ def budget(lo, hi):
                 spans[key] += split.get(key, ())
             owner[name] = owner[run_session(name)] = ("workers", name)
             agents[owner[name]] += [x for key in WORKER_OVERHEAD for x in split.get(key, ())]
+            sessions[name] = run_session(name)
             owner.pop(None, None)
             units["workers"] += (name not in dead and name not in chained and not run.get("resume")
                                  and lo <= num(run.get("ended_at")) < hi)
@@ -586,6 +626,7 @@ def budget(lo, hi):
         if w.get("class") in WAIT_CLASSES and w.get("caller"):
             spans["locks"].append((w["started"], w["started"] + w["seconds"]))
             agents[owner.get(w["caller"]) or owner.get(w["caller"][:8])].append(spans["locks"][-1])
+    waits = wait_overshoot(events.get("w"), owner, suites, sessions, runs, lo, hi)
     recovery = refusal_cost(lo, hi, events)
     spans["refusal"] = recovery.pop("spans")
     for sid, own in recovery.pop("by_sid").items():
@@ -606,8 +647,9 @@ def budget(lo, hi):
         strata["out_s"] = {"suites": round(length(clip(outside, lo, hi)), 1), "unmeasured": seconds(("other",))}
 
     hooks = sorted(((length(clip(v, lo, hi)), k) for k, v in by_hook.items()), key=lambda x: (-x[0], x[1]))
-    return {"lo": lo, "hi": hi, "version": BUDGET_VERSION, "seconds": {k: seconds((k,)) for k in LABEL},
-            "overhead_s": seconds(LABEL), "active_s": round(length(clip(active, lo, hi)), 1),
+    found = dict({k: seconds((k,)) for k, _ in CLASSES}, **{WAITS: waits["seconds"] or 0})
+    return {"lo": lo, "hi": hi, "version": BUDGET_VERSION, "seconds": found, "waits": waits,
+            "overhead_s": seconds([k for k, _ in CLASSES]), "active_s": round(length(clip(active, lo, hi)), 1),
             "rows": {row: seconds([k for part in parts for k in part[1:]]) for row, parts in ROWS},
             "parts": {part[0]: seconds(part[1:]) for _, parts in ROWS for part in parts},
             "hooks_by_hook": {k: round(v, 1) for v, k in hooks[:20] if v}, "runs": len(runs),
@@ -748,9 +790,19 @@ def document(now, hours=24.0, write=True):
     import tool_mining
     adhoc = tool_mining.menu_row(read_json(tool_mining.cache_path()) or {})
     rows += [adhoc] if adhoc else []
+    waits = b["waits"]
+    if waits["seconds"] is not None:
+        unknown = sorted(waits["unknown"].items(), key=lambda kv: -kv[1])
+        rows.append([scale(waits["seconds"]), LABEL[WAITS], [
+            [scale(total), target, [[scale(secs), shape] for shape, secs in shapes if scale(secs) >= 0.1]]
+            for target, (total, shapes) in sorted(waits["on"].items(), key=lambda kv: -kv[1][0]) if scale(total) >= 0.1] + [
+            "-", [scale(sum(v for _, v in unknown)), "end unknown", [[scale(v), t] for t, v in unknown]],
+            [scale(waits["chat_foreground"]), "chat foreground", []]]])
     rows.append([scale(b["active_s"]), "system active", []])
     doc = {"window_h": hours, "as_of_s": int(now), "lost_min_day": scale(b["overhead_s"]) if measured(b) else None,
            "rows": rows, "classes_min_day": {k: scale(v) for k, v in b["seconds"].items()},
+           "waits_min_day": {"overshoot": scale(waits["seconds"]), "end_unknown": scale(sum(waits["unknown"].values())),
+                             "chat_foreground": scale(waits["chat_foreground"])} if waits["seconds"] is not None else None,
            "hooks_by_hook_min_day": {k: scale(v, 2) for k, v in b["hooks_by_hook"].items()},
            "worker_runs": b["runs"], "dead_runs": b["dead_runs"], "refusals": b["refusals"],
            "refusal_cost": dict(b["refusal_cost"], min_day=scale(b["refusal_cost"]["seconds"], 2),
@@ -1019,6 +1071,8 @@ def runtime_change(item):
 def class_day(day, key, now):
     b = day_budget(day, now, True)
     if not b.get("settled") or not measured(b):
+        return None
+    if key == WAITS and (b.get("waits") or {}).get("seconds") is None:
         return None
     return (b["seconds"].get(key, 0) if key else b["overhead_s"]), b["active_s"]
 
