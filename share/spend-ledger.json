@@ -4282,34 +4282,34 @@
   {
    "id": "suite:review-bench/test_consistency",
    "title": "review-bench/test_consistency",
-   "audited_at": "2026-10-13T13:42:43+03:00",
-   "by": "harness-speed-suite-audit-review-bench-test-review-anchors-20261012T235432Z-2c55",
-   "cpu_run": 3.7,
-   "wall_run": 3.0,
-   "cpu_min_day": 1.01,
-   "wall_min_day": 1.41,
+   "audited_at": "2026-10-14T07:41:03+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261014T021742Z-1f18",
+   "cpu_run": 3.6,
+   "wall_run": 3.5,
+   "cpu_min_day": 1.0,
+   "wall_min_day": 2.31,
    "sources": {
-    "review-bench/tests/test_consistency.sh": "b9c2b768d41f3cb2ce7601452b33818463c51f90"
+    "review-bench/tests/test_consistency.sh": "02b1940ec4931be2946c08dec50402554a7cde96"
    },
-   "verdict": "cut",
-   "zero": "removal saves ~1.4 wall-min/day; loses the cross-implementation pins of docs/shared-invariants.md",
-   "note": "review-bench@034f25d: GIT_CONFIG_GLOBAL=/dev/null (global hooksPath chain shims fired on its fixture commits), REVIEW_CELLS_WAIT_S=0 (staffed-cell checks probed live worker_slots/slot_room); 371 asserts, lens_excluded_paths mutation red, CPU 4.2 -> 3.5 s a run; the rest is 353 source-pin greps and six python blocks, kept"
+   "verdict": "kept",
+   "zero": "removing saves ~1.9 wall-min/day; loses the cross-implementation pins of docs/shared-invariants.md",
+   "note": "kept: 372 asserts, 354 grep source pins + 10 python3 in 3 s; changes since 034f25d are pin edits (clone_cell_env 3 -> 2 + memory-env pin, grok_efforts), each still the single site of its literal"
   },
   {
    "id": "suite:review-bench/test_frontier",
    "title": "review-bench/test_frontier",
-   "audited_at": "2026-10-13T13:42:44+03:00",
-   "by": "harness-speed-suite-audit-review-bench-test-review-anchors-20261012T235432Z-2c55",
-   "cpu_run": 7.7,
+   "audited_at": "2026-10-14T07:41:05+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261014T021742Z-1f18",
+   "cpu_run": 7.9,
    "wall_run": 11.7,
-   "cpu_min_day": 0.55,
-   "wall_min_day": 1.16,
+   "cpu_min_day": 0.49,
+   "wall_min_day": 1.07,
    "sources": {
-    "review-bench/tests/test_frontier.sh": "e6e97021012371c6a7b3b0f7d9bd549bb91c2761"
+    "review-bench/tests/test_frontier.sh": "be536136260c2fada4ffa5721d3ba8a5c59b0309"
    },
-   "verdict": "cut",
-   "zero": "removal saves ~1 wall-min/day; loses the frontier/task-lens composition, exclusion, chat-judge and report-bus pins",
-   "note": "review-bench@5828b67: dropped time.sleep(1.1) before six panels (6.6 s a run; 134 checks pass with all runs frozen into one second), REVIEW_CELLS_WAIT_S=0; chat-judge mutation red; wall 17.6 -> 10-13.6 s, CPU unchanged"
+   "verdict": "kept",
+   "zero": "removing saves ~1.2 wall-min/day; loses the frontier/task-lens composition, exclusion, chat-judge and report-bus pins",
+   "note": "kept: 133 checks (agy-pro skills check dropped with the Pro row, 4288f13); 504 git spawns spread over six panels' own production seal/diff/fetch work, no sleeps left"
   },
   {
    "id": "suite:llm-legs/test_memlogd",
@@ -4434,18 +4434,18 @@
   {
    "id": "suite:review-bench/test_compositions",
    "title": "review-bench/test_compositions",
-   "audited_at": "2026-10-13T13:36:00+03:00",
-   "by": "harness-speed-suite-audit-review-bench-test-judge-stats-20261012T235424Z-2856",
+   "audited_at": "2026-10-14T07:40:57+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261014T021742Z-1f18",
    "cpu_run": 4.8,
    "wall_run": 2.8,
-   "cpu_min_day": 0.6,
-   "wall_min_day": 0.86,
+   "cpu_min_day": 0.57,
+   "wall_min_day": 0.96,
    "sources": {
-    "review-bench/tests/test_compositions.sh": "01dd91ae3d94c1c97151b4d3cda22a9c56aa6381"
+    "review-bench/tests/test_compositions.sh": "c00520335b9dadbadee0297ec41d33cdbeb68df3"
    },
    "verdict": "cut",
-   "zero": "removal saves 0.6 wall-min/day and 0.5 CPU-min/day; loses roster, effort, owner-gate, lens and span pins (153 + 21 checks)",
-   "note": "two import-only python processes folded into the main one, same env; vendor_paused opencode check pinned to its fixture value (red under a vetoing mutation); the rest is 13 staffed() launches' own git work"
+   "zero": "removing saves ~1 wall-min/day; loses roster, effort, owner-gate, lens and span pins (151 + 21 checks)",
+   "note": "review-bench@15b38b6: GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1, the owner's hooksPath chain shims ran on 3 fixture adds+commits (1.14 -> 0.15 s); CPU 5.1-5.3 -> 4.3-4.4 s a run, 151 + 21 unchanged; HOME is not isolated and was not checked"
   },
   {
    "id": "suite:review-bench/test_review_bench_speed",
@@ -4919,92 +4919,92 @@
   {
    "id": "suite:review-bench/test_review_bench_lifecycle",
    "title": "review-bench/test_review_bench_lifecycle",
-   "audited_at": "2026-10-13T15:02:18+03:00",
-   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261012T235435Z-6f98",
-   "cpu_run": 53.5,
+   "audited_at": "2026-10-14T07:40:28+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261014T021742Z-1f18",
+   "cpu_run": 43.5,
    "wall_run": 36.4,
-   "cpu_min_day": 9.05,
-   "wall_min_day": 14.12,
+   "cpu_min_day": 7.97,
+   "wall_min_day": 15.98,
    "sources": {
-    "review-bench/tests/review_bench_harness.py": "a8af2d5d15dcfc80b5699d8b0a296fb1b293960a",
+    "review-bench/tests/review_bench_harness.py": "ed359a9b40ec821af31cca61a3db6e6501c38336",
     "review-bench/tests/review_bench_harness.sh": "006aec33188e820e7d280b6e418acb3de506835e",
     "review-bench/tests/test_review_bench_lifecycle.sh": "b5790055ea804076a07e70bff9e54afacd0d7a60"
    },
    "verdict": "cut",
-   "zero": "removing the suite saves its CPU-min/day; loses its pins on the panel, round and lifecycle machinery (no other suite exercises them)",
-   "note": "store.stable_git (review-bench f741952): sha-addressed git reads asked once per process; execs of git ~4300->fewer, CPU-s a run 73/87/98 -> 34/47/60 (lifecycle/panels/rounds, same 3e02049 base), PASS counts unchanged, lifecycle pins the spawn count (mutation: cache off -> red); rest is fixture git + jq, sleeps untouched"
+   "zero": "removing saves ~16 wall-min/day; loses the document lifecycle, reaper, scoped-worktree and lens/--task run pins",
+   "note": "review-bench@6cdf35d: next_second() floor clock instead of a wall-second wait: 1.6 s over 2 calls a run measured; PASS 7 unchanged; rest is fixture git (2184) and the heartbeat/slot race sleeps, kept"
   },
   {
    "id": "suite:review-bench/test_review_bench_panels",
    "title": "review-bench/test_review_bench_panels",
-   "audited_at": "2026-10-13T15:02:18+03:00",
-   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261012T235435Z-6f98",
-   "cpu_run": 56.3,
-   "wall_run": 53.3,
-   "cpu_min_day": 7.91,
-   "wall_min_day": 13.42,
+   "audited_at": "2026-10-14T07:40:26+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261014T021742Z-1f18",
+   "cpu_run": 59.8,
+   "wall_run": 56.1,
+   "cpu_min_day": 8.82,
+   "wall_min_day": 17.12,
    "sources": {
-    "review-bench/tests/review_bench_harness.py": "a8af2d5d15dcfc80b5699d8b0a296fb1b293960a",
+    "review-bench/tests/review_bench_harness.py": "ed359a9b40ec821af31cca61a3db6e6501c38336",
     "review-bench/tests/review_bench_harness.sh": "006aec33188e820e7d280b6e418acb3de506835e",
     "review-bench/tests/test_review_bench_panels.sh": "0866d2baffcf3e08f655d0ad4a56936dc99fe1a9"
    },
    "verdict": "cut",
-   "zero": "removing the suite saves its CPU-min/day; loses its pins on the panel, round and lifecycle machinery (no other suite exercises them)",
-   "note": "store.stable_git (review-bench f741952): sha-addressed git reads asked once per process; execs of git ~4300->fewer, CPU-s a run 73/87/98 -> 34/47/60 (lifecycle/panels/rounds, same 3e02049 base), PASS counts unchanged, lifecycle pins the spawn count (mutation: cache off -> red); rest is fixture git + jq, sleeps untouched"
+   "zero": "removing saves ~16.6 wall-min/day; loses the walled/paused pool, watchdog, panel-lifetime and chunked-diff pins",
+   "note": "review-bench@6cdf35d: next_second() moves a floor clock (time.time + store.utc_now) instead of waiting the wall second: 3.7 s over 9 calls a run measured; PASS 1 unchanged, started_epoch second-clock mutation red; rest is fixture git (2547) + jq, race sleeps untouched"
   },
   {
    "id": "suite:review-bench/test_review_bench_rounds",
    "title": "review-bench/test_review_bench_rounds",
-   "audited_at": "2026-10-13T15:02:19+03:00",
-   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261012T235435Z-6f98",
-   "cpu_run": 66.1,
-   "wall_run": 17.3,
-   "cpu_min_day": 14.64,
-   "wall_min_day": 19.38,
+   "audited_at": "2026-10-14T07:41:02+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261014T021742Z-1f18",
+   "cpu_run": 63.0,
+   "wall_run": 23.3,
+   "cpu_min_day": 14.71,
+   "wall_min_day": 14.06,
    "sources": {
-    "review-bench/tests/review_bench_harness.py": "a8af2d5d15dcfc80b5699d8b0a296fb1b293960a",
+    "review-bench/tests/review_bench_harness.py": "ed359a9b40ec821af31cca61a3db6e6501c38336",
     "review-bench/tests/review_bench_harness.sh": "006aec33188e820e7d280b6e418acb3de506835e",
     "review-bench/tests/run-all": "c5937cbd7bb272e963526106310634d63761377c",
-    "review-bench/tests/test_review_bench_rounds.sh": "c1e7bb96976d83457ef7d6a05068b46b11c86338"
+    "review-bench/tests/test_review_bench_rounds.sh": "50c76280c481ca1ff5ea14f97bb9425444eae71f"
    },
-   "verdict": "cut",
-   "zero": "removing the suite saves its CPU-min/day; loses its pins on the panel, round and lifecycle machinery (no other suite exercises them)",
-   "note": "store.stable_git (review-bench f741952): sha-addressed git reads asked once per process; execs of git ~4300->fewer, CPU-s a run 73/87/98 -> 34/47/60 (lifecycle/panels/rounds, same 3e02049 base), PASS counts unchanged, lifecycle pins the spawn count (mutation: cache off -> red); rest is fixture git + jq, sleeps untouched"
+   "verdict": "kept",
+   "zero": "removing saves ~14.5 wall-min/day; loses the tiers/compositions, launch, triage, report, receipt and round pins",
+   "note": "kept: CPU is ~275 python3 launches (review-bench CLI, ~0.22 s CPU each = most of 63 CPU-s) + 2323 git; no sleeps, no next_second; cheaper form is in-process cmd_* calls with one CLI wiring spawn, a rewrite of a 4400-line bash suite left for a dedicated run; wall sharded 3 ways"
   },
   {
    "id": "suite:review-bench/test_review_debt",
    "title": "review-bench/test_review_debt",
-   "audited_at": "2026-10-13T15:02:21+03:00",
-   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261012T235435Z-6f98",
-   "cpu_run": 55.6,
-   "wall_run": 35.1,
-   "cpu_min_day": 6.36,
-   "wall_min_day": 10.08,
+   "audited_at": "2026-10-14T07:41:00+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261014T021742Z-1f18",
+   "cpu_run": 61.7,
+   "wall_run": 54.5,
+   "cpu_min_day": 7.5,
+   "wall_min_day": 16.09,
    "sources": {
-    "review-bench/tests/test_review_debt.sh": "f44f21821fa4cec369226292e8557c16c352facd"
+    "review-bench/tests/test_review_debt.sh": "87c6886e27e2f0cd8072cf8510239650c66d0151"
    },
    "verdict": "kept",
-   "zero": "removing saves 7.8 wall-min/day; loses every debt-pricing, anchor and doctor-through-review-anchors pin",
-   "note": "kept: profile 4181 git spawns are HEAD/worktree-state reads (rev-parse HEAD, worktree list, ls-files, check-attr) of fixture repos, not sha-addressed, so no safe memo; 91 tests each build their own repo; nothing duplicated in another suite"
+   "zero": "removing saves ~16.9 wall-min/day; loses every debt-pricing, lens-mark, anchor and doctor-through-review-anchors pin",
+   "note": "kept: 5030 git spawns over 95 tests, ~53 each, all production review-anchors reads (ls-files 762, rev-parse --verify 720, Checkout rev-parse 549, worktree list 330, mktree 306); 15 git init only, no fixture rebuilt per check; cheaper form is a production memo of Checkout(dir) in review-anchors, not taken here"
   },
   {
    "id": "suite:review-bench/test_review_bench",
    "title": "review-bench/test_review_bench",
-   "audited_at": "2026-10-13T15:02:22+03:00",
-   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261012T235435Z-6f98",
-   "cpu_run": 31.1,
+   "audited_at": "2026-10-14T07:40:58+03:00",
+   "by": "harness-speed-suite-audit-review-bench-test-review-bench-20261014T021742Z-1f18",
+   "cpu_run": 31.4,
    "wall_run": 41.6,
-   "cpu_min_day": 7.63,
-   "wall_min_day": 25.99,
+   "cpu_min_day": 7.69,
+   "wall_min_day": 18.32,
    "sources": {
-    "review-bench/tests/review_bench_harness.py": "a8af2d5d15dcfc80b5699d8b0a296fb1b293960a",
+    "review-bench/tests/review_bench_harness.py": "ed359a9b40ec821af31cca61a3db6e6501c38336",
     "review-bench/tests/review_bench_harness.sh": "006aec33188e820e7d280b6e418acb3de506835e",
     "review-bench/tests/run-all": "c5937cbd7bb272e963526106310634d63761377c",
-    "review-bench/tests/test_review_bench.sh": "e1594598373d1b8e9ed15747a3bc15bcf4edd8cc"
+    "review-bench/tests/test_review_bench.sh": "aad6b8b872214bdb794df7734b83d6b00ec015ef"
    },
    "verdict": "kept",
-   "zero": "removing saves 14.9 wall-min/day; loses the frames/roster/tiers/compositions/lens pins and the race checks",
-   "note": "kept: wall is sleeps of race checks (sleep_s 3669 over 49 spawns, never shortened per 2026-10-05 revert), 602 git + 130 python3 spawns are fixture setup; CPU 45->32 s with stable_git"
+   "zero": "removing saves ~20.9 wall-min/day; loses the frames/roster/tiers/compositions/lens pins and the run_streamed race checks",
+   "note": "kept: no next_second; wall over CPU is run_streamed stall/stream/kill race sleeps (0.7, 0.4x6, 1.5x2, 0.3x4, 1 s cap) never shortened; 606 git + 361 bash + 130 python3 are fixture setup; the changed parts (agy-pro drop, Popen.poll interrupt) read vacuous-free"
   },
   {
    "id": "suite:llm-legs/test_instruction_gate_tripwire",
