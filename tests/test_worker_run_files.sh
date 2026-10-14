@@ -140,7 +140,7 @@ set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
 mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
 start_ok claudeb
-assert await_done
+assert await_exit
 assert test "$(cat "$RUN_DIR/launcher")" = chat-abc
 assert test "$(cat "$STUB_DIR/launcher_env")" = chat-abc
 # The task row's state file ends where the run ended.
