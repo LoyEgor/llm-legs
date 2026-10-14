@@ -1,6 +1,6 @@
 # Statusline debt `⟟N`: moved-key floor 15 s → 60 s
 
-Status: open
+Status: settled 20261014T013750Z-8004: cause gone — 82 worktrees were the leak (fixed 944ffc1c) and landed ones are no longer repriced (review-bench 6c6001e); review-debt --repo 2.6 → 0.55-0.8 s with 41 night worktrees, the row ≈ 77 → ~15 CPU-min/day, so a 4x lag on ⟟N for ~7 CPU-min/day is not worth it: the 15 s floor stays; CPU audits reopen it if the row climbs
 To: Egor. From: night fixer harness-speed-cpu-statusline-render (20261012T233034Z-3131).
 
 `cpu:statusline/debt` is 77 CPU-min/day (1460 runs, 2.6 s each, `review-debt --repo`, review-bench). Its answer was
