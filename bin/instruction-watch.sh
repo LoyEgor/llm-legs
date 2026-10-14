@@ -54,7 +54,7 @@ command -v jq >/dev/null 2>&1 ||
   { gate_journal watch fault '' '' '' 'jq missing'
     echo "instruction watch: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
 
-STATE_DIR=$(instruction_watch_state)
+instruction_watch_state STATE_DIR
 RANKED_CACHE="$STATE_DIR/ranked.txt"
 repo_root=''
 
@@ -365,8 +365,10 @@ write_baseline() {
   mv "$tmp" "$out" 2>/dev/null
 }
 
-session_baseline() {
-  printf '%s/session-%s.tsv' "$STATE_DIR" "$(instruction_sid_name "$1")"
+session_baseline() { # session var
+  local _sb_name
+  instruction_sid_name "$1" _sb_name
+  printf -v "$2" '%s/session-%s.tsv' "$STATE_DIR" "$_sb_name"
 }
 
 has_rows() { [ -f "$1" ] && grep -q '^[^#]' "$1" 2>/dev/null; }
@@ -595,10 +597,11 @@ inflight_window() { # file name start agent
 # other mark older than an hour is a call that died and is swept without a word — unless this call
 # itself ran over an hour, when an equally old mark may be just as alive and stays a window.
 load_inflight() {
-  local f name m_start m_id m_agent m_end start own_name own_file='' own_count=0 k own_agent
+  local f name m_start m_id m_agent m_end start own_name own_file='' own_count=0 k own_agent now_s
   local aged_files=() aged_names=() aged_starts=() aged_agents=() own_stale=() own_stale_starts=()
-  instruction_ns_to now_ns "$(instruction_now)" || { now_ns=''; return 0; }
-  own_name=$(instruction_sid_name "$sid")
+  instruction_now now_s
+  instruction_ns_to now_ns "$now_s" || { now_ns=''; return 0; }
+  instruction_sid_name "$sid" own_name
   own_agent=${agent_id:--}
   own_agent=${own_agent//[^A-Za-z0-9._-]/_}
   for f in "$INFLIGHT_DIR"/*; do
@@ -980,7 +983,6 @@ cmd_check() {
         continue
       fi
       handled=$((handled + 1))
-      moved=1
       st=$(stat -L -f '%R%t%HT%t%Fm%t%z%t%i' -- "$vis" 2>/dev/null) || st=''
       real='' ht='' mtime='' size='' ino=''
       [ -n "$st" ] && IFS=$'\t' read -r real ht mtime size ino <<<"$st"
@@ -988,10 +990,12 @@ cmd_check() {
       [ -n "$size" ] && [ "$ht" != "Symbolic Link" ] && cur_hash=$(hash_of "$real" "$vis")
       if [ -z "$cur_hash" ]; then
         case "$_watch_nl$unw_known" in *"$_watch_nl$vis$_watch_nl"*) continue ;; esac
+        moved=1
         { [ -e "$vis" ] || [ -L "$vis" ]; } || continue
         report "UNWATCHABLE$sfx $vis (it exists but cannot be read)" "$vis" unwatchable 0
         continue
       fi
+      moved=1
       cur_link='-'
       [ "$vis" = "$real" ] || cur_link=$(stat -f '%Y' "$vis" 2>/dev/null)
       [ -n "$cur_link" ] || cur_link='-'
@@ -1087,10 +1091,11 @@ agent_id=${agent_id%$'\n'}
 
 run_mode() {
   repo_root=$(instruction_repo_root "${cwd:-}") || repo_root=''
-  baseline=$(session_baseline "${sid:-}")
+  session_baseline "${sid:-}" baseline
   case "$1" in
     baseline) cmd_baseline "$baseline" ;;
-    check)    instruction_baseline_wait "$STATE_DIR/pending-$(instruction_sid_name "${sid:-}")"
+    check)    instruction_sid_name "${sid:-}" pending_name
+              instruction_baseline_wait "$STATE_DIR/pending-$pending_name"
               cmd_check "$baseline" "$event" "$sid" ;;
     *)        gate_journal watch fault "$sid" '' '' "unknown mode $1"; exit 0 ;;
   esac

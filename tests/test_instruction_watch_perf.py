@@ -243,6 +243,22 @@ class InstructionPerformance(unittest.TestCase):
         self.assertEqual(['stat', 'stat'], log.read_text().splitlines())
         self.assertFalse(' pin ' in result.stderr, 'quiet check performed per-file pin work')
         self.assertNotIn("read -r -d $'\\035'", result.stderr, 'quiet check read the stat join byte by byte')
+        for helper in ('instruction_sid_name', 'instruction_now', 'instruction_watch_state'):
+            self.assertNotRegex(result.stderr, r'(?m)^\+\++ ' + helper, 'quiet check forked a subshell for ' + helper)
+
+    def test_a_known_unwatchable_file_leaves_the_baseline_alone(self):
+        self.git('init', '-q')
+        self.put(self.home / '.claude/docs/ok.md')
+        locked = self.put(self.home / '.claude/docs/locked.md')
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o644)
+        self.assertEqual(0, self.hook('baseline').returncode)
+        baseline = next(self.state.glob('session-perf.tsv'))
+        self.assertIn('#unwatchable\t' + str(locked), baseline.read_text())
+        before = baseline.stat().st_ino
+        for _ in range(2):
+            self.assertEqual('', self.context(self.hook('check')))
+        self.assertEqual(before, baseline.stat().st_ino, 'a quiet check rewrote the baseline for a known unwatchable file')
 
     def test_reused_enumeration_still_sees_every_arrival(self):
         self.git('init', '-q')
