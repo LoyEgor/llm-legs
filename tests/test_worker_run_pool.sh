@@ -136,7 +136,7 @@ start_ok claudeb --account resumeacct --resume claude-small
 assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
 assert await_exit
 touch -t "$(date -v-60M +%Y%m%d%H%M)" "$claude_small"
-refused_resume claudeb claude-small 'idle 1h0m, past its ~1h cache'
+refused_resume claudeb claude-small 'idle 1h[0-9]*m, past its ~1h cache'
 
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-missing
