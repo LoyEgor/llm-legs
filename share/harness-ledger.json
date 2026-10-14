@@ -10654,6 +10654,13 @@
       "reason": "2026-10-14 test_review_bench journals sleep_s 3670 on a 54 s run: run-suites' shim sums the argument of every sleep, six killed `sleep 600` fixtures among them, so share/test_health.py's min(p10 - floor, median(slept)) is always p10 - floor and the row reads 'bounded by the sleeps' while Python time.sleep totals 3.4 s and the rest is the run queue",
       "since": "2026-10-14",
       "would_catch_if": "the shim journaled the time each sleep actually ran (start to exit) instead of its argument"
+    },
+    {
+      "id": "refusal-recovery-probe-sessions",
+      "what": "the small gates' share of gate refusal recovery (opportunity:time/refusal, refusal/<gate>) that comes from fixers probing the gate itself",
+      "reason": "2026-10-14, 24 h to 06:00 local: of the 1.3 min/day behind time/refusal, worker-pin-gate 4 of 4 denials, launchagent-name-gate 2 of 2, english-gate 1 of 5, review-flow-gate 1 of 1 and the one resume-timer-guard denial read (3 in two sessions) were speed fixers' probe commands that only quote the blocked text (`# codex_model=gpt-5.6-terra` in a test harness, a plist path under echo); worker-edit-guard's 3 of 3 were the `git apply -R patch; test; git apply patch` mutation check the fixer brief prescribes (revert, fails, restore): the brief says a shell write is recorded, never refused, the guard refuses git apply; the other denials are true (Russian in memory files, bare-interpreter plist). Each fixer pass reads these as lost time and re-rules them out (4ef5 on 2026-10-13, this run)",
+      "since": "2026-10-14",
+      "would_catch_if": "refusal_rows skipped denials whose session is a doctor-fix or night-run worker session (run meta.json session) and journaled them apart as probe time, or worker-edit-guard let a `git apply` through whose patch files the run's Edit/Write record already names (a claude-setup hook change, then the brief's mutation check stops losing a turn)"
     }
   ]
 }
