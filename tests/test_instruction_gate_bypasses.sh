@@ -376,37 +376,54 @@ printf '{"model":"opus","hooks":{}}\n' > "$WH/home/.claude/settings.json"
 printf 'repo rules\n' > "$WH/repo/CLAUDE.md"
 printf '#1\n%s\n' "$WH/repo/CLAUDE.md" > "$WH/state/ranked.txt"
 if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -q -c 'return "ok"' 2>/dev/null)" = ok ]; then
-  # Isolate require and globals: the harness otherwise replaces the live module and starts it.
+  # The env carries only the harness's inputs: the harness itself loads a private module copy and
+  # never touches the live package.loaded, which the guard proves for the real run. The second run
+  # stands in for the live Hammerspoon (its own package table holding an instruction-watch) and kills
+  # the harness at its first check: whatever it swapped by then stays swapped, and the guard says so.
   menu_lua=$(cat <<LUA
-local env = setmetatable({}, { __index = _G })
-env._G = { INSTRUCTION_WATCH_FIXTURE = [[$INSTRUCTION_WATCH_STATE]], INSTRUCTION_WATCHER_FIXTURE = {
-    home = [[$WH/home]], state = [[$WH/state]], repo = [[$WH/repo]], watch = [[$WATCH]], gate = [[$WRITE_GATE]], path = [[$PATH]] } }
-env.package = { path = package.path, loaded = {} }
-env.os = setmetatable({ getenv = function(key)
-    if key == "HOME" then return [[$HOME]] end
-    if key == "INSTRUCTION_WATCH_STATE" then return [[$INSTRUCTION_WATCH_STATE]] end
-    return os.getenv(key)
-end }, { __index = os })
+local HARNESS, GUARD = [[$ROOT/tests/instruction_watch_menu_harness.lua]], [[$ROOT/tests/lib/live_log_guard.lua]]
+local function inputs(env)
+    env = setmetatable(env or {}, { __index = _G })
+    env._G = { INSTRUCTION_WATCH_FIXTURE = [[$INSTRUCTION_WATCH_STATE]], INSTRUCTION_WATCHER_FIXTURE = {
+        home = [[$WH/home]], state = [[$WH/state]], repo = [[$WH/repo]], watch = [[$WATCH]], gate = [[$WRITE_GATE]], path = [[$PATH]] } }
+    env.os = setmetatable({ getenv = function(key)
+        if key == "HOME" then return [[$HOME]] end
+        if key == "INSTRUCTION_WATCH_STATE" then return [[$INSTRUCTION_WATCH_STATE]] end
+        return os.getenv(key)
+    end }, { __index = os })
+    return env
+end
+local real = dofile(GUARD)(function() return assert(loadfile(HARNESS, "t", inputs()))() end)
+
 local inert = function() return { start = function() end, stop = function() end } end
-env.hs = setmetatable({
+local stand = inputs({ package = { path = package.path, loaded = { ["instruction-watch"] = { start = inert, stop = inert } } } })
+stand.hs = setmetatable({
     pathwatcher = { new = inert }, timer = { doEvery = inert },
     alert = { show = function() error("unexpected real alert attempt") end },
 }, { __index = hs })
-env.require = function(name)
-    if name == "menu-style" then return assert(loadfile([[$ROOT/hammerspoon/menu-style.lua]], "t", env))() end
-    assert(name == "instruction-watch", "unexpected module: " .. name)
-    local module = assert(loadfile([[$ROOT/hammerspoon/instruction-watch.lua]], "t", env))()
-    env.package.loaded[name] = module
-    return module
+stand.require = function(name)
+    if stand.package.loaded[name] == nil then
+        stand.package.loaded[name] = assert(loadfile([[$ROOT/hammerspoon/]] .. name .. ".lua", "t", stand))()
+    end
+    return stand.package.loaded[name]
 end
-env.dofile = function(path) return assert(loadfile(path, "t", env))() end
-return env.dofile([[$ROOT/tests/instruction_watch_menu_harness.lua]])
+local killed = assert(loadfile(GUARD, "t", stand))()(function()
+    local co = coroutine.create(assert(loadfile(HARNESS, "t", stand)))
+    debug.sethook(co, function()
+        local called = debug.getinfo(2, "nS")
+        if called.name == "check" and called.source == "@" .. HARNESS then error("killed at its first check", 0) end
+    end, "c")
+    local ok, err = coroutine.resume(co)
+    return ok and "SURVIVED" or "KILLED: " .. tostring(err)
+end)
+return real .. "\n" .. killed
 LUA
 )
   # -q: another client's print() lines otherwise reach this one.
   menu_out=$(HS_BOUNDED_IPC_S=120 hs_bounded 600 -q -c "$menu_lua" 2>/dev/null) \
     || fail "the Hammerspoon menu harness threw"
-  assert_eq "PASS: instruction-watch menu contract" "$(printf '%s\n' "$menu_out" | grep -v '^-- Loading extension: ')"
+  assert_eq "PASS: instruction-watch menu contract
+KILLED: killed at its first check" "$(printf '%s\n' "$menu_out" | grep -v '^-- Loading extension: ')"
 else
   echo "   (skipped: Hammerspoon is not reachable from this shell)"
 fi

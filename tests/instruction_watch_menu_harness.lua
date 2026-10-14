@@ -5,34 +5,27 @@ assert(root, "harness path is unavailable")
 local fixture = _G.INSTRUCTION_WATCH_FIXTURE
 assert(type(fixture) == "string" and fixture ~= "", "no fixture state directory was passed")
 
-local savedPath = package.path
 -- `touch -t 202001010000` without a shell: the same local-time stamp for atime and mtime.
 local OLD_STAMP = os.time({ year = 2020, month = 1, day = 1, hour = 0, min = 0, sec = 0 })
-local existing = package.loaded["instruction-watch"]
-local savedGlobal = _G.InstructionWatch
-package.path = root .. "/hammerspoon/?.lua;" .. package.path
--- `require` caches, and this harness runs inside a Hammerspoon that may have loaded the module
--- hours ago: without dropping the cache first, every run after the first one checks the version
--- that was on disk THEN, and an edit to the module could never fail it. The live instance is
--- stopped rather than abandoned, or its watcher and timer outlive it.
-do
-    if type(existing) == "table" and type(existing.stop) == "function" then
-        pcall(existing.stop)
-    end
-    package.loaded["instruction-watch"] = nil
-end
-local savedWatcher = hs.pathwatcher
--- nil would trigger Hammerspoon's extension autoloader and start the module against live state.
-hs.pathwatcher = false
-local loaded, M = pcall(require, "instruction-watch")
-hs.pathwatcher = savedWatcher
-if not loaded then
-    package.path = savedPath
-    package.loaded["instruction-watch"] = existing
-    _G.InstructionWatch = savedGlobal
-    if type(existing) == "table" and type(existing.start) == "function" then pcall(existing.start) end
-    error(M)
-end
+-- This runs inside the live Hammerspoon, whose menubar holds its own instruction-watch in
+-- package.loaded: the harness loads a private copy from disk and never touches the live one, its
+-- package table or its hs, so dying anywhere in here leaves the menubar as it was. Every hs field
+-- the harness or the copy writes lands in this proxy.
+local inert = function() return { start = function() end, stop = function() end } end
+local hs = setmetatable({
+    -- false while the copy loads: it starts itself on load whenever hs.pathwatcher is truthy.
+    pathwatcher = false, timer = { doEvery = inert },
+    alert = { show = function() error("unexpected real alert attempt") end },
+}, { __index = hs })
+local moduleEnv
+moduleEnv = setmetatable({ hs = hs, require = function(name)
+    assert(name == "menu-style", "unexpected module: " .. name)
+    return assert(loadfile(root .. "/hammerspoon/menu-style.lua", "t", moduleEnv))()
+end }, { __index = _ENV })
+-- The copy's `_G.InstructionWatch = M` and `_G.hs` stay inside its own environment.
+moduleEnv._G = moduleEnv
+local M = assert(loadfile(root .. "/hammerspoon/instruction-watch.lua", "t", moduleEnv))()
+hs.pathwatcher = { new = inert }
 
 local failures = {}
 local function check(ok, message)
@@ -57,10 +50,6 @@ local function restore()
     M.setRatesPath(nil)
     M.setHome(nil)
     M.setStateDir(nil)
-    package.path = savedPath
-    package.loaded["instruction-watch"] = existing
-    _G.InstructionWatch = savedGlobal
-    if type(existing) == "table" and type(existing.start) == "function" then pcall(existing.start) end
 end
 
 local function readFile(path)
@@ -596,6 +585,10 @@ local ok, err = pcall(function()
             "TOKENMAP_RATES=" .. quoted(wf.home .. "/no-rates.json"),
             "bash", quoted(gate or wf.watch), mode, "<<'PAYLOAD' >/dev/null 2>&1\n" .. payload .. "\nPAYLOAD\n" }, " "))
     end
+    -- RED on an enabled row; a disabled one (watcher down) gets it retoned by menuStyle.mono to this
+    -- theme's inactive red (dark: 0.55/0/0).
+    local style = moduleEnv.require("menu-style")
+    local reds = { style.RED, style.tone(style.RED, true) }
     local function isRed(title)
         if type(title) ~= "userdata" then return false end
         local okTable, parts = pcall(function() return title:asTable() end)
@@ -603,7 +596,10 @@ local ok, err = pcall(function()
         for index = 2, #parts do
             local color = type(parts[index]) == "table" and type(parts[index].attributes) == "table"
                 and parts[index].attributes.color
-            if type(color) == "table" and (color.red or 0) > 0.8 and (color.green or 1) < 0.3 then return true end
+            for _, red in ipairs(reds) do
+                if type(color) == "table" and math.abs((color.red or 0) - red.red) < 1e-3
+                    and math.abs((color.green or 1) - red.green) < 1e-3 then return true end
+            end
         end
         return false
     end
