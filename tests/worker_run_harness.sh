@@ -217,6 +217,7 @@ if [ -n "${STUB_TRANSCRIPT_GROW:-}" ] && [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; 
   # A working claudeb writes NOTHING to stdout until its very last line; the transcript growing is
   # the whole evidence that the run is alive.
   grown=0
+  enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
   while [ "$grown" -lt "${STUB_SLEEP:-0}" ]; do
     sleep 1
     grown=$((grown + 1))
@@ -411,7 +412,7 @@ clear_stub() {
     "$STUB_DIR/grok_max_turns" "$STUB_DIR/grok_cancelled" "$STUB_DIR/grok_cancelled_worked" \
     "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"
   local store=${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}
-  [ ! -f "$store" ] || ! grep -q worker_wall "$store" || { jq 'walk(if type == "object" then del(.worker_wall) else . end)' "$store" >"$store.next" &&
+  [ ! -f "$store" ] || [[ $(<"$store") != *worker_wall* ]] || { jq 'walk(if type == "object" then del(.worker_wall) else . end)' "$store" >"$store.next" &&
     mv "$store.next" "$store"; }
 }
 
@@ -537,14 +538,15 @@ transcript_report() (
   local SCRIPT_DIRECTORY="$ROOT/bin" gemini_base_home="$HOME" gemini_profiles_dir="$GEMINIB_PROFILES_DIR"
   . "$ROOT/share/gemini-accounts.sh"
   if [ ! -s "$WORK/transcript-report.fns" ]; then
+    local ranges=()
     for name in compute_transcript_files compute_transcript_rows session_id session_transcript codex_home grok_home \
         grok_end_field grok_session_dir_matches classify_tool_rows resolve_tool_path \
         writes_through_shell gemini_tool_rows codex_tool_rows grok_tool_rows transcript_files \
         listing_spelling transcript_wrote_through_shell workdir_escape_line file_lstat meta_unchanged; do
-      sed -n "/^$name() {/,/^}/p" "$RUNNER"
-    done >"$WORK/transcript-report.fns"
-    sed -n '/^SHELL_FLOOR_PARTIAL=/p; /^GEMINI_WRITE_TOOLS=/p; /^STAT_BUILTIN=/p; /^enable -f .*\/stat" stat/p' \
-      "$RUNNER" >>"$WORK/transcript-report.fns"
+      ranges+=(-e "/^$name() {/,/^}/p")
+    done
+    sed -n "${ranges[@]}" -e '/^SHELL_FLOOR_PARTIAL=/p; /^GEMINI_WRITE_TOOLS=/p; /^STAT_BUILTIN=/p; /^enable -f .*\/stat" stat/p' \
+      "$RUNNER" >"$WORK/transcript-report.fns"
   fi
   . "$WORK/transcript-report.fns"
   compute_transcript_files "$directory"
