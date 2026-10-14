@@ -2,6 +2,7 @@
 -- with a stubbed hs, and this module is shared through the real require.
 local M = {}
 
+-- KEEP(Egor 2026-10-14): three hues, each full and dim; a dim twin stays even while unused.
 M.RED = { red = 0.9, green = 0.25, blue = 0.2 }
 M.DIM_RED = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
 M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }
@@ -11,6 +12,7 @@ M.DIM_GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 0.55 }
 M.DIM = { list = "System", name = "tertiaryLabelColor" }
 M.MONO = { name = "Menlo", size = 13 }
 
+-- KEEP(Egor 2026-10-14): measured on the real menu in both themes and approved by eye.
 -- DIM_RED and DIM_GREEN are tokens a builder paints with; no menu draws their alpha. Over the
 -- Liquid-Glass menu an alpha blends with whatever lies under it, while a disabled NSMenu row re-tints
 -- any opaque colour to one fixed look whatever the backdrop (and takes black to its own grey). So each
