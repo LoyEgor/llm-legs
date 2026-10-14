@@ -176,8 +176,9 @@ ended = [r for r in rows if T - 86400 <= r["ended_at"] < T and r["kind"] == "sui
 check(abs(now["queue"] - 100.0 * 300 / sum(r["ended_at"] - r["queued_at"] for r in ended)) < 1e-6
       and sum(r["started_at"] - r["queued_at"] for r in ended) == 300,
       "slot queue: start minus queued over queued to end of run-suites rows: %s" % now["queue"])
-check(section["usual"]["wait_chat"] == 10.0 and section["usual_days"] == 4,
-      "usual: the median over the days before today that ran any suite: %s" % section["usual"])
+check(section["usual"]["wait_chat"] == 10.0 * 12 and section["usual_days"] == 4 and section["usual"]["retests"] is None,
+      "usual: a minutes line's median minutes a run over the days before today that ran any suite, times today's runs "
+      "of its class; with no day before that journaled a tree, retests are unmeasured: %s" % section["usual"])
 
 findings = {f["target"]: f for f in section["findings"]}
 idle = findings.get("test-health/idle/alpha/test_slow")
@@ -193,9 +194,39 @@ check(findings["test-health/retests"]["exposure"] == 3, "retests: one finding ov
 check(findings["test-health/idle/alpha/test_a"]["confidence"] == "estimated",
       "idle: without a profiled run any wait counts and reads estimated")
 regs = {r["key"]: r for r in section["regressions"]}
-check("wait_chat" in regs and abs(regs["wait_chat"]["min_day"] - round(now["wait_chat"] - 10.0, 1)) < 1e-9
-      and set(regs) == {k for k, _, _, m in th.LINES if th.red_line(k, now[k], section["usual"][k], m)},
-      "regressions: every line read red is a row with its minutes a day over the usual: %s" % regs)
+check(set(regs) == {k for k, _, _, m in th.LINES if th.red_line(k, now[k], section["usual"][k], m)},
+      "regressions: every line read red is a row: %s" % regs)
+
+
+def busy(name, today):
+    """A journal of one 600 s chat run of two suites on 3 days before, then today's (start, wall) runs."""
+    del rows[:]
+    for back in (2, 3, 4):
+        row(T - back * 86400, T - back * 86400 + 600, [("test_a.sh", 0, 600, 300), ("test_c.sh", 0, 600, 300)],
+            who="s-u")
+    for start, wall in today:
+        row(start, start + wall, [("test_a.sh", 0, wall, 10), ("test_c.sh", 0, wall, 10)], who="s-u")
+    row(T - 9000, T - 8000, [("test_b.sh", 0, 1000, 10)], tree="x")
+    row(T - 7000, T - 5100, [("test_b.sh", 0, 1900, 10)], tree="x")
+    row(T - 5000, T - 4000, [("test_b.sh", 0, 1000, 10)], tree="x", sleep=5)
+    with open(os.path.join(work, name), "w") as handle:
+        handle.write("".join(json.dumps(r) + "\n" for r in rows))
+    return th.collect(NOW, os.path.join(work, name), [repo])
+
+
+more = busy("busy.jsonl", [(T - 20000 + i * 1000, 600) for i in range(4)])
+slow = busy("slow.jsonl", [(T - 20000 + i * 2000, 1800) for i in range(2)])
+check(more["now"]["wait_chat"] == 40.0 and more["usual"]["wait_chat"] == 40.0
+      and "wait_chat" not in {r["key"] for r in more["regressions"]},
+      "regressions: four times the runs at the usual minutes a run is no regression: %s %s"
+      % (more["now"], more["usual"]))
+reg = {r["key"]: r for r in slow["regressions"]}.get("wait_chat") or {}
+check(reg.get("now") == 60.0 and reg.get("usual") == 20.0 and reg.get("min_day") == 40.0,
+      "regressions: three times the minutes a run is one, priced at the minutes a day over the usual at today's runs: "
+      "%s" % slow["regressions"])
+check(more["now"]["repeats"] == 1 and "retests" not in {r["key"] for r in more["regressions"]},
+      "retests: a profiled run journals what a plain green one cannot, so it repeats only a profiled run; days before "
+      "with no tree journaled leave the line unmeasured, never red: %s %s" % (more["now"]["repeats"], more["regressions"]))
 files = {f["path"]: f for f in section["fan_out"]}
 check(files["bin/tool-a"]["suites"] == 2 and files["bin/tool-a"]["changes"] == 3,
       "fan-out: tool-a pulls the two suites naming it as a word, never the live e2e suite: %s" % files.get("bin/tool-a"))
@@ -241,8 +272,9 @@ check(lines[0][0] == 0 and lines[0][3].startswith("Test health: ") and section["
 classes = [l for l in lines if l[0] == 1 and "usual" in l[3]]
 check(len(classes) == len(th.LINES) and len({l[3].index("usual") for l in classes}) == 1,
       "block: one line per class, its usual in one column: %s" % [l[3] for l in classes])
-check(any(l[3].startswith("wait · chats") and l[2] for l in lines) == th.red_line(
-    "wait_chat", now["wait_chat"], 10.0, 30), "block: a class over 1.5× its usual and its least delta reads red")
+check(any(l[3].startswith("wait · chats") and l[2] for l in slow["menu"]) and not any(
+    l[3].startswith("wait · chats") and l[2] for l in more["menu"]),
+    "block: a class over 1.5× its usual and its least delta reads red")
 check(th.red_line("x", 46, 30, 15) and not th.red_line("x", 44, 30, 15) and not th.red_line("x", 60, 40, 30)
       and not th.red_line("x", 60, None, 1), "red: over the band and the least delta, never without a usual")
 heavy = [l for l in lines if l[0] == 1 and l[3].rstrip().endswith("· alpha")]
@@ -268,9 +300,9 @@ check("opportunity:time/suite_run" not in ranked and ranked["opportunity:time/su
       and all("time_min_day" not in o["opportunity"] for k, o in ranked.items() if k.startswith(S.TEST_HEALTH_ID)),
       "speed: suites running is test health's to price per suite, never a time row; a queue's union minutes are their "
       "own row, never folded into a test-health one: %s" % sorted(ranked))
-problems = {p["id"]: p for p in S.test_regressions(section, {}, NOW)}
+problems = {p["id"]: p for p in S.test_regressions(slow, {}, NOW)}
 wait_row = problems.get("regression:test-health/wait_chat") or {}
-check(wait_row.get("rule") == "regression" and wait_row.get("expected_min_day") == regs["wait_chat"]["min_day"]
+check(wait_row.get("rule") == "regression" and wait_row.get("expected_min_day") == reg["min_day"]
       and wait_row.get("component") == "test-health/wait_chat",
       "speed: a test health line over its usual is a regression row priced at its excess: %s" % wait_row)
 th.HEAVY_MIN_DAY = 0.0

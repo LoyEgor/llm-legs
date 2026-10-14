@@ -147,18 +147,20 @@ def first_end(path):
 
 def label(execs):
     """Marks each exec: `repeat` (a green run of its suite on the same repository content, its `tree`, ended before
-    it started, whichever checkout ran it), `post` (a repeat a chat or the night ran in a worker's worktree after that
-    worker's own green run of the content) and `flaky` (a red run a later green run of the same tree passed; without a
-    tree, two every-suite runs of one head). A run of new content, the night's landing rerun after a rebase included,
-    is neither."""
-    green, worker_green = {}, {}
+    it started, whichever checkout ran it; a profiled run, which journals what a plain one cannot, only after a profiled
+    green), `post` (a repeat a chat or the night ran in a worker's worktree after that worker's own green run of the
+    content) and `flaky` (a red run a later green run of the same tree passed; without a tree, two every-suite runs of
+    one head). A run of new content, the night's landing rerun after a rebase included, is neither."""
+    green, profiled, worker_green = {}, {}, {}
     for e in execs:
         key = (e["repo"], e["tree"], e["name"])
-        e["repeat"] = bool(e["tree"]) and green.get(key, float("inf")) <= e["start"]
+        e["repeat"] = bool(e["tree"]) and (green if e["sleep"] is None else profiled).get(key, float("inf")) <= e["start"]
         e["post"] = e["repeat"] and e["who"] != "worker" and WORKTREES in e["checkout"] \
             and worker_green.get((e["checkout"],) + key, float("inf")) <= e["start"]
         if e["ok"] and e["tree"]:
             green[key] = min(green.get(key, float("inf")), e["end"])
+            if e["sleep"] is not None:
+                profiled[key] = min(profiled.get(key, float("inf")), e["end"])
             if e["who"] == "worker":
                 worker_green[(e["checkout"],) + key] = min(worker_green.get((e["checkout"],) + key, float("inf")),
                                                            e["end"])
@@ -303,11 +305,17 @@ def measure(rows, execs, landed, lo, hi):
                 "suite_min": sum(r["end"] - r["queued"] for r in ended) / 60.0 / days,
                 "targeted_min": sum(r["end"] - r["queued"] for r in ended if r["kind"] == "suites"
                                     and r["scope"] in TARGETED) / 60.0 / days})
+    groups = collections.Counter(e["row"]["group"] for e in window)
+    work = dict({key: groups[key[5:]] for key in WAITS}, retests=out["trees"], idle=len(window), pole=len(window))
+    out["work"] = {key: n / days for key, n in work.items()}
+    out["per_run"] = {key: out[key] / out["work"][key] if n else None for key, n in work.items()}
     return out
 
 
-def usual(rows, execs, landed, hi):
-    """Median of each value over the USUAL_D local days before hi's day that ran any suite."""
+def usual(rows, execs, landed, hi, current):
+    """Median of each value over the USUAL_D local days before hi's day that ran any suite; a minutes line's is its
+    median minutes a suite run of its class (`per_run`) times the current window's runs, so a busier or quieter day is
+    no regression and a day with none of the class (a tree not yet journaled) is unmeasured."""
     found, day = [], time_budget.local_day(hi)
     for back in range(1, USUAL_D + 1):
         lo, end = time_budget.day_bounds(time_budget.local_day(time_budget.day_bounds(day)[0] - back * 86400 + 3600))
@@ -316,8 +324,9 @@ def usual(rows, execs, landed, hi):
             found.append(m)
     out = {}
     for key, _, _, _ in LINES:
-        values = [m[key] for m in found if m[key] is not None]
-        out[key] = statistics.median(values) if values else None
+        per = key in current["per_run"]
+        values = [v for v in (m["per_run"][key] if per else m[key] for m in found) if v is not None]
+        out[key] = statistics.median(values) * (current["work"][key] if per else 1) if values else None
     return out, len(found)
 
 
@@ -777,7 +786,7 @@ def collect(now, journal, tops=None, write=False, lo=None, since=lambda target: 
     scanned = scans(tops, cache if isinstance(cache, dict) else {}, write)
     files, landed, edits = fan_out(tops, scanned, rows, heavy, stats_lo, now)
     current = measure(rows, recent, landed, lo, now)
-    normal, days = usual(rows, recent, landed, now)
+    normal, days = usual(rows, recent, landed, now, current)
     queued = dict(pinned(tops, scanned, stats, edits), **dead(tops, scanned, execs, journal_lo, now))
     found = findings(window, stats, files, now, born, since, execs)
     out.update(status="watch" if any(red_line(k, current[k], normal[k], m) for k, _, _, m in LINES) else "ok",
