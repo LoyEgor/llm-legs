@@ -116,7 +116,7 @@ assert [ "$(grep -c 'charlie-row' <<<"$live_out")" = 1 ]
 assert [ "$(grep -c 'delta-row' <<<"$live_out")" = 1 ]
 assert [ "$(grep -c "^python3 - .* $ID claudeb " "$CALLS")" = 2 ]
 # The wait's ticks start no sleep process.
-assert [ "$(grep -c '^sleep 0.05$' "$CALLS")" = 0 ]
+assert [ "$(grep -c '^sleep ' "$CALLS")" = 0 ]
 # Nor any to wait for the exit, to probe the supervisor or to re-read an unchanged meta.json: one
 # watcher for the whole wait, ps once before it arms and once after, one read of the record.
 assert [ "$(grep -cFx "python3 - $RUN 0.05" "$CALLS")" = 0 ]
