@@ -131,13 +131,12 @@ exec. Over `FLOOR_MIN_DAY` writing min/day in ≥ 3 sessions: `opportunity:adhoc
 alone where `covered_by` names a tool. A fix lands only with a bench (`bench_faults`). Proof (`net`): job min and tokens
 per 1000 Bash calls both below before; worse in either: `regression:adhoc/<key>`.
 
-**ROI** (`night-run report`, `roi ·` lines; the mechanics are `share/time_budget.py`'s). Each Speed or time row of a
-fixer job is an improvement of its own, with an even share of the job's spend. A gain is proven per unit against
-frozen exposure (the 7 days before), load-matched, so neither sample count nor an earlier drop proves it. A key's
-gain is claimed once, by the earliest positive claim; later fixes read `shared with <ref>`.
-Commits touching only measurers and their suites, ledgers, docs or other suites read `measurement fix`, never a gain.
-No gain reads `spend without result`, never a revert or a gate; a fix > 1.3× slower: `regression:fix/<job>`, cause or
-revert.
+**ROI** (`night-run report` `roi ·` lines, `share/time_budget.py`). Each Speed or time row of a fixer job is its own
+improvement with an even share of the job's spend. A gain is proven per unit against frozen exposure (the 7 days
+before), load-matched, never by count or an earlier drop; naming no unit (no control) or over the measure's whole day before: `unmeasured`. A key's
+gain is claimed once: the earliest positive claim takes it, later fixes read `shared with <ref>`. Commits touching
+only measurers and their suites, ledgers, docs or other suites: `measurement fix`. No gain: `spend without result`,
+never a revert or a gate; a fix > 1.3× slower: `regression:fix/<job>`, cause or revert.
 
 **Selection.**
 - One rank over every admitted row (`time_budget.speed_rank`): priced by expected gain, unpriced by measured loss in min/day, spend audits by share of spend. A landed fix measured slower (`fix_commits`) ranks first. Parallelism: `share/slots.sh` `slot_room`; cut-off: a 6 h window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). Nothing carries over: each night recomputes the pick. A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).

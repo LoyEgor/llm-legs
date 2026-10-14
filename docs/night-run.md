@@ -285,7 +285,7 @@ last 7 and their problem direction. A finished night's row is cached in
 is re-priced live once, one without `directions` gains them once. Then the `roi ·` lines: per improvement job (a
 fixer on a Speed or time row) what · spend · lines · before → after unit · verdict · gain a day, the night's and the
 trend's totals (`docs/speed-doctor-design.md` §3 ROI). Last the morning's «Скорость»: per earlier night the proofs
-matured since the night before closed (date, min/day incl. suite-min, ✓ proven, ! slower = regression rows), then
+matured since the night before closed (date, wait min/day, suite-min not, ✓ proven, ! slower = regression rows), then
 the 7-night total.
 
 The Doctors menu's last-night row comes from `night-run latest --menu`, e.g. `Last night 30 Sep: 11 of 13 · 2

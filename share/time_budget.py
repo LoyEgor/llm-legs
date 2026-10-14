@@ -1105,12 +1105,15 @@ def unit_proof(item, started, ended, now, memo=None):
     against the `load_factor` of the unnamed ones in the same windows, so a busy morning reads as no slowdown. A proven gain sums, over the keys proven
     on their own (`keys`), the key's load-matched delta times its samples a day in the UNIT_BEFORE_DAYS before the
     night. No sample or a zero median before the night, or a fix that cuts runs (`counted`), keeps the day totals; a
-    named unit that no longer exists is `gone`."""
+    named unit that no longer exists is `gone`. A load-matched class with no named unit has no control, and a gain over
+    the measure's whole day before the night is no gain: both read `unmeasured`."""
     unit = UNITS.get(item["class"])
     if not unit or counted(item):
         return None
     label, need, ratio, daily, scale = unit
     named = unit_names(item) or own_suites(item)
+    if not named and item["class"] in LOAD_MATCHED:
+        return {"proven": None, "unmeasured": True, "text": "no unit named, no load control: unmeasured"}
     before = unit_samples(item, started - UNIT_BEFORE_DAYS * 86400, started, memo)
     after = unit_samples(item, ended, now, memo)
     when = None
@@ -1118,6 +1121,7 @@ def unit_proof(item, started, ended, now, memo=None):
         when = (before, after)
         before, after = ({k: [w for _, w in v] for k, v in d.items()} for d in when)
     stat = UNIT_STAT.get(item["class"], statistics.median)
+    whole = sum(map(sum, before.values())) / UNIT_BEFORE_DAYS / scale
     load = 1.0
     if named:
         if unit_gone(item, named, after, need, ended, now):
@@ -1144,6 +1148,9 @@ def unit_proof(item, started, ended, now, memo=None):
               if pair[k][1] > SLOWER_RATIO * pair[k][0] * load}
     span = "%s → %s %s%s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label,
                              " · load ×%.2f" % load if load != 1.0 else "")
+    if gain > whole:
+        return {"proven": None, "unmeasured": True, "span": span,
+                "text": "%s · %.1f over the %.1f %s before: unmeasured" % (span, gain, whole, daily)}
     return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total), "span": span,
             "gain": gain, "daily": daily, "gains": gains, "load": round(load, 2), "slower": slower,
             "text": "%s · %s" % (span, "proven · %.1f %s" % (gain, daily) if proven else "not proven")}
@@ -1221,6 +1228,13 @@ def roi_lines(rows, now, gains=None, verdicts=None):
                         item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1],
                         shown["span"] + " · " if shown and "span" in shown else ""))
                 continue
+            if shown and shown.get("unmeasured"):
+                unmeasured += 1
+                seen[index] = {"pending": False, "gain": 0.0, "proven": False, "slower": False}
+                if row is rows[-1]:
+                    out.append("roi · %s · %s · %.1fM · %+d/-%d · %s" % (
+                        item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1], shown["text"]))
+                continue
             if shown and not shown.get("gone"):
                 if shown["proven"] is None:
                     pending += 1
@@ -1237,7 +1251,8 @@ def roi_lines(rows, now, gains=None, verdicts=None):
                             gains[item["ref"]] += shown["gain"]
                     else:
                         other[shown["daily"]] += shown["gain"]
-                seen[index] = {"pending": shown["proven"] is None, "gain": shown.get("gain", 0.0),
+                seen[index] = {"pending": shown["proven"] is None,
+                               "gain": shown["gain"] if shown.get("daily") == "min/day" else 0.0,
                                "proven": bool(shown["proven"] and shown["gain"] > 0),
                                "slower": bool(shown["proven"] is False and shown.get("slower") and change)}
                 if row is rows[-1]:
@@ -1286,7 +1301,8 @@ def roi_lines(rows, now, gains=None, verdicts=None):
 
 
 def matured(found):
-    """[min/day, ✓ proven, ! slower] of the verdicts that matured."""
+    """[min/day, ✓ proven, ! slower] of the verdicts that matured; suite-min/day sums walls of suites run side by side,
+    no wait, so it adds no minutes."""
     done = [v for v in found if not v["pending"]]
     return [round(sum(v["gain"] for v in done), 1), sum(v["proven"] for v in done), sum(v["slower"] for v in done)]
 
