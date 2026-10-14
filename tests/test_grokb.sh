@@ -29,10 +29,11 @@ export ANNOUNCE_LOG="$WORK/announce-log"
 export LLM_LIMITS_ANNOUNCE_CMD="$WORK/fake-announce"
 printf "#!/usr/bin/env bash\nprintf '%%s\\n' \"\$*\" >>\"\$ANNOUNCE_LOG\"\n" >"$LLM_LIMITS_ANNOUNCE_CMD"
 chmod +x "$LLM_LIMITS_ANNOUNCE_CMD"
-wait_announce() {
-  local expected="$1" tries=0
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
+wait_announce() { # forkless: a read and a builtin sleep per 10 ms tick, no grep or sleep process
+  local expected="$1" tries=0 line
   while [ "$tries" -lt 500 ]; do
-    grep -qxF -- "$expected" "$ANNOUNCE_LOG" 2>/dev/null && return 0
+    { while IFS= read -r line; do [ "$line" = "$expected" ] && return 0; done <"$ANNOUNCE_LOG"; } 2>/dev/null
     tries=$((tries + 1))
     sleep 0.01
   done
