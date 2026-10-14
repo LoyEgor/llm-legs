@@ -90,6 +90,7 @@ KEEP_DAYS = 35
 UNMEASURED = "unmeasured"
 MEASURED = "measured"
 SPEED_ROW_S = 3600
+ADHOC_SKIP = ("file-edit", "file-read")
 
 
 def home(*parts):
@@ -729,6 +730,17 @@ def problem_trend(now):
     return {d: dict(sorted(v.items())) for d, v in sorted(out.items())}
 
 
+def adhoc_row():
+    """Ad-hoc scripts beside the overhead, never in it: tool_mining's last scanned day, every cluster but the edits and
+    reads the Edit and Read tools own, the five heaviest apart."""
+    days = (read_json(os.path.join(env_path("SPEED_DOCTOR_DIR", ".cache", "speed-doctor"), "tool-mining.json"))
+            or {}).get("history") or {}
+    clusters = (days[max(days)] if days else {}).get("clusters") or {}
+    own = sorted(((round(c.get("min") or 0, 1), key) for key, c in clusters.items() if key not in ADHOC_SKIP),
+                 reverse=True)
+    return [round(sum(m for m, _ in own), 1), "ad-hoc scripts", [[m, key] for m, key in own[:5]]] if own else None
+
+
 def document(now, hours=24.0, write=True):
     lo = now - hours * 3600
     b = budget(lo, now)
@@ -745,6 +757,8 @@ def document(now, hours=24.0, write=True):
         if row == "harness rules" and hooks:
             sub += ["-"] + hooks
         rows.append([scale(b["rows"][row]), row, sub])
+    adhoc = adhoc_row()
+    rows += [adhoc] if adhoc else []
     rows.append([scale(b["active_s"]), "system active", []])
     doc = {"window_h": hours, "as_of_s": int(now), "lost_min_day": scale(b["overhead_s"]) if measured(b) else None,
            "rows": rows, "classes_min_day": {k: scale(v) for k, v in b["seconds"].items()},

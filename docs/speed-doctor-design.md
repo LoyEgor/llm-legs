@@ -112,7 +112,9 @@ Proven reads `fixed · −X <unit> · ≈Y OM/d`. A later regression stamps `reg
 **Lost time** (`share/time_budget.py`, whose `ROWS` are the classes; Egor). Wall-clock overhead around the work, never
 the work, in min/day: each class is the union of its intervals, so parallel runs count once; the overhead
 (`overhead_s`) is the union of all classes, never their sum. No floors, free-machine deductions or "could save"
-estimates; a class exists only where its intervals are already journaled.
+estimates; a class exists only where its intervals are already journaled. Suite seconds are blocking seconds: those
+their owner generated beside them (inside its turns or run, outside its calls) leave. An `ad-hoc scripts` row sits beside
+the overhead, never in it or the index: tool_mining's last day, every cluster but `file-edit`/`file-read`, top 5 apart.
 
 **Lost time index** (Egor; the title number). Fee per unit of work against the previous 7 days, Paasche per stratum as
 token-map's `_price_index`; 1.00 = the same, no norms or thresholds. It must not move with volume, parallelism,
