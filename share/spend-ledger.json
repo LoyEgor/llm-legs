@@ -2911,7 +2911,7 @@
   {
    "id": "suite:llm-legs/test_statusline_hooks",
    "title": "llm-legs/test_statusline_hooks",
-   "audited_at": "2026-10-14T08:05:10+03:00",
+   "audited_at": "2026-10-14T08:05:25+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
    "cpu_run": 103.5,
    "wall_run": 33.3,
@@ -2923,7 +2923,7 @@
     "llm-legs/tests/test_statusline_hooks.sh": "c4a75057e4d019d0a73f1c4a3a37e636f7f4190e"
    },
    "verdict": "kept",
-   "zero": "removal saves 41.1 wall-min/day; loses 1.7k asserts pinning the statusline render, workdir place journal, probes and launch gates",
+   "zero": "removal saves 41.1 wall-min/day; loses 1644 asserts pinning the statusline render, workdir place journal, probes and launch gates",
    "note": "shards balanced (100/116/112/102 s at load 148); the 342-render width sweep is 5 s of shard 3 (16-way parallel), not its critical path; heaviest blocks are product hook runs (place detector 132 workdir-hook calls 73 s); no assert-neutral cut"
   },
   {
