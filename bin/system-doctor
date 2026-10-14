@@ -6,6 +6,7 @@ No network, no LLM. `agent` is the LaunchAgent's minute: one light tick, the nig
 every 10 minutes."""
 
 import argparse
+import bisect
 import contextlib
 import datetime
 import fcntl
@@ -26,6 +27,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import account_roster as roster_reader  # noqa: E402
 import collector_runs  # noqa: E402
+from cpu_audit import STATUSLINE  # noqa: E402
 import limit_hit  # noqa: E402
 import log_stores  # noqa: E402
 import machine_probe  # noqa: E402
@@ -95,6 +97,8 @@ GIB = 1 << 30
 COHORT = {"cpu_s": 864, "wakes": 86400, "writes_b": GIB, "reads_b": 100 * GIB, "footprint_b": 512 << 20, "births": 86400,
           "launches": 1440, "review": 1, "heavy": 5, "days": 7, "lookback_days": 14, "pressure_comp": 0.25,
           "pressure_swapouts_s": 2000, "watch_rows": 6, "items_day": 100}
+# Claude Code spawns and reaps every statusline render, so the ticks see renders only as claude's reaped-child CPU
+STATUSLINE_REAPER = "claude"
 TERMS = (("C", "cpu_s", "%.0f cpu-s"), ("W", "wakes", "%.0f idle wakes"), ("D", "writes_b", "%.1f GB written"),
          ("R", "reads_b", "%.1f GB read"), ("M", "footprint_b", "%.0f MiB held under pressure"), ("S", "births", "%.0f births"),
          ("L", "launches", "%.0f launches"))
@@ -457,7 +461,9 @@ def locate(exe, rest, pid, cwd=None):
 
 def ps_snapshot(with_children, known=None):
     """{key: [ppid, cpu_s, tag, owner, pid, uid, kind, rss_kb, place]} keyed `pid@lstart`, plus the probe's own pid;
-    kind is `script` for an interpreter tagged by its script; place, the file it runs, only for a tag `known` lacks."""
+    kind is `script` for an interpreter tagged by its script; place, the file it runs, only for a tag `known` lacks.
+    macOS `ps -S` adds no reaped-child time (the tick reads that from proc_pid_rusage); it only tells the fixture `ps`
+    the second snapshot apart."""
     args = ["-A"] + (["-S"] if with_children else []) + ["-o", "pid=,ppid=,uid=,time=,rss=,lstart=,args="]
     pid, out = machine_probe.spawn("ps", args)
     roots = own_roots()
@@ -496,7 +502,8 @@ def causer(key, procs, by_pid):
 
 
 def readable_usage(procs):
-    """{key: (footprint, read B, written B, idle wakeups)} of the own processes and every other process of this uid:
+    """{key: (footprint, read B, written B, idle wakeups, reaped children's CPU s)} of the own processes and every
+    other process of this uid:
     proc_pid_rusage reads them without root."""
     uid, out = os.getuid(), {}
     for key, entry in procs.items():
@@ -646,27 +653,36 @@ def tick(now=None):
                        if label in old_disks and r >= old_disks[label][0] and w >= old_disks[label][1]}
     row["free_gib"] = {name: free for name, (free, _size) in volumes.items()}
 
-    cpu = {}
+    cpu, reaped_by = {}, {}
     old_procs = previous.get("procs") or {}
+    old_usage = previous.get("usage") or {}
+    old_by_pid = {int(key.split("@", 1)[0]): key for key in old_procs}
     charged = {}
     for key, kept in old_procs.items():
         if key not in last and len(kept) >= 4:
-            charged[kept[3]] = charged.get(kept[3], 0.0) + max(0.0, kept[1] - kept[2])
+            # the reaper is the nearest ancestor still alive: a dead parent's lifetime held the child's
+            parent, hops = kept[3], 0
+            while old_by_pid.get(parent) in old_procs and old_by_pid[parent] not in last and hops < 12:
+                parent, hops = old_procs[old_by_pid[parent]][3], hops + 1
+            mine = max(0.0, kept[1] - kept[2]) + (kept[4] if len(kept) > 4 else 0.0)
+            charged[parent] = charged.get(parent, 0.0) + mine
     for key, entry in last.items():
-        own_now = first.get(key)
         before = old_procs.get(key)
-        if not joined or own_now is None or before is None:
+        if not joined or key not in first or before is None:
             continue
-        spent, own = entry[1] - before[1], own_now[1] - before[0]
-        if spent < 0 or own < 0:
+        spent = entry[1] - before[1]
+        if spent < 0:
             continue
-        reaped = max(0.0, spent - own)
-        # a reaped child's whole lifetime lands in its parent's -S time, though its ticks already charged part of it
-        twice = min(reaped, charged.pop(entry[4], 0.0))
-        spent, reaped = spent - twice, reaped - twice
-        if spent > 0:
+        now_usage, was = usage.get(key) or (), old_usage.get(key) or ()
+        reaped = now_usage[4] - was[3] if len(now_usage) > 4 and len(was) > 3 \
+            and now_usage[4] is not None and was[3] is not None else 0.0
+        # proc_pid_rusage adds a reaped child's whole lifetime, though its own ticks already charged part of it; this
+        # also floors a shrunk counter (a restarted process) at 0
+        reaped -= min(reaped, charged.pop(entry[4], 0.0))
+        reaped_by[key] = reaped
+        if spent + reaped > 0:
             slot = cpu.setdefault((entry[2], entry[3]), [0.0, 0.0])
-            slot[0] += spent
+            slot[0] += spent + reaped
             slot[1] += reaped
     row["cpu_top"] = top_rows([[tag, round(s, 2), round(r, 2), owner] for (tag, owner), (s, r) in cpu.items()])
     row["cpu_own"] = top_rows([[tag, round(s, 2), round(r, 2), owner] for (tag, owner), (s, r) in cpu.items()
@@ -675,8 +691,7 @@ def tick(now=None):
     row["own_procs"] = sum(1 for entry in last.values() if entry[3] == "own")
     row["usage_read"] = len(usage)
     held, moved = {}, {}
-    old_usage = previous.get("usage") or {}
-    for key, (footprint, read, written, wakes) in usage.items():
+    for key, (footprint, read, written, wakes, _children) in usage.items():
         tag = (last[key][2], last[key][3])
         held[tag] = held.get(tag, 0) + footprint
         before = old_usage.get(key)
@@ -700,8 +715,11 @@ def tick(now=None):
 
     state = {"t": now, "boot": mem["boot"], "ticks": ticks, "vm": vm, "disks": disks,
              "procs": {key: [first[key][1], entry[1], old_procs[key][2] if joined and len(old_procs.get(key) or ()) >= 4
-                             else entry[1], entry[0]] for key, entry in last.items() if key in first},
-             "usage": {key: [read, written, wakes] for key, (_f, read, written, wakes) in usage.items()},
+                             else entry[1], entry[0],
+                             round(reaped_by.get(key, 0.0) + ((old_procs[key][4] if len(old_procs[key]) > 4 else 0.0)
+                                                              if joined and key in old_procs else 0.0), 3)]
+                       for key, entry in last.items() if key in first},
+             "usage": {key: [read, written, wakes, children] for key, (_f, read, written, wakes, children) in usage.items()},
              "recent": (previous.get("recent") or [])[-2:] + [{"t": round(now, 1), "births_s": row["births_s"],
                                                               "kernel": row["kernel"]}],
              "named": {key: entry[2:4] for key, entry in last.items() if entry[6] == "script" and key in first}}
@@ -2000,12 +2018,39 @@ def pressured(row):
     return (row.get("comp_share") or 0) >= COHORT["pressure_comp"] or swapouts >= COHORT["pressure_swapouts_s"]
 
 
+def statusline_cpu(rows):
+    """{row index: CPU s} of the statusline journal's renders (shared-invariants row `da`) ending inside each minute
+    row's covered span (t - dt, t], so the journal counts only time the ticks cover."""
+    spans = [(row["t"] - row["dt"], row["t"], index) for index, row in enumerate(rows) if row.get("dt")]
+    ends, out = [hi for _lo, hi, _index in spans], {}
+    folder = os.path.join(os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(HOME, ".cache", "harness-doctor"),
+                          "statusline")
+    for day in sorted({local_day(at) for lo, hi, _index in spans for at in (lo, hi)}):
+        try:
+            handle = open(os.path.join(folder, day + ".tsv"), errors="replace")
+        except OSError:
+            continue
+        with handle:
+            for line in handle:
+                fields = line.split("\t", 4)
+                try:
+                    end, spent = int(fields[1]) / 1e6, float(fields[3]) / 1000
+                except (IndexError, ValueError):
+                    continue
+                at = bisect.bisect_left(ends, end)
+                if at < len(spans) and spans[at][0] < end:
+                    out[spans[at][2]] = out.get(spans[at][2], 0.0) + spent
+    return out
+
+
 def cohort_sums(rows):
     """[[tag, owner, cpu-s, births, written B, read B, idle wakes, footprint B·s under pressure, read]] over minute
     rows; read is 1 when every row saw the item's rusage: own, or no process of another uid and no row from before
-    every same-uid process was read (no usage_blind)."""
+    every same-uid process was read (no usage_blind). CPU holds each item's reaped children; the statusline journal's
+    render CPU moves from STATUSLINE_REAPER's reaped CPU to the statusline item."""
     items, blind, legacy = {}, set(), False
-    for row in rows:
+    renders = statusline_cpu(rows)
+    for index, row in enumerate(rows):
         dt = row.get("dt")
         if not dt:
             continue
@@ -2013,6 +2058,14 @@ def cohort_sums(rows):
         blind.update((tag, owner) for tag, owner in row.get("usage_blind") or ())
         for entry in row.get("cpu_top") or ():
             items.setdefault((entry[0], entry[-1]), [0.0] * 6)[0] += entry[1]
+        left = renders.get(index, 0.0)
+        if left:
+            items.setdefault((STATUSLINE, "own"), [0.0] * 6)[0] += left
+            reapers = [e for e in row.get("cpu_top") or () if e[0] == STATUSLINE_REAPER and len(e) >= 4]
+            for entry in sorted(reapers, key=lambda e: -e[2]):
+                take = min(left, entry[2])
+                items[(entry[0], entry[-1])][0] -= take
+                left -= take
         if row.get("births_s") is not None and row.get("births_seen"):
             for entry in row.get("births_top") or ():
                 items.setdefault((entry[0], entry[-1]), [0.0] * 6)[1] += row["births_s"] * entry[1] / row["births_seen"] * dt

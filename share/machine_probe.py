@@ -2,7 +2,8 @@
 SYSTEM_DOCTOR_<NAME> first, so a test replaces it with a fixture; SYSTEM_DOCTOR_HOST_TICKS names a file
 holding the four host CPU tick counters (user system idle nice) in place of host_statistics, SYSTEM_DOCTOR_PROCS
 a JSON {frames: [[pid...]...], procs: {pid: [ppid, uid, start, args]}} in place of libproc's process table and
-SYSTEM_DOCTOR_RUSAGE a JSON {pid: [footprint, read, written, idle wakeups]} in place of proc_pid_rusage."""
+SYSTEM_DOCTOR_RUSAGE a JSON {pid: [footprint, read, written, idle wakeups[, reaped children's CPU s]]} in place of
+proc_pid_rusage."""
 
 import ctypes
 import json
@@ -267,12 +268,33 @@ def _argv(pid):
     return [part.decode(errors="replace") for part in args]
 
 
+class _Timebase(ctypes.Structure):
+    _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+
+_TICK_S = []
+
+
+def _tick_s():
+    """Seconds per mach absolute time unit, the unit of rusage CPU times (1e-9 on Intel, 1/24e6 on Apple silicon)."""
+    if not _TICK_S:
+        base = _Timebase()
+        try:
+            ctypes.CDLL("/usr/lib/libSystem.dylib").mach_timebase_info(ctypes.byref(base))
+        except (OSError, AttributeError):
+            pass
+        _TICK_S.append(base.numer / base.denom / 1e9 if base.denom else 1e-9)
+    return _TICK_S[0]
+
+
 def proc_rusage(pid):
-    """(phys footprint, disk bytes read, disk bytes written, package idle wakeups) of one own process, or None."""
+    """(phys footprint, disk bytes read, disk bytes written, package idle wakeups, reaped children's CPU s) of one own
+    process, or None. The children's CPU is every waited-for descendant's user + system time (a reaped child's own
+    reaped children included): the CPU of processes too short-lived for any tick to see."""
     fixture = _fixture("SYSTEM_DOCTOR_RUSAGE")
     if fixture is not None:
         found = fixture.get(str(pid))
-        return tuple(found) if found else None
+        return (tuple(found) + (None,))[:5] if found else None
     lib = _lib()
     if lib is None:
         return None
@@ -280,4 +302,4 @@ def proc_rusage(pid):
     if lib.proc_pid_rusage(pid, 2, ctypes.byref(usage)) != 0:
         return None
     values = usage.values
-    return values[7], values[16], values[17], values[2]
+    return values[7], values[16], values[17], values[2], (values[10] + values[11]) * _tick_s()

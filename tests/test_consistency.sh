@@ -3077,6 +3077,10 @@ assert doc_has '`script[ arg]<TAB>exit<TAB>ppid<TAB>cpu_us`'
 assert doc_has '`start_us<TAB>end_us<TAB>session`'
 assert doc_has 'a trailing `<TAB>cpu_ms`'
 assert grep -Fq '"$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2"' "$ROOT/bin/statusline.sh"
+assert grep -Fq 'printf -v day '"'"'%(%Y-%m-%d)T'"'"' -1' "$ROOT/bin/statusline.sh"
+assert grep -Fq 'end, spent = int(fields[1]) / 1e6, float(fields[3]) / 1000' "$ROOT/bin/system-doctor"
+assert grep -Fq 'os.path.join(os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(HOME, ".cache", "harness-doctor"),' "$ROOT/bin/system-doctor"
+assert doc_has '`bin/system-doctor` sums `cpu_ms` by `end_us` into its cohort C'
 assert grep -Fq 'fold_tsv(journal, "menu", menu_row)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'os.makedirs(os.path.join(state_dir(), "menu"), exist_ok=True)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'M.journalLine(harnessDoctorDir() .. "/menu", name, startedAt, epochNow())' "$ROOT/hammerspoon/llm-limits.lua"

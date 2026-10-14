@@ -151,11 +151,15 @@ put("df", "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mou
           "/dev/disk3s1 971350180 10000000 104857600 9% 1 2 1% /\n"
           "/dev/disk3s5 971350180 800000000 104857600 89% 1 2 1% /System/Volumes/Data\n"
           "/dev/disk4s1 1953514584 100 20971520 1% 1 2 1% /Volumes/Work Disk\n")
+put("rusage.json", json.dumps({"100": [0, 0, 0, 0, 2.0], "300": [0, 0, 0, 0, 50.0]}))
 first = cli("tick", "--quiet")
 check(first.returncode == 0, "the first tick runs: %s" % first.stderr)
-put("ps", ps_rows([(100, 1, 501, "0:01.50", start, "/bin/bash %s/bin/statusline.sh" % own)] + base[2:] + base[:1]))
-put("ps-children", ps_rows([(100, 1, 501, "0:10.50", start, "/bin/bash %s/bin/statusline.sh" % own)] + base[2:] + base[:1]
-                           + newborns))
+later = [(100, 1, 501, "0:01.50", start, "/bin/bash %s/bin/statusline.sh" % own),
+         (300, 1, 501, "0:01.10", start, "/Applications/Hammerspoon.app/Contents/MacOS/Hammerspoon")] + base[3:] + base[:1]
+put("ps", ps_rows(later))
+put("ps-children", ps_rows(later + newborns))
+# reaped children: statusline.sh's grew 2 -> 11 s; Hammerspoon's fell 50 -> 3 s, a restarted counter, so its own 1 s only
+put("rusage.json", json.dumps({"100": [0, 0, 0, 0, 11.0], "300": [0, 0, 0, 0, 3.0]}))
 put("host", "1500 1500 9000 0\n")
 put("vm_stat", "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages occupied by compressor: 393216\n"
                "Pages stored in compressor: 800000\nPageins: 1000\nSwapins: 10\nSwapouts: 1100\n")
@@ -166,8 +170,9 @@ row = json.loads(second.stdout)
 check(isinstance(row["births_s"], int) and row["births_seen"] == 4, "births counted: %s" % row)
 check(row["births_top"] == [["statusline.sh", 2, "own"], ["Hammerspoon", 1, "own"], ["xpcproxy", 1, "apple"]],
       "births attributed to the nearest own script or app above the newborn: %s" % row["births_top"])
-check(row["cpu_top"] == [["statusline.sh", 10.0, 9.0, "own"]],
-      "reaped-child CPU of statusline.sh = its children-included time less its own: %s" % row["cpu_top"])
+check(row["cpu_top"] == [["statusline.sh", 10.0, 9.0, "own"], ["Hammerspoon", 1.0, 0.0, "own"]],
+      "statusline.sh's CPU = its own ps time plus its rusage's reaped-children growth; a shrunk counter adds none: %s"
+      % row["cpu_top"])
 many = [{"t": 1.0, "cpu_top": [["third%d" % i, 100.0, 0.0, "third-party"] for i in range(m.TOP)],
          "cpu_own": [["own%d" % i, 1.0, 0.0, "own"] for i in range(m.TOP + 2)]}] * 2
 hour = m.summarize(many)
@@ -192,15 +197,24 @@ row = json.loads(cli("tick").stdout)
 check(row["dt"] is None and row["kernel"] is None and row["cpu_top"] == [] and "disk" not in row,
       "a new boot starts a fresh series: %s" % row)
 saved = {name: open(os.path.join(fix, name)).read() for name in ("ps", "ps-children")}
-lives = []
-for parent, child in (("0:01.00", "0:02.00"), ("0:01.00", "0:07.00"), ("0:09.00", None)):
-    rows = [(100, 1, 501, parent, start, "/bin/bash %s/bin/statusline.sh" % own)]
-    put("ps", ps_rows([(100, 1, 501, "0:01.00", start, "/bin/bash %s/bin/statusline.sh" % own)]
-                      + ([(600, 100, 501, child, born, "/opt/homebrew/bin/claude -p")] if child else [])))
-    put("ps-children", ps_rows(rows + ([(600, 100, 501, child, born, "/opt/homebrew/bin/claude -p")] if child else [])))
+lives, me = [], os.getuid()
+parent_row = (100, 1, 501, "0:01.00", start, "/bin/bash %s/bin/statusline.sh" % own)
+# (child's ps time, grandchild's ps time, rusage reaped-children CPU of [parent, child])
+for child, grandchild, reaped in (("0:02.00", None, [0.0, 0.0]), ("0:07.00", None, [0.0, 0.0]), (None, None, [8.0, 0.0]),
+                                  ("0:00.00", "0:00.00", [8.0, 0.0]), ("0:01.00", "0:02.00", [8.0, 0.5]),
+                                  (None, None, [15.5, 0.0])):
+    rows = [parent_row] + ([(600, 100, me, child, born, "/opt/homebrew/bin/claude -p")] if child else []) \
+        + ([(700, 600, me, grandchild, born, "/opt/homebrew/bin/claude -p")] if grandchild else [])
+    put("ps", ps_rows(rows))
+    put("ps-children", ps_rows(rows))
+    put("rusage.json", json.dumps({"100": [0, 0, 0, 0, reaped[0]], "600": [0, 0, 0, 0, reaped[1]], "700": [0, 0, 0, 0, 0.0]}))
     lives.append(json.loads(cli("tick").stdout)["cpu_top"])
-check(lives[1:] == [[["claude", 5.0, 0.0, "third-party"]], [["statusline.sh", 3.0, 3.0, "own"]]],
+check(lives[1:3] == [[["claude", 5.0, 0.0, "third-party"]], [["statusline.sh", 3.0, 3.0, "own"]]],
       "a child reaped after living through ticks charges its parent only the CPU its own ticks never did: %s" % lives)
+check(lives[4] == [["claude", 3.5, 0.5, "third-party"]] and lives[5] == [["statusline.sh", 4.0, 4.0, "own"]],
+      "a grandchild dead with its parent counts against the nearest live ancestor, its parent's reaped CPU included: %s"
+      % lives[3:])
+os.remove(os.path.join(fix, "rusage.json"))
 for name, text in saved.items():
     put(name, text)
 
@@ -1017,6 +1031,19 @@ check(read == {("Google Chrome", "third-party"): 1, ("statusline.sh", "own"): 1,
       "the day's cohort marks which items' rusage every row read: %s" % read)
 check({r[0]: r[8] for r in m.cohort_sums([row, {k: v for k, v in row.items() if k != "usage_blind"}])}["Google Chrome"] == 0,
       "a day holding a row from before every same-uid process was read leaves a third-party item unread")
+os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "harness")
+os.makedirs(os.path.join(work, "harness", "statusline"))
+at = time.mktime(time.strptime("2026-10-13 12:00", "%Y-%m-%d %H:%M"))
+with open(os.path.join(work, "harness", "statusline", "2026-10-13.tsv"), "w") as handle:
+    for end, cpu in ((at + 30, "14000"), (at + 90, "4000"), (at - 10, "7000"), (at + 150, "9000"), (at + 40, "-")):
+        handle.write("%d\t%d\tsid\t%s\t0\n" % (end * 1e6 - 50000, end * 1e6, cpu))
+    handle.write("garbage\n")
+spans = [{"t": at + 60, "dt": 60, "cpu_top": [["claude", 20.0, 12.0, "third-party"], ["claude", 3.0, 3.0, "own"]]},
+         {"t": at + 120, "dt": 60, "cpu_top": [["claude", 2.0, 1.0, "third-party"]]}, {"t": at + 180, "dt": None}]
+cpu = {(r[0], r[1]): r[2] for r in m.cohort_sums(spans)}
+check(cpu == {(m.STATUSLINE, "own"): 18.0, ("claude", "third-party"): 9.0, ("claude", "own"): 1.0},
+      "the statusline journal's render CPU inside covered spans moves off claude's reaped CPU to the statusline: %s" % cpu)
+del os.environ["HARNESS_DOCTOR_DIR"]
 saved_rusage = open(os.path.join(fix, "rusage.json")).read()
 json.dump({}, open(os.path.join(fix, "rusage.json"), "w"))
 row = json.loads(cli("tick").stdout)

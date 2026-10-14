@@ -70,7 +70,12 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
     and their deaths in `pids/<day>.jsonl` (pid, start, last seen, name), so a DiagnosticReports file of
     `Python` or `bash`, which carries only a PID, names the script that pid ran then. A launchd job
     whose program is an interpreter is named by its arguments' script the same way.
-  - **Reaped-child CPU:** Δ`ps -S` minus Δ`ps` per `pid@lstart`, by the same tags.
+  - **Reaped-child CPU:** Δ of `proc_pid_rusage` v2 `ri_child_user_time + ri_child_system_time` (mach units through
+    `mach_timebase_info`) per `pid@lstart` of this uid, added to the parent's tag: the CPU of children born and dead
+    between ticks (Hammerspoon's ~1 osascript/s and ~3 ps/s: own ~92, children ~104 CPU-min/day on 2026-10-14). It
+    holds a reaped child's whole lifetime, so what the ticks already charged that child (own and reaped) comes off the
+    nearest ancestor still alive; a shrunk counter reads 0. macOS `ps -S` adds nothing (Δ`ps -S` − Δ`ps` was noise
+    until 2026-10-14). Another uid's parents stay blind.
   - **Kernel and busy shares** from host CPU ticks.
   - **Memory:** compressor size and share of RAM, swap use, page-in and swap-in rates, and swap-out
     bytes from `vm_stat` and `sysctl`.
@@ -169,7 +174,10 @@ collector-runs row (`trigger background:<name>`) and keeps its own `self` wall/C
   daemons show beside our own.
 - **Cohort score** (`cohort_sums` per day row, `cohort_score`): per item over the newest day rows covering ≥ 7 days
   (≤ 14 back), `B = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB × pressure, S/86400, L/1440)` per covered day;
-  pressure = compressor ≥ 25 % of RAM or ≥ 2,000 swap-outs/s. Under 7 covered days nothing is scored. An item whose
+  pressure = compressor ≥ 25 % of RAM or ≥ 2,000 swap-outs/s. C holds each item's reaped-child CPU. Claude Code reaps
+  every statusline render, so `cohort_sums` moves the Harness statusline journal's `cpu_ms` (shared-invariants row
+  `da`, renders ending inside a covered tick span) from `claude`'s reaped CPU to `llm-legs/bin/statusline.sh`
+  (2026-10-13: 286 CPU-min/day, where the ticks saw 0). Under 7 covered days nothing is scored. An item whose
   rusage some covered day missed (a process of another uid, a day row from before 2026-10-13) lists W, D, R, M as
   unknown (`foreign-cohort-terms`); the day row's ninth field marks it.
 - **Self-cost and blindness.** `costs` carries runs, wall and CPU per collector over 24 h; `collectors` names any blind

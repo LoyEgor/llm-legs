@@ -443,7 +443,8 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   `{label, name, path, mb, age_d, status[, owner]}`, status `menu` | `off` | `home` | `unknown`, owner `llm-doctor`
   on a browser profile; a path gone since the scan is left out; `tidied`: what `system-doctor tidy` moved to the
   Trash within 7 days `{path, mb, age_d, why}`), `background` `{covered_days, groups: [{name, B, items: [{name,
-  owner, B, terms, per_day, unknown, place, job, about}]}]}` (B null before 7 covered days; `job` `{label, plist,
+  owner, B, terms, per_day, unknown, place, job, about}]}]}` (B null before 7 covered days; `per_day.C` includes
+  reaped children's CPU, the statusline journal's on `llm-legs/bin/statusline.sh`, not `claude`; `job` `{label, plist,
   schedule, missing, loaded}`, `loaded` null before any dumpstate), `limits`.
 - `doctor-fix launch system` snapshots only fix-target causes (plus ledger and collector faults);
   close runs `bin/system-doctor check --record` (design, Phase 2).
