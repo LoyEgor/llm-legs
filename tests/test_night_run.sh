@@ -59,6 +59,8 @@ doc() { jq -n --argjson n "$2" --argjson p "${3:-[]}" '{contract: 1, problem_cou
 stop_chat() { pkill -f -- "--session-id $1"; while pgrep -f -- "--session-id $1" >/dev/null; do sleep 0.1; done; }
 wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 night wall; }
 old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
+# A `(cd dir && exec sleep 600) &` process stands in dir once ps shows it as sleep 600.
+settled() { local pid; for pid; do for _ in {1..250}; do [ "$(ps -o command= -p "$pid" 2>/dev/null)" != "sleep 600" ] || break; sleep 0.02; done; done; }
 last_arg() { local line; line=$(grep '^exec ' "$NIGHTS/$1.command"); eval "set -- ${line#exec }"; printf '%s\n' "${!#}"; }
 night_repo() {
   git init -q --bare "$WORK/origin.git"
@@ -132,7 +134,7 @@ assert jqe '[.jobs[] | .state] == ["pending", "pending", "pending", "pending"]
   and .jobs[2].branch == null' "$R"
 
 # Parallel writers never drop each other's jobs.
-for n in 1 2 3 4 5 6 7 8; do night job "$id" add debt "p$n" >/dev/null & done
+for n in 1 2 3 4 5 6 7 8; do LLM_STORE_LOCK_DELAY=0.01 night job "$id" add debt "p$n" >/dev/null & done
 wait
 assert jqe '[.jobs[] | select(.ref | startswith("p"))] | length == 8' "$R"
 assert [ ! -d "$NIGHTS/.lock" ]
@@ -691,7 +693,7 @@ old branch evil-bare "$(old -c user.name=t -c user.email=t@t commit-tree "$evil_
 night leftovers >"$WORK/left-evil" || fail "leftovers with an evil merge"
 assert grep -qxF "repo evil-bare · no worktree · unlanded · +2/-1 main · 0 dirty · leftover (2 unlanded commits)" "$WORK/left-evil"
 git -C "$WORK/repo" branch -q -D evil-bare || fail "drop the evil merge"
-sleep 0.3
+settled "$busy" "$plain_busy"
 night finish "$idc" >"$WORK/out" || fail "finish with worktrees"
 busy_alive=0; kill -0 "$busy" 2>/dev/null && busy_alive=1
 kill "$busy" "$plain_busy" "$addir_busy" 2>/dev/null
@@ -737,7 +739,7 @@ git -C "$WORK/repo" worktree add -q -b "night/$idc/worked" "$wt/worked" "$pushed
 (cd "$wt/worked" && exec sleep 600) &
 worker=$!
 printf '%s\n' "$worker" >>"$DATA/orchestrators"
-for _ in $(seq 50); do lsof -a -p "$worker" -d cwd -Fn 2>/dev/null | grep -qxF "n$wt/worked" && break; sleep 0.1; done
+settled "$worker"
 assert grep -qxF "repo night/$idc/worked · $wt/worked · landed · +0/-$behind main · 1 dirty · live (night $idc worker: processes inside: $worker sleep 600)" <(night leftovers)
 assert_fails night job "$idc" add leftover "night/$idc/worked" 2>"$WORK/err"
 assert grep -qF "night/$idc/worked is live in repo: night $idc worker: processes inside: $worker sleep 600" "$WORK/err"
@@ -818,7 +820,7 @@ old worktree add -q -b inhabited "$wt/inhabited" "$side_hash"
 inhabited=$!
 printf '%s\n' "$inhabited" >>"$DATA/orchestrators"
 old worktree add -q -b self "$wt/self" "$side_hash"
-sleep 0.5
+settled "$inhabited"
 night job "$idc" add leftover inhabited >"$WORK/out" || fail "a process inside never refuses an adoption"
 kill "$inhabited" 2>/dev/null
 assert grep -qxF "adopted repo inhabited into night/$idc/leftover-inhabited at $wt/night-$idc-leftover-inhabited; the old one stays: processes inside: $inhabited sleep 600" "$WORK/out"
@@ -1386,10 +1388,11 @@ printf 'w\n' | tee "$SV/old/w1" >"$SV/old/w2" && touch -t 202601010000 "$SV/old/
 sv "$SV/repo" commit -q --allow-empty -m c && sv "$SV/repo" commit -q --allow-empty -m d
 git -C "$SV/repo" worktree add -q -b fresh "$SV/fresh"
 (cd "$SV/fresh" && exec sleep 600) >/dev/null 2>&1 &
-printf '%s\n' "$!" >>"$DATA/orchestrators"
+fresh=$!
+printf '%s\n' "$fresh" >>"$DATA/orchestrators"
 git -C "$SV/repo" worktree add -q -b frozen "$SV/frozen"
 git -C "$SV/repo" worktree lock "$SV/frozen"
-sleep 0.5
+settled "$fresh"
 : >"$SV/repo/untracked"
 cat >"$DATA/price" <<EOF
   repo/ = $SV/repo: 1111111..2222222 · 3 file(s) · 40 line(s) · scope: a
@@ -1509,7 +1512,7 @@ mkdir -p "$wt"
 (cd "$wt" && exec sleep 600) &
 holder=$!
 printf '%s\n' "$holder" >>"$DATA/orchestrators"
-for _ in $(seq 50); do lsof -a -p "$holder" -d cwd -Fn 2>/dev/null | grep -qxF "n$wt" && break; sleep 0.1; done
+settled "$holder"
 rc=0; night speed-gate nopen hs-in >"$WORK/out" 2>&1 || rc=$?
 assert [ "$rc" = 3 ]
 assert grep -qxF "night nopen job hs-in: its worktree $wt is still worked in by $holder sleep 600; it is handed out again once they exit" "$WORK/out"
