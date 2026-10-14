@@ -4536,20 +4536,20 @@
   {
    "id": "suite:llm-legs/test_worker_run_attribution",
    "title": "llm-legs/test_worker_run_attribution",
-   "audited_at": "2026-10-14T08:52:42+03:00",
+   "audited_at": "2026-10-14T09:16:51+03:00",
    "by": "harness-speed-suite-audit-llm-legs-test-doctor-fix-20261014T021725Z-1ada",
-   "cpu_run": 29.9,
-   "wall_run": 30.4,
-   "cpu_min_day": 18.5,
-   "wall_min_day": 35.95,
+   "cpu_run": 30.2,
+   "wall_run": 38.9,
+   "cpu_min_day": 18.99,
+   "wall_min_day": 58.02,
    "sources": {
     "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
-    "llm-legs/tests/test_worker_run_attribution.sh": "7c88663f989bfd49ef3ae19cf3ef497504cafe54",
+    "llm-legs/tests/test_worker_run_attribution.sh": "16a4baa645400717c745ab0f866410bddf7f7a4a",
     "llm-legs/tests/worker_run_harness.sh": "a036bbbb40ef5d261ed9eafaa6559428e4c73635"
    },
    "verdict": "kept",
-   "zero": "removal saves 28.6 wall-min/day; loses 324 asserts pinning the review-anchors store and attribution repair",
-   "note": "shards measured 84/96 s at load ~90, not 5x apart; moving attr-repair variants needs each start state pinned for <=6 s; per-command python in classify_tool_rows is a product batch left open; harness polls now forkless; PASS 324"
+   "zero": "removal saves 28.6 wall-min/day; loses 328 asserts pinning the review-anchors store and attribution repair",
+   "note": "shards measured 84/96 s at load ~90, not 5x apart; moving attr-repair variants needs each start state pinned for <=6 s; classify_tool_rows now one python3 a window (count-guarded); harness polls forkless; PASS 328"
   },
   {
    "id": "suite:llm-legs/test_worker_run_entry",
