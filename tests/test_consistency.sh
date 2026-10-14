@@ -1662,7 +1662,7 @@ assert grep -Fq '[ "$2" -gt 0 ] || return 1' "$RUN_LIVENESS"
 # before they believe the silence — pid 1, because a sandbox hiding every process but our own still
 # lists `$$` and a foreign supervisor then still reads gone.
 assert grep -Fq 'ps -p 1 -o etime=' "$RUN_LIVENESS"
-assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 4
+assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 5
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
   assert grep -Fq '[ "$pid" -gt 0 ] || { printf '"'"'unknown\n'"'"'; return 0; }' "$JOURNAL_LIB"

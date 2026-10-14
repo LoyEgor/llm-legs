@@ -175,12 +175,13 @@ suite_bound() { # var name -> the suite's wall bound in seconds
   elif [ $((p90 * 5)) -gt "$floor" ]; then printf -v "$1" '%s' $((p90 * 5))
   else printf -v "$1" '%s' "$floor"; fi
 }
-owner_record=${WORKER_RUN_RECORD:-} owner_pid=''
-[ -z "$owner_record" ] || owner_pid=$(jq -r '.pid // empty' "$owner_record/meta.json" 2>/dev/null)
+owner_record=${WORKER_RUN_RECORD:-} owner_pid='' owner_started=''
+[ -z "$owner_record" ] ||
+  { read -r owner_pid; read -r owner_started; } < <(jq -r '(.pid // ""), (.pid_started_at // "")' "$owner_record/meta.json" 2>/dev/null)
 owner_ended() { # -> whether the worker run that asked for this run has ended: its exit code, or its supervisor gone
   [ -n "$owner_record" ] || return 1
   [ ! -e "$owner_record/exit_code" ] || return 0
-  [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] && ! supervisor_running "$owner_record" "$owner_pid"
+  [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] && ! supervisor_running "$owner_record" "$owner_pid" "$owner_started"
 }
 # A worker's backgrounded run outlives the worker; once it has ended nobody reads the run, which then
 # queued for and held a slot anyway (2026-10-05). An owner already ended at launch is a stale export.
@@ -624,12 +625,12 @@ read -r repeat_red 2>/dev/null <"$logdir/stop"
 serial_total=0
 width=0
 for entry in "${suites[@]}"; do
-  name=$(basename "$entry")
+  name=${entry##*/}
   [ "${#name}" -le "$width" ] || width=${#name}
 done
 printf '\n%-*s  %-6s  %5s  %s\n' "$width" suite result secs 'last line'
 for entry in "${suites[@]}"; do
-  name=$(basename "$entry")
+  name=${entry##*/}
   ran[$name]=1
   rc=1
   seconds=0
