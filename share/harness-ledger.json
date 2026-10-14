@@ -8231,7 +8231,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night 20261012T233034Z-3131 harness-speed-test-health-idle-review-bench-test-review-bench-20261012T235445Z-7074",
-      "note": "2026-10-13: p10 wall 62 s on 19 s CPU, idle 42 s; the 82 s direct run at load 95 held 31 CPU-s, the rest a run-queue wait that no suite lever owns, plus 52 s of requested time.sleep, 99 % of it run_streamed's 0.25 s poll tick (each fixture cell's exit waited out the rest of a tick; the doctor's PATH-shim profile never sees a Python sleep, so no profiled run bounded it). Fixed: an Event the cell's reaper thread sets; production gains the same ~90 ms per cell exit. Ruled out: the select/communicate waits of the ~980 subprocess.run calls (bin/review-bench and rbench start-up, ~1.2 s wall for 0.15 s CPU at load 95 is the scheduler, not a sleep), the suite's own 0.05 s fixture polls (0.6 s requested). Not done: the stall-fixture sleeps that ARE the premise (hanger.sh, stall_s=1, sleeper.sh at body 1231-1290), the suite's 9.3k-line single process (a split into shards is the long-pole row's lever and the doctor's heavy floor reads the run count). Blind spot: the idle bound reads requested sleeps of shimmed binaries only.",
+      "note": "2026-10-13: p10 wall 62 s on 19 s CPU, idle 42 s; the 82 s direct run at load 95 held 31 CPU-s, the rest a run-queue wait that no suite lever owns, plus 52 s of requested time.sleep, 99 % of it run_streamed's 0.25 s poll tick (each fixture cell's exit waited out the rest of a tick; the doctor's PATH-shim profile never sees a Python sleep, so no profiled run bounded it). Fixed: an Event the cell's reaper thread sets; production gains the same ~90 ms per cell exit. Ruled out: the select/communicate waits of the ~980 subprocess.run calls (bin/review-bench and rbench start-up, ~1.2 s wall for 0.15 s CPU at load 95 is the scheduler, not a sleep), the suite's own 0.05 s fixture polls (0.6 s requested). Not done: the stall-fixture sleeps that ARE the premise (hanger.sh, stall_s=1, sleeper.sh at body 1231-1290), the suite's 9.3k-line single process (a split into shards is the long-pole row's lever and the doctor's heavy floor reads the run count). Blind spot: the idle bound reads requested sleeps of shimmed binaries only. 2026-10-14 (night 8004): ruled out again after ceb9b12 held. Direct run at load 20-40: wall 52-54 s, cpu 31-32 s (user 14 + sys 16-17), the other ~21 s the run queue at 57 % CPU, Python time.sleep 3.4 s over the whole suite (cli.py:706 await_panel_run_id 15 x 0.2 s = 3.0 s, subprocess.py poll 0.4 s), the stall fixtures' own bash sleeps (0.3-1.5 s each, the premise of the stall and duration checks), 133+140 bin/review-bench and rbench CLI spawns at 35 ms each. Tried: await_panel_run_id polling 0.01 doubling to 0.2 instead of 0.2 flat, 52.0 s -> 52.4 s wall, so reverted (the marker waits for the child's own start). The journaled 'bounded by the sleeps' reads a vacuous 3670 s: sleep_s sums the requested argument of every shimmed sleep, six of them `sleep 600` fixtures killed in about a second, so min(p10 - floor, median(slept)) is always p10 - floor. Cost of the cheapest cut: sharding the 9.3k-line script saves about 20 s wall x 1 run/day, costs one rbench start-up (~0.7 s CPU) per shard and is the pole row's lever.",
       "handoff": null
     },
     {
@@ -10154,6 +10154,70 @@
       "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
       "note": "Not a suite hang: the suite waited its 600 s lockf bound on /tmp/hs-cli.lock and failed, cpu under 2.2 s. The holder was no suite: chat doctors-regroup's ad-hoc `lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c \"return loadfile([[/tmp/regroup-mut/live.lua]])(...)\"` (2026-10-13 12:54:13Z, its Bash call killed by its 25-min timeout 13:19:15Z; `hs -t 10 -c 'return 1+1'` answered in 3.2 s right after), which also cost run 63792's test_doctors_menu 600 s. Why that client outlived its -t 120 is unsettled: its Bash stdin is probably /dev/null (this worker's is), and its next call, same live.lua with fixture paths, returned in 1.6 s. Ruled out here: killing a holder past its -t from a waiter (a client killed while Hammerspoon still runs its command is the SIGTRAP crash of system-ledger hammerspoon-crash), and failing fast on such a holder (a waiter queued before the holder passed its bound still fails past 5x its usual and reads as a hang). Rerun 2026-10-14 with the lock free: 1 s. Run 75960: wall 600 s, cpu 0.08 s, lockf wait 600 s.",
       "handoff": null
+    },
+    {
+      "id": "speed-flaky-test-consistency-review-bench",
+      "title": "test_consistency (review-bench) went red in 3.8 s under /usr/bin/python3 (3.9) and green under Homebrew's on the same tree: cell_runtime.py's `Path | None` is a TypeError before 3.10",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/flaky/review-bench/test_consistency"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T09:25:00+03:00",
+          "by": "night fixer harness-speed-test-health-flaky-review-bench-test-consistency-20261014T021747Z-5f97",
+          "files": [
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/tests/test_run_suites_nice.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the suite journal's red/green pairs on one tree for test_consistency and test_review_bench, and the worker transcript of the 2026-10-13 pair (assert 66 `eq ok,ok,...` after `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`)",
+            "data": "runs.jsonl rows of tree e740586a382a0fcc (red 3.8 s and 3.2 s, green 3.0 s and 4.9 s), claudeb-1791860413-81183-2b39's session; test_run_suites_nice with the old runner and the new",
+            "result": "the runner now puts Homebrew's python3 ahead of a python3 older than 3.10 for every suite; with a python3 on PATH answering True to the old-version probe the suite reads /opt/homebrew/bin/python3 (assert 31 red on the old runner, green now); a python3 that answers nothing (the fakepy fixtures) or a modern one leaves PATH alone; the suites that run the runner (nice, journal, shards, timeout, slots, test_journal, night_carry, consistency, doctor_fix, doctors_menu, log_audit, harness_doctor, system_doctor) PASS"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-test-health-flaky-review-bench-test-consistency-20261014T021747Z-5f97",
+      "note": "Same cause as speed-flaky-test-harness-doctor (a worker shell whose PATH lacks Homebrew first), now fixed once in the runner instead of per suite. Unexplained: the 2026-10-10 05:00 red (assert 358, a launch.py grep) on tree 4efe0c56224d0bd5, green 2 min later on the same digest; the worker (claudeb-1791597153-82876-0cfa) was editing launch.py then, but the digest should have moved. Open for that red: the suite also reads the llm-legs and claude-setup checkouts and ~/.claude hooks, which the tree digest does not cover (a main-checkout run reads their live state; a worktree run gets the same-branch sibling worktree). Not covered: a suite run directly (bash tests/x.sh) from a PATH with macOS python first.",
+      "handoff": null
+    },
+    {
+      "id": "speed-flaky-test-review-bench-review-bench",
+      "title": "test_review_bench went red in 3.2 s under /usr/bin/python3 (3.9) and green under Homebrew's on the same tree",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/flaky/review-bench/test_review_bench"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T09:25:00+03:00",
+          "by": "night fixer harness-speed-test-health-flaky-review-bench-test-consistency-20261014T021747Z-5f97",
+          "files": [
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/tests/test_run_suites_nice.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the same red/green pair as speed-flaky-test-consistency-review-bench: one run-all of both suites, both red in 3 s under the worker's PATH",
+            "data": "runs.jsonl row pid 80535 (test_review_bench rc 1 3.151 s, test_consistency rc 1 3.828 s), the later green rows of the same tree",
+            "result": "one runner fix covers both suites; see speed-flaky-test-consistency-review-bench"
+          }
+        }
+      ],
+      "same_cause": [
+        "speed-flaky-test-consistency-review-bench"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-speed-test-health-flaky-review-bench-test-consistency-20261014T021747Z-5f97",
+      "note": "Its only flaky red in the window is the 2026-10-13 06:39 run-all beside test_consistency, both from the same python 3.9 shell.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -10583,6 +10647,13 @@
       "reason": "Night 20261014T013750Z-8004 (time/dead 3.4 min/day): 67 dead runs on 2026-10-13, all notcom, outcome CLAUDEB_USAGE_LIMIT in two bursts (launched 00:18Z and 02:06Z, `session limit` resets 5am and 10am Kiev), each 13 s of CLI start plus 11 s wrap-up (867 s dead, 719 s wrap-up) after about 1.5 h in the slot queue. the runs were neither pinned nor resumed and none recorded a reroute (walled_accounts empty), so the pick offered no other account: a pool-wide limit, weather. The row left the window by itself (dead 0.0 min/day); a re-read of the recorded wall after the slot grant, before supervise_claudeb, would save about 24 s per run (0.1 min/day over the week), a change in worker-run's launch path with no replay that keeps decisions identical, so not built",
       "since": "2026-10-14",
       "would_catch_if": "the run journal recorded, per run, whether its account's wall was already in worker-walls at the slot grant, so a pool-wide limit burst separates from a run that died on a wall nobody could have known"
+    },
+    {
+      "id": "test-health-idle-sleep-requested",
+      "what": "the 'bounded by the sleeps' clause of opportunity:test-health/idle for a suite whose fixtures start `sleep 600` and kill it",
+      "reason": "2026-10-14 test_review_bench journals sleep_s 3670 on a 54 s run: run-suites' shim sums the argument of every sleep, six killed `sleep 600` fixtures among them, so share/test_health.py's min(p10 - floor, median(slept)) is always p10 - floor and the row reads 'bounded by the sleeps' while Python time.sleep totals 3.4 s and the rest is the run queue",
+      "since": "2026-10-14",
+      "would_catch_if": "the shim journaled the time each sleep actually ran (start to exit) instead of its argument"
     }
   ]
 }
