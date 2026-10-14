@@ -451,16 +451,21 @@ assert env BASH_ENV="$WORK/paths-fail.sh" LLM_LIMITS_CODEX_REMOVED="$WORK/codex-
   >"$WORK/remnants-unread.json"
 assert jq -e '[.problems[] | select(.id == "remnant:roster")] | length == 1' "$WORK/remnants-unread.json" >/dev/null
 rm -rf "$HOME/.codex-profiles" "$HOME/.cache/worker-claims"
+# The dry-run starts below read fixtures and write nothing: they run side by side, each collected
+# with `assert wait` where its output is read.
 # The heartbeat stall is the collector's verdict, carried as one accounts problem; a ticking one is none.
 printf '{"schema":1,"vendors":{},"refresh_heartbeat":{"last_tick_at":%s,"limit_s":900,"stalled":true}}\n' \
   "$((NOW - 39600))" >"$WORK/stalled-store.json"
-assert env LLM_LIMITS_CACHE="$WORK/stalled-store.json" "$DOCTOR" --dry-run --json >"$WORK/stalled.json"
+jq '.refresh_heartbeat.stalled = false' "$WORK/stalled-store.json" >"$WORK/ticking-store.json"
+env LLM_LIMITS_CACHE="$WORK/stalled-store.json" "$DOCTOR" --dry-run --json >"$WORK/stalled.json" & stalled_pid=$!
+env LLM_LIMITS_CACHE="$WORK/ticking-store.json" "$DOCTOR" --dry-run --json >"$WORK/ticking.json" & ticking_pid=$!
+"$DOCTOR" --dry-run --block reviewers >"$WORK/view.txt" & view_pid=$!
+assert wait "$stalled_pid"
 assert jq -e '[.problems[] | select(.rule == "refresh-stalled")] as $rows | ($rows | length) == 1
   and $rows[0].id == "refresh:heartbeat" and $rows[0].group == "accounts" and $rows[0].state == "new"
   and $rows[0].value == 39600 and $rows[0].limit == 900
   and ($rows[0].fact | startswith("limits refresh heartbeat stalled 11h00m"))' "$WORK/stalled.json" >/dev/null
-jq '.refresh_heartbeat.stalled = false' "$WORK/stalled-store.json" >"$WORK/ticking-store.json"
-assert env LLM_LIMITS_CACHE="$WORK/ticking-store.json" "$DOCTOR" --dry-run --json >"$WORK/ticking.json"
+assert wait "$ticking_pid"
 assert jq -e '[.problems[] | select(.rule == "refresh-stalled")] == []' "$WORK/ticking.json" >/dev/null
 # An account older than the store's account_stale_after_s is an accounts problem naming its last error; a
 # fresh one, one waiting for a login, a removed one, a removed vendor's and an OpenCode one (its as_of is
@@ -482,17 +487,20 @@ json.dump({"schema": 1, "account_stale_after_s": 7200, "vendors": {
 PY
 (. "$ROOT/share/limits-view.sh" && jq "$LIMITS_VIEW_JQ"'.vendors |= with_entries(.key as $k | .value |= limits_stale_watch($k))' \
   "$WORK/stale-raw.json" >"$WORK/stale-store.json")
-assert env LLM_LIMITS_CACHE="$WORK/stale-store.json" "$DOCTOR" --dry-run --json >"$WORK/stale.json"
+jq 'del(.account_stale_after_s)' "$WORK/stale-store.json" >"$WORK/unstamped-store.json"
+env LLM_LIMITS_CACHE="$WORK/stale-store.json" "$DOCTOR" --dry-run --json >"$WORK/stale.json" & stale_pid=$!
+env LLM_LIMITS_CACHE="$WORK/unstamped-store.json" "$DOCTOR" --dry-run --json >"$WORK/unstamped.json" & unstamped_pid=$!
+env LLM_LIMITS_CACHE="$WORK/stale-raw.json" "$DOCTOR" --dry-run --json >"$WORK/unmarked.json" & unmarked_pid=$!
+assert wait "$stale_pid"
 assert jq -e '[.problems[] | select(.rule == "account-stale")] as $rows
   | ([$rows[].id] | sort) == ["refresh:gemini:abel", "refresh:grok:grok"]
   and ($rows | all(.group == "accounts" and .state == "new" and .limit == 7200))
   and ([$rows[] | select(.id == "refresh:gemini:abel")][0] | .value == 30000
        and (.fact | startswith("gemini abel limits not refreshed for 8h20m"))
        and (.fact | endswith("last error: abel: agy /usage timed out after 45s")))' "$WORK/stale.json" >/dev/null
-jq 'del(.account_stale_after_s)' "$WORK/stale-store.json" >"$WORK/unstamped-store.json"
-assert env LLM_LIMITS_CACHE="$WORK/unstamped-store.json" "$DOCTOR" --dry-run --json >"$WORK/unstamped.json"
+assert wait "$unstamped_pid"
 assert jq -e '[.problems[] | select(.rule == "account-stale")] == []' "$WORK/unstamped.json" >/dev/null
-assert env LLM_LIMITS_CACHE="$WORK/stale-raw.json" "$DOCTOR" --dry-run --json >"$WORK/unmarked.json"
+assert wait "$unmarked_pid"
 assert jq -e '[.problems[] | select(.rule == "account-stale")] == []' "$WORK/unmarked.json" >/dev/null
 # Days the bench store covers whole are frozen to disk; the older image day stays as it was.
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -name '*.json' | wc -l | tr -d ' ')" -ge 3
@@ -512,7 +520,7 @@ assert doctor.spark([0, 2, 4]) == "▁▄█", doctor.spark([0, 2, 4])
 assert doctor.spark([0, 1, 8]) == "▁▂█", doctor.spark([0, 1, 8])
 PY
 
-"$DOCTOR" --dry-run --block reviewers >"$WORK/view.txt" || fail "the text view failed"
+wait "$view_pid" || fail "the text view failed"
 assert grep -q '^Reviewers: ' "$WORK/view.txt"
 assert grep -q 'X1' "$WORK/view.txt"
 assert test "$(grep -c '^Workers: ' "$WORK/view.txt")" -eq 0
