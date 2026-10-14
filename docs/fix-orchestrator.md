@@ -38,7 +38,8 @@ the repositories.
    <worktree>`, `git branch -D <branch>`, `git push origin --delete <branch>`, by day `git update-ref -d
    refs/doctor-fix/<ref>/base`), the same per `ADD-DIR:` repository (one without commits loses only its
    worktree and branch); chain with `&&`, never `;`: a refused merge (main moved) keeps everything and
-   repeats step 4. A conflict or red goes to step 3.
+   repeats step 4. A red suite reruns once alone (`tests/run-all <suite>`): green lands as a flake,
+   red again goes to step 3, as a conflict does.
 5. A worker the watchdog killed (`KILLED: idle|silent|deadline`): `doctor-fix abandon <ref>`, its branch
    unlanded.
 

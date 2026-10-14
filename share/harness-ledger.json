@@ -9370,6 +9370,333 @@
       "reviewed_by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
       "note": "24 h to 2026-10-14 05:20: 540 min/day over 2.5, 653 repeats; 467 min the night's workers (night 3131), 52 chats at night, 18 by day. Two measurement faults fixed in llm-legs/share/test_health.py by this run: the usual took 10-06..10-08 as 0 though no row journaled a tree before 2026-10-09 (now unmeasured), and a --profile run, which the suite-audit brief orders, read as a repeat of a plain green run (112 min; now only a profiled green). Still red: 466 against 78 at today's runs. By worktree: suite audits 333 min, test-health and regression fixers 104, other night jobs 42, main 37. By shape: same caller rerunning green content directly 204 min (median 17 s after its green: flake hunts as `for i in 1..8; bash tests/x.sh` and env variants like PATH=/usr/bin, e.g. 1983b0bf on test_harness_doctor, claudeb-1791857509-61134-1111 30 runs of test_agy_quota under load), another caller's green first 151 (14 fixers on night base tree d7a0644b, 79 min), multi-suite reruns 94, named single reruns 37. Open questions for the owner: design §1 counts unattended work 0, yet this line counts the night's worker runs; and a deliberate flake or timing rerun is indistinguishable from a wasted one (blind spot test-health-retests-intent). Not tried: a cached-verdict skip in run-suites (would break flake hunts and timing runs).",
       "handoff": null
+    },
+    {
+      "id": "log_audit:doctor-fix-close-verdict-circular",
+      "title": "doctor-fix close refused a lens fixer's own run until its verdicts were folded, which worker-run does only after the run exits",
+      "match": {
+        "rule": "log_audit",
+        "ident": "doctor-fix-close-verdict-circular"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T05:25:00+03:00",
+          "by": "harness-doctor-20261014T021638Z-65a1",
+          "files": [
+            "llm-legs/bin/doctor-fix"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Confirmed (night 3131, chunks 009, 018, 025): worker-run folds a run's verdicts.jsonl only after the run exits, so every speed-lens fixer's close asked review-bench for open findings its own verdicts settle and refused; the run sat open until the orchestrator or a RESUME closed it (~420 min). Fixed: close records the fixer's own $WORKER_RUN_RECORD/verdicts.jsonl through review-bench record first and names a refused row (test_doctor_fix red on old). The judge digest moving with a fixer's own ledger rows is by design (doctor-fix.md §5).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:duplicate-fixes-sibling-branches",
+      "title": "Sibling night branches fixed the same component twice",
+      "match": {
+        "rule": "log_audit",
+        "ident": "duplicate-fixes-sibling-branches"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "log_audit:parallel-fixers-duplicate-work"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Ruled out: the class of row parallel-fixers-duplicate-work (owner not-a-bug: fixers run in parallel by design and a duplicate folds at the landing rebase). The quoted overlaps (chunks 012, 025, 028, 030) were cross-kind rows on one component, a suite or CPU audit beside a speed row, each settled at its rebase (an emptied commit dropped).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:find-root-for-lens-path",
+      "title": "Suite-audit workers ran find / for review-bench/lenses/tests.md",
+      "match": {
+        "rule": "log_audit",
+        "ident": "find-root-for-lens-path"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T06:00:00+03:00",
+          "by": "harness-doctor-20261014T021638Z-65a1",
+          "files": [
+            "llm-legs/bin/doctor-fix"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Confirmed: bin/doctor-fix's suite-audit step 1 named the lens by the relative review-bench/lenses/tests.md (7e2f4c33), and at least ten night-3131 suite-audit workers ran find / for it (3-17 min each under load). Fixed: the brief names lenses/tests.md of the review-bench checkout the review-bench on PATH runs from, absolute (test_doctor_fix red on old).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:foreground-probe-hits-bash-cap",
+      "title": "Foreground probes ran into the 25-min Bash cap",
+      "match": {
+        "rule": "log_audit",
+        "ident": "foreground-probe-hits-bash-cap"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "log_audit:hung-commands-25min-timeout",
+        "log_audit:foreground-call-hangs-25min"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Ruled out: of 48 timeouts most fell 05:28-06:31 on 10-13 at load 176-240 (weather, row suites-timeout-under-night-load); the rest were workers' own commands, ~16 wide suite runs, ~12 shim, mutation or fuzz loops, 3 transcript-wide finds and 3 live hs or Lua probes, conduct already ruled in rows hung-commands-25min-timeout and foreground-call-hangs-25min.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:gate-text-match-false-positives",
+      "title": "PreToolUse gates matched literal text in read-only probes",
+      "match": {
+        "rule": "log_audit",
+        "ident": "gate-text-match-false-positives"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T05:55:00+03:00",
+          "by": "harness-doctor-20261014T021638Z-65a1",
+          "files": [
+            "claude-setup/hooks/resume-timer-guard.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "log_audit:gates-match-command-text",
+        "log_audit:gates-match-text-not-command"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Confirmed one: resume-timer-guard cut commands at every `)`, so a read-only grep whose quoted pattern held `))` before bin/claude-resume-timer read as a call (05:43). Fixed: `)` is no cut; a subshell's `(`, a case pattern and a substitution in command position still open a call, and `<( )` is read as one too (test_resume_timer_guard red on old; last week's 160 timer-naming payloads replayed, only that grep flips). Kept by design: worker-pin-gate's fixture probe (its header), worker-git-guard on a python -c program naming revert-class git and instruction-write-gate on a python heredoc naming CLAUDE.md writes (interpreter text is code). The 4 worker-launch-gate media denials (10-13 09:20-16:23) do not reproduce on the gate committed then or now (the hook is the main checkout's file, so an uncommitted state then); the 06:51 'refusal' was sed output quoting the gate's message.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:hs-ipc-unbounded-lock",
+      "title": "A test's hs client held /tmp/hs-cli.lock for 34 min",
+      "match": {
+        "rule": "log_audit",
+        "ident": "hs-ipc-unbounded-lock"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T05:40:00+03:00",
+          "by": "harness-doctor-20261014T021638Z-65a1",
+          "files": [
+            "hammerspoon/tests/test_compact_boundary.sh",
+            "hammerspoon/tests/test_claude_chat_switch.sh",
+            "hammerspoon/tests/test_display_mirror.sh",
+            "hammerspoon/tests/test_handoff.sh",
+            "hammerspoon/tests/test_ipad_mode.sh",
+            "hammerspoon/tests/test_send_actions.sh",
+            "hammerspoon/tests/test_hs_cli_lock.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Confirmed: test_compact_boundary's hs client had no stdin redirect, read the agent shell's open stdin to EOF and held /tmp/hs-cli.lock 10:54-11:28 (chunk-016); hammerspoon@e74cc8a had fixed 4 suites only. Fixed: </dev/null on the six remaining lock lines, and test_hs_cli_lock fails any lock line without it (red on old). The 04:35 and 16:19 hangs were workers' own live-Hammerspoon probes (conduct).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:landing-conflicts-red-resume",
+      "title": "Landing sent unreproducible reds back to the worker, one branch four times",
+      "match": {
+        "rule": "log_audit",
+        "ident": "landing-conflicts-red-resume"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T06:10:00+03:00",
+          "by": "harness-doctor-20261014T021638Z-65a1",
+          "files": [
+            "llm-legs/docs/fix-orchestrator.md"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "log_audit:landing-pipeline-retests-and-mistakes"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Confirmed one cause: docs/fix-orchestrator.md step 4 sent every landing red to the worker, and one branch cycled four times 16:55-18:54 (test_chat_pin, test_account_purge twice, test_consistency), each red unreproducible, ~40 min a cycle. Fixed: a red suite reruns once alone before step 3, the press-time rule of night-run; test_consistency pins both sites (red on old). Kept: the 63-suite rerun is the overlap selection of a branch touching shared code (0f2198e6); an FF refusal is main moving under a day chat and repeats step 4 by design; ledger conflicts merge row-wise (share/merge_ledger.py, wired); the rest were real overlaps of duplicate fixes (row duplicate-fixes-sibling-branches).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:night-admission-idle-free-capacity",
+      "title": "Night admission idled while capacity looked free",
+      "match": {
+        "rule": "log_audit",
+        "ident": "night-admission-idle-free-capacity"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "log_audit:night-stalls-on-account-limit"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Ruled out: the quoted owner-chat research (night e2f7, 10-12) found no bug: notcom at 87 % over the 80 % guard, com walled weekly, locomthebest out of the pool, codex, Gemini and Grok off by Egor's menu. Weather as row night-stalls-on-account-limit.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:night-fanout-no-headroom-check",
+      "title": "Night fan-out launched fixers into a walled account",
+      "match": {
+        "rule": "log_audit",
+        "ident": "night-fanout-no-headroom-check"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T17:00:00+03:00",
+          "by": "harness-doctor-20261014T021638Z-65a1",
+          "files": [
+            "llm-legs/bin/worker-run",
+            "llm-legs/bin/night-run",
+            "llm-legs/share/night_priority.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Settled before this read by llm-legs@4482c995 (10-13 17:03): night admission holds running Claude fixers within the pool's 5h room (docs/night-run.md 'Priority and admission'). The quoted walls (10-13 03:26, 06:38, 14:31-14:53) all predate it, and no fixer wall follows it in the window.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:night-started-without-egor-go",
+      "title": "Night launched on a readiness question, and once continued after the chat said it would wait",
+      "match": {
+        "rule": "log_audit",
+        "ident": "night-started-without-egor-go"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Ruled out: the 02:30 start followed Egor's own 'launch the night once the lens is ready' (chunk-050, 02:37); the 02:48 continuation was the span doctrine (hooks/stop.d/ask-span-drill.sh: the orchestrator's self-declared wait blocked on nothing, and Egor's 02:34 was a question, not a stop); the 04:03 launch on a readiness question was one model misreading with no hook involved (night is no word-family alias), recorded as the memory 'Finish now, not at night'. A start gate for one incident would be a guard before process.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:review-bench-rater-pin-break",
+      "title": "A dropped Gemini Pro model left review-bench's T2 rater unparseable",
+      "match": {
+        "rule": "log_audit",
+        "ident": "review-bench-rater-pin-break"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-13T22:40:00+03:00",
+          "by": "harness-doctor-20261014T021638Z-65a1",
+          "files": [
+            "review-bench/share/rbench/catalog.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Settled before this read by review-bench@4288f13 (10-13 22:46): tier rosters staff the newest Flash from geminib families and no Pro row, so no static pin names a model a vendor catalog drops; the round that crashed at 13:10 (20261013T000450Z-76aa944) now reads with fix --print, exit 0. The 11 silent relaunch failures were the orchestrator's own dispatch script.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:run-suites-slot-queue-under-load",
+      "title": "Suite runs queued for slots and died with exit 144",
+      "match": {
+        "rule": "log_audit",
+        "ident": "run-suites-slot-queue-under-load"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-14T05:35:00+03:00",
+          "by": "harness-doctor-20261014T021638Z-65a1",
+          "files": [
+            "llm-legs/bin/pkill"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "log_audit:suites-timeout-under-night-load"
+      ],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Confirmed one cause: the 14:07 exit-144 cluster (7 suite runs in chunks 020, 026, 027, each rerun 10-20 min) was one suite-audit worker's `pkill -f run-all; pkill -f run-suites.sh` (chunk-021). Fixed: the pkill shim in a worker run's worktree leaves matches whose cwd is another worktree or the main checkout alone and names them (test_pkill_guard red on old). The queue waits are load weather (row suites-timeout-under-night-load); the 05:58 10-minute cap was the worker's own timeout parameter.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:stale-doctor-rows-reproved",
+      "title": "Fixers re-proved doctor rows whose component was already fixed",
+      "match": {
+        "rule": "log_audit",
+        "ident": "stale-doctor-rows-reproved"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Ruled out: by design. fixed-pending needs a fixes[] row the fixer records, so a component already fixed is re-proved by reading its commit; measured 1 min (56b7, 05:06-05:07) and 7 min (5e5e, 09:53-10:00). Dropping the evidence for retired components would change the judge, which is not a fixer's.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:workers-route-around-denials",
+      "title": "Workers re-expressed denied rm -rf and git checkout calls",
+      "match": {
+        "rule": "log_audit",
+        "ident": "workers-route-around-denials"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Blind spot: 19 rm -rf denials and 22 sh -c rm prompts in 24 h are Egor's own deny rule (Bash(rm -rf *)) working as set; most targets were hand-rolled red-on-old-code checks (rm -rf a scratch copy, git archive HEAD, copy the new test in, run), and share/tool_mining.py scans only inline scripts, so that plain-shell recipe never becomes an adhoc opportunity (blind spot tool-mining-plain-shell-recipes). find -delete on the run's own scratch or sed on its own file bypasses nothing the rules guard; the tm-measure retry until Egor removed it was one worker's conduct.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:zsh-and-python3-env-repeats",
+      "title": "Workers met a PATH without Homebrew and zsh word-splitting",
+      "match": {
+        "rule": "log_audit",
+        "ident": "zsh-and-python3-env-repeats"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
+      "note": "Blind spot: two workers in the 05:44-06:34 load window on 10-13 got a login-only PATH (~/.zprofile's; /opt/homebrew/bin comes only from ~/.zshrc, so python3 was /usr/bin's 3.9), most likely a Claude Code shell snapshot that failed under load; nothing records a worker Bash's environment (blind spot worker-bash-env-unrecorded). One of them found and fixed a real 3.9 fromisoformat bug in the production /usr/bin/python3 fallback. The zsh-isms (==, unsplit lists) each cost one failed call, self-corrected (conduct).",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -9757,6 +10084,20 @@
       "reason": "the suite journal keys a run by tree and suite only, so test_health.label calls every rerun of green content a retest; on 2026-10-13 most of the night's 467 retest minutes were Speed fixers reproducing flakes or timing suites",
       "since": "2026-10-14",
       "would_catch_if": "the suite journal carried the run's reason (a --repeat N flag for hunts, the python3 and PATH of the run) so a deliberate rerun reads as its own class"
+    },
+    {
+      "id": "tool-mining-plain-shell-recipes",
+      "what": "plain-shell recipes models retype in every run, the red-on-old-code check first (remove a scratch copy, git archive HEAD into it, copy the new test in, run it)",
+      "reason": "night 3131: most of 19 rm -rf denials and 22 sh -c rm prompts in 24 h were these checks' cleanups, and share/tool_mining.py's ADHOC filter takes only inline python/node/perl scripts, heredocs and jq/awk pipelines, so no adhoc opportunity ever names the recipe",
+      "since": "2026-10-14",
+      "would_catch_if": "tool mining clustered recurring multi-command shell sequences (a git archive of HEAD extracted and followed by a suite run) as well as inline scripts"
+    },
+    {
+      "id": "worker-bash-env-unrecorded",
+      "what": "the environment a worker's Bash tool runs in (PATH, which python3, whether the shell snapshot loaded)",
+      "reason": "night 3131 05:44-06:34: two workers' Bash had a login-only PATH without /opt/homebrew/bin, so python3 was the system 3.9 and suites failed for an environment reason; each diagnosed it itself (2-15 min) and no doctor saw it",
+      "since": "2026-10-14",
+      "would_catch_if": "worker-run recorded the PATH and python3 version the worker's first Bash call ran with in the run record"
     }
   ]
 }

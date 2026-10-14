@@ -197,6 +197,11 @@ assert grep -Fq -- '+1800s' "$ROOT/docs/statusline-contract.md"
 assert grep -Fq -- '600s ahead' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq -- 'backed off to 1800s' "$ROOT/docs/DIAGNOSTICS.md"
 
+# A red suite reruns once before it counts, at press time (night-run) and at landing (the orchestrator):
+# night 3131 sent four unreproducible landing reds back to one worker, ~40 min a cycle.
+assert grep -Fq -- 'red twice stays failed' "$ROOT/bin/night-run"
+assert grep -Fq -- 'A red suite reruns once alone' "$ROOT/docs/fix-orchestrator.md"
+
 # hammerspoon must stay stale-flag-driven, not hardcode one of these thresholds
 assert grep -q 'bucket.stale == true' "$HAMMER"
 
