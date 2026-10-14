@@ -3,14 +3,14 @@
   "rows": [
     {
       "id": "hs-cli-dead-port",
-      "title": "Hammerspoon SIGTRAPs sending an hs CLI result to a client that already gave up",
+      "title": "Hammerspoon SIGTRAPs sending to an hs CLI client whose port is dying",
       "status": "fixed-pending",
       "match": {
         "rule": "hammerspoon-crash",
         "key": "Hammerspoon",
         "cause": "Hammerspoon"
       },
-      "note": "All three crashes (10-02 14:25:15, 10-03 11:26:51, 10-08 08:44:06) fault in ipc_callback -> ipc_sendMessage -> CFMessagePortSendRequest -> CFMessagePortIsValid (freed port, PAC check): hs.ipc's COMMAND handler sends RETURN to a client whose port died while the command ran or waited. 10-02 and 10-03 each have an hs CLI crash 0-4 s earlier whose parent had already exited; 10-08 has none (a SIGKILL leaves no report) and test_llm_limits_grok, which killed its hs after 3 s, ran in the minute before. Hammerspoon answers one client at a time, so a test client queued behind another suite's harness (instruction gate ~11 s) outlived its -t (default 4 s) or its python kill bound. Fix: every live hs call in llm-legs and hammerspoon tests waits under /usr/bin/lockf -k -t 600 /tmp/hs-cli.lock with hs -t >= 20 and a kill bound past both; tests/test_hs_cli_lock.sh in both repos keeps it; the retry loops of test_presence and test_dia_js (for concurrent suite clients) are gone. Not fixed, same chain still open: production callers run hs unlocked with the default 4 s -t (llm-legs bin/claude-chat-switch, claude-resume-timer, llm-selfcheck, llm-reset-redeem; hammerspoon bin/claude-keys, claude-latency; claude-setup hooks/compact-auto.sh, session-trash.sh; the BTT TypeWhisper.toggle action) and can still queue behind a test harness; a Lua guard in init.lua was not tried, as it cannot be tested without crashing the live Hammerspoon. Ruled out for these crashes: AX polling and leaked drawings (neither in the faulting stack). Side finding: hammerspoon tests/test_menu_cache.sh is red on the night base (test_menu_cache.lua:141, Reports title.text nil), unrelated.",
+      "note": "Four crashes, one cause: Hammerspoon sends synchronously to an hs client that is gone or going, and CFMessagePortSendRequest SIGTRAPs (PAC check on the freed port). 10-02, 10-03, 10-08: the COMMAND's RETURN to a client that gave up queued behind another suite (first fix: every test hs call under /usr/bin/lockf /tmp/hs-cli.lock with hs -t >= 20, tests/test_hs_cli_lock.sh in both repos). 10-14 03:40: init.lua's print shim, under an hs.task callback, cloned a background print to every non-quiet client, here one exiting (second fix: hammerspoon/ipc_print.lua clones only to the client whose command runs, or to hs -C). Still open, same chain: production callers run hs unlocked with the default 4 s -t (llm-legs bin/claude-chat-switch, claude-resume-timer, llm-selfcheck, llm-reset-redeem; hammerspoon bin/claude-keys, claude-latency; claude-setup hooks/compact-auto.sh, session-trash.sh; the BTT TypeWhisper.toggle action) and can outlive -t behind a long command. Ruled out: AX polling and leaked drawings (in no faulting stack).",
       "fixes": [
         {
           "at": "2026-10-09T06:40:16+03:00",
@@ -18,6 +18,17 @@
           "files": [
             "llm-legs/tests/test_hs_cli_lock.sh",
             "hammerspoon/tests/test_hs_cli_lock.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        },
+        {
+          "at": "2026-10-14T08:19:00+03:00",
+          "by": "system-system-20261014T021810Z-7b2a",
+          "files": [
+            "hammerspoon/ipc_print.lua",
+            "hammerspoon/init.lua",
+            "hammerspoon/tests/test_ipc_print.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -101,25 +112,70 @@
     {
       "id": "cohort-hammerspoon-tab-poll",
       "title": "Hammerspoon's own CPU: the 100 ms Terminal tab poll",
-      "status": "open",
+      "status": "fixed-pending",
       "match": {
         "rule": "cohort",
         "key": "Hammerspoon",
         "cause": "Hammerspoon"
       },
-      "note": "B 7.1 by C, 6,127 cpu-s a day. Own CPU 130-510 s an hour on 10-13/14, its reaped children (the poll's osascript and ps -t) 1-7 s an hour, so the cost is the AX walk itself: Egor's Cmd-key input feature, an open trade.",
-      "handoff": "llm-legs/docs/handoffs/2026-10-13-hammerspoon-ax-poll.md"
+      "note": "B 7.1 by C, 6,127 cpu-s a day: the AX walk of claude_cmd_keys' 100 ms Terminal tab poll (own CPU 130-510 s an hour on 10-13/14, its reaped osascript/ps 1-7 s). Fixed by the owner chat, all on hammerspoon main: a0c5ea4 stands the poll still while Egor is away, b4a4941 + 75d60db poll at 0.1 s only for a 2 s burst after input or a context event and at 0.45 s otherwise. Hammerspoon used 238 cpu-s in the 7 h after its 03:40 restart on that code (~34 s an hour); the cohort's 7-day window still carries the old cost.",
+      "fixes": [
+        {
+          "at": "2026-10-14T03:51:32+03:00",
+          "by": "hammerspoon owner chat (cmdkeys-idle-poll)",
+          "files": [
+            "hammerspoon/claude_cmd_keys.lua"
+          ],
+          "in": "hammerspoon@75d60db",
+          "regressed_at": null
+        }
+      ]
     },
     {
       "id": "cohort-statusline-renders",
       "title": "statusline.sh render CPU",
-      "status": "open",
+      "status": "fixed-pending",
       "match": {
         "rule": "cohort",
         "key": "llm-legs/bin/statusline.sh",
         "cause": "llm-legs/bin/statusline.sh"
       },
-      "note": "B 3.2 by C, 2,740 cpu-s a day: the statusline journal's renders (cohort_sums since 7fcf0fc1), all of real chat sessions, none from suites; 10-13 had 157,749 renders, 17,132 cpu-s, ~109 ms each. The 3 s refresh stays (Egor's decision); the lever is per-render cost, the away replay (3332845a) the first cut."
+      "note": "B 3.2 by C, 2,740 cpu-s a day over ~150k renders a day of real chats (3 s refresh stays, Egor's decision), ~109 ms CPU each on 10-13. Cuts: the away replay (llm-legs@3332845a, 10-14 02:55, ~21 ms a replay; 10-14 averaged 64 ms a render) and repo_dirs/input-parse forks (3 fewer processes a worktree render, ~2.5 ms). Left, measured on a warm sandbox render (~65 ms): git status 13 ms, git rev-parse 7 ms, each jq 4-5 ms (input parse, wall view, rate-limit bucket, store stale), the rest bash itself; a rev-parse or wall-view memo needs the statusline contract's event list and tests.",
+      "fixes": [
+        {
+          "at": "2026-10-14T08:19:00+03:00",
+          "by": "system-system-20261014T021810Z-7b2a",
+          "files": [
+            "llm-legs/bin/statusline.sh",
+            "llm-legs/tests/test_statusline_hooks.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
+    },
+    {
+      "id": "review-anchors-blob-memo-rewrites",
+      "title": "review-anchors rewrote its whole blob memo for every hashed chunk",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "cohort",
+        "key": "review-bench/bin/review-bench",
+        "cause": "review-bench/bin/review-bench"
+      },
+      "note": "B 1.1 by D, 1.2 GB written a day, bursts to 1.6 GB an hour. review-bench and review-debt load review-anchors in-process; stored_blobs rewrote ~/.cache/review-bench/blob-memo/<repo>.json after every 1000-path chunk, and logo-vectorizer-bench's is 74,272 paths (12 MB) with ~100 stale per run: 12 MB per pricing to bank ~16 KB (ssd-sampler: 12 MB into that dir per 2-minute sample). Fix: chunks append to <memo>.log, the memo is rewritten once the log reaches a quarter of it. The 380 KB price-memo beside it is rewritten whole too, not measured as a cost yet.",
+      "fixes": [
+        {
+          "at": "2026-10-14T08:19:00+03:00",
+          "by": "system-system-20261014T021810Z-7b2a",
+          "files": [
+            "review-bench/bin/review-anchors",
+            "review-bench/tests/test_review_anchors.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
     }
   ],
   "blind_spots": [
