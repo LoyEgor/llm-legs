@@ -168,8 +168,10 @@ kill "$h3"; until_gone "$h3"
 # A waiter whose caller was killed stops waiting: slot_wait runs in the caller's $(...) subshell,
 # which a TERM to the caller leaves polling, and it would take the next free slot for nobody.
 h9=$(holder "$WORK/s" 1)
-bash -c '. "$1/share/slots.sh"; slot=$(slot_wait "$2" 1 3600 orphan-limiter "a killed job"); exec sleep 300' \
-  _ "$ROOT" "$WORK/s" >/dev/null 2>&1 &
+# Its owner check is the suite: a SIGKILLed suite (no EXIT trap) left one polling under launchd for 13 h.
+bash -c '. "$1/share/slots.sh"; suite=$3; suite_gone() { ! kill -0 "$suite" 2>/dev/null; }
+  slot=$(SLOT_OWNER_ENDED=suite_gone slot_wait "$2" 1 3600 orphan-limiter "a killed job") || exit; exec sleep 300' \
+  _ "$ROOT" "$WORK/s" "$$" >/dev/null 2>&1 &
 caller=$!
 pids+=("$caller")
 for i in $(seq 1 50); do [ "$(holds_of orphan-limiter)" = 1 ] && break; sleep 0.1; done
