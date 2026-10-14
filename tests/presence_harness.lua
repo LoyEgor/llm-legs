@@ -142,6 +142,8 @@ every[1].fn()
 check(read(mark) == nil and not presence.away() and every[1].stopped, "his return left the mark or the watch")
 check(#kicks == 1 and kicks[1]:find("kickstart", 1, true) and kicks[1]:find("/com.llm-refresh", 1, true),
   "his return kicked: " .. table.concat(kicks, "; "))
+local left, back = presence.lastAway()
+check(left == now - 960 and back == now, "his return did not keep the span: " .. tostring(left) .. " " .. tostring(back))
 now = now + 60
 presence.tick()
 check(#kicks == 1, "a present minute with no mark kicked a refresh")

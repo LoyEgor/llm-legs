@@ -4,6 +4,7 @@ local M = {}
 -- rewritten each minute; a WATCH_S watch drops it the moment input returns and kicks a limits refresh.
 -- Readers (share/presence.sh, M.away) take a mark left unwritten for minutes as present. Egor's switch
 -- (Auto ▸ Away Mode) is presence/away-off: while it exists no mark is written, so every consumer runs as present.
+-- presence/last-away keeps "<left epoch>\t<back epoch>" of the last span a mark covered: the menu shows it as proof.
 local AWAY_S, WATCH_S = 600, 2
 local REFRESH_KICK = 'exec /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.llm-refresh"'
 
@@ -25,6 +26,11 @@ local function offPath()
   return dir .. "/away-off"
 end
 
+local function lastPath()
+  local _, dir = presenceDir()
+  return dir .. "/last-away"
+end
+
 local function notify()
   for _, fn in ipairs(listeners) do pcall(fn) end
 end
@@ -44,12 +50,29 @@ function M.enabled()
   return handle == nil
 end
 
+-- M.lastAway(): left, back epochs of the last finished away span; nil before the first one.
+function M.lastAway()
+  local handle = io.open(lastPath())
+  if not handle then return nil end
+  local left, back = (handle:read("l") or ""):match("^(%d+)\t(%d+)$")
+  handle:close()
+  if left then return tonumber(left), tonumber(back) end
+end
+
 function M.back()
   local was = watch ~= nil
   if watch then watch:stop() end
   watch = nil
+  local handle = io.open(markPath())
+  local left = handle and (handle:read("l") or ""):match("^(%d+)\t")
+  if handle then handle:close() end
   local removed = os.remove(markPath())
   if removed then
+    local span = left and io.open(lastPath(), "w")
+    if span then
+      span:write(string.format("%s\t%d\n", left, math.floor(hs.timer.secondsSinceEpoch())))
+      span:close()
+    end
     local task = hs.task.new("/bin/sh", nil, { "-c", REFRESH_KICK })
     if task then task:start() end
   end
