@@ -9566,24 +9566,12 @@
         "rule": "log_audit",
         "ident": "night-fanout-no-headroom-check"
       },
-      "status": "fixed-pending",
-      "fixes": [
-        {
-          "at": "2026-10-13T17:00:00+03:00",
-          "by": "harness-doctor-20261014T021638Z-65a1",
-          "files": [
-            "llm-legs/bin/worker-run",
-            "llm-legs/bin/night-run",
-            "llm-legs/share/night_priority.py"
-          ],
-          "in": null,
-          "regressed_at": null
-        }
-      ],
+      "status": "open",
+      "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
-      "note": "Settled before this read by llm-legs@4482c995 (10-13 17:03): night admission holds running Claude fixers within the pool's 5h room (docs/night-run.md 'Priority and admission'). The quoted walls (10-13 03:26, 06:38, 14:31-14:53) all predate it, and no fixer wall follows it in the window.",
+      "note": "Ruled out: the reading no longer holds, settled before this read by llm-legs@4482c995 (10-13 17:03): night admission holds running Claude fixers within the pool's 5h room (docs/night-run.md 'Priority and admission'). The quoted walls (10-13 03:26, 06:38, 14:31-14:53) all predate it, and no fixer wall follows it in the window. Not a fixes[] row: the audit stamps its quotes with its own read time (blind spot log-audit-evidence-read-time).",
       "handoff": null
     },
     {
@@ -9608,22 +9596,12 @@
         "rule": "log_audit",
         "ident": "review-bench-rater-pin-break"
       },
-      "status": "fixed-pending",
-      "fixes": [
-        {
-          "at": "2026-10-13T22:46:00+03:00",
-          "by": "harness-doctor-20261014T021638Z-65a1",
-          "files": [
-            "review-bench/share/rbench/catalog.py"
-          ],
-          "in": null,
-          "regressed_at": null
-        }
-      ],
+      "status": "open",
+      "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night 20261014T013750Z-8004 harness-doctor-20261014T021638Z-65a1",
-      "note": "Settled before this read by review-bench@4288f13 (10-13 22:46): tier rosters staff the newest Flash from geminib families and no Pro row, so no static pin names a model a vendor catalog drops; the round that crashed at 13:10 (20261013T000450Z-76aa944) now reads with fix --print, exit 0. The 11 silent relaunch failures were the orchestrator's own dispatch script.",
+      "note": "Ruled out: the reading no longer holds, settled before this read by review-bench@4288f13 (10-13 22:46; not a fixes[] row, blind spot log-audit-evidence-read-time): tier rosters staff the newest Flash from geminib families and no Pro row, so no static pin names a model a vendor catalog drops; the round that crashed at 13:10 (20261013T000450Z-76aa944) now reads with fix --print, exit 0. The 11 silent relaunch failures were the orchestrator's own dispatch script.",
       "handoff": null
     },
     {
@@ -10098,6 +10076,13 @@
       "reason": "night 3131 05:44-06:34: two workers' Bash had a login-only PATH without /opt/homebrew/bin, so python3 was the system 3.9 and suites failed for an environment reason; each diagnosed it itself (2-15 min) and no doctor saw it",
       "since": "2026-10-14",
       "would_catch_if": "worker-run recorded the PATH and python3 version the worker's first Bash call ran with in the run record"
+    },
+    {
+      "id": "log-audit-evidence-read-time",
+      "what": "a log_audit problem fixed inside the audit's window, before the audit read it",
+      "reason": "audit_verdicts stamps every quote with findings.json's own `at`, so a fix that held before that read (review-bench@4288f13 at 22:46 for quotes up to 22:43, audit read 04:12) reads regressed, and one passes only when a later unrelated commit touches its files, which would then be credited as its `in` (night 20261014T013750Z-8004)",
+      "since": "2026-10-14",
+      "would_catch_if": "log-audit carried each quote's own transcript time in findings.json and audit_verdicts used it as the evidence time"
     }
   ]
 }
