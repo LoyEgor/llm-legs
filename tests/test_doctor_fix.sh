@@ -1241,7 +1241,7 @@ assert [ "$(head -n1 "$brief")" = 'STRONG: yes' ]
 assert [ "$(grep -c '^Suite audit: each suite in the packet' "$brief")" = 1 ]
 for step in '1. What each check guards' '2. Where the wall goes' 'Never shorten a sleep or a timeout a race check depends on' \
   'assert count unchanged' 'every mutation still red' 'kept (the suite is fine: a normal outcome)' 'bin/speed-doctor --suite-audit' \
-  'through the `tests` lens yourself (`review-bench/lenses/tests.md`' 'proven by that mutation red after the fix'; do
+  "through the \`tests\` lens yourself (\`$WORK/lenses/tests.md\`;" 'proven by that mutation red after the fix'; do
   assert grep -qF "$step" "$brief"
 done
 assert_fails grep -qF -- '--fresh' "$brief"
