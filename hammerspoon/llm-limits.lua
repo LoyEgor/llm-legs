@@ -26,10 +26,11 @@ local dimColorName = style.DIM
 -- every percentage row here is a disabled row, so that colour IS the menu's own dim. Any literal
 -- alpha of ours is a second, darker gray sitting right beside it — a flat 0.55 black measured
 -- 112/255 against the system's 184/255. The name stays unresolved: AppKit resolves it when it draws
--- the row, in the menu's own appearance. Resolving it here (hs.drawing.color.asRGB) used
--- Hammerspoon's appearance instead, which follows the menu bar over a dark wallpaper: on a light
--- menu it gave white at 0.25, invisible on a white backdrop (measured 2026-10-14: 247 on 244, the
--- disabled rows beside it 182).
+-- the row, in the menu's own appearance. Resolving it here (hs.drawing.color.asRGB) used the main
+-- thread's current drawing appearance, which stays whatever theme Hammerspoon launched in: after a
+-- 03:40 relaunch under the auto theme's dark night it still said DarkAqua by day (NSApp Aqua) and
+-- gave white at 0.25, invisible on a white backdrop (measured 2026-10-14: 247 on 244, the disabled
+-- rows beside it 182).
 local function dimColor() return dimColorName end
 
 -- The pool mark of an account row: the check is derived from the pool membership and the vendor's

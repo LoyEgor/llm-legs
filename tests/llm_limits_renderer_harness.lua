@@ -130,8 +130,8 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       table.insert(dialogCalls, { ... })
       return dialogAnswer
     end },
-    -- Resolving in Lua takes Hammerspoon's appearance, not the menu's: over a dark wallpaper it gave
-    -- white on the light menu (2026-10-14). The renderer leaves the dim to AppKit.
+    -- Resolving in Lua takes the theme Hammerspoon launched in, not the menu's: launched at night it
+    -- gave white on the day's light menu (2026-10-14). The renderer leaves the dim to AppKit.
     drawing = { color = { asRGB = function(spec)
       error("the renderer resolved " .. describeColor(spec) .. " in Lua instead of leaving it to AppKit")
     end } },

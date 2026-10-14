@@ -764,7 +764,7 @@ check(#tasks == 1 and tasks[1].path == "/fixture/bin/updater-doctor" and #tasks[
 check((tasks[1].env or {}).DOCTOR_TRIGGER == "menu", "a menu Refresh does not tag its collector run as menu")
 check(text(refreshRow(details(doctors.menuItems()[3].menu)).title) == "refreshing…", "a running Refresh")
 -- The dim stays the system colour's name for AppKit to resolve in the menu's appearance: resolved in
--- Lua it took Hammerspoon's dark menu-bar appearance and drew white on the light menu.
+-- Lua it took the theme Hammerspoon launched in (dark at night) and drew white on the light menu.
 local systemDrawing, resolves = rawget(fakeHs, "drawing"), 0
 fakeHs.drawing = { color = { asRGB = function()
   resolves = resolves + 1
