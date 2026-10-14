@@ -172,8 +172,9 @@ assert grep -qx 'REASON: cancelled — grok ended the session before its first t
   "$WORK/wait.out"
 assert test "$(grep -c 'GROK_UNAVAILABLE\|GROK_USAGE_LIMIT' "$WORK/wait.out")" -eq 0
 assert_fails wall_has grok grokcancel
-assert grep -qx "OUTCOME: GROK_CANCELLED $RUN_ID" <<<"$("$RUNNER" report "$RUN_ID")"
-assert grep -qx 'STATUS: failed' <<<"$("$RUNNER" report "$RUN_ID")"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx "OUTCOME: GROK_CANCELLED $RUN_ID" <<<"$report"
+assert grep -qx 'STATUS: failed' <<<"$report"
 
 # One tool call in front of the same cancelled end is an ordinary run that ended: the classifier
 # reads the FIRST turn-or-end event, never the stop reason alone.

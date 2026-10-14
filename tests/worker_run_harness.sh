@@ -439,10 +439,10 @@ meta_num() { # key file
 
 # The floor is taken by the supervisor before its CLI starts: a fixture write before that is no run's.
 await_launched() {
-  local tick text
-  for tick in $(seq 1 400); do
+  local tick text launched='"cli_pid": *"?[0-9]'
+  for tick in {1..400}; do
     [ ! -e "$RUN_DIR/exit_code" ] || return 0
-    { text=$(<"$RUN_DIR/meta.json"); } 2>/dev/null && [[ $text =~ \"cli_pid\":\ *\"?[0-9] ]] && return 0
+    { text=$(<"$RUN_DIR/meta.json"); } 2>/dev/null && [[ $text =~ $launched ]] && return 0
     sleep 0.05
   done
 }
@@ -464,15 +464,15 @@ gate_open() {
 
 await_done() {
   local output index tick pid
-  for index in $(seq 1 500); do
+  for index in {1..500}; do
     # The file only paces the loop; `wait` alone decides. It runs once the exit code is there, at
-    # once when the supervisor is gone (dying without an exit code is terminal too), and every 5th
+    # once when the supervisor is gone (dying without an exit code is terminal too), and every 60th
     # round regardless: a running `wait` builds a full report, ~1.5 s under load, most of a case.
     for tick in {1..20}; do
       [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || break
       sleep 0.05
     done
-    if [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] && [ $((index % 5)) -ne 0 ]; then
+    if [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] && [ $((index % 60)) -ne 0 ]; then
       meta_num pid "$WORKER_RUN_DIR/$RUN_ID/meta.json" && pid=$META_NUM || pid=0
       [ "${pid:-0}" -le 0 ] 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || continue
     fi
@@ -489,7 +489,7 @@ await_done() {
 # supervisor writes exit_code after delivering, so nothing of the run is still to come.
 await_exit() {
   local tick pid
-  for tick in $(seq 1 "${AWAIT_EXIT_TICKS:-6000}"); do
+  for ((tick = 1; tick <= ${AWAIT_EXIT_TICKS:-6000}; tick++)); do
     [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 0
     if [ $((tick % 20)) -eq 0 ]; then
       meta_num pid "$WORKER_RUN_DIR/$RUN_ID/meta.json" && pid=$META_NUM || pid=0
