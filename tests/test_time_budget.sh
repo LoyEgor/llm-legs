@@ -86,6 +86,7 @@ turn = ["t", D0 + 3600, "sessA", D0 + 4600, "n", [0, 0, 0], 0, [], [],
         {"m": [2, 10, 0, 1000, 9000]}, []]
 lines(os.path.join(work, "harness", "events", "2026-01-10.jsonl"), [
     turn,
+    ["c", D0 + 3000, "p", "Bash", 0, 3000, "w", "tid0000004", "abcd1234", 1],
     ["c", D0 + 4500, "p", "Bash", 0, 300, "w", "tid0000002", "abcd1234", 1],
     ["c", D0 + 7000, "p", "Bash", 0, 600, "w", "tid0000001", "abcd1234", 1],
     ["c", D0 + 7100, "p", "Read", 0, 10, "c", "tid0000003", "sessA", 1],
@@ -238,6 +239,10 @@ split = T.run_split(run, 0, 1e12, T.suite_rows(0, 1e12), calls)
 check(L(split) == {"slot": 600, "retries": 400, "suite_wait": 1000, "suite_run": 2000, "tools": 600, "model": 4400},
       "a worker run's wall starts at its pid, not the restamped started_at: slot queue, retries, its own suites "
       "(the call inside them absorbed), its tools, the rest model: %s" % L(split))
+background = T.run_split(run, 0, 1e12, T.suite_rows(0, 1e12), [c for c in calls if c[7] != "tid0000004"])
+check(L(background) == {"slot": 600, "retries": 400, "suite_run": 300, "tools": 600, "model": 7100},
+      "a suite outside every call of its run ran in the background: the run generated beside it, so only the call "
+      "waiting on it is suite time: %s" % L(background))
 walled = T.run_split(dict(run, walled=["com"]), 0, 1e12, T.suite_rows(0, 1e12), calls)
 check(L(walled) == {"slot": 600, "walled": 400, "suite_wait": 1000, "suite_run": 2000, "tools": 600, "model": 4400},
       "a walled run's earlier attempts are weather, neither retries nor work: %s" % L(walled))

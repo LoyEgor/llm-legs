@@ -467,8 +467,9 @@ def run_split(run, lo, hi, suites, calls):
     """One worker run's spans inside [lo, hi) per class: launch -> first CLI start is the slot queue, earlier attempts
     are retries, or a walled run's usage-wall relaunches (weather, neither work nor retries); the last CLI's exit -> the
     run's end is its wrap-up (file attribution, anchors, the result); the last attempt is split into the idle tail a
-    watchdog killed it after, its own suites (slot wait apart), its tool calls and the rest, which is model time, or is
-    dead whole for a run `dead_runs` marked; a run with no session file names no calls, so its rest is `other`. A bench
+    watchdog killed it after, its own suites (slot wait apart) less the seconds it generated beside them (outside every
+    call of its session, when it has any), its tool calls and the rest, which is model time, or is dead whole for a run
+    `dead_runs` marked; a run with no session file names no calls, so its rest is `other`. A bench
     worker (the owner's benchmark) is its own class whole. `started_at` is restamped by the slot wait, so the run starts
     at its pid."""
     start = num(run.get("pid_started_at")) or num(run.get("started_at"))
@@ -496,24 +497,27 @@ def run_split(run, lo, hi, suites, calls):
         if kill[0] == "silent" or idle:
             out["hung"] = clip([(last if kill[0] == "silent" else exited - idle, exited)], lo, hi)
             work = minus(work, out["hung"])
+    session = run_session(run.get("run"))
+    own = [(c[1], c[1] + c[5]) for c in calls if session and c[8] == session]
+    generating = minus(work, own) if own else []
     mine = [s for s in suites if s.get("worker_run") == run.get("run")]
     ran = union((max(s["started_at"], s["queued_at"]), s["ended_at"]) for s in mine if num(s.get("started_at")))
     queued = minus([(s["queued_at"], num(s.get("started_at")) or s["ended_at"]) for s in mine], ran)
-    out["suite_run"] = [x for w in work for x in clip(ran, *w)]
-    out["suite_wait"] = [x for w in work for x in clip(queued, *w)]
-    rest = minus(work, ran + queued)
-    session = run_session(run.get("run"))
+    out["suite_run"] = minus([x for w in work for x in clip(ran, *w)], generating)
+    out["suite_wait"] = minus([x for w in work for x in clip(queued, *w)], generating)
+    rest = minus(work, out["suite_run"] + out["suite_wait"])
     if session is None:
         out["other"] = rest
         return out
-    out["tools"] = [x for w in rest for x in clip([(c[1], c[1] + c[5]) for c in calls if c[8] == session], *w)]
+    out["tools"] = [x for w in rest for x in clip(own, *w)]
     out["model"] = minus(rest, out["tools"])
     return out
 
 
 def budget(lo, hi):
     """Overhead over [lo, hi) as wall-clock seconds: each class is the union of its spans, so parallel runs count once.
-    Suites come from run-suites' journal for every caller, hooks from Harness's hook rows and a turn's Stop seconds
+    Suites come from run-suites' journal for every caller, less the seconds their owner generated beside them (inside
+    its turns or run, outside its calls, when its session has any: a background suite blocks nobody), hooks from Harness's hook rows and a turn's Stop seconds
     at its end, refusals from `refusal_cost`, locks and polls from the waits a chat or worker paid, and the rest from
     each worker run's split. A turn's compaction and unexplained seconds have no position, so they add to the union.
     `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither. `strata` is the
@@ -526,12 +530,16 @@ def budget(lo, hi):
     spans, unplaced, active, dead = collections.defaultdict(list), collections.Counter(), [], dead_runs(runs)
     agents, compact, owner, units, outside = collections.defaultdict(list), collections.Counter(), {}, collections.Counter(), []
     chained = {name for found in resumers(lo).values() for _, name in found} if runs else set()
+    calls, turns, split_runs = collections.defaultdict(list), collections.defaultdict(list), set()
+    for c in events.get("c", ()):
+        calls[str(c[8])[:8]].append(c)
     for run in runs:
         name = run.get("run")
-        split = run_split(dict(run, dead=name in dead), lo, hi, suites, ())
+        split = run_split(dict(run, dead=name in dead), lo, hi, suites, calls.get(run_session(name), ()))
         if "bench" not in split:
+            split_runs.add(name)
             active += [x for v in split.values() for x in v]
-            for key in ("slot", "retries", "walled", "wrapup", "dead", "hung", "other"):
+            for key in ("slot", "retries", "walled", "wrapup", "dead", "hung", "other", "suite_run", "suite_wait"):
                 spans[key] += split.get(key, ())
             owner[name] = owner[run_session(name)] = ("workers", name)
             agents[owner[name]] += [x for key in WORKER_OVERHEAD for x in split.get(key, ())]
@@ -543,21 +551,29 @@ def budget(lo, hi):
         if t[3] > lo and t[1] < hi and t[3] > t[1]:
             parts, share = t[9] or {}, (min(t[3], hi) - max(t[1], lo)) / (t[3] - t[1])
             active.append((t[1], t[3]))
+            turns[chat[1]].append((t[1], t[3]))
             spans["stop"].append((t[3] - parts.get("stop", 0), t[3]))
             unplaced["compaction"] += parts.get("compact", 0) * share
             unplaced["other"] += parts.get("resid", 0) * share
             agents[chat].append(spans["stop"][-1])
             compact[chat] += parts.get("compact", 0) * share
             units[chat[0]] += chat[0] == "chat" and t[4] == "h" and lo <= t[1] < hi
+    generating = {}
     for r in suites:
         started = num(r.get("started_at"))
         active.append((r["queued_at"], r["ended_at"]))
-        spans["suite_wait"].append((r["queued_at"], started or r["ended_at"]))
-        if started:
-            spans["suite_run"].append((max(started, r["queued_at"]), r["ended_at"]))
+        if r.get("worker_run") in split_runs:
+            continue
         chat = None if r.get("worker_run") else owner.get(str(r.get("session") or "")[:8])
+        if chat and chat[0] == "chat" and chat[1] not in generating:
+            own = [(c[1], c[1] + c[5]) for c in calls.get(chat[1], ())]
+            generating[chat[1]] = minus(turns[chat[1]], own) if own else []
+        gen = generating.get(chat[1]) if chat and chat[0] == "chat" else []
+        spans["suite_wait"] += minus([(r["queued_at"], started or r["ended_at"])], gen)
+        if started:
+            spans["suite_run"] += minus([(max(started, r["queued_at"]), r["ended_at"])], gen)
         if chat and chat[0] == "chat":
-            agents[chat].append((r["queued_at"], r["ended_at"]))
+            agents[chat] += minus([(r["queued_at"], r["ended_at"])], gen)
         elif not r.get("worker_run"):
             outside.append((r["queued_at"], r["ended_at"]))
     by_hook, session_of = collections.defaultdict(list), {c[7]: str(c[8])[:8] for c in events.get("c", ())}
