@@ -43,7 +43,7 @@ mkdir -p "$WORK/updater" "$FAKE_BIN" "$DATA" "$(dirname "$CODEX_NATIVE")" "$CODE
 printf '{"contract":1,"doctor":"updater","judge":"u1"}\n' >"$WORK/updater/latest.json"
 
 cat >"$DATA/behave" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/bash
 vendor=$1
 shift
 case "$vendor:$*" in
@@ -67,7 +67,7 @@ chmod +x "$DATA/behave"
 fake_cli() { # path vendor ids...
   local path=$1 vendor=$2
   shift 2
-  printf '#!/usr/bin/env bash\n# %s\nexec "$DATA/behave" %s "$@"\n' "$*" "$vendor" >"$path"
+  printf '#!/bin/bash\n# %s\nexec "$DATA/behave" %s "$@"\n' "$*" "$vendor" >"$path"
   chmod +x "$path"
 }
 fake_cli "$CODEX_PACKAGE/bin/codex.js" codex
@@ -144,8 +144,7 @@ field() { jq -r "$1" "$(last_event)"; }
 # The chat Egor opened takes every waiting event, so the next change is an event of its own.
 taken() {
   local file
-  for file in "$EVENTS"/*.json; do
-    jq -e '.status == "open" and .launched_at == null' "$file" >/dev/null || continue
+  for file in $(jq -r 'select(.status == "open" and .launched_at == null) | input_filename' "$EVENTS"/*.json 2>/dev/null); do
     jq '.launched_at = "2026-09-24T00:00:00Z"' "$file" >"$WORK/taken"
     touch -r "$file" "$WORK/taken"
     mv "$WORK/taken" "$file"
@@ -515,9 +514,9 @@ count=$(events)
 printf 'grok-4.7 grok-imagine-video-1.5 grok-imagine-image-3.0 grok-5\n' >"$HOME/.grok/bin/grok-1.0.41"
 lockf -k "$STATE/fingerprints/check.lock" sleep 30 &
 HOLDER=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in {1..100}; do
   lockf -k -t 0 "$STATE/fingerprints/check.lock" true 2>/dev/null || break
-  sleep 0.2
+  sleep 0.02
 done
 assert_fails quiet check_all
 assert [ "$(events)" = "$count" ]
@@ -657,9 +656,9 @@ SIB_WT="$SIB/.claude/worktrees/night-N1-grok"
 # The night request joins the event under the check lock, so a scheduled check never rewrites it meanwhile.
 lockf -k "$STATE/fingerprints/check.lock" sleep 30 &
 HOLDER=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in {1..100}; do
   lockf -k -t 0 "$STATE/fingerprints/check.lock" true 2>/dev/null || break
-  sleep 0.2
+  sleep 0.02
 done
 assert_fails env VENDOR_FINGERPRINT_LOCK_WAIT=1 bash "$NREPO/bin/vendor-fingerprint" request --night N1 >"$WORK/night1" 2>/dev/null
 kill "$HOLDER" 2>/dev/null
