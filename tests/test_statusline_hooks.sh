@@ -4938,7 +4938,9 @@ DEBT_CMD="$DEBT_STUB"
 DEBT_ANSWER='LINES=21 FILES=5'
 DEBT_SLEEP=0.4
 debt_cache=${TOP_REVIEW_DIRTY//%/%25}; debt_cache="$STATE_DIR/repo-debt-${debt_cache//\//%2F}"
-debt_lock="$debt_cache.lock"
+debt_fam=$(git -C "$REVIEW_DIRTY" rev-parse --path-format=absolute --git-common-dir)
+debt_fam=${debt_fam//%/%25}; debt_fam="$STATE_DIR/repo-debt-family-${debt_fam//\//%2F}"
+debt_lock="$debt_fam.lock"
 rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
 rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
 debt_nt_out=$(NO_TIMEOUT_BIN=1 run_statusline \
@@ -4977,7 +4979,7 @@ DEBT_ANSWER='LINES=33 FILES=3'
 debt_render repo-debt-key "$REVIEW_DIRTY" >/dev/null
 debt_settle
 debt_payload=$(statusline_payload repo-debt-key "" "$REVIEW_DIRTY")
-debt_age() { age_path "$1" "$debt_cache"; }
+debt_age() { age_path "$1" "$debt_cache"; age_path "$1" "$debt_fam"; }
 debt_asked() {
   local i
   for i in $(seq 1 40); do [ -s "$DEBT_LOG" ] && break; sleep 0.05; done
@@ -5013,6 +5015,32 @@ DEBT_HOLD=
 DEBT_ANSWER='LINES=0 FILES=0'
 DEBT_CMD=
 rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
+
+# The answer is the family's: two worktrees of one repository share one walk. The second asks no
+# `review-debt` while the first's answer is under 15s old and shows it, and a walk is asked again
+# once that answer is older.
+DEBT_WT="$FIXTURES/review-dirty-wt"
+git -C "$REVIEW_DIRTY" worktree add -q -b debt-wt "$DEBT_WT"
+DEBT_CMD="$DEBT_STUB"
+DEBT_ANSWER='LINES=41 FILES=4'
+: > "$DEBT_LOG"
+debt_render repo-debt-fam-a "$REVIEW_DIRTY" >/dev/null
+assert test "$(wc -l < "$DEBT_LOG" | tr -d ' ')" = 1
+: > "$DEBT_LOG"
+debt_fam_b_out=$(run_statusline "$(statusline_payload repo-debt-fam-b "" "$DEBT_WT")")
+assert grep -Fq "${DIM}41${RESET}" <<< "$debt_fam_b_out"
+assert debt_unasked
+debt_age 20
+DEBT_ANSWER='LINES=42 FILES=4'
+run_statusline "$(statusline_payload repo-debt-fam-b "" "$DEBT_WT")" >/dev/null
+assert debt_asked
+debt_settle
+assert grep -Fq "${DIM}42${RESET}" <<< "$(run_statusline "$(statusline_payload repo-debt-fam-b "" "$DEBT_WT")")"
+assert test "$(wc -l < "$DEBT_LOG" | tr -d ' ')" = 1
+DEBT_CMD=
+DEBT_ANSWER='LINES=0 FILES=0'
+rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
+rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
 
 # --- the real gate --------------------------------------------------------------------------
 # The stub above proves the rendering; this proves the wiring against the hook that actually answers.

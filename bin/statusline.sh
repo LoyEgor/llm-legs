@@ -259,21 +259,29 @@ journal_dir() { # var toplevel
 
 # Keyed per TOP: follows the shown tree. Off the render path: pricing walks every diff of the family,
 # so an answer whose key still holds waits 300s and a moved key at least 15s. The key carries the
-# shown tree's HEAD and diff counters; a sibling checkout's edits reach it by the 300s only.
+# shown tree's HEAD and diff counters; a sibling checkout's edits reach it by the 300s only. The
+# answer is the FAMILY's, so a walk publishes it once more under the family and a top that would
+# walk adopts one under 15s old instead; one walk at a time per family.
 repo_debt_lines() { # var toplevel now tree-state
   local out="$1" top="$2" now="$3" state="$4"
   printf -v "$out" ''
   # The install path of the contract, never `command -v`: a PATH lookup makes the segment depend on
   # whatever shell started the harness, and makes every render of a test suite reach the real one.
   local debt="${STATUSLINE_REVIEW_DEBT:-$HOME/.local/bin/review-debt}"
-  local cache lock key cached_key cached cache_mtime commondir journal_mtime lock_mtime top_key
+  local cache lock key cached_key cached cache_mtime commondir journal_mtime lock_mtime top_key fam fam_mtime fam_answer
   [ -n "$top" ] && [ -x "$debt" ] || return 0
   top_key=${top//%/%25}
   cache="$statusline_cache_dir/repo-debt-${top_key//\//%2F}"
   lock="$cache.lock"
   journal_dir commondir "$top"
   journal_mtime=""
-  [ -n "$commondir" ] && file_mtime_to journal_mtime "$commondir/review-anchors.json"
+  fam=""
+  if [ -n "$commondir" ]; then
+    file_mtime_to journal_mtime "$commondir/review-anchors.json"
+    fam=${commondir//%/%25}
+    fam="$statusline_cache_dir/repo-debt-family-${fam//\//%2F}"
+    lock="$fam.lock"
+  fi
   [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
   key="$top|$journal_mtime|$state"
   file_mtime_to cache_mtime "$cache"
@@ -285,6 +293,9 @@ repo_debt_lines() { # var toplevel now tree-state
   if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && { [ "$((now - cache_mtime))" -le 15 ] ||
     { [ "$cached_key" = "$key" ] && [ "$((now - cache_mtime))" -le 300 ]; }; }; then
     :
+  elif [ -n "$fam" ] && file_mtime_to fam_mtime "$fam" && [[ "$fam_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - fam_mtime))" -le 15 ] && { IFS= read -r fam_answer < "$fam"; } 2>/dev/null; then
+    cached=$fam_answer cached_key=$key cache_mtime=$fam_mtime
   elif ensure_dir "$statusline_cache_dir" 2>/dev/null; then
     file_mtime_to lock_mtime "$lock"
     if [ ! -d "$lock" ] ||
@@ -305,6 +316,7 @@ repo_debt_lines() { # var toplevel now tree-state
         else
           answer=""
         fi
+        [ -z "$fam" ] || probe_publish "$fam" "$answer"$'\n'
         probe_publish "$cache" "$key"$'\n'"$answer"
         probe_journal debt "$refresh_start_us"
       ) >/dev/null 2>&1 &
@@ -420,6 +432,7 @@ unpushed_marker() { # toplevel session now
           rmdir "$lock" 2>/dev/null' EXIT
         answer=off
         [ -n "$(run_bounded 10 "$gate" unpushed "$top" "$sid" 2>/dev/null | head -1)" ] && answer=unpushed
+        [ -z "$fam" ] || probe_publish "$fam" "$answer"$'\n'
         probe_publish "$cache" "$key"$'\n'"$answer"
         probe_journal unpushed "$refresh_start_us"
       ) >/dev/null 2>&1 &
