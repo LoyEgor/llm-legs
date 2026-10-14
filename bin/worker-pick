@@ -327,15 +327,16 @@ if [ "$query_role" = image ]; then
   ! asked grok || gr_starts=$(worker_starts_json grok 2>/dev/null) || gr_starts='{}'
 fi
 
-walls_list() {
-  worker_walls_fresh_r "$1" "$now"
-  printf -v "$2" '%s' "$WORKER_WALLS_R"
-}
 cb_walls=''; cx_walls=''; gm_walls=''; gr_walls=''
-! asked claudeb || walls_list claudeb cb_walls
-! asked codex || walls_list codex cx_walls
-! asked gemini || walls_list gemini gm_walls
-! asked grok || walls_list grok gr_walls
+worker_walls_fresh_vendors_r "$now" ${query_vendor:-claudeb codex gemini grok}
+while IFS=$'\t' read -r vendor acct; do
+  case "$vendor" in
+    claudeb) cb_walls+=${cb_walls:+$'\n'}$acct ;;
+    codex) cx_walls+=${cx_walls:+$'\n'}$acct ;;
+    gemini) gm_walls+=${gm_walls:+$'\n'}$acct ;;
+    grok) gr_walls+=${gr_walls:+$'\n'}$acct ;;
+  esac
+done <<<"$WORKER_WALLS_R"
 
 # A codex catalog is per account (a lapsed plan lists the free models alone), so an account whose own
 # cache lacks the worker family is no candidate: its ACCOUNT: line would launch an id it does not

@@ -155,3 +155,18 @@ worker_walls_fresh_r() {
     select(limits_observed_wall(.; $now) != null) | .account // "main"
   ' "$store" 2>/dev/null) || WORKER_WALLS_R=''
 }
+
+# worker_walls_fresh_r for several vendors in one jq: `vendor<TAB>account` lines, the vendor as
+# named. A vendor whose block fails lists nothing on its own, as its own jq would have.
+worker_walls_fresh_vendors_r() { # now vendor...
+  local now="$1" store
+  shift
+  store=${LLM_LIMITS_FILE:-${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}}
+  . "${BASH_SOURCE[0]%/*}/limits-view.sh"
+  WORKER_WALLS_R=$(jq -r --argjson now "$now" "$LIMITS_VIEW_JQ"'
+    $ARGS.positional[] as $name | (if $name == "claudeb" then "claude" else $name end) as $v |
+    (try [.vendors[$v] | (.accounts // [.])[]? |
+      select(limits_observed_wall(.; $now) != null) | .account // "main"] catch []) |
+    .[] | "\($name)\t\(.)"
+  ' "$store" --args "$@" 2>/dev/null) || WORKER_WALLS_R=''
+}
