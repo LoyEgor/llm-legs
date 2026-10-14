@@ -457,8 +457,10 @@ seen = set()
 check([bool(night_spend.weighted(night_spend.run_usage("/usr/bin/false", resumed, "codex", seen)))
        for resumed in ("codex-1-1-aaaa", "codex-2-2-bbbb")] == [True, False],
       "a codex RESUME sharing its session's rollout counts that session's whole total once, not once per run")
-out = subprocess.run([sys.executable, os.path.join(root, "share", "time_budget.py"), "night", "/usr/bin/false",
-                      os.path.join(nights, "N1.json")], capture_output=True, text=True).stdout.splitlines()
+printed = io.StringIO()
+with contextlib.redirect_stdout(printed):
+    T.main(["night", "/usr/bin/false", os.path.join(nights, "N1.json")])
+out = printed.getvalue().splitlines()
 check(out[:6] == ["ledger · night N1 · 3.1 h",
                  "ledger · workers 2.5 h wall · model 1.2 h (49 %) · queued 0.2 h · own tests 0.8 h",
                  "ledger · lines by jobs: code +3/-1 · tests +2/-0 · outside jobs +4/-0",
