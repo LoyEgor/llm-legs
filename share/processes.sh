@@ -21,15 +21,19 @@ process_tree_end() { # pid grace-seconds -> TERM to the whole tree, KILL to what
 # TERM before CONT: continued first, a process stopped by a tty read reads again and stops again
 # with the TERM still to come.
 pids_end() { # grace-seconds pid... -> TERM and CONT to each, KILL to what still lives after the grace; pids_end_killed counts those
-  local tenths=$(($1 * 10)) waited=0
+  local hundredths=$(($1 * 100)) waited=0
   pids_end_killed=0
   shift
   [ "$#" -gt 0 ] || return 0
   kill -TERM "$@" 2>/dev/null
   kill -CONT "$@" 2>/dev/null
-  while [ "$waited" -lt "$tenths" ] && kill -0 "$@" 2>/dev/null; do sleep 0.1; waited=$((waited + 1)); done
+  # 0.02 s ticks for the first tenth: a tree that dies on the TERM is seen gone within milliseconds.
+  while [ "$waited" -lt "$hundredths" ] && kill -0 "$@" 2>/dev/null; do
+    if [ "$waited" -lt 10 ]; then sleep 0.02; waited=$((waited + 2)); else sleep 0.1; waited=$((waited + 10)); fi
+  done
   # kill -0 also answers for an unreaped zombie, which the KILL cannot touch.
-  [ "$waited" -lt "$tenths" ] || pids_end_killed=$(ps -o stat= -p "$(IFS=,; printf '%s' "$*")" 2>/dev/null | grep -vc '^Z')
+  [ "$hundredths" = 0 ] || [ "$waited" -lt "$hundredths" ] ||
+    pids_end_killed=$(ps -o stat= -p "$(IFS=,; printf '%s' "$*")" 2>/dev/null | grep -vc '^Z')
   kill -KILL "$@" 2>/dev/null
   return 0
 }
