@@ -276,6 +276,8 @@ jq -e '.vendors.grok.usable_now == true and (.vendors.grok.status != "login need
    (has("auth_needed") | not))' \
   <<<"$grok_expired_usable" >/dev/null || fail "grok expired-token with weekly must stay usable"
 
+fi
+if suite_shard_owns 4 grok-age-credits; then
 # Staleness and expiry are read off the collector's own flags, never re-derived per surface.
 GROK_AGE_CACHE="$WORK/grok-age.json"
 grok_age_env=("${grok_env[@]}")
@@ -459,10 +461,9 @@ cmp -s "$SHIELD_STORE/disabled" "$WORK/shield-disabled.expected" \
 
 EMPTY="$WORK/empty-home"
 mkdir -p "$EMPTY"
-HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
+missing_json=$(HOME="$EMPTY" bash "$SCRIPT" --no-write 2>/dev/null)
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
-missing_json=$(HOME="$EMPTY" bash "$SCRIPT" --no-write 2>/dev/null)
 jq -e '.refresh_error.cause == "no vendor data available" and
   (.refresh_error.at | type) == "number"' <<<"$missing_json" >/dev/null \
   || fail "all-missing case lacked a structured global error"
@@ -651,6 +652,10 @@ jq -e --arg cause "$dead_cause" '
   (.vendors.codex.refresh_error.needs_user_entry == true)
 ' <<<"$dead_out" >/dev/null   || fail "deactivated workspace was not dead auth: $(jq -c '.vendors.codex | {refresh_errors,accounts:[.accounts[]|{account,auth_needed}]}' <<<"$dead_out")"
 
+fi
+if suite_shard_owns 6 claude-refresh-errors-split; then
+HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json >/dev/null || fail "base collection for the claude refresh_errors cases failed"
+CLASS_CACHE="$WORK/claude-refresh-errors-cache.json"
 CLAUDE_ERR_STORE="$WORK/claude-refresh-errors-store"
 mkdir -p "$CLAUDE_ERR_STORE/limits" "$CLAUDE_ERR_STORE/tokens"
 : >"$CLAUDE_ERR_STORE/tokens/olx"
@@ -725,9 +730,14 @@ fi
 if suite_shard_owns 6 renderer-gemini-credits; then
 . "$ROOT/tests/lib/hs-bounded.sh"
 
-if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -c 'return "ok"' 2>/dev/null)" = ok ]; then
-  renderer_output=$(hs_bounded 600 -c "_G.HS_ROOT = [[${HS_ROOT:-$HOME/.hammerspoon}]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null) \
-    || fail "Hammerspoon renderer contract checks threw"
+# One machine-wide lock wait when hs answers; the availability probe runs only after a failed call.
+renderer_output='' renderer_rc=1
+command -v hs >/dev/null 2>&1 && {
+  renderer_output=$(hs_bounded 600 -c "_G.HS_ROOT = [[${HS_ROOT:-$HOME/.hammerspoon}]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null)
+  renderer_rc=$?
+}
+if [ "$renderer_rc" = 0 ] || { command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -c 'return "ok"' 2>/dev/null)" = ok ]; }; then
+  [ "$renderer_rc" = 0 ] || fail "Hammerspoon renderer contract checks threw"
   [ "$renderer_output" = "PASS: Hammerspoon projection contract" ] \
     || fail "Hammerspoon renderer contract checks: $renderer_output"
 else
