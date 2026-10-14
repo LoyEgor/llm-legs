@@ -109,13 +109,15 @@ cat >"$LLM_LIMITS_ANNOUNCE_CMD" <<'EOF'
 printf '%s\n' "$*" >>"$ANNOUNCE_LOG"
 EOF
 chmod +x "$LLM_LIMITS_ANNOUNCE_CMD"
-# The announce hook is detached; give it a beat before reading the log.
+# The announce hook is detached; give it a beat before reading the log: the same 5 s bound, polled
+# every 20 ms with the builtin sleep (the hook lands in a few ms, a 0.1 s step overshot it).
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 wait_announce() {
   local expected="$1" tries=0
-  while [ "$tries" -lt 50 ]; do
+  while [ "$tries" -lt 250 ]; do
     grep -qxF -- "$expected" "$ANNOUNCE_LOG" 2>/dev/null && return 0
     tries=$((tries + 1))
-    sleep 0.1
+    sleep 0.02
   done
   return 1
 }
