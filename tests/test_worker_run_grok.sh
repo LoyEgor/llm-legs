@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
+export PICK_RC=0 PICK_ACCOUNT=grokacct
 
 # --- grok ----------------------------------------------------------------------------------------
 # The brief rides a FILE (1.0.13 takes no prompt on argv), memory is off by env because the flag
 # that did it is gone, and web search is off unless the brief asks: a worker inheriting the
 # profile's memory carries another task's notes into this one.
+if suite_shard_owns 1 grok-launch-chat-fast; then
 clear_stub
 set_config 'grok_model=auto' 'grok_effort=high'
-export PICK_RC=0 PICK_ACCOUNT=grokacct
 grok_workdir=$(cd "$WORK/workdir" && pwd -P)
 start_ok grok
 assert grep -qx 'TAG: grokacct · grok · high' "$WORK/start.out"
@@ -81,7 +83,12 @@ CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok
 assert grep -qx 'TAG: grokacct · grok-4.6 · high' "$WORK/start.out"
 assert await_exit
 assert grep -qx 'ARG=grok-4.6' "$CALL_LOG"
+rm -f "$CHAT_PINS_DIR/chat-fast"
+fi
 
+if suite_shard_owns 2 grok-chat-fast-research-account-fast; then
+mkdir -p "$CHAT_PINS_DIR"
+printf 'grok_profile=*\ngrok_fast=on\n' >"$CHAT_PINS_DIR/chat-fast"
 # Research is not a worker leg and never takes it (Egor).
 clear_stub
 set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok'
@@ -136,7 +143,10 @@ assert await_exit
 assert_fails grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
 set_config 'grok_model=auto' 'grok_effort=high'
 rm -f "$GROKB_PROFILES_DIR/.grokb/fast-mode/grokacct" "$GROKB_PROFILES_DIR/grokacct/models_cache.json"
+fi
 
+if suite_shard_owns 3 grok-efforts; then
+set_config 'grok_model=auto' 'grok_effort=high'
 # `xhigh` is the CLI's to know: it travels as asked instead of being
 # clamped here, and only an effort no grok has is refused before launch.
 clear_stub
@@ -149,7 +159,9 @@ rc=0
 assert test "$rc" -eq 4
 assert grep -qx 'OUTCOME: EFFORT_REFUSED' "$WORK/grok-effort.out"
 assert test ! -s "$CALL_LOG"
+fi
 
+if suite_shard_owns 1 grok-turn-caps; then
 clear_stub
 set_config 'grok_effort=high'
 export WORKER_RUN_GROK_MAX_TURNS=7
@@ -167,7 +179,10 @@ assert await_exit
 assert test "$(grep -c '^ARG=--max-turns$' "$CALL_LOG")" -eq 0
 assert test "$(jq -r 'has("max_turns")' "$RUN_DIR/meta.json")" = false
 unset WORKER_RUN_GROK_MAX_TURNS
+fi
 
+if suite_shard_owns 2 grok-web-add-dir-image; then
+set_config 'grok_effort=high'
 clear_stub
 start_ok grok --web-search
 assert await_exit
@@ -184,7 +199,10 @@ for grok_flag in "--add-dir $WORK/extra" "--image $WORK/image.png"; do
   assert grep -q 'grok does not support --add-dir or --image' "$WORK/grok-flag.err"
   assert test ! -s "$CALL_LOG"
 done
+fi
 
+if suite_shard_owns 3 grok-research-resume-accounts; then
+set_config 'grok_effort=high'
 # A research run is refused with them: grok reads the one tree `--cwd` names, so a brief over
 # several repositories would be answered from the only one the run could open.
 clear_stub
@@ -261,6 +279,6 @@ rc=0
 assert test "$rc" -eq 3
 assert grep -qx 'OUTCOME: GROK_USAGE_LIMIT' "$WORK/grok-walled-reason.out"
 unset PICK_STDERR
-
+fi
 
 echo "PASS: $asserts asserts; grok launches, models, fast mode, efforts, turn caps and flags"
