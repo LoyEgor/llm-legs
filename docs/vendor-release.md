@@ -112,8 +112,7 @@ only with a stated reason), and every new capability is supported, per account, 
     temporary shim is registered in `EXPERIMENTS.json`.
 12. Manifests: bump `cli.version`/`verified` only after the checks above pass; every value agrees
     with its `field_sources` note.
-13. Tests: every new behaviour asserted; each new assertion shown red on the old code (mutation);
-    `tests/run-all --changed` green in every worktree touched.
+13. `tests/run-all --changed` green in every worktree touched.
 14. Commit on your branch in every worktree you changed. Last, for a CLI vendor, `bin/vendor-fingerprint
     check --here <vendor>` in your worktree: your change can move what a facet reads, and the event it
     records is yours to decide and close, never a new run's.

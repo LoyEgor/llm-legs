@@ -69,11 +69,9 @@ that hit the old deadline died mid-work with nothing handed back (`scratchpad/lo
 - Cap a worker at **~8 findings or ~6 files**. Split a bigger fix pass by file cluster, one worker
   per cluster, parallel where the clusters do not touch each other — slices in the 15–25 min band
   beat one run that never returns.
-- Each worker runs only the suites covering ITS change (`tests/affected <file>...`) plus the one red on
-  the old code, never `tests/run-all`: workers queued 2–3 h for a full-run slot (night 2026-10-04).
-  Inside a worker `tests/affected` drops the slow layer (`tests/slow-suites`) unless the worker edited
-  that suite; the landing and the night's full run run it.
-  The full run is the night's one background run at Close (`docs/night-run.md`).
-- Do NOT repeat the loop rule in the brief: `worker-run` appends it to every launched brief
-  (`BRIEF_PREAMBLE`), so a brief that spells it again only makes itself longer.
+- The test rule (when a worker runs which suites, when it adds a test) lives only in `worker-run`'s
+  `BRIEF_PREAMBLE`, appended to every launched brief; a brief never repeats it. A worker never runs the
+  full `tests/run-all`: workers queued 2–3 h for a full-run slot (night 2026-10-04); the full run is the
+  night's one background run at Close (`docs/night-run.md`). Inside a worker `tests/affected` drops the
+  slow layer (`tests/slow-suites`) unless the worker edited that suite; the landing and the full run run it.
 - A worker never writes an always-loaded instruction file (global/project `CLAUDE.md`, `~/.claude/agents|commands|docs|skills|instructions|rules/*.md`): both instruction gates refuse it with no retry and the tripwire puts back what a shell write grew; the worker returns the exact proposed text and its byte delta under `MD-PROPOSAL`, with the cut that pays for it, and the orchestrating chat audits and edits.

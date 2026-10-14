@@ -273,7 +273,7 @@ assert grep -q '^ARG=--conversation$' "$CALL_LOG"
 assert grep -q '^ARG=gemini-resume$' "$CALL_LOG"
 assert test "$(tail -n2 "$CALL_LOG" | head -n1)" = 'ARG=--print'
 assert grep -q "^ARG=\$'test brief" <<<"$(tail -n1 "$CALL_LOG")"
-assert grep -qF 'TEST LOOP: while iterating run a one-off probe' <<<"$(tail -n1 "$CALL_LOG")"
+assert grep -qF 'TESTS: once, when the work is done' <<<"$(tail -n1 "$CALL_LOG")"
 assert grep -qF 'ended by signal 9 (exit 137) was killed by the machine' <<<"$(tail -n1 "$CALL_LOG")"
 assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
 

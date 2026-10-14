@@ -34,7 +34,7 @@ assert_fails() {
 # What the vendor is handed is the brief plus worker-run's standing preamble; what the record keeps
 # is the brief the caller wrote, byte for byte, because report and RESUME quote that one back.
 assert_launched_brief() { # capture-of-what-the-CLI-read
-  assert grep -qF 'TEST LOOP: while iterating run a one-off probe' "$1"
+  assert grep -qF 'TESTS: once, when the work is done' "$1"
   # No worker waits for a full run: night 2026-10-04 queued workers 2-3 h for a run-all slot.
   assert grep -qF 'never the full `tests/run-all`' "$1"
   # The memory guard's own sentence: a worker whose command is SIGKILLed by it sees exit 137 and
