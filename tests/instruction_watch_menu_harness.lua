@@ -6,6 +6,8 @@ local fixture = _G.INSTRUCTION_WATCH_FIXTURE
 assert(type(fixture) == "string" and fixture ~= "", "no fixture state directory was passed")
 
 local savedPath = package.path
+-- `touch -t 202001010000` without a shell: the same local-time stamp for atime and mtime.
+local OLD_STAMP = os.time({ year = 2020, month = 1, day = 1, hour = 0, min = 0, sec = 0 })
 local existing = package.loaded["instruction-watch"]
 local savedGlobal = _G.InstructionWatch
 package.path = root .. "/hammerspoon/?.lua;" .. package.path
@@ -794,7 +796,7 @@ local ok, err = pcall(function()
     local snapshotFile = wf.state .. "/watcher/snapshot.tsv"
     local addedOff = wf.home .. "/.claude/docs/added-off.md"
     write(addedOff, "added while off\n", "w")
-    os.execute("touch -t 202001010000 " .. quoted(snapshotFile))
+    hs.fs.touch(snapshotFile, OLD_STAMP, OLD_STAMP)
     before = #records()
     io = failing("hash")
     pcall(M.start)
@@ -855,7 +857,7 @@ local ok, err = pcall(function()
     io = failing("append")
     M.watchTick()
     io = plainIo
-    os.execute("touch -t 202001010000 " .. quoted(born))
+    hs.fs.touch(born, OLD_STAMP, OLD_STAMP)
     M.watchTick()
     local readded = records()
     check(#readded == before + 1 and tostring(readded[#readded].summary):find("ADDED " .. born, 1, true) ~= nil,
@@ -991,7 +993,7 @@ local ok, err = pcall(function()
     check(markOpens == 0, "marks already read were read again by later attribution events: " .. markOpens)
 
     -- A receipt already read is not read again while its directory stands as it was; a hand removal re-delivers.
-    os.execute("touch -t 202001010000 " .. quoted(wf.state .. "/receipts"))
+    hs.fs.touch(wf.state .. "/receipts", OLD_STAMP, OLD_STAMP)
     M.pump()
     local receiptOpens = 0
     io = setmetatable({ open = function(path, ...)

@@ -89,7 +89,9 @@ pass python3 -c "x = 1; y = x >> ~/.claude/CLAUDE.md"
 deny python3 -c "x = 1; y = 2"; printf x >> ~/.claude/CLAUDE.md
 pass python3 -c "print(open('CLAUDE.md').read()); x = 1"
 CASES
+fi
 
+if suite_shard_owns 3 bypass-stash-merge-landings; then
 # A repository path holding sed's delimiter or `&` still names the files its stash lands.
 GH="$WORK/R#&D"
 mkdir -p "$GH"
