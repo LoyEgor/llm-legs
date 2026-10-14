@@ -3027,6 +3027,25 @@ ka_out=$(CLAUDE_CONFIG_DIR="$KA_CFG" run_statusline "$(statusline_payload ctx-ke
 ka_death=$(TZ=Europe/Kyiv date -r $((NOW - 1200 + 3600)) +%H:%M)
 assert grep -Fq "${DIM}→${ka_death}${RESET}" <<< "$ka_out"
 assert test "${ka_out#*↓5m}" = "$ka_out"
+# A render of an unchanged transcript under an unchanged flag file reads the flag from its memo: 2 jq
+# starts on 2026-10-14 where it took 3 (the limits views already share one jq).
+KA_JQ_BIN="$WORK/ka-jq-bin" KA_JQ_LOG="$WORK/ka-jq.log"
+mkdir -p "$KA_JQ_BIN"
+printf '#!/bin/sh\necho jq >> "%s"\nexec %s "$@"\n' "$KA_JQ_LOG" "$(command -v jq)" > "$KA_JQ_BIN/jq"
+chmod +x "$KA_JQ_BIN/jq"
+ka_payload=$(statusline_payload ctx-keepalive "$(warm_extra "$TRANSCRIPT" 20 100000)")
+CLAUDE_CONFIG_DIR="$KA_CFG" run_statusline "$ka_payload" >/dev/null
+: > "$KA_JQ_LOG"
+ka_again=$(CLAUDE_CONFIG_DIR="$KA_CFG" PATH="$KA_JQ_BIN:$PATH" run_statusline "$ka_payload")
+assert_eq "$ka_out" "$ka_again"
+assert test "$(wc -l < "$KA_JQ_LOG" | tr -d ' ')" -le 2
+# A transcript that grew with no compaction boundary in the new bytes runs no jq and no sort over them.
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"more"}}' >> "$TRANSCRIPT"
+printf '#!/bin/sh\necho sort >> "%s"\nexec %s "$@"\n' "$KA_JQ_LOG.sort" "$(command -v sort)" > "$KA_JQ_BIN/sort"
+chmod +x "$KA_JQ_BIN/sort"
+: > "$KA_JQ_LOG.sort"
+CLAUDE_CONFIG_DIR="$KA_CFG" PATH="$KA_JQ_BIN:$PATH" run_statusline "$ka_payload" >/dev/null
+assert test ! -s "$KA_JQ_LOG.sort"
 printf '%s\n' '{"cachedGrowthBookFeatures":{"tengu_sequential_cloud":{"enabled":false}}}' > "$KA_CFG/.claude.json"
 ka_off=$(CLAUDE_CONFIG_DIR="$KA_CFG" run_statusline "$(statusline_payload ctx-keepalive "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 assert test "${ka_off#*→}" = "$ka_off"

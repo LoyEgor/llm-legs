@@ -1308,16 +1308,17 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" 
     # The margin re-covers a boundary line the previous scan cut at its own EOF; grep is
     # only a prefilter, so chat content naming compact_boundary falls out at the select.
     if [ "$bnd_scanned" -gt 4096 ]; then bnd_from=$((bnd_scanned - 4096)); else bnd_from=0; fi
-    bnd_seen=$(
-      {
-        [ -z "$bnd_seen" ] || printf '%s\n' "$bnd_seen"
-        tail -c "+$((bnd_from + 1))" "$transcript_path" 2>/dev/null |
-          grep -aF compact_boundary 2>/dev/null |
+    bnd_hits=$(tail -c "+$((bnd_from + 1))" "$transcript_path" 2>/dev/null | grep -aF compact_boundary 2>/dev/null)
+    if [ -n "$bnd_hits" ]; then
+      bnd_seen=$(
+        {
+          [ -z "$bnd_seen" ] || printf '%s\n' "$bnd_seen"
           jq -Rrn 'inputs | fromjson?
             | select(type == "object" and .type == "system" and .subtype == "compact_boundary")
-            | .timestamp // empty' 2>/dev/null
-      } | LC_ALL=C sort | tail -n 1
-    ) || bnd_seen=""
+            | .timestamp // empty' <<<"$bnd_hits" 2>/dev/null
+        } | LC_ALL=C sort | tail -n 1
+      ) || bnd_seen=""
+    fi
     if ensure_dir "$bnd_dir" 2>/dev/null; then
       bnd_tmp="$bnd_file.tmp.$$"
       printf '%s %s\n' "$bnd_size" "${bnd_seen:--}" > "$bnd_tmp" 2>/dev/null &&
@@ -1739,9 +1740,24 @@ if [ "$warm_ttl" = 300 ]; then
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_json="$CLAUDE_CONFIG_DIR/.claude.json"
   else claude_json="$HOME/.claude.json"
   fi
-  keepalive_secs=$(jq -r '.cachedGrowthBookFeatures.tengu_sequential_cloud
-    | if type == "object" and .enabled != false then (.activityWindowMinutes // 60) * 60 else 0 end
-    | floor' "$claude_json" 2>/dev/null) || keepalive_secs=0
+  # The flag is read again only when the file it lives in changed, per session like the scan.
+  keepalive_key=""
+  if [ -n "$session_id" ] && file_mtime_to keepalive_mtime "$claude_json" && file_size_to keepalive_size "$claude_json"; then
+    keepalive_key="$claude_json|$keepalive_mtime|$keepalive_size"
+  fi
+  keepalive_memo="$statusline_cache_dir/keepalive-$session_id"
+  keepalive_memo_key=""; keepalive_secs=""
+  [ -z "$keepalive_key" ] || [ ! -r "$keepalive_memo" ] ||
+    { IFS= read -r keepalive_memo_key; IFS= read -r keepalive_secs; } < "$keepalive_memo" 2>/dev/null
+  if [ -z "$keepalive_key" ] || [ "$keepalive_memo_key" != "$keepalive_key" ] || [[ "$keepalive_secs" != [0-9]* ]]; then
+    keepalive_secs=$(jq -r '.cachedGrowthBookFeatures.tengu_sequential_cloud
+      | if type == "object" and .enabled != false then (.activityWindowMinutes // 60) * 60 else 0 end
+      | floor' "$claude_json" 2>/dev/null) || keepalive_secs=0
+    if [ -n "$keepalive_key" ]; then
+      printf '%s\n%s\n' "$keepalive_key" "$keepalive_secs" > "$keepalive_memo.tmp.$$" 2>/dev/null &&
+        mv -f "$keepalive_memo.tmp.$$" "$keepalive_memo" 2>/dev/null || rm -f "$keepalive_memo.tmp.$$" 2>/dev/null
+    fi
+  fi
   if [ "${keepalive_secs:-0}" -gt 300 ] 2>/dev/null; then
     warm_ttl=$keepalive_secs; keepalive=1
   fi

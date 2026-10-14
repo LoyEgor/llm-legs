@@ -277,7 +277,7 @@ if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
   m=0; { read -r m; } 2>/dev/null < "$marker"
   [[ "$m" =~ ^[0-9]+$ ]] || m=0
   if [ "$((now - m))" -gt 3600 ]; then
-    find "$cache_dir" -maxdepth 1 -type f \( -name 'ports-*' -o -name 'cache-ttl-track-*' -o -name 'scan-*' \
+    find "$cache_dir" -maxdepth 1 -type f \( -name 'ports-*' -o -name 'cache-ttl-track-*' -o -name 'scan-*' -o -name 'keepalive-*' \
       -o -name 'rl-cost-*' -o -name 'unpushed-*' -o -name 'review-autonomy-*' -o -name 'work-*' -o -name 'repo-debt-*' -o -name 'render-*' \) \
       -mtime +7 -delete 2>/dev/null
     # A writer renames its temporary within the second; one an hour old was left by a killed writer.
