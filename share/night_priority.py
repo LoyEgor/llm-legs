@@ -17,6 +17,9 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cpu_audit  # noqa: E402
+import night_spend  # noqa: E402
+from spend import read_json  # noqa: E402
 
 DIRECTIONS = ("speed", "tests", "cpu", "spend", "legacy", "fit", "bugs", "logs", "harness", "updater", "pool")
 PRIORITIES = ("P1", "P2", "P3")
@@ -47,14 +50,6 @@ def num(value):
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def read_json(path, default=None):
-    try:
-        with open(path) as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return default
-
-
 def doctors_dir():
     return os.environ.get("DOCTORS_DIR") or os.path.expanduser("~/.cache/doctors")
 
@@ -64,8 +59,9 @@ def worker_runs_dir():
 
 
 def doctor_path(name):
-    root = os.environ.get("%s_DOCTOR_DIR" % name.upper()) or os.path.expanduser("~/.cache/%s-doctor" % name)
-    return os.path.join(root, "latest.json")
+    """The doctor's latest.json; None for the system doctor under a fixture Harness directory (cpu_audit.system_dir)."""
+    root = cpu_audit.system_dir() if name == "system" else night_spend.doctor_dir(name)
+    return root and os.path.join(root, "latest.json")
 
 
 _DOCS = {}
@@ -73,6 +69,8 @@ _DOCS = {}
 
 def doctor_doc(name, default=None):
     path = doctor_path(name)
+    if path is None:
+        return {} if default is None else default
     try:
         stat = os.stat(path)
         stamp = (stat.st_ino, stat.st_size, stat.st_mtime_ns)

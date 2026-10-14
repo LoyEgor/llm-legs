@@ -126,6 +126,9 @@ for name, rows in lines.items():
         handle.write("".join(json.dumps(r) + "\n" for r in rows))
 check([ls.session_class(os.path.join(sessions_dir, n)) for n in lines] == ["my chats", "workers", "workers", None],
       "a session is classified by its entrypoint or originator: interactive my chats, headless workers, none unknown")
+import chat_names  # noqa: E402
+check(ls.HEADLESS is chat_names.HEADLESS_ENTRYPOINTS and chat_names.HEADLESS_VIA in ls.HEADLESS,
+      "the headless entrypoints log_stores classes by are chat_names' own, headless via included")
 measured = {n: ls.unit_stats(os.path.join(sessions_dir, n)) for n in list(lines) + ["u" * 36]}
 seen = {}
 parts = ls.split({"group": "workers", "split": "session"}, [measured[n] for n in lines], seen)

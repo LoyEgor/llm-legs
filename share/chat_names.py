@@ -34,6 +34,8 @@ NAME_LINE_MAX = 8 * 1024
 ARGV_ROOM = 128 * 1024
 # A worker, bench or subagent run is not a chat: it was launched BY one to carry out an errand.
 HEADLESS_VIA = "sdk-cli"
+# Every entrypoint or originator that marks a headless run (log_stores classes its sessions by it).
+HEADLESS_ENTRYPOINTS = (HEADLESS_VIA, "sdk-ts", "sdk-py", "codex_exec")
 DERIVED_NAME_SOURCE = "derived"
 SESSION_OK = re.compile(r"^[A-Za-z0-9._-]+$")
 # What every surface prints a chat by, and therefore what a reader has to hand when asking about

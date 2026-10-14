@@ -27,6 +27,7 @@ import collector_runs  # noqa: E402
 import handoffs  # noqa: E402
 import limiter_hold  # noqa: E402
 import cpu_audit  # noqa: E402
+import fix_commit  # noqa: E402
 import night_churn  # noqa: E402
 import night_spend  # noqa: E402
 import spend as spend_block  # noqa: E402
@@ -1784,7 +1785,8 @@ def pool_counts():
         if verdict in POOL_COLUMNS:
             out[cls][verdict] += 1
     asked = {os.path.basename(t["path"]) for t in handoffs.egor_trades()}
-    ledger = read_json(os.environ.get("HARNESS_LEDGER") or os.path.join(root, "share", "harness-ledger.json"), {}) or {}
+    ledger = fix_commit.load_merged(os.environ.get("HARNESS_LEDGER") or os.path.join(root, "share", "harness-ledger.json"),
+                                    os.path.join(night_spend.doctor_dir("harness"), fix_commit.SETTLED_FILE)) or {}
     for row in ledger.get("rows") or ():
         cls = "logs" if str(row.get("id")).startswith("log_audit:") else "harness"
         status = row.get("status")

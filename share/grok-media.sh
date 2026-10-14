@@ -62,28 +62,7 @@ grok_media_select_account() { # tool root worker-pick-cmd profiles-dir requested
 # ReferenceToVideo (ImageToVideo before 1.0.41). Reading the tag list
 # rather than one name is what keeps an edit or a reference_to_video run from looking like a
 # generation that produced nothing.
-grok_media_stream_path() { # stream-file type[,type...]
-  local stream=$1 types=$2 path
-  path=$(jq -Rr --arg types "$types" '
-    ($types | split(",")) as $wanted |
-    fromjson? |
-    select(.type == "tool_call_update") |
-    .rawOutput // empty |
-    (.type // "") as $tag |
-    select($wanted | index($tag)) |
-    .path // empty
-  ' "$stream" 2>/dev/null | tail -n 1) || path=''
-  [[ "$path" = /* ]] && [ -f "$path" ] || return 1
-  printf '%s\n' "$path"
-}
-
-grok_media_session_id() { # stream-file
-  local stream=$1 id
-  id=$(jq -Rr 'fromjson? | .sessionId // empty' "$stream" 2>/dev/null | tail -n 1) || id=''
-  printf '%s\n' "${id:-none}"
-}
-
-# grok_media_stream_path and grok_media_session_id off one jq pass: sets grok_media_path (empty when no
+# One jq pass over the stream, the filters grok_media_stream_path and grok_media_session_id share: sets grok_media_path (empty when no
 # readable file) and grok_media_session (none when the stream names none).
 grok_media_stream_read() { # stream-file type[,type...]
   local tag value
@@ -102,6 +81,17 @@ grok_media_stream_read() { # stream-file type[,type...]
   ' "$1" 2>/dev/null)
   [[ "$grok_media_path" = /* ]] && [ -f "$grok_media_path" ] || grok_media_path=''
   grok_media_session=${grok_media_session:-none}
+}
+
+grok_media_stream_path() { # stream-file type[,type...]
+  grok_media_stream_read "$1" "$2"
+  [ -n "$grok_media_path" ] || return 1
+  printf '%s\n' "$grok_media_path"
+}
+
+grok_media_session_id() { # stream-file
+  grok_media_stream_read "$1" ''
+  printf '%s\n' "$grok_media_session"
 }
 
 # Only a persistent wall is a wall. A transient "rate limited, retrying" is weather and must stay

@@ -23,6 +23,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import chat_names  # noqa: E402
 import time_budget  # noqa: E402
 
 WINDOW_S = 86400
@@ -84,6 +85,13 @@ CODEX_CMD = re.compile(r"""exec_command\(\{\s*cmd:\s*("(?:[^"\\]|\\.)*")""")
 
 def projects_dir():
     return time_budget.env_path("CLAUDE_PROJECTS_DIR", ".claude", "projects")
+
+
+def projects_roots():
+    """CLAUDE_PROJECTS_DIR alone where set (a fixture), else every Claude transcript root: claudeb profiles' too."""
+    if os.environ.get("CLAUDE_PROJECTS_DIR"):
+        return [projects_dir()]
+    return [str(root) for root in chat_names.transcript_roots()]
 
 
 def codex_dir():
@@ -249,8 +257,9 @@ def scan(lo, hi, tools=None):
     """(ad-hoc and benched-tool calls in [lo, hi), all Bash calls in it, write rate in chars a second or None, the
     sessions that made a Bash call); `tools` maps a target to the pattern of its tool's calls."""
     calls, rate = [], [0, 0.0, 0, set()]
-    for path in files(projects_dir(), "*/*.jsonl", lo) + files(projects_dir(), "*/*/subagents/*.jsonl", lo):
-        claude_calls(path, lo, hi, calls, rate, tools)
+    for root in projects_roots():
+        for path in files(root, "*/*.jsonl", lo) + files(root, "*/*/subagents/*.jsonl", lo):
+            claude_calls(path, lo, hi, calls, rate, tools)
     for path in files(codex_dir(), "*/sessions/*/*/*/rollout-*.jsonl", lo):
         codex_calls(path, lo, hi, calls, rate, tools)
     return calls, rate[2], (rate[0] / rate[1] if rate[1] else None), len(rate[3])

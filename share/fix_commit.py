@@ -28,11 +28,8 @@ def use_memo(path, write):
 
 def _memo_rows():
     if _memo["rows"] is None:
-        try:
-            with open(_memo["path"], encoding="utf-8") as handle:
-                rows = json.load(handle)
-        except (OSError, ValueError, TypeError):
-            rows = {}
+        from spend import read_json  # spend imports this module at load
+        rows = read_json(_memo["path"], {})
         _memo["rows"] = rows if isinstance(rows, dict) else {}
     return _memo["rows"]
 

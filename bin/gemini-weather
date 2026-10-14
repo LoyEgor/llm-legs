@@ -74,12 +74,9 @@ def geminib_families():
                 [os.path.join(os.path.dirname(os.path.realpath(__file__)), "geminib"), "families", "--json"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=120)
             families = json.loads(result.stdout)
-        except subprocess.TimeoutExpired:
-            limit_hit.hit("gemini-weather.families-timeout", 120, "s", "kill",
-                          "the family list: weather shows no family this run",
-                          "bin/gemini-weather:stderr=subprocess.DEVNULL, text=True, timeout=120", observed=120)
-            families = []
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            limit_hit.expired("gemini-weather.families-timeout", error, "the family list: weather shows no family this run",
+                              "bin/gemini-weather:stderr=subprocess.DEVNULL, text=True, timeout=120")
             families = []
     return [family for family in families if isinstance(family, dict)
             and all(isinstance(family.get(key), str) and family[key]

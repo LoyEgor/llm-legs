@@ -91,13 +91,18 @@ def sources(path):
 
 
 def git(top, *args):
+    return git_answer(top, *args) or ""
+
+
+def git_answer(top, *args):
+    """git's stripped output; None where the call failed or timed out, so an empty answer stays an answer."""
     try:
         out = subprocess.run(["git", "-C", top] + list(args), capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as error:
         limit_hit.expired("probe.git", error, "its answer in %s: read as empty" % top,
                           'share/suite_audit.py:["git", "-C", top] + list(args)')
-        return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
 
 
 def commit(top, rev):
@@ -257,16 +262,12 @@ def last_commit_at(top, rel):
     kept = fix_commit.memo_get("stamp", "%s|%s" % (top, rel)) if head else None
     if kept and kept[0] == head:
         return kept[1]
-    try:
-        out = subprocess.run(["git", "-C", top, "log", "-1", "--format=%ct", "--", rel], capture_output=True, text=True,
-                             timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return git(top, "log", "-1", "--format=%ct", "--", rel)
-    if out.returncode:
+    out = git_answer(top, "log", "-1", "--format=%ct", "--", rel)
+    if out is None:
         return ""
     if head:
-        fix_commit.memo_put("stamp", "%s|%s" % (top, rel), [head, out.stdout.strip()])
-    return out.stdout.strip()
+        fix_commit.memo_put("stamp", "%s|%s" % (top, rel), [head, out])
+    return out
 
 
 def dirty_at(top, rel):

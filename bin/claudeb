@@ -37,6 +37,7 @@ accounts_plain=render_plain_accounts
 accounts_launch_hook=maybe_launch_profile
 . "$claudeb_root/share/store-lock.sh"
 . "$claudeb_root/share/limit-hit.sh"
+. "$claudeb_root/share/run-bounded.sh"
 
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 tokens_dir="$base_dir/tokens"
@@ -2080,10 +2081,10 @@ run_warm_session() {
   local dir="$1" name="$2" output="$3" prompt="$4"
   shift 4
   local rc=0
-  timeout 90 env CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$name" \
+  run_bounded 90 env CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$name" \
     claude -p "$prompt" "$@" --output-format json >"$output" 2>&1 || rc=$?
   [ "$rc" -ne 124 ] || limit_hit claudeb.warm-timeout 90 s kill "the warm session of $name: its token verdict" \
-    'bin/claudeb:timeout 90 env CLAUDE_CONFIG_DIR' 90
+    'bin/claudeb:run_bounded 90 env CLAUDE_CONFIG_DIR' 90
   return "$rc"
 }
 

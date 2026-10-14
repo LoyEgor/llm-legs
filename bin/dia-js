@@ -130,7 +130,7 @@ dia_windows() { # "<CG window id>\t<window name>" per on-screen Dia window
     "$WINDOWS"
     return
   fi
-  osascript -l JavaScript -e 'ObjC.import("CoreGraphics");
+  "$OSASCRIPT" -l JavaScript -e 'ObjC.import("CoreGraphics");
     ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)))
       .filter((w) => w.kCGWindowOwnerName === "Dia" && w.kCGWindowLayer === 0 && w.kCGWindowBounds.Height > 100)
       .map((w) => w.kCGWindowNumber + "\t" + (w.kCGWindowName || "")).join("\n")'

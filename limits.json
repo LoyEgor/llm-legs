@@ -575,14 +575,6 @@
     "why": "One collector run is bounded at 30 min (raised from 600 s after load-cut ticks).",
     "normal": "0 hits since 2026-10-06."
   },
-  "llm-refresh.lock-stale": {
-    "value": 1800,
-    "unit": "s",
-    "where": "bin/llm-refresh:97",
-    "set_by": "chat 123b5750",
-    "why": "A refresh lock with no owner pid older than 30 min is broken.",
-    "normal": "Rare."
-  },
   "llm-refresh.probe-timeout": {
     "value": 90,
     "unit": "s",

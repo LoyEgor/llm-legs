@@ -27,10 +27,10 @@ def roster(vendor: str, fresh: bool = False) -> list[str]:
                         text=True) as process:
                 try:
                     out, err = process.communicate(timeout=30)
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as error:
                     process.kill()
-                    limit_hit.hit("account-roster.timeout", 30, "s", "kill", "the %s account roster: its caller fails unreadable" % vendor,
-                                  "share/account_roster.py:communicate(timeout=30)")
+                    limit_hit.expired("account-roster.timeout", error, "the %s account roster: its caller fails unreadable" % vendor,
+                                      "share/account_roster.py:communicate(timeout=30)")
                     raise
         except (OSError, subprocess.SubprocessError) as exc:
             raise Unreadable(f"cannot read the {vendor} account roster: {exc}") from exc

@@ -38,16 +38,22 @@ def read_json(path, default=None):
         return default
 
 
+def jsonl_row(line):
+    """The object one journal line holds; None for a line that is not JSON or not an object."""
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) else None
+
+
 def read_jsonl(path):
     rows = []
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict):
+                row = jsonl_row(line)
+                if row is not None:
                     rows.append(row)
     except OSError:
         pass
@@ -118,10 +124,9 @@ def components(payload, repos):
 def worker_md_leak():
     """Workers as a loaded: component while the latest claudeb worker run whose transcript worker-run checked still
     loaded the user CLAUDE.md that claudeMdExcludes keeps out; None while that run is clean."""
-    stats = os.environ.get("WORKER_STATS_DIR") or os.path.join(
-        os.environ.get("CLAUDEB_DIR") or os.path.join(os.path.expanduser("~"), ".claude-profiles", ".claudeb"),
-        "worker-stats")
-    checked = [r for r in read_jsonl(os.path.join(stats, "runs.jsonl")) if isinstance(r.get("user_md_loaded"), bool)]
+    import time_budget  # imports this module at load
+
+    checked = [r for r in read_jsonl(time_budget.worker_runs_path()) if isinstance(r.get("user_md_loaded"), bool)]
     latest = max(checked, key=lambda r: r.get("ended_at") or 0, default=None)
     if not latest or not latest["user_md_loaded"]:
         return None

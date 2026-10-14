@@ -32,7 +32,7 @@ etime_seconds() { # etime as ps prints it: [[dd-]hh:]mm:ss
 # written before pid_started_at existed cannot be checked this way and keeps the old answer, or
 # every run started before that field went in would begin reading dead.
 pid_alive_since() { # pid start-epoch (none: unchecked)
-  local elapsed drift now
+  local elapsed
   [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ] || return 1
   command -v ps >/dev/null 2>&1 || { kill -0 "$1" 2>/dev/null; return; }
   elapsed=$(ps -p "$1" -o etime= 2>/dev/null)
@@ -46,9 +46,15 @@ pid_alive_since() { # pid start-epoch (none: unchecked)
     kill -0 "$1" 2>/dev/null
     return
   fi
+  pid_start_fits "$elapsed" "$2"
+}
+
+# The drift rule: whether a process that has run for etime started within PID_START_SLACK of the launch its
+# record stamped. A record or an etime that cannot be checked keeps the old answer, alive.
+pid_start_fits() { # etime start-epoch [now]
+  local drift now=${3:-${EPOCHSECONDS:-$(date +%s)}}
   [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 0
-  etime_parse "$elapsed" || return 0
-  now=${EPOCHSECONDS:-$(date +%s)}
+  etime_parse "$1" || return 0
   drift=$((now - ETIME_SECONDS - $2))
   [ "${drift#-}" -le "$PID_START_SLACK" ]
 }
@@ -68,14 +74,15 @@ pids_alive_since() { # "key pid start-epoch" lines on stdin -> the key of each l
     while read -r key pid began; do pid_alive_since "$pid" "$began" && printf '%s\n' "$key"; done
     return 0
   fi
-  awk -v now="${EPOCHSECONDS:-$(date +%s)}" -v slack="$PID_START_SLACK" '
+  # awk only joins each wanted pid to its etime; the parse and the drift rule are bash's, above.
+  awk '
     FNR == NR { etime[$1] = $2; next }
-    $2 ~ /^[0-9]+$/ && $2 > 0 && ($2 in etime) {
-      n = split(etime[$2], part, /[-:]/)
-      if ($3 !~ /^[1-9][0-9]*$/ || n < 2 || n > 4 || etime[$2] !~ /^[0-9:-]+$/) { print $1; next }
-      age = 0
-      for (i = 1; i <= n; i++) age += part[i] * (n - i == 3 ? 86400 : n - i == 2 ? 3600 : n - i == 1 ? 60 : 1)
-      drift = now - age - $3
-      if (drift <= slack && -drift <= slack) print $1
-    }' <(printf '%s\n' "$listing") -
+    $2 ~ /^[0-9]+$/ && $2 > 0 && ($2 in etime) { print $1, $2, ($3 == "" ? "-" : $3), etime[$2] }' \
+    <(printf '%s\n' "$listing") - | {
+    local now=${EPOCHSECONDS:-$(date +%s)}
+    while read -r key pid began elapsed; do
+      pid_start_fits "$elapsed" "$began" "$now" && printf '%s\n' "$key"
+    done
+    return 0
+  }
 }

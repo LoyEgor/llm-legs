@@ -793,7 +793,8 @@ check(module.background_share(probe_view, {}) == 1.0,
       "the probes' CPU is the statusline's background share")
 later = os.path.join(kick_dir, "statusline-probes", "2026-10-02.tsv")
 with open(later, "w") as handle:
-    handle.write("%d\t9\t6000\twork\n" % ((mid + 86400) * 1e6))
+    # a note line past the 64 bytes read_new keys a file on: the rewrite below changes only rows already read
+    handle.write("# %s\n%d\t9\t6000\twork\n" % ("x" * 70, (mid + 86400) * 1e6))
 module.background_view({}, mid, mid + 2 * 86400, [], 2.0)
 module.PROBE_HELD.update(json.loads(json.dumps(module.PROBE_DAYS)))
 module.PROBE_DAYS.clear()

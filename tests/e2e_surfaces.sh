@@ -17,6 +17,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
 STORE="$HOME/.llm-limits.json"
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/hs-bounded.sh"
+export HS_BOUNDED_IPC_S=120
 
 command -v hs >/dev/null 2>&1 || fail "hs CLI not on PATH"
 command -v llm-limits >/dev/null 2>&1 || fail "llm-limits not on PATH"
@@ -61,7 +63,7 @@ print(table.concat(out, "\n"))
 
 hs_menu() {
   local out
-  out=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c "$HS_SERIALIZE" </dev/null 2>/dev/null)
+  out=$(hs_bounded 600 -c "$HS_SERIALIZE" 2>/dev/null)
   case "$out" in
     HS_ERR*) fail "live menu read path: ${out#HS_ERR }" ;;
   esac
@@ -70,7 +72,7 @@ hs_menu() {
 }
 
 hs_alona_five_style() {
-  /usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c '
+  hs_bounded 600 -c '
 local m = package.loaded["llm-limits"]
 local menu = m and m.menuItems()
 local seen = false
@@ -90,7 +92,7 @@ for _, item in ipairs(menu or {}) do
   if text == "alona" or text:match("^alona%s") then seen = true end
 end
 return "MISSING"
-' </dev/null 2>/dev/null
+' 2>/dev/null
 }
 
 # The reset consumable is not a Codex feature the other legs borrow: the row renders a count
@@ -329,7 +331,7 @@ assert_isolated_menu_contracts() {
   opencode_rows=${opencode_rows#*	}
   case "$opencode_rows" in ''|null) fail "llm-limits.sh emitted no OpenCode rows for the menu fixture" ;; esac
   [ -n "$opencode_evyoxqy_reset" ] || fail "the OpenCode fixture recorded no evyoxqy horizon: $opencode_rows"
-  output=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -q -t 120 -c '
+  output=$(hs_bounded 600 -q -c '
 local path = "'"$(cd "$(dirname "$0")/.." && pwd)"'/hammerspoon/llm-limits.lua"
 local realJsonDecode = hs.json.decode
 local function styled(text, attributes)
@@ -582,7 +584,7 @@ local weekdays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
 local function resetColumn(stamp)
   local text
   if stamp - ocNow >= 604800 then
-    text = os.date("%b ", stamp) .. tonumber(os.date("%d", stamp))
+    text = tones.day(stamp)
   elseif os.date("%Y-%m-%d", stamp) ~= os.date("%Y-%m-%d", ocNow) then
     text = weekdays[tonumber(os.date("%w", stamp)) + 1] .. os.date(" %H:%M", stamp)
   else
@@ -676,14 +678,14 @@ if #wallState.starts ~= startsBefore + 1
   error("a failed leg refresh did not recollect")
 end
 return "OK isolated menu contracts"
-' </dev/null 2>"$hs_err") || fail "isolated Hammerspoon contract checks threw: $(grep -v '^-- Loading' "$hs_err")"
+' 2>"$hs_err") || fail "isolated Hammerspoon contract checks threw: $(grep -v '^-- Loading' "$hs_err")"
   rm -f "$hs_err"
   [ "$output" = "OK isolated menu contracts" ] \
     || fail "isolated Hammerspoon contract checks: $output"
 }
 
 # 1. hs CLI reachable and Hammerspoon responding.
-[ "$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -q -t 120 -c 'return "ok"' </dev/null 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
+[ "$(hs_bounded 600 -q -c 'return "ok"' 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
 pass "hs CLI reachable, Hammerspoon responding"
 assert_isolated_menu_contracts
 pass "isolated menu contracts: menu build starts no collector; refresh actions dispatch; completion re-rendered"

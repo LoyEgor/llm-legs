@@ -1644,7 +1644,8 @@ assert eq "$(grep -c '\.pid_started_at = ' "$ROOT/bin/worker-run")" 1
 RUN_LIVENESS="$ROOT/share/run-liveness.sh"
 assert grep -Fq '. "$SCRIPT_DIRECTORY/../share/run-liveness.sh"' "$ROOT/bin/worker-run"
 assert grep -Fq '} | pids_alive_since)' "$ROOT/bin/worker-run-backstop.sh"
-assert grep -Fq -- '-v slack="$PID_START_SLACK"' "$RUN_LIVENESS"
+assert grep -Fq 'pid_start_fits "$elapsed" "$began" "$now"' "$RUN_LIVENESS"
+assert eq "$(grep -c 'PID_START_SLACK' "$RUN_LIVENESS")" 3
 assert grep -Fq 'pid_alive_since "$pid" "$began" && printf' "$RUN_LIVENESS"
 assert grep -Fq 'supervisor_running "$2" "$3"' "$ROOT/bin/llm-doctor"
 assert eq "$(grep -cE 'os\.kill|[^[:alnum:]_]etime' "$ROOT/bin/llm-doctor")" 0

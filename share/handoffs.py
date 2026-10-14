@@ -534,12 +534,8 @@ def egor_trades(repos=None):
 def night_handoffs(night_path, repos=None):
     """The Last night block's rows: each handoff the night carried or that waits for the next one, as
     (phase, title, path): done (settled or landed), queued (open) and egor (every open trade, egor_trades)."""
-    night = {}
-    try:
-        with open(night_path) as handle:
-            night = json.load(handle)
-    except (OSError, ValueError):
-        pass
+    import spend
+    night = spend.read_json(night_path, {})
     docs = handoff_docs(repos)
     names = []
     for job in night.get("jobs") or ():

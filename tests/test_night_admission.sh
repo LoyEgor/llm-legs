@@ -171,4 +171,8 @@ printf '{"account": "named", "explicit_account": "named", "resume": "", "model":
 WORKER_RUN_NIGHT_RUN="$FAKE_BIN/gate" WORKER_RUN_ADMIT_REPICK_S=0 night_admit "$run" claudeb night/n1/job-a || fail "admitted"
 assert jqe '.account == "named"' "$run/meta.json"
 
+# A fixture Harness directory with no SYSTEM_DOCTOR_DIR never reads the live system doctor's latest.json.
+assert [ "$(env -u SYSTEM_DOCTOR_DIR python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import night_priority as n; print(n.doctor_path('system'))")" = None ]
+assert [ "$(pyq "import night_priority as n; print(n.doctor_path('system'))")" = "$WORK/system/latest.json" ]
+
 echo "PASS: test_night_admission ($asserts asserts)"

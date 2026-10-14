@@ -3,12 +3,13 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/tests/lib/hs-bounded.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 command -v hs >/dev/null 2>&1 || fail "Hammerspoon CLI is unavailable"
 
 printf 'Running Hammerspoon env guard harness...\n'
-output=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c "return dofile([[$ROOT/tests/hs_env_guard_harness.lua]])" </dev/null 2>&1) \
+output=$(HS_BOUNDED_IPC_S=120 hs_bounded 600 -c "return dofile([[$ROOT/tests/hs_env_guard_harness.lua]])" 2>&1) \
   || fail "Lua harness failed: $output"
 printf '%s\n' "$output" | grep -q 'All Hammerspoon env guard tests passed' \
   || fail "unexpected Lua harness output: $output"

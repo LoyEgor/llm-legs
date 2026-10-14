@@ -90,6 +90,13 @@ check(bash_calls == 9 and sessions == 4,
       "every Bash call in the window counts toward the per-1000 base, every session making one: %s %s" % (bash_calls, sessions))
 check(sorted(c["out_b"] for c in calls) == [2] * 5,
       "each call keeps the bytes of its output (a codex exec's split over its commands): %s" % [c["out_b"] for c in calls])
+# Without CLAUDE_PROJECTS_DIR the scan reads every Claude transcript root, a claudeb profile's too.
+profile = os.path.join(os.environ["HOME"], ".claude-profiles", "acct", "projects", "-p", "prof1.jsonl")
+transcript(profile, [bash(T0 + 70, QUERY, "msg_P", "toolu_p1"), result(T0 + 71, "toolu_p1")])
+del os.environ["CLAUDE_PROJECTS_DIR"]
+seen = {c["session"] for c in t.scan(HI - t.WINDOW_S, HI)[0]}
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+check("prof1" in seen, "a claudeb profile's transcripts are scanned with the default root: %s" % sorted(seen))
 TOOLS = {"adhoc/ledger-query": t.re.compile(r"\bbin/ledger-rows\b")}
 tooled = [c for c in t.scan(HI - t.WINDOW_S, HI, TOOLS)[0] if c.get("tool")]
 check([(c["tool"], c["session"], c["exec_s"], c["out_b"]) for c in tooled] == [("adhoc/ledger-query", "w1", 1.0, 2)],

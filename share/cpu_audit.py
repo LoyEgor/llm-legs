@@ -8,7 +8,6 @@ the head counts the rows that floor skipped. Rows live in Spend's ledger as `cpu
 
 import datetime
 import glob
-import json
 import os
 import statistics
 
@@ -51,11 +50,8 @@ def probe_line(line):
 
 
 def hour_line(line):
-    try:
-        row = json.loads(line)
-    except ValueError:
-        return []
-    if not isinstance(row, dict):
+    row = spend.jsonl_row(line)
+    if row is None:
         return []
     return [("process/" + str(e[0]), cpu_s(e[1], 1), None) for e in row.get("cpu_own") or row.get("cpu_top") or ()
             if isinstance(e, list) and len(e) >= 4 and e[3] == "own"]

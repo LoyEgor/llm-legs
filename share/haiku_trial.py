@@ -17,6 +17,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import night_spend  # noqa: E402
+from collector_runs import iso_utc as iso  # noqa: E402
 from spend import read_json  # noqa: E402
 
 LENS = re.compile(r"^(fit|legacy(-.*)?|speed)$")
@@ -29,10 +30,6 @@ def git(top, *args):
         return None
     done = subprocess.run(["git", "-C", top, *args], capture_output=True, text=True, errors="replace")
     return done.stdout if done.returncode == 0 else None
-
-
-def iso(t):
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 
 
 def main_blob(top, path):

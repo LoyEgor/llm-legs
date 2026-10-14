@@ -6131,7 +6131,7 @@ LIMIT_QUIET_DAYS = 7
 
 
 def limit_hits_log():
-    return os.environ.get("LIMIT_HITS_LOG") or os.path.join(base_home(), ".cache", "limits", "hits.jsonl")
+    return limit_hit.log_path()
 
 
 def limit_registries():

@@ -9,6 +9,8 @@ import json
 import os
 import stat
 
+from chat_names import HEADLESS_ENTRYPOINTS as HEADLESS
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 DAY_S = 86400
 MB = 1 << 20
@@ -18,7 +20,6 @@ CRITERIA = ("days", "max_mb", "keep_newest", "tail_mb")
 KINDS = ("log", "app")
 GROUPS = ("workers", "temp", "review bench", "our tools", "my chats", "LLM apps")
 SPLITS = ("session", "session-id")
-HEADLESS = ("sdk-cli", "sdk-ts", "sdk-py", "codex_exec")
 NEEDS_CRITERION = ("self", "sweep", "command")
 SLACK = {"days": 2, "keep_newest": 1, "max_mb": 1.25, "tail_mb": 2.0}
 

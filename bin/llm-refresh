@@ -80,28 +80,11 @@ refresh_lock_acquire() {
     rm -rf "$captured" 2>/dev/null
     return 1
   fi
-  lock_break_hit "$captured" "$stale" "$current"
+  store_lock_broke "$captured" "$stale" "$tick_ceiling"
   rm -rf "$captured"
   mkdir "$lock" 2>/dev/null || return 1
   store_lock_claim "$lock" || return 1
   active_lock=$lock
-  return 0
-}
-
-# A dead owner's lock is no hit; a pidless one past the stale age, or a live owner past the ceiling, is.
-lock_break_hit() { # captured-lock stale now
-  local owner='' mtime age
-  mtime=$(store_lock_mtime "$1" 2>/dev/null) || return 0
-  age=$(($3 - mtime))
-  read -r owner 2>/dev/null <"$1/pid" || owner=''
-  case "$owner" in ''|*[!0-9]*) owner='' ;; esac
-  if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
-    limit_hit llm-refresh.tick-ceiling "$tick_ceiling" s break "the refresh lock of live pid $owner: two ticks may now run at once" \
-      'bin/llm-refresh:tick_ceiling=${' "$age"
-  elif [ -z "$owner" ]; then
-    limit_hit llm-refresh.lock-stale "$2" s break "a refresh lock with no owner pid, $age s old" \
-      'bin/llm-refresh:LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800' "$age"
-  fi
   return 0
 }
 

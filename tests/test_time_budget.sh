@@ -920,6 +920,16 @@ check(T.pool_lines()[0].split() == ["open", "done", "proven", "kept", "trade"]
                    "logs": ["0", "0", "0", "1", "0"], "total": ["3", "3", "3", "2", "5"]},
       "a row per class, totals last: %s" % pool)
 
+# A fixed-pending row the doctor's overlay settles counts as fixed (proven), the merged view every ledger reader takes.
+settling = {"at": "2026-10-01T00:00:00Z", "in": "llm-legs@abc"}
+json.dump({"rows": json.load(open(os.environ["HARNESS_LEDGER"]))["rows"] + [{"id": "e", "status": "fixed-pending", "fixes": [settling]}]},
+          open(os.environ["HARNESS_LEDGER"], "w"))
+json.dump({"rows": {"e": {settling["at"]: {"in": settling["in"], "status": "fixed"}}}},
+          open(os.path.join(work, "pool-harness", T.fix_commit.SETTLED_FILE), "w"))
+settled_pool = {l.split()[0]: l.split()[1:] for l in T.pool_lines()[1:]}
+check(settled_pool["harness"] == ["1", "3", "2", "0", "1"],
+      "an overlay-settled fixed-pending row counts proven: %s" % settled_pool["harness"])
+
 kept_journal = os.path.join(work, "kept", "runs.jsonl")
 lines(kept_journal, [{"ended_at": 1, "queued_at": 0}])
 opened = []

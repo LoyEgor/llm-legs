@@ -1840,14 +1840,13 @@ done < <(printf '%s\n' "$gemini_accounts_list")
 gemini_order=$(printf '%s\n' "$gemini_accounts_list" | account_order_json gemini)
 
 # Network reads stay outside the store lock: one slow API held every other writer for up to 56 s.
-elevenlabs_timeout=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
 elevenlabs_sync=--sync
 [ "$write_cache" = 1 ] || elevenlabs_sync=''
 elevenlabs=''
 [ -n "${ELEVENLABS_KEYS:-}" ] && [ ! -e "${ELEVENLABS_KEYS/#\~/$HOME}" ] ||
-  elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" $elevenlabs_sync 2>/dev/null) ||
+  elevenlabs=$(run_bounded 30 python3 "$script_dir/share/elevenlabs_balance.py" $elevenlabs_sync 2>/dev/null) ||
   { [ "$?" -ne 124 ] || limit_hit llm-limits.elevenlabs-timeout 30 s kill "the ElevenLabs balance read: its section is missing this pass" \
-      'llm-limits.sh:"$elevenlabs_timeout" 30'
+      'llm-limits.sh:run_bounded 30 python3 "$script_dir/share/elevenlabs_balance.py"'
     elevenlabs=''; }
 
 if [ "$write_cache" -eq 1 ]; then

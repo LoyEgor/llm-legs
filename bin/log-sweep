@@ -21,6 +21,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import limit_hit  # noqa: E402
 import log_stores  # noqa: E402
+from spend import read_json  # noqa: E402
 
 RECORD_MAX_BYTES = 256 * 1024
 RECORD_ITEMS = 20
@@ -114,11 +115,7 @@ def record(row):
 
 
 def command_runs():
-    try:
-        with open(os.path.join(state_dir(), "commands.json"), encoding="utf-8") as handle:
-            runs = json.load(handle)
-    except (OSError, ValueError):
-        return {}
+    runs = read_json(os.path.join(state_dir(), "commands.json"), {})
     return runs if isinstance(runs, dict) else {}
 
 
