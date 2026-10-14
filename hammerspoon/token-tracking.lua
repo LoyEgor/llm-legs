@@ -143,14 +143,6 @@ local function freshAt(data, attrs)
     return at
 end
 
-local function dimColor()
-    local palette = type(hs.drawing) == "table" and hs.drawing.color
-    local asRGB = type(palette) == "table" and palette.asRGB
-    if type(asRGB) ~= "function" then return menuStyle.DIM end
-    local ok, resolved = pcall(asRGB, menuStyle.DIM)
-    return (ok and type(resolved) == "table") and resolved or menuStyle.DIM
-end
-
 local function style(text, color)
     return hs.styledtext.new(text, { font = menuStyle.MONO, color = color })
 end
@@ -171,7 +163,7 @@ local function aligned(rows)
             numWidths[c] = math.max(numWidths[c] or 0, width(cell or ""))
         end
     end
-    local dim = dimColor()
+    local dim = menuStyle.DIM
     local titles = {}
     for index, row in ipairs(rows) do
         local nums = row.nums or {}
@@ -333,7 +325,7 @@ local function statusItems(data, problem, attrs, snapshot, job)
         red = outdated(data) or (not snapshot and isStale(data, attrs))
     end
     if job.running then text = text .. " · refreshing…" end
-    local items = { { title = style(text, red and menuStyle.tone(menuStyle.RED, true) or dimColor()), disabled = true } }
+    local items = { { title = style(text, red and menuStyle.tone(menuStyle.RED, true) or menuStyle.DIM), disabled = true } }
     if not job.running and job.error then
         items[2] = { title = style("last refresh failed: " .. job.error, menuStyle.tone(menuStyle.RED, true)), disabled = true }
     end
@@ -531,7 +523,7 @@ local function tableItems(data, lead)
         if group ~= nil and row.group ~= group then
             items[#items + 1] = { title = "-" }
             local caption = type(data.groups) == "table" and data.groups[row.group]
-            if caption then items[#items + 1] = { title = style(caption, dimColor()), disabled = true } end
+            if caption then items[#items + 1] = { title = style(caption, menuStyle.DIM), disabled = true } end
         end
         group = row.group
         local menu = menus[index]

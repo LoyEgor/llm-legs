@@ -1323,15 +1323,6 @@ local function clip(text, width)
     if cells(text) <= width then return text end
     return "…" .. text:sub(utf8.offset(text, -(width - 1)))
 end
-local function dimColor()
-    local drawing = hs.drawing
-    local palette = type(drawing) == "table" and drawing.color
-    local asRGB = type(palette) == "table" and palette.asRGB
-    if type(asRGB) ~= "function" then return menuStyle.DIM end
-    local ok, resolved = pcall(asRGB, menuStyle.DIM)
-    if ok and type(resolved) == "table" then return resolved end
-    return menuStyle.DIM
-end
 
 local function alignedTitles(rows, columns, style)
     local widths = {}
@@ -1367,7 +1358,7 @@ local function alignedTitles(rows, columns, style)
 end
 
 local function renderStyle()
-    local color = dimColor()
+    local color = menuStyle.DIM
     local key = table.concat({ tostring(color.red), tostring(color.green), tostring(color.blue),
         tostring(color.alpha), tostring(color.name) }, "/")
     return function(text, dim, red)

@@ -469,7 +469,7 @@ jq -e '.refresh_error.cause == "no vendor data available" and
 # Egor reads ONE gray in this menu: the system's own, the tone macOS already paints the disabled
 # percentage rows with. A gray spelled out here is a second one beside them whatever its numbers
 # say, so the renderer may hold no gray literal at all and no alpha of its own outside the alarm
-# tone — the dim comes from dimColor(), which resolves the system colour per render. Runs whether
+# tone — the dim comes from dimColor(), the system colour's name AppKit resolves as it draws. Runs whether
 # or not Hammerspoon is available: the evidence is the source text.
 gray_hits=$(awk '
   /grayColor/ { printf "line %d: %s\n", NR, $0 }

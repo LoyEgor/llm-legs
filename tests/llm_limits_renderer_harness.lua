@@ -31,12 +31,11 @@ local harnessClock = nil
 -- nil is no store at all. Nothing under a real ~/.gemini-web is ever served.
 local geminiWebFake = { root = "/fixture/gemini-web", files = nil }
 
--- What AppKit resolves {System, tertiaryLabelColor} to, the tone the renderer dims with. The two
--- levels are the two appearances: black on a light menu, white on a dark one.
-local SYSTEM_DIM_ALPHA = 0.258824
-
-local function dimTone(level)
-  return { red = level, green = level, blue = level, alpha = SYSTEM_DIM_ALPHA }
+-- The renderer dims with the system colour's name, {System, tertiaryLabelColor}, left for AppKit to
+-- resolve in the menu's own appearance (black at 0.26 on a light menu, white on a dark one).
+local function isSystemDim(color)
+  return type(color) == "table" and color.list == "System" and color.name == "tertiaryLabelColor"
+    and color.red == nil
 end
 
 local function colorKey(color)
@@ -49,7 +48,7 @@ end
 -- not reach a row at all.
 local KNOWN_COLORS = {}
 local palette = assert(loadfile(root .. "/hammerspoon/menu-style.lua"))()
-for _, color in ipairs({ dimTone(0), dimTone(1), palette.RED, palette.DIM_RED, palette.GREEN,
+for _, color in ipairs({ palette.RED, palette.DIM_RED, palette.GREEN,
     palette.tone(palette.GREEN, true), palette.tone(palette.RED, true) }) do
   KNOWN_COLORS[colorKey(color)] = true
 end
@@ -71,7 +70,7 @@ local function styled(text, attributes)
   -- through here, submenus and concatenated runs included, so a fourth tone cannot be introduced
   -- anywhere without this failing.
   if color ~= nil then
-    assert(type(color) == "table" and KNOWN_COLORS[colorKey(color)],
+    assert(type(color) == "table" and (isSystemDim(color) or KNOWN_COLORS[colorKey(color)]),
       "a colour outside the one dim, red, dim red and green reached the menu: "
         .. describeColor(color) .. " on " .. string.format("%q", tostring(text)))
   end
@@ -131,14 +130,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       table.insert(dialogCalls, { ... })
       return dialogAnswer
     end },
-    -- The renderer asks AppKit for the dim tone per render, which is how it follows the
-    -- appearance; the fake answers the same way so the light/dark assertions still measure that.
+    -- Resolving in Lua takes Hammerspoon's appearance, not the menu's: over a dark wallpaper it gave
+    -- white on the light menu (2026-10-14). The renderer leaves the dim to AppKit.
     drawing = { color = { asRGB = function(spec)
-      assert(type(spec) == "table" and spec.list == "System"
-        and spec.name == "tertiaryLabelColor",
-        "the renderer resolved a system colour that is not the menu's own dim: "
-          .. describeColor(spec))
-      return dimTone(interfaceStyle == "Dark" and 1 or 0)
+      error("the renderer resolved " .. describeColor(spec) .. " in Lua instead of leaving it to AppKit")
     end } },
     execute = function(command)
       local account = tostring(command):match("fast%-mode%s+[\"']?([^%s\"']+)[\"']?%s+status")
@@ -386,13 +381,10 @@ function toned.assert(items, where)
 end
 
 -- The dim tone is the system's own tertiaryLabelColor, the colour macOS paints the disabled
--- percentage rows with, resolved per render so it flips with the appearance. Any literal alpha of
+-- percentage rows with, resolved by AppKit in the menu's appearance. Any literal alpha of
 -- ours would read as a second gray beside those rows; tests/test_llm_limits.sh fails on one.
-local function isDimmed(attributes, level)
-  local color = attributes and attributes.color
-  if type(color) ~= "table" or color.alpha ~= SYSTEM_DIM_ALPHA then return false end
-  if level and color.red ~= level then return false end
-  return color.red == color.green and color.green == color.blue
+local function isDimmed(attributes)
+  return isSystemDim(attributes and attributes.color)
 end
 
 -- The pin keeps the full label colour in every state, honoured or not: an ignored pin is already
@@ -4428,7 +4420,7 @@ do
         for _, run in ipairs(item.title.runs or { { attributes = item.title.attributes } }) do
           local color = run.attributes and run.attributes.color
           if color ~= nil then
-            assert(type(color) == "table" and KNOWN_COLORS[colorKey(color)],
+            assert(type(color) == "table" and (isSystemDim(color) or KNOWN_COLORS[colorKey(color)]),
               "a second gray is in the menu: " .. describeColor(color) .. " on row " .. where)
           end
         end

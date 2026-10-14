@@ -763,15 +763,17 @@ refresh.fn()
 check(#tasks == 1 and tasks[1].path == "/fixture/bin/updater-doctor" and #tasks[1].args == 0, "Refresh runs bin/updater-doctor")
 check((tasks[1].env or {}).DOCTOR_TRIGGER == "menu", "a menu Refresh does not tag its collector run as menu")
 check(text(refreshRow(details(doctors.menuItems()[3].menu)).title) == "refreshing…", "a running Refresh")
-local systemDrawing, appearance = rawget(fakeHs, "drawing"), 0.1
-fakeHs.drawing = { color = { asRGB = function() return { red = appearance, green = appearance, blue = appearance, alpha = 1 } end } }
-local function dimRed() return (color(refreshRow(details(doctors.menuItems()[3].menu)).title) or {}).red or -1 end
-local lightRed = dimRed()
-appearance = 0.7
-local darkRed = dimRed()
+-- The dim stays the system colour's name for AppKit to resolve in the menu's appearance: resolved in
+-- Lua it took Hammerspoon's dark menu-bar appearance and drew white on the light menu.
+local systemDrawing, resolves = rawget(fakeHs, "drawing"), 0
+fakeHs.drawing = { color = { asRGB = function()
+  resolves = resolves + 1
+  return { red = 1, green = 1, blue = 1, alpha = 0.25 }
+end } }
+local refreshDim = color(refreshRow(details(doctors.menuItems()[3].menu)).title)
 fakeHs.drawing = systemDrawing
-check(math.abs(lightRed - 0.1) < 0.01 and math.abs(darkRed - 0.7) < 0.01,
-  "a dim Doctors row kept the previous appearance's colour: " .. lightRed .. " then " .. darkRed)
+check(resolves == 0 and sameColor(refreshDim, palette.DIM),
+  "a dim Doctors row resolved the system dim in Lua (" .. resolves .. " asRGB calls)")
 check(table.concat(palette.refreshing(), ",") == "Doctors", "a running doctor Refresh does not wear the Automations marker")
 tasks[1]:finish(0)
 check(#palette.refreshing() == 0, "a finished doctor Refresh kept the Automations marker")
