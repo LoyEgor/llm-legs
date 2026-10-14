@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import limit_hit
-from fix_commit import LANDED_FILE, NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir, use_memo
+from fix_commit import LANDED_FILE, NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, memo_flush, merge_settled, read_settled, record_settled, siblings_dir, use_memo
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import command as probe_command, host_ticks, spawn_pid, sysctl
 import cpu_audit
@@ -3596,15 +3596,26 @@ def suite_bound(runs, root, name):
     return max(found)[1] if found else None
 
 
-def usual_secs(runs, root, name, before):
+def usual_index(runs):
+    """Every journaled pass per (repo root, suite), oldest first: what usual_secs asks, read once for all its asks."""
+    index = {}
+    for r in runs:
+        if isinstance(r.get("suites"), dict):
+            for name, s in r["suites"].items():
+                if isinstance(s, dict) and s.get("rc") == 0 and isinstance(s.get("secs"), (int, float)):
+                    index.setdefault((repr(r.get("repo_root")), name), []).append((r["ended_at"], s["secs"]))
+    for passes in index.values():
+        passes.sort()
+    return index
+
+
+def usual_secs(index, root, name, before):
     """run-suites' own p90: its last 50 passes in the repo before, None under 3."""
-    passes = [(r["ended_at"], r["suites"][name]["secs"]) for r in runs
-              if r.get("repo_root") == root and r["ended_at"] < before and isinstance(r.get("suites"), dict)
-              and isinstance(r["suites"].get(name), dict) and r["suites"][name].get("rc") == 0
-              and isinstance(r["suites"][name].get("secs"), (int, float))]
+    passes = index.get((repr(root), name), ())
+    passes = passes[max(0, bisect.bisect_left(passes, (before,)) - 50):bisect.bisect_left(passes, (before,))]
     if len(passes) < 3:
         return None
-    ordered = sorted(x[1] for x in sorted(passes)[-50:])
+    ordered = sorted(x[1] for x in passes)
     return math.ceil(ordered[math.ceil(len(ordered) * 0.9) - 1])
 
 
@@ -3627,7 +3638,7 @@ def hang_log(name, start, end):
 
 def hang_line(runs, now):
     window = LIMITS["test_cost_window_s"]
-    hangs, seen = {}, {}
+    hangs, seen, passes = {}, {}, usual_index(runs)
     for r in runs:
         if r["ended_at"] < now - window or not isinstance(r.get("suites"), dict):
             continue
@@ -3637,7 +3648,7 @@ def hang_line(runs, now):
                 continue
             ident = test_ident(r.get("repo"), SUITE_EXT.sub("", name), r.get("repo_root"))
             seen[ident] = seen.get(ident, 0) + 1
-            usual = usual_secs(runs, r.get("repo_root"), name, r["ended_at"]) if rc else None
+            usual = usual_secs(passes, r.get("repo_root"), name, r["ended_at"]) if rc else None
             if r.get("kind") == "suites" and rc == 124:
                 how = "timeout"
             elif 128 < rc < 160 and secs >= (suite_bound(runs, r.get("repo_root"), name) or float("inf")):
@@ -6519,6 +6530,7 @@ def exec_speed():
     sys.stderr.flush()
     os.environ["DOCTOR_TRIGGER"] = "harness"
     os.environ[collector_runs.CPU_BASE_ENV] = repr(collector_runs.cpu_total())
+    memo_flush()
     try:
         os.execv(script, [script, "--quiet"])
     except OSError:

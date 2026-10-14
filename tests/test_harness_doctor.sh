@@ -425,6 +425,22 @@ for command, want in (("ls -la | grep x", True), ("cat f 2>/dev/null", True), ("
 EOF
 asserts=$((asserts + 1))
 
+# A run that hands over to Speed ends in os.execv, which skips atexit: what it learned of fix landings is
+# saved before the exec, or every run walks git again for the same commits.
+python3 - "$DOCTOR" "$WORK/landings/fix-landings.json" <<'EOF' || fail "a run exec'd into Speed without saving its fix landings"
+import importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+os.environ.update(SPEED_DOCTOR_DIR="/nonexistent", SPEED_DOCTOR_CMD="/usr/bin/true")
+fix_commit = sys.modules["fix_commit"]
+fix_commit.use_memo(sys.argv[2], True)
+fix_commit.memo_put("landed", "/r|x@1", ["a" * 40, 1])
+module.exec_speed()
+EOF
+assert_eq 1 "$([ -s "$WORK/landings/fix-landings.json" ] && echo 1 || echo 0)" "the landings a run learned survive its exec into Speed"
+asserts=$((asserts + 1))
+
 python3 - "$DOCTOR" "$T" <<'EOF' || fail "change impact or inventory caps misjudged"
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
@@ -1160,6 +1176,14 @@ check(hand.get("level") == "red" and "ended by hand or failure after 1728 s, 90Ã
 check(usual_hangs({"rc": 1, "secs": 60, "bound": 1800}, [17.2, 18.4, 18.9, 17.8]) == {}
       and usual_hangs({"rc": 1, "secs": 1728.383, "bound": 1800}, [17.2, 18.4]) == {},
       "a failure within 5x its usual time, or one with fewer than 3 passes behind it, is no hang")
+pass_runs = [hang_run("suites", T - 1000 + i, {"test_p.sh": {"rc": 0, "secs": 100 + i}}) for i in range(80)]
+pass_runs += [hang_run("suites", T - 1000 + i, {"test_p.sh": {"rc": 0, "secs": 100 + i}}, repo_root="/r/other") for i in range(2)]
+pass_runs.append(hang_run("suites", T - 1000 + 5, {"test_p.sh": {"rc": 1, "secs": 9999}}))
+pass_index = m.usual_index(pass_runs)
+check([m.usual_secs(pass_index, hang_root, "test_p.sh", T - 1000 + n) for n in (0, 2, 3, 40, 60, 80, 99)]
+      == [None, None, 102, 135, 154, 174, 174] and m.usual_secs(pass_index, "/r/other", "test_p.sh", T) is None
+      and m.usual_secs(pass_index, hang_root, "test_q.sh", T) is None,
+      "usual pass time is the p90 of the last 50 passes of that repo and suite before the run, none under 3")
 check(m.suite_bound([hang_run("suites", T - 10 * i, {"test_p.sh": {"rc": 0, "secs": 400, "bound": b}})
                      for i, b in enumerate((4500, 3600, 9000))], hang_root, "test_p.sh") == 4500
       and m.suite_bound([hang_run("suites", T, {"test_p.sh": {"rc": 0, "secs": 400}})], hang_root, "test_p.sh") is None

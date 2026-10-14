@@ -46,19 +46,22 @@ def memo_put(kind, key, value):
         _memo_rows().setdefault(kind, {})[key] = value
         if _memo["write"] and not _memo["dirty"]:
             _memo["dirty"] = True
-            atexit.register(_memo_save)
+            atexit.register(memo_flush)
 
 
-def _memo_save():
-    temporary = "%s.tmp.%d" % (_memo["path"], os.getpid())
-    try:
-        os.makedirs(os.path.dirname(_memo["path"]), exist_ok=True)
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(_memo["rows"], handle, sort_keys=True)
-        os.replace(temporary, _memo["path"])
-    except OSError:
-        if os.path.exists(temporary):
-            os.remove(temporary)
+def memo_flush():
+    """Save now what a write run learned: a process that ends in os.execv never reaches its atexit handlers."""
+    if _memo["dirty"]:
+        _memo["dirty"] = False
+        temporary = "%s.tmp.%d" % (_memo["path"], os.getpid())
+        try:
+            os.makedirs(os.path.dirname(_memo["path"]), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(_memo["rows"], handle, sort_keys=True)
+            os.replace(temporary, _memo["path"])
+        except OSError:
+            if os.path.exists(temporary):
+                os.remove(temporary)
 
 
 def read_settled(path):

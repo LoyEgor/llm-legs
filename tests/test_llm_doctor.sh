@@ -1080,7 +1080,7 @@ def memo_run(write):
     finally:
         doctor.subprocess.run = real_run
     if fix_commit._memo["dirty"]:
-        fix_commit._memo_save()
+        fix_commit.memo_flush()
     return landed, len(calls)
 assert memo_run(False)[1] and not os.path.exists(memo)
 assert memo_run(True)[1] and os.path.exists(memo)
