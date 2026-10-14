@@ -45,6 +45,10 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 SHARED = [HERE, os.path.join(os.path.dirname(HERE), "share")]
 REPORT_BUS = os.environ.get("CHAT_LOAD_REPORT_BUS") or os.path.join(HERE, "report-bus")
 REPORT_FRAME = next((path for path in (os.path.join(d, "report_frame.py") for d in SHARED) if os.path.exists(path)), "")
+# Only the memlogd LaunchAgent signals: launchd sets XPC_SERVICE_NAME to the job's label, which no shell,
+# chat or test carries unless it names it on purpose. Any other run prints WOULD KILL and signals nothing
+# (2026-10-14: a hand-run sample with the real low avail SIGKILLed another chat's two Blender renders).
+DAEMON_LABEL = "com.egor.memlogd"
 # Tests weigh pids from a JSON {pid: KB} in place of proc_pid_rusage; a pid it does not name keeps its RSS.
 FOOTPRINT_PATH = os.environ.get("CHAT_LOAD_FOOTPRINT")
 
@@ -310,6 +314,10 @@ def guard(now, avail, table, envs, tops, sessions, protected, roots, titles, las
     (top, pgid), members = max(jobs.items(), key=lambda item: (sum(table[p]["kb"] for p in item[1]), -item[0][1]))
     job_mb = sum(table[p]["kb"] for p in members) // 1024
     if job_mb <= GUARD_JOB_MB:
+        return None
+    if os.environ.get("XPC_SERVICE_NAME") != DAEMON_LABEL:
+        print(f"WOULD KILL {now} chat={top} job_pgid={pgid} footprint_mb={job_mb} avail_mb={avail} "
+              f"pids={','.join(map(str, sorted(members)))}", flush=True)
         return None
     heaviest = max(members, key=lambda p: table[p]["kb"])
     parsed = procargs(heaviest)

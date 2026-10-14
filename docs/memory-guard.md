@@ -23,7 +23,10 @@ A **job** is one process group launched by one chat — every Bash call a chat m
 process the guard SIGKILLed in the last 30 s (still dying under swap, not a new job). Action: **post
 the notice, then SIGKILL every member of that one job** — the whole group at once when nothing else is
 in it, so what it forked while the notice was in flight goes too. The next tick re-evaluates; the next
-fattest goes then, if the pressure did not end.
+fattest goes then, if the pressure did not end. Only the memlogd LaunchAgent acts (launchd's
+`XPC_SERVICE_NAME=com.egor.memlogd`, which guard tests set on purpose); any other `chat-load sample` run
+prints `WOULD KILL chat=… job_pgid=… footprint_mb=…` and signals nothing — a hand-run sample on
+2026-10-14 killed another chat's renders.
 
 On a kill that landed, chat-load prints a `KILLED` line memlogd appends to its day log, appends a
 `MEMGUARD` record to the run directory of any worker run or review cell the job ran under, and the
