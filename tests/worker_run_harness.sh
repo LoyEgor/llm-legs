@@ -503,7 +503,7 @@ await_exit() {
 meta_account_is() { [ "$(jq -r '.account' "$RUN_DIR/meta.json")" = "$1" ]; }
 meta_agy_is() { [ "$(jq -r '.agy_model' "$RUN_DIR/meta.json")" = "$1" ]; }
 
-iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+iso() { TZ=UTC0 printf '%(%Y-%m-%dT%H:%M:%S.000Z)T' "$1"; }
 tool_call() {
   jq -cn --arg name "$1" --arg key "$2" --arg path "$3" --arg id "${4-}" --arg ts "$TOOL_TS" \
     '{type: "assistant", timestamp: $ts,

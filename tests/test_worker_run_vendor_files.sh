@@ -12,7 +12,7 @@ clear_stub
 unset CLAUDE_CODE_SESSION_ID
 set_config 'gemini_model=flash38' 'gemini_effort=high'
 printf 'gemfiles\n' >"$STUB_DIR/gemini_profiles"
-agy_iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+agy_iso() { TZ=UTC0 printf '%(%Y-%m-%dT%H:%M:%SZ)T' "$1"; }
 agy_row_status() { # created_at status name args-json
   jq -cn --arg ts "$1" --arg status "$2" --arg name "$3" --argjson args "$4" \
     '{step_index: 0, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE",
@@ -35,7 +35,7 @@ mkdir -p "$(dirname "$AGY_TRANSCRIPT")"
 # directory.
 agy_workdir=$(cd "$WORK/workdir" && pwd -P)
 export PICK_RC=0 PICK_ACCOUNT=gemfiles
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_write replace_file_content "$agy_workdir/bin/agy-written"
@@ -61,7 +61,7 @@ assert test ! -e "$RUN_DIR/workdir-escape"
 
 # Relative tool targets are anchored to the run workdir before both rendering and escape detection.
 clear_stub
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 agy_write write_to_file 'bin/agy-relative' >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_exit
@@ -74,7 +74,7 @@ assert test ! -e "$RUN_DIR/workdir-escape"
 # The reader takes meta.json, the vendor log and the transcript, read when asked: a case without a
 # launch rewrites the transcript of the run above, which is what a launch of its own would read.
 # A rejected write changed nothing and cannot make the successful call beside it review debt.
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-write-succeeded"
   agy_row_status "$AGY_TS" FAILED write_to_file \
@@ -91,7 +91,7 @@ assert grep -q 'transcript_full.jsonl' "$ROOT/bin/worker-run"
 
 # A shell command that WRITES leaves the run exactly as unanswerable as it was before any extractor
 # existed: the transcript names the editor calls and nothing names the redirect beside them.
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_shell "printf hello > $agy_workdir/bin/agy-through-a-redirect" "$agy_workdir"
@@ -105,7 +105,7 @@ assert grep -qx 'UNKNOWN: the run wrote through the shell, whose targets no tran
 assert test "$(grep -c 'agy-written' "$WORK/transcript-files")" -eq 0
 
 # Numbered and ampersand redirects open files too, so every supported fd spelling spoils the list.
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_shell 'printf one 1>one; printf two 2>two; printf three 3>three; printf all &>all' "$agy_workdir"
@@ -115,7 +115,7 @@ assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targ
 
 # A redirect to a file descriptor or to /dev/null writes no file. Counted as a write it made every
 # `2>/dev/null` in a read-only review run unanswerable, which is most of them.
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_shell 'grep pattern file >/dev/null 2>&1; git diff 2>&1 | head -20; rg -n pattern . 2>/dev/null' "$agy_workdir"
@@ -123,7 +123,7 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 assert grep -qx 'RUN-FILES: 1' <<<"$(transcript_report "$RUN_DIR")"
 
 # The /dev/null exception ends at the device name; a similarly prefixed file is still a write.
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_shell 'printf hidden >/dev/null.log' "$agy_workdir"
@@ -132,7 +132,7 @@ assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targ
   <<<"$(transcript_report "$RUN_DIR")"
 
 # Comparison and arrow operators are not redirects; the shell still makes this exact editor list a floor.
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_shell "printf '%s' 'a >= b' 'x => x'" "$agy_workdir"
@@ -145,7 +145,7 @@ assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report
 # generation names only the image's LABEL, and a subagent it invokes edits under a transcript of
 # its own. Neither may pass as a complete list, and the reason names the call so the next reader
 # knows what to teach it.
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_row "$AGY_TS" generate_image '{"ImageName": "asset", "AspectRatio": "1:1"}'
@@ -154,7 +154,7 @@ assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file ta
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A write whose target the transcript leaves empty is the same refusal.
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 agy_row "$AGY_TS" write_to_file '{"CodeContent": "x"}' >"$AGY_TRANSCRIPT"
 assert grep -qx 'RUN-FILES: unknown (the transcript records a write whose target it does not name)' \
   <<<"$(transcript_report "$RUN_DIR")"
@@ -163,19 +163,18 @@ assert grep -qx 'RUN-FILES: unknown (the transcript records a write whose target
 # before it — reported unfiltered this run claims a file an earlier one edited. The run's own start
 # is the cut, and a call stamped in that very second is this run's.
 clear_stub
-export STUB_SLEEP=0.3
-start_ok gemini
+start_gated gemini
 run_started=$(jq -r '.started_at' "$RUN_DIR/meta.json")
 AGY_TS=$(agy_iso $((run_started - 7200)))
 agy_write write_to_file "$agy_workdir/bin/agy-before-the-resume" >"$AGY_TRANSCRIPT"
 AGY_TS=$(agy_iso "$run_started")
 AGY_TS="${AGY_TS%Z}.123Z"
 agy_write write_to_file "$agy_workdir/bin/agy-at-the-start" >>"$AGY_TRANSCRIPT"
+gate_open
 assert await_exit
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/agy-at-the-start' <<<"$report"
-unset STUB_SLEEP
 
 # A syntactically valid mutating row with no usable time cannot be silently excluded from the run.
 RUN_DIR=$AGY_RUN_DIR
@@ -201,7 +200,7 @@ rm -f "$AGY_TRANSCRIPT.moved"
 # signal is that NOTHING the run named is inside it. Said in the report and marked beside the run,
 # and said even where the list itself is unanswerable — the escape is the louder of the two facts.
 clear_stub
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$WORK/extra/agy-went-elsewhere"
   agy_shell "printf x > $WORK/extra/and-wrote-here" "$WORK/extra"
@@ -226,7 +225,7 @@ assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$report")" -eq 2
 # A run that touched its own workdir AND wrote outside it is doing its job: a worker reads
 # ~/.claude and writes /tmp, and screamed about every time this line would say nothing at all.
 clear_stub
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_write write_to_file "$WORK/extra/agy-also-here"
@@ -244,19 +243,22 @@ set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=codexfiles
 CX_ROLLOUT="$CODEX_PROFILES_DIR/codexfiles/sessions/fixture/rollout-codex-session.jsonl"
 mkdir -p "$(dirname "$CX_ROLLOUT")"
-cx_row() { jq -cn --arg ts "$CX_TS" --argjson p "$1" '{timestamp: $ts, type: "response_item", payload: $p}'; }
-cx_patch_event() { # target move-or-empty success
-  cx_row "$(jq -cn --arg t "$1" --arg m "$2" --argjson ok "$3" \
-    '{type: "patch_apply_end", success: $ok,
-      changes: {($t): {type: "update", move_path: (if $m == "" then null else $m end)}}}')"
+cx_row() { cx_payload --argjson p "$1" '$p'; }
+cx_payload() { # jq-args... payload-filter: one row in a single jq
+  jq -cn --arg ts "$CX_TS" "${@:1:$#-1}" "{timestamp: \$ts, type: \"response_item\", payload: (${!#})}"
 }
-cx_exec() { cx_row "$(jq -cn --arg s "$1" '{type: "custom_tool_call", name: "exec", input: $s}')"; }
-cx_exec_id() { cx_row "$(jq -cn --arg id "$1" --arg s "$2" '{type: "custom_tool_call", name: "exec", call_id: $id, input: $s}')"; }
-cx_call() { cx_row "$(jq -cn --arg n "$1" --arg a "$2" '{type: "function_call", name: $n, arguments: $a}')"; }
-cx_call_id() { cx_row "$(jq -cn --arg id "$1" --arg n "$2" --arg a "$3" '{type: "function_call", name: $n, call_id: $id, arguments: $a}')"; }
-cx_output() { cx_row "$(jq -cn --arg id "$1" --arg out "$2" '{type: "custom_tool_call_output", call_id: $id, output: $out}')"; }
+cx_patch_event() { # target move-or-empty success
+  cx_payload --arg t "$1" --arg m "$2" --argjson ok "$3" \
+    '{type: "patch_apply_end", success: $ok,
+      changes: {($t): {type: "update", move_path: (if $m == "" then null else $m end)}}}'
+}
+cx_exec() { cx_payload --arg s "$1" '{type: "custom_tool_call", name: "exec", input: $s}'; }
+cx_exec_id() { cx_payload --arg id "$1" --arg s "$2" '{type: "custom_tool_call", name: "exec", call_id: $id, input: $s}'; }
+cx_call() { cx_payload --arg n "$1" --arg a "$2" '{type: "function_call", name: $n, arguments: $a}'; }
+cx_call_id() { cx_payload --arg id "$1" --arg n "$2" --arg a "$3" '{type: "function_call", name: $n, call_id: $id, arguments: $a}'; }
+cx_output() { cx_payload --arg id "$1" --arg out "$2" '{type: "custom_tool_call_output", call_id: $id, output: $out}'; }
 cx_workdir=$(cd "$WORK/workdir" && pwd -P)
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 {
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_patch_event "$cx_workdir/bin/cx-moved-from" "$cx_workdir/bin/cx-moved-to" true
@@ -329,7 +331,7 @@ cp "$WORK/memo-rollout.saved" "$CX_ROLLOUT"
 # attribute: a run editing this suite's own fixtures patches their `*** Update File: $cx_workdir/…`
 # headers, and the variable reached a live run's file list as a file (2026-08-24). The run says so
 # instead of naming it.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 {
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_patch_event '$cx_workdir/bin/cx-from-a-variable' '' true
@@ -357,7 +359,7 @@ assert_fails grep -q '^RUN-FILES: unknown' <<<"$report"
 
 # The same guard for agy, which names its targets in its own log through the same reader.
 RUN_DIR=$AGY_RUN_DIR
-AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_write write_to_file '$agy_workdir/bin/agy-from-a-variable'
@@ -370,7 +372,7 @@ assert_fails grep -q '^RUN-FILE: .*agy-from-a-variable' <<<"$report"
 
 # Patch headers printed by a shell command are text, not editor targets.
 RUN_DIR=$CX_RUN_DIR
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 {
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_call exec_command "$(jq -cn --arg d "$cx_workdir" '{cmd:"printf %s *** Update File: bin/cx-mentioned-only",workdir:$d}')"
@@ -380,7 +382,7 @@ assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert test "$(grep -c 'cx-mentioned-only' <<<"$report")" -eq 0
 
 # CRLF patch headers produce the same path bytes as LF headers.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 printf -v crlf_patch '*** Begin Patch\r\n*** Update File: %s/bin/cx-crlf\r\n*** End Patch\r\n' "$cx_workdir"
 {
   cx_call_id cx-crlf apply_patch "$crlf_patch"
@@ -392,7 +394,7 @@ assert test "$(printf '%s' "$report" | tr -cd '\r' | wc -c | tr -d ' ')" -eq 0
 
 # codex's shell arrives as JSON inside the harness call, and the write list reads it the same way
 # whichever wrapper carries it — the JS `exec` dispatcher included.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 {
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_exec "const r = await tools.exec_command({\"cmd\":\"sed -i '' s/a/b/ bin/cx-through-the-shell\",\"workdir\":\"$cx_workdir\"}); text(r.output);"
@@ -401,14 +403,14 @@ assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targ
   <<<"$(transcript_report "$RUN_DIR")"
 
 # Single quotes and backticks are string literals like any other, and a call spelled with them reads.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "await tools.exec_command({cmd:'git status',workdir:'$cx_workdir'}); await tools.exec_command({cmd:\`git status\`,workdir:\`$cx_workdir\`});" \
   >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # An interpolated template literal names no command this reader can read, and fails closed.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "const verb = 'status'; const cmd = \`git \${verb}\`; await tools.exec_command({cmd, workdir:'$cx_workdir'});" \
   >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
@@ -417,21 +419,21 @@ assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file ta
 # Shorthand resolves by NAME against the binding standing before the call, so an explicit value and a
 # shorthand one interleaved each keep their own command; taking them in two blocks paired the second
 # call with the first binding, and its `sed` spoiled a run that never wrote through the shell.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "var cmd = \"sed -i '' s/a/b/ bin/cx-not-this-one\"; await tools.exec_command({cmd: 'git status'}); var cmd = 'cat bin/cx-read-only'; await tools.exec_command({cmd});" \
   >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # The same binding serves every shorthand call that follows it, however many there are.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "const cmd = 'git status --short'; await tools.exec_command({cmd}); await tools.exec_command({cmd});" \
   >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A shorthand name with no binding before it resolves to nothing at all.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "await tools.exec_command({cmd}); const cmd = 'git status';" >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
   <<<"$(transcript_report "$RUN_DIR")"
@@ -439,7 +441,7 @@ assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file ta
 # workdir resolves per call the same way: the shorthand of the second call is the directory bound
 # before IT, and reading the first binding instead put every command outside the workdir.
 clear_stub
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "var workdir = '$WORK/extra'; await tools.exec_command({cmd: 'git status', workdir: '$WORK/extra'}); var workdir = '$cx_workdir'; await tools.exec_command({cmd: 'ls', workdir});" \
   >"$CX_ROLLOUT"
 start_ok codex
@@ -456,7 +458,7 @@ cx_other=$(cd "$cx_other" && pwd -P)
 git -C "$cx_other" worktree add -q "$cx_other/.claude/worktrees/cx-foreign" 2>/dev/null
 for cx_tree in cx-made cx-foreign; do
   clear_stub
-  CX_TS=$(iso $(($(date +%s) + 60)))
+  CX_TS=$(iso $((EPOCHSECONDS + 60)))
   {
     [ "$cx_tree" = cx-foreign ] ||
       cx_call exec_command "{\"cmd\":\"git worktree add .claude/worktrees/$cx_tree\",\"workdir\":\"$cx_other\"}"
@@ -479,20 +481,20 @@ git -C "$cx_other" worktree remove --force "$cx_other/.claude/worktrees/cx-forei
 
 # Tool-looking text in strings and comments is not an executed call.
 RUN_DIR=$CX_RUN_DIR
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec $'await tools.view_image({path:"fixture.png"}); const note = "tools.fs_write()"; // tools.js()' \
   >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # Direct function-call arguments must be a JSON object, not prose containing field-shaped text.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_call exec_command "arbitrary text cmd: \"git status\", workdir: \"$cx_workdir\"" >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # Bare JavaScript object keys are the dominant exec_command rollout form and use the same shell rule.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 {
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_exec "const r = await tools.exec_command({cmd:\"sed -i '' s/a/b/ bin/cx-bare-shell\",workdir:\"$cx_workdir\"}); text(r.output);"
@@ -501,14 +503,14 @@ assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targ
   <<<"$(transcript_report "$RUN_DIR")"
 
 # JavaScript shorthand arguments resolve through their string bindings.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 cx_exec "const cmd = \"git status --short\"; const workdir = \"$cx_workdir\"; await tools.exec_command({cmd, workdir, yield_time_ms:10000});" \
   >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # Bytes typed into a shell a previous call started are read as a command line like any other.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 {
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_call write_stdin '{"session_id":1,"chars":"cat header > bin/cx-typed-in\n"}'
@@ -518,14 +520,14 @@ assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targ
 
 # A tool this reader does not know: node's own REPL, a spawned subagent, an MCP server's write —
 # each can put bytes on disk under no name the rollout carries.
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 {
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_call js '{"code":"nodeRepl.write(1)"}'
 } >"$CX_ROLLOUT"
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: js)' \
   <<<"$(transcript_report "$RUN_DIR")"
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 {
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_row '{"type": "mcp_tool_call_end", "invocation": {"server": "s", "tool": "fs.write"}}'
@@ -535,18 +537,17 @@ assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file ta
 
 # A resumed codex session appends to the rollout it already had, and the cut is the run's own start.
 clear_stub
-export STUB_SLEEP=0.3
-start_ok codex
+start_gated codex
 run_started=$(jq -r '.started_at' "$RUN_DIR/meta.json")
 CX_TS=$(iso $((run_started - 7200)))
 cx_patch_event "$cx_workdir/bin/cx-before-the-resume" '' true >"$CX_ROLLOUT"
 CX_TS=$(iso "$run_started")
 cx_patch_event "$cx_workdir/bin/cx-at-the-start" '' true >>"$CX_ROLLOUT"
+gate_open
 assert await_exit
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/cx-at-the-start' <<<"$report"
-unset STUB_SLEEP
 
 # Codex mutating rows with unusable timestamps fail closed just like Gemini rows.
 RUN_DIR=$CX_RUN_DIR
@@ -564,7 +565,7 @@ assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not track
 # A walled attempt's edits stay the run's after the reroute: the rescue's transcript names only its own.
 clear_stub
 dirt_repo_init
-CX_TS=$(iso $(($(date +%s) + 60)))
+CX_TS=$(iso $((EPOCHSECONDS + 60)))
 mkdir -p "$CODEX_PROFILES_DIR/wall/sessions/fixture" "$CODEX_PROFILES_DIR/rescue/sessions/fixture"
 cx_patch_event "$DIRT_TOP/bin/cx-walled-attempt" '' true >"$CODEX_PROFILES_DIR/wall/sessions/fixture/rollout-wall-session.jsonl"
 cx_patch_event "$DIRT_TOP/bin/cx-rescue-attempt" '' true >"$CODEX_PROFILES_DIR/rescue/sessions/fixture/rollout-codex-session.jsonl"
@@ -636,15 +637,16 @@ unset STUB_SESSION
 # going. Written only when the attempt ends, everything that session journals in the meantime is
 # priced as nobody's, which is the hole the pair on record exists to close.
 clear_stub
-export STUB_SESSION=resumed-session STUB_SLEEP=0.5
-CLAUDE_LAUNCHER_SESSION=chat-resume start_ok claudeb --account resumeacct --resume resumed-session
+export STUB_SESSION=resumed-session
+CLAUDE_LAUNCHER_SESSION=chat-resume start_gated claudeb --account resumeacct --resume resumed-session
 assert test "$(cat "$RUN_DIR/worker-session")" = resumed-session
+gate_open
 assert await_exit
 # And once per id, however many times the record is rewritten over it.
 assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 1
 # Its one attempt line is written at launch.
 assert test "$(jq -r --arg run "$RUN_ID" 'select(.run == $run) | .run' "$CLAUDEB_DIR/worker-stats/worker-attempts.jsonl" | grep -c .)" -eq 1
-unset STUB_SESSION STUB_SLEEP
+unset STUB_SESSION
 
 # "429" only counts as a limit signature with digit boundaries: an error id that
 # merely contains it stays an ordinary failure.
@@ -697,7 +699,7 @@ RECYCLED_DIR="$WORKER_RUN_DIR/codex-9-9-bbbb"
 mkdir -p "$RECYCLED_DIR"
 : >"$RECYCLED_DIR/out"
 : >"$RECYCLED_DIR/err"
-jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$EPOCHSECONDS" \
   '{vendor:"codex",account:"recycled",pid:$pid,started_at:$now,pid_started_at:1000}' \
   >"$RECYCLED_DIR/meta.json"
 recycled_wait=$("$RUNNER" wait codex-9-9-bbbb --max 0)
@@ -706,17 +708,17 @@ assert grep -q '^EXIT: unknown$' <<<"$recycled_wait"
 recycled_report=$("$RUNNER" report codex-9-9-bbbb)
 assert grep -q '^STATUS: failed$' <<<"$recycled_report"
 # The same live pid whose start MATCHES the stamp is the supervisor itself, and it is left alone.
-jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$EPOCHSECONDS" \
   '{vendor:"codex",account:"recycled",pid:$pid,started_at:$now,pid_started_at:$now}' \
   >"$RECYCLED_DIR/meta.json"
 assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
 # A record written before the launch stamp existed has nothing to compare and keeps the old answer:
 # every run started before that field went in would otherwise begin reading dead.
-jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$EPOCHSECONDS" \
   '{vendor:"codex",account:"legacy",pid:$pid,started_at:$now}' >"$RECYCLED_DIR/meta.json"
 assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
 # A night run that queued for its slot keeps its launch as started_at; its deadline runs from slot_at.
-jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$EPOCHSECONDS" \
   '{vendor:"codex",account:"legacy",pid:$pid,started_at:1000,slot_at:$now}' >"$RECYCLED_DIR/meta.json"
 assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
 # A ps that cannot answer at all — a sandbox that hides other processes, a fork that failed —
@@ -725,7 +727,7 @@ assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
 mkdir -p "$WORK/blind-ps"
 printf '#!/bin/sh\nexit 1\n' >"$WORK/blind-ps/ps"
 chmod +x "$WORK/blind-ps/ps"
-jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$EPOCHSECONDS" \
   '{vendor:"codex",account:"recycled",pid:$pid,started_at:$now,pid_started_at:1000}' \
   >"$RECYCLED_DIR/meta.json"
 assert grep -q '^STATUS: running$' <<<"$(PATH="$WORK/blind-ps:$PATH" "$RUNNER" report codex-9-9-bbbb)"
@@ -740,7 +742,7 @@ assert grep -q '^STATUS: running$' <<<"$(PATH="$WORK/self-ps:$PATH" "$RUNNER" re
 # The probe still answers about the process: a pid nothing is behind reads gone, blind ps or not.
 GONE_PID=$(sh -c 'echo $$')
 while kill -0 "$GONE_PID" 2>/dev/null; do GONE_PID=$((GONE_PID + 1)); done
-jq -cn --argjson pid "$GONE_PID" --argjson now "$(date +%s)" \
+jq -cn --argjson pid "$GONE_PID" --argjson now "$EPOCHSECONDS" \
   '{vendor:"codex",account:"recycled",pid:$pid,started_at:$now,pid_started_at:$now}' \
   >"$RECYCLED_DIR/meta.json"
 assert grep -q '^STATUS: failed$' <<<"$(PATH="$WORK/blind-ps:$PATH" "$RUNNER" report codex-9-9-bbbb)"
