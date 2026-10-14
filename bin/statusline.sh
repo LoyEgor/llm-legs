@@ -329,21 +329,46 @@ repo_debt_lines() { # var toplevel now tree-state
   fi
 }
 
+# The gate's answer is two files of this session, its span's arm and off markers
+# (`words_span_marker`, hooks/lib/words.sh): while their stamps hold the answer cannot move, so a
+# refresh past 15s only restamps the cache, and the gate itself is asked again at most 90s later.
+autonomy_stamp() { # var session
+  local f t z i marks=""
+  for f in arm off; do
+    if file_mtime_to t "$HOME/.cache/claude/review-journal/span-$f-$2"; then
+      file_size_to z "$HOME/.cache/claude/review-journal/span-$f-$2"
+      file_stat_to i inode "$HOME/.cache/claude/review-journal/span-$f-$2"
+      marks+="$t.$z.$i|"
+    else
+      marks+="-|"
+    fi
+  done
+  printf -v "$1" '%s' "$marks"
+}
+
 review_session_line() { # session now
   local out="$1" sid="$2" now="$3"
   printf -v "$out" ''
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
   local cache="$statusline_cache_dir/review-autonomy-$sid"
   local lock="$cache.lock"
-  local cached cache_mtime lock_mtime
+  local cached cache_mtime lock_mtime cached_stamp cached_gate stamp
   [ -n "$sid" ] && [ -x "$gate" ] || { printf -v "$out" '%s' 'no'; return 0; }
   file_mtime_to cache_mtime "$cache"
-  cached=""
-  [[ "$cache_mtime" =~ ^[0-9]+$ ]] && IFS= read -r cached < "$cache" 2>/dev/null
+  cached=""; cached_stamp=""; cached_gate=""
+  [[ "$cache_mtime" =~ ^[0-9]+$ ]] && { IFS= read -r cached; IFS= read -r cached_stamp; IFS= read -r cached_gate; } < "$cache" 2>/dev/null
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 15 ]; then
     printf -v "$out" '%s' "$cached"
     return 0
+  fi
+  if [ -n "$cached" ] && [[ "$cached_gate" =~ ^[0-9]+$ ]] && [ "$((now - cached_gate))" -lt 90 ]; then
+    autonomy_stamp stamp "$sid"
+    if [ "$stamp" = "$cached_stamp" ]; then
+      printf '%s\n%s\n%s\n' "$cached" "$stamp" "$cached_gate" > "$cache" 2>/dev/null
+      printf -v "$out" '%s' "$cached"
+      return 0
+    fi
   fi
   if ensure_dir "$statusline_cache_dir" 2>/dev/null; then
     file_mtime_to lock_mtime "$lock"
@@ -355,9 +380,10 @@ review_session_line() { # session now
         lock_id="$(file_inode "$lock"):$(file_mtime "$lock")"
         trap '[ "$(file_inode "$lock"):$(file_mtime "$lock")" = "$lock_id" ] &&
           rmdir "$lock" 2>/dev/null' EXIT
+        autonomy_stamp stamp "$sid"
         auto=$(run_bounded 10 "$gate" autonomous "$sid" 2>/dev/null | head -1)
         [ "$auto" = yes ] || auto=no
-        probe_publish "$cache" "$auto"
+        probe_publish "$cache" "$auto"$'\n'"$stamp"$'\n'"$EPOCHSECONDS"$'\n'
         probe_journal autonomy "$refresh_start_us"
       ) >/dev/null 2>&1 &
     fi

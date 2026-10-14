@@ -1583,6 +1583,13 @@ assert grep -Fq 'if [[ "$answer" =~ ^LINES=([0-9]+)[[:space:]]FILES=[0-9]+$ ]]; 
 assert grep -Fq 'line = f"LINES={sum(lines for _, lines, _, _ in rows)} FILES={len(rows)}"' "$RB_DEBT"
 assert grep -Fq 'return line, None' "$RB_DEBT"
 assert test -z "$(grep -E 'verdict_form|"\$gate" verdict|review-journal/.*\.repos' "$STATUSLINE")"
+# The autonomy cache restamps on the two span markers the gate reads: the statusline's path is the
+# hook library's, or a moved marker leaves the line stale until the 90 s gate recheck.
+for _mk in arm off; do
+  assert eq "$(HOME=/h bash -c '. "$1"; words_span_marker "$2" sid-1' _ "$FAMILY_SETUP_ROOT/hooks/lib/words.sh" "$_mk")" \
+    "/h/.cache/claude/review-journal/span-$_mk-sid-1"
+done
+assert grep -Fq '"$HOME/.cache/claude/review-journal/span-$f-$2"' "$STATUSLINE"
 # Nothing prices another chat's debt. Spelled per file — the statusline's own `ph_foreign`/
 # `dir_foreign` are a run in flight and a foreign checkout, neither of which is debt.
 assert test -z "$(grep -E 'debt-total|review_total|foreign=|echo "split rev' "$FLOW_GATE")"

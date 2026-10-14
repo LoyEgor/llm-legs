@@ -4796,6 +4796,38 @@ assert grep -Fq "${review_seg}●" <<< "$review_auto_narrow_out"
 GATE_AUTONOMOUS=no
 review_auto_off_out=$(review_session_render review-auto-off "$REVIEW_DIRTY")
 assert test "${review_auto_off_out#*●}" = "$review_auto_off_out"
+# The gate's answer is its session's two span markers: past 15s a refresh whose markers have not
+# moved asks the gate no more, until 90s after its last answer, and a moved marker asks at once.
+autonomy_asks() { grep -c '^autonomous ' "$GATE_LOG" | tr -d ' '; }
+autonomy_await() { # asks
+  local i
+  for i in $(seq 1 100); do [ "$(autonomy_asks)" -ge "$1" ] && [ ! -d "$autonomy_cache.lock" ] && break; sleep 0.05; done
+  sleep 0.1
+}
+GATE_AUTONOMOUS=yes
+: > "$GATE_LOG"
+autonomy_cache="$STATE_DIR/review-autonomy-review-auto-stamp"
+autonomy_payload=$(statusline_payload review-auto-stamp "" "$REVIEW_DIRTY")
+review_session_render review-auto-stamp "$REVIEW_DIRTY" >/dev/null
+assert_eq 1 "$(autonomy_asks)"
+GATE_AUTONOMOUS=no
+age_path 20 "$autonomy_cache"
+autonomy_held_out=$(run_statusline "$autonomy_payload")
+sleep 0.3
+assert grep -Fq "${review_seg}●" <<< "$autonomy_held_out"
+assert_eq 1 "$(autonomy_asks)"
+mkdir -p "$HOME/.cache/claude/review-journal"
+printf '1 words\n' > "$HOME/.cache/claude/review-journal/span-arm-review-auto-stamp"
+age_path 20 "$autonomy_cache"
+run_statusline "$autonomy_payload" >/dev/null
+autonomy_await 2
+assert_eq 2 "$(autonomy_asks)"
+assert test "$(run_statusline "$autonomy_payload" | grep -c '●')" = 0
+age_path 20 "$autonomy_cache"
+STATUSLINE_NOW=$(( $(date +%s) + 100 )) run_statusline "$autonomy_payload" >/dev/null
+autonomy_await 3
+assert_eq 3 "$(autonomy_asks)"
+rm -f "$HOME/.cache/claude/review-journal/span-arm-review-auto-stamp"
 GATE_AUTONOMOUS=
 GATE_VERB_RC=1
 review_stub_out=$(review_session_render review-stub-verbs "$REVIEW_DIRTY")
