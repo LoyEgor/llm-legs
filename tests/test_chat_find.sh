@@ -378,19 +378,19 @@ rm -f "$HOME/.claude-profiles/com/sessions/1.json" "$HOME/.claude-profiles/com/s
 
 # --- a client-side notice dates nothing and names no model -------------------
 recent --json
-assert test "$(python3 -c "
+rows=$(python3 -c "
 import json, sys
-row = [r for r in json.load(sys.stdin) if r['session'].startswith('bbbb')][0]
+rows = json.load(sys.stdin)
+row = [r for r in rows if r['session'].startswith('bbbb')][0]
 print(row['model'], row['ctx'], row['branch'], row['cwd'], row['at'] < 1770000000)
 print(row['uuid'], row['ttl'], int(row['spoke']))
-" <<<"$OUT")" = "claude-opus-5 42000 main /tmp/proj True
+row = [r for r in rows if r['session'].startswith('eeee')][0]
+print(row['model'], row['ttl'])
+" <<<"$OUT")
+assert test "${rows%$'\n'*}" = "claude-opus-5 42000 main /tmp/proj True
 reply-b 3600 1769680860"
 assert lacks 'Login expired'
-assert test "$(python3 -c "
-import json, sys
-row = [r for r in json.load(sys.stdin) if r['session'].startswith('eeee')][0]
-print(row['model'], row['ttl'])
-" <<<"$OUT")" = "claude-opus-5 0"
+assert test "${rows##*$'\n'}" = "claude-opus-5 0"
 
 # --- the cache answers with the same list, and yields to a new message -------
 HOTC="$WORK/cache-hot.json" COLDC="$WORK/cache-cold.json"
@@ -405,13 +405,13 @@ assert has '2026-02-11 10:00'
 
 # --- the cache is rewritten only when a row changed ----------------------------
 cache_sig() { stat -f '%i %Fm' "$1"; }
-cached_rows() {  # cached_rows <cache file> <row text as JSON> — prints how many rows say it
+cached_rows() {  # cached_rows <cache file> <row text as JSON> [<file> <text>]... — prints how many rows say it, one line a pair
   python3 -c '
 import importlib.machinery, json, sys
 tool = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1]).load_module()
-rows = tool.load_cache(sys.argv[2])
-print(sum(1 for row in rows.values() if row.get("text") == json.loads(sys.argv[3])))
-' "$SCRIPT" "$1" "$2"
+for cache, text in zip(sys.argv[2::2], sys.argv[3::2]):
+    print(sum(1 for row in tool.load_cache(cache).values() if row.get("text") == json.loads(text)))
+' "$SCRIPT" "$@"
 }
 BEFORE=$(cache_sig "$HOTC")
 recent
@@ -475,9 +475,10 @@ said "$REVIVED" 2026-01-03T10:00:00.000Z user 'старый чат'
 touch -t 202601031001 "$REVIVED"
 recent
 assert has 'давний разговор'
-assert test "$(cached_rows "$COLDC" '"давний разговор"')" = 1
-assert test "$(cached_rows "$HOTC" '"давний разговор"')" = 0
-assert test "$(cached_rows "$COLDC" '"старый чат"')" = 1
+found=($(cached_rows "$COLDC" '"давний разговор"' "$HOTC" '"давний разговор"' "$COLDC" '"старый чат"'))
+assert test "${found[0]}" = 1
+assert test "${found[1]}" = 0
+assert test "${found[2]}" = 1
 # The old chat speaks again. A week run that opened cold — even just to look the path up —
 # would block on this fifo; it measures the chat instead and files it hot.
 cp "$COLDC" "$WORK/cold.keep"
@@ -489,8 +490,9 @@ OUT=$(python3 -c 'import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:], 
 assert test "$RC" -eq 0
 rm -f "$COLDC"
 mv "$WORK/cold.keep" "$COLDC"
-assert test "$(cached_rows "$HOTC" '"старый чат ожил"')" = 1
-assert test "$(cached_rows "$COLDC" '"старый чат"')" = 1
+found=($(cached_rows "$HOTC" '"старый чат ожил"' "$COLDC" '"старый чат"'))
+assert test "${found[0]}" = 1
+assert test "${found[1]}" = 1
 # a week run rewrites hot and leaves cold alone
 HOT_BEFORE=$(cache_sig "$HOTC") COLD_BEFORE=$(cache_sig "$COLDC")
 said "$RICH" 2026-02-14T10:00:00.000Z user 'правка на неделе'
@@ -518,9 +520,10 @@ tool.save_cache(sys.argv[2], hot) and tool.save_cache(sys.argv[3], cold)
 assert test "$(cached_rows "$HOTC" '"давний разговор"')" = 1
 recent --days 7
 assert test "$RC" -eq 0
-assert test "$(cached_rows "$HOTC" '"давний разговор"')" = 0
-assert test "$(cached_rows "$COLDC" '"давний разговор"')" = 1
-assert test "$(cached_rows "$COLDC" '"правка на неделе"')" = 0
+found=($(cached_rows "$HOTC" '"давний разговор"' "$COLDC" '"давний разговор"' "$COLDC" '"правка на неделе"'))
+assert test "${found[0]}" = 0
+assert test "${found[1]}" = 1
+assert test "${found[2]}" = 0
 
 # --- the single cache file of old is split once and never read again ---------
 "$SCRIPT" --root "$WORK/projects" --cache "$WORK/old.json" --recent >/dev/null 2>&1
@@ -544,8 +547,9 @@ OUT=$("$SCRIPT" --root "$WORK/projects" --cache "$WORK/old.json" --recent 2>&1);
 assert test "$RC" -eq 0
 assert has 'строка из старого кеша'
 assert test ! -e "$WORK/old.json"
-assert test "$(cached_rows "$WORK/old-hot.json" '"строка из старого кеша"')" = 1
-assert test "$(cached_rows "$WORK/old-cold.json" '"давний разговор"')" = 1
+found=($(cached_rows "$WORK/old-hot.json" '"строка из старого кеша"' "$WORK/old-cold.json" '"давний разговор"'))
+assert test "${found[0]}" = 1
+assert test "${found[1]}" = 1
 
 # --- every start of the tool stays off the gateway account chain it never calls ---
 assert test "$(python3 -c '
