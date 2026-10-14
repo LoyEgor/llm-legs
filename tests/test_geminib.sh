@@ -109,7 +109,9 @@ case "$HOME" in */.gemini-profiles/*) account=$(basename "$HOME") ;; esac
 printf '%s\n' "${AGY_QUOTA_TIMEOUT-unset}" >>"${GEMINI_TIMEOUT_LOG:-/dev/null}"
 if [ -n "${GEMINI_PROBE_LOG:-}" ]; then
   printf 'START %s\n' "$account" >>"$GEMINI_PROBE_LOG"
-  sleep 1
+  # Overlap evidence with no fixed wait: held until four probes have started (5 s at most), so
+  # probes run one after another end before the fourth START and fail the END-line checks.
+  for _ in $(seq 1 50); do [ "$(grep -c '^START ' "$GEMINI_PROBE_LOG")" -ge 4 ] && break; sleep 0.1; done
   printf 'END %s\n' "$account" >>"$GEMINI_PROBE_LOG"
 fi
 if [ "$(cat "${GEMINI_AUTH_DIR:?}/$account" 2>/dev/null)" != ok ]; then
@@ -575,11 +577,17 @@ notty_output=$(bash "$SCRIPT" p notty </dev/null 2>&1) || fail "profile notty fa
 assert grep -qx "CALL home=$HOME/.gemini-profiles/notty argc=0" "$AGY_CALLS"
 if grep -q "web routes" <<<"$notty_output" || grep -q login "$WEB_CALLS"; then fail "no tty, yet it asked"; fi
 on_tty() { python3 "$ROOT/tests/fixtures/answer-pty.py" "$@"; }
+# Both 2 s deadlines run at once.
+deadline_pids=()
 for child in 'exec </dev/null >/dev/null 2>&1; exec sleep 120' 'while :; do echo x; sleep 0.5; done'; do
   ANSWER_PTY_DEADLINE_S=2 timeout 30 python3 "$ROOT/tests/fixtures/answer-pty.py" y bash -c "$child" \
-    >/dev/null 2>"$WORK/pty-deadline"
+    >/dev/null 2>"$WORK/pty-deadline-${#deadline_pids[@]}" &
+  deadline_pids+=($!)
+done
+for i in "${!deadline_pids[@]}"; do
+  wait "${deadline_pids[i]}"
   assert test "$?" -ne 124
-  assert grep -q "bash still running after 2 s, killed" "$WORK/pty-deadline"
+  assert grep -q "bash still running after 2 s, killed" "$WORK/pty-deadline-$i"
 done
 tty_output=$(on_tty '' bash "$SCRIPT" p ttyno)
 assert grep -q "Also sign ttyno into the web routes now? \[y/N\]" <<<"$tty_output"
