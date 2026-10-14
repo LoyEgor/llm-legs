@@ -2388,6 +2388,8 @@ local automationEnv = setmetatable({
   end,
 }, { __index = _G })
 automationEnv._G = automationEnv
+-- Never the live presence module: automation_menu subscribes its title to it on load.
+automationEnv.Presence = false
 automationEnv.ClaudeContinue = {
   getStatus = function()
     return {

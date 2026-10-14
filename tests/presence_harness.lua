@@ -154,6 +154,27 @@ now, idle = now + 60, 4
 presence.tick()
 check(read(mark) == nil and #kicks == 2, "a mark left over a reload outlived his return")
 
+-- Egor's switch: off drops the mark at once and writes none; on lets the next away minute mark again.
+-- Every change reaches a subscriber.
+local changes = 0
+presence.subscribe(function() changes = changes + 1 end)
+now, idle = now + 60, 900
+presence.tick()
+check(presence.away() and changes == 1, "going away did not reach the subscriber once")
+presence.setEnabled(false)
+check(not presence.enabled() and not presence.away() and read(mark) == nil and read(dir .. "/away-off") ~= nil,
+  "switching off left the mark or no switch file")
+check(changes == 3, "switching off while away did not report the return and the switch: " .. changes)
+now = now + 60
+presence.tick()
+check(read(mark) == nil and not presence.away(), "an away minute wrote a mark while switched off")
+presence.setEnabled(true)
+check(presence.enabled() and read(dir .. "/away-off") == nil, "switching on left the switch file")
+now = now + 60
+presence.tick()
+check(presence.away() and read(mark) ~= nil and changes == 5, "switched on, the next away minute did not mark")
+presence.back()
+
 -- Tick cost: fixture files, the real idle and frontmost APIs (read-only).
 local realHs = { fs = hs.fs, host = hs.host, application = hs.application, window = fakeHs.window,
   task = fakeHs.task, timer = { secondsSinceEpoch = function() return now end, doEvery = fakeHs.timer.doEvery } }

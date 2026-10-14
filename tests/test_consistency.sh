@@ -3076,7 +3076,7 @@ assert doc_has '`start_us<TAB>end_us<TAB>script[ first arg]<TAB>exit<TAB>ppid<TA
 assert doc_has '`script[ arg]<TAB>exit<TAB>ppid<TAB>cpu_us`'
 assert doc_has '`start_us<TAB>end_us<TAB>session`'
 assert doc_has 'a trailing `<TAB>cpu_ms`'
-assert grep -Fq '"$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms"' "$ROOT/bin/statusline.sh"
+assert grep -Fq '"$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2"' "$ROOT/bin/statusline.sh"
 assert grep -Fq 'fold_tsv(journal, "menu", menu_row)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'os.makedirs(os.path.join(state_dir(), "menu"), exist_ok=True)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'M.journalLine(harnessDoctorDir() .. "/menu", name, startedAt, epochNow())' "$ROOT/hammerspoon/llm-limits.lua"
@@ -3332,7 +3332,7 @@ assert doc_has "key order \`${dk_keys// /, }\`"
 assert grep -qF 'base .. "/presence"' "$ROOT/hammerspoon/presence.lua"
 assert grep -qF 'os.path.join(state_dir(), "presence")' "$ROOT/bin/speed-doctor"
 assert grep -qF 'string.format("%d\t%d\t%s\n", minute, idle, bundle)' "$ROOT/hammerspoon/presence.lua"
-assert eq "$(grep -E 'KEEP_DAYS|os\.remove' "$ROOT/hammerspoon/presence.lua" | grep -vcF 'os.remove(markPath())')" 0
+assert eq "$(grep -E 'KEEP_DAYS|os\.remove' "$ROOT/hammerspoon/presence.lua" | grep -vcE 'os\.remove\((markPath|offPath)\(\)\)')" 0
 assert grep -qx 'JOURNAL_DAYS = 35' "$ROOT/bin/speed-doctor"
 assert doc_has '`<minute epoch, a multiple of 60><TAB><HID idle s><TAB><frontmost bundle id, or ->`'
 assert doc_has 'Days past 35 go by `JOURNAL_DAYS = 35` in `bin/speed-doctor` `prune_journals` alone'
@@ -3421,6 +3421,8 @@ assert grep -qF 'string.format("%d\t%d\n", math.floor(now - idle), math.floor(no
 assert grep -qx 'local AWAY_S, WATCH_S = 600, 2' "$ROOT/hammerspoon/presence.lua"
 assert grep -qx 'PRESENCE_MARK_FRESH_S=180' "$ROOT/share/presence.sh"
 assert grep -qx 'GEMINI_AWAY_MIN=60' "$ROOT/bin/llm-refresh"
+assert grep -qF 'return dir .. "/away-off"' "$ROOT/hammerspoon/presence.lua"
+assert grep -qF 'if idle >= AWAY_S and M.enabled() then markAway(now, idle) else M.back() end' "$ROOT/hammerspoon/presence.lua"
 assert doc_has '| em | Away mark |'
 
 assert grep -Fq 'doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])' "$ROOT/share/time_budget.py"

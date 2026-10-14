@@ -2,11 +2,13 @@ local M = {}
 
 -- Away mark: once HID input has been idle AWAY_S, presence/away holds "<last input epoch>\t<written epoch>",
 -- rewritten each minute; a WATCH_S watch drops it the moment input returns and kicks a limits refresh.
--- Readers (share/presence.sh, M.away) take a mark left unwritten for minutes as present.
+-- Readers (share/presence.sh, M.away) take a mark left unwritten for minutes as present. Egor's switch
+-- (Auto ▸ Away Mode) is presence/away-off: while it exists no mark is written, so every consumer runs as present.
 local AWAY_S, WATCH_S = 600, 2
 local REFRESH_KICK = 'exec /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.llm-refresh"'
 
 local timer, watch, lastMinute
+local listeners = {}
 
 local function presenceDir()
   local base = os.getenv("SPEED_DOCTOR_DIR") or (os.getenv("HOME") .. "/.cache/speed-doctor")
@@ -18,17 +20,54 @@ local function markPath()
   return dir .. "/away"
 end
 
+local function offPath()
+  local _, dir = presenceDir()
+  return dir .. "/away-off"
+end
+
+local function notify()
+  for _, fn in ipairs(listeners) do pcall(fn) end
+end
+
+-- fn() runs on every change of M.away() or M.enabled(): the menubar's ☾ follows it at once.
+function M.subscribe(fn)
+  listeners[#listeners + 1] = fn
+end
+
 function M.away()
   return watch ~= nil
 end
 
+function M.enabled()
+  local handle = io.open(offPath())
+  if handle then handle:close() end
+  return handle == nil
+end
+
 function M.back()
+  local was = watch ~= nil
   if watch then watch:stop() end
   watch = nil
-  if os.remove(markPath()) then
+  local removed = os.remove(markPath())
+  if removed then
     local task = hs.task.new("/bin/sh", nil, { "-c", REFRESH_KICK })
     if task then task:start() end
   end
+  if was or removed then notify() end
+end
+
+function M.setEnabled(on)
+  if on then
+    os.remove(offPath())
+  else
+    local base, dir = presenceDir()
+    hs.fs.mkdir(base)
+    hs.fs.mkdir(dir)
+    local handle = io.open(offPath(), "w")
+    if handle then handle:close() end
+    M.back()
+  end
+  notify()
 end
 
 local function markAway(now, idle)
@@ -43,6 +82,7 @@ local function markAway(now, idle)
       local ok, seconds = pcall(hs.host.idleTime)
       if ok and seconds and seconds < AWAY_S then M.back() end
     end)
+    notify()
   end
 end
 
@@ -67,7 +107,7 @@ function M.tick()
       handle:write(string.format("%d\t%d\t%s\n", minute, idle, bundle))
       handle:close()
     end
-    if idle >= AWAY_S then markAway(now, idle) else M.back() end
+    if idle >= AWAY_S and M.enabled() then markAway(now, idle) else M.back() end
   end)
   if not ok then print("presence: tick failed: " .. tostring(err)) end
 end
