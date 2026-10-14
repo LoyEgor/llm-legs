@@ -1086,9 +1086,9 @@ assert grep -q 'transparency effects' "$IMAGE_PROMPT"
 assert grep -Eqi '(^|[^[:alnum:]_])transparent([^[:alnum:]_]|$)' "$IMAGE_PROMPT"
 assert grep -q 'genuinely transparent background' "$IMAGE_PROMPT"
 assert grep -qF -- "-format %[pixel:p{2,2}] info:" "$IMAGE_MAGICK_CALLS"
-assert grep -q -- "-alpha extract -morphology EdgeIn Octagon:2 .*/edge.png" "$IMAGE_MAGICK_CALLS"
+assert grep -qF -- "( mpr:keyed -alpha extract -morphology EdgeIn Octagon:2 )" "$IMAGE_MAGICK_CALLS"
 assert grep -qF -- "-channel G -fx min(g,max(r,b)) +channel" "$IMAGE_MAGICK_CALLS"
-assert grep -q -- "despilled.png .*/edge.png -composite PNG:$WORK/image-output/alpha.png" "$IMAGE_MAGICK_CALLS"
+assert grep -qF -- "+delete mpr:keyed ( mpr:keyed -channel G -fx min(g,max(r,b)) +channel ) ( mpr:keyed -alpha extract -morphology EdgeIn Octagon:2 ) -composite PNG:$WORK/image-output/alpha.png" "$IMAGE_MAGICK_CALLS"
 
 IMAGE_PICK_MODE=ok
 IMAGE_PICK_ACCOUNT=ghostpick
