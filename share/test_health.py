@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import limit_hit  # noqa: E402
 import night_spend  # noqa: E402
 import suite_audit  # noqa: E402
+import test_catches  # noqa: E402
 import time_budget  # noqa: E402
 from time_budget import num  # noqa: E402
 
@@ -694,7 +695,7 @@ def red_line(key, now, normal, least):
     return now is not None and normal is not None and now > BAND * normal and now - normal >= least
 
 
-def block(now, normal, stats, files, found, queued, hours):
+def block(now, normal, stats, files, found, queued, hours, catches):
     """[depth, flags, red, text] lines: the head, one line per class in one unit against its usual, the heavy table."""
     menu, red = [], 0
 
@@ -746,6 +747,16 @@ def block(now, normal, stats, files, found, queued, hours):
             for s in reds[:SHOWN]:
                 emit(2, "%8d %6d %6d  %s · %s" % (s["red"], round(100.0 * s["red"] / s["judged"]), s["flaky"],
                                                   s["label"], s["repo"]), "d")
+    counts, caught, due = catches
+    wall = sum(s["wall_s"] for s in stats.values())
+    hit = sum(s["wall_s"] for s in stats.values() if "%s/%s" % (s["repo"], s["label"]) in caught)
+    emit(1, "%5d of %d red runs fixed by a code edit · %d suites · %d %% of suite time · %d days" % (
+        counts["caught"], sum(counts.values()), len(caught), round(100.0 * hit / wall) if wall else 0, STATS_D), "d")
+    emit(2, "%5d own new test · %d nothing changed · %d tests edited · %d no own edit · %d unread" % (
+        counts["own"], counts["same"], counts["test"], counts["none"], counts["unread"]), "d")
+    for k, n in caught.most_common(SHOWN):
+        emit(2, "%5d  %s" % (n, k), "d")
+    emit(2, "uncaught %d days: deleted whole · next due %s" % (test_catches.UNCAUGHT_D, due or "–"), "d")
     priced = {f["target"].split("/", 2)[2]: f["min_day"] for f in rows["heavy"]}
     emit(1, "min/day   mean   runs  avg min  red %%  CPU/wall   priced  heaviest suites · median day of %d, mean of "
          "them" % STATS_D, "d")
@@ -793,7 +804,11 @@ def collect(now, journal, tops=None, write=False, lo=None, since=lambda target: 
     files, landed, edits = fan_out(tops, scanned, rows, heavy, stats_lo, now)
     current = measure(rows, recent, landed, lo, now)
     normal, days = usual(rows, recent, landed, now, current)
-    queued = dict(pinned(tops, scanned, stats, edits), **dead(tops, scanned, execs, journal_lo, now))
+    held = test_catches.fold(now, journal, write)
+    listed = suite_audit.suites(tops)
+    queued = dict(test_catches.uncaught(held, listed, now), **pinned(tops, scanned, stats, edits))
+    queued.update(dead(tops, scanned, execs, journal_lo, now))
+    counts, caught = test_catches.summary(held, now, STATS_D)
     found = findings(window, stats, files, now, born, since, execs)
     out.update(status="watch" if any(red_line(k, current[k], normal[k], m) for k, _, _, m in LINES) else "ok",
                now=current, usual=normal, usual_days=days, findings=found, regressions=regressions(current, normal),
@@ -802,8 +817,11 @@ def collect(now, journal, tops=None, write=False, lo=None, since=lambda target: 
                            usual_min_day=round(s["wall_s"] / 60.0 / STATS_D, 1))
                       for s in sorted(stats.values(), key=lambda s: (-s["day_s"], -s["wall_s"]))[:TOP]],
                fan_out=files[:SHOWN], candidates=queued,
+               catches={"days": STATS_D, "episodes": dict(counts), "suites": dict(caught),
+                        "next_due": test_catches.next_due(held, listed)},
                journal_days=round((now - (journal_lo or now)) / 86400.0, 1))
-    out["menu"] = block(current, normal, stats, files, found, queued, (now - lo) / 3600.0)
+    out["menu"] = block(current, normal, stats, files, found, queued, (now - lo) / 3600.0,
+                        (counts, caught, out["catches"]["next_due"]))
     out["head"] = out["menu"][0][3].split(": ", 1)[1]
     out["collector_s"] = round(time.monotonic() - started, 2)
     return out

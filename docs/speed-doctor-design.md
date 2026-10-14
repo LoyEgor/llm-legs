@@ -123,7 +123,11 @@ Unmeasured time is unknown, not loss; a day before `horizon()` in either window 
 levers are that module's constants). The heaviest suites rank by their median day of the trailing seven 24 h days (a
 mean keeps a third of one heavy day). A suite run on under four days reads 0 (sporadic cost is no daily lever) unless
 its first journaled run falls inside the seven. Each row's wall splits once (`allocate`), so concurrent suites never
-sum past the wall. Nothing here deletes a test: dead and pinned suites go to Suite audits' queue.
+sum past the wall. Nothing here deletes a test: dead and pinned suites go to Suite audits' queue. Catches
+(`share/test_catches.py`, ledger `test-catches.json`): a red run then the same caller's next green of the suite in the
+same repository is a catch when the caller's transcript edited code between them; its own new test, the same tree,
+test-only edits, no own edit and non-Claude callers are not. A suite with no catch in 90 days since its first journaled
+day queues as `uncaught`, which the audit deletes whole (Egor, 2026-10-14).
 
 **Tool mining** (`share/tool_mining.py`, Speed's `adhoc` key). Once a local day (~3 s) it clusters the day's ad-hoc
 Bash scripts by the first `CLUSTERS` pattern matched. Cost: writing (chars at the measured write rate) + calls × median
