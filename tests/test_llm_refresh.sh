@@ -1382,16 +1382,17 @@ for docstring_range in '/^# A paused vendor is parked/,/^vendor_paused()/p' \
 done
 pass
 
-for journal in "$WORK"/*/journal.jsonl; do
-  jq -eRn '[inputs | fromjson |
+# One jq over every journal names the first file holding a bad line; an empty one has none to read.
+for journal in "$WORK"/*/journal.jsonl; do [ -s "$journal" ] || fail "invalid journal line in $journal"; done
+invalid=$(jq -Rrn 'inputs | select(try (fromjson |
     has("ts") and has("vendor") and has("step") and
     has("accounts_tried") and has("outcome") and has("detail") and has("interval_min") and
     (.ts | type) == "number" and (.vendor | type) == "string" and
     (.step | type) == "number" and (.accounts_tried | type) == "array" and
     (.outcome | type) == "string" and (.detail | type) == "string" and
-    (.interval_min | type) == "number"] | length > 0 and all' "$journal" >/dev/null || \
-    fail "invalid journal line in $journal"
-done
+    (.interval_min | type) == "number") catch false | not) | input_filename' "$WORK"/*/journal.jsonl) || \
+  fail 'the journals could not be read'
+[ -z "$invalid" ] || fail "invalid journal line in ${invalid%%$'\n'*}"
 pass
 
 seed_batched() {

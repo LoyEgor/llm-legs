@@ -193,10 +193,14 @@ worker_model_config=${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}
 vendor_paused() {
   local key
   case "$1" in claude) key=claudeb_paused ;; *) key="$1_paused" ;; esac
-  [ -r "$worker_model_config" ] || return 1
-  [ "$(awk -v prefix="$key=" 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }' \
-    "$worker_model_config" 2>/dev/null)" = on ]
+  case " $paused_keys " in *" $key "*) return 0 ;; esac
+  return 1
 }
+# Read once a process, every key in one pass: the seed, the tick loop and the validator all ask.
+paused_keys=$([ ! -r "$worker_model_config" ] || awk '
+  { eq = index($0, "="); if (eq && !((key = substr($0, 1, eq - 1)) in value)) value[key] = substr($0, eq + 1) }
+  END { for (key in value) if (key ~ /^[a-z]+_paused$/ && value[key] == "on") printf "%s ", key }' \
+  "$worker_model_config" 2>/dev/null)
 
 live_vendors() {
   local vendor
@@ -254,24 +258,29 @@ account_rows() {
   ' "$store" 2>/dev/null
 }
 
-stale_rows_json() {
-  local vendor=$1 interval=$2 want=$3 account as_of blocked age rows='[]'
+# Three JSON lines off one store read: the stale accounts a refresh can help, the stale blocked
+# ones, and every blocked account whatever its age.
+account_lists_json() {
+  local vendor=$1 interval=$2 account as_of blocked age due rows=''
   while IFS=$'\t' read -r account as_of blocked; do
     [ -n "$account" ] || continue
     case "$blocked" in 1) blocked=1 ;; *) blocked=0 ;; esac
-    [ "$blocked" = "$want" ] || continue
     case "$as_of" in ''|*[!0-9]*) as_of=0 ;; esac
     age=$((now - as_of))
     [ "$age" -ge 0 ] || age=0
-    if [ "$as_of" -eq 0 ] || [ "$age" -ge $((interval * 60)) ]; then
-      rows=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$rows"))
-    fi
+    due=0
+    if [ "$as_of" -eq 0 ] || [ "$age" -ge $((interval * 60)) ]; then due=1; fi
+    rows+="$blocked$due	$account"$'\n'
   done < <(account_rows "$vendor")
-  printf '%s\n' "$rows"
+  jq -Rnc '[inputs | select(length > 0) | [.[0:2], .[3:]]] as $rows
+    | ($rows | map(select(.[0] == "01") | .[1])), ($rows | map(select(.[0] == "11") | .[1])),
+      ($rows | map(select(.[0][0:1] == "1") | .[1]))' < <(printf '%s' "$rows")
 }
 
-stale_accounts_json() {
-  stale_rows_json "$1" "$2" 0
+blocked_accounts_json() {
+  local _ blocked
+  { read -r _; read -r blocked; } < <(account_lists_json "$1" "$2")
+  printf '%s\n' "$blocked"
 }
 
 account_names_json() {
@@ -327,10 +336,6 @@ run_collector() {
         'bin/llm-refresh:collector_timeout=${' "$collector_timeout" ;;
   esac
   return "$rc"
-}
-
-blocked_accounts_json() {
-  stale_rows_json "$1" "$2" 1
 }
 
 # The one blocked state a free probe can overturn: agy reports a healthy Gemini token as logged out
@@ -656,8 +661,7 @@ run_tick() {
       [ "$lock_lost" -eq 0 ] || return 0
       continue
     fi
-    stale=$(stale_accounts_json "$vendor" "$interval")
-    blocked=$(blocked_accounts_json "$vendor" "$interval")
+    { read -r stale; read -r blocked; } < <(account_lists_json "$vendor" "$interval")
     reserved='[]'
     dead='[]'
     if [ "$vendor" = claude ]; then
@@ -801,15 +805,14 @@ run_tick() {
         collector_probe "$vendor" "$stale" || return 5
       fi
 
-      post_stale=$(stale_accounts_json "$vendor" "$interval")
+      { read -r post_stale; read -r _; read -r blocked_now; } < <(account_lists_json "$vendor" "$interval")
       [ "$vendor" != claude ] || post_stale=$(drop_reserved "$post_stale")
       # A probe that finds an account auth-dead takes it off the stale list too; it stays
       # unrefreshed whatever as_of the dead verdict carries.
-      dead=$(account_rows "$vendor" | awk -F'\t' '$3 == 1 { print $1 }' | jq -R -s -c --argjson stale "$stale" \
-        'split("\n") as $blocked | [$stale[] | select(IN($blocked[]))]')
-      post_stale=$(jq -c --argjson dead "$dead" '. + $dead' < <(printf '%s\n' "$post_stale"))
-      refreshed_count=$(jq -n --argjson before "$stale" --argjson after "$post_stale" \
-        '$before - $after | length')
+      { read -r dead; read -r post_stale; read -r refreshed_count; } < <(jq -cn --argjson stale "$stale" \
+        --argjson after "$post_stale" --argjson blocked "$blocked_now" \
+        '[$stale[] | select(IN($blocked[]))] as $dead | ($after + $dead) as $post
+         | $dead, $post, ($stale - $post | length)')
       if [ "$pushback" -eq 1 ]; then
         # Pushback outranks a login note: it is what loosens the ladder, and one account that
         # needs a human must not hide another account being rate-limited on the same tick.
@@ -823,7 +826,7 @@ run_tick() {
         # count below would otherwise read as a refresh.
         outcome=error
         detail="$claude_note"
-      elif [ "$(jq 'length' < <(printf '%s\n' "$post_stale"))" -eq 0 ]; then
+      elif [ "$post_stale" = '[]' ]; then
         outcome=refreshed
         detail='all stale accounts refreshed'
       elif [ "$refreshed_count" -gt 0 ]; then
