@@ -196,10 +196,11 @@ end
 
 -- Idempotent, and safe to call from the watcher, the timer, the hook's poke and a menu click at
 -- once: the receipt is what decides, and a record that has one is never delivered twice.
-function M.pump()
+function M.pump(listed)
     ensureWatcher()
     watchStart()
-    watchTick()
+    -- M.start's watchStart has just listed the tree; a tick now would list it again unchanged.
+    if not listed then watchTick() end
     local result = { delivered = 0, alerted = 0, stale = 0 }
     -- Taken before the read, so an append in between still moves the stamp and pumps again; the
     -- journal event this pump's own read answers then finds nothing new.
@@ -1582,7 +1583,7 @@ function M.start()
         onChange()
         pcall(rates)
     end)
-    M.pump()
+    M.pump(true)
     return M
 end
 
