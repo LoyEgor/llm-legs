@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 HOOK="$ROOT/bin/worker-inbox-hook.sh"
@@ -9,6 +10,7 @@ export CLAUDE_CODE_SESSION_ID=inbox-chat
 # PostToolUse hook its `--settings` names after each one the way the real CLI does.
 cat >"$WORK/bin/claudeb" <<'EOF'
 #!/usr/bin/env bash
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 settings='{}' previous=''
 for argument in "$@"; do
   [ "$previous" != --settings ] || settings=$argument
@@ -58,6 +60,7 @@ clear_inbox_stub() {
   rm -f "$STUB_DIR"/tool-* "$STUB_DIR"/context-* "$STUB_DIR/claudeb.settings"
 }
 
+if suite_shard_owns 1 inbox-claudeb; then
 # --- claudeb: delivered by the hook at the next tool call, exactly once ---------------------------
 clear_inbox_stub
 export PICK_ACCOUNT=picked PICK_RC=0 TOOL_CALLS=4
@@ -159,6 +162,10 @@ assert test ! -s "$WORK/forks"
 printf '{}' | PATH="$WORK/forkspy" WORKER_RUN_RECORD="$RUN_DIR" "$HOOK" >/dev/null 2>&1
 assert test -s "$WORK/forks"
 
+fi
+
+if suite_shard_owns 2 inbox-codex; then
+export PICK_ACCOUNT=picked PICK_RC=0
 # --- codex: no mid-run channel, so the message rides the session's next RESUME ----------------------
 clear_stub
 unset TOOL_CALLS
@@ -189,8 +196,9 @@ RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
 await_exit
 assert test "$(grep -c 'Message from the chat that launched you (.*): also cover the empty case' "$STUB_DIR/codex.stdin")" -eq 1
 assert grep -q '^RESUME codex-session: continue$' "$STUB_DIR/codex.stdin"
-assert grep -qF "— delivered at " <<<"$("$RUNNER" report "$first_run")"
-assert grep -qF " via RESUME $RUN_ID" <<<"$("$RUNNER" report "$first_run")"
+first_report=$("$RUNNER" report "$first_run")
+assert grep -qF "— delivered at " <<<"$first_report"
+assert grep -qF " via RESUME $RUN_ID" <<<"$first_report"
 "$RUNNER" start codex --brief "$WORK/resume-brief" --workdir "$WORK/workdir" --account fast \
   >"$WORK/start.out" 2>"$WORK/start.err" || fail "second resume start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
@@ -222,5 +230,6 @@ gate_open
 await_exit
 RUN_ID=$one_run
 await_exit
+fi
 
 echo "PASS: $asserts asserts; worker-run say: hook wired per claudeb launch, delivery once at the next tool call, RESUME carry, finished-run refusal, chat-scoped say, no fork on an empty inbox"
