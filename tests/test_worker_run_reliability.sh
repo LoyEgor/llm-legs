@@ -357,15 +357,15 @@ EOF
     "$RUNNER" start codex --brief "$WORK/brief" --workdir "$wt/sub" --account busy >"$WORK/held.out" 2>&1 || rc=$?
     assert test "$rc" -eq 4
     WORKER_RUN_RECORD=$fixture WORKER_TEST_WORKDIR=$wt start_ok codex --account busy
-    assert await_done
+    assert await_exit
     jq --arg w "$main_top" '.workdir = $w' "$fixture/meta.json" >"$WORK/meta.main" && mv "$WORK/meta.main" "$fixture/meta.json"
     WORKER_TEST_WORKDIR=$main_top start_ok codex --account busy
-    assert await_done
+    assert await_exit
     jq --arg w "$wt" '.workdir = $w' "$fixture/meta.json" >"$WORK/meta.main" && mv "$WORK/meta.main" "$fixture/meta.json"
     kill "$live_pid"
     wait "$live_pid" 2>/dev/null || :
     WORKER_TEST_WORKDIR=$wt start_ok codex --account busy
-    assert await_done
+    assert await_exit
     printf '0\n' >"$fixture/exit_code"
   fi
 
