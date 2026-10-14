@@ -214,6 +214,9 @@ class Locator:
             self.page.upload_menu = True
         if self.key == "upload" and self.page.upload_menu and self.page.chooser_opens:
             self.page.upload_menu, self.page.chooser = False, Chooser(self.page)
+        if self.key == "send" and self.page.swallow:
+            self.page.swallow -= 1
+            return
         if self.key == "send":
             self.page.sent = True
             TIMELINE.append(("send", self.page.chat))
@@ -275,7 +278,7 @@ class Page:
         self.commenting, self.comment_opens, self.comment_open, self.pins, self.typed = False, True, False, [], None
         self.remove_bg_starts = True
         self.send_ready, self.uploads_land, self.multiple, self.scrambles, self.waits = True, True, False, False, []
-        self.chat, self.closed = NEW_CHAT, False
+        self.chat, self.closed, self.swallow = NEW_CHAT, False, 0
     def on(self, event, listener): self.listeners.append(listener)
     def bring_to_front(self): self.events.append(("front",))
     def close(self): self.closed = True
@@ -284,6 +287,10 @@ class Page:
         if script is cw.SEND_READY:
             if not self.send_ready:
                 raise TimeoutError("send stays disabled")
+            return types.SimpleNamespace(json_value=lambda: True)
+        if script is cw.SENT:
+            if not self.sent:
+                raise TimeoutError("the prompt stays in the composer")
             return types.SimpleNamespace(json_value=lambda: True)
         assert script is cw.RESIZE_STARTED and arg is cw.SELECTORS, script
         return types.SimpleNamespace(json_value=lambda: "send")
@@ -583,6 +590,16 @@ page.send_ready = False
 failure, _ = render(page)
 assert failure.code == 1 and failure.reason == STUCK.format(120), failure.reason
 assert (cw.SEND_READY, 120000, 100) in page.waits, page.waits
+# A send click the page swallows (the prompt left in the composer) is clicked again, not waited out for 600 s.
+page = Page()
+page.swallow = 1
+result, _ = render(page)
+assert not isinstance(result, gw.Failure) and [e for e in page.events if e == ("click", "send")] == [("click", "send")] * 2, page.events
+page = Page()
+page.swallow = 9
+failure, _ = render(page)
+assert failure.code == 1 and "left the prompt in the composer (3 clicks" in failure.reason, failure.reason
+assert [e for e in page.events if e == ("click", "send")] == [("click", "send")] * 3 and not page.sent
 page = Page()
 page.uploads_land = False
 failure, _ = render(page, ref=refs[:2])

@@ -109,6 +109,16 @@ SEEN = """const seen = el => { const r = el.getBoundingClientRect();
   const ready = sel => { const b = document.querySelector(sel);
     return !!b && seen(b) && !b.disabled && !b.closest('[aria-disabled=true]'); };"""
 SEND_READY = "(sel) => { " + SEEN + " return ready(sel.send); }"
+# A send took when the prompt left the composer or a reply started streaming. A click the page swallows
+# leaves the prompt sitting in the composer while the job waits out the whole image timeout (live
+# 2026-10-15: two takes idled 600 s each with the send button lit).
+SENT = "(arg) => { " + SEEN + """
+  const norm = t => (t || '').replace(/\\s+/g, ' ').trim();
+  const box = [...document.querySelectorAll(arg.sel.composer)].find(seen);
+  return !box || !norm(box.innerText).includes(arg.head)
+    || [...document.querySelectorAll(arg.sel.stop)].some(seen);
+}"""
+SEND_TRIES, SEND_CHECK_S = 3, 8
 RESIZE_STARTED = "(sel) => { " + SEEN + """
   const any = s => [...document.querySelectorAll(s)].some(seen);
   return any(sel.stop) || !any(sel.idle) ? 'streaming' : ready(sel.send) && 'send';
@@ -469,7 +479,18 @@ def send(page, prompt: str, wait_s: float = 120) -> None:
         page.wait_for_function(SEND_READY, arg=SELECTORS, timeout=wait_s * 1000, polling=100)
     except Exception as error:  # noqa: BLE001
         raise drift(stuck) from error
-    button.click(timeout=10000)
+    head = " ".join(prompt.split())[:40]
+    for attempt in range(SEND_TRIES):
+        if attempt:
+            decline_offers(page)
+        button.click(timeout=10000)
+        try:
+            page.wait_for_function(SENT, arg={"sel": SELECTORS, "head": head}, timeout=SEND_CHECK_S * 1000,
+                                   polling=200)
+            return
+        except Exception:  # noqa: BLE001
+            continue
+    raise drift(f"the send click left the prompt in the composer ({SEND_TRIES} clicks, {SEND_CHECK_S}s each)")
 
 
 def editor_button(page, name: str):
