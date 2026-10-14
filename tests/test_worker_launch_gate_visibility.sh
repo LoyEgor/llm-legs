@@ -303,6 +303,11 @@ asserts=$((asserts + 2))
 [ -z "$(starts_of 'python3 x.py --out=$HOME/f > out.txt')" ] || fail "a \$ beside an = with no assigned name used started: $(starts_of 'python3 x.py --out=$HOME/f > out.txt')"
 operand=$(starts_of 'mkdir -p d && echo codex > d/note.txt')
 [ "$(wc -w <<<"$operand")" -le 14 ] || fail "a launcher named as an operand ran the whole scan: $operand"
+# The full scan of a call with no `<<` and no `=` loads no masker, assigns nothing and strips, splits and
+# screens with builtins: 5 process starts on 2026-10-14, 13 before.
+plain_scan=$(starts_of 'cd /w && claude --version')
+asserts=$((asserts + 1))
+[ "$(wc -w <<<"$plain_scan")" -le 6 ] || fail "a full scan with no heredoc and no assignment started: $plain_scan"
 # The raw-payload screen reads the JSON as the shell would see the command: a vendor at the string's edge,
 # one spelled with a \u escape, one after a newline escape and one split by an escaped backslash.
 for payload in '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi | claude"},"cwd":"/w"}' \

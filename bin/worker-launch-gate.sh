@@ -235,9 +235,15 @@ PROGRAM_STRING_RE="${DASH_C_RE}|(^|[;|&(){}])[[:space:]]*(eval|ssh|tmux|screen|w
 # `X="a b" claude -p` loses the env assignment that keeps the vendor word out of one. The one quoted
 # span that is not an operand is a `sh -c` string, whose words the shell runs: it is broken out onto
 # its own line instead. Only then are the quotes themselves dropped, so `'claude' -p` is a launch.
-self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
-  heredoc_mask() { cat; }
-prestrip=$(heredoc_mask "$HEREDOC_SHELL_RE" "$HEREDOC_POST_SHELL_RE" <<<"$cmd" |
+# Without a `<<` there is no body to mask: the masker is the identity, so the library is never loaded.
+masked_cmd() {
+  if [[ $cmd != *'<<'* ]]; then printf '%s\n' "$cmd"; return; fi
+  local self
+  self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
+    heredoc_mask() { cat; }
+  heredoc_mask "$HEREDOC_SHELL_RE" "$HEREDOC_POST_SHELL_RE" <<<"$cmd"
+}
+prestrip=$(masked_cmd |
   LC_ALL=C awk '{ if (sub(/\\[[:space:]]*$/, " ")) { printf "%s", $0; next } print }' |
   LC_ALL=C awk -v dashc="$PROGRAM_STRING_RE" 'BEGIN { out = ""; q = ""; body = 0 }
        {
@@ -268,10 +274,12 @@ prestrip=$(heredoc_mask "$HEREDOC_SHELL_RE" "$HEREDOC_POST_SHELL_RE" <<<"$cmd" |
          out = ""
        }
        END { if (out != "") print out }') || exit 0
-scan=$(sed -e "s/[\\\\'\"]//g" <<<"$prestrip") || exit 0
+scan=${prestrip//[\'\"\\]/}
+while [[ $scan == *$'\n' ]]; do scan=${scan%$'\n'}; done
 # The pipe check reads the text before this split, the one form that still holds the pipes.
 unsplit=$scan
-scan=$(tr ';|&()`' '\n' <<<"$unsplit")
+scan=${unsplit//[';|&()`']/$'\n'}
+while [[ $scan == *$'\n' ]]; do scan=${scan%$'\n'}; done
 [ -n "$scan" ] || scan="$cmd"
 [ -n "$unsplit" ] || unsplit="$cmd"
 
@@ -281,7 +289,7 @@ scan=$(tr ';|&()`' '\n' <<<"$unsplit")
 # text; a lookup chained with a real launch keeps that launch on its own line. `type`, `which` and
 # `hash` are commands in their own right, so their operand never reaches command position at all.
 LOOKUP_RE='^[[:space:]]*command[[:space:]]+(-[^[:space:]]+[[:space:]]+)*-[vV]([[:space:]]|$)'
-scan=$(grep -Ev "$LOOKUP_RE" <<<"$scan")
+[[ $scan != *command* ]] || scan=$(grep -Ev "$LOOKUP_RE" <<<"$scan")
 scan_literal=$scan
 
 # A command word held in a variable is the launch it names: `W=…/worker-run; $W start` ran two
@@ -291,24 +299,23 @@ ASSIGN_RE='^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^
 # The scan has joined a quoted value's words, and an unquoted `$C` splits them again (`C="codex
 # exec"; $C hi`), so a quoted value is read off the raw command first, its spaces kept.
 QUOTED_ASSIGN_RE="(^|[;&|({[:space:]])[A-Za-z_][A-Za-z0-9_]*=(\"[^\"\$\`\\\\&]*\"|'[^'\$\\\\&]*')"
-while IFS= read -r assign; do
-  [ -n "$assign" ] || continue
-  assign=$(sed -E -e 's/^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?//' \
-    -e "s/^[;&|({[:space:]]//; s/=[\"']/=/; s/[\"']\$//" <<<"$assign")
-  scan=$(LC_ALL=C awk -v n="${assign%%=*}" -v v="${assign#*=}" '{
-    gsub("\\$[{]" n "[}]", v)
-    out = ""
-    while (match($0, "\\$" n "([^A-Za-z0-9_]|$)")) {
-      out = out substr($0, 1, RSTART - 1) v
-      $0 = substr($0, RSTART + 1 + length(n))
-    }
-    print out $0 }' <<<"$scan")
-done < <(grep -Eo "$QUOTED_ASSIGN_RE" <<<"$cmd"; grep -Eo "$ASSIGN_RE" <<<"$scan")
+# Both regexes need a literal `=`, which the scan only ever loses.
+if [[ $cmd == *=* ]]; then
+  while IFS= read -r assign; do
+    [ -n "$assign" ] || continue
+    assign=$(sed -E -e 's/^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?//' \
+      -e "s/^[;&|({[:space:]]//; s/=[\"']/=/; s/[\"']\$//" <<<"$assign")
+    scan=$(LC_ALL=C awk -v n="${assign%%=*}" -v v="${assign#*=}" '{
+      gsub("\\$[{]" n "[}]", v)
+      out = ""
+      while (match($0, "\\$" n "([^A-Za-z0-9_]|$)")) {
+        out = out substr($0, 1, RSTART - 1) v
+        $0 = substr($0, RSTART + 1 + length(n))
+      }
+      print out $0 }' <<<"$scan")
+  done < <(grep -Eo "$QUOTED_ASSIGN_RE" <<<"$cmd"; grep -Eo "$ASSIGN_RE" <<<"$scan")
+fi
 
-may_launch_args=(-e "$SCHEDULE_RE")
-for re in "${MAY_LAUNCH_RES[@]}"; do may_launch_args+=(-e "$re"); done
-grep -Eq "${may_launch_args[@]}" <<<"$unsplit"$'\n'"$scan" 2>/dev/null
-[ $? -ne 1 ] || exit 0
 # Every check below is one of these regexes read at command position, so a text matching none of
 # them denies nothing: an operand that merely names a launcher (`git log -- bin/worker-run`) ends here.
 # A check added below needs its regex here too.
