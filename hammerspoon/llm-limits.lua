@@ -669,14 +669,16 @@ local function newCollectorTask(callback, args, envExtra)
   return task
 end
 
-local actionLogPath = os.getenv("HOME") .. "/.hammerspoon/llm_limits_actions.log"
+-- LLM_LIMITS_ACTION_LOG is a harness's: one loading this module inside the live Hammerspoon hands it
+-- through its own os.getenv, so fixture actions never reach the log every later diagnosis reads.
+M.actionLogPath = os.getenv("LLM_LIMITS_ACTION_LOG") or os.getenv("HOME") .. "/.hammerspoon/llm_limits_actions.log"
 
 -- Every vendor command the menu launches, with its exit code and the exit code of the collect
 -- that follows it. Without this the only trace an action left was the mtime of the pool file,
 -- which records effective changes and says nothing about a click that did nothing.
 local function logAction(event, detail)
   local ok = pcall(function()
-    local file = io.open(actionLogPath, "a")
+    local file = io.open(M.actionLogPath, "a")
     if not file then return end
     file:write(string.format("%s  %-18s %s\n", os.date("%Y-%m-%d %H:%M:%S"), event,
       tostring(detail or "")))

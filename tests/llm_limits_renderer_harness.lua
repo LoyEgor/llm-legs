@@ -2504,7 +2504,11 @@ local watchHs = {
 }
 local watchEnv = setmetatable({
   hs = watchHs,
-  os = setmetatable({ time = function() return watchClock.now end }, { __index = os }),
+  -- Startup already logs its routing launch: the action log goes nowhere live.
+  os = setmetatable({ time = function() return watchClock.now end, getenv = function(name)
+    if name == "LLM_LIMITS_ACTION_LOG" then return "/dev/null" end
+    return os.getenv(name)
+  end }, { __index = os }),
   require = function(name)
     if name == "menu-style" then return palette end
     return require(name)

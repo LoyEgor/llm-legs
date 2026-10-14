@@ -139,7 +139,10 @@ local function treeRequire(name)
   return require(name)
 end
 local limits = assert(loadfile(root .. "/hammerspoon/llm-limits.lua", "t",
-  setmetatable({ hs = fakeHs, require = treeRequire }, { __index = _G })))()
+  setmetatable({ hs = fakeHs, require = treeRequire, os = setmetatable({ getenv = function(name)
+    if name == "LLM_LIMITS_ACTION_LOG" then return dir .. "/actions.log" end
+    return os.getenv(name)
+  end }, { __index = os }) }, { __index = _G })))()
 limits.llmDoctorPath = dir .. "/llm-doctor/latest.json"
 limits.harnessDoctorDir = dir .. "/harness-doctor"
 limits.doctorSnapshotPath = dir .. "/snapshot.json"

@@ -34,7 +34,8 @@ alpha_hits=$(awk '/alpha *=/ && !/dimRedColor/ { printf "line %d: %s\n", NR, $0 
 # One machine-wide lock wait when hs answers; the availability probe runs only after a failed call.
 renderer_output='' renderer_rc=1
 command -v hs >/dev/null 2>&1 && {
-  renderer_output=$(hs_bounded 600 -c "_G.HS_ROOT = [[$HS_ROOT]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null)
+  renderer_output=$(hs_bounded 600 -c "_G.HS_ROOT = [[$HS_ROOT]]; return dofile([[$ROOT/tests/lib/live_log_guard.lua]])(function()
+    return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]]) end)" 2>/dev/null)
   renderer_rc=$?
 }
 if [ "$renderer_rc" = 0 ] || { command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 600 -c 'return "ok"' 2>/dev/null)" = ok ]; }; then
