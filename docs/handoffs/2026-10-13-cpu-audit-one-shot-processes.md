@@ -1,6 +1,6 @@
 # CPU audits key one-shot research scripts per file
 
-Status: open
+Status: settled 20261014T013750Z-8004: cause gone: since 4bcdf0b7 (10-13) a CPU audit is due only at 1 CPU-min/day or more, so a one-shot script never queues (live: 74 logo-vectorizer-bench process keys, all 0.0, none due); the project's CPU is its research load, not a harness component, so the per-file key stays
 
 To: the chat «Harness Doctor» (owner of `share/cpu_audit.py`, e65c62e7/3f4cfb23).
 

@@ -1,6 +1,6 @@
 # Hand-off: transcriptions-gpt overlay CPU (cpu:process/transcriptions-gpt/transcriber/overlay.py)
 
-Status: open
+Status: settled 20261014T013750Z-8004: kept: Egor accepted the overlay CPU on 10-14 (the pill lagged before its fix), so no change-gated redraw; the cpu row reads kept
 To: next night, a fixer with a transcriptions-gpt worktree
 
 22.2 CPU-min/day. `transcriber/overlay.py` runs a 60 FPS `NSTimer` (`tick:`) only while the pill

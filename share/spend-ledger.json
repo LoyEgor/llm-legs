@@ -1233,9 +1233,9 @@
    "sources": {
     "claude-setup/hooks/skill-install-scope-gate.sh": "ced3b13922b4e8de47eee122c2c8c96dfeba1506"
    },
-   "verdict": "trade",
+   "verdict": "kept",
    "zero": "removal saves 1.0 CPU-min/day; loses the block on a global hyperframes skills install into ~/.claude/skills (every chat would pay for them)",
-   "note": "handoff docs/handoffs/2026-10-13-hook-if-filter.md: a settings if-filter (Bash(*skills*), Bash(*hyperframes*init*)) skips the spawn for ~all commands; settings.json registrations are Never-list, Egor's step"
+   "note": "2026-10-14 (Harness Doctor, owner): kept as is: an if-filter saves 0.9 CPU-min/day and no wall (PreToolUse hooks run in parallel) against a gate silently narrowed where `if` splits a command unlike the hook's own substring test; settings registrations stay Egor's (Speed's Never list). handoff docs/handoffs/2026-10-13-hook-if-filter.md: a settings if-filter (Bash(*skills*), Bash(*hyperframes*init*)) skips the spawn for ~all commands; settings.json registrations are Never-list, Egor's step"
   },
   {
    "id": "cpu:hook/chat-switch-link.sh",
@@ -1248,9 +1248,9 @@
    "sources": {
     "claude-setup/hooks/chat-switch-link.sh": "9ff39435c536b1108bb795a0051a7494c41ae632"
    },
-   "verdict": "trade",
+   "verdict": "kept",
    "zero": "removal saves 0.9 CPU-min/day; loses the printed resume line and ~/.claude/last-chat-switch stash when a chat switch fails (the chat is unreachable without it)",
-   "note": "handoff docs/handoffs/2026-10-13-hook-if-filter.md: if-filter Bash(*claude-chat-switch*) skips the spawn for ~all commands; its own work is a substring test that exits at once; settings registrations are Egor's step"
+   "note": "2026-10-14 (Harness Doctor, owner): kept as is: an if-filter saves 0.8 CPU-min/day and no wall (PreToolUse hooks run in parallel) against a gate silently narrowed where `if` splits a command unlike the hook's own substring test; settings registrations stay Egor's (Speed's Never list). handoff docs/handoffs/2026-10-13-hook-if-filter.md: if-filter Bash(*claude-chat-switch*) skips the spawn for ~all commands; its own work is a substring test that exits at once; settings registrations are Egor's step"
   },
   {
    "id": "cpu:doctor/code",
@@ -1788,9 +1788,9 @@
    "sources": {
     "transcriptions-gpt/transcriber/overlay.py": "4296f7ac4196cc4fccf755fd9ad8207b52b30f5b"
    },
-   "verdict": "trade",
+   "verdict": "kept",
    "zero": "removal saves 22.2 CPU-min/day; loses the dictation pill Egor watches while recording and transcribing",
-   "note": "60 FPS NSTimer only while the pill is shown (invalidated when fully hidden; 0.0% CPU idle), but advance() calls setNeedsDisplay every tick, so every frame is a full Python drawRect; change-gated redraw handed off (docs/handoffs/2026-10-13-overlay-redraw-cpu.md): transcriptions-gpt had no worktree in this run; FPS is a visible trade, not touched"
+   "note": "2026-10-14 (Harness Doctor, owner): kept: Egor accepted this cost on 2026-10-14 (the pill lagged before its fix, dictation outranks the CPU), so no change-gated redraw, no fixer, no proposal. 60 FPS NSTimer only while the pill is shown (invalidated when fully hidden; 0.0% CPU idle), but advance() calls setNeedsDisplay every tick, so every frame is a full Python drawRect; change-gated redraw handed off (docs/handoffs/2026-10-13-overlay-redraw-cpu.md): transcriptions-gpt had no worktree in this run; FPS is a visible trade, not touched"
   },
   {
    "id": "cpu:process/llm-legs/bin/harness-doctor",

@@ -1,6 +1,6 @@
 # Hook `if` filter: skip the spawn for commands a Bash hook ignores
 
-Status: open
+Status: settled 20261014T013750Z-8004: kept as is: 1.7 CPU-min/day (0.2 % of the 774 own) and no wall, PreToolUse hooks run in parallel, against a gate silently narrowed where `if` splits a command unlike the hooks' own test; both cpu rows read kept
 
 To: Egor. From night 20261012T233034Z-3131 run harness-speed-cpu-hook-dia-not-chrome-sh; rows `cpu:hook/chat-switch-link.sh`, `cpu:hook/skill-install-scope-gate.sh`.
 Each Bash hook is spawned 7190 times a day and 0.9-1.0 CPU-min/day goes to bash startup plus a substring test that exits at once
