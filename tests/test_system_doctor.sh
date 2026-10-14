@@ -1666,8 +1666,8 @@ check(run.returncode == 0 and sorted(routed) == ["collector:ssd-sampler"]
       and routed["collector:ssd-sampler"]["component"]["files"]
       == [re.sub(r"/\.claude/worktrees/[^/]+(?=/)", "", os.path.join(os.path.realpath(root), "bin", "system-doctor"))],
       "a blind System collector is a night problem on bin/system-doctor: %s %s" % (routed, run.stderr))
-subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "abandon", json.load(open(blinds[-1]))["id"]], capture_output=True,
-               env=env)
+blind = json.load(open(blinds[-1]))["id"]
+subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "abandon", blind], capture_output=True, env=env)
 os.remove(os.environ["SSD_SAMPLER_PLIST"])
 os.remove(blinds[-1])
 os.makedirs(os.path.join(work, "state", "launchd"), exist_ok=True)
@@ -1687,6 +1687,11 @@ check(run.returncode == 0 and sorted(routed) == ["job-loop:com.llm-legs.memlogd"
       and routed["job-loop:com.llm-legs.memlogd"]["component"]["files"] == [os.path.join(work, "repos", "llm-legs", "bin", "memlogd")]
       and "back off before exiting non-zero" in routed["job-loop:com.llm-legs.memlogd"]["component"]["what"],
       "an own looping job routes to the fixer by its program's file, a third-party crashing one never: %s %s" % (routed, run.stderr))
+live = "".join(subprocess.run(["git", "-C", root] + cmd, capture_output=True, text=True).stdout
+               for cmd in (["worktree", "list", "--porcelain"], ["for-each-ref", "--format=%(refname)"]))
+launched = [fixer["id"], blind, json.load(open(fixers[-1]))["id"]]
+check(not [i for i in launched if i in live], "no fixture launch adds a worktree, branch or ref to the live repository: %s"
+      % [line for line in live.splitlines() if any(i in line for i in launched)])
 
 contract = open(os.path.join(root, "docs", "doctors-contract.md")).read().split("\nSystem doctor ", 1)[-1].split("\n\n", 1)[0]
 check(all("`%s`" % rule in contract for rule in m.RULE_LABELS),

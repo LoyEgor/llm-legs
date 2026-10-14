@@ -1037,7 +1037,7 @@ speed_held() { # -> "<problem id>\t<run id>" for each problem an open harness sp
 }
 
 launch_runs() { # doctor night-or-empty -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
-  local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs=''
+  local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs='' own
   [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
   count=$(check_doc "$doctor") || exit 1
   snap=$(DF_HELD_SPEED=$(speed_held) py snapshot "$doctor" "$(doc_path "$doctor")" ${night:+"$night"}) || die "cannot snapshot the $doctor doctor"
@@ -1051,6 +1051,7 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
   fi
   [ "$snap" != '[]' ] || return 0
   top=$(worktree_top) || die "no repository at $repo_root"
+  own=$(DOCTOR_FIX_WORKTREE_REPO='' worktree_top)
   [ "$doctor" != harness ] && [ "$doctor" != system ] || knobs=$(py knob-lines)
   for area in $(jq -r 'map(.area) | unique[]' <<<"$snap"); do
     jq --arg a "$area" 'map(select(.area == $a))' <<<"$snap" >"$runs_dir/.$$.problems"
@@ -1081,7 +1082,7 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
     # A log-audit reading names no component file: its cause may lie in any sweep repository.
     while IFS= read -r repo; do repos+=("$repo"); done < <({ component_repos "$id" "$top"
       ! jq -e --arg rules "$TEST_FIX_RULES log_audit " "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
-        grep -vxF -e "$top" -e '' "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null; } | sort -u)
+        grep -vxF -e "$top" -e '' "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null; } | grep -vxF -e "$own" | sort -u)
     siblings=$(worktree_siblings "$branch" ${repos[@]+"${repos[@]}"})
     [ -n "$night" ] || while IFS= read -r repo; do [ -z "$repo" ] || git -C "$repo" update-ref "$base" HEAD; done <<<"$siblings"
     [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"
