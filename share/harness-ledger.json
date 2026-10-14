@@ -647,7 +647,7 @@
         "rule": "hook-error",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-03T09:35:00+03:00",
@@ -671,12 +671,28 @@
             "data": "a copy of 2ddedf36's live tag cache (399 files, ~400 keys) and the live run root, 2026-10-06",
             "result": "identical owned set (md5 2f7b4751); whole hook output identical (empty) both ways"
           }
+        },
+        {
+          "at": "2026-10-14T07:30:00+03:00",
+          "by": "night fixer harness-stop-hooks-20261014T021757Z-6b9c",
+          "files": [
+            "llm-legs/bin/worker-run-backstop.sh",
+            "llm-legs/share/run-liveness.sh",
+            "llm-legs/tests/test_worker_run_backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "whole hook output, base vs fix, under /bin/bash 3.2 and Homebrew bash 5",
+            "data": "100 live runs of one chat, 90 held by a live starter and 10 with a dead one, at load ~50, 2026-10-14",
+            "result": "identical: the same 10 unheld runs named, in the same order; wall 3.10 -> 0.61 s (bash 3.2), 2.01 -> 0.39 s (bash 5)"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
-      "note": "Exit 124 only in orchestrator chats while busy (7ca51401, 52be4c78, 2ddedf36), at CPU busy 0.93-1.0 with swap near full. 24571d6 cut owned() from a grep per tag file to one grep -l per lookup; 2ddedf36 still read its 399-file cache once per live run (12). Now one grep + awk reads the cache once per stop (grep, not awk, reads the files: BWK awk aborts on a file deleted after the glob): 0.87-0.95 s to 0.46-0.65 s on a copy of 2ddedf36's cache at load 140-150, identical owned set over all 400 keys; test_worker_run_backstop counts greps for 12 runs. Not cut: the tag cache and crashed run dirs are never pruned (1188 run dirs); each crashed run of the chat with no exit_code (7 of 2ddedf36's 12) still pays jq + two ps per stop, and kill -0 cannot skip them (invariant ar: EPERM reads a foreign live pid as dead).",
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-stop-hooks-20261014T021757Z-6b9c",
+      "note": "2026-10-14: the two exits 124 of 2026-10-13 (02:19Z, 03:01Z) were night 3131's orchestrator (a99daa57), its only two stops that night, with 101 and 93 live runs no wait owned, each held by a live starter (the night launcher). The cache cuts of 24571d6/f04d86de hold; what was left was a fork per run: starter_alive's ps -p for every run, and jq + ps for every run its starter did not hold, ~100-200 forks a stop on a machine at load 100-220. Now one ps -Ao pid=,etime= listing (share/run-liveness.sh pids_alive_since, the same etime vs start rule within PID_START_SLACK and the same per-pid probe when ps cannot list pid 1, invariant ar) and one jq over the candidates' meta.json answer every run; test_worker_run_backstop counts 2 ps and 1 meta jq for 12 starter-held runs (13 ps on the old code). Accepted: a truncated meta.json would stop that one jq and hide the runs after it, unreachable since worker-run writes the first meta.json whole before state.json and every later one by temp + mv. Not cut: a run the backstop names still pays one jq in resume_of; crashed run dirs are never pruned (1984 run dirs, a glob and a few builtin tests each).",
       "handoff": null
     },
     {
@@ -9749,6 +9765,21 @@
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night fixer harness-speed-adhoc-logo-bench-20261014T021655Z-40b5",
       "note": "2026-10-14 ruled out here: 491 calls in 41 sessions, all judge workers launched by logo-vectorizer-bench results/lanes/coord/tools/judge.sh with mkbrief.py briefs ('Append each row ... as soon as you judge that panel', return 'judged N/M: A x, B y, tie z'): 373 echo >> verdicts.csv plus a python3 or cut|sort|uniq tally (~390 chars, 1942 of 145854 chars the rows), 118 cat >> heredocs whose rows are 66 % of their chars and are the judgment itself. The lever is the bench's: one command there appending a row and printing judged N/M with the A/B/tie counts, named in mkbrief.py's Output paragraph; that tree is unversioned and owned by its live coordinator chat, so no night worktree can land it. Measured: 162.9 s exec wall/day; 10 sampled appends replayed on a /tmp copy: 3.25 s logged, 0.10 s wall, 0.08 s cpu; the day's cost is the writing (15 w-min/day).",
+      "handoff": null
+    },
+    {
+      "id": "hook-error-notice-connections-kill",
+      "title": "stop-dispatch killed notice-connections.sh at its 5 s cap (exit 124) once, on a saturated machine",
+      "match": {
+        "rule": "hook-error",
+        "ident": "notice-connections\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-14",
+      "reviewed_by": "night fixer harness-stop-hooks-20261014T021757Z-6b9c",
+      "note": "2026-10-14 ruled out as a hang of ours: the same one kill (2026-10-13 15:36:44Z, chat c0f23f02) that row limit_hit:claude-setup:stop-dispatch.hook-kill measured (llm-legs@d9c59236): 1 of 577 runs, busy 0.99 and kernel 0.48, the read-only path of `connections check` waits on nothing, lock contention, dead $TMPDIR keys and its imports measured out; blind spot hook-off-cpu-wait. No kill since in 801 stops.",
       "handoff": null
     }
   ],

@@ -59,9 +59,23 @@ supervisor_running() { # directory pid [pid_started_at, read from meta.json when
   pid_alive_since "$2" "$(jq -r '.pid_started_at // empty' "$1/meta.json" 2>/dev/null)"
 }
 
-starter_alive() { # directory
-  local pid began
-  { read -r pid began <"$1/starter"; } 2>/dev/null || return 1
-  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] || return 1
-  pid_alive_since "$pid" "$began"
+# pid_alive_since for many pids off one process listing: a ps per pid is a fork each, and a night
+# orchestrator's hundred live runs took the run backstop past the stop's 5 s cap on a saturated machine.
+pids_alive_since() { # "key pid start-epoch" lines on stdin -> the key of each live one
+  local listing key pid began
+  listing=$(ps -Ao pid=,etime= 2>/dev/null)
+  if ! [[ "$listing" =~ (^|$'\n')\ *1\ + ]]; then
+    while read -r key pid began; do pid_alive_since "$pid" "$began" && printf '%s\n' "$key"; done
+    return 0
+  fi
+  awk -v now="${EPOCHSECONDS:-$(date +%s)}" -v slack="$PID_START_SLACK" '
+    FNR == NR { etime[$1] = $2; next }
+    $2 ~ /^[0-9]+$/ && $2 > 0 && ($2 in etime) {
+      n = split(etime[$2], part, /[-:]/)
+      if ($3 !~ /^[1-9][0-9]*$/ || n < 2 || n > 4 || etime[$2] !~ /^[0-9:-]+$/) { print $1; next }
+      age = 0
+      for (i = 1; i <= n; i++) age += part[i] * (n - i == 3 ? 86400 : n - i == 2 ? 3600 : n - i == 1 ? 60 : 1)
+      drift = now - age - $3
+      if (drift <= slack && -drift <= slack) print $1
+    }' <(printf '%s\n' "$listing") -
 }

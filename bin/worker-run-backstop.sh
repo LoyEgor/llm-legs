@@ -42,9 +42,6 @@ owned() {
   [ "$waiting" = yes ]
 }
 run_root=${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}
-held() { # run|review id
-  owned || { [ "$1" = run ] && starter_alive "$run_root/$2"; }
-}
 resume_of() { # run|review id
   if [ "$1" = review ]; then
     printf 'review-bench wait %s' "$2"
@@ -67,6 +64,7 @@ lines=''
 # Every finished run stays for days; sorting that many names in a UTF-8 locale costs more CPU than testing them.
 run_dirs() { local LC_COLLATE=C; runs=("$run_root"/*/); }
 run_dirs
+ids=()
 for run in "${runs[@]}"; do
   run=${run%/}
   [ ! -e "$run/exit_code" ] && [ -f "$run/state.json" ] || continue
@@ -75,12 +73,29 @@ for run in "${runs[@]}"; do
   [ "$launcher" = "$session" ] || continue
   id=${run##*/}
   case "$id" in *[!A-Za-z0-9._-]*) continue ;; esac
-  held run "$id" && continue
-  pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
-  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
-  tag=$(head -n1 "$run/tag" 2>/dev/null)
-  lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — \`$(resume_of run "$id")\`"
+  ids+=("$id")
 done
+# A run is held by its starter still alive (a script waiting on its runs one at a time) and needs a
+# wait only while its supervisor lives: every run's two answers come off one listing.
+if [ "${#ids[@]}" -gt 0 ] && ! owned; then
+  live=$'\n'$({
+    metas=()
+    for id in "${ids[@]}"; do
+      metas+=("$run_root/$id/meta.json")
+      pid='' began=''
+      { read -r pid began <"$run_root/$id/starter"; } 2>/dev/null
+      [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] &&
+        printf 's/%s %s %s\n' "$id" "$pid" "$began"
+    done
+    jq -r 'select((.pid | numbers) > 1) | "r/\(input_filename | split("/") | .[-2]) \(.pid) \(.pid_started_at | numbers // 0)"' \
+      "${metas[@]}" 2>/dev/null
+  } | pids_alive_since)$'\n'
+  for id in "${ids[@]}"; do
+    case "$live" in *$'\n'"s/$id"$'\n'*) continue ;; *$'\n'"r/$id"$'\n'*) ;; *) continue ;; esac
+    tag=$(head -n1 "$run_root/$id/tag" 2>/dev/null)
+    lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — \`$(resume_of run "$id")\`"
+  done
+fi
 
 progress="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/progress"
 named=''
@@ -95,7 +110,7 @@ now=''
   now=$(date +%s)
   while IFS= read -r id; do
     case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-    held review "$id" && continue
+    owned && continue
     lines=$lines${lines:+$'\n'}"- review $id — \`$(resume_of review "$id")\`"
   done < <(cat "$progress"/*.json 2>/dev/null | jq -r --arg s "$session" --argjson now "$now" \
     'select((.session // "") == $s and .state == "running" and (.heartbeat_epoch | type) == "number" and ($now - .heartbeat_epoch) < 600)
