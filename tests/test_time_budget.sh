@@ -508,14 +508,16 @@ pend = {"id": "E2", "started": D0 + 86400 * 8, "hours": 3.0,
 tonight = {"id": "T", "started": D0 + 86400 * 8.5, "hours": 3.0,
            "improvements": [dict(item, ref="r3", spend_m=1.0, lines=[1, 1], **{"class": "slot"})]}
 morning = lambda rows, at: T.speed_block(rows, at, (lambda v: (T.roi_lines(rows, at, verdicts=v), v)[1])({}))
-check(morning([early, tonight], D0 + 86400 * 9) == ["Скорость", "  10 Jan   +1.0 min/day   ✓ 1",
-                                                    "  7 d      +1.0 min/day   ✓ 1"]
-      and morning([early, pend, tonight], D0 + 86400 * 9) == ["Скорость", "  7 d   +1.0 min/day   ✓ 1"]
+verdict = lambda gain, proven, slower, pending=False: {"pending": pending, "gain": gain, "proven": proven, "slower": slower}
+won = {"E1": {0: verdict(1.0, True, False)}}
+check(morning([early, tonight], D0 + 86400 * 9) == ["Скорость", "  7 d   +0.0 min/day"]
+      and T.speed_block([early, tonight], D0 + 86400 * 9, won) == ["Скорость", "  10 Jan   +1.0 min/day   ✓ 1",
+                                                                  "  7 d      +1.0 min/day   ✓ 1"]
+      and T.speed_block([early, pend, tonight], D0 + 86400 * 9, won) == ["Скорость", "  7 d   +1.0 min/day   ✓ 1"]
       and morning([tonight], D0 + 86400 * 9) == [],
       "the morning's «Скорость»: a row per earlier night whose proofs matured since the night before the reported one "
       "closed, in min/day, then the trend's matured total; one matured before that close only counts in the total, "
-      "pending ones nowhere, the reported night never")
-verdict = lambda gain, proven, slower, pending=False: {"pending": pending, "gain": gain, "proven": proven, "slower": slower}
+      "pending ones nowhere, the reported night never; the day totals' 1.0 min/day has no load control, never a gain")
 check(T.speed_block([dict(early, improvements=[]), tonight], D0, {
     "E1": {0: verdict(2.5, True, False), 1: verdict(-0.4, False, True), 2: verdict(9.0, True, False, True)},
     "T": {0: verdict(30.0, True, False)}}) == ["Скорость", "  10 Jan   +2.1 min/day   ✓ 1   ! 1",
@@ -538,10 +540,11 @@ T.now_s = lambda: D0 + 86400 * 9 + T.SPEED_ROW_S
 later = T.speed_row("/usr/bin/false", os.path.join(nights_speed, "S1.json"))
 running_row = T.speed_row("/usr/bin/false", os.path.join(nights_speed, "S2.json"))
 T.cached_row, T.now_s = kept
-check(first == {"at": D0 + 86400 * 9, "items": 1, "gain": 1.0, "proven": 1, "slower": 0, "pending": 0}
-      and printed == "speed\t1.0\t1\t0\t0\n" and again == first and later["items"] == 0 and running_row is None,
-      "the menu's speed row of a finished night: min/day, proven, slower, pending of its fixes over its trend, read "
-      "again once SPEED_ROW_S passed, none while the night runs: %s %r" % (first, printed))
+check(first == {"at": D0 + 86400 * 9, "items": 1, "gain": 0.0, "proven": 0, "slower": 0, "pending": 0}
+      and printed == "speed\t0.0\t0\t0\t0\n" and again == first and later["items"] == 0 and running_row is None,
+      "the menu's speed row of a finished night: min/day, proven, slower, pending of its fixes over its trend (a day "
+      "totals' gain, with no load control, none), read again once SPEED_ROW_S passed, none while the night runs: %s %r"
+      % (first, printed))
 L = D0 + 20 * 86400 + 43200
 for back in (1, 2, 3):
     T.write_json(T.day_cache_path(T.local_day(L - back * 86400)),

@@ -324,9 +324,10 @@ save(journal + later)
 time_budget.roi_lines([dict(night, id="n-won", improvements=[item, dict(item, ref="night-m", files=[["alpha", "a.md"]])])],
                       NOW + 600, verdicts=won)
 check(slow_wins == {"n-slow": {0: {"pending": False, "gain": 0.0, "proven": False, "slower": True}}}
-      and won == {"n-won": {0: {"pending": False, "gain": 0.0, "proven": True, "slower": False}}},
-      "the «Скорость» verdicts are the roi lines' own measures: a proven suite counts, its suite-min (walls of suites "
-      "run side by side, no wait) adds no minutes; a fix measured slower as such, a measurement fix never: %s %s"
+      and won == {"n-won": {0: {"pending": False, "gain": 0.0, "proven": False, "slower": False}}},
+      "the «Скорость» verdicts are the roi lines' own measures: a proven suite's suite-min (walls of suites run side "
+      "by side, no wait) neither adds minutes nor a ✓ beside them; a fix measured slower as such, a measurement fix "
+      "never: %s %s"
       % (slow_wins, won))
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)])
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)] + busy)
@@ -439,6 +440,23 @@ check(time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/skew.
       == "10000 → 1.0 ms/call · 1.2 over the 0.6 min/day before: unmeasured",
       "a proof can never gain more than its measure's whole day before the night: a median of 10 s over 24 calls of "
       "1 ms claims 1.2 min/day of the 0.6 the hooks spent, unmeasured")
+hook_rows = lambda at, name, was, now_: ([["h", at - 3600 + i, "~", "PreToolUse", name, was, "Bash", "x"] for i in range(50)]
+                                         + [["h", at + 60 + i, "~", "PreToolUse", name, now_, "Bash", "x"] for i in range(50)])
+fix, judged = {"ref": "night-f", "class": "hooks", "ids": ["opportunity:hooks/fix.sh"], "spend_m": 1.0, "lines": [1, 1],
+               "merged": True}, {}
+for name, at, control in (("in band", NOW + 40 * 86400, 100), ("no control", NOW + 60 * 86400, None),
+                          ("quieter", NOW + 80 * 86400, 40)):
+    for r in hook_rows(at, "fix.sh", 1000, 100) + [r for c in ("c1.sh", "c2.sh", "c3.sh") if control
+                                                   for r in hook_rows(at, c, 100, control)]:
+        with open(os.path.join(events, time_budget.local_day(r[1]) + ".jsonl"), "a") as handle:
+            handle.write(json.dumps(r, separators=(",", ":")) + "\n")
+    time_budget.roi_lines([dict(night, id=name, started=at - 30, ended=at, improvements=[fix])], at + 600, verdicts=judged)
+check(judged == {"in band": {0: {"pending": False, "gain": 0.1, "proven": True, "slower": False}},
+                 "no control": {0: {"pending": False, "gain": 0.0, "proven": False, "slower": False}},
+                 "quieter": {0: {"pending": False, "gain": 0.0, "proven": False, "slower": False}}},
+      "a «Скорость» gain is load-matched: 1000 → 100 ms/call proves 0.1 min/day beside three untouched hooks at "
+      "100 → 100 ms, never with fewer than 3 of them (load fixed at 1) nor beside ones at 100 → 40 ms (load ×0.40, "
+      "outside the suite proof ratio either way): %s" % judged)
 flat = [{"wall": w, "cpu": 20.0, "head": h, "end": NOW + i * 36000, "ok": True}
         for i, (w, h) in enumerate([(40.0, "a")] * 6 + [(100.0, "b")] * 6)]
 check(suite_audit.jump(flat) and suite_audit.jump(flat)["before"] == 40 and suite_audit.proof(
