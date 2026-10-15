@@ -726,7 +726,17 @@ gw.write_meta("old", flagged_at=int(time.time()) - gw.FLAG_BURST_S - 1)
 gw.note_saved("old")
 assert flag_once() <= gw.FLAG_WALL_S, gw.walls()
 gw.set_wall("old", None)
-gw.write_meta("old", flagged_at=0, flag_strikes=0)
+gw.write_meta("old", flagged_at=0, flag_strikes=0, ramp_from=0)
+# A flagged account sends FLOW_RAMP a day until a take is saved, then twice as many each day up to its budget.
+now = int(time.time())
+assert gw.day_budget({"flagged_at": now - 10, "saved_at": now - 99}, now) == gw.FLOW_RAMP
+gw.write_meta("ramped", flagged_at=now - 10)
+gw.note_saved("ramped")
+ramped = gw.read_meta("ramped")
+assert [gw.day_budget(ramped, ramped["ramp_from"] + d * gw.FLOW_DAY_S) for d in range(4)] == [3, 6, 12, gw.FLOW_DAY_TAKES]
+gw.write_meta("ramped", ramp_from=1)
+gw.note_saved("ramped")
+assert gw.read_meta("ramped")["ramp_from"] == 1, gw.read_meta("ramped")
 # The take that spends the 24 h Flow budget walls the account until the oldest counted take ages out.
 now = int(time.time())
 gw.write_meta("old", flow_takes=[now - gw.FLOW_DAY_S - 5] + [now - 100] * (gw.FLOW_DAY_TAKES - 2))
@@ -757,22 +767,13 @@ gw.write_meta("old", flow_takes=[], flow_day_takes=gw.FLOW_DAY_TAKES)
 gw.rest_no_result("old")
 assert gw.FLOW_DAY_S - 60 < gw.walls()["old"] - time.time() <= gw.FLOW_DAY_S, gw.walls()
 gw.set_wall("old", None)
-# TEMP-FLOW-TRUST(gemini-web): the experiment's arms and its stop rule.
-(gw.ROOT / gw.TRUST).write_text(json.dumps({"started": now - 10, "until": now + 3600, "halt_flags": 2,
-                                            "arms": {"old": "send-budget", "new": "hand-first", "walled": "control"}}))
-gw.note_flow_send("old", 4)
-assert len(gw.read_meta("old")["flow_takes"]) == 1, gw.read_meta("old")
+# TEMP-FLOW-TRUST(gemini-web): the experiment's arms.
+(gw.ROOT / gw.TRUST).write_text(json.dumps({"started": now - 10, "until": now + 3600,
+                                            "arms": {"new": "hand-first"}}))
 gw.set_wall("new", now + 7200)
 gw.trust_hand_done("new")
 assert "new" not in gw.walls() and gw.trust_arm("new") == "hand-done", (gw.walls(), gw.trust())
 gw.trust_hand_done("new")
-gw.write_meta("new", flagged_at=now - 5)
-assert gw.trust_halt() == 0 and "old" not in gw.walls(), gw.walls()
-gw.write_meta("old", flagged_at=now - 1)
-assert gw.trust_halt() == now + 3600 and gw.walls()["new"] == now + 3600 and "walled" not in gw.walls(), gw.walls()
-for name in ("old", "new"):
-    gw.set_wall(name, None)
-    gw.write_meta(name, flagged_at=0, flow_takes=[])
 gw.set_wall("walled", time.time() + 3600)
 (gw.ROOT / gw.TRUST).unlink()
 assert gw.trust() == {} and gw.trust_arm("old") is None

@@ -15,17 +15,17 @@
   {
     "id": "flow-trust",
     "tag": "TEMP-FLOW-TRUST(gemini-web)",
-    "what": "Which change keeps Google Flow from flagging our automated sends (PUBLIC_ERROR_UNUSUAL_ACTIVITY): every account packs takes and counts its budget in images; the marker's arms vary one thing each — 'time' (jihangarangan: back after a 48 h wall, 12 images a day), 'send-budget' (tronjhon: its budget counts sends, not images, so 4-packs test whether Google counts requests), 'ceiling' (egbogd from 2026-10-15 23:30: after the owner's hand session, 40 images a day instead of 12, so the per-account count is tested without lockstep fan-outs), 'hand-first' (loiyehor from 2026-10-15 22:30, rawilimo/abel after flow-rest: walled until the owner closes his own Flow session in the automation profile, then 12 a day), 'manual' (locomthebest: walled, owner by hand only), 'control' (com: 60 images a day); a second flagged account since the start walls every arm but the control to the end",
+    "what": "What brings a Flow-flagged account (PUBLIC_ERROR_UNUSUAL_ACTIVITY) back to automated sends: every account packs takes, keeps 15 a day and restarts a flag at 3 a day, doubling per clean day; the marker's arms vary one thing each — 'time' (jihangarangan, tronjhon: one probe when the 48 h wall ends, 2026-10-17 05:00), 'hand-done' (egbogd, loiyehor: the owner's hand session 2026-10-15 evening, probe the same night, about 18 h after the flag), 'hand-first' (rawilimo, abel after flow-rest: walled until the owner closes his own Flow session in the automation profile), 'manual' (locomthebest: walled, owner by hand only), 'control' (com: 60 a day). Hand probes pass and time probes flag: a hand session ends the wall; all four flag: the automated session itself is the cause (warm long-lived Chrome next)",
     "started": "2026-10-15",
     "review_by": "2026-10-31",
     "state_marker": "~/.gemini-web/flow-trust.json",
-    "evidence": "per account: flagged_at / flag_strikes / saved_at / flow_takes in ~/.gemini-web/accounts/<a>.json, 'Flow flagged this account' reports in ~/.gemini-web/failures/, queued (with refs fingerprints and count), saved, failed (reason, flagged) and hand (owner sessions) rows in ~/.gemini-web/jobs.jsonl; baseline 2026-10-15: five accounts flagged at their 30th-36th image of a night, com clean at 97",
+    "evidence": "per account: flagged_at / flag_strikes / saved_at / ramp_from / flow_takes in ~/.gemini-web/accounts/<a>.json, 'Flow flagged this account' reports in ~/.gemini-web/failures/, queued (with refs fingerprints and count), saved, failed (reason, flagged) and hand (owner sessions) rows in ~/.gemini-web/jobs.jsonl; baseline 2026-10-15: five accounts flagged at their 30th-36th image of a night, com clean at 97",
     "surfaces": [
       "menubar Gemini account rows (the arm walls)",
       "gemini-web accounts (arm per account)",
       "llm-limits --table banner once overdue"
     ],
-    "how_to_remove": "Read the evidence per arm and ask the owner which change stays. Then delete every TEMP-FLOW-TRUST(gemini-web) block (share/gemini_web.py: trust, trust_arm, trust_hand_done, trust_halt and their call sites in note_flow_send, wall_until, cmd_login, cmd_accounts; the block in tests/test_flow_image.sh), delete ~/.gemini-web/flow-trust.json, set flow_day_takes in ~/.gemini-web/accounts/<a>.json to what the verdict says (or remove it), clear the arm walls the owner releases in ~/.gemini-web/walls.json, then this entry, and run tests/run-all $(tests/affected share/gemini_web.py)."
+    "how_to_remove": "Read the evidence per arm and ask the owner which change stays. Then delete every TEMP-FLOW-TRUST(gemini-web) block (share/gemini_web.py: trust, trust_arm, trust_hand_done and their call sites in cmd_login, cmd_accounts; the block in tests/test_flow_image.sh), delete ~/.gemini-web/flow-trust.json, set flow_day_takes in ~/.gemini-web/accounts/<a>.json to what the verdict says (or remove it), clear the arm walls the owner releases in ~/.gemini-web/walls.json, then this entry, and run tests/run-all $(tests/affected share/gemini_web.py)."
   },
   {
     "id": "haiku-review-cells",
