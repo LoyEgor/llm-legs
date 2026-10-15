@@ -1991,8 +1991,12 @@ def cmd_generate(args) -> None:
         if not any(in_pool(name) for name in bound):
             raise Failure(4, 'every signed-in Flow account is out of the gemini worker pool; turn "In pool" '
                              "back on for one, or pin it in ~/.claude/worker-model")
+        now, wall = time.time(), walls()
+        states = ", ".join(f"{name} walled until {time.strftime('%a %H:%M', time.localtime(wall[name]))}"
+                           if wall.get(name, 0) > now else f"{name} {read_meta(name).get('credits', '?')} credits"
+                           for name in bound if in_pool(name))
         raise Failure(3, f"every signed-in Flow account is walled (walls.json) or holds under {plan['cost']} "
-                         "credits by its last balance read")
+                         f"credits by its last balance read: {states}")
     skipped: list[tuple[str, Failure]] = []
     with contextlib.closing(claimed(candidates, args.lock_wait)) as picks:
         for account, refusal in picks:
