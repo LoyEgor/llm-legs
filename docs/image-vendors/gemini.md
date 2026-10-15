@@ -402,7 +402,9 @@ cleared within 33 h, while a re-probed hot account re-flagged at its first send 
 its last `FLOW_DAY_TAKES` (20) Flow images and clips is 24 h old once it starts that many (`flow_takes`, one
 stamp per take a send asks for; a higher `flow_day_takes` in the meta for an account proven above it, com).
 Sends on one account are at least `FLOW_SPACING_S` (180 s) apart, the wait reported as `space_wait_s`. A run
-that waited on the account lock re-reads the walls before it sends. On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
+that waited on the account lock re-reads the walls before it sends. For the flag analysis `jobs.jsonl` also gets a
+`failed` row per failed attempt (`code`, `flagged`, `reason`), `refs` fingerprints (sha256, 12 hex) and `count` on
+queued rows, and a `hand` row when the owner closes his own session in the profile (`gemini-web login --wait`). On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
 mode alike, including under raw CDP input with no Runtime domain, while egbogd, com, jihangarangan and
 locomthebest ran; exit 4 is a profile never signed in. A quote that differs from the manifest fails with
 both numbers and spends nothing. Re-verify after a `model_caps=stale` line, a quote mismatch or a

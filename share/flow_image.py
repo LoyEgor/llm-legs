@@ -287,7 +287,8 @@ def render_on(account: str, plan: dict, meta: dict, started: float) -> dict:
                     "build": state["build"]}
         known = set(watcher.images)
         gw.ledger({"kind": KIND, "event": "queued", "account": account, "project": project, "model": plan["model"],
-                   "resume_of": plan["resume"], "prompt": plan["prompt"][:500]})
+                   "resume_of": plan["resume"], "prompt": plan["prompt"][:500], "count": plan.get("count", 1),
+                   "refs": gw.file_tags(plan.get("refs"))})
         watcher.errors &= gw.BLOCK_ERRORS
         gw.press_generate(page, button)
         sent = time.time()
@@ -645,7 +646,7 @@ def tool_on(account: str, plan: dict, meta: dict, started: float) -> dict:
                     "canvas": list(canvas), "layer": [round(n, 1) for n in layer_rect(frame)], "build": state["build"],
                     "credits_before": credits}
         gw.ledger({"kind": KIND, "event": "queued", "account": account, "project": project, "op": plan["op"],
-                   "model": plan["model"], "prompt": plan["prompt"][:500]})
+                   "model": plan["model"], "prompt": plan["prompt"][:500], "refs": gw.file_tags([plan["image"]])})
         out = Path(plan["out_dir"]) / "take1"
         sent = time.time()
         if plan["op"] == "cutout":

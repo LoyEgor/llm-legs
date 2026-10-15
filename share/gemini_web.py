@@ -1480,6 +1480,9 @@ def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned
                                                "count": plan.get("count", 1) - len(done)})
             except Exception as error:
                 done += getattr(error, "takes", [])
+                ledger({"event": "failed", "account": account, "model": plan.get("model"),
+                        "code": getattr(error, "code", 1), "flagged": bool(getattr(error, "extra", {}).get("flagged")),
+                        "reason": failure_text(error)[:200]})
                 if not isinstance(error, Failure):
                     if not done:
                         raise
@@ -1553,6 +1556,15 @@ def job_rows() -> list:
             with contextlib.suppress(ValueError):
                 rows.append(json.loads(line))
     return rows
+
+
+def file_tags(paths) -> list[str]:
+    """Upload fingerprints for the ledger, so one source photo sent from several accounts shows up."""
+    tags = []
+    for path in filter(None, paths or []):
+        with contextlib.suppress(OSError):
+            tags.append(hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12])
+    return tags
 
 
 def ledger(entry: dict) -> None:
@@ -1916,7 +1928,9 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             clips = clips[:count]
             for index, media_id in enumerate(clips):
                 ledger({"account": account, "media_id": media_id, "project": project,
-                        "dest": str(variant_path(dest, index)), "state": "queued", "model": plan["model"]})
+                        "dest": str(variant_path(dest, index)), "state": "queued", "model": plan["model"],
+                        "refs": file_tags([plan.get("first_frame"), plan.get("last_frame"), plan.get("edit"),
+                                           *(plan.get("refs") or [])])})
             await_clips(page, watcher, clips, deadline, args.timeout, account, dest)
             rendered = time.time()
             phase("media")
@@ -2178,11 +2192,13 @@ def cmd_login(args) -> None:
         [chrome_binary(SOURCE_APP), f"--user-data-dir={profile}", *COMMON_FLAGS, "--new-window",
          LOGIN_URL, *LOGIN_TABS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     if getattr(args, "wait", False):
+        opened = time.time()
         print(f"{TOOL}: sign {args.account} in in the Chrome window that opened{LOGIN_STEPS}, then quit it with "
               "Cmd+Q; waiting for it to close…", file=sys.stderr, flush=True)
         # The launched process can hand the window to another one, so the profile lock decides too.
         while chrome.poll() is None or profile_in_use(profile):
             time.sleep(LOGIN_POLL_S)
+        ledger({"event": "hand", "account": args.account, "opened_at": int(opened)})
         trust_hand_done(args.account)  # TEMP-FLOW-TRUST(gemini-web)
         emit({"ok": True, "account": args.account, "login": has_login(args.account)})
         return
