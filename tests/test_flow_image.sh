@@ -21,7 +21,7 @@ mkdir -p "$HOME" "$TMPDIR" "$WORK/media" "$WORK/out" "$GEMINI_WEB_DIR"
 M=$WORK/media
 magick -size 1200x896 xc:steelblue "$M/a.jpg" || exit 1
 magick -size 1200x896 xc:tomato "$M/b.jpg" || exit 1
-magick -size 64x64 xc:gray "$M/ref.png" || exit 1
+magick -size 64x64 gradient:gray-white "$M/ref.png" || exit 1
 magick -size 1000x750 pattern:checkerboard -fill tomato -draw 'circle 500,375 500,200' "$M/scene.png" || exit 1
 export FAKE_A="$M/a.jpg" FAKE_B="$M/b.jpg"
 cat >"$FLOW_IMAGE_ENGINE" <<'EOF'
@@ -271,7 +271,7 @@ assert jq -e --arg job "$(sed -n 's/^job=//p' "$WORK/stdout")" \
 assert test -z "$(ls "$TMPDIR")"
 
 # The Image Editor ops refuse before the engine starts, one line each.
-magick -size 1600x900 xc:khaki "$M/wide.png" || exit 1
+magick -size 1600x900 gradient:khaki-white "$M/wide.png" || exit 1
 png="$WORK/out/tool.png"
 : >"$FAKE_CALLS"
 while IFS='#' read -r message flags; do

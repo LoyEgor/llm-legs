@@ -123,6 +123,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -z "$edit" ] || { image_leg_edit_arg "$edit" "$resume"; refs=("$edit" ${refs[@]+"${refs[@]}"}); }
+image_leg_inputs "$root"
 tool_op=''
 if [ "$remove_bg" = true ]; then
   tool_op=cutout

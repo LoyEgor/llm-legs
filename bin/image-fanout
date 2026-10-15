@@ -13,6 +13,7 @@ resolve_self() {
 }
 
 usage() {
+  image_leg_cause "$@"
   printf 'usage: image-fanout --dest-dir <abs dir> (--prompt <text> | --jobs <abs jsonl>) [--vendors all|<vendor,...>] [--accounts all|pick] [--takes <n>] [--spare <n>] [--pack <1-4>] [--ref <abs img>]... [--edit <abs img>] [--aspect <W:H>] [--size <WxH>] [--transparent] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
   printf '  --jobs: one JSON object per line {prompt, dest, refs, edit, aspect, size, transparent, vendor, account, takes}; vendors = share/image-caps/*.json\n' >&2
   exit 2
@@ -33,6 +34,7 @@ root=$(cd "$script_dir/.." && pwd)
 . "$root/share/image-caps.sh"
 . "$root/share/limiter-hold.sh"
 . "$root/share/image-leg.sh"
+trap image_leg_inputs_cleanup EXIT
 . "$root/share/limit-hit.sh"
 
 caps_root=${IMAGE_FANOUT_CAPS_ROOT:-$root}
@@ -160,8 +162,15 @@ check_request() { # prompt aspect size edit refs-lines -> 0, or 1 with $why
 }
 
 add_request() { # prompt dest refs-lines edit aspect size transparent vendors account takes
+  local edit=$4 ref refs=()
+  while IFS= read -r ref; do [ -z "$ref" ] || refs+=("$ref"); done <<<"$3"
+  image_leg_inputs "$root"
+  image_leg_input "$root" "$edit"
+  edit=$IMAGE_LEG_INPUT
+  local ref_lines=''
+  [ "${#refs[@]}" -eq 0 ] || ref_lines=$(printf '%s\n' "${refs[@]}")
   rq_n=$((rq_n + 1))
-  rq_prompt[rq_n]=$1 rq_dest[rq_n]=$2 rq_refs[rq_n]=$3 rq_edit[rq_n]=$4 rq_aspect[rq_n]=$5
+  rq_prompt[rq_n]=$1 rq_dest[rq_n]=$2 rq_refs[rq_n]=$ref_lines rq_edit[rq_n]=$edit rq_aspect[rq_n]=$5
   rq_size[rq_n]=$6 rq_transparent[rq_n]=$7 rq_vendors[rq_n]=$8 rq_account[rq_n]=$9 rq_takes[rq_n]=${10}
 }
 
@@ -486,7 +495,7 @@ a_vendor=() a_name=() a_live=() a_excl=() a_cool=() a_launches=() a_used=() a_wh
 limited_why=''
 rq_tid=()
 
-cleanup() { hold_clear "$mem_hold"; rm -rf "$jobs_dir"; }
+cleanup() { image_leg_inputs_cleanup; hold_clear "$mem_hold"; rm -rf "$jobs_dir"; }
 trap cleanup EXIT
 
 on_signal() {

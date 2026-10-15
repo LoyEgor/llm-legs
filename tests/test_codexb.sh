@@ -1024,7 +1024,7 @@ image_run --dest "$WORK/image-output/bad.jpg" --prompt badge --transparent || im
 assert test "$image_rc" -eq 2
 assert grep -q 'requires a .png destination' "$IMAGE_ERR"
 
-printf 'reference\n' >"$WORK/reference.jpg"
+magick -size 64x64 gradient:red-blue "$WORK/reference.jpg"
 # One over the cap the manifest states, never a literal of this suite's own: the imagegen tool
 # refuses the call itself, so the whole generation would be spent to be told so.
 IMAGE_REF_MAX=$(jq -r '.refs.max' "$ROOT/share/image-caps/codex.json")

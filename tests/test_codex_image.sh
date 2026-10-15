@@ -129,7 +129,7 @@ esac
 EOF
 chmod +x "$WORK/fake-web"
 
-"$REAL_MAGICK" -size 64x64 xc:green "$WORK/lineage-ref.png"
+"$REAL_MAGICK" -size 64x64 xc:green -fill black -draw 'rectangle 0,0 1,1' "$WORK/lineage-ref.png"
 printf '{"root":"unrelated.png","depth":7,"edits":[]}' >"$WORK/lineage-ref.png.edit.json"
 assert image_run --dest "$OUTPUT_DIR/ref-only.png" --prompt badge --ref "$WORK/lineage-ref.png" --account explicit
 assert grep -qx 'composite=skipped reason=new-generation' "$IMAGE_OUT"
@@ -204,7 +204,7 @@ assert grep -q 'requires a .png destination' "$IMAGE_ERR"
 # run would be spent to be told so.
 refs=()
 for index in $(seq 1 $((REF_MAX + 1))); do
-  printf 'reference\n' >"$WORK/ref-$index.png"
+  magick -size 64x64 gradient:red-blue "$WORK/ref-$index.png"
   refs+=(--ref "$WORK/ref-$index.png")
 done
 image_rc=0
@@ -364,7 +364,7 @@ export FAKE_CODEX_IMAGE_FORMAT
 # them in context.
 : >"$FAKE_CODEX_CALLS"
 : >"$PICK_CALLS"
-printf 'reference\n' >"$WORK/reference.png"
+magick -size 64x64 gradient:red-blue "$WORK/reference.png"
 assert image_run --dest "$OUTPUT_DIR/edited.png" --prompt 'make the badge blue' \
   --ref "$WORK/reference.png" --account explicit
 assert test ! -s "$PICK_CALLS"
@@ -459,7 +459,7 @@ assert grep -qx "rendered=$OUTPUT_DIR/resumed2.rendered.png" "$IMAGE_OUT"
 assert cmp "$CODEX_PROFILES/other/generated_images/$RESUME_ID/exec-fixture.png" "$OUTPUT_DIR/resumed2.rendered.png"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=2 root=$OUTPUT_DIR/first.png"
 assert test "$(jq -r '.edits[1].composite.kind' "$(sidecar "$OUTPUT_DIR/resumed2.png")")" = auto
-"$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/green-ref.png"
+"$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/green-ref.png"
 assert image_run --dest "$OUTPUT_DIR/composited.png" --prompt 'add a blue circle' --edit "$WORK/green-ref.png" --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
 assert test -e "$OUTPUT_DIR/composited.rendered.png"
@@ -647,7 +647,7 @@ for refusal in sent:1 limit-sent:3 unknown:1 refused:1; do
   assert_fails grep -q 'the same request goes to' "$IMAGE_ERR"
   assert jq -se '.[-1] | .route == "web" and (has("fallback_from") | not) and .delivered == 0' "$IMAGE_LEG_LOG" >/dev/null
 done
-"$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/edit-base.png"
+"$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/edit-base.png"
 for blocked in "--route web" "--remove-bg --ref $WORK/edit-base.png" "--point 0.5,0.5=bluer --ref $WORK/edit-base.png" \
     "--resume 0c0c0c0c-1111-4222-8333-944455556666"; do
   read -r -a blocked_args <<<"$blocked"
@@ -684,8 +684,8 @@ assert test ! -e "$WEB_CALLS"
 assert grep -qx 'ARG=resume' "$FAKE_CODEX_CALLS"
 
 # --edit is the composite base and the first reference; the other refs are references only.
-"$REAL_MAGICK" -size 64x64 'xc:#FF0000' "PNG24:$WORK/style-a.png"
-"$REAL_MAGICK" -size 64x64 'xc:#0000FF' "PNG24:$WORK/style-b.png"
+"$REAL_MAGICK" -size 64x64 'xc:#FF0000' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/style-a.png"
+"$REAL_MAGICK" -size 64x64 'xc:#0000FF' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/style-b.png"
 web_run ok --dest "$OUTPUT_DIR/edited-web.png" --prompt 'add a blue circle' --edit "$WORK/edit-base.png" \
   --ref "$WORK/style-a.png" --ref "$WORK/style-b.png"
 assert test "$image_rc" -eq 0

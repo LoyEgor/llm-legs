@@ -66,6 +66,7 @@ image_leg_cause() { # [cause...]
 # status, and it returns 0 because errexit inside the trap would skip the wrapper's own cleanup.
 image_leg_exit() {
   local rc=$? log err='' model='' index composite
+  image_leg_inputs_cleanup
   [ -z "${IMAGE_LEG_COMPOSITE_BASE:-}" ] || rm -rf "${IMAGE_LEG_COMPOSITE_BASE%/*}" || true
   [ -n "${IMAGE_LEG_TOOL:-}" ] || return 0
   if [ -n "${IMAGE_LEG_ERR:-}" ]; then
@@ -426,4 +427,40 @@ image_leg_lineage() { # vendor route dest session prompt region points(newline-s
   fi
   [ -z "${IMAGE_LEG_COMPOSITE_LINES:-}" ] || printf '%s\n' "$IMAGE_LEG_COMPOSITE_LINES"
   jq -r '"edit_depth=\(.depth) root=\(.root)"' <<<"$sidecar"
+}
+
+image_leg_inputs_cleanup() {
+  local dir
+  for dir in ${IMAGE_LEG_INPUT_DIRS[@]+"${IMAGE_LEG_INPUT_DIRS[@]}"}; do
+    rm -f "$dir"/*
+    rmdir "$dir"
+  done
+  IMAGE_LEG_INPUT_DIRS=()
+}
+
+IMAGE_LEG_INPUT_DIRS=()
+image_leg_input() {
+  local path=$2 result uv dir
+  IMAGE_LEG_INPUT=$path
+  [ -n "$path" ] || return 0
+  [[ "$path" = /* ]] && [ -f "$path" ] || usage "input $path is not an absolute path to a file"
+  uv=$(command -v uv || printf /opt/homebrew/bin/uv)
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/image-input.XXXXXX") || usage "cannot create image input directory"
+  IMAGE_LEG_INPUT_DIRS+=("$dir")
+  result=$(TMPDIR="$dir" "$uv" run -q --script "$1/share/image_input.py" "$path" 2>&1) || usage "$result"
+  IMAGE_LEG_INPUT=$result
+}
+
+image_leg_inputs() {
+  local index field
+  for index in ${refs[@]+"${!refs[@]}"}; do
+    image_leg_input "$1" "${refs[index]}"
+    [ "${edit:-}" != "${refs[index]}" ] || edit=$IMAGE_LEG_INPUT
+    [ "${IMAGE_LEG_EDIT:-}" != "${refs[index]}" ] || IMAGE_LEG_EDIT=$IMAGE_LEG_INPUT
+    refs[index]=$IMAGE_LEG_INPUT
+  done
+  for field in first_frame last_frame; do
+    image_leg_input "$1" "${!field:-}"
+    printf -v "$field" '%s' "$IMAGE_LEG_INPUT"
+  done
 }

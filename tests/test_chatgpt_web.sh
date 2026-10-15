@@ -1332,8 +1332,8 @@ EOF
 chmod +x "$WORK/fake-codex"
 OUT="$WORK/out"
 mkdir -p "$OUT"
-printf 'r\n' >"$WORK/r1.png"
-printf 'r\n' >"$WORK/r2.png"
+magick -size 64x64 gradient:red-blue "$WORK/r1.png"
+magick -size 64x64 gradient:red-blue "$WORK/r2.png"
 IMAGE_OUT="$WORK/image.out"
 IMAGE_ERR="$WORK/image.err"
 image_rc() {
@@ -1385,7 +1385,7 @@ WEB_REFS=$(jq -r '.web.refs_max' "$ROOT/share/image-caps/codex.json")
 assert test "$WEB_REFS" -gt "$CLI_REFS"
 many=()
 for index in $(seq 1 $((WEB_REFS + 1))); do
-  printf 'r\n' >"$WORK/many-$index.png"
+  magick -size 64x64 gradient:red-blue "$WORK/many-$index.png"
   many+=(--ref "$WORK/many-$index.png")
 done
 assert test "$(image_rc --route web --dest "$OUT/many.png" --prompt badge "${many[@]:0:$((2 * WEB_REFS))}")" = 0
@@ -1514,7 +1514,7 @@ if suite_shard_owns 4 composite; then
 # Composite: on by default for --region/--point, against the input snapshot; the fake paints a blue
 # circle over x 18..46 of 64 onto green, so the green input shows wherever the mask did not reach.
 WEB_CHAT=0b6f1d2e-1111-4222-8333-944455556666
-"$REAL_MAGICK" -size 64x48 'xc:#00FF00' "PNG24:$WORK/green.png"
+"$REAL_MAGICK" -size 64x48 'xc:#00FF00' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/green.png"
 pixel_at() { "$REAL_MAGICK" "$1" -depth 8 -format "%[pixel:p{$2}]" info:; }
 assert test "$(image_rc --route web --dest "$OUT/c1.png" --prompt 'blue corner' --ref "$WORK/green.png" --region 0,0,0.2,0.2)" = 0
 assert grep -Eq '^composite=region changed=' "$IMAGE_OUT"

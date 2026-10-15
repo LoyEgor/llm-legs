@@ -28,7 +28,7 @@ command -v ffmpeg >/dev/null 2>&1 || fail "ffmpeg is required for this suite"
 OUT="$WORK/out"
 mkdir -p "$OUT"
 CLIP="$WORK/clip.mp4" FRAME="$WORK/frame.png" LONG="$WORK/long.mp4"
-ffmpeg -v error -f lavfi -i color=c=blue:s=1280x720:d=1:r=24 -f lavfi -i color=c=red:s=1280x720 \
+ffmpeg -v error -f lavfi -i color=c=blue:s=1280x720:d=1:r=24 -f lavfi -i testsrc=s=1280x720 \
   -f lavfi -i color=c=green:s=320x180:d=31:r=4 -map 0 -c:v libx264 -pix_fmt yuv420p "$CLIP" \
   -map 1 -frames:v 1 "$FRAME" -map 2 -c:v libx264 -pix_fmt yuv420p "$LONG" || fail "could not build the fixture clips"
 

@@ -30,7 +30,7 @@ mkdir -p "$FAKE_BIN" "$FAKE_LIST" "$FAKE_SYS" "$DEST" "$WORK/refs" "$CHILDREN" "
 DEST_WORK=$(fanout_work "$DEST")
 
 for i in 1 2 3 4 5; do
-  printf 'ref-%s\n' "$i" >"$WORK/refs/r$i.png"
+  magick -size 64x64 gradient:red-blue "$WORK/refs/r$i.png"
 done
 
 # The memory reader's inputs: vm_stat pages (16 KB each, so MB * 64) and the pressure level.
@@ -224,7 +224,7 @@ GEMINI_FLOW_MAX=$(jq -r '.flow_image.refs_max' "$ROOT/share/image-caps/gemini.js
 FLOW_REFS=()
 for ((i = 0; i < GEMINI_FLOW_MAX; i++)); do FLOW_REFS+=(--ref "$WORK/refs/r$((i % 5 + 1)).png"); done
 
-magick -size 180x120 xc:green "$WORK/edit-shape.png"
+magick -size 180x120 gradient:green-white "$WORK/edit-shape.png"
 assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$WORK/edit-shape.png"
 assert grep -Fq -- '--aspect 3:2' <<<"$(plan_cmd grok delta)"
 assert grep -Fq -- '--aspect 4:3' <<<"$(plan_cmd gemini gamma)"

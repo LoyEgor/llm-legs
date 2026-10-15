@@ -118,6 +118,7 @@ done
 [[ "$dest" = /* ]] || usage "--dest must be an absolute path, not $dest"
 IMAGE_LEG_ROUTE=cli
 [ -z "$edit" ] || { image_leg_edit_arg "$edit" "$resume"; refs=("$edit" ${refs[@]+"${refs[@]}"}); }
+image_leg_inputs "$root"
 if [ -n "$edit" ] && [ "$aspect_given" = false ]; then
   edit_aspect=$(image_caps_edit_aspect "$edit" "$(image_caps_get "$root" grok '.aspects.edit | join(",")')")
   [ -z "$edit_aspect" ] || aspect=$edit_aspect

@@ -96,6 +96,7 @@ done
 [[ "$dest" = /* ]] || usage "--dest must be an absolute path, not $dest"
 [ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = "$container" ] || usage "--dest $dest must end in .$container"
 [ -d "$(dirname "$dest")" ] || usage "--dest folder $(dirname "$dest") does not exist"
+image_leg_inputs "$root"
 [ "${#refs[@]}" -le "$refs_max" ] || say "Flow takes at most $refs_max --ref images"
 case "|$counts|" in
   *"|$count|"*) ;;

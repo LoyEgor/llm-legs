@@ -122,7 +122,7 @@ assert grep -q 'requires a .png destination' "$IMAGE_ERR"
 MANIFEST="$ROOT/share/image-caps/grok.json"
 REFS_MAX=$(jq -r '.refs.max' "$MANIFEST")
 assert test "$REFS_MAX" -ge 3
-printf 'reference\n' >"$WORK/ref-a.jpg"
+magick -size 64x64 gradient:red-blue "$WORK/ref-a.jpg"
 over_cap=()
 for ((i = 0; i <= REFS_MAX; i++)); do over_cap+=(--ref "$WORK/ref-a.jpg"); done
 image_rc=0
@@ -208,7 +208,7 @@ assert image_run --dest "$OUTPUT_DIR/atcap.jpg" --prompt badge --account explici
 assert test "$(grep -c "^- $WORK/ref-a.jpg$" "$FAKE_GROKB_PROMPT")" -eq "$REFS_MAX"
 
 # With a reference the run goes to image_edit, which takes them.
-printf 'reference\n' >"$WORK/aspect-reference.jpg"
+magick -size 64x64 gradient:red-blue "$WORK/aspect-reference.jpg"
 FAKE_GROKB_IMAGE_FORMAT=jpg
 assert image_run --dest "$OUTPUT_DIR/wide.jpg" --prompt 'make the badge blue' \
   --aspect 4:3 --ref "$WORK/aspect-reference.jpg" --account explicit
@@ -265,7 +265,7 @@ assert grep -q 'image you produced most recently in this session' "$FAKE_GROKB_P
 
 # Composite is on by default for every edit, as on every vendor: the session's last delivered image
 # (this machine's lineage record) or --edit is the input, the render kept beside the dest.
-"$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/green.png"
+"$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/green.png"
 "$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill blue -draw 'circle 32,32 32,14' "PNG24:$WORK/circle.png"
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/green.png" \
   assert image_run --dest "$OUTPUT_DIR/g0.png" --prompt 'a green field' --account explicit
@@ -294,7 +294,7 @@ assert test "$image_rc" -eq 2
 assert grep -q 'composite needs the image being edited' "$IMAGE_ERR"
 # --edit is the composite base and the first image_edit source; the other refs are references only. Grok has
 # one route, so --lock-wait is accepted and nothing waits on it.
-"$REAL_MAGICK" -size 64x64 'xc:#FF0000' "PNG24:$WORK/style-a.png"
+"$REAL_MAGICK" -size 64x64 'xc:#FF0000' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/style-a.png"
 : >"$FAKE_GROKB_PROMPT"
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
   assert image_run --dest "$OUTPUT_DIR/g6.png" --prompt 'add a blue circle' --edit "$WORK/green.png" \
@@ -414,7 +414,7 @@ assert test "$(sips -g format "$OUTPUT_DIR/converted.png" | awk '/format:/ {prin
 assert test -s "$MAGICK_CALLS"
 assert grep -Fq "$FAKE_GROKB_SESSION_ROOT/fake-session/images/1.jpg $OUTPUT_DIR/converted.png" "$MAGICK_CALLS"
 
-printf 'reference\n' >"$WORK/reference.jpg"
+magick -size 64x64 gradient:red-blue "$WORK/reference.jpg"
 : >"$FAKE_GROKB_CALLS"
 : >"$PICK_CALLS"
 assert image_run --dest "$OUTPUT_DIR/edited.jpg" --prompt 'make the badge blue' \

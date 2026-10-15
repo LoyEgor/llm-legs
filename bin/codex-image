@@ -330,6 +330,7 @@ fi
 route=${route:-$(image_caps_get "$root" codex '.routes[0]' 2>/dev/null)}
 case "$route" in cli|web) IMAGE_LEG_ROUTE=$route ;; *) usage "--route takes cli or web, not $route" ;; esac
 [ -z "$edit" ] || { image_leg_edit_arg "$edit" "$resume_id"; refs=("$edit" ${refs[@]+"${refs[@]}"}); }
+image_leg_inputs "$root"
 if [ "$count" != 1 ]; then
   [ "$route" = web ] ||
     usage "--count runs on --route web (one browser, a chat per take); the CLI image_gen renders one image"

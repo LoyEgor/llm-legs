@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+set -eu
+ROOT=${IMAGE_INPUT_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
+WORK=$(mktemp -d)
+trap 'rm -f "$WORK"/*; rmdir "$WORK"' EXIT
+export IMAGE_LEG_LOG="$WORK/legs.jsonl"
+asserts=0
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+assert() { asserts=$((asserts + 1)); "$@" || fail "$*"; }
+magick -size 64x64 xc:white "$WORK/blank.png"
+cat >"$WORK/viewbox.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="100 200 400 100"><path fill="black" d="M120 220h360v60H120z"/></svg>
+SVG
+
+blank_reference() {
+  local code=0
+  (
+    . "$ROOT/share/image-leg.sh"
+    trap image_leg_inputs_cleanup EXIT
+    usage() { printf '%s\nusage: input\n' "$*" >&2; exit 2; }
+    refs=("$WORK/blank.png")
+    image_leg_inputs "$ROOT"
+  ) >"$WORK/out" 2>"$WORK/err" || code=$?
+  assert test "$code" = 2
+  assert grep -Fq "blank reference: $WORK/blank.png (uniform image; an SVG rasterised without its viewBox?)" "$WORK/err"
+}
+
+svg_reference() {
+  (
+    . "$ROOT/share/image-leg.sh"
+    trap image_leg_inputs_cleanup EXIT
+    usage() { printf '%s\n' "$*" >&2; exit 2; }
+    refs=("$WORK/viewbox.svg")
+    image_leg_inputs "$ROOT"
+    [[ "${refs[0]}" = *.png ]] || exit 1
+    magick "${refs[0]}" -format '%w %h %[fx:standard_deviation.a] %[fx:minima.a]' info: >"$WORK/svg-stats"
+    printf '%s' "${refs[0]}" >"$WORK/converted"
+    image_leg_input "$ROOT" "${refs[0]}"
+  ) || fail 'SVG reference must rasterise to a non-blank PNG'
+  assert awk '{exit !($1 == 1024 && $2 == 256 && $3 > 0 && $4 == 0)}' "$WORK/svg-stats"
+  assert test ! -e "$(cat "$WORK/converted")"
+}
+
+case ${1:-} in
+  blank_reference) blank_reference; exit ;;
+  svg_reference) svg_reference; exit ;;
+esac
+blank_reference
+svg_reference
+for wrapper in codex-image gemini-image grok-image gemini-video grok-video; do
+  case $wrapper in *-image) flags='--ref --edit'; ext=png ;; *) flags='--ref --first-frame --last-frame'; ext=mp4 ;; esac
+  for flag in $flags; do
+    code=0
+    bash "$ROOT/bin/$wrapper" --dest "$WORK/out.$ext" --prompt test "$flag" "$WORK/blank.png" >"$WORK/out" 2>"$WORK/err" || code=$?
+    assert test "$code" = 2
+    assert grep -Fq "blank reference: $WORK/blank.png" "$WORK/err"
+    assert grep -q '^usage:' "$WORK/err"
+  done
+done
+for mode in flags jobs; do
+  args=(--prompt test --ref "$WORK/blank.png")
+  if [ "$mode" = jobs ]; then
+    printf '{"prompt":"test","dest":"%s/out.png","refs":["%s"]}\n' "$WORK" "$WORK/blank.png" >"$WORK/jobs.jsonl"
+    args=(--jobs "$WORK/jobs.jsonl")
+  fi
+  code=0
+  bash "$ROOT/bin/image-fanout" --dest-dir "$WORK" --vendors codex --dry-run "${args[@]}" >"$WORK/out" 2>"$WORK/err" || code=$?
+  assert test "$code" = 2
+  assert grep -Fq "blank reference: $WORK/blank.png" "$WORK/err"
+done
+for color in black transparent '#808080'; do
+  magick -size 64x64 "xc:$color" "$WORK/blank.png"
+  blank_reference
+done
+for color in black white; do
+  magick -size 64x64 xc:none -fill "$color" -draw 'rectangle 8,8 55,55' "$WORK/shape.png"
+  result=$(uv run -q --script "$ROOT/share/image_input.py" "$WORK/shape.png")
+  assert test "$result" = "$WORK/shape.png"
+done
+magick -size 64x64 gradient:'#808080-#818181' -evaluate multiply 0.1 "$WORK/blank.png"
+blank_reference
+printf 'PASS: %s asserts; blank_reference, svg_reference, all wrapper input flags and fanout jobs\n' "$asserts"

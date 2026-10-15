@@ -87,8 +87,8 @@ MAIN_GROK_HOME="$WORK/grok-main"
 CLAIMS_DIR="$WORK/worker-claims"
 SESSION_UUID=01a05a11-0000-7000-8000-00000000beef
 mkdir -p "$GROK_PROFILES/explicit" "$GROK_PROFILES/picked"
-printf 'reference\n' >"$WORK/ref-a.jpg"
-printf 'reference\n' >"$WORK/ref-b.jpg"
+magick -size 64x64 gradient:red-blue "$WORK/ref-a.jpg"
+magick -size 64x64 gradient:red-blue "$WORK/ref-b.jpg"
 
 video_run() {
   env PATH="$FAKE_BIN:$PATH" TMPDIR="$TMP_ROOT" \

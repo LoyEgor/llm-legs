@@ -54,7 +54,7 @@ expect_rc() {
   assert test "$result" -eq "$expected"
 }
 args=(--dest "$WORK/output/result.png" --prompt 'a blue badge')
-printf 'reference\n' >"$WORK/reference.jpg"
+magick -size 64x64 gradient:red-blue "$WORK/reference.jpg"
 ref="$WORK/reference.jpg"
 export FLOW_CALLS="$WORK/flow-engine-calls"
 cat >"$WORK/bin/fake-flow" <<'EOF'
@@ -181,7 +181,7 @@ assert test "$(jq -c '[.edits[] | [.prompt, .region, .points, .route, .vendor, .
 fi
 
 if suite_shard_owns 2 gemini-image-composite; then
-"$REAL_MAGICK" -size 256x192 xc:'#00FF00' "$WORK/green.png"
+"$REAL_MAGICK" -size 256x192 xc:'#00FF00' -fill black -draw 'rectangle 120,90 121,91' "$WORK/green.png"
 assert image_run --dest "$WORK/output/composite.png" --prompt 'add a blue patch' --edit "$WORK/green.png" --composite --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
 assert grep -qx 'size=256x192' "$WORK/out"
@@ -217,13 +217,13 @@ assert test ! -e "$WORK/output/optout.rendered.png"
 assert test "$(jq -c '.edits[0].composite' "$(sidecar "$WORK/output/optout.png")")" = '{"kind":"skipped","changed":null,"reason":"opted-out"}'
 assert image_run --dest "$WORK/output/keyed.png" --prompt 'a patch' --ref "$WORK/green.png" --transparent --account explicit
 assert test "$(grep -c '^composite=' "$WORK/out")" -eq 0
-"$REAL_MAGICK" -size 256x192 xc:red "$WORK/red.png"
+"$REAL_MAGICK" -size 256x192 xc:red -fill black -draw 'rectangle 0,0 1,1' "$WORK/red.png"
 assert image_run --dest "$WORK/output/global.png" --prompt 'repaint' --edit "$WORK/red.png" --account explicit
 assert grep -Eqx 'composite=refused reason=global changed=[0-9.]+% kind=auto' "$WORK/out"
 assert test ! -e "$WORK/output/global.rendered.png"
 assert test "$("$REAL_MAGICK" "$WORK/output/global.png" -format '%wx%h' info:)" = 16x12
 assert test "$(jq -r '.edits[0].composite.kind' "$(sidecar "$WORK/output/global.png")")" = refused
-"$REAL_MAGICK" -size 256x256 xc:'#00FF00' "$WORK/square.png"
+"$REAL_MAGICK" -size 256x256 xc:'#00FF00' -fill black -draw 'rectangle 0,0 1,1' "$WORK/square.png"
 assert image_run --dest "$WORK/output/outpaint.png" --prompt 'widen' --edit "$WORK/square.png" --account explicit
 assert grep -qx 'composite=skipped reason=aspect-changed from=256x256 to=16x12' "$WORK/out"
 assert test ! -e "$WORK/output/outpaint.rendered.png"
@@ -289,6 +289,7 @@ cp "$ROOT/bin/gemini-image" "$WORK/repo/bin/"
 printf '#!/usr/bin/env bash\nexec bash "%s" "$@"\n' "$ROOT/bin/geminib" >"$WORK/repo/bin/geminib"
 chmod +x "$WORK/repo/bin/geminib"
 cp "$ROOT/share/"{image-caps,image-chroma,image-leg,account-arg,account-roster,gemini-accounts,codex-accounts,worker-model,worker-pool,worker-walls,worker-claims,flow-image,limit-hit}.sh "$WORK/repo/share/"
+cp "$ROOT/share/image_input.py" "$WORK/repo/share/"
 jq '.refs.max=1 | .aspects.generate=["5:4"] | .aspects.edit=["5:4"] | .aspects.default="5:4"' "$ROOT/share/image-caps/gemini.json" >"$WORK/repo/share/image-caps/gemini.json"
 SCRIPT="$WORK/repo/bin/gemini-image"
 assert image_run "${args[@]}" --ref "$ref" --account explicit
@@ -373,9 +374,9 @@ if suite_shard_owns 2 gemini-image-edit; then
 route_args=()
 export FLOW_IMAGE_ENGINE="$WORK/bin/fake-flow"
 # --edit is the composite base and the first reference on both routes; the other refs are references only.
-"$REAL_MAGICK" -size 16x12 'xc:#00FF00' "PNG24:$WORK/edit-base.png"
-"$REAL_MAGICK" -size 16x12 'xc:#FF0000' "PNG24:$WORK/style-a.png"
-"$REAL_MAGICK" -size 16x12 'xc:#0000FF' "PNG24:$WORK/style-b.png"
+"$REAL_MAGICK" -size 16x12 'xc:#00FF00' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/edit-base.png"
+"$REAL_MAGICK" -size 16x12 'xc:#FF0000' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/style-a.png"
+"$REAL_MAGICK" -size 16x12 'xc:#0000FF' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/style-b.png"
 edit_args=(--edit "$WORK/edit-base.png" --ref "$WORK/style-a.png" --ref "$WORK/style-b.png")
 flow_run signin "${args[@]}" --route flow "${edit_args[@]}"
 assert test "$(grep -A1 -x -- --ref "$FLOW_CALLS" | grep -v -x -- --ref | grep -v -x -- -- | tr '\n' ' ')" = \

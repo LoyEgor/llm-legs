@@ -965,7 +965,7 @@ assert grep -q 'magick is required' "$IMAGE_ERR"
 assert test ! -s "$IMAGE_CALLS"
 mv "$WORK/magick-away" "$IMAGE_BIN/magick"
 
-printf 'reference\n' >"$WORK/reference.jpg"
+magick -size 64x64 gradient:red-blue "$WORK/reference.jpg"
 : >"$IMAGE_PICK_CALLS"
 image_rc=0
 image_run --dest "$WORK/image-output/alpha.jpg" --prompt 'simple badge' --transparent || image_rc=$?
