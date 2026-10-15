@@ -1417,11 +1417,9 @@ cp "$WORK/limits.json" "$WORK/cg-limits-kept.json"
 jq --argjson now "$cg_now" '.vendors.codex.accounts[0].as_of = ($now - 19 * 3600 - 600 | todateiso8601)' \
   "$WORK/cg-limits-kept.json" > "$WORK/limits.json"
 cg_stale=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
-assert grep -Fq "${RED}stale 19h10m${RESET}" <<< "$(sed -n '2p' <<< "$cg_stale")"
+assert test "${cg_stale#*stale}" = "$cg_stale"
 jq --argjson now "$cg_now" '.vendors.codex.accounts[0].as_of = ($now - 600 | todateiso8601)' \
   "$WORK/cg-limits-kept.json" > "$WORK/limits.json"
-cg_recent=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
-assert test "${cg_recent#*stale}" = "$cg_recent"
 cg_wall_reset=$((cg_now + 5400))
 LLM_LIMITS_FILE="$WORK/limits.json" bash -c '. "$1/share/worker-walls.sh" && worker_walls_record codex work4 "$2" "$3"' \
   _ "$ROOT" "$cg_wall_reset" "$((cg_now + 1))"
@@ -1440,7 +1438,8 @@ jq --argjson now "$cg_now" '.vendors.claude.accounts = [{account:"stalefab", as_
     fable:{used_pct:5,effective_pct:5,stale:true,resets_at:($now + 86400 | todateiso8601)}}]' \
   "$WORK/cg-limits-kept.json" > "$WORK/limits.json"
 fab_stale=$(run_statusline "$(statusline_payload stale-fable '{"model":{"id":"claude-fable-5","display_name":"Fable 5"}}')" stalefab)
-assert grep -Fq "${RED}stale 19h${RESET}" <<< "$(sed -n '2p' <<< "$fab_stale")"
+assert grep -Fq "fb ${DIM}5%" <<< "$(sed -n '2p' <<< "$fab_stale")"
+assert test -z "$(sed -n '2p' <<< "$fab_stale" | grep stale)"
 mv "$WORK/cg-limits-kept.json" "$WORK/limits.json"
 for cg_bucket in 'null' '{used_pct:null,resets_at:null,as_of:$now,origin:"usage",stale:false,effective_pct:null}' '{}'; do
   jq -cn --argjson now "$cg_now" "{vendors:{codex:{accounts:[{account:\"desktop-pro\",

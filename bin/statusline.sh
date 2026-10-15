@@ -805,7 +805,7 @@ fi
 
 now=${STATUSLINE_NOW:-$EPOCHSECONDS}
 h5_absent=false; h5_pct=""; h5_reset=""; h5_dim=""; wk_pct=""; wk_reset=""; wk_dim=""; wk_origin=""
-h5_stale=""; wk_stale=""; fable_found=""; fable_pct=""; fable_reset=""; fable_dim=""; store_stale_txt=""
+h5_stale=""; wk_stale=""; fable_found=""; fable_pct=""; fable_reset=""; fable_dim=""
 want_rl=0; want_claude=0; want_codex=0; limits_mtime=0
 if [ -n "$rl_json" ]; then
   # Legacy raw-headers caches carry no as_of; the cache file's mtime is the honest lower bound
@@ -832,7 +832,7 @@ if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then wall_vendor=codex; wall_account=$CLAUDE
 # store file is read once, and unreadable or invalid it leaves b, c and d empty.
 limits_lines=$(jq -nr --arg rl "$rl_json" --argjson want_rl "$want_rl" --argjson want_claude "$want_claude" \
   --argjson want_codex "$want_codex" --argjson now "$now" --argjson rl_mtime "${rl_mtime:-0}" \
-  --argjson limits_mtime "$limits_mtime" --argjson sthr "$LIMITS_STALE_ROUTING" \
+  --argjson limits_mtime "$limits_mtime" \
   --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
   --arg acct "$acct" --arg gpt "${CLAUDEGPT_ACCOUNT:-}" --arg wall_v "$wall_vendor" --arg wall_a "$wall_account" \
   "$LIMITS_VIEW_JQ"'
@@ -866,10 +866,7 @@ limits_lines=$(jq -nr --arg rl "$rl_json" --argjson want_rl "$want_rl" --argjson
            (.resets_at | limits_store_epoch | if . == null then "" else (floor | tostring) end),
            (if .stale == true or .expired == true then "1" else "" end)]
         | join("\u001f")) // "\u001f\u001f\u001f")
-       catch "\u001f\u001f\u001f")
-    + "\u001f"
-    + (try (first(.vendors.claude.accounts[]? | select(.account == $acct) | select(.fable != null)
-        | limits_store_stale_text(.; $now; $sthr)) // "") catch "");
+       catch "\u001f\u001f\u001f");
   def sl_c:
     [.vendors.codex.accounts[]? | select(.account == $gpt)][0] as $a
     | def bucket($b; $thr):
@@ -885,8 +882,7 @@ limits_lines=$(jq -nr --arg rl "$rl_json" --argjson want_rl "$want_rl" --argjson
                   or ($now - $limits_mtime) > $thr then "1" else "" end) ]
         end;
     bucket($a.five_hour; $thr5) + bucket($a.weekly; $thrw)
-    + [($a != null and limits_window_absent($a.five_hour) | tostring)]
-    + [limits_store_stale_text($a; $now; $sthr)] | join("\u001f");
+    + [($a != null and limits_window_absent($a.five_hour) | tostring)] | join("\u001f");
   def sl_d:
   first(.vendors[$wall_v] | (.accounts // [.])[]? | select((.account // "main") == $wall_a) |
     limits_wall_view(.; $now) | select(. != null)) |
@@ -910,7 +906,7 @@ limits_lines=$(jq -nr --arg rl "$rl_json" --argjson want_rl "$want_rl" --argjson
 [ "$wk_origin" = headers ] && { wk_pct=""; wk_reset=""; }
 
 if [ "$want_claude" = 1 ]; then
-  IFS=$'\x1f' read -r h5_stale wk_stale fable_found fable_pct fable_reset fable_dim store_stale_txt <<< "$limits_b"
+  IFS=$'\x1f' read -r h5_stale wk_stale fable_found fable_pct fable_reset fable_dim <<< "$limits_b"
   if [ -n "$rl_json" ] && [ -n "$rl_from_cache" ]; then
     [ "$h5_stale" = true ] && h5_dim=1
     [ "$wk_stale" = true ] && wk_dim=1
@@ -918,7 +914,7 @@ if [ "$want_claude" = 1 ]; then
 fi
 
 if [ "$want_codex" = 1 ]; then
-  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim h5_absent store_stale_txt <<< "$limits_c"
+  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim h5_absent <<< "$limits_c"
   codex_quota_kick "$CLAUDEGPT_ACCOUNT" "$now"
 fi
 
@@ -2191,7 +2187,6 @@ fit_compose2() {
     fit_label "$fable_reset_txt"
     line2="${line2}${gap}fb ${fable_pct_part}${fit_out}"
   fi
-  [ -n "$store_stale_txt" ] && line2="${line2}${gap}${RED}stale ${store_stale_txt}${RESET}"
   [ "$fit2_cost" = 1 ] && [ -n "$cost_part" ] && line2="${line2}${gap}${cost_part}"
 }
 

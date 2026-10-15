@@ -170,9 +170,4 @@ def limits_stale_watch($key):
   elif (.accounts | type) == "array" and (.accounts | length) > 0
   then (.removed != true) as $live | del(.stale_watch) | .accounts |= map(mark($live))
   else mark(.removed != true and .available == true) end;
-def limits_store_stale_text($row; $now; $thr):
-  (($row // {}).as_of | limits_store_epoch) as $asof |
-  if $row == null or $row.auth_needed == true or $asof == null
-     or (limits_data_stale($now - $asof; $thr) | not) then ""
-  else limits_age_text($now - $asof) end;
 '

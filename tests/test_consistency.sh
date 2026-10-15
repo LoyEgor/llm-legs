@@ -178,10 +178,10 @@ assert grep -Fq -- '-gt "$LIMITS_STALE_FABLE"' "$STATUSLINE"
 assert eq "$(grep -cE -- '-gt (1800|21600)\b' "$STATUSLINE")" 0
 
 # account data staleness is the routing threshold on every surface: the collector publishes it for
-# the menu and judges its own table with it, the statusline sources it, none carries a literal
+# the menu and judges its own table with it, none carries a literal; the statusline only dims cells
 assert grep -Fq -- '--argjson stale_after "$LIMITS_STALE_ROUTING"' "$LLMLIMITS"
 assert eq "$(grep -c -- '--argjson stale_thr "$LIMITS_STALE_ROUTING"' "$LLMLIMITS")" 2
-assert eq "$(grep -c -- '--argjson sthr "$LIMITS_STALE_ROUTING"' "$STATUSLINE")" 1
+assert eq "$(grep -cE 'LIMITS_STALE_ROUTING|\b7200\b' "$STATUSLINE")" 0
 assert grep -Fq 'tonumber(limits.account_stale_after_s)' "$ROOT/hammerspoon/llm-limits.lua"
 assert eq "$(grep -cE '\b7200\b' "$ROOT/hammerspoon/llm-limits.lua")" 0
 
