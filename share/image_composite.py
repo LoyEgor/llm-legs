@@ -137,8 +137,23 @@ def coherent_regions(base: np.ndarray, edited: np.ndarray, known: np.ndarray) ->
     sizes = np.bincount(labels.ravel(), minlength=count + 1)
     keep = sizes >= max(12, strong.size * 0.005)
     keep[0] = False
+    keep[np.unique(np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1])))] = False
+    for label in np.flatnonzero(keep):
+        core = labels == label
+        ring = ndimage.binary_dilation(core, disk(3 * sigma)) & ~core & ~known
+        if not ring.any() or np.max(np.abs(np.median(mean[core], axis=0)
+                                          - np.median(mean[ring], axis=0))) <= 0.25:
+            keep[label] = False
+    seeds = keep[labels]
     weak = ((signal > 0.25) & (signal > 0.75 * noise)).any(axis=2)
-    return ndimage.binary_propagation(keep[labels], mask=weak)
+    labels, count = ndimage.label(weak)
+    keep = np.zeros(count + 1, bool)
+    keep[np.unique(labels[seeds])] = True
+    keep[0] = False
+    # Weak drift can bridge a bounded seed to the whole frame; it is not a local edit.
+    keep[np.intersect1d(labels[0], labels[-1])] = False
+    keep[np.intersect1d(labels[:, 0], labels[:, -1])] = False
+    return keep[labels]
 
 
 def near_points(regions: np.ndarray, points: list[tuple[float, float]]) -> np.ndarray:
