@@ -948,7 +948,11 @@ case "${IMAGE_MODE:-reply}" in
     printf 'status\n/nonexistent/generated.jpg\n' >"$output"
     ;;
   *)
-    image_dir="${CODEX_HOME:-$HOME/.codex}/generated_images/fake-thread"
+    # A fresh thread per call, announced as the real CLI does: a shared directory lets the previous
+    # run's answer, landed inside the launch marker's backdated second, tie on whole-second mtimes.
+    thread=$(uuidgen | tr 'A-F' 'a-f')
+    printf '{"type":"thread.started","thread_id":"%s"}\n' "$thread"
+    image_dir="${CODEX_HOME:-$HOME/.codex}/generated_images/$thread"
     mkdir -p "$image_dir"
     printf 'generated:%s\n' "$account" >"$image_dir/exec-fake.${IMAGE_REPLY_EXT:-png}"
     printf 'done\n' >"$output"
