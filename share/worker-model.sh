@@ -526,6 +526,12 @@ worker_model_chat_opens_all() {
   file=$(worker_model_chat_pin_file) && grep -qx 'open=all' "$file" 2>/dev/null
 }
 
+# Flash is Light only (Egor 2026-10-15): the grant leaves `gemini_workers=off` shut while the gemini
+# model is a Flash; its reviews, light legs and an explicit pin are untouched.
+worker_model_chat_opens_workers() { # vendor model
+  worker_model_chat_opens_all && ! { [ "$1" = gemini ] && [ "${2#flash}" != "$2" ]; }
+}
+
 worker_model_pin_file() {
   worker_model_pin_file_r
   printf '%s' "$WORKER_MODEL_R"

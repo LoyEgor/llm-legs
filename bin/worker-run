@@ -3086,9 +3086,9 @@ start_run() {
   fi
   # The role switch walls the vendor exactly the way the pool walls an account: an explicit
   # --account, a resumed session or the pin fallback cannot get in under it; the vendor pin and the
-  # chat's open=all are the overrides, because naming either is the deliberate "use this one anyway".
+  # chat's open=all (never for Gemini Flash) are the overrides, because naming either is the deliberate "use this one anyway".
   if [ "$role" = workers ] && [ -z "$light" ] && [ "$computer" = false ] && [ "$browser" = false ] && [ "$(config_value "${vendor}_workers")" = off ] &&
-     ! worker_model_pin_has "$vendor" "$account" && ! worker_model_chat_opens_all; then
+     ! worker_model_pin_has "$vendor" "$account" && ! worker_model_chat_opens_workers "$vendor" "$model"; then
     outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
     fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
   fi

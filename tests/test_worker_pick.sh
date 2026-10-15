@@ -1353,6 +1353,20 @@ assert test "$query_out" = main
 query --account gemini
 assert test "$query_rc" -eq 3
 assert test "$(cat "$WORK/query.err")" = 'worker-pick: gemini is switched off for workers'
+# «воркер на все» leaves a Flash shut for workers (Flash is Light only); Pro and reviews still open.
+light_env=("${run_env[@]}")
+run_env=("${run_env[@]}" CLAUDE_CODE_SESSION_ID=chat-flash)
+mkdir -p "$WORK/chat-pins"; printf 'open=all\n' >"$WORK/chat-pins/chat-flash"
+query --account gemini
+assert test "$query_rc" -eq 3
+printf '%s\n' 'worker=auto' 'gemini_model=pro' 'gemini_effort=high' 'gemini_workers=off' >"$CONFIG"
+query --account gemini
+assert test "$query_rc" -eq 0
+write_config 'gemini_reviewers=off'
+query --account gemini --role reviewers
+assert test "$query_rc" -eq 0
+run_env=("${light_env[@]}")
+rm -f "$WORK/chat-pins/chat-flash"
 # The same on a second vendor, so `light` is a role of the picker and not a Gemini exemption.
 write_config 'claudeb_workers=off'
 query_case claude_pool --account claudeb --role light

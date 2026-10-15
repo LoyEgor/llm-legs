@@ -254,9 +254,10 @@ eff_display "$gr_effort" gr_eff; gr_display="${gr_model_display}·$gr_eff"
 # choose, and a usable pin still answers over it the way it answers over pool exclusion. So a
 # workers wall cannot be decided here — whether the pin serves is only known once selection ran.
 # Egor's per-chat grant opens what it names for this chat alone: «воркер на <vendor>» that vendor's
-# reviews (its workers ride the pin itself), «воркер на все» every vendor for both roles. Which
-# account works stays the pool's.
+# reviews (its workers ride the pin itself), «воркер на все» every vendor for both roles but Gemini
+# Flash's workers. Which account works stays the pool's.
 chat_opens() { # vendor role
+  if [ "$2" = workers ]; then worker_model_chat_opens_workers "$1" "$gm_model"; return; fi
   worker_model_chat_opens_all ||
     { [ "$2" = reviewers ] && grep -q "^$1_profile=" "$(worker_model_chat_pin_file)" 2>/dev/null; }
 }

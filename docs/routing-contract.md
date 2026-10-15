@@ -133,8 +133,9 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    runs the twin under its `grokXYfast` cell token; codex's stays "Fast Mode (workers)" and its
    review cells disable fast outright. An `open=all` line
    (`chat-pin all`, «воркер на все») opens every `<vendor>_workers`/`<vendor>_reviewers` wall for
-   that chat alone — `worker-pick` `chat_opens`, `worker-run` through `worker_model_chat_opens_all`
-   for a named `--account` too; the pool, a pause and usage walls still hold.
+   that chat alone but `gemini_workers` while the gemini model is a Flash (Flash is Light only) —
+   `worker-pick` `chat_opens`, `worker-run` through `worker_model_chat_opens_workers` for a named
+   `--account` too; the pool, a pause and usage walls still hold.
 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
    outside the pool cannot carry a headless run however it is named: the four vendor CLIs
@@ -321,7 +322,8 @@ an ordinary candidate ranked by pool and spending like any other. The global pin
 <vendor>», Egor 2026-09-23) is a whole test permission, workers and reviews alike, and the pool still
 picks which account reviews (`chat_opens` in `bin/worker-pick`). «воркер на все» (`chat-pin all`) writes the one line
 `open=all` instead: no vendor is pinned, and every `<vendor>_workers=off` and `<vendor>_reviewers=off`
-is open for that chat, so the pool ranks all vendors as if no switch were closed. The global pins
+is open for that chat but `gemini_workers=off` under a Flash model, which stays shut (Flash is Light
+only, Egor 2026-10-15), so the pool ranks all vendors as if no other switch were closed. The global pins
 still lead its workers, and a walled pin falls through to that open pool (Egor 2026-10-08: «все» opens,
 a pin chooses). A paused vendor, walls and the Light switch still apply.
 

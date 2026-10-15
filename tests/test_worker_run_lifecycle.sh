@@ -325,6 +325,14 @@ rc=0
 CLAUDE_CODE_SESSION_ID=chat-pin-test "$RUNNER" start codex --brief "$WORK/brief" --account explicit   >"$WORK/role-open.out" 2>"$WORK/role-open.err" || rc=$?
 assert test "$rc" -eq 4
 assert grep -q 'codex is switched off for workers' "$WORK/role-open.err"
+# …but never a Gemini Flash as a worker: Flash is Light only.
+set_config 'gemini_workers=off' 'gemini_model=flash38' 'gemini_effort=high'
+printf 'explicit\n' >"$STUB_DIR/gemini_profiles"
+clear_stub
+rc=0
+CLAUDE_CODE_SESSION_ID=chat-open-all "$RUNNER" start gemini --brief "$WORK/brief" --account explicit   >"$WORK/role-flash.out" 2>"$WORK/role-flash.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'gemini is switched off for workers' "$WORK/role-flash.err"
 rm -rf "$CHAT_PINS_DIR" "$HOME/.llm-limits.json"
 
 # Computer Use is not the implementation leg codex_workers=off closes: the picker is asked under
