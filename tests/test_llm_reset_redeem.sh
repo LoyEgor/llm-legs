@@ -34,6 +34,53 @@ exit \${FAKE_COLLECTOR_RC:-0}
 EOF
 chmod +x "$WORK/fake-collector.sh"
 
+if suite_shard_owns 1 quota-propagation; then
+python3 -B - "$REDEEM" "$WORK" <<'PYTEST' || fail "post-redeem quota propagation"
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+
+os.environ["CLAUDEB_DIR"] = str(Path(sys.argv[2]) / "propagation-claudeb")
+loader = importlib.machinery.SourceFileLoader("redeem", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(module)
+work = Path(sys.argv[2])
+cache = work / "propagation.json"
+collector = work / "propagation.sh"
+count = work / "propagation-count"
+os.environ["LLM_LIMITS_CACHE"] = str(cache)
+os.environ["LLM_RESET_REDEEM_COLLECTOR"] = str(collector)
+module.time.sleep = lambda seconds: None
+for vendor in ("claude", "codex", "grok"):
+    for current in (False, True):
+        for stays_walled in (False, True):
+            row = {"account": "fixture", "is_current": current,
+                   "weekly": {"used_pct": 100, "effective_pct": 100, "resets_at": 4102444800}}
+            cache.write_text(json.dumps({"vendors": {vendor: {"accounts": [row]}}}))
+            count.write_text("0")
+            collector.write_text("""n=$(cat '%s'); n=$((n + 1)); echo "$n" >'%s'
+if [ "$n" -gt 1 ] && [ '%s' = False ]; then
+  jq '.vendors[].accounts[].weekly |= (.used_pct = 0 | .effective_pct = 0)' '%s' >'%s.tmp'
+  mv '%s.tmp' '%s'
+fi
+""" % (count, count, stays_walled, cache, cache, cache, cache))
+            note = module.refresh(f"{vendor}/fixture")
+            reading = json.loads(cache.read_text())["vendors"][vendor]["accounts"][0]
+            if stays_walled:
+                assert int(count.read_text()) == 4, (vendor, current, "bounded retries")
+                assert note == " (quota still reads walled; re-read in a minute)", note
+            else:
+                assert reading["weekly"]["used_pct"] == 0, (vendor, current, "stale wall retained")
+                assert int(count.read_text()) == 2, "refresh did not stop after propagation"
+                assert note == "", note
+print("PASS: post-redeem quota propagation (all vendors, current and non-current)")
+PYTEST
+pass
+fi
+
 if suite_shard_owns 1 grok; then
 cat >"$WORK/server.py" <<'PY'
 import http.server

@@ -91,16 +91,36 @@ def touch_grok(account: str) -> bool:
     return True
 
 
-def refresh(target: str) -> bool:
+def refresh(target: str) -> str:
     collector = os.environ.get("LLM_RESET_REDEEM_COLLECTOR") or str(ROOT / "llm-limits.sh")
-    try:
-        done = subprocess.run(["bash", collector, "--refresh-account", target],
-                              capture_output=True, text=True, timeout=180)
-    except (OSError, subprocess.SubprocessError) as error:
-        limit_hit.expired("probe.cli", error, "the limits refresh of %s: the redeem reads it as failed" % target,
-                          'bin/llm-reset-redeem:["bash", collector, "--refresh-account", target]')
-        return False
-    return done.returncode == 0
+    vendor, account = target.split("/", 1)
+    deadline = time.monotonic() + 60
+    note = " (quota re-read failed; press Refresh)"
+    for delay in (0, 2, 4, 8):
+        remaining = deadline - time.monotonic()
+        if remaining <= delay:
+            break
+        time.sleep(delay)
+        try:
+            done = subprocess.run(["bash", collector, "--refresh-account", target],
+                                  capture_output=True, text=True,
+                                  timeout=max(0.001, deadline - time.monotonic()))
+        except (OSError, subprocess.SubprocessError) as error:
+            limit_hit.expired("probe.cli", error, "the limits refresh of %s: the redeem reads it as failed" % target,
+                              'bin/llm-reset-redeem:["bash", collector, "--refresh-account", target]')
+            return " (quota re-read failed; press Refresh)"
+        if done.returncode != 0:
+            return " (quota re-read failed; press Refresh)"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        row = store_row(vendor, account, int(time.time()), timeout=remaining / 2)
+        if not row.get("quota"):
+            return " (quota re-read failed; press Refresh)"
+        if not row.get("walled"):
+            return ""
+        note = " (quota still reads walled; re-read in a minute)"
+    return note
 
 
 def redeem_grok(account: str, target: str) -> int:
@@ -167,8 +187,7 @@ def redeem_grok(account: str, target: str) -> int:
                       EXIT_TRANSIENT)
 
     line = f"{target}: usage reset redeemed — {len(remaining)} left"
-    if not refresh(target):
-        line += " (quota re-read failed; press Refresh)"
+    line += refresh(target)
     return report(line, EXIT_REDEEMED)
 
 
@@ -271,8 +290,7 @@ def redeem_codex(account: str, target: str) -> int:
         line += " — an earlier attempt under this credit's key had already landed"
     elif token is None:
         line += f" — unrecognized outcome, see {LOG_PATH}"
-    if not refresh(target):
-        line += " (quota re-read failed; press Refresh)"
+    line += refresh(target)
     return report(line, EXIT_REDEEMED)
 
 
@@ -366,8 +384,7 @@ def redeem_claude(account: str, target: str) -> int:
     elif isinstance(result.get("resets_left"), int):
         line += f" — {result['resets_left']} left"
     mark_claude_reset(account)
-    if not refresh(target):
-        line += " (quota re-read failed; press Refresh)"
+    line += refresh(target)
     return report(line, EXIT_REDEEMED)
 
 
@@ -553,18 +570,20 @@ def alert(line: str) -> None:
 STORE_ROW_JQ = """
   (.vendors[$vendor] // {}) | (.accounts // [.])[]? | select((.account // "main") == $account) |
   {weekly_wall: (limits_store_wall_until({weekly: .weekly}; $now) != null),
-   credits: .reset_credits}
+   credits: .reset_credits,
+   quota: ([.five_hour, .weekly, .fable | limits_store_eff(.; $now) | numbers] | length > 0),
+   walled: ([.five_hour, .weekly, .fable | limits_store_eff(.; $now) | numbers] | any(. >= 100))}
 """
 
 
-def store_row(vendor: str, account: str, now: int) -> dict:
+def store_row(vendor: str, account: str, now: int, timeout: float = 20) -> dict:
     try:
         defs = subprocess.run(["bash", "-c", '. "$1" && printf %s "$LIMITS_VIEW_JQ"', "_",
                                str(ROOT / "share" / "limits-view.sh")],
-                              capture_output=True, text=True, timeout=20).stdout
+                              capture_output=True, text=True, timeout=timeout).stdout
         done = subprocess.run(["jq", "-c", "--arg", "vendor", vendor, "--arg", "account", account,
                                "--argjson", "now", str(now), defs + STORE_ROW_JQ, limits_cache()],
-                              capture_output=True, text=True, timeout=20)
+                              capture_output=True, text=True, timeout=timeout)
         row = json.loads(done.stdout.splitlines()[0])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError) as error:
         limit_hit.expired("probe.helper", error, "the store row of %s/%s: read as none" % (vendor, account),
