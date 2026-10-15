@@ -944,6 +944,8 @@ class Context:
 class Chromium:
     def launch_persistent_context(self, profile, executable_path, **kw):
         launches.append(executable_path)
+        # viewport=None is Playwright's default 1280x720 emulation: the page saw a window wider than its screen.
+        assert kw.get("no_viewport") is True and "viewport" not in kw, kw
         return Context()
 
 

@@ -611,7 +611,7 @@ def browser(account: str, visible: bool = False):
         context = pw.chromium.launch_persistent_context(
             str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False, args=flags,
             ignore_default_args=["--enable-automation"],
-            viewport=None, accept_downloads=True, locale="en-US")
+            no_viewport=True, accept_downloads=True, locale="en-US")
         with contextlib.suppress(Exception):
             context.add_init_script(TOAST_LOG)
         pid = chrome_pid(profile)
