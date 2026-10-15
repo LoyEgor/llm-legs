@@ -399,10 +399,9 @@ the account's last flag is the next strike, a saved take puts it back on the fir
 count once (`flagged_at`, `flag_strikes`, `saved_at` in its `accounts/<name>.json`; jihangarangan's first flag
 cleared within 33 h, while a re-probed hot account re-flagged at its first send and gained a strike a day);
 24 h when a send got nothing back (`sent, but …`) instead of the next send going to it; and until the oldest of
-its last `FLOW_DAY_TAKES` (15) Flow images and clips is 24 h old once it starts that many (`flow_takes`, one
-stamp per take a send asks for; a higher `flow_day_takes` in the meta for an account proven above it, com). A
-flagged account starts `FLOW_RAMP` (3) a day until a take is saved, then doubles its budget each day from that
-take (`ramp_from`): 3, 6, 12, 15; a new account ramps the same from the owner's first hand session.
+its last `FLOW_DAY_TAKES` (20) Flow images and clips is 24 h old once it starts that many (`flow_takes`, one
+stamp per take a send asks for; `flow_day_takes` in the meta overrides it, null for com: no budget until its
+first flag sets one at two thirds of its 24 h count then).
 Sends on one account are at least `FLOW_SPACING_S` (180 s) apart, the wait reported as `space_wait_s`. A run
 that waited on the account lock re-reads the walls before it sends. For the flag analysis `jobs.jsonl` also gets a
 `failed` row per failed attempt (`code`, `flagged`, `reason`), `refs` fingerprints (sha256, 12 hex) and `count` on

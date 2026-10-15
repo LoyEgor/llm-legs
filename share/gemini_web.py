@@ -65,11 +65,9 @@ WALL_SECONDS = 6 * 3600
 FLAG_WALL_S = 48 * 3600
 FLAG_BURST_S = 3600
 # Flow takes (images, clips) one account may start in 24 h. No healthy account was ever flagged below its 21st
-# of a day, five were at their 26th-32nd on 2026-10-15; com made 97 unflagged, so its meta carries a higher
-# flow_day_takes. A flagged or new account restarts at FLOW_RAMP a day, doubled per day from its first saved
-# take after the flag (or the owner's first hand session), up to its budget.
-FLOW_DAY_TAKES = 15
-FLOW_RAMP = 3
+# of a day, five were at their 26th-32nd on 2026-10-15. com made 97 unflagged: its meta carries flow_day_takes
+# null, no budget until its first flag sets one at two thirds of its count then.
+FLOW_DAY_TAKES = 20
 FLOW_DAY_S = 24 * 3600
 FLOW_SPACING_S = 180
 TRUST = "flow-trust.json"
@@ -464,24 +462,13 @@ def note_flow_send(account: str, takes: int = 1) -> None:
     now = time.time()
     counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S] + [int(now)] * takes
     write_meta(account, flow_takes=counted)
-    budget = day_budget(meta, now)
-    if len(counted) >= budget:
+    budget = meta.get("flow_day_takes", FLOW_DAY_TAKES)
+    if budget is not None and len(counted) >= budget:
         set_wall(account, counted[-budget] + FLOW_DAY_S)
 
 
-def day_budget(meta: dict, now: float) -> int:
-    budget = meta.get("flow_day_takes", FLOW_DAY_TAKES)
-    if meta.get("flagged_at", 0) > meta.get("saved_at", 0):
-        return min(budget, FLOW_RAMP)
-    if meta.get("ramp_from"):
-        return min(budget, FLOW_RAMP * 2 ** int((now - meta["ramp_from"]) // FLOW_DAY_S))
-    return budget
-
-
 def note_saved(account: str) -> None:
-    meta, now = read_meta(account), int(time.time())
-    ramp = {"ramp_from": now} if meta.get("flagged_at", 0) > meta.get("saved_at", 0) else {}
-    write_meta(account, saved_at=now, **ramp)
+    write_meta(account, saved_at=int(time.time()))
 
 
 def rest_no_result(account: str) -> None:
@@ -1357,6 +1344,9 @@ def wall_until(account: str, failure: Failure) -> float:
         strikes = strikes + 1 if meta.get("saved_at", 0) < last else 1
     strikes = max(strikes, 1)
     write_meta(account, flagged_at=int(now), flag_strikes=strikes)
+    if meta.get("flow_day_takes", FLOW_DAY_TAKES) is None:
+        counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S]
+        write_meta(account, flow_day_takes=max(FLOW_DAY_TAKES, len(counted) * 2 // 3))
     return now + FLAG_WALL_S * 2 ** (strikes - 1)
 
 
@@ -2199,8 +2189,6 @@ def cmd_login(args) -> None:
         while chrome.poll() is None or profile_in_use(profile):
             time.sleep(LOGIN_POLL_S)
         ledger({"event": "hand", "account": args.account, "opened_at": int(opened)})
-        if not read_meta(args.account).get("generation_started_at"):
-            write_meta(args.account, ramp_from=int(time.time()))
         trust_hand_done(args.account)  # TEMP-FLOW-TRUST(gemini-web)
         emit({"ok": True, "account": args.account, "login": has_login(args.account)})
         return

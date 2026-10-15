@@ -726,17 +726,15 @@ gw.write_meta("old", flagged_at=int(time.time()) - gw.FLAG_BURST_S - 1)
 gw.note_saved("old")
 assert flag_once() <= gw.FLAG_WALL_S, gw.walls()
 gw.set_wall("old", None)
-gw.write_meta("old", flagged_at=0, flag_strikes=0, ramp_from=0)
-# A flagged account sends FLOW_RAMP a day until a take is saved, then twice as many each day up to its budget.
+gw.write_meta("old", flagged_at=0, flag_strikes=0)
+# A null budget never walls; the account's first flag sets one at two thirds of its 24 h count.
 now = int(time.time())
-assert gw.day_budget({"flagged_at": now - 10, "saved_at": now - 99}, now) == gw.FLOW_RAMP
-gw.write_meta("ramped", flagged_at=now - 10)
-gw.note_saved("ramped")
-ramped = gw.read_meta("ramped")
-assert [gw.day_budget(ramped, ramped["ramp_from"] + d * gw.FLOW_DAY_S) for d in range(4)] == [3, 6, 12, gw.FLOW_DAY_TAKES]
-gw.write_meta("ramped", ramp_from=1)
-gw.note_saved("ramped")
-assert gw.read_meta("ramped")["ramp_from"] == 1, gw.read_meta("ramped")
+gw.write_meta("open", flow_takes=[now - 100] * 89, flow_day_takes=None)
+gw.note_flow_send("open")
+assert "open" not in gw.walls(), gw.walls()
+gw.wall_until("open", gw.Failure(1, "flagged", flagged=True))
+assert gw.read_meta("open")["flow_day_takes"] == 60, gw.read_meta("open")
+gw.set_wall("open", None)
 # The take that spends the 24 h Flow budget walls the account until the oldest counted take ages out.
 now = int(time.time())
 gw.write_meta("old", flow_takes=[now - gw.FLOW_DAY_S - 5] + [now - 100] * (gw.FLOW_DAY_TAKES - 2))
