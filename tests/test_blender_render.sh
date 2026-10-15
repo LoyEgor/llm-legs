@@ -70,9 +70,19 @@ m = importlib.util.module_from_spec(spec)
 loader.exec_module(m)
 with tempfile.TemporaryDirectory() as directory:
     m.STATE = directory
-    Path(m.peaks_file()).write_text('\n'.join(json.dumps({'mb': n}) for n in [224, 622, 2685, 9400, 17000]))
-    got = m.footprint_mb()
-    assert got >= 17000, f'peak reservation {got} MB undercounts known 17000 MB run'
+    rows = [(224, 'small.py'), (9400, 'small.py'), (8000, 'small.py'), (17000, 'big.py'), (9000, 'big.py'),
+            (3, 'waiter.py')]
+    Path(m.peaks_file()).write_text('\n'.join(json.dumps({'mb': n, 'what': w}) for n, w in rows))
+    # A script reserves its own largest recent peak; others the median, never a waiter's few MB.
+    assert m.footprint_mb('big.py') == 17000, m.footprint_mb('big.py')
+    assert m.footprint_mb('small.py') == 9400, m.footprint_mb('small.py')
+    assert m.footprint_mb('new.py') == 9200, m.footprint_mb('new.py')
+    # The first slot checks memory only when a Blender outside the pool runs.
+    m.subprocess.run = lambda *a, **k: type('R', (), {'stdout': ''})()
+    assert not m.outside_blender()
+    m.subprocess.run = lambda *a, **k: type('R', (), {'stdout': '4242\n'})()
+    m.STATE = directory
+    assert m.outside_blender()
 PY
 (
   . "$ROOT/share/slots.sh"
