@@ -23,9 +23,15 @@ sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
 # a faked sweep list means a test: the real helpers would get its night refs
 helper_repos="${NIGHT_RUN_HELPER_REPOS-${NIGHT_RUN_SWEEP_REPOS:+/dev/null}}"
 helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
-KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas '
+KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal '
 # kind:days: carry adds the kind once no night ran it to an end in that many days
-PERIODIC='vendor-watch:30 tool-ideas:30'
+PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30'
+# One direction at a time (docs/directions/README.md): a new night is that direction's pilot and works only the
+# goals of docs/directions/<it>.md; empty runs the full night.
+PILOT=${NIGHT_RUN_PILOT-breakages}
+# What a pilot night does instead of night-sweep's Night mode prep, launches and debt pass: said in its prompt, so
+# the skill every night reads stays as it is.
+PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `doctor-fix launch`, `vendor-fingerprint`, leftovers, `debt` job or debt pass. `nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
 STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
@@ -46,7 +52,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage|vendor-watch|tool-ideas> <ref> [--branch B] [--ready "<why>" [--repo R]...]
+       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage|vendor-watch|tool-ideas|directions-refresh|goal> <ref> [--branch B] [--ready "<why>" [--repo R]...]
        night-run carry <id>
        night-run suites <id> [--wait]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed, suites, answer, done)
@@ -130,11 +136,15 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   <ref>\t<prompt>\topened <account> <session>|message <owner>. Then one handoff job per other open
   docs/handoffs/*.md of the sweep repositories not addressed to a chat live now, and one suite job per
   suite the newest earlier night's full run failed, nothing-to-do with no worker when it is green in the
-  press-time tree (stderr names it), and one job per PERIODIC kind (vendor-watch, tool-ideas: 30 days) no
+  press-time tree (stderr names it), and one job per PERIODIC kind (vendor-watch, tool-ideas, directions-refresh: 30 days) no
   night ran to an end within its days, in the llm-legs sweep repository from share/briefs/<kind>.md; each
   gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
+  A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt) carries only Egor's
+  answered trades and one goal job at a time: the first `### goal <slug>:` section under `## Goals` of
+  docs/directions/<direction>.md with no job tonight, none while a goal job is pending or live; its worker
+  moves the goal out of that section once it lands. After the last goal, directions-refresh when it is due
 speed-gate, run by worker-run once a night worker takes its slot: exits 3 while a process stands in the
   job's night worktree (a resumed night's earlier worker), naming it, the job untouched — never the launching chat's own; a Speed fixer (a harness run of area
   speed-<first lever>, up to 5 levers of one repository) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
@@ -375,7 +385,7 @@ trades_recheck() { # id (locked) -> per answered trade of the other nights: sett
 }
 
 cmd_start() {
-  local id open file opened account session scope=all resume='' job='' marker=''
+  local id open file opened account session scope=all resume='' job='' marker='' pilot=$PILOT
   while [ $# -gt 0 ]; do
     case $1 in
       --cleanup) scope=cleanup; shift ;;
@@ -385,7 +395,8 @@ cmd_start() {
     esac
   done
   [ -z "$job" ] || [ -n "$resume" ] || usage
-  [ "$scope" = all ] || marker=" $scope"
+  [ "$scope" = all ] || marker=" $scope" pilot=''
+  [ -z "$pilot" ] || marker=" pilot $pilot. $PILOT_RULES"
   lock
   open=$(open_nights | head -1)
   [ -z "$open" ] || die "night $open is still running: $(jq -r '"its orchestrator chat \(.session // "(opening, pid \(.opener))") has run since \(.started_at)"' \
@@ -397,11 +408,11 @@ cmd_start() {
     id="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
     file=$(night_file "$id")
     [ ! -e "$file" ] || die "night id $id is taken"
-    jq -n --arg id "$id" --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" \
+    jq -n --arg id "$id" --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" --arg p "$pilot" \
       --argjson opener "$$" "$JQ_SNAPSHOT"'{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
         doctors_before: snapshot(0), doctors_after: null, doctor_states_after: null,
         doctor_problems_after: null, jobs: [],
-        opener: $opener}' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
+        opener: $opener} + (if $p == "" then {} else {pilot: $p} end)' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
       { rm -f "$file.tmp"; die "cannot write $file"; }
   fi
   trades_recheck "$id"
@@ -816,6 +827,9 @@ job_set() { # id ref key=value...
 }
 
 carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carry adds
+  local pilot
+  pilot=$(jq -r '.pilot // empty' "$(night_file "$1")")
+  [ -z "$pilot" ] || { pilot_goal "$1" "$pilot"; return 0; }
   python3 -B "$repo_root/share/handoffs.py" | jq -r --slurpfile n "$(night_file "$1")" '
     [$n[0].jobs[] | select(.kind == "owner-chat" and .state != "failed-launch") | .handoffs[]?] as $owned
     | select(.live == [] and (.path | IN($owned[]) | not)) | ["handoff", .slug, .repo, .rel, ""] | @tsv'
@@ -825,6 +839,30 @@ carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carr
     repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: %s not carried\n' "$kind" >&2; continue; }
     printf '%s\t%s\t%s\tshare/briefs/%s.md\t-\n' "$kind" "$(date -u +%Y-%m)" "$repo" "$kind"
   done
+}
+
+goal_slugs() { # direction-file -> the slug of each `### goal <slug>:` section under `## Goals`, in order
+  awk '/^## /{in_goals = ($0 ~ /^## Goals/)} in_goals && /^### goal [a-z0-9-]+:/{slug = $3; sub(/:$/, "", slug); print slug}' "$1"
+}
+
+goal_text() { # direction-file slug -> that goal's section
+  awk -v head="### goal $2:" '/^##/{if (inside) exit; inside = index($0, head) == 1} inside' "$1"
+}
+
+pilot_goal() { # id direction -> the carry line of its next goal (the first with no job tonight), none while one is at work;
+  # after the last goal the monthly directions-refresh when due, the direction files settled by then
+  local repo file="docs/directions/$2.md" slug night
+  night=$(night_file "$1")
+  ! jq -e 'any(.jobs[]; .kind == "goal" and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
+  repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: pilot %s not carried\n' "$2" >&2; return 0; }
+  [ -r "$repo/$file" ] || { printf 'night-run: no %s/%s: pilot %s has no goals\n' "$repo" "$file" "$2" >&2; return 0; }
+  for slug in $(goal_slugs "$repo/$file"); do
+    ! jq -e --arg r "goal-$slug" 'any(.jobs[]; .ref == $r)' "$night" >/dev/null || continue
+    printf 'goal\t%s\t%s\t%s\t-\n' "$slug" "$repo" "$file"
+    return 0
+  done
+  ! periodic_due | grep -qx directions-refresh ||
+    printf 'directions-refresh\t%s\t%s\tshare/briefs/directions-refresh.md\t-\n' "$(date -u +%Y-%m)" "$repo"
 }
 
 periodic_due() { # -> each PERIODIC kind no night ran to an end (merged, nothing-to-do, blocked-on-egor) within its days
@@ -839,7 +877,22 @@ suite_green() { # worktree suite log -> the suite passes in the press-time tree
 }
 
 carry_brief() { # id kind ref repo what log worktree branch -> the brief file
-  local id=$1 kind=$2 ref=$3 repo=$4 what=$5 log=$6 wt=$7 branch=$8 file="$nights_dir/$1.$3.brief.md" other outside
+  local id=$1 kind=$2 ref=$3 repo=$4 what=$5 log=$6 wt=$7 branch=$8 file="$nights_dir/$1.$3.brief.md" other outside goal
+  if [ "$kind" = goal ]; then
+    goal=$(goal_text "$repo/$what" "${ref#goal-}")
+    { printf 'ROUND: none\nSTRONG: yes\n'
+      for other in $(grep -vxF -e "$repo" -e '' "$sweep_repos" 2>/dev/null; grep -vxF '' "$helper_repos" 2>/dev/null); do
+        [[ $goal != *"$(basename "$other")"* ]] || worktree_siblings "$branch" "$other" | sed 's/^/ADD-DIR: /'
+      done
+      printf 'Working directory: %s\n\n# Night %s goal %s\n\n' "$wt" "$id" "${ref#goal-}"
+      printf 'Night %s is the pilot of one direction. Read `%s` whole first: it is the direction'"'"'s knowledge (metric, classes, decisions), and `%s/docs/directions/README.md` holds the rules every direction keeps. Your job is the goal below, a class: one change that makes the whole class impossible, never one more instance of it.\n\n' \
+        "$id" "$wt/$what" "$repo"
+      printf 'Work in the worktree `%s` on branch `%s`; `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor. Prove the change on the goal'"'"'s own number, old against new on the same machine; no other direction'"'"'s number gets worse. Tests once, at the end: the covering suites (`tests/affected`). Once it holds, move the goal out of the Goals section into a Done row with its commit and proof, on the same branch; a goal you cannot reach stays, with one line on what blocked it. Report: the outcome, the proof as before -> after, the commits as repo@hash.\n\n' \
+        "$wt" "$branch" "$repo_root"
+      printf '%s\n' "$goal"; } >"$file" || return 1
+    printf '%s\n' "$file"
+    return 0
+  fi
   if [[ " $PERIODIC " == *" $kind:"* ]]; then
     { printf 'ROUND: none\nSTRONG: yes\nWEB: on\nWorking directory: %s\n\n# Night %s job %s\n\n' "$wt" "$kind" "$ref"
       printf 'Night %s. Work in the worktree `%s` on branch `%s`; `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor; markdown is net zero against `refs/night/%s/base`. No commit is `nothing-to-do`.\n\n' \
@@ -974,7 +1027,7 @@ cmd_carry() {
   local id=${1:-} kind slug repo what log ref branch wt err brief path top root
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
-  carry_owner_chats "$id"
+  jq -e '.pilot' "$(night_file "$id")" >/dev/null || carry_owner_chats "$id"
   while IFS=$'\t' read -r kind slug repo what log; do
     ref="$kind-$slug"
     if [ "$kind" = handoff ]; then

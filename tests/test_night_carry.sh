@@ -242,7 +242,8 @@ git init -q -b main "$P" && gt -C "$P" commit -q --allow-empty -m init
 printf '%s\n' "$P" >"$WORK/sweep-periodic"
 ago() { date -u -v-"$1"d +%Y-%m-%dT%H:%M:%SZ; }
 jq -n --arg t "$(ago 10)" '{id: "P1", started_at: $t, finished_at: $t, jobs: [{kind: "vendor-watch", ref: "vendor-watch-x", state: "nothing-to-do"},
-  {kind: "tool-ideas", ref: "tool-ideas-x", state: "left"}]}' >"$NIGHTS/P1.json"
+  {kind: "tool-ideas", ref: "tool-ideas-x", state: "left"}, {kind: "directions-refresh", ref: "directions-refresh-x", state: "merged"}]}' \
+  >"$NIGHTS/P1.json"
 jq -n --arg t "$(ago 40)" '{id: "P0", started_at: $t, finished_at: $t, jobs: [{kind: "tool-ideas", ref: "tool-ideas-y", state: "merged"}]}' >"$NIGHTS/P0.json"
 jq -n --arg t "$(ago 0)" '{id: "P2", started_at: $t, finished_at: null, session: null, jobs: []}' >"$NIGHTS/P2.json"
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night base P2 >/dev/null || fail "night base P2 failed"
@@ -258,6 +259,49 @@ assert grep -qF '## Tool ideas — monthly, harness direction' "$NIGHTS/P2.$ref.
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2b.out" 2>/dev/null || fail "a second carry failed"
 assert [ ! -s "$WORK/p2b.out" ]
 assert [ "$(python3 "$ROOT/share/night_priority.py" job vendor-watch v | jq -c '[.direction, .priority]')" = '["updater","P2"]' ]
+export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
+fi
+
+if suite_shard_owns 2 nc-pilot; then
+# A pilot night carries its direction file's goals one at a time, in order, and nothing a full night would: no
+# handoff, owner chat or periodic job; the next goal only once the last one stopped working.
+export DOCTORS_DIR="$WORK/pilot/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
+L="$WORK/pilot/llm-legs" C="$WORK/pilot/claude-setup"
+git init -q -b main "$L" && mkdir -p "$L/docs/directions" "$L/docs/handoffs"
+printf '# B\n\n## Goals\n\n### goal gates: one parser\n\nIn claude-setup hooks/lib.\n\n### goal stop-hooks: capped\n\nBounded.\n\n## Done\n\n### goal old: landed\n' \
+  >"$L/docs/directions/breakages.md"
+printf '# H\n\nStatus: open\n\nA full night would carry it.\n' >"$L/docs/handoffs/2026-10-01-h.md"
+gt -C "$L" add -A && gt -C "$L" commit -qm init
+git init -q -b main "$C" && gt -C "$C" commit -q --allow-empty -m init
+printf '%s\n' "$L" "$C" >"$WORK/sweep-pilot"
+jq -n '{id: "G1", started_at: "2026-10-15T01:00:00Z", finished_at: null, session: null, pilot: "breakages", jobs: []}' \
+  >"$NIGHTS/G1.json"
+pnight() { NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-pilot" night "$@"; }
+pnight base G1 >/dev/null || fail "night base G1 failed"
+pnight carry G1 >"$WORK/g1.out" 2>/dev/null || fail "pilot carry failed"
+b="$NIGHTS/G1.goal-gates.brief.md"
+assert [ "$(cat "$WORK/g1.out")" = "goal-gates	$b	$L/.claude/worktrees/night-G1-goal-gates" ]
+assert jqe '[.jobs[] | [.kind, .ref, .state, .priority]] == [["goal", "goal-gates", "pending", "P1"]]' "$NIGHTS/G1.json"
+assert [ "$(head -2 "$b")" = "ROUND: none
+STRONG: yes" ]
+assert grep -qxF "ADD-DIR: $C/.claude/worktrees/night-G1-goal-gates" "$b"
+assert grep -qxF '### goal gates: one parser' "$b"
+assert grep -qxF 'In claude-setup hooks/lib.' "$b"
+assert_fails grep -qF 'stop-hooks' "$b"
+pnight carry G1 >"$WORK/g1b.out" 2>/dev/null || fail "a carry while the goal works failed"
+assert [ ! -s "$WORK/g1b.out" ]
+pnight job G1 set goal-gates state=left reason=blocked >/dev/null || fail "goal-gates not set left"
+pnight carry G1 >"$WORK/g1c.out" 2>/dev/null || fail "a carry after the first goal failed"
+assert [ "$(cut -f1 "$WORK/g1c.out")" = goal-stop-hooks ]
+pnight job G1 set goal-stop-hooks state=nothing-to-do >/dev/null || fail "goal-stop-hooks not closed"
+# After the last goal, the monthly refresh of the direction files when it is due, once.
+month=$(date -u +%Y-%m)
+pnight carry G1 >"$WORK/g1d.out" 2>/dev/null || fail "a carry after every goal failed"
+assert [ "$(cut -f1 "$WORK/g1d.out")" = "directions-refresh-$month" ]
+assert grep -qF '## Directions refresh — monthly' "$NIGHTS/G1.directions-refresh-$month.brief.md"
+pnight carry G1 >"$WORK/g1e.out" 2>/dev/null || fail "a carry after the refresh failed"
+assert [ ! -s "$WORK/g1e.out" ]
+assert jqe --arg r "directions-refresh-$month" '[.jobs[].ref] == ["goal-gates", "goal-stop-hooks", $r]' "$NIGHTS/G1.json"
 export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi
 

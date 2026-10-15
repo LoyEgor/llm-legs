@@ -26,6 +26,9 @@ only after each has shown that.
 - Proof: the check is fixed before the work; old against new, interleaved, on the same machine; verdict better,
   worse or unclear, and unclear is kept and settled by the next days' data. A direction may stop a goal once its
   diagnosis shows little to gain.
+- The pilot: `bin/night-run` PILOT names the active direction. Every new night is its pilot and works only the
+  `### goal <slug>:` sections under that file's `## Goals`, one at a time, in order. Switching the direction means
+  changing PILOT; an empty PILOT brings back the full night.
 - Freshness: a model that finds a file contradicting the code or a ledger fixes the file in the same change.
-  Monthly, a periodic night job re-checks every file against its sources by md-compact's rules (to be added to
-  `bin/night-run` PERIODIC beside vendor-watch and tool-ideas, with the direction 1 pilot).
+  Monthly, the night's `directions-refresh` job (`share/briefs/directions-refresh.md`) re-checks every file against
+  its sources by md-compact's rules; a pilot night runs it after its last goal.

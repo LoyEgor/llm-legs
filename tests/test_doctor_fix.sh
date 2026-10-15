@@ -1111,6 +1111,17 @@ assert [ "$(grep -c 'ruled-out refused: a P1 or P2 Speed or test row keeps its t
 assert grep -qF 'line 2 (opportunity:delegation/background Bash): ruled-out refused' "$WORK/err"
 assert_fails grep -qF '(opportunity:machine/contention): ruled-out refused' "$WORK/err"
 assert grep -qF 'is a number you measured on that row' "$RUNS/$sid.brief.md"
+# A row its ledger already fixed leaves as a repeat with no measurement; a repeat on a never-fixed row is still refused.
+jq '(.problems[] | select(.id == "opportunity:chat/tools")) |= (.ledger = "L-tools")
+  | (.problems[] | select(.id == "opportunity:chat/tests")) |= (.ledger = "L-tests")' "$(record "$sid")" >"$WORK/rp.json" &&
+  mv "$WORK/rp.json" "$(record "$sid")"
+jq -n '{owner: "H", rows: [{id: "L-tools", fixes: [{at: "2026-10-09T01:00:00+03:00"}]}, {id: "L-tests", fixes: []}]}' \
+  >"$WORK/repeat-ledger.json"
+sed -e '1s/the lever is elsewhere/repeat: fixed 10-09, back again/' -e '4s/the lever is elsewhere/repeat: fixed before/' \
+  "$WORK/sd" >"$WORK/sd-repeat"
+HARNESS_LEDGER="$WORK/repeat-ledger.json" assert_fails fix close "$sid" --decisions "$WORK/sd-repeat" "tuned" 2>"$WORK/err"
+assert_fails grep -qF '(opportunity:chat/tools): ruled-out refused' "$WORK/err"
+assert grep -qF 'line 4 (opportunity:chat/tests): ruled-out refused' "$WORK/err"
 sed -i '' -e 's/the lever is elsewhere/wall 41 s, cpu 31 s, sleeps 8 s/' -e 's/sleeps 8 s$/sleeps 8 s; tried one jq pass: 41 s -> 40 s/' "$WORK/sd"
 gw reset -q --hard refs/night/n8/base && gw clean -qfd
 sed -i '' 's/the per-model call/the per-model table/' "$swt/share/worker-model.sh"

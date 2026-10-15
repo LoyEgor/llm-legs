@@ -95,7 +95,7 @@ if suite_shard_owns 1 nr-start-to-sweep; then
 assert [ -n "$id" ]
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
   "doctors_before", "doctors_after", "doctor_states_after",
-  "doctor_problems_after", "jobs"] | sort)' "$R"
+  "doctor_problems_after", "jobs", "pilot"] | sort) and .pilot == "breakages"' "$R"
 assert jqe '.doctor_states_after == null and .doctor_problems_after == null' "$R"
 assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null, code: null, system: null} and .doctors_after == null and .jobs == []
   and .finished_at == null and .account == "acct-n"' "$R"
@@ -108,7 +108,11 @@ assert grep -qF "cd $main " "$NIGHTS/$id.command"
 assert grep -qF -- "--session-id $session " "$NIGHTS/$id.command"
 exec_line=$(grep '^exec ' "$NIGHTS/$id.command")
 eval "set -- ${exec_line#exec }"
-assert [ "${!#}" = "сделай чистку — night run $id" ]
+# A new night is the pilot of the active direction (docs/directions/README.md): its prompt says what that changes.
+prompt=${!#}
+assert [ "${prompt%%. Pilot night *}" = "сделай чистку — night run $id pilot breakages" ]
+assert grep -qF "\`nr carry R\` records the next goal" <<<"$prompt"
+assert grep -qF -e "--remainder 'review debt paused: pilot night'" <<<"$prompt"
 assert [ "$1 $2 $3" = "caffeinate -i $FAKE_BIN/claudeb" ]
 assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 
@@ -1257,8 +1261,13 @@ jq -n '{id: "20260202T000000Z-a0b1", finished: true, hours: 9.8, runs: 3, wall_s
   >"$TB/doctors/night-ledger/20260202T000000Z-a0b1.json"
 jq -n '{id: "20260204T000000Z-e4f5", finished: true, hours: 6.0, runs: 2, wall_s: 0, split_s: {}, rewrite: null,
   problems: [7, 6], spend_m: 5.0}' >"$TB/doctors/night-ledger/20260204T000000Z-e4f5.json"
+# repeats: a ledger row fixed during the night that carried an earlier fix; a first fix is no repeat.
+jq -n '{rows: [{id: "r1", fixes: [{at: "2026-02-01T10:00:00Z"}, {at: "2026-02-05T03:00:00+02:00"}]},
+  {id: "r2", fixes: [{at: "2026-02-05T02:00:00Z"}]}]}' >"$TB/harness-ledger.json"
+printf '{"rows": []}\n' >"$TB/llm-ledger.json"
 TZ=UTC DOCTORS_DIR="$TB/doctors" WORKER_RUN_DIR="$TB/runs" CLAUDEB_PROFILES_ROOT="$TB/profiles" \
   WORKER_STATS_DIR="$TB/stats" NIGHT_RUN_SWEEP_REPOS="$TB/sweep-repos" CHAT_NAME_ROOTS="$TB/profiles" \
+  HARNESS_LEDGER="$TB/harness-ledger.json" LLM_DOCTOR_LEDGER="$TB/llm-ledger.json" \
   CHAT_NAMES_CACHE="$TB/chat-names.json" night report 20260205T000000Z-abcd >"$WORK/table-report" || fail "table report"
 sed '/^$/,$d' "$WORK/table-report" >"$WORK/table-block"
 assert [ "$(cat "$WORK/table-block")" = "                2 Feb   4 Feb   5 Feb
@@ -1290,6 +1299,7 @@ problems        8 → –   7 → 6   3 → 4
   updater           –   0 → 1       –
   code              –   1 → 0       –
   system            –       –       –
+repeats             0       0       1
 job lines      +14/-3       –   +0/-0
 rewrote 7d          7       –       –
 suites ✓/✗          –       –    15/1" ]

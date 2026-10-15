@@ -13,6 +13,7 @@ problem counts. Measurement only: it reads existing journals and gates nothing.
 
 import argparse
 import collections
+import datetime
 import glob
 import json
 import os
@@ -1784,6 +1785,7 @@ def table_column(worker_run, path, night, goals, was):
          else "%s \u2192 %s" % (show(before.get(d)), show(after.get(d))))
         for d in doctors
     ] + [
+        ("repeats", show(repeats(night))),
         ("job lines", "+%d/-%d" % (jobs_lines[0] + jobs_lines[2], jobs_lines[1] + jobs_lines[3])
          if jobs_lines else dash),
         ("rewrote 7d", show((row.get("rewrite") or [None])[0])),
@@ -1793,6 +1795,37 @@ def table_column(worker_run, path, night, goals, was):
 
 
 CLOSED = ("merged", "nothing-to-do", "settled")
+
+
+def stamp_s(value):
+    """An ISO stamp (Z, an offset, or local) as epoch seconds; None when it is none."""
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def repeats(night):
+    """Ledger rows (Harness, LLM) fixed during the night that carried an earlier fix: direction 1's repeats, target 0.
+    None for an unfinished night or with no ledger readable."""
+    lo, hi = stamp_s(night.get("started_at")), stamp_s(night.get("finished_at"))
+    if lo is None or hi is None:
+        return None
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rows, read = [], False
+    for env, name in (("HARNESS_LEDGER", "harness-ledger.json"), ("LLM_DOCTOR_LEDGER", "doctor-ledger.json")):
+        ledger = read_json(os.environ.get(env) or os.path.join(root, "share", name), None)
+        if isinstance(ledger, dict):
+            read = True
+            rows += [r for r in ledger.get("rows") or () if isinstance(r, dict)]
+    if not read:
+        return None
+    count = 0
+    for row in rows:
+        at = sorted(t for t in (stamp_s(f.get("at")) for f in row.get("fixes") or () if isinstance(f, dict))
+                    if t is not None)
+        count += any(lo <= t <= hi for t in at[1:])
+    return count
 
 
 def newest(path):

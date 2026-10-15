@@ -39,7 +39,8 @@ EXPIRY_MIN_PCT = 5.0
 
 KINDS = {"vendor": ("updater", "P1"), "leftover": ("harness", "P1"), "trade": ("harness", "P1"),
          "suite": ("tests", "P1"), "debt": ("fit", "P1"), "handoff": ("harness", "P2"), "owner-chat": ("harness", "P2"),
-         "coverage": ("fit", "P3"), "vendor-watch": ("updater", "P2"), "tool-ideas": ("harness", "P2")}
+         "coverage": ("fit", "P3"), "vendor-watch": ("updater", "P2"), "tool-ideas": ("harness", "P2"),
+         "directions-refresh": ("harness", "P2"), "goal": ("harness", "P1")}
 WALL_DAY_S_RULES = ("test_daily_cost", "wait_class")
 SPEED_ROWS = ("opportunity", "suite_audit", "cpu_audit", "spend_audit")
 

@@ -88,24 +88,68 @@ The 2026-10-05 night worked that way: one shared cause fixed in several places.
 - **The night makes its own.** Parallel fixers load the machine (load 100–240), so tests flake and timings turn to
   noise.
 
-## Planned (agreed in principle 2026-10-15, not landed)
+## Goals
 
-1. A row reopens only on its own number: ×2 held 2 days, with a jump still reopening at once. A source edit alone
-   never reopens it, so the source-changed reason goes from the three audits.
-2. The night's goal is a class, not a row.
-3. A row fixed before may exit as «repeat» with no measurement and goes to the next night's research as a class
-   candidate. A fresh row keeps the measured-evidence rule.
-4. The night report's facts table gets a repeats row.
-5. Fewer parallel fixers (the pilot itself).
+The pilot night works these goals in order, one at a time (`bin/night-run` PILOT, carry). A goal that lands
+moves to Done with its commit and proof. A goal that fails stays here with one line on what blocked it.
+
+### goal gates: every Bash gate parses the command instead of matching its text
+
+Class: a gate refuses a legitimate command because a word it looks for sits in a quoted argument, a heredoc, a
+commit message, a path or a probe. The log audit found 14 such rows on 7 of 7 nights; 13 were fixed one gate at a
+time.
+- The gates are the PreToolUse Bash hooks of `~/.claude/settings.json`, 17 on 10-15, in claude-setup `hooks/`
+  and llm-legs `bin/`. Seven use `hooks/lib/readonly-command.sh` or `hooks/lib/heredoc-cut.sh`; the rest grep the
+  raw text.
+- One parser in claude-setup `hooks/lib/` turns a command into its simple commands: program and arguments, split at
+  pipes, `&&`, `;`, subshells and `bash -c` bodies. Quoted text, heredoc bodies and comments are data. Every gate
+  decides on its output, never on the raw string. The two current libs fold into it.
+- Corpus: every denial of the last 14 days in `~/.cache/harness-doctor/refusal-scan.json` (transcript,
+  tool_use_id, gate). Each command is read from its transcript and labelled legitimate or rightly refused, plus the
+  quotes of this class's log-audit rows in `share/harness-ledger.json`. It becomes a fixture every gate's suite
+  replays.
+- Proof, old → new on the corpus: legitimate refusals fall to 0; every rightly refused command is still refused;
+  each gate's own suite stays green.
+- After landing: the denials a day in `refusal-scan.json` that a model then re-ran in another form, 7 days before
+  against 7 after.
+
+### goal bash-cap: a long run outlives the caller's Bash cap instead of dying and running again
+
+Class: a suite run, `run-all` or a probe started in the foreground dies at the 10- or 25-minute Bash cap and runs
+again. 9 rows on 6 of 7 nights, ≈500 min est.
+- The priced idea is `tool-idea-run-all-attach` in `share/harness-ledger.json`. When its caller is killed,
+  `run-suites` keeps running detached, and the next `tests/run-all --attach <run>` waits on it instead of starting
+  over.
+- Proof: suite runs killed at the cap per week, from `~/.cache/run-suites/runs.jsonl` and the transcripts. It was
+  61 a week before the tests-once rule. Before against after, with no suite result lost.
+
+### goal stop-hooks: every Stop hook finishes inside its cap on a loaded machine
+
+Class: a Stop hook in claude-setup `hooks/stop.d/` outruns its 5 s slice, and each case was fixed alone. Harness
+`hook-error` found 7 rows on 5 days: worker-run-backstop, notice-chat-names, ask-span-drill, ask-word-reading,
+ask-run-unfinished, notice-connections, and stop-dispatch with no timeout binary on a launchd PATH.
+- A hook's work at a stop is bounded by design: incremental reads, a cache keyed on what it reads, nothing that
+  grows with the transcript or the tag cache. stop-dispatch caps every hook on any PATH.
+- Proof: Harness `hook-error` rows and the Stop timeouts in its hook journal, 7 days before against 7 after, under
+  the night's load.
+
+## Mechanics (2026-10-15)
+
+- The pilot: one goal at a time, no row fixers, no debt pass, no owner chats. It removes the fan-out classes by
+  construction.
+- `doctor-fix close` takes `ruled-out` with evidence `repeat: <what was fixed before>` on a row whose ledger row
+  carries a fix, with no measurement. Those rows are the next goals' candidates.
+- The night report's facts table has a `repeats` row: the ledger rows re-fixed during the night.
+- Not done: a row reopening only on its own number. It belongs to Lost time, System and Spend, whose audits make
+  those reopens.
 
 ## Decisions
 
+- 2026-10-15: the pilot plan approved: goals gates → bash-cap → stop-hooks, one at a time; Egor launches the night.
 - 2026-10-15: direction 1 runs alone until its metric moves. Lost time, System, Spend and Legacy wait.
 - 2026-10-15: no new hooks. Mechanics only where obvious, such as a tool replacing a script models keep rewriting.
 - 2026-10-13: ruled-out on a P1/P2 Speed or test row needs measured evidence.
 
 ## Open
 
-- The pilot plan: goals as classes, waiting for Egor's go.
-- Planned item 1 belongs to Lost time, System and Spend, whose audits make those reopens. The block-1 pilot does
-  not run those audits.
+- The first pilot night: Egor launches it. The proof is read 7 nights later against the baseline above.

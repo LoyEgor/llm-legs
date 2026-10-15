@@ -955,7 +955,7 @@ write_brief() { # id worktree -> the brief file
     ! jq -e '[.problems[].id | strings | select(startswith("opportunity:tool/"))] | length > 0' "$file" >/dev/null ||
       printf 'Unused tool rows (`opportunity:tool/<bin|skill>/<name>`, `share/tool_mining.py` `adoption`): a tool whose hint every session loads, with no model call in 30 days. Delete the tool and its hint whole (the CLAUDE.md lines naming it, the skill or command file), every mention with them. A skill is a command Egor can type, used or not: it keeps its file and only its hint goes (`disable-model-invocation: true`), never a line of an instruction file. A bin tool another script, LaunchAgent, Hammerspoon or Egor himself runs (grep the sweep repositories, ~/Library/LaunchAgents and ~/.hammerspoon) keeps its file and loses only the hint; record those callers as the fix'"'"'s equivalence. The proof is the doctor'"'"'s: the row leaves the unused list.\n\n'
     [ -z "$(py owed "$file")" ] ||
-      printf '`close` refuses `ruled-out` on a P1 or P2 Speed or test row unless its evidence carries what you measured and tried: `wall <N> s, cpu <N> s, <where the rest goes> <N> s; tried <what>: <before> -> <after>`. A cause you name (sleeps, race waits, startup) is a number you measured on that row, never a reading of the code.\n\n'
+      printf '`close` refuses `ruled-out` on a P1 or P2 Speed or test row unless its evidence carries what you measured and tried: `wall <N> s, cpu <N> s, <where the rest goes> <N> s; tried <what>: <before> -> <after>`. A cause you name (sleeps, race waits, startup) is a number you measured on that row, never a reading of the code. A row its ledger already fixed may leave instead as `repeat: <the earlier fix>`, unmeasured: a class candidate for the next goal (docs/directions/breakages.md), never one more instance fix.\n\n'
     ! jq -e --arg rules ' test_hang ' "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'A hung suite (`test_hang`) is this run'"'"'s to fix, never a handoff (`close` refuses one): find what it blocked on and fix it so it cannot hang, e.g. stdin from /dev/null for a child that may read a tty, a timeout on a child that waits, a tty probe a fixture answers; every assert keeps its coverage. The proof is the doctor'"'"'s own: no `test_hang` row for that suite after the fix.\n\n'
     ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||
@@ -1294,6 +1294,13 @@ measured() { # evidence -> whether it carries what was measured and tried: wall 
     grep -qiE '(^|[^a-z])tried [^ ]' <<<"$1"
 }
 
+fixed_before() { # run-file problem-id -> whether the problem's ledger row already carries a fix
+  local ledger
+  ledger=$(jq -r --arg p "$2" 'first((.problems + (.quiet // []))[] | select(.id == $p) | .ledger) // empty' "$1")
+  [ -n "$ledger" ] && jq -e --arg l "$ledger" 'any(.rows[]; .id == $l and (.fixes | length) > 0)' \
+    "${HARNESS_LEDGER:-$repo_root/share/harness-ledger.json}" >/dev/null 2>&1
+}
+
 priced_cut() { # evidence -> whether it prices the cheapest cut: cut <what> saves <N> ms × <M>/day, costs <Y>
   grep -qiE 'cut .+ saves [0-9.]+ ?(ms|s|min) ?(×|x|\*) ?[0-9.]+ ?/ ?day.*costs? [^ ]' <<<"$1"
 }
@@ -1391,8 +1398,10 @@ close_run() { # id --decisions <file> note...
       bad+=("line $line_no ($pid): ruled-out refused: a floor row's floor is zero, never a limit; the evidence prices its cheapest cut as 'cut <what> saves <N> ms × <M>/day, costs <Y>'")
       continue
     fi
-    if [ "$verdict" = ruled-out ] && [[ $owed == *$'\x1f'"$pid"$'\x1f'* ]] && ! measured "$evidence"; then
-      bad+=("line $line_no ($pid): ruled-out refused: a P1 or P2 Speed or test row keeps its time only on measured evidence: 'wall <N> s, cpu <N> s, <where the rest goes> <N> s; tried <what>: <before> -> <after>'")
+    # A repeat (Egor 2026-10-15): a row fixed before leaves unmeasured, as a class candidate for the next goal.
+    if [ "$verdict" = ruled-out ] && [[ $owed == *$'\x1f'"$pid"$'\x1f'* ]] && ! measured "$evidence" &&
+      ! { [[ $evidence == repeat:* ]] && fixed_before "$file" "$pid"; }; then
+      bad+=("line $line_no ($pid): ruled-out refused: a P1 or P2 Speed or test row keeps its time only on measured evidence: 'wall <N> s, cpu <N> s, <where the rest goes> <N> s; tried <what>: <before> -> <after>', or 'repeat: <the earlier fix>' when its ledger row carries one")
       continue
     fi
     if [ "$verdict" = fixed ]; then
