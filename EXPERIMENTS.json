@@ -15,7 +15,7 @@
   {
     "id": "flow-trust",
     "tag": "TEMP-FLOW-TRUST(gemini-web)",
-    "what": "Which change keeps Google Flow from flagging our automated sends (PUBLIC_ERROR_UNUSUAL_ACTIVITY): every account packs takes and counts its budget in images; the marker's arms vary one thing each — 'time' (jihangarangan, loiyehor: back after a 48 h wall, 12 images a day), 'send-budget' (tronjhon: its budget counts sends, not images, so 4-packs test whether Google counts requests), 'hand-first' (egbogd, and rawilimo/abel after flow-rest: walled until the owner closes his own Flow session in the automation profile, then 12 a day), 'manual' (locomthebest: walled, owner by hand only), 'control' (com: 60 images a day); a second flagged account since the start walls every account to the end",
+    "what": "Which change keeps Google Flow from flagging our automated sends (PUBLIC_ERROR_UNUSUAL_ACTIVITY): every account packs takes and counts its budget in images; the marker's arms vary one thing each — 'time' (jihangarangan: back after a 48 h wall, 12 images a day), 'send-budget' (tronjhon: its budget counts sends, not images, so 4-packs test whether Google counts requests), 'hand-first' (egbogd and loiyehor from 2026-10-15 22:30, rawilimo/abel after flow-rest: walled until the owner closes his own Flow session in the automation profile, then 12 a day), 'manual' (locomthebest: walled, owner by hand only), 'control' (com: 60 images a day); a second flagged account since the start walls every arm but the control to the end",
     "started": "2026-10-15",
     "review_by": "2026-10-31",
     "state_marker": "~/.gemini-web/flow-trust.json",

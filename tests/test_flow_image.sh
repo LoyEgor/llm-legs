@@ -759,7 +759,7 @@ assert gw.FLOW_DAY_S - 60 < gw.walls()["old"] - time.time() <= gw.FLOW_DAY_S, gw
 gw.set_wall("old", None)
 # TEMP-FLOW-TRUST(gemini-web): the experiment's arms and its stop rule.
 (gw.ROOT / gw.TRUST).write_text(json.dumps({"started": now - 10, "until": now + 3600, "halt_flags": 2,
-                                            "arms": {"old": "send-budget", "new": "hand-first"}}))
+                                            "arms": {"old": "send-budget", "new": "hand-first", "walled": "control"}}))
 gw.note_flow_send("old", 4)
 assert len(gw.read_meta("old")["flow_takes"]) == 1, gw.read_meta("old")
 gw.set_wall("new", now + 7200)
@@ -769,8 +769,7 @@ gw.trust_hand_done("new")
 gw.write_meta("new", flagged_at=now - 5)
 assert gw.trust_halt() == 0 and "old" not in gw.walls(), gw.walls()
 gw.write_meta("old", flagged_at=now - 1)
-assert gw.trust_halt() == now + 3600 and gw.walls()["new"] == now + 3600 and gw.walls()["walled"] > now + 3500, \
-    gw.walls()
+assert gw.trust_halt() == now + 3600 and gw.walls()["new"] == now + 3600 and "walled" not in gw.walls(), gw.walls()
 for name in ("old", "new"):
     gw.set_wall(name, None)
     gw.write_meta(name, flagged_at=0, flow_takes=[])

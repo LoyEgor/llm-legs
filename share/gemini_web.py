@@ -496,13 +496,14 @@ def trust_hand_done(account: str) -> None:
 
 
 def trust_halt() -> float:
-    """The experiment's stop rule: its second flagged account walls every account until its end."""
+    """The experiment's stop rule: its second flagged account walls every arm but the control until its end."""
     data = trust()
     flagged = [n for n in bound_accounts() if read_meta(n).get("flagged_at", 0) >= data.get("started", 1e12)]
     if len(flagged) < data.get("halt_flags", 2):
         return 0
     for name in bound_accounts():
-        set_wall(name, max(walls().get(name, 0), data["until"]))
+        if trust_arm(name) != "control":
+            set_wall(name, max(walls().get(name, 0), data["until"]))
     return data["until"]
 
 
