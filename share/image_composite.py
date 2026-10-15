@@ -123,6 +123,24 @@ def changed_regions(magnitude: np.ndarray, raw: np.ndarray, *, detail: bool = Fa
     return seeded[labels]
 
 
+def coherent_regions(base: np.ndarray, edited: np.ndarray, known: np.ndarray) -> np.ndarray:
+    tint = np.median((edited - base).reshape(-1, 3), axis=0)
+    delta = lab(np.clip(edited - tint, 0, 1)) - lab(base)
+    sigma = max(2.0, min(base.shape[:2]) / 120)
+    mean = ndimage.gaussian_filter(delta, (sigma, sigma, 0))
+    noise = np.sqrt(ndimage.gaussian_filter((delta - mean) ** 2, (sigma, sigma, 0)))
+    signal = np.abs(mean)
+    strong = ((signal > 0.5) & (signal > 2 * noise)).any(axis=2)
+    # A known edit's blurred halo cannot seed a second, larger mask for that same edit.
+    strong &= ~ndimage.binary_dilation(known, disk(3 * sigma))
+    labels, count = ndimage.label(strong)
+    sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    keep = sizes >= max(12, strong.size * 0.005)
+    keep[0] = False
+    weak = ((signal > 0.25) & (signal > 0.75 * noise)).any(axis=2)
+    return ndimage.binary_propagation(keep[labels], mask=weak)
+
+
 def near_points(regions: np.ndarray, points: list[tuple[float, float]]) -> np.ndarray:
     height, width = regions.shape
     labels, count = ndimage.label(ndimage.binary_closing(regions, disk(min(height, width) / 100)))
@@ -231,6 +249,7 @@ def composite(base: str, edited: str, out: str, mask_source, mask_out: str | Non
             detail = changed_regions(*difference(small_base, small_edited, sigma=0.5), detail=True)
             if detail is not None:
                 hard |= detail
+            hard |= coherent_regions(small_base, small_edited, hard)
             hard = tidy(hard if kind == "auto" else near_points(hard, list(mask_source)))
     refusal = ""
     if hard is None or hard.mean() > GLOBAL_LIMIT:

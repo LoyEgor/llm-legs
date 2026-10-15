@@ -74,6 +74,24 @@ magick "$WORK/date-base.png" -evaluate add 0.8% "$WORK/date-drift.png"
 assert compose --base "$WORK/date-base.png" --edited "$WORK/date-drift.png" --out "$WORK/date-drift-out.png"
 assert grep -qx 'composite=refused reason=no-local-change changed=0.0% kind=auto' "$WORK/out"
 
+# faint-rectangle: about +5 L*, removed alongside a small strong edit and global re-render grain.
+magick -size 400x400 gradient:'#606060-#a0a0a0' -alpha off -depth 8 "$WORK/faint-clean.png"
+magick "$WORK/faint-clean.png" \( +clone -crop 100x80+180+160 +repage -evaluate add 5% \) \
+  -geometry +180+160 -composite -depth 8 "$WORK/faint-base.png"
+magick "$WORK/faint-clean.png" -seed 31 -attenuate 0.1 +noise Gaussian -evaluate add 0.8% \
+  -fill '#d02020' -draw 'rectangle 40,40 55,55' -depth 8 "$WORK/faint-edited.png"
+assert compose --base "$WORK/faint-base.png" --edited "$WORK/faint-edited.png" \
+  --out "$WORK/faint-out.png" --mask-out "$WORK/faint-mask.png"
+assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
+assert test "$(magick "$WORK/faint-mask.png" -crop 96x76+182+162 +repage -format '%[fx:mean>0.95]' info:)" = 1
+assert within "$WORK/faint-out.png" "$WORK/faint-clean.png" 220,200 3
+assert within "$WORK/faint-out.png" "$WORK/faint-base.png" 20,300 0
+assert test "$(magick "$WORK/faint-mask.png" -format '%[fx:mean<0.10]' info:)" = 1
+magick "$WORK/faint-clean.png" -seed 31 -attenuate 0.1 +noise Gaussian -evaluate add 0.8% \
+  -depth 8 "$WORK/faint-noise.png"
+assert compose --base "$WORK/faint-clean.png" --edited "$WORK/faint-noise.png" --out "$WORK/faint-noise-out.png"
+assert grep -qx 'composite=refused reason=no-local-change changed=0.0% kind=auto' "$WORK/out"
+
 assert compose --base "$base" --edited "$WORK/global.png" --out "$WORK/global-out.png"
 assert grep -Eq '^composite=refused reason=global changed=(6[0-9]|[7-9][0-9]|100)\.[0-9]% kind=auto$' "$WORK/out"
 assert cmp "$WORK/global.png" "$WORK/global-out.png"
