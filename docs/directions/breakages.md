@@ -13,7 +13,23 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
 - Rows from a doctor rule added inside the window go on their own line, never into the sum.
 - Second number: repeats, the ledger rows fixed twice or more in the window. Target 0.
 
-Baseline: not computed yet.
+### Baseline (computed 2026-10-15)
+
+A row's first day comes from the git history of the ledger that holds it. Units come from
+`~/.cache/harness-doctor/budget-days/`, with 10-14 taken from `time_budget.budget()`. The unit journals start on
+10-03, so the prior window is 5 days.
+
+| per 100 units | 10-03…07 (855 units) | 10-08…14 (1,952 units) |
+|---|---:|---:|
+| Harness breakage rules | 0.70 | 0.31 |
+| LLM doctor (legs) | 5.15 | 0.36 |
+| **doctors total** | **5.85** | **0.67** |
+| rows of a rule born in the window (own line) | 19 | 6 |
+| repeats: rows re-fixed in the window | 11 | 9 |
+
+- The drop comes mostly from the image legs settling after the 10-03 media launch: 44 → 7 LLM rows.
+- The log audit gives exactly 15 findings a night, its merge cap. The raw count before the merge (224 → 541) grows
+  with the number of transcripts. Neither count can show a trend, so the log audit is measured by classes, below.
 
 ## Sources
 
@@ -31,16 +47,22 @@ Baseline: not computed yet.
 
 ## Recurring classes
 
-Each class was fixed as an instance, then came back somewhere else.
+Each class was fixed as an instance, then came back somewhere else. Ranked 2026-10-15 from the 105 log-audit rows
+of 7 nights (10-07…10-14) and the doctors' rows. "Nights" counts the audits the class showed up in.
 
-| class | fixed | back in |
-|---|---|---|
-| a gate blocks a legitimate command by matching its text | 10-09 ×2, 10-10, 10-14 | log audit 10-14 |
-| parallel fixers conflict on one shared JSON ledger or handoff | 10-08 ×2, 10-13 | log audit 10-14 |
-| a run dies at the 10- or 25-min Bash cap and is redone | 10-07 ×2, 10-14 | log audit 10-14, ≈500 min est. |
-| every fixer on one account hits its session wall and the night stalls | 10-08, 10-12, open | log audit 10-14, ≈715 min est. |
-| worker-run orphans (caffeinate, forked shells) | 6 fixes | |
-| a trivial Bash call waits on the heavy hooks | 4 fixes; each new hook broke the fast path again | |
+| class | rows | nights | instances fixed |
+|---|---:|---:|---:|
+| a gate refuses a legitimate command by matching its text (17 Bash gates; only 7 share a parser, `readonly-command.sh` or `heredoc-cut.sh`) | 14 | 7/7 | 13 |
+| parallel night fixers collide: one ledger or handoff, landing races, the same component fixed twice | 10 | 5/7 | 6 |
+| a run dies at the 10- or 25-min Bash cap and is redone (≈500 min est.) | 9 | 6/7 | 4 |
+| fan-out into a walled account, then the night idles (≈715 min est.) | 8 | 5/7 | 1 |
+| a Stop hook outruns its 5 s cap (Harness `hook-error`) | 7 | 5 days | 7 |
+| night load breaks timing tests | 5 | 3/7 | 4 |
+| a worker writes a repository its brief never granted | 5 | 4 days | |
+| shell environment: bash 3.2, zsh word-splitting, a launchd PATH | 3 | 3/7 | |
+| model behavior: re-asked decisions, unverified claims, unrequested mechanisms (not mechanics, so no fixer) | ≈25 | 7/7 | |
+
+Rows 2, 4 and 6 (23 rows) are made by the night's own fan-out. Fewer fixers removes them by construction.
 
 The goal is the class, by one fix that makes it impossible:
 - a gate parses the command instead of grepping it;
@@ -84,5 +106,6 @@ The 2026-10-05 night worked that way: one shared cause fixed in several places.
 
 ## Open
 
-- The metric's baseline over the last 7+7 days.
-- The class list from the ledgers, ranked by how often each class returns.
+- The pilot plan: goals as classes, waiting for Egor's go.
+- Planned item 1 belongs to Lost time, System and Spend, whose audits make those reopens. The block-1 pilot does
+  not run those audits.
