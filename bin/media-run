@@ -44,7 +44,7 @@ vendors_of() { # kind -> the vendors whose manifest names a script for it, one p
 all_kinds() { cat "$caps_dir"/*.json 2>/dev/null | jq -r '.scripts // {} | keys[]' 2>/dev/null | sort -u | paste -sd'|' -; }
 
 usage() {
-  printf 'usage: media-run <%s> [--vendor V | --vendors all|a,b] [--jobs <jsonl>] -- <the script'\''s own args>\n' "$(all_kinds)" >&2
+  printf 'usage: media-run <%s> [--vendor V | --vendors all|a,b] [--jobs <jsonl>] [--takes N] -- <the script'\''s own args>\n' "$(all_kinds)" >&2
   printf '  one vendor runs its script; several vendors, --takes or --jobs run image-fanout\n' >&2
   exit 2
 }
@@ -57,16 +57,20 @@ known=$(vendors_of "$kind")
 [ -n "$known" ] || { printf 'media-run: no manifest names a %s script (kinds: %s)\n' "$kind" "$(all_kinds)" >&2; exit 2; }
 
 vendor='' vendors_arg='' jobs=''
+pass_args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --vendor) [ "$#" -ge 2 ] || usage; vendor=$2; shift 2 ;;
     --vendors) [ "$#" -ge 2 ] || usage; vendors_arg=$2; shift 2 ;;
+    --takes) [ "$#" -ge 2 ] || usage; pass_args+=(--takes "$2"); shift 2 ;;
+    --takes=*) pass_args+=(--takes "${1#--takes=}"); shift ;;
     --jobs) [ "$#" -ge 2 ] || usage; jobs=$2; [[ "$jobs" = /* ]] || jobs=$PWD/$jobs; shift 2 ;;
     --) shift; break ;;
     -h|--help) usage ;;
     *) printf 'media-run: unknown option %s before -- (the script'\''s own args go after --)\n' "$1" >&2; usage ;;
   esac
 done
+set -- ${pass_args[@]+"${pass_args[@]}"} "$@"
 [ -z "$vendor" ] || [ -z "$vendors_arg" ] || { printf 'media-run: --vendor and --vendors exclude each other\n' >&2; exit 2; }
 
 known_list=$(paste -sd' ' - <<<"$known")
@@ -160,7 +164,7 @@ fi
 media_tag=$(set +eu; worker_media_tag "$vendors" "$kind" "$*" 2>/dev/null) || media_tag=''
 label=gen
 for arg in "$@"; do
-  case "$arg" in --ref | --ref=* | --resume | --resume=* | --edit | --edit=* | --extend | --extend=* | --for-video | --for-video=*) label=edit ;; esac
+  case "$arg" in --resume | --resume=* | --edit | --edit=* | --extend | --extend=* | --for-video | --for-video=*) label=edit ;; esac
 done
 write_pointer "${account:-pool} · ${media_tag:-${kind}·$vendors}" "$label" ''
 exec "$bin_dir/$script" "$@"

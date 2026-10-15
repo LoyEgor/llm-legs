@@ -63,6 +63,14 @@ run image --vendors codex,zeta -- "${args[@]}"
 same_args image-fanout --vendors codex,zeta "${args[@]}" || fail "the fan-out did not get the arguments byte for byte"
 ok
 
+for takes_args in '--takes 2' '--takes=2'; do
+  read -r -a take_flags <<<"$takes_args"
+  run image --vendor codex "${take_flags[@]}" -- --dest-dir /tmp/fan --prompt x
+  [ "$rc" = 0 ] && same_args image-fanout --vendors codex --takes 2 --dest-dir /tmp/fan --prompt x ||
+    fail "--takes before -- did not reach fan-out"
+  ok
+done
+
 # The vendor list and the kinds are the manifests'.
 run smell -- --dest /tmp/a.smell
 [ "$rc" = 0 ] && same_args zeta-smell --dest /tmp/a.smell || fail "a kind only one manifest names did not run its script"
@@ -118,7 +126,7 @@ pid=$(cat "$LOG/zeta-image.pid")
 pointer="$CACHE/media-$pid"
 [ -f "$pointer" ] || fail "no media pointer for pid $pid"
 IFS=$'\037' read -r p_start p_tag p_label p_state p_job < <(pointer "$pid")
-[[ "$p_start" =~ ^[0-9]+$ ]] && [ "$p_tag" = 'zacct · img·zeta' ] && [ "$p_label" = edit ] && [ -z "$p_state" ] ||
+[[ "$p_start" =~ ^[0-9]+$ ]] && [ "$p_tag" = 'zacct · img·zeta' ] && [ "$p_label" = gen ] && [ -z "$p_state" ] ||
   fail "pointer reads '$p_start|$p_tag|$p_label|$p_state'"
 ok
 [ -n "$p_job" ] && [ "$p_job" = "$(cat "$LOG/zeta-image.job")" ] || fail "the pointer's job '$p_job' is not the script's IMAGE_JOB_ID"

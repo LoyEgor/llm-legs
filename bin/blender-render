@@ -9,9 +9,8 @@
 
 The output extension picks the job: .png a still, .mp4 an H.264 loop, .mov ProRes 4444 with
 alpha, .webm VP9 with alpha (web), .glb a Draco-compressed mesh for three.js.
-Each render (doctor, logo, run) first takes a slot of the machine-wide `blender` pool: one Blender always runs,
-another only while available memory holds one more run's footprint (median peak of the last 9 runs, 9.5 GB
-until measured; ~/.cache/blender-render, BLENDER_RENDER_DIR); a waiter prints
+Each render (doctor, logo, run) first takes a slot of the machine-wide `blender` pool: each run waits
+until available memory covers its footprint (largest peak of the last 9 runs, at least 9.5 GB; ~/.cache/blender-render, BLENDER_RENDER_DIR); a waiter prints
 `blender: waiting for a slot (N running, room R)` and raises a limiter hold.
 Guide: llm-legs docs/blender.md.
 """
@@ -21,7 +20,6 @@ import json
 import os
 import re
 import shutil
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -41,10 +39,6 @@ class Usage(Exception):
     pass
 
 
-# One headless Blender holds ~9.3 GB phys_footprint, mostly wired Metal memory that cannot swap: two at once
-# took a 24 GB Mac to 22.4 GB used and 5.5 GB swap (2026-10-14). Every launch takes a slot of the machine-wide
-# `blender` pool (share/slots.sh): one always runs, another only while available memory holds one more run's
-# expected footprint (the median peak of the recent runs) over the memory guard's line.
 STATE = os.path.expanduser(os.environ.get("BLENDER_RENDER_DIR", "~/.cache/blender-render"))
 DEFAULT_FOOTPRINT_MB = 9728
 RECENT_RUNS = 9
@@ -84,7 +78,7 @@ def peaks_file():
 
 
 def footprint_mb():
-    """The median peak footprint of the recent successful runs, DEFAULT_FOOTPRINT_MB until one is measured."""
+    """The largest recent peak, never below the unmeasured-run reservation."""
     try:
         with open(peaks_file()) as handle:
             lines = handle.read().splitlines()
@@ -96,7 +90,7 @@ def footprint_mb():
             peaks.append(float(json.loads(line)["mb"]))
         except (ValueError, KeyError, TypeError):
             pass
-    return round(statistics.median(peaks)) if peaks else DEFAULT_FOOTPRINT_MB
+    return round(max([DEFAULT_FOOTPRINT_MB, *peaks]))
 
 
 def record_peak(mb, what):
@@ -164,7 +158,8 @@ def blender(script, args, log):
     directory = slots_dir()
     what = "blender-render %s" % os.path.basename(script)
     self = os.path.realpath(__file__)
-    env = dict(os.environ, BLENDER_FOOTPRINT_MB=str(expected), SLOT_CEILING_S=str(SLOT_CEILING_S))
+    env = dict(os.environ, BLENDER_FOOTPRINT_MB=str(expected), SLOT_CEILING_S=str(SLOT_CEILING_S),
+               SLOTS_CHECK_FLOOR="1")
     process = subprocess.Popen(["bash", "-c", ADMIT, "_", os.path.join(os.path.dirname(SHARE), "slots.sh"),
                                 directory, "1-%d" % ceiling, what, log, self, *command], env=env)
     peak = 0
@@ -176,7 +171,7 @@ def blender(script, args, log):
             usage = machine_probe.proc_rusage(process.pid)
             peak = max(peak, usage[0] if usage else 0)
     release(directory, process.pid)
-    if code == 0 and peak:
+    if code != 75 and peak:
         record_peak(peak / 1048576, what)
     text = open(log).read() if os.path.exists(log) else ""
     return code, text

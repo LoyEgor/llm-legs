@@ -135,15 +135,7 @@ image_leg_composite_arg() { # flag
   esac
 }
 
-# Every vendor re-renders the whole image on an edit, so every edit of an existing image is
-# composited onto it by default. An edit has exactly one input: the single --ref, else the resumed
-# session's last delivered image. An explicit --composite insists (the first --ref among several);
-# a contradiction exits 2 before anything is spent. The input is copied now: dest may overwrite it.
-# Mask arguments a wrapper set in IMAGE_LEG_COMPOSITE_ARGS (--region, --point) stand unless
-# --composite names its own.
-# repaint=matte: the render is a generative cutout of the one input (Remove BG), laid back onto it
-# only on --composite.
-image_leg_composite_plan() { # vendor resume repaint(true|false|matte) [ref...]
+image_leg_composite_plan() { # vendor resume repaint(true|false|matte) [edit-input]
   local vendor=$1 resume=$2 repaint=$3 tool=${IMAGE_LEG_TOOL:-image} ask=${IMAGE_LEG_COMPOSITE_ASK:-} inputs input='' dir=''
   shift 3
   inputs=$#
@@ -173,7 +165,7 @@ image_leg_composite_plan() { # vendor resume repaint(true|false|matte) [ref...]
       exit 2
     fi
     if [ -z "$input" ]; then
-      printf '%s: --composite needs the image being edited: a --ref, or --resume of a session whose last image this machine delivered\n' "$tool" >&2
+      printf '%s: --composite needs the image being edited: --edit, or --resume of a session whose last image this machine delivered\n' "$tool" >&2
       exit 2
     fi
     IMAGE_LEG_COMPOSITE_ARGS=()
@@ -389,12 +381,12 @@ image_leg_sidecar() { # image -> its edit-chain sidecar
 }
 
 # A plain generation keeps no sidecar (a missing one reads as a root at depth 0) and drops a stale one.
-# Parent = the first input with a sidecar; with none the first input is a root at depth 0, and no
-# input makes dest itself the root. Prints the main take's composite lines before edit_depth=.
+# Only the edited input carries lineage; references never choose a parent.
 image_leg_lineage() { # vendor route dest session prompt region points(newline-separated) [input...]
   local vendor=$1 route=$2 dest=$3 session=$4 prompt=$5 region=$6 points=$7 parent='' previous=null input sidecar file made
   shift 7
-  for input in "$@"; do
+  for input in "${1:-}"; do
+    [ -n "$input" ] || break
     for file in "$(image_leg_sidecar "$input")" "$input.edit.json"; do
       if jq -e '(.root | type) == "string" and (.depth | type) == "number" and (.edits | type) == "array"' \
           "$file" >/dev/null 2>&1; then

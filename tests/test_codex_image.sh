@@ -129,6 +129,17 @@ esac
 EOF
 chmod +x "$WORK/fake-web"
 
+"$REAL_MAGICK" -size 64x64 xc:green "$WORK/lineage-ref.png"
+printf '{"root":"unrelated.png","depth":7,"edits":[]}' >"$WORK/lineage-ref.png.edit.json"
+assert image_run --dest "$OUTPUT_DIR/ref-only.png" --prompt badge --ref "$WORK/lineage-ref.png" --account explicit
+assert grep -qx 'composite=skipped reason=new-generation' "$IMAGE_OUT"
+assert grep -qx "edit_depth=0 root=$OUTPUT_DIR/ref-only.png" "$IMAGE_OUT"
+assert test ! -e "$(sidecar "$OUTPUT_DIR/ref-only.png")"
+assert image_run --dest "$OUTPUT_DIR/ref-only-edit.png" --prompt badge --ref "$WORK/lineage-ref.png" --edit "$OUTPUT_DIR/ref-only.png" --account explicit
+assert grep -qx "edit_depth=1 root=$OUTPUT_DIR/ref-only.png" "$IMAGE_OUT"
+assert image_run --dest "$OUTPUT_DIR/ref-only-edit2.png" --prompt badge --edit "$OUTPUT_DIR/ref-only-edit.png" --ref "$WORK/lineage-ref.png" --account explicit
+assert grep -qx "edit_depth=2 root=$OUTPUT_DIR/ref-only.png" "$IMAGE_OUT"
+
 REF_MAX=$(manifest_value '.refs.max')
 assert test "$REF_MAX" -ge 1
 assert test "$(manifest_value '.transparent')" = native+chroma
@@ -357,9 +368,8 @@ printf 'reference\n' >"$WORK/reference.png"
 assert image_run --dest "$OUTPUT_DIR/edited.png" --prompt 'make the badge blue' \
   --ref "$WORK/reference.png" --account explicit
 assert test ! -s "$PICK_CALLS"
-# A reference that is no image fails its composite, and the edit is still delivered as generated.
-assert grep -qx 'composite=failed' "$IMAGE_OUT"
-assert grep -q 'composite failed; the edited image is delivered as generated' "$IMAGE_ERR"
+assert grep -qx 'composite=skipped reason=new-generation' "$IMAGE_OUT"
+assert grep -qx "edit_depth=0 root=$(sed -n 's/^dest=//p' "$IMAGE_OUT")" "$IMAGE_OUT"
 assert test -s "$OUTPUT_DIR/edited.png"
 assert grep -q 'call view_image on each path below first' "$FAKE_CODEX_PROMPT"
 assert grep -q 'referenced_image_paths' "$FAKE_CODEX_PROMPT"
@@ -440,7 +450,7 @@ assert test "$(grep -n 'ARG=--experimental-json' "$FAKE_CODEX_CALLS" | cut -d: -
   -lt "$(grep -n 'ARG=resume' "$FAKE_CODEX_CALLS" | cut -d: -f1)"
 
 # Composite is on by default for every edit, after the contract block: the thread's last delivered
-# image or a single --ref is the input, and the vendor's render is kept beside the dest.
+# image or --edit is the input, and the vendor's render is kept beside the dest.
 "$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$OUTPUT_DIR/resumed.png"
 assert image_run --dest "$OUTPUT_DIR/resumed2.png" --prompt 'add a blue circle' --resume "$RESUME_ID"
 assert test "$(sed -n 1p "$IMAGE_OUT")" = "dest=$OUTPUT_DIR/resumed2.png"
@@ -450,17 +460,17 @@ assert cmp "$CODEX_PROFILES/other/generated_images/$RESUME_ID/exec-fixture.png" 
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=2 root=$OUTPUT_DIR/first.png"
 assert test "$(jq -r '.edits[1].composite.kind' "$(sidecar "$OUTPUT_DIR/resumed2.png")")" = auto
 "$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/green-ref.png"
-assert image_run --dest "$OUTPUT_DIR/composited.png" --prompt 'add a blue circle' --ref "$WORK/green-ref.png" --account explicit
+assert image_run --dest "$OUTPUT_DIR/composited.png" --prompt 'add a blue circle' --edit "$WORK/green-ref.png" --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
 assert test -e "$OUTPUT_DIR/composited.rendered.png"
-assert image_run --dest "$OUTPUT_DIR/optout.png" --prompt 'add a blue circle' --ref "$WORK/green-ref.png" --account explicit --no-composite
+assert image_run --dest "$OUTPUT_DIR/optout.png" --prompt 'add a blue circle' --edit "$WORK/green-ref.png" --account explicit --no-composite
 assert_fails grep -q '^composite=\|^rendered=' "$IMAGE_OUT"
 assert cmp "$CODEX_PROFILES/explicit/generated_images/$FAKE_CODEX_THREAD/exec-fixture.png" "$OUTPUT_DIR/optout.png"
 assert test ! -e "$OUTPUT_DIR/optout.rendered.png"
-assert image_run --dest "$OUTPUT_DIR/keyedref.png" --prompt 'a transparent circle' --ref "$WORK/green-ref.png" --account explicit --transparent
+assert image_run --dest "$OUTPUT_DIR/keyedref.png" --prompt 'a transparent circle' --edit "$WORK/green-ref.png" --account explicit --transparent
 assert_fails grep -q '^composite=' "$IMAGE_OUT"
 assert image_run --dest "$OUTPUT_DIR/tworefs.png" --prompt 'merge' --ref "$WORK/green-ref.png" --ref "$WORK/reference.png" --account explicit
-assert grep -qx 'composite=skipped reason=several-inputs' "$IMAGE_OUT"
+assert grep -qx 'composite=skipped reason=new-generation' "$IMAGE_OUT"
 assert test ! -e "$OUTPUT_DIR/tworefs.rendered.png"
 
 # An id the store cannot resolve is answered by the CLI with a brand-new thread (openai/codex#15538),
@@ -704,6 +714,9 @@ assert grep -q "references exceed the $cli_cap" "$IMAGE_ERR"
 web_run unset --dest "$OUTPUT_DIR/stay.png" --prompt badge --edit "$WORK/edit-base.png" --resume "$RESUME_ID"
 assert test "$image_rc" -eq 2
 assert grep -q -- '--edit names the image to edit' "$IMAGE_ERR"
+web_run ok --route web --dest "$OUTPUT_DIR/stay.png" --prompt badge --edit "$WORK/edit-base.png" --ref "$WORK/style-a.png" --region 0.1,0.1,0.2,0.2
+assert test "$image_rc" -eq 2
+assert grep -Fq 'plain composited edit: --edit <img> --ref <vector>' "$IMAGE_ERR"
 web_run unset --dest "$OUTPUT_DIR/stay.png" --prompt badge --edit edit-base.png
 assert test "$image_rc" -eq 2
 assert test ! -s "$FAKE_CODEX_CALLS"

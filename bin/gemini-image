@@ -144,16 +144,15 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$gemini_base_home/.gemini-profiles}
 . "$root/share/gemini-accounts.sh"
 . "$root/share/flow-image.sh"
 tool_input=''
-# An --edit with no --aspect keeps its input's shape (the nearest edit aspect): the 1:1 default squared
-# a 4:5 photo, so its composite was skipped (live, 2026-10-15).
-if [ -n "$edit" ] && [ "$aspect_given" = false ] && [ -z "$tool_op" ]; then
-  edit_ratio=$(sips -g pixelWidth -g pixelHeight "$edit" 2>/dev/null |
-    awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {if (w && h) print w ":" h}')
-  [ -z "$edit_ratio" ] ||
-    aspect=$(image_caps_nearest_aspect "$edit_ratio" "$(image_caps_get "$root" gemini '.aspects.edit | join(",")')")
-fi
-route_given=$route aspect_before=$aspect model_given=$model
+route_given=$route model_given=$model
 if [ -n "$tool_op" ]; then flow_image_tool_route; else flow_image_route; fi
+if [ -n "$edit" ] && [ "$aspect_given" = false ] && [ -z "$tool_op" ]; then
+  edit_aspects='.aspects.edit'
+  [ "$route" != flow ] || edit_aspects='.flow_image.aspects'
+  edit_aspect=$(image_caps_edit_aspect "$edit" "$(image_caps_get "$root" gemini "$edit_aspects | join(\",\")")")
+  [ -z "$edit_aspect" ] || aspect=$edit_aspect
+fi
+aspect_before=$aspect
 IMAGE_LEG_ROUTE=$route
 flow_image_flags
 flow_image_tool_flags
@@ -217,7 +216,7 @@ if [ -n "$tool_input" ]; then
 elif [ -n "$IMAGE_LEG_EDIT" ]; then
   image_leg_composite_plan gemini '' "$remove_green" "$IMAGE_LEG_EDIT"
 else
-  image_leg_composite_plan gemini "$resume" "$remove_green" ${refs[@]+"${refs[@]}"}
+  image_leg_composite_plan gemini "$resume" "$remove_green"
 fi
 edit_input=$IMAGE_LEG_COMPOSITE_INPUT
 expressible=false
@@ -511,8 +510,7 @@ image_caps_check "$root" gemini "${AGY_BIN:-$base_home/.local/bin/agy}"
 fi
 lineage_region=$region
 [ "${IMAGE_LEG_COMPOSITE_ASK:-auto}" = auto ] || lineage_region=$IMAGE_LEG_COMPOSITE_ASK
-lineage_inputs=(${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"})
-[ -z "$IMAGE_LEG_EDIT" ] || lineage_inputs=("$edit_input")
+lineage_inputs=(${edit_input:+"$edit_input"})
 image_leg_lineage gemini "$route" "$dest" "$session" "$prompt" "$lineage_region" \
   "$(printf '%s\n' ${points[@]+"${points[@]}"})" ${lineage_inputs[@]+"${lineage_inputs[@]}"}
 exit

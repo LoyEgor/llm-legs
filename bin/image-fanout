@@ -74,6 +74,7 @@ while [ "$#" -gt 0 ]; do
     --vendors) [ "$#" -ge 2 ] || usage; vendors_arg=$2; shift 2 ;;
     --accounts) [ "$#" -ge 2 ] || usage; accounts_mode=$2; shift 2 ;;
     --ref) [ "$#" -ge 2 ] || usage; refs+=("$2"); request_flags=true; shift 2 ;;
+    --region | --region=*) usage_error '--region is not supported by fan-out; use a plain composited edit: --edit <img> --ref <vector> --prompt "replace the logo at <spot>" (omit --region)' ;;
     --edit) [ "$#" -ge 2 ] || usage; edit=$2; request_flags=true; shift 2 ;;
     --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; request_flags=true; shift 2 ;;
     --size) [ "$#" -ge 2 ] || usage; size=$2; request_flags=true; shift 2 ;;
@@ -643,6 +644,9 @@ plan_group() { # request vendor
     fi
   fi
   want_aspect=$r_aspect
+  if [ "$video" = false ] && [ -n "$r_edit" ] && [ -z "$r_aspect$r_size" ]; then
+    want_aspect=$(image_caps_edit_aspect "$r_edit" "$(aspect_list_for "$vendor" "$n_used")")
+  fi
   [ -n "$size_aspect" ] && want_aspect=$size_aspect
 
   if [ -n "$want_aspect" ]; then

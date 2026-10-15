@@ -111,12 +111,12 @@ assert lineage gemini cli "$WORK/e1.png" conv-1 'red hair' '0.1,0.1,0.5,0.5' '' 
 assert grep -qx "edit_depth=1 root=$WORK/gen.png" "$WORK/out"
 assert test "$(session_input gemini conv-1)" = "$WORK/e1.png"
 cp "$base" "$WORK/e2.png"
-assert lineage codex web "$WORK/e2.png" chat-2 '' '' $'0.5,0.8=moon pendant\n0.2,0.2=strap' "$WORK/plain.png" "$WORK/e1.png"
+assert lineage codex web "$WORK/e2.png" chat-2 '' '' $'0.5,0.8=moon pendant\n0.2,0.2=strap' "$WORK/e1.png" "$WORK/plain.png"
 assert grep -qx "edit_depth=2 root=$WORK/gen.png" "$WORK/out"
 assert test "$(jq -c '.edits' "$(sidecar "$WORK/e2.png")")" = '[{"prompt":"red hair","region":"0.1,0.1,0.5,0.5","points":[],"route":"cli","vendor":"gemini","account":"acct"},{"prompt":"","region":null,"points":["0.5,0.8=moon pendant","0.2,0.2=strap"],"route":"web","vendor":"codex","account":"acct"}]'
 cp "$base" "$WORK/plain.png"
 cp "$base" "$WORK/p1.png"
-assert lineage gemini cli "$WORK/p1.png" none 'bluer' '' '' "$WORK/plain.png"
+assert lineage gemini cli "$WORK/p1.png" none 'bluer' '' '' "$WORK/plain.png" "$WORK/e1.png"
 assert grep -qx "edit_depth=1 root=$WORK/plain.png" "$WORK/out"
 assert test "$(jq -r '.edits | length' "$(sidecar "$WORK/p1.png")")" = 1
 assert test ! -e "$WORK/legs/sessions/gemini/none"

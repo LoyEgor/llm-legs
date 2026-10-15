@@ -942,7 +942,19 @@ def generate_on(account: str, args) -> dict:
         raise gw.Failure(4, f"account {account} is not bound to a ChatGPT login yet; run: chatgpt-web status {account}")
     if not args.resume:
         gw.note_started(account)
-    return render_on(account, args, meta)
+    for attempt in range(2):
+        try:
+            return render_on(account, args, meta)
+        except Exception as error:
+            cause = error
+            crashed = isinstance(error, gw.Failure) and error.extra.get("crashed")
+            while cause is not None:
+                crashed = crashed or cause.__class__.__name__ == "TargetClosedError"
+                cause = cause.__cause__
+            if attempt or not crashed or getattr(args, "count", 1) != 1:
+                raise
+            gw.ledger({"kind": KIND, "event": "browser_retry", "account": account,
+                       "reason": "TargetClosedError"})
 
 
 def region_arg(text: str) -> tuple[float, float, float, float]:
@@ -977,7 +989,9 @@ def check_args(args) -> None:
         raise gw.Failure(2, f"--resume takes the chat id printed as chat=, not {args.resume}")
     edit = "--region" if args.region else args.tool
     if edit in ("--region", "comment", "remove-bg") and not (args.resume and not args.ref or len(args.ref) == 1):
-        raise gw.Failure(2, f"{edit} edits one image: the chat's last one (--resume) or a single --ref")
+        raise gw.Failure(2, f"{edit} edits one image: the chat's last one (--resume) or a single --ref; "
+                         "for an extra reference use codex-image --edit <img> --ref <vector> "
+                         '--prompt "replace the logo at <spot>" (omit --region)')
     counts = take_counts()
     if args.count not in counts:
         raise gw.Failure(2, f"--count is {min(counts)}-{max(counts)}, not {args.count}")

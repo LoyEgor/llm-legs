@@ -224,6 +224,17 @@ GEMINI_FLOW_MAX=$(jq -r '.flow_image.refs_max' "$ROOT/share/image-caps/gemini.js
 FLOW_REFS=()
 for ((i = 0; i < GEMINI_FLOW_MAX; i++)); do FLOW_REFS+=(--ref "$WORK/refs/r$((i % 5 + 1)).png"); done
 
+magick -size 180x120 xc:green "$WORK/edit-shape.png"
+assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$WORK/edit-shape.png"
+assert grep -Fq -- '--aspect 3:2' <<<"$(plan_cmd grok delta)"
+assert grep -Fq -- '--aspect 4:3' <<<"$(plan_cmd gemini gamma)"
+assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$WORK/edit-shape.png" --aspect 1:1
+assert grep -Fq -- '--aspect 1:1' <<<"$(plan_cmd grok delta)"
+rc=0
+fanout --dest-dir "$DEST" --prompt badge --region 0,0,0.2,0.2 --edit "$WORK/edit-shape.png" || rc=$?
+assert test "$rc" -eq 2
+assert grep -Fq 'plain composited edit: --edit <img> --ref <vector>' "$FANOUT_ERR"
+
 # --- the registry is the vendor list: no vendor name is written into the script ----------
 assert test -z "$(grep -nwE 'codex|gemini|grok' "$SCRIPT" || true)"
 

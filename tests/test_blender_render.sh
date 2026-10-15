@@ -15,15 +15,23 @@ within() { # seconds command... -> whether the command held within that many sec
 }
 
 # No real Blender, slot dir or holds: a fake Blender that runs until released (past one footprint sample a
-# second), and a vm_stat with 6000 MB available, room for no second 9.5 GB run.
+# second), and a vm_stat with 15000 MB available, room for no second 9.5 GB run.
 mkdir -p "$WORK/shim"
 printf '#!/bin/bash\n: >"%s/started-${!#}"\nsleep 1.2\nuntil [ -e "%s/release-${!#}" ]; do sleep 0.05; done\necho "RESULT name=${!#}"\n' \
   "$WORK" "$WORK" >"$WORK/blender"
-printf '#!/bin/sh\nprintf "Mach Virtual Memory Statistics: (page size of 16384 bytes)\\nPages free:  384000.\\nPages inactive:  0.\\nPages speculative:  0.\\n"\n' \
+printf '#!/bin/sh\nprintf "Mach Virtual Memory Statistics: (page size of 16384 bytes)\\nPages free:  960000.\\nPages inactive:  0.\\nPages speculative:  0.\\n"\n' \
   >"$WORK/shim/vm_stat"
-chmod +x "$WORK/blender" "$WORK/shim/vm_stat"
+cat >"$WORK/shim/sysctl" <<'SH'
+#!/bin/sh
+case "$*" in
+  '-n hw.memsize') echo 25769803776 ;;
+  *) printf '1\n10\n{ 0.00 0.00 0.00 }\n' ;;
+esac
+SH
+chmod +x "$WORK/blender" "$WORK/shim/vm_stat" "$WORK/shim/sysctl"
 : >"$WORK/scene.py"
 export BLENDER_BIN="$WORK/blender" BLENDER_RENDER_DIR="$WORK/state" PATH="$WORK/shim:$PATH" \
+  SYSTEM_DOCTOR_SYSCTL="$WORK/shim/sysctl" \
   HARNESS_HOLDS_DIR="$WORK/holds" HARNESS_WAITS_DIR="$WORK/waits" SLOTS_POLL_S=0.2 SLOTS_ROOM_POLL_S=0.4
 render() { "$ROOT/bin/blender-render" run "$WORK/scene.py" -- "$1" >"$WORK/out-$1" 2>&1; echo $? >"$WORK/rc-$1"; }
 
@@ -45,8 +53,35 @@ assert [ "$(cat "$WORK/rc-a") $(cat "$WORK/rc-b")" = "0 0" ]
 assert grep -qx 'RESULT name=b' "$WORK/out-b"
 assert test -z "$(compgen -G "$WORK/holds/blender-*.json")"
 assert [ "$(cat "$WORK"/waits/*.jsonl | jq -s 'map(select(.class == "blender")) | length')" = 1 ]
-# Each ended run gave its slot back and left its peak footprint for the next median.
+# Each ended run gave its slot back and left its peak footprint for the next reservation.
 assert test -z "$(find "$WORK/state/slots" -name pid)"
 assert [ "$(grep -c '"mb"' "$WORK/state/peaks.jsonl")" = 2 ]
+
+assert python3 - "$ROOT" <<'PY'
+import importlib.machinery
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader('blender_render', sys.argv[1] + '/bin/blender-render')
+spec = importlib.util.spec_from_loader(loader.name, loader)
+m = importlib.util.module_from_spec(spec)
+loader.exec_module(m)
+with tempfile.TemporaryDirectory() as directory:
+    m.STATE = directory
+    Path(m.peaks_file()).write_text('\n'.join(json.dumps({'mb': n}) for n in [224, 622, 2685, 9400, 17000]))
+    got = m.footprint_mb()
+    assert got >= 17000, f'peak reservation {got} MB undercounts known 17000 MB run'
+PY
+(
+  . "$ROOT/share/slots.sh"
+  slot_room() { printf 'fixture: insufficient memory\n'; return 1; }
+  mkdir -p "$WORK/floor/2"
+  printf '%s\n' "$$" >"$WORK/floor/2/pid"
+  SLOTS_CHECK_FLOOR=1
+  ! slot_take "$WORK/floor" 1-2 86400 >/dev/null
+)
+assert test "$?" -eq 0
 
 printf 'PASS: test_blender_render.sh (%s asserts)\n' "$asserts"

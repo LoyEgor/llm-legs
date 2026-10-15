@@ -51,6 +51,7 @@ normalized_extension() {
 dest=''
 prompt=''
 aspect=$default_aspect
+aspect_given=false
 account=''
 resume=''
 remove_green=false
@@ -72,7 +73,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --aspect)
       [ "$#" -ge 2 ] || usage "$1 needs a value"
-      aspect=$2
+      aspect=$2 aspect_given=true
       shift 2
       ;;
     --ref)
@@ -117,6 +118,10 @@ done
 [[ "$dest" = /* ]] || usage "--dest must be an absolute path, not $dest"
 IMAGE_LEG_ROUTE=cli
 [ -z "$edit" ] || { image_leg_edit_arg "$edit" "$resume"; refs=("$edit" ${refs[@]+"${refs[@]}"}); }
+if [ -n "$edit" ] && [ "$aspect_given" = false ]; then
+  edit_aspect=$(image_caps_edit_aspect "$edit" "$(image_caps_get "$root" grok '.aspects.edit | join(",")')")
+  [ -z "$edit_aspect" ] || aspect=$edit_aspect
+fi
 extension=$(normalized_extension "${dest##*/}")
 # An extensionless destination — a bare trailing dot included — names no format for `magick` to
 # infer, and the mismatch below would hand it one anyway.
@@ -175,7 +180,7 @@ fi
 if [ -n "$IMAGE_LEG_EDIT" ]; then
   image_leg_composite_plan grok '' "$remove_green" "$IMAGE_LEG_EDIT"
 else
-  image_leg_composite_plan grok "$resume" "$remove_green" ${refs[@]+"${refs[@]}"}
+  image_leg_composite_plan grok "$resume" "$remove_green"
 fi
 edit_input=$IMAGE_LEG_COMPOSITE_INPUT
 IMAGE_LEG_REQUESTED=1
@@ -329,8 +334,7 @@ image_caps_model_check "$root" grok image "$observed_model"
 printf '%s\n' "$caps_line"
 lineage_region=''
 [ "${IMAGE_LEG_COMPOSITE_ASK:-auto}" = auto ] || lineage_region=$IMAGE_LEG_COMPOSITE_ASK
-lineage_inputs=(${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"})
-[ -z "$IMAGE_LEG_EDIT" ] || lineage_inputs=("$edit_input")
+lineage_inputs=(${edit_input:+"$edit_input"})
 image_leg_lineage grok cli "$dest" "${session:-none}" "$prompt" "$lineage_region" '' \
   ${lineage_inputs[@]+"${lineage_inputs[@]}"}
 exit

@@ -54,10 +54,10 @@ full 2048×1152 still at 384 samples ~110 s. Video renders every frame — run l
 A render holds ~9.3 GB phys_footprint, mostly wired Metal memory that cannot swap: two at once took the
 24 GB Mac to 22.4 GB used and 5.5 GB swap (2026-10-14). Every Blender launch (`doctor`'s probe, `logo`, `run`)
 first takes a slot of the machine-wide `blender` pool (`share/slots.sh`, `~/.cache/blender-render/slots`,
-`BLENDER_RENDER_DIR`). One always runs; another only while
+`BLENDER_RENDER_DIR`). Every slot, including a freed first slot while another is held, waits until
 `available MB ≥ GUARD_AVAIL_MB + footprint + Σ (footprint − current footprint) over running Blenders` (the sum
-covers a Blender just launched that has not allocated yet), and at most RAM ÷ footprint. The footprint is the median
-peak phys_footprint of the last 9 successful runs (`peaks.jsonl`, sampled each second), 9.5 GB until measured.
+covers a Blender just launched that has not allocated yet), and at most RAM ÷ footprint. The footprint is the largest
+peak phys_footprint of the last 9 runs, including failed runs (`peaks.jsonl`, sampled each second), at least 9.5 GB.
 A waiter prints `blender: waiting for a slot (N running, room R)` once, raises the `blender` limiter hold and
 journals its wait (`docs/harness-doctor-design.md` §12). So queue renders freely: they run one after another.
 

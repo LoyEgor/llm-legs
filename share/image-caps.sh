@@ -85,6 +85,14 @@ image_caps_nearest_aspect() { # want list-csv -> the listed W:H closest to want 
   '
 }
 
+image_caps_edit_aspect() { # input list-csv
+  local ratio
+  [ -n "$2" ] || return 0
+  ratio=$(sips -g pixelWidth -g pixelHeight "$1" 2>/dev/null |
+    awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {if (w > 0 && h > 0) print w ":" h}')
+  [ -z "$ratio" ] || image_caps_nearest_aspect "$ratio" "$2"
+}
+
 worker_media_tag() { # vendor image|video|music|sfx|listen [launch line]
   local kind=$2 launch=${3:-} where
   case "$kind" in sfx | listen) printf '%s' "$kind"; return ;; esac

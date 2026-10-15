@@ -125,10 +125,10 @@ assert test -e "$WORK/media-starts/gemini/picked"
 assert grep -qx 'ARG=stream-json' "$FAKE_GEMINIB_CALLS"
 job=$(sed -n 's/^job=//p' "$WORK/out")
 assert grep -Eqx 'gemini-image-[0-9]{8}T[0-9]{6}Z-[0-9]+' <<<"$job"
-printf 'dest=%s\nsize=16x12\nformat=png\naccount=picked\nsession=fixture-session\njob=%s\nroute=cli\nmodel=gemini-3.1-flash-image model_caps=fresh\ncaps=fresh\ncomposite=skipped reason=several-inputs\nedit_depth=1 root=%s\n' "$WORK/output/result.png" "$job" "$ref" >"$WORK/expected"
+printf 'dest=%s\nsize=16x12\nformat=png\naccount=picked\nsession=fixture-session\njob=%s\nroute=cli\nmodel=gemini-3.1-flash-image model_caps=fresh\ncaps=fresh\ncomposite=skipped reason=new-generation\nedit_depth=0 root=%s\n' "$WORK/output/result.png" "$job" "$WORK/output/result.png" >"$WORK/expected"
 assert cmp "$WORK/expected" "$WORK/out"
 assert jq -se --arg job "$job" '.[-1] | .job == $job and .route == "cli" and .requested == 1 and .delivered == 1
-  and .composite == {kind: "skipped", changed: null, reason: "several-inputs"} and (has("fallback_from") | not)' "$IMAGE_LEG_LOG" >/dev/null
+  and .composite == {kind: "skipped", changed: null, reason: "new-generation"} and (has("fallback_from") | not)' "$IMAGE_LEG_LOG" >/dev/null
 
 : >"$PICK_CALLS"
 assert image_run "${args[@]}" --account explicit
@@ -174,7 +174,7 @@ assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=0 root=$result"
 assert test ! -e "$(sidecar "$WORK/output/result.png")"
 assert image_run --dest "$WORK/output/step1.png" --prompt 'red hair' --resume fixture-session --account explicit
 assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=1 root=$result"
-assert image_run --dest "$WORK/output/step2.png" --prompt 'moon pendant' --ref "$WORK/output/step1.png" --account explicit
+assert image_run --dest "$WORK/output/step2.png" --prompt 'moon pendant' --edit "$WORK/output/step1.png" --account explicit
 assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=2 root=$result"
 assert test "$(jq -c '[.edits[] | [.prompt, .region, .points, .route, .vendor, .account]]' "$(sidecar "$WORK/output/step2.png")")" = \
   '[["red hair",null,[],"cli","gemini","explicit"],["moon pendant",null,[],"cli","gemini","explicit"]]'
@@ -182,7 +182,7 @@ fi
 
 if suite_shard_owns 2 gemini-image-composite; then
 "$REAL_MAGICK" -size 256x192 xc:'#00FF00' "$WORK/green.png"
-assert image_run --dest "$WORK/output/composite.png" --prompt 'add a blue patch' --ref "$WORK/green.png" --composite --account explicit
+assert image_run --dest "$WORK/output/composite.png" --prompt 'add a blue patch' --edit "$WORK/green.png" --composite --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
 assert grep -qx 'size=256x192' "$WORK/out"
 assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[pixel:p{3,3}]' info:)" = 'srgb(0,255,0)'
@@ -191,16 +191,16 @@ assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=1 root=$WORK/green.png"
 assert test "$(jq -r '.edits[0].region' "$(sidecar "$WORK/output/composite.png")")" = null
 # The fixture paints blue over x 80..175 of 256: the 0..0.2 corner rectangle keeps the whole input green,
 # and the resumed edit's 0.25..0.5 band takes only the blue left of x 128 — the rest stays the input's.
-assert image_run --dest "$WORK/output/composite.png" --prompt 'corner' --ref "$WORK/green.png" --composite=0,0,0.2,0.2 --account explicit
+assert image_run --dest "$WORK/output/composite.png" --prompt 'corner' --edit "$WORK/green.png" --composite=0,0,0.2,0.2 --account explicit
 assert image_run --dest "$WORK/output/composite.png" --prompt 'again' --resume fixture-session --composite=0.25,0.25,0.25,0.5 --account explicit
 assert grep -Eq '^composite=region changed=' "$WORK/out"
 assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[fx:int(255*p{100,96}.b)]' info:)" -gt 200
 assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[pixel:p{150,96}]' info:)" = 'srgb(0,255,0)'
 assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=2 root=$WORK/green.png"
 assert test "$(jq -r '.edits[1].region' "$(sidecar "$WORK/output/composite.png")")" = 0.25,0.25,0.25,0.5
-# Composite is on by default for every edit: a single --ref or the resumed session's last image, the
+# Composite is on by default for every edit: --edit or the resumed session's last image, the
 # vendor's render kept beside the dest; a global change is refused and delivered as rendered.
-assert image_run --dest "$WORK/output/default.png" --prompt 'add a blue patch' --ref "$WORK/green.png" --account explicit
+assert image_run --dest "$WORK/output/default.png" --prompt 'add a blue patch' --edit "$WORK/green.png" --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
 assert grep -qx "rendered=$WORK/output/default.rendered.png" "$WORK/out"
 assert test "$("$REAL_MAGICK" "$WORK/output/default.png" -depth 8 -format '%[pixel:p{3,3}]' info:)" = 'srgb(0,255,0)'
@@ -211,25 +211,25 @@ assert image_run --dest "$WORK/output/default2.png" --prompt 'again' --resume fi
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
 assert grep -qx "rendered=$WORK/output/default2.rendered.png" "$WORK/out"
 assert test "$("$REAL_MAGICK" "$WORK/output/default2.png" -format '%wx%h' info:)" = 256x192
-assert image_run --dest "$WORK/output/optout.png" --prompt 'add a blue patch' --ref "$WORK/green.png" --no-composite --account explicit
+assert image_run --dest "$WORK/output/optout.png" --prompt 'add a blue patch' --edit "$WORK/green.png" --no-composite --account explicit
 assert test "$(grep -c '^composite=\|^rendered=' "$WORK/out")" -eq 0
 assert test ! -e "$WORK/output/optout.rendered.png"
 assert test "$(jq -c '.edits[0].composite' "$(sidecar "$WORK/output/optout.png")")" = '{"kind":"skipped","changed":null,"reason":"opted-out"}'
 assert image_run --dest "$WORK/output/keyed.png" --prompt 'a patch' --ref "$WORK/green.png" --transparent --account explicit
 assert test "$(grep -c '^composite=' "$WORK/out")" -eq 0
 "$REAL_MAGICK" -size 256x192 xc:red "$WORK/red.png"
-assert image_run --dest "$WORK/output/global.png" --prompt 'repaint' --ref "$WORK/red.png" --account explicit
+assert image_run --dest "$WORK/output/global.png" --prompt 'repaint' --edit "$WORK/red.png" --account explicit
 assert grep -Eqx 'composite=refused reason=global changed=[0-9.]+% kind=auto' "$WORK/out"
 assert test ! -e "$WORK/output/global.rendered.png"
 assert test "$("$REAL_MAGICK" "$WORK/output/global.png" -format '%wx%h' info:)" = 16x12
 assert test "$(jq -r '.edits[0].composite.kind' "$(sidecar "$WORK/output/global.png")")" = refused
 "$REAL_MAGICK" -size 256x256 xc:'#00FF00' "$WORK/square.png"
-assert image_run --dest "$WORK/output/outpaint.png" --prompt 'widen' --ref "$WORK/square.png" --account explicit
+assert image_run --dest "$WORK/output/outpaint.png" --prompt 'widen' --edit "$WORK/square.png" --account explicit
 assert grep -qx 'composite=skipped reason=aspect-changed from=256x256 to=16x12' "$WORK/out"
 assert test ! -e "$WORK/output/outpaint.rendered.png"
 assert image_run --dest "$WORK/output/both.png" --prompt 'merge' --ref "$WORK/green.png" --ref "$WORK/square.png" --account explicit
-assert grep -qx 'composite=skipped reason=several-inputs' "$WORK/out"
-expect_rc 2 "${args[@]}" --ref "$WORK/green.png" --composite --no-composite --account explicit
+assert grep -qx 'composite=skipped reason=new-generation' "$WORK/out"
+expect_rc 2 "${args[@]}" --edit "$WORK/green.png" --composite --no-composite --account explicit
 fi
 
 if suite_shard_owns 3 gemini-image-stream-quota-chroma; then

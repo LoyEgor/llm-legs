@@ -142,13 +142,8 @@ deliver_generated() {
 lineage() {
   local lineage_region=$region
   [ -n "$lineage_region" ] || [ "${IMAGE_LEG_COMPOSITE_ASK:-auto}" = auto ] || lineage_region=$IMAGE_LEG_COMPOSITE_ASK
-  if [ -n "$IMAGE_LEG_EDIT" ]; then
-    image_leg_lineage codex "$route" "$dest" "${session:-none}" "$prompt" "$lineage_region" \
-      "$(printf '%s\n' ${points[@]+"${points[@]}"})" "$edit_input"
-  else
-    image_leg_lineage codex "$route" "$dest" "${session:-none}" "$prompt" "$lineage_region" \
-      "$(printf '%s\n' ${points[@]+"${points[@]}"})" ${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"}
-  fi
+  image_leg_lineage codex "$route" "$dest" "${session:-none}" "$prompt" "$lineage_region" \
+    "$(printf '%s\n' ${points[@]+"${points[@]}"})" ${edit_input:+"$edit_input"}
 }
 
 # Delivered as generated: a ratio off by more than 2% is reported, never cropped or resized.
@@ -376,7 +371,7 @@ if [ -n "$region" ]; then
     exit 2
   }
   if ! { [ -n "$resume_id" ] && [ "${#refs[@]}" -eq 0 ]; } && [ "${#refs[@]}" -ne 1 ]; then
-    printf 'codex-image: --region edits one image: the chat'"'"'s last one (--resume <chat id>) or a single --ref\n' >&2
+    printf 'codex-image: --region edits one image: the chat'"'"'s last one (--resume <chat id>) or a single --edit/--ref; for an extra reference use a plain composited edit: --edit <img> --ref <vector> --prompt "replace the logo at <spot>" (omit --region)\n' >&2
     exit 2
   fi
 fi
@@ -476,8 +471,10 @@ repaint=false
 [ "$remove_bg" = false ] || repaint=matte
 if [ -n "$IMAGE_LEG_EDIT" ]; then
   image_leg_composite_plan codex '' "$repaint" "$IMAGE_LEG_EDIT"
+elif { [ -n "$region" ] || [ "${#points[@]}" -gt 0 ] || [ "$remove_bg" = true ]; } && [ "${#refs[@]}" -eq 1 ]; then
+  image_leg_composite_plan codex "" "$repaint" "${refs[0]}"
 else
-  image_leg_composite_plan codex "$resume_id" "$repaint" ${refs[@]+"${refs[@]}"}
+  image_leg_composite_plan codex "$resume_id" "$repaint"
 fi
 edit_input=$IMAGE_LEG_COMPOSITE_INPUT
 cli_ref_ok=false

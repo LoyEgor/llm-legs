@@ -1,6 +1,6 @@
 {
   "vendor": "gemini",
-  "verified": "2026-10-13",
+  "verified": "2026-10-15",
   "routes": ["flow", "cli"],
   "scripts": {"image": "gemini-image", "video": "gemini-video", "music": "gemini-music", "sfx": "gemini-sfx", "listen": "gemini-listen", "speech": "gemini-speech"},
   "default_for": ["music", "sfx", "speech"],
@@ -125,7 +125,8 @@
           }
         },
         "wire": [
-          "^veo_3_1_[a-z0-9_]*fast$"
+          "^veo_3_1_[a-z0-9_]*fast$",
+          "^veo_3_1_i2v_s_fast_fl$"
         ]
       },
       "lite": {
@@ -264,7 +265,7 @@
     },
     "flow": {
       "location": "https://flow.google.com (bin/gemini-web, hidden Chrome clone, geminib account profiles)",
-      "observed": "2026-09-30 build boq_labs-ai-sandbox-frontend_20260929.10_p0, PRO tier: agent settings model list, agent capability answer, ask_for_permission/generate_video_from_text tool calls, jwpduf/as29s media records; 2026-09-30 manual composer (Agent off) settings popover: model family menu, 360p/720p and 4-10s on Omni only, Frames Start/End slots, Ingredients picker (Veo 3 images no video, Omni 4 images + 1 video), live 'Generating will use N credits' quote, generation rpc YhhmEf with wire key abra_t2v_4s_360p; 2026-10-01 real manual runs: generation rpcs YhhmEf (text), nprQif (frames), MZZa6b (ingredients), jIps6 (edit) with one reply shape; wire keys abra_t2v_4s_360p, omni_flash_i2v_4s_first_last_360p, abra_r2v_4s_360p, abra_edit; quotes matched the charge (Omni 360p 4s = 4, edit of an uploaded 8s clip at 720p = 20); the editor's '1080p Upscaled' download is 1920x1080 and charged nothing; Extend (fZytfe, veo_3_1_extension_lite) charged 10 for a 7s 720p continuation of a Veo clip, disabled on Omni clips, and an extension's editor is empty (no Add clip, Download disabled); x2 returned two clips in one reply (Omni 360p 4s x2 = 8); an --edit with an image ingredient inserted the object at the plain edit price"
+      "observed": "2026-09-30 build boq_labs-ai-sandbox-frontend_20260929.10_p0, PRO tier: agent settings model list, agent capability answer, ask_for_permission/generate_video_from_text tool calls, jwpduf/as29s media records; 2026-09-30 manual composer (Agent off) settings popover: model family menu, 360p/720p and 4-10s on Omni only, Frames Start/End slots, Ingredients picker (Veo 3 images no video, Omni 4 images + 1 video), live 'Generating will use N credits' quote, generation rpc YhhmEf with wire key abra_t2v_4s_360p; 2026-10-01 real manual runs: generation rpcs YhhmEf (text), nprQif (frames), MZZa6b (ingredients), jIps6 (edit) with one reply shape; wire keys abra_t2v_4s_360p, omni_flash_i2v_4s_first_last_360p, abra_r2v_4s_360p, abra_edit; quotes matched the charge (Omni 360p 4s = 4, edit of an uploaded 8s clip at 720p = 20); the editor's '1080p Upscaled' download is 1920x1080 and charged nothing; Extend (fZytfe, veo_3_1_extension_lite) charged 10 for a 7s 720p continuation of a Veo clip, disabled on Omni clips, and an extension's editor is empty (no Add clip, Download disabled); x2 returned two clips in one reply (Omni 360p 4s x2 = 8); an --edit with an image ingredient inserted the object at the plain edit price; re-verified 2026-10-15 against the completed 2026-10-14T23:10:16Z gemini-video take on tronjhon: Flow fast frame-edit wire model veo_3_1_i2v_s_fast_fl (legs.jsonl served field, matching queued/saved job 20261014T230808Z-31570 in gemini-web/jobs.jsonl); only this observed key added"
     },
     "listen": {
       "location": "/Users/egorloy/.local/bin/agy",

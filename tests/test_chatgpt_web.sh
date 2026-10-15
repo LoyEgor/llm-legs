@@ -1043,6 +1043,36 @@ cw.generate_on("alpha", argparse.Namespace(resume="c-a"))
 assert "generation_started_at" not in gw.read_meta("alpha"), "a resume stamped a new generation"
 cw.generate_on("alpha", argparse.Namespace(resume=None))
 assert gw.read_meta("alpha")["generation_started_at"] >= time.time() - 60, gw.read_meta("alpha")
+class TargetClosedError(Exception):
+    pass
+for wrapped in (False, True):
+    attempts = []
+    def crash_once(account, args, meta):
+        attempts.append(1)
+        if len(attempts) == 1:
+            if wrapped:
+                try:
+                    raise TargetClosedError('closed')
+                except TargetClosedError as error:
+                    raise cw.gw.Failure(1, 'viewer closed') from error
+            raise TargetClosedError('closed')
+        return {'ok': True}
+    cw.render_on = crash_once
+    assert cw.generate_on('alpha', argparse.Namespace(resume=None, count=1))['ok']
+    assert len(attempts) == 2
+for failure in (TargetClosedError('closed'), cw.gw.Failure(4, 'login needed')):
+    attempts = []
+    def fail_always(account, args, meta):
+        attempts.append(1)
+        raise failure
+    cw.render_on = fail_always
+    try:
+        cw.generate_on('alpha', argparse.Namespace(resume=None, count=1))
+        raise AssertionError('failure swallowed')
+    except (TargetClosedError, cw.gw.Failure):
+        pass
+    assert len(attempts) == (2 if isinstance(failure, TargetClosedError) else 1)
+
 cw.render_on = real_render_on
 assert cw.rotation() == ["beta", "alpha"], "ordered by the jobs ledger, not the least recent start"
 gw.set_wall("beta", time.time() + 3600)
@@ -1508,11 +1538,11 @@ assert_fails grep -q '^composite=' "$IMAGE_OUT"
 assert test "$(pixel_at "$OUT/c4.png" 32,24)" = 'srgb(0,0,255)'
 assert test "$(image_rc --route web --dest "$OUT/c5.png" --prompt 'blue corner' --ref "$WORK/green.png" --region 0,0,0.2,0.2 --transparent)" = 0
 assert_fails grep -q '^composite=' "$IMAGE_OUT"
-assert test "$(image_rc --route web --dest "$OUT/c6.png" --prompt 'blue dot' --ref "$WORK/green.png" --composite=0.5,0,0.5,1)" = 0
+assert test "$(image_rc --route web --dest "$OUT/c6.png" --prompt 'blue dot' --edit "$WORK/green.png" --composite=0.5,0,0.5,1)" = 0
 assert grep -Eq '^composite=region changed=' "$IMAGE_OUT"
 assert test "$(pixel_at "$OUT/c6.png" 24,24)" = 'srgb(0,255,0)'
 assert test "$(jq -r '.edits[0].region' "$(sidecar "$OUT/c6.png")")" = 0.5,0,0.5,1
-assert test "$(image_rc --route web --dest "$OUT/c7.png" --prompt 'blue dot' --ref "$WORK/green.png" --composite)" = 0
+assert test "$(image_rc --route web --dest "$OUT/c7.png" --prompt 'blue dot' --edit "$WORK/green.png" --composite)" = 0
 assert grep -Eq '^composite=auto changed=' "$IMAGE_OUT"
 for refused in "--ref $WORK/green.png --composite --no-composite" "--ref $WORK/green.png --composite=0.5,0.5,0.6,0.1" \
   "--ref $WORK/green.png --composite --transparent" "--resume $CHAT --composite"; do
@@ -1525,7 +1555,7 @@ assert test ! -e "$WEB_CALLS"
 assert test "$(WEB_MODE=alpha image_rc --route web --dest "$OUT/c9.png" --ref "$WORK/green.png" --remove-bg --composite)" = 0
 assert grep -qx 'composite=skipped reason=unregistered' "$IMAGE_OUT"
 assert test ! -e "$OUT/c9.rendered.png"
-assert test "$(image_rc --route cli --dest "$OUT/c8.png" --prompt x --ref "$WORK/green.png" --composite --account acct)" = 1
+assert test "$(image_rc --route cli --dest "$OUT/c8.png" --prompt x --edit "$WORK/green.png" --composite --account acct)" = 1
 assert test -s "$CLI_CALLS"
 
 # Every web-only tool in the manifest is one this suite drives and the CLI refuses.

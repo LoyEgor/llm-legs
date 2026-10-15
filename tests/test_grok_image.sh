@@ -264,7 +264,7 @@ assert grep -qx 'account=explicit' "$IMAGE_OUT"
 assert grep -q 'image you produced most recently in this session' "$FAKE_GROKB_PROMPT"
 
 # Composite is on by default for every edit, as on every vendor: the session's last delivered image
-# (this machine's lineage record) or a single --ref is the input, the render kept beside the dest.
+# (this machine's lineage record) or --edit is the input, the render kept beside the dest.
 "$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/green.png"
 "$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill blue -draw 'circle 32,32 32,14' "PNG24:$WORK/circle.png"
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/green.png" \
@@ -279,14 +279,14 @@ assert cmp "$WORK/circle.png" "$OUTPUT_DIR/g1.rendered.png"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=1 root=$OUTPUT_DIR/g0.png"
 assert test "$(jq -r '.edits[0] | "\(.vendor) \(.composite.kind)"' "$(sidecar "$OUTPUT_DIR/g1.png")")" = 'grok auto'
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
-  assert image_run --dest "$OUTPUT_DIR/g2.png" --prompt 'add a blue circle' --ref "$WORK/green.png" --account explicit
+  assert image_run --dest "$OUTPUT_DIR/g2.png" --prompt 'add a blue circle' --edit "$WORK/green.png" --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
-  assert image_run --dest "$OUTPUT_DIR/g3.png" --prompt 'add a blue circle' --ref "$WORK/green.png" --account explicit --no-composite
+  assert image_run --dest "$OUTPUT_DIR/g3.png" --prompt 'add a blue circle' --edit "$WORK/green.png" --account explicit --no-composite
 assert_fails grep -q '^composite=\|^rendered=' "$IMAGE_OUT"
 assert cmp "$WORK/circle.png" "$OUTPUT_DIR/g3.png"
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
-  assert image_run --dest "$OUTPUT_DIR/g4.png" --prompt 'a circle' --ref "$WORK/green.png" --account explicit --transparent
+  assert image_run --dest "$OUTPUT_DIR/g4.png" --prompt 'a circle' --edit "$WORK/green.png" --account explicit --transparent
 assert_fails grep -q '^composite=' "$IMAGE_OUT"
 image_rc=0
 image_run --dest "$OUTPUT_DIR/g5.png" --prompt x --account explicit --composite || image_rc=$?

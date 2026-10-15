@@ -71,7 +71,7 @@ slot_take() { # dir count ceiling-seconds -> the slot taken; fails while all are
       continue
     fi
     LLM_STORE_LOCK_RETRIES=1 LLM_STORE_LOCK_CEILING_SECONDS=$ceiling store_lock_acquire "$1/$i" || continue
-    if [ "$i" -gt "$floor" ] && ! SLOT_WHY=$(slot_room); then
+    if { [ "$i" -gt "$floor" ] || [ "${SLOTS_CHECK_FLOOR:-0}" = 1 ]; } && ! SLOT_WHY=$(slot_room); then
       store_lock_release "$1/$i"
       return 1
     fi
