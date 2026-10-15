@@ -271,14 +271,14 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
 - **Local — vectorize: `bin/logo-vectorize`** (free, no network): a logo or icon bitmap (PNG, JPEG, WebP;
   flat colours and gradients, not photos) to SVG with the stable champion of the logo bench
   (`/Volumes/Work/Projects/logo-vectorizer-bench/tracers/stable`, moved on each adopted champion; `LOGO_BENCH`
-  overrides the bench path). `--size 512` (default) fits the long side into 512 px, where every champion step
-  is tuned and judged; `--size native` traces up to 1024 px as given (keeps sub-pixel detail, only the older
-  core steps apply above 512). The SVG keeps the source's pixel size as width/height. ~1.5–3 min an image,
+  overrides the bench path). `--size native` (default) traces up to 1024 px as given: finer edges, better than
+  512 on 11 of 16 clean 1024 logos, but above 512 only the core steps apply; `--size 512` fits the long side
+  into 512 px, where every champion step is tuned and judged (JPEG, soft-edged or gradient-heavy art). The SVG keeps the source's pixel size as width/height. ~1.5–3 min an image,
   independent images run in parallel. Prints `svg= champion= source= traced= seconds=`.
 
   ```bash
   logo-vectorize --in /abs/logo.png --dest /abs/logo.svg
-  logo-vectorize --in /abs/logo.png --dest /abs/logo.svg --size native --dry-run   # champion and sizes only
+  logo-vectorize --in /abs/logo.jpg --dest /abs/logo.svg --size 512 --dry-run   # champion and sizes only
   ```
 
 - **Flow's Cutout** (`gemini-image --remove-bg`, MODNet on-device in Flow's Image Editor; the input's

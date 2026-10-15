@@ -47,19 +47,23 @@ chmod +x "$WORK/bench/.venv/bin/python" "$WORK/bench/tracers/champ99/run.sh"
 ln -s champ99 "$WORK/bench/tracers/stable"
 
 assert vectorize --in "$in" --dest "$dest" --dry-run
-assert grep -qx 'champion=champ99 source=1024x768 traced=512x384 size=512' "$WORK/out"
+assert grep -qx 'champion=champ99 source=1024x768 traced=1024x768 size=native' "$WORK/out"
 assert test ! -e "$dest"
 assert test ! -e "$WORK/seen.png"
-assert vectorize --in "$in" --dest "$dest" --dry-run --size native
-assert grep -qx 'champion=champ99 source=1024x768 traced=1024x768 size=native' "$WORK/out"
+assert vectorize --in "$in" --dest "$dest" --dry-run --size 512
+assert grep -qx 'champion=champ99 source=1024x768 traced=512x384 size=512' "$WORK/out"
 assert exits 2 --in "$WORK/text.png" --dest "$dest"
 
 assert vectorize --in "$in" --dest "$dest"
-assert grep -Eq "^svg=$dest champion=champ99 source=1024x768 traced=512x384 seconds=[0-9]+$" "$WORK/out"
-assert test "$(magick identify -format %wx%h "$WORK/seen.png")" = 512x384
+assert grep -Eq "^svg=$dest champion=champ99 source=1024x768 traced=1024x768 seconds=[0-9]+$" "$WORK/out"
+assert cmp -s "$in" "$WORK/seen.png"
 assert grep -q '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 384" width="1024" height="768">' "$dest"
 assert test "$(grep -o 'width="[0-9]*"' "$dest" | head -1)" = 'width="1024"'
 assert test "$(cat "$WORK/slot")" = 1
+assert vectorize --in "$in" --dest "$WORK/half.svg" --size 512
+assert grep -Eq " traced=512x384 " "$WORK/out"
+assert test "$(magick identify -format %wx%h "$WORK/seen.png")" = 512x384
+assert grep -q 'width="1024" height="768"' "$WORK/half.svg"
 
 assert vectorize --in "$WORK/small.png" --dest "$WORK/small.svg"
 assert cmp -s "$WORK/small.png" "$WORK/seen.png"

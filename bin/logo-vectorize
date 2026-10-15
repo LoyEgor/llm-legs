@@ -8,13 +8,13 @@ usage() {
   printf 'usage: logo-vectorize --in <absolute image> --dest <absolute .svg> [--size 512|native] [--dry-run]\n' >&2
   printf '  traces a logo or icon bitmap (PNG, JPEG, WebP; flat colours and gradients) into an SVG with the\n' >&2
   printf '  logo bench'\''s stable champion (%s/tracers/stable); local, free, ~1.5-3 min per image\n' "$BENCH" >&2
-  printf '  --size 512 (default) fits the long side into 512 px, where every champion step is tuned;\n' >&2
-  printf '  --size native traces up to 1024 px as given (more pixels, only the older core steps apply)\n' >&2
+  printf '  --size native (default) traces up to 1024 px as given (finer edges; above 512 only the core steps apply)\n' >&2
+  printf '  --size 512 fits the long side into 512 px, where every champion step is tuned (JPEG, soft or gradient art)\n' >&2
   printf '  --dry-run prints the champion, the source size and the traced size, and writes nothing\n' >&2
   exit 2
 }
 
-input='' dest='' size=512 dry=0
+input='' dest='' size=native dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --in) [ $# -ge 2 ] || usage; input=$2; shift 2 ;;
