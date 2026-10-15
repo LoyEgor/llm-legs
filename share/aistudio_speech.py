@@ -652,7 +652,8 @@ def cmd_generate(args) -> None:
     plan = make_plan(args)
     gw.TIMED = True
     accounts = take_accounts(args.account)
-    gw.take_failover(accounts, plan, generate_on, set_wall, bool(args.account), lock_wait=args.lock_wait)
+    gw.take_failover(accounts, plan, generate_on, set_wall, bool(args.account), lock_wait=args.lock_wait,
+                     walls_name=WALLS)
 
 
 def main() -> None:

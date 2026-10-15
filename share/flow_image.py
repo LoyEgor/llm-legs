@@ -335,6 +335,8 @@ def generate_on(account: str, plan: dict) -> dict:
     meta = gw.read_meta(account)
     if not meta.get("email"):
         raise gw.Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
+    if not plan["dry_run"]:
+        gw.note_flow_send(account)
     if not (plan["resume"] or plan["dry_run"]):
         gw.note_started(account)
     return render_on(account, plan, meta, started)
@@ -729,6 +731,7 @@ def cmd_tool(args) -> None:
         if not meta.get("email"):
             raise gw.Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
         if plan["op"] != "cutout" and not plan["dry_run"]:
+            gw.note_flow_send(account)
             gw.note_started(account)
         return tool_on(account, plan, meta, started)
 

@@ -706,11 +706,29 @@ fi.generate_on = flagged
 ran.clear()
 gw.write_meta("old", flagged_at=0)
 assert gw.BLOCK_WALL_SECONDS - 60 < flag_once() <= gw.BLOCK_WALL_SECONDS and ran == ["old"], (ran, gw.walls())
+# A job queued behind the lock while the flag landed is refused unsent and keeps the wall it found.
+until = gw.walls()["old"]
+flag_once()
+assert ran == ["old"] and gw.walls()["old"] == until, (ran, gw.walls())
 # A repeat flag inside the window walls for the whole window instead of another daily strike.
+gw.set_wall("old", None)
 assert gw.REFLAG_WALL_SECONDS - 60 < flag_once() <= gw.REFLAG_WALL_SECONDS, gw.walls()
+gw.set_wall("old", None)
 gw.write_meta("old", flagged_at=int(time.time()) - gw.REFLAG_WALL_SECONDS - 1)
 assert flag_once() <= gw.BLOCK_WALL_SECONDS, gw.walls()
 gw.set_wall("old", None)
+# The send that spends the 24 h Flow budget walls the account until the oldest counted send ages out.
+now = int(time.time())
+gw.write_meta("old", flow_sends=[now - gw.FLOW_DAY_S - 5] + [now - 100] * (gw.FLOW_DAY_SENDS - 2))
+gw.note_flow_send("old")
+assert "old" not in gw.walls(), gw.walls()
+gw.note_flow_send("old")
+assert gw.walls()["old"] == now - 100 + gw.FLOW_DAY_S, gw.walls()
+gw.set_wall("old", None)
+gw.write_meta("old", flow_sends=[now - 100] * 30, flow_day_sends=40)
+gw.note_flow_send("old")
+assert "old" not in gw.walls(), gw.walls()
+gw.write_meta("old", flow_sends=[], flow_day_sends=gw.FLOW_DAY_SENDS)
 watcher = gw.Watcher.__new__(gw.Watcher)
 watcher.errors = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 assert watcher.blocked().extra.get("flagged") is True, watcher.blocked().extra

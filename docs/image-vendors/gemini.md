@@ -392,10 +392,13 @@ first, never used first (the owner's rule, 2026-10-01): `generation_started_at` 
 stamped when a new generation starts on Flow video, Flow Music or Gemini app music, never by an `--extend`, a
 fetch or a `--dry-run`; an idle account still goes before one another run holds. A balance short
 of one job's price is never walled, so a cheaper job still runs there. Exit 3 otherwise walls an account in
-`~/.gemini-web/walls.json` (writes serialised by a lock file): 6 h when it is out of credits, 24 h when Flow flags it
+`~/.gemini-web/walls.json` (writes serialised by a lock file): 6 h when it is out of credits, 14 days when Flow flags it (after a 24 h wall the first send re-flagged)
 (`PUBLIC_ERROR_UNUSUAL_ACTIVITY` on a whole failed envelope or on the new clip — "We noticed some unusual
 activity", nothing charged), 30 days when the account was already flagged within the last 30 days (`flagged_at` in
-its `accounts/<name>.json`: a daily re-probe added a strike a day). On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
+its `accounts/<name>.json`: a daily re-probe added a strike a day), and until the oldest of its last
+`FLOW_DAY_SENDS` (20) Flow image and video sends is 24 h old once it makes that many (`flow_sends`; a higher
+`flow_day_sends` in the meta for an account proven above it, com). A run that waited on the account lock re-reads the
+walls before it sends. On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
 mode alike, including under raw CDP input with no Runtime domain, while egbogd, com, jihangarangan and
 locomthebest ran; exit 4 is a profile never signed in. A quote that differs from the manifest fails with
 both numbers and spends nothing. Re-verify after a `model_caps=stale` line, a quote mismatch or a

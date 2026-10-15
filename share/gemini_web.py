@@ -60,8 +60,13 @@ LOGIN_URL = "https://accounts.google.com/ServiceLogin?continue=" + FLOW + "/"
 LOGIN_TABS = (FLOW_MUSIC + "/",)
 LOGIN_STEPS = " (Google in the first tab, then in the Flow Music tab Log in → Continue with Google → Agree → Grant access)"
 WALL_SECONDS = 6 * 3600
-BLOCK_WALL_SECONDS = 24 * 3600
+# A flagged account re-flagged at its first send 2 and 5 days after a 24 h wall (abel, rawilimo, 2026-10).
+BLOCK_WALL_SECONDS = 14 * 24 * 3600
 REFLAG_WALL_SECONDS = 30 * 24 * 3600
+# Flow sends one account may make in 24 h. On 2026-10-15 five accounts that never sent over 9 a day were
+# flagged at their 26th-30th; com sent 69 unflagged, so its meta carries a higher flow_day_sends.
+FLOW_DAY_SENDS = 20
+FLOW_DAY_S = 24 * 3600
 BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 # One generation rpc per composer mode: text, frames, ingredients, video edit, extend.
 GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
@@ -438,6 +443,17 @@ def free_first(accounts: list[str]) -> list[str]:
 
 def note_started(account: str) -> None:
     write_meta(account, generation_started_at=int(time.time()))
+
+
+def note_flow_send(account: str) -> None:
+    """The send that spends the account's 24 h Flow budget walls it until the oldest send counted ages out."""
+    now = time.time()
+    meta = read_meta(account)
+    sends = [t for t in meta.get("flow_sends", []) if now - t < FLOW_DAY_S] + [int(now)]
+    write_meta(account, flow_sends=sends)
+    budget = meta.get("flow_day_sends", FLOW_DAY_SENDS)
+    if len(sends) >= budget:
+        set_wall(account, sends[-budget] + FLOW_DAY_S)
 
 
 def least_recent(accounts: list[str]) -> list[str]:
@@ -1282,7 +1298,7 @@ def wall_until(account: str, failure: Failure) -> float:
     strike every day, the pattern that ended with Google disabling mish."""
     now = time.time()
     if not failure.extra.get("flagged"):
-        return now + failure.extra.get("wall_s", WALL_SECONDS)
+        return failure.extra.get("until") or now + failure.extra.get("wall_s", WALL_SECONDS)
     last = read_meta(account).get("flagged_at", 0)
     write_meta(account, flagged_at=int(now))
     return now + (REFLAG_WALL_SECONDS if now - last < REFLAG_WALL_SECONDS else BLOCK_WALL_SECONDS)
@@ -1392,9 +1408,10 @@ def take_accounts(pinned: str | None, rotated, walled: str) -> list[str]:
 
 
 def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned: bool,
-                  wall_pinned: bool = True, lock_wait: float = LOCK_WAIT_S) -> None:
+                  wall_pinned: bool = True, lock_wait: float = LOCK_WAIT_S, walls_name: str = "walls.json") -> None:
     """Takes left over by a failed account move on to the next one; a credit wall (3), a dead login (4) or an
-    account still busy after the lock wait (5) skips to the next account unless one was pinned."""
+    account still busy after the lock wait (5) skips to the next account unless one was pinned. A wall set while
+    this run waited on the lock refuses it unsent: tronjhon's second flag of 2026-10-15 was a send queued so."""
     done: list[dict] = []
     last: Failure | None = None
     with contextlib.closing(claimed(accounts, lock_wait)) as picks:
@@ -1402,6 +1419,7 @@ def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned
             try:
                 if refusal:
                     raise refusal
+                refuse_walled(account, walls_name)
                 result = generate_on(account, {**plan, "first_take": len(done) + 1,
                                                "count": plan.get("count", 1) - len(done)})
             except Exception as error:
@@ -1775,6 +1793,8 @@ def generate_on(account: str, plan: dict, args) -> dict:
     meta = read_meta(account)
     if not meta.get("email"):
         raise Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
+    if not args.dry_run:
+        note_flow_send(account)
     if not (plan["extend"] or args.dry_run):
         note_started(account)
     return render_on(account, plan, args, meta, Path(args.dest), started)
@@ -2003,6 +2023,7 @@ def cmd_generate(args) -> None:
             try:
                 if refusal:
                     raise refusal
+                refuse_walled(account)
                 result = generate_on(account, plan, args)
             except Failure as failure:
                 report(account, failure)
@@ -2013,7 +2034,6 @@ def cmd_generate(args) -> None:
                     raise Failure(failure.code, failure.reason, account=account, **failure.extra)
                 skipped.append((account, failure))
                 continue
-            set_wall(account, None)
             emit(result)
             return
     raise Failure(min(failure.code for _, failure in skipped),
