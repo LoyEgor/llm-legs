@@ -307,7 +307,7 @@ assert w.blocked() is None
 flagged = g.Watcher()
 flagged.feed(""")]}'\n\n192\n[["wrb.fr","YhhmEf",null,null,null,[7,null,[["type.googleapis.com/google.rpc.ErrorInfo",["PUBLIC_ERROR_UNUSUAL_ACTIVITY"]]]],"generic"]]\n""")
 failure = flagged.blocked()
-assert failure and failure.code == 3 and failure.extra["wall_s"] == g.FLAG_WALLS[0], failure
+assert failure and failure.code == 3 and failure.extra["wall_s"] == g.FLAG_WALL_S, failure
 old_tile = g.Watcher()
 old_tile.feed(""")]}'\n[["wrb.fr","jwpduf","[null,1050,[[\\"m-old\\",null,\\"PUBLIC_ERROR_UNUSUAL_ACTIVITY\\"]]]",null,null,null,"generic"]]\n""")
 assert old_tile.blocked() is None and old_tile.media["m-old"]["error"] == "PUBLIC_ERROR_UNUSUAL_ACTIVITY", old_tile.media
@@ -403,7 +403,7 @@ tried = []
 def fake_generate_on(account, plan, args):
     tried.append(account)
     if account == "walled":
-        raise g.Failure(3, "flagged", wall_s=g.FLAG_WALLS[0])
+        raise g.Failure(3, "flagged", wall_s=g.FLAG_WALL_S)
     return {"ok": True, "account": account}
 g.generate_on = fake_generate_on
 args = argparse.Namespace(model="fast", duration=8, aspect="16:9", resolution="720p", first_frame=None,
@@ -565,7 +565,7 @@ assert code == 3 and "rich is walled until" in reason and tried == [], (code, re
 g.set_wall("rich", None)
 def flagged(account, plan, args):
     tried.append(account)
-    raise g.Failure(3, "Flow flagged this account", wall_s=g.FLAG_WALLS[0])
+    raise g.Failure(3, "Flow flagged this account", wall_s=g.FLAG_WALL_S)
 g.generate_on = flagged
 code, reason = run(account="rich")
 assert code == 3 and tried == ["rich"] and g.walls()["rich"] > time.time() + g.WALL_SECONDS, (code, tried, g.walls())

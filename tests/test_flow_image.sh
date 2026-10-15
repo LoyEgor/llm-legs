@@ -690,7 +690,7 @@ gw.set_wall("old", None)
 # Google's flag walls the account even on a pinned run that records no other wall.
 def flagged(account, plan):
     ran.append(account)
-    raise gw.Failure(3, "Flow flagged this account (PUBLIC_ERROR_UNUSUAL_ACTIVITY)", wall_s=gw.FLAG_WALLS[0],
+    raise gw.Failure(3, "Flow flagged this account (PUBLIC_ERROR_UNUSUAL_ACTIVITY)", wall_s=gw.FLAG_WALL_S,
                      flagged=True)
 
 
@@ -707,15 +707,16 @@ def flag_once():
 fi.generate_on = flagged
 ran.clear()
 gw.write_meta("old", flagged_at=0)
-assert gw.FLAG_WALLS[0] - 60 < flag_once() <= gw.FLAG_WALLS[0] and ran == ["old"], (ran, gw.walls())
+assert gw.FLAG_WALL_S - 60 < flag_once() <= gw.FLAG_WALL_S and ran == ["old"], (ran, gw.walls())
 # A job queued behind the lock while the flag landed is refused unsent and keeps the wall it found.
 until = gw.walls()["old"]
 flag_once()
 assert ran == ["old"] and gw.walls()["old"] == until, (ran, gw.walls())
-# Flags within FLAG_BURST_S are one strike; one later with no saved take since is the next, up to the last.
+# Flags within FLAG_BURST_S are one strike; one later with no saved take since doubles the wall, uncapped.
 gw.set_wall("old", None)
-assert gw.FLAG_WALLS[0] - 60 < flag_once() <= gw.FLAG_WALLS[0], gw.walls()
-for wall in gw.FLAG_WALLS[1:] + gw.FLAG_WALLS[-1:]:
+assert gw.FLAG_WALL_S - 60 < flag_once() <= gw.FLAG_WALL_S, gw.walls()
+for wall in (2, 4, 8, 16):
+    wall *= gw.FLAG_WALL_S
     gw.set_wall("old", None)
     gw.write_meta("old", flagged_at=int(time.time()) - gw.FLAG_BURST_S - 1)
     assert wall - 60 < flag_once() <= wall, (wall, gw.walls())
@@ -723,7 +724,7 @@ for wall in gw.FLAG_WALLS[1:] + gw.FLAG_WALLS[-1:]:
 gw.set_wall("old", None)
 gw.write_meta("old", flagged_at=int(time.time()) - gw.FLAG_BURST_S - 1)
 gw.note_saved("old")
-assert flag_once() <= gw.FLAG_WALLS[0], gw.walls()
+assert flag_once() <= gw.FLAG_WALL_S, gw.walls()
 gw.set_wall("old", None)
 gw.write_meta("old", flagged_at=0, flag_strikes=0)
 # The take that spends the 24 h Flow budget walls the account until the oldest counted take ages out.

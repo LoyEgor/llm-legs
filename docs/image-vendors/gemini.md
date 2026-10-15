@@ -394,7 +394,7 @@ fetch or a `--dry-run`; an idle account still goes before one another run holds.
 of one job's price is never walled, so a cheaper job still runs there. Exit 3 otherwise walls an account in
 `~/.gemini-web/walls.json` (writes serialised by a lock file): 6 h when it is out of credits; when Flow flags it
 (`PUBLIC_ERROR_UNUSUAL_ACTIVITY` on a whole failed envelope or on the new clip — "We noticed some unusual
-activity", nothing charged) by strike, `FLAG_WALLS` 48 h, 14 days, 30 days: a flag with no take saved since
+activity", nothing charged) 48 h doubled per strike (`FLAG_WALL_S`: 2, 4, 8, 16 days … uncapped): a flag with no take saved since
 the account's last flag is the next strike, a saved take puts it back on the first, and flags within an hour
 count once (`flagged_at`, `flag_strikes`, `saved_at` in its `accounts/<name>.json`; jihangarangan's first flag
 cleared within 33 h, while a re-probed hot account re-flagged at its first send and gained a strike a day);

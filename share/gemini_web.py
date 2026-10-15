@@ -62,7 +62,7 @@ LOGIN_STEPS = " (Google in the first tab, then in the Flow Music tab Log in → 
 WALL_SECONDS = 6 * 3600
 # Flag walls by strike: jihangarangan's first flag (2026-10-01) cleared within 33 h, while abel and rawilimo,
 # flagged again before any saved take, re-flagged at their first send 2 and 5 days on.
-FLAG_WALLS = (48 * 3600, 14 * 24 * 3600, 30 * 24 * 3600)
+FLAG_WALL_S = 48 * 3600
 FLAG_BURST_S = 3600
 # Flow takes (images, clips) one account may start in 24 h. On 2026-10-15 five accounts were flagged at their
 # 30th-36th image; com made 97 unflagged, so its meta carries a higher flow_day_takes.
@@ -971,7 +971,7 @@ class Watcher:
         if not codes:
             return None
         return Failure(3, f"Flow flagged this account ({', '.join(sorted(codes))}); nothing was charged",
-                       wall_s=FLAG_WALLS[0], flagged=True)
+                       wall_s=FLAG_WALL_S, flagged=True)
 
     def new_clips(self, known: set[str]) -> list[str]:
         return [k for k, r in self.media.items() if k not in known and r.get("created")]
@@ -1344,8 +1344,8 @@ def update_json(name: str, change) -> None:
 
 
 def wall_until(account: str, failure: Failure) -> float:
-    """A flag walls by the account's strikes (FLAG_WALLS): one more when no take was saved since its last flag,
-    back to the first after a saved one; flags within FLAG_BURST_S count once. Re-probing a hot account daily
+    """A flag walls FLAG_WALL_S doubled per strike: one more when no take was saved since its last flag, back
+    to the first after a saved one; flags within FLAG_BURST_S count once. Re-probing a hot account daily
     added a strike every day, the pattern that ended with Google disabling mish."""
     now = time.time()
     if not failure.extra.get("flagged"):
@@ -1354,9 +1354,9 @@ def wall_until(account: str, failure: Failure) -> float:
     last, strikes = meta.get("flagged_at", 0), meta.get("flag_strikes", 0)
     if now - last >= FLAG_BURST_S:
         strikes = strikes + 1 if meta.get("saved_at", 0) < last else 1
-    strikes = min(max(strikes, 1), len(FLAG_WALLS))
+    strikes = max(strikes, 1)
     write_meta(account, flagged_at=int(now), flag_strikes=strikes)
-    return max(now + FLAG_WALLS[strikes - 1], trust_halt())  # TEMP-FLOW-TRUST(gemini-web): trust_halt
+    return max(now + FLAG_WALL_S * 2 ** (strikes - 1), trust_halt())  # TEMP-FLOW-TRUST(gemini-web): trust_halt
 
 
 def set_wall(account: str, until: float | None) -> None:
