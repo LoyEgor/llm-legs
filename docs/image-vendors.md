@@ -268,6 +268,19 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   decal it cleared the window showing through (40 % of the kept area) with no pink pixel lost;
   on photos it eats the subject (64–84 % of the kept area), so logos/decals/flat graphics only, and
   check the `holes=` share it prints. Exit 1: no subject, or the points leave nothing.
+- **Local — vectorize: `bin/logo-vectorize`** (free, no network): a logo or icon bitmap (PNG, JPEG, WebP;
+  flat colours and gradients, not photos) to SVG with the stable champion of the logo bench
+  (`/Volumes/Work/Projects/logo-vectorizer-bench/tracers/stable`, moved on each adopted champion; `LOGO_BENCH`
+  overrides the bench path). `--size 512` (default) fits the long side into 512 px, where every champion step
+  is tuned and judged; `--size native` traces up to 1024 px as given (keeps sub-pixel detail, only the older
+  core steps apply above 512). The SVG keeps the source's pixel size as width/height. ~1.5–3 min an image,
+  independent images run in parallel. Prints `svg= champion= source= traced= seconds=`.
+
+  ```bash
+  logo-vectorize --in /abs/logo.png --dest /abs/logo.svg
+  logo-vectorize --in /abs/logo.png --dest /abs/logo.svg --size native --dry-run   # champion and sizes only
+  ```
+
 - **Flow's Cutout** (`gemini-image --remove-bg`, MODNet on-device in Flow's Image Editor; the input's
   own pixels under Flow's matte) exists for parity only. On 2026-10-03 it ate half the hair of a
   portrait, kept background fragments, and melted a flat teapot scene, where `image-cutout` was

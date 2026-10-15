@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+{
+set -euo pipefail
+
+BENCH=${LOGO_BENCH:-/Volumes/Work/Projects/logo-vectorizer-bench}
+
+usage() {
+  printf 'usage: logo-vectorize --in <absolute image> --dest <absolute .svg> [--size 512|native] [--dry-run]\n' >&2
+  printf '  traces a logo or icon bitmap (PNG, JPEG, WebP; flat colours and gradients) into an SVG with the\n' >&2
+  printf '  logo bench'\''s stable champion (%s/tracers/stable); local, free, ~1.5-3 min per image\n' "$BENCH" >&2
+  printf '  --size 512 (default) fits the long side into 512 px, where every champion step is tuned;\n' >&2
+  printf '  --size native traces up to 1024 px as given (more pixels, only the older core steps apply)\n' >&2
+  printf '  --dry-run prints the champion, the source size and the traced size, and writes nothing\n' >&2
+  exit 2
+}
+
+input='' dest='' size=512 dry=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --in) [ $# -ge 2 ] || usage; input=$2; shift 2 ;;
+    --dest) [ $# -ge 2 ] || usage; dest=$2; shift 2 ;;
+    --size) [ $# -ge 2 ] && [[ "$2" =~ ^(512|native)$ ]] || usage; size=$2; shift 2 ;;
+    --dry-run) dry=1; shift ;;
+    -h|--help) usage ;;
+    *) printf 'logo-vectorize: unknown argument %s\n' "$1" >&2; usage ;;
+  esac
+done
+[ -n "$input" ] && [ -n "$dest" ] || usage
+[[ "$input" = /* && "$dest" = /* ]] || { printf 'logo-vectorize: --in and --dest must be absolute paths\n' >&2; exit 2; }
+[[ "$dest" = *.svg ]] || { printf 'logo-vectorize: --dest must end in .svg\n' >&2; exit 2; }
+[ -f "$input" ] || { printf 'logo-vectorize: no such image %s\n' "$input" >&2; exit 2; }
+[ -d "$(dirname "$dest")" ] || { printf 'logo-vectorize: no such directory %s\n' "$(dirname "$dest")" >&2; exit 2; }
+[ -x "$BENCH/tracers/stable/run.sh" ] || { printf 'logo-vectorize: no stable champion at %s/tracers/stable\n' "$BENCH" >&2; exit 1; }
+
+champion=$(basename "$(cd -P "$BENCH/tracers/stable" && pwd)")
+PY="$BENCH/.venv/bin/python"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+plan=$("$PY" -I - "$input" "$work" "$size" <<'EOF'
+import shutil, sys
+from PIL import Image
+src, work, size = sys.argv[1:]
+im = Image.open(src)
+fmt, w, h = im.format, *im.size
+cap = 512 if size == '512' else 1024
+s = min(1, cap / max(w, h))
+if s == 1 and fmt in ('PNG', 'JPEG'):
+    out = f'{work}/in.{"jpg" if fmt == "JPEG" else "png"}'
+    shutil.copyfile(src, out)
+else:
+    im = im.convert('RGBA' if im.mode in ('RGBA', 'LA', 'P') or 'transparency' in im.info else 'RGB')
+    out = f'{work}/in.png'
+    im.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS).save(out)
+print(w, h, *Image.open(out).size, out)
+EOF
+) || { printf 'logo-vectorize: cannot read %s as an image\n' "$input" >&2; exit 2; }
+read -r w h tw th src <<<"$plan"
+
+if [ "$dry" = 1 ]; then
+  printf 'champion=%s source=%sx%s traced=%sx%s size=%s\n' "$champion" "$w" "$h" "$tw" "$th" "$size"
+  exit 0
+fi
+
+start=$SECONDS
+BENCH_IN_SLOT=1 BENCH_SLOT_WAIT=86400 nice -n 5 "$BENCH/tracers/stable/run.sh" "$src" "$work/out.svg" >"$work/log" 2>&1 || true
+[ -s "$work/out.svg" ] || { printf 'logo-vectorize: the tracer produced no SVG; last log lines:\n' >&2; tail -5 "$work/log" >&2; exit 1; }
+"$PY" -I - "$work/out.svg" "$dest" "$w" "$h" <<'EOF'
+import re, sys
+svg, dest, w, h = open(sys.argv[1]).read(), *sys.argv[2:]
+head = re.match(r'<svg\b[^>]*>', svg).group(0)
+new = re.sub(r'\s(width|height)="[^"]*"', '', head)[:-1] + f' width="{w}" height="{h}">'
+open(dest, 'w').write(svg.replace(head, new, 1))
+EOF
+printf 'svg=%s champion=%s source=%sx%s traced=%sx%s seconds=%s\n' "$dest" "$champion" "$w" "$h" "$tw" "$th" "$((SECONDS - start))"
+exit; }
