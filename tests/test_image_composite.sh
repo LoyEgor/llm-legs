@@ -61,6 +61,19 @@ assert compose --base "$base" --edited "$WORK/shift.png" --out "$WORK/shift-out.
 assert grep -qx 'composite=refused reason=no-local-change changed=0.0% kind=auto' "$WORK/out"
 assert cmp "$WORK/shift.png" "$WORK/shift-out.png"
 
+magick -size 640x640 xc:'#828c96' -font Helvetica -pointsize 16 -fill '#46505a' \
+  -annotate +310+325 '25' "$WORK/date-base.png"
+magick -size 640x640 xc:'#828c96' -font Helvetica -pointsize 16 -fill '#46505a' \
+  -annotate +310+325 '26' "$WORK/date-intended.png"
+magick "$WORK/date-intended.png" -evaluate add 0.8% "$WORK/date-edited.png"
+assert compose --base "$WORK/date-base.png" --edited "$WORK/date-edited.png" --out "$WORK/date-out.png"
+assert grep -Eq '^composite=auto changed=' "$WORK/out"
+assert test "$(pixel "$WORK/date-out.png" 10,10)" = "$(pixel "$WORK/date-base.png" 10,10)"
+assert within "$WORK/date-out.png" "$WORK/date-intended.png" 321,317 3
+magick "$WORK/date-base.png" -evaluate add 0.8% "$WORK/date-drift.png"
+assert compose --base "$WORK/date-base.png" --edited "$WORK/date-drift.png" --out "$WORK/date-drift-out.png"
+assert grep -qx 'composite=refused reason=no-local-change changed=0.0% kind=auto' "$WORK/out"
+
 assert compose --base "$base" --edited "$WORK/global.png" --out "$WORK/global-out.png"
 assert grep -Eq '^composite=refused reason=global changed=(6[0-9]|[7-9][0-9]|100)\.[0-9]% kind=auto$' "$WORK/out"
 assert cmp "$WORK/global.png" "$WORK/global-out.png"

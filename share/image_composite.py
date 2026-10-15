@@ -90,35 +90,35 @@ def lab(rgb: np.ndarray) -> np.ndarray:
     return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], axis=2)
 
 
-def difference(base: np.ndarray, edited: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def difference(base: np.ndarray, edited: np.ndarray, sigma: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(change above the model's whole-picture tint, raw change), both in Lab ΔE."""
-    sigma = max(1.0, min(base.shape[:2]) / 400)
+    sigma = max(1.0, min(base.shape[:2]) / 400) if sigma is None else sigma
     delta = ndimage.gaussian_filter(lab(edited) - lab(base), sigma=(sigma, sigma, 0))
     tint = np.median(delta.reshape(-1, delta.shape[2]), axis=0)
     return np.sqrt(((delta - tint) ** 2).sum(axis=2)), np.sqrt((delta**2).sum(axis=2))
 
 
-def thresholds(magnitude: np.ndarray) -> tuple[float, float]:
+def thresholds(magnitude: np.ndarray, floor: float = FLOOR) -> tuple[float, float]:
     median = float(np.median(magnitude))
     spread = 1.4826 * float(np.median(np.abs(magnitude - median)))
-    low = max(median + 6 * spread, 3 * median, FLOOR)
-    return low, max(2 * low, 15.0)
+    low = max(median + 6 * spread, 3 * median, floor)
+    return low, max(2 * low, 2.5 * floor)
 
 
-def changed_regions(magnitude: np.ndarray, raw: np.ndarray) -> np.ndarray | None:
+def changed_regions(magnitude: np.ndarray, raw: np.ndarray, *, detail: bool = False) -> np.ndarray | None:
     """From difference()'s pair; None when the edit is global."""
     side = min(magnitude.shape)
     if (raw > FLOOR).mean() > GLOBAL_LIMIT:
         return None
-    low, high = thresholds(magnitude)
+    low, high = thresholds(magnitude, 3.0 if detail else FLOOR)
     weak = magnitude > low
-    labels, count = ndimage.label(weak)
+    labels, count = ndimage.label(weak, structure=np.ones((3, 3), bool) if detail else None)
     if not count:
         return weak
     seeded = np.zeros(count + 1, bool)
     seeded[np.unique(labels[magnitude > high])] = True
     sizes = np.bincount(labels.ravel(), minlength=count + 1)
-    seeded &= sizes >= max(4, side * side * 1e-4)
+    seeded &= sizes >= (12 if detail else max(4, side * side * 1e-4))
     seeded[0] = False
     return seeded[labels]
 
@@ -227,6 +227,10 @@ def composite(base: str, edited: str, out: str, mask_source, mask_out: str | Non
         change = difference(small_base, small_edited)
         hard = changed_regions(*change)
         if hard is not None:
+            # Thin strokes cancel under the coarse blur; retain a noise-adaptive detail pass too.
+            detail = changed_regions(*difference(small_base, small_edited, sigma=0.5), detail=True)
+            if detail is not None:
+                hard |= detail
             hard = tidy(hard if kind == "auto" else near_points(hard, list(mask_source)))
     refusal = ""
     if hard is None or hard.mean() > GLOBAL_LIMIT:

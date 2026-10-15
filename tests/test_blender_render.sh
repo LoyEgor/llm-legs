@@ -94,4 +94,6 @@ PY
 )
 assert test "$?" -eq 0
 
+assert python3 "$ROOT/tests/blender_wait_regression.py"
+
 printf 'PASS: test_blender_render.sh (%s asserts)\n' "$asserts"

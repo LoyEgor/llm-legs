@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -36,6 +37,7 @@ VIDEO = {".mp4", ".mov", ".webm"}
 SIZE_RE = re.compile(r"^(\d{2,5})x(\d{2,5})$")
 sys.path.insert(0, os.path.dirname(SHARE))
 import machine_probe  # noqa: E402
+import limiter_hold  # noqa: E402
 
 
 class Usage(Exception):
@@ -73,7 +75,7 @@ slot_wait "$dir" "$count" "$SLOT_CEILING_S" blender "$what" waiting >/dev/null 2
   printf 'blender: no slot taken\n' >&2
   exit 75
 }
-exec "$@" >"$log" 2>&1
+exec "$@" >"$log" 2>&1 3>&-
 '''
 
 
@@ -185,16 +187,30 @@ def blender(script, args, log):
                SLOTS_CHECK_FLOOR="1" if outside_blender() else "0")
     launched = time.time() - 1
     process = subprocess.Popen(["bash", "-c", ADMIT, "_", os.path.join(os.path.dirname(SHARE), "slots.sh"),
-                                directory, "1-%d" % ceiling, what, log, self, *command], env=env)
-    peak = 0
-    while True:
+                                directory, "1-%d" % ceiling, what, log, self, *command], env=env,
+                               start_new_session=True)
+    def forward(signum, _frame):
         try:
-            code = process.wait(timeout=1)
-            break
-        except subprocess.TimeoutExpired:
-            usage = machine_probe.proc_rusage(process.pid)
-            peak = max(peak, usage[0] if usage else 0)
-    release(directory, process.pid)
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
+    handlers = {sig: signal.signal(sig, forward) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+    peak = 0
+    try:
+        while True:
+            try:
+                code = process.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                usage = machine_probe.proc_rusage(process.pid)
+                peak = max(peak, usage[0] if usage else 0)
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        release(directory, process.pid)
+        limiter_hold.hold_clear(os.path.join(limiter_hold.hold_dir(), "blender-%d.json" % process.pid),
+                                reason="cancelled")
     started = os.path.exists(log) and os.path.getmtime(log) >= launched
     if code != 75 and peak and started:
         record_peak(peak / 1048576, what)
