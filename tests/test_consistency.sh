@@ -3176,6 +3176,8 @@ assert grep -Fq 'return home .. "/.gemini-web"' <<<"$web_dir_lua"
 assert eq "$(cd "$ROOT" && grep -rlIF --exclude='*.json' '.gemini-web' bin share hammerspoon llm-limits.sh | sort | tr '\n' ' ')" \
   "bin/gemini-sfx hammerspoon/llm-limits.lua share/gemini_web.py "
 assert doc_has '`${GEMINI_WEB_DIR:-~/.gemini-web}`'
+flow_budget=$(sed -n 's/^FLOW_DAY_TAKES = \([0-9]*\)$/\1/p; s/^FLOW_DAY_S = \(.*\)$/\1/p' "$ROOT/share/gemini_web.py" | paste -sd, -)
+assert grep -Fqx "local FLOW_DAY_TAKES, FLOW_DAY_S = ${flow_budget/,/, }" "$ROOT/hammerspoon/llm-limits.lua"
 
 # Row df: the chatgpt-web store default is spelled once and read nowhere else; the clone stays in row de's store.
 assert eq "$(grep -o 'environ.get("CHATGPT_WEB_DIR", "[^"]*")' "$ROOT/share/chatgpt_web.py")" 'environ.get("CHATGPT_WEB_DIR", "~/.chatgpt-web")'

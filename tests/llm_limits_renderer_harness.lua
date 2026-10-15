@@ -4568,7 +4568,7 @@ end
   assert(#tune == 1 and titleText(tune[1]) == unmeasured("fm", 30) and #redRuns(tune[1].title) == 0,
     "an unknown Flow Music total drew a bar or hid the balance in the reset column: " .. texts(tune))
   local egbor = mediaRows(menu, "egbor")
-  assert(#egbor == 2 and titleText(egbor[1]) == unmeasured("fv", 50) and titleText(egbor[2]) == walled("fm", now + 3600)
+  assert(#egbor == 2 and titleText(egbor[1]) == unmeasured("fv", "20/50") and titleText(egbor[2]) == walled("fm", now + 3600)
       and isRed(egbor[2]),
     "a gemini-web profile named apart from the roster did not map by its email, or kept an expired wall: "
       .. texts(egbor))
@@ -4591,7 +4591,12 @@ end
       { account = "bars", five_hour = bucket(10), weekly = bucket(20) }
     mediaFixture.vendors.gemini.accounts[#mediaFixture.vendors.gemini.accounts + 1] =
       { account = "refill", five_hour = bucket(10), weekly = bucket(20) }
+    mediaFixture.vendors.gemini.accounts[#mediaFixture.vendors.gemini.accounts + 1] =
+      { account = "open", five_hour = bucket(10), weekly = bucket(20) }
+    geminiWebFake.files[root .. "/accounts/open.json"] = { credits = 489, credits_total = 1050, flow_uncapped = true,
+      flow_takes = { now - 100 } }
     geminiWebFake.files[root .. "/accounts/bars.json"] = { credits = 828, credits_at = now - 3 * 3600,
+      flow_takes = { now - 100, now - 200, now - 3 * 86400 },
       credits_total = 1000, music_signed_in = true,
       music_credits = 10510, music_credits_at = now - 3600, music_credits_total = 10530,
       music_credits_renews_at = now + 30 * 86400 }
@@ -4602,9 +4607,12 @@ end
     menu = mediaMenu()
     local weekly = titleText(menu[accountIndex(menu, "bars") + 2])
     local bars = mediaRows(menu, "bars")
-    assert(#bars == 2 and titleText(bars[1]) == row("fv", "▓░░░░", "17%", "828")
+    assert(#bars == 2 and titleText(bars[1]) == row("fv", "▓░░░░", "17%", "18/828")
         and titleText(bars[2]) == row("fm", "░░░░░", "0%", day(now + 30 * 86400)) and #redRuns(bars[1].title) == 0,
-      "the credit bars are wrong, or a cycle without a renewal date hid its balance: " .. texts(bars))
+      "the credit bars are wrong, or a cycle without a renewal date hid its balance or the takes left today: " .. texts(bars))
+    local open = mediaRows(menu, "open")
+    assert(#open == 1 and titleText(open[1]) == row("fv", "▓▓▓░░", "53%", "489"),
+      "an uncapped Flow account drew a takes-left figure: " .. texts(open))
     assert(weekly:match("^        wk  ") and #weekly == #titleText(bars[1])
         and weekly:find("[▓░]") == titleText(bars[1]):find("[▓░]"),
       "a credit bar is not cut to the weekly row's columns: " .. weekly .. " | " .. titleText(bars[1]))

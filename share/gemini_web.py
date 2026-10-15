@@ -65,8 +65,9 @@ WALL_SECONDS = 6 * 3600
 FLAG_WALL_S = 48 * 3600
 FLAG_BURST_S = 3600
 # Flow takes (images, clips) one account may start in 24 h. No healthy account was ever flagged below its 21st
-# of a day, five were at their 26th-32nd on 2026-10-15. com made 97 unflagged: its meta carries flow_day_takes
-# null, no budget until its first flag sets one at two thirds of its count then.
+# of a day, five were at their 26th-32nd on 2026-10-15. com made 97 unflagged: its meta carries flow_uncapped,
+# no budget until its first flag sets flow_day_takes at two thirds of its count then. The menu mirrors both
+# constants (shared-invariants row de).
 FLOW_DAY_TAKES = 20
 FLOW_DAY_S = 24 * 3600
 FLOW_SPACING_S = 180
@@ -462,7 +463,7 @@ def note_flow_send(account: str, takes: int = 1) -> None:
     now = time.time()
     counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S] + [int(now)] * takes
     write_meta(account, flow_takes=counted)
-    budget = meta.get("flow_day_takes", FLOW_DAY_TAKES)
+    budget = None if meta.get("flow_uncapped") else meta.get("flow_day_takes", FLOW_DAY_TAKES)
     if budget is not None and len(counted) >= budget:
         set_wall(account, counted[-budget] + FLOW_DAY_S)
 
@@ -1344,9 +1345,9 @@ def wall_until(account: str, failure: Failure) -> float:
         strikes = strikes + 1 if meta.get("saved_at", 0) < last else 1
     strikes = max(strikes, 1)
     write_meta(account, flagged_at=int(now), flag_strikes=strikes)
-    if meta.get("flow_day_takes", FLOW_DAY_TAKES) is None:
+    if meta.get("flow_uncapped"):
         counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S]
-        write_meta(account, flow_day_takes=max(FLOW_DAY_TAKES, len(counted) * 2 // 3))
+        write_meta(account, flow_uncapped=False, flow_day_takes=max(FLOW_DAY_TAKES, len(counted) * 2 // 3))
     return now + FLAG_WALL_S * 2 ** (strikes - 1)
 
 

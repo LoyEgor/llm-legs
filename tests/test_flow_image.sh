@@ -727,13 +727,13 @@ gw.note_saved("old")
 assert flag_once() <= gw.FLAG_WALL_S, gw.walls()
 gw.set_wall("old", None)
 gw.write_meta("old", flagged_at=0, flag_strikes=0)
-# A null budget never walls; the account's first flag sets one at two thirds of its 24 h count.
+# An uncapped account never walls on its budget; its first flag sets one at two thirds of its 24 h count.
 now = int(time.time())
-gw.write_meta("open", flow_takes=[now - 100] * 89, flow_day_takes=None)
+gw.write_meta("open", flow_takes=[now - 100] * 89, flow_uncapped=True)
 gw.note_flow_send("open")
 assert "open" not in gw.walls(), gw.walls()
 gw.wall_until("open", gw.Failure(1, "flagged", flagged=True))
-assert gw.read_meta("open")["flow_day_takes"] == 60, gw.read_meta("open")
+assert gw.read_meta("open")["flow_day_takes"] == 60 and gw.read_meta("open")["flow_uncapped"] is False, gw.read_meta("open")
 gw.set_wall("open", None)
 # The take that spends the 24 h Flow budget walls the account until the oldest counted take ages out.
 now = int(time.time())

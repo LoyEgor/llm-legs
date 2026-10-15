@@ -284,22 +284,23 @@ end
 local function geminiMediaRows(media)
   local rows = {}
   if not media then return rows end
-  local function row(label, left, total, renewsAt, wall, bound)
+  local function row(label, left, total, renewsAt, wall, bound, takes)
     local title
+    local balance = left and ((takes and (takes .. "/") or "") .. tostring(left))
     if wall then
       title = rowTitle("", label, { effective_pct = 100, resets_at = wall }, false, true, false, { pct = "" })
     elseif left and total and total > 0 then
       local used = math.max(0, total - left)
       title = rowTitle("", label, { effective_pct = used / total * 100, resets_at = renewsAt }, false, used >= total,
-        false, { reset = not renewsAt and tostring(left) or nil })
+        false, { reset = not renewsAt and balance or nil })
     elseif left or bound then
-      title = rowTitle("", label, nil, false, false, false, { pct = "", reset = left and tostring(left) or "" })
+      title = rowTitle("", label, nil, false, false, false, { pct = "", reset = balance or "" })
     else
       return
     end
     rows[#rows + 1] = { title = title, disabled = true }
   end
-  row("fv", media.credits, media.creditsTotal, media.creditsRenewsAt, media.videoWall, media.bound)
+  row("fv", media.credits, media.creditsTotal, media.creditsRenewsAt, media.videoWall, media.bound, media.takesLeft)
   if media.musicSignedIn then
     local wall = math.max(media.flowMusicWall or 0, media.videoWall or 0)
     row("fm", media.musicCredits, media.musicCreditsTotal, media.musicCreditsRenewsAt, wall > 0 and wall or nil, true)
@@ -1051,6 +1052,9 @@ end
 
 -- Flow credits and the media walls (shared-invariants row `de`) are only ever read here: the one
 -- way to refresh them launches Chrome, so the row states the reading's age instead.
+-- share/gemini_web.py's Flow budget: takes per account in a rolling day, unless the meta overrides it.
+local FLOW_DAY_TAKES, FLOW_DAY_S = 20, 24 * 3600
+
 local function geminiWebDir()
   local override = os.getenv("GEMINI_WEB_DIR")
   if override and override ~= "" then return override end
@@ -1098,8 +1102,14 @@ local function geminiMediaState(roster, now)
     if acct and roster[acct] and not state[acct] then
       local cookies = type(meta.email) == "string" and io.open(dir .. "/profiles/" .. name .. "/Default/Cookies", "r")
       if cookies then cookies:close() end
+      local takes = 0
+      for _, stamp in ipairs(type(meta.flow_takes) == "table" and meta.flow_takes or {}) do
+        if tonumber(stamp) and now - tonumber(stamp) < FLOW_DAY_S then takes = takes + 1 end
+      end
       state[acct] = {
         bound = cookies and true or false,
+        takesLeft = meta.flow_uncapped ~= true
+          and math.max(0, (tonumber(meta.flow_day_takes) or FLOW_DAY_TAKES) - takes) or nil,
         credits = tonumber(meta.credits),
         creditsTotal = tonumber(meta.credits_total), creditsRenewsAt = tonumber(meta.credits_renews_at),
         musicSignedIn = meta.music_signed_in == true,
