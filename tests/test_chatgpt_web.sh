@@ -946,6 +946,9 @@ class Chromium:
         launches.append(executable_path)
         # viewport=None is Playwright's default 1280x720 emulation: the page saw a window wider than its screen.
         assert kw.get("no_viewport") is True and "viewport" not in kw, kw
+        # Playwright's own switches and locale override are what the owner's hand session lacks.
+        assert kw.get("ignore_default_args") is True and "locale" not in kw, kw
+        assert "--remote-debugging-pipe" in kw["args"] and f"--user-data-dir={profile}" in kw["args"], kw
         return Context()
 
 

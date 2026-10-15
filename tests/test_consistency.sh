@@ -3436,7 +3436,7 @@ assert doc_has '| em | Away mark |'
 chrome_launch_re='launch_persistent_context|\.launch\(|launch_server|connect_over_cdp|puppeteer|selenium|chrome_binary\(|Google Chrome\.app|-[ab][[:space:]]+['\''"]?(com\.google\.Chrome|Google Chrome)|application (id )?\\?"(Google Chrome|com\.google\.Chrome)"'
 assert eq "$(cd "$ROOT" && command grep -rcIE --exclude='*.json' --exclude='*.md' "$chrome_launch_re" bin share |
   command grep -v ':0$' | sort | paste -sd' ' -)" "bin/chrome-applescript-js:4 bin/worker-run:2 share/gemini_web.py:5 share/image_input.py:1"
-assert grep -Fq 'str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False, args=flags,' "$ROOT/share/gemini_web.py"
+assert grep -Fq 'str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False,' "$ROOT/share/gemini_web.py"
 assert grep -Fq 'browser = pw.chromium.launch(executable_path=chrome_binary(SOURCE_APP), headless=True)' "$ROOT/share/image_input.py"
 assert grep -Fq 'CLONE_ID = "com.google.Chrome.gemini-web"' "$ROOT/share/gemini_web.py"
 assert grep -Fq 'info["CFBundleIdentifier"] = CLONE_ID' "$ROOT/share/gemini_web.py"

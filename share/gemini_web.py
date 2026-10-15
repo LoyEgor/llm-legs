@@ -601,8 +601,13 @@ def browser(account: str, visible: bool = False):
         raise Failure(4, f"account {account} has no browser login; run: {TOOL} login {account}")
     if profile_in_use(profile):
         raise Failure(1, f"profile {account} is open in another Chrome (the login window?); close it")
-    flags = [*COMMON_FLAGS, "--window-size=1440,1000", "--disable-renderer-backgrounding",
-             "--disable-backgrounding-occluded-windows", "--disable-background-timer-throttling"]
+    # Only the owner's login flags plus what a hidden window needs: Playwright's own ~30 switches
+    # (--disable-field-trial-config, --disable-extensions, --force-color-profile=srgb, --no-sandbox…) and its
+    # locale override are what a hand session lacks. sergey passed a Pro 4-pack by hand twice and was flagged on
+    # the same request automated twice, within the hour (2026-10-16).
+    flags = [f"--user-data-dir={profile}", "--remote-debugging-pipe", *COMMON_FLAGS, "--window-size=1440,1000",
+             "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",
+             "--disable-background-timer-throttling"]
     if not visible:
         # Off-screen, not headless: headless Chrome is served a different, bot-checked page.
         flags.append("--window-position=-30000,-30000")
@@ -610,9 +615,8 @@ def browser(account: str, visible: bool = False):
     threading.Thread(target=sweep_code_sign_clones, daemon=True).start()
     with chrome_clone() as clone, sync_playwright() as pw:
         context = pw.chromium.launch_persistent_context(
-            str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False, args=flags,
-            ignore_default_args=["--enable-automation"],
-            no_viewport=True, accept_downloads=True, locale="en-US")
+            str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False,
+            args=[*flags, "about:blank"], ignore_default_args=True, no_viewport=True, accept_downloads=True)
         with contextlib.suppress(Exception):
             context.add_init_script(TOAST_LOG)
         pid = chrome_pid(profile)
