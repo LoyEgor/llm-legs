@@ -386,6 +386,8 @@ sys.path.insert(0, os.path.join(root, "share"))
 import gemini_web as gw
 import flow_image as fi
 
+# Sends here follow each other in milliseconds; the spacing has its own assert below.
+gw.FLOW_SPACING_S = 0
 base = Path(os.environ["GEMINI_WEB_DIR"])
 assert gw.ROOT == base, gw.ROOT
 names = ["old", "new", "walled", "outpool", "unbound", "nologin"]
@@ -688,7 +690,7 @@ gw.set_wall("old", None)
 # Google's flag walls the account even on a pinned run that records no other wall.
 def flagged(account, plan):
     ran.append(account)
-    raise gw.Failure(3, "Flow flagged this account (PUBLIC_ERROR_UNUSUAL_ACTIVITY)", wall_s=gw.BLOCK_WALL_SECONDS,
+    raise gw.Failure(3, "Flow flagged this account (PUBLIC_ERROR_UNUSUAL_ACTIVITY)", wall_s=gw.FLAG_WALLS[0],
                      flagged=True)
 
 
@@ -705,30 +707,75 @@ def flag_once():
 fi.generate_on = flagged
 ran.clear()
 gw.write_meta("old", flagged_at=0)
-assert gw.BLOCK_WALL_SECONDS - 60 < flag_once() <= gw.BLOCK_WALL_SECONDS and ran == ["old"], (ran, gw.walls())
+assert gw.FLAG_WALLS[0] - 60 < flag_once() <= gw.FLAG_WALLS[0] and ran == ["old"], (ran, gw.walls())
 # A job queued behind the lock while the flag landed is refused unsent and keeps the wall it found.
 until = gw.walls()["old"]
 flag_once()
 assert ran == ["old"] and gw.walls()["old"] == until, (ran, gw.walls())
-# A repeat flag inside the window walls for the whole window instead of another daily strike.
+# Flags within FLAG_BURST_S are one strike; one later with no saved take since is the next, up to the last.
 gw.set_wall("old", None)
-assert gw.REFLAG_WALL_SECONDS - 60 < flag_once() <= gw.REFLAG_WALL_SECONDS, gw.walls()
+assert gw.FLAG_WALLS[0] - 60 < flag_once() <= gw.FLAG_WALLS[0], gw.walls()
+for wall in gw.FLAG_WALLS[1:] + gw.FLAG_WALLS[-1:]:
+    gw.set_wall("old", None)
+    gw.write_meta("old", flagged_at=int(time.time()) - gw.FLAG_BURST_S - 1)
+    assert wall - 60 < flag_once() <= wall, (wall, gw.walls())
+# A saved take since the last flag puts the next one back on the first strike.
 gw.set_wall("old", None)
-gw.write_meta("old", flagged_at=int(time.time()) - gw.REFLAG_WALL_SECONDS - 1)
-assert flag_once() <= gw.BLOCK_WALL_SECONDS, gw.walls()
+gw.write_meta("old", flagged_at=int(time.time()) - gw.FLAG_BURST_S - 1)
+gw.note_saved("old")
+assert flag_once() <= gw.FLAG_WALLS[0], gw.walls()
 gw.set_wall("old", None)
-# The send that spends the 24 h Flow budget walls the account until the oldest counted send ages out.
+gw.write_meta("old", flagged_at=0, flag_strikes=0)
+# The take that spends the 24 h Flow budget walls the account until the oldest counted take ages out.
 now = int(time.time())
-gw.write_meta("old", flow_sends=[now - gw.FLOW_DAY_S - 5] + [now - 100] * (gw.FLOW_DAY_SENDS - 2))
+gw.write_meta("old", flow_takes=[now - gw.FLOW_DAY_S - 5] + [now - 100] * (gw.FLOW_DAY_TAKES - 2))
 gw.note_flow_send("old")
 assert "old" not in gw.walls(), gw.walls()
 gw.note_flow_send("old")
 assert gw.walls()["old"] == now - 100 + gw.FLOW_DAY_S, gw.walls()
 gw.set_wall("old", None)
-gw.write_meta("old", flow_sends=[now - 100] * 30, flow_day_sends=40)
-gw.note_flow_send("old")
+# A pack counts every take it asks for.
+gw.write_meta("old", flow_takes=[now - 100] * (gw.FLOW_DAY_TAKES - 4))
+gw.note_flow_send("old", 4)
+assert "old" in gw.walls(), gw.walls()
+gw.set_wall("old", None)
+gw.write_meta("old", flow_takes=[now - 100] * 30, flow_day_takes=40)
+gw.note_flow_send("old", 4)
 assert "old" not in gw.walls(), gw.walls()
-gw.write_meta("old", flow_sends=[], flow_day_sends=gw.FLOW_DAY_SENDS)
+# A send waits out FLOW_SPACING_S after the account's last one, and the wait is reported.
+gw.FLOW_SPACING_S, slept, real_sleep = 180, [], time.sleep
+gw.write_meta("old", flow_takes=[int(time.time()) - 60])
+time.sleep = slept.append
+gw.note_flow_send("old")
+time.sleep = real_sleep
+assert len(slept) == 1 and 118 < slept[0] <= 120, slept
+assert 118 < gw.spaced <= 120, gw.spaced
+gw.FLOW_SPACING_S, gw.spaced = 0, 0.0
+gw.write_meta("old", flow_takes=[], flow_day_takes=gw.FLOW_DAY_TAKES)
+# Sent with nothing back, the account rests a day.
+gw.rest_no_result("old")
+assert gw.FLOW_DAY_S - 60 < gw.walls()["old"] - time.time() <= gw.FLOW_DAY_S, gw.walls()
+gw.set_wall("old", None)
+# TEMP-FLOW-TRUST(gemini-web): the experiment's arms and its stop rule.
+(gw.ROOT / gw.TRUST).write_text(json.dumps({"started": now - 10, "until": now + 3600, "halt_flags": 2,
+                                            "arms": {"old": "send-budget", "new": "hand-first"}}))
+gw.note_flow_send("old", 4)
+assert len(gw.read_meta("old")["flow_takes"]) == 1, gw.read_meta("old")
+gw.set_wall("new", now + 7200)
+gw.trust_hand_done("new")
+assert "new" not in gw.walls() and gw.trust_arm("new") == "hand-done", (gw.walls(), gw.trust())
+gw.trust_hand_done("new")
+gw.write_meta("new", flagged_at=now - 5)
+assert gw.trust_halt() == 0 and "old" not in gw.walls(), gw.walls()
+gw.write_meta("old", flagged_at=now - 1)
+assert gw.trust_halt() == now + 3600 and gw.walls()["new"] == now + 3600 and gw.walls()["walled"] > now + 3500, \
+    gw.walls()
+for name in ("old", "new"):
+    gw.set_wall(name, None)
+    gw.write_meta(name, flagged_at=0, flow_takes=[])
+gw.set_wall("walled", time.time() + 3600)
+(gw.ROOT / gw.TRUST).unlink()
+assert gw.trust() == {} and gw.trust_arm("old") is None
 watcher = gw.Watcher.__new__(gw.Watcher)
 watcher.errors = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 assert watcher.blocked().extra.get("flagged") is True, watcher.blocked().extra

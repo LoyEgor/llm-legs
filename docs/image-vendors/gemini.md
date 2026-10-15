@@ -392,13 +392,17 @@ first, never used first (the owner's rule, 2026-10-01): `generation_started_at` 
 stamped when a new generation starts on Flow video, Flow Music or Gemini app music, never by an `--extend`, a
 fetch or a `--dry-run`; an idle account still goes before one another run holds. A balance short
 of one job's price is never walled, so a cheaper job still runs there. Exit 3 otherwise walls an account in
-`~/.gemini-web/walls.json` (writes serialised by a lock file): 6 h when it is out of credits, 14 days when Flow flags it (after a 24 h wall the first send re-flagged)
+`~/.gemini-web/walls.json` (writes serialised by a lock file): 6 h when it is out of credits; when Flow flags it
 (`PUBLIC_ERROR_UNUSUAL_ACTIVITY` on a whole failed envelope or on the new clip — "We noticed some unusual
-activity", nothing charged), 30 days when the account was already flagged within the last 30 days (`flagged_at` in
-its `accounts/<name>.json`: a daily re-probe added a strike a day), and until the oldest of its last
-`FLOW_DAY_SENDS` (20) Flow image and video sends is 24 h old once it makes that many (`flow_sends`; a higher
-`flow_day_sends` in the meta for an account proven above it, com). A run that waited on the account lock re-reads the
-walls before it sends. On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
+activity", nothing charged) by strike, `FLAG_WALLS` 48 h, 14 days, 30 days: a flag with no take saved since
+the account's last flag is the next strike, a saved take puts it back on the first, and flags within an hour
+count once (`flagged_at`, `flag_strikes`, `saved_at` in its `accounts/<name>.json`; jihangarangan's first flag
+cleared within 33 h, while a re-probed hot account re-flagged at its first send and gained a strike a day);
+24 h when a send got nothing back (`sent, but …`) instead of the next send going to it; and until the oldest of
+its last `FLOW_DAY_TAKES` (20) Flow images and clips is 24 h old once it starts that many (`flow_takes`, one
+stamp per take a send asks for; a higher `flow_day_takes` in the meta for an account proven above it, com).
+Sends on one account are at least `FLOW_SPACING_S` (180 s) apart, the wait reported as `space_wait_s`. A run
+that waited on the account lock re-reads the walls before it sends. On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
 mode alike, including under raw CDP input with no Runtime domain, while egbogd, com, jihangarangan and
 locomthebest ran; exit 4 is a profile never signed in. A quote that differs from the manifest fails with
 both numbers and spends nothing. Re-verify after a `model_caps=stale` line, a quote mismatch or a

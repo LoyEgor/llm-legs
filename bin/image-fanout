@@ -575,8 +575,12 @@ spare_count() { # vendor takes
 
 pack_size() { # vendor -> takes per launch, within the first route's counts (all of them by default)
   local max
-  [ "$kind" = image ] && [ "$pack" != 1 ] || { printf 1; return; }
-  max=$(route_get "$1" '.counts' 'null' 'if type == "array" then max else 1 end' 2>/dev/null) || max=1
+  [ "$pack" != 1 ] || { printf 1; return; }
+  if [ "$kind" = image ]; then
+    max=$(route_get "$1" '.counts' 'null' 'if type == "array" then max else 1 end' 2>/dev/null) || max=1
+  else
+    max=$(caps_get "$1" '.video.counts // null | if type == "array" then max else 1 end' 2>/dev/null) || max=1
+  fi
   [[ "$max" =~ ^[0-9]+$ ]] && [ "$max" -ge 1 ] || max=1
   if [ -n "$pack" ] && [ "$pack" -le "$max" ]; then printf '%s' "$pack"; else printf '%s' "$max"; fi
 }
@@ -605,6 +609,7 @@ plan_group() { # request vendor
   local used_aspect='' used_size='' used_duration='' pass_transparent=false
   local adapt_refs='' adapt_aspect='' adapt_size='' adapt_duration='' adapt_trans='' size_aspect='' want_aspect list mapped
   local r_size=${rq_size[r]} r_aspect=${rq_aspect[r]} r_edit=${rq_edit[r]} mode rows accounts g n spares_n acct skip
+  local every_n=''
   local -a used_refs=() extra=()
 
   if [ "$video" = true ] && [ "$(caps_get "$vendor" '.video | if . == null then "no" else "yes" end')" != yes ]; then
@@ -737,6 +742,12 @@ plan_group() { # request vendor
     '') [ -z "${rq_takes[r]}" ] || mode=pool ;;
     *) mode=pinned ;;
   esac
+  # Flow renders a pack as one batch and its accounts alike, so a take on every account becomes one pack of
+  # that many takes: one Flow send instead of six (2026-10-15).
+  if [ "$mode" = every ] && [ "$(pack_size "$vendor")" -gt 1 ] &&
+    { [ "$kind" = video ] || [ "$(route_get "$vendor" '.counts_batch' 'false')" = true ]; }; then
+    mode=pool every_n=1
+  fi
 
   case "$mode" in
     pick)
@@ -768,14 +779,25 @@ plan_group() { # request vendor
     pool)
       roster_of "$vendor"; rows=$roster_rows
       accounts=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $3 == "" { print $1 "\t" $2 }')
+      if [ -n "$every_n" ]; then
+        while IFS=$'\t' read -r acct used skip; do
+          [ -z "$acct" ] || [ -z "${skip:-}" ] || add_static "$vendor" "$acct" skipped "$skip"
+        done <<<"$rows"
+        [ -n "$accounts" ] || [ -z "$rows" ] || return
+      fi
       if [ -z "$accounts" ]; then
         add_static "$vendor" - skipped 'no accounts'
         return
       fi
       while IFS=$'\t' read -r acct used; do register_account "$vendor" "$acct" "$used"; done <<<"$accounts"
-      n=${rq_takes[r]}
+      n=${rq_takes[r]} spares_n=0
+      if [ -n "$every_n" ]; then
+        n=$(printf '%s\n' "$accounts" | wc -l | tr -d ' ')
+        [ "$n" -le "$(pack_size "$vendor")" ] || n=$(pack_size "$vendor")
+      else
+        spares_n=$(spare_count "$vendor" "$n")
+      fi
       g_target[g]=$n
-      spares_n=$(spare_count "$vendor" "$n")
       [ "$spares_n" -eq 0 ] || g_cancelable[g]=1
       add_takes "$g" $((n + spares_n)) pool '' $((n + 1))
       ;;

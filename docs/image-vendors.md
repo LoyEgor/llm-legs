@@ -127,7 +127,10 @@ it in a session of its own. Every job runs in its own session (process group) wi
 
 `--takes N` (with `--accounts all` only) is a pool: N takes per vendor over its logged-in accounts,
 plus `spares[image]` from the manifest — `max(min, ceil(N × ratio))` extra takes launched up front
-(`--spare <n>` overrides, `--spare 0` opts out; video never gets spares). Once N takes are delivered
+(`--spare <n>` overrides, `--spare 0` opts out; video never gets spares). Without `--takes`, a vendor whose
+route renders a pack as one batch (gemini Flow, images and video) gets one pack of as many takes as it has
+live accounts, at most a full one and with no spare, instead of a take on every account: one Flow send where
+2026-10-15 spent six. Once N takes are delivered
 (counted from `dest=`/`variant=` lines, not exit codes) the rest are ended by process group and
 descendants (TERM, 5 s, KILL; the schedule runs on meanwhile, the account and slot held until the
 job is gone) and listed as `spare-cancelled`. A packed request's spare launches only after its pack
@@ -135,7 +138,8 @@ ran 90 s without delivering (`IMAGE_FANOUT_LAZY_SPARE_MS`): the pack usually lan
 spare cancelled after sending still spends an image (at 20 s it launched and sent on every run, clean
 or loaded). Take k lands at `<vendor>-<account>.<ext>` for k = 1, else
 `<vendor>-<account>-<k>.<ext>`. Takes of a pool on a vendor whose first route lists `counts` (gemini
-Flow, codex web) launch packed, up to its largest count per `--count` job; each delivered variant is a take.
+Flow, codex web; video: gemini's `video.counts`) launch packed, up to its largest count per `--count` job; each
+delivered variant is a take.
 `--pack N` (1-4) caps a pack, `--pack 1` opts out. Measured 2026-10-03: a Flow `--count 4` renders
 in the time of one image (9.4 s per image against 47 s unpacked) and holds one browser, not four; a
 ChatGPT `--count 3` is three chats in tabs of one browser on one account (2026-10-04, load ~30: 26-52 s

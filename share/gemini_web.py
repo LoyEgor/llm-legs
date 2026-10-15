@@ -60,13 +60,16 @@ LOGIN_URL = "https://accounts.google.com/ServiceLogin?continue=" + FLOW + "/"
 LOGIN_TABS = (FLOW_MUSIC + "/",)
 LOGIN_STEPS = " (Google in the first tab, then in the Flow Music tab Log in → Continue with Google → Agree → Grant access)"
 WALL_SECONDS = 6 * 3600
-# A flagged account re-flagged at its first send 2 and 5 days after a 24 h wall (abel, rawilimo, 2026-10).
-BLOCK_WALL_SECONDS = 14 * 24 * 3600
-REFLAG_WALL_SECONDS = 30 * 24 * 3600
-# Flow sends one account may make in 24 h. On 2026-10-15 five accounts that never sent over 9 a day were
-# flagged at their 26th-30th; com sent 69 unflagged, so its meta carries a higher flow_day_sends.
-FLOW_DAY_SENDS = 20
+# Flag walls by strike: jihangarangan's first flag (2026-10-01) cleared within 33 h, while abel and rawilimo,
+# flagged again before any saved take, re-flagged at their first send 2 and 5 days on.
+FLAG_WALLS = (48 * 3600, 14 * 24 * 3600, 30 * 24 * 3600)
+FLAG_BURST_S = 3600
+# Flow takes (images, clips) one account may start in 24 h. On 2026-10-15 five accounts were flagged at their
+# 30th-36th image; com made 97 unflagged, so its meta carries a higher flow_day_takes.
+FLOW_DAY_TAKES = 20
 FLOW_DAY_S = 24 * 3600
+FLOW_SPACING_S = 180
+TRUST = "flow-trust.json"
 BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 # One generation rpc per composer mode: text, frames, ingredients, video edit, extend.
 GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
@@ -107,6 +110,7 @@ LOADS: dict[str, float] = {}
 TIMED = False
 LOCK_WAIT_S = 900.0
 lock_waited = 0.0
+spaced = 0.0
 SETTLE_MS = 100
 
 
@@ -122,7 +126,7 @@ def timing(failed: bool = False) -> dict:
     if not TIMED:
         return {}
     out = {"job": os.environ.get("IMAGE_JOB_ID") or None, "phases": dict(PHASES), "load": dict(LOADS),
-           "lock_wait_s": round(lock_waited, 2)}
+           "lock_wait_s": round(lock_waited, 2), "space_wait_s": round(spaced, 1)}
     if failed:
         out["sent"] = "sent" in PHASES
     return out
@@ -445,15 +449,61 @@ def note_started(account: str) -> None:
     write_meta(account, generation_started_at=int(time.time()))
 
 
-def note_flow_send(account: str) -> None:
-    """The send that spends the account's 24 h Flow budget walls it until the oldest send counted ages out."""
-    now = time.time()
+def note_flow_send(account: str, takes: int = 1) -> None:
+    """Holds a send until FLOW_SPACING_S after the account's last one, then counts its takes against the 24 h
+    Flow budget; the take that spends it walls the account until the oldest one counted ages out."""
+    global spaced
     meta = read_meta(account)
-    sends = [t for t in meta.get("flow_sends", []) if now - t < FLOW_DAY_S] + [int(now)]
-    write_meta(account, flow_sends=sends)
-    budget = meta.get("flow_day_sends", FLOW_DAY_SENDS)
-    if len(sends) >= budget:
-        set_wall(account, sends[-budget] + FLOW_DAY_S)
+    wait = max(meta.get("flow_takes") or [0]) + FLOW_SPACING_S - time.time()
+    if wait > 0:
+        time.sleep(wait)
+        spaced += wait
+    now = time.time()
+    if trust_arm(account) == "send-budget":  # TEMP-FLOW-TRUST(gemini-web)
+        takes = 1
+    counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S] + [int(now)] * takes
+    write_meta(account, flow_takes=counted)
+    budget = meta.get("flow_day_takes", FLOW_DAY_TAKES)
+    if len(counted) >= budget:
+        set_wall(account, counted[-budget] + FLOW_DAY_S)
+
+
+def note_saved(account: str) -> None:
+    write_meta(account, saved_at=int(time.time()))
+
+
+def rest_no_result(account: str) -> None:
+    """Sent and nothing came back: the account rests a day instead of taking the next send."""
+    set_wall(account, max(walls().get(account, 0), time.time() + FLOW_DAY_S))
+
+
+# TEMP-FLOW-TRUST(gemini-web): the flow-trust experiment (EXPERIMENTS.json) gives accounts arms in its marker.
+def trust() -> dict:
+    data = read_json(ROOT / TRUST, {})
+    return data if data.get("until", 0) > time.time() else {}
+
+
+def trust_arm(account: str) -> str | None:
+    return trust().get("arms", {}).get(account)
+
+
+def trust_hand_done(account: str) -> None:
+    """A hand-first account waits walled until the owner closes his own session in its profile."""
+    if trust_arm(account) != "hand-first":
+        return
+    update_json(TRUST, lambda data: data["arms"].update({account: "hand-done"}))
+    set_wall(account, None)
+
+
+def trust_halt() -> float:
+    """The experiment's stop rule: its second flagged account walls every account until its end."""
+    data = trust()
+    flagged = [n for n in bound_accounts() if read_meta(n).get("flagged_at", 0) >= data.get("started", 1e12)]
+    if len(flagged) < data.get("halt_flags", 2):
+        return 0
+    for name in bound_accounts():
+        set_wall(name, max(walls().get(name, 0), data["until"]))
+    return data["until"]
 
 
 def least_recent(accounts: list[str]) -> list[str]:
@@ -921,7 +971,7 @@ class Watcher:
         if not codes:
             return None
         return Failure(3, f"Flow flagged this account ({', '.join(sorted(codes))}); nothing was charged",
-                       wall_s=BLOCK_WALL_SECONDS, flagged=True)
+                       wall_s=FLAG_WALLS[0], flagged=True)
 
     def new_clips(self, known: set[str]) -> list[str]:
         return [k for k, r in self.media.items() if k not in known and r.get("created")]
@@ -1294,14 +1344,19 @@ def update_json(name: str, change) -> None:
 
 
 def wall_until(account: str, failure: Failure) -> float:
-    """A second flag within REFLAG_WALL_SECONDS walls that long: a 24 h wall re-probed daily earned a new
-    strike every day, the pattern that ended with Google disabling mish."""
+    """A flag walls by the account's strikes (FLAG_WALLS): one more when no take was saved since its last flag,
+    back to the first after a saved one; flags within FLAG_BURST_S count once. Re-probing a hot account daily
+    added a strike every day, the pattern that ended with Google disabling mish."""
     now = time.time()
     if not failure.extra.get("flagged"):
         return failure.extra.get("until") or now + failure.extra.get("wall_s", WALL_SECONDS)
-    last = read_meta(account).get("flagged_at", 0)
-    write_meta(account, flagged_at=int(now))
-    return now + (REFLAG_WALL_SECONDS if now - last < REFLAG_WALL_SECONDS else BLOCK_WALL_SECONDS)
+    meta = read_meta(account)
+    last, strikes = meta.get("flagged_at", 0), meta.get("flag_strikes", 0)
+    if now - last >= FLAG_BURST_S:
+        strikes = strikes + 1 if meta.get("saved_at", 0) < last else 1
+    strikes = min(max(strikes, 1), len(FLAG_WALLS))
+    write_meta(account, flagged_at=int(now), flag_strikes=strikes)
+    return max(now + FLAG_WALLS[strikes - 1], trust_halt())  # TEMP-FLOW-TRUST(gemini-web): trust_halt
 
 
 def set_wall(account: str, until: float | None) -> None:
@@ -1794,10 +1849,13 @@ def generate_on(account: str, plan: dict, args) -> dict:
     if not meta.get("email"):
         raise Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
     if not args.dry_run:
-        note_flow_send(account)
+        note_flow_send(account, plan.get("count", 1))
     if not (plan["extend"] or args.dry_run):
         note_started(account)
-    return render_on(account, plan, args, meta, Path(args.dest), started)
+    result = render_on(account, plan, args, meta, Path(args.dest), started)
+    if not args.dry_run:
+        note_saved(account)
+    return result
 
 
 def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: float) -> dict:
@@ -1849,6 +1907,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                     [c for c in [watcher.new_clip(known, args.prompt)] if c]
                 if len(clips) < count and time.time() > sent + 120:
                     seen = f"only {len(clips)} of {count} clips" if clips else "no new clip"
+                    rest_no_result(account)
                     raise Failure(1, f"sent, but {seen} showed up in the project within 120s; it may still "
                                      "land there")
                 if len(clips) < count:
@@ -2123,6 +2182,7 @@ def cmd_login(args) -> None:
         # The launched process can hand the window to another one, so the profile lock decides too.
         while chrome.poll() is None or profile_in_use(profile):
             time.sleep(LOGIN_POLL_S)
+        trust_hand_done(args.account)  # TEMP-FLOW-TRUST(gemini-web)
         emit({"ok": True, "account": args.account, "login": has_login(args.account)})
         return
     emit({"ok": True, "account": args.account, "profile": str(profile),
@@ -2137,7 +2197,8 @@ def cmd_accounts(args) -> None:
             meta = read_meta(p.name)
             rows.append({"account": p.name, "roster": p.name in roster(), "login": has_login(p.name),
                          "email": meta.get("email"), "credits": meta.get("credits"),
-                         "walled_until": walls().get(p.name), "last_used": meta.get("generation_started_at")})
+                         "walled_until": walls().get(p.name), "last_used": meta.get("generation_started_at"),
+                         "arm": trust_arm(p.name)})  # TEMP-FLOW-TRUST(gemini-web)
     emit({"ok": True, "accounts": rows})
 
 

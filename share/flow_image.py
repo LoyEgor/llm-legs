@@ -249,6 +249,7 @@ def await_takes(page, watcher: Images, plan: dict, known: set, account: str, pro
                 return done, missing
             if retried and failed:
                 raise gw.Failure(1, f"{gw.GENERATION_FAILED}: Flow's Retry did not take on {account}")
+            gw.rest_no_result(account)
             raise gw.Failure(1, f"sent, but {len(done)} of {plan['count']} images came back within "
                                 f"{plan['timeout_s']}s on {account}; any late one lands in project {project}")
         page.wait_for_timeout(500)
@@ -336,10 +337,13 @@ def generate_on(account: str, plan: dict) -> dict:
     if not meta.get("email"):
         raise gw.Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
     if not plan["dry_run"]:
-        gw.note_flow_send(account)
+        gw.note_flow_send(account, plan["count"])
     if not (plan["resume"] or plan["dry_run"]):
         gw.note_started(account)
-    return render_on(account, plan, meta, started)
+    result = render_on(account, plan, meta, started)
+    if result.get("takes"):
+        gw.note_saved(account)
+    return result
 
 
 def make_plan(args) -> dict:
@@ -733,7 +737,10 @@ def cmd_tool(args) -> None:
         if plan["op"] != "cutout" and not plan["dry_run"]:
             gw.note_flow_send(account)
             gw.note_started(account)
-        return tool_on(account, plan, meta, started)
+        result = tool_on(account, plan, meta, started)
+        if plan["op"] != "cutout" and not plan["dry_run"]:
+            gw.note_saved(account)
+        return result
 
     if not (args.account or any(gw.read_meta(n).get("image_editor") for n in gw.bound_accounts())):
         raise gw.Failure(4, f"no free Flow account has the {tool_caps()['editor']} in My Tools; open Tools > Templates "

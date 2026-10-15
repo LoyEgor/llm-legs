@@ -227,7 +227,7 @@ for ((i = 0; i < GEMINI_FLOW_MAX; i++)); do FLOW_REFS+=(--ref "$WORK/refs/r$((i 
 magick -size 180x120 gradient:green-white "$WORK/edit-shape.png"
 assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$WORK/edit-shape.png"
 assert grep -Fq -- '--aspect 3:2' <<<"$(plan_cmd grok delta)"
-assert grep -Fq -- '--aspect 4:3' <<<"$(plan_cmd gemini gamma)"
+assert grep -Fq -- '--aspect 4:3' <<<"$(plan_cmd gemini take1)"
 assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$WORK/edit-shape.png" --aspect 1:1
 assert grep -Fq -- '--aspect 1:1' <<<"$(plan_cmd grok delta)"
 rc=0
@@ -245,8 +245,8 @@ rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${REFS[@]}" || rc=$?
 assert test "$rc" -eq 0
 assert test ! -s "$CALLS"
-assert_fails "$(plan_reason gemini gamma)" 'refs '
-gemini_cmd=$(plan_cmd gemini gamma)
+assert_fails "$(plan_reason gemini take1)" 'refs '
+gemini_cmd=$(plan_cmd gemini take1)
 assert test "$(grep -o -- '--ref' <<<"$gemini_cmd" | wc -l | tr -d ' ')" -eq 5
 codex_cmd=$(plan_cmd codex alpha)
 assert test "$(grep -o -- '--ref' <<<"$codex_cmd" | wc -l | tr -d ' ')" -eq 5
@@ -260,21 +260,21 @@ assert grep -Eq '^IMAGE_JOB_ID=fanout-[0-9TZ]+-[0-9]+-1-[0-9]+ ' <<<"$gemini_cmd
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${FLOW_REFS[@]}" --ref "$WORK/refs/r1.png" || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq "refs $((GEMINI_FLOW_MAX + 1))→${GEMINI_FLOW_MAX}" <<<"$(plan_reason gemini gamma)"
-assert test "$(grep -o -- '--ref' <<<"$(plan_cmd gemini gamma)" | wc -l | tr -d ' ')" -eq "$GEMINI_FLOW_MAX"
+assert grep -Fq "refs $((GEMINI_FLOW_MAX + 1))→${GEMINI_FLOW_MAX}" <<<"$(plan_reason gemini take1)"
+assert test "$(grep -o -- '--ref' <<<"$(plan_cmd gemini take1)" | wc -l | tr -d ' ')" -eq "$GEMINI_FLOW_MAX"
 # An --edit image is an input too: it takes one of the route's reference slots.
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${FLOW_REFS[@]}" --edit "$WORK/refs/r2.png" || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq "refs ${GEMINI_FLOW_MAX}→$((GEMINI_FLOW_MAX - 1))" <<<"$(plan_reason gemini gamma)"
-assert grep -Fq -- "--edit $WORK/refs/r2.png" <<<"$(plan_cmd gemini gamma)"
+assert grep -Fq "refs ${GEMINI_FLOW_MAX}→$((GEMINI_FLOW_MAX - 1))" <<<"$(plan_reason gemini take1)"
+assert grep -Fq -- "--edit $WORK/refs/r2.png" <<<"$(plan_cmd gemini take1)"
 
 # --- dry-run: aspect mapping + Codex prose -----------------------------------
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --dry-run --aspect 20:9 || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq 'aspect 20:9→16:9' <<<"$(plan_reason gemini gamma)"
-assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd gemini gamma)"
+assert grep -Fq 'aspect 20:9→16:9' <<<"$(plan_reason gemini take1)"
+assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd gemini take1)"
 assert grep -Fq 'aspect 20:9→16:9' <<<"$(plan_reason grok delta)"
 assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd grok delta)"
 cx_reason=$(plan_reason codex alpha)
@@ -287,8 +287,8 @@ for pair in 21:9=16:9 2:3=3:4; do
   rc=0
   fanout --dest-dir "$DEST" --prompt 'badge' --dry-run --aspect "${pair%=*}" || rc=$?
   assert test "$rc" -eq 0
-  assert grep -Fq "aspect ${pair%=*}→${pair#*=}" <<<"$(plan_reason gemini gamma)"
-  assert grep -Fq -- "--aspect ${pair#*=}" <<<"$(plan_cmd gemini gamma)"
+  assert grep -Fq "aspect ${pair%=*}→${pair#*=}" <<<"$(plan_reason gemini take1)"
+  assert grep -Fq -- "--aspect ${pair#*=}" <<<"$(plan_cmd gemini take1)"
 done
 
 # grok edit list includes 20:9, so a ref keeps it
@@ -302,9 +302,9 @@ assert_fails "$(plan_reason grok delta)" 'aspect 20:9→'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --dry-run --size 1920x1080 || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq 'size 1920x1080→aspect 16:9' <<<"$(plan_reason gemini gamma)"
-assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd gemini gamma)"
-assert_fails "$(plan_cmd gemini gamma)" --size
+assert grep -Fq 'size 1920x1080→aspect 16:9' <<<"$(plan_reason gemini take1)"
+assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd gemini take1)"
+assert_fails "$(plan_cmd gemini take1)" --size
 assert grep -Fq 'size 1920x1080→prompt 16:9' <<<"$(plan_reason codex alpha)"
 assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd codex alpha)"
 
@@ -314,30 +314,41 @@ fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --ref "$WORK/refs/
 assert test "$rc" -eq 0
 assert grep -Fq $'codex -\tskipped: video unsupported' "$FANOUT_OUT"
 assert_fails "$(cat "$FANOUT_OUT")" $'gemini -\tskipped: video unsupported'
-assert grep -Fq 'gemini-video' <<<"$(plan_cmd gemini gamma)"
-assert grep -Fq '.mp4' <<<"$(plan_cmd gemini gamma)"
+assert grep -Fq 'gemini-video' <<<"$(plan_cmd gemini take1)"
+assert grep -Fq '.mp4' <<<"$(plan_cmd gemini take1)"
 assert grep -Fq 'grok-video' <<<"$(plan_cmd grok delta)"
 assert grep -Fq '.mp4' <<<"$(plan_cmd grok delta)"
 assert_fails "$(plan_cmd grok delta)" grok-image
 assert grep -Fq -- "--lock-wait $LOCK_WAIT" <<<"$(plan_cmd grok delta)"
-assert grep -Fq -- "--lock-wait $LOCK_WAIT" <<<"$(plan_cmd gemini gamma)"
+assert grep -Fq -- "--lock-wait $LOCK_WAIT" <<<"$(plan_cmd gemini take1)"
 # With several references gemini keeps to its listed lengths; grok's reference range takes any second in it.
 rc=0
 fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --duration 5 --ref "$WORK/refs/r1.png" --ref "$WORK/refs/r2.png" || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq 'duration 5→4' <<<"$(plan_reason gemini gamma)"
-assert grep -Fq -- '--duration 4' <<<"$(plan_cmd gemini gamma)"
+assert grep -Fq 'duration 5→4' <<<"$(plan_reason gemini take1)"
+assert grep -Fq -- '--duration 4' <<<"$(plan_cmd gemini take1)"
 assert_fails "$(plan_reason grok delta)" 'duration 5→'
 assert_fails "$(cat "$FANOUT_OUT")" codex-image
 assert_fails "$(cat "$FANOUT_OUT")" gemini-image
-# Video never gets spares or packing: every take spends credits.
+# Video takes pack into one Flow send like images, but never get spares: every take spends credits.
 rc=0
 fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --ref "$WORK/refs/r1.png" --vendors gemini --takes 2 --pack 4 || rc=$?
 assert test "$rc" -eq 0
-assert test -n "$(plan_cmd gemini take2)"
-assert test -z "$(plan_cmd gemini take3)"
-assert_fails "$(cat "$FANOUT_OUT")" --count
+assert grep -Fq -- '--count 2' <<<"$(plan_cmd gemini take1)"
+assert test -z "$(plan_cmd gemini take2)"
 assert_fails "$(cat "$FANOUT_OUT")" $'\tspare'
+# A take on every Flow account packs into one send of as many takes, at most a full pack, with no spare.
+set_roster gemini-web '[ "${1:-}" = accounts ] || exit 2
+printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"g1\",\"roster\":true,\"login\":true,\"walled_until\":null},{\"account\":\"g2\",\"roster\":true,\"login\":true,\"walled_until\":null},{\"account\":\"g3\",\"roster\":true,\"login\":true,\"walled_until\":null},{\"account\":\"g4\",\"roster\":true,\"login\":true,\"walled_until\":null},{\"account\":\"g5\",\"roster\":true,\"login\":true,\"walled_until\":null},{\"account\":\"g6\",\"roster\":true,\"login\":true,\"walled_until\":null},{\"account\":\"g7\",\"roster\":true,\"login\":false,\"walled_until\":null}]}"'
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --dry-run --vendors gemini || rc=$?
+assert test "$rc" -eq 0
+assert grep -Fq -- '--count 4' <<<"$(plan_cmd gemini take1)"
+assert test -z "$(plan_cmd gemini take5)$(plan_cmd gemini take2)"
+assert grep -Fq $'gemini g7\tskipped: login needed' "$FANOUT_OUT"
+assert_fails "$(cat "$FANOUT_OUT")" $'\tspare'
+set_roster gemini-web '[ "${1:-}" = accounts ] || exit 2
+printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"gamma\",\"roster\":true,\"login\":true,\"walled_until\":null}]}"'
 
 # --- live run: tsv columns, exit 0 ------------------------------------------
 : >"$CALLS"
@@ -913,8 +924,8 @@ fanout --dest-dir "$DEST" --prompt 'badge' --dry-run --aspect auto || rc=$?
 assert test "$rc" -eq 0
 assert grep -Fq -- '--aspect auto' <<<"$(plan_cmd grok delta)"
 assert_fails "$(plan_reason grok delta)" 'aspect auto'
-assert grep -Fq 'aspect auto dropped (vendor default)' <<<"$(plan_reason gemini gamma)"
-assert_fails "$(plan_cmd gemini gamma)" --aspect
+assert grep -Fq 'aspect auto dropped (vendor default)' <<<"$(plan_reason gemini take1)"
+assert_fails "$(plan_cmd gemini take1)" --aspect
 assert grep -Fq 'aspect auto dropped (vendor default)' <<<"$(plan_reason codex alpha)"
 assert_fails "$(plan_cmd codex alpha)" --aspect
 assert_fails "$(plan_cmd codex alpha)" 'aspect ratio auto'
@@ -951,7 +962,10 @@ assert grep -Fq $'grok\tghost\tskipped\tlogin needed' "$DEST_WORK/fanout.tsv"
 assert grep -Fq $'gemini\tabsent\tskipped\tlogin needed' "$DEST_WORK/fanout.tsv"
 assert grep -Fq $'gemini\tstray\tskipped\tout of pool' "$DEST_WORK/fanout.tsv"
 assert grep -Fq $'gemini\twall\tskipped\twalled' "$DEST_WORK/fanout.tsv"
-assert grep -Fq $'gemini\tthawed\tok' "$DEST_WORK/fanout.tsv"
+# The two live Flow accounts, a thawed wall among them, take one pack of two.
+assert grep -Eq $'^gemini\t(gamma|thawed)\tok' "$DEST_WORK/fanout.tsv"
+assert test "$(grep -c '^ARG=--count$' "$CALLS")" -eq 1
+assert_fails "$(cat "$DEST_WORK/fanout.tsv")" $'gemini\tthawed\tskipped'
 assert grep -Fq $'grok\tdelta\tok' "$DEST_WORK/fanout.tsv"
 assert_fails "$(cat "$CALLS")" 'ARG=ghost'
 assert_fails "$(cat "$CALLS")" 'ARG=absent'

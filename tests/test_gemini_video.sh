@@ -237,6 +237,7 @@ assert python3 - "$ROOT/share" "$ROOT/tests/fixtures/flow-traffic.json" <<'EOF'
 import json, sys, urllib.parse
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 
 items = [item for item in json.load(open(sys.argv[2])) if item["kind"] in ("jwpduf", "as29s")]
 clip = "0204fe88-a03f-4762-8ae3-b182951b626d"
@@ -306,7 +307,7 @@ assert w.blocked() is None
 flagged = g.Watcher()
 flagged.feed(""")]}'\n\n192\n[["wrb.fr","YhhmEf",null,null,null,[7,null,[["type.googleapis.com/google.rpc.ErrorInfo",["PUBLIC_ERROR_UNUSUAL_ACTIVITY"]]]],"generic"]]\n""")
 failure = flagged.blocked()
-assert failure and failure.code == 3 and failure.extra["wall_s"] == g.BLOCK_WALL_SECONDS, failure
+assert failure and failure.code == 3 and failure.extra["wall_s"] == g.FLAG_WALLS[0], failure
 old_tile = g.Watcher()
 old_tile.feed(""")]}'\n[["wrb.fr","jwpduf","[null,1050,[[\\"m-old\\",null,\\"PUBLIC_ERROR_UNUSUAL_ACTIVITY\\"]]]",null,null,null,"generic"]]\n""")
 assert old_tile.blocked() is None and old_tile.media["m-old"]["error"] == "PUBLIC_ERROR_UNUSUAL_ACTIVITY", old_tile.media
@@ -316,6 +317,7 @@ assert python3 - "$ROOT/share" "$FRAME" "$CLIP" <<'EOF'
 import argparse, sys
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 frame, clip = sys.argv[2], sys.argv[3]
 
 def plan(**kw):
@@ -374,6 +376,7 @@ assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
 import sys
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 assert g.rotation(20) == ["rich"], g.rotation(20)
 assert g.bound_accounts() == ["rich", "walled"], g.bound_accounts()
 g.set_wall("walled", None)
@@ -400,7 +403,7 @@ tried = []
 def fake_generate_on(account, plan, args):
     tried.append(account)
     if account == "walled":
-        raise g.Failure(3, "flagged", wall_s=g.BLOCK_WALL_SECONDS)
+        raise g.Failure(3, "flagged", wall_s=g.FLAG_WALLS[0])
     return {"ok": True, "account": account}
 g.generate_on = fake_generate_on
 args = argparse.Namespace(model="fast", duration=8, aspect="16:9", resolution="720p", first_frame=None,
@@ -425,6 +428,7 @@ assert env GEMINI_WEB_DIR="$GWX" python3 - "$ROOT/share" <<'EOF'
 import argparse, sys
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 assert "blocked" not in g.roster() and "main" not in g.roster() and "rich" in g.roster(), g.roster()
 assert g.bound_accounts() == ["rich"], g.bound_accounts()
 assert g.rotation(20) == ["rich"], g.rotation(20)
@@ -455,6 +459,7 @@ assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
 import sys
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 
 g.write_meta("totals", credits=828)
 g.note_credits("totals", 700)
@@ -491,6 +496,7 @@ assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
 import sys
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 
 passes = []
 g.manual_composer = lambda page: None
@@ -508,6 +514,7 @@ assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" "$GEMINIB_PROFILES_DIR/.
 import argparse, contextlib, fcntl, io, os, sys, time
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 disabled = sys.argv[2]
 g.set_wall("walled", None)
 now = int(time.time())
@@ -558,7 +565,7 @@ assert code == 3 and "rich is walled until" in reason and tried == [], (code, re
 g.set_wall("rich", None)
 def flagged(account, plan, args):
     tried.append(account)
-    raise g.Failure(3, "Flow flagged this account", wall_s=g.BLOCK_WALL_SECONDS)
+    raise g.Failure(3, "Flow flagged this account", wall_s=g.FLAG_WALLS[0])
 g.generate_on = flagged
 code, reason = run(account="rich")
 assert code == 3 and tried == ["rich"] and g.walls()["rich"] > time.time() + g.WALL_SECONDS, (code, tried, g.walls())
@@ -651,6 +658,7 @@ assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" "$VEO" "$OMNI" "$EDITED"
 import argparse, contextlib, io, sys
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 veo, omni, edited, walled, clip, frame, grown = sys.argv[2:9]
 
 def ns(**kw):
@@ -1028,6 +1036,7 @@ import sys, time, types
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
+g.FLOW_SPACING_S = 0  # sends here follow each other in milliseconds
 g.CARDS_SCAN_S = 0
 
 
