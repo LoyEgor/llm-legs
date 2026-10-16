@@ -15,7 +15,7 @@ here, and other directions' goals add lines, which README's worse → revert wou
 
 ### Baseline (computed 2026-10-16)
 
-Legacy lines: **3,964** (tests 510): class 1 2,852, class 2 683 (10-14 refresh), class 3 399, class 4 30.
+Legacy lines: **3,966** (tests 512): class 1 2,852, class 2 683 (10-14 refresh), class 3 401, class 4 30.
 
 | net lines, four repositories | 10-02…08 | 10-09…15 |
 |---|---:|---:|
@@ -52,24 +52,27 @@ was fixed as an instance and came back.
 |---|---:|---:|---:|---:|
 | 1. deployed copies: `night-snapshot` commits what a sweep repository deploys into claude-setup `local-config/home` | 111 Code doctor candidates | 2/2 since 10-13 | 3 | 2,852 in 22 files |
 | 2. a removal leaves its other end: a retired feature's readers, flags, tests and prose, a deleted reader's writer, a unit the removal orphaned | 42 dead candidates, 5 code-ledger dead rows, 2 check refusals | 10 (10-03…10-13) | 5 ledger fixes (−252) + 9 relay commits | 683 dead lines waiting |
-| 3. each suite redefines its assert helpers: `fail` defined 190 times (one body 74 times), `assert` 101 (50), `assert_fails` 40 | 25 of 45 suites added 10-09…15 | 6 | 1 fit round (10-14) | 399 |
+| 3. each suite redefines its assert helpers: `fail` defined 190 times (one body 74 times), `assert` 101 (50), `assert_fails` 40 | 25 of 45 suites added 10-09…15 | 6 | 1 fit round (10-14) | 401 |
 | 4. every new tool rolls its own helpers (JSON IO, bounded runs) | 4 code-ledger rows | 5 (10-08…10-14) | 4 + 3 fit-round folds | 30 |
 
 - Method of the table, at HEAD on 2026-10-16:
   - class 1: `git ls-files local-config/home` at a `DEPLOYS` target (21 files, 2,818 lines), plus files byte-equal
     (`cmp`) to a tracked llm-legs or hammerspoon file (hammerspoon's `com.egor.hammerspoon.plist`, 34); `wc -l`;
-  - class 2: dead lines = the units the 42 `dead` rows of `candidates.jsonl` name in `detail`, each once (`value`
-    adds a clone signal: 695); days = the dead-row fixes, relay sweep, stamp and refusals; relay commits = `git log
+  - class 2: dead lines = `lines` of the units the 42 `dead` rows of `candidates.jsonl` name as dead in `detail`
+    (`X is defined and never called`, `no entry point reaches X, Y`), each once; the `is N lines with N branches`
+    units (worker-run, instruction-files.sh: 11,534) and clone-only units (24) are out; `value` adds a clone signal: 695; days = the dead-row fixes, relay sweep, stamp and refusals; relay commits = `git log
     --first-parent -i -E --grep='^relay (leftovers|cleanup)|^relay-free polish|retired relay|dangling worker-relay'`
     from 10-09 on, less two Spend audits (fc86109c, 3e8062e0);
-  - class 3: `fail()`, `assert()`, `assert_fails()` bodies in tracked `*.sh`, whitespace-stripped; lines = every copy
+  - class 3: `fail()`, `assert()`, `assert_fails()` bodies in tracked `*.sh`, defined at column 0, from the `name()`
+    line to the line where `{`/`}` balance (one body closes on `exit 1; }`), whitespace-stripped; lines = every copy
     of a body seen twice or more, less one per body; suites added = `tests/` files added on first parents, by date;
   - class 4: `def read_json(`, `def read_jsonl(`, `def write_json(`; lines = per repository, every body less the
     longest per name, less the copies the code ledger keeps on purpose (chat-load: deployed beside memlogd;
     harness-doctor's `read_jsonl`: a binary tail reader; review-anchors: a standalone script);
   - classes 3–4 leave `local-config/` out;
   - shared 6-line blocks: windows of 6 non-blank lines, whitespace-stripped, found in two or more tracked test
-    files (the Method's tests bucket, text files at HEAD, 163,052 lines); a pair's number is one side's lines.
+    files (the Method's tests bucket, text files at HEAD 96f8c2da, 164,745 lines); a pair (A, B) counts A's
+    non-blank lines inside windows it shares with B, A the alphabetically first path; the total sums the pairs.
 
 Why they come back:
 1. The snapshot (d2ecaa0, 10-13) copies every file in `~/.local/libexec` and every agent plist naming it. Installers
@@ -96,8 +99,8 @@ Why they come back:
    REUSE FIRST in worker-run's brief preamble has asked for reuse since 09-18; the class came back anyway.
 
 Checked, not a class:
-- Copied fixtures across split suites: shared 6-line blocks total 1,822 lines (overlapping windows: an upper
-  bound), the largest pair test_codexb/test_geminib with 92. No fix of one exists to have come back.
+- Copied fixtures across split suites: shared 6-line blocks total 2,901 lines over 309 pairs (2,472 distinct
+  lines: an upper bound), the largest pair test_codexb/test_geminib with 108. No fix of one exists to have come back.
 - Readers of retired experiments: none of the 5 tags removed since 09-20 has one left (grep outside docs/handoffs).
 - Names a retirement left in code or tests at its own commit, 10-09…15: of 103 commits deleting a file or
   definition, 2 (worker-corpus's frame-guard exemption, 138b5a6c; `words_grant_target` in a planted test, b50e5bff).

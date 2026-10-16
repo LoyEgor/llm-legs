@@ -65,12 +65,17 @@ the log audit's 105 rows hold none that moves CPU or disk.
 
 | class | CPU-min/day 10-09…15 | rows | days fixed | instances fixed |
 |---|---:|---:|---:|---:|
-| 1. the statusline recomputes what did not change | 469 | 8 | 3 (10-06, 10-13, 10-14) | 10 |
+| 1. the statusline recomputes what did not change | 468 | 8 | 3 (10-06, 10-13, 10-14) | 10 |
 | 2. a hook starts a bash per tool call | 166 | 50 | 2 (10-13, 10-14) | 35 |
 | 3. a doctor run costs more each day it holds more data | 103 | 3 | 1 (10-14) | 2 |
 | 4. a Hammerspoon timer polls on the main thread | 95 | 3 | 4 (10-09, 10-10, 10-13, 10-14) | 8 |
 | 5. a CPU audit reopens on a number not its own | audits' churn | 28 due | 0 | 0 |
-| 6. a store rewritten whole instead of its delta | SSD | 3 | 2 (10-13, 10-14) | 3 |
+| 6. a store rewritten whole instead of its delta | SSD | 3 | 2 (10-13, 10-14) | 2 |
+
+CPU-min/day is the Baseline's 10-09…15 lines (class 1 = renders + probes and kicks). Rows: the ledger ids each
+item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan-writes`, `-cohort`,
+`review-anchors-blob-memo-rewrites`). Days and instances fixed: distinct fixing commits or `cut` verdicts by date
+(`fixes[].at`, `audited_at`); one commit credited to two rows is one instance (token-map 825b88f).
 
 1. Rows `cpu:statusline/{render,ports,unpushed,work,debt,autonomy}`, `cohort-statusline-renders`,
    `statusline-render-load`; each audit caches one section, a new one joins uncached. 10-15: 117 CPU ms a changed
@@ -81,33 +86,37 @@ the log audit's 105 rows hold none that moves CPU or disk.
    pays ≈ 40 of 72 ms) and freezes a segment on a missed input. The CPU audits keep cutting sections.
 2. Rows `cpu:hook/*`. CPU a run fell 36.9 → 28.6 ms; runs follow tool calls. No goal: the dispatcher was declined
    (2026-10-05, `spend.md`) and no new hooks, so the CPU audits cut them one by one, dearest first.
-3. Rows `cpu:doctor/{speed,system,harness}`. Median CPU s a run (`collector-runs.jsonl`) 10-13/14/15/16: Speed 7.5,
+3. Rows `cpu:doctor/{speed,system,harness}`. Median CPU s a run (`collector-runs.jsonl` `cpu_s` by the local day of
+   `start`; 10-16 to 22:00) 10-13/14/15/16: Speed 7.5,
    11.1, 12.6, 15.2; System 1.0, 2.4, 3.6, 5.0; Harness 24.6, 8.3, 5.9, 7.1. No commit to either rising doctor
    after 10-14 (`share/time_budget.py` once on 10-15): the rise is their data.
 4. Rows `cohort-hammerspoon-tab-poll`, `cpu:process/Hammerspoon`, `speed-hs-lag-instruction-watch-walk` (iPad
    pointer trace, instruction-watch walk ×2, tab poll ×3, menu rebuild ×2). 14 files start repeating timers, each
-   with its own idle rule; three gate on `Presence.away()`. Present minutes carry 94, 84, 55 CPU-min on 10-14/15/16,
+   with its own idle rule; three gate on `Presence.away()`. Present minutes carry 93, 84, 55 CPU-min on 10-14/15/16,
    away ones 11–16 (goal tab-tty's join), so an away-timer helper was dropped. A Terminal-front present minute
    costs 8.38 CPU-s, any other app's 3.24 (10-14…16, 1,245 and 1,079 min): the Cmd-key tab poll runs a ps every
    0.45 s idle tick and re-reads the tab's tty by osascript every `ttyRefreshAfter` 1 s (`refreshTty`, 44 a quiet
    minute in 75d60db), 50–60 ms CPU each in osascript alone (timed here). Next, unconfirmed: `llm-limits.lua`
    `onStoreChanged` → `refreshRouting` runs `nice worker-pick --menu` per store write (2 s throttle), 1,383–1,994
-   a day 10-14…16 (`routing-launch`), 0.44–0.93 CPU-s each (diagnosis); whether the writes change its input is open.
+   a day 10-14…16 (`routing-launch` lines in the actions log, 10-16 to 22:20), 0.44–0.93 CPU-s each (diagnosis); whether the writes change its input is open.
 5. `share/cpu_audit.py` `due()` reopens a row on another source blob (`spend.moved`) or on CPU-min/day 1.5× the
    audit's, neither the component's own cost (Lost time's 2026-10-16 decision makes these System's). On 10-16 21:46
    33 were due: 2 never audited, 14 source changed, 17 rises, mostly runs (hooks 5,712 → 13,049 a day at 0.007 s).
    Only 3 ran slower: `hook/review-owner-gate.sh` ×5.6, `doctor/speed` ×1.7, `run-suites.sh` ×16 (test load).
    `cpu:hook/context-nudge.sh` was re-audited on 10-14 when an edit "moved the source; the cost did not".
-6. Since 10-14 no own writer the ticks see passes 1 GB/day (memlogd 0.84 on 10-15), but one dying between ticks
+6. Since 10-15 no own writer the ticks see passes 1 GB/day but the load (agy, the logo bench) and
+   transcriptions-gpt (accepted): memlogd 0.84 on 10-15 (`days.jsonl` `cohort` field 5); 10-14 had review-bench 2.93
+   before its 08:19 fix. One dying between ticks
    takes its write counters along (blind spot `ssd-writers`: the 10-04 privileged trace put ≈ 76 % of writes on our
-   own short-lived processes). The root ssd-sampler's 20 samples 10-13…16 (22 min): kernel_task 55 % (swap 28 %),
+   own short-lived processes). The root ssd-sampler's first 20 v3 samples (`/var/db/ssd-sampler`, 10-13 22:12 …
+   10-16 17:06, 22 min, shares as `system-doctor` `ssd_sampled()`): kernel_task 55 % (swap 28 %),
    the logo bench's `$TMPDIR` ≥ 17.5 %. No goal until its 7-day shares name an own writer.
 
 ## Goals
 
 After Breakages' and Lost time's goals (PILOT order). `cpu-audit-own-number` goes first: goal 2's doctor edits
-would otherwise reopen the `cpu:doctor/*` rows. `doctor-run-flat` recovers ≈ 35 CPU-min/day and grows daily (Speed
-195 runs × 7.7 s, System 171 × 4 s over 10-13's), `tab-tty` ≈ 25 ((5.14 − 1.5) CPU-s × 415 Terminal-front minutes a
+would otherwise reopen the `cpu:doctor/*` rows. `doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
+195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15), `tab-tty` ≈ 25 ((5.14 − 1.5) CPU-s × 415 Terminal-front minutes a
 day). Classes 1, 2 and 6 have no goal (above).
 
 ### goal cpu-audit-own-number: a CPU audit comes due only on its own slower run
@@ -129,7 +138,7 @@ Class 3.
   follows the days held; each moves to an existing reader (Speed's `read_new` + `fold_jsonl`, `cpu_audit.tally`'s
   size+mtime cache) and the one it replaces goes.
 - Proof: a state copy 5 min after a live run, old and new alternated on fresh copies, 5 pairs a doctor, CPU s a run
-  from the copy's `collector-runs.jsonl`. Before (10-16 medians): Speed 15.2, System 5.0; after landing the daily
+  from the copy's `collector-runs.jsonl`. Before (10-16 medians to 22:00): Speed 15.2, System 5.0; after landing the daily
   medians stay flat 7 days (they rose 1.2–2.6 s a day from 10-14).
 - Must not get worse: `latest.json` equal old vs new on one copy, clock pinned (`SPEED_DOCTOR_NOW`; System's
   timestamps aside).

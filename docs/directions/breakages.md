@@ -17,7 +17,8 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
   time_floor, tool_idea, growth-* (installs), store_size, debt-*, ledger faults, Updater `event-waiting` (per event).
 - Units: `strata.chat.units + strata.workers.units` of `~/.cache/harness-doctor/budget-days/<day>.json`, as Lost
   time; they start 10-03, so the prior window is 5 days.
-- Repeats, the second number (target 0): ledger rows a snapshot shows `regressed`, log_audit's aside (below).
+- Repeats, the second number (target 0): ledger rows a snapshot shows `regressed`, distinct per window, with the
+  sum's exclusions (log_audit's aside, below; Speed's, test_*, time_floor and growth-* rows out too).
 
 ### Baseline (computed 2026-10-16)
 
@@ -41,8 +42,8 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
 - Harness doctor (`latest.json`) minus `suite_audit`, `test_*` (Lost time), `cpu_audit` (System), `spend_audit` (Spend).
 - LLM doctor (the legs); Updater doctor (`share/updater-ledger.json` is empty: its problems live in the snapshots).
 - Log audit (`bin/log-audit`, nightly since 10-07): Haiku reads the day's transcripts in chunks (55 on 10-14), Sonnet
-  merges them into 15 Harness problems; ≈0.8 % of worker-run spend (7 days to 10-15); 105 rows: 50 fixed, 18 open,
-  36 dismissed. Kept: the only reader of the night's own waste.
+  merges them into 15 Harness problems; ≈0.8 % of worker-run spend (7 days to 10-15; unconfirmed, no method named);
+  105 rows: 50 fixed, 1 fixed-pending, 18 open, 36 dismissed. Kept: the only reader of the night's own waste.
 - Ledgers: `share/harness-ledger.json` (383 rows on 10-15: 284 fixed, 4 fixed-pending, 37 open, 31 ruled-out,
   25 not-a-bug, 2 weather), `share/doctor-ledger.json` (LLM).
 
@@ -61,8 +62,8 @@ of 10-07…14 and the doctors' rows; "nights" are the rows' distinct first commi
 | a Stop hook outruns its 5 s cap (Harness `hook-error`) | 7 | 6 days | 6 |
 | a reviewer's output takes a shape its reader did not expect (R1: empty findings, agy Markdown, the coverage floor) | 1 | | 7 fixes |
 | night load breaks timing tests | 5 | 3/7 | 4 |
-| a worker writes a repository its brief never granted | 5 | 4 days | W3 5×, W7 3×, W8 |
-| shell environment: bash 3.2, zsh word-splitting, a launchd PATH | 3 | 3/7 | 0, open |
+| a worker writes a repository its brief never granted (W3, W5, W7, W8, W9) | 5 | 3 days (W3, W5 filed before 10-03) | W3 5×, W5, W7 3×, W8, W9 |
+| shell environment: bash 3.2, zsh word-splitting, a launchd PATH | 3 | 3/7 | 2 (1 open) |
 | the LLM doctor files one cause again as a new row each day (callers' argument errors refused before spend: I23, I35, I41, I48, all not-a-bug) | 4 | 4 days | 0 |
 | model behavior: re-asked decisions, unverified claims, unrequested mechanisms (not mechanics, so no fixer) | ≈25 | 7/7 | |
 
@@ -122,15 +123,17 @@ table; awk dying on Cyrillic let calls through, `log_audit:pretooluse-awk-multib
 
 ### goal bash-cap: a worker's timed-out Bash call moves to the background, as a chat's does
 
-Class: a Bash call dies at its cap and runs again. 10-02…16, 616 results "Command timed out after" (one per
-tool_use id, `~/.claude/projects/**/*.jsonl`), killed / re-run / re-run minutes: suites 255 / 236 / 2,896, waits
-146 / 0, bench 101 / 20 / 200, other scripts 44 / 7 / 122, scans 30 / 4 / 20, media 16 / 4 / 52, probes 15 / 2 / 27,
-doctor, review and worker 9 / 3 / 37; by cap 2-min 181, 10-min 271, 25-min 113. Breakages owns it; `lost-time.md`
-points here.
-- Cause: 604 ran in headless workers (`entrypoint: sdk-cli`), 11 in subagents, 1 in a chat. Claude Code 2.1.301
-  moves a timed-out call to the background instead of killing it (commands starting with `sleep` excepted); chats
-  got that 795 times. `bin/worker-run` exports `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (0b9f4f25, 09-27), so
-  workers are killed instead.
+Class: a Bash call dies at its cap and runs again. 10-02…16 23:40 (local), 606 killed calls: `tool_result` with
+`is_error` whose text begins `Exit code 143` / `Command timed out after`, one per tool_use id,
+`~/.claude/projects/**/*.jsonl` (a bare substring match also counts transcripts quoting the text: 657). Killed /
+re-run / re-run minutes, from an earlier count of 616 and unconfirmed: suites 255 / 236 / 2,896, waits 146 / 0, bench
+101 / 20 / 200, other scripts 44 / 7 / 122, scans 30 / 4 / 20, media 16 / 4 / 52, probes 15 / 2 / 27, doctor, review
+and worker 9 / 3 / 37; by cap (605 to 23:15) 2-min 181, 10-min 264, 25-min 110, other caps 50. Breakages owns it;
+`lost-time.md` points here.
+- Cause: 595 ran in headless workers (`entrypoint: sdk-cli`; 87 of them start with `sleep`), 11 in their subagents,
+  0 in a chat. Claude Code 2.1.301 moves a timed-out call to the background instead of killing it (commands starting
+  with `sleep` excepted); chats got that 795 times (unconfirmed). `bin/worker-run` exports
+  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (0b9f4f25, 09-27), so workers are killed instead.
 - Change: delete that export and its comment; the `BASH_MAX_TIMEOUT_MS` lines stay; `tool-idea-run-all-attach` is
   not built. Under `-p` a background task dies at the final response, and Claude Code's move notice already says so
   ("terminated when you give your final response … wait for it before giving your final response", 2.1.301
@@ -138,8 +141,8 @@ points here.
 - Proof: one slow selection through worker-run at `BASH_MAX_TIMEOUT_MS=60000`, old and new interleaved: old is
   killed and re-runs, new runs once. Its first new run confirms auto-backgrounding under `-p`, so far only read.
 - Read after landing: worker timeouts ending killed (Claude Code's tool_result text in `sdk-cli` transcripts,
-  `sleep` excluded), 604 → 0 per 14 days. Not worse: final responses with a backgrounded task unread (0),
-  `worker_orphans`.
+  `sleep` excluded), 519 (508 headless, 11 subagents) → 0 per 14 days. Not worse: final responses with a
+  backgrounded task unread (0), `worker_orphans`.
 
 ### goal stop-hooks: no Stop hook holds the stop
 
@@ -159,8 +162,10 @@ notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
   `stop_hook_active`.
 - Proof: stops that waited ≥5 s or were killed, per 1,000, from Claude Code's transcript records
   (`stop_hook_summary`, `hook_cancelled`) by live-run band: under 20 0.4, 20–79 41, 80+ 615 before; target 0 in
-  every band, an empty band reads unclear. Not worse: asks/holds (64) and notices (54) still delivered, ≤23 repeats
-  within 5 min, Stop CPU p50 0.29 s.
+  every band, an empty band reads unclear. The bands are unconfirmed (no source for the live-run count, no window);
+  all transcripts 10-01…16: 7,179 stops, 120 with a hook ≥5 s (`hookInfos[].durationMs`), 16 Stop
+  `hook_cancelled`. Not worse: asks/holds (64) and notices (54) still delivered, ≤23 repeats within 5 min, Stop CPU
+  p50 0.29 s.
 
 ## Mechanics (2026-10-15)
 

@@ -34,9 +34,10 @@ Method, ≈90 s a window on an idle machine (over 10 min at load 130+):
   until=…))`, node `Doctors` `value / total[0]`, then `prev / prev_total[0]` (`tokenmap spend` takes no `--since`).
 - Audit runs: run dirs whose `~/.cache/claude-worker-runs/*/brief` holds `# Fixer run harness-speed-spend-` and
   whose `meta.json` `started_at` is in the window (a `spend:` key match also takes log-audit chunks, which quote
-  transcripts: 23 sessions, 7.15M plain). Session: `session`, else `worker-session`; resumes share it. Sum
+  transcripts: 23 sessions, 7.15M plain); `started_at` is epoch seconds, read as a local day. Session: the run dir's
+  `session` file, else its `worker-session` file; resumes share it. Sum
   `limits.request_sql('r')` × `tokenmap.pie.model_weight(model, day, speed, prompt)` over `requests.root_session`
-  in `tokenmap.sqlite3` (`mode=ro`). 10-09…15: 39 dirs, 28 runs, 33 sessions with requests.
+  in `tokenmap.sqlite3` (`mode=ro`). 10-09…15: 39 dirs, 30 run tags, 28 of them (33 sessions) with requests.
 
 ## Sources
 
@@ -64,7 +65,7 @@ tails + 7 load + 8 other key on 31 rows; an independent pass on 10-16 labelled 3
 |---|---:|---:|---:|---:|
 | 1. a Spend audit comes due with nothing new to change: a cut whose tail still sits in the 7-day window, a rise that was load or a tokenmap measurement change, a part kept before under another key | 78 of 81 audited problems; 31 of 64 rows | 6.65M of the audits' 7.63M (25 of 28 runs) | 5 audit nights, 10-09…14 | 31 rows, each closed alone |
 | 2. a scripted one-request call carries the configuration it never uses | 173 worker calls | 6.94M, ≈2.7M of it configuration | 10-05…15 | 5 (Done) |
-| 3. a session re-writes its whole context cold: idle past the cache, or another org's account | 5 | 0.04M since 10-14 | 10-10…14 | 1, held |
+| 3. a session re-writes its whole context cold: idle past the cache, or another org's account | 5 | 0.11M since 10-14 (0.04M plain) | 10-10…14 | 1, held |
 | 4. a run re-derives what a ledger holds: known reds, fixed rows re-proved, ledger ground re-profiled, a whole read redone | 5 | | 4 nights | 3 |
 | 5. a run sized past what settles it, then run again: a 289-panel judge grid for ≈22 votes, a cap that measured itself, a biased answer key, Haiku cells on Sonnet, 241 images to one worker | 5 | | 2+ nights | 1 |
 | 6. rework from an unsettled spec (Spend menu, Fee index rebuilt 3×, batch sizing, lens tuning): model behavior, no fixer | 6 | | 3 nights | 0 |
@@ -126,10 +127,12 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 - Proof, a replay (the pilot runs no audits; neither number above counts them): old and new `due()` on the windows
   ending at the five audit nights' starts, 10-09…14 (`tokenmap tracking --since/--until --json`), each with the
   ledger at that night's base. Before (packets): 81 audited, 78 changed nothing, 3 gate false catches. Better:
-  under half of the 78 still due. On 10-09…16 with the ledger at b0698b17, old `due()` gives 14, 13 never audited.
+  under half of the 78 still due. On 10-09…15 (`--until "2026-10-16 00:00"`) with the ledger at b0698b17, old
+  `due()` gives 14, 13 never audited.
 - Once the full night is back: audit runs a week, 28 (7.63M Opus = 1) in 10-09…15, by the method above.
-- Must not get worse: the components under the floor stay at or under 0.09 % of spend together (0.79M of the
-  872.5M Opus-priced `harness_index.claude` on 10-09…16).
+- Must not get worse: the components under the floor stay at or under 0.09 % of spend together (the `fee:`
+  sources' `charged` under 0.27M: 7 sources, 0.785M of the 872.5M Opus-priced `harness_index.claude` on 10-09…15;
+  the `loaded:` ones under 0.31M, Browser check and cwd.sh, add 0.26M plain).
 
 ## Done
 
@@ -178,7 +181,7 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 - `spend-7d.json` is written only by `tokenmap spend --range 7d --write`, run by the menu's 7-day view (last 10-14
   02:20), so the night's `Doctors 7d` is stale; the night can run it first.
 - Advisor 14 and Daily note 15 runs a week for one launch a day each (ledger notes, 7 days to 10-13), extras
-  untraced; audit-due's price rule makes both due (×1.75, ×1.81 on 10-09…16).
+  untraced; audit-due's price rule makes both due (×1.75, ×1.81 on 10-09…15, `cells` `price[0] / price[1]`).
 - `share/tool_mining.py` `bench_faults` refuses a tool slower than the ad-hoc script's run, leaving out the model's
   writing of that script; it dropped a ledger lookup over 3–5 ms (`speed-adhoc-doctor-state`).
 - Night fixers' first request in llm-legs worktrees, 10-14…16 (36 fixers): brief 8.1k against 2.6k for a day
