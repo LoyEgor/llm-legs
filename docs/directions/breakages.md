@@ -49,9 +49,8 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
 
 ## Recurring classes
 
-Each was fixed as an instance, then came back elsewhere. Ranked 2026-10-15 by hand from the 105 log-audit rows
-of 10-07…14 and the doctors' rows; "nights" are the rows' distinct first commits (Stop hooks: hook-error rows
-10-03…14).
+Each was fixed as an instance, then came back elsewhere. Ranked 10-15 by hand from the 105 log-audit rows of
+10-07…14 and the doctors' rows; "nights": the rows' distinct first commits (Stop hooks: hook-error rows 10-03…14).
 
 | class | rows | nights | instances fixed |
 |---|---:|---:|---:|
@@ -67,30 +66,28 @@ of 10-07…14 and the doctors' rows; "nights" are the rows' distinct first commi
 | the LLM doctor files one cause again as a new row each day (callers' argument errors refused before spend: I23, I35, I41, I48, all not-a-bug) | 4 | 4 days | 0 |
 | model behavior: re-asked decisions, unverified claims, unrequested mechanisms (not mechanics, so no fixer) | ≈25 | 7/7 | |
 
-The collision, walled-account and timing-test rows (23) come from the night's own fan-out: the pilot stops them
-only while PILOT is set, so they stay open. Ledger rows already merge by row id (`share/merge_ledger.py`, since
-10-08): fixers collide on a row, a handoff or a component, not on the file.
+The collision, walled-account and timing-test rows (23) are the night's own fan-out, stopped only while PILOT is
+set, so they stay open; rows merge by id since 10-08 (`share/merge_ledger.py`): fixers collide on a row, a handoff
+or a component, not the file.
 
-One fix per class, an existing tool before our own: a gate decides on the parsed command (goal gates); a worker's
-timed-out Bash call moves to the background (goal bash-cap); a Stop hook runs async (goal stop-hooks); a worker
-writes only where its brief grants, through its CLI's sandbox (workdir plus `--add-dir`, `codex exec --sandbox
-workspace-write`); a reviewer's output is held to a schema by its CLI (`claude --json-schema`, `codex exec
---output-schema`); fixers spread over accounts by room. The 2026-10-05 night worked that way.
+One fix per class, an existing tool before our own: the three goals below; a worker writes only where its brief
+grants, through its CLI's sandbox (workdir plus `--add-dir`, `codex exec --sandbox workspace-write`); a reviewer's
+output is held to a schema by its CLI (`claude --json-schema`, `codex exec --output-schema`); fixers spread over
+accounts by room. The 2026-10-05 night worked that way.
 
 ## Why rows come back (2026-10-15 audit)
 
 - **Re-fixes.** 48 harness-ledger rows were fixed 2+ times: 22 Speed `opportunity` rows (optimised again), 8
   measured under load (noise read as a regression), the rest real returns.
-- **Audits reopen on edits.** The suite, CPU and spend audits reopen on any edit of a source (`spend.moved`, read
-  by `share/suite_audit.py`, `share/cpu_audit.py`, `share/spend.py`): on 10-15, 139 of the 252 suites audited on
-  10-13/14 were due again with no slower run.
-- **Log-audit evidence carries the read's time.** `audit_verdicts` (`bin/harness-doctor`) stamps every quote with
-  the audit's `at`, so a fix landed before the read reads regressed (blind spots `audit-fix-inside-window`,
+- **Audits reopen on edits.** Suite, CPU and spend audits reopen on any source edit (`spend.moved`, read by
+  `share/{suite_audit,cpu_audit,spend}.py`): on 10-15, 139 of 252 suites audited 10-13/14 were due, none slower.
+- **Log-audit evidence carries the read's time.** `audit_verdicts` (`bin/harness-doctor`) stamps every quote with the
+  audit's `at`: a fix landed before the read reads regressed (blind spots `audit-fix-inside-window`,
   `log-audit-evidence-read-time`).
-- **Doctors miss each other's verdicts.** The statusline render was settled 10-06
-  (`docs/handoffs/2026-10-05-hook-cuts-left.md`), then fixed again by the nights of 10-13 and 10-14.
-- **A repeat had no cheap exit** under 10-13's measured-evidence rule (997f1d1a), so changing something was the
-  fixer's cheapest way out; the pilot's `repeat:` exit (Mechanics) answers it.
+- **Doctors miss each other's verdicts.** The statusline render, settled 10-06
+  (`docs/handoffs/2026-10-05-hook-cuts-left.md`), was fixed again on the nights of 10-13 and 10-14.
+- **A repeat had no cheap exit** under 10-13's measured-evidence rule (997f1d1a), so a change was the fixer's
+  cheapest way out; the pilot's `repeat:` exit (Mechanics) answers it.
 - **The night makes its own.** Parallel fixers load the machine (load 100–240): tests flake, timings turn to noise.
 
 ## Goals
@@ -112,14 +109,22 @@ table; awk dying on Cyrillic let calls through, `log_audit:pretooluse-awk-multib
   unquoted heredoc, and a heredoc or `-c` body fed to a shell, are commands; other quoted text and comments are data.
 - A formality never denies: the gate rewrites the input (`updatedInput`) or adds a notice (Decision 09-29).
 - Corpus `~/.cache/harness-doctor/gate-corpus/corpus.jsonl`: 231 denials 08-05…10-16 (Stop, PostToolUse out),
-  labelled 10-16 by two blind labellers (`label`, `label_b`, `agreed`, `cause`, `input`, `denial`). Agreed on 196:
-  81 legitimate (62 Bash; review-flow-gate 27, unknown-hook 19, edit-conflict-notice 6, cd-guard 5; text-match 20,
-  word-match 8, memory-unpinned 11, probe 7, no-op cd 9, gate-crash 3), 111 rightly, 4 unclear. The 35 disputed are
-  settled by the goal's worker against each gate's stated purpose before the work; as many allowed Bash calls from
-  the same transcripts join it. One test replays it for every gate, replacing the per-gate text cases.
-- Proof replays the agreed rows: legitimate 81 → 0, rightly 111 stay refused, allowed calls stay allowed.
-- Read after landing: the next 7 days' denials labelled the same way; legitimate ones stay 0. Re-runs after a
-  denial show nothing: workers re-run rightly refused commands too (`log_audit:workers-route-around-denials`).
+  labelled 10-16 by two blind labellers (`label`/`label_b`, `cause`, `why`, `agreed`); agreed on 196: 81 legitimate,
+  111 rightly, 4 unclear; `unknown-hook` rows (19) are named by their denial text. The goal's worker settles the 35
+  disputed against each gate's purpose first; as many allowed Bash calls from the same transcripts join. One test
+  replays it for every gate, replacing the per-gate text cases.
+- Target 0: the 37 Bash rows the parsed argv removes: quoted or heredoc text read as a command 14, help and
+  `--dry-run` probes 13 (5 filed `text-match`), a relative path off the call's own `cd` 1, a `cd` to the input's
+  `cwd` 9. A deny rule refuses probes and no-op cds too, so their gates stay hooks on the parse.
+- Out, counted apart (not worse): 25 Bash: Egor's words unread 10 (the word readers), a gate's purpose misjudged 5
+  (that gate's rule), a `review-bench waive` earlier in the call 3 (crediting a step before it runs passes a failed
+  one), gate crashes 3 (the replay fails a crashing gate; a crashed dependency is its own bug), a variable naming
+  the program or argument 4 (unparsable: as today). 19 not Bash: an unpinned memory 11 (instruction-bloat-gate's
+  rule passes it now; the replay confirms), edit-conflict-notice 6 (a foreign run without a file list claims its
+  workdir: worker-run's `files`; one a notice, Decision 09-29), english-gate's straight quotes 1, Mattermost words 1.
+- Proof replays the agreed rows: the 37 → 0, the 44 not more, rightly 111 stay refused, allowed calls allowed. Read
+  after landing: the next 7 days' denials labelled the same way, target causes 0. Re-runs after a denial show
+  nothing: workers re-run rightly refused commands too (`log_audit:workers-route-around-denials`).
 
 ### goal bash-cap: a worker's timed-out Bash call moves to the background, as a chat's does
 
@@ -130,14 +135,14 @@ re-run / re-run minutes, from an earlier count of 616 and unconfirmed: suites 25
 101 / 20 / 200, other scripts 44 / 7 / 122, scans 30 / 4 / 20, media 16 / 4 / 52, probes 15 / 2 / 27, doctor, review
 and worker 9 / 3 / 37; by cap (605 to 23:15) 2-min 181, 10-min 264, 25-min 110, other caps 50. Breakages owns it;
 `lost-time.md` points here.
-- Cause: 595 ran in headless workers (`entrypoint: sdk-cli`; 87 of them start with `sleep`), 11 in their subagents,
-  0 in a chat. Claude Code 2.1.301 moves a timed-out call to the background instead of killing it (commands starting
-  with `sleep` excepted); chats got that 795 times (unconfirmed). `bin/worker-run` exports
-  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (0b9f4f25, 09-27), so workers are killed instead.
+- Cause: 595 ran in headless workers (`entrypoint: sdk-cli`), 11 in their subagents, 0 in a chat. Claude Code
+  2.1.301 moves a timed-out call to the background instead of killing it; chats got that 795 times (unconfirmed).
+  `bin/worker-run` exports `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (0b9f4f25, 09-27), so workers are killed instead.
+- 87 of the 606 start with `sleep`, exempt from the move, so they stay killed after the change; none was redone (no
+  later identical command in its session, checked 10-16): the base and the read leave them out.
 - Change: delete that export and its comment; the `BASH_MAX_TIMEOUT_MS` lines stay; `tool-idea-run-all-attach` is
-  not built. Under `-p` a background task dies at the final response, and Claude Code's move notice already says so
-  ("terminated when you give your final response … wait for it before giving your final response", 2.1.301
-  binary): no preamble line unless the read below finds a final response with a task unread.
+  not built. Under `-p` a background task dies at the final response, as the move notice says ("… wait for it before
+  giving your final response", 2.1.301): no preamble line unless the read finds a final response with a task unread.
 - Proof: one slow selection through worker-run at `BASH_MAX_TIMEOUT_MS=60000`, old and new interleaved: old is
   killed and re-runs, new runs once. Its first new run confirms auto-backgrounding under `-p`, so far only read.
 - Read after landing: worker timeouts ending killed (Claude Code's tool_result text in `sdk-cli` transcripts,
@@ -158,14 +163,15 @@ notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
 - Change: `"asyncRewake": true` on the one Stop entry of claude-setup `local-config/home/.claude/settings.json`
   (2.1.301 schema: the hook runs in the background and wakes the model on exit 2); stop-dispatch turns a block into
   exit 2 with the reason on stderr; its 5 s/10 s budget and serial order go.
-- Check first: whether an async hook's `systemMessage` still shows, and whether a rewoken stop sets
-  `stop_hook_active`.
-- Proof: stops that waited ≥5 s or were killed, per 1,000, from Claude Code's transcript records
-  (`stop_hook_summary`, `hook_cancelled`) by live-run band: under 20 0.4, 20–79 41, 80+ 615 before; target 0 in
-  every band, an empty band reads unclear. The bands are unconfirmed (no source for the live-run count, no window);
-  all transcripts 10-01…16: 7,179 stops, 120 with a hook ≥5 s (`hookInfos[].durationMs`), 16 Stop
-  `hook_cancelled`. Not worse: asks/holds (64) and notices (54) still delivered, ≤23 repeats within 5 min, Stop CPU
-  p50 0.29 s.
+- Check first: whether an async hook's `systemMessage` still shows, a rewoken stop sets `stop_hook_active`, and an
+  async Stop hook still writes `stop_hook_summary`/`hook_cancelled`; if not, stop-dispatch journals an entry line
+  beside its exit line (`~/.cache/claude/stop-gate/journal.jsonl`): no exit is a kill, entry to exit its time.
+- Proof: stops that waited ≥5 s or were killed, per 1,000, from those records (`hookInfos[].durationMs`) by band of
+  worker runs live at the stop (`~/.cache/claude-worker-runs/<run-id>/` birth → `exit_code` mtime, the diagnosis'
+  source): under 20 0.4, 20–79 41, 80+ 615 before, unconfirmed (no window; run dirs prune at 7 days, now 10-07…16):
+  first step, recompute it there. Target 0 per band, an empty band unclear. All transcripts 10-01…16: 7,179 stops,
+  120 with a hook ≥5 s, 16 Stop `hook_cancelled`. Not worse: asks/holds (64), notices (54) delivered, ≤23 repeats
+  within 5 min, Stop CPU p50 0.29 s.
 
 ## Mechanics (2026-10-15)
 

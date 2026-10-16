@@ -78,11 +78,12 @@ Why they come back:
    and with tokenmap's measurement changes (re-ingest, re-split: deferred tool list ×5.4, Review summary +26 %). The
    3 that changed something were Breakages' `gates` false catches (review-flow-gate, dia-not-chrome, english-gate).
 2. 761cf189 made the stripped ask_* legs the launch for scripted model calls, yet 161 of the 173 calls are
-   `bin/log-audit`'s chunk reads and merge, 6 the end-of-day report, 1 code-doctor's critical judge, all through
-   `worker-run`, which cannot know at launch that a run will be one request. Each started with ≈36k of configuration
-   (est.) against 8.0k for `ask_claude.sh`. `bin/log-audit` sizes a chunk at 120 kB assuming Claude Code adds ≈11k,
-   so 26 of its 115 Haiku reads went past 100k prompt tokens, which Haiku 5.5 bills at 5×: 1.03M, against 0.64M for
-   the other 89. Method: Claude sessions with one non-sidechain request, `ts` 10-08T21:00Z…10-15T21:00Z, `zone =
+   `bin/log-audit`'s chunk reads (115 Haiku, 39 Sonnet) and merges (7), 6 the end-of-day report, 1 code-doctor's
+   critical judge, all through `worker-run`, which has no one-request path: each caller wrote its own start/wait.
+   Each started with ≈36k of configuration (est.) against 8.0k for `ask_claude.sh`. `bin/log-audit` sizes a chunk
+   at 120 kB assuming Claude Code adds ≈11k, so 26 of its 115 Haiku reads went past 100k prompt tokens, which Haiku
+   5.5 bills at 5×: 1.03M, against 0.64M for the other 89; its 39 Sonnet reads cost 4.37M of the class's 6.94M, 33
+   past 100k. Method: Claude sessions with one non-sidechain request, `ts` 10-08T21:00Z…10-15T21:00Z, `zone =
    'worker'`, the caller read from its run dir's brief, priced as the audit runs.
 3. Fixed for claudeb by the 10-14 resume refusal (9864be9d): cold worker re-writes 32 (8.5M) on 10-13, 2 (0.04M)
    in 10-14…16; account switches 10 (3.5M), none since 10-13. Method: `requests` on `sessions.zone='worker'`,
@@ -96,18 +97,25 @@ Why they come back:
 After Breakages' goals, by its landing rule: scripted-bare first, since log-audit runs on every pilot night while
 the audits wait for the full night. Bash-cap runs belong to Breakages' `bash-cap`.
 
-### goal scripted-bare: every scripted model call goes through the stripped `ask_claude.sh`
+### goal scripted-bare: a one-request model call launches stripped by default
 
-Class 2. `worker-run` cannot tell a one-request run at launch; the caller can, and the stripped leg already exists.
-- Change: `bin/log-audit` (chunk reads and merge), `bin/code-doctor`'s critical judge and claude-setup's
-  `skills-on-demand/end-report/compose.py` call `ask_claude.sh` with the model, effort and worker-pick role they
-  get now (`CLAUDE_MODEL`, `CLAUDE_EFFORT`, `CLAUDE_ALLOW_WEAK=1` for Haiku, `LEGS_ROLE`); their own
-  `worker-run start/wait/report` code goes. Log-audit keeps its `--parallel` cap, and its waits stay measured
-  (`collector_runs`). `worker-run` does not change; `share/web-search.sh` is the argv table it reads, no launcher.
-- Proof, the three callers' calls in Opus = 1 a call (the whole session, so text moved into the brief counts) and
-  Haiku reads past 100k prompt tokens, 7 days before against 7 after, by method 2 above. Before, 10-09…15:
-  log-audit's Haiku reads 115 at 14.6k (26 past 100k), its merges 7 at 76k, the end-of-day report 6 at 39k,
-  code-doctor's judge 1 at 32k. After: each lower, Haiku reads past 100k 0.
+Class 2. Moving the three named callers leaves the next scripted call to bring the class back, so the change goes
+where every one-request call already passes: all 173 started through `bin/worker-run`.
+- Change: `worker-run` gains one shared one-request path launched as `ask_claude.sh` launches (empty cwd,
+  `--safe-mode`, no tool schemas unless declared; through `ask_claude.sh` itself where it can), keeping the pick,
+  account, model, effort (`CLAUDE_ALLOW_WEAK=1` for Haiku), waits and report it does now. A scripted caller that
+  passes nothing new gets it; a run that needs the configuration is the one that says so. `bin/log-audit` (chunk
+  reads and merge), `bin/code-doctor`'s critical judge and claude-setup's `skills-on-demand/end-report/compose.py`
+  then drop their own start/wait code for it. Log-audit keeps its `--parallel` cap and measured waits
+  (`collector_runs`); `share/web-search.sh` is the argv table worker-run reads, no launcher.
+- First step, unconfirmed: how `worker-run` tells a one-request run at launch (the class's old premise was that it
+  cannot; on 10-16 it has no such path or flag, `bin/worker-run` read). Settle a signal no new caller has to add
+  before the change; if none exists, it is a trade for Egor.
+- Proof, every one-request worker call by method 2 above (a new caller counts), in Opus = 1 a call (the whole
+  session, so text moved into the brief counts) and reads past 100k prompt tokens, 7 days before against 7 after.
+  Before, 10-09…15: log-audit's Haiku reads 115 at 14.6k (26 past 100k), its Sonnet reads 39 at 112k (4.37M, 33
+  past 100k), its merges 7 at 76k, the end-of-day report 6 at 39k, code-doctor's judge 1 at 32k; 173 calls carried
+  the configuration. After: each lower, Haiku reads past 100k 0, Sonnet's fewer, calls with the configuration 0.
 - Outputs: one night's chunks and merge, one end-of-day report and one judge input through both launches,
   interleaved on one machine; where answers differ, a blind Sonnet judge (both in random order, with the input)
   rates the new one better, equal or worse. Passes when worse ≤ better, else it is a trade for Egor.
@@ -122,13 +130,19 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
     cell new to the window has a previous price of 0), or when it has no previous price and no ledger row. Its
     "never audited", "source changed" and `SHARE_RISE` go: a relabel shows in both windows, a cut's tail lowers
     the price, and a kept row returns only on a measured rise (the 10-15 decision holds);
-  - `loaded:` (no cells) keeps "never audited" and "still loading after the cut"; `menus` (no tokens) its rule;
-  - a component under one audit run (7.63M / 28 = 0.27M Opus = 1; 0.31M plain `loaded[].tokens`) is never due.
-- Proof, a replay (the pilot runs no audits; neither number above counts them): old and new `due()` on the windows
-  ending at the five audit nights' starts, 10-09…14 (`tokenmap tracking --since/--until --json`), each with the
-  ledger at that night's base. Before (packets): 81 audited, 78 changed nothing, 3 gate false catches. Better:
-  under half of the 78 still due. On 10-09…15 (`--until "2026-10-16 00:00"`) with the ledger at b0698b17, old
-  `due()` gives 14, 13 never audited.
+  - `loaded:` (no cells) keeps "never audited" and "still loading after the cut"; `menus` (no tokens) comes due on
+    a commit to its sources since its audit that no Speed audit run made (`foreign()`, `run_start()` and
+    `landings()` stay for it; `git log` only, no blobs, no `moved()`);
+  - a component under one audit run (7.63M / 28 = 0.27M Opus = 1; 0.31M plain `loaded[].tokens`) is never due;
+  - `spend.moved` goes from Spend. Lost time's `suite-own-cost` and System's `cpu-audit-own-number` drop their
+    callers too; whichever of the three lands last deletes `moved()` and `blobs()` (and `source_blobs()` with the
+    rows' `sources` hashes once nothing reads them).
+- Proof, a replay (the pilot runs no audits): old and new `due()` on the same inputs, the windows ending at the
+  five audit nights' starts, 10-09…14 (`tokenmap tracking --since/--until --json`), each with the ledger at that
+  night's base, and 10-09…15 (`--until "2026-10-16 00:00"`) with the ledger at b0698b17, where old `due()` gives 14,
+  13 never audited. Before is old `due()`'s list on each input, never the packets' 81 (tokenmap and the ledger
+  moved since). Better: new under half of old, summed over the six; a component old lists that an audit then
+  changed (the 3 gates false catches) stays due under new.
 - Once the full night is back: audit runs a week, 28 (7.63M Opus = 1) in 10-09…15, by the method above.
 - Must not get worse: the components under the floor stay at or under 0.09 % of spend together (the `fee:`
   sources' `charged` under 0.27M: 7 sources, 0.785M of the 872.5M Opus-priced `harness_index.claude` on 10-09…15;

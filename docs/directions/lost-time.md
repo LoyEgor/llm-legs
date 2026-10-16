@@ -32,17 +32,15 @@ The windows are 10-08…14 against 10-03…07 (5 days), the same as Breakages', 
   the bracketed parts overlap. Suite runs and CPU from `~/.cache/run-suites/runs.jsonl` by local day of
   `queued_at`: a run is one entry of a line's `suites`, CPU is Σ `suites.*.cpu_s`, per unit divides by chat orders +
   worker tasks (855; 1,952). Some lines hold two JSON objects: decode with `json.JSONDecoder().raw_decode`.
-- `index_by_day` cannot recompute this baseline (7 days against 7 reach 10-01, before the journals): use `budget-days/`.
-- Live cross-check: the doctor's `index_window` at 10-16 19:51 (10-10…16 against 10-03…09) read 0.64; 0.62 at
-  23:15 (`latest.json` → `speed.budget.index_window`).
+- `index_by_day` cannot recompute it (7 against 7 days reach 10-01, before the journals): use `budget-days/`. Live
+  cross-check (`latest.json` → `speed.budget.index_window`, 10-10…16 against 10-03…09): 0.64 at 10-16 19:51.
 
 ## Sources
 
-- Index, rows and waits: `share/time_budget.py`. It reads `~/.cache/harness-doctor/events/`, the worker-stats
-  `runs.jsonl`, the run-suites journal and `~/.cache/harness-doctor/waits`. Settled days are kept in `budget-days/`.
-- Suite runs, CPU, callers and trees: `~/.cache/run-suites/runs.jsonl`. `worker_run`/`session` give the caller,
-  `kind`/`scope` say direct, targeted (`named|changed`) or full, and `tree` is a content digest from 10-09 21:14
-  (hash reworked by 518a3523 on 10-13).
+- Index, rows and waits: `share/time_budget.py`, reading `~/.cache/harness-doctor/events/` and `waits`, the
+  worker-stats `runs.jsonl` and the run-suites journal; settled days in `budget-days/`.
+- Suite runs, CPU, callers, trees: `~/.cache/run-suites/runs.jsonl`; `worker_run`/`session` = caller, `kind`/`scope`
+  = direct, targeted (`named|changed`) or full, `tree` a content digest from 10-09 21:14 (reworked 518a3523, 10-13).
 - Catches: `~/.cache/harness-doctor/test-catches.json` from 10-03, a caller's red → code edit → green. Close's full
   run (`night-run suites`, every night, pilot ones too; `~/.cache/doctors/nights/<id>.json` → `suites.repos[].failed`
   after one rerun) has no transcript, so its reds count as `unread`, never as catches.
@@ -50,8 +48,7 @@ The windows are 10-08…14 against 10-03…07 (5 days), the same as Breakages', 
 - Suite audits: `share/suite_audit.py` `due()`; rows `suite:` in `share/spend-ledger.json`; due ones are the
   `suite_audit` problems in `latest.json` → `speed.problems`, reason after `audit due:`.
 - Ledger rows: `share/harness-ledger.json`, rules `opportunity` (test-health, `chat/tests`), `regression`, `test_*`,
-  `tool_idea`, `wait_class`, the hook rules `hook_*` and `floor` (Speed's, outside Breakages' sum) and the
-  `log_audit` rows. Commits come from git.
+  `tool_idea`, `wait_class`, `hook_*` and `floor` (Speed's, outside Breakages' sum), `log_audit`. Commits: git.
 
 ## Recurring classes
 
@@ -71,56 +68,54 @@ Each class was fixed as an instance and came back. Ranked by harness-ledger rows
   - hooks: rules `hook_*` (57) + `floor` (7); a fix with `regressed_at` is one the row came back after.
   - shaving: rules `test_slow`, `test_daily_cost`, `test_long_pole` (14) + `opportunity` idents matching
     `test-health/\(?(heavy|pole)` (43, `(heavy|idle)/…vendor_files` included).
-  - reopened: `suite:` rows of `share/spend-ledger.json` whose `sources` blob differs from `git rev-parse
-    HEAD:<path>` (203; `tests/lib/suite-journal.sh` moved in 160, the only moved source of 72) + every `regression`
-    row but `test-health/retests` and `test-health/targeted`: 14 `fix/…` (8 fixes, 10-13…14; 11 are suite fixes,
-    6 closed ruled-out: 4 as noise or load, 1 coverage growth, 1 leaked worktrees) and 4
-    `test-health/{pole,wait_night,wait_chat,idle}` volume rows (5 fixes).
+  - reopened: `suite:` rows of `share/spend-ledger.json` whose `sources` blob differs from `git rev-parse HEAD:<path>`
+    (203; `tests/lib/suite-journal.sh` moved in 160, the only moved source of 72) + every `regression` row but
+    `test-health/retests`, `/targeted`: 14 `fix/…` (8 fixes, 10-13…14; 11 suite fixes, 6 closed ruled-out: 4 noise or
+    load, 1 coverage growth, 1 leaked worktrees), 4 `test-health/{pole,wait_night,wait_chat,idle}` volume rows (5 fixes).
   - bash cap: `test_hang` (13 rows, 9 fixes) + 8 `log_audit` rows on the 10/25-min cap or slot queue (4 fixes) +
-    `tool-idea-run-all-attach`.
-  - idle: `opportunity` idents `test-health/idle/*` (18, 14 fixed, 10-10…14) + `time/wait_loop` and the `log_audit`
-    rows `sleep-poll-loops-waiting`, `slot-throttle-foreground-sleeps`, `worker-suite-run-waits` (4, no fix); 10-05
-    is the c4adcbb8 sleep cut, a commit with no row.
+    `tool-idea-run-all-attach`. fan-out: `opportunity` `test-health/fan-out/*` (3, 2 fixes),
+    `log_audit:tests-affected-over-selection`, `tool-idea-run-all-affected`.
+  - idle: `opportunity` `test-health/idle/*` (18, 14 fixed) + `time/wait_loop`, `log_audit` `sleep-poll-loops-waiting`,
+    `slot-throttle-foreground-sleeps`, `worker-suite-run-waits` (4, no fix); 10-05 is c4adcbb8's sleep cut, no row.
   - green reruns: `regression` and `opportunity` `test-health/retests`, `regression` `test-health/targeted`,
     `log_audit:landing-pipeline-retests-and-mistakes`; `known-red-suites-rediagnosed` is a red base, no rerun.
-  - fan-out: `opportunity` `test-health/fan-out/*` (3, 2 fixes), `log_audit:tests-affected-over-selection`,
-    `tool-idea-run-all-affected`.
 - Measured weight, 10-08…14:
   - 37 % of targeted suite runs (22 % of their CPU, 272 of 1,210 CPU-min/day) went to suites with no catch since
-    10-03: a suite is `basename(repo_root)/<stem>`, caught when it is a key of any `days.*.catches`;
-    targeted = `scope` `named` or `changed`, by local day of `queued_at` (27,901 runs).
-  - Retests (a suite rerun on a (`repo_root`, `tree`) with an earlier `rc` 0): 276 runs/day, 84 CPU-min/day from
-    10-09 21:14 to tests-once (10-14 15:42); 36/day, 7 CPU-min/day from then to 10-16 00:00 (by `queued_at`, over
-    the exact spans, 4.77 and 1.35 days).
+    10-03 (suite `basename(repo_root)/<stem>`, caught = a key of any `days.*.catches`; targeted = `scope` `named`
+    or `changed`, by local day of `queued_at`; 27,901 runs).
+  - Retests (a suite rerun on a (`repo_root`, `tree`) with an earlier `rc` 0, by `queued_at`): 276 runs/day, 84
+    CPU-min/day 10-09 21:14 → tests-once (10-14 15:42, 4.77 days); 36/day, 7 CPU-min/day to 10-16 00:00 (1.35).
   - Wait overshoot (`budget-days` `rows`): 8, 34, 38 min/day on 10-12…14; 32 of 10-14's on suites (`waits.on`).
-  - Idle findings (Σ `min_day` of class `idle` in `speed.tests.findings`, live): 6.3–7.8 min/day on 10-16 (7.8 at
-    23:15).
-  - Hooks (`parts.hooks`): 156 → 20 min/day, `commit-report.sh` 11.5 of the 20 (`hooks_by_hook`).
+  - Idle (Σ `min_day`, class `idle`, `speed.tests.findings`, live): 6.3–7.8 min/day on 10-16. Hooks (`parts.hooks`):
+    156 → 20 min/day, `commit-report.sh` 11.5 of the 20 (`hooks_by_hook`).
 - No goal for hooks (10-05; no new hooks), idle (little to gain; a race check's sleep stays) or green reruns (10-16,
-  10-07; 1.3 days of tests-once so far, so the open `regression` `test-health/retests` row keeps reading it).
-- No class for usage walls or waiting for workers: two of their log-audit rows were fixed 10-08, the rest are
-  weather or chat conduct (`night-stalls-on-account-limit`, …); the worker queue is protection (10-14).
+  10-07; tests-once is young, the open `regression` `test-health/retests` row reads it). No class for usage walls or
+  waiting for workers: two log-audit rows fixed 10-08, the rest weather or chat conduct; the worker queue is
+  protection (10-14).
 
 ## Goals
 
-The pilot night works these goals in order, one at a time; a landed goal moves to Done with its commit and proof, a
-failed one stays with a line on what blocked it. Breakages' `bash-cap`, this direction's largest wait, is not
-repeated here. Each proof replays fixed journals: a 7-day window after landing moves with the pilot's volume (no
-`doctor-fix launch`, so no suite audits; targeted suite CPU 1,210/day in 10-08…14, 113 on 10-15) and tests-once.
+Worked in order, one at a time; a landed goal moves to Done with commit and proof, a failed one stays with what
+blocked it. Breakages' `bash-cap`, this direction's largest wait, is not repeated. Each proof replays fixed journals:
+a 7-day window after landing moves with the pilot's volume (no `doctor-fix launch`, so no suite audits; targeted
+suite CPU 1,210/day in 10-08…14, 113 on 10-15) and tests-once.
 
-### goal night-owned: a suite with no worker and no chat owner counts in the index, as the night's
+### goal night-owned: the night hub session is owned whole, as its own stratum
 
-Class: a caller the index does not own sits outside it, so the pilot night's own suites never reach it (first for
-that). `out_s.suites` (509 → 261 wall-min/day, 46 % of the tests row; 438 CPU-min/day, 30 % of suite CPU in
-10-08…14) by CPU: night hub chats 396 (90 %; their first message `сделай чистку — night run <id>` matches
-`C1_MACHINE` in `bin/harness-doctor`, so the session is `own=False` and writes no `t` rows), Close's `night-run
-suites` 40 (it strips the session), `bin/llm-selfcheck` 1.6.
-- The change is in llm-legs `share/time_budget.py` `budget()`: such a suite joins agent `("workers", "night")`;
-  `outside` and `out_s.suites` go (`out_s.unmeasured` stays); BUDGET_VERSION 6. Bench suites stay out.
-- Proof, version 5 → 6 on `budget-days` 10-03…07 → 10-08…14 (projected now by adding `out_s.suites` to the
-  workers stratum's `overhead_s`, units unchanged): outside 509/261 → 0 min/day, workers min/task
-  42.5/20.0 → 48.2/21.6, index 0.48 → 0.46; chat stratum, tests row and units unchanged. The baseline then takes
-  the version-6 numbers. Must not get worse: no non-bench suite outside every stratum.
+Class: a caller the index does not own sits outside it, so the pilot night's own work never reaches it (first for
+that). A hub chat's first message `сделай чистку — night run <id>` matches `C1_MACHINE` in `bin/harness-doctor`, so
+its session is `own=False`, with no `t` rows: its suites land in `out_s.suites` (509 → 261 wall-min/day, 46 % of
+the tests row; 438 CPU-min/day, 30 % of suite CPU in 10-08…14: hub chats 396, Close's `night-run suites` 40, which
+strips the session, `bin/llm-selfcheck` 1.6), its hooks, waits and refusals in `agents[None]`, in no stratum.
+- The change is in llm-legs `share/time_budget.py` `budget()`: a third stratum `night`, units the jobs of the nights
+  finished that day (`~/.cache/doctors/nights/<id>.json` `jobs`), agent the night record's `session`, owning its
+  suites, hooks, waits and refusals, and Close's suites. Chat and workers strata stay as they are, so the index stays
+  per unit (2026-10-11); `out_s.suites` keeps the rest; BUDGET_VERSION 6. Bench suites stay out.
+- First step, unconfirmed: `session` is the hub's, how Close's session-less rows tie to their night, job counts
+  (≈181 / 275 in the windows, by UTC start) and the projection (night min/job, index; `budget-days` has no per-session split,
+  the old 0.48 → 0.46 put suites in workers with no units: void), recomputed from the journals before the change.
+- Proof, version 5 → 6 on the same journals: chat and workers strata unchanged, night as projected. Must not get
+  worse: no night-session span in `agents[None]`, `out_s.suites` at most selfcheck's.
 
 ### goal fan-out: a targeted run carries a file's own suite and, of the rest, only suites that catch
 
@@ -129,16 +124,17 @@ after five commits narrowed the selection one rule at a time.
 - The change is in llm-legs `share/suite_select.py`: a suite with no catch in `CATCH_D` days, journaled 7 days or
   more (test_health's fan-out `zero` set plus that age), leaves the targeted output unless it is a changed file
   or named after one (`named()`), so every file keeps its own unit suite.
-- In `share/test_catches.py`, a suite still red after Close's rerun counts as a catch. A dropped suite runs only at
+- In `share/test_catches.py`, a suite red at one night's Close and green at a later Close counts as a catch; one
+  still red counts as nothing, so known-red suites are not kept alive (Legacy's). A dropped suite runs only at
   Close, whose reds are `unread`, and a pilot night carries no job for them: without this it could never catch
   again, and the 90-day rule would delete it on no evidence. Test_health's fan-out finding and its pricing go.
 - Proof, old → new on one journal: `select()` replayed over the commits the four sweep repositories landed in the 7
   days before landing, each suite at its median passing targeted run of those days (`runs.jsonl`): suite wall-min a
-  commit, CPU beside. 10-08…14 (1,580 commits, catches of 10-16): 6.4 → 5.3 (−17 %), CPU 3.9 → 3.4, suites 13 → 9.3.
-  That replay (`git log --no-merges --name-only` per repository, HEAD's `select()` and `tests/`; 206 of 20,582
-  selections unpriced) left out the 7-day journal age, so −17 % is an upper bound; the proof applies it.
-- Must not get worse: missed catches, dropped suites still red after Close's rerun over 7 nights, beside their Close
-  runs (never 0). Target 0; each is named, and one a targeted run would have caught stops the goal.
+  commit, CPU beside. 10-08…14 (1,580 commits, catches of 10-16; `git log --no-merges --name-only` per repository,
+  HEAD's `select()` and `tests/`; 206 of 20,582 selections unpriced): 6.4 → 5.3, CPU 3.9 → 3.4, suites 13 → 9.3.
+  −17 % is an upper bound: that replay ignored the 7-day age rule, which the proof applies.
+- Must not get worse: missed catches, dropped suites that went red at Close over 7 nights, beside their Close runs
+  (never 0). Target 0; each is named, and one a targeted run would have caught stops the goal.
 
 ### goal suite-own-cost: a suite's cost has one queue, due only on the suite's own slower run
 
@@ -147,14 +143,16 @@ pole findings beside suite_audit's queue.
 - The change is in llm-legs `share/suite_audit.py` `due()`: the `spend.moved` reason goes, with `changed_at`; the
   held 2× rise is read through `load()` as `jump()` already is, and `load()` with fewer than LOAD_CONTROLS controls
   reads unknown, never 1.0, the rise then read on CPU a run (`test_health.cpu_run`). A suite is due only on such a
-  rise, never audited, a new heavy suite or dead. Spend and System keep their own `spend.moved` callers.
+  rise, never audited, a new heavy suite or dead. Spend's `audit-due` and System's `cpu-audit-own-number` drop
+  `spend.moved` too: whichever lands last deletes `moved()` and `blobs()` with their other callers' leftovers
+  (`foreign`, `run_start`, `source_blobs`, the rows' `sources`, `tests/test_spend.sh`'s checks).
 - In `share/test_health.py` the heavy and pole findings and their pricing go: suite_audit prices every suite.
 - Proof, old → new on one `runs.jsonl`, `spend-ledger.json` and HEAD: old and new `due()` against the suites
   whose own wall floor or CPU a run is ≥ 2× their audit's (`price()` against the rows' `wall_run`, `cpu_run`,
   without `due()`). 10-16 21:40: old 103 due, 102 of them `source changed`; risen over the floor 0 of 252, so new 1
   (never audited); 3 suites risen ≥ 2×, all under FLOOR_MIN_DAY (`suite_audit.collect(now)`, risen from
-  `price(runs(journal, now − 7 d))`, recomputed at 23:24: same). The new set must equal the risen suites plus never audited, new
-  heavy and dead.
+  `price(runs(journal, now − 7 d))`, recomputed at 23:24: same). The new set must equal the risen suites plus never
+  audited, new heavy and dead.
 - Must not get worse: no suite gets slower unseen. In the 7 days after landing, a risen suite (≥ 2× held over
   HELD_S) over the floor that is not due fails the goal.
 
@@ -171,26 +169,24 @@ pole findings beside suite_audit's queue.
 
 ## Open
 
-- Index coverage: `out_s.unmeasured` (426 → 2 min/day) sits outside the index; ownerless suites are `night-owned`.
+- Index coverage: `out_s.unmeasured` (426 → 2 min/day) sits outside the index; the night hub is `night-owned`.
 - Fixed-sleep polls (`tool-idea-wait-until`): ≈121 min/day estimated, the overshoot above measured; the tool waits
-  until the overshoot outgrows what bash-cap's attach covers.
-- `tests/affected` basename rule, no goal: 2 of 21,646 suite selections on 10-08…14. The 38 suites on 10-15 came
-  from the new `docs/directions/` files before a suite named them (`docs/zz/README.md` still pulls 38).
-- Expected gains have been inflated: on 10-14 the night expected 3,493 min/day from tests, while the whole tests
-  row is ≈550. Price from the journal.
+  until the overshoot outgrows what Breakages' `bash-cap` (deleting worker-run's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`
+  export) covers.
+- `tests/affected` basename rule, no goal: 2 of 21,646 selections on 10-08…14; 10-15's 38 suites came from the new
+  `docs/directions/` files before a suite named them (`docs/zz/README.md` still pulls 38).
+- Expected gains were inflated (10-14: 3,493 min/day expected from tests, the whole row ≈550): price from the journal.
 
 ## Decisions
 
 - 2026-10-16: audit reopens belong to the audit that makes them: `suite_audit` (an edit, load read as slower) here,
   `spend_audit` Spend's, `cpu_audit` System's. `green-once` dropped: ≈7 CPU-min/day after tests-once, for a cache.
 - 2026-10-15: obsolete test checks belong to Legacy. («Updater doctor»)
-- 2026-10-14: tests are the disease, the worker launch queue is protection: no goal shrinks a queue by launching
-  less. («Updater doctor»)
-- 2026-10-14: tests run once, when the work is done, and only where the change reaches: 72 suites for a one-file
-  edit, with no catch to show for it, is a fault the night fixes. («Updater doctor»)
-- 2026-10-14: a suite counts only while its owner waits on it, never while the owner generates beside it; a model's
-  sleep or poll counts only past the end of what it awaits. Model-written scripts and our tools stay outside the
-  index. («Updater doctor»)
+- 2026-10-14 («Updater doctor»): tests are the disease, the worker launch queue is protection: no goal shrinks a
+  queue by launching less. Tests run once, when the work is done, and only where the change reaches: 72 suites for
+  a one-file edit, with no catch to show for it, is a fault the night fixes. A suite counts only while its owner
+  waits on it, never while the owner generates beside it; a model's sleep or poll counts only past the end of what
+  it awaits. Model-written scripts and our tools stay outside the index.
 - 2026-10-14: the statusline refresh stays 3 s; only the per-render cost is cut. («Передача system-doctor-ux»)
 - 2026-10-13: speed here is less delay, not less CPU: a goal is proven on wall minutes, CPU only beside them.
   («Updater doctor»)
@@ -208,9 +204,8 @@ pole findings beside suite_audit's queue.
   were reverted. («Updater doctor»)
 - 2026-10-05: the hook dispatcher was declined; hooks are cut one by one, dearest first. A speed trade comes to
   Egor as min/day and share of the total. («make land for multiple workers in one repository»)
-- 2026-10-04: every wait (slot, queue, lock, poll) is journaled where the doctors read it and shown even when
-  normal; the measuring itself adds no wait (10-06, «Чистка night run»). («make land for multiple workers in one
-  repository»)
+- 2026-10-04 («make land for multiple workers in one repository»): every wait (slot, queue, lock, poll) is journaled
+  where the doctors read it and shown even when normal; the measuring itself adds no wait (10-06, «Чистка night run»).
 - 2026-10-03: speed never trades model, effort or thinking. («Updater doctor»)
 - 2026-09-23: no serial machine-wide test queue: contention is met by lower priority (nice), and any hold tells the
   held chat and the menubar. («Updater doctor»)

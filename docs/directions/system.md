@@ -116,15 +116,18 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
 
 After Breakages' and Lost time's goals (PILOT order). `cpu-audit-own-number` goes first: goal 2's doctor edits
 would otherwise reopen the `cpu:doctor/*` rows. `doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
-195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15), `tab-tty` ≈ 25 ((5.14 − 1.5) CPU-s × 415 Terminal-front minutes a
-day). Classes 1, 2 and 6 have no goal (above).
+195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15), `tab-tty` ≈ 17 (2.4 CPU-s × 415
+Terminal-front minutes a day). Classes 1, 2 and 6 have no goal (above).
 
 ### goal cpu-audit-own-number: a CPU audit comes due only on its own slower run
 
 Class 5.
 - llm-legs `share/cpu_audit.py` `due()`: the `spend.moved` reason and `collect()`'s blob hashing go; due = never
-  audited or `cpu_s_run` ≥ `spend.SHARE_RISE` × the row's. Spend keeps its `spend.moved` caller; Lost time's
-  `audit-own-number` makes the same change in `suite_audit`.
+  audited or `cpu_s_run` ≥ `spend.SHARE_RISE` × the row's. Lost time's `suite-own-cost` (`suite_audit`) and
+  Spend's `audit-due` (`spend.due()`, `fee:` rows) drop `spend.moved` too. Whichever of the three lands last deletes
+  from `share/spend.py` `moved()`, `source_blobs()`, `blobs()` and the rows' recorded `sources` (callers today:
+  `cpu_audit.py:143,177,238`, `suite_audit.py:324,401,470`, `spend.py:262,423,487`, `tests/test_spend.sh`);
+  `foreign()`, `run_start()` and `landings()` stay for Spend's `menus` rule (`git log` only, `spend.md` "its rule").
 - Proof: old and new `due()` over one copy of the CPU journals, `spend-ledger.json` and HEAD. Before (10-16 21:46):
   33 due, 28 with no per-run rise; target 0 of those 28. After landing, 7 daily reads of the Speed doctor's
   `cpu_audit` problems: none due without a per-run rise.
@@ -132,14 +135,16 @@ Class 5.
 
 ### goal doctor-run-flat: a doctor run reads what is new since its last
 
-Class 3.
-- llm-legs `bin/speed-doctor` and `bin/system-doctor`: `python3 -m cProfile` on a state copy (`SPEED_DOCTOR_DIR`,
-  `SYSTEM_DOCTOR_DIR`, `HARNESS_DOCTOR_DIR`, `DOCTORS_DIR`; `CLAUDEB_DIR` a fixture) names the reads whose cost
-  follows the days held; each moves to an existing reader (Speed's `read_new` + `fold_jsonl`, `cpu_audit.tally`'s
-  size+mtime cache) and the one it replaces goes.
+Class 3. The rule every doctor run keeps: each read is incremental (Speed's `read_new` + `fold_jsonl`) or cached on
+the size+mtime of what it reads (`cpu_audit.tally`'s cache); a read whose cost follows the days held is the bug.
+- Every doctor in `collector-runs.jsonl` (harness, speed, system, llm, updater, code): `python3 -m cProfile` on a
+  state copy (`SPEED_DOCTOR_DIR`, `SYSTEM_DOCTOR_DIR`, `HARNESS_DOCTOR_DIR`, `DOCTORS_DIR`; `CLAUDEB_DIR` a fixture)
+  names its reads that break the rule; each moves to one of those two readers and the one it replaces goes. Speed
+  and System are profiled first (they rise); the others are read the same way, none skipped.
 - Proof: a state copy 5 min after a live run, old and new alternated on fresh copies, 5 pairs a doctor, CPU s a run
-  from the copy's `collector-runs.jsonl`. Before (10-16 medians to 22:00): Speed 15.2, System 5.0; after landing the daily
-  medians stay flat 7 days (they rose 1.2–2.6 s a day from 10-14).
+  from the copy's `collector-runs.jsonl`, every doctor. Before (10-16 medians to 22:00): Speed 15.2, System 5.0,
+  Harness 7.1, llm 4.1, updater 0.2; code ran last on 10-14 (9.3). After landing every doctor's daily median stays
+  flat 7 days (Speed and System rose 1.2–2.6 s a day from 10-14).
 - Must not get worse: `latest.json` equal old vs new on one copy, clock pinned (`SPEED_DOCTOR_NOW`; System's
   timestamps aside).
 
@@ -148,11 +153,13 @@ Class 3.
 Class 4. A tab keeps its tty for its life.
 - hammerspoon `claude_cmd_keys.lua`: `refreshTty` runs when the observed tab changes (window id, tab index or tab
   element, `sameObserved`) or the context is invalidated; the `ttyRefreshAfter` recheck in `pollFrontTab` goes. The
-  ps verdict keeps its poll.
+  ps verdict and the AX walk keep their poll: the walk (`observeFrontmost`) is how a tab change is seen, and an AX
+  observer in its place is a separate, more fragile change (Decisions: nothing fragile), not this goal.
 - Proof: extra Hammerspoon CPU of a Terminal-front present minute over another app's (`ticks/<day>.jsonl`
   `cpu_own` Hammerspoon field 2 by the minute of `t`, joined to that or the minute before in `presence/<day>.tsv`,
-  idle < 600 s, front app column 3): 5.14 CPU-s (10-14…16) → ≤ 1.5 over 7 days after landing. osascript a quiet
-  minute in 75d60db's simulator (`tests/claude_cmd_keys_harness.lua` `env.idle.run`): 44 → 0, old vs new.
+  idle < 600 s, front app column 3): 5.14 CPU-s (10-14…16) → ≈ 2.7 over 7 days after landing (44 osascript × 50–60
+  ms ≈ 2.4 go). 75d60db's simulator (`tests/claude_cmd_keys_harness.lua` `env.idle.run`), old vs new a quiet minute:
+  osascript 44 → 0; AX walks 312 and ps 134 unchanged (first step: recount them on HEAD).
 - Must not get worse: a tab switch re-reads the tty before a press acts (a harness case red on a never-re-read
   version); 75d60db's first-press and `cacheTtl` cases; away-minute Hammerspoon CPU.
 

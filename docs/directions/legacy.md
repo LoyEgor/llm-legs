@@ -15,7 +15,8 @@ here, and other directions' goals add lines, which README's worse → revert wou
 
 ### Baseline (computed 2026-10-16)
 
-Legacy lines: **3,966** (tests 512): class 1 2,852, class 2 683 (10-14 refresh), class 3 401, class 4 30.
+Legacy lines: **4,030** (tests 512): class 1 2,916 (four repositories' deploys), class 2 683 (10-14 refresh),
+class 3 401, class 4 30.
 
 | net lines, four repositories | 10-02…08 | 10-09…15 |
 |---|---:|---:|
@@ -50,14 +51,17 @@ was fixed as an instance and came back.
 
 | class | rows | days seen | instances fixed | lines now |
 |---|---:|---:|---:|---:|
-| 1. deployed copies: `night-snapshot` commits what a sweep repository deploys into claude-setup `local-config/home` | 111 Code doctor candidates | 2/2 since 10-13 | 3 | 2,852 in 22 files |
+| 1. deployed copies: `night-snapshot` commits what a sweep repository deploys into claude-setup `local-config/home` | 111 Code doctor candidates | 2/2 since 10-13 | 3 | 2,916 in 26 files |
 | 2. a removal leaves its other end: a retired feature's readers, flags, tests and prose, a deleted reader's writer, a unit the removal orphaned | 42 dead candidates, 5 code-ledger dead rows, 2 check refusals | 10 (10-03…10-13) | 5 ledger fixes (−252) + 9 relay commits | 683 dead lines waiting |
 | 3. each suite redefines its assert helpers: `fail` defined 190 times (one body 74 times), `assert` 101 (50), `assert_fails` 40 | 25 of 45 suites added 10-09…15 | 6 | 1 fit round (10-14) | 401 |
 | 4. every new tool rolls its own helpers (JSON IO, bounded runs) | 4 code-ledger rows | 5 (10-08…10-14) | 4 + 3 fit-round folds | 30 |
 
 - Method of the table, at HEAD on 2026-10-16:
-  - class 1: `git ls-files local-config/home` at a `DEPLOYS` target (21 files, 2,818 lines), plus files byte-equal
-    (`cmp`) to a tracked llm-legs or hammerspoon file (hammerspoon's `com.egor.hammerspoon.plist`, 34); `wc -l`;
+  - class 1: `git ls-files local-config/home` at a path a sweep repository deploys, `wc -l`: llm-legs `DEPLOYS` (21
+    files, 2,818 lines), review-bench `share/rbench/debt.py` `doctor_agent_paths` (`review-doctord`,
+    `com.llm-legs.review-doctor.plist`: 27), claude-setup end-report's `launchd/` pair (README `install`: 37),
+    hammerspoon `launchd/com.egor.hammerspoon.plist` (34). `libexec/hammerspoon` (2), which that plist runs, has no
+    source or installer in any repository: out, unconfirmed;
   - class 2: dead lines = `lines` of the units the 42 `dead` rows of `candidates.jsonl` name as dead in `detail`
     (`X is defined and never called`, `no entry point reaches X, Y`), each once; the `is N lines with N branches`
     units (worker-run, instruction-files.sh: 11,534) and clone-only units (24) are out; `value` adds a clone signal: 695; days = the dead-row fixes, relay sweep, stamp and refusals; relay commits = `git log
@@ -76,8 +80,8 @@ was fixed as an instance and came back.
 
 Why they come back:
 1. The snapshot (d2ecaa0, 10-13) copies every file in `~/.local/libexec` and every agent plist naming it. Installers
-   deploy llm-legs files there, because launchd cannot run a program off /Volumes/Work. `DEPLOYS` already lists each
-   copy with its installer and heals drift (`harness-doctor --redeploy`); the snapshot does not read it.
+   in all four repositories deploy there, because launchd cannot run a program off /Volumes/Work. Only llm-legs lists
+   its copies (`DEPLOYS`, with installers, healing drift by `harness-doctor --redeploy`); the snapshot reads no list.
    - 3 of the 10 libexec copies have drifted. Fixes to them do not last: a fit round synced store-lock.sh (1eaff59),
      a legacy round deleted ipad-mic-refresh (091c455), test_report_frame_guard gained an exemption (2612a804).
    - The Code doctor's judge spent all 16 verdicts of 10-14 (247k tokens) on these copies.
@@ -87,7 +91,7 @@ Why they come back:
      prose and a test block 10-12 (8090aa7).
    - `code-doctor check` refuses a Code fixer's deletion that no judged problem names, even of a unit the same run
      orphaned: normalizeDir stayed dead (10f7f32, 10-07), and the statusline.sh and grokb `run_bounded` migrations,
-     green, were reverted (84de7cc5, 10-13).
+     green (84de7cc5), were reverted (7c9a9cc9, 10-13).
    - The Code doctor finds leftovers nights later and fixes 1 cause a day (yield 424 lines for 6.0M tokens, under
      `LOW_YIELD_PER_KTOK`, so `queue_k` = `TOP_K_LOW_YIELD` = 1); its judge takes 8–16 candidates a night under a
      400k token cap, so the queue grew from 109 pending (10-03) to 531 waiting (10-14).
@@ -113,46 +117,51 @@ Checked, not a class:
 The pilot night works these goals in order, one at a time. A goal that lands moves to Done with its commit and proof.
 A goal that fails stays here with one line on what blocked it.
 
-### goal deployed-copies: the machine snapshot leaves out what a sweep repository deploys
+### goal deployed-copies: the machine snapshot leaves out what any sweep repository deploys
 
-Class 1.
-- Where: claude-setup `bin/night-snapshot` and `bin/restore-local`, reading `DEPLOYS` as the one list (no second
-  list, no byte or name matching): `harness-doctor --deploys` prints each copy's home path and its group's installer
-  (`cp <source>` for a hand copy).
-  - `night-snapshot` leaves out every listed path; `restore-local`, once llm-legs is cloned, runs each installer
-    instead of copying, then starts the agents as now.
-  - The 21 copies leave the tree, with test_report_frame_guard's local-config skip; the hammerspoon plist stays.
+Class 1, one rule for the four repositories: each lists its deploys; the snapshot leaves out every listed path.
+- First step (unconfirmed): who writes `~/.local/libexec/hammerspoon`, the wrapper hammerspoon's plist runs. No
+  repository has its source or installer; hammerspoon lists it if it owns it, else it stays in the tree.
+- Where: each repository prints its copies one way, home path and installer (`cp <source>` for a hand copy), from
+  one list (no second list, no byte or name matching): llm-legs `harness-doctor --deploys` from `DEPLOYS`;
+  review-bench from `doctor_agent_paths` (`review-bench doctor --install-agent`); claude-setup end-report's
+  `launchd/` pair; hammerspoon its plist.
+  - claude-setup `bin/night-snapshot` leaves out every path a list prints; `bin/restore-local`, once the
+    repositories are cloned, runs each installer instead of copying, then starts the agents as now.
+  - The 26 copies leave the tree, with test_report_frame_guard's local-config skip.
 - Proof, on each night's snapshot commit for 7 days after landing: lines under `local-config/home` by class 1's
-  method, a copy a new deployer adds included: 2,852 in 22 files → 34 (the plist). Code doctor duplicate candidates
-  with a `local-config/` file: 111 of 247 → 0, at a `code-doctor refresh` the measurer runs.
+  method, plus any file there `cmp`-equal to a tracked file of the four (a deploy no list names): 2,916 in 26 files
+  → 0, each repository at 0. Code doctor duplicate candidates with a `local-config/` file: 111 of 247 → 0, at a
+  `code-doctor refresh` the measurer runs.
 - Must not get worse: `restore-local` into a scratch `HOME`, `launchctl` stubbed on `PATH` (installers bootstrap the
   real `gui/$UID` whatever `HOME` says), restores today's file set under `.local/libexec` and `Library/LaunchAgents`;
   the live `~/.local/libexec` is only read.
 
 ### goal shared-asserts: suites take fail, assert and assert_fails from the lib they already source
 
-Class 3.
+Class 3, llm-legs only: the 10 of 25 own-helper suites elsewhere (claude-setup 8, hammerspoon 2) copy one-line
+helpers and source no test lib, so a source line would cost what it saves.
 - Where: llm-legs `tests/lib/suite-journal.sh`, between its `--lib` and `SUITE_JOURNAL_PID` returns (lines 272–274),
   so only a suite's line-2 source gets them: the runner (its own `fail` exits 4), the statusline scripts and
   claude-setup's suites source `--lib`.
   - It defines the three helpers in their most common bodies, `assert` counting `asserts` as the copies do.
-  - Every identical copy in llm-legs goes: 372 lines. A variant stays where it behaves differently; suites sourcing
-    `--lib` or nothing keep theirs.
+  - Copies of a body seen twice or more in llm-legs: 367 lines, 157 of them the three lib bodies. A copy behaving
+    as the lib's goes, a variant behaving differently stays; suites sourcing `--lib` or nothing keep theirs.
 - Proof: suites added in the 7 days after landing that define their own `fail`, `assert` or `assert_fails`, by class
   3's method: llm-legs 15 of 26 in 10-09…15 → 0.
 - Must not get worse: every touched suite's PASS assert count against HEAD, its mutations still red.
 
 ### goal own-orphans: a Code fixer deletes what its own change orphaned
 
-Class 2 (Decision 2026-10-09: change impact).
+Class 2's Code fixer cause only (Decision 2026-10-09: change impact): the relay and stamp leftovers came from
+retirements by chats and workers, which `check` never sees, and stay in the class.
 - Where: llm-legs `bin/code-doctor` `check` (bin/code-doctor:3464–3476).
   - A deletion no judged problem names passes when every reference to the unit at the run's base sits in lines the
     same run deletes, its own definition aside, or the unit is a copy whose callers the run moved to a shared one.
   - Every other unjudged deletion stays refused.
 - Proof, old → new on this machine: replay both refusals in scratch worktrees (10f7f32 plus normalizeDir's deletion;
-  84de7cc5 plus the statusline.sh and grokb migrations): old `check` refuses both, new passes both, both refuse a live
-  unit. Then, in full nights once the queue empties, Code fixer rows noting a unit left or a migration reverted for
-  an unjudged deletion: 2 of 9 (10-03…10-13) → 0.
+  84de7cc5's statusline.sh and grokb migrations, which 7c9a9cc9 reverted): old `check` refuses both, new passes both,
+  both refuse a live unit. No full-night count: Code fixer runs only there, 1 cause a day against 531 waiting.
 - Must not get worse: no unit `check` passes keeps a `git grep -w` hit outside the run's deleted lines in the four
   trees; `doctor-fix close` time for a Code run.
 
