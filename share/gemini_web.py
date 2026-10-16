@@ -72,6 +72,7 @@ FLOW_DAY_TAKES = 20
 FLOW_DAY_S = 24 * 3600
 FLOW_SPACING_S = 180
 TRUST = "flow-trust.json"
+VIDEO_NIGHT = "flow-video-night.json"  # TEMP-FLOW-VIDEO-NIGHT(gemini-web)
 BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 # One generation rpc per composer mode: text, frames, ingredients, video edit, extend.
 GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
@@ -464,6 +465,7 @@ def note_flow_send(account: str, takes: int = 1) -> None:
     counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S] + [int(now)] * takes
     write_meta(account, flow_takes=counted)
     budget = None if meta.get("flow_uncapped") else meta.get("flow_day_takes", FLOW_DAY_TAKES)
+    budget = budget and video_night().get("day_takes", budget)  # TEMP-FLOW-VIDEO-NIGHT(gemini-web)
     if budget is not None and len(counted) >= budget:
         set_wall(account, counted[-budget] + FLOW_DAY_S)
 
@@ -480,6 +482,13 @@ def rest_no_result(account: str) -> None:
 # TEMP-FLOW-TRUST(gemini-web): the flow-trust experiment (EXPERIMENTS.json) gives accounts arms in its marker.
 def trust() -> dict:
     data = read_json(ROOT / TRUST, {})
+    return data if data.get("until", 0) > time.time() else {}
+
+
+# TEMP-FLOW-VIDEO-NIGHT(gemini-web): until the marker's `until` Flow keeps its budget for video: every account
+# gets `day_takes`, images run only on `image_accounts` (Egor 2026-10-16: images come from GPT and com).
+def video_night() -> dict:
+    data = read_json(ROOT / VIDEO_NIGHT, {})
     return data if data.get("until", 0) > time.time() else {}
 
 

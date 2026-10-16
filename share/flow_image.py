@@ -118,7 +118,16 @@ def refusal(codes) -> gw.Failure:
 
 
 def rotation(price: int = 0) -> list[str]:
-    return gw.rotation(price)
+    night = gw.video_night()  # TEMP-FLOW-VIDEO-NIGHT(gemini-web)
+    return [n for n in gw.rotation(price) if not night or n in night.get("image_accounts", [])]
+
+
+def refuse_video_night(account: str | None) -> None:  # TEMP-FLOW-VIDEO-NIGHT(gemini-web)
+    night = gw.video_night()
+    if account and night and account not in night.get("image_accounts", []):
+        raise gw.Failure(3, f"Flow images are off on {account} until "
+                            f"{time.strftime('%a %H:%M', time.localtime(night['until']))}: its budget is kept for "
+                            f"video; images come from codex or {', '.join(night.get('image_accounts', [])) or 'nowhere'}")
 
 
 def resume_project(account: str, image_id: str) -> str:
@@ -376,6 +385,7 @@ def make_plan(args) -> dict:
 
 def cmd_generate(args) -> None:
     plan = make_plan(args)
+    refuse_video_night(args.account)  # TEMP-FLOW-VIDEO-NIGHT(gemini-web)
     accounts = gw.take_accounts(args.account, lambda: rotation(plan["price"]),
                                 "every signed-in Flow account is walled (walls.json)")
     gw.take_failover(accounts, plan, lambda account, plan: generate_on(account, plan), gw.set_wall, bool(args.account),
@@ -746,6 +756,7 @@ def cmd_tool(args) -> None:
     if not (args.account or any(gw.read_meta(n).get("image_editor") for n in gw.bound_accounts())):
         raise gw.Failure(4, f"no free Flow account has the {tool_caps()['editor']} in My Tools; open Tools > Templates "
                             f"> {tool_caps()['editor']} once on one, then pass --account <it>")
+    refuse_video_night(args.account)  # TEMP-FLOW-VIDEO-NIGHT(gemini-web)
     accounts = gw.take_accounts(args.account, editor_accounts, "every Flow account with the Image Editor is walled")
     gw.take_failover(accounts, plan, run, gw.set_wall, bool(args.account), lock_wait=args.lock_wait)
 

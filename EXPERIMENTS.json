@@ -28,6 +28,21 @@
     "how_to_remove": "Read the evidence per arm and ask the owner which change stays. Then delete every TEMP-FLOW-TRUST(gemini-web) block (share/gemini_web.py: trust, trust_arm, trust_hand_done and their call sites in cmd_login, cmd_accounts; the block in tests/test_flow_image.sh), delete ~/.gemini-web/flow-trust.json, set flow_day_takes in ~/.gemini-web/accounts/<a>.json to what the verdict says (or remove it), clear the arm walls the owner releases in ~/.gemini-web/walls.json, then this entry, and run tests/run-all $(tests/affected share/gemini_web.py)."
   },
   {
+    "id": "flow-video-night",
+    "tag": "TEMP-FLOW-VIDEO-NIGHT(gemini-web)",
+    "what": "Egor 2026-10-16: for the night the Flow accounts keep their budget for video, the only video source; Flow images run on com alone (GPT carries the rest) and every capped account gets day_takes (40) Flow takes in a rolling 24 h instead of 20. Tests whether 40 a day of mostly video stays unflagged on the healthy accounts",
+    "started": "2026-10-16",
+    "review_by": "2026-10-17",
+    "state_marker": "~/.gemini-web/flow-video-night.json",
+    "evidence": "queued/saved/failed rows (kind, flagged) per account in ~/.gemini-web/jobs.jsonl from 2026-10-16 04:40 to the marker's until; flow_takes and flagged_at in ~/.gemini-web/accounts/<a>.json",
+    "surfaces": [
+      "flow-image refusal text on every non-image account (exit 3)",
+      "menubar fv row: takes left out of day_takes",
+      "llm-limits --table banner once overdue"
+    ],
+    "how_to_remove": "The marker's until (2026-10-17 12:00) already ends it. Delete every TEMP-FLOW-VIDEO-NIGHT(gemini-web) block (share/gemini_web.py: VIDEO_NIGHT, video_night, the budget line in note_flow_send; share/flow_image.py: the rotation filter, refuse_video_night and its two call sites; hammerspoon/llm-limits.lua: the night/nightTakes lines in geminiMediaState and nightTakes in takesLeft), delete ~/.gemini-web/flow-video-night.json, then this entry, and run tests/run-all $(tests/affected share/gemini_web.py share/flow_image.py). Ask the owner first whether video-only Flow accounts should stay as a permanent mode."
+  },
+  {
     "id": "haiku-review-cells",
     "tag": "TEMP-HAIKU-TRIAL(report)",
     "what": "Haiku 5.5 review cells in production, chunked and judged by the Opus blind judge (Egor, 2026-10-10; review-bench 16dcb55 legacy lens staffs haiku-high, 22c0acd speed lens haiku-high x2, fit since b7b7dd2): hypothesis: Haiku cells reach judge-confirmed findings comparable to the other cells per round, and fixes of their findings are no more often reverted or left unlanded",
