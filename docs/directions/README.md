@@ -7,10 +7,10 @@ them all together only after each direction's metric has moved.
 | # | Direction | Metric | State |
 |---|---|---|---|
 | 1 | [Breakages](breakages.md) | new distinct problems per 100 units of work, 7 days against the 7 before; repeats 0 | active |
-| 2 | [Lost time](lost-time.md) | Lost time index | preparing |
-| 3 | [System](system.md) | own background CPU-min/day; SSD GB written a day | preparing |
-| 4 | [Spend](spend.md) | Fee index; Doctors' share of 7-day usage | preparing |
-| 5 | [Legacy](legacy.md) | net lines in the four sweep repositories, code and tests apart | preparing |
+| 2 | [Lost time](lost-time.md) | Lost time index | queued |
+| 3 | [System](system.md) | own background CPU-min/day; SSD GB written a day | queued |
+| 4 | [Spend](spend.md) | Fee index; Doctors' share of 7-day usage | queued |
+| 5 | [Legacy](legacy.md) | net lines in the four sweep repositories, code and tests apart | queued |
 | 6 | [Debt](debt.md) | review debt closed | paused |
 
 ## Rules
@@ -32,8 +32,9 @@ them all together only after each direction's metric has moved.
   empty PILOT brings back the full night.
 - Ready: a direction joins PILOT once its file holds a baseline computed before any pilot night changed the harness,
   its recurring classes ranked from the ledgers and the log audit, and goals, each one class fix with its proof fixed
-  before the work. A model of another vendor than the author has checked that the numbers reproduce from the
-  sources, that each goal fixes a class rather than an instance, and that each proof is measurable.
+  before the work. A fresh model that did not write it (another vendor when the worker toggles let one work) has
+  checked that the numbers reproduce from the sources, that each goal fixes a class rather than an instance, and
+  that each proof is measurable.
 - Freshness: a model that finds a file contradicting the code or a ledger fixes the file in the same change.
   Monthly, the night's `directions-refresh` job (`share/briefs/directions-refresh.md`) re-checks every file against
   its sources by md-compact's rules; a pilot night runs it after its last goal.

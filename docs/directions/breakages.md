@@ -15,17 +15,24 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
 
 ### Baseline (computed 2026-10-15)
 
-A row's first day comes from the git history of the ledger that holds it. Units come from
-`~/.cache/harness-doctor/budget-days/`, with 10-14 taken from `time_budget.budget()`. The unit journals start on
-10-03, so the prior window is 5 days.
+A row's first day is the first commit of the ledger that holds it (`git log --reverse --date=format-local:%Y-%m-%d`
+over `share/harness-ledger.json` and `share/doctor-ledger.json`, rows read with `git show <sha>:<file>`; deleted
+rows count). A rule's first day is its first row's. Units: `strata.chat.units + strata.workers.units` of
+`~/.cache/harness-doctor/budget-days/<day>.json` (10-14 is stored now). The unit journals start on 10-03, so the
+prior window is 5 days.
+- Harness breakage rules: every `match.rule` but log_audit (classes, below), test_*, the audits, and the Speed-section
+  rules (`in_speed` in `bin/harness-doctor`: floor, hook_*, statusline, menu_build, collector, wait_class,
+  worker_orphans, load, opportunity, regression), time_budget's time_floor and tool_idea, and Guards' growth-*.
+- growth-* rows are skill and plugin installs an instruction gate did not see: load, nothing broke.
+- Repeats: rows of those rules and log_audit, plus every doctor-ledger row, with 2+ `fixes[].at` inside the window.
 
 | per 100 units | 10-03…07 (855 units) | 10-08…14 (1,952 units) |
 |---|---:|---:|
-| Harness breakage rules | 0.70 | 0.31 |
-| LLM doctor (legs) | 5.15 | 0.36 |
-| **doctors total** | **5.85** | **0.67** |
-| rows of a rule born in the window (own line) | 19 | 6 |
-| repeats: rows re-fixed in the window | 11 | 9 |
+| Harness breakage rules | 0.70 (6 rows) | 0.26 (5) |
+| LLM doctor (legs) | 5.15 (44) | 0.36 (7) |
+| **doctors total** | **5.85** | **0.61** |
+| rows of a rule born in the window (own line) | 4 | 5 |
+| repeats: rows re-fixed in the window | 8 | 7 |
 
 - The drop comes mostly from the image legs settling after the 10-03 media launch: 44 → 7 LLM rows.
 - The log audit gives exactly 15 findings a night, its merge cap. The raw count before the merge (224 → 541) grows
@@ -48,18 +55,20 @@ A row's first day comes from the git history of the ledger that holds it. Units 
 ## Recurring classes
 
 Each class was fixed as an instance, then came back somewhere else. Ranked 2026-10-15 from the 105 log-audit rows
-of 7 nights (10-07…10-14) and the doctors' rows. "Nights" counts the audits the class showed up in.
+of 7 nights (10-07…10-14) and the doctors' rows, labelled by hand. "Nights" counts the distinct first days (as in
+the Baseline) of a class's rows; the Stop hook row counts Harness hook-error rows 10-03…14 instead.
 
 | class | rows | nights | instances fixed |
 |---|---:|---:|---:|
-| a gate refuses a legitimate command by matching its text (17 Bash gates; only 7 share a parser, `readonly-command.sh` or `heredoc-cut.sh`) | 14 | 7/7 | 13 |
+| a gate refuses a legitimate command: one symptom, several causes — text matching (10-09, 10-10, 10-13, 10-14), launch-gate brief-format refusals, the headroom guard, awk crashing on Cyrillic | 14 | 7/7 | 13 |
 | parallel night fixers collide: one ledger or handoff, landing races, the same component fixed twice | 10 | 5/7 | 6 |
 | a run dies at the 10- or 25-min Bash cap and is redone (≈500 min est.) | 9 | 6/7 | 4 |
 | fan-out into a walled account, then the night idles (≈715 min est.) | 8 | 5/7 | 1 |
-| a Stop hook outruns its 5 s cap (Harness `hook-error`) | 7 | 5 days | 7 |
+| a Stop hook outruns its 5 s cap (Harness `hook-error`) | 7 | 6 days | 6 |
 | night load breaks timing tests | 5 | 3/7 | 4 |
 | a worker writes a repository its brief never granted | 5 | 4 days | |
 | shell environment: bash 3.2, zsh word-splitting, a launchd PATH | 3 | 3/7 | |
+| the LLM doctor files one cause again as a new row each day (callers' argument errors refused before spend: I23, I35, I41, I48, all not-a-bug) | 4 | 4 days | |
 | model behavior: re-asked decisions, unverified claims, unrequested mechanisms (not mechanics, so no fixer) | ≈25 | 7/7 | |
 
 Rows 2, 4 and 6 (23 rows) are made by the night's own fan-out. Fewer fixers removes them by construction.
@@ -95,12 +104,14 @@ moves to Done with its commit and proof. A goal that fails stays here with one l
 
 ### goal gates: every Bash gate parses the command instead of matching its text
 
-Class: a gate refuses a legitimate command because a word it looks for sits in a quoted argument, a heredoc, a
-commit message, a path or a probe. The log audit found 14 such rows on 7 of 7 nights; 13 were fixed one gate at a
-time.
-- The gates are the PreToolUse Bash hooks of `~/.claude/settings.json`, 17 on 10-15, in claude-setup `hooks/`
-  and llm-legs `bin/`. Seven use `hooks/lib/readonly-command.sh` or `hooks/lib/heredoc-cut.sh`; the rest grep the
-  raw text.
+Class: a gate refuses a legitimate command. The log audit found 14 such rows on 7 of 7 nights, 13 fixed one gate at
+a time. Text matching (a word in a quoted argument, a heredoc, a commit message, a path or a probe) is one cause; the
+others are launch-gate brief-format refusals, the headroom guard and awk crashing on Cyrillic.
+- The gates: 15 of the 18 PreToolUse Bash hooks of `~/.claude/settings.json` on 10-15 (statusline-workdir-hook,
+  worker-tag-hook and chat-switch-link never deny), in claude-setup `hooks/` and llm-legs `bin/`. Six use
+  `hooks/lib/readonly-command.sh` or `hooks/lib/heredoc-cut.sh`; the rest grep the raw text.
+- The parser removes the text-matching cause. The corpus every gate's suite replays catches the other causes before
+  they land.
 - One parser in claude-setup `hooks/lib/` turns a command into its simple commands: program and arguments, split at
   pipes, `&&`, `;`, subshells and `bash -c` bodies. Quoted text, heredoc bodies and comments are data. Every gate
   decides on its output, never on the raw string. The two current libs fold into it.
@@ -120,18 +131,22 @@ again. 9 rows on 6 of 7 nights, ≈500 min est.
 - The priced idea is `tool-idea-run-all-attach` in `share/harness-ledger.json`. When its caller is killed,
   `run-suites` keeps running detached, and the next `tests/run-all --attach <run>` waits on it instead of starting
   over.
-- Proof: suite runs killed at the cap per week, from `~/.cache/run-suites/runs.jsonl` and the transcripts. It was
-  61 a week before the tests-once rule. Before against after, with no suite result lost.
+- Breakages owns this goal; `lost-time.md` points to it.
+- Proof: suite runs killed at the cap per 100 units, 7 days before against 7 after, with no suite result lost. 10-03…07:
+  6.67 (57); 10-08…14: 1.13 (22). Days by local `ended_at`, from `~/.cache/run-suites/runs.jsonl`:
+  `jq -rR 'fromjson? | select(.signal==15) | (.ended_at-.queued_at) as $d | select(($d-600|fabs)<=20 or ($d-1500|fabs)<=20) | .ended_at|localtime|strftime("%F")'`
 
 ### goal stop-hooks: every Stop hook finishes inside its cap on a loaded machine
 
 Class: a Stop hook in claude-setup `hooks/stop.d/` outruns its 5 s slice, and each case was fixed alone. Harness
-`hook-error` found 7 rows on 5 days: worker-run-backstop, notice-chat-names, ask-span-drill, ask-word-reading,
+`hook-error` found 7 rows on 6 days: worker-run-backstop, notice-chat-names, ask-span-drill, ask-word-reading,
 ask-run-unfinished, notice-connections, and stop-dispatch with no timeout binary on a launchd PATH.
 - A hook's work at a stop is bounded by design: incremental reads, a cache keyed on what it reads, nothing that
   grows with the transcript or the tag cache. stop-dispatch caps every hook on any PATH.
-- Proof: Harness `hook-error` rows and the Stop timeouts in its hook journal, 7 days before against 7 after, under
-  the night's load.
+- Proof: Stop hook errors per 100 units, 7 days before against 7 after, under the night's load, read with their
+  counts. Source: the stop journal Harness `hook-error` reads (`~/.cache/claude/stop-gate/journal.jsonl`,
+  `.hooks[] | select(.outcome=="error")`, days by `.ts`, UTC); all are timeouts (`exit 124`, budget exhausted, no
+  timeout binary). 10-03…07: 1.87 (16); 10-08…14: 0.56 (11).
 
 ## Mechanics (2026-10-15)
 
@@ -155,3 +170,4 @@ ask-run-unfinished, notice-connections, and stop-dispatch with no timeout binary
 ## Open
 
 - The first pilot night: Egor launches it. The proof is read 7 nights later against the baseline above.
+- The LLM doctor needs one row per cause, or the metric counts its repeats as new problems.
