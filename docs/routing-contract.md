@@ -343,8 +343,8 @@ browser` is a usage error. A chat asks `worker-pick --role browser`, writes its 
 brief headed `BROWSER: chrome` (or `yes` for Dia), and runs its `START:` line.
 
 `chat` is the account Egor talks to, independent of everything that steers delegated work
-(Egor 2026-10-06): the pin, the pool toggle and the `<vendor>_workers`/`<vendor>_reviewers`
-switches never reach it, so an account out of the pool is an ordinary chat candidate and
+(Egor 2026-10-06): the pin, the pool toggle, the `<vendor>_workers`/`<vendor>_reviewers`
+switches and workers' claims never reach it, so an account out of the pool is an ordinary chat candidate and
 `claudeb status` lists every account even with all of them out. Login, walls and spending rank
 it, and the bucket is the chat model's (`chat_model_bucket`). The pin it never sees
 (above); the session account ranks as an ordinary candidate here as it does everywhere else,

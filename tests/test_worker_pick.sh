@@ -336,6 +336,10 @@ assert test "$query_out" = dry
 query --account claudeb --exclude dry,tie-a,tie-b
 assert test "$query_rc" -eq 0
 assert test "$query_out" = session
+# A chat is no parallel launch to spread: a worker's claim never moves it off the account it ranks first.
+query --account claudeb --role chat --model opus --exclude tie-a,tie-b,off
+assert test "$query_rc" -eq 0
+assert test "$query_out" = session
 # The table reads claims and never writes one: it reports a decision instead of taking it.
 run_case claude_pool
 assert contains "$(nrow 1)" 'claude/dry opus·high'

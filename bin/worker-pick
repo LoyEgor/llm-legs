@@ -314,10 +314,13 @@ claims_list() { # vendor var
 # An --account answer reads only its own vendor's section of the table below.
 asked() { [ -z "$query_vendor" ] || [ "$query_vendor" = "$1" ]; }
 cb_claims=''; cx_claims=''; gm_claims=''; gr_claims=''
-! asked claudeb || claims_list claudeb cb_claims
-! asked codex || claims_list codex cx_claims
-! asked gemini || claims_list gemini gm_claims
-! asked grok || claims_list grok gr_claims
+# Claims spread parallel worker launches; a chat ignores them like the rest of the pool's state (Egor 2026-10-06).
+if [ "$query_role" != chat ]; then
+  ! asked claudeb || claims_list claudeb cb_claims
+  ! asked codex || claims_list codex cx_claims
+  ! asked gemini || claims_list gemini gm_claims
+  ! asked grok || claims_list grok gr_claims
+fi
 
 media_order=false
 cx_starts='{}'; gm_starts='{}'; gr_starts='{}'
