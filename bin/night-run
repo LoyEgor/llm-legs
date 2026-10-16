@@ -26,8 +26,8 @@ helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
 KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal '
 # kind:days: carry adds the kind once no night ran it to an end in that many days
 PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30'
-# One direction at a time (docs/directions/README.md): a new night is that direction's pilot and works only the
-# goals of docs/directions/<it>.md; empty runs the full night.
+# The directions in queue order (docs/directions/README.md): a new night is their pilot and works only the goals of
+# docs/directions/<each>.md, one at a time, a direction once the one before has none left; empty runs the full night.
 PILOT=${NIGHT_RUN_PILOT-breakages}
 # What a pilot night does instead of night-sweep's Night mode prep, launches and debt pass: said in its prompt, so
 # the skill every night reads stays as it is.
@@ -143,7 +143,8 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   Loss: and Recommendation:
   A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt) carries only Egor's
   answered trades and one goal job at a time: the first `### goal <slug>:` section under `## Goals` of
-  docs/directions/<direction>.md with no job tonight, none while a goal job is pending or live; its worker
+  docs/directions/<direction>.md with no job tonight, the directions in PILOT order, none while a goal job is
+  pending or live; its worker
   moves the goal out of that section once it lands. After the last goal, directions-refresh when it is due
 speed-gate, run by worker-run once a night worker takes its slot: exits 3 while a process stands in the
   job's night worktree (a resumed night's earlier worker), naming it, the job untouched — never the launching chat's own; a Speed fixer (a harness run of area
@@ -849,17 +850,20 @@ goal_text() { # direction-file slug -> that goal's section
   awk -v head="### goal $2:" '/^##/{if (inside) exit; inside = index($0, head) == 1} inside' "$1"
 }
 
-pilot_goal() { # id direction -> the carry line of its next goal (the first with no job tonight), none while one is at work;
-  # after the last goal the monthly directions-refresh when due, the direction files settled by then
-  local repo file="docs/directions/$2.md" slug night
+pilot_goal() { # id directions -> the carry line of the next goal in queue order (the first with no job tonight), none
+  # while one is at work; after the last goal the monthly directions-refresh when due, the direction files settled by then
+  local repo dir file slug night
   night=$(night_file "$1")
   ! jq -e 'any(.jobs[]; .kind == "goal" and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
   repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: pilot %s not carried\n' "$2" >&2; return 0; }
-  [ -r "$repo/$file" ] || { printf 'night-run: no %s/%s: pilot %s has no goals\n' "$repo" "$file" "$2" >&2; return 0; }
-  for slug in $(goal_slugs "$repo/$file"); do
-    ! jq -e --arg r "goal-$slug" 'any(.jobs[]; .ref == $r)' "$night" >/dev/null || continue
-    printf 'goal\t%s\t%s\t%s\t-\n' "$slug" "$repo" "$file"
-    return 0
+  for dir in $2; do
+    file="docs/directions/$dir.md"
+    [ -r "$repo/$file" ] || { printf 'night-run: no %s/%s: pilot %s has no goals\n' "$repo" "$file" "$dir" >&2; continue; }
+    for slug in $(goal_slugs "$repo/$file"); do
+      ! jq -e --arg r "goal-$slug" 'any(.jobs[]; .ref == $r)' "$night" >/dev/null || continue
+      printf 'goal\t%s\t%s\t%s\t-\n' "$slug" "$repo" "$file"
+      return 0
+    done
   done
   ! periodic_due | grep -qx directions-refresh ||
     printf 'directions-refresh\t%s\t%s\tshare/briefs/directions-refresh.md\t-\n' "$(date -u +%Y-%m)" "$repo"

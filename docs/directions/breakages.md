@@ -146,7 +146,9 @@ ask-run-unfinished, notice-connections, and stop-dispatch with no timeout binary
 ## Decisions
 
 - 2026-10-15: the pilot plan approved: goals gates → bash-cap → stop-hooks, one at a time; Egor launches the night.
-- 2026-10-15: direction 1 runs alone until its metric moves. Lost time, System, Spend and Legacy wait.
+- 2026-10-16: the directions run in a queue: the next direction's goals start once these goals have landed, and
+  this metric is read 7 days after the last of them. It replaces 10-15's "direction 1 runs alone until its metric
+  moves". Parallel directions were declined: two at once collide (bash-cap is also Lost time's) and blur the proof.
 - 2026-10-15: no new hooks. Mechanics only where obvious, such as a tool replacing a script models keep rewriting.
 - 2026-10-13: ruled-out on a P1/P2 Speed or test row needs measured evidence.
 

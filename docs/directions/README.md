@@ -1,16 +1,16 @@
 # Directions
 
 The harness is improved one direction at a time (Egor, 2026-10-15). Each direction has one metric and one file
-here, and proves it improves on its own before the next one is switched on; the night works them all together
-only after each has shown that.
+here. The directions run in a queue, one goal at a time, each proven on its own number (2026-10-16); the night works
+them all together only after each direction's metric has moved.
 
 | # | Direction | Metric | State |
 |---|---|---|---|
 | 1 | [Breakages](breakages.md) | new distinct problems per 100 units of work, 7 days against the 7 before; repeats 0 | active |
-| 2 | [Lost time](lost-time.md) | Lost time index | next |
-| 3 | [System](system.md) | own background CPU-min/day; SSD GB written a day | later |
-| 4 | [Spend](spend.md) | Fee index; Doctors' share of 7-day usage | later |
-| 5 | [Legacy](legacy.md) | net lines in the four sweep repositories, code and tests apart | later |
+| 2 | [Lost time](lost-time.md) | Lost time index | preparing |
+| 3 | [System](system.md) | own background CPU-min/day; SSD GB written a day | preparing |
+| 4 | [Spend](spend.md) | Fee index; Doctors' share of 7-day usage | preparing |
+| 5 | [Legacy](legacy.md) | net lines in the four sweep repositories, code and tests apart | preparing |
 | 6 | [Debt](debt.md) | review debt closed | paused |
 
 ## Rules
@@ -26,9 +26,14 @@ only after each has shown that.
 - Proof: the check is fixed before the work; old against new, interleaved, on the same machine; verdict better,
   worse or unclear, and unclear is kept and settled by the next days' data. A direction may stop a goal once its
   diagnosis shows little to gain.
-- The pilot: `bin/night-run` PILOT names the active direction. Every new night is its pilot and works only the
-  `### goal <slug>:` sections under that file's `## Goals`, one at a time, in order. Switching the direction means
-  changing PILOT; an empty PILOT brings back the full night.
+- The queue: `bin/night-run` PILOT lists the ready directions in order. Every new night is their pilot and works
+  only the `### goal <slug>:` sections under each file's `## Goals`, one at a time, a direction's goals once the one
+  before has none left. A direction's metric is read 7 days after its last goal lands, while the next one works. An
+  empty PILOT brings back the full night.
+- Ready: a direction joins PILOT once its file holds a baseline computed before any pilot night changed the harness,
+  its recurring classes ranked from the ledgers and the log audit, and goals, each one class fix with its proof fixed
+  before the work. A model of another vendor than the author has checked that the numbers reproduce from the
+  sources, that each goal fixes a class rather than an instance, and that each proof is measurable.
 - Freshness: a model that finds a file contradicting the code or a ledger fixes the file in the same change.
   Monthly, the night's `directions-refresh` job (`share/briefs/directions-refresh.md`) re-checks every file against
   its sources by md-compact's rules; a pilot night runs it after its last goal.
