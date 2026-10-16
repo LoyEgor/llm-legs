@@ -296,18 +296,23 @@ pnight job G1 set goal-gates state=left reason=blocked >/dev/null || fail "goal-
 pnight carry G1 >"$WORK/g1c.out" 2>/dev/null || fail "a carry after the first goal failed"
 assert [ "$(cut -f1 "$WORK/g1c.out")" = goal-stop-hooks ]
 pnight job G1 set goal-stop-hooks state=nothing-to-do >/dev/null || fail "goal-stop-hooks not closed"
-pnight carry G1 >"$WORK/g1t.out" 2>/dev/null || fail "a carry after the first direction failed"
-assert [ "$(cut -f1 "$WORK/g1t.out")" = goal-attach ]
-assert grep -qxF '### goal attach: detached' "$NIGHTS/G1.goal-attach.brief.md"
-pnight job G1 set goal-attach state=merged >/dev/null || fail "goal-attach not closed"
-# After the last goal, the monthly refresh of the direction files when it is due, once.
+# Both goals stay in breakages.md, so lost-time waits; after the last goal, the monthly refresh of the direction files when it is due, once.
 month=$(date -u +%Y-%m)
 pnight carry G1 >"$WORK/g1d.out" 2>/dev/null || fail "a carry after every goal failed"
 assert [ "$(cut -f1 "$WORK/g1d.out")" = "directions-refresh-$month" ]
 assert grep -qF '## Directions refresh — monthly' "$NIGHTS/G1.directions-refresh-$month.brief.md"
 pnight carry G1 >"$WORK/g1e.out" 2>/dev/null || fail "a carry after the refresh failed"
 assert [ ! -s "$WORK/g1e.out" ]
-assert jqe --arg r "directions-refresh-$month" '[.jobs[].ref] == ["goal-gates", "goal-stop-hooks", "goal-attach", $r]' "$NIGHTS/G1.json"
+assert jqe --arg r "directions-refresh-$month" '[.jobs[].ref] == ["goal-gates", "goal-stop-hooks", $r]' "$NIGHTS/G1.json"
+# Once a direction's goals have all landed, none left in its file, the next direction's follow.
+printf '# B\n\n## Goals\n\n## Done\n\n### goal gates: landed\n' >"$L/docs/directions/breakages.md"
+gt -C "$L" commit -qam landed
+jq -n '{id: "G2", started_at: "2026-10-16T01:00:00Z", finished_at: null, session: null, pilot: "breakages lost-time", jobs: []}' \
+  >"$NIGHTS/G2.json"
+pnight base G2 >/dev/null || fail "night base G2 failed"
+pnight carry G2 >"$WORK/g2.out" 2>/dev/null || fail "a carry after the first direction failed"
+assert [ "$(cut -f1 "$WORK/g2.out")" = goal-attach ]
+assert grep -qxF '### goal attach: detached' "$NIGHTS/G2.goal-attach.brief.md"
 export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi
 

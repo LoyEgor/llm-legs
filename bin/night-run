@@ -852,18 +852,20 @@ goal_text() { # direction-file slug -> that goal's section
 
 pilot_goal() { # id directions -> the carry line of the next goal in queue order (the first with no job tonight), none
   # while one is at work; after the last goal the monthly directions-refresh when due, the direction files settled by then
-  local repo dir file slug night
+  local repo dir file slug slugs night
   night=$(night_file "$1")
   ! jq -e 'any(.jobs[]; .kind == "goal" and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
   repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: pilot %s not carried\n' "$2" >&2; return 0; }
   for dir in $2; do
     file="docs/directions/$dir.md"
     [ -r "$repo/$file" ] || { printf 'night-run: no %s/%s: pilot %s has no goals\n' "$repo" "$file" "$dir" >&2; continue; }
-    for slug in $(goal_slugs "$repo/$file"); do
+    slugs=$(goal_slugs "$repo/$file")
+    for slug in $slugs; do
       ! jq -e --arg r "goal-$slug" 'any(.jobs[]; .ref == $r)' "$night" >/dev/null || continue
       printf 'goal\t%s\t%s\t%s\t-\n' "$slug" "$repo" "$file"
       return 0
     done
+    [ -z "$slugs" ] || break # goals still in its file (failed or blocked tonight): the next direction waits
   done
   ! periodic_due | grep -qx directions-refresh ||
     printf 'directions-refresh\t%s\t%s\tshare/briefs/directions-refresh.md\t-\n' "$(date -u +%Y-%m)" "$repo"

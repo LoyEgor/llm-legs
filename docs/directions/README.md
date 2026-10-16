@@ -6,11 +6,11 @@ them all together only after each direction's metric has moved.
 
 | # | Direction | Metric | State |
 |---|---|---|---|
-| 1 | [Breakages](breakages.md) | new distinct problems per 100 units of work, 7 days against the 7 before; repeats 0 | active |
+| 1 | [Breakages](breakages.md) | new distinct problems (doctor snapshots) per 100 units of work, 7 days against the 7 before; repeats 0 | active |
 | 2 | [Lost time](lost-time.md) | Lost time index | queued |
-| 3 | [System](system.md) | own background CPU-min/day; SSD GB written a day | queued |
-| 4 | [Spend](spend.md) | Fee index; Doctors' share of 7-day usage | queued |
-| 5 | [Legacy](legacy.md) | net lines in the four sweep repositories, code and tests apart | queued |
+| 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | queued |
+| 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | queued |
+| 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, tests apart; net lines watched | queued |
 | 6 | [Debt](debt.md) | review debt closed | paused |
 
 ## Rules
