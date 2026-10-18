@@ -65,11 +65,14 @@ WALL_SECONDS = 6 * 3600
 FLAG_WALL_S = 48 * 3600
 FLAG_BURST_S = 3600
 # Flow takes (images, clips) one account may start in 24 h. Five accounts were flagged at their 26th-32nd on
-# 2026-10-15; four ran 21-25 unflagged on 2026-10-16. com made 109 unflagged: its meta carries flow_uncapped,
-# no budget until its first flag sets flow_day_takes at two thirds of its count then. The menu mirrors both
-# constants (shared-invariants row de).
+# 2026-10-15, before the session fixes of 2026-10-16; four ran 20-25 unflagged on 2026-10-16 and 10-18. A spent
+# budget climbs FLOW_CLIMB once a day while the account has no flag for FLOW_CLIMB_HOLD_S; a flag sets it to two
+# thirds of the 24 h count, never below FLOW_DAY_TAKES. com made 109 unflagged: its meta carries flow_uncapped,
+# no budget until its first flag. The menu mirrors both constants (shared-invariants row de).
 FLOW_DAY_TAKES = 25
 FLOW_DAY_S = 24 * 3600
+FLOW_CLIMB = 5
+FLOW_CLIMB_HOLD_S = 3 * FLOW_DAY_S
 FLOW_SPACING_S = 180
 TRUST = "flow-trust.json"
 BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
@@ -466,6 +469,8 @@ def note_flow_send(account: str, takes: int = 1) -> None:
     budget = None if meta.get("flow_uncapped") else meta.get("flow_day_takes", FLOW_DAY_TAKES)
     if budget is not None and len(counted) >= budget:
         set_wall(account, counted[-budget] + FLOW_DAY_S)
+        if now - meta.get("flagged_at", 0) >= FLOW_CLIMB_HOLD_S and now - meta.get("flow_climbed_at", 0) >= FLOW_DAY_S:
+            write_meta(account, flow_day_takes=budget + FLOW_CLIMB, flow_climbed_at=int(now))
 
 
 def note_saved(account: str) -> None:
@@ -1350,10 +1355,9 @@ def wall_until(account: str, failure: Failure) -> float:
     if now - last >= FLAG_BURST_S:
         strikes = strikes + 1 if meta.get("saved_at", 0) < last else 1
     strikes = max(strikes, 1)
-    write_meta(account, flagged_at=int(now), flag_strikes=strikes)
-    if meta.get("flow_uncapped"):
-        counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S]
-        write_meta(account, flow_uncapped=False, flow_day_takes=max(FLOW_DAY_TAKES, len(counted) * 2 // 3))
+    counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S]
+    write_meta(account, flagged_at=int(now), flag_strikes=strikes, flow_uncapped=False,
+               flow_day_takes=max(FLOW_DAY_TAKES, len(counted) * 2 // 3))
     return now + FLAG_WALL_S * 2 ** (strikes - 1)
 
 

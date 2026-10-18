@@ -407,8 +407,11 @@ count once (`flagged_at`, `flag_strikes`, `saved_at` in its `accounts/<name>.jso
 cleared within 33 h, while a re-probed hot account re-flagged at its first send and gained a strike a day);
 and until the oldest of
 its last `FLOW_DAY_TAKES` (25) Flow images and clips is 24 h old once it starts that many (`flow_takes`, one
-stamp per take a send asks for; `flow_day_takes` in the meta overrides it; `flow_uncapped` (com) means no budget
-until the account's first flag sets one at two thirds of its 24 h count then). The menu's `fv` row shows the
+stamp per take a send asks for; `flow_day_takes` in the meta overrides it). The take that spends the budget also
+raises it by `FLOW_CLIMB` (5) for the next day, at most once a day (`flow_climbed_at`) and only 3 days
+(`FLOW_CLIMB_HOLD_S`) after the account's last flag; a flag sets it to two thirds of the account's 24 h count, never
+below 25. The flags at the 26th-32nd take (2026-10-15) predate the session fixes of 2026-10-16, so the climb
+finds each account's ceiling again; `flow_uncapped` (com) means no budget until the account's first flag. The menu's `fv` row shows the
 takes left today before the balance, `23/828`; an uncapped account shows the balance alone.
 Sends on one account are at least `FLOW_SPACING_S` (180 s) apart, the wait reported as `space_wait_s`. A run
 that waited on the account lock re-reads the walls before it sends. For the flag analysis `jobs.jsonl` also gets a
