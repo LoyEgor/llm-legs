@@ -84,7 +84,8 @@ SELECTORS = {
 }
 EDITOR = {"markup": "Markup", "canvas": "Draw on image", "undo": "Undo", "resize": "Resize", "close": "Close viewer",
           "comment": "Comment", "comment_surface": "Image comment surface", "tools": "Image editing tools",
-          "send": "Send", "remove_bg": "Remove BG"}
+          "send": "Send", "remove_bg": "Remove BG", "move_toolbar": "Move toolbar", "full_view": "Enter full view",
+          "exit_full_view": "Exit full view"}
 IMAGE_SRC = r"^blob:https://chatgpt\.com/|/backend-api/estuary/content|oaiusercontent\.com|/files/"
 LIMIT = re.compile(r"(?:image|images|generation|request)[^.\n]{0,80}\blimit\b|\blimit\b[^.\n]{0,80}image", re.I)
 LIMIT_CUE = re.compile(r"try again|again later|resets?\b|upgrade|your plan|plan limit|wait until", re.I)
@@ -521,61 +522,113 @@ def stroke(page, points: list[tuple[float, float]], steps: int = 12) -> None:
     page.wait_for_timeout(1000)
 
 
-ON_CANVAS = "(canvas, [x, y]) => { const hit = document.elementFromPoint(x, y); return !!hit && canvas.contains(hit); }"
+ON_CANVAS = """(canvas, points) => points.findIndex(([x, y]) => {
+  const hit = document.elementFromPoint(x, y); return !!hit && canvas.contains(hit); })"""
+EDGE_PX, STEP_PX, REACH_PX = 2, 2, 320
+TOOLBAR_TOP = 10
 
 
-def clear_point(canvas, x: float, y: float, dx: int, dy: int) -> tuple[float, float]:
-    """The corner moved inward off the viewer's overlays (the Stroke width slider sits on a full-width image)."""
-    for sx, sy in ((dx, 0), (0, dy)):
-        for step in range(40):
-            if canvas.evaluate(ON_CANVAS, [x + sx * 8 * step, y + sy * 8 * step]):
-                return x + sx * 8 * step, y + sy * 8 * step
-    return x, y
+def clear_point(surface, x: float, y: float, dx: int, dy: int) -> tuple[float, float]:
+    """The nearest spot toward (dx, dy) the surface itself takes, off an earlier pin or an overlay."""
+    steps = range(REACH_PX // STEP_PX)
+    spots = [(x + dx * STEP_PX * i, y) for i in steps] + [(x, y + dy * STEP_PX * i) for i in steps]
+    found = surface.evaluate(ON_CANVAS, spots)
+    return spots[found] if found >= 0 else (x, y)
 
 
-# The viewer panel's left edge is a resizer: a stroke or click starting there drags the panel, draws nothing.
 def inside(value: float, start: float, size: float) -> float:
-    return min(max(value, start + 16), start + size - 16)
+    return min(max(value, start + EDGE_PX), start + size - EDGE_PX)
+
+
+def park_toolbar(page, box: dict) -> None:
+    """The editing toolbar dragged into the band above the picture: it opens over a tall picture's foot, where a
+    pin cannot be placed, and the page keeps it where it was left."""
+    with contextlib.suppress(Exception):
+        bar = page.get_by_role("toolbar", name=EDITOR["tools"]).first.bounding_box()
+        if bar["y"] + bar["height"] <= box["y"] or bar["y"] >= box["y"] + box["height"]:
+            return
+        grip = editor_button(page, "move_toolbar").bounding_box()
+        x, y = grip["x"] + grip["width"] / 2, grip["y"] + grip["height"] / 2
+        stroke(page, [(x, y), (x, y - bar["y"] + TOOLBAR_TOP)])
+
+
+def outline(left: float, top: float, right: float, bottom: float) -> list[tuple[float, float, int]]:
+    """Spots along the rectangle clockwise from its top-right corner, each with the corner index its edge ends at,
+    then the top edge's line on past that corner."""
+    corners = [(right, top), (right, bottom), (left, bottom), (left, top)]
+    spots = []
+    for index, ((x0, y0), (x1, y1)) in enumerate(zip(corners, corners[1:] + corners[:1])):
+        count = max(1, round(max(abs(x1 - x0), abs(y1 - y0)) / STEP_PX))
+        spots += [(x0 + (x1 - x0) * i / count, y0 + (y1 - y0) * i / count, index + 1) for i in range(count)]
+    return spots + [(right + STEP_PX * i, top, 0) for i in range(1, REACH_PX // STEP_PX)]
 
 
 def mark_region(page, region: tuple[float, float, float, float]) -> None:
-    """The region outlined with the Markup pen; the prompt then goes into the composer Markup opens."""
+    """The region outlined with the Markup pen; the prompt then goes into the composer Markup opens.
+    A stroke draws only from a spot the canvas itself takes (the panel resizer and the Stroke width slider lie over
+    a full-width picture's left side, the toolbar over a tall one's foot), and once begun it draws under them too, so
+    the outline starts at the first free spot on it: its corners stay where the region puts them."""
     try:
         editor_button(page, "markup").click(timeout=10000)
         canvas = page.get_by_role("application", name=EDITOR["canvas"]).first
         canvas.wait_for(timeout=10000)
-        frame = canvas.bounding_box()
         box = page.locator(SELECTORS["editor_image"]).filter(visible=True).first.bounding_box()
     except Exception as error:  # noqa: BLE001
         raise drift("no Markup canvas in the image viewer") from error
+    park_toolbar(page, box)
     x, y, w, h = region
-    left = inside(box["x"] + x * box["width"] + 4, frame["x"], frame["width"])
-    right = inside(box["x"] + (x + w) * box["width"] - 4, frame["x"], frame["width"])
-    top = inside(box["y"] + y * box["height"] + 4, frame["y"], frame["height"])
-    bottom = inside(box["y"] + (y + h) * box["height"] - 4, frame["y"], frame["height"])
+    left, right = (inside(box["x"] + f * box["width"], box["x"], box["width"]) for f in (x, x + w))
+    top, bottom = (inside(box["y"] + f * box["height"], box["y"], box["height"]) for f in (y, y + h))
+    corners = [(right, top), (right, bottom), (left, bottom), (left, top)]
+    spots = outline(left, top, right, bottom)
     for _ in range(2):
         # Live, a stroke drawn the moment the canvas appeared was dropped.
         page.wait_for_timeout(2000)
-        corners = [clear_point(canvas, left, top, 1, 1), clear_point(canvas, right, top, -1, 1),
-                   clear_point(canvas, right, bottom, -1, -1), clear_point(canvas, left, bottom, 1, -1)]
-        stroke(page, corners + corners[:1])
+        found = canvas.evaluate(ON_CANVAS, [spot[:2] for spot in spots])
+        if found < 0:
+            raise drift("no spot on or beside the region's outline is free on the Markup canvas")
+        sx, sy, ahead = spots[found]
+        stroke(page, [(sx, sy)] + [corners[(ahead + k) % 4] for k in range(4)] + [(sx, sy)])
         if editor_button(page, "undo").is_enabled():
             return
     raise drift("the Markup canvas took no stroke")
 
 
+def toggle(page, name: str) -> None:
+    button = editor_button(page, name)
+    with contextlib.suppress(Exception):
+        if button.is_visible():
+            button.click(timeout=5000)
+
+
+def settled_box(page, target, wait_s: float = 3) -> dict:
+    """The box once a layout change has stopped moving it."""
+    box, deadline = target.bounding_box(), time.time() + wait_s
+    while time.time() < deadline:
+        page.wait_for_timeout(300)
+        again = target.bounding_box()
+        if again == box:
+            break
+        box = again
+    return box
+
+
 def place_comments(page, points: list[tuple[float, float, str]], wait_s: float = 10) -> None:
-    """One Comment pin per point, each given its own text and kept with Enter before the next is placed."""
+    """One Comment pin per point, each given its own text and kept with Enter before the next is placed.
+    Placed in full view: beside the composer the panel resizer covers a full-width picture's left 14 px (2.2% of
+    it, live), full view only 6 px; the pins stay on leaving it."""
     try:
         editor_button(page, "comment").click(timeout=10000)
         surface = editor_button(page, "comment_surface")
         surface.wait_for(timeout=10000)
-        box = surface.bounding_box()
+        toggle(page, "full_view")
+        box = settled_box(page, surface)
     except Exception as error:  # noqa: BLE001
         raise drift("no Comment surface in the image viewer") from error
+    park_toolbar(page, box)
     text_box, pins = page.locator(SELECTORS["comment_text"]), page.locator(SELECTORS["comment_pin"])
     for index, (x, y, text) in enumerate(points, 1):
-        # Off an earlier pin and the toolbar lying over the image's foot: a click there would edit or miss.
+        # Off an earlier pin or an overlay: a click there would edit or miss.
         spot = clear_point(surface, inside(box["x"] + x * box["width"], box["x"], box["width"]),
                            inside(box["y"] + y * box["height"], box["y"], box["height"]),
                            1 if x < 0.5 else -1, 1 if y < 0.5 else -1)
@@ -591,6 +644,7 @@ def place_comments(page, points: list[tuple[float, float, str]], wait_s: float =
             if time.time() > deadline:
                 raise drift(f"comment {index} was not kept on the image")
             page.wait_for_timeout(250)
+    toggle(page, "exit_full_view")
 
 
 def send_comments(page) -> None:

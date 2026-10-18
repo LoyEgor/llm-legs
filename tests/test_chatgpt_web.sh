@@ -161,11 +161,21 @@ class Locator:
     def evaluate_all(self, script):
         assert self.key == "attachment", self.key
         return [Path(path).name for path in self.page.files]
-    def bounding_box(self): return {"x": 100, "y": 100, "width": 400, "height": 300}
+    def bounding_box(self):
+        if self.key == "role:Image editing tools":
+            x, y, w, h = self.page.toolbar
+            return {"x": x, "y": y, "width": w, "height": h}
+        if self.key == "role:Move toolbar":
+            return {"x": self.page.toolbar[0], "y": self.page.toolbar[1], "width": 20, "height": self.page.toolbar[3]}
+        return {"x": 100, "y": 100, "width": 400, "height": 300}
     def evaluate(self, script, arg):
         assert script is cw.ON_CANVAS and self.key in ("role:Draw on image", "role:Image comment surface"), script
-        (x0, y0, x1, y1), (x, y) = self.page.overlay or (0, 0, 0, 0), arg
-        return 100 <= x <= 500 and 100 <= y <= 400 and not (x0 <= x <= x1 and y0 <= y <= y1)
+        covers = [self.page.overlay or (0, 0, 0, 0)]
+        tx, ty, tw, th = self.page.toolbar
+        covers.append((tx, ty, tx + tw, ty + th))
+        free = [100 <= x <= 500 and 100 <= y <= 400 and not any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in covers)
+                for x, y in arg]
+        return free.index(True) if True in free else -1
     def count(self):
         if self.key == "attachment":
             return len(self.page.files) + len(self.page.stale)
@@ -257,6 +267,11 @@ class Mouse:
             self.page.comment_open, self.page.pin_at = True, (round(x), round(y))
     def down(self): self.down_at = len(self.page.points)
     def up(self):
+        tx, ty, tw, th = self.page.toolbar
+        if self.page.points[self.down_at - 1] == (round(tx + 10), round(ty + th / 2)):
+            self.page.toolbar = (tx, self.page.points[-1][1] - th / 2, tw, th)
+            self.page.events.append(("toolbar", self.page.toolbar))
+            return
         self.page.events.append(("stroke", self.page.points[self.down_at - 1:]))
         self.page.strokes += int(self.page.draws)
 
@@ -274,7 +289,7 @@ class Page:
         self.url_after_goto, self.probes = url_after_goto, 0
         self.keyboard, self.mouse = Keyboard(self), Mouse(self)
         self.viewer, self.menu, self.menu_open, self.points, self.strokes, self.draws = False, [], False, [], 0, True
-        self.overlay = None
+        self.overlay, self.toolbar = None, (100, 40, 400, 40)
         self.commenting, self.comment_opens, self.comment_open, self.pins, self.typed = False, True, False, [], None
         self.remove_bg_starts = True
         self.send_ready, self.uploads_land, self.multiple, self.scrambles, self.waits = True, True, False, False, []
@@ -490,23 +505,41 @@ session.pending = [Response(me, None, status=401)]
 session.poll()
 assert session.seen and session.email is None
 
-# --region: the chat's last image opened in the viewer, a Markup outline drawn inside the canvas (never on
-# its resizer edge), then the prompt typed into the composer Markup opened.
+# --region: the chat's last image opened in the viewer, a Markup outline on the region's own edges (2 px inside the
+# picture at its border), then the prompt typed into the composer Markup opened.
+HALF = {(498, 250), (498, 398), (102, 398), (102, 250)}
 page = Page()
 result, _ = render(page, resume=OLD_CHAT, region=(0.0, 0.5, 1.0, 0.5), prompt="recolor the table")
 assert isinstance(result, dict), result.reason
 clicks = [e for e in page.events if e[0] in ("click", "stroke", "type")]
 assert clicks[:2] == [("click", "preview"), ("click", "role:Markup")], clicks
 stroke = next(e[1] for e in page.events if e[0] == "stroke")
-assert {stroke[0], max(stroke), min(stroke)} == {(116, 254), (484, 384)}, stroke
-assert all(116 <= x <= 484 and 116 <= y <= 384 for x, y in stroke), stroke
+assert stroke[0] == stroke[-1] == (498, 250) and HALF <= set(stroke), stroke
+assert all(102 <= x <= 498 and 250 <= y <= 398 for x, y in stroke), stroke
 assert page.events.index(("type", "recolor the table")) > max(i for i, e in enumerate(page.events) if e[0] == "stroke")
-# A full-width image puts the Stroke width slider over a left corner: the stroke starts inward of it.
+# The resizer and the Stroke width slider over a full-width picture's left side (live: up to 11% of its width), the
+# toolbar over a tall one's foot: the stroke begins at the first free spot of the outline and runs under them,
+# its corners where the region puts them.
 page = Page()
 page.overlay = (100, 230, 150, 330)
 result, _ = render(page, resume=OLD_CHAT, region=(0.0, 0.5, 1.0, 0.5), prompt="recolor the table")
 stroke = next(e[1] for e in page.events if e[0] == "stroke")
-assert isinstance(result, dict) and stroke[0] == (156, 254) and (116, 384) in stroke, stroke
+assert isinstance(result, dict) and stroke[0] == (498, 250) and HALF <= set(stroke), stroke
+page = Page()
+page.overlay = (400, 100, 500, 400)
+result, _ = render(page, resume=OLD_CHAT, region=(0.0, 0.5, 1.0, 0.5), prompt="recolor the table")
+stroke = next(e[1] for e in page.events if e[0] == "stroke")
+assert stroke[0] == stroke[-1] == (398, 398) and HALF <= set(stroke), stroke
+# A region wholly under an overlay: the stroke begins on its top edge's line past the right corner.
+page = Page()
+page.overlay = (100, 100, 150, 150)
+result, _ = render(page, resume=OLD_CHAT, region=(0.0, 0.0, 0.1, 0.1), prompt="recolor the corner")
+stroke = next(e[1] for e in page.events if e[0] == "stroke")
+assert stroke[0] == stroke[-1] == (152, 102) and {(140, 102), (140, 130), (102, 130), (102, 102)} <= set(stroke), stroke
+page = Page()
+page.overlay = (100, 100, 500, 400)
+failure, _ = render(page, resume=OLD_CHAT, region=(0.0, 0.0, 0.1, 0.1), prompt="recolor the corner")
+assert failure.code == 1 and "no spot on or beside" in failure.reason and not page.sent, failure
 page = Page()
 page.draws = False
 failure, _ = render(page, resume=OLD_CHAT, region=(0.0, 0.5, 1.0, 0.5))
@@ -534,22 +567,30 @@ failure, _ = render(page, resume=OLD_CHAT, prompt=None, aspect="2:3", tool="resi
 assert failure.code == 2 and failure.extra["offered"] == ["1:1", "3:4", "9:16", "4:3", "16:9"], failure
 assert "1:1, 3:4, 9:16, 4:3, 16:9, not 2:3" in failure.reason and not page.sent, failure
 
-# Point edits: Comment on, one pin per point placed off the resizer edge, each given its text and kept with
-# Enter before the next, then the Comment toolbar's Send, the composer untouched.
+# Point edits: Comment on, in full view, one pin per point placed where the point puts it (2 px inside the picture at
+# its border), each given its text and kept with Enter before the next, then back out of full view to the Comment
+# toolbar's Send, the composer untouched.
 POINTS = [(0.5, 0.2, "make the helmet orange"), (0.0, 1.0, "make the top green")]
 page = Page()
 result, _ = render(page, resume=OLD_CHAT, prompt=None, tool="comment", point=POINTS)
 assert isinstance(result, dict), result.reason
 steps = [e for e in page.events if e[0] in ("click", "pin", "type", "key") and e[1] != "role:Close viewer"]
-assert steps == [("click", "preview"), ("click", "role:Comment"), ("pin", (300, 160)), ("type", "make the helmet orange"),
-                 ("key", "Enter"), ("pin", (116, 384)), ("type", "make the top green"), ("key", "Enter"),
-                 ("click", "role:Send")], steps
-assert page.pins == [((300, 160), "make the helmet orange"), ((116, 384), "make the top green")], page.pins
-# The toolbar over the image's foot: a pin there moves up off it, never clicks the toolbar.
+assert steps == [("click", "preview"), ("click", "role:Comment"), ("click", "role:Enter full view"), ("pin", (300, 160)),
+                 ("type", "make the helmet orange"), ("key", "Enter"), ("pin", (102, 398)), ("type", "make the top green"),
+                 ("key", "Enter"), ("click", "role:Exit full view"), ("click", "role:Send")], steps
+assert page.pins == [((300, 160), "make the helmet orange"), ((102, 398), "make the top green")], page.pins
+# The toolbar over a tall picture's foot is dragged by its grip into the band above the picture first, so the pin
+# lands on the point; an overlay that stays (the panel resizer) moves the pin just off it.
 page = Page()
-page.overlay = (100, 370, 500, 400)
+page.toolbar = (100, 370, 400, 30)
 result, _ = render(page, resume=OLD_CHAT, prompt=None, tool="comment", point=[(0.5, 1.0, "the shoes red")])
-assert isinstance(result, dict) and page.pins == [((300, 368), "the shoes red")], page.pins
+assert isinstance(result, dict) and page.pins == [((300, 398), "the shoes red")], page.pins
+assert ("toolbar", (100, 10, 400, 30)) in page.events, page.events
+page = Page()
+page.overlay = (100, 100, 110, 400)
+result, _ = render(page, resume=OLD_CHAT, prompt=None, tool="comment", point=[(0.0, 0.5, "the sleeve blue")])
+assert isinstance(result, dict) and page.pins == [((112, 250), "the sleeve blue")], page.pins
+assert not any(e[0] == "toolbar" for e in page.events), page.events
 page = Page()
 page.comment_opens = False
 failure, _ = render(page, resume=OLD_CHAT, prompt=None, tool="comment", point=POINTS)

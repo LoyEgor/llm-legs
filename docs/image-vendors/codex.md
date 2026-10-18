@@ -153,10 +153,20 @@ cli 16:9 → 1664×936, all `fit=ok`; `--transparent` gave real alpha on both ro
 `--route web`, never as prose). Each edits one image: the chat's last one (`--resume <chat>`) or exactly one
 `--ref`.
 
-- `--region x,y,w,h` (fractions of the image): the viewer's Markup draws a red outline (clamped 16 px inside the canvas — its left edge is the
-  panel resizer, and each corner moved inward off overlays such as the Stroke width slider, which covers a
-  full-width image's left side), the stroke must enable Undo or the run fails unsent, then the prompt goes
-  with it. Live 2026-10-02: the cube chat's front band became walnut (24% change inside, 0.6% outside, no red
+- `--region x,y,w,h` (fractions of the image): the viewer's Markup draws a red outline on the region's edges
+  (2 px inside the picture at its border), the stroke must enable Undo or the run fails unsent, then the prompt
+  goes with it. Markup splits the viewer beside the composer: on a full-width picture the panel resizer (left
+  14 px) and the Stroke width slider (52×228 px) cover up to 11% of its width, the toolbar a tall picture's
+  foot. A stroke only starts on a spot the canvas itself takes and then draws under all of them, so it starts
+  at the first free spot of the outline; a region wholly under the slider starts on its top edge's line past
+  the right corner and keeps that tail (a 5% top-left box on 3000×1000: box exact, tail to x=0.106). The page
+  keeps strokes in image coordinates. Live 2026-10-19 (no send; grid refs 1024², 1920×1080, 1080×1920,
+  1536×1024, 3000×1000, 1000×3000, 400×300, 4000×3000; centre, four corners, left edge, 5% boxes; the
+  canvas's own ink read back): every side within 0.8% of the picture side (the old 16 px clamp + 4 px inset
+  + corner shifts: up to 29%, a left-edge box drawn as a sliver, a 5% box collapsed to a dash). The
+  `img[class*=ZoomableImage]` box is the picture to ≤0.7 px (object-fit letterbox ≤0.3%), small refs show
+  1:1 and large ones as a 2048-px preview, neither moves the fractions.
+  Live 2026-10-02: the cube chat's front band became walnut (24% change inside, 0.6% outside, no red
   left); a ref 16:9 seascape with band `0,0.6,1,0.4` → calm sea (12.9% inside, 2.5% outside — the calm
   spread to the water just above the band; rocks at the band's left kept). The outline steers, it does not mask.
 - Re-aspect: `--resume <chat> --aspect W:H` with no `--prompt` runs `chatgpt-web resize`, the viewer's
@@ -167,8 +177,13 @@ cli 16:9 → 1664×936, all `fit=ok`; `--transparent` gave real alpha on both ro
 - Point edits: `--point x,y=<text>` (repeatable; fractions of the image) runs `chatgpt-web comment`, the
   viewer's Comment tool: one numbered pin per point, each with its own text box (kept with Enter), then the
   Comment toolbar's Send — ONE message `Image 1:` + `1. (x: 50%, y: 19.9%) <text>` per pin with an annotated
-  thumbnail, one generation however many pins. A pin is placed 16 px inside the image and moved off an
-  earlier pin or the toolbar lying over the image's foot. The pins go alone: that Send drops a composer draft
+  thumbnail, one generation however many pins. A pin is placed on its point (2 px inside the picture at its
+  border), in full view (beside the composer the resizer covers a full-width picture's left 14 px, 2.2%; full
+  view 6 px), after the toolbar is dragged by its grip into the band above the picture (it opens over a tall
+  picture's foot; the page keeps it there), and moved off an earlier pin; the pins stay on leaving full view.
+  A pin's own `left`/`top` style is its fraction of the picture. Live 2026-10-19 (same 8 refs, pins at the
+  centre, corners, left edge and x=0.15, no send): every pin within 0.75% (the old 16 px clamp: up to 7.5%).
+  The pins go alone: that Send drops a composer draft
   and the composer's own send drops the pins (both seen live), so `--point` refuses `--prompt`, `--aspect`,
   `--size`, `--transparent` and `--region` — an overall note goes into a pin. Live 2026-10-02: two pins (helmet
   → orange, top → green) in 87 s; a 1536×1024 cube ref with "matte yellow" on the cube and "a white mug here"
@@ -193,7 +208,10 @@ edit of an existing image is composited by default, on both routes, by the decis
 part of the delivered image back onto a snapshot of the input (`--edit <image>`, which goes first among the
 references while every `--ref` stays a reference only; else the single `--ref`, or on `--resume` the last
 image this machine delivered in that chat). A `--region` edit masks its rectangle and a `--point` edit the
-changed areas touching the points; any other edit masks the difference map. A new generation, several
+changed areas touching the points; any other edit masks the difference map. Both masks are in the input's
+frame whatever size comes back (checked 2026-10-19 with 1500×1000, 3000×1000, 1000×3000, 400×300 and 4000×3000
+inputs delivered smaller, larger or 0.1% off-aspect: rectangle sides within 0.2%, a point mask centred on its
+change and grown ≤1.8% by its deliberate dilation). A new generation, several
 references, a resume with no recorded image or a changed aspect (the viewer's Resize) print
 `composite=skipped reason=...`; `--no-composite` and `--transparent` never composite, `--remove-bg` only
 with `--composite` (a matte, above).
