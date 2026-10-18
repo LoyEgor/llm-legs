@@ -68,7 +68,7 @@ FLAG_BURST_S = 3600
 # 2026-10-15; four ran 21-25 unflagged on 2026-10-16. com made 109 unflagged: its meta carries flow_uncapped,
 # no budget until its first flag sets flow_day_takes at two thirds of its count then. The menu mirrors both
 # constants (shared-invariants row de).
-FLOW_DAY_TAKES = 20
+FLOW_DAY_TAKES = 25
 FLOW_DAY_S = 24 * 3600
 FLOW_SPACING_S = 180
 TRUST = "flow-trust.json"

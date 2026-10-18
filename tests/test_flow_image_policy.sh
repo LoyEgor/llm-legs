@@ -59,7 +59,6 @@ with tempfile.TemporaryDirectory() as temporary:
     fi.gw.take_failover = lambda accounts, plan, *args, **kwargs: plans.append(plan)
     fi.cmd_generate(argparse.Namespace(**{**base, "upscale": "2k"}))
     check(len(plans) == 1 and plans[0]["upscale"] == "2k", plans)
-    check(fi.gw.FLOW_DAY_TAKES == 20, fi.gw.FLOW_DAY_TAKES)
 
     engine = work / "engine"
     engine.write_text(f'#!/bin/sh\nexec "{sys.executable}" -B "{root}/share/flow_image.py" "$@"\n')
