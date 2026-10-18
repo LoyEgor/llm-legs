@@ -356,7 +356,7 @@ manifest, so a misread setup spends nothing. Watermark: none on PRO.
 | `--edit`: Omni reworks an uploaded video (any source; uploads over 30 s must be trimmed), the clip keeps the source length; 720p edit of an 8 s upload = 20 credits (Flow help says 40; the charge was 20) | real edit run, 1030 → 1010 |
 | `--resolution 1080p`: renders 720p, then the clip editor's "Download media → 1080p Upscaled" gives 1920x1080 at no charge (4K is disabled on PRO) | real runs, credits unchanged |
 | `--extend`: the source clip's editor → "Add clip" → "Extend (Veo 3.1 - Lite)" → prompt → send; 10 credits, a 7 s 720p clip holding only the continuation, which starts where the source ends (SSIM 0.91 and 0.92 against the source's last frame). Veo clips only: on Omni the item is disabled ("Only Veo-generated videos can be extended"); an extension opens as an empty editor (no Add clip, Download disabled), so it can be neither extended again nor downloaded upscaled. Extend mode shows no quote, so the charge is checked afterwards from the reply's credits. The source is looked up in `~/.gemini-web/jobs.jsonl` (account, project, scene, model, bytes); an older row without a scene opens the editor from the clip's tile in the project grid, as `fetch` does | two real runs (the first 990 → 980) |
-| `--count 2-4`: the x2–x4 setting; the reply names every take, saved as the dest, `<stem>-2.mp4`, …; Omni 360p 4 s x2 = 8 | real run on egbogd |
+| `--count 2-4`: the x2–x4 setting; the reply names every take, with fresh media polls carrying the exact prompt as fallback, saved as the dest, `<stem>-2.mp4`, …; Omni 360p 4 s x2 = 8 | real run on egbogd; missing-reply regression |
 | `--edit` + `--ref`: puts the ingredient into the uploaded video (a stopwatch onto a water clip's sand), same 20 credits as a plain edit | real run on jihangarangan |
 | Output: 1280x720 (640x360 at 360p) h264 with AAC | ffprobe of every run |
 | Generation rpcs, one per mode: `YhhmEf` text, `nprQif` frames, `MZZa6b` ingredients, `jIps6` edit, `fZytfe` extend; the reply names the new clips, their scenes and the credits left | page traffic |
@@ -376,6 +376,13 @@ tile carries no media id, only a thumbnail, so the tile is the one showing the t
 own project listing (`Zzl0ze`, read passively) gives that media id; the grid is virtualized and scrolled until
 the tile renders. The original-size file is byte-identical to the signed URL's (2026-10-03, a 4 s Omni clip,
 2276674 bytes both ways). An extension has no tile in the grid (2026-10-03), so it cannot be fetched later.
+
+For clips missing from the ledger, `gemini-web fetch <account> --project <id> --prompt "<exact prompt>"
+--dest <abs .mp4>` reads the page's own project listing through Watcher and downloads every matching clip,
+using the same variant filenames as generation. Matching ignores surrounding whitespace. No match or no
+listing is exit 1. `--project` also overrides the ledger lookup when fetching a media id. Every fetch holds
+the account lock (`--lock-wait`, default 900 s; exit 5 when busy), ignores generation walls, spends no
+generation credits, and records each saved clip's project so later fetches can use its media id.
 
 Operations: `geminib web <account>` once (a visible Chrome; sign in to the Google account whose geminib
 profile has that name, then Cmd+Q; it refuses a name off the gemini roster and runs `gemini-web login --wait`, and

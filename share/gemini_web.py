@@ -885,12 +885,14 @@ def wire_models(post_data: str) -> list[str]:
 class Watcher:
     """Collects the page's own media polls and generation calls; it never issues a request."""
 
-    def __init__(self, page=None):
+    def __init__(self, page=None, include_listing: bool = False):
         self.media: dict[str, dict] = {}
         self.credits: int | None = None
         self.reply_credits: int | None = None
         self.errors: set[str] = set()
         self.submitted: list[str] = []
+        self.listed = False
+        self.include_listing = include_listing
         if page is not None:
             page.on("response", self._on_response)
 
@@ -909,18 +911,18 @@ class Watcher:
     def feed(self, body: str) -> None:
         self.errors |= envelope_errors(body)
         for rpcid, payload in batch_payloads(body):
-            if rpcid in ("jwpduf", "as29s") or rpcid in GENERATE_RPCS:
+            if rpcid in ("jwpduf", "as29s") or rpcid in GENERATE_RPCS or (rpcid == LISTING_RPC and self.include_listing):
                 self._on_media(rpcid, payload)
 
     def _on_media(self, rpcid: str, payload) -> None:
         if not isinstance(payload, list):
             return
-        if rpcid == "jwpduf" or rpcid in GENERATE_RPCS:
+        if rpcid in (LISTING_RPC, "jwpduf") or rpcid in GENERATE_RPCS:
             if len(payload) > 1 and isinstance(payload[1], int):
                 self.credits = payload[1]
                 if rpcid in GENERATE_RPCS:
                     self.reply_credits = payload[1]
-            slot = 2 if rpcid == "jwpduf" else 3
+            slot = 3 if rpcid in GENERATE_RPCS else 2
             entries = payload[slot] if len(payload) > slot and isinstance(payload[slot], list) else []
         else:
             entries = [payload]
@@ -948,11 +950,13 @@ class Watcher:
             if duration:
                 record["duration"] = int(duration.group(1))
             if new:
-                record["fresh"] = record.get("status") != DONE and not record.get("url")
+                record["fresh"] = rpcid != LISTING_RPC and record.get("status") != DONE and not record.get("url")
             if len(entry) > 2 and isinstance(entry[2], str):
                 record["scene"] = entry[2]
             if rpcid in GENERATE_RPCS:
                 record["created"] = True
+        if rpcid == LISTING_RPC:
+            self.listed = True
 
     def blocked(self) -> Failure | None:
         codes = self.errors & BLOCK_ERRORS
@@ -961,8 +965,11 @@ class Watcher:
         return Failure(3, f"Flow flagged this account ({', '.join(sorted(codes))}); nothing was charged",
                        wall_s=FLAG_WALL_S, flagged=True)
 
-    def new_clips(self, known: set[str]) -> list[str]:
-        return [k for k, r in self.media.items() if k not in known and r.get("created")]
+    def new_clips(self, known: set[str], prompt: str | None = None) -> list[str]:
+        created = [k for k, r in self.media.items() if k not in known and r.get("created")]
+        same = [k for k, r in self.media.items() if k not in known and k not in created and r.get("fresh")
+                and prompt is not None and (r.get("prompt") or "").strip() == prompt.strip()]
+        return created + same
 
     def new_clip(self, known: set[str], prompt: str) -> str | None:
         """The clip a send created: named in the generation reply, else first seen after the send,
@@ -1906,7 +1913,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             while len(clips) < count:
                 if watcher.blocked():
                     raise watcher.blocked()
-                clips = watcher.new_clips(known) if count > 1 else \
+                clips = watcher.new_clips(known, args.prompt) if count > 1 else \
                     [c for c in [watcher.new_clip(known, args.prompt)] if c]
                 # A clip can show up minutes late on a slow Flow (superman's, 2026-10-18): wait the whole timeout.
                 if len(clips) < count and time.time() > deadline:
@@ -2132,22 +2139,51 @@ def job_project(media_id: str) -> str | None:
 
 
 def cmd_fetch(args) -> None:
-    project = job_project(args.media_id)
+    prompt = getattr(args, "prompt", None)
+    project = getattr(args, "project", None)
+    if prompt is not None and (not prompt.strip() or not project or args.media_id):
+        raise Failure(2, "--prompt needs --project and a nonempty prompt, without a media id")
+    if not args.media_id and prompt is None:
+        raise Failure(2, "fetch needs a media id or --project with --prompt")
+    project = project or job_project(args.media_id)
     if not project:
         raise Failure(1, f"the job ledger ({ROOT / 'jobs.jsonl'}) has no Flow project for clip {args.media_id}, "
                          "so its tile cannot be found")
-    with browser(args.account) as context:
-        page = context.pages[0] if context.pages else context.new_page()
-        opened = {}
+    with contextlib.closing(claimed([args.account], getattr(args, "lock_wait", LOCK_WAIT_S))) as picks:
+        _, refusal = next(picks)
+        if refusal:
+            raise refusal
+        with browser(args.account) as context:
+            page = context.pages[0] if context.pages else context.new_page()
+            clips = [args.media_id]
+            if prompt is not None:
+                watcher = Watcher(page, include_listing=True)
+                try:
+                    goto_flow(page, f"/project/{project}")
+                    close_promos(page, args.account)
+                    settle(page, 30000, lambda: watcher.listed)
+                    if not watcher.listed:
+                        raise Failure(1, f"project {project} on {args.account} never listed its media")
+                    clips = [mid for mid, record in watcher.media.items()
+                             if (record.get("prompt") or "").strip() == prompt.strip()]
+                    if not clips:
+                        raise Failure(1, f"cannot download: project {project} on {args.account} lists no clips matching --prompt")
+                finally:
+                    page.remove_listener("response", watcher._on_response)
+            saved = []
+            for index, media_id in enumerate(clips):
+                dest = variant_path(Path(args.dest), index)
+                opened = {}
 
-        def prepare():
-            opened["scene"] = open_clip(page, project, args.media_id, args.account)
+                def prepare():
+                    opened["scene"] = open_clip(page, project, media_id, args.account)
 
-        size = save_from_editor(page, prepare, Path(args.dest), args.resolution == "1080p")
-        ledger({"account": args.account, "media_id": args.media_id, "dest": str(Path(args.dest)),
-                "state": "saved", "scene": opened["scene"], "bytes": size})
-        emit({"ok": True, "account": args.account, "dest": args.dest, "media_id": args.media_id,
-              "bytes": size})
+                size = save_from_editor(page, prepare, dest, args.resolution == "1080p")
+                saved.append({"dest": str(dest), "media_id": media_id, "bytes": size})
+                ledger({"account": args.account, "project": project, **saved[-1],
+                        "state": "saved", "scene": opened["scene"]})
+            emit({"ok": True, "account": args.account, **saved[0],
+                  **({"project": project, "variants": saved} if prompt is not None else {})})
 
 
 def music_ready(context, account: str) -> str | None:
@@ -2241,12 +2277,15 @@ def main() -> None:
                    help="set the composer up and read Flow's credit quote, send nothing")
     lock_wait_arg(p)
     p.set_defaults(func=cmd_generate)
-    p = sub.add_parser("fetch", help="download an already generated clip by media id")
+    p = sub.add_parser("fetch", help="download existing clips by media id or project and exact prompt")
     p.add_argument("account")
-    p.add_argument("media_id")
+    p.add_argument("media_id", nargs="?")
+    p.add_argument("--project", help="Flow project id; required with --prompt, overrides the ledger for a media id")
+    p.add_argument("--prompt", help="download every clip in the project listing with this exact prompt")
     p.add_argument("--dest", required=True)
     p.add_argument("--resolution", choices=("720p", "1080p"), default="720p",
                    help="1080p downloads Flow's own upscale from the clip's editor")
+    lock_wait_arg(p)
     p.set_defaults(func=cmd_fetch)
     args = parser.parse_args()
     global TIMED

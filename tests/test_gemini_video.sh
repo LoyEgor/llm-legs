@@ -313,6 +313,59 @@ old_tile.feed(""")]}'\n[["wrb.fr","jwpduf","[null,1050,[[\\"m-old\\",null,\\"PUB
 assert old_tile.blocked() is None and old_tile.media["m-old"]["error"] == "PUBLIC_ERROR_UNUSUAL_ACTIVITY", old_tile.media
 EOF
 
+assert python3 - "$ROOT/share" "$ROOT/tests/fixtures/flow-traffic.json" <<'EOF'
+import contextlib, copy, json, sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+sys.path.insert(0, sys.argv[1])
+import gemini_web as g
+
+fixture = json.loads(Path(sys.argv[2]).read_text())
+pending = next(g.batch_payloads(fixture[0]['body']))[1][2][0]
+prompt = pending[5][1]
+
+def poll(watcher, media_id, text=prompt, done=False):
+    entry = copy.deepcopy(pending)
+    entry[0], entry[5][1] = media_id, text
+    if done:
+        entry[5][8][0] = g.DONE
+    watcher.feed(json.dumps([['wrb.fr', 'jwpduf', json.dumps([None, 100, [entry]])]]))
+
+watcher = g.Watcher()
+poll(watcher, 'known')
+poll(watcher, 'already-done', done=True)
+page = Mock()
+page.get_by_role.return_value.last.is_enabled.return_value = True
+context = SimpleNamespace(pages=[page])
+
+def sent(*args):
+    poll(watcher, 'late-old', done=True)
+    poll(watcher, 'unrelated', text='different prompt')
+    poll(watcher, 'new-1')
+    poll(watcher, 'new-2')
+    poll(watcher, 'new-3')
+    for mid in ('new-1', 'new-2', 'new-3'):
+        poll(watcher, mid, done=True)
+        watcher.media[mid]['url'] = 'https://flow-content.google/video/' + mid
+
+plan = dict(cost=30, count=2, extend=None, what='Omni pair', model='omni', upscale=None, mode='Ingredients')
+args = SimpleNamespace(prompt=prompt, dry_run=False, timeout=-1)
+with patch.multiple(g, browser=lambda account: contextlib.nullcontext(context), Watcher=lambda page: watcher,
+                    open_project=lambda *a: 'project', page_state=lambda page: {'email': 'fixture', 'build': 'fixture'},
+                    read_credits=lambda page: 100, note_credits=Mock(), compose=lambda *a: (30, 'Video x2'),
+                    press_generate=sent, await_clips=Mock(), ledger=Mock(), save_video=lambda *a: 10):
+    result = g.render_on('fixture', plan, args, {'email': 'fixture'}, Path('/tmp/fixture.mp4'), 0)
+assert [v['media_id'] for v in result['variants']] == ['new-1', 'new-2'], result
+assert not any(r.get('created') for r in watcher.media.values())
+assert watcher.new_clips({'known', 'new-1'}, ' ' + prompt + ' ') == ['new-2', 'new-3']
+assert watcher.new_clips(set(), 'different unmatched prompt') == []
+watcher.media['new-2']['created'] = True
+assert watcher.new_clips({'known'}, prompt) == ['new-2', 'new-1', 'new-3']
+assert watcher.new_clip({'known'}, prompt) == 'new-2'
+print('PASS: count=2 recovers fresh matching polls without a generation reply; excludes old/unrelated, caps count')
+EOF
+
 assert python3 - "$ROOT/share" "$FRAME" "$CLIP" <<'EOF'
 import argparse, sys
 sys.path.insert(0, sys.argv[1])
@@ -959,6 +1012,7 @@ grid = Grid(tiles, [(f"m-{n}", f"s-{n}", f"T{n}") for n in range(7)] + [("m-gone
 
 @contextlib.contextmanager
 def grid_browser(account, visible=False):
+    assert str(g.lock_path(account)) in g._held, "fetch must hold the account lock"
     yield types.SimpleNamespace(pages=[grid])
 
 
@@ -992,6 +1046,35 @@ for media_id, said in (("m-none", "has no Flow project for clip m-none"), ("m-go
         raise AssertionError(f"fetch of {media_id} passed")
     except g.Failure as failure:
         assert failure.code == 1 and said in failure.reason and not grid.rpc, (failure.reason, grid.rpc)
+
+
+grid.listed = [("recovered-1", "s-0", "T0"), ("recovered-2", "s-1", "T1")]
+grid.shown, grid.items = 2, []
+assert g.job_project("recovered-1") is None
+g.set_wall("rich", g.time.time() + 86400)
+before_wall = g.walls()
+with contextlib.redirect_stdout(out := io.StringIO()):
+    g.cmd_fetch(types.SimpleNamespace(account="rich", media_id=None, project="p-f", prompt=" prompt ",
+                                     dest=str(hd / "recovered.mp4"), resolution="720p", lock_wait=0))
+recovered = json.loads(out.getvalue())
+assert [v["media_id"] for v in recovered["variants"]] == ["recovered-1", "recovered-2"], recovered
+assert (hd / "recovered.mp4").read_bytes() == (hd / "recovered-2.mp4").read_bytes() == clip_bytes
+assert g.job_project("recovered-1") == "p-f" and g.job_project("recovered-2") == "p-f"
+assert g.walls() == before_wall and not g._held and not grid.listeners and not grid.rpc
+for prompt, project, media_id, code in (("absent", "p-f", None, 1), ("", "p-f", None, 2),
+                                       ("prompt", None, None, 2), ("prompt", "p-f", "m-0", 2),
+                                       (None, None, None, 2)):
+    try:
+        g.cmd_fetch(types.SimpleNamespace(account="rich", media_id=media_id, project=project, prompt=prompt,
+                                         dest=str(hd / "missing.mp4"), resolution="720p", lock_wait=0))
+        raise AssertionError("invalid or unmatched fetch passed")
+    except g.Failure as failure:
+        assert failure.code == code and not g._held and not grid.listeners, failure.reason
+assert not (hd / "missing.mp4").exists()
+with contextlib.redirect_stdout(io.StringIO()):
+    g.cmd_fetch(types.SimpleNamespace(account="rich", media_id="recovered-2", project="p-f", prompt=None,
+                                     dest=str(hd / "explicit.mp4"), resolution="720p", lock_wait=0))
+assert (hd / "explicit.mp4").read_bytes() == clip_bytes
 
 import fcntl
 (g.ROOT / "locks").mkdir(parents=True, exist_ok=True)
