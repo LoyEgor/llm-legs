@@ -40,6 +40,14 @@ def caps() -> dict:
     return json.loads(gw.MANIFEST.read_text())["flow_image"]
 
 
+def require_image_capability(upscale=None) -> None:
+    # Flow-only list: --upscale 2k. The manifests and docs/image-vendors.md give codex web
+    # region edits, outpaint/resize and cutout too; its prose --size cannot request a 2K download.
+    policy = caps()["image_policy"]
+    if upscale not in policy["upscale"]:
+        raise gw.Failure(2, policy["refusal"])
+
+
 def is_image(head: bytes) -> bool:
     return head[:3] == b"\xff\xd8\xff" or head[:8] == b"\x89PNG\r\n\x1a\n" or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")
 
@@ -374,6 +382,7 @@ def make_plan(args) -> dict:
 
 
 def cmd_generate(args) -> None:
+    require_image_capability(args.upscale)
     plan = make_plan(args)
     accounts = gw.take_accounts(args.account, lambda: rotation(plan["price"]),
                                 "every signed-in Flow account is walled (walls.json)")
@@ -725,6 +734,7 @@ def tool_plan(args) -> dict:
 
 
 def cmd_tool(args) -> None:
+    require_image_capability()
     plan = tool_plan(args)
 
     def run(account: str, plan: dict) -> dict:

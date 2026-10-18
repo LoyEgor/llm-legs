@@ -1053,7 +1053,7 @@ end
 -- Flow credits and the media walls (shared-invariants row `de`) are only ever read here: the one
 -- way to refresh them launches Chrome, so the row states the reading's age instead.
 -- share/gemini_web.py's Flow budget: takes per account in a rolling day, unless the meta overrides it.
-local FLOW_DAY_TAKES, FLOW_DAY_S = 25, 24 * 3600
+local FLOW_DAY_TAKES, FLOW_DAY_S = 20, 24 * 3600
 
 local function geminiWebDir()
   local override = os.getenv("GEMINI_WEB_DIR")

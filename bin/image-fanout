@@ -14,8 +14,8 @@ resolve_self() {
 
 usage() {
   image_leg_cause "$@"
-  printf 'usage: image-fanout --dest-dir <abs dir> (--prompt <text> | --jobs <abs jsonl>) [--vendors all|<vendor,...>] [--accounts all|pick] [--takes <n>] [--spare <n>] [--pack <1-4>] [--ref <abs img>]... [--edit <abs img>] [--aspect <W:H>] [--size <WxH>] [--transparent] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
-  printf '  --jobs: one JSON object per line {prompt, dest, refs, edit, aspect, size, transparent, vendor, account, takes}; vendors = share/image-caps/*.json\n' >&2
+  printf 'usage: image-fanout --dest-dir <abs dir> (--prompt <text> | --jobs <abs jsonl>) [--vendors all|<vendor,...>] [--accounts all|pick] [--takes <n>] [--spare <n>] [--pack <1-4>] [--ref <abs img>]... [--edit <abs img>] [--aspect <W:H>] [--size <WxH>] [--upscale 2k] [--transparent] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
+  printf '  --jobs: one JSON object per line {prompt, dest, refs, edit, aspect, size, upscale, transparent, vendor, account, takes}; vendors = share/image-caps/*.json\n' >&2
   exit 2
 }
 
@@ -56,6 +56,7 @@ vendors_arg=all
 accounts_mode=all
 aspect=''
 size=''
+upscale=''
 duration=''
 edit=''
 video=false
@@ -80,6 +81,7 @@ while [ "$#" -gt 0 ]; do
     --edit) [ "$#" -ge 2 ] || usage; edit=$2; request_flags=true; shift 2 ;;
     --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; request_flags=true; shift 2 ;;
     --size) [ "$#" -ge 2 ] || usage; size=$2; request_flags=true; shift 2 ;;
+    --upscale) [ "$#" -ge 2 ] || usage; upscale=$2; request_flags=true; shift 2 ;;
     --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
     --max-parallel) [ "$#" -ge 2 ] || usage; max_parallel=$2; shift 2 ;;
     --takes) [ "$#" -ge 2 ] || usage; takes=$2; shift 2 ;;
@@ -98,7 +100,7 @@ done
 [ -d "$dest_dir" ] || { printf 'image-fanout: --dest-dir is not a directory: %s\n' "$dest_dir" >&2; exit 2; }
 case "$accounts_mode" in all|pick) ;; *) usage ;; esac
 if [ -n "$jobs_file" ]; then
-  [ "$request_flags" = false ] || usage_error '--jobs carries each request: drop --prompt, --ref, --edit, --aspect, --size and --transparent'
+  [ "$request_flags" = false ] || usage_error '--jobs carries each request: drop --prompt, --ref, --edit, --aspect, --size, --upscale and --transparent'
   [[ "$jobs_file" = /* ]] && [ -f "$jobs_file" ] || usage_error "--jobs must name an existing file by absolute path: $jobs_file"
 else
   [ -n "$prompt" ] || usage
@@ -143,7 +145,7 @@ resolve_vendors "$vendors_arg" >/dev/null || usage
 # rq_refs holds newline-separated paths; rq_account is '' (every account, or the pool with takes),
 # `pick`, or a pinned account name.
 rq_n=0
-rq_prompt=() rq_dest=() rq_refs=() rq_edit=() rq_aspect=() rq_size=() rq_transparent=() rq_vendors=() rq_account=() rq_takes=()
+rq_prompt=() rq_dest=() rq_refs=() rq_edit=() rq_aspect=() rq_size=() rq_transparent=() rq_vendors=() rq_account=() rq_takes=() rq_upscale=()
 
 check_request() { # prompt aspect size edit refs-lines -> 0, or 1 with $why
   why=''
@@ -161,8 +163,10 @@ check_request() { # prompt aspect size edit refs-lines -> 0, or 1 with $why
   return 0
 }
 
-add_request() { # prompt dest refs-lines edit aspect size transparent vendors account takes
+add_request() { # prompt dest refs-lines edit aspect size transparent vendors account takes upscale
   local edit=$4 ref refs=()
+  case ${11} in ""|2k) ;; *) usage_error "--upscale is 2k" ;; esac
+  [ "$video" = false ] || [ -z "${11}" ] || usage_error "--upscale is image-only"
   while IFS= read -r ref; do [ -z "$ref" ] || refs+=("$ref"); done <<<"$3"
   image_leg_inputs "$root"
   image_leg_input "$root" "$edit"
@@ -171,7 +175,7 @@ add_request() { # prompt dest refs-lines edit aspect size transparent vendors ac
   [ "${#refs[@]}" -eq 0 ] || ref_lines=$(printf '%s\n' "${refs[@]}")
   rq_n=$((rq_n + 1))
   rq_prompt[rq_n]=$1 rq_dest[rq_n]=$2 rq_refs[rq_n]=$ref_lines rq_edit[rq_n]=$edit rq_aspect[rq_n]=$5
-  rq_size[rq_n]=$6 rq_transparent[rq_n]=$7 rq_vendors[rq_n]=$8 rq_account[rq_n]=$9 rq_takes[rq_n]=${10}
+  rq_size[rq_n]=$6 rq_transparent[rq_n]=$7 rq_vendors[rq_n]=$8 rq_account[rq_n]=$9 rq_takes[rq_n]=${10} rq_upscale[rq_n]=${11}
 }
 
 if [ -z "$jobs_file" ]; then
@@ -185,7 +189,7 @@ if [ -z "$jobs_file" ]; then
   fi
   account=''
   [ "$accounts_mode" = all ] || account=pick
-  add_request "$prompt" '' "$ref_lines" "$edit" "$aspect" "$size" "$transparent" "$vendors_arg" "$account" "$takes"
+  add_request "$prompt" '' "$ref_lines" "$edit" "$aspect" "$size" "$transparent" "$vendors_arg" "$account" "$takes" "$upscale"
 else
   line_n=0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -197,6 +201,7 @@ else
     j_refs=$(jq -r '(.refs // [])[]' <<<"$line")
     j_edit=$(jq -r '.edit // ""' <<<"$line")
     j_aspect=$(jq -r '.aspect // ""' <<<"$line")
+    j_upscale=$(jq -r '.upscale // ""' <<<"$line")
     j_size=$(jq -r '.size // ""' <<<"$line")
     j_transparent=$(jq -r 'if .transparent == true then "true" else "false" end' <<<"$line")
     j_vendors=$(jq -r '.vendor // "" | if type == "array" then join(",") else . end' <<<"$line")
@@ -216,7 +221,7 @@ else
     [ -n "$j_takes" ] || j_takes=${takes:-1}
     [[ "$j_takes" =~ ^[1-9][0-9]*$ ]] || usage_error "--jobs line $line_n: bad takes: $j_takes"
     [ "$j_account" != pick ] || [ "$j_takes" = 1 ] || usage_error "--jobs line $line_n: pick takes no takes"
-    add_request "$j_prompt" "$j_dest" "$j_refs" "$j_edit" "$j_aspect" "$j_size" "$j_transparent" "$j_vendors" "$j_account" "$j_takes"
+    add_request "$j_prompt" "$j_dest" "$j_refs" "$j_edit" "$j_aspect" "$j_size" "$j_transparent" "$j_vendors" "$j_account" "$j_takes" "$j_upscale"
   done <"$jobs_file"
   [ "$rq_n" -gt 0 ] || usage_error "--jobs holds no job"
 fi
@@ -609,12 +614,23 @@ plan_group() { # request vendor
   local used_aspect='' used_size='' used_duration='' pass_transparent=false
   local adapt_refs='' adapt_aspect='' adapt_size='' adapt_duration='' adapt_trans='' size_aspect='' want_aspect list mapped
   local r_size=${rq_size[r]} r_aspect=${rq_aspect[r]} r_edit=${rq_edit[r]} mode rows accounts g n spares_n acct skip
-  local every_n=''
+  local every_n='' policy r_upscale=${rq_upscale[r]}
   local -a used_refs=() extra=()
 
   if [ "$video" = true ] && [ "$(caps_get "$vendor" '.video | if . == null then "no" else "yes" end')" != yes ]; then
     add_static "$vendor" - skipped 'video unsupported'
     return
+  fi
+  if [ "$video" = false ]; then
+    policy=$(route_get "$vendor" '.image_policy' 'null')
+    if [ "$policy" != null ] && ! jq -e --arg upscale "$r_upscale" '.upscale | index($upscale) != null' <<<"$policy" >/dev/null; then
+      add_static "$vendor" - skipped "$(jq -r .refusal <<<"$policy")"
+      return
+    fi
+    if [ -n "$r_upscale" ] && [ -z "$(route_get "$vendor" ".upscale[\"$r_upscale\"]" 'null' '. // empty')" ]; then
+      add_static "$vendor" - skipped "--upscale $r_upscale unsupported"
+      return
+    fi
   fi
   bin_name=$(caps_get "$vendor" ".scripts.$kind // empty")
   bin=''
@@ -733,6 +749,7 @@ plan_group() { # request vendor
   if [ -n "$used_size" ]; then extra+=(--size "$used_size"); fi
   if [ -n "$used_duration" ]; then extra+=(--duration "$used_duration"); fi
   if [ "$pass_transparent" = true ]; then extra+=(--transparent); fi
+  [ -z "$r_upscale" ] || extra+=(--upscale "$r_upscale")
   extra+=(--lock-wait "$lock_wait")
   write_argv "$jobs_dir/g$g.extra" ${extra[@]+"${extra[@]}"}
 

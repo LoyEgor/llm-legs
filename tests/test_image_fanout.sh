@@ -174,6 +174,12 @@ LOCK_WAIT=5 JOB_MB=1200
 FANOUT_ENV=(IMAGE_FANOUT_BIN_DIR="$FAKE_BIN" IMAGE_FANOUT_LISTER_DIR="$FAKE_LIST" PATH="$FAKE_SYS:$PATH"
   FANOUT_CALLS="$CALLS" FANOUT_CHILDREN="$CHILDREN" IMAGE_FANOUT_JOB_MB="$JOB_MB"
   IMAGE_FANOUT_LAUNCH_GAP_MS=0 IMAGE_FANOUT_MEM_POLL_MS=100 HARNESS_HOLDS_DIR="$WORK/harness/holds" HARNESS_WAITS_DIR="$WORK/harness/waits")
+# Scheduler mechanics use an unrestricted fixture; test_flow_image_policy covers the production policy.
+mkdir -p "$WORK/caps/share/image-caps"
+for manifest in "$ROOT/share/image-caps/"*.json; do
+  jq 'del(.flow_image.image_policy)' "$manifest" >"$WORK/caps/share/image-caps/${manifest##*/}"
+done
+FANOUT_ENV+=(IMAGE_FANOUT_CAPS_ROOT="$WORK/caps")
 fanout() {
   env "${FANOUT_ENV[@]}" bash "$SCRIPT" "$@" >"$FANOUT_OUT" 2>"$FANOUT_ERR"
 }
@@ -664,7 +670,6 @@ assert test -n "$(plan_cmd gemini take2)"
 # --- another manifest is another vendor: nothing in the script names the vendors -----------------
 CAPS="$WORK/caps"
 mkdir -p "$CAPS/share/image-caps"
-cp "$ROOT"/share/image-caps/*.json "$CAPS/share/image-caps/"
 jq -n '{vendor: "zeta", verified: "2026-10-03", routes: ["cli"], scripts: {image: "zeta-image"},
   rosters: {cli: ["zetab", "list"]}, refs: {max: 2}, aspects: null, exact_size: false,
   transparent: "chroma", video: null}' >"$CAPS/share/image-caps/zeta.json"

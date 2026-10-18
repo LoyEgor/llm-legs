@@ -612,7 +612,7 @@ def walled_then_ok(account, plan):
 fi.generate_on = walled_then_ok
 out = io.StringIO()
 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-    fi.cmd_generate(args())
+    fi.cmd_generate(args(upscale="2k"))
 emitted = json.loads(out.getvalue().strip().splitlines()[-1])
 assert (emitted["account"], emitted["model"]) == ("new", "GEM_PIX_2"), out.getvalue()
 assert time.time() + 500 < gw.walls()["walled"] <= time.time() + 600, gw.walls()
@@ -620,7 +620,7 @@ gw.set_wall("walled", None)
 out = io.StringIO()
 try:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        fi.cmd_generate(args(account="walled"))
+        fi.cmd_generate(args(account="walled", upscale="2k"))
     raise AssertionError("pinned")
 except SystemExit as exit_:
     failure = json.loads(out.getvalue().strip().splitlines()[-1])
@@ -630,7 +630,7 @@ assert time.time() + 500 < gw.walls()["walled"] <= time.time() + 600, gw.walls()
 ran = []
 fi.generate_on = lambda account, plan: ran.append(account) or {"ok": True, "account": account, "takes": []}
 try:
-    fi.cmd_generate(args(account="walled"))
+    fi.cmd_generate(args(account="walled", upscale="2k"))
     raise AssertionError("a walled pinned account ran")
 except gw.Failure as failure:
     assert failure.code == 3 and "walled is walled until" in failure.reason and ran == [], failure.reason
@@ -934,32 +934,18 @@ assert path[0] == (250, 375) and all(math.dist(p, path[0]) <= 44 * 2 / 3 + 1e-9 
 assert max(math.dist(p, path[0]) for p in path) > 44 / 2
 
 assert fi.editor_accounts() == []
-try:
-    fi.cmd_tool(tool_args())
-    raise AssertionError("no editor account")
-except gw.Failure as failure:
-    assert failure.code == 4 and "My Tools" in failure.reason, failure.reason
 gw.write_meta("new", image_editor=True)
 assert fi.editor_accounts() == ["new"]
 seen = []
-fi.tool_on = lambda account, plan, meta, started: seen.append(account) or {"ok": True, "account": account, "takes": []}
-stamp = gw.read_meta("new")["generation_started_at"]
-with contextlib.redirect_stdout(io.StringIO()):
-    fi.cmd_tool(tool_args())
-assert seen == ["new"] and gw.read_meta("new")["generation_started_at"] > stamp, seen
-gw.write_meta("new", generation_started_at=7)
-with contextlib.redirect_stdout(io.StringIO()):
-    fi.cmd_tool(tool_args(op="cutout", region=None, prompt=None))
-    fi.cmd_tool(tool_args(dry_run=True))
-assert seen == ["new"] * 3 and gw.read_meta("new")["generation_started_at"] == 7, seen
-gw.set_wall("new", time.time() + 3600)
-try:
-    with contextlib.redirect_stdout(io.StringIO()):
-        fi.cmd_tool(tool_args())
-    raise AssertionError("a walled editor account ran")
-except SystemExit as walled:
-    assert walled.code == 3, walled.code
-gw.set_wall("new", time.time() - 1)
+fi.tool_on = lambda account, plan, meta, started: seen.append(account)
+for over in ({}, dict(op="outpaint", region=None, aspect="16:9"),
+             dict(op="cutout", region=None, prompt=None), dict(dry_run=True)):
+    try:
+        fi.cmd_tool(tool_args(**over))
+        raise AssertionError("a non-exclusive Flow edit ran")
+    except gw.Failure as failure:
+        assert failure.code == 2 and "Flow video-first" in failure.reason, failure.reason
+assert seen == []
 
 
 class Tile:

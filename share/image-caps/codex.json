@@ -3,6 +3,7 @@
   "verified": "2026-10-09",
   "routes": ["web", "cli"],
   "scripts": {"image": "codex-image"},
+  "default_for": ["image"],
   "rosters": {"web": ["chatgpt-web", "accounts"], "cli": ["codexb", "list"]},
   "spares": {"image": {"ratio": 0.25, "min": 1}},
   "cli": {"name": "codex", "version": "0.162.0", "version_args": ["--version"]},

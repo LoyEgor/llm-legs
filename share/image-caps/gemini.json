@@ -521,6 +521,10 @@
     }
   },
   "flow_image": {
+    "image_policy": {
+      "upscale": ["2k"],
+      "refusal": "Flow video-first: images require --upscale 2k; use media-run image (codex default)"
+    },
     "verified": "2026-10-02",
     "surface": "flow",
     "engine": "share/flow_image.py",

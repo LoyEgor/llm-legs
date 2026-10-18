@@ -76,7 +76,7 @@ run smell -- --dest /tmp/a.smell
 [ "$rc" = 0 ] && same_args zeta-smell --dest /tmp/a.smell || fail "a kind only one manifest names did not run its script"
 ok
 run image -- --dest /tmp/a.png --prompt x
-[ "$rc" = 2 ] && grep -q 'codex gemini grok zeta' "$WORK/err" || fail "an image with no vendor did not ask for one: $(cat "$WORK/err")"
+[ "$rc" = 0 ] && same_args codex-image --dest /tmp/a.png --prompt x || fail "an image with no vendor did not use codex"
 ok
 run image --vendors all -- --dest-dir /tmp/fan --prompt x
 same_args image-fanout --vendors codex,gemini,grok,zeta --dest-dir /tmp/fan --prompt x || fail "--vendors all is not every image manifest"

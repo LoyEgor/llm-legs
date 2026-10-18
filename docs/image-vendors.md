@@ -13,6 +13,11 @@ under [`docs/image-vendors/`](image-vendors/):
 Runtime limits are the JSON manifests in [`share/image-caps/`](../share/image-caps/README.md),
 not these pages. Re-verify a manifest when a run prints `caps=stale` or `model_caps=stale`.
 
+Flow is video-first: images use `media-run image` (codex/ChatGPT by default); Flow images require
+`--upscale 2k`, the only verified capability missing from ChatGPT web, whose prose `--size` cannot
+guarantee 2K (observed long side about 1672 px). Other Flow image requests exit 2 before sending;
+fan-out skips them per job, while video, music and sfx keep their routes.
+
 ## Capability matrix
 
 Route a request by this table; every cell follows from the vendor's manifest (`api_only` names what the
@@ -76,7 +81,7 @@ adapting each call from that vendor's manifest. The vendors ARE the manifests in
 `rosters[routes[0]]` the argv that lists the accounts (a web engine's `accounts` JSON: `login: false`,
 `roster: false` and a future `walled_until` are skipped; a CLI pool's `name: state` lines as before).
 
-- **Hard** — skip the vendor. `video: null` against `--video` is the one hard skip.
+- **Hard** — skip unsupported video, unsupported `--upscale`, or images that fail the Flow video-first rule.
 - **Soft** — still run, and report the change in the row's reason:
   - too many `--ref` → truncate to `refs.max` (or `video.refs_max` on `--video`; `flow_image.refs_max` when the vendor's `routes[0]` is `flow`, `web.refs_max` when it is `web`); an `--edit` image takes one of those slots
   - unsupported `--aspect` → nearest value in `aspects.generate` / `aspects.edit` (edit when any `--ref` is kept; `flow_image.aspects` when `routes[0]` is `flow`); when `aspects` is `null` (Codex), pass `--aspect W:H` and the script's own sentence builder words it
