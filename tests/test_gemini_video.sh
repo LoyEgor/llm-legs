@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/gemini-video"
 MANIFEST="$ROOT/share/image-caps/gemini.json"
 WORK="$(mktemp -d)"
-export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 export LLM_LIMITS_GEMINI_REMOVED="$WORK/gemini-main.removed"
 export GEMINIB_PROFILES_DIR="$WORK/gemini-profiles" WORKER_PICK_CONFIG_FILE="$WORK/pins" LLM_LIMITS_FILE="$WORK/limits.json" CHAT_PINS_DIR="$WORK/chat-pins"
 mkdir -p "$GEMINIB_PROFILES_DIR/.geminib"
@@ -45,8 +45,8 @@ done
 case "${ENGINE_MODE:-ok}" in
   ok)
     cp "$CLIP" "$dest"
-    printf '{"ok": true, "account": "acct-a", "model": "%s", "media_id": "m-1", "build": "boq_test_1", "cost": 20, "charged": %s, "seconds": {"harness": 12.5, "render": 55.0, "total": 87.6}, "phases": {"lock": 0.1, "sent": 9.4}, "load": {"lock": 6.5, "sent": 140.2}}\n' \
-      "${ENGINE_MODEL:-veo_3_1_t2v_fast}" "${ENGINE_CHARGED:-20}" ;;
+    printf '{"ok": true, "account": "acct-a", "model": "%s", "media_id": "m-1", "build": "boq_test_1", "cost": 20, "charged": %s, "seconds": {"harness": 12.5, "render": 55.0, "total": 87.6}, "phases": {"lock": 0.1, "sent": 9.4}, "load": {"lock": 6.5, "sent": 140.2}, "caps": %s}\n' \
+      "${ENGINE_MODEL:-veo_3_1_t2v_fast}" "${ENGINE_CHARGED:-20}" "${ENGINE_CAPS:-null}" ;;
   variants)
     cp "$CLIP" "$dest"
     cp "$CLIP" "${dest%.mp4}-2.mp4"
@@ -211,6 +211,9 @@ assert grep -qx 'account=acct-a' "$VIDEO_OUT"
 assert grep -qx 'media=m-1' "$VIDEO_OUT"
 assert grep -qx 'model=veo_3_1_t2v_fast model_caps=fresh' "$VIDEO_OUT"
 assert grep -qx 'caps=fresh surface=boq_test_1' "$VIDEO_OUT"
+reset_calls
+ENGINE_CAPS='["models: +Veo 4"]' assert video_run --dest "$OUT/footer-caps.mp4" --prompt 'water light'
+assert grep -qx 'caps=stale what=models: +Veo 4 surface=boq_test_1' "$VIDEO_OUT"
 assert grep -qx 'seconds=87.6 harness=12.5 render=55.0' "$VIDEO_OUT"
 assert jq -e 'select(.tool == "gemini-video" and .kind == "video" and .rc == 0 and .account == "acct-a")' \
   "$IMAGE_LEG_LOG" >/dev/null
@@ -560,6 +563,84 @@ plan = {"first_frame": None, "last_frame": None, "refs": [], "edit": None, "reso
 assert g.compose(None, plan) == (4, "Video 360p 4s x1") and passes == [True], passes
 passes.clear()
 assert g.compose(None, {**plan, "refs": ["/r.png"]}) == (4, "Video 360p 4s x1") and passes == [True, False], passes
+EOF
+
+# Every model in Flow's model menu is compared with the manifest: an added one is recorded as caps drift and
+# the run goes on; a gone one is recorded even when the run then fails on it.
+assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import gemini_web as g
+
+
+class MenuPage:
+    def __init__(self, models):
+        self.models, self.popover, self.menu, self.picked = models, False, False, None
+
+    def get_by_role(self, role, name=None, exact=None):
+        page = self
+
+        class Node:
+            last = first = property(lambda self: self)
+
+            def count(self):
+                if name == "Select model family":
+                    return int(page.popover)
+                return int(page.menu and name in page.models) if role == "menuitem" else 1
+
+            def is_visible(self):
+                return self.count() > 0
+
+            def is_checked(self):
+                return True
+
+            def wait_for(self, timeout=None):
+                if not self.count():
+                    raise TimeoutError(name)
+
+            def aria_snapshot(self, timeout=None):
+                if not page.menu:
+                    raise TimeoutError("menu")
+                return "- menu:\n" + "".join(f'  - menuitem "{model}"\n' for model in page.models)
+
+            def inner_text(self, timeout=None):
+                return "20 credits" if role == "link" else "Video · 720p · 8s crop_16_9 x1"
+
+            def click(self, timeout=None):
+                if name == "Settings trigger":
+                    page.popover = not page.popover
+                elif name == "Select model family":
+                    page.menu = True
+                elif role == "menuitem":
+                    self.wait_for()
+                    page.picked, page.menu = name, False
+
+        return Node()
+
+    def locator(self, selector):
+        return type("Backdrop", (), {"count": lambda self: 0})()
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+plan = {"label": "Veo 3.1 - Fast", "mode": "Frames", "aspect": "16:9", "resolution": "720p", "duration": 8,
+        "count": 1}
+known = [m["label"] for m in g.video_caps()["models"].values()]
+for models, drift, state in ((known + ["Veo 4"], ["models: +Veo 4"], "stale"), (known[::-1], [], "fresh")):
+    page = MenuPage(models)
+    assert g.settings(page, plan, full=True) == (20, "Video · 720p · 8s crop_16_9 x1"), vars(page)
+    assert page.picked == "Veo 3.1 - Fast" and not page.popover, vars(page)
+    assert g.MENU_CAPS["video"] == drift, g.MENU_CAPS
+    row = g.caps_checks.read()[-1]
+    assert (row["section"], row["state"], row["what"]) == ("video", state, "; ".join(drift)), row
+try:
+    g.settings(MenuPage([m for m in known if m != "Veo 3.1 - Fast"]), plan, full=True)
+    raise AssertionError("a model the menu lacks was set")
+except g.Failure as failure:
+    assert failure.reason.startswith("Flow UI drift: composer settings"), failure.reason
+row = g.caps_checks.read()[-1]
+assert (row["state"], row["what"]) == ("stale", "models: -Veo 3.1 - Fast"), row
 EOF
 
 # Rotation by cached balance gate and least recent start, past a sign-in step, and inside the gemini worker pool; the clone stays while in use.

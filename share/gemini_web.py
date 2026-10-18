@@ -1164,6 +1164,20 @@ def manual_composer(page) -> None:
         raise drift("the prompt box kept earlier text after Clear prompt")
 
 
+MENU_CAPS: dict[str, list[str]] = {}
+
+
+def note_model_menu(page, section: str, known: list[str]) -> None:
+    """Every model in the open family menu against the manifest's labels, as caps drift: a model Flow added is
+    recorded, never refused."""
+    with contextlib.suppress(Exception):
+        live = [re.sub(r"^\W+", "", name) for name in
+                re.findall(r'menuitem "([^"]+)"', page.get_by_role("menu").last.aria_snapshot(timeout=3000))]
+        if live:
+            MENU_CAPS[section] = caps_drift("models", live, known)
+            caps_checks.record("gemini", section, bool(MENU_CAPS[section]), "; ".join(MENU_CAPS[section]))
+
+
 def choose(page, name) -> None:
     radio = page.get_by_role("radio", name=name, exact=isinstance(name, str)).last
     radio.click(timeout=5000)
@@ -1183,7 +1197,11 @@ def settings(page, plan: dict, full: bool) -> tuple[int, str]:
         if full:
             choose(page, "Video")
             family.last.click()
-            page.get_by_role("menuitem", name=plan["label"], exact=True).click(timeout=5000)
+            item = page.get_by_role("menuitem", name=plan["label"], exact=True)
+            with contextlib.suppress(Exception):
+                item.wait_for(timeout=5000)
+            note_model_menu(page, "video", [model["label"] for model in video_caps()["models"].values()])
+            item.click(timeout=5000)
             page.wait_for_timeout(600)
             choose(page, plan["mode"])
         choose(page, plan["aspect"])
@@ -1908,7 +1926,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 click_if_visible(page, "button", "Clear prompt")
                 return {"ok": True, "dry_run": True, "account": account, "project": project,
                         "quote": quote, "chip": chip, "credits": credits, "build": state["build"],
-                        "seconds": {"total": round(time.time() - started, 1)}}
+                        "caps": MENU_CAPS.get("video"), "seconds": {"total": round(time.time() - started, 1)}}
             known = set(watcher.media)
             press_generate(page, button)
             sent = time.time()
@@ -1980,7 +1998,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                     "upscaled": plan["upscale"], "duration": first["duration"],
                     "media_id": first["media_id"], "project": project, "variants": saved,
                     "refused": refused, "cost": cost, "charged": charged, "credits": after,
-                    "bytes": first["bytes"], "build": state["build"],
+                    "bytes": first["bytes"], "build": state["build"], "caps": MENU_CAPS.get("video"),
                     "seconds": {"harness": round((sent - started) + (finished - rendered), 1),
                                 "render": round(rendered - sent, 1),
                                 "total": round(finished - started, 1)}}

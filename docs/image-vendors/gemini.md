@@ -347,7 +347,10 @@ message that came and went during a run that still succeeded. It uses Flow's man
 picks Video, the model family, Frames or Ingredients, aspect, resolution, duration and x1; frames go into
 the Start/End slots, refs and an `--edit` video into the ingredient picker, each uploaded under a unique
 name. Before sending, the popover's own "Generating will use N credits" quote and chip must match the
-manifest, so a misread setup spends nothing. Watermark: none on PRO.
+manifest, so a misread setup spends nothing. Every model in the family menu is compared with the labels of
+`.video.models` (the composer's image menu with `.flow_image.models`): one Flow added or dropped becomes a
+`caps-checks.jsonl` row and `caps=stale what=models: +<label>` in the footer, and the run goes on (all four video
+and three image models matched, quotes too, on build `20261016.00_p1`, 2026-10-19). Watermark: none on PRO.
 
 | Fact (2026-10-01, build `boq_labs-ai-sandbox-frontend_20260929.10_p0`, PRO) | Evidence |
 | --- | --- |

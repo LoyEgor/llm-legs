@@ -271,7 +271,8 @@ elif jq -e --arg o "$observed_model" "$wire_path | any(. as \$p | \$o | test(\$p
 else
   printf 'model=%s model_caps=stale verified=%s\n' "$observed_model" "$(caps "$wire_path | join(\",\")")"
 fi
-printf 'caps=fresh surface=%s\n' "$(jq -r '.build // "unknown"' <<<"$result")"
+page_caps=$(image_caps_page_check "$result")
+printf '%s surface=%s\n' "${page_caps:-caps=fresh}" "$(jq -r '.build // "unknown"' <<<"$result")"
 jq -r '.seconds // empty | "seconds=\(.total) harness=\(.harness) render=\(.render)"' <<<"$result"
 while IFS=$'\t' read -r variant variant_media; do
   [ -n "$variant" ] || continue

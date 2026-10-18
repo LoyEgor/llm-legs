@@ -289,7 +289,8 @@ flow_image_footer() {
   else
     printf 'model=%s model_caps=stale verified=%s\n' "$observed_model" "$(flow_image_caps ".models[\"$model\"].wire | join(\",\") | if . == \"\" then \"none\" else . end")"
   fi
-  printf 'caps=fresh surface=%s\n' "$(jq -r '.build // "unknown"' <<<"$flow_result")"
+  page_caps=$(image_caps_page_check "$flow_result")
+  printf '%s surface=%s\n' "${page_caps:-caps=fresh}" "$(jq -r '.build // "unknown"' <<<"$flow_result")"
   if [ -n "$tool_op" ]; then
     image_leg_route_lines " tool=$tool_op${model:+ model=$model}"
   else

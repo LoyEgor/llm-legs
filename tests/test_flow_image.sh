@@ -1044,6 +1044,7 @@ except gw.Failure as failure:
 class SettingsPage:
     popover = menu = False
     onboarding = True
+    models = ("Nano Banana Pro", "Nano Banana 3", "Nano Banana 2 Lite", "Nano Banana 2.1")
 
     def get_by_role(self, role, name=None, exact=None):
         page = self
@@ -1070,6 +1071,14 @@ class SettingsPage:
 
             def inner_text(self, timeout=None):
                 return "Nano Banana Pro arrow_drop_down"
+
+            def is_checked(self):
+                return True
+
+            def aria_snapshot(self, timeout=None):
+                if not page.menu:
+                    raise TimeoutError("menu")
+                return "".join(f'- menuitem "\U0001F34C {label}"\n' for label in page.models)
 
             def click(self, timeout=None):
                 if name == "Settings trigger":
@@ -1108,6 +1117,18 @@ saved_promos, gw.close_promos = gw.close_promos, lambda page, account: 0
 gw.dismiss_dialogs(page)
 gw.close_promos = saved_promos
 assert not page.onboarding, "the onboarding callout stayed open"
+# A model Flow added to the composer's menu is recorded as caps drift; the editor's own menu is not compared.
+assert "flow_image" not in gw.MENU_CAPS, gw.MENU_CAPS
+page = SettingsPage()
+try:
+    fi.settings(page, {"label": "Nano Banana 2.1", "aspect": None, "count": 1, "price": 0}, editor=False)
+    raise AssertionError("the fake menu item took a click")
+except gw.Failure:
+    pass
+assert gw.MENU_CAPS["flow_image"] == ["models: +Nano Banana 3"], gw.MENU_CAPS
+row = gw.caps_checks.read()[-1]
+assert (row["vendor"], row["section"], row["state"], row["what"]) == \
+    ("gemini", "flow_image", "stale", "models: +Nano Banana 3"), row
 PY
 
 # The card finder on a fake DOM shaped like the live editor history (2026-10-02 failure shot): a Failed card

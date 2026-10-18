@@ -157,7 +157,12 @@ def settings(page, plan: dict, editor: bool) -> str:
 
         if not model_item(plan["label"]).match(chosen()):
             family.last.click()
-            page.get_by_role("menuitem", name=model_item(plan["label"])).click(timeout=5000)
+            item = page.get_by_role("menuitem", name=model_item(plan["label"]))
+            with contextlib.suppress(Exception):
+                item.wait_for(timeout=5000)
+            if not editor:
+                gw.note_model_menu(page, "flow_image", [model["label"] for model in caps()["models"].values()])
+            item.click(timeout=5000)
             gw.settle(page, 600, lambda: model_item(plan["label"]).match(chosen()))
         if not model_item(plan["label"]).match(chosen()):
             raise gw.drift(f"the model family reads {chosen()!r}, not {plan['label']!r}")
@@ -291,7 +296,7 @@ def render_on(account: str, plan: dict, meta: dict, started: float) -> dict:
         if plan["dry_run"]:
             gw.click_if_visible(page, "button", "Clear prompt")
             return {"ok": True, "dry_run": True, "account": account, "project": project, "chip": chip,
-                    "build": state["build"]}
+                    "build": state["build"], "caps": gw.MENU_CAPS.get("flow_image")}
         known = set(watcher.images)
         gw.ledger({"kind": KIND, "event": "queued", "account": account, "project": project, "model": plan["model"],
                    "resume_of": plan["resume"], "prompt": plan["prompt"][:500], "count": plan.get("count", 1),
@@ -333,7 +338,7 @@ def render_on(account: str, plan: dict, meta: dict, started: float) -> dict:
         return {"ok": True, "account": account, "project": project, "takes": takes, "refused": refused, "failed": lost,
                 "unsaved": [failure.reason for failure in unsaved],
                 "model": (watcher.models or [None])[-1], "model_name": plan["model"], "label": plan["label"],
-                "chip": chip, "build": state["build"],
+                "chip": chip, "build": state["build"], "caps": gw.MENU_CAPS.get("flow_image"),
                 "seconds": {"render": round(rendered - sent, 1), "total": round(finished - started, 1)}}
 
 
