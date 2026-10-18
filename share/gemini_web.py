@@ -64,15 +64,14 @@ WALL_SECONDS = 6 * 3600
 # flagged again before any saved take, re-flagged at their first send 2 and 5 days on.
 FLAG_WALL_S = 48 * 3600
 FLAG_BURST_S = 3600
-# Flow takes (images, clips) one account may start in 24 h. No healthy account was ever flagged below its 21st
-# of a day, five were at their 26th-32nd on 2026-10-15. com made 97 unflagged: its meta carries flow_uncapped,
+# Flow takes (images, clips) one account may start in 24 h. Five accounts were flagged at their 26th-32nd on
+# 2026-10-15; four ran 21-25 unflagged on 2026-10-16. com made 109 unflagged: its meta carries flow_uncapped,
 # no budget until its first flag sets flow_day_takes at two thirds of its count then. The menu mirrors both
 # constants (shared-invariants row de).
-FLOW_DAY_TAKES = 20
+FLOW_DAY_TAKES = 25
 FLOW_DAY_S = 24 * 3600
 FLOW_SPACING_S = 180
 TRUST = "flow-trust.json"
-VIDEO_NIGHT = "flow-video-night.json"  # TEMP-FLOW-VIDEO-NIGHT(gemini-web)
 BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 # One generation rpc per composer mode: text, frames, ingredients, video edit, extend.
 GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
@@ -465,7 +464,6 @@ def note_flow_send(account: str, takes: int = 1) -> None:
     counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S] + [int(now)] * takes
     write_meta(account, flow_takes=counted)
     budget = None if meta.get("flow_uncapped") else meta.get("flow_day_takes", FLOW_DAY_TAKES)
-    budget = budget and video_night().get("day_takes", budget)  # TEMP-FLOW-VIDEO-NIGHT(gemini-web)
     if budget is not None and len(counted) >= budget:
         set_wall(account, counted[-budget] + FLOW_DAY_S)
 
@@ -474,21 +472,9 @@ def note_saved(account: str) -> None:
     write_meta(account, saved_at=int(time.time()))
 
 
-def rest_no_result(account: str) -> None:
-    """Sent and nothing came back: the account rests a day instead of taking the next send."""
-    set_wall(account, max(walls().get(account, 0), time.time() + FLOW_DAY_S))
-
-
 # TEMP-FLOW-TRUST(gemini-web): the flow-trust experiment (EXPERIMENTS.json) gives accounts arms in its marker.
 def trust() -> dict:
     data = read_json(ROOT / TRUST, {})
-    return data if data.get("until", 0) > time.time() else {}
-
-
-# TEMP-FLOW-VIDEO-NIGHT(gemini-web): until the marker's `until` Flow keeps its budget for video: every account
-# gets `day_takes`, images run only on `image_accounts` (Egor 2026-10-16: images come from GPT and com).
-def video_night() -> dict:
-    data = read_json(ROOT / VIDEO_NIGHT, {})
     return data if data.get("until", 0) > time.time() else {}
 
 
@@ -1922,11 +1908,11 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                     raise watcher.blocked()
                 clips = watcher.new_clips(known) if count > 1 else \
                     [c for c in [watcher.new_clip(known, args.prompt)] if c]
-                if len(clips) < count and time.time() > sent + 120:
+                # A clip can show up minutes late on a slow Flow (superman's, 2026-10-18): wait the whole timeout.
+                if len(clips) < count and time.time() > deadline:
                     seen = f"only {len(clips)} of {count} clips" if clips else "no new clip"
-                    rest_no_result(account)
-                    raise Failure(1, f"sent, but {seen} showed up in the project within 120s; it may still "
-                                     "land there")
+                    raise Failure(1, f"sent, but {seen} showed up in the project within {args.timeout}s; it may "
+                                     "still land there")
                 if len(clips) < count:
                     page.wait_for_timeout(500)
             clips = clips[:count]

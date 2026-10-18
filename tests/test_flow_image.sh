@@ -761,10 +761,6 @@ assert len(slept) == 1 and 118 < slept[0] <= 120, slept
 assert 118 < gw.spaced <= 120, gw.spaced
 gw.FLOW_SPACING_S, gw.spaced = 0, 0.0
 gw.write_meta("old", flow_takes=[], flow_day_takes=gw.FLOW_DAY_TAKES)
-# Sent with nothing back, the account rests a day.
-gw.rest_no_result("old")
-assert gw.FLOW_DAY_S - 60 < gw.walls()["old"] - time.time() <= gw.FLOW_DAY_S, gw.walls()
-gw.set_wall("old", None)
 # TEMP-FLOW-TRUST(gemini-web): the experiment's arms.
 (gw.ROOT / gw.TRUST).write_text(json.dumps({"started": now - 10, "until": now + 3600,
                                             "arms": {"new": "hand-first"}}))

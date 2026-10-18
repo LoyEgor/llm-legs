@@ -15,7 +15,7 @@
   {
     "id": "flow-trust",
     "tag": "TEMP-FLOW-TRUST(gemini-web)",
-    "what": "What brings a Flow-flagged account (PUBLIC_ERROR_UNUSUAL_ACTIVITY) back to automated sends: every account packs takes and keeps 20 a day, com none until its first flag; the marker's arms vary one thing each — 'time' (jihangarangan: one probe when the 48 h wall ends, 2026-10-17 05:00), 'hand-done' (egbogd, loiyehor: the owner's hand session 2026-10-15 evening, probe the same night, about 18 h after the flag), 'hand-first' (tronjhon from 2026-10-16; sergey, flagged at its first automated request 2026-10-16 01:24 while the owner's hand generation 20 min earlier and the same photo-edit 4-pack on superman 14 s later passed: from 2026-10-18 01:24 the owner sends that request type by hand, a flag means the request type, a pass then an automated flag means the automation; rawilimo, abel after flow-rest: walled until the owner closes his own Flow session in the automation profile), 'manual' (locomthebest: walled, owner by hand only), 'control' (com: no budget until its first flag). Hand probes pass and time probes flag: a hand session ends the wall; all four flag: the automated session itself is the cause (warm long-lived Chrome next)",
+    "what": "What brings a Flow-flagged account (PUBLIC_ERROR_UNUSUAL_ACTIVITY) back to automated sends: every account packs takes and keeps 25 a day (20 until 2026-10-18), com none until its first flag; the marker's arms vary one thing each — 'time' (jihangarangan: one probe when the 48 h wall ends, 2026-10-17 05:00), 'hand-done' (egbogd, loiyehor: the owner's hand session 2026-10-15 evening, probe the same night, about 18 h after the flag), 'hand-first' (tronjhon from 2026-10-16; sergey, flagged at its first automated request 2026-10-16 01:24 while the owner's hand generation 20 min earlier and the same photo-edit 4-pack on superman 14 s later passed: from 2026-10-18 01:24 the owner sends that request type by hand, a flag means the request type, a pass then an automated flag means the automation; rawilimo, abel after flow-rest: walled until the owner closes his own Flow session in the automation profile), 'manual' (locomthebest: walled, owner by hand only), 'control' (com: no budget until its first flag). Hand probes pass and time probes flag: a hand session ends the wall; all four flag: the automated session itself is the cause (warm long-lived Chrome next)",
     "started": "2026-10-15",
     "review_by": "2026-10-31",
     "state_marker": "~/.gemini-web/flow-trust.json",
@@ -26,21 +26,6 @@
       "llm-limits --table banner once overdue"
     ],
     "how_to_remove": "Read the evidence per arm and ask the owner which change stays. Then delete every TEMP-FLOW-TRUST(gemini-web) block (share/gemini_web.py: trust, trust_arm, trust_hand_done and their call sites in cmd_login, cmd_accounts; the block in tests/test_flow_image.sh), delete ~/.gemini-web/flow-trust.json, set flow_day_takes in ~/.gemini-web/accounts/<a>.json to what the verdict says (or remove it), clear the arm walls the owner releases in ~/.gemini-web/walls.json, then this entry, and run tests/run-all $(tests/affected share/gemini_web.py)."
-  },
-  {
-    "id": "flow-video-night",
-    "tag": "TEMP-FLOW-VIDEO-NIGHT(gemini-web)",
-    "what": "Egor 2026-10-16: for the night the Flow accounts keep their budget for video, the only video source; Flow images run on com alone (GPT carries the rest) and every capped account gets day_takes (40) Flow takes in a rolling 24 h instead of 20. Tests whether 40 a day of mostly video stays unflagged on the healthy accounts",
-    "started": "2026-10-16",
-    "review_by": "2026-10-17",
-    "state_marker": "~/.gemini-web/flow-video-night.json",
-    "evidence": "queued/saved/failed rows (kind, flagged) per account in ~/.gemini-web/jobs.jsonl from 2026-10-16 04:40 to the marker's until; flow_takes and flagged_at in ~/.gemini-web/accounts/<a>.json",
-    "surfaces": [
-      "flow-image refusal text on every non-image account (exit 3)",
-      "menubar fv row: takes left out of day_takes",
-      "llm-limits --table banner once overdue"
-    ],
-    "how_to_remove": "The marker's until (2026-10-17 12:00) already ends it. Delete every TEMP-FLOW-VIDEO-NIGHT(gemini-web) block (share/gemini_web.py: VIDEO_NIGHT, video_night, the budget line in note_flow_send; share/flow_image.py: the rotation filter, refuse_video_night and its two call sites; hammerspoon/llm-limits.lua: the night/nightTakes lines in geminiMediaState and nightTakes in takesLeft), delete ~/.gemini-web/flow-video-night.json, then this entry, and run tests/run-all $(tests/affected share/gemini_web.py share/flow_image.py). Ask the owner first whether video-only Flow accounts should stay as a permanent mode."
   },
   {
     "id": "haiku-review-cells",

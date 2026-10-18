@@ -1053,7 +1053,7 @@ end
 -- Flow credits and the media walls (shared-invariants row `de`) are only ever read here: the one
 -- way to refresh them launches Chrome, so the row states the reading's age instead.
 -- share/gemini_web.py's Flow budget: takes per account in a rolling day, unless the meta overrides it.
-local FLOW_DAY_TAKES, FLOW_DAY_S = 20, 24 * 3600
+local FLOW_DAY_TAKES, FLOW_DAY_S = 25, 24 * 3600
 
 local function geminiWebDir()
   local override = os.getenv("GEMINI_WEB_DIR")
@@ -1089,9 +1089,6 @@ local function geminiMediaState(roster, now)
   local videoWalls = readJsonTable(dir .. "/walls.json") or {}
   local musicWalls = readJsonTable(dir .. "/music-walls.json") or {}
   local flowMusicWalls = readJsonTable(dir .. "/flow-music-walls.json") or {}
-  -- TEMP-FLOW-VIDEO-NIGHT(gemini-web): the night marker's day_takes replaces every capped budget until it ends.
-  local night = readJsonTable(dir .. "/flow-video-night.json") or {}
-  local nightTakes = (tonumber(night["until"]) or 0) > now and tonumber(night.day_takes) or nil
   local function standing(walls, name)
     local untilEpoch = tonumber(walls[name])
     return untilEpoch and untilEpoch > now and untilEpoch or nil
@@ -1112,7 +1109,7 @@ local function geminiMediaState(roster, now)
       state[acct] = {
         bound = cookies and true or false,
         takesLeft = meta.flow_uncapped ~= true
-          and math.max(0, (nightTakes or tonumber(meta.flow_day_takes) or FLOW_DAY_TAKES) - takes) or nil,
+          and math.max(0, (tonumber(meta.flow_day_takes) or FLOW_DAY_TAKES) - takes) or nil,
         credits = tonumber(meta.credits),
         creditsTotal = tonumber(meta.credits_total), creditsRenewsAt = tonumber(meta.credits_renews_at),
         musicSignedIn = meta.music_signed_in == true,
