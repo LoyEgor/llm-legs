@@ -4604,6 +4604,7 @@ chrome_live_write() { # browse-directory run-directory start|end
     printf '%s\n' "$live" >"$1/chrome-live.$$" && mv -f "$1/chrome-live.$$" "$1/chrome-live"
   else
     rm -f "$1/chrome-live" "$1/hidden"
+    [ "$3" != end ] || browse_quit_idle "${2##*/}"
   fi
 }
 
@@ -5955,6 +5956,17 @@ APPLESCRIPT
 # opened here connects ~25 s after it shows (live 2026-10-07): a proof listing sooner misses its device.
 browse_marker() { printf 'https://example.com/#worker-run=%s\n' "${1// /-}"; }
 
+# Chrome is automation's browser: once no run drives it and every tab is a marker, probe or canary page, it
+# quits, or the windows a canary or run opened stay on Egor's screen for good (three, 2026-10-18).
+browse_quit_idle() { # [run id that is ending]
+  local urls
+  [ -z "$(chrome_runs | grep -vxF -- "${1:-}")" ] || return 0
+  "${BROWSE_OSASCRIPT:-osascript}" -e 'application id "com.google.Chrome" is running' 2>/dev/null | grep -qx true || return 0
+  urls=$(browse_chrome_urls) && grep -q . <<<"$urls" || return 0
+  ! grep -v -e '^$' -e '^https://example\.com/' -e '^http://127\.0\.0\.1:' -e '^chrome://newtab/' <<<"$urls" | grep -q . || return 0
+  "${BROWSE_OSASCRIPT:-osascript}" -e 'tell application id "com.google.Chrome" to quit' >/dev/null 2>&1 || :
+}
+
 browse_chrome_visible() { # true|false; System Events, since AppleScript to Chrome itself unhides and activates it
   "${BROWSE_OSASCRIPT:-osascript}" -e "tell application \"System Events\" to set visible of process \"Google Chrome\" to $1" >/dev/null 2>&1
 }
@@ -6363,6 +6375,7 @@ PY
   done < <(browse_registry | jq -r 'to_entries[] | select((.value.chrome_profile // "") != "") | [.key, .value.chrome_profile] | @tsv')
   for child in "${children[@]}"; do wait "$child" || rc=1; done
   browse_canary_codex "$work" "$port" "$listing" "$unreadable" || rc=1
+  browse_quit_idle
   return "$rc"
 }
 
