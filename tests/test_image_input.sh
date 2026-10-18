@@ -78,6 +78,10 @@ for color in black white; do
   result=$(uv run -q --script "$ROOT/share/image_input.py" "$WORK/shape.png")
   assert test "$result" = "$WORK/shape.png"
 done
+# A fully opaque RGBA photo at this size left ImageStat's variance a hair below zero (sqrt raised).
+magick -size 1122x1402 gradient:green-white -alpha opaque -define png:color-type=6 "$WORK/opaque.png"
+result=$(uv run -q --script "$ROOT/share/image_input.py" "$WORK/opaque.png" 2>&1)
+assert test "$result" = "$WORK/opaque.png"
 magick -size 64x64 gradient:'#808080-#818181' -evaluate multiply 0.1 "$WORK/blank.png"
 blank_reference
-printf 'PASS: %s asserts; blank_reference, svg_reference, all wrapper input flags and fanout jobs\n' "$asserts"
+printf 'PASS: %s asserts; blank_reference, svg_reference, opaque RGBA, all wrapper input flags and fanout jobs\n' "$asserts"

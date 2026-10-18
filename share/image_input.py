@@ -37,16 +37,23 @@ def rasterise(path):
             browser.close()
 
 
+def spread(channel):
+    """Standard deviation of one channel. ImageStat's stddev takes the root of a variance that float
+    rounding can leave a hair below zero on a uniform channel (a fully opaque PNG's alpha at some
+    sizes), which raised "expected a nonnegative input"."""
+    return max(0.0, ImageStat.Stat(channel).var[0]) ** 0.5
+
+
 def prepare(path):
     rendered = rasterise(path) if path.suffix.lower() == ".svg" else None
     with Image.open(io.BytesIO(rendered) if rendered else path) as source:
         if source.mode.startswith("I;16") or (source.mode == "I" and source.format == "PNG"):
             source = source.convert("F").point(lambda value: value / 257).convert("L")
         rgba = source.convert("RGBA")
-    deviations = [ImageStat.Stat(rgba.getchannel("A")).stddev[0]]
+    deviations = [spread(rgba.getchannel("A"))]
     for color in ("white", "black"):
         flat = Image.alpha_composite(Image.new("RGBA", rgba.size, color), rgba)
-        deviations.append(ImageStat.Stat(flat.convert("L")).stddev[0])
+        deviations.append(spread(flat.convert("L")))
     if max(deviations) < 0.5:
         raise ValueError(f"blank reference: {path} (uniform image; an SVG rasterised without its viewBox?)")
     if rendered is None:
