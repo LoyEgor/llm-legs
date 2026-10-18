@@ -887,6 +887,20 @@ def wire_models(post_data: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+CATCH_LISTING = """(() => {
+  if (window.__gwListing) return;
+  const bodies = window.__gwListing = [];
+  const fetch = window.fetch;
+  window.fetch = async function (...args) {
+    const response = await fetch.apply(this, args);
+    if (response.url && (new URL(response.url).searchParams.get('rpcids') || '').split(',').includes(%s)) {
+      response.clone().text().then(body => bodies.push(body)).catch(() => {});
+    }
+    return response;
+  };
+})();""" % json.dumps(LISTING_RPC)
+
+
 class Watcher:
     """Collects the page's own media polls and generation calls; it never issues a request."""
 
@@ -898,8 +912,17 @@ class Watcher:
         self.submitted: list[str] = []
         self.listed = False
         self.include_listing = include_listing
+        self.page = page
+        self.thumbs: dict[str, str] = {}
         if page is not None:
+            if include_listing:
+                page.add_init_script(CATCH_LISTING)
             page.on("response", self._on_response)
+
+    def listing_ready(self, media_id: str | None = None) -> bool:
+        # Flow can cancel its stream after parsing the payload, leaving CDP no response body.
+        self.feed(self.page.evaluate("() => (window.__gwListing || []).splice(0).join('\\n')"))
+        return media_id in self.thumbs if media_id is not None else self.listed
 
     def _on_response(self, response) -> None:
         if "rpcids=" not in response.url:
@@ -914,6 +937,8 @@ class Watcher:
         self.feed(body)
 
     def feed(self, body: str) -> None:
+        if self.include_listing:
+            self.thumbs.update(listed_thumbs(body))
         self.errors |= envelope_errors(body)
         for rpcid, payload in batch_payloads(body):
             if rpcid in ("jwpduf", "as29s") or rpcid in GENERATE_RPCS or (rpcid == LISTING_RPC and self.include_listing):
@@ -1759,18 +1784,12 @@ def listed_thumbs(body: str) -> dict[str, str]:
 def open_clip(page, project: str, media_id: str, account: str = "-", timeout_s: float = 120.0) -> str:
     """Opens the clip's editor from its tile in the project grid and returns its scene. A video tile carries
     no media id, only a thumbnail, so the page's own listing reply says which thumbnail is the clip's."""
-    thumbs: dict[str, str] = {}
-
-    def listener(response):
-        if f"rpcids={LISTING_RPC}" in response.url:
-            with contextlib.suppress(Exception):
-                thumbs.update(listed_thumbs(response.text()))
-
-    page.on("response", listener)
+    watcher = Watcher(page, include_listing=True)
+    thumbs = watcher.thumbs
     try:
         goto_flow(page, f"/project/{project}")
         close_promos(page, account)
-        settle(page, 30000, lambda: media_id in thumbs)
+        settle(page, 30000, lambda: watcher.listing_ready(media_id))
         if media_id not in thumbs:
             raise Failure(1, f"Flow no longer lists clip {media_id} in project {project} on {account}" if thumbs
                           else f"project {project} on {account} never listed its media")
@@ -1795,7 +1814,7 @@ def open_clip(page, project: str, media_id: str, account: str = "-", timeout_s: 
         raise drift(f"the tile of clip {media_id} in project {project} ({exc.__class__.__name__})") from exc
     finally:
         with contextlib.suppress(Exception):
-            page.remove_listener("response", listener)
+            page.remove_listener("response", watcher._on_response)
     close_promos(page, account)
     return re.search(r"/edit/([^/?#]+)", page.url).group(1)
 
@@ -2183,7 +2202,7 @@ def cmd_fetch(args) -> None:
                 try:
                     goto_flow(page, f"/project/{project}")
                     close_promos(page, args.account)
-                    settle(page, 30000, lambda: watcher.listed)
+                    settle(page, 30000, watcher.listing_ready)
                     if not watcher.listed:
                         raise Failure(1, f"project {project} on {args.account} never listed its media")
                     clips = [mid for mid, record in watcher.media.items()

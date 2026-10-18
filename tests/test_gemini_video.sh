@@ -1008,6 +1008,7 @@ class Grid:
 
     def __init__(self, tiles, listed):
         self.tiles, self.listed, self.shown = tiles, listed, 2
+        self.aborted, self.init_scripts, self.bodies = False, [], []
         self.url, self.listeners, self.rpc, self.items, self.caught = "", [], [], [], None
         self.mouse = types.SimpleNamespace(wheel=lambda dx, dy: setattr(self, "shown", self.shown + 2))
         self.context = types.SimpleNamespace(request=types.SimpleNamespace(
@@ -1015,9 +1016,19 @@ class Grid:
 
     def load(self, path):
         self.url = g.FLOW + path
+        self.bodies = [listing(self.listed)] if self.aborted and self.init_scripts else []
+
+        def body():
+            if self.aborted:
+                raise RuntimeError("Network.getResponseBody: No data found for resource with given identifier")
+            return listing(self.listed)
+
         for listener in list(self.listeners):
             listener(types.SimpleNamespace(url=f"{g.FLOW}/_/x/data/batchexecute?rpcids={g.LISTING_RPC}",
-                                           text=lambda: listing(self.listed)))
+                                           text=body))
+
+    def add_init_script(self, script):
+        self.init_scripts.append(script)
 
     def on(self, event, listener):
         self.listeners.append(listener)
@@ -1072,7 +1083,10 @@ class Grid:
         return Clickable(click)
 
     def evaluate(self, script, args=None):
-        if script is g.CATCH_DOWNLOAD:
+        if "__gwListing" in script:
+            bodies, self.bodies = self.bodies, []
+            return "\n".join(bodies)
+        elif script is g.CATCH_DOWNLOAD:
             self.caught = None
         elif script is g.CAUGHT:
             return self.caught
@@ -1084,6 +1098,43 @@ class Grid:
 
     def wait_for_timeout(self, ms):
         pass
+
+
+from unittest.mock import patch
+aborted_grid = Grid([("s-aborted", "Taborted")], [("m-aborted", "s-aborted", "Taborted")])
+aborted_grid.aborted = True
+with patch.multiple(g, goto_flow=lambda page, path: page.load(path), close_promos=lambda *args: None):
+    assert g.open_clip(aborted_grid, "p-f", "m-aborted", "rich") == "s-aborted"
+assert not aborted_grid.listeners and not aborted_grid.rpc and not aborted_grid.bodies
+
+import subprocess
+subprocess.run(["node", "-e", """
+const assert = require('node:assert/strict');
+const {script, body} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+let controller, requests = 0, clones = 0;
+const stream = new ReadableStream({start(c) { controller = c; }});
+const response = new Response(stream);
+Object.defineProperty(response, 'url', {value: 'https://flow.google.com/batchexecute?rpcids=other%2CZzl0ze'});
+const clone = response.clone.bind(response);
+response.clone = () => { clones++; return clone(); };
+globalThis.window = {fetch: async () => { requests++; return response; }};
+eval(script);
+eval(script);
+(async () => {
+  const received = await window.fetch(response.url);
+  assert.equal(received, response);
+  const reader = received.body.getReader();
+  controller.enqueue(new TextEncoder().encode(body));
+  await reader.read();
+  const cancelled = reader.cancel();
+  controller.close();
+  await cancelled;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(window.__gwListing, [body]);
+  assert.equal(requests, 1);
+  assert.equal(clones, 1);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""], input=json.dumps({"script": g.CATCH_LISTING, "body": listing(aborted_grid.listed)}), text=True, check=True)
 
 
 clip_bytes = b"\0\0\0\x18ftypmp42" + bytes(range(256)) * 8
@@ -1130,6 +1181,7 @@ for media_id, said in (("m-none", "has no Flow project for clip m-none"), ("m-go
 
 
 grid.listed = [("recovered-1", "s-0", "T0"), ("recovered-2", "s-1", "T1")]
+grid.aborted = True
 grid.shown, grid.items = 2, []
 assert g.job_project("recovered-1") is None
 g.set_wall("rich", g.time.time() + 86400)
