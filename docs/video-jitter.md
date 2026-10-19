@@ -18,6 +18,8 @@ every upscale: measure each one. Research, evidence and Egor's verdicts: `docs/h
   - the result reads no steadier, or its mean colour moved over 1.5 of 255: the upscale is kept.
 - gemini-video prints `jitter=<global>/<local> ref720=<global>/<local> steadied=anchor+settle|lanczos|none
   [fixed=<global>/<local>] dest=… ref720_file=…` per clip, or `jitter=unmeasured` with the reason.
+- Each run leaves an `"event": "steady"` row in `~/.gemini-web/jobs.jsonl` (raw, ref, fixed, steadied, secs): when the
+  raw readings fall under the gate for good, Flow has fixed its upscale and the 720p and the minute can go.
 - Keep the 720p: a film later cut from the clip can be re-anchored to it. Anchor the raw download, then cut: a second
   lossy encode cost the anchored fleet film half its softness.
 

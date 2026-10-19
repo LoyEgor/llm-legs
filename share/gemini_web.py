@@ -1612,12 +1612,17 @@ def steady_upscales(result: dict) -> dict:
     for variant in variants:
         if not variant.get("ref720"):
             continue
+        started = time.monotonic()
         run = subprocess.run([str(JITTER), "steady", variant["dest"], "--ref720", variant["ref720"]],
                              capture_output=True, text=True)
         try:
             variant["steady"] = json.loads(run.stdout.strip().splitlines()[-1])
         except (IndexError, ValueError):
             variant["steady"] = {"error": (run.stderr.strip().splitlines() or [f"exit {run.returncode}"])[-1][:300]}
+        # Whether Flow still trembles, and what steadying costs, read back over time.
+        ledger({"event": "steady", "account": result.get("account"), "media_id": variant.get("media_id"),
+                "dest": variant["dest"], "secs": round(time.monotonic() - started, 1),
+                **{k: variant["steady"][k] for k in ("raw", "ref", "fixed", "steadied", "error") if k in variant["steady"]}})
         with contextlib.suppress(OSError):
             variant["bytes"] = Path(variant["dest"]).stat().st_size
     result["steady"] = variants[0].get("steady")
