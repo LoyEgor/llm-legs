@@ -13,7 +13,8 @@ set -u
 usage() {
   printf '%s\n' \
     'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search | --no-web-search] [--browser] [--target dia|chrome] [--computer] [--role research --research-timeout <duration>]' \
-    '       worker-run wait <run-id> [--max <sec>]' \
+    '       worker-run run <auto|claudeb|codex|gemini|grok|light> --brief <file> [start flags]' \
+    '       worker-run wait <run-id> [--max <sec>] [--report]' \
     '       worker-run stop <run-id>' \
     '       worker-run report <run-id>' \
     '       worker-run say [<run-id>] <text>' \
@@ -2533,7 +2534,7 @@ run_wait_line() { # directory
   if [ "$(jq -r '.light // ""' "$1/meta.json" 2>/dev/null)" = research ]; then
     printf 'WAIT: light-research --attach %s --out <answer-file> (as a background Bash)\n' "${1##*/}"
   else
-    printf 'WAIT: worker-run wait %s (as a background Bash)\n' "${1##*/}"
+    printf 'WAIT: worker-run wait %s --report (as a background Bash)\n' "${1##*/}"
   fi
 }
 
@@ -5004,6 +5005,57 @@ wait_sleep() { # directory seconds: back early once exit_code appears; fails wit
   return 0
 }
 
+wait_report() { # directory
+  report_run "${1##*/}"
+  workdir_escape_line "$1"
+}
+
+# The one-call delegation: the account pick, the start and a `wait --report`, so a chat spends one
+# background Bash and one wake on a run. `auto` is the vendor of worker-pick's NEXT row 1; a RESUME
+# brief goes back to the vendor and account its session lives in.
+run_run() { # auto|vendor start-args...
+  [ "$#" -ge 1 ] || usage
+  local vendor=$1 brief='' account='' handle='' entry='' picked started rc=0 run_id i role=''
+  shift
+  local -a args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      --brief) brief=${args[i + 1]-} ;;
+      --account) account=${args[i + 1]-} ;;
+      --browser) role=browser ;;
+    esac
+  done
+  [ -r "$brief" ] || fail "brief is not readable: ${brief:-none given}"
+  [ -n "$account" ] || account=$(brief_line_value "$brief" ACCOUNT)
+  case "$(brief_line_value "$brief" BROWSER)" in chrome | yes | dia) role=browser ;; esac
+  handle=$(sed -n '1s/^RESUME \([^[:space:]:]\{1,\}\):.*/\1/p' "$brief" 2>/dev/null)
+  if [ -n "$handle" ]; then
+    if valid_run_id "$handle" && [ -r "$(run_path "$handle")/meta.json" ]; then entry=$(run_path "$handle")
+    else
+      entry=$(refuse_live_matches "$handle" "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" worker-session | head -n1)
+      entry=${entry%/worker-session}
+    fi
+    if [ -n "$entry" ]; then
+      [ "$vendor" != auto ] || vendor=$(jq -r '.vendor // "auto"' "$entry/meta.json" 2>/dev/null)
+      [ -n "$account" ] || { account=$(jq -r '.account // empty' "$entry/meta.json" 2>/dev/null) && [ -n "$account" ] &&
+        args+=(--account "$account"); }
+    fi
+  fi
+  if [ "$vendor" = auto ]; then
+    picked=$("${WORKER_RUN_WORKER_PICK:-$SCRIPT_DIRECTORY/worker-pick}" ${role:+--role "$role"} 2>/dev/null)
+    vendor=$(sed -n 's/^START: worker-run [a-z]* \([a-z]*\)$/\1/p' <<<"$picked" | head -n1)
+    picked=$(sed -n 's/^NEXT: //p' <<<"$picked" | head -n1)
+    [ -n "$vendor" ] || fail "worker-pick names no vendor to start${picked:+ ($picked)}. Nothing was launched and no account was spent."
+  fi
+  started=$(start_run "$vendor" "${args[@]}") || rc=$?
+  [ -z "$started" ] || grep -v '^NEXT: ' <<<"$started"
+  [ "$rc" -eq 0 ] || exit "$rc"
+  run_id=$(sed -n 's/^RUN: //p' <<<"$started" | head -n1)
+  [ -n "$run_id" ] || exit 0
+  # exec, so the process every wait reader looks for (the backstop, the statusline) is this wait.
+  exec "$SCRIPT_PATH" wait "$run_id" --report
+}
+
 wait_run() {
   local rc=0
   wait_run_loop "$@" || rc=$?
@@ -5013,16 +5065,19 @@ wait_run() {
 
 wait_run_loop() {
   [ "$#" -ge 1 ] || usage
-  local run_id="$1" max='' stream=false directory wait_started now waited remaining sleep_for ticks pid account
+  local run_id="$1" max='' stream=false report=false directory wait_started now waited remaining sleep_for ticks pid account
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --max) [ "$#" -ge 2 ] || usage; max="$2"; shift 2 ;;
+      --report) report=true; shift ;;
       *) usage ;;
     esac
   done
   # No --max blocks until the run ends and streams its progress; a --max poll answers STATUS: running.
+  # --report streams nothing and ends in the whole report: the chat reads that output once, on wake.
   if [ -z "$max" ]; then stream=true max=$((1 << 62)); fi
+  [ "$report" = false ] || stream=false
   [[ "$max" =~ ^[0-9]+$ ]] || usage
   directory=$(run_path "$run_id")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $run_id"
@@ -5031,7 +5086,9 @@ wait_run_loop() {
   while :; do
     if [ -f "$directory/exit_code" ]; then
       WAIT_STAMP=''; wait_progress "$directory" "$run_id" "$stream"
-      wait_poll_lag "$directory" "$run_id" "$wait_started"; run_state_terminal "$directory"; terminal_report "$directory"; return 0
+      wait_poll_lag "$directory" "$run_id" "$wait_started"; run_state_terminal "$directory"
+      if [ "$report" = true ]; then wait_report "$directory"; else terminal_report "$directory"; fi
+      return 0
     fi
     wait_progress "$directory" "$run_id" "$stream"
     pid=$WAIT_PID
@@ -5042,12 +5099,13 @@ wait_run_loop() {
       WAIT_STAMP=''; wait_progress "$directory" "$run_id" "$stream"
       if [ -f "$directory/exit_code" ]; then
         run_state_terminal "$directory"
-        terminal_report "$directory"
+        [ "$report" = true ] || terminal_report "$directory"
       else
         write_run_state "$directory" failed unknown
         chrome_run_end "$directory"
-        unknown_report "$directory"
+        [ "$report" = true ] || unknown_report "$directory"
       fi
+      [ "$report" = false ] || wait_report "$directory"
       return 0
     fi
     printf -v now '%(%s)T' -1
@@ -6438,7 +6496,7 @@ browse_run() {
 # A run belongs to the chat that started it and waits on it; a headless worker starting or awaiting
 # one would spend an account with nobody waiting on the result.
 worker_door() { # subcommand
-  case "$1" in start | wait) ;; *) return 0 ;; esac
+  case "$1" in start | wait | run) ;; *) return 0 ;; esac
   [ "${CLAUDEB_WORKER:-}" != 1 ] && [ "${GROK_WORKER:-}" != 1 ] && [ -z "${WORKER_RUN_ID:-}" ] ||
     fail "\`worker-run $1\` runs from the chat that owns the run, never inside a headless worker: report what should be delegated in your RETURN. Nothing was launched and no account was spent."
 }
@@ -6454,6 +6512,7 @@ CODEX_CONFIG="${WORKER_RUN_CODEX_CONFIG:-$HOME/.codex/config.toml}"
 worker_door "${1:-}"
 case "${1:-}" in
   start) shift; start_run "$@"; exit $? ;;
+  run) shift; run_run "$@"; exit $? ;;
   wait) shift; wait_run "$@"; exit $? ;;
   stop) shift; stop_command "$@"; exit $? ;;
   report) shift; report_run "$@"; exit $? ;;

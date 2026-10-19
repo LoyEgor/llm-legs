@@ -8,7 +8,7 @@ set -u
 
 input=$(cat) || exit 0
 
-direct='Delegate from this chat: write the brief with the Write tool (a heredoc ends early at its delimiter); Bash `worker-run start %s --brief <file> --workdir <dir>` (prints RUN:/TAG:/DIR:); then Bash with run_in_background `worker-run wait <run-id>`; on its completion notification, `worker-run report <run-id>`. Mid-run note: `worker-run say <run-id> "<text>"`; a run in flight with no live wait gets `worker-run wait <run-id>` in the background again.'
+direct='Delegate from this chat: write the brief with the Write tool (a heredoc ends early at its delimiter); then ONE Bash with run_in_background `worker-run run %s --brief <file> --workdir <dir>`: it picks the account, starts, waits and prints the whole report, so its completion notification wakes the chat with the answer in that output. Mid-run note: `worker-run say <run-id> "<text>"` (its RUN: line); a run in flight with no live wait gets `worker-run wait <run-id> --report` in the background again.'
 # A relay or native type is denied by this one jq: only a fork pulls the prompt into the shell.
 parsed=$(jq -r --arg hook "${0##*/}" --arg direct "$direct" '
   [.session_id // "", .hook_event_name // "", .tool_name // "", .tool_input.subagent_type // "",
@@ -25,7 +25,7 @@ parsed=$(jq -r --arg hook "${0##*/}" --arg direct "$direct" '
            "the light-research agent is retired. Run `light-research --prompt-file <file> --out <answer-file> --repo <abs>` as a Bash with run_in_background; its completion notification wakes this chat and the answer is in --out."
          elif $type == "review-waiter" then
            "review-waiter is retired. Run `review-bench wait <run-id>` as a Bash with run_in_background; its completion notification wakes this chat (`--relaunch` / `--finish-partial` recover a dead or interrupted run)."
-         else "native \($type) is not spawned. \($head)<vendor of worker-pick'"'"'s START line>\($tail)" end) as $r
+         else "native \($type) is not spawned. \($head)auto\($tail)" end) as $r
       | [.[0], "deny", ({hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny",
           permissionDecisionReason: ("[" + $hook + "] " + $r)}} | tojson)])
     end | @sh' <<<"$input" 2>/dev/null) || exit 0

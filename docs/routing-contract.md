@@ -204,7 +204,7 @@ recording a run. Every headless run therefore goes through `worker-run` or a too
 own launches, and this is the whole list: `worker-run`, `review-bench`,
 `llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `opencode-go`,
 `light-research`, plus the
-OWNED pair — `worker-run start|wait`, which only the chat itself spells (never an agent or a
+OWNED `worker-run start|run|wait`, which only the chat itself spells (never an agent or a
 headless worker), and the media scripts
 `codex-image` / `gemini-image` / `grok-image` / `grok-video` / `image-fanout` / `gemini-video` /
 `gemini-music` / `gemini-sfx` / `gemini-listen` with the engine calls `chatgpt-web
@@ -226,7 +226,7 @@ the operand it is. It fails open on its own errors. Interactive launches — no 
 `--prompt`, no `exec`, no `run` — are the user, not a worker, and are never gated.
 
 A text gate reads the Bash command line only, so a launch from a script, an interpreter or a
-Monitor never reaches it; the launchers hold runtime doors of their own. `worker-run start|wait`
+Monitor never reaches it; the launchers hold runtime doors of their own. `worker-run start|run|wait`
 refuses inside a headless worker (`CLAUDEB_WORKER=1`, shared-invariants row `cx`), and `worker-run
 start` runs `bin/worker-limit-gate.sh --start` on its own brief inside Claude Code. `review-bench
 review|run` runs only with the single-use nonce the review door stamps on the main-chat call it
@@ -240,14 +240,15 @@ The other half of the same rule is the Agent tool, and the gate there is
 Workers are unified and relay-free: every run that edits, reviews, verifies or scans is a
 `worker-run` the chat drives itself, spending zero Claude tokens to hold it —
 
-1. write the brief to a file; Bash `worker-run start <vendor> --brief <file> --workdir <dir>`
-   (worker-pick's `START:` line names the vendor) prints `RUN:` / `TAG:` / `DIR:`;
-2. Bash with `run_in_background` `worker-run wait <run-id>`: it blocks until the run ends and streams
-   `[elapsed] row` progress lines (edits, commands, tools, messages) the chat reads in /tasks;
-3. on its completion notification, `worker-run report <run-id>`.
+1. write the brief to a file;
+2. ONE background Bash `worker-run run auto --brief <file> --workdir <dir>`: worker-pick's NEXT
+   row 1 vendor (a RESUME brief: its session's), a start (`RUN:` / `TAG:` / `DIR:`), then an exec
+   of `wait <run-id> --report`;
+3. on its completion notification, read that output: the report, no progress rows.
 
-A mid-run note is `worker-run say <run-id> "<text>"`; a run in flight with no live wait gets the
-background wait again; `RESUME <session-id>:` stays the brief's first line. A review is
+Scripts keep `start`, `wait` (streams `[elapsed] row` lines to /tasks), `report`. A mid-run note is
+`worker-run say <run-id> "<text>"`; a run with no live wait gets `wait <run-id> --report` again;
+`RESUME <session-id>:` stays the brief's first line. A review is
 `review-bench review …` then `review-bench wait <run-id>` as a background Bash; read-only research
 is `light-research --prompt-file <file> --out <answer> --repo <abs>` as a background Bash. Each run
 dir carries `title` (the brief's first prose line) and `tokens` (the run's usage so far, written by

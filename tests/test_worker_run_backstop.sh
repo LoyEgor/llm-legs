@@ -36,7 +36,7 @@ reason() { jq -r '.reason // empty' 2>/dev/null; }
 run r1 s1 codex
 out=$(stop)
 assert_eq block "$(jq -r .decision <<<"$out")"
-assert_has 'worker run r1 (acct · astra · high) — `worker-run wait r1`' "$(reason <<<"$out")"
+assert_has 'worker run r1 (acct · astra · high) — `worker-run wait r1 --report`' "$(reason <<<"$out")"
 assert_has 'Start each wait now as a Bash with run_in_background: true' "$(reason <<<"$out")"
 
 # Any live `worker-run wait` under the chat owns its runs, whatever id it names: its end wakes the chat
@@ -132,7 +132,7 @@ assert_eq "" "$(stop)"
 run r2 s1 claudeb
 assert_eq "" "$(CLAUDEB_WORKER=1 stop)"
 assert_eq "" "$(stop '+ {agent_id:"a1"}')"
-assert_has '`worker-run wait r2`' "$(stop | reason)"
+assert_has '`worker-run wait r2 --report`' "$(stop | reason)"
 # Inside Egor's autonomy span the stop is never held.
 forget
 printf 'words_span_live() { [ "$1" = s1 ] && [ "$2" = /t/s1.jsonl ]; }\n' >"$WORK/span-words.sh"

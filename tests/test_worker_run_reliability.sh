@@ -276,7 +276,7 @@ EOF
     "$RUNNER" start codex --brief "$WORK/brief" --account busy --resume busy-session >"$WORK/busy.out" 2>&1 || rc=$?
     assert test "$rc" -eq 4
     assert grep -qx "OUTCOME: RESUME_BUSY $old_id" "$WORK/busy.out"
-    assert grep -qx "WAIT: worker-run wait $old_id (as a background Bash)" "$WORK/busy.out"
+    assert grep -qx "WAIT: worker-run wait $old_id --report (as a background Bash)" "$WORK/busy.out"
     kill -TERM "$(jq -r '.pid' "$old_dir/meta.json")"
     "$RUNNER" wait "$old_id" --max 60 >/dev/null
     unset STUB_SLEEP
@@ -296,7 +296,7 @@ EOF
     WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --brief "$WORK/brief" --account duplicate >"$WORK/duplicate.out" 2>&1 || rc=$?
     assert test "$rc" -eq 4
     assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/duplicate.out"
-    assert grep -qx "WAIT: worker-run wait $old_id (as a background Bash)" "$WORK/duplicate.out"
+    assert grep -qx "WAIT: worker-run wait $old_id --report (as a background Bash)" "$WORK/duplicate.out"
     jq '.light = "research"' "$old_dir/meta.json" >"$WORK/meta.research" && mv "$WORK/meta.research" "$old_dir/meta.json"
     rc=0
     WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --brief "$WORK/brief" --account duplicate >"$WORK/duplicate.out" 2>&1 || rc=$?
@@ -351,7 +351,7 @@ EOF
     "$RUNNER" start codex --brief "$WORK/brief" --workdir "$wt" --account busy >"$WORK/held.out" 2>&1 || rc=$?
     assert test "$rc" -eq 4
     assert grep -qx "OUTCOME: WORKDIR_BUSY held-worktree" "$WORK/held.out"
-    assert grep -qx "WAIT: worker-run wait held-worktree (as a background Bash)" "$WORK/held.out"
+    assert grep -qx "WAIT: worker-run wait held-worktree --report (as a background Bash)" "$WORK/held.out"
     mkdir -p "$wt/sub"
     rc=0
     "$RUNNER" start codex --brief "$WORK/brief" --workdir "$wt/sub" --account busy >"$WORK/held.out" 2>&1 || rc=$?

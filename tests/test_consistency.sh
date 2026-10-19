@@ -1222,8 +1222,8 @@ for retired in claudeb-worker codex-worker gemini-worker grok-worker light-worke
   assert grep -Fq "$retired" "$SPAWN_HOOK_BIN"
   assert grep -Fq "$retired" "$ROOT/$DOC"
 done
-assert grep -Fq 'worker-run start %s --brief <file> --workdir <dir>' "$SPAWN_HOOK_BIN"
-assert grep -Fq '`worker-run start <vendor> --brief <file> --workdir <dir>`' "$ROUTING_DOC"
+assert grep -Fq 'worker-run run %s --brief <file> --workdir <dir>' "$SPAWN_HOOK_BIN"
+assert grep -Fq '`worker-run run auto --brief <file> --workdir <dir>`' "$ROUTING_DOC"
 assert doc_has 'DENIED with the direct protocol'
 assert test "$(grep -Ec '^NATIVE_[A-Z_]+=' "$WORKER_GATE")" -eq 0
 assert test "$(grep -Fc "runs on this session's own quota" "$WORKER_GATE")" -eq 0
@@ -2501,7 +2501,7 @@ assert grep -Fq 'media = "^(media-run|image-fanout|codex-image|gemini-image|grok
 assert grep -Fq 'grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
 assert grep -Fq 'MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"' "$LAUNCH_GATE"
 assert grep -Fq '`media-run`' "$ROOT/$DOC"
-assert grep -Eq '^OWNED_RUN_RE=.*worker-run.*\(start\|wait\)' "$LAUNCH_GATE"
+assert grep -Eq '^OWNED_RUN_RE=.*worker-run.*\(start\|run\|wait\)' "$LAUNCH_GATE"
 assert doc_has 'sanctioned only in the hand that owns them'
 # `claudeb revive` and `claudeb warm` are subcommands, not binaries: the gate must not exempt every
 # `claudeb` line, or the bare launch it exists to deny walks straight through.
@@ -3031,13 +3031,13 @@ assert doc_has 'ONE table, `share/web-search.sh` `web_search_table`'
 # worker-run's own door and the text gate refuse the same pair; the review nonce is the only token left.
 WORKER_RUN_BIN="$ROOT/bin/worker-run"
 assert grep -Fq 'worker_door "${1:-}"' "$WORKER_RUN_BIN"
-assert grep -Fq 'case "$1" in start | wait) ;;' "$WORKER_RUN_BIN"
-assert grep -Fq 'OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|wait)|light-research)${EDGE}"' "$ROOT/bin/worker-launch-gate.sh"
+assert grep -Fq 'case "$1" in start | wait | run) ;;' "$WORKER_RUN_BIN"
+assert grep -Fq 'OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|run|wait)|light-research)${EDGE}"' "$ROOT/bin/worker-launch-gate.sh"
 assert grep -Fq '[[:space:]]+)*(REVIEW_BENCH_DOOR)="' "$ROOT/bin/worker-launch-gate.sh"
 assert grep -Fq 'local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh}' "$WORKER_RUN_BIN"
 assert test -z "$(git -C "$ROOT" grep -l 'WORKER_RUN_RELAY' -- bin share 2>/dev/null)"
 assert grep -Fq '[ "${CLAUDEB_WORKER:-}" != 1 ] && [ "${GROK_WORKER:-}" != 1 ] && [ -z "${WORKER_RUN_ID:-}" ] ||' "$WORKER_RUN_BIN"
-assert doc_has '`worker-run` refuses both inside any worker run (`CLAUDEB_WORKER`/`GROK_WORKER`=1 or `WORKER_RUN_ID` set, `worker_door`)'
+assert doc_has '`worker-run` refuses them inside any worker run (`CLAUDEB_WORKER`/`GROK_WORKER`=1 or `WORKER_RUN_ID` set, `worker_door`)'
 # The review nonce: one directory, one TTL, one variable name on both sides of the door.
 REVIEW_DOOR_HOOK="$FAMILY_SETUP_ROOT/hooks/review-flow-gate.sh"
 assert grep -Fq 'door_dir=$HOME/.cache/claude-review-door' "$REVIEW_DOOR_HOOK"

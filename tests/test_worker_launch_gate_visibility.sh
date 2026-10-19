@@ -210,11 +210,11 @@ fi
 if suite_shard_owns 3 wlg-askers; then
 # The deny names the way that works, the same for the chat and an agent: the chat's own worker run.
 for asker in '{}' "$AGENT"; do
-  expect_as deny "$asker" 'claude -p hi' 'A worker is a worker run the chat starts itself: `worker-run start <vendor> --brief <file> --workdir <dir>`'
-  expect_as deny "$asker" 'ask_codex.sh q' 'then `worker-run wait <run-id>` as a background Bash and `worker-run report <run-id>` when it ends'
+  expect_as deny "$asker" 'claude -p hi' 'A worker is a worker run the chat starts itself: `worker-run run auto --brief <file> --workdir <dir>`'
+  expect_as deny "$asker" 'ask_codex.sh q' 'as ONE background Bash, which picks, starts, waits and prints the report'
 done
 printf 'light_paused=on\n' >"$WORK/light-toggle"
-WORKER_PICK_CONFIG_FILE="$WORK/light-toggle" expect_as deny '{}' 'claude -p hi' "worker-pick's START line names the vendor"
+WORKER_PICK_CONFIG_FILE="$WORK/light-toggle" expect_as deny '{}' 'claude -p hi' '`worker-run run auto --brief <file> --workdir <dir>` as ONE background Bash, which picks'
 fi
 if suite_shard_owns 2 wlg-sanctioned-stdin; then
 

@@ -5360,11 +5360,11 @@ for gate_denied in \
   gate_out=$(gate_payload "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
   # Chat and agent alike are pointed at the chat's own worker-run start.
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("worker-run start <vendor> --brief <file> --workdir <dir>")' \
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("worker-run run auto --brief <file> --workdir <dir>")' \
     <<<"$gate_out" >/dev/null
   gate_out=$(gate_agent_payload fork "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("worker-run start <vendor> --brief <file> --workdir <dir>")' \
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("worker-run run auto --brief <file> --workdir <dir>")' \
     <<<"$gate_out" >/dev/null
 done
 gate_out=$(gate_payload 'worker-run start grok --brief /tmp/brief --workdir /tmp' | "$LAUNCH_GATE_BIN") ||

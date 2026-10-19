@@ -232,7 +232,7 @@ Why `ctx` stays unknown on this transport: `docs/claudegpt.md`.
 The chat's own work, one line each under line 2. **Agent rows** (workers of any vendor, reviews,
 media jobs, in that order, each oldest first) lead; **command rows** (`tests`, `shell`: the chat's
 Bash calls, their tests, tests backgrounded out of them) follow, oldest first. A chat waits on a run
-with a background `worker-run wait` / `review-bench wait` call, which no task row shows: the work
+with a background `worker-run run|wait` / `review-bench wait` call, which no task row shows: the work
 line is the run's only drawing.
 
 Layout:
@@ -316,7 +316,7 @@ admits `fork` alone and denies (`permissionDecision: "deny"`) every other type â
 with the direct command that replaces each, `Explore`, `Plan`, `general-purpose` and
 `claude-code-guide` included; a Workflow call is untouched; `worker-limit-gate` judges no native
 type (shared-invariants row `bt`). `worker-launch-gate` reads a Monitor's command through the same
-masked scan as a Bash call: a Monitor on `worker-run wait` or `review-bench wait` in command position
+masked scan as a Bash call: a Monitor on `worker-run wait|run` or `review-bench wait` in command position
 is denied with the background-Bash spelling, and every owned spelling behind it (`worker-run start`,
 the media scripts, `light-research`) meets the same checks a Bash call does. Foreign runs (another
 chat's review) are drawn in no row or line of this chat.

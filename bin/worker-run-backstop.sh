@@ -48,7 +48,7 @@ resume_of() { # run|review id
   elif [ "$(jq -r '.light // ""' "$run_root/$2/meta.json" 2>/dev/null)" = research ]; then
     printf 'light-research --attach %s --out <answer-file>' "$2"
   else
-    printf 'worker-run wait %s' "$2"
+    printf 'worker-run wait %s --report' "$2"
   fi
 }
 

@@ -43,14 +43,15 @@ for relay in claudeb codex gemini grok light; do
   out=$(spawn "$relay-worker" $'ACCOUNT: a1\nFix it.' "u-$relay")
   assert_eq deny "$(jq -r '.hookSpecificOutput.permissionDecision' <<<"$out")"
   why=$(reason <<<"$out")
-  assert_has "the $relay-worker relay is retired. Delegate from this chat: write the brief with the Write tool (a heredoc ends early at its delimiter); Bash \`worker-run start $relay --brief <file> --workdir <dir>\`" "$why"
-  assert_has 'then Bash with run_in_background `worker-run wait <run-id>`; on its completion notification, `worker-run report <run-id>`' "$why"
+  assert_has "the $relay-worker relay is retired. Delegate from this chat: write the brief with the Write tool (a heredoc ends early at its delimiter); then ONE Bash with run_in_background \`worker-run run $relay --brief <file> --workdir <dir>\`" "$why"
+  assert_has 'a run in flight with no live wait gets `worker-run wait <run-id> --report` in the background again.' "$why"
 done
 assert_has 'Run `light-research --prompt-file <file> --out <answer-file> --repo <abs>` as a Bash with run_in_background' \
   "$(spawn light-research 'Where is X?' u-lr | reason)"
 assert_has 'Run `review-bench wait <run-id>` as a Bash with run_in_background' "$(spawn review-waiter 'WAIT r1: x' u-rw | reason)"
 for native in general-purpose Explore Plan claude statusline-setup ''; do
   assert_has "native ${native:-general-purpose} is not spawned. Delegate from this chat" "$(spawn "$native" 'Look around.' "u-n$native" | reason)"
+  assert_has '`worker-run run auto --brief <file> --workdir <dir>`' "$(spawn "$native" 'Look around.' "u-n$native" | reason)"
 done
 assert_eq '' "$(ls "$TAGS" 2>/dev/null)"
 
@@ -65,4 +66,4 @@ asserts=$((asserts + 1))
 assert_eq 'fork · inherit · acct2: Do the task' \
   "$(CLAUDE_LIMITS_ACCOUNT=acct2 spawn fork 'Go.' u-f2 | jq -r '.hookSpecificOutput.updatedInput.description')"
 
-printf 'PASS: %s asserts; every retired relay type (vendor relays, light-research, review-waiter) and every native type is refused with the chat'"'"'s own worker-run start / background wait / report protocol and leaves no seed, while a fork spawns renamed `fork · <model> · <account>: <title>` with a seed keyed by its first prompt line\n' "$asserts"
+printf 'PASS: %s asserts; every retired relay type (vendor relays, light-research, review-waiter) and every native type is refused with the chat'"'"'s own one-call background `worker-run run` protocol and leaves no seed, while a fork spawns renamed `fork · <model> · <account>: <title>` with a seed keyed by its first prompt line\n' "$asserts"

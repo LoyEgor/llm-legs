@@ -1252,7 +1252,7 @@ print_next() {
     printf '%s\n' "${ranked[@]}"
     printf 'ACCOUNT: %s\n' "$pick"
     [ "$pick_vendor" != claude ] || pick_vendor=claudeb
-    printf 'START: worker-run start %s\n' "$pick_vendor"
+    printf 'START: worker-run run %s\n' "$pick_vendor"
     return 0
   fi
   # A verdict about quota outranks the per-vendor reasons that produced it, and a pause outranks

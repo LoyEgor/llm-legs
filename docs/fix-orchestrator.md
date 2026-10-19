@@ -7,9 +7,8 @@ jobs (`night-run job`).
 
 ## Dispatch, all at once
 
-`worker-pick`, then per line its START line with the brief file and `--workdir <worktree>` (a `MODEL: sonnet`
-brief: `worker-run start claudeb --account $(worker-pick --account claudeb)`), and a background `worker-run
-wait`; a report's `ESCALATE-BRIEF:` file starts again on the plain START line. `ROUND: pending` (worker-run
+`worker-pick`, then per line its START line with the brief file and `--workdir <worktree>` as a background
+Bash (a `MODEL: sonnet` brief: `worker-run run claudeb`); a report's `ESCALATE-BRIEF:` file starts again on the plain START line. `ROUND: pending` (worker-run
 refuses it): run every line `doctor-fix lens-lines <ref>...` prints in ONE Bash call first; a brief naming
 a round waits for it (a background `review-bench wait`). Never poll.
 

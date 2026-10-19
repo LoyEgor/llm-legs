@@ -223,7 +223,7 @@ WAIT_RUN = re.compile(r"\b(?:claudeb|codex|grok|gemini|agy|opencode)[a-z]*-\d{10
 HEREDOC_SCRIPT = r">[[:space:]]*[^[:space:]]+\.(sh|bash)([^[:alnum:]_]|$)"
 HEREDOC_SHELL_FED = (r"(^|[[:space:];&|(])(bash|sh|zsh)([[:space:]]+-[^[:space:]]+)*[[:space:]]*$|" + HEREDOC_SCRIPT,
                      r"[|][[:space:]]*(bash|sh|zsh)([[:space:]]|$)|" + HEREDOC_SCRIPT)
-WORKER_WAIT = re.compile(r"(?:^|[\s/;&|(])(?:worker-run\s+wait|light-research)(?=\s|$|[;&|)])")
+WORKER_WAIT = re.compile(r"(?:^|[\s/;&|(])(?:worker-run\s+(?:wait|run)|light-research)(?=\s|$|[;&|)])")
 REVIEW_WAIT = re.compile(r"(?:^|[\s/;&|(])review-bench\s+wait(?=\s|$|[;&|)])")
 C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
 DONE_WORDS = ("delivered", "passed", "sent", "fixed", "landed", "передал", "отправил", "доставлен", "починил")

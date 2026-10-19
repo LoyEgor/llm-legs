@@ -782,7 +782,7 @@ assert grep -q 'no selectable grok account (no quota data)' "$WORK/query.err"
 
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·high'
-assert contains "$output" 'START: worker-run start grok'
+assert contains "$output" 'START: worker-run run grok'
 assert contains "$(vsection grok)" '10% – spare grok·high'
 assert contains "$(vsection grok)" '40% – supergrok grok·high'
 assert contains "$(section_order)" 'codex grok gemini'
@@ -1522,7 +1522,7 @@ query --role browser
 assert test "$query_rc" -eq 0
 output=$query_out
 assert test "$(acct_line)" = 'ACCOUNT: cx-free'
-assert grep -qx 'START: worker-run start codex' <<<"$query_out"
+assert grep -qx 'START: worker-run run codex' <<<"$query_out"
 assert test "$(next_block | awk '{print $6}' | tr '\n' ' ' | squeeze)" = 'codex/cx-free claude/cl-busy'
 assert not_contains "$query_out" gemini
 query --account codex --role browser
@@ -1550,7 +1550,7 @@ load_case gemini_fresh "$browser_store | .vendors.codex.accounts[0].five_hour.us
 query --role browser
 output=$query_out
 assert test "$(acct_line)" = 'ACCOUNT: cl-busy'
-assert grep -qx 'START: worker-run start claudeb' <<<"$query_out"
+assert grep -qx 'START: worker-run run claudeb' <<<"$query_out"
 load_case gemini_fresh "$browser_store | .vendors.claude.accounts[0].five_hour.used_pct = 100"
 query --role browser
 output=$query_out
@@ -2029,7 +2029,7 @@ assert not_contains "$output" 'RESERVE'
 assert test "$(sed -n '1p' <<<"$output" | cut -c1-4)" = NEXT
 assert test "$(section_order)" = 'claude codex gemini'
 assert test "$(grep -c -- '^DATA: ' <<<"$output")" -eq 1
-assert test "$(sed -n '7p' <<<"$output")" = 'START: worker-run start claudeb'
+assert test "$(sed -n '7p' <<<"$output")" = 'START: worker-run run claudeb'
 assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 15
 assert not_contains "$output" '# Worker routing policy'
 assert cmp -s <(printf '%s\n' "$output") "$GOLDEN"
@@ -2469,7 +2469,7 @@ assert not_contains "$claude_output" 'main*'
 bare_output=$(env "${gateway_env[@]}" CLAUDE_LIMITS_ACCOUNT=session "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>/dev/null) ||
   fail "bare run failed"
 assert contains "$bare_output" 'ACCOUNT: '
-assert contains "$bare_output" 'START: worker-run start '
+assert contains "$bare_output" 'START: worker-run run '
 assert test "$(grep -c '^DATA: ' <<<"$bare_output")" -eq 1
 assert test "$(grep -Ec '^(claude|codex|grok|gemini|light):' <<<"$bare_output")" -eq 0
 

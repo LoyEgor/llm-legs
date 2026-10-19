@@ -23,7 +23,7 @@
 # Interactive launches — no -p/--print/--prompt, no `exec`, no `run` — are the human, never a
 # worker, and are not this gate's business. Fail-open on its own errors, like the sibling gates.
 #
-# `worker-run start|wait` belongs to the main chat, which waits on a run as a background Bash; an
+# `worker-run start|run|wait` belongs to the main chat, which waits on a run as a background Bash; an
 # agent or a headless worker never starts or awaits one. The media scripts and the generating
 # subcommands of their web engines have one door for every session, `media-run`, whose job pointer
 # is what renders the account a generation spends.
@@ -77,9 +77,9 @@ LAUNCH_RES=(
 # word above, and light-research, which starts and awaits them itself. `claim` is bookkeeping any
 # surface may do, `report` only prints a record that already exists, and a bare `worker-run` prints
 # help, so none of the three is here; `bash tests/test_worker_run.sh` is not a run.
-OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|wait)|light-research)${EDGE}"
+OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|run|wait)|light-research)${EDGE}"
 # A variable this door could not expand, standing where worker-run would, is read as worker-run.
-UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|wait)${EDGE}"
+UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|run|wait)${EDGE}"
 
 # Called past media-run, a media script or a web engine's generating subcommand spends an account
 # with no work line naming it, so every hand is refused, an agent's included.
@@ -97,7 +97,7 @@ REVIEW_LAUNCH_RE="${VENDOR_WORD}review-bench[[:space:]]+(review|run)${EDGE}"
 REVIEW_IDLE_RE='[[:space:]](--help|-h|--price)([[:space:]]|$)'
 PIPED_RE="(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(${VENDOR_BINS})([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)"
 SCHEDULE_RE='^[[:space:]]*(at|batch|crontab)([[:space:]]|$)'
-DIRECT_ASK="a worker run the chat starts itself: \`worker-run start <vendor> --brief <file> --workdir <dir>\` (worker-pick's START line names the vendor), then \`worker-run wait <run-id>\` as a background Bash and \`worker-run report <run-id>\` when it ends"
+DIRECT_ASK="a worker run the chat starts itself: \`worker-run run auto --brief <file> --workdir <dir>\` as ONE background Bash, which picks, starts, waits and prints the report"
 # The owner token review-bench checks is the hooks' to stamp; a command setting it by hand is a
 # forged owner.
 FORGED_TOKEN_RE="^[[:space:]]*((export|env|declare|typeset|local|readonly)([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(REVIEW_BENCH_DOOR)="
@@ -341,7 +341,7 @@ forged=''
 # A Monitor is a background command like any other, so every check below reads it too. The review
 # door is registered for Bash alone, so a Monitor launching a panel would skip his word.
 if [ "$tool" = Monitor ]; then
-  monitor_hit=$(first_hit "${VENDOR_WORD}(worker-run|review-bench)[[:space:]]+wait${EDGE}")
+  monitor_hit=$(first_hit "${VENDOR_WORD}(worker-run[[:space:]]+(wait|run)|review-bench[[:space:]]+wait)${EDGE}")
   [ -z "$monitor_hit" ] ||
     deny "Blocked: a Monitor polling \`${monitor_hit}\` re-reads the run every round. Run \`${monitor_hit} <run-id>\` once as a Bash call with \`run_in_background: true\`: it blocks until the run ends, streams its progress to /tasks, and its completion notification wakes this chat."
   monitor_review=$(grep -Ev -e "$REVIEW_IDLE_RE" <<<"$scan" 2>/dev/null | grep -Eo "$REVIEW_LAUNCH_RE" | head -n1)
@@ -368,7 +368,7 @@ fi
 if [ "$tool" = Bash ] && [[ $scan == *worker-run* || $scan == *light-research* ]] &&
     [ "$(input_field .tool_input.run_in_background)" != true ]; then
   foreground_hit=$(grep -Ev -e "${VENDOR_WORD}worker-run[[:space:]]+wait[[:space:]].*--max([[:space:]=]|$)" <<<"$scan" 2>/dev/null |
-    grep -Eo "${VENDOR_WORD}(worker-run[[:space:]]+wait|light-research)${EDGE}" | head -n1 |
+    grep -Eo "${VENDOR_WORD}(worker-run[[:space:]]+(wait|run)|light-research)${EDGE}" | head -n1 |
     tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
   [ -z "$foreground_hit" ] ||
     deny "Blocked: \`${foreground_hit}\` blocks until the run ends, and a foreground Bash call is killed at its timeout (600 s at most) while the run keeps spending and nothing wakes this chat. Run the identical call with \`run_in_background: true\`: its completion notification wakes this chat."
