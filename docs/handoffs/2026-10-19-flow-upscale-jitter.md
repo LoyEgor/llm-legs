@@ -83,6 +83,42 @@ The meter is `renders/research/jitter/bin/jitter.py` in `~/Arbostar/arbostar-log
 - **Untested.** A temporally consistent video upscaler (RealBasicVSR, SeedVR, FlashVSR, Topaz) for a sharp 1080p. A
   per-frame image upscaler (Real-ESRGAN) would bring the same tremble back.
 
+## Egor's verdict (2026-10-19, on `see/*-4ways.mp4`)
+
+- **vidstab (the After Effects way): no visible change at all.** It trembles the same, in the same places, though
+  its whole-frame number fell 0.44 → 0.15. The eye follows the local measure (the redraw of detail), not the
+  whole-frame shift. Gate on the local median cell and the corners; a whole-frame shift alone is not the defect.
+- **Anchored: "helped very much", no loss of quality.** On the turning2 wall a mild tremble is left, "not irritating
+  like the original". Accepted as the fix.
+- **Integration is yours.** Add your own fixer if you find a better one, then test it with him on real films.
+- **Applied to the deck films already.** `bin/reanchor.py <finished film> <720p> <out>` puts a finished film on the 720p
+  geometry whatever its chain was:
+  - it finds the crop/scale by SIFT;
+  - it finds the frame path through trims, ping-pong and dissolve loops (Viterbi over thumbnail likeness);
+  - its flow is texture-weighted, because raw DIS flow is noise in dark glass and flat paving.
+  It refuses a film that is not that original.
+  The decks point at `*-anchored.mp4` next to each source (arbostar-logo `tools/deck_*.py`). Films the decks copy as
+  they are were then re-encoded at their source's crf and keyframe spacing (the turning2 inlay is seeked by the cursor:
+  `-g 12`), so the pages weigh what they did.
+- **Deck films, before → after** (global corner / local median cell; `fixed/deck-before-after.jsonl`):
+
+  | film | before | after |
+  |---|---|---|
+  | turning2 wall | 0.35 / 0.35 | 0.06 / 0.18 |
+  | turning2 inlay | 0.19 / 0.31 | 0.05 / 0.27 (its 720p: 0.02 / 0.18) |
+  | sprout cover oak | 0.30 / 0.17 | 0.07 / 0.05 |
+  | sprout cover oak 9:16 | 0.45 / 0.40 | 0.05 / 0.09 |
+  | four-sides2 film | 0.20 / 0.18 | 0.05 / 0.09 |
+  | crown-free hero / match | 0.60 / 0.34, 0.45 / 0.26 | 0.11 / 0.09, 0.07 / 0.07 |
+  | original-free smoke / morning | 0.34 / 0.20, 0.28 / 0.20 | 0.06 / 0.06, 0.05 / 0.06 |
+  | turning-free expo | 0.13 / 0.14 | 0.04 / 0.09 |
+  | real motion, about the same | crown-free ascent 0.05 / 0.08, original-free press 0.15 / 0.81, turning-free hero 0.16 / 2.36, sprout leaf 0.15 / 0.14 | 0.04 / 0.08, 0.13 / 0.84, 0.16 / 2.15, 0.14 / 0.13 |
+
+- **Where the meter is blind.** Soft moving shadows (sprout `cover-bg`, Veo dapple) read 1.19 / 1.05 even on the
+  steady 720p, and the anchored film read worse (0.76 / 0.91 against 0.35 / 0.62): its frames barely differ, so the
+  frame match is weak. That film stayed as it was. Blurred, low-texture content needs the 720p difference or an eye,
+  never an absolute.
+
 ## Proposed integration
 
 1. **Steady 1080p by default.** In `gemini-video`, for `--resolution 1080p`, also fetch the 720p of the same media,
