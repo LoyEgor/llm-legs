@@ -2074,6 +2074,25 @@ for _, case in ipairs(loginCases) do
   end
 end
 
+-- A signed-in row (a Codex plan lapsed to free) ends with Remove too, behind a Cancel-first confirmation; main never.
+do
+  local tasks = {}
+  local menu = loadModule(switchFixture, captureTasks(tasks)).menuItems()
+  local row = accountItem(menu, "work4")
+  local remove = submenuItem(row, "Remove work4")
+  assert(remove and row.menu[#row.menu] == remove, "a signed-in Codex row lacks Remove as its last item")
+  assert(not submenuItem(accountItem(menu, "main"), "Remove main"), "the reserved main row offered Remove")
+  dialogCalls, dialogAnswer = {}, "Cancel"
+  remove.fn()
+  assert(#dialogCalls == 1 and dialogCalls[1][3] == "Cancel" and #tasks == 0,
+    "a signed-in row's Remove skipped its Cancel-first confirmation or ran on Cancel")
+  dialogAnswer = "Remove"
+  remove.fn()
+  assert(tasks[1] and tasks[1].path:find("codexb", 1, true) and table.concat(tasks[1].args, " ") == "remove work4 --force",
+    "a confirmed Remove did not run codexb remove --force")
+  dialogAnswer = nil
+end
+
 do
   local fixture = { schema = 1, vendors = {
     claude = { available = true, source = "claudeb-store", accounts = {
@@ -2808,8 +2827,8 @@ do
   assert(submenuItem(superRow, "Pin for workers").checked == true,
     "pinned Grok checkbox is not checked")
   assert(submenuItem(superRow, "Hard refresh"), "Grok account Hard refresh is missing")
-  assert(not submenuItem(superRow, "Remove supergrok"),
-    "healthy Grok account offered Remove, bypassing grokb's logged-in guard")
+  assert(superRow.menu[#superRow.menu] == submenuItem(superRow, "Remove supergrok"),
+    "a signed-in Grok account lacks Remove as its last item")
   local superWeekly = titleText(menu[accountIndex(menu, "supergrok") + 1])
   assert(superWeekly:find("wk", 1, true) and superWeekly:find("61%", 1, true),
     "Grok weekly usage did not use the shared bucket formatter")
@@ -4580,6 +4599,11 @@ end
     "a profile signed in to Flow but never to Flow Music lacks its unmeasured fv row or drew an fm row: "
       .. texts(fresh))
   assert(#mediaRows(menu, "quiet") == 0, "an account without a gemini-web reading grew a media row")
+  assert(submenuItem(accountItem(menu, "fresh"), "Log in to Flow…") and submenuItem(accountItem(menu, "tune"), "Log in to Flow…"),
+    "an account Flow or Flow Music never bound offers no Flow login")
+  local flowScript
+  loadModule(mediaFixture, nil, now, nil, function(script) flowScript = script; return true, true, {} end).loginFlow("fresh")
+  assert(flowScript and flowScript:find("geminib web 'fresh'", 1, true), "Log in to Flow… is not geminib web: " .. tostring(flowScript))
   for _, item in ipairs(menu) do
     local text = titleText(item)
     assert(not text:find("@", 1, true) and not text:find("secret", 1, true) and not text:find("999", 1, true)
@@ -4595,7 +4619,8 @@ end
       { account = "open", five_hour = bucket(10), weekly = bucket(20) }
     geminiWebFake.files[root .. "/accounts/open.json"] = { credits = 489, credits_total = 1050, flow_uncapped = true,
       flow_takes = { now - 100 } }
-    geminiWebFake.files[root .. "/accounts/bars.json"] = { credits = 828, credits_at = now - 3 * 3600,
+    geminiWebFake.files[root .. "/profiles/bars/Default/Cookies"] = ""
+    geminiWebFake.files[root .. "/accounts/bars.json"] = { email = "bars@example.com", credits = 828, credits_at = now - 3 * 3600,
       flow_takes = { now - 100, now - 200, now - 3 * 86400 },
       credits_total = 1000, music_signed_in = true,
       music_credits = 10510, music_credits_at = now - 3600, music_credits_total = 10530,
@@ -4610,6 +4635,8 @@ end
     assert(#bars == 2 and titleText(bars[1]) == row("fv", "▓░░░░", "17%", "23/828")
         and titleText(bars[2]) == row("fm", "░░░░░", "0%", day(now + 30 * 86400)) and #redRuns(bars[1].title) == 0,
       "the credit bars are wrong, or a cycle without a renewal date hid its balance or the takes left today: " .. texts(bars))
+    assert(not submenuItem(accountItem(menu, "bars"), "Log in to Flow…"),
+      "an account bound to Flow and Flow Music still offers the Flow login")
     local open = mediaRows(menu, "open")
     assert(#open == 1 and titleText(open[1]) == row("fv", "▓▓▓░░", "53%", "489"),
       "an uncapped Flow account drew a takes-left figure: " .. texts(open))

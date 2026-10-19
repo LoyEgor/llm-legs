@@ -68,7 +68,8 @@ FLAG_BURST_S = 3600
 # 2026-10-15, before the session fixes of 2026-10-16; four ran 20-25 unflagged on 2026-10-16 and 10-18. A spent
 # budget climbs FLOW_CLIMB once a day while the account has no flag for FLOW_CLIMB_HOLD_S; a flag sets it to two
 # thirds of the 24 h count, never below FLOW_DAY_TAKES. com made 109 unflagged: its meta carries flow_uncapped,
-# no budget until its first flag. The menu mirrors both constants (shared-invariants row de).
+# no budget until its first flag, and so does notcom, the same owner's (Egor 2026-10-19). The menu mirrors both
+# constants (shared-invariants row de).
 FLOW_DAY_TAKES = 25
 FLOW_DAY_S = 24 * 3600
 FLOW_CLIMB = 5
@@ -561,7 +562,9 @@ def chrome_binary(app: Path) -> str:
 # with one fixed key, so no keychain prompt ever blocks an unattended run and a rebuilt (re-signed)
 # clone still reads the cookies the real Chrome wrote at login.
 # AutomationControlled sets navigator.webdriver, and with it every Gemini-app music generation fails.
-COMMON_FLAGS = ["--use-mock-keychain", "--no-first-run", "--no-default-browser-check",
+# Every path reads <profile>/Default: a Chrome sign-in and sign-out in the login window (notcom, 2026-10-19) moved the
+# profile to "Profile 1", where the login was never found.
+COMMON_FLAGS = ["--profile-directory=Default", "--use-mock-keychain", "--no-first-run", "--no-default-browser-check",
                 "--disable-features=Translate,MediaRouter", "--lang=en-US",
                 "--disable-blink-features=AutomationControlled"]
 

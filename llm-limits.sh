@@ -635,7 +635,7 @@ account_priority_names() {
   case "$1" in
     claude) printf 'notcom\ncom\n' ;;
     codex) printf 'notcom\ncom\nmain\n' ;;
-    gemini) printf 'com\nmain\n' ;;
+    gemini) printf 'notcom\ncom\nmain\n' ;;
     grok) printf 'notcom\ncom\nsupergrok\n' ;;
   esac
 }

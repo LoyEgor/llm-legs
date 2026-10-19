@@ -2491,9 +2491,9 @@ function M.setWorkerRole(vendor, role, enable)
 end
 
 -- --force is mandatory here, not a convenience: both CLIs' alive-guards only test that a
--- token STRING is present, so a revoked login (exactly the state this row renders) can never
--- satisfy them and the unforced remove refuses forever. Remove is offered only on
--- login-needed rows, so the guard has nothing left to protect.
+-- token STRING is present, so a revoked login (exactly the state a login-needed row renders) can
+-- never satisfy them and the unforced remove refuses forever. A healthy row's Remove goes through
+-- confirmRemove, the guard's stand-in.
 local function removalOptions(vendor, name)
   setRemovalOverride(vendor, name, true)
   notifyRefreshState()
@@ -2531,6 +2531,17 @@ function M.removeGrok(name)
     removalOptions("grok", name))
 end
 
+-- A healthy account (a Codex plan lapsed to free) is still signed in, so its Remove deletes a working
+-- login: Cancel is the first button, as on the reset redeem.
+function M.confirmRemove(vendor, name)
+  local choice = hs.dialog.blockAlert("Remove " .. vendor .. "/" .. name .. "?",
+    "This deletes the account's profile and login on this Mac; adding it back needs a new login.",
+    "Cancel", "Remove")
+  if choice ~= "Remove" then return end
+  local remove = { claude = M.removeClaude, codex = M.removeCodex, gemini = M.removeGemini, grok = M.removeGrok }
+  remove[vendor](name)
+end
+
 -- Two quoting layers: the account name is shell-quoted inside the command, then
 -- the whole command becomes an AppleScript string literal for `do script`.
 local function openLoginTerminal(command)
@@ -2553,6 +2564,10 @@ function M.loginCodex(name)
 end
 function M.loginGemini(name)
   openLoginTerminal((M.geminibCmd or "geminib") .. " profile " .. shellQuote(name or "main"))
+end
+-- Flow and Flow Music in the account's hidden-Chrome profile; `geminib web` then reads the balances.
+function M.loginFlow(name)
+  openLoginTerminal((M.geminibCmd or "geminib") .. " web " .. shellQuote(name))
 end
 function M.loginGrok(name)
   openLoginTerminal((M.grokbCmd or "grokb") .. " profile " .. shellQuote(name)
@@ -3198,6 +3213,10 @@ local function buildMenuItems()
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshGemini(acct) end },
                 }
+                local media = geminiMedia[acct]
+                if not (media and media.bound and media.musicSignedIn) then
+                  table.insert(accountRow.menu, { title = "Log in to Flow…", fn = function() M.loginFlow(acct) end })
+                end
               elseif isGrokAccounts then
                 accountRow.disabled = nil
                 applyPoolMark(accountRow, enabled, unused)
@@ -3233,6 +3252,10 @@ local function buildMenuItems()
                   fn = function() M[fastApi.toggle](acct, fastMode) end,
                 })
               end
+            end
+            if accountRow.menu and not authNeeded and acct ~= "main" and block.removed ~= true then
+              table.insert(accountRow.menu, { title = "Remove " .. acct,
+                fn = function() M.confirmRemove(entry.key, acct) end })
             end
             table.insert(menu, accountRow)
           end
