@@ -112,7 +112,6 @@ eval "set -- ${exec_line#exec }"
 prompt=${!#}
 assert [ "${prompt%%. Pilot night *}" = "сделай чистку — night run $id pilot breakages lost-time system spend legacy" ]
 assert grep -qF "\`nr carry R\` records the next goal" <<<"$prompt"
-assert grep -qF "all of Night mode runs (prep, \`doctor-fix launch\`, \`vendor-fingerprint\`, leftovers" <<<"$prompt"
 assert grep -qF -e "--remainder 'review debt paused: pilot night'" <<<"$prompt"
 assert [ "$1 $2 $3" = "caffeinate -i $FAKE_BIN/claudeb" ]
 assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"

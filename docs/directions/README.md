@@ -26,11 +26,11 @@ them all together only after each direction's metric has moved.
 - Proof: the check is fixed before the work; old against new, interleaved, on the same machine; verdict better,
   worse or unclear, and unclear is kept and settled by the next days' data. A direction may stop a goal once its
   diagnosis shows little to gain.
-- The queue: `bin/night-run` PILOT lists the ready directions in order. Every new night is their pilot: the whole
-  night (doctor fixes, vendor events, leftovers, handoffs, suites, periodic jobs; Egor 2026-10-19: a night covers
-  every section) plus the `### goal <slug>:` sections under each file's `## Goals`, one at a time, a direction's goals
-  once the one before has none left; only review debt stays paused. A direction's metric is read 7 days after its
-  last goal lands, while the next one works. An empty PILOT brings back the debt pass.
+- The queue: `bin/night-run` PILOT lists the ready directions in order. Every new night is their pilot and works
+  only the `### goal <slug>:` sections under each file's `## Goals`, one at a time, a direction's goals once the one
+  before has none left; the rest of the night waits (The whole night, below), so a goal is judged alone on its metric
+  and its spend. A direction's metric is read 7 days after its last goal lands, while the next one works. An empty
+  PILOT brings back the full night.
 - Ready: a direction joins PILOT once its file holds a baseline computed before any pilot night changed the harness,
   its recurring classes ranked from the ledgers and the log audit, and goals, each one class fix with its proof fixed
   before the work. A fresh model that did not write it (another vendor when the worker toggles let one work) has
@@ -39,3 +39,26 @@ them all together only after each direction's metric has moved.
 - Freshness: a model that finds a file contradicting the code or a ledger fixes the file in the same change.
   Monthly, the night's `directions-refresh` job (`share/briefs/directions-refresh.md`) re-checks every file against
   its sources by md-compact's rules; a pilot night runs it after its last goal.
+
+## The whole night
+
+The night's purpose (Egor 2026-10-19): a singularity, automation that keeps the whole harness directly or indirectly
+with as little manual work as possible; he launches it and it does everything. It digs deeper than the doctors: a
+doctor is a helper that gives hints, never the scope. The pilot narrows a night to one thing at a time to test it;
+it drops nothing. After the queue's directions, each section below comes back in this order and is tested like a
+goal: does the night cope, if not why, can it do the same for fewer tokens. A section is dropped only by an explicit
+decision with Egor, written here.
+
+| Section | What it does | In a pilot night |
+|---|---|---|
+| Prep | vendor CLIs installed, log audit, LLM, harness and Updater doctors run | runs |
+| Direction goals | one class fix at a time, with its proof | runs |
+| Vendor events | a new CLI version, model or plan studied and integrated (`vendor-fingerprint`) | waits |
+| Doctor fixes | every doctor's Fix row (`doctor-fix launch`) | waits |
+| Failed suites | suites the last full run left red | waits |
+| Handoffs, owner chats | each open handoff done, or handed to its owner chat | waits |
+| Leftovers | unlanded branches landed | waits |
+| Monthly research | vendor news (`vendor-watch`), repeated ad-hoc scripts become tools (`tool-ideas`) | waits |
+| Deep search | after its goals the night looks for what no doctor shows, the next goal's candidates | waits |
+| Review debt | bugs and fit rounds, the debt pass | paused (Egor 2026-10-14) |
+| Directions refresh | the direction files re-checked against their sources, monthly | runs |

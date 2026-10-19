@@ -263,8 +263,9 @@ export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi
 
 if suite_shard_owns 2 nc-pilot; then
-# A pilot night carries what a full night does and its directions' goals one at a time, in order, the next direction
-# once the one before has none left; the next goal only once the last one stopped working.
+# A pilot night carries its directions' goals one at a time, in order, the next direction once the one before has
+# none left, and nothing a full night would: no handoff, owner chat or periodic job; the next goal only once the last
+# one stopped working.
 export DOCTORS_DIR="$WORK/pilot/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
 L="$WORK/pilot/llm-legs" C="$WORK/pilot/claude-setup"
 git init -q -b main "$L" && mkdir -p "$L/docs/directions" "$L/docs/handoffs"
@@ -280,13 +281,9 @@ jq -n '{id: "G1", started_at: "2026-10-15T01:00:00Z", finished_at: null, session
 pnight() { NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-pilot" night "$@"; }
 pnight base G1 >/dev/null || fail "night base G1 failed"
 pnight carry G1 >"$WORK/g1.out" 2>/dev/null || fail "pilot carry failed"
-b="$NIGHTS/G1.goal-gates.brief.md" month=$(date -u +%Y-%m)
-assert [ "$(cut -f1 "$WORK/g1.out")" = "goal-gates
-handoff-2026-10-01-h
-vendor-watch-$month
-tool-ideas-$month" ]
-assert grep -qxF "goal-gates	$b	$L/.claude/worktrees/night-G1-goal-gates" "$WORK/g1.out"
-assert jqe '[.jobs[] | select(.kind == "goal") | [.ref, .state, .priority]] == [["goal-gates", "pending", "P1"]]' "$NIGHTS/G1.json"
+b="$NIGHTS/G1.goal-gates.brief.md"
+assert [ "$(cat "$WORK/g1.out")" = "goal-gates	$b	$L/.claude/worktrees/night-G1-goal-gates" ]
+assert jqe '[.jobs[] | [.kind, .ref, .state, .priority]] == [["goal", "goal-gates", "pending", "P1"]]' "$NIGHTS/G1.json"
 assert [ "$(head -2 "$b")" = "ROUND: none
 STRONG: yes" ]
 assert grep -qxF "ADD-DIR: $C/.claude/worktrees/night-G1-goal-gates" "$b"
@@ -300,12 +297,13 @@ pnight carry G1 >"$WORK/g1c.out" 2>/dev/null || fail "a carry after the first go
 assert [ "$(cut -f1 "$WORK/g1c.out")" = goal-stop-hooks ]
 pnight job G1 set goal-stop-hooks state=nothing-to-do >/dev/null || fail "goal-stop-hooks not closed"
 # Both goals stay in breakages.md, so lost-time waits; after the last goal, the monthly refresh of the direction files when it is due, once.
+month=$(date -u +%Y-%m)
 pnight carry G1 >"$WORK/g1d.out" 2>/dev/null || fail "a carry after every goal failed"
 assert [ "$(cut -f1 "$WORK/g1d.out")" = "directions-refresh-$month" ]
 assert grep -qF '## Directions refresh — monthly' "$NIGHTS/G1.directions-refresh-$month.brief.md"
 pnight carry G1 >"$WORK/g1e.out" 2>/dev/null || fail "a carry after the refresh failed"
 assert [ ! -s "$WORK/g1e.out" ]
-assert jqe --arg r "directions-refresh-$month" '[.jobs[] | select(.kind | IN("goal", "directions-refresh")) | .ref] == ["goal-gates", "goal-stop-hooks", $r]' "$NIGHTS/G1.json"
+assert jqe --arg r "directions-refresh-$month" '[.jobs[].ref] == ["goal-gates", "goal-stop-hooks", $r]' "$NIGHTS/G1.json"
 # Once a direction's goals have all landed, none left in its file, the next direction's follow.
 printf '# B\n\n## Goals\n\n## Done\n\n### goal gates: landed\n' >"$L/docs/directions/breakages.md"
 gt -C "$L" commit -qam landed
@@ -313,7 +311,7 @@ jq -n '{id: "G2", started_at: "2026-10-16T01:00:00Z", finished_at: null, session
   >"$NIGHTS/G2.json"
 pnight base G2 >/dev/null || fail "night base G2 failed"
 pnight carry G2 >"$WORK/g2.out" 2>/dev/null || fail "a carry after the first direction failed"
-assert [ "$(head -1 "$WORK/g2.out" | cut -f1)" = goal-attach ]
+assert [ "$(cut -f1 "$WORK/g2.out")" = goal-attach ]
 assert grep -qxF '### goal attach: detached' "$NIGHTS/G2.goal-attach.brief.md"
 export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi
