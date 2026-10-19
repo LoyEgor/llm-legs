@@ -114,6 +114,12 @@ if [ "$browser" = true ]; then
   toggle_note=''
 fi
 
+# A gemini run's family (worker-run passes its slug) asks the pool for that family: its accounts and
+# its own bucket decide, and a request-only family passes the closed workers switch.
+gate_model=''
+[ "$worker" != gemini ] || [ "$role_arg" != workers ] || gate_model=${WORKER_GATE_MODEL:-}
+[ -z "$gate_model" ] || label="Gemini ${gate_model}"
+
 brief_header_account() {
   head -n 400 "$1" 2>/dev/null | sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+).*/\1/p' | head -n1
 }
@@ -128,7 +134,7 @@ if [ ! -x "$WORKER_PICK" ]; then
   router_rc=127
 else
   if [ "$role_arg" = workers ]; then
-    router_account=$("$WORKER_PICK" --account "$vendor" 2>/dev/null) || router_rc=$?
+    router_account=$("$WORKER_PICK" --account "$vendor" ${gate_model:+--model "$gate_model"} 2>/dev/null) || router_rc=$?
   else
     router_account=$("$WORKER_PICK" --account "$vendor" --role "$role_arg" 2>/dev/null) || router_rc=$?
   fi
@@ -173,11 +179,12 @@ eff_defs='
 
 account_pressure() {
   [ -r "$LIMITS_FILE" ] || return 0
-  jq -r --arg vendor "$1" --arg account "$2" --argjson now "$(date +%s)" "$eff_defs"'
+  jq -r --arg vendor "$1" --arg account "$2" --arg family "$gate_model" --argjson now "$(date +%s)" "$eff_defs"'
     vendor_rows($vendor) |
     first(.[] | select((.account // "main") == $account)) as $row |
     if $row == null then empty
-    else ([eff($row.five_hour; "five_hour"), eff($row.weekly; "weekly")] |
+    else (($row.families // {})[$family] // $row) as $b |
+      ([eff($b.five_hour; "five_hour"), eff($b.weekly; "weekly")] |
       map(select(type == "number")) | if length > 0 then max else empty end)
     end
   ' "$LIMITS_FILE" 2>/dev/null

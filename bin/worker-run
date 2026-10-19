@@ -2458,13 +2458,17 @@ write_run_state() { # directory phase [exit-code]
 
 # The pressure check a chat's delegation passes before any account is picked: a deny refuses the
 # launch, a note rides along on stderr.
-limit_gate() { # vendor light brief account computer
-  local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh} verdict reason note worker=$1
+limit_gate() { # vendor light brief account computer model
+  local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh} verdict reason note worker=$1 family=''
   [ -x "$gate" ] || return 0
   [ -z "$2" ] || worker=light
   [ "${5:-false}" != true ] || worker=computer
   [ "${WORKER_RUN_ROLE:-}" != browser ] || worker=$1-browser
-  verdict=$("$gate" --start "$worker" "$3" ${4:+"$4"} 2>/dev/null) || return 0
+  if [ "$worker" = gemini ] && [ -n "${6-}" ]; then
+    family=$(worker_model_gemini_family "$6" | cut -f2)
+    family=${family:-$6}
+  fi
+  verdict=$(WORKER_GATE_MODEL=$family "$gate" --start "$worker" "$3" ${4:+"$4"} 2>/dev/null) || return 0
   [ -n "$verdict" ] || return 0
   reason=$(jq -r 'select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason // empty' <<<"$verdict" 2>/dev/null)
   [ -z "$reason" ] || fail "$reason Nothing was launched and no account was spent."
@@ -2779,7 +2783,7 @@ start_run() {
   [ -z "$explicit_account" ] || account_roster_refuse worker-run "$vendor" "$explicit_account" || exit 2
   # A browser run is not the implementation leg `<vendor>_workers=off` closes (Egor, 2026-10-12).
   [ "$browser" = false ] || [ -n "$light" ] || [ "$role" != workers ] || export WORKER_RUN_ROLE=browser
-  [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief" "$explicit_account" "$computer"
+  [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief" "$explicit_account" "$computer" "$model"
   # The first line is the run's handle: readers take `RESUME <id>:`
   # off the top of it, and every reader that falls back to a prefix of the brief
   # matches nothing useful with a blank one.
