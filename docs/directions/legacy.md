@@ -1,37 +1,38 @@
 # Legacy (direction 5)
 
-Code and tests nothing needs: dead code, duplicates, and obsolete or duplicate test checks.
+Code nothing needs: dead code and duplicates. Tests, obsolete and duplicate checks included, are Tests and lost
+time's ([lost-time.md](lost-time.md), Egor 2026-10-20); a removal here still takes its own tests with it.
 
 ## Metric
 
 Legacy lines standing in the four sweep repositories (llm-legs, claude-setup, review-bench, hammerspoon): the
-recurring classes' "lines now" summed by their methods, tests apart, read 7 days after the last goal lands (class 2
-at a `code-doctor refresh` the reader runs). Another direction moves it only by adding legacy. A test check leaves
-only when stale (it guards a case the code can no longer produce), covered (another suite's check fails on the same
-mutation), or in a suite that caught no defect in 90 days, deleted whole (`uncaught:`, Decision 2026-10-14).
+recurring classes' "lines now" summed by their methods, code only (no line under a `tests/` or `test/` dir or in a
+`test_*` file), read 7 days after the last goal lands (class 2 at a `code-doctor refresh` the reader runs). Another
+direction moves it only by adding legacy.
 
 Net lines stay observed, never a verdict (Decision 2026-09-30): weekly churn moves them ±11k, more than every goal
 here, and other directions' goals add lines, which README's worse → revert would charge to Legacy.
 
-### Baseline (computed 2026-10-16)
+### Baseline (computed 2026-10-20, code only)
 
-Legacy lines: **4,030** (tests 512): class 1 2,916 (four repositories' deploys), class 2 683 (10-14 refresh),
-class 3 401, class 4 30.
+Legacy lines: **3,518**: class 1 2,916 in 26 files (HEAD 2026-10-20, unchanged since 10-16), class 2 572 (the 10-14
+refresh, the last; its 111 test lines, `hammerspoon/tests/test_claude_keys_bin.sh`, are Tests and lost time's), class
+3 30 (HEAD). The 10-16 figure was 4,030 with tests 512 (class 2's 111 + the assert helpers' 401, now lost-time.md's).
 
-| net lines, four repositories | 10-02…08 | 10-09…15 |
+| net lines, four repositories | 10-06…12 | 10-13…19 |
 |---|---:|---:|
-| **code** | **+27,340** (+38,415 −11,075) | **+16,153** (+26,728 −10,575) |
-| **tests** | **+22,102** (+48,658 −26,556) | **+12,675** (+24,864 −12,189) |
-| data: ledgers, `limits.json`, plists (own line) | +6,200 | +15,229 |
-| docs, `*.md` (own line) | +478 | +376 |
+| **code** | **+15,733** (+27,534 −11,801) | **+15,712** (+19,886 −4,174) |
+| data: ledgers, `limits.json`, plists (own line) | +9,011 | +9,591 |
+| docs, `*.md` (own line) | +175 | +1,785 |
 
-- Method (git covers both windows whole: 7 full days each):
+- Method (git covers both windows whole: 7 full days each; the tests bucket is lost-time.md's):
   - A window's ends are each repository's commit `git rev-list -1 --first-parent --before='<day> 00:00' HEAD` for
-    10-02, 10-09 and 10-16, local time. Lines are `git diff --numstat` between two ends, binary files skipped.
+    10-06, 10-13 and 10-20, local time. Lines are `git diff --numstat` between two ends, binary files skipped.
   - Buckets by path: tests = under a `tests/` or `test/` dir, or a `test_*` file; docs = `*.md`; data =
     `*.json|jsonl|plist|txt|log|csv|yaml`; code = the rest.
-  - The ends: llm-legs 5e6a2951 af820ec9 916f78d6, claude-setup 64135192 2f02e870 dcd60c0f, review-bench bfe77bbb
-    9dda0c3e 69c02d3d, hammerspoon fb9aa82b 31c703ac 0eabdd90.
+  - The ends: llm-legs 31652cc4 419d60e8 e93902c2, claude-setup 5dc53083 bd436c1f d3aa368f, review-bench 46543731
+    b2d851be 21a08465, hammerspoon 01153ba2 5d953cf3 f1872c3a. The same method on 10-02/09/16's ends reproduces the
+    10-16 table (code +27,340 → +16,153).
 
 ## Sources
 
@@ -40,43 +41,36 @@ class 3 401, class 4 30.
   Pilot nights run no refresh, judge or Code fixer (`bin/night-run` PILOT_RULES).
 - `share/code-ledger.json`: the Code doctor's 9 dead and duplicate rows, all fixed-pending, −424 lines 10-03…10-13.
 - llm-legs `bin/harness-doctor` `DEPLOYS`: every copy llm-legs installers deploy, its source, kind and installer.
-- `share/spend-ledger.json` `suite:` rows: each Suite audit's removed never-red, vacuous or covered checks, with the
-  mutation that proves it; 38 audits did so on 10-13…14. Full nights only: a pilot night launches no audit.
 - `share/harness-ledger.json`: no legacy rule. None of its 105 log-audit rows is about dead or duplicate code.
 
 ## Recurring classes
 
-Ranked 2026-10-16 by lines, from the ledgers, the Code doctor's candidates and git from 10-02 to 10-15. Each class
-was fixed as an instance and came back.
+Ranked 2026-10-16 by lines, from the ledgers, the Code doctor's candidates and git from 10-02 to 10-15; lines now
+recomputed 2026-10-20, code only. Each class was fixed as an instance and came back.
 
 | class | rows | days seen | instances fixed | lines now |
 |---|---:|---:|---:|---:|
 | 1. deployed copies: `night-snapshot` commits what a sweep repository deploys into claude-setup `local-config/home` | 111 Code doctor candidates | 2/2 since 10-13 | 3 | 2,916 in 26 files |
-| 2. a removal leaves its other end: a retired feature's readers, flags, tests and prose, a deleted reader's writer, a unit the removal orphaned | 42 dead candidates, 5 code-ledger dead rows, 2 check refusals | 10 (10-03…10-13) | 5 ledger fixes (−252) + 9 relay commits | 683 dead lines waiting |
-| 3. each suite redefines its assert helpers: `fail` defined 190 times (one body 74 times), `assert` 101 (50), `assert_fails` 40 | 25 of 45 suites added 10-09…15 | 6 | 1 fit round (10-14) | 401 |
-| 4. every new tool rolls its own helpers (JSON IO, bounded runs) | 4 code-ledger rows | 5 (10-08…10-14) | 4 + 3 fit-round folds | 30 |
+| 2. a removal leaves its other end: a retired feature's readers, flags, tests and prose, a deleted reader's writer, a unit the removal orphaned | 42 dead candidates, 5 code-ledger dead rows, 2 check refusals | 10 (10-03…10-13) | 5 ledger fixes (−252) + 9 relay commits | 572 dead code lines waiting |
+| 3. every new tool rolls its own helpers (JSON IO, bounded runs) | 4 code-ledger rows | 5 (10-08…10-14) | 4 + 3 fit-round folds | 30 |
 
-- Method of the table, at HEAD on 2026-10-16:
+- Method of the table (2026-10-16, rerun 2026-10-20 to the same counts):
   - class 1: `git ls-files local-config/home` at a path a sweep repository deploys, `wc -l`: llm-legs `DEPLOYS` (21
     files, 2,818 lines), review-bench `share/rbench/debt.py` `doctor_agent_paths` (`review-doctord`,
     `com.llm-legs.review-doctor.plist`: 27), claude-setup end-report's `launchd/` pair (README `install`: 37),
     hammerspoon `launchd/com.egor.hammerspoon.plist` (34). `libexec/hammerspoon` (2), which that plist runs, has no
     source or installer in any repository: out, unconfirmed;
   - class 2: dead lines = `lines` of the units the 42 `dead` rows of `candidates.jsonl` name as dead in `detail`
-    (`X is defined and never called`, `no entry point reaches X, Y`), each once; the `is N lines with N branches`
-    units (worker-run, instruction-files.sh: 11,534) and clone-only units (24) are out; `value` adds a clone signal: 695; days = the dead-row fixes, relay sweep, stamp and refusals; relay commits = `git log
+    (`X is defined and never called`, `no entry point reaches X, Y`), each once, a unit in a test path out (683 with
+    it; all 26 files still stand at HEAD 2026-10-20); the `is N lines with N branches` units (worker-run,
+    instruction-files.sh: 11,534) and clone-only units (24) are out; `value` adds a clone signal: 695; days = the
+    dead-row fixes, relay sweep, stamp and refusals; relay commits = `git log
     --first-parent -i -E --grep='^relay (leftovers|cleanup)|^relay-free polish|retired relay|dangling worker-relay'`
     from 10-09 on, less two Spend audits (fc86109c, 3e8062e0);
-  - class 3: `fail()`, `assert()`, `assert_fails()` bodies in tracked `*.sh`, defined at column 0, from the `name()`
-    line to the line where `{`/`}` balance (one body closes on `exit 1; }`), whitespace-stripped; lines = every copy
-    of a body seen twice or more, less one per body; suites added = `tests/` files added on first parents, by date;
-  - class 4: `def read_json(`, `def read_jsonl(`, `def write_json(`; lines = per repository, every body less the
-    longest per name, less the copies the code ledger keeps on purpose (chat-load: deployed beside memlogd;
-    harness-doctor's `read_jsonl`: a binary tail reader; review-anchors: a standalone script);
-  - classes 3–4 leave `local-config/` out;
-  - shared 6-line blocks: windows of 6 non-blank lines, whitespace-stripped, found in two or more tracked test
-    files (the Method's tests bucket, text files at HEAD 96f8c2da, 164,745 lines); a pair (A, B) counts A's
-    non-blank lines inside windows it shares with B, A the alphabetically first path; the total sums the pairs.
+  - class 3: `def read_json(`, `def read_jsonl(`, `def write_json(`, `local-config/` out; lines = per repository,
+    every body less the longest per name, less the copies the code ledger keeps on purpose (chat-load: deployed
+    beside memlogd; harness-doctor's `read_jsonl`: a binary tail reader; review-anchors: a standalone script): at
+    HEAD 2026-10-20 llm-legs `read_json` 6 (code-doctor, spend.py) + `write_json` 24 (five tools).
 
 Why they come back:
 1. The snapshot (d2ecaa0, 10-13) copies every file in `~/.local/libexec` and every agent plist naming it. Installers
@@ -97,20 +91,15 @@ Why they come back:
      400k token cap, so the queue grew from 109 pending (10-03) to 531 waiting (10-14).
    - Audits of retired components (spawn:codex-worker, spawn:review-waiter 10-10; cd-guard ×4 10-13) are Spend's:
      `due()` reopens a cut whose tail is still in the 7-day window (spend.md class 1, goal audit-due).
-3. A new suite copies its preamble, helpers included (6 splits since 10-03 netted only +18…+73 each over a shared
-   harness). Every llm-legs suite already sources `tests/lib/suite-journal.sh` on line 2.
-4. A new tool starts standalone, and a deployed copy (chat-load) cannot import `share/`. Each fold fixes one helper.
+3. A new tool starts standalone, and a deployed copy (chat-load) cannot import `share/`. Each fold fixes one helper.
    REUSE FIRST in worker-run's brief preamble has asked for reuse since 09-18; the class came back anyway.
 
 Checked, not a class:
-- Copied fixtures across split suites: shared 6-line blocks total 2,901 lines over 309 pairs (2,472 distinct
-  lines: an upper bound), the largest pair test_codexb/test_geminib with 108. No fix of one exists to have come back.
 - Readers of retired experiments: none of the 5 tags removed since 09-20 has one left (grep outside docs/handoffs).
 - Names a retirement left in code or tests at its own commit, 10-09…15: of 103 commits deleting a file or
   definition, 2 (worker-corpus's frame-guard exemption, 138b5a6c; `words_grant_target` in a planted test, b50e5bff).
   Other hits were common words, variables, keys, an 8-second cross-repository pair, and 234256e0, which swept in a
   staged deletion a minute before its retirement (6280c424): a scan of deleted names would list mostly false hits.
-- The rest of the test growth is new suites for new code: test_test_health, test_tool_mining, test_log_stores…
 
 ## Goals
 
@@ -137,20 +126,6 @@ Class 1, one rule for the four repositories: each lists its deploys; the snapsho
   real `gui/$UID` whatever `HOME` says), restores today's file set under `.local/libexec` and `Library/LaunchAgents`;
   the live `~/.local/libexec` is only read.
 
-### goal shared-asserts: suites take fail, assert and assert_fails from the lib they already source
-
-Class 3, llm-legs only: the 10 of 25 own-helper suites elsewhere (claude-setup 8, hammerspoon 2) copy one-line
-helpers and source no test lib, so a source line would cost what it saves.
-- Where: llm-legs `tests/lib/suite-journal.sh`, between its `--lib` and `SUITE_JOURNAL_PID` returns (lines 272–274),
-  so only a suite's line-2 source gets them: the runner (its own `fail` exits 4), the statusline scripts and
-  claude-setup's suites source `--lib`.
-  - It defines the three helpers in their most common bodies, `assert` counting `asserts` as the copies do.
-  - Copies of a body seen twice or more in llm-legs: 367 lines, 157 of them the three lib bodies. A copy behaving
-    as the lib's goes, a variant behaving differently stays; suites sourcing `--lib` or nothing keep theirs.
-- Proof: suites added in the 7 days after landing that define their own `fail`, `assert` or `assert_fails`, by class
-  3's method: llm-legs 15 of 26 in 10-09…15 → 0.
-- Must not get worse: every touched suite's PASS assert count against HEAD, its mutations still red.
-
 ### goal own-orphans: a Code fixer deletes what its own change orphaned
 
 Class 2's Code fixer cause only (Decision 2026-10-09: change impact): the relay and stamp leftovers came from
@@ -168,20 +143,15 @@ retirements by chats and workers, which `check` never sees, and stay in the clas
 ## Done
 
 - Retired features took their tests with them: llm-legs `test_light_edit`, `test_land`, `test_worktree`,
-  `test_night_report_trial`; claude-setup 5 files.
-- 10-14: a tests lens pilot on the 10 heaviest suites ran two rounds (05a7238f, 62458120): 131 fixes, +1,096 −803 =
-  +293 lines. The lens as it stands strengthens weak checks, which adds lines, so cleanup here is deletion only.
-- 10-14: the lens was tuned (review-bench 53f8137, 051aa8f); a tests round joined the debt pass (9e852e4d), unrun.
+  `test_night_report_trial`; claude-setup 5 files. The tests lens rounds of 10-14 are lost-time.md's Done.
 
 ## Decisions
 
-- 2026-10-15: the harness's code and tests shrink, not grow; obsolete tests are Legacy's. («Updater doctor»)
+- 2026-10-20: everything about tests is one block, Tests and lost time; Legacy is code only, its "tests apart"
+  metric code only. It replaces 10-15's "obsolete tests are Legacy's". («Updater doctor»)
+- 2026-10-15: the harness's code and tests shrink, not grow. («Updater doctor»)
 - 2026-10-14: unused code is deleted together with its tests, with no "Egor asked" marker; what he wants kept, he
   asks a test for. («Updater doctor»)
-- 2026-10-14: a new test comes only with a P1/P2 fix, written without his word. («Updater doctor»)
-- 2026-10-14: a stale check is deleted, never strengthened. («Updater doctor»)
-- 2026-10-14: a suite that caught no defect in 90 days is deleted whole (`uncaught:` in doctor-fix's suite audit).
-  («Updater doctor»)
 - 2026-10-13: legacy sits in long-settled code, not in review debt: debt neither scopes nor measures it.
   («Updater doctor»)
 - 2026-10-13: a mechanism is not worth a heap of new lines; nights adding ~1,500 lines each are the problem.
@@ -196,9 +166,5 @@ retirements by chats and workers, which `check` never sees, and stay in the clas
 
 ## Open
 
-- Covered and stale checks standing have no number: it needs mutation runs, and their sources, Suite audits and the
-  tests round (Debt, paused), run only in full nights.
-- `uncaught:` is first due 2027-01-01 (the journal starts 10-03). 274 of 543 red→green episodes so far are `unread`
-  (no transcript, `share/test_catches.py` `judge`) and never count as a catch, so a suite's silence can be a gap.
 - Change impact beyond code and tests (2026-10-09): hooks, docs and actions a landed change made obsolete. No class
   or goal counts them.

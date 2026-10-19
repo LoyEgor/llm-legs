@@ -10,13 +10,13 @@ Blocks, in queue order (Egor 2026-10-20; the numbers are how he and the chats na
 |---|---|---|---|
 | 0 | Always on | none: the prep every night runs (vendor CLIs installed, log audit, doctors) and the monthly directions refresh | runs |
 | 1 | [Breakages](breakages.md) | new distinct problems (doctor snapshots) per 100 units of work, 7 days against the 7 before; repeats 0 | active |
-| 2 | [Tests and lost time](lost-time.md) | Lost time index | queued; tests' whole scope being added |
+| 2 | [Tests and lost time](lost-time.md) | Lost time index; test rewrite share, red suites and test legacy lines watched | queued |
 | 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | queued |
 | 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | queued |
 | 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, code only; net lines watched | queued |
-| 6 | Vendors | being set: a vendor change (version, model, plan) studied and integrated | being prepared |
-| 7 | Doctors | being set: doctors' Fix rows, and what no doctor shows | being prepared |
-| 8 | Leftovers | being set: handoffs and unlanded branches | being prepared |
+| 6 | [Vendors](vendors.md) | integration lag: mean days from a vendor event to its close; changes found outside the fingerprint 0 | being checked |
+| 7 | [Doctors](doctors.md) | false-alarm share of decided Fix rows; outside-found share (what no doctor shows) | being checked |
+| 8 | [Leftovers](leftovers.md) | handoffs and branches that outlive a night, plus returns, per night; target 0 | being checked |
 | 9 | Monthly research | vendor news, repeated ad-hoc scripts become tools | postponed (Egor 2026-10-20) |
 | 10 | [Debt](debt.md) | review debt closed: a bugs read of settled code only (Egor 2026-10-06) | paused, last |
 
