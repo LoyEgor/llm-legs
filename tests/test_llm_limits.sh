@@ -267,6 +267,29 @@ grep -q "$GEMINI_PROFILES/Library" "$GEMINI_MULTI_LOG" && fail "a stray Library 
 [ ! -e "$GEMINI_PROFILES/.keychain-password" ] || fail "a keychain was built in the profiles root"
 rm -rf "$GEMINI_PROFILES/Library"
 
+# The primary group is the one with both windows, whatever agy's order: a weekly-only family group
+# listed first used to take the account's row with it. Groups named as a family label on the
+# account's own list become `families.<slug>`; other groups are not stored.
+cp "$GEMINI_ACCOUNTS_CACHE/work.json" "$WORK/gemini-work-saved.json"
+mkdir -p "$WORK/geminib-cache"
+printf '%s\n' '{"fetched_at":1,"attempted_at":1,"families":[{"family":"gemini-x","slug":"zircon","agy_prefix":"gemini-x","label":"Gemini Zircon"}]}' \
+  >"$WORK/geminib-cache/models-work.json"
+printf '%s\n' '{"groups":[{"displayName":"Gemini Zircon","buckets":[{"window":"weekly","remainingFraction":0.7,"resetTime":"2099-01-03T00:00:00Z"}]},{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.5,"resetTime":"2099-01-01T00:00:00Z"},{"window":"5h","remainingFraction":0.6,"resetTime":"2099-01-01T00:00:00Z"}]},{"displayName":"Claude and GPT models","buckets":[{"window":"weekly","remainingFraction":1,"resetTime":"2099-01-01T00:00:00Z"},{"window":"5h","remainingFraction":1,"resetTime":"2099-01-01T00:00:00Z"}]}]}' \
+  >"$GEMINI_ACCOUNTS_CACHE/work.json"
+family_env=(GEMINIB_CACHE_DIR="$WORK/geminib-cache" GEMINIB_PROFILES_DIR="$GEMINI_PROFILES"
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=0
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE")
+family_gemini=$(env "${family_env[@]}" /bin/bash "$SCRIPT" --json --no-write) || fail "Gemini family-group collection failed"
+jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0] |
+  .group == "Gemini Models" and .weekly.used_pct == 50 and .five_hour.used_pct == 40 and
+  (.families | keys) == ["zircon"] and .families.zircon.group == "Gemini Zircon" and
+  .families.zircon.weekly.used_pct == 30 and .families.zircon.weekly.resets_at == "2099-01-03T00:00:00Z" and
+  (.families.zircon | has("five_hour") | not)' <<<"$family_gemini" >/dev/null \
+  || fail "a family group listed first lost the account or its bucket: $(jq -c '[.vendors.gemini.accounts[] | select(.account == "work")]' <<<"$family_gemini")"
+env "${family_env[@]}" /bin/bash "$SCRIPT" --table --no-write | grep -Eq '^gemini/work zircon +- +30% +- +- +01-0[23] ' \
+  || fail "the family bucket has no WK-only table row"
+cp "$WORK/gemini-work-saved.json" "$GEMINI_ACCOUNTS_CACHE/work.json"
+
 # One failing gemini account named `main` is reported as a bare cause with no `main: ` prefix, so
 # the vendor entry it becomes carries no account while the account row carries the same text. Both
 # describe one failure, and the legacy cause joins whatever survives, so only one may.

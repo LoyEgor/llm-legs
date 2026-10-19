@@ -625,7 +625,7 @@ chmod +x "$CONSISTENCY_CACHE/agy-models"
 assert eq "$(AGY_BIN="$CONSISTENCY_CACHE/agy-models" GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/fixture-fetch" "$GEMINIB_BIN" families --refresh)" "$builtin_rows"
 assert doc_has 'Gemini model families'
 assert doc_has '`families_builtin`'
-assert doc_has '`geminib families [--json] [--refresh] [--account <profile>]`'
+assert doc_has '`geminib families [--json] [--refresh] [--account <profile>] [--union]`'
 
 # The menu is built on every open, so it never blocks on a shell-out.
 assert test "$(grep -Fc 'hs.execute' "$ROOT/hammerspoon/llm-limits.lua")" -eq 0

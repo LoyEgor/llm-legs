@@ -583,6 +583,34 @@ local fresh5h = accountIndex(menu, "fresh")
 assert(not isDimmed(menu[fresh5h + 1].title.attributes),
   "future resets_at was rendered dim")
 
+-- A Gemini account's own family buckets (store `families.<slug>`) each draw one weekly row under its
+-- wk row, sorted by slug, in the menu's columns, the bar red from 80 % like fb; an account without
+-- them draws none.
+local familyMenu = loadModule({ schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = true, accounts = {
+    { account = "pro", is_current = true, five_hour = bucket(10), weekly = bucket(20),
+      families = { zircon = { group = "Gemini Zircon", weekly = bucket(85) },
+                   amber = { group = "Gemini Amber", weekly = bucket(30) } } },
+    { account = "plus", is_current = false, five_hour = bucket(10), weekly = bucket(20) },
+  } },
+}}).menuItems()
+toned.assert(familyMenu, "the Gemini family rows")
+local familyPro = accountIndex(familyMenu, "pro")
+local proWeekly = titleText(familyMenu[familyPro + 2])
+local amberRow, zirconRow = familyMenu[familyPro + 3], familyMenu[familyPro + 4]
+assert(proWeekly:match("^%s+wk%s"), "the account's own wk row moved: " .. proWeekly)
+assert(titleText(amberRow):match("^amber%s+wk%s") and titleText(amberRow):find("30%", 1, true),
+  "family row missing or unsorted: " .. titleText(amberRow))
+assert(titleText(amberRow):find("%d+%%") == proWeekly:find("%d+%%"), "family row left the menu's columns")
+assertNoRed(amberRow, "under-80 % family row rendered red")
+assert(titleText(zirconRow):match("^zircon%s+wk%s") and titleText(zirconRow):find("85%", 1, true),
+  "second family row missing: " .. titleText(zirconRow))
+local zirconRuns = redRuns(zirconRow.title)
+assert(#zirconRuns == 1 and zirconRuns[1] == "▓▓▓▓░", "family warning did not color only its usage bar")
+assert(accountIndex(familyMenu, "plus") == familyPro + 5, "a family row drew under an account without one")
+
 local pinFixture = { schema = 1, vendors = {
   claude = { available = true, source = "claudeb-store", accounts = {
     { account = "claude-current", is_current = true, five_hour = bucket(10) },

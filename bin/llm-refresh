@@ -227,7 +227,7 @@ account_rows() {
        $status == "failed" or ($status == "expired" and $vendor != "grok"));
     def row($name):
       [$name,
-       ([.five_hour?.as_of, .weekly?.as_of, .fable?.as_of, .as_of_epoch]
+       ([.five_hour?.as_of, .weekly?.as_of, .fable?.as_of, (.families[]? | .five_hour?.as_of, .weekly?.as_of), .as_of_epoch]
         | map(select(type == "number")) | min // 0),
        (if blocked then 1 else 0 end)] | @tsv;
     .vendors[$vendor] // {} |

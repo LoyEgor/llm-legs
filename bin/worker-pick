@@ -537,7 +537,7 @@ summary=$(jq -r \
   def gr_auth_ok: .auth_needed != true and (gr_auth | IN("ok", "expired"));
   def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));
   def account_as_of:
-    [.five_hour?, .weekly?, .fable? |
+    [.five_hour?, .weekly?, .fable?, (.families[]? | .five_hour?, .weekly?) |
       select(type == "object" and (.used_pct | type) == "number") |
       (.as_of? | epoch)] |
     map(select(. != null));

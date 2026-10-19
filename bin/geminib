@@ -470,10 +470,8 @@ families_builtin() {
 }
 
 families_parse() { # `agy models` output → family rows, newest version first
-  # Gemini 4 names its top class without a minor version (gemini-4-argon, agy 1.3.4): served only on the
-  # accounts whose plan carries it, so it shows in `families --account <that profile>`, not in the default list.
   awk -F'\t' '
-    NF >= 2 && $2 != "" && $1 ~ /^gemini-[0-9]+(\.[0-9]+)?-(flash|pro|argon)(-(high|medium|low))?$/ {
+    NF >= 2 && $2 != "" && $1 ~ /^gemini-[0-9]+(\.[0-9]+)?-[a-z]+(-(high|medium|low))?$/ {
       family = $1
       sub(/-(high|medium|low)$/, "", family)
       split(family, part, "-")
@@ -508,7 +506,7 @@ families_write() { # fetched-at attempted-at rows [account]
 families_fresh() { [ "$(($1 - $2))" -ge 0 ] && [ "$(($1 - $2))" -lt "$families_ttl_s" ]; } # now stamp
 
 # A failed refresh stamps attempted_at, so a broken agy is asked once per TTL and not by every hook.
-families_rows() { # refresh(true|false) [account]
+families_rows() { # refresh(true|false) [account [own]]
   local cache now fetched=0 attempted=0 rows='' cached='' output fresh account="${2:-}"
   local list=("$agy_bin" models)
   # `<name> exec`, not `profile <name>`: a list request must never create the profile it asks about.
@@ -536,7 +534,7 @@ families_rows() { # refresh(true|false) [account]
   fi
   if [ -z "$rows" ]; then
     # An account whose own list cannot be read yet answers with the shared list, not the frozen one.
-    if [ -n "$account" ]; then families_rows false; else families_builtin; fi
+    if [ -z "$account" ]; then families_builtin; elif [ "${3:-}" != own ]; then families_rows false; fi
     return 0
   fi
   families_fresh "$now" "$fetched" ||
@@ -545,23 +543,44 @@ families_rows() { # refresh(true|false) [account]
   printf '%s\n' "$rows"
 }
 
+families_union_line() { # profile → its own rows, each led by the profile
+  families_rows "$families_union_refresh" "$1" own 2>/dev/null | awk -v p="$1" 'NF { print p "\t" $0 }'
+}
+
+families_union() { # refresh(true|false) → the families of every profile's own list, each with the profiles carrying it
+  local lines
+  families_union_refresh=$1
+  lines=$(parallel_account_output families_union_line | LC_ALL=C sort -t "$(printf '\t')" -k1,1)
+  [ -n "$lines" ] || return 0
+  cut -f2,5 <<<"$lines" | families_parse | awk -F'\t' '
+    NR == FNR { held[$2] = held[$2] (held[$2] == "" ? "" : ",") $1; next }
+    { print $0 "\t" held[$1] }' <(printf '%s\n' "$lines") -
+}
+
 show_families() {
-  local json=false refresh=false account='' rows
+  local json=false refresh=false account='' union=false rows
+  local usage='usage: geminib families [--json] [--refresh] [--account <profile>] [--union]'
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=true ;;
       --refresh) refresh=true ;;
-      --account) [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9][a-z0-9-]*$ ]] ||
-          { printf 'usage: geminib families [--json] [--refresh] [--account <profile>]\n' >&2; exit 2; }
+      --union) union=true ;;
+      --account) [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { printf '%s\n' "$usage" >&2; exit 2; }
         account=$2; shift ;;
-      *) printf 'usage: geminib families [--json] [--refresh] [--account <profile>]\n' >&2; exit 2 ;;
+      *) printf '%s\n' "$usage" >&2; exit 2 ;;
     esac
     shift
   done
-  rows=$(families_rows "$refresh" "$account")
+  if [ "$union" = true ]; then
+    [ -z "$account" ] || { printf '%s\n' "$usage" >&2; exit 2; }
+    . "$geminib_root/share/gemini-accounts.sh"
+    rows=$(families_union "$refresh")
+  else
+    rows=$(families_rows "$refresh" "$account")
+  fi
   if [ "$json" = true ]; then
     printf '%s\n' "$rows" | jq -Rn '[inputs | select(length > 0) | split("\t")
-      | {family: .[0], slug: .[1], agy_prefix: .[2], label: .[3]}]'
+      | {family: .[0], slug: .[1], agy_prefix: .[2], label: .[3]} + if .[4] then {accounts: (.[4] | split(","))} else {} end]'
   else
     printf '%s\n' "$rows"
   fi
@@ -1091,7 +1110,7 @@ show_help() {
     'geminib enable <name>|--all           Return an account (or every account) to worker selection.' \
     'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'geminib use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
-    'geminib families [--json] [--refresh]  Gemini model families newest first (family, slug, agy id prefix, label), from agy models cached for 24 h.' \
+    'geminib families [--json] [--refresh] [--account <profile>] [--union]  Gemini model families newest first (family, slug, agy id prefix, label), from agy models cached for 24 h; --account is one profile'"'"'s own list, --union every profile'"'"'s with a fifth column, the profiles carrying the family.' \
     'geminib list                          List profiles with login state.' \
     'geminib status                        Per-account login state and quota.' \
     'geminib export-token <name> --to <path> [--min-seconds <n>]  Export a keychain-first access-only sign-in to a new 0600 file; refresh here if needed, with no profile writes.'

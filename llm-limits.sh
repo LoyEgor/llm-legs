@@ -385,7 +385,10 @@ render_table() {
                  age: compact_age($render_now), alarm: (.age_alarm == true or data_stale($render_now)),
                  rot: rotation,
                  credits: credits,
-                 status:account_status($k)})
+                 status:account_status($k)},
+                (.account as $a | (.families // {}) | to_entries[]
+                 | {src: ($k + "/" + $a + " " + .key), five:null, week: .value.weekly, fable:null,
+                    age:"-", alarm:false, rot:"-", credits:"-", status:"-"}))
          elif .available then
            limits_wall_painted($render_now) |
            {src: $k, five: .five_hour, week: .weekly, fable:null,
@@ -905,7 +908,9 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused ge
       gemini_5h_reset=''
       if [ -r "$gemini_cache" ]; then
         gemini_5h_reset=$(int_or_empty "$(jq -r "$iso_def"'
-          [.groups[]? | select((.displayName // "") | ascii_downcase | contains("gemini"))][0] as $g |
+          [.groups[]? | select(((.displayName // "") | ascii_downcase | contains("gemini")) and
+            any(.buckets[]?; .window == "5h" and (.remainingFraction | type) == "number") and
+            any(.buckets[]?; .window == "weekly" and (.remainingFraction | type) == "number"))][0] as $g |
           [$g.buckets[]? | select(.window == "5h")][0].resetTime | iso2epoch // empty
         ' "$gemini_cache" 2>/dev/null || true)")
       fi
@@ -1780,13 +1785,22 @@ while IFS= read -r gemini_account; do
   if [ -r "$gemini_cache" ]; then
     gemini_auth=$(jq -r 'if .auth_needed == true then "1" else "" end' "$gemini_cache" 2>/dev/null || true)
     gemini_auth_checked=$(int_or_empty "$(jq -r '.auth_checked_at // empty' "$gemini_cache" 2>/dev/null || true)")
-    gemini_data=$(jq -c '
-      [.groups[]? | select((.displayName // "") | ascii_downcase | contains("gemini"))][0] as $group |
-      [$group.buckets[]? | select(.window == "5h")][0] as $five |
-      [$group.buckets[]? | select(.window == "weekly")][0] as $week |
-      select(($five.remainingFraction | type) == "number" and
-             ($week.remainingFraction | type) == "number") |
-      {group:$group.displayName,five:$five,week:$week}
+    gemini_labels=$(jq -c '[.families[]? | select((.label | type) == "string" and (.slug | type) == "string")
+      | {key:.label, value:.slug}] | from_entries' \
+      "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}/models-$gemini_account.json" 2>/dev/null) || gemini_labels='{}'
+    gemini_data=$(jq -c --argjson labels "$gemini_labels" '
+      def window($w): [.buckets[]? | select(.window == $w and (.remainingFraction | type) == "number")][0];
+      [.groups[]? | select(((.displayName // "") | ascii_downcase | contains("gemini")) and
+        window("5h") != null and window("weekly") != null)][0] as $group |
+      ($group | window("5h")) as $five |
+      ($group | window("weekly")) as $week |
+      select($group != null) |
+      {group:$group.displayName,five:$five,week:$week,
+       families:([.groups[]? | select(.displayName != $group.displayName and
+                    (.displayName | type) == "string" and ($labels[.displayName] | type) == "string" and
+                    (window("5h") != null or window("weekly") != null))
+                  | {key:$labels[.displayName], value:{group:.displayName,five:window("5h"),week:window("weekly")}}]
+                 | from_entries)}
     ' "$gemini_cache" 2>/dev/null || true)
     gemini_mtime=$(file_mtime "$gemini_cache" 2>/dev/null || true)
     [ -n "$gemini_mtime" ] || gemini_mtime=$now_epoch
@@ -1800,12 +1814,17 @@ while IFS= read -r gemini_account; do
       def used($remaining):
         ((1 - $remaining) * 100) |
         (if . < 0 then 0 elif . > 100 then 100 else . end) | round;
+      def bucket($thr):
+        {used_pct:used(.remainingFraction),resets_at:.resetTime,
+         as_of:$as_of_epoch,origin:"usage",stale:($stale > $thr)};
       {account:$account,enabled:$enabled,source:"agy-print-usage",group:$d.group,
-       five_hour:{used_pct:used($d.five.remainingFraction),resets_at:$d.five.resetTime,
-                  as_of:$as_of_epoch,origin:"usage",stale:($stale > $thr5)},
-       weekly:{used_pct:used($d.week.remainingFraction),resets_at:$d.week.resetTime,
-               as_of:$as_of_epoch,origin:"usage",stale:($stale > $thrw)},
-       as_of:$as_of,stale_seconds:$stale}
+       five_hour:($d.five | bucket($thr5)),
+       weekly:($d.week | bucket($thrw)),
+       as_of:$as_of,stale_seconds:$stale} +
+      (if ($d.families // {}) == {} then {} else
+         {families:($d.families | map_values({group} +
+            (if .week then {weekly:(.week | bucket($thrw))} else {} end) +
+            (if .five then {five_hour:(.five | bucket($thr5))} else {} end)))} end)
       | if $auth == "1" then . + {auth_needed:true,status:"login needed"} +
           (if $checked == "" then {} else {auth_checked_at:($checked | tonumber)} end) else . end')
   elif [ "$gemini_auth" = 1 ]; then
@@ -2120,7 +2139,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     then .resets_at = ((.resets_at // null) | normalize_reset) | drop_ancient_reset
     else . end;
   def data_as_of:
-    [.five_hour?, .weekly?, .fable? |
+    [.five_hour?, .weekly?, .fable?, (.families[]? | .five_hour?, .weekly?) |
       select(type == "object" and (.used_pct | type) == "number") |
       (.as_of | if type == "number" then . elif type == "string" then iso2epoch else null end)] |
     map(select(. != null)) | min;
@@ -2158,7 +2177,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     end;
   def vendor_stale:
     ([.five_hour?, .weekly?, .fable?] +
-     [(.accounts[]? | .five_hour?, .weekly?, .fable?)]) |
+     [(.accounts[]? | .five_hour?, .weekly?, .fable?, (.families[]? | .five_hour?, .weekly?))]) |
     map(select(type == "object") | .stale == true) | any;
   def old_error($value):
     if ($value | type) == "object" and ($value.cause | type) == "string" and ($value.at | type) == "number"
@@ -2320,7 +2339,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
         end)
     end;
   def row_as_of:
-    [.five_hour?.as_of, .weekly?.as_of, .fable?.as_of, .as_of, .as_of_epoch] |
+    [.five_hour?.as_of, .weekly?.as_of, .fable?.as_of, (.families[]? | .five_hour?.as_of, .weekly?.as_of),
+     .as_of, .as_of_epoch] |
     map(if type == "number" then . elif type == "string" then iso2epoch else null end) |
     map(select(type == "number")) | max;
   def newest_accounts($key):

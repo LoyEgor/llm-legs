@@ -149,7 +149,7 @@ cp "$SCRIPT" "$WORK/lone/bin/geminib"
 assert_eq "$(bash "$WORK/lone/bin/geminib" families 2>"$WORK/err" | cut -f2 | tr '\n' ,)" 'flash38,flash37,flash36,pro,'
 
 # --- Usage ---
-assert_eq "$(bash "$SCRIPT" families --bogus 2>&1 >/dev/null; printf 'rc=%s' "$?")" "usage: geminib families [--json] [--refresh] [--account <profile>]
+assert_eq "$(bash "$SCRIPT" families --bogus 2>&1 >/dev/null; printf 'rc=%s' "$?")" "usage: geminib families [--json] [--refresh] [--account <profile>] [--union]
 rc=2"
 
 printf 'PASS: %s asserts; geminib families (fresh fetch from agy models with effort rows folded and non-Gemini rows dropped, TSV and --json, --refresh, newest version first with the newest pro owning `pro`, the 24 h TTL both sides, the stale cache with a stderr note and a stamped attempt, a failing or empty agy never trusted, the built-in list with no cache or an unreadable one, the capacity chain following the list)\n' "$asserts"

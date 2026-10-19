@@ -3304,6 +3304,19 @@ local function buildMenuItems()
               local fableWarning = (tonumber(block.fable.effective_pct) or 0) >= 80
               table.insert(menu, { title = tailRow("fb", block.fable, fableWarning), disabled = true })
             end
+            if type(block.families) == "table" then
+              local slugs = {}
+              for slug, family in pairs(block.families) do
+                if type(family) == "table" and type(family.weekly) == "table" then table.insert(slugs, slug) end
+              end
+              table.sort(slugs)
+              for _, slug in ipairs(slugs) do
+                local familyWeekly = block.families[slug].weekly
+                table.insert(menu, { title = rowTitle(slug, "wk", familyWeekly, isStale(familyWeekly),
+                  bucketAtLimit(familyWeekly), (tonumber(familyWeekly.effective_pct) or 0) >= 80,
+                  { untrusted = untrusted }), disabled = true })
+              end
+            end
           end
           if isGeminiAccounts then
             for _, mediaRow in ipairs(geminiMediaRows(geminiMedia[acct])) do
