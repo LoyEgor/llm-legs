@@ -4,14 +4,25 @@ The harness is improved one direction at a time (Egor, 2026-10-15). Each directi
 here. The directions run in a queue, one goal at a time, each proven on its own number (2026-10-16); the night works
 them all together only after each direction's metric has moved.
 
-| # | Direction | Metric | State |
+Blocks, in queue order (Egor 2026-10-20; the numbers are how he and the chats name them):
+
+| # | Block | Metric | State |
 |---|---|---|---|
+| 0 | Always on | none: the prep every night runs (vendor CLIs installed, log audit, doctors) and the monthly directions refresh | runs |
 | 1 | [Breakages](breakages.md) | new distinct problems (doctor snapshots) per 100 units of work, 7 days against the 7 before; repeats 0 | active |
-| 2 | [Lost time](lost-time.md) | Lost time index | queued |
+| 2 | [Tests and lost time](lost-time.md) | Lost time index | queued; tests' whole scope being added |
 | 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | queued |
 | 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | queued |
-| 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, tests apart; net lines watched | queued |
-| 13 | [Debt](debt.md) | review debt closed | paused, last |
+| 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, code only; net lines watched | queued |
+| 6 | Vendors | being set: a vendor change (version, model, plan) studied and integrated | being prepared |
+| 7 | Doctors | being set: doctors' Fix rows, and what no doctor shows | being prepared |
+| 8 | Leftovers | being set: handoffs and unlanded branches | being prepared |
+| 9 | Monthly research | vendor news, repeated ad-hoc scripts become tools | postponed (Egor 2026-10-20) |
+| 10 | [Debt](debt.md) | review debt closed: a bugs read of settled code only (Egor 2026-10-06) | paused, last |
+
+Every block, upkeep ones too, keeps one rule (Egor 2026-10-20): it is judged by a metric that converges, never by
+work done. A goal removes a class's root cause, and its proof shows the class stops coming back and the block's
+number moves (more reliable, faster tests, fewer tokens), with net lines shown; code that moves no number is reverted.
 
 ## Rules
 
@@ -45,20 +56,19 @@ them all together only after each direction's metric has moved.
 The night's purpose (Egor 2026-10-19): a singularity, automation that keeps the whole harness directly or indirectly
 with as little manual work as possible; he launches it and it does everything. It digs deeper than the doctors: a
 doctor is a helper that gives hints, never the scope. The pilot narrows a night to one thing at a time to test it;
-it drops nothing. After the queue's directions, each section below comes back in this order and is tested like a
-goal: does the night cope, if not why, can it do the same for fewer tokens. A section is dropped only by an explicit
-decision with Egor, written here. The numbers are the order Egor and the chats name the blocks by (2026-10-19):
-0 always runs, 1–5 are the directions above, 6–13 return one at a time, then the full night runs them all.
+it drops nothing. Each section below comes back in its block's turn (#, the block that judges it) and is tested
+like a goal: does the night cope, if not why, can it do the same for fewer tokens. A section is dropped only by an explicit
+decision with Egor, written here.
 
 | # | Section | What it does | In a pilot night |
 |---|---|---|---|
 | 0 | Prep, directions refresh | vendor CLIs installed, log audit, LLM, harness and Updater doctors; monthly, the direction files re-checked | runs |
 | 1–5 | Direction goals | one class fix at a time, with its proof | runs |
+| 2 | Failed suites | suites the last full run left red | waits |
 | 6 | Vendor events | a new CLI version, model or plan studied and integrated (`vendor-fingerprint`) | waits |
 | 7 | Doctor fixes | every doctor's Fix row (`doctor-fix launch`) | waits |
-| 8 | Failed suites | suites the last full run left red | waits |
-| 9 | Handoffs, owner chats | each open handoff done, or handed to its owner chat | waits |
-| 10 | Leftovers | unlanded branches landed | waits |
-| 11 | Monthly research | vendor news (`vendor-watch`), repeated ad-hoc scripts become tools (`tool-ideas`) | waits |
-| 12 | Deep search | after its goals the night looks for what no doctor shows, the next goal's candidates | waits |
-| 13 | Review debt | bugs and fit rounds, the debt pass ([Debt](debt.md)) | paused (Egor 2026-10-14) |
+| 7 | Deep search | after its goals the night looks for what no doctor shows, the next goal's candidates | waits |
+| 8 | Handoffs, owner chats | each open handoff done, or handed to its owner chat | waits |
+| 8 | Leftovers | unlanded branches landed | waits |
+| 9 | Monthly research | vendor news (`vendor-watch`), repeated ad-hoc scripts become tools (`tool-ideas`) | waits |
+| 10 | Review debt | bugs and fit rounds, the debt pass ([Debt](debt.md)) | paused (Egor 2026-10-14) |

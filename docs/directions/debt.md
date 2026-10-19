@@ -1,4 +1,4 @@
-# Debt (block 13): paused
+# Debt (block 10): paused
 
 Review debt is bugs-lens findings not yet fixed, per repository. Metric: debt closed.
 
