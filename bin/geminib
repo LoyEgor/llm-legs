@@ -470,13 +470,15 @@ families_builtin() {
 }
 
 families_parse() { # `agy models` output → family rows, newest version first
+  # Gemini 4 names its top class without a minor version (gemini-4-argon, agy 1.3.4): served only on the
+  # accounts whose plan carries it, so it shows in `families --account <that profile>`, not in the default list.
   awk -F'\t' '
-    NF >= 2 && $2 != "" && $1 ~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)(-(high|medium|low))?$/ {
+    NF >= 2 && $2 != "" && $1 ~ /^gemini-[0-9]+(\.[0-9]+)?-(flash|pro|argon)(-(high|medium|low))?$/ {
       family = $1
       sub(/-(high|medium|low)$/, "", family)
       split(family, part, "-")
       split(part[2], version, ".")
-      slug = part[3] == "pro" ? "pro" : part[3] version[1] version[2]
+      slug = part[3] == "flash" ? part[3] version[1] version[2] : part[3]
       label = $2
       sub(/ \((High|Medium|Low)\)$/, "", label)
       printf "%d\t%d\t%d\t%s\t%s\t%s\n", version[1], version[2], NR, family, slug, label
@@ -484,9 +486,13 @@ families_parse() { # `agy models` output → family rows, newest version first
     awk -F'\t' '!seen[$5]++ { printf "%s\t%s\t%s\t%s\n", $4, $5, $4, $6 }'
 }
 
-families_write() { # fetched-at attempted-at rows
+families_cache() { # [account] → its models file: models.json, or models-<account>.json for one profile's own list
+  printf '%s/models%s.json' "$(capacity_state_dir)" "${1:+-$1}"
+}
+
+families_write() { # fetched-at attempted-at rows [account]
   local cache tmp
-  cache="$(capacity_state_dir)/models.json"
+  cache=$(families_cache "${4:-}")
   mkdir -p "$(capacity_state_dir)" 2>/dev/null || return 0
   tmp="$cache.tmp.$$"
   if printf '%s' "$3" | jq -Rn --argjson fetched "$1" --argjson attempted "$2" '
@@ -502,9 +508,12 @@ families_write() { # fetched-at attempted-at rows
 families_fresh() { [ "$(($1 - $2))" -ge 0 ] && [ "$(($1 - $2))" -lt "$families_ttl_s" ]; } # now stamp
 
 # A failed refresh stamps attempted_at, so a broken agy is asked once per TTL and not by every hook.
-families_rows() { # refresh(true|false)
-  local cache now fetched=0 attempted=0 rows='' cached='' output fresh
-  cache="$(capacity_state_dir)/models.json"
+families_rows() { # refresh(true|false) [account]
+  local cache now fetched=0 attempted=0 rows='' cached='' output fresh account="${2:-}"
+  local list=("$agy_bin" models)
+  # `<name> exec`, not `profile <name>`: a list request must never create the profile it asks about.
+  [ -z "$account" ] || list=("$geminib_root/bin/geminib" "$account" exec models)
+  cache=$(families_cache "$account")
   now=$(date +%s)
   if [ -r "$cache" ] && cached=$(jq -r '
        [((.fetched_at // 0) | floor), ((.attempted_at // 0) | floor)] as $stamps
@@ -517,16 +526,17 @@ families_rows() { # refresh(true|false)
   [[ "$fetched" =~ ^[0-9]+$ ]] || fetched=0
   [[ "$attempted" =~ ^[0-9]+$ ]] || attempted=0
   if [ "$1" = true ] || { ! families_fresh "$now" "$fetched" && ! families_fresh "$now" "$attempted"; }; then
-    if output=$(perl -e 'alarm shift; exec @ARGV or exit 127' 30 "$agy_bin" models 2>/dev/null) &&
+    if output=$(perl -e 'alarm shift; exec @ARGV or exit 127' 30 "${list[@]}" 2>/dev/null) &&
        output=$(families_parse <<<"$output") && [ -n "$output" ]; then
-      families_write "$now" "$now" "$output"
+      families_write "$now" "$now" "$output" "$account"
       printf '%s\n' "$output"
       return 0
     fi
-    families_write "$fetched" "$now" "$rows"
+    families_write "$fetched" "$now" "$rows" "$account"
   fi
   if [ -z "$rows" ]; then
-    families_builtin
+    # An account whose own list cannot be read yet answers with the shared list, not the frozen one.
+    if [ -n "$account" ]; then families_rows false; else families_builtin; fi
     return 0
   fi
   families_fresh "$now" "$fetched" ||
@@ -536,16 +546,19 @@ families_rows() { # refresh(true|false)
 }
 
 show_families() {
-  local json=false refresh=false rows
+  local json=false refresh=false account='' rows
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=true ;;
       --refresh) refresh=true ;;
-      *) printf 'usage: geminib families [--json] [--refresh]\n' >&2; exit 2 ;;
+      --account) [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9][a-z0-9-]*$ ]] ||
+          { printf 'usage: geminib families [--json] [--refresh] [--account <profile>]\n' >&2; exit 2; }
+        account=$2; shift ;;
+      *) printf 'usage: geminib families [--json] [--refresh] [--account <profile>]\n' >&2; exit 2 ;;
     esac
     shift
   done
-  rows=$(families_rows "$refresh")
+  rows=$(families_rows "$refresh" "$account")
   if [ "$json" = true ]; then
     printf '%s\n' "$rows" | jq -Rn '[inputs | select(length > 0) | split("\t")
       | {family: .[0], slug: .[1], agy_prefix: .[2], label: .[3]}]'

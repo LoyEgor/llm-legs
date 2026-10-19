@@ -369,6 +369,11 @@
         "family": "flash",
         "effort": "high",
         "beeps": false
+      },
+      "argon": {
+        "family": "argon",
+        "effort": "high",
+        "beeps": true
       }
     },
     "model_default": "pro",

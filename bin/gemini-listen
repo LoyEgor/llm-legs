@@ -6,8 +6,8 @@ set -euo pipefail
 
 usage() {
   image_leg_cause "$@"
-  printf 'usage: gemini-listen "<question>" <absolute media path>... [-o <absolute .md path>] [--model pro|flash] [--account <geminib profile>]\n' >&2
-  printf '       gemini-listen "<question>" --compare <absolute A> <absolute B> -o <absolute .md path> [--model pro|flash]\n' >&2
+  printf 'usage: gemini-listen "<question>" <absolute media path>... [-o <absolute .md path>] [--model pro|flash|argon] [--account <geminib profile>]\n' >&2
+  printf '       gemini-listen "<question>" --compare <absolute A> <absolute B> -o <absolute .md path> [--model pro|flash|argon]\n' >&2
   printf '  --compare asks twice, A,B then B,A, each reply ending WINNER: first|second|tie; footer winner=A|B|tie votes=<n>/2, tie unless both orders agree\n' >&2
   printf '  Gemini watches and listens through agy on a subscription account: video with its sound, audio, images\n' >&2
   printf '  files over %s bytes (agy views at most 20 MB) are sent as a proxy: video 720p at the bitrate that fits, audio mp3\n' "$limit_bytes" >&2
@@ -67,10 +67,11 @@ done
 [ -z "$out" ] || [[ "$out" = /* ]] || say "-o must be an absolute path, not $out"
 [ -z "$out" ] || [ -d "$(dirname "$out")" ] || say "-o folder $(dirname "$out") does not exist"
 if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage "--account $account is not a profile name"; fi
-families=$("$root/bin/geminib" families 2>/dev/null) || families=''
+# With --account the account's own list: a class only some plans carry (Gemini 4 Argon) is on no other list.
+families=$("$root/bin/geminib" families ${account:+--account "$account"} 2>/dev/null) || families=''
 family_prefix() { awk -F'\t' -v kind="$1" '$1 ~ ("-" kind "$") && !done { print $3; done = 1 }' <<<"$families"; }
 family_kind=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].family // empty")
-[ -n "$family_kind" ] || say "--model is pro or flash"
+[ -n "$family_kind" ] || say "--model is pro, flash or argon"
 # Google drops whole families from the catalog (every Pro, agy 1.3.3, 2026-10-12): the default is
 # the first listed model in caps order, and comes back to Pro by itself once Pro is listed again.
 if [ "$model_explicit" = false ] && [ -z "$(family_prefix "$family_kind")" ]; then
@@ -307,7 +308,7 @@ worker_starts_record gemini "$account" ||
   printf 'gemini-listen: could not stamp the start on %s\n' "$account" >&2
 
 prefix=$(family_prefix "$family_kind")
-[ -n "$prefix" ] || say "\`geminib families\` printed no $family_kind row" 1
+[ -n "$prefix" ] || say "\`geminib families${account:+ --account $account}\` printed no $family_kind row" 1
 agy_model="$prefix-$effort"
 
 audio_rule=''
