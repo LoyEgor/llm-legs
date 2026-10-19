@@ -318,6 +318,24 @@ He rated each one 0 steady, 1 trembles if you look for it, 2 visible at once, 3 
     but not the redraw.
   - At the mask's edge a moving outline could show a seam: watch it on the man.
 
+## Colour shift, found and fixed (2026-10-19 evening)
+
+Egor on the anchored turning entrance: "quality dropped a little, the colours merged". Measured against the source:
+R -6, G -2, B -5 of 255, and the picture a little flatter.
+
+- **Cause.** `cv2.VideoCapture` converts YUV to RGB with swscale's fast default, which is biased (here R -1.7, G
+  -1.3, B -1.4 against an accurate conversion). Each decode → process → encode generation adds it again, and anchor
+  plus settle is two generations. The encode side and the matrix were fine: the files are untagged and read and
+  written as BT.601, so the YUV a browser decodes stays the source's.
+- **Fix.** `bin/vio.py`: frames are read through ffmpeg with `scale=flags=accurate_rnd+full_chroma_int+full_chroma_inp`.
+  An `.mkv` output is lossless RGB (libx264rgb qp 0) for a step that another step reads; `.mp4` is the one lossy
+  encode. reanchor.py and settle.py use it. A lossless round trip is now within 0.1 of 255; the six rerun deck films
+  are within 1 of their sources.
+- **For the harness.** Never read video through `cv2.VideoCapture` in a pipeline whose output is shown. Gate any
+  fixer on a mean-RGB delta against its input, for example under 1.5 of 255.
+- **Still open.** The anchored wall is up to 20% less sharp than its source by Laplacian variance, from the warp
+  plus the settle average. Part of that is the redrawn texture the settle exists to calm.
+
 ## Ideas to try with him
 
 - **A sharp base that never trembled.** Upscale the 720p with a temporally consistent video upscaler: RealBasicVSR,
