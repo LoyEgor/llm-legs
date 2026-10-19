@@ -96,8 +96,8 @@ Side by side, zoomed: `see/oak-4ways.mp4`, `see/wall-bushes-4ways.mp4`, `see/wal
 
 ## Egor's verdict (2026-10-19, on the 4-way clips)
 
-- **vidstab: "no visible change at all".** Gate on the local median cell and the corners; a whole-frame shift alone is
-  not the defect.
+- **vidstab: "no visible change at all".** A whole-frame shift alone is not the defect. For which number to gate
+  on, see § Egor's eye check.
 - **Anchored: "helped very much", no loss of quality.** On the turning2 wall a mild tremble is left, "not irritating
   like the original". Accepted as the fix.
 
@@ -179,11 +179,8 @@ source. Raw numbers: `fixed/deck-before-after.jsonl`.
   - 1 px shake 1.16;
   - zoom breathing 1.06 at the corners, 0.02 at the centre;
   - 1 px local wobble 1.18 local.
-- **What Egor saw so far.**
-  - He complained at 0.30-0.35 (the oak, the wall).
-  - Steady sources read ≤ 0.05.
-  - He accepted the wall at 0.06 / 0.18 as "mild, not irritating".
-  - His perception follows the local number.
+- **What Egor sees.** See § Egor's eye check. Nothing up to a global 0.065, visible from ~0.095. The global
+  corner number follows his eye on films nothing has steadied.
 - **Where it is blind.**
   - **Soft moving shadows** (sprout cover-bg, Veo dapple) read 1.19 / 1.05 even on the steady 720p. The anchored film
     read worse than the deck's (0.76 / 0.91 against 0.35 / 0.62); its frames barely differ, so the frame match was weak.
@@ -200,25 +197,109 @@ source. Raw numbers: `fixed/deck-before-after.jsonl`.
   - The breathing and the redraw stayed, 0.35 at the corners and 0.35 local. That is Egor's "centre steadier, bushes
     worse".
 
-## Egor's eye check (pending)
+## Egor's eye check (2026-10-19, blind)
 
-- **The page.** `eye/index.html`: 17 clips, numbered, in a blind order. It has deck films before and after, two
-  in-between steps of the oak (`bin/ladder.py`, the anchor applied at 25% and 50%), the shadows and a real-motion film.
-- **The key.** `eye/key.json` maps each number to its clip and meter reading.
-- **What he gives.** A rating for each number: 0 steady, 1 trembles if you look for it, 2 visible at once,
-  3 irritating, and where it trembles.
-- **What to read from it.** Set the gate threshold where his 1 starts. Note which measure, global or local, follows
-  his eye.
-- The ratings go here when he gives them.
+`eye/index.html` holds 17 numbered clips in a blind order:
+- deck films before and after;
+- two in-between steps of the oak (`bin/ladder.py`, the anchor applied at 25% and 50%);
+- the shadows and a real-motion film.
+
+He rated each one 0 steady, 1 trembles if you look for it, 2 visible at once, 3 irritating. The ratings are in
+`eye/ratings.json`, the key in `eye/key.json`.
+
+| clip | eye | global | local |
+|---|---|---|---|
+| fleet after | 0 | 0.043 | 0.081 |
+| inlay after | 0 | 0.044 | 0.263 |
+| wall after | 0.5 ("almost still") | 0.048 | 0.167 |
+| smoke after | 0 | 0.060 | 0.059 |
+| oak after | 0 | 0.065 | 0.046 |
+| oak, 25% of the tremble left | 1 | 0.095 | 0.074 |
+| crown hero after | 1.5 (the grass at the bottom) | 0.112 | 0.090 |
+| oak, 50% left | 1 (the bark) | 0.164 | 0.105 |
+| inlay before | 1.5 | 0.193 | 0.313 |
+| fleet before | 1 (a one-second burst mid-film) | 0.199 | 0.180 |
+| oak before | 2 (bark and leaves at the edges) | 0.300 | 0.174 |
+| crown hero before (vidstab, as the page had it) | 2.5 (everything) | 0.315 | 0.299 |
+| smoke before | 2.5 (the stump's edges) | 0.341 | 0.199 |
+| wall before | 2.7 (the man passing the lettering) | 0.354 | 0.350 |
+| turning-free hero, real motion | 0 | 0.161 | 2.147 |
+| shadows before | 0 | 0.353 | 0.622 |
+| shadows 720p + Lanczos | 0 | 0.941 | 0.921 |
+
+- **The global corner number follows his eye.** Spearman 0.93 on the static shots, against 0.66 for the local
+  median cell. Local is inflated by real motion: the inlay's moving light, the walking man, the turning-free hero.
+- **Thresholds.** He sees nothing up to a global 0.065. He sees it ("1") from about 0.095. Start the gate at
+  **0.08 global corner**.
+- **Even a quarter of the tremble shows.** The oak with 25% of it left was rated 1. A fix has to take out ~80% to
+  pass.
+- **A global-only stabiliser fools the global number.** vidstab cuts exactly what the global number measures, while
+  the per-patch wobble stays: 0.145 on the oak, yet "no visible change". So:
+  - on a film nothing has steadied, the global number is the gate;
+  - after any stabiliser, gate on the local difference to the 720p.
+- **The meter is blind on soft moving shadows**: 0.35-0.94 read, 0 seen. Gate those only by the difference to the
+  720p.
+- **Not the tremble.**
+  - **The crown hero's "whole frame jumps once or twice".** It is the clip's loop restart: the generation drifts
+    slowly, its last frame sits 6.5 px off its first (`bin/spikes.py`), and the page looped it hard. The deck
+    crossfades that seam over 1 s (crown-free `film()`). A look at ping-pong for that film is Egor's call.
+  - **The fleet's mid-film burst.** It is in the upscale itself: frames 35-43, jerk 0.6-0.8 px, top and bottom.
+    The anchor took it out; one frame of 0.40 is left.
+- **Softness.** He felt the anchored fleet film softer (unsure); it was, by 11.5%.
+  - Half of that was a second crf 27 encode: the film was anchored after it had been cut and encoded. The fleet is
+    now anchored from the raw download and cut after (arbostar-logo `332e9dd`): sharpness 3884 → 4093, the
+    original 4390.
+  - The sub-pixel warp itself costs 4-8%.
+  - **Rule: anchor the raw download, then do the deck's own steps.**
+
+## Second pass: settle (`bin/settle.py <anchored> <out>`), not yet in the decks
+
+- **What the anchor leaves.** It fixes geometry. Flow also redraws fine texture (grass, moss, fog) every frame, and
+  the anchor keeps the upscale's texture, so that flicker stays. That is the crown hero's 0.112 and its "grass at
+  the bottom".
+- **A finer anchor flow does not help.** σ 6 → 3 → 1.5 gave the same 0.112 / 0.090: the residual is texture, not
+  position.
+- **The temporal filters, on the anchored crown hero** (global / local; sharpness as Laplacian variance, anchored
+  2490):
+
+  | filter | result |
+  |---|---|
+  | hqdn3d temporal 4 | 0.104 / 0.085 |
+  | hqdn3d temporal 8 | 0.085 / 0.074 |
+  | atadenoise | 0.105 / 0.085 |
+  | **tmix 3 frames, 1-2-1** | **0.016 / 0.036**, sharpness 2379 (−4%); the 720p itself is 0.003 / 0.035 |
+  | 720p + Lanczos | 0.003 / 0.032, sharpness 218 |
+
+  A 1-2-1 average cancels exactly a change that alternates frame to frame. The adaptive denoisers leave it.
+- **tmix needs the anchor first.** On the raw 1080p it averages misplaced frames: crown hero 0.107 / 0.071,
+  sharpness −14%.
+- **tmix needs a motion mask.** Plain, it triples a walking man (turning2 wall).
+- **What settle does.** It averages only where the picture stands. Dense flow to both neighbours at 640 px, blurred
+  σ4; below 0.5 px a frame (of 1920) a pixel is averaged, above 1.5 px it stays as it is, between them a blend. It
+  streams with a three-frame window.
+- **Results.**
+
+  | film | anchored | anchored + settle |
+  |---|---|---|
+  | crown hero | 0.112 / 0.090 | 0.016 / 0.036 (97% of the picture averaged) |
+  | turning2 wall | 0.048 / 0.167 | 0.009 / 0.149 (93%); the man stays sharp, no ghost |
+  | sprout oak | 0.065 / 0.046 | 0.025 / 0.024 (99%) |
+
+- **Pending: Egor's second eye check, `eye2/index.html`.** Each clip shows the same crop of two takes side by side,
+  sides shuffled; the key is in `eye2/key.json`. Pairs:
+  - crown hero, wall and oak: anchored vs anchored + settle;
+  - the fleet: anchored from the crf 27 film vs from the raw download.
+  If he confirms settle, run it on the deck films after the anchor.
+- **Open.**
+  - Moving parts are left unaveraged. A motion-compensated average there would need flow that follows the motion
+    but not the redraw.
+  - At the mask's edge a moving outline could show a seam: watch it on the man.
 
 ## Ideas to try with him
 
 - **A sharp base that never trembled.** Upscale the 720p with a temporally consistent video upscaler: RealBasicVSR,
   FlashVSR, SeedVR2, Topaz. Then the Flow 1080p is not needed at all. A per-frame image upscaler (Real-ESRGAN) would
   bring the redraw back.
-- **The anchor plus a residual pass.** What is left after the anchor is the 720p's own floor and the flow's blur
-  (σ6). A per-pixel temporal smoothing of the remaining displacement could lower the wall's 0.18, at the risk of
-  smearing real motion. Gate it on the motion mask.
 - **No 720p at hand** (an old download, another vendor's upscale): a self-anchor. Take dense flow to the neighbouring
   frames, low-pass each pixel's trajectory, warp. This is the per-pixel model that a camera stabiliser lacks.
 - **After Effects, to settle it.** See § Why stabilisers miss it.
@@ -231,9 +312,11 @@ source. Raw numbers: `fixed/deck-before-after.jsonl`.
    - the 720p + Lanczos when anchoring refuses.
    The final line gets `jitter=<global>/<local> ref720=<global>/<local>`. Keep the 720p next to the file: every later
    edit can be re-anchored to it.
-2. **One detector, everywhere a film lands.** Replace `deckkit.shaky_video` with the meter's corner and local numbers,
-   compared to the 720p when there is one. Its refusal must name the fix (`reanchor <film> <720p>`), so a model fixes
-   instead of iterating.
+2. **One detector, everywhere a film lands.** Replace `deckkit.shaky_video` with the meter.
+   - **No 720p and nothing steadied:** the global corner number, gate at 0.08.
+   - **With a 720p:** the rise over it, global and local.
+   - **After a stabiliser:** local only.
+   Its refusal must name the fix (`reanchor <film> <720p>`, then `settle`), so a model fixes instead of iterating.
 3. **Tools in the harness.** Move `jitter.py`, `anchor.py` and `reanchor.py` into llm-legs `bin/` with tests on the
    `ctrl/` films. The arbostar copies are research code.
 4. **Docs.** One line each:
@@ -248,8 +331,9 @@ Folder: `~/Arbostar/arbostar-logo/renders/research/jitter/`.
 | path | what |
 |---|---|
 | `bin/jitter.py`, `bin/synth.py` | the meter and its calibration films; any Python with OpenCV and numpy |
-| `bin/anchor.py`, `bin/reanchor.py`, `bin/ladder.py` | the fixers and the in-between steps for the eye check |
-| `bin/eyepage.py`, `eye/` | the blind eye check |
+| `bin/anchor.py`, `bin/reanchor.py`, `bin/settle.py` | the fixers: anchor (raw pair), reanchor (finished film), the second pass |
+| `bin/ladder.py`, `bin/spikes.py` | in-between steps of a tremble for the eye check; where in a film the frame jumps, and its loop seam |
+| `bin/eyepage.py`, `eye/`, `bin/abpage.py`, `eye2/` | the blind eye checks: ratings (`eye/ratings.json`) and keys |
 | `see/*-4ways.mp4`, `see/*-720-vs-1080.mp4` | side by side, zoomed |
 | `maps/cmp-wall.jpg`, `maps/cmp-oak.jpg` | heat maps: Flow 1080p on top, 720p below |
 | `f720/` | the 720p originals of every deck film |
