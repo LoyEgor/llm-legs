@@ -8,8 +8,9 @@ usage() {
   printf 'usage: logo-vectorize --in <absolute image> --dest <absolute .svg> [--size 512|native] [--dry-run]\n' >&2
   printf '  traces a logo or icon bitmap (PNG, JPEG, WebP; flat colours and gradients) into an SVG with the\n' >&2
   printf '  logo bench'\''s stable champion (%s/tracers/stable); local, free, ~1.5-3 min per image\n' "$BENCH" >&2
-  printf '  --size native (default) traces up to 1024 px as given (finer edges; above 512 only the core steps apply)\n' >&2
-  printf '  --size 512 fits the long side into 512 px, where every champion step is tuned (JPEG, soft or gradient art)\n' >&2
+  printf '  --size native (default) traces up to 1024 px as given (finer edges; the champion steps run on opaque, transparent\n' >&2
+  printf '  and JPEG art at any size; above 512 px blurred/soft art gets only the core steps)\n' >&2
+  printf '  --size 512 fits the long side into 512 px (use it for blurred or soft art)\n' >&2
   printf '  --dry-run prints the champion, the source size and the traced size, and writes nothing\n' >&2
   exit 2
 }
