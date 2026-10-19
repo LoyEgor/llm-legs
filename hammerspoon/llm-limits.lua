@@ -3312,9 +3312,9 @@ local function buildMenuItems()
               table.sort(slugs)
               for _, slug in ipairs(slugs) do
                 local familyWeekly = block.families[slug].weekly
-                table.insert(menu, { title = rowTitle(slug, "wk", familyWeekly, isStale(familyWeekly),
-                  bucketAtLimit(familyWeekly), (tonumber(familyWeekly.effective_pct) or 0) >= 80,
-                  { untrusted = untrusted }), disabled = true })
+                -- fb is fable's 1st and 3rd letter; a family's label follows it (argon -> ag)
+                table.insert(menu, { title = tailRow(slug:sub(1, 1) .. slug:sub(3, 3), familyWeekly,
+                  (tonumber(familyWeekly.effective_pct) or 0) >= 80), disabled = true })
               end
             end
           end
