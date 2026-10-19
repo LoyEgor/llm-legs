@@ -26,7 +26,8 @@ The meter is `renders/research/jitter/bin/jitter.py` in `~/Arbostar/arbostar-log
 
 | clip (media) | model | 720p global / local | Flow 1080p global / local |
 |---|---|---|---|
-| turning2 r16 wall (522b4b2a) | omni first+last 8 s | 0.008 / 0.148 | 0.518 / 0.384 |
+| turning2 r16 wall `omni.mp4` (f3460349), the deck's take | omni first+last 8 s | 0.007 / 0.127 | 0.518 / 0.384 |
+| turning2 r16 wall `omni-2.mp4` (522b4b2a) | omni first+last 8 s | 0.008 / 0.148 | 0.500 / 0.384 |
 | sprout r16 cover oak (3745c596) | omni first+last 10 s | 0.044 / 0.034 | 0.439 / 0.192 |
 | sprout r16 park (e1ae5a1e) | omni first+last 10 s | 0.015 / 0.033 | 0.730 / 0.380 |
 | turning2 r15 film5 (2166d71d) | veo fast first+last | 0.009 / 0.147 | 0.736 / 0.409 |
@@ -70,7 +71,7 @@ The meter is `renders/research/jitter/bin/jitter.py` in `~/Arbostar/arbostar-log
 | treatment | result |
 |---|---|
 | Flow 1080p as downloaded | 0.439 / 0.192 |
-| ffmpeg vidstab `tripod=1` on the 1080p | 0.145 / 0.187: global gone, the leaves still redraw |
+| ffmpeg vidstab `tripod=1` on the 1080p | 0.145 / 0.187: global gone, the leaves still redraw; on the turning2 wall only 0.368 / 0.387, the walking man pulls it |
 | ffmpeg `atadenoise` temporal denoise | 0.432 / 0.194: no effect |
 | our old oak-stab | 0.300 / 0.189 |
 | **720p + Lanczos to 1080** | **0.052 / 0.033**: steady, softer |
@@ -121,6 +122,7 @@ Folder: `~/Arbostar/arbostar-logo/renders/research/jitter/`. It is gitignored bu
 | path | what |
 |---|---|
 | `see/turning-bushes-720-vs-1080.mp4`, `see/oak-720-vs-1080.mp4` | zoomed side by side |
+| `see/oak-4ways.mp4`, `see/wall-bushes-4ways.mp4`, `see/wall-door-4ways.mp4` | the four treatments side by side, zoomed: 1 Flow 1080p, 2 vidstab, 3 720p + Lanczos, 4 anchored |
 | `maps/cmp-wall.jpg`, `maps/cmp-oak.jpg` | jitter heat maps: Flow 1080p on top, 720p below |
 | `f720/` | the 720p originals |
 | `see/*-anchored.mp4`, `see/oak-vidstab.mp4` | the fix candidates |
