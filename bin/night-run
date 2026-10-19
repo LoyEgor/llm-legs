@@ -1050,6 +1050,9 @@ cmd_carry() {
         die "cannot write night $id"
       unlock
     fi
+    # a goal after one landed tonight starts from main: from the base its Done row conflicts with the landed one's
+    [ "$kind" != goal ] || ! jq -e 'any(.jobs[]; .kind == "goal" and .state == "merged")' "$(night_file "$id")" >/dev/null ||
+      git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || git -C "$repo" branch "$branch" main >/dev/null 2>&1 || true
     if ! err=$(worktree_new "$repo" "$branch" 2>&1 >/dev/null); then
       "$script_path" job "$id" set "$ref" state=failed-launch reason="not carried: $err" >/dev/null
       continue

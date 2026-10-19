@@ -134,9 +134,8 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
     a commit to its sources since its audit that no Speed audit run made (`foreign()`, `run_start()` and
     `landings()` stay for it; `git log` only, no blobs, no `moved()`);
   - a component under one audit run (7.63M / 28 = 0.27M Opus = 1; 0.31M plain `loaded[].tokens`) is never due;
-  - `spend.moved` goes from Spend. Lost time's `suite-own-cost` and System's `cpu-audit-own-number` drop their
-    callers too; whichever of the three lands last deletes `moved()` and `blobs()` (and `source_blobs()` with the
-    rows' `sources` hashes once nothing reads them).
+  - `spend.moved` goes from Spend only: 11 of 12 Spend reopens were ruled out (0.078 %), while Suite's and CPU's
+    source-edit reopens find real speedups, so `moved()` and `blobs()` stay for them (2026-10-20 night-cost research).
 - Proof, a replay (the pilot runs no audits): old and new `due()` on the same inputs, the windows ending at the
   five audit nights' starts, 10-09…14 (`tokenmap tracking --since/--until --json`), each with the ledger at that
   night's base, and 10-09…15 (`--until "2026-10-16 00:00"`) with the ledger at b0698b17, where old `due()` gives 14,

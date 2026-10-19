@@ -136,23 +136,19 @@ after five commits narrowed the selection one rule at a time.
 - Must not get worse: missed catches, dropped suites that went red at Close over 7 nights, beside their Close runs
   (never 0). Target 0; each is named, and one a targeted run would have caught stops the goal.
 
-### goal suite-own-cost: a suite's cost has one queue, due only on the suite's own slower run
+### goal suite-own-cost: a suite's cost has one queue, its rise read under load
 
-Class: a suite is reopened on a number not its own, and a slow suite is shaved again by test_health's heavy and
-pole findings beside suite_audit's queue.
-- The change is in llm-legs `share/suite_audit.py` `due()`: the `spend.moved` reason goes, with `changed_at`; the
-  held 2× rise is read through `load()` as `jump()` already is, and `load()` with fewer than LOAD_CONTROLS controls
-  reads unknown, never 1.0, the rise then read on CPU a run (`test_health.cpu_run`). A suite is due only on such a
-  rise, never audited, a new heavy suite or dead. Spend's `audit-due` and System's `cpu-audit-own-number` drop
-  `spend.moved` too: whichever lands last deletes `moved()` and `blobs()` with their other callers' leftovers
-  (`foreign`, `run_start`, `source_blobs`, the rows' `sources`, `tests/test_spend.sh`'s checks).
+Class: a slow suite is shaved again by test_health's heavy and pole findings beside suite_audit's queue, and a
+held rise is read without the machine's load.
+- The change is in llm-legs `share/suite_audit.py` `due()`: the held 2× rise is read through `load()` as `jump()`
+  already is, and `load()` with fewer than LOAD_CONTROLS controls reads unknown, never 1.0, the rise then read on
+  CPU a run (`test_health.cpu_run`). The source-edit reason (`spend.moved`) stays: re-audits on a source edit landed
+  a measured drop to ≤ 0.65× wall a run in 13 of 61 suites (kept rows 0 of 15), ≈ 66 wall-min/day for 0.42 % of
+  Claude spend, a first audit's price per find (2026-10-20 night-cost research).
 - In `share/test_health.py` the heavy and pole findings and their pricing go: suite_audit prices every suite.
-- Proof, old → new on one `runs.jsonl`, `spend-ledger.json` and HEAD: old and new `due()` against the suites
-  whose own wall floor or CPU a run is ≥ 2× their audit's (`price()` against the rows' `wall_run`, `cpu_run`,
-  without `due()`). 10-16 21:40: old 103 due, 102 of them `source changed`; risen over the floor 0 of 252, so new 1
-  (never audited); 3 suites risen ≥ 2×, all under FLOOR_MIN_DAY (`suite_audit.collect(now)`, risen from
-  `price(runs(journal, now − 7 d))`, recomputed at 23:24: same). The new set must equal the risen suites plus never
-  audited, new heavy and dead.
+- Proof, old → new on one `runs.jsonl`, `spend-ledger.json` and HEAD: test_health's heavy and pole findings on a
+  suite suite_audit already prices, before (unconfirmed; counting them is the first step) → 0; old and new `due()`
+  differ only in rises the load explains, each listed with its load.
 - Must not get worse: no suite gets slower unseen. In the 7 days after landing, a risen suite (≥ 2× held over
   HELD_S) over the floor that is not due fails the goal.
 

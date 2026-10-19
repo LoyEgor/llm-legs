@@ -271,7 +271,7 @@ L="$WORK/pilot/llm-legs" C="$WORK/pilot/claude-setup"
 git init -q -b main "$L" && mkdir -p "$L/docs/directions" "$L/docs/handoffs"
 printf '# B\n\n## Goals\n\n### goal gates: one parser\n\nIn claude-setup hooks/lib.\n\n### goal stop-hooks: capped\n\nBounded.\n\n## Done\n\n### goal old: landed\n' \
   >"$L/docs/directions/breakages.md"
-printf '# T\n\n## Goals\n\n### goal attach: detached\n\nKept.\n' >"$L/docs/directions/lost-time.md"
+printf '# T\n\n## Goals\n\n### goal attach: detached\n\nKept.\n\n### goal waits: measured\n\nTimed.\n' >"$L/docs/directions/lost-time.md"
 printf '# H\n\nStatus: open\n\nA full night would carry it.\n' >"$L/docs/handoffs/2026-10-01-h.md"
 gt -C "$L" add -A && gt -C "$L" commit -qm init
 git init -q -b main "$C" && gt -C "$C" commit -q --allow-empty -m init
@@ -313,6 +313,15 @@ pnight base G2 >/dev/null || fail "night base G2 failed"
 pnight carry G2 >"$WORK/g2.out" 2>/dev/null || fail "a carry after the first direction failed"
 assert [ "$(cut -f1 "$WORK/g2.out")" = goal-attach ]
 assert grep -qxF '### goal attach: detached' "$NIGHTS/G2.goal-attach.brief.md"
+# A goal after one that landed tonight starts from main, where the landed one's Done row already is: from the base
+# the two Done rows would conflict at landing.
+assert [ "$(git -C "$L/.claude/worktrees/night-G2-goal-attach" rev-parse HEAD)" = "$(git -C "$L" rev-parse refs/night/G2/base)" ]
+printf '# T\n\n## Goals\n\n### goal waits: measured\n\nTimed.\n\n## Done\n\n### goal attach: landed\n' >"$L/docs/directions/lost-time.md"
+gt -C "$L" commit -qam "attach landed"
+pnight job G2 set goal-attach state=merged >/dev/null || fail "goal-attach not merged"
+pnight carry G2 >"$WORK/g2b.out" 2>/dev/null || fail "a carry after a landed goal failed"
+assert [ "$(head -1 "$WORK/g2b.out" | cut -f1)" = goal-waits ]
+assert [ "$(git -C "$L/.claude/worktrees/night-G2-goal-waits" rev-parse HEAD)" = "$(git -C "$L" rev-parse main)" ]
 export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi
 

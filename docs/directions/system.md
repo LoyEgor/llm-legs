@@ -114,23 +114,21 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
 
 ## Goals
 
-After Breakages' and Lost time's goals (PILOT order). `cpu-audit-own-number` goes first: goal 2's doctor edits
-would otherwise reopen the `cpu:doctor/*` rows. `doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
+After Breakages' and Lost time's goals (PILOT order). `doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
 195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15), `tab-tty` ≈ 17 (2.4 CPU-s × 415
 Terminal-front minutes a day). Classes 1, 2 and 6 have no goal (above).
 
-### goal cpu-audit-own-number: a CPU audit comes due only on its own slower run
+### goal cpu-audit-own-number: a CPU audit's rise is its own cost a run
 
 Class 5.
-- llm-legs `share/cpu_audit.py` `due()`: the `spend.moved` reason and `collect()`'s blob hashing go; due = never
-  audited or `cpu_s_run` ≥ `spend.SHARE_RISE` × the row's. Lost time's `suite-own-cost` (`suite_audit`) and
-  Spend's `audit-due` (`spend.due()`, `fee:` rows) drop `spend.moved` too. Whichever of the three lands last deletes
-  from `share/spend.py` `moved()`, `source_blobs()`, `blobs()` and the rows' recorded `sources` (callers today:
-  `cpu_audit.py:143,177,238`, `suite_audit.py:324,401,470`, `spend.py:262,423,487`, `tests/test_spend.sh`);
-  `foreign()`, `run_start()` and `landings()` stay for Spend's `menus` rule (`git log` only, `spend.md` "its rule").
+- llm-legs `share/cpu_audit.py` `due()`: the rise reason reads CPU a run (`cpu_s_run` ≥ `spend.SHARE_RISE` × the
+  row's), never CPU-min/day, which more runs move. Never audited and the source-edit reason (`spend.moved`) stay:
+  none of 13 source-edit reopens had a per-run rise ≥ 1.5×, yet one is the biggest CPU find on record,
+  `statusline/render` 0.104 → 0.037 CPU-s a run (228.7 → 78.4 CPU-min/day), and the 8 launched cost 0.045 % of
+  Claude spend (2026-10-20 night-cost research).
 - Proof: old and new `due()` over one copy of the CPU journals, `spend-ledger.json` and HEAD. Before (10-16 21:46):
-  33 due, 28 with no per-run rise; target 0 of those 28. After landing, 7 daily reads of the Speed doctor's
-  `cpu_audit` problems: none due without a per-run rise.
+  17 due on a rise, 3 of them slower a run; target: new due = never audited + source edits + the per-run risen.
+  After landing, 7 daily reads of the Speed doctor's `cpu_audit` problems: none due on a rise without a per-run one.
 - Must not get worse: every per-run rise ≥ 1.5× is due (3 of 3 in the replay); the Speed doctor's CPU a run.
 
 ### goal doctor-run-flat: a doctor run reads what is new since its last

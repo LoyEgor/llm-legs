@@ -544,6 +544,10 @@ def main():
         was = spend(before, worker_run)["total"]
         ratio = f" · {now['total'] / was:.2f}× night {before['id']} ({mega(was)})" if was else ""
     print(f"spend total · {mega(now['total'])} {UNIT}{ratio}")
+    for job in night.get("jobs", []):  # a pilot judges each goal on its own spend: its worktree's runs
+        if job.get("kind") == "goal":
+            print(f"spend goal {job['ref'].removeprefix('goal-')} · {mega(now['refs'].get(job['ref'], 0))} {UNIT}"
+                  f" · {job.get('state', '?')}")
 
 
 if __name__ == "__main__":

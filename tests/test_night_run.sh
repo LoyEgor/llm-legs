@@ -999,7 +999,8 @@ spend_night 20260103T000000Z-dddd 2026-01-03T00:00:00Z '"2026-01-03T01:00:00Z"' 
 spend_night 20260102T000000Z-bbbb 2026-01-02T00:00:00Z '"2026-01-02T02:00:00Z"' S1 '[{"ref": "a", "kind": "fixer",
   "state": "merged", "commits": []}, {"ref": "b", "kind": "fixer", "state": "merged", "commits": []}, {"ref": "c",
   "kind": "vendor", "state": "merged", "commits": []}, {"ref": "d", "kind": "fixer", "state": "left", "commits": []},
-  {"ref": "e", "kind": "debt", "state": "blocked-on-egor", "commits": []}]'
+  {"ref": "e", "kind": "debt", "state": "blocked-on-egor", "commits": []}, {"ref": "goal-gates", "kind": "goal", "state": "merged",
+  "commits": []}]'
 assistant o0 2026-01-01T00:10:00Z '{"output_tokens": 1600000}' >"$SP/profiles/p1/projects/-x/S0.jsonl"
 { assistant o1 2026-01-02T00:10:00.000Z '{"output_tokens": 200000, "cache_read_input_tokens": 10000000}'
   assistant o2 2026-01-02T03:00:00.000Z '{"output_tokens": 9000000}'; } >"$SP/profiles/p1/projects/-x/S1.jsonl"
@@ -1011,7 +1012,7 @@ T1="$SP/profiles/p1/projects/-x/T1.jsonl"
   assistant m2 2026-01-02T00:03:00Z '{"output_tokens": 300000}'; } >"$T1"
 assistant m3 2026-01-02T00:04:00Z '{"output_tokens": 500000}' >"$SP/profiles/p1/projects/-x/T1/subagents/agent-b.jsonl"
 opus='"vendor": "claudeb", "account": "p1", "served_model": "claude-opus-5-5"'
-spend_run claudeb-1767312100-1-aaaa S1 "{$opus, \"started_at\": 1767312100, \"ended_at\": 1767315700}"
+spend_run claudeb-1767312100-1-aaaa S1 "{$opus, \"started_at\": 1767312100, \"ended_at\": 1767315700, \"workdir\": \"/r/.claude/worktrees/night-20260102T000000Z-bbbb-goal-gates\"}"
 printf '%s\n' "$T1" >"$SP/runs/claudeb-1767312100-1-aaaa/session-file"
 # A walled reroute restamps started_at; the hours run from the launch.
 spend_run claudeb-1767312200-2-bbbb S1 "{$opus, \"pid_started_at\": 1767312100, \"started_at\": 1767315700, \"ended_at\": 1767317500}"
@@ -1044,15 +1045,16 @@ TZ=UTC DOCTORS_DIR="$SP/doctors" WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT
   WORKER_STATS_DIR="$SP/stats" CODEX_PROFILES_DIR="$SP/codex" CHAT_NAME_ROOTS="$SP/profiles/p2/projects:$SP/profiles/p1/projects" \
   CHAT_NAMES_CACHE="$SP/chat-names.json" night report 20260102T000000Z-bbbb >"$WORK/spend-report" ||
   fail "spend report"
-assert [ "$(body "$WORK/spend-report" | head -9)" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
-jobs · landed 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
+assert [ "$(body "$WORK/spend-report" | head -10)" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
+jobs · landed 4 (fixer 2, goal 1, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
 agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 3.0 h wall-clock · 1 without a transcript
 review rounds · 2
 tests round · 20260102T010000Z-2222222 · -12 test lines
 spend fixers · 11.2M Opus-eq (opus 8.0M · codex 3.2M)
 spend reviews · 11.8M Opus-eq (opus 10.5M · sonnet 1.2M)
 spend orchestrator · 1.6M Opus-eq (opus 1.5M · haiku 0.1M)
-spend total · 24.6M Opus-eq · 3.07× night 20260101T000000Z-aaaa (8.0M)" ]
+spend total · 24.6M Opus-eq · 3.07× night 20260101T000000Z-aaaa (8.0M)
+spend goal gates · 8.0M Opus-eq · merged" ]
 assert [ "$(body "$WORK/spend-report" | sed -n '/^reviews · /,/^fixer spend without proof · /p')" = "reviews · per-branch 0 rounds (0.0M Opus-eq) · other 2 rounds (11.8M Opus-eq)
 problems · no snapshot
 fixer spend without proof · no snapshot" ]
