@@ -42,7 +42,6 @@ if [ "${1:-}" = --list-models ]; then
   agy models; exit $?
 fi
 families=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families --union 2>/dev/null)
-[ -n "$families" ] || families=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families 2>/dev/null)
 families=${families//$'\t'/$'\x1f'}
 model_slug=''
 agy_label() { # var "<families slug or label> (<tier>)" -> var = "<agy label> (<tier>)"; anything else unchanged

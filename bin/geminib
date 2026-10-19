@@ -551,7 +551,7 @@ families_union() { # refresh(true|false) → the families of every profile's own
   local lines
   families_union_refresh=$1
   lines=$(parallel_account_output families_union_line | LC_ALL=C sort -t "$(printf '\t')" -k1,1)
-  [ -n "$lines" ] || return 0
+  [ -n "$lines" ] || { families_rows "$1"; return 0; }
   cut -f2,5 <<<"$lines" | families_parse | awk -F'\t' '
     NR == FNR { held[$2] = held[$2] (held[$2] == "" ? "" : ",") $1; next }
     { print $0 "\t" held[$1] }' <(printf '%s\n' "$lines") -

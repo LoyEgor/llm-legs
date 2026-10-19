@@ -236,7 +236,6 @@ worker_model_gemini_families() {
   # Every account's own list, so a family one plan serves is a row; the shared list until any has one.
   local rows
   rows=$("${BASH_SOURCE[0]%/*}/../bin/geminib" families --union 2>/dev/null)
-  [ -n "$rows" ] || rows=$("${BASH_SOURCE[0]%/*}/../bin/geminib" families 2>/dev/null)
   [ -z "$rows" ] || printf '%s\n' "$rows"
 }
 
@@ -253,7 +252,7 @@ worker_model_gemini_requested() { # model
 
 # A stored gemini_model the list no longer carries falls to the vendor default, the newest Flash.
 worker_model_gemini_stored_r() { # stored value
-  if [ -n "${1-}" ] && worker_model_allows gemini "$1" default; then WORKER_MODEL_R=$1
+  if [ -n "${1-}" ] && [ -n "$(worker_model_gemini_family "$1")" ]; then WORKER_MODEL_R=$1
   elif ! worker_model_default_model_r gemini; then WORKER_MODEL_R=${1-}; fi
 }
 

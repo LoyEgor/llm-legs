@@ -303,9 +303,8 @@ case "$MODE" in
     [ -z "$offending" ] || deny_light_row "$offending"
     ;;
   bash)
-    printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and .tool_name == "Bash"' \
-      >/dev/null 2>&1 || exit 0
-    cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty') || exit 0
+    cmd=$(printf '%s' "$input" | jq -er 'select(.hook_event_name == "PreToolUse" and .tool_name == "Bash")
+      | .tool_input.command // empty' 2>/dev/null) || exit 0
     ! chat_pins_written "$cmd" || deny "$CHAT_DENY_REASON"
     [[ $cmd != *chat-pin* ]] || ! off=$(chat_pin_off_account "$cmd") ||
       deny "Blocked: ${off#*:} is switched off in Egor's menu, and only Egor pins a chat to it, typing \`! chat-pin $off\` himself. Tell him that line; do not run it."

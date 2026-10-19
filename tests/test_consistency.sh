@@ -425,12 +425,20 @@ print("\n".join(bad) if bad else "ok")
 PATCHPY
 )
 assert eq "$rb_patch_audit" ok
-# The cell tables are the families `geminib families` prints (row `cr`), each at `high` alone.
+# The cell tables are the families `geminib families` prints (row `cr`): Flash at `high` alone in
+# every tier, the served non-Flash family (the fixture's main list serves it) at the tier's
+# `agy_top`, T0 low, T1 medium, T2/T3 high.
 assert grep -Fq 'AGY_MODEL_IDS = {f"agy-{family['"'"'slug'"'"']}": family["agy_prefix"] for family in GEMINI_FAMILIES}' "$RB_CATALOG"
 assert grep -Fq 'AGY_EFFORTS = {f"agy-{family['"'"'slug'"'"']}": ("high",) for family in GEMINI_FAMILIES}' "$RB_CATALOG"
-assert eq "$(PYTHONPATH="$RBENCH_SHARE" python3 -c 'import json, rbench.catalog as c; print(json.dumps([c.AGY_MODEL_IDS, c.AGY_EFFORTS], sort_keys=True))')" \
-  "$(jq -c '[(.families | map({key: ("agy-" + .slug), value: .agy_prefix}) | from_entries),
-            (.families | map({key: ("agy-" + .slug), value: ["high"]}) | from_entries)]' "$GEMINIB_CACHE_DIR/models.json" |
+assert eq "$(PYTHONPATH="$RBENCH_SHARE" python3 -c 'import json, rbench.catalog as c
+tiers = {cell: [c.tier_effort(cell, tier) for tier in ("T0", "T1", "T2", "T3")] for cell in c.AGY_EFFORTS}
+print(json.dumps([c.AGY_MODEL_IDS, c.AGY_EFFORTS, tiers], sort_keys=True))')" \
+  "$(jq -c 'def flash: .family | endswith("-flash");
+            [(.families | map({key: ("agy-" + .slug), value: .agy_prefix}) | from_entries),
+             (.families | map({key: ("agy-" + .slug), value: (if flash then ["high"] else ["low", "medium", "high"] end)}) | from_entries),
+             (.families | map({key: ("agy-" + .slug),
+               value: (if flash then ["high", "high", "high", "high"] else ["low", "medium", "high", "high"] end)}) | from_entries)]' \
+       "$GEMINIB_CACHE_DIR/models.json" |
      python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))')"
 # The retired 3.5 Flash family, pinned as ABSENT: the server answers a dropped id
 # `invalid model selection`, so a spelling that creeps back into the roster, the raters' grammar
@@ -448,7 +456,8 @@ assert grep -Fq 'agy-flash37-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash36-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'return f"{_catalog.AGY_MODEL_IDS[rater['\''model'\'']]}-{rater['\''effort'\'']}"' "$RB_LAUNCH"
 assert test "$(grep -A2 '^def agy_model_id' "$RB_LAUNCH" | grep -c agy_expected_label)" -eq 0
-assert doc_has '`agy-<slug>-high` → `--model <agy_prefix>-high`'
+assert doc_has '`agy-<slug>` at `<effort>` → `--model <agy_prefix>-<effort>`'
+assert doc_has 'a Flash cell runs `high` only, a served non-Flash one its tier'"'"'s `agy_top` (T0 `low`, T1 `medium`, T2/T3 `high`)'
 assert doc_has '`agy-flash35`/`gemini-3.5-flash` went that way'
 assert doc_has 'historical rows are keyed `flash35-<effort>`'
 assert grep -Fq 'retired_flash = "agy-" + "flash35-"' "$RB_RATERS"
@@ -489,7 +498,7 @@ assert grep -Fq "\`gemini_model=<slug>\` (a slug \`geminib families\` prints), a
 assert eq "$gemini_default_model" "$(awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }' <<<"$gemini_family_rows")"
 assert grep -Fq 'Gemini runs at `high` only' "$WORKER_COMMAND"
 assert test "$(grep -Ec 'flash3[0-9] low/medium/high|gemini_effort=low\|medium\|high' "$WORKER_COMMAND")" -eq 0
-assert grep -Fq 'conf_get gemini_model; gm_model=${conf_val:-$(worker_model_default_model gemini)}' "$WORKERPICK"
+assert grep -Fq 'conf_get gemini_model; worker_model_gemini_stored_r "$conf_val"; gm_model=$WORKER_MODEL_R' "$WORKERPICK"
 assert grep -Fq 'conf_get gemini_effort; gm_effort=${conf_val:-$(worker_model_default_effort gemini "$gm_model")}' "$WORKERPICK"
 assert eq "$(bash -c '. "$1"; worker_model_default_effort gemini "$(worker_model_default_model gemini)"' _ "$ROOT/share/worker-model.sh")" high
 # A missing `<vendor>_effort` has ONE reading: the table default of the STORED model, which is what
@@ -861,7 +870,8 @@ assert doc_has 'Allowed worker models'
 
 assert grep -Fq '`gemini_profile=<name>`' "$WORKER_COMMAND"
 assert grep -Fq -- '--account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;' "$WORKER_RUN"
-assert grep -Fq '"$picker" --account "$vendor"' "$WORKER_RUN"
+assert grep -Fq 'local -a args=(--account "$vendor")' "$WORKER_RUN"
+assert grep -Fq '"$picker" "${args[@]}"' "$WORKER_RUN"
 assert grep -Fq 'outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT"' "$WORKER_RUN"
 assert grep -Fq 'pin=$(worker_model_pin_first "$vendor")' "$WORKER_RUN"
 assert grep -Fq 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable' "$WORKER_RUN"
