@@ -594,7 +594,7 @@ an Omni edit at 720p (20 credits) asking for effects synced to the picture; the 
 length. By ear, 1 of 3 text takes was usable (the others had a drone or hiss under the sound), so ask for
 `--count 2`. In the edit, whooshes landed on the cuts, but continuous clicks ignored the hand's pauses.
 
-**Listening** — `bin/gemini-listen` asks Gemini (agy, Pro or Flash) to watch and hear files through
+**Listening** — `bin/gemini-listen` asks Gemini (agy, Pro, Flash or Argon) to watch and hear files through
 `view_file`. The default is Pro, or Flash while `geminib families` lists no Pro; an asked `--model`
 is never swapped. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
 720p, audio as mp3. Audio otherwise goes as wav, since agy refuses flac, aac, m4a and aiff as unsupported
@@ -628,6 +628,19 @@ Aesthetics) per file. It runs in one uv process on the CPU: about 3 GB of RAM an
 first run downloads the models into `~/.cache/torch/hub` and `~/.cache/huggingface`. UTMOS is trained on
 English and Japanese read speech: it underrates whispers, laughs and shouts, so read it as a cleanliness
 score, not as acting quality.
+
+Gemini 4 Argon is served only on plans that carry it. `--model argon --account <profile>` reads that
+profile's own model list (`geminib families --account <profile>`), with the beep check on.
+
+**Listening bench.** `/Volumes/Work/Projects/listen-bench` is the answer key for hearing music (start with its README).
+It holds Egor's marks for 28 tracks: fit as deck background, voice, drums, lead, build, and his timed notes.
+It also holds 60 tasks, every model's answers and `score.py`. Run a new audio model there, or a change to
+gemini-listen's prompt, checks or default model, and compare its row before you trust it. He should not have to mark
+the tracks again. On 2026-10-19 Argon beat Flash:
+- drums heard: 25 vs 19 of 28;
+- drum-start error: 5 s vs 15 s;
+- builds;
+- pairs held in both orders: 7 of 8 vs 3 (Flash's other picks followed the slot).
 
 ## Speech on AI Studio
 

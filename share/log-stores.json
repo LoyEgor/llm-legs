@@ -158,6 +158,8 @@
      "owner": "third-party", "cleaner": "keep", "why": "stray Grok homes inside Gemini profiles: Egor's call (candidate)"},
     {"name": "transcriptions-gpt", "kind": "app", "globs": ["~/.transcriptions-gpt/*"], "exclude": ["*.log"], "writer": "transcriptions-gpt",
      "owner": "own", "cleaner": "keep", "why": "audio, models, judge outputs of that project"},
+    {"name": "listen-bench", "kind": "app", "globs": ["/Volumes/Work/Projects/listen-bench"], "writer": "the listening bench (a chat, 2026-10-19)",
+     "owner": "own", "cleaner": "keep", "why": "Egor's hand-marked music dataset and every audio model's answers on it: the answer key for any new listening model or gemini-listen change (docs/image-vendors/gemini.md)"},
     {"name": "cursor-agent-versions", "kind": "app", "globs": ["~/.local/share/cursor-agent/versions/*"], "writer": "cursor-agent updater",
      "owner": "third-party", "cleaner": "self", "keep_newest": 2, "why": "the updater keeps the live and the previous build"},
     {"name": "ide-agent-data", "kind": "app", "globs": ["~/Library/Application Support/Code/agentSessionData", "~/Library/Application Support/Code/agent-host",
