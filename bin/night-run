@@ -26,12 +26,12 @@ helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
 KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal '
 # kind:days: carry adds the kind once no night ran it to an end in that many days
 PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30'
-# The directions in queue order (docs/directions/README.md): a new night is their pilot and works only the goals of
-# docs/directions/<each>.md, one at a time, a direction once the one before has none left; empty runs the full night.
+# The directions in queue order (docs/directions/README.md): a new night is their pilot, the full night plus the goals
+# of docs/directions/<each>.md, one at a time, a direction once the one before has none left, review debt paused (Egor
+# 2026-10-19: a night covers every section); empty runs the full night with its debt pass.
 PILOT=${NIGHT_RUN_PILOT-breakages lost-time system spend legacy}
-# What a pilot night does instead of night-sweep's Night mode prep, launches and debt pass: said in its prompt, so
-# the skill every night reads stays as it is.
-PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `doctor-fix launch`, `vendor-fingerprint`, leftovers, `debt` job or debt pass. `nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
+# What a pilot night changes in night-sweep's Night mode: said in its prompt, so the skill every night reads stays as it is.
+PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: all of Night mode runs (prep, `doctor-fix launch`, `vendor-fingerprint`, leftovers, every job `nr carry R` records) but the `debt` job and the debt pass. `nr carry R` records the next goal too, one at a time: run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
 STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
@@ -141,8 +141,8 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
-  A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt) carries only Egor's
-  answered trades and one goal job at a time: the first `### goal <slug>:` section under `## Goals` of
+  A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt) carries all of
+  the above and one goal job at a time: the first `### goal <slug>:` section under `## Goals` of
   docs/directions/<direction>.md with no job tonight, the directions in PILOT order, none while a goal job is
   pending or live; its worker
   moves the goal out of that section once it lands. After the last goal, directions-refresh when it is due
@@ -830,13 +830,14 @@ job_set() { # id ref key=value...
 carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carry adds
   local pilot
   pilot=$(jq -r '.pilot // empty' "$(night_file "$1")")
-  [ -z "$pilot" ] || { pilot_goal "$1" "$pilot"; return 0; }
+  [ -z "$pilot" ] || pilot_goal "$1" "$pilot"
   python3 -B "$repo_root/share/handoffs.py" | jq -r --slurpfile n "$(night_file "$1")" '
     [$n[0].jobs[] | select(.kind == "owner-chat" and .state != "failed-launch") | .handoffs[]?] as $owned
     | select(.live == [] and (.path | IN($owned[]) | not)) | ["handoff", .slug, .repo, .rel, ""] | @tsv'
   all_nights | jq -r --arg id "$1" '[.[] | select(.id != $id and .suites != null)] | first // empty | .suites.repos[]?
     | .repo as $r | .log as $l | .failed[]? | ["suite", "\($r | split("/") | last)-\(sub("\\.[a-z]+$"; ""))", $r, ., $l] | @tsv'
   periodic_due | while IFS= read -r kind; do
+    [ -z "$pilot" ] || [ "$kind" != directions-refresh ] || continue # a pilot's comes after its last goal
     repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: %s not carried\n' "$kind" >&2; continue; }
     printf '%s\t%s\t%s\tshare/briefs/%s.md\t-\n' "$kind" "$(date -u +%Y-%m)" "$repo" "$kind"
   done
@@ -1033,7 +1034,7 @@ cmd_carry() {
   local id=${1:-} kind slug repo what log ref branch wt err brief path top root
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
-  jq -e '.pilot' "$(night_file "$id")" >/dev/null || carry_owner_chats "$id"
+  carry_owner_chats "$id"
   while IFS=$'\t' read -r kind slug repo what log; do
     ref="$kind-$slug"
     if [ "$kind" = handoff ]; then

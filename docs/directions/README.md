@@ -26,10 +26,11 @@ them all together only after each direction's metric has moved.
 - Proof: the check is fixed before the work; old against new, interleaved, on the same machine; verdict better,
   worse or unclear, and unclear is kept and settled by the next days' data. A direction may stop a goal once its
   diagnosis shows little to gain.
-- The queue: `bin/night-run` PILOT lists the ready directions in order. Every new night is their pilot and works
-  only the `### goal <slug>:` sections under each file's `## Goals`, one at a time, a direction's goals once the one
-  before has none left. A direction's metric is read 7 days after its last goal lands, while the next one works. An
-  empty PILOT brings back the full night.
+- The queue: `bin/night-run` PILOT lists the ready directions in order. Every new night is their pilot: the whole
+  night (doctor fixes, vendor events, leftovers, handoffs, suites, periodic jobs; Egor 2026-10-19: a night covers
+  every section) plus the `### goal <slug>:` sections under each file's `## Goals`, one at a time, a direction's goals
+  once the one before has none left; only review debt stays paused. A direction's metric is read 7 days after its
+  last goal lands, while the next one works. An empty PILOT brings back the debt pass.
 - Ready: a direction joins PILOT once its file holds a baseline computed before any pilot night changed the harness,
   its recurring classes ranked from the ledgers and the log audit, and goals, each one class fix with its proof fixed
   before the work. A fresh model that did not write it (another vendor when the worker toggles let one work) has
