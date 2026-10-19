@@ -50,7 +50,9 @@ A 10 s 1080p clip takes about a minute (crown hero: 0.601 → 0.017, 68 s).
 - Colour: every frame is decoded and encoded by ffmpeg with accurate rounding and full chroma. cv2.VideoCapture read
   the hero 1.8/1.2/1.5 of 255 darker (R/G/B) per decode, and the research's cv2-anchored hero ended 6.3/2.2/5.6 darker
   in the file: the shift Egor saw was real. Flow tags its files BT.601; an untagged encode is read as BT.709 by
-  players and red rises by 2, so the encode writes the source's tags. A round trip stays within 0.12 of 255.
+  players (Chrome: red +1 to +2, blue −1), so the encode writes the source's tags. chrome-headless-shell reads
+  untagged as BT.601, so a headless capture hides the shift: check `ffprobe -show_entries stream=color_space`. A round
+  trip stays within 0.12 of 255.
 - Sharpness (Laplacian variance against the download): the steadied films keep 85-91 %, 720p + Lanczos 8-13 %. On
   the hero the anchor's sub-pixel warp costs 6 %, the settle 8 % (the per-frame redraw it takes out), the crf 18
   encode nothing: crf 14 doubles the size and keeps the same. At 2x crops the hero and the wall look the same as
