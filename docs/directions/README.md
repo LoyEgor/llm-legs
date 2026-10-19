@@ -11,7 +11,7 @@ them all together only after each direction's metric has moved.
 | 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | queued |
 | 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | queued |
 | 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, tests apart; net lines watched | queued |
-| 6 | [Debt](debt.md) | review debt closed | paused |
+| 13 | [Debt](debt.md) | review debt closed | paused, last |
 
 ## Rules
 
@@ -47,18 +47,18 @@ with as little manual work as possible; he launches it and it does everything. I
 doctor is a helper that gives hints, never the scope. The pilot narrows a night to one thing at a time to test it;
 it drops nothing. After the queue's directions, each section below comes back in this order and is tested like a
 goal: does the night cope, if not why, can it do the same for fewer tokens. A section is dropped only by an explicit
-decision with Egor, written here.
+decision with Egor, written here. The numbers are the order Egor and the chats name the blocks by (2026-10-19):
+0 always runs, 1–5 are the directions above, 6–13 return one at a time, then the full night runs them all.
 
-| Section | What it does | In a pilot night |
-|---|---|---|
-| Prep | vendor CLIs installed, log audit, LLM, harness and Updater doctors run | runs |
-| Direction goals | one class fix at a time, with its proof | runs |
-| Vendor events | a new CLI version, model or plan studied and integrated (`vendor-fingerprint`) | waits |
-| Doctor fixes | every doctor's Fix row (`doctor-fix launch`) | waits |
-| Failed suites | suites the last full run left red | waits |
-| Handoffs, owner chats | each open handoff done, or handed to its owner chat | waits |
-| Leftovers | unlanded branches landed | waits |
-| Monthly research | vendor news (`vendor-watch`), repeated ad-hoc scripts become tools (`tool-ideas`) | waits |
-| Deep search | after its goals the night looks for what no doctor shows, the next goal's candidates | waits |
-| Review debt | bugs and fit rounds, the debt pass | paused (Egor 2026-10-14) |
-| Directions refresh | the direction files re-checked against their sources, monthly | runs |
+| # | Section | What it does | In a pilot night |
+|---|---|---|---|
+| 0 | Prep, directions refresh | vendor CLIs installed, log audit, LLM, harness and Updater doctors; monthly, the direction files re-checked | runs |
+| 1–5 | Direction goals | one class fix at a time, with its proof | runs |
+| 6 | Vendor events | a new CLI version, model or plan studied and integrated (`vendor-fingerprint`) | waits |
+| 7 | Doctor fixes | every doctor's Fix row (`doctor-fix launch`) | waits |
+| 8 | Failed suites | suites the last full run left red | waits |
+| 9 | Handoffs, owner chats | each open handoff done, or handed to its owner chat | waits |
+| 10 | Leftovers | unlanded branches landed | waits |
+| 11 | Monthly research | vendor news (`vendor-watch`), repeated ad-hoc scripts become tools (`tool-ideas`) | waits |
+| 12 | Deep search | after its goals the night looks for what no doctor shows, the next goal's candidates | waits |
+| 13 | Review debt | bugs and fit rounds, the debt pass ([Debt](debt.md)) | paused (Egor 2026-10-14) |
