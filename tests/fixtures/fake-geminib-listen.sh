@@ -78,11 +78,13 @@ case "$mode" in
   *) response=$(printf '%sHeard a tone in [file1](file://%s).\nThe pitch steps up at 3 s.' "$beeps" "${paths[0]}") ;;
 esac
 [ "$mode" != big ] || response+=$'\n'$(head -c 300000 /dev/zero | tr '\0' x | fold -w 80)
-# Prefers the caller's file FAKE_GEMINIB_WINNER wherever it stands, else always the first one.
+# Prefers the caller's file FAKE_GEMINIB_WINNER wherever it stands, else always the first one; the prompt
+# names no caller file, so File 1's caller file comes from the sent list beside the media copies.
 if grep -q 'WINNER: first' "$FAKE_GEMINIB_PROMPT"; then
   verdict=first
-  [ -z "${FAKE_GEMINIB_WINNER:-}" ] || [ "$(grep -c "^File 1: .*the caller's file $FAKE_GEMINIB_WINNER)$" "$FAKE_GEMINIB_PROMPT")" -gt 0 ] ||
-    verdict=second
+  first=$(sed -n 's/^File 1: \(\/[^ ]*\) .*/\1/p' "$FAKE_GEMINIB_PROMPT")
+  caller=$(awk -F'\t' -v s="$first" '$1 == s { print $2 }' "${first%/media/*}/sent")
+  [ -z "${FAKE_GEMINIB_WINNER:-}" ] || [ "${caller##*/}" = "$FAKE_GEMINIB_WINNER" ] || verdict=second
   [ "$mode" != garbled ] || verdict='the first one'
   response+=$'\n\n'"**WINNER: $verdict**"
 fi

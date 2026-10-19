@@ -276,7 +276,8 @@ for file in "${media[@]}"; do
     audio) desc="audio, $seconds s$([ "$beeps" -eq 0 ] || printf ', then the test beeps')" ;;
     image) desc="image, $(shape_of "$send")" ;;
   esac
-  labels+="File $index: $send ($desc; the caller's file ${file##*/})"$'\n'
+  # Never the caller's file name: a take's name (flow-2, final, -old) sways a blind verdict.
+  labels+="File $index: $send ($desc)"$'\n'
   printf '%s\t%s\t%s\n' "$send" "$file" "$kind" >>"$tmp_dir/sent"
 done
 

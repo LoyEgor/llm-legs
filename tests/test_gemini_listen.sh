@@ -79,10 +79,10 @@ assert test -e "$WORK/media-starts/gemini/picked"
 assert grep -qx 'ARG=gemini-3.1-pro-high' "$FAKE_GEMINIB_CALLS"
 assert grep -qx 'ARG=stream-json' "$FAKE_GEMINIB_CALLS"
 assert grep -q "^PWD=$TMPDIR/gemini-listen\." "$FAKE_GEMINIB_CALLS"
-assert grep -q '^File 1: /.*/media/file1\.mp4 (video, 2\.0 s, 64x48, with sound; the caller'\''s file clip\.mp4)$' "$FAKE_GEMINIB_PROMPT"
-assert grep -q '^File 2: /.*/media/file2\.wav (audio, 2\.0 s, then the test beeps; the caller'\''s file tone\.wav)$' "$FAKE_GEMINIB_PROMPT"
-assert grep -q '^File 3: /.*/media/file3\.png (image, 64x48; the caller'\''s file still\.png)$' "$FAKE_GEMINIB_PROMPT"
-assert grep -q '^File 4: /.*/media/file4\.wav (audio, 2\.0 s, then the test beeps; the caller'\''s file cover\.mp3)$' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 1: /.*/media/file1\.mp4 (video, 2\.0 s, 64x48, with sound)$' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 2: /.*/media/file2\.wav (audio, 2\.0 s, then the test beeps)$' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 3: /.*/media/file3\.png (image, 64x48)$' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 4: /.*/media/file4\.wav (audio, 2\.0 s, then the test beeps)$' "$FAKE_GEMINIB_PROMPT"
 assert grep -q 'must be BEEPS 2:N 4:N, where' "$FAKE_GEMINIB_PROMPT"
 assert grep -qx 'what happens?' "$FAKE_GEMINIB_PROMPT"
 assert test "$(head -n 1 "$answer")" = '<!-- gemini-3.1-pro-high -->'
@@ -114,8 +114,8 @@ assert grep -qx 'dest=-' "$WORK/err"
 assert grep -qx 'files=2 proxied=2' "$WORK/err"
 assert grep -qE "^proxy=file1\.mp4 [0-9]+ bytes from [0-9]+: $M/silent\.mkv$" "$WORK/err"
 assert grep -qE "^proxy=file2\.mp3 [0-9]+ bytes from [0-9]+: $M/long\.wav$" "$WORK/err"
-assert grep -q '^File 1: /.*/media/file1\.mp4 (video, 2\.0 s, 64x48, silent; ' "$FAKE_GEMINIB_PROMPT"
-assert grep -q '^File 2: /.*/media/file2\.mp3 (audio, 200\.0 s; ' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 1: /.*/media/file1\.mp4 (video, 2\.0 s, 64x48, silent)$' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 2: /.*/media/file2\.mp3 (audio, 200\.0 s)$' "$FAKE_GEMINIB_PROMPT"
 assert grep -qx "audio=delivered file2: $M/long.wav" "$WORK/err"
 assert test "$(grep -c BEEPS "$FAKE_GEMINIB_PROMPT")" -eq 0
 assert grep -q 'reply with the single line NO_AUDIO <file number>' "$FAKE_GEMINIB_PROMPT"
@@ -193,6 +193,8 @@ assert grep -qx '## Order A,B: File 1 = A (tone.wav), File 2 = B (hum.wav)' "$WO
 assert grep -qx '## Order B,A: File 1 = B (hum.wav), File 2 = A (tone.wav)' "$WORK/out/cmp.md"
 assert test "$(grep -c 'WINNER: second\|WINNER: first' "$WORK/out/cmp.md")" -eq 2
 assert grep -q 'End your reply with one last line that is exactly WINNER: first' "$FAKE_GEMINIB_PROMPT"
+# Blind: the prompt names neither caller file (a take's name sways the verdict).
+assert test "$(grep -c 'tone\.wav\|hum\.wav' "$FAKE_GEMINIB_PROMPT")" -eq 0
 assert test "$(grep -c '^PWD=' "$FAKE_GEMINIB_CALLS")" -eq 2
 assert test ! -e "$WORK/out/cmp.md.part"
 FAKE_GEMINIB_WINNER=tone.wav expect_rc 0 'q' --compare "$M/tone.wav" "$M/hum.wav" -o "$WORK/out/cmp.md" --account explicit --model flash
