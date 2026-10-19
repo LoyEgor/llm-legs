@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-GUARD_AVAIL_MB = 3072
+GUARD_AVAIL_MB = 2048
 GUARD_JOB_MB = 1536
 GUARD_SHOWN_S = 900
 BUSY_CORES = 0.3

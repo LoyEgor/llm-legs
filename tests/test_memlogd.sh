@@ -1362,13 +1362,13 @@ done
 assert test "$(grep -c 'memguard_lines "\$directory"' "$WORKER_RUN")" -eq 5
 # The guard's own thresholds are stated once, in chat-load, and the decision record quotes them;
 # install-agent deploys chat-load beside the daemon copy launchd runs, which is where it is looked up.
-assert grep -q '^GUARD_AVAIL_MB = 3072$' "$ROOT/bin/chat-load"
+assert grep -q '^GUARD_AVAIL_MB = 2048$' "$ROOT/bin/chat-load"
 assert grep -q '^GUARD_JOB_MB = 1536$' "$ROOT/bin/chat-load"
 assert grep -qF 'chat_load="$(dirname "$script_path")/chat-load"' "$SCRIPT"
 # So are the resolver and the bus it runs: macOS denies the daemon's Python /Volumes/Work.
 assert grep -qF 'for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh share/limit-hit.sh; do' "$SCRIPT"
 assert grep -qF 'mv -f "$deployed_tmp" "$(dirname "$wrapper")/${source##*/}"' "$SCRIPT"
-assert grep -q '3072' "$ROOT/docs/memory-guard.md"
+assert grep -q '2048' "$ROOT/docs/memory-guard.md"
 assert grep -q '1536' "$ROOT/docs/memory-guard.md"
 # The agent process env is scoped to the run's own tree and set nowhere wider.
 assert grep -q 'export NX_PARALLEL=1 NX_DAEMON=false' "$WORKER_RUN"

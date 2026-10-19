@@ -9,7 +9,7 @@ knobs. A forced reboot is the one outcome this exists to prevent; lag and heavy 
 
 Trigger, both halves required, evaluated once per tick:
 
-- system available RAM < **3072 MB**, AND
+- system available RAM < **2048 MB**, AND
 - the **fattest chat job** > **1536 MB**, weighed as the summed physical footprint of its members.
 
 A member's weight is its `ri_phys_footprint` (`proc_pid_rusage`, one syscall per attributed pid), the
@@ -80,14 +80,15 @@ but its job is still killed: that is exactly what nothing else would ever stop.
 Nothing is paused or queued: SIGSTOP would park a chat for minutes and leave stopped processes
 behind for chats that die. A killed job leaves nothing.
 
-## Why 3072 / 1536
+## Why 2048 / 1536
 
 Neither number alone convicts, and that is the whole design. macOS keeps swapping long past the
 point where a machine is comfortable, so "low memory" on its own is a state this machine lives in
 for hours at a time. A single fat job on its own is likewise ordinary.
 
-- **3072 MB available** is below the band where the machine still swaps its way out on its own and
-  above the point where the UI has already stopped responding.
+- **2048 MB available** is above the point where the UI has already stopped responding. It was 3072
+  until 2026-10-19, when Egor lowered it: he takes a lagging Mac over killed work, and a local audio
+  model of 5-8 GB was killed at 3072 run after run while the Mac stayed usable.
 - **1536 MB for one job** is above every healthy agent job measured on this machine and below the
   runaway shapes that caused the freezes (2026-08-28: a review cell's `pnpm test` fan-out;
   2026-09-28: a chat's `nohup` bench loop spawning tracers and node, invisible to the old guard,
