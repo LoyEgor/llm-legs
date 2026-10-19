@@ -27,6 +27,7 @@ SCRIPT="$ROOT/ask_gemini.sh"
 WORK="$(mktemp -d)"
 export GEMINIB_CACHE_DIR="$WORK/geminib-cache"
 . "$ROOT/tests/fixtures/geminib-families.sh"
+export AGY_MODEL='pro (High)' AGY_MODEL_FALLBACK='pro (Low)'
 trap 'rm -rf "$WORK"' EXIT
 
 STUBDIR="$WORK/bin"
@@ -166,9 +167,7 @@ rc=$?
 [ "$rc" -eq 0 ] || fail "probe case: expected exit 0, got $rc; stderr: $(cat "$err3")"
 grep -q 'gemini leg alive' "$out3" || fail "probe case: missing alive line: $(cat "$out3")"
 
-# --- Case 4: no `pro` row on the family list -> refuse before any model call ---
-# `geminib families` answers from its built-in list when it has nothing else, so a missing row is a
-# broken reader, and the default model would be the nameless " (High)".
+# --- Case 4: no strong family named -> typed refusal (exit 3) before any model call ---
 nopro="$WORK/geminib-no-pro"
 mkdir -p "$nopro"
 python3 -c 'import json, sys
@@ -176,12 +175,12 @@ models = json.load(open(sys.argv[1]))
 models["families"] = [f for f in models["families"] if f["slug"] != "pro"]
 json.dump(models, open(sys.argv[2], "w"))' "$GEMINIB_CACHE_DIR/models.json" "$nopro/models.json"
 err4="$WORK/err4.txt"
-GEMINIB_CACHE_DIR="$nopro" LLM_LEGS_DATA_DIR="$WORK/data-no-pro" \
+AGY_MODEL='' AGY_MODEL_FALLBACK='' GEMINIB_CACHE_DIR="$nopro" LLM_LEGS_DATA_DIR="$WORK/data-no-pro" \
   bash "$SCRIPT" "test prompt" >/dev/null 2>"$err4"
 rc=$?
-[ "$rc" -eq 1 ] || fail "no-pro case: expected exit 1, got $rc; stderr: $(cat "$err4")"
-grep -q 'no `pro` row' "$err4" || fail "no-pro case: refusal does not name the missing row: $(cat "$err4")"
+[ "$rc" -eq 3 ] || fail "no-pro case: expected exit 3, got $rc; stderr: $(cat "$err4")"
+grep -q 'no strong Gemini is served' "$err4" || fail "no-pro case: refusal does not say no strong Gemini is served: $(cat "$err4")"
 [ ! -s "$WORK/data-no-pro/served-models.jsonl" ] || fail "no-pro case: a model was called anyway"
 
-echo "PASS: quota-chain->5, quota-fallback-ok->0, partial-fallback->0, credits->5, empty->1, probe->0, no-pro-row->1"
+echo "PASS: quota-chain->5, quota-fallback-ok->0, partial-fallback->0, credits->5, empty->1, probe->0, no-strong->3"
 exit 0

@@ -6,6 +6,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 export GEMINIB_CACHE_DIR="$WORK/geminib-cache"
 . "$ROOT/tests/fixtures/geminib-families.sh"
+# The gemini leg has no default family: every routed case below names the fixture's non-Flash one.
+AGY_MODEL="$(jq -r '[.families[] | select(.family | endswith("-flash") | not)][0].slug' "$GEMINIB_CACHE_DIR/models.json") (High)"
+export AGY_MODEL
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -214,6 +217,20 @@ LEG_ENV=("AGY_MODEL=pro (Low)")
 assert run_leg "$ROUTED_PATH" "$WORK/family-gemini" "$ROOT/ask_gemini.sh" "family gemini" >/dev/null 2>&1
 LEG_ENV=()
 assert jq -e --arg label "$PRO_LABEL (Low)" '.requested == $label' "$WORK/family-gemini/served-models.jsonl" >/dev/null
+
+# A Flash-only list leaves no automatic family: the leg answers its typed exit 3 before any pick or call.
+mkdir -p "$WORK/flash-only"
+jq '.families |= map(select(.family | endswith("-flash")))' "$GEMINIB_CACHE_DIR/models.json" >"$WORK/flash-only/models.json"
+: >"$CALL_LOG"
+: >"$PICK_LOG"
+LEG_ENV=(AGY_MODEL= "GEMINIB_CACHE_DIR=$WORK/flash-only")
+rc=0
+run_leg "$ROUTED_PATH" "$WORK/no-strong" "$ROOT/ask_gemini.sh" "no strong" >/dev/null 2>"$WORK/no-strong.err" || rc=$?
+LEG_ENV=()
+assert test "$rc" -eq 3
+assert grep -q 'no strong Gemini is served' "$WORK/no-strong.err"
+assert test ! -s "$CALL_LOG"
+assert test ! -s "$PICK_LOG"
 
 # Every audit row carries the caller's LLM_LEGS_RUN_ID; a value unsafe for the JSON row is dropped.
 for spec in "codex:$ROOT/ask_codex.sh" "gemini:$ROOT/ask_gemini.sh" "claude:$ROOT/ask_claude.sh"; do

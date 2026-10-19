@@ -839,7 +839,7 @@ refuse_unlisted_model() { # vendor offered-model [resume-id] [class]
       effective=$offered
       [ -n "$effective" ] && [ "$effective" != default ] || effective=$(codex_config_model)
       ;;
-    gemini) effective=${offered:-$(config_value gemini_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
+    gemini) worker_model_gemini_stored_r "$(config_value gemini_model)"; effective=${offered:-$WORKER_MODEL_R} ;;
     grok) effective=${offered:-$(config_value grok_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
   esac
   worker_model_allows "$vendor" "$effective" "$class" && return 0
@@ -1019,17 +1019,18 @@ meta_update() {
 }
 
 run_picker() {
-  local picker="$1" vendor="$2" exclude="$3" errors="$4"
+  local picker="$1" vendor="$2" exclude="$3" errors="$4" model="${5-}"
   local role_arg=${WORKER_RUN_ROLE:-workers}
-  if [ -n "$exclude" ]; then
-    if [ "$role_arg" = workers ]; then "$picker" --account "$vendor" --claim --exclude "$exclude" 2>"$errors"; else "$picker" --account "$vendor" --role "$role_arg" --claim --exclude "$exclude" 2>"$errors"; fi
-  else
-    if [ "$role_arg" = workers ]; then "$picker" --account "$vendor" --claim 2>"$errors"; else "$picker" --account "$vendor" --role "$role_arg" --claim 2>"$errors"; fi
-  fi
+  local -a args=(--account "$vendor")
+  [ "$role_arg" = workers ] || args+=(--role "$role_arg")
+  [ "$vendor" != gemini ] || [ -z "$model" ] || args+=(--model "$model")
+  args+=(--claim)
+  [ -z "$exclude" ] || args+=(--exclude "$exclude")
+  "$picker" "${args[@]}" 2>"$errors"
 }
 
 pick_account() {
-  local vendor="$1" walled="$2" picker errors
+  local vendor="$1" walled="$2" model="${3-}" picker errors
   PICKED_ACCOUNT=''
   PICKED_RC=0
   PICKED_POOL_EMPTY=false
@@ -1038,7 +1039,7 @@ pick_account() {
   picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
   errors=$(mktemp "${TMPDIR:-/tmp}/worker-run-pick.XXXXXX") ||
     fail 'could not create a temporary file for the account query'
-  PICKED_ACCOUNT=$(run_picker "$picker" "$vendor" "$walled" "$errors")
+  PICKED_ACCOUNT=$(run_picker "$picker" "$vendor" "$walled" "$errors" "$model")
   PICKED_RC=$?
   [ ! -s "$errors" ] || cat "$errors" >&2
   # An empty pool is Egor's choice, not a limit: reporting it as a usage limit would send the
@@ -1064,21 +1065,25 @@ pick_account() {
   PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
 }
 
-# The picker ranks quota only, and a codex catalog is per account: a lapsed plan lists the free models
-# alone, so its idle account ranks first and would launch an id it does not serve.
+# The picker ranks quota only, and a codex or gemini catalog is per account: a lapsed plan lists the
+# free models alone, so its idle account ranks first and would launch an id it does not serve.
 pick_account_listing() { # vendor exclude model
   local exclude=$2 claimed=''
   PICKED_UNLISTED='' PICKED_SLUG=''
   while :; do
-    [ "$1" != codex ] || claimed=$(worker_claims_fresh codex 2>/dev/null) || claimed=''
-    pick_account "$1" "$exclude"
-    [ "$1" = codex ] && [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 0
-    PICKED_SLUG=$(worker_model_codex_slug "$3" "$PICKED_ACCOUNT")
+    case "$1" in codex | gemini) claimed=$(worker_claims_fresh "$1" 2>/dev/null) || claimed='' ;; esac
+    pick_account "$1" "$exclude" "$3"
+    [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 0
+    case "$1" in
+      codex) PICKED_SLUG=$(worker_model_codex_slug "$3" "$PICKED_ACCOUNT") ;;
+      gemini) PICKED_SLUG=$(worker_model_gemini_prefix "$3" "$PICKED_ACCOUNT") ;;
+      *) return 0 ;;
+    esac
     [ -z "$PICKED_SLUG" ] || return 0
     case ",$exclude," in *",$PICKED_ACCOUNT,"*) PICKED_ACCOUNT='' PICKED_RC=3; return 0 ;; esac
     # The picker claimed it for this launch; a claim someone else already held stays theirs.
-    grep -qxF -- "$PICKED_ACCOUNT" <<<"$claimed" || worker_claims_release codex "$PICKED_ACCOUNT" || :
-    printf 'worker-run: codex/%s lists no model of %s; routing past it\n' "$PICKED_ACCOUNT" "$3" >&2
+    grep -qxF -- "$PICKED_ACCOUNT" <<<"$claimed" || worker_claims_release "$1" "$PICKED_ACCOUNT" || :
+    printf 'worker-run: %s/%s lists no model of %s; routing past it\n' "$1" "$PICKED_ACCOUNT" "$3" >&2
     PICKED_UNLISTED=${PICKED_UNLISTED:+$PICKED_UNLISTED,}$PICKED_ACCOUNT
     exclude=${exclude:+$exclude,}$PICKED_ACCOUNT
   done
@@ -1431,9 +1436,11 @@ record_run_wall() {
     # A timeless wall keeps the attempt's first sighting, so a re-record never moves its retry time.
     printf '%s\n' "${epoch:-@$(date +%s)}" >"$event" || return 1
   fi
-  local since=''
+  local since='' bucket=''
   case "$epoch" in @*) since=${epoch#@}; epoch='' ;; esac
-  worker_walls_record "$vendor" "$account" "$epoch" '' "$since" || true
+  [ "$vendor" != gemini ] || { bucket=$(jq -r '.model // empty' "$directory/meta.json" 2>/dev/null) &&
+    worker_model_gemini_requested "$bucket"; } || bucket=''
+  worker_walls_record "$vendor" "$account" "$epoch" '' "$since" "$bucket" || true
   worker_model_clear_walled_pin "$vendor" "$account" || true
 }
 
@@ -2643,6 +2650,7 @@ start_run() {
   command=()
   shift
   case "$vendor" in claudeb|codex|gemini|grok|light) ;; *) usage ;; esac
+  [ "$vendor" != gemini ] || worker_model_prime gemini
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --brief) [ "$#" -ge 2 ] || usage; brief="$2"; shift 2 ;;
@@ -2705,8 +2713,8 @@ start_run() {
         ;;
       *) fail "the brief header 'BROWSER: $value' names no target: chrome, or yes/dia for Egor's Dia. Nothing was launched and no account was spent." ;;
     esac
-    value=${model:-$(config_value gemini_model)}
-    ! { [ "$(brief_line_value "$brief" STRONG)" = yes ] && { [ "$vendor" = light ] || { [ "$vendor" = gemini ] && [[ ${value:-$(worker_model_default_model gemini)} != *pro* ]]; }; }; } ||
+    value=${model:-$(worker_model_gemini_stored_r "$(config_value gemini_model)"; printf '%s' "$WORKER_MODEL_R")}
+    ! { [ "$(brief_line_value "$brief" STRONG)" = yes ] && { [ "$vendor" = light ] || { [ "$vendor" = gemini ] && ! worker_model_gemini_requested "$value"; }; }; } ||
       fail "the brief header 'STRONG: yes' takes no Light or Gemini Flash worker: start it on the next vendor worker-pick ranks. Nothing was launched and no account was spent."
     # A relay that dropped --resume launched a RESUME brief as a fresh session (2026-10-02).
     value=$(sed -n '1s/^RESUME \([^[:space:]:]\{1,\}\):.*/\1/p' "$brief" 2>/dev/null)
@@ -2944,6 +2952,9 @@ start_run() {
         fit | legacy | legacy-*) fit_round=1 ;;
       esac
     fi
+    if [ -z "$model" ] && [ "$vendor" = gemini ]; then
+      worker_model_gemini_stored_r "$(config_value gemini_model)"; model=$WORKER_MODEL_R
+    fi
     model=${model:-$(config_value "${vendor}_model")}
     model=${model:-$(worker_model_default_model "$vendor")}
     # Fixers of fit and legacy rounds run Sonnet where the default is Opus (Egor, 2026-10-13); bugs rounds keep Opus.
@@ -3064,7 +3075,7 @@ start_run() {
       # A wall behind the passed-over accounts is a quota to wait out, not a model to change.
       if [ -n "$PICKED_UNLISTED" ] && [ "$PICKED_WALLED" = false ]; then
         outcome_line MODEL_REFUSED
-        fail "codex model $model: no selectable account lists it (passed over $PICKED_UNLISTED, whose catalogs lack it). Nothing was launched and no account was spent."
+        fail "$vendor model $model: no selectable account lists it (passed over $PICKED_UNLISTED, whose catalogs lack it). Nothing was launched and no account was spent."
       fi
       outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT"
       exit 3
@@ -3086,9 +3097,11 @@ start_run() {
   fi
   # The role switch walls the vendor exactly the way the pool walls an account: an explicit
   # --account, a resumed session or the pin fallback cannot get in under it; the vendor pin and the
-  # chat's open=all (never for Gemini Flash) are the overrides, because naming either is the deliberate "use this one anyway".
+  # chat's open=all (never for Gemini Flash) are the overrides, because naming either is the deliberate "use this one anyway";
+  # so is a non-Flash Gemini family, which runs only where it was asked for.
   if [ "$role" = workers ] && [ -z "$light" ] && [ "$computer" = false ] && [ "$browser" = false ] && [ "$(config_value "${vendor}_workers")" = off ] &&
-     ! worker_model_pin_has "$vendor" "$account" && ! worker_model_chat_opens_workers "$vendor" "$model"; then
+     ! worker_model_pin_has "$vendor" "$account" && ! worker_model_chat_opens_workers "$vendor" "$model" &&
+     ! { [ "$vendor" = gemini ] && worker_model_gemini_requested "$model"; }; then
     outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
     fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
   fi
@@ -3173,10 +3186,11 @@ start_run() {
       ;;
     gemini)
       # The effort rides in the agy slug and never in an `--effort` flag (shared-invariants row h).
-      [ "$effort" = high ] &&
-        gemini_family=$(worker_model_gemini_families | awk -F'\t' -v slug="$model" '$2 == slug { print; exit }') &&
-        [ -n "$gemini_family" ] || { outcome_line GEMINI_UNAVAILABLE; exit 4; }
-      agy_model="$(cut -f3 <<<"$gemini_family")-$effort"
+      [ "$effort" = high ] || { outcome_line GEMINI_UNAVAILABLE; exit 4; }
+      if [ -n "${PICKED_SLUG:-}" ] && [ "$account" = "$PICKED_ACCOUNT" ]; then gemini_family=$PICKED_SLUG
+      else gemini_family=$(worker_model_gemini_prefix "$model" "$account"); fi
+      [ -n "$gemini_family" ] || { outcome_line MODEL_REFUSED; fail "gemini/$account lists no model $model. Nothing was launched and no account was spent."; }
+      agy_model="$gemini_family-$effort"
       cli="${WORKER_RUN_GEMINIB:-$HOME/.local/bin/geminib}"
       if [ "$account" != main ]; then
         list_output=$("$cli" list 2>/dev/null)

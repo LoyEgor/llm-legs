@@ -400,9 +400,9 @@ session (`CLAUDECODE`) the way the role writer does, so the menubar is the only 
 `worker-pick` answers which ACCOUNT. `share/worker-model.sh` (`worker_model_table`) is the
 source for allowed models, default efforts, brief efforts and efforts requiring Egor's word
 (`docs/shared-invariants.md` row `bq`; policy table in `share/worker-policy.md`). Default models
-are claudeb `opus`, codex `astra` (the family word; the launch resolves it to the newest slug `codexb models` lists, and a full slug passes through as a deliberate pin), gemini the newest Flash family `geminib families` prints (also every other slug it prints), grok `auto` (the CLI's own default, also every slug `grokb models` prints).
+are claudeb `opus`, codex `astra` (the family word: the newest slug `codexb models` lists; a full slug is a deliberate pin), gemini `gemini_model`, else the newest Flash `geminib families --union` prints (also every other slug), grok `auto` (the CLI's own default, also every slug `grokb models` prints).
 Opus defaults to `high`; brief efforts are `high`, `xhigh`, and word efforts are `low`, `medium`, `max`.
-claudeb `fable`, codex `sol` and gemini `pro` require Egor's explicit ask in this chat, as do word efforts. Cheap models claudeb `sonnet` (default `high`: Egor, 2026-10-12) and codex `luna`/`terra` (default `medium`; rows marked `request`) launch on an explicit `MODEL:` for a simple task and are never a default, nor a stored `*_model=` pin (Egor, 2026-10-06); `haiku` too, default `high` (Egor, 2026-10-12).
+`fable`, `sol` and non-Flash gemini (`argon`; own-list accounts, even under `gemini_workers=off`) need Egor's ask, as do word efforts. Cheap models claudeb `sonnet` (default `high`: Egor, 2026-10-12) and codex `luna`/`terra` (default `medium`; rows marked `request`) launch on an explicit `MODEL:` for a simple task and are never a default, nor a stored `*_model=` pin (Egor, 2026-10-06); `haiku` too, default `high` (Egor, 2026-10-12).
 Gemini is the exception to the effort refusal: every Gemini leg runs `high`, and a lower effort is raised rather than refused.
 
 The model check covers `MODEL:` forwarded as `--model`, vendor `*_model=` values consumed by

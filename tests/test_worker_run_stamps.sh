@@ -36,12 +36,18 @@ for spec in 'claudeb:mythos' 'codex:gpt-5.6-nova' 'codex:gpt-5.6' 'gemini:flash'
 done
 
 # The same refusal when the toggle file carries it and no brief names a model at all.
-for spec in 'claudeb:claudeb_model=mythos' 'gemini:gemini_model=flash35' 'grok:grok_model=grok-3'; do
+for spec in 'claudeb:claudeb_model=mythos' 'grok:grok_model=grok-3'; do
   vendor=${spec%%:*}
   key=${spec#*:}
   set_config "$key" 'claudeb_effort=high' 'codex_effort=medium' 'gemini_effort=high' 'grok_effort=high'
   assert model_refused "$vendor" "${key#*=}"
 done
+# A stored Gemini family the list dropped is gone, never a fault: the newest Flash takes over.
+set_config 'gemini_model=flash35' 'gemini_effort=high'
+clear_stub
+start_ok gemini --account main
+assert meta_agy_is 'gemini-3.8-flash-high'
+assert await_exit
 # Codex has no key of its own and its default is the allow-list's model, never `config.toml`'s:
 # Egor's interactive picks land in that shared file and must neither refuse nor switch a worker.
 set_config 'codex_effort=medium'

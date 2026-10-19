@@ -20,11 +20,13 @@
 #     we exit 5 (with the reset hint) — the orchestrator then drops the leg for the day.
 #
 # Model chain (same Google family only — this leg must stay vendor-pure for cross-checking):
-#   1) AGY_MODEL          (default "<Pro label> (High)", the `pro` row of `geminib families`)
-#   2) AGY_MODEL_FALLBACK (default "<Pro label> (Low)" — same pro tier, lower reasoning)
-# Either may name a family word instead of a label ("pro (Low)"): it becomes that row's label.
+#   1) AGY_MODEL          (no default: Flash is weak, and every other family runs on request only)
+#   2) AGY_MODEL_FALLBACK (optional, tried when the first answers nothing)
+# Either may name a family slug instead of a label ("argon (High)"): it becomes that row's label.
+# Unset, the leg answers exit 3 "no strong Gemini is served", so a caller drops to its other legs.
 # Flash/lite tiers are WEAK and never used in a judgment seat (GEMINI_ALLOW_WEAK=1 overrides).
-# The account is worker-pick's answer for role LEGS_ROLE (default `reviewers`), like ask_codex.sh.
+# The account is worker-pick's answer for role LEGS_ROLE (default `reviewers`) among the accounts
+# whose own list carries the family, like ask_codex.sh.
 #
 # Every call logs {transport:"agy", requested, served(pinned, unverified)} to
 # data/served-models.jsonl. Modes: --probe (no model call), --list-models.
@@ -39,20 +41,17 @@ LOG="$DATA_DIR/served-models.jsonl"
 if [ "${1:-}" = --list-models ]; then
   agy models; exit $?
 fi
-families=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families 2>/dev/null)
+families=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families --union 2>/dev/null)
+[ -n "$families" ] || families=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families 2>/dev/null)
 families=${families//$'\t'/$'\x1f'}
-agy_label() { # var "<families word> (<tier>)" -> var = "<agy label> (<tier>)"; anything else unchanged
+model_slug=''
+agy_label() { # var "<families slug or label> (<tier>)" -> var = "<agy label> (<tier>)"; anything else unchanged
   local word="${2%% (*}" label='' f2 f4
   while IFS=$'\x1f' read -r _ f2 _ f4 _; do
-    [ "$f2" = "$word" ] && { label=$f4; break; }
+    { [ "$f2" = "$word" ] || [ "$f4" = "$word" ]; } && { label=$f4; model_slug=${model_slug:-$f2}; break; }
   done <<<"$families"
   if [ -n "$label" ]; then printf -v "$1" '%s' "$label${2#"$word"}"; else printf -v "$1" '%s' "$2"; fi
 }
-agy_label pro_label pro
-if [ "$pro_label" != pro ]; then
-  AGY_MODEL="${AGY_MODEL:-$pro_label (High)}"
-  AGY_MODEL_FALLBACK="${AGY_MODEL_FALLBACK:-$pro_label (Low)}"
-fi
 [ -n "${AGY_MODEL:-}" ] && agy_label AGY_MODEL "$AGY_MODEL"
 [ -n "${AGY_MODEL_FALLBACK:-}" ] && agy_label AGY_MODEL_FALLBACK "$AGY_MODEL_FALLBACK"
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-5m}"
@@ -72,17 +71,14 @@ is_weak() { printf '%s' "$1" | grep -qiE "$WEAK_RE"; }
 
 ACCOUNT=main
 GEMINI_CMD=(agy)
-# `geminib families` answers from its built-in list when it has nothing else, so a missing `pro` row
-# is a broken reader: the default would pin the nameless model " (High)". `--list-models` above
-# stays reachable — it is how an empty list is diagnosed.
-if [ -z "${AGY_MODEL:-}" ] || [ -z "${AGY_MODEL_FALLBACK:-}" ]; then
-  printf 'ask_gemini: `geminib families` printed no `pro` row; name AGY_MODEL and AGY_MODEL_FALLBACK to run anyway\n' >&2
-  exit 1
+if [ -z "${AGY_MODEL:-}" ]; then
+  echo 'ask_gemini.sh: no strong Gemini is served — Flash is weak and every other family runs on request (AGY_MODEL="<slug> (High)") — leg unavailable' >&2
+  exit 3
 fi
 # Missing routing tools are a cron/launchd portability case; preserve the bare-CLI contract.
 if command -v worker-pick >/dev/null 2>&1; then
   pick_rc=0
-  account="$(worker-pick --account gemini --role "${LEGS_ROLE:-reviewers}")" || pick_rc=$?
+  account="$(worker-pick --account gemini ${model_slug:+--model "$model_slug"} --role "${LEGS_ROLE:-reviewers}")" || pick_rc=$?
   if [ "$pick_rc" -eq 3 ]; then
     # Falling back here would spend quota the router deliberately reserved.
     echo "ask_gemini.sh: no selectable Gemini account — leg unavailable" >&2
@@ -134,7 +130,7 @@ cd "$STUB_DIR" || exit 1
 quota_hit=0
 served_other=0
 reset_hint=""
-for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
+for MODEL in "$AGY_MODEL" ${AGY_MODEL_FALLBACK:+"$AGY_MODEL_FALLBACK"}; do
   [ -z "$MODEL" ] && continue
   if is_weak "$MODEL" && [ "${GEMINI_ALLOW_WEAK:-0}" != "1" ]; then
     echo "ask_gemini.sh: REFUSING weak-tier model '$MODEL' in a judgment seat (GEMINI_ALLOW_WEAK=1 to override)" >&2
@@ -182,7 +178,7 @@ done
 
 if [ "$quota_hit" = 1 ] && [ "$served_other" = 0 ]; then
   . "$LEGS_DIR/share/worker-walls.sh"
-  worker_walls_record gemini "$ACCOUNT" "$(worker_walls_parse_reset "$reset_hint")" || true
+  worker_walls_record gemini "$ACCOUNT" "$(worker_walls_parse_reset "$reset_hint")" '' '' "$model_slug" || true
   echo "ask_gemini.sh: Antigravity individual quota exhausted across the model chain${reset_hint:+ — $reset_hint} — account-wide, leg unavailable (quota)" >&2
   exit 5
 fi

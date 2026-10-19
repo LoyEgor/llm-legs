@@ -2362,8 +2362,12 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
             ($prev | del(.auth, .auth_needed, .enabled, .shielded, .removed, .blocked, .rotation, .is_current))
             + ($new | {auth,auth_needed,enabled,shielded,removed,blocked,rotation,is_current}
                     | with_entries(select(.value != null)))
-          else $new + ($prev | {worker_wall} | with_entries(select(.value != null))) end
-        end | limits_clean_wall($now))
+          else $new + ($prev | {worker_wall} | with_entries(select(.value != null))) |
+            reduce ($prev.families // {} | to_entries[] | select(.value.worker_wall != null)) as $f (.;
+              if (.families[$f.key]? | type) == "object" then .families[$f.key].worker_wall = $f.value.worker_wall else . end)
+          end
+        end | limits_clean_wall($now) |
+        if (.families | type) == "object" then .families |= map_values(limits_clean_wall($now)) else . end)
     end;
   # The last door on codex main: the roster is already built without it, but a failed refresh
   # falls back to the PREVIOUS snapshot below, and that one still holds the row main left. A

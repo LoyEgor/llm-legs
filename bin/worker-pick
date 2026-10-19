@@ -109,8 +109,8 @@ if [ "$query_claim" = true ] && [ -z "$query_vendor" ]; then
   printf 'worker-pick: --claim only means something with --account\n' >&2
   usage
 fi
-if [ "$query_model_given" = true ] && [ "$query_role" != chat ]; then
-  printf 'worker-pick: --model only means something with --role chat\n' >&2
+if [ "$query_model_given" = true ] && [ "$query_role" != chat ] && [ "$query_vendor" != gemini ]; then
+  printf 'worker-pick: --model only means something with --role chat or --account gemini\n' >&2
   usage
 fi
 if [ "$query_menu" = true ] && { [ -n "$query_vendor" ] || [ "$query_list" = true ]; }; then
@@ -222,7 +222,7 @@ conf_get claudeb_model; cb_model=${conf_val:-opus}
 conf_get claudeb_effort; cb_effort=${conf_val:-$(worker_model_default_effort claudeb "$cb_model")}
 worker_model_allowed_models_r codex; cx_model=${WORKER_MODEL_R%%"$nl"*}
 conf_get codex_effort; cx_effort=${conf_val:-$(worker_model_default_effort codex "$cx_model")}
-conf_get gemini_model; gm_model=${conf_val:-$(worker_model_default_model gemini)}
+conf_get gemini_model; worker_model_gemini_stored_r "$conf_val"; gm_model=$WORKER_MODEL_R
 conf_get gemini_effort; gm_effort=${conf_val:-$(worker_model_default_effort gemini "$gm_model")}
 # worker-run raises a stored Gemini effort the table does not offer, so the column shows what launches.
 worker_model_effort_allowed gemini "$gm_model" "$gm_effort" ||
@@ -261,7 +261,17 @@ chat_opens() { # vendor role
   worker_model_chat_opens_all ||
     { [ "$2" = reviewers ] && grep -q "^$1_profile=" "$(worker_model_chat_pin_file)" 2>/dev/null; }
 }
-role_off() { conf_get "$1_$2"; [ "$conf_val" = off ] && ! chat_opens "$1" "$2"; }
+# A gemini `--model` is the family the run launches: its accounts and its bucket decide the answer,
+# and a non-Flash one is the request itself, so the role switch does not close it.
+gm_ask=$gm_model
+if [ "$query_model_given" = true ] && [ "$query_vendor" = gemini ]; then
+  gm_ask=$query_model
+  worker_model_allows gemini "$gm_ask" || { printf 'worker-pick: gemini lists no model %s\n' "$gm_ask" >&2; exit 2; }
+fi
+role_off() {
+  conf_get "$1_$2"; [ "$conf_val" = off ] && ! chat_opens "$1" "$2" &&
+    ! { [ "$1" = gemini ] && [ "$query_model_given" = true ] && worker_model_gemini_requested "$gm_ask"; }
+}
 query_role_wall=false
 # `chat`, `research`, `image`, `light`, `computer` and `browser` have no `<vendor>_<role>` key. `image` also
 # ignores `<vendor>_workers=off` and the pin: a picture is not code work, so image = pool + login +
@@ -356,6 +366,17 @@ if [ "$cx_paused" = false ] && [ -n "$cx_model" ] && { [ -z "$query_vendor" ] ||
         { "$worker_pick_share/../bin/codexb" models --own --family "$cx_family" --account "$account" >/dev/null 2>&1
           [ "$?" -ne 1 ] || printf '%s\n' "$account"; } &
       done; wait; }) || cx_unlisted=''
+fi
+# A gemini plan serves its own families, read off the union's account column the same way; a
+# non-Flash family also spends a bucket of its own (`families.<slug>`), where the account has one.
+gm_unlisted='' gm_bucket=''
+if [ "$gm_paused" = false ] && { [ -z "$query_vendor" ] || [ "$query_vendor" = gemini ]; }; then
+  gm_row=$(worker_model_gemini_family "$gm_ask")
+  IFS=$'\t' read -r _ gm_slug _ <<<"$gm_row"
+  ! worker_model_gemini_requested "$gm_ask" || gm_bucket=$gm_slug
+  gm_unlisted=$(worker_model_gemini_families | awk -F'\t' -v want="$gm_slug" '
+    { n = split($5, a, ","); for (i = 1; i <= n; i++) { own[a[i]] = 1; if ($2 == want) has[a[i]] = 1 } }
+    END { for (p in own) if (!(p in has)) print p }')
 fi
 
 # A met wall drops the pin once; vendor percentages alone never do.
@@ -513,7 +534,8 @@ summary=$(jq -r \
   --arg media_order "$media_order" --argjson cx_starts "$cx_starts" \
   --argjson gm_starts "$gm_starts" --argjson gr_starts "$gr_starts" \
   --arg cb_walls "$cb_walls" --arg cx_walls "$cx_walls" \
-  --arg gm_walls "$gm_walls" --arg gr_walls "$gr_walls" --arg cx_unlisted "$cx_unlisted" \
+  --arg gr_walls "$gr_walls" --arg cx_unlisted "$cx_unlisted" \
+  --arg gm_unlisted "$gm_unlisted" --arg gm_bucket "$gm_bucket" \
   --argjson qx "$query_exclude_json" --arg fable_view "$query_fable_view" "$LIMITS_VIEW_JQ"'
   # Local names for the store-reading defs of share/limits-view.sh, which the pin writes its wall
   # record from as well; never a second copy of them.
@@ -735,8 +757,8 @@ summary=$(jq -r \
   ($cb_claims | names) as $cb_claims | ($cx_claims | names) as $cx_claims |
   ($gm_claims | names) as $gm_claims | ($gr_claims | names) as $gr_claims |
   ($cb_walls | names) as $cb_walls | ($cx_walls | names) as $cx_walls |
-  ($gm_walls | names) as $gm_walls | ($gr_walls | names) as $gr_walls |
-  ($cx_unlisted | names) as $cx_unlisted |
+  ($gr_walls | names) as $gr_walls |
+  ($cx_unlisted | names) as $cx_unlisted | ($gm_unlisted | names) as $gm_unlisted |
   (reduce ($live_pools | split("\u001e")[] | select(length > 0) | split("\u001f")) as $pool
      ({}; . + {($pool[0]): ($pool[1] // "" | pool_list)})) as $live_pools |
   # Only Claude header weeklies were synthetic; Codex rate-limit headers are measured.
@@ -844,16 +866,19 @@ summary=$(jq -r \
     line:reason($rows; $state; $note)}) as $codex |
 
   ([$gm_source[] | select(.removed != true and gemini_group) |
+    (if $gm_bucket != "" and (.families[$gm_bucket] | type) == "object"
+     then . + (.families[$gm_bucket] | {five_hour, weekly, worker_wall}) else . end) |
     {name:(.account // "main"),
      enabled:(.enabled != false),auth_ok:auth_ok,
      h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
-     rs:wall_reset_str(.weekly),wv:limits_wall_view(.; $now).window} |
+     rs:wall_reset_str(.weekly),wv:limits_wall_view(.; $now).window,
+     observed:(limits_observed_wall(.; $now) != null)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gm_claims) |
     .started = $gm_starts[.name] |
-    .observed = (.name | IN($gm_walls[])) |
-    .walled = (usage_walled(.spend) or .observed) | eligibility]) as $gm_accounts |
+    .walled = (usage_walled(.spend) or .observed) | eligibility |
+    .unlisted = (.name | IN($gm_unlisted[])) | .eligible = (.eligible and (.unlisted | not))]) as $gm_accounts |
   ($gm_accounts | map(select(.eligible)) | rank) as $gm_eligible |
   serving_pins($gm_accounts; $gm_pins) as $gm_pin_tier |
   ($gm_pin_tier[0] // null) as $gm_pinned |

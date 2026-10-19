@@ -101,7 +101,7 @@ worker_walls_kind() { # vendor parsed-reset-epoch-or-empty run-output-file...
 # An account the store has no row for is left alone: a row made up here would show an account the
 # collector never listed, and the collector would drop it again on its next pass.
 worker_walls_record() (
-  local vendor="$1" account="$2" epoch="$3" written="${4:-$(date +%s)}" since="${5:-}" store tmp
+  local vendor="$1" account="$2" epoch="$3" written="${4:-$(date +%s)}" since="${5:-}" bucket="${6:-}" store tmp
   worker_walls_valid_name "$vendor" && worker_walls_valid_name "$account" || return 1
   case "$epoch:$written:$since" in *[!0-9:]*|*::*) return 1 ;; esac
   since=${since:-$written}
@@ -114,17 +114,19 @@ worker_walls_record() (
   tmp=''
   trap 'test -z "$tmp" || rm -f "$tmp"; store_lock_release "$store.lock"' EXIT
   tmp=$(mktemp "$store.tmp.XXXXXX") || return 1
-  jq --arg v "$vendor" --arg a "$account" --argjson vendor_reset "${epoch:-null}" --argjson at "$written" --argjson since "$since" "$LIMITS_VIEW_JQ"'
+  jq --arg v "$vendor" --arg a "$account" --arg b "$bucket" --argjson vendor_reset "${epoch:-null}" --argjson at "$written" --argjson since "$since" "$LIMITS_VIEW_JQ"'
+    def own: if (.families[$b]? | type) == "object" then .families[$b] else . end;
     def wall($row):
       if $vendor_reset != null then {reset:$vendor_reset, guess:{}}
-      else limits_wall_most_used($row; $at).reset as $known |
+      else limits_wall_most_used($row | own; $at).reset as $known |
         if $known != null then {reset:$known, guess:{}}
         else {reset:($since + 3600), guess:{guessed:true}} end
       end;
-    def record($w):
-      $w.reset as $reset |
+    def stamp($w):
       if (.worker_wall.recorded_at // 0) > $at then .
-      else .worker_wall = {resets_at:$reset,recorded_at:$at} + $w.guess end;
+      else .worker_wall = {resets_at:$w.reset,recorded_at:$at} + $w.guess end;
+    def record($w):
+      if (.families[$b]? | type) == "object" then .families[$b] |= stamp($w) else stamp($w) end;
     select((.schema // 1) == 1 and (.vendors | type) == "object") |
     (.vendors[$v] // null) as $block |
     if $block == null or $block.removed == true then empty
@@ -132,7 +134,7 @@ worker_walls_record() (
       select(any($block.accounts[]; .account == $a and .removed != true)) |
       wall(first($block.accounts[] | select(.account == $a))) as $w |
       .vendors[$v].accounts |= map(if .account == $a then record($w) else . end) |
-      if ($block.current_account // "main") == $a then .vendors[$v] |= record($w) else . end
+      if $b == "" and ($block.current_account // "main") == $a then .vendors[$v] |= record($w) else . end
     elif ($block.account // "main") == $a then wall($block) as $w | .vendors[$v] |= record($w)
     else empty end
   ' "$store" >"$tmp" || return 1

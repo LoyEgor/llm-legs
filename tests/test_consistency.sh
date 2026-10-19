@@ -448,11 +448,7 @@ assert grep -Fq 'agy-flash37-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash36-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'return f"{_catalog.AGY_MODEL_IDS[rater['\''model'\'']]}-{rater['\''effort'\'']}"' "$RB_LAUNCH"
 assert test "$(grep -A2 '^def agy_model_id' "$RB_LAUNCH" | grep -c agy_expected_label)" -eq 0
-assert doc_has '`agy-pro-low` → `--model gemini-3.1-pro-low`'
-assert doc_has '`agy-pro-high` → `--model gemini-3.1-pro-high`'
-assert doc_has '`agy-flash38-<effort>` → `--model gemini-3.8-flash-<effort>`'
-assert doc_has '`agy-flash37-<effort>` → `--model gemini-3.7-flash-<effort>`'
-assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash-<effort>`'
+assert doc_has '`agy-<slug>-high` → `--model <agy_prefix>-high`'
 assert doc_has '`agy-flash35`/`gemini-3.5-flash` went that way'
 assert doc_has 'historical rows are keyed `flash35-<effort>`'
 assert grep -Fq 'retired_flash = "agy-" + "flash35-"' "$RB_RATERS"
@@ -476,12 +472,11 @@ assert doc_has 'Antigravity review cell invocation mapping'
 # --- Row i: Gemini worker knobs ----------------------------------------------
 assert test -r "$WORKER_COMMAND"
 assert test -x "$WORKER_RUN"
-assert test "$(grep -Fc -- 'awk -F'"'"'\t'"'"' -v slug="$model" '"'"'$2 == slug { print; exit }'"'"')' "$WORKER_RUN")" -eq 1
-assert test "$(grep -Fc -- 'agy_model="$(cut -f3 <<<"$gemini_family")-$effort"' "$WORKER_RUN")" -eq 1
-# Pro reaches the worker leg at `high` and at nothing else, and it launches under the row `h`
-# label: the `-high` Pro slug is still served as Flash, so the slug spelling would run the
-# wrong model on every Pro worker.
-assert test "$(grep -Fc -- '[ "$effort" = high ] &&' "$WORKER_RUN")" -eq 1
+assert test "$(grep -Fc -- 'gemini_family=$(worker_model_gemini_prefix "$model" "$account")' "$WORKER_RUN")" -eq 1
+assert test "$(grep -Fc -- 'agy_model="$gemini_family-$effort"' "$WORKER_RUN")" -eq 1
+# Every family reaches the worker leg at `high` and at nothing else, under the prefix the
+# account's own list carries (row `h`), never a label.
+assert test "$(grep -Fc -- '[ "$effort" = high ] ||' "$WORKER_RUN")" -eq 1
 assert test "$(grep -Fc -- ' (High)"' "$WORKER_RUN")" -eq 0
 assert test "$(grep -Ec 'pro:(medium|low)' "$WORKER_RUN")" -eq 0
 # No arm below `high` for any Gemini model, and none for a family outside the table: the effort
@@ -709,8 +704,8 @@ assert doc_has '`worker_model_codex_slug`'
 PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 assert test -r "$WORKER_MODEL_SH"
 # The claudeb and codex rows are the table's own; the gemini and grok rows follow the fixture caches
-# (Flash in list order, `pro` last and gated; `auto` first with its default's efforts, then every slug
-# at high plus xhigh where its catalog carries it), so a model added to a fixture needs no edit here.
+# (Flash in list order, every other family after them and gated; `auto` first with its default's efforts,
+# then every slug at high plus xhigh where its catalog carries it), so a fixture model needs no edit here.
 worker_table=$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")
 assert eq "$(grep -E '^(claudeb|codex) ' <<<"$worker_table")" 'claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
@@ -721,21 +716,23 @@ codex sol medium medium,high low,xhigh yes
 codex luna medium low,medium,high - no request
 codex terra medium low,medium,high - no request'
 assert eq "$(grep -Ev '^(claudeb|codex) ' <<<"$worker_table")" "$(
-  jq -r '(.families | map(select(.slug != "pro")) + map(select(.slug == "pro")))[]
-    | "gemini \(.slug) high high - \(if .slug == "pro" then "yes" else "no" end)"' \
+  jq -r 'def flash: .family | endswith("-flash");
+    (.families | map(select(flash)) + map(select(flash | not)))[]
+    | "gemini \(.slug) high high - \(if flash then "no" else "yes" end)"' \
     "$ROOT/tests/fixtures/geminib-models.json"
   jq -r 'def row($n): "grok \($n) high high\(if (.efforts | index("xhigh")) then ",xhigh" else "" end) - no";
     (.models[] | select(.default) | row("auto")), (.models[] | row(.slug))' \
     "$ROOT/tests/fixtures/grokb-models.json")"
-# A Pro newer than every Flash tops `geminib families`, and the table still ends with `pro`: the
-# first gemini row is the vendor default and `pro` is word-gated, so a Pro-first table would hand
-# the gated model to every worker that names no model.
+# A non-Flash family newer than every Flash tops `geminib families`, and the table still ends with it:
+# the first gemini row is the vendor default and the other classes are word-gated, so a table led by
+# one would hand the gated model to every worker that names no model.
 pro_newest_cache="$CONSISTENCY_CACHE/geminib-pro-newest"
 mkdir -p "$pro_newest_cache"
 jq --argjson now "$(date +%s)" '.fetched_at = $now | .attempted_at = $now |
   .families = ([{family: "gemini-3.9-pro", slug: "pro", agy_prefix: "gemini-3.9-pro", label: "Gemini 3.9 Pro"}] +
     (.families | map(select(.slug != "pro"))))' \
   "$ROOT/tests/fixtures/geminib-models.json" >"$pro_newest_cache/models.json"
+cp "$pro_newest_cache/models.json" "$pro_newest_cache/models-main.json"
 assert eq "$(GEMINIB_CACHE_DIR="$pro_newest_cache" bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH" |
   awk '$1 == "gemini" { print $2 }')" 'flash38
 flash37
@@ -1396,7 +1393,7 @@ assert doc_has 'Codex out-of-credits wall wording agrees across worker-run and b
 # One fact in the limits store: one writer function, every surface reading it with one rule.
 WALLS_SH="$ROOT/share/worker-walls.sh"
 assert test -r "$WALLS_SH"
-assert grep -Fq '.worker_wall = {resets_at:$reset,recorded_at:$at}' "$WALLS_SH"
+assert grep -Fq '.worker_wall = {resets_at:$w.reset,recorded_at:$at}' "$WALLS_SH"
 assert grep -Fq 'store_lock_acquire "$store.lock"' "$WALLS_SH"
 assert test -z "$(command grep -rlF 'claude-worker-runs/walls' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS")"
 for writer in "$WORKER_RUN" "$ROOT/ask_claude.sh" "$ROOT/ask_codex.sh" "$ROOT/ask_gemini.sh" \
@@ -1423,7 +1420,7 @@ assert doc_has 'limits_wall_view'
 assert grep -Fq 'limits_clean_wall($now)' "$LLMLIMITS"
 assert grep -Fq 'IN($cx_walls[])' "$WORKERPICK"
 assert grep -Fq 'IN($cb_walls[])' "$WORKERPICK"
-assert grep -Fq 'IN($gm_walls[])' "$WORKERPICK"
+assert grep -Fq 'observed:(limits_observed_wall(.; $now) != null)}' "$WORKERPICK"
 assert grep -Fq 'IN($gr_walls[])' "$WORKERPICK"
 assert grep -Fq 'WALL: resumed session stays on' "$WORKER_RUN"
 assert test "$(grep -c 'pool not consulted' "$WORKER_RUN")" -eq 0
@@ -2754,7 +2751,7 @@ assert grep -Fq -- '--claim' "$ROOT/bin/worker-run"
 # worker-run records a claim itself only for an account the brief named, which no pick claimed.
 assert eq "$(grep -c 'worker_claims_record' "$ROOT/bin/worker-run")" 1
 assert grep -Fq '[ -z "$explicit_account" ] || worker_claims_record "$vendor" "$account"' "$ROOT/bin/worker-run"
-assert grep -Fq 'worker_claims_release codex "$PICKED_ACCOUNT"' "$ROOT/bin/worker-run"
+assert grep -Fq 'worker_claims_release "$1" "$PICKED_ACCOUNT"' "$ROOT/bin/worker-run"
 # Research picks for itself nowhere any more: the compatibility entrypoint submits a tracked
 # worker-run, and that run claims through the same picker flag every other relay uses.
 assert grep -Fq -- 'args=(start "$vendor" --role research' "$ROOT/bin/light-research"

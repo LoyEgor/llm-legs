@@ -10,3 +10,10 @@ if [ -z "${GEMINIB_CACHE_DIR:-}" ]; then
   export GEMINIB_CACHE_DIR
 fi
 [ -s "$GEMINIB_CACHE_DIR/models.json" ] || geminib_families_seed "$GEMINIB_CACHE_DIR"
+# `families --union` reads every roster profile's own list and fetches a missing one: an empty roster
+# and main's list seeded keep a suite on the real HOME from asking a real login.
+if [ -z "${GEMINIB_PROFILES_DIR:-}" ]; then
+  GEMINIB_PROFILES_DIR=$(mktemp -d "${TMPDIR:-/tmp}/geminib-profiles.XXXXXX")
+  export GEMINIB_PROFILES_DIR
+fi
+[ -s "$GEMINIB_CACHE_DIR/models-main.json" ] || cp "$GEMINIB_CACHE_DIR/models.json" "$GEMINIB_CACHE_DIR/models-main.json"

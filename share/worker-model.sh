@@ -41,13 +41,13 @@ codex luna medium low,medium,high - no request
 codex terra medium low,medium,high - no request
 TABLE
   printf '%s' "$static"
-  # Flash rows first in list order, `pro` last: the first gemini row is the vendor default, and a
-  # Pro newer than every Flash would otherwise make the word-gated model everyone's default.
+  # Flash rows first in list order: the first gemini row is the vendor and Light default, and a
+  # newer family of another class would otherwise make a word-gated model everyone's default.
   if [ -z "${_WM_SKIP_GEMINI+x}" ]; then
     worker_model_gemini_families | awk -F'\t' '
-      $2 == "pro" { pro = pro sprintf("gemini %s high high - yes\n", $2); next }
+      $1 !~ /-flash$/ { word = word sprintf("gemini %s high high - yes\n", $2); next }
       { printf "gemini %s high high - no\n", $2 }
-      END { printf "%s", pro }'
+      END { printf "%s", word }'
   fi
   # `auto` stays the vendor default: it is the CLI's own default model, so a release that moves it
   # self-integrates, and every slug the list prints is offered beside it.
@@ -233,7 +233,28 @@ worker_model_gemini_families() {
     printf '%s' "$_WM_GEMINI_FAMILIES"
     return 0
   fi
-  "${BASH_SOURCE[0]%/*}/../bin/geminib" families 2>/dev/null
+  # Every account's own list, so a family one plan serves is a row; the shared list until any has one.
+  local rows
+  rows=$("${BASH_SOURCE[0]%/*}/../bin/geminib" families --union 2>/dev/null)
+  [ -n "$rows" ] || rows=$("${BASH_SOURCE[0]%/*}/../bin/geminib" families 2>/dev/null)
+  [ -z "$rows" ] || printf '%s\n' "$rows"
+}
+
+worker_model_gemini_prefix() { # slug account → the agy prefix that account's own list carries for it
+  "${BASH_SOURCE[0]%/*}/../bin/geminib" families --account "$2" 2>/dev/null |
+    awk -F'\t' -v slug="$1" '$2 == slug { print $3; exit }'
+}
+
+# A non-Flash family runs only where a brief, a call or Egor's `/worker` names it.
+worker_model_gemini_requested() { # model
+  local row
+  row=$(worker_model_gemini_family "${1-}") && [ -n "$row" ] && [[ ${row%%$'\t'*} != *-flash ]]
+}
+
+# A stored gemini_model the list no longer carries falls to the vendor default, the newest Flash.
+worker_model_gemini_stored_r() { # stored value
+  if [ -n "${1-}" ] && worker_model_allows gemini "$1" default; then WORKER_MODEL_R=$1
+  elif ! worker_model_default_model_r gemini; then WORKER_MODEL_R=${1-}; fi
 }
 
 # `flash` predates versioned slugs and names the newest Flash family on the list.
@@ -529,7 +550,7 @@ worker_model_chat_opens_all() {
 # Flash is Light only (Egor 2026-10-15): the grant leaves `gemini_workers=off` shut while the gemini
 # model is a Flash; its reviews, light legs and an explicit pin are untouched.
 worker_model_chat_opens_workers() { # vendor model
-  worker_model_chat_opens_all && ! { [ "$1" = gemini ] && [ "${2#flash}" != "$2" ]; }
+  worker_model_chat_opens_all && { [ "$1" != gemini ] || worker_model_gemini_requested "$2"; }
 }
 
 worker_model_pin_file() {

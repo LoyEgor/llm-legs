@@ -100,8 +100,11 @@ for vendor in claudeb codex gemini; do
   start_ok "$vendor"
   assert meta_account_is picked
   # Claims own cross-run spreading, so every automatic launch makes one claimed query and does
-  # not derive a second exclusion layer from worker-run's live-run registry.
-  assert grep -qx -- "--account $vendor --claim" "$PICK_LOG"
+  # not derive a second exclusion layer from worker-run's live-run registry. Gemini names its
+  # family, which decides the accounts that serve it.
+  query="--account $vendor --claim"
+  [ "$vendor" != gemini ] || query="--account gemini --model flash38 --claim"
+  assert grep -qx -- "$query" "$PICK_LOG"
   assert await_exit
 
   clear_stub

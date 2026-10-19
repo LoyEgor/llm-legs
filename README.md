@@ -12,15 +12,15 @@ decision-support) as a git submodule. One fix here propagates to every consumer 
 | Script | Vendor | Transport | Default model |
 |--------|--------|-----------|---------------|
 | `ask_codex.sh` | OpenAI | `codex exec` (read-only sandbox) | CLI flagship (auto-tracked, no pin) |
-| `ask_gemini.sh` | Google | Antigravity `agy --print` | the Pro label `geminib families` prints, `(High)` → in-family fallback `(Low)` |
+| `ask_gemini.sh` | Google | Antigravity `agy --print` | none: `AGY_MODEL` names a non-Flash family on request, else exit 3 |
 | `ask_claude.sh` | Anthropic | `claude -p --output-format json` | `opus` alias (cost ceiling: Opus — Mythos-class refused) |
 
 ## Contract (what consumers may rely on)
 
 - **Input:** prompt as `$1` or stdin. **Output:** the model's text answer on stdout.
-- **Exit codes:** `0` ok · `1` transport/leg failure · `3` weak-tier model refused (a weak model
-  must never sit in a judgment seat) · `5` subscription quota exhausted (callers should drop the
-  leg for the rest of the run instead of retrying after exhaustion).
+- **Exit codes:** `0` ok · `1` transport/leg failure · `3` weak-tier model refused or no strong one
+  served (a weak model must never sit in a judgment seat) · `5` subscription quota exhausted (callers drop the
+  leg for the rest of the run, never retry).
 - **Audit:** every call appends `{ts, leg, requested, served, weak_tier}` to
   `$LLM_LEGS_DATA_DIR/served-models.jsonl` (default: `$PWD/data` — orchestrators invoke legs
   with cwd = project root; set `LLM_LEGS_DATA_DIR` explicitly for cron/launchd).
