@@ -252,7 +252,7 @@ He rated each one 0 steady, 1 trembles if you look for it, 2 visible at once, 3 
   - The sub-pixel warp itself costs 4-8%.
   - **Rule: anchor the raw download, then do the deck's own steps.**
 
-## Second pass: settle (`bin/settle.py <anchored> <out>`), not yet in the decks
+## Second pass: settle (`bin/settle.py <anchored> <out>`)
 
 - **What the anchor leaves.** It fixes geometry. Flow also redraws fine texture (grass, moss, fog) every frame, and
   the anchor keeps the upscale's texture, so that flicker stays. That is the crown hero's 0.112 and its "grass at
@@ -285,11 +285,29 @@ He rated each one 0 steady, 1 trembles if you look for it, 2 visible at once, 3 
   | turning2 wall | 0.048 / 0.167 | 0.009 / 0.149 (93%); the man stays sharp, no ghost |
   | sprout oak | 0.065 / 0.046 | 0.025 / 0.024 (99%) |
 
-- **Pending: Egor's second eye check, `eye2/index.html`.** Each clip shows the same crop of two takes side by side,
-  sides shuffled; the key is in `eye2/key.json`. Pairs:
-  - crown hero, wall and oak: anchored vs anchored + settle;
-  - the fleet: anchored from the crf 27 film vs from the raw download.
-  If he confirms settle, run it on the deck films after the anchor.
+- **Egor's second eye check, `eye2/index.html`.** Each clip shows the same crop of two takes side by side, sides
+  shuffled; the key is in `eye2/key.json`. His verdicts:
+  - **crown hero:** settle "much less, practically still"; the anchored one trembles "considerably more";
+  - **wall:** settle less, "a trifle", mostly by the door;
+  - **oak:** settle "dead still", the anchored "a little worse";
+  - **fleet** (from the crf 27 film vs from the raw): no difference in tremble, neither trembles.
+- **How far to trust it.** The shuffle put settle on the left all three times, so a side bias cannot be ruled out.
+  His strength of preference follows the meter's gaps (crown hero 0.112 → 0.016 big; wall 0.048 → 0.009 and oak
+  0.065 → 0.025 small), which a side bias would not.
+- **Applied.** Settle runs on every anchored deck film. The global corner numbers after it (`fixed/deck-settled.jsonl`):
+
+  | film | global |
+  |---|---|
+  | crown-free hero / match | 0.016 / 0.013 |
+  | turning2 wall | 0.008 |
+  | turning2 inlay | 0.032 |
+  | sprout oak / 9:16 | 0.026 / 0.016 |
+  | original-free smoke / morning | 0.013 / 0.010 |
+  | four-sides2 fleet | 0.027 |
+  | turning-free expo | 0.024 |
+
+  The motion films (press, turning-free hero, sprout leaf, crown-free ascent) are mostly left unaveraged by the mask.
+  The copied films were anchored again from their sources and encoded once at the source's crf.
 - **Open.**
   - Moving parts are left unaveraged. A motion-compensated average there would need flow that follows the motion
     but not the redraw.
