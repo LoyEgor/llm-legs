@@ -40,25 +40,59 @@ class Refused(Exception):
     pass
 
 
+# cv2.VideoCapture's fast YUV->RGB is biased (R -1.7, G -1.3, B -1.4 of 255 on the turning2 entrance) and each
+# decode-encode generation adds it again: Egor saw "the colours merged" (2026-10-19). ffmpeg with accurate rounding and
+# full chroma interpolation round-trips a film to 0.1 of 255. Flow tags its files BT.601 (smpte170m); an untagged
+# re-encode is read as BT.709 by players and shifts red by +2 of 255, so the encode carries its source's tags.
+SWS = "accurate_rnd+full_chroma_int+full_chroma_inp"
+TAGS = {"color_space": "colorspace", "color_primaries": "color_primaries", "color_transfer": "color_trc",
+        "color_range": "range"}
+# A fixer's film may differ from its input by this much mean colour per channel, of 255.
+GATE_RGB = 1.5
+
+
+def probe(path) -> tuple[int, int, float, int]:
+    run = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
+                          "stream=width,height,r_frame_rate,nb_read_packets", "-of", "json", str(path)],
+                         capture_output=True, text=True)
+    streams = json.loads(run.stdout or "{}").get("streams") or [{}]
+    stream = streams[0]
+    if run.returncode or not stream.get("width") or not int(stream.get("nb_read_packets") or 0):
+        raise Refused(f"{path} holds no readable video")
+    num, den = stream["r_frame_rate"].split("/")
+    return stream["width"], stream["height"], float(num) / float(den or 1), int(stream["nb_read_packets"])
+
+
+def colour_filter(path) -> str:
+    """The RGB->YUV filter that writes `path`'s matrix and colour tags (libx264 drops -color_trc on piped frames)."""
+    run = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=" + ",".join(TAGS), "-of", "json", str(path)], capture_output=True, text=True)
+    stream = (json.loads(run.stdout or "{}").get("streams") or [{}])[0]
+    found = {TAGS[k]: v for k, v in stream.items() if k in TAGS and v not in ("unknown", "reserved")}
+    matrix = "bt709" if found.get("colorspace") == "bt709" else "bt601"
+    tags = ":".join(f"{k}={v}" for k, v in found.items())
+    return f"scale=out_color_matrix={matrix}:out_range=tv:flags={SWS},format=yuv420p" + (f",setparams={tags}" if tags else "")
+
+
 def frames(path):
-    cap = cv2.VideoCapture(str(path))
+    w, h, _, _ = probe(path)
+    decoder = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-vf", f"scale=flags={SWS}",
+                                "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE)
+    size = w * h * 3
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
+            buffer = decoder.stdout.read(size)
+            if len(buffer) < size:
                 return
-            yield frame
+            yield np.frombuffer(buffer, np.uint8).reshape(h, w, 3)
     finally:
-        cap.release()
+        decoder.stdout.close()
+        decoder.kill()
+        decoder.wait()
 
 
 def info(path) -> tuple[float, int]:
-    cap = cv2.VideoCapture(str(path))
-    fps, count = cap.get(cv2.CAP_PROP_FPS) or 24.0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
-    if count <= 0:
-        raise Refused(f"{path} holds no readable video")
-    return fps, count
+    return probe(path)[2:]
 
 
 def gray(frame):
@@ -155,14 +189,16 @@ def encode(stream, dst: Path, fps: float, sound_from: Path) -> None:
     """One encode, the source's sound copied; a second lossy encode cost the fleet film half its softness."""
     part = dst.with_name(f".{dst.name}.part.mp4")
     encoder = None
+    to_yuv = colour_filter(sound_from)
     try:
         for frame in stream:
             if encoder is None:
                 h, w = frame.shape[:2]
                 encoder = subprocess.Popen(
                     ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}",
-                     "-r", f"{fps}", "-i", "-", "-an", "-c:v", "libx264", "-preset", "slow", "-crf", "18",
-                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(part)], stdin=subprocess.PIPE)
+                     "-r", f"{fps}", "-i", "-", "-an", "-vf", to_yuv, "-c:v", "libx264", "-preset", "slow", "-crf", "18",
+                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(part)],
+                    stdin=subprocess.PIPE)
             encoder.stdin.write(frame.tobytes())
         if encoder is None:
             raise Refused("no frames to write")
@@ -244,10 +280,18 @@ def lanczos(ref720: Path, upscale: Path, dst: Path) -> None:
 
 
 def measure_size(path: Path) -> tuple[int, int]:
-    cap = cv2.VideoCapture(str(path))
-    size = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-    return size
+    return probe(path)[:2]
+
+
+def look(path, every: int = 6) -> tuple[list[float], float]:
+    """Mean colour (R, G, B of 255) and sharpness (Laplacian variance of the luma) over every `every`-th frame."""
+    colour, sharp = [], []
+    for index, frame in enumerate(frames(path)):
+        if index % every:
+            continue
+        colour.append(frame.reshape(-1, 3).mean(axis=0)[::-1])
+        sharp.append(cv2.Laplacian(gray(frame), cv2.CV_64F).var())
+    return [round(float(c), 2) for c in np.mean(colour, axis=0)], round(float(np.mean(sharp)), 1)
 
 
 def reanchor(film: Path, orig: Path, dst: Path, sigma: float) -> None:
@@ -402,6 +446,13 @@ def steady(upscale: Path, ref720: Path) -> dict:
         out["fixed"] = reading(after)
         if after["global"]["corner_rms"] >= raw["global"]["corner_rms"]:
             out["steadied"], out["reason"] = "none", f"the {out['steadied']} film read no steadier; the upscale is kept"
+            return out
+        (colour, sharp), (fixed_colour, fixed_sharp) = look(upscale), look(fixed)
+        out["colour_shift"] = round(max(abs(a - b) for a, b in zip(colour, fixed_colour)), 2)
+        out["sharpness"] = round(fixed_sharp / sharp, 3) if sharp else None
+        if out["colour_shift"] > GATE_RGB:
+            out["steadied"], out["reason"] = "none", (f"the {out['steadied']} film's colour moved {out['colour_shift']} "
+                                                      f"of 255 (gate {GATE_RGB}); the upscale is kept")
             return out
         fixed.replace(upscale)
     finally:

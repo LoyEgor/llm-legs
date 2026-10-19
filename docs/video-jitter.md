@@ -12,9 +12,10 @@ every upscale: measure each one. Research, evidence and Egor's verdicts: `docs/h
   `steady_upscales` runs `video-jitter steady` on each upscale:
   - it does not tremble (its rise over the 720p is under the gate): the upscale is delivered as downloaded, so a
     fixed Flow costs nothing;
-  - it trembles: it is replaced in place by the anchored and settled film, one encode at crf 18 with its sound;
+  - it trembles: it is replaced in place by the anchored and settled film, one encode at crf 18 with its sound and
+    colour tags;
   - the anchor refuses (frame counts differ): the 720p + Lanczos instead;
-  - the result reads no steadier: the upscale is kept.
+  - the result reads no steadier, or its mean colour moved over 1.5 of 255: the upscale is kept.
 - gemini-video prints `jitter=<global>/<local> ref720=<global>/<local> steadied=anchor+settle|lanczos|none
   [fixed=<global>/<local>] dest=… ref720_file=…` per clip, or `jitter=unmeasured` with the reason.
 - Keep the 720p: a film later cut from the clip can be re-anchored to it. Anchor the raw download, then cut: a second
@@ -43,6 +44,18 @@ A 10 s 1080p clip takes about a minute (crown hero: 0.601 → 0.017, 68 s).
 - After any stabiliser only the local rise counts: vidstab took the oak's global from 0.439 to 0.145 with "no visible
   change at all".
 - Without a 720p only the global number is read, and real motion reads the same as tremble.
+
+## Quality (measured 2026-10-19 on the crown hero, the turning wall, the sprout oak)
+
+- Colour: every frame is decoded and encoded by ffmpeg with accurate rounding and full chroma. cv2.VideoCapture read
+  the hero 1.8/1.2/1.5 of 255 darker (R/G/B) per decode, and the research's cv2-anchored hero ended 6.3/2.2/5.6 darker
+  in the file: the shift Egor saw was real. Flow tags its files BT.601; an untagged encode is read as BT.709 by
+  players and red rises by 2, so the encode writes the source's tags. A round trip stays within 0.12 of 255.
+- Sharpness (Laplacian variance against the download): the steadied films keep 85-91 %, 720p + Lanczos 8-13 %. On
+  the hero the anchor's sub-pixel warp costs 6 %, the settle 8 % (the per-frame redraw it takes out), the crf 18
+  encode nothing: crf 14 doubles the size and keeps the same. At 2x crops the hero and the wall look the same as
+  the download; the oak's moss is a little smoother.
+- `steady` reports `colour_shift` (of 255) and `sharpness` (fixed / download).
 
 ## What does not work
 
