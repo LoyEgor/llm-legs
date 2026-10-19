@@ -42,6 +42,11 @@ assert out 'size=320x180'
 rgb=$(ffmpeg -v error -i "$WORK/last.png" -vf 'crop=1:1:160:90' -f rawvideo -pix_fmt rgb24 - | od -An -tu1 | tr -s ' ')
 read -r r g b <<<"$rgb"
 assert test "$b" -gt 200 -a "$r" -lt 60
+ffmpeg -v error -f lavfi -i color=c=0x4a8030:s=320x180:d=0.5:r=24 -c:v libx264 -pix_fmt yuv420p "$WORK/green.mp4" \
+  || fail "no green fixture"
+assert run last-frame "$WORK/green.mp4" "$WORK/green.png"
+assert test "$(ffmpeg -v error -i "$WORK/green.png" -vf 'crop=1:1:160:90' -f rawvideo -pix_fmt rgb24 - | od -An -tu1 \
+  | xargs)" = "74 128 48"
 assert test "$(rc last-frame "$RED_BLUE" "$WORK/last.gif")" = 2
 assert test "$(rc last-frame "$WORK/missing.mp4" "$WORK/x.png")" = 2
 printf 'not a video' >"$WORK/text.mp4"
@@ -75,4 +80,20 @@ assert test "$(rc join "$WORK/bad.mp4" "$BUSY" "$WORK/text.mp4")" = 2
 assert test ! -e "$WORK/bad.mp4"
 assert test "$(rc splice "$BUSY")" = 2
 
-echo "PASS: $asserts asserts; last-frame returns the very last frame, end-motion tells a still tail from a moving one and tiles a direction strip, join cuts clips of any size, rate and audio into one at the first clip's format with audio held to each clip's video, and usage errors exit 2"
+# Flow tags BT.601 and other sources BT.709: a joined clip keeps its own colours.
+F601="$WORK/green-601.mp4" F709="$WORK/green-709.mp4"
+ffmpeg -v error -f lavfi -i color=c=0x4a8030:s=320x180:d=0.5:r=24 -c:v libx264 -pix_fmt yuv420p \
+  -bsf:v h264_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients=6:video_full_range_flag=0 \
+  "$F601" || fail "no BT.601 fixture"
+ffmpeg -v error -f lavfi -i color=c=0x4a8030:s=320x180:d=0.5:r=24 -c:v libx264 -vf \
+  scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv \
+  "$F709" || fail "no BT.709 fixture"
+px() { ffmpeg -v error -i "$1" -vf "select=eq(n\,$2),scale=flags=accurate_rnd+full_chroma_int+full_chroma_inp,format=rgb24,crop=1:1:160:90" \
+  -frames:v 1 -f rawvideo - | od -An -tu1; }
+near() { awk -v a="$1" -v b="$2" 'BEGIN { if (split(a, x, " ") != 3 || split(b, y, " ") != 3) exit 1
+  for (i = 1; i <= 3; i++) if (x[i] - y[i] > 1 || y[i] - x[i] > 1) exit 1 }'; }
+assert run join "$WORK/mixed.mp4" "$F601" "$F709"
+assert near "$(px "$WORK/mixed.mp4" 6)" "$(px "$F601" 6)"
+assert near "$(px "$WORK/mixed.mp4" 18)" "$(px "$F709" 6)"
+
+echo "PASS: $asserts asserts; last-frame returns the very last frame in its exact colours, end-motion tells a still tail from a moving one and tiles a direction strip, join cuts clips of any size, rate and audio into one at the first clip's format and colour tags with audio held to each clip's video and each clip's colours kept, and usage errors exit 2"

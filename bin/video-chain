@@ -44,6 +44,13 @@ seconds_of() {
 }
 
 # -sseof counts from the container's end, which a longer audio track pushes past the last frame.
+colour_tags() { # clip -> setparams options for its colour tags, empty when untagged
+  "$ffprobe_cmd" -v error -select_streams v:0 -show_entries stream=color_space,color_primaries,color_transfer,color_range \
+    -of default=nw=1 "$1" 2>/dev/null | awk -F= '$2 != "" && $2 != "unknown" && $2 != "reserved" {
+      key = $1 == "color_space" ? "colorspace" : $1 == "color_transfer" ? "color_trc" : $1 == "color_range" ? "range" : $1
+      printf "%s%s=%s", n++ ? ":" : "", key, $2 }'
+}
+
 tail_start() { # clip seconds
   awk -v d="$(seconds_of "$1")" -v t="$2" 'BEGIN { s = d - t; printf "%.3f", (s > 0 ? s : 0) }'
 }
@@ -53,8 +60,10 @@ last_frame() {
   need_clip "$1"
   case "$(printf '%s' "${2##*.}" | tr '[:upper:]' '[:lower:]')" in png | jpg | jpeg) ;; *) usage ;; esac
   rm -f "$2"
-  # -update keeps overwriting one image, so what remains is the very last decoded frame.
-  "$ffmpeg_cmd" -v error -y -ss "$(tail_start "$1" 0.5)" -i "$1" -an -update 1 -q:v 2 "$2"
+  # -update keeps overwriting one image, so what remains is the very last decoded frame. swscale's fast YUV->RGB reads
+  # 1-2 of 255 dark, which a frame chain would add on every link.
+  "$ffmpeg_cmd" -v error -y -ss "$(tail_start "$1" 0.5)" -i "$1" -an -update 1 \
+    -vf scale=flags=accurate_rnd+full_chroma_int+full_chroma_inp -q:v 2 "$2"
   [ -s "$2" ] || say "ffmpeg wrote no frame from $1"
   printf 'frame=%s\nsize=%s\n' "$2" "$(probe "$1" stream=width,height | tr ',' 'x')"
 }
@@ -88,7 +97,8 @@ end_motion() {
 
 join_clips() {
   [ "$#" -ge 3 ] || usage
-  local out=$1 width height fps index=0 inputs=() graph='' pairs='' clip length row rows=()
+  local out=$1 width height fps index=0 inputs=() graph='' pairs='' clip length row rows=() tags matrix=bt601 to_yuv
+  local sws=accurate_rnd+full_chroma_int+full_chroma_inp
   shift
   case "$(printf '%s' "${out##*.}" | tr '[:upper:]' '[:lower:]')" in mp4) ;; *) usage ;; esac
   for clip in "$@"; do
@@ -98,11 +108,16 @@ join_clips() {
     rows+=("$row")
   done
   IFS=, read -r width height fps _ <<<"${rows[0]}"
+  # Every clip goes through RGB into the first clip's matrix and tags: Flow tags BT.601, other sources BT.709, and
+  # concat alone would show a BT.709 clip -3/-1/-4 of 255 off.
+  tags=$(colour_tags "$1")
+  [[ ":$tags" == *":colorspace=bt709"* ]] && matrix=bt709
+  to_yuv="scale=out_color_matrix=$matrix:out_range=tv:flags=$sws,format=yuv420p${tags:+,setparams=$tags}"
   for clip in "$@"; do
     inputs+=(-i "$clip")
     length=${rows[index]##*,}
     [[ "$length" =~ ^[0-9.]+$ ]] || length=$(seconds_of "$clip")
-    graph+="[$index:v]scale=$width:$height:force_original_aspect_ratio=decrease,pad=$width:$height:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=$fps,format=yuv420p[v$index];"
+    graph+="[$index:v]scale=$width:$height:force_original_aspect_ratio=decrease:flags=bicubic+$sws,format=gbrp,pad=$width:$height:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=$fps,$to_yuv[v$index];"
     # concat pairs audio with video per segment, so every segment's audio is cut or padded to its video.
     if [ -n "$(probe_audio "$clip")" ]; then
       graph+="[$index:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=0:$length[a$index];"
