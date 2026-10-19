@@ -15,7 +15,7 @@ only with a stated reason), and every new capability is supported, per account, 
   the paths of its `.diff` and of the current fingerprint (`snapshot <vendor>` re-takes one).
 - Read your vendor's lines in `docs/vendor-release-open.md`: prove what this release lets you
   prove, and never re-check what a closed event already settled.
-- Several ids given: the procedure per event, each already folding its vendor's changes since it opened.
+- Several ids: the procedure per event, each folding its vendor's changes since it opened.
 - A manual request (`request [--here] <vendor>` with no event waiting) diffs the whole current
   fingerprint: the full checklist, every line decided (a `+*` row per facet is fine).
 - A vendor-watch event (facet `watch`, `share/briefs/vendor-watch.md`): a web feature per line with its
@@ -30,10 +30,12 @@ only with a stated reason), and every new capability is supported, per account, 
   test), learn why it is built the way it is — `git log --follow` / `git log -S` on its lines, the
   commit that made it, its handoff or design doc, its `docs/shared-invariants.md` row. Say its goal
   in one sentence and check the release still serves it, not only that the tests stay green; a pin
-  or fallback kept for a reason that no longer holds is removed, one whose reason holds stays. A
-  model the vendor dropped takes every pin, option and menu row naming it along, and a choice left
-  with one option goes too: that is this run's cleanup, never `blocked` — no word of Egor's brings
-  a dropped model back.
+  or fallback kept for a reason that no longer holds is removed, one whose reason holds stays.
+- A model change is never Egor's decision; the run proves and records the defaults: a new
+  version replaces its class's older; a new class enters where a consumer derives from the union
+  (Frontier: each vendor's strongest), workers keep it `request`; a family some accounts serve
+  (`divergence`, `plans`) stays on those; a dropped one takes every pin, option and menu row naming
+  it along, and a choice left with one option goes too — cleanup, never `blocked`.
 - Work only in the brief's worktree and its `ADD-DIR:` worktrees (review-bench, claude-setup), on its
   branch; a change in a repository without one is a handoff. Commit there; never push, merge or review:
   the orchestrator lands it.
@@ -42,13 +44,11 @@ only with a stated reason), and every new capability is supported, per account, 
 - Tests use fixtures only; never point one at `~/.claude-profiles/.claudeb`, a real `~/.codex`,
   `~/.grok` or `~/.gemini`, and never mutate the live Hammerspoon singleton (`menuItems()` only).
 - Never generate an image or video: every generation needs Egor's «сгенерируй». What only a generation
-  can prove (§3 step 10), or any step needing his word, is decided `blocked` with evidence
-  `blocked-on-egor: <what his word unlocks>`.
+  can prove (§3 step 10) is decided `blocked` with evidence `blocked-on-egor: <what his word unlocks>`.
 - Before building a capability for this vendor, study how the other vendors expose the same or an
   analogous one — the Hammerspoon menu, `<vendor>b` verbs, worker-run, chat pins, statusline, review
-  pins — and put it in the same places with the same names and look (codex's per-account "Fast Mode
-  (workers)" toggle means grok's fast model gets it too, not a chat tag). Share the mechanism where it
-  fits; where vendors differ, the visible surface still matches. Egor never asks for this parity.
+  pins — and put it in the same places with the same names and look. Share the mechanism where it
+  fits; where vendors differ, the visible surface still matches.
 - A worker's "done" is a claim: diff the files it says it changed, and diff every test/spec change
   against HEAD — a weakened assertion is a regression, not a pass.
 - Blocked on the owner (ZDR/privacy toggles, generation budget, paid API): `blocked` with what his
@@ -106,8 +106,8 @@ only with a stated reason), and every new capability is supported, per account, 
    per-account catalogs, entitlements); an entitlement refusal is typed apart from a usage limit.
 10. Live proof. LLM models: your RETURN asks the orchestrator for one `worker-run` per new model
     (you cannot start one); its `SERVED:` line must name it. Images/video: list each generation as
-    "generation → the claim only it can settle", parameters riding in the same call, nothing a free
-    source settles. The list is the report's one ask; typically empty for a CLI bump, 1–3 otherwise.
+    "generation → the claim only it settles", parameters riding in one call, nothing a free
+    source settles. The list is the report's one ask.
 11. Deprecations and silent fallbacks get a dated tripwire (a test that fails on the date), and a
     temporary shim is registered in `EXPERIMENTS.json`.
 12. Manifests: bump `cli.version`/`verified` only after the checks above pass; every value agrees

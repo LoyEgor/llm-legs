@@ -62,12 +62,34 @@ def geminib_cache_dir():
     return os.environ.get("GEMINIB_CACHE_DIR") or os.path.join(base_home(), ".cache", "geminib")
 
 
+def geminib_union():
+    """`geminib families --union` off the profiles' own caches: each family with the profiles carrying it."""
+    profiles = os.environ.get("GEMINIB_PROFILES_DIR") or os.path.join(base_home(), ".gemini-profiles")
+    union = {}
+    for path in sorted(glob.glob(os.path.join(geminib_cache_dir(), "models-*.json"))):
+        profile = os.path.basename(path)[len("models-"):-len(".json")]
+        if profile != "main" and not os.path.isdir(os.path.join(profiles, profile)):
+            continue
+        try:
+            with open(path, encoding="utf-8") as handle:
+                listed = json.load(handle)["families"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        for family in listed if isinstance(listed, list) else []:
+            if isinstance(family, dict) and isinstance(family.get("family"), str):
+                union.setdefault(family["family"], dict(family, accounts=[]))["accounts"].append(profile)
+    return sorted(union.values(), reverse=True,
+                  key=lambda family: [int(part) for part in re.findall(r"\d+", (family["family"].split("-") + ["", ""])[1])])
+
+
 def geminib_families():
-    try:
-        with open(os.path.join(geminib_cache_dir(), "models.json"), encoding="utf-8") as handle:
-            families = json.load(handle)["families"]
-    except (OSError, ValueError, KeyError, TypeError):
-        families = None
+    families = geminib_union()
+    if not families:
+        try:
+            with open(os.path.join(geminib_cache_dir(), "models.json"), encoding="utf-8") as handle:
+                families = json.load(handle)["families"]
+        except (OSError, ValueError, KeyError, TypeError):
+            families = None
     if not families:
         try:
             result = subprocess.run(

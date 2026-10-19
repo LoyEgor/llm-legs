@@ -21,6 +21,9 @@ log_file="$state_dir/update.log"
 codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
 grok_home="${GROK_HOME:-$HOME/.grok}"
 grokb_cache="${GROKB_CACHE_DIR:-$HOME/.cache/grokb}/models.json"
+geminib="${VENDOR_FINGERPRINT_GEMINIB:-$repo_root/bin/geminib}"
+limits_store="${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}"
+gemini_quota_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$HOME/.llm-limits-gemini}"
 vendors="codex grok gemini claude"
 # vendor-watch rows of a web-only vendor: no CLI, so no fingerprint and no check.
 watch_only="elevenlabs"
@@ -233,9 +236,30 @@ codex_facets() {
     fail catalog_order remote
     fail docs remote
   fi
-  jq -r '.codex.divergence // [] | .[]' "$state_dir/state.json" 2>/dev/null >"$work/divergence"
-  LC_ALL=C grep $'^catalog\t' "$work/divergence" | put_lines divergence
+  put_divergence codex
   LC_ALL=C grep $'^client\t' "$work/divergence" | cut -f2,3 | put_pairs foreign_clients
+  put_plans codex
+}
+
+put_divergence() { # vendor
+  [ -n "${divergence_rows+set}" ] ||
+    divergence_rows=$(jq -r 'to_entries[] | .key as $v | (.value.divergence? // [])[] | "\($v)\t\(.)"' "$state_dir/state.json" 2>/dev/null)
+  printf '%s\n' "$divergence_rows" | sed -n "s/^$1"$'\t'"//p" >"$work/divergence"
+  LC_ALL=C grep $'^catalog\t' "$work/divergence" | put_lines divergence
+}
+
+# A plan is what routing reads per account: the collector's claude and codex plan_type, every gemini
+# /usage group with its windows. An account the store lists with no such row keeps its last lines.
+put_plans() { # vendor
+  [ -e "$limits_store" ] || return 0
+  jq -r --arg v "$1" '.vendors[$v].accounts[]? | "R\t\(.account)",
+    (select(.plan_type | type == "string" and length > 0) | "F\t\(.account)\t\(.plan_type)")' \
+    "$limits_store" >"$work/plans" 2>/dev/null || { fail plans local; return 0; }
+  [ "$1" != gemini ] || jq -r '(input_filename | sub(".*/"; "") | sub("\\.json$"; "")) as $a | .groups[]?
+    | "F\t\($a)\t\(.displayName)\t\([.buckets[]?.window] | sort | join(","))"' "$gemini_quota_dir"/*.json >>"$work/plans" 2>/dev/null
+  jq -r '.facets.plans[]? | "P\t\(.)"' "$fp_dir/$1.json" >>"$work/plans" 2>/dev/null
+  awk -F'\t' '$1 == "R" { roster[$2] = 1; next } $1 == "F" { fresh[$2] = 1 } $1 == "P" && ($2 in fresh) { next }
+    $2 in roster { sub(/^[FP]\t/, ""); print }' "$work/plans" | LC_ALL=C sort -u | put_lines plans
 }
 
 grok_facets() {
@@ -247,16 +271,22 @@ grok_facets() {
     fail catalog remote
   fi
   put_docs docs "$grok_home/docs"
+  put_divergence grok
 }
 
+# The union of every profile's own list, each family with the profiles serving it: the default
+# login's list alone hid a family only some plans carry, and a login switch read as a release.
 gemini_facets() {
   put_text 'help: agy --help' agy --help
-  if timeout_command 30 agy models </dev/null 2>/dev/null | LC_ALL=C grep -E $'^[a-z0-9][a-z0-9._-]*\t' >"$work/models"; then
+  if timeout_command 300 "$geminib" families --union </dev/null 2>/dev/null | LC_ALL=C grep -E $'^gemini-[^\t]*\t' >"$work/models" &&
+    [ -s "$work/models" ]; then
     put_lines catalog "$work/models"
     cut -f1 "$work/models" >"$work/served"
   else
     fail catalog remote
   fi
+  put_divergence gemini
+  put_plans gemini
 }
 
 claude_facets() {
@@ -266,7 +296,7 @@ claude_facets() {
   native=$(native_of claude) && [ -f "$native" ] &&
     LC_ALL=C strings -a -n 6 "$native" 2>/dev/null | LC_ALL=C grep -oE 'first_party:"[a-z0-9.-]+"' |
     sed -E 's/^first_party:"(.*)"$/\1/' >"$work/served"
-  return 0
+  put_plans claude
 }
 
 snapshot() { # vendor -> {vendor, version, facets, failed}
@@ -359,13 +389,13 @@ ids_unserved() { # previous current -> true when every added or removed id is on
     (.[1].served | type == "array") and (
       ((.[0].served // []) + .[1].served) as $s | ($s | map(stem)) as $st
       | (.[0].facets.ids // []) as $p | (.[1].facets.ids // []) as $c
-      | all(($c - $p)[], ($p - $c)[]; . as $id | (any($s[]; . == $id) | not) and any($st[]; . == ($id | stem))))' "$1" "$2" >/dev/null
+      | all(($c - $p)[], ($p - $c)[]; . as $id | (any($s[]; . == $id or . == ($id | sub("-(minimal|low|medium|high|xhigh)$"; ""))) | not) and any($st[]; . == ($id | stem))))' "$1" "$2" >/dev/null
 }
 
 changes() { # vendor previous current -> changed-json<TAB>substantive-json
   local changed substantive
-  changed=$(jq -s -c '.[0].facets as $p | .[1].facets as $c
-    | [(($p | keys) + ($c | keys) | unique)[] | select(($p[.] // null) != ($c[.] // null))]' "$2" "$3")
+  # A facet the stored fingerprint never had is a probe this code added, not a release.
+  changed=$(jq -s -c '.[0].facets as $p | .[1].facets as $c | [$p | keys[] | select($p[.] != ($c[.] // null))]' "$2" "$3")
   substantive=$(jq -c --arg info "$info_facets" '($info | split(" ")) as $i | map(select(. as $f | $i | index($f) | not))' <<<"$changed")
   if jq -e 'index("ids")' <<<"$substantive" >/dev/null && ids_unserved "$2" "$3"; then
     substantive=$(jq -c 'map(select(. != "ids"))' <<<"$substantive")
@@ -592,11 +622,11 @@ waiting() { # [vendor] -> the open events no chat has taken yet
   return 0
 }
 
-cheap_events() { # id... -> true when every event changed only help text or bundled docs, Sonnet's to integrate
+cheap_events() { # id... -> true when every event changed only help text, bundled docs, the model lists or plans: Sonnet's to integrate
   local id
   for id in "$@"; do
     jq -e '(.reason // "" | startswith("manual request") | not) and (.changed | length > 0)
-      and all(.substantive[]; startswith("help: ") or . == "docs")' "$events_dir/$id.json" >/dev/null 2>&1 || return 1
+      and all(.substantive[]; startswith("help: ") or IN("docs", "catalog", "divergence", "plans"))' "$events_dir/$id.json" >/dev/null 2>&1 || return 1
   done
 }
 
@@ -632,8 +662,9 @@ Read $top/docs/vendor-release.md in full and follow it${night:+ with its §6 Nig
 Report in English, under 300 words, outcome first: each event closed or not; the branch and commit
 hash per repository; every blocked-on-egor line; the suites run with PASS counts.
 EOF
-  ! cheap_events "$@" || printf '\nYou run on Sonnet: on a new served model, a tool schema or flag change, a conflict in logic or a
-failure whose cause is unclear, stop editing, write what you found and end with `ESCALATE: <reason>`.\n'
+  ! cheap_events "$@" || printf '\nYou run on Sonnet: a new, partial or dropped model takes the defaults of vendor-release.md §1.
+On a tool schema or flag change, a conflict in logic or a failure whose cause is unclear, stop editing, write what you found
+and end with `ESCALATE: <reason>`.\n'
 }
 
 # A night takes per vendor its one real waiting release (never a manual request), branched from

@@ -32,7 +32,7 @@ def probe_families():
     families = {}
     for family in weather.geminib_families():
         model = family["agy_prefix"] + "-high"
-        families[weather.family_short(family["family"])] = (family["family"], model)
+        families[weather.family_short(family["family"])] = (family["family"], model, family.get("accounts") or [])
     if not families:
         # `geminib families` answers from its built-in list when it has nothing else, so an empty
         # result is a broken reader: probing nothing would report every family healthy.
@@ -107,7 +107,7 @@ def run_request(account, slug, kind, log, workdir, timeout):
 
 
 def probe_family(key, account, kinds, log_prefix, timeout):
-    family, slug = FAMILIES[key]
+    family, slug, _accounts = FAMILIES[key]
     workdir = tempfile.mkdtemp(prefix="gemini-probe.")
     try:
         for name, text in PROBE_FILES.items():
@@ -198,10 +198,14 @@ def main(argv):
         weather.PROBE_LOG_PREFIX, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), os.getpid()))
     print("account: %s" % account)
     print("families: %s" % ", ".join(FAMILIES[key][1] for key in keys))
+    served = {key: account if account in FAMILIES[key][2] or not FAMILIES[key][2] else FAMILIES[key][2][0] for key in keys}
+    moved = ["%s on %s" % (key, served[key]) for key in keys if served[key] != account]
+    if moved:
+        print("served elsewhere: %s" % ", ".join(moved))
     sys.stdout.flush()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(keys)) as pool:
-        futures = [pool.submit(probe_family, key, account, kinds, log_prefix, args.timeout) for key in keys]
+        futures = [pool.submit(probe_family, key, served[key], kinds, log_prefix, args.timeout) for key in keys]
         results = []
         for future in futures:
             family, requests = future.result()

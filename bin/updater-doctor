@@ -40,7 +40,7 @@ EVIDENCE_MAX = 3
 EXCERPT_MAX = 300
 NEW_MODELS_SHOWN = 3
 FACET_WORDS = {"catalog": "model catalog", "catalog_order": "model catalog", "catalog_text": "model catalog",
-               "ids": "model ids", "divergence": "accounts differ", "foreign_clients": "other installs",
+               "ids": "model ids", "divergence": "accounts differ", "plans": "account plans", "foreign_clients": "other installs",
                "installs": "other installs", "probe_failures": "probes"}
 LOG_TAIL_BYTES = 1 << 20
 
@@ -154,7 +154,7 @@ def event_evidence(event):
             "excerpt": clip(excerpt)}
 
 
-def diff_added(event, facet):
+def diff_added(event, facet, sign="+"):
     try:
         with open(event.get("diff") or "", encoding="utf-8", errors="replace") as handle:
             text = handle.read()
@@ -164,7 +164,7 @@ def diff_added(event, facet):
     for line in text.splitlines():
         if line.startswith("### "):
             inside = line[4:] == facet
-        elif inside and line.startswith("+") and not line.startswith("+++"):
+        elif inside and line.startswith(sign) and not line.startswith(sign * 3):
             added.add(line[1:])
     return added
 
@@ -240,6 +240,136 @@ def catalog_models(vendor, installed, fingerprint, catalogs):
         if isinstance(catalog, list):
             return [line.split("\t", 1)[0] for line in catalog if isinstance(line, str) and line][:MODELS_MAX]
     return []
+
+
+def catalog_missing(facets):
+    missing = {}
+    for line in facets.get("divergence") or []:
+        kind, account, what = (str(line).split("\t") + ["", ""])[:3]
+        if kind == "catalog" and what.startswith("missing "):
+            for model in what[len("missing "):].split(","):
+                missing.setdefault(model, []).append(account)
+    return missing
+
+
+def partial_since(log, vendor, model):
+    since = None
+    for line in reversed([entry for entry in log if entry["who"] == vendor and entry["word"] == "divergence:"]):
+        parts = [part.split(" ") for part in line["rest"].split(";")]
+        if not any(len(p) == 4 and p[0] == "catalog" and model in p[3].split(",") for p in parts):
+            break
+        since = line
+    return since
+
+
+def family_partial(col, vendor, fingerprint, log, exposure):
+    facets = fingerprint.get("facets") or {}
+    at = iso_epoch(fingerprint.get("checked_at"))
+    holders = {}
+    for line in facets.get("catalog") if isinstance(facets.get("catalog"), list) else []:
+        fields = str(line).split("\t")
+        if len(fields) >= 5:
+            holders[fields[1]] = fields[4].replace(",", ", ")
+    for model, lacking in sorted(catalog_missing(facets).items()):
+        since = partial_since(log, vendor, model)
+        first = since["at"] if since else at
+        served = holders[model] + " only" if model in holders else "every account but " + ", ".join(lacking)
+        col.add("family-partial", "%s/%s" % (vendor, model), "watch", clip(
+            "%s %s served by %s since %s · the night integrates it on those accounts (vendor-release §1), no ask" % (
+                vendor, model, served, time.strftime("%Y-%m-%d %H:%M", time.localtime(first)) if first else "?"), 200),
+            len(lacking), 0, "accounts", None, exposure, len(lacking), first, at,
+            log_evidence([since]) if since else [{"at": iso_time(at), "ref": "fingerprint:%s" % vendor, "account": None,
+                                                   "excerpt": clip("missing on " + ", ".join(lacking))}])
+
+
+def plan_changes(col, events, exposure):
+    seen = set()
+    for event in events[::-1]:
+        if event.get("status") != "open" or "plans" not in (event.get("changed") or []):
+            continue
+        sides = {}
+        for index, sign in enumerate("-+"):
+            for line in sorted(diff_added(event, "plans", sign)):
+                account, _, plan = line.partition("\t")
+                sides.setdefault(account, ([], []))[index].append(plan.replace("\t", " "))
+        at = iso_epoch(event.get("created_at"))
+        for account, (old, new) in sorted(sides.items()):
+            key = "%s/%s" % (event.get("vendor"), account)
+            if key in seen:
+                continue
+            seen.add(key)
+            col.add("plan-changed", key, "watch", clip("%s %s plan: %s → %s · the night proves it under %s and records it, no ask" % (
+                event.get("vendor"), account, "; ".join(old) or "none", "; ".join(new) or "none", event["id"]), 200),
+                len(old) + len(new), 0, "lines", None, exposure, 1, at, at, [event_evidence(event)])
+
+
+GEMINI_CLASS = re.compile(r"^gemini-\d+(?:\.\d+)?-([a-z]+)(?![a-z])")
+CAPS_GEMINI = os.path.join("share", "image-caps", "gemini.json")
+USAGE_MODELS = re.compile(r"--model[ =][\[<]?([a-z0-9]+(?:\|[a-z0-9]+)+)")
+
+
+def gemini_classes(lines):
+    return {match.group(1) for match in (GEMINI_CLASS.match(str(line)) for line in lines) if match}
+
+
+def class_mentions(word):
+    named = re.compile(r"^%s\d*$" % re.escape(word))
+    places = []
+    conf = os.environ.get("WORKER_PICK_CONFIG_FILE") or os.path.join(HOME, ".claude", "worker-model")
+    try:
+        with open(conf, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                if "gemini" in key and named.match(value):
+                    places.append((conf, key))
+    except OSError:
+        pass
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if named.match(key):
+                    places.append((CAPS_GEMINI, "%s.%s" % (path, key)))
+                walk(value, "%s.%s" % (path, key))
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, "%s[%d]" % (path, index))
+        elif isinstance(node, str) and named.match(node):
+            places.append((CAPS_GEMINI, path))
+
+    walk(read_json(os.path.join(ROOT_DIR, CAPS_GEMINI)), "")
+    for path in sorted(glob.glob(os.path.join(ROOT_DIR, "bin", "gemini*"))):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for number, line in enumerate(handle, 1):
+                    if any(named.match(alt) for match in USAGE_MODELS.finditer(line) for alt in match.group(1).split("|")):
+                        places.append(("bin/" + os.path.basename(path), "line %d usage" % number))
+        except OSError:
+            continue
+    return places
+
+
+def family_gone(col, fingerprint, events, exposure):
+    catalog = ((fingerprint or {}).get("facets") or {}).get("catalog") if isinstance(fingerprint, dict) else None
+    if not isinstance(catalog, list) or not catalog:
+        return
+    known = set()
+    for event in events:
+        if event.get("vendor") == "gemini":
+            known |= gemini_classes(diff_added(event, "catalog", "-") | diff_added(event, "catalog", "+"))
+    at = iso_epoch(fingerprint.get("checked_at"))
+    for word in sorted(known - gemini_classes(catalog)):
+        places = class_mentions(word)
+        if not places:
+            continue
+        files = {}
+        for name, _where in places:
+            files[name] = files.get(name, 0) + 1
+        col.add("family-gone", "gemini/%s" % word, "new", clip(
+            "gemini %s is on no account's list, still named in %s · the night's fix removes it with its pins (vendor-release §1), never blocked"
+            % (word, ", ".join("%s ×%d" % item for item in files.items())), 300),
+            len(places), 0, "places", None, exposure, len(places), at, at,
+            [{"at": iso_time(at), "ref": name, "account": None, "excerpt": "%s names %s" % (where, word)} for name, where in places])
 
 
 class Collector:
@@ -365,6 +495,9 @@ def collect(now):
                     clip("%s: %d other install%s at another version: %s" % (vendor, len(foreign), "" if len(foreign) == 1 else "s", listed), 200),
                     len(foreign), 0, "installs", None, exposure, len(foreign), at, at,
                     [{"at": iso_time(at), "ref": "fingerprint:%s" % vendor, "account": None, "excerpt": clip(listed)}])
+        family_partial(col, vendor, fingerprint, log, exposure)
+    plan_changes(col, events, exposure)
+    family_gone(col, fingerprints.get("gemini"), events, exposure)
 
     streaks = {}
     for row in caps_checks.read():

@@ -490,13 +490,13 @@ _family_slugs = None
 
 
 def family_slugs():
-    """geminib's own family list, served family name → slug; empty without its cache."""
+    """geminib's family lists, the shared one and every profile's own, served family name → slug; empty without their caches."""
     global _family_slugs
     if _family_slugs is None:
         document = read_json(os.path.join(gemini.geminib_cache_dir(), "models.json")) or {}
-        entries = document.get("families")
+        entries = gemini.geminib_union() + (document.get("families") if isinstance(document.get("families"), list) else [])
         _family_slugs = {}
-        for entry in entries if isinstance(entries, list) else []:
+        for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("slug"), str):
                 continue
             for key in ("agy_prefix", "family"):

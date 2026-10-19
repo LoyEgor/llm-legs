@@ -55,14 +55,12 @@ case "$vendor:$*" in
   *:--help) cat "$DATA/help-$vendor" ;;
   "codex:exec --help") cat "$DATA/help-codex-exec" ;;
   "codex:features list") cat "$DATA/features" ;;
-  agy:models)
-    [ ! -e "$DATA/agy-models-fail" ] || exit 1
-    printf 'Fetching available models...\n'
-    cat "$DATA/models-agy"
-    ;;
 esac
 EOF
 chmod +x "$DATA/behave"
+export VENDOR_FINGERPRINT_GEMINIB="$FAKE_BIN/geminib"
+printf '#!/bin/bash\n[ "$*" = "families --union" ] && [ ! -e "$DATA/union-fail" ] && cat "$DATA/union"\n' >"$FAKE_BIN/geminib"
+chmod +x "$FAKE_BIN/geminib"
 # A CLI is its own native binary unless the vendor ships a launcher: its model ids are strings in it.
 fake_cli() { # path vendor ids...
   local path=$1 vendor=$2
@@ -106,7 +104,7 @@ printf 'grok usage\n  -p, --print\n' >"$DATA/help-grok"
 printf 'Usage of agy:\n  --model  Model for the current CLI session\n' >"$DATA/help-agy"
 printf 'Claude Code 2.1.280\n  --model <model>\n' >"$DATA/help-claude"
 printf 'image_generation         stable             true\nagent_message_board      under development  false\n' >"$DATA/features"
-printf 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n' >"$DATA/models-agy"
+printf 'gemini-3.8-flash\tflash38\tgemini-3.8-flash\tGemini 3.8 Flash\tacct-a,acct-b\n' >"$DATA/union"
 printf 'image generation skill\n' >"$HOME/.codex-profiles/a/skills/.system/imagegen/SKILL.md"
 printf '# Headless\n' >"$HOME/.grok/docs/14-headless-mode.md"
 # grokb lists the models the later checks find new in the binary: only a served id is a release.
@@ -331,17 +329,17 @@ taken
 # Another client's list never enters the catalog, and an unreachable catalog keeps its last value.
 count=$(events)
 codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"},{"slug":"gpt-5.5"}]'
-: >"$DATA/agy-models-fail"
+: >"$DATA/union-fail"
 check codex gemini
 assert [ "$(events)" = "$count" ]
 # The Updater doctor reads which facets a remote read missed, kept beside the facets so it is no change.
 assert jqe '.remote_failures == ["catalog"] and (.facets.catalog | length) > 0' "$STATE/fingerprints/gemini.json"
-rm "$DATA/agy-models-fail"
-printf 'gemini-4-flash-high\tGemini 4 Flash (High)\n' >>"$DATA/models-agy"
+rm "$DATA/union-fail"
+printf 'gemini-4-flash\tflash4\tgemini-4-flash\tGemini 4 Flash\tacct-a,acct-b\n' >>"$DATA/union"
 check gemini
 assert jqe '.remote_failures == []' "$STATE/fingerprints/gemini.json"
 assert [ "$(field .vendor)" = gemini ]
-assert grep -qxF "+gemini-4-flash-high	Gemini 4 Flash (High)" "$(field .diff)"
+assert grep -qxF "+gemini-4-flash	flash4	gemini-4-flash	Gemini 4 Flash	acct-a,acct-b" "$(field .diff)"
 taken
 
 # A probe that breaks locally is news; the facet it could not read keeps its value.
@@ -427,7 +425,7 @@ check claude
 assert jqe '.launched_at == null' "$EVENTS/$retry.json"
 assert [ -s "$EVENTS/$retry.base" ]
 assert [ ! -s "$OPENED" ]
-printf 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-4-flash\tGemini 4 Flash\n' >"$DATA/models-agy"
+printf 'gemini-3.8-flash\tflash38\tgemini-3.8-flash\tGemini 3.8 Flash\tacct-a,acct-b\ngemini-4-flash\tflash4\tgemini-4-flash\tGemini 4 Flash\tacct-a\n' >"$DATA/union"
 VENDOR_FINGERPRINT_HOLD=1 check gemini
 unrequested=$(field .id)
 assert [ "$(jq -r .vendor "$EVENTS/$unrequested.json")" = gemini ]
@@ -483,7 +481,7 @@ assert [ "$(cat "$OPENED")" = "$EVENTS/$(jq -r .run "$EVENTS/$manual.json").comm
 here=$(bash "$SCRIPT" request --here gemini | head -n 1)
 assert [ "$(jq -r '"\(.status) \(.launched)"' "$EVENTS/$here.json")" = "open here" ]
 assert [ ! -s "$OPENED" ]
-assert grep -qxF "+gemini-4-flash	Gemini 4 Flash" "$EVENTS/$here.diff"
+assert grep -qxF "+gemini-4-flash	flash4	gemini-4-flash	Gemini 4 Flash	acct-a" "$EVENTS/$here.diff"
 assert grep -qxF "+gemini-3.8-flash" "$EVENTS/$here.diff"
 assert_fails grep -qxF '### version' "$EVENTS/$here.diff"
 assert_fails quiet bash "$SCRIPT" close "$here" "nothing new"
@@ -541,13 +539,13 @@ check grok
 assert [ "$(events)" = $((count + 1)) ]
 assert grep -qxF '+grok-6' "$EVENTS/$grok_id.diff"
 assert grep -qxF '+grok-7' "$EVENTS/$grok_id.diff"
-printf 'gemini-5-pro\tGemini 5 Pro\n' >>"$DATA/models-agy"
+printf 'gemini-5-pro\tpro\tgemini-5-pro\tGemini 5 Pro\tacct-a\n' >>"$DATA/union"
 check gemini
 gemini_id=$(field .id)
 assert [ "$(field '"\(.vendor) \(.status)"')" = "gemini open" ]
 jq '.facets.ids += ["gemini-3.1-pro-low-thinkingx"]' "$EVENTS/$gemini_id.base" >"$WORK/glued"
 mv "$WORK/glued" "$EVENTS/$gemini_id.base"
-sed -i '' '/gemini-5-pro/d' "$DATA/models-agy"
+sed -i '' '/gemini-5-pro/d' "$DATA/union"
 check gemini
 assert [ "$(jq -r .status "$EVENTS/$gemini_id.json")" = auto-closed ]
 assert [ "$(events)" = $((count + 2)) ]
