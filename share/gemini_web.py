@@ -1488,11 +1488,11 @@ def refuse_walled(account: str, name: str = "walls.json") -> None:
                          f"({name}); nothing was sent", account=account, until=until)
 
 
-def take_accounts(pinned: str | None, rotated, walled: str) -> list[str]:
+def take_accounts(pinned: str | None, rotated, walled: str, walls_name: str = "walls.json") -> list[str]:
     if pinned:
         refuse_off_roster(pinned)
         refuse_out_of_pool(pinned)
-        refuse_walled(pinned)
+        refuse_walled(pinned, walls_name)
         return [pinned]
     # Idle first only for a fan-out, which hands accounts[:n] to child runs; a failover claims by try-lock.
     accounts = free_first(rotated())

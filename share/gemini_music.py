@@ -46,11 +46,8 @@ def set_music_wall(account: str, until: float) -> None:
 
 
 def rotation() -> list[str]:
-    now = time.time()
-    flow_walls, walls_now = gw.walls(), music_walls()
-    # A Flow wall can be an "unusual activity" flag; music stays off that account too.
-    ready = [n for n in gw.bound_accounts()
-             if flow_walls.get(n, 0) <= now and walls_now.get(n, 0) <= now and gw.in_pool(n)]
+    now, walls_now = time.time(), music_walls()
+    ready = [n for n in gw.bound_accounts() if walls_now.get(n, 0) <= now and gw.in_pool(n)]
     return gw.least_recent(ready)
 
 
@@ -401,8 +398,8 @@ def cmd_generate(args) -> None:
     plan = {"prompt": args.prompt, "chips": chips, "attach": args.attach or [], "count": args.count,
             "out_dir": args.out_dir, "dry_run": args.dry_run, "timeout_s": c["timeout_s"],
             "upload_wait_s": c["upload_wait_s"]}
-    accounts = gw.take_accounts(args.account, rotation, "no signed-in account is free of music and Flow walls")
-    gw.take_failover(accounts, plan, generate_on, set_music_wall, bool(args.account))
+    accounts = gw.take_accounts(args.account, rotation, "no signed-in account is free of music walls", WALLS)
+    gw.take_failover(accounts, plan, generate_on, set_music_wall, bool(args.account), walls_name=WALLS)
 
 
 def main() -> None:

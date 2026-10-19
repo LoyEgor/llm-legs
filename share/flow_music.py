@@ -79,7 +79,7 @@ def note_balance(account: str, credits: int | None, grants: list | None = None) 
 
 
 def rotation(price: int) -> list[str]:
-    now, flow_walls, own = time.time(), gw.walls(), walls()
+    now, own = time.time(), walls()
 
     def ready(name: str) -> bool:
         meta = gw.read_meta(name)
@@ -88,7 +88,7 @@ def rotation(price: int) -> list[str]:
         fresh = now - meta.get("music_credits_at", 0) <= gw.WALL_SECONDS
         if fresh and (meta.get("music_credits") or 0) < price:
             return False
-        return flow_walls.get(name, 0) <= now and own.get(name, 0) <= now and gw.in_pool(name)
+        return own.get(name, 0) <= now and gw.in_pool(name)
 
     return gw.least_recent([name for name in gw.bound_accounts() if ready(name)])
 
@@ -813,11 +813,12 @@ def cmd_generate(args) -> None:
         raise gw.Failure(2, f"--edit {args.edit!r} is a library title, which lives on one account: add --account")
     plan = make_plan(args)
     accounts = gw.take_accounts(args.account, lambda: rotation(plan["price"]),
-                                "no Flow Music account is free of walls and holds a song's credits")
+                                "no Flow Music account is free of walls and holds a song's credits", WALLS)
     if args.accounts > 1 and not args.account:
         fan_out(args, accounts[:args.accounts])
         return
-    gw.take_failover(accounts, plan, generate_on, set_wall, bool(args.account), wall_pinned=args.fanned)
+    gw.take_failover(accounts, plan, generate_on, set_wall, bool(args.account), wall_pinned=args.fanned,
+                     walls_name=WALLS)
 
 
 def cmd_status(args) -> None:

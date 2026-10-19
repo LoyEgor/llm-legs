@@ -279,8 +279,8 @@ end
 -- Labels: fv Flow video credits, fm Flow Music credits, gm the Gemini app's music. A standing wall
 -- is the pool's limit hit, drawn like any walled window; a pool without a known total is unmeasured.
 -- Without a renewal date the reset column carries the balance left, so the menu grows no column.
--- fm exists only once Flow Music has seen the account signed in; a Flow wall walls it too, because
--- flow_music.rotation skips an account behind either wall.
+-- fm exists only once Flow Music has seen the account signed in; a Flow video wall leaves fm and gm alone,
+-- because music runs on other sites and never honours it.
 local function geminiMediaRows(media)
   local rows = {}
   if not media then return rows end
@@ -302,8 +302,7 @@ local function geminiMediaRows(media)
   end
   row("fv", media.credits, media.creditsTotal, media.creditsRenewsAt, media.videoWall, media.bound, media.takesLeft)
   if media.musicSignedIn then
-    local wall = math.max(media.flowMusicWall or 0, media.videoWall or 0)
-    row("fm", media.musicCredits, media.musicCreditsTotal, media.musicCreditsRenewsAt, wall > 0 and wall or nil, true)
+    row("fm", media.musicCredits, media.musicCreditsTotal, media.musicCreditsRenewsAt, media.flowMusicWall, true)
   end
   row("gm", nil, nil, nil, media.musicWall)
   return rows

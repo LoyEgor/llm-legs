@@ -328,6 +328,8 @@ for name, email in (("alpha", "a@x"), ("beta", "b@x"), ("gamma", "c@x"), ("delta
 now = time.time()
 (g.ROOT / "walls.json").write_text(json.dumps({"delta": now + 3600}))
 m.set_music_wall("gamma", now + 3600)
+assert "delta" in m.rotation(), "a Flow video wall kept music off the account"
+m.set_music_wall("delta", now + 3600)
 g.write_meta("alpha", generation_started_at=int(now) - 5)
 g.write_meta("beta", generation_started_at=int(now) - 10)
 with open(g.ROOT / "jobs.jsonl", "a") as ledger:
@@ -384,6 +386,10 @@ real_generate_on, launched = m.generate_on, []
 m.generate_on = lambda account, plan: launched.append(account) or {"ok": True, "account": account, "takes": []}
 code, result = run(account="blocked")
 assert code == 2 and "unknown account: blocked" in result["reason"] and launched == [], (result, launched)
+m.set_music_wall("delta", 0)
+code, result = run(account="delta")
+assert launched == ["delta"], ("a Flow video wall refused a named music account", result)
+m.set_music_wall("delta", now + 3600)
 m.generate_on = real_generate_on
 assert "blocked" not in g.bound_accounts(), g.bound_accounts()
 calls = []

@@ -4561,9 +4561,9 @@ end
   local menu = mediaMenu()
   local abel = mediaRows(menu, "abel")
   assert(#abel == 2 and titleText(abel[1]) == walled("fv", now + 7200) and isRed(abel[1])
-      and titleText(abel[2]) == walled("fm", now + 7200) and isRed(abel[2])
+      and titleText(abel[2]) == unmeasured("fm", 10510) and #redRuns(abel[2].title) == 0
       and abel[1].disabled == true and abel[2].disabled == true,
-    "a standing Flow wall is not fv's and fm's limit hit (Flow Music rotation skips it too): " .. texts(abel))
+    "a standing Flow video wall is not fv's limit hit, or it walled fm (music never honours it): " .. texts(abel))
   local tune = mediaRows(menu, "tune")
   assert(#tune == 1 and titleText(tune[1]) == unmeasured("fm", 30) and #redRuns(tune[1].title) == 0,
     "an unknown Flow Music total drew a bar or hid the balance in the reset column: " .. texts(tune))

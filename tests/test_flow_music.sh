@@ -502,9 +502,9 @@ gw.set_wall("flagged", now + 3600)
 gw.ledger({"kind": "flow-music", "event": "saved", "account": "good"})
 gw.write_meta("fresh", music_credits=900, music_credits_at=now)
 gw.write_meta("blocked", music_credits=9000, music_credits_at=now)
-for name, at in (("good", 1), ("dry", 3), ("fresh", 2)):
+for name, at in (("good", 1), ("dry", 3), ("fresh", 2), ("flagged", 4)):
     gw.write_meta(name, generation_started_at=at)
-assert fm.rotation(5) == ["good", "fresh", "dry"], "Flow Music ordered by its ledger, not the least recent start"
+assert fm.rotation(5) == ["good", "fresh", "dry", "flagged"], "Flow Music ordered by its ledger, or a Flow video wall kept it off"
 real_browser, real_take = gw.browser, fm.one_take
 gw.browser = lambda account: contextlib.nullcontext()
 fm.one_take = lambda context, account, plan, take: {"ok": True, "take": take, **({"dry_run": True} if plan["dry_run"] else {})}
@@ -514,7 +514,7 @@ fm.generate_on("good", {"count": 1, "dry_run": False})
 assert gw.read_meta("good")["generation_started_at"] >= now, "a new song did not stamp its start"
 gw.browser, fm.one_take = real_browser, real_take
 gw.write_meta("dry", generation_started_at=1)
-assert fm.rotation(5) == ["dry", "fresh", "good"], fm.rotation(5)
+assert fm.rotation(5) == ["dry", "fresh", "flagged", "good"], fm.rotation(5)
 
 # The single-account run walls an account out of credits and moves on; a named account is never walled.
 calls = []
@@ -545,6 +545,10 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
     except SystemExit as stop:
         assert stop.code == 3, stop.code
 assert fm.walls()["dry"] == 0, fm.walls()
+args.account, calls[:] = "flagged", []
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    fm.cmd_generate(args)
+assert calls == ["flagged"], "a Flow video wall refused a named Flow Music account"
 args.account, calls[:] = "blocked", []
 try:
     fm.cmd_generate(args)

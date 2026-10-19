@@ -433,7 +433,7 @@ door, and `worker-launch-gate.sh` blocks them in any other Bash.
 
 **Music** — `bin/gemini-music` → `share/gemini_music.py` drives gemini.google.com/app (Upload & tools → More
 tools → Create music, Lyria 3.5) in the same hidden Chrome and profiles as Flow. Rotation skips accounts
-with a Flow wall, a 6 h music wall (`~/.gemini-web/music-walls.json`) or out of the gemini worker pool, and
+with a 6 h music wall (`~/.gemini-web/music-walls.json`) or out of the gemini worker pool, and
 takes the one that least recently started any generation (Flow's rule and stamp). With `--count`, takes that finished before a later take failed
 are kept: the rest go to the next account, and if none is left the run delivers what it has with a `short=`
 footer line. Images and a video for the tool to watch are attached through Upload files; Playwright's
@@ -504,8 +504,9 @@ Flags (flow only): `--model lyria-3.5|lyria-3-pro`, `--format` (must match the d
 idle accounts first. It keeps every take as dest, dest-2, … (`variant= … account=`) and cancels nothing. It
 exits 0 when any take saved, and a `short=` line names the accounts that failed.
 
-Rotation: signed-in Gemini profiles in the gemini worker pool, without a Flow wall (Flow's unusual-activity flag
-holds here too) or a Flow Music wall (`~/.gemini-web/flow-music-walls.json`, 6 h, set on exit 3). A balance read
+Rotation: signed-in Gemini profiles in the gemini worker pool, without a Flow Music wall
+(`~/.gemini-web/flow-music-walls.json`, 6 h, set on exit 3). Flow's video and image walls hold neither music
+route: ~75 music runs to 2026-10-19 met no flag, every flag was a Flow video or image send. A balance read
 in the last 6 h that is under the price of one song skips the account. The account that least recently started any
 generation goes first (Flow's rule and stamp). An account Flow Music shows as signed out is marked `music_signed_in: false` and
 skipped until a balance read (`uv run --script share/flow_music.py status --account <name>`) finds it signed in.
