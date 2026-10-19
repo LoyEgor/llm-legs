@@ -1,6 +1,11 @@
 # Hand-off: Flow's "1080p Upscaled" download makes still shots tremble
 
-Status: open. The research is done and the deck films were fixed by hand; nothing in the harness has changed.
+Status: integrated 2026-10-19 into llm-legs. `bin/video-jitter` (`share/video_jitter.py`) carries the meter, `check`
+and the anchor, reanchor and settle fixers. At 1080p, gemini-video and `gemini-web fetch` save the 720p beside the clip
+and replace a trembling upscale with the anchored and settled film in one encode. On the crown hero that takes 0.601
+to 0.017 in 68 s, matching this chat's 0.016. See `docs/video-jitter.md`.
+Left to «Логотип CRM для арбористов»: `deckkit.shaky_video` → `video-jitter check <film> --ref720 <720p>`, which needs
+each deck film's 720p (§ Deck films). § Ideas to try stays with Egor.
 To: whoever Egor gives the video stabilisation / post-processing integration.
 From: the arbostar-logo chat, 2026-10-19. Its tools and evidence live in `~/Arbostar/arbostar-logo/renders/research/jitter/`
 (gitignored, kept on disk); `bin/` there is the code to start from.

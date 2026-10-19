@@ -1895,10 +1895,9 @@ function M.harnessDoctorEntry()
 end
 
 -- Show Chrome answers for every automation Chrome (docs/browser-runs.md; shared-invariants row en), read
--- from the processes so no producer can forget to say so: the real Chrome, which stays running between
--- runs, while it is not hidden (enrolment, the canary and --window open windows outside any run) or
--- browse/chrome-live lists a worker-run browser run; the media tools' clone (share/gemini_web.py)
--- whenever one runs.
+-- from the processes so no producer can forget to say so: the real Chrome whenever it runs, hidden or not
+-- (it quits once idle; the canary, enrolment and --window drive it outside any run: hiding it during the
+-- canary took the item away, 2026-10-19), and the media tools' clone (share/gemini_web.py) whenever one runs.
 -- The clone is LSBackgroundOnly, which macOS never hides: its windows move on and off screen over AX,
 -- and windows-shown beside the clone tells park_window to leave a page opened meanwhile where it is.
 local CHROME_CLONE_ID = "com.google.Chrome.gemini-web"
@@ -1945,10 +1944,9 @@ local function setCloneWindowsShown(show)
 end
 
 function M.chromeToggleItem()
-  local live = readTextFile(os.getenv("HOME") .. "/.cache/claude-worker-runs/browse/chrome-live")
   local chrome = hs.application.get("com.google.Chrome")
   local path, args = harnessAction("worker-run\31browse\31--toggle")
-  local real = chrome and path and (not chrome:isHidden() or live and live:find("%S")) and chrome or nil
+  local real = path and chrome or nil
   local clones, windows = cloneWindows()
   if not real and #clones == 0 then return nil end
   local shown = real ~= nil and not real:isHidden()

@@ -31,9 +31,9 @@ local harnessClock = nil
 -- nil is no store at all. Nothing under a real ~/.gemini-web is ever served.
 local geminiWebFake = { root = "/fixture/gemini-web", files = nil }
 -- The automation Chromes Show Chrome reads: `real` the fake com.google.Chrome (nil: not running), `clones`
--- the running gemini-web clone apps, `live` what browse/chrome-live holds (nil: absent), `removed` every
--- path the module hands os.remove, `screen` the one display.
-local chromeFake = { real = nil, clones = {}, live = nil, removed = {}, screen = {
+-- the running gemini-web clone apps, `removed` every path the module hands os.remove, `screen` the one display.
+-- worker-run no longer writes browse/chrome-live (2026-10-19), so the fake io serves it absent.
+local chromeFake = { real = nil, clones = {}, removed = {}, screen = {
   fullFrame = function() return { x = 0, y = 0, w = 1344, h = 1008 } end,
   frame = function() return { x = 0, y = 30, w = 1344, h = 978 } end } }
 
@@ -204,7 +204,8 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         }
       end
       if path:match("/%.config/opencode%-go/profiles$")
-          or path:match("/worker%-stats/walls%.jsonl$") then
+          or path:match("/worker%-stats/walls%.jsonl$")
+          or path:match("/browse/chrome%-live$") then
         return nil
       end
       local contents = "fixture"
@@ -230,10 +231,6 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
           return nil
         end
         contents = "GEMINI_WEB:" .. path
-      end
-      if path:match("/browse/chrome%-live$") then
-        if chromeFake.live == nil then return nil end
-        contents = chromeFake.live
       end
       if path:match("/memlogd/chats%.json$") then
         if chatsFake.snapshot == nil then return nil end
@@ -4713,8 +4710,8 @@ end)()
   end
 end)()
 
--- Show Chrome answers for the media tools' Chrome clone as for a worker-run browser run, read from the
--- running clone with no chrome-live (Egor saw a clone window and no checkbox, 2026-10-14): a parked window
+-- Show Chrome answers for the media tools' Chrome clone as for the real Chrome, read from the running clone
+-- (Egor saw a clone window and no checkbox, 2026-10-14): a parked window
 -- reads unchecked and one on screen checked, and a click moves the clone's windows on or off screen,
 -- writing or removing windows-shown; beside a live real Chrome both go the same way.
 ;(function()
@@ -4746,7 +4743,7 @@ end)()
     { allWindows = function() return { second } end } }
   local toggle, module = item()
   assert(toggle and toggle.title == "Show Chrome" and toggle.checked == false,
-    "a running clone with its windows parked did not give an unchecked Show Chrome without chrome-live")
+    "a running clone with its windows parked did not give an unchecked Show Chrome")
   toggle.fn()
   assert(parked.moves[1] == "0,30,800x600/0" and second.moves[1] == "30,60,800x600/0" and #bubble.moves == 0
       and module.__writes[root .. "/windows-shown"] and #tasks == 0 and #removed == 0,
@@ -4757,7 +4754,7 @@ end)()
   toggle.fn()
   assert(parked.moves[2] == "off" and second.moves[2] == "off" and removed[1] == root .. "/windows-shown",
     "hiding did not move the clone windows off screen or remove windows-shown")
-  chromeFake.real, chromeFake.live = { isHidden = function() return false end }, "run-1\n"
+  chromeFake.real = { isHidden = function() return false end }
   toggle = item()
   toggle.fn()
   assert(toggle.checked == true and tasks[1] and tasks[1].args[1] == "browse" and tasks[1].args[2] == "--hide"
@@ -4766,12 +4763,11 @@ end)()
   chromeFake.clones = {}
   item().fn()
   assert(tasks[2] and tasks[2].args[2] == "--toggle", "the real Chrome alone no longer runs browse --toggle")
-  -- Enrolment, the canary and --window open real Chrome windows outside any run: visible is enough.
-  chromeFake.live = nil
-  toggle = item()
-  assert(toggle and toggle.checked == true, "a visible real Chrome with no live run gave no Show Chrome")
+  -- The canary, enrolment and --window drive the real Chrome outside any run; hiding it mid-canary took the
+  -- item away (2026-10-19), so a running Chrome counts whether hidden or not.
   chromeFake.real = { isHidden = function() return true end }
-  assert(item() == nil, "a hidden real Chrome with no live run still gave Show Chrome")
+  toggle = item()
+  assert(toggle and toggle.checked == false, "a hidden real Chrome with no worker-run run gave no Show Chrome")
   chromeFake.real = nil
 end)()
 

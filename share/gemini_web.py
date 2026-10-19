@@ -1563,6 +1563,8 @@ def save_or_defer(page, account: str, project: str, upscale: dict, model: str) -
     Chrome takes it over (upscale_later)."""
     variant = upscale["variant"]
     try:
+        if "ref720" not in variant:
+            variant["ref720"] = save_ref720(page, account, project, upscale)
         variant["bytes"] = save_upscaled(page, project, upscale["scene"], upscale["path"])
     except Failure as failure:
         if failure.extra.get("crashed"):
@@ -1573,6 +1575,55 @@ def save_or_defer(page, account: str, project: str, upscale: dict, model: str) -
     ledger({"account": account, "media_id": variant["media_id"], "dest": str(upscale["path"]), "state": "saved",
             "model": model, "scene": upscale["scene"], "bytes": variant["bytes"]})
     return True
+
+
+def ref720_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.720p{path.suffix}")
+
+
+def save_ref720(page, account: str, project: str, upscale: dict) -> str | None:
+    """The 720p of the same media beside its 1080p upscale: the steady geometry steady_upscales anchors the upscale
+    to, kept so a later cut can be re-anchored. A missing one costs only the steadying, never the clip."""
+    ref = ref720_path(upscale["path"])
+    try:
+        if upscale.get("url"):
+            save_video(page.context, upscale["url"], ref)
+        else:
+            save_from_scene(page, project, upscale["scene"], ref, upscaled=False)
+    except Failure as failure:
+        if failure.extra.get("crashed"):
+            raise
+        warn(account, f"the 720p beside the 1080p upscale was not saved, so it stays unsteadied: {failure.reason}")
+        return None
+    return str(ref)
+
+
+# Flow's "1080p Upscaled" moves each frame up to ~1 px and redraws fine detail per frame on first/last-frame shots
+# (since Omni 1.1 Flash, 2026-08); the 720p of the same media is steady. docs/video-jitter.md.
+JITTER = Path(__file__).resolve().parent.parent / "bin" / "video-jitter"
+
+
+def steady_upscales(result: dict) -> dict:
+    """Each upscale measured against its 720p and, when it trembles, replaced by the anchored and settled film; run
+    after the account's lock is released, since it is minutes of CPU and no Flow."""
+    variants = result.get("variants") or [result]
+    if not any(variant.get("ref720") for variant in variants):
+        return result
+    for variant in variants:
+        if not variant.get("ref720"):
+            continue
+        run = subprocess.run([str(JITTER), "steady", variant["dest"], "--ref720", variant["ref720"]],
+                             capture_output=True, text=True)
+        try:
+            variant["steady"] = json.loads(run.stdout.strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            variant["steady"] = {"error": (run.stderr.strip().splitlines() or [f"exit {run.returncode}"])[-1][:300]}
+        with contextlib.suppress(OSError):
+            variant["bytes"] = Path(variant["dest"]).stat().st_size
+    result["steady"] = variants[0].get("steady")
+    result["ref720"] = variants[0].get("ref720")
+    result["bytes"] = variants[0].get("bytes")
+    return result
 
 
 def upscale_hint(account: str, upscales: list) -> str:
@@ -1987,7 +2038,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 if plan["upscale"]:
                     if not record.get("scene"):
                         raise drift(f"clip {media_id} came without a scene id for the 1080p download")
-                    upscale = {"variant": saved[-1], "scene": record["scene"], "path": path}
+                    upscale = {"variant": saved[-1], "scene": record["scene"], "path": path, "url": record.get("url")}
                     if later or not save_or_defer(page, account, project, upscale, plan["model"]):
                         later.append(upscale)
                     continue
@@ -2149,8 +2200,12 @@ def cmd_generate(args) -> None:
                     raise Failure(failure.code, failure.reason, account=account, **failure.extra)
                 skipped.append((account, failure))
                 continue
-            emit(result)
-            return
+            break
+        else:
+            result = None
+    if result is not None:
+        emit(steady_upscales(result))
+        return
     raise Failure(min(failure.code for _, failure in skipped),
                   "no signed-in Flow account could take the job ("
                   + "; ".join(f"{account}: {failure.reason}" for account, failure in skipped) + ")")
@@ -2222,12 +2277,16 @@ def cmd_fetch(args) -> None:
                 def prepare():
                     opened["scene"] = open_clip(page, project, media_id, args.account)
 
-                size = save_from_editor(page, prepare, dest, args.resolution == "1080p")
+                upscaled = args.resolution == "1080p"
+                size = save_from_editor(page, prepare, dest, upscaled)
                 saved.append({"dest": str(dest), "media_id": media_id, "bytes": size})
                 ledger({"account": args.account, "project": project, **saved[-1],
                         "state": "saved", "scene": opened["scene"]})
-            emit({"ok": True, "account": args.account, **saved[0],
-                  **({"project": project, "variants": saved} if prompt is not None else {})})
+                if upscaled:
+                    saved[-1]["ref720"] = save_ref720(page, args.account, project,
+                                                      {"path": dest, "scene": opened["scene"]})
+    emit(steady_upscales({"ok": True, "account": args.account, **saved[0],
+                          **({"project": project, "variants": saved} if prompt is not None else {})}))
 
 
 def music_ready(context, account: str) -> str | None:

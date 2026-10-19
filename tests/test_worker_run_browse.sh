@@ -208,11 +208,8 @@ EOF
   printf 'BROWSER: chrome\nACCOUNT: com\nfill the form\n' >"$WORK/brief"
   clear_stub
   start_gated claudeb
-  # the menu's Show Chrome checkbox reads browse/chrome-live: written at a Chrome run's start, gone after the last ends
-  assert test "$(cat "$WORKER_RUN_DIR/browse/chrome-live")" = "$RUN_ID"
   gate_open
   assert await_done
-  assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
   assert grep -q "\`$dev_com\` first when listed" "$RUN_DIR/browser-preamble"
   assert grep -qF -- '- Never put `tabs_close_mcp` in a `browser_batch` with any other action' "$RUN_DIR/browser-preamble"
@@ -470,7 +467,6 @@ EOF
   : >"$WORKER_RUN_DIR/browse/hidden"
   deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
   assert test -e "$WORKER_RUN_DIR/browse/hidden"
-  assert test "$(cat "$WORKER_RUN_DIR/browse/chrome-live")" = live-browser
   mkdir -p "$WORKER_RUN_DIR/live-computer"
   printf '{"pid":%s,"started_at":%s,"computer":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/live-computer/meta.json"
   assert_fails "$RUNNER" browse --hide
@@ -479,18 +475,17 @@ EOF
   wait "$holder" 2>/dev/null || true
   deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
   assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
-  assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
   rm -rf "$WORKER_RUN_DIR/live-browser"
-  # a Chrome run whose supervisor died before delivery leaves the list at the wait that finds it dead
+  # a Chrome run whose supervisor died before delivery ends hidden mode at the wait that finds it dead
   sleep 300 &
   holder=$!
   mkdir -p "$WORKER_RUN_DIR/dead-browser"
   printf '{"pid":%s,"started_at":%s,"browser":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/dead-browser/meta.json"
-  printf 'dead-browser\n' >"$WORKER_RUN_DIR/browse/chrome-live"
+  : >"$WORKER_RUN_DIR/browse/hidden"
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   "$RUNNER" wait dead-browser >/dev/null 2>&1 || true
-  assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
+  assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
   rm -rf "$WORKER_RUN_DIR/dead-browser"
   fi
   unset -f browse deliver enrolled

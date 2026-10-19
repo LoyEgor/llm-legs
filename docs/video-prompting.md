@@ -127,8 +127,8 @@ prompt differ.
 ## Aspect, length, resolution, credits
 
 - Aspect: `--aspect 16:9` or `9:16` only; others exit 2. Crop or pad afterwards for another frame.
-- Length: Veo 8 s; Omni 4, 6, 8 or 10 s; an edit keeps its source's length; an extension adds 7 s.
-- Resolution: 360p (Omni drafts, about half the credits), 720p, 1080p (Flow's free upscale of 720p).
+- Length: Veo 8 s; Omni 4/6/8/10 s; an edit keeps its source's length; an extension adds 7 s.
+- Resolution: 360p (Omni drafts, ~half price), 720p, 1080p (Flow's upscale, steadied: video-jitter.md).
 - Credits on PRO (1,050 a month per account): Omni 360p 4/6/8/10 s = 4/5/6/7; Omni 720p = 7/10/12/15;
   Omni edit at 720p = 20; Veo Lite/Fast/Quality 8 s = 10/20/100; Extend = 10; first + last frame adds
   nothing; `--count n` multiplies.

@@ -3387,7 +3387,6 @@ exit "$rc"'
   record_worker_session "$directory"
   write_run_state "$directory" start
   : >"$directory/.ready"
-  chrome_run_edge "$directory" start
   # WEB: on the launch line, because the state the run really got is otherwise only in meta.json and
   # an orchestrator cannot tell a web-grounded answer from one written out of memory.
   printf 'RUN: %s\nTAG: %s · %s · %s\nWEB: %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$web_search_state" "$directory"
@@ -4605,25 +4604,13 @@ chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
     done
 }
 
-# browse/chrome-live is what the menu's Show Chrome checkbox reads on every open. Not the harness doctor:
-# launchd drops a kickstart while the doctor is mid-run, and its 1-3 min runs outlast short browser runs.
-chrome_run_edge() { # directory start|end
+# The last Chrome browser run's end leaves hidden mode and quits an idle Chrome; the menu's Show Chrome reads
+# the running Chrome itself, so nothing here tells it a run is live.
+chrome_run_end() { # run-directory
   jq -e "$CHROME_BROWSER_RUN" "$1/meta.json" >/dev/null 2>&1 || return 0
-  local dir
-  dir=$(browse_dir)
-  mkdir -p "$dir" && with_lock "$dir" chrome_live_write "$dir" "$1" "$2"
-}
-
-chrome_live_write() { # browse-directory run-directory start|end
-  local live
-  live=$(chrome_runs "$CHROME_BROWSER_RUN" | grep -vxF -- "${2##*/}")
-  [ "$3" = end ] || live=$(printf '%s\n%s\n' "$live" "${2##*/}" | sed '/^$/d')
-  if [ -n "$live" ]; then
-    printf '%s\n' "$live" >"$1/chrome-live.$$" && mv -f "$1/chrome-live.$$" "$1/chrome-live"
-  else
-    rm -f "$1/chrome-live" "$1/hidden"
-    [ "$3" != end ] || browse_quit_idle "${2##*/}"
-  fi
+  [ -z "$(chrome_runs "$CHROME_BROWSER_RUN" | grep -vxF -- "${1##*/}")" ] || return 0
+  rm -f "$(browse_dir)/hidden"
+  browse_quit_idle "${1##*/}"
 }
 
 say_run() {
@@ -5058,7 +5045,7 @@ wait_run_loop() {
         terminal_report "$directory"
       else
         write_run_state "$directory" failed unknown
-        chrome_run_edge "$directory" end
+        chrome_run_end "$directory"
         unknown_report "$directory"
       fi
       return 0
@@ -6474,7 +6461,7 @@ case "${1:-}" in
   claim) shift; claim_run "$@"; exit $? ;;
   say) shift; say_run "$@"; exit $? ;;
   browse) shift; browse_run "$@"; exit $? ;;
-  _deliver) complete_run "$2" "$3"; chrome_run_edge "$2" end; exit 0 ;;
+  _deliver) complete_run "$2" "$3"; chrome_run_end "$2"; exit 0 ;;
   _chrome-runs) chrome_runs; exit 0 ;;
   _chrome-flags) printf '%s\n' "${CHROME_FLAGS[@]}"; exit 0 ;;
   _chrome-data) browse_chrome_data; exit 0 ;;
