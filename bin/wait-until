@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# wait-until: block until a job ends instead of polling it with fixed sleeps; a fixed sleep overshoots by half its length.
+#   wait-until [--max SEC] pid PID | gone PATTERN | files GLOB N | log FILE REGEX
+# pid: PID is no longer alive. gone: no process matches `pgrep -f PATTERN` (this call and its shells excluded).
+# files: GLOB matches at least N paths. log: FILE has a line matching the extended REGEX (an existing one counts).
+# Prints `met: ...` and exits 0, or `timeout after Ns` and exits 1; usage errors exit 2. The default cap is the Bash
+# call's own limit (BASH_DEFAULT_TIMEOUT_MS, 120 s without it) less 30 s; poll WAIT_UNTIL_POLL_S (default 2).
+set -u
+
+usage() { printf 'usage: wait-until [--max SEC] pid PID | gone PATTERN | files GLOB N | log FILE REGEX\n' >&2; exit 2; }
+
+max=
+if [ "${1:-}" = --max ]; then
+  max=${2:-}
+  [[ $max =~ ^[0-9]+$ ]] || usage
+  shift 2
+fi
+[ $# -ge 2 ] || usage
+kind=$1
+shift
+case "$kind" in
+  pid) [ $# -eq 1 ] && [[ $1 =~ ^[0-9]+$ ]] || usage ;;
+  gone) [ $# -eq 1 ] || usage ;;
+  files) [ $# -eq 2 ] && [[ $2 =~ ^[0-9]+$ ]] || usage ;;
+  log) [ $# -eq 2 ] || usage ;;
+  *) usage ;;
+esac
+poll=${WAIT_UNTIL_POLL_S:-2}
+if [ -z "$max" ]; then
+  cap=$(( ${BASH_DEFAULT_TIMEOUT_MS:-120000} / 1000 - 30 ))
+  max=$(( cap > 1 ? cap : 1 ))
+fi
+
+if [ "$kind" = gone ]; then
+  self=" $$ "
+  at=$$
+  while [ "$at" -gt 1 ]; do
+    at=$(ps -o ppid= -p "$at" 2>/dev/null | tr -d ' ')
+    [[ $at =~ ^[0-9]+$ ]] || break
+    self+="$at "
+  done
+fi
+
+check() {
+  case "$kind" in
+    pid) ! kill -0 "$1" 2>/dev/null && what="pid $1 exited" ;;
+    gone)
+      local p
+      for p in $(/usr/bin/pgrep -f -- "$1" 2>/dev/null); do
+        case "$self" in *" $p "*) ;; *) return 1 ;; esac
+      done
+      what="no process matches $1" ;;
+    files)
+      local list
+      shopt -s nullglob
+      # shellcheck disable=SC2206
+      list=($1)
+      shopt -u nullglob
+      [ "${#list[@]}" -ge "$2" ] && what="${#list[@]} paths match $1" ;;
+    log) [ -r "$1" ] && grep -Eq -- "$2" "$1" && what="$1 matches $2" ;;
+  esac
+}
+
+start=$SECONDS
+while :; do
+  what=
+  check "$@" && [ -n "$what" ] && { printf 'met: %s after %ss\n' "$what" "$((SECONDS - start))"; exit 0; }
+  [ $((SECONDS - start)) -lt "$max" ] || { printf 'timeout after %ss\n' "$((SECONDS - start))"; exit 1; }
+  sleep "$poll"
+done
