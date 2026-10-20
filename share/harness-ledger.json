@@ -10478,6 +10478,96 @@
       "reviewed_by": "doctor fixer harness-speed-refusal-write-20261020T114015Z-3725",
       "note": "The unused-tool row names no component file in the run packet (component.files empty), so the run launched without a claude-setup ADD-DIR; the fixer made that worktree itself (share/worktree.sh worktree_new, base ref set, run record's worktrees extended). Blind spot opportunity-tool-component-files.",
       "handoff": null
+    },
+    {
+      "id": "speed-unused-tool-skill-impeccable",
+      "title": "Unused skill /impeccable: its 66 B hint loaded in every session, no model call in 30 days",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^tool/skill/impeccable$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-20T12:00:00+03:00",
+          "by": "night fixer harness-speed-tool-skill-impeccable-20261020T114216Z-6fc2",
+          "files": [
+            "claude-setup/commands/impeccable.md"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the command's frontmatter before and after: description, argument-hint and body unchanged (the body of impeccable and 3d-review lose a repeated clause only); disable-model-invocation: true added",
+            "data": "grep of ~/Library/LaunchAgents, ~/.hammerspoon and the sweep repositories' bin, hooks, share and tests for the command or its skills-on-demand path: no caller; share/tool_mining.py skips a command with the flag, so the row leaves the unused list",
+            "result": "/impeccable stays typeable by Egor with the same text; only its skill-list line (66 B in 175 sessions a day) is gone"
+          }
+        }
+      ],
+      "same_cause": [],
+      "handoff": null,
+      "last_reviewed": "2026-10-20",
+      "reviewed_by": "night fixer harness-speed-tool-skill-impeccable-20261020T114216Z-6fc2",
+      "note": "2026-10-20: the run launched with no claude-setup worktree because the row's component named no file (fixed: speed-doctor's unused-tool opportunity now carries the tool's path as files); the worktree was made by hand on the run's branch and registered in the run record."
+    },
+    {
+      "id": "speed-unused-tool-skill-3d-review",
+      "title": "Unused skill /3d-review: its 61 B hint loaded in every session, no model call in 30 days",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^tool/skill/3d\\-review$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-20T12:00:00+03:00",
+          "by": "night fixer harness-speed-tool-skill-impeccable-20261020T114216Z-6fc2",
+          "files": [
+            "claude-setup/commands/3d-review.md"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the command's frontmatter before and after: description, argument-hint and body unchanged (the body of impeccable and 3d-review lose a repeated clause only); disable-model-invocation: true added",
+            "data": "grep of ~/Library/LaunchAgents, ~/.hammerspoon and the sweep repositories' bin, hooks, share and tests for the command or its skills-on-demand path: no caller; share/tool_mining.py skips a command with the flag, so the row leaves the unused list",
+            "result": "/3d-review stays typeable by Egor with the same text; only its skill-list line (61 B in 175 sessions a day) is gone"
+          }
+        }
+      ],
+      "same_cause": [],
+      "handoff": null,
+      "last_reviewed": "2026-10-20",
+      "reviewed_by": "night fixer harness-speed-tool-skill-impeccable-20261020T114216Z-6fc2",
+      "note": "2026-10-20: the run launched with no claude-setup worktree because the row's component named no file (fixed: speed-doctor's unused-tool opportunity now carries the tool's path as files); the worktree was made by hand on the run's branch and registered in the run record."
+    },
+    {
+      "id": "speed-unused-tool-skill-trash",
+      "title": "Unused skill /trash: its 64 B hint loaded in every session, no model call in 30 days",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^tool/skill/trash$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-20T12:00:00+03:00",
+          "by": "night fixer harness-speed-tool-skill-impeccable-20261020T114216Z-6fc2",
+          "files": [
+            "claude-setup/commands/trash.md"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the command's frontmatter before and after: description, argument-hint and body unchanged (the body of impeccable and 3d-review lose a repeated clause only); disable-model-invocation: true added",
+            "data": "grep of ~/Library/LaunchAgents, ~/.hammerspoon and the sweep repositories' bin, hooks, share and tests for the command or its skills-on-demand path: no caller; share/tool_mining.py skips a command with the flag, so the row leaves the unused list",
+            "result": "/trash stays typeable by Egor with the same text; only its skill-list line (64 B in 175 sessions a day) is gone"
+          }
+        }
+      ],
+      "same_cause": [],
+      "handoff": null,
+      "last_reviewed": "2026-10-20",
+      "reviewed_by": "night fixer harness-speed-tool-skill-impeccable-20261020T114216Z-6fc2",
+      "note": "2026-10-20: the run launched with no claude-setup worktree because the row's component named no file (fixed: speed-doctor's unused-tool opportunity now carries the tool's path as files); the worktree was made by hand on the run's branch and registered in the run record."
     }
   ],
   "blind_spots": [

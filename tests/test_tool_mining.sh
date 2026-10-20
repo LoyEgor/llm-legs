@@ -342,8 +342,9 @@ check(t.unused_row(cache) == [2, "Unused tools", [[0, "/s", [], "○"], [0, "foo
 unused = s.unused_opportunities({"unused": [dict(got["skill/s"], key="skill/s")]})
 check([o["id"] for o in unused] == ["opportunity:tool/skill/s"] and unused[0]["group"] == "tool"
       and unused[0]["fact"].startswith("skill/s · 0 calls in 30 days · 40 d old · hint 9 B in 10 sessions/day")
-      and unused[0]["opportunity"]["quality"] == "equivalent",
-      "Speed turns an unused tool into a night row deleting it and its hint: %s" % unused)
+      and unused[0]["opportunity"]["quality"] == "equivalent"
+      and unused[0]["opportunity"]["files"] == [got["skill/s"]["path"]],
+      "Speed turns an unused tool into a night row deleting it and its hint, its file the component (a skill lives in claude-setup, whose worktree the run needs): %s" % unused)
 tree = os.path.join(repo, ".claude", "worktrees", "w")
 git("worktree", "add", "-q", tree)
 cwd = lambda row, path: dict(row, cwd=path)
