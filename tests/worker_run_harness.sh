@@ -11,7 +11,9 @@ if test_scope_narrowed "$0" WORKER_RUN_TEST_; then
   test_scope_partial "$0"
 fi
 # Hundreds of 0.05 s polls per suite: a forked `sleep` each cost more than the pause under load.
-enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
+# The await_* ticks shrink to 10 ms only on that builtin (a forked 10 ms sleep would be a fork storm),
+# their tick counts scaling with POLL_X so every bound stays the same seconds.
+if enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null; then POLL_S=0.01 POLL_X=5; else POLL_S=0.05 POLL_X=1; fi
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
@@ -449,10 +451,10 @@ meta_num() { # key file
 # The floor is taken by the supervisor before its CLI starts: a fixture write before that is no run's.
 await_launched() {
   local tick text launched='"cli_pid": *"?[0-9]'
-  for tick in {1..400}; do
+  for ((tick = 1; tick <= 400 * POLL_X; tick++)); do
     [ ! -e "$RUN_DIR/exit_code" ] || return 0
     { text=$(<"$RUN_DIR/meta.json"); } 2>/dev/null && [[ $text =~ $launched ]] && return 0
-    sleep 0.05
+    sleep "$POLL_S"
   done
 }
 
@@ -477,9 +479,9 @@ await_done() {
     # The file only paces the loop; `wait` alone decides. It runs once the exit code is there, at
     # once when the supervisor is gone (dying without an exit code is terminal too), and every 60th
     # round regardless: a running `wait` builds a full report, ~1.5 s under load, most of a case.
-    for tick in {1..20}; do
+    for ((tick = 1; tick <= 20 * POLL_X; tick++)); do
       [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || break
-      sleep 0.05
+      sleep "$POLL_S"
     done
     if [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] && [ $((index % 60)) -ne 0 ]; then
       meta_num pid "$WORKER_RUN_DIR/$RUN_ID/meta.json" && pid=$META_NUM || pid=0
@@ -500,13 +502,13 @@ await_done() {
 # supervisor writes exit_code after delivering, so nothing of the run is still to come.
 await_exit() {
   local tick pid
-  for ((tick = 1; tick <= ${AWAIT_EXIT_TICKS:-6000}; tick++)); do
+  for ((tick = 1; tick <= ${AWAIT_EXIT_TICKS:-6000} * POLL_X; tick++)); do
     [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 0
-    if [ $((tick % 20)) -eq 0 ]; then
+    if [ $((tick % (20 * POLL_X))) -eq 0 ]; then
       meta_num pid "$WORKER_RUN_DIR/$RUN_ID/meta.json" && pid=$META_NUM || pid=0
       [ "${pid:-0}" -le 0 ] 2>/dev/null || kill -0 "$pid" 2>/dev/null || [ -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || return 1
     fi
-    sleep 0.05
+    sleep "$POLL_S"
   done
   return 1
 }

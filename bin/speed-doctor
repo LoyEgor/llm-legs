@@ -297,6 +297,7 @@ def backfill(state, now):
     held = job["todo"][:1] if job["rec"] else []
     job["todo"] = held + sorted(job["todo"][len(held):], key=mtime, reverse=True)
     budget = float(os.environ.get("SPEED_DOCTOR_BACKFILL_S") or BACKFILL_S)
+    max_steps, steps = int(os.environ.get("SPEED_DOCTOR_BACKFILL_STEPS") or 0), 0
     boots = H.c1_boots(H.read_json(os.path.join(H.state_dir(), "state.json"), {}))
     started, horizon, rows = time.monotonic(), job["at"] - LIMITS["baseline_days"] * 86400, []
     while job["todo"]:
@@ -320,7 +321,8 @@ def backfill(state, now):
         else:
             job["rec"] = rec
         rows += [e for e in events if e[0] in ("t", "d") and e[1] >= horizon]
-        if time.monotonic() - started >= budget:
+        steps += 1
+        if time.monotonic() - started >= budget or steps == max_steps:
             break
     return rows
 

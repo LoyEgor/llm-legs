@@ -508,7 +508,8 @@ job = json.load(open(os.path.join(resumed, "state.json")))["backfill"]
 check(not job["todo"] and job["stored"] and headline(done) == headline(cold)
       and done["selection"] == cold["selection"] and "backfill" not in [b["id"] for b in done["blind_spots"]],
       "the resumed backfill finishes and later runs read its rows, never the transcripts again: %s" % headline(done))
-job = {"files": 1, "todo": [1]}
+speed("speed-half", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_STEPS="20", **transcripts)
+job = json.load(open(os.path.join(work, "speed-half", "state.json")))["backfill"]
 while len(job["todo"]) * 2 > job["files"]:
     speed("speed-half", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
     job = json.load(open(os.path.join(work, "speed-half", "state.json")))["backfill"]

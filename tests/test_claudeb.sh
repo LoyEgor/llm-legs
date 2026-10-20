@@ -45,10 +45,10 @@ chmod +x "$LLM_LIMITS_ANNOUNCE_CMD"
 # The announce hook is detached; give it a beat before reading the log.
 wait_announce() {
   local expected="$1" tries=0
-  while [ "$tries" -lt 50 ]; do
+  while [ "$tries" -lt 500 ]; do
     grep -qxF -- "$expected" "$ANNOUNCE_LOG" 2>/dev/null && return 0
     tries=$((tries + 1))
-    sleep 0.1
+    sleep 0.01
   done
   return 1
 }
@@ -57,10 +57,10 @@ wait_announce() {
 # finds the previous removal's own entry and says nothing about the announce under test.
 wait_announce_grew() {
   local before="$1" tries=0
-  while [ "$tries" -lt 50 ]; do
+  while [ "$tries" -lt 500 ]; do
     [ "$(wc -l <"$ANNOUNCE_LOG" 2>/dev/null | tr -d ' ')" -gt "$before" ] && return 0
     tries=$((tries + 1))
-    sleep 0.1
+    sleep 0.01
   done
   return 1
 }
@@ -1240,7 +1240,7 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   # Holders hold the glock past the default waiter budget — under the old 10-try
   # acquire the waiters timed out and POSTed in parallel (the morning-herd 429).
   (
-    export CLAUDEB_LOCK_RETRIES=10 CLAUDEB_LOCK_DELAY=0.05
+    export CLAUDEB_LOCK_RETRIES=10 CLAUDEB_LOCK_DELAY=0.01
     account_names() { printf 'wg1\nwg2\nwg3\nwg4\n'; }
     curl() {
       local out='' prev='' a body rt
@@ -1249,7 +1249,7 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
         *'/oauth/token'*)
           body=$(cat)
           rt=$(printf '%s' "$body" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
-          printf 'S:%s\n' "$rt" >>"$SERLOG"; sleep 0.6; printf 'E:%s\n' "$rt" >>"$SERLOG"
+          printf 'S:%s\n' "$rt" >>"$SERLOG"; sleep 0.15; printf 'E:%s\n' "$rt" >>"$SERLOG"
           printf '{"access_token":"at-%s","expires_in":3600,"refresh_token":"%s"}\n200' "$rt" "$rt"
           ;;
         *'/api/oauth/usage'*)
@@ -2859,10 +2859,10 @@ printf 'tok-ann' >"$CLAUDEB_DIR/tokens/annacct"
 ann_before=$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)
 CLAUDEB_WARM_USER_EXPLICIT=false bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
 ann_tries=0
-while [ "$ann_tries" -lt 50 ]; do
+while [ "$ann_tries" -lt 500 ]; do
   [ "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -gt "$ann_before" ] && break
   ann_tries=$((ann_tries + 1))
-  sleep 0.1
+  sleep 0.01
 done
 assert test "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -eq "$((ann_before + 1))"
 LLM_LIMITS_ANNOUNCE_SUPPRESS=1 CLAUDEB_WARM_USER_EXPLICIT=false bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
