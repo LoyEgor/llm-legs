@@ -92,6 +92,20 @@ claude_ancestor() { # pid -> the nearest process at or above pid named claude (a
     }'
 }
 
+starter_chain() { # pid -> "pid etime" for pid and each ancestor below its nearest claude; pid alone when none
+  ps -Ao pid=,ppid=,etime=,comm= 2>/dev/null | awk -v pid="$1" '
+    match($0, /^ *[0-9]+ +[0-9]+ +[-0-9:]+ /) { parent[$1] = $2; etime[$1] = $3; comm[$1] = substr($0, RLENGTH + 1) }
+    END {
+      for (n = 0; pid > 1 && (pid in comm) && n < 40; n++) {
+        c = comm[pid]; sub(/.*\//, "", c)
+        if (c == "claude") { found = 1; break }
+        chain[n] = pid; pid = parent[pid]
+      }
+      if (!found && n > 1) n = 1
+      for (i = 0; i < n; i++) print chain[i], etime[chain[i]]
+    }'
+}
+
 # The caller's own session never holds: everything under the highest of its ancestors standing inside
 # the directory, so a chat landing the worktree it works in is not held by its own shell or servers.
 # A detached caller names its chat as own-claude-pid: that chat's tree is its own too, while it is still a claude.

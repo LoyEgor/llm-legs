@@ -105,6 +105,15 @@ forget
 printf '999999 %s\n' "$live_began" >"$WORKER_RUN_DIR/r3/starter"
 assert_eq block "$(stop | jq -r .decision)"
 forget
+# The starter is a chain, the run's parent first: `id=$(worker-run start … | grep …)` leaves a subshell gone
+# at once, while the script above it still waits (2026-10-19, b22790bc held twice).
+printf '999999 %s\n%s %s\n' "$live_began" "$LIVE_PID" "$live_began" >"$WORKER_RUN_DIR/r3/starter"
+assert_eq "" "$(stop)"
+mkdir -p "$WORK/fakeps"
+printf '#!/bin/sh\nprintf "%%s\\n" " 40 30 00:01 bash" " 30 20 01:00 /bin/bash" " 20 10 02:00 /bin/zsh" " 10 5 03:00 claude" " 5 1 04:00 bash" " 50 1 00:09 bash"\n' >"$WORK/fakeps/ps"
+chmod +x "$WORK/fakeps/ps"
+assert_eq $'40 00:01\n30 01:00\n20 02:00' "$(PATH="$WORK/fakeps:$PATH" starter_chain 40)"
+assert_eq "50 00:09" "$(PATH="$WORK/fakeps:$PATH" starter_chain 50)"
 # A ps that lists nothing, not even pid 1, cannot answer: the live starter still owns its run.
 mkdir -p "$WORK/mute"
 printf '#!/bin/sh\nexit 0\n' >"$WORK/mute/ps"

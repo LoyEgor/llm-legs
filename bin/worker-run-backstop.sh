@@ -8,8 +8,9 @@
 # Owned = any live process in this chat's process tree, below the nearest `claude` ancestor of this
 # hook, whose command line runs `worker-run wait` or `review-bench wait`, whatever ids it names: its
 # end wakes the chat, and this stop checks again then. Matching ids held chats whose loops read them
-# from a file or spelled the verb `$RB wait` (four times 2026-10-09). Or the process that started the
-# run still alive (a script waiting on its runs one at a time). A run whose state.json is not written
+# from a file or spelled the verb `$RB wait` (four times 2026-10-09). Or a starter still alive: any
+# process from the run's parent up to the chat's CLI (a script waiting on its runs one at a time, the
+# background Bash running it, whose end wakes the chat). A run whose state.json is not written
 # yet is still inside `worker-run start`. Fail-open everywhere.
 {
 set -u
@@ -75,17 +76,17 @@ for run in "${runs[@]}"; do
   case "$id" in *[!A-Za-z0-9._-]*) continue ;; esac
   ids+=("$id")
 done
-# A run is held by its starter still alive (a script waiting on its runs one at a time) and needs a
+# A run is held by a starter still alive and needs a
 # wait only while its supervisor lives: every run's two answers come off one listing.
 if [ "${#ids[@]}" -gt 0 ] && ! owned; then
   live=$'\n'$({
     metas=()
     for id in "${ids[@]}"; do
       metas+=("$run_root/$id/meta.json")
-      pid='' began=''
-      { read -r pid began <"$run_root/$id/starter"; } 2>/dev/null
-      [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] &&
-        printf 's/%s %s %s\n' "$id" "$pid" "$began"
+      while read -r pid began; do
+        [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] &&
+          printf 's/%s %s %s\n' "$id" "$pid" "$began"
+      done 2>/dev/null <"$run_root/$id/starter"
     done
     jq -r 'select((.pid | numbers) > 1) | "r/\(input_filename | split("/") | .[-2]) \(.pid) \(.pid_started_at | numbers // 0)"' \
       "${metas[@]}" 2>/dev/null
