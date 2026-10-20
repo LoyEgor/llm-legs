@@ -4129,19 +4129,19 @@
   {
    "id": "suite:llm-legs/test_claudeb",
    "title": "llm-legs/test_claudeb",
-   "audited_at": "2026-10-13T12:57:27+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-bypasses-20261012T235320Z-268b",
-   "cpu_run": 34.3,
-   "wall_run": 40.2,
-   "cpu_min_day": 7.18,
-   "wall_min_day": 13.05,
+   "audited_at": "2026-10-20T15:52:53+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-claudeb-20261020T114108Z-5617",
+   "cpu_run": 32.3,
+   "wall_run": 34.1,
+   "cpu_min_day": 2.61,
+   "wall_min_day": 4.9,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_claudeb.sh": "68cdc1174d0a5e2dc11bbe64fb101e6bfc78043a"
+    "llm-legs/tests/lib/suite-journal.sh": "81333618c0ede1295ff60523b106e2789bd6984d",
+    "llm-legs/tests/test_claudeb.sh": "0d1051627034a7b513ffbd005571c4f93a415d85"
    },
    "verdict": "cut",
-   "zero": "removal saves 12.0 wall-min/day; loses claudeb launch guard, oauth refresh race, lock and convergence checks",
-   "note": "fixed waits -> handshakes (4 s glock holder, sleep 2 order probe, sleep 0.3 kill check), live status without convergence spin; unsharded: ~1,100 lines of shared top-level state"
+   "zero": "removal saves 5.3 wall-min/day; loses the OAuth weather, glock serialization, lock, announce and status coverage of bin/claudeb",
+   "note": "wait cuts only, 374 asserts unchanged: probe_accounts wait -n, announce polls 0.01 s, glock hold 0.15 s (below-hold mutation red); the tests-lens read of the suite was not done (launch stopped)"
   },
   {
    "id": "suite:llm-legs/test_chatgpt_web",
