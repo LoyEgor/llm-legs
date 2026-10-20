@@ -6,7 +6,7 @@ which needs `OPENAI_API_KEY` and is a different model surface with different kno
 script enforces come from `share/image-caps/codex.json` at runtime; this file says where every value
 in that manifest came from and how to check it again.
 
-Verified against `codex-cli 0.161.0` on 2026-10-08, unchanged from 0.159.3 (0.160.1 touches only the MCP stdio launcher; 0.161.0's `ext/image-generation/src/tool.rs` only moves to the environment's `fs()` API, parameters unchanged; first pass: 0.156.1, 2026-09-23).
+Verified against `codex-cli 0.163.0` on 2026-10-20, unchanged from 0.159.3 (0.160.1 touches only the MCP stdio launcher; 0.161.0's `ext/image-generation/src/tool.rs` only moves to the environment's `fs()` API, parameters unchanged; 0.162.0 through 0.163.0 leave every `ext/image-generation/src` file but `tests.rs` byte-identical; first pass: 0.156.1, 2026-09-23).
 
 ## Capabilities
 

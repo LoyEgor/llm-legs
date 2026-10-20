@@ -443,7 +443,7 @@ codex_launch_needs_default_model() { # config.toml codex-args...
         if [ "$command_seen" = false ]; then
           command_seen=true
           case "$1" in
-            login|logout|mcp|mcp-server|app|app-server|resume|fork|review|debug|completion|cloud|apply|features|help) launch=false ;;
+            login|logout|mcp|app|app-server|resume|fork|review|debug|completion|cloud|apply|features|help) launch=false ;;
           esac
         fi ;;
     esac
@@ -482,7 +482,7 @@ codex_launch_needs_fast_mode_off() {
       -c|--config|-m|--model|-p|--profile|-C|--cd|-s|--sandbox|-a|--ask-for-approval|-i|--image|--enable|--disable|--add-dir|--local-provider)
         [ "$#" -lt 2 ] || shift ;;
       -*) ;;
-      login|logout|mcp|mcp-server|app|app-server|debug|completion|cloud|apply|features|help) return 1 ;;
+      login|logout|mcp|app|app-server|debug|completion|cloud|apply|features|help) return 1 ;;
       *) return 0 ;;
     esac
     shift
