@@ -6429,17 +6429,18 @@
   {
    "id": "fee:Skills",
    "title": "Skills (Context)",
-   "audited_at": "2026-10-14T07:40:54+03:00",
-   "by": "harness-speed-spend-fee-checks-20261014T021719Z-0b39",
-   "share": 0.000712,
+   "audited_at": "2026-10-20T15:02:14+03:00",
+   "by": "harness-speed-spend-fee-skills-20261020T114045Z-5b1e",
+   "share": 0.003679,
    "prices": {
-    "Reviewers · Skills": 257.3524999993969,
-    "Workers · Skills": 0.0
+    "Workers · Skills": 2988.488130934677,
+    "Chat · Skills": 825.5982073604524,
+    "Reviewers · Skills": 85.39563370581253
    },
    "sources": {},
    "verdict": "kept",
-   "zero": "removal saves 0.07 % of Claude spend; loses media, experiment and before-commit skill bodies on invocation",
-   "note": "bodies load only when invoked (media 9, experiment 7, before-commit 6 in 30 days); media 11.5k and experiment 4.5k bytes were compacted by claude-setup def095f on 10-13, after this window; before-commit (295k, new) is a project skill of another repo outside the four sweep repos"
+   "zero": "removal saves 0.37 % of Claude spend; loses the media skill body in every media worker (the only skill workers invoked: 112 sessions of 7 days, ~4.9k tokens once each)",
+   "note": "×5.2 is load, not waste: the invocations are one media skill read per media worker session (112 of them 10-14..10-19, 80 in the 10-15/16 burst, a handful the week before), each once, ~4.9k tokens against a 13.4k-byte body the brief's workers need to run media-run; per-unit it is ~3.0k per Worker task only because the previous 7 days had almost no media workers. No cheaper equivalent in this repo: the body is claude-setup/skills/media/SKILL.md (no ADD-DIR worktree this run; last trimmed afeaaf9), and shrinking it is md-compact's job on its own cadence"
   },
   {
    "id": "fee:Doctor metrics",
@@ -6761,6 +6762,62 @@
    "verdict": "kept",
    "zero": "removal saves the tracer's own stage, daily CPU-s 0,676,1883,1980,428,0,247 (Oct 13-19) of the project's 0-5310 CPU-min/day; loses champ58 as the base every later champion's run.sh execs (champ78 -> champ77 -> ... chain), so the current champion would not run",
    "note": "kept: one-shot research candidate of the live chat «Vector Magic macOS ARM migration» (tracers/<name> untracked by .gitignore tracers/*); no timer, loop or launchd, started by hand per eval set; the 7-day median is the Oct 14-17 burst, not a standing load; champion run.sh files chain (champ63 execs champ62, champ75 champ74 ... champ57 champ55, champ58 champ57 etc.; champ77 via champ77-mrg/champ75.sh) so each level shows its own stage plus reaped children, and the project already resumes the chain from a seed (champ78-big J1_FROM/J1_SEED); the lever, a cache of a stage keyed on input and stage tree, is in another repo and its chat"
+  },
+  {
+   "id": "fee:Other programs",
+   "title": "Other programs (Tests & checks)",
+   "audited_at": "2026-10-20T15:02:15+03:00",
+   "by": "harness-speed-spend-fee-skills-20261020T114045Z-5b1e",
+   "share": 0.00225,
+   "prices": {
+    "Workers · Other programs": 1563.7958345658658,
+    "Chat · Other programs": 552.9870968483463,
+    "Reviewers · Other programs": 92.79930236564975
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.23 % of Claude spend in tokenmap's books; loses nothing of the harness: the calls are Egor's own work tools",
+   "note": "tokenmap gap: Other programs is work, not Fee: 14 days of Bash calls to bin names no Fee rule or WORK_CLIS lists are blender-render 216 calls (65.8k est tokens, the 3D renders of the print/model work, llm-legs/bin and ~/.local/bin), pymobiledevice3 29 (22.0k, iPad device work), jira-mcp, logo-vectorize, gemini-video, gemini-probe, mattermost-mcp, connections, ipad-js, video-jitter, mm-pr; bare Claude Code doing the same task runs the same renders, so the x48 is the blender-render/pymobiledevice3 days (10-15, 10-16, 10-18, 10-19), not a harness procedure; the fix is token-map tokenmap/pie.py WORK_CLIS (add them, owner of token-map), outside this run's repositories"
+  },
+  {
+   "id": "fee:Browser check",
+   "title": "Browser check (Scripts)",
+   "audited_at": "2026-10-20T15:02:17+03:00",
+   "by": "harness-speed-spend-fee-skills-20261020T114045Z-5b1e",
+   "share": 0.000903,
+   "prices": {
+    "Background · Browser check": 13304.840633557473
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.09 % of Claude spend; loses the daily proof that each pool account's Chrome profile still drives a browser (worker-run browse --canary, enroll)",
+   "note": "worker-run browse_proof_session (bin/worker-run:6231): one Sonnet low-effort session per enrolled account, started by harness-doctor only when browse/canary.stamp is older than 23 h (docs/browser-runs.md), ~13k tokens each, -35 % vs previous 7 days; the rest of the run is the fixed browse_preamble the task needs (device proof, JS form fill, tab rules), nothing repeated; fewer firing would blind the Harness doctor Browser section and the registry every browser run reads"
+  },
+  {
+   "id": "loaded:Browser check",
+   "title": "Browser check loaded the harness configuration",
+   "audited_at": "2026-10-20T15:02:18+03:00",
+   "by": "harness-speed-spend-fee-skills-20261020T114045Z-5b1e",
+   "share": 0.000509,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "zero": "stripping saves up to 0.05 % of Claude spend (367k plain tokens over 26 runs); loses nothing if the Chrome MCP survives, every browser enrollment and proof if it does not",
+   "note": "browse_session (bin/worker-run:6153) runs 'claudeb profile <acct> -p --chrome' and needs only the claude-in-chrome MCP, Bash and Sonnet, no CLAUDE.md, skill, agent or hook; --safe-mode disables MCP servers by its help text, and whether --chrome survives it is unproven: the ask_* legs cannot carry --chrome and worker-launch-gate refuses a bare claude -p probe, a wrong guess would mark every enrolled account needs-login in the live accounts.json; the next loaded run makes the row due again, the probe belongs to a run that may launch claudeb with --chrome --safe-mode on a fixture CLAUDEB_DIR (token-map research/script-context-2026-10-12.md: Browser check 'not tried')"
+  },
+  {
+   "id": "fee:Red team",
+   "title": "Red team (Scripts)",
+   "audited_at": "2026-10-20T15:02:20+03:00",
+   "by": "harness-speed-spend-fee-skills-20261020T114045Z-5b1e",
+   "share": 0.000402,
+   "prices": {
+    "Background · Red team": 5927.224489795918
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.04 % of Claude spend; loses the standing adversary leg of the daily advisor (find-truth advisor_today.sh)",
+   "note": "already stripped at source (find-truth 45016f4 limited it to supplied context, f9b4199 moved it to ask_claude.sh's stripped default): one call a day, 37-40k tokens each in 10-06..10-19 (10-12 five replays), -32 % because the week before had extra runs; find-truth e4444c9 (10-20) puts scheduled note and advisor on Gemini Argon alone until the owner decides, which ends the Claude leg; nothing left to cut"
   }
  ]
 }
