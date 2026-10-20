@@ -439,28 +439,39 @@ image_leg_inputs_cleanup() {
 }
 
 IMAGE_LEG_INPUT_DIRS=()
-image_leg_input() {
-  local path=$2 result uv dir
-  IMAGE_LEG_INPUT=$path
-  [ -n "$path" ] || return 0
-  [[ "$path" = /* ]] && [ -f "$path" ] || usage "input $path is not an absolute path to a file"
-  uv=$(command -v uv || printf /opt/homebrew/bin/uv)
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/image-input.XXXXXX") || usage "cannot create image input directory"
-  IMAGE_LEG_INPUT_DIRS+=("$dir")
-  result=$(TMPDIR="$dir" "$uv" run -q --script "$1/share/image_input.py" "$path" 2>&1) || usage "$result"
-  IMAGE_LEG_INPUT=$result
+image_leg_batch() { # root path...: one validation start for every non-empty path; IMAGE_LEG_BATCH holds one result per path, empty for empty
+  local root=$1 path result uv dir todo=() lines=()
+  shift
+  IMAGE_LEG_BATCH=()
+  for path; do [ -z "$path" ] || todo+=("$path"); done
+  if [ "${#todo[@]}" -gt 0 ]; then
+    uv=$(command -v uv || printf /opt/homebrew/bin/uv)
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/image-input.XXXXXX") || usage "cannot create image input directory"
+    IMAGE_LEG_INPUT_DIRS+=("$dir")
+    result=$(TMPDIR="$dir" "$uv" run -q --script "$root/share/image_input.py" "${todo[@]}" 2>&1) || usage "$result"
+    while IFS= read -r path; do lines+=("$path"); done <<<"$result"
+  fi
+  local n=0
+  for path; do
+    if [ -z "$path" ]; then IMAGE_LEG_BATCH+=(""); else IMAGE_LEG_BATCH+=("${lines[n]}"); n=$((n + 1)); fi
+  done
 }
 
-image_leg_inputs() {
-  local index field
+image_leg_input() {
+  image_leg_batch "$1" "$2"
+  IMAGE_LEG_INPUT=${IMAGE_LEG_BATCH[0]}
+}
+
+image_leg_inputs() { # root [extra path]: refs, frames and the extra path (left in IMAGE_LEG_INPUT) in one start
+  local index count=0
+  [ -z "${refs[*]+x}" ] || count=${#refs[@]}
+  image_leg_batch "$1" ${refs[@]+"${refs[@]}"} "${first_frame:-}" "${last_frame:-}" "${2:-}"
   for index in ${refs[@]+"${!refs[@]}"}; do
-    image_leg_input "$1" "${refs[index]}"
-    [ "${edit:-}" != "${refs[index]}" ] || edit=$IMAGE_LEG_INPUT
-    [ "${IMAGE_LEG_EDIT:-}" != "${refs[index]}" ] || IMAGE_LEG_EDIT=$IMAGE_LEG_INPUT
-    refs[index]=$IMAGE_LEG_INPUT
+    [ "${edit:-}" != "${refs[index]}" ] || edit=${IMAGE_LEG_BATCH[index]}
+    [ "${IMAGE_LEG_EDIT:-}" != "${refs[index]}" ] || IMAGE_LEG_EDIT=${IMAGE_LEG_BATCH[index]}
+    refs[index]=${IMAGE_LEG_BATCH[index]}
   done
-  for field in first_frame last_frame; do
-    image_leg_input "$1" "${!field:-}"
-    printf -v "$field" '%s' "$IMAGE_LEG_INPUT"
-  done
+  first_frame=${IMAGE_LEG_BATCH[count]}
+  last_frame=${IMAGE_LEG_BATCH[count + 1]}
+  IMAGE_LEG_INPUT=${IMAGE_LEG_BATCH[count + 2]}
 }

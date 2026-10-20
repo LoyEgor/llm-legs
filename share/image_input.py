@@ -63,11 +63,24 @@ def prepare(path):
         return output.name
 
 
+def main(arguments):
+    outputs = {}
+    for argument in arguments:
+        if argument in outputs:
+            continue
+        path = Path(argument)
+        if not (argument.startswith("/") and path.is_file()):
+            return f"input {argument} is not an absolute path to a file"
+        try:
+            outputs[argument] = prepare(path)
+        except Exception as exc:
+            return (str(exc).replace("\n", " ") if str(exc).startswith("blank reference:")
+                    else f"cannot read image: {path} ({str(exc).splitlines()[0]})")
+    print("\n".join(outputs[argument] for argument in arguments))
+
+
 if __name__ == "__main__":
-    path = Path(sys.argv[1])
-    try:
-        print(prepare(path))
-    except Exception as exc:
-        print(str(exc).replace("\n", " ") if str(exc).startswith("blank reference:")
-              else f"cannot read image: {path} ({str(exc).splitlines()[0]})", file=sys.stderr)
+    error = main(sys.argv[1:])
+    if error:
+        print(error, file=sys.stderr)
         sys.exit(2)
