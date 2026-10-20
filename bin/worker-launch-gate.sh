@@ -72,6 +72,9 @@ LAUNCH_RES=(
   "${VENDOR_WORD}opencode${SUBCOMMAND}run${EDGE}"
   "${VENDOR_WORD}grokb?${GROK_PRINT_FLAG}"
 )
+# One literal each regex above cannot match without, so the loop below forks no grep for a vendor the text
+# never names; a regex added above needs its literal here, in the same place.
+LAUNCH_LITS=(claude claudegpt codex gemini agy opencode grok)
 
 # The worker-run subcommands that own a run's LIFE, judged in command position like every vendor
 # word above, and light-research, which starts and awaits them itself. `claim` is bookkeeping any
@@ -429,7 +432,9 @@ help_lines=''
 launch_any=()
 for launch_re in "${LAUNCH_RES[@]}"; do launch_any+=(-e "$launch_re"); done
 grep -Eq "${launch_any[@]}" <<<"$unsanctioned" 2>/dev/null || LAUNCH_RES=()
-for launch_re in ${LAUNCH_RES[@]+"${LAUNCH_RES[@]}"}; do
+for ((launch_i = 0; launch_i < ${#LAUNCH_RES[@]}; launch_i++)); do
+  [[ $unsanctioned == *"${LAUNCH_LITS[launch_i]}"* ]] || continue
+  launch_re=${LAUNCH_RES[launch_i]}
   hit=$(grep -Eo "$launch_re" <<<"$unsanctioned" 2>/dev/null) || continue
   hit=$(printf '%s\n' "${hit%%$'\n'*}" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
   [ -n "$hit" ] || continue
