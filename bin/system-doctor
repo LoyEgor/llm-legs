@@ -756,12 +756,29 @@ def tick(now=None):
 # ---------------------------------------------------------------- rollups
 
 
+PARSED = {}
+
+
+def day_file_rows(path):
+    """read_jsonl(path), parsed once per process while the file's mtime and size hold: one judge pass reads the same
+    day files for the document and for every fix proof's baseline."""
+    try:
+        seen = os.stat(path)
+    except OSError:
+        return []
+    sig = (seen.st_mtime_ns, seen.st_size)
+    kept = PARSED.get(path)
+    if kept is None or kept[0] != sig:
+        kept = PARSED[path] = (sig, read_jsonl(path))
+    return kept[1]
+
+
 def tick_rows(since, until, sub="ticks"):
     names, at = set(), since
     while at < until + 6 * HOUR_S:
         names.add(local_day(min(at, until)))
         at += 6 * HOUR_S
-    rows = [row for name in sorted(names) for row in read_jsonl(os.path.join(state_dir(), sub, name + ".jsonl"))
+    rows = [row for name in sorted(names) for row in day_file_rows(os.path.join(state_dir(), sub, name + ".jsonl"))
             if isinstance(row.get("t"), (int, float)) and since <= row["t"] <= until]
     rows.sort(key=lambda r: r["t"])
     return rows
