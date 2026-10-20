@@ -2622,11 +2622,17 @@ def load_tests(now):
     joins = {}
     for t in journal:
         joins.setdefault(str(t["label"]), []).append((t["label"], t["end"] - t["secs"], t["_roots"]))
+    for group in joins.values():
+        group.sort(key=lambda j: j[1])
+    starts_of = {key: [j[1] for j in group] for key, group in joins.items()}
     kept, peers = set(), {}
     for row in sorted(rows, key=lambda t: -t["end"]):
         began, label, root = row["end"] - row["secs"], row.get("label"), row.get("repo_root")
+        near = joins.get(str(label), ())
+        span = starts_of.get(str(label), ())
         if any(label == jl and abs(began - js) <= RUN_JOIN_S and root in roots
-               for jl, js, roots in joins.get(str(label), ())):
+               for jl, js, roots in near[bisect.bisect_left(span, began - RUN_JOIN_S):
+                                         bisect.bisect_right(span, began + RUN_JOIN_S)]):
             continue
         same = peers.setdefault(json.dumps([label, root, row.get("who")]), [])
         if any(abs(began - (k["end"] - k["secs"])) <= 3 and row["end"] < k["end"]
