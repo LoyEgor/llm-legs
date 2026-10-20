@@ -34,6 +34,41 @@ assert python3 -c 'import json, sys; assert ["diarize", "true"] in json.load(ope
 assert el speech --dest "$WORK/d.mp3" --line 'abcdefghij0123456789: hi' --line 'bbcdefghij0123456789: [laughs] yes' --dry-run
 assert python3 -c 'import json, sys; got = json.load(open(sys.argv[1])); assert got["POST"] == "/v1/text-to-dialogue" and got["body"]["model_id"] == json.load(open(sys.argv[2]))["speech"]["model"], got' "$WORK/out" "$ROOT/share/image-caps/elevenlabs.json"
 
+# --speed is refused where the API would drop it: eleven_v4 has no speed slider and dialogue settings carry
+# stability only; a model with the slider still sends it.
+el speech --dest "$WORK/a.mp3" --text hi --voice abcdefghij0123456789 --speed 1.1 --dry-run
+assert test $? -eq 2
+el speech --dest "$WORK/d.mp3" --line 'abcdefghij0123456789: hi' --model eleven_v3 --speed 1.1 --dry-run
+assert test $? -eq 2
+assert el speech --dest "$WORK/a.mp3" --text hi --voice abcdefghij0123456789 --model eleven_v3 --speed 1.1 --dry-run
+assert python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["body"]["voice_settings"] == {"speed": 1.1}' "$WORK/out"
+
+# Instant Soundtracks ride on video-to-music: separate tracks imply the sfx layer and need an .mp3 dest; none of the
+# three scores a prompt alone.
+printf 'x' >"$WORK/clip.mp4"
+assert el music --for-video "$WORK/clip.mp4" --dest "$WORK/m.mp3" --separate-tracks --audio-reference --dry-run
+assert python3 -c 'import json, sys; f = json.load(open(sys.argv[1]))["fields"]; assert all([k, "true"] in f for k in ("add_sfx", "separate_tracks", "use_audio_as_reference")), f' "$WORK/out"
+el music --for-video "$WORK/clip.mp4" --dest "$WORK/m.wav" --separate-tracks --dry-run
+assert test $? -eq 2
+el music --prompt calm --dest "$WORK/m.mp3" --add-sfx --dry-run
+assert test $? -eq 2
+assert python3 - "$ROOT/share" "$WORK" <<'PY'
+import contextlib, io, sys, zipfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import elevenlabs_media as m
+
+work, buf = Path(sys.argv[2]), io.BytesIO()
+with zipfile.ZipFile(buf, "w") as archive:
+    archive.writestr("music.mp3", b"ID3m")
+    archive.writestr("sfx.mp3", b"ID3s")
+run = m.Run("music", None)
+m.probe = lambda path: ("", "")
+m.unzip_tracks(buf.getvalue(), work, "score", run)
+assert (work / "score.music.mp3").read_bytes() == b"ID3m" and (work / "score.sfx.mp3").read_bytes() == b"ID3s"
+assert f"dest={work / 'score.sfx.mp3'}" in run.lines, run.lines
+PY
+
 # A transcript edit rides in the transcription call as transcript_edit; its answer is untimed text, so no .srt, and
 # the API takes at most 2000 chars.
 assert el transcribe --in "$WORK/short.wav" --dest "$WORK/t.txt" --edit 'Spell the names right' --dry-run

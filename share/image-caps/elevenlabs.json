@@ -81,6 +81,10 @@
   },
   "speech": {
     "model": "eleven_v4",
+    "speed_unsupported": [
+      "eleven_v4",
+      "eleven_v4_turbo"
+    ],
     "voice": "George",
     "formats": {
       "mp3": "mp3_44100_128",
@@ -133,7 +137,8 @@
     "studio": "long-form projects and podcasts: /v1/studio",
     "agents": "conversational agents platform: /v1/convai",
     "music_editing": "composition plans (/v1/music/plan), inpainting of a stored song, finetunes, streaming",
-    "realtime": "websocket TTS input streaming and realtime STT (scribe realtime is used by transcriptions-gpt)",
+    "realtime": "websocket TTS input streaming (eleven_v4_turbo dialogue websocket) and realtime STT (scribe realtime is used by transcriptions-gpt)",
+    "audio_effects": "reverb, distance, environment, background noise and pan on speech and dialogue (audio_effects, GET /v1/audio-effects/catalog; cost unchanged; stereo effects refuse pcm/ulaw/alaw): local mixing does this for us (2026-10-20)",
     "voice_library": "shared community voices: /v1/shared-voices",
     "lipsync": "a still face speaking a given audio (creatify-aurora via /v1/flows/video; Seedance 2 audio refs): Flows need the Pro plan, both accounts are Creator (402 paid_plan_required, 2026-10-06); the only video ability no other vendor has"
   },

@@ -459,6 +459,15 @@ def k_sfx(args, run: Run) -> None:
     run.attempt(work)
 
 
+def unzip_tracks(raw: bytes, out_dir: Path, stem: str, run: Run) -> None:
+    """A ZIP answer (stems, separate soundtrack tracks): each track becomes `<stem>.<its name>` in out_dir."""
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        for name in [n for n in archive.namelist() if not n.endswith("/")]:
+            target = out_dir / f"{stem}.{Path(name).name}"
+            target.write_bytes(archive.read(name))
+            run.deliver(target)
+
+
 def k_music(args, run: Run) -> None:
     c = caps()["music"]
     dest = absolute_dest(args.dest)
@@ -471,8 +480,13 @@ def k_music(args, run: Run) -> None:
         videos = [absolute_input(v, "--for-video") for v in args.for_video]
         if args.length or args.lyrics or args.instrumental or args.mode:
             raise Fail(2, "--for-video follows the videos' length; drop --length, --lyrics, --instrumental and --mode")
+        if args.separate_tracks and fmt != c["formats"]["mp3"]:
+            raise Fail(2, "--separate-tracks takes an .mp3 --dest: the ZIP's music and sfx tracks land beside it")
         fields = [("model_id", model)] + ([("description", args.prompt)] if args.prompt else [])
         fields += [("tags", tag) for tag in args.tag[:10]]
+        fields += [(name, "true") for name, on in (("add_sfx", args.add_sfx or args.separate_tracks),
+                                                   ("separate_tracks", args.separate_tracks),
+                                                   ("use_audio_as_reference", args.audio_reference)) if on]
         if args.dry_run:
             print(json.dumps({"POST": "/v1/music/video-to-music", "output_format": fmt, "fields": fields,
                               "videos": [str(v) for v in videos]}))
@@ -481,12 +495,19 @@ def k_music(args, run: Run) -> None:
         def work(client):
             raw, headers = client.call("POST", "/v1/music/video-to-music", query={"output_format": fmt}, fields=fields,
                                        files=[("videos", v) for v in videos])
+            if args.separate_tracks:
+                unzip_tracks(raw, dest.parent, dest.stem, run)
+                run.cost(headers)
+                run.media_id(headers, "song-id", "request-id")
+                return
             save_audio(raw, dest, fmt, c.get("pcm_channels", 1))
             run.cost(headers)
             run.media_id(headers, "song-id", "request-id")
             run.deliver(dest)
         run.attempt(work)
         return
+    if args.add_sfx or args.separate_tracks or args.audio_reference:
+        raise Fail(2, "--add-sfx, --separate-tracks and --audio-reference score a video: give --for-video")
     if not args.prompt:
         raise Fail(2, "missing --prompt")
     lo, hi = c["length_s"]
@@ -544,12 +565,7 @@ def k_stems(args, run: Run) -> None:
     def work(client):
         raw, headers = client.call("POST", "/v1/music/stem-separation", query={"output_format": fmt},
                                    fields=[("stem_variation_id", variation)], files=[("file", source)])
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-            names = [n for n in archive.namelist() if not n.endswith("/")]
-            for name in names:
-                target = out_dir / f"{source.stem}.{Path(name).name}"
-                target.write_bytes(archive.read(name))
-                run.deliver(target)
+        unzip_tracks(raw, out_dir, source.stem, run)
         run.cost(headers)
         run.media_id(headers, "request-id")
     run.model = variation
@@ -579,6 +595,9 @@ def k_speech(args, run: Run) -> None:
     if args.stability is not None:
         settings["stability"] = args.stability
     if args.speed is not None:
+        # Dialogue settings carry stability alone, and v4 has no speed slider: a --speed there would be dropped.
+        if lines or model in c["speed_unsupported"]:
+            raise Fail(2, f"--speed has no effect on {'a dialogue' if lines else model}; give one voice another --model")
         settings["speed"] = args.speed
 
     def work(client):
@@ -921,6 +940,9 @@ def parser(kind: str) -> argparse.ArgumentParser:
         p.add_argument("--seed", type=int)
         p.add_argument("--for-video", action="append")
         p.add_argument("--tag", action="append", default=[])
+        p.add_argument("--add-sfx", action="store_true")
+        p.add_argument("--separate-tracks", action="store_true")
+        p.add_argument("--audio-reference", action="store_true")
     elif kind == "stems":
         p.add_argument("--in", dest="input", required=True)
         p.add_argument("--dest-dir", required=True)
