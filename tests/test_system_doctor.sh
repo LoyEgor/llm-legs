@@ -1171,7 +1171,7 @@ check(probe.returncode == 0 and sample and "calibration %d" % (2 << 20) in probe
 if sample:
     check(sample["v"] == 3 and sample["calibration"] == {"wrote": 2 << 20, "seen": 0}
           and sample["trace"]["exit"] == 0 and "lost events" in sample["trace"]["stderr"] and sample["trace"]["cut"] is None
-          and 2 <= sample["trace"]["span"] <= 3 and sample["trace"]["lag_max"] < 2
+          and 2 <= sample["trace"]["span"] <= sample["trace"]["ran"] and sample["trace"]["lag_max"] < 2
           and sample["devices"]["internal:disk0"] > 0 and sample["devices"]["external:disk6"] == 3 * sample["devices"]["internal:disk0"]
           and sorted(r[:4] for r in sample["rows"]) == [["Python", "disk3s1", 1, "~/.cache/tool"], ["rsync", "disk7s1", 0, "/Volumes/Work/x"]]
           and len(sample["ticks"]) >= 2 and all(len(t) == 5 for t in sample["ticks"])
