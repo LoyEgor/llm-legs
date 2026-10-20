@@ -5793,7 +5793,7 @@
         "rule": "opportunity",
         "ident": "background/hs lag"
       },
-      "status": "open",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T09:30:00+03:00",
@@ -10667,7 +10667,7 @@
         "rule": "menu_build",
         "ident": "automation"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-20T16:23:49+03:00",

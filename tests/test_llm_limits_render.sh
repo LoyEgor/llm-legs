@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# shards: 4
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 4
 . "$(dirname "$0")/llm_limits_harness.sh" || exit 1
 # Every Claude account of every collection asks the real keychain for its plan (~30 ms, never a fixture's): a no-op answers the same nothing.
 mkdir -p "$WORK/no-keychain" && ln -s /usr/bin/false "$WORK/no-keychain/security" && export PATH="$WORK/no-keychain:$PATH"

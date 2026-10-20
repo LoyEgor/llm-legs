@@ -109,7 +109,7 @@ research_sandbox_profile() { # vendor
   local -a writable
   writable=()
   if [ "$1" = grok ]; then
-    profile_home=$(readlink -f "$(grok_home "$account")") || return 1
+    profile_home=$(resolve_path "$(grok_home "$account")") || return 1
     writable+=("$profile_home")
   else
     if [ "$account" != main ]; then

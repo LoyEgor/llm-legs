@@ -33,10 +33,11 @@ printf 'light_research=grok\n' >"$TOGGLE"
 run; rc=$?; assert test "$rc" -eq 0
 assert test "$(sed '1,2d' "$WORK/answer")" = 'grok research answer'
 assert grep -q '^ACCOUNT: researcher (grok)$' "$WORK/out"
-# Grok has no read-only mode: a tree that changed under the run fails it, answer withheld.
+# Grok research is write-denied by the sandbox, so a co-tenant's edit of the tree under the run keeps
+# the answer (test_worker_run_websearch ws-grok-sandbox fails a write the sandbox refused).
 rm -f "$WORK/answer"
-FAKE_GROK_EDIT="$REPO/file" run; rc=$?; assert test "$rc" -eq 5
-assert grep -q '^OUTCOME: READ_ONLY_VIOLATION$' "$WORK/out"; assert test ! -e "$WORK/answer"
+FAKE_GROK_EDIT="$REPO/file" run; rc=$?; assert test "$rc" -eq 0
+assert test "$(grep -c '^OUTCOME: READ_ONLY_VIOLATION$' "$WORK/out")" = 0; assert test "$(sed '1,2d' "$WORK/answer")" = 'grok research answer'
 git -C "$REPO" checkout -q -- file
 
 printf 'light_research=grok:opus\n' >"$TOGGLE"

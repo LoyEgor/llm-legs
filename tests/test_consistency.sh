@@ -1293,7 +1293,7 @@ for pool_tool in claudeb codexb geminib grokb; do
   # The wall and the directory formula come from the helper too: a vendor that walled headless
   # runs on its own, or spelled its own pool path, is how the three drift apart.
   assert grep -Fq 'worker_pool_refuse_headless ' "$ROOT/bin/$pool_tool"
-  assert grep -Eq 'pool_dir=\$\(worker_pool_dir (claudeb|codex|gemini|grok)\)' "$ROOT/bin/$pool_tool"
+  assert grep -Eq '(pool_dir=\$\(worker_pool_dir|^ *worker_pool_dir_r) (claudeb|codex|gemini|grok)( |\)|$)' "$ROOT/bin/$pool_tool"
   assert test "$(grep -c 'last enabled account' "$ROOT/bin/$pool_tool")" -eq 0
   # No vendor may re-derive the file format locally.
   assert test "$(grep -c 'grep -qxF -- ' "$ROOT/bin/$pool_tool")" -eq 0

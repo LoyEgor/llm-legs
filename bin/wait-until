@@ -5,6 +5,7 @@
 # files: GLOB matches at least N paths. log: FILE has a line matching the extended REGEX (an existing one counts).
 # Prints `met: ...` and exits 0, or `timeout after Ns` and exits 1; usage errors exit 2. The default cap is the Bash
 # call's own limit (BASH_DEFAULT_TIMEOUT_MS, 120 s without it) less 30 s; poll WAIT_UNTIL_POLL_S (default 2).
+{
 set -u
 
 usage() { printf 'usage: wait-until [--max SEC] pid PID | gone PATTERN | files GLOB N | log FILE REGEX\n' >&2; exit 2; }
@@ -68,3 +69,4 @@ while :; do
   [ $((SECONDS - start)) -lt "$max" ] || { printf 'timeout after %ss\n' "$((SECONDS - start))"; exit 1; }
   sleep "$poll"
 done
+exit; }
