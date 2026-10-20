@@ -6701,6 +6701,19 @@
    "verdict": "kept",
    "zero": "removal saves 12.8 CPU-min/day (4 hourly rows a day, 149 CPU-s each, ~60% in child renders); loses the hairline-recovery stage of the champ52-hl pipeline, in the champion chain every later candidate re-runs",
    "note": "hairline.py is a stage of champ52-hl/driver.py (hairline_stage), a pure function of (src, svg) that renders the full SVG at 4x per candidate stroke; runs when a champ52-hl/driver or a chain above it is evaluated, same re-trace of the chain as champ61 (handoff docs/handoffs/2026-10-14-logo-bench-own-tools.md); per-candidate full re-render could be region-only but changes pixels, a bench-owner decision; load is weather"
+  },
+  {
+   "id": "cpu:process/memlogd",
+   "title": "process/memlogd",
+   "audited_at": "2026-10-20T15:52:35+03:00",
+   "by": "harness-speed-cpu-process-llm-legs-bin-worker-run-20261020T113947Z-43fc",
+   "cpu_min_day": 37.8,
+   "cpu_s_run": 90.456,
+   "runs_day": 24,
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 37.8 CPU-min/day; loses the machine's memory log, the incident frames, the per-chat load snapshot of the menubar and the memory guard that kills a runaway job before the machine freezes",
+   "note": "98% of the CPU is reaped children of the 15 s tick (own 44-97 s/day): ps x2 0.07 each, chat-load python ~0.25; chat-load's title refresh read 2x~2400 run-dir files per refresh (0.23 CPU-s, due on ~60% of ticks) and registered_roots globbed 2400 run + 557 bench dirs: launchers kept 300 s, scandir, bench listing keyed on dir mtime, 40-tick replay 0.25 -> 0.13 CPU-s/tick (~11 CPU-min/day); left: node_stats' ps duplicates chat-load's ps (~0.07 CPU-s/tick, ~7 CPU-min/day) but test_memlogd pins node_count/-1 on a fake ps in ~12 asserts; bash side forks ~12 processes a tick (vm_stat, df, sysctl x3, awk x3, date x2)"
   }
  ]
 }
