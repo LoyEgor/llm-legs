@@ -1810,17 +1810,17 @@
   {
    "id": "cpu:process/llm-legs/bin/speed-doctor",
    "title": "process/llm-legs/bin/speed-doctor",
-   "audited_at": "2026-10-13T09:50:37+03:00",
-   "by": "harness-speed-cpu-process-llm-legs-bin-harness-doctor-20261012T235104Z-2d37",
-   "cpu_min_day": 0.0,
-   "cpu_s_run": 94.355,
-   "runs_day": 0,
+   "audited_at": "2026-10-20T15:11:36+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ62-run-sh-20261020T113954Z-6fbb",
+   "cpu_min_day": 7.1,
+   "cpu_s_run": 46.324,
+   "runs_day": 12,
    "sources": {
-    "llm-legs/bin/speed-doctor": "cde358f4f4cce33e5262eeef84a6bdcce0ab9a6d"
+    "llm-legs/bin/speed-doctor": "09ec74bd8d7fa24b36764089f3f40946b1312adc"
    },
-   "verdict": "kept",
-   "zero": "removal saves the Speed collector exec'd by every Harness run (doctor/speed 9.9 CPU-min/day; this row is a sampled view, 0.0 median); loses the Speed block, CPU audits and night Speed queue",
-   "note": "its CPU is doctor/speed's collector run, audited and cut by night run harness-speed-cpu-doctor-speed-20261012T235033Z-1231 (d9f92c86, 15 -> 4.6 CPU-s a run); nothing further here to avoid a second edit of the same code"
+   "verdict": "cut",
+   "zero": "removal saves the Speed collector Harness execs after each run (doctor/speed, 160-270 runs a day, 1.5-3.5 kCPU-s a day, median 6.9 CPU-s a run on 2026-10-20; this process key is the System doctor's sampled view of it); loses the Speed block, CPU audits and the night's Speed queue",
+   "note": "the collector was cut twice already (doctor/speed 10-14: 15 -> 4.6 CPU-s, llm-legs@4b13fc9e suite-audit git memo, 81b4d0e5 fix-landings flush); cold profile on a copy of the live state (memo keyed on main HEAD so git calls rerun, 523 git spawns, not the warm path): suite_audit.collect 42 s, time_budget 31, cpu_audit.collect 22 (tally of 20 journal files 8), test_health 28, load_tests 18.6 of 167 profiled s; load_tests first any() scanned every journal row of the label (1.86M comparisons, 0.51 CPU-s a call): bisect on the run start, 0.31 CPU-s, 18624 rows byte-identical (llm-legs@4efbe79f). Left: suite_audit/spend git calls and 138k json.loads of night journals per run (night_spend.rows, parsed once per reader), warm cost unmeasured from a worktree"
   },
   {
    "id": "cpu:process/llm-legs/bin/worker-run",
@@ -6701,6 +6701,66 @@
    "verdict": "kept",
    "zero": "removal saves 12.8 CPU-min/day (4 hourly rows a day, 149 CPU-s each, ~60% in child renders); loses the hairline-recovery stage of the champ52-hl pipeline, in the champion chain every later candidate re-runs",
    "note": "hairline.py is a stage of champ52-hl/driver.py (hairline_stage), a pure function of (src, svg) that renders the full SVG at 4x per candidate stroke; runs when a champ52-hl/driver or a chain above it is evaluated, same re-trace of the chain as champ61 (handoff docs/handoffs/2026-10-14-logo-bench-own-tools.md); per-candidate full re-render could be region-only but changes pixels, a bench-owner decision; load is weather"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ62/run.sh",
+   "title": "process/logo-vectorizer-bench/tracers/champ62/run.sh",
+   "audited_at": "2026-10-20T15:10:51+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ62-run-sh-20261020T113954Z-6fbb",
+   "cpu_min_day": 9.0,
+   "cpu_s_run": 232.982,
+   "runs_day": 6,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ62/run.sh": "648df5b891e4cd803a5e704f33e95c35c60b0e6c"
+   },
+   "verdict": "kept",
+   "zero": "removal saves the tracer's own stage, daily CPU-s 0,540,2173,4990,1383,0,0 (Oct 13-19), no sample since Oct 17 of the project's 0-5310 CPU-min/day; loses champ62 as the base every later champion's run.sh execs (champ78 -> champ77 -> ... chain), so the current champion would not run",
+   "note": "kept: one-shot research candidate of the live chat «Vector Magic macOS ARM migration» (tracers/<name> untracked by .gitignore tracers/*); no timer, loop or launchd, started by hand per eval set; the 7-day median is the Oct 14-17 burst, not a standing load; champion run.sh files chain (champ63 execs champ62, champ75 champ74 ... champ57 champ55, champ58 champ57 etc.; champ77 via champ77-mrg/champ75.sh) so each level shows its own stage plus reaped children, and the project already resumes the chain from a seed (champ78-big J1_FROM/J1_SEED); the lever, a cache of a stage keyed on input and stage tree, is in another repo and its chat"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ55/run.sh",
+   "title": "process/logo-vectorizer-bench/tracers/champ55/run.sh",
+   "audited_at": "2026-10-20T15:10:57+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ62-run-sh-20261020T113954Z-6fbb",
+   "cpu_min_day": 8.8,
+   "cpu_s_run": 181.21,
+   "runs_day": 5,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ55/run.sh": "b84b746f199cf9e6c58b49667513ba4bbc5c917f"
+   },
+   "verdict": "kept",
+   "zero": "removal saves the tracer's own stage, daily CPU-s 0,1818,1126,2220,529,0,106 (Oct 13-19), last 2026-10-20 of the project's 0-5310 CPU-min/day; loses champ55 as the base every later champion's run.sh execs (champ78 -> champ77 -> ... chain), so the current champion would not run",
+   "note": "kept: one-shot research candidate of the live chat «Vector Magic macOS ARM migration» (tracers/<name> untracked by .gitignore tracers/*); no timer, loop or launchd, started by hand per eval set; the 7-day median is the Oct 14-17 burst, not a standing load; champion run.sh files chain (champ63 execs champ62, champ75 champ74 ... champ57 champ55, champ58 champ57 etc.; champ77 via champ77-mrg/champ75.sh) so each level shows its own stage plus reaped children, and the project already resumes the chain from a seed (champ78-big J1_FROM/J1_SEED); the lever, a cache of a stage keyed on input and stage tree, is in another repo and its chat"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ73/run.sh",
+   "title": "process/logo-vectorizer-bench/tracers/champ73/run.sh",
+   "audited_at": "2026-10-20T15:11:06+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ62-run-sh-20261020T113954Z-6fbb",
+   "cpu_min_day": 8.7,
+   "cpu_s_run": 438.392,
+   "runs_day": 5,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ73/run.sh": "199c7119478c5b9782c3b8c34d4d8ab9e5ef68ff"
+   },
+   "verdict": "kept",
+   "zero": "removal saves the tracer's own stage, daily CPU-s 0,0,1781,10758,2719,0,524 (Oct 13-19), last 2026-10-20 of the project's 0-5310 CPU-min/day; loses champ73 as the base every later champion's run.sh execs (champ78 -> champ77 -> ... chain), so the current champion would not run",
+   "note": "kept: one-shot research candidate of the live chat «Vector Magic macOS ARM migration» (tracers/<name> untracked by .gitignore tracers/*); no timer, loop or launchd, started by hand per eval set; the 7-day median is the Oct 14-17 burst, not a standing load; champion run.sh files chain (champ63 execs champ62, champ75 champ74 ... champ57 champ55, champ58 champ57 etc.; champ77 via champ77-mrg/champ75.sh) so each level shows its own stage plus reaped children, and the project already resumes the chain from a seed (champ78-big J1_FROM/J1_SEED); the lever, a cache of a stage keyed on input and stage tree, is in another repo and its chat"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ58/run.sh",
+   "title": "process/logo-vectorizer-bench/tracers/champ58/run.sh",
+   "audited_at": "2026-10-20T15:11:11+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ62-run-sh-20261020T113954Z-6fbb",
+   "cpu_min_day": 7.1,
+   "cpu_s_run": 179.797,
+   "runs_day": 4,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ58/run.sh": "135253f59aeb1c126eae7f189a8d62b54d7c5a12"
+   },
+   "verdict": "kept",
+   "zero": "removal saves the tracer's own stage, daily CPU-s 0,676,1883,1980,428,0,247 (Oct 13-19) of the project's 0-5310 CPU-min/day; loses champ58 as the base every later champion's run.sh execs (champ78 -> champ77 -> ... chain), so the current champion would not run",
+   "note": "kept: one-shot research candidate of the live chat «Vector Magic macOS ARM migration» (tracers/<name> untracked by .gitignore tracers/*); no timer, loop or launchd, started by hand per eval set; the 7-day median is the Oct 14-17 burst, not a standing load; champion run.sh files chain (champ63 execs champ62, champ75 champ74 ... champ57 champ55, champ58 champ57 etc.; champ77 via champ77-mrg/champ75.sh) so each level shows its own stage plus reaped children, and the project already resumes the chain from a seed (champ78-big J1_FROM/J1_SEED); the lever, a cache of a stage keyed on input and stage tree, is in another repo and its chat"
   }
  ]
 }
