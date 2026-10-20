@@ -2310,7 +2310,7 @@
     "detail": "^read-only violation$"
    },
    "title": "a grok research run in a shared checkout failed READ_ONLY_VIOLATION because another chat edited that checkout during it",
-   "status": "fixed-pending",
+   "status": "open",
    "fixes": [
     {
      "at": "2026-10-20T15:25:00+03:00",
@@ -2327,7 +2327,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-20",
    "reviewed_by": "Fixer llm-light-20261020T114234Z-28a9",
-   "note": "2026-10-20: grok-1792494701-51041-05cd (rawilimo, blind ElevenLabs web research, workdir the main checkout) made only web_search/web_fetch calls, yet the before/after tree digest moved: bin/log-sweep and share/log_stores.py (dirty before) and share/log-stores.json were edited by the concurrent log_stores fixer (2f64d43c), so the answer was thrown away for a co-tenant's write. Grok research now runs under the gemini research leg's Seatbelt write-deny profile (its GROK_HOME instead of the gemini roots; live-checked: a grok run answers under it, its write tool gets Operation not permitted, the tree stays clean) and only a write/edit tool call the sandbox failed is READ_ONLY_VIOLATION; the digest is gone. Same detail on a later leg = the model tried to write, a different cause; read the run's out before calling it a regression. Left: llm-doctor DIGEST_RE (W1) now only matches pre-fix runs, removable once they leave the 14-day window (judge, the owner's).",
+   "note": "2026-10-20: grok-1792494701-51041-05cd (rawilimo, blind ElevenLabs web research, workdir the main checkout) made only web_search/web_fetch calls, yet the before/after tree digest moved: bin/log-sweep and share/log_stores.py (dirty before) and share/log-stores.json were edited by the concurrent log_stores fixer (2f64d43c), so the answer was thrown away for a co-tenant's write. Grok research now runs under the gemini research leg's Seatbelt write-deny profile (its GROK_HOME instead of the gemini roots; live-checked: a grok run answers under it, its write tool gets Operation not permitted, the tree stays clean) and only a write/edit tool call the sandbox failed is READ_ONLY_VIOLATION; the digest is gone. Same detail on a later leg = the model tried to write, a different cause; read the run's out before calling it a regression. Left: llm-doctor DIGEST_RE (W1) now only matches pre-fix runs, removable once they leave the 14-day window (judge, the owner's). 2026-10-20 (fix orchestrator): back to open, not fixed: the sandbox fix is unlanded (branch only) and its covering suites are red, test_light_research_vendors.sh and test_light_research_fanout.sh ('light-research: could not resolve sandbox write paths' -> GROK_UNAVAILABLE); worker not resumed per Egor's stop.",
    "handoff": null
   }
  ],
