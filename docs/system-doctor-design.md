@@ -337,6 +337,16 @@ and the doctor carry it.
   slow, large downloads; the growth lens names them if they grow); Telegram, Slack, Zoom, Docker (app data with user
   content, or absent); `~/.cargo` (0.1 GB), gradle, maven (absent). `also` (relative to each unit) names what counts,
   ages, is held and goes with a unit; the fallback claims it too.
+- **Coverage pass** (2026-10-20, du 5 levels deep over `~` and `/Volumes/Work`, every folder of ≥ 200 MB that no
+  store or ignore entry claims): the home is covered (0.6 GB left in `~/.cache`, the pinned browsers above); on Work
+  it found the build caches of `/Volumes/Work/Sites/*` (Rentiva's `.next`, 1.0 GB) and pnpm's Work-volume store
+  (0.9 GB), now in `repo-build-caches` and `pnpm-store`. The rest is Egor's work, not cache: Nextcloud design files,
+  device mockups, logo renders, bench sets and results, game art, `.venv`s and `node_modules` (installed, a bench run
+  may hold them), git objects, Unity `Library` folders (1.3 GB, a long reimport), the video harness's
+  `scratch/tools-2026-10-01` (1.1 GB, its project's call) and find-truth's API-built data cache.
+- **Automation browsers' HTTP cache**: gemini_web launches every gemini-web and chatgpt-web profile with
+  `--disk-cache-size=200 MB`: these profiles run daily, so `chromium-caches` (30 idle days) never reached them and
+  Chrome sized each from free disk (~750 MB, 9 GB in all); the next launch trims it, logins untouched.
 - **Work tmp** (`work-tmp`, a log store of group temp, 14 days a top-level dir): `/Volumes/Work/tmp`, where night and
   worker runs put scratch off Data (66 GB on 2026-10-20, 57 GB of it the upscale's model weights). The log growth
   (`log-growth` and each group's growth in the view) compares only the stores both scans list, so a store the

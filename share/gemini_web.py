@@ -564,9 +564,12 @@ def chrome_binary(app: Path) -> str:
 # AutomationControlled sets navigator.webdriver, and with it every Gemini-app music generation fails.
 # Every path reads <profile>/Default: a Chrome sign-in and sign-out in the login window (notcom, 2026-10-19) moved the
 # profile to "Profile 1", where the login was never found.
+# The HTTP cache keeps 200 MB a profile: by default Chrome sizes it from free disk space (~750 MB each on 2026-10-20,
+# 9 GB over the daily-run profiles, which never sit idle long enough for log-sweep's chromium-caches); a smaller limit
+# trims it on the next launch and touches no cookie, login or site storage.
 COMMON_FLAGS = ["--profile-directory=Default", "--use-mock-keychain", "--no-first-run", "--no-default-browser-check",
                 "--disable-features=Translate,MediaRouter", "--lang=en-US",
-                "--disable-blink-features=AutomationControlled"]
+                "--disable-blink-features=AutomationControlled", "--disk-cache-size=209715200"]
 
 
 def chrome_pid(profile: Path) -> int | None:
