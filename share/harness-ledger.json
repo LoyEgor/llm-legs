@@ -9323,19 +9323,30 @@
     },
     {
       "id": "limit_hit:claude-setup:stop-dispatch.hook-kill",
-      "title": "stop-dispatch killed notice-connections.sh at its 5 s cap (usual 0.15 s)",
+      "title": "stop-dispatch killed notice-connections.sh at its 5 s cap (usual 0.1 s): 6 of 9 kills in 24 h, 2026-10-19/20",
       "match": {
         "rule": "limit_hit",
         "ident": "^claude\\-setup:stop\\-dispatch\\.hook\\-kill$"
       },
-      "status": "ruled-out",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-20T15:30:00+03:00",
+          "by": "harness-limits-20261020T113903Z-59b1, recording claude-setup@ab0da798",
+          "files": [
+            "claude-setup/hooks/stop.d/notice-connections.sh",
+            "claude-setup/tests/test_connections.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-14",
-      "reviewed_by": "night 20261014T013750Z-8004 harness-limits-20261014T021654Z-0129",
-      "note": "2026-10-14 ruled out as a hang of ours: the one kill in 577 runs of the hook (born claude-setup@4fcd4bba 2026-10-13 11:27Z), 15:36:37Z in a stop where the parallel notices also ran long (chat-names 1.96 s, word-journal 1.42 s) on a saturated machine (samples.jsonl 15:32Z busy 0.99, kernel 0.48, 1191 forks). `connections check` is 0.11-0.15 s wall on ~0.1 CPU-s (cProfile: 2394 stats, 61 opens, 28 JSON decodes, nothing waits); the only blocking calls are edit_registry's flock (reached only when something new is found, which then prints a notice) and rb_emit, and the slow runs of the same 15:25-17:05Z window (4.31, 3.46, 2.58 s on 0.11-0.14 CPU-s) were all silent, so the wall was on the read-only path. Ruled out: lock contention (no sync between the owner chat's 11:14Z migration and 16:51Z: no sync.log, last-sync.json/lock mtimes), the 929 dead $TMPDIR project keys it stats (3 ms, unchanged under 4 mktemp/rmdir churn loops), CPU saturation (10 busy loops: 0.10-0.26 s), the extra imports (15 vs chat_names' 9 dylibs; concurrent.futures+subprocess ~25 ms). Unattributed: why its wall/CPU ran 10-36x in that window against 2-7x for its siblings (blind spot hook-off-cpu-wait). A kill of any hook with usual under 1 s at the 5 s cap reads over LIMIT_FAULT_X by construction.",
+      "last_reviewed": "2026-10-20",
+      "reviewed_by": "harness-limits-20261020T113903Z-59b1",
+      "note": "2026-10-20: 9 kills in 24 h (hits.jsonl), 6 of them notice-connections (6 of its 420 runs; 15 over 2 s, against notice-reports 1 and word-journal 4), 3 siblings only inside two stops where the whole notice batch stalled (2026-10-19 22:48Z; 2026-10-20 10:06Z: chat-names, connections, word-attested killed together, word-journal 4.25 s, usual 0.03-0.12 s). Samples at the kills: busy 0.92-0.997 in 4 of 5; load average 140-272 during this run. The connections check is 0.06-0.1 CPU-s under Homebrew python3 (0.36-0.51 s wall at load 210, no stall reproduced); the read-only path waits on nothing (2026-10-14 note). Fix: with the report bus and a session id the check runs detached and posts its notice to the chat's queue (report-bus post --session), so no stop waits on it or kills it; it was the slowest notice in 229 of 586 stops (+87 s stop wall over 3 days). Not fixed: kills of the other notices in a whole-batch stall (load, the limit's own normal); a recurrence there is that, not this hook (blind spot hook-off-cpu-wait still unattributed). Ruled out: lock contention (no sync since 10-08, last-sync.json), log-sweep I/O (no sweep within 15 min of any kill), memory (mem_free 36-84). Found: /usr/bin/python3 (Xcode 3.9) runs with dont_write_bytecode and no stdlib __pycache__, 0.23 CPU-s for this check against 0.08 under Homebrew's; the killed chats' PATH puts /opt/homebrew/bin first, so not this cause, but any hook reached through /usr/bin/python3 pays it.",
       "handoff": null,
-      "ruled_at": "2026-10-14T02:30:36Z"
+      "ruled_at": null
     },
     {
       "id": "regression-test-health-wait-night-volume",
