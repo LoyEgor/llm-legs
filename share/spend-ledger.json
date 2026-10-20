@@ -6620,6 +6620,57 @@
    "verdict": "cut",
    "zero": "removal saves 0.00 % of Claude spend; loses nothing of ours: the listing now holds only Claude Code's built-in agents",
    "note": "cut at source by claude-setup 46879c63 (10-09) retiring the seven relay agents: the attachment fell from 576-611 est tokens a request (10-06..08) to 93-131 (10-10..20), Workers cell price 657 -> 0.0 in tokenmap; ~/.claude/agents (symlink to claude-setup/agents) is empty; the ~100 left is the vendor's built-in agent listing, not ours to remove; Δ -96 % is that cut showing"
+  },
+  {
+   "id": "menus",
+   "title": "Token tracking and Doctors menus against what the night reads",
+   "audited_at": "2026-10-20T15:02:40+03:00",
+   "by": "harness-speed-spend-menus-20261020T114047Z-0451",
+   "share": 0.0,
+   "prices": {},
+   "sources": {
+    "llm-legs/bin/code-doctor": "53b46f8c540d584ea55ae7f5872da2ede28618f6",
+    "llm-legs/bin/harness-doctor": "f877ce264da75c5de3ba219108a9dc11b79f2219",
+    "llm-legs/bin/llm-doctor": "47ece0fbb43f8c0b5dd71066c73e86b8d755fedc",
+    "llm-legs/bin/speed-doctor": "09ec74bd8d7fa24b36764089f3f40946b1312adc",
+    "llm-legs/bin/system-doctor": "b0f8d11312f9f699b582e30d4146a08478c5ab7a",
+    "llm-legs/bin/updater-doctor": "09c7ad38e8d1eace31d04f5da3c21aa8ec969c0b",
+    "llm-legs/hammerspoon/doctors.lua": "b73bdd4ccec4ec5f5f745d7ec8f3866b306f42f6",
+    "llm-legs/hammerspoon/token-tracking.lua": "0717a0f9af3232d374b764778c575299b14e26be",
+    "token-map/tokenmap/pie.py": "758d2fd95baed129b643f5f3238ffc3bf6f796dc",
+    "token-map/tokenmap/tracking.py": "52431ee0cd11654755ef979fc59b113c3a185cd4"
+   },
+   "verdict": "kept",
+   "zero": "removal saves nothing: the menus are views, no tokens spent; loses Egor's only read of doctor and spend state",
+   "note": "read tracking.json rows and sections (worse rows: Hidden calls est. +29 %, Cold restarts 2.2M, Repeated reads 0.1M, retells 7k, Codex pool +231 % = load) and the harness latest.json problem list (360 rows, 13 spend_audit watches) against both menus after 3ea8810a; every red or loud menu row has a problem behind it and the calm/DIM rows are report-only by design; the one gap, worker compaction summaries +82 % under Hidden calls, is a blind_spots row (worker-compaction-summaries), not a rule: a new detector is the owner's"
+  },
+  {
+   "id": "fee:Started by cwd.sh",
+   "title": "Started by cwd.sh (Scripts)",
+   "audited_at": "2026-10-20T15:03:04+03:00",
+   "by": "harness-speed-spend-menus-20261020T114047Z-0451",
+   "share": 0.0,
+   "prices": {
+    "Background · Started by cwd.sh": 0.0
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0: this week's price is 0 (prev 7: 45k plain, 0.0002 pts); loses nothing, no program of ours is behind the label",
+   "note": "label is a launcher name tokenmap read from ~/.cache/claudeb/starts.tsv: three claudeb headless starts on 2026-10-12 21:11Z (ask_claude.sh < cwd.sh < zsh, notcom, find-truth and /tmp/stub-probe/empty), a throwaway /tmp/stub-probe/cwd.sh a chat wrote to probe ask_claude.sh's cwd handling; no file named cwd.sh exists in any repo (git log -S cwd.sh: only direction docs), nothing started since, the 7d window has left it; nothing to cut"
+  },
+  {
+   "id": "fee:Started by worker-run",
+   "title": "Started by worker-run (Scripts)",
+   "audited_at": "2026-10-20T15:03:07+03:00",
+   "by": "harness-speed-spend-menus-20261020T114047Z-0451",
+   "share": 0.0,
+   "prices": {
+    "Background · Started by worker-run": 0.0
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0: this week's price is 0 (prev 7: 8k plain, 0.00003 pts); removing worker-run's starts would stop the workers, not a fee",
+   "note": "label is the launcher of Background chat-kind sessions tokenmap matched to a worker-run headless start in starts.tsv (cwd match within 120 s) that no worker journal claimed; prev 7 217 units at 37 tokens, this week 98 units at price 0: worker-run's own runs are classified Workers through the attempt journal (zones.py), so the leftover label carries no fee; no worker-run code path starts an unjournaled session that spends fee, nothing to cut"
   }
  ]
 }
