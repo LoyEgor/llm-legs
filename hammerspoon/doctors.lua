@@ -607,31 +607,45 @@ local function nightEntry()
     disabled = #jobs == 0 or nil, problems = 0 }
 end
 
+local function parseNight(stdout)
+  local lines = {}
+  for line in stdout:gmatch("[^\n]+") do lines[#lines + 1] = line end
+  local text, tone, busy, id = (lines[1] or ""):match("^([^\t]*)\t([012])\t?([01]?)\t?([^\t]*)")
+  local jobs, handoffs, speed = {}, {}, nil
+  for index = 2, #lines do
+    local fields = {}
+    for field in (lines[index] .. "\t"):gmatch("([^\t]*)\t") do fields[#fields + 1] = field end
+    if fields[1] == "speed" and #fields >= 5 and tonumber(fields[2]) then
+      speed = { gain = tonumber(fields[2]), proven = tonumber(fields[3]) or 0, slower = tonumber(fields[4]) or 0,
+        pending = tonumber(fields[5]) or 0 }
+    elseif fields[1] == "handoff" and #fields >= 4 then
+      handoffs[#handoffs + 1] = { phase = fields[2], title = fields[3], path = fields[4] }
+    elseif fields[2] == "0" or fields[2] == "1" or fields[2] == "2" then
+      jobs[#jobs + 1] = { text = fields[1], red = fields[2] == "1", quiet = fields[2] == "0", detail = fields[3] or "",
+        ref = fields[4], kind = fields[5], resumable = fields[6] == "1" and fields[4] ~= nil and fields[4] ~= "",
+        way = fields[7] }
+    end
+  end
+  return { at = os.time(), text = text ~= "" and text or nil, red = tone == "1", quiet = tone == "0",
+    running = busy == "1", jobs = jobs, handoffs = handoffs, speed = speed, id = id ~= "" and id or nil }
+end
+
+-- The last good reading outlives a reload and a failed refresh, so Last night never blinks out (Egor 2026-10-20).
+local function nightCache() return dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/night-latest.txt" end
+
 function M.refreshNight()
   if running(nightTask) then return end
+  if night.at == 0 and not night.text then
+    local file = io.open(nightCache())
+    if file then night = parseNight(file:read("a") or "") night.at = 0 file:close() end
+  end
   local path = nightRunPath()
   local ok, task = pcall(hs.task.new, path, function(code, stdout)
     nightTask, built = nil, nil
-    local lines = {}
-    for line in (code == 0 and stdout or ""):gmatch("[^\n]+") do lines[#lines + 1] = line end
-    local text, tone, busy, id = (lines[1] or ""):match("^([^\t]*)\t([012])\t?([01]?)\t?([^\t]*)")
-    local jobs, handoffs, speed = {}, {}, nil
-    for index = 2, #lines do
-      local fields = {}
-      for field in (lines[index] .. "\t"):gmatch("([^\t]*)\t") do fields[#fields + 1] = field end
-      if fields[1] == "speed" and #fields >= 5 and tonumber(fields[2]) then
-        speed = { gain = tonumber(fields[2]), proven = tonumber(fields[3]) or 0, slower = tonumber(fields[4]) or 0,
-          pending = tonumber(fields[5]) or 0 }
-      elseif fields[1] == "handoff" and #fields >= 4 then
-        handoffs[#handoffs + 1] = { phase = fields[2], title = fields[3], path = fields[4] }
-      elseif fields[2] == "0" or fields[2] == "1" or fields[2] == "2" then
-        jobs[#jobs + 1] = { text = fields[1], red = fields[2] == "1", quiet = fields[2] == "0", detail = fields[3] or "",
-          ref = fields[4], kind = fields[5], resumable = fields[6] == "1" and fields[4] ~= nil and fields[4] ~= "",
-          way = fields[7] }
-      end
-    end
-    night = { at = os.time(), text = text ~= "" and text or nil, red = tone == "1", quiet = tone == "0",
-      running = busy == "1", jobs = jobs, handoffs = handoffs, speed = speed, id = id ~= "" and id or nil }
+    if code ~= 0 then night.at = os.time() return end
+    night = parseNight(stdout or "")
+    local file = io.open(nightCache(), "w")
+    if file then file:write(stdout or "") file:close() end
   end, { "latest", "--menu" })
   if not ok or not task then night.at = os.time() return end
   task:setEnvironment(limits.diagnosticsEnvironment())

@@ -45,7 +45,7 @@ Code         3  ▁▁▂▃▄▆█    3 ▸
 Lost time 0.93  ▁▁▂▃▄▆█      ▸
 Spend     0.46  ▁▁▂▃▄▆█      ▸
 System       2  ▁▁▂▃▄▆█    3 ▸
-Last night 5 Oct · stopped early: no jobs
+Night 5 Oct · stopped · no jobs
 ──────────
 Land night branches now
 Run everything now

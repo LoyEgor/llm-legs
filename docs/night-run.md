@@ -288,8 +288,8 @@ trend's totals (`docs/speed-doctor-design.md` §3 ROI). Last the morning's «С�
 matured since the night before closed (date, load-matched min/day, ✓ its proofs, ! slower = regression rows), then
 the 7-night total.
 
-The Doctors menu's last-night row comes from `night-run latest --menu`, e.g. `Last night 30 Sep: 11 of 13 · 2
-unfinished`; its submenu: once finished, the night's fixes as proofs mature (`time_budget.py speed`, hourly:
+The Doctors menu's last-night row comes from `night-run latest --menu`, e.g. `Night 30 Sep · 11/13 · 2
+left`; its submenu: once finished, the night's fixes as proofs mature (`time_budget.py speed`, hourly:
 min/day, ✓ proven, red ! slower, → pending), `✓ done`, `→ queued`, red `! To: Egor` handoff rows with a count, each
 title down to its doc (`handoffs.py --night`), then a row per job direction with `✓ → !` job counts (red first, then
 owing), its jobs and reasons below.

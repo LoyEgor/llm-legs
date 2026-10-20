@@ -525,7 +525,7 @@ do
         table.sort(samples)
         print(string.format("BENCH %s p50=%.3f ms p95=%.3f ms n=%d", pair[1], samples[25], samples[48], #samples))
       end
-      trendNight:finish(0, "Last night 5 Oct · stopped early: no jobs\t0\t0\n")
+      trendNight:finish(0, "Night 5 Oct · stopped · no jobs\t0\t0\n")
       local rendered = trendDoctor.menuItems()
       print("FIXTURE " .. text(trendDoctor.title()))
       for _, item in ipairs(rendered) do print("FIXTURE " .. text(item.title) .. (item.menu and " ▸" or "")) end
@@ -1004,6 +1004,12 @@ tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4\t0\t0\n")
 nightRow = doctors.menuItems()[8]
 check(nightRow and text(nightRow.title) == "Last night 30 Sep: 4 of 4" and dimmed(nightRow.title)
   and nightRow.disabled, "a clean night with no job rows is dim")
+-- The last good reading outlives a failed refresh and a reload: Last night never blinks out (P1, 2026-10-20).
+doctors.refreshNight()
+tasks[#tasks]:finish(1, "", "killed\n")
+check(text((doctors.menuItems()[8] or {}).title or "") == "Last night 30 Sep: 4 of 4", "a failed refresh keeps Last night")
+check(text((loadDoctors().menuItems()[8] or {}).title or "") == "Last night 30 Sep: 4 of 4",
+  "a reload shows the last good night before its own refresh returns")
 -- Handoffs under the night: a glyph, an aligned count and a word per phase, each title one level down, its doc below.
 do
   local handoffLines = { "Last night 30 Sep: 1 of 1\t0\t0\n", "LLM fixer\t0\t\tllm-x\tfixer\t0\n",
@@ -1098,6 +1104,9 @@ doctors.runEverything()
 check(#dialogs == dialogCount and #tasks == 2, "a running night asked or started again")
 doctors.refreshNight()
 tasks[#tasks]:finish(4, "", "night-run: cannot read\n")
+check(#doctors.menuItems() == 11, "a failed night-run keeps the last good row")
+doctors.refreshNight()
+tasks[#tasks]:finish(0, "")
 check(#doctors.menuItems() == 10, "an empty night-run hides the row")
 
 -- Land night branches now: bin/night-run start --cleanup behind the same Cancel-first confirmation; off while a night runs.

@@ -267,7 +267,7 @@ night job "$id" set p1 state=blocked-on-egor reason="step 10 needs his word" >/d
 # Plain words for the Doctors menu: a title line, then one line per job; red only where Egor is needed.
 night latest --menu >"$WORK/menu"
 started=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$R")
-assert [ "$(head -1 "$WORK/menu")" = "$(printf 'Night run since %s: 2 of 12 · 1 unfinished · 7 in progress · 1 failed to launch · 1 need you\t1\t1\t%s' "$started" "$id")" ]
+assert [ "$(head -1 "$WORK/menu")" = "$(printf 'Night since %s · 2/12 · 1 left · 7 running · 1 failed · 1 need you\t1\t1\t%s' "$started" "$id")" ]
 assert grep -qxF "$(printf 'LLM fixer\t0\t\tllm-20260930T010203Z\tfixer\t0\tpool')" "$WORK/menu"
 assert grep -qxF "$(printf 'cleanup debt-round · unfinished · hung\t2\thung: idle 1800\tdebt-round\tdebt\t0\tfit')" "$WORK/menu"
 assert grep -qxF "$(printf 'harness-r1 · failed to launch · opener\t1\topener\tharness-r1\tfixer\t0\tharness')" "$WORK/menu"
@@ -365,17 +365,17 @@ night job "$id2" set f1 state=merged "commits=repo:$pushed_hash" pushed=true >/d
 night job "$id2" set v1 state=nothing-to-do >/dev/null
 CLAUDE_CODE_SESSION_ID=$(jq -r .session "$(record "$id2")") night finish "$id2" >/dev/null
 day2=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id2")")
-assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
+assert [ "$(night latest --menu | head -1)" = "$(printf 'Night %s · 2/2\t0\t0\t%s' "$day2" "$id2")" ]
 night report | body | grep -q "^night $id2 " || fail "report without an id reads the latest night"
 night job "$id2" set v1 state=merged "commits=repo:$local_hash" >/dev/null
-assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 · 1 not pushed\t2\t0\t%s' "$day2" "$id2")" ]
+assert [ "$(night latest --menu | head -1)" = "$(printf 'Night %s · 2/2 · 1 not pushed\t2\t0\t%s' "$day2" "$id2")" ]
 assert grep -qxF "$(printf 'v1 update · not pushed\t2\t\tv1\tvendor\t0\tupdater')" <(night latest --menu)
 night report >"$WORK/report2"
 assert grep -qxF "landed · vendor · v1 · repo@${local_hash:0:7} · code +0/-0 · not pushed" "$WORK/report2"
 assert grep -qxF "total · 2 landed · 1 not pushed" "$WORK/report2"
 night job "$id2" set f1 state=nothing-to-do >/dev/null
 night job "$id2" set v1 state=nothing-to-do >/dev/null
-assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
+assert [ "$(night latest --menu | head -1)" = "$(printf 'Night %s · 2/2\t0\t0\t%s' "$day2" "$id2")" ]
 # Handoffs under the last night: those it carried by their doc's Status, those open for the next one, then every
 # open trade addressed to Egor (a trade doc, an audit row with verdict trade), each with its doc path.
 HO="$WORK/repo/docs/handoffs"
@@ -425,7 +425,7 @@ id4=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
 assert [ "$(night report "$id3" | body | grep "^night $id3 ")" = "night $id3 · $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$(record "$id3")")–- · UNFINISHED" ]
 rm "$(record "$id")" "$(record "$id2")" "$(record "$id4")"
 IFS=$'\t' read -r text red running _ < <(night latest --menu)
-assert [ "$text" = "Last night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id3")"), stopped early: no jobs" ]
+assert [ "$text" = "Night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id3")") · stopped · no jobs" ]
 assert [ "$red$running" = 00 ]
 
 # The chat does not open: the night is closed with a note and reads red.
@@ -436,7 +436,7 @@ assert grep -qF 'the orchestrator chat did not open' "$WORK/err"
 id5=$(ls "$NIGHTS" | sed -n 's/\.json$//p' | head -1)
 assert jqe '.finished_at != null and (.note | startswith("orchestrator chat did not open"))' "$(record "$id5")"
 IFS=$'\t' read -r text red _ < <(night latest --menu)
-assert [ "$text" = "Last night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id5")"): did not start" ]
+assert [ "$text" = "Night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id5")") · did not start" ]
 assert [ "$red" = 1 ]
 assert grep -q "^orchestrator chat did not open	1	orchestrator chat did not open: " <(night latest --menu)
 rm "$DATA/opener-fails"

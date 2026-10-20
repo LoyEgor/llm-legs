@@ -1713,17 +1713,17 @@ cmd_latest() {
     def tone: if .state == "failed-launch" or .state == "blocked-on-egor" then 1
       elif .state == "nothing-to-do" or .state == "settled" or (.state == "merged" and .pushed) then 0 else 2 end;
     totals as $t
-    | (if $t.running then "Night run since \(.started_at | hm)"
-       else "Last night \(.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0"))"
-         + (if $t.unfinished then ", stopped early" else "" end) end) as $when
+    | (if $t.running then "Night since \(.started_at | hm)"
+       else "Night \(.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0"))"
+         + (if $t.unfinished then " · stopped" else "" end) end) as $when
     | ($t.merged + $t.nothing + $t.settled) as $done
     | (if (.jobs | length) == 0 then [if .note then "did not start" else "no jobs" end]
-       else ["\($done) of \(.jobs | length)"]
+       else ["\($done)/\(.jobs | length)"]
          + [count($t.unpushed; "not pushed"),
-            count($t.left + (if $t.running then 0 else $t.pending + $t.live end); "unfinished"),
-            count(if $t.running then $t.pending + $t.live else 0 end; "in progress"),
-            count($t.failed; "failed to launch"), count($t.blocked; "need you")] end) as $parts
-    | "\($when): \($parts | join(" · "))\t\(if $t.failed + $t.blocked > 0 or .note != null then 1
+            count($t.left + (if $t.running then 0 else $t.pending + $t.live end); "left"),
+            count(if $t.running then $t.pending + $t.live else 0 end; "running"),
+            count($t.failed; "failed"), count($t.blocked; "need you")] end) as $parts
+    | "\($when) · \($parts | join(" · "))\t\(if $t.failed + $t.blocked > 0 or .note != null then 1
         elif $t.running or ([.jobs[] | tone] | index(2)) then 2 else 0 end)\t\(
         if $t.running then 1 else 0 end)\t\(.id)",
       (if .note then "orchestrator chat did not open\t1\t\(.note | flat)" else empty end),
