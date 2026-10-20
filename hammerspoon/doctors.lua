@@ -14,6 +14,15 @@ local ROW_CELLS = 64
 local LAG_EVERY_S, LAG_MIN_S = 1, 0.05
 local VERDICTS = { "fixed", "ruled-out", "weather", "blind-spot", "handoff" }
 local LOUD = { new = true, open = true, regressed = true }
+-- Egor's red (docs/doctors-contract.md "Menu layout"): a loud problem nothing acts on reads calm, while every document,
+-- the night and doctor-fix keep it as it is. A vendor release waits for its integration; an unregistered store and
+-- swap writes name no cause and no lever (`docs/system-doctor-design.md`).
+local CALM_RULES = { updater = { ["event-waiting"] = true },
+  system = { ["unregistered-store"] = true, ["swap-writes"] = true } }
+-- The machine itself at risk (its disk filling, its swap exhausted): red whoever's cause.
+local AT_RISK = { ["free-space"] = true, ["dir-growth"] = true, swap = true }
+local held = {}
+local RED_DAYS_KEEP = 8
 local DOCTORS = {
   { key = "llm", fix = "Fix — open a fixer chat", env = "LLM_DOCTOR", ledger = "doctor-ledger.json" },
   { key = "harness", fix = "Fix — open a fixer chat", env = "HARNESS_DOCTOR", ledgerEnv = "HARNESS_LEDGER",
@@ -230,6 +239,38 @@ local function runState(run)
   if failed then return "failed", failed end
   if abandoned then return "abandoned", abandoned end
   return "open", limits.parseTime(run.launched_at) or limits.parseTime(run.created_at)
+end
+
+-- Problem ids an open fixer run holds: a run launched within FIX_BUSY_S, neither closed, abandoned nor failed. The
+-- stamp in its name skips the old records unread.
+local function heldIds(now)
+  local runs = dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/runs"
+  local attrs = hs.fs.attributes(runs)
+  local key = attrs and string.format("%s:%s:%s:%s", runs, attrs.ino or "", attrs.modification or "", attrs.size or "")
+  local ids = {}
+  for _, name in ipairs(attrs and runNames(runs, key) or {}) do
+    local y, mo, d, h, mi, s = name:match("%-(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)Z%-%x+%.json$")
+    local at = y and limits.parseTime(string.format("%s-%s-%sT%s:%s:%sZ", y, mo, d, h, mi, s))
+    if at and now - at < FIX_BUSY_S then
+      local run = readJson(runs .. "/" .. name)
+      if runState(run) == "open" then
+        for _, problem in ipairs(type(run.problems) == "table" and run.problems or {}) do
+          if type(problem) == "table" and problem.id ~= nil then ids[tostring(problem.id)] = true end
+        end
+      end
+    end
+  end
+  return ids
+end
+
+-- Red: true now (new, open, regressed), something acts on it (not a calm rule; a System cause that is no fix target
+-- is the doctor's own `report only`), and no open fixer run holds it.
+local function isRed(key, problem)
+  if type(problem) ~= "table" or not LOUD[problem.state] or held[tostring(problem.id)] then return false end
+  if (CALM_RULES[key] or {})[problem.rule] then return false end
+  local cause = problem.cause
+  return not (key == "system" and type(cause) == "table" and cause.name ~= nil and not cause.fix_target
+    and not AT_RISK[problem.rule])
 end
 
 local function verdictCounts(decisions)
@@ -505,7 +546,7 @@ local function directionRows(groups)
 end
 
 local GREEN = style.tone(style.GREEN, false)
-local TONES = { [style.RED] = "r", [style.DIM_RED] = "d", [style.DIM] = "m", [GREEN] = "g" }
+local TONES = { [style.RED] = "r", [style.DIM] = "m", [GREEN] = "g" }
 local styledCache, styledCount = {}, 0
 
 local function styled(segments)
@@ -517,7 +558,7 @@ local function styled(segments)
   for _, segment in ipairs(segments) do
     local text, tone = segment[1], segment[2]
     local piece = tone == GREEN and hs.styledtext.new(text, { font = style.MONO, color = tone })
-      or infoTitle(text, tone == style.RED, tone == style.DIM or tone == style.DIM_RED, tone == style.DIM_RED)
+      or infoTitle(text, tone == style.RED, tone == style.DIM)
     title = title and title .. piece or piece
   end
   if styledCount >= 256 then styledCache, styledCount = {}, 0 end
@@ -925,9 +966,9 @@ end
 
 local function summaryTitle(name, value, status, history, now, stale, indexed)
   local bars, median = trend(history, now)
-  local tone = (stale or status == "nodata") and style.DIM
-    or (status == "error" or status == "problems") and style.RED
-    or (status == "blind" or status == "watch") and style.DIM_RED or GREEN
+  -- RED: act now; DIM: cannot tell (no data, stale, a blind collector); GREEN: nothing for Egor.
+  local tone = (status == "error" or status == "problems") and not stale and style.RED
+    or (stale or status == "nodata" or status == "blind") and style.DIM or GREEN
   local segments = { { string.format("%-9s", name), tone }, { " " },
     value and { padded((indexed and ratio or rounded)(value), 4) } or { padded(MISSING, 4), style.DIM }, { "  " } }
   for _, bar in ipairs(bars) do segments[#segments + 1] = bar end
@@ -1011,10 +1052,9 @@ local function byName(rows, nameOf, valueOf, countOf)
   return out
 end
 
+-- RED for a red problem; nil (the row's own tone) for any other.
 local function problemTone(problem)
-  if not problem then return nil end
-  if LOUD[problem.state] then return style.RED end
-  return style.DIM_RED
+  return problem and isRed("system", problem) and style.RED or nil
 end
 
 local function louder(a, b)
@@ -1125,7 +1165,7 @@ local function movedRows(moved, incoming)
     local label, rest = plain:match("^([^:]+):%s*(.*)$")
     if label then
       local count = counts[label] or 0
-      local tone = count > 0 and style.RED or rest:match("^watch") and style.DIM_RED or nil
+      local tone = count > 0 and style.RED or nil
       local shown = listRow(count > 0 and tostring(count) or "", "", label, tone, item.menu)
       local section = MOVED_TO[label]
       bySection[section] = bySection[section] or {}
@@ -1435,7 +1475,7 @@ local function systemSections(document, now, moved, incoming)
         elseif per and (share or 0) >= 0.01 then
           menu[#menu + 1] = row({ { padded(amount(per * term[4]), 5) }, { " " .. string.format("%-5s", term[3]) .. "  " },
             { string.format("%-9s", term[2]) }, { padded(times(share or 0) .. "×", 6),
-              (share or 0) >= 1 and (problemTone(problem) or style.RED) or style.DIM } })
+              (share or 0) >= 1 and problemTone(problem) or (share or 0) < 1 and style.DIM or nil } })
         elseif unknown[term[1]] then
           blindTerms[#blindTerms + 1] = term[2]
         end
@@ -1490,10 +1530,11 @@ local function systemSections(document, now, moved, incoming)
       for _, rule in ipairs(section.rules) do
         if problem.rule == rule then
           tone = louder(tone, problemTone(problem))
-          if not used[problem] and problemTone(problem) then
+          if not used[problem] then
             used[problem] = true
             local shown, shownUnit = problemValue(problem)
-            extra[#extra + 1] = listRow(shown, shownUnit, problemName(problem), problemTone(problem), problemMenu(problem))
+            extra[#extra + 1] = listRow(shown, shownUnit, problemName(problem), problemTone(problem) or style.DIM,
+              problemMenu(problem))
           end
         end
       end
@@ -1508,7 +1549,7 @@ local function systemSections(document, now, moved, incoming)
       tone = louder(tone, item.tone)
     end
     for _, name in ipairs(section.blind) do
-      if blind[name] and tone ~= style.RED then tone = style.DIM_RED end
+      if blind[name] and tone ~= style.RED then tone = style.DIM end
     end
     local tidy = {}
     for _, line in ipairs(rows) do
@@ -1519,7 +1560,7 @@ local function systemSections(document, now, moved, incoming)
     out[#out + 1] = header
   end
   for _, problem in ipairs(all) do
-    if not used[problem] and problemTone(problem) then
+    if not used[problem] and problemTone(problem) == style.RED then
       local shown, shownUnit = problemValue(problem)
       out[#out + 1] = listRow(shown, shownUnit, tostring(problem.label or problem.rule or problem.id),
         problemTone(problem), problemMenu(problem))
@@ -1533,41 +1574,66 @@ local function issueRow(amount, unit, what, format, tone)
     { (unit and " " .. unit or "") .. "  " .. what } }), disabled = true })
 end
 
-local function issueList(doctor, document)
+-- A doctor's red problems: their count, per group, the first one's fact per group, and their ids.
+local function redView(doctor, document)
+  local view = { count = 0, groups = {}, facts = {}, ids = {} }
+  if not document or document.status == "error" then return view end
+  for _, problem in ipairs(type(document.problems) == "table" and document.problems or {}) do
+    if isRed(doctor.key, problem) then
+      view.count, view.ids[tostring(problem.id)] = view.count + 1, true
+      if problem.group ~= nil then
+        local group = tostring(problem.group)
+        view.groups[group] = (view.groups[group] or 0) + 1
+        if not view.facts[group] and type(problem.fact) == "string" then view.facts[group] = problem.fact end
+      end
+    end
+  end
+  return view
+end
+
+-- What a red row says: its group and, in the doctor's own words, the first red problem in it.
+local function issueWhat(what, fact)
+  return fact and fact ~= what and what .. " · " .. fact or what
+end
+
+local function issueList(doctor, document, view)
   local issues = {}
   if not document then return issues end
-  local routes = type(document.groups) == "table" and SHOWN_BY[doctor.key] or {}
-  local function add(count, what, group)
-    if count > 0 and not (group and routes[group]) then issues[#issues + 1] = { count = count, what = what } end
+  local routes = SHOWN_BY[doctor.key] or {}
+  local function add(count, what, group, fact)
+    if count > 0 and not (group and routes[group]) then issues[#issues + 1] = { count = count, what = what, fact = fact } end
   end
   if doctor.key == "harness" then
-    if type(document.groups) == "table" then
-      for group, count in pairs(document.groups) do add(tonumber(count) or 0, tostring(group), group) end
-    else
-      for _, issue in ipairs(document.issues or {}) do add(tonumber(issue[1]) or 0, tostring(issue[2])) end
-    end
+    for group, count in pairs(view.groups) do add(count, group, group, view.facts[group]) end
   elseif doctor.key == "llm" then
     for _, block in ipairs(document.blocks or {}) do
       for _, problem in ipairs(block.problems or {}) do
-        if problem.kind == "bug" then add(tonumber(problem.count) or 1, block.block .. " " .. (problem.label or problem.id)) end
+        if problem.kind == "bug" and view.ids[tostring(problem.id)] then
+          add(tonumber(problem.count) or 1, block.block .. " " .. (problem.label or problem.id))
+        end
       end
       for _, issue in ipairs((block.machinery or {}).classes or {}) do
-        if LOUD[issue.status] then add(tonumber(issue.count) or 0, "review " .. (tostring(issue.class):gsub("_", " "))) end
+        if LOUD[issue.status] and (view.groups.machinery or 0) > 0 then
+          add(tonumber(issue.count) or 0, "review " .. (tostring(issue.class):gsub("_", " ")))
+        end
       end
     end
     for _, health in ipairs(document.health or {}) do
-      if health.status == "problem" then add(tonumber(health.count) or 1, tostring(health.name), health.name) end
+      local group = tostring(health.name)
+      if health.status == "problem" and (view.groups[group] or 0) > 0 then
+        add(tonumber(health.count) or 1, group, group, view.facts[group])
+      end
     end
   elseif doctor.key == "code" then
-    for _, group in ipairs(CODE_GROUPS) do add(tonumber((document.groups or {})[group.key]) or 0, group.name) end
+    for _, group in ipairs(CODE_GROUPS) do add(view.groups[group.key] or 0, group.name, nil, view.facts[group.key]) end
   elseif doctor.key == "system" then
     for _, problem in ipairs(document.problems or {}) do
-      if LOUD[problem.state] then add(1, tostring(problem.label or problem.rule or problem.id)) end
+      if isRed("system", problem) then add(1, tostring(problem.label or problem.rule or problem.id)) end
     end
   end
   if #issues == 0 then
     for _, problem in ipairs(document.problems or {}) do
-      if LOUD[problem.state] then add(1, tostring(problem.fact or problem.id), problem.group) end
+      if isRed(doctor.key, problem) then add(1, tostring(problem.fact or problem.id), problem.group) end
     end
   end
   return issues
@@ -1577,7 +1643,9 @@ local function issueRows(issues, incoming)
   for _, issue in ipairs(incoming or {}) do issues[#issues + 1] = issue end
   table.sort(issues, function(a, b) return a.count > b.count or a.count == b.count and a.what < b.what end)
   local rows = {}
-  for index = 1, math.min(3, #issues) do rows[index] = issueRow(issues[index].count, nil, issues[index].what) end
+  for index = 1, math.min(3, #issues) do
+    rows[index] = issueRow(issues[index].count, nil, issueWhat(issues[index].what, issues[index].fact))
+  end
   return rows
 end
 
@@ -1601,34 +1669,33 @@ local function placeRows(details, rows, keep)
   return details
 end
 
--- Moves the donor's per-group counts; capped at its count so the Doctors total never changes.
-local function routeCounts(donor, document, count, shift, incoming)
-  local groups = document and type(document.groups) == "table" and document.groups
+-- Moves the donor's per-group red counts; capped at its count so the Doctors total never changes.
+local function routeCounts(donor, view, shift, incoming)
   local routes = SHOWN_BY[donor]
-  if not groups or not routes then return end
-  local names = {}
-  for group in pairs(groups) do if routes[group] then names[#names + 1] = group end end
+  if not routes then return end
+  local names, count = {}, view.count
+  for group in pairs(view.groups) do if routes[group] then names[#names + 1] = group end end
   table.sort(names)
   for _, group in ipairs(names) do
-    local take = math.min(math.max(math.floor(tonumber(groups[group]) or 0), 0), count)
+    local take = math.min(math.max(math.floor(view.groups[group]), 0), count)
     if take > 0 then
       local target = routes[group]
       count = count - take
       shift[donor], shift[target] = (shift[donor] or 0) - take, (shift[target] or 0) + take
-      incoming[target][#incoming[target] + 1] = { count = take, what = group }
+      incoming[target][#incoming[target] + 1] = { count = take, what = group, fact = view.facts[group] }
     end
   end
 end
 
-local function firstRows(doctor, document, now, moved, incoming)
+local function firstRows(doctor, document, view, now, moved, incoming)
   if doctor.key == "system" and document then
     local ok, rows = pcall(systemSections, document, now, moved.system, incoming.system)
     if ok then return rows end
-    local fallback = issueRows(issueList(doctor, document), incoming.system)
+    local fallback = issueRows(issueList(doctor, document, view), incoming.system)
     table.insert(fallback, 1, fitRow({ title = infoTitle(tostring(rows), true), disabled = true }))
     return fallback
   end
-  return issueRows(issueList(doctor, document), incoming[doctor.key])
+  return issueRows(issueList(doctor, document, view), incoming[doctor.key])
 end
 
 local function egorLayer(rows, menu, details)
@@ -1645,7 +1712,7 @@ local function harnessSection(entryMenu, prefix, issues, unit, format)
   end
   for _, issue in ipairs(type(issues) == "table" and issues or {}) do
     if tonumber(issue[1]) then
-      rows[#rows + 1] = issueRow(tonumber(issue[1]), tostring(issue[3] or unit), tostring(issue[2]), format)
+      rows[#rows + 1] = issueRow(tonumber(issue[1]), tostring(issue[3] or unit), tostring(issue[2]), format, style.DIM)
     end
   end
   return details, rows
@@ -1694,16 +1761,42 @@ local function lostRows(rows)
   return out
 end
 
-local function compute()
-  local now = os.time()
-  local entries, histories, speed, spend, machine = {}, {}, nil, nil, nil
-  local rows = readJson(dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/problem-days.jsonl", "days") or {}
-  for _, row in ipairs(rows) do
-    if type(row.doctor) == "string" and type(row.day) == "string" and tonumber(row.max) then
+-- The day's highest red count per summary (contract row `rd`): the bars and the usual beside a count read the same
+-- red count, while problem-days.jsonl keeps every problem for the time budget. Written only when a day's max rises.
+local function redDays(now, counts)
+  local path = dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/red-days.jsonl"
+  local day, keep = os.date("%Y-%m-%d", now), os.date("%Y-%m-%d", now - RED_DAYS_KEEP * 86400)
+  local histories, rows, changed = {}, {}, false
+  for _, row in ipairs(readJson(path, "days") or {}) do
+    if type(row.doctor) == "string" and type(row.day) == "string" and tonumber(row.max) and row.day >= keep then
       histories[row.doctor] = histories[row.doctor] or {}
       histories[row.doctor][row.day] = math.max(histories[row.doctor][row.day] or 0, tonumber(row.max))
     end
   end
+  for doctor, count in pairs(counts) do
+    histories[doctor] = histories[doctor] or {}
+    if count > (histories[doctor][day] or -1) then histories[doctor][day], changed = count, true end
+  end
+  if changed then
+    pcall(function()
+      for doctor, days in pairs(histories) do
+        for at, max in pairs(days) do rows[#rows + 1] = hs.json.encode({ day = at, doctor = doctor, max = max }) end
+      end
+      table.sort(rows)
+      local handle = io.open(path .. ".tmp", "w")
+      if not handle then return end
+      handle:write(table.concat(rows, "\n") .. "\n")
+      handle:close()
+      os.rename(path .. ".tmp", path)
+    end)
+  end
+  return histories
+end
+
+local function compute()
+  local now = os.time()
+  local entries, speed, spend, machine = {}, nil, nil, nil
+  held = heldIds(now)
   local built, lostDetails = {}, {}
   local moved, shift, incoming = { harness = {}, speed = {}, system = {} }, {}, { harness = {}, speed = {}, system = {} }
   for _, doctor in ipairs(DOCTORS) do
@@ -1725,11 +1818,18 @@ local function compute()
       end
     end
     local document = doctorDocument(doctor)
-    routeCounts(doctor.key, document, tonumber(entry.problems) or 0, shift, incoming)
-    built[#built + 1] = { doctor = doctor, entry = entry, own = own, document = document }
+    local view = redView(doctor, document)
+    routeCounts(doctor.key, view, shift, incoming)
+    built[#built + 1] = { doctor = doctor, entry = entry, own = own, document = document, view = view }
   end
+  local counts = {}
   for _, done in ipairs(built) do
-    local doctor, entry, document = done.doctor, done.entry, done.document
+    local key = done.doctor.key
+    if done.entry.status ~= "nodata" and done.entry.status ~= "error" then counts[key] = done.view.count + (shift[key] or 0) end
+  end
+  local histories = redDays(now, counts)
+  for _, done in ipairs(built) do
+    local doctor, entry, document, view = done.doctor, done.entry, done.document, done.view
     local own = placeRows(done.own, moved[doctor.key], 2)
     local run = latestRun(doctor.key)
     local menu = {}
@@ -1745,14 +1845,13 @@ local function compute()
     menu[#menu + 1] = fixItem(doctor.key, doctor.fix, run, now)
     menu[#menu + 1] = fixerRow(run, now)
     local stale = oldTitle:find("stale", 1, true) ~= nil
-    local status = entry.status
-    if status == "ok" and doctor.key == "updater" and document and updatesPending(document) > 0 then status = "watch" end
-    local shown = count + (shift[doctor.key] or 0)
-    if shown > 0 and status == "ok" then status = "problems" elseif shown == 0 and status == "problems" then status = "ok" end
+    local shown = view.count + (shift[doctor.key] or 0)
+    local status = (entry.status == "nodata" or entry.status == "error") and entry.status
+      or shown > 0 and "problems" or entry.status == "blind" and "blind" or "ok"
     local summary = { title = summaryTitle((NAMES[doctor.key]:gsub(" doctor$", "")),
       entry.status ~= "nodata" and entry.status ~= "error" and shown or nil, status, histories[doctor.key] or {}, now, stale),
-      menu = egorLayer(firstRows(doctor, document, now, moved, incoming), menu, menu), problems = shown,
-      status = entry.status }
+      menu = egorLayer(firstRows(doctor, document, view, now, moved, incoming), menu, menu),
+      problems = entry.status ~= "nodata" and entry.status ~= "error" and shown or 0, status = entry.status }
     if doctor.key == "system" then machine = summary else entries[#entries + 1] = summary end
     if doctor.key == "harness" then
       local metrics = document and type(document.speed) == "table" and document.speed or {}
@@ -1765,13 +1864,15 @@ local function compute()
         if text:match("^Needs Egor") and text ~= "Needs Egor: nothing" then speedRows[#speedRows + 1] = item end
       end
       local lost = tonumber(metrics.index)
-      speed = { title = summaryTitle("Lost time", lost, lost and metrics.status or "nodata", byDay, now,
+      speed = { title = summaryTitle("Lost time", lost, not lost and "nodata" or (shift.speed or 0) > 0 and "problems" or "ok",
+        byDay, now,
         stale or not byDay[os.date("%Y-%m-%d", now)], true),
         menu = egorLayer(speedRows, menu, placeRows(lostDetails, moved.speed, 0)), problems = shift.speed or 0 }
       local cost = document and type(document.spend) == "table" and document.spend or {}
       local spendMenu, spendRows = harnessSection(entry.menu, "Spend", cost.issues, "%", "%.1f")
       local index = cost.status ~= "nodata" and tonumber(cost.index) or nil
-      local spendStatus = not index and "nodata" or cost.status == "watch" and "problems" or cost.status
+      -- Spend's audits only watch (share/spend.py): the summary stays green and its rows DIM.
+      local spendStatus = not index and "nodata" or "ok"
       spend = { title = summaryTitle("Spend", index, spendStatus,
         type(cost.index_by_day) == "table" and cost.index_by_day or {}, now, stale, true),
         menu = egorLayer(spendRows, menu, spendMenu), problems = 0 }
@@ -1834,16 +1935,15 @@ function M.lagTick()
 end
 M.lagTimer = hs.timer.doEvery(LAG_EVERY_S, M.lagTick)
 
+-- Counts the red problems only: a blind collector or a watch reads DIM in its summary, never in the title.
 function M.title()
-  local problems, blind, failed = 0, false, false
+  local problems, failed = 0, false
   for _, entry in ipairs(entries()) do
     problems = problems + entry.problems
-    blind = blind or entry.status == "blind"
     failed = failed or entry.status == "error"
   end
   local parts = {}
   if problems > 0 then parts[#parts + 1] = plural(problems, "problem") end
-  if blind then parts[#parts + 1] = "blind" end
   if failed then parts[#parts + 1] = "failed" end
   if #parts == 0 then return "Doctors" end
   return hs.styledtext.new("Doctors: " .. table.concat(parts, " · "), { color = style.RED, font = (hs.styledtext.defaultFonts or {}).menu })

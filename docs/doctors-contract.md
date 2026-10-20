@@ -20,8 +20,21 @@ amended text.
 ### Menu layout
 
 Egor scans the first level and each doctor's first level; he reads no captions there. Glyphs,
-the palette (RED, DIM_RED, DIM, GREEN) and aligned columns carry state; every other row lives
-unchanged under `LLM details`. Fixture render:
+the palette (RED, DIM, GREEN) and aligned columns carry state; every other row lives
+unchanged under `LLM details`. One meaning per colour:
+- RED: act now: true now, actionable, and nobody already fixing it. Only a red problem counts in `Doctors: N problems`.
+- DIM: no number to trust (no data, stale, a blind collector) or a row that only informs (a watch, a pending fix, a
+  report-only cause).
+- GREEN: nothing for Egor.
+
+A red problem is a loud one (`new`, `open`, `regressed`) the menu does not calm. The view calms, in
+`hammerspoon/doctors.lua` only: a problem an open fixer run holds (`runs/`, launched within `FIX_BUSY_S`, neither
+closed, failed nor abandoned; its `problems[].id`); `CALM_RULES` (Updater `event-waiting`: a release waiting for its
+integration; System `unregistered-store` and `swap-writes`: no cause, no lever); a System problem whose `cause` is no
+`fix_target` (Apple, third-party, an own process outside the sweep repositories) unless it is `AT_RISK`
+(`free-space`, `dir-growth`, `swap`: the machine itself at risk). Every document, `problem_count`, the night's
+`doctor_snapshot` and doctor-fix keep each problem as it is (test: the night snapshot block of
+`tests/doctors_menu_harness.lua`). Fixture render:
 
 ```
 Doctors: 8 problems
@@ -51,15 +64,18 @@ LLM ▸     8  reviewers crashed
   per-task `index` (docs/speed-doctor-design.md); Spend is tokenmap's `harness_index.value` from `tracking.json` via
   `share/spend.py`, per Claude request, Harness being the Spend tree's Harness leaves of every consumer; Lost time
   counts the Harness groups `SHOWN_BY` gives it, Spend none.
-- Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error (Spend: an
-  audit due), DIM_RED watch/blind/pending update, DIM no data or
-  stale (Speed also without an index dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null). Missing value: DIM `–`.
-- Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Lost time: `index_by_day` in Harness's
+- Status color of the name (no dot: `●` is the LLM Limits pin mark): RED a red problem or a collector error (Lost
+  time: a red Harness group it shows; Spend never: its audits only watch), DIM no data, blind or
+  stale (Speed also without an index dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null), else GREEN. Missing value: DIM `–`.
+  The value is the summary's red count.
+- Bars: six completed local dates and today, daily `max` of the red count in `red-days.jsonl` (the menu writes it when
+  a day's max rises, 8 days kept; `problem-days.jsonl` stays every loud problem for the time budget) (Lost time: `index_by_day` in Harness's
   `menu.txt` header, the 7-day window ending each day, today live; Spend: its stored index of each day, the same window). Eight heights against the window maximum. An unmeasured date
   is a blank cell, never an invented bar or a dash; a zero is `▁` (as every other spark line, Chats → Other's
   load graph the model). Every bar is DIM, never RED.
 - `usual` is the median of measured completed dates, never today; index rows have none.
-- A doctor's first level: up to three issue rows (RED count, the problem's own short name;
+- A doctor's first level: up to three issue rows of red problems (RED count, the group or the problem's own short name,
+  then ` · ` and the first red problem's `fact` where the document gives one; Spend's rows DIM;
   Lost time: the current window's `levels`, `min per order · chat` and `min per task · workers`, then the header's `rows`, plain aligned min/day, separators and sub-menus, a row flagged `{"dim": true}` (outside the index: model-written scripts, our tools) DIM whole, a `{"count": true}` row (Unused tools) a bare count opening its rows, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title
   (stale, failed, pending) first; Lost time's and Spend's details are Harness's `Lost time:` and `Spend:` subtrees.
@@ -68,29 +84,29 @@ LLM ▸     8  reviewers crashed
   summary that shows it: Harness's Suite audits, Test flakes, Limiter holds and the row-less Speed, Tests, Wait
   classes, Hook waits, Hooks, Waits, Slow periods, Collector → Lost time (with the window rows and their chooser);
   CPU audits, Load (out of Lost time's subtree), Memory guard, Growth → System, kept at the end of its details;
-  LLM's `debt` → Harness. Harness's details drop `Lost time:` and `Spend:`. Counts move through the same table from
-  the doctors' own per-group counts (Harness: the header's `groups`; LLM: `groups`), so each summary's count and
-  issue rows change but the `Doctors: N problems` total never does; a header without `groups` keeps Harness's own.
+  LLM's `debt` → Harness. Harness's details drop `Lost time:` and `Spend:`. Red counts move through the same table by
+  each red problem's `group`, so each summary's count and issue rows change but the `Doctors: N problems` total never
+  does.
 - System's first level is seven fixed sections instead of issue rows: Processor, Memory, Disk writes, Disk space, Logs,
   Crashes, Background, each `name (13) · value (5) · unit (7) · 7 DIM bars · usual (5)` from the document's `measures` and `days`,
-  the name RED when a loud problem of its rules sits inside, DIM_RED for a watch or pending fix or a blind collector,
-  else GREEN. Inside, each rule's problem tones the measure it judges (a problem with no measure row gets its own row),
+  the name RED when a red problem of its rules sits inside, DIM for a blind collector, else GREEN; a calm problem
+  (watch, pending fix, report-only cause) is a DIM row. Inside, each rule's problem tones the measure it judges (a problem with no measure row gets its own row),
   lists carry human names (worker-run → workers, test suites → tests, helpers by their app), log groups open their
   labels as `size · retention · label` (the group's own retention for a split store; a label of several stores spans
   their days and opens one such row per registry `part`; no readers); Disk writes lists the root samples
   (`measures.ssd_sampled`) after the rusage rows as `process  directory` in GB/d, the week's mean times each share, and
-  the unattributed rest DIM; Apple's own problems are RED and counted like any other. The moved Harness rows show
+  the unattributed rest DIM; a problem an Apple or third-party cause makes is a DIM row. The moved Harness rows show
   in their section by label and count (CPU audits, Load → Processor; Memory guard → Memory; Growth → Logs); a problem
-  of a rule no section owns follows the sections. Background (rule `cohort`) lists `background.groups` as
-  `B × · group · item count`, RED with a loud problem inside, DIM under its limit, its value the groups at or over
+  of a rule no section owns follows the sections while red. Background (rule `cohort`) lists `background.groups` as
+  `B × · group · item count`, RED with a red problem inside, DIM under its limit, its value the groups at or over
   it; an item reads `B × · dominant term · name` (the group's prefix dropped, `✗` its job's file gone, `○` a job
   launchd does not hold with B 0) and opens its `about`, `place`, `label · schedule · state`, then each term per day
   and as a share of its limit, starts (`per_day.S`, unscored: B has no S) per second on a DIM row with no share,
   the unmeasured terms on one DIM row. The menu only places and formats what the
   document says.
-- Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,
-  three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows. The menu
-  reads it and `problem-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;
+- Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs (a loud one also its
+  `state`, `group` and `fact`), three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows. The menu
+  reads it and `red-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;
   a header-less file shows open Harness ledger rows as `known, awaiting snapshot`.
 
 Who builds what:
@@ -112,7 +128,7 @@ and adds these top-level keys. Its own keys stay as they are.
 | `as_of` | ISO-8601 with offset |
 | `judge` | sha256 over the doctor's code, ledger and limits; it changes whenever the judge changes |
 | `status` | `ok` \| `problems` \| `blind` \| `error` |
-| `problem_count` | the N of the menu's `N problems`: problems whose state is `new`, `open` or `regressed`; the harness doctor writes `null` when its collector failed |
+| `problem_count` | problems whose state is `new`, `open` or `regressed` (the menu counts the red ones among them, "Menu layout"); the harness doctor writes `null` when its collector failed |
 | `problems` | list of problems, below |
 | `blind_spots` | list from §3 |
 | `self` | `{collector_s, error}`, where `error` is null or one line |

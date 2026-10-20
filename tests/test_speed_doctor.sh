@@ -654,7 +654,8 @@ repeated = json.load(open(os.path.join(harness_dir, "latest.json")))["speed"]
 days_value = {"2026-09-29": 34.7, "2026-09-30": 35.6, "2026-10-01": 52.6, today: 19.8}
 check(doc["budget"].get("lost_min_day_by_day") == first["budget"].get("lost_min_day_by_day") == days_value
       and header == {"status": latest["status"],
-                     "problems": [{k: p[k] for k in ("id", "ledger") if k in p} for p in latest["problems"]],
+                     "problems": [{k: p[k] for k in ("id", "ledger") + (("state", "group", "fact") if p.get("state") in (
+                         "new", "open", "regressed") else ()) if k in p} for p in latest["problems"]],
                      "issues": [[1, "Waits"], [1, "Guards"], [1, "Memory guard"]],
                      "groups": {"Waits": 1, "Guards": 1, "Memory guard": 1},
                      "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "index": None, "index_by_day": {},

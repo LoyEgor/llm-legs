@@ -46,7 +46,10 @@ local function row(name, value, bars, usual)
   local function pad(cell, width) return string.rep(" ", width - utf8.len(cell)) .. cell end
   return string.format("%-9s", name) .. " " .. pad(value, 4) .. "  " .. bars .. " " .. pad(usual, 4)
 end
-local function summary(name, value) return row(name, value and tostring(value) or "–", "       ", "–") end
+-- With no past day in red-days.jsonl the only bar is today's highest red count: ▁ at 0, █ above, blank unmeasured.
+local function summary(name, value, today)
+  return row(name, value and tostring(value) or "–", "      " .. (today or value == nil and " " or value == 0 and "▁" or "█"), "–")
+end
 local function indexRow(name, value, bars, usual) return row(name, value, bars, usual) end
 local function fix(menu) return menu[#menu - 1] end
 local function fixer(menu) return menu[#menu] end
@@ -182,14 +185,22 @@ local function loadDoctors(override)
 end
 
 local now = startedAt
+-- Each counted problem is listed loud and red: the menu counts listed problems, never problem_count. A field, not
+-- a local: the main chunk is at Lua's 200-local limit.
+fakeHs.loudProblems = function(count, group)
+  local problems = {}
+  for index = 1, count do problems[index] = { id = group .. ":" .. index, state = "new", group = group } end
+  return problems
+end
 local function llmDocument(status, count)
   return { contract = 1, doctor = "llm", as_of_s = now, status = status, problem_count = count, window_h = 24,
-    bugs = 0, summary = "", not_measurable = {},
+    bugs = 0, summary = "", not_measurable = {}, problems = fakeHs.loudProblems(count, "reviewers"),
     -- Judged off the snapshot below: a machinery verdict older than it would kick a re-judge.
     blocks = { { block = "reviewers", machinery = { as_of = now } } } }
 end
 local function harnessMenu(count, title)
-  return "T\t" .. count .. "\t" .. now .. "\t" .. title .. "\n0\td\t\tWaits  ok\n"
+  return "T\t" .. count .. "\t" .. now .. "\t" .. title .. "\nH\t" .. hs.json.encode({ status = count > 0 and "problems" or "ok",
+    problems = fakeHs.loudProblems(count, "Stop hooks") }) .. "\n0\td\t\tWaits  ok\n"
 end
 local updater = {
   contract = 1, doctor = "updater", as_of_s = now, status = "problems", problem_count = 1,
@@ -252,7 +263,7 @@ local function writeDays(values)
       end
     end
   end
-  write("/doctors/problem-days.jsonl", table.concat(rows, "\n") .. "\nmalformed\n")
+  write("/doctors/red-days.jsonl", table.concat(rows, "\n") .. "\nmalformed\n")
 end
 local series = { 0, 1, 2, 3, 4, 6, 8 }
 local function spendDays(values)
@@ -266,11 +277,15 @@ local trendLlm = llmDocument("problems", 2)
 trendLlm.blocks[1].problems = { { id = "crashed", label = "crashed", count = 8, kind = "bug" } }
 trendLlm.blocks[1].bugs = 8
 trendLlm.blocks[1].machinery.classes = { { class = "anchors", status = "open", count = 4 } }
+trendLlm.problems = { { id = "crashed", rule = "leg-failure", state = "new", group = "reviewers" },
+  { id = "M1", rule = "machinery", state = "open", group = "machinery" } }
 write("/llm-doctor/latest.json", trendLlm)
 write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
   problem_count = 0, problems = {}, blind_spots = {}, vendors = {} })
 write("/code-doctor/latest.json", { contract = 1, doctor = "code", as_of_s = now, status = "problems",
-  problem_count = 3, groups = { dead = 2, heavy = 0, duplicate = 1 }, problems = {} })
+  problem_count = 3, groups = { dead = 2, heavy = 0, duplicate = 1 }, problems = {
+    { id = "cause:a", group = "dead", state = "new" }, { id = "cause:b", group = "dead", state = "open" },
+    { id = "cause:c", group = "duplicate", state = "regressed" }, { id = "cause:d", group = "heavy", state = "watch" } } })
 write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s = now, status = "problems",
   problem_count = 2, blind_spots = {}, problems = {
     { id = "swap:machine", rule = "swap", label = "swap full", state = "new", severity = "review",
@@ -284,7 +299,9 @@ write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s =
   nightly = { as_of_s = now - 3600, reports = { crash = 3 }, processes = { { "crash", "bash", 3, "own" } },
     caches = { { ".cache/uv", 22.1 } } } })
 writeDays(series)
-local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" } },
+local metadata = { status = "problems", issues = { { 3, "Hooks" } }, problems = {
+    { id = "h1", state = "new", group = "Stop hooks" }, { id = "h2", state = "open", group = "Stop hooks" },
+    { id = "h3", state = "regressed", group = "Stop hooks" }, { id = "h4", state = "watch", group = "Stop hooks" } },
   speed = { status = "ok", as_of_s = now, index = 0.93, index_by_day = spendDays(series),
     levels = { { 1.24, "min per order · chat" }, { 12, "min per task · workers" } },
     rows = {
@@ -348,7 +365,8 @@ end
 check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].title) == "Cleanup now"
   and text(trendItems[10].title) == "Run everything now", "top level: seven summaries, System last, then the actions")
 check(span(trendItems[5].title, 1, 9) == "Lost time" and span(trendItems[6].title, 1, 5) == "Spend"
-  and sameColor(colorAt(trendItems[6].title, 1), palette.RED), "the time row reads Lost time; Spend beside it, RED while an audit is due")
+  and sameColor(colorAt(trendItems[6].title, 1), palette.GREEN),
+  "the time row reads Lost time; Spend beside it, GREEN while an audit is due: Spend only watches")
 check(colorAt(trendItems[6].title, VALUE_AT) == nil and colorAt(trendItems[5].title, VALUE_AT) == nil,
   "Spend's value is plain like every other value")
 check(span(trendItems[3].title, 1, 7) == "Updater" and sameColor(colorAt(trendItems[3].title, 1), palette.GREEN)
@@ -361,7 +379,7 @@ local function issue(menu, at, want)
 end
 check(issue(trendItems[1].menu, 1, "   8  reviewers crashed"), "LLM issue row")
 check(issue(trendItems[1].menu, 2, "   4  review anchors"), "LLM review machinery issue row")
-check(issue(trendItems[2].menu, 1, "   3  Hooks"), "Harness issue row")
+check(issue(trendItems[2].menu, 1, "   3  Stop hooks"), "Harness issue row: its red problems by group")
 check(issue(trendItems[4].menu, 1, "   2  Dead") and issue(trendItems[4].menu, 2, "   1  Duplicate"), "Code issue rows")
 local lost = trendItems[5].menu
 local function plainRow(item, want) return item and text(item.title) == want and not red(item.title) end
@@ -390,7 +408,9 @@ check(plainRow(adhoc, " 310 min/day  model-written scripts") and sameColor(color
 check(lost[10].title == "-" and plainRow(lost[11], "   1  Unused tools") and lost[11].menu
   and plainRow(lost[11].menu[1], "   0    ○ min/day  /trash") and lost[11].menu[1].disabled,
   "Unused tools open under a row counting them, an unused tool 0 beside its glyph: " .. text(lost[11].title))
-check(issue(trendItems[6].menu, 1, " 1.9 %  compaction summaries"), "Spend issue row: the due component by its share")
+check(trendItems[6].menu[1] and text(trendItems[6].menu[1].title) == " 1.9 %  compaction summaries"
+  and not red(trendItems[6].menu[1].title) and dimmed(trendItems[6].menu[1].title),
+  "Spend issue row: the due component by its share, DIM")
 check(span(trendItems[7].menu[1].title, 1, 9) == "Processor" and red(trendItems[7].menu[1].title)
   and span(trendItems[7].menu[2].title, 1, 6) == "Memory" and red(trendItems[7].menu[2].title)
   and not find(trendItems[7].menu, "   1  new processes"), "System's first level: its sections, RED where a loud problem sits")
@@ -454,7 +474,9 @@ do
   local function quiet(title) return { title = title, disabled = true } end
   local old = { limits.llmDoctorEntry(), limits.harnessDoctorEntry(),
     { menu = { { title = "-" }, action("Refresh") } },
-    { menu = { quiet("Dead: 2 problems"), quiet("Heavy: 0 problems"), quiet("Duplicate: 1 problem"), quiet("Promise: 0 problems"),
+    { menu = { { title = "Dead: 2 problems", menu = { quiet("cause:a"), quiet("cause:b") } },
+      { title = "Heavy: 0 problems", menu = { quiet("cause:d") } },
+      { title = "Duplicate: 1 problem", menu = { quiet("cause:c") } }, quiet("Promise: 0 problems"),
       quiet("candidates waiting: 0"), quiet("cost 0k tokens · 0 min · yield 0 lines, 0 causes closed"),
       { title = "-" }, action("Refresh") } } }
   local harnessTree, movedToLost = old[2].menu, {}
@@ -522,7 +544,7 @@ fakeHs.json = getmetatable(fakeHs.json).__index
 write("/harness-ledger.json", { rows = {
   { id = "H1", status = "open", title = "reported cause" }, { id = "H2", status = "open", title = "quiet cause" } } })
 write("/harness-doctor/latest.json", { status = "problems", problems = { { ledger = "H1" } } })
-write("/harness-doctor/menu.txt", harnessMenu(3, "Harness doctor: 3 problems"))
+write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 problems\n0\td\t\tWaits  ok\n")
 local legacy = find(details(loadDoctors().menuItems()[2].menu), "known, awaiting snapshot")
 check(legacy and #legacy.menu == 2 and text(legacy.menu[1].title) == "H1 · reported cause"
   and text(legacy.menu[2].title) == "H2 · quiet cause", "legacy header retains all open ledger rows without classifying them")
@@ -576,10 +598,10 @@ check(text(staleSpend.title) == indexRow("Spend", "–", " ▂▂▃▄▆█", 
   "a stale tracking.json is a DIM – on Spend, never its old index: " .. text(staleSpend.title))
 metadata.spend.status, metadata.spend.index = "watch", 0.46
 trendHarness()
-write("/doctors/problem-days.jsonl", "")
+write("/doctors/red-days.jsonl", "")
 trendItems = trendDoctor.menuItems()
 check(text(trendItems[1].title) == summary("LLM", 2) and aligned({ table.unpack(trendItems, 1, 7) }),
-  "empty history: bars blank, usual a DIM –")
+  "empty history: today's red count its only bar, usual a DIM –: " .. text(trendItems[1].title))
 local function egorLayer(menu)
   for _, item in ipairs(menu or {}) do
     if utf8.len(text(item.title)) > 64 then return false end
@@ -602,11 +624,11 @@ check(text(staleItem.title) == summary("LLM", 2) and sameColor(colorAt(staleItem
   "a stale doctor is a DIM name with its count; the full status and original rows sit in details")
 limits.llmDoctorEntry = realEntry
 remove("/speed-doctor/hs/" .. os.date("%Y-%m-%d") .. ".tsv")
-remove("/doctors/problem-days.jsonl")
+remove("/doctors/red-days.jsonl")
 remove("/code-doctor/latest.json")
 remove("/harness-doctor/latest.json")
 tasks, alerts = {}, {}
-check(#fakeHs.json.refused == 0, "a problem-days line that is no JSON object reached hs.json.decode, an ERROR in the live console: "
+check(#fakeHs.json.refused == 0, "a red-days line that is no JSON object reached hs.json.decode, an ERROR in the live console: "
   .. table.concat(fakeHs.json.refused, " | "))
 if onlyTrends then
   os.execute("rm -rf '" .. dir .. "'")
@@ -635,8 +657,8 @@ local pendingRow = { id = "cli-behind:codex", rule = "cli-behind", state = "watc
 write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
   problem_count = 0, problems = { pendingRow }, blind_spots = {}, vendors = {} })
 local pending = doctors.menuItems()[3]
-check(text(pending.title) == summary("Updater", 0) and toneOf(pending.title) == "r",
-  "a pending update is never a plain ok: " .. text(pending.title))
+check(text(pending.title) == summary("Updater", 0) and toneOf(pending.title) == "g",
+  "a pending update inside its day is calm: " .. text(pending.title))
 check(text(details(pending.menu)[1].title) == "Updater doctor: update pending"
   and text(details(pending.menu)[2].title) == pendingRow.fact and dimmed(details(pending.menu)[2].title), "the pending update is a watch row")
 pendingRow.state, pendingRow.fact = "new", pendingRow.fact .. " · 26h"
@@ -735,10 +757,10 @@ check(text(title) == "Doctors: 6 problems" and red(title), "N problems: " .. tex
 updater.status = "blind"
 write("/updater-doctor/latest.json", updater)
 title = text(doctors.title())
-check(title == "Doctors: 6 problems · blind", "blind: " .. title)
+check(title == "Doctors: 6 problems", "blind: a blind collector reads DIM in its own row, never in the title: " .. title)
 write("/llm-doctor/latest.json", llmDocument("error", 0))
 title = text(doctors.title())
-check(title == "Doctors: 4 problems · blind · failed", "failed: " .. title)
+check(title == "Doctors: 4 problems · failed", "failed: " .. title)
 updater.status = "problems"
 write("/updater-doctor/latest.json", updater)
 write("/llm-doctor/latest.json", llmDocument("ok", 0))
@@ -747,7 +769,7 @@ limits.harnessDoctorEntry = function() error("menu.txt exploded") end
 title = text(doctors.title())
 check(title == "Doctors: 1 problem · failed", "a throwing builder: " .. title)
 local broken = doctors.menuItems()[2]
-check(text(broken.title) == summary("Harness", nil) and red(broken.title)
+check(text(broken.title) == summary("Harness", nil, "█") and red(broken.title)
   and text(details(broken.menu)[1].title) == "Harness doctor: failed to render"
   and details(broken.menu)[3].title == "-" and text(fix(details(broken.menu)).title) == "Fix — open a fixer chat",
   "a throwing builder keeps its Fix row")
@@ -832,7 +854,7 @@ updater.status, updater.problem_count, updater.as_of_s = "error", 0, now
 updater.self = { collector_s = 1, error = "vendor-fingerprint: no such file" }
 write("/updater-doctor/latest.json", updater)
 up = doctors.menuItems()[3]
-check(text(up.title) == summary("Updater", nil) and red(up.title)
+check(text(up.title) == summary("Updater", nil, "█") and red(up.title)
   and text(details(up.menu)[1].title) == "Updater doctor: collector failed"
   and text(details(up.menu)[2].title) == "vendor-fingerprint: no such file"
   and red(details(up.menu)[2].title), "a failed collector names its error")
@@ -840,7 +862,7 @@ check(text(up.title) == summary("Updater", nil) and red(up.title)
 -- A missing document.
 remove("/updater-doctor/latest.json")
 up = doctors.menuItems()[3]
-check(text(up.title) == summary("Updater", nil) and text(details(up.menu)[1].title) == "no data yet"
+check(text(up.title) == summary("Updater", nil, "█") and text(details(up.menu)[1].title) == "no data yet"
   and details(up.menu)[2].title == "-" and text(details(up.menu)[3].title) == "Refresh" and #details(up.menu) == 5, "missing file: " .. text(up.title))
 
 -- The LLM and Harness blocks keep the same width: a long row is clipped, its text one level down.
@@ -1190,6 +1212,8 @@ do
   remove("/code-doctor/latest.json")
   local llmDoc = llmDocument("problems", 3)
   llmDoc.groups = { workers = 2, debt = 1 }
+  llmDoc.problems = fakeHs.loudProblems(2, "workers")
+  llmDoc.problems[3] = { id = "debt:1", state = "new", group = "debt" }
   llmDoc.health = { { name = "debt", status = "problem", count = 1, items = {}, notes = {} } }
   write("/llm-doctor/latest.json", llmDoc)
   write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
@@ -1200,6 +1224,9 @@ do
   local header = { status = "problems", problems = {}, issues = { { 4, "Tests" }, { 2, "CPU audits" }, { 1, "Load" } },
     groups = { Tests = 4, ["CPU audits"] = 2, Load = 1, ["Suite audits"] = 1, ["Stop hooks"] = 1 },
     speed = { status = "ok", as_of_s = now, index = 0.9, index_by_day = {}, levels = {} } }
+  for _, group in ipairs({ "Tests", "CPU audits", "Load", "Suite audits", "Stop hooks" }) do
+    for _, problem in ipairs(fakeHs.loudProblems(header.groups[group], group)) do header.problems[#header.problems + 1] = problem end
+  end
   local body = table.concat({ "0\t\t\tLost time: 5 problems", "1\t\t\tChat turns: 1 min/day", "1\t\t\tLoad: 1 problem",
     "1\t\t\tTests: 4 problems", "2\t\t\ttest_slow hung", "0\t\t\tSpend: watch", "1\t\t\t1.9 % · compaction",
     "0\t\t\tSuite audits: 1 problem", "0\t\t\tCPU audits: 2 problems", "1\t\t\tstatusline/render",
@@ -1276,11 +1303,22 @@ do
     and rowMatching(items[7].menu[1].menu, "^    1 +Load$", "R") and red(items[7].menu[2].title)
     and rowMatching(items[7].menu[2].menu, "^ +Memory guard$") and rowMatching(items[7].menu[5].menu, "^ +Growth$")
     and not find(items[1].menu, "   1  debt"), "issue rows follow the moved counts, System's inside its sections")
-  harnessFile(false)
+  -- An open fixer run holds its problems: out of the counts and rows, while the documents keep them.
+  local held = os.date("!%Y%m%dT%H%M%SZ", now - 60)
+  write("/doctors/runs/harness-speed-" .. held .. "-beef.json", { id = "harness-speed-" .. held .. "-beef",
+    doctor = "harness", area = "speed", created_at = iso(now - 60), launched_at = iso(now - 60),
+    problems = { { id = "Tests:1" }, { id = "Tests:2" }, { id = "Tests:3" }, { id = "Tests:4" } } })
   items = regrouped.menuItems()
-  check(value(items[2]) == "10" and issue(items[2].menu, 1, "   4  Tests") and text(regrouped.title()) == "Doctors: 13 problems"
-    and not issue(items[5].menu, 1, "   4  Tests"), "a header without groups keeps Harness's own count and issues: "
-    .. tostring(value(items[2])))
+  check(text(regrouped.title()) == "Doctors: 9 problems" and value(items[2]) == "2"
+    and issue(items[5].menu, 1, "   1  Suite audits") and not issue(items[5].menu, 1, "   4  Tests"),
+    "an open fixer run's problems leave the red count and rows: " .. text(regrouped.title()))
+  write("/doctors/runs/harness-speed-" .. held .. "-beef.json", { id = "harness-speed-" .. held .. "-beef",
+    doctor = "harness", area = "speed", created_at = iso(now - 60), launched_at = iso(now - 60), closed_at = iso(now),
+    problems = { { id = "Tests:1" }, { id = "Tests:2" }, { id = "Tests:3" }, { id = "Tests:4" } } })
+  items = regrouped.menuItems()
+  check(text(regrouped.title()) == "Doctors: 13 problems" and issue(items[5].menu, 1, "   4  Tests"),
+    "a closed run holds nothing: " .. text(regrouped.title()))
+  remove("/doctors/runs/harness-speed-" .. held .. "-beef.json")
 end
 
 -- System's first level: six fixed sections over its own document, each problem toned in its section.
@@ -1307,7 +1345,8 @@ do
       { id = "profile-size:~/.gemini-web/profiles/rawilimo", rule = "profile-size", label = "LLM profile too big",
         state = "new", value = 4468, limit = 3072, unit = "MB", fact = "rawilimo holds 4.5 GB" },
       { id = "worker-run-births", rule = "cohort", label = "costly program", state = "new", value = 92, limit = 1,
-        unit = "B", cause = { name = "llm-legs/bin/worker-run", owner = "own" }, fact = "worker-run 92× its limit" },
+        unit = "B", cause = { name = "llm-legs/bin/worker-run", owner = "own", fix_target = true },
+        fact = "worker-run 92× its limit" },
       { id = "cohort:ghost", rule = "cohort", label = "costly program", state = "watch", value = 2, limit = 1,
         unit = "B", cause = { name = "ghost", owner = "third-party" }, fact = "ghost 2× its limit" } },
     background = { covered_days = 7, groups = {
@@ -1364,12 +1403,12 @@ do
       tidied = { { path = "~/.cursor-tutor", mb = 1, age_d = 0.3, why = "a tutorial folder idle for 463 days" } },
       sweep = { bytes = 500000000, errors = 0 } } })
   local first = loadDoctors().menuItems()[7].menu
-  local order, tones = true, { "R", "g", "g", "R", "R", "R", "R" }
+  local order, tones = true, { "R", "g", "g", "R", "R", "g", "R" }
   for index, name in ipairs({ "Processor", "Memory", "Disk writes", "Disk space", "Logs", "Crashes", "Background" }) do
     order = order and first[index] and span(first[index].title, 1, 13) == string.format("%-13s", name)
       and first[index].menu ~= nil and toneOf(first[index].title) == tones[index]
   end
-  check(order, "System's sections in a fixed order, each toned by its worst problem, Apple's Siri loop RED")
+  check(order, "System's sections in a fixed order, RED only over a red problem: Apple's Siri loop and a watch read calm")
   check(text(first[1].title) == string.format("%-13s %5s %-7s %s %5s", "Processor", "5", "cores", "    ▇▄█", "3"),
     "a section row: name, value with its unit, seven DIM bars, the usual: " .. text(first[1].title))
   check(rowMatching({ first[8] }, "^ +1 rows +ledger$", "R") and text(first[9].title):match("^Fix —"),
@@ -1393,8 +1432,9 @@ do
   check(workers and rowMatching(workers.menu, "^ +11 GB +15 d  Claude$") and rowMatching(workers.menu, "^ +1 GB +10 d  run logs$")
     and rowMatching(rowMatching(logs, "my chats$").menu, "^ +3 GB +180 d  Claude$")
     and apps and rowMatching(apps.menu, "^ +0%.3 GB +∞  Codex log$", "R") and rowMatching(apps.menu, "^ +1%.0 GB +∞  Codex history$")
-    and rowMatching(rowMatching(logs, "unknown$", "R").menu, "Telegram$", "R"),
-    "Logs: groups with growth, each label with its size and retention per group, unread and unknown RED")
+    and not rowMatching(logs, "unknown$", "R") and rowMatching(rowMatching(logs, "unknown$").menu, "Telegram$")
+    and not rowMatching(rowMatching(logs, "unknown$").menu, "Telegram$", "R"),
+    "Logs: groups with growth, each label with its size and retention per group, unread RED, an unregistered store calm")
   check(gemini and #(gemini.menu or {}) == 2 and rowMatching(gemini.menu, "^ +5 GB +15 d  conversations$")
     and rowMatching(gemini.menu, "^ +1%.5 GB +2 d  audio$")
     and tokenmap and rowMatching(tokenmap.menu, "^ +1%.7 GB +8 GB  database$")
@@ -1424,9 +1464,10 @@ do
     and sameColor(colorAt(profiles.menu[8].title, utf8.len(shown[8])), palette.DIM),
     "Disk space: LLM profiles by size and last change, a flagged one (off the menu, too big) RED first, unknown ? and "
     .. "default home ⌂, idle 30 d DIM, then what the night moved to the Trash 🗑: " .. table.concat(shown, " | "))
-  check(rowMatching(crashes, "^ +7 /day +Siri$", "R") and rowMatching(crashes, "Hammerspoon$", "r")
+  check(rowMatching(crashes, "^ +7 /day +Siri$") and not rowMatching(crashes, "Siri$", "R")
+    and rowMatching(crashes, "Hammerspoon$") and not rowMatching(crashes, "Hammerspoon$", "R")
     and rowMatching(rowMatching(crashes, "^app crashes ").menu, "^ +3 /8 d +Chrome$"),
-    "Crashes: Apple's loop RED by its short name, a pending fix DIM_RED, crashes by process")
+    "Crashes: Apple's loop by its short name and a pending fix both calm, crashes by process")
   local background = first[7].menu
   local harness, findTruth = rowMatching(background, "^ +92%.0 ×  harness  1$"), rowMatching(background, "^ +0%.30 ×  find%-truth  3$")
   local workerRun = harness and rowMatching(harness.menu, "^ +92%.0 ×  cpu +llm%-legs/bin/worker%-run$", "R")
@@ -1490,6 +1531,78 @@ if vocab then
     check(shown, "night label «" .. label .. "» names no row of its doctor's menu")
   end
   check(labels == 16, "the vocabulary labels: " .. labels)
+end
+
+-- A view change only: the night's snapshot (bin/night-run doctor_snapshot) and the documents read the same before and
+-- after the menu calms a release, an Apple loop, an unregistered store, swap writes and a problem an open run holds.
+do
+  local held = os.date("!%Y%m%dT%H%M%SZ", now - 60)
+  local harnessDoc = { contract = 1, doctor = "harness", as_of_s = now, status = "problems", problem_count = 2,
+    problems = { { id = "hook-error:a", rule = "hook-error", state = "new", group = "Stop hooks", fact = "a.sh: exit 124" },
+      { id = "hook-error:b", rule = "hook-error", state = "open", group = "Stop hooks", fact = "b.sh: exit 124" } } }
+  write("/harness-doctor/latest.json", harnessDoc)
+  write("/harness-doctor/menu.txt", "T\t2\t" .. now .. "\tHarness doctor: 2 problems\nH\t"
+    .. hs.json.encode({ status = "problems", problems = harnessDoc.problems }) .. "\n0\td\t\tWaits  ok\n")
+  write("/llm-doctor/latest.json", llmDocument("problems", 1))
+  write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "problems",
+    problem_count = 2, blind_spots = {}, vendors = {}, problems = {
+      { id = "event-waiting:codex-0.160.0", rule = "event-waiting", state = "new", fact = "codex 0.160.0 waits" },
+      { id = "family-gone:gemini/pro", rule = "family-gone", state = "new", fact = "gemini pro is on no list" },
+      { id = "cli-behind:codex", rule = "cli-behind", state = "watch", fact = "codex update pending" } } })
+  write("/code-doctor/latest.json", { contract = 1, doctor = "code", as_of_s = now, status = "ok", problem_count = 0,
+    groups = {}, problems = {} })
+  write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s = now, status = "problems",
+    problem_count = 6, blind_spots = {}, blind = {}, measures = {}, problems = {
+      { id = "job-loop:com.apple.Siri.agent", rule = "job-loop", state = "new", fact = "Siri loops",
+        cause = { name = "com.apple.Siri.agent", owner = "apple", fix_target = false } },
+      { id = "unregistered-store:~/x", rule = "unregistered-store", state = "new", fact = "~/x grows" },
+      { id = "swap-writes:machine", rule = "swap-writes", state = "new", fact = "358 GiB a day" },
+      { id = "free-space:Data", rule = "free-space", state = "new", fact = "Data 9 GiB",
+        cause = { name = "Spotlight", owner = "apple", fix_target = false } },
+      { id = "log-growth:total", rule = "log-growth", state = "regressed", fact = "logs grow 3 GB a day" },
+      { id = "cohort:statusline", rule = "cohort", state = "open", fact = "statusline 3× its limit",
+        cause = { name = "llm-legs/bin/statusline.sh", owner = "own", fix_target = true } } } })
+  write("/doctors/runs/harness-self-" .. held .. "-f00d.json", { id = "harness-self-" .. held .. "-f00d",
+    doctor = "harness", area = "self", created_at = iso(now - 60), launched_at = iso(now - 60),
+    problems = { { id = "hook-error:b" } } })
+  local script = dir .. "/snapshot.sh"
+  local handle = assert(io.open(script, "w"))
+  handle:write("cd '" .. root .. "' || exit 1\n",
+    "export LLM_DOCTOR_DIR='" .. dir .. "/llm-doctor' HARNESS_DOCTOR_DIR='" .. dir .. "/harness-doctor'\n",
+    "export UPDATER_DOCTOR_DIR='" .. dir .. "/updater-doctor' CODE_DOCTOR_DIR='" .. dir .. "/code-doctor'\n",
+    "export SYSTEM_DOCTOR_DIR='" .. dir .. "/system-doctor'\n",
+    [[program='/^doctor_read() {/,/^}/p; /^JQ_PROBLEM_NORM=/,/end;.$/p; /^doctor_snapshot() {/,/^}/p']], "\n",
+    [[eval "$(sed -n "$program" bin/night-run)"]], "\n",
+    "doctor_snapshot | jq -cS . && cat \"$LLM_DOCTOR_DIR\"/latest.json \"$HARNESS_DOCTOR_DIR\"/latest.json ",
+    "\"$UPDATER_DOCTOR_DIR\"/latest.json \"$CODE_DOCTOR_DIR\"/latest.json \"$SYSTEM_DOCTOR_DIR\"/latest.json | shasum\n")
+  handle:close()
+  local function snapshot()
+    local pipe = io.popen("/bin/bash '" .. script .. "' 2>&1")
+    local out = pipe:read("*a")
+    pipe:close()
+    return out
+  end
+  local before = snapshot()
+  local calm = loadDoctors()
+  local title, items = text(calm.title()), calm.menuItems()
+  local after = snapshot()
+  local night = hs.json.decode(before:match("^[^\n]*") or "") or {}
+  local states = {}
+  for doctor, value in pairs(night) do
+    for id, state in pairs(type(value) == "table" and type(value[3]) == "table" and value[3] or {}) do
+      states[doctor .. " " .. id] = state
+    end
+  end
+  check(before ~= "" and before == after, "the night snapshot and the documents change under the menu: " .. before
+    .. " → " .. after)
+  check(states["updater event-waiting:codex-0.160.0"] == "new" and states["system job-loop:com.apple.Siri.agent"] == "new"
+    and states["system swap-writes:machine"] == "new" and states["system unregistered-store:~/x"] == "new"
+    and states["harness hook-error:b"] == "open" and night.system and night.system[1] == 6,
+    "the night still sees every problem the menu shows calm: " .. before)
+  check(title == "Doctors: 6 problems" and text(items[3].title):match("^Updater +1 ") and text(items[2].title):match("^Harness +1 ")
+    and text(items[7].title):match("^System +3 "),
+    "the menu counts red only: LLM 1, Harness 2 - 1 held, Updater 2 - 1 release, System 6 - 3 calm: " .. title)
+  remove("/doctors/runs/harness-self-" .. held .. "-f00d.json")
 end
 
 os.execute("rm -rf '" .. dir .. "'")
