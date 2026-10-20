@@ -223,8 +223,8 @@ done
 assert_eq "$(jq -cn --arg root "$suites_repo" '["full","all","changed","named"] | map({label: "suites", scope: ., repo_root: $root})')" \
   "$(jq -sc 'map({label, scope, repo_root})' "$STATUSLINE_CACHE_DIR/test-scope.jsonl")"
 mkdir -p "$WORK/slow-git"
-# Only the first ls-files sleeps: anything stamped after it is already a second past the recorded one.
-printf '#!/bin/bash\ncase " $* " in *" ls-files "*) [ -s %s ] || { date +%%s > %s; sleep 1; } ;; esac\nexec %s "$@"\n' \
+# Only the first ls-files sleeps, to the next whole second: anything stamped after it is already a second past the recorded one.
+printf '#!/bin/bash\ncase " $* " in *" ls-files "*) [ -s %s ] || { date +%%s > %s; perl -MTime::HiRes=time,sleep -e '"'"'$t = time; sleep(int($t) + 1.02 - $t)'"'"'; } ;; esac\nexec %s "$@"\n' \
   "$WORK/ls-files-at" "$WORK/ls-files-at" "$(command -v git)" > "$WORK/slow-git/git"
 chmod +x "$WORK/slow-git/git"
 : > "$STATUSLINE_CACHE_DIR/test-scope.jsonl"

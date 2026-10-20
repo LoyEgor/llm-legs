@@ -41,7 +41,7 @@ chmod +x "$WORK/bin/claudeb"
 
 await_file() { # test-flag path
   local tick
-  for tick in $(seq 1 600); do
+  for ((tick = 1; tick <= 600; tick++)); do
     test "$1" "$2" && return 0
     sleep 0.05
   done
@@ -151,8 +151,8 @@ assert test ! -e "$RUN_DIR/inbox.delivered"
 mkdir -p "$WORK/forkspy"
 for name in jq realpath find mkdir rmdir rm tail head wc tr date awk cat grep sed sleep touch stat; do
   printf '#!/bin/sh\necho %s >>"%s/forks"\n' "$name" "$WORK" >"$WORK/forkspy/$name"
-  chmod +x "$WORK/forkspy/$name"
 done
+chmod +x "$WORK/forkspy"/*
 rm -f "$RUN_DIR/inbox.new"
 : >"$WORK/forks"
 assert test -z "$(printf '{}' | PATH="$WORK/forkspy" WORKER_RUN_RECORD="$RUN_DIR" "$HOOK" 2>&1)"
