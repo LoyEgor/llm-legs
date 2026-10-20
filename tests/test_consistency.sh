@@ -3451,7 +3451,7 @@ assert grep -Fq 'info["CFBundleIdentifier"] = CLONE_ID' "$ROOT/share/gemini_web.
 assert grep -Fq 'CLONE_SHOWN = CLONE_ROOT / "windows-shown"' "$ROOT/share/gemini_web.py"
 assert grep -Fq 'local CHROME_CLONE_ID = "com.google.Chrome.gemini-web"' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq 'local flag = geminiWebDir() .. "/windows-shown"' "$ROOT/hammerspoon/llm-limits.lua"
-assert grep -Fq 'local chrome = hs.application.get("com.google.Chrome")' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'local chrome = (hs.application.applicationsForBundleID("com.google.Chrome") or {})[1]' "$ROOT/hammerspoon/llm-limits.lua"
 assert doc_has '| en | Automation Chrome |'
 
 assert grep -Fq 'doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])' "$ROOT/share/time_budget.py"

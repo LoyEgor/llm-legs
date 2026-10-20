@@ -133,8 +133,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
   local mock = {
     alert = { show = alertFn or function() end },
     application = {
-      get = function(id) return id == "com.google.Chrome" and chromeFake.real or nil end,
-      applicationsForBundleID = function(id) return id == "com.google.Chrome.gemini-web" and chromeFake.clones or {} end,
+      applicationsForBundleID = function(id)
+        if id == "com.google.Chrome" then return { chromeFake.real } end
+        return id == "com.google.Chrome.gemini-web" and chromeFake.clones or {}
+      end,
     },
     screen = { allScreens = function() return { chromeFake.screen } end, mainScreen = function() return chromeFake.screen end },
     dialog = { blockAlert = function(...)

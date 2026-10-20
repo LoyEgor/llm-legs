@@ -1943,8 +1943,10 @@ local function setCloneWindowsShown(show)
   end
 end
 
+-- Built on every click of the Auto menu: hs.application.get walks every running app over LaunchServices
+-- (0.4-1.7 s a click under load, 2026-10-20), the bundle lookup reads the process list in 0 ms.
 function M.chromeToggleItem()
-  local chrome = hs.application.get("com.google.Chrome")
+  local chrome = (hs.application.applicationsForBundleID("com.google.Chrome") or {})[1]
   local path, args = harnessAction("worker-run\31browse\31--toggle")
   local real = path and chrome or nil
   local clones, windows = cloneWindows()
