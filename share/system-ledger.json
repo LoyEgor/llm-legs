@@ -231,6 +231,17 @@
         "cause": "llm-legs/share/run-suites.sh"
       },
       "note": "Ruled out as run-suites' own cost (system-system-20261020T113826Z-7b45): its own CPU is ~0 since 10-15 (builtin sleep, kill -0 watchers); its C is the suites' CPU it reaps, below the run journal's own suite cpu_s every day (10-14 37.8k of 83.0k, 10-19 16.9k of 25.7k, 10-20 5.2k of 10.5k). The lever is the suites themselves, the Harness doctor's suite audit."
+    },
+    {
+      "id": "cohort:llm-legs/bin/worker-run",
+      "title": "worker-run watchdog transcript re-parse",
+      "status": "open",
+      "match": {
+        "rule": "cohort",
+        "key": "llm-legs/bin/worker-run",
+        "cause": "llm-legs/bin/worker-run"
+      },
+      "note": "Undecided, run system-system-20261020T113826Z-7b45 stopped by Egor mid-problem. C is steady watchdog cost outside suite ticks (10-18 1.9k, 10-19 1.9k cpu-s; 1-20 s a tick over 674 ticks). Each hop (<= 30 s) on a moved transcript runs activity_fingerprint -> compute_transcript_files: transcript_files' two full jq passes (78 ms on a 2.4 MB transcript), transcript_wrote_through_shell's jq pass plus a python3 classifier, though the watchdog reads only RUN_FILES_LIST; estimated ~4.6k cpu-s a day over 154 claudeb runs (76 h) in 2 days. Ready levers: skip transcript_wrote_through_shell in the watchdog (its outputs are unread there); one jq (reduce inputs into bad ids and [id, path] hits, non-string ids tojson) gives byte-identical lists on 138 real transcripts with subagents and a since cut; next, parse only bytes appended since the last hop."
     }
   ],
   "blind_spots": [
