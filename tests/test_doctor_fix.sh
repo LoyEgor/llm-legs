@@ -25,8 +25,7 @@ RUNS="$WORK/doctors/runs"
 export HOME DATA OPENED
 export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR="$WORK/harness" \
   UPDATER_DOCTOR_DIR="$WORK/updater" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vcu" DOCTOR_FIX_PROJECTS="$WORK/projects" \
-  DOCTOR_FIX_OPENER="$FAKE_BIN/opener" DOCTOR_FIX_WORKER_PICK="$FAKE_BIN/worker-pick" \
-  DOCTOR_FIX_VENDOR_CLI_UPDATE="$FAKE_BIN/vendor-cli-update" DOCTOR_FIX_DOCS="$WORK/docs" \
+  DOCTOR_FIX_OPENER="$FAKE_BIN/opener" DOCTOR_FIX_WORKER_PICK="$FAKE_BIN/worker-pick" DOCTOR_FIX_DOCS="$WORK/docs" \
   LLM_DOCTOR_LEDGER="$WORK/ledgers/llm.json" HARNESS_LEDGER="$WORK/ledgers/harness.json" \
   UPDATER_DOCTOR_LEDGER="$WORK/ledgers/updater.json" HARNESS_SETTINGS="$WORK/settings.json" \
   DOCTOR_FIX_WORKTREE_REPO="$WORK/projects/llm-legs" LLM_DOCTOR_REPOS="$WORK/projects" HARNESS_REPOS_DIR="$WORK/projects" \
@@ -45,11 +44,15 @@ printf '%s\n' "$*" >>"$OPENED"
 EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/pick-args"\nprintf "acct-b\\n"\n' >"$FAKE_BIN/worker-pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/vcu-args"\nprintf "vendor update started: fake\\n"\n' >"$FAKE_BIN/vendor-cli-update"
 chmod +x "$FAKE_BIN"/*
 
 FIX="$ROOT/bin/doctor-fix"
 fix() { bash "$FIX" "$@"; }
+# Fixers launch only inside an open full night: each night a launch below names has its ledger, unfinished, no pilot.
+night_ledger() { # doctors-dir id [jq-update]
+  mkdir -p "$1/nights" && jq -n --arg id "$2" "{id: \$id, finished_at: null} | ${3:-.}" >"$1/nights/$2.json"
+}
+for n in nD $(seq -f n%g 0 21); do night_ledger "$WORK/doctors" "$n"; done
 now() { date +%s; }
 doc() { # doctor as_of_s status problem_count judge [contract]
   jq -n --arg d "$1" --argjson s "$2" --arg st "$3" --argjson n "$4" --arg j "$5" --argjson c "${6:-1}" \
@@ -80,39 +83,54 @@ lhash=$(git -C "$L" rev-parse --short HEAD)
 printf '[{"id":"grok-1","verdict":"integrated","purpose":null,"evidence":"1 decision rows"}]\n' >"$WORK/ujson"
 
 if suite_shard_owns 1 df-day-launch; then
-# Launch refusals: no document, a foreign contract, a stale document, nothing to fix.
+# Fixers launch only inside an open full night (2026-10-20: a chat opened ~35 fixer sessions by day): no day
+# launch, no pilot night, no finished night, no night without its ledger.
+doc llm "$(now)" problems 3 j1
+night_ledger "$WORK/doctors" nP '.pilot = "breakages"'
+night_ledger "$WORK/doctors" nF '.finished_at = "2026-10-20T06:00:00Z"'
 assert_fails fix launch llm 2>"$WORK/err"
+assert grep -qF 'fixers launch only inside a full night' "$WORK/err"
+assert_fails fix launch llm --night nP 2>"$WORK/err"
+assert grep -qxF 'doctor-fix: night nP is a pilot: fixers launch only inside a full night' "$WORK/err"
+assert_fails fix launch llm --night nF 2>"$WORK/err"
+assert grep -qxF 'doctor-fix: night nF is finished: fixers launch only inside a full night' "$WORK/err"
+assert_fails fix launch all --night nX 2>"$WORK/err"
+assert grep -qF "no night ledger $WORK/doctors/nights/nX.json" "$WORK/err"
+assert [ -z "$(ls "$RUNS" 2>/dev/null)" ]
+# Launch refusals: no document, a foreign contract, a stale document.
+git -C "$L" update-ref refs/night/nD/base HEAD
+rm "$WORK/llm/latest.json"
+assert_fails fix launch llm --night nD 2>"$WORK/err"
 assert grep -qF 'Refresh the doctor first.' "$WORK/err"
 doc llm "$(now)" problems 3 j1 2
-assert_fails fix launch llm 2>"$WORK/err"
+assert_fails fix launch llm --night nD 2>"$WORK/err"
 assert grep -qF 'not 1. Refresh the doctor first.' "$WORK/err"
 doc llm $(($(now) - 3 * 3600)) problems 3 j1
-assert_fails fix launch llm 2>"$WORK/err"
+assert_fails fix launch llm --night nD 2>"$WORK/err"
 assert grep -qF 'is 3 h old. Refresh the doctor first.' "$WORK/err"
-doc llm "$(now)" ok 0 j1
-assert_fails fix launch llm 2>"$WORK/err"
-assert grep -qF 'nothing to fix' "$WORK/err"
 assert [ ! -s "$OPENED" ]
 assert [ -z "$(ls "$RUNS" 2>/dev/null)" ]
 
-# A fresh document with problems makes the night's runs off main, one per area, each with its worktree and brief,
-# and opens ONE orchestrator chat on their lines.
+# A fresh document with problems makes the night's runs off its base, one per area, each with its worktree and brief;
+# the night's ONE orchestrator chat opens on their lines.
 ddoc llm $(($(now) - 60)) problems 3 j1
 main_head=$(git -C "$L" rev-parse HEAD)
-fix launch llm >"$WORK/out" || fail "launch llm failed"
-assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 2 ]
-assert [ "$(tail -n 1 "$WORK/out")" = "llm fixer opened: 1 runs in one orchestrator chat" ]
+fix launch llm --night nD >"$WORK/out" || fail "launch llm failed"
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 1 ]
 IFS=$'\t' read -r id brief wt <"$WORK/out"
 assert grep -qE '^llm-doctor-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$' <<<"$id"
-assert [ "$brief" = "$RUNS/$id.brief.md" ] && assert [ "$wt" = "$L/.claude/worktrees/doctor-fix-$id" ]
-assert [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" = "doctor-fix/$id" ]
-assert [ "$(git -C "$L" rev-parse "refs/doctor-fix/$id/base")" = "$main_head" ]
+assert [ "$brief" = "$RUNS/$id.brief.md" ] && assert [ "$wt" = "$L/.claude/worktrees/night-nD-$id" ]
+assert [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" = "night/nD/$id" ]
+assert [ "$(git -C "$L" rev-parse "refs/night/nD/base")" = "$main_head" ]
+cp "$WORK/out" "$RUNS/$id.lines"
+fix orchestrate "$RUNS/$id.lines" >"$WORK/orch" || fail "orchestrate failed"
+assert [ "$(cat "$WORK/orch")" = "$(cat "$WORK/out")" ]
 R=$(record "$id")
 assert jqe '["id", "doctor", "area", "night", "created_at", "launched_at", "closed_at", "abandoned_at", "failed_at",
   "account", "session", "command", "branch", "base", "worktrees", "judge_at_launch", "judge_at_close", "problems", "quiet", "decisions", "note"] - keys == []' "$R"
-assert jqe --arg id "$id" --arg w "$wt" '.id == $id and .doctor == "llm" and .area == "doctor" and .night == null and .account == "acct-b"
+assert jqe --arg id "$id" --arg w "$wt" '.id == $id and .doctor == "llm" and .area == "doctor" and .night == "nD" and .account == "acct-b"
   and .judge_at_launch == "j1" and .closed_at == null and .abandoned_at == null and .failed_at == null and .decisions == []
-  and .note == null and .branch == "doctor-fix/\($id)" and .base == "refs/doctor-fix/\($id)/base" and .worktrees == [$w]' "$R"
+  and .note == null and .branch == "night/nD/\($id)" and .base == "refs/night/nD/base" and .worktrees == [$w]' "$R"
 assert jqe '[.created_at, .launched_at] | all(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$"))' "$R"
 assert jqe '[.problems[] | {id, state, fact}] == [{id: "A", state: "new", fact: "a new bug"}, {id: "B", state: "open", fact: "an open row"},
   {id: "E", state: "regressed", fact: "a regressed fix"}]' "$R"
@@ -120,8 +138,8 @@ assert jqe --arg e "$WORK/projects/llm-legs/bin/llm-doctor" '[.problems[] | .are
   and all(.problems[]; .component.files == [$e])' "$R"
 assert [ "$(head -n 1 "$brief")" = "ROUND: none" ]
 assert grep -qxF "# Fixer run $id" "$brief"
-assert [ "$(grep -c 'Night' "$brief")" = 0 ]
-assert grep -qF "all on the branch \`doctor-fix/$id\`, started from their \`refs/doctor-fix/$id/base\`" "$brief"
+assert grep -qxF "Night nD · llm doctor · area doctor · 3 problems. Worktree \`$wt\` on branch \`night/nD/$id\`." "$brief"
+assert grep -qF "all on the branch \`night/nD/$id\`, started from their \`refs/night/nD/base\`" "$brief"
 session=$(jq -r .session "$R")
 assert grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<<"$session"
 assert_fails grep -qF "$session" "$WORK/out"
@@ -129,45 +147,46 @@ assert_fails grep -qF "$session" "$WORK/out"
 # on the very lines a night dispatches.
 assert [ "$(jq -r .command "$R")" = "$RUNS/$id.command" ]
 assert [ "$(cat "$OPENED")" = "$RUNS/$id.command" ]
-assert [ "$(cat "$RUNS/$id.lines")" = "$(head -n 1 "$WORK/out")" ]
 assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 assert grep -qxF "cd $(printf '%q' "$ROOT") || exit 1" "$RUNS/$id.command"
 assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $session --model opus --effort high Fix\\ orchestrator:\\ read\\ $ROOT/docs/fix-orchestrator.md\\ in\\ full\\ and\\ follow\\ it\\ for\\ the\\ runs\\ in\\ $RUNS/$id.lines." "$RUNS/$id.command"
 
-# An open run younger than 12 h is named, and no second chat opens; an older one is abandoned.
-assert_fails fix launch llm 2>"$WORK/err"
+# An open run younger than 12 h is named and holds its area; an older one is abandoned.
+fix launch llm --night nD >"$WORK/out" 2>"$WORK/err" || fail "a held relaunch failed"
+assert [ ! -s "$WORK/out" ]
 assert grep -qF "run $id of the llm doctor is still open" "$WORK/err"
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
 jq --arg t "$(date -u -r $(($(now) - 13 * 3600)) +%Y-%m-%dT%H:%M:%SZ)" --arg c "$(date -u -r $(($(now) - 30)) +%Y-%m-%dT%H:%M:%SZ)" \
   '.launched_at = $t | .created_at = $c' "$R" >"$WORK/r" && mv "$WORK/r" "$R"
-fix launch llm >"$WORK/out" 2>&1 || fail "launch over an old run failed"
+fix launch llm --night nD >"$WORK/out" 2>&1 || fail "launch over an old run failed"
 assert grep -qF "run $id abandoned: open for 13 h" "$WORK/out"
 assert jqe '.abandoned_at != null and .closed_at == null' "$R"
 id2=$(awk -F'\t' 'NF == 3 { print $1 }' "$WORK/out")
 assert [ -n "$id2" ] && assert [ "$id2" != "$id" ]
+awk -F'\t' 'NF == 3' "$WORK/out" >"$RUNS/$id2.lines" && fix orchestrate "$RUNS/$id2.lines" >/dev/null || fail "orchestrate of $id2 failed"
 R2=$(record "$id2")
 jq --arg t "$(date -u -r $(($(now) - 20)) +%Y-%m-%dT%H:%M:%SZ)" '.created_at = $t' "$R2" >"$WORK/r" && mv "$WORK/r" "$R2"
 WT2=$(jq -r '.worktrees[0]' "$R2")
 # Another doctor's open run is no obstacle.
 ddoc harness "$(now)" problems 1 h1
-fix launch harness >"$WORK/out" || fail "launch harness failed"
+fix launch harness --night nD >"$WORK/out" || fail "launch harness failed"
 hid=$(awk -F'\t' 'NF == 3 { print $1 }' "$WORK/out")
 assert grep -qE '^harness-doctor-' <<<"$hid"
-assert [ "$(tail -n 1 "$WORK/out")" = "harness fixer opened: 1 runs in one orchestrator chat" ]
 # A chat that does not open fails every run it would have dispatched.
 : >"$DATA/opener-fails"
 jq --arg t "$(date -u -r $(($(now) - 10)) +%Y-%m-%dT%H:%M:%SZ)" '.launched_at = "2026-01-01T00:00:00Z" | .created_at = $t' "$(record "$hid")" >"$WORK/r" && mv "$WORK/r" "$(record "$hid")"
-assert_fails fix launch harness 2>"$WORK/err" >/dev/null
+fix launch harness --night nD >"$WORK/hl.lines" 2>/dev/null || fail "a harness relaunch failed"
+assert_fails fix orchestrate "$WORK/hl.lines" 2>"$WORK/err" >/dev/null
 rm "$DATA/opener-fails"
-assert grep -qF 'the harness fixer did not open' "$WORK/err"
+assert grep -qF 'doctor-fix: the orchestrator chat did not open' "$WORK/err"
 failed=$(fix runs harness --json | jq -r '.[0].id')
 assert [ "$failed" != "$hid" ]
 assert jqe '.failed_at != null and .session == null and (.note | startswith("chat did not open"))' "$(record "$failed")"
-# Its worktree, branch and base ref go with it: no fixer ever had them.
+# Its worktree and branch go with it: no fixer ever had them. The night's base stays for its other runs.
 assert [ ! -e "$(jq -r '.worktrees[0]' "$(record "$failed")")" ]
-assert_fails git -C "$L" rev-parse -q --verify "refs/heads/doctor-fix/$failed"
-assert_fails git -C "$L" rev-parse -q --verify "refs/doctor-fix/$failed/base"
-assert git -C "$L" rev-parse -q --verify "refs/heads/doctor-fix/$hid"
+assert_fails git -C "$L" rev-parse -q --verify "refs/heads/night/nD/$failed"
+assert git -C "$L" rev-parse -q --verify refs/night/nD/base
+assert git -C "$L" rev-parse -q --verify "refs/heads/night/nD/$hid"
 assert_fails fix close "$failed" --decisions /dev/null "x" 2>"$WORK/err"
 assert grep -qF "run $failed failed to launch: chat did not open" "$WORK/err"
 
@@ -262,10 +281,10 @@ adhoc_ledger "$bench"
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
 assert_fails grep -qF "row R1 fixes[0]" "$WORK/err" && assert grep -qF "row R2 fixes[0] lacks regressed_at" "$WORK/err"
 cp "$WORK/ledger-kept" "$WORK/ledgers/llm.json"
-# A day run's markdown is net zero against its own base, like a night run's; the main checkout's is not the run's.
+# A run's markdown is net zero against its night's base; the main checkout's is not the run's.
 printf '%0500d\n' 0 >"$WT2/DAY.md"
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
-assert grep -qF "markdown grew by 501 bytes since refs/doctor-fix/$id2/base in $WT2 (DAY.md +501)" "$WORK/err"
+assert grep -qF "markdown grew by 501 bytes since refs/night/nD/base in $WT2 (DAY.md +501)" "$WORK/err"
 mv "$WT2/DAY.md" "$L/DAY.md"
 printf '#!/bin/bash\necho >>"$DATA/py-calls"\nexec %q "$@"\n' "$(command -v python3)" >"$FAKE_BIN/python3" && chmod +x "$FAKE_BIN/python3"
 mkdir -p "$WORK/wrun"
@@ -286,7 +305,7 @@ assert_fails fix close "$id2" --decisions "$WORK/decisions" "again" 2>/dev/null
 # show and runs.
 fix show "$id2" >"$WORK/show"
 assert grep -qF "run $id2 · llm doctor · area doctor · closed" "$WORK/show"
-assert grep -qxF "branch doctor-fix/$id2 · worktrees $WT2" "$WORK/show"
+assert grep -qxF "night nD · branch night/nD/$id2 · worktrees $WT2" "$WORK/show"
 assert grep -qF "  E	regressed	a regressed fix" "$WORK/show"
 assert grep -qF "  judge	changed	bin/llm-doctor	the owner narrowed a dismissal row" "$WORK/show"
 assert_fails grep -qF "$(jq -r .session "$R2")" "$WORK/show"
@@ -308,9 +327,6 @@ assert_fails fix close "$uid" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
 assert grep -qF 'through vendor-fingerprint close' "$WORK/err"
 fix record-close "$uid" --decisions "$WORK/ujson" "grok-1: integrated" || fail "record-close failed"
 assert jqe '.closed_at != null and .judge_at_close == "u1" and .decisions[0].verdict == "integrated" and .note == "grok-1: integrated"' "$(record "$uid")"
-fix launch updater >"$WORK/out" || fail "launch updater failed"
-assert [ "$(cat "$WORK/out")" = "vendor update started: fake" ]
-assert [ "$(cat "$DATA/vcu-args")" = now ]
 # A night vendor run is the same with its night, so show and abandon reach it.
 nid=$(fix record updater --night n9 --branch night/n9/grok --worktree "$WORK/wt-grok" --problems grok-1) ||
   fail "record updater --night failed"
@@ -713,12 +729,14 @@ assert jqe --arg f "$WORK/projects/llm-legs/bin/vendor-cli-update" '[.problems[]
 assert_fails fix close "$uid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
 assert grep -qF "$RUNS/$uid.d/latest.json is no contract-1 updater doctor document" "$WORK/err"
 assert_fails fix launch llm --night 'bad night' 2>/dev/null
-# `launch all` walks the whole roster: one doctor's failure is one stderr line and never stops the next.
-fix launch all --night 'bad night' >/dev/null 2>"$WORK/err" || fail "launch all stopped on a failing doctor"
+assert_fails fix launch all --night 'bad night' 2>/dev/null
+# `launch all` walks the whole roster: one doctor's failure (here its missing document) is one stderr line and never stops the next.
+LLM_DOCTOR_DIR="$WORK/none" HARNESS_DOCTOR_DIR="$WORK/none" UPDATER_DOCTOR_DIR="$WORK/none" CODE_DOCTOR_DIR="$WORK/none" \
+  SYSTEM_DOCTOR_DIR="$WORK/none" fix launch all --night n4 >/dev/null 2>"$WORK/err" || fail "launch all stopped on a failing doctor"
 # The roster is the usage line's, in its order.
 roster=$(fix --help | sed -nE 's/^usage: doctor-fix launch ([a-z|]+) .*/\1/p' | tr '|' '\n')
 assert [ "$(wc -l <<<"$roster" | tr -d ' ')" -ge 5 ]
-assert [ "$(grep '^doctor-fix: launch ' "$WORK/err")" = "$(sed 's/.*/doctor-fix: launch & --night bad night failed/' <<<"$roster")" ]
+assert [ "$(grep '^doctor-fix: launch ' "$WORK/err")" = "$(sed 's/.*/doctor-fix: launch & --night n4 failed/' <<<"$roster")" ]
 assert_fails fix launch all 2>/dev/null
 
 # A release run recorded before runs had an area is a release run, not an all-areas one.
@@ -819,7 +837,7 @@ for open in $(fix runs --open --json | jq -r '.[].id'); do fix abandon "$open" >
 doc llm "$(now)" problems 3 j1
 before=$(ls "$RUNS"/*.json)
 : >"$DATA/mv-term-launch"
-assert_fails env LLM_STORE_LOCK_RETRIES=8 bash "$FIX" launch llm >/dev/null 2>&1
+assert_fails env LLM_STORE_LOCK_RETRIES=8 bash "$FIX" launch llm --night n7 >/dev/null 2>&1
 killed=$(comm -13 <(printf '%s\n' "$before") <(ls "$RUNS"/*.json) | sed 's|.*/||; s|\.json$||')
 assert grep -qE '^llm-doctor-' <<<"$killed"
 assert jqe '.failed_at != null and .note == "the launcher exited before the run opened"' "$(record "$killed")"
@@ -882,17 +900,19 @@ assert grep -qxF "exec $FAKE_BIN/claudeb profile acct-b --resume sess-cb --permi
 fi
 
 if suite_shard_owns 1 df-quiet-day; then
-# A doctor that reads ok still opens its day fixer while a quiet open ledger row waits; with none, nothing to fix.
+# A doctor that reads ok still gets its night fixer while a quiet open ledger row waits; with none, nothing launches.
 mkdir -p "$WORK/llm-q"
+night_ledger "$WORK/doctors-q" nQ
+git -C "$L" update-ref refs/night/nQ/base HEAD
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "q", status: "ok", problem_count: 0, problems: []}' \
   >"$WORK/llm-q/latest.json"
 printf '{"owner": "o", "rows": [{"id": "Q7", "title": "quiet", "block": "workers", "status": "fixed", "match": {"word": "x"}}]}\n' >"$WORK/ledgers/q.json"
-assert_fails env DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_DIR="$WORK/llm-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" launch llm 2>"$WORK/err"
-assert grep -qF 'nothing to fix' "$WORK/err"
+DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_DIR="$WORK/llm-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" launch llm --night nQ >"$WORK/out" ||
+  fail "an ok doctor's night launch failed"
+assert [ ! -s "$WORK/out" ]
 printf '{"owner": "o", "rows": [{"id": "Q7", "title": "quiet", "block": "workers", "status": "open", "match": {"word": "x"}}]}\n' >"$WORK/ledgers/q.json"
-DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_DIR="$WORK/llm-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" launch llm >"$WORK/out" 2>"$WORK/err" ||
-  fail "a quiet open row must open the fixer: $(cat "$WORK/err")"
-assert [ "$(tail -n 1 "$WORK/out")" = "llm fixer opened: 1 runs in one orchestrator chat" ]
+DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_DIR="$WORK/llm-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" launch llm --night nQ >"$WORK/out" 2>"$WORK/err" ||
+  fail "a quiet open row must launch the fixer: $(cat "$WORK/err")"
 qid=$(awk -F'\t' 'NF == 3 { print $1 }' "$WORK/out")
 assert jqe '.area == "workers" and .problems == [] and [.quiet[].id] == ["Q7"]' "$WORK/doctors-q/runs/$qid.json"
 DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" show "$qid" >"$WORK/show"
@@ -941,27 +961,17 @@ printf '{"rows": [{"id": "code-q", "title": "an open row past top-K", "status": 
 fix launch code --night n6 >"$WORK/out" 2>"$WORK/err" || fail "code night n6 failed"
 assert jqe '.quiet == [] and (.problems | length) == 3' "$(record "$(cut -f1 "$WORK/out")")"
 for open in $(fix runs code --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
-# A day Code run is the night's off main: close runs code-doctor check against the run's own base.
-fix launch code >"$WORK/out" || fail "code day launch failed"
-dcid=$(awk -F'\t' 'NF == 3 { print $1 }' "$WORK/out")
-jq --argjson s "$(($(now) + 5))" '.as_of_s = $s' "$DATA/code-doc.json" >"$WORK/c" && mv "$WORK/c" "$DATA/code-doc.json"
-: >"$DATA/code-checks"
-DOCTOR_FIX_CODE_DOCTOR="$FAKE_BIN/code-check-passes" fix close "$dcid" --decisions "$WORK/cd-decisions" "done" >/dev/null ||
-  fail "a day code run did not close"
-assert grep -qxF "check $RUNS/$dcid.json --base refs/doctor-fix/$dcid/base" "$DATA/code-checks"
 printf '{"rows": []}\n' >"$CODE_DOCTOR_LEDGER"
 jq '.problems |= map(select(.needs_egor)) | .problem_count = 1' "$WORK/code/latest.json" >"$WORK/code/egor.json" &&
   mv "$WORK/code/egor.json" "$WORK/code/latest.json"
 before=$(ls "$RUNS"/code-*.json)
-assert_fails fix launch code 2>"$WORK/err"
-assert grep -qF 'nothing to fix: every code doctor problem is held back' "$WORK/err"
+fix launch code --night n7 >"$WORK/out" || fail "a held-back code night failed"
+assert [ ! -s "$WORK/out" ]
 assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
 jq '.problems |= map(del(.needs_egor)) | .scope = {foreign: ["/x/web"], report_only: "report-only scope: /x/web is not a sweep repository, so no fixer edits it"}' \
   "$WORK/code/latest.json" >"$WORK/code/scoped.json" && mv "$WORK/code/scoped.json" "$WORK/code/latest.json"
-assert_fails fix launch code 2>"$WORK/err"
-assert [ "$(cat "$WORK/err")" = 'doctor-fix: report-only scope: /x/web is not a sweep repository, so no fixer edits it' ]
 assert_fails fix launch code --night n7 2>"$WORK/err"
-assert grep -qF 'report-only scope' "$WORK/err"
+assert [ "$(cat "$WORK/err")" = 'doctor-fix: report-only scope: /x/web is not a sweep repository, so no fixer edits it' ]
 assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
 fi
 

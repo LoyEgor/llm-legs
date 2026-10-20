@@ -112,6 +112,8 @@ chmod +x "$FAKE_BIN"/*
 PATH="$FAKE_BIN:$PATH"
 
 SCRIPT="$ROOT/bin/vendor-cli-update"
+export LLM_LAUNCH_JOURNAL="$WORK/launches.jsonl"
+egor() { env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION -u WORKER_RUN_ID "$@"; } # as from his terminal or click
 STATE="$HOME/.cache/vendor-cli-update/state.json"
 LOG="$HOME/.cache/vendor-cli-update/update.log"
 set_versions() { # codex-installed codex-latest grok-installed grok-latest ('' = npm view fails)
@@ -325,7 +327,14 @@ assert [ "$(jq -r '.codex.divergence | length' "$STATE")" = 0 ]
 # «выполни обновление»: the same pass with the fingerprint's own launch held, then one chat for every
 # vendor; from a chat it returns at once and runs detached.
 : >"$CALLS"
-VENDOR_CLI_UPDATE_DETACHED=1 bash "$SCRIPT" now
+# Only Egor's own act opens that chat: a chat without his «сделай апдейт» grant is refused before any pass,
+# the detached half included, and the launched-by journal says who asked.
+assert_fails env -u WORKER_RUN_ID CLAUDE_CODE_SESSION_ID=chat-x WORDS_LIB="$WORK/no-words.sh" VENDOR_CLI_UPDATE_DETACHED=1 \
+  bash "$SCRIPT" now 2>"$WORK/err"
+assert grep -qF 'LLM_LAUNCH_REFUSED: the vendor update starts only on' "$WORK/err"
+assert [ ! -s "$CALLS" ]
+assert jq -e -s '.[-1] | .what == "the vendor update" and .by == "chat-x" and .allowed == false' "$LLM_LAUNCH_JOURNAL"
+egor env VENDOR_CLI_UPDATE_DETACHED=1 bash "$SCRIPT" now
 assert [ "$(grep -c '^fingerprint ' "$CALLS")" = 2 ]
 assert grep -qE '^fingerprint check HOLD=1 ' "$CALLS"
 assert [ "$(tail -n 2 "$CALLS" | head -n 1 | cut -d' ' -f1-4)" = "fingerprint request --all Egor's" ]
@@ -336,28 +345,29 @@ assert [ "$(tail -n 2 "$CALLS" | head -n 1 | sed 's/.*PATH=//')" = "$PATH:$FAKE_
 : >"$CALLS"
 printf '#!/usr/bin/env bash\ncase "$*" in *run.lock*) exit 75 ;; esac\nexec /usr/bin/lockf "$@"\n' >"$FAKE_BIN/lockf"
 chmod +x "$FAKE_BIN/lockf"
-assert_fails env VENDOR_CLI_UPDATE_DETACHED=1 bash "$SCRIPT" now
+assert_fails egor env VENDOR_CLI_UPDATE_DETACHED=1 bash "$SCRIPT" now
 rm "$FAKE_BIN/lockf"
 assert_fails grep -qF 'request --all' "$CALLS"
 assert grep -qF 'another run held the lock' "$LOG"
 : >"$CALLS"
-assert grep -qF 'vendor update started' <(bash "$SCRIPT" now)
+assert grep -qF 'vendor update started' <(egor bash "$SCRIPT" now)
 for _ in $(seq 1 50); do grep -qF 'request --all' "$CALLS" && break; sleep 0.2; done
 assert grep -qF 'fingerprint request --all' "$CALLS"
 # A second click during the detached pass starts no second pass and no second orchestrator chat.
 # hold_lock's own lockf blocks until the detached pass lets manual.lock go.
 hold_lock "$HOME/.cache/vendor-cli-update/manual.lock"
 : >"$CALLS"
-assert grep -qF 'vendor update already running' <(bash "$SCRIPT" now)
+assert grep -qF 'vendor update already running' <(egor bash "$SCRIPT" now)
 sleep 1
 assert_fails grep -qF 'fingerprint' "$CALLS"
 kill "$HOLDER" 2>/dev/null
 wait "$HOLDER" 2>/dev/null
 HOLDER=""
 
-# Night prep: the same pass in the foreground, no orchestrator chat, so `request --night` still finds the events.
+# Night prep: the same pass in the foreground, no orchestrator chat, so `request --night` still finds the events;
+# it opens no chat, so the night's own chat runs it unguarded.
 : >"$CALLS"
-bash "$SCRIPT" now --night
+CLAUDE_CODE_SESSION_ID=chat-x WORDS_LIB="$WORK/no-words.sh" bash "$SCRIPT" now --night
 assert grep -qE '^fingerprint check HOLD=1 ' "$CALLS"
 assert_fails grep -qF 'fingerprint request' "$CALLS"
 assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]

@@ -1,7 +1,7 @@
 # Doctors (direction 7)
 
 The doctors (LLM, Harness with Speed, Updater, Code, System) and the night's use of them. Two parts:
-- Doctor fixes: every doctor's Fix rows, `doctor-fix launch` on a full night (`docs/doctor-fix.md`).
+- Doctor fixes: `doctor-fix launch --night` on a full night (`docs/doctor-fix.md`).
 - Deep search: the night looks for what no doctor shows and makes a doctor see it. A doctor is a helper that gives
   hints, never the scope (Decisions).
 
@@ -162,10 +162,10 @@ Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the
 - It brings back README "The whole night" sections Doctor fixes and Deep search, both block 7. `bin/night-run`:
   the `PILOT` default (line 31) ends at `legacy`, so `vendors` (block 6) joins first, then `doctors`, each once its
   file is checked (README, Ready). Carry prints neither section today (`pilot_goal` gives goal and
-  directions-refresh lines; fixers are the sweep's `doctor-fix launch`, which `PILOT_RULES` forbids). Once PILOT
+  directions-refresh lines; fixers are the sweep's `doctor-fix launch`, refused on a pilot). Once PILOT
   reaches `doctors` with no goal left, `pilot_goal` adds one `fixer<TAB><doctor><TAB>llm-legs<TAB>doctor-fix launch
   <doctor>` line per doctor, then `deep-search<TAB><date><TAB>llm-legs<TAB>share/briefs/deep-search.md` (new kind
-  and brief); `PILOT_RULES` excepts those lines. Audit rules launch once their owners' goals (blocks 2–4) landed.
+  and brief); `PILOT_RULES` and doctor-fix's pilot check except them. Audit rules launch once their owners' goals (blocks 2–4) landed.
 - First night: those lines once each. Judged by its false-alarm share of decided non-audit rows against 38.1 % and
   24.6 % (target below 24.6 %) with the guard at or under baseline, rows ruled out again within a window 0, fixer
   spend per decided row from the night header (c746800c), meter closes ≥ blind spots added. If it does not cope,

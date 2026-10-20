@@ -52,7 +52,6 @@ Run everything now
 
 LLM ▸     8  reviewers crashed
           4  review anchors
-       Fix — open a fixer chat
        fixer: never ran
        ──────────
        LLM details ▸   (the doctor's whole previous tree)
@@ -118,7 +117,7 @@ LLM ▸     8  reviewers crashed
 Who builds what:
 - **Each doctor's owner chat** builds its document and ledger in this shape, its section of
   `docs/doctor-fix.md`, and the tests that hold both.
-- **The chat «Updater doctor»** builds the Doctors menu entry, the Fix button, the launcher, the run
+- **The chat «Updater doctor»** builds the Doctors menu entry, the launcher, the run
   record, the common part of `docs/doctor-fix.md`, and the Updater doctor.
 
 ## 1. Document envelope
@@ -236,9 +235,9 @@ read-modify-write holds the runs directory's lock (`share/store-lock.sh`). Field
 - `id`, `doctor`, `area` (`all` for an old day run, `release` for a vendor-fingerprint run), `night` or null;
 - `created_at`, `launched_at`, `closed_at`, `abandoned_at`, `failed_at`: ISO UTC, or null. A run is
   closed, abandoned, failed (with its `note`) or open; a launch never leaves it in between;
-- `account`, `session`, `command`: a day run's orchestrator chat's Claude account, session and command file;
-- `branch`, `base`, `worktrees`: `night/<night>/<id>` from `refs/night/<night>/base` at night, `doctor-fix/<id>`
-  from `refs/doctor-fix/<id>/base` (main at launch) by day, and its worktree paths;
+- `account`, `session`, `command`: the orchestrator chat's Claude account, session and command file (`orchestrate`);
+- `branch`, `base`, `worktrees`: `night/<night>/<id>` from `refs/night/<night>/base` (`doctor-fix/<id>` on an old day
+  run), and its worktree paths;
 - `judge_at_launch`, `judge_at_close`: the doctor document's `judge` (a night run's from its branch
   base), or null;
 - `problems`: `[{id, state, fact, rule, ledger, area, component: {what, files, rule_at}}]`, the
@@ -274,14 +273,14 @@ The menu reads `doctor-fix runs [doctor] [--open] [--json]` (newest first) to sh
 · closed / still open". `doctor-fix show <id>` prints the run and, per problem, the packet: its
 ledger row, earlier decisions on the id, the component and its git history, and the handoffs,
 invariant rows and memory files naming it. Launch:
-- `launch llm|harness|updater|code|system [--night <night-id>]`: per area with problems or quiet rows and no open run
+- `launch llm|harness|updater|code|system|all --night <night-id>`, only from an open full night (its ledger in
+  `nights/` unfinished, no `pilot`; else refused, a day launch too, 2026-10-20): per area with problems or quiet rows and no open run
   of (doctor, area) opened less than 12 h ago (an older one is marked `abandoned_at`), a record, a worktree
   `<repo>/.claude/worktrees/<branch, / -> ->` and `<runs>/<id>.brief.md`; one line `<id>\t<brief>\t<worktree>` each.
-  Refused when the document's `contract` is not 1 or it is older than 2 h. By day (not `updater`) it then
-  opens one orchestrator chat on those lines (`orchestrate <lines>`, `docs/fix-orchestrator.md`; no chat fails the runs and drops their worktrees) and refuses
-  nothing to fix; at night nothing to do prints nothing, but a harness night whose Speed section selects nothing first prints `harness: Speed selects nothing:
+  Refused when the document's `contract` is not 1 or it is older than 2 h. Nothing to do prints nothing, but a harness night whose Speed section selects nothing first prints `harness: Speed selects nothing:
   <why_none>` on stderr; a failed worktree or brief fails its run and the exit status.
-- `launch updater`: runs `vendor-cli-update now`. Every per-vendor run `vendor-fingerprint` makes writes its
+- `orchestrate <lines>` opens one orchestrator chat on such lines (`docs/fix-orchestrator.md`; no chat fails the runs and
+  drops their worktrees). Every per-vendor run `vendor-fingerprint` makes writes its
   record through `doctor-fix record updater` (area `release`): `problems` are the event ids, and each
   event's `run` names the record. It closes through `record-close` when `vendor-fingerprint close`
   closes the last of its events, one decision per event (`verdict` integrated, not-applicable,
@@ -472,5 +471,5 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   `per_day` those plus S, births a day, which no B reads; `per_day.C` includes
   reaped children's CPU, the statusline journal's on `llm-legs/bin/statusline.sh`, not `claude`; `job` `{label, plist,
   schedule, missing, loaded}`, `loaded` null before any dumpstate), `limits`.
-- `doctor-fix launch system` snapshots only fix-target causes (plus ledger and collector faults);
+- `doctor-fix launch system --night` snapshots only fix-target causes (plus ledger and collector faults);
   close runs `bin/system-doctor check --record` (design, Phase 2).

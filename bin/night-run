@@ -31,7 +31,7 @@ PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30'
 PILOT=${NIGHT_RUN_PILOT-breakages lost-time system spend legacy vendors doctors leftovers}
 # What a pilot night does instead of night-sweep's Night mode prep, launches and debt pass: said in its prompt, so
 # the skill every night reads stays as it is.
-PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `doctor-fix launch`, `vendor-fingerprint`, leftovers, `debt` job or debt pass. `nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
+PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. `nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
 STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
@@ -39,6 +39,7 @@ JQ_DONE_JOB='def done_job: .state == "nothing-to-do" or .state == "settled"; def
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/limit-hit.sh"
+. "$repo_root/share/llm-launch.sh"
 . "$repo_root/share/test-scope.sh"
 . "$repo_root/share/worktree.sh"
 . "$repo_root/share/processes.sh"
@@ -387,6 +388,7 @@ trades_recheck() { # id (locked) -> per answered trade of the other nights: sett
 
 cmd_start() {
   local id open file opened account session scope=all resume='' job='' marker='' pilot=$PILOT
+  llm_launch_guard sweep "the night" || exit 1
   while [ $# -gt 0 ]; do
     case $1 in
       --cleanup) scope=cleanup; shift ;;

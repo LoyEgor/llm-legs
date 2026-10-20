@@ -30,7 +30,7 @@ unset WORDS_DIR WORDS_ROOT CLAUDEB_DIR CODE_DOCTOR_DIR SYSTEM_DOCTOR_DIR WORKER_
 export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR="$WORK/harness" \
   UPDATER_DOCTOR_DIR="$WORK/updater" NIGHT_RUN_OPENER="$FAKE_BIN/opener" NIGHT_RUN_WORKER_PICK="$FAKE_BIN/worker-pick" \
   NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SPEND_LEDGER="$WORK/spend-ledger.json" HARNESS_LEDGER="$WORK/harness-ledger.json" \
-  TOKENMAP_ROOT="$ROOT/tests/fixtures/token-map"
+  TOKENMAP_ROOT="$ROOT/tests/fixtures/token-map" LLM_LAUNCH_JOURNAL="$WORK/launches.jsonl"
 # TOKENMAP_ROOT: spend is priced by a frozen copy of token-map's pricing.py (9caede1), never the sibling checkout.
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 mkdir -p "$FAKE_BIN" "$DATA" "$HOME" "$WORK/llm" "$WORK/harness" "$WORK/updater"
@@ -54,7 +54,10 @@ exit 2
 EOF
 chmod +x "$FAKE_BIN"/*
 
-night() { bash "$ROOT/bin/night-run" "$@"; }
+night() { # a start runs as from Egor's terminal or click: no LLM's env (share/llm-launch.sh)
+  if [ "${1:-}" = start ]; then env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION -u WORKER_RUN_ID bash "$ROOT/bin/night-run" "$@"
+  else bash "$ROOT/bin/night-run" "$@"; fi
+}
 # The report under its comparison table, which a blank line closes.
 body() { sed -n '/^duration · /,$p' "$@"; }
 record() { printf '%s/%s.json' "$NIGHTS" "$1"; }
@@ -93,6 +96,50 @@ id=$(sed -n 's/^night \([0-9]\{8\}T[0-9]\{6\}Z-[0-9a-f]\{4\}\) started: orchestr
 R=$(record "$id")
 if suite_shard_owns 1 nr-start-to-sweep; then
 assert [ -n "$id" ]
+# Only Egor's own act starts LLM work (2026-10-20: a chat ran doctor-fix's launch and opened ~35 fixer sessions
+# he never asked for): no LLM's env (his click, his terminal, launchd), or his word for the calling chat; never a worker.
+WL="${CLAUDE_SETUP_ROOT:-$(git_projects "$ROOT")/claude-setup}/hooks/lib/words.sh"
+[ -f "$WL" ] || fail "the launch guard tests need claude-setup's words.sh"
+lg() { # family [VAR=value...] -> llm_launch_guard's exit under only the given LLM env; its stderr in $WORK/err
+  local family=$1
+  shift
+  env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION -u WORKER_RUN_ID WORDS_LIB="$WL" WORDS_DIR="$WORK/words" "$@" \
+    bash -c '. "$0/share/llm-launch.sh" && llm_launch_guard "$1" "the probe"' "$ROOT" "$family" 2>"$WORK/err"
+}
+last_launch() { jq -e -s ".[-1] | $1" "$LLM_LAUNCH_JOURNAL" >/dev/null; }
+assert lg sweep
+assert last_launch '.what == "the probe" and .by == "egor" and .allowed == true and (.at | test("^[0-9-]{10}T[0-9:]{8}Z$"))'
+assert lg update
+assert_fails lg sweep CLAUDE_CODE_SESSION_ID=chat-g
+assert grep -qxF "LLM_LAUNCH_REFUSED: the probe starts only on Egor's own act: his click in the Doctors menu or his word «сделай чистку» in this chat. Tell him so in one line; never start it another way." "$WORK/err"
+assert last_launch '.by == "chat-g" and .allowed == false'
+assert_fails lg update CLAUDE_CODE_SESSION_ID=chat-g
+assert grep -qF '«сделай апдейт»' "$WORK/err"
+# The sweep word is a span its family armed: «максимально автономно» alone arms no sweep.
+mkdir -p "$HOME/.cache/claude/review-journal"
+printf '%s words\n' "$(date +%s)" >"$HOME/.cache/claude/review-journal/span-arm-chat-g"
+assert_fails lg sweep CLAUDE_CODE_SESSION_ID=chat-g
+printf '%s words sweep\n' "$(date +%s)" >"$HOME/.cache/claude/review-journal/span-arm-chat-g"
+assert lg sweep CLAUDE_CODE_SESSION_ID=chat-g
+assert last_launch '.by == "chat-g" and .allowed == true'
+assert_fails lg update CLAUDE_CODE_SESSION_ID=chat-g
+# The update word is a fresh grant of its family; a stale one opens nothing.
+mkdir -p "$WORK/words/chat-g"
+printf '{"lifetime": "ttl:30m"}\n' >"$WORK/words/chat-g/grant.update"
+assert lg update CLAUDE_CODE_SESSION_ID=chat-g
+touch -t "$(date -v-40M +%Y%m%d%H%M)" "$WORK/words/chat-g/grant.update"
+assert_fails lg update CLAUDE_CODE_SESSION_ID=chat-g
+# A worker never launches, inside a chat holding the word too; a launcher with no chat id has no word to read.
+assert_fails lg sweep CLAUDE_CODE_SESSION_ID=chat-g WORKER_RUN_ID=w-1
+assert last_launch '.by == "worker:w-1" and .allowed == false'
+assert_fails lg sweep CLAUDE_LAUNCHER_SESSION=l-1
+assert last_launch '.by == "l-1" and .allowed == false'
+# night-run start asks it first: refused before any record, lock or chat, whatever night is open.
+nights_before=$(ls "$NIGHTS")
+assert_fails env -u WORKER_RUN_ID CLAUDE_CODE_SESSION_ID=chat-x WORDS_LIB="$WORK/no-words.sh" bash "$ROOT/bin/night-run" start --cleanup 2>"$WORK/err"
+assert grep -qF 'LLM_LAUNCH_REFUSED: the night starts only on' "$WORK/err"
+assert [ "$(ls "$NIGHTS")" = "$nights_before" ]
+assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
   "doctors_before", "doctors_after", "doctor_states_after",
   "doctor_problems_after", "jobs", "pilot"] | sort) and .pilot == "breakages lost-time system spend legacy vendors doctors leftovers"' "$R"

@@ -2,8 +2,7 @@
 
 One chat dispatches a launch's fixer runs and lands each branch, day and night. Its input is
 `<ref>\t<brief>\t<worktree>` lines (ref = a `doctor-fix` run; a vendor's run holds its events): by day the
-file `doctor-fix launch` or `vendor-fingerprint request` opened this chat on, at night the night-sweep skill's
-jobs (`night-run job`).
+file `vendor-fingerprint request` opened this chat on, at night the night-sweep skill's jobs (`night-run job`).
 
 ## Dispatch, all at once
 
@@ -34,8 +33,7 @@ the repositories.
    `git rebase --onto main "$base"`, then `if [ -n "$suites" ]; then tests/run-all "$suites"; fi`.
    No overlap means no rerun: mapped inputs main did not touch are still the worker's green inputs.
    Green: in the main checkout `git merge --ff-only <branch> &&` the teardown (`git worktree remove
-   <worktree>`, `git branch -D <branch>`, `git push origin --delete <branch>`, by day `git update-ref -d
-   refs/doctor-fix/<ref>/base`), the same per `ADD-DIR:` repository (one without commits loses only its
+   <worktree>`, `git branch -D <branch>`, `git push origin --delete <branch>`), the same per `ADD-DIR:` repository (one without commits loses only its
    worktree and branch); chain with `&&`, never `;`: a refused merge (main moved) keeps everything and
    repeats step 4. A red suite reruns once alone (`tests/run-all <suite>`): green lands as a flake,
    red again goes to step 3, as a conflict does.

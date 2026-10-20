@@ -826,19 +826,18 @@ if __name__ == "__main__":
 
 py() { DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
 
-check_doc() { # doctor -> dies unless its document is fresh and speaks contract 1; prints its problem count
-  local doc facts contract age status count
+check_doc() { # doctor -> dies unless its document is fresh and speaks contract 1
+  local doc facts contract age
   doc=$(doc_path "$1")
   [ -s "$doc" ] || die "no $1 doctor document at $doc. Refresh the doctor first."
-  facts=$(jq -r "$JQ_EPOCH"' [(.contract // "none"), ((now - ((.as_of_s // (.as_of | epoch)) // 0)) | floor), (.status // "none"), (.problem_count // 0)] | @tsv' "$doc" 2>/dev/null) ||
+  facts=$(jq -r "$JQ_EPOCH"' [(.contract // "none"), ((now - ((.as_of_s // (.as_of | epoch)) // 0)) | floor)] | @tsv' "$doc" 2>/dev/null) ||
     die "$doc is not a doctor document. Refresh the doctor first."
-  IFS=$'\t' read -r contract age status count <<<"$facts"
+  IFS=$'\t' read -r contract age <<<"$facts"
   [ "$contract" = 1 ] || die "$doc speaks contract $contract, not 1. Refresh the doctor first."
   [ "$age" -le "$DOC_MAX_AGE_S" ] || {
     limit_hit doctor-fix.doc-age "$DOC_MAX_AGE_S" s skip "the $1 doctor's fix launch: its document was too old" 'bin/doctor-fix:DOC_MAX_AGE_S=' "$age"
     die "the $1 doctor document is $((age / 3600)) h old. Refresh the doctor first."
   }
-  if [ "$count" = 0 ] && [ "$status" = ok ]; then printf 'none\n'; else printf '%s\n' "${count:-0}"; fi
 }
 
 claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an open run under 12 h holds the area (locked)
@@ -864,18 +863,8 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
   printf '%s\n' "$id"
 }
 
-launch_day() { # llm|harness|code|system -> the night's runs off main, then one orchestrator chat dispatching them
-  local doctor=$1 lines="$runs_dir/.$$.lines" first
-  launch_runs "$doctor" '' >"$lines"
-  [ -s "$lines" ] || { rm -f "$lines"; exit 1; }
-  first=$(head -n 1 "$lines" | cut -f1)
-  mv -f "$lines" "$runs_dir/$first.lines" || die "cannot write $runs_dir/$first.lines"
-  orchestrate "$runs_dir/$first.lines" || die "the $doctor fixer did not open"
-  printf '%s fixer opened: %s runs in one orchestrator chat\n' "$doctor" "$(wc -l <"$runs_dir/$first.lines" | tr -d ' ')"
-}
-
 orchestrate() { # lines-file -> its <ref>\t<brief>\t<worktree> lines once one chat dispatching them opened; else every run failed
-  local lines=$1 opened account session id ids=() branch base wt top
+  local lines=$1 opened account session id ids=() branch wt top
   while IFS=$'\t' read -r id _; do ids+=("$id"); done <"$lines"
   [ ${#ids[@]} -gt 0 ] || die "no runs in $lines"
   if ! opened=$(CHAT_OPEN_OPENER="${DOCTOR_FIX_OPENER:-open -a Terminal}" \
@@ -884,10 +873,9 @@ orchestrate() { # lines-file -> its <ref>\t<brief>\t<worktree> lines once one ch
       "Fix orchestrator: read $repo_root/docs/fix-orchestrator.md in full and follow it for the runs in $lines." 2>&1); then
     for id in "${ids[@]}"; do
       locked fail_run "$id" "chat did not open: $opened"
-      while IFS=$'\t' read -r branch base wt; do
+      while IFS=$'\t' read -r branch _ wt; do
         top=$(worktree_main "$wt") && git -C "$top" worktree remove "$wt" 2>/dev/null &&
           git -C "$top" branch -q -d "$branch" 2>/dev/null
-        [[ $base != refs/doctor-fix/* ]] || git -C "$top" update-ref -d "$base"
       done < <(jq -r '[.branch, (.base // "")] as $b | .worktrees[]? | $b + [.] | @tsv' "$(record_file "$id")")
     done
     printf 'doctor-fix: the orchestrator chat did not open: %s\n' "$opened" >&2
@@ -1059,19 +1047,12 @@ speed_held() { # -> "<problem id>\t<run id>" for each problem an open harness sp
     | (.problems[]? | select(type == "object")) | [.id, $run] | @tsv'
 }
 
-launch_runs() { # doctor night-or-empty -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
-  local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs='' own
-  [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
-  count=$(check_doc "$doctor") || exit 1
-  snap=$(DF_HELD_SPEED=$(speed_held) py snapshot "$doctor" "$(doc_path "$doctor")" ${night:+"$night"}) || die "cannot snapshot the $doctor doctor"
+launch_runs() { # doctor night -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
+  local doctor=$1 night=$2 snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs='' own
+  check_doc "$doctor" || exit 1
+  snap=$(DF_HELD_SPEED=$(speed_held) py snapshot "$doctor" "$(doc_path "$doctor")" "$night") || die "cannot snapshot the $doctor doctor"
   [ "$doctor" != harness ] || jq -r '.speed | select(. != null and (.selection // []) == [])
     | "harness: Speed selects nothing: \(.why_none // "no reason recorded")"' "$(doc_path harness)" >&2 2>/dev/null || true
-  if [ -z "$night" ]; then
-    [ "$count" != none ] || [ "$(jq 'map(select(.state == "quiet")) | length' <<<"$snap")" != 0 ] ||
-      die "nothing to fix: the $doctor doctor reads ok with 0 problems and no quiet open ledger row."
-    [ "$snap" != '[]' ] ||
-      die "nothing to fix: every $doctor doctor problem is held back (needs Egor, under active work or over its budget)."
-  fi
   [ "$snap" != '[]' ] || return 0
   top=$(worktree_top) || die "no repository at $repo_root"
   own=$(DOCTOR_FIX_WORKTREE_REPO='' worktree_top)
@@ -1090,12 +1071,10 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
     if [[ $area == speed-* ]] && [[ $(py levels "$(record_file "$id")") != *$'\t'P1* ]]; then
       locked record_set "$id" '.model = "sonnet"'
     fi
-    if [ -n "$night" ]; then branch="night/$night/$id" base="refs/night/$night/base"
-    else branch="doctor-fix/$id" base="refs/doctor-fix/$id/base"; fi
+    branch="night/$night/$id" base="refs/night/$night/base"
     wt=$(worktree_path "$top" "$branch")
     locked record_set "$id" '.branch = $b | .base = $r | .worktrees = [$w]' --arg b "$branch" --arg r "$base" --arg w "$wt"
-    if ! err=$(worktree_new "$top" "$branch" 2>&1 >/dev/null) ||
-      { [ -z "$night" ] && ! err=$(git -C "$wt" update-ref "$base" HEAD 2>&1); }; then
+    if ! err=$(worktree_new "$top" "$branch" 2>&1 >/dev/null); then
       locked fail_run "$id" "worktree not created: ${err:-git worktree add failed}"
       printf 'run %s failed: worktree not created: %s\n' "$id" "$err" >&2
       pending_id='' failed=1
@@ -1107,7 +1086,6 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
       ! jq -e --arg rules "$TEST_FIX_RULES log_audit " "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
         grep -vxF -e "$top" -e '' "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null; } | grep -vxF -e "$own" | sort -u)
     siblings=$(worktree_siblings "$branch" ${repos[@]+"${repos[@]}"})
-    [ -n "$night" ] || while IFS= read -r repo; do [ -z "$repo" ] || git -C "$repo" update-ref "$base" HEAD; done <<<"$siblings"
     [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"
     [ -n "$judge" ] || judge=$( (cd "$wt" && "bin/$doctor-doctor" --json 2>/dev/null) | jq -r '.judge // empty' 2>/dev/null)
     [ -z "$judge" ] || locked record_set "$id" '.judge_at_launch = $j' --arg j "$judge"
@@ -1131,19 +1109,27 @@ launch_runs() { # doctor night-or-empty -> per area with problems a run, its wor
   return "$failed"
 }
 
-launch() { # llm|harness|updater|code|system [--night <id>]
+full_night() { # id -> dies unless the night's ledger exists, is unfinished and no pilot: fixers launch only inside one
+  local file="${runs_dir%/*}/nights/$1.json" state
+  [[ $1 =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$1' is not branch-safe"
+  state=$(jq -r 'if .finished_at != null then "finished" elif has("pilot") then "a pilot" else "open" end' "$file" 2>/dev/null) ||
+    die "no night ledger $file: fixers launch only inside a full night"
+  [ "$state" = open ] || die "night $1 is $state: fixers launch only inside a full night"
+}
+
+launch() { # llm|harness|updater|code|system|all --night <id>
   local doctor=${1:-} reason
+  [ "${2:-}" = --night ] && [ -n "${3:-}" ] && [ $# -eq 3 ] ||
+    { printf 'doctor-fix: fixers launch only inside a full night: launch <doctor> --night <night-id>, from its orchestrator\n' >&2; usage; }
+  full_night "$3"
   mkdir -p "$runs_dir" || die "cannot make $runs_dir"
   if [ "$doctor" = code ]; then
     reason=$(jq -r '.scope.report_only // empty' "$(doc_path code)" 2>/dev/null)
     [ -z "$reason" ] || die "$reason"
   fi
-  case "$doctor:${2:-}" in
-    llm: | harness: | code: | system:) launch_day "$doctor" ;;
-    updater:) "${DOCTOR_FIX_VENDOR_CLI_UPDATE:-$repo_root/bin/vendor-cli-update}" now ;;
-    llm:--night | harness:--night | updater:--night | code:--night | system:--night) [ -n "${3:-}" ] && [ $# -eq 3 ] || usage; launch_runs "$doctor" "$3" ;;
-    all:--night)
-      [ -n "${3:-}" ] && [ $# -eq 3 ] || usage
+  case "$doctor" in
+    llm | harness | updater | code | system) launch_runs "$doctor" "$3" ;;
+    all)
       for doctor in llm harness updater code system; do
         ( launch "$doctor" --night "$3" ) || printf 'doctor-fix: launch %s --night %s failed\n' "$doctor" "$3" >&2
       done ;;
@@ -1523,7 +1509,7 @@ list_runs() { # [doctor] [--open] [--json]
 
 usage_text() {
   cat <<'EOF'
-usage: doctor-fix launch llm|harness|updater|code|system [--night <night-id>]
+usage: doctor-fix launch llm|harness|updater|code|system --night <night-id>   (only inside an open full night, from its orchestrator)
        doctor-fix launch all --night <night-id>   (every doctor in roster order; one that fails prints a line, the rest still launch)
        doctor-fix show <id>
        doctor-fix runs [llm|harness|updater|code|system] [--open] [--json]

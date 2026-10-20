@@ -1,8 +1,8 @@
 # Doctor fixer run
 
 One run of one doctor's fixer on one area: a headless worker the fix orchestrator dispatched
-(`docs/fix-orchestrator.md`), by day after Egor's Fix button, at night in `docs/night-run.md`. Work
-autonomously and go deep. Updater release events follow
+(`docs/fix-orchestrator.md`) inside a full night (`docs/night-run.md`); `launch` refuses any other (day,
+pilot, finished). Work autonomously and go deep. Updater release events follow
 `docs/vendor-release.md`; shared shapes are in `docs/doctors-contract.md`.
 
 ## 0. Entry
@@ -59,8 +59,8 @@ job (your section says what it counts); never wait for it.
 
 ## 4. Ground rules
 
-- The brief (`<runs>/<id>.brief.md`) names your area, worktree and branch (`doctor-fix/<run id>` from main
-  by day, `night/<night-id>/<run id>` from `refs/night/<night>/base` at night: the run's `base`). Work only
+- The brief (`<runs>/<id>.brief.md`) names your area, worktree and branch (`night/<night-id>/<run id>` from
+  `refs/night/<night>/base`: the run's `base`). Work only
   there and in the `ADD-DIR:` worktrees at its top, one per other repository the components name (every
   sweep repository for a run holding test speed or a log-audit reading), on the same branch and base. A
   change in any other repository is a handoff. Never write a main checkout: hooks and other chats read it.

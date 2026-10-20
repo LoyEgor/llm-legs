@@ -124,7 +124,7 @@ the cause is our own):
   `~/.claude/sweep-repos`; Hammerspoon maps to `hammerspoon/init.lua`); `cause.files` lists them as
   `repo/path`. Everything else, a helper repository's `repo/path` included, reads
   `(<owner>, report only)` and never enters a fixer snapshot or a handoff.
-- **Fixer routing.** `doctor-fix launch system [--night <id>]`, one area `system` (`whole`), so one run
+- **Fixer routing.** `doctor-fix launch system --night <id>`, one area `system` (`whole`), so one run
   owns every cause of a night. The component is the cause's files; `what` names its levers (`LEVERS`,
   the list below). The night brief adds the rules: output-equivalent changes only, and speed never
   trades model, effort or thinking (close refuses a knob change, as for Harness).

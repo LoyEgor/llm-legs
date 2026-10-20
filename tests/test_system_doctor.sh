@@ -1650,10 +1650,13 @@ check(cli().returncode == 0, "the judge writes a fresh document")
 fixer_repo = os.path.join(work, "fixer-repo")
 subprocess.run(["git", "init", "-q", "-b", "main", fixer_repo], check=True)
 subprocess.run(["git", "-C", fixer_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+subprocess.run(["git", "-C", fixer_repo, "update-ref", "refs/night/n1/base", "HEAD"], check=True)
+os.makedirs(os.path.join(work, "doctors", "nights"), exist_ok=True)
+json.dump({"id": "n1", "finished_at": None}, open(os.path.join(work, "doctors", "nights", "n1.json"), "w"))
 env = dict(os.environ, PATH=fake + ":/usr/bin:/bin", DOCTOR_FIX_OPENER=os.path.join(fake, "opener"),
            DOCTOR_FIX_WORKER_PICK=os.path.join(fake, "worker-pick"), DOCTOR_FIX_WORKTREE_REPO=fixer_repo)
-run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
-check(run.returncode == 0 and run.stdout.endswith("system fixer opened: 1 runs in one orchestrator chat\n"), "doctor-fix launch system opens a fixer: %s %s"
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system", "--night", "n1"], capture_output=True, text=True, env=env)
+check(run.returncode == 0 and run.stdout.count("\n") == 1, "doctor-fix launch system --night makes one fixer run: %s %s"
       % (run.stdout, run.stderr))
 fixer = json.load(open(glob.glob(os.path.join(work, "doctors", "runs", "system-system-*.json"))[0]))
 routed = {p["id"]: p for p in fixer["problems"]}
@@ -1665,13 +1668,13 @@ check(sorted(routed) == ["kernel:machine", "spawn:machine"] and routed["spawn:ma
 write_ticks(minutes(10, births_s=1500, births_seen=10, births_top=[["xpcproxy", 10, "apple"]]))
 check(cli().returncode == 0, "the judge rewrites the document")
 run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "abandon", fixer["id"]], capture_output=True, text=True, env=env)
-run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
-check(run.returncode != 0 and "nothing to fix" in run.stderr and len(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json"))) == 1,
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system", "--night", "n1"], capture_output=True, text=True, env=env)
+check(run.returncode == 0 and run.stdout == "" and len(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json"))) == 1,
       "an Apple cause is never in a fixer snapshot: %s" % run.stderr)
 open(os.environ["SSD_SAMPLER_PLIST"], "w").close()
 os.utime(os.environ["SSD_SAMPLER_PLIST"], (time.time() - 20 * 3600, time.time() - 20 * 3600))
 check(cli().returncode == 0, "the judge rewrites the document with a stale sampler")
-run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system", "--night", "n1"], capture_output=True, text=True, env=env)
 blinds = sorted(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json")), key=os.path.getmtime)
 routed = {p["id"]: p for p in json.load(open(blinds[-1]))["problems"]} if len(blinds) == 2 else {}
 check(run.returncode == 0 and sorted(routed) == ["collector:ssd-sampler"]
@@ -1692,7 +1695,7 @@ with open(os.path.join(work, "state", "launchd", m.local_day(at) + ".jsonl"), "w
             {"label": "com.vendor.sync", "name": "com.vendor.sync", "owner": "third-party", "runs": 1, "bad": 1,
              "exit": "signal 11", "every": 300, "relaunched": True}]}) + "\n")
 check(cli().returncode == 0, "the judge reads the launchd rows")
-run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system", "--night", "n1"], capture_output=True, text=True, env=env)
 fixers = sorted(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json")), key=os.path.getmtime)
 routed = {p["id"]: p for p in json.load(open(fixers[-1]))["problems"]} if len(fixers) == 2 else {}
 check(run.returncode == 0 and sorted(routed) == ["job-loop:com.llm-legs.memlogd"]

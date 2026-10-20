@@ -15,6 +15,7 @@ resolve_script() {
 script_path=$(resolve_script)
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 . "$repo_root/share/limit-hit.sh"
+. "$repo_root/share/llm-launch.sh"
 state_dir="${VENDOR_CLI_UPDATE_STATE_DIR:-$HOME/.cache/vendor-cli-update}"
 state_file="$state_dir/state.json"
 log_file="$state_dir/update.log"
@@ -378,6 +379,8 @@ run_doctor() {
 update_now() {
   local night=false
   [ "${1:-}" = --night ] && night=true
+  # The detached pass asks again: VENDOR_CLI_UPDATE_DETACHED alone must not open the orchestrator chat.
+  $night || llm_launch_guard update "the vendor update" || return 1
   mkdir -p "$state_dir"
   if ! $night && [ -z "${VENDOR_CLI_UPDATE_DETACHED:-}" ]; then
     if ! lockf -k -t 0 "$state_dir/manual.lock" true 2>/dev/null; then

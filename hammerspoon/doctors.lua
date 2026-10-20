@@ -24,12 +24,12 @@ local AT_RISK = { ["free-space"] = true, ["dir-growth"] = true, swap = true }
 local held = {}
 local RED_DAYS_KEEP = 8
 local DOCTORS = {
-  { key = "llm", fix = "Fix — open a fixer chat", env = "LLM_DOCTOR", ledger = "doctor-ledger.json" },
-  { key = "harness", fix = "Fix — open a fixer chat", env = "HARNESS_DOCTOR", ledgerEnv = "HARNESS_LEDGER",
+  { key = "llm", env = "LLM_DOCTOR", ledger = "doctor-ledger.json" },
+  { key = "harness", env = "HARNESS_DOCTOR", ledgerEnv = "HARNESS_LEDGER",
     ledger = "harness-ledger.json" },
-  { key = "updater", fix = "Fix — update and integrate all vendors", env = "UPDATER_DOCTOR", ledger = "updater-ledger.json" },
-  { key = "code", fix = "Fix — open a fixer chat", env = "CODE_DOCTOR", ledger = "code-ledger.json" },
-  { key = "system", fix = "Fix — open a fixer chat", env = "SYSTEM_DOCTOR", ledger = "system-ledger.json" },
+  { key = "updater", env = "UPDATER_DOCTOR", ledger = "updater-ledger.json" },
+  { key = "code", env = "CODE_DOCTOR", ledger = "code-ledger.json" },
+  { key = "system", env = "SYSTEM_DOCTOR", ledger = "system-ledger.json" },
 }
 local CODE_GROUPS = { { key = "dead", name = "Dead" }, { key = "heavy", name = "Heavy" },
   { key = "duplicate", name = "Duplicate" }, { key = "promise", name = "Promise" }, { key = "ledger", name = "Ledger" } }
@@ -343,11 +343,6 @@ local function launch(key, path, args, label, launched, after)
   end
 end
 
-function M.fix(doctor)
-  launch(doctor, M.doctorFixCmd or (repoRoot and repoRoot .. "/bin/doctor-fix"), { "launch", doctor }, "Fix",
-    "doctor-fix launched the " .. doctor .. " fixer")
-end
-
 local function nightRunPath() return M.nightRunCmd or (repoRoot and repoRoot .. "/bin/night-run") end
 
 local function startNight(label, question, text, button, args)
@@ -381,13 +376,6 @@ local function nightItem(title, fn)
   if running(fixTasks.night) then return dim(title:match("^(.-) now") .. " — opening…") end
   if night.running then return dim(title:match("^(.-) now") .. " — a night run is going") end
   return { title = infoTitle(title), fn = fn }
-end
-
-local function fixItem(doctor, label, run, now)
-  if running(fixTasks[doctor]) then return dim("Fix — opening…") end
-  local state, at = runState(run)
-  if state == "open" and at and now - at < FIX_BUSY_S then return dim("Fix — fixer running for " .. style.age(now - at)) end
-  return { title = infoTitle(label), fn = function() M.fix(doctor) end }
 end
 
 local refreshTasks = {}
@@ -1733,7 +1721,7 @@ local function firstRows(doctor, document, view, now, moved, incoming)
 end
 
 local function egorLayer(rows, menu, details)
-  rows[#rows + 1], rows[#rows + 2] = menu[#menu - 1], menu[#menu]
+  rows[#rows + 1] = menu[#menu]
   rows[#rows + 1] = { title = "-" }
   rows[#rows + 1] = { title = infoTitle("LLM details"), menu = details }
   return rows
@@ -1893,7 +1881,6 @@ local function compute()
     for _, item in ipairs(own) do menu[#menu + 1] = fitRow(item) end
     local ok, quiet = pcall(quietRow, doctor)
     if ok and quiet then menu[#menu + 1] = quiet end
-    menu[#menu + 1] = fixItem(doctor.key, doctor.fix, run, now)
     menu[#menu + 1] = fixerRow(run, now)
     local stale = oldTitle:find("stale", 1, true) ~= nil
     local shown = view.count + (shift[doctor.key] or 0)

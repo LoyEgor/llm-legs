@@ -444,12 +444,14 @@ export DOCTORS_DIR="$WORK/doctors" DOCTOR_FIX_PROJECTS="$WORK/projects" LLM_DOCT
 mkdir -p "$WORK/projects/llm-legs" "$WORK/docs/handoffs" "$LLM_DOCTOR_DIR"
 git -C "$WORK/projects/llm-legs" init -q -b main
 git -C "$WORK/projects/llm-legs" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+git -C "$WORK/projects/llm-legs" update-ref refs/night/n1/base HEAD
+mkdir -p "$DOCTORS_DIR/nights" && printf '{"id": "n1", "finished_at": null}\n' >"$DOCTORS_DIR/nights/n1.json"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$WORK/bin/opener"
 printf '#!/usr/bin/env bash\nprintf "acct-b\\n"\n' >"$WORK/bin/worker-pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$WORK/bin/claudeb"
 chmod +x "$WORK/bin/opener" "$WORK/bin/worker-pick" "$WORK/bin/claudeb"
 jq '.as_of_s = (now | floor) | .contract = 1' "$WORK/doc.json" >"$LLM_DOCTOR_DIR/latest.json"
-assert bash "$ROOT/bin/doctor-fix" launch llm >"$WORK/fix.out"
+assert bash "$ROOT/bin/doctor-fix" launch llm --night n1 >"$WORK/fix.out"
 run=$(awk -F'\t' '$1 ~ /^llm-image-/ { print $1 }' "$WORK/fix.out")
 assert test -n "$run"
 assert jq -e --arg p "$WORK/projects" '.problems[] | select(.id == "leg-failure:image/browser upload") | .component

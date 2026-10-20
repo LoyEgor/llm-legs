@@ -70,7 +70,7 @@ decision with Egor, written here.
 | 1–5 | Direction goals | one class fix at a time, with its proof | runs |
 | 2 | Failed suites | suites the last full run left red | waits |
 | 6 | Vendor events | a new CLI version, model or plan studied and integrated (`vendor-fingerprint`) | waits |
-| 7 | Doctor fixes | every doctor's Fix row (`doctor-fix launch`) | waits |
+| 7 | Doctor fixes | `doctor-fix launch --night` on a full night | waits |
 | 7 | Deep search | after its goals the night looks for what no doctor shows, the next goal's candidates | waits |
 | 8 | Handoffs, owner chats | each open handoff done, or handed to its owner chat | waits |
 | 8 | Leftovers | unlanded branches landed | waits |

@@ -51,9 +51,8 @@ local function summary(name, value, today)
   return row(name, value and tostring(value) or "–", "      " .. (today or value == nil and " " or value == 0 and "▁" or "█"), "–")
 end
 local function indexRow(name, value, bars, usual) return row(name, value, bars, usual) end
-local function fix(menu) return menu[#menu - 1] end
 local function fixer(menu) return menu[#menu] end
-local function refreshRow(menu) return menu[#menu - 2] end
+local function refreshRow(menu) return menu[#menu - 1] end
 local function allMenlo(menu)
   for _, item in ipairs(menu or {}) do
     if item.title ~= "-" then
@@ -165,7 +164,6 @@ local function loadDoctors(override)
   local doctors = assert(loadfile(override or source or root .. "/hammerspoon/doctors.lua", "t", env))()
   doctors.doctorsDir = dir .. "/doctors"
   doctors.updaterDoctorDir = dir .. "/updater-doctor"
-  doctors.doctorFixCmd = "/fixture/bin/doctor-fix"
   doctors.updaterDoctorCmd = "/fixture/bin/updater-doctor"
   doctors.nightRunCmd = "/fixture/bin/night-run"
   doctors.llmDoctorDir = dir .. "/llm-doctor"
@@ -430,9 +428,12 @@ local function rawInDisabled(menu)
 end
 local rawRow = rawInDisabled(trendItems)
 check(not rawRow, "a disabled row kept a raw palette colour instead of tone(…, true): " .. tostring(rawRow))
-local systemFix = find(trendItems[7].menu, "Fix —")
-check(systemFix and text(systemFix.title) == "Fix — open a fixer chat" and not systemFix.disabled and systemFix.fn,
-  "System routes its own causes to a fixer: its Fix row opens a fixer chat")
+local function fixRow(menu)
+  for _, item in ipairs(menu or {}) do
+    if item.title ~= "-" and text(item.title):match("^Fix —") or fixRow(item.menu) then return true end
+  end
+end
+check(not fixRow(trendItems), "no Fix row anywhere: fixers launch only inside a full night")
 local systemDetails = details(trendItems[7].menu)
 check(text(systemDetails[1].title):find("^swap 3%.2 of 4%.0 GB") and red(systemDetails[1].title)
   and systemDetails[1].menu and text(systemDetails[1].menu[1].title) == "vm.swapusage used 3240M total 4096M"
@@ -444,7 +445,7 @@ check(text(systemDetails[1].title):find("^swap 3%.2 of 4%.0 GB") and red(systemD
 local function captionless(menu)
   for _, item in ipairs(menu or {}) do
     local plain = item.title == "-" and "-" or text(item.title)
-    if not (plain:match("^ *[%d.]+ ") or plain:match("^Fix —") or plain:match("^fixer: ") or plain == "-"
+    if not (plain:match("^ *[%d.]+ ") or plain:match("^fixer: ") or plain == "-"
       or plain == "LLM details") then return false, plain end
   end
   return true
@@ -453,7 +454,7 @@ for index = 1, 7 do
   local menu = trendItems[index].menu or {}
   local ok, caption = captionless({ table.unpack(menu, index == 7 and 8 or 1) })
   check(ok and #menu > 0 and text(menu[#menu].title) == "LLM details",
-    "Egor's layer of " .. names[index] .. " holds issue rows, Fix, fixer and LLM details only: " .. tostring(caption))
+    "Egor's layer of " .. names[index] .. " holds issue rows, fixer and LLM details only: " .. tostring(caption))
 end
 local function rowCount(menu)
   local n = 0
@@ -494,15 +495,14 @@ do
   oldSpeed[#oldSpeed + 1] = { title = "-" }
   for _, item in ipairs(movedToLost) do oldSpeed[#oldSpeed + 1] = item end
   for index, entry in ipairs(old) do
-    entry.menu[#entry.menu + 1] = action(index == 3 and "Fix — update and integrate all vendors" or "Fix — open a fixer chat")
     entry.menu[#entry.menu + 1] = quiet("fixer: never ran")
   end
   for index = 1, 4 do
     check(rowCount(details(trendItems[index].menu)) == rowCount(old[index].menu), "LLM details row count " .. names[index])
     check(sameRows(details(trendItems[index].menu), old[index].menu), "LLM details unchanged tree " .. names[index])
-    local topFix, topFixer = find(trendItems[index].menu, "Fix —"), find(trendItems[index].menu, "fixer:")
-    check(topFix and topFixer and #details(trendItems[index].menu) > 0 and topFix.fn == fix(details(trendItems[index].menu)).fn
-      and text(topFixer.title) == text(fixer(details(trendItems[index].menu)).title), "outer fixer controls " .. names[index])
+    local topFixer = find(trendItems[index].menu, "fixer:")
+    check(topFixer and #details(trendItems[index].menu) > 0
+      and text(topFixer.title) == text(fixer(details(trendItems[index].menu)).title), "outer fixer row " .. names[index])
   end
   check(#movedToLost == 2 and rowCount(details(trendItems[5].menu)) == rowCount(oldSpeed), "LLM details row count Speed")
   check(sameRows(details(trendItems[5].menu), oldSpeed),
@@ -632,7 +632,7 @@ end
 local staleItem = loadDoctors().menuItems()[1]
 local staleDetails = details(staleItem.menu)
 check(text(staleItem.title) == summary("LLM", 2) and sameColor(colorAt(staleItem.title, 1), palette.DIM)
-  and #staleDetails == 4 and text(staleDetails[1].title) == staleTitle
+  and #staleDetails == 3 and text(staleDetails[1].title) == staleTitle
   and text(staleDetails[2].title) == "original detail" and egorLayer({ staleItem }),
   "a stale doctor is a DIM name with its count; the full status and original rows sit in details")
 limits.llmDoctorEntry = realEntry
@@ -682,16 +682,12 @@ check(text(pending.title) == summary("Updater", 1) and red(pending.title) and re
   "a pending update stuck past a day is red: " .. text(pending.title))
 write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
   problem_count = 0, problems = {}, blind_spots = {}, vendors = {} })
-check(text(fix(details(items[1].menu)).title) == "Fix — open a fixer chat" and fix(details(items[1].menu)).fn ~= nil, "LLM Fix button")
-check(text(fix(details(items[2].menu)).title) == "Fix — open a fixer chat", "Harness Fix button")
-check(text(fix(details(items[3].menu)).title) == "Fix — update and integrate all vendors", "Updater Fix button")
-check(text(fix(details(items[4].menu)).title) == "Fix — open a fixer chat", "Code Fix button")
 for index = 1, 4 do
   local item = items[index]
   check(text(fixer(details(item.menu)).title) == "fixer: never ran" and fixer(details(item.menu)).disabled and dimmed(fixer(details(item.menu)).title),
     "no run record: " .. text(fixer(details(item.menu)).title))
-  check(text(refreshRow(details(item.menu)).title) == "Refresh" and (details(item.menu)[#details(item.menu) - 3] or {}).title == "-",
-    text(item.title) .. ": a separator, then Refresh, above Fix")
+  check(text(refreshRow(details(item.menu)).title) == "Refresh" and (details(item.menu)[#details(item.menu) - 2] or {}).title == "-",
+    text(item.title) .. ": a separator, then Refresh, above the fixer row")
 end
 check(allMenlo(items), "every row under Doctors is Menlo 13")
 check(text(details(items[2].menu)[1].title) == "Waits  ok", "the Harness doctor's own rows come first")
@@ -784,8 +780,8 @@ check(title == "Doctors: 1 problem · failed", "a throwing builder: " .. title)
 local broken = doctors.menuItems()[2]
 check(text(broken.title) == summary("Harness", nil, "█") and red(broken.title)
   and text(details(broken.menu)[1].title) == "Harness doctor: failed to render"
-  and details(broken.menu)[3].title == "-" and text(fix(details(broken.menu)).title) == "Fix — open a fixer chat",
-  "a throwing builder keeps its Fix row")
+  and details(broken.menu)[3].title == "-" and text(fixer(details(broken.menu)).title):match("^fixer: "),
+  "a throwing builder keeps its fixer row")
 limits.harnessDoctorEntry = harnessEntry
 
 -- The Updater doctor's rows.
@@ -830,7 +826,7 @@ local function widest(menu)
 end
 check(widest(details(up.menu)) <= 64 and widest(long and long.menu) <= 64, "an Updater row is wider than 64: " .. widest(details(up.menu)))
 local refresh = refreshRow(details(up.menu))
-check(text(refresh.title) == "Refresh" and refresh.fn and (details(up.menu)[#details(up.menu) - 3] or {}).title == "-",
+check(text(refresh.title) == "Refresh" and refresh.fn and (details(up.menu)[#details(up.menu) - 2] or {}).title == "-",
   "the Updater doctor has Refresh after a separator")
 tasks = {}
 refresh.fn()
@@ -876,7 +872,7 @@ check(text(up.title) == summary("Updater", nil, "█") and red(up.title)
 remove("/updater-doctor/latest.json")
 up = doctors.menuItems()[3]
 check(text(up.title) == summary("Updater", nil, "█") and text(details(up.menu)[1].title) == "no data yet"
-  and details(up.menu)[2].title == "-" and text(details(up.menu)[3].title) == "Refresh" and #details(up.menu) == 5, "missing file: " .. text(up.title))
+  and details(up.menu)[2].title == "-" and text(details(up.menu)[3].title) == "Refresh" and #details(up.menu) == 4, "missing file: " .. text(up.title))
 
 -- The LLM and Harness blocks keep the same width: a long row is clipped, its text one level down.
 local llmWide = llmDocument("ok", 0)
@@ -934,15 +930,11 @@ check(waitingRow and text(waitingRow.title) == "candidates waiting: 4" and dimme
 check(costRow and text(costRow.title) == "cost 123k tokens · 10 min · yield 40 lines, 1 causes closed" and dimmed(costRow.title),
   "cost and yield are one dim row")
 check(find(details(codeItem.menu), "not measured") and refreshRow(details(codeItem.menu)) and text(refreshRow(details(codeItem.menu)).title) == "Refresh",
-  "blind spots, then Refresh above Fix")
+  "blind spots, then Refresh above the fixer row")
 tasks = {}
 refreshRow(details(codeItem.menu)).fn()
 check(#tasks == 1 and tasks[1].path == "/fixture/bin/code-doctor" and table.concat(tasks[1].args, " ") == "refresh --quiet",
   "Refresh runs bin/code-doctor refresh --quiet")
-tasks[1]:finish(0, "")
-tasks = {}
-fix(details(codeItem.menu)).fn()
-check(#tasks == 1 and table.concat(tasks[1].args, " ") == "launch code", "Fix on the Code doctor launches code")
 tasks[1]:finish(0, "")
 title = text(loadDoctors().title())
 check(title == "Doctors: " .. (before + 3) .. " problems", "the Code doctor counts into Doctors: " .. title)
@@ -960,34 +952,11 @@ write("/doctors/runs/updater-20260201T000000Z.json", { doctor = "updater", launc
   abandoned_at = iso(now - 86400 - 60) })
 items = doctors.menuItems()
 check(text(fixer(details(items[1].menu)).title) == "fixer: ran 2d ago · closed · 3 fixed · 1 handoff", "closed: " .. text(fixer(details(items[1].menu)).title))
-check(text(fix(details(items[1].menu)).title) == "Fix — open a fixer chat" and fix(details(items[1].menu)).fn, "a closed run leaves Fix on")
 check(text(fixer(details(items[2].menu)).title) == "fixer: running for 2h", "open: " .. text(fixer(details(items[2].menu)).title))
-check(text(fix(details(items[2].menu)).title) == "Fix — fixer running for 2h" and fix(details(items[2].menu)).disabled
-  and not fix(details(items[2].menu)).fn and dimmed(fix(details(items[2].menu)).title), "Fix is off while a young run is open")
 check(text(fixer(details(items[3].menu)).title) == "fixer: abandoned 24h ago", "abandoned: " .. text(fixer(details(items[3].menu)).title))
 write("/doctors/runs/harness-20260201T000000Z.json", { doctor = "harness", launched_at = iso(now - 14 * 3600) })
 items = doctors.menuItems()
-check(text(fix(details(items[2].menu)).title) == "Fix — open a fixer chat" and fix(details(items[2].menu)).fn, "a run open 14 h no longer holds Fix")
 check(text(fixer(details(items[2].menu)).title) == "fixer: running for 14h", "old open run: " .. text(fixer(details(items[2].menu)).title))
-
--- The Fix button's command line, its opening row and its alerts.
-tasks, alerts = {}, {}
-fix(details(items[3].menu)).fn()
-check(#tasks == 1 and tasks[1].path == "/fixture/bin/doctor-fix" and table.concat(tasks[1].args, " ") == "launch updater",
-  "Fix runs bin/doctor-fix launch updater")
-check(tasks[1] and tasks[1].env and tasks[1].env.HOME == os.getenv("HOME"), "the fix task lost HOME")
-local opening = fix(details(doctors.menuItems()[3].menu))
-check(text(opening.title) == "Fix — opening…" and opening.disabled, "a running launch reads opening")
-fix(details(items[3].menu)).fn()
-check(#tasks == 1, "a second click launched a second fixer")
-tasks[1]:finish(0, "starting\nopened fixer chat «Updater fix»\n")
-check(alerts[1] == "opened fixer chat «Updater fix»", "the last output line: " .. tostring(alerts[1]))
-check(text(fix(details(doctors.menuItems()[3].menu)).title) == "Fix — update and integrate all vendors", "Fix is back after exit")
-fix(details(doctors.menuItems()[1].menu)).fn()
-check(table.concat(tasks[2].args, " ") == "launch llm", "Fix on the LLM doctor launches llm")
-tasks[2]:finish(3, "", "checking\nrefused: a run is already open\n")
-check(alerts[2] and alerts[2]:find("exit 3", 1, true) and alerts[2]:find("refused: a run is already open", 1, true),
-  "a failed launch shows its line: " .. tostring(alerts[2]))
 
 -- The newest run record by its own clock, whatever area its name sorts under; a failed launch is final.
 write("/doctors/runs/llm-workers-20260301T000000Z-aaaa.json", { doctor = "llm", created_at = iso(now - 5 * 86400),
@@ -998,7 +967,6 @@ items = doctors.menuItems()
 local failedRow = fixer(details(items[1].menu))
 check(text(failedRow.title) == "fixer: failed 3h ago" and red(failedRow.title) and failedRow.menu
   and text(failedRow.menu[1].title) == "no account left to launch on", "failed run: " .. text(failedRow.title))
-check(fix(details(items[1].menu)).fn ~= nil, "a failed run leaves Fix on")
 
 -- Night: bin/night-run latest --menu, a row under the doctors with a job per line, hidden while it
 -- prints nothing; Run everything under it.
@@ -1143,6 +1111,11 @@ check(#dialogs == 1 and #tasks == 0 and dialogs[1][3] == "Cancel" and dialogs[1]
   and dialogs[1][2]:find("No fixers, no updates", 1, true), "Cancel on the cleanup confirmation starts nothing")
 answer = "Run"
 cleanup.fn()
+tasks[1]:finish(1, "", "checking\nLLM_LAUNCH_REFUSED: the night starts only on Egor's own act\n")
+check(alerts[#alerts] and alerts[#alerts]:find("exit 1", 1, true) and alerts[#alerts]:find("LLM_LAUNCH_REFUSED", 1, true),
+  "a failed launch shows its line: " .. tostring(alerts[#alerts]))
+tasks = {}
+cleanup.fn()
 check(#tasks == 1 and table.concat(tasks[1].args, " ") == "start --cleanup", "Land night branches now runs bin/night-run start --cleanup")
 tasks[1]:finish(0, "night n-2 started: orchestrator on acct\n")
 doctors.menuItems()
@@ -1194,14 +1167,14 @@ write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 proble
   .. hs.json.encode({ status = "problems", problems = {} }) .. "\n0\td\t\tWaits  ok\n")
 write("/harness-ledger.json", { rows = { { id = "suites-llm-legs-concurrent-load", status = "open" } } })
 items = doctors.menuItems()
-local quietLlm = details(items[1].menu)[#details(items[1].menu) - 2]
+local quietLlm = details(items[1].menu)[#details(items[1].menu) - 1]
 check(text(quietLlm.title) == "known, quiet" and dimmed(quietLlm.title) and #quietLlm.menu == 2
   and text(quietLlm.menu[1].title) == "V14 · the judge ruled on fewer claims than it was given"
   and text(quietLlm.menu[2].title) == "W1 · a worker row", "the LLM doctor's quiet rows: " .. text(quietLlm.title))
-local quietHarness = details(items[2].menu)[#details(items[2].menu) - 2]
+local quietHarness = details(items[2].menu)[#details(items[2].menu) - 1]
 check(text(quietHarness.title) == "known, quiet" and text(quietHarness.menu[1].title) == "suites-llm-legs-concurrent-load",
   "the Harness doctor's quiet row: " .. text(quietHarness.title))
-check(text(details(items[3].menu)[#details(items[3].menu) - 2].title) == "Refresh", "no ledger rows, no quiet row")
+check(text(details(items[3].menu)[#details(items[3].menu) - 1].title) == "Refresh", "no ledger rows, no quiet row")
 write("/code-doctor/latest.json", { contract = 1, doctor = "code", as_of_s = now, status = "ok", problem_count = 0,
   problems = {} })
 write("/code-ledger.json", { rows = { { id = "C1", status = "open", title = "a code row" } } })
@@ -1216,7 +1189,7 @@ remove("/code-ledger.json")
 quietDoc.status = "error"
 write("/llm-doctor/latest.json", quietDoc)
 items = doctors.menuItems()
-check(not text(details(items[1].menu)[#details(items[1].menu) - 2].title):find("known, quiet", 1, true), "a failed collector hides nothing as quiet")
+check(not text(details(items[1].menu)[#details(items[1].menu) - 1].title):find("known, quiet", 1, true), "a failed collector hides nothing as quiet")
 
 -- Regroup (docs/doctors-contract.md "Menu layout"): rows and counts move between summaries, the total never changes.
 do
@@ -1258,7 +1231,7 @@ do
   local function titles(menu, out)
     for _, item in ipairs(menu or {}) do
       local plain = item.title ~= "-" and text(item.title) or "-"
-      if plain ~= "-" and not plain:match("^Fix —") and not plain:match("^fixer:") and not plain:match("^%a+ doctor:") then
+      if plain ~= "-" and not plain:match("^fixer:") and not plain:match("^%a+ doctor:") then
         out[plain] = (out[plain] or 0) + 1
       end
     end
@@ -1424,7 +1397,7 @@ do
   check(order, "System's sections in a fixed order, RED only over a red problem: Apple's Siri loop and a watch read calm")
   check(text(first[1].title) == string.format("%-13s %5s %-7s %s %5s", "Processor", "5", "cores", "    ▇▄█", "3"),
     "a section row: name, value with its unit, seven DIM bars, the usual: " .. text(first[1].title))
-  check(rowMatching({ first[8] }, "^ +1 rows +ledger$", "R") and text(first[9].title):match("^Fix —"),
+  check(rowMatching({ first[8] }, "^ +1 rows +ledger$", "R") and text(first[9].title):match("^fixer: "),
     "a problem no section owns shows after the sections")
   local processor, memory, logs, crashes = first[1].menu, first[2].menu, first[5].menu, first[6].menu
   local starts = rowMatching(processor, "^starts ", nil)
