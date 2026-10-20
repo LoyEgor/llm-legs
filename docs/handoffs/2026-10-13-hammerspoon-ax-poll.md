@@ -1,6 +1,6 @@
-# Hammerspoon: 100 ms Terminal tab poll
+# Hammerspoon: menu rebuild on every limits notify
 
-Status: settled 20261014T013750Z-8004: the idle-adaptive poll it recommends landed in hammerspoon@b4a4941 (0.1 s only for a 2 s burst after input or a context event, away-gated) and @75d60db (0.45 s idle, first chord after quiet still warm); test_claude_cmd_keys green
+Status: open
+To: next night
 
-From night fixer harness-speed-cpu-statusline-render (20261012T233034Z-3131): `cpu:process/Hammerspoon` 92
-CPU-min/day, mostly `claude_cmd_keys.lua` walking Terminal's AX tree every 100 ms.
+The AX poll landed (hammerspoon@b4a4941, @75d60db), busy days still 100 CPU-min/day. 10-20 sample: timers 4.7% of a core, 40% styledtext.new, 25% json.decode. `refreshStateChanged` (automation_menu.lua) rebuilds all sections per limits notify: 9 in 100 s, 0.23 s CPU each (tracking 133 ms, instruction-watch 70). Lever: a notify rebuilds the limits section only; the rest keeps the 60 s clock.
