@@ -32,6 +32,10 @@ Verified against `codex-cli 0.163.0` on 2026-10-20, unchanged from 0.159.3 (0.16
 - **Exact size, quality, `n`, masks, `input_fidelity`, `background=transparent`** — every one of them is
   a fallback-CLI/API parameter. `--size` is passed to the model as a sentence and is a request, not a
   guarantee; with no `--size` the prompt asks for low quality, which is likewise only prose.
+  The manifest's `api_only` records them, plus the API's per-call model: its Images 2.5 models
+  (Sunburst, Flare) add `xhigh` and `max` quality, and `background: "transparent"` there is what the
+  built-in tool's own `transparent_background` already carries (developers.openai.com/api/docs/guides/image-generation,
+  2026-10-20); the 0.163.0 `ImagegenArgs` still names no model, quality or size.
 - **Video** — no video tool in this CLI; the manifest's `video` is `null`, which is the fan-out's hard
   skip signal for this vendor.
 - **Naming the image model per run** — `codex exec` output never names the image model (no image item

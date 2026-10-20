@@ -18,5 +18,6 @@
   "transparent": "native+chroma",
   "resume": {"flag": "--resume", "id_source": "thread.started thread_id on codex exec --experimental-json"},
   "video": null,
-  "unsupported": ["aspect", "mask", "n", "quality", "size", "video"]
+  "unsupported": ["aspect", "mask", "n", "quality", "size", "video"],
+  "api_only": ["model_choice", "quality_xhigh_max", "size", "n", "mask", "input_fidelity", "output_format"]
 }
