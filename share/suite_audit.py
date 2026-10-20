@@ -49,12 +49,25 @@ def repos():
     return handoffs.sweep_repos() + handoffs.helper_repos()
 
 
+_RUNS = {}
+
+
 def runs(path, lo):
-    """One sample per suite run ended after lo."""
+    """One sample per suite run ended after lo, copies of the journal's samples built once per its content: a Speed
+    read asks for some forty windows of the same 11 MB journal."""
+    lines = night_spend.kept_lines(path)
+    if _RUNS.get(path, (None,))[0] is not lines:
+        found = journal_runs(lines)
+        _RUNS[path] = (lines, found, [r["end"] for r in found])
+    _, found, ends = _RUNS[path]
+    return [dict(r) for r in found[bisect.bisect_left(ends, lo):]]
+
+
+def journal_runs(lines):
     out = []
-    for r in night_spend.rows(path, keep=True):
+    for r in night_spend.parsed(lines):
         end = r.get("ended_at")
-        if not isinstance(end, (int, float)) or end < lo or not isinstance(r.get("suites"), dict):
+        if not isinstance(end, (int, float)) or not isinstance(r.get("suites"), dict):
             continue
         root = str(r.get("repo_root") or r.get("repo") or "").rstrip("/")
         for name, s in r["suites"].items():

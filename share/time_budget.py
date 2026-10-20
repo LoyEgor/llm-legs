@@ -12,6 +12,7 @@ problem counts. Measurement only: it reads existing journals and gates nothing.
 """
 
 import argparse
+import bisect
 import collections
 import datetime
 import glob
@@ -279,8 +280,12 @@ def transcript_refusals(path, size):
 
 
 def save_refusals():
+    """The scan of every transcript read here, over the held scans of transcripts still on disk: the Harness doctor's
+    day and the Doctors menu's speed row read different windows, so neither drops the other's."""
     if _REFUSALS:
-        write_json(refusal_scan_path(), _REFUSALS)
+        held = {path: entry for path, entry in (_REFUSALS_HELD or [{}])[0].items()
+                if path not in _REFUSALS and os.path.exists(path)}
+        write_json(refusal_scan_path(), dict(held, **_REFUSALS))
 
 
 def parse_refusals(data):
@@ -373,13 +378,16 @@ def refusal_cost(lo, hi, events, rows=None):
     for r in rows:
         refused[str(r.get("sid") or "")[:8]].add(num(r.get("at")) or 0)
     by, own, missing, seen = collections.defaultdict(list), collections.defaultdict(list), collections.Counter(), set()
-    measured = 0
+    measured, accepted = 0, {}
     for r in sorted(rows, key=lambda r: (num(r.get("at")) or 0, str(r.get("gate") or ""))):
         gate, at = r.get("gate") or "unknown", num(r.get("at")) or 0
         sid = str(r.get("sid") or "")[:8]
-        following = [c[1] for c in calls[sid] if at < c[1] and (sid, c[7]) not in denied]
+        if sid not in accepted:
+            accepted[sid] = sorted(c[1] for c in calls[sid] if (sid, c[7]) not in denied)
+        times = accepted[sid]
+        following = bisect.bisect_right(times, at)
         turn = next((t[3] for t in turns[sid] if t[1] <= at < t[3]), None)
-        ends = [x for x in (min(following) if following else None, turn) if x is not None]
+        ends = [x for x in (times[following] if following < len(times) else None, turn) if x is not None]
         if not sid or not ends:
             if lo <= at < hi:
                 missing[gate] += 1
@@ -1198,8 +1206,9 @@ def load_factor(item, before, after, named, need, stat, when=None):
             if n and len(after[key]) >= need:
                 spans[0] += [t for t, _ in when[0][key][-n:]]
                 spans[1] += [t for t, _ in when[1][key][:n]]
+        bounds = [(min(span), max(span)) for span in spans] if spans[0] else ()
         for key in set(when[1]) - set(named) if spans[0] else ():
-            sides = [[w for t, w in when[i].get(key) or () if min(spans[i]) <= t <= max(spans[i])] for i in (0, 1)]
+            sides = [[w for t, w in when[i].get(key) or () if bounds[i][0] <= t <= bounds[i][1]] for i in (0, 1)]
             if min(map(len, sides)) >= need and stat(sides[0]) > 0:
                 ratios.append(stat(sides[1]) / stat(sides[0]))
         return statistics.median(ratios) if len(ratios) >= LOAD_CONTROLS else None
@@ -1553,6 +1562,7 @@ def speed_row(worker_run, path):
         found = {"at": now, "items": len(mine), "gain": sums[0], "proven": sums[1], "slower": sums[2],
                  "pending": sum(v["pending"] for v in mine)}
         write_json(cache, found)
+        save_refusals()
     return found
 
 
