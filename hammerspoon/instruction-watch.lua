@@ -493,7 +493,7 @@ case $mode in
       awk "$_instruction_unloaded_awk"' unloaded($0)' ;;
   # Like the tripwire, which lists only a session's git toplevel: a ranked CLAUDE.md in a plain
   # folder (~/Downloads) made its parent a root, walked whole by find every tick (3-6 s, menubar frozen).
-  repo) for r; do instruction_repo_root "$r" >/dev/null && instruction_repo_files "$r"; done ;;
+  repo) for r; do instruction_repo_root "$r" >/dev/null && _INSTRUCTION_REPO_ONLY=1 instruction_visible_cached "$home" '' "$r" "$state/watcher"; done ;;
   hash)
     [ $# -gt 0 ] || exit 0
     stat -L -f '%N%t%Fm%t%z%t%i' -- "$@" 2>/dev/null

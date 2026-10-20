@@ -5814,6 +5814,24 @@
             "data": "live ~/.claude and the live ranked.txt copied to a temp state dir, read-only; fixture menus",
             "result": "449 listed paths byte-identical uncached, cached cold and cached warm (34 ms uncached, 14 ms warm hit at idle); the tick's listing and repo scans now run as hs.task so the main thread no longer waits on them, events meanwhile queue and replay (journaled once in the harness); every menu title the harnesses compare is unchanged"
           }
+        },
+        {
+          "at": "2026-10-20T15:30:00+03:00",
+          "by": "night fixer harness-speed-background-hs-lag-20261020T113916Z-19d3",
+          "files": [
+            "llm-legs/hammerspoon/doctors.lua",
+            "llm-legs/hammerspoon/instruction-watch.lua",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/doctors_menu_harness.lua",
+            "llm-legs/tests/test_instruction_gate_bypasses.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "doctors.lua: every row title through one memo per text and tone (the dim memo generalised), heldIds over a per-directory-key list of stamped names; the watcher's repo scan through instruction_visible_cached in repo-only mode (instruction_repo_files unfiltered, cached on the same stamps)",
+            "data": "doctors and watcher suites over fixtures (322 doctors menu checks, 140 gate-bypass assertions incl. the repo-scan reuse and arrival, 20 watch-perf cases)",
+            "result": "same titles and held ids, same repo listing; a repeat doctors build styles no title again and parses no run name again; an unchanged repository's repo scan runs no git ls-files. Not timed live; the hung-old-code red run of the doctors harness was not obtained (stopped by the launcher)"
+          }
         }
       ],
       "same_cause": [],

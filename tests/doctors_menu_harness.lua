@@ -1618,6 +1618,31 @@ do
   remove("/doctors/runs/harness-self-" .. held .. "-f00d.json")
 end
 
+-- A repeat build does no work its inputs did not change: every row title is one styled object per text and tone
+-- (style.mono's settled cache hits on it), and the run directory's names are parsed once per directory key.
+do
+  local made, parsed = 0, 0
+  local createTitle, parseTime = limits.infoTitle, limits.parseTime
+  limits.infoTitle = function(...) made = made + 1; return createTitle(...) end
+  local repeated = loadDoctors()
+  limits.infoTitle = createTitle
+  for index = 1, 3 do
+    local stamp = "2019030" .. index .. "T050607Z"
+    write("/doctors/runs/zz-old-" .. stamp .. "-aaaa.json", { id = "zz-old-" .. stamp .. "-aaaa", doctor = "zz" })
+  end
+  limits.parseTime = function(text)
+    if type(text) == "string" and text:sub(1, 4) == "2019" then parsed = parsed + 1 end
+    return parseTime(text)
+  end
+  repeated.menuItems()
+  local madeFirst, parsedFirst = made, parsed
+  repeated.menuItems()
+  limits.parseTime = parseTime
+  check(madeFirst > 0 and made == madeFirst, "a repeat build styled " .. (made - madeFirst) .. " titles again, the first " .. madeFirst)
+  check(parsedFirst == 3 and parsed == parsedFirst, "a repeat build parsed the run names again: " .. parsedFirst .. " then " .. parsed)
+  for index = 1, 3 do os.remove(dir .. "/doctors/runs/zz-old-2019030" .. index .. "T050607Z-aaaa.json") end
+end
+
 os.execute("rm -rf '" .. dir .. "'")
 if #failures > 0 then return "FAIL: " .. table.concat(failures, "; ") end
 return "PASS: " .. checks .. " doctors menu checks"
