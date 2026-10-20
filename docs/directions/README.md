@@ -20,9 +20,13 @@ Blocks, in queue order (Egor 2026-10-20; the numbers are how he and the chats na
 | 9 | Monthly research | vendor news, repeated ad-hoc scripts become tools | postponed (Egor 2026-10-20) |
 | 10 | [Debt](debt.md) | review debt closed: a bugs read of settled code only (Egor 2026-10-06) | paused, last |
 
-Every block, upkeep ones too, keeps one rule (Egor 2026-10-20): it is judged by a metric that converges, never by
-work done. A goal removes a class's root cause, and its proof shows the class stops coming back and the block's
-number moves (more reliable, faster tests, fewer tokens), with net lines shown; code that moves no number is reverted.
+Every block, upkeep ones too, is judged in three layers (Egor 2026-10-20), never by work done:
+- Its number is a compass: whether the block gets healthier over weeks. One that does not converge sends the block
+  back to re-research its diagnosis, never to more code.
+- A goal removes a class's root cause and is judged by the promise it writes before the work: a number when one
+  exists, else a checkable fact. A promise that did not hold is reverted.
+- Harm is reverted: another number worse, red tests, code added with no stated gain. A missing number never is;
+  net lines are always shown, and deleting what nothing needs needs no number.
 
 ## Rules
 

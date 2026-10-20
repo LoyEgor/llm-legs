@@ -169,7 +169,8 @@ Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the
 - First night: those lines once each. Judged by its false-alarm share of decided non-audit rows against 38.1 % and
   24.6 % (target below 24.6 %) with the guard at or under baseline, rows ruled out again within a window 0, fixer
   spend per decided row from the night header (c746800c), meter closes ≥ blind spots added. If it does not cope,
-  the night says why and what would do the same for fewer tokens. Code that moved no number is reverted.
+  the night says why and what would do the same for fewer tokens. A promise that did not hold, or a guard over its
+  baseline, is reverted.
 
 ## Done
 

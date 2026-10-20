@@ -146,7 +146,7 @@ been fixed.
 - Read after landing: mean lag over the next 7 days at or under the mean gap between nights, target ≈1 d or less
   with a night every day (10-06…12: 0.14 d over 6 nights). Events open at a night's start and still open at its
   close: 0. Not worse: the guard within 50–69 %, the integration sessions' spend share per event against 10-06…12
-  (≈0.03 %), and the second number. A lag that does not move, or moves only with the guard out of range: reverted.
+  (≈0.03 %), and the second number. A night closing with an event still open, or the guard out of range: reverted.
 
 ## At night
 
