@@ -187,6 +187,8 @@ class Locator:
             return int(self.page.comment_open)
         if self.key == "comment_pin":
             return len(self.page.pins)
+        if self.key == "upload":
+            return int(self.page.upload_menu)
         if self.key.startswith("role:"):
             return int(self.page.viewer)
         return int(self.page.shown.get(self.key, False))

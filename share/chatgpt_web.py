@@ -120,6 +120,7 @@ SENT = "(arg) => { " + SEEN + """
     || [...document.querySelectorAll(arg.sel.stop)].some(seen);
 }"""
 SEND_TRIES, SEND_CHECK_S = 3, 8
+MENU_TRIES, MENU_CHECK_S = 3, 5
 RESIZE_STARTED = "(sel) => { " + SEEN + """
   const any = s => [...document.querySelectorAll(s)].some(seen);
   return any(sel.stop) || !any(sel.idle) ? 'streaming' : ready(sel.send) && 'send';
@@ -425,11 +426,22 @@ def upload(page, refs: list[str], index: int, batch: bool) -> tuple[int, list[st
     decline_offers(page)
     before, files = page.locator(SELECTORS["attachment"]).count(), [refs[index]]
     # The composer's image/* file inputs stay in the page but ignore a file set on them (live 2026-10-02):
-    # only the chooser its own menu opens takes the upload.
+    # only the chooser its own menu opens takes the upload. A "+" click on a page not yet live opens no menu
+    # (14 legs 2026-10-15..19, their page ready 0.6 s sooner than the median): it is clicked again.
+    item = page.get_by_text(SELECTORS["upload"], exact=True).first
     try:
-        page.get_by_role("button", name=SELECTORS["add_files"], exact=True).first.click(timeout=10000)
+        for attempt in range(MENU_TRIES):
+            if attempt:
+                decline_offers(page)
+            page.get_by_role("button", name=SELECTORS["add_files"], exact=True).first.click(timeout=10000)
+            try:
+                item.wait_for(state="visible", timeout=MENU_CHECK_S * 1000)
+                break
+            except Exception:  # noqa: BLE001
+                if attempt == MENU_TRIES - 1:
+                    raise
         with page.expect_file_chooser(timeout=10000) as chooser:
-            page.get_by_text(SELECTORS["upload"], exact=True).first.click(timeout=5000)
+            item.click(timeout=5000)
         if batch and chooser.value.is_multiple():
             files = refs
         chooser.value.set_files(files if len(files) > 1 else files[0], timeout=15000)

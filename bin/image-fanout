@@ -14,7 +14,7 @@ resolve_self() {
 
 usage() {
   image_leg_cause "$@"
-  printf 'usage: image-fanout --dest-dir <abs dir> (--prompt <text> | --jobs <abs jsonl>) [--vendors all|<vendor,...>] [--accounts all|pick] [--takes <n>] [--spare <n>] [--pack <1-4>] [--ref <abs img>]... [--edit <abs img>] [--aspect <W:H>] [--size <WxH>] [--upscale 2k] [--transparent] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
+  printf 'usage: image-fanout --dest-dir <abs dir> (--prompt <text> | --jobs <abs jsonl>) [--vendors all|<vendor,...>] [--accounts all|pick] [--takes <n>] [--spare <n>] [--pack <1-4>] [--ref <abs img>]... [--edit <abs img>] [--aspect <W:H>] [--size <WxH>] [--upscale 2k] [--transparent] [--composite[=auto|x,y,w,h] | --no-composite] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
   printf '  --jobs: one JSON object per line {prompt, dest, refs, edit, aspect, size, upscale, transparent, vendor, account, takes}; vendors = share/image-caps/*.json\n' >&2
   exit 2
 }
@@ -61,6 +61,7 @@ duration=''
 edit=''
 video=false
 transparent=false
+composite=''
 dry_run=false
 max_parallel=6
 takes=''
@@ -88,6 +89,7 @@ while [ "$#" -gt 0 ]; do
     --spare) [ "$#" -ge 2 ] || usage; spare=$2; shift 2 ;;
     --pack) [ "$#" -ge 2 ] || usage; pack=$2; shift 2 ;;
     --transparent) transparent=true; request_flags=true; shift ;;
+    --composite | --composite=* | --no-composite) composite=$1; shift ;;
     --video) video=true; shift ;;
     --dry-run) dry_run=true; shift ;;
     -h|--help) usage ;;
@@ -112,6 +114,7 @@ fi
 [ -z "$spare" ] || [[ "$spare" =~ ^[0-9]+$ ]] || usage
 [ -z "$pack" ] || [[ "$pack" =~ ^[1-4]$ ]] || usage
 if [ -n "$duration" ] && ! [[ "$duration" =~ ^[0-9]+$ ]]; then usage; fi
+[ "$video" = false ] || [ -z "$composite" ] || usage_error "$composite is image-only"
 kind=image
 [ "$video" = false ] || kind=video
 ext=png
@@ -750,6 +753,7 @@ plan_group() { # request vendor
   if [ -n "$used_duration" ]; then extra+=(--duration "$used_duration"); fi
   if [ "$pass_transparent" = true ]; then extra+=(--transparent); fi
   [ -z "$r_upscale" ] || extra+=(--upscale "$r_upscale")
+  [ -z "$composite" ] || extra+=("$composite")
   extra+=(--lock-wait "$lock_wait")
   write_argv "$jobs_dir/g$g.extra" ${extra[@]+"${extra[@]}"}
 

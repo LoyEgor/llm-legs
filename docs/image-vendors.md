@@ -87,6 +87,7 @@ adapting each call from that vendor's manifest. The vendors ARE the manifests in
   - unsupported `--aspect` → nearest value in `aspects.generate` / `aspects.edit` (edit when any `--ref` is kept; `flow_image.aspects` when `routes[0]` is `flow`); when `aspects` is `null` (Codex), pass `--aspect W:H` and the script's own sentence builder words it
   - `--size WxH` → passed only if `exact_size` is true; otherwise treated as an aspect and mapped as above
   - `--transparent` → forwarded to every image wrapper; each wrapper applies its own `transparent` mode (`native`, `chroma`, `native+chroma`)
+  - `--composite[=…]`/`--no-composite` → forwarded to every image take, `--jobs` too (a whole-image enhance opts out)
 
 ## Fan-out usage
 
