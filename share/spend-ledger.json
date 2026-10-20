@@ -3355,19 +3355,19 @@
   {
    "id": "suite:llm-legs/test_chats",
    "title": "llm-legs/test_chats",
-   "audited_at": "2026-10-13T13:06:40+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-llm-selfcheck-20261012T235335Z-33ab",
-   "cpu_run": 4.9,
-   "wall_run": 11.2,
-   "cpu_min_day": 2.24,
-   "wall_min_day": 7.06,
+   "audited_at": "2026-10-20T15:58:25+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-chatgpt-web-20261020T114056Z-7c8a",
+   "cpu_run": 4.5,
+   "wall_run": 11.3,
+   "cpu_min_day": 0.88,
+   "wall_min_day": 2.59,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_chats.sh": "45b58007404ca1fd4c00692e8d111db1bfe7af01"
+    "llm-legs/tests/lib/suite-journal.sh": "81333618c0ede1295ff60523b106e2789bd6984d",
+    "llm-legs/tests/test_chats.sh": "531fbd77fedea8645d35370146f6cf5e4ac17c9f"
    },
    "verdict": "cut",
-   "zero": "removal saves 10 wall-s a run; loses the picker, filter, mouse and cache-expiry guards",
-   "note": "startup probes gate stubs on file handshakes not 1 s sleeps, finder waits on a release file, cache expiry on a fake clock, bucket tree in one ln (same 129 asserts; blocked-first-paint and sequential-load mutations red)"
+   "zero": "removal saves 2.6 wall-min/day; loses the picker's data, mouse, board-switch and filter-widening checks",
+   "note": "scroll-past-end probe no longer polls the chat-find stub for 5 s (release on the loading frame's draw), board-switch idle sleeps -> event, 99 grep forks -> bash matches; 129 asserts unchanged, load 150 hides the wall (29.1 -> 27.0 s)"
   },
   {
    "id": "suite:llm-legs/test_instruction_gate_matrix",
