@@ -3735,7 +3735,7 @@ gemini_tool_rows() { # transcript since
     def epoch(value):
       try ((value | tostring | sub("\\.[0-9]+(?=Z$)"; "")) | fromdateiso8601) catch null;
     def write_tool: test($writes);
-    def read_tool: test("^(view_file|list_dir|find_by_name|grep_search|search_web|read_url_content|manage_task|schedule|send_message|ask_question|list_permissions)$");
+    def read_tool: test("^(read_file|view_file|list_dir|find_by_name|grep_search|search_web|read_url_content|manage_task|schedule|send_message|ask_question|list_permissions)$");
     def succeeded: tostring | ascii_upcase | test("^(DONE|SUCCESS|SUCCEEDED)$");
     def failed: tostring | ascii_upcase | test("^(FAILED|FAILURE|ERROR|CANCELLED|CANCELED|REJECTED)$");
     . as $rows

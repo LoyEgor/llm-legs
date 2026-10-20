@@ -369,7 +369,7 @@
   },
   "listen": {
     "script": "bin/gemini-listen",
-    "tool": "view_file",
+    "tool": "read_file",
     "view_max_bytes": 19000000,
     "models": {
       "pro": {

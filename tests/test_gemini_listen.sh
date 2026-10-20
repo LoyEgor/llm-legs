@@ -119,6 +119,9 @@ assert grep -q '^File 2: /.*/media/file2\.mp3 (audio, 200\.0 s)$' "$FAKE_GEMINIB
 assert grep -qx "audio=delivered file2: $M/long.wav" "$WORK/err"
 assert test "$(grep -c BEEPS "$FAKE_GEMINIB_PROMPT")" -eq 0
 assert grep -q 'reply with the single line NO_AUDIO <file number>' "$FAKE_GEMINIB_PROMPT"
+# agy before 1.4.3 named the tool view_file {AbsolutePath}; an open under either name is an open.
+FAKE_AGY_TOOL=view_file assert listen 'is it silent?' "$M/silent.mkv" --model flash --account explicit
+assert grep -qF "[file1](file://$M/silent.mkv)" "$WORK/stdout"
 
 # 840 s keeps the bitrate under its 192k cap; 32 kHz still decodes to a wav over view_max_bytes and takes 192k.
 ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=32000 -t 840 -c:a libmp3lame -compression_level 9 -b:a 32k "$M/talk.mp3" || exit 1
@@ -162,11 +165,11 @@ assert test "$(grep -c '^PWD=' "$FAKE_GEMINIB_CALLS")" -eq 2
 FAKE_GEMINIB_MODE=deaf-beeps expect_rc 1 'q' "$M/clip.mp4" "$M/tone.wav" --account explicit
 assert grep -q 'did not hear the test beeps (BEEPS 2:[2-4] wanted' "$WORK/err"
 FAKE_GEMINIB_MODE=no-audio expect_rc 1 'q' "$M/tone.wav" --account explicit
-assert grep -q 'says view_file gave it no sound, in 2 calls' "$WORK/err"
+assert grep -q 'says read_file gave it no sound, in 2 calls' "$WORK/err"
 : >"$FAKE_GEMINIB_CALLS"
 FAKE_GEMINIB_MODE=text expect_rc 1 'q' "$M/clip.mp4" "$M/tone.wav" --account explicit --model flash
-assert grep -q "view_file gave the model $M/tone.wav without its audio; asking again" "$WORK/err"
-assert grep -q "view_file gave the model $M/tone.wav without its audio, in 2 calls; the answer is not grounded" "$WORK/err"
+assert grep -q "read_file gave the model $M/tone.wav without its audio; asking again" "$WORK/err"
+assert grep -q "read_file gave the model $M/tone.wav without its audio, in 2 calls; the answer is not grounded" "$WORK/err"
 assert test "$(grep -c '^PWD=' "$FAKE_GEMINIB_CALLS")" -eq 2
 : >"$FAKE_GEMINIB_CALLS"
 FAKE_GEMINIB_MODE=text-once expect_rc 0 'q' "$M/tone.wav" --account explicit
@@ -176,7 +179,7 @@ assert grep -qx 'The pitch steps up at 3 s.' "$WORK/stdout"
 FAKE_GEMINIB_MODE=no-record expect_rc 1 'q' "$M/still.png" --account explicit
 assert grep -q 'agy kept no record of session listen-session' "$WORK/err"
 FAKE_GEMINIB_MODE=no-audio expect_rc 1 'q' "$M/tone.wav" --account explicit --model flash
-assert grep -q 'says view_file gave it no sound, in 2 calls' "$WORK/err"
+assert grep -q 'says read_file gave it no sound, in 2 calls' "$WORK/err"
 TMPDIR="$TMPDIR/" expect_rc 0 'q' "$M/tone.wav" --account explicit
 assert grep -qx 'calls=1' "$WORK/err"
 assert test "$(grep -c 'WINNER\|^verdict=' "$FAKE_GEMINIB_PROMPT" "$WORK/err" | grep -vc ':0$')" -eq 0

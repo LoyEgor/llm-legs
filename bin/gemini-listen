@@ -316,11 +316,11 @@ audio_rule=''
 [ -z "$beep_counts" ] || audio_rule="
 Short test beeps were added at the very end of each audio file, after its own sound; leave them out of the answer and its timings. The first line of your reply must be BEEPS${beep_counts//:[0-9]/:N}, where each N is how many short test beeps are at the very end of that file, after its own sound."
 [ -z "$heard_lines" ] || audio_rule+="
-If view_file gives you no sound for an audio file, reply with the single line NO_AUDIO <file number>.
+If read_file gives you no sound for an audio file, reply with the single line NO_AUDIO <file number>.
 "
-instruction="Answer a question about the media files below. First open every file with your view_file tool: it shows you the picture of a video or an image and lets you hear the sound of a video or an audio file. Open each file whole, one view_file call per file, and never run a shell command or write a file. Answer only from what you saw and heard; say so when something cannot be told from the media.
+instruction="Answer a question about the media files below. First open every file with your read_file tool: it shows you the picture of a video or an image and lets you hear the sound of a video or an audio file. Open each file whole, one read_file call per file, and never run a shell command or write a file. Answer only from what you saw and heard; say so when something cannot be told from the media.
 ${audio_rule}${labels}
-If view_file fails on a file, reply with the single line CANNOT_OPEN <file number> <the error>.
+If read_file fails on a file, reply with the single line CANNOT_OPEN <file number> <the error>.
 If a quota or usage-limit error stops you, reply with the single word QUOTA.
 
 Question:
@@ -373,7 +373,8 @@ while :; do
   deaf=''
   while IFS=$'\t' read -r sent original _; do
     jq -e --arg path "$sent" 'any(.[]; .event == "step_update" and .step_update.state == "DONE" and
-        .step_update.tool_name == "view_file" and .step_update.tool_info.parameters.AbsolutePath == $path and
+        (.step_update.tool_name == "read_file" or .step_update.tool_name == "view_file") and
+        (.step_update.tool_info.parameters | .Path // .AbsolutePath) == $path and
         ((.step_update.tool_info.error // "") == ""))' \
       "$events" >/dev/null || deaf=${deaf:-"the model answered without opening $original"}
     answer=${answer//"$sent"/"$original"}
@@ -381,18 +382,18 @@ while :; do
   record="$(gemini_account_home "$account")/.gemini/antigravity-cli/brain/$session/.system_generated/logs/transcript_full.jsonl"
   while IFS=$'\t' read -r sent original kind && [ -z "$deaf" ]; do
     if [ ! -f "$record" ]; then
-      deaf="agy kept no record of session $session to show what view_file returned"
+      deaf="agy kept no record of session $session to show what read_file returned"
     elif ! jq -se --arg path "$sent" --arg kind "$kind/" 'reduce .[] as $step ({calls: [], seen: false};
-        if $step.type == "PLANNER_RESPONSE" then .calls += [($step.tool_calls // [])[] | .args.AbsolutePath // ""]
+        if $step.type == "PLANNER_RESPONSE" then .calls += [($step.tool_calls // [])[] | .args.Path // .args.AbsolutePath // ""]
         elif $step.type == "GENERIC" and (.calls | length) > 0 then
           .seen = (.seen or (.calls[0] == $path and any($step.media[]?; .mime_type | startswith($kind))))
           | .calls |= .[1:]
         else . end) | .seen' "$record" >/dev/null; then
-      deaf="view_file gave the model $original without its $kind"
+      deaf="read_file gave the model $original without its $kind"
     fi
   done <"$tmp_dir/sent"
   if [ -z "$deaf" ] && [ -n "$heard_lines" ] && [[ "$first_line$last_line" =~ NO_AUDIO ]]; then
-    deaf="the model says view_file gave it no sound"
+    deaf="the model says read_file gave it no sound"
   fi
   if [ -z "$deaf" ] && [ -n "$beep_counts" ]; then
     if ! [[ "$first_line" =~ ^[[:space:]]*BEEPS ]] ||

@@ -491,10 +491,10 @@ length. By ear, 1 of 3 text takes was usable (the others had a drone or hiss und
 `--count 2`. In the edit, whooshes landed on the cuts, but continuous clicks ignored the hand's pauses.
 
 **Listening** — `bin/gemini-listen` asks Gemini (agy, Pro, Flash or Argon) to watch and hear files through
-`view_file`. The default is Pro, or Flash while `geminib families` lists no Pro; an asked `--model`
+`read_file` (`view_file` before agy 1.4.3, 2026-10-20; both count). The default is Pro, or Flash while `geminib families` lists no Pro; an asked `--model`
 is never swapped. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
 720p, audio as mp3. Audio otherwise goes as wav, since agy refuses flac, aac, m4a and aiff as unsupported
-mime types. A reply that never opened a file is refused, and so is one whose `view_file` step returned an
+mime types. A reply that never opened a file is refused, and so is one whose file step returned an
 error. It judges sound and sync well, but it echoes timings from the question, so measure exact times
 with ffmpeg.
 

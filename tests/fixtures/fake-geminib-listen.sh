@@ -37,22 +37,26 @@ while read -r path kind; do
   kinds+=("$kind")
 done < <(sed -n 's/^File [0-9]*: \(\/[^ ]*\) (\([a-z]*\),.*/\1 \2/p' "$FAKE_GEMINIB_PROMPT")
 [ "$mode" != skip-view ] || paths=("${paths[0]}")
+# agy 1.4.3 (2026-10-20) renamed view_file {AbsolutePath} to read_file {Path}; FAKE_AGY_TOOL=view_file is the old agy.
+tool=${FAKE_AGY_TOOL:-read_file}
+key=Path
+[ "$tool" != view_file ] || key=AbsolutePath
 for path in "${paths[@]}"; do
   error=''
   [ "$mode" != view-error ] || [ "$path" != "${paths[0]}" ] || error='file size (25 MB) exceeds 20MB display limit'
   for state in ACTIVE DONE; do
     jq -cn --arg path "$path" --arg state "$state" --arg error "$error" \
-      '{event:"step_update",step_update:{state:$state,tool_name:"view_file",
-        tool_info:({name:"view_file",parameters:{AbsolutePath:$path}} + if $error == "" then {} else {error:$error} end)}}'
+      --arg tool "$tool" --arg key "$key" '{event:"step_update",step_update:{state:$state,tool_name:$tool,
+        tool_info:({name:$tool,parameters:{($key):$path}} + if $error == "" then {} else {error:$error} end)}}'
   done
 done
-# agy's own record: the view_file calls, then one result step each, the media part per the label's kind.
+# agy's own record: the file-reading calls, then one result step each, the media part per the label's kind.
 record="$GEMINIB_PROFILES_DIR/$account/.gemini/antigravity-cli/brain/listen-session/.system_generated/logs"
 mkdir -p "$record"
 record="$record/transcript_full.jsonl"
 rm -f "$record"
 if [ "$mode" != no-record ]; then
-  printf '%s\n' "${paths[@]}" | jq -Rnc '{type: "PLANNER_RESPONSE", tool_calls: [inputs | {name: "view_file", args: {AbsolutePath: .}}]}' >"$record"
+  printf '%s\n' "${paths[@]}" | jq -Rnc --arg tool "$tool" --arg key "$key" '{type: "PLANNER_RESPONSE", tool_calls: [inputs | {name: $tool, args: {($key): .}}]}' >"$record"
   for index in "${!paths[@]}"; do
     path=${paths[$index]} kind=${kinds[$index]}
     mime=$(case "$kind" in audio) printf audio/wav ;; video) printf video/mp4 ;; *) printf image/png ;; esac)
