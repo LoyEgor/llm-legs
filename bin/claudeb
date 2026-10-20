@@ -993,8 +993,9 @@ messages_probe() {
     printf '255 000'
     return
   fi
-  # pin: any served id answers a one-token probe, so the cheapest; a retired one 404s and the
-  # fingerprint's claude ids facet names its successor.
+  # pin: any served id answers a one-token probe; a retired one 404s and the fingerprint's claude
+  # ids facet names its successor. claude-haiku-5-5 is served and cheaper, but it thinks by default
+  # and a max_tokens 1 answer from it is unproven (docs/vendor-release-open.md).
   local body='{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}'
   if http=$(curl -sK - -m 10 -D "$dir/$name.headers" -o /dev/null -w '%{http_code}' -X POST \
       -H 'anthropic-beta: oauth-2025-04-20' -H 'anthropic-version: 2023-06-01' \
