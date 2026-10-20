@@ -64,15 +64,20 @@ timeout_command() {
 
 stamp() { TZ=UTC printf '%(%Y-%m-%dT%H:%M:%SZ)T\n' -1; }
 
+node_bin_dirs() { # cli -> every nvm node's npm bin directory that installed it, oldest node first
+  local dir
+  while IFS= read -r dir; do
+    [ -x "$dir/$1" ] && [ -x "$dir/npm" ] && printf '%s\n' "$dir"
+  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V)
+}
+
 node_bin_dir() { # cli -> the npm bin directory that installed it
-  local dir found=''
+  local found
   if [ -n "${VENDOR_CLI_UPDATE_BIN_DIR:-}" ]; then
     printf '%s\n' "$VENDOR_CLI_UPDATE_BIN_DIR"
     return 0
   fi
-  while IFS= read -r dir; do
-    [ -x "$dir/$1" ] && [ -x "$dir/npm" ] && found=$dir
-  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V)
+  found=$(node_bin_dirs "$1" | tail -n 1)
   [ -n "$found" ] && printf '%s\n' "$found"
 }
 
@@ -246,6 +251,7 @@ update_vendor() { # vendor
   fi
   if ! newer "$latest" "$installed"; then
     record "$vendor" current "$installed" "$latest"
+    update_older_nodes "$vendor" "$package" "$latest" "$bin_dir"
     return 0
   fi
   if busy "$vendor" "$(dirname "$bin_dir")/lib/node_modules"; then
@@ -262,6 +268,28 @@ update_vendor() { # vendor
     return 0
   fi
   record "$vendor" updated "$now" "$latest" "$installed"
+  update_older_nodes "$vendor" "$package" "$latest" "$bin_dir"
+}
+
+# A node nvm superseded keeps its own global install, and whatever reaches it first runs that old
+# client: /usr/local/bin/claude links into one (2026-10-20: 2.1.296 under node v24.14.1 while v24.21.0
+# had 2.1.304, the claude a LaunchAgent PATH with /usr/local/bin first resolves). Each is brought to the
+# primary's version; one held busy or failing waits for the vendor's next check, the log says which.
+update_older_nodes() { # vendor package version primary-bin-dir
+  local dir installed now
+  while IFS= read -r dir; do
+    [ "$dir" != "$4" ] || continue
+    installed=$(version_of "$dir/$1" --version)
+    [ -n "$installed" ] && newer "$3" "$installed" || continue
+    if busy "$1" "$(dirname "$dir")/lib/node_modules"; then
+      printf '%s %s busy %s -> %s in %s\n' "$(stamp)" "$1" "$installed" "$3" "$dir" >>"$log_file"
+    elif PATH="$dir:$PATH" timeout_command 600 "$dir/npm" install -g "$2@$3" >>"$log_file" 2>&1 &&
+      now=$(version_of "$dir/$1" --version) && [ "$now" = "$3" ]; then
+      printf '%s %s updated %s -> %s in %s\n' "$(stamp)" "$1" "$installed" "$3" "$dir" >>"$log_file"
+    else
+      printf '%s %s install-failed %s -> %s in %s\n' "$(stamp)" "$1" "$installed" "$3" "$dir" >>"$log_file"
+    fi
+  done < <(node_bin_dirs "$1")
 }
 
 # The native versions live in separate files (~/.local/share/claude/versions/<version>) behind the

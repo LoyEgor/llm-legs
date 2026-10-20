@@ -186,8 +186,8 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
   or finished meanwhile. Account choice stays worker-pick's (no silent rotation): the move is a
   visible resume, the same one a person runs by hand.
 - `night-run start --cleanup` opens a new night with the prompt `сделай чистку — night run <id>
-  cleanup`: the orchestrator lands the finished night branches and every leftover, and runs the debt
-  round, no fixers, no updates.
+  cleanup`: the orchestrator lands the finished night branches and every leftover; no debt round (paused),
+  no fixers, no updates.
 - The Doctors menu: `Land night branches now` above `Run everything`, behind
   the same Cancel-first confirmation and off while a night runs; under the last night, while it does
   not run, each unfinished job gets `Continue this job` one level down, and one item `Continue

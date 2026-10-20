@@ -32,6 +32,8 @@ PILOT=${NIGHT_RUN_PILOT-breakages lost-time system spend legacy vendors doctors 
 # What a pilot night does instead of night-sweep's Night mode prep, launches and debt pass: said in its prompt, so
 # the skill every night reads stays as it is.
 PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. `nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
+# The cleanup button lands every leftover and nothing more while review debt waits (README block 10).
+CLEANUP_RULES='Review debt is paused (llm-legs docs/directions/README.md block 10): no `debt` job or debt pass; land every leftover, then Close, and step 6 with `--remainder '"'"'review debt paused'"'"'`.'
 STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
@@ -71,7 +73,7 @@ usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
 wall: a running night's orchestrator stopped by a usage wall (error rate_limit) is handed to a detached
   failover, which waits until worker-pick names a Claude account with room, ends the walled chat and
   resumes the night (start --resume) under a new orchestrator; events wall, wall-moved, wall-gave-up
-start opens the orchestrator chat: --cleanup lands finished night branches and runs the debt round
+start opens the orchestrator chat: --cleanup lands finished night branches and every leftover, no debt round
   only; --resume reopens night <id> under a new orchestrator for its unfinished jobs (one with --job,
   else all plus a cleanup job), the old session kept in previous_sessions; a job whose branch a live
   worker run still works on goes live with run=<run id>, printed `night <id> job <ref> live: worker-run
@@ -399,6 +401,7 @@ cmd_start() {
   done
   [ -z "$job" ] || [ -n "$resume" ] || usage
   [ "$scope" = all ] || marker=" $scope" pilot=''
+  [ "$scope" != cleanup ] || marker=" cleanup. $CLEANUP_RULES"
   [ -z "$pilot" ] || marker=" pilot $pilot. $PILOT_RULES"
   lock
   open=$(open_nights | head -1)

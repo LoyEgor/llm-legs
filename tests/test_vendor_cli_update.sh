@@ -473,6 +473,32 @@ rm "$WORK/agy-manifest.json"
 run
 assert [ "$(result gemini)" = "check-failed 1.3.1" ]
 
+# An older nvm node's own install (the one /usr/local/bin/claude links to) follows the primary's
+# version, left alone while a client holds it.
+OLD_BIN="$HOME/.nvm/versions/node/v24.14.1/bin"
+OLD_CLAUDE="$HOME/.nvm/versions/node/v24.14.1/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+mkdir -p "$OLD_BIN" "$(dirname "$OLD_CLAUDE")"
+: >"$OLD_CLAUDE"
+printf '#!/usr/bin/env bash\nprintf "%%s (Claude Code)\\n" "$(cat "%s/ver")"\n' "$OLD_BIN" >"$OLD_BIN/claude"
+printf '#!/usr/bin/env bash\nprintf "old npm %%s %%s\\n" "$1" "$3" >>"$CALLS"\nprintf "%%s\\n" "${3##*@}" >"%s/ver"\n' "$OLD_BIN" >"$OLD_BIN/npm"
+chmod +x "$OLD_BIN/claude" "$OLD_BIN/npm"
+printf '2.1.296\n' >"$OLD_BIN/ver"
+printf '2.1.304\n' >"$FAKE_BIN/ver-claude"
+printf '2.1.304\n' >"$FAKE_BIN/latest-claude"
+printf '%s\n' "$OLD_CLAUDE" >"$BUSY"
+run
+assert_fails grep -qF 'old npm install' "$CALLS"
+assert grep -qE " claude busy 2\.1\.296 -> 2\.1\.304 in $OLD_BIN\$" "$LOG"
+: >"$BUSY"
+run
+assert grep -qxF 'old npm install @anthropic-ai/claude-code@2.1.304' "$CALLS"
+assert [ "$(cat "$OLD_BIN/ver")" = 2.1.304 ]
+assert grep -qE " claude updated 2\.1\.296 -> 2\.1\.304 in $OLD_BIN\$" "$LOG"
+assert [ "$(result claude)" = "current 2.1.304" ]
+run
+assert_fails grep -qF 'old npm install' "$CALLS"
+rm -rf "$HOME/.nvm"
+
 # launchd runs a wrapper named after the job, never a bare interpreter; uninstall removes both.
 WRAPPER="$HOME/.local/libexec/vendor-cli-update"
 PLIST="$HOME/Library/LaunchAgents/com.llm-legs.vendor-cli-update.plist"
