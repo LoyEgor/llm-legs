@@ -27,7 +27,7 @@ night's local day (UTC+3), 7 days against the 7 before. Target 0: nothing outliv
 | returns: night branch adopted again (one is the branch above) | 2 | 0 |
 | **total, per night** | **15, 2.5** | **1, 0.5** |
 | watched: open at the window's end, oldest | 4, 5.1 d | 1, 5.1 d |
-| watched: days open → settled, median / p90 / max (docs) | 0.8 / 1.9 / 4.2 (42) | 0.8 / 1.2 / 3.9 (17) |
+| watched: days open → settled, median / p90 / max (docs) | 0.8 / 1.8 / 4.2 (40) | 0.8 / 1.2 / 3.9 (14) |
 | recorded under a night's `leftovers` at finish (own line) | 20 | 6 |
 
 - Doc-nights, Status open or trade at the night's `started_at` and `finished_at` on main's first parent:
@@ -43,6 +43,14 @@ night's local day (UTC+3), 7 days against the 7 before. Target 0: nothing outliv
       done; done; done
   ```
   `trad` at finish is a trade doc-night; `usage-gate-hooks` counts open on 10-06 and trade on 10-07.
+- Open at a window's end, and the oldest: 00:00 UTC+3 the morning after the window (2026-10-13, 2026-10-20).
+  A doc counts when the first 20 lines of `main` just before that instant match `^\**Status:?\**` and the value
+  starts with `open`. Age is days from the committer time of the first-parent commit that set that open, one
+  decimal: tokenmap open `2026-10-07T21:19:06+03:00` (5.1 d) and `2026-10-14-logo-bench-own-tools` open
+  `2026-10-14T21:14:26+03:00` (5.1 d).
+- Days open → settled: the same history. A spell runs from a commit that sets `Status:` to open until the next
+  that sets a status that does not start with open; the close falls in `[window start, next window start)` local.
+  Median is the mean of the two middle values when the count is even; p90 is linear at `0.9*(n-1)`; max; one decimal.
 - Reopens, a Status line turning back to open (window bounds local):
   ```
   for r in $(cat ~/.claude/sweep-repos); do git -C $r log --first-parent main -p --since=2026-10-06 \
@@ -61,19 +69,22 @@ night's local day (UTC+3), 7 days against the 7 before. Target 0: nothing outliv
   their chats fast-forwarded 6–50 min after the finish (reflog). The one left:
   `night/…-7777/leftover-fix-browser-local-probe`, adopted again by 7b98, so also a return.
 - Spend: token-map units per job are unconfirmed (worker-run dirs prune at 7 days; owner chats work in their own
-  transcripts; `night-run report` splits no spend by job kind). Job spans (first to last event, `.events` of each
-  night): 10-06…12 handoff 21 jobs 5,336 min (3,580 of it three trades paused for Egor), leftover 17 jobs 3,292,
+  transcripts; `night-run report` splits no spend by job kind). Job spans are whole minutes, truncated: for each
+  job, floor of (last `.events[].at` with that `.job` minus the first) / 60, then summed.
+  10-06…12 handoff 21 jobs 5,336 min (3,580 of it three trades paused for Egor), leftover 17 jobs 3,292,
   owner-chat 4 jobs 317; 10-13…19 handoff 4 jobs 1,009, owner-chat 3 jobs 516.
 
 ## Sources
 
 - The night records `~/.cache/doctors/nights/<id>.json`: `jobs` (kind, state, reason, `handoffs`, `adopted`),
-  `events`, `leftovers` and `held` written by `finish`; 16 finished nights 09-30…10-14.
+  `events`, `leftovers` and `held` written by `finish`; 15 finished nights 09-30…10-14 (16 files; `20261014T010328Z-6468` has no `finished_at`).
 - Git history of `docs/handoffs/` on main of llm-legs (39 docs now), claude-setup (7), review-bench (25); hammerspoon
   has none, nor do the helper repositories (`share/night-helper-repos`).
 - `share/handoffs.py` (`open_handoffs`, `owner_batches`, `--status`, `--night` for the Doctors menu's
   `handoffRows`), `bin/night-run` (`carry_list`, `carry_owner_chats`, `branch_row`, `job set`).
-- No ledger holds handoffs or leftovers; the log audit filed no row on them (10-07…14).
+- No ledger is the handoff list. The harness ledger holds three log-audit rows on them in 10-07…14: `log_audit:`
+  `same-day-apply-not-honored` (the leftovers 6 h rule, fixed 10-07), `handoff-brief-missing-cross-repo-dir` (fixed
+  10-08), `shared-ledger-handoff-conflicts` (fixed 10-13).
 
 ## Recurring classes
 
@@ -81,13 +92,13 @@ Ranked by events in 10-06…19, each with the job minutes it cost.
 
 | class | 10-06…12 | 10-13…19 | cost |
 |---|---:|---:|---|
-| C1. a settled handoff reopens for a new item | 6 returns, 5 docs | 0 | hook-floors carried by 3 nights, tokenmap 4 |
-| C2. a job closes merged, its doc still open | 4 doc-nights | 1 | re-carries 27 + 375 min, part of 88, 129-min batches |
+| C1. a settled handoff reopens for a new item | 6 returns, 5 docs; 1 doc-night | 0 | hook-floors carried by 3 nights, tokenmap 4 |
+| C2. a job closes merged, its doc still open | 3 doc-nights | 1 | re-carries 375 min, part of an 88-min batch |
 | C3. a trade waits for Egor's word | 4 doc-nights | 0 | spans 958, 1,311, 1,311 min paused |
 | C4. one plain handoff to a live chat: no job, no batch | 2 doc-nights | 0 | 2 nights skipped; then a 94-min batch |
 | C5. a night's branch is adopted again | 2 returns | 0 | 1,335 + 18 and 1,325 + 8 min spans |
 | C6. finish records landed or landing work as leftovers | 25 of 26 recorded | | none; the report and menu read them |
-| C7. a doc with no readable Status is never carried | 34 docs | | unknown |
+| C7. a doc with no readable Status is never carried | 35 docs | | unknown |
 
 Why they come back:
 - C1: all six landed while a night ran, its fixers or audits appending an item to a settled doc of their topic
@@ -96,10 +107,10 @@ Why they come back:
   `docs/handoffs/<date>-<topic>.md`. None since 10-10 over three nights with 154 fixer jobs; no fix found that
   stopped it.
 - C2: `night-run job set` checks reason= for `left` and `blocked-on-egor` but never a closing handoff job's doc; the
-  brief asks the worker to rewrite Status and nothing reads it (only `trade_settle` reads Status). hook-floors' job
-  merged 17 min after a fixer reopened it (C1); usage-gate-hooks' fix lay outside the sweep repositories then;
-  one-shot-instructions was settled next night as "kept as is", no code; tokenmap-waste-detectors' owner chat
-  settled it on 10-14 after two merged jobs.
+  brief asks the worker to rewrite Status and nothing reads it (only `trade_settle` reads Status). usage-gate-hooks'
+  fix lay outside the sweep repositories then; one-shot-instructions was settled next night as "kept as is", no code;
+  tokenmap-waste-detectors' owner chat settled it on 10-14 after two merged jobs. hook-floors' f253 doc-night is C1's:
+  its job settled the doc at 07:29 (6298ac54), pushed 07:31; fixer aa48e898 reopened it at 07:39.
 - C3: answered trades stayed `trade for Egor` all day (7777). Since 10-08 an answer settles the trade
   (`trade_settle`, Decision below), and a trade is only a strategic change or a serious downside (10-07).
 - C4: `carry_list` drops a handoff addressed to a live chat as that chat's, and `owner_batches` keeps an owner only
@@ -111,7 +122,8 @@ Why they come back:
 - C6: `finish` snapshots once. A night branch landed by an integration commit or closed reads unlanded (the
   superseded rule, e35094e2 10-08, covers nothing-to-do and settled jobs, not merged), and chats landing their
   branches at that minute read as leftovers.
-- C7: 30 docs written 09-09…09-25 and `opencode-roster-pins` (10-01) have no Status line; 3 read free text:
+- C7: 31 docs written 09-09…09-25 (author date of the adding commit; no `^\**Status:?\**` in the first 20 lines)
+  and `opencode-roster-pins` (written 10-01) have no Status line; 3 read free text:
   `harness-time-budget` "in progress" (its branch landed 10-05), review-bench `debt-redesign-anchors-and-touches`
   "DECIDED … not implemented" and `gemini-leg-waste-and-fixes` "fixes … UNCOMMITTED". Every doc since 10-06 opens
   with `Status: open`: the class stopped at its source.
@@ -122,16 +134,17 @@ Worked in order, one at a time (`bin/night-run` PILOT, carry); a landed goal mov
 
 ### goal job-settles-its-doc: a handoff or owner-chat job closes only with its docs settled
 
-Class C2: 5 doc-nights (4 + 1), each the next carry re-taking a doc whose job had closed.
+Class C2: 4 doc-nights (3 + 1; 3 docs), each the next carry re-taking a doc whose job had closed.
 - Change: in `job set`'s state `case`, `merged` or `nothing-to-do` on a `handoff` job (its `.path`) or an
   `owner-chat` job (each of `.handoffs`) reads each doc's Status on main (`share/handoffs.py --status`, as
   `trade_settle` does); a doc still `open` refuses, naming it: settle it (`Status: settled <night>: …`) or set
   `left` with reason=. About 6 lines, no new store.
 - Proof, fixed before the work: a `tests/test_night_run.sh` case, a fixture night whose handoff job's doc reads
-  `Status: open` on main: `state=merged` accepted on the old code (red), refused on the new; settled, accepted; the
-  five recorded docs at their nights' finish commits replay refused. Read on block 8's first night and the 7 days
-  after: doc-nights after a closed job 5 → 0. Not worse: `left` handoff jobs counted apart, all doc-nights per night
-  ≤ 0.5.
+  `Status: open` on main: `state=merged` accepted on the old code (red), refused on the new; settled, accepted.
+  Replayed on main at each job's last `set` event: usage-gate-hooks (f253), one-shot-instructions (4c4e), tokenmap-
+  waste-detectors (e2f7, 3131) refused; hook-floors (f253, settled before its reopen) accepted. Read on block 8's
+  first night and the 7 days after: doc-nights after a closed job 4 → 0. Not worse: `left` handoff jobs counted
+  apart, all doc-nights per night ≤ 0.5. Net lines about +6 (`bin/night-run`) plus the case; reverted unless 4 → 0.
 
 ### goal live-owner-single: a lone handoff to a live chat reaches it
 
@@ -140,7 +153,8 @@ Class C4: 2 doc-nights, one doc skipped by two nights.
   message`) and no chat opens (Decision 2026-10-04). One condition.
 - Proof, fixed before the work: a `tests/test_night_carry.sh` case, one open handoff `To: «<live chat>»` with no
   decision section and no outside repository: no batch and no job on the old code (red), one `message` batch on the
-  new. Read: doc-nights of handoffs addressed to a live chat 2 → 0.
+  new. Read: doc-nights of handoffs addressed to a live chat 2 → 0. Net lines about +1 (`share/handoffs.py`) plus
+  the case; reverted unless 2 → 0.
 
 ## How the block runs at night
 
@@ -195,12 +209,13 @@ None yet.
   new dated doc rather than denying (Decision 2026-09-29, `breakages.md`).
 - C6: the finish snapshot moves no number of this block (the metric reads the next start). Shown in the report, it
   names 25 leftovers that were not; a fix is the report's reading, not a goal here.
-- C7: 34 docs no carry reads, 3 saying unfinished. Instances, not a class: one triage job on block 8's first night
+- C7: 35 docs no carry reads, 3 saying unfinished. Instances, not a class: one triage job on block 8's first night
   sets each Status with evidence (cost: one worker run); unconfirmed how many still hold work.
 - Egor's 10-19 "no handoffs anywhere": `night-run latest --menu` printed 9 done and 1 queued handoff rows on 10-20,
   shown only inside the last night's block (`hammerspoon/doctors.lua` `handoffRows`); not checked in the live menu
   (read-only `menuItems()` not run). With no night since 10-14, that block is six days old.
 - Checked: a night worker inside a night branch still reads `live` (`branch_row`, `cwd_held`); that is 10-01's
   exception (work going on now), not against 10-07. Handoffs outside the sweep repositories (`~/.cache/chat-handoffs/`,
-  2 docs; other projects') go between chats by Egor's hand: out of scope.
+  3 docs: `2026-10-13-system-doctor-ux`, `2026-10-19-md-compact-round-2`, `2026-10-20-worker-run-run`; other projects')
+  go between chats by Egor's hand: out of scope.
 - Spend per handoff, owner-chat and leftover job in token-map units: unconfirmed until the night records it per job.

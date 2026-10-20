@@ -51,7 +51,7 @@ recomputed 2026-10-20, code only. Each class was fixed as an instance and came b
 | class | rows | days seen | instances fixed | lines now |
 |---|---:|---:|---:|---:|
 | 1. deployed copies: `night-snapshot` commits what a sweep repository deploys into claude-setup `local-config/home` | 111 Code doctor candidates | 2/2 since 10-13 | 3 | 2,916 in 26 files |
-| 2. a removal leaves its other end: a retired feature's readers, flags, tests and prose, a deleted reader's writer, a unit the removal orphaned | 42 dead candidates, 5 code-ledger dead rows, 2 check refusals | 10 (10-03…10-13) | 5 ledger fixes (−252) + 9 relay commits | 572 dead code lines waiting |
+| 2. a removal leaves its other end: a retired feature's readers, flags, tests and prose, a deleted reader's writer, a unit the removal orphaned | 42 dead candidates, 5 code-ledger dead rows, 2 check refusals | 10 (10-03…10-13) | 5 ledger fixes (−252) + 7 relay commits | 572 dead code lines waiting |
 | 3. every new tool rolls its own helpers (JSON IO, bounded runs) | 4 code-ledger rows | 5 (10-08…10-14) | 4 + 3 fit-round folds | 30 |
 
 - Method of the table (2026-10-16, rerun 2026-10-20 to the same counts):
@@ -64,9 +64,11 @@ recomputed 2026-10-20, code only. Each class was fixed as an instance and came b
     (`X is defined and never called`, `no entry point reaches X, Y`), each once, a unit in a test path out (683 with
     it; all 26 files still stand at HEAD 2026-10-20); the `is N lines with N branches` units (worker-run,
     instruction-files.sh: 11,534) and clone-only units (24) are out; `value` adds a clone signal: 695; days = the
-    dead-row fixes, relay sweep, stamp and refusals; relay commits = `git log
-    --first-parent -i -E --grep='^relay (leftovers|cleanup)|^relay-free polish|retired relay|dangling worker-relay'`
-    from 10-09 on, less two Spend audits (fc86109c, 3e8062e0);
+    dead-row fixes, relay sweep, stamp and refusals; relay commits = `git log --first-parent -i -E
+    --grep='^relay (leftovers|cleanup)|^relay-free polish|retired relay|dangling worker-relay'` on the four
+    repositories, committer `%cI` local ≥ 2026-10-09 (`--since=2026-10-09` is UTC midnight and drops a85ef28e,
+    02:54 +0300), less fc86109c and 3e8062e0 (they match only as `retired relays`): 7. The seventh is review-bench
+    0c12b33 (10-10), the unanchored `retired relay`;
   - class 3: `def read_json(`, `def read_jsonl(`, `def write_json(`, `local-config/` out; lines = per repository,
     every body less the longest per name, less the copies the code ledger keeps on purpose (chat-load: deployed
     beside memlogd; harness-doctor's `read_jsonl`: a binary tail reader; review-anchors: a standalone script): at
@@ -80,7 +82,7 @@ Why they come back:
      a legacy round deleted ipad-mic-refresh (091c455), test_report_frame_guard gained an exemption (2612a804).
    - The Code doctor's judge spent all 16 verdicts of 10-14 (247k tokens) on these copies.
 2. A retirement spans repositories while each commit is one, and the Code fixer may not finish its own.
-   - Relay: retired 10-09 (ee185fa8, 46879c6). Its leftovers took 9 commits in 3 repositories, all but one on 10-09.
+   - Relay: retired 10-09 (ee185fa8, 46879c6). Its leftovers took 7 commits in 3 repositories, all but one on 10-09.
    - Delegated stamp: its reader went in review-bench 6a684df. The writers went 10-08 (7d353f02, fa10c66), the
      prose and a test block 10-12 (8090aa7).
    - `code-doctor check` refuses a Code fixer's deletion that no judged problem names, even of a unit the same run
@@ -133,7 +135,9 @@ retirements by chats and workers, which `check` never sees, and stay in the clas
 - Where: llm-legs `bin/code-doctor` `check` (bin/code-doctor:3464–3476).
   - A deletion no judged problem names passes when every reference to the unit at the run's base sits in lines the
     same run deletes, its own definition aside, or the unit is a copy whose callers the run moved to a shared one.
-  - Every other unjudged deletion stays refused.
+  - Such a unit still takes `deletion_proof` (live entry point, rollup hits, the cross-repo later-night delete), the
+    problem that orphaned it as owner, its reason quoted; every other unjudged deletion stays refused. Not against
+    2026-09-30: it pushes no model to delete, it lets through what the run's own change made obsolete (2026-10-09).
 - Proof, old → new on this machine: replay both refusals in scratch worktrees (10f7f32 plus normalizeDir's deletion;
   84de7cc5's statusline.sh and grokb migrations, which 7c9a9cc9 reverted): old `check` refuses both, new passes both,
   both refuse a live unit. No full-night count: Code fixer runs only there, 1 cause a day against 531 waiting.

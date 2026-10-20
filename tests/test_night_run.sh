@@ -95,7 +95,7 @@ if suite_shard_owns 1 nr-start-to-sweep; then
 assert [ -n "$id" ]
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
   "doctors_before", "doctors_after", "doctor_states_after",
-  "doctor_problems_after", "jobs", "pilot"] | sort) and .pilot == "breakages lost-time system spend legacy"' "$R"
+  "doctor_problems_after", "jobs", "pilot"] | sort) and .pilot == "breakages lost-time system spend legacy vendors doctors leftovers"' "$R"
 assert jqe '.doctor_states_after == null and .doctor_problems_after == null' "$R"
 assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null, code: null, system: null} and .doctors_after == null and .jobs == []
   and .finished_at == null and .account == "acct-n"' "$R"
@@ -110,7 +110,7 @@ exec_line=$(grep '^exec ' "$NIGHTS/$id.command")
 eval "set -- ${exec_line#exec }"
 # A new night is the pilot of the queued directions (docs/directions/README.md): its prompt says what that changes.
 prompt=${!#}
-assert [ "${prompt%%. Pilot night *}" = "сделай чистку — night run $id pilot breakages lost-time system spend legacy" ]
+assert [ "${prompt%%. Pilot night *}" = "сделай чистку — night run $id pilot breakages lost-time system spend legacy vendors doctors leftovers" ]
 assert grep -qF "\`nr carry R\` records the next goal" <<<"$prompt"
 assert grep -qF -e "--remainder 'review debt paused: pilot night'" <<<"$prompt"
 assert [ "$1 $2 $3" = "caffeinate -i $FAKE_BIN/claudeb" ]
