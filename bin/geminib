@@ -447,7 +447,8 @@ show_status() {
 
 # --- Capacity fallback, the one mechanism every Gemini consumer gets ---
 # Google answers an overloaded Flash family with a 503 `No capacity available for model …`, and agy
-# retries that in process with a long backoff: a starved family reads as a stall, never as an exit.
+# retries that in process (at most 30 s apart since 1.3.4; `retrying in 4s` on 1.4.3, 2026-10-20):
+# a starved family reads as a stall, never as an exit.
 # So the launch watches agy's log instead — first sight of the phrase ends the attempt and relaunches
 # the identical command one family down at the same effort. Workers, the research leg and
 # review-bench cells all reach agy through here, so none of them carries a fallback of its own.
