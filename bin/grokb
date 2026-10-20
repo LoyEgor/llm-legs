@@ -54,10 +54,18 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 
-grokb_root=$(resolve_root)
+if [ -L "${BASH_SOURCE[0]}" ]; then
+  grokb_root=$(resolve_root)
+else
+  case "${BASH_SOURCE[0]}" in
+    */*) grokb_root=$(cd -P "${BASH_SOURCE[0]%/*}/.." && pwd) ;;
+    *) grokb_root=$(cd -P .. && pwd) ;;
+  esac
+fi
 . "$grokb_root/share/worker-pool.sh"
 . "$grokb_root/share/account-roster.sh"
-pool_dir=$(worker_pool_dir grok)
+worker_pool_dir_r grok
+pool_dir=$WORKER_POOL_DIR_R
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
@@ -662,11 +670,18 @@ export_token() {
   printf 'source=auth.json expires_at=%s\n' "$expires_at"
 }
 
-if [ "${1:-}" != models ]; then
-  . "$grokb_root/share/worker-model.sh"
-  . "$grokb_root/share/account-announce.sh"
-  . "$grokb_root/share/limit-hit.sh"
-fi
+case "${1:-}" in
+  models) ;;
+  list|status|add|remove|enable|disable|fast-mode)
+    . "$grokb_root/share/account-announce.sh"
+    . "$grokb_root/share/limit-hit.sh"
+    ;;
+  *)
+    . "$grokb_root/share/worker-model.sh"
+    . "$grokb_root/share/account-announce.sh"
+    . "$grokb_root/share/limit-hit.sh"
+    ;;
+esac
 
 if [ "${2:-}" = exec ] && [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] && account_exists "${1:-}"; then
   name="$1"
@@ -709,7 +724,6 @@ case "${1:-}" in
     [ "$#" -eq 3 ] && { [ "$3" = workers ] || [ "$3" = reviewers ]; } ||
       { printf 'usage: grokb launch-model <name> <slug> workers|reviewers\n' >&2; exit 2; }
     account_exists "$1" || { printf 'grokb: unknown account: %s\n' "$1" >&2; exit 2; }
-    . "$grokb_root/share/worker-model.sh"
     worker_model_grok_launch_model "$2" "$3" '' "$1"
     exit
     ;;

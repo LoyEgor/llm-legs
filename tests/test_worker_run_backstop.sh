@@ -22,12 +22,13 @@ mkdir -p "$WORKER_STATS_DIR/progress"
 run() { # id launcher vendor [pid]
   mkdir -p "$WORKER_RUN_DIR/$1"
   printf '%s\n' "$2" >"$WORKER_RUN_DIR/$1/launcher"
-  jq -nc --arg v "$3" --argjson p "${4:-$LIVE_PID}" '{vendor:$v,role:"workers",pid:$p}' >"$WORKER_RUN_DIR/$1/meta.json"
+  printf '{"vendor":"%s","role":"workers","pid":%s}\n' "$3" "${4:-$LIVE_PID}" >"$WORKER_RUN_DIR/$1/meta.json"
   printf '{"phase":"start"}\n' >"$WORKER_RUN_DIR/$1/state.json"
   printf 'acct · astra · high\n' >"$WORKER_RUN_DIR/$1/tag"
 }
 stop() { # [extra jq]
-  jq -cn "{hook_event_name:\"Stop\",session_id:\"s1\"} ${1:-}" | bash "$HOOK"
+  if [ -n "${1:-}" ]; then jq -cn "{hook_event_name:\"Stop\",session_id:\"s1\"} $1" | bash "$HOOK"
+  else printf '{"hook_event_name":"Stop","session_id":"s1"}\n' | bash "$HOOK"; fi
 }
 forget() { rm -rf "$HOME/.cache/claude/stop-backstop"; }
 reason() { jq -r '.reason // empty' 2>/dev/null; }
@@ -194,7 +195,7 @@ done
 WORKER_RUN_DIR="$WORK/runs-started"
 for i in $(seq 4 15); do run "r$i" s1 codex; printf '%s %s\n' "$LIVE_PID" "$live_began" >"$WORKER_RUN_DIR/r$i/starter"; done
 assert_eq "" "$(PATH="$WORK/tally:$PATH" stop)"
-assert_eq "3 jq 2 ps" "$(sort "$WORK/tally-calls" | uniq -c | xargs)"
+assert_eq "2 jq 2 ps" "$(sort "$WORK/tally-calls" | uniq -c | xargs)"
 for i in $(seq 4 9); do printf '999999 %s\n' "$live_began" >"$WORKER_RUN_DIR/r$i/starter"; done
 assert_eq "r4 r5 r6 r7 r8 r9" "$(stop | reason | sed -n 's/^- worker run \([^ ]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
 forget
