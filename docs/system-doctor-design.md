@@ -326,6 +326,8 @@ and the doctor carry it.
 | `repo-build-caches` | nx, vite, next, turbo, parcel, angular, svelte-kit caches of `/Volumes/Work/Projects/*` and `~/Arbostar/*` (and their `apps`/`packages`), 14 days | 0.5 GB | per build | the next build | a slower first build |
 | `library-caches` | `~/Library/Caches/*` but Apple's, Claude Code's, Playwright's, Homebrew's, CloudKit, FamilyCircle, GameKit, 30 days | 0.3 GB | per app | the app | none |
 | `cycles-kernels` | Blender Cycles' compiled kernels, 30 days | 0.2 GB | per Blender version | the next render compiles | a minute once |
+| `flow-media-cache` | Flow's IndexedDB in the gemini-web profiles: the leveldb is the unit, its blob directory goes with it (`also`), 14 days | 9.0 GB, 9 profiles | every generated clip | Flow refetches from the project | none: the origin goes whole, leveldb first, as Chrome's own eviction |
+| `metal-shader-caches` | Metal's per-app shader caches in the per-user cache dir (`$TMPDIR/../C`), 30 days | 3.3 GB (Blender 2.5) | per app and GPU driver | the next launch or render compiles | a slower first frame |
 
   Left out, each for a reason: `~/.cache/puppeteer` (1.6 GB) and `~/.agent-browser/browsers` (0.4 GB) hold browsers
   npx tools pin by version and never download again at launch; `ms-playwright` (1.2 GB) collects its own unused
@@ -333,7 +335,12 @@ and the doctor carry it.
   CoreSimulator Devices (app state, not cache); Figma's old profiles v17–v42 (~0.4 GB, only their caches are swept; the
   profiles are Egor's call); model weights (`~/.cache/huggingface` 2.4 GB, `hyperframes` 0.7 GB, `torch` 0.4 GB:
   slow, large downloads; the growth lens names them if they grow); Telegram, Slack, Zoom, Docker (app data with user
-  content, or absent); `~/.cargo` (0.1 GB), gradle, maven (absent).
+  content, or absent); `~/.cargo` (0.1 GB), gradle, maven (absent). `also` (relative to each unit) names what counts,
+  ages, is held and goes with a unit; the fallback claims it too.
+- **Work tmp** (`work-tmp`, a log store of group temp, 14 days a top-level dir): `/Volumes/Work/tmp`, where night and
+  worker runs put scratch off Data (66 GB on 2026-10-20, 57 GB of it the upscale's model weights). The log growth
+  (`log-growth` and each group's growth in the view) compares only the stores both scans list, so a store the
+  registry gains is never growth.
 - **Pressure sweep** `log-sweep --pressure GIB`: cache stores only, every unit of a `days` store whatever its age (a
   store with another criterion gives only what it removes anyway, a command store runs whatever its last run, 300 s),
   biggest first, until the volume holding each unit has GIB free or the caches run out; the open, argv and denied

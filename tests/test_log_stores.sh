@@ -495,6 +495,41 @@ with open(os.path.join(work, "sweep", "sweep.lock"), "w") as lock:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     busy = log_sweep("--pressure", "40", "--json")
 check(json.loads(busy.stdout) == {"busy": True} and busy.returncode == 0, "a sweep already running answers busy: %s" % busy.stdout)
+# A unit's `also` (Chromium IndexedDB: the leveldb is the unit, its blob directory goes with it)
+for prof in ("p1", "p2", "p3"):
+    put("prof/%s/IndexedDB/o.indexeddb.leveldb/000003.log" % prof, 1 << 20, 40)
+    put("prof/%s/IndexedDB/o.indexeddb.blob/1/00/1" % prof, (6 if prof == "p3" else 3) << 20, 40)
+for prof in ("p1", "p3"):
+    for top, dirs, _files in os.walk(os.path.join(home, "prof", prof, "IndexedDB")):
+        for name in dirs:
+            age(os.path.relpath(os.path.join(top, name), home), 40)
+age("prof/p2/IndexedDB/o.indexeddb.leveldb/000003.log", 1)
+flow = {"name": "flowc", "kind": "cache", "type": "dir", "globs": ["~/prof/*/IndexedDB/o.indexeddb.leveldb"],
+        "also": ["../o.indexeddb.blob"], "cleaner": "sweep", "days": 14}
+registry([flow])
+pair = {os.path.basename(os.path.dirname(os.path.dirname(r["path"]))): r for r in ls.measure(flow)}
+check(pair["p1"]["bytes"] >= 4 << 20 and pair["p1"]["also"] == [os.path.join(home, "prof/p1/IndexedDB/o.indexeddb.blob")]
+      and pair["p2"]["newest"] > time.time() - 2 * DAY and pair["p1"]["newest"] < time.time() - 30 * DAY,
+      "a unit counts and ages with what goes with it: %s" % pair["p1"])
+with open(os.path.join(work, "open-paths"), "w") as handle:
+    handle.write("p1\nn%s/prof/p1/IndexedDB/o.indexeddb.blob/1/00/1\n" % home)
+log_sweep("--store", "flowc")
+def kept(prof):
+    return [os.path.exists(os.path.join(home, "prof", prof, "IndexedDB", "o.indexeddb." + k)) for k in ("leveldb", "blob")]
+
+
+check(kept("p3") == [False, False] and kept("p1") == [True, True] and kept("p2") == [True, True],
+      "an idle database goes with its blobs, one whose blob is held open stays whole, a young one stays")
+os.environ["LOG_SWEEP_FREE_GIB"] = "13"
+log_sweep("--pressure", "40")
+del os.environ["LOG_SWEEP_FREE_GIB"]
+check(kept("p2") == [False, False] and kept("p1") == [True, True], "under pressure the young database goes whole, the held one stays")
+check(set(ls.app_claims({"stores": [flow]}, {})) == {os.path.join(home, "prof/p1/IndexedDB/o.indexeddb.leveldb"),
+                                                     os.path.join(home, "prof/p1/IndexedDB/o.indexeddb.blob")},
+      "the fallback sees a unit's also as claimed")
+check(all(raises(registry([dict(flow, also=bad)])) for bad in (["/abs"], [], "x")), "also is a list of relative paths")
+with open(os.path.join(work, "open-paths"), "w") as handle:
+    handle.write("")
 with open(os.path.join(work, "ps-args"), "w") as handle:
     handle.write("")
 
@@ -652,6 +687,14 @@ check(judge.problems == [], "a total that stopped growing in the last day does n
 judge = m.Judge(now, None)
 m.judge_logstores(judge, series[3:])
 check(judge.problems == [] and m.log_growth(series[3:])[1] is None, "under 5 days of series nothing fires")
+named = [dict(r, stores=[{"name": "a", "bytes": r["total_bytes"], "group": "workers"}]
+              + ([{"name": "new", "bytes": 60 * m.GIB, "group": "temp"}] if d == 7 else []),
+              groups={"workers": r["total_bytes"], **({"temp": 60 * m.GIB} if d == 7 else {})},
+              total_bytes=r["total_bytes"] + (60 * m.GIB if d == 7 else 0)) for d, r in enumerate(series)]
+one, seven = m.log_growth(named)
+check(round(one, 2) == 1.2 and round(seven, 2) == 1.2 and m.grown_bytes(named[-1], named[0], "temp") == 0
+      and round(m.grown_bytes(named[-1], named[0], "workers") / m.GIB, 1) == 8.4,
+      "a store the registry gained today is no growth, in the total or its group: %s %s" % (one, seven))
 ticks = [{"t": now - 2 * DAY}]
 judge = m.Judge(now, None)
 m.judge_collectors(judge, ticks, [], [], [], [])
@@ -674,8 +717,13 @@ check(view["groups"] and view["groups"][0][0] == "workers" and view["groups"][0]
       and {s["name"]: s["part"] for s in view["stores"]}.get("v") == "versions"
       and {s["name"]: s["part"] for s in view["stores"]}.get("s") is None,
       "groups, labels and parts reach the view, no growth from one scan")
-grown = [dict(logs[-1], t=logs[-1]["t"] - 2 * DAY, groups={"workers": 1e9, "temp": 5e9}),
-         dict(logs[-1], groups={"workers": 3e9})]
+def st(name, size, group):
+    return dict(logs[-1]["stores"][0], name=name, bytes=int(size), group=group, parts={group: int(size)})
+
+
+grown = [dict(logs[-1], t=logs[-1]["t"] - 2 * DAY, groups={"workers": 1e9, "temp": 5e9},
+              stores=[st("a", 1e9, "workers"), st("t", 5e9, "temp")]),
+         dict(logs[-1], groups={"workers": 3e9}, stores=[st("a", 3e9, "workers")])]
 view = m.logstores_view(grown)
 check(view["groups"] == [["workers", 3.0, 2.0]] and view["groups_since"] == m.iso_time(grown[0]["t"]),
       "group growth is measured against the oldest grouped scan at least 20 h before the newest: %s" % view["groups"])

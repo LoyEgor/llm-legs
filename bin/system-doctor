@@ -2974,9 +2974,29 @@ def log_firing(row, rule):
     return set()
 
 
+def store_parts(row):
+    """{store: {group: bytes}} of a scan's log stores."""
+    return {s["name"]: s["parts"] if isinstance(s.get("parts"), dict) else {s.get("group"): s.get("bytes") or 0}
+            for s in row.get("stores") or () if isinstance(s, dict) and s.get("name")}
+
+
+def grown_bytes(new, old, group=None):
+    """Bytes the log stores (of `group`, when given) grew between two scans, over the stores both list: a store the
+    registry gains or drops (a 60 GB scratch root registered today) is no growth. Rows without named stores compare
+    their totals."""
+    after, before = store_parts(new), store_parts(old)
+    if not after or not before:
+        if group is None:
+            return new["total_bytes"] - old["total_bytes"]
+        return (new.get("groups") or {}).get(group, 0) - (old.get("groups") or {}).get(group, 0)
+    return sum(sum(size for g, size in parts.items() if group is None or g == group)
+               - sum(size for g, size in before[name].items() if group is None or g == group)
+               for name, parts in after.items() if name in before)
+
+
 def log_growth(rows):
     """(GiB grown since the scan about a day before the newest, mean GiB/day over the newest 7 days or None under
-    growth_min_days of series), one scan a local day (its newest)."""
+    growth_min_days of series), one scan a local day (its newest), over the stores both scans list."""
     by_day = {}
     for row in rows:
         if isinstance(row.get("total_bytes"), (int, float)):
@@ -2986,10 +3006,10 @@ def log_growth(rows):
         return None, None
     latest = series[-1]
     day_ago = [r for r in series[:-1] if r["t"] <= latest["t"] - LOGS["compare_min_s"]]
-    one = (latest["total_bytes"] - day_ago[-1]["total_bytes"]) / GIB if day_ago else None
+    one = grown_bytes(latest, day_ago[-1]) / GIB if day_ago else None
     week = [r for r in series if r["t"] >= latest["t"] - 7.5 * DAY_S]
     span = (latest["t"] - week[0]["t"]) / DAY_S
-    seven = (latest["total_bytes"] - week[0]["total_bytes"]) / GIB / span if span >= LOGS["growth_min_days"] else None
+    seven = grown_bytes(latest, week[0]) / GIB / span if span >= LOGS["growth_min_days"] else None
     return one, seven
 
 
@@ -3105,7 +3125,7 @@ def logstores_view(rows):
             "growth_gb_1d": round(one * GIB / 1e9, 2) if one is not None else None,
             "growth_gb_day_7d": round(seven * GIB / 1e9, 2) if seven is not None else None,
             "groups": [[group, round(size / 1e9, 2),
-                        round((size - then["groups"].get(group, 0)) / 1e9, 2) if then else None] for group, size in groups],
+                        round(grown_bytes(latest, then, group) / 1e9, 2) if then else None] for group, size in groups],
             "groups_since": iso_time(then["t"]) if then else None,
             "stores": [{"name": s["name"], "gb": round(s["bytes"] / 1e9, 2), "files": s["files"],
                         "age_d": round((latest["t"] - s["oldest_s"]) / DAY_S, 1) if s.get("oldest_s") else None,

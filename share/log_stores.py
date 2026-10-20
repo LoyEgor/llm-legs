@@ -45,8 +45,8 @@ def load(path=None):
     """The registry, validated: every store has a name, globs, a kind, a known cleaner and at most one criterion, which a
     `self`, `sweep` or `command` store must have, and a log store lists its readers; a `command` store is an app or
     cache store whose criterion is `days` and whose `command` is an argv list; `group_days` only on a split `days`
-    store, each group known and kept no longer than `days`, which an unclassified unit keeps; every ignore entry has a
-    glob and a reason. Raises ValueError naming the fault."""
+    store, each group known and kept no longer than `days`, which an unclassified unit keeps; `also` a list of paths
+    relative to each unit; every ignore entry has a glob and a reason. Raises ValueError naming the fault."""
     path = path or registry_path()
     with open(path, encoding="utf-8") as handle:
         registry = json.load(handle)
@@ -76,6 +76,10 @@ def load(path=None):
                                        or not isinstance(entry.get("part", "-"), str) or entry.get("part") == ""):
             raise ValueError("store %s: a log store needs a group in %s, a label, no split but %s and a part only as a name" % (
                 name, "/".join(GROUPS), "/".join(SPLITS)))
+        also = entry.get("also")
+        if also is not None and not (isinstance(also, list) and also
+                                     and all(isinstance(a, str) and a and not a.startswith("/") for a in also)):
+            raise ValueError("store %s: also is a list of paths relative to each unit" % name)
         by_group = entry.get("group_days")
         if by_group is not None and not (
                 entry.get("split") and isinstance(entry.get("days"), int) and isinstance(by_group, dict) and by_group
@@ -165,7 +169,20 @@ def unit_stats(path):
 
 
 def measure(entry):
-    return [row for row in (unit_stats(path) for path in units(entry)) if row]
+    """unit_stats of every unit; a store's `also` paths (each relative to its unit: the blob directory beside a Chromium
+    IndexedDB leveldb) count, age, deny and go with their unit, listed in its `also`, removed after it."""
+    rows = [row for row in (unit_stats(path) for path in units(entry)) if row]
+    for row in rows if entry.get("also") else ():
+        row["also"] = []
+        for rel in entry["also"]:
+            found = unit_stats(os.path.normpath(os.path.join(row["path"], rel)))
+            if found:
+                row["also"].append(found["path"])
+                row["bytes"] += found["bytes"]
+                row["files"] += found["files"]
+                row["newest"] = max(row["newest"], found["newest"])
+                row["denied"] = row.get("denied") or found.get("denied")
+    return rows
 
 
 def doomed(entry, rows, now, slack=False):
@@ -422,7 +439,8 @@ def app_claims(registry, sizes, only=None):
     for entry in registry.get("stores") or ():
         if not (only(entry) if only else entry.get("kind") in ("app", "cache")):
             continue
-        for path in units(entry):
+        for path in (p for unit in units(entry)
+                     for p in [unit] + [os.path.normpath(os.path.join(unit, a)) for a in entry.get("also") or ()]):
             if path in sizes:
                 claims[path] = sizes[path] * KB
             else:

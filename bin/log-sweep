@@ -65,8 +65,8 @@ def open_paths():
     return held
 
 
-def held(path, paths):
-    return os.path.realpath(path) in paths
+def held(path, paths, also=()):
+    return any(os.path.realpath(p) in paths for p in (path, *also))
 
 
 def glob_base(pattern):
@@ -101,11 +101,18 @@ def truncate(path, keep):
         handle.truncate()
 
 
-def remove(path):
+def remove(path, also=()):
+    """The unit, then each path that goes with it (a unit first: a Chromium IndexedDB leveldb before its blob
+    directory, so a stop between them leaves stray blobs Chromium overwrites, never a database naming lost ones)."""
     if os.path.isdir(path) and not os.path.islink(path):
         shutil.rmtree(path)
     else:
         os.remove(path)
+    for extra in also:
+        try:
+            remove(extra)
+        except FileNotFoundError:
+            pass
 
 
 def write(path, text):
@@ -198,7 +205,7 @@ def sweep(registry, now, dry_run, only=None, say=print):
             if action == "delete":
                 if paths is None:
                     paths = open_paths()
-                if paths is None or held(row["path"], paths):
+                if paths is None or held(row["path"], paths, row.get("also") or ()):
                     skipped += 1
                     continue
             freed = row["bytes"] if action == "delete" else max(0, row["bytes"] - value * log_stores.MB)
@@ -207,7 +214,7 @@ def sweep(registry, now, dry_run, only=None, say=print):
             else:
                 try:
                     if action == "delete":
-                        remove(row["path"])
+                        remove(row["path"], row.get("also") or ())
                         prune_parents(row["path"], bases)
                     else:
                         truncate(row["path"], int(value * log_stores.MB))
@@ -260,15 +267,16 @@ def pressure(registry, now, target_gib, dry_run, say=print, only=()):
         rows = [r for r in rows if not r.get("denied")]
         if entry["cleaner"] == "command":
             if rows:
-                candidates.append((sum(r["bytes"] for r in rows), entry, "run", rows[0]["path"]))
+                candidates.append((sum(r["bytes"] for r in rows), entry, "run", rows[0]["path"], ()))
         elif entry["cleaner"] == "sweep":
             key, _value = log_stores.criterion(entry)
             gone = [(r, "delete") for r in rows] if key == "days" else log_stores.doomed(entry, rows, now)
-            candidates += [(r["bytes"], entry, action, r["path"]) for r, action in gone if action == "delete"]
+            candidates += [(r["bytes"], entry, action, r["path"], r.get("also") or ()) for r, action in gone
+                           if action == "delete"]
     candidates.sort(key=lambda c: (-c[0], c[3]))
     paths, freed, before = None, {}, {}
     stores = {}
-    for size, entry, action, path in candidates:
+    for size, entry, action, path, also in candidates:
         if not os.path.lexists(path):
             continue
         volume = mount_of(path)
@@ -288,7 +296,7 @@ def pressure(registry, now, target_gib, dry_run, say=print, only=()):
         else:
             if paths is None:
                 paths = open_paths()
-            if paths is None or held(path, paths):
+            if paths is None or held(path, paths, also):
                 skipped += 1
                 continue
             got = size
@@ -296,7 +304,7 @@ def pressure(registry, now, target_gib, dry_run, say=print, only=()):
                 say("  %-8s %8.1f MB  %s" % ("delete", size / log_stores.MB, path))
             else:
                 try:
-                    remove(path)
+                    remove(path, also)
                     prune_parents(path, [glob_base(p) for p in entry["globs"]])
                 except FileNotFoundError:
                     continue
