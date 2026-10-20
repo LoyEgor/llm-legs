@@ -1423,17 +1423,17 @@
   {
    "id": "cpu:process/transcriptions-gpt/transcriber/__main__.py",
    "title": "process/transcriptions-gpt/transcriber/__main__.py",
-   "audited_at": "2026-10-13T09:48:18+03:00",
-   "by": "harness-speed-cpu-process-q852-crops-20261012T235112Z-33ce",
-   "cpu_min_day": 0.0,
-   "cpu_s_run": 45.55,
-   "runs_day": 0,
+   "audited_at": "2026-10-20T15:17:40+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ61-run-sh-20261020T113950Z-3795",
+   "cpu_min_day": 9.2,
+   "cpu_s_run": 28.948,
+   "runs_day": 24,
    "sources": {
-    "transcriptions-gpt/transcriber/__main__.py": "608b90d71dd8d685625c74fc87e464f1234e562a"
+    "transcriptions-gpt/transcriber/__main__.py": "e120c4ea40dfebf16216ca253b2a3e6ded9791a7"
    },
    "verdict": "kept",
-   "zero": "removal saves ~9 CPU-s/h idle (live ps -S over 60 s: 0.15 s; ~3.6 CPU-min/day, 0.25% of a core); loses hotkey dictation and its warm-mic latency, which Egor uses daily",
-   "note": "idle daemon: main loop wakes every 0.2 s (events.get timeout) for 2 os.stat settings mtimes + idle_keepalive, all other threads blocked (sample 10 s: kevent/recvfrom/cond_wait); cpu_own history before 2026-10-13 holds only top-N hours so the day median reads 0, real ~9 CPU-s/h; cheaper lever is a 1-2 s tick in transcriptions-gpt (other repo, latency-contract tests) worth <=3 CPU-min/day; the repo's real burner is overlay.py (22 CPU-min/day, own row)"
+   "zero": "removal saves 9.2 CPU-min/day (24 hourly rows, 28.9 CPU-s each: ~10 CPU-s/h idle tick, the rest dictation takes); loses hotkey dictation and its warm-mic latency, which Egor uses daily",
+   "note": "re-measured 2026-10-20 pid 54557 idle: 0.08-0.09 CPU-s per 30 s (~10 CPU-s/h = 4 CPU-min/day) with 0.2 s main-loop wake; paste.pump_app_state (3e4a45d, a 0-timeout CFRunLoopRunInMode per wake) is the fix for frontmostApplication freezing on Terminal and adds microseconds; hourly series flat 16-27 s/h before and after it; _main_loop_due stall report (e88c359) keys on the same tick; the 1-2 s tick lever (<=3 CPU-min/day) stays unproposed: other repo, latency-contract tests, and daemon CPU is an accepted cost"
   },
   {
    "id": "cpu:process/worker-run",
@@ -3228,17 +3228,17 @@
   {
    "id": "cpu:statusline/debt",
    "title": "statusline/debt",
-   "audited_at": "2026-10-14T08:35:21+03:00",
-   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
-   "cpu_min_day": 85.8,
-   "cpu_s_run": 3.117,
-   "runs_day": 1767,
+   "audited_at": "2026-10-20T15:15:59+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ61-run-sh-20261020T113950Z-3795",
+   "cpu_min_day": 11.2,
+   "cpu_s_run": 1.866,
+   "runs_day": 1334,
    "sources": {
-    "llm-legs/bin/statusline.sh": "c5a969efce8bfa5f52ba5bf00a38a731fab7dee7"
+    "llm-legs/bin/statusline.sh": "d3b55f1a15c7510e61310ec8c89ad8e88ac20f33"
    },
-   "verdict": "cut",
-   "zero": "removal saves 85.8 CPU-min/day; loses the repository-debt number on the strip",
-   "note": "the review-debt answer is the git family's, so a walk also publishes it under the family and a top that would walk adopts a family answer under 15 s old (llm-legs@be3d5520: 1218 of 2313 walks started within 15 s of another ending); the moved-key floor 15 -> 60 s stays Egor's trade, handoff docs/handoffs/2026-10-13-debt-moved-key-floor.md"
+   "verdict": "kept",
+   "zero": "removal saves 11.2 CPU-min/day; loses the repository-debt number on the strip",
+   "note": "85.8 -> 11.2 CPU-min/day since the 10-14 family-answer adoption (be3d5520): 1334 runs a day, 1.87 CPU-s each, 2.1 min/day wasted (output equal to the previous run) by speed-doctor statusline-probes tsv 10-15..10-20 (1.6-2.4 min/day); each walk is review-debt --repo over 49 worktrees (user 1.3-2.0 s, sys 2.4-3.7 s, 34k lines/342 files, review-bench's code, not ours); only lever left is the moved-key floor 15 -> 60 s, settled against by docs/handoffs/2026-10-13-debt-moved-key-floor.md"
   },
   {
    "id": "cpu:process/Hammerspoon",
@@ -5213,17 +5213,17 @@
   {
    "id": "cpu:doctor/system",
    "title": "doctor/system",
-   "audited_at": "2026-10-14T08:38:19+03:00",
-   "by": "harness-speed-cpu-statusline-render-20261014T021659Z-1266",
-   "cpu_min_day": 5.2,
-   "cpu_s_run": 2.607,
-   "runs_day": 171,
+   "audited_at": "2026-10-20T15:15:45+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ61-run-sh-20261020T113950Z-3795",
+   "cpu_min_day": 13.5,
+   "cpu_s_run": 4.518,
+   "runs_day": 180,
    "sources": {
-    "llm-legs/bin/system-doctor": "234168e1dab4fa737a421e0216721895c4a6bc54"
+    "llm-legs/bin/system-doctor": "0bd90c03b5102adcb805896f77b0564fd7c06224"
    },
-   "verdict": "kept",
-   "zero": "removal saves 5.2 CPU-min/day; loses births/kernel/swap ticks, launchd exits, DAS verdicts and log-store growth the System doctor reads",
-   "note": "agent ticks 2.2 CPU-s x 89 and harvest 33 s x 3-4 a day are the measurement; the daily log-stores du walk is 70-110 CPU-s (1.5 min/day); 10-13 holds eight logstores rows (13:30-23:40) against one scheduled: logstores_due fires once a local day or at 36 h stale, so the extra runs were started by hand outside the schedule (who by not shown in the journal; the 7-day median absorbs them)"
+   "verdict": "cut",
+   "zero": "removal saves 13.5 CPU-min/day; loses births/kernel/swap ticks, launchd exits, DAS verdicts and log-store growth the System doctor reads",
+   "note": "the 10-min judge run (document(), ~144/day) grew 0.6 -> 3.3-5.7 CPU-s on 10-12..10-14 once Background/cohort rows and 7 fix proofs each re-read 7 days of ticks/*.jsonl; tick_rows now parses each day file once per process (llm-legs@8509db59): document() 5.0-5.5 -> 1.8-1.9 CPU-s on the live state copy at a fixed now, output byte-equal bar the source-digest judge and wall-clock collector_s; per-minute tick 0.14-0.2 CPU-s, harvest 4/day and logstores 1/day (1-2 min/day) untouched; left: statusline_cpu runs twice per document (~0.5 s), the 45 unique day files ~1.1 s"
   },
   {
    "id": "cpu:process/token-map/tokenmap/__main__.py",
@@ -6671,6 +6671,36 @@
    "verdict": "kept",
    "zero": "removal saves 0: this week's price is 0 (prev 7: 8k plain, 0.00003 pts); removing worker-run's starts would stop the workers, not a fee",
    "note": "label is the launcher of Background chat-kind sessions tokenmap matched to a worker-run headless start in starts.tsv (cwd match within 120 s) that no worker journal claimed; prev 7 217 units at 37 tokens, this week 98 units at price 0: worker-run's own runs are classified Workers through the attempt journal (zones.py), so the leftover label carries no fee; no worker-run code path starts an unjournaled session that spends fee, nothing to cut"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ61/run.sh",
+   "title": "process/logo-vectorizer-bench/tracers/champ61/run.sh",
+   "audited_at": "2026-10-20T15:16:35+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ61-run-sh-20261020T113950Z-3795",
+   "cpu_min_day": 14.1,
+   "cpu_s_run": 233.831,
+   "runs_day": 6,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ61/run.sh": "07a1d43966f360a16bb7657b881e0f5bdc6c03ac"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 14.1 CPU-min/day (6 hourly rows a day, 234 CPU-s each); loses the champ61 candidate's evaluation in Egor's logo-vectorizer-bench project (outside llm-legs, tracers/ gitignored)",
+   "note": "bench workload started by hand per eval set, no timer or loop; wasted by construction: champ61/run.sh runs champ60/run.sh, which runs champ59 ... champ46, so the candidate re-traces its whole chain per input, own layer champ61-scap/post.py is 2-160 CPU-s of an hour's 50-750; out/champ60 holds the same 96 inputs' parent SVGs; lever (take out/<parent>/ SVG when present, determinism from PYTHONHASHSEED=0 + 1 thread, unproven here) is the bench repo's, handed to its owner chat in docs/handoffs/2026-10-14-logo-bench-own-tools.md; load is weather"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ52-hl/hairline.py",
+   "title": "process/logo-vectorizer-bench/tracers/champ52-hl/hairline.py",
+   "audited_at": "2026-10-20T15:16:51+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ61-run-sh-20261020T113950Z-3795",
+   "cpu_min_day": 12.8,
+   "cpu_s_run": 148.946,
+   "runs_day": 4,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ52-hl/hairline.py": "201845c5cc2d57e5a1b6c5dda55915fc571affb2"
+   },
+   "verdict": "kept",
+   "zero": "removal saves 12.8 CPU-min/day (4 hourly rows a day, 149 CPU-s each, ~60% in child renders); loses the hairline-recovery stage of the champ52-hl pipeline, in the champion chain every later candidate re-runs",
+   "note": "hairline.py is a stage of champ52-hl/driver.py (hairline_stage), a pure function of (src, svg) that renders the full SVG at 4x per candidate stroke; runs when a champ52-hl/driver or a chain above it is evaluated, same re-trace of the chain as champ61 (handoff docs/handoffs/2026-10-14-logo-bench-own-tools.md); per-candidate full re-render could be region-only but changes pixels, a bench-owner decision; load is weather"
   }
  ]
 }
