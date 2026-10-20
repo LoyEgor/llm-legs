@@ -14,16 +14,9 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
    - Doctors menu → `Run everything now`, after a confirmation, →
      `bin/night-run start`; off while a night runs. It writes the night record and opens ONE
      orchestrator chat via `chat_open`. That chat takes an account with a claim, runs under
-     `caffeinate -i -w <its pid>`, and starts with the prompt
+     `caffeinate -i`, and starts with the prompt
      `сделай чистку — night run <night-id>`.
-   - Before the chat opens, `start` re-checks every answered trade, a `blocked-on-egor` job of another
-     night. Recorded answers only, never read from prose: `night-run job <id> set <ref> answer="<his words>"
-     done=<check>,…` (`commit:<repo>:<hash>` on main, `file:<path>`, `gone:<path>`, `keep`), or a handoff
-     job's doc (its `path`, else the one its ref's slug names) whose `Status:` reads settled. Every check holding (or the doc settled), the job goes
-     `settled` with `settled` {at, night, evidence}; otherwise it becomes a pending `trade` job
-     `trade-<ref>` of this night carrying the answer and `from` {night, ref, kind, trade, path}, the old job
-     marked `carried`, and `carry` gives it a night worktree and a brief. An unanswered trade stays. The
-     same check runs when `answer=` is set, so a trade carried out in the chat that got the answer settles at once.
+   - Before the chat opens, `start` settles or carries answered trades (`night-run` usage).
    - The sweep word arms the sweep span. The span carries the review grant, and commit and push, as
      a hand-typed «сделай чистку» does (claude-setup `hooks/lib/word-families.json` family `sweep`).
      The night-sweep skill reads the `night run <id>` marker and follows its **Night mode** section.
@@ -69,11 +62,7 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
          `tests/test_doctors_menu.sh` checks every label against the rendered menu.
      - Each run gets a worktree on `night/<night-id>/<run-id>` and a brief, as a day launch does;
        `docs/fix-orchestrator.md` dispatches and lands them.
-     - Speed gets fixers sized per kind, each starting only inside a 6-hour
-       wall-clock window from the night's `started_at`: `worker-run`
-       runs `night-run speed-gate` once its slot is taken (a `speed-start` event); a first start past the window
-       is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, its levers ranked
-       again the next night. `report` shows `speed · levers N selected · S started · L left by the 6 h window`.
+     - Speed gets fixers sized per kind, started only inside `night-run speed-gate`'s window.
    - **Vendors.** `vendor-fingerprint request --night <night-id>` makes one event per vendor with a
      REAL waiting release or vendor-watch event (never a manual full checklist). Each gets an updater fixer
      run (the printed ref), worktrees on `night/<night-id>/<vendor>` (review-bench, claude-setup as
@@ -107,8 +96,7 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
 
 ## Priority and admission
 - `night-run job add` stamps each job `direction`, `priority` P1|P2|P3, `value` {n, unit, norm}
-  (`share/night_priority.py`: a fixer by its best row, other kinds by `KINDS`); bars: speed, tests, logs P1 ≥ 15 wall-min/day, P2 ≥ 1; cpu P2 ≥ 30 CPU-min/day, never P1; spend P1 ≥ 0.5 %,
-  P2 ≥ 0.1 %; pool, updater P1; legacy, fit, harness, vendor-watch, tool-ideas P2; unpriced P2.
+  (`share/night_priority.py`: a fixer by its best row, other kinds by `KINDS`, with its bars).
 - `worker-run` asks `night-run admit` before a night worker's slot: P1, then P2, by norm per expected cost (7 days'
   median night-run tokens × 10 % per 1M); running Claude fixers hold at most the pool's 5h room. A P3 runs only from
   weekly room its burn leaves unused at reset (≥ 5 %), else it ends unlaunched (`admission.deferred`, job `pending`,
@@ -140,19 +128,7 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
   `fixed · …`), `pending` (`fixed-pending` or rule `fix-proof`), `open`,
   `new`, `regressed`. `report` prints one line per doctor,
   `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
-- `jobs[]`, each with:
-  - `kind` (`KINDS` in `bin/night-run`) and `ref` (run id, event id,
-    review round or `leftover-<slug>`); an owner-chat job carries `owner`, `session`, `via` (open,
-    message), `handoffs[]`; a leftover job `adopted[]` ({repo, branch, worktree, tip,
-    night_worktree}), where its branch came from, and `handover` ({by, at, why}) when adopted with `--ready`;
-  - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` (its reason the trade, `answer`
-    {words, at, by, done[]} once Egor answered), `settled` (a trade whose answer start found carried out), `live` (its worker
-    run, `run`, still worked at resume) or `nothing-to-do`;
-  - `branch`, `review` (run id, optional: a night branch gets no review of its own), `commits[]`
-    ({repo, hash}), `integration[]` and `pushed` (bool, as verified against the remote, integration included).
-    A merged job whose branch exists records as `commits` only what its branch made (its reflog's non-merge
-    commits plus what it was created with past the night's base, found on main by author, author time and
-    subject, else on the branch); any other commit `commits=` lists goes to `integration`, never counted as the job's lines.
+- `jobs[]`: the job records `bin/night-run` writes (`kind`, `ref`, `state`, `branch`, `commits[]`, `pushed`, …);
 
 - `suites` (the Close run): `started_at`, `finished_at`, `repos[]` {repo, exit, passed, failed[], log}.
 
@@ -194,8 +170,7 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
   unfinished (N jobs) + cleanup` resumes them all.
 
 ## Leftovers
-Egor (2026-10-01): in the sweep repositories no branch or worktree but main outlives the work going on
-right now; a kept worktree once lost a review fix.
+Egor's rule: [leftovers](directions/leftovers.md), Decision 2026-10-01.
 `night-run leftovers [--json]` lists every non-main branch and worktree with its repository, worktree,
 landed (in main or origin/main, or a night branch still at its night's base), ahead/behind main, dirty
 count and a state, the one predicate `finish` prunes by; its text form also prints `checkout <repo>: behind
@@ -239,29 +214,8 @@ N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
   refs/night/<id>/base`, so the review range and the later `--onto` hold only its own change. A landing
   that fails stays `left`, and a later Cleanup takes it like any other night branch.
 
-`night-run survey [--post] [<repo>...]` is the sweep's opening report (repositories default to the sweep
-list). Per repository `<name> · debt N lines/M
-files · due D lines/E files · K dirty · whole|N chunks`, then per linked worktree `  <branch> · +ahead/-behind main · K dirty ·
-debt N · take|keep|drop (<reason>)`, closing `total · …`. Debt and the chunk column come from one `review-bench
-review --debt --repo <A> … --tier T2 --price`, the due part (stable or critical, what the bugs round
-reads) from the same with `--due` (launches nothing; a checkout it does not list owes 0, a
-failed price prints `?`); keep is `live` or `held` by the same predicate as `leftovers`. `--post` sends the same
-lines as one report-bus `notice` block (word `survey`).
-
-`night-run report [<id>] [--post]` prints it. First the morning numbers blocks, each closed by a blank line, no
-ids or chat names, `–` for no source; `--post` sends each to the chat as a report-bus `notice` block instead:
-- `time_budget.py table` (word `night · <date>`): this night and the two previous finished nights with jobs,
-  oldest left, local dates as heads (with the time if two share one). Rows: duration;
-  Opus-eq spend in total and by fixers / reviews / orchestrator; merged, left jobs; `needs Egor`, every open trade
-  to him once (`handoffs.egor_trades()`: unanswered blocked-on-egor jobs, handoffs whose Status reads trade, audit rows
-  with verdict `trade`, doctor rows with `needs_egor`; rows naming one handoff are one, a settled one none), stored
-  at the close; worker runs, wall, model share, slot queue, own tests; problems per doctor; job lines; week-old
-  rewrites; suites ✓/✗.
-- `time_budget.py directions` (`night · directions`): per direction its P1, P2, P3 jobs done/total (`✓` all done; class
-  as stamped, else its kind's), % of fixer spend (runs by night worktree), nights to plateau (open P1+P2 at the close /
-  closed a night, `–` once grown or none closed; the ledger row's `directions`); rows without jobs or spend left out.
-- `time_budget.py pool` (`night · improvement pool`): open, done, proven, kept, trade per class, totals last: spend,
-  suite, cpu (audit ledger, Speed's due selections and proofs), harness, logs (harness ledger).
+`night-run survey [--post] [<repo>...]` (the sweep's opening report) and `night-run report [<id>] [--post]`
+(the morning numbers blocks: `time_budget.py` table, directions and pool): `night-run` usage.
 
 Then `share/night_spend.py`'s header: duration; jobs by state and kind; the worker runs the
 orchestrator sessions launched in the window, by vendor/served model, with wall hours; the review rounds;
@@ -294,6 +248,4 @@ min/day, ✓ proven, red ! slower, → pending), `✓ done`, `→ queued`, red `
 title down to its doc (`handoffs.py --night`), then a row per job direction with `✓ → !` job counts (red first, then
 owing), its jobs and reasons below.
 Color is the state: done and pushed is a dim name, owing work plain with its word, red only where Egor is needed
-(blocked on him, failed launch). Output: `text\ttone\trunning\tid`, then
-`text\ttone\treason\tref\tkind\tresumable\tdirection` per job (`tone` 0 dim, 2 plain, 1 red; `resumable` 1 for an
-unfinished job of a night not running), `handoff\tphase\ttitle\tpath` per handoff, `speed\tmin/day\t✓\t!\t→`.
+(blocked on him, failed launch); the wire format is `cmd_latest`'s.

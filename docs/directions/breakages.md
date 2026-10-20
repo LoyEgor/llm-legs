@@ -42,10 +42,9 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
 - Harness doctor (`latest.json`) minus `suite_audit`, `test_*` (Lost time), `cpu_audit` (System), `spend_audit` (Spend).
 - LLM doctor (the legs); Updater doctor (`share/updater-ledger.json` is empty: its problems live in the snapshots).
 - Log audit (`bin/log-audit`, nightly since 10-07): Haiku reads the day's transcripts in chunks (55 on 10-14), Sonnet
-  merges them into 15 Harness problems; ≈0.8 % of worker-run spend (7 days to 10-15; unconfirmed, no method named);
-  105 rows: 50 fixed, 1 fixed-pending, 18 open, 36 dismissed. Kept: the only reader of the night's own waste.
-- Ledgers: `share/harness-ledger.json` (383 rows on 10-15: 284 fixed, 4 fixed-pending, 37 open, 31 ruled-out,
-  25 not-a-bug, 2 weather), `share/doctor-ledger.json` (LLM).
+  merges them into 15 Harness problems; ≈0.8 % of worker-run spend (7 days to 10-15; unconfirmed, no method named).
+  Kept: the only reader of the night's own waste.
+- Ledgers: `share/harness-ledger.json`, `share/doctor-ledger.json` (LLM).
 
 ## Recurring classes
 
@@ -73,7 +72,7 @@ or a component, not the file.
 One fix per class, an existing tool before our own: the three goals below; a worker writes only where its brief
 grants, through its CLI's sandbox (workdir plus `--add-dir`, `codex exec --sandbox workspace-write`); a reviewer's
 output is held to a schema by its CLI (`claude --json-schema`, `codex exec --output-schema`); fixers spread over
-accounts by room. The 2026-10-05 night worked that way.
+accounts by room.
 
 ## Why rows come back (2026-10-15 audit)
 
@@ -173,15 +172,6 @@ notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
   120 with a hook ≥5 s, 16 Stop `hook_cancelled`. Not worse: asks/holds (64), notices (54) delivered, ≤23 repeats
   within 5 min, Stop CPU p50 0.29 s.
 
-## Mechanics (2026-10-15)
-
-- The pilot: one goal at a time, no row fixers, no debt pass, no owner chats.
-- `doctor-fix close` takes `ruled-out` with evidence `repeat: <what was fixed before>` on a row whose ledger row
-  carries a fix, unmeasured: approved with the pilot plan on 10-15 as the one exception to 10-13's measured-evidence
-  rule (P1/P2 Speed and test rows, outside this metric). Those rows are the next goals' candidates.
-- The night report's facts table has a `repeats` row: the ledger rows re-fixed during the night.
-- Not done: a row reopening only on its own number; it is Lost time's, System's and Spend's, whose audits reopen.
-
 ## Decisions
 
 - 2026-10-16: the directions run in a queue: the next direction's goals start once these goals have landed, and
@@ -190,6 +180,9 @@ notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
   («Updater doctor»)
 - 2026-10-15: the pilot plan approved: goals gates → bash-cap → stop-hooks, one at a time; Egor launches the night.
   («Updater doctor»)
+- 2026-10-15: `doctor-fix close` takes `ruled-out` with evidence `repeat: <what was fixed before>` on a row whose
+  ledger row carries a fix, unmeasured: approved with the pilot plan as the one exception to 10-13's
+  measured-evidence rule (P1/P2 Speed and test rows, outside this metric).
 - 2026-10-15: no new hooks. Mechanics only where obvious, such as a tool replacing a script models keep rewriting.
   («Updater doctor»)
 - 2026-10-15: a goal's worker may leave a goal its own diagnosis shows has little to gain, saying why, and the
@@ -211,4 +204,4 @@ notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
 ## Open
 
 - `bin/night-run` `pilot_goal` skips every goal with a job tonight whatever its outcome, so a failed goal lets the
-  next one, then the next direction's, start the same night, against the 10-16 queue.
+  next one in its direction start the same night, against the 10-16 queue.

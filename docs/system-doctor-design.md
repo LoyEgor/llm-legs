@@ -47,7 +47,7 @@ privileged/analysis-*.md). They were measured on 2026-10-03 at load 50–186 and
 ## Phase 1 — built (`bin/system-doctor`, `share/machine_probe.py`)
 
 Everything is unprivileged and bounded, and never runs inside memlogd's guard loop. The doctor
-persists names, labels and counters only, never argv, paths or log bodies. Every probe binary and
+persists names, labels, counters and each tag's program file (`origins.json`), never argv, data paths or log bodies. Every probe binary and
 source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`, `SYSTEM_DOCTOR_DIR`).
 
 - **LaunchAgent `com.llm-legs.system-doctor`.** Its program is the wrapper
@@ -58,7 +58,7 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
   - Each run is one tick, then the nightly pass when due, then the document every 10 min.
 - **Tick** (~2.1 s wall, mostly the births window; ~0.1 cpu-s) writes `ticks/<day>.jsonl` and
   `tick-state.json`.
-  - **Births/s:** the PID delta between two `ps` probes ~2 s apart, modulo 99,999.
+  - **Births/s:** the PID delta between two `ps` probes ~2 s apart (wrapping at `PID_WRAP`).
   - **Births attribution:** newborns alive at the window's end, each charged to the nearest own
     script, own app or LLM CLI (`LLM_CLIS`: claude, codex, grok, agy) above it, so a worker's tool commands are its
     CLI's as in an interactive chat, and the own launcher above (worker-run) keeps only what it spawns itself.
@@ -98,31 +98,19 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
 - **Document** `~/.cache/system-doctor/latest.json`, in the shape of `docs/doctors-contract.md`. Its `days` block
   holds `{series: {day: value}}` for the last 7 days covered ≥ 1 h (busy, kernel, births_s, ssd_gb_day, swap_gib_day,
   comp_share_max, free_gib per volume, logs_gb), the menu's sparklines and usual values.
-  The ledger is `share/system-ledger.json`. The menu row is System, last of the doctors; its first level is six
-  sections (Processor, Memory, Disk writes, Disk space, Logs, Crashes), `docs/doctors-contract.md` "Menu layout".
+  The ledger is `share/system-ledger.json`. The menu row is System, last of the doctors; its first level is in
+  `docs/doctors-contract.md` "Menu layout".
 
-Problem rules (`LIMITS`; each names its top attributed cause where known; `fix_target` only when
-the cause is our own):
 
-| rule | fires at | heavy |
-|---|---|---|
-| `spawn` | hour mean ≥ 1,000 births/s, ≥ 3 ticks | ≥ 2,500 |
-| `kernel` | hour mean sys share ≥ 0.40 | every tick of 30 min ≥ 0.55 |
-| `compressor` | every tick of 10 min ≥ 33% of RAM | — |
-| `swap` | latest tick ≥ 50% of swap allocated | — |
-| `swap-writes` | 24 h swap-outs ≥ 20 GiB/day (≥ 1 h covered) | — |
-| `ssd-writes` | 7-day mean > 200 GB/day (cause: the week's top own writer by the day cohorts' rusage bytes, else the top writer, else the top disk-writes report; levers: write fewer bytes for the same output) | > 400 |
-| `free-space` | a volume < 25 GiB free; the fact names the volume's biggest folders beside the caches and the last cache sweep (cause: the biggest folder's owner, else Data's biggest nightly cache, report-only) | < 10 |
-| `hammerspoon-crash` | ≥ 1 crash in the day before the nightly pass | — |
-| `job-crash` | ≥ 1 crash/day of a job launchd relaunches | — |
-| `unclean-reboot` | ≥ 1 in 7 days (cause: a shutdown stall or panic within 1 h) | — |
+Problem rules: `LIMITS`, `judge_ticks()` and `judge_nightly()` in `bin/system-doctor`; each names its top
+attributed cause where known, `fix_target` only when the cause is our own.
 
 ## Phase 2 — built (2026-10-06)
 
 - **Own causes only.** A cause is a fix target when its owner is `own` and it names a file of a sweep
   repository: its `repo/path` exactly, or a bare name by basename (`own_sources`: `git ls-files` of
-  `~/.claude/sweep-repos`; Hammerspoon maps to `hammerspoon/init.lua`); `cause.files` lists them as
-  `repo/path`. Everything else, a helper repository's `repo/path` included, reads
+  `~/.claude/sweep-repos`, or a helper repository's exact `repo/path`; Hammerspoon maps to
+  `hammerspoon/init.lua`); `cause.files` lists them as `repo/path`. Everything else reads
   `(<owner>, report only)` and never enters a fixer snapshot or a handoff.
 - **Fixer routing.** `doctor-fix launch system --night <id>`, one area `system` (`whole`), so one run
   owns every cause of a night. The component is the cause's files; `what` names its levers (`LEVERS`,
@@ -200,17 +188,6 @@ A `job-loop` fix is proven after 7 quiet days of snapshots; a looping snapshot s
 fix is proven on its CPU and written bytes, never its births, so an item dominated by M, R or L is not measured by its
 proof yet.
 
-Measured once on 2026-10-06 at ~350 births/s (real machine, temp state dirs):
-
-| collector | wall | CPU | found |
-|---|---|---|---|
-| tick `rusage` step | 1 ms | ~0 | 34 of 35 own processes read; top footprints two bench workers ~770 MB each |
-| census | 60 s | 1.5 s | 2,467 polls, 5,697 newborns (12 % gone before read); statusline.sh 38 % |
-| dumpstate | 0.3 s | 0.2 s | 2,148 services; 1 own orphan |
-| harvest, 11 h back | 88 s | 76 s | launchd 80 s/72 cpu-s of it (`log show` predicate scan); DAS 562k lines 12 s/10 cpu-s; Siri.agent 4 × `exit 1` (Apple, report-only), Hammerspoon 5 spins |
-
-A 6-hourly run reads 6 h, about half the first run's cost.
-
 ## Log stores — built (2026-10-09)
 
 Egor must see how much disk LLM logs take and whether they grow, even when a writer nobody registered logs somewhere
@@ -281,7 +258,7 @@ tokens, keychains) — minus anything with a file written in 7 days or kept by a
 Sonnet worker-run (low effort, read-only) call each `garbage` or `keep`, keep when unsure. The doctor itself moves
 garbage to `~/.Trash` under a dated name, never deletes, after re-checking the path (still a real directory in the
 home, no recent file, no credentials inside); an invented path is ignored. Verdicts land in `tidy.jsonl`; the menu
-lists the week's moves under LLM profiles with 🗑. `--dry-run` judges and prints only.
+lists the week's moves under LLM profiles with 🗑.
 
 **Background** (Egor, 2026-10-14: every program running behind his back in one place, with its harm, so he removes
 what hurts): `background` holds every cohort item at B ≥ 0.01 and every launchd plist of the agent dirs (through its
@@ -294,7 +271,7 @@ unplaced → `other`. Each tick records in `origins.json` the file of every tag 
 script, a module's cwd, the executable, `proc_pidpath` for a bare name; inline code its parent's), at most 4000. A
 group shows 60 items but never drops a job or an item at its limit. `system-doctor explain`, in the Prep after
 tidy, has the same Sonnet worker-run write one line per unexplained item (Apple at its limit, else a job or
-B ≥ 0.05; the 40 heaviest) into `about.json`; an invented name or a blank line is ignored, `--dry-run` prints only.
+B ≥ 0.05; the 40 heaviest) into `about.json`; an invented name or a blank line is ignored.
 Login items macOS keeps outside plists stay blind (ledger `login-items`).
 
 `log-growth` threshold: with every big store under a criterion the total plateaus; 1 GiB/day sits under the biggest
@@ -303,8 +280,7 @@ once 14 days of series exist. A `log-store` fix is proven when the next scan no 
 
 ## Caches and free space — built (2026-10-20)
 
-The 2026-10-20 freeze: a 17.7 GB upscale filled Data to 97 %, swap could not grow and jetsam fired. Egor (2026-10-20):
-zero manual cleaning, hear only about a surprising giant grower, no CleanMyMac. No new tool: the registry, log-sweep
+Egor (2026-10-20): zero manual cleaning, hear only about a surprising giant grower, no CleanMyMac. No new tool: the registry, log-sweep
 and the doctor carry it.
 
 - **Cache stores** (`kind: cache`): what refills by itself and goes without breaking a running program or losing
@@ -314,22 +290,7 @@ and the doctor carry it.
   `--user-data-dir` profile) is never swept, nor anything above it; a directory macOS will not list (TCC: Chrome's,
   Discord's data) is `denied`, skipped and counted apart, never an error.
 
-| store | what | 2026-10-20 | growth | rebuilds | risk |
-|---|---|---|---|---|---|
-| `chromium-caches` | `Cache`, `Code Cache`, GPU/shader/Dawn caches, Service Worker CacheStorage of every Chromium/Electron profile in Application Support (≤ 3 levels) and of the gemini-web, chatgpt-web and Antigravity browser profiles, 30 days | 19.6 GB, 269 units (9 denied) | each capped by Chromium (~0.8 GB a web profile), grows with profiles | the next page load refetches | a slower first load |
-| `npm-cache` | `~/.npm/_npx/*`, `_cacache`, `_logs`, bun's and Yarn's caches, 30 days | 2.7 GB | per new npx tool or version | the next npx/install downloads | needs network once |
-| `pnpm-store` | `~/Library/pnpm/store/v*`, 30 days idle (`pnpm store prune` is not wired: pnpm lives under nvm, off the agents' PATH) | 2.4 GB | per install | the next install | none: node_modules keep their hard links |
-| `uv-cache` | `uv cache clean`, 30 days | 2.0 GB | per venv | the next `uv` sync | needs network once |
-| `vscode-caches` | `CachedData`, `CachedExtensionVSIXs` and logs of Code, Cursor, Antigravity IDE, Windsurf, Kiro, Trae, 14 days | 1.1 GB | per editor update | the next start | none |
-| `xcode-caches` | DerivedData, CoreSimulator Caches, Previews, 14 days | 0.7 GB | per build | the next build | one full rebuild |
-| `xcode-device-support` | `* DeviceSupport/*`, 90 days | 0 (appears with a device) | ~5 GB per OS version | Xcode copies symbols on reconnect | minutes on reconnect |
-| `repo-build-caches` | nx, vite, next, turbo, parcel, angular, svelte-kit caches of `/Volumes/Work/Projects/*` and `~/Arbostar/*` (and their `apps`/`packages`), 14 days | 0.5 GB | per build | the next build | a slower first build |
-| `library-caches` | `~/Library/Caches/*` but Apple's, Claude Code's, Playwright's, Homebrew's, CloudKit, FamilyCircle, GameKit, 30 days | 0.3 GB | per app | the app | none |
-| `cycles-kernels` | Blender Cycles' compiled kernels, 30 days | 0.2 GB | per Blender version | the next render compiles | a minute once |
-| `flow-media-cache` | Flow's IndexedDB in the gemini-web profiles: the leveldb is the unit, its blob directory goes with it (`also`), 14 days | 9.0 GB, 9 profiles | every generated clip | Flow refetches from the project | none: the origin goes whole, leveldb first, as Chrome's own eviction |
-| `metal-shader-caches` | Metal's per-app shader caches in the per-user cache dir (`$TMPDIR/../C`), 30 days | 3.3 GB (Blender 2.5) | per app and GPU driver | the next launch or render compiles | a slower first frame |
-
-  Left out, each for a reason: `~/.cache/puppeteer` (1.6 GB) and `~/.agent-browser/browsers` (0.4 GB) hold browsers
+  The stores are the `kind: cache` entries of `share/log-stores.json`, each with its `why`. Left out, each for a reason: `~/.cache/puppeteer` (1.6 GB) and `~/.agent-browser/browsers` (0.4 GB) hold browsers
   npx tools pin by version and never download again at launch; `ms-playwright` (1.2 GB) collects its own unused
   versions; Homebrew (cleans every 30 days itself; a forced cleanup can break a venv that records a Cellar path);
   CoreSimulator Devices (app state, not cache); Figma's old profiles v17–v42 (~0.4 GB, only their caches are swept; the
@@ -337,13 +298,10 @@ and the doctor carry it.
   slow, large downloads; the growth lens names them if they grow); Telegram, Slack, Zoom, Docker (app data with user
   content, or absent); `~/.cargo` (0.1 GB), gradle, maven (absent). `also` (relative to each unit) names what counts,
   ages, is held and goes with a unit; the fallback claims it too.
-- **Coverage pass** (2026-10-20, du 5 levels deep over `~` and `/Volumes/Work`, every folder of ≥ 200 MB that no
-  store or ignore entry claims): the home is covered (0.6 GB left in `~/.cache`, the pinned browsers above); on Work
-  it found the build caches of `/Volumes/Work/Sites/*` (Rentiva's `.next`, 1.0 GB) and pnpm's Work-volume store
-  (0.9 GB), now in `repo-build-caches` and `pnpm-store`. The rest is Egor's work, not cache: Nextcloud design files,
+- **Not cache** (Egor's work, never a store): Nextcloud design files,
   device mockups, logo renders, bench sets and results, game art, `.venv`s and `node_modules` (installed, a bench run
-  may hold them), git objects, Unity `Library` folders (1.3 GB, a long reimport), the video harness's
-  `scratch/tools-2026-10-01` (1.1 GB, its project's call) and find-truth's API-built data cache.
+  may hold them), git objects, Unity `Library` folders (a long reimport), the video harness's
+  `scratch/tools-2026-10-01` (its project's call) and find-truth's API-built data cache.
 - **Automation browsers' HTTP cache**: gemini_web launches every gemini-web and chatgpt-web profile with
   `--disk-cache-size=200 MB`: these profiles run daily, so `chromium-caches` (30 idle days) never reached them and
   Chrome sized each from free disk (~750 MB, 9 GB in all); the next launch trims it, logins untouched.
@@ -381,51 +339,22 @@ and the doctor carry it.
   Application Support/Caches/Containers child, a dot-dir, a `/Volumes` project). Nothing is ignored here, so an
   unregistered giant cannot hide; a static giant (Nextcloud 54 GB) never fires. The folders above 5 GB
   (`biggest_gb`, caches claimed) go to the row's `giants` for the `free-space` fact.
-- **Log growth** (2026-10-13 → 20: 46.9 → 78.3 GB): no sweep bug (no unit held open, no error since 10-16, no
-  unmatched big path). Worker volume rose: Claude and Codex worker transcripts took ~4 GB/day the last week against
-  ~0.5 GB/day the week before, so the 15-day worker window fills toward ~60 GB; Codex worker rollouts that look at
-  images keep each full-size image (one rollout 166 MB, 2–11 MB a `view_image` batch). tmp-sandboxes held the
-  upscale's frames (12.3 GB, 7 days). Retention stays Egor's trade (2026-10-20): workers 15 → 7 days frees ~5.5 GB
-  now and ~32 GB at the plateau, but Spend and Lost time lose their previous week and older worker sessions can't be
-  read or resumed; tmp 7 → 3 days frees about half of temp (~8 GB a normal week) and the sandboxes of a 4–7-day-old
-  debugging session.
 
 ## Left
 
 - **Felt score** for scheduling levers (stalls, slow HID) — the hang and DAS counters feed no rule yet.
 - **Cohort proof** on its own dominant term (M, D, R, L) instead of births/CPU.
 - **Retention of `collector-runs.jsonl`:** 30 days.
+- **Log retention** stays Egor's trade: workers 15 → 7 days frees ~5.5 GB now and ~32 GB at the plateau, but Spend
+  and Lost time lose their previous week and older worker sessions can't be read or resumed; tmp 7 → 3 days frees
+  about half of temp (~8 GB a normal week) and the sandboxes of a 4–7-day-old debugging session.
 - Other users' footprints stay blind without a consented privileged sample (ledger `foreign-cohort-terms`).
   Short-lived and other users' disk writes are sampled, not traced (ledger `ssd-writers`): the root `bin/ssd-sampler`
-  (LaunchDaemon `com.egor.ssd-sampler`, owner-consented 2026-10-13, `sudo bin/ssd-sampler install`, copy in
-  /usr/local/libexec so no user-writable file runs as root) traces `fs_usage -f diskio` up to 2 min every 3.5 h, a
-  3.5 h step walks every half hour of the day in a week. fs_usage loses events once it lags behind them: the v2 sample
-  (2026-10-13, 10 min) traced the whole 64 MiB calibration and every byte for 2 min, a tenth by minute 9, at 6 min lag
-  and 3.5 GB RSS. So a sample ends at 20 s of lag, 768 MiB of fs_usage RSS, or its timeout plus 60 s (watchdog kill).
-  Each sample, `/var/db/ssd-sampler/<start>.json`, carries the device write counters over the traced span and the
-  write bytes per (process, disk, directory), paths kept from the front (`-F`), the Data firmlink prefix dropped,
-  slashless system paths rooted, the per-user temp folder named `$TMPDIR`. It checks its own capture (a 16 MiB fsync'd
-  calibration write against the bytes traced for it, device counters every 10 s beside that tick's traced bytes,
-  fs_usage's lag, cut, exit and stderr, raw lines with no process, device or absolute path) and carries its own cost
-  (CPU s of itself and fs_usage, peak RSS, run time, bytes written). The sampler runs as root through Apple's fs_usage,
-  which the ticks tag Apple and cannot read, so `cohort_score` adds each sample's cost as the own item
-  `llm-legs/bin/ssd-sampler` (C, D, and M as peak RSS x run time) and the night tunes it like any own tool at B >= 1.
-  Only v3 samples count (v1 cut Data paths, v2 traced past its drops). `measures.ssd_sampled` sums 7 days:
-  each (process, directory) share of the internal devices' bytes and the attributed share; Disk writes scales them to
-  GB/d by the week's mean. Blind `ssd-sampler` while the daemon is installed but no sample is younger than 15 h.
+  (owner-consented 2026-10-13; its docstring and `judge_sampler` hold the rest).
 
 ## Levers (own code, output-equivalent; every one needs a before/after on this collector)
 
-1. **Spawn rate.**
-   - Statusline first: cache git and jq per render keyed on mtime, take review-flow-gate off the
-     render path, add a births-per-render metric.
-   - No-fork bash idioms and ≥ 1 s waits in worker-run, worker-pick and llm-limits.sh.
-2. **Hammerspoon.** Make no `hs -c` calls from scripts or tests. Make AX polling event-driven or
-   ≤ 1 Hz. Free the leaked drawings.
-3. **gemini-web hidden browser:** close it on idle.
-4. **harness-doctor's own cost**, which grew 657 → 1,565 cpu-s/day.
-5. **Homebrew bash teardown segfault** (49 in 8 days): find the children that die after their parent.
-6. **vendor-cli-update RunAtLoad:** drop it, or add a boot delay (shutdown stall 2).
+`LEVERS` and `SPAWN_LEVER` in `bin/system-doctor`, handed to the fixer as `what`.
 
 Egor's trades: a consented privileged sample, the night-run window, bench pool size, Spotlight
 exclusions, disk housekeeping (uv cache, gemini profiles, the staged macOS update) and idle apps.

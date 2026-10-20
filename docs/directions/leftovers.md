@@ -82,9 +82,7 @@ night's local day (UTC+3), 7 days against the 7 before. Target 0: nothing outliv
   has none, nor do the helper repositories (`share/night-helper-repos`).
 - `share/handoffs.py` (`open_handoffs`, `owner_batches`, `--status`, `--night` for the Doctors menu's
   `handoffRows`), `bin/night-run` (`carry_list`, `carry_owner_chats`, `branch_row`, `job set`).
-- No ledger is the handoff list. The harness ledger holds three log-audit rows on them in 10-07…14: `log_audit:`
-  `same-day-apply-not-honored` (the leftovers 6 h rule, fixed 10-07), `handoff-brief-missing-cross-repo-dir` (fixed
-  10-08), `shared-ledger-handoff-conflicts` (fixed 10-13).
+- No ledger is the handoff list.
 
 ## Recurring classes
 
@@ -130,8 +128,6 @@ Why they come back:
 
 ## Goals
 
-Worked in order, one at a time (`bin/night-run` PILOT, carry); a landed goal moves to Done with its commit and proof.
-
 ### goal job-settles-its-doc: a handoff or owner-chat job closes only with its docs settled
 
 Class C2: 4 doc-nights (3 + 1; 3 docs), each the next carry re-taking a doc whose job had closed.
@@ -161,7 +157,7 @@ Class C4: 2 doc-nights, one doc skipped by two nights.
 - It brings back README's section 8 rows, Handoffs and owner chats, and Leftovers. A pilot night leaves both out now:
   `PILOT_RULES` lists "no … leftovers", `cmd_carry` skips `carry_owner_chats` on `.pilot`, `carry_list` prints only
   `pilot_goal`.
-- Pilot change: `leftovers` joins `PILOT` after the blocks before it. Once the pilot reaches it (every earlier
+- Pilot change: once the pilot reaches `leftovers` (every earlier
   direction's goals gone), carry adds the owner-chat batches and handoff lines after this direction's goal, and the
   prep runs `night-run leftovers` and `job add leftover` per row; `start` records `night-run leftovers --json` in the
   night file, so "still there at the next start" is read from records, not reflogs.

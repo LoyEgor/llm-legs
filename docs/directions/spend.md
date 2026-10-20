@@ -94,7 +94,7 @@ Why they come back:
 
 ## Goals
 
-After Breakages' goals, by its landing rule: scripted-bare first, since log-audit runs on every pilot night while
+Scripted-bare first, since log-audit runs on every pilot night while
 the audits wait for the full night. Bash-cap runs belong to Breakages' `bash-cap`.
 
 ### goal scripted-bare: a one-request model call launches stripped by default

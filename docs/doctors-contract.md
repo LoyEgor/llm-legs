@@ -2,8 +2,7 @@
 
 What the LLM doctor (`bin/llm-doctor`), the Harness doctor (`bin/harness-doctor`), the Updater
 doctor (`bin/updater-doctor`), the Code doctor (`bin/code-doctor`) and the System doctor (`bin/system-doctor`) share, so
-that one menu entry and one fixer procedure can serve them all. Version 1, written 2026-09-29 by the chat «Updater doctor» from two
-T2 hunts over both doctors. A doctor's owner chat may amend it here; the other owners follow the
+that one menu entry and one fixer procedure can serve them all. A doctor's owner chat may amend it here; the other owners follow the
 amended text.
 
 ## 0. Egor's decisions (2026-09-29)
@@ -31,7 +30,7 @@ A red problem is a loud one (`new`, `open`, `regressed`) the menu does not calm.
 `hammerspoon/doctors.lua` only: a problem an open fixer run holds (`runs/`, launched within `FIX_BUSY_S`, neither
 closed, failed nor abandoned; its `problems[].id`); `CALM_RULES` (Updater `event-waiting`: a release waiting for its
 integration; System `unregistered-store` and `swap-writes`: no cause, no lever); a System problem whose `cause` is no
-`fix_target` (Apple, third-party, an own process outside the sweep repositories) unless it is `AT_RISK`
+`fix_target` (Apple, third-party, an own process with no sweep or helper repository file) unless it is `AT_RISK`
 (`free-space`, `dir-growth`, `swap`: the machine itself at risk). Every document, `problem_count`, the night's
 `doctor_snapshot` and doctor-fix keep each problem as it is (test: the night snapshot block of
 `tests/doctors_menu_harness.lua`). Fixture render:
@@ -67,14 +66,10 @@ LLM ▸     8  reviewers crashed
   time: a red Harness group it shows; Spend never: its audits only watch), DIM no data, blind or
   stale (Speed also without an index dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null), else GREEN. Missing value: DIM `–`.
   The value is the summary's red count.
-- Bars: six completed local dates and today, daily `max` of the red count in `red-days.jsonl` (the menu writes it when
-  a day's max rises, 8 days kept; `problem-days.jsonl` stays every loud problem for the time budget). A date with no
-  red-days row (before the menu kept them, or a doctor with no count that day) draws that day's loud `max` from
-  `problem-days.jsonl` in the same DIM bar: red is a subset of loud, so a loud 0 is an exact red 0, and any other
-  such date is a loud day, drawn but never in the `usual` (Lost time: `index_by_day` in Harness's
-  `menu.txt` header, the 7-day window ending each day, today live; Spend: its stored index of each day, the same window). Eight heights against the window maximum. An unmeasured date
-  is a blank cell, never an invented bar or a dash; a zero is `▁` (as every other spark line, Chats → Other's
-  load graph the model). Every bar is DIM, never RED.
+- Bars: six completed local dates and today, the daily red count by shared-invariants row `ee` (Lost time:
+  `index_by_day` in Harness's `menu.txt` header, the 7-day window ending each day, today live; Spend: its stored
+  index of each day, the same window). Eight heights against the window maximum; a zero is `▁`, as on every other
+  spark line.
 - `usual` is the median of measured completed dates, never today and never a loud day; index rows have none.
 - A doctor's first level: up to three issue rows of red problems (RED count, the group or the problem's own short name,
   then ` · ` and the first red problem's `fact` where the document gives one; Spend's rows DIM;
@@ -83,10 +78,7 @@ LLM ▸     8  reviewers crashed
   (stale, failed, pending) first; Lost time's and Spend's details are Harness's `Lost time:` and `Spend:` subtrees.
 - Each doctor answers one question; the view moves, never the collectors (rule ids, groups, documents, areas and night
   kinds stay). `SHOWN_BY` in `hammerspoon/doctors.lua` maps a donor's group (and its level-0 `<Group>:` row) to the
-  summary that shows it: Harness's Suite audits, Test flakes, Limiter holds and the row-less Speed, Tests, Wait
-  classes, Hook waits, Hooks, Waits, Slow periods, Collector → Lost time (with the window rows and their chooser);
-  CPU audits, Load (out of Lost time's subtree), Memory guard, Growth → System, kept at the end of its details;
-  LLM's `debt` → Harness. Harness's details drop `Lost time:` and `Spend:`. Red counts move through the same table by
+  summary that shows it. Harness's details drop `Lost time:` and `Spend:`. Red counts move through the same table by
   each red problem's `group`, so each summary's count and issue rows change but the `Doctors: N problems` total never
   does.
 - System's first level is seven fixed sections instead of issue rows: Processor, Memory, Disk writes, Disk space, Logs,
@@ -129,7 +121,7 @@ and adds these top-level keys. Its own keys stay as they are.
 | key | value |
 |---|---|
 | `contract` | `1` |
-| `doctor` | `llm` \| `harness` \| `updater` |
+| `doctor` | `llm` \| `harness` \| `updater` \| `code` \| `system` |
 | `as_of` | ISO-8601 with offset |
 | `judge` | sha256 over the doctor's code, ledger and limits; it changes whenever the judge changes |
 | `status` | `ok` \| `problems` \| `blind` \| `error` |
@@ -141,7 +133,7 @@ and adds these top-level keys. Its own keys stay as they are.
 Status rules:
 - `blind`: an input the doctor needs is missing, empty or unjoinable. It is never reported as `ok`.
 - `error`: the collector failed. The menu shows the error, never the previous document's colour.
-- The menu never recomputes a state or a count.
+- The menu never recomputes a state.
 
 Problem fields:
 
@@ -170,7 +162,8 @@ There is one file per doctor, with the same row shape:
 - `share/harness-ledger.json` for the Harness doctor;
 - `share/updater-ledger.json` for the Updater doctor, whose rows match an exact `{rule, key}`;
 - `share/code-ledger.json` for the Code doctor, whose rows match an exact `{cause}` or a structural
-  `{identity}` (§6).
+  `{identity}` (§6);
+- `share/system-ledger.json` for the System doctor, whose rows match an exact `{rule, key}`.
 
 The top level is `{owner, rows, blind_spots}`:
 - `owner` is the chat that owns the doctor, and every handoff about the doctor goes to it.
@@ -197,9 +190,7 @@ The fix lifecycle:
   `regressed_at`, `fixed-pending` → `fixed`) goes to its overlay `<state dir>/ledger-settled.json`,
   keyed by row id and fix `at`. Every reader merges it through `share/fix_commit.py` `load_merged`, a
   value the tracked file holds winning; the night's `doctor-fix ledger-sync` commits it.
-- A repeat fix appends to `fixes` and never overwrites it. More than one fix on a row, or on a
-  `same_cause` group, is a complexity signal: the fixer looks for the shared cause instead of
-  patching again.
+- A repeat fix appends to `fixes` and never overwrites it.
 
 A matching event regresses a fix only if it ran on code that holds the fix:
 - It must have started after the last fix: its `at`, or once `in` is filled the time `in` reached
@@ -223,9 +214,6 @@ Guarding the judge, enforced by each doctor's own tests:
 
 A blind spot is a row `{id, what, reason, since, would_catch_if}` in the ledger's `blind_spots`. The
 doctor emits these rows in its document.
-
-A fixer that meets a cause the doctor did not catch adds a row here, with what would catch it. It
-never builds the detector in a fix run: that is the doctor owner's work.
 
 ## 4. Fixer run record (built by «Updater doctor»)
 
@@ -253,8 +241,7 @@ Areas: the LLM doctor's block (from the ledger row, the id or the document's blo
 row (the ledger row's `match.health`, or the `health[]` row whose `rules` hold the problem's rule); the
 Harness doctor's section of the rule; else `doctor` (`share/doctor-areas.json` `own`), which is every
 Updater rule but `event-waiting`; the Code doctor's one area `code` and the System doctor's one area
-`system` (`whole`), labelled a bare `Code fixer` and `System fixer`. Old runs' `health`, `self` and `machinery` read as `debt`, `doctor`
-and `doctor` (`renamed`). The snapshot keeps the problems not `watch` or
+`system` (`whole`). The snapshot keeps the problems not `watch` or
 `fixed-pending`, plus, for the Harness doctor, the top 8 `watch` rows of Hooks and Hook waits by
 value × exposure.
 
@@ -269,8 +256,8 @@ review claim), the needs-Egor problems, and the problems whose units changed sin
 whose verdicts go back to the judge. The rest stay counted and wait for a later night: a code queue is
 months of work, and a run sized to the whole of it never closes.
 
-The menu reads `doctor-fix runs [doctor] [--open] [--json]` (newest first) to show "fixer ran N d ago
-· closed / still open". `doctor-fix show <id>` prints the run and, per problem, the packet: its
+The menu reads the run records itself to show "fixer ran N d ago · closed / still open";
+`doctor-fix runs [doctor] [--open] [--json]` lists them newest first. `doctor-fix show <id>` prints the run and, per problem, the packet: its
 ledger row, earlier decisions on the id, the component and its git history, and the handoffs,
 invariant rows and memory files naming it. Launch:
 - `launch llm|harness|updater|code|system|all --night <night-id>`, only from an open full night (its ledger in
@@ -288,7 +275,7 @@ invariant rows and memory files naming it. Launch:
   its decision rows and its note).
 - `abandon <id> [--reason TEXT]`: the deadline's verb; a closed run refuses it.
 
-`doctor-fix close <id> --decisions <file> [--doc <document>] <note>` closes any other run:
+`doctor-fix close <id> --decisions <file> <note>` closes any other run:
 - A run with a worktree reruns its doctor there into a run-local document (never the shared
   `latest.json`); an old day run without one reads the shared one. It refuses until that document's `as_of` is
   later than `launched_at`, and it refuses an abandoned or failed run.
@@ -307,12 +294,8 @@ invariant rows and memory files naming it. Launch:
 - A Code run also refuses while `bin/code-doctor check <record> --base <base>` prints a line (§6).
 - A Harness or System run also refuses every added or removed line that sets a model, effort or thinking
   knob (`KNOBS` in `share/knobs.py`): in its worktrees against its `base`, committed,
-  uncommitted or untracked, and in the live settings and worker-model files against
-  `knobs_at_launch`. Sites: settings `model`, `effortLevel`, `alwaysThinkingEnabled`,
-  `MAX_THINKING_TOKENS`, `modelSettings`; `worker-model`; the `share/worker-model.sh` table;
-  `share/worker-policy.md` effort lines; review-bench `share/rbench/catalog.py` tier efforts and
-  rosters; agent `model:`/`effort:` frontmatter; claudeb's default model (`bin/claudeb`,
-  `share/chat-open.sh`); brief-template `EFFORT:`/`MODEL:` lines. Each refusal names the site and
+  uncommitted or untracked; a live settings or worker-model change since `knobs_at_launch` is only a stderr
+  note (Egor's own `/model` lands there too). Each refusal names the site and
   `file:line`.
 
 ## 5. Fixer procedure
@@ -331,7 +314,7 @@ Handoffs are `docs/handoffs/<date>-<topic>.md`. The first line after the title i
 
 ## 6. Per-doctor notes
 
-Harness doctor (added 2026-09-29 by its owner chat):
+Harness doctor:
 - `as_of` is ISO as §1 says; the epoch stays under the doctor's own key `as_of_s`, which `menu.txt`
   carries.
 - `local_slow`, read by the LLM doctor, is fed only by rule `wait`: a red Waits call row, per project
@@ -382,7 +365,7 @@ Harness doctor (added 2026-09-29 by its owner chat):
   follow it (`time_budget.UNITS`), a wait, refusal or run cut per unit of work (`VOLUME`), load-matched or
   `unmeasured`, as are day totals (other classes).
 
-LLM doctor (added 2026-09-29 by its owner chat):
+LLM doctor:
 - `as_of` is ISO as §1 says; the epoch stays under the doctor's own key `as_of_s`, which the menu
   reads.
 - `judge` is sha256 over `bin/llm-doctor`, the ledger's dismissal rows (`id`, `block`, `match`,
@@ -411,7 +394,7 @@ LLM doctor (added 2026-09-29 by its owner chat):
   limit and the limit. Per-problem p50/p95 is not built; each block's `speed` carries
   `ratio_p50`/`ratio_p95` of leg duration against its baseline.
 
-Updater doctor (added 2026-09-30 by «Updater doctor»):
+Updater doctor:
 - `as_of_s` beside `as_of`; `blind[]` names the inputs that are not ok (`state.json`, `pass`).
 - `judge` is sha256 over `bin/updater-doctor`, `share/updater-ledger.json` and its limits
   (`LIMITS`, `PASS_OK`).
@@ -421,7 +404,7 @@ Updater doctor (added 2026-09-30 by «Updater doctor»):
 - Its own key `vendors[]` carries, per vendor, what the menu shows: installed, latest, result, the
   catalog newest first (12 at most) and the last 5 events.
 
-Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
+Code doctor (design `docs/code-doctor-design.md`):
 - Groups `dead`, `heavy`, `duplicate`, `promise` (plus `ledger` for a faulty row) under the own key `groups`;
   they sum to `problem_count`, one unit: a problem is one cause, however many units it spans.
 - A problem exists only once the judge (worker-run, under the night's token and wall budget) ruled
@@ -446,7 +429,7 @@ Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
 - `bin/code-doctor record-fix` writes the fixed-pending row (with its identity and yield) and, with
   `--mechanism`, `share/canonical-mechanisms.json`, which review-bench's fit lens reads.
 
-System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
+System doctor (design `docs/system-doctor-design.md`):
 - Machine rules `spawn`, `kernel`, `compressor`, `swap`, `swap-writes`, `ssd-writes`, `free-space`,
   `hammerspoon-crash`, `job-crash`, `unclean-reboot`, the job rule `job-loop`, the standing-cost
   rule `cohort`, the log rules `log-store`, `log-growth`, `unregistered-store`, `log-unread` (registry
@@ -456,7 +439,7 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.
 - Own problem keys: `label` (the menu's short name), `severity` (`review` | `heavy`) and `cause`
   `{name, share, owner, fix_target, files}`; `fix_target` is true only for an own cause whose name is a
-  file of a sweep repository (`files`, `repo/path`); every other cause is report-only. doctor-fix adds a
+  file of a sweep repository or a helper repository's exact `repo/path` (`files`, `repo/path`); every other cause is report-only. doctor-fix adds a
   `collector:<name>` problem per name in the document's `blind`. A proven,
   refused or pending fix carries `proof` `{verdict, why, since, ...}`.
 - `status` is `blind` while the newest tick is older than 10 min or the nightly pass older than 36 h
@@ -471,5 +454,3 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   `per_day` those plus S, births a day, which no B reads; `per_day.C` includes
   reaped children's CPU, the statusline journal's on `llm-legs/bin/statusline.sh`, not `claude`; `job` `{label, plist,
   schedule, missing, loaded}`, `loaded` null before any dumpstate), `limits`.
-- `doctor-fix launch system --night` snapshots only fix-target causes (plus ledger and collector faults);
-  close runs `bin/system-doctor check --record` (design, Phase 2).

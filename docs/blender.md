@@ -16,10 +16,10 @@ first when anything looks off.
 |---|---|
 | Logo/mark in material, still | `blender-render logo --svg <abs> --out <abs .png> [--material gold] [--color '#169148']` |
 | Same on a transparent background | add `--transparent --backdrop none` (PNG with alpha, no background removal needed) |
-| Loop for a page or a promo | `--out <abs .mp4>` (H.264), `.mov` (ProRes 4444, alpha), `.webm` (VP9, alpha, for the web); `--motion swing\|turntable --seconds 6 --fps 30` |
+| Loop for a page or a promo | `--out <abs .mp4>` (H.264), `.mov` (ProRes 4444), `.webm` (VP9, for the web), both with alpha under `--backdrop none`; `--motion swing\|turntable --seconds 6 --fps 30` |
 | three.js / model-viewer asset | `--out <abs .glb>` — Draco-compressed mesh with PBR materials (clearcoat and transmission export as KHR extensions) |
 | Anything else in 3D | a bpy script: `blender-render run <script.py> [-- args]`, `import kit` works inside it |
-| Hand-tune in the Blender UI | add `--save <abs .blend>` to any `logo` call, open it with `open <file>` |
+| Hand-tune in the Blender UI | add `--save <abs .blend>` to a still or video `logo` call, open it with `open <file>` |
 
 Materials (`--material`): `gloss` (painted, clear-coated — default), `matte`, `satin`, `metal`
 (tinted anodized), `brushed`, `gold`, `chrome`, `copper`, `glass`, `frosted`, `clay` (form review),
@@ -52,16 +52,8 @@ full 2048×1152 still at 384 samples ~110 s. Video renders every frame — run l
 ## One Blender at a time, unless memory holds two
 
 A render holds ~9.3 GB phys_footprint, mostly wired Metal memory that cannot swap: two at once took the
-24 GB Mac to 22.4 GB used and 5.5 GB swap (2026-10-14). Every Blender launch (`doctor`'s probe, `logo`, `run`)
-first takes a slot of the machine-wide `blender` pool (`share/slots.sh`, `~/.cache/blender-render/slots`,
-`BLENDER_RENDER_DIR`). The first slot always runs unless a Blender outside the pool is running (`blender -b`
-launched directly); every other slot waits until
-`available MB ≥ GUARD_AVAIL_MB + footprint + Σ (footprint − current footprint) over running Blenders` (the sum
-covers a Blender just launched that has not allocated yet), and at most RAM ÷ footprint. The footprint is the largest
-recent peak phys_footprint of the same script, else the median of the last 9 runs (`peaks.jsonl`, sampled each
-second, failed runs included), 9.5 GB until measured.
-A waiter prints `blender: waiting for a slot (N running, room R)` once, raises the `blender` limiter hold and
-journals its wait (`docs/harness-doctor-design.md` §12). So queue renders freely: they run one after another.
+24 GB Mac to 22.4 GB used and 5.5 GB swap. Every Blender launch queues on the machine-wide `blender` pool
+(`blender-render --help`), so queue renders freely: they run one after another.
 
 ## With the rest of the media chain
 
@@ -77,10 +69,5 @@ journals its wait (`docs/harness-doctor-design.md` §12). So queue renders freel
 
 ## kit (share/blender/kit.py)
 
-`clear()`, `render_settings(scene, size, samples, engine, transparent, view, look, exposure, fps)`,
-`gpu(scene)`, `material(name, preset, color)`, `world_hdri(scene, name, strength, rotation,
-background)`, `world_color`, `backdrop(color)`, `studio_lights(center)`, `area_light`, `aim`,
-`import_svg(path, width, depth, bevel)`, `apply_material(obj, preset, color)`, `bounds(objects)`,
-`camera(scene, objects, angle, lens, margin, fstop)`, `spin(obj, frames, motion)`,
-`render_still`, `render_frames`, `export_glb`, `save_blend`. A script prints `RESULT key=value`
+A script prints `RESULT key=value`
 lines; `run` echoes them and `Saved:` lines, and the log path.

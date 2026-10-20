@@ -26,8 +26,7 @@ The same count opens and closes incidents, so the 1 s ticks run once it is low.
 A member's weight is its `ri_phys_footprint` (`proc_pid_rusage`, one syscall per attributed pid), the
 memory `top` and Activity Monitor show; a pid it cannot read (another user's, gone) keeps its RSS
 from `ps`. RSS alone missed wired GPU memory: a headless Cycles render on Metal holds ~9 GB at
-0.2 GB RSS, so on 2026-10-14 two of them were credited 0.6 GB and the guard ranked them below a
-1.8 GB job. Tests weigh pids from `CHAT_LOAD_FOOTPRINT` (a JSON `{pid: KB}`) instead.
+0.2 GB RSS. Tests weigh pids from `CHAT_LOAD_FOOTPRINT` (a JSON `{pid: KB}`) instead.
 
 A **job** is one process group launched by one chat — every Bash call a chat makes is its own group
 — minus every protected process, every process of another user (its kill could only fail) and every
@@ -36,8 +35,7 @@ the notice, then SIGKILL every member of that one job** — the whole group at o
 in it, so what it forked while the notice was in flight goes too. The next tick re-evaluates; the next
 fattest goes then, if the pressure did not end. Only the memlogd LaunchAgent acts (launchd's
 `XPC_SERVICE_NAME=com.egor.memlogd`, which guard tests set on purpose); any other `chat-load sample` run
-prints `WOULD KILL chat=… job_pgid=… footprint_mb=…` and signals nothing — a hand-run sample on
-2026-10-14 killed another chat's renders.
+prints `WOULD KILL chat=… job_pgid=… footprint_mb=…` and signals nothing.
 
 On a kill that landed, chat-load prints a `KILLED` line memlogd appends to its day log, appends a
 `MEMGUARD` record to the run directory of any worker run or review cell the job ran under, and the
@@ -71,8 +69,7 @@ The registry pids and all their ancestors are never members of a job:
    `${WORKER_STATS_DIR:-${CLAUDEB_DIR:-~/.claude-profiles/.claudeb}/worker-stats}`, written right
    after `Popen` and removed in its `finally`.
 
-A stale registration can only spare a process, never condemn one, so no identity check is needed:
-the old guard's start-time verification existed because a registered pid used to be a kill TARGET.
+A stale registration can only spare a process, never condemn one, so no identity check is needed.
 
 So the agent always survives its command: the chat or worker CLI sees the command die by signal 9
 and can say so, and a worker run's supervisor still writes its exit code and report.
@@ -91,9 +88,8 @@ but its job is still killed: that is exactly what nothing else would ever stop.
 
 A worker session never flushes the bus (`skip_flush`, shared-invariants row `ch`), so a worker run's
 own session gets the same text as a line in `<run dir>/inbox` (`by: memory-guard`), which
-`bin/worker-inbox-hook.sh` hands it at its next tool call as a message from the memory guard. Until
-2026-10-20 it was posted to the bus and never read: a worker relaunched a 15-22 GB upscale eight
-times in one night, its seven notices still pending, `notified=` naming it as told.
+`bin/worker-inbox-hook.sh` hands a claudeb worker at its next tool call as a message from the memory
+guard; other vendors' lines wait for a `RESUME` (`share/worker-inbox.sh`).
 
 Nothing is paused or queued: SIGSTOP would park a chat for minutes and leave stopped processes
 behind for chats that die. A killed job leaves nothing.
@@ -108,9 +104,8 @@ for hours at a time. A single fat job on its own is likewise ordinary.
   until 2026-10-19, when Egor lowered it: he takes a lagging Mac over killed work, and a local audio
   model of 5-8 GB was killed at 3072 run after run while the Mac stayed usable.
 - **1536 MB for one job** is above every healthy agent job measured on this machine and below the
-  runaway shapes that caused the freezes (2026-08-28: a review cell's `pnpm test` fan-out;
-  2026-09-28: a chat's `nohup` bench loop spawning tracers and node, invisible to the old guard,
-  which knew only registered worker trees — 35 minutes frozen, then the power button).
+  runaway shapes that caused the freezes (a review cell's `pnpm test` fan-out; a chat's `nohup` bench
+  loop, invisible to the old guard, which knew only registered worker trees).
 
 Neither threshold is an environment variable: a threshold an operator can turn down is a guard that
 stops firing exactly when it is needed. Both are stated once, in `bin/chat-load`; the swap room that
@@ -119,19 +114,12 @@ switches the count (`swap_reserve_mb`), once, in `bin/memlogd`.
 ## Why the count changes when swap is full, not the threshold
 
 `avail` counts inactive pages as RAM to hand out, and an inactive anonymous page is that only while
-swap can take it. On 2026-10-20 (disk 97 % full) an upscale of 17.7 GB pushed swap from 6 to 15.6 GB
-until no disk was left for it; the ram count stayed at 2.3-5 GB the whole time, so the 2048 rule never
-fired, and the kernel's `low-swap` jetsam killed ~40 system services and left Terminal hung for 10
-hours. The kernel's own count at its first kill (`JetsamEvent-2026-10-20-023254.ips`, 16 KB pages)
-reads 3748 MB the ram way and 1373 MB the swap way; its next two reports, 02:33:55 and 02:38:21,
-3297 and 3925 MB against 1778 and 1640 MB. The guard would have cut the upscale on the first tick after the room fell under 4096 MB.
+swap can take it.
 
 Raising the threshold instead was rejected (Egor, 2026-10-20: not above 2 GB): it kills healthy work
 on a roomy disk, where the ram count is right.
 
-- vm_stat has no per-queue file/anonymous split, so the inactive queue is taken at the file-backed
-  share of all active and inactive pages. Under pressure the kernel drops file pages first, so the
-  inactive queue holds fewer of them than that, and the estimate errs toward keeping jobs.
+- The file-backed share estimate errs toward keeping jobs.
 - **4096 MB** of room is ~19 s at that night's fastest growth (6 GB of swap in 28 s), about ten
   incident ticks. It only switches the count: a full disk with RAM free still reads several GB
   available the swap way and opens no incident, so stale swap, the term that once latched the dumps
@@ -146,9 +134,7 @@ which takes time and often more memory first; under this trigger there is no tim
 per tick, the fattest: killing every job over the ceiling would take out the innocent alongside the
 runaway.
 
-## What the live test showed (2026-09-05, old guard, same physics)
-
-`INCIDENT avail_mb=2726` → `KILLED avail_mb=3027 tree_rss_mb=1850` (9 pids) → `RECOVERED`.
+## What the live test showed (old guard, same physics)
 
 - **A cold allocation never trips it and never froze the machine either.** 48 GB mapped and touched
   once does not move `avail` off ~4.3 GB: the kernel pages it out and the resident size stays small.
@@ -197,24 +183,13 @@ A click copies the chat's resume command. A chat appears only by its title from
 id or a derived session name. Older than 120 s the title reads `· stale` in red: the guard is not
 running.
 
-Limiter holds (`docs/harness-doctor-design.md` §12) live here too, attributed like CPU and RAM: a
-live hold (its pid started no later than `since` + 2 s) adds `⏳<jobs> <longest wait>` to the row of
-the chat its waiting process belongs to, and one no chat launched gets its own `queued <limiter>` row.
-Per limiter the snapshot keeps `moved`, the last tick a hold file of that limiter disappeared (a job
-got its slot) or the queue first appeared; a queue none left for `QUEUE_STUCK_S` (1800 s) is stuck —
-however long a job waits in a queue that moves, it stays dim. A stuck queue paints its row and the
-`Chats/other` title red, and `queues[]` (`limiter, session, count, longest, moved_at, stuck, text`)
-plus `queue_stuck_s` carry the verdict to the menubar ⚠ and the Harness doctor.
-
 ## Nothing it runs lives on /Volumes/Work
 
-`install-agent` deploys `chat-load`, `chat_names.py`, `report-bus`, `report_frame.py` and the bus's
-`store-lock.sh` and `limiter-hold.sh` beside the daemon copy in `~/.local/libexec/`, and chat-load
-imports and runs those copies (the deployed bus sources the lock library beside itself; without it
-every guard notice went to `lost.log` with the chat recorded as told). macOS denies a
+`install-agent` deploys chat-load and every file it runs beside the daemon copy in `~/.local/libexec/`
+(`install_agent` in `bin/memlogd`), and chat-load imports and runs those copies (the deployed bus sources
+the lock library beside itself; without it every guard notice went to `lost.log` with the chat recorded as told). macOS denies a
 LaunchAgent's Python /Volumes/Work, and every process that Python starts, even with memlogd itself
-granted Full Disk Access (seen live 2026-09-28: titles and the bus probe both refused after the
-grant). Every Harness doctor write run redeploys a landed edit of any of them (`harness-doctor --redeploy`).
+granted Full Disk Access. Every Harness doctor write run redeploys a landed edit of any of them (`harness-doctor --redeploy`).
 
 ## Agent process environment
 
@@ -224,13 +199,5 @@ so one agent's fan-out does not become the job the guard has to cut.
 
 ## Tests
 
-`bash tests/test_memlogd.sh` runs the daemon against real process groups (the fake `ps` lists only
-the groups a case spawned, the fake `df` sets the swap volume's free disk): both halves required, the
-kernel's count of 2026-10-20 02:32 replayed (3748 MB the ram way, 1373 MB and a cut once the room is
-gone, nothing with a roomy disk, an unknown room or a full disk with RAM free), a worker's notice
-landing in its run's inbox and rendered by its hook, a chat's own Bash job killed whole with its CLI
-standing and the notice posted while the job was alive, registered CLIs, supervisors and cells and
-their ancestors protected, an ended run protecting nothing, only the fattest job cut, unattributed
-processes never touched, a fat CLI never convicted on its own weight, a worker's job billed to the
-launching chat with both sessions notified, the `memguard` record and the `MEMGUARD:` line, and the
-menu snapshot's aligned rows.
+`bash tests/test_memlogd.sh` runs the daemon against real process groups.
+

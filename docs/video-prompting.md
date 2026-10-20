@@ -1,8 +1,9 @@
 # Video prompting and chaining (gemini-video on Google Flow)
 
 Read this before you write a `gemini-video` prompt or plan a sequence of clips. It combines Google's
-official guidance (fetched 2026-10-01, sources at the end) with what we measured on Flow. Facts about
-the harness itself (flags, credits, exits) are in `docs/image-vendors/gemini.md`.
+official guidance (sources at the end) with what we measured on Flow. Facts about
+the harness itself (flags, credits, exits) are in `docs/image-vendors/gemini.md`; 1080p steadying in
+`docs/video-jitter.md`.
 
 ## Pick the input
 
@@ -14,8 +15,6 @@ the harness itself (flags, credits, exits) are in `docs/image-vendors/gemini.md`
 | a character, object or style that must appear | `--ref` ×1–4 | Veo takes 3 (8 s only), Omni 4 |
 | a finished video to change: restyle, add or remove a thing or a character | `--edit` (+ `--ref` for what to add) | Omni |
 | a Flow Veo clip whose action must go on | `--extend` | Veo 3.1 Lite |
-
-Frames and ingredients are separate Flow modes: `--first-frame`/`--last-frame` never combine with `--ref`/`--edit`.
 
 ## Writing the prompt
 
@@ -55,16 +54,13 @@ Frames and ingredients are separate Flow modes: `--first-frame`/`--last-frame` n
 
 ### Editing a video (`--edit`)
 
-- Any source video (a Grok clip too), up to 30 s; the result keeps the source's length. Our live edits
-  used 8 s sources; Google says an edit works on a segment of up to 10 s, so trim a longer source to
+- Any source video (a Grok clip too), up to 30 s; the result keeps the source's length. Google says an edit works on a segment of up to 10 s, so trim a longer source to
   the part you need first (`ffmpeg -ss <start> -t <seconds> -i in.mp4 -c copy part.mp4`).
 - One short instruction, then "Keep everything else the same." Over-described edit prompts change
   things you did not ask for. Good: "Make the phone invisible. Keep everything else the same."
 - **Put a character or an object into a video:** `--edit clip.mp4 --ref thing.png` and say what it is,
   where it is and what it does: "Add the antique brass stopwatch from the reference image lying on the
-  sand under the water, in the middle of the frame. Keep everything else the same." (Verified: the
-  stopwatch sat on the sand with the water's light moving over it, 20 credits for an 8 s clip.)
-- Editing uploaded videos is blocked in the EEA, UK and Switzerland (not our case).
+  sand under the water, in the middle of the frame. Keep everything else the same."
 
 ## Chaining clips into a longer shot
 
@@ -75,8 +71,7 @@ Two ways to continue clip A:
    sees one still: speed and direction are gone. From one frame a ball in mid-air may be rising or
    falling, so the new clip may reverse, freeze or restart the motion, and the sound restarts.
 2. **Extend:** `gemini-video --dest A-ext.mp4 --extend A.mp4 --prompt …` continues from A's last second
-   (24 frames), so motion, speed and ambient sound carry over. Measured twice: a 7 s continuation at
-   720p for 10 credits, seamless from A's last frame. Only for Veo clips that gemini-video saved from
+   (24 frames), so motion, speed and ambient sound carry over. Only for Veo clips that gemini-video saved from
    Flow (the job ledger remembers the account and project); it runs on that account. Omni, uploaded and
    Grok clips cannot be extended (Flow lists Omni extension as "coming soon"), and neither can an
    extension. The output is only the new part, at 720p; `video-chain join` puts them together.
@@ -102,16 +97,14 @@ video-chain end-motion A.mp4 --strip A-tail.png
   23, sunlit water ripples 29, a restyled clip with a moving camera 63.
 
 **Plan for it.** If a shot will need to go on with its motion, make its first clip on Veo
-(`--model fast` or `--model lite`, 8 s) so Extend stays possible; Omni 4/6/10 s clips cannot be
-extended.
+(`--model fast` or `--model lite`, 8 s) so Extend stays possible.
 
 **Extend prompts:** describe how the action continues ("the knob keeps turning slowly clockwise, as
 before") and repeat the original prompt's style, camera and light words. A voice continues only if
-someone is speaking in the last second of A. One Extend per clip: past A + 7 s, continue with a frame
-chain from the extension's last frame, or extend a new Veo clip.
+someone is speaking in the last second of A. Past A + 7 s, frame-chain from the extension's last frame,
+or extend a new Veo clip.
 
-**Join:** `video-chain join out.mp4 A.mp4 A-ext.mp4 B.mp4 …` re-encodes to the first clip's size and
-frame rate with AAC stereo, silence where a clip has none. Extensions come only at 720p (Flow has no
+**Join:** `video-chain join out.mp4 A.mp4 A-ext.mp4 B.mp4 …`. Extensions come only at 720p (Flow has no
 upscaled download of an extension), so keep a chain that uses Extend at 720p; a 1080p first clip makes
 the join scale the extension up. A frame chain repeats A's last frame once (1/24 s); it is invisible in
 most shots.
@@ -120,18 +113,7 @@ most shots.
 
 One clip per call is the default. `--count 2`–`4` renders takes in one send at that multiple of the
 credits; use it only when choosing between takes is worth it (a hero shot whose motion often fails).
-Files: the `--dest`, then `<stem>-2.mp4`, `<stem>-3.mp4`; the footer adds a `variant=` line per extra
-take and a `refused=` line for a take Flow's filter blocked. Several calls work as well and let each
-prompt differ.
-
-## Aspect, length, resolution, credits
-
-- Aspect: `--aspect 16:9` or `9:16` only; others exit 2. Crop or pad afterwards for another frame.
-- Length: Veo 8 s; Omni 4/6/8/10 s; an edit keeps its source's length; an extension adds 7 s.
-- Resolution: 360p (Omni drafts, ~half price), 720p, 1080p (Flow's upscale, steadied: video-jitter.md).
-- Credits on PRO (1,050 a month per account): Omni 360p 4/6/8/10 s = 4/5/6/7; Omni 720p = 7/10/12/15;
-  Omni edit at 720p = 20; Veo Lite/Fast/Quality 8 s = 10/20/100; Extend = 10; first + last frame adds
-  nothing; `--count n` multiplies.
+Several calls work as well and let each prompt differ.
 
 ## Sources
 

@@ -35,8 +35,7 @@ class stops coming back, this number that it moved); stale, covered and `uncaugh
 - Index and rows: `~/.cache/harness-doctor/budget-days/<day>.json` (`strata`, `rows`, `parts`, BUDGET_VERSION 5, all
   `settled`) summed per window over its days; index = Σ window overhead / Σ (window units × prior overhead per unit),
   per stratum, as `paasche`; rows are span unions, parts overlap. 10-19's worker rows sit in the account store this
-  baseline may not read: 1.09 is `latest.json` → `speed.budget.index_by_day["2026-10-19"]` (10-20 01:40). The same
-  method gives 10-16's 0.48 (10-08…14 against 10-03…07).
+  baseline may not read: 1.09 is `latest.json` → `speed.budget.index_by_day["2026-10-19"]` (10-20 01:40).
 - The rise is workers': 10-13 (night 3131 closing: 9,930 overhead-min, 275 tasks) and usage walls (110 min on 10-18),
   while tests halved. Nights paused from 10-15 left 0–159 tasks a day: a mix change, unclear.
 - Suites: `~/.cache/run-suites/runs.jsonl` by local day of `queued_at`, a run one entry of `suites`, CPU Σ `cpu_s`;
@@ -112,7 +111,7 @@ Each was fixed as an instance and came back; harness-ledger rows as of 2026-10-1
 
 ## Goals
 
-One at a time; a landed goal moves to Done with commit and proof, a failed one stays with what blocked it. Net
+Net
 lines: `git diff --numstat <base>..<merge>` of the goal's commits, legacy.md's buckets, code and tests apart.
 Breakages' `bash-cap`, this block's largest wait, is not repeated. Proofs replay fixed journals: a 7-day window
 after landing moves with the pilot's volume (targeted suite CPU 1,210/day in 10-08…14, 113 on 10-15) and tests-once.
@@ -206,8 +205,8 @@ Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-he
 
 ## Decisions
 
-- 2026-10-20: everything about tests is one block, this one; Legacy is code only. A block is judged by a converging
-  metric, never work done: tests grew and problems did not fall. («Updater doctor»)
+- 2026-10-20: everything about tests is one block, this one; Legacy is code only: tests grew and problems
+  did not fall. («Updater doctor»)
 - 2026-10-19: tests may mark only what changes with the code, so most changes rewrite them and the architecture must
   change: measure it. («Updater doctor»)
 - 2026-10-16: audit reopens belong to their audit (`suite_audit` here, `spend_audit` Spend's, `cpu_audit` System's);
@@ -215,7 +214,6 @@ Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-he
 - 2026-10-14 («Updater doctor»): tests are the disease, the worker queue protection: no goal launches less. Tests run
   once, when the work is done, only where the change reaches; a suite counts only while its owner waits on it. A new
   test only with a P1/P2 fix; a stale check deleted, never strengthened; a suite uncaught in 90 days deleted whole.
-- 2026-10-14: the statusline refresh stays 3 s; only the per-render cost is cut. («Передача system-doctor-ux»)
 - 2026-10-13: speed is less delay, not less CPU: proven on wall minutes, CPU beside. («Updater doctor»)
 - 2026-10-10/11 («test and lost time optimization»): Lost time is machine overhead around the work (tests, waits,
   hooks, refusals, walls), never work he chose, a wall-clock union from existing journals. The index has no norm, only

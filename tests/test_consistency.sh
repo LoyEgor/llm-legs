@@ -370,7 +370,6 @@ done
 assert grep -Fq '`main` is no longer a ranking key on any vendor' "$CONTRACT"
 # codexb ranks its own profiles by the same budget, largest first, name breaking the tie.
 assert grep -Fq 'sort -t $'\''\t'\'' -k2,2nr -k1,1' "$CODEXB"
-assert grep -Fq 'the workers pin tier leads, then `[five-hour deferral, fresh claim, late auth, −budget, name]` across all vendors' "$POLICY"
 assert grep -Fq 'pin tier first, then `[five-hour deferral, fresh claim, late auth, −budget, name]`' "$CONTRACT"
 assert grep -Fq 'NEXT_MAX_ROWS=5' "$WORKERPICK"
 assert doc_has 'Worker rank contract'

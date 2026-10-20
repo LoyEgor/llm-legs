@@ -82,7 +82,7 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
    render (28k), 72 an unchanged one (52k), 22 an away replay (29k); work and ports probes 93 % and 99.8 % unchanged.
    Its forks were the spawn storm (`births_s` 920/s on 10-13, 135 on 10-15; `docs/system-doctor-design.md`). No
    goal: a whole-render memo needs an exact key (payload, every cache and store, the tree's `git status`, the second
-   a work line ticks), must still kick the probes (`bin/statusline.sh:2271`), saves ≤ 30 CPU-min/day (a hit still
+   a work line ticks), must still kick the probes (`bin/statusline.sh`), saves ≤ 30 CPU-min/day (a hit still
    pays ≈ 40 of 72 ms) and freezes a segment on a missed input. The CPU audits keep cutting sections.
 2. Rows `cpu:hook/*`. CPU a run fell 36.9 → 28.6 ms; runs follow tool calls. No goal: the dispatcher was declined
    (2026-10-05, `spend.md`) and no new hooks, so the CPU audits cut them one by one, dearest first.
@@ -114,7 +114,7 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
 
 ## Goals
 
-After Breakages' and Lost time's goals (PILOT order). `doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
+`doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
 195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15), `tab-tty` ≈ 17 (2.4 CPU-s × 415
 Terminal-front minutes a day). Classes 1, 2 and 6 have no goal (above).
 

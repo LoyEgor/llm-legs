@@ -17,7 +17,7 @@ here, and other directions' goals add lines, which README's worse → revert wou
 
 Legacy lines: **3,518**: class 1 2,916 in 26 files (HEAD 2026-10-20, unchanged since 10-16), class 2 572 (the 10-14
 refresh, the last; its 111 test lines, `hammerspoon/tests/test_claude_keys_bin.sh`, are Tests and lost time's), class
-3 30 (HEAD). The 10-16 figure was 4,030 with tests 512 (class 2's 111 + the assert helpers' 401, now lost-time.md's).
+3 30 (HEAD).
 
 | net lines, four repositories | 10-06…12 | 10-13…19 |
 |---|---:|---:|
@@ -31,8 +31,7 @@ refresh, the last; its 111 test lines, `hammerspoon/tests/test_claude_keys_bin.s
   - Buckets by path: tests = under a `tests/` or `test/` dir, or a `test_*` file; docs = `*.md`; data =
     `*.json|jsonl|plist|txt|log|csv|yaml`; code = the rest.
   - The ends: llm-legs 31652cc4 419d60e8 e93902c2, claude-setup 5dc53083 bd436c1f d3aa368f, review-bench 46543731
-    b2d851be 21a08465, hammerspoon 01153ba2 5d953cf3 f1872c3a. The same method on 10-02/09/16's ends reproduces the
-    10-16 table (code +27,340 → +16,153).
+    b2d851be 21a08465, hammerspoon 01153ba2 5d953cf3 f1872c3a.
 
 ## Sources
 
@@ -104,9 +103,6 @@ Checked, not a class:
   staged deletion a minute before its retirement (6280c424): a scan of deleted names would list mostly false hits.
 
 ## Goals
-
-The pilot night works these goals in order, one at a time. A goal that lands moves to Done with its commit and proof.
-A goal that fails stays here with one line on what blocked it.
 
 ### goal deployed-copies: the machine snapshot leaves out what any sweep repository deploys
 

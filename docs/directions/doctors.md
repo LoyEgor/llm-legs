@@ -2,8 +2,7 @@
 
 The doctors (LLM, Harness with Speed, Updater, Code, System) and the night's use of them. Two parts:
 - Doctor fixes: `doctor-fix launch --night` on a full night (`docs/doctor-fix.md`).
-- Deep search: the night looks for what no doctor shows and makes a doctor see it. A doctor is a helper that gives
-  hints, never the scope (Decisions).
+- Deep search: the night looks for what no doctor shows and makes a doctor see it.
 
 ## Metric
 
@@ -78,7 +77,6 @@ No night has run since 10-14. The run records sit in six nights, then two (`2026
 - Ledgers `share/{harness,doctor,system,code,updater}-ledger.json`: rows (`status`, `fixes`, `ruled_at`) and
   `blind_spots` (63, 8, 6, 1, 3 on 10-20). Documents `~/.cache/<doctor>-doctor/latest.json` (contract §1).
   Log audit `~/.cache/doctors/log-audit/`.
-- The 10-20 night-cost research (applied in c746800c): Spend reopens 11 of 12 ruled out; suite source-edit re-audits 13 measured drops in 61; CPU's biggest find from a source-edit reopen.
 
 ## Recurring classes
 
@@ -163,8 +161,7 @@ Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the
 ## How the block runs at night
 
 - It brings back README "The whole night" sections Doctor fixes and Deep search, both block 7. `bin/night-run`:
-  the `PILOT` default (line 31) ends at `legacy`, so `vendors` (block 6) joins first, then `doctors`, each once its
-  file is checked (README, Ready). Carry prints neither section today (`pilot_goal` gives goal and
+  the `PILOT` default already holds `vendors` and `doctors`. Carry prints neither section today (`pilot_goal` gives goal and
   directions-refresh lines; fixers are the sweep's `doctor-fix launch`, refused on a pilot). Once PILOT
   reaches `doctors` with no goal left, `pilot_goal` adds one `fixer<TAB><doctor><TAB>llm-legs<TAB>doctor-fix launch
   <doctor>` line per doctor, then `deep-search<TAB><date><TAB>llm-legs<TAB>share/briefs/deep-search.md` (new kind
@@ -200,8 +197,6 @@ None yet.
   goes into its blind-spot list. («Harness Doctor»)
 - 2026-09-29: a fixer learns a component's purpose before changing it and judges whether the goal is met, not
   whether the row turns green. Fixers run only on Egor's button (the night), never on a timer. («Updater doctor»)
-- Reviews: no bugs round on fresh code (2026-10-06); a change under ≈150 lines is never auto-reviewed
-  (2026-10-01). No new hooks (2026-10-15, «Updater doctor»).
 
 ## Open
 

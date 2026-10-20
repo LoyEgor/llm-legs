@@ -30,10 +30,10 @@ end, 7 days against the 7 before.
 | | 10-06…12 | 10-13…19 |
 |---|---:|---:|
 | events (not auto-closed) | 13 | 11 (5 vendor-watch) |
-| **mean lag, days** | **0.14** | **4.32** |
+| **mean lag, days** | **0.12** | **4.32** |
 | max lag, days | 0.63 | 5.67 |
 | open at the window's end | 1 | 9 |
-| event-days waiting | 1.8 | 47.6 |
+| event-days waiting | 1.5 | 47.6 |
 | auto-closed (out) | 8 | 2 |
 | **changes noticed outside the fingerprint** | **1** | **1** |
 | **guard: decided lines not-applicable or blocked** | **69 % (75 of 108)** | **55 % (6 of 11)** |
@@ -41,8 +41,8 @@ end, 7 days against the 7 before.
 | integration runs, launch → close, wall clock | 11, median 32 min | 2: 169, 384 min |
 | nights started | 6 | 3 (the last one 10-14 01:37Z) |
 
-- Lag, local days UTC+3. W1 `a=2026-10-05T21:00:00Z` `b=2026-10-12T21:00:00Z`; W2 `a=2026-10-12T21:00:00Z` `b=2026-10-19T21:00:00Z`. The table rounds mean and max to 2 decimals and event-days to 1 (W1 raw 0.137, 0.630, 1.782; W2 raw 4.325, 5.672, 47.574):
-  `q='[.[] | select(.created_at >= $a and .created_at < $b and .status != "auto-closed" and .id != "grok-20261008T234948Z") | (((.closed_at // $b) | fromdateiso8601) - (.created_at | fromdateiso8601)) / 86400] | {n: length, mean: (add / length), max: max, days: add}'`
+- Lag, local days UTC+3. W1 `a=2026-10-05T21:00:00Z` `b=2026-10-12T21:00:00Z`; W2 `a=2026-10-12T21:00:00Z` `b=2026-10-19T21:00:00Z`. The table rounds mean and max to 2 decimals and event-days to 1 (W1 raw 0.119, 0.630, 1.542; W2 raw 4.325, 5.672, 47.574):
+  `q='[.[] | select(.created_at >= $a and .created_at < $b and .status != "auto-closed" and .id != "grok-20261008T234948Z") | ((([.closed_at // $b, $b] | min) | fromdateiso8601) - (.created_at | fromdateiso8601)) / 86400] | {n: length, mean: (add / length), max: max, days: add}'`
   then `jq -s --arg a "$a" --arg b "$b" "$q" ~/.cache/vendor-cli-update/events/*.json` once per window.
 - Open at the window's end (created in the window, `closed_at` null or ≥ `$b`): W1 is 1 (`grok-20261012T191955Z`, closed 2026-10-13T02:45:07Z), W2 is 9.
   `jq -s --arg a "$a" --arg b "$b" '[.[] | select(.created_at >= $a and .created_at < $b and .status != "auto-closed" and .id != "grok-20261008T234948Z" and (.closed_at == null or .closed_at >= $b))] | length' ~/.cache/vendor-cli-update/events/*.json`
@@ -66,9 +66,8 @@ end, 7 days against the 7 before.
 ## Sources
 
 - Event store above (`.diff`, `.base` of a waiting event, `.decisions.tsv`). Events are written by `vendor-fingerprint
-  check` at the end of `bin/vendor-cli-update`'s full pass: launchd runs `run --if-due` every 30 min, a full pass is
-  due every 24 h and the version check every 2 h (64f8354e). Fingerprints: `fingerprints/<vendor>.json`; info
-  facets (version, catalog_text, catalog_order, foreign_clients) never open an event; `update.log`, `state.json`.
+  check` at the end of `bin/vendor-cli-update`'s full pass. Fingerprints: `fingerprints/<vendor>.json`; `update.log`,
+  `state.json`.
 - Runs: `~/.cache/doctors/runs/updater-release-*.json`; nights' `jobs[]` of kind `vendor` / `vendor-watch`.
 - Updater doctor `~/.cache/updater-doctor/latest.json`: `event-waiting` (from 0 d), `event-stuck` (2 d),
   `plan-changed`, `family-partial`, `family-gone`. `share/updater-ledger.json` is empty; the night snapshots'
@@ -123,8 +122,6 @@ The rule: a breakage goes to block 1, and an unintegrated change goes to block 6
 
 ## Goals
 
-Worked in order, one at a time, after blocks 1–5 (PILOT). A landed goal moves to Done with its commit and proof.
-
 ### goal night-events: from this block's turn, every pilot night integrates the vendor events waiting at its start
 
 Class: events wait for a night that does not take them. 9 events are open, 3.8–5.7 d old on 10-19; no instance has
@@ -144,7 +141,7 @@ been fixed.
   open): integrated, not-applicable, or blocked with a line in `vendor-release-open.md`. Its goal job's spend and
   minutes in the night header are unchanged, because the vendor jobs start after the goal lands.
 - Read after landing: mean lag over the next 7 days at or under the mean gap between nights, target ≈1 d or less
-  with a night every day (10-06…12: 0.14 d over 6 nights). Events open at a night's start and still open at its
+  with a night every day (10-06…12: 0.12 d over 6 nights). Events open at a night's start and still open at its
   close: 0. Not worse: the guard within 50–69 %, the integration sessions' spend share per event against 10-06…12
   (≈0.03 %), and the second number. A night closing with an event still open, or the guard out of range: reverted.
 
@@ -152,8 +149,6 @@ been fixed.
 
 - Section 6, Vendor events (README "The whole night"), plus the vendor-watch events block 9 opens. The Updater
   doctor and the CLI installs stay in block 0's prep.
-- Goal `night-events` above is the pilot change: `bin/night-run`'s start marker, once the pilot reaches this block,
-  lets the pilot night run a full night's dispatch step 3, Vendors (`vendor-fingerprint request --night R`).
 - The first night is judged on: every event waiting at its start closed by Close; each run starting with "purpose
   before change" (vendor-release §1) and deciding every diff line; a blocked line naming what Egor's word unlocks;
   the night header showing each vendor job's spend; the guard within its range.
@@ -170,8 +165,6 @@ been fixed.
 
 ## Decisions
 
-- 2026-10-20: blocks 0–10 numbered; every block is judged by a converging metric, never by work done.
-  («Updater doctor», README)
 - 2026-10-19: block 0 notices and installs; block 6 studies and integrates (new model into routing, gone model out,
   a plan change into limits, new flags used); a browser path that broke is block 1; vendor news no CLI shows is
   block 9, postponed. («Updater doctor») The metric above was proposed there; Egor has not replied yet.
@@ -211,4 +204,4 @@ been fixed.
   projection stays a proposal until a miss shows a field it would have caught.
 - Detection delay (change → event) is outside the metric: ≤2 h for a CLI release, ≤24 h for a server catalog or
   plan, weeks for vendor-watch rows (10-14's are dated 09-05…10-06). Those are blocks 0 and 9.
-- Ready: not yet checked by a fresh model that did not write this file.
+- Ready: checked 2026-10-20 by a fresh grok session (c4f02ce9).
