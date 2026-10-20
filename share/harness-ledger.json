@@ -4808,7 +4808,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night fixer harness-speed-time-refusal-20261012T235450Z-4ef5",
-      "note": "2026-10-13 (night fixer harness-speed-time-refusal-20261012T235450Z-4ef5): next idle suites measured with timestamped xtrace (slot-queue sleeps in slots.sh excluded): test_slots (3 fixed `sleep 1` negative waits = 3 of ~20 s; rest is git worktree add / worker-run _supervise work, ~1 s each under load), test_worker_run_reliability and _claims (worker-run start/wait of stubs, 1-2 s each, plus the stub durations against 3 s idle windows: the race margins above), test_worker_run_browse (one 47 s wait on the run, no sleeps), test_image_fanout (FANOUT_SLEEP 0.3-2 s against IMAGE_FANOUT_LAUNCH_GAP_MS/KILL_WAIT_MS ratios): all production-timing windows, none a mock sleep to cut without trading load-robustness. test_llm_refresh was the one with pure settle sleeps (hang_tree_dead, fixed in 0be65b0f; the supervisor-term window here). Earlier: Before (runs.jsonl, 7 days to 2026-10-08T00:40Z): test_codexb 104 runs, min wall 58 s, p10 wall-minus-CPU 61.6 s. Fixed in codex-image: the CLI deadline watchdog slept in fixed 5 s hops (a 1 s deadline fired at ~5 s) and, killed at the run's end, stranded its in-flight sleep, which holds a caller's stdout pipe open up to 5 s (reproduced with $(...); whether Claude Code's Bash tool waits on that pipe through media-run was not checked); a reclaimed stale account lock still slept 2 s before retrying. Saves ~6.5 s a test_codexb run, ~1.5 suite-min/day. Ruled out for this lever, measured 2026-10-08 with timestamped xtrace and a PATH sleep shim: test_night_run (wall is 113 `night-run job` calls of jq/process work, ~1.5 s each under load, and 1.3 s of fixed sleeps), test_consistency (no sleeps; CPU), test_worker_pick (no sleeps; 146 s wall on 108 CPU-s, the rest is load), test_codex_image (no blocking sleeps; ~2 s per image_run of process work), test_doctor_fix (3 x sleep 1 order run ids by the second). The largest remaining idle floor is the worker_run family (test_worker_run_watchdog: ~100% idle, min wall 125 s): its stub durations against 1-16 s watchdog windows are race margins docs/doctor-fix.md forbids shortening; the lever there is an injected watchdog clock in bin/worker-run (integer `date +%s`, hop >= 1 s), owner's call. Most of the rest of the suites' wall-minus-CPU is contention, the machine/contention lever's ground. test_llm_limits*, test_statusline_hooks and test_instruction_gate were held by other runs of this night.",
+      "note": "2026-10-20 (fixer harness-speed-refusal-write-20261020T114015Z-3725, ruled-out): llm-legs idle wall (median wall - CPU of the last 20 passing runs) x runs in 7 days ranks test_system_doctor 17 s x 232, test_worker_run_watchdog 28 s x 124, test_worker_run_vendor_files 32 s x 99, test_worker_run_grok_outcomes 27 s x 107, test_llm_refresh 34 s x 78, test_image_fanout, test_vendor_fingerprint, test_memlogd; their sleeps are polls with a break (`sleep 0.02-0.1` loops), killed `sleep 30/300` fixtures, or the tested timeout itself (SECS=1 GRACE_S=1, already four-way parallel in test_system_doctor); the idle is run-queue wait at load 144 (one test_system_doctor run took 14 min, almost all waiting for a slot). No mock sleep or clock left to cut without trading load-robustness. 2026-10-13 (night fixer harness-speed-time-refusal-20261012T235450Z-4ef5): next idle suites measured with timestamped xtrace (slot-queue sleeps in slots.sh excluded): test_slots (3 fixed `sleep 1` negative waits = 3 of ~20 s; rest is git worktree add / worker-run _supervise work, ~1 s each under load), test_worker_run_reliability and _claims (worker-run start/wait of stubs, 1-2 s each, plus the stub durations against 3 s idle windows: the race margins above), test_worker_run_browse (one 47 s wait on the run, no sleeps), test_image_fanout (FANOUT_SLEEP 0.3-2 s against IMAGE_FANOUT_LAUNCH_GAP_MS/KILL_WAIT_MS ratios): all production-timing windows, none a mock sleep to cut without trading load-robustness. test_llm_refresh was the one with pure settle sleeps (hang_tree_dead, fixed in 0be65b0f; the supervisor-term window here). Earlier: Before (runs.jsonl, 7 days to 2026-10-08T00:40Z): test_codexb 104 runs, min wall 58 s, p10 wall-minus-CPU 61.6 s. Fixed in codex-image: the CLI deadline watchdog slept in fixed 5 s hops (a 1 s deadline fired at ~5 s) and, killed at the run's end, stranded its in-flight sleep, which holds a caller's stdout pipe open up to 5 s (reproduced with $(...); whether Claude Code's Bash tool waits on that pipe through media-run was not checked); a reclaimed stale account lock still slept 2 s before retrying. Saves ~6.5 s a test_codexb run, ~1.5 suite-min/day. Ruled out for this lever, measured 2026-10-08 with timestamped xtrace and a PATH sleep shim: test_night_run (wall is 113 `night-run job` calls of jq/process work, ~1.5 s each under load, and 1.3 s of fixed sleeps), test_consistency (no sleeps; CPU), test_worker_pick (no sleeps; 146 s wall on 108 CPU-s, the rest is load), test_codex_image (no blocking sleeps; ~2 s per image_run of process work), test_doctor_fix (3 x sleep 1 order run ids by the second). The largest remaining idle floor is the worker_run family (test_worker_run_watchdog: ~100% idle, min wall 125 s): its stub durations against 1-16 s watchdog windows are race margins docs/doctor-fix.md forbids shortening; the lever there is an injected watchdog clock in bin/worker-run (integer `date +%s`, hop >= 1 s), owner's call. Most of the rest of the suites' wall-minus-CPU is contention, the machine/contention lever's ground. test_llm_limits*, test_statusline_hooks and test_instruction_gate were held by other runs of this night.",
       "handoff": null
     },
     {
@@ -10448,6 +10448,36 @@
       "reviewed_by": "night fixer harness-speed-adhoc-image-probe-20261020T113914Z-3d87",
       "note": "2026-10-20: 58 sampled calls, 53 in /Users/egorloy/Arbostar/arbostar-logo, 4 here, 1 in logo-vectorizer-bench; median exec 0.2 s, 272 B out. 36 are crop+resize+print-size to view a detail (Image.open/cv2.resize/ffmpeg crop,vstack), about 10 mean RGB or Laplacian sharpness over video frames, the rest size/mode lookups. The job is arbostar-logo's (its CLAUDE.md-less repository, tools/README.md map; logocheck.py judges by eye, no pixel metrics), outside every night worktree and owned by the chat «Логотип CRM для арбористов»: its command and hint go there. Not built here: a harness always-loaded hint would cost every session for a one-project job.",
       "handoff": "docs/handoffs/2026-10-20-image-probe-arbostar-logo.md"
+    },
+    {
+      "id": "speed-unused-tool-skill-worker",
+      "title": "Speed's unused-tool lever: the /worker command's model-facing hint",
+      "match": {
+        "rule": "opportunity",
+        "ident": "tool/skill/worker"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-20T15:10:00+03:00",
+          "by": "doctor fixer harness-speed-refusal-write-20261020T114015Z-3725, recording claude-setup@3916fcf",
+          "files": [
+            "claude-setup/commands/worker.md"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "who can start /worker before and after: model (Skill tool) and Egor (typed slash), and every script, hook or doc that names the command",
+            "data": "tool mining: 0 model calls in 30 days, 94 d old, hint 168 B in 175 sessions/day; grep of claude-setup and llm-legs bin, share, docs, tests, hs finds no caller that invokes the skill by model; the routing rule edits ~/.claude/worker-model directly",
+            "result": "the command body is byte-identical and Egor's typed /worker expands as before (commands/chat-find.md uses the same flag); only the description line leaves the skill listing every session loads"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-20",
+      "reviewed_by": "doctor fixer harness-speed-refusal-write-20261020T114015Z-3725",
+      "note": "The unused-tool row names no component file in the run packet (component.files empty), so the run launched without a claude-setup ADD-DIR; the fixer made that worktree itself (share/worktree.sh worktree_new, base ref set, run record's worktrees extended). Blind spot opportunity-tool-component-files.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -10898,6 +10928,13 @@
       "reason": "2026-10-20 menus audit (7 days to 10-20 against prev 7): Hidden calls 15.5M limit tokens (+29 %, 1.8 % of Claude spend), of it worker compaction summaries 8.7M against 4.8M (+82 %) while worker units grew 572 -> 665 (+16 %); chat 6.7M flat, review-bench -67 %. A compaction summary is written by the worker's own model, so it is not Fee Egor can switch off, and tokenmap prices it from marks, not from a transcript. The other worse rows (Cold restarts 2.2M, Repeated reads 0.1M, Delegation that retells 7k) sit under 0.3 % of spend and belong to tokenmap's waste detectors.",
       "since": "2026-10-20",
       "would_catch_if": "the Spend block read harness_index.sections' worker compaction rows per worker unit and opened a watch when the per-unit summary tokens rose 50 % week on week, naming the worker contexts that compacted most (their brief size and tool-output load), so the night could shrink briefs or outputs at the source"
+    },
+    {
+      "id": "opportunity-tool-component-files",
+      "what": "component files of an opportunity:tool/<kind>/<name> row",
+      "reason": "2026-10-20 skill/worker: the Speed row carries the tool's file only in opportunity.path (claude-setup/commands/worker.md), problem.component.files stays empty, so doctor-fix component_repos opens no ADD-DIR worktree in the repository that holds the file, and a skill row outside llm-legs cannot be fixed or handed off (claude-setup is a sweep repository, so close refuses a handoff)",
+      "since": "2026-10-20",
+      "would_catch_if": "the packet's component.files held opportunity.path for tool rows, so launch_runs made the sibling worktree"
     }
   ]
 }
