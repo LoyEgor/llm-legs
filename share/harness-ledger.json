@@ -10642,6 +10642,38 @@
       "reviewed_by": "night fixer harness-stop-hooks-20261020T114218Z-20c9",
       "note": "One kill, 2026-10-20 10:06:08Z/4037a0e4, the hook's first: 17 ms CPU in 5.04 s, beside chat-names and connections killed in the same stop. Same stall as hook-error-notice-connections-kill: killed parts spent 12-28 ms CPU in 5 s (folded hook-time), and every parallel notice of the stop ran 3.5-5 s on <=0.2 CPU-s (10-20 10:06Z/4037a0e4: chat-names, connections, word-attested killed, word-journal 4.25 s on 154 ms). Its usual run is 30 ms (jq over the attest records only).",
       "handoff": null
+    },
+    {
+      "id": "menu-build-automation",
+      "title": "the Auto menu's click asked hs.application.get for Chrome, which searches every window title over AX while Chrome is quit",
+      "match": {
+        "rule": "menu_build",
+        "ident": "automation"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-20T16:23:49+03:00",
+          "by": "fixer harness-hooks-20261020T113858Z-147d",
+          "files": [
+            "llm-legs/hammerspoon/llm-limits.lua",
+            "llm-legs/tests/llm_limits_renderer_harness.lua",
+            "llm-legs/tests/test_consistency.sh"
+          ],
+          "in": "llm-legs@0cf6ca11",
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "chromeToggleItem's Chrome lookup: hs.application.get(\"com.google.Chrome\") vs applicationsForBundleID(\"com.google.Chrome\")[1]",
+            "data": "live Hammerspoon, read-only hs -c, Chrome quit, no gemini-web clone, 3 rounds",
+            "result": "both nil; get 47-284 ms, applicationsForBundleID 0.0 ms, the whole buildMenu 48-118 ms of which chromeToggleItem 38-81 ms. With Chrome running get returns applicationsForBundleID's first app by its own first step, so the item is identical; quit, get's fallback (runningApplications names, then hs.window.find over every app's AX windows) could only add a false real Chrome for a window titled with the bundle id"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-20",
+      "reviewed_by": "fixer harness-hooks-20261020T113858Z-147d",
+      "note": "menu/2026-10-20.tsv: automation p50 ~80 ms 10-18/19, then 4.5-8.3 s builds at 02:40-03:05 and 12:12-12:17 and 1.5-2.8 s ones at 13:05-14:47; the 6-8 s ones match AX's 6 s messaging timeout on an unresponsive app (the hung Terminal of hammerspoon@d607320), since hs.window.find walks every app's windows. The rest of buildMenu (getStatus, Presence, AwdlGuard, iPad modules) is under 1 ms; sections are cached and rebuilt under backgroundMenu. Not fixed, outside the click: the hammerspoon repo's init.lua/display_mirror.lua ask hs.application.get(\"BetterDisplay\"/\"Jump Desktop Connect\") by name, which takes the same window walk whenever that app is not running (hs-lag, not menu_build). The same code fix landed first as 0cf6ca11; its renderer harness fakes no hs.application.get, so a call errors (red on the old code).",
+      "handoff": null
     }
   ],
   "blind_spots": [
