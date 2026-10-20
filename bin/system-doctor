@@ -1239,9 +1239,37 @@ def launch_due(now, start=detach, say=notify):
         for name in due:
             start(name)
     if heavy:
-        say("%s: %s free. Caches are being cleared; the biggest folders are in Doctors > Disk space." % (
-            ", ".join("%s %.1f GiB" % kv for kv in heavy.items()), "only" if len(heavy) == 1 else "each only"))
+        grower = recent_grower(now)
+        chat = scratch_chat(grower["path"]) if grower else None
+        say("%s: %s free. Caches and idle temp are being cleared%s; the biggest folders are in Doctors > Disk space." % (
+            ", ".join("%s %.1f GiB" % kv for kv in heavy.items()), "only" if len(heavy) == 1 else "each only",
+            "; written in the last %d h: %s %.0f GB%s" % (
+                log_stores.GROWER_H, tilde(grower["path"]), grower["bytes"] / 1e9, " by the chat \u201c%s\u201d" % chat if chat else "")
+            if grower else ""))
     return due
+
+
+SCRATCH = re.compile(r"/private/tmp/claude-\d+/[^/]+/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(/|$)")
+
+
+def recent_grower(now):
+    """The biggest unit the newest free-space sweep of the last GROWER_H hours saw written within them, or None."""
+    rows = [r for r in tick_rows(now - log_stores.GROWER_H * HOUR_S, now + 60, "freespace")
+            if (r.get("sweep") or {}).get("grower")]
+    return rows[-1]["sweep"]["grower"] if rows else None
+
+
+def scratch_chat(path):
+    """The chat whose Claude Code scratch directory holds path, by its name, or None (never its id)."""
+    found = SCRATCH.match(path)
+    if not found:
+        return None
+    try:
+        import chat_names
+        return chat_names.chat_name(found.group(1))
+    except Exception as error:  # a half-written store names nothing; the notification still goes
+        print("system-doctor scratch_chat: %s: %s" % (type(error).__name__, error), file=sys.stderr)
+        return None
 
 
 def append_row(sub, row, keep_days=KEEP_HOUR_DAYS):
@@ -1636,7 +1664,7 @@ def log_sweep_command():
 
 
 SWEEP_KEYS = ("units", "bytes", "errors", "skipped_open", "wall_s")
-PRESSURE_KEYS = SWEEP_KEYS + ("stores", "denied", "enough", "free_gib", "largest", "busy")
+PRESSURE_KEYS = SWEEP_KEYS + ("stores", "denied", "enough", "left", "grower", "free_gib", "largest", "busy")
 
 
 def run_log_sweep(extra=(), keys=SWEEP_KEYS):
@@ -1658,9 +1686,9 @@ def run_log_sweep(extra=(), keys=SWEEP_KEYS):
 
 
 def freespace(now=None):
-    """While a watched volume has under LIMITS free_gib: bin/log-sweep --pressure frees the cache stores, biggest unit
-    first and every unit whatever its age, until each volume has free_target_gib or no cache is left; one row in
-    freespace/<day>.jsonl."""
+    """While a watched volume has under LIMITS free_gib: bin/log-sweep --pressure frees the cache stores (every unit
+    whatever its age), then temp units idle 2 h, biggest unit first, until each volume has free_target_gib or nothing
+    eligible is left; one row in freespace/<day>.jsonl, its sweep naming the biggest unit written in the last hours."""
     began = time.time()
     now = began if now is None else now
     row = {"t": round(now, 1), "free_gib": {name: free for name, (free, _size) in free_space().items()}}
@@ -2816,9 +2844,9 @@ def judge_ticks(judge, rows, days):
                 "%s %.0f GB (%s)" % (g["path"], g["gb"], g["owner"]) for g in biggest) if biggest else ""
             sweep = freed[-1]["sweep"] if freed else None
             if sweep and not sweep.get("error") and not sweep.get("busy"):
-                words += "; the cache sweep at %s freed %.1f GB%s" % (
+                words += "; the cache and idle temp sweep at %s freed %.1f GB%s" % (
                     time.strftime("%H:%M", time.localtime(freed[-1]["t"])), (sweep.get("bytes") or 0) / 1e9,
-                    "" if sweep.get("enough") else " and found no cache left to take")
+                    "" if sweep.get("enough") else " and found nothing idle left to take")
             caches = (judge.nightly or {}).get("caches") or []
             found = {"name": biggest[0]["owner"], "share": None, "owner": "third-party", "fix_target": False} \
                 if biggest else {"name": caches[0][0], "share": None, "owner": "own", "fix_target": False} \
@@ -3155,7 +3183,17 @@ def logstores_view(rows):
             "growers": latest.get("growers"), "giants": latest.get("giants"), "scan": latest.get("scan"),
             "profiles": [p for p in latest.get("profiles") or () if os.path.lexists(untilde(p["path"]))],
             "tidied": [{"path": r["path"], "mb": r.get("mb"), "age_d": round((time.time() - r["t"]) / DAY_S, 1),
-                        "why": r.get("why")} for r in tidied(time.time())]}
+                        "why": r.get("why")} for r in tidied(time.time())],
+            "emergency": emergency_estimate()}
+
+
+def emergency_estimate():
+    """{gb, as_of (epoch)}: what `log-sweep --emergency` would free now, as its last whole-registry run (the daily
+    sweep, a pressure or an emergency run) left it in emergency.json; None before one."""
+    found = read_json(os.path.join(log_stores.sweep_dir(), "emergency.json"), None)
+    if not isinstance(found, dict) or not isinstance(found.get("bytes"), (int, float)):
+        return None
+    return {"gb": round(found["bytes"] / 1e9, 1), "as_of": found.get("t")}
 
 
 def judge_collectors(judge, rows, launches, harvests, censuses, logs=()):

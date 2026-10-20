@@ -24,6 +24,12 @@ GROUPS = ("workers", "temp", "review bench", "our tools", "my chats", "LLM apps"
 SPLITS = ("session", "session-id")
 NEEDS_CRITERION = ("self", "sweep", "command")
 SLACK = {"days": 2, "keep_newest": 1, "max_mb": 1.25, "tail_mb": 2.0}
+GROWER_H = 6  # a pressure sweep names the biggest unit written this many hours back; the low-space notification shows it
+
+
+def sweep_dir():
+    """bin/log-sweep's state: its lock, run record, command runs and the emergency estimate system-doctor shows."""
+    return os.environ.get("LOG_SWEEP_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "log-sweep")
 
 
 def registry_path():
@@ -46,7 +52,8 @@ def load(path=None):
     `self`, `sweep` or `command` store must have, and a log store lists its readers; a `command` store is an app or
     cache store whose criterion is `days` and whose `command` is an argv list; `group_days` only on a split `days`
     store, each group known and kept no longer than `days`, which an unclassified unit keeps; `also` a list of paths
-    relative to each unit; every ignore entry has a glob and a reason. Raises ValueError naming the fault."""
+    relative to each unit; `emergency_h` (hours idle before `log-sweep --pressure`/`--emergency` takes a unit) only on
+    a `sweep` store; every ignore entry has a glob and a reason. Raises ValueError naming the fault."""
     path = path or registry_path()
     with open(path, encoding="utf-8") as handle:
         registry = json.load(handle)
@@ -80,6 +87,10 @@ def load(path=None):
         if also is not None and not (isinstance(also, list) and also
                                      and all(isinstance(a, str) and a and not a.startswith("/") for a in also)):
             raise ValueError("store %s: also is a list of paths relative to each unit" % name)
+        idle = entry.get("emergency_h")
+        if idle is not None and not (entry["cleaner"] == "sweep" and isinstance(idle, (int, float))
+                                     and not isinstance(idle, bool) and idle > 0):
+            raise ValueError("store %s: emergency_h is a positive number of hours on a sweep store" % name)
         by_group = entry.get("group_days")
         if by_group is not None and not (
                 entry.get("split") and isinstance(entry.get("days"), int) and isinstance(by_group, dict) and by_group
@@ -456,3 +467,8 @@ def logs(registry):
 
 def caches(registry):
     return [entry for entry in registry.get("stores") or () if entry.get("kind") == "cache"]
+
+
+def emergency_temp(registry):
+    """The stores a pressure or emergency sweep takes after the caches: each unit idle `emergency_h` hours."""
+    return [entry for entry in registry.get("stores") or () if entry.get("emergency_h")]

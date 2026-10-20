@@ -459,7 +459,8 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   refused or pending fix carries `proof` `{verdict, why, since, ...}`.
 - `status` is `blind` while the newest tick is older than 10 min or the nightly pass older than 36 h
   (own key `blind`). Own keys: `measures`, `causes` (births and CPU by cause), `nightly`,
-  `costs.tick`, `log_stores` (total, growth, per store, unregistered, sweep, `apps` (an app store with a criterion
+  `costs.tick`, `log_stores` (total, growth, per store, unregistered, sweep, `emergency` `{gb, as_of}` (what
+  `log-sweep --emergency` would free now, as of its last whole-registry run, epoch), `apps` (an app store with a criterion
   against it), `profiles`: every LLM profile dir
   `{label, name, path, mb, age_d, status[, owner]}`, status `menu` | `off` | `home` | `unknown`, owner `llm-doctor`
   on a browser profile; a path gone since the scan is left out; `tidied`: what `system-doctor tidy` moved to the

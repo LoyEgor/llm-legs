@@ -4,11 +4,14 @@
 or not), beyond `keep_newest` or `max_mb` (oldest first), and truncates files to their last `tail_mb`. A unit some
 process holds open (an open file or bound socket, a cwd, a path in its argv, or one inside a directory) is skipped; sockets, FIFOs and
 devices are never units. A `command` store's argv runs once its last successful run (~/.cache/log-sweep/commands.json)
-is `days` old, the bytes it freed counted like a removal. `--pressure GIB` takes cache stores only, ignoring `days`
-(every unit; another criterion still keeps its units) and a command's last run: biggest unit first, each skipped once
-its volume has GIB free, the open-file skip kept; run by `system-doctor pressure` while a volume is short of space.
-`--dry-run` prints what it would remove or run with sizes. One summary line per run goes to
-~/.cache/log-sweep/sweeps.jsonl, capped. Run daily by `system-doctor logstores`."""
+is `days` old, the bytes it freed counted like a removal. `--pressure GIB` takes cache stores ignoring `days`
+(every unit; another criterion still keeps its units) and a command's last run, then the units of each `emergency_h`
+store (temp) idle that many hours: biggest unit first within each tier, each skipped once its volume has GIB free, the
+open-file skip kept; run by `system-doctor freespace` while a volume is short of space. `--emergency` takes the same
+with no target (the menu's emergency cleanup). `--dry-run` prints what it would remove or run with sizes. One summary
+line per run goes to ~/.cache/log-sweep/sweeps.jsonl, capped. Every whole-registry daily, pressure or emergency run
+leaves emergency.json, what `--emergency` would free now, which system-doctor shows. Run daily by `system-doctor
+logstores`."""
 
 import argparse
 import fcntl
@@ -30,11 +33,13 @@ RECORD_MAX_BYTES = 256 * 1024
 RECORD_ITEMS = 20
 COMMAND_TIMEOUT_S = 1200  # under system-doctor's LOGS["sweep_timeout_s"], which kills the whole sweep
 PRESSURE_COMMAND_TIMEOUT_S = 300  # a pressure run frees space now; a cleaner waiting on another tool's lock is skipped
+GROWER_S = log_stores.GROWER_H * 3600
+GROWER_MIN_BYTES = 1 << 30
 GIB = 1 << 30
 
 
 def state_dir():
-    return os.environ.get("LOG_SWEEP_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "log-sweep")
+    return log_stores.sweep_dir()
 
 
 def open_paths():
@@ -254,38 +259,57 @@ def free_bytes(path):
 
 
 def pressure(registry, now, target_gib, dry_run, say=print, only=()):
-    """Frees cache stores' units, biggest first, while the volume holding each has under target_gib free: a `days`
-    store gives every unit, another criterion only what it already removes, a command store runs whatever its last run.
-    A dry run, and a faked free space, count what they would have freed toward the target; a real run reads the
-    volume again after each removal."""
-    candidates, items, skipped, errors, enough, denied = [], [], 0, 0, 0, 0
-    for entry in log_stores.caches(registry):
+    """Frees cache stores' units, then each `emergency_h` store's units idle that long, biggest first within each
+    tier, while the volume holding each has under target_gib free (no target: everything eligible, `--emergency`): a
+    `days` cache gives every unit, another criterion only what it already removes, a command store runs whatever its
+    last run. A dry run, and a faked free space, count what they would have freed toward the target; a real run reads
+    the volume again after each removal. `left` is what the target spared, so freed (dry run) plus left is what
+    `--emergency` would free now; `grower` the biggest unit written within GROWER_S."""
+    candidates, items, skipped, errors, enough, denied, left = [], [], 0, 0, 0, 0, 0
+    grower = None
+    tiers = [(0, e, None) for e in log_stores.caches(registry)] + \
+        [(1, e, now - e["emergency_h"] * 3600) for e in log_stores.emergency_temp(registry)]
+    for tier, entry, idle_before in tiers:
         if only and entry["name"] not in only:
             continue
         rows = log_stores.measure(entry)
         denied += sum(1 for r in rows if r.get("denied"))
         rows = [r for r in rows if not r.get("denied")]
+        for row in rows:
+            if row["newest"] >= now - GROWER_S and row["bytes"] >= GROWER_MIN_BYTES and \
+                    (grower is None or row["bytes"] > grower["bytes"]):
+                grower = {"path": row["path"], "bytes": row["bytes"], "store": entry["name"]}
         if entry["cleaner"] == "command":
             if rows:
-                candidates.append((sum(r["bytes"] for r in rows), entry, "run", rows[0]["path"], ()))
+                candidates.append((tier, sum(r["bytes"] for r in rows), entry, "run", rows[0]["path"], ()))
+        elif idle_before is not None:
+            candidates += [(tier, r["bytes"], entry, "delete", r["path"], r.get("also") or ()) for r in rows
+                           if r["newest"] < idle_before]
         elif entry["cleaner"] == "sweep":
             key, _value = log_stores.criterion(entry)
             gone = [(r, "delete") for r in rows] if key == "days" else log_stores.doomed(entry, rows, now)
-            candidates += [(r["bytes"], entry, action, r["path"], r.get("also") or ()) for r, action in gone
+            candidates += [(tier, r["bytes"], entry, action, r["path"], r.get("also") or ()) for r, action in gone
                            if action == "delete"]
-    candidates.sort(key=lambda c: (-c[0], c[3]))
+    candidates.sort(key=lambda c: (c[0], -c[1], c[4]))
+    faked = dry_run or os.environ.get("LOG_SWEEP_FREE_GIB")
     paths, freed, before = None, {}, {}
     stores = {}
-    for size, entry, action, path, also in candidates:
+    for _tier, size, entry, action, path, also in candidates:
         if not os.path.lexists(path):
             continue
         volume = mount_of(path)
         if volume not in before:
             before[volume] = free_bytes(volume)
-        now_free = (before[volume] + freed.get(volume, 0)) if dry_run or os.environ.get("LOG_SWEEP_FREE_GIB") \
-            else free_bytes(volume)
-        if now_free >= target_gib * GIB:
+        if action == "delete":
+            if paths is None:
+                paths = open_paths()
+            if paths is None or held(path, paths, also):
+                skipped += 1
+                continue
+        if target_gib is not None and \
+                (before[volume] + freed.get(volume, 0) if faked else free_bytes(volume)) >= target_gib * GIB:
             enough += 1
+            left += size
             continue
         if action == "run":
             done = run_command(entry, now, dry_run, say, due=True, timeout=PRESSURE_COMMAND_TIMEOUT_S)
@@ -294,11 +318,6 @@ def pressure(registry, now, target_gib, dry_run, say=print, only=()):
                 continue
             got = sum(b for _p, b in done)
         else:
-            if paths is None:
-                paths = open_paths()
-            if paths is None or held(path, paths, also):
-                skipped += 1
-                continue
             got = size
             if dry_run:
                 say("  %-8s %8.1f MB  %s" % ("delete", size / log_stores.MB, path))
@@ -317,24 +336,36 @@ def pressure(registry, now, target_gib, dry_run, say=print, only=()):
         slot = stores.setdefault(entry["name"], [0, 0])
         slot[0] += 1
         slot[1] += got
+    mode = "pressure" if target_gib is not None else "emergency"
     for name, (count, got) in stores.items():
-        say("%s: %d unit%s, %.1f MB (pressure)" % (name, count, "" if count == 1 else "s", got / log_stores.MB))
+        say("%s: %d unit%s, %.1f MB (%s)" % (name, count, "" if count == 1 else "s", got / log_stores.MB, mode))
     items.sort(key=lambda item: -item[1])
-    after = {v: (before[v] + freed.get(v, 0)) if dry_run or os.environ.get("LOG_SWEEP_FREE_GIB") else free_bytes(v)
-             for v in before}
-    return {"t": round(now), "dry_run": dry_run, "pressure": target_gib, "units": sum(s[0] for s in stores.values()),
-            "bytes": sum(s[1] for s in stores.values()), "stores": stores, "skipped_open": skipped, "errors": errors,
-            "denied": denied, "enough": enough,
+    after = {v: before[v] + freed.get(v, 0) if faked else free_bytes(v) for v in before}
+    return {"t": round(now), "dry_run": dry_run, "pressure": target_gib, "emergency": target_gib is None,
+            "units": sum(s[0] for s in stores.values()), "bytes": sum(s[1] for s in stores.values()), "stores": stores,
+            "skipped_open": skipped, "errors": errors, "denied": denied, "enough": enough, "left": left,
+            "grower": grower,
             "free_gib": {volume_name(v): [round(before[v] / GIB, 1), round(after[v] / GIB, 1)] for v in before},
             "largest": items[:RECORD_ITEMS]}
+
+
+def estimate(result):
+    """emergency.json: what `--emergency` would free now, from a whole-registry pressure or emergency run's result."""
+    gone = 0 if not result["dry_run"] else result["bytes"]
+    write(os.path.join(state_dir(), "emergency.json"),
+          json.dumps({"bytes": gone + result["left"], "t": result["t"]}) + "\n")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="log-sweep", description=__doc__.split("\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="print what would be removed, remove nothing")
     parser.add_argument("--store", action="append", help="only this store (repeatable)")
-    parser.add_argument("--pressure", type=float, metavar="GIB",
-                        help="cache stores only, every unit regardless of age, biggest first, until each volume has GIB free")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--pressure", type=float, metavar="GIB",
+                      help="cache stores (every unit regardless of age), then temp units idle emergency_h, biggest "
+                           "first, until each volume has GIB free")
+    mode.add_argument("--emergency", action="store_true",
+                      help="what --pressure takes, with no free-space target")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
     parser.add_argument("--json", action="store_true", help="print the run's summary as JSON")
     args = parser.parse_args(argv)
@@ -354,10 +385,14 @@ def main(argv=None):
                 print(json.dumps({"busy": True}))
             return 0
         started = time.time()
-        if args.pressure is not None:
+        if args.pressure is not None or args.emergency:
             result = pressure(registry, started, args.pressure, args.dry_run, say, set(args.store or ()))
+            if not args.store:
+                estimate(result)
         else:
             result = sweep(registry, started, args.dry_run, set(args.store or ()), say)
+            if not args.store and not args.dry_run:
+                estimate(pressure(registry, time.time(), None, True, lambda *_: None))
         result["wall_s"] = round(time.time() - started, 1)
         if not args.dry_run:
             record(result)

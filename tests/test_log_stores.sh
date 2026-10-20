@@ -495,6 +495,63 @@ with open(os.path.join(work, "sweep", "sweep.lock"), "w") as lock:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     busy = log_sweep("--pressure", "40", "--json")
 check(json.loads(busy.stdout) == {"busy": True} and busy.returncode == 0, "a sweep already running answers busy: %s" % busy.stdout)
+# ---- temp joins the pressure sweep after the caches; --emergency takes the same with no target; the estimate it leaves
+put("tcache/a/blob", 1 << 20, 1)
+put("ttmp/idle/blob", 3 << 20)
+put("ttmp/young/blob", 4 << 20)
+put("ttmp/heldidle/blob", 2 << 20)
+put("tlog/run/a.log", 1 << 20, 30)
+for rel in ("ttmp/idle/blob", "ttmp/idle", "ttmp/heldidle/blob", "ttmp/heldidle"):
+    age(rel, 3 / 24)
+temp = {"name": "ttmp", "group": "temp", "globs": ["~/ttmp/*"], "cleaner": "sweep", "days": 7, "emergency_h": 2}
+check(all(raises(registry([dict(temp, **bad)])) for bad in ({"emergency_h": 0}, {"emergency_h": True},
+                                                             {"emergency_h": "2"}, {"cleaner": "self"}))
+      and raises(registry([temp])) is None, "emergency_h is a positive number of hours on a sweep store")
+registry([{"name": "tcache", "kind": "cache", "globs": ["~/tcache/*"], "cleaner": "sweep", "days": 30}, temp,
+          {"name": "tlog", "globs": ["~/tlog/*"], "cleaner": "sweep", "days": 60}])
+with open(os.path.join(work, "open-paths"), "w") as handle:
+    handle.write("p1\nn%s/ttmp/heldidle/blob\n" % home)
+size = {rel: ls.unit_stats(os.path.join(home, rel))["bytes"] for rel in ("tcache/a", "ttmp/idle")}
+
+
+def estimated():
+    return json.load(open(os.path.join(work, "sweep", "emergency.json")))
+
+
+os.environ["LOG_SWEEP_FREE_GIB"] = str(40 - 0.5 / 1024)
+tiered = json.loads(log_sweep("--pressure", "40", "--dry-run", "--json").stdout)
+del os.environ["LOG_SWEEP_FREE_GIB"]
+check(list(tiered["stores"]) == ["tcache"] and tiered["enough"] == 1 and tiered["left"] == size["ttmp/idle"]
+      and tiered["skipped_open"] == 1 and estimated() == {"bytes": tiered["bytes"] + tiered["left"], "t": tiered["t"]},
+      "the cache goes before the bigger idle temp unit, which the target spares; the estimate counts both: %s" % tiered)
+sweep_mod.GROWER_MIN_BYTES = 4 << 20
+whole = json.loads(log_sweep("--emergency", "--dry-run", "--json").stdout)
+sweep_mod.GROWER_MIN_BYTES = 1 << 30
+check(whole["emergency"] and whole["pressure"] is None and whole["stores"] == {
+          "tcache": [1, size["tcache/a"]], "ttmp": [1, size["ttmp/idle"]]} and whole["skipped_open"] == 1
+      and estimated() == {"bytes": whole["bytes"], "t": whole["t"]} and os.path.exists(os.path.join(home, "tcache/a")),
+      "an emergency dry run counts every cache unit and each temp unit idle 2 h, never a held, young or log unit: %s"
+      % whole)
+check(whole["grower"] == {"path": os.path.join(home, "ttmp/young"), "bytes": ls.unit_stats(os.path.join(home,
+                                                                                                         "ttmp/young"))["bytes"],
+                          "store": "ttmp"}, "the biggest unit written in the last hours is named: %s" % whole["grower"])
+kept_by_store = log_sweep("--emergency", "--dry-run", "--json", "--store", "tcache")
+check(estimated()["t"] == whole["t"] and json.loads(kept_by_store.stdout)["units"] == 1,
+      "a run limited to some stores leaves the estimate alone")
+emptied = json.loads(log_sweep("--emergency", "--json").stdout)
+check([os.path.exists(os.path.join(home, rel)) for rel in ("tcache/a", "ttmp/idle", "ttmp/young", "ttmp/heldidle", "tlog/run")]
+      == [False, False, True, True, True] and emptied["units"] == 2 and estimated() == {"bytes": 0, "t": emptied["t"]},
+      "the emergency run takes them and leaves an estimate of nothing: %s" % emptied)
+check(json.loads(open(os.path.join(work, "sweep", "sweeps.jsonl")).read().splitlines()[-1])["emergency"] is True,
+      "the emergency run is recorded, marked emergency")
+put("tcache/b/blob", 1 << 20, 1)
+put("ttmp/idle2/blob", 2 << 20)
+age("ttmp/idle2/blob", 3 / 24)
+age("ttmp/idle2", 3 / 24)
+daily = json.loads(log_sweep("--json").stdout)
+check(daily["units"] == 0 and estimated()["bytes"] == sum(ls.unit_stats(os.path.join(home, rel))["bytes"]
+                                                          for rel in ("tcache/b", "ttmp/idle2")),
+      "the daily sweep refreshes the estimate: %s %s" % (daily, estimated()))
 # A unit's `also` (Chromium IndexedDB: the leveldb is the unit, its blob directory goes with it)
 for prof in ("p1", "p2", "p3"):
     put("prof/%s/IndexedDB/o.indexeddb.leveldb/000003.log" % prof, 1 << 20, 40)
@@ -712,6 +769,8 @@ views = {s["name"]: s for s in view["stores"]}
 check(views["cxd"]["keep"] == "180 days" and views["cxd"]["keep_by_group"] == {"workers": "15 days", "my chats": "180 days"}
       and views["s"]["keep_by_group"] is None, "keep_by_group reaches the view beside the store's default keep: %s" % views["cxd"])
 check(view["stores"][0]["name"] in ("s", "v") and view["unregistered"][0]["path"] == "~/cache/stray", "the document's log_stores view")
+check(view["emergency"] == {"gb": round(estimated()["bytes"] / 1e9, 1), "as_of": estimated()["t"]},
+      "the view carries what the emergency cleanup would free now: %s" % view["emergency"])
 check(view["groups"] and view["groups"][0][0] == "workers" and view["groups"][0][2] is None and view["groups_since"] is None
       and [view["stores"][0][k] for k in ("group", "label")] == ["workers", view["stores"][0]["name"]]
       and {s["name"]: s["part"] for s in view["stores"]}.get("v") == "versions"
@@ -759,7 +818,18 @@ for at, free, heard in ((7300, 9.0, 1), (7360, 8.0, 1), (7420, 30.0, 1), (7480, 
     tick_free(now + at, {"Data": free})
     m.launch_due(now + at, started.append, said.append)
     check(len(said) == heard, "under 10 GiB one notification an episode, another after the volume came back: %s" % said)
-check("Data 9.0 GiB" in said[0] and "Doctors > Disk space" in said[0], "the notification names the volume: %s" % said[0])
+check("Data 9.0 GiB" in said[0] and "Doctors > Disk space" in said[0] and "written in" not in said[0],
+      "the notification names the volume: %s" % said[0])
+hog = "/private/tmp/claude-501/-Volumes-Work-x/0123abcd-0000-4000-8000-00000000abcd"
+m.append_row("freespace", {"t": now + 7500, "sweep": {"units": 0, "grower": {"path": hog + "/tasks", "bytes": 3e10,
+                                                                             "store": "claude-session-scratch"}}})
+real_chat_name, chat_names.chat_name = chat_names.chat_name, lambda s: "Disk hog" if s == hog.rsplit("/", 1)[1] else None
+for at, free in ((7540, 30.0), (7600, 9.0)):
+    tick_free(now + at, {"Data": free})
+    m.launch_due(now + at, started.append, said.append)
+chat_names.chat_name = real_chat_name
+check(len(said) == 3 and "written in the last 6 h: %s/tasks 30 GB by the chat \u201cDisk hog\u201d" % hog in said[-1],
+      "the notification names the biggest unit written in the last hours and its chat: %s" % said[-1])
 os.environ["LOG_SWEEP_FREE_GIB"] = "13"
 row = m.freespace(now)
 del os.environ["LOG_SWEEP_FREE_GIB"]
@@ -774,7 +844,7 @@ judge = m.Judge(now + 60, None)
 m.judge_ticks(judge, [{"t": now + 30, "dt": 60, "free_gib": {"Data": 13.0}}], [])
 low = {p["id"]: p for p in judge.problems}["free-space:Data"]
 check("~/Nextcloud 54 GB (Nextcloud)" in low["fact"] and "/Volumes/Work/tmp" not in low["fact"]
-      and "the cache sweep at" in low["fact"] and "found no cache left" in low["fact"]
+      and "the cache and idle temp sweep at" in low["fact"] and "found nothing idle left" in low["fact"]
       and low["cause"]["name"] == "Nextcloud" and not low["cause"]["fix_target"],
       "low space names the volume's biggest folders beside the caches and what the last cache sweep freed: %s" % low["fact"])
 judge = m.Judge(now + 60, None)

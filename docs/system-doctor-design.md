@@ -351,17 +351,29 @@ and the doctor carry it.
   worker runs put scratch off Data (66 GB on 2026-10-20, 57 GB of it the upscale's model weights). The log growth
   (`log-growth` and each group's growth in the view) compares only the stores both scans list, so a store the
   registry gains is never growth.
-- **Pressure sweep** `log-sweep --pressure GIB`: cache stores only, every unit of a `days` store whatever its age (a
+- **Pressure sweep** `log-sweep --pressure GIB`: cache stores first, every unit of a `days` store whatever its age (a
   store with another criterion gives only what it removes anyway, a command store runs whatever its last run, 300 s),
-  biggest first, until the volume holding each unit has GIB free or the caches run out; the open, argv and denied
-  skips hold. One `sweeps.jsonl` line carries `pressure`, per-store units and bytes, `free_gib` per volume before and
-  after, and the 20 largest units. Measured 2026-10-20 (dry run, free faked at 13 GiB): 457 units, 28.5 GB, 15 s;
-  Data would reach 39.6 GiB.
+  then the units of each `emergency_h` store (the four temp stores: chat scratch dirs and files, /tmp sandboxes and
+  loose files) idle 2 h, biggest first within each tier, until the volume holding each unit has GIB free or nothing
+  eligible is left; the open, argv and denied skips hold. Temp joined on 2026-10-20 after a chat filled /tmp overnight
+  and swap failed: live work is protected by file activity (2 h without a write) and the open-file skip, not by its
+  chat being alive; `work-tmp` stays out (a paused experiment's weights). One `sweeps.jsonl` line carries `pressure`,
+  per-store units and bytes, `left` (what the target spared), `grower` (the biggest unit written in the last 6 h,
+  `GROWER_H`, ≥ 1 GB), `free_gib` per volume before and after, and the 20 largest units. Measured 2026-10-20 (dry
+  run, free faked at 13 GiB, caches only): 457 units, 28.5 GB, 15 s; Data would reach 39.6 GiB.
+- **Emergency cleanup** `log-sweep --emergency [--dry-run] [--json]`: what the pressure sweep takes, with no target
+  (the Disk space menu's button). Every whole-registry run (the daily sweep, a pressure or emergency run, dry or not)
+  leaves `emergency.json` beside `sweeps.jsonl`: what `--emergency` would free now (a dry run's bytes plus `left`; the
+  daily sweep runs one in-process dry pass after its removals). The document carries it as `log_stores.emergency`
+  `{gb, as_of}`; nothing recomputes it per tick. Measured 2026-10-20: 24.9 GB (caches 20.1, chat scratch 4.4, /tmp
+  0.7), 9,811 units, 36 s.
 - **Trigger.** The minute tick records each volume's free GiB; while one is under `free_gib` (25) the launcher starts
   the `freespace` collector detached, at most once an hour (`freespace_every_s`): `log-sweep --pressure 40`
   (`free_target_gib`), its summary a row of `freespace/<day>.jsonl`. Under `free_heavy_gib` (10) one notification per
-  episode (`launched.json` `space_warned`, reset once the volume is back at ≥ 25). The `free-space` fact names the
-  last cache sweep of the day and, when space is still short, the volume's biggest folders beside the caches.
+  episode (`launched.json` `space_warned`, reset once the volume is back at ≥ 25), naming the `grower` of the newest
+  free-space sweep within 6 h and, for a Claude Code scratch dir, its chat by name (`chat_names`, never an id). The
+  `free-space` fact names the last sweep of the day and, when space is still short, the volume's biggest folders
+  beside the caches.
 - **Growth lens** (`scan.giants`): the daily scan's du also covers `/Applications`, `/Library`, `/opt`,
   `/Users/Shared`, `/Volumes/Work` (each cut at its own depth). A folder 1–3 levels down, minus the units of bounded
   stores (cap, or a criterion), that crosses 20 GB from below or grows ≥ 10 GB against the oldest giant scan within 8
