@@ -208,6 +208,12 @@ def named_files(path, repos):
     return found
 
 
+def in_home(top, home):
+    """A project checkout under the home directory; its dot-directories (~/.nvm, ~/.hammerspoon) are tools, not projects."""
+    rest = top[len(home) + 1:] if top.startswith(home + os.sep) else ""
+    return bool(rest) and not rest.startswith(".")
+
+
 def outside_repos(path, repos):
     import chat_names
     try:
@@ -217,6 +223,7 @@ def outside_repos(path, repos):
         return []
     night = {os.path.realpath(repo) for repo in list(repos) + helper_repos()}
     beside = {os.path.dirname(repo) for repo in night}
+    home = os.path.realpath(os.path.expanduser("~"))
     found = []
     for token in PATH_RE.findall(text):
         if not token.startswith(os.sep):
@@ -227,7 +234,7 @@ def outside_repos(path, repos):
         while top != os.sep and not os.path.exists(os.path.join(top, ".git")):
             top = os.path.dirname(top)
         top = os.path.realpath(top)
-        if os.path.dirname(top) in beside and top not in night and top not in found:
+        if (os.path.dirname(top) in beside or in_home(top, home)) and top not in night and top not in found:
             found.append(top)
     return found
 

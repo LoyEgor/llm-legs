@@ -434,6 +434,15 @@ with open(lone, "w") as handle:
 assert h.outside_repos(lone, [repo]) == [foreign], "a git checkout not beside the night's repositories is no repository: %s" % (
     h.outside_repos(lone, [repo]),)
 assert h.outside_repos(lone, [repo, foreign]) == []
+home = os.path.join(os.path.dirname(foreign), "home")
+for sub in ("Proj/app", ".dot/tool"):
+    os.makedirs(os.path.join(home, sub, ".git"))
+real_home, os.environ["HOME"] = os.environ.get("HOME"), home
+homed = os.path.join(os.path.dirname(foreign), "homed.md")
+with open(homed, "w") as handle:
+    handle.write(f"Fix {home}/Proj/app/x.py and {home}/.dot/tool/y.sh.\n")
+assert h.outside_repos(homed, [repo, foreign]) == [os.path.join(home, "Proj", "app")], "a project under the home directory is outside the night; a dot-directory tool is not"
+os.environ["HOME"] = real_home
 os.environ["NIGHT_RUN_HELPER_REPOS"] = os.path.join(os.path.dirname(foreign), "lone-helpers")
 open(os.environ["NIGHT_RUN_HELPER_REPOS"], "w").write(foreign + "\n")
 assert h.outside_repos(lone, [repo]) == [], "a helper repository is the night's"
