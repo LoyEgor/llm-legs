@@ -2,7 +2,7 @@ local home = os.getenv("HOME")
 local repoRoot = (debug.getinfo(1, "S").source or ""):match("^@(.*)/[^/]+/[^/]+$")
 local limits = require("llm-limits")
 local style = require("menu-style")
-local infoTitle = limits.infoTitle
+local rawInfoTitle = limits.infoTitle
 
 local M = { cacheSeconds = 2 }
 
@@ -68,22 +68,25 @@ local function plural(count, word)
   return string.format("%d %s%s", count, word, count == 1 and "" or "s")
 end
 
--- One styled title per text: the same object lets style.mono's settled cache hit on every later build.
+-- One styled title per text and tone: the same object lets style.mono's settled cache hit on every later build.
 -- The memo is per resolved tone: the dim colour follows the appearance.
-local dimTitles, dimCount, dimTone = {}, 0, nil
-local function dim(text)
+local titleMemo, titleCount, titleTone = {}, 0, nil
+local function infoTitle(text, warning, quiet)
   local color = limits.dimColor()
   local tone = type(color) == "table" and string.format("%s %s %s %s", color.red, color.green, color.blue, color.alpha)
     or tostring(color)
-  if tone ~= dimTone then dimTitles, dimCount, dimTone = {}, 0, tone end
-  local title = dimTitles[text]
+  if tone ~= titleTone then titleMemo, titleCount, titleTone = {}, 0, tone end
+  local key = (warning and "w" or "p") .. (quiet and "d" or "p") .. text
+  local title = titleMemo[key]
   if not title then
-    if dimCount >= 512 then dimTitles, dimCount = {}, 0 end
-    title = infoTitle(text, false, true)
-    dimTitles[text], dimCount = title, dimCount + 1
+    if titleCount >= 1024 then titleMemo, titleCount = {}, 0 end
+    title = rawInfoTitle(text, warning, quiet)
+    titleMemo[key], titleCount = title, titleCount + 1
   end
-  return { title = title, disabled = true }
+  return title
 end
+
+local function dim(text) return { title = infoTitle(text, false, true), disabled = true } end
 
 local function plainText(title) return type(title) == "string" and title or title:getString() end
 local function cells(text) return utf8.len(text) or #text end
@@ -242,17 +245,29 @@ local function runState(run)
 end
 
 -- Problem ids an open fixer run holds: a run launched within FIX_BUSY_S, neither closed, abandoned nor failed. The
--- stamp in its name skips the old records unread.
+-- stamp in its name skips the old records unread; the stamped names are parsed once per directory key (a name
+-- appears only when the key moves) and the cutoff applies per call.
+local heldNames = nil
+local function stampedRuns(runs, attrs, key)
+  if heldNames and key and heldNames.key == key and clock() - heldNames.at < RUNS_RESCAN_S then return heldNames.list end
+  local list = {}
+  for _, name in ipairs(attrs and runNames(runs, key) or {}) do
+    local y, mo, d, h, mi, s = name:match("%-(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)Z%-%x+%.json$")
+    local at = y and limits.parseTime(string.format("%s-%s-%sT%s:%s:%sZ", y, mo, d, h, mi, s))
+    if at then list[#list + 1] = { name = name, at = at } end
+  end
+  heldNames = key and { key = key, at = clock(), list = list } or nil
+  return list
+end
+
 local function heldIds(now)
   local runs = dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/runs"
   local attrs = hs.fs.attributes(runs)
   local key = attrs and string.format("%s:%s:%s:%s", runs, attrs.ino or "", attrs.modification or "", attrs.size or "")
   local ids = {}
-  for _, name in ipairs(attrs and runNames(runs, key) or {}) do
-    local y, mo, d, h, mi, s = name:match("%-(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)Z%-%x+%.json$")
-    local at = y and limits.parseTime(string.format("%s-%s-%sT%s:%s:%sZ", y, mo, d, h, mi, s))
-    if at and now - at < FIX_BUSY_S then
-      local run = readJson(runs .. "/" .. name)
+  for _, stamped in ipairs(stampedRuns(runs, attrs, key)) do
+    if now - stamped.at < FIX_BUSY_S then
+      local run = readJson(runs .. "/" .. stamped.name)
       if runState(run) == "open" then
         for _, problem in ipairs(type(run.problems) == "table" and run.problems or {}) do
           if type(problem) == "table" and problem.id ~= nil then ids[tostring(problem.id)] = true end

@@ -251,6 +251,7 @@ instruction_repo_files() { # repo-root [outer-root]
 instruction_visible_paths() {
   local home=${1:-$HOME} cache=${2:-} root=${3:-} link real resolved
   local -a linked=() links=()
+  [ -z "${_INSTRUCTION_REPO_ONLY:-}" ] || { instruction_repo_files "$root"; return; }
   for link in "$home"/.claude/*; do
     [ -L "$link" ] && links+=("$link")
   done
@@ -342,14 +343,18 @@ _instruction_moved_dirs_kept() { # home root cache-file header current-stamps
     mv -f "$file.$$" "$file" 2>/dev/null || rm -f "$file.$$" 2>/dev/null
   return 0
 }
+# _INSTRUCTION_REPO_ONLY=1 caches one repository's own files (instruction_repo_files, unfiltered) under the
+# same stamps, for the watcher's repo scan; its file and header differ from the full set's.
 instruction_visible_cached() { # home ranked-cache root state-dir
   local home=${1:-$HOME} cache=${2:-} root=${3:-} dir=${4:-} file key want n p stamps='' set cur
+  local only=${_INSTRUCTION_REPO_ONLY:-} kind=visible
   local -a lines=() paths=()
   key=${root:-none}
   key=${key//[!A-Za-z0-9._-]/_}
   [ "${#key}" -le 80 ] || key=${key: -80}
-  file=$dir/visible-$key
-  want="#2$_instruction_tab$home$_instruction_tab$root$_instruction_tab$cache"
+  [ -z "$only" ] || kind=repo
+  file=$dir/$kind-$key
+  want="#2$only$_instruction_tab$home$_instruction_tab$root$_instruction_tab$cache"
   # Its parent is this state directory, which every check writes: the cache's arrival is the header's.
   [ -f "$cache" ] && want+=+ || want+=-
   if [ -n "$dir" ] && [ -r "$file" ]; then
@@ -371,8 +376,8 @@ instruction_visible_cached() { # home ranked-cache root state-dir
     instruction_visible_paths "$home" "$cache" "$root"
     return
   fi
-  { [ -e "$home/.claude" ] && printf '%s\n' "$home/.claude" || printf '%s\n' "$home"
-    if [ -f "$cache" ]; then
+  { [ -n "$only" ] || { [ -e "$home/.claude" ] && printf '%s\n' "$home/.claude" || printf '%s\n' "$home"; }
+    if [ -z "$only" ] && [ -f "$cache" ]; then
       printf '%s\n' "$cache"
       instruction_ranked_names "$cache" | while IFS= read -r p; do
         p=${p%/*}

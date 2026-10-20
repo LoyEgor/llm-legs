@@ -463,6 +463,20 @@ chmod +x "$WORK/find-shim/find"
 repo_out=$(PATH="$WORK/find-shim:$PATH" bash -c "$watch_script" _ "$ROOT" "$HOME" "$claim_state" repo "$WORK/plain" "$WORK/gitrepo")
 assert_eq "$WORK/gitrepo/CLAUDE.md" "$repo_out"
 assert [ ! -e "$WORK/find.log" ]
+
+# The tick repeats the repo scan every 120 s: an unchanged repository reuses its stamped listing (no
+# git ls-files), and an arrival moves a stamp, so the next scan sees it.
+mkdir -p "$claim_state/watcher" "$WORK/git-shim"
+printf '#!/bin/sh\ncase " $* " in *" ls-files "*) echo ls-files >> "%s" ;; esac\nexec %s "$@"\n' \
+  "$WORK/git.log" "$(command -v git)" > "$WORK/git-shim/git"
+chmod +x "$WORK/git-shim/git"
+repo_scan() { PATH="$WORK/git-shim:$PATH" bash -c "$watch_script" _ "$ROOT" "$HOME" "$claim_state" repo "$WORK/gitrepo"; }
+assert_eq "$WORK/gitrepo/CLAUDE.md" "$(repo_scan)"
+listed=$(wc -l < "$WORK/git.log")
+assert_eq "$WORK/gitrepo/CLAUDE.md" "$(repo_scan)"
+assert_eq "$listed" "$(wc -l < "$WORK/git.log")"
+mkdir -p "$WORK/gitrepo/sub"; printf 'r\n' > "$WORK/gitrepo/sub/CLAUDE.md"
+assert_eq "$(printf '%s\n' "$WORK/gitrepo/CLAUDE.md" "$WORK/gitrepo/sub/CLAUDE.md")" "$(repo_scan)"
 fi
 
 echo "OK ($asserts assertions)"
