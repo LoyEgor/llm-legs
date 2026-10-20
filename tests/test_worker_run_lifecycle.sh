@@ -19,7 +19,7 @@ assert grep -qx 'WEB: off' "$WORK/start.out"
 assert grep -qx "DIR: $RUN_DIR" "$WORK/start.out"
 pid=$(jq -r '.pid' "$RUN_DIR/meta.json")
 assert kill -0 "$pid"
-first_wait=$("$RUNNER" wait "$RUN_ID" --max 1)
+first_wait=$("$RUNNER" wait "$RUN_ID" --max 0)
 assert grep -q '^STATUS: running$' <<<"$first_wait"
 assert grep -q '^SESSION: -$' <<<"$first_wait"
 assert kill -0 "$pid"
@@ -72,7 +72,8 @@ set_config 'gemini_model=flash38' 'gemini_effort=high'
 printf 'fast\n' >"$STUB_DIR/gemini_profiles"
 export PICK_ACCOUNT=fast PICK_RC=0
 start_gated gemini
-running_wait=$("$RUNNER" wait "$RUN_ID" --max 1)
+for tick in {1..400}; do grep -q "Created conversation" "$RUN_DIR/log" 2>/dev/null && break; sleep 0.05; done
+running_wait=$("$RUNNER" wait "$RUN_ID" --max 0)
 assert grep -q '^STATUS: running$' <<<"$running_wait"
 assert grep -q '^SESSION: gemini-conversation$' <<<"$running_wait"
 running_report=$("$RUNNER" report "$RUN_ID")

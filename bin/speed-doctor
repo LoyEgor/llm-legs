@@ -661,9 +661,14 @@ def iso_epoch(text):
     return H.at_epoch(text) if isinstance(text, str) else (float(text) if isinstance(text, (int, float)) else None)
 
 
-def night_view():
+def night_view(now):
+    """Every night of the stored-day window and the newest one whatever its age: a night file is never touched after
+    its night ends, so an older mtime holds no night any stored day can name."""
     nights = []
-    for path in glob.glob(os.path.join(doctors_dir(), "nights", "*.json")):
+    oldest = now - (LIMITS["baseline_days"] + LIMITS["regression_days"] + 2) * 86400
+    for path in sorted(glob.glob(os.path.join(doctors_dir(), "nights", "*.json")), reverse=True):
+        if nights and mtime(path) < oldest:
+            continue
         night = H.read_json(path, {})
         events = [e for e in night.get("events") or () if isinstance(e, dict)]
         start = iso_epoch(night.get("started_at"))
@@ -1064,8 +1069,9 @@ def moved_opportunities(component_om, days, now, covered=WINDOW_D):
         for key, (_, us) in (acc.get("hook_cpu_us") or {}).items():
             ms.setdefault(key, {})[day] = us / 1000.0
     total = sum(sum(v.values()) for k, v in ms.items() if not k.startswith(H.STOP_PART))
+    memo = {}
     for key in sorted(k for k, v in ms.items() if max(v.values()) >= HOT_CPU_MS_DAY):
-        since = hook_changed_day(key)
+        since = hook_changed_day(key, memo)
         kept = [v for day, v in ms[key].items() if not since or day > since]
         if len(kept) >= HOT_MIN_DAYS and sum(kept) / len(kept) >= HOT_CPU_MS_DAY:
             om = component_om("chat/hooks") * sum(kept) / total if total else 0.0
@@ -1074,13 +1080,21 @@ def moved_opportunities(component_om, days, now, covered=WINDOW_D):
     return out
 
 
-def hook_changed_day(key):
+def hook_changed_day(key, memo=None):
     """An optimised hook is never charged for its old cost: only days after its script's last commit count. A mode
     key (`<script> <arg>`, the statusline's former `review-flow-gate.sh verdict`) is its script's; a script no settings
-    entry registers, run out of band or deleted, is found in ~/.claude/hooks, where a deletion is its last commit."""
+    entry registers, run out of band or deleted, is found in ~/.claude/hooks, where a deletion is its last commit.
+    A caller's memo holds one run's answers: a script is asked of git once, however many mode keys it has."""
     word = key.split(" ", 1)[0]
-    script = next((s for s in (H.hook_script(h["command"]) for h in H.settings_hooks()) if os.path.basename(s) == word),
-                  os.path.join(H.base_home(), ".claude", "hooks", word))
+    memo = {} if memo is None else memo
+    if word in memo.setdefault("days", {}):
+        return memo["days"][word]
+    if "scripts" not in memo:
+        memo["scripts"] = {}
+        for h in reversed(H.settings_hooks()):
+            script = H.hook_script(h["command"])
+            memo["scripts"][os.path.basename(script)] = script
+    script = memo["scripts"].get(word) or os.path.join(H.base_home(), ".claude", "hooks", word)
     real = os.path.realpath(script)
     try:
         out = subprocess.run(["git", "-C", os.path.dirname(real), "log", "-1", "--first-parent", "--format=%ct", "HEAD",
@@ -1089,7 +1103,8 @@ def hook_changed_day(key):
         H.limit_hit.expired("probe.git", error, "the last change day of hook %s: read as unknown" % word,
                             'bin/speed-doctor:"--", os.path.basename(real)], capture_output=True')
         return None
-    return H.local_day(int(out)) if out.isdigit() else None
+    memo["days"][word] = H.local_day(int(out)) if out.isdigit() else None
+    return memo["days"][word]
 
 
 def landed_at(ref):
@@ -1222,7 +1237,7 @@ def collect(write, now):
     back = list({row_key(r): r for r in backfill_rows(since) + fresh if row_key(r) not in keys}.values())
     rows += back
     collector_rows = fold_jsonl(state, "collector", os.path.join(doctors_dir(), "collector-runs.jsonl"),
-                                now - JOURNAL_DAYS * 86400, lambda r: r.get("start"))
+                                now - ROW_DAYS * 86400, lambda r: r.get("start"))
     runs = fold_jsonl(state, "worker_runs", worker_runs_path(), now - JOURNAL_DAYS * 86400, lambda r: r.get("ended_at"))
     turned = [d for d, e in sorted(state["events"].items()) if any(r[0] in ("t", "d") for r in e["rows"])]
     froms = [H.day_start(turned[0])] if turned else []
@@ -1264,7 +1279,7 @@ def collect(write, now):
     areas = {area: round(sum(v.values()), 2) for area, v in tree.items()}
     local = sum(tree.get("chat", {}).get(leaf, 0.0) for leaf in LOCAL_LEAVES)
     machine = machine_view(days, local)
-    night = night_view()
+    night = night_view(now)
     delegation = delegation_view(runs, lo)
 
     def machine_om(component, machine, background):
@@ -1291,11 +1306,12 @@ def collect(write, now):
     for f in tsv_days(os.path.join(state_dir(), "merge-kick"), lo):
         if len(f) >= 3 and f[0].isdigit() and f[2].replace(".", "", 1).isdigit():
             kicks.setdefault(H.local_day(int(f[0]) / 1e6), []).append(float(f[2]))
-    stored = stored_days(now)
+    stored, computed = stored_days(now), set()
     old_days = {d for d, _, _ in old_credit}
     for day in sorted({d for d, _, _ in credit} | set(days) | old_days):
         if day < today and (H.day_start(day) >= lo or day in old_days) and (day not in stored or write):
             last = night["by_day"].get(day)
+            computed.add(day)
             stored[day] = {"day": day, "values": day_values(day, old_credit if day in old_days else credit, prompts,
                                                             (days.get(day) or {}).get("machine"),
                                                             (days.get(day) or {}).get("statusline"), kicks.get(day),
@@ -1465,7 +1481,7 @@ def collect(write, now):
     if write:
         os.makedirs(folder, exist_ok=True)
         for day, entry in stored.items():
-            if day < today:
+            if day in computed:
                 os.makedirs(os.path.join(folder, "days"), exist_ok=True)
                 H.write_json(os.path.join(folder, "days", day + ".json"), entry)
         by_day = {}
