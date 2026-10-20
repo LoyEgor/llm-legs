@@ -14,7 +14,7 @@ shift 2
 exec "$@"
 SANDBOX
 chmod +x "$WORK/bin/sandbox-exec"
-export GEMINI_RESEARCH_SANDBOX_EXEC="$WORK/bin/sandbox-exec"
+export RESEARCH_SANDBOX_EXEC="$WORK/bin/sandbox-exec"
 workdir="$WORK/websearch-workdir"
 mkdir -p "$workdir" "$WORK/websearch"
 git -C "$workdir" init -q
@@ -219,8 +219,8 @@ if suite_shard_owns 2 ws-meta-state; then
 fi
 
 if suite_shard_owns 3 ws-grok-research-fence; then
-  # The grok research leg is policed from outside by a tree digest, and the answer contract now asks
-  # it to fetch pages: the fence rides in the launched brief only, never in the recorded one.
+  # The answer contract asks the grok research leg to fetch pages, and its sandbox fails a run that
+  # saves one: the fence rides in the launched brief only, never in the recorded one.
   set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok' 'light_edit=grok'
   web_search_launch "$WORK/websearch/plain" grok --role research
   assert grep -qF 'READ-ONLY TREE' "$RUN_DIR/brief.launch"
@@ -230,51 +230,35 @@ if suite_shard_owns 3 ws-grok-research-fence; then
   assert test "$(grep -cF 'EDITS: change repository files only' "$RUN_DIR/brief.launch")" = 0
 fi
 
-if suite_shard_owns 4 ws-grok-nongit; then
+if suite_shard_owns 4 ws-grok-sandbox; then
   set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok' 'light_edit=grok'
-  # Grok research digests non-git trees and catches edits outside git repos.
-  nongit="$WORK/websearch/scratchpad"
-  mkdir -p "$nongit"
-  web_search_launch "$WORK/websearch/plain" grok --role research --workdir "$nongit"
-  assert test "$(cat "$RUN_DIR/exit_code")" -eq 0
-  assert test ! -s "$RUN_DIR/research-outcome"
-
+  # Grok research runs in the write-deny sandbox: a co-tenant's edit to the shared tree mid-run is
+  # no violation (it was, under the old before/after digest), and a write tool the sandbox refused is.
   cat >"$STUB_DIR/relay_hook" <<EOF
 #!/usr/bin/env bash
-touch "$nongit/leaked.txt"
+printf 'cotenant\n' >"$workdir/cotenant.txt"
 EOF
   chmod +x "$STUB_DIR/relay_hook"
-  web_search_launch "$WORK/websearch/plain" grok --role research --workdir "$nongit"
+  web_search_launch "$WORK/websearch/plain" grok --role research
+  assert test "$(cat "$RUN_DIR/exit_code")" -eq 0
+  assert test ! -s "$RUN_DIR/research-outcome"
+  assert grep -qxF "(allow file-write* (subpath \"$(readlink -f "$GROKB_PROFILES_DIR/websearch")\"))" "$RUN_DIR/sandbox.sb"
+  assert grep -qxF "(deny file-write* (subpath \"$(readlink -f "$workdir")\"))" "$RUN_DIR/sandbox.sb"
+  assert test "$(jq -r '.sandbox_exec' "$RUN_DIR/meta.json")" = "$RESEARCH_SANDBOX_EXEC"
+  rm -f "$workdir/cotenant.txt"
+  cat >"$STUB_DIR/relay_hook" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"tool_call","toolCallId":"call-1","title":"write","kind":"write","rawInput":{"file_path":"notes.txt"}}' \
+  '{"type":"tool_call_update","toolCallId":"call-1","status":"failed","rawOutput":{"error":"tool_execution_failed","message":"IO Error: Operation not permitted (os error 1)"}}'
+EOF
+  web_search_launch "$WORK/websearch/plain" grok --role research
   assert test "$(cat "$RUN_DIR/exit_code")" -eq 5
   assert grep -qx 'READ_ONLY_VIOLATION' "$RUN_DIR/research-outcome"
-  rm -f "$nongit/leaked.txt" "$STUB_DIR/relay_hook"
-  # The non-git digest hashes its files in one git start, re-batching past a file it cannot read,
-  # and a one-byte edit still moves it.
-  (
-    eval "$(sed -n '/^non_git_tree_digest() {/,/^}/p' "$RUNNER")"
-    mkdir -p "$nongit/sub" "$WORK/digest-shim"
-    for name in a b c sub/d sub/e; do printf '%s\n' "$name" >"$nongit/$name"; done
-    ln -s a "$nongit/link"
-    printf '#!/usr/bin/env bash\necho >>"%s/starts"\nexec %s "$@"\n' "$WORK/digest-shim" "$(command -v git)" \
-      >"$WORK/digest-shim/git"
-    chmod +x "$WORK/digest-shim/git"
-    : >"$WORK/digest-shim/starts"
-    clean=$(PATH="$WORK/digest-shim:$PATH" non_git_tree_digest "$nongit")
-    assert test "$(wc -l <"$WORK/digest-shim/starts" | tr -d ' ')" = 1
-    assert grep -qxF "$(printf 'f\t%s\t./sub/d' "$(git hash-object "$nongit/sub/d")")" <<<"$clean"
-    assert grep -qxF "$(printf 'l\ta\t./link')" <<<"$clean"
-    assert grep -qxF "$(printf 'd\t./sub')" <<<"$clean"
-    chmod 000 "$nongit/b"
-    : >"$WORK/digest-shim/starts"
-    unreadable=$(PATH="$WORK/digest-shim:$PATH" non_git_tree_digest "$nongit")
-    assert test "$(wc -l <"$WORK/digest-shim/starts" | tr -d ' ')" = 3
-    assert grep -qxF "$(printf 'f\t-\t./b')" <<<"$unreadable"
-    assert test "$(grep -vF './b' <<<"$unreadable")" = "$(grep -vF './b' <<<"$clean")"
-    chmod 644 "$nongit/b"
-    printf 'c\r' >"$nongit/c"
-    assert test "$(non_git_tree_digest "$nongit")" != "$clean"
-  )
-  assert test "$?" -eq 0
+  # A read the sandbox or TCC refused is no write.
+  sed -i '' 's/"kind":"write"/"kind":"execute"/' "$STUB_DIR/relay_hook"
+  web_search_launch "$WORK/websearch/plain" grok --role research
+  assert test "$(cat "$RUN_DIR/exit_code")" -eq 0
+  rm -f "$STUB_DIR/relay_hook"
 fi
 
 if suite_shard_owns 2 ws-claudeb-edits; then

@@ -318,10 +318,10 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # edit 60 belongs where it read last.
 BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — everything you write is English: the report, findings, verdicts, any brief or message to another model, code, comments and commit messages; Russian never passes between models, only as code in backticks. HOUSE RULES: commit only your own files by explicit path, never `git add -A`; unless the brief names it, never delete a file you did not create, and no `rm -rf`, `git reset --hard`, force push, history rewrite or destructive database operation; `llm-limits --table --no-write` before any theory about an account limit; never a headed Playwright window, and browser or Mac-app UI work reads `~/.claude/docs/browser-ui-work.md` first. TESTS: once, when the work is done, in one `tests/run-all <suite>...` call: the suites covering the files you changed (`tests/affected <file>...` where the repo has it); report PASS counts. Never a suite while iterating, never the full `tests/run-all`. On a night branch (`night/...`) skip them: its landing runs them. Only a P1/P2 fix adds a test, shown red on the old code; speed fixes keep the work-not-done proof in docs/speed-doctor-design.md. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. RETURN: first line the outcome — done, partially done or failed, plus one clause; then changed files, verification with PASS counts and anything undone; mark anything you could not confirm and say where you looked. `worker-run report` puts its own `ACCOUNT: <account> (<vendor>)` line second, so never write one; an `OUTCOME:` line is a worker-run status code, written only where a preamble names its code. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
 
-# Grok is the one research leg with no read-only mode: supervise_grok digests every tree it may read
-# before and after, and ANY difference ends a finished run as READ_ONLY_VIOLATION with the answer
-# withheld and the account already spent. Since the answer contract asks such a run to fetch pages,
-# the consequence is stated where the model reads it rather than discovered by losing a run.
+# Grok is the one research leg with no read-only mode: supervise_grok runs it in a write-deny sandbox,
+# and a denied write ends a finished run as READ_ONLY_VIOLATION with the answer withheld and the
+# account already spent. Since the answer contract asks such a run to fetch pages, the consequence
+# is stated where the model reads it rather than discovered by losing a run.
 COMPUTER_PREAMBLE='# Computer Use Preamble (Codex)
 
 Drive Egor'"'"'s Mac apps through Codex Computer Use: the CUA REPL `js` tool, whose own instructions document the `cua` API.
@@ -335,7 +335,7 @@ CLAUDEB_DENIED_TOOLS=ScheduleWakeup,CronCreate,Workflow,ListAgents,Agent
 # The harness's own prompt steers a bypass-mode model toward sed and heredocs, which worker-edit-guard
 # only records; said up front, a text edit stays an Edit call the transcript names.
 CLAUDEB_EDIT_FENCE='EDITS: change repository files only through the Edit and Write tools where an edit can do it; a cp, mv, rsync or redirect with no Edit form is recorded for the run, never refused.'
-GROK_RESEARCH_FENCE='READ-ONLY TREE: every repository handed to this run is digested before and after it. Creating or changing ANY file in them — a fetched page, a scratch note, a saved quote — fails the finished run and throws your answer away. Quote web pages inline in the answer and write nothing, anywhere.'
+GROK_RESEARCH_FENCE='READ-ONLY TREE: this run may write nothing outside the system temp directories. Writing ANY other file — a fetched page, a scratch note, a saved quote — is denied, fails the finished run and throws your answer away. Quote web pages inline in the answer and write nothing, anywhere.'
 
 CYRILLIC_MAX=${WORKER_RUN_CYRILLIC_MAX:-}
 CYRILLIC_SHARE=${WORKER_RUN_CYRILLIC_SHARE:-$SCRIPT_DIRECTORY/cyrillic-share}
@@ -1288,80 +1288,15 @@ supervise_gemini() {
   return "$rc"
 }
 
-# --stdin-paths stops at the first file it cannot hash: that one takes the per-file path, whose
-# shasum fallback the batch lacks, and the rest re-batch after it.
-non_git_tree_digest() { # dir
-  (cd "$1" 2>/dev/null || exit 1
-   items=() kinds=() files=() shas=()
-   while IFS= read -r item; do
-     if [ -L "$item" ]; then kinds+=(l)
-     elif [ -d "$item" ]; then kinds+=(d)
-     elif [ -f "$item" ]; then kinds+=(f); files+=("$item")
-     else kinds+=(-)
-     fi
-     items+=("$item")
-   done < <(find . -mindepth 1 2>/dev/null | sort)
-   s=0
-   while [ "$s" -lt "${#files[@]}" ]; do
-     got=0
-     while IFS= read -r sha; do
-       shas[s + got]=$sha
-       got=$((got + 1))
-     done < <(printf '%s\n' "${files[@]:$s}" | git hash-object --stdin-paths 2>/dev/null)
-     s=$((s + got))
-     [ "$s" -lt "${#files[@]}" ] || break
-     shas[s]=$(git hash-object -- "${files[$s]}" 2>/dev/null) ||
-       shas[s]=$(shasum -a 256 "${files[$s]}" 2>/dev/null | cut -d' ' -f1)
-     s=$((s + 1))
-   done
-   i=0 n=0
-   while [ "$i" -lt "${#items[@]}" ]; do
-     item=${items[$i]}
-     case ${kinds[$i]} in
-       l) printf 'l\t%s\t%s\n' "$(readlink "$item" 2>/dev/null)" "$item" ;;
-       d) printf 'd\t%s\n' "$item" ;;
-       f)
-         sha=${shas[$n]}
-         n=$((n + 1))
-         printf 'f\t%s\t%s\n' "${sha:--}" "$item"
-         ;;
-     esac
-     i=$((i + 1))
-   done)
-}
-
-research_tree_digest() { # root...
-  local root head unshaped
-  for root in "$@"; do
-    [ -d "$root" ] || return 1
-    printf '%s\n' "$root"
-    if git -C "$root" rev-parse --show-toplevel >/dev/null 2>&1; then
-      head=$(git -C "$root" rev-parse --verify --quiet HEAD 2>/dev/null) || head=empty
-      printf '%s\n' "$head"
-      unshaped=$(mktemp) || return 1
-      workdir_dirty_shas "$root" "$unshaped" && cat "$unshaped" || { rm -f "$unshaped"; return 1; }
-      rm -f "$unshaped"
-    else
-      non_git_tree_digest "$root" || return 1
-    fi
-  done
-}
-
-# Grok has no read-only mode, so a research run is checked from outside: the trees it may read are
-# digested before and after, and any difference fails the run.
+# Grok has no read-only mode, so a research run gets the gemini research leg's write-deny sandbox.
 supervise_grok() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied before='' search_arg
-  local -a command roots
-  roots=()
+  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied search_arg
+  local research=false sandbox_exec profile
+  local -a command
   if [ "$(jq -r '.role // "workers"' "$meta")" = research ]; then
-    REPLY_ARRAY=()
-    read_json_array '.add_dirs[]' "$meta"
-    roots=("$(jq -r '.workdir' "$meta")" "${REPLY_ARRAY[@]}")
-    before=$(research_tree_digest "${roots[@]}") || {
-      printf 'research: the tree digest a read-only grok run is checked against could not be taken\n' >"$directory/err"
-      printf 'READ_ONLY_VIOLATION\n' >"$directory/research-outcome"
-      return 5
-    }
+    research=true
+    . "$SCRIPT_DIRECTORY/../share/light-research.sh"
+    research_sandbox_ready "$directory" grok || return $?
   fi
   account=$(jq -r '.account' "$meta")
   model=$(jq -r '.model' "$meta")
@@ -1379,12 +1314,22 @@ supervise_grok() {
   # `-r` resumes; `-s` only ever CREATES and rejects an id that already exists (live 1.0.13).
   [ -z "$resume" ] || command+=(-r "$resume")
   while IFS= read -r search_arg; do command+=("$search_arg"); done < <(web_search_args grok "$(web_search_meta_state "$meta")")
+  [ "$research" = false ] || command=("$sandbox_exec" -p "$profile" "${command[@]}")
   run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"
   rc=$?
-  if [ "${#roots[@]}" -gt 0 ] && [ "$(research_tree_digest "${roots[@]}")" != "$before" ]; then
-    printf 'research: the tree changed during a read-only grok run — a fetched page or a scratch note saved into it is the usual cause; web sources belong inline in the answer\n' >>"$directory/err"
-    printf 'READ_ONLY_VIOLATION\n' >"$directory/research-outcome"
-    return 5
+  if [ "$research" = true ]; then
+    if grep -Eq '^sandbox-exec:' "$directory/err"; then
+      research_failure "$directory" GROK_UNAVAILABLE 4; return $?
+    fi
+    # The sandbox keeps the tree whole; a write tool it refused is the run ignoring its fence.
+    if jq -seR '[split("\n")[] | fromjson? | objects] as $events
+               | [$events[] | select(.type == "tool_call" and (.kind | IN("write", "edit"))) | .toolCallId] as $writes
+               | any($events[]; .type == "tool_call_update" and .status == "failed"
+                     and (.toolCallId | IN($writes[]))
+                     and ([.. | strings] | any(test("Operation not permitted"))))' "$directory/out" >/dev/null; then
+      printf 'research: the sandbox denied a write of this read-only grok run; web sources belong inline in the answer\n' >>"$directory/err"
+      research_failure "$directory" READ_ONLY_VIOLATION 5; return $?
+    fi
   fi
   served=$(grok_end_field "$directory" 'tojson' | served_model_from_envelope /dev/stdin "$model")
   [ -z "$served" ] || meta_update "$directory" '.served_model = $model' --arg model "$served" || :
@@ -2775,7 +2720,7 @@ start_run() {
     [ -n "$research_timeout" ] || research_timeout=360m
     . "$SCRIPT_DIRECTORY/../share/light-research.sh"
     value=$(research_duration_seconds "$research_timeout") && [ "$value" -gt 0 ] || usage
-    [ "$vendor" != gemini ] || sandbox_exec="${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}"
+    case "$vendor" in gemini|grok) sandbox_exec="${RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}" ;; esac
     export WORKER_RUN_ROLE=research
   elif [ -n "$research_timeout" ]; then
     usage

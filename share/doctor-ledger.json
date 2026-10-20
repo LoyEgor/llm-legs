@@ -2301,6 +2301,34 @@
    "reviewed_by": "LLM doctor",
    "handoff": null,
    "note": "2026-10-20 (fixer llm-workers-20261020T114240Z-26b5): cause stands in code (no theirs word for 'stream disconnected before completion', no match in bin/ or share/), but no recurrence: of 10 codex runs whose err logged it since 2026-10-13, 8 reconnected and ended DONE, and 2 (2026-10-16, CODEX_UNAVAILABLE) ended on 'Selected model is at capacity', another cause. Left open, bounded by until. 2026-10-14 (night 20261014T013750Z-8004): codex-1791880551-65626-32dd (egbogd, sol, 2026-10-13 14:06) ended 'stream disconnected before completion: An error occurred while processing your request' (request d44f0014-...), vendor-side; its last err line 'ERROR codex_core::session: failed to record rollout items: thread ... not found' is a consequence and matches the crashed word. The only text-classified crashed worker in 30 days, so no vocabulary change (a move to theirs is the owner's, panel.py and llm-doctor copies); until bounds the row to this one leg. Recurring: give 'stream disconnected before completion' a theirs word. Ruled out: CODEX_UNAVAILABLE is worker-run's generic codex failure outcome, no vendor verdict."
+  },
+  {
+   "id": "W13",
+   "block": "light",
+   "match": {
+    "word": "escaped",
+    "detail": "^read-only violation$"
+   },
+   "title": "a grok research run in a shared checkout failed READ_ONLY_VIOLATION because another chat edited that checkout during it",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-20T15:25:00+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run",
+      "llm-legs/share/light-research.sh",
+      "llm-legs/tests/test_worker_run_websearch.sh"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-20",
+   "reviewed_by": "Fixer llm-light-20261020T114234Z-28a9",
+   "note": "2026-10-20: grok-1792494701-51041-05cd (rawilimo, blind ElevenLabs web research, workdir the main checkout) made only web_search/web_fetch calls, yet the before/after tree digest moved: bin/log-sweep and share/log_stores.py (dirty before) and share/log-stores.json were edited by the concurrent log_stores fixer (2f64d43c), so the answer was thrown away for a co-tenant's write. Grok research now runs under the gemini research leg's Seatbelt write-deny profile (its GROK_HOME instead of the gemini roots; live-checked: a grok run answers under it, its write tool gets Operation not permitted, the tree stays clean) and only a write/edit tool call the sandbox failed is READ_ONLY_VIOLATION; the digest is gone. Same detail on a later leg = the model tried to write, a different cause; read the run's out before calling it a regression. Left: llm-doctor DIGEST_RE (W1) now only matches pre-fix runs, removable once they leave the 14-day window (judge, the owner's).",
+   "handoff": null
   }
  ],
  "blind_spots": [

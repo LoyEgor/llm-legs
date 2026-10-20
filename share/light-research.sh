@@ -104,17 +104,22 @@ research_citation_body() { # checked-file
   tail -n +3 "$1"
 }
 
-research_sandbox_profile() {
+research_sandbox_profile() { # vendor
   local path resolved escaped profile_home
   local -a writable
   writable=()
-  if [ "$account" != main ]; then
-    profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
+  if [ "$1" = grok ]; then
+    profile_home=$(readlink -f "$(grok_home "$account")") || return 1
     writable+=("$profile_home")
+  else
+    if [ "$account" != main ]; then
+      profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
+      writable+=("$profile_home")
+    fi
+    mkdir -p "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" 2>/dev/null || :
+    writable+=("$HOME/.gemini" "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}")
   fi
-  mkdir -p "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" 2>/dev/null || :
-  writable+=("$HOME/.gemini" "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" "${TMPDIR:-/tmp}" /private/tmp
-    "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$directory")
+  writable+=("${TMPDIR:-/tmp}" /private/tmp "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$directory")
   printf '(version 1)\n(allow default)\n(deny file-write*)\n'
   for path in "${writable[@]}"; do
     [ -n "$path" ] || return 1
@@ -138,25 +143,37 @@ research_failure() {
   return "$3"
 }
 
+# Sets the caller's `sandbox_exec` and `profile` for a research run of <vendor>: its repositories and
+# ~/.claude write-denied whoever else writes in them, so a co-tenant's edit never fails the run.
+research_sandbox_ready() { # directory vendor
+  local meta="$1/meta.json" unavailable account resolved_repos
+  unavailable="$(tr '[:lower:]' '[:upper:]' <<<"$2")_UNAVAILABLE"
+  account=$(jq -r .account "$meta")
+  sandbox_exec=$(jq -r .sandbox_exec "$meta")
+  REPLY_ARRAY=()
+  read_json_array '.add_dirs[]' "$meta"
+  resolved_repos=("$(jq -r .workdir "$meta")" "${REPLY_ARRAY[@]}")
+  profile=$(directory=$1 research_sandbox_profile "$2") || {
+    printf 'light-research: could not resolve sandbox write paths\n' >"$1/err"
+    research_failure "$1" "$unavailable" 4; return $?
+  }
+  printf '%s\n' "$profile" >"$1/sandbox.sb"
+  if [ ! -x "$sandbox_exec" ] || ! "$sandbox_exec" -p "$profile" /usr/bin/true 2>"$1/err"; then
+    printf 'light-research: sandbox-exec unavailable or refused profile\n' >>"$1/err"
+    research_failure "$1" "$unavailable" 4; return $?
+  fi
+}
+
 supervise_gemini_research() {
   local directory="$1" meta="$1/meta.json" account cli profile sandbox_exec timeout_value argument rc=0
   local -a resolved_repos command
   account=$(jq -r .account "$meta")
   cli=$(jq -r .cli "$meta")
   timeout_value=$(jq -r .research_timeout "$meta")
-  sandbox_exec=$(jq -r .sandbox_exec "$meta")
   REPLY_ARRAY=()
   read_json_array '.add_dirs[]' "$meta"
   resolved_repos=("$(jq -r .workdir "$meta")" "${REPLY_ARRAY[@]}")
-  profile=$(research_sandbox_profile) || {
-    printf 'light-research: could not resolve sandbox write paths\n' >"$directory/err"
-    research_failure "$directory" GEMINI_UNAVAILABLE 4; return $?
-  }
-  printf '%s\n' "$profile" >"$directory/sandbox.sb"
-  if [ ! -x "$sandbox_exec" ] || ! "$sandbox_exec" -p "$profile" /usr/bin/true 2>"$directory/err"; then
-    printf 'light-research: sandbox-exec unavailable or refused profile\n' >>"$directory/err"
-    research_failure "$directory" GEMINI_UNAVAILABLE 4; return $?
-  fi
+  research_sandbox_ready "$directory" gemini || return $?
   mkdir -p "$directory/scratch" || return 4
   command=("$cli" profile "$account" --model "$(jq -r .agy_model "$meta")")
   for repo in "${resolved_repos[@]}"; do command+=(--add-dir "$repo"); done
