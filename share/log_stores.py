@@ -127,8 +127,9 @@ def units(entry):
 
 def unit_stats(path):
     """{path, bytes (allocated, as du), size (a file's length), files, newest (the newest mtime of the unit and
-    everything inside it), denied (a directory macOS will not list, an app's data its privacy guard keeps: never
-    swept)}; symlinks are counted, never followed."""
+    everything inside it), denied (a directory macOS will not list, an app's data its privacy guard keeps, or one
+    holding a non-empty directory of another owner we may not write, a tool once run as root: never swept)};
+    symlinks are counted, never followed."""
     try:
         info = os.lstat(path)
     except OSError:
@@ -138,12 +139,14 @@ def unit_stats(path):
     if not row["dir"]:
         row["files"] = 1
         return row
-    stack = [path]
+    stack, uid = [(path, info.st_uid)], os.getuid()
     while stack:
-        top = stack.pop()
+        top, owner = stack.pop()
         try:
             with os.scandir(top) as entries:
                 for item in entries:
+                    if owner != uid and not row.get("denied"):
+                        row["denied"] = not os.access(top, os.W_OK)
                     try:
                         info = item.stat(follow_symlinks=False)
                     except OSError:
@@ -151,7 +154,7 @@ def unit_stats(path):
                     row["bytes"] += info.st_blocks * 512
                     row["newest"] = max(row["newest"], info.st_mtime)
                     if stat.S_ISDIR(info.st_mode):
-                        stack.append(item.path)
+                        stack.append((item.path, info.st_uid))
                     else:
                         row["files"] += 1
         except PermissionError:
@@ -192,7 +195,7 @@ def doomed(entry, rows, now, slack=False):
 
 def summary(entry, rows, now):
     """One store's measurement: bytes, files, units, the oldest unit's age and what lies past criterion + slack."""
-    over = [r for r, _action in doomed(entry, rows, now, slack=True) if r["bytes"]]
+    over = [r for r, _action in doomed(entry, rows, now, slack=True) if r["bytes"] and not r.get("denied")]
     key, value = criterion(entry)
     return {"name": entry["name"], "cleaner": entry["cleaner"], "criterion": [key, value] if key else None,
             "group_days": entry.get("group_days"), "bytes": sum(r["bytes"] for r in rows),

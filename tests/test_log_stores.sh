@@ -440,6 +440,20 @@ with open(os.path.join(work, "ps-args"), "w") as handle:
                  % (home, home))
 check(ls.unit_stats(os.path.join(home, "cachey/locked")).get("denied") is True
       and not ls.unit_stats(os.path.join(home, "cachey/big")).get("denied"), "a directory macOS will not list is denied")
+put("rootish/logs/sub/main.log", 4096, 400)
+put("plainish/logs/sub/main.log", 4096, 400)
+os.chmod(os.path.join(home, "rootish/logs/sub"), 0o555)
+real_uid = ls.os.getuid
+ls.os.getuid = lambda: real_uid() + 1  # every directory reads as another user's, as a tool once run under sudo leaves
+try:
+    foreign = ls.unit_stats(os.path.join(home, "rootish/logs"))
+    writable = ls.unit_stats(os.path.join(home, "plainish/logs"))
+finally:
+    ls.os.getuid = real_uid
+    os.chmod(os.path.join(home, "rootish/logs/sub"), 0o755)
+check(foreign.get("denied") is True and not writable.get("denied")
+      and ls.summary({"name": "x", "cleaner": "sweep", "days": 30}, [foreign], time.time())["over_units"] == 0,
+      "another owner's directory holding what we may not remove is denied, never past its criterion: %s" % foreign)
 held_now = sweep_mod.open_paths()
 check(os.path.join(home, "npx/abc") in held_now and os.path.join(home, "prof") in held_now
       and os.path.join(home, "prof/Default/Cache") not in held_now,
