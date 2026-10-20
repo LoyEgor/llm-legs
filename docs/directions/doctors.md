@@ -39,6 +39,9 @@ No night has run since 10-14. The run records sit in six nights, then two (`2026
 | outside: log-audit rows / blind spots added | 57 / 27 | 12 / 26 |
 | blind spots closed (open on 10-20: 81) | 5 | 0 |
 
+- First point after the baseline: 10-20's day wave (46 fixer runs a chat launched unasked, stopped midway): false-alarm
+  share **48.1 % (13 of 27)**, audit rows 21 of 29.
+
 - Recompute the false-alarm share in about 1 s:
   ```
   python3 -c 'import json,glob,os,datetime as T
