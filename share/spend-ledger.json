@@ -6544,6 +6544,82 @@
    "verdict": "kept",
    "zero": "removal saves ~1.0 CPU-min/day (median; hours 10-15..10-19 held 1240/3305/884/61 CPU-s, 0 since 10-19); loses the champ67 tracer layer every later tracer (champ68..champ77, d1/d2 lanes) calls as its base, so the bench lineage and its recorded results stop reproducing",
    "note": "bench compute, not harness overhead: the sampled process is the champ67-j256 ladder pipeline on one image, deterministic (PYTHONHASHSEED=0, 1 thread); 'runs' are hourly samples, active only 10-15..10-17 and 10-19 during the champ68-77 campaign, idle now. Only cheaper equivalent: a per-input-hash cache of this layer's output shared by descendants, a change in logo-vectorizer-bench (not an ADD-DIR repo), worth <1 CPU-min/day on the idle bench, so no handoff"
+  },
+  {
+   "id": "fee:Handoffs",
+   "title": "Handoffs (Workers)",
+   "audited_at": "2026-10-20T15:07:32+03:00",
+   "by": "harness-speed-spend-fee-handoffs-20261020T114042Z-57ed",
+   "share": 0.000352,
+   "prices": {
+    "Chat · Handoffs": 306.107550736237,
+    "Workers · Handoffs": 51.994943613584674,
+    "Reviewers · Handoffs": 0.0
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.04 % of Claude spend; loses the owner-to-owner carry of research and trades (a worker's finding reaches the next night or the integrating chat only through a handoff file)",
+   "note": "Read/attachment of docs/handoffs/*.md, 7d to 10-20: 53k est tokens (chats 19k, workers 8k, review-bench cell fixtures 26k); one 25 kB handoff (2026-10-19-flow-upscale-jitter, written by the arbostar-logo chat) is 16k of it, read once whole by the integrating chat (10.4k) and re-attached, i.e. the handoff doing its job, which is the Δ +32 %; Edit/Write carry no est tokens in tokenmap (tokenmap gap: handoff write cost is invisible); a pointer-only handoff would make the integrating chat re-ask the writer, no equal-decision cheaper form replayed"
+  },
+  {
+   "id": "fee:Gates",
+   "title": "Gates (Scripts)",
+   "audited_at": "2026-10-20T15:07:35+03:00",
+   "by": "harness-speed-spend-fee-handoffs-20261020T114042Z-57ed",
+   "share": 0.000292,
+   "prices": {
+    "Background · Gates": 4294.5204081632655
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.03 % of Claude spend; loses the usage-ai-report sanitization gate before publish",
+   "note": "already the stripped launch (usage-ai-report 40bffd3 minimal context, a8dddce ask_claude.sh transport; llm-legs 761cf189 empty cwd, --safe-mode, no tools): 12 runs 10-19 at one request each, 19.9k context of which 14-15k is the text under judgment (the work) and 2.5k the system prefix; the 1.7k CLAUDE.md+memory in tokenmap's split is its per-carrier scaling, not a load (--safe-mode); runs fell 63 -> 12 a week, price per task up because the unit count fell with it; nothing left to strip without shrinking the payload the gate exists to read"
+  },
+  {
+   "id": "fee:Commit check",
+   "title": "Commit check (Scripts)",
+   "audited_at": "2026-10-20T15:07:39+03:00",
+   "by": "harness-speed-spend-fee-handoffs-20261020T114042Z-57ed",
+   "share": 0.000123,
+   "prices": {
+    "Background · Commit check": 36364.122448979615
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.01 % of Claude spend; loses the nightly Haiku classification of harness commits that splits Spend into fix and new work",
+   "note": "already the stripped launch (token-map 674f34f: ask_claude.sh, Haiku medium, 31.9k -> 28.6k context; empty cwd since 10-13); runs 65 on 10-09 (reference-drift reruns) -> 1-17 a day, 35 runs 10-13..10-19; context 25-50k is rule 2.7 kB + a batch of up to 40 commit blocks (message 700 chars, 30 diff lines, 10 stat lines), already capped; research/script-context-2026-10-12.md: minimal context moved the scores, drift bound 15/12 is the guard; Δ +38 % is per-task price rising as the denominator fell, not more text"
+  },
+  {
+   "id": "fee:Memory files",
+   "title": "Memory files (Context)",
+   "audited_at": "2026-10-20T15:07:42+03:00",
+   "by": "harness-speed-spend-fee-handoffs-20261020T114042Z-57ed",
+   "share": 6.9e-05,
+   "prices": {
+    "Chat · attachment: memory files": 15.451101205572392,
+    "Reviewers · attachment: memory files": 174.69405973023657,
+    "Workers · attachment: memory files": 0.0
+   },
+   "sources": {},
+   "verdict": "kept",
+   "zero": "removal saves 0.01 % of Claude spend; loses the nested CLAUDE.md a subdirectory read attaches (project rules for that directory)",
+   "note": "attachment: memory files parts, 7d: 10-13/14 only (two /Users/egorloy chats 0.89M est plus review-bench cell worktrees ~0.6M, the bench's own load), 10-15 12k, 10-16 2k, none 10-17..10-20; Δ -83 % is that burst gone; what remains is Claude Code attaching a repo's own CLAUDE.md on a read in that subtree, the work's context, no cheaper equal form; the out-of-cwd copies were kept on startup:nested CLAUDE.md files 10-08"
+  },
+  {
+   "id": "fee:Agents list",
+   "title": "Agents list (Context)",
+   "audited_at": "2026-10-20T15:07:44+03:00",
+   "by": "harness-speed-spend-fee-handoffs-20261020T114042Z-57ed",
+   "share": 3.6e-05,
+   "prices": {
+    "Workers · attachment: agent listing": 0.0,
+    "Chat · attachment: agent listing": 30.813493549044892,
+    "Background · attachment: agent listing": 0.0
+   },
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 0.00 % of Claude spend; loses nothing of ours: the listing now holds only Claude Code's built-in agents",
+   "note": "cut at source by claude-setup 46879c63 (10-09) retiring the seven relay agents: the attachment fell from 576-611 est tokens a request (10-06..08) to 93-131 (10-10..20), Workers cell price 657 -> 0.0 in tokenmap; ~/.claude/agents (symlink to claude-setup/agents) is empty; the ~100 left is the vendor's built-in agent listing, not ours to remove; Δ -96 % is that cut showing"
   }
  ]
 }
