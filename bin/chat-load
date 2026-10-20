@@ -33,6 +33,8 @@ LOG_DIR = os.environ.get("MEMLOGD_DIR") or os.path.join(HOME, "Library/Logs/meml
 STATE_PATH = os.path.join(LOG_DIR, "chat-load.state.json")
 OUT_PATH = os.path.join(LOG_DIR, "chats.json")
 BENCHES_PATH = os.path.join(LOG_DIR, "chat-load.benches.json")
+LAUNCHERS_PATH = os.path.join(LOG_DIR, "chat-load.launchers.json")
+LAUNCHERS_TTL_S = 300
 HOLDS_DIR = os.environ.get("HARNESS_HOLDS_DIR") or os.path.join(
     os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(HOME, ".cache/harness-doctor"), "holds")
 SESSION_DIRS = (os.environ.get("CHAT_LOAD_SESSIONS")
@@ -458,6 +460,17 @@ def guard(now, avail, room, measure, table, envs, tops, sessions, protected, roo
             "told": bool(posted) or not notify, "killed": killed}
 
 
+def launchers_of(chat_names, now):
+    """chat_names.worker_run_launchers() reads two files in each of the thousands of run dirs (~0.25 CPU-s) and a
+    title refresh is due on most ticks, so the map is kept for LAUNCHERS_TTL_S, under the 600 s a title already lives."""
+    held = read_json(LAUNCHERS_PATH, {})
+    if isinstance(held.get("map"), dict) and 0 <= now - held.get("at", 0) < LAUNCHERS_TTL_S:
+        return held["map"]
+    found = {worker: sorted(owners) for worker, owners in chat_names.worker_run_launchers().items()}
+    write_json(LAUNCHERS_PATH, {"at": now, "map": found})
+    return found
+
+
 def name_chats(sids, now, cache):
     stale = [sid for sid in sids if now - cache.get(sid, {}).get("at", 0) > 600]
     if not stale:
@@ -467,7 +480,7 @@ def name_chats(sids, now, cache):
         sys.dont_write_bytecode = True
         sys.path[:0] = SHARED
         import chat_names
-        launchers, store = chat_names.worker_run_launchers(), chat_names.store_names()
+        launchers, store = launchers_of(chat_names, now), chat_names.store_names()
         for sid in stale:
             name = chat_names.chat_name(sid, launchers=launchers, store=store)
             found[sid] = (name, name or chat_names.chat_title(sid, launchers, store))

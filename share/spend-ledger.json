@@ -6818,6 +6818,19 @@
    "verdict": "kept",
    "zero": "removal saves 0.04 % of Claude spend; loses the standing adversary leg of the daily advisor (find-truth advisor_today.sh)",
    "note": "already stripped at source (find-truth 45016f4 limited it to supplied context, f9b4199 moved it to ask_claude.sh's stripped default): one call a day, 37-40k tokens each in 10-06..10-19 (10-12 five replays), -32 % because the week before had extra runs; find-truth e4444c9 (10-20) puts scheduled note and advisor on Gemini Argon alone until the owner decides, which ends the Claude leg; nothing left to cut"
+  },
+  {
+   "id": "cpu:process/memlogd",
+   "title": "process/memlogd",
+   "audited_at": "2026-10-20T15:52:35+03:00",
+   "by": "harness-speed-cpu-process-llm-legs-bin-worker-run-20261020T113947Z-43fc",
+   "cpu_min_day": 37.8,
+   "cpu_s_run": 90.456,
+   "runs_day": 24,
+   "sources": {},
+   "verdict": "cut",
+   "zero": "removal saves 37.8 CPU-min/day; loses the machine's memory log, the incident frames, the per-chat load snapshot of the menubar and the memory guard that kills a runaway job before the machine freezes",
+   "note": "98% of the CPU is reaped children of the 15 s tick (own 44-97 s/day): ps x2 0.07 each, chat-load python ~0.25; chat-load's title refresh read 2x~2400 run-dir files per refresh (0.23 CPU-s, due on ~60% of ticks) and registered_roots globbed 2400 run + 557 bench dirs: launchers kept 300 s, scandir, bench listing keyed on dir mtime, 40-tick replay 0.25 -> 0.13 CPU-s/tick (~11 CPU-min/day); left: node_stats' ps duplicates chat-load's ps (~0.07 CPU-s/tick, ~7 CPU-min/day) but test_memlogd pins node_count/-1 on a fake ps in ~12 asserts; bash side forks ~12 processes a tick (vm_stat, df, sysctl x3, awk x3, date x2)"
   }
  ]
 }
