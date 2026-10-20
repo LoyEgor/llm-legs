@@ -42,12 +42,54 @@ svg_reference() {
   assert test ! -e "$(cat "$WORK/converted")"
 }
 
+batch_start() {
+  local real shim="$WORK/shim" i
+  real=$(command -v uv)
+  mkdir -p "$shim"
+  printf '#!/bin/sh\necho start >>"%s/uv-starts"\nexec "%s" "$@"\n' "$WORK" "$real" >"$shim/uv"
+  chmod +x "$shim/uv"
+  for i in 1 2 3; do magick -size 64x64 gradient:red-blue "$WORK/ref$i.png"; done
+  : >"$WORK/uv-starts"
+  (
+    PATH="$shim:$PATH"
+    . "$ROOT/share/image-leg.sh"
+    trap image_leg_inputs_cleanup EXIT
+    usage() { printf '%s\n' "$*" >&2; exit 2; }
+    refs=("$WORK/ref1.png" "$WORK/viewbox.svg" "$WORK/ref3.png")
+    edit=$WORK/ref3.png
+    first_frame=$WORK/ref1.png
+    image_leg_inputs "$ROOT" "$WORK/ref2.png"
+    printf '%s\n' "${refs[@]}" "$edit" "$first_frame" "[$last_frame]" "$IMAGE_LEG_INPUT" >"$WORK/batch-out"
+  ) || fail 'batched inputs must validate'
+  assert test "$(wc -l <"$WORK/uv-starts")" -eq 1
+  assert test "$(sed -n 1p "$WORK/batch-out")" = "$WORK/ref1.png"
+  assert grep -q '/image-input-.*\.png$' <(sed -n 2p "$WORK/batch-out")
+  assert test "$(sed -n 3,6p "$WORK/batch-out" | paste -sd' ' -)" = "$WORK/ref3.png $WORK/ref3.png $WORK/ref1.png []"
+  assert test "$(sed -n 7p "$WORK/batch-out")" = "$WORK/ref2.png"
+  : >"$WORK/uv-starts"
+  code=0
+  (
+    PATH="$shim:$PATH"
+    . "$ROOT/share/image-leg.sh"
+    usage() { printf '%s\n' "$*" >&2; exit 2; }
+    refs=("$WORK/ref1.png" "$WORK/missing.png" "$WORK/blank.png")
+    image_leg_inputs "$ROOT"
+  ) >"$WORK/out" 2>"$WORK/err" || code=$?
+  assert test "$code" = 2
+  assert test "$(cat "$WORK/err")" = "input $WORK/missing.png is not an absolute path to a file"
+  assert test "$(wc -l <"$WORK/uv-starts")" -eq 1
+  rm -f "$shim/uv"
+  rmdir "$shim"
+}
+
 case ${1:-} in
+  batch_start) batch_start; exit ;;
   blank_reference) blank_reference; exit ;;
   svg_reference) svg_reference; exit ;;
 esac
 blank_reference
 svg_reference
+batch_start
 for wrapper in codex-image gemini-image grok-image gemini-video grok-video; do
   case $wrapper in *-image) flags='--ref --edit'; ext=png ;; *) flags='--ref --first-frame --last-frame'; ext=mp4 ;; esac
   for flag in $flags; do

@@ -171,8 +171,7 @@ add_request() { # prompt dest refs-lines edit aspect size transparent vendors ac
   case ${11} in ""|2k) ;; *) usage_error "--upscale is 2k" ;; esac
   [ "$video" = false ] || [ -z "${11}" ] || usage_error "--upscale is image-only"
   while IFS= read -r ref; do [ -z "$ref" ] || refs+=("$ref"); done <<<"$3"
-  image_leg_inputs "$root"
-  image_leg_input "$root" "$edit"
+  image_leg_inputs "$root" "$edit"
   edit=$IMAGE_LEG_INPUT
   local ref_lines=''
   [ "${#refs[@]}" -eq 0 ] || ref_lines=$(printf '%s\n' "${refs[@]}")

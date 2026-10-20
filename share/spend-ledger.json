@@ -5666,19 +5666,19 @@
   {
    "id": "suite:llm-legs/test_image_fanout",
    "title": "llm-legs/test_image_fanout",
-   "audited_at": "2026-10-14T08:36:33+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-outcomes-20261014T021737Z-04e0",
-   "cpu_run": 35.9,
-   "wall_run": 66.3,
-   "cpu_min_day": 11.11,
-   "wall_min_day": 24.75,
+   "audited_at": "2026-10-20T16:11:39+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-grok-outcomes-20261020T114154Z-40ea",
+   "cpu_run": 40.6,
+   "wall_run": 51.7,
+   "cpu_min_day": 7.26,
+   "wall_min_day": 17.12,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
-    "llm-legs/tests/test_image_fanout.sh": "97d851bee70b79309cfd02947543f7372fbb92da"
+    "llm-legs/tests/lib/suite-journal.sh": "81333618c0ede1295ff60523b106e2789bd6984d",
+    "llm-legs/tests/test_image_fanout.sh": "7ae27782bc2fd455295c6cc2f21824f44eaab03c"
    },
    "verdict": "cut",
-   "zero": "removal saves 25.2 wall-min/day, 11.0 CPU-min/day; loses the image fan-out scheduler checks (362 asserts)",
-   "note": "cut 70cd9481: one jq per route_get, plan_group three fields in one jq, 12 kv_last keys in one awk, builtin sleep in the idle tick; jq 1658 -> 1213, awk 1416 -> 654, sleep 363 -> 113, CPU 58.5 -> 41.0 s; PASS 362"
+   "zero": "removal saves 12.6 wall-min/day; loses the fan-out planning, per-vendor split, ref/edit routing and job-file checks",
+   "note": "F1 only: one uv start per request instead of one per ref plus edit; F3/F4 left open; fanout 356 asserts unchanged, wall not re-measurable at load 115"
   },
   {
    "id": "suite:llm-legs/test_run_suites_journal",
