@@ -364,7 +364,7 @@ function M.runEverything()
 end
 
 function M.cleanupNow()
-  startNight("Cleanup", "Cleanup now?",
+  startNight("Land night branches", "Land night branches now?",
     "Lands the finished night branches, then one debt round, in one orchestrator chat. No fixers, no updates.", "Run",
     { "--cleanup" })
 end
@@ -1092,6 +1092,37 @@ local function keepRow(gb, keep, name, tone, menu)
   return row({ { padded(amount(gb), 5) }, { " GB  " }, { padded(keep, 7), style.DIM }, { "  " }, { name, tone } }, menu)
 end
 
+-- Disk space by hand. The emergency size is log_stores.emergency, measured by the daily collector and after a sweep,
+-- never per tick; the review opens a chat (docs/disk-review.md) and nothing reminds of it.
+function M.emergencyCleanup(gb)
+  if running(fixTasks.emergency) then return end
+  if hs.dialog.blockAlert("Emergency cleanup now?", (gb and "About " .. amount(gb) .. " GB: e" or "E")
+      .. "very cache, and temp files untouched for 2 h, biggest first. Logins and live work stay.", "Cancel", "Run") ~= "Run" then
+    return
+  end
+  launch("emergency", M.logSweepCmd or (repoRoot and repoRoot .. "/bin/log-sweep"), { "--emergency" },
+    "Emergency cleanup", "Emergency cleanup done")
+end
+
+function M.reviewDisk()
+  launch("diskreview", M.diskReviewCmd or (repoRoot and repoRoot .. "/bin/disk-review"), {}, "Disk review",
+    "Disk review chat opened")
+end
+
+local function diskByHand(logs)
+  local gb, emergency = tonumber(list(logs.emergency).gb), nil
+  if running(fixTasks.emergency) then
+    emergency = dim("Emergency cleanup — running…")
+  elseif not gb then
+    emergency = dim("Emergency cleanup — not measured yet")
+  else
+    emergency = row({ { "Emergency cleanup  " }, { "~" .. amount(gb) .. " GB" } })
+    emergency.fn, emergency.disabled = function() M.emergencyCleanup(gb) end, nil
+  end
+  return { emergency, running(fixTasks.diskreview) and dim("Review disk with Claude — opening…")
+    or { title = infoTitle("Review disk with Claude…"), fn = M.reviewDisk } }
+end
+
 local function retention(store, group)
   local words = type(store.keep_by_group) == "table" and store.keep_by_group[group] or store.keep
   if type(words) == "string" then return keepWords(words) end
@@ -1297,6 +1328,8 @@ local function systemSections(document, now, moved, incoming)
         problemMenu(free))
       if gib and (not least or gib < least.gib) then least = { gib = gib, history = history } end
     end
+    rows[#rows + 1] = { title = "-" }
+    for _, line in ipairs(diskByHand(logs)) do rows[#rows + 1] = line end
     local caches = {}
     for _, cache in ipairs(list(nightly.caches)) do
       if type(cache) == "table" and tonumber(cache[2]) then
@@ -1903,7 +1936,7 @@ local function compute()
   if now - night.at >= NIGHT_REFRESH_S then M.refreshNight() end
   if night.text then entries[#entries + 1] = nightEntry() end
   entries[#entries + 1] = { title = "-", problems = 0 }
-  for _, item in ipairs({ nightItem("Cleanup now", M.cleanupNow),
+  for _, item in ipairs({ nightItem("Land night branches now", M.cleanupNow),
       nightItem("Run everything now", M.runEverything) }) do
     item.problems = 0
     entries[#entries + 1] = item

@@ -1,0 +1,24 @@
+#!/bin/bash
+# Doctors → System → Disk space → "Review disk with Claude…": start the disk scan, then open the review chat that
+# follows docs/disk-review.md. By hand only; nothing here runs on a timer.
+{
+set -u
+source=${BASH_SOURCE[0]}
+while [ -L "$source" ]; do
+  dir=$(cd -P "${source%/*}" && pwd)
+  source=$(readlink "$source")
+  [[ $source = /* ]] || source=$dir/$source
+done
+repo_root=$(cd -P "${source%/*}/.." && pwd)
+state=${DISK_REVIEW_DIR:-$HOME/.cache/disk-review}
+mkdir -p "$state" || exit 1
+
+python3 -B "$repo_root/share/disk_review/scan.py" run || { printf 'disk-review: the scan did not start\n' >&2; exit 1; }
+. "$repo_root/share/chat-open.sh"
+opened=$(CHAT_OPEN_OPENER="${DISK_REVIEW_OPENER:-open -a Terminal}" \
+  CHAT_OPEN_WORKER_PICK="${DISK_REVIEW_WORKER_PICK:-$repo_root/bin/worker-pick}" \
+  chat_open "$state/chat.command" "$repo_root" \
+    "Disk review: read $repo_root/docs/disk-review.md in full and follow it." 2>&1) ||
+  { printf 'disk-review: the chat did not open: %s\n' "$opened" >&2; exit 1; }
+printf 'disk review chat opened\n'
+exit; }

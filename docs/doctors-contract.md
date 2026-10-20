@@ -47,7 +47,7 @@ Spend     0.46  ▁▁▂▃▄▆█      ▸
 System       2  ▁▁▂▃▄▆█    3 ▸
 Last night 5 Oct · stopped early: no jobs
 ──────────
-Cleanup now
+Land night branches now
 Run everything now
 
 LLM ▸     8  reviewers crashed
@@ -105,7 +105,10 @@ LLM ▸     8  reviewers crashed
   it; an item reads `B × · dominant term · name` (the group's prefix dropped, `✗` its job's file gone, `○` a job
   launchd does not hold with B 0) and opens its `about`, `place`, `label · schedule · state`, then each term per day
   and as a share of its limit, starts (`per_day.S`, unscored: B has no S) per second on a DIM row with no share,
-  the unmeasured terms on one DIM row. The menu only places and formats what the
+  the unmeasured terms on one DIM row. Disk space follows its volume rows with two by-hand items:
+  `Emergency cleanup  ~N GB` (`log_stores.emergency.gb`; DIM before the first measure), which asks Cancel-first and
+  runs `bin/log-sweep --emergency`, and `Review disk with Claude…`, which runs `bin/disk-review`
+  (`docs/disk-review.md`); neither has a timer. The menu only places and formats what the
   document says.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs (a loud one also its
   `state`, `group` and `fact`), three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows. The menu

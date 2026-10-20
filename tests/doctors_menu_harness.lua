@@ -362,7 +362,7 @@ for index = 1, 7 do
   check(not span(title, VALUE_AT - 3, USUAL_AT):match("[%a%%/]"),
     "summary rows carry no unit, Lost time's min/day lives inside its menu: " .. text(title))
 end
-check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].title) == "Cleanup now"
+check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].title) == "Land night branches now"
   and text(trendItems[10].title) == "Run everything now", "top level: seven summaries, System last, then the actions")
 check(span(trendItems[5].title, 1, 9) == "Lost time" and span(trendItems[6].title, 1, 5) == "Spend"
   and sameColor(colorAt(trendItems[6].title, 1), palette.GREEN),
@@ -1101,8 +1101,8 @@ items = doctors.menuItems()
 local run = items[#items]
 check(items[#items - 2].title == "-" and text(run.title) == "Run everything now" and run.fn,
   "Run everything is the last Doctors item")
-check(text(items[#items - 1].title) == "Cleanup now" and items[#items - 1].fn,
-  "Cleanup now sits right above Run everything")
+check(text(items[#items - 1].title) == "Land night branches now" and items[#items - 1].fn,
+  "Land night branches now sits right above Run everything")
 tasks, dialogs, answer = {}, {}, "Cancel"
 run.fn()
 check(#dialogs == 1 and #tasks == 0, "Cancel on the confirmation starts nothing")
@@ -1132,7 +1132,7 @@ doctors.refreshNight()
 tasks[#tasks]:finish(4, "", "night-run: cannot read\n")
 check(#doctors.menuItems() == 10, "an empty night-run hides the row")
 
--- Cleanup now: bin/night-run start --cleanup behind the same Cancel-first confirmation; off while a night runs.
+-- Land night branches now: bin/night-run start --cleanup behind the same Cancel-first confirmation; off while a night runs.
 doctors.refreshNight()
 tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4\t0\t0\tn-1\n")
 tasks, dialogs, answer = {}, {}, "Cancel"
@@ -1143,13 +1143,13 @@ check(#dialogs == 1 and #tasks == 0 and dialogs[1][3] == "Cancel" and dialogs[1]
   and dialogs[1][2]:find("No fixers, no updates", 1, true), "Cancel on the cleanup confirmation starts nothing")
 answer = "Run"
 cleanup.fn()
-check(#tasks == 1 and table.concat(tasks[1].args, " ") == "start --cleanup", "Cleanup now runs bin/night-run start --cleanup")
+check(#tasks == 1 and table.concat(tasks[1].args, " ") == "start --cleanup", "Land night branches now runs bin/night-run start --cleanup")
 tasks[1]:finish(0, "night n-2 started: orchestrator on acct\n")
 doctors.menuItems()
 tasks[#tasks]:finish(0, "Night run since 12:00: no jobs\t0\t1\tn-2\n")
 items = doctors.menuItems()
-check(text(items[#items - 1].title) == "Cleanup — a night run is going" and items[#items - 1].disabled
-  and not items[#items - 1].fn, "a running night holds Cleanup now")
+check(text(items[#items - 1].title) == "Land night branches — a night run is going" and items[#items - 1].disabled
+  and not items[#items - 1].fn, "a running night holds Land night branches now")
 
 -- Continue: each unfinished job of a night that no longer runs, and all of them plus the cleanup.
 doctors.refreshNight()

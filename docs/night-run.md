@@ -188,7 +188,7 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
 - `night-run start --cleanup` opens a new night with the prompt `сделай чистку — night run <id>
   cleanup`: the orchestrator lands the finished night branches and every leftover, and runs the debt
   round, no fixers, no updates.
-- The Doctors menu: `Cleanup now` above `Run everything`, behind
+- The Doctors menu: `Land night branches now` above `Run everything`, behind
   the same Cancel-first confirmation and off while a night runs; under the last night, while it does
   not run, each unfinished job gets `Continue this job` one level down, and one item `Continue
   unfinished (N jobs) + cleanup` resumes them all.
