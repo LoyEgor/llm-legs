@@ -28,11 +28,16 @@ worker_pool_valid_name() {
 # llm-limits.sh already enumerate accounts by; honouring worker-run's CODEX_PROFILES_DIR as well
 # would let one store hold the accounts and another the exclusions.
 worker_pool_dir() {
+  worker_pool_dir_r "$1" || return 1
+  printf '%s\n' "$WORKER_POOL_DIR_R"
+}
+
+worker_pool_dir_r() {
   case "$1" in
-    claudeb) printf '%s\n' "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}" ;;
-    codex) printf '%s/.codexb\n' "${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}" ;;
-    gemini) printf '%s/.geminib\n' "${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}" ;;
-    grok) printf '%s/.grokb\n' "${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}" ;;
+    claudeb) WORKER_POOL_DIR_R=${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb} ;;
+    codex) WORKER_POOL_DIR_R=${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}/.codexb ;;
+    gemini) WORKER_POOL_DIR_R=${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}/.geminib ;;
+    grok) WORKER_POOL_DIR_R=${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}/.grokb ;;
     *) return 1 ;;
   esac
 }

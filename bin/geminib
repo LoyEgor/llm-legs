@@ -16,7 +16,14 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 
-geminib_root=$(resolve_root)
+if [ -L "${BASH_SOURCE[0]}" ]; then
+  geminib_root=$(resolve_root)
+else
+  case "${BASH_SOURCE[0]}" in
+    */*) geminib_root=$(cd -P "${BASH_SOURCE[0]%/*}/.." && pwd) ;;
+    *) geminib_root=$(cd -P .. && pwd) ;;
+  esac
+fi
 quota_helper="${GEMINIB_QUOTA_CMD:-$geminib_root/agy-quota.py}"
 gemini_base_home=$base_home
 gemini_profiles_dir=$profiles_dir

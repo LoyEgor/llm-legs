@@ -5081,19 +5081,19 @@
   {
    "id": "suite:llm-legs/test_run_suites_shards",
    "title": "llm-legs/test_run_suites_shards",
-   "audited_at": "2026-10-13T12:38:36+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-tripwire-20261012T235323Z-6327",
-   "cpu_run": 10.2,
-   "wall_run": 37.4,
-   "cpu_min_day": 1.58,
-   "wall_min_day": 8.48,
+   "audited_at": "2026-10-20T15:47:12+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-test-health-20261020T114131Z-4ce9",
+   "cpu_run": 12.9,
+   "wall_run": 10.8,
+   "cpu_min_day": 0.83,
+   "wall_min_day": 1.22,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "56fd9ddd6eac2f09bfabc7fd627b763f356fa568",
-    "llm-legs/tests/test_run_suites_shards.sh": "e37e85c6dad4b19b3ce45638352174d822e1e3c5"
+    "llm-legs/tests/lib/suite-journal.sh": "81333618c0ede1295ff60523b106e2789bd6984d",
+    "llm-legs/tests/test_run_suites_shards.sh": "c8cbacdb95cd756d749425372e200baccdb54fc4"
    },
    "verdict": "cut",
-   "zero": "removing it saves 7.6 wall-min/day; loses the shard fan-out, one-verdict, -j sharing and layout pins",
-   "note": "fixture sleeps (1 s, 3 s) now only in the five runs that check overlap or wall (~30 s of ~37 a run were sleeps in runs checking neither); shard-layout sweep no longer forks a subshell per test file; 77 asserts unchanged"
+   "zero": "removal saves 0.7 s CPU a run (shard b's 200000-turn busy loop ran in every sharded run); loses nothing: the summed-CPU check keeps a 20000-turn burn in its one run",
+   "note": "BUSY_B gates the burn to the run asserting cpu_s; 94 asserts unchanged, suite PASS; run stopped by Egor before a profiled rerun"
   },
   {
    "id": "suite:llm-legs/test_self_edit_guard",
