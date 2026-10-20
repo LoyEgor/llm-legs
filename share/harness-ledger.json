@@ -6179,7 +6179,7 @@
         "rule": "opportunity",
         "ident": "hooks/commit-report\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T08:20:00+03:00",
@@ -6213,12 +6213,27 @@
             "data": "621 PostToolUse payloads rebuilt from the last 400 transcripts (500 spelling no git, 120 spelling it, the largest no-git one), 77 with a write stash for their tool_use_id, scratch HOME, CLAUDE_PROJECT_DIR unset",
             "result": "621/621 identical; 250 interleaved no-git pairs at load ~200: p50 349 -> 119 ms, mean 430 -> 213 ms"
           }
+        },
+        {
+          "at": "2026-10-20T15:30:00+03:00",
+          "by": "fixer harness-speed-hooks-commit-report-sh-20261020T114011Z-699d",
+          "files": [
+            "claude-setup/hooks/commit-report.sh",
+            "claude-setup/tests/test_commit_report.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "hooks/commit-report.sh at the base vs the fix: stdout and stderr per landing call",
+            "data": "23 fixture scenarios of a commit landing in 1, 2 and 3 journaled repositories x 5 review-debt answers (zero, owed, owed with due, WHY=err, garbage), a probe killed at RJ_DEBT_BOUND, review-debt absent, the row budget spent by a clock moving 3 s a read (budget 4 and 60), an unwritable TMPDIR; scratch HOME, review-debt stubbed",
+            "result": "23/23 identical; two probes that each wait for the other's marker overlap (red on the old code, where the second starts after the first gave up); 4 repositories x 1 s stub probes at load ~150: 6.3-7.5 s -> 3.3-6.4 s wall, 3 pairs"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-13",
-      "reviewed_by": "night fixer harness-speed-hooks-commit-report-sh-20261012T235126Z-5503",
-      "note": "2026-10-13: 4.7 min/day back (hooks/folded 20738, 2026-10-12: 8155 runs, 11.0 wall-min; 6986 under 50 ms, 157 over 1 s = 6.8 min, the landings). Fixed: a payload spelling no git anywhere (SPLICE_JSON over the raw bytes, comment-gate's screen) whose raw tool_use_id has no write stash leaves before jq: 76 % of 58 866 rebuilt Bash payloads. Left: the landing tail (157 runs/day at ~2.6 s), not traced this run. Before: 15.58 min/day recoverable (latest.json 2026-10-10). hooks/folded 20735 (2026-10-09): 11 249 runs, 33.7 wall-min; by CPU, 7963 under 25 ms (4.1 min: no git or the old screen), 2931 at 25-150 ms (9.6 min: a git call that loaded the 2k-line library to find no landing), 295 over 500 ms (19 min: landings). Fixed: a named call with no write stash, no armed HEAD snapshot and no spliced whole word of push or RJ_LANDING_SUBCOMMANDS leaves before the library; anonymous calls (nocall.* snapshots) and stashed ones keep the full path. RJ_LIB found by expansion (the 10-09 note's dirname/cd forks). Test: test_commit_report no grep/sed/awk on such a call (red on old code) and an armed snapshot with no landing word still reports (red with the snapshot check removed). Left, handed off: the landing tail is the debt probe, review-debt --split missing its cache after every commit (76-82 s llm-legs at load ~39) and killed at the 4 s row budget as `debt unknown`, 197 runs over 4.5 s in 2026-10-08..09, about 10 min/day. Found, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base too (2026-10-10, load ~90). Seen, not changed: the libdown note now waits for a landing call, as it already did for a call naming no git.",
+      "last_reviewed": "2026-10-20",
+      "reviewed_by": "fixer harness-speed-hooks-commit-report-sh-20261020T114011Z-699d",
+      "note": "2026-10-20 (fixer 699d): hooks/folded 20745 (2026-10-19): 8556 runs under 1 s at 15 ms CPU, 100 landings over 1 s = 6.2 of 7.9 wall-min (mean 3.7 s wall, 2.1 s CPU), 51 of them at the 4 s row budget; a landing with no probe costs 0.6 s CPU (python identity, report-bus, ~60 forks). Fixed: uncommitted_lines starts every repository probe at once (wait, rows in order) and keeps status files and answers in one scratch dir; the sum of the probes (claude-setup 1.0, llm-legs 4-5, review-bench 1.7, hammerspoon 3 s wall at load ~90) was waited serially. Left, handed off (review-bench): llm-legs review-debt --repo --split reprices 8 of 48 checkouts per call (cProfile: price_family 21 of 27 s, 227 git calls) because night worktrees move their stamps between calls, so the probe alone runs 4-5 s at load ~90 and is killed at the budget; the hook cannot shorten that. Seen, not changed: report-bus and report_frame.py identity are two python starts per landing (0.9 s wall of 2.8 at load 150, ~40 ms CPU each). 2026-10-13: 4.7 min/day back (hooks/folded 20738, 2026-10-12: 8155 runs, 11.0 wall-min; 6986 under 50 ms, 157 over 1 s = 6.8 min, the landings). Fixed: a payload spelling no git anywhere (SPLICE_JSON over the raw bytes, comment-gate's screen) whose raw tool_use_id has no write stash leaves before jq: 76 % of 58 866 rebuilt Bash payloads. Left: the landing tail (157 runs/day at ~2.6 s), not traced this run. Before: 15.58 min/day recoverable (latest.json 2026-10-10). hooks/folded 20735 (2026-10-09): 11 249 runs, 33.7 wall-min; by CPU, 7963 under 25 ms (4.1 min: no git or the old screen), 2931 at 25-150 ms (9.6 min: a git call that loaded the 2k-line library to find no landing), 295 over 500 ms (19 min: landings). Fixed: a named call with no write stash, no armed HEAD snapshot and no spliced whole word of push or RJ_LANDING_SUBCOMMANDS leaves before the library; anonymous calls (nocall.* snapshots) and stashed ones keep the full path. RJ_LIB found by expansion (the 10-09 note's dirname/cd forks). Test: test_commit_report no grep/sed/awk on such a call (red on old code) and an armed snapshot with no landing word still reports (red with the snapshot check removed). Left, handed off: the landing tail is the debt probe, review-debt --split missing its cache after every commit (76-82 s llm-legs at load ~39) and killed at the 4 s row budget as `debt unknown`, 197 runs over 4.5 s in 2026-10-08..09, about 10 min/day. Found, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base too (2026-10-10, load ~90). Seen, not changed: the libdown note now waits for a landing call, as it already did for a call naming no git.",
       "handoff": "docs/handoffs/2026-10-10-commit-report-debt-probe.md"
     },
     {

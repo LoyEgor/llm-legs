@@ -1,9 +1,9 @@
 # Hand-off: commit-report's debt probe waits out its budget
 
-Status: settled 20261012T005404Z-e2f7: review-bench@be0b79d price_family memoizes each checkout's price by its own stamp; a worktree commit reprices one checkout (llm-legs, 22 checkouts: 32 s → ~2 s at load 150, same LINES/DUE)
+Status: open 2026-10-20 (family memo be0b79d settled the 2026-10-12 case; the llm-legs probe is slow again)
+To: «Review-bench improvements phase 4», /Volumes/Work/Projects/review-bench (next night's fixer if it is not live)
 
-A landing's block asks `review-debt --repo <top> --split` within what is left of the 4 s row budget
-(claude-setup `hooks/commit-report.sh` uncommitted_lines). Every commit moved the family stamp, so
-all checkouts were repriced: 76-82 s for llm-legs, the probe was killed, the row read `debt unknown`,
-~4.5 s per landing (197 runs on 2026-10-08..09, ~10 min/day). Still open: a commit on main moves the
-key of every linked checkout, which then reprices (a killed probe now banks what it priced).
+A landing asks `review-debt --repo <top> --split` within the 4 s row budget (claude-setup
+`hooks/commit-report.sh`). llm-legs with 48 checkouts: 4-5 s at load ~90, cache missed twice in a row;
+cProfile: `price_family` 21 of 27 s, 8 checkouts repriced, 227 git calls. 51 of 100 landings on
+2026-10-19 ended at the budget as `debt unknown`. Ask: reprice fewer per call.
