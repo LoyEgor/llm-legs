@@ -112,7 +112,7 @@ the cause is our own):
 | `swap` | latest tick ≥ 50% of swap allocated | — |
 | `swap-writes` | 24 h swap-outs ≥ 20 GiB/day (≥ 1 h covered) | — |
 | `ssd-writes` | 7-day mean > 200 GB/day (cause: the week's top own writer by the day cohorts' rusage bytes, else the top writer, else the top disk-writes report; levers: write fewer bytes for the same output) | > 400 |
-| `free-space` | a volume < 25 GiB free (Data's cause: the biggest cache, report-only) | < 10 |
+| `free-space` | a volume < 25 GiB free; the fact names the volume's biggest folders beside the caches and the last cache sweep (cause: the biggest folder's owner, else Data's biggest nightly cache, report-only) | < 10 |
 | `hammerspoon-crash` | ≥ 1 crash in the day before the nightly pass | — |
 | `job-crash` | ≥ 1 crash/day of a job launchd relaunches | — |
 | `unclean-reboot` | ≥ 1 in 7 days (cause: a shutdown stall or panic within 1 h) | — |
@@ -260,6 +260,7 @@ new. Writers stay free: no format or location standard, we only measure and clea
 | `log-store` | a store holds units past its criterion plus slack, or log-sweep failed (cause: log-sweep, or the `self` writer) | — |
 | `log-growth` | the total of all stores grew ≥ 1 GiB/day over ≥ 5 days of the newest 7 and grew in the last day | ≥ 3 GiB/day |
 | `unregistered-store` | a directory the fallback names (key: its path), report-only | — |
+| `dir-growth` | a folder of a giant root, its bounded stores taken out, crossed 20 GB or grew ≥ 10 GB in a week (key: its path; fact: size, growth, owner app), no cause | — |
 | `profile-size` | a profile dir other than a vendor's default home above 3 GB (key: its path), no cause | — |
 | `orphan-profile` | a named CLI profile dir its vendor's menubar roster lacks (key: its path), no cause: deleting it is Egor's call | — |
 | `log-unread` | a log store with `readers: []` holding bytes and nothing deleting it (cleaner `keep`, or no criterion and not `cap`): written, read by nobody, unbounded (no cause; the fix is a reader, a criterion or less writing); every unread store, bounded or not, stays listed in the row's `unread` | — |
@@ -299,6 +300,66 @@ Login items macOS keeps outside plists stay blind (ledger `login-items`).
 `log-growth` threshold: with every big store under a criterion the total plateaus; 1 GiB/day sits under the biggest
 single inflow measured (tmp session scratch, ~1.3 GB/day) and above a retention-limited store's daily swing; re-tune
 once 14 days of series exist. A `log-store` fix is proven when the next scan no longer fires it.
+
+## Caches and free space — built (2026-10-20)
+
+The 2026-10-20 freeze: a 17.7 GB upscale filled Data to 97 %, swap could not grow and jetsam fired. Egor (2026-10-20):
+zero manual cleaning, hear only about a surprising giant grower, no CleanMyMac. No new tool: the registry, log-sweep
+and the doctor carry it.
+
+- **Cache stores** (`kind: cache`): what refills by itself and goes without breaking a running program or losing
+  anything Egor made. A cache store is `sweep` (or `command`) with `days`, measured and listed like an app store,
+  never counted in the log total. `globs` take `{a,b}` alternatives (no nesting), one match one unit. A unit some
+  process holds open, works in or names in its argv (one `ps -x -ww`: `~/.npm/_npx/<hash>` of a live MCP server, a
+  `--user-data-dir` profile) is never swept, nor anything above it; a directory macOS will not list (TCC: Chrome's,
+  Discord's data) is `denied`, skipped and counted apart, never an error.
+
+| store | what | 2026-10-20 | growth | rebuilds | risk |
+|---|---|---|---|---|---|
+| `chromium-caches` | `Cache`, `Code Cache`, GPU/shader/Dawn caches, Service Worker CacheStorage of every Chromium/Electron profile in Application Support (≤ 3 levels) and of the gemini-web, chatgpt-web and Antigravity browser profiles, 30 days | 19.6 GB, 269 units (9 denied) | each capped by Chromium (~0.8 GB a web profile), grows with profiles | the next page load refetches | a slower first load |
+| `npm-cache` | `~/.npm/_npx/*`, `_cacache`, `_logs`, bun's and Yarn's caches, 30 days | 2.7 GB | per new npx tool or version | the next npx/install downloads | needs network once |
+| `pnpm-store` | `~/Library/pnpm/store/v*`, 30 days idle (`pnpm store prune` is not wired: pnpm lives under nvm, off the agents' PATH) | 2.4 GB | per install | the next install | none: node_modules keep their hard links |
+| `uv-cache` | `uv cache clean`, 30 days | 2.0 GB | per venv | the next `uv` sync | needs network once |
+| `vscode-caches` | `CachedData`, `CachedExtensionVSIXs` and logs of Code, Cursor, Antigravity IDE, Windsurf, Kiro, Trae, 14 days | 1.1 GB | per editor update | the next start | none |
+| `xcode-caches` | DerivedData, CoreSimulator Caches, Previews, 14 days | 0.7 GB | per build | the next build | one full rebuild |
+| `xcode-device-support` | `* DeviceSupport/*`, 90 days | 0 (appears with a device) | ~5 GB per OS version | Xcode copies symbols on reconnect | minutes on reconnect |
+| `repo-build-caches` | nx, vite, next, turbo, parcel, angular, svelte-kit caches of `/Volumes/Work/Projects/*` and `~/Arbostar/*` (and their `apps`/`packages`), 14 days | 0.5 GB | per build | the next build | a slower first build |
+| `library-caches` | `~/Library/Caches/*` but Apple's, Claude Code's, Playwright's, Homebrew's, CloudKit, FamilyCircle, GameKit, 30 days | 0.3 GB | per app | the app | none |
+| `cycles-kernels` | Blender Cycles' compiled kernels, 30 days | 0.2 GB | per Blender version | the next render compiles | a minute once |
+
+  Left out, each for a reason: `~/.cache/puppeteer` (1.6 GB) and `~/.agent-browser/browsers` (0.4 GB) hold browsers
+  npx tools pin by version and never download again at launch; `ms-playwright` (1.2 GB) collects its own unused
+  versions; Homebrew (cleans every 30 days itself; a forced cleanup can break a venv that records a Cellar path);
+  CoreSimulator Devices (app state, not cache); Figma's old profiles v17–v42 (~0.4 GB, only their caches are swept; the
+  profiles are Egor's call); model weights (`~/.cache/huggingface` 2.4 GB, `hyperframes` 0.7 GB, `torch` 0.4 GB:
+  slow, large downloads; the growth lens names them if they grow); Telegram, Slack, Zoom, Docker (app data with user
+  content, or absent); `~/.cargo` (0.1 GB), gradle, maven (absent).
+- **Pressure sweep** `log-sweep --pressure GIB`: cache stores only, every unit of a `days` store whatever its age (a
+  store with another criterion gives only what it removes anyway, a command store runs whatever its last run, 300 s),
+  biggest first, until the volume holding each unit has GIB free or the caches run out; the open, argv and denied
+  skips hold. One `sweeps.jsonl` line carries `pressure`, per-store units and bytes, `free_gib` per volume before and
+  after, and the 20 largest units. Measured 2026-10-20 (dry run, free faked at 13 GiB): 457 units, 28.5 GB, 15 s;
+  Data would reach 39.6 GiB.
+- **Trigger.** The minute tick records each volume's free GiB; while one is under `free_gib` (25) the launcher starts
+  the `freespace` collector detached, at most once an hour (`freespace_every_s`): `log-sweep --pressure 40`
+  (`free_target_gib`), its summary a row of `freespace/<day>.jsonl`. Under `free_heavy_gib` (10) one notification per
+  episode (`launched.json` `space_warned`, reset once the volume is back at ≥ 25). The `free-space` fact names the
+  last cache sweep of the day and, when space is still short, the volume's biggest folders beside the caches.
+- **Growth lens** (`scan.giants`): the daily scan's du also covers `/Applications`, `/Library`, `/opt`,
+  `/Users/Shared`, `/Volumes/Work` (each cut at its own depth). A folder 1–3 levels down, minus the units of bounded
+  stores (cap, or a criterion), that crosses 20 GB from below or grows ≥ 10 GB against the oldest giant scan within 8
+  days (≥ 20 h back, only roots both scans covered whole) is `dir-growth`, named with its owner app (a repository, an
+  Application Support/Caches/Containers child, a dot-dir, a `/Volumes` project). Nothing is ignored here, so an
+  unregistered giant cannot hide; a static giant (Nextcloud 54 GB) never fires. The folders above 5 GB
+  (`biggest_gb`, caches claimed) go to the row's `giants` for the `free-space` fact.
+- **Log growth** (2026-10-13 → 20: 46.9 → 78.3 GB): no sweep bug (no unit held open, no error since 10-16, no
+  unmatched big path). Worker volume rose: Claude and Codex worker transcripts took ~4 GB/day the last week against
+  ~0.5 GB/day the week before, so the 15-day worker window fills toward ~60 GB; Codex worker rollouts that look at
+  images keep each full-size image (one rollout 166 MB, 2–11 MB a `view_image` batch). tmp-sandboxes held the
+  upscale's frames (12.3 GB, 7 days). Retention stays Egor's trade (2026-10-20): workers 15 → 7 days frees ~5.5 GB
+  now and ~32 GB at the plateau, but Spend and Lost time lose their previous week and older worker sessions can't be
+  read or resumed; tmp 7 → 3 days frees about half of temp (~8 GB a normal week) and the sandboxes of a 4–7-day-old
+  debugging session.
 
 ## Left
 

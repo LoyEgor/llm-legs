@@ -86,8 +86,8 @@ def cli(*args, env=None):
 
 check(m.LIMITS == {"spawn_s": 1000, "spawn_heavy_s": 2500, "kernel": 0.40, "kernel_heavy": 0.55, "kernel_heavy_min": 30,
                    "compressor": 0.33, "compressor_min": 10, "swap": 0.50, "ssd_gb_day": 200, "ssd_heavy_gb_day": 400,
-                   "swap_writes_gib_day": 20, "free_gib": 25, "free_heavy_gib": 10, "hammerspoon_crashes": 1,
-                   "job_crashes_day": 1, "unclean_reboots": 1, "log_growth_gib_day": 1.0,
+                   "swap_writes_gib_day": 20, "free_gib": 25, "free_heavy_gib": 10, "free_target_gib": 40,
+                   "hammerspoon_crashes": 1, "job_crashes_day": 1, "unclean_reboots": 1, "log_growth_gib_day": 1.0,
                    "log_growth_heavy_gib_day": 3.0}, "the limits are the design's: %s" % m.LIMITS)
 
 # ---- births counter: PIDs restart at 100 after 99998, the closing ps itself is not a birth

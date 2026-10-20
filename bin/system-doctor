@@ -50,6 +50,7 @@ LIMITS = {
     "swap_writes_gib_day": 20,
     "free_gib": 25,
     "free_heavy_gib": 10,
+    "free_target_gib": 40,
     "hammerspoon_crashes": 1,
     "job_crashes_day": 1,
     "unclean_reboots": 1,
@@ -61,7 +62,8 @@ PROOF = {"sightings": 30, "min_s": 2 * 3600, "max_s": 7 * 86400, "baseline_s": 7
 RATE_RULES = ("spawn", "kernel")
 COLLECT = {"storm_s": 2000, "storm_min": 2, "storm_kernel": 0.50, "census_s": 60, "census_poll_s": 0.02,
            "census_every_s": 30 * 60, "dumpstate_every_s": 3600, "harvest_every_s": 6 * 3600, "harvest_back_s": 11 * 3600,
-           "loop_runs_h": 60, "loop_heavy_runs_h": 360, "loop_dt_s": 1800, "job_exits_day": 3, "job_exits_heavy_day": 24}
+           "loop_runs_h": 60, "loop_heavy_runs_h": 360, "loop_dt_s": 1800, "job_exits_day": 3, "job_exits_heavy_day": 24,
+           "freespace_every_s": 3600}
 LOGS = {"sweep_timeout_s": 1800, "compare_min_s": 20 * 3600, "keep_scan_days": 14, "growth_min_days": 5,
         "stale_s": 36 * 3600}
 HARVEST = (("launchd", 'processID == 1 AND eventMessage CONTAINS "ran for"', 300, 100000),
@@ -88,7 +90,8 @@ RULE_LABELS = {"spawn": "new processes", "job-loop": "job relaunch loop", "cohor
                "hammerspoon-crash": "Hammerspoon crash", "job-crash": "job crashes", "unclean-reboot": "unclean reboot",
                "free-space": "low disk space", "log-store": "log cleaner broken", "log-growth": "LLM logs growing",
                "unregistered-store": "unregistered log store", "log-unread": "log read by nobody",
-               "orphan-profile": "LLM profile off the menu", "profile-size": "LLM profile too big"}
+               "orphan-profile": "LLM profile off the menu", "profile-size": "LLM profile too big",
+               "dir-growth": "folder grew fast"}
 COUNTED = ("new", "open", "regressed")
 DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
@@ -731,7 +734,7 @@ def tick(now=None):
                        for key, entry in last.items() if key in first},
              "usage": {key: [read, written, wakes, children] for key, (_f, read, written, wakes, children) in usage.items()},
              "recent": (previous.get("recent") or [])[-2:] + [{"t": round(now, 1), "births_s": row["births_s"],
-                                                              "kernel": row["kernel"]}],
+                                                              "kernel": row["kernel"], "free_gib": row["free_gib"]}],
              "named": {key: entry[2:4] for key, entry in last.items() if entry[6] == "script" and key in first}}
     gone = [[int(key.split("@", 1)[0]), start_epoch(key), previous["t"]] + list(named)
             for key, named in (previous.get("named") or {}).items() if key not in last and isinstance(previous.get("t"), (int, float))]
@@ -1182,8 +1185,21 @@ def census_due(recent, now, last=None):
     return None
 
 
-def launch_due(now, start=detach):
-    """Starts each collector that is due as its own background process; launched.json holds when each last began."""
+def notify(text):
+    """One macOS notification, never waited for."""
+    try:
+        subprocess.Popen(["osascript", "-e", "on run argv", "-e",
+                          'display notification (item 1 of argv) with title "System doctor"', "-e", "end run", text],
+                         start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True)
+    except OSError as error:
+        print("system-doctor notify: %s: %s" % (type(error).__name__, error), file=sys.stderr)
+
+
+def launch_due(now, start=detach, say=notify):
+    """Starts each collector that is due as its own background process; launched.json holds when each last began.
+    The latest tick seeing a volume under LIMITS free_gib starts `freespace` at most once per freespace_every_s; one
+    under free_heavy_gib also gets one notification, again only after that volume was seen back at free_gib."""
     path = os.path.join(state_dir(), "launched.json")
     launched = read_json(path, {}) or {}
     recent = (read_json(os.path.join(state_dir(), "tick-state.json"), {}) or {}).get("recent") or []
@@ -1193,10 +1209,21 @@ def launch_due(now, start=detach):
             due.append(name)
     if logstores_due(launched.get("logstores"), now):
         due.append("logstores")
-    if due:
-        write_json(path, dict(launched, **{name: now for name in due}))
+    latest = recent[-1] if recent else {}
+    free = (latest.get("free_gib") or {}) if now - (latest.get("t") or 0) <= TICK_STALE_S else {}
+    low = {name: gib for name, gib in free.items() if gib < LIMITS["free_gib"]}
+    if low and now - (launched.get("freespace") or 0) >= COLLECT["freespace_every_s"] - 30:
+        due.append("freespace")
+    warned = {name: at for name, at in (launched.get("space_warned") or {}).items() if name not in free or name in low}
+    heavy = {name: gib for name, gib in sorted(low.items()) if gib < LIMITS["free_heavy_gib"] and name not in warned}
+    if due or heavy or warned != (launched.get("space_warned") or {}):
+        write_json(path, dict(launched, space_warned=dict(warned, **{name: round(now) for name in heavy}),
+                              **{name: now for name in due}))
         for name in due:
             start(name)
+    if heavy:
+        say("%s: %s free. Caches are being cleared; the biggest folders are in Doctors > Disk space." % (
+            ", ".join("%s %.1f GiB" % kv for kv in heavy.items()), "only" if len(heavy) == 1 else "each only"))
     return due
 
 
@@ -1591,9 +1618,13 @@ def log_sweep_command():
     return os.environ.get("SYSTEM_DOCTOR_LOG_SWEEP") or os.path.join(ROOT_DIR, "bin", "log-sweep")
 
 
-def run_log_sweep():
+SWEEP_KEYS = ("units", "bytes", "errors", "skipped_open", "wall_s")
+PRESSURE_KEYS = SWEEP_KEYS + ("stores", "denied", "enough", "free_gib", "largest", "busy")
+
+
+def run_log_sweep(extra=(), keys=SWEEP_KEYS):
     try:
-        out = subprocess.run([log_sweep_command(), "--json"], capture_output=True, text=True,
+        out = subprocess.run([log_sweep_command(), "--json", *extra], capture_output=True, text=True,
                              timeout=LOGS["sweep_timeout_s"], stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as error:
         limit_hit.expired("probe.cli", error, "this run's log sweep: its stores stay unswept until the next",
@@ -1606,25 +1637,46 @@ def run_log_sweep():
         found = None
     if not isinstance(found, dict):
         return {"error": clip("exit %d: %s" % (out.returncode, out.stderr.strip() or "no summary"), 200)}
-    return {k: found.get(k) for k in ("units", "bytes", "errors", "skipped_open", "wall_s")}
+    return {k: found.get(k) for k in keys}
+
+
+def freespace(now=None):
+    """While a watched volume has under LIMITS free_gib: bin/log-sweep --pressure frees the cache stores, biggest unit
+    first and every unit whatever its age, until each volume has free_target_gib or no cache is left; one row in
+    freespace/<day>.jsonl."""
+    began = time.time()
+    now = began if now is None else now
+    row = {"t": round(now, 1), "free_gib": {name: free for name, (free, _size) in free_space().items()}}
+    row["sweep"] = run_log_sweep(["--pressure", str(LIMITS["free_target_gib"])], PRESSURE_KEYS)
+    row["self"] = {"wall_s": round(time.time() - began, 3)}
+    append_row("freespace", row)
+    return row
 
 
 def tilde(path):
     return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
 
 
-def previous_scan(now):
-    """({path: [kb, residual]}, days back) of the newest directory scan at least 20 h and at most 8 days old."""
+def volume_of(path):
+    """The free_space() name of the volume a path lies on: a /Volumes mount's name, else Data."""
+    parts = path.split("/")
+    return parts[2] if len(parts) > 2 and parts[1] == "Volumes" and parts[2] else "Data"
+
+
+def previous_scan(now, key="dirs", oldest=False):
+    """({path: [kb, residual]}, days back, roots) of the newest directory scan (with oldest, the oldest one holding
+    `key`) at least 20 h and at most 8 days old; roots are the giant roots that scan's du covered whole."""
     best = None
     for path in glob.glob(os.path.join(state_dir(), "logscan", "????-??-??.json")):
         scan = read_json(path, {}) or {}
         at = scan.get("t")
-        if isinstance(at, (int, float)) and now - 8 * DAY_S <= at <= now - LOGS["compare_min_s"] and \
-                (best is None or at > best["t"]):
+        if isinstance(at, (int, float)) and now - 8 * DAY_S <= at <= now - LOGS["compare_min_s"] and key in scan and \
+                (best is None or (at < best["t"] if oldest else at > best["t"])):
             best = scan
     if not best:
-        return None, None
-    return {log_stores.expand(p): v for p, v in (best.get("dirs") or {}).items()}, (now - best["t"]) / DAY_S
+        return None, None, ()
+    return ({log_stores.expand(p): v for p, v in (best.get(key) or {}).items()}, (now - best["t"]) / DAY_S,
+            [log_stores.expand(r) for r in best.get("giant_roots") or ()])
 
 
 PROFILE_ROOTS = (("claude", "claude", ".claude-profiles", None), ("codex", "codex", ".codex-profiles", ".codex"),
@@ -1930,8 +1982,10 @@ def tidied(now):
 
 def logstores(now=None):
     """Daily: bin/log-sweep, then every registered log store's size, files, oldest unit and what lies past its
-    criterion plus slack, and the du fallback naming each directory no store or ignore entry covers that holds
-    min_mb or grew grow_mb_day; one row in logstores/<day>.jsonl, the directory sizes in logscan/<day>.json."""
+    criterion plus slack, the du fallback naming each directory no store or ignore entry covers that holds min_mb or
+    grew grow_mb_day, the growth lens naming each folder of the giant roots that crossed min_gb or grew grow_gb_week
+    in the last 8 days, and the biggest folders beside the caches; one row in logstores/<day>.jsonl, the directory
+    sizes in logscan/<day>.json."""
     began = time.time()
     now = began if now is None else now
     started_cpu = collector_runs.cpu_total()
@@ -1945,10 +1999,12 @@ def logstores(now=None):
         append_row("logstores", row)
         return row
     row["sweep"] = steps("sweep", run_log_sweep)
-    stores, claims, sessions = [], {}, {}
+    stores, claims, sessions, kept = [], {}, {}, {}
     for entry in log_stores.logs(registry):
         rows = steps("store:" + entry["name"], log_stores.measure, entry)
         claims.update((r["path"], r["bytes"]) for r in rows)
+        if log_stores.bounded(entry):
+            kept.update((r["path"], r["bytes"]) for r in rows)
         parts = steps("split:" + entry["name"], log_stores.split, entry, rows, sessions)
         stores.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner"),
                            readers=entry["readers"], group=entry["group"], label=entry["label"], part=entry.get("part"),
@@ -1966,33 +2022,52 @@ def logstores(now=None):
     scan = registry.get("scan") or {}
     depth = scan.get("depth", 3)
     roots = [r for r in (log_stores.expand(r) for r in scan.get("roots") or ()) if os.path.isdir(r)]
-    sizes, cut = {}, []
+    giants = scan.get("giants") or {}
+    giant_roots = [r for r in (log_stores.expand(r) for r in giants.get("roots") or ()) if os.path.isdir(r)]
+    plan = log_stores.du_plan(roots + [r for r in giant_roots if not log_stores.root_of(r, roots)], depth)
+    sizes, cut, giant_cut = {}, [], []
     deadline = time.time() + scan.get("budget_s", 600)
 
     def du_all():
-        for top, levels in log_stores.du_plan(roots, depth):
+        for top, levels in plan:
             left = deadline - time.time()
             found = log_stores.parse_du(machine_probe.run("du", ["-k", "-x", "-d", str(levels), top], timeout=left)
                                         if left > 1 else "")
             if top not in found:
-                cut.append(tilde(top))
+                (cut if log_stores.root_of(top, roots) else giant_cut).append(tilde(top))
             sizes.update(found)
 
     steps("du", du_all)
-    if cut:
+    if cut or giant_cut:
         limit_hit.hit("system-doctor.scan-budget", scan.get("budget_s", 600), "s", "skip",
-                      "the log scan's sizes and new-store findings under %s" % ", ".join(cut),
+                      "the log scan's sizes, new-store and growth findings under %s" % ", ".join(cut + giant_cut),
                       'bin/system-doctor:deadline = time.time() + scan.get("budget_s", 600)',
                       observed=round(time.time() - deadline + scan.get("budget_s", 600)))
     row["profiles"] = steps("profiles", llm_profiles, sizes, registry, now)
-    old, old_days = previous_scan(now)
-    claims = steps("apps", log_stores.app_claims, registry, sizes) | claims
+    old, old_days, _roots = previous_scan(now)
+    others = [e for e in registry.get("stores") or () if e.get("kind") != "log"]
+    held = steps("apps", lambda: [(e, log_stores.app_claims({"stores": [e]}, sizes)) for e in others])
+    claims = {p: b for _e, found in held for p, b in found.items()} | claims
     reported, dirs = steps("fallback", log_stores.unregistered, sizes, roots, depth, claims,
                            log_stores.ignore_paths(registry), scan.get("min_mb", 200) * 1024,
                            scan.get("grow_mb_day", 50) * 1024, scan.get("floor_mb", 10) * 1024, old, old_days)
+    # The growth lens: every directory of the watched volumes, what a bounded store keeps aside, against the oldest
+    # scan of the last 8 days; the biggest folders beside the caches, for the free-space fact.
+    tops = [top for top, _levels in plan]
+    whole = [r for r in giant_roots if tilde(log_stores.root_of(r, tops) or r) not in cut + giant_cut]
+    kept |= {p: b for e, found in held if log_stores.bounded(e) for p, b in found.items()}
+    cached = {p: b for e, found in held if e.get("kind") == "cache" for p, b in found.items()}
+    floor_kb = giants.get("floor_mb", 1024) * 1024
+    old_giants, giant_days, old_roots = previous_scan(now, "giants", oldest=True)
+    grown, giant_dirs = steps("growth", log_stores.growers, sizes, whole, depth, kept, giants.get("min_gb", 20) << 20,
+                              giants.get("grow_gb_week", 10) << 20, floor_kb, old_giants, giant_days, old_roots)
+    biggest, _scan = steps("giants", log_stores.residuals, sizes, whole, depth, cached, (), floor_kb,
+                           lambda path, kb, residual: {"path": path, "kb": kb, "residual_kb": residual}
+                           if residual >= giants.get("biggest_gb", 5) << 20 else None)
     if not cut:
         write_json(os.path.join(state_dir(), "logscan", local_day(now) + ".json"),
-                   {"t": round(now), "dirs": {tilde(p): v for p, v in dirs.items()}})
+                   {"t": round(now), "dirs": {tilde(p): v for p, v in dirs.items()},
+                    "giants": {tilde(p): v for p, v in giant_dirs.items()}, "giant_roots": [tilde(r) for r in whole]})
         cutoff = local_day(now - LOGS["keep_scan_days"] * DAY_S)
         for path in glob.glob(os.path.join(state_dir(), "logscan", "????-??-??.json")):
             if os.path.basename(path)[:10] < cutoff:
@@ -2004,8 +2079,16 @@ def logstores(now=None):
                                   "residual_mb": round(r["residual_kb"] / 1024),
                                   "grow_mb_day": round(r["grow_kb_day"] / 1024) if r["grow_kb_day"] is not None else None}
                                  for r in reported[:40]] if not cut else [],
+                "growers": [{"path": tilde(r["path"]), "gb": round(r["residual_kb"] * 1024 / 1e9, 1),
+                             "grew_gb": round(r["grew_kb"] * 1024 / 1e9, 1), "days": r["days"],
+                             "owner": log_stores.owner_words(r["path"], HOME)} for r in grown[:20]],
+                "giants": [{"path": tilde(r["path"]), "gb": round(r["residual_kb"] * 1024 / 1e9, 1),
+                            "volume": volume_of(r["path"]), "owner": log_stores.owner_words(r["path"], HOME)}
+                           for r in biggest[:12]],
                 "scan": {"roots": len(roots), "dirs": len(sizes), "cut": cut,
-                         "compared_days": round(old_days, 2) if old_days else None},
+                         "compared_days": round(old_days, 2) if old_days else None,
+                         "giant_roots": [tilde(r) for r in whole], "giant_cut": giant_cut,
+                         "giants_compared_days": round(giant_days, 2) if giant_days else None},
                 "self": {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
                          "steps": {k: v for k, v in steps.out.items() if not k.startswith(("store:", "split:"))} |
                          {fold: [round(sum(v[i] for k, v in steps.out.items() if k.startswith(fold[:5] + ":")), 3)
@@ -2707,15 +2790,27 @@ def judge_ticks(judge, rows, days):
                 found=cause(writers[0], sum(d.get("ssd_w_b") or 0 for d in week)) if writers else
                 cause(causes[0], sum(c[1] for c in causes)) if causes else None)
     if latest and now - latest["t"] <= TICK_STALE_S:
-        for name, gib in sorted((latest.get("free_gib") or {}).items()):
-            if gib < LIMITS["free_gib"]:
-                caches = (judge.nightly or {}).get("caches") or []
-                found = {"name": caches[0][0], "share": None, "owner": "own", "fix_target": False} if caches and \
-                    name == "Data" else None
-                judge.add("free-space", name, "%s has %.1f GiB free, limit %d" % (name, gib, LIMITS["free_gib"]),
-                          gib, LIMITS["free_gib"], "GiB", None, 1, 1, latest["t"], latest["t"],
-                          [tick_evidence(latest, "df %s free %.1f GiB" % (name, gib))],
-                          heavy=gib < LIMITS["free_heavy_gib"], found=found)
+        low = sorted((name, gib) for name, gib in (latest.get("free_gib") or {}).items() if gib < LIMITS["free_gib"])
+        scans = [r for r in tick_rows(now - 2 * DAY_S, now, "logstores") if r.get("giants") is not None] if low else []
+        freed = [r for r in tick_rows(now - DAY_S, now, "freespace") if r.get("sweep")] if low else []
+        for name, gib in low:
+            biggest = [g for g in (scans[-1]["giants"] if scans else ()) if g.get("volume") == name][:3]
+            words = "; the biggest folders beside the caches: %s" % ", ".join(
+                "%s %.0f GB (%s)" % (g["path"], g["gb"], g["owner"]) for g in biggest) if biggest else ""
+            sweep = freed[-1]["sweep"] if freed else None
+            if sweep and not sweep.get("error") and not sweep.get("busy"):
+                words += "; the cache sweep at %s freed %.1f GB%s" % (
+                    time.strftime("%H:%M", time.localtime(freed[-1]["t"])), (sweep.get("bytes") or 0) / 1e9,
+                    "" if sweep.get("enough") else " and found no cache left to take")
+            caches = (judge.nightly or {}).get("caches") or []
+            found = {"name": biggest[0]["owner"], "share": None, "owner": "third-party", "fix_target": False} \
+                if biggest else {"name": caches[0][0], "share": None, "owner": "own", "fix_target": False} \
+                if caches and name == "Data" else None
+            judge.add("free-space", name, "%s has %.1f GiB free, limit %d%s" % (name, gib, LIMITS["free_gib"], words),
+                      gib, LIMITS["free_gib"], "GiB", None, 1, 1, latest["t"], latest["t"],
+                      [tick_evidence(latest, "df %s free %.1f GiB" % (name, gib))] +
+                      [{"at": None, "ref": "du:%s" % g["path"], "account": None, "excerpt": "%.1f GB, %s" % (g["gb"], g["owner"])}
+                       for g in biggest], heavy=gib < LIMITS["free_heavy_gib"], found=found)
 
 
 def ssd_writers(week):
@@ -2961,6 +3056,14 @@ def judge_logstores(judge, rows):
             found["residual_mb"], scan.get("min_mb", 200), "MB", 24, found["mb"], 1, latest["t"], latest["t"],
             [{"at": iso_time(latest["t"]), "ref": "du:%s" % found["path"], "account": None,
               "excerpt": "%d MB in the directory, %d MB of it in no store" % (found["mb"], found["residual_mb"])}])
+    giants = scan.get("giants") or {}
+    for found in latest.get("growers") or ():
+        judge.add("dir-growth", found["path"], "%s (%s) holds %.1f GB, %.1f GB more than %.1f days ago" % (
+            found["path"], found["owner"], found["gb"], found["grew_gb"], found["days"]),
+            found["gb"], giants.get("min_gb", 20), "GB", 24 * 7, found["gb"], 1, latest["t"], latest["t"],
+            [{"at": iso_time(latest["t"]), "ref": "du:%s" % found["path"], "account": None,
+              "excerpt": "%.1f GB now, %.1f GB %.1f days ago" % (found["gb"], found["gb"] - found["grew_gb"], found["days"])}],
+            found={"name": found["owner"], "share": None, "owner": "third-party", "fix_target": False})
     for found in latest.get("profiles") or ():
         if not os.path.lexists(untilde(found["path"])):
             continue
@@ -3012,7 +3115,7 @@ def logstores_view(rows):
                         "label": s.get("label"), "part": s.get("part"), "parts": {g: round(b / 1e9, 2) for g, b in (s.get("parts") or {}).items()}}
                        for s in stores],
             "unregistered": latest.get("unregistered"), "unread": latest.get("unread"), "sweep": latest.get("sweep"),
-            "scan": latest.get("scan"),
+            "growers": latest.get("growers"), "giants": latest.get("giants"), "scan": latest.get("scan"),
             "profiles": [p for p in latest.get("profiles") or () if os.path.lexists(untilde(p["path"]))],
             "tidied": [{"path": r["path"], "mb": r.get("mb"), "age_d": round((time.time() - r["t"]) / DAY_S, 1),
                         "why": r.get("why")} for r in tidied(time.time())]}
@@ -3392,7 +3495,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="system-doctor", description=__doc__.split("\n")[0])
     parser.add_argument("command", nargs="?", default="judge",
                         choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check",
-                                 "census", "dumpstate", "harvest", "logstores", "tidy", "explain"))
+                                 "census", "dumpstate", "harvest", "logstores", "freespace", "tidy", "explain"))
     parser.add_argument("cause", nargs="?", help="check: the cause (a script's basename) whose fix to prove")
     parser.add_argument("--json", action="store_true", help="judge: print the document and write nothing")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
@@ -3477,7 +3580,7 @@ def main(argv=None):
 
 
 RECORD = True
-COLLECTORS = {"census": census, "dumpstate": dumpstate, "harvest": harvest, "logstores": logstores}
+COLLECTORS = {"census": census, "dumpstate": dumpstate, "harvest": harvest, "logstores": logstores, "freespace": freespace}
 
 if __name__ == "__main__":
     started = time.time()

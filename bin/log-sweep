@@ -2,10 +2,13 @@
 """log-sweep: removes what each `sweep` store of share/log-stores.json is past its criterion: units untouched for
 `days` (a classified unit of a split store: its group's `group_days`, classes read from every `session` store, swept
 or not), beyond `keep_newest` or `max_mb` (oldest first), and truncates files to their last `tail_mb`. A unit some
-process holds open (an open file or bound socket, a cwd or either inside a directory) is skipped; sockets, FIFOs and
+process holds open (an open file or bound socket, a cwd, a path in its argv, or one inside a directory) is skipped; sockets, FIFOs and
 devices are never units. A `command` store's argv runs once its last successful run (~/.cache/log-sweep/commands.json)
-is `days` old, the bytes it freed counted like a removal. `--dry-run` prints what it would remove or run with sizes. One
-summary line per run goes to ~/.cache/log-sweep/sweeps.jsonl, capped. Run daily by `system-doctor logstores`."""
+is `days` old, the bytes it freed counted like a removal. `--pressure GIB` takes cache stores only, ignoring `days`
+(every unit; another criterion still keeps its units) and a command's last run: biggest unit first, each skipped once
+its volume has GIB free, the open-file skip kept; run by `system-doctor pressure` while a volume is short of space.
+`--dry-run` prints what it would remove or run with sizes. One summary line per run goes to
+~/.cache/log-sweep/sweeps.jsonl, capped. Run daily by `system-doctor logstores`."""
 
 import argparse
 import fcntl
@@ -26,6 +29,8 @@ from spend import read_json  # noqa: E402
 RECORD_MAX_BYTES = 256 * 1024
 RECORD_ITEMS = 20
 COMMAND_TIMEOUT_S = 1200  # under system-doctor's LOGS["sweep_timeout_s"], which kills the whole sweep
+PRESSURE_COMMAND_TIMEOUT_S = 300  # a pressure run frees space now; a cleaner waiting on another tool's lock is skipped
+GIB = 1 << 30
 
 
 def state_dir():
@@ -33,8 +38,8 @@ def state_dir():
 
 
 def open_paths():
-    """Every path a process of this user holds open, works in or binds a socket at, and every directory above one, as
-    realpaths, from one lsof call."""
+    """Every path a process of this user holds open, works in, binds a socket at or names in its argv, and every
+    directory above one, as realpaths, from one lsof and one ps call."""
     command = os.environ.get("LOG_SWEEP_LSOF") or "/usr/sbin/lsof"
     try:
         out = subprocess.run([command, "-n", "-P", "-w", "-u", str(os.getuid()), "-F", "n"], capture_output=True,
@@ -43,8 +48,17 @@ def open_paths():
         limit_hit.expired("probe.ps", error, "the open-file list: no file is known held open this sweep",
                           'bin/log-sweep:"-w", "-u", str(os.getuid())')
         return None
+    found = {line[1:] for line in out.splitlines() if line.startswith("n/")}
+    try:
+        args = subprocess.run([os.environ.get("LOG_SWEEP_PS") or "/bin/ps", "-x", "-ww", "-U", str(os.getuid()), "-o",
+                               "args="], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        args = ""
+    # A script a process runs from (node ~/.npm/_npx/<hash>/…, --user-data-dir=…) is held too: node and python keep no
+    # file of a loaded module open, so lsof alone never sees an npx MCP server using its install.
+    found.update(part for word in args.split() for part in word.split("=") if part.startswith("/"))
     held = set()
-    for path in {os.path.realpath(line[1:]) for line in out.splitlines() if line.startswith("n/")}:
+    for path in {os.path.realpath(p) for p in found}:
         while path not in held and path != "/":
             held.add(path)
             path = os.path.dirname(path)
@@ -59,7 +73,7 @@ def glob_base(pattern):
     parts = log_stores.expand(pattern).split("/")
     fixed = []
     for part in parts:
-        if re.search(r"[*?\[]", part):
+        if re.search(r"[*?\[{]", part):
             break
         fixed.append(part)
     return "/".join(fixed) or "/"
@@ -119,12 +133,12 @@ def command_runs():
     return runs if isinstance(runs, dict) else {}
 
 
-def run_command(entry, now, dry_run, say):
-    """[[unit, bytes freed]] of a `command` store whose last successful run is `days` old or never happened ([] when
-    not due; a dry run reports the units' size and runs nothing), None when the command fails."""
+def run_command(entry, now, dry_run, say, due=False, timeout=COMMAND_TIMEOUT_S):
+    """[[unit, bytes freed]] of a `command` store whose last successful run is `days` old or never happened, or `due`
+    ([] when not due; a dry run reports the units' size and runs nothing), None when the command fails."""
     runs = command_runs()
     last = runs.get(entry["name"])
-    if isinstance(last, (int, float)) and last > now - entry["days"] * log_stores.DAY_S:
+    if not due and isinstance(last, (int, float)) and last > now - entry["days"] * log_stores.DAY_S:
         return []
     argv = entry["command"]
     before = log_stores.measure(entry)
@@ -132,7 +146,7 @@ def run_command(entry, now, dry_run, say):
         say("  %-8s %8.1f MB  %s" % ("run", sum(r["bytes"] for r in before) / log_stores.MB, " ".join(argv)))
         return [[r["path"], r["bytes"]] for r in before]
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=COMMAND_TIMEOUT_S, stdin=subprocess.DEVNULL)
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as error:
         say("log-sweep: %s: %s" % (" ".join(argv), error))
         return None
@@ -146,7 +160,7 @@ def run_command(entry, now, dry_run, say):
 
 
 def sweep(registry, now, dry_run, only=None, say=print):
-    stores, items, errors, skipped = {}, [], 0, 0
+    stores, items, errors, skipped, denied = {}, [], 0, 0, 0
     paths, sessions = None, {}
 
     def tally(entry, done):
@@ -178,6 +192,9 @@ def sweep(registry, now, dry_run, only=None, say=print):
         bases = [glob_base(p) for p in entry["globs"]]
         done = []
         for row, action in log_stores.doomed(entry, rows, now):
+            if row.get("denied"):
+                denied += 1
+                continue
             if action == "delete":
                 if paths is None:
                     paths = open_paths()
@@ -194,6 +211,8 @@ def sweep(registry, now, dry_run, only=None, say=print):
                         prune_parents(row["path"], bases)
                     else:
                         truncate(row["path"], int(value * log_stores.MB))
+                except FileNotFoundError:
+                    continue
                 except OSError as error:
                     errors += 1
                     say("log-sweep: %s %s: %s" % (action, row["path"], error))
@@ -203,6 +222,102 @@ def sweep(registry, now, dry_run, only=None, say=print):
     items.sort(key=lambda item: -item[1])
     return {"t": round(now), "dry_run": dry_run, "units": sum(s[0] for s in stores.values()),
             "bytes": sum(s[1] for s in stores.values()), "stores": stores, "skipped_open": skipped, "errors": errors,
+            "denied": denied, "largest": items[:RECORD_ITEMS]}
+
+
+def mount_of(path):
+    path = os.path.realpath(path)
+    while not os.path.ismount(path) and path != "/":
+        path = os.path.dirname(path)
+    return path
+
+
+def volume_name(mount):
+    """system-doctor's name for a volume: Data for the system's, a /Volumes mount's own name."""
+    return mount[len("/Volumes/"):] if mount.startswith("/Volumes/") else "Data"
+
+
+def free_bytes(path):
+    """Free bytes of the volume holding path: LOG_SWEEP_FREE_GIB stands in for every volume (tests)."""
+    fake = os.environ.get("LOG_SWEEP_FREE_GIB")
+    if fake:
+        return float(fake) * GIB
+    found = os.statvfs(path)
+    return found.f_bavail * found.f_frsize
+
+
+def pressure(registry, now, target_gib, dry_run, say=print, only=()):
+    """Frees cache stores' units, biggest first, while the volume holding each has under target_gib free: a `days`
+    store gives every unit, another criterion only what it already removes, a command store runs whatever its last run.
+    A dry run, and a faked free space, count what they would have freed toward the target; a real run reads the
+    volume again after each removal."""
+    candidates, items, skipped, errors, enough, denied = [], [], 0, 0, 0, 0
+    for entry in log_stores.caches(registry):
+        if only and entry["name"] not in only:
+            continue
+        rows = log_stores.measure(entry)
+        denied += sum(1 for r in rows if r.get("denied"))
+        rows = [r for r in rows if not r.get("denied")]
+        if entry["cleaner"] == "command":
+            if rows:
+                candidates.append((sum(r["bytes"] for r in rows), entry, "run", rows[0]["path"]))
+        elif entry["cleaner"] == "sweep":
+            key, _value = log_stores.criterion(entry)
+            gone = [(r, "delete") for r in rows] if key == "days" else log_stores.doomed(entry, rows, now)
+            candidates += [(r["bytes"], entry, action, r["path"]) for r, action in gone if action == "delete"]
+    candidates.sort(key=lambda c: (-c[0], c[3]))
+    paths, freed, before = None, {}, {}
+    stores = {}
+    for size, entry, action, path in candidates:
+        if not os.path.lexists(path):
+            continue
+        volume = mount_of(path)
+        if volume not in before:
+            before[volume] = free_bytes(volume)
+        now_free = (before[volume] + freed.get(volume, 0)) if dry_run or os.environ.get("LOG_SWEEP_FREE_GIB") \
+            else free_bytes(volume)
+        if now_free >= target_gib * GIB:
+            enough += 1
+            continue
+        if action == "run":
+            done = run_command(entry, now, dry_run, say, due=True, timeout=PRESSURE_COMMAND_TIMEOUT_S)
+            if done is None:
+                errors += 1
+                continue
+            got = sum(b for _p, b in done)
+        else:
+            if paths is None:
+                paths = open_paths()
+            if paths is None or held(path, paths):
+                skipped += 1
+                continue
+            got = size
+            if dry_run:
+                say("  %-8s %8.1f MB  %s" % ("delete", size / log_stores.MB, path))
+            else:
+                try:
+                    remove(path)
+                    prune_parents(path, [glob_base(p) for p in entry["globs"]])
+                except FileNotFoundError:
+                    continue
+                except OSError as error:
+                    errors += 1
+                    say("log-sweep: delete %s: %s" % (path, error))
+                    continue
+        freed[volume] = freed.get(volume, 0) + got
+        items.append([path, got])
+        slot = stores.setdefault(entry["name"], [0, 0])
+        slot[0] += 1
+        slot[1] += got
+    for name, (count, got) in stores.items():
+        say("%s: %d unit%s, %.1f MB (pressure)" % (name, count, "" if count == 1 else "s", got / log_stores.MB))
+    items.sort(key=lambda item: -item[1])
+    after = {v: (before[v] + freed.get(v, 0)) if dry_run or os.environ.get("LOG_SWEEP_FREE_GIB") else free_bytes(v)
+             for v in before}
+    return {"t": round(now), "dry_run": dry_run, "pressure": target_gib, "units": sum(s[0] for s in stores.values()),
+            "bytes": sum(s[1] for s in stores.values()), "stores": stores, "skipped_open": skipped, "errors": errors,
+            "denied": denied, "enough": enough,
+            "free_gib": {volume_name(v): [round(before[v] / GIB, 1), round(after[v] / GIB, 1)] for v in before},
             "largest": items[:RECORD_ITEMS]}
 
 
@@ -210,6 +325,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="log-sweep", description=__doc__.split("\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="print what would be removed, remove nothing")
     parser.add_argument("--store", action="append", help="only this store (repeatable)")
+    parser.add_argument("--pressure", type=float, metavar="GIB",
+                        help="cache stores only, every unit regardless of age, biggest first, until each volume has GIB free")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
     parser.add_argument("--json", action="store_true", help="print the run's summary as JSON")
     args = parser.parse_args(argv)
@@ -225,9 +342,14 @@ def main(argv=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             say("log-sweep: another sweep is running")
+            if args.json:
+                print(json.dumps({"busy": True}))
             return 0
         started = time.time()
-        result = sweep(registry, started, args.dry_run, set(args.store or ()), say)
+        if args.pressure is not None:
+            result = pressure(registry, started, args.pressure, args.dry_run, say, set(args.store or ()))
+        else:
+            result = sweep(registry, started, args.dry_run, set(args.store or ()), say)
         result["wall_s"] = round(time.time() - started, 1)
         if not args.dry_run:
             record(result)

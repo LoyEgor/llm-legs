@@ -3,7 +3,9 @@
 # share/log_stores.py, bin/log-sweep and `system-doctor logstores` on a temp tree: the registry's validation, units
 # and their age, each criterion with and without slack, the du fallback (covered, ignored, nested roots, residuals,
 # growth), log-sweep --dry-run removing nothing, the real sweep (held-open skip, parent pruning, tail truncation, its
-# capped record), and the collector plus judge (broken cleaner, failed sweep, unregistered store, growth, blindness).
+# capped record), cache stores and the pressure sweep (brace globs, unlistable units, argv-held installs, biggest
+# first, the target), the growth lens, and the collectors plus judge (broken cleaner, failed sweep, unregistered
+# store, growth, blindness, the free-space trigger and its notification, a folder that grew fast).
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(mktemp -d)
@@ -17,10 +19,12 @@ export PATH="$WORK/path:$PATH"
 export HOME="$WORK/home" LOG_SWEEP_DIR="$WORK/sweep" LOG_STORES_REGISTRY="$WORK/registry.json" TMPDIR="$WORK/tmpdir"
 export SYSTEM_DOCTOR_DIR="$WORK/state" DOCTORS_DIR="$WORK/doctors" SYSTEM_DOCTOR_LEDGER="$WORK/ledger.json"
 export LOG_SWEEP_LSOF="$WORK/bin/lsof" SYSTEM_DOCTOR_DU="$WORK/bin/du" SYSTEM_DOCTOR_LOG_SWEEP="$ROOT/bin/log-sweep"
+export LOG_SWEEP_PS="$WORK/bin/ps"
 printf '{"owner": "System doctor", "rows": [], "blind_spots": []}\n' >"$SYSTEM_DOCTOR_LEDGER"
 printf '#!/bin/bash\ncat "%s/open-paths" 2>/dev/null\n' "$WORK" >"$WORK/bin/lsof"
+printf '#!/bin/bash\ncat "%s/ps-args" 2>/dev/null\n' "$WORK" >"$WORK/bin/ps"
 printf '#!/bin/bash\nawk -F"\\t" -v top="${@: -1}" '"'"'$2 == top || index($2, top "/") == 1'"'"' "%s/du-lines"\n' "$WORK" >"$WORK/bin/du"
-chmod +x "$WORK/bin/lsof" "$WORK/bin/du"
+chmod +x "$WORK/bin/lsof" "$WORK/bin/du" "$WORK/bin/ps"
 
 python3 - "$ROOT" "$WORK" "$TMPW" <<'PY'
 import contextlib
@@ -391,6 +395,113 @@ check(len(uv_calls()) == 2 and "uvc" not in again["stores"] and "uvc" not in onl
 later = sweep_mod.sweep(ls.load(), now + 31 * DAY, False, None, lambda *_: None)
 check(len(uv_calls()) == 3 and later["errors"] == 0 and "uvc" in later["stores"], "it runs again once 30 days passed: %s" % later)
 
+# ---- cache stores: brace globs, unlistable units, argv-held installs, the pressure sweep
+check(ls.braces("~/a/{b,c d}/{x,y}") == ["~/a/b/x", "~/a/b/y", "~/a/c d/x", "~/a/c d/y"] and ls.braces("~/a") == ["~/a"],
+      "a glob's {a,b} alternatives expand as a shell expands them")
+by_name = {e["name"]: e for e in real["stores"]}
+cache_stores = [e for e in real["stores"] if e["kind"] == "cache"]
+check(len(cache_stores) >= 8 and by_name["uv-cache"]["kind"] == "cache"
+      and all(e["cleaner"] in ("sweep", "command") and ls.criterion(e)[0] == "days" for e in cache_stores),
+      "the shipped caches, uv's among them, each go by days: %s" % [e["name"] for e in cache_stores])
+for rel in ("Cache/a", "Code Cache/js/a", "GPUCache/a", "Cookies", "Local Storage/leveldb/a", "IndexedDB/x/a",
+            "User Data/Default/Cache/Cache_Data/a", "User Data/Default/Service Worker/CacheStorage/a",
+            "User Data/Default/Service Worker/Database/a", "User Data/Default/Login Data", "User Data/Default/History",
+            "CachedData/0123abc/a", "logs/20261001T000000/main.log"):
+    put("Library/Application Support/App/" + rel, 10)
+matched = sorted(os.path.relpath(p, home + "/Library/Application Support/App") for e in (by_name["chromium-caches"],
+                 by_name["vscode-caches"]) for p in ls.units(e))
+check(matched == ["Cache", "CachedData/0123abc", "Code Cache", "GPUCache", "User Data/Default/Cache",
+                  "User Data/Default/Service Worker/CacheStorage"],
+      "the shipped browser and editor caches take caches only, never cookies, logins, history, storage or logs of an "
+      "app outside VS Code's family: %s" % matched)
+put("cachey/big/blob", 3 << 20, 1)
+put("cachey/mid/blob", 2 << 20, 1)
+put("cachey/held/blob", 4 << 20, 1)
+put("cachey/locked/inner/blob", 10, 40)
+age("cachey/locked/inner", 40)
+age("cachey/locked", 40)
+put("npx/abc/node_modules/x.js", 1 << 20, 40)
+age("npx/abc/node_modules", 40)
+age("npx/abc", 40)
+for days in (3, 2, 1):
+    put("cvers/v%d/bin" % days, 1 << 20, days)
+put("younglog/run1/a.log", 5 << 20, 1)
+put(".cache/uv/archive-v0/blob", 4096)
+registry([{"name": "cachey", "kind": "cache", "globs": ["~/cachey/*"], "cleaner": "sweep", "days": 30},
+          {"name": "npx", "kind": "cache", "globs": ["~/npx/*"], "cleaner": "sweep", "days": 30},
+          {"name": "cvers", "kind": "cache", "globs": ["~/cvers/*"], "cleaner": "sweep", "keep_newest": 2},
+          dict(uvc, kind="cache", days=30),
+          {"name": "younglog", "globs": ["~/younglog/*"], "cleaner": "sweep", "days": 7}])
+os.chmod(os.path.join(home, "cachey/locked"), 0)
+with open(os.path.join(work, "open-paths"), "w") as handle:
+    handle.write("p1\nn%s/cachey/held/blob\n" % home)
+with open(os.path.join(work, "ps-args"), "w") as handle:
+    handle.write("node %s/npx/abc/node_modules/x.js --port=3000\n/Applications/Br.app/Contents/MacOS/Br --user-data-dir=%s/prof\n"
+                 % (home, home))
+check(ls.unit_stats(os.path.join(home, "cachey/locked")).get("denied") is True
+      and not ls.unit_stats(os.path.join(home, "cachey/big")).get("denied"), "a directory macOS will not list is denied")
+held_now = sweep_mod.open_paths()
+check(os.path.join(home, "npx/abc") in held_now and os.path.join(home, "prof") in held_now
+      and os.path.join(home, "prof/Default/Cache") not in held_now,
+      "a path a process names in its argv (node's script, --user-data-dir=) is held, a cache inside that profile not")
+daily = json.loads(log_sweep("--json", "--store", "cachey", "--store", "npx").stdout)
+check(daily["units"] == 0 and daily["denied"] == 1 and daily["skipped_open"] == 1 and daily["errors"] == 0
+      and os.path.exists(os.path.join(home, "npx/abc/node_modules/x.js")),
+      "the daily sweep leaves the young caches, skips the unlistable one without an error and the npx install a "
+      "running server named: %s" % daily)
+os.environ["LOG_SWEEP_FREE_GIB"] = "13"
+calls = len(uv_calls())
+before = sorted(os.listdir(os.path.join(home, "cachey")))
+dry = json.loads(log_sweep("--pressure", "40", "--dry-run", "--json").stdout)
+check(sorted(os.listdir(os.path.join(home, "cachey"))) == before and len(uv_calls()) == calls and dry["units"] == 4,
+      "a pressure dry run removes and runs nothing: %s" % dry)
+squeezed = json.loads(log_sweep("--pressure", "40", "--json").stdout)
+check(sorted(os.listdir(os.path.join(home, "cachey"))) == ["held", "locked"]
+      and sorted(os.listdir(os.path.join(home, "cvers"))) == ["v1", "v2"] and len(uv_calls()) == calls + 1
+      and os.path.exists(os.path.join(home, "younglog/run1/a.log")) and os.path.exists(os.path.join(home, "npx/abc")),
+      "under pressure every young cache unit goes, the oldest beyond keep_newest, the command runs though its last "
+      "run is fresh; a log store, a held unit and an argv-held install stay: %s" % squeezed)
+check([item[0] for item in squeezed["largest"]][:2] == [os.path.join(home, "cachey/big"), os.path.join(home, "cachey/mid")]
+      and squeezed["stores"]["cachey"][0] == 2 and squeezed["pressure"] == 40.0 and squeezed["denied"] == 1
+      and squeezed["skipped_open"] == 2 and squeezed["errors"] == 0 and list(squeezed["free_gib"]) == ["Data"]
+      and squeezed["free_gib"]["Data"][0] == 13.0,
+      "biggest first, one row per run, volumes named as the doctor names them: %s" % squeezed)
+record = json.loads(open(os.path.join(work, "sweep", "sweeps.jsonl")).read().splitlines()[-1])
+check(record["pressure"] == 40.0 and record["units"] == squeezed["units"], "the pressure run is recorded, marked pressure")
+put("cachey/one/blob", 3 << 20, 1)
+put("cachey/two/blob", 2 << 20, 1)
+os.environ["LOG_SWEEP_FREE_GIB"] = str(40 - 2.5 / 1024)
+enough = json.loads(log_sweep("--pressure", "40", "--json").stdout)
+check(sorted(os.listdir(os.path.join(home, "cachey"))) == ["held", "locked", "two"] and enough["enough"] >= 1,
+      "the sweep stops once the volume holds the target: %s" % enough)
+del os.environ["LOG_SWEEP_FREE_GIB"]
+os.chmod(os.path.join(home, "cachey/locked"), 0o755)
+import fcntl  # noqa: E402
+with open(os.path.join(work, "sweep", "sweep.lock"), "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    busy = log_sweep("--pressure", "40", "--json")
+check(json.loads(busy.stdout) == {"busy": True} and busy.returncode == 0, "a sweep already running answers busy: %s" % busy.stdout)
+with open(os.path.join(work, "ps-args"), "w") as handle:
+    handle.write("")
+
+# ---- the growth lens: a folder that crossed min_gb or grew grow_gb_week, never a static giant
+G = "/g"
+sizes = {G: 145 * K * K, G + "/static": 60 * K * K, G + "/new": 25 * K * K, G + "/fast": 18 * K * K,
+         G + "/kept": 30 * K * K, G + "/slow": 12 * K * K}
+old = {G + "/static": [60 * K * K, 60 * K * K], G + "/fast": [5 * K * K, 5 * K * K], G + "/slow": [10 * K * K, 10 * K * K],
+       G + "/kept": [5 * K * K, 5 * K * K]}
+grew, giant_scan = ls.growers(sizes, [G], 3, {G + "/kept": 30 * K * K * K}, 20 * K * K, 10 * K * K, K * K, old, 6.0, [G])
+check([(r["path"], r["grew_kb"] // (K * K)) for r in grew] == [(G + "/new", 25), (G + "/fast", 13)]
+      and grew[0]["days"] == 6.0 and giant_scan[G + "/static"] == [60 * K * K, 60 * K * K],
+      "a new 25 GB folder and one grown 13 GB fire; a static 60 GB giant, a slow one and a bounded store's do not: %s" % grew)
+check(ls.growers(sizes, [G], 3, {}, 20 * K * K, 10 * K * K, K * K)[0] == []
+      and ls.growers(sizes, [G], 3, {}, 20 * K * K, 10 * K * K, K * K, old, 6.0, ["/elsewhere"])[0] == [],
+      "with no earlier scan, or one that never covered the root, nothing fires")
+check(ls.owner_words(home + "/Library/Application Support/Figma/DesktopProfile", home) == "Figma"
+      and ls.owner_words(home + "/.ollama/models", home) == "ollama" and ls.owner_words(home + "/Nextcloud/x", home) == "Nextcloud/x"
+      and ls.owner_words("/Volumes/Work/tmp/upscale", home) == "tmp/upscale" and ls.owner_words(root + "/bin", home) == "repo "
+      + os.path.basename(root), "a folder's owner comes from its place: app folder, dot-dir, repo, volume path")
+
 # ---- retention by class: workers 15 days, chats and unclassified units 180, a session dir follows its transcript
 logged = dict(named, kind="log", readers=[], name="a", globs=["~/a"], cleaner="sweep")
 check("group_days" in (raises({"stores": [dict(logged, days=180, group_days={"workers": 15})]}) or "")
@@ -558,7 +669,63 @@ check(m.proof("worker-run", "log-store", now - 10, now + 1)["verdict"] == "refus
       and m.proof("Other", "log-store", now - 10, now + 1)["verdict"] == "proven"
       and m.proof("worker-run", "log-store", now + 5, now + 6)["verdict"] == "pending",
       "a log-store fix is proven by the next scan no longer firing it")
+# ---- a tick at 13 GiB free: freespace sweeps a cache store, never a log store's unit under its age
+put("ecache/app/blob", 2 << 20, 1)
+put("elog/run/a.log", 2 << 20, 1)
+registry([{"name": "ecache", "kind": "cache", "globs": ["~/ecache/*"], "cleaner": "sweep", "days": 30},
+          {"name": "elog", "globs": ["~/elog/*"], "cleaner": "sweep", "days": 7}])
+state_path = os.path.join(work, "state", "tick-state.json")
+
+
+def tick_free(at, free):
+    with open(state_path, "w") as handle:
+        json.dump({"recent": [{"t": at - 5, "births_s": 1, "kernel": 0.1, "free_gib": free}]}, handle)
+
+
+started, said = [], []
+tick_free(now, {"Data": 13.0, "Work": 200.0})
+check("freespace" in m.launch_due(now, started.append, said.append) and said == [],
+      "a tick seeing Data at 13 GiB starts the free-space sweep, no notification above 10 GiB")
+tick_free(now + 600, {"Data": 13.0})
+check("freespace" not in m.launch_due(now + 600, started.append, said.append), "at most one free-space sweep an hour")
+tick_free(now + 3600, {"Data": 13.0})
+check("freespace" in m.launch_due(now + 3600, started.append, said.append), "the next one an hour on")
+tick_free(now + 7290 - 2 * m.TICK_STALE_S, {"Data": 9.0})
+check("freespace" not in m.launch_due(now + 7290, started.append, said.append) and said == [],
+      "a stale tick starts and notifies nothing")
+for at, free, heard in ((7300, 9.0, 1), (7360, 8.0, 1), (7420, 30.0, 1), (7480, 9.5, 2)):
+    tick_free(now + at, {"Data": free})
+    m.launch_due(now + at, started.append, said.append)
+    check(len(said) == heard, "under 10 GiB one notification an episode, another after the volume came back: %s" % said)
+check("Data 9.0 GiB" in said[0] and "Doctors > Disk space" in said[0], "the notification names the volume: %s" % said[0])
+os.environ["LOG_SWEEP_FREE_GIB"] = "13"
+row = m.freespace(now)
+del os.environ["LOG_SWEEP_FREE_GIB"]
+check(not os.path.exists(os.path.join(home, "ecache/app")) and os.path.exists(os.path.join(home, "elog/run/a.log"))
+      and row["sweep"]["stores"] == {"ecache": [1, row["sweep"]["bytes"]]} and row["sweep"]["bytes"] >= 2 << 20,
+      "the free-space sweep took the day-old cache unit and left the day-old log unit (days 7): %s" % row)
+check(m.tick_rows(now - 60, now + 60, "freespace")[-1]["sweep"]["units"] == 1, "one freespace row per run")
+m.append_row("logstores", {"t": now + 10, "stores": [], "growers": [], "giants": [
+    {"path": "~/Nextcloud", "gb": 54.0, "volume": "Data", "owner": "Nextcloud"},
+    {"path": "/Volumes/Work/tmp", "gb": 30.0, "volume": "Work", "owner": "tmp"}]})
+judge = m.Judge(now + 60, None)
+m.judge_ticks(judge, [{"t": now + 30, "dt": 60, "free_gib": {"Data": 13.0}}], [])
+low = {p["id"]: p for p in judge.problems}["free-space:Data"]
+check("~/Nextcloud 54 GB (Nextcloud)" in low["fact"] and "/Volumes/Work/tmp" not in low["fact"]
+      and "the cache sweep at" in low["fact"] and "found no cache left" in low["fact"]
+      and low["cause"]["name"] == "Nextcloud" and not low["cause"]["fix_target"],
+      "low space names the volume's biggest folders beside the caches and what the last cache sweep freed: %s" % low["fact"])
+judge = m.Judge(now + 60, None)
+m.judge_logstores(judge, [{"t": now - 30, "stores": [], "growers": [
+    {"path": "/Volumes/Work/tmp/upscale", "gb": 25.0, "grew_gb": 25.0, "days": 6.0, "owner": "tmp/upscale"}]}])
+grew = {p["id"]: p for p in judge.problems}.get("dir-growth:/Volumes/Work/tmp/upscale")
+check(grew and "25.0 GB more than 6.0 days ago" in grew["fact"] and "tmp/upscale" in grew["fact"]
+      and m.RULE_LABELS["dir-growth"] and grew["severity"] == "review",
+      "a folder that grew fast is a Doctors problem with its path, size, growth and owner: %s" % grew)
+lua = open(os.path.join(root, "hammerspoon", "doctors.lua")).read()
+check('"free-space", "dir-growth"' in lua, "the menu's Disk space section shows the growth rule")
 execs = len(open(os.path.join(work, "python-execs")).read().splitlines())
-check(execs == 2, "python starts twice, this suite and the collector's log-sweep; log-sweep runs in-process here: %d" % execs)
+check(execs == 3, "python starts three times, this suite and the collectors' log-sweeps (daily, free space); log-sweep "
+      "runs in-process here: %d" % execs)
 print("OK: PASS: %d log store checks" % asserts)
 PY

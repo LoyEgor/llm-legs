@@ -939,7 +939,7 @@ local SECTIONS = {
   { name = "Processor", rules = { "spawn", "kernel" }, blind = { "ticks", "census" } },
   { name = "Memory", rules = { "compressor", "swap", "swap-writes" }, blind = { "ticks", "footprints" } },
   { name = "Disk writes", rules = { "ssd-writes" }, blind = { "ticks", "footprints", "ssd-sampler" } },
-  { name = "Disk space", rules = { "free-space", "orphan-profile", "profile-size" }, blind = { "ticks", "nightly" } },
+  { name = "Disk space", rules = { "free-space", "dir-growth", "orphan-profile", "profile-size" }, blind = { "ticks", "nightly" } },
   { name = "Logs", rules = { "log-store", "log-growth", "unregistered-store", "log-unread" }, blind = { "logstores" } },
   { name = "Crashes", rules = { "hammerspoon-crash", "job-crash", "job-loop", "unclean-reboot" },
     blind = { "nightly", "dumpstate", "harvest" } },

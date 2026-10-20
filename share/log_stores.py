@@ -1,12 +1,14 @@
 """The LLM log-store registry (share/log-stores.json) read by `bin/system-doctor logstores` and `bin/log-sweep`:
-each store's units (one glob match each), their size, file count and age, what a store's criterion removes, and the
-mechanical fallback that names any big or growing directory under the scan roots no store or ignore entry covers."""
+each store's units (one glob match each), their size, file count and age, what a store's criterion removes, the
+mechanical fallback that names any big or growing directory under the scan roots no store or ignore entry covers, and
+the growth lens that names any directory of the watched volumes that crossed a size or grew fast over the week."""
 
 import fnmatch
 import glob
 import itertools
 import json
 import os
+import re
 import stat
 
 from chat_names import HEADLESS_ENTRYPOINTS as HEADLESS
@@ -17,7 +19,7 @@ MB = 1 << 20
 KB = 1024
 CLEANERS = ("self", "sweep", "cap", "keep", "command")
 CRITERIA = ("days", "max_mb", "keep_newest", "tail_mb")
-KINDS = ("log", "app")
+KINDS = ("log", "app", "cache")
 GROUPS = ("workers", "temp", "review bench", "our tools", "my chats", "LLM apps")
 SPLITS = ("session", "session-id")
 NEEDS_CRITERION = ("self", "sweep", "command")
@@ -41,10 +43,10 @@ def criterion(entry):
 
 def load(path=None):
     """The registry, validated: every store has a name, globs, a kind, a known cleaner and at most one criterion, which a
-    `self`, `sweep` or `command` store must have, and a log store lists its readers; a `command` store is an app store
-    whose criterion is `days` and whose `command` is an argv list; `group_days` only on a split `days` store, each
-    group known and kept no longer than `days`, which an unclassified unit keeps; every ignore entry has a glob and a
-    reason. Raises ValueError naming the fault."""
+    `self`, `sweep` or `command` store must have, and a log store lists its readers; a `command` store is an app or
+    cache store whose criterion is `days` and whose `command` is an argv list; `group_days` only on a split `days`
+    store, each group known and kept no longer than `days`, which an unclassified unit keeps; every ignore entry has a
+    glob and a reason. Raises ValueError naming the fault."""
     path = path or registry_path()
     with open(path, encoding="utf-8") as handle:
         registry = json.load(handle)
@@ -63,9 +65,9 @@ def load(path=None):
             raise ValueError("store %s: needs a kind in %s" % (name, "/".join(KINDS)))
         argv = entry.get("command")
         if entry["cleaner"] == "command" and not (
-                entry["kind"] == "app" and isinstance(entry.get("days"), int) and entry["days"] > 0
+                entry["kind"] in ("app", "cache") and isinstance(entry.get("days"), int) and entry["days"] > 0
                 and isinstance(argv, list) and argv and all(isinstance(a, str) and a for a in argv)):
-            raise ValueError("store %s: a command store is an app store with days and a command argv list" % name)
+            raise ValueError("store %s: a command store is an app or cache store with days and a command argv list" % name)
         readers = entry.get("readers")
         if entry["kind"] == "log" and not (isinstance(readers, list) and all(isinstance(r, str) and r for r in readers)):
             raise ValueError("store %s: a log store needs readers, a list of program names or []" % name)
@@ -95,9 +97,17 @@ def outermost(paths):
     return kept
 
 
+def braces(pattern):
+    """The patterns a glob's {a,b} alternatives stand for, as a shell expands them (no nesting)."""
+    found = re.search(r"\{([^{}]*)\}", pattern)
+    if not found:
+        return [pattern]
+    return [p for alt in found.group(1).split(",") for p in braces(pattern[:found.start()] + alt + pattern[found.end():])]
+
+
 def units(entry):
     found = set()
-    for pattern in entry["globs"]:
+    for pattern in (p for g in entry["globs"] for p in braces(g)):
         found.update(os.path.normpath(p) for p in glob.glob(expand(pattern), include_hidden=True))
     excluded = [expand(p) if p.startswith(("~", "/", "$")) else p for p in entry.get("exclude") or ()]
     wanted = {"file": (stat.S_IFREG,), "dir": (stat.S_IFDIR,)}.get(entry.get("type"),
@@ -117,7 +127,8 @@ def units(entry):
 
 def unit_stats(path):
     """{path, bytes (allocated, as du), size (a file's length), files, newest (the newest mtime of the unit and
-    everything inside it)}; symlinks are counted, never followed."""
+    everything inside it), denied (a directory macOS will not list, an app's data its privacy guard keeps: never
+    swept)}; symlinks are counted, never followed."""
     try:
         info = os.lstat(path)
     except OSError:
@@ -129,8 +140,9 @@ def unit_stats(path):
         return row
     stack = [path]
     while stack:
+        top = stack.pop()
         try:
-            with os.scandir(stack.pop()) as entries:
+            with os.scandir(top) as entries:
                 for item in entries:
                     try:
                         info = item.stat(follow_symlinks=False)
@@ -142,6 +154,8 @@ def unit_stats(path):
                         stack.append(item.path)
                     else:
                         row["files"] += 1
+        except PermissionError:
+            row["denied"] = row.get("denied") or top == path
         except OSError:
             continue
     return row
@@ -262,13 +276,13 @@ def parse_du(text):
     return sizes
 
 
-def unregistered(sizes, roots, depth, claims, ignores, min_kb, grow_kb_day, floor_kb, old=None, old_days=None):
+def residuals(sizes, roots, depth, claims, ignores, floor_kb, fires):
     """(reported, scan) over du sizes in KB. A directory 1..depth below its root is covered when it lies in a store
     unit, or in an ignore match that its root does not lie inside. Its residual is its size minus every covered or
-    already-reported part below it (and every other root inside it); it is reported when the residual reaches min_kb or
-    grew by grow_kb_day a day against `old` ({path: [kb, residual]}, old_days back). A root's own loose files are judged
-    the same way as `<root>/*`: its size minus every directory and claimed file directly in it. `claims` maps each store
-    unit to its bytes; `scan` keeps [kb, residual] of every uncovered directory of floor_kb or more for the next comparison."""
+    already-reported part below it (and every other root inside it); fires(path, kb, residual) returns the row to report
+    or None, deepest first. A root's own loose files are judged the same way as `<root>/*`: its size minus every
+    directory and claimed file directly in it. `claims` maps each store unit to its bytes; `scan` keeps [kb, residual]
+    of every uncovered directory of floor_kb or more for the next comparison."""
     roots = [r for r in roots if r in sizes]
     ignored = set(ignores)
     units = outermost(claims)
@@ -315,17 +329,50 @@ def unregistered(sizes, roots, depth, claims, ignores, min_kb, grow_kb_day, floo
     reported, scan = [], {}
     for path, kb in sorted(candidates, key=lambda c: (-c[0].count("/"), c[0])):
         residual = max(0, kb - acc.get(path, 0))
-        grow = None
-        if old is not None and old_days:
-            before = (old.get(path) or [0, 0])[1]
-            grow = (residual - before) / old_days
         if kb >= floor_kb:
             scan[path] = [kb, residual]
-        if residual >= min_kb or grow is not None and grow >= grow_kb_day:
-            reported.append({"path": path, "kb": kb, "residual_kb": residual,
-                             "grow_kb_day": round(grow) if grow is not None else None})
+        found = fires(path, kb, residual)
+        if found:
+            reported.append(found)
             lift(path, residual)
     return sorted(reported, key=lambda r: -r["residual_kb"]), scan
+
+
+def unregistered(sizes, roots, depth, claims, ignores, min_kb, grow_kb_day, floor_kb, old=None, old_days=None):
+    """residuals() reporting a directory whose residual reaches min_kb or grew by grow_kb_day a day against `old`
+    ({path: [kb, residual]}, old_days back)."""
+
+    def fires(path, kb, residual):
+        grow = None
+        if old is not None and old_days:
+            grow = (residual - (old.get(path) or [0, 0])[1]) / old_days
+        if residual >= min_kb or grow is not None and grow >= grow_kb_day:
+            return {"path": path, "kb": kb, "residual_kb": residual, "grow_kb_day": round(grow) if grow is not None else None}
+        return None
+
+    return residuals(sizes, roots, depth, claims, ignores, floor_kb, fires)
+
+
+def growers(sizes, roots, depth, claims, min_kb, grow_kb, floor_kb, old=None, old_days=None, old_roots=()):
+    """residuals() with no ignores over the watched volumes' roots, reporting a directory that crossed min_kb or grew
+    grow_kb against `old` ({path: [kb, residual]}, old_days back): a giant that appeared or grew fast, never one that
+    sat that big all along. Only a path under one of `old_roots`, the roots that scan covered, is compared; with no
+    earlier scan nothing is reported. A path `old` lacks was under its floor then and counts as 0."""
+
+    def fires(path, kb, residual):
+        if old is None or not old_days or not root_of(path, old_roots):
+            return None
+        before = (old.get(path) or [0, 0])[1]
+        if residual >= min_kb > before or residual - before >= grow_kb:
+            return {"path": path, "kb": kb, "residual_kb": residual, "grew_kb": residual - before,
+                    "days": round(old_days, 1)}
+        return None
+
+    return residuals(sizes, roots, depth, claims, (), floor_kb, fires)
+
+
+OWNER_DIRS = ("Library/Application Support", "Library/Caches", "Library/Containers", "Library/Group Containers",
+              ".cache", ".local/share", ".config")
 
 
 def ignore_paths(registry):
@@ -335,12 +382,42 @@ def ignore_paths(registry):
     return found
 
 
-def app_claims(registry, sizes):
-    """{unit: bytes} of every app store unit, never counted but claimed so the fallback skips it: du's size when du
-    listed it, else its own (a file du never lists, a directory below du's depth)."""
+def owner_words(path, home=None):
+    """Who a directory belongs to, from its place alone: the git checkout around it (`repo <name>`), the app folder
+    of an Application Support, Caches or Containers root, a home dot-dir's name, else the first two folders under the
+    home or the volume."""
+    home = home or os.path.expanduser("~")
+    path = path[:-2] if path.endswith("/*") else path
+    up = path
+    while up and up not in ("/", home) and not re.fullmatch(r"/Volumes/[^/]+", up):
+        if os.path.exists(os.path.join(up, ".git")):
+            return "repo " + os.path.basename(up)
+        up = parent(up)
+    if path == home:
+        return "home"
+    rel = path[len(home) + 1:] if path.startswith(home + "/") else None
+    if rel is not None:
+        for top in OWNER_DIRS:
+            if rel.startswith(top + "/"):
+                return rel[len(top) + 1:].split("/")[0]
+        parts = rel.split("/")
+        return parts[0].lstrip(".") if parts[0].startswith(".") else "/".join(parts[:2])
+    parts = [p for p in path.split("/") if p and p != "private"]
+    return "/".join(parts[2:4] or parts[1:2] if parts[:1] == ["Volumes"] else parts[:2]) or path
+
+
+def bounded(entry):
+    """A store something keeps within bounds: the app caps it, or a cleaner other than `keep` applies its criterion."""
+    return entry.get("cleaner") == "cap" or entry.get("cleaner") != "keep" and bool(criterion(entry)[0])
+
+
+def app_claims(registry, sizes, only=None):
+    """{unit: bytes} of every app or cache store unit (of every store `only` accepts, when given), never counted but
+    claimed so the fallback skips it: du's size when du listed it, else its own (a file du never lists, a directory
+    below du's depth)."""
     claims = {}
     for entry in registry.get("stores") or ():
-        if entry.get("kind") != "app":
+        if not (only(entry) if only else entry.get("kind") in ("app", "cache")):
             continue
         for path in units(entry):
             if path in sizes:
@@ -354,3 +431,7 @@ def app_claims(registry, sizes):
 
 def logs(registry):
     return [entry for entry in registry.get("stores") or () if entry.get("kind") == "log"]
+
+
+def caches(registry):
+    return [entry for entry in registry.get("stores") or () if entry.get("kind") == "cache"]
