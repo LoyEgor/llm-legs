@@ -297,7 +297,41 @@ def post_notices(sids, identity, body):
     return posted
 
 
-def guard(now, avail, table, envs, tops, sessions, protected, roots, titles, last):
+def post_inboxes(inboxes, text):
+    """A worker session never flushes the report bus (`skip_flush`), so its notice goes into its run's
+    inbox, which worker-inbox-hook.sh hands it at its next tool call. Appended in one write, so a held
+    `.claim.lock` is waited on for a second at most."""
+    line = json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "by": "memory-guard",
+                       "from": "the machine's memory guard", "text": text}, ensure_ascii=False) + "\n"
+    told = []
+    for sid, directory in sorted(inboxes.items()):
+        lock, held = os.path.join(directory, ".claim.lock"), False
+        for _ in range(10):
+            try:
+                os.mkdir(lock)
+                held = True
+                break
+            except OSError:
+                time.sleep(0.1)
+        try:
+            with open(os.path.join(directory, "inbox"), "a") as handle:
+                handle.write(line)
+            open(os.path.join(directory, "inbox.new"), "w").close()
+            told.append(sid)
+        except OSError:
+            pass
+        finally:
+            if held:
+                try:
+                    os.rmdir(lock)
+                except OSError:
+                    pass
+    return told
+
+
+def guard(now, avail, room, measure, table, envs, tops, sessions, protected, roots, titles, last):
+    """`measure` is how memlogd counted `avail`: "swap" when the swap volume had no room left and
+    inactive anonymous pages counted as used (`docs/memory-guard.md`)."""
     if avail < 0 or avail >= GUARD_AVAIL_MB:
         return None
     uid = os.getuid()
@@ -317,24 +351,47 @@ def guard(now, avail, table, envs, tops, sessions, protected, roots, titles, las
         return None
     if os.environ.get("XPC_SERVICE_NAME") != DAEMON_LABEL:
         print(f"WOULD KILL {now} chat={top} job_pgid={pgid} footprint_mb={job_mb} avail_mb={avail} "
-              f"pids={','.join(map(str, sorted(members)))}", flush=True)
+              f"swap_room_mb={room} trigger={measure} pids={','.join(map(str, sorted(members)))}", flush=True)
         return None
     heaviest = max(members, key=lambda p: table[p]["kb"])
     parsed = procargs(heaviest)
     command = " ".join(parsed[0]) if parsed and parsed[0] else table[heaviest]["comm"]
     if len(command) > 160:
         command = command[:159] + "…"
-    body = json.dumps({"word": "memory guard", "rows": [
+    why = {
+        "ram": f"the Mac was down to {avail} MB of available RAM and this was the largest job any chat was "
+               "running; left alone it would have frozen the machine into a forced reboot",
+        "swap": f"the Mac was down to {avail} MB of RAM it could still free (swap had {room} MB of room left on "
+                "the disk, so memory waiting to be swapped out counted as used) and this was the largest job any "
+                "chat was running; past that point macOS kills its own services and the machine hangs",
+    }[measure]
+    rows = [
         ["stopped", f"{command} (pid {heaviest}) and the rest of its process group {pgid}: "
                     f"{len(members)} processes, {job_mb / 1024:.1f} GB of memory"],
-        ["why", f"the Mac was down to {avail} MB of available RAM and this was the largest job any chat "
-                "was running; left alone it would have frozen the machine into a forced reboot"],
+        ["why", why],
         ["this is", "not a crash and not a broken system: the machine is healthy and the task is still solvable"],
-        ["next", "rerun it with fewer parallel jobs or smaller batches; the guard acts again only if RAM runs out again"],
-    ]})
+        ["next", "do not start it again at that size or in any variant near it: this Mac cannot hold it beside "
+                 "the rest. A rerun must need far less memory (one job at a time, smaller tiles or batches, a "
+                 "lighter model); otherwise finish without it and report that it needs a bigger machine"],
+    ]
+    body = json.dumps({"word": "memory guard", "rows": rows})
+    inboxes = {}
+    for pid in members:
+        root = next((ancestor for ancestor in lineage(pid, table) if ancestor in roots), None)
+        if root is None:
+            continue
+        try:
+            with open(os.path.join(roots[root][1], "worker-session")) as handle:
+                sid = handle.readline().strip()
+        except OSError:
+            continue
+        if sid and sid != top:
+            inboxes[sid] = roots[root][1]
     notify = [sid for sid in [top] + sorted({envs.get(str(p), [0, "", ""])[2] for p in members} - {top})
-              if sid in sessions]
+              if sid in sessions and sid not in inboxes]
     posted = post_notices(notify, f"memguard-{now}-{pgid}", body)
+    posted += post_inboxes(inboxes, "memory guard — " + "; ".join(f"{label}: {value}" for label, value in rows))
+    notify += sorted(inboxes)
     killed = []
     # The whole group at once when nothing else is in it, so what it forked during the notice goes too.
     if all(p in members or row["zombie"] for p, row in table.items() if row["pgid"] == pgid):
@@ -365,8 +422,8 @@ def guard(now, avail, table, envs, tops, sessions, protected, roots, titles, las
                              f"root_pid={root} killed={','.join(map(str, pids))}\n")
         except OSError:
             pass
-    print(f"KILLED {now} chat={top} job_pgid={pgid} avail_mb={avail} job_rss_mb={job_mb} "
-          f"killed={','.join(map(str, killed))} notified={','.join(posted) or 'none'}", flush=True)
+    print(f"KILLED {now} chat={top} job_pgid={pgid} avail_mb={avail} swap_room_mb={room} trigger={measure} "
+          f"job_rss_mb={job_mb} killed={','.join(map(str, killed))} notified={','.join(posted) or 'none'}", flush=True)
     return {"at": now, "session": top, "mb": job_mb, "title": titles.get(top, {}).get("t", ""),
             "told": bool(posted) or not notify, "killed": killed}
 
@@ -579,7 +636,7 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
             "queue_stuck_s": QUEUE_STUCK_S, "error": ""}
 
 
-def sample(now, avail, swap):
+def sample(now, avail, swap, room, measure):
     os.makedirs(LOG_DIR, exist_ok=True)
     prev = read_json(STATE_PATH, {})
     state = {"guard": prev.get("guard"), "titles": prev.get("titles", {}), "hist": prev.get("hist", {}),
@@ -598,7 +655,8 @@ def sample(now, avail, swap):
     footprints(table, [pid for pid, row in table.items() if not row["zombie"]])
     failure = ""
     try:
-        event = guard(now, avail, table, envs, tops, sessions, protected, roots, state["titles"], prev.get("guard"))
+        event = guard(now, avail, room, measure, table, envs, tops, sessions, protected, roots, state["titles"],
+                      prev.get("guard"))
         if event:
             state["guard"] = event
     except Exception as error:
@@ -631,18 +689,19 @@ def show():
 def main(argv):
     if argv[:1] == ["show"] and len(argv) == 1:
         return show()
-    if argv[:1] == ["sample"] and len(argv) == 7 and argv[1::2] == ["--now", "--avail", "--swap"]:
+    if (argv[:1] == ["sample"] and len(argv) == 11
+            and argv[1::2] == ["--now", "--avail", "--swap", "--room", "--measure"] and argv[10] in ("ram", "swap")):
         try:
-            now, avail, swap = int(argv[2]), int(argv[4]), int(argv[6])
+            now, avail, swap, room = int(argv[2]), int(argv[4]), int(argv[6]), int(argv[8])
         except ValueError:
             now = None
         if now is not None:
             try:
-                return sample(now, avail, swap)
+                return sample(now, avail, swap, room, argv[10])
             except Exception as error:
                 print(f"CHAT-LOAD-ERROR {now} sample: {error!r}", flush=True)
                 return 1
-    print("usage: chat-load sample --now EPOCH --avail MB --swap MB | chat-load show", file=sys.stderr)
+    print("usage: chat-load sample --now EPOCH --avail MB --swap MB --room MB --measure ram|swap | chat-load show", file=sys.stderr)
     return 2
 
 

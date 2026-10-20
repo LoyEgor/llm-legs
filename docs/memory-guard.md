@@ -12,6 +12,17 @@ Trigger, both halves required, evaluated once per tick:
 - system available RAM < **2048 MB**, AND
 - the **fattest chat job** > **1536 MB**, weighed as the summed physical footprint of its members.
 
+memlogd counts available RAM one of two ways (`available_mb`), and the `KILLED` line names which as
+`trigger=ram|swap`, beside `swap_room_mb=`:
+
+- **ram**: free + inactive + speculative pages, all RAM can hand out while swap can still grow;
+- **swap**, once **swap room** is under **4096 MB** (free swap plus the free disk of the swap volume
+  `/System/Volumes/VM`, `swap_probe`, logged as `swap_room_mb=` in `machine/`): free + speculative +
+  purgeable pages + inactive × (file-backed − speculative) / (active + inactive), the file-backed
+  share of the inactive pages. A failed probe (-1) or a vm_stat without a file-backed count keeps ram.
+
+The same count opens and closes incidents, so the 1 s ticks run once it is low.
+
 A member's weight is its `ri_phys_footprint` (`proc_pid_rusage`, one syscall per attributed pid), the
 memory `top` and Activity Monitor show; a pid it cannot read (another user's, gone) keeps its RSS
 from `ps`. RSS alone missed wired GPU memory: a headless Cycles render on Metal holds ~9 GB at
@@ -70,12 +81,19 @@ and can say so, and a worker run's supervisor still writes its exit code and rep
 
 Before the kill, chat-load posts a `notice` block (the deployed `report-bus`, all posts at once under
 one 3 s timeout) to the
-launching chat and to every live session a member ran under (the worker's own, for a worker's job):
-what was stopped, the available RAM, that this is not a crash and the task is still solvable, and to
-rerun with fewer parallel jobs or smaller batches. Posted first, it is already on the bus when the
+launching chat and to every live session a member ran under: what was stopped, why (the trigger and
+the numbers), that this is not a crash and the task is still solvable, and not to start it again at that
+size or in any variant near it: a rerun must need far less memory, or the task finishes without it and
+reports that it needs a bigger machine. Posted first, it is already on the bus when the
 killed tool call returns, so that call's own PostToolUse flush carries it into the model's context
 and Egor's view. A closed chat gets no post — nothing may wait for a chat that never comes back —
 but its job is still killed: that is exactly what nothing else would ever stop.
+
+A worker session never flushes the bus (`skip_flush`, shared-invariants row `ch`), so a worker run's
+own session gets the same text as a line in `<run dir>/inbox` (`by: memory-guard`), which
+`bin/worker-inbox-hook.sh` hands it at its next tool call as a message from the memory guard. Until
+2026-10-20 it was posted to the bus and never read: a worker relaunched a 15-22 GB upscale eight
+times in one night, its seven notices still pending, `notified=` naming it as told.
 
 Nothing is paused or queued: SIGSTOP would park a chat for minutes and leave stopped processes
 behind for chats that die. A killed job leaves nothing.
@@ -95,7 +113,31 @@ for hours at a time. A single fat job on its own is likewise ordinary.
   which knew only registered worker trees — 35 minutes frozen, then the power button).
 
 Neither threshold is an environment variable: a threshold an operator can turn down is a guard that
-stops firing exactly when it is needed. Both are stated once, in `bin/chat-load`.
+stops firing exactly when it is needed. Both are stated once, in `bin/chat-load`; the swap room that
+switches the count (`swap_reserve_mb`), once, in `bin/memlogd`.
+
+## Why the count changes when swap is full, not the threshold
+
+`avail` counts inactive pages as RAM to hand out, and an inactive anonymous page is that only while
+swap can take it. On 2026-10-20 (disk 97 % full) an upscale of 17.7 GB pushed swap from 6 to 15.6 GB
+until no disk was left for it; the ram count stayed at 2.3-5 GB the whole time, so the 2048 rule never
+fired, and the kernel's `low-swap` jetsam killed ~40 system services and left Terminal hung for 10
+hours. The kernel's own count at its first kill (`JetsamEvent-2026-10-20-023254.ips`, 16 KB pages)
+reads 3748 MB the ram way and 1373 MB the swap way; its next two reports, 02:33:55 and 02:38:21,
+3297 and 3925 MB against 1778 and 1640 MB. The guard would have cut the upscale on the first tick after the room fell under 4096 MB.
+
+Raising the threshold instead was rejected (Egor, 2026-10-20: not above 2 GB): it kills healthy work
+on a roomy disk, where the ram count is right.
+
+- vm_stat has no per-queue file/anonymous split, so the inactive queue is taken at the file-backed
+  share of all active and inactive pages. Under pressure the kernel drops file pages first, so the
+  inactive queue holds fewer of them than that, and the estimate errs toward keeping jobs.
+- **4096 MB** of room is ~19 s at that night's fastest growth (6 GB of swap in 28 s), about ten
+  incident ticks. It only switches the count: a full disk with RAM free still reads several GB
+  available the swap way and opens no incident, so stale swap, the term that once latched the dumps
+  for 14 hours, decides nothing.
+- No per-chat hold for relaunches: the eight relaunches of that night were a worker that never heard
+  the guard (see Notice).
 
 ## Why SIGKILL
 
@@ -183,7 +225,10 @@ so one agent's fan-out does not become the job the guard has to cut.
 ## Tests
 
 `bash tests/test_memlogd.sh` runs the daemon against real process groups (the fake `ps` lists only
-the groups a case spawned): both halves required, a chat's own Bash job killed whole with its CLI
+the groups a case spawned, the fake `df` sets the swap volume's free disk): both halves required, the
+kernel's count of 2026-10-20 02:32 replayed (3748 MB the ram way, 1373 MB and a cut once the room is
+gone, nothing with a roomy disk, an unknown room or a full disk with RAM free), a worker's notice
+landing in its run's inbox and rendered by its hook, a chat's own Bash job killed whole with its CLI
 standing and the notice posted while the job was alive, registered CLIs, supervisors and cells and
 their ancestors protected, an ended run protecting nothing, only the fattest job cut, unattributed
 processes never touched, a fat CLI never convicted on its own weight, a worker's job billed to the

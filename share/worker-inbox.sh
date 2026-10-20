@@ -1,6 +1,7 @@
 # A worker run's mid-run messages, one path for every vendor. Sourced by bin/worker-run (`say`,
 # report, the RESUME carry) and bin/worker-inbox-hook.sh (the in-session delivery).
-#   <run>/inbox            one {at,by,text} JSON line per `worker-run say`
+#   <run>/inbox            one {at,by,text} JSON line per `worker-run say`; the memory guard's notice
+#                          (bin/chat-load) adds from, the sender the line names
 #   <run>/inbox.new        exists while a line may be untaken: the hook's whole empty-inbox cost is
 #                          one stat of it
 #   <run>/inbox.delivered  one "<end byte offset> <time> <via>" line per take, via = hook | resume:<run>
@@ -66,7 +67,7 @@ inbox_record() { # directory end via
 
 inbox_context() { # taken-lines
   jq -Rrs 'split("\n") | map(select(length > 0) | (fromjson? // {at: "?", text: .})
-    | "Message from the chat that launched you (\(.at)): \(.text)") | join("\n\n")' <<<"$1"
+    | "Message from \(.from // "the chat that launched you") (\(.at)): \(.text)") | join("\n\n")' <<<"$1"
 }
 
 inbox_states() { # directory queued-text

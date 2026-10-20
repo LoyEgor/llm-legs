@@ -35,6 +35,8 @@ quiet_interval="${MEMLOGD_QUIET_INTERVAL:-15}"
 incident_interval="${MEMLOGD_INCIDENT_INTERVAL:-1}"
 enter_avail_mb="${MEMLOGD_ENTER_AVAIL_MB:-4096}"
 exit_avail_mb="${MEMLOGD_EXIT_AVAIL_MB:-5120}"
+# Under this much room for swap to grow into, available RAM is counted the swap way (available_mb).
+swap_reserve_mb=4096
 recover_seconds="${MEMLOGD_RECOVER_SECONDS:-60}"
 retention_days="${MEMLOGD_RETENTION_DAYS:-3}"
 max_frames_mb="${MEMLOGD_MAX_FRAMES_MB:-1024}"
@@ -69,31 +71,58 @@ prev_swapins_at=""
 ncpu=-1
 boot_id=-1
 
+# "<MB> <measure>". The ram measure counts free, inactive and speculative pages, all RAM can hand out
+# while swap can grow. Under swap_reserve_mb of room an inactive anonymous page has nowhere to go and
+# is used memory: the swap measure counts free, speculative and purgeable pages plus the file-backed
+# share of the inactive ones (vm_stat has no per-queue split, so the inactive queue is taken at the
+# file-backed share of all active and inactive pages). 2026-10-20 02:32: 3748 MB by the ram measure,
+# 1373 MB by the swap one, while the kernel's low-swap jetsam was killing services.
 # -1 is "the probe failed", and every threshold test rejects it: a vm_stat that returns nothing
-# must not read as zero bytes available and fake an incident.
-available_mb() {
-  awk '
+# must not read as zero bytes available and fake an incident. Without a room or a file-backed count
+# the ram measure stays. Called without a room (share/slots.sh, bin/image-fanout) it prints the bare MB.
+available_mb() { # vm_text [room]
+  awk -v room="${2--1}" -v said="${2+1}" -v reserve="${swap_reserve_mb-0}" '
+    BEGIN { file = -1 }
     NR == 1 { for (i = 1; i <= NF; i++) if ($i == "of") page = $(i + 1) + 0 }
     /^Pages free:/ { free = $3 + 0; seen = 1 }
+    /^Pages active:/ { active = $3 + 0 }
     /^Pages inactive:/ { inactive = $3 + 0 }
     /^Pages speculative:/ { speculative = $3 + 0 }
+    /^Pages purgeable:/ { purgeable = $3 + 0 }
+    /^File-backed pages:/ { file = $3 + 0 }
     END {
-      if (!seen) { print "-1"; exit }
+      if (!seen) { print said ? "-1 ram" : "-1"; exit }
       if (page <= 0) page = 4096
-      printf "%d\n", (free + inactive + speculative) * page / 1048576
+      pages = free + inactive + speculative
+      measure = "ram"
+      if (room >= 0 && room < reserve && file >= 0 && active + inactive > 0) {
+        backed = file > speculative ? file - speculative : 0
+        pages = free + speculative + purgeable + inactive * backed / (active + inactive)
+        measure = "swap"
+      }
+      if (said) printf "%d %s\n", pages * page / 1048576, measure
+      else printf "%d\n", pages * page / 1048576
     }' <<<"$1"
 }
 
-swap_used_mb() {
-  sysctl -n vm.swapusage 2>/dev/null | awk '
-    { for (i = 1; i <= NF; i++) if ($i == "used") { value = $(i + 2); seen = 1; break } }
-    END {
-      if (!seen) { print "-1"; exit }
+# "<used MB> <room MB>": room is the free swap plus the free disk of the swap volume, all swap can still
+# grow into. Once it is gone the kernel's low-swap jetsam kills system services while vm_stat still
+# shows gigabytes available (2026-10-20, 14 GB free on the disk). -1 is a failed probe.
+swap_probe() {
+  local disk
+  disk=$(df -m /System/Volumes/VM 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print $4 }')
+  sysctl -n vm.swapusage 2>/dev/null | awk -v disk="${disk:--1}" '
+    function mb(value, unit, number) {
       unit = substr(value, length(value), 1)
       number = value + 0
       if (unit == "G") number *= 1024
       else if (unit == "K") number /= 1024
-      printf "%d\n", number
+      return int(number)
+    }
+    { for (i = 1; i < NF - 1; i++) if ($i == "used") used = $(i + 2); else if ($i == "free") free = $(i + 2) }
+    END {
+      if (used == "") { print "-1 -1"; exit }
+      printf "%d %d\n", mb(used), (free == "" || disk < 0) ? -1 : mb(free) + disk
     }'
 }
 
@@ -118,12 +147,12 @@ node_stats() {
     END { printf "%d %d\n", count + 0, (total + 0) / 1024 }' <<<"$snapshot"
 }
 
-chat_load_tick() { # now avail swap
+chat_load_tick() { # now avail swap room measure
   local line
   while IFS= read -r line; do
     append "$line"
     flush
-  done < <("$chat_load" sample --now "$1" --avail "$2" --swap "$3" 2>/dev/null)
+  done < <("$chat_load" sample --now "$1" --avail "$2" --swap "$3" --room "$4" --measure "$5" 2>/dev/null)
 }
 
 boot_facts() {
@@ -149,8 +178,8 @@ contention_probe_ms() {
   fi
 }
 
-machine_tick() { # now swap vm_text
-  local now="$1" swap="$2" load1=-1 swapins=-1 rate=-1 thermal=-1 text probe=""
+machine_tick() { # now swap vm_text room
+  local now="$1" swap="$2" room="$4" load1=-1 swapins=-1 rate=-1 thermal=-1 text probe=""
   [ -z "$machine_at" ] || [ "$now" -lt "$machine_at" ] || [ $((now - machine_at)) -ge "$machine_interval" ] || \
     return 0
   machine_at=$now
@@ -170,8 +199,8 @@ machine_tick() { # now swap vm_text
     probe=" probe_ms=$(contention_probe_ms)"
   fi
   mkdir -p "$log_dir/machine"
-  printf '%s load1=%s ncpu=%s swap_mb=%s swapin_pages_s=%s thermal=%s boot=%s%s\n' \
-    "$now" "$load1" "$ncpu" "$swap" "$rate" "$thermal" "$boot_id" "$probe" >>"$log_dir/machine/$today.log"
+  printf '%s load1=%s ncpu=%s swap_mb=%s swap_room_mb=%s swapin_pages_s=%s thermal=%s boot=%s%s\n' \
+    "$now" "$load1" "$ncpu" "$swap" "$room" "$rate" "$thermal" "$boot_id" "$probe" >>"$log_dir/machine/$today.log"
 }
 
 log_path() { printf '%s/%s.log\n' "$log_dir" "$1"; }
@@ -231,8 +260,9 @@ want_frame() {
   [ $((now - last_frame_at)) -ge "$slow_interval" ]
 }
 
-# Swap is reported but decides nothing: macOS holds swap allocated for hours after the pressure
+# Swap is reported but decides no incident: macOS holds swap allocated for hours after the pressure
 # that caused it is gone, and a swap term here once latched the 1 Hz dumps for 14 hours and 8 GB.
+# Its room only changes how available RAM is counted (available_mb).
 pressure() { [ "$1" -ge 0 ] && [ "$1" -lt "$enter_avail_mb" ]; }
 
 # A failed probe is unknown, not pressure — the same rule pressure() applies, so a vm_stat that
@@ -315,7 +345,7 @@ acquire_lock() {
 }
 
 run_loop() {
-  local today day now avail swap counts node_count node_rss stamp jump_file vm_text
+  local today day now avail measure swap room counts node_count node_rss stamp jump_file vm_text
   local state=quiet recover_since=0 ticks=0 interval
   enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
   mkdir -p "$log_dir" || return 1
@@ -338,15 +368,15 @@ run_loop() {
       fi
     fi
     vm_text=$(vm_stat 2>/dev/null) || vm_text=""
-    avail=$(available_mb "$vm_text")
-    swap=$(swap_used_mb)
+    read -r swap room <<<"$(swap_probe)"
+    read -r avail measure <<<"$(available_mb "$vm_text" "$room")"
     counts=$(node_stats)
     node_count=${counts% *}
     node_rss=${counts#* }
     # Before the state machine, and independent of it: the guard answers to its own two thresholds,
     # not to whether this tick opened an incident, so a change to the incident window cannot quietly
     # move when the machine defends itself.
-    chat_load_tick "$now" "$avail" "$swap"
+    chat_load_tick "$now" "$avail" "$swap" "$room" "$measure"
 
     if [ "$state" = quiet ] && pressure "$avail"; then
       state=incident
@@ -416,7 +446,7 @@ run_loop() {
     fi
     prev_node_count=$node_count
     prev_node_rss=$node_rss
-    machine_tick "$now" "$swap" "$vm_text"
+    machine_tick "$now" "$swap" "$vm_text" "$room"
 
     ticks=$((ticks + 1))
     if [ "$max_ticks" -gt 0 ] && [ "$ticks" -ge "$max_ticks" ]; then break; fi

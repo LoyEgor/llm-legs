@@ -39,6 +39,8 @@ cat >"$FAKE_BIN/vm_stat" <<'EOF'
 set -u
 count=$(cat "$TICK_FILE" 2>/dev/null || echo 0)
 printf '%s' "$((count + 1))" >"$TICK_FILE"
+# A case replaying a real count (VM_STAT_TEXT) prints it as it is.
+[ -z "${VM_STAT_TEXT:-}" ] || exec cat "$VM_STAT_TEXT"
 read -r -a values <<<"$(cat "$AVAIL_FILE")"
 index=$count
 [ "$index" -lt "${#values[@]}" ] || index=$(( ${#values[@]} - 1 ))
@@ -82,6 +84,14 @@ read -r -a values <<<"$(cat "$SWAP_FILE")"
 index=$count
 [ "$index" -lt "${#values[@]}" ] || index=$(( ${#values[@]} - 1 ))
 printf 'total = 8192.00M  used = %s.00M  free = 100.00M  (encrypted)\n' "${values[$index]}"
+EOF
+
+# The swap volume's free disk: roomy unless a case declares a full disk (DISK_FREE_MB) or a failed df.
+cat >"$FAKE_BIN/df" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${DF_FAILS:-}" ] || exit 1
+printf 'Filesystem 1M-blocks Used Available Capacity iused ifree %%iused Mounted on\n'
+printf '/dev/disk3s6 471452 3072 %s 15%% 3 179112720 0%% /System/Volumes/VM\n' "${DISK_FREE_MB:-100000}"
 EOF
 
 cat >"$FAKE_BIN/ps" <<'EOF'
@@ -203,7 +213,7 @@ if [ "$#" -eq 3 ] && [ "$1" = "-r" ] && [ "$3" = "+%Y-%m-%dT%H%M%S" ] && [ -n "$
 fi
 exec /bin/date "$@"
 EOF
-chmod +x "$FAKE_BIN/vm_stat" "$FAKE_BIN/sysctl" "$FAKE_BIN/ps" "$SEAM_BIN/date" "$SEAM_BIN/stat" \
+chmod +x "$FAKE_BIN/vm_stat" "$FAKE_BIN/sysctl" "$FAKE_BIN/df" "$FAKE_BIN/ps" "$SEAM_BIN/date" "$SEAM_BIN/stat" \
   "$FAKE_BIN/notifyutil" "$SEAM_BIN/jq"
 PATH="$FAKE_BIN:$PATH"
 export PATH
@@ -293,7 +303,7 @@ assert run_memlogd "$MACHINE_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_PROBE_FORKS= MEMLO
   LOADAVG=3.25 THERMAL=2 SWAPINS_FILE="$WORK/swapins" EPOCH_FILE="$WORK/machine-epochs" EPOCH_TICK="$WORK/machine-epoch-tick"
 machine_log="$MACHINE_DIR/machine/$run_day.log"
 assert test "$(wc -l <"$machine_log")" -eq 3
-assert grep -qE '^[0-9]{10} load1=3.25 ncpu=8 swap_mb=1024 swapin_pages_s=-1 thermal=2 boot=1790882097 probe_ms=[0-9]+$' \
+assert grep -qE '^[0-9]{10} load1=3.25 ncpu=8 swap_mb=1024 swap_room_mb=100100 swapin_pages_s=-1 thermal=2 boot=1790882097 probe_ms=[0-9]+$' \
   <(sed -n 1p "$machine_log")
 assert grep -qE ' swapin_pages_s=0 thermal=2 boot=1790882097$' <(sed -n 2p "$machine_log")
 assert grep -qE ' swapin_pages_s=600 thermal=2 boot=1790882097$' <(sed -n 3p "$machine_log")
@@ -308,7 +318,7 @@ assert test "$(wc -l <"$MACHINE_GATE_DIR/machine/$run_day.log")" -eq 1
 MACHINE_FAIL_DIR="$WORK/machine-fail"
 probes 8192 1024
 assert run_memlogd "$MACHINE_FAIL_DIR" MEMLOGD_MAX_TICKS=1 JQ_FAILS=1
-assert grep -qE '^[0-9]{10} load1=-1 ncpu=8 swap_mb=1024 swapin_pages_s=-1 thermal=0 boot=1790882097 probe_ms=-1$' \
+assert grep -qE '^[0-9]{10} load1=-1 ncpu=8 swap_mb=1024 swap_room_mb=100100 swapin_pages_s=-1 thermal=0 boot=1790882097 probe_ms=-1$' \
   "$MACHINE_FAIL_DIR/machine/$run_day.log"
 
 # A wall clock stepped backwards is a new sample, not a gap of silence until it catches up.
@@ -903,7 +913,7 @@ FAT_DIR="$WORK/guard-fat"
 probes 2000 1024
 assert guard_run "$FAT_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$FAT_KIDS" BUS_WATCH="$FAT_ROOT $FAT_KIDS"
 fat_log=$(log_file "$FAT_DIR")
-assert grep -qE '^KILLED [0-9]{10} chat=chat-fat job_pgid='"$FAT_ROOT"' avail_mb=2000 job_rss_mb=[0-9]+ killed=[0-9]+,[0-9]+,[0-9]+ notified=chat-fat$' "$fat_log"
+assert grep -qE '^KILLED [0-9]{10} chat=chat-fat job_pgid='"$FAT_ROOT"' avail_mb=2000 swap_room_mb=100100 trigger=ram job_rss_mb=[0-9]+ killed=[0-9]+,[0-9]+,[0-9]+ notified=chat-fat$' "$fat_log"
 assert test "$(awk -F'job_rss_mb=' '/^KILLED /{ split($2, f, " "); print (f[1] > 1536) }' "$fat_log")" = 1
 for pid in $FAT_ROOT $FAT_KIDS; do assert gone "$pid"; done
 assert alive "$FAT_CLI"
@@ -1073,7 +1083,7 @@ loader.exec_module(chat_load)
 calls = []
 os.kill = lambda *args: calls.append(args)
 os.killpg = lambda *args: calls.append(args)
-chat_load.sample(int(time.time()), 2000, 0)
+chat_load.sample(int(time.time()), 2000, 0, 100000, "ram")
 print(f"kill calls {len(calls)}")
 PY
 )
@@ -1163,6 +1173,88 @@ assert grep -qE "^KILLED .* notified=chat-lead,chat-worker$" "$(log_file "$PAIR_
 assert test "$(grep -c -- '--session chat-[a-z]* peers=2$' "$PAIR_PEERS.log")" = 2
 assert test "$(grep -cE -- '--session chat-(lead|worker) alive=2 ' "$BUS_LOG")" = 2
 for pid in $PAIR_KIDS; do assert gone "$pid"; done
+
+# Swap at its disk ceiling, replayed from the kernel's own count in the JetsamEvent of 2026-10-20
+# 02:32:54. Free, inactive and speculative pages read 3748 MB, so the guard waited for 2048 MB while
+# swap filled the last free disk and low-swap jetsam killed ~40 services and hung Terminal. With
+# under 4096 MB of room an inactive anonymous page has nowhere to go: counted the swap way the same
+# pages are 1373 MB, and the fattest job goes at the one threshold.
+VM_0232="$WORK/vm-2026-10-20T023254"
+cat >"$VM_0232" <<'EOF'
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                     6867.
+Pages active:                                 233012.
+Pages inactive:                               231081.
+Pages speculative:                              1927.
+Pages throttled:                                   0.
+Pages wired down:                             367058.
+Pages purgeable:                                   0.
+File-backed pages:                            160754.
+Anonymous pages:                              305266.
+EOF
+clear_registry
+spawn_leaf
+register_session chat-ceiling "$LEAF_ROOT"
+spawn_tree chat-ceiling
+CEIL_ROOT=$TREE_ROOT CEIL_KIDS=$TREE_KIDS
+CEIL_DIR="$WORK/guard-ceiling"
+probes 0 15616
+assert guard_run "$CEIL_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$CEIL_KIDS" VM_STAT_TEXT="$VM_0232" DISK_FREE_MB=0
+assert grep -qE "^KILLED [0-9]{10} chat=chat-ceiling job_pgid=$CEIL_ROOT avail_mb=1373 swap_room_mb=100 trigger=swap " \
+  "$(log_file "$CEIL_DIR")"
+assert grep -qE '^INCIDENT [0-9]{10} avail_mb=1373 ' "$(log_file "$CEIL_DIR")"
+for pid in $CEIL_ROOT $CEIL_KIDS; do assert gone "$pid"; done
+assert grep -q 'down to 1373 MB of RAM it could still free (swap had 100 MB of room left' "$BUS_LOG"
+
+# The same pages with room for swap to grow are 3748 MB and cut nothing, nor do they with an unknown
+# room (a failed df). A full disk with RAM free is stale swap, not danger: counted the swap way it is
+# still over the incident level, so the swap term that once latched the dumps for 14 hours stays out.
+clear_registry
+spawn_tree chat-spare
+SPARE_ROOT=$TREE_ROOT SPARE_KIDS=$TREE_KIDS
+VM_STALE="$WORK/vm-stale-swap"
+sed 's/^Pages free: .*/Pages free: 262144./' "$VM_0232" >"$VM_STALE"
+probes 0 15616
+assert guard_run "$WORK/guard-spare-roomy" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$SPARE_KIDS" VM_STAT_TEXT="$VM_0232"
+probes 0 15616
+assert guard_run "$WORK/guard-spare-blind" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$SPARE_KIDS" VM_STAT_TEXT="$VM_0232" DF_FAILS=1
+probes 0 15616
+assert guard_run "$WORK/guard-spare-stale" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$SPARE_KIDS" VM_STAT_TEXT="$VM_STALE" DISK_FREE_MB=0
+for dir in guard-spare-roomy guard-spare-blind guard-spare-stale; do
+  assert_fails grep -q '^KILLED ' "$(log_file "$WORK/$dir")"
+done
+assert grep -qE '^INCIDENT [0-9]{10} avail_mb=3748 ' "$(log_file "$WORK/guard-spare-roomy")"
+assert_fails grep -q '^INCIDENT ' "$(log_file "$WORK/guard-spare-stale")"
+assert grep -qE '^[0-9]{10} quiet avail_mb=5361 ' "$(log_file "$WORK/guard-spare-stale")"
+for pid in $SPARE_ROOT $SPARE_KIDS; do assert alive "$pid"; done
+assert grep -q ' swap_room_mb=-1 ' "$WORK/guard-spare-blind/machine/$run_day.log"
+
+# A worker never flushes the report bus (`skip_flush`): its seven notices of 2026-10-20 sat pending
+# while it relaunched. Its notice goes into its run's inbox instead, which its own PostToolUse hook
+# hands it at the next tool call; the launching chat still hears through the bus.
+clear_registry
+spawn_leaf
+register_session chat-lead "$LEAF_ROOT"
+spawn_deep_tree chat-worker chat-lead
+register_run claudeb-1-2-inbox "$DEEP_SUP" "$DEEP_CLI"
+INBOX_RUN="$GUARD_ROOT/runs/claudeb-1-2-inbox"
+printf 'chat-worker\n' >"$INBOX_RUN/worker-session"
+register_session chat-worker "$DEEP_CLI"
+INBOX_DIR="$WORK/guard-inbox"
+probes 2000 1024
+assert guard_run "$INBOX_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DEEP_KIDS"
+assert grep -qE "^KILLED [0-9]{10} chat=chat-lead .* notified=chat-lead,chat-worker$" "$(log_file "$INBOX_DIR")"
+for pid in $DEEP_KIDS; do assert gone "$pid"; done
+assert alive "$DEEP_CLI"
+assert test "$(grep -c -- '--session chat-lead ' "$BUS_LOG")" = 1
+assert test "$(grep -c -- '--session chat-worker ' "$BUS_LOG")" = 0
+assert test "$(wc -l <"$INBOX_RUN/inbox" | tr -d ' ')" = 1
+assert jq -e '.by == "memory-guard" and (.text | startswith("memory guard — stopped: "))' "$INBOX_RUN/inbox"
+assert test -e "$INBOX_RUN/inbox.new"
+assert test ! -e "$INBOX_RUN/.claim.lock"
+inbox_out=$(printf '{}' | HOME="$WORK/hook-home" WORKER_RUN_RECORD="$INBOX_RUN" bash "$ROOT/bin/worker-inbox-hook.sh")
+assert jq -e '.hookSpecificOutput.additionalContext | startswith("Message from the machine'"'"'s memory guard (")' \
+  <<<"$inbox_out"
 
 # The menu snapshot: one aligned row per chat, the title shortened to its column with a trailing
 # phase number kept, state words for live chats, and every number carrying its unit.
@@ -1327,7 +1419,7 @@ chat_load_sample() { # log-dir now
   env MEMLOGD_DIR="$1" WORKER_RUN_DIR="$GUARD_ROOT/runs" WORKER_STATS_DIR="$GUARD_ROOT/stats" \
     CHAT_LOAD_SESSIONS="$SESSIONS_DIR" CHAT_NAME_ROOTS="$WORK/transcripts" CHAT_NAMES_CACHE="$WORK/chat-names.json" \
     CHAT_LOAD_REPORT_BUS="$FAKE_BIN/report-bus" HARNESS_HOLDS_DIR="$EMPTY_REGISTRY/holds" GUARD_SCOPE="$GUARD_SCOPE" \
-    python3 "$ROOT/bin/chat-load" sample --now "$2" --avail 8192 --swap 0
+    python3 "$ROOT/bin/chat-load" sample --now "$2" --avail 8192 --swap 0 --room 100000 --measure ram
 }
 assert chat_load_sample "$SKEW_DIR" "$(date +%s)"
 cp "$SKEW_DIR/chat-load.state.json" "$WORK/skew-before.json"
@@ -1364,12 +1456,14 @@ assert test "$(grep -c 'memguard_lines "\$directory"' "$WORKER_RUN")" -eq 5
 # install-agent deploys chat-load beside the daemon copy launchd runs, which is where it is looked up.
 assert grep -q '^GUARD_AVAIL_MB = 2048$' "$ROOT/bin/chat-load"
 assert grep -q '^GUARD_JOB_MB = 1536$' "$ROOT/bin/chat-load"
+assert grep -q '^swap_reserve_mb=4096$' "$SCRIPT"
 assert grep -qF 'chat_load="$(dirname "$script_path")/chat-load"' "$SCRIPT"
 # So are the resolver and the bus it runs: macOS denies the daemon's Python /Volumes/Work.
 assert grep -qF 'for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh share/limit-hit.sh; do' "$SCRIPT"
 assert grep -qF 'mv -f "$deployed_tmp" "$(dirname "$wrapper")/${source##*/}"' "$SCRIPT"
 assert grep -q '2048' "$ROOT/docs/memory-guard.md"
 assert grep -q '1536' "$ROOT/docs/memory-guard.md"
+assert grep -q '4096' "$ROOT/docs/memory-guard.md"
 # The agent process env is scoped to the run's own tree and set nowhere wider.
 assert grep -q 'export NX_PARALLEL=1 NX_DAEMON=false' "$WORKER_RUN"
 
@@ -1380,4 +1474,4 @@ assert test "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.memlogd.p
 
 reap_trees
 
-echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, weighed by footprint not RSS, no kill from any run but the LaunchAgent's (WOULD KILL instead), a memory row whose parts add up past RAM used, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, and the MEMGUARD: line the run report renders from the record in every shape"
+echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, available RAM counted the swap way once swap has under 4096 MB of room to grow into (the kernel's count of 2026-10-20 02:32 replayed: 3748 MB read as 1373 MB and its fattest job cut at the one 2048 MB threshold) but never with a roomy disk, an unknown room or a full disk with RAM free, a worker's notice landing in its run inbox and rendered by its hook instead of a bus it never flushes, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, weighed by footprint not RSS, no kill from any run but the LaunchAgent's (WOULD KILL instead), a memory row whose parts add up past RAM used, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, and the MEMGUARD: line the run report renders from the record in every shape"
