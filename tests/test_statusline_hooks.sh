@@ -2563,6 +2563,19 @@ far_boundary=$(run_statusline "$(statusline_payload ctx-bnd-far "$(warm_extra "$
 assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$far_boundary"
 assert_eq "$(iso_utc $((NOW - 600)))" "$(awk '{print $2}' "$(bnd_file ctx-bnd-far)")"
 
+# A cold sidecar on a long chat's transcript (356 MB seen) reads the whole file once. Through
+# tail -c +N that took 16 s, past the harness's render timeout, so the status line never showed.
+t_reset; t_boundary $((NOW - 600))
+yes "{\"type\":\"user\",\"filler\":\"$(printf '%01000d' 0)\"}" | head -c 150000000 >> "$TRANSCRIPT"
+printf '\n' >> "$TRANSCRIPT"
+t_assist $((NOW - 5))
+big_start=${EPOCHREALTIME//[!0-9]/}
+run_statusline "$(statusline_payload ctx-bnd-big "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
+big_ms=$(( (${EPOCHREALTIME//[!0-9]/} - big_start) / 1000 ))
+assert test "$big_ms" -lt 2500
+assert_eq "$(iso_utc $((NOW - 600)))" "$(awk '{print $2}' "$(bnd_file ctx-bnd-big)")"
+t_reset
+
 # A response carrying only input tokens (no cache at all) is still a real size for
 # the context that follows a boundary.
 t_reset; t_boundary $((NOW - 30))

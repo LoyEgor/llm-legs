@@ -1319,7 +1319,11 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" 
     # The margin re-covers a boundary line the previous scan cut at its own EOF; grep is
     # only a prefilter, so chat content naming compact_boundary falls out at the select.
     if [ "$bnd_scanned" -gt 4096 ]; then bnd_from=$((bnd_scanned - 4096)); else bnd_from=0; fi
-    bnd_hits=$(tail -c "+$((bnd_from + 1))" "$transcript_path" 2>/dev/null | grep -aF compact_boundary 2>/dev/null)
+    # dd seeks to the MiB block holding bnd_from; the bytes before it only re-find boundaries the
+    # maximum already holds. macOS tail -c +N copies about 35 MB/s: a cold sidecar on a 356 MB
+    # transcript took 16 s, past the harness's render timeout, so no render ever wrote it.
+    bnd_hits=$(dd if="$transcript_path" bs=1048576 skip=$((bnd_from / 1048576)) 2>/dev/null |
+      grep -aF compact_boundary 2>/dev/null)
     if [ -n "$bnd_hits" ]; then
       bnd_seen=$(
         {
