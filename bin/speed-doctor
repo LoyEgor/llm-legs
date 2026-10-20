@@ -971,7 +971,7 @@ def unused_opportunities(adhoc):
         o = target_opportunity(target, u["hint_min_day"] or 0.0, dict(UNUSED_LEVER, component=target), 0,
                                seen_days=WINDOW_D)
         o["opportunity"].update(what="unused tool · %s · delete it and its hint" % u["key"], path=u["path"],
-                                hint_b=u["hint_b"], hint_tok_day=u["hint_tok_day"], age_d=u["age_d"])
+                                hint_b=u["hint_b"], hint_tok_day=u["hint_tok_day"], age_d=u["age_d"], files=[u["path"]])
         o["fact"] = "%s · 0 calls in %d days%s · %s d old · hint %d B in %d sessions/day, %d tokens/day · %s · %s" % (
             u["key"], u["days"], " · typed %s/day" % fmt(u["slash_day"]) if u.get("slash_day") else "", fmt(u["age_d"]),
             u["hint_b"], u["hint_sessions"], u["hint_tok_day"], per_day(u["hint_min_day"] or 0.0), UNUSED_LEVER["lever"])
