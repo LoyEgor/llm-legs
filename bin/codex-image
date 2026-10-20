@@ -330,6 +330,17 @@ fi
 route=${route:-$(image_caps_get "$root" codex '.routes[0]' 2>/dev/null)}
 case "$route" in cli|web) IMAGE_LEG_ROUTE=$route ;; *) usage "--route takes cli or web, not $route" ;; esac
 [ -z "$edit" ] || { image_leg_edit_arg "$edit" "$resume_id"; refs=("$edit" ${refs[@]+"${refs[@]}"}); }
+# Before the inputs: each one costs a uv run, and a refusal for too many of them needs none.
+ref_count=${#refs[@]}
+ref_cap=$ref_max ref_taker='the imagegen tool takes'
+if [ "$route" = web ]; then
+  ref_cap=$(image_caps_get "$root" codex '.web.refs_max // "none"' 2>/dev/null) || ref_cap=''
+  ref_taker='the ChatGPT web route takes'
+fi
+if [[ "$ref_cap" =~ ^[0-9]+$ ]] && [ "$ref_count" -gt "$ref_cap" ]; then
+  printf 'codex-image: %s references exceed the %s %s\n' "$ref_count" "$ref_cap" "$ref_taker" >&2
+  exit 2
+fi
 image_leg_inputs "$root"
 if [ "$count" != 1 ]; then
   [ "$route" = web ] ||
@@ -438,16 +449,6 @@ command -v magick >/dev/null 2>&1 || {
 }
 if [ -n "$size" ] && ! [[ "$size" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
   usage "--size needs WxH, not $size"
-fi
-ref_count=${#refs[@]}
-ref_cap=$ref_max ref_taker='the imagegen tool takes'
-if [ "$route" = web ]; then
-  ref_cap=$(image_caps_get "$root" codex '.web.refs_max // "none"' 2>/dev/null) || ref_cap=''
-  ref_taker='the ChatGPT web route takes'
-fi
-if [[ "$ref_cap" =~ ^[0-9]+$ ]] && [ "$ref_count" -gt "$ref_cap" ]; then
-  printf 'codex-image: %s references exceed the %s %s\n' "$ref_count" "$ref_cap" "$ref_taker" >&2
-  exit 2
 fi
 if [ "$ref_count" -gt 0 ]; then
   for ref in "${refs[@]}"; do

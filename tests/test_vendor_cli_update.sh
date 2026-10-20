@@ -25,7 +25,7 @@ BUSY="$WORK/busy"
 export HOME CALLS VIEWS BUSY FAKE_BIN
 export AGY_BIN="$WORK/agy" VENDOR_CLI_UPDATE_AGY_MANIFEST="file://$WORK/agy-manifest.json"
 unset CODEXB_PROFILES_DIR VENDOR_CLI_UPDATE_STATE_DIR VENDOR_CLI_UPDATE_LOCKED
-export VENDOR_CLI_UPDATE_BIN_DIR="$FAKE_BIN" VENDOR_CLI_UPDATE_GROKB="$FAKE_BIN/grokb"
+export VENDOR_CLI_UPDATE_BIN_DIR="$FAKE_BIN" VENDOR_CLI_UPDATE_GROKB="$FAKE_BIN/grokb" VENDOR_CLI_UPDATE_GEMINIB="$FAKE_BIN/geminib"
 CODEX_NATIVE="$NPM_ROOT/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
 GROK_NATIVE="$NPM_ROOT/@xai-official/grok/bin/grok-native"
 CLAUDE_NATIVE="$NPM_ROOT/@anthropic-ai/claude-code/bin/claude.exe"
@@ -54,6 +54,7 @@ cat >"$FAKE_BIN/grokb" <<'EOF'
 #!/usr/bin/env bash
 printf 'grokb %s\n' "$*" >>"$CALLS"
 EOF
+printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/geminib"
 cat >"$FAKE_BIN/claude" <<'EOF'
 #!/usr/bin/env bash
 printf '%s (Claude Code)\n' "$(cat "$FAKE_BIN/ver-claude")"

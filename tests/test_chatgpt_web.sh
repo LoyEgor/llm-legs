@@ -25,7 +25,9 @@ REAL_MAGICK=$(command -v magick) || fail "magick is required for this suite"
 UV_CACHE_DIR=${UV_CACHE_DIR:-$(uv cache dir 2>/dev/null)}
 export UV_CACHE_DIR
 unset PYTHONDONTWRITEBYTECODE
-export HOME="$WORK/home" PYTHONPYCACHEPREFIX="$WORK/pycache"
+# Bytecode is keyed on source mtime and size, so one prefix outside WORK serves every shard and run.
+export PYTHONPYCACHEPREFIX="${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/pycache"
+export HOME="$WORK/home"
 export CHATGPT_WEB_DIR="$WORK/home/.chatgpt-web" GEMINI_WEB_DIR="$WORK/home/.gemini-web"
 export GEMINI_WEB_CHROME="$WORK/no-chrome.app"
 export CODEX_PROFILES_DIR="$WORK/codex-profiles" CODEXB_PROFILES_DIR="$WORK/codex-profiles"
@@ -1381,7 +1383,7 @@ chmod +x "$WORK/fake-codex"
 OUT="$WORK/out"
 mkdir -p "$OUT"
 magick -size 64x64 gradient:red-blue "$WORK/r1.png"
-magick -size 64x64 gradient:red-blue "$WORK/r2.png"
+cp "$WORK/r1.png" "$WORK/r2.png"
 IMAGE_OUT="$WORK/image.out"
 IMAGE_ERR="$WORK/image.err"
 image_rc() {
@@ -1433,7 +1435,7 @@ WEB_REFS=$(jq -r '.web.refs_max' "$ROOT/share/image-caps/codex.json")
 assert test "$WEB_REFS" -gt "$CLI_REFS"
 many=()
 for index in $(seq 1 $((WEB_REFS + 1))); do
-  magick -size 64x64 gradient:red-blue "$WORK/many-$index.png"
+  cp "$WORK/r1.png" "$WORK/many-$index.png"
   many+=(--ref "$WORK/many-$index.png")
 done
 assert test "$(image_rc --route web --dest "$OUT/many.png" --prompt badge "${many[@]:0:$((2 * WEB_REFS))}")" = 0

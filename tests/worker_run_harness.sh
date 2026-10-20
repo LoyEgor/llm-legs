@@ -490,6 +490,8 @@ await_done() {
       printf '%s\n' "$output" >"$WORK/wait.out"
       return 0
     fi
+    # An exit code with no terminal report yet is paced like a missing one, not retried back to back.
+    [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || sleep 0.05
   done
   return 1
 }

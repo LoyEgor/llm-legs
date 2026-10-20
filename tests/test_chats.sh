@@ -14,6 +14,9 @@ STATUSLINE="$ROOT/bin/statusline.sh"
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+# A whole line / a substring of $2 equal to the literal $1, without a grep fork per check.
+has_line() { [[ $'\n'$2$'\n' == *$'\n'"$1"$'\n'* ]]; }
+has_text() { [[ $2 == *"$1"* ]]; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -178,69 +181,69 @@ print("pinned-account:", at(chats.TRACK_ACCOUNT))
 PY
 ) || fail "module probe failed"
 
-assert grep -qx 'model: haiku-4-5' <<<"$OUT"
-assert grep -qx 'ctx: alona' <<<"$OUT"
-assert grep -qx 'warm: alona None' <<<"$OUT"
-assert grep -qx 'account-warm: 0' <<<"$OUT"
-assert grep -qx 'account-cold: 1' <<<"$OUT"
-assert grep -qx 'account-absent: 1' <<<"$OUT"
-assert grep -qx 'gateway-model: Astra' <<<"$OUT"
-assert grep -qx 'gateway-account: 1' <<<"$OUT"
-assert grep -qx 'gateway-label: gpt:notcom notcom' <<<"$OUT"
-assert grep -qx 'stamp-read: borodatch' <<<"$OUT"
-assert grep -qx 'stamp-ignored: 0' <<<"$OUT"
-assert grep -qx "gateway-open: \['claudegpt', 'p', 'notcom', '--model', 'astra', '--resume', 'gw1'\]" <<<"$OUT"
-assert grep -qx "claudeb-open: \['claudeb', 'profile', 'com', '--resume', 'abc123'\]" <<<"$OUT"
-assert grep -qx 'refollow: True False True' <<<"$OUT"
+assert has_line 'model: haiku-4-5' "$OUT"
+assert has_line 'ctx: alona' "$OUT"
+assert has_line 'warm: alona None' "$OUT"
+assert has_line 'account-warm: 0' "$OUT"
+assert has_line 'account-cold: 1' "$OUT"
+assert has_line 'account-absent: 1' "$OUT"
+assert has_line 'gateway-model: Astra' "$OUT"
+assert has_line 'gateway-account: 1' "$OUT"
+assert has_line 'gateway-label: gpt:notcom notcom' "$OUT"
+assert has_line 'stamp-read: borodatch' "$OUT"
+assert has_line 'stamp-ignored: 0' "$OUT"
+assert has_line "gateway-open: ['claudegpt', 'p', 'notcom', '--model', 'astra', '--resume', 'gw1']" "$OUT"
+assert has_line "claudeb-open: ['claudeb', 'profile', 'com', '--resume', 'abc123']" "$OUT"
+assert has_line 'refollow: True False True' "$OUT"
 # The minute past this row's own expiry is still warm on the track's later stamp.
-assert grep -qx 'ahead: alona alona' <<<"$OUT"
-assert grep -qx 'behind: alona None' <<<"$OUT"
-assert grep -qx 'cold: 42k 42k' <<<"$OUT"
-assert grep -qx 'project: llm-legs' <<<"$OUT"
-assert grep -qx 'name: Header and shadows' <<<"$OUT"
+assert has_line 'ahead: alona alona' "$OUT"
+assert has_line 'behind: alona None' "$OUT"
+assert has_line 'cold: 42k 42k' "$OUT"
+assert has_line 'project: llm-legs' "$OUT"
+assert has_line 'name: Header and shadows' "$OUT"
 # Who spoke last is what says whether a chat is finished or waiting on him.
-assert grep -qx 'quote: claude: done, the header holds' <<<"$OUT"
-assert grep -qx "today: '06:06'" <<<"$OUT"
-assert grep -qx 'midnight: 00:00 05.08' <<<"$OUT"
-assert grep -qx 'older: 05.08' <<<"$OUT"
+assert has_line 'quote: claude: done, the header holds' "$OUT"
+assert has_line "today: '06:06'" "$OUT"
+assert has_line 'midnight: 00:00 05.08' "$OUT"
+assert has_line 'older: 05.08' "$OUT"
 # The last window has no horizon, so the year is the only thing telling two 05.08s apart; the
 # cell widens with it, once, for every row of that view rather than for the old ones alone.
-assert grep -qx 'dated: 05.08.26 07:06' <<<"$OUT"
-assert grep -qx "dated-cell: '05.08.26'" <<<"$OUT"
-assert grep -qx 'future: 07:16' <<<"$OUT"
-assert grep -qx 'future-day: 07:06' <<<"$OUT"
+assert has_line 'dated: 05.08.26 07:06' "$OUT"
+assert has_line "dated-cell: '05.08.26'" "$OUT"
+assert has_line 'future: 07:16' "$OUT"
+assert has_line 'future-day: 07:06' "$OUT"
 # With no name of its own, the last message stands in for one and is not repeated.
-assert grep -qx 'nameless: claude: done, the header holds' <<<"$OUT"
-assert grep -qx "nameless-quote: ''" <<<"$OUT"
-assert grep -qx 'wt-project: proj' <<<"$OUT"
-assert grep -qx 'wt-deep: proj' <<<"$OUT"
-assert grep -qx 'wt-plain: other' <<<"$OUT"
-assert grep -qx 'wt-cwd-kept: True' <<<"$OUT"
-assert grep -qx 'wt-resume-raw: True' <<<"$OUT"
-assert grep -qx 'wt-plan: \[22, 9, 5\]' <<<"$OUT"
-assert grep -qx 'plan: \[22, 9, 5\]' <<<"$OUT"
-assert grep -qx 'filter-name: True' <<<"$OUT"
-assert grep -qx 'filter-branch: True' <<<"$OUT"
-assert grep -qx 'filter-words: True' <<<"$OUT"
-assert grep -qx 'filter-miss: False' <<<"$OUT"
-assert grep -qx 'filter-empty: True' <<<"$OUT"
+assert has_line 'nameless: claude: done, the header holds' "$OUT"
+assert has_line "nameless-quote: ''" "$OUT"
+assert has_line 'wt-project: proj' "$OUT"
+assert has_line 'wt-deep: proj' "$OUT"
+assert has_line 'wt-plain: other' "$OUT"
+assert has_line 'wt-cwd-kept: True' "$OUT"
+assert has_line 'wt-resume-raw: True' "$OUT"
+assert has_line 'wt-plan: [22, 9, 5]' "$OUT"
+assert has_line 'plan: [22, 9, 5]' "$OUT"
+assert has_line 'filter-name: True' "$OUT"
+assert has_line 'filter-branch: True' "$OUT"
+assert has_line 'filter-words: True' "$OUT"
+assert has_line 'filter-miss: False' "$OUT"
+assert has_line 'filter-empty: True' "$OUT"
 # The first window advertises that more history is a scroll away; the last does not.
 # Six ASCII plus eight double-width glyphs: 22 columns out of 14 characters.
-assert grep -qx 'cjk-width: 22 14' <<<"$OUT"
+assert has_line 'cjk-width: 22 14' "$OUT"
 # A cut never splits a glyph, so ten columns hold six letters and two of them.
-assert grep -qx 'cjk-clip: Gemini树木 True True' <<<"$OUT"
+assert has_line 'cjk-clip: Gemini树木 True True' "$OUT"
 # Padding answers in columns whichever side it fills, and an odd size cannot be
 # filled by half a glyph — it is filled with a space instead.
-assert grep -qx 'pad-invariant: \[0, 0, 7, 7, 10, 10, 30, 30\]' <<<"$OUT"
-assert grep -qx 'name-oneline: Gemini树木 foo bar' <<<"$OUT"
+assert has_line 'pad-invariant: [0, 0, 7, 7, 10, 10, 30, 30]' "$OUT"
+assert has_line 'name-oneline: Gemini树木 foo bar' "$OUT"
 # A title of nothing but whitespace is no title: the last message stands in.
-assert grep -qx "blank-name: \['claude: done, the header holds', ''\]" <<<"$OUT"
-assert grep -q 'label0: last 7d · ↓ for more' <<<"$OUT"
+assert has_line "blank-name: ['claude: done, the header holds', '']" "$OUT"
+assert has_text 'label0: last 7d · ↓ for more' "$OUT"
 assert test -z "$(grep -o 'label-last:.*more' <<<"$OUT")"
-assert grep -qx 'label-pinned: last 7d' <<<"$OUT"
-assert grep -qx 'writer-fields: True 9' <<<"$OUT"
-assert grep -qx 'pinned-ts: rec_ts' <<<"$OUT"
-assert grep -qx 'pinned-account: rec_acct' <<<"$OUT"
+assert has_line 'label-pinned: last 7d' "$OUT"
+assert has_line 'writer-fields: True 9' "$OUT"
+assert has_line 'pinned-ts: rec_ts' "$OUT"
+assert has_line 'pinned-account: rec_acct' "$OUT"
 
 # --- the account the picker opens on ----------------------------------------
 # worker-pick owns the choice; .claudeb-state is only what is left when it can staff nobody.
@@ -293,14 +296,14 @@ print("pick-sibling:", chats.worker_pick() == os.path.join(chats.HERE, "worker-p
 PY
 ) || fail "account probe failed"
 
-assert grep -qx 'pick: 2' <<<"$OUT"
-assert grep -qx 'pick-not-gateway: 1' <<<"$OUT"
+assert has_line 'pick: 2' "$OUT"
+assert has_line 'pick-not-gateway: 1' "$OUT"
 # An answer no profile here carries is no answer at all.
-assert grep -qx 'pick-unknown: 1' <<<"$OUT"
-assert grep -qx 'none-state: 1' <<<"$OUT"
-assert grep -qx "pick-binary: $STUB/worker-pick" <<<"$OUT"
-assert grep -qx 'pick-sibling: True' <<<"$OUT"
-assert grep -qx 'none-nothing: 0' <<<"$OUT"
+assert has_line 'pick-unknown: 1' "$OUT"
+assert has_line 'none-state: 1' "$OUT"
+assert has_line "pick-binary: $STUB/worker-pick" "$OUT"
+assert has_line 'pick-sibling: True' "$OUT"
+assert has_line 'none-nothing: 0' "$OUT"
 
 # --- a gateway reply names no cache bucket, so the listing gives it a nominal one ---
 REPLIES="$WORK/replies.jsonl"
@@ -323,9 +326,9 @@ print("gateway-bucket-ttl:", chat_find.reply_ttl({"model": "anthropic.ccr.sol", 
     "cache_creation": {"ephemeral_5m_input_tokens": 10}}}))
 PY
 ) || fail "gateway ttl probe failed"
-assert grep -qx 'gateway-ttl: 3600' <<<"$OUT"
-assert grep -qx 'claude-bare-ttl: 0' <<<"$OUT"
-assert grep -qx 'gateway-bucket-ttl: 300' <<<"$OUT"
+assert has_line 'gateway-ttl: 3600' "$OUT"
+assert has_line 'claude-bare-ttl: 0' "$OUT"
+assert has_line 'gateway-bucket-ttl: 300' "$OUT"
 
 # --- the bar is worker-pick's ranking, per line -----------------------------
 # Freest on the left, in the order `worker-pick --list` prints each vendor and never one the
@@ -365,10 +368,10 @@ PY
 ) || fail "ranking probe failed"
 # zeta and zulu have no row in the listing at all: no data is not a logout, so they follow the
 # ranked ones unlabelled; ghost has no profile here, and gemini is no line of this bar.
-assert grep -qx 'offered: omega alpha zeta gpt:delta gpt:epsilon gpt:zulu' <<<"$OUT"
-assert grep -qx 'line1: omega 5%|alpha 100%!|zeta' <<<"$OUT"
-assert grep -qx 'line2: gpt:delta 30%|gpt:epsilon 60%|gpt:zulu' <<<"$OUT"
-assert grep -qx 'chosen: omega 0' <<<"$OUT"
+assert has_line 'offered: omega alpha zeta gpt:delta gpt:epsilon gpt:zulu' "$OUT"
+assert has_line 'line1: omega 5%|alpha 100%!|zeta' "$OUT"
+assert has_line 'line2: gpt:delta 30%|gpt:epsilon 60%|gpt:zulu' "$OUT"
+assert has_line 'chosen: omega 0' "$OUT"
 assert test -z "$(grep -n 'llm-limits' "$SCRIPT")"
 
 # --- the bar is the ranking of the bucket the landed chat spends --------------
@@ -402,10 +405,10 @@ for model in ("claude-fable-5-1", "claude-opus-5-5", "anthropic.ccr.astra", None
     print("board:", model, board, chosen, used[("claudeb", "omega")])
 PY
 ) || fail "boards probe failed"
-assert grep -qx 'board: claude-fable-5-1 fable alpha 100%!' <<<"$OUT"
-assert grep -qx 'board: claude-opus-5-5 weekly omega 10%' <<<"$OUT"
-assert grep -qx 'board: anthropic.ccr.astra weekly omega 10%' <<<"$OUT"
-assert grep -qx 'board: None weekly omega 10%' <<<"$OUT"
+assert has_line 'board: claude-fable-5-1 fable alpha 100%!' "$OUT"
+assert has_line 'board: claude-opus-5-5 weekly omega 10%' "$OUT"
+assert has_line 'board: anthropic.ccr.astra weekly omega 10%' "$OUT"
+assert has_line 'board: None weekly omega 10%' "$OUT"
 assert test "$(sort "$STUB/boards/asked" | tr '\n' '|')" = '--list --role chat --model fable|--list --role chat --model opus|'
 
 # The bucket is chat_model_bucket's answer, so a changed rule there moves the picker's rows with it.
@@ -429,24 +432,24 @@ loader.exec_module(chats)
 print("buckets:", chats.board_of({"model": "claude-sonnet-5-5"}), chats.board_of({"model": "claude-fable-5-1"}))
 PY
 ) || fail "bucket resolver probe failed"
-assert grep -qx 'buckets: fable weekly' <<<"$OUT"
+assert has_line 'buckets: fable weekly' "$OUT"
 
 # --- arguments are answered without a terminal ------------------------------
 run() { OUT=$("$SCRIPT" "$@" </dev/null 2>&1); RC=$?; }
 
 run --help
 assert test "$RC" -eq 0
-assert grep -q 'usage: chats' <<<"$OUT"
+assert has_text 'usage: chats' "$OUT"
 
 run --days abc
 assert test "$RC" -ne 0
-assert grep -q "not 'abc'" <<<"$OUT"
+assert has_text "not 'abc'" "$OUT"
 
 # An option silently dropped is worse than a refusal: the picker would open on a
 # window he did not ask for.
 run --days 7 --all
 assert test "$RC" -ne 0
-assert grep -q 'usage: chats' <<<"$OUT"
+assert has_text 'usage: chats' "$OUT"
 
 run --all extra
 assert test "$RC" -ne 0
@@ -454,7 +457,7 @@ assert test "$RC" -ne 0
 # Without a terminal it says so instead of dying inside curses.
 run --days 7
 assert test "$RC" -ne 0
-assert grep -q 'full-screen picker' <<<"$OUT"
+assert has_text 'full-screen picker' "$OUT"
 
 python3 - "$SCRIPT" "$WORK" <<'PYMOUSE' || fail "mouse probe failed"
 import importlib.machinery, importlib.util, json, os, sys, time
@@ -503,10 +506,17 @@ class Screen:
         pass
 
 
+finder_release = None
+
+
 def play(events, initial=None, windows=(7,), accounts=names, load=True):
     screen = Screen(events)
     def draw(_, visible, view, accounts, profile, *rest):
         screen.frames.append((view["cursor"], view["top"], profile, len(visible), view["window"]))
+        # The blocked wait paints this frame before it starts waiting, and a blocked loop resumes
+        # no generator: the stub's release is the draw of the in-flight frame.
+        if view["window"] == "loading…" and finder_release:
+            open(finder_release, "w").close()
     fetch = patch.object(chats, "fetch_chats", return_value=rows) if load \
         else patch.object(chats, "HERE", sys.argv[2])
     with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
@@ -570,7 +580,7 @@ assert play(["z", "\x1b", "\n"])[0][1] == rows[0]
 # the wider listing replaces the narrower one when it lands — painted once, not on every tick.
 calls = os.path.join(sys.argv[2], "chat-find.calls")
 finder = os.path.join(sys.argv[2], "chat-find")
-release = os.path.join(sys.argv[2], "chat-find.release")
+release = finder_release = os.path.join(sys.argv[2], "chat-find.release")
 with open(finder, "w") as handle:
     handle.write("#!/usr/bin/env python3\nimport json, os, sys, time\n"
                  "open(%r, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
@@ -749,32 +759,32 @@ OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") FAST_PEER=1 PATH="$FAST/bin:$PA
   || fail "startup probe failed"
 
 echo "$OUT" | grep '^timing:'
-assert grep -qx 'quit: None' <<<"$OUT"
-assert grep -qx 'first-paint-fast: True' <<<"$OUT"
-assert grep -qx 'loads-concurrent: True' <<<"$OUT"
+assert has_line 'quit: None' "$OUT"
+assert has_line 'first-paint-fast: True' "$OUT"
+assert has_line 'loads-concurrent: True' "$OUT"
 # Before anything lands: the header says so, the body is empty, the bar carries every
 # account the two stores know without a subprocess — no percentage, nothing hidden — and
 # it opens on the last profile launched.
-assert grep -qx 'first-window: loading…' <<<"$OUT"
-assert grep -qx 'first-empty: 0 0' <<<"$OUT"
-assert grep -qx 'first-accounts: alpha beta gamma gpt:delta' <<<"$OUT"
-assert grep -qx 'first-account: beta' <<<"$OUT"
+assert has_line 'first-window: loading…' "$OUT"
+assert has_line 'first-empty: 0 0' "$OUT"
+assert has_line 'first-accounts: alpha beta gamma gpt:delta' "$OUT"
+assert has_line 'first-account: beta' "$OUT"
 # Once they land: rows, the window they came from, the bar in worker-pick's order with the
 # logged-out account gone, and the account it named.
-assert grep -qx 'full-window: last 7d · ↓ for more' <<<"$OUT"
-assert grep -qx 'full-rows: 3' <<<"$OUT"
-assert grep -qx 'full-accounts: gamma alpha gpt:delta' <<<"$OUT"
-assert grep -qx 'full-account: gamma' <<<"$OUT"
-assert grep -qx 'idle-quiet: True' <<<"$OUT"
+assert has_line 'full-window: last 7d · ↓ for more' "$OUT"
+assert has_line 'full-rows: 3' "$OUT"
+assert has_line 'full-accounts: gamma alpha gpt:delta' "$OUT"
+assert has_line 'full-account: gamma' "$OUT"
+assert has_line 'idle-quiet: True' "$OUT"
 
 # ←→ works while the screen is still empty, and the account landing a second later does
 # not take that choice back.
 OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") PATH="$FAST/bin:$PATH" \
   python3 "$FAST/probe.py" "$SCRIPT" "$FAST" alpha left) \
   || fail "early-key probe failed"
-assert grep -qx 'first-account: beta' <<<"$OUT"
-assert grep -qx 'full-account: alpha' <<<"$OUT"
-assert grep -qx 'full-rows: 3' <<<"$OUT"
+assert has_line 'first-account: beta' "$OUT"
+assert has_line 'full-account: alpha' "$OUT"
+assert has_line 'full-rows: 3' "$OUT"
 
 # ↵ on a listed row while worker-pick is still answering waits for it: the bar still holds the
 # logged-out last profile, and opening on it ran a chat on a dead login (2026-10-04).
@@ -788,8 +798,8 @@ chmod +x "$FAST/quick/chat-find"
 OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") FAST_PICK_GATE=entered \
   PROBE_BIN="$FAST/quick" CLAUDEB_WORKER_PICK="$FAST/bin/worker-pick" \
   python3 "$FAST/probe.py" "$SCRIPT" "$FAST" - enter) || fail "early-enter probe failed"
-assert grep -qx 'first-account: beta' <<<"$OUT"
-assert grep -qx 'opened: gamma' <<<"$OUT"
+assert has_line 'first-account: beta' "$OUT"
+assert has_line 'opened: gamma' "$OUT"
 
 # Every account logged out: the bar is empty rather than the unfiltered list, no account is the
 # default, and ←→, Shift+↓ and ↵ on the empty bar change nothing and open nothing.
@@ -805,11 +815,11 @@ chmod +x "$FAST/login/worker-pick"
 OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") PATH="$FAST/bin:$PATH" \
   CLAUDEB_WORKER_PICK="$FAST/login/worker-pick" \
   python3 "$FAST/probe.py" "$SCRIPT" "$FAST" - after) || fail "all-login probe failed"
-assert grep -qx 'quit: None' <<<"$OUT"
-assert grep -qx 'full-rows: 3' <<<"$OUT"
-assert grep -qx 'full-accounts: ' <<<"$OUT"
-assert grep -qx 'full-account: -' <<<"$OUT"
-assert grep -qx 'full-note: no logged-in account to open it under' <<<"$OUT"
+assert has_line 'quit: None' "$OUT"
+assert has_line 'full-rows: 3' "$OUT"
+assert has_line 'full-accounts: ' "$OUT"
+assert has_line 'full-account: -' "$OUT"
+assert has_line 'full-note: no logged-in account to open it under' "$OUT"
 
 # --- a worker session's launcher comes off the run record --------------------
 # The env stamp `worker-run` exports into a worker is one of two sides, and the one a sub-shell, a
@@ -843,12 +853,12 @@ for worker in ("worker-paired", "worker-shared", "worker-orphan"):
 MAP
 ) || fail "launcher mapping probe failed"
 
-assert grep -qx 'worker-paired: chat-one' <<<"$LAUNCHERS"
-assert grep -qx 'worker-shared: -' <<<"$LAUNCHERS"
-assert grep -qx 'worker-orphan: -' <<<"$LAUNCHERS"
+assert has_line 'worker-paired: chat-one' "$LAUNCHERS"
+assert has_line 'worker-shared: -' "$LAUNCHERS"
+assert has_line 'worker-orphan: -' "$LAUNCHERS"
 
 python3 - "$SCRIPT" "$WORK" <<'PYBOARDS' || fail "board switch probe failed"
-import contextlib, importlib.machinery, importlib.util, io, sys, time
+import contextlib, importlib.machinery, importlib.util, io, sys, threading
 from unittest.mock import patch
 
 loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
@@ -869,9 +879,17 @@ boards = {"weekly": ([("claudeb", "omega"), ("claudeb", "alpha")], {}, set(), "o
           "fable": ([("claudeb", "alpha"), ("claudeb", "omega")], {}, set(), "alpha")}
 
 
+asked_boards = threading.Event()
+
+
+def ranked_boards(timeout=10):
+    asked_boards.set()
+    return boards
+
+
 class Screen:
     def __init__(self):
-        self.events = iter([None] * 20 + [(0, 3, c.BUTTON1_DOUBLE_CLICKED)])
+        self.events = iter([None, (0, 3, c.BUTTON1_DOUBLE_CLICKED)])
 
     def getmaxyx(self):
         return 7, 80
@@ -882,7 +900,11 @@ class Screen:
     def get_wch(self):
         event = next(self.events)
         if event is None:
-            time.sleep(0.01)
+            # Idle until the ranking job has been asked and has landed, then let the loop take it.
+            assert asked_boards.wait(5)
+            for job in threading.enumerate():
+                if job is not threading.current_thread():
+                    job.join(5)
             raise c.error("no input")
         self.mouse = (0, event[0], event[1], 0, event[2])
         return c.KEY_MOUSE
@@ -894,7 +916,7 @@ with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
                     mousemask=lambda _: None), \
         patch.object(c, "getmouse", side_effect=lambda: screen.mouse), \
         patch.object(chats, "draw", lambda *rest: None), \
-        patch.object(chats, "rankings", lambda timeout=10: boards), \
+        patch.object(chats, "rankings", ranked_boards), \
         patch.object(chats, "board_of", lambda row: "fable" if row.get("model") == "fable" else "weekly"):
     result = chats.run(screen, rows, list(names), None, 0, 0, (7,))
 assert result[1] == rows[2], result

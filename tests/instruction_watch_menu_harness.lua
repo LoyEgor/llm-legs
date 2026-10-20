@@ -27,6 +27,15 @@ moduleEnv._G = moduleEnv
 local M = assert(loadfile(root .. "/hammerspoon/instruction-watch.lua", "t", moduleEnv))()
 hs.pathwatcher = { new = inert }
 
+-- `mkdir -p` without a shell, for absolute paths.
+local function mkdirp(path)
+    local built = ""
+    for part in path:gmatch("[^/]+") do
+        built = built .. "/" .. part
+        hs.fs.mkdir(built)
+    end
+end
+
 local failures = {}
 local function check(ok, message)
     if not ok then failures[#failures + 1] = message end
@@ -527,13 +536,13 @@ local ok, err = pcall(function()
     created = 0
     M.start()
     check(created == 0, "a watcher was created for a missing stateDir")
-    os.execute('mkdir -p "' .. missing .. '"')
+    mkdirp(missing)
     M.pump()
     check(created >= 1, "pump did not create a watcher once stateDir appeared")
     hs.pathwatcher.new = savedNew
     M.stop()
     M.setStateDir(fixture)
-    os.execute('rmdir "' .. missing .. '"')
+    hs.fs.rmdir(missing)
 
     local wf = _G.INSTRUCTION_WATCHER_FIXTURE
     check(type(wf) == "table", "no watcher fixture was passed")
@@ -665,7 +674,8 @@ local ok, err = pcall(function()
     hs.fs = savedFs
 
     local expiredMark = wf.state .. "/alerts/0123456789abcdef"
-    os.execute("mkdir -p " .. quoted(expiredMark) .. " && touch -t 202001010000 " .. quoted(expiredMark))
+    mkdirp(expiredMark)
+    hs.fs.touch(expiredMark, OLD_STAMP, OLD_STAMP)
     local before = #records()
     write(doc, "grown line\n")
     fire(doc)
@@ -808,7 +818,7 @@ local ok, err = pcall(function()
 
     M.stop()
     local catalog = wf.home .. "/.claude/plugins/marketplaces/official/README.md"
-    os.execute("mkdir -p " .. quoted(wf.home .. "/.claude/plugins/marketplaces/official"))
+    mkdirp(wf.home .. "/.claude/plugins/marketplaces/official")
     write(catalog, "catalog clone grew\n", "w")
     write(wf.state .. "/watcher/snapshot.tsv", table.concat({ catalog, string.rep("0", 64), "1", "1", "1", catalog },
         "\t") .. "\n")
@@ -943,7 +953,7 @@ local ok, err = pcall(function()
     fire(repoReal .. "/sub/CLAUDE.md")
     check(relists == 1, "a new repository CLAUDE.md scheduled no relisting tick: " .. relists)
     local classLink = wf.home .. "/.claude/agents"
-    os.execute('mkdir -p "' .. wf.repo .. '/agents"')
+    mkdirp(wf.repo .. "/agents")
     check(hs.fs.link(wf.repo .. "/agents", classLink, true), "the class-directory symlink was not created")
     if relistFn then relistFn() end
     fire(repoReal .. "/agents/new.md")
@@ -990,19 +1000,19 @@ local ok, err = pcall(function()
 
     -- A receipt already read is not read again while its directory stands as it was; a hand removal re-delivers.
     hs.fs.touch(wf.state .. "/receipts", OLD_STAMP, OLD_STAMP)
-    M.pump()
+    M.pump(true)
     local receiptOpens = 0
     io = setmetatable({ open = function(path, ...)
         if tostring(path):find("/receipts/", 1, true) then receiptOpens = receiptOpens + 1 end
         return countedIo.open(path, ...)
     end }, { __index = countedIo })
-    M.pump()
+    M.pump(true)
     M.menuItems()
     io = countedIo
     check(receiptOpens == 0, "receipts were read again with their directory unchanged: " .. receiptOpens)
     local alertsBeforeRemoval = #alerts
     os.remove(wf.state .. "/receipts/pumped01")
-    M.pump()
+    M.pump(true)
     check(#alerts == alertsBeforeRemoval + 1, "a receipt removed by hand did not deliver its record again")
 
     -- A record's submenu is built once while what it prints holds still, and renders the same.
