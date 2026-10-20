@@ -360,7 +360,7 @@ end
 
 function M.cleanupNow()
   startNight("Land night branches", "Land night branches now?",
-    "Lands the finished night branches, then one debt round, in one orchestrator chat. No fixers, no updates.", "Run",
+    "Lands the finished night branches and every leftover in one orchestrator chat. No debt round while debt is paused, no fixers, no updates.", "Run",
     { "--cleanup" })
 end
 

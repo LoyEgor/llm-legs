@@ -1117,7 +1117,7 @@ items = doctors.menuItems()
 local cleanup = items[#items - 1]
 cleanup.fn()
 check(#dialogs == 1 and #tasks == 0 and dialogs[1][3] == "Cancel" and dialogs[1][4] == "Run"
-  and dialogs[1][2]:find("No fixers, no updates", 1, true), "Cancel on the cleanup confirmation starts nothing")
+  and dialogs[1][2]:find("No debt round while debt is paused, no fixers, no updates", 1, true), "Cancel on the cleanup confirmation starts nothing")
 answer = "Run"
 cleanup.fn()
 tasks[1]:finish(1, "", "checking\nLLM_LAUNCH_REFUSED: the night starts only on Egor's own act\n")

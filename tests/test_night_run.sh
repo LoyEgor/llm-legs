@@ -652,7 +652,7 @@ done
 night start --cleanup >"$WORK/out" || fail "cleanup start"
 idc=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
 assert [ -n "$idc" ] && [ "$idc" != "${id6:-$id}" ]
-assert [ "$(last_arg "$idc")" = "сделай чистку — night run $idc cleanup" ]
+assert [ "$(last_arg "$idc")" = "сделай чистку — night run $idc cleanup. Review debt is paused (llm-legs docs/directions/README.md block 10): no \`debt\` job or debt pass; land every leftover, then Close, and step 6 with \`--remainder 'review debt paused'\`." ]
 assert jqe '.jobs == [] and .finished_at == null' "$(record "$idc")"
 assert_fails night start --cleanup 2>/dev/null
 stop_chat "$(jq -r .session "$(record "$idc")")"
