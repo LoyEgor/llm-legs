@@ -2440,6 +2440,34 @@
    "reviewed_by": "Fixer llm-image-20261020T114225Z-20f2",
    "note": "borodatch 00:40Z 2026-10-20, tile t0 of an 8-tile 'enhance every surface' --jobs fanout (arbostar-logo chat a15d9903, renders/upscale/chatgpt-web/full-tiles): auto composite found no local change and delivered the model's image, while on the other 7 tiles it pasted 1.7-3.8 % patches back onto the inputs, and the caller took the .rendered.png files instead. image-fanout had no way to pass the wrappers' shared --no-composite; it now forwards --composite[=...]/--no-composite to every image take, --jobs included (docs/image-vendors.md). A later no-local-change on a direct call is a caller's own flag choice or the model ignoring a local edit: read its transcript before re-fixing.",
    "handoff": null
+  },
+  {
+   "id": "W13",
+   "block": "light",
+   "match": {
+    "word": "escaped",
+    "detail": "^read-only violation$"
+   },
+   "title": "a grok research run in a shared checkout failed READ_ONLY_VIOLATION because another chat edited that checkout during it",
+   "status": "open",
+   "fixes": [
+    {
+     "at": "2026-10-20T15:25:00+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run",
+      "llm-legs/share/light-research.sh",
+      "llm-legs/tests/test_worker_run_websearch.sh"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-20",
+   "reviewed_by": "Fixer llm-light-20261020T114234Z-28a9",
+   "note": "2026-10-20: grok-1792494701-51041-05cd (rawilimo, blind ElevenLabs web research, workdir the main checkout) made only web_search/web_fetch calls, yet the before/after tree digest moved: bin/log-sweep and share/log_stores.py (dirty before) and share/log-stores.json were edited by the concurrent log_stores fixer (2f64d43c), so the answer was thrown away for a co-tenant's write. Grok research now runs under the gemini research leg's Seatbelt write-deny profile (its GROK_HOME instead of the gemini roots; live-checked: a grok run answers under it, its write tool gets Operation not permitted, the tree stays clean) and only a write/edit tool call the sandbox failed is READ_ONLY_VIOLATION; the digest is gone. Same detail on a later leg = the model tried to write, a different cause; read the run's out before calling it a regression. Left: llm-doctor DIGEST_RE (W1) now only matches pre-fix runs, removable once they leave the 14-day window (judge, the owner's). 2026-10-20 (fix orchestrator): back to open, not fixed: the sandbox fix is unlanded (branch only) and its covering suites are red, test_light_research_vendors.sh and test_light_research_fanout.sh ('light-research: could not resolve sandbox write paths' -> GROK_UNAVAILABLE); worker not resumed per Egor's stop.",
+   "handoff": null
   }
  ],
  "blind_spots": [
