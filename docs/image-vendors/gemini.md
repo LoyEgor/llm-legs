@@ -139,13 +139,13 @@ pixel-identical. One decision serves them all (`image_leg_composite_plan` and
 `image_leg_composite_take` in [`share/image-leg.sh`](../../share/image-leg.sh), guarded by
 `tests/test_image_composite.sh`):
 
-- An edit has exactly one input — `--edit`, else the single `--ref`, else on `--resume` the last image this
-  machine delivered in that session — and an output of the input's aspect (±1%). Anything else prints
+- An edit has exactly one input — `--edit` (or an Image Editor tool's input), else on `--resume` the last image
+  this machine delivered in that session; a plain `--ref` is a reference, never the input — and an output of the input's aspect (±1%). Anything else prints
   `composite=skipped reason=new-generation|several-inputs|input-unknown|aspect-changed` (a re-aspect or
   outpaint is `aspect-changed`) and delivers the model's image.
 - `--no-composite` opts out; `--transparent` and `--remove-bg` never composite (they repaint the whole
-  background); neither prints a composite line. `--composite[=auto|x,y,w,h]` forces it (the first of
-  several `--ref`s) and picks the mask; it is refused before spending (exit 2) without an input image,
+  background); neither prints a composite line. `--composite[=auto|x,y,w,h]` forces it (on the `--edit` or
+  resumed image) and picks the mask; it is refused before spending (exit 2) without an input image,
   with `--transparent`/`--remove-bg` or with `--no-composite`. `codex-image --region`/`--point` feed the
   mask unless `--composite` names one.
 
@@ -336,8 +336,8 @@ profile has that name, then Cmd+Q; it refuses a name off the gemini roster and r
 `geminib p` offers it once after a first Antigravity login on a tty, default no); it holds until that window is
 quit, then runs `gemini-web status <account>` itself, which binds the email and reads credits without spending,
 and prints `<account> ready` with the credits (the menu's `fv` row appears, unmeasured until a balance is
-read), or the reason and exit 4; `gemini-web accounts` lists profiles, credits and walls; `gemini-video … --dry-run`
-sets the composer up and prints Flow's quote without sending (with `--extend` it opens extend mode, which adds an empty "Untitled Scene" to the project); a clip that finished after a timeout is
+read), or the reason and exit 4; `gemini-web accounts` lists profiles, credits and walls; `gemini-web generate … --dry-run`
+(engine only: the launch gate blocks it in a chat's Bash) sets the composer up and prints Flow's quote without sending (with `--extend` it opens extend mode, which adds an empty "Untitled Scene" to the project); a clip that finished after a timeout is
 recovered with `gemini-web fetch <account> <media_id> --dest <abs .mp4>`. Rotation (no `--account`) keeps to
 the gemini worker pool ("In pool", read through `share/worker-pool.sh`; a pin in `worker-model` overrides it,
 and a named account out of the pool exits 4), skips an account whose balance read in the last 6 h is under

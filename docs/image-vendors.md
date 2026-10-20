@@ -213,8 +213,8 @@ Two local tools answer it ([gemini page](image-vendors/gemini.md#local-composite
 
 - `share/image_composite.py` pastes only the changed part of an edited image back onto its input
   (mask: `auto` difference map, an `x,y,w,h` rectangle, or `--point x,y` areas). Composite is ON BY
-  DEFAULT for every edit of an existing image on every wrapper and route — one input (`--edit`, else a
-  single `--ref` or the `--resume` session's last delivered image) and the input's aspect; otherwise
+  DEFAULT for every edit of an existing image on every wrapper and route — one input (`--edit`, else the `--resume` session's last delivered image; on
+  `codex-image` also the single `--ref` of a `--region`, `--point` or `--remove-bg` edit) and the input's aspect; otherwise
   `composite=skipped reason=...`. It refuses a global edit (over 60% changed:
   `composite=refused reason=global changed=N%`, the model's image delivered), keeps the model's image as
   `<dest stem>.rendered.<ext>` (`rendered=`) whenever it changed the delivered pixels, and runs on each

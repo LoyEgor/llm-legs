@@ -210,7 +210,7 @@ outside a region still moved, above), and over chained edits the face blurs and 
 edit of an existing image is composited by default, on both routes, by the decision every image wrapper shares
 ([gemini page](gemini.md#local-composite-and-edit-lineage)): `share/image_composite.py` pastes only the changed
 part of the delivered image back onto a snapshot of the input (`--edit <image>`, which goes first among the
-references while every `--ref` stays a reference only; else the single `--ref`, or on `--resume` the last
+references while every `--ref` stays a reference only; else the single `--ref` of a `--region`, `--point` or `--remove-bg` edit, or on `--resume` the last
 image this machine delivered in that chat). A `--region` edit masks its rectangle and a `--point` edit the
 changed areas touching the points; any other edit masks the difference map. Both masks are in the input's
 frame whatever size comes back (checked 2026-10-19 with 1500×1000, 3000×1000, 1000×3000, 400×300 and 4000×3000
