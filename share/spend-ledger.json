@@ -6529,6 +6529,21 @@
    "verdict": "cut",
    "zero": "removal saves ~10.6 CPU-min/day; loses the door in front of review launches, the autonomy and unpushed answers the statusline reads, and the writes journal",
    "note": "27334 of its runs a day were the statusline's autonomous question (14.4 ms, 6.6 CPU-min): the statusline now asks only when a span marker moved or its answer is 90 s old, ~85% fewer (llm-legs@86c4bd67); the PreToolUse path (18572 runs, 68 ms, fast exits for read-only and write-free calls already in place) and unpushed (456 runs, 404 ms: three git calls plus one per own commit, 3.1 CPU-min) were left, a change there moves what the gate refuses"
+  },
+  {
+   "id": "cpu:process/logo-vectorizer-bench/tracers/champ67/run.sh",
+   "title": "process/logo-vectorizer-bench/tracers/champ67/run.sh",
+   "audited_at": "2026-10-20T14:55:20+03:00",
+   "by": "harness-speed-cpu-process-logo-vectorizer-bench-tracers-champ67-run-sh-20261020T114007Z-1392",
+   "cpu_min_day": 1.0,
+   "cpu_s_run": 196.053,
+   "runs_day": 4,
+   "sources": {
+    "logo-vectorizer-bench/tracers/champ67/run.sh": "c3741d0fb0c1ce1e16624df1d1d6fdb8447b26fc"
+   },
+   "verdict": "kept",
+   "zero": "removal saves ~1.0 CPU-min/day (median; hours 10-15..10-19 held 1240/3305/884/61 CPU-s, 0 since 10-19); loses the champ67 tracer layer every later tracer (champ68..champ77, d1/d2 lanes) calls as its base, so the bench lineage and its recorded results stop reproducing",
+   "note": "bench compute, not harness overhead: the sampled process is the champ67-j256 ladder pipeline on one image, deterministic (PYTHONHASHSEED=0, 1 thread); 'runs' are hourly samples, active only 10-15..10-17 and 10-19 during the champ68-77 campaign, idle now. Only cheaper equivalent: a per-input-hash cache of this layer's output shared by descendants, a change in logo-vectorizer-bench (not an ADD-DIR repo), worth <1 CPU-min/day on the idle bench, so no handoff"
   }
  ]
 }
