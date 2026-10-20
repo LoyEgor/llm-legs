@@ -5296,20 +5296,20 @@
   {
    "id": "suite:llm-legs/test_llm_limits_render",
    "title": "llm-legs/test_llm_limits_render",
-   "audited_at": "2026-10-14T08:08:05+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261014T021730Z-5d7f",
-   "cpu_run": 41.2,
-   "wall_run": 28.7,
-   "cpu_min_day": 8.73,
-   "wall_min_day": 14.22,
+   "audited_at": "2026-10-20T15:44:57+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-llm-limits-render-20261020T114119Z-5e6d",
+   "cpu_run": 38.7,
+   "wall_run": 20.5,
+   "cpu_min_day": 5.15,
+   "wall_min_day": 6.53,
    "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
+    "llm-legs/tests/lib/suite-journal.sh": "81333618c0ede1295ff60523b106e2789bd6984d",
     "llm-legs/tests/llm_limits_harness.sh": "0a165bc27b8c2cd06328a9902fc662926cdb2603",
-    "llm-legs/tests/test_llm_limits_render.sh": "85a539fcecf9cb2796dff136308a9d15964af03a"
+    "llm-legs/tests/test_llm_limits_render.sh": "a55f76a71a8596404b2f841bc2960faebab56ff1"
    },
    "verdict": "cut",
-   "zero": "removal saves 12.7 wall-min/day; loses the table/sort/age/plan/reset-format asserts",
-   "note": "cut: no-op security (symlink to /usr/bin/false) instead of the real keychain per Claude account (~30 ms wait each); collector per-account jq collapse not done: an 8-account collection measures 0.13 CPU-s whole, under 10 ms per account"
+   "zero": "removal saves 6.9 wall-min/day; loses the render/sort/expiry/alarm/order collector checks",
+   "note": "sharded 4 ways: every check kept, sections on own caches; shard 4 alone 23 s, unsharded 70 s under load ~195"
   },
   {
    "id": "suite:llm-legs/test_gemini_image",

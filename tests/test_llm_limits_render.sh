@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
+# shards: 4
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/llm_limits_harness.sh" || exit 1
 # Every Claude account of every collection asks the real keychain for its plan (~30 ms, never a fixture's): a no-op answers the same nothing.
 mkdir -p "$WORK/no-keychain" && ln -s /usr/bin/false "$WORK/no-keychain/security" && export PATH="$WORK/no-keychain:$PATH"
 
 . "$ROOT/share/worker-walls.sh"
+if suite_shard_owns 1 wall; then
+CACHE="$WORK/cache-wall.json"
 wall_baseline=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json --no-write) || fail "wall baseline failed"
 wall_read=$(jq -r '.vendors.codex.five_hour.as_of' <<<"$wall_baseline")
 wall_reset=$((now + 1800))
@@ -39,10 +42,13 @@ for wall_case in newer older expired; do
     fi
   done
 done
+fi
 
 home_fixture_after_first_suite
 seed_claudeb_store
 
+if suite_shard_owns 2 sorts-expired; then
+CACHE="$WORK/cache-sorts-expired.json"
 # zoe: distant 5h reset but imminent weekly reset — --sort reset must use min(5h, weekly).
 printf '{"five_hour":{"used_percentage":11,"resets_at":%s},"seven_day":{"used_percentage":97,"resets_at":%s}}\n' "$((now + 50000))" "$((now + 990))" >"$CLAUDEB/limits/zoe.json"
 reset_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort reset) || fail "reset-sorted table collection failed"
@@ -113,7 +119,10 @@ grep -q 'codex: 5h 0%! @ .* | wk 44% @ ' <<<"$expired_plain" || fail "expired pl
 expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "expired sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$expired_sorted" | paste -sd, -)
 [ "$order" = "claude/alona*,codex,gemini,grok" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
+fi
 
+if suite_shard_owns 2 honest; then
+CACHE="$WORK/cache-honest.json"
 HONEST_STORE="$WORK/honest-store"
 HONEST_HOME="$WORK/honest-home"
 mkdir -p "$HONEST_STORE/limits" "$HONEST_HOME"
@@ -136,7 +145,10 @@ grep -Eq ' +1h1m +limit-5h +- +-$' <<<"$honest_row" || fail "table age or limit-
 grep -q 'claude/honest\*: 5h 100%~ @ .* | wk 0%! @ ' <<<"$honest_plain" || fail "honesty plain lost markers or the effective expired value"
 grep 'claude/honest\*:' <<<"$honest_plain" | grep -q '| age 1h1m | rot limit-5h | cr - | status -' \
   || fail "plain age or explicit state fields missing"
+fi
 
+if suite_shard_owns 3 age; then
+CACHE="$WORK/cache-age.json"
 # A row carrying no dated window and a row a day old are one verdict, and neither may render as an
 # ordinary age. The flag is the collector's alone: every surface paints it, none re-derives it.
 ALARM_STORE="$WORK/alarm-store"
@@ -224,7 +236,10 @@ stale_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CACHE="
   bash "$SCRIPT" --plain) || fail "stale-data plain collection failed"
 grep '^claude/old:' <<<"$stale_plain" | grep -q '| status stale$' \
   || fail "a 19h-old account did not say stale in plain: $stale_plain"
+fi
 
+if suite_shard_owns 3 usable; then
+CACHE="$WORK/cache-usable.json"
 USABLE_STORE="$WORK/usable-store"
 USABLE_HOME="$WORK/usable-home"
 mkdir -p "$USABLE_STORE/limits" "$USABLE_HOME/.codex/sessions"
@@ -299,7 +314,10 @@ printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primar
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$((now + 5000))" "$((now + 9000))" >"$USABLE_HOME/.codex/sessions/rollout-full.jsonl"
 codex_full=$(HOME="$USABLE_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex exhausted usability collection failed"
 jq -e '.vendors.codex.five_hour.effective_pct == 100 and .vendors.codex.usable_now == false' <<<"$codex_full" >/dev/null || fail "Codex exhausted usability mismatch"
+fi
 
+if suite_shard_owns 2 reset-text; then
+CACHE="$WORK/cache-reset-text.json"
 FORMAT_STORE="$WORK/reset-format-store"
 FORMAT_HOME="$WORK/reset-format-home"
 mkdir -p "$FORMAT_STORE/limits" "$FORMAT_STORE/tokens" "$FORMAT_HOME"
@@ -355,7 +373,10 @@ for surface_name in table plain claudeb; do
   grep -Fq "$sameday_daytext" <<<"$surface" && fail "$surface_name: same-day reset wrongly gained a day marker ($sameday_daytext)"
   grep -Fq "$farweek_text" <<<"$surface" || fail "$surface_name: >24h reset tier changed ($farweek_text)"
 done
+fi
 
+if suite_shard_owns 1 provenance; then
+CACHE="$WORK/cache-provenance.json"
 # Header-origin week must render unknown, not as a number that walls the account.
 PROV_STORE="$WORK/prov-store"
 PROV_HOME="$WORK/prov-home"
@@ -418,7 +439,10 @@ for marker_state in spent absent; do
   jq -e '.experiments == ["EXPERIMENT ended OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_ended" >/dev/null \
     || fail "an experiment past its review date whose marker is $marker_state must still be announced OVERDUE"
 done
+fi
 
+if suite_shard_owns 4 order-merge-scope; then
+CACHE="$WORK/cache-order-merge-scope.json"
 # Account order in the cache is the order every surface renders: the hardcoded primaries first,
 # then oldest profile directory first, and an account with no directory (hence no birth time) last
 # by name. `current` no longer buys a place in that order — it is carried by is_current instead.
@@ -602,6 +626,7 @@ jq -e '.vendors.claude.refresh_error.cause == "no claudeb store"' "$WORK/no-stor
 if env "${vendor_scope_env[@]}" bash "$SCRIPT" --refresh-account claude --start-windows \
   >/dev/null 2>&1; then
   fail "a bare vendor accepted --start-windows"
+fi
 fi
 
 echo "PASS: table sorts, truncated and expired rollouts, age alarm, usability, plans, reset formats, provenance, account order and merge, vendor-scoped --refresh-account"
