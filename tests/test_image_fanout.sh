@@ -29,9 +29,8 @@ mkdir -p "$FAKE_BIN" "$FAKE_LIST" "$FAKE_SYS" "$DEST" "$WORK/refs" "$CHILDREN" "
 : >"$CALLS"
 DEST_WORK=$(fanout_work "$DEST")
 
-for i in 1 2 3 4 5; do
-  magick -size 64x64 gradient:red-blue "$WORK/refs/r$i.png"
-done
+magick -size 64x64 gradient:red-blue "$WORK/refs/r1.png"
+for i in 2 3 4 5; do cp "$WORK/refs/r1.png" "$WORK/refs/r$i.png"; done
 
 # The memory reader's inputs: vm_stat pages (16 KB each, so MB * 64) and the pressure level.
 MEM_MB="$WORK/mem-mb"

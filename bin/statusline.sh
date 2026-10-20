@@ -6,14 +6,18 @@
 # never from raw headers alone.
 # Runs every 5s even while idle: GIT_OPTIONAL_LOCKS=0 keeps renders off index.lock.
 # `env bash` resolves to macOS bash 3.2 when PATH lists /bin before Homebrew; this script needs bash 5.
+# The marker rides the exec instead of a probe bash per render; a re-exec that is still bash < 5 stops at the echo.
 if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
-  for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
-    [ -x "$modern_bash" ] && "$modern_bash" -c '[ "${BASH_VERSINFO[0]}" -ge 5 ]' && exec "$modern_bash" "$0" "$@"
-  done
+  if [ -z "${STATUSLINE_REEXEC:-}" ]; then
+    for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+      [ -x "$modern_bash" ] && STATUSLINE_REEXEC=1 exec "$modern_bash" "$0" "$@"
+    done
+  fi
   echo "statusline: bash 5 required (found $BASH_VERSION)"
   exit 0
 fi
 {
+unset STATUSLINE_REEXEC
 statusline_start_us=${EPOCHREALTIME//[!0-9]/}
 export GIT_OPTIONAL_LOCKS=0
 
@@ -110,6 +114,11 @@ if enable -f "${BASH%/bin/*}/lib/bash/stat" stat 2>/dev/null; then
     stat -L -A st "$3" 2>/dev/null || { printf -v "$1" ''; return 1; }
     printf -v "$1" '%s' "${st[$2]}"
   }
+  file_ident_to() { # var path -> "inode size mtime" from one stat
+    local -A st
+    stat -L -A st "$2" 2>/dev/null || { printf -v "$1" ''; return 1; }
+    printf -v "$1" '%s %s %s' "${st[inode]}" "${st[size]}" "${st[mtime]}"
+  }
 else
   file_mtime() {
     [ -e "$1" ] || [ -L "$1" ] || return 1
@@ -126,6 +135,12 @@ else
     value=$("file_$2" "$3"); rc=$?
     printf -v "$1" '%s' "$value"
     return "$rc"
+  }
+  file_ident_to() { # var path -> "inode size mtime"
+    local ino size mtime
+    file_stat_to mtime mtime "$2" || { printf -v "$1" ''; return 1; }
+    file_stat_to ino inode "$2"; file_stat_to size size "$2"
+    printf -v "$1" '%s %s %s' "$ino" "$size" "$mtime"
   }
 fi
 file_mtime_to() { file_stat_to "$1" mtime "$2"; }
@@ -239,7 +254,7 @@ repo_dirs() {
 }
 
 dirty_state_key() { # var git-dir status-v2 -> 0 when every entry's stat is older than 2 s (git's own racy-stat rule)
-  local line path n=0 newest=0 key="$2"$'\n'"$3" ino size mtime
+  local line path n=0 newest=0 key="$2"$'\n'"$3" ident mtime
   while IFS= read -r line; do
     case "$line" in
       '1 '*) path=${line#* * * * * * * * } ;;
@@ -251,9 +266,9 @@ dirty_state_key() { # var git-dir status-v2 -> 0 when every entry's stat is olde
     [[ "$path" = \"* ]] && return 1
     n=$((n + 1)); [ "$n" -le 200 ] || return 1
     path="$active_top/$path"
-    if file_stat_to mtime mtime "$path"; then
-      file_stat_to ino inode "$path"; file_stat_to size size "$path"
-      key+=$'\n'"$ino $size $mtime"
+    if file_ident_to ident "$path"; then
+      mtime=${ident##* }
+      key+=$'\n'"$ident"
       [ "$mtime" -le "$newest" ] || newest=$mtime
     else
       key+=$'\n-'
@@ -431,12 +446,13 @@ unpushed_marker() { # toplevel session now
   local key cached_key cached cache_mtime lock_mtime commondir head upstream f m s
   [ -n "$sid" ] && [ -n "$top" ] && [ -x "$gate" ] || { printf -v "$out" '%s' off; return 0; }
   # A branch with no upstream owes nothing here — nothing on this machine knows where it would go —
-  # and one whose upstream is HEAD is a branch with nothing ahead at all. Both answer without the
-  # gate, which is what keeps the marker off the render path for the repositories it never marks.
-  # The render's own status already says which: no `branch.upstream`, or `branch.ab +0 -0`. An
-  # upstream whose ref is missing prints no `branch.ab`, and rev-parse echoes `@{upstream}` for it.
+  # and one with nothing ahead of its upstream (HEAD equal to it, or only behind it) is a branch
+  # with no commit the upstream lacks. Both answer without the gate, which is what keeps the marker
+  # off the render path for the repositories it never marks. The render's own status already says
+  # which: no `branch.upstream`, or `ahead` 0. An upstream whose ref is missing prints no
+  # `branch.ab`, leaving `ahead` empty, and rev-parse echoes `@{upstream}` for it.
   if [ "$git_status_rc" -eq 0 ] && [[ "$branch_oid" =~ ^[0-9a-f]+$ ]]; then
-    [ -n "$branch_upstream" ] && [ "$branch_ab" != "+0 -0" ] || { printf -v "$out" '%s' off; return 0; }
+    [ -n "$branch_upstream" ] && [ "$ahead" != 0 ] || { printf -v "$out" '%s' off; return 0; }
     head=$branch_oid
   else
     head=$(git -C "$top" rev-parse HEAD 2>/dev/null)
@@ -1021,7 +1037,7 @@ head_known=0
 git_status_rc=1
 branch_oid=""; branch_upstream=""; branch_ab=""; branch=""; has_untracked=0; status_dirty=0
 if [ -n "$active_top" ]; then
-  status_v2=$(git -C "$active_top" status --porcelain=v2 --branch --untracked-files=all --ahead-behind 2>/dev/null)
+  status_v2=$(git -C "$active_top" -c core.quotePath=false status --porcelain=v2 --branch --untracked-files=all --ahead-behind 2>/dev/null)
   git_status_rc=$?
   while IFS= read -r status_line; do
     case "$status_line" in
