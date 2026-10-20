@@ -550,7 +550,7 @@ activity_fingerprint() { # directory vendor workdir
     [ -n "$path" ] && [ -e "$path" ] || continue
     if file_lstat "$path"; then fingerprint+="$path $FILE_SIZE $FILE_MTIME|"; else fingerprint+='|'; fi
   done
-  [ -z "$workdir" ] || compute_transcript_files "$directory"
+  [ -z "$workdir" ] || compute_transcript_files "$directory" list
   if stamp=$(workdir_activity_stamp "$directory" "$workdir" own "${RUN_FILES_LIST-}"); then
     observed=y
     fingerprint+="edit $stamp|"
@@ -4013,8 +4013,10 @@ transcript_files() {
   # (assistant turn, sidechain entry) does not hide the call. NotebookEdit names its target
   # notebook_path; every other editor names file_path. A call whose tool_result came back is_error
   # changed nothing — a denied or failed edit listed as this run's work is a file it never touched.
-  # Nonzero says UNREADABLE, never empty: jq's own status is what the caller needs, so the passes
-  # are separate assignments rather than one pipeline whose status belongs to `sort`.
+  # Nonzero says UNREADABLE, never empty: jq's own status is what the caller needs, so the pass is
+  # an assignment of its own rather than one pipeline whose status belongs to `sort`. One pass reads
+  # both the failed ids and the hits: a failed tool_result lands after its tool_use, so the hits are
+  # filtered only at the end (a non-string id spelled as `-r` would print it, an empty one dropped).
   #
   # `since` is the run's own start: a --resume run APPENDS to the session's existing transcript, so
   # the file also holds the calls of the runs before it, and listing those as this run's work is the
@@ -4022,20 +4024,23 @@ transcript_files() {
   # calls, so the cut is a per-line select ahead of the descent, not a filter on the paths it yields.
   # `fromdateiso8601` refuses the milliseconds every real transcript writes, hence the sub() — parsed
   # without it, every line reads as epoch 0 and a resumed run reports nothing at all.
-  local transcript="$1" workdir="$2" since="${3:-0}" failed paths
+  local transcript="$1" workdir="$2" since="${3:-0}" paths
   local -a more=("${@:4}")
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
-  failed=$(jq -r '.. | objects
-           | select((.type? == "tool_result") and (.is_error? == true))
-           | (.tool_use_id? // empty)' "$transcript" ${more[@]+"${more[@]}"} 2>/dev/null) || return 1
-  paths=$(jq -r --arg failed "$failed" --argjson since "$since" '
-           ($failed | split("\n") | map(select(length > 0))) as $bad
-           | select(((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; ""))
-                      | fromdateiso8601? // 0)) >= $since)
-           | .. | objects
-           | select((.type? == "tool_use") and ((.name? // "") | test("^(Write|Edit|MultiEdit|NotebookEdit)$")))
-           | select((.id? // "") as $id | ($bad | index($id)) == null)
-           | (.input.file_path? // .input.notebook_path? // empty)' "$transcript" ${more[@]+"${more[@]}"} 2>/dev/null) || return 1
+  paths=$(jq -nr --argjson since "$since" '
+           reduce (inputs
+                   | ((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "")) | fromdateiso8601? // 0) >= $since) as $in
+                   | .. | objects
+                   | if (.type? == "tool_result") and (.is_error? == true) then
+                       (.tool_use_id? // empty) | (if type == "string" then . else tojson end)
+                       | select(length > 0) | ["bad", .]
+                     elif $in and (.type? == "tool_use")
+                          and ((.name? // "") | test("^(Write|Edit|MultiEdit|NotebookEdit)$")) then
+                       (.input.file_path? // .input.notebook_path? // empty) as $path | ["hit", (.id? // ""), $path]
+                     else empty end) as $row
+             ({bad: [], hits: []}; if $row[0] == "bad" then .bad += [$row[1]] else .hits += [$row[1:]] end)
+           | .bad as $bad | .hits[] | select((.[0] as $id | $bad | index($id)) == null) | .[1]' \
+           "$transcript" ${more[@]+"${more[@]}"} 2>/dev/null) || return 1
   # Piped, never a here-string: bash writes a short one whole into a pipe only it reads, and a
   # transcript's path list past the 16K buffer a macOS pipe was left at blocked that write forever
   # (live 2026-10-04: four watchdog chains outlived their runs by 31 h).
@@ -4074,8 +4079,10 @@ shell_write_rows() { # directory workdir snapshot
     sort -u
 }
 
-compute_transcript_files() {
-  local directory="$1" vendor account workdir session transcript started rows
+# `list`: only RUN_FILES_LIST and RUN_FILES_REASON are read (the watchdog's hop), so the shell
+# classifier, a second transcript pass and a python3 start per hop, is skipped.
+compute_transcript_files() { # directory [list]
+  local directory="$1" mode="${2:-}" vendor account workdir session transcript started rows
   RUN_FILES_LIST=''
   RUN_FILES_REASON=''
   RUN_FILES_PARTIAL=''
@@ -4105,7 +4112,7 @@ compute_transcript_files() {
     for sub in "${transcript%.jsonl}"/subagents/*.jsonl; do [ ! -f "$sub" ] || subagents+=("$sub"); done
   fi
   if [ -n "${TRANSCRIPT_MEMO+x}" ]; then
-    printf -v key '%s\x1f' "$vendor" "$account" "$workdir" "$started" "$session"
+    printf -v key '%s\x1f' "$vendor" "$account" "$workdir" "$started" "$session" "$mode"
     for sub in "$transcript" ${subagents[@]+"${subagents[@]}"}; do
       file_lstat "$sub" || { key=''; break; }
       key+="$sub $FILE_SIZE $FILE_MTIME $FILE_INODE"$'\n'
@@ -4117,7 +4124,7 @@ compute_transcript_files() {
       return 0
     fi
   fi
-  compute_transcript_rows "$directory" "$vendor" "$transcript" "$workdir" "$started" ${subagents[@]+"${subagents[@]}"} ||
+  compute_transcript_rows "$directory" "$vendor" "$transcript" "$workdir" "$started" "$mode" ${subagents[@]+"${subagents[@]}"} ||
     return 0
   [ -z "$key" ] || {
     TRANSCRIPT_MEMO=$key TRANSCRIPT_MEMO_LIST=$RUN_FILES_LIST TRANSCRIPT_MEMO_REASON=$RUN_FILES_REASON
@@ -4128,9 +4135,9 @@ compute_transcript_files() {
 }
 
 # Nonzero where the transcript was unreadable, which no memo may stand for.
-compute_transcript_rows() { # directory vendor transcript workdir started [subagent...]
-  local directory="$1" vendor="$2" transcript="$3" workdir="$4" started="$5" rows
-  local -a subagents=("${@:6}")
+compute_transcript_rows() { # directory vendor transcript workdir started mode [subagent...]
+  local directory="$1" vendor="$2" transcript="$3" workdir="$4" started="$5" mode="$6" rows
+  local -a subagents=("${@:7}")
   case "$vendor" in
     claudeb)
       if ! RUN_FILES_LIST=$(transcript_files "$transcript" "$workdir" "$started" ${subagents[@]+"${subagents[@]}"}); then
@@ -4142,6 +4149,7 @@ compute_transcript_rows() { # directory vendor transcript workdir started [subag
       # `sed -i`, a redirect, `mv` — changed files no transcript records as a tool call, and the list
       # is a floor rather than the whole of it. Said per run, because a run whose shell only READ
       # (its own test suite, `git status`) has a complete list and must not be doubted.
+      [ "$mode" != list ] || return 0
       transcript_wrote_through_shell "$transcript" "$started" ${subagents[@]+"${subagents[@]}"}
       case $? in
         0) RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL" ;;
@@ -4499,7 +4507,7 @@ last_edit_age() { # directory workdir now
   newest=$(workdir_activity_stamp "$1" "$2") || newest=0
   # Git sees no edit to an ignored path, a committed one or one in another repository; the run's own
   # transcript names them.
-  compute_transcript_files "$1"
+  compute_transcript_files "$1" list
   while IFS= read -r path; do
     case "$path" in '') ;; /*) named+=("$path") ;; *) named+=("${2%/}/$path") ;; esac
   done <<<"$RUN_FILES_LIST"

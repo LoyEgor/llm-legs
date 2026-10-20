@@ -235,13 +235,24 @@
     {
       "id": "cohort:llm-legs/bin/worker-run",
       "title": "worker-run watchdog transcript re-parse",
-      "status": "open",
+      "status": "fixed-pending",
       "match": {
         "rule": "cohort",
         "key": "llm-legs/bin/worker-run",
         "cause": "llm-legs/bin/worker-run"
       },
-      "note": "Undecided, run system-system-20261020T113826Z-7b45 stopped by Egor mid-problem. C is steady watchdog cost outside suite ticks (10-18 1.9k, 10-19 1.9k cpu-s; 1-20 s a tick over 674 ticks). Each hop (<= 30 s) on a moved transcript runs activity_fingerprint -> compute_transcript_files: transcript_files' two full jq passes (78 ms on a 2.4 MB transcript), transcript_wrote_through_shell's jq pass plus a python3 classifier, though the watchdog reads only RUN_FILES_LIST; estimated ~4.6k cpu-s a day over 154 claudeb runs (76 h) in 2 days. Ready levers: skip transcript_wrote_through_shell in the watchdog (its outputs are unread there); one jq (reduce inputs into bad ids and [id, path] hits, non-string ids tojson) gives byte-identical lists on 138 real transcripts with subagents and a since cut; next, parse only bytes appended since the last hop."
+      "note": "Undecided, run system-system-20261020T113826Z-7b45 stopped by Egor mid-problem. C is steady watchdog cost outside suite ticks (10-18 1.9k, 10-19 1.9k cpu-s; 1-20 s a tick over 674 ticks). Each hop (<= 30 s) on a moved transcript runs activity_fingerprint -> compute_transcript_files: transcript_files' two full jq passes (78 ms on a 2.4 MB transcript), transcript_wrote_through_shell's jq pass plus a python3 classifier, though the watchdog reads only RUN_FILES_LIST; estimated ~4.6k cpu-s a day over 154 claudeb runs (76 h) in 2 days. Ready levers: skip transcript_wrote_through_shell in the watchdog (its outputs are unread there); one jq (reduce inputs into bad ids and [id, path] hits, non-string ids tojson) gives byte-identical lists on 138 real transcripts with subagents and a since cut; next, parse only bytes appended since the last hop. Fixed 2026-10-20: levers 1 and 2 applied. The watchdog hop (activity_fingerprint) and last_edit_age call compute_transcript_files <dir> list, which skips transcript_wrote_through_shell (no jq pass, no python3 start); transcript_files reads failed ids and hits in one jq reduce. Proof: byte-identical lists, old vs new, on 165 real transcripts (the 30 largest up to 195 MB, 20 with subagents, a since cut); dropping the failed-id filter diverges on 4, so the filter is exercised; transcript_files 284 -> 151 s over the set, and the shell pass (about half a hop on a typical 2 MB transcript) is gone from the hop. Lever 3 (append-only parse) not taken: one jq start per moved hop remains, reopen with it if the check does not settle.",
+      "fixes": [
+        {
+          "at": "2026-10-20T17:22:50+03:00",
+          "by": "Workers и review bench унификация отображения",
+          "files": [
+            "llm-legs/bin/worker-run"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
     }
   ],
   "blind_spots": [

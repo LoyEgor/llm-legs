@@ -1,6 +1,6 @@
 # Hand-off: worker-run's watchdog re-parses the whole transcript every hop
 
-Status: open
+Status: settled by «Workers и review bench унификация отображения»: levers 1 and 2 in bin/worker-run (watchdog hop skips the shell classifier; one jq pass), byte-identical on 165 real transcripts; ledger row fixed-pending; lever 3 not taken
 To: «Workers и review bench унификация отображения» (owner of `bin/worker-run`)
 From: system doctor fixer run system-system-20261020T113826Z-7b45, stopped by Egor mid-problem; ledger row
 `cohort:llm-legs/bin/worker-run` in `share/system-ledger.json` (status open) holds the same facts.
