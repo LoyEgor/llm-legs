@@ -69,11 +69,14 @@ LLM ▸     8  reviewers crashed
   stale (Speed also without an index dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null), else GREEN. Missing value: DIM `–`.
   The value is the summary's red count.
 - Bars: six completed local dates and today, daily `max` of the red count in `red-days.jsonl` (the menu writes it when
-  a day's max rises, 8 days kept; `problem-days.jsonl` stays every loud problem for the time budget) (Lost time: `index_by_day` in Harness's
+  a day's max rises, 8 days kept; `problem-days.jsonl` stays every loud problem for the time budget). A date with no
+  red-days row (before the menu kept them, or a doctor with no count that day) draws that day's loud `max` from
+  `problem-days.jsonl` in the same DIM bar: red is a subset of loud, so a loud 0 is an exact red 0, and any other
+  such date is a loud day, drawn but never in the `usual` (Lost time: `index_by_day` in Harness's
   `menu.txt` header, the 7-day window ending each day, today live; Spend: its stored index of each day, the same window). Eight heights against the window maximum. An unmeasured date
   is a blank cell, never an invented bar or a dash; a zero is `▁` (as every other spark line, Chats → Other's
   load graph the model). Every bar is DIM, never RED.
-- `usual` is the median of measured completed dates, never today; index rows have none.
+- `usual` is the median of measured completed dates, never today and never a loud day; index rows have none.
 - A doctor's first level: up to three issue rows of red problems (RED count, the group or the problem's own short name,
   then ` · ` and the first red problem's `fact` where the document gives one; Spend's rows DIM;
   Lost time: the current window's `levels`, `min per order · chat` and `min per task · workers`, then the header's `rows`, plain aligned min/day, separators and sub-menus, a row flagged `{"dim": true}` (outside the index: model-written scripts, our tools) DIM whole, a `{"count": true}` row (Unused tools) a bare count opening its rows, plus nonempty `Needs Egor` rows), Fix, fixer, separator,

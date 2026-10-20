@@ -941,7 +941,8 @@ local function ratio(value)
 end
 local function padded(text, width) return string.rep(" ", width - cells(text)) .. text end
 
-local function trend(history, now)
+-- `loud` marks the dates whose bar is the loud count (no red count kept that day): drawn, never in the median.
+local function trend(history, now, loud)
   local days, prior, high = {}, {}, 0
   local date = os.date("*t", now)
   for index = 1, 7 do
@@ -950,7 +951,7 @@ local function trend(history, now)
     local amount = tonumber(history[day])
     if amount and amount >= 0 then
       days[index], high = amount, math.max(high, amount)
-      if index < 7 then prior[#prior + 1] = amount end
+      if index < 7 and not (loud and loud[day]) then prior[#prior + 1] = amount end
     end
   end
   table.sort(prior)
@@ -964,8 +965,8 @@ local function trend(history, now)
   return bars, median
 end
 
-local function summaryTitle(name, value, status, history, now, stale, indexed)
-  local bars, median = trend(history, now)
+local function summaryTitle(name, value, status, history, now, stale, indexed, loud)
+  local bars, median = trend(history, now, loud)
   -- RED: act now; DIM: cannot tell (no data, stale, a blind collector); GREEN: nothing for Egor.
   local tone = (status == "error" or status == "problems") and not stale and style.RED
     or (stale or status == "nodata" or status == "blind") and style.DIM or GREEN
@@ -1763,8 +1764,11 @@ end
 
 -- The day's highest red count per summary (contract row `rd`): the bars and the usual beside a count read the same
 -- red count, while problem-days.jsonl keeps every problem for the time budget. Written only when a day's max rises.
+-- A date with no red count (before the menu kept them, or a doctor with no count that day) draws problem-days.jsonl's
+-- loud max: red is a subset of loud, so a loud 0 is an exact red 0, and any other loud day is marked, out of the usual.
 local function redDays(now, counts)
-  local path = dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/red-days.jsonl"
+  local folder = dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors")
+  local path = folder .. "/red-days.jsonl"
   local day, keep = os.date("%Y-%m-%d", now), os.date("%Y-%m-%d", now - RED_DAYS_KEEP * 86400)
   local histories, rows, changed = {}, {}, false
   for _, row in ipairs(readJson(path, "days") or {}) do
@@ -1790,7 +1794,21 @@ local function redDays(now, counts)
       os.rename(path .. ".tmp", path)
     end)
   end
-  return histories
+  local shown, loud = {}, {}
+  for doctor, days in pairs(histories) do
+    shown[doctor] = {}
+    for at, max in pairs(days) do shown[doctor][at] = max end
+  end
+  for _, row in ipairs(readJson(folder .. "/problem-days.jsonl", "days") or {}) do
+    local max = tonumber(row.max)
+    if type(row.doctor) == "string" and type(row.day) == "string" and max and row.day >= keep
+      and (histories[row.doctor] or {})[row.day] == nil then
+      shown[row.doctor], loud[row.doctor] = shown[row.doctor] or {}, loud[row.doctor] or {}
+      shown[row.doctor][row.day] = math.max(shown[row.doctor][row.day] or 0, max)
+      loud[row.doctor][row.day] = shown[row.doctor][row.day] > 0 or nil
+    end
+  end
+  return shown, loud
 end
 
 local function compute()
@@ -1827,7 +1845,7 @@ local function compute()
     local key = done.doctor.key
     if done.entry.status ~= "nodata" and done.entry.status ~= "error" then counts[key] = done.view.count + (shift[key] or 0) end
   end
-  local histories = redDays(now, counts)
+  local histories, louds = redDays(now, counts)
   for _, done in ipairs(built) do
     local doctor, entry, document, view = done.doctor, done.entry, done.document, done.view
     local own = placeRows(done.own, moved[doctor.key], 2)
@@ -1849,7 +1867,8 @@ local function compute()
     local status = (entry.status == "nodata" or entry.status == "error") and entry.status
       or shown > 0 and "problems" or entry.status == "blind" and "blind" or "ok"
     local summary = { title = summaryTitle((NAMES[doctor.key]:gsub(" doctor$", "")),
-      entry.status ~= "nodata" and entry.status ~= "error" and shown or nil, status, histories[doctor.key] or {}, now, stale),
+      entry.status ~= "nodata" and entry.status ~= "error" and shown or nil, status, histories[doctor.key] or {}, now, stale,
+      nil, louds[doctor.key]),
       menu = egorLayer(firstRows(doctor, document, view, now, moved, incoming), menu, menu),
       problems = entry.status ~= "nodata" and entry.status ~= "error" and shown or 0, status = entry.status }
     if doctor.key == "system" then machine = summary else entries[#entries + 1] = summary end

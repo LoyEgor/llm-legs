@@ -564,6 +564,19 @@ local flat = trendDoctor.menuItems()[1].title
 local flatRed = false
 for at = BAR_AT, BAR_AT + 6 do flatRed = flatRed or sameColor(colorAt(flat, at), palette.RED) end
 check(text(flat) == row("LLM", "2", "███████", "5") and not flatRed, "a flat week has no RED bar: " .. text(flat))
+-- Dates before red-days.jsonl draw problem-days.jsonl's loud max; a red row wins its date; a loud 0 is an exact red 0.
+-- No new top-level local: the main chunk sits at Lua's 200-local limit.
+fakeHs.loudRows = {}
+for offset, max in pairs({ [-6] = 9, [-5] = 0, [-4] = 12, [-3] = 6, [-2] = 50, [-1] = 99 }) do
+  fakeHs.loudRows[#fakeHs.loudRows + 1] = hs.json.encode({ day = trendDay(offset), doctor = "llm", count = max, max = max })
+end
+write("/doctors/problem-days.jsonl", table.concat(fakeHs.loudRows, "\n") .. "\n")
+write("/doctors/red-days.jsonl", hs.json.encode({ day = trendDay(-2), doctor = "llm", max = 4 }) .. "\n"
+  .. hs.json.encode({ day = trendDay(-1), doctor = "llm", max = 3 }) .. "\n")
+fakeHs.backfilled = text(trendDoctor.menuItems()[1].title)
+check(fakeHs.backfilled == row("LLM", "2", "▆▁█▄▃▂▂", "3"),
+  "loud days fill the bars, the usual reads red days and loud zeros only: " .. fakeHs.backfilled)
+remove("/doctors/problem-days.jsonl")
 writeDays({ false, 1, 2, 3, 4, 6, 8 })
 metadata.speed.index_by_day = spendDays({ false, 1, 2, 3, 4, 6, 8 })
 metadata.spend.index_by_day = spendDays({ false, 1, 2, 3, 4, 6, 8 })
