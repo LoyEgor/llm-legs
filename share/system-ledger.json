@@ -176,9 +176,71 @@
           "regressed_at": null
         }
       ]
+    },
+    {
+      "id": "cohort:memlogd",
+      "title": "memlogd tick CPU",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "cohort",
+        "key": "memlogd",
+        "cause": "memlogd"
+      },
+      "note": "B 1.9 by C, all reaped (own CPU 40-96 s a day): every 15 s tick ran chat-load sample (~185 ms CPU, python) and ps -axo rss=,comm= (~43 ms). Half of chat-load was registered_roots: glob of ~2,400 run folders' meta.json plus a listing of ~540 bench folders (~35k files). Cut: ended runs skipped on exit_code before meta.json, bench folders relisted only when their mtime moves (chat-load.benches.json, written only on change); same roots on a fixture (run-name sort, hidden names, dangling meta, pid files added and removed), 186 -> 145 ms CPU a sample. Left: chat-load's ps (~45 ms) and memlogd's node_stats ps (~43 ms) read the same table twice a tick; merging them moves the node counts into chat-load's output, a memory-guard interface change.",
+      "fixes": [
+        {
+          "at": "2026-10-20T15:20:00+03:00",
+          "by": "system-system-20261020T113826Z-7b45",
+          "files": [
+            "llm-legs/bin/chat-load"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
+    },
+    {
+      "id": "cohort:llm-legs/bin/image-fanout",
+      "title": "image-fanout scheduler forks",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "cohort",
+        "key": "llm-legs/bin/image-fanout",
+        "cause": "llm-legs/bin/image-fanout"
+      },
+      "note": "B 4.3 by C, on media days (10-15 10.8k, 10-16 12.4k cpu-s). Own CPU ~0.23 cores during a run: the 10 Hz scheduler forked $(now_ms) per tick and $(pick_account) per pending unit (births ~84/s in its ticks). Cut: now_ms sets clock_ms, pick_account sets picked, account_index sets account_at; stub run of 8 takes on one account: same plan table (md5) and files, 2.0 -> 1.5 cpu-s. Left, not ours to tune here: most reaped C is the legs' own trees (codex-image -> chatgpt_web.py -> Playwright -> Chrome) that start and end between ticks, 200-300 cpu-s landing in one tick; gap_open still runs ps+awk at 10 Hz for up to the 3 s launch gap.",
+      "fixes": [
+        {
+          "at": "2026-10-20T15:20:00+03:00",
+          "by": "system-system-20261020T113826Z-7b45",
+          "files": [
+            "llm-legs/bin/image-fanout"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
+    },
+    {
+      "id": "cohort:llm-legs/share/run-suites.sh",
+      "title": "run-suites reaped suite CPU",
+      "status": "open",
+      "match": {
+        "rule": "cohort",
+        "key": "llm-legs/share/run-suites.sh",
+        "cause": "llm-legs/share/run-suites.sh"
+      },
+      "note": "Ruled out as run-suites' own cost (system-system-20261020T113826Z-7b45): its own CPU is ~0 since 10-15 (builtin sleep, kill -0 watchers); its C is the suites' CPU it reaps, below the run journal's own suite cpu_s every day (10-14 37.8k of 83.0k, 10-19 16.9k of 25.7k, 10-20 5.2k of 10.5k). The lever is the suites themselves, the Harness doctor's suite audit."
     }
   ],
   "blind_spots": [
+    {
+      "id": "cohort-proof-statusline",
+      "what": "the cohort fix proof of llm-legs/bin/statusline.sh",
+      "reason": "proof() reads tag_rates over tick cpu_top, where a render is claude's reaped CPU, so its baseline reads 0 cores and every statusline fix is refused for no measurable baseline; cohort_sums moves the statusline journal's cpu_ms to the item, proof does not. The journal shows the fixes worked: ~109 ms CPU a render on 10-13, 35-41 ms on 10-17, 10-18 and 10-20, 66 ms on loaded 10-19 (23-135 ms by hour, load-driven).",
+      "since": "2026-10-20",
+      "would_catch_if": "tag_rates added statusline_cpu(rows) for the statusline item, as cohort_sums does"
+    },
     {
       "id": "ssd-writers",
       "what": "which short-lived or other users' process writes the internal SSD",

@@ -32,6 +32,7 @@ HOME = os.path.expanduser("~")
 LOG_DIR = os.environ.get("MEMLOGD_DIR") or os.path.join(HOME, "Library/Logs/memlogd")
 STATE_PATH = os.path.join(LOG_DIR, "chat-load.state.json")
 OUT_PATH = os.path.join(LOG_DIR, "chats.json")
+BENCHES_PATH = os.path.join(LOG_DIR, "chat-load.benches.json")
 HOLDS_DIR = os.environ.get("HARNESS_HOLDS_DIR") or os.path.join(
     os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(HOME, ".cache/harness-doctor"), "holds")
 SESSION_DIRS = (os.environ.get("CHAT_LOAD_SESSIONS")
@@ -181,18 +182,47 @@ def live_sessions(table):
     return sessions
 
 
+def listed(directory):
+    try:
+        return [name for name in os.listdir(directory) if not name.startswith(".")]
+    except OSError:
+        return []
+
+
+def bench_pid_files():
+    """benches/*/pid-* in glob's order. A bench folder is listed again only once its mtime moved: listing all
+    ~540 of them (~35k files) every tick was half of memlogd's CPU (2026-10-20)."""
+    root, cache, fresh, paths = os.path.join(STATS_DIR, "benches"), read_json(BENCHES_PATH, {}), {}, []
+    cache = cache if isinstance(cache, dict) else {}
+    for name in listed(root):
+        directory = os.path.join(root, name)
+        try:
+            mtime = os.stat(directory).st_mtime_ns
+            hit = cache.get(name)
+            pids = hit[1] if isinstance(hit, list) and hit[0] == mtime else \
+                [entry for entry in os.listdir(directory) if entry.startswith("pid-")]
+        except OSError:
+            continue
+        fresh[name] = [mtime, pids]
+        paths += [os.path.join(directory, entry) for entry in pids]
+    if fresh != cache:
+        write_json(BENCHES_PATH, fresh)
+    return sorted(paths)
+
+
 def registered_roots(table):
     roots = {}
-    for meta in sorted(glob.glob(os.path.join(RUNS_DIR, "*", "meta.json"))):
-        directory = os.path.dirname(meta)
+    # an ended run (exit_code on disk) is skipped before its meta.json is looked at: ~2,400 run folders a tick
+    for name in sorted(listed(RUNS_DIR), key=lambda name: name + "/meta.json"):
+        directory = os.path.join(RUNS_DIR, name)
         if os.path.exists(os.path.join(directory, "exit_code")):
             continue
-        record = read_json(meta, {})
+        record = read_json(os.path.join(directory, "meta.json"), {})
         for key in ("cli_pid", "pid"):
             pid = record.get(key)
             if isinstance(pid, int) and pid > 1 and pid in table:
-                roots.setdefault(pid, (os.path.basename(directory), directory))
-    for path in sorted(glob.glob(os.path.join(STATS_DIR, "benches", "*", "pid-*"))):
+                roots.setdefault(pid, (name, directory))
+    for path in bench_pid_files():
         try:
             with open(path) as handle:
                 pid = int(handle.readline().strip())

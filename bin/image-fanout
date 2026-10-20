@@ -386,12 +386,13 @@ list_accounts() { # vendor
   '
 }
 
+# Into clock_ms, never through $(...): the scheduler reads the clock ten times a second, a fork each.
 now_ms() {
   if [ -n "${EPOCHREALTIME:-}" ]; then
     local t=${EPOCHREALTIME//[!0-9]/}
-    printf '%s' "${t:0:${#t}-3}"
+    clock_ms=${t:0:${#t}-3}
   else
-    printf '%s000' "$(date +%s)"
+    clock_ms="$(date +%s)000"
   fi
 }
 
@@ -515,18 +516,18 @@ on_signal() {
 }
 trap on_signal INT TERM
 
-account_index() { # vendor name -> index (a_n + 1 when unknown)
-  local i
-  for ((i = 1; i <= a_n; i++)); do
-    if [ "${a_vendor[i]}" = "$1" ] && [ "${a_name[i]}" = "$2" ]; then printf '%s' "$i"; return; fi
+account_index() { # vendor name -> account_at, its index (a_n + 1 when unknown)
+  for ((account_at = 1; account_at <= a_n; account_at++)); do
+    if [ "${a_vendor[account_at]}" = "$1" ] && [ "${a_name[account_at]}" = "$2" ]; then return 0; fi
   done
-  printf '%s' "$((a_n + 1))"
+  return 0
 }
 
 register_account() { # vendor name [last used ms]
   local i used=${3:-0}
   [[ "$used" =~ ^[0-9]+$ ]] || used=0
-  i=$(account_index "$1" "$2")
+  account_index "$1" "$2"
+  i=$account_at
   if [ "$i" -gt "$a_n" ]; then
     a_n=$i
     a_vendor[i]=$1 a_name[i]=$2 a_live[i]=0 a_excl[i]='' a_cool[i]=0 a_launches[i]=0 a_used[i]=$used
@@ -970,7 +971,8 @@ cancel_group() { # group
       pending) u_state[u]=cancelled ;;
       running)
         signal_unit "$u" TERM
-        u_state[u]=stopping u_kill_at[u]=$(( $(now_ms) + kill_wait_ms ))
+        now_ms
+        u_state[u]=stopping u_kill_at[u]=$((clock_ms + kill_wait_ms))
         ;;
     esac
   done
@@ -981,7 +983,7 @@ drain_stopping() {
   local u rc g now
   for ((u = 1; u <= u_n; u++)); do
     [ "${u_state[u]}" = stopping ] || continue
-    now=$(now_ms)
+    now_ms; now=$clock_ms
     if unit_alive "$u"; then
       if [ "$now" -ge "${u_kill_at[u]}" ]; then
         signal_unit "$u" KILL
@@ -1053,7 +1055,7 @@ handle_exit() { # unit rc
   a=${u_acct[u]} g=${u_group[u]}
   [ "$a" -eq 0 ] || a_live[a]=0
   delivered=$(count_delivered "$u")
-  now=$(now_ms)
+  now_ms; now=$clock_ms
   state_dirty=1
   if [ "$rc" -eq 5 ] && [ "$delivered" -eq 0 ]; then
     [ "$a" -eq 0 ] || a_cool[a]=$((now + busy_retry_ms))
@@ -1099,15 +1101,17 @@ reap() {
   done
 }
 
-pick_account() { # unit now -> account index (0 = the script picks); 1 = none free now, 2 = none left
+pick_account() { # unit now -> picked, the account index (0 = the script picks); 1 = none free now, 2 = none left
   local u=$1 now=$2 a best='' vendor
+  picked=''
   vendor=${g_vendor[${u_group[u]}]}
   case "${u_mode[u]}" in
-    pick) printf 0; return 0 ;;
+    pick) picked=0; return 0 ;;
     pinned)
-      a=$(account_index "$vendor" "${u_pin[u]}")
-      [ "${a_live[a]}" = 0 ] && [ "${a_cool[a]}" -le "$now" ] || return 1
-      printf '%s' "$a"
+      account_index "$vendor" "${u_pin[u]}"
+      a=$account_at
+      [ "${a_live[a]-}" = 0 ] && [ "${a_cool[a]}" -le "$now" ] || return 1
+      picked=$a
       return 0
       ;;
   esac
@@ -1120,7 +1124,7 @@ pick_account() { # unit now -> account index (0 = the script picks); 1 = none fr
     fi
   done
   [ -n "$best" ] || return 1
-  printf '%s' "$best"
+  picked=$best
 }
 
 launch_unit() { # unit account-index
@@ -1136,7 +1140,8 @@ launch_unit() { # unit account-index
   u_pid[u]=$!
   u_state[u]=running
   last_launch=$u
-  last_launch_at=$(now_ms)
+  now_ms
+  last_launch_at=$clock_ms
   u_started[u]=$last_launch_at
   if [ "$a" -ne 0 ]; then
     a_live[a]=$u
@@ -1153,7 +1158,8 @@ gap_open() {
   local u=$last_launch
   [ -n "$u" ] && [ "$gap_ms" -gt 0 ] || return 1
   [ "${u_state[u]}" = running ] || return 1
-  [ $(( $(now_ms) - last_launch_at )) -lt "$gap_ms" ] || return 1
+  now_ms
+  [ $((clock_ms - last_launch_at)) -lt "$gap_ms" ] || return 1
   ! proc_tree "${u_pid[u]}" | awk -F'\t' '{ n = split($2, p, "/"); if (tolower(p[n]) ~ /chrom/) up = 1 } END { exit !up }' || return 1
   return 0
 }
@@ -1180,13 +1186,14 @@ mem_checked_at=0
 mem_holding=0
 try_launch() { # -> 0 when a unit was launched; primary takes before spares
   local u now a pick_rc candidate='' cand_a='' spare_pass
-  now=$(now_ms)
+  now_ms; now=$clock_ms
   for spare_pass in 0 1; do
     for ((u = 1; u <= u_n; u++)); do
       [ "${u_state[u]}" = pending ] && [ "${u_not_before[u]}" -le "$now" ] && [ "${u_spare[u]}" = "$spare_pass" ] || continue
       ! spare_waits "$u" "$now" || continue
       pick_rc=0
-      a=$(pick_account "$u" "$now") || pick_rc=$?
+      pick_account "$u" "$now" || pick_rc=$?
+      a=$picked
       if [ "$pick_rc" -eq 2 ]; then
         if vendor_limited "${g_vendor[${u_group[u]}]}"; then
           next_route "$u" "$limited_why" || { add_note "$u" 'no account left'; finalize "$u" 3 0; }
