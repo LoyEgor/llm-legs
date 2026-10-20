@@ -30,6 +30,73 @@ assert grep -q 'isolation takes at least 4.6 s' "$WORK/err"
 assert el transcribe --in "$WORK/short.wav" --dest "$WORK/t.srt" --dry-run
 assert python3 -c 'import json, sys; assert ["diarize", "true"] in json.load(open(sys.argv[1]))["fields"]' "$WORK/out"
 
+# A dialogue runs the one speech model (eleven_v4 reached Text to Dialogue on 2026-09-28; the v3 pin went with it).
+assert el speech --dest "$WORK/d.mp3" --line 'abcdefghij0123456789: hi' --line 'bbcdefghij0123456789: [laughs] yes' --dry-run
+assert python3 -c 'import json, sys; got = json.load(open(sys.argv[1])); assert got["POST"] == "/v1/text-to-dialogue" and got["body"]["model_id"] == json.load(open(sys.argv[2]))["speech"]["model"], got' "$WORK/out" "$ROOT/share/image-caps/elevenlabs.json"
+
+# A transcript edit rides in the transcription call as transcript_edit; its answer is untimed text, so no .srt, and
+# the API takes at most 2000 chars.
+assert el transcribe --in "$WORK/short.wav" --dest "$WORK/t.txt" --edit 'Spell the names right' --dry-run
+assert python3 -c 'import json, sys; assert ["transcript_edit", "Spell the names right"] in json.load(open(sys.argv[1]))["fields"]' "$WORK/out"
+el transcribe --in "$WORK/short.wav" --dest "$WORK/t.srt" --edit 'Spell the names right' --dry-run
+assert test $? -eq 2
+el transcribe --in "$WORK/short.wav" --dest "$WORK/t.txt" --edit "$(printf 'x%.0s' $(seq 2001))" --dry-run
+assert test $? -eq 2
+assert grep -q 'at most 2000' "$WORK/err"
+
+# Both results of an edit are read: the edited text lands in the .txt and the whole answer in its .json; an edit error
+# in its place exits 1 with the unedited transcript delivered, never a second paid call.
+assert python3 - "$ROOT/share" "$WORK" <<'PY'
+import contextlib, http.server, io, json, os, sys, threading
+sys.path.insert(0, sys.argv[1])
+import elevenlabs_media as m
+
+work, posts = sys.argv[2], []
+answer = {"text": "eggor said hi", "language_code": "en", "words": [{"text": "eggor", "type": "word"}]}
+
+
+class Fake(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'{"character_count": 1, "character_limit": 10}')
+
+    def do_POST(self):
+        posts.append(self.rfile.read(int(self.headers["Content-Length"])))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(json.dumps(answer).encode())
+
+    def log_message(self, *args):
+        pass
+
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Fake)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+m.API = f"http://127.0.0.1:{server.server_port}"
+m.models_check = lambda account: "model_caps=fresh"
+dest = os.path.join(work, "edit.txt")
+
+
+def transcribe():
+    with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+        rc = m.main(["transcribe", "--in", os.path.join(work, "short.wav"), "--dest", dest, "--edit", "Egor, not eggor"])
+    return rc, out.getvalue() + err.getvalue()
+
+
+answer["edited_transcript"] = {"kind": "transcript", "text": "Egor said hi.", "edited_text": "Egor said hi."}
+rc, said = transcribe()
+assert rc == 0 and "edit=done" in said, said
+assert open(dest).read() == "Egor said hi.\n" and json.load(open(dest + ".json"))["text"] == "eggor said hi"
+assert b'name="transcript_edit"\r\n\r\nEgor, not eggor' in posts[-1], posts[-1][:400]
+answer["edited_transcript"] = {"kind": "error", "error_type": "edit_failed", "message": "edit timed out"}
+rc, said = transcribe()
+assert rc == 1 and "edit timed out" in said and open(dest).read() == "eggor said hi\n" and len(posts) == 2, said
+del answer["edited_transcript"]
+rc, said = transcribe()
+assert rc == 1 and "no edited_transcript" in said, said
+PY
+
 # Lip-sync needs a Pro plan (HTTP 402 paid_plan_required): no kind runs it.
 el lipsync --dest "$WORK/l.mp4"
 assert test $? -eq 2

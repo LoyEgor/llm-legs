@@ -81,7 +81,6 @@
   },
   "speech": {
     "model": "eleven_v4",
-    "dialogue_model": "eleven_v3",
     "voice": "George",
     "formats": {
       "mp3": "mp3_44100_128",
@@ -108,7 +107,8 @@
     "min_s": 4.6
   },
   "transcribe": {
-    "model": "scribe_v2"
+    "model": "scribe_v2",
+    "edit_chars": 2000
   },
   "dub": {
     "timeout_s": 1800,
@@ -141,12 +141,12 @@
     "_measured": "2026-10-06, trimmed (Creator); header = response cost header, balance = settled subscription delta",
     "sfx": "~11 credits/s (1.5 s 17, 2 s loop 22; header)",
     "speech": "~0.46 credit/char on eleven_v3 and multilingual_v2 (39 chars 18), eleven_v4 ~0.12 (43 chars 5); header",
-    "dialogue": "40 chars 22 (header)",
+    "dialogue": "40 chars 22 on eleven_v3 (header); eleven_v4 unmeasured",
     "music": "~13.8 credits/s (10 s 138, video-to-music 5 s 69; balance)",
     "stems": "~13.8 credits/s for two stems, ~27.7 for six (6 s: 83 and 166; balance)",
     "revoice": "~11 credits/s (2.77 s 30; header)",
     "isolate": "~11 credits/s (6.92 s 76; header)",
-    "transcribe": "~0.25 credit/s (4 s 1; header)",
+    "transcribe": "~0.25 credit/s (4 s 1; header); --edit adds 30 %, billed for at least 10 s (OpenAPI transcript_edit, 2026-10-20)",
     "align": "~0.3 credit/s (2.9 s 1; header)",
     "dub": "2.77 s 125 (balance)",
     "voice": "three previews of a 120-char text 111, of the auto text (~40 s each) ~350 (balance)"

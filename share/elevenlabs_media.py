@@ -572,13 +572,8 @@ def k_speech(args, run: Run) -> None:
     text = text_arg(args)
     if bool(lines) == bool(text):
         raise Fail(2, "give --text/--text-file for one voice or --line '<voice>: <text>' (repeated) for a dialogue")
-    if lines:
-        model = args.model or c["dialogue_model"]
-        kind_caps = {"formats": c["dialogue_formats"]}
-    else:
-        model = args.model or c["model"]
-        kind_caps = c
-    fmt = output_format(dest, kind_caps)
+    model = args.model or c["model"]
+    fmt = output_format(dest, {"formats": c["dialogue_formats"]} if lines else c)
     run.model = model
     settings = {}
     if args.stability is not None:
@@ -690,6 +685,8 @@ def stt_fields(args, c: dict) -> list[tuple[str, str]]:
     fields += [("keyterms", term) for term in args.keyterm]
     if args.url:
         fields.append(("source_url", args.url))
+    if args.edit:
+        fields.append(("transcript_edit", args.edit))
     return fields
 
 
@@ -702,6 +699,10 @@ def k_transcribe(args, run: Run) -> None:
     if bool(args.input) == bool(args.url):
         raise Fail(2, "give exactly one of --in <abs file> or --url <link>")
     source = absolute_input(args.input) if args.input else None
+    if args.edit and ext == "srt":
+        raise Fail(2, "--edit returns untimed text: give a .txt or .json --dest")
+    if args.edit and len(args.edit) > c["edit_chars"]:
+        raise Fail(2, f"--edit is {len(args.edit)} chars; the API takes at most {c['edit_chars']}")
     fields = stt_fields(args, c)
     if ext == "srt":
         if ("diarize", "true") not in fields:
@@ -716,6 +717,9 @@ def k_transcribe(args, run: Run) -> None:
         raw, headers = client.call("POST", "/v1/speech-to-text", fields=fields,
                                    files=[("file", source)] if source else None)
         answer = json.loads(raw)
+        # The edit is its own result beside the timed transcript: text only, or an error in its place.
+        edited = answer.get("edited_transcript") or {}
+        edited_text = edited.get("text") if edited.get("kind") == "transcript" else None
         if ext == "json":
             dest.write_text(json.dumps(answer, ensure_ascii=False, indent=1))
         elif ext == "srt":
@@ -725,7 +729,7 @@ def k_transcribe(args, run: Run) -> None:
             dest.write_text(extra[0]["content"])
             Path(str(dest) + ".json").write_text(json.dumps(answer, ensure_ascii=False))
         else:
-            dest.write_text(speaker_text(answer))
+            dest.write_text(edited_text.strip() + "\n" if edited_text is not None else speaker_text(answer))
             Path(str(dest) + ".json").write_text(json.dumps(answer, ensure_ascii=False))
         run.lines += [f"dest={dest}", f"language={answer.get('language_code', '')}",
                       f"words={sum(1 for w in answer.get('words', []) if w.get('type') == 'word')}"]
@@ -734,6 +738,12 @@ def k_transcribe(args, run: Run) -> None:
             run.lines.append(f"speakers={len(speakers)}")
         run.cost(headers)
         run.media_id(headers, "request-id")
+        if args.edit and edited_text is None:
+            # Paid and delivered: never resent, the caller gets the unedited transcript and a failure.
+            raise Fail(1, f"account {client.account}: the transcript edit failed "
+                          f"({edited.get('message') or 'no edited_transcript in the answer'}); {dest} holds the unedited transcript")
+        if args.edit:
+            run.lines.append("edit=done")
         if answer.get("transcription_id"):
             run.ids.append(f"transcription-id={answer['transcription_id']}")
     run.attempt(work)
@@ -950,6 +960,7 @@ def parser(kind: str) -> argparse.ArgumentParser:
         p.add_argument("--granularity", choices=["none", "word", "character"], default="word")
         p.add_argument("--no-events", action="store_true")
         p.add_argument("--no-verbatim", action="store_true")
+        p.add_argument("--edit")
     elif kind == "align":
         p.add_argument("--in", dest="input", required=True)
         p.add_argument("--dest", required=True)
