@@ -3508,24 +3508,6 @@
    "note": "grok-image reads its manifest in one jq instead of five: suite jq spawns 988 -> 742, CPU 35.9 -> 32.7 s a run, 210 asserts unchanged; remaining cost is ~70 full grok-image runs, each pinning a distinct path"
   },
   {
-   "id": "suite:llm-legs/test_worker_run_inbox",
-   "title": "llm-legs/test_worker_run_inbox",
-   "audited_at": "2026-10-14T08:08:05+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261014T021730Z-5d7f",
-   "cpu_run": 8.0,
-   "wall_run": 12.0,
-   "cpu_min_day": 4.29,
-   "wall_min_day": 13.15,
-   "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
-    "llm-legs/tests/test_worker_run_inbox.sh": "ae6458b9698cef6c042b4ecefb3572a93f9f0a84",
-    "llm-legs/tests/worker_run_harness.sh": "3ef1251064b422eeab669f195796d801f2f068ab"
-   },
-   "verdict": "cut",
-   "zero": "removal saves 11.0 wall-min/day; loses 62 asserts on say, the inbox hook and RESUME carry",
-   "note": "cut: 2 shards (claudeb | codex + chat-scoped say) 21 s -> 12 s measured, claudeb stub on the builtin sleep, one report for two greps; 62 asserts unchanged, sharded sum equals serial"
-  },
-  {
    "id": "suite:llm-legs/test_instruction_gate_relay",
    "title": "llm-legs/test_instruction_gate_relay",
    "audited_at": "2026-10-13T12:11:43+03:00",
@@ -3558,25 +3540,6 @@
    "verdict": "cut",
    "zero": "removing the suite saves 10.1 wall-min/day and loses the pins on claudegpt launch commands, gateway auth projection, concurrency guards and effort forwarding",
    "note": "effort-launch ccr stub is sh and starts Python only for launch: effort test 16 -> 10 s, 52 tests and 38 subtests unchanged; wait_ready raised 5 -> 30 s after a load-200 flake"
-  },
-  {
-   "id": "suite:llm-legs/test_test_journal",
-   "title": "llm-legs/test_test_journal",
-   "audited_at": "2026-10-14T08:08:06+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-worker-run-browse-20261014T021730Z-5d7f",
-   "cpu_run": 5.2,
-   "wall_run": 6.8,
-   "cpu_min_day": 4.45,
-   "wall_min_day": 9.52,
-   "sources": {
-    "llm-legs/tests/lib/suite-journal.sh": "7cb9630b514eb5d34af2b9455df7f5dc8eaac548",
-    "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
-    "llm-legs/tests/test_test_journal.sh": "f84dbcdd47bf1b6c24dbdc2be2713c34183d1cb3",
-    "llm-legs/tests/worker_run_harness.sh": "3ef1251064b422eeab669f195796d801f2f068ab"
-   },
-   "verdict": "cut",
-   "zero": "removal saves 8.8 wall-min/day; loses 34 asserts on the test probe's journaling",
-   "note": "cut: the slow fake git sleeps on its first ls-files only (the --changed run made two); 34 asserts unchanged, red under the stamp-after-discovery mutation"
   },
   {
    "id": "suite:llm-legs/test_claude_session_driver",
@@ -6529,6 +6492,43 @@
    "verdict": "cut",
    "zero": "removal saves ~10.6 CPU-min/day; loses the door in front of review launches, the autonomy and unpushed answers the statusline reads, and the writes journal",
    "note": "27334 of its runs a day were the statusline's autonomous question (14.4 ms, 6.6 CPU-min): the statusline now asks only when a span marker moved or its answer is 90 s old, ~85% fewer (llm-legs@86c4bd67); the PreToolUse path (18572 runs, 68 ms, fast exits for read-only and write-free calls already in place) and unpushed (456 runs, 404 ms: three git calls plus one per own commit, 3.1 CPU-min) were left, a change there moves what the gate refuses"
+  },
+  {
+   "id": "suite:llm-legs/test_test_journal",
+   "title": "llm-legs/test_test_journal",
+   "audited_at": "2026-10-20T16:00:50+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-night-carry-20261020T114124Z-5775",
+   "cpu_run": 5.9,
+   "wall_run": 6.0,
+   "cpu_min_day": 1.82,
+   "wall_min_day": 3.24,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "81333618c0ede1295ff60523b106e2789bd6984d",
+    "llm-legs/tests/run-all": "0908684d67317728d14d44645cdc4362d4402705",
+    "llm-legs/tests/test_test_journal.sh": "53e42c6197c0d1e4d18c6847cf01357f08b93ba0",
+    "llm-legs/tests/worker_run_harness.sh": "410a0db39a8607fb9607b739fdf507766e90339b"
+   },
+   "verdict": "cut",
+   "zero": "removal saves ~0.5 s a run of the foreground slow-git wait; loses nothing: the stub still crosses one whole second after its stamp",
+   "note": "slow-git stub sleeps to the next whole second (perl one-shot); 34 asserts unchanged, assert 27 red under stamp-after-discovery mutation"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_run_inbox",
+   "title": "llm-legs/test_worker_run_inbox",
+   "audited_at": "2026-10-20T16:00:52+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-night-carry-20261020T114124Z-5775",
+   "cpu_run": 18.3,
+   "wall_run": 5.9,
+   "cpu_min_day": 4.4,
+   "wall_min_day": 3.54,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "81333618c0ede1295ff60523b106e2789bd6984d",
+    "llm-legs/tests/test_worker_run_inbox.sh": "33518c6ad599f5ae717bdda3c283098c2e1a1917",
+    "llm-legs/tests/worker_run_harness.sh": "410a0db39a8607fb9607b739fdf507766e90339b"
+   },
+   "verdict": "cut",
+   "zero": "removal saves 8 seq forks and 16 chmod forks a run; loses nothing: same timeouts, same spies",
+   "note": "await_file builtin loop, forkspy chmod once; 62 asserts unchanged"
   }
  ]
 }
