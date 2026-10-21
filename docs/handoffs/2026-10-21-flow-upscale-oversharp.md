@@ -100,6 +100,38 @@ Open, untried, do not lose:
   3090 for this.
 - Invented texture ("worms") has no detector: the same bark sits on films he passed.
 
+## Any-chat guard against upscale on upscale (Egor, 2026-10-22)
+
+Egor: a mechanism, not prose, so that ANY chat in any project that makes a video, gets Flow's upscale and later takes
+a frame from it is handled automatically: «не наши договорённости в этом чате, а любой чат… автоматически понимал».
+Prose alone may not be followed. Design:
+
+1. **Register at fetch** (media-run video). Every delivered film gets a row: path, sha256, vendor, media id, size,
+   `upscaled` (Flow 1080p = true), its 720p twin (fetched beside it, free), the input frames it was made from, and
+   `tainted` when an input matched an upscaled or tainted film (lineage). Plus one fingerprint per frame (a 32x18 luma
+   thumbnail or a 64-bit pHash, a few KB a film): by content, so it survives re-encode, PNG/JPEG save, resize and a lost
+   tag. Flow 1080p is cleaned by default with the fixer (k3 m4), the raw download kept beside it. Backfill the
+   films fetched before the register from media-run's logs.
+2. **Check at every image input** of media-run (`--first-frame`, `--last-frame`, `--keyframe`, `--ref`, `--edit`, video
+   and image kinds), by fingerprint lookup:
+   - a frame of an upscaled film with a 720p twin → swapped for the same frame of the twin, printed as
+     `swapped=<twin>@<frame>`. Nothing is lost: Veo and Grok generate at 720p and resize any input to it;
+   - a frame of a tainted film (its 720p carries the halos too) → exit 2 naming the fix: the ancestor's clean frame, or
+     a GPT redraw (point 4);
+   - no match → passes; the pixel detector may warn, never refuse (Egor: a good picture must not be rejected).
+   The check sits in the door every chat already passes (the launch gate refuses other spellings), so no model needs to
+   know the rule. A crop or an edit of the frame escapes the whole-frame fingerprint and gets only the warning.
+3. **Why models cut frames from films** (Egor did not know they did): seams. The next clip must start exactly where the
+   last one ended: the turning2 entrance (first frame = frame 0 of the 720p, last = the same frame emptied), ping-pong
+   loops, chains. A redraw there jumps at the cut, so a seam takes the exact frame, from the 720p. The door can tell a
+   seam: a `--first-frame` matching a film's last frames, or a `--last-frame` matching its first.
+4. **GPT clean redraw for references that are not seams** (Egor's hypothesis). GPT-Image upscaled by parts well, so a
+   GPT pass on a frame from a film could drop the halos, AI patterns and defects (an odd stump) and hand the video model
+   a clean start, for free. Catches: GPT redraws marks and lettering (the mark goes in only by pure transform, so
+   composite it back), and nobody has compared a video from a GPT-cleaned frame with one from the 720p frame. Test before
+   it becomes the default: 3-4 deck start frames, 720p frame vs GPT-cleaned, same prompt, Egor compares by number. If
+   it wins, the door applies it to non-seam frames from films.
+
 ## Fixes that work, and what does not
 
 - The 720p of the same media, re-cut like the deck film: same content, no halos, softer on a large screen.
