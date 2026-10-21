@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+{
+set -euo pipefail
+
+ffmpeg_cmd=${FRAME_SHEET_FFMPEG:-ffmpeg}
+ffprobe_cmd=${FRAME_SHEET_FFPROBE:-ffprobe}
+# JPEG stores each side in 16 bits.
+jpeg_max_side=65535
+
+usage() {
+  [ -z "${1:-}" ] || printf 'frame-sheet: %s\n' "$1" >&2
+  cat >&2 <<'EOF'
+usage: frame-sheet <abs video> --dest <abs .jpg> [--fps 8] [--width 420] [--cols 8] [--start s] [--end s]
+  a contact sheet: the video sampled at --fps, each frame --width wide and labelled t=<seconds> (the source's
+  own time, also under --start), tiled --cols to a row in reading order; prints dest=, frames=, size=WxH
+EOF
+  exit 2
+}
+
+number() { [[ "$2" =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage "$1 takes a number of seconds or frames, not '$2'"; }
+whole() { [[ "$2" =~ ^[1-9][0-9]*$ ]] || usage "$1 takes a whole number above 0, not '$2'"; }
+
+video='' dest='' fps=8 width=420 cols=8 start='' end=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h | --help) usage ;;
+    --dest | --fps | --width | --cols | --start | --end)
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
+      case "$1" in
+        --dest) dest=$2 ;;
+        --fps) number "$1" "$2"; fps=$2 ;;
+        --width) whole "$1" "$2"; width=$2 ;;
+        --cols) whole "$1" "$2"; cols=$2 ;;
+        --start) number "$1" "$2"; start=$2 ;;
+        --end) number "$1" "$2"; end=$2 ;;
+      esac
+      shift 2
+      ;;
+    -*) usage "unknown argument $1" ;;
+    *) [ -z "$video" ] || usage "one video only"; video=$1; shift ;;
+  esac
+done
+[ -n "$video" ] || usage "missing a video"
+[[ "$video" = /* ]] || usage "$video is not an absolute path"
+[ -f "$video" ] || usage "$video is not a file"
+[ -n "$dest" ] || usage "missing --dest"
+[[ "$dest" = /* ]] || usage "$dest is not an absolute path"
+case "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" in jpg | jpeg) ;; *) usage "--dest must end in .jpg" ;; esac
+[ -d "${dest%/*}/" ] || usage "${dest%/*} is not a directory"
+awk -v f="$fps" 'BEGIN { exit !(f > 0) }' || usage "--fps must be above 0"
+[ "$width" -ge 64 ] || usage "--width must be at least 64"
+[ -z "$start" ] || [ -z "$end" ] || awk -v s="$start" -v e="$end" 'BEGIN { exit !(e > s) }' \
+  || usage "--end must be after --start"
+
+command -v "$ffmpeg_cmd" >/dev/null 2>&1 && command -v "$ffprobe_cmd" >/dev/null 2>&1 \
+  || { printf 'frame-sheet: ffmpeg and ffprobe are required\n' >&2; exit 1; }
+"$ffprobe_cmd" -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$video" 2>/dev/null \
+  | grep -q '^[0-9]' || usage "ffprobe finds no video stream in $video"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# The label is a drawtext expansion read from a file, so its colons and commas need no filtergraph escaping;
+# milliseconds are rounded once, so 0.7 s never prints as 0.699.
+printf '%s' 't=%{eif:trunc(round(t*1000)/1000):d}.%{eif:mod(round(t*1000),1000):d:3}' >"$work/label"
+# trim runs after the timestamps start at 0 and keeps them, so a label is the frame's time in the source.
+trim=''
+[ -z "$start$end" ] || trim="trim=${start:+start=$start}${start:+${end:+:}}${end:+end=$end},"
+font=$((width / 17 > 12 ? width / 17 : 12))
+"$ffmpeg_cmd" -nostdin -v error -i "$video" -an -vf "setpts=PTS-STARTPTS,${trim}fps=$fps,scale=$width:-2,drawtext=textfile=$work/label:x=6:y=6:fontsize=$font:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=4" \
+  -fps_mode passthrough "$work/f%06d.png" || { printf 'frame-sheet: ffmpeg could not sample %s\n' "$video" >&2; exit 1; }
+frames=$(find "$work" -name 'f*.png' | wc -l | tr -d ' ')
+[ "$frames" -gt 0 ] || { printf 'frame-sheet: no frame of %s falls in the asked range\n' "$video" >&2; exit 1; }
+
+[ "$cols" -le "$frames" ] || cols=$frames
+rows=$(((frames + cols - 1) / cols))
+height=$("$ffprobe_cmd" -v error -show_entries stream=height -of csv=p=0 "$work/f000001.png")
+[ $((rows * (height + 4) + 4)) -le "$jpeg_max_side" ] && [ $((cols * (width + 4) + 4)) -le "$jpeg_max_side" ] \
+  || { printf 'frame-sheet: %s frames in %s rows exceed a JPEG side of %s px; narrow --start/--end, lower --fps or --width\n' \
+    "$frames" "$rows" "$jpeg_max_side" >&2; exit 1; }
+"$ffmpeg_cmd" -nostdin -v error -y -framerate 1 -i "$work/f%06d.png" -vf "tile=${cols}x${rows}:padding=4:margin=4" \
+  -frames:v 1 -q:v 2 "$dest"
+[ -s "$dest" ] || { printf 'frame-sheet: ffmpeg wrote no sheet to %s\n' "$dest" >&2; exit 1; }
+printf 'dest=%s\nframes=%s\nsize=%s\n' "$dest" "$frames" \
+  "$("$ffprobe_cmd" -v error -show_entries stream=width,height -of csv=p=0 "$dest" | tr ',' 'x')"
+exit; }

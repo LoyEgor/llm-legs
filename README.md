@@ -289,6 +289,7 @@ this list):
 - `bin/logo-vectorize` → `~/.local/bin/logo-vectorize` — logo/icon bitmap to SVG with the logo bench's stable champion (local, no account).
 - `bin/gemini-video` → `~/.local/bin/gemini-video` — Veo/Omni clips through Google Flow.
 - `bin/video-chain` → `~/.local/bin/video-chain` — frame extraction for chaining clips.
+- `bin/frame-sheet` → `~/.local/bin/frame-sheet` — a contact sheet of a clip's frames labelled `t=<s>`, for judging motion (local, no account).
 - `bin/gemini-music` → `~/.local/bin/gemini-music` — music through the Gemini app's Lyria tool.
 - `bin/gemini-sfx` → `~/.local/bin/gemini-sfx` — sound effects from a Flow Omni render.
 - `bin/gemini-listen` → `~/.local/bin/gemini-listen` — a Gemini model's judgement of video or audio.

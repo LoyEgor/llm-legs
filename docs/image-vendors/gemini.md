@@ -499,6 +499,18 @@ mime types. A reply that never opened a file is refused, and so is one whose fil
 error. It judges sound and sync well, but it echoes timings from the question, so measure exact times
 with ffmpeg.
 
+Video models do not judge motion speed or playback direction. For speed, run `bin/frame-sheet <abs video>
+--dest <abs .jpg> [--fps 8] [--width 420] [--cols 8] [--start s] [--end s]` (every sampled frame labelled `t=<s>`,
+tiled in reading order; prints `dest=`, `frames=`, `size=`) and ask a Sol (codex) or Opus (claudeb) judge for
+the countable cue: steps per second, rotations, frames per event. Playback reversal of our own edits is caught
+mechanically, never by a judge; arbostar-logo's deckkit gate `reversed_video` (`tools/deckkit.py`) is an example.
+Calibration 2026-10-21 on Egor's known defects, each judged blind with a neutral question: a walk retimed to
+about 2x, and forward-and-back loops where fire and smoke run backwards. Watching the video, Flash and Argon
+both called the 2x walk natural; on the loops Flash said "fire frozen" on both and Argon "reversed" on both,
+the good loop too. On an 8 fps sheet, asked to list foot strikes and steps per second, Sol said 3.2 steps/s,
+1.6x fast, and Opus 3.3 steps/s, 1.9x fast; on the untouched take both said slow along the wall, about 1.3
+steps/s (true). Both called the reversed loop ok: no judge catches reversal.
+
 Sometimes the model says `view_file` gave it a text transcript and then scores 1 (2026-10-07: 6 of 70
 calls on the since-dropped Pro). It is the model's belief, not agy: agy's record of each run
 (`brain/<session>/.system_generated/logs/transcript_full.jsonl` in the profile) showed an `audio/*`
