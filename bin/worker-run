@@ -1126,6 +1126,10 @@ supervise_claudeb() {
   # A -p session ends when its turn does: a suite sent to the background dies unread with it, and
   # the worker's closing "I'll report once they finish" leaves the round without its verdicts.
   local -x CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+  # Claude Code's own bundled skills (update-config, code-review, claude-api, workflow-authoring,
+  # run) were three quarters of a worker's skill listing, and no claudeb worker invoked one in the
+  # 805 runs since 2026-10-14; Egor's skills (media, Jira and the rest) stay listed and loadable.
+  local -x CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1
   # So a covering suite run stays in the foreground, where Claude Code's own 10-minute Bash cap (and
   # the 2-minute default for a call naming no timeout) killed it (exit 143) and the worker reran it
   # detached, polling with sleeps; the idle watchdog is what bounds one tool call.
