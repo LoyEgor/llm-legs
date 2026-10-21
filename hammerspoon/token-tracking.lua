@@ -242,7 +242,8 @@ local function rowMenu(row)
         local item = owners[index]
         if not item then
             if #items > 0 then items[#items + 1] = { title = "-" } end
-            items[#items + 1] = { title = title, disabled = true }
+            -- an untitled section (token-map's dim meaning line) opens on its row, not on a blank one
+            if rows[index].label ~= "" then items[#items + 1] = { title = title, disabled = true } end
         elseif item.child then
             items[#items + 1] = { title = title, menu = rowMenu(item.child) }
         elseif item.copy then
