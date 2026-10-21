@@ -58,6 +58,48 @@ the review page `site/oversharp/` (served at http://localhost:8765/oversharp/ind
    37 of 55 deck films (cuts, loops, re-encodes) are never checked; the oversharp page maps each deck film to its source
    and 720p (`tools/oversharp.py` page_order), which the gate can reuse.
 
+## State, 2026-10-21 late evening (supersedes the parts above where they differ)
+
+Decided with Egor:
+- **The fixer exists and he approves it**: `tools/oversharp.py --fix <1080p> --ref720 <720p> --dest <out>` (arbostar-logo,
+  commit 3091bdf). It anchors the upscale on its 720p as `video_jitter.anchored` does, then clamps the luma to the
+  720p's local range (3 px window, 4 grey levels margin); chroma moves to the 720p only where the clamp moved the luma.
+  Every clean bad pair drops under the detector limit and keeps 50-75 % of the upscale's extra fine detail over the 720p;
+  letter edges stay crisp. Egor on the comparison page: the default (k3 m4) is the one he likes. Costs: foliage
+  glints dimmer; the upscaler's invented texture ("worms" on bark, wavy lines inside letters) stays, since it is
+  within the 720p's range. A take chained from an upscaled frame cannot be fixed (its 720p is crisp too).
+- **Run it on every Flow 1080p that has its 720p, no detector in front.** Egor: a false fix loses nothing visible, so
+  false alarms at fetch are harmless. One pass with `steady` (both anchor on the same 720p). Keep the raw download
+  beside it. The detector then only writes the ledger row (raw and fixed scores).
+- **Different takes do not help**: 4+4 takes from identical frames and prompt read within 10 % of each other at 1080p,
+  all over the limit, all clean at 720p. The upscaler makes the halos, not the take. A re-download of an upscale is
+  byte-identical.
+- **No LLM judges for oversharp**: the detector decides (Egor: not worth the tokens if the detector is about right).
+
+Where false alarms DO matter: a gate on start frames before they go to Flow, where a good image could be rejected.
+Recommendation: guard by provenance first (a frame cut from a Flow 1080p upscale is refused or swapped for the same
+frame of its 720p): zero false alarms, and it is the root cause found here. A pixel check of images of unknown origin
+(GPT/Codex stills) stays warn-only until the detector proves near-zero false alarms on stills; whether GPT stills are
+oversharp at all is untested.
+
+Still with the arbostar-logo chat (needs Egor's eye and his marks), then handed over:
+1. Detector v4: halo intensity x importance (in focus, subject, logo) x coverage, redo limit fitted on his 53 verdicts
+   with at most one false alarm, plus a synthetic Unsharp Mask dose-response check (does the score rise with
+   amount 0-300 %; each Flow film expressed as "reads like USM N % at R px"). His painted share alone predicts his
+   verdict at AUC 0.90 (45 of 53 above 29 % painted).
+2. One fixer improvement round: clamp only where an edge overshoots (give back real glints and thin lines), and calm
+   the invented fine texture over time (static shots: motion-compensated average of the fine band over 3-5 frames).
+3. The decks switch from the 720p fallback to fixed 1080p.
+
+Open, untried, do not lose:
+- Frame-chain guard (provenance) in video-chain and gemini-video: not built. The cheapest win.
+- deckkit gate: not built; the antishake gate skips 37 of 55 deck films (no `<stem>.720p.mp4` beside them).
+- Redrawing an oversharp start frame with an image model (Egor's idea): untested; lockup and lettering must be
+  composited back.
+- A paid upscaler (Krea, Magnific) compared against the fixer: Egor's later option; never local heavy models, never his
+  3090 for this.
+- Invented texture ("worms") has no detector: the same bark sits on films he passed.
+
 ## Fixes that work, and what does not
 
 - The 720p of the same media, re-cut like the deck film: same content, no halos, softer on a large screen.
