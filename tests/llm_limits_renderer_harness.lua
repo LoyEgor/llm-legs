@@ -4223,7 +4223,7 @@ do
   local expiryEpoch = os.time() + 11 * 86400
   local expires = os.date("!%Y-%m-%dT%H:%M:%SZ", expiryEpoch)
   local aged = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 9 * 60)
-  local expectedLabel = "Redeem usage reset · " .. os.date("%b %d", expiryEpoch)
+  local expectedLabel = "Redeem usage reset · " .. palette.day(expiryEpoch)
   local labels = {}
   for _, vendor in ipairs({ "grok", "codex", "claude" }) do
     local menu = loadModule(resetFixture(vendor, {
@@ -4234,7 +4234,7 @@ do
     local row = titleText(accountItem(menu, "acct"))
     assert(row:find("↻1", 1, true) and row:find("9m", 1, true),
       vendor .. " lost the reset count or the data age on the account row: " .. row)
-    assert(not row:find(os.date("%b %d", expiryEpoch), 1, true),
+    assert(not row:find(palette.day(expiryEpoch), 1, true),
       vendor .. " still spelled the expiry on the account row: " .. row)
     local redeem = redeemItem(menu, "acct")
     assert(redeem, vendor .. " offered no redeem action for a spendable reset")
