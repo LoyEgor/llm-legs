@@ -159,7 +159,7 @@ each, and the first order that fits wins. Line 1:
 
 Shared abbreviation rule (head model only from step 5): model = first letter
 plus the first consonant after it, uppercased, with the version digits glued on — `Fable 5`→`FB5`,
-`Opus`→`OP`, `Sonnet 5`→`SN5`, `Haiku 4.5`→`HK4.5`, `astra`→`AS`, `pro`→`PR`; a name yielding no two
+`Opus`→`OP`, `Sonnet 5`→`SN5`, `Haiku 4.5`→`HK4.5`, `astra`→`AS`, `argon`→`AR`; a name yielding no two
 such letters is printed whole. Effort = `low` / `med` / `hi` / `xhi` / `max`.
 
 Never dropped at any width: the red alarm block (`unpushed`,

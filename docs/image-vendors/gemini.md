@@ -490,28 +490,29 @@ an Omni edit at 720p (20 credits) asking for effects synced to the picture; the 
 length. By ear, 1 of 3 text takes was usable (the others had a drone or hiss under the sound), so ask for
 `--count 2`. In the edit, whooshes landed on the cuts, but continuous clicks ignored the hand's pauses.
 
-**Listening** — `bin/gemini-listen` asks Gemini (agy, Pro, Flash or Argon) to watch and hear files through
-`read_file` (`view_file` before agy 1.4.3, 2026-10-20; both count). The default is Pro, or Flash while `geminib families` lists no Pro; an asked `--model`
-is never swapped. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
+**Listening** — `bin/gemini-listen` asks Gemini (agy, Argon or Flash) to watch and hear files through
+`read_file` (`view_file` before agy 1.4.3, 2026-10-20; both count). The default is Argon where the account's own
+`geminib families --account` lists it (notcom only, 2026-10-21), else Flash; an asked `--model` is never swapped. Google
+dropped Pro (no account lists it, 2026-10-21), so `--model` is `argon` or `flash`. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
 720p, audio as mp3. Audio otherwise goes as wav, since agy refuses flac, aac, m4a and aiff as unsupported
 mime types. A reply that never opened a file is refused, and so is one whose file step returned an
 error. It judges sound and sync well, but it echoes timings from the question, so measure exact times
 with ffmpeg.
 
-Sometimes Pro says `view_file` gave it a text transcript and then scores 1 (2026-10-07: 6 of 70 Pro
-calls). It is the model's belief, not agy: agy's record of each run
+Sometimes the model says `view_file` gave it a text transcript and then scores 1 (2026-10-07: 6 of 70
+calls on the since-dropped Pro). It is the model's belief, not agy: agy's record of each run
 (`brain/<session>/.system_generated/logs/transcript_full.jsonl` in the profile) showed an `audio/*`
 media part in all 345 `view_file` opens checked, including the 4 failing calls. The stream-json events do
 not carry that part. So every call is checked against the record: each sent file must come back with a
 media part of its kind, and a missing record counts as a failure. A reply whose first or last line is
-`NO_AUDIO` also fails. With Pro (`.listen.models.pro.beeps`), 2–4 test beeps go at the end of each
+`NO_AUDIO` also fails. With Argon (`.listen.models.argon.beeps`), 2–4 test beeps go at the end of each
 audio file, and the reply's first line must count them (`BEEPS 1:3`); the tool removes that line. Pro
 miscounted them in 4 of 39 calls, and 2 of 36 runs exited 1. Flash miscounts them under a long question
 (9 of 18), though it counts them right alone (24 of 24), so Flash gets no beeps. Any of these failures asks once more, then
 exits 1. The footer shows `audio=heard` (beeps counted) or `audio=delivered` (record only) per audio
 file, and `calls=`.
 
-To pick between two takes, use `--compare <A> <B> -o <.md>`, never one call with both. One Pro verdict
+To pick between two takes, use `--compare <A> <B> -o <.md>`, never one call with both. One verdict
 is noise, several takes in one call get mixed up, and the file shown first tends to win. So it makes two
 independent calls, A,B then B,A, each with the checks above. Each reply must end with the line
 `WINNER: first|second|tie`; any other last line fails that call. The .md holds both replies. The footer

@@ -372,11 +372,6 @@
     "tool": "read_file",
     "view_max_bytes": 19000000,
     "models": {
-      "pro": {
-        "family": "pro",
-        "effort": "high",
-        "beeps": true
-      },
       "flash": {
         "family": "flash",
         "effort": "high",
@@ -388,8 +383,8 @@
         "beeps": true
       }
     },
-    "model_default": "pro",
-    "compare": "--compare <A> <B> -o <.md>: two independent calls, A,B then B,A, each reply's last line strictly WINNER: first|second|tie (else asked once more, then exit 1); footer winner=A|B|tie votes=<n>/2, tie unless both orders agree (one Pro verdict is noise and the first file tends to win, 2026-10-07)"
+    "model_default": "argon",
+    "compare": "--compare <A> <B> -o <.md>: two independent calls, A,B then B,A, each reply's last line strictly WINNER: first|second|tie (else asked once more, then exit 1); footer winner=A|B|tie votes=<n>/2, tie unless both orders agree (one verdict is noise and the first file tends to win, 2026-10-07)"
   },
   "audio_score": "bin/audio-score <audio>... [--json], not a media-run route: local and free, CPU, one uv process (share/audio_score.py), ~3 GB RAM, ~1 s a file after loading. utmos=1-5 (UTMOS22 strong, tarepan/SpeechMOS v1.2.0; trained on English and Japanese speech, underrates whispers, laughs and shouts) and aes_pq aes_pc aes_ce aes_cu 1-10 (Meta Audiobox Aesthetics). First run downloads into ~/.cache/torch/hub and ~/.cache/huggingface",
   "music": {

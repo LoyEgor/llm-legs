@@ -6,8 +6,9 @@ set -euo pipefail
 
 usage() {
   image_leg_cause "$@"
-  printf 'usage: gemini-listen "<question>" <absolute media path>... [-o <absolute .md path>] [--model pro|flash|argon] [--account <geminib profile>]\n' >&2
-  printf '       gemini-listen "<question>" --compare <absolute A> <absolute B> -o <absolute .md path> [--model pro|flash|argon]\n' >&2
+  printf 'usage: gemini-listen "<question>" <absolute media path>... [-o <absolute .md path>] [--model argon|flash] [--account <geminib profile>]\n' >&2
+  printf '       gemini-listen "<question>" --compare <absolute A> <absolute B> -o <absolute .md path> [--model argon|flash]\n' >&2
+  printf '  the default is argon where the account lists it, else flash\n' >&2
   printf '  --compare asks twice, A,B then B,A, each reply ending WINNER: first|second|tie; footer winner=A|B|tie votes=<n>/2, tie unless both orders agree\n' >&2
   printf '  Gemini watches and listens through agy on a subscription account: video with its sound, audio, images\n' >&2
   printf '  files over %s bytes (agy views at most 20 MB) are sent as a proxy: video 720p at the bitrate that fits, audio mp3\n' "$limit_bytes" >&2
@@ -67,24 +68,8 @@ done
 [ -z "$out" ] || [[ "$out" = /* ]] || say "-o must be an absolute path, not $out"
 [ -z "$out" ] || [ -d "$(dirname "$out")" ] || say "-o folder $(dirname "$out") does not exist"
 if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage "--account $account is not a profile name"; fi
-# With --account the account's own list: a class only some plans carry (Gemini 4 Argon) is on no other list.
-families=$("$root/bin/geminib" families ${account:+--account "$account"} 2>/dev/null) || families=''
-family_prefix() { awk -F'\t' -v kind="$1" '$1 ~ ("-" kind "$") && !done { print $3; done = 1 }' <<<"$families"; }
 family_kind=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].family // empty")
-[ -n "$family_kind" ] || say "--model is pro, flash or argon"
-# Google drops whole families from the catalog (every Pro, agy 1.3.3, 2026-10-12): the default is
-# the first listed model in caps order, and comes back to Pro by itself once Pro is listed again.
-if [ "$model_explicit" = false ] && [ -z "$(family_prefix "$family_kind")" ]; then
-  while IFS=$'\t' read -r key kind; do
-    [ -n "$(family_prefix "$kind")" ] || continue
-    printf 'gemini-listen: no %s family listed; the default is %s\n' "$family_kind" "$key" >&2
-    model_key=$key
-    family_kind=$kind
-    break
-  done < <(image_caps_get "$root" gemini '.listen.models | to_entries[] | [.key, .value.family] | @tsv')
-fi
-effort=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].effort")
-beeps_on=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].beeps")
+[ -n "$family_kind" ] || say "--model is argon or flash"
 for file in "${media[@]}"; do
   [[ "$file" = /* ]] || say "$file is not an absolute path"
   [ -f "$file" ] || say "$file is not a file"
@@ -99,7 +84,9 @@ if [ "$compare" = true ]; then
   [ "${#media[@]}" -eq 2 ] || usage "--compare takes exactly two files"
   [ -n "$out" ] || usage "--compare needs -o"
   IMAGE_LEG_SKIP=1
-  pass=(--model "$model_key")
+  # An unasked model stays unasked: each call settles the default on the account it lands on.
+  pass=()
+  [ "$model_explicit" = false ] || pass+=(--model "$model_key")
   [ -z "$account" ] || pass+=(--account "$account")
   : >"$out"
   winners='' rows=''
@@ -177,9 +164,9 @@ video_proxy() { # source dest seconds
   say "the proxy of $1 is still over $limit_bytes bytes" 1
 }
 
-# Pro sometimes believes view_file gave it a transcript, though agy's record shows the sound arrived
-# (2026-10-07); a Pro reply must count these beeps. Flash miscounts them under a long question, so it
-# gets none.
+# A model sometimes believes view_file gave it a transcript, though agy's record shows the sound
+# arrived (2026-10-07); an Argon reply must count these beeps. Flash miscounts them under a long
+# question, so it gets none.
 with_beeps() { # source dest beeps ffmpeg-output-args...
   local source=$1 dest=$2 beeps=$3
   shift 3
@@ -205,6 +192,50 @@ kind_of() { # file ext
 shape_of() {
   "$ffprobe_cmd" -v error -select_streams V:0 -show_entries stream=width,height -of csv=p=0:s=x "$1" | head -n 1
 }
+
+# A file with nothing to hear or see is refused before an account is picked.
+for file in "${media[@]}"; do
+  ext=$(printf '%s' "${file##*.}" | tr '[:upper:]' '[:lower:]')
+  [ -n "$(kind_of "$file" "$ext")" ] || say "$file has no picture or sound ffprobe can read"
+done
+
+off_roster_rc=1
+[ -z "$account" ] || off_roster_rc=2
+picked=false
+if [ -z "$account" ]; then
+  pick_rc=0
+  if command -v worker-pick >/dev/null 2>&1; then
+    account=$(worker-pick --account gemini --role image 2>/dev/null) || pick_rc=$?
+  else
+    pick_rc=127
+  fi
+  [ "$pick_rc" -ne 3 ] || { printf 'GEMINI_USAGE_LIMIT\n' >&2; exit 3; }
+  if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    account=$(worker_model_pin_first gemini 2>/dev/null || true)
+    [[ "${account:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || account=main
+    printf 'gemini-listen: worker-pick unavailable; falling back to account %s\n' "$account" >&2
+  else
+    picked=true
+  fi
+fi
+account_roster_refuse gemini-listen gemini "$account" || exit "$off_roster_rc"
+worker_pool_refuse_headless gemini "$account" "$(worker_model_pin_csv < <(worker_model_pins gemini))" || exit 4
+
+# The account's own list: Argon is on some plans only (notcom, 2026-10-19), so the default is the
+# first caps model that account lists, and the beeps follow it; an asked --model is never swapped.
+families=$("$root/bin/geminib" families --account "$account" 2>/dev/null) || families=''
+family_prefix() { awk -F'\t' -v kind="$1" '$1 ~ ("-" kind "$") && !done { print $3; done = 1 }' <<<"$families"; }
+if [ "$model_explicit" = false ] && [ -z "$(family_prefix "$family_kind")" ]; then
+  while IFS=$'\t' read -r key kind; do
+    [ -n "$(family_prefix "$kind")" ] || continue
+    printf 'gemini-listen: %s lists no %s family; the default is %s\n' "$account" "$family_kind" "$key" >&2
+    model_key=$key
+    family_kind=$kind
+    break
+  done < <(image_caps_get "$root" gemini '.listen.models | to_entries[] | [.key, .value.family] | @tsv')
+fi
+effort=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].effort")
+beeps_on=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].beeps")
 
 labels=''
 proxied=0
@@ -281,27 +312,6 @@ for file in "${media[@]}"; do
   printf '%s\t%s\t%s\n' "$send" "$file" "$kind" >>"$tmp_dir/sent"
 done
 
-off_roster_rc=1
-[ -z "$account" ] || off_roster_rc=2
-picked=false
-if [ -z "$account" ]; then
-  pick_rc=0
-  if command -v worker-pick >/dev/null 2>&1; then
-    account=$(worker-pick --account gemini --role image 2>/dev/null) || pick_rc=$?
-  else
-    pick_rc=127
-  fi
-  [ "$pick_rc" -ne 3 ] || { printf 'GEMINI_USAGE_LIMIT\n' >&2; exit 3; }
-  if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    account=$(worker_model_pin_first gemini 2>/dev/null || true)
-    [[ "${account:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || account=main
-    printf 'gemini-listen: worker-pick unavailable; falling back to account %s\n' "$account" >&2
-  else
-    picked=true
-  fi
-fi
-account_roster_refuse gemini-listen gemini "$account" || exit "$off_roster_rc"
-worker_pool_refuse_headless gemini "$account" "$(worker_model_pin_csv < <(worker_model_pins gemini))" || exit 4
 if [ "$picked" = true ] && ! worker_claims_record gemini "$account"; then
   printf 'gemini-listen: could not record the claim on %s\n' "$account" >&2
 fi
@@ -360,7 +370,7 @@ while :; do
   if limited; then
     printf 'GEMINI_USAGE_LIMIT\n' >&2
     printf 'gemini-listen: %s is out of %s quota; retry with --model %s or later\n' "$account" "$model_key" \
-      "$([ "$model_key" = pro ] && printf flash || printf pro)" >&2
+      "$([ "$model_key" = argon ] && printf flash || printf argon)" >&2
     exit 3
   fi
   if [ "$rc" -ne 0 ] && grep -Eqi 'out of the worker pool|treating every account as out of the pool' "$tmp_dir/stderr" "$tmp_dir/stdout-text"; then

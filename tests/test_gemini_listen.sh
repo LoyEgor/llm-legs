@@ -16,6 +16,11 @@ export LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$WORK/account-caches" TMPDIR="$WORK/tmp"
 export FAKE_GEMINIB_CALLS="$WORK/calls" FAKE_GEMINIB_PROMPT="$WORK/prompt"
 export PICK_CALLS="$WORK/picks" GEMINIB_CACHE_DIR="$WORK/geminib-cache"
 . "$ROOT/tests/fixtures/geminib-families.sh"
+# Argon is on some plans only: both test accounts list it, main's list does not.
+for profile in picked explicit; do
+  jq '.families = [{family: "gemini-4-argon", slug: "argon", agy_prefix: "gemini-4-argon", label: "Gemini 4 Argon"}] + .families' \
+    "$GEMINIB_CACHE_DIR/models.json" >"$GEMINIB_CACHE_DIR/models-$profile.json"
+done
 mkdir -p "$HOME" "$WORK/bin" "$TMPDIR" "$WORK/media" "$WORK/out" "$GEMINIB_PROFILES_DIR/explicit" "$GEMINIB_PROFILES_DIR/picked"
 ln -s "$ROOT/tests/fixtures/fake-geminib-listen.sh" "$WORK/bin/geminib"
 cat >"$WORK/bin/worker-pick" <<'STUB'
@@ -76,7 +81,7 @@ assert listen 'what happens?' "$M/clip.mp4" "$M/tone.wav" "$M/still.png" "$M/cov
 assert grep -qx -- '--account gemini --role image' "$PICK_CALLS"
 assert test -e "$WORKER_CLAIMS_DIR/gemini/picked"
 assert test -e "$WORK/media-starts/gemini/picked"
-assert grep -qx 'ARG=gemini-3.1-pro-high' "$FAKE_GEMINIB_CALLS"
+assert grep -qx 'ARG=gemini-4-argon-high' "$FAKE_GEMINIB_CALLS"
 assert grep -qx 'ARG=stream-json' "$FAKE_GEMINIB_CALLS"
 assert grep -q "^PWD=$TMPDIR/gemini-listen\." "$FAKE_GEMINIB_CALLS"
 assert grep -q '^File 1: /.*/media/file1\.mp4 (video, 2\.0 s, 64x48, with sound)$' "$FAKE_GEMINIB_PROMPT"
@@ -85,13 +90,13 @@ assert grep -q '^File 3: /.*/media/file3\.png (image, 64x48)$' "$FAKE_GEMINIB_PR
 assert grep -q '^File 4: /.*/media/file4\.wav (audio, 2\.0 s, then the test beeps)$' "$FAKE_GEMINIB_PROMPT"
 assert grep -q 'must be BEEPS 2:N 4:N, where' "$FAKE_GEMINIB_PROMPT"
 assert grep -qx 'what happens?' "$FAKE_GEMINIB_PROMPT"
-assert test "$(head -n 1 "$answer")" = '<!-- gemini-3.1-pro-high -->'
+assert test "$(head -n 1 "$answer")" = '<!-- gemini-4-argon-high -->'
 assert grep -qF "[file1](file://$M/clip.mp4)" "$answer"
 assert grep -qx 'The pitch steps up at 3 s.' "$answer"
 assert grep -qx "dest=$answer" "$WORK/stdout"
 assert grep -qx 'account=picked' "$WORK/stdout"
 assert grep -qx 'session=listen-session' "$WORK/stdout"
-assert grep -qx 'model=gemini-3.1-pro-high' "$WORK/stdout"
+assert grep -qx 'model=gemini-4-argon-high' "$WORK/stdout"
 assert grep -qx 'files=4 proxied=0' "$WORK/stdout"
 assert grep -qx "audio=heard file2: $M/tone.wav" "$WORK/stdout"
 assert grep -qx "audio=heard file4: $M/cover.mp3" "$WORK/stdout"
@@ -142,7 +147,7 @@ FAKE_GEMINIB_MODE=quota expect_rc 3 'q' "$M/tone.wav" --account explicit
 assert grep -qx GEMINI_USAGE_LIMIT "$WORK/err"
 assert grep -q 'retry with --model flash' "$WORK/err"
 FAKE_GEMINIB_MODE=quota-stderr expect_rc 3 'q' "$M/tone.wav" --account explicit --model flash
-assert grep -q 'retry with --model pro' "$WORK/err"
+assert grep -q 'retry with --model argon' "$WORK/err"
 FAKE_GEMINIB_MODE=quota-credits expect_rc 3 'q' "$M/tone.wav" --account explicit
 assert grep -qx GEMINI_USAGE_LIMIT "$WORK/err"
 FAKE_GEMINIB_MODE=pool expect_rc 4 'q' "$M/tone.wav" --account explicit
@@ -216,19 +221,20 @@ PICK_MODE=limit expect_rc 3 'q' "$M/tone.wav"
 assert test ! -s "$FAKE_GEMINIB_CALLS"
 assert test -z "$(find "$TMPDIR" -name 'gemini-listen.*' -print -quit)"
 
-# The catalog dropped every Pro (agy 1.3.3, 2026-10-12): the default runs Flash, an asked Pro refuses.
+# An account that lists no Argon (every account but notcom, 2026-10-21): the default runs Flash,
+# an asked Argon refuses.
 FLASH_ONLY="$WORK/flash-only"
 geminib_families_seed "$FLASH_ONLY"
-jq '.families |= map(select(.slug != "pro"))' "$FLASH_ONLY/models.json" >"$FLASH_ONLY/one.json"
-mv "$FLASH_ONLY/one.json" "$FLASH_ONLY/models.json"
 : >"$FAKE_GEMINIB_CALLS"
 GEMINIB_CACHE_DIR="$FLASH_ONLY" expect_rc 0 'q' "$M/tone.wav" --account explicit
 assert grep -qx 'ARG=gemini-3.8-flash-high' "$FAKE_GEMINIB_CALLS"
-assert grep -q 'no pro family listed; the default is flash' "$WORK/err"
+assert grep -q 'explicit lists no argon family; the default is flash' "$WORK/err"
 assert test "$(grep -c BEEPS "$FAKE_GEMINIB_PROMPT")" -eq 0
 : >"$FAKE_GEMINIB_CALLS"
-GEMINIB_CACHE_DIR="$FLASH_ONLY" expect_rc 1 'q' "$M/tone.wav" --account explicit --model pro
-assert grep -q 'printed no pro row' "$WORK/err"
+GEMINIB_CACHE_DIR="$FLASH_ONLY" expect_rc 1 'q' "$M/tone.wav" --account explicit --model argon
+assert grep -q 'printed no argon row' "$WORK/err"
 assert test ! -s "$FAKE_GEMINIB_CALLS"
+expect_rc 2 'q' "$M/tone.wav" --account explicit --model pro
+assert grep -q -- '--model is argon or flash' "$WORK/err"
 
 printf 'PASS: gemini-listen (%s asserts)\n' "$asserts"
