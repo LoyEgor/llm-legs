@@ -524,21 +524,32 @@ assert [ "$(night latest --menu | head -1 | cut -f3)" = 1 ]
 assert grep -q "^codex update · in progress · hung	2	.*	codex-e1	vendor	0	updater$" <(night latest --menu)
 stop_chat "$new_session"
 night start --resume "$id6" >/dev/null || fail "resume every unfinished job"
+# A pilot night's debt job closes instead: review debt is paused (README block 10).
 assert jqe --arg o "$old_session" --arg n "$new_session" '.previous_sessions == [$o, $n]
   and ([.jobs[] | [.ref, .kind, .state]] == [["codex-e1", "vendor", "pending"], ["f-done", "fixer", "nothing-to-do"],
-    ["debt", "debt", "pending"]])' "$R6"
+    ["debt", "debt", "nothing-to-do"]]) and (.jobs[2].reason | startswith("review debt paused"))' "$R6"
 assert jqe '[.events[] | select(.phase == "resume")] | length == 2 and .[0].scope == "codex-e1" and (.[1] | has("scope") | not)
   and (.[1].pred | length) == 1' "$R6"
 stop_chat "$(jq -r .session "$R6")"
 night finish "$id6" >/dev/null
-night job "$id6" set debt state=nothing-to-do >/dev/null
+# A resumed pilot night keeps its pilot and adds no cleanup while review debt is paused (README block 10).
+night start --resume "$id6" >/dev/null || fail "resume a pilot night"
+assert jqe '[.jobs[] | select(.kind == "debt") | .ref] == ["debt"]' "$R6"
+prompt=$(last_arg "$id6")
+assert [ "${prompt%%. Pilot night *}" = "сделай чистку — night run $id6 resume pilot $(jq -r .pilot "$R6")" ]
+assert grep -qF 'over resume: no `debt` job or debt pass' <<<"$prompt"
+assert grep -qF -e "--remainder 'review debt paused: pilot night'" <<<"$prompt"
+stop_chat "$(jq -r .session "$R6")"
+night finish "$id6" >/dev/null
+jq 'del(.pilot)' "$R6" >"$WORK/tmp" && mv "$WORK/tmp" "$R6"
 night start --resume "$id6" >/dev/null || fail "resume adds the cleanup a done one no longer covers"
+assert [ "$(last_arg "$id6")" = "сделай чистку — night run $id6 resume" ]
 assert jqe '[.jobs[] | select(.kind == "debt") | [.ref, .state]] == [["debt", "nothing-to-do"], ["debt-2", "pending"]]' "$R6"
 assert grep -q "^cleanup · in progress	2		debt-2	debt	0	fit$" <(night latest --menu)
 stop_chat "$(jq -r .session "$R6")"
 touch "$DATA/opener-fails"
 assert_fails night start --resume "$id6" 2>/dev/null
-assert jqe '.finished_at != null and (.note | startswith("orchestrator chat did not open")) and (.previous_sessions | length) == 4' "$R6"
+assert jqe '.finished_at != null and (.note | startswith("orchestrator chat did not open")) and (.previous_sessions | length) == 5' "$R6"
 assert jqe '([.jobs[] | select(.state == "pending")] == []) and (.jobs[] | select(.ref == "debt-2")
   | .state == "left" and (.reason | startswith("orchestrator chat did not open")))' "$R6"
 rm "$DATA/opener-fails"
@@ -653,8 +664,12 @@ night start --cleanup >"$WORK/out" || fail "cleanup start"
 idc=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
 assert [ -n "$idc" ] && [ "$idc" != "${id6:-$id}" ]
 assert [ "$(last_arg "$idc")" = "сделай чистку — night run $idc cleanup. Review debt is paused (llm-legs docs/directions/README.md block 10): no \`debt\` job or debt pass; land every leftover, then Close, and step 6 with \`--remainder 'review debt paused'\`." ]
-assert jqe '.jobs == [] and .finished_at == null' "$(record "$idc")"
+assert jqe '.jobs == [] and .finished_at == null and .cleanup' "$(record "$idc")"
 assert_fails night start --cleanup 2>/dev/null
+stop_chat "$(jq -r .session "$(record "$idc")")"
+night start --resume "$idc" >/dev/null || fail "resume a cleanup night"
+assert jqe '.jobs == []' "$(record "$idc")"
+assert [ "$(last_arg "$idc")" = "сделай чистку — night run $idc resume cleanup. Review debt is paused (llm-legs docs/directions/README.md block 10): no \`debt\` job or debt pass; land every leftover, then Close, and step 6 with \`--remainder 'review debt paused'\`." ]
 stop_chat "$(jq -r .session "$(record "$idc")")"
 
 # finish prunes every landed (in main, or a night branch still at its base), clean, not live, not held

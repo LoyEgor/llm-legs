@@ -149,7 +149,8 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
   `session` is appended to `previous_sessions`, and the unfinished (`left`, `pending`, `live`) jobs, or the one
   `--job` names, go back to `pending` with their reasons kept, or to `live` (with `run`) while a live worker
   run holds its worktree (start prints `night <id> job <ref> live: worker-run wait <run-id>`). Without `--job` a `debt-<n>` job is
-  added when no debt job is pending or live, so a night not finished yet reopens even with every job closed. The review-flow gate reads the night's
+  added when no debt job is pending or live, so a night not finished yet reopens even with every job closed; a pilot or `--cleanup` night gets none
+  while review debt is paused (README block 10), its unfinished debt job closes `nothing-to-do`, and its prompt keeps `pilot <directions>` with `PILOT_RESUME_RULES` or `cleanup` with `CLEANUP_RULES`. The review-flow gate reads the night's
   `finished_at` and live `session`, so resumed workers commit on their `night/<id>/…` branches.
 - `night-run wall` is the `StopFailure` hook (matcher `rate_limit`, wired in the shared
   `~/.claude/settings.json`): when the stopped chat is a running night's orchestrator it starts a

@@ -31,7 +31,10 @@ PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30'
 PILOT=${NIGHT_RUN_PILOT-breakages lost-time system spend legacy vendors doctors leftovers}
 # What a pilot night does instead of night-sweep's Night mode prep, launches and debt pass: said in its prompt, so
 # the skill every night reads stays as it is.
-PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. `nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
+PILOT_CARRY='`nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
+PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. '"$PILOT_CARRY"
+# A resumed pilot night keeps its pilot (resume_night adds no debt job): only its pending jobs, then the carry loop.
+PILOT_RESUME_RULES='Pilot night (llm-legs docs/directions/README.md), over resume: no `debt` job or debt pass; once the pending jobs land, '"$PILOT_CARRY"
 # The cleanup button lands every leftover and nothing more while review debt waits (README block 10).
 CLEANUP_RULES='Review debt is paused (llm-legs docs/directions/README.md block 10): no `debt` job or debt pass; land every leftover, then Close, and step 6 with `--remainder '"'"'review debt paused'"'"'`.'
 STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
@@ -75,7 +78,8 @@ wall: a running night's orchestrator stopped by a usage wall (error rate_limit) 
   resumes the night (start --resume) under a new orchestrator; events wall, wall-moved, wall-gave-up
 start opens the orchestrator chat: --cleanup lands finished night branches and every leftover, no debt round
   only; --resume reopens night <id> under a new orchestrator for its unfinished jobs (one with --job,
-  else all plus a cleanup job), the old session kept in previous_sessions; a job whose branch a live
+  else all plus a cleanup job on a full night; a pilot night keeps its pilot, a pilot or --cleanup night gets no
+  cleanup job and its unfinished one is closed nothing-to-do while review debt is paused), the old session kept in previous_sessions; a job whose branch a live
   worker run still works on goes live with run=<run id>, printed `night <id> job <ref> live: worker-run
   wait <run id>`: waited on, never relaunched
   First it re-checks every answered trade (a blocked-on-egor job) of the other nights: one whose answer is
@@ -309,9 +313,13 @@ resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orc
   runs=$(live_night_runs "$id")
   night_set "$id" "$JQ_UNFINISHED$JQ_DONE_JOB$JQ_EVENTS"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
     | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .doctor_states_after = null | .doctor_problems_after = null | .note = null
+    | (.pilot != null or .cleanup == true) as $paused
     | .jobs |= map(if unfinished and ($job == "" or .ref == $job) then $runs[job_branch($id)] as $run
-        | if $run then .state = "live" | .run = $run else .state = "pending" | del(.run) end else . end)
-    | if $job == "" and ([.jobs[] | select(.kind == "debt" and (.state == "pending" or .state == "live"))] | length) == 0
+        | if $run then .state = "live" | .run = $run
+          elif $job == "" and $paused and .kind == "debt" then .state = "nothing-to-do" | .reason = "review debt paused (docs/directions/README.md block 10)" | del(.run)
+          else .state = "pending" | del(.run) end else . end)
+    | if $job == "" and ($paused | not)
+      and ([.jobs[] | select(.kind == "debt" and (.state == "pending" or .state == "live"))] | length) == 0
       then .jobs += [{kind: "debt", ref: "debt-\([.jobs[] | select(.kind == "debt")] | length + 1)", state: "pending",
         reason: null, branch: null, review: null, commits: [], pushed: false} + $prio] else . end
     | events([{phase: "resume", pred: "last"} + (if $job == "" then {} else {scope: $job} end)]; $t)' --arg job "$job" \
@@ -410,15 +418,20 @@ cmd_start() {
   if [ -n "$resume" ]; then
     id=$resume
     resume_night "$id" "$job"
+    if [ -z "$job" ]; then
+      pilot=$(jq -r '.pilot // empty' "$(night_file "$id")")
+      if [ -n "$pilot" ]; then marker=" resume pilot $pilot. $PILOT_RESUME_RULES"
+      elif jq -e '.cleanup' "$(night_file "$id")" >/dev/null; then marker=" resume cleanup. $CLEANUP_RULES"; fi
+    fi
   else
     id="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
     file=$(night_file "$id")
     [ ! -e "$file" ] || die "night id $id is taken"
-    jq -n --arg id "$id" --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" --arg p "$pilot" \
+    jq -n --arg id "$id" --arg t "$(stamp)" --argjson d "$(doctor_snapshot)" --arg p "$pilot" --arg s "$scope" \
       --argjson opener "$$" "$JQ_SNAPSHOT"'{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
         doctors_before: snapshot(0), doctors_after: null, doctor_states_after: null,
         doctor_problems_after: null, jobs: [],
-        opener: $opener} + (if $p == "" then {} else {pilot: $p} end)' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
+        opener: $opener} + (if $p == "" then {} else {pilot: $p} end) + (if $s == "cleanup" then {cleanup: true} else {} end)' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
       { rm -f "$file.tmp"; die "cannot write $file"; }
   fi
   trades_recheck "$id"
