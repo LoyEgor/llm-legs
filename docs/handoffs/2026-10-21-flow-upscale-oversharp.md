@@ -109,6 +109,8 @@ Still with the arbostar-logo chat; none of it blocks the above:
   the clean) removes it, but on real detail it is about as soft as the 720p. Egor picks per film by eye: guided on 5
   of 7 cards, plain clean where the upscaler added real detail (a concrete wall, lettering). For the integration this
   is an opt-in flag; the default stays plain clean.
+  An LLM judge (Sol, blind pairs in both A/B orders) matched his pick on 6 of 7 cards in both orders; its miss chose
+  the smoother guided. Untested on films without texture, so an LLM may propose guided, not apply it.
 - Deck films switch from the 720p fallback to cleaned 1080p.
 - The GPT start-frame test (point 4 below).
 
