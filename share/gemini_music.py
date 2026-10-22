@@ -165,6 +165,15 @@ def close_disclaimer(page) -> bool:
     return gw.click_if_visible(page, "button", "Got it")
 
 
+def close_cards(page, account: str) -> None:
+    """Cards over the composer that only need declining: the first-visit "Keep in mind", Personal Intelligence's
+    "Supercharge Gemini" (2026-10-22 on abel, over the chips; "Use without content apps" connects nothing), and the
+    promos gemini_web knows."""
+    close_disclaimer(page)
+    gw.click_if_visible(page, "button", "Use without content apps")
+    gw.close_promos(page, account)
+
+
 def open_music(page, account: str) -> None:
     """A Create music click can leave the plain composer (2026-10-01; the next run on the same account worked),
     so the tool is checked by its Length chip and picked once more."""
@@ -181,6 +190,21 @@ def open_music(page, account: str) -> None:
                 raise drift("Create music did not stay selected (no Length chip, picked twice)") from error
 
 
+def click_past_tour(page, target, what: str) -> None:
+    """A first-visit tour card can sit over the composer and swallow every click (2026-10-22: "Hand off your
+    to-dos" beside the new Chat/Task switch; Upload & tools then timed out on com, jihangarangan, egbogd). Escape
+    closes such a card and accepts nothing."""
+    for attempt in (1, 2, 3):
+        try:
+            target.click(timeout=8000)
+            return
+        except Exception as error:  # noqa: BLE001
+            if attempt == 3:
+                raise drift(f"{what} took no click, even after Escape") from error
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(800)
+
+
 def pick_music(page, account: str) -> None:
     page.goto(APP, wait_until="domcontentloaded", timeout=60000)
     tools = page.get_by_role("button", name="Upload & tools")
@@ -193,15 +217,19 @@ def pick_music(page, account: str) -> None:
         page.wait_for_timeout(500)
     else:
         raise drift("the Gemini app shows no Upload & tools button")
-    close_disclaimer(page)
-    gw.close_promos(page, account)
-    tools.first.click()
-    page.get_by_text("More tools", exact=True).first.click(timeout=8000)
-    music = page.get_by_text("Create music", exact=True)
+    close_cards(page, account)
+    click_past_tour(page, tools.first, "Upload & tools")
+    # Create music sits in the menu itself since 2026-10-22, under More tools before; hidden copies of both
+    # labels stay in the page, so only visible ones count.
+    music = page.get_by_text("Create music", exact=True).filter(visible=True)
     try:
-        music.first.wait_for(timeout=8000)
-    except Exception as error:  # noqa: BLE001
-        raise gw.Failure(4, f"the Gemini app offers {account} no Create music tool") from error
+        music.first.wait_for(timeout=4000)
+    except Exception:  # noqa: BLE001
+        page.get_by_text("More tools", exact=True).filter(visible=True).first.click(timeout=8000)
+        try:
+            music.first.wait_for(timeout=8000)
+        except Exception as error:  # noqa: BLE001
+            raise gw.Failure(4, f"the Gemini app offers {account} no Create music tool") from error
     music.first.click()
     page.get_by_role("textbox").first.wait_for(timeout=15000)
 
@@ -251,7 +279,7 @@ TOASTS = "() => [...document.querySelectorAll('simple-snack-bar, .mat-mdc-snack-
 def attach(page, account: str, paths: list[Path], wait_s: float) -> None:
     choosers: list = []
     page.on("filechooser", lambda chooser: choosers.append(chooser))
-    page.get_by_role("button", name="Upload & tools").first.click()
+    click_past_tour(page, page.get_by_role("button", name="Upload & tools").first, "Upload & tools")
     try:
         page.get_by_role("menuitem", name="Upload files").first.click(timeout=8000)
     except Exception as error:  # noqa: BLE001
@@ -322,6 +350,7 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
     bodies: list = []
     page.on("response", lambda r: bodies.append(r) if "StreamGenerate" in r.url else None)
     open_music(page, account)
+    close_cards(page, account)
     for chip, value in plan["chips"]:
         set_chip(page, chip, value)
     if plan["attach"]:
