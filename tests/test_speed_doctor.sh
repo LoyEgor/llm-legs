@@ -40,7 +40,7 @@ base = {"HOME": os.path.join(work, "home"), "HARNESS_DOCTOR_DIR": os.path.join(w
         "CODE_DOCTOR_DIR": os.path.join(work, "code"), "HARNESS_LEDGER": ledger,
         "CODE_LEDGER": os.path.join(work, "code-ledger.json"), "STATUSLINE_CACHE_DIR": os.path.join(work, "sl"),
         "HARNESS_REPOS_DIR": os.path.join(work, "repos"), "RUN_SUITES_JOURNAL": os.path.join(work, "run-suites.jsonl"),
-        "SPEED_DOCTOR_NOW": str(HI), "PATH": os.environ["PATH"]}
+        "SPEED_DOCTOR_NOW": str(HI), "VIDEO_JITTER_DIR": os.path.join(work, "vj"), "PATH": os.environ["PATH"]}
 
 
 def speed(folder, *args, **env):
@@ -826,6 +826,37 @@ pre = module.day_values("2026-10-01", {}, {}, None, None, None, [
     {"ended_at": mid, "vendor": "codex", "pid_started_at": mid - 100, "cli_starts": [mid - 130]}], None)
 check(pre == {"delegation.pre_cli_s|codex|-": [5.0, 1]},
       "a CLI start before its pid start is no pre-CLI time, as in the delegation view: %s" % pre)
+media_rows = [{"ts": mid, "command": "fix", "secs": 96.0, "load": 0.5, "frames": 192},
+              {"ts": mid, "command": "fix", "secs": 300.0, "load": 2.5, "frames": 240},
+              {"ts": mid, "command": "door", "secs": 6.0, "load": 0.5, "images": 2},
+              {"ts": mid - 40 * 86400, "command": "fix", "secs": 50.0, "load": 0.5, "frames": 100}]
+media_values = module.day_values("2026-10-01", {}, {}, None, None, None, [], None, media_rows)
+check(media_values == {"media.fix_ms_per_frame|fix|<1": [500.0, 1], "media.fix_ms_per_frame|fix|2-4": [1250.0, 1],
+                       "media.door_s_per_image|door|<1": [3.0, 1]},
+      "a Flow 1080p fix is judged per frame and a door per image, each in its load band: %s" % media_values)
+media_post = module.media_view(media_rows, mid - 86400, 2.0)
+check(media_post["fix"] == {"runs_day": 1.0, "frames_day": 216.0, "min_day": 3.3, "p50_s": 198.0, "p95_s": 300.0,
+                            "max_s": 300.0}
+      and media_post["door"] == {"runs_day": 0.5, "images_day": 1.0, "min_day": 0.05, "p50_s": 6.0, "p95_s": 6.0,
+                                 "max_s": 6.0},
+      "the media post-process view counts every fix and door in the window, normal or not: %s" % media_post)
+os.makedirs(os.path.join(work, "vj-live"), exist_ok=True)
+with open(os.path.join(work, "vj-live", "runs.jsonl"), "w") as handle:
+    for row in media_rows[:3]:
+        handle.write(json.dumps(dict(row, ts=HI - 3600)) + "\n")
+media_menu = speed("speed-media", "--menu", VIDEO_JITTER_DIR=os.path.join(work, "vj-live"))[0].stdout.splitlines()
+media_line = [l for l in media_menu if "media post-process" in l]
+check(len(media_line) == 1 and media_line[0].startswith("2\td\t\tmedia post-process ")
+      and "p50 198.0 s p95 300.0 s · door" in media_line[0] and media_line[0].endswith("p50 6.0 s"),
+      "the Delegation lines show video-jitter's fix and door times from its run journal: %s" % media_line)
+with open(os.path.join(root, "share", "video_jitter.py")) as handle:
+    jitter_src = handle.read()
+jitter_dir = os.environ.pop("VIDEO_JITTER_DIR", None)
+check('or Path.home() / ".cache" / "video-jitter")' in jitter_src and 'RUNS = STORE / "runs.jsonl"' in jitter_src
+      and module.media_runs_path() == os.path.expanduser("~/.cache/video-jitter/runs.jsonl"),
+      "Speed reads video-jitter's run journal where video-jitter writes it: %s" % module.media_runs_path())
+if jitter_dir is not None:
+    os.environ["VIDEO_JITTER_DIR"] = jitter_dir
 
 nights = os.path.join(work, "doctors", "nights")
 os.makedirs(nights, exist_ok=True)

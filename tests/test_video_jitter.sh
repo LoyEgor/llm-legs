@@ -5,6 +5,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+export VIDEO_JITTER_DIR="$WORK/vj" # never the live register or run journal
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/err" >&2 2>/dev/null; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
@@ -93,4 +94,9 @@ swapped=$(jq -r .swapped "$WORK/out")
 assert [ "$(ffprobe -v error -show_entries stream=width,height -of csv=p=0 "$swapped")" = 480,270 ]
 assert differ "$swapped" "$WORK/cut.png"
 
-printf 'PASS: %s asserts; a re-encode keeps its source colour tags; fix clamps an upscale in place, keeps the download and registers it, and keeps it whole when the colour moves; the door swaps its frame for the 720p'"'"'s, or for an edit the cleaned one at its size, and names a painted one\n' "$asserts"
+# Every fix and door run is journaled with its wall time for the Speed doctor.
+assert jq -se 'map(select(.command == "fix")) | length == 4 and all(.frames == 12 or .frames == 8)
+  and all(.secs > 0 and (.load | type) == "number")' "$WORK/vj/runs.jsonl" >/dev/null
+assert jq -se '[.[] | select(.command == "door") | [.images, .swapped]] == [[4, 1], [1, 1]]' "$WORK/vj/runs.jsonl" >/dev/null
+
+printf 'PASS: %s asserts; a re-encode keeps its source colour tags; fix clamps an upscale in place, keeps the download and registers it, and keeps it whole when the colour moves; the door swaps its frame for the 720p'"'"'s, or for an edit the cleaned one at its size, and names a painted one; each run journals its wall time\n' "$asserts"

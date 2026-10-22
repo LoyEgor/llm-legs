@@ -96,6 +96,7 @@ HOLE_LAYERS = ("dark", "ask")
 MACHINE_PRICED = ("machine/contention", "background/statusline")
 LOCAL_LEAVES = ("hooks", "tests", "media", "tools", "residual", "start")
 METRICS = {"chat.om_per_100_prompts": ("chat", 30), "delegation.pre_cli_s": ("delegation/workers", 10),
+           "media.fix_ms_per_frame": ("delegation/media", 3), "media.door_s_per_image": ("delegation/media", 5),
            "background.statusline_cpu_ms_per_sh": ("background/statusline", 200),
            "background.merge_kick_cpu_ms": ("background/statusline", 20), "machine.probe_ms": ("machine/contention", 30),
            "night.wall_h_per_job": ("night", 5)}
@@ -204,6 +205,12 @@ def doctors_dir():
 
 def worker_runs_path():
     return os.path.join(H.worker_stats_dir(), "runs.jsonl")
+
+
+def media_runs_path():
+    """video-jitter's run journal: each Flow 1080p fix and door with its wall time (docs/video-jitter.md)."""
+    return os.path.join(os.environ.get("VIDEO_JITTER_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "video-jitter"),
+                        "runs.jsonl")
 
 
 def code_ledger_path():
@@ -705,7 +712,25 @@ def delegation_view(runs, lo):
             "pre_cli_p50_s_by_vendor": {k: round(H.median(v), 1) for k, v in sorted(by_vendor.items())}}
 
 
-def day_values(day, credit, prompts, machine_day, statusline_day, kicks_day, runs, night):
+MEDIA_POST = (("fix", "frames", 1000.0, "media.fix_ms_per_frame"), ("door", "images", 1.0, "media.door_s_per_image"))
+
+
+def media_view(rows, lo, covered):
+    """The media post-process phase: every video-jitter fix and door, normal or not."""
+    out = {}
+    for command, unit, _, _ in MEDIA_POST:
+        secs = [float(r["secs"]) for r in rows if r.get("command") == command and (r.get("ts") or 0) >= lo
+                and isinstance(r.get("secs"), (int, float))]
+        units = sum(r.get(unit) or 0 for r in rows if r.get("command") == command and (r.get("ts") or 0) >= lo)
+        out[command] = {"runs_day": round(len(secs) / covered, 2), "%s_day" % unit: round(units / covered, 2),
+                        "min_day": round(sum(secs) / 60.0 / covered, 2),
+                        "p50_s": round(H.median(secs), 1) if secs else None,
+                        "p95_s": round(H.percentile(secs, 0.95), 1) if secs else None,
+                        "max_s": round(max(secs), 1) if secs else None}
+    return out
+
+
+def day_values(day, credit, prompts, machine_day, statusline_day, kicks_day, runs, night, media=()):
     """Unit metrics of one closed day, keyed metric|ident|band, with their exposure."""
     out = {}
     chat_min = sum(v for (d, area, _), v in credit.items() if d == day and area == "chat") / 60.0
@@ -730,6 +755,14 @@ def day_values(day, credit, prompts, machine_day, statusline_day, kicks_day, run
             out["machine.probe_ms|probe|%s" % band] = [round(hist_mean(hist), 1), hist[0]]
     if night and night.get("jobs_done") and H.local_day(night["started"]) == day:
         out["night.wall_h_per_job|all|-"] = [round(night["wall_h"] / night["jobs_done"], 3), night["jobs_done"]]
+    for command, unit, scale, metric in MEDIA_POST:
+        by_band = {}
+        for r in media:
+            if r.get("command") == command and r.get(unit) and isinstance(r.get("secs"), (int, float)) \
+                    and H.local_day(r.get("ts") or 0) == day:
+                by_band.setdefault(H.load_band(r.get("load")), []).append(r["secs"] * scale / r[unit])
+        for band, values in by_band.items():
+            out["%s|%s|%s" % (metric, command, band)] = [round(H.median(values), 2), len(values)]
     return out
 
 
@@ -1241,6 +1274,7 @@ def collect(write, now):
     collector_rows = fold_jsonl(state, "collector", os.path.join(doctors_dir(), "collector-runs.jsonl"),
                                 now - ROW_DAYS * 86400, lambda r: r.get("start"))
     runs = fold_jsonl(state, "worker_runs", worker_runs_path(), now - JOURNAL_DAYS * 86400, lambda r: r.get("ended_at"))
+    media_runs = fold_jsonl(state, "media_post", media_runs_path(), now - JOURNAL_DAYS * 86400, lambda r: r.get("ts"))
     turned = [d for d, e in sorted(state["events"].items()) if any(r[0] in ("t", "d") for r in e["rows"])]
     froms = [H.day_start(turned[0])] if turned else []
     if job["todo"]:
@@ -1283,6 +1317,7 @@ def collect(write, now):
     machine = machine_view(days, local)
     night = night_view(now)
     delegation = delegation_view(runs, lo)
+    media_post = media_view(media_runs, lo, covered)
 
     def machine_om(component, machine, background):
         if component == "machine/contention":
@@ -1317,7 +1352,7 @@ def collect(write, now):
             stored[day] = {"day": day, "values": day_values(day, old_credit if day in old_days else credit, prompts,
                                                             (days.get(day) or {}).get("machine"),
                                                             (days.get(day) or {}).get("statusline"), kicks.get(day),
-                                                            runs, last)}
+                                                            runs, last, media_runs)}
     regressions, baselines = judge_regressions(stored, today, component_om)
 
     problems = []
@@ -1450,7 +1485,7 @@ def collect(write, now):
         "of_which": {"hooks": round(tree.get("chat", {}).get("hooks", 0.0), 2),
                      "tests": round(tree.get("chat", {}).get("tests", 0.0) + tree.get("chat", {}).get("queue", 0.0), 2),
                      "machine": machine["p_om_day"]},
-        "night": night, "delegation": delegation,
+        "night": night, "delegation": delegation, "media_post": media_post,
         "baselines": baselines, "selection": selection, "why_none": why_none,
         "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0},
         "yield": speed_yield(ledger, roi_read(state, now)["gains"]),
@@ -1540,6 +1575,12 @@ def menu_lines(document):
     d = document["delegation"]
     emit(1, "%d worker runs · pre-CLI p50 %s s · %d reroutes" % (d["runs"], d["pre_cli_p50_s"] if d["pre_cli_p50_s"] is not None
                                                                  else "–", d["reroutes"]), "d")
+    post = document.get("media_post") or {}
+    if any((post.get(c) or {}).get("runs_day") for c in ("fix", "door")):
+        fix, door = post.get("fix") or {}, post.get("door") or {}
+        emit(1, "media post-process %s min/day · fix %s/day p50 %s s p95 %s s · door %s/day p50 %s s" % (
+            fmt((fix.get("min_day") or 0) + (door.get("min_day") or 0)), fix.get("runs_day"), fix.get("p50_s") or "–",
+            fix.get("p95_s") or "–", door.get("runs_day"), door.get("p50_s") or "–"), "d")
     tests = document.get("tests") or {}
     for depth, flags, red, text in tests.get("menu") or [[0, "", tests.get("status") == "error",
                                                            "Test health: " + str(tests.get("head") or "not measured")]]:

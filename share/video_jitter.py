@@ -33,6 +33,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -594,7 +595,21 @@ FROM_UPSCALE = 0.6  # an image is the upscale's frame when it sits this much clo
 EXACT = 3.0         # grey levels (trimmed mean): a saved frame, its encode and decode rounding included
 EDIT = 12.0         # grey levels a 4 px blur of the difference reaches where the frame was painted over
 BATCH = 6           # registered films read at once (ffmpeg decodes)
-REGISTER = Path(os.environ.get("VIDEO_JITTER_REGISTER") or Path.home() / ".cache" / "video-jitter" / "upscales.jsonl")
+STORE = Path(os.environ.get("VIDEO_JITTER_DIR") or Path.home() / ".cache" / "video-jitter")
+REGISTER = STORE / "upscales.jsonl"
+RUNS = STORE / "runs.jsonl"  # each fix and door: its wall time, read by the Speed doctor's media drill
+
+
+def journal(command: str, started: float, load: float, **facts) -> None:
+    with contextlib.suppress(OSError):
+        STORE.mkdir(parents=True, exist_ok=True)
+        with open(RUNS, "a") as out:
+            out.write(json.dumps({"ts": round(time.time(), 1), "command": command,
+                                  "secs": round(time.time() - started, 2), "load": load, **facts}) + "\n")
+
+
+def load_ratio() -> float:
+    return round(os.getloadavg()[0] / (os.cpu_count() or 1), 2)
 
 
 def dhash(frame) -> int:
@@ -826,14 +841,23 @@ def main(argv: list[str]) -> int:
             print(f"settle: {len(still)} frames, {np.mean(still):.0%} of the picture averaged (least on a frame "
                   f"{min(still):.0%})", file=sys.stderr)
             return 0
+        started, load = time.time(), load_ratio()
         if args.command == "door":
-            for row in door(args.images, Path(args.register), Path(args.out or Path(args.register).parent / "frames"),
-                            args.clean):
+            rows = door(args.images, Path(args.register), Path(args.out or Path(args.register).parent / "frames"),
+                        args.clean)
+            for row in rows:
                 print(json.dumps(row), flush=True)
+            journal("door", started, load, images=len(args.images), swapped=sum(r["verdict"] == "swap" for r in rows))
             return 0
         upscale, ref720 = Path(args.upscale), Path(args.ref720)
-        got = fix(upscale, ref720) if args.command == "fix" else {}
+        got = {}
         if args.command == "fix":
+            try:
+                got = fix(upscale, ref720)
+            finally:
+                with contextlib.suppress(Refused):
+                    journal("fix", started, load, frames=probe(upscale)[3], steadied=got.get("steadied"),
+                            cleaned=got.get("cleaned"))
             print(json.dumps(got), flush=True)
         if args.register:
             raw = got.get("raw_file") or args.raw

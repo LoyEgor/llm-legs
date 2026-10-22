@@ -28,6 +28,10 @@ Evidence and Egor's verdicts: `docs/handoffs/2026-10-21-flow-upscale-oversharp.m
   clamped, colour_shift, sharpness, bytes, secs). When the raw readings fall under the gate for good, Flow has fixed
   its tremble; when `clamped` (the share of the picture the clamp moved 2+ grey levels, 4-31 % on 10 pairs) falls near
   zero, its halos.
+- Each fix and door appends `{ts, command, secs, load, frames|images}` to
+  `${VIDEO_JITTER_DIR:-~/.cache/video-jitter}/runs.jsonl`: the Speed doctor's `media post-process` line under
+  Delegation, judged per frame and per image against its 28-day median in each load band
+  (`docs/speed-doctor-design.md` C9).
 - Keep the 720p: a film later cut from the clip can be re-anchored to it, and the door hands out its frames. Anchor
   the raw download, then cut: a second lossy encode cost the anchored fleet film half its softness.
 
@@ -85,7 +89,7 @@ to the next take. So:
 | `settle <anchored> <out>` | the second pass: a 1-2-1 average with the neighbours wherever the picture stands |
 | `fix <1080p> --ref720 <720p> [--register [<jsonl>]]` | what gemini-web runs: measure, steady when it trembles, clamp, replace in place keeping `<stem>.raw.mp4`, one JSON line |
 | `register <1080p> --ref720 <720p> [--raw <download>] [--register <jsonl>]` | the door's row for a film fixed before the register |
-| `door <image>... [--clean] [--register <jsonl>] [--out <dir>]` | one JSON line per image cut from a registered upscale: `swap` or `edited`, `as` 720p or cleaned; the register defaults to `$VIDEO_JITTER_REGISTER` or `~/.cache/video-jitter/upscales.jsonl` |
+| `door <image>... [--clean] [--register <jsonl>] [--out <dir>]` | one JSON line per image cut from a registered upscale: `swap` or `edited`, `as` 720p or cleaned; the register defaults to `${VIDEO_JITTER_DIR:-~/.cache/video-jitter}/upscales.jsonl` |
 
 An 8 s 1080p clip on a quiet machine: 56 s when it does not tremble (the measure alone, all the steady did there, 11 s),
 75 s when it does; about half is dense flow. Three at once on a loaded machine took 2-4.5 minutes each.
