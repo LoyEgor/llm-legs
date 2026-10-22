@@ -293,10 +293,11 @@ jq -r 'def pair: map(tostring) | join("/");
       + (if $s.fixed then " fixed=\($s.fixed | pair)" else "" end) + " cleaned=\($s.cleaned // false)"
       + (if $s.reason then " reason=\($s.reason)" else "" end) + " dest=\(.dest) ref720_file=\(.ref720)"
       + (if $s.raw_file then " raw_file=\($s.raw_file)" else "" end) end' <<<"$result"
-# Every delivered take is judged for generation glitches (a door that opens by itself, a limb that twists) by one
+# Each delivered take can be judged for generation glitches (a door that opens by itself, a limb that twists) by one
 # Sol call on its frames (docs/video-glitch.md): `glitch=ok|defects` and `t=` lines, the parent decides a remake.
-# The takes are judged at once; a check that fails says `glitch=unchecked` and never fails the take.
-glitch_cmd=${GEMINI_VIDEO_GLITCH:-$root/bin/video-glitch}
+# The takes are judged at once; a check that fails says `glitch=unchecked` and never fails the take. Off until
+# the judge is calibrated on Egor's labels (2026-10-22): GEMINI_VIDEO_GLITCH=<video-glitch path> turns it on.
+glitch_cmd=${GEMINI_VIDEO_GLITCH:-off}
 if [ "$glitch_cmd" != off ]; then
   glitch_dir=$(mktemp -d)
   glitch_pids=() glitch_count=0
