@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Music loops and join checks by Egor's ear (docs/audiokit.md): share/audiokit.py through uv, which provisions numpy
+# and, on the first check that needs stems, Demucs (share/audiokit_stems.py).
+{
+set -euo pipefail
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+uv_cmd=${AUDIOKIT_UV:-$(command -v uv || printf /opt/homebrew/bin/uv)}
+[ -x "$uv_cmd" ] || { printf 'audiokit: uv is missing (brew install uv)\n' >&2; exit 4; }
+command -v ffmpeg >/dev/null || { printf 'audiokit: ffmpeg is missing (brew install ffmpeg)\n' >&2; exit 4; }
+export AUDIOKIT_UV="$uv_cmd"
+exec "$uv_cmd" run -q --script "$(resolve_root)/share/audiokit.py" "$@"
+exit; }
