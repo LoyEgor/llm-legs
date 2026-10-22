@@ -11,7 +11,8 @@
     label [--port N] [--no-open]     the labelling page on 127.0.0.1; every change appends to labels.jsonl
     list                             one line per clip: id, set, latest verdict, defect count
     check <video> [--model sol] [--effort E]
-                                     judge one clip: `glitch=ok|defects`, then one `t=` line per defect
+                                     judge one clip: `glitch=ok|defects`, then one `t=` line per defect with
+                                     what to change in the start image or prompt (`fix:`)
 """
 from __future__ import annotations
 
@@ -43,7 +44,8 @@ ACCEPTED_NOTE = "used in the R7-A film"  # a pool take that went into a finished
 MAX_FRAMES = 24  # 12 s at 2 fps; a longer clip is sampled sparser, so one check stays one image budget
 FLAG_LINE = re.compile(
     r"^t=(?P<t0>\d+(?:\.\d+)?)(?:\s*-\s*(?P<t1>\d+(?:\.\d+)?))?\s*\|\s*(?P<object>[^|]*)\|\s*(?P<what>[^|]*)"
-    r"(?:\|\s*noticeable:\s*(?P<noticeable>yes|no))?\s*(?:\|\s*confidence:\s*(?P<confidence>\w+))?",
+    r"(?:\|\s*noticeable:\s*(?P<noticeable>yes|no))?\s*(?:\|\s*confidence:\s*(?P<confidence>\w+))?"
+    r"\s*(?:\|\s*fix:\s*(?P<fix>.*))?",
     re.IGNORECASE)
 
 
@@ -147,7 +149,8 @@ def cmd_flags(args: argparse.Namespace) -> int:
         flag = {"clip": args.clip, "judge": args.judge, "t0": t0, "t1": float(match["t1"] or t0),
                 "object": match["object"].strip(), "what": match["what"].strip(),
                 "noticeable": (match["noticeable"] or "").lower() or None,
-                "confidence": (match["confidence"] or "").lower() or None}
+                "confidence": (match["confidence"] or "").lower() or None,
+                "fix": (match["fix"] or "").strip() or None}
         flag["id"] = hashlib.sha1(json.dumps(flag, sort_keys=True).encode()).hexdigest()[:10]
         append_jsonl(FLAGS, {k: v for k, v in flag.items() if v is not None})
         count += 1
@@ -155,7 +158,7 @@ def cmd_flags(args: argparse.Namespace) -> int:
     return 0
 
 
-def cut_frames(video: Path, out: Path, duration: float) -> list[Path]:
+def cut_frames(video: Path, out: Path, rate: float) -> list[Path]:
     """The frames a judge reads: 2 per second (fewer past MAX_FRAMES), the longer side at most 1280 px, each
     stamped `t=<s>` top left, so a judge names times. Full size on purpose: a twisted arm is gone at 420 px."""
     out.mkdir(parents=True, exist_ok=True)
@@ -163,7 +166,6 @@ def cut_frames(video: Path, out: Path, duration: float) -> list[Path]:
         old.unlink()
     stamp = out / "stamp.txt"
     stamp.write_text("t=%{eif:trunc(t+0.001):d}.%{eif:mod(round(t*10),10):d}s")
-    rate = min(2.0, MAX_FRAMES / max(duration, 0.1))
     subprocess.run(
         ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(video), "-an", "-vf",
          f"setpts=PTS-STARTPTS,fps={rate:.4f},scale='if(gt(iw,ih),min(1280,iw),-2)':'if(gt(iw,ih),-2,min(1280,ih))',"
@@ -178,10 +180,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         sys.exit(f"video-glitch: not a file: {video}")
     digest = sha256(video)
     work = DATA_DIR / "checks" / digest[:16]
-    frames = cut_frames(video, work / "frames", probe(video)["dur"])
+    rate = min(2.0, MAX_FRAMES / max(probe(video)["dur"], 0.1))
+    frames = cut_frames(video, work / "frames", rate)
     # worker-run refuses a brief it has already run, so the handle carries the time: a re-check is a new run.
     brief = (SET_DIR / "judge.md").read_text().replace("__HANDLE__", f"{video.name} {digest[:8]} {now()}") \
-        .replace("__N__", str(len(frames))).replace("__FRAMES__", "\n".join(f"- {f}" for f in frames))
+        .replace("__N__", str(len(frames))).replace("__FPS__", f"{rate:.2g}") \
+        .replace("__FRAMES__", "\n".join(f"- {f}" for f in frames))
     (work / "brief.md").write_text(brief)
     command = ["worker-run", "run", "codex", "--model", args.model, "--brief", str(work / "brief.md"),
                "--workdir", str(work)]
@@ -200,7 +204,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         if match:
             defects.append({"t0": float(match["t0"]), "t1": float(match["t1"] or match["t0"]),
                             "object": match["object"].strip(), "what": match["what"].strip(),
-                            "noticeable": (match["noticeable"] or "no").lower() == "yes"})
+                            "noticeable": (match["noticeable"] or "no").lower() == "yes",
+                            "fix": (match["fix"] or "").strip()})
     append_jsonl(DATA_DIR / "checks.jsonl", {"at": now(), "video": str(video), "sha256": digest,
                                              "judge": f"codex {args.model} {args.effort or '-'}",
                                              "frames": len(frames), "defects": defects})
@@ -208,7 +213,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     print(f"glitch={'defects' if noticeable else 'ok'} video={video}")
     for d in defects:
         span = f"{d['t0']:g}" if d["t1"] == d["t0"] else f"{d['t0']:g}-{d['t1']:g}"
-        print(f"t={span} {d['object']}: {d['what']} noticeable={'yes' if d['noticeable'] else 'no'}")
+        fix = f" fix: {d['fix']}" if d["fix"] else ""
+        print(f"t={span} {d['object']}: {d['what']} noticeable={'yes' if d['noticeable'] else 'no'}{fix}")
     return 0
 
 

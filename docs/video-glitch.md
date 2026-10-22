@@ -12,10 +12,21 @@ it is off until the judge is settled on Egor's labels (2026-10-22: «не буд
 
 `video-glitch check <video>` cuts 2 frames a second (at most 24, longer side 1280 px, each stamped `t=<s>`),
 hands them to one Sol call through `worker-run run codex` with `share/video-glitch/judge.md`, and prints
-`glitch=ok|defects` and one `t=<a>-<b> <object>: <what> noticeable=yes|no` line per defect; only `noticeable=yes`
-makes `defects`. Every check is appended to `data/video-glitch/checks.jsonl`. About 20 s and 30k tokens a clip.
+`glitch=ok|defects` and one `t=<a>-<b> <object>: <what> noticeable=yes|no fix: <what to change>` line per defect;
+only `noticeable=yes` makes `defects`. Every check is appended to `data/video-glitch/checks.jsonl`. About 20 s and 30k tokens a clip.
 
 Calibration (2026-10-22, 25 known-bad and 35 accepted deck films, plus 67 pool takes):
+- The judge prompt (`judge.md`) has it inventory each rigid structure from the first frames (leaves, frame bars,
+  handles, how it opens) and compare every later frame with it: generated defects are smooth, so neighbouring
+  frames look plausible and only the comparison with the start shows the door that became sliding or the frame
+  that slid away. With it Sol caught 24 of 24 known-bad (all but the reversal) and failed 0 of 35 accepted films;
+  the plain checklist caught 16. Each defect also carries `fix:`, what to change in the start image or prompt
+  (Egor: the parent should know to regenerate with a door that opens differently, not just remake).
+- Same prompt on the 20 hardest clips (9 bad that the checklist missed, expo and fifth, 9 accepted films): Sol 9/9
+  and no false alarm; Sol at 1 fps 7/9 at about half the tokens; Opus 6/9 (7/9 at high effort) and it flags expo
+  and fifth, real glitches Egor rated tolerable; Sonnet 3/9 (4/9 high) and on all 60 it failed 3 accepted films;
+  Terra 3/9 (2/9 high). Cost on Egor's accounts (2026-10-22): Sol is the scarcest, Opus a little cheaper, Sonnet
+  several times cheaper.
 - Sol, checklist prompt: 16 of 25 known-bad caught, 0 of 35 accepted films failed. Low, medium and high effort
   give the same verdicts; high costs 3.5x the tokens and 4x the time, so the default effort stays.
 - Its misses: the 2x walk and the forward-and-back fire loop (no judge sees speed or reversal: those are
