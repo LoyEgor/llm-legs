@@ -45,7 +45,7 @@ usage() {
   printf '  --edit reworks a video of up to %ss (any source, a Grok clip too) on Omni; the clip keeps its length\n' "$edit_max" >&2
   printf '  --extend continues a Veo clip gemini-video saved, on its own account: a new %ss clip that picks up its motion\n' "$extend_s" >&2
   printf '  --count 2-4 renders variants in one send (dest, then <stem>-2, ...) at that multiple of the credits; default 1\n' >&2
-  printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (no extra credits), steadied against its 720p (kept as <stem>.720p.mp4)\n' >&2
+  printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (no extra credits), steadied and cleaned of halos against its 720p (kept as <stem>.720p.mp4, the download as <stem>.raw.mp4)\n' >&2
   printf '  prompting guide (read before writing a prompt): %s/docs/video-prompting.md\n' "$root" >&2
   printf '  one-time per account: geminib web <account>; readiness: gemini-web status <account>\n' >&2
   exit 2
@@ -283,14 +283,16 @@ while IFS=$'\t' read -r variant variant_media; do
     "$(jq -r '.format.duration // "?" | tostring | sub("\\..*"; "")' <<<"$vprobe")" "$variant_media"
 done < <(jq -r '(.variants // [])[1:][] | [.dest, .media_id] | @tsv' <<<"$result")
 jq -r '(.refused // [])[] | "refused=\(.media_id) \(.error)"' <<<"$result"
-# Flow's 1080p upscale trembles on first/last-frame shots; gemini-web measured each one against its 720p and
-# replaced a trembling one by the anchored film (docs/video-jitter.md). Numbers: global/local px of a 1920 frame.
+# Flow's 1080p upscale trembles on first/last-frame shots and rings every edge with a halo; gemini-web fixed each one
+# against its 720p, the download kept as raw_file (docs/video-jitter.md). Numbers: global/local px of a 1920 frame.
 jq -r 'def pair: map(tostring) | join("/");
   (.variants // [.])[] | select(has("ref720")) | .steady as $s
   | if .ref720 == null then "jitter=unmeasured dest=\(.dest) reason=its 720p was not saved"
     elif $s == null or ($s.error // null) != null then "jitter=unmeasured dest=\(.dest) ref720_file=\(.ref720) error=\($s.error)"
     else "jitter=\($s.raw | pair) ref720=\($s.ref | pair) steadied=\($s.steadied)"
-      + (if $s.fixed then " fixed=\($s.fixed | pair)" else "" end) + " dest=\(.dest) ref720_file=\(.ref720)" end' <<<"$result"
+      + (if $s.fixed then " fixed=\($s.fixed | pair)" else "" end) + " cleaned=\($s.cleaned // false)"
+      + (if $s.reason then " reason=\($s.reason)" else "" end) + " dest=\(.dest) ref720_file=\(.ref720)"
+      + (if $s.raw_file then " raw_file=\($s.raw_file)" else "" end) end' <<<"$result"
 charged=$(jq -r '.charged // empty' <<<"$result")
 if [ -n "$charged" ] && [ "$charged" != "$(jq -r '.cost // empty' <<<"$result")" ]; then
   printf 'gemini-video: Flow charged %s credits, the manifest says %s; update share/image-caps/gemini.json\n' \

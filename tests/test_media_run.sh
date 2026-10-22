@@ -29,6 +29,15 @@ EOF
   chmod +x "$BIN/$1"
 }
 for script in $(cat "$CAPS"/*.json | jq -r '.scripts // {} | .[]' | sort -u) image-fanout; do fake "$script"; done
+cat >"$BIN/video-jitter" <<'EOF'
+#!/usr/bin/env bash
+: >"$FAKE_LOG/video-jitter.args"
+for arg in "$@"; do printf '%s\0' "$arg" >>"$FAKE_LOG/video-jitter.args"; done
+cat "$DOOR_ROWS" 2>/dev/null
+exit 0
+EOF
+chmod +x "$BIN/video-jitter"
+export DOOR_ROWS="$WORK/door-rows"
 cat >"$WORK/worker-pick" <<'EOF'
 #!/usr/bin/env bash
 [ "$*" = '--account zeta --role image' ] && printf 'zacct\n'
@@ -184,8 +193,41 @@ PATH="$WORK/shim:$PATH" run image --vendor zeta -- --dest /tmp/a.png --prompt x
 [ "$rc" = 0 ] && [ "$(wc -c <"$WORK/jq-forks")" -le 3 ] || fail "a one-vendor run forked jq $(wc -c <"$WORK/jq-forks") times"
 ok
 
+# A frame cut from a registered Flow upscale is swapped for its clean one before the script sees it, in every spelling
+# of an image argument: an image job asks for it cleaned at its size, a video job for its 720p's; one changed after the
+# cut goes as given with the clean frame named.
+touch "$WORK/a.png" "$WORK/b.PNG" "$WORK/c.jpg" "$WORK/d.png"
+for x in a.png b.PNG c.jpg; do
+  jq -nc --arg i "$WORK/$x" --arg s "$WORK/f/${x%.*}-clean.png" '{verdict: "swap", image: $i, swapped: $s, film: "/v/u.mp4", frame: 5, as: "cleaned"}'
+done >"$DOOR_ROWS"
+jq -nc --arg i "$WORK/d.png" --arg s "$WORK/f/d-clean.png" '{verdict: "edited", image: $i, swapped: $s, film: "/v/u.mp4", frame: 7, as: "cleaned"}' >>"$DOOR_ROWS"
+run image --vendor zeta -- --edit "$WORK/a.png" --ref="$WORK/b.PNG" --keyframe "$WORK/c.jpg@2.5" --ref "$WORK/d.png" \
+  --ref /nonexistent/e.png --prompt x
+[ "$rc" = 0 ] && same_args zeta-image --edit "$WORK/f/a-clean.png" --ref="$WORK/f/b-clean.png" --keyframe "$WORK/f/c-clean.png@2.5" \
+  --ref "$WORK/d.png" --ref /nonexistent/e.png --prompt x || fail "the door did not swap the upscale frames: $(cat "$WORK/err")"
+ok
+same_args video-jitter door "$WORK/a.png" "$WORK/b.PNG" "$WORK/c.jpg" "$WORK/d.png" --clean ||
+  fail "the door was not asked about each image on disk, cleaned"
+ok
+grep -qxF "swapped=$WORK/f/a-clean.png for=$WORK/a.png (frame 5 of Flow's 1080p upscale /v/u.mp4, cleaned of the halos)" "$WORK/err" &&
+  grep -qxF "media-run: $WORK/d.png is frame 7 of Flow's 1080p upscale /v/u.mp4, changed after the cut, so its halos go into the result; redo the change on the same frame, cleaned of the halos: $WORK/f/d-clean.png" "$WORK/err" ||
+  fail "the door's swaps were not reported: $(cat "$WORK/err")"
+ok
+jq -nc --arg i "$WORK/a.png" --arg s "$WORK/f/a-720.png" '{verdict: "swap", image: $i, swapped: $s, film: "/v/u.mp4", frame: 5, as: "720p"}' >"$DOOR_ROWS"
+run video --vendor grok -- --dest /tmp/a.mp4 --first-frame "$WORK/a.png" --prompt x
+[ "$rc" = 0 ] && same_args grok-video --dest /tmp/a.mp4 --first-frame "$WORK/f/a-720.png" --prompt x &&
+  same_args video-jitter door "$WORK/a.png" &&
+  grep -qxF "swapped=$WORK/f/a-720.png for=$WORK/a.png (frame 5 of Flow's 1080p upscale /v/u.mp4, its 720p, without the halos)" "$WORK/err" ||
+  fail "a video job did not get the 720p's frame: $(cat "$WORK/err")"
+ok
+run sfx --vendor zeta -- --dest /tmp/a.wav --ref "$WORK/a.png"
+[ "$rc" = 0 ] && [ ! -e "$LOG/video-jitter.args" ] && same_args zeta-sfx --dest /tmp/a.wav --ref "$WORK/a.png" ||
+  fail "a sound job went through the image door"
+ok
+rm -f "$DOOR_ROWS"
+
 # No vendor literal in the door itself.
 [ -z "$(grep -nE 'codex|gemini|grok' "$MEDIA_RUN")" ] || fail "media-run names a vendor: $(grep -nE 'codex|gemini|grok' "$MEDIA_RUN")"
 ok
 
-echo "PASS: $asserts asserts; media-run passes the prompt and every argument to the vendor script or image-fanout byte for byte, takes its vendors and kinds from the manifests alone (a fourth fake vendor and kind run with no code change), fans out on several vendors, --takes or --jobs, returns the script's exit code, and leaves a work-line pointer with the account, the media tag and gen/edit"
+echo "PASS: $asserts asserts; media-run passes the prompt and every argument to the vendor script or image-fanout byte for byte (a registered upscale's frame swapped for its clean one), takes its vendors and kinds from the manifests alone (a fourth fake vendor and kind run with no code change), fans out on several vendors, --takes or --jobs, returns the script's exit code, and leaves a work-line pointer with the account, the media tag and gen/edit"

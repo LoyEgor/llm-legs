@@ -2,7 +2,7 @@
 
 Read this before you write a `gemini-video` prompt or plan a sequence of clips. It combines Google's
 official guidance (sources at the end) with what we measured on Flow. Facts about
-the harness itself (flags, credits, exits) are in `docs/image-vendors/gemini.md`; 1080p steadying in
+the harness itself (flags, credits, exits) are in `docs/image-vendors/gemini.md`; 1080p steadying and cleaning in
 `docs/video-jitter.md`.
 
 ## Pick the input

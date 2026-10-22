@@ -1583,8 +1583,8 @@ def ref720_path(path: Path) -> Path:
 
 
 def save_ref720(page, account: str, project: str, upscale: dict) -> str | None:
-    """The 720p of the same media beside its 1080p upscale: the steady geometry steady_upscales anchors the upscale
-    to, kept so a later cut can be re-anchored. A missing one costs only the steadying, never the clip."""
+    """The 720p of the same media beside its 1080p upscale: the steady, halo-free picture fix_upscales holds the
+    upscale to, kept so a later cut can be re-anchored. A missing one costs only the fix, never the clip."""
     ref = ref720_path(upscale["path"])
     try:
         if upscale.get("url"):
@@ -1600,13 +1600,14 @@ def save_ref720(page, account: str, project: str, upscale: dict) -> str | None:
 
 
 # Flow's "1080p Upscaled" moves each frame up to ~1 px and redraws fine detail per frame on first/last-frame shots
-# (since Omni 1.1 Flash, 2026-08); the 720p of the same media is steady. docs/video-jitter.md.
+# (since Omni 1.1 Flash, 2026-08), and rings every contrast edge with a halo; the 720p of the same media has neither.
+# docs/video-jitter.md.
 JITTER = Path(__file__).resolve().parent.parent / "bin" / "video-jitter"
 
 
-def steady_upscales(result: dict) -> dict:
-    """Each upscale measured against its 720p and, when it trembles, replaced by the anchored and settled film; run
-    after the account's lock is released, since it is minutes of CPU and no Flow."""
+def fix_upscales(result: dict) -> dict:
+    """Each upscale fixed against its 720p (video-jitter fix: steadied when it trembles, its halos clamped), the
+    download kept beside it; run after the account's lock is released, since it is minutes of CPU and no Flow."""
     variants = result.get("variants") or [result]
     if not any(variant.get("ref720") for variant in variants):
         return result
@@ -1614,18 +1615,21 @@ def steady_upscales(result: dict) -> dict:
         if not variant.get("ref720"):
             continue
         started = time.monotonic()
-        run = subprocess.run([str(JITTER), "steady", variant["dest"], "--ref720", variant["ref720"]],
+        # --register: video-jitter's own register, read by media-run's door.
+        run = subprocess.run([str(JITTER), "fix", variant["dest"], "--ref720", variant["ref720"], "--register"],
                              capture_output=True, text=True)
         try:
             variant["steady"] = json.loads(run.stdout.strip().splitlines()[-1])
         except (IndexError, ValueError):
             variant["steady"] = {"error": (run.stderr.strip().splitlines() or [f"exit {run.returncode}"])[-1][:300]}
-        # Whether Flow still trembles, and what steadying costs, read back over time.
-        ledger({"event": "steady", "account": result.get("account"), "media_id": variant.get("media_id"),
-                "dest": variant["dest"], "secs": round(time.monotonic() - started, 1),
-                **{k: variant["steady"][k] for k in ("raw", "ref", "fixed", "steadied", "error") if k in variant["steady"]}})
         with contextlib.suppress(OSError):
             variant["bytes"] = Path(variant["dest"]).stat().st_size
+        # Whether Flow still trembles and overshoots, and what the fix costs, read back over time; the bytes let
+        # --extend know the fixed file as its media's.
+        ledger({"event": "steady", "account": result.get("account"), "media_id": variant.get("media_id"),
+                "dest": variant["dest"], "secs": round(time.monotonic() - started, 1), "bytes": variant.get("bytes"),
+                **{k: variant["steady"][k] for k in ("raw", "ref", "fixed", "steadied", "cleaned", "clamped",
+                                                     "colour_shift", "sharpness", "error") if k in variant["steady"]}})
     result["steady"] = variants[0].get("steady")
     result["ref720"] = variants[0].get("ref720")
     result["bytes"] = variants[0].get("bytes")
@@ -2210,7 +2214,7 @@ def cmd_generate(args) -> None:
         else:
             result = None
     if result is not None:
-        emit(steady_upscales(result))
+        emit(fix_upscales(result))
         return
     raise Failure(min(failure.code for _, failure in skipped),
                   "no signed-in Flow account could take the job ("
@@ -2291,7 +2295,7 @@ def cmd_fetch(args) -> None:
                 if upscaled:
                     saved[-1]["ref720"] = save_ref720(page, args.account, project,
                                                       {"path": dest, "scene": opened["scene"]})
-    emit(steady_upscales({"ok": True, "account": args.account, **saved[0],
+    emit(fix_upscales({"ok": True, "account": args.account, **saved[0],
                           **({"project": project, "variants": saved} if prompt is not None else {})}))
 
 

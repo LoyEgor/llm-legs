@@ -11,7 +11,9 @@ usage() {
 usage: video-chain last-frame <clip> <out.png|.jpg>
        video-chain end-motion <clip> [--tail <seconds>] [--strip <out.png>]
        video-chain join <out.mp4> <clip> <clip>...
-  last-frame  the clip's final frame, to pass as the next clip's --first-frame
+  last-frame  the clip's final frame, to pass as the next clip's --first-frame; a Flow 1080p (or its <stem>.raw)
+              gives it from the 720p of the same media saved beside it (<stem>.720p, its end matching), printed
+              as from=
   end-motion  how much the last second moves: motion=still|moving score=N (strongest 16x9 block's mean
               frame-to-frame change, 0-255; below 4 is still); --strip saves three frames across the
               tail side by side, so the direction of motion can be read before chaining
@@ -55,17 +57,35 @@ tail_start() { # clip seconds
   awk -v d="$(seconds_of "$1")" -v t="$2" 'BEGIN { s = d - t; printf "%.3f", (s > 0 ? s : 0) }'
 }
 
+same_media() { # clip twin: their last half seconds at 64x36 grey, 38 dB or closer (a 720p and its upscale read 43-48,
+  # another take from the same start frame 15-32)
+  "$ffmpeg_cmd" -nostdin -v info -ss "$(tail_start "$1" 0.5)" -i "$1" -ss "$(tail_start "$2" 0.5)" -i "$2" -an -lavfi \
+    '[0:v]scale=64:36:flags=area,format=gray[a];[1:v]scale=64:36:flags=area,format=gray[b];[a][b]psnr' -f null - 2>&1 |
+    awk -F'average:' '/PSNR/ { split($2, v, " "); found = 1; ok = v[1] == "inf" || v[1] + 0 >= 38 } END { exit !(found && ok) }'
+}
+
 last_frame() {
   [ "$#" -eq 2 ] || usage
-  need_clip "$1"
+  local clip=$1 twin
+  need_clip "$clip"
   case "$(printf '%s' "${2##*.}" | tr '[:upper:]' '[:lower:]')" in png | jpg | jpeg) ;; *) usage ;; esac
+  # Flow's 1080p upscale rings every edge with a halo and invents texture, and a take started from its frame carries
+  # them even at 720p (docs/video-jitter.md); the 720p of the same media holds the same frame clean.
+  twin=${clip%.*}
+  twin=${twin%.raw}.720p.${clip##*.}
+  if [ "$twin" != "$clip" ] && [[ "$(probe "$twin" stream=width)" =~ ^[0-9] ]] && same_media "$clip" "$twin"; then
+    clip=$twin
+  else
+    twin=
+  fi
   rm -f "$2"
   # -update keeps overwriting one image, so what remains is the very last decoded frame. swscale's fast YUV->RGB reads
   # 1-2 of 255 dark, which a frame chain would add on every link.
-  "$ffmpeg_cmd" -v error -y -ss "$(tail_start "$1" 0.5)" -i "$1" -an -update 1 \
+  "$ffmpeg_cmd" -v error -y -ss "$(tail_start "$clip" 0.5)" -i "$clip" -an -update 1 \
     -vf scale=flags=accurate_rnd+full_chroma_int+full_chroma_inp -q:v 2 "$2"
-  [ -s "$2" ] || say "ffmpeg wrote no frame from $1"
-  printf 'frame=%s\nsize=%s\n' "$2" "$(probe "$1" stream=width,height | tr ',' 'x')"
+  [ -s "$2" ] || say "ffmpeg wrote no frame from $clip"
+  printf 'frame=%s\nsize=%s\n' "$2" "$(probe "$clip" stream=width,height | tr ',' 'x')"
+  [ -z "$twin" ] || printf 'from=%s\n' "$twin"
 }
 
 end_motion() {

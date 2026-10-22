@@ -1166,14 +1166,17 @@ assert {k: row.get(k) for k in ("account", "media_id", "dest", "state", "scene",
      "bytes": len(clip_bytes)}, row
 grid.shown, grid.items = 2, []
 g.JITTER = hd / "jitter-stub"
-g.JITTER.write_text("#!/bin/sh\necho \"$*\" >\"$0.args\"; echo '{\"steadied\": \"none\"}'\n")
+g.JITTER.write_text("#!/bin/sh\necho \"$*\" >\"$0.args\"; printf fixed >>\"$2\"; echo '{\"steadied\": \"none\"}'\n")
 g.JITTER.chmod(0o755)
 with contextlib.redirect_stdout(out := io.StringIO()):
     g.cmd_fetch(types.SimpleNamespace(account="rich", media_id="m-1", dest=str(hd / "u.mp4"), resolution="1080p"))
 assert grid.items == ["1080p Upscaled", g.ORIGINAL_SIZE] and grid.shown == 2 and not grid.rpc, vars(grid)
 fetched = json.loads(out.getvalue())
 assert fetched["ref720"] == str(hd / "u.720p.mp4") and fetched["steady"] == {"steadied": "none"}, fetched
-assert (hd / "jitter-stub.args").read_text().split() == ["steady", str(hd / "u.mp4"), "--ref720", str(hd / "u.720p.mp4")]
+assert (hd / "jitter-stub.args").read_text().split() == ["fix", str(hd / "u.mp4"), "--ref720", str(hd / "u.720p.mp4"),
+                                                         "--register"]
+# The fix rewrites the file, and Extend still knows it as its media's.
+assert g.extend_source(str(hd / "u.mp4"), {"sources": ["fast"]})["media_id"] == "m-1"
 for media_id, said in (("m-none", "has no Flow project for clip m-none"), ("m-gone", "no tile in its grid"),
                        ("m-elsewhere", "Flow no longer lists clip m-elsewhere")):
     if media_id == "m-elsewhere":

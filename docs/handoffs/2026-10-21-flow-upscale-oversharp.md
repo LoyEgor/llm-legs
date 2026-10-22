@@ -1,6 +1,11 @@
 # Hand-off: Flow's "1080p Upscaled" download is oversharp
 
-Status: ready to integrate (2026-10-22). The clean is verified by Egor's eye; read "State, 2026-10-22" first.
+Status: integrated 2026-10-22 into llm-legs. `video-jitter fix` steadies and clamps (k3 m4) every Flow 1080p in one
+decode and one encode at fetch, the download kept as `<stem>.raw.mp4`; media-run's door swaps a frame cut from a
+registered upscale for a clean one (the 720p's for a video, cleaned at its size for an image edit), and
+`video-chain last-frame` reads the 720p beside the clip when it ends on the same picture. Lineage (`tainted`) is
+not built: only an edited frame escapes the swap, and the door names it. See `docs/video-jitter.md`.
+Left to «Логотип CRM для арбористов»: the deckkit gate (point 3 below), the GPT start-frame test (point 4 of the guard).
 To: whoever Egor gives the video post-processing integration (the chat that integrated `video-jitter`).
 From: the arbostar-logo chat, 2026-10-21. Code and evidence: `~/Arbostar/arbostar-logo/tools/oversharp.py`,
 the review page `site/oversharp/` (served at http://localhost:8765/oversharp/index.html by `tools/serve.py`) and his marks

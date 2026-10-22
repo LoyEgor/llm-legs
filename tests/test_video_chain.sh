@@ -47,6 +47,27 @@ ffmpeg -v error -f lavfi -i color=c=0x4a8030:s=320x180:d=0.5:r=24 -c:v libx264 -
 assert run last-frame "$WORK/green.mp4" "$WORK/green.png"
 assert test "$(ffmpeg -v error -i "$WORK/green.png" -vf 'crop=1:1:160:90' -f rawvideo -pix_fmt rgb24 - | od -An -tu1 \
   | xargs)" = "74 128 48"
+# A Flow 1080p's frame comes from the 720p of the same media beside it: a take started from the upscale's frame
+# inherits its halos. A 720p beside it that ends on another picture is not its twin.
+ffmpeg -v error -f lavfi -i color=c=0x4a8030:s=480x270:d=0.5:r=24 -c:v libx264 -pix_fmt yuv420p "$WORK/up.mp4" \
+  || fail "no upscale fixture"
+cp "$WORK/up.mp4" "$WORK/up.raw.mp4"
+cp "$WORK/green.mp4" "$WORK/up.720p.mp4"
+for clip in up up.raw; do
+  assert run last-frame "$WORK/$clip.mp4" "$WORK/$clip.png"
+  assert out "from=$WORK/up.720p.mp4"
+  assert out "size=320x180"
+  assert test "$(ffmpeg -v error -i "$WORK/$clip.png" -vf 'crop=1:1:160:90' -f rawvideo -pix_fmt rgb24 - | od -An -tu1 \
+    | xargs)" = "74 128 48"
+done
+assert run last-frame "$WORK/up.720p.mp4" "$WORK/twin.png"
+assert_fails grep -q '^from=' "$WORK/out"
+cp "$STILL" "$WORK/other.mp4"
+cp "$WORK/green.mp4" "$WORK/other.720p.mp4"
+assert run last-frame "$WORK/other.mp4" "$WORK/other.png"
+assert_fails grep -q '^from=' "$WORK/out"
+assert test "$(ffmpeg -v error -i "$WORK/other.png" -vf 'crop=1:1:160:90' -f rawvideo -pix_fmt rgb24 - | od -An -tu1 \
+  | xargs)" != "74 128 48"
 assert test "$(rc last-frame "$RED_BLUE" "$WORK/last.gif")" = 2
 assert test "$(rc last-frame "$WORK/missing.mp4" "$WORK/x.png")" = 2
 printf 'not a video' >"$WORK/text.mp4"
@@ -96,4 +117,4 @@ assert run join "$WORK/mixed.mp4" "$F601" "$F709"
 assert near "$(px "$WORK/mixed.mp4" 6)" "$(px "$F601" 6)"
 assert near "$(px "$WORK/mixed.mp4" 18)" "$(px "$F709" 6)"
 
-echo "PASS: $asserts asserts; last-frame returns the very last frame in its exact colours, end-motion tells a still tail from a moving one and tiles a direction strip, join cuts clips of any size, rate and audio into one at the first clip's format and colour tags with audio held to each clip's video and each clip's colours kept, and usage errors exit 2"
+echo "PASS: $asserts asserts; last-frame returns the very last frame in its exact colours, from the 720p twin of a Flow 1080p, end-motion tells a still tail from a moving one and tiles a direction strip, join cuts clips of any size, rate and audio into one at the first clip's format and colour tags with audio held to each clip's video and each clip's colours kept, and usage errors exit 2"

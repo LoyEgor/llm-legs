@@ -97,6 +97,50 @@ else
     { printf 'media-run: name --vendor (one of: %s) or --vendors\n' "$known_list" >&2; exit 2; }
 fi
 
+# A frame cut from Flow's 1080p upscale carries its halos into whatever is made from it, even at 720p, so an image
+# input that is a registered upscale's frame is swapped for the same frame of its 720p, or, for an image to edit,
+# where the 720p would cost its detail, for that frame cleaned at its size (docs/video-jitter.md).
+if [ "$kind" = image ] || [ "$kind" = video ]; then
+  args=("$@") inputs=() door_flags=()
+  [ "$kind" = video ] || door_flags=(--clean)
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      --edit | --ref | --first-frame | --last-frame | --keyframe) value=${args[i + 1]-} ;;
+      --edit=* | --ref=* | --first-frame=* | --last-frame=* | --keyframe=*) value=${args[i]#*=} ;;
+      *) continue ;;
+    esac
+    case "${args[i]}" in --keyframe*) value=${value%@*} ;; esac
+    case "$(printf '%s' "${value##*.}" | tr '[:upper:]' '[:lower:]')" in
+      png | jpg | jpeg | webp) [ ! -f "$value" ] || inputs+=("$value") ;;
+    esac
+  done
+  if [ "${#inputs[@]}" -gt 0 ]; then
+    rows=$("$bin_dir/video-jitter" door "${inputs[@]}" "${door_flags[@]}" 2>/dev/null) ||
+      printf 'media-run: the upscale check failed; the images go as given\n' >&2
+    while IFS=$'\t' read -r verdict image swapped film frame as; do
+      [ -n "$verdict" ] || continue
+      clean_one='its 720p, without the halos'
+      [ "$as" = 720p ] || clean_one='cleaned of the halos'
+      if [ "$verdict" = edited ]; then
+        printf 'media-run: %s is frame %s of Flow'\''s 1080p upscale %s, changed after the cut, so its halos go into the result; redo the change on the same frame, %s: %s\n' \
+          "$image" "$frame" "$film" "$clean_one" "$swapped" >&2
+        continue
+      fi
+      for ((i = 0; i < ${#args[@]}; i++)); do
+        case "${args[i]}" in
+          "$image") args[i]=$swapped ;;
+          "$image"@*) args[i]=$swapped@${args[i]#"$image"@} ;;
+          *="$image") args[i]=${args[i]%%=*}=$swapped ;;
+          *="$image"@*) args[i]=${args[i]%%=*}=$swapped@${args[i]#*"$image"@} ;;
+        esac
+      done
+      printf 'swapped=%s for=%s (frame %s of Flow'\''s 1080p upscale %s, %s)\n' \
+        "$swapped" "$image" "$frame" "$film" "$clean_one" >&2
+    done < <(jq -r '[.verdict, .image, .swapped, .film, .frame, .as] | @tsv' <<<"${rows:-}" 2>/dev/null)
+    set -- "${args[@]}"
+  fi
+fi
+
 takes=false dest_dir='' dry_run=false account='' route=''
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
