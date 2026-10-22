@@ -666,23 +666,6 @@ if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null && [ -n "$ctx_tokens"
   ctx_pct=$(( (ctx_tokens * 100 + ctx_size / 2) / ctx_size ))
 fi
 
-# The context-nudge hook only sees PostToolUse payloads, which carry no window
-# size, and auto-compaction fires at a fraction of that window - so this render,
-# which does get it, publishes it per session. Rewritten only on change: an
-# unchanged file keeps its mtime, which is what makes a stale one identifiable.
-if [ -n "$session_id" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
-  nudge_dir="${CONTEXT_NUDGE_STATE_DIR:-$HOME/.cache/claude-context-nudge}"
-  window_file="$nudge_dir/$session_id.window"
-  window_seen=""
-  [ -r "$window_file" ] && read -r window_seen < "$window_file" 2>/dev/null
-  if [ "$window_seen" != "$ctx_size" ] && ensure_dir "$nudge_dir" 2>/dev/null; then
-    # No sweep here: hooks/context-nudge.sh (claude-setup) sweeps this directory daily.
-    window_tmp="$window_file.tmp.$$"
-    printf '%s\n' "$ctx_size" > "$window_tmp" 2>/dev/null &&
-      mv "$window_tmp" "$window_file" 2>/dev/null || rm -f "$window_tmp" 2>/dev/null
-  fi
-fi
-
 rl_merge() {
   # An empty/invalid existing file must degrade to {}: feeding it to --argjson
   # makes jq fail every render and the corrupt file would never self-heal.
@@ -1296,7 +1279,8 @@ resolve_parent_transcript() {
 # A compaction boundary scrolls out of the scan window once the re-emitted burst behind
 # it outgrows the window, and the scan then stops at the first re-emitted assistant and
 # reports its pre-compact total as live. The sidecar remembers the newest boundary across
-# renders; the context-nudge hook writes the same file under the same rules.
+# renders; the context-nudge hook writes the same file under the same rules. No sweep here:
+# hooks/context-nudge.sh (claude-setup) sweeps this directory daily.
 boundary_seed=""
 if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
   bnd_dir="${CONTEXT_NUDGE_STATE_DIR:-$HOME/.cache/claude-context-nudge}"

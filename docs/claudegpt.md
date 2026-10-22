@@ -137,23 +137,17 @@ safety buffers are disabled.
 
 ## Thresholds
 
-Three numbers govern a gateway chat, and **872000 is the only literal** — the launcher's
+**872000 is the only literal** governing a gateway chat — the launcher's
 `CONTEXT_WINDOW` (`bin/claudegpt`), which becomes the router's `--context-window` and the
 chat's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
-(`docs/shared-invariants.md` row `ce`). The other two are derived from it and are spelled
-nowhere:
+(`docs/shared-invariants.md` row `ce`). What follows from it is spelled nowhere:
 
 - **Claude Code's autocompact trigger, 839,000** — the window minus the 20,000-token output
   reserve and 13,000 summary tokens, at default output settings.
-- **The context nudge's ceiling, 839,000** — `../claude-setup/hooks/context-nudge.sh` reads
-  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` out of the environment and subtracts its own `RESERVE`
-  of 33,000, which is those same two reserves added up. So the nudge speaks at the cut
-  Claude Code actually compacts at, by construction rather than by coincidence; without the
-  variable it falls back to its percentage-of-window rule.
 - **The statusline's `ctx` cell, 872,000** — a percentage of the window the harness payload
   carries, so it holds no constant of its own and follows a relaunch on a different window.
 
-Raising the window therefore moves all three, and only `CONTEXT_WINDOW` is edited.
+Raising the window therefore moves both, and only `CONTEXT_WINDOW` is edited.
 
 CLIProxyAPI 7.2.152 translates Codex Responses usage into Anthropic fields:
 `input_tokens` excludes `input_tokens_details.cached_tokens`, cache reads are

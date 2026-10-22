@@ -239,12 +239,8 @@ assert doc_has 'The `anthropic.ccr.` model-id prefix'
 assert grep -Fqx 'FAMILIES = ("sol", "astra")' "$CLAUDEGPT"
 assert grep -Fq '"models", "--family", family' "$CLAUDEGPT"
 
-# --- Row ce: gateway context window and its derived cuts ---------------------
-# The nudge ceiling and Claude Code's autocompact trigger are the SAME number by construction: a
-# window raised in the launcher alone would leave the nudge speaking 33000 tokens off the cut.
+# --- Row ce: gateway context window and its derived cut ----------------------
 CG_DOC="$ROOT/docs/claudegpt.md"
-CG_NUDGE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/context-nudge.sh"
-assert test -r "$CG_NUDGE"
 CG_WINDOW=$(grep -oE '^CONTEXT_WINDOW = [0-9]+' "$CLAUDEGPT" | grep -oE '[0-9]+')
 assert eq "$CG_WINDOW" 872000
 assert doc_has "\`$CG_WINDOW\`"
@@ -254,21 +250,15 @@ assert grep -Fq "$CG_WINDOW" "$CG_DOC"
 assert eq "$(grep -cE '\b872000\b' "$CLAUDEGPT")" 1
 assert grep -Fq 'str(CONTEXT_WINDOW)' "$CLAUDEGPT"
 assert grep -Fq '"--context-window", str(CONTEXT_WINDOW)' "$CLAUDEGPT"
-# The nudge derives its ceiling from the environment and never learns the window itself.
-CG_RESERVE=$(grep -oE 'RESERVE:-[0-9]+' "$CG_NUDGE" | grep -oE '[0-9]+')
-assert eq "$CG_RESERVE" 33000
-assert grep -Fq 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' "$CG_NUDGE"
-# The doc's two halves of that reserve must add up to it, and its cut must be the subtraction.
+# The doc's cut must be the window less the two reserves it names.
 read -r cg_output_reserve cg_summary_reserve <<<"$(sed -nE \
   's/.*subtracts up to ([0-9,]+) output tokens and ([0-9,]+) summary tokens.*/\1 \2/p' "$CG_DOC" |
   head -1 | tr -d ',')"
-assert eq "$((cg_output_reserve + cg_summary_reserve))" "$CG_RESERVE"
-CG_CUT=$((CG_WINDOW - CG_RESERVE))
+CG_CUT=$((CG_WINDOW - cg_output_reserve - cg_summary_reserve))
 assert eq "$CG_CUT" 839000
 assert grep -Fq "$(sed -E 's/([0-9])([0-9]{3})$/\1,\2/' <<<"$CG_CUT")" "$CG_DOC"
-# Derived means derived: no site holds either number in CODE. The nudge's own comment cites both,
-# which is the one place they may be written down outside this doc and the launcher.
-for cg_site in "$CLAUDEGPT" "$STATUSLINE" "$CG_NUDGE"; do
+# Derived means derived: no site holds either number in CODE.
+for cg_site in "$CLAUDEGPT" "$STATUSLINE"; do
   cg_code=$(grep -vE '^[[:space:]]*#' "$cg_site")
   assert eq "$(grep -cE "\\b${CG_CUT}\\b" <<<"$cg_code")" 0
   [ "$cg_site" = "$CLAUDEGPT" ] ||

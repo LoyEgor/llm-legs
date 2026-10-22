@@ -2511,20 +2511,6 @@ t_reset; t_boundary $((NOW - 600)); t_assist $((NOW - 300)); t_boundary $((NOW -
 old_boundary=$(run_statusline "$(statusline_payload ctx-boundary-order "$(warm_extra "$TRANSCRIPT" 87 260000)")")
 assert grep -Fq "${DIM}? 51k${RESET}" <<< "$old_boundary"
 
-# The context-nudge hook needs the window size the render alone receives; it is
-# published per session and rewritten only when it changes.
-window_file="$HOME/.cache/claude-context-nudge/ctx-window.window"
-window_extra=$(jq -cn --arg tp "$TRANSCRIPT" \
-  '{transcript_path:$tp,context_window:{context_window_size:200000,used_percentage:10,current_usage:{input_tokens:20000}}}')
-run_statusline "$(statusline_payload ctx-window "$window_extra")" > /dev/null
-assert_eq "200000" "$(cat "$window_file" 2>/dev/null)"
-touch -t 202001010000 "$window_file"
-run_statusline "$(statusline_payload ctx-window "$window_extra")" > /dev/null
-assert_eq "2020" "$(date -r "$window_file" +%Y)"
-window_1m=$(jq -c '.context_window.context_window_size = 1000000' <<< "$window_extra")
-run_statusline "$(statusline_payload ctx-window "$window_1m")" > /dev/null
-assert_eq "1000000" "$(cat "$window_file" 2>/dev/null)"
-
 # --- the .bnd sidecar: boundary knowledge that outlives the scan window ---
 NUDGE_DIR="$HOME/.cache/claude-context-nudge"
 bnd_file() { printf '%s/%s.bnd' "$NUDGE_DIR" "$1"; }
@@ -2606,17 +2592,15 @@ mid_boundary=$(run_statusline "$(statusline_payload "" "$(warm_extra "$TRANSCRIP
 assert grep -Fq "52k" <<< "$mid_boundary"
 assert test "${mid_boundary#*0k}" = "$mid_boundary"
 
-# Sweeping this directory is context-nudge.sh's job (claude-setup); the window
+# Sweeping this directory is context-nudge.sh's job (claude-setup); the sidecar
 # write path must leave even ancient files of other sessions alone.
 t_reset; t_assist $((NOW - 5))
-printf 'stale\n' > "$NUDGE_DIR/old.window"
-touch -t 202001010000 "$NUDGE_DIR/old.window"
-prune_extra=$(jq -cn --arg tp "$TRANSCRIPT" \
-  '{transcript_path:$tp,context_window:{context_window_size:200000,used_percentage:10,current_usage:{input_tokens:20000}}}')
-run_statusline "$(statusline_payload ctx-bnd-prune "$prune_extra")" >/dev/null
-assert test -f "$NUDGE_DIR/ctx-bnd-prune.window"
-assert test -f "$NUDGE_DIR/old.window"
-rm -f "$NUDGE_DIR/old.window" "$NUDGE_DIR/ctx-bnd-prune.window"
+printf 'stale\n' > "$(bnd_file old)"
+touch -t 202001010000 "$(bnd_file old)"
+run_statusline "$(statusline_payload ctx-bnd-prune "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
+assert test -f "$(bnd_file ctx-bnd-prune)"
+assert test -f "$(bnd_file old)"
+rm -f "$(bnd_file old)" "$(bnd_file ctx-bnd-prune)"
 
 # --- a known boundary must not stop the window before it has been reached ---
 # The sidecar knows the boundary from the whole file, i.e. from a position the
