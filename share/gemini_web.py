@@ -65,12 +65,12 @@ WALL_SECONDS = 6 * 3600
 FLAG_WALL_S = 48 * 3600
 FLAG_BURST_S = 3600
 # Flow takes (images, clips) one account may start in 24 h. Five accounts were flagged at their 26th-32nd on
-# 2026-10-15, before the session fixes of 2026-10-16; four ran 20-25 unflagged on 2026-10-16 and 10-18. A spent
-# budget climbs FLOW_CLIMB once a day while the account has no flag for FLOW_CLIMB_HOLD_S; a flag sets it to two
-# thirds of the 24 h count, never below FLOW_DAY_TAKES. com made 109 unflagged: its meta carries flow_uncapped,
-# no budget until its first flag, and so does notcom, the same owner's (Egor 2026-10-19). The menu mirrors both
-# constants (shared-invariants row de).
-FLOW_DAY_TAKES = 25
+# 2026-10-15, before the session fixes of 2026-10-16; four ran 20-25 unflagged on 2026-10-16 and 10-18. An account
+# Flow has not trusted yet, a new one or one back from a flag, starts at FLOW_DAY_TAKES (Egor 2026-10-22: nothing
+# shows 25 holds for a pessimised account) and a spent budget climbs FLOW_CLIMB once a day while the account has no
+# flag for FLOW_CLIMB_HOLD_S. com made 109 unflagged: its meta carries flow_uncapped, no budget until its first flag,
+# and so does notcom, the same owner's (Egor 2026-10-19). The menu mirrors both constants (shared-invariants row de).
+FLOW_DAY_TAKES = 10
 FLOW_DAY_S = 24 * 3600
 FLOW_CLIMB = 5
 FLOW_CLIMB_HOLD_S = 3 * FLOW_DAY_S
@@ -1404,9 +1404,7 @@ def wall_until(account: str, failure: Failure) -> float:
     if now - last >= FLAG_BURST_S:
         strikes = strikes + 1 if meta.get("saved_at", 0) < last else 1
     strikes = max(strikes, 1)
-    counted = [t for t in meta.get("flow_takes", []) if now - t < FLOW_DAY_S]
-    write_meta(account, flagged_at=int(now), flag_strikes=strikes, flow_uncapped=False,
-               flow_day_takes=max(FLOW_DAY_TAKES, len(counted) * 2 // 3))
+    write_meta(account, flagged_at=int(now), flag_strikes=strikes, flow_uncapped=False, flow_day_takes=FLOW_DAY_TAKES)
     return now + FLAG_WALL_S * 2 ** (strikes - 1)
 
 

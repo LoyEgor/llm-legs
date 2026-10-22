@@ -4614,7 +4614,7 @@ end
   assert(#tune == 1 and titleText(tune[1]) == unmeasured("fm", 30) and #redRuns(tune[1].title) == 0,
     "an unknown Flow Music total drew a bar or hid the balance in the reset column: " .. texts(tune))
   local egbor = mediaRows(menu, "egbor")
-  assert(#egbor == 2 and titleText(egbor[1]) == unmeasured("fv", "25/50") and titleText(egbor[2]) == walled("fm", now + 3600)
+  assert(#egbor == 2 and titleText(egbor[1]) == unmeasured("fv", "10/50") and titleText(egbor[2]) == walled("fm", now + 3600)
       and isRed(egbor[2]),
     "a gemini-web profile named apart from the roster did not map by its email, or kept an expired wall: "
       .. texts(egbor))
@@ -4659,7 +4659,7 @@ end
     menu = mediaMenu()
     local weekly = titleText(menu[accountIndex(menu, "bars") + 2])
     local bars = mediaRows(menu, "bars")
-    assert(#bars == 2 and titleText(bars[1]) == row("fv", "▓░░░░", "17%", "23/828")
+    assert(#bars == 2 and titleText(bars[1]) == row("fv", "▓░░░░", "17%", "8/828")
         and titleText(bars[2]) == row("fm", "░░░░░", "0%", day(now + 30 * 86400)) and #redRuns(bars[1].title) == 0,
       "the credit bars are wrong, or a cycle without a renewal date hid its balance or the takes left today: " .. texts(bars))
     assert(not submenuItem(accountItem(menu, "bars"), "Log in to Flow…"),
