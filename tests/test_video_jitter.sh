@@ -19,4 +19,10 @@ assert "$UV" run -q --script "$ROOT/share/video_jitter.py" settle "$WORK/in.mp4"
 assert [ "$(tags "$WORK/out.mp4")" = "$(tags "$WORK/in.mp4")" ]
 assert [ "$(tags "$WORK/out.mp4")" = "tv,smpte170m,iec61966-2-1,bt709" ]
 
+# An untagged source stays untagged: a BT.601 tag on its re-encode made 11 cleaned deck films jump in brightness
+# against their sources in Egor's browser (2026-10-22), since players read the untagged one differently.
+ffmpeg -nostdin -v error -f lavfi -i color=c=0x4a8030:s=320x180:r=24:d=0.5 -c:v libx264 -pix_fmt yuv420p "$WORK/bare.mp4"
+assert "$UV" run -q --script "$ROOT/share/video_jitter.py" settle "$WORK/bare.mp4" "$WORK/bare-out.mp4" 2>"$WORK/err"
+assert [ "$(tags "$WORK/bare-out.mp4")" = "$(tags "$WORK/bare.mp4")" ]
+
 printf 'PASS: %s asserts; a re-encode keeps its source colour tags\n' "$asserts"

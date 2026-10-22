@@ -70,8 +70,9 @@ def colour_filter(path) -> str:
     stream = (json.loads(run.stdout or "{}").get("streams") or [{}])[0]
     found = {TAGS[k]: v for k, v in stream.items() if k in TAGS and v not in ("unknown", "reserved")}
     matrix = "bt709" if found.get("colorspace") == "bt709" else "bt601"
-    tags = ":".join(f"{k}={v}" for k, v in found.items())
-    return f"scale=out_color_matrix={matrix}:out_range=tv:flags={SWS},format=yuv420p" + (f",setparams={tags}" if tags else "")
+    # a tag the source lacks stays unknown: scale would stamp bt470bg, which players read unlike the untagged source
+    tags = ":".join(f"{k}={found.get(k, 'unknown')}" for k in TAGS.values())
+    return f"scale=out_color_matrix={matrix}:out_range=tv:flags={SWS},format=yuv420p,setparams={tags}"
 
 
 def frames(path):
