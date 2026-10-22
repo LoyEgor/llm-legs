@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Read Egor's own Telegram chats and voice messages through the official API: share/tg_read.py.
+# Its Telethon lives in ~/.local/share/tg-read/.venv (python3 -m venv + pip install telethon).
+{
+set -u
+root=$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+venv=${TG_READ_VENV:-$HOME/.local/share/tg-read/.venv}
+[ -x "$venv/bin/python" ] || {
+  printf 'tg-read: no venv at %s — python3 -m venv "%s" && "%s/bin/pip" install telethon\n' "$venv" "$venv" "$venv" >&2
+  exit 4
+}
+exec "$venv/bin/python" "$root/share/tg_read.py" "$@"
+exit; }
