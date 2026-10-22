@@ -104,10 +104,11 @@ Build here, in this order:
 3. Later: the deckkit gate (the tremble gate skips 37 of 55 deck films).
 
 Still with the arbostar-logo chat; none of it blocks the above:
-- One time-boxed round against the texture the upscaler invents. Egor ranks the cases: a diagonal hatch in haze (227),
-  the worst; watercolour swirls on plain asphalt (269); stump rings turned into a woven mesh (243); camouflage blobs on
-  bark (275). Only methods that act on the whole frame, no zones. A winner becomes a `--fix` option, which the
-  integration then exposes as a flag.
+- Texture round done (arbostar df02cbc). The upscaler invents texture: a hatch in haze, swirls on asphalt, a mesh on
+  stump rings, camouflage on bark. No method fixes it on every film. The `--fix` option guided (the 720p with edges from
+  the clean) removes it, but on real detail it is about as soft as the 720p. Egor picks per film by eye: guided on 5
+  of 7 cards, plain clean where the upscaler added real detail (a concrete wall, lettering). For the integration this
+  is an opt-in flag; the default stays plain clean.
 - Deck films switch from the 720p fallback to cleaned 1080p.
 - The GPT start-frame test (point 4 below).
 
