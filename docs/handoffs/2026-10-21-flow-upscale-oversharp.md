@@ -99,6 +99,11 @@ Open, untried, do not lose:
 - A paid upscaler (Krea, Magnific) compared against the fixer: Egor's later option; never local heavy models, never his
   3090 for this.
 - Invented texture ("worms") has no detector: the same bark sits on films he passed.
+- `share/video_jitter.py` `colour_filter()` writes an untagged source back tagged bt470bg (it decodes and encodes BT.601,
+  so the pixels match): Chrome shows both alike, Safari on his iPad is unverified. For an untagged source leave the
+  matrix unspecified (arbostar's 11 cleans were remuxed with h264_metadata matrix_coefficients=2).
+- The clamp lowers the brightest 1 % by 10-17 levels on bright scenes (four-sides fleet 241/242, takes 305-308, 257):
+  Egor saw those films as darker, «просто тупо меньше света», although the mean does not move (under 0.5 of 255).
 
 ## Any-chat guard against upscale on upscale (Egor, 2026-10-22)
 
