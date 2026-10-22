@@ -44,7 +44,8 @@ The four measures (the module docstring holds the calibration):
 
 - Ship the file byte for byte: no re-encode, loudnorm, resample, trim, fade or limiter after `audiokit loop`.
 - In a page, `<audio loop>` restarts with the browser's own gap. Use Web Audio: fetch → `decodeAudioData` →
-  `AudioBufferSourceNode` with `loop = true` (sample-exact; the m4a's edit list gives Chrome and Safari the exact length).
+  `AudioBufferSourceNode` with `loop = true` (sample-exact: audiokit's m4a decodes to its exact length in Chrome and
+  Safari). A loop made elsewhere: `check --loop` names the `loopEnd` its tail needs.
 - A loop to 0.1 s is a slice of the take, not a new performance: it inherits the take's own slips (`check` on the
   take shows them as `listen`).
 
@@ -54,6 +55,7 @@ The four measures (the module docstring holds the calibration):
 |---|---|
 | ffmpeg decodes ~20 ms of AAC end padding past the container length | a gap and a grid shift at the wrap; read to the ffprobe duration |
 | Apple's encoders (`afconvert`, `aac_at`) pad ~600-700 samples | a gap ffmpeg (Chrome) plays |
+| Chrome's `decodeAudioData` skips the edit list's end, decoding to the last AAC frame's edge | up to 1023 samples of the loop's start past its end: a click every wrap |
 | ffmpeg's default mp4 timescale (1000) | up to 1 ms cut off: a click |
 | a loop ending on silence (ElevenLabs loop-mode takes: 17-19 ms) or with its last samples pulled to zero | a click every pass |
 | a crossfade of two parts whose beat grids sit apart (old decks: 190-250 ms) | two near-identical beats, a doubled rhythm |

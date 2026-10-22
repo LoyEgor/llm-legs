@@ -31,7 +31,10 @@ assert grep -q 'stems off' "$WORK/err"
 assert grep -qE '^loop [0-9.]+-[0-9.]+ s of 64.0 s: [0-9.]+ s, (8|9|1[0-9]|2[0-9])\.(00|01|99) bars of 2\.000 s' "$WORK/out"
 len=$(sed -nE 's/^loop [0-9.-]+ s of [0-9.]+ s: ([0-9.]+) s,.*/\1/p' "$WORK/out")
 assert awk -v a="$(dur "$WORK/loop.m4a")" -v b="$len" 'BEGIN { exit !(a - b < 0.001 && b - a < 0.001) }'
-[ "$(uname)" != Darwin ] || assert grep -q 'checked=ffmpeg+apple' "$WORK/out"
+# Chrome's decodeAudioData and ffmpeg run past the edit list's end to the last AAC frame's edge: no samples there
+ts=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration_ts -of csv=p=0 "$WORK/loop.m4a")
+assert test "$(ffmpeg -v error -i "$WORK/loop.m4a" -ac 1 -f s16le - | wc -c | tr -d ' ')" -eq $((ts * 2))
+[ "$(uname)" != Darwin ] || assert grep -q 'checked=chrome+apple' "$WORK/out"
 assert exits 0 check "$WORK/loop.m4a" --loop
 assert grep -q '^verdict=clean$' "$WORK/out"
 

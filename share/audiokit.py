@@ -52,9 +52,10 @@ timbre agrees, then moved by up to 5 ms to the best waveform match. The file is 
 crossfaded from what follows the end, so the last sample runs into the first. Gain is one linear factor: no
 resampling or limiter after the cut (in tools/music_prep.py they pulled the last samples to zero: a click at every
 wrap). An .m4a is encoded with the loop's own end before it and its start after it, and its edit list plays only the
-loop: the encoder never meets silence at the edges, and both ffmpeg (Chrome) and Apple's decoder (Safari) return the
-exact length (Apple's encoder and afconvert pad ~600 samples ffmpeg plays as a gap; ffmpeg's default ms timescale
-cuts up to 1 ms off). It decodes its own output and checks it; `verdict=clean`, `verdict=borderline: <why>` or
+loop: the encoder never meets silence at the edges. The loop ends on an AAC frame edge, so Chrome's decodeAudioData and
+ffmpeg, which skip the edit list's end and run to the last frame's edge, return the exact length, as Apple's decoder
+(Safari) does (Egor's deck loops before it: 148-850 samples of the loop's start past the end, a click at every wrap;
+Apple's encoder and afconvert pad ~600 samples ffmpeg plays as a gap; ffmpeg's default ms timescale cuts up to 1 ms). It decodes its own output and checks it; `verdict=clean`, `verdict=borderline: <why>` or
 `verdict=audible: <why>`.
 points: the loop pairs that keep their voices and parts, by likeness, for choosing by hand (loop --at).
 check: digital silence and beat-grid jumps anywhere; with --at (the joins you made) and --loop (the wrap) also the
@@ -62,7 +63,7 @@ waveform step and the level dip there. A grid jump where nobody cut is a place t
 (four-sides-fb1's generator slipped a drum hit at 62.4 s; 14 of 16 untouched deck takes show none).
 
 Files are read to their container length: ffmpeg also decodes the AAC end padding (~20 ms of silence), which glued
-to the next piece is itself a click. A browser's <audio loop> restarts with its own gap; Web Audio's
+to the next piece is itself a click; check --loop also counts what a browser decodes past that length. A browser's <audio loop> restarts with its own gap; Web Audio's
 AudioBufferSourceNode with loop=true plays a loop sample-exact.
 """
 import argparse
@@ -98,13 +99,14 @@ def duration(path):
                                 check=True, capture_output=True, text=True).stdout)
 
 
-def read(path, sr=SR, ch=2):
-    """Samples to the container length (ffmpeg would add the AAC encoder's end padding)."""
+def read(path, sr=SR, ch=2, whole=False):
+    """Samples to the container length; whole: every decoded sample, as Chrome's decodeAudioData returns them (it
+    and ffmpeg skip the edit list's end and run to the last AAC frame's edge)."""
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", str(ch), "-ar", str(sr), "-f", "f32le", "-"],
                          check=True, capture_output=True).stdout
     x = np.frombuffer(raw, np.float32).astype(np.float64)
     x = x.reshape(-1, ch) if ch > 1 else x
-    return x[:round(duration(path) * sr)]
+    return x if whole else x[:round(duration(path) * sr)]
 
 
 def read_apple(path):
@@ -131,7 +133,8 @@ def write(path, y, loop=False):
     if ext not in codec:
         sys.exit(f"audiokit: write .m4a, .wav or .flac (mp3 has no exact length, so a loop would gap): {path}")
     roll = ext == "m4a" and loop
-    z = np.concatenate([y[-ROLL:], y, y[:ROLL]]) if roll else y
+    front = ROLL + -len(y) % 1024  # the loop ends on an AAC frame edge: decoders that skip the edit list's end stop there
+    z = np.concatenate([y[-front:], y, y[:ROLL]]) if roll else y
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "f64le", "-ar", str(SR), "-ac", "2", "-i", "-", *codec[ext], path],
                    input=np.ascontiguousarray(z).tobytes(), check=True)
     if roll:  # the edit list plays the loop only: it starts past the encoder delay and the roll, and lasts the loop
@@ -140,7 +143,7 @@ def write(path, y, loop=False):
         if b[i + 4] != 0 or struct.unpack(">I", b[i + 8:i + 12])[0] != 1:
             sys.exit(f"audiokit: unexpected edit list in {path}")
         start = struct.unpack(">I", b[i + 16:i + 20])[0]
-        b[i + 12:i + 20] = struct.pack(">II", len(y), start + ROLL)
+        b[i + 12:i + 20] = struct.pack(">II", len(y), start + front)
         for box, off in ((b"mvhd", 20), (b"tkhd", 24)):
             j = b.find(box)
             b[j + off:j + off + 4] = struct.pack(">I", len(y))
@@ -496,7 +499,7 @@ def loop(a):
         y *= lufs_gain(y, a.lufs)
     write(a.dst, y, loop=True)
     found, checked = [], []
-    for name, z in (("ffmpeg", read(a.dst)), ("apple", read_apple(a.dst) if a.dst.endswith(".m4a") else None)):
+    for name, z in (("chrome", read(a.dst, whole=True)), ("apple", read_apple(a.dst) if a.dst.endswith(".m4a") else None)):
         if z is None:
             continue
         checked.append(name)
@@ -553,7 +556,12 @@ def points(a):
 
 
 def check(a):
-    found = inspect(read(a.file), [float(v) for v in a.at.split(",")] if a.at else [], a.loop)
+    y = read(a.file)
+    found = inspect(y, [float(v) for v in a.at.split(",")] if a.at else [], a.loop)
+    tail = len(read(a.file, whole=True)) - len(y)
+    if a.loop and tail:
+        found.append((len(y) / SR, f"browsers decode {tail} samples past the loop's end, a click at every wrap: set the "
+                                   f"player's loopEnd to {len(y) / SR:.6f} s, or re-cut with audiokit loop", "clear"))
     for t, w, k in found:
         print(f"{mmss(t)}  {k:6} {w}")
     print("verdict=" + ("clean" if all(k == "listen" for *_, k in found) else "audible"))
