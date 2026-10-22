@@ -462,7 +462,7 @@ const ASK_RU={4:"судья видит глюк — верно? (соседни�
 const TODAY=new Date().toLocaleDateString("sv");
 let state, cur, label, timer, pendingSeek=null, allOpen=false;
 const answered=c=>{const l=c.label;if(!l)return false;if(l.verdict)return true;
-  return c.ask.type==="flags"&&c.groups.every(g=>g.ids.every(id=>l.flags.some(x=>x.id===id)));};
+  return c.ask.type==="flags"&&c.groups.every(g=>g.ids.some(id=>l.flags.some(x=>x.id===id)));};
 const today=()=>state.clips.filter(c=>c.ask&&answered(c)&&(c.label.at||"").slice(0,10)===TODAY).length;
 const queue=()=>state.clips.filter(c=>c.ask&&!answered(c))
   .sort((a,b)=>a.ask.prio-b.ask.prio||a.id.localeCompare(b.id)).slice(0,Math.max(0,state.sitting-today()));
@@ -507,7 +507,7 @@ function render(){document.querySelectorAll(".verdict button").forEach(b=>b.clas
     c.querySelector(".del").onclick=()=>{label.defects.splice(i,1);save();render();};box.append(c);});
   const fl=$("flags");fl.innerHTML="";
   if(cur.groups.length){const h=document.createElement("div");h.className="help";h.textContent="судьи нашли — ✓ глюк · ✗ нормально";fl.append(h);}
-  for(const g of cur.groups){const r=label.flags.find(x=>x.id===g.ids[0]);const c=document.createElement("div");c.className="row";
+  for(const g of cur.groups){const r=label.flags.find(x=>g.ids.includes(x.id));const c=document.createElement("div");c.className="row";
     c.innerHTML=`<button class="b chip seek">${g.t0.toFixed(1)}–${g.t1.toFixed(1)}s</button>
       <button class="b chip yes ${r&&r.ok===true?"on":""}">✓</button><button class="b chip no ${r&&r.ok===false?"on":""}">✗</button>
       <span></span>`;
