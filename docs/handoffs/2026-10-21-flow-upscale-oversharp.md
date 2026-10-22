@@ -1,6 +1,6 @@
 # Hand-off: Flow's "1080p Upscaled" download is oversharp
 
-Status: researched and calibrated on Egor's eye in arbostar-logo, not integrated into llm-legs.
+Status: ready to integrate (2026-10-22). The clean is verified by Egor's eye; read "State, 2026-10-22" first.
 To: whoever Egor gives the video post-processing integration (the chat that integrated `video-jitter`).
 From: the arbostar-logo chat, 2026-10-21. Code and evidence: `~/Arbostar/arbostar-logo/tools/oversharp.py`,
 the review page `site/oversharp/` (served at http://localhost:8765/oversharp/index.html by `tools/serve.py`) and his marks
@@ -82,31 +82,38 @@ frame of its 720p): zero false alarms, and it is the root cause found here. A pi
 (GPT/Codex stills) stays warn-only until the detector proves near-zero false alarms on stills; whether GPT stills are
 oversharp at all is untested.
 
-Still with the arbostar-logo chat (needs Egor's eye and his marks), then handed over:
-1. Detector v4: halo intensity x importance (in focus, subject, logo) x coverage, redo limit fitted on his 53 verdicts
-   with at most one false alarm, plus a synthetic Unsharp Mask dose-response check (does the score rise with
-   amount 0-300 %; each Flow film expressed as "reads like USM N % at R px"). His painted share alone predicts his
-   verdict at AUC 0.90 (45 of 53 above 29 % painted).
-2. One fixer improvement round: clamp only where an edge overshoots (give back real glints and thin lines), and calm
-   the invented fine texture over time (static shots: motion-compensated average of the fine band over 3-5 frames).
-3. The decks switch from the 720p fallback to fixed 1080p.
+## State, 2026-10-22: ready to integrate (supersedes everything above where they differ)
+
+Verified by Egor's eye:
+- **The clean (k3 m4) goes on every Flow 1080p by default, with no detector in front.** He watched it on all 30 deck
+  films that have a 720p twin (arbostar `site/oversharp/rank/`, `tools/oversharp_rank/clean.py`, 1470e90) and found
+  nothing worse. The detector (v3; v4 draft b0fef84) is frozen and may only write a ledger number.
+- `--calm 2` (e4ce706) averages the fine band over neighbouring frames: less shimmer, no measured loss, but not chosen,
+  so keep it out of the default. `--glint` is rejected: it brings back Flow's sparkle along with real glints.
+- Fixed 41194d85: `colour_filter()` stamped bt470bg on untagged sources, so the cleans of 11 untagged deck films jumped
+  in brightness against their sources in his browser (headless Chrome showed no difference). An untagged source now
+  stays untagged; the test is in tests/test_video_jitter.sh.
+- The clamp lowers the brightest 1 % of a frame by 10-17 levels on bright scenes (241/242, 305-308, 257). The mean does
+  not move (under 0.5 of 255), and he did not object once the tags were fixed.
+
+Build here, in this order:
+1. **Clean at fetch.** Download a Flow 1080p together with its 720p. Anchor and clamp it in one pass with `steady`. Keep
+   the raw download beside the result and log a ledger row. Port or call `tools/oversharp.py` `fix()`/`clamp()`; plain
+   k3 m4 must give byte-identical output.
+2. **The any-chat guard** (next section).
+3. Later: the deckkit gate (the tremble gate skips 37 of 55 deck films).
+
+Still with the arbostar-logo chat; none of it blocks the above:
+- One time-boxed round against the texture the upscaler invents. Egor ranks the cases: a diagonal hatch in haze (227),
+  the worst; watercolour swirls on plain asphalt (269); stump rings turned into a woven mesh (243); camouflage blobs on
+  bark (275). Only methods that act on the whole frame, no zones. A winner becomes a `--fix` option, which the
+  integration then exposes as a flag.
+- Deck films switch from the 720p fallback to cleaned 1080p.
+- The GPT start-frame test (point 4 below).
 
 Open, untried, do not lose:
-- Frame-chain guard (provenance) in video-chain and gemini-video: not built. The cheapest win.
-- deckkit gate: not built; the antishake gate skips 37 of 55 deck films (no `<stem>.720p.mp4` beside them).
-- Redrawing an oversharp start frame with an image model (Egor's idea): untested; lockup and lettering must be
-  composited back.
-- A paid upscaler (Krea, Magnific) compared against the fixer: Egor's later option; never local heavy models, never his
+- A paid upscaler (Krea, Magnific) compared against the fixer: Egor's later option. Never local heavy models, never his
   3090 for this.
-- Invented texture ("worms") has no detector: the same bark sits on films he passed.
-- Fixed 41194d85: `colour_filter()` stamped bt470bg on untagged sources, and the cleans of 11 untagged deck films
-  jumped in brightness against their sources in Egor's browser (headless Chrome showed no difference). Untagged now
-  stays untagged; test in tests/test_video_jitter.sh.
-- The clamp lowers the brightest 1 % by 10-17 levels on bright scenes (four-sides fleet 241/242, takes 305-308, 257);
-  the mean does not move (under 0.5 of 255). Egor did not object once the tags were fixed.
-
-**Not handed over yet** (Egor, 2026-10-22): the work stays with the arbostar-logo chat while he can still check it by eye;
-this document is handed over only after he closes it there.
 
 ## Any-chat guard against upscale on upscale (Egor, 2026-10-22)
 
