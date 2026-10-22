@@ -45,6 +45,18 @@ The defects he means:
 - Backwards motion: no judge is reliable. arbostar's `tools/deckkit.py` `reversed_video` stops a deck build whose film
   mirrors around a frame. Keep that mechanical; it is the one case where mechanics work.
 - Gemini Pro is on no account any more.
+- What exists to start from: `bin/frame-sheet` (the sheet) and the numbers in `docs/image-vendors/gemini.md`. Nothing
+  else was built. The raw answers of that round are in `2026-10-22-video-glitch/judged-2026-10-21/` (`<clip>-<judge>.md`;
+  the sheets are one `frame-sheet` call each, not kept). Clips, under `~/Arbostar/arbostar-logo/renders/night/`:
+  - `round7_wall_wall-even` = `turning2/round7/wall/wall-even.mp4`, the walk retimed to about 2x. Opus: 1.9x fast;
+    Flash and Argon: natural.
+  - `round6_film_wall` = `turning2/round6/film/wall.mp4`, the untouched take. Opus: slow, 1.25 steps/s.
+  - `fire_hover-loop` = `original/r17/films/hover/hover-loop.mp4`, the forward-and-back loop. Opus: "wrong" for a
+    flame pop and sparks fading in mid-air, but it never named the reversal; Argon: reversed.
+  - `fire_iron-hover` = `original/r17/films/iron-hover.mp4`, the forward take. Opus: ok; Flash: "frozen"; Argon:
+    reversed (a false alarm).
+  - `a-3-door.jpg`, `b-3-door.jpg`: door crops of two turning2 entrance takes (`round7c/wall/a-3`, `b-3`), where the
+    man walks sideways along the doors instead of going in.
 
 ## Calibration first (one round, then decide)
 
