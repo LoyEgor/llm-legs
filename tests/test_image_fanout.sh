@@ -147,6 +147,7 @@ for ((i = 2; i <= count; i++)); do
   [ -z "${FANOUT_VARIANT_COMPOSITE:-}" ] || [ "$i" = 4 ] || printf 'composite=%s\n' "$([ "$i" = 3 ] && echo 'refused reason=global' || echo 'auto changed=4.0%')"
 done
 [ -z "${FANOUT_VARIANT_COMPOSITE:-}" ] || printf 'model=test-model\ncomposite=region changed=2.0%%\n'
+[ -z "${FAKE_GLITCH:-}" ] || printf 'glitch=defects video=%s\nt=1-2 door: opens by itself fix: start with it open\n' "$dest"
 EOF
 chmod +x "$FAKE_BIN/fake-image"
 ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/codex-image"
@@ -358,9 +359,15 @@ printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"gamma\",\"roster\":true
 # --- live run: tsv columns, exit 0 ------------------------------------------
 : >"$CALLS"
 rc=0
-fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --accounts all || rc=$?
+FAKE_GLITCH=1 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --accounts all || rc=$?
 assert test "$rc" -eq 0
 tsv="$DEST_WORK/fanout.tsv"
+# A take's glitch verdict reaches the parent under the table, never in it.
+delta_dest=$(awk -F'\t' '$1=="grok" && $2=="delta" {print $5; exit}' "$tsv")
+assert grep -qx "glitch=defects video=$delta_dest" "$FANOUT_OUT"
+assert test "$(grep -A1 -x "glitch=defects video=$delta_dest" "$FANOUT_OUT" | tail -n 1)" = \
+  't=1-2 door: opens by itself fix: start with it open'
+assert_fails "$(cat "$tsv")" 'glitch='
 assert test -f "$tsv"
 assert test "$(head -n1 "$tsv")" = $'vendor\taccount\tstatus\treason\tdest\tsize\tsession\tmodel\tmodel_caps\tcaps\tjob\troute\tfallback_from\tphases\tcomposite'
 delta_row=$(awk -F'\t' '$1=="grok" && $2=="delta" {print; exit}' "$tsv")

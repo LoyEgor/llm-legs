@@ -293,26 +293,17 @@ jq -r 'def pair: map(tostring) | join("/");
       + (if $s.fixed then " fixed=\($s.fixed | pair)" else "" end) + " cleaned=\($s.cleaned // false)"
       + (if $s.reason then " reason=\($s.reason)" else "" end) + " dest=\(.dest) ref720_file=\(.ref720)"
       + (if $s.raw_file then " raw_file=\($s.raw_file)" else "" end) end' <<<"$result"
-# Each delivered take can be judged for generation glitches (a door that opens by itself, a limb that twists) by one
-# Sol call on its frames (docs/video-glitch.md): `glitch=ok|defects` and `t=` lines, the parent decides a remake.
-# The takes are judged at once; a check that fails says `glitch=unchecked` and never fails the take. Off until
-# the judge is calibrated on Egor's labels (2026-10-22): GEMINI_VIDEO_GLITCH=<video-glitch path> turns it on.
-glitch_cmd=${GEMINI_VIDEO_GLITCH:-off}
+# Each delivered take is judged for generation glitches (a door that opens by itself, a limb that twists) by one
+# Sol call on its frames, all takes at once (docs/video-glitch.md): `glitch=ok|defects` and a `t=… fix: …` line per
+# noticeable defect, so the parent remakes with changed sources. A failed check says `glitch=unchecked` and never
+# fails the take; VIDEO_GLITCH=off skips it.
+glitch_cmd=${VIDEO_GLITCH:-$root/bin/video-glitch}
 if [ "$glitch_cmd" != off ]; then
-  glitch_dir=$(mktemp -d)
-  glitch_pids=() glitch_count=0
-  takes=$(jq -r '(.variants // [])[].dest' <<<"$result")
+  takes=()
   while IFS= read -r take; do
-    [ -s "$take" ] || continue
-    glitch_count=$((glitch_count + 1))
-    { "$glitch_cmd" check "$take" 2>"$glitch_dir/$glitch_count.err" ||
-        printf 'glitch=unchecked video=%s reason=%s\n' "$take" "$(tail -n 1 "$glitch_dir/$glitch_count.err")"
-    } >"$glitch_dir/$glitch_count" &
-    glitch_pids+=("$!")
-  done <<<"${takes:-$dest}"
-  [ "$glitch_count" -eq 0 ] || wait "${glitch_pids[@]}" || true
-  for ((n = 1; n <= glitch_count; n++)); do cat "$glitch_dir/$n"; done
-  rm -rf "$glitch_dir"
+    [ ! -s "$take" ] || takes+=("$take")
+  done < <(jq -r '(.variants // [])[].dest' <<<"$result" | grep . || printf '%s\n' "$dest")
+  [ "${#takes[@]}" -eq 0 ] || "$glitch_cmd" check "${takes[@]}" || true
 fi
 charged=$(jq -r '.charged // empty' <<<"$result")
 if [ -n "$charged" ] && [ "$charged" != "$(jq -r '.cost // empty' <<<"$result")" ]; then

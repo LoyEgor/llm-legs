@@ -1257,6 +1257,7 @@ failed_n=0
 attempted_n=0
 planned_n=0
 stale_lines=''
+glitch_lines=''
 
 if [ "$dry_run" = true ]; then
   tsv="$jobs_dir/fanout.tsv"
@@ -1362,6 +1363,10 @@ count_status() {
     if [ -n "$stale_hit" ]; then
       stale_lines="${stale_lines}STALE: ${vendor} ${account} ${stale_hit}"$'\n'
     fi
+    # A video take's glitch verdict (docs/video-glitch.md) is the parent's to read, so it rides under the table.
+    if [ -f "$dir/out" ] && found=$(grep -E '^(glitch|t)=' "$dir/out"); then
+      glitch_lines="${glitch_lines}${found}"$'\n'
+    fi
   done
 } >"$tsv"
 
@@ -1370,6 +1375,7 @@ if [ "$dry_run" = false ]; then
   if [ -n "$stale_lines" ]; then
     printf '%s' "$stale_lines"
   fi
+  printf '%s' "$glitch_lines"
 fi
 printf 'ok=%s skipped=%s usage_limit=%s failed=%s\n' "$ok_n" "$skipped_n" "$limit_n" "$failed_n"
 

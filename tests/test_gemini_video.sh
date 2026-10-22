@@ -66,11 +66,18 @@ export GEMINI_VIDEO_ENGINE="$ENGINE"
 GLITCH="$WORK/video-glitch"
 cat >"$GLITCH" <<'EOF'
 #!/usr/bin/env bash
-[ "${GLITCH_MODE:-ok}" = ok ] || { printf 'video-glitch: the judge gave no verdict\n' >&2; exit 1; }
-printf 'glitch=defects video=%s\nt=1.5-3 door: opens by itself noticeable=yes\n' "$2"
+shift
+for take; do
+  if [ "${GLITCH_MODE:-ok}" = ok ]; then
+    printf 'glitch=defects video=%s\nt=1.5-3 door: opens by itself fix: start with the door open\n' "$take"
+  else
+    printf 'glitch=unchecked video=%s reason=the judge gave no verdict\n' "$take"
+  fi
+done
+[ "${GLITCH_MODE:-ok}" = ok ]
 EOF
 chmod +x "$GLITCH"
-export GEMINI_VIDEO_GLITCH="$GLITCH"
+export VIDEO_GLITCH="$GLITCH"
 
 VIDEO_OUT="$WORK/video.out"
 VIDEO_ERR="$WORK/video.err"
@@ -164,7 +171,7 @@ assert grep -qx "glitch=defects video=$OUT/var-2.mp4" "$VIDEO_OUT"
 assert test "$(grep -c '^t=1.5-3 door' "$VIDEO_OUT")" = 2
 assert test "$(GLITCH_MODE=fail video_rc --dest "$OUT/unjudged.mp4" --prompt 'water light')" = 0
 assert grep -qx "dest=$OUT/unjudged.mp4" "$VIDEO_OUT"
-assert grep -qx "glitch=unchecked video=$OUT/unjudged.mp4 reason=video-glitch: the judge gave no verdict" "$VIDEO_OUT"
+assert grep -qx "glitch=unchecked video=$OUT/unjudged.mp4 reason=the judge gave no verdict" "$VIDEO_OUT"
 reset_calls
 ENGINE_CHARGED=25 video_run --dest "$OUT/eight.mp4" --prompt 'water light'
 assert grep -q 'Flow charged 25 credits, the manifest says 20' "$VIDEO_ERR"

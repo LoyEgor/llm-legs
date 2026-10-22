@@ -280,6 +280,12 @@ assert grep -qx "model=$(jq -r '.model.video' "$MANIFEST") model_caps=fresh" "$V
 assert grep -qx 'caps=fresh' "$VIDEO_OUT"
 assert cmp "$FAKE_GROKB_SESSION_ROOT/fake-session/videos/1.mp4" "$OUTPUT_DIR/single.$CONTAINER"
 assert test -z "$(find "$TMP_ROOT" -mindepth 1 -maxdepth 1 -name 'grok-video.*' -print -quit)"
+# The take gets the same glitch check as a Flow take, after the footer.
+printf '#!/usr/bin/env bash\nprintf "glitch=ok video=%%s\\n" "$2"\n' >"$WORK/video-glitch"
+chmod +x "$WORK/video-glitch"
+VIDEO_GLITCH="$WORK/video-glitch" assert video_run --dest "$OUTPUT_DIR/judged.$CONTAINER" \
+  --prompt 'gentle camera push-in' --ref "$WORK/ref-a.jpg"
+assert test "$(tail -n 1 "$VIDEO_OUT")" = "glitch=ok video=$OUTPUT_DIR/judged.$CONTAINER"
 
 : >"$FAKE_GROKB_CALLS"
 : >"$FAKE_GROKB_PROMPT"

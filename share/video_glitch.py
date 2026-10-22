@@ -10,9 +10,9 @@
     flags <clip> <judge> <reply.txt> import a judge's `t=` lines as flags for Egor to confirm
     label [--port N] [--no-open]     the labelling page on 127.0.0.1; every change appends to labels.jsonl
     list                             one line per clip: id, set, latest verdict, defect count
-    check <video> [--model sol] [--effort E]
-                                     judge one clip: `glitch=ok|defects`, then one `t=` line per defect with
-                                     what to change in the start image or prompt (`fix:`)
+    check <video>... [--model sol] [--effort E]
+                                     judge each clip at once: `glitch=ok|defects|unchecked`, then one `t=` line
+                                     per noticeable defect with what to change in the start image or prompt (`fix:`)
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -174,30 +175,31 @@ def cut_frames(video: Path, out: Path, rate: float) -> list[Path]:
     return sorted(out.glob("f*.jpg"))
 
 
-def cmd_check(args: argparse.Namespace) -> int:
-    video = Path(args.video).expanduser().resolve()
-    if not video.is_file():
-        sys.exit(f"video-glitch: not a file: {video}")
+def check_one(video: Path, model: str, effort: str | None) -> list[str]:
+    """One Sol call on the clip's frames; the lines `check` prints for it. Raises RuntimeError with the
+    judge's last words when it gave no verdict."""
     digest = sha256(video)
     work = DATA_DIR / "checks" / digest[:16]
     rate = min(2.0, MAX_FRAMES / max(probe(video)["dur"], 0.1))
-    frames = cut_frames(video, work / "frames", rate)
-    # worker-run refuses a brief it has already run, so the handle carries the time: a re-check is a new run.
-    brief = (SET_DIR / "judge.md").read_text().replace("__HANDLE__", f"{video.name} {digest[:8]} {now()}") \
-        .replace("__N__", str(len(frames))).replace("__FPS__", f"{rate:.2g}") \
-        .replace("__FRAMES__", "\n".join(f"- {f}" for f in frames))
-    (work / "brief.md").write_text(brief)
-    command = ["worker-run", "run", "codex", "--model", args.model, "--brief", str(work / "brief.md"),
-               "--workdir", str(work)]
-    if args.effort:
-        command += ["--effort", args.effort]
-    run = subprocess.run(command, capture_output=True, text=True)
+    try:
+        frames = cut_frames(video, work / "frames", rate)
+        # worker-run refuses a brief it has already run, so the handle carries the time: a re-check is a new run.
+        brief = (SET_DIR / "judge.md").read_text().replace("__HANDLE__", f"{video.name} {digest[:8]} {now()}") \
+            .replace("__N__", str(len(frames))).replace("__FPS__", f"{rate:.2g}") \
+            .replace("__FRAMES__", "\n".join(f"- {f}" for f in frames))
+        (work / "brief.md").write_text(brief)
+        command = ["worker-run", "run", "codex", "--model", model, "--brief", str(work / "brief.md"),
+                   "--workdir", str(work)]
+        if effort:
+            command += ["--effort", effort]
+        run = subprocess.run(command, capture_output=True, text=True)
+    finally:
+        shutil.rmtree(work / "frames", ignore_errors=True)  # 24 full-size frames a check; the verdict is the record
     reply = run.stdout.split("\nRESULT:", 1)[-1]
     verdict = re.search(r"^VERDICT:\s*(ok|defects)\b", reply, re.M)
     if run.returncode != 0 or not verdict:
         tail = (run.stdout + run.stderr).strip().splitlines()[-5:]
-        print("video-glitch: the judge gave no verdict:\n" + "\n".join(tail), file=sys.stderr)
-        return 1
+        raise RuntimeError("the judge gave no verdict: " + " / ".join(tail))
     defects = []
     for line in reply.splitlines():
         match = FLAG_LINE.match(line.strip().strip("`"))
@@ -207,15 +209,36 @@ def cmd_check(args: argparse.Namespace) -> int:
                             "noticeable": (match["noticeable"] or "no").lower() == "yes",
                             "fix": (match["fix"] or "").strip()})
     append_jsonl(DATA_DIR / "checks.jsonl", {"at": now(), "video": str(video), "sha256": digest,
-                                             "judge": f"codex {args.model} {args.effort or '-'}",
+                                             "judge": f"codex {model} {effort or '-'}",
                                              "frames": len(frames), "defects": defects})
+    # Only what catches the eye reaches the parent: a defect the judge itself calls unnoticeable stays in
+    # checks.jsonl, so a good take is never remade over it.
     noticeable = [d for d in defects if d["noticeable"]]
-    print(f"glitch={'defects' if noticeable else 'ok'} video={video}")
-    for d in defects:
+    lines = [f"glitch={'defects' if noticeable else 'ok'} video={video}"]
+    for d in noticeable:
         span = f"{d['t0']:g}" if d["t1"] == d["t0"] else f"{d['t0']:g}-{d['t1']:g}"
-        fix = f" fix: {d['fix']}" if d["fix"] else ""
-        print(f"t={span} {d['object']}: {d['what']} noticeable={'yes' if d['noticeable'] else 'no'}{fix}")
-    return 0
+        lines.append(f"t={span} {d['object']}: {d['what']}" + (f" fix: {d['fix']}" if d["fix"] else ""))
+    return lines
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    """Every clip judged at once; each prints its own block in the order given. A clip the judge could not
+    check says `glitch=unchecked` with the reason, and the exit is 1."""
+    videos = [Path(v).expanduser().absolute() for v in args.videos]  # as the caller named them
+    for video in videos:
+        if not video.is_file():
+            sys.exit(f"video-glitch: not a file: {video}")
+    with ThreadPoolExecutor(max_workers=len(videos)) as pool:
+        jobs = [pool.submit(check_one, video, args.model, args.effort) for video in videos]
+    failed = False
+    for video, job in zip(videos, jobs):
+        try:
+            print("\n".join(job.result()))
+        except Exception as error:  # a missing ffmpeg, a judge with no verdict: never the take's failure
+            failed = True
+            reason = (str(error).strip().splitlines() or [type(error).__name__])[-1]
+            print(f"glitch=unchecked video={video} reason={reason}")
+    return 1 if failed else 0
 
 
 def cmd_list(_: argparse.Namespace) -> int:
@@ -570,7 +593,7 @@ def main() -> int:
     label.add_argument("--no-open", action="store_true")
     sub.add_parser("list")
     check = sub.add_parser("check")
-    check.add_argument("video")
+    check.add_argument("videos", nargs="+")
     check.add_argument("--model", default="sol")
     check.add_argument("--effort")
     args = parser.parse_args()

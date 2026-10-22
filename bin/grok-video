@@ -363,5 +363,8 @@ printf 'dest=%s\nsize=%sx%s\nformat=%s\nduration=%s\naccount=%s\nsession=%s\n' \
   "$dest" "$width" "$height" "$format" "$measured" "$account" "$(grok_media_session_id "$stream_file")"
 image_caps_model_check "$root" grok video "$observed_model"
 printf '%s\n' "$caps_line"
+# The same glitch check as every Flow take (docs/video-glitch.md); VIDEO_GLITCH=off skips it.
+glitch_cmd=${VIDEO_GLITCH:-$root/bin/video-glitch}
+[ "$glitch_cmd" = off ] || "$glitch_cmd" check "$dest" || true
 exit
 }

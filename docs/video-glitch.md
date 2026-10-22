@@ -2,20 +2,38 @@
 
 Goal (Egor, 2026-10-22, handoff `docs/handoffs/2026-10-22-video-glitch.md`): after every generation, tell the
 ordering LLM what is visibly broken in the clip. Two hard rules: it never fails a good clip (missing a small
-glitch is fine, a remake of a good take is not), and it stays cheap in tokens. Status: calibration. `bin/gemini-video` can run
-the check on every delivered Flow take (all `--count` variants at once) and print its lines after the footer, but
-it is off until the judge is settled on Egor's labels (2026-10-22: «не будем ничего добавлять в скилл, пока не
-определимся»); `GEMINI_VIDEO_GLITCH=<path to bin/video-glitch>` turns it on, and a failed check prints
-`glitch=unchecked … reason=…` and never fails the take.
+glitch is fine, a remake of a good take is not), and it stays cheap in tokens. Status: on (2026-10-23, Egor:
+«если модуль работает близко к моему — оформляем как модуль»). Every delivered video take is judged: `gemini-video`
+(all `--count` variants at once) and `grok-video` print the verdict after their footer, and `image-fanout` relays
+it under its table. A failed check prints `glitch=unchecked … reason=…` and never fails the take;
+`VIDEO_GLITCH=off` skips it (every test suite sets that, a suite testing it sets a stub).
 
 ## The check
 
-`video-glitch check <video>` cuts 2 frames a second (at most 24, longer side 1280 px, each stamped `t=<s>`),
-hands them to one Sol call through `worker-run run codex` with `share/video-glitch/judge.md`, and prints
-`glitch=ok|defects` and one `t=<a>-<b> <object>: <what> noticeable=yes|no fix: <what to change>` line per defect;
-only `noticeable=yes` makes `defects`. Every check is appended to `data/video-glitch/checks.jsonl`. About 20 s and 30k tokens a clip.
+`video-glitch check <video>...` cuts 2 frames a second of each clip (at most 24, longer side 1280 px, each stamped
+`t=<s>`), hands them to one Sol call each through `worker-run run codex` with `share/video-glitch/judge.md`, all clips
+at once, and prints per clip `glitch=ok|defects|unchecked video=<path>` and one `t=<a>-<b> <object>: <what> fix:
+<what to change>` line per noticeable defect: what the judge itself calls unnoticeable stays in the record, so the
+parent never remakes a good take over it. Every check is appended to `data/video-glitch/checks.jsonl` (all defects);
+the frames are deleted after it. About 30 s a clip; one check is about 1 % of one codex account's 5-hour window.
 
-Calibration (2026-10-22, 25 known-bad and 35 accepted deck films, plus 67 pool takes):
+Scored against Egor's labels (2026-10-23: 33 bad, 43 good, 11 he called borderline, which count neither way):
+
+| judge (prompt F, `judge.md`) | bad caught | good failed |
+|---|---|---|
+| Sol, 2 fps (the check) | 32 of 33 | 0 of 43 |
+| Sol, plain checklist | 27 of 33 | 0 of 43 |
+| on the 20 hardest: Sol / Sol 1 fps / Opus / Sonnet / Terra | 7 / 6 / 6 / 4 / 3 of 7 | 0 of 9 each |
+| Sonnet, all 60 | 17 of 22 | 2 of 33 |
+
+Reading the frames: one message with every frame is cheapest and loses nothing. Same Sonnet, same 10 clips: one
+frame per message re-read 19x the cached context (each message re-sends every frame already read), cost about
+1.6x and took twice as long. It got one clip more right than a plain rerun of the all-at-once run (6 against 5 of
+10, clips picked because the first pass got them wrong), while that rerun alone changed 3 of 10 verdicts: noise, not
+a quality gap. In a parent chat with a long context the gap in cost is many times larger, since every extra message
+re-sends the whole conversation.
+
+Calibration history (2026-10-22, before Egor's labels, counted by set: 25 known-bad, 35 accepted deck films, 67 pool takes):
 - The judge prompt (`judge.md`) has it inventory each rigid structure from the first frames (leaves, frame bars,
   handles, how it opens) and compare every later frame with it: generated defects are smooth, so neighbouring
   frames look plausible and only the comparison with the start shows the door that became sliding or the frame
