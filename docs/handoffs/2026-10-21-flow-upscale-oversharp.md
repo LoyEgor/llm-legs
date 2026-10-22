@@ -105,6 +105,9 @@ Open, untried, do not lose:
 - The clamp lowers the brightest 1 % by 10-17 levels on bright scenes (four-sides fleet 241/242, takes 305-308, 257);
   the mean does not move (under 0.5 of 255). Egor did not object once the tags were fixed.
 
+**Not handed over yet** (Egor, 2026-10-22): the work stays with the arbostar-logo chat while he can still check it by eye;
+this document is handed over only after he closes it there.
+
 ## Any-chat guard against upscale on upscale (Egor, 2026-10-22)
 
 Egor: a mechanism, not prose, so that ANY chat in any project that makes a video, gets Flow's upscale and later takes
