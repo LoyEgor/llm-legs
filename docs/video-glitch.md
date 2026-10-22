@@ -53,9 +53,11 @@ of the judges.
 | `share/video-glitch/judge.md` | the judge prompt `check` sends |
 | `data/video-glitch/clips/<id>.mp4` | a copy of each clip (gitignored), so a moved or cleaned render keeps its label usable |
 
-A label row: `verdict` (`ok` clean, `minor` glitches he would let pass, `reject` a remake), `defects` (each `t0`,
+A label row: `verdict` (`ok` clean, `minor` glitches he would let pass or calls borderline, `reject` a remake), `defects` (each `t0`,
 `t1`, `kind` of body, object, text, causality, speed, physics, popping, other, `severity` reject or minor, and
-his `words`), `flags` (his yes/no per judge flag id) and free `words`. His own words are kept verbatim
+his `words`), `flags` (his yes/no per judge flag id) and free `words`. Scoring counts a `minor` clip neither
+way: a judge that flags it is not a false alarm and one that passes it did not miss (Egor 2026-10-23 on the mouse
+that turns into a notebook: «скажут брак — соглашусь, скажут не брак — тоже»). His own words are kept verbatim
 (Russian dictation) so later prompts can quote what he calls a glitch.
 
 ```
