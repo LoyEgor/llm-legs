@@ -2,8 +2,9 @@
 
 Goal (Egor, 2026-10-22, handoff `docs/handoffs/2026-10-22-video-glitch.md`): after every generation, tell the
 ordering LLM what is visibly broken in the clip. Two hard rules: it never fails a good clip (missing a small
-glitch is fine, a remake of a good take is not), and it stays cheap in tokens. Status: `bin/video-glitch check`
-works by hand; it does not run after `media-run video` yet (`bin/gemini-video` carries another chat's edits).
+glitch is fine, a remake of a good take is not), and it stays cheap in tokens. Status: `bin/gemini-video` runs
+the check on every delivered Flow take (all `--count` variants at once) and prints its lines after the footer;
+`GEMINI_VIDEO_GLITCH=off` skips it, and a failed check prints `glitch=unchecked … reason=…` and never fails the take.
 
 ## The check
 

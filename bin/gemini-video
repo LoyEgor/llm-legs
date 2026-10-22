@@ -293,6 +293,26 @@ jq -r 'def pair: map(tostring) | join("/");
       + (if $s.fixed then " fixed=\($s.fixed | pair)" else "" end) + " cleaned=\($s.cleaned // false)"
       + (if $s.reason then " reason=\($s.reason)" else "" end) + " dest=\(.dest) ref720_file=\(.ref720)"
       + (if $s.raw_file then " raw_file=\($s.raw_file)" else "" end) end' <<<"$result"
+# Every delivered take is judged for generation glitches (a door that opens by itself, a limb that twists) by one
+# Sol call on its frames (docs/video-glitch.md): `glitch=ok|defects` and `t=` lines, the parent decides a remake.
+# The takes are judged at once; a check that fails says `glitch=unchecked` and never fails the take.
+glitch_cmd=${GEMINI_VIDEO_GLITCH:-$root/bin/video-glitch}
+if [ "$glitch_cmd" != off ]; then
+  glitch_dir=$(mktemp -d)
+  glitch_pids=() glitch_count=0
+  takes=$(jq -r '(.variants // [])[].dest' <<<"$result")
+  while IFS= read -r take; do
+    [ -s "$take" ] || continue
+    glitch_count=$((glitch_count + 1))
+    { "$glitch_cmd" check "$take" 2>"$glitch_dir/$glitch_count.err" ||
+        printf 'glitch=unchecked video=%s reason=%s\n' "$take" "$(tail -n 1 "$glitch_dir/$glitch_count.err")"
+    } >"$glitch_dir/$glitch_count" &
+    glitch_pids+=("$!")
+  done <<<"${takes:-$dest}"
+  [ "$glitch_count" -eq 0 ] || wait "${glitch_pids[@]}" || true
+  for ((n = 1; n <= glitch_count; n++)); do cat "$glitch_dir/$n"; done
+  rm -rf "$glitch_dir"
+fi
 charged=$(jq -r '.charged // empty' <<<"$result")
 if [ -n "$charged" ] && [ "$charged" != "$(jq -r '.cost // empty' <<<"$result")" ]; then
   printf 'gemini-video: Flow charged %s credits, the manifest says %s; update share/image-caps/gemini.json\n' \
