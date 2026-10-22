@@ -13,7 +13,9 @@ too, not only one that disappears: Gemini speech (`aistudio_speech.page_caps`) c
 Audio filter (`-tts` ids), the chosen family's Expression tag chips, the speaker panel (3.8: per-use-case
 counts and the names shown; older: every name) and the older models' Director's note menus with `.speech`;
 Flow Music (`flow_music.page_caps`) compares the Lyria picker and every song menu the run opens
-(`flow_music.menus`: ⋯ More options, its Remix and Download submenus) with `.flow_music`. Both print
+(`flow_music.menus`: ⋯ More options, its Remix and Download submenus) with `.flow_music`; Suno
+(`suno_music.page_caps`) compares the usable models in `billing/info`, the edit picker and a song's ⋯ and Remix
+menus (never a v6 preview's) with `suno.json` `.models`, `.condition_menu` and `.menus`. All three print
 `caps=fresh` or `caps=stale what=<part>: +added -gone; …` (`unread` when a part did not show). ElevenLabs
 reads `GET /v1/models` at most once a day (cache `models-check.json` beside the key file) and prints
 `model_caps=fresh|unknown` or `model_caps=stale new=… newer=<id>><default> gone=…` against `served_models`.

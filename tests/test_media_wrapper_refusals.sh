@@ -62,6 +62,8 @@ for wrapper in "${wrappers[@]}"; do
     gemini-music) dest_args=(--dest /nonexistent-i23/out.mp3 --prompt tune) folder_flag=--dest ;;
     gemini-sfx) dest_args=(--dest /nonexistent-i23/out.wav --prompt thud) folder_flag=--dest ;;
     gemini-speech) dest_args=(--dest /nonexistent-i23/out.wav --text hello) folder_flag=--dest ;;
+    suno-music) dest_args=(--dest /nonexistent-i23/out.mp3 --prompt tune) folder_flag=--dest ;;
+    suno-speech) dest_args=(--dest /nonexistent-i23/out.mp3 --text hello) folder_flag=--dest ;;
     *-video) dest_args=(--dest /nonexistent-i23/out.mp4 --prompt clip --ref "$WORK/clip.png") folder_flag=--dest ;;
     *) dest_args=(--dest /nonexistent-i23/out.png --prompt badge) folder_flag=--dest ;;
   esac

@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+# bin/suno-speech is a symlink to this file: the kind is the name it was called by.
+# One group, parsed whole before it runs: bash reads a script as it goes, so an in-place edit
+# mid-run fed a running leg shifted bytes (2026-10-02). The closing `exit` and `}` stay last.
+{
+set -euo pipefail
+
+tool=${0##*/}
+case "$tool" in suno-speech) kind=speech ;; *) tool=suno-music kind=music ;; esac
+command -v jq >/dev/null 2>&1 || { printf '%s: jq is required\n' "$tool" >&2; exit 1; }
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+. "$root/share/image-leg.sh"
+. "$root/share/account-arg.sh"
+image_leg_start "$tool" audio observed_model
+IMAGE_LEG_ROUTE=web
+. "$root/share/image-caps.sh"
+caps() { image_caps_get "$root" suno "$1"; }
+manifest=$(image_caps_file "$root" suno)
+
+usage() {
+  image_leg_cause "$@"
+  if [ "$kind" = speech ]; then
+    printf 'usage: suno-speech --dest <absolute .mp3|.m4a path> (--text <script> | --text-file <absolute .txt>) [--tone <delivery, pacing, mood, setting>] [--gender male|female] [--no-music] [--variety 0-4] [--takes 0|1|2] [--account <profile>] [--lock-wait <s>] [--dry-run]\n' >&2
+    printf '  Suno'\''s Speech tab on v6-mini: %s credits for two takes of the script, with background music unless --no-music\n' "$(caps '.price.speech')" >&2
+  else
+    printf 'usage: suno-music --dest <absolute .mp3|.m4a path> (--prompt <styles> [--lyrics <text> | --instrumental] [--title <t>] | --describe <idea> [--video <absolute mp4>] [--image <absolute png|jpg>]) [--gender male|female] [--duration %s-%s] [--weirdness 0-100] [--style-influence 0-100] [--variety 0-4] [--takes 0|1|2] [--account <profile>] [--lock-wait <s>] [--dry-run]\n' \
+      "$(caps '.ranges.duration.min')" "$(caps '.ranges.duration.max')" >&2
+    printf '  edit: --source <file a suno run saved | library clip id + --account | absolute audio to upload, %s-%s s> --mode %s [--with <file a suno run saved | clip id>] [--from <s>] [--to <s>] [--speed 0.25-4] [--keep-pitch] [--audio-influence 0-100] [--about <what an uploaded file is>]\n' \
+      "$(caps '.uploads.audio_s.min')" "$(caps '.uploads.audio_s.max')" "$(caps '.modes | keys | join("|")')" >&2
+    printf '  suno-music --fetch <file a suno run saved | clip id> [--account <profile>] --dest <absolute .mp3|.m4a>: the file of a library song\n' >&2
+    printf '  suno-music --accounts: the signed-in accounts, credits and download unlocks as last seen; suno-music --status --account <profile>: read them live; suno-music --login --account <profile> [--hand]: sign one in\n' >&2
+    printf '  v6-mini, the free plan'\''s model: %s credits a generation of two songs (cover, mashup, sample and extend too; crop, remove, reverse and speed are free); --prompt is the Styles box, empty lyrics make an instrumental; --describe lets Suno write lyrics and styles from an idea, a video or an image\n' "$(caps '.price.song')" >&2
+  fi
+  printf '  every new song file spends one of the account'\''s download unlocks (--takes, default 1; 0 keeps the songs in the library only); fetching an unlocked song again is free; <dest>.txt names the song, clip and account\n' >&2
+  exit 2
+}
+
+say() {
+  image_leg_cause "$1"
+  exit 2
+}
+
+dest='' prompt='' lyrics='' instrumental=false title='' describe='' video='' image='' text='' text_file='' tone=''
+music=on gender='' duration='' weirdness='' style_influence='' audio_influence='' variety='' takes=1 account=''
+dry_run=false source='' mode='' with='' from_s='' to_s='' speed='' keep_pitch=false about='' fetch='' command=generate
+hand=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h | --help) image_leg_help usage ;;
+    --dest) [ "$#" -ge 2 ] || usage "$1 needs a value"; dest=$2; shift 2 ;;
+    --gender) [ "$#" -ge 2 ] || usage "$1 needs a value"; gender=$2; shift 2 ;;
+    --variety) [ "$#" -ge 2 ] || usage "$1 needs a value"; variety=$2; shift 2 ;;
+    --takes) [ "$#" -ge 2 ] || usage "$1 needs a value"; takes=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
+    --lock-wait) [ "$#" -ge 2 ] && image_leg_lock_wait_arg "$2" || usage "--lock-wait needs whole seconds"; shift 2 ;;
+    --dry-run) dry_run=true; shift ;;
+    --text) [ "$kind" = speech ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; text=$2; shift 2 ;;
+    --text-file) [ "$kind" = speech ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; text_file=$2; shift 2 ;;
+    --tone) [ "$kind" = speech ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; tone=$2; shift 2 ;;
+    --no-music) [ "$kind" = speech ] || usage "unknown argument $1"; music=off; shift ;;
+    --prompt) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; prompt=$2; shift 2 ;;
+    --lyrics) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; lyrics=$2; shift 2 ;;
+    --instrumental) [ "$kind" = music ] || usage "unknown argument $1"; instrumental=true; shift ;;
+    --title) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; title=$2; shift 2 ;;
+    --describe) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; describe=$2; shift 2 ;;
+    --video) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; video=$2; shift 2 ;;
+    --image) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; image=$2; shift 2 ;;
+    --duration) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; duration=$2; shift 2 ;;
+    --weirdness) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; weirdness=$2; shift 2 ;;
+    --style-influence) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; style_influence=$2; shift 2 ;;
+    --audio-influence) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; audio_influence=$2; shift 2 ;;
+    --source) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; source=$2; shift 2 ;;
+    --mode) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; mode=$2; shift 2 ;;
+    --with) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; with=$2; shift 2 ;;
+    --from) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; from_s=$2; shift 2 ;;
+    --to) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; to_s=$2; shift 2 ;;
+    --speed) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; speed=$2; shift 2 ;;
+    --keep-pitch) [ "$kind" = music ] || usage "unknown argument $1"; keep_pitch=true; shift ;;
+    --about) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; about=$2; shift 2 ;;
+    --fetch) [ "$kind" = music ] && [ "$#" -ge 2 ] || usage "unknown argument $1"; fetch=$2; command=fetch; shift 2 ;;
+    --accounts) [ "$kind" = music ] || usage "unknown argument $1"; command=accounts; shift ;;
+    --login) [ "$kind" = music ] || usage "unknown argument $1"; command=login; shift ;;
+    --status) [ "$kind" = music ] || usage "unknown argument $1"; command=status; shift ;;
+    --hand) [ "$kind" = music ] || usage "unknown argument $1"; hand=true; shift ;;
+    *) usage "unknown argument $1" ;;
+  esac
+done
+
+uv_cmd=${GEMINI_WEB_UV:-$(command -v uv || printf /opt/homebrew/bin/uv)}
+engine() { # args...
+  if [ -n "${SUNO_MUSIC_ENGINE:-}" ]; then "$SUNO_MUSIC_ENGINE" "$@"; else "$uv_cmd" run -q --script "$root/share/suno_music.py" "$@"; fi
+}
+case "$command" in
+  accounts) IMAGE_LEG_SKIP=1; engine accounts; exit ;;
+  login)
+    IMAGE_LEG_SKIP=1
+    [ -n "$account" ] || say "--login needs --account <profile>"
+    login_args=(login --account "$account")
+    [ "$hand" = false ] || login_args+=(--hand)
+    rc=0; engine "${login_args[@]}" || rc=$?
+    exit "$rc" ;;
+  status)
+    IMAGE_LEG_SKIP=1
+    [ -n "$account" ] || say "--status needs --account <profile>"
+    rc=0; result=$(engine status --account "$account" | grep '^{' | tail -n 1) || rc=$?
+    if [ "$(jq -r '.ok // false' <<<"$result" 2>/dev/null)" != true ]; then
+      printf '%s: %s\n' "$tool" "$(jq -r '.reason // "the engine printed no result"' <<<"$result" 2>/dev/null)" >&2
+      exit "$([ "$rc" -eq 4 ] && echo 4 || echo 1)"
+    fi
+    jq -r '"account=\(.account)\ncredits=\(.credits) of \(.credits_limit) left, \(.spendable) spendable now\ndownloads=\(.downloads) unlocks left"' <<<"$result"
+    exit ;;
+esac
+[ "$hand" = false ] || say "--hand belongs to --login"
+
+in_range() { # flag value min max
+  [ -z "$2" ] || { [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -ge "$3" ] && [ "$2" -le "$4" ]; } || say "$1 is a whole number from $3 to $4"
+}
+[[ "$takes" =~ ^[0-2]$ ]] || say "--takes is 0, 1 or 2 (a generation makes two songs; each file spends a download unlock)"
+if [ "$takes" -gt 0 ] || [ -n "$dest" ]; then
+  [ -n "$dest" ] || usage "missing --dest"
+  [[ "$dest" = /* ]] || say "--dest must be an absolute path, not $dest"
+  [ -d "$(dirname "$dest")" ] || say "--dest folder $(dirname "$dest") does not exist"
+fi
+ext=mp3
+[ -z "$dest" ] || ext=$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')
+jq -e --arg ext "$ext" '.formats.free | index($ext) != null' "$manifest" >/dev/null ||
+  say "--dest must end in .$(caps '.formats.free | join(" .")') (the free plan downloads no WAV; convert with ffmpeg after)"
+[ -z "$gender" ] || case "$gender" in male) gender=Male ;; female) gender=Female ;; *) say "--gender is male or female" ;; esac
+in_range --variety "$variety" "$(caps '.ranges.variety.min')" "$(caps '.ranges.variety.max')"
+is_clip() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; }
+saved_by_suno() { [[ "$1" = /* ]] && [ -f "$1.txt" ] && grep -q '^Clip: ' "$1.txt" && grep -q '^Account: ' "$1.txt"; }
+owner_of() { sed -n 's/^Account: //p' "$1.txt" | head -n 1; }
+clip_of() { sed -n 's/^Clip: //p' "$1.txt" | head -n 1; }
+pin_owner() { # flag value
+  local owner
+  owner=$(owner_of "$2")
+  [ -z "$account" ] || [ "$account" = "$owner" ] || say "$1 $2 is a Suno song on $owner, not $account"
+  account=$owner
+}
+
+engine_args=()
+if [ "$command" = fetch ]; then
+  [ "$takes" = 1 ] || say "--fetch saves one song: no --takes"
+  [ -n "$dest" ] || usage "missing --dest"
+  if saved_by_suno "$fetch"; then pin_owner --fetch "$fetch"; fetch=$(clip_of "$fetch"); fi
+  is_clip "$fetch" || say "--fetch takes a clip id or a file a suno run saved"
+  [ -n "$account" ] || say "--fetch $fetch is a library song, which lives on one account: add --account"
+  engine_args=(fetch --clip "$fetch" --account "$account" --format "$ext")
+elif [ "$kind" = speech ]; then
+  [ -z "$text_file" ] || { [[ "$text_file" = /* ]] && [ -f "$text_file" ] || say "--text-file needs an absolute path to a file"; text=$(cat "$text_file"); }
+  [ -n "$text" ] || usage "missing --text"
+  [ "${#text}" -le "$(caps '.limits.script')" ] || say "--text is over Suno's $(caps '.limits.script') characters"
+  engine_args=(generate --script "$text" --music "$music")
+  [ -z "$tone" ] || engine_args+=(--tone "$tone")
+else
+  in_range --weirdness "$weirdness" 0 100
+  in_range --style-influence "$style_influence" 0 100
+  in_range --audio-influence "$audio_influence" 0 100
+  [ -z "$duration" ] || { in_range --duration "$duration" "$(caps '.ranges.duration.min')" "$(caps '.ranges.duration.max')"
+    [ $((duration % 5)) -eq 0 ] || say "--duration moves in steps of 5 s"; }
+  [ "$instrumental" = false ] || [ -z "$lyrics" ] || say "--lyrics and --instrumental are one choice"
+  [ "${#lyrics}" -le "$(caps '.limits.lyrics')" ] || say "--lyrics is over Suno's $(caps '.limits.lyrics') characters"
+  [ "${#prompt}" -le "$(caps '.limits.styles')" ] || say "--prompt (the Styles box) is over Suno's $(caps '.limits.styles') characters"
+  [ "${#describe}" -le "$(caps '.limits.describe')" ] || say "--describe is over Suno's $(caps '.limits.describe') characters"
+  if [ -z "$source" ] && { [ -n "$mode$with$from_s$to_s$speed$about" ] || [ "$keep_pitch" = true ]; }; then
+    say "--mode, --with, --from, --to, --speed, --keep-pitch and --about edit a song: add --source"
+  fi
+  for item in "--video:$video" "--image:$image"; do
+    path=${item#*:}
+    [ -n "$path" ] || continue
+    [ -n "$describe" ] || say "${item%%:*} goes with --describe (Suno's Simple form scores it)"
+    [[ "$path" = /* ]] && [ -f "$path" ] || say "${item%%:*} needs an absolute path to a file"
+    case "${item%%:*}:$(printf '%s' "${path##*.}" | tr '[:upper:]' '[:lower:]')" in
+      --video:mp4 | --video:mov | --image:png | --image:jpg | --image:jpeg | --image:webp) ;;
+      *) say "--video takes an mp4 or mov, --image a png, jpg or webp" ;;
+    esac
+  done
+  if [ -n "$describe" ]; then
+    [ -z "$source$prompt$lyrics$title$duration$weirdness$style_influence$gender" ] && [ "$instrumental" = false ] ||
+      say "--describe is Suno's Simple form: no --prompt, --lyrics, --instrumental, --title, --gender, --duration, --weirdness, --style-influence or --source"
+    engine_args=(generate --describe "$describe")
+    [ -z "$video" ] || engine_args+=(--video "$video")
+    [ -z "$image" ] || engine_args+=(--image "$image")
+  elif [ -n "$source" ]; then
+    [ -n "$mode" ] || say "--source needs --mode $(caps '.modes | keys | join("|")')"
+    jq -e --arg v "$mode" '.modes | has($v)' "$manifest" >/dev/null || say "--mode is one of: $(caps '.modes | keys | join(", ")')"
+    generates=$(caps ".modes.$mode.generates")
+    [ "$generates" = true ] || [ -z "$prompt$lyrics$duration$weirdness$style_influence$audio_influence$variety$gender" ] ||
+      say "--mode $mode cuts the song itself: no --prompt, --lyrics, --gender, --duration or sliders"
+    [ -z "$duration" ] || say "--duration makes a new song; an edit keeps its source's length"
+    case "$mode" in
+      mashup) [ -n "$with" ] || say "--mode mashup needs --with <the second song>" ;;
+      *) [ -z "$with" ] || say "--with belongs to --mode mashup" ;;
+    esac
+    for number in "$from_s" "$to_s"; do
+      [ -z "$number" ] || [[ "$number" =~ ^[0-9]+(\.[0-9])?$ ]] || say "--from and --to are seconds, to a tenth"
+    done
+    case "$mode" in
+      crop | remove) [ -n "$from_s" ] && [ -n "$to_s" ] && awk -v a="$from_s" -v b="$to_s" 'BEGIN { exit !(a < b) }' ||
+        say "--mode $mode needs --from <s> before --to <s>" ;;
+      sample) [ -z "$from_s$to_s" ] || { [ -n "$from_s" ] && [ -n "$to_s" ] && awk -v a="$from_s" -v b="$to_s" 'BEGIN { exit !(a < b) }'; } ||
+        say "--mode sample takes --from <s> and --to <s> together (default the first minute)" ;;
+      extend) [ -z "$to_s" ] || say "--mode extend continues from --from <s> (default the end): no --to" ;;
+      *) [ -z "$from_s$to_s" ] || say "--mode $mode works on the whole song: no --from or --to" ;;
+    esac
+    if [ "$mode" = speed ]; then
+      [ -n "$speed" ] && awk -v s="$speed" 'BEGIN { exit !(s ~ /^[0-9]+(\.[0-9]+)?$/ && s >= 0.25 && s <= 4) }' ||
+        say "--mode speed needs --speed 0.25 to 4 (it snaps to semitone steps)"
+    else
+      [ -z "$speed" ] && [ "$keep_pitch" = false ] || say "--speed and --keep-pitch belong to --mode speed"
+    fi
+    if saved_by_suno "$source"; then
+      pin_owner --source "$source"
+    elif [[ "$source" = /* ]]; then
+      [ -f "$source" ] || say "--source needs an absolute path to a file, or a clip id"
+      case "$(printf '%s' "${source##*.}" | tr '[:upper:]' '[:lower:]')" in mp3 | wav | m4a | aac | flac | ogg) ;;
+        *) say "--source takes an mp3, wav, m4a, aac, flac or ogg file to upload" ;; esac
+      length=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$source" 2>/dev/null | head -n 1 || true)
+      awk -v s="${length:-0}" -v a="$(caps '.uploads.audio_s.min')" -v b="$(caps '.uploads.audio_s.max')" 'BEGIN { exit !(s >= a && s <= b) }' ||
+        say "--source is ${length:-an unreadable} s long; Suno uploads $(caps '.uploads.audio_s.min') to $(caps '.uploads.audio_s.max') s"
+    else
+      is_clip "$source" || say "--source takes a file or a clip id"
+      [ -n "$account" ] || say "--source $source is a library song, which lives on one account: add --account"
+    fi
+    if [ -n "$with" ]; then
+      if saved_by_suno "$with"; then pin_owner --with "$with"; with=$(clip_of "$with"); fi
+      is_clip "$with" || say "--with takes a clip id or a file a suno run saved"
+    fi
+    [ "$generates" = true ] || [ "$takes" -le 1 ] || say "--mode $mode makes one song: --takes 0 or 1"
+    engine_args=(generate --source "$source" --mode "$mode")
+    [ -z "$prompt" ] || engine_args+=(--prompt "$prompt")
+    [ -z "$lyrics" ] || engine_args+=(--lyrics "$lyrics")
+    [ -z "$with" ] || engine_args+=(--with "$with")
+    [ -z "$from_s" ] || engine_args+=(--from "$from_s")
+    [ -z "$to_s" ] || engine_args+=(--to "$to_s")
+    [ -z "$speed" ] || engine_args+=(--speed "$speed")
+    [ "$keep_pitch" = false ] || engine_args+=(--keep-pitch)
+    [ -z "$about" ] || engine_args+=(--about "$about")
+    [ -z "$audio_influence" ] || engine_args+=(--audio-influence "$audio_influence")
+  else
+    [ -n "$prompt" ] || usage "missing --prompt (the Styles box) or --describe"
+    [ -z "$audio_influence" ] || say "--audio-influence weighs a --source song"
+    engine_args=(generate --prompt "$prompt" --lyrics "$lyrics")
+    [ -z "$duration" ] || engine_args+=(--duration "$duration")
+  fi
+  [ -z "$title" ] || engine_args+=(--title "$title")
+  [ -z "$weirdness" ] || engine_args+=(--weirdness "$weirdness")
+  [ -z "$style_influence" ] || engine_args+=(--style-influence "$style_influence")
+fi
+if [ "$command" = generate ]; then
+  [ -n "$title" ] || [ -z "$dest" ] || engine_args+=(--title "$(basename "${dest%.*}")")
+  [ -z "$gender" ] || engine_args+=(--gender "$gender")
+  [ -z "$variety" ] || engine_args+=(--variety "$variety")
+  engine_args+=(--takes "$takes" --format "$ext")
+  [ -z "$IMAGE_LEG_LOCK_WAIT" ] || engine_args+=(--lock-wait "$IMAGE_LEG_LOCK_WAIT")
+  [ "$dry_run" = false ] || engine_args+=(--dry-run)
+fi
+[ -z "$account" ] || [ "$command" = fetch ] || engine_args+=(--account "$account")
+
+started=$(date +%s)
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/suno-music.XXXXXX")
+trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+engine_args+=(--out-dir "$tmp_dir")
+image_leg_mark "$takes"
+rc=0
+engine "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
+grep '^BROWSER_' "$tmp_dir/engine.err" >&2 || true
+result=$(grep '^{' "$tmp_dir/engine.out" | tail -n 1 || true)
+if ! jq -e . >/dev/null 2>&1 <<<"$result"; then
+  tail -n 15 "$tmp_dir/engine.err" >&2
+  printf '%s: the engine printed no result (exit %s)\n' "$tool" "$rc" >&2
+  exit 1
+fi
+if [ "$(jq -r '.ok' <<<"$result")" != true ]; then
+  reason=$(jq -r '.reason // "unknown failure"' <<<"$result")
+  printf '%s: %s\n' "$tool" "$reason" >&2
+  case "$rc" in
+    3) printf 'SUNO_USAGE_LIMIT\n' >&2; exit 3 ;;
+    5) image_leg_busy "$(jq -r '.account // empty' <<<"$result")" ;;
+    2 | 4) exit "$rc" ;;
+    *) exit 1 ;;
+  esac
+fi
+account=$(jq -r '.account' <<<"$result")
+if [ "$(jq -r '.dry_run // false' <<<"$result")" = true ]; then
+  printf 'dry_run=ok\naccount=%s\ncredits=%s\ndownloads=%s\ncontrols=%s\n' "$account" "$(jq -r '.credits' <<<"$result")" \
+    "$(jq -r '.downloads' <<<"$result")" "$(jq -c '.controls' <<<"$result")"
+  image_caps_page_check "$result"
+  exit 0
+fi
+
+variant_of() { # index
+  if [ "$1" -eq 1 ]; then printf '%s' "$dest"; else printf '%s-%s.%s' "${dest%.*}" "$1" "$ext"; fi
+}
+takes_done=$(jq -r '.takes | length' <<<"$result")
+[ "$takes_done" -le "$takes" ] || takes_done=$takes # never a file nobody asked a --dest for
+footer=''
+index=0
+while [ "$index" -lt "$takes_done" ]; do
+  take=$(jq -c ".takes[$index]" <<<"$result")
+  index=$((index + 1))
+  out=$(variant_of "$index")
+  audio=$(jq -r '.audio' <<<"$take")
+  [ -s "$audio" ] || { printf '%s: take %s has no audio file\n' "$tool" "$index" >&2; exit 1; }
+  cp "$audio" "$out"
+  jq -r '.notes' <<<"$take" >"$out.txt"
+  seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" 2>/dev/null | head -n 1 || true)
+  observed_model=$(jq -r '.model // empty' <<<"$take")
+  line="duration=$(awk -v s="${seconds:-0}" 'BEGIN { printf "%.2f", s }')"
+  if [ "$index" -eq 1 ]; then
+    footer+="dest=$out"$'\n'"$line"$'\n'"format=$ext"$'\n'"song=$(jq -r '.song' <<<"$take")"$'\n'"clip=$(jq -r '.clip' <<<"$take")"$'\n'
+  else
+    footer+="variant=$out $line song=$(jq -r '.song' <<<"$take")"$'\n'
+  fi
+done
+while IFS= read -r song; do
+  [ -n "$song" ] || continue
+  footer+="library=$song"$'\n'
+done < <(jq -r --argjson saved "$(jq -c '[.takes[].clip]' <<<"$result")" '.library[] | select(.clip as $c | $saved | index($c) | not) | .song' <<<"$result")
+printf '%saccount=%s\nmodel=%s\ncredits=%s charged, %s left\ndownloads=%s unlocks left\nseconds=%s\n' \
+  "$footer" "$account" "${observed_model:-$(jq -r '.controls.model // "v6-mini"' <<<"$result")}" \
+  "$(jq -r '.charged // 0' <<<"$result")" "$(jq -r '.credits' <<<"$result")" "$(jq -r '.downloads' <<<"$result")" \
+  "$(($(date +%s) - started))"
+image_caps_page_check "$result"
+exit
+}

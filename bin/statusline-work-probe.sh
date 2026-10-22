@@ -200,7 +200,7 @@ found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v n
     kids[$2] = kids[$2] " " $1
   }
   END {
-    media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"
+    media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|suno-music|suno-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"
     owned = "^(worker-run|review-bench|" substr(media, 3)
     pid = start; depth = 0; root = ""
     while (pid != "" && pid + 0 > 1 && depth < 30) {

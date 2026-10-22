@@ -207,7 +207,7 @@ own launches, and this is the whole list: `worker-run`, `review-bench`,
 OWNED `worker-run start|run|wait`, which only the chat itself spells (never an agent or a
 headless worker), and the media scripts
 `codex-image` / `gemini-image` / `grok-image` / `grok-video` / `image-fanout` / `gemini-video` /
-`gemini-music` / `gemini-sfx` / `gemini-listen` with the engine calls `chatgpt-web
+`gemini-music` / `gemini-sfx` / `gemini-listen` / `suno-music` / `suno-speech` with the engine calls `chatgpt-web
 generate|resize|comment|remove-bg` and `gemini-web generate`, which no hand may spell: every
 session, the chat included, reaches them through `bin/media-run`, whose job pointer renders the
 account it spends as a `media` work line — an image, a clip, a track or a listening started past it

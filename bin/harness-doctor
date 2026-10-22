@@ -209,7 +209,8 @@ C1_NOTE_IDS = re.compile(r"<(tool-use-id|task-id)>([^<]+)</")
 C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|env|nice|timeout\s+\S+)\s+)*"
                       r"(?:\S*/)?(?:run-all|run-suites\.sh|test_[\w.-]+\.(?:sh|bash|py|lua))(?=\s|$|[;&|)])")
 MEDIA_TOOLS = ("media-run", "codex-image", "gemini-image", "grok-image", "image-fanout", "gemini-video", "grok-video",
-               "video-chain", "gemini-music", "gemini-sfx", "gemini-listen", "gemini-speech", "chatgpt-web", "gemini-web")
+               "video-chain", "gemini-music", "gemini-sfx", "gemini-listen", "gemini-speech", "suno-music", "suno-speech",
+               "chatgpt-web", "gemini-web")
 MEDIA_TOOL = re.compile(r"(?<![\w.-])(%s)(?![\w.-])" % "|".join(MEDIA_TOOLS))
 WAIT_SLEEP = re.compile(r"(?:^|[;&|({\n]|\b(?:do|then|else))\s*(?:command\s+)?sleep\s+(\d+(?:\.\d+)?)\b")
 WAIT_FOLLOW = re.compile(r"(?:^|[;&|(\n]|\b(?:do|then))\s*(?:timeout\s+\S+\s+)?tail\s+(?:-\w+\s+)*-[fF]\b")

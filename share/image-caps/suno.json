@@ -1,0 +1,53 @@
+{
+  "vendor": "suno",
+  "verified": "2026-10-23",
+  "routes": ["web"],
+  "scripts": {"music": "suno-music", "speech": "suno-speech"},
+  "default_for": null,
+  "rosters": {"web": ["suno-music", "--accounts"]},
+  "plan": {
+    "name": "Free",
+    "credits": "monthly_limit per account (com 100, notcom 50, an account signed up 2026-10-22 300); total_credits_left is what remains",
+    "rate_limit": "at most available_credits at once (50; 200 on a new account), refilled by 20 every 600 s",
+    "downloads": "a file needs one download unlock per song (additional_download_remaining: com 7, notcom 7 when found, 0 on a new account; Earn Credits gives none); downloading an unlocked song again, in any format, is free",
+    "commercial_use": false
+  },
+  "models": {"v6-mini": {"wire": "chirp-goose", "default": true}},
+  "pro_models": {"v6": "chirp-hawk", "v6-wild": "chirp-hawk-wild"},
+  "price": {"song": 10, "speech": 10},
+  "clips_per_generation": 2,
+  "previews": "a free generation may come back with two more clips on v6 (chirp-hawk, metadata.type preview, can_remix false): Suno's upsell, no extra credits; a file of one spends an unlock like any song, so takes save the v6-mini songs first and the previews stay in the library (2026-10-23, notcom)",
+  "limits": {"title": 100, "lyrics": 5000, "styles": 1000, "describe": 3000, "script": 5000},
+  "ranges": {
+    "duration": {"min": 10, "max": 360, "step": 5},
+    "weirdness": {"min": 0, "max": 100, "default": 50},
+    "style_influence": {"min": 0, "max": 100, "default": 50},
+    "audio_influence": {"min": 0, "max": 100, "default": 25},
+    "variety": {"min": 0, "max": 4, "default": 1},
+    "speed": {"min": 0.25, "max": 4.0, "steps": "semitones: 2^(n/12), n -24..24; an asked speed snaps to the nearest"}
+  },
+  "uploads": {"audio_s": {"min": 6, "max": 480}, "video": "mp4 on the Simple form, scored by Suno", "image": "png/jpeg on the Simple form, scored by Suno"},
+  "formats": {"free": ["mp3", "m4a"], "pro": ["wav", "mp4 video asset", "stems & midi"]},
+  "modes": {
+    "cover": {"label": "Cover", "menu": "Recreate this song with a different genre or feel", "price": 10, "generates": true},
+    "mashup": {"label": "Mashup", "menu": "Blend with another song you pick", "price": 10, "generates": true},
+    "sample": {"label": "Sample", "menu": "Use a slice of audio inside a new track", "price": 10, "generates": true, "window": "Selection"},
+    "extend": {"label": "Extend", "menu": "Continue this song where it left off", "price": 10, "generates": true, "window": "Extend from"},
+    "crop": {"label": "Crop", "menu": "Trim to a sub-section", "price": 0, "generates": false, "window": "Crop to"},
+    "remove": {"label": "Remove Section", "menu": "Remove a section from the middle", "price": 0, "generates": false, "window": "Remove Section"},
+    "reverse": {"label": "Reverse", "menu": "Play the audio backwards", "price": 0, "generates": false},
+    "speed": {"label": "Speed", "menu": "Change playback speed", "price": 0, "generates": false}
+  },
+  "pro_modes": ["Inspo", "Edit instruments", "Edit vocals", "Replace section", "Fade in", "Fade out", "Add stem"],
+  "condition_menu": ["REMIX", "Cover", "Recreate this song with a different genre or feel", "Mashup", "Blend with another song you pick", "Sample", "Use a slice of audio inside a new track", "Inspo", "Pro", "Take loose inspiration — vibe, not specifics", "EDIT", "Extend", "Continue this song where it left off", "Crop", "Trim to a sub-section", "Remove Section", "Remove a section from the middle", "Reverse", "Play the audio backwards", "Speed", "Change playback speed", "Edit instruments", "Pro", "Add or replace the song's instrumentation", "Edit vocals", "Pro", "Add or replace the song's vocal performance", "Replace section", "Pro", "Swap out a portion of the song", "Fade in", "Pro", "Soften the start", "Fade out", "Pro", "Soften the end", "Add stem", "Premier", "Layer in a new stem (drums, bass, lead, …)"],
+  "menus": {"More options": ["Remix", "Edit", "Publish", "Share", "Download", "Manage", "Add to Queue", "Add to Playlist", "Song Radio", "Report", "Move to Trash"], "Remix": ["Cover", "Reuse Prompt", "Mashup", "Sample this song", "Use as Inspiration", "Voice"]},
+  "upload_wait_s": 300,
+  "timeout_s": 600,
+  "api_only": {
+    "stems": "Stems & MIDI in the Download dialog and the Get Stems action are Pro",
+    "wav": "WAV downloads answer 403 wav_not_allowed on the free plan",
+    "max_mode": "Max Mode (Pro) is left Off",
+    "personas_voices": "Add Voice and personas: free_vox_gens_remaining 3 on chirp-hawk (v6) per account, not wired",
+    "playlist_inspiration": "Add inspiration from a playlist (Pro Inspo) is not wired"
+  }
+}

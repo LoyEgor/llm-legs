@@ -2479,15 +2479,16 @@ assert eq "$gate_sanctioned" 'claude-session-driver light-research llm-limits op
 # own and NONE of them may reappear in SANCTIONED_RE — named there, an image would be generated
 # from any chat's Bash with nothing rendering the account it spent. The extraction above still
 # reads the `-image` shape, so a re-added one breaks that equality rather than passing unseen.
-for owned in codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen gemini-speech; do
+for owned in codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen gemini-speech suno-music suno-speech; do
   assert grep -Fq "\`$owned\`" "$ROOT/$DOC"
 done
 assert grep -Eq '^OWNED_IMAGE_RE=.*\(codex\|gemini\|grok\)-image' "$LAUNCH_GATE"
 assert grep -Eq '^OWNED_IMAGE_RE=.*gemini-\(video\|music\|sfx\|listen\|speech\)' "$LAUNCH_GATE"
+assert grep -Eq '^OWNED_IMAGE_RE=.*suno-\(music\|speech\)' "$LAUNCH_GATE"
 # The work probe draws the same media scripts the gate owns, plus media-run, their one door; the gate
 # also owns the engine subcommands those scripts drive.
-assert grep -Fq 'media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
-assert grep -Fq 'grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
+assert grep -Fq 'media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|suno-music|suno-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
+assert grep -Fq 'grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|suno-music|suno-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
 assert grep -Fq 'MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"' "$LAUNCH_GATE"
 assert grep -Fq '`media-run`' "$ROOT/$DOC"
 assert grep -Eq '^OWNED_RUN_RE=.*worker-run.*\(start\|run\|wait\)' "$LAUNCH_GATE"
@@ -3292,7 +3293,7 @@ assert doc_has '| dj | Doctor roster |'
 # Row dk: an explicit --account is never read as "none": every media entry point refuses an empty or
 # malformed name through the one shared check before anything is spent. media-run sources image-leg.sh
 # for the fan-out's work-store path only; it reads --account for its tag and execs the script that checks it.
-media_account_scripts="codex-image gemini-image grok-image grok-video gemini-video gemini-music gemini-sfx gemini-listen gemini-speech"
+media_account_scripts="codex-image gemini-image grok-image grok-video gemini-video gemini-music gemini-sfx gemini-listen gemini-speech suno-music suno-speech"
 assert eq "$(cd "$ROOT/bin" && grep -lE -- '^ *--account\)' $(grep -lF '. "$root/share/image-leg.sh"' -- * | grep -vx media-run) | sort | tr '\n' ' ')" \
   "$(printf '%s\n' $media_account_scripts | sort | tr '\n' ' ')"
 for name in $media_account_scripts; do
@@ -3300,7 +3301,7 @@ for name in $media_account_scripts; do
   assert eq "$(grep -cE -- '--account\)' "$ROOT/bin/$name")" "$(grep -cE -- '--account\).*account_arg "\$2"|^ +account_arg "\$2"$' "$ROOT/bin/$name")"
 done
 assert grep -qF '[[ "${1-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]' "$ROOT/share/account-arg.sh"
-for engine in gemini_web chatgpt_web gemini_music flow_music flow_image aistudio_speech; do
+for engine in gemini_web chatgpt_web gemini_music flow_music flow_image aistudio_speech suno_music; do
   assert eq "$(grep -E 'add_argument\("--account"' "$ROOT/share/$engine.py" | grep -cv 'type=\(gw\.\)\?account_arg')" 0
   assert grep -qE 'add_argument\("--account"' "$ROOT/share/$engine.py"
 done
@@ -3315,7 +3316,7 @@ assert doc_has '| dk | Explicit --account |'
 MEDIA_SKILL="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/skills/media/SKILL.md"
 [ -r "$MEDIA_SKILL" ] || fail "run names: $MEDIA_SKILL is unreadable (set CLAUDE_SETUP_ROOT)"
 readme_links=$(LC_ALL=C sed -nE 's/^- `bin\/([^`]+)` → `~\/\.local\/bin\/([^`]+)`.*/\1 \2/p' "$ROOT/README.md" | awk '$1 == $2 { print $1 }')
-run_names="media-run codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen worker-run worker-pick"
+run_names="media-run codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen suno-music suno-speech worker-run worker-pick"
 for script in "$ROOT"/bin/*; do
   name=${script##*/}
   [ -f "$script" ] && [ -x "$script" ] && [[ "$name" != *.sh ]] || continue

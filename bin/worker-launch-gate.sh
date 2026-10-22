@@ -86,7 +86,7 @@ UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(
 
 # Called past media-run, a media script or a web engine's generating subcommand spends an account
 # with no work line naming it, so every hand is refused, an agent's included.
-OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen|speech)|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice)|image-fanout)${EDGE}"
+OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen|speech)|suno-(music|speech)|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice)|image-fanout)${EDGE}"
 MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"
 
 # A recovery relaunches review cells, so inside an agent it is a launch; a plain `review-bench wait`

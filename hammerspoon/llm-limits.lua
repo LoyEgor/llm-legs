@@ -1073,8 +1073,8 @@ M.readJsonTable = readJsonTable
 
 -- A gemini-web profile matching no roster name, even by its email's local part, gets no row: the
 -- store's roster is the only roster.
-local function geminiMediaState(roster, now)
-  local dir, state = geminiWebDir(), {}
+-- The profile names with an account file in the gemini-web store, sorted; none without a store.
+local function geminiWebAccounts(dir)
   local ok, names = pcall(function()
     local found = {}
     for file in hs.fs.dir(dir .. "/accounts") do
@@ -1084,7 +1084,12 @@ local function geminiMediaState(roster, now)
     table.sort(found)
     return found
   end)
-  if not ok then return state end
+  return ok and names or {}
+end
+
+local function geminiMediaState(roster, now)
+  local dir, state = geminiWebDir(), {}
+  local names = geminiWebAccounts(dir)
   local videoWalls = readJsonTable(dir .. "/walls.json") or {}
   local musicWalls = readJsonTable(dir .. "/music-walls.json") or {}
   local flowMusicWalls = readJsonTable(dir .. "/flow-music-walls.json") or {}
@@ -1121,6 +1126,48 @@ local function geminiMediaState(roster, now)
     end
   end
   return state
+end
+
+-- Suno, after ElevenLabs: one 1d row per account suno-music has seen signed in, read from the same
+-- gemini-web account files. Free credits renew daily on a UTC clock the files do not carry, so the reset
+-- column holds the credits left; ↓ is the download unlocks left (every new song file spends one and the
+-- free plan earns none back). Red when the account cannot deliver a file: a standing wall, credits under
+-- one generation, or no unlock.
+local SUNO_GENERATION_CREDITS = 10
+
+local function appendSuno(menu, now)
+  local dir, accounts = geminiWebDir(), {}
+  for _, name in ipairs(geminiWebAccounts(dir)) do
+    local meta = readJsonTable(dir .. "/accounts/" .. name .. ".json") or {}
+    if meta.suno_signed_in == true then accounts[#accounts + 1] = { name = name, meta = meta } end
+  end
+  if #accounts == 0 then return end
+  local walls = readJsonTable(dir .. "/suno-walls.json") or {}
+  table.insert(menu, { title = infoTitle("Suno") })
+  for _, account in ipairs(accounts) do
+    local meta = account.meta
+    local left, total = tonumber(meta.suno_credits), tonumber(meta.suno_credits_limit)
+    local downloads = tonumber(meta.suno_downloads)
+    local wall = tonumber(walls[account.name])
+    wall = wall and wall > now and wall or nil
+    local atLimit = wall ~= nil or (left ~= nil and left < SUNO_GENERATION_CREDITS)
+      or (downloads ~= nil and downloads < 1)
+    local detail = downloads and string.format("  ↓%d", downloads) or nil
+    local title
+    if wall then
+      title = rowTitle("", "1d", { effective_pct = 100, resets_at = wall }, false, true, false,
+        { pct = "", detail = detail })
+    elseif left and total and total > 0 then
+      title = rowTitle("", "1d", { effective_pct = math.max(0, total - left) / total * 100 }, false, atLimit, false,
+        { reset = tostring(left), detail = detail })
+    else
+      title = rowTitle("", "1d", nil, false, atLimit, false, { pct = "", reset = left and tostring(left) or "",
+        detail = detail })
+    end
+    table.insert(menu, { title = accountTitle(account.name, formatAccountAge(meta.suno_at), atLimit) })
+    table.insert(menu, { title = title, disabled = true })
+  end
+  table.insert(menu, { title = "-" })
 end
 
 local DOCTOR_REPO_WIDTH, DOCTOR_CHAT_WIDTH = 20, 24
@@ -3357,6 +3404,7 @@ local function buildMenuItems()
     end
 
     appendElevenLabs(menu, limits)
+    appendSuno(menu, os.time())
     appendOpenCode(menu, limits, paused)
     table.insert(menu, { title = "-" })
     refreshItems(menu)

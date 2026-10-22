@@ -823,6 +823,22 @@
     "why": "240 tries x 0.25 s = 60 s for a store write behind a live holder.",
     "normal": "0 hits; a hit drops that store write."
   },
+  "suno.clip-wait": {
+    "value": 600,
+    "unit": "s",
+    "where": "share/image-caps/suno.json:45",
+    "set_by": "chat b05622d4",
+    "why": "Suno finishes a v6-mini generation in about a minute and an edit in seconds; timeout_s bounds a clip that never completes, which stays fetchable from the library.",
+    "normal": "0 hits."
+  },
+  "suno.upload-wait": {
+    "value": 300,
+    "unit": "s",
+    "where": "share/image-caps/suno.json:44",
+    "set_by": "chat b05622d4",
+    "why": "An audio upload, or a Simple form video or image, is processed within a minute; upload_wait_s bounds a stuck one.",
+    "normal": "0 hits."
+  },
   "system-doctor.cache-budget": {
     "value": 120,
     "unit": "s",

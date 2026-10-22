@@ -291,6 +291,8 @@ this list):
 - `bin/video-chain` → `~/.local/bin/video-chain` — frame extraction for chaining clips.
 - `bin/frame-sheet` → `~/.local/bin/frame-sheet` — a contact sheet of a clip's frames labelled `t=<s>`, for judging motion (local, no account).
 - `bin/gemini-music` → `~/.local/bin/gemini-music` — music through the Gemini app's Lyria tool.
+- `bin/suno-music` → `~/.local/bin/suno-music` — songs, covers and edits on Suno's free plan in the hidden Chrome.
+- `bin/suno-speech` → `~/.local/bin/suno-speech` — Suno's Speech tab (a voiced script, optional background music).
 - `bin/gemini-sfx` → `~/.local/bin/gemini-sfx` — sound effects from a Flow Omni render.
 - `bin/gemini-listen` → `~/.local/bin/gemini-listen` — a Gemini model's judgement of video or audio.
 - `bin/blender-render` → `~/.local/bin/blender-render` — local Blender stills, loops and GLB web models (`docs/blender.md`).

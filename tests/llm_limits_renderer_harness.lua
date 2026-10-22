@@ -4712,6 +4712,68 @@ end)()
   end
 end)()
 
+-- Suno: right after ElevenLabs, one 1d row per account suno-music saw signed in, read from the gemini-web
+-- account files; the reset column holds the credits left, ↓ the download unlocks left; red when the
+-- account cannot deliver a file (no unlock, credits under one generation, a standing wall).
+;(function()
+  local now = 1790000000
+  local root = geminiWebFake.root
+  local fixture = { schema = 1, vendors = {
+    claude = { available = false }, codex = { available = false },
+    gemini = { available = true, accounts = {} },
+  }, elevenlabs = { as_of = now - 60, accounts = {
+    { account = "key", name = "voices", used = 1, limit = 100, reserve = 0, resets_at = now + 86400 },
+  } } }
+  geminiWebFake.files = {
+    [root .. "/accounts/aria.json"] = { suno_signed_in = true, suno_credits = 60, suno_credits_limit = 100,
+      suno_downloads = 6, suno_at = now - 1020 },
+    [root .. "/accounts/bolt.json"] = { suno_signed_in = true, suno_credits = 300, suno_credits_limit = 300,
+      suno_downloads = 0, suno_at = now - 60 },
+    [root .. "/accounts/cove.json"] = { suno_signed_in = true, suno_credits = 50, suno_credits_limit = 50,
+      suno_downloads = 7, suno_at = now - 60 },
+    [root .. "/accounts/dusk.json"] = { suno_signed_in = false, suno_credits = 50, suno_at = now - 60 },
+    [root .. "/accounts/echo.json"] = { credits = 50, credits_at = now - 60 },
+    [root .. "/suno-walls.json"] = { cove = now + 1800, aria = now - 1 },
+  }
+  holdFake.getenv = function(name)
+    if name == "GEMINI_WEB_DIR" then return root end
+    return os.getenv(name)
+  end
+  local menu = loadModule(fixture, nil, now).menuItems()
+  holdFake.getenv = nil
+  local function row(bar, pct, reset, downloads)
+    return string.format("        1d  %s  %4s  %9s  ↓%d", bar, pct, reset, downloads)
+  end
+  local voices, aria = accountIndex(menu, "voices"), accountIndex(menu, "aria")
+  local bolt, cove = accountIndex(menu, "bolt"), accountIndex(menu, "cove")
+  assert(titleText(menu[voices + 2]) == "-" and titleText(menu[aria - 1]) == "Suno" and aria == voices + 4
+      and bolt == aria + 2 and cove == bolt + 2 and titleText(menu[cove + 2]) == "-",
+    "the Suno section is not a header after ElevenLabs, one row per signed-in account and a separator")
+  for _, item in ipairs(menu) do
+    local text = titleText(item)
+    assert(text:sub(1, 4) ~= "dusk" and text:sub(1, 4) ~= "echo", "an account not signed in to Suno drew a row")
+  end
+  assert(titleText(menu[aria]) == "aria  17m ago" and titleText(menu[aria + 1]) == row("▓▓░░░", "40%", "60", 6)
+      and #redRuns(menu[aria + 1].title) == 0 and #redRuns(menu[aria].title) == 0 and menu[aria + 1].disabled == true,
+    "a usable account's Suno row is wrong (a lapsed wall must not count): " .. titleText(menu[aria + 1]))
+  assert(titleText(menu[bolt + 1]) == row("░░░░░", "0%", "300", 0) and redRuns(menu[bolt].title)[1] == "bolt"
+      and redRuns(menu[bolt + 1].title)[1] == titleText(menu[bolt + 1]),
+    "an account without a download unlock is not red: " .. titleText(menu[bolt + 1]))
+  assert(titleText(menu[cove + 1]) == row("▓▓▓▓▓", "", os.date("%H:%M", now + 1800), 7)
+      and redRuns(menu[cove + 1].title)[1] == titleText(menu[cove + 1]),
+    "a walled account does not read walled until its wall ends: " .. titleText(menu[cove + 1]))
+  geminiWebFake.files = { [root .. "/accounts/echo.json"] = { credits = 50 } }
+  holdFake.getenv = function(name)
+    if name == "GEMINI_WEB_DIR" then return root end
+    return os.getenv(name)
+  end
+  for _, item in ipairs(loadModule(fixture, nil, now).menuItems()) do
+    assert(titleText(item) ~= "Suno", "a store with no Suno account still drew the section")
+  end
+  holdFake.getenv = nil
+  geminiWebFake.files = nil
+end)()
+
 -- Show Chrome answers for the media tools' Chrome clone as for the real Chrome, read from the running clone
 -- (Egor saw a clone window and no checkbox, 2026-10-14): a parked window
 -- reads unchecked and one on screen checked, and a click moves the clone's windows on or off screen,
