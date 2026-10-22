@@ -25,13 +25,11 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import caps_checks  # noqa: E402
 import gemini_web as gw  # noqa: E402
-from spend import read_json  # noqa: E402
 
 gw.ROUTE = "aistudio"
 
 SITE = "https://aistudio.google.com"
 WALLS = "aistudio-walls.json"
-REST = "flow-rest.json"
 TERMS = re.compile(r"^I acknowledge that I am at least 18")
 TERMS_BUTTONS = ("Accept terms of service", "Continue")
 WELCOME = re.compile(r"Welcome to AI Studio|Gemini API Additional Terms")
@@ -73,26 +71,18 @@ def set_wall(account: str, until: float) -> None:
     gw.update_json(WALLS, lambda data: data.update({account: int(until)}))
 
 
-def resting(now: float | None = None) -> set[str]:
-    """Accounts the owner rests (the flow-rest experiment): never driven while its `until` is ahead."""
-    rest = read_json(gw.ROOT / REST, {})
-    return set(rest.get("accounts") or []) if rest.get("until", 0) > (now or time.time()) else set()
-
-
 def rotation() -> list[str]:
-    now, own, rest = time.time(), walls(), resting()
-    ready = [name for name in gw.bound_accounts() if name not in rest and own.get(name, 0) <= now and gw.in_pool(name)
+    now, own = time.time(), walls()
+    ready = [name for name in gw.bound_accounts() if own.get(name, 0) <= now and gw.in_pool(name)
              and gw.read_meta(name).get("aistudio_signed_in") is not False]
     return gw.least_recent(ready)
 
 
 def take_accounts(pinned: str | None) -> list[str]:
     if not pinned:
-        return gw.take_accounts(None, rotation, "every AI Studio account is walled (aistudio-walls.json) or resting")
+        return gw.take_accounts(None, rotation, "every AI Studio account is walled (aistudio-walls.json)")
     gw.refuse_off_roster(pinned)
     gw.refuse_out_of_pool(pinned)
-    if pinned in resting():
-        raise gw.Failure(3, f"{pinned} is resting ({gw.ROOT / REST}); nothing was sent", account=pinned)
     gw.refuse_walled(pinned, WALLS)
     return [pinned]
 

@@ -572,8 +572,7 @@ touched. Plain `media-run speech` runs here (`default_for` in gemini.json); `--v
 Flags: `gemini-speech --help`. `--language` is refused: write the text in the language. A tag in the other
 family's brackets is refused; one outside the composer's list is sent with a stderr note.
 
-Rotation: signed-in Gemini profiles in the gemini worker pool, minus accounts resting in
-`~/.gemini-web/flow-rest.json` while its `until` is ahead, minus their own walls in
+Rotation: signed-in Gemini profiles in the gemini worker pool, minus their own walls in
 `~/.gemini-web/aistudio-walls.json`, minus meta `aistudio_signed_in: false`; least recently started first. A quota
 or rate-limit answer is exit 3 and walls the account until the next Pacific midnight (15 min for a per-minute one);
 the free daily limit itself was not reached. Exits: 0 ok, 1 failed or UI drift, 2 usage, 3 limit or wall,

@@ -161,21 +161,17 @@ notes = []
 s.make_plan(args(text="<laughs> <sighs> a"), warn=notes.append)
 assert notes == ["tags not in the composer's list (sent as written): laughs"], notes
 
-# Rotation: rest, own walls and a known sign-out keep an account out; least recently started first.
-names = ["com", "egbogd", "rawilimo", "walled", "gone"]
+# Rotation: own walls and a known sign-out keep an account out; least recently started first.
+names = ["com", "egbogd", "walled", "gone"]
 gw.bound_accounts = lambda: list(names)
 gw.roster = lambda: list(names)
 gw.ROOT.mkdir(parents=True, exist_ok=True)
-(gw.ROOT / "flow-rest.json").write_text(json.dumps({"accounts": ["rawilimo"], "until": time.time() + 3600}))
 (gw.ROOT / s.WALLS).write_text(json.dumps({"walled": time.time() + 3600, "com": time.time() - 5}))
 gw.write_meta("gone", aistudio_signed_in=False)
 gw.write_meta("egbogd", generation_started_at=1)
 gw.write_meta("com", generation_started_at=2)
 assert s.rotation() == ["egbogd", "com"], s.rotation()
-(gw.ROOT / "flow-rest.json").write_text(json.dumps({"accounts": ["rawilimo"], "until": time.time() - 1}))
-assert "rawilimo" in s.rotation()
-(gw.ROOT / "flow-rest.json").write_text(json.dumps({"accounts": ["rawilimo"], "until": time.time() + 3600}))
-for pinned, word in (("rawilimo", "resting"), ("walled", "walled until")):
+for pinned, word in (("walled", "walled until"),):
     try:
         s.take_accounts(pinned)
         raise AssertionError(pinned)

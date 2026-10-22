@@ -1,18 +1,5 @@
 [
   {
-    "id": "flow-rest",
-    "what": "rawilimo and abel rest from Google Flow and Gemini web media for 14 days (Flow kept answering them PUBLIC_ERROR_UNUSUAL_ACTIVITY and the daily re-probe after each 24 h wall added a strike every time; mish was disabled by Google after the same pattern); hypothesis: with no attempts for two weeks Google's risk score recovers and both return to full normal use",
-    "started": "2026-10-06",
-    "review_by": "2026-10-20",
-    "state_marker": "~/.gemini-web/flow-rest.json",
-    "evidence": "~/.gemini-web/failures/*-rawilimo-*.txt and *-abel-*.txt (reason 'Flow flagged this account') and saved rows for both accounts in ~/.gemini-web/jobs.jsonl and ~/.cache/image-legs/legs.jsonl after the rest ends; baseline 2026-10-06: both accounts have 2FA and a phone, and the owner generated Flow images by hand in his normal browser on both without a flag, so Google flags our automated sessions, not the accounts as such",
-    "surfaces": [
-      "menubar Gemini account rows (video wall until 2026-10-20 12:00 on both)",
-      "llm-limits --table banner once overdue"
-    ],
-    "how_to_remove": "The marker expires by itself on 2026-10-20 12:00 local; since 2026-10-15 their Flow walls are held by flow-trust's hand-first arm (until the owner's own `geminib web rawilimo|abel` session, at the earliest after 2026-10-20). Run `gemini-web status rawilimo` and `gemini-web status abel` once (Flow Music was never checked on them; exit 4 names its missing one-time step, which the owner agreed to have done for him on 2026-10-06 for loiyehor and tronjhon). Delete ~/.gemini-web/flow-rest.json, then this entry. Verdict: no flag on either account within a week of normal use after the rest = recovered, nothing else to do; a flag again = gemini_web.wall_until walls that account 30 days by itself (flagged_at in ~/.gemini-web/accounts/<a>.json was seeded with the 2026-10-05 flags), then ask the owner whether it stays manual-only for Flow (longer rest, or account-side steps only he can take: phone, 2FA, normal use by hand)."
-  },
-  {
     "id": "flow-trust",
     "tag": "TEMP-FLOW-TRUST(gemini-web)",
     "what": "What brings a Flow-flagged account (PUBLIC_ERROR_UNUSUAL_ACTIVITY) back to automated sends: every account packs takes on a day budget that starts at 25 and climbs while it stays unflagged, com none until its first flag; the marker's arms vary one thing each — 'time' (jihangarangan: one probe when the 48 h wall ends, 2026-10-17 05:00), 'hand-done' (egbogd, loiyehor: the owner's hand session 2026-10-15 evening, probe the same night, about 18 h after the flag; tronjhon from 2026-10-16), 'hand-first' (rawilimo, abel after flow-rest: walled until the owner closes his own Flow session in the automation profile), 'manual' (locomthebest; sergey from 2026-10-18: its hand Pro 4-packs passed while the identical automated request flagged on 2026-10-16, and its first automated send after the wall flagged again on 2026-10-18 16:24 with the hand session's launch flags: walled, owner by hand only), 'control' (com: no budget until its first flag). Hand probes pass and time probes flag: a hand session ends the wall; all four flag: the automated session itself is the cause (warm long-lived Chrome next)",
