@@ -93,7 +93,7 @@ Each was fixed as an instance and came back; harness-ledger rows as of 2026-10-1
 - Helper copies: `fail()`, `assert()`, `assert_fails()` bodies in tracked `*.sh` at column 0, `name()` line to brace
   balance, whitespace-stripped, `local-config/` out; every copy of a body seen twice or more, less one per body: 400
   at 10-16's ends, 403 at HEAD 10-20. Suites added 10-09…15 that define their own: `git log --first-parent
-  --diff-filter=A --name-only --since=2026-10-09 --until=2026-10-16`, basename `test_*.sh`, a column-0
+  --diff-filter=A --name-only --since=2026-10-09T00:00Z --until=2026-10-16T00:00Z` (a bare date takes now's clock), basename `test_*.sh`, a column-0
   `fail()`/`assert()`/`assert_fails()` in that commit's blob: 22 of 41 (llm-legs 13 of 23, claude-setup 7 of 13,
   review-bench 0 of 1, hammerspoon 2 of 4). Dead test units: `hammerspoon/tests/test_claude_keys_bin.sh` 111 (legacy.md
   class 2's method). Not a class: copied fixtures (shared 6-line blocks 2,901 lines over 309 pairs; no fix to return).
@@ -115,17 +115,6 @@ Net
 lines: `git diff --numstat <base>..<merge>` of the goal's commits, legacy.md's buckets, code and tests apart.
 Breakages' `bash-cap`, this block's largest wait, is not repeated. Proofs replay fixed journals: a 7-day window
 after landing moves with the pilot's volume (targeted suite CPU 1,210/day in 10-08…14, 113 on 10-15) and tests-once.
-
-### goal shared-asserts: suites take fail, assert and assert_fails from the lib they already source
-
-Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-helper suites source no test lib).
-- Change, `tests/lib/suite-journal.sh` between its `--lib` and `SUITE_JOURNAL_PID` returns (lines 272–274), so only
-  a line-2 source gets them: the three in their commonest bodies, `assert` counting `asserts`. Copies in llm-legs,
-  all lines of every copy of a body seen twice or more (not less one), tracked `*.sh`, `local-config/` out: 369, 158
-  the three commonest (`fail` 40, `assert` 46, `assert_fails` 72); a copy behaving as the lib's goes, a variant stays.
-- Proof: suites added in 7 days after landing defining their own helpers, the class row's add command: llm-legs
-  13 of 23 in 10-09…15 → 0; the second number (Metric) falls by the copies that go. Not worse: every touched suite's
-  PASS assert count against HEAD, its mutations still red. Net lines: tests below 0, up to −158 plus the lib's three.
 
 ## At night
 
@@ -152,6 +141,7 @@ Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-he
 | 10-23 | goal fan-out: suites with no catch in 90 days leave targeted runs but their own file's; Close red → green is a catch | `select()` replay, 218 commits 10-16…22: 5.70 → 4.96 wall-min a commit, CPU 5.54 → 4.96; watch: dropped suites red at Close over 7 nights, target 0 | 4e891fe3 |
 | 10-23 | goal night-owned: stratum `night` (jobs of nights finished), one agent per night: hubs (`session`, `previous_sessions`, `wall` events'; 817e had 2, 3131 4) and Close (session-less `suites` runs inside it); an older settled day keeps its strata | v5 → v6, same journals 10-03…21: chat, workers equal 19/19 days; hub spans in `agents[None]` 0; `out_s.suites` 10-08…14 261 → 3.2 min/day (selfcheck + one 10 s run); night 6.12 → 5.87 min/job, index 1.09 → 1.09 | a92cc622 |
 | 10-23 | goal suite-own-cost: test_health's heavy and pole findings go; both suite_audit rises read beyond `load()`, on CPU a run under 3 controls | heavy/pole rows on audited suites, windows to 10-10/14/17/23: 7/4/1/0 → 0; at-once rises at flat CPU (2 controls) 3 → 0, due 60 → 60; code −20, tests −12 lines; 7-day read: a suite risen beyond its load or CPU (≥ 2× held over HELD_S) not due, target 0 | ebf5bde1 |
+| 10-23 | goal shared-asserts: `fail`, `assert`, `assert_fails` from `tests/lib/suite-journal.sh` to line-2 sources; 133 copies behaving as the lib's go, variants stay | llm-legs helper-copy lines 382 → 182 (less one 333 → 145); touched suites' PASS counts = HEAD's, 3 sampled mutations red; tests −188 lines; 7-day read: suites added defining their own (class command), llm-legs 13 of 23 → target 0 | 5e084b8d |
 
 ## Open
 
