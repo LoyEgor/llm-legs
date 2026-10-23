@@ -148,7 +148,7 @@ ROOT, PROJECTS, RUNS, HOME, DOCS = (os.environ["DF_" + k] for k in ("ROOT", "PRO
 sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
 from fix_commit import FIX_KEYS, fix_record_faults, fix_root_faults, load_merged, main_checkout, record_ruled, sync_settled
-from spend import read_json
+from spend import SHARE_RISE, epoch, read_json
 from knobs import changed_lines, knob_site
 import limit_hit
 DOCTORS = ("llm", "harness", "updater", "code", "system")
@@ -260,8 +260,37 @@ def strings(value):
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
+def rulings(doctor, now):
+    """id -> (closed epoch, run id, value then) of the doctor's last closed run that decided it ruled-out or weather."""
+    last = {}
+    for path in glob.glob(os.path.join(RUNS, "*.json")):
+        run = read_json(path, {})
+        closed = epoch(run.get("closed_at")) if isinstance(run, dict) and run.get("doctor") == doctor else None
+        if not closed or closed > now:
+            continue
+        values = {p.get("id"): p.get("value") for p in dicts(run.get("problems")) + dicts(run.get("quiet"))}
+        for decision in dicts(run.get("decisions")):
+            pid = decision.get("id")
+            if decision.get("verdict") in ("ruled-out", "weather") and (pid not in last or last[pid][0] < closed):
+                last[pid] = (closed, run.get("id"), values.get(pid))
+    return last
+
+
+def held_since(problem, ruling, now):
+    """The Harness ruled_at rule (problems_from), the run's close as ruled_at; no window_h holds 168 h; a 3-day or
+    longer value at 1.5x its value at the ruling launches (Egor 2026-10-13)."""
+    ruled, _, then = ruling
+    window = problem.get("window_h") if isinstance(problem.get("window_h"), (int, float)) and problem["window_h"] > 0 else 168
+    times = [t for t in (epoch(e.get("at")) for e in dicts(problem.get("evidence"))) if t]
+    value = problem.get("value")
+    if window >= 72 and isinstance(value, (int, float)) and isinstance(then, (int, float)) and then > 0 \
+            and value >= SHARE_RISE * then:
+        return False
+    return not (any(t > ruled for t in times) or (not times and now - window * 3600 >= ruled))
+
+
 def snapshot(doctor, doc_file, night=None):
-    import night_priority
+    import night_priority, time
 
     doc, ledger = read_json(doc_file, {}), merged_ledger(doctor)
     if doctor == "code" and doc.get("status") != "error":
@@ -308,11 +337,15 @@ def snapshot(doctor, doc_file, night=None):
             if key not in problem and key in row:
                 problem[key] = row[key]
     kept, watched, opportunities, speed, held, ranks = [], [], {}, set(), set(), {}
-    skipped = []
+    now = time.time()
+    skipped, holds, ruled = [], [], rulings(doctor, now)
     speed_doc = (doc.get("speed") or {}) if doctor == "harness" else {}
     for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
         if rule == "debt-handoff":
+            continue
+        if pid in ruled and state != "regressed" and held_since(problem, ruled[pid], now):
+            holds.append({"id": pid, "state": "held", "run": ruled[pid][1]})
             continue
         row = rows.get(problem.get("ledger")) or (rows.get(pid[7:]) if str(pid).startswith("ledger:") else None)
         files, what = [], rule
@@ -437,7 +470,7 @@ def snapshot(doctor, doc_file, night=None):
         for fix in dicts((row or {}).get("fixes")):
             files += [os.path.join(repos_dir(doctor), name) for name in strings(fix.get("files"))]
         entry = {"id": pid, "state": state, "fact": problem.get("fact"), "rule": rule, "ledger": problem.get("ledger"),
-                 "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
+                 "value": problem.get("value"), "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
                                                    "rule_at": rule_at(doctor, rule)}}
         entry["direction"], entry["priority"] = night_priority.priority(doctor, problem)[:2]
         if doctor == "harness":
@@ -490,7 +523,10 @@ def snapshot(doctor, doc_file, night=None):
     entries = [entry for entry in kept if entry["id"] not in speed] + ranked + [entry for _, entry in watched[:8]]
     if skipped:
         print("speed-doctor: " + "; ".join(skipped), file=sys.stderr)
-    print(json.dumps(batch_speed(entries, speed)))
+    if holds:
+        print("doctor-fix: held, nothing new since the ruling: " + "; ".join("%s (%s)" % (h["id"], h["run"]) for h in holds),
+              file=sys.stderr)
+    print(json.dumps(batch_speed(entries, speed) + holds))
 
 
 def repo_top(path):
@@ -1048,9 +1084,11 @@ speed_held() { # -> "<problem id>\t<run id>" for each problem an open harness sp
 }
 
 launch_runs() { # doctor night -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
-  local doctor=$1 night=$2 snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs='' own
+  local doctor=$1 night=$2 snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs='' own held
   check_doc "$doctor" || exit 1
   snap=$(DF_HELD_SPEED=$(speed_held) py snapshot "$doctor" "$(doc_path "$doctor")" "$night") || die "cannot snapshot the $doctor doctor"
+  # Rows a ruling holds ride on the first run this launch claims, as its held list (stderr names them too).
+  held=$(jq -c 'map(select(.state == "held") | {id, run})' <<<"$snap") && snap=$(jq -c 'map(select(.state != "held"))' <<<"$snap")
   [ "$doctor" != harness ] || jq -r '.speed | select(. != null and (.selection // []) == [])
     | "harness: Speed selects nothing: \(.why_none // "no reason recorded")"' "$(doc_path harness)" >&2 2>/dev/null || true
   [ "$snap" != '[]' ] || return 0
@@ -1066,6 +1104,7 @@ launch_runs() { # doctor night -> per area with problems a run, its worktrees an
       *) failed=1; continue ;;
     esac
     pending_id=$id
+    [ "$held" = '[]' ] || { locked record_set "$id" '.held = $h' --argjson h "$held"; held='[]'; }
     [ -z "$knobs" ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$knobs"
     # A Speed run without a P1 row (>=15 wall-min/day) runs Sonnet (Egor, 2026-10-13).
     if [[ $area == speed-* ]] && [[ $(py levels "$(record_file "$id")") != *$'\t'P1* ]]; then

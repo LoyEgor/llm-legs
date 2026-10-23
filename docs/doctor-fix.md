@@ -35,7 +35,7 @@ recorded `component: unverified`, shown by `doctor-fix show` and `night-run repo
 | verdict | when | what you leave behind |
 |---|---|---|
 | `fixed` | a clear bug, or a component of ours that works as specified but misses its goal | the fix (a change or a deletion; deletions beat additions), a `fixes[]` entry and status `fixed-pending` per your doctor's section |
-| `ruled-out` | not a bug of ours | the reason in the row's `note`; `close` turns a harness row `ruled-out` until an occurrence after the ruling reopens it |
+| `ruled-out` | not a bug of ours | the reason in the row's `note`; it holds out of launches, as `weather` does, until something new (`held_since`) |
 | `weather` | vendor-side or external | an `open` row narrowed to this cause, the reason in its `note` |
 | `blind-spot` | cannot be measured yet | a ledger `blind_spots` row with `would_catch_if` |
 | `handoff` | research cannot settle it here, or it would loosen the judge; to Egor only as a trade (`Cost:`/`Loss:`/`Recommendation:` lines) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line and the row's `handoff` pointing at it. It is addressed to the next night, whose `night-run carry` makes it a job; a chat is its addressee only while live right now |

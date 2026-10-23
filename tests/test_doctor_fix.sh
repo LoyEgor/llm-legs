@@ -1457,4 +1457,29 @@ assert jqe --arg o "$O/.claude/worktrees/night-n15-$audit" '[.problems[].rule] =
   "$(record "$audit")"
 fi
 
+if suite_shard_owns 2 df-ruling-holds; then
+# A row an earlier closed run ruled out or called weather holds until something new: an evidence time after the
+# ruling, its window_h passed with no times (168 h with none), or a 3-day-or-longer value at 1.5x the ruling's.
+for r in "$RUNS"/llm-*.json; do
+  jq -e '.closed_at == null and .abandoned_at == null and .failed_at == null' "$r" >/dev/null || continue
+  fix abandon "$(basename "$r" .json)" --reason "the ruling-holds case" >/dev/null || fail "abandon before the ruling-holds case failed"
+done
+ago() { date -u -v-"$1"H +%Y-%m-%dT%H:%M:%SZ; }
+h1=llm-own-20260101T000000Z-h001 h2=llm-own-20260101T000000Z-h002
+jq -n --arg id "$h1" --arg c "$(ago 1)" '{id: $id, doctor: "llm", closed_at: $c, problems: [{id: "H5", value: 10}, {id: "H6", value: 10}],
+  decisions: [range(1; 7) | {id: "H\(.)", verdict: (if . == 2 then "weather" else "ruled-out" end)}]}' >"$(record "$h1")"
+jq -n --arg id "$h2" --arg c "$(ago 30)" '{id: $id, doctor: "llm", closed_at: $c, problems: [],
+  decisions: [{id: "H7", verdict: "ruled-out"}, {id: "H8", verdict: "weather"}]}' >"$(record "$h2")"
+jq -n --argjson s "$(now)" --arg t "$(ago 0)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "j", status: "problems", problem_count: 8,
+  blocks: [], problems: [{id: "H1", state: "open"}, {id: "H2", state: "new", window_h: 24}, {id: "H3", state: "regressed"},
+    {id: "H4", state: "open", evidence: [{at: $t}]}, {id: "H5", state: "open", window_h: 168, value: 15},
+    {id: "H6", state: "open", window_h: 24, value: 30}, {id: "H7", state: "open", window_h: 24}, {id: "H8", state: "open"}]
+  | map(. + {rule: "leg-failure", fact: "f \(.id)", ledger: null})}' >"$WORK/llm/latest.json"
+night_ledger "$WORK/doctors" nH && git -C "$L" update-ref refs/night/nH/base HEAD
+fix launch llm --night nH >"$WORK/out" 2>"$WORK/err" || fail "ruling-holds night: $(cat "$WORK/err")"
+assert jqe --arg a "$h1" --arg b "$h2" '[.problems[] | [.id, .value]] == [["H3", null], ["H4", null], ["H5", 15], ["H7", null]]
+  and .held == [{id: "H1", run: $a}, {id: "H2", run: $a}, {id: "H6", run: $a}, {id: "H8", run: $b}]' "$(record "$(cut -f1 "$WORK/out")")"
+assert grep -qxF "doctor-fix: held, nothing new since the ruling: H1 ($h1); H2 ($h1); H6 ($h1); H8 ($h2)" "$WORK/err"
+fi
+
 suite_shard_pass "$asserts"
