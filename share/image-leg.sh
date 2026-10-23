@@ -305,7 +305,7 @@ image_leg_fallback() { # rc engine-json next-route
   IMAGE_LEG_FALLBACK_FROM=$IMAGE_LEG_ROUTE IMAGE_LEG_FALLBACK_REASON=$reason IMAGE_LEG_ROUTE=$3 IMAGE_LEG_PHASES='' IMAGE_LEG_LOAD=''
 }
 
-# Exit 3 names its cause from the engine's own result: a flagged account (a 24 h wall) is no usage limit.
+# Exit 3 names its cause from the engine's own result: a flagged account (a wall of 48 h, doubling per strike) is no usage limit.
 image_leg_limit() { # LABEL engine-json
   if jq -e '.flagged == true' <<<"${2:-}" >/dev/null 2>&1; then
     printf '%s_ACCOUNT_FLAGGED\n' "$1" >&2

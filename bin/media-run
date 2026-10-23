@@ -141,12 +141,15 @@ if [ "$kind" = image ] || [ "$kind" = video ]; then
   fi
 fi
 
+# --takes before -- always asks for the fan-out; past -- it does only for the kinds image-fanout runs, and
+# elsewhere it is the script's own flag (suno-music --takes 0).
 takes=false dest_dir='' dry_run=false account='' route=''
+[ "${#pass_args[@]}" -eq 0 ] || takes=true
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   next=${args[i + 1]-}
   case "${args[i]}" in
-    --takes | --takes=*) takes=true ;;
+    --takes | --takes=*) case "$kind" in image | video) takes=true ;; esac ;;
     --dest-dir) dest_dir=$next ;;
     --dest-dir=*) dest_dir=${args[i]#--dest-dir=} ;;
     --dry-run) dry_run=true ;;

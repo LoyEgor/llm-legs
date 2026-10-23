@@ -122,6 +122,10 @@ ok
 run image --vendor zeta --jobs /tmp/jobs.jsonl -- --dest-dir /tmp/fan
 same_args image-fanout --vendors zeta --jobs /tmp/jobs.jsonl --dest-dir /tmp/fan || fail "--jobs did not reach image-fanout"
 ok
+# Past -- a kind image-fanout does not run keeps --takes as its script's own flag (suno-music --takes 0).
+run sfx --vendor zeta -- --dest /tmp/a.wav --takes 0
+[ "$rc" = 0 ] && same_args zeta-sfx --dest /tmp/a.wav --takes 0 || fail "an sfx script's own --takes was taken for a fan-out: $(cat "$WORK/err")"
+ok
 
 # The exit code is the script's, exit 5 (account busy) included.
 FAKE_RC=5 run image --vendor zeta -- --prompt x
