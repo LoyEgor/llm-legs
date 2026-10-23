@@ -669,6 +669,36 @@ def named(terms, text):
     return any(re.search(r"(?<![\w.-])%s(?![\w-])" % re.escape(t), text) for t in terms)
 
 
+def blind_queue():
+    """The Deep search queue: each open blind spot of the ledgers, costliest first by the minutes of the outside finds
+    naming it (the log-audit ~N min and the fixer wall-min of each decision whose evidence names its id)."""
+    spots, marked = [], 0
+    for doctor in DOCTORS:
+        for spot in dicts(read_json(ledger_path(doctor), {}).get("blind_spots")):
+            if spot.get("unmeasurable"):
+                marked += 1
+            elif spot.get("id"):
+                spots.append(dict(spot, doctor=doctor, found={}))
+    for run in (read_json(p, {}) for p in glob.glob(os.path.join(RUNS, "*.json"))):
+        problems = dicts(run.get("problems")) + dicts(run.get("quiet"))
+        start, end = epoch(run.get("launched_at")), epoch(run.get("closed_at"))
+        wall = (end - start) / 60 / len(problems) if start and end and problems else 0
+        facts = {p.get("id"): str(p.get("fact") or "") for p in problems}
+        for decision in dicts(run.get("decisions")):
+            evidence, pid = str(decision.get("evidence") or ""), decision.get("id")
+            for spot in spots:
+                if named([spot["id"]], evidence):
+                    audit = re.search(r"~(\d+) min", facts.get(pid, ""))
+                    was = spot["found"].get(pid, (0, 0))
+                    spot["found"][pid] = (max(was[0], int(audit.group(1)) if audit else 0), was[1] + wall)
+    for spot in spots:
+        spot["min"] = sum(a + w for a, w in spot["found"].values())
+    for spot in sorted(spots, key=lambda s: (-s["min"], str(s.get("since") or ""))):
+        print("\t".join((spot["doctor"], spot["id"], "%.0f" % spot["min"], str(len(spot["found"])),
+                         str(spot.get("would_catch_if") or ""))))
+    print("open %d · unmeasurable %d" % (len(spots), marked), file=sys.stderr)
+
+
 def packet(record_file, key):
     record = read_json(record_file, {})
     doctor = record.get("doctor")
@@ -848,6 +878,8 @@ if __name__ == "__main__":
         print("\n".join("\t".join(row) for row in levels(read_json(sys.argv[2], {}))))
     elif command == "owed":
         print("\n".join(owed_measurement(read_json(sys.argv[2], {}))))
+    elif command == "blind-spots":
+        blind_queue()
     elif command == "ledger-sync":
         ledger_sync(sys.argv[2])
     elif command == "rule-out":
@@ -1560,6 +1592,7 @@ usage: doctor-fix launch llm|harness|updater|code|system --night <night-id>   (o
        doctor-fix record updater [--night <night-id>] --branch <b> --worktree <w> [--worktree <w>...] --problems <event id>...   (internal)
        doctor-fix orchestrate <lines-file>   (internal: one chat dispatching the runs of its <ref>\t<brief>\t<worktree> lines)
        doctor-fix record-close <id> --decisions <json-file> <note...>   (internal, updater release runs)
+       doctor-fix blind-spots   (the night's Deep search queue: doctor, id, minutes, decisions naming it, would_catch_if per open blind spot, costliest first; stderr the open and unmeasurable counts)
        doctor-fix ledger-sync <worktree>   (night close: the doctors' settled ledger fields into that worktree's tracked ledgers)
        doctor-fix touches <record-file> <id> <purpose>   (internal: 0 resolves and touches, 1 resolves nowhere, 2 misses the component, 3 the problem's component names no file: close records it component unverified)
 EOF
@@ -1580,6 +1613,7 @@ case "${1:-}" in
   abandon) abandon_run "${@:2}" ;;
   touches) [ $# -eq 4 ] && [ -f "$2" ] || usage; py touches "${@:2}" ;;
   ledger-sync) [ $# -eq 2 ] && [ -d "$2" ] || usage; py ledger-sync "$2" ;;
+  blind-spots) [ $# -eq 1 ] || usage; py blind-spots ;;
   -h | --help | help) usage_text ;;
   *) usage ;;
 esac

@@ -250,8 +250,8 @@ assert_eq "$(doc '[.problems[] | select(.state | IN("new", "open", "regressed"))
   "problem_count counts new, open and regressed problems"
 assert_eq 'true' "$(doc '[.problems[].id] | (length == (unique | length)) and all(contains("…") | not)')" \
   "problem ids are unique and never a clipped label"
-assert_eq '[]' "$(doc '[.blind_spots[] | select((keys | sort) != ["id","reason","since","what","would_catch_if"])]' | jq -c .)" \
-  "every blind spot is a contract row"
+assert_eq '[]' "$(doc '[.blind_spots[] | select(keys - ["unmeasurable"] != ["id","reason","since","what","would_catch_if"]
+  or (.unmeasurable // "x" | type != "string" or . == ""))]' | jq -c .)" "every blind spot is a contract row"
 assert_eq 'true' "$(doc '[.blind_spots[].id] | index("permission-mode-calls") != null')" \
   "calls outside bypassPermissions are a named blind spot"
 assert_eq '["blind","blind",true]' \
@@ -2194,7 +2194,8 @@ def guard(path):
             assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
             assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
     for b in ledger["blind_spots"]:
-        assert set(b) == {"id", "what", "reason", "since", "would_catch_if"}, b
+        assert set(b) - {"unmeasurable"} == {"id", "what", "reason", "since", "would_catch_if"}, b
+        assert isinstance(b.get("unmeasurable", "x"), str) and b.get("unmeasurable", "x").strip(), b
 
 for path in sys.argv[3:]:
     try:

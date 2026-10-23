@@ -54,7 +54,7 @@ job (your section says what it counts); never wait for it.
   (journals, registries, trackers, word families) does the job.
 - **The doctor's own blind spots, bounded.** When a cause you met was not a problem in the document,
   add a `blind_spots` row with `would_catch_if`. Record, do not build: a new detector is its owner's
-  work, not a fix run's.
+  or the night's Deep search's work, not a fix run's.
 - **The judge is not yours to loosen.** See your doctor's section.
 
 ## 4. Ground rules

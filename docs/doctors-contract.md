@@ -213,7 +213,8 @@ Guarding the judge, enforced by each doctor's own tests:
 ## 3. Blind spots
 
 A blind spot is a row `{id, what, reason, since, would_catch_if}` in the ledger's `blind_spots`. The
-doctor emits these rows in its document.
+doctor emits these rows in its document. The night's Deep search builds them, costliest first (`doctor-fix
+blind-spots`), or adds `unmeasurable` (why): it stays, out of the open count.
 
 ## 4. Fixer run record (built by «Updater doctor»)
 

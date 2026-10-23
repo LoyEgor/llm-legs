@@ -229,7 +229,8 @@ assert jqe '.owner == "Updater doctor" and (keys == ["blind_spots", "owner", "ro
 assert jqe '.rows | all(.match | keys == ["key", "rule"] and (.rule | type == "string" and length > 0)
   and (.key | type == "string" and length > 0 and (test("[*?]") | not)))' "$L"
 assert jqe '[.rows[] | select(.status == "not-a-bug" or .status == "weather") | .id] == []' "$L"
-assert jqe '.blind_spots | map(keys == (["id", "what", "reason", "since", "would_catch_if"] | sort)) | all' "$L"
+assert jqe '.blind_spots | map(keys - ["unmeasurable"] == (["id", "what", "reason", "since", "would_catch_if"] | sort)
+  and (.unmeasurable // "x" | type == "string" and . != "")) | all' "$L"
 assert jqe '[.blind_spots[].id] == ["announced-not-served", "claude-catalog", "per-account-rollout"]' "$L"
 assert jqe '(.blind_spots[] | select(.id == "announced-not-served") | .would_catch_if) | test("release-notes feed") and test("research leg")' "$L"
 

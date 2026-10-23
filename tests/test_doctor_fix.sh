@@ -1441,6 +1441,30 @@ assert grep -qxF "doctor-fix: opportunity:batch/6 stays with its open run $held"
 assert jqe '.closed_at == null and .abandoned_at == null' "$(record "$held")"
 fi
 
+if suite_shard_owns 1 df-blind-spots; then
+# The Deep search queue: open blind spots of every ledger by the minutes of the finds naming them (a log-audit row's
+# ~N min once per row, the fixer wall-min split per problem each run), then oldest first; unmeasurable ones only counted.
+B="$WORK/blind"
+mkdir -p "$B/runs"
+spot() { jq -n --arg i "$1" --arg s "$2" '{id: $i, what: "w", reason: "r", since: $s, would_catch_if: "c-\($i)"}'; }
+jq -n --argjson a "$(spot spot-a 2026-10-01)" --argjson b "$(spot spot-b 2026-10-02)" --argjson c "$(spot spot-c 2026-09-01)" \
+  '{rows: [], blind_spots: [$a, $b, ($c + {unmeasurable: "no journal sees it"})]}' >"$B/harness.json"
+jq -n --argjson s "$(spot spot-s 2026-09-30)" '{rows: [], blind_spots: [$s]}' >"$B/system.json"
+printf '{"rows": [], "blind_spots": []}\n' >"$B/none.json"
+jq -n '{id: "r1", launched_at: "2026-10-10T00:00:00Z", closed_at: "2026-10-10T01:00:00Z",
+  problems: [{id: "log_audit:x", fact: "a gate skipped · ~90 min"}, {id: "y", fact: "y"}],
+  decisions: [{id: "log_audit:x", verdict: "blind-spot", evidence: "blind_spots row spot-b"},
+              {id: "y", verdict: "ruled-out", evidence: "spot-a-longer only"}]}' >"$B/runs/r1.json"
+jq -n '{id: "r2", launched_at: "2026-10-11T00:00:00Z", closed_at: "2026-10-11T00:10:00Z",
+  problems: [{id: "log_audit:x", fact: "a gate skipped · ~90 min"}], decisions: [{id: "log_audit:x", verdict: "weather", evidence: "spot-b again"}]}' \
+  >"$B/runs/r2.json"
+DOCTORS_DIR="$B" HARNESS_LEDGER="$B/harness.json" SYSTEM_DOCTOR_LEDGER="$B/system.json" LLM_DOCTOR_LEDGER="$B/none.json" \
+  CODE_DOCTOR_LEDGER="$B/none.json" UPDATER_DOCTOR_LEDGER="$B/none.json" bash "$FIX" blind-spots >"$WORK/out" 2>"$WORK/err" ||
+  fail "blind-spots: $(cat "$WORK/err")"
+assert diff "$WORK/out" <(printf 'harness\tspot-b\t130\t1\tc-spot-b\nsystem\tspot-s\t0\t0\tc-spot-s\nharness\tspot-a\t0\t0\tc-spot-a\n')
+assert grep -qxF 'open 3 · unmeasurable 1' "$WORK/err"
+fi
+
 if suite_shard_owns 4 df-log-audit; then
 # A log-audit reading names no file, so its run gets every sweep repository (a gate's cause sat in claude-setup).
 for r in "$RUNS"/harness-*.json; do
