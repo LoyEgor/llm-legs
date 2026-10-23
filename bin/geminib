@@ -1019,14 +1019,18 @@ def export():
         refresh = token.get("refresh_token")
         if source != "keychain" or not text(refresh):
             refuse(4, "refresh_unavailable: no keychain refresh material for the requested lifetime")
-        try:
-            payload = saved["id_token"].split(".")[1]
-            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-            client_id = claims["aud"]
-            if not text(client_id):
-                raise ValueError()
-        except (KeyError, IndexError, ValueError, TypeError, AttributeError):
-            refuse(4, "refresh_unavailable: invalid ID token audience")
+        # agy 1.4 saves no id_token (only id_token_email): the binary's own client ids are then the
+        # candidates, each tried with every secret as a wrong secret is below.
+        clients = []
+        if "id_token" in saved:
+            try:
+                payload = saved["id_token"].split(".")[1]
+                claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+                clients = [claims["aud"]]
+                if not text(clients[0]):
+                    raise ValueError()
+            except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+                refuse(4, "refresh_unavailable: invalid ID token audience")
         # Go packs adjacent strings together: the binary carries one 35-byte secret per embedded
         # client id, back to back, and nothing says which secret pairs with the ID token's audience,
         # so a wrong pairing (invalid_client) moves on to the next candidate.
@@ -1038,8 +1042,18 @@ def export():
         secrets = list(dict.fromkeys(found.stdout.decode("ascii").splitlines()))
         if found.returncode or not 1 <= len(secrets) <= 4:
             refuse(4, "refresh_unavailable: client secret lookup failed")
+        if not clients:
+            try:
+                found = subprocess.run(["grep", "-a", "-o", "-E", r"[0-9]+-[a-z0-9]{32}\.apps\.googleusercontent\.com",
+                                        binary], env=dict(os.environ, LC_ALL="C"), capture_output=True)
+            except OSError:
+                refuse(4, "refresh_unavailable: client id lookup failed")
+            clients = list(dict.fromkeys(found.stdout.decode("ascii").splitlines()))
+            if found.returncode or not 1 <= len(clients) <= 4:
+                refuse(4, "refresh_unavailable: client id lookup failed")
+        pairs = [(client_id, secret) for client_id in clients for secret in secrets]
         # Both the grant and its response stay off argv and disk; only the projection leaves here.
-        for secret in secrets:
+        for client_id, secret in pairs:
             body = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": refresh,
                                           "client_id": client_id, "client_secret": secret})
             issued_at = int(time.time())
@@ -1061,7 +1075,7 @@ def export():
                 grant = {}
             if not isinstance(grant, dict):
                 grant = {}
-            if grant.get("error") in ("invalid_client", "unauthorized_client") and secret != secrets[-1]:
+            if grant.get("error") in ("invalid_client", "unauthorized_client") and (client_id, secret) != pairs[-1]:
                 continue
             break
         if http != "200" or "error" in grant:

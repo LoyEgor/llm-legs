@@ -1160,11 +1160,12 @@ assert args[args.index("--request") + 1] == "POST"
 assert not any("placeholder" in arg for arg in args)
 body = urllib.parse.parse_qs(sys.stdin.read())
 secret = body.pop("client_secret")
-assert body == {"grant_type": ["refresh_token"], "refresh_token": ["refresh-placeholder"],
-                "client_id": ["fixture-client"]}
+client = body.pop("client_id")
+assert "XPORT_CLIENT" in os.environ or client == ["fixture-client"]
+assert body == {"grant_type": ["refresh_token"], "refresh_token": ["refresh-placeholder"]}
 with open(os.environ["XPORT_REFRESH_LOG"], "a") as log:
     log.write("refresh " + secret[0] + "\n")
-if secret == ["GOCSPX-fixture-wrong-placeholder000"]:
+if secret == ["GOCSPX-fixture-wrong-placeholder000"] or client != [os.environ.get("XPORT_CLIENT", "fixture-client")]:
     print(json.dumps({"error": "invalid_client", "error_description": "Unauthorized"}))
     print("401", end="")
 elif os.environ.get("XPORT_GRANT_FAIL"):
@@ -1226,6 +1227,23 @@ assert grep -q 'fresh-token ceiling' "$XPORT_OUT/error"
 assert_fails test -e "$XPORT_OUT/too-long"
 assert test "$(wc -l <"$XPORT_REFRESH_LOG" | tr -d ' ')" = 4
 assert test "$(grep -c 'wrong' "$XPORT_REFRESH_LOG")" = 2
+# agy 1.4 saves no id_token, only id_token_email: the refresh pairs the binary's own client ids with
+# its secrets until the endpoint accepts one (live 2026-10-23: every Argon cell refused its export).
+python3 - <<'PYNOID'
+import base64, datetime as dt, json, os
+from pathlib import Path
+saved = {"token": {"access_token": "keychain-placeholder", "refresh_token": "refresh-placeholder",
+                   "token_type": "Bearer", "expires_in": 60,
+                   "expiry": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=60)).isoformat()},
+         "auth_method": "consumer", "id_token_email": "fixture@example.invalid"}
+Path(os.environ["XPORT_BLOB"]).write_text("go-keyring-base64:" + base64.b64encode(json.dumps(saved).encode()).decode())
+PYNOID
+xport_client=123456-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com
+printf 'GOCSPX-fixture-wrong-placeholder000GOCSPX-fixture-secret-placeholder00 654321-zyxwvutsrqponmlkjihgfedcba543210.apps.googleusercontent.com %s\n' \
+  "$xport_client" >"$AGY_BIN"
+xport_line=$(XPORT_CLIENT=$xport_client /bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/no-id-token" --min-seconds 1800)
+assert expr "$xport_line" : '^source=refresh expires_at=[0-9][0-9]*$' >/dev/null
+assert jq -e '.token.access_token == "minted-placeholder" and .id_token == "minted-id-placeholder"' "$XPORT_OUT/no-id-token" >/dev/null
 
 printf '{"token":{"access_token":"legacy-placeholder","refresh_token":"legacy-refresh-placeholder","expiry":"%s"},"auth_method":"consumer","id_token":"legacy-id-placeholder"}\n' \
   "$(TZ=UTC date -v+2H '+%Y-%m-%dT%H:%M:%SZ')" >"$XPORT_TOKEN"
