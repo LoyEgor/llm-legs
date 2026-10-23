@@ -89,6 +89,9 @@ assert_deny 'checkout relative path' claudeb 'git checkout ./tracked'
 assert_deny 'checkout two paths' claudeb 'git checkout file1 file2'
 assert_deny 'restore in chain' claudeb 'cd /x && git restore file'
 assert_deny 'hard reset' claudeb 'git reset --hard HEAD~1'
+assert_deny 'quote in an argument' claudeb "git reset --hard \"'\""
+assert_deny 'quoted \$name in an argument' claudeb "git checkout -- . -e \"'\$f'\""
+assert_allow 'quoted \$name in a read-only git call' claudeb "git -C x grep -e \"'\$f'\" y"
 assert_deny 'clean force' claudeb 'git clean -fd'
 assert_deny 'grok worker restore' grok 'git restore file'
 assert_deny 'stash drop' claudeb 'git stash drop'

@@ -179,6 +179,7 @@ done < <(ARGV_RECS=$recs argv_all '
 blocked=0
 while IFS=$'\t' read -r dir words; do
   [ -n "$words" ] || continue
+  printf -v dir %b "$dir"; printf -v words %b "$words" # undo @tsv's escapes, or a quote in an arg breaks the eval open
   eval "set -- $words"
   if is_revert_call "${dir:-$guard_cwd}" "$@"; then
     blocked=1
