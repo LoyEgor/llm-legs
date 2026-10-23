@@ -96,7 +96,7 @@ proof, a failed one stays with one line on what blocked it. Reads after landing 
 
 ## Done
 
-- gates (claude-setup 0b87228, llm-legs bd7ecb9f, review-bench 7f36bb6, 10-23): 9 gates decide on `hooks/lib/argv.sh`
+- gates (claude-setup 5e3cc12, llm-legs 0daf801d, review-bench 7f36bb6, 10-23): 9 gates decide on `hooks/lib/argv.sh`
   (shfmt; both libs gone), 4 take its read-only pass, no deny rule fits; `test_gate_replay` 348 × 16. Refused old → new:
   target 9/37 → 2 (others' rules), out 15/44 → 15, rightly 23/90 → 23, allowed 1 → 1, recent 200 +0; hook wall 280 →
   149 ms/call. Left: rj_segments, instruction-files.sh, word/edit/eod gates, per-gate text cases. Read: target 0.
