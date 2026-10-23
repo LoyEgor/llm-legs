@@ -77,7 +77,7 @@ night's local day (UTC+3), 7 days against the 7 before. Target 0: nothing outliv
 ## Sources
 
 - The night records `~/.cache/doctors/nights/<id>.json`: `jobs` (kind, state, reason, `handoffs`, `adopted`),
-  `events`, `leftovers` and `held` written by `finish`; 15 finished nights 09-30…10-14 (16 files; `20261014T010328Z-6468` has no `finished_at`).
+  `events`, `leftovers` and `held` written by `finish`; 15 finished nights 09-30…10-14 (16 files; `20261014T010328Z-6468`, a jobless stale start closed 10-20, not counted).
 - Git history of `docs/handoffs/` on main of llm-legs (39 docs now), claude-setup (7), review-bench (25); hammerspoon
   has none, nor do the helper repositories (`share/night-helper-repos`).
 - `share/handoffs.py` (`open_handoffs`, `owner_batches`, `--status`, `--night` for the Doctors menu's
@@ -104,8 +104,8 @@ Why they come back:
   speed-floor-measures; 9bac8bbb tokenmap-waste-detectors), though `docs/doctor-fix.md` names a new
   `docs/handoffs/<date>-<topic>.md`. None since 10-10 over three nights with 154 fixer jobs; no fix found that
   stopped it.
-- C2: `night-run job set` checks reason= for `left` and `blocked-on-egor` but never a closing handoff job's doc; the
-  brief asks the worker to rewrite Status and nothing reads it (only `trade_settle` reads Status). usage-gate-hooks'
+- C2: `night-run job set` checked reason= for `left` and `blocked-on-egor` but never a closing handoff job's doc
+  (Done); the brief asks the worker to rewrite Status and nothing reads it (only `trade_settle` reads Status). usage-gate-hooks'
   fix lay outside the sweep repositories then; one-shot-instructions was settled next night as "kept as is", no code;
   tokenmap-waste-detectors' owner chat settled it on 10-14 after two merged jobs. hook-floors' f253 doc-night is C1's:
   its job settled the doc at 07:29 (6298ac54), pushed 07:31; fixer aa48e898 reopened it at 07:39.
@@ -128,19 +128,7 @@ Why they come back:
 
 ## Goals
 
-### goal job-settles-its-doc: a handoff or owner-chat job closes only with its docs settled
-
-Class C2: 4 doc-nights (3 + 1; 3 docs), each the next carry re-taking a doc whose job had closed.
-- Change: in `job set`'s state `case`, `merged` or `nothing-to-do` on a `handoff` job (its `.path`) or an
-  `owner-chat` job (each of `.handoffs`) reads each doc's Status on main (`share/handoffs.py --status`, as
-  `trade_settle` does); a doc still `open` refuses, naming it: settle it (`Status: settled <night>: …`) or set
-  `left` with reason=. About 6 lines, no new store.
-- Proof, fixed before the work: a `tests/test_night_run.sh` case, a fixture night whose handoff job's doc reads
-  `Status: open` on main: `state=merged` accepted on the old code (red), refused on the new; settled, accepted.
-  Replayed on main at each job's last `set` event: usage-gate-hooks (f253), one-shot-instructions (4c4e), tokenmap-
-  waste-detectors (e2f7, 3131) refused; hook-floors (f253, settled before its reopen) accepted. Read on block 8's
-  first night and the 7 days after: doc-nights after a closed job 4 → 0. Not worse: `left` handoff jobs counted
-  apart, all doc-nights per night ≤ 0.5. Net lines about +6 (`bin/night-run`) plus the case; reverted unless 4 → 0.
+No open goal; C1, C6 and C7 are under Open.
 
 ## How the block runs at night
 
@@ -160,6 +148,10 @@ Class C2: 4 doc-nights (3 + 1; 3 docs), each the next carry re-taking a doc whos
 - live-owner-single (C4, 2bd260a4): `owner_batches` keeps a live owner whatever the batch size. test_night_carry's
   lone handoff to a live chat: no job, no batch (red) → one `message` batch. Read on block 8's first full night: doc-
   nights of handoffs to a live chat 2 → 0, reverted unless 0.
+- job-settles-its-doc (C2, 6455e151): `job set` refuses merged or nothing-to-do on a handoff or owner-chat job whose
+  doc reads open, naming it. Replay at each close's last state event: the 4 C2 closes refused, the other 50 doc
+  closes accepted; test_night_run hd case red → green. Read on block 8's first full night and the 7 days after:
+  doc-nights after a closed job 4 → 0 (`left` jobs apart, all doc-nights a night ≤ 0.5), reverted unless 0.
 
 ## Decisions
 
