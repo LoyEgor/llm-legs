@@ -7,7 +7,6 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # A chat hands every child the live worker-model; one with OpenCode paused must not empty the
 # fixture's OpenCode rows.

@@ -12,7 +12,6 @@ fail() {
   [ ! -s "$WORK/err" ] || sed -n '1,20p' "$WORK/err" >&2
   exit 1
 }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
   if "$@"; then fail "assert $asserts unexpectedly succeeded: $*"; fi

@@ -8,7 +8,6 @@ PROJECTS=$(git_projects "$ROOT")
 WORK=$(cd "$(mktemp -d)" && pwd -P)
 trap 'touch "$WORK/release"; ! kill -0 $(cat "$WORK/wait-pid" 2>/dev/null) 2>/dev/null || sleep 0.3; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
 jqe() { jq -e "$@" >/dev/null; }

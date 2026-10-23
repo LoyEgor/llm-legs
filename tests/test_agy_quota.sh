@@ -9,8 +9,6 @@ HELPER="$ROOT/agy-quota.py"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 
 cat >"$WORK/agy" <<'STUB'
 #!/usr/bin/env bash

@@ -32,8 +32,6 @@ fi
 CHAT_SWITCH_LUA="${CHAT_SWITCH_LUA:-$PROJECTS/hammerspoon/claude_chat_switch.lua}"
 
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 if [ "${CHAT_SWITCH_SHELL_ONLY:-0}" = 1 ]; then
   echo "PASS: claude-chat-switch shell-only fixture mode"
   exit 0

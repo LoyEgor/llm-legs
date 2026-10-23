@@ -8,17 +8,6 @@ DRIVER="$ROOT/bin/claude-session-driver"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
-assert_fails() {
-  asserts=$((asserts + 1))
-  if "$@"; then
-    fail "assert $asserts unexpectedly succeeded: $*"
-  else
-    status=$?
-    [ "$status" -ne 127 ] || fail "assert $asserts command not found: $*"
-  fi
-}
 
 HOME="$WORK/home"
 CLAUDEB_DIR="$WORK/store"

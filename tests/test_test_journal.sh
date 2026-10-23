@@ -10,7 +10,6 @@ export HOME="$WORK/home" STATUSLINE_CACHE_DIR="$WORK/cache" WORKER_RUN_DIR="$WOR
 unset XDG_CACHE_HOME SPEED_DOCTOR_DIR
 mkdir -p "$HOME" "$STATUSLINE_CACHE_DIR" "$WORKER_RUN_DIR/codex-5-5-live"
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "assert $asserts: expected '$1', got '$2'"; }
 
 printf '{"pid":700,"workdir":"/w/find-truth"}\n' > "$WORKER_RUN_DIR/codex-5-5-live/meta.json"

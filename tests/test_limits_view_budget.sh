@@ -4,8 +4,6 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 eq() { [ "$1" = "$2" ] || { echo "  got '$1' want '$2'" >&2; return 1; }; }
 
 . "$ROOT/share/limits-view.sh"

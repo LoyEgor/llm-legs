@@ -9,7 +9,6 @@ WORK=$(mktemp -d)
 WORK=$(cd -P "$WORK" && pwd)
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 
 export HOME="$WORK/home" GIT_CONFIG_GLOBAL="$WORK/gitconfig" GIT_CONFIG_NOSYSTEM=1

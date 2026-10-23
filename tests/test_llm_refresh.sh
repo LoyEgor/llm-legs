@@ -11,7 +11,6 @@ export GROKB_CACHE_DIR="$WORK/grokb-cache"
 . "$ROOT/tests/fixtures/grokb-models.sh"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 passed=0
 pass() { passed=$((passed + 1)); }
 

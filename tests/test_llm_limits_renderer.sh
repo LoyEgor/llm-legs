@@ -9,7 +9,6 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$ROOT/share/test-scope.sh"
 . "$ROOT/tests/lib/hs-bounded.sh"
 HS_ROOT="${HS_ROOT:-$(git_projects "$ROOT")/hammerspoon}"
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 [ -r "$HS_ROOT/automation_menu.lua" ] || fail "$HS_ROOT/automation_menu.lua is unreadable (set HS_ROOT)"
 
 # Egor reads ONE gray in this menu: the system's own, the tone macOS already paints the disabled

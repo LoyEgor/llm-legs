@@ -10,8 +10,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(cd -P "$(mktemp -d)" && pwd)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly succeeded: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 

@@ -7,8 +7,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(cd -P "$(mktemp -d)" && pwd)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 export TZ=UTC HOME="$WORK/home" HARNESS_DOCTOR_DIR="$WORK/state" HARNESS_HOLDS_DIR="$WORK/holds"
 unset HARNESS_WAITS_DIR WORKER_RUN_ID CLAUDE_CODE_SESSION_ID

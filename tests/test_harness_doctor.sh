@@ -32,7 +32,6 @@ cp "$ROOT/share/harness-ledger.json" "$HARNESS_LEDGER"
 mkdir -p "$HOME/hooks" "$CLAUDE_PROJECTS_DIR" "$STATUSLINE_CACHE_DIR" "$MEMLOGD_DIR" "$CLAUDEB_DIR"
 for repo in alpha beta gamma; do git init -q "$WORK/$repo"; done
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "assert $asserts ($3): expected '$1', got '$2'"; }
 
 T=$(( $(date +%s) / 86400 * 86400 + 43200 ))

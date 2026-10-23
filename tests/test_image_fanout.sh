@@ -14,7 +14,6 @@ export GROKB_CACHE_DIR="$WORK/grokb-cache"
 trap 'pkill -f "$WORK/" 2>/dev/null; rm -rf "$WORK"' EXIT
 asserts=0
 fail() { echo "FAIL: $*" >&2; [ -z "${FANOUT_ERR:-}" ] || sed -n '1,80p' "$FANOUT_ERR" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 
 FAKE_BIN="$WORK/bin"
 FAKE_LIST="$WORK/listers"

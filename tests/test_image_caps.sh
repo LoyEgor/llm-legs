@@ -8,8 +8,6 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 
 # --- the caps model check: fresh, stale and unknown ---------------------------
 # shellcheck source=share/image-caps.sh

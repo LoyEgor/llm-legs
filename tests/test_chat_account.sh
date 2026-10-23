@@ -10,7 +10,6 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 clean_env() { # NAME=value... -> exported over a cleared account environment, in this subshell
   unset CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT CLAUDE_CONFIG_DIR
   export HOME="$WORK/home"

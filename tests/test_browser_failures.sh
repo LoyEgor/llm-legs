@@ -9,7 +9,6 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 WORK="$(cd -P "$WORK" && pwd)"
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 
 export HOME="$WORK/home" GEMINI_WEB_DIR="$WORK/home/.gemini-web" PYTHONDONTWRITEBYTECODE=1

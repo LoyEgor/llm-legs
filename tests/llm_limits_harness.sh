@@ -8,7 +8,6 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
 strip_ansi() { sed $'s/\033\[[0-9;]*m//g'; }
 unset CLICOLOR_FORCE
 # Every fixture owns its worker-model through HOME; an inherited path would point the run at

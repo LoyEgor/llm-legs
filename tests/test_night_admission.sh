@@ -7,8 +7,6 @@ WORK="$(mktemp -d)"
 WORK="$(cd -P "$WORK" && pwd)"
 trap 'kill $(cat "$WORK/pids" 2>/dev/null) 2>/dev/null; rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 
 FAKE_BIN="$WORK/bin" NIGHTS="$WORK/doctors/nights"

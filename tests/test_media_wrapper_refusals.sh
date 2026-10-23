@@ -11,8 +11,6 @@ mkdir -p "$FAKE_HOME/.claude"
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-state"
 : >"$IMAGE_LEG_LOG"
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
   if "$@"; then

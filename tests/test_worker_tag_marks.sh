@@ -10,7 +10,6 @@ unset CLAUDEB_WORKER
 TAGS="$HOME/.cache/claude-worker-tags/s1"
 mkdir -p "$TAGS" "$WORKER_RUN_DIR"
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "expected [$1] got [$2]"; }
 
 payload() { # agent-type agent-id command [description] [session]: a hand-built PreToolUse payload, no jq per call

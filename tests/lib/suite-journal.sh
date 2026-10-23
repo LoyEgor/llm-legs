@@ -270,6 +270,18 @@ suite_shard_wanted() { # [wait] -> status 0 under RUN_SUITES_SHARDS=on, or auto 
 }
 
 [ "${1:-}" != --lib ] || return 0
+# A suite's helpers; one that needs another body defines its own after this source.
+fail() { echo "FAIL: $*" >&2; exit 1; }
+assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+assert_fails() {
+  asserts=$((asserts + 1))
+  if "$@"; then
+    fail "assert $asserts unexpectedly succeeded: $*"
+  else
+    status=$?
+    [ "$status" -ne 127 ] || fail "assert $asserts command not found: $*"
+  fi
+}
 [ -n "${LIMIT_HITS_LOG:-}" ] || export LIMIT_HITS_LOG=/dev/null
 # Every delivered video take calls the real glitch judge (a Sol run); a suite that tests it exports its own stub.
 export VIDEO_GLITCH=off

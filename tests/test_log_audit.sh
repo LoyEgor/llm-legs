@@ -7,8 +7,6 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 WORK="$(cd -P "$WORK" && pwd)"
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 
 export LOG_AUDIT_DIR="$WORK/audit" CHAT_NAME_ROOTS="$WORK/projects" LOG_AUDIT_WORKER_RUN="$WORK/worker-run"

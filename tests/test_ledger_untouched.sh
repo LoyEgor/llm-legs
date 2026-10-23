@@ -9,7 +9,6 @@ WORK=$(mktemp -d)
 WORK=$(cd -P "$WORK" && pwd)
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 commit() { git -C "$1" -c user.name=t -c user.email=t@t commit -qm "$2"; }
 

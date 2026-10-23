@@ -6,7 +6,6 @@ HOOK="${LIMITS_TRIAGE_NUDGE_HOOK:-$HOME/.claude/hooks/limits-triage-nudge.sh}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -x "$HOOK" ] || fail "limits triage nudge hook is not executable: $HOOK"
 
 run_hook() {

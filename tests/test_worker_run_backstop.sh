@@ -14,7 +14,6 @@ export HOME="$WORK/home" WORKER_RUN_DIR="$WORK/runs" WORKER_STATS_DIR="$WORK/sta
 export WORKER_RUN_BACKSTOP_CHAT_PID=$$
 unset CLAUDEB_WORKER
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "line ${BASH_LINENO[0]}: expected [$1] got [$2]"; }
 assert_has() { asserts=$((asserts + 1)); case "$2" in *"$1"*) ;; *) fail "line ${BASH_LINENO[0]}: [$2] lacks [$1]" ;; esac; }
 

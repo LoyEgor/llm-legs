@@ -23,16 +23,6 @@ export GROKB_CACHE_DIR="$WORK/grokb-cache"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL(line %s): %s\n' "${BASH_LINENO[1]-?}" "$*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
-assert_fails() {
-  asserts=$((asserts + 1))
-  if "$@"; then
-    fail "assert $asserts unexpectedly succeeded: $*"
-  else
-    status=$?
-    [ "$status" -ne 127 ] || fail "assert $asserts command not found: $*"
-  fi
-}
 
 # What the vendor is handed is the brief plus worker-run's standing preamble; what the record keeps
 # is the brief the caller wrote, byte for byte, because report and RESUME quote that one back.

@@ -88,7 +88,6 @@ chmod +x "$STUBDIR/agy"
 
 export PATH="$STUBDIR:/usr/bin:/bin"
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # --- Case 1: quota on BOTH models -> chain exhausted -> exit 5, reset hint, both models attempted ---
 DATA1="$WORK/data-quota"

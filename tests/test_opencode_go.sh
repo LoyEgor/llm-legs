@@ -14,17 +14,6 @@ WORKER_STATS_DIR="$WORK/worker-stats"
 export WORKER_STATS_DIR
 WALLS="$WORKER_STATS_DIR/walls.jsonl"
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
-assert_fails() {
-  asserts=$((asserts + 1))
-  if "$@"; then
-    fail "assert $asserts unexpectedly succeeded: $*"
-  else
-    status=$?
-    [ "$status" -ne 127 ] || fail "assert $asserts command not found: $*"
-  fi
-}
 
 FAKE_BIN="$WORK/bin"
 mkdir -p "$FAKE_BIN"

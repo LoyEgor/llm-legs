@@ -12,7 +12,6 @@ asserts=0
 exec 8>&2
 # fd 8: an assertion run as `assert_fails cmd 2>file` would otherwise send its FAIL line into the file.
 fail() { echo "FAIL: $*" >&8; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
   "$@" && fail "assert $asserts unexpectedly succeeded: $*"

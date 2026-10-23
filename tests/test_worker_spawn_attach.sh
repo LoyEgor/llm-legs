@@ -10,7 +10,6 @@ unset CLAUDEB_WORKER WORKER_PICK_CONFIG_FILE CLAUDE_LIMITS_ACCOUNT CLAUDE_CONFIG
 mkdir -p "$HOME" "$WORKER_RUN_DIR"
 TAGS="$HOME/.cache/claude-worker-tags/s1"
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "expected [$1] got [$2]"; }
 assert_has() { asserts=$((asserts + 1)); case "$2" in *"$1"*) ;; *) fail "[$2] lacks [$1]" ;; esac; }
 

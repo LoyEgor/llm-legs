@@ -6,7 +6,6 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 cat >"$WORK/fixture.md" <<'MD'
 `bin/no-such-tool` and `share/worker-pick` and `docs/<topic>.md`, `tests/test_*.sh`, `tests/x.sh`,

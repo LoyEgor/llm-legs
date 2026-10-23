@@ -11,7 +11,6 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
 
 REAL_JQ=$(command -v jq) || fail "jq is required"
 HOME_FIXTURE="$WORK/home"

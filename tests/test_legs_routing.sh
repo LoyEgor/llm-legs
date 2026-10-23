@@ -11,8 +11,6 @@ AGY_MODEL="$(jq -r '[.families[] | select(.family | endswith("-flash") | not)][0
 export AGY_MODEL
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 
 STUB_BIN="$WORK/stubs"
 BARE_BIN="$WORK/bare"

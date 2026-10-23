@@ -9,7 +9,6 @@ WEATHER="$ROOT/bin/gemini-weather"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 assert_eq() {
   asserts=$((asserts + 1))

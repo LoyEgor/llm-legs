@@ -7,17 +7,6 @@ SCRIPT="$ROOT/bin/memlogd"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
-assert_fails() {
-  asserts=$((asserts + 1))
-  if "$@"; then
-    fail "assert $asserts unexpectedly succeeded: $*"
-  else
-    status=$?
-    [ "$status" -ne 127 ] || fail "assert $asserts command not found: $*"
-  fi
-}
 
 # Fakes driven by a variable live in SEAM_BIN, on PATH only for a run naming one (run_memlogd's case
 # list): elsewhere they are pass-through bash forks, hundreds a suite run.

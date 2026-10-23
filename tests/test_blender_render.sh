@@ -6,7 +6,6 @@ WORK=$(cd "$(mktemp -d)" && pwd -P)
 pids=()
 trap 'touch "$WORK/release-a" "$WORK/release-b"; kill ${pids[@]+"${pids[@]}"} 2>/dev/null; rm -rf "$WORK"' EXIT
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 within() { # seconds command... -> whether the command held within that many seconds
   local i

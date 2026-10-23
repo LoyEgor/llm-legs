@@ -20,7 +20,6 @@ export GROKB_CACHE_DIR="$WORK/grokb-cache"
 trap 'for _ in 1 2 3 4 5 6 7 8 9 10; do rm -rf "$WORK" 2>/dev/null && break; sleep 0.3; done' EXIT
 asserts=0
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
 here_fq() { local text; IFS= read -r -d '' text; [[ $text == *"$1"* ]]; }
 is_here_fq() { [ "$#" = 3 ] && [ "$1" = grep ] && [ "$2" = -Fq ] && [[ $3 != *$'\n'* ]]; }
 assert() {

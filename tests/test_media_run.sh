@@ -7,7 +7,6 @@ MEDIA_RUN="$ROOT/bin/media-run"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { asserts=$((asserts + 1)); }
 
 CAPS="$WORK/root/share/image-caps" BIN="$WORK/bin" CACHE="$WORK/cache" LOG="$WORK/log"

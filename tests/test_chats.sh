@@ -12,8 +12,6 @@ SCRIPT="$ROOT/bin/chats"
 STATUSLINE="$ROOT/bin/statusline.sh"
 
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 # A whole line / a substring of $2 equal to the literal $1, without a grep fork per check.
 has_line() { [[ $'\n'$2$'\n' == *$'\n'"$1"$'\n'* ]]; }
 has_text() { [[ $2 == *"$1"* ]]; }

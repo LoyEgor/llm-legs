@@ -8,8 +8,6 @@ GEN_DPID=""
 trap 'rm -rf "$WORK"; [ -n "$GEN_DPID" ] && kill "$GEN_DPID" 2>/dev/null; true' EXIT
 WORK="$(cd -P "$WORK" && pwd)"
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
   "$@" && fail "assert $asserts unexpectedly succeeded: $*"

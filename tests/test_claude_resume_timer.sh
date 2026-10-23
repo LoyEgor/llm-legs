@@ -6,7 +6,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/claude-resume-timer"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
 unset WORKER_RUN_RECORD
 
 FAKE_BIN="$WORK/bin"

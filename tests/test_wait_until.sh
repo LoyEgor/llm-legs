@@ -6,9 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(cd -P "$(mktemp -d)" && pwd)"
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$WORK"' EXIT
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
 like() { [[ $1 == $2 ]]; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 W="$ROOT/bin/wait-until"
 export WAIT_UNTIL_POLL_S=0.2
 

@@ -4,7 +4,6 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/tests/lib/hs-bounded.sh"
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 command -v hs >/dev/null 2>&1 || { echo "   (skipped: Hammerspoon CLI is unavailable)"; exit 0; }
 

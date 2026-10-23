@@ -17,8 +17,6 @@ printf '#!/bin/sh\necho %s\n' "'{\"claims\": {}}'" >"$WORK/no-claims/review-anch
 export PATH="$WORK/no-claims:$PATH"
 asserts=0
 now=$(date +%s)
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly succeeded: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 commit() { git -C "$1" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm "$2"; }

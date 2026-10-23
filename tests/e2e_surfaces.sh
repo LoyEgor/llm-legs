@@ -13,7 +13,6 @@ set -u
 # It never assigns to any module field (cachePath, timers, callbacks). Mutating the live
 # singleton would silently break the user's real menubar while console checks stay green.
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
 STORE="$HOME/.llm-limits.json"

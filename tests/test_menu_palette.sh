@@ -9,7 +9,6 @@
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 STYLE="$ROOT/hammerspoon/menu-style.lua"
 WORK=$(mktemp -d)

@@ -9,8 +9,6 @@ unset WORKER_RUN_ID
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 eq() { [ "$1" = "$2" ] || { printf 'expected [%s]\n     got [%s]\n' "$2" "$1" >&2; return 1; }; }
 
 WORK="$(mktemp -d)"

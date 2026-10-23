@@ -14,7 +14,6 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
 passed=0
 pass() { passed=$((passed + 1)); }
 

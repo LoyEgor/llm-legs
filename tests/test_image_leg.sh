@@ -8,8 +8,6 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 
 # --- busy and limit are left to the scheduler; the next route is the last resort --------------------
 (

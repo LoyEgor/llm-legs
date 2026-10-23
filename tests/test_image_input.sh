@@ -6,7 +6,6 @@ WORK=$(mktemp -d)
 trap 'rm -f "$WORK"/*; rmdir "$WORK"' EXIT
 export IMAGE_LEG_LOG="$WORK/legs.jsonl"
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "$*"; }
 magick -size 64x64 xc:white "$WORK/blank.png"
 cat >"$WORK/viewbox.svg" <<'SVG'

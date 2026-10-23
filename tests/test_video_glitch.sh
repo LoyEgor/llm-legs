@@ -11,7 +11,6 @@ fail() {
   [ ! -f "$WORK/check.out" ] || sed -n '1,20p' "$WORK/check.out" >&2
   exit 1
 }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
   if "$@"; then fail "assert $asserts unexpectedly succeeded: $*"; fi

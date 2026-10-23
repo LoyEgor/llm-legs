@@ -20,7 +20,6 @@ fail() {
   [ -z "${VIDEO_ERR:-}" ] || sed -n '1,80p' "$VIDEO_ERR" >&2
   exit 1
 }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 # Only grep's "found nothing" counts: an unreadable file or a bad pattern also exits non-zero, and
 # taking that for the answer would let the assertion pass without ever looking at the text.
 assert_fails() {
