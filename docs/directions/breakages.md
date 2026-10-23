@@ -125,29 +125,6 @@ table; awk dying on Cyrillic let calls through, `log_audit:pretooluse-awk-multib
   after landing: the next 7 days' denials labelled the same way, target causes 0. Re-runs after a denial show
   nothing: workers re-run rightly refused commands too (`log_audit:workers-route-around-denials`).
 
-### goal bash-cap: a worker's timed-out Bash call moves to the background, as a chat's does
-
-Class: a Bash call dies at its cap and runs again. 10-02…16 23:40 (local), 606 killed calls: `tool_result` with
-`is_error` whose text begins `Exit code 143` / `Command timed out after`, one per tool_use id,
-`~/.claude/projects/**/*.jsonl` (a bare substring match also counts transcripts quoting the text: 657). Killed /
-re-run / re-run minutes, from an earlier count of 616 and unconfirmed: suites 255 / 236 / 2,896, waits 146 / 0, bench
-101 / 20 / 200, other scripts 44 / 7 / 122, scans 30 / 4 / 20, media 16 / 4 / 52, probes 15 / 2 / 27, doctor, review
-and worker 9 / 3 / 37; by cap (605 to 23:15) 2-min 181, 10-min 264, 25-min 110, other caps 50. Breakages owns it;
-`lost-time.md` points here.
-- Cause: 595 ran in headless workers (`entrypoint: sdk-cli`), 11 in their subagents, 0 in a chat. Claude Code
-  2.1.301 moves a timed-out call to the background instead of killing it; chats got that 795 times (unconfirmed).
-  `bin/worker-run` exports `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (0b9f4f25, 09-27), so workers are killed instead.
-- 87 of the 606 start with `sleep`, exempt from the move, so they stay killed after the change; none was redone (no
-  later identical command in its session, checked 10-16): the base and the read leave them out.
-- Change: delete that export and its comment; the `BASH_MAX_TIMEOUT_MS` lines stay; `tool-idea-run-all-attach` is
-  not built. Under `-p` a background task dies at the final response, as the move notice says ("… wait for it before
-  giving your final response", 2.1.301): no preamble line unless the read finds a final response with a task unread.
-- Proof: one slow selection through worker-run at `BASH_MAX_TIMEOUT_MS=60000`, old and new interleaved: old is
-  killed and re-runs, new runs once. Its first new run confirms auto-backgrounding under `-p`, so far only read.
-- Read after landing: worker timeouts ending killed (Claude Code's tool_result text in `sdk-cli` transcripts,
-  `sleep` excluded), 207 (10-09…23, all headless) → 0 per 14 days. Not worse: final responses with a
-  backgrounded task unread (0), `worker_orphans`.
-
 ### goal stop-hooks: no Stop hook holds the stop
 
 Class: a Stop hook outruns its slice, each case fixed alone: worker-run-backstop (10-03, 10-06, 10-14; its
@@ -171,6 +148,13 @@ notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
   stops: under 20 9.9 (23, 6 killed), 20–79 90 (9 of 100, 3 killed), 80+ empty. Target 0 per band, an empty band
   unclear. Transcripts 10-01…16: 7,179 stops, 120 ≥5 s, 16 killed. Not worse: asks/holds (64), notices (54)
   delivered, ≤23 repeats within 5 min, Stop CPU p50 0.29 s.
+
+## Done
+
+- bash-cap (llm-legs 35d604a3, 10-23): workers no longer export `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, so a
+  Bash call at its cap moves to the background. Proof at a 60 s cap, `test_night_run` as one plain call, old and new
+  interleaved: old 2 of 2 killed, no result; new 2 of 2 moved, PASS 529. Read: killed worker calls, `sleep` excluded,
+  207 (10-09…23) → 0 per 14 days; not worse: final responses with a task unread, `worker_orphans`.
 
 ## Decisions
 
