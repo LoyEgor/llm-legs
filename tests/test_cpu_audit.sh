@@ -3,7 +3,7 @@
 # share/cpu_audit.py, the CPU audits block of the Speed doctor, off fixture statusline render and probe journals,
 # System doctor hours and doctor collector runs: each component's median over the days its own journal holds, the
 # rank, own processes only, the due rules (never, a source blob a Speed landing did not move, x1.5
-# CPU-min/day, never under 1 CPU-min/day), the zero option a record must
+# CPU a run, never under 1 CPU-min/day), the zero option a record must
 # carry, a kept audit closing its row with its proof, the restate a night close reads, and no live System hours under
 # a fixture Harness directory. Fixture directories only.
 set -u
@@ -157,9 +157,11 @@ check("statusline/render" not in landed
       % landed)
 record("statusline/render", "removal saves 2.5 CPU-min/day; loses every statusline")
 render(1, "00000")
+busier = {p["cpu"]["component"]: p["cpu"]["due"] for p in collect()["problems"]}
+write(os.path.join(harness, "statusline", D(1) + ".tsv"), ["1\t2\tsid\t240000\t0"])
 risen = {p["cpu"]["component"]: p["cpu"]["due"] for p in collect()["problems"]}
-check(risen.get("statusline/render") == "CPU-min/day ×1.6 since audit",
-      "CPU-min/day at 1.5x the audit's reopens it: %s" % risen)
+check("statusline/render" not in busier and risen.get("statusline/render") == "CPU a run ×1.8 since audit",
+      "CPU a run at 1.5x the audit's reopens it, CPU-min/day at 1.6x from more runs does not: %s, %s" % (busier, risen))
 
 import time_budget
 lower = dict(kept["proofs"]["statusline/render"], after=1.0)
@@ -179,4 +181,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the CPU audits block misjudged its fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; CPU audits price each component by its median over the days its own journal holds, rank own components (every own process System kept, hooks by script), price wasted CPU off the same column, judge audits due by never/source blob/x1.5 CPU-min/day over a 1 CPU-min/day floor (a Speed landing reopens nothing), refuse a record with no zero option, close a kept audit with its proof and settle it for a night close, and never read live System hours under a fixture Harness directory\n' "$asserts"
+printf 'PASS: %s asserts; CPU audits price each component by its median over the days its own journal holds, rank own components (every own process System kept, hooks by script), price wasted CPU off the same column, judge audits due by never/source blob/x1.5 CPU a run over a 1 CPU-min/day floor (a Speed landing reopens nothing), refuse a record with no zero option, close a kept audit with its proof and settle it for a night close, and never read live System hours under a fixture Harness directory\n' "$asserts"

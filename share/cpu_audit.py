@@ -3,7 +3,7 @@ median of its last 7 settled days (today alone before any), from journals the co
 renders and background probes, the System doctor's hourly CPU of own processes, doctor collector runs, hook runs.
 Wasted is the CPU of runs whose output equalled the previous run's (the statusline journals' same column). Due when
 never audited, a source has another blob than at audit that a Speed audit run did not land (spend.moved), or
-CPU-min/day reached spend.SHARE_RISE x the audit's; never under FLOOR_MIN_DAY CPU-min/day, whatever the reason, and
+CPU a run reached spend.SHARE_RISE x the audit's (more runs are load, not the component); never under FLOOR_MIN_DAY CPU-min/day, whatever the reason, and
 the head counts the rows that floor skipped. Rows live in Spend's ledger as `cpu:<component>`."""
 
 import datetime
@@ -142,9 +142,9 @@ def due(c, row, held, repos, memo):
         return "never audited"
     if spend.moved(row, held, repos, memo):
         return "source changed"
-    then = row.get("cpu_min_day")
-    if isinstance(then, (int, float)) and then > 0 and c["cpu_min_day"] >= spend.SHARE_RISE * then:
-        return "CPU-min/day ×%.1f since audit" % (c["cpu_min_day"] / then)
+    then = row.get("cpu_s_run")
+    if isinstance(then, (int, float)) and then > 0 and c["cpu_s_run"] >= spend.SHARE_RISE * then:
+        return "CPU a run ×%.1f since audit" % (c["cpu_s_run"] / then)
     return None
 
 

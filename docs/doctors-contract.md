@@ -344,7 +344,7 @@ Harness doctor:
   (`harness_index.sources`) by its share of Fee. `spend.selection` lists every due
   audit, area `speed-spend-<component>`; `spend.proofs` (share, part price at audit) feed night `roi` lines.
   `cpu` (`share/cpu_audit.py`): `cpu:<component>` rows, group `CPU audits`, own, wasted CPU-min/day, due as
-  Spend's, never under 1 CPU-min/day (`FLOOR_MIN_DAY`; the head counts the rows it skipped). In every audit block a
+  Spend's but risen on CPU a run, never under 1 CPU-min/day (`FLOOR_MIN_DAY`; the head counts the rows it skipped). In every audit block a
   source moved only by `merge …harness-speed-…` landings (main's reflog) since the audit's run started, or since the
   last main commit holding its recorded blob, reopens nothing (`spend.moved`); any other commit or an uncommitted
   edit does.
