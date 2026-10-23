@@ -660,7 +660,8 @@ check(doc["budget"].get("lost_min_day_by_day") == first["budget"].get("lost_min_
                      "issues": [[1, "Waits"], [1, "Guards"], [1, "Memory guard"]],
                      "groups": {"Waits": 1, "Guards": 1, "Memory guard": 1},
                      "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "index": None, "index_by_day": {},
-                               "levels": [[None, "min per order · chat"], [None, "min per task · workers"]],
+                               "levels": [[None, "min per order · chat"], [None, "min per task · workers"],
+                                          [None, "min per job · night"]],
                                "rows": first["budget"]["rows"]},
                      "spend": {"as_of_s": first["as_of_s"], "status": "nodata", "index": None, "index_by_day": {},
                                "issues": []}}
