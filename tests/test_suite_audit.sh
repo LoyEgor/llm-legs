@@ -199,10 +199,11 @@ for name, text in (("helper.sh", "helper changed\n"),):
 check({p["suite"]["component"]: p["suite"]["due"] for p in collect()["problems"]}.get("alpha/test_mid")
       == "source changed", "an audited suite whose tests/ helper changed is due again")
 write("tests/helper.sh", "helper\n")
-ledger([dict(recorded, wall_run=20 / 2.0)])
+risen = dict(recorded, wall_run=20 / 2.0, cpu_run=20 / 2.0)
+ledger([risen])
 rose = {p["suite"]["component"]: p for p in collect()["problems"]}.get("alpha/test_mid")
 check(rose and rose["suite"]["due"] == "wall a run ×2.0 since audit"
-      and suite_audit.restate([rose], {"suite:alpha/test_mid": dict(recorded, wall_run=20 / 2.0)}) == [rose],
+      and suite_audit.restate([rose], {"suite:alpha/test_mid": risen}) == [rose],
       "wall a run at 2x the audit's is due again, and the audit it rose over does not settle it for a night close")
 one_day = [r for r in journal if not {"test_heavy.sh", "test_mid.sh"} & set(r["suites"])]
 one_day += [row(NOW - 6 * 86400 + i * 600, {"test_heavy": cpu(40)}, cheap) for i in range(6)]
@@ -218,8 +219,16 @@ ledger([dropped])
 gone = {p["suite"]["component"]: p for p in collect()["problems"]}.get("alpha/test_mid")
 check(gone and gone["suite"]["due"] == "source changed" and suite_audit.restate([gone], {"suite:alpha/test_mid": dropped})
       == [gone], "a source the audit recorded and the suite no longer has is a change the old audit does not settle")
-ledger([dict(recorded, wall_run=20 / 1.9)])
+ledger([dict(recorded, wall_run=20 / 1.9, cpu_run=20 / 1.9)])
 check("alpha/test_mid" not in {p["suite"]["component"] for p in collect()["problems"]}, "1.9x is not due")
+ledger([dict(recorded, wall_run=20 / 2.0)])
+steady = [{"wall": w, "cpu": 20.0, "head": h, "end": NOW + i * 36000, "ok": True}
+          for i, (w, h) in enumerate([(40.0, "a")] * 6 + [(100.0, "b")] * 6)]
+check("alpha/test_mid" not in {p["suite"]["component"] for p in collect()["problems"]}
+      and suite_audit.jump(steady, lambda before, after: None) is None
+      and suite_audit.jump(steady, lambda before, after: 1.0),
+      "with under 3 untouched suites to read the load, a rise is read on CPU a run: wall at 2x the audit's or 40 → 100 s "
+      "between commits at flat CPU is no rise, one at a load that reads 1 still is")
 ledger([recorded])
 later = [row(NOW + 60 + i, {"test_mid": cpu(8)}, split) for i in range(5)]
 save(journal + later)
@@ -283,7 +292,7 @@ late = ([10.0, 20.0, 30.0, 60.0, 70.0, 80.0, 210.0, 220.0, 230.0], [1.0] * 3 + [
 mixed = dict({"u%d" % i: side(1.0, 2.0, []) for i in range(3)}, **{"t%d" % i: side(1.0, 1.0, [150.0]) for i in range(4)})
 check(suite_audit.load(mixed, "x", *spans) == 2.0
       and suite_audit.load({"u": side(1.0, 2.0, []), "l1": late, "l2": late}, "x", *spans) == 2.0
-      and suite_audit.load(mixed, "u0", *spans) == 1.0
+      and suite_audit.load(mixed, "u0", *spans) is None
       and suite_audit.load({k: side(2.0, 1.0, []) for k in ("a", "b", "c")}, "x", *spans) == 1.0,
       "the load leaves out suites changed between the runs compared, reads a suite changed inside the before span "
       "since its change, needs 3 controls besides the suite itself, and never reads under 1")

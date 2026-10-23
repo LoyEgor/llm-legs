@@ -320,20 +320,15 @@ wait_row = problems.get("regression:test-health/wait_chat") or {}
 check(wait_row.get("rule") == "regression" and wait_row.get("expected_min_day") == reg["min_day"]
       and wait_row.get("component") == "test-health/wait_chat",
       "speed: a test health line over its usual is a regression row priced at its excess: %s" % wait_row)
-th.HEAVY_MIN_DAY = 0.0
 heavy_section = th.collect(NOW, journal, [repo])
-fixed = {"test-health/heavy/alpha/test_a", "test-health/idle/alpha/test_slow"}
+fixed = {"test-health/idle/alpha/test_slow"}
 cut = {f["target"] for f in th.collect(NOW, journal, [repo], since=lambda t: NOW if t in fixed else None)["findings"]}
-th.HEAVY_MIN_DAY = 15.0
 check(not fixed & cut and {f["target"] for f in heavy_section["findings"]} - fixed == cut,
       "speed: a suite's row whose own fix landed is charged only for its runs after, every other row as it was: %s"
       % sorted(cut))
-heavy_ids = {o["id"] for o in S.test_opportunities(heavy_section)}
-moved = {"id": "opportunity:tests/alpha/test_a"}
-check("opportunity:test-health/heavy/alpha/test_a" in heavy_ids
-      and S.without_moved_heavy([moved, {"id": "opportunity:tests/alpha/other"}], heavy_section)
-      == [{"id": "opportunity:tests/alpha/other"}],
-      "speed: a heavy suite is a test-health row and drops its moved tests/ row: %s" % sorted(heavy_ids))
+check(not {"heavy", "pole"} & {f["class"] for f in heavy_section["findings"]},
+      "a suite's own cost, heavy or the long pole, is suite_audit's queue alone, never a test-health row: %s"
+      % sorted(f["target"] for f in heavy_section["findings"]))
 
 spike = os.path.join(work, "spike.jsonl")
 with open(spike, "w") as handle:
@@ -349,28 +344,12 @@ with open(spike, "w") as handle:
                                  - 1000, "repo": repo, "repo_root": repo, "scope": "named", "j": 1, "suites": {
                                      "test_b.sh": {"rc": 0, "secs": 1000, "cpu_s": 900}}}) + "\n")
 spiked = th.collect(NOW, spike, [repo])
-spiked_heavy = {f["target"] for f in spiked["findings"] if f["class"] == "heavy"}
 spiked_c = next(s for s in spiked["heavy"] if s["label"] == "test_c")
-check("test-health/heavy/alpha/test_c" not in spiked_heavy and spiked["heavy"][0]["label"] == "test_a"
-      and spiked_c["min_day"] == 0 and spiked_c["usual_min_day"] > 60,
+check(spiked["heavy"][0]["label"] == "test_a" and spiked_c["min_day"] == 0 and spiked_c["usual_min_day"] > 60,
       "heavy: one old heavy day never ranks a suite over one that costs minutes every day; its 7-day mean stays the "
-      "usual: %s %s" % (sorted(spiked_heavy), spiked["heavy"]))
-check(spiked_heavy == {"test-health/heavy/alpha/test_a", "test-health/heavy/alpha/test_b"}
-      and spiked["heavy"][1]["label"] == "test_b" and abs(spiked["heavy"][1]["min_day"] - 1000 / 60.0) < 0.1,
-      "heavy: a suite first run 2 days ago, heavy both days, is priced over its own days and ranks heavy: %s %s"
-      % (sorted(spiked_heavy), spiked["heavy"]))
-cut_a = lambda t: T - 3.5 * 86400 if t == "test-health/heavy/alpha/test_a" else None
-quiet = {f["target"] for f in th.collect(NOW, spike, [repo], since=cut_a)["findings"] if f["class"] == "heavy"}
-with open(spike, "a") as handle:
-    for back in (0.3, 0.6, 1.3, 1.6, 2.5):
-        handle.write(json.dumps({"kind": "suites", "started_at": T - back * 86400 - 2000, "ended_at": T - back * 86400
-                                 - 800, "repo": repo, "repo_root": repo, "scope": "named", "j": 1, "suites": {
-                                     "test_a.sh": {"rc": 0, "secs": 3000, "cpu_s": 2900}}}) + "\n")
-grown = {f["target"] for f in th.collect(NOW, spike, [repo], since=cut_a)["findings"] if f["class"] == "heavy"}
-check("test-health/heavy/alpha/test_a" not in quiet and "test-health/heavy/alpha/test_a" in grown
-      and "test-health/heavy/alpha/test_b" in quiet,
-      "heavy: after its own fix a suite returns only on more CPU a run than before it, never on wall alone: %s %s"
-      % (sorted(quiet), sorted(grown)))
+      "usual: %s" % spiked["heavy"])
+check(spiked["heavy"][1]["label"] == "test_b" and abs(spiked["heavy"][1]["min_day"] - 1000 / 60.0) < 0.1,
+      "heavy: a suite first run 2 days ago, heavy both days, is priced over its own days: %s" % spiked["heavy"])
 
 mini, M = os.path.join(work, "mini.jsonl"), NOW - 3600
 

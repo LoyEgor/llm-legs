@@ -171,12 +171,8 @@ TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "
                 "saving": 0.5, "confidence": "estimated", "proof": "orchestration"},
     "idle": {"lever": "event waits instead of sleeps and polls inside the suite, every check kept", "saving": 0.5},
     "flaky": {"lever": "make the suite pass or fail the same on the same code, every check kept", "saving": 1.0},
-    "pole": {"lever": "split the long-pole suite into shards so the run's other slots stay busy, every check kept",
-             "saving": 0.5},
     "serial": {"lever": "multi-suite runs take their usual slots instead of one", "saving": 0.5,
-               "proof": "orchestration"},
-    "heavy": {"lever": "audit the suite (legacy checks, over-complication, a split, sleeps) and cut its wall, every "
-                       "requirement kept", "saving": 0.3, "confidence": "estimated"}}.items()}
+               "proof": "orchestration"}}.items()}
 ADHOC_LEVERS = {k: {"component": "adhoc/" + k, "lever": v, "effort": "S", "confidence": "measured", "saving": 1.0,
                     "night_cost_h": 0.0, "proof": "net", "quality": "equivalent"} for k, v in {
     "tool": "a command for the job, its hint where the script would start",
@@ -955,21 +951,15 @@ TEST_HEALTH_ID = "opportunity:test-health/"
 
 
 def test_opportunities(tests):
-    """Test health findings as opportunities priced at their own min/day; a floor gap never folds into one. A heavy
-    suite carries its keep requirement as `protected`."""
+    """Test health findings as opportunities priced at their own min/day; a floor gap never folds into one."""
     out = []
     for f in tests.get("findings") or ():
         lever = dict(TEST_HEALTH_LEVERS[f["class"]], **({"confidence": f["confidence"]} if f.get("confidence") else {}))
-        protected = None
-        if f["class"] == "heavy":
-            repo, name = f["files"][0].split("/tests/", 1)
-            protected = test_requirement(repo, "tests/" + name)
-        o = target_opportunity(f["target"], f["min_day"], lever, f["exposure"], protected, seen_days=f["days"])
+        o = target_opportunity(f["target"], f["min_day"], lever, f["exposure"], seen_days=f["days"])
         fields = o["opportunity"]
         fields.update(files=f["files"], worker_min_day=round(f["worker_min_day"] * lever["saving"], 2))
-        o["fact"] = "%s · %s → saves %s · %s%s" % (f["fact"], per_day(f["min_day"], f["worker_min_day"]),
-                                                   per_day(fields["saving"], fields["worker_min_day"]), lever["lever"],
-                                                   " · " + protected if protected else "")
+        o["fact"] = "%s · %s → saves %s · %s" % (f["fact"], per_day(f["min_day"], f["worker_min_day"]),
+                                                 per_day(fields["saving"], fields["worker_min_day"]), lever["lever"])
         out.append(o)
     return out
 
@@ -1019,13 +1009,6 @@ def unused_opportunities(adhoc):
 def parked(ledger, target):
     row = H.ledger_row(ledger, "opportunity", target) or {}
     return row.get("status") == "ruled-out" or bool(row.get("handoff"))
-
-
-def without_moved_heavy(opportunities, tests):
-    """A suite test health prices as heavy drops its moved `tests/<repo>/<label>` row: one minute, one offer."""
-    heavy = {"opportunity:tests/" + f["target"].split("/", 2)[2] for f in tests.get("findings") or ()
-             if f["class"] == "heavy"}
-    return [o for o in opportunities if o["id"] not in heavy]
 
 
 def test_regressions(tests, ledger, now):
@@ -1405,8 +1388,7 @@ def collect(write, now):
                                     since=lambda target: landed_end(ledger, target))
     except Exception as exc:
         tests = {"status": "error", "head": H.error_line(exc), "findings": [], "candidates": {}, "menu": []}
-    opportunities = without_moved_heavy(opportunities, tests) + [
-        o for o in test_opportunities(tests) if o["opportunity"]["om_day"] >= LIMITS["worth_om_day"]]
+    opportunities += [o for o in test_opportunities(tests) if o["opportunity"]["om_day"] >= LIMITS["worth_om_day"]]
     problems += test_regressions(tests, ledger, now)
     try:
         adhoc = tool_mining.collect(now, write, since=lambda target: landed_end(ledger, target),

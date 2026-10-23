@@ -4,8 +4,9 @@ it: a suite idles most of its wall, so CPU alone misses it. A run's wall is its 
 (`wall_floor`): contention swamps the median. Test health's dead suites join the queue. An audit is due when never
 done, when the suite or a tests/ helper it names has another blob than at audit that a Speed audit run did not land
 (spend.moved), or when its wall per run held >= 2x the audit's over HELD_S (2 days); a rise of 2x and 30 s between
-commits beyond the machine's slowdown over the same spans (`load`), held over HELD_S, or a new suite over 3x the
-median suite per run, is due at once and names its commit. A suite under FLOOR_MIN_DAY wall-min/day is never due but
+commits, held over HELD_S, or a new suite over 3x the median suite per run, is due at once and names its commit. Both
+rises count beyond the machine's slowdown over the same spans (`load`), on CPU a run where it does not read. A suite
+under FLOOR_MIN_DAY wall-min/day is never due but
 dead, and the head counts the ones that floor skipped. Audit rows live in Spend's ledger (share/spend-ledger.json) as `suite:<repo>/<label>`."""
 
 import bisect
@@ -150,9 +151,25 @@ def passing(history):
     return [h for h in history if h["ok"]] or history
 
 
+def cpu_run(history):
+    """CPU a run: the median of the last RECENT_RUNS passing runs that read one, None under SIDE_RUNS of them."""
+    timed = [h["cpu"] for h in history if h["ok"] and h["cpu"]][-RECENT_RUNS:]
+    return statistics.median(timed) if len(timed) >= SIDE_RUNS else None
+
+
+def slowdown(factor, walls, cpus):
+    """What a rise's after side is divided by: the load when it reads, else the wall's rise beyond CPU a run's
+    (walls and cpus as (before, after)); None, no rise, when neither reads."""
+    if factor is not None:
+        return factor
+    if None in cpus or not walls[0]:
+        return None
+    return max(1.0, walls[1] / walls[0] / (cpus[1] / cpus[0]))
+
+
 def jump(history, load=lambda before, after: 1.0):
     """The first run of a commit after which every run's wall stayed >= 2x and >= 30 s over the fastest before it,
-    the after side divided by load(before runs, after runs) and spanning HELD_S, so a one-day spike is no rise."""
+    the after side divided by the slowdown across its sides and spanning HELD_S, so a one-day spike is no rise."""
     history = passing(history)
     walls = [h["wall"] for h in history]
     if len(walls) < 2 * SIDE_RUNS or max(walls) < JUMP_S:
@@ -166,8 +183,9 @@ def jump(history, load=lambda before, after: 1.0):
             continue
         before, after = min(walls[:i]), min(walls[i:])
         if after >= WALL_RISE * before and after - before >= JUMP_S and history[-1]["end"] - h["end"] >= HELD_S:
-            factor = load(history[:i], history[i:])
-            if after / factor >= WALL_RISE * before and after / factor - before >= JUMP_S \
+            factor = slowdown(load(history[:i], history[i:]), (before, after),
+                              (cpu_run(history[:i]), cpu_run(history[i:])))
+            if factor and after / factor >= WALL_RISE * before and after / factor - before >= JUMP_S \
                     and (not best or after / factor - before > best[0]):
                 best = (after / factor - before, h, before, after, factor)
     return best and {"at": best[1]["end"], "head": best[1]["head"], "before": round(best[2], 1),
@@ -197,7 +215,8 @@ def controls(found, lo):
 def load(controls, key, before, after):
     """The machine's slowdown across a rise's two sides: the median, over the other suites whose sources no commit
     changed between the runs compared, of their fastest run in the after side's span over their fastest in the before
-    side's since their last change, SIDE_RUNS runs a side; 1 under LOAD_CONTROLS of them or when they ran no slower."""
+    side's since their last change, SIDE_RUNS runs a side; 1 when they ran no slower, unknown (None) under
+    LOAD_CONTROLS of them."""
     spans = [[before[0]["end"], before[-1]["end"]], [after[0]["end"], after[-1]["end"]]]
     ratios = []
     for other, (ends, walls, changes) in controls.items():
@@ -207,7 +226,7 @@ def load(controls, key, before, after):
         sides = [walls[bisect.bisect_left(ends, max(lo, last)):bisect.bisect_right(ends, hi)] for lo, hi in spans]
         if min(map(len, sides)) >= SIDE_RUNS and min(sides[0]) > 0:
             ratios.append(min(sides[1]) / min(sides[0]))
-    return max(1.0, statistics.median(ratios)) if len(ratios) >= LOAD_CONTROLS else 1.0
+    return max(1.0, statistics.median(ratios)) if len(ratios) >= LOAD_CONTROLS else None
 
 
 def price(rows, found):
@@ -322,7 +341,8 @@ def due(c, row, held, median, new, dead=None, timed=None, memo=None):
     audited = epoch((row or {}).get("audited_at")) or 0.0
     if dead and (not row or audited < dead["since"]):
         return dead.get("kind", "dead") + ": " + dead["reason"], False, dead["since"]
-    rise = jump(c["history"], lambda before, after: load(timed or {}, c["key"], before, after))
+    machine = lambda before, after: load(timed or {}, c["key"], before, after)
+    rise = jump(c["history"], machine)
     if rise and rise["at"] > audited:
         c["commit"] = culprit(c, rise)
         return ("wall a run ×%.1f (%d → %d s%s) since %s" % (
@@ -337,17 +357,25 @@ def due(c, row, held, median, new, dead=None, timed=None, memo=None):
     if spend.moved(row, held, os.path.dirname(c["top"].rstrip("/")), memo):
         return "source changed", False, changed_at(c["top"], c["sources"], held, row)
     then = row.get("wall_run")
-    held = held_rise(c["history"], WALL_RISE * then) if isinstance(then, (int, float)) and then > 0 else None
+    held = held_rise(c["history"], WALL_RISE * then, machine, row.get("cpu_run")) \
+        if isinstance(then, (int, float)) and then > 0 else None
     if held:
         return "wall a run ×%.1f since audit" % (held / then), False, max(c["history"][-1]["end"], audited + 1)
     return None
 
 
-def held_rise(history, bar):
-    """The fastest wall of the newest passing runs that all read >= bar, once they span HELD_S: a rise held over three
-    days, never a one-day spike."""
-    streak = list(itertools.takewhile(lambda h: h["wall"] >= bar, reversed(passing(history))))
-    return min(h["wall"] for h in streak) if streak and streak[0]["end"] - streak[-1]["end"] >= HELD_S else None
+def held_rise(history, bar, load=lambda before, after: 1.0, cpu_then=None):
+    """The fastest wall of the newest passing runs that all read >= bar, once they span HELD_S (a rise held over three
+    days, never a one-day spike), divided by the slowdown across them and the runs before as jump() divides it, the
+    audit's CPU a run (cpu_then) standing for the before side's: None unless it still reads >= bar."""
+    history = passing(history)
+    streak = list(itertools.takewhile(lambda h: h["wall"] >= bar, reversed(history)))[::-1]
+    if not streak or streak[-1]["end"] - streak[0]["end"] < HELD_S:
+        return None
+    before, wall = history[:len(history) - len(streak)], min(h["wall"] for h in streak)
+    factor = slowdown(load(before, streak) if before else None, (bar / WALL_RISE, wall),
+                      (cpu_then if isinstance(cpu_then, (int, float)) and cpu_then > 0 else None, cpu_run(streak)))
+    return wall / factor if factor and wall / factor >= bar else None
 
 
 def proof(c, row):
