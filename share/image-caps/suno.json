@@ -20,9 +20,6 @@
   "limits": {"title": 100, "lyrics": 5000, "styles": 1000, "describe": 3000, "script": 5000},
   "ranges": {
     "duration": {"min": 10, "max": 360, "step": 5},
-    "weirdness": {"min": 0, "max": 100, "default": 50},
-    "style_influence": {"min": 0, "max": 100, "default": 50},
-    "audio_influence": {"min": 0, "max": 100, "default": 25},
     "variety": {"min": 0, "max": 4, "default": 1},
     "speed": {"min": 0.25, "max": 4.0, "steps": "semitones: 2^(n/12), n -24..24; an asked speed snaps to the nearest"}
   },
@@ -47,6 +44,7 @@
     "stems": "Stems & MIDI in the Download dialog and the Get Stems action are Pro",
     "wav": "WAV downloads answer 403 wav_not_allowed on the free plan",
     "max_mode": "Max Mode (Pro) is left Off",
+    "control_sliders": "Weirdness, Style Influence and Audio Influence are Pro since 2026-10-23: a moved slider makes generate answer 403 «You do not have permission to use control sliders»; suno-music refuses the flags",
     "personas_voices": "Add Voice and personas: free_vox_gens_remaining 3 on chirp-hawk (v6) per account, not wired",
     "playlist_inspiration": "Add inspiration from a playlist (Pro Inspo) is not wired"
   }

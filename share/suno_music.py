@@ -83,15 +83,25 @@ RECORD = """async (limit) => {
     await new Promise(r => setTimeout(r, 200));
   }
   if (!tapped.has(a)) return {error: 'the player plays through an <audio> the recorder does not hear'};
-  a.pause();
-  a.currentTime = 0;
-  const parts = [], rec = new MediaRecorder(sink.stream, {mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 256000});
-  rec.ondataavailable = e => parts.push(e.data);
-  const stopped = new Promise(r => rec.onstop = r);
+  let parts, rec, stopped, started;
+  for (let tries = 0; ; tries++) {
+    a.pause();
+    a.currentTime = 0;
+    parts = [];
+    rec = new MediaRecorder(sink.stream, {mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 256000});
+    rec.ondataavailable = e => parts.push(e.data);
+    stopped = new Promise(r => rec.onstop = r);
+    rec.start(1000);
+    started = performance.now();
+    try { await a.play(); break; } catch (error) {
+      rec.stop();
+      await stopped;
+      // The page's own player can pause the element just after its Play click (2026-10-23): settle, start over.
+      if (error.name !== 'AbortError' || tries >= 4) return {error: `the player would not play: ${error.message}`};
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
   const ended = new Promise(r => a.addEventListener('ended', () => r(true), {once: true}));
-  rec.start(1000);
-  const started = performance.now();
-  await a.play();
   const done = await Promise.race([ended, new Promise(r => setTimeout(() => r(false), limit * 1000))]);
   rec.stop();
   await stopped;
@@ -570,17 +580,17 @@ def styles_box(page):
 
 def clear_form(page) -> None:
     """Suno keeps the last form (lyrics, styles, pills, sliders) across visits; its own Clear resets it whole. The
-    Clear button shows only while something is set, so a form without it is already pristine."""
+    Clear button is missing or disabled while nothing is set (2026-10-23), so such a form is already pristine."""
     try:
         styles_box(page).wait_for(timeout=15000)
     except Exception as error:  # noqa: BLE001
         raise drift("no Styles box on the Advanced form") from error
     page.wait_for_timeout(1000)
     button = page.get_by_role("button", name="Clear all form inputs").locator("visible=true")
-    if not button.count():
-        return
     failed = None
     for _ in range(2):
+        if not button.count() or not button.first.is_enabled():
+            return
         # A panel left open from the last visit (the Lyricist, «Help me write lyrics», 2026-10-23) covers the button.
         page.keyboard.press("Escape")
         page.wait_for_timeout(400)

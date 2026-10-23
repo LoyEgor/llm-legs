@@ -32,7 +32,7 @@ keeps both in the library (`library=` lines), and `--fetch <clip> --account <a> 
 
 | Kind | Call |
 | --- | --- |
-| song | `--dest <abs .mp3\|.m4a> --prompt <styles> [--lyrics <text> \| --instrumental] [--title] [--gender male\|female] [--duration 10-360, step 5] [--weirdness 0-100] [--style-influence 0-100] [--variety 0-4]` |
+| song | `--dest <abs .mp3\|.m4a> --prompt <styles> [--lyrics <text> \| --instrumental] [--title] [--gender male\|female] [--duration 10-360, step 5] [--variety 0-4]` |
 | describe | `--describe <idea> [--video <abs mp4>] [--image <abs png\|jpg>]`: Suno writes lyrics and styles (the Simple tab); a video or image is scored by Suno |
 | edit | `--source <a saved file \| library clip + --account \| abs audio 6-480 s to upload> --mode <mode>` |
 | speech | `suno-speech --dest … --text <script> \| --text-file <abs> [--tone …] [--gender] [--no-music] [--variety 0-4]`: a voiced script, background music on by default |
@@ -70,9 +70,10 @@ Community tests on v6 (HookGenius, 2026-10; not Suno's docs, v6-mini itself unte
   `[Instrumental]` or `[Interlude]` for parts without voice; delivery goes inside the tag of its section,
   `[Verse | whispered, close-mic]`, `[Chorus | belted]`. Keep tags short, or their words get sung. A full song
   is 30-40 lines (under 15 comes out short, over 60 rushed). Spell hard words as they sound, space acronyms.
-- `--variety 0` keeps the Styles text as written (52 of 54 takes); the default rewrites it every take. Raise
-  `--style-influence` to ~70-75 when the style is half ignored (default 50); `--weirdness` 20-30 for a
-  conventional song. The engine already turns "Personalize style prompt" off.
+- `--variety 0` keeps the Styles text as written (52 of 54 takes); the default rewrites it every take. Weirdness,
+  Style Influence and Audio Influence are Pro since 2026-10-23 (a moved slider makes generate answer 403 «You do
+  not have permission to use control sliders»), so `suno-music` refuses those flags; Variety still works free. The
+  engine already turns "Personalize style prompt" off.
 - Two takes of one generation differ more than one prompt edit: judge a prompt over several takes, never one.
 
 ## Accounts

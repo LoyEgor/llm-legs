@@ -64,6 +64,8 @@ assert refused "steps of 5 s" music --dest "$WORK/out/a.mp3" --prompt x --durati
 assert refused "one choice" music --dest "$WORK/out/a.mp3" --prompt x --lyrics la --instrumental
 assert refused "Simple form" music --dest "$WORK/out/a.mp3" --describe idea --prompt x
 assert refused "goes with --describe" music --dest "$WORK/out/a.mp3" --prompt x --video "$FAKE_AUDIO"
+assert refused "Pro control" music --dest "$WORK/out/a.mp3" --prompt x --style-influence 70
+assert refused "Pro control" music --dest "$WORK/out/a.mp3" --prompt x --weirdness 30
 assert refused "add --source" music --dest "$WORK/out/a.mp3" --prompt x --mode crop
 assert refused "--from <s> before --to <s>" music --source "$SONG" --account com --mode crop --from 10 --to 5 --takes 0
 assert refused "needs --with" music --source "$SONG" --account com --mode mashup --takes 0

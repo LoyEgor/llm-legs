@@ -34,9 +34,9 @@ usage() {
     printf 'usage: suno-speech --dest <absolute .mp3|.m4a path> (--text <script> | --text-file <absolute .txt>) [--tone <delivery, pacing, mood, setting>] [--gender male|female] [--no-music] [--variety 0-4] [--takes 0|1|2] [--account <profile>] [--lock-wait <s>] [--dry-run]\n' >&2
     printf '  Suno'\''s Speech tab on v6-mini: %s credits for two takes of the script, with background music unless --no-music\n' "$(caps '.price.speech')" >&2
   else
-    printf 'usage: suno-music --dest <absolute .mp3|.m4a path> (--prompt <styles> [--lyrics <text> | --instrumental] [--title <t>] | --describe <idea> [--video <absolute mp4>] [--image <absolute png|jpg>]) [--gender male|female] [--duration %s-%s] [--weirdness 0-100] [--style-influence 0-100] [--variety 0-4] [--takes 0|1|2] [--account <profile>] [--lock-wait <s>] [--dry-run]\n' \
+    printf 'usage: suno-music --dest <absolute .mp3|.m4a path> (--prompt <styles> [--lyrics <text> | --instrumental] [--title <t>] | --describe <idea> [--video <absolute mp4>] [--image <absolute png|jpg>]) [--gender male|female] [--duration %s-%s] [--variety 0-4] [--takes 0|1|2] [--account <profile>] [--lock-wait <s>] [--dry-run]\n' \
       "$(caps '.ranges.duration.min')" "$(caps '.ranges.duration.max')" >&2
-    printf '  edit: --source <file a suno run saved | library clip id + --account | absolute audio to upload, %s-%s s> --mode %s [--with <file a suno run saved | clip id>] [--from <s>] [--to <s>] [--speed 0.25-4] [--keep-pitch] [--audio-influence 0-100] [--about <what an uploaded file is>]\n' \
+    printf '  edit: --source <file a suno run saved | library clip id + --account | absolute audio to upload, %s-%s s> --mode %s [--with <file a suno run saved | clip id>] [--from <s>] [--to <s>] [--speed 0.25-4] [--keep-pitch] [--about <what an uploaded file is>]\n' \
       "$(caps '.uploads.audio_s.min')" "$(caps '.uploads.audio_s.max')" "$(caps '.modes | keys | join("|")')" >&2
     printf '  suno-music --fetch <file a suno run saved | clip id> [--account <profile>] --dest <absolute .mp3|.m4a>: the file of a library song\n' >&2
     printf '  suno-music --accounts: the signed-in accounts, credits and download unlocks as last seen; suno-music --status --account <profile>: read them live; suno-music --login --account <profile> [--hand]: sign one in\n' >&2
@@ -164,9 +164,10 @@ elif [ "$kind" = speech ]; then
   engine_args=(generate --script "$text" --music "$music")
   [ -z "$tone" ] || engine_args+=(--tone "$tone")
 else
-  in_range --weirdness "$weirdness" 0 100
-  in_range --style-influence "$style_influence" 0 100
-  in_range --audio-influence "$audio_influence" 0 100
+  # The free plan refuses a moved control slider before it charges: generate answers 403 (2026-10-23).
+  for flag in weirdness style_influence audio_influence; do
+    [ -z "${!flag}" ] || say "--${flag//_/-} is a Pro control now: Suno's free plan answers 403 «You do not have permission to use control sliders» (2026-10-23); leave it out"
+  done
   [ -z "$duration" ] || { in_range --duration "$duration" "$(caps '.ranges.duration.min')" "$(caps '.ranges.duration.max')"
     [ $((duration % 5)) -eq 0 ] || say "--duration moves in steps of 5 s"; }
   [ "$instrumental" = false ] || [ -z "$lyrics" ] || say "--lyrics and --instrumental are one choice"
