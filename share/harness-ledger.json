@@ -8911,8 +8911,8 @@
         "rule": "opportunity",
         "ident": "test-health/fan-out/llm-legs/share/instruction-files\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed",
+      "fixes": [{"at": "2026-10-23T06:02:41+03:00", "by": "goal fan-out", "files": ["llm-legs/share/suite_select.py", "llm-legs/share/affected-suites.sh", "llm-legs/share/test_health.py"], "in": "llm-legs@4e891fe3", "regressed_at": null}],
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
