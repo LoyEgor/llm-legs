@@ -1990,34 +1990,6 @@ local function setCloneWindowsShown(show)
   end
 end
 
--- Chrome unhides and activates itself for every URL worker-run hands it (all its windows on screen for 450-600 ms,
--- 2026-10-23); while worker-run holds a fresh browse/opening.<pid>, written only when Chrome stays hidden, it is
--- hidden here the moment it shows, leaving ~60 ms (share/worker-run-browse.sh browse_window).
-local CHROME_OPENING_S = 120
-
-local function chromeOpening()
-  local dir = (os.getenv("WORKER_RUN_DIR") or home .. "/.cache/claude-worker-runs") .. "/browse"
-  local ok, found = pcall(function()
-    for name in hs.fs.dir(dir) do
-      local at = name:match("^opening%.%d+$") and hs.fs.attributes(dir .. "/" .. name, "modification")
-      if at and os.time() - at < CHROME_OPENING_S then return true end
-    end
-    return false
-  end)
-  return ok and found
-end
-
-function M.onChromeEvent(_, event, app)
-  local events = hs.application.watcher
-  if event ~= events.activated and event ~= events.unhidden and event ~= events.launched then return end
-  if app and app:bundleID() == "com.google.Chrome" and chromeOpening() then app:hide() end
-end
-
-if hs.application and hs.application.watcher and hs.application.watcher.new then
-  M.chromeWatcher = hs.application.watcher.new(M.onChromeEvent)
-  M.chromeWatcher:start()
-end
-
 -- Built on every click of the Auto menu: hs.application.get walks every running app over LaunchServices
 -- (0.4-1.7 s a click under load, 2026-10-20), the bundle lookup reads the process list in 0 ms.
 function M.chromeToggleItem()

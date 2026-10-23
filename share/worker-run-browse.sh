@@ -129,23 +129,11 @@ browse_refocus() { # bundle id frontmost before; keep_shown set by browse_window
     -e "tell application \"System Events\" to set frontmost of first application process whose bundle identifier is \"$1\" to true" >/dev/null 2>&1 || :
 }
 
-# Chrome unhides and activates itself for every URL handed to it, `open -g`, `open -j` and its own binary alike
-# (all its windows on screen for 450-600 ms, 2026-10-23); while a fresh browse/opening.<pid> exists the menu
-# (hammerspoon/llm-limits.lua) hides it the moment it shows, leaving ~60 ms. Written only when Chrome stays hidden.
 browse_window() { # profile-directory
-  local keep_shown='' opening rc=0
-  [ ! -e "$(browse_dir)/shown" ] && [ -z "$(chrome_runs '.computer == true')" ] || keep_shown=1
-  opening="$(browse_dir)/opening.$$"
-  [ -n "$keep_shown" ] || { mkdir -p "$(browse_dir)" && : >"$opening"; } || :
-  browse_window_open "$1" || rc=$?
-  rm -f "$opening"
-  return "$rc"
-}
-
-browse_window_open() { # profile-directory; keep_shown is browse_window's
-  local marker i front
+  local marker i front keep_shown=''
   marker=$(browse_marker "$1")
   front=$(browse_front)
+  [ ! -e "$(browse_dir)/shown" ] && [ -z "$(chrome_runs '.computer == true')" ] || keep_shown=1
   for ((i = 0; i < ${BROWSE_WINDOW_WAIT:-40}; i++)); do
     [ "$i" -eq 0 ] || browse_refocus "$front"
     browse_chrome_urls | grep -qxF -- "$marker" &&
