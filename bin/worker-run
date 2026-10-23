@@ -4563,12 +4563,11 @@ chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
     done
 }
 
-# The last Chrome browser run's end leaves hidden mode and quits an idle Chrome; the menu's Show Chrome reads
-# the running Chrome itself, so nothing here tells it a run is live.
+# The last Chrome browser run's end quits an idle Chrome; the menu's Show Chrome reads the running Chrome
+# itself, so nothing here tells it a run is live, and Egor's choice to show it outlives every run.
 chrome_run_end() { # run-directory
   jq -e "$CHROME_BROWSER_RUN" "$1/meta.json" >/dev/null 2>&1 || return 0
   [ -z "$(chrome_runs "$CHROME_BROWSER_RUN" | grep -vxF -- "${1##*/}")" ] || return 0
-  rm -f "$(browse_dir)/hidden"
   browse_quit_idle "${1##*/}"
 }
 
@@ -5998,18 +5997,21 @@ browse_front() {
 }
 
 # `open -g` still unhides Chrome and makes it frontmost when it opens a profile window (live 2026-10-07).
-browse_refocus() { # bundle id frontmost before
+# Chrome stays hidden unless Egor turned Show Chrome on (browse/shown) or a Computer Use run needs it on
+# screen: an automation Chrome nobody asked to see is never shown (Egor 2026-10-23).
+browse_refocus() { # bundle id frontmost before; keep_shown set by browse_window
   local now
   now=$(browse_front)
-  [ ! -e "$(browse_dir)/hidden" ] || browse_chrome_visible false
+  [ -n "$keep_shown" ] || browse_chrome_visible false
   [ -z "$1" ] || [ "$1" = com.google.Chrome ] || [ "$now" != com.google.Chrome ] || "${BROWSE_OSASCRIPT:-osascript}" \
     -e "tell application \"System Events\" to set frontmost of first application process whose bundle identifier is \"$1\" to true" >/dev/null 2>&1 || :
 }
 
 browse_window() { # profile-directory
-  local marker i front
+  local marker i front keep_shown=''
   marker=$(browse_marker "$1")
   front=$(browse_front)
+  [ ! -e "$(browse_dir)/shown" ] && [ -z "$(chrome_runs '.computer == true')" ] || keep_shown=1
   for ((i = 0; i < ${BROWSE_WINDOW_WAIT:-40}; i++)); do
     [ "$i" -eq 0 ] || browse_refocus "$front"
     browse_chrome_urls | grep -qxF -- "$marker" &&
@@ -6434,14 +6436,14 @@ browse_run() {
     json) browse_registry | jq . ;;
     hide)
       [ -z "$(chrome_runs '.computer == true')" ] || fail 'a Computer Use run is live and needs Chrome on screen'
-      mkdir -p "$(browse_dir)" && : >"$(browse_dir)/hidden" || return 1
+      rm -f "$(browse_dir)/shown"
       ! browse_chrome_running || browse_chrome_visible false
       "${BROWSE_PS:-ps}" -Ao command= | awk '/\/MacOS\/Google Chrome( |$)/ { print; exit }' | grep -q -- "${CHROME_FLAGS[2]}" ||
         printf 'WARNING: this Chrome runs without the anti-throttling flags: hidden page timers slow to ~1/min\n'
       printf 'CHROME: hidden\n' ;;
     show)
+      mkdir -p "$(browse_dir)" && : >"$(browse_dir)/shown" || return 1
       ! browse_chrome_running || browse_chrome_visible true
-      rm -f "$(browse_dir)/hidden"
       printf 'CHROME: shown\n' ;;
     *)
       for account in $(browse_pool); do

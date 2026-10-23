@@ -98,4 +98,36 @@ assert grep -q '^ACCOUNT_BUSY account=com' "$WORK/err"
 rc=0; FAKE_RC=4 music --dest "$WORK/out/b.mp3" --prompt x || rc=$?
 assert test "$rc" -eq 4
 
+# The page passing through /auth/session-recovery on its way back is a live session, never "signed out";
+# /sign-in still is.
+assert python3 - "$ROOT/share" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import gemini_web as gw
+import suno_music as sm
+
+class Tab:
+    def __init__(self, page): self.page = page
+    def count(self): return int(self.page.url.endswith("/create"))
+    @property
+    def first(self): return self
+    def is_visible(self): return True
+
+class Page:
+    def __init__(self, urls): self.urls = urls
+    @property
+    def url(self): return self.urls[0]
+    def goto(self, *a, **k): pass
+    def get_by_role(self, *a, **k): return Tab(self)
+    def wait_for_timeout(self, ms): self.urls.pop(0) if len(self.urls) > 1 else None
+
+sm.reject_cookies = gw.close_promos = lambda *a, **k: None
+sm.open_page(Page(["https://suno.com/auth/session-recovery?return_to=%2Fcreate", "https://suno.com/create"]), "com", "/create")
+try:
+    sm.open_page(Page(["https://suno.com/sign-in"]), "com", "/create")
+    sys.exit("a /sign-in page passed as signed in")
+except gw.Failure as e:
+    assert e.code == 4, e.code
+EOF
+
 echo "PASS:$asserts asserts; suno-music and suno-speech hand the engine its own flags, refuse a bad call before it runs, pin a saved song's account, write the file, notes and footer, read live status, and map the engine's exits 3, 4 and 5"

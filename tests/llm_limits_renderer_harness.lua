@@ -4777,7 +4777,8 @@ end)()
 -- Show Chrome answers for the media tools' Chrome clone as for the real Chrome, read from the running clone
 -- (Egor saw a clone window and no checkbox, 2026-10-14): a parked window
 -- reads unchecked and one on screen checked, and a click moves the clone's windows on or off screen,
--- writing or removing windows-shown; beside a live real Chrome both go the same way.
+-- writing or removing windows-shown; every click sets the real Chrome's record the same way, running or not
+-- (Egor 2026-10-23: off unless he turned it on).
 ;(function()
   local root, tasks, removed = "/fixture/gemini-web", {}, chromeFake.removed
   local function window(x, standard)
@@ -4810,23 +4811,26 @@ end)()
     "a running clone with its windows parked did not give an unchecked Show Chrome")
   toggle.fn()
   assert(parked.moves[1] == "0,30,800x600/0" and second.moves[1] == "30,60,800x600/0" and #bubble.moves == 0
-      and module.__writes[root .. "/windows-shown"] and #tasks == 0 and #removed == 0,
+      and module.__writes[root .. "/windows-shown"] and #removed == 0
+      and tasks[1] and tasks[1].args[1] == "browse" and tasks[1].args[2] == "--show",
     "showing did not move each clone window onto the screen or write windows-shown: "
       .. tostring(parked.moves[1]) .. " " .. tostring(second.moves[1]))
   toggle = item()
   assert(toggle.checked == true, "a clone window on screen did not read as shown")
   toggle.fn()
-  assert(parked.moves[2] == "off" and second.moves[2] == "off" and removed[1] == root .. "/windows-shown",
-    "hiding did not move the clone windows off screen or remove windows-shown")
+  assert(parked.moves[2] == "off" and second.moves[2] == "off" and removed[1] == root .. "/windows-shown"
+      and tasks[2].args[2] == "--hide",
+    "hiding did not move the clone windows off screen, remove windows-shown and hide the real Chrome")
   chromeFake.real = { isHidden = function() return false end }
   toggle = item()
   toggle.fn()
-  assert(toggle.checked == true and tasks[1] and tasks[1].args[1] == "browse" and tasks[1].args[2] == "--hide"
+  assert(toggle.checked == true and tasks[3] and tasks[3].args[1] == "browse" and tasks[3].args[2] == "--hide"
       and parked.moves[3] == "off",
-    "beside a shown real Chrome the click did not hide both: " .. table.concat(tasks[1] and tasks[1].args or {}, " "))
+    "beside a shown real Chrome the click did not hide both: " .. table.concat(tasks[3] and tasks[3].args or {}, " "))
   chromeFake.clones = {}
   item().fn()
-  assert(tasks[2] and tasks[2].args[2] == "--toggle", "the real Chrome alone no longer runs browse --toggle")
+  assert(tasks[4] and tasks[4].args[2] == "--hide" and removed[#removed] == root .. "/windows-shown",
+    "the real Chrome alone did not set both records one way")
   -- The canary, enrolment and --window drive the real Chrome outside any run; hiding it mid-canary took the
   -- item away (2026-10-19), so a running Chrome counts whether hidden or not.
   chromeFake.real = { isHidden = function() return true end }

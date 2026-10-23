@@ -765,7 +765,8 @@ with open(g.ROOT / ".clone-use.lock", "w") as other:
 assert g.CLONE_SHOWN.exists()
 with g.chrome_clone():
     assert built == [1]
-assert not g.CLONE_SHOWN.exists(), "the last clone to close left windows-shown behind"
+assert g.CLONE_SHOWN.exists(), "Egor's Show Chrome went with the last clone to close"
+g.CLONE_SHOWN.unlink()
 (g.CLONE_APP / "Contents" / "Info.plist").write_text(plist % "2")
 with g.chrome_clone():
     assert built == [1, 1], "a clone of the current Chrome that still carries its GoogleUpdater was kept"

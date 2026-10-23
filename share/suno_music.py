@@ -154,7 +154,9 @@ def open_page(page, account: str, path: str, timeout_s: float = 45.0) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         url = page.url
-        if "/sign-in" in url or "accounts.google.com" in url or "/onboarding" in url or "/auth/" in url:
+        # /auth/session-recovery is Suno refreshing a live session on the way back to the page, not a sign-out.
+        if "/sign-in" in url or "accounts.google.com" in url or "/onboarding" in url or \
+                ("/auth/" in url and "/auth/session-recovery" not in url):
             raise signed_out(account)
         if ready.count() and ready.first.is_visible():
             reject_cookies(page)

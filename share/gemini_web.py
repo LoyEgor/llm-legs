@@ -49,8 +49,8 @@ SOURCE_APP = Path(os.environ.get("GEMINI_WEB_CHROME", "/Applications/Google Chro
 CLONE_ROOT = ROOT
 CLONE_APP = CLONE_ROOT / "Gemini Web Automation.app"
 CLONE_ID = "com.google.Chrome.gemini-web"
-# Written by the Auto menu's Show Chrome while it shows the clone's windows (docs/browser-runs.md), so
-# park_window leaves a page opened meanwhile on screen; the last clone to close removes it.
+# Egor's Show Chrome for the clone, written and removed by the Auto menu alone (docs/browser-runs.md): while it
+# exists park_window leaves every page on screen, and it outlives every clone; absent, every window is parked.
 CLONE_SHOWN = CLONE_ROOT / "windows-shown"
 MANIFEST = Path(__file__).resolve().parent / "image-caps" / "gemini.json"
 REPO = Path(__file__).resolve().parent.parent
@@ -518,12 +518,7 @@ def chrome_clone():
             if idle and not clone_current(want):
                 build_clone()
             fcntl.flock(use, fcntl.LOCK_SH)
-        try:
-            yield CLONE_APP
-        finally:
-            with contextlib.suppress(BlockingIOError):
-                fcntl.flock(use, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                CLONE_SHOWN.unlink(missing_ok=True)
+        yield CLONE_APP
 
 
 def build_clone() -> None:

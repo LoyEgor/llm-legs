@@ -102,17 +102,19 @@ EOF
   assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
   assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
   assert test "$(cat "$bt/open.log")" = '-n -g -b com.google.Chrome --args --profile-directory=Profile 1 --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-features=IntensiveWakeUpThrottling https://example.com/#worker-run=Profile-1'
-  # the app frontmost before gets focus back from Chrome, once: Chrome stays visible unless hidden mode is on
+  # the app frontmost before gets focus back from Chrome, once, and Chrome is hidden: nobody turned Show Chrome on
   assert test "$(grep -cxF -- "$front" "$bt/osa.log")" -eq 1
-  assert test "$(grep -c 'visible' "$bt/osa.log")" -eq 0
+  assert test "$(grep -c 'visible of process "Google Chrome" to false' "$bt/osa.log")" -gt 0
   rc=0; out=$(browse --window lost) || rc=$?
   assert test "$rc" -eq 1
   assert grep -qx 'WINDOW: lost failed' <<<"$out"
 
-  # 1b: --hide hides Chrome and is remembered, re-hiding every window opened later; --show undoes both
+  # 1b: --hide hides Chrome and every window opened later; --show shows it and is remembered, leaving every
+  # window opened later on screen, until --hide
+  : >"$WORKER_RUN_DIR/browse/shown"
   : >"$bt/osa.log"
   out=$(browse --hide)
-  assert test -e "$WORKER_RUN_DIR/browse/hidden"
+  assert test ! -e "$WORKER_RUN_DIR/browse/shown"
   assert grep -qx 'CHROME: hidden' <<<"$out"
   assert grep -q '^WARNING: this Chrome runs without the anti-throttling flags' <<<"$out"
   assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to false' "$bt/osa.log"
@@ -125,15 +127,19 @@ EOF
   assert test "$(grep -n 'to false' "$bt/osa.log" | head -n 1 | cut -d: -f1)" -lt "$(grep -nF -- "$front" "$bt/osa.log" | head -n 1 | cut -d: -f1)"
   : >"$bt/osa.log"
   assert grep -qx 'CHROME: shown' <<<"$(browse --show)"
-  assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
+  assert test -e "$WORKER_RUN_DIR/browse/shown"
   assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to true' "$bt/osa.log"
+  : >"$bt/osa.log"
+  cp "$bt/tabs" "$bt/tabs.1"; cp "$bt/open.log" "$bt/open.1"
+  browse --window extra >/dev/null
+  mv -f "$bt/tabs.1" "$bt/tabs"; mv -f "$bt/open.1" "$bt/open.log"
+  assert test "$(grep -c 'to false' "$bt/osa.log")" -eq 0
   # 1c: --toggle (the menu checkbox) shows a hidden Chrome and hides a visible one
   echo false >"$bt/visible"
   assert grep -qx 'CHROME: shown' <<<"$(browse --toggle)"
   echo true >"$bt/visible"
   assert grep -qx 'CHROME: hidden' <<<"$(browse --toggle)"
-  assert test -e "$WORKER_RUN_DIR/browse/hidden"
-  rm -f "$WORKER_RUN_DIR/browse/hidden"
+  assert test ! -e "$WORKER_RUN_DIR/browse/shown"
 
   # 2: --seen reads the target browser's own tab list
   printf 'https://example.com/?wr=tok-1\n' >>"$bt/tabs"
@@ -463,29 +469,36 @@ EOF
   : >"$bt/claudeb.log"
   assert grep -qx 'CANARY: skipped — a browser run is live' <<<"$(browse --canary)"
   assert test ! -s "$bt/claudeb.log"
-  # hidden mode outlives a Chrome run while another is live, never the last one
-  : >"$WORKER_RUN_DIR/browse/hidden"
+  # Egor's Show Chrome outlives every Chrome run, the last one and a dead one included
+  : >"$WORKER_RUN_DIR/browse/shown"
   deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
-  assert test -e "$WORKER_RUN_DIR/browse/hidden"
+  assert test -e "$WORKER_RUN_DIR/browse/shown"
+  rm -f "$WORKER_RUN_DIR/browse/shown"
   mkdir -p "$WORKER_RUN_DIR/live-computer"
   printf '{"pid":%s,"started_at":%s,"computer":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/live-computer/meta.json"
   assert_fails "$RUNNER" browse --hide
+  # a live Computer Use run keeps Chrome on screen though Show Chrome is off
+  : >"$bt/osa.log"
+  cp "$bt/tabs" "$bt/tabs.1"; cp "$bt/open.log" "$bt/open.1"
+  browse --window extra >/dev/null
+  mv -f "$bt/tabs.1" "$bt/tabs"; mv -f "$bt/open.1" "$bt/open.log"
+  assert test "$(grep -c 'to false' "$bt/osa.log")" -eq 0
   rm -rf "$WORKER_RUN_DIR/live-computer"
+  : >"$WORKER_RUN_DIR/browse/shown"
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
-  assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
+  assert test -e "$WORKER_RUN_DIR/browse/shown"
   rm -rf "$WORKER_RUN_DIR/live-browser"
-  # a Chrome run whose supervisor died before delivery ends hidden mode at the wait that finds it dead
   sleep 300 &
   holder=$!
   mkdir -p "$WORKER_RUN_DIR/dead-browser"
   printf '{"pid":%s,"started_at":%s,"browser":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/dead-browser/meta.json"
-  : >"$WORKER_RUN_DIR/browse/hidden"
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   "$RUNNER" wait dead-browser >/dev/null 2>&1 || true
-  assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
+  assert test -e "$WORKER_RUN_DIR/browse/shown"
+  rm -f "$WORKER_RUN_DIR/browse/shown"
   rm -rf "$WORKER_RUN_DIR/dead-browser"
   fi
   unset -f browse deliver enrolled

@@ -3441,6 +3441,8 @@ assert grep -Fq 'info["CFBundleIdentifier"] = CLONE_ID' "$ROOT/share/gemini_web.
 assert grep -Fq 'CLONE_SHOWN = CLONE_ROOT / "windows-shown"' "$ROOT/share/gemini_web.py"
 assert grep -Fq 'local CHROME_CLONE_ID = "com.google.Chrome.gemini-web"' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq 'local flag = geminiWebDir() .. "/windows-shown"' "$ROOT/hammerspoon/llm-limits.lua"
+assert eq "$(grep -c '(browse_dir)/shown"' "$ROOT/bin/worker-run")" 3
+assert eq "$(grep -c 'browse_dir)/hidden' "$ROOT/bin/worker-run")" 0
 assert grep -Fq 'local chrome = (hs.application.applicationsForBundleID("com.google.Chrome") or {})[1]' "$ROOT/hammerspoon/llm-limits.lua"
 assert doc_has '| en | Automation Chrome |'
 
