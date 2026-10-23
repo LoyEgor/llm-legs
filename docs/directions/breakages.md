@@ -94,38 +94,12 @@ accounts by room.
 Worked in order, one at a time (`bin/night-run` PILOT, carry); a landed goal moves to Done with its commit and
 proof, a failed one stays with one line on what blocked it. Reads after landing are journals the load also moves.
 
-### goal gates: every gate decides on the parsed command, never its text
-
-Class: a gate refuses a legitimate command, 13 rows on 7/7 nights, 12 fixed one gate at a time (causes in the
-table; awk dying on Cyrillic let calls through, `log_audit:pretooluse-awk-multibyte-error`: not this class).
-- The gates: 15 of the 18 PreToolUse Bash hooks on 10-15 (all but statusline-workdir-hook, worker-tag-hook,
-  chat-switch-link); six use `hooks/lib/readonly-command.sh` or `heredoc-cut.sh`, the rest grep the raw text.
-- One that denies by program or subcommand alone becomes a `permissions.deny` rule and its hook goes: Claude Code
-  splits compound commands, checks subshells, substitutions and loop bodies, never matches quoted text, and denies
-  in every mode, `bypassPermissions` included (code.claude.com/docs/en/permissions).
-- One that needs context (whose session, Egor's words, the brief) reads `shfmt --to-json`'s parse (Homebrew), never
-  the raw text, and decides as today on what it cannot parse; the two libs go. `$(…)` in double quotes or an
-  unquoted heredoc, and a heredoc or `-c` body fed to a shell, are commands; other quoted text and comments are data.
-- A formality never denies: the gate rewrites the input (`updatedInput`) or adds a notice (Decision 09-29).
-- Corpus `~/.cache/harness-doctor/gate-corpus/corpus.jsonl`: 231 denials 08-05…10-16 (Stop, PostToolUse out),
-  labelled 10-16 by two blind labellers (`label`/`label_b`, `cause`, `why`, `agreed`); agreed on 196: 81 legitimate,
-  111 rightly, 4 unclear; `unknown-hook` rows (19) are named by their denial text. The goal's worker settles the 35
-  disputed against each gate's purpose first; as many allowed Bash calls from the same transcripts join. One test
-  replays it for every gate, replacing the per-gate text cases.
-- Target 0: the 37 Bash rows the parsed argv removes: quoted or heredoc text read as a command 14, help and
-  `--dry-run` probes 13 (5 filed `text-match`), a relative path off the call's own `cd` 1, a `cd` to the input's
-  `cwd` 9. A deny rule refuses probes and no-op cds too, so their gates stay hooks on the parse.
-- Out, counted apart (not worse): 25 Bash: Egor's words unread 10 (the word readers), a gate's purpose misjudged 5
-  (that gate's rule), a `review-bench waive` earlier in the call 3 (crediting a step before it runs passes a failed
-  one), gate crashes 3 (the replay fails a crashing gate; a crashed dependency is its own bug), a variable naming
-  the program or argument 4 (unparsable: as today). 19 not Bash: an unpinned memory 11 (instruction-bloat-gate's
-  rule passes it now; the replay confirms), edit-conflict-notice 6 (a foreign run without a file list claims its
-  workdir: worker-run's `files`; one a notice, Decision 09-29), english-gate's straight quotes 1, Mattermost words 1.
-- Proof replays the agreed rows: the 37 → 0, the 44 not more, rightly 111 stay refused, allowed calls allowed. Read
-  after landing: the next 7 days' denials labelled the same way, target causes 0. Re-runs after a denial show
-  nothing: workers re-run rightly refused commands too (`log_audit:workers-route-around-denials`).
-
 ## Done
+
+- gates (claude-setup 0b87228, llm-legs bd7ecb9f, review-bench 7f36bb6, 10-23): 9 gates decide on `hooks/lib/argv.sh`
+  (shfmt; both libs gone), 4 take its read-only pass, no deny rule fits; `test_gate_replay` 348 × 16. Refused old → new:
+  target 9/37 → 2 (others' rules), out 15/44 → 15, rightly 23/90 → 23, allowed 1 → 1, recent 200 +0; hook wall 280 →
+  149 ms/call. Left: rj_segments, instruction-files.sh, word/edit/eod gates, per-gate text cases. Read: target 0.
 
 - stop-hooks (claude-setup a0fe49a, 10-23): stops waited on process starts (stall ≤≈1 s each), not work; builtin
   payload read, first word ask in the asks' wave, kill hits and cleanup detached: 44 → 34 starts idle. Proof,
