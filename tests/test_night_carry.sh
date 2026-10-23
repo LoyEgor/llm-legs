@@ -228,6 +228,18 @@ NIGHT_RUN_OWNER_CHATS=1 night carry N3 >"$WORK/n3.out" 2>"$WORK/n3.err" || fail 
 assert [ "$(grep -c '^owner-chat-' "$WORK/n3.out")" = 1 ]
 assert grep -qxF 'night-run: owner chat «Beta Chat» deferred (1 owner chats at work): its handoffs are night jobs' "$WORK/n3.err"
 assert [ "$(handoff_refs N3)" = '["handoff-2026-09-25-b1","handoff-2026-09-26-c1","handoff-2026-09-27-d1","handoff-2026-09-28-d2","handoff-2026-09-28-old"]' ]
+
+# A lone plain handoff to a live chat (no decision section, no outside repository) reaches it as a message.
+export DOCTORS_DIR="$WORK/single/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
+S="$WORK/single/repo"
+git init -q -b main "$S" && mkdir -p "$S/docs/handoffs" && printf '%s\n' "$S" >"$WORK/sweep-single"
+printf '# S\n\nStatus: open\n\nTo: «Beta Chat».\n\nOne plain item.\n' >"$S/docs/handoffs/2026-10-09-single.md"
+gt -C "$S" add -A && gt -C "$S" commit -qm init
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" new_night N3s
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" night carry N3s >"$WORK/n3s.out" 2>/dev/null || fail "carry of a lone live handoff failed"
+assert [ "$(cut -f1,3 "$WORK/n3s.out")" = "owner-chat-beta-chat	message Beta Chat" ]
+assert jqe --arg p "$S/docs/handoffs/2026-10-09-single.md" '[.jobs[] | [.kind, .via, .handoffs]] == [["owner-chat", "message", [$p]]]' "$NIGHTS/N3s.json"
+export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi
 
 if suite_shard_owns 2 nc-periodic; then

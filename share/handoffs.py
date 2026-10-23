@@ -1,9 +1,9 @@
 """Open handoffs of the sweep repositories: `docs/handoffs/*.md` whose first `Status:` line reads open.
 Each becomes a night job (`bin/night-run carry`); the LLM doctor's debt row names one open past STALE_S.
 A handoff addressed (its To/For paragraph) to a chat («name») that is live right now is that chat's, never a night job.
-`owner_batches` groups them by owner chat for `night-run carry`: an owner with a decision section, two or more
-handoffs or one naming a git repository outside the night's (`--outside <file>` prints those; the night cannot land
-there), its chat found by exact name among `chat-find --recent`. A handoff's owner, first that applies:
+`owner_batches` groups them by owner chat for `night-run carry`: a live owner, or one with a decision section, two or
+more handoffs or one naming a git repository outside the night's (`--outside <file>` prints those; the night cannot
+land there), its chat found by exact name among `chat-find --recent`. A handoff's owner, first that applies:
 1. its first To/For addressee («name», or a known chat name opening a `To:` text) that is a known chat;
 2. evidence on the repository files the handoff names (backticked or plain paths existing in a sweep repo,
    `docs/handoffs/` aside): per file basename, each chat's Edit/Write/MultiEdit uses plus the basename's mentions
@@ -443,11 +443,9 @@ def owner_batches(handoffs, repos=None, chats=None, live=None):
     for handoff, ledger, pick, _ in owner_picks(handoffs, repos, chats):
         if pick:
             groups.setdefault(pick["owner"], []).append(dict(handoff, pick=pick, ledger=ledger))
-    groups = {o: hs for o, hs in groups.items()
-              if len(hs) >= 2 or any(decides(h["path"]) or outside_repos(h["path"], repos) for h in hs)}
-    if not groups:
-        return []
     names = live_chats() if live is None else {n.lower() for n in live}
+    groups = {o: hs for o, hs in groups.items() if o.lower() in names
+              or len(hs) >= 2 or any(decides(h["path"]) or outside_repos(h["path"], repos) for h in hs)}
     out = []
     for owner, batch in groups.items():
         chat = next((c for c in chats if c.get("name") == owner and c.get("session")), None)
