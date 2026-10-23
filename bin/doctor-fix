@@ -261,7 +261,7 @@ def strings(value):
 
 
 def rulings(doctor, now):
-    """id -> (closed epoch, run id, value then) of the doctor's last closed run that decided it ruled-out or weather."""
+    """id -> (closed epoch, run id, value then) of the last closed run of the doctor that decided it ruled-out or weather."""
     last = {}
     for path in glob.glob(os.path.join(RUNS, "*.json")):
         run = read_json(path, {})
@@ -277,7 +277,7 @@ def rulings(doctor, now):
 
 
 def held_since(problem, ruling, now):
-    """The Harness ruled_at rule (problems_from), the run's close as ruled_at; no window_h holds 168 h; a 3-day or
+    """The Harness ruled_at rule (problems_from), the close of that run as ruled_at; no window_h holds 168 h; a 3-day or
     longer value at 1.5x its value at the ruling launches (Egor 2026-10-13)."""
     ruled, _, then = ruling
     window = problem.get("window_h") if isinstance(problem.get("window_h"), (int, float)) and problem["window_h"] > 0 else 168
