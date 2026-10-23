@@ -151,10 +151,10 @@ Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the
 
 ## Done
 
-- ruling-holds (88914f20): `snapshot()` holds a row an earlier run ruled out or called weather until something
-  new. Replay 10-06…14: the 28 re-ruled rows launched → held 28; of the 11 later `fixed`, 2 regressed launch, 9 held
-  ≤ 168 h after the ruling; regressed held 0 of 34. Read once section 7 is back: re-ruled 0 a night, guard ≤
-  baseline, class 1 < 0.11 %.
+- ruling-holds (d1718346, 6b9fa23c): `snapshot()` holds a row an earlier run ruled out or called weather until
+  something new. Replay 10-06…14: the 28 re-ruled rows launched → held 28; of the 11 later `fixed`, 2 regressed
+  launch, 9 held ≤ 168 h after the ruling; regressed held 0 of 34. Read once section 7 is back: re-ruled 0 a night,
+  guard ≤ baseline, class 1 < 0.11 %.
 
 ## Decisions
 
