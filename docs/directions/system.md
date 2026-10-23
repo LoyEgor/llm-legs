@@ -68,7 +68,7 @@ the log audit's 105 rows hold none that moves CPU or disk.
 | 1. the statusline recomputes what did not change | 468 | 8 | 3 (10-06, 10-13, 10-14) | 10 |
 | 2. a hook starts a bash per tool call | 166 | 50 | 2 (10-13, 10-14) | 35 |
 | 3. a doctor run costs more each day it holds more data | 103 | 3 | 1 (10-14) | 2 |
-| 4. a Hammerspoon timer polls on the main thread | 95 | 3 | 4 (10-09, 10-10, 10-13, 10-14) | 8 |
+| 4. a Hammerspoon timer polls on the main thread | 95 | 3 | 5 (10-09, 10-10, 10-13, 10-14, 10-23) | 9 |
 | 5. a CPU audit reopens on a number not its own | audits' churn | 28 due | 1 (10-23) | 1 |
 | 6. a store rewritten whole instead of its delta | SSD | 3 | 2 (10-13, 10-14) | 2 |
 
@@ -93,10 +93,11 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
 4. Rows `cohort-hammerspoon-tab-poll`, `cpu:process/Hammerspoon`, `speed-hs-lag-instruction-watch-walk` (iPad
    pointer trace, instruction-watch walk ×2, tab poll ×3, menu rebuild ×2). 14 files start repeating timers, each
    with its own idle rule; three gate on `Presence.away()`. Present minutes carry 93, 84, 55 CPU-min on 10-14/15/16,
-   away ones 11–16 (goal tab-tty's join), so an away-timer helper was dropped. A Terminal-front present minute
-   costs 8.38 CPU-s, any other app's 3.24 (10-14…16, 1,245 and 1,079 min): the Cmd-key tab poll runs a ps every
-   0.45 s idle tick and re-reads the tab's tty by osascript every `ttyRefreshAfter` 1 s (`refreshTty`, 44 a quiet
-   minute in 75d60db), 50–60 ms CPU each in osascript alone (timed here). Next, unconfirmed: `llm-limits.lua`
+   away ones 11–16 (the join: `ticks/<day>.jsonl` `cpu_own` Hammerspoon field 2 by the minute of `t`, joined to
+   that or the minute before in `presence/<day>.tsv`, idle < 600 s, front app column 3), so an away-timer helper
+   was dropped. A Terminal-front present minute costs 8.38 CPU-s, any other app's 3.24 (10-14…16, 1,245 and 1,079
+   min): the Cmd-key tab poll runs a ps every 0.45 s idle tick and, until tab-tty (Done), re-read the tab's tty by
+   osascript every 1 s, 50–60 ms CPU each. Next, unconfirmed: `llm-limits.lua`
    `onStoreChanged` → `refreshRouting` runs `nice worker-pick --menu` per store write (2 s throttle), 1,383–1,994
    a day 10-14…16 (`routing-launch` lines in the actions log, 10-16 to 22:20), 0.44–0.93 CPU-s each (diagnosis); whether the writes change its input is open.
 5. `share/cpu_audit.py` `due()` reopened a row on another source blob (`spend.moved`) or on CPU-min/day 1.5× the
@@ -115,8 +116,8 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
 ## Goals
 
 `doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
-195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15), `tab-tty` ≈ 17 (2.4 CPU-s × 415
-Terminal-front minutes a day). Classes 1, 2 and 6 have no goal (above).
+195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15). Classes 1, 2 and 6 have no goal
+(above).
 
 ### goal doctor-run-flat: a doctor run reads what is new since its last
 
@@ -133,21 +134,6 @@ the size+mtime of what it reads (`cpu_audit.tally`'s cache); a read whose cost f
 - Must not get worse: `latest.json` equal old vs new on one copy, clock pinned (`SPEED_DOCTOR_NOW`; System's
   timestamps aside).
 
-### goal tab-tty: Hammerspoon reads a tab's tty once a tab, never on a timer
-
-Class 4. A tab keeps its tty for its life.
-- hammerspoon `claude_cmd_keys.lua`: `refreshTty` runs when the observed tab changes (window id, tab index or tab
-  element, `sameObserved`) or the context is invalidated; the `ttyRefreshAfter` recheck in `pollFrontTab` goes. The
-  ps verdict and the AX walk keep their poll: the walk (`observeFrontmost`) is how a tab change is seen, and an AX
-  observer in its place is a separate, more fragile change (Decisions: nothing fragile), not this goal.
-- Proof: extra Hammerspoon CPU of a Terminal-front present minute over another app's (`ticks/<day>.jsonl`
-  `cpu_own` Hammerspoon field 2 by the minute of `t`, joined to that or the minute before in `presence/<day>.tsv`,
-  idle < 600 s, front app column 3): 5.14 CPU-s (10-14…16) → ≈ 2.7 over 7 days after landing (44 osascript × 50–60
-  ms ≈ 2.4 go). 75d60db's simulator (`tests/claude_cmd_keys_harness.lua` `env.idle.run`), old vs new a quiet minute:
-  osascript 44 → 0; AX walks 312 and ps 134 unchanged (first step: recount them on HEAD).
-- Must not get worse: a tab switch re-reads the tty before a press acts (a harness case red on a never-re-read
-  version); 75d60db's first-press and `cacheTtl` cases; away-minute Hammerspoon CPU.
-
 ## Done
 
 | date | change | result | evidence |
@@ -159,6 +145,7 @@ Class 4. A tab keeps its tty for its life.
 | 10-14 | Hammerspoon tab poll idle-adaptive | 105, 100 CPU-min/day on 10-14/15 with children, not proven | hammerspoon b4a4941, 75d60db |
 | 10-14 | the System doctor's blind spot | | 7fcf0fc1 |
 | 10-23 | CPU audits rise on CPU a run, never CPU-min/day (goal cpu-audit-own-number) | one copy of journals, ledger, HEAD: due on a rise 3 (×0.2–1.05 a run) → 3 (×1.6–3.5 a run, missed before), 29 never + 23 source kept; per-run ≥ 1.5× due 3/6 → 6/6; replay CPU 3.17 → 3.14 s; read 7 days: no rise-due without a per-run one | 627bc40d |
+| 10-23 | goal tab-tty: a tab's tty is read on a tab change or his return, never on a timer | quiet Terminal-front minute (`env.idle.run`): osascript 44 → 0, ps 133, AX walks 310 → 266; class 4's join, extra CPU-s a Terminal-front minute 5.16 (10-14…16) → ≈ 2.7 and away minutes ≤ 1.67, read 10-30 | hammerspoon d3bb5a6 |
 
 ## Decisions
 
