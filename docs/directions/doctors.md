@@ -136,7 +136,7 @@ Doctors' goals run after blocks 1–6 (PILOT order). Their reads need section 7 
   something new. Replay 10-06…14: the 28 re-ruled rows launched → held 28; of the 11 later `fixed`, 2 regressed
   launch, 9 held ≤ 168 h after the ruling; regressed held 0 of 34. Read once section 7 is back: re-ruled 0 a night,
   guard ≤ baseline, class 1 < 0.11 %.
-- blind-spot-builder (955b0a31): Deep search's queue `doctor-fix blind-spots`, brief `share/briefs/deep-search.md`.
+- blind-spot-builder (de43909e): Deep search's queue `doctor-fix blind-spots`, brief `share/briefs/deep-search.md`.
   Baseline reproduced from ledger git: meter closes (an id leaving `blind_spots` in a commit changing that doctor's
   code) / added 3 / 27, 0 / 26; outside-found 41.6 / 36.9 % (36.5 % by 10-23 statuses); open 81 → 83 by 10-23. Read
   weekly once Deep search runs: closes ≥ added, open falls, outside-found < 36.9 %; a meter with no real row in 14
