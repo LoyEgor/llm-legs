@@ -20,8 +20,8 @@ stays down.
   `not-a-bug`, `ruled-out` or `weather`.
 - Guard: neither number sees a row not launched, so holding a Fix row back (ruling-holds, doctor-fix's skips, a
   muted false rule) lowers the first and leaves the second flat. Beside them: rows held a night (in the document,
-  not launched) and held rows later decided `fixed`. Nothing records holds today (skips go to stderr); ruling-holds
-  adds the run's `held` list. Baseline, its replay: 26 held in 10-06…12's six nights, 24 in 10-13…14's two, 10 / 4
+  not launched) and held rows later decided `fixed`. Holds: each launch's `held` list, on its first run (stderr
+  only when it claims none). Baseline, its replay: 26 held in 10-06…12's six nights, 24 in 10-13…14's two, 10 / 4
   of them decided `fixed` at that launch. A fall with a guard number above baseline is unclear, never better.
 
 ### Baseline (computed 2026-10-20)
@@ -117,29 +117,6 @@ Why they come back:
 
 Doctors' goals run after blocks 1–6 (PILOT order). Their reads need section 7 back (How the block runs at night).
 
-### goal ruling-holds: every doctor's ruling holds until something new, by the Harness doctor's rule
-
-Class 1. The fix goes where every doctor's rows pass, so a new doctor gets it too.
-- Change, in llm-legs `bin/doctor-fix` `snapshot()`: a problem not `regressed`, whose id an earlier closed run
-  decided `ruled-out` or `weather`, is held: out of `problems` and `quiet` (the packet shows `quiet` to the fixer),
-  into the run's `held` list with that run's id. The Harness rule (`problems_from`, the `ruled_at` test), with that
-  run's `closed_at` as `ruled_at`: it launches once an `evidence[].at` is later, or with no times once its own
-  `window_h` (168, 24 or 48 h today) has passed. Two differences: Egor's 10-13 rule, absent there, launches it when
-  `value` ≥ `spend.SHARE_RISE` (1.5×) its value at the ruling, read only when `window_h` ≥ 72 h (his 7- or 3-day
-  trend, never a one-day spike; the snapshot starts recording `value`); a problem with no `window_h` (137 of 399
-  Harness rows on 10-20) holds 168 h; the Harness rule has no case for it. Menu and Harness ledger rule untouched.
-- Proof, a replay (no pilot night runs fixers). Run `snapshot()` old and new over the run records 10-06…14: each
-  run's `problems` stand in for the document, and the decisions of runs closed before its launch stand in for
-  history (any earlier run, not only 10-06…14). Before, non-audit rows only: 28 whose verdict is `ruled-out` or
-  `weather` and whose id has an earlier `ruled-out` or `weather` with `closed_at` within 168 h of this launch
-  (16 / 12; the 168 h cap removes none), and 11 decided `fixed` with exactly one such earlier verdict inside 168 h.
-  Snapshots kept no evidence times or values, so that part is unclear and the read below settles it. Target: new
-  launches none of the 28, and each of the 11 launches again by 7 days after its ruling (delayed, not lost). Not
-  worse: `regressed` rows all launch. Net lines of `bin/doctor-fix` and its test shown; none of the 28 held → revert.
-- Read after section 7 is back: rows ruled out again within `window_h` of a ruling, target 0 a night. Fixes after
-  a ruling still arrive, about 11 per 14 days before; the Metric's guard (held a night, held then `fixed`) stays at
-  or under its baseline. Class 1's spend share goes below 0.11 %.
-
 ### goal blind-spot-builder: the night builds what a blind spot says would catch it
 
 Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the doctor learns to log it.
@@ -174,7 +151,10 @@ Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the
 
 ## Done
 
-None yet.
+- ruling-holds (88914f20): `snapshot()` holds a row an earlier run ruled out or called weather until something
+  new. Replay 10-06…14: the 28 re-ruled rows launched → held 28; of the 11 later `fixed`, 2 regressed launch, 9 held
+  ≤ 168 h after the ruling; regressed held 0 of 34. Read once section 7 is back: re-ruled 0 a night, guard ≤
+  baseline, class 1 < 0.11 %.
 
 ## Decisions
 
