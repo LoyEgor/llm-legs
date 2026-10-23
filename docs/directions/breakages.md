@@ -105,6 +105,8 @@ proof, a failed one stays with one line on what blocked it. Reads after landing 
   payload read, first word ask in the asks' wave, kill hits and cleanup detached: 44 → 34 starts idle. Proof,
   fixture stop, every start +0.2 s, interleaved: idle 6.9 → 4.4 s, busy 4.75 → 3.65 s, killed part 6.2–7.5 →
   4.3–4.5 s. Read, 7 days: ≥5 s and kills per 1,000 under 13.2 and 3.7; not worse: asks, holds, notices, CPU p50 0.29 s.
+- pilot-hold (llm-legs 04b8e272, 10-23): an unlanded goal holds its direction and those after;
+  `test_night_carry`, first goal left: second starts 1 → 0, why on stderr; landed: 1 → 1.
 - bash-cap (llm-legs 35d604a3, 10-23): workers no longer export `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, so a
   Bash call at its cap moves to the background. Proof at a 60 s cap, `test_night_run` as one plain call, old and new
   interleaved: old 2 of 2 killed, no result; new 2 of 2 moved, PASS 529. Read: killed worker calls, `sleep` excluded,
@@ -143,5 +145,3 @@ proof, a failed one stays with one line on what blocked it. Reads after landing 
 
 - stop-hooks: the backstop still runs alone (44 % of held seconds) as `words_span_live` syncs the words store;
   on `words_span_on` beside the notices it saves ≈5 starts a stop, but a hold may miss a mid-turn span word.
-- `bin/night-run` `pilot_goal` skips every goal with a job tonight whatever its outcome, so a failed goal lets the
-  next one in its direction start the same night, against the 10-16 queue.

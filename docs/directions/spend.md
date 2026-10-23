@@ -45,7 +45,7 @@ Method, ≈90 s a window on an idle machine (over 10 min at load 130+):
   price per task `price` by consumer × leaf, this window then the one before), `sources`, and `loaded` (harness jobs
   that loaded Egor's configuration). Its hourly write covers a rolling 7 days, so a baseline uses the command above.
 - The Spend pie (`compute_spend`); its copy `spend-7d.json` is the night's `Doctors 7d` (`share/night_spend.py
-  doctors_share()`; Open).
+  doctors_share()`).
 - `share/spend-ledger.json`: 64 Spend rows on 10-16 (17 cut, 47 kept), keyed `fee:`, `hook:`, `startup:`, `spawn:`,
   `turns:`, `rewrites:`, `resumes`; its 339 `suite:`/`cpu:` rows and their reopens are Lost time's and System's.
 - Audit packets `~/.cache/doctors/runs/harness-speed-spend-*.brief.md` (each problem's `audit due:` reason) and
@@ -142,6 +142,7 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 | 10-14 | first mined tool, `doctor-fix problems` | net proof needs 7 scanned days (≈10-21) | 2580854c |
 | 10-23 | bench gate counts the script's writing (`adhoc_write_s`) | dropped ledger lookup 0.034 vs 0.029 s: refused → passes (+2.46 s); 1 ledger bench, no flip | 286cbd24 |
 | 10-23 | other vendors' uncaused re-send under 1 h scores 0 | 10-09…15 `cache miss` 4,258 → 0; Claude 1,233 same | token-map 22a55f2 |
+| 10-23 | `night-run start` rewrites `spend-7d.json` by the menu's command | file older than the night: kept → rewritten before finish | 04b8e272 |
 
 ## Decisions
 
@@ -171,8 +172,6 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 
 - Review startup: re-measure ≈10-20, once the cells from before the 10-13 cut leave the window. Review spend
   itself is Debt's, paused.
-- `spend-7d.json` is written only by `tokenmap spend --range 7d --write`, run by the menu's 7-day view (last 10-14
-  02:20), so the night's `Doctors 7d` is stale; the night can run it first.
 - Advisor 14 and Daily note 15 runs a week for one launch a day each (ledger notes, 7 days to 10-13), extras
   untraced; audit-due's price rule makes both due (×1.75, ×1.81 on 10-09…15, `cells` `price[0] / price[1]`).
 - Night fixers' first request in llm-legs worktrees, 10-14…16 (36 fixers): brief 8.1k against 2.6k for a day
