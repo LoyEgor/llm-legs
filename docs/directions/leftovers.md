@@ -111,8 +111,8 @@ Why they come back:
   its job settled the doc at 07:29 (6298ac54), pushed 07:31; fixer aa48e898 reopened it at 07:39.
 - C3: answered trades stayed `trade for Egor` all day (7777). Since 10-08 an answer settles the trade
   (`trade_settle`, Decision below), and a trade is only a strategic change or a serious downside (10-07).
-- C4: `carry_list` drops a handoff addressed to a live chat as that chat's, and `owner_batches` keeps an owner only
-  with 2+ handoffs, a decision section or an outside repository. image-night-triage (To: «LLM Doctor меню
+- C4: `carry_list` drops a handoff addressed to a live chat as that chat's, and `owner_batches` kept an owner only
+  with 2+ handoffs, a decision section or an outside repository (Done). image-night-triage (To: «LLM Doctor меню
   refactoring») waited out 817e and 4c4e. The standing 2026-10-14-logo-bench-own-tools names an outside repository,
   so it batches (`handoffs.py --batches` on 10-20: `live`, via message).
 - C5: 7777 closed both jobs merged while their branches could not land (elevenlabs-one-pool: a live chat's
@@ -142,16 +142,6 @@ Class C2: 4 doc-nights (3 + 1; 3 docs), each the next carry re-taking a doc whos
   first night and the 7 days after: doc-nights after a closed job 4 → 0. Not worse: `left` handoff jobs counted
   apart, all doc-nights per night ≤ 0.5. Net lines about +6 (`bin/night-run`) plus the case; reverted unless 4 → 0.
 
-### goal live-owner-single: a lone handoff to a live chat reaches it
-
-Class C4: 2 doc-nights, one doc skipped by two nights.
-- Change: `owner_batches` keeps an owner who is live whatever the batch size; a live owner is messaged (`via:
-  message`) and no chat opens (Decision 2026-10-04). One condition.
-- Proof, fixed before the work: a `tests/test_night_carry.sh` case, one open handoff `To: «<live chat>»` with no
-  decision section and no outside repository: no batch and no job on the old code (red), one `message` batch on the
-  new. Read: doc-nights of handoffs addressed to a live chat 2 → 0. Net lines about +1 (`share/handoffs.py`) plus
-  the case; reverted unless 2 → 0.
-
 ## How the block runs at night
 
 - It brings back README's section 8 rows, Handoffs and owner chats, and Leftovers. A pilot night leaves both out now:
@@ -167,7 +157,9 @@ Class C4: 2 doc-nights, one doc skipped by two nights.
 
 ## Done
 
-None yet.
+- live-owner-single (C4, 2bd260a4): `owner_batches` keeps a live owner whatever the batch size. test_night_carry's
+  lone handoff to a live chat: no job, no batch (red) → one `message` batch. Read on block 8's first full night: doc-
+  nights of handoffs to a live chat 2 → 0, reverted unless 0.
 
 ## Decisions
 
