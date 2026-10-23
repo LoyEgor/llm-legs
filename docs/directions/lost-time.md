@@ -7,7 +7,7 @@ duplicate checks, and how tests are written.
 ## Metric
 
 The Lost time index in the Doctors menu: overhead per unit of work against the previous 7 days, 1.00 unchanged; a
-Paasche index over chat orders and worker tasks (`time_budget.paasche`), read with `share/time_budget.py day
+Paasche index over chat orders, worker tasks and night jobs (`time_budget.paasche`), read with `share/time_budget.py day
 [--json]` (`index`, `index_window`). Per unit, so it shows health, not volume; one suite's honest number is CPU. It
 judges goals on test cost and waits; muting targeted runs lowers it and says nothing about how tests are written.
 
@@ -116,20 +116,6 @@ lines: `git diff --numstat <base>..<merge>` of the goal's commits, legacy.md's b
 Breakages' `bash-cap`, this block's largest wait, is not repeated. Proofs replay fixed journals: a 7-day window
 after landing moves with the pilot's volume (targeted suite CPU 1,210/day in 10-08…14, 113 on 10-15) and tests-once.
 
-### goal night-owned: the night hub session is owned whole, as its own stratum
-
-Class: a caller the index does not own. The hub's first message `сделай чистку — night run <id>` matches `C1_MACHINE`
-(`bin/harness-doctor`): `own=False`, its suites in `out_s.suites` (509 → 261 wall-min/day, 46 % of the tests row; 438
-CPU-min/day, 30 % of suite CPU in 10-08…14: hub chats 396, Close 40, `bin/llm-selfcheck` 1.6), its hooks, waits and
-refusals in `agents[None]`, in no stratum.
-- Change, `share/time_budget.py` `budget()`: a third stratum `night`, units the jobs of the nights finished that day,
-  agent the record's `session`, owning its suites, hooks, waits, refusals and Close's suites; chat and workers stay
-  (per unit, 2026-10-11); BUDGET_VERSION 6; bench suites out.
-- First step, unconfirmed: `session` is the hub's, how Close's session-less rows tie to their night, job counts (≈181
-  / 275 by UTC start), the projection from the journals (the old 0.48 → 0.46 put suites in workers, no units: void).
-- Proof, version 5 → 6 on the same journals: chat and workers unchanged, night as projected. Not worse: no
-  night-session span in `agents[None]`, `out_s.suites` at most selfcheck's. Net lines: code above 0 (the stratum).
-
 ### goal suite-own-cost: a suite's cost has one queue, its rise read under load
 
 Class: test_health's heavy and pole findings shave a suite again beside suite_audit's queue; a held rise is read
@@ -177,6 +163,7 @@ Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-he
 | 10-14 | tests lens, 10 heaviest suites, two rounds; lens tuned (review-bench 53f8137) | 131 fixes, +293 lines: cleanup is deletion only | 05a7238f, 62458120 |
 | 10-14 | tests run once, when the work is done | runs per worker task 7.7 → 3.3, retests 276 → 36/day | 8e6961df |
 | 10-23 | goal fan-out: suites with no catch in 90 days leave targeted runs but their own file's; Close red → green is a catch | `select()` replay, 218 commits 10-16…22: 5.70 → 4.96 wall-min a commit, CPU 5.54 → 4.96; watch: dropped suites red at Close over 7 nights, target 0 | 4e891fe3 |
+| 10-23 | goal night-owned: stratum `night` (jobs of nights finished), one agent per night: hubs (`session`, `previous_sessions`, `wall` events'; 817e had 2, 3131 4) and Close (session-less `suites` runs inside it); an older settled day keeps its strata | v5 → v6, same journals 10-03…21: chat, workers equal 19/19 days; hub spans in `agents[None]` 0; `out_s.suites` 10-08…14 261 → 3.2 min/day (selfcheck + one 10 s run); night 6.12 → 5.87 min/job, index 1.09 → 1.09 | a92cc622 |
 
 ## Open
 
