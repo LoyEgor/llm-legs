@@ -574,12 +574,19 @@ def clear_form(page) -> None:
     button = page.get_by_role("button", name="Clear all form inputs").locator("visible=true")
     if not button.count():
         return
-    try:
-        button.first.click(timeout=8000)
-        page.get_by_role("alertdialog").get_by_role("button", name="Confirm", exact=True).click(timeout=8000)
-        page.wait_for_timeout(800)
-    except Exception as error:  # noqa: BLE001
-        raise drift("no Clear all form inputs, or no Confirm after it") from error
+    failed = None
+    for _ in range(2):
+        # A panel left open from the last visit (the Lyricist, «Help me write lyrics», 2026-10-23) covers the button.
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+        try:
+            button.first.click(timeout=8000)
+            page.get_by_role("alertdialog").get_by_role("button", name="Confirm", exact=True).click(timeout=8000)
+            page.wait_for_timeout(800)
+            return
+        except Exception as error:  # noqa: BLE001
+            failed = error
+    raise drift("no Clear all form inputs, or no Confirm after it") from failed
 
 
 def fill_lyrics(page, lyrics: str) -> None:
