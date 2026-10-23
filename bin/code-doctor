@@ -871,13 +871,31 @@ def journal_sources():
     return out
 
 
+def file_sigs(paths, *extra):
+    out = list(extra)
+    for path in paths:
+        try:
+            info = os.stat(path)
+        except OSError:
+            info = None
+        out.append([path, info and info.st_size, info and info.st_mtime_ns])
+    return out
+
+
 def run_rollup():
+    """Each day's rollup off its journal files; a (source, day) whose files and completeness hold their sizes and
+    mtimes since the last rollup (rollup-sigs.json) is not read again."""
     if foreign_repos():
         return 0
     folder = os.path.join(state_dir(), "rollup")
     today = time.strftime("%Y-%m-%d", time.localtime(now_s()))
-    written = 0
+    held = read_json(os.path.join(state_dir(), "rollup-sigs.json"), {}) or {}
+    sigs, written = {}, 0
     for (source, day), paths in sorted(journal_sources().items()):
+        key = source + " " + day
+        sigs[key] = file_sigs(sorted(paths), day < today)
+        if held.get(key) == sigs[key] and os.path.exists(os.path.join(folder, day + ".json")):
+            continue
         hits, ms, sessions = {}, {}, set()
         for path in paths:
             try:
@@ -909,6 +927,10 @@ def run_rollup():
         day = os.path.basename(events)[:-6]
         if not re.fullmatch(r"\d{4}-\d\d-\d\d", day):
             continue
+        key = "overclaims " + day
+        sigs[key] = file_sigs([events], day < today)
+        if held.get(key) == sigs[key]:
+            continue
         hits, refs, reasons, rows = {}, {}, {}, []
         try:
             with open(events, encoding="utf-8", errors="replace") as handle:
@@ -934,6 +956,8 @@ def run_rollup():
         doc["complete"] = day < today
         write_json(path, doc)
         written += 1
+    if sigs != held:
+        write_json(os.path.join(state_dir(), "rollup-sigs.json"), sigs)
     return written
 
 

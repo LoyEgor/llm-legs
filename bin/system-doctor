@@ -13,6 +13,7 @@ import fcntl
 import functools
 import glob
 import hashlib
+import itertools
 import json
 import os
 import plistlib
@@ -120,6 +121,7 @@ NIGHTLY_STALE_S = 36 * HOUR_S
 COVER_MIN_S = HOUR_S
 KEEP_TICK_DAYS = 14
 KEEP_HOUR_DAYS = 90
+HELD_SPANS = 4
 REPORT_DAYS = 8
 REBOOT_DAYS = 7
 CACHE_BUDGET_S = 120
@@ -773,6 +775,14 @@ def day_file_rows(path):
     return kept[1]
 
 
+def file_sig(path):
+    try:
+        seen = os.stat(path)
+    except OSError:
+        return None
+    return [seen.st_size, seen.st_mtime_ns]
+
+
 def tick_rows(since, until, sub="ticks"):
     names, at = set(), since
     while at < until + 6 * HOUR_S:
@@ -829,16 +839,31 @@ def summarize(rows):
 
 def rollup(now, rows, persist=True):
     """Hourly rollups of today and yesterday (hours/<day>.jsonl, 90 days) and their daily rows (days.jsonl, kept
-    forever) off the minute rows `rows`, which cover both days; minute rows older than 14 days are deleted."""
+    forever) off the minute rows `rows`, which cover both days; minute rows older than 14 days are deleted. Yesterday's
+    rows stand while the day files they came from (its ticks, the statusline days its minutes reach) hold their size
+    and mtime (rollup.json)."""
     base = state_dir()
     days_path = os.path.join(base, "days.jsonl")
     days = {r["day"]: r for r in read_jsonl(days_path) if isinstance(r.get("day"), str)}
+    held = read_json(os.path.join(base, "rollup.json"), {}) or {}
+    lines = held.get("statusline") if isinstance(held.get("statusline"), dict) else {}
+    kept = {"statusline": lines}
     for offset in (1, 0):
         day = local_day(now - offset * DAY_S)
         part = [row for row in rows if local_day(row["t"]) == day]
         if not part:
             continue
-        days[day] = dict(summarize(part), day=day, cohort=cohort_sums(part))
+        folder = os.path.join(os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(HOME, ".cache", "harness-doctor"),
+                              "statusline")
+        sig = [file_sig(__file__), file_sig(os.path.join(base, "ticks", day + ".jsonl"))] + [
+            file_sig(os.path.join(folder, d + ".tsv")) for d in sorted({local_day(r["t"] - r["dt"]) for r in part
+                                                                        if r.get("dt")} | {day})]
+        if offset and day in days and held.get("day") == [day, sig]:
+            kept["day"] = held["day"]
+            continue
+        days[day] = dict(summarize(part), day=day, cohort=cohort_sums(part, lines))
+        if offset:
+            kept["day"] = [day, sig]
         if persist:
             hours = {}
             for row in part:
@@ -848,6 +873,9 @@ def rollup(now, rows, persist=True):
     if not persist:
         return [days[d] for d in sorted(days)]
     write_lines(days_path, [days[d] for d in sorted(days)])
+    floor = local_day(now - 3 * DAY_S)
+    kept["statusline"] = {p: v for p, v in lines.items() if os.path.basename(p)[:10] >= floor}
+    write_json(os.path.join(base, "rollup.json"), kept)
     for sub, keep in (("ticks", KEEP_TICK_DAYS), ("hours", KEEP_HOUR_DAYS)):
         cutoff = local_day(now - keep * DAY_S)
         for path in glob.glob(os.path.join(base, sub, "????-??-??.jsonl")):
@@ -2156,38 +2184,56 @@ def pressured(row):
     return (row.get("comp_share") or 0) >= COHORT["pressure_comp"] or swapouts >= COHORT["pressure_swapouts_s"]
 
 
-def statusline_cpu(rows):
+def statusline_cpu(rows, held=None):
     """{row index: CPU s} of the statusline journal's renders (shared-invariants row `da`) ending inside each minute
-    row's covered span (t - dt, t], so the journal counts only time the ticks cover."""
+    row's covered span (t - dt, t], so the journal counts only time the ticks cover. held ({path: entry}, kept across
+    runs) keeps an earlier day file's renders for the few spans reaching into it (the minute over midnight) while its
+    size and mtime hold, so a day file is read for its own day and not again for the next one's first minute."""
     spans = [(row["t"] - row["dt"], row["t"], index) for index, row in enumerate(rows) if row.get("dt")]
     ends, out = [hi for _lo, hi, _index in spans], {}
     folder = os.path.join(os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(HOME, ".cache", "harness-doctor"),
                           "statusline")
+    held = {} if held is None else held
     for day in sorted({local_day(at) for lo, hi, _index in spans for at in (lo, hi)}):
+        path = os.path.join(folder, day + ".tsv")
         try:
-            handle = open(os.path.join(folder, day + ".tsv"), errors="replace")
+            handle = open(path, errors="replace")
         except OSError:
             continue
         with handle:
+            seen, kept = os.fstat(handle.fileno()), held.get(path) or {}
+            reach = [s for s in spans if s[0] < kept.get("max_end", 0)]
+            if kept.get("sig") == [seen.st_size, seen.st_mtime_ns] and all("%r %r" % s[:2] in kept["spans"] for s in reach):
+                for lo, hi, index in reach:
+                    for spent in kept["spans"]["%r %r" % (lo, hi)]:
+                        out[index] = out.get(index, 0.0) + spent
+                continue
+            took, last = {}, 0.0
             for line in handle:
                 fields = line.split("\t", 4)
                 try:
                     end, spent = int(fields[1]) / 1e6, float(fields[3]) / 1000
                 except (IndexError, ValueError):
                     continue
+                last = max(last, end)
                 at = bisect.bisect_left(ends, end)
                 if at < len(spans) and spans[at][0] < end:
                     out[spans[at][2]] = out.get(spans[at][2], 0.0) + spent
+                    took.setdefault(at, []).append(spent)
+        reach = [i for i, s in enumerate(spans) if s[0] < last]
+        if day < local_day(spans[-1][1]) and len(reach) <= HELD_SPANS:
+            held[path] = {"sig": [seen.st_size, seen.st_mtime_ns], "max_end": last,
+                          "spans": {"%r %r" % spans[i][:2]: took.get(i, []) for i in reach}}
     return out
 
 
-def cohort_sums(rows):
+def cohort_sums(rows, held=None):
     """[[tag, owner, cpu-s, births, written B, read B, idle wakes, footprint B·s under pressure, read]] over minute
     rows; read is 1 when every row saw the item's rusage: own, or no process of another uid and no row from before
     every same-uid process was read (no usage_blind). CPU holds each item's reaped children; the statusline journal's
     render CPU moves from STATUSLINE_REAPER's reaped CPU to the statusline item."""
     items, blind, legacy = {}, set(), False
-    renders = statusline_cpu(rows)
+    renders = statusline_cpu(rows, held)
     for index, row in enumerate(rows):
         dt = row.get("dt")
         if not dt:
@@ -2569,10 +2615,9 @@ def cause_words(found):
     return " · top cause %s%s%s" % (found["name"], share, tail)
 
 
-def tag_rates(rows, name):
-    """Births/s and CPU cores attributed to one cause over minute rows, and the ticks it was seen in."""
-    covered = births = cpu = written = 0.0
-    seen = 0
+def tag_sums(rows, name, sums=None):
+    """[covered s, births, CPU s, written B, ticks seen] of one cause over minute rows, added to sums."""
+    covered, births, cpu, written, seen = sums or (0.0, 0.0, 0.0, 0.0, 0)
     for row in rows:
         if not row.get("dt"):
             continue
@@ -2585,9 +2630,33 @@ def tag_rates(rows, name):
         cpu += spent
         written += wrote
         seen += bool(born or spent or wrote)
+    return [covered, births, cpu, written, seen]
+
+
+def tag_rates(rows, name, sums=None):
+    """Births/s and CPU cores attributed to one cause over minute rows (or its tag_sums), and the ticks it was seen in."""
+    covered, births, cpu, written, seen = tag_sums(rows, name) if sums is None else sums
     return {"covered_s": round(covered), "seen": seen, "births_s": round(births / covered, 1) if covered else None,
             "cores": round(cpu / covered, 3) if covered else None,
             "mb_h": round(written / covered * HOUR_S / 1e6, 1) if covered else None}
+
+
+def after_rates(name, since, now, memo, key):
+    """tag_rates of the ticks from since on, folded by day in the memo: a run reads only the ticks after the last
+    one folded, and a day leaves the sum with its tick file, as a read of every tick since would."""
+    fold = memo.get(key + "|after") if memo is not None and since <= now else None
+    fold = fold if isinstance(fold, dict) and isinstance(fold.get("days"), dict) else {"to": None, "days": {}}
+    done = fold["to"]
+    rows = [r for r in tick_rows(since if done is None else done, now) if r["t"] >= since and (done is None or r["t"] > done)]
+    for day, part in itertools.groupby(rows, key=lambda r: local_day(r["t"])):
+        part = list(part)
+        fold["days"][day] = tag_sums(part, name, fold["days"].get(day))
+        fold["to"] = part[-1]["t"]
+    fold["days"] = {d: s for d, s in fold["days"].items() if os.path.exists(os.path.join(state_dir(), "ticks", d + ".jsonl"))}
+    if memo is not None and since <= now:
+        memo[key + "|after"] = fold
+    days = [fold["days"][d] for d in sorted(fold["days"])]
+    return tag_rates((), name, [sum(s[i] for s in days) for i in range(5)])
 
 
 def fix_since(row):
@@ -2640,15 +2709,14 @@ def proof(name, rule, since, now, night=None, memo=None):
             return dict(out, verdict="pending", why="no report of %s in %.1f of %d days" % (
                 name, covered / DAY_S, PROOF["reports_s"] // DAY_S))
         return dict(out, verdict="proven", why="no report of %s in %d days" % (name, PROOF["reports_s"] // DAY_S))
-    rows = tick_rows(since - PROOF["baseline_s"], now)
-    before = tag_rates([r for r in rows if r["t"] < since], name)
-    if memo is not None:
-        kept = memo.get(key)
-        if isinstance(kept, dict) and (kept.get("covered_s") or 0) >= before["covered_s"]:
-            before = kept
-        elif since <= now:
+    kept = memo.get(key) if memo is not None else None
+    if isinstance(kept, dict) and since <= now:
+        before = kept
+    else:
+        before = tag_rates([r for r in tick_rows(since - PROOF["baseline_s"], min(since, now)) if r["t"] < since], name)
+        if memo is not None and since <= now:
             memo[key] = before
-    after = tag_rates([r for r in rows if r["t"] >= since], name)
+    after = after_rates(name, since, now, memo, key)
     out = {"before": before, "after": after}
     terms = {"ssd-writes": ("mb_h",), "cohort": ("cores", "mb_h")}.get(rule, ("births_s", "cores"))
     if before["seen"] < PROOF["sightings"] or not any(before.get(k) for k in terms):

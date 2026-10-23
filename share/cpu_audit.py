@@ -64,28 +64,53 @@ def add(found, key, cpu, same):
         t[2], t[3] = t[2] + (cpu if same == "1" else 0.0), t[3] + 1
 
 
+def hook_line(local_day):
+    """The parse of a Harness hook journal line (start us, end us, key, failed, ppid, CPU us): its key carries the
+    local day the run ended, since a journal file holds a UTC day."""
+    days = {}
+
+    def parse(line):
+        f = line.rstrip("\n").split("\t")
+        try:
+            end = int(f[1]) / 1e6
+            int(f[0]), f[3]
+        except (IndexError, ValueError):
+            return []
+        minute = int(end // 60)
+        day = days.get(minute) or days.setdefault(minute, local_day(end))
+        cpu = f[5] if len(f) > 5 else ""
+        return [(day + " hook/" + f[2].split(" ")[0], int(cpu) / 1e6 if cpu.isdigit() else 0.0, None)]
+    return parse
+
+
 def tally(path, parse, cache):
-    """{component: [cpu_s, runs, wasted_cpu_s, judged_runs]} of one day file, kept in the state while its size and
-    mtime hold."""
+    """{component: [cpu_s, runs, wasted_cpu_s, judged_runs]} of one journal file's complete lines, kept in the state
+    while its size and mtime hold; a file that only grew is read from the byte the last tally ended at."""
     try:
-        st = os.stat(path)
+        handle = open(path, "rb")
     except OSError:
         return {}
-    held = cache.get(path)
-    if held and held[:2] == [st.st_size, st.st_mtime_ns]:
-        return held[2]
-    found = {}
-    with open(path, errors="replace") as handle:
-        for line in handle:
-            for key, cpu, same in parse(line):
-                add(found, key, cpu, same)
-    cache[path] = [st.st_size, st.st_mtime_ns, found]
+    with handle:
+        st, head = os.fstat(handle.fileno()), handle.read(64).hex()
+        held = cache.get(path)
+        if held and held[:2] == [st.st_size, st.st_mtime_ns]:
+            return held[2]
+        grown = held and len(held) == 5 and held[4] == head[:len(held[4])] and st.st_size >= held[3]
+        found = {k: list(v) for k, v in held[2].items()} if grown else {}
+        handle.seek(held[3] if grown else 0)
+        data = handle.read()
+    cut = data.rfind(b"\n") + 1
+    for line in data[:cut].decode("utf-8", "replace").split("\n"):
+        for key, cpu, same in parse(line):
+            add(found, key, cpu, same)
+    cache[path] = [st.st_size, st.st_mtime_ns, found, (held[3] if grown else 0) + cut, head]
     return found
 
 
-def days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_day):
+def days(now, state, harness_dir, speed_dir, collector_rows, local_day):
     """{journal: {day: {component: tally}}} over the window: a journal's days are the ones it holds, so a component
-    reads 0 on a day its journal covers and nothing on a day it never kept. hook_runs: Harness's journal_runs."""
+    reads 0 on a day its journal covers and nothing on a day it never kept. Hook runs are Harness's journal files
+    (hooks/ and hooks/folded/, one UTC day each), tallied by the local day a run ended."""
     cache, lo = {}, local_day(now - WINDOW_D * 86400)
     held = state.get("cpu_files") or {}
     out = {}
@@ -100,18 +125,21 @@ def days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_da
                 if path in held:
                     cache[path] = held[path]
                 out.setdefault(name, {})[day] = tally(path, parse, cache)
+    parse = hook_line(local_day)
+    for path in sorted(glob.glob(os.path.join(harness_dir, "hooks", "*.tsv"))
+                       + glob.glob(os.path.join(harness_dir, "hooks", "folded", "*.tsv"))):
+        if path in held:
+            cache[path] = held[path]
+        for key, t in tally(path, parse, cache).items():
+            day, _, component = key.partition(" ")
+            if day >= lo:
+                into = out.setdefault("hooks", {}).setdefault(day, {}).setdefault(component, [0.0, 0, 0.0, 0])
+                into[:] = [a + b for a, b in zip(into, t)]
     state["cpu_files"] = cache
     for r in collector_rows:
         if isinstance(r.get("start"), (int, float)) and r.get("doctor") and local_day(r["start"]) >= lo:
             add(out.setdefault("collector", {}).setdefault(local_day(r["start"]), {}), "doctor/" + str(r["doctor"]),
                 cpu_s(r.get("cpu_s"), 1), None)
-    minutes = {}
-    for end, key, _ms, _failed, _start, _ppid, cpu_ms in hook_runs:
-        minute = int(end // 60)
-        day = minutes.get(minute) or minutes.setdefault(minute, local_day(end))
-        if day >= lo:
-            add(out.setdefault("hooks", {}).setdefault(day, {}), "hook/" + str(key).split(" ")[0],
-                cpu_s(cpu_ms, 1000), None)
     return out
 
 
@@ -165,17 +193,17 @@ def problem(c, why, at):
             "cpu": dict(c, component=c["key"], due=why)}
 
 
-def collect(now, state, harness_dir, speed_dir, collector_rows, hook_runs, root, repos, local_day):
+def collect(now, state, harness_dir, speed_dir, collector_rows, root, repos, local_day):
     """The `cpu` section: components ranked by CPU-min/day, one problem per due audit, the night's queue, menu lines."""
     out = {"status": "nodata", "as_of_s": int(now), "problems": [], "selection": [], "proofs": {},
            "menu": [], "head": "no CPU journal over %d days" % WINDOW_D}
-    found = components(days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_day), local_day(now),
+    found = components(days(now, state, harness_dir, speed_dir, collector_rows, local_day), local_day(now),
                        repos)
     if not found:
         return out
     rows = spend.load_ledger(root)
     held = spend.blobs([s for c in found if ROW + c["key"] in rows for s in c["sources"]])
-    memo = {}
+    memo = spend.landing_memo(rows.get(ROW + c["key"]) for c in found)
     reasons = {c["key"]: due(c, rows.get(ROW + c["key"]), None if held is None else {
         spend.repo_path(s, repos): h for s, h in held.items() if s in c["sources"]}, repos, memo) for c in found}
     skipped = [c["key"] for c in found if reasons[c["key"]] and c["cpu_min_day"] < FLOOR_MIN_DAY]
@@ -223,12 +251,12 @@ def restate(problems, rows):
     return out
 
 
-def record(root, repos, state, harness_dir, speed_dir, collector_rows, hook_runs, key, verdict, note, zero, by, worktrees,
+def record(root, repos, state, harness_dir, speed_dir, collector_rows, key, verdict, note, zero, by, worktrees,
            now, local_day):
     if verdict not in spend.VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(spend.VERDICTS))
     zero = spend.zero_option(zero)
-    c = next((c for c in components(days(now, state, harness_dir, speed_dir, collector_rows, hook_runs, local_day),
+    c = next((c for c in components(days(now, state, harness_dir, speed_dir, collector_rows, local_day),
                                     local_day(now), repos) if c["key"] == key), None)
     if not c:
         raise SystemExit("no CPU component %s in the journals" % key)

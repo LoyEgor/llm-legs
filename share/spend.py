@@ -7,7 +7,7 @@ import re
 import subprocess
 import time
 
-from fix_commit import main_checkout
+from fix_commit import main_checkout, memo_get, memo_put
 import limit_hit
 
 MENUS = "menus"
@@ -142,17 +142,35 @@ def repo_path(path, repos):
 
 
 def blobs(paths):
-    real = [p for p in paths if os.path.isfile(p)]
-    if not real:
-        return {}
+    """{path: blob}; a doctor run's landing memo (fix_commit.use_memo) keeps each file's blob while its size and
+    mtime hold, so git hashes only what changed."""
+    real, sigs, out = [p for p in paths if os.path.isfile(p)], {}, {}
+    for path in real:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        sigs[path] = [stat.st_size, stat.st_mtime_ns]
+        kept = memo_get("blob", path)
+        if isinstance(kept, list) and kept[:2] == sigs[path]:
+            out[path] = kept[2]
+    ask = sorted({p for p in real if p not in out})
+    if not ask:
+        return {p: out[p] for p in real}
     try:
-        out = subprocess.run(["git", "hash-object", "--"] + real, capture_output=True, text=True, timeout=20, cwd="/")
+        found = subprocess.run(["git", "hash-object", "--"] + ask, capture_output=True, text=True, timeout=20, cwd="/")
     except (OSError, subprocess.SubprocessError) as error:
-        limit_hit.expired("probe.git", error, "the content hashes of %d files: read as unknown" % len(real),
+        limit_hit.expired("probe.git", error, "the content hashes of %d files: read as unknown" % len(ask),
                           'share/spend.py:["git", "hash-object", "--"]')
         return None
-    hashes = out.stdout.split() if out.returncode == 0 else []
-    return dict(zip(real, hashes)) if len(hashes) == len(real) else None
+    hashes = found.stdout.split() if found.returncode == 0 else []
+    if len(hashes) != len(ask):
+        return None
+    for path, blob in zip(ask, hashes):
+        out[path] = blob
+        if path in sigs:
+            memo_put("blob", path, sigs[path] + [blob])
+    return {p: out[p] for p in real}
 
 
 def moved(row, held, repos=None, memo=None):
@@ -200,11 +218,17 @@ def foreign(keys, recorded, since, repos, memo):
     return False
 
 
+def landing_memo(rows):
+    """A block's landings memo, floored at its oldest audit run's start: an older since answers every later one."""
+    return {None: min(filter(None, (run_start(r) for r in rows if isinstance(r, dict))), default=None)}
+
+
 def landings(top, since, memo):
     """{"files": {path: [(landed_at, by_speed, blob)]}, "dirty": {path}} of top's main checkout: every commit main
     took after `since`, oldest first, with the blob it left each path at, off main's reflog: a move lands the
     first-parent commits after the move before it; a `merge …harness-speed-…` move is a Speed audit run's landing.
-    None without a reflog."""
+    None without a reflog. A memo from landing_memo reads from its floor, so one read answers every later since."""
+    since = min(since, memo.get(None) or since)
     held = memo.get(top)
     if held is not None and held[0] <= since:
         return held[1]
@@ -421,7 +445,7 @@ def collect(now, state, write, home, repos, root, local_day):
     found = components(payload, repos)
     rows = load_ledger(root)
     held = blobs([s for c in found if c["key"] in rows for s in c["sources"]])
-    memo = {}
+    memo = landing_memo(rows.get(c["key"]) for c in found)
     reasons = {c["key"]: due(c, rows.get(c["key"]), None if held is None else {
         repo_path(s, repos): h for s, h in held.items() if s in c["sources"]}, repos, memo) for c in found}
     proofs = {c["key"]: proof(c, rows[c["key"]], index, made) for c in found

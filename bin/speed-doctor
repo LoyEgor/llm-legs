@@ -210,10 +210,6 @@ def code_ledger_path():
     return os.environ.get("CODE_LEDGER") or os.path.join(ROOT_DIR, "share", "code-ledger.json")
 
 
-def cpu_hook_runs(now):
-    return H.journal_runs(now - (cpu_audit.WINDOW_D + 1) * 86400)[0]
-
-
 def now_s():
     fixed = os.environ.get("SPEED_DOCTOR_NOW")
     return float(fixed) if fixed else time.time()
@@ -1111,13 +1107,13 @@ def hook_changed_day(key, memo=None):
             memo["scripts"][os.path.basename(script)] = script
     script = memo["scripts"].get(word) or os.path.join(H.base_home(), ".claude", "hooks", word)
     real = os.path.realpath(script)
-    try:
-        out = subprocess.run(["git", "-C", os.path.dirname(real), "log", "-1", "--first-parent", "--format=%ct", "HEAD",
-                              "--", os.path.basename(real)], capture_output=True, text=True, timeout=5).stdout.strip()
-    except (OSError, subprocess.SubprocessError) as error:
-        H.limit_hit.expired("probe.git", error, "the last change day of hook %s: read as unknown" % word,
-                            'bin/speed-doctor:"--", os.path.basename(real)], capture_output=True')
-        return None
+    folder = os.path.dirname(real)
+    if folder not in memo.setdefault("tops", {}):
+        found = (suite_audit.git_answer(folder, "rev-parse", "--show-toplevel", "HEAD") or "").splitlines()
+        memo["tops"][folder] = found if len(found) == 2 else [folder, None]
+    top, head = memo["tops"][folder]
+    out = suite_audit.head_kept(top, head, "hook-day", os.path.relpath(real, top), lambda: suite_audit.git_answer(
+        folder, "log", "-1", "--first-parent", "--format=%ct", "HEAD", "--", os.path.basename(real)))
     memo["days"][word] = H.local_day(int(out)) if out.isdigit() else None
     return memo["days"][word]
 
@@ -1486,8 +1482,8 @@ def collect(write, now):
         document["suites"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
     problems += document["suites"].pop("problems")
     try:
-        document["cpu"] = cpu_audit.collect(now, state, H.state_dir(), state_dir(), collector_rows, cpu_hook_runs(now),
-                                            ROOT_DIR, H.repos_dir(), H.local_day)
+        document["cpu"] = cpu_audit.collect(now, state, H.state_dir(), state_dir(), collector_rows, ROOT_DIR,
+                                            H.repos_dir(), H.local_day)
     except Exception as exc:
         document["cpu"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
     problems += document["cpu"].pop("problems")
@@ -1686,9 +1682,8 @@ def main():
         return 0
     if args.cpu_audit:
         collector = spend.read_jsonl(os.path.join(doctors_dir(), "collector-runs.jsonl"))
-        row = cpu_audit.record(ROOT_DIR, H.repos_dir(), {}, H.state_dir(), state_dir(), collector, cpu_hook_runs(now),
-                               args.cpu_audit, args.verdict, args.note, args.zero, args.by, args.worktree, now,
-                               H.local_day)
+        row = cpu_audit.record(ROOT_DIR, H.repos_dir(), {}, H.state_dir(), state_dir(), collector, args.cpu_audit,
+                               args.verdict, args.note, args.zero, args.by, args.worktree, now, H.local_day)
         print(json.dumps(row, ensure_ascii=False))
         return 0
     if args.json or args.menu:

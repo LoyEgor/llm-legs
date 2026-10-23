@@ -4957,8 +4957,11 @@ def period(summaries, days, now, tests, need=WEEK_MIN_DAYS):
                 out["load"][key].append(value)
                 out["load_days"][key] += 1
     first = local_day(min(t["end"] for t in tests)) if tests else None
+    by_day = {}
+    for t in tests:
+        by_day.setdefault(local_day(t["end"]), []).append(t)
     for day in days:
-        mine = [t for t in tests if local_day(t["end"]) == day]
+        mine = by_day.get(day, [])
         if first and day >= first:
             out["test_days"] += day_share(day, now)
         out["wall"] += union_secs([(t["end"] - t["secs"], t["end"]) for t in mine])

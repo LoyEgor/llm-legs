@@ -288,17 +288,39 @@ def top_state(top):
 
 
 def last_commit_at(top, rel):
-    """`git log -1 --format=%ct -- rel`, kept per (checkout, path) for as long as HEAD holds: a path's last commit is
-    a function of HEAD alone."""
-    head = top_state(top)[0]
-    kept = fix_commit.memo_get("stamp", "%s|%s" % (top, rel)) if head else None
-    if kept and kept[0] == head:
+    """`git log -1 --format=%ct -- rel`, kept per (checkout, path) for as long as HEAD holds, or a HEAD move touched
+    no commit of the path: a path's last commit is a function of HEAD alone."""
+    return head_kept(top, top_state(top)[0], "stamp", rel, lambda: git_answer(top, "log", "-1", "--format=%ct", "--", rel))
+
+
+_touched = {}
+
+
+def touched(top, old, new):
+    """Every path a commit on either side of old...new touched (a merge against each parent), asked once a run per
+    pair; None where git could not say."""
+    if (top, old, new) not in _touched:
+        out = git_answer(top, "log", "--format=", "--name-only", "--no-renames", "-m", "%s...%s" % (old, new))
+        _touched[(top, old, new)] = None if out is None else set(out.splitlines())
+    return _touched[(top, old, new)]
+
+
+def head_kept(top, head, kind, rel, ask):
+    """ask()'s answer about rel (a path under the checkout top) at HEAD, kept in the landing memo across runs: a
+    later HEAD keeps it unless a commit between the two touched rel; '' where git could not say."""
+    kept = fix_commit.memo_get(kind, "%s|%s" % (top, rel)) if head else None
+    if kept and kept[0] != head:
+        moved = touched(top, kept[0], head)
+        kept = [head, kept[1]] if moved is not None and rel not in moved else None
+        if kept:
+            fix_commit.memo_put(kind, "%s|%s" % (top, rel), kept)
+    if kept:
         return kept[1]
-    out = git_answer(top, "log", "-1", "--format=%ct", "--", rel)
+    out = ask()
     if out is None:
         return ""
     if head:
-        fix_commit.memo_put("stamp", "%s|%s" % (top, rel), [head, out])
+        fix_commit.memo_put(kind, "%s|%s" % (top, rel), [head, out])
     return out
 
 
@@ -431,7 +453,7 @@ def collect(now, journal, root, dead=None):
     ledger = spend.load_ledger(root)
     median = statistics.median([c["wall_floor"] for c in found if c["runs"]] or [0.0])
     at = datetime.datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds")
-    reasons, new, memo = {}, {}, {}
+    reasons, new, memo = {}, {}, spend.landing_memo(ledger.get(ROW + c["key"]) for c in found)
     for top in {c["top"] for c in found if c["wall_floor"] > NEW_HEAVY * median}:
         new.update(adds(top, lo))
     for c in found:

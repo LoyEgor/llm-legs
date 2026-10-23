@@ -59,15 +59,17 @@ write(os.path.join(system, "hours", D(1) + ".jsonl"),
       [json.dumps({"cpu_top": [["Hammerspoon", 600, 5.0, "own"], ["Safari", 6000, 50.0, "other"]]}),
        json.dumps({"cpu_top": [["Safari", 6000, 50.0, "other"]], "cpu_own": [["tool.py", 120, 0.0, "own"]]})])
 collector = [{"doctor": "harness", "start": NOW - 86400, "wall_s": 9, "cpu_s": 30, "trigger": "timer"}]
-hooks = [(NOW - 86400, "gate.sh autonomous", 5.0, False, NOW - 86400, "1", 30000.0)]
+ran = int((NOW - 86400) * 1e6)
+write(os.path.join(harness, "hooks", "%d.tsv" % ((NOW - 86400) // 86400)),
+      ["%d\t%d\tgate.sh autonomous\t0\t1\t30000000" % (ran, ran)])
 
 
 def collect(state=None):
-    return cpu_audit.collect(NOW, {} if state is None else state, harness, speed, collector, hooks, root, repos, day)
+    return cpu_audit.collect(NOW, {} if state is None else state, harness, speed, collector, root, repos, day)
 
 
 def comps(state=None):
-    return cpu_audit.components(cpu_audit.days(NOW, {} if state is None else state, harness, speed, collector, hooks, day),
+    return cpu_audit.components(cpu_audit.days(NOW, {} if state is None else state, harness, speed, collector, day),
                                 day(NOW), repos)
 
 
@@ -106,11 +108,11 @@ oldest = os.path.join(speed, "statusline-probes", D(5) + ".tsv")
 held = os.stat(oldest)
 write(oldest, ["1\t500\t990000\twork"])
 os.utime(oldest, ns=(held.st_atime_ns, held.st_mtime_ns))
-check(comps(state) == first_components and len(state["cpu_files"]) == 9,
+check(comps(state) == first_components and len(state["cpu_files"]) == 10,
       "a day file whose size and mtime hold is read from the state: %s" % sorted(state["cpu_files"]))
 write(oldest, ["1\t500\t120000\twork"])
 
-record = lambda key, zero: cpu_audit.record(root, repos, {}, harness, speed, collector, hooks, key, "kept", "fine",
+record = lambda key, zero: cpu_audit.record(root, repos, {}, harness, speed, collector, key, "kept", "fine",
                                             zero, "t", [], NOW, day)
 try:
     record("statusline/render", " ")
