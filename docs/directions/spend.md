@@ -1,12 +1,12 @@
 # Spend (direction 4)
 
-Tokens the harness itself costs: instructions, briefs, relays, hook text, review and doctor runs, worker startup,
+Tokens the harness itself costs: instructions, briefs, hook text, review and doctor runs, worker startup,
 and scripts models rewrite where one tool would do.
 
 ## Metric
 
 - Fee index (tokenmap definition `pie-fee-task-3`): the harness's fee per task in a window, priced against the 7
-  days before it. Below 1 means cheaper per task. Its consumers are Workers, Reviewers and Background; the night's
+  days before it. Below 1 means cheaper per task. Its consumers are Chat, Workers, Reviewers and Background; the night's
   runs (Doctors, Upkeep) stay out of it.
 - Second number: Doctors' share of Claude usage over 7 days, Opus = 1 (Egor's ≈5 %, below): volume, mostly 547
   night fixers. Breakages' pilot (no row fixers) moves it, so no Spend goal is proven on it.
@@ -59,7 +59,7 @@ Method, ≈90 s a window on an idle machine (over 10 min at load 130+):
 
 Ranked 2026-10-16 by size in Opus = 1, from the audit packets, the 64 Spend rows, the log-audit rows and tokenmap.
 Class 1's rows are hand labels from each row's `.note` (rows not keyed `suite:`/`cpu:`); its causes overlap (20 cut
-tails + 7 load + 8 other key on 31 rows; an independent pass on 10-16 labelled 34: 21 / 7 / 9).
+tails + 7 load + 8 other key on 31 rows).
 
 | class | count | size, 10-09…15 | days | instances fixed |
 |---|---:|---:|---:|---:|
@@ -69,6 +69,7 @@ tails + 7 load + 8 other key on 31 rows; an independent pass on 10-16 labelled 3
 | 4. a run re-derives what a ledger holds: known reds, fixed rows re-proved, ledger ground re-profiled, a whole read redone | 5 | | 4 nights | 3 |
 | 5. a run sized past what settles it, then run again: a 289-panel judge grid for ≈22 votes, a cap that measured itself, a biased answer key, Haiku cells on Sonnet, 241 images to one worker | 5 | | 2+ nights | 1 |
 | 6. rework from an unsettled spec (Spend menu, Fee index rebuilt 3×, batch sizing, lens tuning): model behavior, no fixer | 6 | | 3 nights | 0 |
+| 7. a Claude review cell writes its cache at the hour's price (×2) where 5 minutes' (×1.25) serve | 2,084 cells | 47.4M of 198.9M (10-09…22) | daily | 0 |
 
 Why they come back:
 1. `share/spend.py` `due()` reopens a component four ways: never audited, source changed (`moved()`), still
@@ -77,28 +78,55 @@ Why they come back:
    audited, as does a component cut before its first audit while its tail stays 7 days. The share moves with load
    and with tokenmap's measurement changes (re-ingest, re-split: deferred tool list ×5.4, Review summary +26 %). The
    3 that changed something were Breakages' `gates` false catches (review-flow-gate, dia-not-chrome, english-gate).
-2. 761cf189 made the stripped ask_* legs the launch for scripted model calls, yet 161 of the 173 calls are
-   `bin/log-audit`'s chunk reads (115 Haiku, 39 Sonnet) and merges (7), 6 the end-of-day report, 1 code-doctor's
-   critical judge, all through `worker-run`. Two 10-12 commits fixed most of it: the 39 Sonnet reads (4.37M, 33 past
-   100k) predate reads on Haiku (ffdf3b0d), the 26 Haiku reads past 100k (briefs 155–262 kB) the 120 kB cap
-   (6741fcf8); the 81 Haiku reads after it: 0 past 100k, max 84.9k, 7.3k Opus = 1 each. Left is configuration:
-   ≈13–16k tokens a worker launch against ≈6k stripped (`parts` fixed + config of first requests), 1.1k Opus = 1 a
-   chunk read, 16–20k an end-of-day report; stripping saves ≈0.05M a week now (no night, so no log audit, since
-   10-14), ≈0.3M with one every night. No goal: `worker-run` cannot tell a one-request run at launch (scripted
-   `doctor-fix`, `image-fanout` need tools; `ROUND: none` is any brief's), so each caller would add a flag.
-   Method: one-request sessions (distinct `request_id`), `ts` 10-08T21:00Z…10-15T21:00Z, `zone = 'worker'`, caller
-   from the transcript's first user text (run dirs pruned before 10-14), priced as the audit runs.
-3. Fixed for claudeb by the 10-14 resume refusal (9864be9d): cold worker re-writes 32 (8.5M) on 10-13, 2 (0.04M)
-   in 10-14…16; account switches 10 (3.5M), none since 10-13. Method: `requests` on `sessions.zone='worker'`,
-   `waste_cause` in (`expired (1h+ idle)`, `idle 5-60min`, `account switch`), `request_sql('r')`. No goal.
+2. Scripted calls via `worker-run` (161 of 173 log-audit chunk reads and merges), cut on 10-12 by reads on Haiku
+   (ffdf3b0d) and the 120 kB cap (6741fcf8); ≈0.05M a week left. Goal scripted-bare stopped: `worker-run` cannot
+   tell a one-request run at launch.
+3. Fixed by the 10-14 resume refusal (9864be9d): cold worker re-writes 8.5M on 10-13, Workers' Cold cache 0 in
+   10-16…22 (`waste_cause` on `zone='worker'`).
 4.–6. come from the night's fan-out, which Breakages' pilot removes, and from model behavior. Log-audit's whole
    reread is not fan-out: it runs in pilot prep (`bin/night-run` `PILOT_RULES`), and a stopped read restarts from
    its `since` (last 10-14). Class 5's one fix was review-bench's (909514f); the rest were the chat's choices.
+7. Claude Code gives `sdk` sessions (`claude -p`) the hour; a cell's requests come back to back (49 of 30,162 after
+   a 5–60 min gap). Workers and chats keep it: their gaps' re-writes would exceed the saving (266M vs 190M, 317M vs
+   52M Opus = 1, 10-09…22).
 
 ## Goals
 
 Goal scripted-bare was stopped on 10-23 by its first step (class 2 above). Bash-cap runs belong to Breakages'
-`bash-cap`.
+`bash-cap`. Deep search 10-23 put its goals before the blocked audit-due; dropped (10-16…22): media skill
+(2.66M), split 10-23 (claude-setup 9cc8c07); `wait-until` (0.90M), replacing `sleep` polls the Fee never counted;
+Project docs (9.7M), the docs briefs name, p50 2.5k characters a read; Workers' Unexplained (3.3M), 80 % logo
+image estimates; Chat·Delegation (2.9M), launcher text 0.6M, the rest turns kept 10-13; mattermost/jira MCP,
+Arbostar-scoped; test output (346 tokens).
+
+### goal cell-cache-5m: a Claude review cell writes its cache at the 5-minute price
+
+Class 7: since 10-09 cells write at the hour (Opus 47 % → 93 %, Haiku 99–100 %), so Review startup went 12.3k →
+15.6k → 16.4k a cell (10-02…08, 09…15, 16…22), write price 1.6 → 2.0, over the 10-13 cut.
+- Change, review-bench `share/rbench/launch.py`: `FORCE_PROMPT_CACHING_5M=1` beside `CLAUDE_CODE_DISABLE_AUTO_MEMORY`
+  in every Claude cell's env (Claude Code 2.1.309 reads it before any other TTL rule).
+- First step: grep that every Claude command `launch.py` builds gets it; one fixture cell writes only
+  `ephemeral_5m_input_tokens`.
+- Proof, a replay on `tokenmap.sqlite3` (`sessions.zone = 'review-bench'`, 10-09…22, `pie.model_weight`): each
+  `cache_1h` at ×1.25, plus a ×1.25 re-write of what was read after a 5–60 min gap (49 requests, 0.94M) or by a
+  cell's first request after a >5 min lull of its model (77 cells, 0.57M): 198.9M → 153.0M Opus = 1 (−23 %, 3.5 %
+  of Claude spend; 10-16…22 alone 5.5M). 7 days after landing: `cache_1h` share ≈ 0, Review startup ≤ 11k a cell.
+- Must not get worse: gap requests ≤ 0.2 %; model, prompt, tools and settings unchanged; workers' and chats'
+  `cache_1h` share unchanged.
+
+### goal preamble-journal: the Fee index prices a worker's preamble from worker-run's journal
+
+Metric fault, no class: `pie.preambles()` reads `brief.launch` − `brief` from run dirs, pruned after 7 days, so the
+previous window loses its preambles (run dirs for 0 of 748 worker sessions of 10-09…13, 625 of 636 in
+10-16…22); the menu's index (10-23) reads Workers·Delegation 3.5k against 1.8k a task, +2.0 of its −14 %.
+- Change: worker-run `journal_worker_attempt` adds `brief_bytes` and `launch_bytes` (`file_bytes`) to its
+  `worker-attempts.jsonl` line, which tokenmap reads already (`zones.ATTEMPTS`); `preambles()` sums them per
+  session, a run dir only for a line without them.
+- First step: a fixture run (`CLAUDEB_DIR`, stub CLI) journals its run dir's two sizes.
+- Proof, a replay on a `--db` index copy (`tracking --since "2026-10-19 00:00" --until "2026-10-23 00:00"`, every
+  run dir present) with run dirs mirrored by size: old 1.091 with all, 1.130 without those begun before 10-17
+  (Workers·Delegation previous price 3,002 → 509); new, its journal built from the mirror, equal both ways.
+- Must not get worse: the full-mirror value equal to old; Chat and Background Delegation cells unchanged.
 
 ### goal audit-due: a Spend audit comes due only on its own price per task
 
@@ -143,6 +171,7 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 | 10-23 | bench gate counts the script's writing (`adhoc_write_s`) | dropped ledger lookup 0.034 vs 0.029 s: refused → passes (+2.46 s); 1 ledger bench, no flip | 286cbd24 |
 | 10-23 | other vendors' uncaused re-send under 1 h scores 0 | 10-09…15 `cache miss` 4,258 → 0; Claude 1,233 same | token-map 22a55f2 |
 | 10-23 | `night-run start` rewrites `spend-7d.json` by the menu's command | file older than the night: kept → rewritten before finish | 04b8e272 |
+| 10-22 | Focus mechanism removed (Egor) | Fee's Focus 2.24M → 0 a week (10-09…15 → 10-16…22) | claude-setup 1c3839f5 |
 
 ## Decisions
 
@@ -170,13 +199,9 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 
 ## Open
 
-- Review startup: re-measure ≈10-20, once the cells from before the 10-13 cut leave the window. Review spend
-  itself is Debt's, paused.
-- Advisor 14 and Daily note 15 runs a week for one launch a day each (ledger notes, 7 days to 10-13), extras
-  untraced; audit-due's price rule makes both due (×1.75, ×1.81 on 10-09…15, `cells` `price[0] / price[1]`).
 - Night fixers' first request in llm-legs worktrees, 10-14…16 (36 fixers): brief 8.1k against 2.6k for a day
   worker there, configuration equal. Re-measure when the full night returns.
-- One worker given 241 images self-compacted repeatedly; the harness ledger ruled it the chat's choice
-  (`log_audit:one-worker-241-images`), against the split-up-front decision above. No class measures it.
-- Focus-off experiment (claude-setup `EXPERIMENTS.json`, 2–3 % of Fee): Egor rules at its 10-20 review; the
-  baseline's 10-09…15 window holds 10-13…15 of it.
+- Worker self-compaction (System, outside the Fee): 118 auto-compactions, 84 sessions, 10-16…22, at ≈268k tokens
+  (`autoCompactWindow` `auto`); summaries and their carry 9.3M Opus = 1, 1.9 % of Claude spend; 90 % logo work,
+  median 76.5 images a session against 20, 141 of 144 in a first run. Fewer images or a larger window are
+  context-quality trades, Egor's (`log_audit:one-worker-241-images` was one).
