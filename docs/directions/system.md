@@ -69,7 +69,7 @@ the log audit's 105 rows hold none that moves CPU or disk.
 | 2. a hook starts a bash per tool call | 166 | 50 | 2 (10-13, 10-14) | 35 |
 | 3. a doctor run costs more each day it holds more data | 103 | 3 | 1 (10-14) | 2 |
 | 4. a Hammerspoon timer polls on the main thread | 95 | 3 | 4 (10-09, 10-10, 10-13, 10-14) | 8 |
-| 5. a CPU audit reopens on a number not its own | audits' churn | 28 due | 0 | 0 |
+| 5. a CPU audit reopens on a number not its own | audits' churn | 28 due | 1 (10-23) | 1 |
 | 6. a store rewritten whole instead of its delta | SSD | 3 | 2 (10-13, 10-14) | 2 |
 
 CPU-min/day is the Baseline's 10-09…15 lines (class 1 = renders + probes and kicks). Rows: the ledger ids each
@@ -99,8 +99,8 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
    minute in 75d60db), 50–60 ms CPU each in osascript alone (timed here). Next, unconfirmed: `llm-limits.lua`
    `onStoreChanged` → `refreshRouting` runs `nice worker-pick --menu` per store write (2 s throttle), 1,383–1,994
    a day 10-14…16 (`routing-launch` lines in the actions log, 10-16 to 22:20), 0.44–0.93 CPU-s each (diagnosis); whether the writes change its input is open.
-5. `share/cpu_audit.py` `due()` reopens a row on another source blob (`spend.moved`) or on CPU-min/day 1.5× the
-   audit's, neither the component's own cost (Lost time's 2026-10-16 decision makes these System's). On 10-16 21:46
+5. `share/cpu_audit.py` `due()` reopened a row on another source blob (`spend.moved`) or on CPU-min/day 1.5× the
+   audit's (CPU a run since 10-23, Done), neither the component's own cost (Lost time's 2026-10-16 decision makes these System's). On 10-16 21:46
    33 were due: 2 never audited, 14 source changed, 17 rises, mostly runs (hooks 5,712 → 13,049 a day at 0.007 s).
    Only 3 ran slower: `hook/review-owner-gate.sh` ×5.6, `doctor/speed` ×1.7, `run-suites.sh` ×16 (test load).
    `cpu:hook/context-nudge.sh` was re-audited on 10-14 when an edit "moved the source; the cost did not".
@@ -117,19 +117,6 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
 `doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
 195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15), `tab-tty` ≈ 17 (2.4 CPU-s × 415
 Terminal-front minutes a day). Classes 1, 2 and 6 have no goal (above).
-
-### goal cpu-audit-own-number: a CPU audit's rise is its own cost a run
-
-Class 5.
-- llm-legs `share/cpu_audit.py` `due()`: the rise reason reads CPU a run (`cpu_s_run` ≥ `spend.SHARE_RISE` × the
-  row's), never CPU-min/day, which more runs move. Never audited and the source-edit reason (`spend.moved`) stay:
-  none of 13 source-edit reopens had a per-run rise ≥ 1.5×, yet one is the biggest CPU find on record,
-  `statusline/render` 0.104 → 0.037 CPU-s a run (228.7 → 78.4 CPU-min/day), and the 8 launched cost 0.045 % of
-  Claude spend (2026-10-20 night-cost research).
-- Proof: old and new `due()` over one copy of the CPU journals, `spend-ledger.json` and HEAD. Before (10-16 21:46):
-  17 due on a rise, 3 of them slower a run; target: new due = never audited + source edits + the per-run risen.
-  After landing, 7 daily reads of the Speed doctor's `cpu_audit` problems: none due on a rise without a per-run one.
-- Must not get worse: every per-run rise ≥ 1.5× is due (3 of 3 in the replay); the Speed doctor's CPU a run.
 
 ### goal doctor-run-flat: a doctor run reads what is new since its last
 
@@ -171,6 +158,7 @@ Class 4. A tab keeps its tty for its life.
 | 10-13/14 | six statusline sections cut by CPU audit | renders 286 → 128, probes 394 → 65 CPU-min/day (10-13 → 10-15) | `cpu:statusline/*` |
 | 10-14 | Hammerspoon tab poll idle-adaptive | 105, 100 CPU-min/day on 10-14/15 with children, not proven | hammerspoon b4a4941, 75d60db |
 | 10-14 | the System doctor's blind spot | | 7fcf0fc1 |
+| 10-23 | CPU audits rise on CPU a run, never CPU-min/day (goal cpu-audit-own-number) | one copy of journals, ledger, HEAD: due on a rise 3 (×0.2–1.05 a run) → 3 (×1.6–3.5 a run, missed before), 29 never + 23 source kept; per-run ≥ 1.5× due 3/6 → 6/6; replay CPU 3.17 → 3.14 s; read 7 days: no rise-due without a per-run one | 627bc40d |
 
 ## Decisions
 
