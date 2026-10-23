@@ -132,6 +132,7 @@ No `w` row in a day: no value, never 0, no row.
 **Lost time index** (Egor; the title number). Fee per unit of work against the previous 7 days, Paasche per stratum as
 token-map's `_price_index`; 1.00 = the same, no norms or thresholds. It must not move with volume, parallelism,
 vendor, night/day or presence, so a stratum's overhead is the SUM over its agents, each agent's own spans unioned.
+Strata: chat (orders), workers (tasks), night (jobs of the nights finished; a night's hubs and Close are one agent).
 Unmeasured time is unknown, not loss; a day before `horizon()` in either window means no value.
 
 **Test health** (`share/test_health.py`, Speed's `tests` key; the one place test time is shown; its lines, bands and

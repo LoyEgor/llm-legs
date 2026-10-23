@@ -58,8 +58,8 @@ REFUSAL_CAP_S = 300
 HISTORY_DAYS = 6
 TREND_DAYS = 7
 TREND_RECENT = 3
-BUDGET_VERSION = 5
-STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"))
+BUDGET_VERSION = 6
+STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"), ("night", "min per job · night"))
 WORKER_OVERHEAD = ("slot", "retries", "walled", "wrapup", "dead", "hung", "suite_run", "suite_wait")
 INDEX_DAYS, INDEX_MIN_UNITS = 7, 20
 DEAD_LINE = re.compile(r"(?:(?:Failed to authenticate|Not logged in|You've hit your \w+ limit|API Error|Execution error|"
@@ -576,6 +576,29 @@ def tool_time(rows, owner, taken, lo, hi):
             "by": {k: round(length(minus(clip(v, lo, hi), taken)), 1) for k, v in spans.items()}}
 
 
+def night_agents(lo, hi):
+    """`(owner, closes, jobs)` of the night stratum: {session prefix: ("night", id)} of every hub a night had (its
+    `session`, `previous_sessions` and each `wall` event's, as a walled hub is relaunched in a new session); (start,
+    end, agent) per night, whose session-less `suites` runs are its Close's (a Close relaunched leaves only the last in
+    `suites`), open to `hi` while the night or its Close runs; the jobs of the nights finished in [lo, hi)."""
+    owner, closes, jobs = {}, [], 0
+    for path in glob.glob(os.path.join(night_churn.doctors_dir(), "nights", "*.json")):
+        night = read_json(path, {})
+        try:
+            agent, start = ("night", night["id"]), night_spend.epoch(night["started_at"])
+            ends = [night.get("finished_at")] + ([night["suites"].get("finished_at")] if night.get("suites") else [])
+            end = max(night_spend.epoch(e) for e in ends) if all(ends) else hi
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        walled = [e.get("session") for e in night.get("events") or () if isinstance(e, dict) and e.get("phase") == "wall"]
+        for session in [night.get("session")] + list(night.get("previous_sessions") or ()) + walled:
+            if session:
+                owner[str(session)[:8]] = agent
+        closes.append((start, end, agent))
+        jobs += len(night.get("jobs") or ()) if ends[0] and lo <= night_spend.epoch(ends[0]) < hi else 0
+    return owner, closes, jobs
+
+
 def budget(lo, hi):
     """Overhead over [lo, hi) as wall-clock seconds: each class is the union of its spans, so parallel runs count once.
     Suites come from run-suites' journal for every caller, less the seconds their owner generated beside them (inside
@@ -585,13 +608,15 @@ def budget(lo, hi):
     `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither. Wait loops (`waits`,
     beside the overhead, never in it) are `wait_overshoot`. `strata` is the
     index's per-day input: each stratum's overhead summed over its agents, every agent's own spans unioned, and its
-    units; None for a day before the journals record (`horizon`)."""
+    units; None for a day before the journals record (`horizon`). A night is one agent (`night_agents`): its hub
+    sessions and its Close, their suites whole (a hub has no turns to generate in)."""
     events = event_rows(lo, hi)
     runs = worker_runs(lo, hi)
     suites = suite_rows(min([lo] + [num(r.get("pid_started_at")) or num(r.get("started_at")) or lo for r in runs]),
                         hi + 86400)
     spans, unplaced, active, dead = collections.defaultdict(list), collections.Counter(), [], dead_runs(runs)
-    agents, compact, owner, units, outside = collections.defaultdict(list), collections.Counter(), {}, collections.Counter(), []
+    agents, compact, units, outside = collections.defaultdict(list), collections.Counter(), collections.Counter(), []
+    owner, closes, units["night"] = night_agents(lo, hi)
     sessions = {}
     chained = {name for found in resumers(lo).values() for _, name in found} if runs else set()
     calls, turns, split_runs = collections.defaultdict(list), collections.defaultdict(list), set()
@@ -629,7 +654,9 @@ def budget(lo, hi):
         active.append((r["queued_at"], r["ended_at"]))
         if r.get("worker_run") in split_runs:
             continue
-        chat = None if r.get("worker_run") else owner.get(str(r.get("session") or "")[:8])
+        chat = None if r.get("worker_run") else owner.get(str(r.get("session") or "")[:8]) or next(
+            (night for a, b, night in closes if not r.get("session") and r.get("kind") == "suites"
+             and a <= r["queued_at"] < b), None)
         if chat and chat[0] == "chat" and chat[1] not in generating:
             own = [(c[1], c[1] + c[5]) for c in calls.get(chat[1], ())]
             generating[chat[1]] = minus(turns[chat[1]], own) if own else []
@@ -637,7 +664,7 @@ def budget(lo, hi):
         spans["suite_wait"] += minus([(r["queued_at"], started or r["ended_at"])], gen)
         if started:
             spans["suite_run"] += minus([(max(started, r["queued_at"]), r["ended_at"])], gen)
-        if chat and chat[0] == "chat":
+        if chat and chat[0] != "workers":
             agents[chat] += minus([(r["queued_at"], r["ended_at"])], gen)
         elif not r.get("worker_run"):
             outside.append((r["queued_at"], r["ended_at"]))
@@ -703,7 +730,8 @@ def cached_day(day):
 
 def day_budget(day, now, store):
     """A day's budget, stored once the day ended a day ago (worker rows land when the run ends) and recomputed when
-    its BUDGET_VERSION is older."""
+    its BUDGET_VERSION is older; an older settled day keeps its numbers and strata, taking only the strata it lacks
+    and `out_s` (run folders are pruned after 7 days, so a recompute reads less than it did)."""
     lo, hi = day_bounds(day)
     cached = cached_day(day)
     if cached:
@@ -711,6 +739,10 @@ def day_budget(day, now, store):
     key = (day, now, harness_dir(), worker_runs_path(), suites_path(), gates_path())
     if key not in _BUDGETS:
         found = _BUDGETS[key] = budget(lo, min(hi, now))
+        old = read_json(day_cache_path(day), None)
+        if isinstance(old, dict) and old.get("settled") and isinstance(old.get("strata"), dict) and found["strata"]:
+            found = _BUDGETS[key] = dict(old, version=BUDGET_VERSION, strata=dict(found["strata"], **{
+                s: v for s, v in old["strata"].items() if s != "out_s"}))
         found["settled"] = now >= hi + SETTLE_S
         if found["settled"] and store:
             write_json(day_cache_path(day), found)

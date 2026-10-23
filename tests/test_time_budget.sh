@@ -283,7 +283,7 @@ check(day["overhead_s"] == 4290 and sum(day["seconds"].values()) == 4910,
       "the overhead is the union of all classes, a second two classes share counted once, never their sum: %s"
       % day["overhead_s"])
 check(day["strata"] == {"chat": {"overhead_s": 60, "units": 0}, "workers": {"overhead_s": 4101, "units": 2},
-                        "out_s": {"suites": 100, "unmeasured": 649}},
+                        "night": {"overhead_s": 0, "units": 0}, "out_s": {"suites": 100, "unmeasured": 649}},
       "a chat's stratum holds its turns' Stop seconds and the locks it paid, a notification turn adds no order; a "
       "worker's holds its own classes and the hook its call ran; a suite of no worker and no chat with turns and the "
       "unmeasured seconds stay out, reported: %s" % day["strata"])
@@ -698,12 +698,12 @@ chain = stats("chain-stats", [quick("claudeb-1-1-cha1", D0 + 50000), quick("clau
 check(chain["strata"]["workers"] == {"overhead_s": 200, "units": 1},
       "a resume chain is one task, each run's overhead its own: %s" % chain["strata"])
 day1 = {"chat": {"overhead_s": 600, "units": 10}, "workers": {"overhead_s": 3000, "units": 5},
-        "out_s": {"suites": 0, "unmeasured": 0}}
+        "night": {"overhead_s": 0, "units": 0}, "out_s": {"suites": 0, "unmeasured": 0}}
 twice = {k: {f: 2 * v for f, v in day1[k].items()} for k in day1}
 moved = dict(day1, chat={"overhead_s": 240, "units": 4}, workers={"overhead_s": 5400, "units": 9})
 thin = dict(moved, chat={"overhead_s": 600, "units": 1})
 check(T.paasche([day1] * 7 + [twice] * 7)["value"] == 1.0 and T.paasche([day1] * 7 + [moved] * 7)["value"] == 1.0
-      and T.paasche([day1] * 7 + [thin] * 7)["left_out"] == ["chat"]
+      and T.paasche([day1] * 7 + [thin] * 7)["left_out"] == ["chat", "night"]
       and T.paasche([day1] * 7 + [thin] * 7)["value"] == 1.0
       and T.paasche([day1] * 7 + [dict(day1, workers={"overhead_s": 1500, "units": 5})] * 7)["value"] == 0.58,
       "doubled volume is 1.00, units moved between strata at unchanged prices are 1.00, a stratum under 20 units on "
