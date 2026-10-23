@@ -125,32 +125,12 @@ table; awk dying on Cyrillic let calls through, `log_audit:pretooluse-awk-multib
   after landing: the next 7 days' denials labelled the same way, target causes 0. Re-runs after a denial show
   nothing: workers re-run rightly refused commands too (`log_audit:workers-route-around-denials`).
 
-### goal stop-hooks: no Stop hook holds the stop
-
-Class: a Stop hook outruns its slice, each case fixed alone: worker-run-backstop (10-03, 10-06, 10-14; its
-hook-held row 4 times), notice-chat-names, ask-span-drill, ask-word-reading, ask-run-unfinished,
-notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
-- Load drives it: at 80+ machine-wide live runs 16 of 26 stops (night 10-13) waited ≥5 s and 3 were killed at the
-  15 s timeout; under 20 live runs 1 of 2,741. Killed stops used only 0.22–0.32 s CPU (`hooks/folded/20739.tsv`).
-  Transcript size, run root and the session's own live runs are not drivers.
-- stop-dispatch's busy scan runs before `start=$SECONDS`, outside its budget; the backstop then runs alone before
-  any notice (6–12.6 s of those stops). 15 of 16 kills at 15 s left no stop-gate journal line, so the old read
-  (`journal.jsonl` errors) cannot see them.
-- Change: `"asyncRewake": true` on the one Stop entry of claude-setup `local-config/home/.claude/settings.json`
-  (runs in the background, wakes the model on exit 2); stop-dispatch turns a block into exit 2 with the reason on
-  stderr; its 5 s/10 s budget and serial order go.
-- **Blocked** by the check (10-23, 2.1.309, interactive): a rewoken stop sets `stop_hook_active`, but an async
-  hook's `systemMessage` never shows (exit 0 or 2), its `stop_hook_summary` has no `durationMs`, a timeout kill no
-  `hook_cancelled`: every notice goes silent. Open: notices on a sync entry of their own (10-15: no new hooks) or
-  relayed by the rewoken model, a turn each. `claude -p` stays sync (code read).
-- Proof: stops ≥5 s (kills included), per 1,000, from `hookInfos[].durationMs` (uuid-deduped: forks copy records)
-  by band of worker runs live at the stop (run dir birth → `exit_code` mtime). 10-14 22:00…10-23 04:00, 2,429
-  stops: under 20 9.9 (23, 6 killed), 20–79 90 (9 of 100, 3 killed), 80+ empty. Target 0 per band, an empty band
-  unclear. Transcripts 10-01…16: 7,179 stops, 120 ≥5 s, 16 killed. Not worse: asks/holds (64), notices (54)
-  delivered, ≤23 repeats within 5 min, Stop CPU p50 0.29 s.
-
 ## Done
 
+- stop-hooks (claude-setup a0fe49a, 10-23): stops waited on process starts (stall ≤≈1 s each), not work; builtin
+  payload read, first word ask in the asks' wave, kill hits and cleanup detached: 44 → 34 starts idle. Proof,
+  fixture stop, every start +0.2 s, interleaved: idle 6.9 → 4.4 s, busy 4.75 → 3.65 s, killed part 6.2–7.5 →
+  4.3–4.5 s. Read, 7 days: ≥5 s and kills per 1,000 under 13.2 and 3.7; not worse: asks, holds, notices, CPU p50 0.29 s.
 - bash-cap (llm-legs 35d604a3, 10-23): workers no longer export `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, so a
   Bash call at its cap moves to the background. Proof at a 60 s cap, `test_night_run` as one plain call, old and new
   interleaved: old 2 of 2 killed, no result; new 2 of 2 moved, PASS 529. Read: killed worker calls, `sleep` excluded,
@@ -187,5 +167,7 @@ notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
 
 ## Open
 
+- stop-hooks: the backstop still runs alone (44 % of held seconds) as `words_span_live` syncs the words store;
+  on `words_span_on` beside the notices it saves ≈5 starts a stop, but a hold may miss a mid-turn span word.
 - `bin/night-run` `pilot_goal` skips every goal with a job tonight whatever its outcome, so a failed goal lets the
   next one in its direction start the same night, against the 10-16 queue.

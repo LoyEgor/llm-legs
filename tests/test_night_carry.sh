@@ -289,7 +289,7 @@ STRONG: yes" ]
 assert grep -qxF "ADD-DIR: $C/.claude/worktrees/night-G1-goal-gates" "$b"
 assert grep -qxF '### goal gates: one parser' "$b"
 assert grep -qxF 'In claude-setup hooks/lib.' "$b"
-assert_fails grep -qF 'stop-hooks' "$b"
+assert_fails grep -qF 'goal stop-hooks: capped' "$b"
 pnight carry G1 >"$WORK/g1b.out" 2>/dev/null || fail "a carry while the goal works failed"
 assert [ ! -s "$WORK/g1b.out" ]
 pnight job G1 set goal-gates state=left reason=blocked >/dev/null || fail "goal-gates not set left"
