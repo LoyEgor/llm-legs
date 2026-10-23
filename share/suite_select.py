@@ -5,7 +5,8 @@ suite; a suite whose name holds the file's stem; a suite, or a tests/ helper it 
 imports its module or requires it; for a file with none of those, the same for a repo file that imports, sources,
 requires or runs it on a line of code, one level: a comment naming it (a doc pointer) loads nothing. A module its package's __init__ names counts as imported by a suite importing the
 package. A file with no own suite and no catch keeps the name rule: a suite, or a helper it names, naming its basename
-as a word.
+as a word. A suite with no catch in CATCH_D days, journaled JOURNALED_D days or more, leaves every file's selection
+but its own (the file is the suite, or named() after the file): the night's full run keeps it.
 
   suite_select.py <top> <paths-file>   suite paths on stdin, the ones covering the paths on stdout
 """
@@ -21,6 +22,7 @@ import test_catches  # noqa: E402
 import time_budget  # noqa: E402
 
 CATCH_D = test_catches.UNCAUGHT_D
+JOURNALED_D = 7
 WORKTREES = "/.claude/worktrees/"
 EDGE = r"(?<![\w.@+-])%s(?![\w.@+-])"
 IMPORTS = r"^[ \t]*(?:import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*%s\b|from[ \t]+%s[ \t]+import\b)|" \
@@ -156,8 +158,12 @@ def select(top, rels, names, now=None, held=None):
     texts = {n: read(os.path.join(folder, n)) for n in names}
     via = {n: [h for h in helpers if h in t] for n, t in texts.items()}
     by_stem = {os.path.splitext(n)[0]: n for n in names}
-    credit = test_catches.fixers(held if isinstance(held, dict) else {}, now, CATCH_D)
+    held = held if isinstance(held, dict) else {}
+    credit = test_catches.fixers(held, now, CATCH_D)
     repo = repo_name(top)
+    caught, aged = test_catches.summary(held, now, CATCH_D)[1], time_budget.local_day(now - JOURNALED_D * 86400)
+    first = {n: (held.get("suites") or {}).get(test_catches.key(repo, n), {}).get("first") for n in names}
+    zero = {n for n in names if test_catches.key(repo, n) not in caught and first[n] and first[n] <= aged}
     tokens = {n: set(TOKEN.findall(t)) for pool in (texts, helpers) for n, t in pool.items()} \
         if len(rels) >= INDEX_AT else None
 
@@ -188,7 +194,9 @@ def select(top, rels, names, now=None, held=None):
             users = {h for h, t in helpers.items() if match(t, rel, 2)}
             naming = {n for n, t in texts.items() if match(t, rel, 2) or users.intersection(via[n])}
             proven |= given.keys() & naming
-        out[rel] = {"own": own, "evidence": proven, "fallback": naming if not own and not proven else set()}
+        keep = {os.path.basename(rel)} | named(names, rel)
+        out[rel] = {k: {n for n in v if n not in zero or n in keep} for k, v in
+                    (("own", own), ("evidence", proven), ("fallback", naming if not own and not proven else set()))}
     return out
 
 

@@ -25,7 +25,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import limit_hit  # noqa: E402
 import night_spend  # noqa: E402
 import suite_audit  # noqa: E402
-import suite_select  # noqa: E402
 import test_catches  # noqa: E402
 import time_budget  # noqa: E402
 from time_budget import num  # noqa: E402
@@ -39,7 +38,6 @@ BAND = 1.5
 IDLE_RATIO, IDLE_MIN_S, IDLE_RUNS = 2.0, 10.0, 5
 RED_SHARE = 0.25
 HEAVY_MIN_DAY = 15.0
-HELD_SHARE = 0.5
 PIN_MIN, PIN_EDITS, PIN_REDS = 5, 2, 2
 NIGHT_OPEN_H = 16
 FULL_SCOPES = ("full", "all")
@@ -218,8 +216,9 @@ def per_suite(execs, now, born):
              "judged": len(judged), "flaky": sum(1 for e in runs if e["flaky"]),
              "p50_s": passing[len(passing) // 2]["secs"] if passing else None, "idle_s": 0.0,
              "days": len({time_budget.local_day(e["end"]) for e in runs}),
-             "cpu_share": sum(e["cpu"] for e in runs if e["cpu"]) / sum(e["secs"] for e in runs if e["cpu"])
-             if any(e["cpu"] for e in runs) else None}
+             "cpu_share": sum(e["cpu"] for e in runs if e["cpu"] and e["secs"]) /
+             sum(e["secs"] for e in runs if e["cpu"] and e["secs"]) if any(e["cpu"] and e["secs"] for e in runs)
+             else None}
         timed = [e for e in passing if e["cpu"] is not None]
         if len(timed) >= IDLE_RUNS:
             fast = timed[:max(1, len(timed) // 10)]
@@ -352,7 +351,7 @@ def regressions(now, normal):
             for key, text, unit, least in LINES if red_line(key, now[key], normal[key], least)]
 
 
-# ---------------------------------------------------------------- fan-out: tests/affected's selection
+# ---------------------------------------------------------------- repository scans
 
 
 def candidates(text):
@@ -459,26 +458,6 @@ def scans(tops, cache, write):
     return out
 
 
-def pulls(top, scan, paths, held, now, cache=None):
-    """{path: frozenset of suites tests/affected selects for it}: share/suite_select.py's choice, plus test_consistency
-    for a name shared-invariants.md holds; kept in cache[top] while HEAD, the ledger's days, the paths and both readers
-    are unchanged."""
-    key = hashlib.sha1("\n".join([read(os.path.abspath(__file__)), read(os.path.abspath(suite_select.__file__)),
-                                  git(top, "rev-parse", "HEAD") or "", str(held.get("through")),
-                                  time_budget.local_day(now)] + list(paths)).encode()).hexdigest()
-    entry = (cache or {}).get(top)
-    kept = entry.get("pulls") if isinstance(entry, dict) else None
-    if isinstance(kept, dict) and kept.get("key") == key:
-        return {path: frozenset(suites) for path, suites in kept["sets"].items()}
-    out = {}
-    for path, c in suite_select.select(top, paths, scan["suites"], now, held).items():
-        out[path] = frozenset(c["own"] | c["evidence"] | c["fallback"] |
-                              ({"test_consistency.sh"} if os.path.basename(path) in scan["invariants"] else set()))
-    if isinstance(entry, dict):
-        entry["pulls"] = {"key": key, "sets": {path: sorted(suites) for path, suites in out.items()}}
-    return out
-
-
 def changes(top, lo):
     """([commit time], {path: commits}) of the commits on the checkout's HEAD since lo."""
     stamps, paths = [], collections.Counter()
@@ -488,67 +467,6 @@ def changes(top, lo):
         elif line.strip():
             paths[line.strip()] += 1
     return stamps, paths
-
-
-def fan_out(tops, scanned, rows, heavy, held, lo, hi, cache=None):
-    """The changed files whose tests/affected selection (share/suite_select.py) costs the most suite minutes a day. A
-    targeted run prices a file when it held HELD_SHARE of the suites the file selects (a worker drops the slow layer);
-    each of its execs goes to one such file selecting it, the one most like the run (shared suites over joint), the
-    narrowest on a tie: no exec is priced twice. Minutes on suites a heavy row prices are shown apart; `zero_min_day`
-    is the part on suites with no catch over the catch window. Every commit time and {top: {path: commits}}."""
-    files, landed, edits = [], [], {}
-    caught = test_catches.summary(held, hi, suite_select.CATCH_D)[1]
-    for top in tops:
-        stamps, paths = changes(top, lo)
-        landed += stamps
-        edits[top] = paths
-        scan = scanned.get(top)
-        if not scan:
-            continue
-        repo = os.path.basename(top.rstrip("/"))
-        changed = sorted(p for p in paths if os.path.exists(os.path.join(top, p)))
-        pulled = {p: suites for p, suites in pulls(top, scan, changed, held, hi, cache).items() if suites}
-        pulling = collections.defaultdict(list)
-        for p, suites in pulled.items():
-            for name in suites:
-                pulling[name].append(p)
-        zero = {n for n in scan["suites"] if "%s/%s" % (repo, os.path.splitext(n)[0]) not in caught}
-        found = {p: {"repo": repo, "top": top, "path": p, "changes": paths[p], "suites": len(suites),
-                     "zero_suites": len(suites & zero), "runs": 0, "wall_s": 0.0, "heavy_s": 0.0}
-                 for p, suites in pulled.items()}
-        parts = {p: ([], [], []) for p in found}
-        for r in rows:
-            if r["repo"] != repo or r["kind"] != "suites" or r["scope"] not in TARGETED or not lo <= r["end"] < hi:
-                continue
-            ran = {e["name"] for e in r["execs"]}
-            shared = collections.Counter(p for name in ran for p in pulling.get(name, ()))
-            like = {p: n / float(len(pulled[p]) + len(ran) - n) for p, n in shared.items()
-                    if n >= HELD_SHARE * len(pulled[p])}
-            owning, owners = {}, set()
-            for p in sorted(like, key=lambda p: (-like[p], len(pulled[p]), -paths[p], p)):
-                for name in pulled[p] & ran:
-                    owning.setdefault(name, p)
-            for e in r["execs"]:
-                owner = owning.get(e["name"])
-                if owner is None:
-                    continue
-                owners.add(owner)
-                is_heavy, work = (repo, e["name"]) in heavy, e["cost"].get("work", 0.0)
-                found[owner]["heavy_s" if is_heavy else "wall_s"] += work
-                parts[owner][is_heavy].append((e["end"], work))
-                if not is_heavy and e["name"] in zero:
-                    parts[owner][2].append((e["end"], work))
-            for owner in owners:
-                found[owner]["runs"] += 1
-        for p, f in found.items():
-            f.update(suite_min=round((f["wall_s"] + f["heavy_s"]) / 60.0 / f["runs"], 1) if f["runs"] else 0.0,
-                     min_day=round(per_day(parts[p][0], hi) / 60.0, 1),
-                     heavy_min_day=round(per_day(parts[p][1], hi) / 60.0, 1),
-                     zero_min_day=round(per_day(parts[p][2], hi) / 60.0, 1),
-                     usual_min_day=round(f["wall_s"] / 60.0 / STATS_D, 1))
-            files.append(f)
-    files.sort(key=lambda f: (-f["min_day"], -f["runs"], -f["suites"], f["path"]))
-    return files, landed, edits
 
 
 # ---------------------------------------------------------------- dead and pinned suites
@@ -616,10 +534,6 @@ def per_class(window, cls, now, born):
             for key, runs in by.items()}
 
 
-def heavy_keys(window, now, born):
-    return {k for k, (day_s, _, _) in per_class(window, "work", now, born).items() if day_s / 60.0 >= HEAVY_MIN_DAY}
-
-
 def cpu_run(execs):
     timed = [e["cpu"] for e in sorted(execs, key=lambda e: e["end"]) if e["ok"] and e["cpu"]][-suite_audit.RECENT_RUNS:]
     return statistics.median(timed) if len(timed) >= suite_audit.SIDE_RUNS else None
@@ -635,9 +549,9 @@ def same_work(history, key, cut, runs):
     return bool(before and after) and after < BAND * before
 
 
-def findings(window, suites, files, now, born, since=lambda target: None, history=()):
+def findings(window, suites, now, born, since=lambda target: None, history=()):
     """Each minute of the window's suite wall in at most one finding: retests, flaky, idle, long pole, serial,
-    heavy suites (their work at HEAVY_MIN_DAY or more), then fan-out on the rest. A suite's finding is charged only
+    heavy suites (their work at HEAVY_MIN_DAY or more). A suite's finding is charged only
     for its runs from since(its target) on, the time its own fix landed; a heavy one returns only on more CPU a run
     than before that fix (same_work over history, every run loaded)."""
     out = []
@@ -688,16 +602,6 @@ def findings(window, suites, files, now, born, since=lambda target: None, histor
                            len({id(e["row"]) for e in serial}), days(serial),
                            "%d multi-suite runs on one slot, their suites one after another" % len(
                                {id(e["row"]) for e in serial}), ["llm-legs/share/run-suites.sh"]))
-    for f in sorted((f for f in files if f["suites"] > 1), key=lambda f: (-f["zero_min_day"], f["path"]))[:3]:
-        if f["zero_min_day"] > 0:
-            out.append(finding("fan-out", "fan-out/%s/%s" % (f["repo"], f["path"]), f["zero_min_day"] * 60.0, 0.0,
-                               f["runs"], STATS_D, "%s · %s: selects %d suites, %d with no catch in %d days, %s of "
-                               "its %s min/day on them over %d targeted runs, %d changes in %d days; +%s min/day on "
-                               "heavy suites priced there" % (
-                                   f["path"], f["repo"], f["suites"], f["zero_suites"], suite_select.CATCH_D,
-                                   plain(f["zero_min_day"]), plain(f["min_day"]), f["runs"], f["changes"], STATS_D,
-                                   plain(f["heavy_min_day"])),
-                               ["llm-legs/share/suite_select.py", "%s/%s" % (f["repo"], f["path"])], "estimated"))
     return out
 
 
@@ -715,7 +619,7 @@ def red_line(key, now, normal, least):
     return now is not None and normal is not None and now > BAND * normal and now - normal >= least
 
 
-def block(now, normal, stats, files, found, queued, hours, catches):
+def block(now, normal, stats, found, queued, hours, catches):
     """[depth, flags, red, text] lines: the head, one line per class in one unit against its usual, the heavy table."""
     menu, red = [], 0
 
@@ -748,13 +652,6 @@ def block(now, normal, stats, files, found, queued, hours, catches):
                 now["posts"], now["post_h"]), "d")
         elif key == "per_change":
             emit(2, "%5d changes landed in %d h" % (now["landed"], round(hours)), "d")
-        elif key == "targeted" and files:
-            emit(2, "suites  uncaught  runs  suite-min  changes  min/day  uncaught  file · median day of %d" % STATS_D,
-                 "d")
-            for f in files[:SHOWN]:
-                emit(2, "%6d %9d %5d %10s %8d %8s %9s  %s · %s" % (
-                    f["suites"], f["zero_suites"], f["runs"], plain(f["suite_min"]), f["changes"], plain(f["min_day"]),
-                    plain(f["zero_min_day"]), f["path"], f["repo"]), "d")
         elif key in ("idle", "pole"):
             shown = sorted(rows["idle"] if key == "idle" else rows["pole"] + rows["serial"], key=lambda f: -f["min_day"])
             if shown:
@@ -820,33 +717,31 @@ def collect(now, journal, tops=None, write=False, lo=None, since=lambda target: 
     stats = per_suite(window, now, born)
     multi = [r["j"] for r in rows if r["n"] >= 2 and r["j"] > 1 and r["end"] >= stats_lo]
     allocate(rows, stats, statistics.median(multi) if multi else 1)
-    heavy = heavy_keys(window, now, born)
     cache = time_budget.read_json(cache_path(), {})
-    cache = cache if isinstance(cache, dict) else {}
-    scanned = scans(tops, cache, write)
+    scanned = scans(tops, cache if isinstance(cache, dict) else {}, write)
     held = test_catches.fold(now, journal, write)
-    before = json.dumps(cache, sort_keys=True)
-    files, landed, edits = fan_out(tops, scanned, rows, heavy, held, stats_lo, now, cache)
-    if write and json.dumps(cache, sort_keys=True) != before:
-        time_budget.write_json(cache_path(), {k: v for k, v in cache.items() if k in scanned})
+    landed, edits = [], {}
+    for top in tops:
+        stamps, edits[top] = changes(top, stats_lo)
+        landed += stamps
     current = measure(rows, recent, landed, lo, now)
     normal, days = usual(rows, recent, landed, now, current)
     listed = suite_audit.suites(tops)
     queued = dict(test_catches.uncaught(held, listed, now), **pinned(tops, scanned, stats, edits))
     queued.update(dead(tops, scanned, execs, journal_lo, now))
     counts, caught = test_catches.summary(held, now, STATS_D)
-    found = findings(window, stats, files, now, born, since, execs)
+    found = findings(window, stats, now, born, since, execs)
     out.update(status="watch" if any(red_line(k, current[k], normal[k], m) for k, _, _, m in LINES) else "ok",
                now=current, usual=normal, usual_days=days, findings=found, regressions=regressions(current, normal),
                heavy=[dict({k: s[k] for k in ("repo", "label", "runs", "wall_s", "avg_s", "red", "judged", "flaky",
                                               "cpu_share")}, min_day=round(s["day_s"] / 60.0, 1),
                            usual_min_day=round(s["wall_s"] / 60.0 / STATS_D, 1))
                       for s in sorted(stats.values(), key=lambda s: (-s["day_s"], -s["wall_s"]))[:TOP]],
-               fan_out=files[:SHOWN], candidates=queued,
+               candidates=queued,
                catches={"days": STATS_D, "episodes": dict(counts), "suites": dict(caught),
                         "next_due": test_catches.next_due(held, listed)},
                journal_days=round((now - (journal_lo or now)) / 86400.0, 1))
-    out["menu"] = block(current, normal, stats, files, found, queued, (now - lo) / 3600.0,
+    out["menu"] = block(current, normal, stats, found, queued, (now - lo) / 3600.0,
                         (counts, caught, out["catches"]["next_due"]))
     out["head"] = out["menu"][0][3].split(": ", 1)[1]
     out["collector_s"] = round(time.monotonic() - started, 2)

@@ -4,7 +4,8 @@
 # the package whose __init__ names it, or
 # does so for a repo file importing or sourcing it) plus the suites test_catches credits with a whole catch on it over
 # 90 days, or with any credit when they also name it; a file with neither keeps the name rule (a suite or helper
-# naming its basename). A suite only naming a file leaves targeted runs: the night's full run keeps it.
+# naming its basename). A suite only naming a file, or with no catch in 90 days but for its own file, leaves
+# targeted runs: the night's full run keeps it.
 # test_consistency.sh too when docs/shared-invariants.md names one. Sourced by
 # run-suites.sh (--changed); run, it is tests/affected:
 #   affected-suites.sh --repo <dir> [file...]   (no file: every file changed against HEAD, untracked or

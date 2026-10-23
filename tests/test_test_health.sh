@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/test_health.py off a fixture repository and run-suites journal: each class (wait as a union per caller,
-# exact repeats by tree, post-worker retests, runs per landed change, fan-out through tests/affected's selection,
-# the scan cache, idle on the fastest runs, red and flaky, contention and slot queue, heavy, dead), the usual and its
-# red lines, Speed's opportunities from the findings and suite_audit's queue of dead suites. Fixture directories only.
+# exact repeats by tree, post-worker retests, runs per landed change, the scan cache, idle on the fastest runs, red
+# and flaky, contention and slot queue, heavy, dead), the usual and its red lines, Speed's opportunities from the
+# findings and suite_audit's queue of dead suites. Fixture directories only.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -176,7 +176,7 @@ check(now["landed"] == 2 and abs(now["per_change"] - now["runs"] / 2.0) < 1e-9,
 check(now["targeted"] == sum(len(r["suites"]) for r in rows if r["ended_at"] >= T - 86400 and r["kind"] == "suites"
                              and r["scope"] == "named") / sum(1 for r in rows if r["ended_at"] >= T - 86400 and
                                                                r["kind"] == "suites" and r["scope"] == "named"),
-      "fan-out: suites per targeted run is the mean over named and changed runs")
+      "targeted: suites per targeted run is the mean over named and changed runs")
 check(now["flaky"] == 2, "flaky: red then green on one tree, or two every-suite runs of one head; a new tree or a "
       "named run of one head is no flake: %s" % now["flaky"])
 judged = [(n, s) for r in rows if T - 86400 <= r["ended_at"] < T and r["signal"] is None for n, s in r["suites"].items()]
@@ -185,6 +185,10 @@ check(abs(now["red"] - 100.0 * sum(1 for _, s in judged if s["rc"]) / len(judged
 timed = [s for r in rows if T - 86400 <= r["ended_at"] < T for s in r["suites"].values()]
 check(abs(now["contention"] - sum(s["secs"] for s in timed) / sum(s["cpu_s"] for s in timed)) < 1e-9,
       "contention: wall per CPU second over the window's suite runs")
+killed = {"repo": "alpha", "name": "test_k.sh", "killed": True, "ok": False, "secs": 0.0, "cpu": 2.0, "end": NOW - 60,
+          "flaky": False, "sleep": None}
+check(th.per_suite([killed], NOW, {})[("alpha", "test_k.sh")]["cpu_share"] is None,
+      "contention: a killed run journaling 0 s wall and its CPU has no CPU share, never a division by zero")
 ended = [r for r in rows if T - 86400 <= r["ended_at"] < T and r["kind"] == "suites"]
 check(abs(now["queue"] - 100.0 * 300 / sum(r["ended_at"] - r["queued_at"] for r in ended)) < 1e-6
       and sum(r["started_at"] - r["queued_at"] for r in ended) == 300,
@@ -240,33 +244,22 @@ check(reg.get("now") == 60.0 and reg.get("usual") == 20.0 and reg.get("min_day")
 check(more["now"]["repeats"] == 1 and "retests" not in {r["key"] for r in more["regressions"]},
       "retests: a profiled run journals what a plain green one cannot, so it repeats only a profiled run; days before "
       "with no tree journaled leave the line unmeasured, never red: %s %s" % (more["now"]["repeats"], more["regressions"]))
-files = {f["path"]: f for f in section["fan_out"]}
-check(files["bin/tool-a"]["suites"] == 1 and files["bin/tool-a"]["changes"] == 3,
-      "fan-out: tool-a pulls the suite running it, never test_c only naming it as a word nor the live e2e suite: %s"
-      % files.get("bin/tool-a"))
-check(files["bin/tool-a"]["runs"] == 12 and files["bin/tool-x"]["runs"] == 8,
-      "fan-out: priced from the suites each targeted run held, each exec to the one file selecting it that shares the "
-      "most suites with its run: %s" % section["fan_out"])
-check(files["bin/tool-x"]["suites"] == 1,
-      "fan-out: a file no suite runs keeps the name rule, a helper a suite sources carrying its names into it")
 held = json.load(open(th.cache_path()))
-check(th.pulls(repo, held[repo]["scan"], ["bin/tool-y"], {}, NOW)["bin/tool-y"] == {"test_consistency.sh"},
-      "fan-out: shared-invariants.md names pull test_consistency")
 saved, th.repo_scan = th.repo_scan, lambda top: (_ for _ in ()).throw(AssertionError("rescanned"))
-check(th.scans([repo], held, False)[repo] == held[repo]["scan"], "fan-out: an unchanged repo reads its cached scan")
+check(th.scans([repo], held, False)[repo] == held[repo]["scan"], "scan: an unchanged repo reads its cached scan")
 write("bin/tool-a", "edited\n")
 git("commit", "-qam", "edit a tool", at=NOW - 90)
 try:
-    check(th.scans([repo], held, False)[repo] == held[repo]["scan"], "fan-out: an edit outside tests/ reads its cached scan")
+    check(th.scans([repo], held, False)[repo] == held[repo]["scan"], "scan: an edit outside tests/ reads its cached scan")
 except AssertionError:
-    check(False, "fan-out: an edit outside tests/ reads its cached scan")
+    check(False, "scan: an edit outside tests/ reads its cached scan")
 write("tests/test_c.sh", "now tool-x too\n")
 git("commit", "-qam", "touch a suite", at=NOW - 60)
 try:
     th.scans([repo], held, False)
-    check(False, "fan-out: a new blob rescans")
+    check(False, "scan: a new blob rescans")
 except AssertionError:
-    check(True, "fan-out: a new blob rescans")
+    check(True, "scan: a new blob rescans")
 th.repo_scan = saved
 git("reset", "-q", "--hard", "HEAD~2")
 
@@ -341,9 +334,6 @@ check("opportunity:test-health/heavy/alpha/test_a" in heavy_ids
       and S.without_moved_heavy([moved, {"id": "opportunity:tests/alpha/other"}], heavy_section)
       == [{"id": "opportunity:tests/alpha/other"}],
       "speed: a heavy suite is a test-health row and drops its moved tests/ row: %s" % sorted(heavy_ids))
-tool_a = next(f for f in heavy_section["fan_out"] if f["path"] == "bin/tool-a")
-check(tool_a["heavy_s"] > 0 and tool_a["wall_s"] == 0 and tool_a["min_day"] == 0,
-      "fan-out: minutes on suites a heavy row prices stay there and are shown, never priced twice: %s" % tool_a)
 
 spike = os.path.join(work, "spike.jsonl")
 with open(spike, "w") as handle:

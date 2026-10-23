@@ -154,10 +154,8 @@ only, the landing included: there it cost 0.43 of 5.0 CPU-h/day for one catch in
 full run finds the same night. Proof 2026-10-14, 7 days, 1898 targeted runs, each run's files inferred as the widest
 changed files whose old selection it held whole: 461 dropped (file, suite) pairs on 413 files, none credited with a
 catch on that file; targeted CPU 18.0 → 17.1 h/day (−1.56 dropped, +0.66 added).
-Fan-out: a targeted run prices a changed file when it held half the suites the file selects (only 12 of worker-run's
-runs held all of them); each exec goes to one such file, the one most like the run (shared over joint suites), the
-narrowest on a tie. The top 3 files by minutes a day on selected suites with no catch in 90 days are
-`fan-out/<repo>/<path>` findings for the night.
+A suite with no catch in 90 days, journaled 7 or more, leaves every file's selection but its own (the file is the
+suite, or the suite is named after it); a Close red, green at a later Close on other content, is a catch (2026-10-23).
 
 **Tool mining** (`share/tool_mining.py`, Speed's `adhoc` key). Once a local day (~5 s) it clusters the day's ad-hoc
 Bash scripts by the first `CLUSTERS` pattern matched; a scratch script file (`cat >` heredoc or Write into /tmp, $TMPDIR,
