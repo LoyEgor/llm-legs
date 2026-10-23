@@ -54,9 +54,12 @@ CONDITION_MENU = """() => {
   return boxes.length ? boxes[0].innerText.split('\\n').map(l => l.trim()).filter(Boolean) : [];
 }"""
 FETCH = """async ([path, token, body]) => {
-  const init = {method: body === null ? 'GET' : 'POST', headers: {Authorization: 'Bearer ' + token}};
+  // A fetch with no deadline hung a run for 36 min (superman, 2026-10-23): status 0 is a timeout or a network error.
+  const init = {method: body === null ? 'GET' : 'POST', headers: {Authorization: 'Bearer ' + token},
+                signal: AbortSignal.timeout(30000)};
   if (body !== null) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
-  const response = await fetch(path, init);
+  let response;
+  try { response = await fetch(path, init); } catch (error) { return [0, String(error)]; }
   let data = null;
   try { data = await response.json(); } catch (error) {}
   return [response.status, data];
@@ -200,6 +203,8 @@ def open_page(page, account: str, path: str, timeout_s: float = 45.0) -> None:
             reject_cookies(page)
             gw.close_promos(page, account, keep=(UPLOAD_NOTICE,))
             return
+        # A promo over the page (the v6 «Meet your new creative toolkit», 2026-10-23) hides the form from the role tree.
+        gw.close_promos(page, account, keep=(UPLOAD_NOTICE,))
         page.wait_for_timeout(300)
     raise gw.Failure(1, f"Suno did not load {path} within {timeout_s:.0f}s ({page.url})")
 
