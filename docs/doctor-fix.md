@@ -53,8 +53,8 @@ job (your section says what it counts); never wait for it.
 - **No bulk.** No new layer, switch, mode or prose rule where a deletion or an existing mechanism
   (journals, registries, trackers, word families) does the job.
 - **The doctor's own blind spots, bounded.** When a cause you met was not a problem in the document,
-  add a `blind_spots` row with `would_catch_if`. Record, do not build: a new detector is its owner's
-  work, not a fix run's.
+  add a `blind_spots` row with `would_catch_if`. Record, do not build: its owner or the night's
+  Deep search builds it.
 - **The judge is not yours to loosen.** See your doctor's section.
 
 ## 4. Ground rules
