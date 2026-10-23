@@ -4507,6 +4507,16 @@ def installed_deploys(source):
                         for target, kind, src in targets]
 
 
+def print_deploys():
+    """`<path from home>\t<installer>` per copy of DEPLOYS (bin/deploys): claude-setup's night-snapshot leaves them out
+    of the machine snapshot and its restore-local runs the installers."""
+    dirs = {"libexec": os.path.join(".local", "libexec"), "agents": os.path.join("Library", "LaunchAgents")}
+    for fix, copies in DEPLOYS:
+        for where, name, _, src in copies:
+            print("%s\t%s" % (os.path.join(dirs[where], name), fix or "cp " + src))
+    return 0
+
+
 def reload_agent(plist):
     domain = "gui/%d" % os.getuid()
     try:
@@ -6557,8 +6567,11 @@ def main():
     parser.add_argument("--menu", action="store_true", help="print the menu lines and persist nothing")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--redeploy", action="store_true", help="rerun the installer of every drifted deployed copy")
+    parser.add_argument("--deploys", action="store_true", help="print every deployed copy's home path and installer")
     parser.add_argument("--reload", metavar="PLIST", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.deploys:
+        return print_deploys()
     if args.redeploy:
         return redeploy()
     if args.reload:

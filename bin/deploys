@@ -1,0 +1,4 @@
+#!/bin/sh
+# Every copy this repository deploys outside it, `<path from home>\t<installer>`: claude-setup's night-snapshot leaves
+# them out of the machine snapshot and its restore-local runs the installers. One list: harness-doctor's DEPLOYS.
+exec "$(dirname "$0")/harness-doctor" --deploys

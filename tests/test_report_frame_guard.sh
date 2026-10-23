@@ -22,10 +22,9 @@ CONSTANT='(^|[^.A-Za-z_])(FRAME_WIDTH|REPORT_WIDTH[A-Z_]*|REPORT_FRAME_WIDTH|REP
 # A table the model reads is not a chat block; base64 padding is not a rule.
 ALLOWED='^llm-legs:share/merge_ledger\.py:[0-9]+:        lines\.append\("=" \* 7\)$|% 4\)'
 
-# claude-setup's local-config/ is the machine snapshot: the deployed copies of these repositories' own files.
 sources() {
   git -C "$1" ls-files --cached --others --exclude-standard |
-    grep -vE '^(tests|docs|local-config)/|(^|/)fixtures/|\.(md|json|jsonl|txt|plist)$|^share/report_frame\.py$'
+    grep -vE '^(tests|docs)/|(^|/)fixtures/|\.(md|json|jsonl|txt|plist)$|^share/report_frame\.py$'
 }
 hits=''
 for pair in "llm-legs:$ROOT" "review-bench:$REVIEW_BENCH" "claude-setup:$CLAUDE_SETUP"; do
