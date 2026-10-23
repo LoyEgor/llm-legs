@@ -1131,8 +1131,8 @@ end
 -- Suno, after ElevenLabs: one 1d row per account suno-music has seen signed in, read from the same
 -- gemini-web account files. Free credits renew daily on a UTC clock the files do not carry, so the reset
 -- column holds the credits left; ↓ is the download unlocks left (every new song file spends one and the
--- free plan earns none back). Red when the account cannot deliver a file: a standing wall, credits under
--- one generation, or no unlock.
+-- free plan earns none back; with none left the song is recorded as it plays). Red when the account cannot
+-- make a song: a standing wall or credits under one generation.
 local SUNO_GENERATION_CREDITS = 10
 
 local function appendSuno(menu, now)
@@ -1151,7 +1151,6 @@ local function appendSuno(menu, now)
     local wall = tonumber(walls[account.name])
     wall = wall and wall > now and wall or nil
     local atLimit = wall ~= nil or (left ~= nil and left < SUNO_GENERATION_CREDITS)
-      or (downloads ~= nil and downloads < 1)
     local detail = downloads and string.format("  ↓%d", downloads) or nil
     local title
     if wall then

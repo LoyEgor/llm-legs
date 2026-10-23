@@ -4756,9 +4756,9 @@ end)()
   assert(titleText(menu[aria]) == "aria  17m ago" and titleText(menu[aria + 1]) == row("▓▓░░░", "40%", "60", 6)
       and #redRuns(menu[aria + 1].title) == 0 and #redRuns(menu[aria].title) == 0 and menu[aria + 1].disabled == true,
     "a usable account's Suno row is wrong (a lapsed wall must not count): " .. titleText(menu[aria + 1]))
-  assert(titleText(menu[bolt + 1]) == row("░░░░░", "0%", "300", 0) and redRuns(menu[bolt].title)[1] == "bolt"
-      and redRuns(menu[bolt + 1].title)[1] == titleText(menu[bolt + 1]),
-    "an account without a download unlock is not red: " .. titleText(menu[bolt + 1]))
+  assert(titleText(menu[bolt + 1]) == row("░░░░░", "0%", "300", 0) and #redRuns(menu[bolt].title) == 0
+      and #redRuns(menu[bolt + 1].title) == 0,
+    "an account without a download unlock turned red, though its songs are recorded: " .. titleText(menu[bolt + 1]))
   assert(titleText(menu[cove + 1]) == row("▓▓▓▓▓", "", os.date("%H:%M", now + 1800), 7)
       and redRuns(menu[cove + 1].title)[1] == titleText(menu[cove + 1]),
     "a walled account does not read walled until its wall ends: " .. titleText(menu[cove + 1]))

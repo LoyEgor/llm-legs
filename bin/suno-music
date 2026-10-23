@@ -42,7 +42,7 @@ usage() {
     printf '  suno-music --accounts: the signed-in accounts, credits and download unlocks as last seen; suno-music --status --account <profile>: read them live; suno-music --login --account <profile> [--hand]: sign one in\n' >&2
     printf '  v6-mini, the free plan'\''s model: %s credits a generation of two songs (cover, mashup, sample and extend too; crop, remove, reverse and speed are free); --prompt is the Styles box, empty lyrics make an instrumental; --describe lets Suno write lyrics and styles from an idea, a video or an image\n' "$(caps '.price.song')" >&2
   fi
-  printf '  every new song file spends one of the account'\''s download unlocks (--takes, default 1; 0 keeps the songs in the library only); fetching an unlocked song again is free; <dest>.txt names the song, clip and account\n' >&2
+  printf '  every new song file spends one of the account'\''s download unlocks while it holds one, else the song is recorded as the page plays it, silently, taking its length (--takes, default 1; 0 keeps the songs in the library only); fetching an unlocked song again is free; <dest>.txt names the song, clip and account\n' >&2
   exit 2
 }
 
@@ -126,7 +126,7 @@ esac
 in_range() { # flag value min max
   [ -z "$2" ] || { [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -ge "$3" ] && [ "$2" -le "$4" ]; } || say "$1 is a whole number from $3 to $4"
 }
-[[ "$takes" =~ ^[0-2]$ ]] || say "--takes is 0, 1 or 2 (a generation makes two songs; each file spends a download unlock)"
+[[ "$takes" =~ ^[0-2]$ ]] || say "--takes is 0, 1 or 2 (a generation makes two songs)"
 if [ "$takes" -gt 0 ] || [ -n "$dest" ]; then
   [ -n "$dest" ] || usage "missing --dest"
   [[ "$dest" = /* ]] || say "--dest must be an absolute path, not $dest"
@@ -318,10 +318,11 @@ while [ "$index" -lt "$takes_done" ]; do
   seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" 2>/dev/null | head -n 1 || true)
   observed_model=$(jq -r '.model // empty' <<<"$take")
   line="duration=$(awk -v s="${seconds:-0}" 'BEGIN { printf "%.2f", s }')"
+  kept="file=$(jq -r 'if .recorded then "recorded" else "download" end' <<<"$take")"
   if [ "$index" -eq 1 ]; then
-    footer+="dest=$out"$'\n'"$line"$'\n'"format=$ext"$'\n'"song=$(jq -r '.song' <<<"$take")"$'\n'"clip=$(jq -r '.clip' <<<"$take")"$'\n'
+    footer+="dest=$out"$'\n'"$line"$'\n'"$kept"$'\n'"format=$ext"$'\n'"song=$(jq -r '.song' <<<"$take")"$'\n'"clip=$(jq -r '.clip' <<<"$take")"$'\n'
   else
-    footer+="variant=$out $line song=$(jq -r '.song' <<<"$take")"$'\n'
+    footer+="variant=$out $line $kept song=$(jq -r '.song' <<<"$take")"$'\n'
   fi
 done
 while IFS= read -r song; do

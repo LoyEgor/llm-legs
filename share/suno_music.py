@@ -7,19 +7,21 @@ or an uploaded file, files through the official download.
 
 Same hidden Chrome, profiles, locks and job ledger as gemini_web. The create form is driven the way a person would;
 the new clips are read from the page's own replies (generate/v2-web, the edit actions), their progress and the
-balance from the endpoints the page itself reads, with the page's own session. A file comes only from the song's
-Download dialog, which spends one of the account's download unlocks the first time a song is downloaded; the
-player's stream is encrypted and never read. Prints one JSON line; exit 0 ok, 2 usage, 3 out of credits or
-download unlocks, 4 signed out or an owner step, 1 other.
+balance from the endpoints the page itself reads, with the page's own session. A file comes from the song's Download
+dialog while the song is unlocked or the account holds an unlock (spent the first time a song is downloaded), else it
+is recorded as the page plays it; the player's stream is encrypted and never read. Prints one JSON line; exit 0 ok,
+2 usage, 3 out of credits, 4 signed out or an owner step, 1 other.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import json
 import math
 import re
 import secrets
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -59,6 +61,44 @@ FETCH = """async ([path, token, body]) => {
   try { data = await response.json(); } catch (error) {}
   return [response.status, data];
 }"""
+# With no unlock left a song is recorded as the page plays it, in real time (Egor 2026-10-23: the harness must hear
+# what Suno made, and a free account may download a handful of songs ever). Every <audio> is routed into a recorder
+# before anything plays, so nothing reaches the speakers; the encrypted stream itself is never read or decrypted.
+TAP = """() => {
+  const ctx = new AudioContext(), sink = ctx.createMediaStreamDestination(), tapped = new Set();
+  for (const a of document.querySelectorAll('audio')) { ctx.createMediaElementSource(a).connect(sink); tapped.add(a); }
+  window.__sunoTap = {ctx, sink, tapped};
+  return tapped.size;
+}"""
+RECORD = """async (limit) => {
+  const {ctx, sink, tapped} = window.__sunoTap;
+  await ctx.resume();
+  const loaded = Date.now() + 30000;
+  let a;
+  while (!(a = [...document.querySelectorAll('audio')].find(e => e.src.startsWith('blob:') && e.duration > 0))) {
+    if (Date.now() > loaded) return {error: 'the player loaded no song within 30 s'};
+    await new Promise(r => setTimeout(r, 200));
+  }
+  if (!tapped.has(a)) return {error: 'the player plays through an <audio> the recorder does not hear'};
+  a.pause();
+  a.currentTime = 0;
+  const parts = [], rec = new MediaRecorder(sink.stream, {mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 256000});
+  rec.ondataavailable = e => parts.push(e.data);
+  const stopped = new Promise(r => rec.onstop = r);
+  const ended = new Promise(r => a.addEventListener('ended', () => r(true), {once: true}));
+  rec.start(1000);
+  const started = performance.now();
+  await a.play();
+  const done = await Promise.race([ended, new Promise(r => setTimeout(() => r(false), limit * 1000))]);
+  rec.stop();
+  await stopped;
+  if (!done) return {error: `the song had not ended after ${limit} s of playing`};
+  const bytes = new Uint8Array(await new Blob(parts).arrayBuffer());
+  let text = '';
+  for (let i = 0; i < bytes.length; i += 32768) text += String.fromCharCode(...bytes.subarray(i, i + 32768));
+  return {b64: btoa(text), duration: a.duration, wall: (performance.now() - started) / 1000};
+}"""
+ENCODE = {"mp3": ["-c:a", "libmp3lame", "-q:a", "0"], "m4a": ["-c:a", "aac", "-b:a", "256k"]}
 SEEN: dict[str, list[str]] = {}
 
 
@@ -121,14 +161,12 @@ def spendable(info: dict) -> int:
     return min(int(info["total_credits_left"]), int(rate)) if rate is not None else int(info["total_credits_left"])
 
 
-def rotation(price: int, downloads: int) -> list[str]:
+def rotation(price: int) -> list[str]:
     now, own = time.time(), walls()
 
     def ready(name: str) -> bool:
         meta = gw.read_meta(name)
         if meta.get("suno_signed_in") is not True:
-            return False
-        if downloads and (meta.get("suno_downloads") or 0) < downloads:
             return False
         fresh = now - meta.get("suno_at", 0) <= gw.WALL_SECONDS
         if fresh and price and (meta.get("suno_credits") or 0) < price:
@@ -774,8 +812,12 @@ def download(page, account: str, clip: str, fmt: str, dest: Path, downloads: int
         open_page(page, account, f"/song/{clip}")
         song_menu(page, record=not preview)
         page.get_by_role("menuitem", name="Download", exact=True).first.click(timeout=8000)
-        dialog = page.get_by_role("dialog").filter(has_text=re.compile(r"^\s*Download")).last
+        # An account with no unlock left gets Out of Downloads instead, for a song never downloaded (2026-10-23)
+        dialog = page.get_by_role("dialog").filter(has_text=re.compile(r"^\s*(Download|Out of Downloads)")).last
         dialog.wait_for(timeout=10000)
+        if dialog.inner_text().lstrip().startswith("Out of Downloads"):
+            page.keyboard.press("Escape")
+            raise NoUnlock(1, f"{account} has no Suno download unlock left for {clip}")
         for label, ticked in format_rows(dialog).items():
             if ticked != (label.lower() == fmt):
                 dialog.get_by_role("button", name=label, exact=True).first.click(timeout=8000)
@@ -786,8 +828,7 @@ def download(page, account: str, clip: str, fmt: str, dest: Path, downloads: int
         button = dialog.get_by_role("button", name=re.compile(r"^(Unlock & Download|Download)$")).last
         state["unlock"] = button.inner_text().strip() == "Unlock & Download"
         if state["unlock"] and downloads < 1:
-            raise gw.Failure(3, f"{account} has no Suno download unlock left for {clip}", account=account,
-                             until=time.time())
+            raise NoUnlock(1, f"{account} has no Suno download unlock left for {clip}")
         state["button"] = button
 
     size = gw.save_caught(page, lambda: state["button"].click(timeout=8000), dest, fmt, f"a {fmt} file", MAGIC[fmt],
@@ -796,6 +837,49 @@ def download(page, account: str, clip: str, fmt: str, dest: Path, downloads: int
     with contextlib.suppress(Exception):
         page.keyboard.press("Escape")
     return size, bool(state.get("unlock"))
+
+
+class NoUnlock(gw.Failure):
+    """The song needs an unlock the account no longer holds; a Failure, so save_caught lets it through."""
+
+
+def record(page, account: str, clip: dict, fmt: str, dest: Path) -> int:
+    """The song as the page plays it, routed into a recorder instead of the speakers (TAP, RECORD)."""
+    length = float((clip.get("metadata") or {}).get("duration") or caps()["ranges"]["duration"]["max"])
+    open_page(page, account, f"/song/{clip['id']}")
+    if not page.evaluate(TAP):
+        raise drift(f"the song page of {clip['id']} holds no <audio> to record")
+    page.get_by_role("button", name="Play", exact=True).first.click(timeout=8000)
+    taken = page.evaluate(RECORD, math.ceil(length) + 60)
+    if taken.get("error"):
+        raise drift(f"recording {clip['id']}: {taken['error']}")
+    if taken["wall"] > taken["duration"] + 3:
+        raise gw.Failure(1, f"the recording of {clip['id']} stalled: {taken['wall']:.0f} s of playing for a "
+                            f"{taken['duration']:.0f} s song")
+    raw = dest.with_name(f".{dest.name}.webm")
+    raw.write_bytes(base64.b64decode(taken["b64"]))
+    try:
+        encoded = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(raw), *ENCODE[fmt], str(dest)],
+                                 capture_output=True, text=True, timeout=300)
+        if encoded.returncode != 0:
+            raise gw.Failure(1, f"ffmpeg could not encode the recording of {clip['id']}: {encoded.stderr.strip()[:200]}")
+        level = subprocess.run(["ffmpeg", "-i", str(dest), "-af", "volumedetect", "-f", "null", "-"],
+                               capture_output=True, text=True, timeout=300).stderr
+    finally:
+        raw.unlink(missing_ok=True)
+    peak = re.search(r"max_volume: (-?[0-9.]+) dB", level)
+    if not peak or float(peak.group(1)) < -60:
+        raise drift(f"the recording of {clip['id']} is silent: the player no longer plays through a tapped <audio>")
+    return dest.stat().st_size
+
+
+def save_song(page, account: str, clip: dict, fmt: str, dest: Path, downloads: int) -> tuple[int, bool, bool]:
+    """(bytes, unlocked, recorded): Suno's own file while the song is unlocked or the account holds an unlock, else
+    a recording."""
+    try:
+        return (*download(page, account, clip["id"], fmt, dest, downloads, is_preview(clip)), False)
+    except NoUnlock:
+        return record(page, account, clip, fmt, dest), False, True
 
 
 def model_of(clip: dict, fallback: str | None = None) -> str | None:
@@ -807,7 +891,7 @@ def model_of(clip: dict, fallback: str | None = None) -> str | None:
 
 
 def clip_notes(clip: dict, account: str, plan: dict, controls: dict, charged: int | None, info: dict,
-               others: list[dict]) -> str:
+               others: list[dict], recorded: bool = False) -> str:
     meta = clip.get("metadata") or {}
     lines = [f"Model: {model_of(clip, controls.get('model')) or '-'}{' preview' if is_preview(clip) else ''} "
              f"({clip.get('model_name') or '-'})",
@@ -818,9 +902,11 @@ def clip_notes(clip: dict, account: str, plan: dict, controls: dict, charged: in
             f", {key} {controls[key]}" for key in ("window", "speed", "with") if key in controls))
     lines.append(f"Credits: {charged if charged is not None else '?'} charged, {info['total_credits_left']} left; "
                  f"download unlocks left: {downloads_left(info)}")
+    if recorded:
+        lines.append("File: recorded as the page played it (no download unlock left), not Suno's own file")
     for other in others:
         kind = f"{model_of(other)} preview, not remixable" if is_preview(other) else model_of(other)
-        lines.append(f"Other clip: {SITE}/song/{other['id']} ({kind}; in the library; a file spends a download unlock: "
+        lines.append(f"Other clip: {SITE}/song/{other['id']} ({kind}; in the library; its file, an unlock or a recording: "
                      f"suno-music --fetch {other['id']} --account {account} --dest <abs .mp3>)")
     lines += ["", f"Styles: {meta.get('tags') or '-'}", "", "Lyrics:", meta.get("prompt") or "-"]
     if meta.get("gpt_description_prompt"):
@@ -836,9 +922,6 @@ def one_run(context, account: str, plan: dict) -> dict:
     if spendable(before) < plan["price"]:
         raise gw.Failure(3, f"{account} holds {before['total_credits_left']} Suno credits ({spendable(before)} spendable "
                             f"now), under the {plan['price']} this costs", account=account)
-    if plan["takes"] and downloads_left(before) < plan["takes"]:
-        raise gw.Failure(3, f"{account} has {downloads_left(before)} Suno download unlocks, under the {plan['takes']} "
-                            f"asked", account=account, until=time.time())
     title = f"{plan['title']}-{secrets.token_hex(2)}"
     if plan["mode"]:
         gw.click_if_visible(page, "tab", "Songs")
@@ -874,12 +957,11 @@ def one_run(context, account: str, plan: dict) -> dict:
     out_dir = Path(plan["out_dir"])
     for index, clip in enumerate(clips[:plan["takes"]], start=1):
         audio = out_dir / f"take{index}.{plan['format']}"
-        size, unlocked = download(page, account, clip["id"], plan["format"], audio, downloads_left(after),
-                                  is_preview(clip))
+        size, unlocked, recorded = save_song(page, account, clip, plan["format"], audio, downloads_left(after))
         after = billing(page, account)
         gw.ledger({"kind": "suno", "event": "saved", "account": account, "clip": clip["id"], "bytes": size,
-                   "unlocked": unlocked, "downloads": downloads_left(after)})
-        takes.append({"audio": str(audio), "clip": clip["id"], "unlocked": unlocked})
+                   "unlocked": unlocked, "recorded": recorded, "downloads": downloads_left(after)})
+        takes.append({"audio": str(audio), "clip": clip["id"], "unlocked": unlocked, "recorded": recorded})
     library = [{"clip": c["id"], "song": f"{SITE}/song/{c['id']}", "title": c.get("title") or title,
                 "duration": float((c.get("metadata") or {}).get("duration") or 0)} for c in clips]
     for take in takes:
@@ -889,7 +971,7 @@ def one_run(context, account: str, plan: dict) -> dict:
                     duration=float((clip.get("metadata") or {}).get("duration") or 0),
                     model=model_of(clip, controls.get("model")), charged=charged,
                     credits=after["total_credits_left"], downloads=downloads_left(after), render_s=render_s,
-                    notes=clip_notes(clip, account, plan, controls, charged, after, others))
+                    notes=clip_notes(clip, account, plan, controls, charged, after, others, take["recorded"]))
     page.close()
     return {"takes": takes, "library": library, "charged": charged, "credits": after["total_credits_left"],
             "downloads": downloads_left(after), "controls": controls}
@@ -947,9 +1029,9 @@ def cmd_generate(args) -> None:
         raise gw.Failure(2, f"--source {args.source} is a Suno song on {owner_of(args.source)}, not {args.account}")
     if plan["source"] and not pinned:
         raise gw.Failure(2, f"--source {plan['source']} is a library song, which lives on one account: add --account")
-    accounts = gw.take_accounts(pinned, lambda: rotation(plan["price"], plan["takes"]),
-                                "no Suno account is signed in, free of walls and holding the credits and download "
-                                "unlocks this needs (suno-music --accounts lists them)", WALLS)
+    accounts = gw.take_accounts(pinned, lambda: rotation(plan["price"]),
+                                "no Suno account is signed in, free of walls and holding the credits this needs "
+                                "(suno-music --accounts lists them)", WALLS)
     gw.take_failover(accounts, plan, generate_on, set_wall, bool(pinned), lock_wait=args.lock_wait, walls_name=WALLS)
 
 
@@ -963,11 +1045,10 @@ def cmd_fetch(args) -> None:
         if status != 200 or not isinstance(clip, dict) or clip.get("status") != "complete":
             raise gw.Failure(1, f"no complete Suno song {args.clip} on {args.account} (HTTP {status})")
         audio = Path(args.out_dir) / f"take1.{args.format}"
-        size, unlocked = download(page, args.account, args.clip, args.format, audio, downloads_left(info),
-                                  is_preview(clip))
+        size, unlocked, recorded = save_song(page, args.account, clip, args.format, audio, downloads_left(info))
         info = billing(page, args.account)
         gw.ledger({"kind": "suno", "event": "saved", "account": args.account, "clip": args.clip, "bytes": size,
-                   "unlocked": unlocked, "downloads": downloads_left(info)})
+                   "unlocked": unlocked, "recorded": recorded, "downloads": downloads_left(info)})
         plan = {"mode": None, "source": None}
         controls = {"title": clip.get("title") or args.clip, "model": model_of(clip)}
         gw.emit({"ok": True, "account": args.account, "charged": 0, "credits": info["total_credits_left"],
@@ -975,8 +1056,8 @@ def cmd_fetch(args) -> None:
             "audio": str(audio), "clip": args.clip, "account": args.account, "song": f"{SITE}/song/{args.clip}",
             "title": controls["title"], "duration": float((clip.get("metadata") or {}).get("duration") or 0),
             "model": controls["model"], "charged": 0, "credits": info["total_credits_left"],
-            "downloads": downloads_left(info), "unlocked": unlocked,
-            "notes": clip_notes(clip, args.account, plan, controls, 0, info, [])}],
+            "downloads": downloads_left(info), "unlocked": unlocked, "recorded": recorded,
+            "notes": clip_notes(clip, args.account, plan, controls, 0, info, [], recorded)}],
             "library": [], "caps": page_caps()})
 
 

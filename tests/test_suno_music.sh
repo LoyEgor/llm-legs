@@ -29,7 +29,7 @@ fi
 out=''
 while [ \$# -gt 0 ]; do [ "\$1" = --out-dir ] && out=\$2; shift; done
 cp "\$FAKE_AUDIO" "\$out/take1.mp3"
-printf '{"ok":true,"account":"com","takes":[{"audio":"%s/take1.mp3","clip":"$SONG","song":"https://suno.com/song/$SONG","model":"v6-mini","notes":"Clip: $SONG\\\\nAccount: com\\\\n"}],"library":[{"clip":"$SONG","song":"https://suno.com/song/$SONG"},{"clip":"$OTHER","song":"https://suno.com/song/$OTHER"}],"charged":10,"credits":50,"downloads":5,"caps":[]}\n' "\$out"
+printf '{"ok":true,"account":"com","takes":[{"audio":"%s/take1.mp3","clip":"$SONG","song":"https://suno.com/song/$SONG","model":"v6-mini","recorded":'"\${FAKE_RECORDED:-false}"',"notes":"Clip: $SONG\\\\nAccount: com\\\\n"}],"library":[{"clip":"$SONG","song":"https://suno.com/song/$SONG"},{"clip":"$OTHER","song":"https://suno.com/song/$OTHER"}],"charged":10,"credits":50,"downloads":5,"caps":[]}\n' "\$out"
 EOF
 chmod +x "$SUNO_MUSIC_ENGINE"
 
@@ -54,6 +54,10 @@ assert grep -qx "clip=$SONG" "$WORK/out.txt"
 assert grep -qx "library=https://suno.com/song/$OTHER" "$WORK/out.txt"
 assert grep -qx "credits=10 charged, 50 left" "$WORK/out.txt"
 assert grep -qx "downloads=5 unlocks left" "$WORK/out.txt"
+assert grep -qx "file=download" "$WORK/out.txt"
+# With no unlock left the engine records the song as the page plays it, and the footer says so.
+assert env FAKE_RECORDED=true "$ROOT/bin/suno-music" --dest "$WORK/out/rec.mp3" --prompt "lofi" >"$WORK/out.txt" 2>"$WORK/err"
+assert grep -qx "file=recorded" "$WORK/out.txt"
 
 # Refused before the engine runs.
 assert refused "steps of 5 s" music --dest "$WORK/out/a.mp3" --prompt x --duration 33

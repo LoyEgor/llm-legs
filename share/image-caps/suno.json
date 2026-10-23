@@ -7,9 +7,9 @@
   "rosters": {"web": ["suno-music", "--accounts"]},
   "plan": {
     "name": "Free",
-    "credits": "monthly_limit per account (com 100, notcom 50, an account signed up 2026-10-22 300); total_credits_left is what remains",
+    "credits": "monthly_limit per account (com 100, notcom 50; locomthebest, signed up 2026-10-22, 300 that day and 100 the next); total_credits_left is what remains",
     "rate_limit": "at most available_credits at once (50; 200 on a new account), refilled by 20 every 600 s",
-    "downloads": "a file needs one download unlock per song (additional_download_remaining: com 7, notcom 7 when found, 0 on a new account; Earn Credits gives none); downloading an unlocked song again, in any format, is free",
+    "downloads": "Suno's own file needs one download unlock per song (up to 7 for life on an account made before 2026-09-03, none promised later; Earn Credits gives none); downloading an unlocked song again, in any format, is free; with no unlock left the song is recorded as the page plays it, silently, in real time (file=recorded)",
     "commercial_use": false
   },
   "models": {"v6-mini": {"wire": "chirp-goose", "default": true}},

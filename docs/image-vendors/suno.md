@@ -12,16 +12,21 @@ page. `bin/suno-music` (kind `music`) and its symlink `bin/suno-speech` (kind `s
 | What | Free | Pro / Premier |
 | --- | --- | --- |
 | Model | v6-mini (`chirp-goose`) only | v6, v6-wild |
-| Credits | 50 renewed daily on a UTC clock ([help](https://help.suno.com/en/articles/2418177)); `billing/info` reports `monthly_limit` (com 100, notcom 50, a 2026-10-22 sign-up 300) and `total_credits_left` | monthly pools, top-ups |
+| Credits | 50 renewed daily on a UTC clock ([help](https://help.suno.com/en/articles/2418177)); `billing/info` reports `monthly_limit` (com 100, notcom 50; locomthebest, signed up 2026-10-22, 300 that day and 100 the next) and `total_credits_left` | monthly pools, top-ups |
 | Rate | `credit_rate_limit`: at most 50 credits at once (200 on a new account), +20 every 600 s | |
 | Price | 10 credits a generation = two songs; Speech, cover, mashup, sample, extend the same; crop, remove, reverse, speed 0 | |
-| Files | mp3, m4a; **one download unlock per new song** (`download_usage.additional_download_remaining`: com 6, notcom 7, a new account 0; Earn Credits gives none; packs are paid). Downloading an unlocked song again, any format, is free | wav, video, stems & MIDI |
+| Files | mp3, m4a; **one download unlock per new song**: up to 7 for life on an account made before 2026-09-03, none promised on a later one ([help](https://help.suno.com/en/articles/13876865); `download_usage.additional_download_remaining`: com 6, notcom 6, locomthebest 0; Earn Credits gives none; packs are paid). Downloading an unlocked song again, any format, is free | wav, video, stems & MIDI |
 | Rights | no commercial use | commercial |
 
-So a free account makes songs freely but saves only a handful of files ever. `--takes` (default 1) is how
-many of the two songs become files; `--takes 0` keeps both in the library (`library=` lines), and
-`--fetch <clip> --account <a> --dest …` saves one later. Never capture the player's stream and never publish
-a song to get around the unlock: the owner's rule (2026-10-22).
+So a free account makes songs freely but downloads only a handful ever. A take is Suno's own file while the
+song is unlocked or the account holds an unlock; with none left it is **recorded as the page plays it** (Egor
+2026-10-23: the harness must hear what Suno made): every `<audio>` is routed into a `MediaRecorder` before
+anything plays, so nothing reaches the speakers, the song plays once from 0 in real time (its length), and
+ffmpeg encodes it to the asked format; the footer says `file=download|recorded`. Measured against the official
+mp3 of the same song: correlation 0.999, gain 0.999, 10 ms offset. Suno's terms forbid recording (an account
+ban is the risk, which Egor took); the encrypted stream itself is never read or decrypted, and no song is
+published to get around the unlock. `--takes` (default 1) is how many of the two songs become files; `--takes 0`
+keeps both in the library (`library=` lines), and `--fetch <clip> --account <a> --dest …` saves one later.
 
 ## Calls
 
