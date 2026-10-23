@@ -3310,17 +3310,18 @@ assert eq "$(sed -nE 's/^ +--accounts\) .*accounts_mode=\$2.*/ok/p' "$ROOT/bin/i
 assert grep -Fq 'case "$accounts_mode" in all|pick) ;; *) usage ;; esac' "$ROOT/bin/image-fanout"
 assert doc_has '| dk | Explicit --account |'
 
-# Every script the media skill runs by bare name has its README PATH link,
+# Every script the media skill's files run by bare name has its README PATH link,
 # the inventory llm-selfcheck's path-links step checks; media-run reaches the media scripts as "that
 # vendor's script", hence the fixed floor.
-MEDIA_SKILL="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/skills/media/SKILL.md"
-[ -r "$MEDIA_SKILL" ] || fail "run names: $MEDIA_SKILL is unreadable (set CLAUDE_SETUP_ROOT)"
+MEDIA_SKILL_DIR="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/skills/media"
+[ -r "$MEDIA_SKILL_DIR/SKILL.md" ] || fail "run names: $MEDIA_SKILL_DIR/SKILL.md is unreadable (set CLAUDE_SETUP_ROOT)"
+media_skill=$(cat "$MEDIA_SKILL_DIR"/*.md)
 readme_links=$(LC_ALL=C sed -nE 's/^- `bin\/([^`]+)` → `~\/\.local\/bin\/([^`]+)`.*/\1 \2/p' "$ROOT/README.md" | awk '$1 == $2 { print $1 }')
 run_names="media-run codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen suno-music suno-speech worker-run worker-pick"
 for script in "$ROOT"/bin/*; do
   name=${script##*/}
   [ -f "$script" ] && [ -x "$script" ] && [[ "$name" != *.sh ]] || continue
-  grep -qE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" "$MEDIA_SKILL" && run_names+=" $name"
+  grep -qE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" <<<"$media_skill" && run_names+=" $name"
 done
 unlinked_run_names=$(for name in $(printf "%s\n" $run_names | sort -u); do grep -qxF "$name" <<<"$readme_links" || printf '%s ' "$name"; done)
 assert eq "unlinked: $unlinked_run_names" "unlinked: "
