@@ -145,7 +145,7 @@ and worker 9 / 3 / 37; by cap (605 to 23:15) 2-min 181, 10-min 264, 25-min 110, 
 - Proof: one slow selection through worker-run at `BASH_MAX_TIMEOUT_MS=60000`, old and new interleaved: old is
   killed and re-runs, new runs once. Its first new run confirms auto-backgrounding under `-p`, so far only read.
 - Read after landing: worker timeouts ending killed (Claude Code's tool_result text in `sdk-cli` transcripts,
-  `sleep` excluded), 519 (508 headless, 11 subagents) → 0 per 14 days. Not worse: final responses with a
+  `sleep` excluded), 207 (10-09…23, all headless) → 0 per 14 days. Not worse: final responses with a
   backgrounded task unread (0), `worker_orphans`.
 
 ### goal stop-hooks: no Stop hook holds the stop

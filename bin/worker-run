@@ -1123,9 +1123,6 @@ supervise_claudeb() {
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json "${access[@]}")
   [ -z "$resume" ] || command+=(--resume "$resume")
   [ "$chrome" = false ] || command+=(--chrome)
-  # A -p session ends when its turn does: a suite sent to the background dies unread with it, and
-  # the worker's closing "I'll report once they finish" leaves the round without its verdicts.
-  local -x CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
   # Claude Code's own bundled skills (update-config, code-review, claude-api, workflow-authoring,
   # run) were three quarters of a worker's skill listing, and no claudeb worker invoked one in the
   # 805 runs since 2026-10-14; Egor's skills (media, Jira and the rest) stay listed and loadable.
