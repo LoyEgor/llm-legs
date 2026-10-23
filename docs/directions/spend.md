@@ -64,7 +64,7 @@ tails + 7 load + 8 other key on 31 rows; an independent pass on 10-16 labelled 3
 | class | count | size, 10-09…15 | days | instances fixed |
 |---|---:|---:|---:|---:|
 | 1. a Spend audit comes due with nothing new to change: a cut whose tail still sits in the 7-day window, a rise that was load or a tokenmap measurement change, a part kept before under another key | 78 of 81 audited problems; 31 of 64 rows | 6.65M of the audits' 7.63M (25 of 28 runs) | 5 audit nights, 10-09…14 | 31 rows, each closed alone |
-| 2. a scripted one-request call carries the configuration it never uses | 173 worker calls | 6.94M, ≈2.7M of it configuration | 10-05…15 | 5 (Done) |
+| 2. a scripted one-request call carries the configuration it never uses | 173 worker calls | 6.94M; ≈0.05M a week left | 10-05…15 | 7 |
 | 3. a session re-writes its whole context cold: idle past the cache, or another org's account | 5 | 0.11M since 10-14 (0.04M plain) | 10-10…14 | 1, held |
 | 4. a run re-derives what a ledger holds: known reds, fixed rows re-proved, ledger ground re-profiled, a whole read redone | 5 | | 4 nights | 3 |
 | 5. a run sized past what settles it, then run again: a 289-panel judge grid for ≈22 votes, a cap that measured itself, a biased answer key, Haiku cells on Sonnet, 241 images to one worker | 5 | | 2+ nights | 1 |
@@ -79,47 +79,26 @@ Why they come back:
    3 that changed something were Breakages' `gates` false catches (review-flow-gate, dia-not-chrome, english-gate).
 2. 761cf189 made the stripped ask_* legs the launch for scripted model calls, yet 161 of the 173 calls are
    `bin/log-audit`'s chunk reads (115 Haiku, 39 Sonnet) and merges (7), 6 the end-of-day report, 1 code-doctor's
-   critical judge, all through `worker-run`, which has no one-request path: each caller wrote its own start/wait.
-   Each started with ≈36k of configuration (est.) against 8.0k for `ask_claude.sh`. `bin/log-audit` sizes a chunk
-   at 120 kB assuming Claude Code adds ≈11k, so 26 of its 115 Haiku reads went past 100k prompt tokens, which Haiku
-   5.5 bills at 5×: 1.03M, against 0.64M for the other 89; its 39 Sonnet reads cost 4.37M of the class's 6.94M, 33
-   past 100k. Method: Claude sessions with one non-sidechain request, `ts` 10-08T21:00Z…10-15T21:00Z, `zone =
-   'worker'`, the caller read from its run dir's brief, priced as the audit runs.
+   critical judge, all through `worker-run`. Two 10-12 commits fixed most of it: the 39 Sonnet reads (4.37M, 33 past
+   100k) predate reads on Haiku (ffdf3b0d), the 26 Haiku reads past 100k (briefs 155–262 kB) the 120 kB cap
+   (6741fcf8); the 81 Haiku reads after it: 0 past 100k, max 84.9k, 7.3k Opus = 1 each. Left is configuration:
+   ≈13–16k tokens a worker launch against ≈6k stripped (`parts` fixed + config of first requests), 1.1k Opus = 1 a
+   chunk read, 16–20k an end-of-day report; stripping saves ≈0.05M a week now (no night, so no log audit, since
+   10-14), ≈0.3M with one every night. No goal: `worker-run` cannot tell a one-request run at launch (scripted
+   `doctor-fix`, `image-fanout` need tools; `ROUND: none` is any brief's), so each caller would add a flag.
+   Method: one-request sessions (distinct `request_id`), `ts` 10-08T21:00Z…10-15T21:00Z, `zone = 'worker'`, caller
+   from the transcript's first user text (run dirs pruned before 10-14), priced as the audit runs.
 3. Fixed for claudeb by the 10-14 resume refusal (9864be9d): cold worker re-writes 32 (8.5M) on 10-13, 2 (0.04M)
    in 10-14…16; account switches 10 (3.5M), none since 10-13. Method: `requests` on `sessions.zone='worker'`,
    `waste_cause` in (`expired (1h+ idle)`, `idle 5-60min`, `account switch`), `request_sql('r')`. No goal.
 4.–6. come from the night's fan-out, which Breakages' pilot removes, and from model behavior. Log-audit's whole
    reread is not fan-out: it runs in pilot prep (`bin/night-run` `PILOT_RULES`), and a stopped read restarts from
-   its `since` (last 10-07). Class 5's one fix was review-bench's (909514f); the rest were the chat's choices.
+   its `since` (last 10-14). Class 5's one fix was review-bench's (909514f); the rest were the chat's choices.
 
 ## Goals
 
-Scripted-bare first, since log-audit runs on every pilot night while
-the audits wait for the full night. Bash-cap runs belong to Breakages' `bash-cap`.
-
-### goal scripted-bare: a one-request model call launches stripped by default
-
-Class 2. Moving the three named callers leaves the next scripted call to bring the class back, so the change goes
-where every one-request call already passes: all 173 started through `bin/worker-run`.
-- Change: `worker-run` gains one shared one-request path launched as `ask_claude.sh` launches (empty cwd,
-  `--safe-mode`, no tool schemas unless declared; through `ask_claude.sh` itself where it can), keeping the pick,
-  account, model, effort (`CLAUDE_ALLOW_WEAK=1` for Haiku), waits and report it does now. A scripted caller that
-  passes nothing new gets it; a run that needs the configuration is the one that says so. `bin/log-audit` (chunk
-  reads and merge), `bin/code-doctor`'s critical judge and claude-setup's `skills-on-demand/end-report/compose.py`
-  then drop their own start/wait code for it. Log-audit keeps its `--parallel` cap and measured waits
-  (`collector_runs`); `share/web-search.sh` is the argv table worker-run reads, no launcher.
-- First step, unconfirmed: how `worker-run` tells a one-request run at launch (the class's old premise was that it
-  cannot; on 10-16 it has no such path or flag, `bin/worker-run` read). Settle a signal no new caller has to add
-  before the change; if none exists, it is a trade for Egor.
-- Proof, every one-request worker call by method 2 above (a new caller counts), in Opus = 1 a call (the whole
-  session, so text moved into the brief counts) and reads past 100k prompt tokens, 7 days before against 7 after.
-  Before, 10-09…15: log-audit's Haiku reads 115 at 14.6k (26 past 100k), its Sonnet reads 39 at 112k (4.37M, 33
-  past 100k), its merges 7 at 76k, the end-of-day report 6 at 39k, code-doctor's judge 1 at 32k; 173 calls carried
-  the configuration. After: each lower, Haiku reads past 100k 0, Sonnet's fewer, calls with the configuration 0.
-- Outputs: one night's chunks and merge, one end-of-day report and one judge input through both launches,
-  interleaved on one machine; where answers differ, a blind Sonnet judge (both in random order, with the input)
-  rates the new one better, equal or worse. Passes when worse ≤ better, else it is a trade for Egor.
-- Must not get worse: log-audit wall minutes (`~/.cache/doctors/log-audit/runs.jsonl` `wall_s`).
+Goal scripted-bare was stopped on 10-23 by its first step (class 2 above). Bash-cap runs belong to Breakages'
+`bash-cap`.
 
 ### goal audit-due: a Spend audit comes due only on its own price per task
 
