@@ -89,6 +89,7 @@ start opens the orchestrator chat: --cleanup lands finished night branches and e
   trade-<ref> of this night, carry giving it a worktree and a brief; an unanswered one stays. Recorded
   answers only: the job's answer= with every done= check holding, or a handoff job's doc whose Status:
   reads settled; prints `trade <night> <ref> settled: <evidence>` or `trade <night> <ref> -> <new ref>`
+  Then it rewrites the Doctors 7d source, detached: `~/.local/bin/tokenmap spend --range 7d --write`, log <id>.spend-7d.log
 Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
 report opens with share/time_budget.py's comparison table: this night and the two previous finished
   nights with jobs, a column each, oldest left, facts only, – where a value has no source, a blank line
@@ -447,6 +448,10 @@ cmd_start() {
   fi
   trades_recheck "$id"
   unlock
+  # The night's Doctors 7d reads the menu's 7-day Spend pie, written only when that view runs: rewritten first, by
+  # the menu's own command, detached (≈25 s) so the chat opens at once, long done by finish, its first reader.
+  perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$HOME/.local/bin/tokenmap" spend --range 7d --write \
+    </dev/null >"$nights_dir/$id.spend-7d.log" 2>&1 &
   if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-open -a Terminal}" \
     CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" \
     CHAT_OPEN_PREFIX="caffeinate -i" \
@@ -886,8 +891,9 @@ goal_text() { # direction-file slug -> that goal's section
 }
 
 pilot_goal() { # id directions -> the carry line of the next goal in queue order (the first with no job tonight), none
-  # while one is at work; after the last goal the monthly directions-refresh when due, the direction files settled by then
-  local repo dir file slug slugs night
+  # while one is at work or once one did not land tonight (the 10-16 queue: the next starts once the earlier ones
+  # landed); after the last goal the monthly directions-refresh when due, the direction files settled by then
+  local repo dir file slug slugs night state
   night=$(night_file "$1")
   ! jq -e 'any(.jobs[]; .kind == "goal" and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
   repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: pilot %s not carried\n' "$2" >&2; return 0; }
@@ -896,9 +902,12 @@ pilot_goal() { # id directions -> the carry line of the next goal in queue order
     [ -r "$repo/$file" ] || { printf 'night-run: no %s/%s: pilot %s has no goals\n' "$repo" "$file" "$dir" >&2; continue; }
     slugs=$(goal_slugs "$repo/$file")
     for slug in $slugs; do
-      ! jq -e --arg r "goal-$slug" 'any(.jobs[]; .ref == $r)' "$night" >/dev/null || continue
-      printf 'goal\t%s\t%s\t%s\t-\n' "$slug" "$repo" "$file"
-      return 0
+      state=$(jq -r --arg r "goal-$slug" 'first(.jobs[] | select(.ref == $r) | .state) // empty' "$night")
+      [ -n "$state" ] || { printf 'goal\t%s\t%s\t%s\t-\n' "$slug" "$repo" "$file"; return 0; }
+      [ "$state" = merged ] && continue
+      printf 'night-run: goal-%s is %s tonight, not landed: %s and the directions after it wait for the next night\n' \
+        "$slug" "$state" "$dir" >&2
+      break
     done
     [ -z "$slugs" ] || break # goals still in its file (failed or blocked tonight): the next direction waits
   done

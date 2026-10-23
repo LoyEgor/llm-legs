@@ -275,7 +275,7 @@ fi
 if suite_shard_owns 2 nc-pilot; then
 # A pilot night carries its directions' goals one at a time, in order, the next direction once the one before has
 # none left, and nothing a full night would: no handoff, owner chat or periodic job; the next goal only once the last
-# one stopped working.
+# one landed.
 export DOCTORS_DIR="$WORK/pilot/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
 L="$WORK/pilot/llm-legs" C="$WORK/pilot/claude-setup"
 git init -q -b main "$L" && mkdir -p "$L/docs/directions" "$L/docs/handoffs"
@@ -303,17 +303,16 @@ assert_fails grep -qF 'goal stop-hooks: capped' "$b"
 pnight carry G1 >"$WORK/g1b.out" 2>/dev/null || fail "a carry while the goal works failed"
 assert [ ! -s "$WORK/g1b.out" ]
 pnight job G1 set goal-gates state=left reason=blocked >/dev/null || fail "goal-gates not set left"
-pnight carry G1 >"$WORK/g1c.out" 2>/dev/null || fail "a carry after the first goal failed"
-assert [ "$(cut -f1 "$WORK/g1c.out")" = goal-stop-hooks ]
-pnight job G1 set goal-stop-hooks state=nothing-to-do >/dev/null || fail "goal-stop-hooks not closed"
-# Both goals stay in breakages.md, so lost-time waits; after the last goal, the monthly refresh of the direction files when it is due, once.
+# A goal that did not land tonight holds its direction and the queue after it (the 10-16 queue: the next starts once
+# the earlier ones landed), saying why; after the night's last goal, the monthly refresh of the direction files when it is due, once.
 month=$(date -u +%Y-%m)
-pnight carry G1 >"$WORK/g1d.out" 2>/dev/null || fail "a carry after every goal failed"
+pnight carry G1 >"$WORK/g1d.out" 2>"$WORK/g1d.err" || fail "a carry after the first goal failed"
 assert [ "$(cut -f1 "$WORK/g1d.out")" = "directions-refresh-$month" ]
+assert grep -qxF 'night-run: goal-gates is left tonight, not landed: breakages and the directions after it wait for the next night' "$WORK/g1d.err"
 assert grep -qF '## Directions refresh — monthly' "$NIGHTS/G1.directions-refresh-$month.brief.md"
 pnight carry G1 >"$WORK/g1e.out" 2>/dev/null || fail "a carry after the refresh failed"
 assert [ ! -s "$WORK/g1e.out" ]
-assert jqe --arg r "directions-refresh-$month" '[.jobs[].ref] == ["goal-gates", "goal-stop-hooks", $r]' "$NIGHTS/G1.json"
+assert jqe --arg r "directions-refresh-$month" '[.jobs[].ref] == ["goal-gates", $r]' "$NIGHTS/G1.json"
 # Once a direction's goals have all landed, none left in its file, the next direction's follow.
 printf '# B\n\n## Goals\n\n## Done\n\n### goal gates: landed\n' >"$L/docs/directions/breakages.md"
 gt -C "$L" commit -qam landed

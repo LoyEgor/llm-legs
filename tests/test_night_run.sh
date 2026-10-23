@@ -89,10 +89,25 @@ night_repo() {
 doc llm 5
 doc harness 3 '[{"id": "h1", "state": "new"}, {"id": "h2", "state": "open"}, {"id": "h3", "state": "regressed"}, {"id": "h4", "state": "watch", "fact": "fine"}]'
 
+# The night's Doctors 7d reads token-map's 7-day Spend pie, written only by the menu's 7-day view: a start rewrites
+# it first by the menu's command, so a file from before the night is never what finish stores.
+SPEND7="$HOME/.local/share/tokenmap/spend-7d.json"
+mkdir -p "$HOME/.local/bin" "${SPEND7%/*}"
+printf '{"generated_at": "2026-10-14T02:20:00Z", "stale_after_hours": 30, "tree": [{"name": "Doctors", "share": 0.051}]}\n' >"$SPEND7"
+cat >"$HOME/.local/bin/tokenmap" <<'EOF'
+#!/usr/bin/env bash
+printf '{"generated_at": "%s", "stale_after_hours": 30, "tree": [{"name": "Doctors", "share": 0.229}]}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  >"$HOME/.local/share/tokenmap/spend-7d.tmp" && mv "$HOME/.local/share/tokenmap/spend-7d.tmp" "$HOME/.local/share/tokenmap/spend-7d.json"
+printf '%s\n' "$*" >>"$DATA/tokenmap-args"
+EOF
+chmod +x "$HOME/.local/bin/tokenmap"
 # start: the record, the orchestrator chat on the main checkout with the sweep word, the session.
 night start >"$WORK/out" || fail "start failed"
 id=$(sed -n 's/^night \([0-9]\{8\}T[0-9]\{6\}Z-[0-9a-f]\{4\}\) started: orchestrator on acct-n$/\1/p' "$WORK/out")
 R=$(record "$id")
+assert "$ROOT/bin/wait-until" --max 10 log "$DATA/tokenmap-args" '^spend --range 7d --write$'
+assert [ "$(cat "$DATA/tokenmap-args")" = 'spend --range 7d --write' ]
+assert jqe --arg s "$(jq -r .started_at "$R")" '.tree[0].share == 0.229 and .generated_at >= $s' "$SPEND7"
 if suite_shard_owns 1 nr-start-to-sweep; then
 assert [ -n "$id" ]
 # Only Egor's own act starts LLM work (2026-10-20: a chat ran doctor-fix's launch and opened ~35 fixer sessions
@@ -314,6 +329,7 @@ assert grep -qF "night $id is still running: its orchestrator chat $session has 
 assert jqe '.finished_at == null' "$R"
 CLAUDE_CODE_SESSION_ID=$session night finish "$id" >/dev/null || fail "finish"
 assert_fails night finish "$id" 2>/dev/null
+assert jqe '.doctors_share == {share: 22.9}' "$R"
 assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2, code: null, system: null} and .finished_at != null
   and ([.jobs[] | select(.state == "pending")] | length) == 0
   and ([.jobs[] | select(.ref == "p2")][0] | .state == "left" and .reason == "no outcome recorded by the close")' "$R"
