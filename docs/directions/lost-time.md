@@ -116,19 +116,6 @@ lines: `git diff --numstat <base>..<merge>` of the goal's commits, legacy.md's b
 Breakages' `bash-cap`, this block's largest wait, is not repeated. Proofs replay fixed journals: a 7-day window
 after landing moves with the pilot's volume (targeted suite CPU 1,210/day in 10-08…14, 113 on 10-15) and tests-once.
 
-### goal suite-own-cost: a suite's cost has one queue, its rise read under load
-
-Class: test_health's heavy and pole findings shave a suite again beside suite_audit's queue; a held rise is read
-without load.
-- Change, `share/suite_audit.py` `due()`: the held 2× rise read through `load()` as `jump()` is; under LOAD_CONTROLS
-  `load()` reads unknown, never 1.0, the rise then on CPU a run (`test_health.cpu_run`). The source-edit reason stays:
-  re-audits on an edit cut 13 of 61 suites to ≤ 0.65× wall a run (kept rows 0 of 15), ≈ 66 wall-min/day for 0.42 %
-  of Claude spend (2026-10-20 night-cost research). `share/test_health.py` heavy and pole findings go.
-- Proof, old → new on one `runs.jsonl`, `spend-ledger.json` and HEAD: heavy and pole findings on a suite suite_audit
-  prices, before (unconfirmed; counted first) → 0; old and new `due()` differ only in rises the load explains. Not
-  worse: in 7 days a risen suite (≥ 2× held over HELD_S) over the floor that is not due fails the goal. Net lines:
-  code at most 0, the `load()` read against the heavy and pole findings that go.
-
 ### goal shared-asserts: suites take fail, assert and assert_fails from the lib they already source
 
 Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-helper suites source no test lib).
@@ -164,6 +151,7 @@ Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-he
 | 10-14 | tests run once, when the work is done | runs per worker task 7.7 → 3.3, retests 276 → 36/day | 8e6961df |
 | 10-23 | goal fan-out: suites with no catch in 90 days leave targeted runs but their own file's; Close red → green is a catch | `select()` replay, 218 commits 10-16…22: 5.70 → 4.96 wall-min a commit, CPU 5.54 → 4.96; watch: dropped suites red at Close over 7 nights, target 0 | 4e891fe3 |
 | 10-23 | goal night-owned: stratum `night` (jobs of nights finished), one agent per night: hubs (`session`, `previous_sessions`, `wall` events'; 817e had 2, 3131 4) and Close (session-less `suites` runs inside it); an older settled day keeps its strata | v5 → v6, same journals 10-03…21: chat, workers equal 19/19 days; hub spans in `agents[None]` 0; `out_s.suites` 10-08…14 261 → 3.2 min/day (selfcheck + one 10 s run); night 6.12 → 5.87 min/job, index 1.09 → 1.09 | a92cc622 |
+| 10-23 | goal suite-own-cost: test_health's heavy and pole findings go; both suite_audit rises read beyond `load()`, on CPU a run under 3 controls | heavy/pole rows on audited suites, windows to 10-10/14/17/23: 7/4/1/0 → 0; at-once rises at flat CPU (2 controls) 3 → 0, due 60 → 60; code −20, tests −12 lines; 7-day read: a suite risen beyond its load or CPU (≥ 2× held over HELD_S) not due, target 0 | ebf5bde1 |
 
 ## Open
 
@@ -172,6 +160,8 @@ Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-he
   a rewrite can launder a regression (2026-07-25), and it moves no number here (model work, 2026-10-10); its proof is
   the rewrite share of those suites (target half, net lines ≤ 0, mutations red). Recommendation: the goal after
   shared-asserts, its rewrite share read beside the second number; `test_consistency.sh` stays (shared invariants).
+- A third suite-cost queue stands: Code's moved `tests/<repo>/<label>` rows (`bin/speed-doctor` `moved_opportunities`,
+  `heavy_test_s`), 0 live on 10-23.
 - Covered and stale checks have no number: mutation runs, suite audits and the tests round run only in full nights.
   `uncaught:` first due 2027-01-01; 274 of 543 red→green episodes are `unread`, so silence can be a gap.
 - `out_s.unmeasured` (426 → 2 min/day) stays outside; fixed-sleep polls (`tool-idea-wait-until`, ≈121 min/day est.)
