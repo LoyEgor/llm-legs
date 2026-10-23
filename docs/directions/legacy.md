@@ -37,7 +37,8 @@ refresh, the last; its 111 test lines, `hammerspoon/tests/test_claude_keys_bin.s
 
 - Code doctor (`~/.cache/code-doctor/`, last refresh 2026-10-14 12:19): `latest.json` (counts by group, yield),
   `candidates.jsonl` (549 candidates with files and units), `verdicts.json`, `judge-runs.jsonl`, `accounting.jsonl`.
-  Pilot nights run no refresh, judge or Code fixer (`bin/night-run` PILOT_RULES).
+  Pilot nights run no refresh, judge or Code fixer (`bin/night-run` PILOT_RULES). A scratch refresh
+  (`CODE_DOCTOR_DIR` = a copy of it) reads today's trees and leaves it untouched: 9 s on 10-23.
 - `share/code-ledger.json`: the Code doctor's 9 dead and duplicate rows, all fixed-pending, −424 lines 10-03…10-13.
 - llm-legs `bin/harness-doctor` `DEPLOYS`: every copy llm-legs installers deploy, its source, kind and installer.
 - `share/harness-ledger.json`: no legacy rule. None of its 105 log-audit rows is about dead or duplicate code.
@@ -74,25 +75,19 @@ recomputed 2026-10-20, code only. Each class was fixed as an instance and came b
     HEAD 2026-10-20 llm-legs `read_json` 6 (code-doctor, spend.py) + `write_json` 24 (five tools).
 
 Why they come back:
-1. The snapshot (d2ecaa0, 10-13) copies every file in `~/.local/libexec` and every agent plist naming it. Installers
-   in all four repositories deploy there, because launchd cannot run a program off /Volumes/Work. Only llm-legs lists
-   its copies (`DEPLOYS`, with installers, healing drift by `harness-doctor --redeploy`); the snapshot reads no list.
-   - 3 of the 10 libexec copies have drifted. Fixes to them do not last: a fit round synced store-lock.sh (1eaff59),
-     a legacy round deleted ipad-mic-refresh (091c455), test_report_frame_guard gained an exemption (2612a804).
-   - The Code doctor's judge spent all 16 verdicts of 10-14 (247k tokens) on these copies.
+1. The snapshot (d2ecaa0, 10-13) copied every deployed file and read no list; the judge spent all 16 verdicts of
+   10-14 (247k tokens) on these copies. Settled by goal deployed-copies.
 2. A retirement spans repositories while each commit is one, and the Code fixer may not finish its own.
    - Relay: retired 10-09 (ee185fa8, 46879c6). Its leftovers took 7 commits in 3 repositories, all but one on 10-09.
    - Delegated stamp: its reader went in review-bench 6a684df. The writers went 10-08 (7d353f02, fa10c66), the
      prose and a test block 10-12 (8090aa7).
-   - `code-doctor check` refused a unit the same run orphaned (normalizeDir, 10f7f32; the statusline.sh and grokb
-     `run_bounded` migrations, 7c9a9cc9): goal own-orphans, Done.
    - The Code doctor finds leftovers nights later and fixes 1 cause a day (yield 424 lines for 6.0M tokens, under
      `LOW_YIELD_PER_KTOK`, so `queue_k` = `TOP_K_LOW_YIELD` = 1); its judge takes 8–16 candidates a night under a
      400k token cap, so the queue grew from 109 pending (10-03) to 531 waiting (10-14).
    - Audits of retired components (spawn:codex-worker, spawn:review-waiter 10-10; cd-guard ×4 10-13) are Spend's:
      `due()` reopens a cut whose tail is still in the 7-day window (spend.md class 1, goal audit-due).
-3. A new tool starts standalone, and a deployed copy (chat-load) cannot import `share/`. Each fold fixes one helper.
-   REUSE FIRST in worker-run's brief preamble has asked for reuse since 09-18; the class came back anyway.
+3. A new tool is modeled on a sibling and copies its helpers (goal lift-not-copy); a deployed copy (chat-load)
+   cannot import `share/`. Each fold fixes one helper. The method's three names miss the rest of the class.
 
 Checked, not a class:
 - Readers of retired experiments: none of the 5 tags removed since 09-20 has one left (grep outside docs/handoffs).
@@ -100,8 +95,38 @@ Checked, not a class:
   definition, 2 (worker-corpus's frame-guard exemption, 138b5a6c; `words_grant_target` in a planted test, b50e5bff).
   Other hits were common words, variables, keys, an 8-second cross-repository pair, and 234256e0, which swept in a
   staged deletion a minute before its retirement (6280c424): a scan of deleted names would list mostly false hits.
+- Deep search 10-23, dropped:
+  - class 2 inflow since 10-14 (scratch refresh): +4 units, 25 lines (one a `do_POST` dispatch false hit), −2
+    units, 16: 572 → 585;
+  - unused tools: every sweep `bin` tool ran in 35 d (model Bash calls deduped by tool_use id, or a code caller),
+    and the 13 largest tools' flags too, bar a few argparse lines; unparsed jq (729 lines): every `def` referenced;
+  - gates: retired hooks' files are all gone; 5 registered gates (232 lines) denied nothing in 35 d, each a
+    rare-event guard (Jira, MCP scope, skill names, end of day): silence is not need;
+  - exact clones at HEAD: 143 lines, 54 of them the 9-line bin `resolve_root` that finds `share/` before importing;
+  - superseded machinery: no journal names it; the silent-hook rule, blind until 14 covered days (rollup gaps
+    10-15…19), found 0 at 15 on 10-14; claudebd, xAI-direct and relay names left no code; no experiment overdue.
 
 ## Goals
+
+### goal lift-not-copy: a tool modeled on a sibling imports the sibling's helpers, never copies them
+
+Class 3. 10-09…10-23, 386 helper lines in 33 units re-rolled an existing helper (11.2 per 1k code lines added, of
+34,497); in 28 units (352 lines) the writer had opened or named that sibling first: suno_music.py ← flow_music.py
+185, the Hammerspoon guards 54, cpu_audit.py 38. Chats wrote 279: nothing they load asks for reuse, and REUSE FIRST
+(worker briefs) says "use it", which a copy passes.
+- First step: read the five largest writers (suno_music, cpu_audit, awdl_guard, dock_guard, words_journal); under 3
+  that read the copied helper itself, not only its file's name, stops the goal.
+- Change: REUSE FIRST in llm-legs `bin/worker-run` `BRIEF_PREAMBLE` adds "use it by import: a helper in another tool
+  moves to a module both import (`share/`, `gemini_web` for the browser legs, a Hammerspoon module), never a copy";
+  the same sentence goes into claude-setup `global/CLAUDE.md` for chats (the orchestrator's edit), paid by a trim
+  there. The 386 standing lines are the Code fixer's (block 7).
+- Proof, forward (prose has no replay), the 7 days after landing: a scratch `code-doctor refresh`; its clone and
+  reuse pairs with both units ≤ 60 lines, code only, `local-config/` out, the newer unit's def line `git blame` in
+  the window; same-file pairs, argparse `main`, bin `resolve_root` and the ledger's kept copies (chat-load) out; per
+  1k code lines added (git numstat between the window's ends, the Metric's buckets): 11.2 → ≤ 5.6. Beside it,
+  exact-body copies (index digests, symlinks out): 46 lines in 9 units.
+- Must not get worse: `global/CLAUDE.md` ≤ 5,519 bytes; the preamble + ≤ 120 bytes; no hook or gate; a lift keeps
+  both files' suites green and lowers the pair's lines.
 
 ## Done
 
@@ -137,5 +162,5 @@ Checked, not a class:
 
 ## Open
 
-- Change impact beyond code and tests (2026-10-09): hooks, docs and actions a landed change made obsolete. No class
-  or goal counts them.
+- Change impact beyond code and tests (2026-10-09): docs and actions a landed change made obsolete (hooks checked
+  10-23, above). No class or goal counts them.
