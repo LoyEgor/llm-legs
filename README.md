@@ -287,6 +287,7 @@ this list):
 - `bin/image-fanout` → `~/.local/bin/image-fanout` — one request across every vendor and account.
 - `bin/image-cutout` → `~/.local/bin/image-cutout` — exact-pixel background removal with macOS Vision (no generation).
 - `bin/logo-vectorize` → `~/.local/bin/logo-vectorize` — logo/icon bitmap to SVG with the logo bench's stable champion (local, no account).
+- `bin/image-enhance` → `~/.local/bin/image-enhance` — enhance, restore or upscale a picture with ChatGPT web edits in tiles at the output size (`docs/image-vendors.md` § Enhance and upscale).
 - `bin/gemini-video` → `~/.local/bin/gemini-video` — Veo/Omni clips through Google Flow.
 - `bin/video-chain` → `~/.local/bin/video-chain` — frame extraction for chaining clips.
 - `bin/frame-sheet` → `~/.local/bin/frame-sheet` — a contact sheet of a clip's frames labelled `t=<s>`, for judging motion (local, no account).

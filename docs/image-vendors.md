@@ -298,6 +298,34 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   clean on both; Flow's BEN2 option fails in the page. Don't pick it.
 - Never hand-roll thresholding, chroma keys or a mask of your own on a real image.
 
+## Enhance and upscale
+
+`bin/image-enhance` (`share/image_enhance.py`): an existing picture made to look like a real photograph,
+restored, or enlarged, through ChatGPT web edits (free route, via `media-run image --jobs`). ChatGPT returns
+at most ~1672 px, so the work happens at the OUTPUT size: the base is resized (Lanczos) to it, cut into
+overlapping 1024 px squares (a quarter overlap), every tile is one `--no-composite` edit fanned out over the
+accounts, each render is registered back onto its tile (SIFT similarity, plain resize when no fit holds) and
+the tiles cross-fade over the overlap. A tile that does not come back is retried once, then named (exit 1).
+
+```bash
+image-enhance --in /abs/a.png --dest /abs/b.png                              # photo: real texture, same size
+image-enhance --in /abs/frame.png --dest /abs/b.png --mode restore --scale 2   # redraw nothing: soft frames, upscaling
+image-enhance --in /abs/a.png --dest /abs/b.png --mode strong --takes 3       # re-shot as a new photograph, pick a take
+image-enhance --in /abs/a.png --dest /abs/b.png --mode strong --change "make it night"
+image-enhance --in /abs/a.png --dest /abs/b.png --focus "the trees" --dry-run  # plan and prompts, nothing sent
+```
+
+- `restore`: clean-up without redrawing (compression, blur, motion smear); the upscaler step.
+- `photo` (default): every surface re-created as true-to-life texture, objects, light and colours kept; the
+  2026-10-20 winner (arbostar-logo `site/upscale` card 180: 8 tiles, 2/2 against a plain resize, no seams).
+- `strong`: one edit of the whole frame as the layout for a new photograph (soft camera rendering, no
+  sharpening or HDR), then restore tiles to the output size; the light and small details change, the time of
+  day, season and weather stay unless `--change`. It varies take to take: 2 of 4 takes at the boldest wording
+  had small structural slips, so take 2-3 and pick.
+- `--focus <what>` names what gets the strongest treatment, the rest changing as little as possible.
+- Stills only: enhancing a clip frame by frame flickers. Local SR models (4x-UltraSharp, Real-ESRGAN,
+  SeedVR2, SDXL tile, Z-Image) lost on the same test and look digital; they are not wired in.
+
 ## Likeness of a real person
 
 Takes of a real person are ranked by a face-recognition score, never by a model's eye: Fable, Opus, Sol,

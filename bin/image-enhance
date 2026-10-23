@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+{
+set -euo pipefail
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+usage() {
+  printf 'usage: image-enhance --in <absolute image> --dest <absolute .png> [--mode restore|photo|strong] [--size WxH | --scale <x>] [--focus <what>] [--change <what>] [--takes 1-4] [--dry-run]\n' >&2
+  printf '  ChatGPT web edits (free) in overlapping tiles at the output size; restore = redraw nothing (soft frames, upscaling),\n' >&2
+  printf '  photo = real photographic texture (default), strong = the picture re-shot as a new photograph, then restored to size\n' >&2
+  printf '  --focus names what gets the strongest treatment; --change (strong only) e.g. "make it night"; time of day and season stay otherwise\n' >&2
+  exit 2
+}
+
+case "${1:-}" in '' | -h | --help) usage ;; esac
+uv_cmd=${IMAGE_ENHANCE_UV:-$(command -v uv || printf /opt/homebrew/bin/uv)}
+exec "$uv_cmd" run -q --script "$(resolve_root)/share/image_enhance.py" "$@"
+exit; }
