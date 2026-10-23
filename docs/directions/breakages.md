@@ -99,7 +99,7 @@ proof, a failed one stays with one line on what blocked it. Reads after landing 
 - gates (claude-setup 5e3cc12, llm-legs 0daf801d, review-bench 7f36bb6, 10-23): 9 gates decide on `hooks/lib/argv.sh`
   (shfmt; both libs gone), 4 take its read-only pass, no deny rule fits; `test_gate_replay` 348 × 16. Refused old → new:
   target 9/37 → 2 (others' rules), out 15/44 → 15, rightly 23/90 → 23, allowed 1 → 1, recent 200 +0; hook wall 280 →
-  149 ms/call. Left: rj_segments, instruction-files.sh, word/edit/eod gates, per-gate text cases. Read: target 0.
+  149 ms/call. Rest b936d23: rj_segments, word/edit/eod. Left: instruction-files.sh, text cases. Read: target 0.
 
 - stop-hooks (claude-setup a0fe49a, 10-23): stops waited on process starts (stall ≤≈1 s each), not work; builtin
   payload read, first word ask in the asks' wave, kill hits and cleanup detached: 44 → 34 starts idle. Proof,
