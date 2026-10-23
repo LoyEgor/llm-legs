@@ -35,6 +35,8 @@ PILOT_CARRY='`nr carry R` records the next goal (and answered trades): run its b
 PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. '"$PILOT_CARRY"
 # A resumed pilot night keeps its pilot (resume_night adds no debt job): only its pending jobs, then the carry loop.
 PILOT_RESUME_RULES='Pilot night (llm-legs docs/directions/README.md), over resume: no `debt` job or debt pass; once the pending jobs land, '"$PILOT_CARRY"
+# Once the pilot reaches vendors, its events are integrated after the goal lands, so a goal is judged alone.
+PILOT_VENDORS='Then step 3'"'"'s Vendors: `vendor-fingerprint request --night R`, a `vendor` job per printed run, each landed per branch.'
 # The cleanup button lands every leftover and nothing more while review debt waits (README block 10).
 CLEANUP_RULES='Review debt is paused (llm-legs docs/directions/README.md block 10): no `debt` job or debt pass; land every leftover, then Close, and step 6 with `--remainder '"'"'review debt paused'"'"'`.'
 STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
@@ -148,7 +150,7 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
-  A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt) carries only Egor's
+  A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt, plus PILOT_VENDORS once no direction before vendors has a goal) carries only Egor's
   answered trades and one goal job at a time: the first `### goal <slug>:` section under `## Goals` of
   docs/directions/<direction>.md with no job tonight, the directions in PILOT order, none while a goal job is
   pending or live; its worker
@@ -417,6 +419,8 @@ cmd_start() {
   [ "$scope" = all ] || marker=" $scope" pilot=''
   [ "$scope" != cleanup ] || marker=" cleanup. $CLEANUP_RULES"
   [ -z "$pilot" ] || marker=" pilot $pilot. $PILOT_RULES"
+  ! pilot_vendors "$pilot" || { marker=${marker/'no `vendor-fingerprint`, '/no }
+    marker=${marker/' Then Close,'/" $PILOT_VENDORS Then Close,"}; }
   lock
   open=$(open_nights | head -1)
   [ -z "$open" ] || die "night $open is still running: $(jq -r '"its orchestrator chat \(.session // "(opening, pid \(.opener))") has run since \(.started_at)"' \
@@ -427,6 +431,7 @@ cmd_start() {
     if [ -z "$job" ]; then
       pilot=$(jq -r '.pilot // empty' "$(night_file "$id")")
       if [ -n "$pilot" ]; then marker=" resume pilot $pilot. $PILOT_RESUME_RULES"
+        ! pilot_vendors "$pilot" || marker=${marker/' Then Close,'/" $PILOT_VENDORS Then Close,"}
       elif jq -e '.cleanup' "$(night_file "$id")" >/dev/null; then marker=" resume cleanup. $CLEANUP_RULES"; fi
     fi
   else
@@ -899,6 +904,15 @@ pilot_goal() { # id directions -> the carry line of the next goal in queue order
   done
   ! periodic_due | grep -qx directions-refresh ||
     printf 'directions-refresh\t%s\t%s\tshare/briefs/directions-refresh.md\t-\n' "$(date -u +%Y-%m)" "$repo"
+}
+
+pilot_vendors() { # directions -> true when vendors is among them and none before it has a goal left (pilot_goal's test)
+  local repo dir
+  case " $1 " in *' vendors '*) ;; *) return 1 ;; esac
+  repo=$(repo_dir llm-legs) || return 1
+  for dir in ${1%%vendors*}; do
+    [ ! -r "$repo/docs/directions/$dir.md" ] || [ -z "$(goal_slugs "$repo/docs/directions/$dir.md")" ] || return 1
+  done
 }
 
 periodic_due() { # -> each PERIODIC kind no night ran to an end (merged, nothing-to-do, blocked-on-egor) within its days

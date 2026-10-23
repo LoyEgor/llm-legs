@@ -169,6 +169,27 @@ assert grep -qF "night $id is still running" "$WORK/err"
 assert grep -qF "its orchestrator chat $session has run since $(jq -r .started_at "$R")" "$WORK/err"
 assert_fails grep -qF 'night-run finish' "$WORK/err"
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
+# Once no direction before vendors has a goal left, a pilot night integrates the waiting vendor events after its goals.
+assert_fails grep -qF 'vendor-fingerprint request' <<<"$prompt"
+mkdir -p "$WORK/pv/llm-legs/docs/directions" && printf '%s\n' "$WORK/pv/llm-legs" >"$WORK/pv/sweep-repos"
+printf '# L\n\n## Goals\n\n### goal x: y\n\n## Done\n' >"$WORK/pv/llm-legs/docs/directions/legacy.md"
+printf '# V\n\n## Goals\n\n### goal night-events: z\n' >"$WORK/pv/llm-legs/docs/directions/vendors.md"
+pv() { DOCTORS_DIR="$WORK/pv/$1" OPENED="$WORK/pv/opened" NIGHT_RUN_SWEEP_REPOS="$WORK/pv/sweep-repos" night "${@:2}"; }
+pv_prompt() { NIGHTS="$WORK/pv/$1/nights" last_arg "$2"; }
+pv before start >"$WORK/out" || fail "pilot start, a goal before vendors"
+pvp=$(pv_prompt before "$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")")
+assert grep -qF 'no `vendor-fingerprint`, leftovers' <<<"$pvp"
+assert_fails grep -qF 'vendor-fingerprint request' <<<"$pvp"
+printf '# L\n\n## Goals\n\n## Done\n\n### goal x: landed\n' >"$WORK/pv/llm-legs/docs/directions/legacy.md"
+pv reached start >"$WORK/out" || fail "pilot start, vendors reached"
+pvid=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
+pvp=$(pv_prompt reached "$pvid")
+assert grep -qF '; no leftovers, `debt` job or debt pass.' <<<"$pvp"
+assert grep -qF 'until it prints nothing. Then step 3'"'"'s Vendors: `vendor-fingerprint request --night R`, a `vendor` job per printed run, each landed per branch. Then Close, and step 6' <<<"$pvp"
+stop_chat "$(jq -r .session "$WORK/pv/reached/nights/$pvid.json")"
+pv reached start --resume "$pvid" >/dev/null || fail "resume a pilot night past vendors"
+assert grep -qF 'over resume: no `debt` job or debt pass; once the pending jobs land, `nr carry R` records the next goal' <<<"$(pv_prompt reached "$pvid")"
+assert grep -qF 'Then step 3'"'"'s Vendors: `vendor-fingerprint request --night R`' <<<"$(pv_prompt reached "$pvid")"
 
 # Jobs: add before dispatch, one per ref, kinds checked.
 night job "$id" add fixer llm-20260930T010203Z --branch "night/$id/llm-20260930T010203Z" >/dev/null || fail "job add"
