@@ -122,29 +122,6 @@ The rule: a breakage goes to block 1, and an unintegrated change goes to block 6
 
 ## Goals
 
-### goal night-events: from this block's turn, every pilot night integrates the vendor events waiting at its start
-
-Class: events wait for a night that does not take them. 9 events are open, 3.8–5.7 d old on 10-19; no instance has
-been fixed.
-- Change in `bin/night-run`, only once the pilot reaches this block. Today `cmd_start` puts PILOT_RULES into every
-  pilot night's prompt, and its no-list names `vendor-fingerprint`, so prep runs only `vendor-cli-update now --night`
-  (which requests nothing) and dispatch step 3's Vendors never runs. New: when `vendors` is in PILOT and no direction
-  before it has a `### goal` section left at the start (pilot_goal's own test), the marker drops `vendor-fingerprint`
-  from the no-list and adds step 3's Vendors: `vendor-fingerprint request --night R`, which builds per waiting vendor
-  its fixer run, worktrees on `night/R/<vendor>` and a brief, printing `<run>\t<brief>\t<worktree>`; it runs after
-  the night's goal job lands, so a goal is still judged alone on its spend and load, and each branch lands per
-  branch. Pilot nights before that keep today's rules. No new hook or suite: `tests/test_night_run.sh`'s pilot case
-  gains a reached-vendors case. Net lines: `git diff --shortstat <landing>^ <landing> -- bin/night-run
-  tests/test_night_run.sh`, insertions minus deletions, written into Done.
-- Proof, fixed now. Old: a pilot night leaves every event open at its start still open (9; PILOT_RULES forbids
-  the request since 10-15, and no night has run since 10-14). New: the first pilot night past this goal closes every event open at its start (0 left
-  open): integrated, not-applicable, or blocked with a line in `vendor-release-open.md`. Its goal job's spend and
-  minutes in the night header are unchanged, because the vendor jobs start after the goal lands.
-- Read after landing: mean lag over the next 7 days at or under the mean gap between nights, target ≈1 d or less
-  with a night every day (10-06…12: 0.12 d over 6 nights). Events open at a night's start and still open at its
-  close: 0. Not worse: the guard within 50–69 %, the integration sessions' spend share per event against 10-06…12
-  (≈0.03 %), and the second number. A night closing with an event still open, or the guard out of range: reverted.
-
 ## At night
 
 - Section 6, Vendor events (README "The whole night"), plus the vendor-watch events block 9 opens. The Updater
@@ -162,6 +139,7 @@ been fixed.
 | 10-07, 10-09 | ids facet holds only served ids; cheap events go to Sonnet | false events 4 → 0 per week | fe3841b9, 52ec96b0 |
 | 10-08 | releases seen within 2 h; the updater owns the native claude | | 64f8354e |
 | 10-19 | per-account catalogs and plans become events; Argon serves only on accounts that list it | Argon joined the gemini event 10-19 23:05Z | 56a766ed, 13707749 |
+| 10-23 | goal night-events: a pilot night past blocks 1–5's goals runs step 3's Vendors after its goals (`pilot_vendors`) | proof pending, the first such night: events open at its start 9 (10-19) → 0; then the 7-day lag ≤ the gap between nights, guard 50–69 %, else reverted | 998dd4be, +35 net lines |
 
 ## Decisions
 
@@ -196,8 +174,7 @@ been fixed.
     per run, started after the goal lands; it goes against 10-19's "sections return in their turn".
   - Loss if they wait: about 10 events a week pile up, the lag grows a day per day, and new models and flags stay
     unused.
-  - Recommendation: keep the queue and press the Updater's Fix button once now. That path already exists and
-    changes no decision.
+  - Recommendation: keep the queue; the Fix button closed the 9 on 10-20 (11:18–13:33Z), 4 opened 10-20…22.
 - Changes no facet reads: no provable goal. Both past misses are caught by today's code (64f8354e; 56a766ed, live
   since Argon joined `gemini-20261014T201301Z` 10-19 23:05Z), so a replay shows no old/new difference; what is
   still unread (grok plan, Claude `fable`, Gemini's plan name) has no recorded miss. A generic per-account
