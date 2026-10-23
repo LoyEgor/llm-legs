@@ -13,9 +13,8 @@ judges goals on test cost and waits; muting targeted runs lowers it and says not
 
 Second number, proposed, Egor's word pending: test legacy lines standing in the four repositories by the helper-copy
 and dead-test-unit methods (Recurring classes), read 7 days after a goal lands: 514 at HEAD 10-20 (copies 403, dead
-units 111 at the 10-14 refresh). It judges goals on how tests are written (shared-asserts: the add-rate shows the
-class stops coming back, this number that it moved); stale, covered and `uncaught:` checks join it once measured
-(Open). Watched only: suites the last full run left red, code commits' rewrite share (the contract-checks trade).
+units 111 at the 10-14 refresh). It judges goals on how tests are written; stale, covered and `uncaught:` checks
+join it once measured (Open). Watched only: suites the last full run left red, code commits' rewrite share (the contract-checks trade).
 
 ### Baseline (computed 2026-10-20)
 
@@ -36,8 +35,8 @@ class stops coming back, this number that it moved); stale, covered and `uncaugh
   `settled`) summed per window over its days; index = Σ window overhead / Σ (window units × prior overhead per unit),
   per stratum, as `paasche`; rows are span unions, parts overlap. 10-19's worker rows sit in the account store this
   baseline may not read: 1.09 is `latest.json` → `speed.budget.index_by_day["2026-10-19"]` (10-20 01:40).
-- The rise is workers': 10-13 (night 3131 closing: 9,930 overhead-min, 275 tasks) and usage walls (110 min on 10-18),
-  while tests halved. Nights paused from 10-15 left 0–159 tasks a day: a mix change, unclear.
+- The rise is workers' (night 3131 closing on 10-13: 9,930 overhead-min, 275 tasks; walls 110 min on 10-18) while
+  tests halved; paused nights left 0–159 tasks a day from 10-15: mix, unclear.
 - Suites: `~/.cache/run-suites/runs.jsonl` by local day of `queued_at`, a run one entry of `suites`, CPU Σ `cpu_s`;
   decode with `json.JSONDecoder().raw_decode` (some lines hold two objects).
 - Git rows: legacy.md's window ends and buckets. Rewrites: `git log --no-merges <end>..<next-end> --numstat`,
@@ -54,7 +53,7 @@ class stops coming back, this number that it moved); stale, covered and `uncaugh
   `~/.cache/doctors/nights/<id>.json` `suites.repos[].failed`/`flaky` after one rerun, logs `<id>.suites.<repo>.log`;
   the next night's `jobs[]` of `kind` `suite`. No transcript: its reds are `unread`, never catches.
 - `latest.json` → `speed.tests`; `share/suite_audit.py` `due()`; `suite:` rows of `share/spend-ledger.json` (removed
-  never-red, vacuous or covered checks with their mutation; 38 on 10-13…14, full nights only); the harness ledger;
+  never-red, vacuous or covered checks with their mutation; full nights only); the harness ledger;
   dead test units: Code doctor `candidates.jsonl` (refresh 10-14).
 
 ## Recurring classes
@@ -64,57 +63,72 @@ Each was fixed as an instance and came back; harness-ledger rows as of 2026-10-1
 | class | rows | fixes | fix days | what makes it come back |
 |---|---:|---:|---|---|
 | a hook's latency is cut hook by hook | 64 | 64 (15 came back) | 09-29…10-10 | each hook is cut alone (dispatcher declined 10-05) |
-| a slow suite is shaved one at a time | 57 | 76 (17 twice+) | 10-01…13 | one suite's seconds a fix; test_health files a suite again beside suite_audit |
 | a run dies at the Bash cap or queues past it | 22 | 13 | 10-07…14 | Breakages' `bash-cap` |
 | a suite idles on a fixed sleep or poll | 18 + 4 | 14 | 10-05…14 | each suite and model writes its own wait loop |
-| a suite is reopened on a number not its own | 18 + 203 of 252 moved | 13 | 10-10…14 | a held rise read without load; `load()` 1.0 under 3 controls |
-| a targeted run carries suites that never catch | 5 + 5 commits | 7 | 10-04…14 | each fix narrowed one rule; suites reached through a helper remain |
-| a caller reruns a suite on content already green | 4 + 8e6961df | 2 | 10-10…14 | each caller decides alone; prose binds only its readers |
 | a Close red is green before the night acts | 32 of 41 suite jobs | 9 merged | 10-05…14 | Close runs in the shared checkout under the night's load |
-| each suite redefines its assert helpers | 22 of 41 suites added 10-09…15 | 1 fit round | 6 days | a new suite copies its preamble, helpers included |
 | a code change rewrites checks pinning how code is written | 779 of 1,309 code commits 09-20…10-19 | | | below |
 
-- Rows (`match.rule`/`ident`; fixes `fixes[]`, `regressed_at` = came back): hooks `hook_*` 57 + `floor` 7; shaving
-  `test_slow|test_daily_cost|test_long_pole` 14 + `opportunity` `test-health/\(?(heavy|pole)` 43; reopened `suite:` rows
-  whose `sources` blob ≠ `git rev-parse <end>:<path>` (`<end>` each repository's commit before 2026-10-17 00:00,
-  llm-legs e13fb2357c57, ledger at that commit; HEAD today is 205): 203 + `regression` rows but `retests|targeted`; bash cap
-  `test_hang` 13 + 8 `log_audit` + `tool-idea-run-all-attach`; idle `test-health/idle/*` 18 + 4 `log_audit`; green
-  reruns `test-health/retests`, `/targeted`, `log_audit:landing-pipeline-retests-and-mistakes`.
-- Weight 10-08…14: 37 % of targeted runs (22 % of their CPU, 265 of 1,210 CPU-min/day, raw 264.6) went to suites with
-  no catch since 10-03. A run is caught when `basename(repo_root)/<suite stem without .sh>` is in any
-  `test-catches.json` `days.*.catches` (through 2026-10-19); scope `named|changed`; `queued_at` local 10-08 through
-  10-14. Retests 276 → 36 runs/day after tests-once; idle 6.3–7.8 min/day; hooks 156 → 20 min/day.
-- Close reds, nights 10-04…14: 25 `green on main in the night rerun` (10-04's 231-min Close left 27), 5 green at press
-  time, 2 nothing-to-do unexplained, 9 merged. In the logs: untracked files of the shared checkout
-  (`test_claude_md_refs` 10-13 and 10-14 read `skills/.trash/…`), a chat's same-day fix (`test_report_frame_guard`
-  10-07, 10-14), timing (`test_vendor_fingerprint` `65 -le 56`, `test_statusline_hooks`). The press-time check
-  (`suite_green`) makes them free, so no goal moves Close to a detached `main` worktree (it would drop the
-  untracked-file reds, 2 of 41); the full run takes 9–34 min a night since 10-05.
+Settled by Done goals: suite shaving and reopening, never-catching suites, helper copies; green reruns are 0.2 % of
+worker suite-seconds 10-16…22 (7.4 % 10-09…15).
+- Rows (`match.rule`/`ident`; fixes `fixes[]`, `regressed_at` = came back): hooks `hook_*` 57 + `floor` 7; bash cap
+  `test_hang` 13 + 8 `log_audit` + `tool-idea-run-all-attach`; idle `test-health/idle/*` 18 + 4 `log_audit`. Idle
+  6.3–7.8 min/day; hooks 156 → 20 min/day.
+- Close reds, nights 10-04…14: 25 green in the night rerun, 5 at press time, 2 unexplained, 9 merged (untracked
+  files, same-day fixes, timing); the press-time `suite_green` makes them free, so Close stays in the main checkout
+  (a detached worktree drops 2 of 41 reds); the full run takes 9–34 min a night since 10-05.
 - Helper copies: `fail()`, `assert()`, `assert_fails()` bodies in tracked `*.sh` at column 0, `name()` line to brace
-  balance, whitespace-stripped, `local-config/` out; every copy of a body seen twice or more, less one per body: 400
-  at 10-16's ends, 403 at HEAD 10-20. Suites added 10-09…15 that define their own: `git log --first-parent
-  --diff-filter=A --name-only --since=2026-10-09T00:00Z --until=2026-10-16T00:00Z` (a bare date takes now's clock), basename `test_*.sh`, a column-0
-  `fail()`/`assert()`/`assert_fails()` in that commit's blob: 22 of 41 (llm-legs 13 of 23, claude-setup 7 of 13,
-  review-bench 0 of 1, hammerspoon 2 of 4). Dead test units: `hammerspoon/tests/test_claude_keys_bin.sh` 111 (legacy.md
-  class 2's method). Not a class: copied fixtures (shared 6-line blocks 2,901 lines over 309 pairs; no fix to return).
+  balance, whitespace-stripped, `local-config/` out; every copy of a body seen twice or more, less one per body: 403 at
+  HEAD 10-20. Suites added 10-09…15 that define their own (the class command): `git log --first-parent
+  --diff-filter=A --name-only --since=2026-10-09T00:00Z --until=2026-10-16T00:00Z` (a bare date takes now's clock),
+  basename `test_*.sh`, a column-0 helper in that commit's blob: 22 of 41 (llm-legs 13 of 23). Dead test units:
+  `hammerspoon/tests/test_claude_keys_bin.sh` 111 (legacy.md class 2's method).
 - Pinned checks (Egor's hypothesis 2026-10-19, measured 09-20…10-19): 60 % of code commits rewrite existing test
-  lines (llm-legs 65 %, claude-setup 52 %, review-bench 49 %, hammerspoon 30 %), 0.23 lines per code line changed,
-  median 5 (0.16) in a rewriting commit. Same rev-range, ends before 2026-09-20 and before 2026-10-20. Seeded sample
-  of 10: that rewriting list in `git log` order (newest first), repos llm-legs, claude-setup, review-bench,
-  hammerspoon, then `random.seed(20261020)` and `random.sample` (Python 3.11+): implementation 4 (f698194 a
-  fixture copying internal files by name, 492e028 a wait on an internal lock path, 92aa785 a golden list of 76 problem
-  ids and an exact fork list, f57b7c3 hook paths and reason strings), the suite's narrative PASS line only 1
-  (630d45e), mixed 2 (48bfc77, cfda46d), behavior 3 (0eabdd9; 4c7bcb3 read as source text; 014f8ae one default in 7
-  suites). 143 of 779 rewrite a PASS line, 21 only that; ten files hold 52 % of test-deletion lines (36,221;
-  test_worker_run.sh 5,081 before its 10-01 split), llm-legs `tests/test_consistency.sh` 109 of those commits. Holds in part: 60 %,
-  not 90 %; half the sample changed no behavior.
+  lines (llm-legs 65 %, hammerspoon 30 %), 0.23 lines per code line changed.
+  Same rev-range, ends before 2026-09-20 and 2026-10-20. Seeded sample of 10 (the rewriting list in `git log` order,
+  repos llm-legs, claude-setup, review-bench, hammerspoon, `random.seed(20261020)`, `random.sample`, Python 3.11+):
+  implementation 4, narrative PASS line only 1, mixed 2, behavior 3. 143 of 779 rewrite a PASS line, 21 only that;
+  ten files hold 52 % of test-deletion lines, `tests/test_consistency.sh` 109 commits. Holds in part: 60 %, not 90 %; half the sample
+  changed no behavior.
 
 ## Goals
 
 Net
 lines: `git diff --numstat <base>..<merge>` of the goal's commits, legacy.md's buckets, code and tests apart.
 Breakages' `bash-cap`, this block's largest wait, is not repeated. Proofs replay fixed journals: a 7-day window
-after landing moves with the pilot's volume (targeted suite CPU 1,210/day in 10-08…14, 113 on 10-15) and tests-once.
+after landing moves with the pilot's volume and tests-once.
+
+### goal walled-resume: a walled worker's rescue continues its session
+
+Class: usage walls, 84 worker-min/day 10-09…22. `reroute_walled` (`bin/worker-run`, 10-05) restarts a walled
+claudeb run fresh, redoing the walled attempt; the 07-25 rotation cut's rescue was `RESUME <session>` on a
+worker-pick account, and all profiles share `~/.claude/projects`.
+- Change: a claudeb rescue resumes the walled session on the picked account (one reroute; `REROUTE:` and the
+  browser, `.resume`, explicit-account refusals stay; no stale-RESUME refusal); `run_split` counts its relaunch gap.
+- First step: the 10-19 rescues (walled at 9,504 s; 2,735, 8,352, 8,421 s) repeat the walled sessions' calls, and a
+  finished claudeb session resumed on another account answers; either fails, stop.
+- Proof, old → new: claudeb walled attempts of 10 min or more, 10-09…22: 13 runs on 4 days, 1,054 min, fresh rescues
+  733, redo ≤ Σ min(walled, rescue) 626 min (≈45 worker-min/day). New, 14 days after landing: each claudeb rescue
+  keeps the walled session id, its walled minutes only relaunch gaps.
+- Must not get worse: rescues succeed (33 of 33); rescue tokens a walled run at or under the fresh rescues' (tokenmap,
+  counted first); codex walls (117 min) untouched.
+
+### goal chat-owned: the chat stratum counts only Egor's own turns
+
+Class: a caller the index does not own. Since 8bfaa17f (10-09) a day fix launch opens a chat on `Fix orchestrator:
+read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: on 10-20 chat 607 min / 87 orders, 315 min four
+orchestrators' suites. A forked transcript repeats its parent's entries (`forkedFrom`), read again as turns: 304
+duplicate turn rows 10-12…20 (10-15 recomputed: 151 orders, settled 106).
+- Change: `C1_MACHINE` takes `Fix orchestrator:` for its two dead forms; `read_transcript` skips `forkedFrom`
+  entries; `time_budget.night_agents` owns a doctor-fix run record's `session` (no `night`) as a night agent, units
+  its runs closed that day.
+- Proof, v6 → v7 on 10-09…22 (projected, a span dedupe for `forkedFrom`): chat 1.48 → 1.35 min an order, 10-20 7.0 →
+  3.6; night +332 min / 45 runs on 10-20; workers equal every day. Gain 0 minutes, a true compass.
+- Must not get worse: no orchestrator span in `agents[None]` or `out_s`; a settled day keeps its strata.
+
+Dropped, 10-09…22: full-night slot queues (917 worker-min/day, `room` at 6–7 of 40 held), memory and load;
+run-suites `limit` waits (10-20 325 min), CPU busy 1.00 in all 88 samples; 10-20's 63 fixers (495 min queued),
+CPU-bound, fan-out's; chats testing while iterating, 13 min/day, a rule exists; chat compaction 19.6 min/day (74 s at
+≈267k), a spend trade; worker compaction 3.6 min/day; API retries 7; model-written scripts, beside the index.
 
 ## At night
 
@@ -133,14 +147,13 @@ after landing moves with the pilot's volume (targeted suite CPU 1,210/day in 10-
 | date | change | result | evidence |
 |---|---|---|---|
 | 10-01 | `test_worker_run` (7,755 lines) split into 16 suites | slowest part 2,287 → 233 s | 8f113a19 |
-| 10-04 | workers run only the covering suites (`tests/affected`) | | ad5d95f9 |
 | 10-05 night 052f | slot admission, fixed sleeps cut, `test_instruction_gate` split in 8, hangs | median suite 160–240 → 35 s | c4adcbb8, 03001c01 |
 | 10-13/14 nights | 252 suite audits (170 cut, 81 kept, 1 trade) | a pass 59 → 50 min, under noise, ×4.5 10-05's cost | `suite:` rows |
-| 10-14 | tests lens, 10 heaviest suites, two rounds; lens tuned (review-bench 53f8137) | 131 fixes, +293 lines: cleanup is deletion only | 05a7238f, 62458120 |
+| 10-14 | tests lens, 10 heaviest suites, two rounds, lens tuned | 131 fixes, +293 lines: cleanup is deletion only | 05a7238f, 62458120, review-bench 53f8137 |
 | 10-14 | tests run once, when the work is done | runs per worker task 7.7 → 3.3, retests 276 → 36/day | 8e6961df |
 | 10-23 | goal fan-out: suites with no catch in 90 days leave targeted runs but their own file's; Close red → green is a catch | `select()` replay, 218 commits 10-16…22: 5.70 → 4.96 wall-min a commit, CPU 5.54 → 4.96; watch: dropped suites red at Close over 7 nights, target 0 | 4e891fe3 |
-| 10-23 | goal night-owned: stratum `night` (jobs of nights finished), one agent per night: hubs (`session`, `previous_sessions`, `wall` events'; 817e had 2, 3131 4) and Close (session-less `suites` runs inside it); an older settled day keeps its strata | v5 → v6, same journals 10-03…21: chat, workers equal 19/19 days; hub spans in `agents[None]` 0; `out_s.suites` 10-08…14 261 → 3.2 min/day (selfcheck + one 10 s run); night 6.12 → 5.87 min/job, index 1.09 → 1.09 | a92cc622 |
-| 10-23 | goal suite-own-cost: test_health's heavy and pole findings go; both suite_audit rises read beyond `load()`, on CPU a run under 3 controls | heavy/pole rows on audited suites, windows to 10-10/14/17/23: 7/4/1/0 → 0; at-once rises at flat CPU (2 controls) 3 → 0, due 60 → 60; code −20, tests −12 lines; 7-day read: a suite risen beyond its load or CPU (≥ 2× held over HELD_S) not due, target 0 | ebf5bde1 |
+| 10-23 | goal night-owned: stratum `night` (jobs of nights finished), one agent per night: its hub sessions and Close's session-less runs | v5 → v6, journals 10-03…21: chat, workers equal 19/19 days; hub spans in `agents[None]` 0; `out_s.suites` 10-08…14 261 → 3.2 min/day; night 6.12 → 5.87 min/job | a92cc622 |
+| 10-23 | goal suite-own-cost: test_health's heavy and pole findings go; both suite_audit rises read beyond `load()`, on CPU a run under 3 controls | heavy/pole rows on audited suites, 4 windows, 12 → 0; at-once rises at flat CPU (2 controls) 3 → 0, due 60 → 60; code −20, tests −12 lines; 7-day read: a suite risen beyond its load or CPU (≥ 2× held over HELD_S) not due, target 0 | ebf5bde1 |
 | 10-23 | goal shared-asserts: `fail`, `assert`, `assert_fails` from `tests/lib/suite-journal.sh` to line-2 sources; 133 copies behaving as the lib's go, variants stay | llm-legs helper-copy lines 382 → 182 (less one 333 → 145); touched suites' PASS counts = HEAD's, 3 sampled mutations red; tests −188 lines; 7-day read: suites added defining their own (class command), llm-legs 13 of 23 → target 0 | 5e084b8d |
 
 ## Open
@@ -148,15 +161,16 @@ after landing moves with the pilot's volume (targeted suite CPU 1,210/day in 10-
 - Pinned checks, a trade. Cost: goal `contract-checks` rewrites the ten most-rewritten suites' checks to what a caller
   or Egor reads (exit, fields, the rendered menu) and the preamble's TESTS line asks for that, ≈10 worker runs. Loss:
   a rewrite can launder a regression (2026-07-25), and it moves no number here (model work, 2026-10-10); its proof is
-  the rewrite share of those suites (target half, net lines ≤ 0, mutations red). Recommendation: the goal after
-  shared-asserts, its rewrite share read beside the second number; `test_consistency.sh` stays (shared invariants).
-- A third suite-cost queue stands: Code's moved `tests/<repo>/<label>` rows (`bin/speed-doctor` `moved_opportunities`,
-  `heavy_test_s`), 0 live on 10-23.
-- Covered and stale checks have no number: mutation runs, suite audits and the tests round run only in full nights.
-  `uncaught:` first due 2027-01-01; 274 of 543 red→green episodes are `unread`, so silence can be a gap.
+  the rewrite share of those suites (target half, net lines ≤ 0, mutations red). Recommendation: next after this
+  file's goals, its rewrite share read beside the second number; `test_consistency.sh` stays (shared invariants).
+- Code's moved `tests/<repo>/<label>` rows (`bin/speed-doctor` `moved_opportunities`) are a third suite-cost queue,
+  0 live on 10-23.
+- Index 0.10 (10-16…22) is mix: the prior window's slot queues (workers 19.7 → 1.3 min a task), 10-22's 631 judge
+  calls of 0.3 min (0.17 without); a work-sized worker unit is open.
+- Covered and stale checks have no number: mutation runs, suite audits (65 due on 327 suite-min/day, none since 10-14
+  but 10-20's 8) and the tests round run only in full nights. `uncaught:` first due 2027-01-01; 274 of 543 red→green episodes are `unread`, so silence can be a gap.
 - `out_s.unmeasured` (426 → 2 min/day) stays outside; fixed-sleep polls (`tool-idea-wait-until`, ≈121 min/day est.)
-  wait on `bash-cap`; `tests/affected` basename rule 2 of 21,646 (`docs/zz/README.md` still pulls 38); expected gains
-  priced from the journal (10-14: 3,493 min/day expected, the whole row ≈550).
+  wait on `bash-cap`; gains are priced from journals (10-14 expected 3,493 min/day of a ≈550 row).
 
 ## Decisions
 

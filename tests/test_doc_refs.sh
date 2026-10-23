@@ -25,7 +25,6 @@ out=$(cd "$ROOT" && python3 share/doc_refs.py --repo . $files <<'ALLOW'
 docs/image-vendors.md likeness.py untracked
 docs/harness-doctor-design.md test_worker_run.sh history
 docs/harness-doctor-design.md hooks/folded runtime
-docs/directions/lost-time.md docs/zz/README.md example
 docs/harness-doctor-design.md bin/test-history removed
 docs/harness-doctor-design.md throttle.py untracked
 docs/statusline-contract.md ~/.claude/statusline-cache-ttl ignored
