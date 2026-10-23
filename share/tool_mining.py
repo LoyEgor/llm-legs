@@ -568,15 +568,19 @@ def number(value):
 
 def bench_faults(bench, hint_only=False):
     """Why an adhoc fix's bench keeps it from landing, [] when it lands. The bench runs the cluster's own example
-    calls (`calls` names them and their inputs) and the tool on the same inputs: the tool's wall and output bytes at
-    most the ad-hoc median's, a longer output only with a `reason`; `command` matches the tool's Bash calls (empty
-    only on a hint row whose tool is no Bash command), `hint_b` the hint's bytes loaded in every session."""
+    calls (`calls` names them and their inputs) and the tool on the same inputs: the tool's wall at most the ad-hoc
+    median's plus `adhoc_write_s`, the model's writing of one example call (its characters at the day's write rate),
+    its output bytes at most the median's, a longer output only with a `reason`; `command` matches the tool's Bash
+    calls (empty only on a hint row whose tool is no Bash command), `hint_b` the hint's bytes loaded in every session."""
     if not isinstance(bench, dict):
         return ["no bench {%s}" % ", ".join(BENCH)]
     missing = [k for k in BENCH if k not in bench]
     if missing:
         return ["the bench lacks " + ", ".join(missing)]
     out = ["bench %s is no number >= 0" % k for k in BENCH[1:2] + BENCH[3:] if not number(bench[k])]
+    write = bench.get("adhoc_write_s", 0)
+    if not number(write):
+        out.append("bench adhoc_write_s is no number >= 0")
     if not str(bench["calls"] or "").strip():
         out.append("the bench names no example calls and inputs")
     command = bench["command"]
@@ -589,8 +593,9 @@ def bench_faults(bench, hint_only=False):
             out.append("the bench command is no pattern: %s" % exc)
     if out:
         return out
-    if bench["tool_wall_s"] > bench["adhoc_wall_s"]:
-        out.append("the tool's wall %s s is over the ad-hoc median's %s s" % (bench["tool_wall_s"], bench["adhoc_wall_s"]))
+    if bench["tool_wall_s"] > bench["adhoc_wall_s"] + write:
+        out.append("the tool's wall %s s is over the ad-hoc median's %s s%s" % (
+            bench["tool_wall_s"], bench["adhoc_wall_s"], " plus its writing %s s" % write if write else ""))
     if bench["tool_out_b"] > bench["adhoc_out_b"] and not str(bench.get("reason") or "").strip():
         out.append("the tool prints %s bytes, over the ad-hoc median's %s, with no reason"
                    % (bench["tool_out_b"], bench["adhoc_out_b"]))

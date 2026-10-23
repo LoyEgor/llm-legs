@@ -207,6 +207,13 @@ check(t.bench_faults(dict(FAIR, tool_wall_s=0.5)) == ["the tool's wall 0.5 s is 
       and t.bench_faults(dict(FAIR, tool_out_b=901, reason="x")) == []
       and t.bench_faults(dict(FAIR, tool_out_b=901)) == ["the tool prints 901 bytes, over the ad-hoc median's 900, with no reason"],
       "a slower tool is refused; a wordier one only with a stated reason")
+LOOKUP = dict(FAIR, adhoc_wall_s=0.029, tool_wall_s=0.034)
+check(t.bench_faults(dict(LOOKUP, adhoc_write_s=2.459)) == []
+      and t.bench_faults(dict(FAIR, tool_wall_s=0.5, adhoc_write_s=0.05))
+      == ["the tool's wall 0.5 s is over the ad-hoc median's 0.4 s plus its writing 0.05 s"]
+      and t.bench_faults(dict(FAIR, adhoc_write_s="2 s")) == ["bench adhoc_write_s is no number >= 0"],
+      "the ad-hoc side's wall counts the model's writing of the script: the dropped ledger lookup (5 ms over bare jq, "
+      "2.46 s to write) lands")
 ledger = {"rows": [{"id": "A", "match": {"rule": "opportunity", "ident": "adhoc/file-edit"}, "fixes": [{"bench": dict(FAIR, command="")}]},
                    {"id": "B", "match": {"rule": "opportunity", "ident": "adhoc/ledger-query"}, "fixes": [{}, {"bench": FAIR}]},
                    {"id": "C", "match": {"rule": "opportunity", "ident": "chat/hooks"}, "fixes": [{}]}]}
