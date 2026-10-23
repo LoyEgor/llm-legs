@@ -160,17 +160,17 @@ notice-connections, stop-dispatch with no timeout binary on a launchd PATH.
   any notice (6–12.6 s of those stops). 15 of 16 kills at 15 s left no stop-gate journal line, so the old read
   (`journal.jsonl` errors) cannot see them.
 - Change: `"asyncRewake": true` on the one Stop entry of claude-setup `local-config/home/.claude/settings.json`
-  (2.1.301 schema: the hook runs in the background and wakes the model on exit 2); stop-dispatch turns a block into
-  exit 2 with the reason on stderr; its 5 s/10 s budget and serial order go.
-- Check first: whether an async hook's `systemMessage` still shows, a rewoken stop sets `stop_hook_active`, and an
-  async Stop hook still writes `stop_hook_summary`/`hook_cancelled`; if not, stop-dispatch journals an entry line
-  beside its exit line (`~/.cache/claude/stop-gate/journal.jsonl`): no exit is a kill, entry to exit its time.
-- Proof: stops that waited ≥5 s or were killed, per 1,000, from those records (`hookInfos[].durationMs`) by band of
-  worker runs live at the stop (`~/.cache/claude-worker-runs/<run-id>/` birth → `exit_code` mtime, the diagnosis'
-  source): under 20 0.4, 20–79 41, 80+ 615 before, unconfirmed (no window; run dirs prune at 7 days, now 10-07…16):
-  first step, recompute it there. Target 0 per band, an empty band unclear. All transcripts 10-01…16: 7,179 stops,
-  120 with a hook ≥5 s, 16 Stop `hook_cancelled`. Not worse: asks/holds (64), notices (54) delivered, ≤23 repeats
-  within 5 min, Stop CPU p50 0.29 s.
+  (runs in the background, wakes the model on exit 2); stop-dispatch turns a block into exit 2 with the reason on
+  stderr; its 5 s/10 s budget and serial order go.
+- **Blocked** by the check (10-23, 2.1.309, interactive): a rewoken stop sets `stop_hook_active`, but an async
+  hook's `systemMessage` never shows (exit 0 or 2), its `stop_hook_summary` has no `durationMs`, a timeout kill no
+  `hook_cancelled`: every notice goes silent. Open: notices on a sync entry of their own (10-15: no new hooks) or
+  relayed by the rewoken model, a turn each. `claude -p` stays sync (code read).
+- Proof: stops ≥5 s (kills included), per 1,000, from `hookInfos[].durationMs` (uuid-deduped: forks copy records)
+  by band of worker runs live at the stop (run dir birth → `exit_code` mtime). 10-14 22:00…10-23 04:00, 2,429
+  stops: under 20 9.9 (23, 6 killed), 20–79 90 (9 of 100, 3 killed), 80+ empty. Target 0 per band, an empty band
+  unclear. Transcripts 10-01…16: 7,179 stops, 120 ≥5 s, 16 killed. Not worse: asks/holds (64), notices (54)
+  delivered, ≤23 repeats within 5 min, Stop CPU p50 0.29 s.
 
 ## Decisions
 
