@@ -130,19 +130,6 @@ refusals in `agents[None]`, in no stratum.
 - Proof, version 5 → 6 on the same journals: chat and workers unchanged, night as projected. Not worse: no
   night-session span in `agents[None]`, `out_s.suites` at most selfcheck's. Net lines: code above 0 (the stratum).
 
-### goal fan-out: a targeted run carries a file's own suite and, of the rest, only suites that catch
-
-Class: targeted runs carry suites with no catch (235 of that 265 CPU-min/day in runs of 6+ suites; raw 234.9).
-- Change, `share/suite_select.py`: a suite with no catch in `CATCH_D` days, journaled 7 days or more (test_health's
-  fan-out `zero` set plus that age), leaves the targeted output unless a changed file or named after one (`named()`).
-- `share/test_catches.py`: red at one Close and green at a later one is a catch; still red is nothing (the 90-day rule
-  deletes known-red suites). Test_health's fan-out finding and pricing go.
-- Proof, old → new: `select()` replayed over the commits the four repositories landed in the 7 days before landing,
-  each suite at its median passing targeted run: wall-min a commit, CPU beside. 10-08…14 (1,580 commits, catches of
-  10-16, 206 of 20,582 unpriced): 6.4 → 5.3, CPU 3.9 → 3.4, suites 13 → 9.3; −17 % an upper bound (no age rule).
-- Not worse: missed catches, dropped suites red at Close over 7 nights; target 0, one a targeted run catches stops it.
-  Net lines: the new rule against test_health's fan-out finding and pricing, which go.
-
 ### goal suite-own-cost: a suite's cost has one queue, its rise read under load
 
 Class: test_health's heavy and pole findings shave a suite again beside suite_audit's queue; a held rise is read
@@ -189,6 +176,7 @@ Class: helper copies, llm-legs only (claude-setup's 8 and hammerspoon's 2 own-he
 | 10-13/14 nights | 252 suite audits (170 cut, 81 kept, 1 trade) | a pass 59 → 50 min, under noise, ×4.5 10-05's cost | `suite:` rows |
 | 10-14 | tests lens, 10 heaviest suites, two rounds; lens tuned (review-bench 53f8137) | 131 fixes, +293 lines: cleanup is deletion only | 05a7238f, 62458120 |
 | 10-14 | tests run once, when the work is done | runs per worker task 7.7 → 3.3, retests 276 → 36/day | 8e6961df |
+| 10-23 | goal fan-out: suites with no catch in 90 days leave targeted runs but their own file's; Close red → green is a catch | `select()` replay, 218 commits 10-16…22: 5.70 → 4.96 wall-min a commit, CPU 5.54 → 4.96; watch: dropped suites red at Close over 7 nights, target 0 | 4e891fe3 |
 
 ## Open
 
