@@ -10,7 +10,11 @@ parts nobody asked to change. The mask comes from a rectangle (x,y,w,h fractions
 difference map (`auto`). One stdout line: `composite=<auto|region|points> changed=<percent>`; a mask
 over GLOBAL_LIMIT of the image means the edit was global (`composite=refused reason=global`) and an
 edited image of another aspect is no edit of this input (`composite=skipped reason=aspect-changed`):
-both deliver the edited image as is. Exit 0 delivered (composited or not), 1 unreadable input, 2 usage.
+both deliver the edited image as is. An auto mask of several parts or over WIDE_SHARE of the image
+(a model that redrew more than it was asked: a background, an arm, rain around a swapped logo) adds
+` parts=<n> check=<out stem>.parts.png`, the render with each part outlined and numbered; `--keep 1,3`
+on the same base and render pastes only those parts. Exit 0 delivered (composited or not), 1
+unreadable input or a part that does not exist, 2 usage.
 """
 from __future__ import annotations
 
@@ -45,9 +49,13 @@ def parse_arguments() -> tuple[argparse.Namespace, str | tuple | list]:
     parser.add_argument("--out", required=True)
     parser.add_argument("--mask", default="auto", help="auto or x,y,w,h fractions")
     parser.add_argument("--point", action="append", default=[], help="x,y fractions (=text ignored)")
+    parser.add_argument("--keep", help="with the auto mask: only these parts, as numbered in parts.png (1,3)")
     parser.add_argument("--mask-out")
     args = parser.parse_args()
     try:
+        args.keep = sorted({int(part) for part in args.keep.split(",")}) if args.keep else []
+        if args.keep and (args.point or args.mask != "auto" or min(args.keep) < 1):
+            parser.error("--keep takes part numbers (1 up) of the auto mask, never with --point or a --mask rectangle")
         if args.point:
             if args.mask != "auto":
                 parser.error("--point and a --mask rectangle exclude each other")
@@ -63,13 +71,15 @@ def parse_arguments() -> tuple[argparse.Namespace, str | tuple | list]:
 ARGUMENTS = parse_arguments() if __name__ == "__main__" else None
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import limit_hit  # noqa: E402
 
 GLOBAL_LIMIT = 0.60
+PART_SHARE = 0.0025  # a changed area under this share of the image is no part of its own (rain, grain)
+WIDE_SHARE = 0.10  # an auto mask over this share asks for a look even in one part
 ASPECT_TOLERANCE = 0.01
 FLOOR = 6.0
 WORK_SIDE = 640
@@ -192,6 +202,39 @@ def rectangle(shape: tuple[int, int], region: tuple[float, float, float, float])
     return mask
 
 
+def parts(hard: np.ndarray) -> np.ndarray:
+    """hard's separate areas numbered by size, 1 the largest; areas under PART_SHARE are 0."""
+    labels, count = ndimage.label(hard)
+    sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    sizes[0] = 0
+    number = np.zeros(count + 1, int)
+    listed = [label for label in np.argsort(-sizes, kind="stable") if sizes[label] >= hard.size * PART_SHARE]
+    number[listed] = np.arange(1, len(listed) + 1)
+    return number[labels]
+
+
+def show_parts(edited: Image.Image, hard: np.ndarray, numbered: np.ndarray, path: str) -> None:
+    """The render, dimmed where the composite keeps the base, each part outlined and numbered."""
+    scale = min(1.0, 1200 / max(edited.size))
+    size = (round(edited.width * scale), round(edited.height * scale))
+    picture = np.asarray(edited.convert("RGB").resize(size, Image.Resampling.BOX), np.float32)
+    kept, labels = (np.asarray(Image.fromarray(plane.astype(np.uint8)).resize(size, Image.Resampling.NEAREST))
+                    for plane in (hard, numbered))
+    kept = kept > 0
+    picture[~kept] *= 0.35
+    canvas = Image.fromarray(picture.astype(np.uint8))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default(size=max(18, size[0] // 30))
+    for number in range(1, int(numbered.max()) + 1):
+        part = labels == number
+        edge = part & ~ndimage.binary_erosion(part, disk(2))
+        canvas.paste((255, 214, 0), mask=Image.fromarray((ndimage.binary_dilation(edge, disk(1)) * 255).astype(np.uint8)))
+        y, x = np.unravel_index(np.argmax(ndimage.distance_transform_edt(part)), part.shape)  # its deepest point
+        draw.text((int(x), int(y)), str(number), fill=(255, 214, 0), font=font, anchor="mm",
+                  stroke_width=3, stroke_fill=(0, 0, 0))
+    canvas.save(path)
+
+
 def feather(hard: np.ndarray) -> np.ndarray:
     sigma = max(0.5, min(hard.shape) / 250)
     return ndimage.gaussian_filter(hard.astype(np.float32), sigma)
@@ -240,9 +283,11 @@ def opened(path: str, size: tuple[int, int] | None = None) -> Image.Image:
     return image
 
 
-def composite(base: str, edited: str, out: str, mask_source, mask_out: str | None = None, target: str | None = None) -> str:
+def composite(base: str, edited: str, out: str, mask_source, mask_out: str | None = None, target: str | None = None,
+              keep: list[int] | None = None) -> str:
     """mask_source: "auto", an (x, y, w, h) fraction tuple, or a list of (x, y) fraction points.
-    target: the image the patch is pasted onto when it is not `base` itself."""
+    target: the image the patch is pasted onto when it is not `base` itself. keep: the auto mask's parts
+    (as numbered by parts()) to paste, the rest left as the base."""
     base_image = opened(base)
     edited_image = opened(edited)
     if abs(edited_image.width * base_image.height / (edited_image.height * base_image.width) - 1) > ASPECT_TOLERANCE:
@@ -266,6 +311,12 @@ def composite(base: str, edited: str, out: str, mask_source, mask_out: str | Non
                 hard |= detail
             hard |= coherent_regions(small_base, small_edited, hard)
             hard = tidy(hard if kind == "auto" else near_points(hard, list(mask_source)))
+    numbered = parts(hard) if kind == "auto" and hard is not None else None
+    if keep:
+        count = 0 if numbered is None else int(numbered.max())
+        if max(keep) > count:
+            raise ValueError(f"--keep {max(keep)}: the change has {count} parts")
+        hard = np.isin(numbered, keep)
     refusal = ""
     if hard is None or hard.mean() > GLOBAL_LIMIT:
         refusal = "global"
@@ -294,7 +345,14 @@ def composite(base: str, edited: str, out: str, mask_source, mask_out: str | Non
     if base_image.has_transparency_data and not out.lower().endswith((".jpg", ".jpeg")):
         result.putalpha(base_image.convert("RGBA").getchannel("A"))
     save(result, out)
-    return f"composite={kind} changed={float(alpha.mean()) * 100:.1f}%"
+    line = f"composite={kind} changed={float(alpha.mean()) * 100:.1f}%"
+    check = f"{os.path.splitext(out)[0]}.parts.png"
+    if numbered is not None and not keep and (numbered.max() >= 2 or hard.mean() > WIDE_SHARE):
+        show_parts(edited_image, hard, numbered, check)
+        line += f" parts={int(numbered.max())} check={check}"
+    elif not keep and os.path.exists(check):  # an earlier take's look, no longer this image's
+        os.unlink(check)
+    return line
 
 
 def deliver(edited: str, out: str) -> None:
@@ -318,7 +376,7 @@ def save(image: Image.Image, out: str) -> None:
 def main() -> int:
     args, source = ARGUMENTS
     try:
-        print(composite(args.base, args.edited, args.out, source, args.mask_out))
+        print(composite(args.base, args.edited, args.out, source, args.mask_out, keep=args.keep))
     except (OSError, ValueError) as error:
         print(f"image_composite: {error}", file=sys.stderr)
         return 1

@@ -272,14 +272,14 @@ assert grep -qx 'composite=skipped reason=new-generation' "$IMAGE_OUT"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=0 root=$OUTPUT_DIR/g0.png"
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
   assert image_run --dest "$OUTPUT_DIR/g1.png" --prompt 'add a blue circle' --resume "$RESUMED_SESSION"
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
+assert grep -Eq '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$IMAGE_OUT"
 assert grep -qx "rendered=$OUTPUT_DIR/g1.rendered.png" "$IMAGE_OUT"
 assert cmp "$WORK/circle.png" "$OUTPUT_DIR/g1.rendered.png"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=1 root=$OUTPUT_DIR/g0.png"
 assert test "$(jq -r '.edits[0] | "\(.vendor) \(.composite.kind)"' "$(sidecar "$OUTPUT_DIR/g1.png")")" = 'grok auto'
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
   assert image_run --dest "$OUTPUT_DIR/g2.png" --prompt 'add a blue circle' --edit "$WORK/green.png" --account explicit
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
+assert grep -Eq '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$IMAGE_OUT"
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
   assert image_run --dest "$OUTPUT_DIR/g3.png" --prompt 'add a blue circle' --edit "$WORK/green.png" --account explicit --no-composite
 assert_fails grep -q '^composite=\|^rendered=' "$IMAGE_OUT"
@@ -302,7 +302,7 @@ assert test "$(grep -x -- "- $WORK/[a-z-]*\.[a-z]*" "$FAKE_GROKB_PROMPT" | tr '\
   "- $WORK/green.png - $WORK/style-a.png - $WORK/aspect-reference.jpg "
 assert grep -qx 'The first image is the one to edit; the other images are references only.' "$FAKE_GROKB_PROMPT"
 assert grep -qx 'ARG=image_edit' "$FAKE_GROKB_CALLS"
-assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$IMAGE_OUT"
+assert grep -Eqx 'composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?' "$IMAGE_OUT"
 assert grep -qx "edit_depth=1 root=$WORK/green.png" "$IMAGE_OUT"
 assert grep -qx 'route=cli' "$IMAGE_OUT"
 assert grep -Eqx 'job=grok-image-[0-9]{8}T[0-9]{6}Z-[0-9]+' <<<"$(grep '^job=' "$IMAGE_OUT")"

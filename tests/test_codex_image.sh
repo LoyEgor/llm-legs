@@ -453,14 +453,14 @@ assert test "$(grep -n 'ARG=--experimental-json' "$FAKE_CODEX_CALLS" | cut -d: -
 "$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$OUTPUT_DIR/resumed.png"
 assert image_run --dest "$OUTPUT_DIR/resumed2.png" --prompt 'add a blue circle' --resume "$RESUME_ID"
 assert test "$(sed -n 1p "$IMAGE_OUT")" = "dest=$OUTPUT_DIR/resumed2.png"
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
+assert grep -Eq '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$IMAGE_OUT"
 assert grep -qx "rendered=$OUTPUT_DIR/resumed2.rendered.png" "$IMAGE_OUT"
 assert cmp "$CODEX_PROFILES/other/generated_images/$RESUME_ID/exec-fixture.png" "$OUTPUT_DIR/resumed2.rendered.png"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=2 root=$OUTPUT_DIR/first.png"
 assert test "$(jq -r '.edits[1].composite.kind' "$(sidecar "$OUTPUT_DIR/resumed2.png")")" = auto
 "$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill black -draw 'rectangle 0,0 1,1' "PNG24:$WORK/green-ref.png"
 assert image_run --dest "$OUTPUT_DIR/composited.png" --prompt 'add a blue circle' --edit "$WORK/green-ref.png" --account explicit
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
+assert grep -Eq '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$IMAGE_OUT"
 assert test -e "$OUTPUT_DIR/composited.rendered.png"
 assert image_run --dest "$OUTPUT_DIR/optout.png" --prompt 'add a blue circle' --edit "$WORK/green-ref.png" --account explicit --no-composite
 assert_fails grep -q '^composite=\|^rendered=' "$IMAGE_OUT"
@@ -691,7 +691,7 @@ assert test "$image_rc" -eq 0
 assert test "$(grep -A1 -x -- --ref "$WEB_CALLS" | grep -v -x -- --ref | grep -v -x -- -- | tr '\n' ' ')" = \
   "$WORK/edit-base.png $WORK/style-a.png $WORK/style-b.png "
 assert grep -qx 'The first image is the one to edit; the other images are references only.' "$WEB_CALLS"
-assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$IMAGE_OUT"
+assert grep -Eqx 'composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?' "$IMAGE_OUT"
 assert grep -qx "rendered=$OUTPUT_DIR/edited-web.rendered.png" "$IMAGE_OUT"
 assert grep -qx "edit_depth=1 root=$WORK/edit-base.png" "$IMAGE_OUT"
 assert test "$(jq -r '.root' "$(sidecar "$OUTPUT_DIR/edited-web.png")")" = "$WORK/edit-base.png"
@@ -703,7 +703,7 @@ assert test "$image_rc" -eq 0
 assert test "$(grep -A1 -x -- '- '"$WORK/edit-base.png" "$FAKE_CODEX_PROMPT" | head -n 1)" = "- $WORK/edit-base.png"
 assert test "$(grep -x -- "- $WORK/[a-z-]*.png" "$FAKE_CODEX_PROMPT" | tr '\n' ' ')" = \
   "- $WORK/edit-base.png - $WORK/style-a.png - $WORK/style-b.png "
-assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$IMAGE_OUT"
+assert grep -Eqx 'composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?' "$IMAGE_OUT"
 assert grep -qx "edit_depth=1 root=$WORK/edit-base.png" "$IMAGE_OUT"
 over_cli=()
 for index in $(seq 1 "$cli_cap"); do over_cli+=(--ref "$WORK/style-a.png"); done

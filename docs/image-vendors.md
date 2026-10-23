@@ -222,6 +222,8 @@ Two local tools answer it ([gemini page](image-vendors/gemini.md#local-composite
   Flow `--count` take. `--no-composite` opts out; never with `--transparent` or Flow's `--remove-bg`, on codex `--remove-bg`
   only asked ([background removal](#background-removal));
   `--composite[=auto|x,y,w,h]` forces it and picks the mask; `codex-image --region`/`--point` feed it.
+  An `auto` change in several parts or over 10% of the picture adds ` parts=<n> check=<.parts.png>`: look
+  at the numbered parts and rerun `share/image_composite.py ... --keep <numbers>` to drop the stray ones.
 - Work store: `<dirname of IMAGE_LEG_LOG>/<kind>/<hash of the path>/` (`image_leg_work_file`) holds the
   fanout table, live cells and failed takes' `.stderr` per dest-dir, and the edit lineage per image; a write
   prunes that kind's files untouched for 14 days. Nothing lands beside the images.

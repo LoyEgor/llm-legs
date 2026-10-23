@@ -183,7 +183,7 @@ fi
 if suite_shard_owns 2 gemini-image-composite; then
 "$REAL_MAGICK" -size 256x192 xc:'#00FF00' -fill black -draw 'rectangle 120,90 121,91' "$WORK/green.png"
 assert image_run --dest "$WORK/output/composite.png" --prompt 'add a blue patch' --edit "$WORK/green.png" --composite --account explicit
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
+assert grep -Eq '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$WORK/out"
 assert grep -qx 'size=256x192' "$WORK/out"
 assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[pixel:p{3,3}]' info:)" = 'srgb(0,255,0)'
 assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[fx:int(255*p{128,96}.b)]' info:)" -gt 200
@@ -201,14 +201,14 @@ assert test "$(jq -r '.edits[1].region' "$(sidecar "$WORK/output/composite.png")
 # Composite is on by default for every edit: --edit or the resumed session's last image, the
 # vendor's render kept beside the dest; a global change is refused and delivered as rendered.
 assert image_run --dest "$WORK/output/default.png" --prompt 'add a blue patch' --edit "$WORK/green.png" --account explicit
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
+assert grep -Eq '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$WORK/out"
 assert grep -qx "rendered=$WORK/output/default.rendered.png" "$WORK/out"
 assert test "$("$REAL_MAGICK" "$WORK/output/default.png" -depth 8 -format '%[pixel:p{3,3}]' info:)" = 'srgb(0,255,0)'
 assert test "$("$REAL_MAGICK" "$WORK/output/default.rendered.png" -format '%wx%h' info:)" = 16x12
 assert test "$(jq -r '.edits[0].composite.kind' "$(sidecar "$WORK/output/default.png")")" = auto
 "$REAL_MAGICK" -size 256x192 xc:'#00FF00' "$WORK/output/default.png"
 assert image_run --dest "$WORK/output/default2.png" --prompt 'again' --resume fixture-session --account explicit
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
+assert grep -Eq '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$WORK/out"
 assert grep -qx "rendered=$WORK/output/default2.rendered.png" "$WORK/out"
 assert test "$("$REAL_MAGICK" "$WORK/output/default2.png" -format '%wx%h' info:)" = 256x192
 assert image_run --dest "$WORK/output/optout.png" --prompt 'add a blue patch' --edit "$WORK/green.png" --no-composite --account explicit
@@ -387,7 +387,7 @@ assert image_run "${args[@]}" "${edit_args[@]}" --account explicit
 assert test "$(grep -x -- "- $WORK/[a-z-]*.png" "$FAKE_GEMINIB_PROMPT" | tr '\n' ' ')" = \
   "- $WORK/edit-base.png - $WORK/style-a.png - $WORK/style-b.png "
 assert grep -qx 'The first image is the one to edit; the other images are references only.' "$FAKE_GEMINIB_PROMPT"
-assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$WORK/out"
+assert grep -Eqx 'composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?' "$WORK/out"
 assert grep -qx "edit_depth=1 root=$WORK/edit-base.png" "$WORK/out"
 assert jq -e '.composite.kind == "auto" and .size == 4' <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
 expect_rc 2 "${args[@]}" "${edit_args[@]}" --ref "$ref" --account explicit

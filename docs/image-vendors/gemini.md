@@ -153,6 +153,13 @@ pixel-identical. One decision serves them all (`image_leg_composite_plan` and
   the threshold adapts above the image-wide median, specks without a strong core are dropped, holes
   closed, the mask dilated and feathered; the patch is colour-matched to the input along the mask
   border. `x,y,w,h` (fractions, the shape of `codex-image --region`) pastes that rectangle.
+- An `auto` change in more than one part (each at least 0.25% of the picture), or over 10% of it, is
+  flagged: the line gains ` parts=<n> check=<dest stem>.parts.png`, the render dimmed where the base stays
+  and each part outlined and numbered by size, 1 the largest. Models redraw what nobody asked for (a
+  background, an arm, rain), and the difference map pastes it all. Look at the check; to keep only the
+  asked parts, rerun locally, no new render: `share/image_composite.py --base <input> --edited <rendered=>
+  --out <dest> --keep 1,3` (exit 1 when a number is past the last part). A known place is
+  `--composite=x,y,w,h` from the start.
 - Lines, right before `edit_depth=`: `composite=<auto|region|points> changed=<percent of pixels taken
   from the edited image>` and `rendered=<dest stem>.rendered.<ext>`, the model's own image kept beside
   the dest. An edit that is global (more than 60% of the picture changed) prints

@@ -199,14 +199,14 @@ done
 : >"$FAKE_CALLS"
 magick "$M/green.png" -fill blue -draw 'rectangle 5,5 20,20' "$M/patched.png" || exit 1
 FAKE_A="$M/patched.png" assert image --dest "$WORK/out/comp.png" --prompt 'add a patch' --edit "$M/green.png" --composite
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/stdout"
+assert grep -Eq '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$WORK/stdout"
 assert grep -qx "edit_depth=1 root=$M/green.png" "$WORK/stdout"
 assert test "$(jq -r '.edits[0].route' "$(sidecar "$WORK/out/comp.png")")" = flow
 # By default too, and on every take of a --count: each composited, each render kept beside its file.
 magick "$M/patched.png" -fill white -colorize 4% "$M/drifted.png" || exit 1
 FAKE_A="$M/drifted.png" FAKE_B="$M/drifted.png" assert image --dest "$WORK/out/takes.png" --prompt 'add a patch' \
   --edit "$M/green.png" --count 2
-assert test "$(grep -Ec '^composite=auto changed=[0-9.]+%$' "$WORK/stdout")" -eq 2
+assert test "$(grep -Ec '^composite=auto changed=[0-9.]+%( parts=[0-9]+ check=[^ ]+)?$' "$WORK/stdout")" -eq 2
 corner() { magick "$1" -depth 8 -format '%[pixel:p{110,80}]' info:; }
 for take in takes takes-2; do
   assert grep -qx "rendered=$WORK/out/$take.rendered.png" "$WORK/stdout"

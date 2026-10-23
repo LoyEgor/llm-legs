@@ -82,7 +82,7 @@ magick "$WORK/faint-clean.png" -seed 31 -attenuate 0.1 +noise Gaussian -evaluate
   -fill '#d02020' -draw 'rectangle 40,40 55,55' -depth 8 "$WORK/faint-edited.png"
 assert compose --base "$WORK/faint-base.png" --edited "$WORK/faint-edited.png" \
   --out "$WORK/faint-out.png" --mask-out "$WORK/faint-mask.png"
-assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
+assert grep -Eq "^composite=auto changed=[0-9.]+% parts=2 check=$WORK/faint-out.parts.png$" "$WORK/out"  # the faint patch and the red square
 assert test "$(magick "$WORK/faint-mask.png" -crop 96x76+182+162 +repage -format '%[fx:mean>0.95]' info:)" = 1
 assert within "$WORK/faint-out.png" "$WORK/faint-clean.png" 220,200 3
 assert within "$WORK/faint-out.png" "$WORK/faint-base.png" 20,300 0
@@ -117,6 +117,18 @@ assert compose --base "$base" --edited "$WORK/two.png" --out "$WORK/points-out.p
 assert grep -Eq '^composite=points changed=[0-9.]+%$' "$WORK/out"
 assert within "$WORK/points-out.png" "$WORK/two.png" 65,205 2
 assert test "$(pixel "$WORK/points-out.png" 325,85)" = "$(pixel "$base" 325,85)"
+
+# An auto change in several parts is shown numbered by size; --keep pastes only the named ones.
+magick "$base" -fill '#d02020' -draw 'rectangle 30,170 100,240' -draw 'rectangle 300,60 350,110' "$WORK/parts.png"
+assert compose --base "$base" --edited "$WORK/parts.png" --out "$WORK/parts-out.png"
+assert grep -Eqx "composite=auto changed=[0-9.]+% parts=2 check=$WORK/parts-out.parts.png" "$WORK/out"
+assert test -s "$WORK/parts-out.parts.png"
+assert compose --base "$base" --edited "$WORK/parts.png" --out "$WORK/parts-out.png" --keep 2
+assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$WORK/out"
+assert within "$WORK/parts-out.png" "$WORK/parts.png" 325,85 2
+assert test "$(pixel "$WORK/parts-out.png" 65,205)" = "$(pixel "$base" 65,205)"
+compose --base "$base" --edited "$WORK/parts.png" --out "$WORK/parts-out.png" --keep 3
+assert test $? -eq 1
 
 compose --base "$base" --edited "$WORK/two.png" --out "$WORK/bad.png" --mask 0.5,0.5,0.6,0.2
 assert test $? -eq 2

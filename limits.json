@@ -410,7 +410,7 @@
   "image-composite.global": {
     "value": 60,
     "unit": "pct",
-    "where": "share/image_composite.py:72",
+    "where": "share/image_composite.py:80",
     "set_by": "night 1cda77fd",
     "why": "An edit that changed over 60 % of the image is global, so a region composite would paste a mismatched patch.",
     "normal": "Common for prompts that restyle the whole image; frequent hits on region edits mean the model redraws everything."
