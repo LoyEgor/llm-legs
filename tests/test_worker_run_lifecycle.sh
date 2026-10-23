@@ -340,7 +340,8 @@ assert grep -q 'gemini is switched off for workers' "$WORK/role-flash.err"
 rm -rf "$CHAT_PINS_DIR" "$HOME/.llm-limits.json"
 
 # Computer Use is not the implementation leg codex_workers=off closes: the picker is asked under
-# `computer`, the role wall stays open, and only the launched brief carries the preamble.
+# `computer`, the role wall stays open, and only the launched brief carries the preamble. Computer and browser
+# starts run share/worker-run-browse.sh (browse_pool, browse_prepare).
 printf '#!/bin/sh\nexit 0\n' >"$WORK/bin/cua-sync-ok"
 printf '#!/bin/sh\necho "fake registration failure" >&2\nexit 2\n' >"$WORK/bin/cua-sync-broken"
 chmod +x "$WORK/bin/cua-sync-ok" "$WORK/bin/cua-sync-broken"

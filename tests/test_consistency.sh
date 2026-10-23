@@ -3216,7 +3216,7 @@ assert doc_has '`account_roster <vendor>` in `share/account-roster.sh` is the on
 # against the roster (gemini_web cmd_accounts, the menu's gemini-web media rows) — never accounts.
 store_walk_re='(profiles_dir|PROFILES_DIR|PROFILES_ROOT|_profiles|-profiles)[}"]*/\*|(profiles|accounts)[^#]*\.(iterdir|glob|listdir|scandir)\(|(listdir|scandir|glob\.glob)\([^)]*(profiles|accounts|PROFILES)|hs\.fs\.dir\([^)]*(profiles|accounts)'
 assert eq "$(cd "$ROOT" && grep -rlIE "$store_walk_re" bin share hammerspoon llm-limits.sh | LC_ALL=C sort | tr '\n' ' ')" \
-  "bin/chat-load bin/chats bin/claude-chat-switch bin/claude-resume-timer bin/codexb bin/gemini-weather bin/llm-selfcheck bin/report-bus bin/updater-doctor bin/vendor-cli-update bin/vendor-fingerprint bin/worker-run hammerspoon/config/env_guard.lua hammerspoon/llm-limits.lua share/account-roster.sh share/chat_names.py share/gemini-accounts.sh share/gemini_web.py share/log-stores.json "
+  "bin/chat-load bin/chats bin/claude-chat-switch bin/claude-resume-timer bin/codexb bin/gemini-weather bin/llm-selfcheck bin/report-bus bin/updater-doctor bin/vendor-cli-update bin/vendor-fingerprint bin/worker-run hammerspoon/config/env_guard.lua hammerspoon/llm-limits.lua share/account-roster.sh share/chat_names.py share/gemini-accounts.sh share/gemini_web.py share/log-stores.json share/worker-run-browse.sh "
 for roster_site in bin/codexb bin/grokb; do
   assert grep -Eq '^account_names\(\) \{ [A-Z_]+="\$profiles_dir" account_roster (codex|grok); \}$' "$ROOT/$roster_site"
 done
@@ -3430,10 +3430,10 @@ assert grep -qF 'if M.enabled() and (idle >= AWAY_S or stillAway(now, idle)) the
 assert doc_has '| em | Away mark |'
 # Row en: every Chrome launched for automation is one of the two bundles Show Chrome reads; a launch spelling
 # beyond the counted ones fails here until it is (Egor saw a clone window with no Show Chrome, 2026-10-14).
-# worker-run's browse_quit_idle counts twice: its `is running` check and its quit never launch Chrome.
+# worker-run browse_quit_idle counts twice: its `is running` check and its quit never launch Chrome.
 chrome_launch_re='launch_persistent_context|\.launch\(|launch_server|connect_over_cdp|puppeteer|selenium|chrome_binary\(|Google Chrome\.app|-[ab][[:space:]]+['\''"]?(com\.google\.Chrome|Google Chrome)|application (id )?\\?"(Google Chrome|com\.google\.Chrome)"'
 assert eq "$(cd "$ROOT" && command grep -rcIE --exclude='*.json' --exclude='*.md' "$chrome_launch_re" bin share |
-  command grep -v ':0$' | sort | paste -sd' ' -)" "bin/chrome-applescript-js:4 bin/worker-run:4 share/gemini_web.py:5 share/image_input.py:1"
+  command grep -v ':0$' | sort | paste -sd' ' -)" "bin/chrome-applescript-js:4 share/gemini_web.py:5 share/image_input.py:1 share/worker-run-browse.sh:4"
 assert grep -Fq 'str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False,' "$ROOT/share/gemini_web.py"
 assert grep -Fq 'browser = pw.chromium.launch(executable_path=chrome_binary(SOURCE_APP), headless=True)' "$ROOT/share/image_input.py"
 assert grep -Fq 'CLONE_ID = "com.google.Chrome.gemini-web"' "$ROOT/share/gemini_web.py"
@@ -3441,8 +3441,8 @@ assert grep -Fq 'info["CFBundleIdentifier"] = CLONE_ID' "$ROOT/share/gemini_web.
 assert grep -Fq 'CLONE_SHOWN = CLONE_ROOT / "windows-shown"' "$ROOT/share/gemini_web.py"
 assert grep -Fq 'local CHROME_CLONE_ID = "com.google.Chrome.gemini-web"' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq 'local flag = geminiWebDir() .. "/windows-shown"' "$ROOT/hammerspoon/llm-limits.lua"
-assert eq "$(grep -c '(browse_dir)/shown"' "$ROOT/bin/worker-run")" 3
-assert eq "$(grep -c 'browse_dir)/hidden' "$ROOT/bin/worker-run")" 0
+assert eq "$(grep -c '(browse_dir)/shown"' "$ROOT/share/worker-run-browse.sh")" 3
+assert eq "$(cat "$ROOT/bin/worker-run" "$ROOT/share/worker-run-browse.sh" | grep -c 'browse_dir)/hidden')" 0
 assert grep -Fq 'local chrome = (hs.application.applicationsForBundleID("com.google.Chrome") or {})[1]' "$ROOT/hammerspoon/llm-limits.lua"
 assert doc_has '| en | Automation Chrome |'
 

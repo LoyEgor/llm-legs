@@ -3,7 +3,7 @@ selection follows evidence, not name mentions). A file's suites are its own plus
 WHOLE catches on it over CATCH_D days, or with any credit when they also name it. Own: the file itself when it is a
 suite; a suite whose name holds the file's stem; a suite, or a tests/ helper it names, that holds the file's repo path,
 imports its module or requires it; for a file with none of those, the same for a repo file that imports, sources,
-requires or runs it, one level. A module its package's __init__ names counts as imported by a suite importing the
+requires or runs it on a line of code, one level: a comment naming it (a doc pointer) loads nothing. A module its package's __init__ names counts as imported by a suite importing the
 package. A file with no own suite and no catch keeps the name rule: a suite, or a helper it names, naming its basename
 as a word.
 
@@ -29,6 +29,7 @@ REQUIRE = r"""\brequire\s*\(?\s*["']%s["']"""
 SOURCE = r"""(?:^|[\s;&|(])(?:\.|source)[ \t]+(?:[^\n;&|]*?[/"'])?%s(?![\w.@+-])"""
 NOT_CODE = (":!tests/", ":!docs/", ":!*.md", ":!*.json", ":!*.jsonl")
 TOKEN = re.compile(r"[\w@+-]+")
+COMMENT = re.compile(r"\s*(?:#|-- |//)")
 INDEX_AT = 16
 WHOLE = 1.0
 
@@ -106,7 +107,8 @@ def lines(text, needle):
 
 def match(text, rel, kind):
     pat = patterns(rel)[kind]
-    return any(pat.search(line) for line in lines(text, os.path.basename(rel) if kind == 2 else stem(rel)))
+    return any(pat.search(line) for line in lines(text, os.path.basename(rel) if kind == 2 else stem(rel))
+               if kind != 1 or not COMMENT.match(line))
 
 
 def importers(top, rels):

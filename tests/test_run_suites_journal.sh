@@ -335,6 +335,14 @@ assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" 
 assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" share/limiter-hold.sh)" = "$ROOT/tests/test_consistency.sh"
 assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" nowhere-named.txt)"
 assert test "$(/bin/bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" = "$R4/tests/test_tool_part.sh"
+# A file no suite names inherits the suites of a repo file running it on a line of code, never of one whose
+# comment only points at it (a doc named in a comment pulled 22 suites, 2026-10-23).
+mkdir -p "$R4/docs"
+printf 'echo helper\n' >"$R4/bin/helper.sh"
+printf 'notes\n' >"$R4/docs/notes.md"
+printf '# Why: docs/notes.md\n"$(dirname "$0")/helper.sh"\necho v2\n' >"$R4/bin/tool.sh"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/helper.sh)" = "$R4/tests/test_tool_part.sh"
+assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" docs/notes.md)"
 # A module its package's __init__ imports runs in every suite importing the package, beside its own suite.
 R4P="$WORK/r4p"
 new_repo "$R4P"
