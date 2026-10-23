@@ -383,11 +383,18 @@ git -C "$REPOS/beta" rm -q lib/day-extra.sh && commit "$REPOS/beta" "day fixer d
 "$CD" check "$C/record-day.json" >"$WORK/check.out"
 assert grep -qF 'beta/lib/day-extra.sh: deleted, but no judged problem of this run names it' "$WORK/check.out"
 
-# The run is bound to the units its snapshot handed the fixer, never to what the live document reads since.
+# The run is bound to the units its snapshot handed the fixer, never to what the live document reads since; a unit
+# only its judged deletions referenced passes as theirs (old_sync_lib.sh, sourced by old-sync alone), unless the run
+# keeps a reference to it.
 jq --slurpfile d "$LATEST" '.problems = [$d[0].problems[] | select(.id == "cause:alpha/bin/old-sync")
   | .units |= map(select(.unit == "alpha/bin/old-sync"))]' "$C/record.json" >"$C/record-snap.json"
 "$CD" check "$C/record-snap.json" --base refs/night/n1/base >"$WORK/check.out"
+assert grep -qF 'alpha/tests/test_old_sync.sh: deleted, but no judged problem of this run names it' "$WORK/check.out"
+assert test "$(grep -c 'old_sync_lib' "$WORK/check.out")" = 0
+printf '. lib/old_sync_lib.sh\n' >"$WT/lib/keeps.sh"
+"$CD" check "$C/record-snap.json" --base refs/night/n1/base >"$WORK/check.out"
 assert grep -qF 'alpha/lib/old_sync_lib.sh: deleted, but no judged problem of this run names it' "$WORK/check.out"
+rm "$WT/lib/keeps.sh"
 jq --slurpfile d "$LATEST" '.problems = [$d[0].problems[] | select(.id == "cause:alpha/bin/old-sync") | .cause = .id | .id = "row-x"]' \
   "$C/record.json" >"$C/record-row.json"
 assert "$CD" check "$C/record-row.json" --base refs/night/n1/base

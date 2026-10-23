@@ -3409,6 +3409,107 @@ def day_trees(record, tops):
     return out
 
 
+def run_diff(tree, base, worktree):
+    """(ref, {rel: (old-side lines the run deletes, lines it adds)}) from base's merge-base to the run's state."""
+    if base and base != EMPTY_TREE:
+        base = (git(tree, "merge-base", base, "HEAD") or "").strip() or base
+    out, rel, header, old = {}, None, False, 0
+    for line in (git(tree, "-c", "core.quotePath=false", "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff",
+                     base or "HEAD", *(() if worktree else ("HEAD",))) or "").splitlines():
+        if line.startswith("diff --git "):
+            header, rel = True, None
+        elif header and line.startswith(("--- a/", "+++ b/")):
+            rel = line[6:]
+        elif line.startswith("@@ -"):
+            header, old = False, int(re.match(r"@@ -(\d+)", line).group(1))
+        elif not header and rel and line[:1] in "-+":
+            lines = out.setdefault(rel, (set(), []))
+            if line[0] == "-":
+                lines[0].add(old)
+                old += 1
+            else:
+                lines[1].append(line[1:])
+    return base or "HEAD", out
+
+
+def own_orphans(unowned, runs, judged, tops):
+    """[(label, fid, name, owners)] for deletions no judged problem names. Owners are the judged problems whose
+    deleted units held every `git grep -w` reference to the unit at the run's base (its own definition aside, chains
+    followed) and whose run keeps none, or the judged merge naming a same-named copy when the run moved the unit's file onto a shared file it
+    changed that defines the name; none refuses the deletion."""
+    if not unowned:
+        return []
+    diffs = {repo: run_diff(*run) for repo, run in runs.items()}
+    spans = [(span["file"], span.get("start") or 1, span.get("end") if "#" in span["unit"] else 1 << 30, [(pid, problem)])
+             for pid, problem in judged.items() for span in problem.get("units") or ()]
+    parsed = {}
+
+    def text(repo, rel, at_base):
+        tree, _, worktree = runs[repo]
+        if at_base or not worktree:
+            return git(tree, "show", "%s:%s" % (diffs[repo][0] if at_base else "HEAD", rel), raw=True) or b""
+        try:
+            with open(os.path.join(tree, rel), "rb") as handle:
+                return handle.read()
+        except OSError:
+            return b""
+
+    def defined(fid, name, at_base=True):
+        repo, rel = fid.split("/", 1)
+        if not name:
+            return [(1, 1 << 30)]
+        if (fid, at_base) not in parsed:
+            parsed[fid, at_base] = parse_file(rel, text(repo, rel, at_base)).get("symbols") or ()
+        return [(s["start"], s["end"]) for s in parsed[fid, at_base] if s["name"] == name]
+
+    def orphaned_by(label, fid, name):
+        base_name = os.path.basename(fid)
+        words = {re.split(r"[.:]", name)[-1]} if name else {base_name, os.path.splitext(base_name)[0]}
+        owners, hits = {}, 0
+        for repo in sorted(set(tops) | set(runs)):
+            ref = diffs[repo][0] if repo in diffs else "HEAD"
+            for word in words:
+                for line in (git(runs[repo][0] if repo in runs else tops[repo], "grep", "-z", "-n", "-w", "-F", "-I",
+                                 "-e", word, ref, "--") or "").splitlines():
+                    path, num = line.split("\0")[:2]
+                    rel, num = path[len(ref) + 1:], int(num)
+                    where = "%s/%s" % (repo, rel)
+                    if where == fid and any(s <= num <= e for s, e in defined(fid, name)):
+                        continue
+                    hits += 1
+                    held = [o for f, s, e, who in spans if f == where and s <= num <= e for o in who]
+                    if not held or num not in diffs.get(repo, ("", {}))[1].get(rel, ((),))[0]:
+                        return None
+                    owners.update(held)
+        for repo, (tree, _, worktree) in runs.items() if hits else ():
+            for word in words:
+                if git(tree, "grep", "-q", "-w", "-F", "-I", *(("--untracked",) if worktree else ()), "-e", word,
+                       *(() if worktree else ("HEAD",)), "--") is not None:
+                    return None
+        return list(owners.items()) if hits else None
+
+    def moved_copy(label, fid, name):
+        owners = [(pid, p) for pid, p in judged.items()
+                  if any(u["unit"] != label and u["unit"].rsplit("#", 1)[-1] == name for u in p.get("units") or ())]
+        repo, rel = fid.split("/", 1)
+        added = diffs.get(repo, ("", {}))[1].get(rel, ((), []))[1]
+        shared = [(r, f) for r, (_, files) in diffs.items() for f in files if (r, f) != (repo, rel)
+                  and any(os.path.basename(f) in line for line in added) and defined("%s/%s" % (r, f), name, False)]
+        return owners if name and owners and shared else None
+
+    left, out, more = list(unowned), [], True
+    while more:
+        more = False
+        for item in list(left):
+            owners = orphaned_by(*item)
+            if owners:
+                left.remove(item)
+                out.append(item + (owners,))
+                spans.extend((item[1], s, e, owners) for s, e in defined(item[1], item[2]))
+                more = True
+    return out + [item + (moved_copy(*item) or [],) for item in left]
+
+
 def check_run(record, base):
     errors = [report_only()] if report_only() else []
     since = iso_epoch(record.get("launched_at")) or iso_epoch(record.get("created_at")) or 0
@@ -3465,7 +3566,7 @@ def check_run(record, base):
     day = {} if record.get("worktrees") else day_trees(record, tops)
     if not record.get("worktrees") and not (record.get("launched_at") or record.get("created_at")):
         errors.append("the run records no launch time: nothing bounds its changes in the main checkouts")
-    tree_of = {}
+    tree_of, runs, unowned = {}, {}, []
     for tree in record.get("worktrees") or sorted(day):
         if not os.path.isdir(tree):
             errors.append("%s: the run's worktree is gone, nothing proves its changes: they land through a new Code fixer run" % tree)
@@ -3475,6 +3576,7 @@ def check_run(record, base):
         tree_of[repo] = tree
         onto = rebase_onto(tree) if base and tree not in day else None
         tree_base = day.get(tree) or onto or base
+        runs[repo] = (tree, tree_base, tree not in day)
         entries = diff_entries(tree, tree_base) if tree_base else []
         if tree not in day:
             entries += porcelain(tree)
@@ -3488,7 +3590,7 @@ def check_run(record, base):
             if "D" in kind:
                 owners = deleted_ok.get(fid)
                 if not owners:
-                    errors.append("%s: deleted, but no judged problem of this run names it" % fid)
+                    unowned.append((fid, fid, None))
                 else:
                     deletion_proof(fid, fid, owners, True)
                 continue
@@ -3497,9 +3599,14 @@ def check_run(record, base):
                     unit = "%s#%s" % (fid, name)
                     owners = unit_ok.get(unit)
                     if not owners:
-                        errors.append("%s: deleted, but no judged problem of this run names it" % unit)
+                        unowned.append((unit, fid, name))
                     else:
                         deletion_proof(unit, fid, owners, False)
+    for label, fid, name, owners in own_orphans(unowned, runs, judged, tops):
+        if owners:
+            deletion_proof(label, fid, owners, name is None)
+        else:
+            errors.append("%s: deleted, but no judged problem of this run names it" % label)
     for pid, problem in judged.items():
         if not problem.get("units"):
             continue

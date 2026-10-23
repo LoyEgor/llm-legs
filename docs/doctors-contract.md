@@ -422,7 +422,8 @@ Code doctor (design `docs/code-doctor-design.md`):
   benefit. Own keys: `candidates`, `cost`, `cost_per_cause`, `yield`, `queue_k`, `coverage`
   (rollup window, deep-pass slices), `index`, `last_judge`.
 - Fixer safety is mechanical, `code-doctor check` at `doctor-fix close`: a deletion needs a judged
-  problem naming the unit, no live entry point, no rollup hits and a quoted purpose or retirement reason;
+  problem naming the unit or orphaning it (every base reference in its deleted units, none kept; or its
+  file moved onto the shared copy its merge defines), no live entry point, no rollup hits and a quoted purpose or retirement reason;
   a unit changed since its judgment on the base or on main goes back to the judge; no edit through a
   symlink into another repository; active work blocks; a cross-repository merge deletes the old copy
   only on a later night than its `migrated` stage.
