@@ -140,6 +140,7 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 | 10-14 | stale RESUME refused | cold resumes had been 2.2 % of spend: median 199k rewritten, against 31k for a fresh worker | 9864be9d |
 | 10-14 | Agent tool off workers | worker startup per task 29.4k → 19.4k | 5d780fd1 |
 | 10-14 | first mined tool, `doctor-fix problems` | net proof needs 7 scanned days (≈10-21) | 2580854c |
+| 10-23 | bench gate counts the script's writing (`adhoc_write_s`) | dropped ledger lookup 0.034 vs 0.029 s: refused → passes (+2.46 s); 1 ledger bench, no flip | 286cbd24 |
 
 ## Decisions
 
@@ -175,8 +176,6 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
   02:20), so the night's `Doctors 7d` is stale; the night can run it first.
 - Advisor 14 and Daily note 15 runs a week for one launch a day each (ledger notes, 7 days to 10-13), extras
   untraced; audit-due's price rule makes both due (×1.75, ×1.81 on 10-09…15, `cells` `price[0] / price[1]`).
-- `share/tool_mining.py` `bench_faults` refuses a tool slower than the ad-hoc script's run, leaving out the model's
-  writing of that script; it dropped a ledger lookup over 3–5 ms (`speed-adhoc-doctor-state`).
 - Night fixers' first request in llm-legs worktrees, 10-14…16 (36 fixers): brief 8.1k against 2.6k for a day
   worker there, configuration equal. Re-measure when the full night returns.
 - One worker given 241 images self-compacted repeatedly; the harness ledger ruled it the chat's choice
