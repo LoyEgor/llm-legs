@@ -84,9 +84,8 @@ Why they come back:
    - Relay: retired 10-09 (ee185fa8, 46879c6). Its leftovers took 7 commits in 3 repositories, all but one on 10-09.
    - Delegated stamp: its reader went in review-bench 6a684df. The writers went 10-08 (7d353f02, fa10c66), the
      prose and a test block 10-12 (8090aa7).
-   - `code-doctor check` refuses a Code fixer's deletion that no judged problem names, even of a unit the same run
-     orphaned: normalizeDir stayed dead (10f7f32, 10-07), and the statusline.sh and grokb `run_bounded` migrations,
-     green (84de7cc5), were reverted (7c9a9cc9, 10-13).
+   - `code-doctor check` refused a unit the same run orphaned (normalizeDir, 10f7f32; the statusline.sh and grokb
+     `run_bounded` migrations, 7c9a9cc9): goal own-orphans, Done.
    - The Code doctor finds leftovers nights later and fixes 1 cause a day (yield 424 lines for 6.0M tokens, under
      `LOW_YIELD_PER_KTOK`, so `queue_k` = `TOP_K_LOW_YIELD` = 1); its judge takes 8–16 candidates a night under a
      400k token cap, so the queue grew from 109 pending (10-03) to 531 waiting (10-14).
@@ -124,24 +123,11 @@ Class 1, one rule for the four repositories: each lists its deploys; the snapsho
   real `gui/$UID` whatever `HOME` says), restores today's file set under `.local/libexec` and `Library/LaunchAgents`;
   the live `~/.local/libexec` is only read.
 
-### goal own-orphans: a Code fixer deletes what its own change orphaned
-
-Class 2's Code fixer cause only (Decision 2026-10-09: change impact): the relay and stamp leftovers came from
-retirements by chats and workers, which `check` never sees, and stay in the class.
-- Where: llm-legs `bin/code-doctor` `check` (bin/code-doctor:3464–3476).
-  - A deletion no judged problem names passes when every reference to the unit at the run's base sits in lines the
-    same run deletes, its own definition aside, or the unit is a copy whose callers the run moved to a shared one.
-  - Such a unit still takes `deletion_proof` (live entry point, rollup hits, the cross-repo later-night delete), the
-    problem that orphaned it as owner, its reason quoted; every other unjudged deletion stays refused. Not against
-    2026-09-30: it pushes no model to delete, it lets through what the run's own change made obsolete (2026-10-09).
-- Proof, old → new on this machine: replay both refusals in scratch worktrees (10f7f32 plus normalizeDir's deletion;
-  84de7cc5's statusline.sh and grokb migrations, which 7c9a9cc9 reverted): old `check` refuses both, new passes both,
-  both refuse a live unit. No full-night count: Code fixer runs only there, 1 cause a day against 531 waiting.
-- Must not get worse: no unit `check` passes keeps a `git grep -w` hit outside the run's deleted lines in the four
-  trees; `doctor-fix close` time for a Code run.
-
 ## Done
 
+- goal own-orphans (08914fb6): `check` passes an unjudged deletion whose base references all sat in the run's judged
+  deleted units and stay gone, or a copy moved onto the judged merge's shared file. Replays old → new: 10f7f32 +
+  normalizeDir, 84de7cc5's statusline.sh/grokb copies refused → passed; a live unit refused in both; check +0.1–0.3 s.
 - Retired features took their tests with them: llm-legs `test_light_edit`, `test_land`, `test_worktree`,
   `test_night_report_trial`; claude-setup 5 files. The tests lens rounds of 10-14 are lost-time.md's Done.
 
