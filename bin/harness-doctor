@@ -190,7 +190,7 @@ FLOOR_ROWS = (("bash:trivial", "Bash · trivial", "a trivial Bash call"),
               ("event:SessionStart", "chat start", "a chat start"),
               ("event:PreCompact", "compaction", "a compaction"),
               ("event:SessionEnd", "chat end", "a chat end"))
-FAST_PATH_PROBES = {"readonly-command.sh": 'rc_readonly_command ls && ! rc_readonly_command "rm x"'}
+FAST_PATH_PROBES = {"argv.sh": 'argv_readonly ls && ! argv_readonly "rm x"'}
 SECRET_SETTING = re.compile(r"(?i)^env\.|token|secret|passw|credential|api.?key")
 SUITE_EXT = re.compile(r"\.(sh|bash|py|lua)$")
 HANG_MARK = b"run-suites: TIMEOUT after "

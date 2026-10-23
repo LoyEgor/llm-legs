@@ -2468,46 +2468,45 @@ assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 1
 # spelling the contract forgot is a bare launch nobody can see.
 LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$ROOT/bin/worker-launch-gate.sh}"
 assert test -x "$LAUNCH_GATE"
-gate_sanctioned=$(grep -m1 '^SANCTIONED_RE=' "$LAUNCH_GATE" |
-  grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go|research)' | sort -u | paste -sd' ' -)
 for launcher in worker-run review-bench llm-limits claude-session-driver opencode-go light-research; do
   assert grep -Fq "\`$launcher\`" "$ROOT/$DOC"
   assert grep -Fq "$launcher" "$LAUNCH_GATE"
 done
-assert eq "$gate_sanctioned" 'claude-session-driver light-research llm-limits opencode-go review-bench worker-run'
+# The gate denies a vendor program alone, so a launcher passes unless it is spelled as a vendor.
+assert test -z "$(grep -m1 '^VENDOR_BINS=' "$LAUNCH_GATE" | grep -oE 'worker-run|review-bench|llm-limits|claude-session-driver|opencode-go|light-research')"
 # The OWNED launchers are sanctioned only in the hand that owns them, so each has a regex of its
-# own and NONE of them may reappear in SANCTIONED_RE — named there, an image would be generated
-# from any chat's Bash with nothing rendering the account it spent. The extraction above still
-# reads the `-image` shape, so a re-added one breaks that equality rather than passing unseen.
+# own and NONE of them may become a launcher the gate passes — an image would be generated from any
+# chat's Bash with nothing rendering the account it spent.
 for owned in codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen gemini-speech suno-music suno-speech; do
   assert grep -Fq "\`$owned\`" "$ROOT/$DOC"
 done
-assert grep -Eq '^OWNED_IMAGE_RE=.*\(codex\|gemini\|grok\)-image' "$LAUNCH_GATE"
-assert grep -Eq '^OWNED_IMAGE_RE=.*gemini-\(video\|music\|sfx\|listen\|speech\)' "$LAUNCH_GATE"
-assert grep -Eq '^OWNED_IMAGE_RE=.*suno-\(music\|speech\)' "$LAUNCH_GATE"
+assert grep -Eq '^OWNED_IMAGE=.*\(codex\|gemini\|grok\)-image' "$LAUNCH_GATE"
+assert grep -Eq '^OWNED_IMAGE=.*gemini-\(video\|music\|sfx\|listen\|speech\)' "$LAUNCH_GATE"
+assert grep -Eq '^OWNED_IMAGE=.*suno-\(music\|speech\)' "$LAUNCH_GATE"
 # The work probe draws the same media scripts the gate owns, plus media-run, their one door; the gate
 # also owns the engine subcommands those scripts drive.
 assert grep -Fq 'media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|suno-music|suno-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
 assert grep -Fq 'grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|gemini-speech|suno-music|suno-speech|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
-assert grep -Fq 'MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"' "$LAUNCH_GATE"
+assert grep -Fq '($p == "chatgpt-web" and (($a[0] // "") | test("^(generate|resize|comment|remove-bg)$"))' "$LAUNCH_GATE"
+assert grep -Fq '($p == "gemini-web" and $a[0] == "generate"' "$LAUNCH_GATE"
 assert grep -Fq '`media-run`' "$ROOT/$DOC"
-assert grep -Eq '^OWNED_RUN_RE=.*worker-run.*\(start\|run\|wait\)' "$LAUNCH_GATE"
+assert grep -Fq '($p == "worker-run" and (($a[0] // "") | test("^(start|run|wait)$")))' "$LAUNCH_GATE"
 assert doc_has 'sanctioned only in the hand that owns them'
 # `claudeb revive` and `claudeb warm` are subcommands, not binaries: the gate must not exempt every
 # `claudeb` line, or the bare launch it exists to deny walks straight through.
-assert grep -Fq 'claudeb[[:space:]]+(revive|warm)' "$LAUNCH_GATE"
+assert grep -Fq '($p == "claudeb" and (($a[0] // "") | test("^(revive|warm)$")))' "$LAUNCH_GATE"
 assert doc_has '`claudeb revive`, `claudeb warm`'
 # Every bare-launch spelling the contract names has a pattern, and every pattern a spelling.
 for launch_spelling in 'claude -p' 'claudeb … -p' 'claudegpt p <acct> -p' 'codex exec' 'codexb … exec' 'gemini -p' 'geminib … --print' 'agy … --print' 'opencode run' 'grok … -p' 'grokb … --prompt-file'; do
   assert grep -Fq "\`$launch_spelling\`" "$ROOT/$DOC"
   assert grep -Fq "\`$launch_spelling\`" "$ROOT/docs/routing-contract.md"
 done
-# Seven vendor launch patterns, counted inside the array alone: the same command-position anchor is
-# reused by the worker-run ownership rule, which is not a vendor.
-assert eq "$(sed -n '/^LAUNCH_RES=(/,/^)/p' "$LAUNCH_GATE" | grep -Fc '${VENDOR_WORD}')" 7
-assert grep -Fq 'OWNED_RUN_RE=' "$LAUNCH_GATE"
-assert grep -Fq 'unsanctioned=$(grep -Ev "$SANCTIONED_RE" <<<"$scan")' "$LAUNCH_GATE"
-assert test "$(grep -Fc '"$SANCTIONED_RE" <<<"$scan" && exit 0' "$LAUNCH_GATE")" -eq 0
+# Every vendor has its launch spelling: a print flag, exec|e|review, run, or grok's prompt flags and agent.
+assert grep -Fq 'if ($p | test("^(claude|claudeb|claudegpt|gemini|geminib|agy)$")) then $pf' "$LAUNCH_GATE"
+assert grep -Fq 'elif ($p | test("^codexb?$")) then $xf elif $p == "opencode" then $rf else $gf end) as $at' "$LAUNCH_GATE"
+assert eq "$(grep -m1 '^VENDOR_BINS=' "$LAUNCH_GATE" | tr -cd '|' | wc -c | tr -d ' ')" 10
+# A launcher exempts only its own record: each record is judged on its own program.
+assert grep -Fq '. as $r | cmdv as $c | $c.prog as $p | $c.args as $a' "$LAUNCH_GATE"
 assert doc_has 'a launcher in command position exempting only its own segment'
 assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Sanctioned headless launchers'
@@ -3022,8 +3021,8 @@ assert doc_has 'ONE table, `share/web-search.sh` `web_search_table`'
 WORKER_RUN_BIN="$ROOT/bin/worker-run"
 assert grep -Fq 'worker_door "${1:-}"' "$WORKER_RUN_BIN"
 assert grep -Fq 'case "$1" in start | wait | run) ;;' "$WORKER_RUN_BIN"
-assert grep -Fq 'OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|run|wait)|light-research)${EDGE}"' "$ROOT/bin/worker-launch-gate.sh"
-assert grep -Fq '[[:space:]]+)*(REVIEW_BENCH_DOOR)="' "$ROOT/bin/worker-launch-gate.sh"
+assert grep -Fq '($owned or $p == "light-research"' "$ROOT/bin/worker-launch-gate.sh"
+assert grep -Fq '(if ((.env + .assigns) | any(.name == "REVIEW_BENCH_DOOR"))' "$ROOT/bin/worker-launch-gate.sh"
 assert grep -Fq 'local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh}' "$WORKER_RUN_BIN"
 assert test -z "$(git -C "$ROOT" grep -l 'WORKER_RUN_RELAY' -- bin share 2>/dev/null)"
 assert grep -Fq '[ "${CLAUDEB_WORKER:-}" != 1 ] && [ "${GROK_WORKER:-}" != 1 ] && [ -z "${WORKER_RUN_ID:-}" ] ||' "$WORKER_RUN_BIN"

@@ -502,11 +502,11 @@ def put(path, text):
     with open(path, "w") as handle:
         handle.write(text)
 
-LIB = '. "$(dirname "$0")/lib/readonly-command.sh" 2>/dev/null && rc_readonly_command "$c" && exit 0\n'
+LIB = '. "$(dirname "$0")/lib/argv.sh" 2>/dev/null && argv_readonly "$c" && exit 0\n'
 for name in ("gate-a", "gate-b", "watch", "nudge", "prompt"):
     put(os.path.join(home, "hk", name + ".sh"), "#!/bin/bash\n" + (LIB if name == "gate-a" else "true\n"))
-GOOD = 'rc_readonly_command() { case $1 in rm*) return 1;; esac; return 0; }\n'
-put(os.path.join(home, "hk", "lib", "readonly-command.sh"), GOOD)
+GOOD = 'argv_readonly() { case $1 in rm*) return 1;; esac; return 0; }\n'
+put(os.path.join(home, "hk", "lib", "argv.sh"), GOOD)
 hooks = [{"event": e, "matcher": mt, "command": c, "timeout": 10, "async": False} for e, mt, c in (
     ("PreToolUse", "Bash", "~/hk/gate-a.sh"), ("PreToolUse", "Bash", "~/hk/gate-b.sh"),
     ("PostToolUse", "Bash|Edit|Write", "~/hk/watch.sh check"), ("PostToolUse", "*", "~/hk/nudge.sh"),
@@ -582,13 +582,13 @@ quiet = m.hooks_section(hooks, calls, [], [], 0, t24, t24, T, view_now["split"],
 check(all(r["dim"] for r in quiet["nav"][0]["menu"]["rows"]) and quiet["state"] == "ok",
       "J B/C/E/F: fast hooks clear every hook watch")
 
-put(os.path.join(home, "hk", "lib", "readonly-command.sh"), 'rc_readonly_command() { return 0; }\n')
+put(os.path.join(home, "hk", "lib", "argv.sh"), 'argv_readonly() { return 0; }\n')
 broken = m.hooks_section(hooks, calls, [], [], 0, t24, t24, T, {}, m.probe_fast_paths(hooks))
 check(broken["state"] == "problem" and broken["lead"][0]["red"] and "fast path broken under /bin/bash" in broken["fact"],
       "D: a fast path that answers wrong is red")
-put(os.path.join(home, "hk", "lib", "readonly-command.sh"), 'rc_readonly_command() {\n')
+put(os.path.join(home, "hk", "lib", "argv.sh"), 'argv_readonly() {\n')
 check(m.probe_fast_paths(hooks)[0]["state"] == "does not load", "D: a library that fails to parse does not load")
-put(os.path.join(home, "hk", "lib", "readonly-command.sh"), GOOD)
+put(os.path.join(home, "hk", "lib", "argv.sh"), GOOD)
 check(m.hooks_section(hooks, calls, [], [], 0, t24, t24, T, {}, m.probe_fast_paths(hooks))["state"] == "ok",
       "J D: a repaired library clears the red")
 
@@ -1866,11 +1866,11 @@ check(0 < recent["tool_batches"] < view["tool_batches"] and len(recent["floors"]
       and 0 < len(recent["split"]["gate-a.sh"]["trivial"]) < len(view["split"]["gate-a.sh"]["trivial"]),
       "the hook view counts batches and splits only since its window start, and keeps every floor")
 
-put(os.path.join(home, "hk", "lib", "readonly-command.sh"), 'rc_readonly_command() { return 0; }\n')
-fast_fixed = {"rows": [{"id": "fast-fix", "match": {"rule": "fastpath", "ident": "readonly-command\\.sh:bash"},
+put(os.path.join(home, "hk", "lib", "argv.sh"), 'argv_readonly() { return 0; }\n')
+fast_fixed = {"rows": [{"id": "fast-fix", "match": {"rule": "fastpath", "ident": "argv\\.sh:bash"},
                         "status": "fixed", "fixes": [{"at": m.iso_time(T - 3600), "in": None}]}]}
 fast_broken = m.hooks_section(hooks, calls, [], [], 0, t24, t24, T, {}, m.probe_fast_paths(hooks))
-put(os.path.join(home, "hk", "lib", "readonly-command.sh"), GOOD)
+put(os.path.join(home, "hk", "lib", "argv.sh"), GOOD)
 check([p["state"] for p in m.problems_from([fast_broken], fast_fixed, {}, T) if p["id"] == "fast-fix"] == ["regressed"],
       "D: a fast path failing now regresses its fix at once")
 

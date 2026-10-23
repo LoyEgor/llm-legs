@@ -50,18 +50,10 @@ is_worktree_key() {
   return 1
 }
 
-is_revert_segment() {
-  local segment=$1 subcommand arg dry_run=0 other_mode=0 git_cwd=$guard_cwd other_tree=0
-  local -a words
-
-  read -r -a words <<< "$segment"
-  [ "${#words[@]}" -gt 0 ] || return 1
-  set -- "${words[@]}"
-  if [ "$1" = command ]; then
-    shift
-    [ "$#" -gt 0 ] || return 1
-  fi
-  [ "$1" = git ] || return 1
+is_revert_call() { # cwd program args... (one parsed command, its wrappers gone)
+  local guard_cwd=$1 subcommand arg dry_run=0 other_mode=0 git_cwd=$1 other_tree=0
+  shift
+  [ "$#" -gt 0 ] && [ "${1##*/}" = git ] || return 1
   shift
 
   while [ "$#" -gt 0 ]; do
@@ -166,58 +158,33 @@ is_revert_segment() {
   return 1
 }
 
-# A heredoc body is data unless a shell reads it; an unquoted delimiter still runs the body's
-# `$( … )` and backtick spans, so those stay (share/heredoc-mask.sh). Unloadable, bodies stay whole.
-heredoc_wrap='([A-Za-z_][A-Za-z0-9_]*=[^ \t]*|env|command|exec|nohup|sudo|timeout|[0-9]+|-[^ \t]*)[ \t]+'
-heredoc_shell='(eval[ \t]|([^ \t]*/)?((ba|z|k|da|a)?sh)([ \t]|$))'
-heredoc_bodies_cut() {
-  heredoc_mask "^[ \t]*(${heredoc_wrap})*${heredoc_shell}" "[|][ \t]*(${heredoc_wrap})*${heredoc_shell}"
-}
-
-# A body the same command can later run — a script file handed to a shell, `source`, `eval`, sudo,
-# `at`, a file run by its path — is not data, and nothing here can follow which file it lands in: the
-# body is judged whole. Only the command's own lines say so; a body's prose saying `source` does not.
-runs_written_file() {
-  LC_ALL=C awk '
-    function base(w) { gsub(/["\047]/, "", w); sub(/.*\//, "", w); return w }
-    {
-      t = $0
-      while (match(t, />>?[[:space:]]*[^[:space:];&|()<>]+|(^|[^[:alnum:]_-])tee[[:space:]]+(-a[[:space:]]+)?[^[:space:];&|()<>-][^[:space:];&|()<>]*/)) {
-        w = substr(t, RSTART, RLENGTH); t = substr(t, RSTART + RLENGTH)
-        sub(/.*[>[:space:]]/, "", w); wrote[base(w)] = 1
-      }
-      n = split($0, seg, /[;&|()`]/)
-      for (i = 1; i <= n; i++) {
-        s = seg[i]; sub(/^[[:space:]]+/, "", s)
-        while (s ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/) sub(/^[^[:space:]]*[[:space:]]+/, "", s)
-        sub(/[[:space:]].*/, "", s)
-        if (s ~ /[\/$]/) run[base(s)] = 1
-      }
-    }
-    END { for (w in run) if (w in wrote) exit 0; exit 1 }'
-}
-# Without a `<<` the mask is the identity: it and its checks are skipped.
-segments_text=$command_text body_cut=cat
-if [[ $command_text == *'<<'* ]]; then
-  body_cut=heredoc_bodies_cut
-  self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
-    body_cut=cat
-fi
-if [ "$body_cut" != cat ]; then
-  cut_text=$(printf '%s\n' "$command_text" | heredoc_bodies_cut)
-  grep -Eq '(^|[^[:alnum:]_.-])((ba|z|k|da|a|fi|c|tc)?sh|source|eval|xargs|sudo|exec)([^[:alnum:]_.-]|$)|(^|[;&|(`[:space:]])\.[[:space:]]|(^|[;&|(`])[[:space:]]*(at|batch)([[:space:]]|$)|\.git/hooks/' <<<"$cut_text" &&
-    body_cut=cat
-  [ "$body_cut" = cat ] || ! runs_written_file <<<"$cut_text" || body_cut=cat
-  [ "$body_cut" = cat ] || segments_text=$cut_text
-fi
+# Decided on the parsed command (claude-setup hooks/lib/argv.sh): every git the shell would run, its
+# wrappers gone and its `cd`s followed, in a `-c` string or a body a shell runs too; a heredoc body is
+# data. A body the same command writes to a file and then runs — by its path, a shell, `source` or
+# `.` — is that file's commands, so it is read as commands too.
+. "${ARGV_LIB:-$HOME/.claude/hooks/lib/argv.sh}" 2>/dev/null || exit 0
+argv_parse "$command_text" "$guard_cwd"
+recs=$ARGV_RECS
+while IFS= read -r body; do
+  argv_parse "$(jq -r . <<<"$body")" "$guard_cwd"
+  recs+=$ARGV_RECS
+done < <(ARGV_RECS=$recs argv_all '
+  [.[] | select(.feed == null)] as $all
+  | [$all[] | .redirs[] | select(.hdoc != null and (.op | test("^<<")))] as $docs
+  | [$all[] | (shell_script.file // empty), (cmdv | select(.prog == "source" or .prog == "." ) | .args[0] // empty), (cmdv.path)] as $runs
+  | $all[] | select(.redirs | any(.hdoc != null)) | . as $w
+  | ((.redirs[] | select(.op | test("^>")) | .to), (cmdv | select(.prog == "tee") | .args[] | select(test("^-") | not))) as $t
+  | select([$runs[] | select(. == $t or (. | sub(".*/"; "")) == ($t | sub(".*/"; "")))] | length > 0)
+  | $w.redirs[] | select(.hdoc != null) | .hdoc | tojson' 2>/dev/null)
 blocked=0
-while IFS= read -r segment; do
-  segment=${segment#"${segment%%[![:space:]]*}"}
-  if is_revert_segment "$segment"; then
+while IFS=$'\t' read -r dir words; do
+  [ -n "$words" ] || continue
+  eval "set -- $words"
+  if is_revert_call "${dir:-$guard_cwd}" "$@"; then
     blocked=1
     break
   fi
-done < <(printf '%s\n' "$segments_text" | tr ';&|()' '\n')
+done < <(ARGV_RECS=$recs argv_select 'cmdv as $c | select(($c.prog) == "git") | [(.dir // ""), ([$c.path] + $c.args | @sh)] | @tsv')
 
 [ "$blocked" -eq 1 ] || exit 0
 

@@ -4,21 +4,14 @@
 # no stall watch. This door denies that spelling so every headless run reaches a launcher that owns
 # it — the sanctioned list is docs/routing-contract.md rule 4 and the share/worker-pool.sh header.
 #
-# Two lists and no judgement between them. LAUNCH_RES is a vendor binary plus the flag or
-# subcommand that makes it print-and-exit; SANCTIONED_RE is the tools that own their launches. A
-# chain segment running a sanctioned launcher in command position passes whatever else it spells,
-# and exempts that segment only: `worker-run report x; codex exec …` is still a bare launch.
-#
-# The text gate reads the common spellings only. A review launch spelled past it — `eval`, a script
-# file, an interpreter — carries no REVIEW_BENCH_DOOR nonce, and review-bench refuses it.
-#
-# Quoted text is collapsed into ONE word first, then quotes and backslashes are stripped from the
-# whole string, so `'claude' -p`, `"codex" exec` and `\claude -p` are the launches they spell while
-# a separator or a space inside a quote stays inside it. What survives is judged by POSITION: a
-# vendor name counts only in command position — the start of a chain segment, past any env
-# assignments and wrapper words — so `mkdir claude -p` and `git log dir/claude -p` are the operands
-# they are. Chain separators end a segment, so a vendor name in one link cannot borrow a flag from
-# the next, and a vendor name quoted inside an echo or a grep is an operand and passes.
+# It decides on the parsed command (claude-setup hooks/lib/argv.sh: `shfmt --to-json` walked into one
+# record per simple command the shell runs), never on its text: a vendor counts only as the program
+# of a record, past env assignments and the wrappers that hand a command on (`env`, `nohup`,
+# `timeout 540`, `xargs -I{}`), path-qualified or quoted. Quoted text, comments and a heredoc fed to
+# anything but a shell are data, so a brief quoting `claude -p` is a brief; `$(…)`, an unquoted
+# heredoc's substitutions, and a `-c`, `eval` or heredoc body a shell runs are commands. A command
+# shfmt cannot parse is read as its raw words, as the text gate read it. A help or version probe
+# launches nothing, and neither does a media script's `--dry-run` (each honours it or refuses it).
 #
 # Interactive launches — no -p/--print/--prompt, no `exec`, no `run` — are the human, never a
 # worker, and are not this gate's business. Fail-open on its own errors, like the sibling gates.
@@ -26,86 +19,16 @@
 # `worker-run start|run|wait` belongs to the main chat, which waits on a run as a background Bash; an
 # agent or a headless worker never starts or awaits one. The media scripts and the generating
 # subcommands of their web engines have one door for every session, `media-run`, whose job pointer
-# is what renders the account a generation spends.
+# is what renders the account a generation spends. A review launch spelled past the parse — a script
+# file, an interpreter — carries no REVIEW_BENCH_DOOR nonce, and review-bench refuses it.
 {
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
-EDGE="([[:space:]]|\$)"
-# Command position. Every chain separator is turned into a newline below, so the start of a line is
-# the start of a command; `^` is that whole alternation. A shell keyword or a group brace opens a
-# command position without being one, env assignments and the wrapper words that hand a command
-# straight to the kernel may precede the binary in any order, each wrapper with its own flags and
-# the operand those flags take (`nice -n 5`, `timeout -k 10 540`), and a path prefix ending in `/`
-# lets `/usr/local/bin/codex exec` read as `codex exec` while keeping `~/.claude` and
-# `.claude/hooks` from reading as the `claude` binary.
-KEYWORD="([{!]|if|then|else|elif|do|while|until)[[:space:]]+"
-WRAPPER_NAME="(env|command|exec|builtin|nohup|nice|time|timeout|gtimeout|stdbuf|setsid|caffeinate|unbuffer|arch|sudo|xargs|npx|bunx|pnpx|(npm|pnpm|yarn|bun)[[:space:]]+(exec|dlx|x))"
-WRAPPER="${WRAPPER_NAME}([[:space:]]+(-[^[:space:]]*|[0-9][^[:space:]]*))*"
-# Wrappers whose operands are not flags alone — a user, a host, a path, a lock file, a session name,
-# the `-a` of `exec` — so any words may stand between them and the command they run.
-LOOSE_WRAPPER="(sudo|script|watch|ssh|find|tmux|screen|launchctl|xargs|flock|exec)([[:space:]]+.*)?"
-# A flag may take one word (`timeout -s KILL`, `env -u FOO`). That word and the loose wrappers' `.*`
-# can swallow a vendor word, so they read a launch and never a sanctioned launcher: on the exempting
-# side `env -i codex exec worker-run` would exempt a codex launch.
-SANCTIONED_WORD="^[[:space:]]*(${KEYWORD})*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|${WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*"
-VENDOR_WORD="^[[:space:]]*(${KEYWORD})*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|${WRAPPER_NAME}([[:space:]]+(-[^[:space:]]*([[:space:]]+[^-[:space:]][^[:space:]]*)?|[0-9][^[:space:]]*))*|${LOOSE_WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*"
-# The flag or subcommand that turns a vendor CLI into a headless run, reached past any number of
-# other flags.
-PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt)(=[^[:space:]]*)?${EDGE}"
-SUBCOMMAND="([[:space:]]+[^[:space:]]+)*[[:space:]]+"
 VENDOR_BINS="claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb"
-
-# Grok's own spellings, not reusable from PRINT_FLAG: folding it back in would let
-# `grokb ... --prompt-file` and `grokb agent` through.
-GROK_PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt(-file|-json)?(=[^[:space:]]*)?|agent)${EDGE}"
-
-LAUNCH_RES=(
-  "${VENDOR_WORD}claudeb?${PRINT_FLAG}"
-  # `claudeb?` cannot reach it: the `gpt` sits where that alternation expects a separator, and a
-  # `claudegpt p <acct> -p` run is a print run spending a Codex account like any other.
-  "${VENDOR_WORD}claudegpt${PRINT_FLAG}"
-  # `e` is codex's own alias for `exec`, and `review` is a headless run of its own.
-  "${VENDOR_WORD}codexb?${SUBCOMMAND}(exec|e|review)${EDGE}"
-  "${VENDOR_WORD}geminib?${PRINT_FLAG}"
-  "${VENDOR_WORD}agy${PRINT_FLAG}"
-  "${VENDOR_WORD}opencode${SUBCOMMAND}run${EDGE}"
-  "${VENDOR_WORD}grokb?${GROK_PRINT_FLAG}"
-)
-# One literal each regex above cannot match without, so the loop below forks no grep for a vendor the text
-# never names; a regex added above needs its literal here, in the same place.
-LAUNCH_LITS=(claude claudegpt codex gemini agy opencode grok)
-
-# The worker-run subcommands that own a run's LIFE, judged in command position like every vendor
-# word above, and light-research, which starts and awaits them itself. `claim` is bookkeeping any
-# surface may do, `report` only prints a record that already exists, and a bare `worker-run` prints
-# help, so none of the three is here; `bash tests/test_worker_run.sh` is not a run.
-OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|run|wait)|light-research)${EDGE}"
-# A variable this door could not expand, standing where worker-run would, is read as worker-run.
-UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|run|wait)${EDGE}"
-
-# Called past media-run, a media script or a web engine's generating subcommand spends an account
-# with no work line naming it, so every hand is refused, an agent's included.
-OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen|speech)|suno-(music|speech)|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice)|image-fanout)${EDGE}"
-MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"
-
-# A recovery relaunches review cells, so inside an agent it is a launch; a plain `review-bench wait`
-# spends nothing.
-WORKER_REVIEW_RE="${VENDOR_WORD}review-bench[[:space:]]+wait[[:space:]].*--(relaunch|finish-partial)"
-# The legs and probes that spend an account with no launcher around them. No agent type owns them:
-# `--extract-served-model` and `--help` spend nothing.
-OWNED_LEGS_RE="${VENDOR_WORD}(ask_(claude|codex|gemini)\.sh|codex-fast-probe|gemini-probe)${EDGE}"
-LEGS_FREE_RE='[[:space:]]--(extract-served-model|help)([[:space:]]|$)'
-REVIEW_LAUNCH_RE="${VENDOR_WORD}review-bench[[:space:]]+(review|run)${EDGE}"
-REVIEW_IDLE_RE='[[:space:]](--help|-h|--price)([[:space:]]|$)'
-PIPED_RE="(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(${VENDOR_BINS})([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)"
-SCHEDULE_RE='^[[:space:]]*(at|batch|crontab)([[:space:]]|$)'
+OWNED_IMAGE="(codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen|speech)|suno-(music|speech)|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice)|image-fanout"
+OWNED_LEGS="ask_(claude|codex|gemini)\.sh|codex-fast-probe|gemini-probe"
 DIRECT_ASK="a worker run the chat starts itself: \`worker-run run auto --brief <file> --workdir <dir>\` as ONE background Bash, which picks, starts, waits and prints the report"
-# The owner token review-bench checks is the hooks' to stamp; a command setting it by hand is a
-# forged owner.
-FORGED_TOKEN_RE="^[[:space:]]*((export|env|declare|typeset|local|readonly)([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(REVIEW_BENCH_DOOR)="
-
-SANCTIONED_RE="${SANCTIONED_WORD}(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|light-research|claudeb[[:space:]]+(revive|warm))${EDGE}"
 
 deny() {
   jq -cn --arg hook "${0##*/}" --arg r "$1" \
@@ -118,90 +41,38 @@ span_live() {
     words_span_live "$(jq -r '.session_id // ""' <<<"$input")" "$(jq -r '.transcript_path // ""' <<<"$input")" ) >/dev/null 2>&1
 }
 
-# Every check below needs one of these words in the text it reads: each is a check's own literal with
-# its command-position prefix dropped, which can only match more; a check added below needs its
-# literal here too.
-MAY_LAUNCH_RES=("(${VENDOR_BINS})${EDGE}" 'worker-run|review-bench|light-research|REVIEW_BENCH_DOOR'
-  "${UNREADABLE_RUN_RE#"$VENDOR_WORD"}" "${OWNED_LEGS_RE#"$VENDOR_WORD"}" "${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
-  "${MEDIA_ENGINE_RE#"$VENDOR_WORD"}")
-# The same words read off the raw command with builtins, before any fork: quotes and backslashes go
-# as the full scan drops them, separators become spaces where the scan breaks lines, and a `$` beside
-# an `=` may expand into any word — the scan expands only a name the command itself assigns, so that
-# is the pair asked for. Only a word the scan joins out of a quoted space reads differently,
-# and the shell runs no such word.
-may_launch() {
-  local text=${cmd//[\'\"\\]/} re
-  text=${text//[;|&()\`]/ }
-  if [[ $text == *'$'* && $text == *=* ]]; then
-    local rest=$text
-    re='([A-Za-z_][A-Za-z0-9_]*)='
-    while [[ $rest =~ $re ]]; do
-      [[ $text == *'$'"${BASH_REMATCH[1]}"* || $text == *'${'"${BASH_REMATCH[1]}"* ]] && return 0
-      rest=${rest#*"${BASH_REMATCH[0]}"}
-    done
-  fi
-  re="(^|[[:space:]])${SCHEDULE_RE#^}"
-  [[ $text =~ $re ]] && return 0
-  for re in "${MAY_LAUNCH_RES[@]}"; do
-    [[ $text =~ $re ]] && return 0
-  done
-  return 1
+# A screen before any fork: every rule below needs one of these words as a program, and a program word
+# is spelled in the text with at most quotes and backslashes inside it, so a text naming none of them
+# — nearly every call — launches nothing. A `$` beside an `=` may assign any program word, so that pair
+# takes the full path.
+SCREEN_RE="(^|[^A-Za-z0-9_-])((${VENDOR_BINS})([^A-Za-z0-9_-]|\$)|worker-run|review-bench|light-research|REVIEW_BENCH_DOOR|${OWNED_LEGS}|${OWNED_IMAGE}|chatgpt-web|gemini-web|(at|batch|crontab)([^A-Za-z0-9_-]|\$))"
+# Quotes and backslashes go first (JSON escapes become blanks when the text is the payload). Bash 3.2's
+# ${x//…/} is cubic — a 7 KB payload took 128 s — so past 256 bytes one tr or sed does it.
+unquote() { # text [json] -> UNQUOTED
+  if [ "${#1}" -lt 256 ]; then
+    UNQUOTED=$1
+    [ -z "${2:-}" ] || UNQUOTED=${UNQUOTED//\\[ntrbf]/ }
+    UNQUOTED=${UNQUOTED//[\'\"\\]/}
+  elif [ -n "${2:-}" ]; then UNQUOTED=$(LC_ALL=C sed -e 's/\\[ntrbf]/ /g' -e "s/[\"'\\\\]//g" <<<"$1")
+  else UNQUOTED=$(LC_ALL=C tr -d "'\"\\\\" <<<"$1"); fi
 }
-# The payload itself is screened before jq reads it: a call whose text names no launcher at all —
-# nearly every call — is judged by the same may_launch regexes over the raw JSON, so the common
-# call forks nothing. The JSON escapes are undone as far as the screen needs: `\\` pairs go first
-# (left to right, as JSON pairs them) and a backslash is stripped anyway, an escaped quote is the
-# quote it stands for and is stripped too, a bare quote is a string's edge and a boundary, the
-# whitespace escapes are whitespace, and a `\u` escape may spell any letter, so it takes the full path.
-raw_screen() {
-  local raw=${input//'\\'/}
-  case $raw in *mcp__codex__* | *'\u'*) return 1 ;; esac
-  raw=${raw//'\"'/}
-  raw=${raw//'"'/ }
-  cmd=${raw//\\[ntrbf]/ }
-  may_launch && return 1
-  cmd=''
-  return 0
+may_launch() { # text [json]
+  unquote "$@"
+  [[ $UNQUOTED == *'$'* && $UNQUOTED == *=* ]] && return 0
+  [[ $UNQUOTED =~ $SCREEN_RE ]]
 }
+# The payload is screened before jq reads it. A `\u` escape may spell any letter, so it takes the full path.
+input=''
+IFS= read -r -d '' input || :
+case $input in *mcp__codex__* | *'\u'*) ;; *) may_launch "$input" json || exit 0 ;; esac
 
 command -v jq >/dev/null 2>&1 || exit 0
-IFS= read -r -d '' input || :
-raw_screen && exit 0
-parsed=$(jq -rn '[inputs] as $docs | $docs[] | select(.hook_event_name == "PreToolUse")
-  | [.agent_id, .tool_input.run_in_background] as $more
-  | [.tool_name // "", .tool_input.command // "",
-     ($docs | length) == 1 and all($more[]; type != "object" and type != "array"),
-     ($more | to_entries[] | .key as $k | .value
-       | if . == null or . == false then (if $k == 1 then "false" else "" end)
-         elif type == "string" then . else tojson end)] | @sh' \
-  <<<"$input" 2>/dev/null) || exit 0
-fields=()
+parsed=$(jq -r 'select(.hook_event_name == "PreToolUse")
+  | [.tool_name // "", .tool_input.command // "", (.agent_id // "" | tostring),
+     (.tool_input.run_in_background == true | tostring), .cwd // ""] | @sh' <<<"$input" 2>/dev/null) || exit 0
+[ -n "$parsed" ] || exit 0
 eval "fields=($parsed)"
-tool=${fields[0]-} cmd=${fields[1]-}
-input_field() { # jq path -> what `jq -r '<path> // empty'` prints for it (`// false` for run_in_background)
-  local i
-  case $1 in .agent_id) i=3 ;; .tool_input.run_in_background) i=4 ;; esac
-  if [ "${#fields[@]}" = 5 ] && [ "${fields[2]}" = true ]; then
-    printf '%s\n' "${fields[$i]}"
-  elif [ "$1" = .tool_input.run_in_background ]; then
-    printf '%s' "$input" | jq -r "$1 // false" 2>/dev/null
-  else
-    printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null
-  fi
-}
-
-# `[[:blank:]]`, never `[[:space:]]`: a newline is a chain separator.
-SAFE_RUN_RE='^[[:blank:]]*worker-run[[:blank:]]+(report|say|claim|stop)([[:blank:]]+[A-Za-z0-9._/@%+=:,-]+)+[[:blank:]]*$'
-case "$tool" in Bash | Monitor) [[ ! $cmd =~ $SAFE_RUN_RE ]] && may_launch || exit 0 ;; esac
-# A Bash call that provably writes nothing runs no program, so it launches nothing. The forged-owner
-# check reads the text with its quotes gone, so a call naming the token still takes the full path.
-if [ "$tool" = Bash ]; then
-  case "${cmd//[\'\"\\]/}" in
-    *REVIEW_BENCH_DOOR*) ;;
-    *) . "${READONLY_COMMAND_LIB:-$HOME/.claude/hooks/lib/readonly-command.sh}" 2>/dev/null &&
-         rc_readonly_command "$cmd" && exit 0 ;;
-  esac
-fi
+tool=${fields[0]} cmd=${fields[1]} agent_id=${fields[2]} background=${fields[3]} cwd=${fields[4]}
 case "$tool" in
   Bash | Monitor) ;;
   mcp__codex__*)
@@ -209,236 +80,80 @@ case "$tool" in
   *) exit 0 ;;
 esac
 [ -n "$cmd" ] || exit 0
+may_launch "$cmd" || exit 0
+. "${ARGV_LIB:-$HOME/.claude/hooks/lib/argv.sh}" 2>/dev/null || exit 0
+argv_parse "$cmd" "$cwd"
+owner=false
+[ -z "$agent_id" ] && [ "${CLAUDEB_WORKER:-}" != 1 ] || owner=true
 
-# A shell word, in command position, whose whole job is to interpret what it is fed: what stands
-# around a `<<` decides whether the body is text or a program. Used by both passes below — the
-# heredoc one asks it about the words on EITHER side of the `<<`, since `cat <<EOF | bash` and
-# `<<EOF bash` feed a shell as squarely as `bash <<EOF` does; the `-c` one about the words before
-# the quote.
-SHELL_WORD="(^|[[:space:];|&(){}])([^[:space:]/]*/)*(ba|z|da|k)?sh"
-HEREDOC_SHELL_RE="${SHELL_WORD}([[:space:]]+-[^[:space:]]+)*[[:space:]]*\$"
-# On the far side, command position is the start of what follows the token or the other end of a
-# chain link, so `cat <<EOF | grep sh` keeps its body as the text it is.
-HEREDOC_POST_SHELL_RE="(^[[:space:]]*|[|;&][[:space:]]*)((${WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*(ba|z|da|k)?sh([[:space:]]|\$)"
-DASH_C_RE="${SHELL_WORD}([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[A-Za-z]*c[[:space:]]+\$"
-# The other commands whose quoted operand is a program: `eval "…"`, `ssh host "…"`, `tmux new "…"`,
-# `screen … "…"`, `watch "…"`, `su -c "…"` and `env -S "…"`.
-PROGRAM_STRING_RE="${DASH_C_RE}|(^|[;|&(){}])[[:space:]]*(eval|ssh|tmux|screen|watch|su|env([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[A-Za-z]*S)([[:space:]]+[^[:space:]]+)*[[:space:]]+\$"
+# Every record the call runs, judged at once: each hit is `rank<TAB>kind<TAB>shown words`, and the
+# lowest rank decides — the order the checks have always run in.
+hits=$(argv_select --arg tool "$tool" --argjson owner "$owner" --argjson bg "$background" \
+  --arg vendors "^(${VENDOR_BINS})\$" --arg media "^(${OWNED_IMAGE})\$" --arg legs "^(${OWNED_LEGS})\$" '
+  . as $r | cmdv as $c | $c.prog as $p | $c.args as $a
+  | ($r.lit[($r.argv | length) - ($a | length) - 1] != false) as $plit
+  | ([$c.path] + $a[:1] | join(" ")) as $two
+  | (if ($p | test($vendors)) then
+       ([$a | to_entries[] | select(.value | test("^(-p|--print|--prompt)(=.*)?$")) | .key] | first) as $pf
+       | ([$a | to_entries[] | select(.value | test("^(-p|--print|--prompt(-file|-json)?)(=.*)?$|^agent$")) | .key] | first) as $gf
+       | ([$a | to_entries[] | select(.value | test("^(exec|e|review)$")) | .key] | first) as $xf
+       | ([$a | to_entries[] | select(.value == "run") | .key] | first) as $rf
+       | (if ($p | test("^(claude|claudeb|claudegpt|gemini|geminib|agy)$")) then $pf
+          elif ($p | test("^codexb?$")) then $xf elif $p == "opencode" then $rf else $gf end) as $at
+       # A pipe from sleep or true feeds no prompt: a stdin-driven server mode run that way is a probe.
+       | ($r.stdin.from.argv[0] // "" | base | test("^(sleep|true|:)$")) as $fed_nothing
+       | ($p == "claudeb" and (($a[0] // "") | test("^(revive|warm)$"))) as $sanctioned
+       | (if ($sanctioned or probe) then empty
+          elif $r.stdin.kind == "pipe" and ($fed_nothing | not) then [7, "piped", $two]
+          elif $at != null and (($fed_nothing and $a[$at] == "agent") | not) then [9, "launch", ([$c.path] + $a[:$at + 1] | join(" "))]
+          else empty end)
+     else empty end),
+    (if ((.env + .assigns) | any(.name == "REVIEW_BENCH_DOOR"))
+        or (($r.argv[0] // "" | base) == "env" or .crude) and ($r.argv | any(startswith("REVIEW_BENCH_DOOR=")))
+     then [0, "forged", "REVIEW_BENCH_DOOR"] else empty end),
+    (if probe then empty else
+       ($p == "worker-run" and (($a[0] // "") | test("^(start|run|wait)$"))) as $owned
+       | (($p == "review-bench") and (($a[0] // "") | test("^(review|run)$")) and ($a | any(test("^(--help|-h|--price)$")) | not)) as $review
+       | ($p == "review-bench" and $a[0] == "wait") as $rwait
+       | (if $tool == "Monitor" and (($p == "worker-run" and (($a[0] // "") | test("^(wait|run)$"))) or $rwait) then [1, "monitor", $two] else empty end),
+         (if $tool == "Monitor" and $review then [1, "monitor-review", $two] else empty end),
+         (if $owner and ($review or ($rwait and ($a | any(test("^--(relaunch|finish-partial)")))))
+          then [2, "owner-review", $two] else empty end),
+         (if $owner and ($owned or $p == "light-research" or (($plit | not) and (($a[0] // "") | test("^(start|run|wait)$"))))
+          then [3, "owner-run", (if $p == "light-research" then $c.path else $two end)] else empty end),
+         (if $tool == "Bash" and ($bg | not) and (($p == "worker-run" and ($a[0] == "run" or ($a[0] == "wait" and ($a | any(test("^--max(=|$)")) | not))))
+               or $p == "light-research")
+          then [4, "foreground", (if $p == "light-research" then $c.path else $two end)] else empty end),
+         (if ($p | test($legs)) and ($a | any(. == "--extract-served-model" or . == "--help") | not) then [5, "legs", $c.path] else empty end),
+         (if ($p | test("^(at|batch|crontab)$")) and (($p == "crontab" and ($a | if .[0] == "-u" then .[2:] else . end) == ["-l"]) | not)
+          then [8, "schedule", ([$c.path] + $a | join(" "))] else empty end)
+     end),
+    (if (($p | test($media)) and (probe_dry | not))
+        or ($p == "chatgpt-web" and (($a[0] // "") | test("^(generate|resize|comment|remove-bg)$")) and (probe | not))
+        or ($p == "gemini-web" and $a[0] == "generate" and (probe_dry | not))
+     then [6, "media", (if ($p | test($media)) then $c.path else $two end)] else empty end)
+  | @tsv' | sort -t $'\t' -k1,1n)
 
-# Four passes, and their ORDER is the whole difference between reading a launch and inventing one.
-# A heredoc body is text a command is FED, so it is blanked first (share/heredoc-mask.sh), while the
-# line structure that says where the body ends is still intact — `cat > brief <<EOF` quoting
-# `worker-run wait` is a brief being written, not a run being awaited, and masking can only lose a
-# command, never invent one: `bash <<EOF` is scanned, `cat > f <<EOF` masked. Unloadable, nothing
-# is masked, which can only deny more.
-# A backslash-continued line is one command, so the join comes next: splitting there would
-# sever a vendor name from the flag on the next line, which is how a long brief is routinely typed.
-# Then quoted text loses its separators and its spaces, which is what makes it one operand word:
-# strip the quotes first and `echo "x; codex exec"` grows a command position it never had, while
-# `X="a b" claude -p` loses the env assignment that keeps the vendor word out of one. The one quoted
-# span that is not an operand is a `sh -c` string, whose words the shell runs: it is broken out onto
-# its own line instead. Only then are the quotes themselves dropped, so `'claude' -p` is a launch.
-# Without a `<<` there is no body to mask: the masker is the identity, so the library is never loaded.
-masked_cmd() {
-  if [[ $cmd != *'<<'* ]]; then printf '%s\n' "$cmd"; return; fi
-  local self
-  self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
-    heredoc_mask() { cat; }
-  heredoc_mask "$HEREDOC_SHELL_RE" "$HEREDOC_POST_SHELL_RE" <<<"$cmd"
-}
-prestrip=$(masked_cmd |
-  LC_ALL=C awk '{ if (sub(/\\[[:space:]]*$/, " ")) { printf "%s", $0; next } print }' |
-  LC_ALL=C awk -v dashc="$PROGRAM_STRING_RE" 'BEGIN { out = ""; q = ""; body = 0 }
-       {
-         for (i = 1; i <= length($0); i++) {
-           c = substr($0, i, 1)
-           if (q == "") {
-             if (c == "\\") { out = out c substr($0, i + 1, 1); i++; continue }
-             if (c == "#" && (out == "" || out ~ /[[:space:];|&()]$/)) break
-             if (c == "\047" || c == "\"") {
-               q = c
-               if (out ~ dashc) {
-                 body = 1
-                 c = "\n"
-               }
-             }
-           }
-           else if (q == "\"" && c == "\\") {
-             c = substr($0, i + 1, 1)
-             out = out "\\" ((!body && c ~ /[[:space:];|&()`]/) ? "" : c); i++; continue
-           }
-           else if (c == q) { q = ""; if (body) { body = 0; c = "\n" } }
-           else if (!body && c ~ /[[:space:];|&()`]/) c = ""
-           out = out c
-         }
-         # A quoted operand spanning lines (a commit message, a PR body) is still one word.
-         if (q != "" && !body) next
-         print out
-         out = ""
-       }
-       END { if (out != "") print out }') || exit 0
-scan=${prestrip//[\'\"\\]/}
-while [[ $scan == *$'\n' ]]; do scan=${scan%$'\n'}; done
-# The pipe check reads the text before this split, the one form that still holds the pipes.
-unsplit=$scan
-scan=${unsplit//[';|&()`']/$'\n'}
-while [[ $scan == *$'\n' ]]; do scan=${scan%$'\n'}; done
-[ -n "$scan" ] || scan="$cmd"
-[ -n "$unsplit" ] || unsplit="$cmd"
-
-# `command` is a wrapper above because it hands its operand to the kernel — except with -v/-V, which
-# only prints where a word lives and runs nothing. The whole segment goes, and after the fallback
-# above, so a command that is nothing but lookups scans as empty instead of falling back to its own
-# text; a lookup chained with a real launch keeps that launch on its own line. `type`, `which` and
-# `hash` are commands in their own right, so their operand never reaches command position at all.
-LOOKUP_RE='^[[:space:]]*command[[:space:]]+(-[^[:space:]]+[[:space:]]+)*-[vV]([[:space:]]|$)'
-[[ $scan != *command* ]] || scan=$(grep -Ev "$LOOKUP_RE" <<<"$scan")
-scan_literal=$scan
-
-# A command word held in a variable is the launch it names: `W=…/worker-run; $W start` ran two
-# workers with no row (2026-09-24). Names assigned in this command are expanded in place; a value
-# that itself holds a `$` is skipped, or its expansion would never end.
-ASSIGN_RE='^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?[A-Za-z_][A-Za-z0-9_]*=[^[:space:]$]+'
-# The scan has joined a quoted value's words, and an unquoted `$C` splits them again (`C="codex
-# exec"; $C hi`), so a quoted value is read off the raw command first, its spaces kept.
-QUOTED_ASSIGN_RE="(^|[;&|({[:space:]])[A-Za-z_][A-Za-z0-9_]*=(\"[^\"\$\`\\\\&]*\"|'[^'\$\\\\&]*')"
-# Both regexes need a literal `=`, which the scan only ever loses.
-if [[ $cmd == *=* ]]; then
-  while IFS= read -r assign; do
-    [ -n "$assign" ] || continue
-    assign=$(sed -E -e 's/^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?//' \
-      -e "s/^[;&|({[:space:]]//; s/=[\"']/=/; s/[\"']\$//" <<<"$assign")
-    scan=$(LC_ALL=C awk -v n="${assign%%=*}" -v v="${assign#*=}" '{
-      gsub("\\$[{]" n "[}]", v)
-      out = ""
-      while (match($0, "\\$" n "([^A-Za-z0-9_]|$)")) {
-        out = out substr($0, 1, RSTART - 1) v
-        $0 = substr($0, RSTART + 1 + length(n))
-      }
-      print out $0 }' <<<"$scan")
-  done < <(grep -Eo "$QUOTED_ASSIGN_RE" <<<"$cmd"; grep -Eo "$ASSIGN_RE" <<<"$scan")
-fi
-
-# Every check below is one of these regexes read at command position, so a text matching none of
-# them denies nothing: an operand that merely names a launcher (`git log -- bin/worker-run`) ends here.
-# A check added below needs its regex here too.
-hit_args=(-e "$FORGED_TOKEN_RE" -e "$SCHEDULE_RE" -e "$OWNED_RUN_RE" -e "$UNREADABLE_RUN_RE" -e "$OWNED_LEGS_RE"
-  -e "$OWNED_IMAGE_RE" -e "$MEDIA_ENGINE_RE" -e "$REVIEW_LAUNCH_RE" -e "$WORKER_REVIEW_RE"
-  -e "${VENDOR_WORD}(worker-run|review-bench)[[:space:]]+wait${EDGE}")
-for re in "${LAUNCH_RES[@]}"; do hit_args+=(-e "$re"); done
-hit_args+=(-e "$PIPED_RE")
-grep -Eq "${hit_args[@]}" <<<"$unsplit"$'\n'"$scan" 2>/dev/null
-[ $? -ne 1 ] || exit 0
-
-first_hit() { # regex
-  local hit
-  hit=$(grep -Eo "$1" <<<"$scan" 2>/dev/null) || return 0
-  printf '%s\n' "${hit%%$'\n'*}" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//'
-}
-# Each check below forks only once its regex's own literals stand in the text it reads.
-forged=''
-[[ $scan != *REVIEW_BENCH_DOOR=* ]] ||
-  forged=$(grep -Eo "$FORGED_TOKEN_RE" <<<"$scan" 2>/dev/null | head -n1 | grep -Eo '(REVIEW_BENCH_DOOR)=$')
-[ -z "$forged" ] ||
-  deny "Blocked: \`${forged%=}\` is stamped by the hooks alone — it names the review Egor's word opened — and a command setting it by hand forges that owner. A review is launched plainly from the chat's own shell on his word."
-# A Monitor is a background command like any other, so every check below reads it too. The review
-# door is registered for Bash alone, so a Monitor launching a panel would skip his word.
-if [ "$tool" = Monitor ]; then
-  monitor_hit=$(first_hit "${VENDOR_WORD}(worker-run[[:space:]]+(wait|run)|review-bench[[:space:]]+wait)${EDGE}")
-  [ -z "$monitor_hit" ] ||
-    deny "Blocked: a Monitor polling \`${monitor_hit}\` re-reads the run every round. Run \`${monitor_hit} <run-id>\` once as a Bash call with \`run_in_background: true\`: it blocks until the run ends, streams its progress to /tasks, and its completion notification wakes this chat."
-  monitor_review=$(grep -Ev -e "$REVIEW_IDLE_RE" <<<"$scan" 2>/dev/null | grep -Eo "$REVIEW_LAUNCH_RE" | head -n1)
-  [ -z "$monitor_review" ] ||
-    deny "Blocked: a Monitor running \`$(tr -s '[:space:]' ' ' <<<"$monitor_review" | sed -e 's/^ //' -e 's/ $//')\` launches a review panel past the door that holds it for Egor's word. Launch it with a plain Bash call from this chat on his word, then run \`review-bench wait <run-id>\` as a background Bash."
-fi
-# A review panel spends the chat's grant and a pool of accounts, and only the chat's own shell holds
-# that grant; a worker run likewise belongs to the chat that waits on it. An agent of any type or a
-# headless worker launching either is a run nobody granted and nobody waits on.
-agent_id=$(input_field .agent_id)
-if [ -n "$agent_id" ] || [ "${CLAUDEB_WORKER:-}" = 1 ]; then
-  worker_review_hit=$(grep -Ev -e "$REVIEW_IDLE_RE" <<<"$scan" 2>/dev/null | grep -Eo "$REVIEW_LAUNCH_RE" | head -n1 |
-    tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-  [ -n "$worker_review_hit" ] || worker_review_hit=$(first_hit "$WORKER_REVIEW_RE")
-  [ -z "$worker_review_hit" ] ||
-    deny "Blocked: \`${worker_review_hit}\` inside an agent or a headless worker launches review cells on a grant that is the chat's alone, spending a pool of accounts nobody granted. An agent never runs a review: report that one is due, and the chat launches it from its own shell on Egor's word."
-  owned_hit=$(first_hit "$OWNED_RUN_RE")
-  [ -n "$owned_hit" ] || owned_hit=$(first_hit "$UNREADABLE_RUN_RE")
-  [ -z "$owned_hit" ] ||
-    deny "Blocked: \`${owned_hit}\` inside an agent or a headless worker starts or awaits a worker run that belongs to the chat: the chat starts it, waits on it as a background Bash and reads its report. Report what should be delegated in your RETURN instead. \`worker-run report\`, \`worker-run claim\` and the test suites are not gated."
-fi
-# An unbounded wait in a foreground call dies at the Bash timeout while the run keeps spending, and
-# nothing wakes the chat when it ends.
-if [ "$tool" = Bash ] && [[ $scan == *worker-run* || $scan == *light-research* ]] &&
-    [ "$(input_field .tool_input.run_in_background)" != true ]; then
-  foreground_hit=$(grep -Ev -e "${VENDOR_WORD}worker-run[[:space:]]+wait[[:space:]].*--max([[:space:]=]|$)" <<<"$scan" 2>/dev/null |
-    grep -Eo "${VENDOR_WORD}(worker-run[[:space:]]+(wait|run)|light-research)${EDGE}" | head -n1 |
-    tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-  [ -z "$foreground_hit" ] ||
-    deny "Blocked: \`${foreground_hit}\` blocks until the run ends, and a foreground Bash call is killed at its timeout (600 s at most) while the run keeps spending and nothing wakes this chat. Run the identical call with \`run_in_background: true\`: its completion notification wakes this chat."
-fi
-legs_hit=''
-[[ $scan != *ask_* && $scan != *-probe* ]] ||
-  legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_FREE_RE" | head -n1 |
-    grep -Eo "$OWNED_LEGS_RE" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-[ -z "$legs_hit" ] || span_live ||
-  deny "Blocked: \`${legs_hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record naming the account. A question for a model is ${DIRECT_ASK}; a live probe is Egor's to run — hand him the paste-ready command for his own terminal."
-HELP_TAIL='([[:space:]]+[0-9]*[<>]+[[:space:]]*[^[:space:]]*)*[[:space:]]*$'
-# Exempt by line and only as typed: a wrapper (`xargs -J --help`) or an expanded `$VAR` makes a line
-# that reads as help yet runs the script with other arguments.
-image_help_re="^[[:space:]]*([^[:space:]/]*/)*${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
-image_help_re="${image_help_re%"$EDGE"}[[:space:]]+(-h|--help)${HELP_TAIL}"
-typed=''
-typed_lines() { [ -n "$typed" ] || typed=$(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]"); }
-image_hit=''
-case $scan in
-  *-image* | *grok-video* | *gemini-* | *elevenlabs-* | *image-fanout* | *chatgpt-web*)
-    typed_lines
-    literal=()
-    while IFS= read -r line; do literal+=("$line"); done <<<"$scan_literal"
-    image_scan=$(i=0
-      while IFS= read -r line; do
-        [ "$line" = "${literal[i]-}" ] && [[ $line =~ $image_help_re ]] && grep -Fxq -- "$line" <<<"$typed" ||
-          printf '%s\n' "$line"
-        i=$((i + 1))
-      done <<<"$scan")
-    image_hit=$(scan=$image_scan; first_hit "$OWNED_IMAGE_RE")
-    [ -n "$image_hit" ] || image_hit=$(first_hit "$MEDIA_ENGINE_RE") ;;
-esac
-[ -z "$image_hit" ] ||
-  deny "Blocked: \`${image_hit}\` runs media past \`media-run\`, the one door that renders the account it spends: load the media skill, write the prompt yourself and run \`media-run <kind> --vendor <v> -- <the script's own args>\` (\`media-run --help\` lists the kinds) (several vendors, \`--takes\` or \`--jobs\` fan out). Quoting one inside a heredoc body is not running it."
-
-unsanctioned=$(grep -Ev "$SANCTIONED_RE" <<<"$scan")
-launch_ask="A worker is ${DIRECT_ASK}"
-# A vendor CLI fed on stdin runs headless with no print flag, and a scheduler runs its command later,
-# where no gate reads it.
-piped=''
-[[ $unsplit != *'|'* ]] || piped=$(grep -Eo "$PIPED_RE" <<<"$unsplit" 2>/dev/null |
-  grep -Ev "[|][[:space:]]*claudeb[[:space:]]+(revive|warm)[[:space:]]*\$" | head -n1 | sed -E 's/^[^|]*[|][[:space:]]*//' | tr -s '[:space:]' ' ' | sed -e 's/ $//')
-[ -z "$piped" ] || deny "Blocked: a pipe into \`${piped}\` runs it headless on its stdin — a bare vendor launch. ${launch_ask}."
-scheduled=''
-schedule_line=$'\n''[[:space:]]*(at|batch|crontab)[[:space:]]'
-[[ ! $'\n'$scan$'\n' =~ $schedule_line ]] || scheduled=$(grep -E "$SCHEDULE_RE" <<<"$scan" 2>/dev/null |
-  grep -Ev '^[[:space:]]*crontab([[:space:]]+-u[[:space:]]+[^[:space:]]+)?[[:space:]]+-l([[:space:]]+[0-9]?>>?(&[0-9]|[^[:space:]&|;]+)?)*[[:space:]]*$' | head -n1 |
-  tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-[ -z "$scheduled" ] || span_live || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
-# `help` is a subcommand only to some CLIs; to gemini and claude it is a positional prompt, so a flag
-# after it (`gemini help -p "fix x"`) is a headless launch. A help line is exempt only as a segment
-# that held no quote or backslash before stripping: `sh -c "claude -p 'ls -h'"` strips to a help line.
-HELP_RE="${VENDOR_WORD}(${VENDOR_BINS})(${SUBCOMMAND}(-h|--help)${HELP_TAIL}|[[:space:]]+help([[:space:]]+[^[:space:]-][^[:space:]]*)*${HELP_TAIL})"
-help_lines=''
-[[ $unsanctioned != *-h* && $unsanctioned != *help* ]] || { typed_lines; help_lines=$(grep -E "$HELP_RE" <<<"$unsanctioned" |
-  grep -Fx -f <(printf '%s\n' "$typed")); }
-[ -z "$help_lines" ] || unsanctioned=$(grep -Fxv -f <(printf '%s\n' "$help_lines") <<<"$unsanctioned")
-launch_any=()
-for launch_re in "${LAUNCH_RES[@]}"; do launch_any+=(-e "$launch_re"); done
-grep -Eq "${launch_any[@]}" <<<"$unsanctioned" 2>/dev/null || LAUNCH_RES=()
-for ((launch_i = 0; launch_i < ${#LAUNCH_RES[@]}; launch_i++)); do
-  [[ $unsanctioned == *"${LAUNCH_LITS[launch_i]}"* ]] || continue
-  launch_re=${LAUNCH_RES[launch_i]}
-  hit=$(grep -Eo "$launch_re" <<<"$unsanctioned" 2>/dev/null) || continue
-  hit=$(printf '%s\n' "${hit%%$'\n'*}" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-  [ -n "$hit" ] || continue
-  deny "Blocked: \`${hit}\` is a bare headless vendor launch — it leaves no worker-run record, no statusline tag, no journal ownership, no pool refusal, no limit signature and no stall watch. ${launch_ask}; the other tools own their launches (review-bench, llm-limits, claudeb revive, claude-session-driver, opencode-go; the media scripts are reached through media-run). An interactive launch — no -p/--print/--prompt, no exec, no run — is not gated. Quotes and backslashes do not hide a launch: the gate strips them, then reads the first word of every chained command, and a sanctioned tool exempts only its own segment."
-done
+while IFS=$'\t' read -r _ kind hit; do
+  case $kind in
+    forged) deny "Blocked: \`REVIEW_BENCH_DOOR\` is stamped by the hooks alone — it names the review Egor's word opened — and a command setting it by hand forges that owner. A review is launched plainly from the chat's own shell on his word." ;;
+    # The review door is registered for Bash alone, so a Monitor launching a panel would skip his word.
+    monitor) deny "Blocked: a Monitor polling \`${hit}\` re-reads the run every round. Run \`${hit} <run-id>\` once as a Bash call with \`run_in_background: true\`: it blocks until the run ends, streams its progress to /tasks, and its completion notification wakes this chat." ;;
+    monitor-review) deny "Blocked: a Monitor running \`${hit}\` launches a review panel past the door that holds it for Egor's word. Launch it with a plain Bash call from this chat on his word, then run \`review-bench wait <run-id>\` as a background Bash." ;;
+    # A review panel spends the chat's grant and a pool of accounts, and only the chat's own shell
+    # holds that grant; a worker run likewise belongs to the chat that waits on it.
+    owner-review) deny "Blocked: \`${hit}\` inside an agent or a headless worker launches review cells on a grant that is the chat's alone, spending a pool of accounts nobody granted. An agent never runs a review: report that one is due, and the chat launches it from its own shell on Egor's word." ;;
+    owner-run) deny "Blocked: \`${hit}\` inside an agent or a headless worker starts or awaits a worker run that belongs to the chat: the chat starts it, waits on it as a background Bash and reads its report. Report what should be delegated in your RETURN instead. \`worker-run report\`, \`worker-run claim\` and the test suites are not gated." ;;
+    # An unbounded wait in a foreground call dies at the Bash timeout while the run keeps spending.
+    foreground) deny "Blocked: \`${hit}\` blocks until the run ends, and a foreground Bash call is killed at its timeout (600 s at most) while the run keeps spending and nothing wakes this chat. Run the identical call with \`run_in_background: true\`: its completion notification wakes this chat." ;;
+    legs) span_live || deny "Blocked: \`${hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record naming the account. A question for a model is ${DIRECT_ASK}; a live probe is Egor's to run — hand him the paste-ready command for his own terminal." ;;
+    media) deny "Blocked: \`${hit}\` runs media past \`media-run\`, the one door that renders the account it spends: load the media skill, write the prompt yourself and run \`media-run <kind> --vendor <v> -- <the script's own args>\` (\`media-run --help\` lists the kinds) (several vendors, \`--takes\` or \`--jobs\` fan out). Quoting one inside a heredoc body is not running it." ;;
+    # A vendor CLI fed on stdin runs headless with no print flag.
+    piped) deny "Blocked: a pipe into \`${hit}\` runs it headless on its stdin — a bare vendor launch. A worker is ${DIRECT_ASK}." ;;
+    # A scheduler runs its command later, where no gate reads it.
+    schedule) span_live || deny "Blocked: \`${hit}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command." ;;
+    launch) deny "Blocked: \`${hit}\` is a bare headless vendor launch — it leaves no worker-run record, no statusline tag, no journal ownership, no pool refusal, no limit signature and no stall watch. A worker is ${DIRECT_ASK}; the other tools own their launches (review-bench, llm-limits, claudeb revive, claude-session-driver, opencode-go; the media scripts are reached through media-run). An interactive launch — no -p/--print/--prompt, no exec, no run — is not gated. The gate reads the parsed command: quotes, wrappers and \`sh -c\` strings do not hide a launch, and quoted text is not one." ;;
+  esac
+done <<<"$hits"
 exit 0
 exit; }

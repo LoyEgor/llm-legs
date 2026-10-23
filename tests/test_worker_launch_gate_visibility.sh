@@ -13,10 +13,9 @@ mkdir -p "$HOME"
 unset CLAUDEB_WORKER WORKER_PICK_CONFIG_FILE
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
-# The deployed gate lets a provably read-only call skip its scan, so every denial below also proves
-# the skip swallows none.
-export READONLY_COMMAND_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/readonly-command.sh"
-[ -r "$READONLY_COMMAND_LIB" ] || fail "readonly-command.sh not readable (set CLAUDE_SETUP_ROOT)"
+# The gate reads the parsed command off claude-setup's hooks/lib/argv.sh.
+export ARGV_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/argv.sh"
+[ -r "$ARGV_LIB" ] || fail "argv.sh not readable (set CLAUDE_SETUP_ROOT)"
 
 verdict() { # agent command [timeout-ms|null] [background]
   jq -cn --arg agent "$1" --arg command "$2" --argjson timeout "${3:-null}" --argjson bg "${4:-false}" \

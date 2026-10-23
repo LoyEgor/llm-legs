@@ -138,9 +138,9 @@ rm -f "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-fresh"
 # Without the classifier library the gate falls back to marking every call, so every call is checked.
 span_base sid-nolib >/dev/null
 printf 'grown by somebody else\n' >> "$DOC"
-READONLY_COMMAND_LIB=$WORK/absent.sh pre_call sid-nolib Bash command "grep -c . $DOC" "$SPAN_T"
+ARGV_LIB=$WORK/absent.sh pre_call sid-nolib Bash command "grep -c . $DOC" "$SPAN_T"
 assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-nolib@tu-sid-nolib" ]
-ctx=$(READONLY_COMMAND_LIB=$WORK/absent.sh span_check sid-nolib Bash command "grep -c . $DOC" "$SPAN_T")
+ctx=$(ARGV_LIB=$WORK/absent.sh span_check sid-nolib Bash command "grep -c . $DOC" "$SPAN_T")
 assert_contains "CHANGED" "$ctx"
 printf 'tier doc\n' > "$DOC"
 

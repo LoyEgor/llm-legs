@@ -170,29 +170,39 @@ under_chat_pins() {
 
 CHAT_DENY_REASON="Blocked: the chat pin under $(chat_pins_dir) moves only through \`chat-pin <vendor|account|auto>\`; do not write, copy over or delete that file another way."
 
-# The copy verbs deny on the name alone: a backup of a chat pin is a thing no session needs, and
-# false-deny is this door's side.
-CHAT_VERB_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|chown|cp|mv|ln|install|touch|truncate|tee|dd)([[:space:]]|$)'
+# Decided on the parsed command (claude-setup hooks/lib/argv.sh): a record writes under the dir
+# when a write redirect, a file verb's operand or an in-place editor's file names it. The copy verbs
+# deny on the name alone: a backup of a chat pin is a thing no session needs, and false-deny is this
+# door's side. A runtime's program (`python3 - <<EOF`) is data but for a line pairing the dir with a
+# write call; the text a `perl -pi` or `sed -i` substitutes is data, its files are the writes.
+load_argv() { command -v argv_parse >/dev/null 2>&1 || . "${ARGV_LIB:-$HOME/.claude/hooks/lib/argv.sh}" 2>/dev/null; }
+CHAT_TARGETS_JQ='
+  cmdv as $c | $c.args as $a
+  | ($a | any(test("^-[A-Za-z0-9]*i") or test("^--in-place"))) as $inplace
+  | (.redirs[] | select(.op | test("^(>|>>|>\\||&>|&>>|<>)$")) | .to),
+    (if ($c.prog | test("^(rm|unlink|shred|chmod|chown|cp|mv|ln|install|touch|truncate|tee|dd)$"))
+        or ($inplace and ($c.prog | test("^(sed|gsed|perl|ruby)$")))
+     then $a[] | select(test("^-") | not) | sub("^of="; "") else empty end),
+    (if ($c.prog | test("^(python[0-9.]*|perl|ruby|node|osascript)$")) and ($inplace | not) then
+       ([$a[] | select(test("^-") | not)] + [.redirs[] | .hdoc // (select(.op == "<<<") | .to) // empty]) | join("\n")
+       | split("\n")[] | select(test($names) and test("open\\(.*[\"\u0027][wax+]|write_text|write_bytes|unlink|os\\.remove|rmtree|shutil\\.|rename|truncate"))
+       | "BODY"
+     else empty end)
+  | select(. == "BODY" or test($names))'
 
 chat_pins_written() { # command → 0 when it writes, copies over or deletes under the chat-pins dir
-  local names scan segment
+  local names target
   names='claude-chat-pins'
   [ -z "${CHAT_PINS_DIR:-}" ] ||
     names="$names|$(basename -- "$CHAT_PINS_DIR" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
   grep -Eq "$names" <<<"$1" || return 1
-  load_share instruction-files.sh instruction_write_targets || return 1
-  scan=$(printf '%s' "$1" | instruction_shell_scan 2>/dev/null) || scan=''
-  [ -n "$scan" ] || scan=$1
-  grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" <<<"$scan" &&
-    scan=$1
-  [ -z "$(instruction_write_targets "$scan" "[^[:space:]]*($names)(/[^[:space:]]*)?")" ] || return 0
-  while IFS= read -r -d '' segment; do
-    grep -Eq "$names" <<<"$segment" || continue
-    grep -Eq "$CHAT_VERB_RE|-i([[:space:]]|$)" <<<"$segment" && return 0
-  done < <(instruction_split_commands "$scan")
-  grep -Eq "[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*($names)" <<<"$scan" || return 1
-  instruction_write_targets "$scan" '[^[:space:]]+' |
-    awk -F '\t' '$2 != "unknown" && $4 != "" && $4 != "/dev/null" { found = 1 } END { exit !found }'
+  load_argv || return 1
+  argv_parse "$1" "$PWD"
+  while IFS= read -r target; do
+    [ "$target" = BODY ] && return 0
+    under_chat_pins "$target" && return 0
+  done < <(argv_select --arg names "$names" "$CHAT_TARGETS_JQ")
+  return 1
 }
 
 # `$HOME/.claude//worker-model`, a `..` hop and a tilde all name the one file; comparing the
@@ -232,32 +242,22 @@ PIN_NAME_RE='[^[:space:]]*worker-model'
 DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|chown)([[:space:]]|$)'
 
 # Egor's `! chat-pin <name>` runs without this hook, so only he pins a chat to an account he
-# switched off in the menu; a session pinning it would spend what the night must not.
-# Only a `chat-pin` in command position is a pin: a brief, commit message or path that names it is
-# not. Where the scan cannot tell what runs (a shell given text, an unresolved command word), the
-# raw command is read with quotes as command boundaries, this door's false-deny side.
-CHAT_PIN_CALL_RE="(^|[;&|({\`'\"])[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|then|do|else|if|while|until|!|time|sudo|command|exec|env|nohup)[[:space:]]+)*([^[:space:];&|()<>\`'\"]*/)?chat-pin[[:space:]]+([A-Za-z0-9_][A-Za-z0-9._:-]*)"
-
+# switched off in the menu; a session pinning it would spend what the night must not. Only a
+# `chat-pin` the parse finds as a program is a pin: a brief, commit message or path that names it is
+# not, and a `-c` string or a body a shell runs is read as the commands it holds.
 chat_pin_off_account() { # command → the switched-off account a `chat-pin <name>` in it pins
-  local scan segment rest name resolved
-  load_share instruction-files.sh instruction_split_commands || return 1
+  local name resolved
+  load_argv || return 1
   load_share worker-model.sh worker_model_chat_pin_vendors || return 1
-  scan=$(printf '%s' "$1" | instruction_shell_scan 2>/dev/null) || scan=''
-  [ -n "$scan" ] || scan=$1
-  grep -Eq "$INSTRUCTION_SHELL_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" <<<"$scan" &&
-    scan=${1//$'\n'/;}
-  while IFS= read -r -d '' segment; do
-    rest=$segment
-    while [[ "$rest" =~ $CHAT_PIN_CALL_RE ]]; do
-      rest=${rest#*"${BASH_REMATCH[0]}"}
-      name=${BASH_REMATCH[5]}
-      resolved=$(worker_model_chat_pin_vendors "$name")
-      [[ "$resolved" == *' off' && "$resolved" != *$'\n'* ]] || continue
-      resolved=${resolved% off}
-      printf '%s:%s' "${resolved/#claudeb/claude}" "${name#*:}"
-      return 0
-    done
-  done < <(instruction_split_commands "$scan")
+  argv_parse "$1" "$PWD"
+  while IFS= read -r name; do
+    [[ $name =~ ^[A-Za-z0-9_][A-Za-z0-9._:-]*$ ]] || continue
+    resolved=$(worker_model_chat_pin_vendors "$name")
+    [[ "$resolved" == *' off' && "$resolved" != *$'\n'* ]] || continue
+    resolved=${resolved% off}
+    printf '%s:%s' "${resolved/#claudeb/claude}" "${name#*:}"
+    return 0
+  done < <(argv_select 'cmdv | select(.prog == "chat-pin") | .args[0] // empty')
   return 1
 }
 

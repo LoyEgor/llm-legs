@@ -55,8 +55,8 @@ IFS=$'\x1f' read -r -d '' tool_name sid cwd transcript tool_use_id agent_id comm
 [ "$tool_name" = Bash ] || exit 0
 # A call that provably writes nothing gets a read-only note instead of a mark, and instruction-watch.sh
 # skips the check that takes it.
-. "${READONLY_COMMAND_LIB:-$HOME/.claude/hooks/lib/readonly-command.sh}" 2>/dev/null &&
-  rc_readonly_command "$command" && { instruction_readonly_note "$sid" "$tool_use_id"; exit 0; }
+. "${ARGV_LIB:-$HOME/.claude/hooks/lib/argv.sh}" 2>/dev/null &&
+  argv_readonly "$command" "$cwd" && { instruction_readonly_note "$sid" "$tool_use_id"; exit 0; }
 # Before any decision: the tripwire attributes bytes to this call by the mark's time, never by the
 # command text. A denied call never runs, so every deny below takes its mark back.
 instruction_inflight_mark "$sid" "$tool_use_id" Bash "$cwd" "$agent_id"

@@ -71,7 +71,7 @@ done
 # sources from its OWN directory — deployed alone, every in-span row of the matrix below silently
 # answers out-span.
 lib_parts=()
-for part in review-journal.sh words.sh words.py word-families.json readonly-command.sh; do
+for part in review-journal.sh words.sh words.py word-families.json argv.sh argv.jq; do
   [ -r "${JOURNAL_LIB%/*}/$part" ] || fail "$part not readable beside review-journal.sh"
   lib_parts+=("${JOURNAL_LIB%/*}/$part")
 done
