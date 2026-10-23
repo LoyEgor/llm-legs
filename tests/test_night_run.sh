@@ -1705,6 +1705,26 @@ rm "$DATA/opener-fails"
 assert jqe '.jobs[0] | has("carried") | not' "$(record tf)"
 assert jqe '[.[] | select((.note // "") | startswith("orchestrator chat did not open")) | .jobs] == [[]]' <(jq -s . "$NIGHTS"/*.json)
 
+# A handoff or owner-chat job closes merged or nothing-to-do only with its docs settled (10-06…13: four closed with
+# their doc open and the next carry took it again); a doc still open is named, a trade's or left with reason= passes.
+printf '# H\n\nStatus: open\n' >"$TR/docs/handoffs/h.md"
+hd() { jq -nc --arg k "$1" --arg r "$2" --argjson x "$3" '{kind: $k, ref: $r, state: "live", reason: null, branch: null,
+  review: null, commits: [], pushed: false} + $x'; }
+jq -n --argjson j "[$(hd handoff h-path "{\"path\": \"$TR/docs/handoffs/h.md\"}"), $(hd handoff handoff-h '{}'),
+  $(hd owner-chat oc "{\"handoffs\": [\"$TR/docs/handoffs/s.md\", \"$TR/docs/handoffs/o.md\", \"$TR/docs/handoffs/h.md\"]}")]" \
+  '{id: "hd", started_at: "2026-01-02T00:00:00Z", finished_at: "2026-01-02T03:00:00Z", session: null, jobs: $j}' >"$(record hd)"
+for j in h-path handoff-h oc; do
+  assert_fails night job hd set "$j" state=merged 2>"$WORK/err"
+  assert grep -qxF "night-run: $TR/docs/handoffs/h.md still reads Status: open: settle it (Status: settled hd: <one line>) or set state=left reason=<why it stayed>" "$WORK/err"
+done
+assert_fails night job hd set h-path state=nothing-to-do 2>/dev/null
+night job hd set oc state=left "reason=its owner chat keeps it" >/dev/null || fail "left with its doc open"
+printf '# H\n\nStatus: settled hd: fixed\n' >"$TR/docs/handoffs/h.md"
+night job hd set h-path state=merged >/dev/null || fail "merged with its doc settled"
+night job hd set handoff-h state=nothing-to-do >/dev/null || fail "nothing-to-do with its doc settled"
+night job hd set oc state=merged >/dev/null || fail "an owner-chat job merged with its docs settled or traded"
+assert jqe '[.jobs[].state] == ["merged", "nothing-to-do", "merged"]' "$(record hd)"
+
 # Each merged job records the commits its own branch made, as landed on main, whatever the orchestrator lists:
 # two jobs landed through one integration commit (2026-10-07: night 7777 gave eight fixers its fea660fb) each
 # report their own hashes and lines, the integration commit only as integration, day work on main as neither.

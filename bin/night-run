@@ -107,7 +107,7 @@ survey: the sweep's opening report, default the sweep repositories, each reposit
   slices read, never in the debt), per linked
   worktree `<branch> · +ahead/-behind main · K dirty · debt N · take|keep (<reason>)`, keep = live or
   held as in leftovers, then `total · …`; --post also sends it to the chat as one report-bus block
-states: pending live merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
+states: pending live merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=; merged and nothing-to-do refuse a handoff or owner-chat job's doc still open)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
   A merged job whose branch is gone records what main's last fast-forward of it brought (main's reflog).
@@ -342,16 +342,22 @@ trade_check() { # check -> its evidence; fails when it does not hold
   esac
 }
 
-# Only a recorded answer moves a trade: a handoff doc's settled Status, or answer= with its done= checks.
-trade_settle() { # night ref by (locked) -> 0 settled with its evidence, 1 answered but not carried out, 2 unanswered
-  local night=$1 ref=$2 id=$3 job path status check line evidence='[]'
-  job=$(jq -c --arg r "$ref" 'first(.jobs[] | select(.ref == $r))' "$(night_file "$night")")
-  path=$(jq -r 'select(.kind == "handoff") | .path // empty' <<<"$job") status=''
+handoff_doc() { # job -> a handoff job's doc: its path, or on a job from before paths the one sweep repository's doc of its ref's slug
+  local path ref line
+  path=$(jq -r 'select(.kind == "handoff") | .path // empty' <<<"$1") ref=$(jq -r .ref <<<"$1")
   if [ -z "$path" ] && [[ $ref == handoff-* ]]; then
     path=$(sed "s|\$|/docs/handoffs/${ref#handoff-}.md|" "$sweep_repos" 2>/dev/null | while IFS= read -r line; do
       [ ! -f "$line" ] || printf '%s\n' "$line"; done)
     [ "$(grep -c . <<<"$path")" = 1 ] || path=''
   fi
+  [ -z "$path" ] || printf '%s\n' "$path"
+}
+
+# Only a recorded answer moves a trade: a handoff doc's settled Status, or answer= with its done= checks.
+trade_settle() { # night ref by (locked) -> 0 settled with its evidence, 1 answered but not carried out, 2 unanswered
+  local night=$1 ref=$2 id=$3 job path status='' check line evidence='[]'
+  job=$(jq -c --arg r "$ref" 'first(.jobs[] | select(.ref == $r))' "$(night_file "$night")")
+  path=$(handoff_doc "$job")
   [ -z "$path" ] || status=$(python3 -B "$repo_root/share/handoffs.py" --status "$path" 2>/dev/null)
   if [[ $status == [Ss]ettled* ]]; then
     evidence=$(jq -cn --arg e "$path: Status: $status" '[$e]')
@@ -775,7 +781,7 @@ job_set() { # id ref key=value...
       *) die "no job key $key: state, reason, branch, review, commits, pushed, suites, answer or done" ;;
     esac
   done
-  local file job checked='' refusal='' events='[]' at began own full
+  local file job checked='' refusal='' events='[]' at began own full docs open
   file=$(night_file "$id")
   if jq -e 'has("answer")' <<<"$patch" >/dev/null; then
     jq -e '.answer.words != null' <<<"$patch" >/dev/null || die "done= comes with answer=<Egor's words>"
@@ -826,6 +832,12 @@ job_set() { # id ref key=value...
       die "state blocked-on-egor needs reason=<the trade Egor decides: each way's cost and loss, the recommendation>"
       [ "$(jq -r '.kind' <<<"$job")" != handoff ] || jq -e '.reason | test("Cost:") and test("Loss:") and test("Recommendation:")' <<<"$job" >/dev/null ||
         die "a handoff job blocked on Egor needs its trade in reason= as Cost:, Loss: and Recommendation:" ;;
+    merged | nothing-to-do) if jq -e 'has("state") and ($j.kind | IN("handoff", "owner-chat"))' --argjson j "$job" <<<"$patch" >/dev/null; then
+        docs=$(handoff_doc "$job"; jq -r 'select(.kind == "owner-chat") | .handoffs[]?' <<<"$job")
+        [ -z "$docs" ] || ! open=$(paste <(printf '%s\n' "$docs") <(tr '\n' '\0' <<<"$docs" |
+          xargs -0 python3 -B "$repo_root/share/handoffs.py" --status 2>/dev/null) | awk -F '\t' 'tolower($2) ~ /^open/ { print $1 }' | grep .) ||
+          die "$(tr '\n' ' ' <<<"$open")still reads Status: open: settle it (Status: settled $id: <one line>) or set state=left reason=<why it stayed>"
+      fi ;;
   esac
   [ "$pushed" != true ] || [ "$(jq -c '.commits + (.integration // [])' <<<"$job")" = "$checked" ] ||
     die "the job's commits changed while origin was checked: set pushed=true again"
