@@ -67,7 +67,7 @@ the log audit's 105 rows hold none that moves CPU or disk.
 |---|---:|---:|---:|---:|
 | 1. the statusline recomputes what did not change | 468 | 8 | 3 (10-06, 10-13, 10-14) | 10 |
 | 2. a hook starts a bash per tool call | 166 | 50 | 2 (10-13, 10-14) | 35 |
-| 3. a doctor run costs more each day it holds more data | 103 | 3 | 1 (10-14) | 2 |
+| 3. a doctor run re-reads what did not change | 103 | 3 | 2 (10-14, 10-23) | 3 |
 | 4. a Hammerspoon timer polls on the main thread | 95 | 3 | 5 (10-09, 10-10, 10-13, 10-14, 10-23) | 9 |
 | 5. a CPU audit reopens on a number not its own | audits' churn | 28 due | 1 (10-23) | 1 |
 | 6. a store rewritten whole instead of its delta | SSD | 3 | 2 (10-13, 10-14) | 2 |
@@ -86,10 +86,11 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
    pays ≈ 40 of 72 ms) and freezes a segment on a missed input. The CPU audits keep cutting sections.
 2. Rows `cpu:hook/*`. CPU a run fell 36.9 → 28.6 ms; runs follow tool calls. No goal: the dispatcher was declined
    (2026-10-05, `spend.md`) and no new hooks, so the CPU audits cut them one by one, dearest first.
-3. Rows `cpu:doctor/{speed,system,harness}`. Median CPU s a run (`collector-runs.jsonl` `cpu_s` by the local day of
-   `start`; 10-16 to 22:00) 10-13/14/15/16: Speed 7.5,
-   11.1, 12.6, 15.2; System 1.0, 2.4, 3.6, 5.0; Harness 24.6, 8.3, 5.9, 7.1. No commit to either rising doctor
-   after 10-14 (`share/time_budget.py` once on 10-15): the rise is their data.
+3. Rows `cpu:doctor/{speed,system,harness}`. Median CPU s a run (`collector-runs.jsonl` `cpu_s`, local day of
+   `start`; System `background:agent`) 10-13…16: Speed 7.5, 11.1, 12.6, 15.2, System 1.0–5.2; 10-17…23 Speed
+   5.5–10.3, System 2.7–5.5, Harness 2.4–5.2, all doctors moving together. The rise was load: no doctor commit
+   10-16…18, yet Speed fell to 6.1 on 10-17. Left: run-suites' unpruned `runs.jsonl`, parsed whole by Speed
+   (≈ 0.25 s a run, +0.01 a day).
 4. Rows `cohort-hammerspoon-tab-poll`, `cpu:process/Hammerspoon`, `speed-hs-lag-instruction-watch-walk` (iPad
    pointer trace, instruction-watch walk ×2, tab poll ×3, menu rebuild ×2). 14 files start repeating timers, each
    with its own idle rule; three gate on `Presence.away()`. Present minutes carry 93, 84, 55 CPU-min on 10-14/15/16,
@@ -115,24 +116,7 @@ item names (class 2: the 50 `cpu:hook/*`; class 6: system-ledger `token-map-scan
 
 ## Goals
 
-`doctor-run-flat` recovers ≈ 36 CPU-min/day and grows daily (Speed
-195 runs × 7.7 s, System 171 × 4 s over 10-13's; runs a calendar day 10-09…15). Classes 1, 2 and 6 have no goal
-(above).
-
-### goal doctor-run-flat: a doctor run reads what is new since its last
-
-Class 3. The rule every doctor run keeps: each read is incremental (Speed's `read_new` + `fold_jsonl`) or cached on
-the size+mtime of what it reads (`cpu_audit.tally`'s cache); a read whose cost follows the days held is the bug.
-- Every doctor in `collector-runs.jsonl` (harness, speed, system, llm, updater, code): `python3 -m cProfile` on a
-  state copy (`SPEED_DOCTOR_DIR`, `SYSTEM_DOCTOR_DIR`, `HARNESS_DOCTOR_DIR`, `DOCTORS_DIR`; `CLAUDEB_DIR` a fixture)
-  names its reads that break the rule; each moves to one of those two readers and the one it replaces goes. Speed
-  and System are profiled first (they rise); the others are read the same way, none skipped.
-- Proof: a state copy 5 min after a live run, old and new alternated on fresh copies, 5 pairs a doctor, CPU s a run
-  from the copy's `collector-runs.jsonl`, every doctor. Before (10-16 medians to 22:00): Speed 15.2, System 5.0,
-  Harness 7.1, llm 4.1, updater 0.2; code ran last on 10-14 (9.3). After landing every doctor's daily median stays
-  flat 7 days (Speed and System rose 1.2–2.6 s a day from 10-14).
-- Must not get worse: `latest.json` equal old vs new on one copy, clock pinned (`SPEED_DOCTOR_NOW`; System's
-  timestamps aside).
+No open goal; classes 1, 2 and 6 have none (above).
 
 ## Done
 
@@ -146,6 +130,7 @@ the size+mtime of what it reads (`cpu_audit.tally`'s cache); a read whose cost f
 | 10-14 | the System doctor's blind spot | | 7fcf0fc1 |
 | 10-23 | CPU audits rise on CPU a run, never CPU-min/day (goal cpu-audit-own-number) | one copy of journals, ledger, HEAD: due on a rise 3 (×0.2–1.05 a run) → 3 (×1.6–3.5 a run, missed before), 29 never + 23 source kept; per-run ≥ 1.5× due 3/6 → 6/6; replay CPU 3.17 → 3.14 s; read 7 days: no rise-due without a per-run one | 627bc40d |
 | 10-23 | goal tab-tty: a tab's tty is read on a tab change or his return, never on a timer | quiet Terminal-front minute (`env.idle.run`): osascript 44 → 0, ps 133, AX walks 310 → 266; class 4's join, extra CPU-s a Terminal-front minute 5.16 (10-14…16) → ≈ 2.7 and away minutes ≤ 1.67, read 10-30 | hammerspoon d3bb5a6 |
+| 10-23 | goal doctor-run-flat: a doctor run reads only what changed (git answers kept per HEAD; closed day files, yesterday's rollup, code's day rollups by size+mtime) | 5 warmed pairs, CPU s a run old → new: Speed 4.2 → 1.5, System judge 1.7 → 0.6, Harness 2.7 → 2.3, code 2.5 → 2.0, llm, updater unchanged (window-bound); `latest.json` equal, clock pinned; read 10-30: medians within 10-17…23's | 9392991b |
 
 ## Decisions
 
