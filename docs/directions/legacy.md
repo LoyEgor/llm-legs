@@ -57,8 +57,8 @@ recomputed 2026-10-20, code only. Each class was fixed as an instance and came b
   - class 1: `git ls-files local-config/home` at a path a sweep repository deploys, `wc -l`: llm-legs `DEPLOYS` (21
     files, 2,818 lines), review-bench `share/rbench/debt.py` `doctor_agent_paths` (`review-doctord`,
     `com.llm-legs.review-doctor.plist`: 27), claude-setup end-report's `launchd/` pair (README `install`: 37),
-    hammerspoon `launchd/com.egor.hammerspoon.plist` (34). `libexec/hammerspoon` (2), which that plist runs, has no
-    source or installer in any repository: out, unconfirmed;
+    hammerspoon `launchd/com.egor.hammerspoon.plist` (34); its wrapper `libexec/hammerspoon` (2, hand-made in
+    861925b) is out;
   - class 2: dead lines = `lines` of the units the 42 `dead` rows of `candidates.jsonl` name as dead in `detail`
     (`X is defined and never called`, `no entry point reaches X, Y`), each once, a unit in a test path out (683 with
     it; all 26 files still stand at HEAD 2026-10-20); the `is N lines with N branches` units (worker-run,
@@ -103,31 +103,16 @@ Checked, not a class:
 
 ## Goals
 
-### goal deployed-copies: the machine snapshot leaves out what any sweep repository deploys
-
-Class 1, one rule for the four repositories: each lists its deploys; the snapshot leaves out every listed path.
-- First step (unconfirmed): who writes `~/.local/libexec/hammerspoon`, the wrapper hammerspoon's plist runs. No
-  repository has its source or installer; hammerspoon lists it if it owns it, else it stays in the tree.
-- Where: each repository prints its copies one way, home path and installer (`cp <source>` for a hand copy), from
-  one list (no second list, no byte or name matching): llm-legs `harness-doctor --deploys` from `DEPLOYS`;
-  review-bench from `doctor_agent_paths` (`review-bench doctor --install-agent`); claude-setup end-report's
-  `launchd/` pair; hammerspoon its plist.
-  - claude-setup `bin/night-snapshot` leaves out every path a list prints; `bin/restore-local`, once the
-    repositories are cloned, runs each installer instead of copying, then starts the agents as now.
-  - The 26 copies leave the tree, with test_report_frame_guard's local-config skip.
-- Proof, on each night's snapshot commit for 7 days after landing: lines under `local-config/home` by class 1's
-  method, plus any file there `cmp`-equal to a tracked file of the four (a deploy no list names): 2,916 in 26 files
-  → 0, each repository at 0. Code doctor duplicate candidates with a `local-config/` file: 111 of 247 → 0, at a
-  `code-doctor refresh` the measurer runs.
-- Must not get worse: `restore-local` into a scratch `HOME`, `launchctl` stubbed on `PATH` (installers bootstrap the
-  real `gui/$UID` whatever `HOME` says), restores today's file set under `.local/libexec` and `Library/LaunchAgents`;
-  the live `~/.local/libexec` is only read.
-
 ## Done
 
 - goal own-orphans (08914fb6): `check` passes an unjudged deletion whose base references all sat in the run's judged
   deleted units and stay gone, or a copy moved onto the judged merge's shared file. Replays old → new: 10f7f32 +
   normalizeDir, 84de7cc5's statusline.sh/grokb copies refused → passed; a live unit refused in both; check +0.1–0.3 s.
+- goal deployed-copies (llm-legs 30eaae1a, claude-setup e6b97de, review-bench 546967d, hammerspoon 0da6d28): each
+  repository's `bin/deploys` prints its copies and installers, hammerspoon's wrapper included (its source now
+  `launchd/`); `night-snapshot` leaves them out, `restore-local` runs the installers. Class 1: tree 2,916 lines in 26
+  files → 0, fresh 10-23 snapshot 3,085 → 0, `cmp`-equal 13 → 0; scratch restore keeps its 28 + 19 files. 7-day
+  read 10-30 (+ Code doctor candidates 111 → 0).
 - Retired features took their tests with them: llm-legs `test_light_edit`, `test_land`, `test_worktree`,
   `test_night_report_trial`; claude-setup 5 files. The tests lens rounds of 10-14 are lost-time.md's Done.
 
