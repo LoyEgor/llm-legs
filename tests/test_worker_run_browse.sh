@@ -34,6 +34,7 @@ EOF
   cat >"$bt/stub/open" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >>"$bt/open.log"
+ls "\$WORKER_RUN_DIR/browse" | grep -c '^opening\.[0-9]*\$' >>"$bt/opening.log"
 for a; do last=\$a; done
 printf '\n%s\n' "\$last" >>"$bt/tabs"
 : >"$bt/up/Google Chrome"
@@ -102,7 +103,10 @@ EOF
   assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
   assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
   assert test "$(cat "$bt/open.log")" = '-n -g -b com.google.Chrome --args --profile-directory=Profile 1 --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-features=IntensiveWakeUpThrottling https://example.com/#worker-run=Profile-1'
-  # the app frontmost before gets focus back from Chrome, once, and Chrome is hidden: nobody turned Show Chrome on
+  # the app frontmost before gets focus back from Chrome, once, and Chrome is hidden: nobody turned Show Chrome on;
+  # browse/opening.<pid> lets the menu hide Chrome the moment the open unhides it, and goes with the open
+  assert test "$(cat "$bt/opening.log")" = 1
+  assert test -z "$(ls "$WORKER_RUN_DIR/browse" | grep '^opening\.')"
   assert test "$(grep -cxF -- "$front" "$bt/osa.log")" -eq 1
   assert test "$(grep -c 'visible of process "Google Chrome" to false' "$bt/osa.log")" -gt 0
   rc=0; out=$(browse --window lost) || rc=$?
@@ -134,6 +138,7 @@ EOF
   browse --window extra >/dev/null
   mv -f "$bt/tabs.1" "$bt/tabs"; mv -f "$bt/open.1" "$bt/open.log"
   assert test "$(grep -c 'to false' "$bt/osa.log")" -eq 0
+  assert test "$(tail -n 1 "$bt/opening.log")" = 0
   # 1c: --toggle (the menu checkbox) shows a hidden Chrome and hides a visible one
   echo false >"$bt/visible"
   assert grep -qx 'CHROME: shown' <<<"$(browse --toggle)"
@@ -483,6 +488,7 @@ EOF
   browse --window extra >/dev/null
   mv -f "$bt/tabs.1" "$bt/tabs"; mv -f "$bt/open.1" "$bt/open.log"
   assert test "$(grep -c 'to false' "$bt/osa.log")" -eq 0
+  assert test "$(tail -n 1 "$bt/opening.log")" = 0
   rm -rf "$WORKER_RUN_DIR/live-computer"
   : >"$WORKER_RUN_DIR/browse/shown"
   kill "$holder" 2>/dev/null || true

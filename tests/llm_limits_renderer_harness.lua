@@ -31,7 +31,8 @@ local harnessClock = nil
 -- nil is no store at all. Nothing under a real ~/.gemini-web is ever served.
 local geminiWebFake = { root = "/fixture/gemini-web", files = nil }
 -- The automation Chromes Show Chrome reads: `real` the fake com.google.Chrome (nil: not running), `clones`
--- the running gemini-web clone apps, `removed` every path the module hands os.remove, `screen` the one display.
+-- the running gemini-web clone apps, `removed` every path the module hands os.remove, `screen` the one display,
+-- `browse` the names in worker-run's browse directory (nil: no directory).
 -- worker-run no longer writes browse/chrome-live (2026-10-19), so the fake io serves it absent.
 local chromeFake = { real = nil, clones = {}, removed = {}, screen = {
   fullFrame = function() return { x = 0, y = 0, w = 1344, h = 1008 } end,
@@ -137,6 +138,8 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         if id == "com.google.Chrome" then return { chromeFake.real } end
         return id == "com.google.Chrome.gemini-web" and chromeFake.clones or {}
       end,
+      -- Hammerspoon's event numbers, with no `new`: the module starts no watcher in the harness
+      watcher = { launched = 1, hidden = 3, unhidden = 4, activated = 5, deactivated = 6 },
     },
     screen = { allScreens = function() return { chromeFake.screen } end, mainScreen = function() return chromeFake.screen end },
     dialog = { blockAlert = function(...)
@@ -164,6 +167,12 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
           names[#names + 1] = file:match("/accounts/([^/]+%.json)$")
         end
         table.sort(names)
+        return function() return table.remove(names, 1) end
+      end
+      if path:match("/browse$") then
+        assert(chromeFake.browse, "no such directory: " .. path)
+        local names = { ".", ".." }
+        for _, name in ipairs(chromeFake.browse) do names[#names + 1] = name end
         return function() return table.remove(names, 1) end
       end
       assert(path:match("/holds$") and holdFake.files, "no such directory: " .. path)
@@ -4837,6 +4846,40 @@ end)()
   toggle = item()
   assert(toggle and toggle.checked == false, "a hidden real Chrome with no worker-run run gave no Show Chrome")
   chromeFake.real = nil
+end)()
+
+-- Chrome unhides itself for every URL a search run's window open hands it (450-600 ms on screen, 2026-10-23):
+-- while worker-run holds a fresh browse/opening.<pid> the menu hides it on its activated, unhidden or launched
+-- event, and never otherwise: no marker, a stale or foreign name, another event or another app.
+;(function()
+  local now, runs, hides, mtime = 1800000000, "/fixture/runs", {}, nil
+  local function app(id) return { bundleID = function() return id end, hide = function() hides[#hides + 1] = id end } end
+  local chrome, clone = app("com.google.Chrome"), app("com.google.Chrome.gemini-web")
+  holdFake.getenv = function(name)
+    if name == "WORKER_RUN_DIR" then return runs end
+    return os.getenv(name)
+  end
+  local module = loadModule({}, nil, now, nil, nil, nil, function(path, field)
+    return path == runs .. "/browse/opening.4242" and field == "modification" and mtime or nil
+  end)
+  holdFake.getenv = nil
+  local function hidden(event, which)
+    hides = {}
+    module.onChromeEvent("Google Chrome", event, which or chrome)
+    return #hides == 1 and hides[1] == "com.google.Chrome"
+  end
+  chromeFake.browse = nil
+  assert(not hidden(5), "Chrome was hidden with no browse directory")
+  chromeFake.browse, mtime = { "shown", "opening.4242" }, now - 5
+  assert(hidden(5) and hidden(4) and hidden(1), "a fresh opening marker did not hide an activated, unhidden or launched Chrome")
+  assert(not hidden(6) and not hidden(3) and not hidden(5, clone) and #hides == 0,
+    "the opening marker hid Chrome on another event, or hid another app")
+  module.onChromeEvent("Google Chrome", 5, nil)
+  mtime = now - 121
+  assert(not hidden(5), "a stale opening marker still hid Chrome")
+  chromeFake.browse, mtime = { "opening.tmp" }, now
+  assert(not hidden(5), "a name not opening.<pid> hid Chrome")
+  chromeFake.browse = nil
 end)()
 
 return "PASS: Hammerspoon projection contract"
