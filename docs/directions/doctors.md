@@ -102,8 +102,7 @@ Why they come back:
    ledger row, and log-audit rows reach the next snapshot whatever a run decided, so the fixer finds the earlier
    decision and rules the row out again: LLM M2's stuck round 10-06, 10-07, 10-08; M4's one 09-30 handoff on 5
    nights; `I48` re-filed; `machine/contention` and `chat/tools` re-checked 10-12 and 10-14.
-2. Speed ranks an opportunity by its estimated saving (blind spot `delegation-model-time`), and ranks it the same
-   after a fixer measured it flat; unconfirmed whether any measured result feeds back.
+2. Speed ranks an opportunity by its estimated saving (blind spot `delegation-model-time`); a ruling holds it (Open).
 4. Every log-audit finding becomes a Harness row; none of the 105 packets of 10-06…19 names a component file, and
    conduct (re-asked decisions, a chat's brief, a bench lane) has no fixer. It shrank 23 → 7 on its own.
 5. The contract's after-fix rule (§2: an event regresses a fix only if it ran on code holding it) covers matching,
@@ -180,8 +179,9 @@ Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the
 
 ## Open
 
-- Class 2 (lever measured absent): no goal yet. First check whether Speed's `select` reads a fixer's measured
-  "no effect"; if not, the measured result replaces the estimate, replayed `select` old and new over 10-12…14.
+- Class 2 (lever measured absent): `select` reads no verdict; doctor-fix `snapshot()` holds a ruled-out lever 168 h
+  or to a 1.5× rise (`held_since`). 10-12…14: all 13 launched levers ruled earlier held, so a `select` drop adds 0;
+  no fix found one flat. Goal only if re-rulings past the hold climb.
 - Class 4 (conduct readings): `kind` does not separate conduct (10-14: ruled-out in wait 3, gate, rework,
   instruction, repeat; fixed in gate 2, wait 3, rework). It fell 23 → 7 unchanged; a goal only if it climbs back.
 - Class 5 (a fix's tail): reading values only after a row's last fix would quiet it, but 41 rows were fixed again
