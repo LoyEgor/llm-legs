@@ -109,30 +109,12 @@ Why they come back:
    not values. A 7-day aggregate re-raises a landed fix until its tail leaves the window (6 `test-health/heavy`
    rows on 10-12 ruled out as "already cut" or "already 3 shards"; 9 false System `cohort` rows on 10-14, the
    false-alarm command with `cohort` in the id).
-6. Contract §3: a fixer records a blind spot and "never builds the detector in a fix run: that is the doctor
-   owner's work"; owners are day chats, no night job takes them. 53 added in 14 days, 5 closed, one came back.
+6. A fixer records a blind spot, never builds it (`docs/doctor-fix.md` §3); owners were day chats, no night job took
+   them. 53 added in 14 days, 5 closed, one came back.
 
 ## Goals
 
 Doctors' goals run after blocks 1–6 (PILOT order). Their reads need section 7 back (How the block runs at night).
-
-### goal blind-spot-builder: the night builds what a blind spot says would catch it
-
-Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the doctor learns to log it.
-- Change: the Deep search job (README, The whole night) takes the open `blind_spots` of every ledger as its queue.
-  The order is the outside finds that name a blind spot's area (log-audit `~N min`, fixer evidence) by cost. It
-  takes the top ones a night, as far as its time bound allows (no count cap), and for each one either builds the
-  `would_catch_if` meter as that doctor's rule, with the row's id leaving `blind_spots`, or marks it
-  `unmeasurable` with its why (it stays in `blind_spots`, out of the open count). In contract §3, "the doctor
-  owner's work" gains "or the night's Deep search". Fixers still only record.
-- Proof, fixed now: per 7 days, meter closes only (an id leaving `blind_spots` in a commit changing that doctor's
-  code; `unmeasurable` marks and plain drops shown beside, never counted) against added: 3 / 27 and 0 / 26 before,
-  hand-read: 73e74b214 (memory-owners, launchd-runs) and 59f456ca3 (wait-caller-kind) built meters, fc93e639a
-  dropped short-lived-origin and load-red-unattributed when Load stopped judging. Outside-found share 41.6 % and
-  36.9 %. A built meter raises a real row (`fixed`, `handoff`, `blind-spot`) within 14 days of landing or is
-  reverted, net lines shown. Target: meter closes ≥ added each week, open (81) falls, outside-found below 36.9 %.
-- Not worse: the false-alarm share (a new meter's ruled-out rows count against it); the doctor's CPU a run
-  (System's `doctor-run-flat`).
 
 ## How the block runs at night
 
@@ -140,8 +122,8 @@ Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the
   the `PILOT` default already holds `vendors` and `doctors`. Carry prints neither section today (`pilot_goal` gives goal and
   directions-refresh lines; fixers are the sweep's `doctor-fix launch`, refused on a pilot). Once PILOT
   reaches `doctors` with no goal left, `pilot_goal` adds one `fixer<TAB><doctor><TAB>llm-legs<TAB>doctor-fix launch
-  <doctor>` line per doctor, then `deep-search<TAB><date><TAB>llm-legs<TAB>share/briefs/deep-search.md` (new kind
-  and brief); `PILOT_RULES` and doctor-fix's pilot check except them. Audit rules launch once their owners' goals (blocks 2–4) landed.
+  <doctor>` line per doctor, then `deep-search<TAB><date><TAB>llm-legs<TAB>share/briefs/deep-search.md` (new kind;
+  brief landed); `PILOT_RULES` and doctor-fix's pilot check except them. Audit rules launch once their owners' goals (blocks 2–4) landed.
 - First night: those lines once each. Judged by its false-alarm share of decided non-audit rows against 38.1 % and
   24.6 % (target below 24.6 %) with the guard at or under baseline, rows ruled out again within a window 0, fixer
   spend per decided row from the night header (c746800c), meter closes ≥ blind spots added. If it does not cope,
@@ -154,6 +136,11 @@ Class 6, Egor's 10-13 rule: when the night finds what a doctor does not log, the
   something new. Replay 10-06…14: the 28 re-ruled rows launched → held 28; of the 11 later `fixed`, 2 regressed
   launch, 9 held ≤ 168 h after the ruling; regressed held 0 of 34. Read once section 7 is back: re-ruled 0 a night,
   guard ≤ baseline, class 1 < 0.11 %.
+- blind-spot-builder (955b0a31): Deep search's queue `doctor-fix blind-spots`, brief `share/briefs/deep-search.md`.
+  Baseline reproduced from ledger git: meter closes (an id leaving `blind_spots` in a commit changing that doctor's
+  code) / added 3 / 27, 0 / 26; outside-found 41.6 / 36.9 % (36.5 % by 10-23 statuses); open 81 → 83 by 10-23. Read
+  weekly once Deep search runs: closes ≥ added, open falls, outside-found < 36.9 %; a meter with no real row in 14
+  days reverts; not worse: false-alarm share, CPU a run.
 
 ## Decisions
 

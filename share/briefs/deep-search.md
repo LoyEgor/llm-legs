@@ -1,7 +1,6 @@
 ## Deep search — the doctors learn what they do not log
 
-Egor 2026-10-13: when the night finds what a doctor does not log, the doctor learns to log it. Fixers only record
-blind spots; this job builds them.
+Fixers only record blind spots (Egor 2026-10-13); this job builds them.
 
 1. `bin/doctor-fix blind-spots` prints the queue: every open `blind_spots` row of the ledgers, costliest first by the
    minutes of the outside finds naming it. Work from the top as far as the night's time bound allows, no count cap.
