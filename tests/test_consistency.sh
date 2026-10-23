@@ -2913,7 +2913,9 @@ assert eq "$(grep -c '^instruction_write_targets()' "$INSTR_MOD")" 1
 PIN_GATE_BR="$ROOT/bin/worker-pin-gate.sh"
 assert grep -Fq 'load_share instruction-files.sh instruction_write_targets' "$PIN_GATE_BR"
 assert grep -Fq 'instruction_shell_scan' "$PIN_GATE_BR"
-assert eq "$(grep -cE '>\[>\|\]|g\?tee|\(cp\|mv\|ln\|install\)|--in-place' "$PIN_GATE_BR")" 0
+# Its chat-pins door reads claude-setup's parsed records (argv.sh), whose flags are words, not text.
+assert grep -Fq 'argv_select' "$PIN_GATE_BR"
+assert eq "$(grep -cE '>\[>\|\]|g\?tee|\(cp\|mv\|ln\|install\)' "$PIN_GATE_BR")" 0
 if [ -r "$FLOW_GATE" ]; then
   assert grep -Fq 'share/instruction-files.sh' "$FLOW_GATE"
   assert grep -Fq 'REVIEW_FLOW_SHELL_PARSE' "$FLOW_GATE"

@@ -5,6 +5,10 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 GUARD="$ROOT/bin/worker-git-guard.sh"
+# The guard reads the parsed command through claude-setup's hooks/lib/argv.sh.
+. "$ROOT/share/test-scope.sh"
+export ARGV_LIB="${CLAUDE_SETUP_ROOT:-$(git_projects "$ROOT")/claude-setup}/hooks/lib/argv.sh"
+[ -r "$ARGV_LIB" ] || { echo "FAIL: argv.sh not readable (set CLAUDE_SETUP_ROOT)" >&2; exit 1; }
 HOME=$(mktemp -d "${TMPDIR:-/tmp}/worker-git-guard.XXXXXX") || exit 1
 export HOME
 trap 'rm -rf "$HOME"' EXIT

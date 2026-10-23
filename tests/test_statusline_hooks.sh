@@ -5330,6 +5330,8 @@ fi
 # `worker-run` is the only sanctioned way in. Interactive launches and read-only subcommands stay
 # ungated.
 LAUNCH_GATE_BIN="$ROOT/bin/worker-launch-gate.sh"
+export ARGV_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/argv.sh"
+[ -r "$ARGV_LIB" ] || fail "argv.sh not readable (set CLAUDE_SETUP_ROOT)"
 gate_payload() {
   jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$command}}'
 }

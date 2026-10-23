@@ -43,22 +43,35 @@ span_live() {
 
 # A screen before any fork: every rule below needs one of these words as a program, and a program word
 # is spelled in the text with at most quotes and backslashes inside it, so a text naming none of them
-# — nearly every call — launches nothing. A `$` beside an `=` may assign any program word, so that pair
-# takes the full path.
-SCREEN_RE="(^|[^A-Za-z0-9_-])((${VENDOR_BINS})([^A-Za-z0-9_-]|\$)|worker-run|review-bench|light-research|REVIEW_BENCH_DOOR|${OWNED_LEGS}|${OWNED_IMAGE}|chatgpt-web|gemini-web|(at|batch|crontab)([^A-Za-z0-9_-]|\$))"
-# Quotes and backslashes go first (JSON escapes become blanks when the text is the payload). Bash 3.2's
-# ${x//…/} is cubic — a 7 KB payload took 128 s — so past 256 bytes one tr or sed does it.
+# — nearly every call — launches nothing. A program word in a `$X` must be followed by its subcommand
+# to start, wait or run anything; a `$X` beside the `X=` that assigns it may hold any word, so that
+# pair takes the full path.
+SCREEN_RE="(${VENDOR_BINS})([[:space:]]|\$)|worker-run|review-bench|light-research|REVIEW_BENCH_DOOR|${OWNED_LEGS}|${OWNED_IMAGE}|chatgpt-web|gemini-web|(^|[[:space:]])(at|batch|crontab)([[:space:]]|\$)|[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|run|wait)([[:space:]]|\$)"
+# Quotes and backslashes go, and separators become blanks (in the payload, `\\` pairs first, an escaped
+# quote goes, a bare one is a string's edge and the whitespace escapes are blanks). Bash 3.2's ${x//…/}
+# is cubic — a 7 KB payload took 128 s — so past 256 bytes one sed or tr does it.
 unquote() { # text [json] -> UNQUOTED
   if [ "${#1}" -lt 256 ]; then
     UNQUOTED=$1
-    [ -z "${2:-}" ] || UNQUOTED=${UNQUOTED//\\[ntrbf]/ }
-    UNQUOTED=${UNQUOTED//[\'\"\\]/}
-  elif [ -n "${2:-}" ]; then UNQUOTED=$(LC_ALL=C sed -e 's/\\[ntrbf]/ /g' -e "s/[\"'\\\\]//g" <<<"$1")
-  else UNQUOTED=$(LC_ALL=C tr -d "'\"\\\\" <<<"$1"); fi
+    if [ -n "${2:-}" ]; then
+      UNQUOTED=${UNQUOTED//'\\'/} UNQUOTED=${UNQUOTED//'\"'/} UNQUOTED=${UNQUOTED//'"'/ }
+      UNQUOTED=${UNQUOTED//\\[ntrbf]/ }
+    fi
+    UNQUOTED=${UNQUOTED//[\'\"\\]/} UNQUOTED=${UNQUOTED//[;|&()\`]/ }
+  elif [ -n "${2:-}" ]; then
+    UNQUOTED=$(LC_ALL=C sed -e 's/\\\\//g' -e 's/\\"//g' -e 's/"/ /g' -e 's/\\[ntrbf]/ /g' -e "s/['\\\\]//g" -e 's/[;|&()`]/ /g' <<<"$1")
+  else UNQUOTED=$(LC_ALL=C tr -d "'\"\\\\" <<<"$1" | LC_ALL=C tr ';|&()`' '      '); fi
 }
 may_launch() { # text [json]
   unquote "$@"
-  [[ $UNQUOTED == *'$'* && $UNQUOTED == *=* ]] && return 0
+  if [[ $UNQUOTED == *'$'* && $UNQUOTED == *=* ]]; then
+    [ "${#UNQUOTED}" -lt 4096 ] || return 0
+    local rest=$UNQUOTED re='([A-Za-z_][A-Za-z0-9_]*)='
+    while [[ $rest =~ $re ]]; do
+      [[ $UNQUOTED == *'$'"${BASH_REMATCH[1]}"* || $UNQUOTED == *'${'"${BASH_REMATCH[1]}"* ]] && return 0
+      rest=${rest#*"${BASH_REMATCH[0]}"}
+    done
+  fi
   [[ $UNQUOTED =~ $SCREEN_RE ]]
 }
 # The payload is screened before jq reads it. A `\u` escape may spell any letter, so it takes the full path.
@@ -80,7 +93,9 @@ case "$tool" in
   *) exit 0 ;;
 esac
 [ -n "$cmd" ] || exit 0
-may_launch "$cmd" || exit 0
+# `[[:blank:]]`, never `[[:space:]]`: a newline is a chain separator.
+SAFE_RUN_RE='^[[:blank:]]*worker-run[[:blank:]]+(report|say|claim|stop)([[:blank:]]+[A-Za-z0-9._/@%+=:,-]+)+[[:blank:]]*$'
+[[ ! $cmd =~ $SAFE_RUN_RE ]] && may_launch "$cmd" || exit 0
 . "${ARGV_LIB:-$HOME/.claude/hooks/lib/argv.sh}" 2>/dev/null || exit 0
 argv_parse "$cmd" "$cwd"
 owner=false
@@ -128,7 +143,10 @@ hits=$(argv_select --arg tool "$tool" --argjson owner "$owner" --argjson bg "$ba
          (if ($p | test("^(at|batch|crontab)$")) and (($p == "crontab" and ($a | if .[0] == "-u" then .[2:] else . end) == ["-l"]) | not)
           then [8, "schedule", ([$c.path] + $a | join(" "))] else empty end)
      end),
-    (if (($p | test($media)) and (probe_dry | not))
+    # Media help is exempt only as typed: past a wrapper (`xargs -J --help`), a `$H` or
+    # another flag, it runs with other words.
+    (if (($p | test($media)) and ((($r.argv | length) == ($a | length) + 1 and ($r.lit | all) and ($a == ["--help"] or $a == ["-h"]))
+                                  or ($a | flag_in(["--dry-run"])) | not))
         or ($p == "chatgpt-web" and (($a[0] // "") | test("^(generate|resize|comment|remove-bg)$")) and (probe | not))
         or ($p == "gemini-web" and $a[0] == "generate" and (probe_dry | not))
      then [6, "media", (if ($p | test($media)) then $c.path else $two end)] else empty end)

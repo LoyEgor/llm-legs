@@ -4,6 +4,10 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$ROOT/bin/worker-pin-gate.sh"
+# The gate reads the parsed command through claude-setup's hooks/lib/argv.sh.
+. "$ROOT/share/test-scope.sh"
+export ARGV_LIB="${CLAUDE_SETUP_ROOT:-$(git_projects "$ROOT")/claude-setup}/hooks/lib/argv.sh"
+[ -r "$ARGV_LIB" ] || { echo "FAIL: argv.sh not readable (set CLAUDE_SETUP_ROOT)" >&2; exit 1; }
 WORK="$(mktemp -d)"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
