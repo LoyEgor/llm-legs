@@ -53,7 +53,7 @@ Each was fixed as an instance, then came back elsewhere. Ranked 10-15 by hand fr
 
 | class | rows | nights | instances fixed |
 |---|---:|---:|---:|
-| a gate refuses a legitimate command: text matching (10-09, 10-10, 10-13, 10-14), launch-gate brief-format refusals, a commit gate reading the session's repository instead of the commit's, the headroom guard's unstated rule | 13 | 7/7 | 12 |
+| a gate refuses a legitimate command: text matching, launch-gate brief-format refusals, a commit gate reading the session's repository instead of the commit's, the headroom guard's unstated rule | 13 | 7/7 | 12 |
 | parallel night fixers collide: one ledger row or handoff, landing races, the same component fixed twice | 10 | 5/7 | 6 |
 | a suite run dies with its caller at the 10- or 25-min Bash cap and runs again (all calls: goal bash-cap) | 9 | 6/7 | 4 |
 | fan-out into a walled account, then the night idles (≈715 min est.) | 8 | 5/7 | 1 |
@@ -69,7 +69,7 @@ The collision, walled-account and timing-test rows (23) are the night's own fan-
 set, so they stay open; rows merge by id since 10-08 (`share/merge_ledger.py`): fixers collide on a row, a handoff
 or a component, not the file.
 
-One fix per class, an existing tool before our own: the three goals below; a worker writes only where its brief
+One fix per class, an existing tool before our own; a worker writes only where its brief
 grants, through its CLI's sandbox (workdir plus `--add-dir`, `codex exec --sandbox workspace-write`); a reviewer's
 output is held to a schema by its CLI (`claude --json-schema`, `codex exec --output-schema`); fixers spread over
 accounts by room.
@@ -99,8 +99,8 @@ proof, a failed one stays with one line on what blocked it. Reads after landing 
 - gates (claude-setup 5e3cc12, llm-legs 0daf801d, review-bench 7f36bb6, 10-23): 9 gates decide on `hooks/lib/argv.sh`
   (shfmt; both libs gone), 4 take its read-only pass, no deny rule fits; `test_gate_replay` 348 × 16. Refused old → new:
   target 9/37 → 2 (others' rules), out 15/44 → 15, rightly 23/90 → 23, allowed 1 → 1, recent 200 +0; hook wall 280 →
-  149 ms/call. Rest b936d23 (critique fixes f0f308b): rj_segments, word/edit/eod. Left: instruction-files.sh, text
-  cases, worker-edit-guard 33 → 70 ms a worker call (shfmt + jq per level). Read: target 0.
+  149 ms/call. Rest b936d23 (+f0f308b): rj_segments, word/edit/eod. Left: instruction-files.sh, text
+  cases, worker-edit-guard 33 → 70 ms/call. Read: target 0.
 
 - stop-hooks (claude-setup a0fe49a, 10-23): stops waited on process starts (stall ≤≈1 s each), not work; builtin
   payload read, first word ask in the asks' wave, kill hits and cleanup detached: 44 → 34 starts idle. Proof,
