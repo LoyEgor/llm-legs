@@ -125,6 +125,7 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 - Must not get worse: the components under the floor stay at or under 0.09 % of spend together (the `fee:`
   sources' `charged` under 0.27M: 7 sources, 0.785M of the 872.5M Opus-priced `harness_index.claude` on 10-09…15;
   the `loaded:` ones under 0.31M, Browser check and cwd.sh, add 0.26M plain).
+- Blocked 10-23, the two criteria conflict: as written 178 → 54 but fee:Hooks (the gates) not due on n3/n4 (92abd4f2); fee: never audited kept due, Hooks due but 178 → 140 (899a2b2c).
 
 ## Done
 
