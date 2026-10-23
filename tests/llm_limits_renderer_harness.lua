@@ -4713,8 +4713,8 @@ end)()
 end)()
 
 -- Suno: right after ElevenLabs, one 1d row per account suno-music saw signed in, read from the gemini-web
--- account files; the reset column holds the credits left, ↓ the download unlocks left; red when the
--- account cannot deliver a file (no unlock, credits under one generation, a standing wall).
+-- account files; the reset column holds the credits left and no unlock count shows (a song with no unlock is
+-- recorded); red when the account cannot make a song (credits under one generation, a standing wall).
 ;(function()
   local now = 1790000000
   local root = geminiWebFake.root
@@ -4741,8 +4741,8 @@ end)()
   end
   local menu = loadModule(fixture, nil, now).menuItems()
   holdFake.getenv = nil
-  local function row(bar, pct, reset, downloads)
-    return string.format("        1d  %s  %4s  %9s  ↓%d", bar, pct, reset, downloads)
+  local function row(bar, pct, reset)
+    return string.format("        1d  %s  %4s  %9s", bar, pct, reset)
   end
   local voices, aria = accountIndex(menu, "voices"), accountIndex(menu, "aria")
   local bolt, cove = accountIndex(menu, "bolt"), accountIndex(menu, "cove")
@@ -4753,13 +4753,13 @@ end)()
     local text = titleText(item)
     assert(text:sub(1, 4) ~= "dusk" and text:sub(1, 4) ~= "echo", "an account not signed in to Suno drew a row")
   end
-  assert(titleText(menu[aria]) == "aria  17m ago" and titleText(menu[aria + 1]) == row("▓▓░░░", "40%", "60", 6)
+  assert(titleText(menu[aria]) == "aria  17m ago" and titleText(menu[aria + 1]) == row("▓▓░░░", "40%", "60")
       and #redRuns(menu[aria + 1].title) == 0 and #redRuns(menu[aria].title) == 0 and menu[aria + 1].disabled == true,
     "a usable account's Suno row is wrong (a lapsed wall must not count): " .. titleText(menu[aria + 1]))
-  assert(titleText(menu[bolt + 1]) == row("░░░░░", "0%", "300", 0) and #redRuns(menu[bolt].title) == 0
+  assert(titleText(menu[bolt + 1]) == row("░░░░░", "0%", "300") and #redRuns(menu[bolt].title) == 0
       and #redRuns(menu[bolt + 1].title) == 0,
     "an account without a download unlock turned red, though its songs are recorded: " .. titleText(menu[bolt + 1]))
-  assert(titleText(menu[cove + 1]) == row("▓▓▓▓▓", "", os.date("%H:%M", now + 1800), 7)
+  assert(titleText(menu[cove + 1]) == row("▓▓▓▓▓", "", os.date("%H:%M", now + 1800))
       and redRuns(menu[cove + 1].title)[1] == titleText(menu[cove + 1]),
     "a walled account does not read walled until its wall ends: " .. titleText(menu[cove + 1]))
   geminiWebFake.files = { [root .. "/accounts/echo.json"] = { credits = 50 } }

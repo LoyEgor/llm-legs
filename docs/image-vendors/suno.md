@@ -52,24 +52,45 @@ keeps both in the library (`library=` lines), and `--fetch <clip> --account <a> 
 An uploaded file lands in the library (`uploads/audio/…/initialize-clip/`) but is never attached to the form
 by itself: the engine attaches it through its song page (More options → Remix → Cover), like any clip. Pro-only
 (`pro_modes`): Inspo, Edit instruments/vocals, Replace section, Fades, Add stem, Max Mode, WAV, stems. Not
-wired: Voice/personas (3 free v6 vox generations an account), playlist inspiration.
+wired: Voice/personas (3 free v6 vox generations an account), playlist inspiration, the lyrics Cowriter.
+
+## Prompting
+
+Community tests on v6 (HookGenius, 2026-10; not Suno's docs, v6-mini itself untested there):
+
+- `--prompt` (Styles, ≤ 1000 chars) is sound only: genre first, then BPM (and key), each instrument's role,
+  the vocal (texture, range), the mood's arc, production (era, mix). 250-600 chars of short phrases, or
+  sentences saying what each instrument does; a five-tag list drifts generic. No story, no lyrics.
+- No artist names: Suno swaps them out (a guitar "capo" was read as an artist and became "German Rap").
+  Describe the era, the vocal texture and the instruments instead.
+- A negative typed into Styles («no drums») can add the very thing; keep Styles positive (the free form has no
+  Exclude Styles field, checked 2026-10-23).
+- A tempo word must agree with the BPM: «slow jazz, 140 BPM» fights itself.
+- `--lyrics` (≤ 5000 chars): section tags `[Intro] [Verse] [Pre-Chorus] [Chorus] [Bridge] [Outro]`,
+  `[Instrumental]` or `[Interlude]` for parts without voice; delivery goes inside the tag of its section,
+  `[Verse | whispered, close-mic]`, `[Chorus | belted]`. Keep tags short, or their words get sung. A full song
+  is 30-40 lines (under 15 comes out short, over 60 rushed). Spell hard words as they sound, space acronyms.
+- `--variety 0` keeps the Styles text as written (52 of 54 takes); the default rewrites it every take. Raise
+  `--style-influence` to ~70-75 when the style is half ignored (default 50); `--weirdness` 20-30 for a
+  conventional song. The engine already turns "Personalize style prompt" off.
+- Two takes of one generation differ more than one prompt edit: judge a prompt over several takes, never one.
 
 ## Accounts
 
-The engine rotates the accounts whose meta says `suno_signed_in`, have the credits (a reading under 6 h old)
-and the unlocks `--takes` needs, oldest `suno_started_at` first; a spent account walls 30 min
-(`suno-walls.json`). Signed in: com, notcom, locomthebest (0 unlocks: library-only). The owner allowed
-every gemini pool account; the rest stay unsigned because a new account gets 0 unlocks:
-`suno-music --login --account <name>` signs one in through «Continue with Google» on his word. abel needs
-its passkey (`--hand`); egbogd stopped at Google's consent screen. The upload terms («Agree to Terms») are
+The engine rotates the accounts whose meta says `suno_signed_in` and have the credits (a reading under 6 h
+old), oldest `suno_started_at` first; a spent account walls 30 min (`suno-walls.json`). Signed in
+(2026-10-23): every gemini pool account but abel, whose Google sign-in needs its passkey (`suno-music --login
+--account abel --hand`, Egor's step); only com and notcom hold unlocks, the rest get files by recording. A new
+account starts with 300 credits for its first day, then 100 a day. The upload terms («Agree to Terms») are
 accepted per `~/.gemini-web/notices.json` `agreed_suno` (every Suno account, owner 2026-10-22); upload only
 our own tracks.
 
 ## Menu
 
 `hammerspoon/llm-limits.lua` `appendSuno`, right after ElevenLabs: one `1d` row per signed-in account from
-the account meta (`suno_credits`, `suno_credits_limit`, `suno_downloads`, `suno_at`), the reset column
-holding the credits left and `↓N` the unlocks left; red when the account cannot deliver a file. A run or
+the account meta (`suno_credits`, `suno_credits_limit`, `suno_at`), the reset column holding the credits
+left; red when the account cannot make a song (a wall, credits under one generation). Unlocks are not shown:
+a song with none left is recorded, so they no longer decide whether a file comes. A run or
 `--status` refreshes the meta; the menu never launches Chrome.
 
 ## Traps

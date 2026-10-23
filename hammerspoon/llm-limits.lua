@@ -1130,9 +1130,9 @@ end
 
 -- Suno, after ElevenLabs: one 1d row per account suno-music has seen signed in, read from the same
 -- gemini-web account files. Free credits renew daily on a UTC clock the files do not carry, so the reset
--- column holds the credits left; ↓ is the download unlocks left (every new song file spends one and the
--- free plan earns none back; with none left the song is recorded as it plays). Red when the account cannot
--- make a song: a standing wall or credits under one generation.
+-- column holds the credits left. Download unlocks are not shown: with none left a song is recorded as it
+-- plays (2026-10-23), so they no longer decide whether a file comes. Red when the account cannot make a song:
+-- a standing wall or credits under one generation.
 local SUNO_GENERATION_CREDITS = 10
 
 local function appendSuno(menu, now)
@@ -1147,21 +1147,18 @@ local function appendSuno(menu, now)
   for _, account in ipairs(accounts) do
     local meta = account.meta
     local left, total = tonumber(meta.suno_credits), tonumber(meta.suno_credits_limit)
-    local downloads = tonumber(meta.suno_downloads)
     local wall = tonumber(walls[account.name])
     wall = wall and wall > now and wall or nil
     local atLimit = wall ~= nil or (left ~= nil and left < SUNO_GENERATION_CREDITS)
-    local detail = downloads and string.format("  ↓%d", downloads) or nil
     local title
     if wall then
       title = rowTitle("", "1d", { effective_pct = 100, resets_at = wall }, false, true, false,
-        { pct = "", detail = detail })
+        { pct = "" })
     elseif left and total and total > 0 then
       title = rowTitle("", "1d", { effective_pct = math.max(0, total - left) / total * 100 }, false, atLimit, false,
-        { reset = tostring(left), detail = detail })
+        { reset = tostring(left) })
     else
-      title = rowTitle("", "1d", nil, false, atLimit, false, { pct = "", reset = left and tostring(left) or "",
-        detail = detail })
+      title = rowTitle("", "1d", nil, false, atLimit, false, { pct = "", reset = left and tostring(left) or "" })
     end
     table.insert(menu, { title = accountTitle(account.name, formatAccountAge(meta.suno_at), atLimit) })
     table.insert(menu, { title = title, disabled = true })
