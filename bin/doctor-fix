@@ -278,8 +278,11 @@ def rulings(doctor, now):
 
 def held_since(problem, ruling, now):
     """The Harness ruled_at rule (problems_from), the close of that run as ruled_at; no window_h holds 168 h; a 3-day or
-    longer value at 1.5x its value at the ruling launches (Egor 2026-10-13)."""
+    longer value at 1.5x its value at the ruling launches (Egor 2026-10-13). A spend or CPU audit row due for any reason
+    but "never audited" launches: a kept audit is its ruling, and the reason is measured against that audit."""
     ruled, _, then = ruling
+    if (problem.get("spend") or problem.get("cpu") or {}).get("due") not in (None, "never audited"):
+        return False
     window = problem.get("window_h") if isinstance(problem.get("window_h"), (int, float)) and problem["window_h"] > 0 else 168
     times = [t for t in (epoch(e.get("at")) for e in dicts(problem.get("evidence"))) if t]
     value = problem.get("value")
