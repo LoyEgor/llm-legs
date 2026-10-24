@@ -38,7 +38,7 @@ refresh, the last; its 111 test lines, `hammerspoon/tests/test_claude_keys_bin.s
 - Code doctor (`~/.cache/code-doctor/`, last refresh 2026-10-14 12:19): `latest.json` (counts by group, yield),
   `candidates.jsonl` (549 candidates with files and units), `verdicts.json`, `judge-runs.jsonl`, `accounting.jsonl`.
   Pilot nights run no refresh, judge or Code fixer (`bin/night-run` PILOT_RULES). A scratch refresh
-  (`CODE_DOCTOR_DIR` = a copy of it) reads today's trees and leaves it untouched: 9 s on 10-23.
+  (`CODE_DOCTOR_DIR` = a copy of it) reads today's trees and leaves it untouched: 32 s at 10-23 21:44.
 - `share/code-ledger.json`: the Code doctor's 9 dead and duplicate rows, all fixed-pending, −424 lines 10-03…10-13.
 - llm-legs `bin/harness-doctor` `DEPLOYS`: every copy llm-legs installers deploy, its source, kind and installer.
 - `share/harness-ledger.json`: no legacy rule. None of its 105 log-audit rows is about dead or duplicate code.
@@ -58,17 +58,14 @@ recomputed 2026-10-20, code only. Each class was fixed as an instance and came b
   - class 1: `git ls-files local-config/home` at a path a sweep repository deploys, `wc -l`: llm-legs `DEPLOYS` (21
     files, 2,818 lines), review-bench `share/rbench/debt.py` `doctor_agent_paths` (`review-doctord`,
     `com.llm-legs.review-doctor.plist`: 27), claude-setup end-report's `launchd/` pair (README `install`: 37),
-    hammerspoon `launchd/com.egor.hammerspoon.plist` (34); its wrapper `libexec/hammerspoon` (2, hand-made in
-    861925b) is out;
+    hammerspoon `launchd/com.egor.hammerspoon.plist` (34); its wrapper `libexec/hammerspoon` is out;
   - class 2: dead lines = `lines` of the units the 42 `dead` rows of `candidates.jsonl` name as dead in `detail`
     (`X is defined and never called`, `no entry point reaches X, Y`), each once, a unit in a test path out (683 with
-    it; all 26 files still stand at HEAD 2026-10-20); the `is N lines with N branches` units (worker-run,
+    it); the `is N lines with N branches` units (worker-run,
     instruction-files.sh: 11,534) and clone-only units (24) are out; `value` adds a clone signal: 695; days = the
     dead-row fixes, relay sweep, stamp and refusals; relay commits = `git log --first-parent -i -E
     --grep='^relay (leftovers|cleanup)|^relay-free polish|retired relay|dangling worker-relay'` on the four
-    repositories, committer `%cI` local ≥ 2026-10-09 (`--since=2026-10-09` is UTC midnight and drops a85ef28e,
-    02:54 +0300), less fc86109c and 3e8062e0 (they match only as `retired relays`): 7. The seventh is review-bench
-    0c12b33 (10-10), the unanchored `retired relay`;
+    repositories, committer `%cI` local ≥ 2026-10-09 (not `--since`, UTC), less fc86109c and 3e8062e0: 7;
   - class 3: `def read_json(`, `def read_jsonl(`, `def write_json(`, `local-config/` out; lines = per repository,
     every body less the longest per name, less the copies the code ledger keeps on purpose (chat-load: deployed
     beside memlogd; harness-doctor's `read_jsonl`: a binary tail reader; review-anchors: a standalone script): at
@@ -93,8 +90,7 @@ Checked, not a class:
 - Readers of retired experiments: none of the 5 tags removed since 09-20 has one left (grep outside docs/handoffs).
 - Names a retirement left in code or tests at its own commit, 10-09…15: of 103 commits deleting a file or
   definition, 2 (worker-corpus's frame-guard exemption, 138b5a6c; `words_grant_target` in a planted test, b50e5bff).
-  Other hits were common words, variables, keys, an 8-second cross-repository pair, and 234256e0, which swept in a
-  staged deletion a minute before its retirement (6280c424): a scan of deleted names would list mostly false hits.
+  Other hits were common words, variables and keys: a scan of deleted names would list mostly false hits.
 - Deep search 10-23, dropped:
   - class 2 inflow since 10-14 (scratch refresh): +4 units, 25 lines (one a `do_POST` dispatch false hit), −2
     units, 16: 572 → 585;
@@ -103,19 +99,22 @@ Checked, not a class:
   - gates: retired hooks' files are all gone; 5 registered gates (232 lines) denied nothing in 35 d, each a
     rare-event guard (Jira, MCP scope, skill names, end of day): silence is not need;
   - exact clones at HEAD: 143 lines, 54 of them the 9-line bin `resolve_root` that finds `share/` before importing;
-  - superseded machinery: no journal names it; the silent-hook rule, blind until 14 covered days (rollup gaps
-    10-15…19), found 0 at 15 on 10-14; claudebd, xAI-direct and relay names left no code; no experiment overdue.
+  - superseded machinery: no journal names it; claudebd, xAI-direct and relay names left no code; no experiment
+    overdue.
 
 ## Goals
 
 ### goal lift-not-copy: a tool modeled on a sibling imports the sibling's helpers, never copies them
 
-Class 3. 10-09…10-23, 386 helper lines in 33 units re-rolled an existing helper (11.2 per 1k code lines added, of
-34,497); in 28 units (352 lines) the writer had opened or named that sibling first: suno_music.py ← flow_music.py
-185, the Hammerspoon guards 54, cpu_audit.py 38. Chats wrote 279: nothing they load asks for reuse, and REUSE FIRST
-(worker briefs) says "use it", which a copy passes.
-- First step: read the five largest writers (suno_music, cpu_audit, awdl_guard, dock_guard, words_journal); under 3
-  that read the copied helper itself, not only its file's name, stops the goal.
+Class 3. 10-09…10-23, 377 helper lines in 27 units re-rolled an existing helper (10.7 per 1k code
+lines added, of 35,283; `image_enhance` 25 of them): 109 lines (10 units) near-copy a sibling's code, 268 only make
+the same calls (`cpu_audit#tally` re-rolls `speed-doctor#read_new`; some are parallel per-vendor `cmd_*`). The writer
+had opened or named the sibling first in 28 units (352 lines, of the older count): suno_music.py ← flow_music.py 97
+(156 with `main`), the Hammerspoon guards 54, cpu_audit.py 38. Chats wrote 279 (older count); nothing they load asks
+for reuse, and REUSE FIRST (worker briefs) says "use it", which a copy passes; neither says "import, never copy".
+- First step: read the five largest writers (suno_music, cpu_audit, awdl_guard, system-doctor, words_journal);
+  under 3 that read the copied helper itself, not only its file's name, stops the goal (suno's one chat, 3 forked
+  transcripts, read `flow_music.py`'s code first).
 - Change: REUSE FIRST in llm-legs `bin/worker-run` `BRIEF_PREAMBLE` adds "use it by import: a helper in another tool
   moves to a module both import (`share/`, `gemini_web` for the browser legs, a Hammerspoon module), never a copy";
   the same sentence goes into claude-setup `global/CLAUDE.md` for chats (the orchestrator's edit), paid by a trim
@@ -123,9 +122,9 @@ Class 3. 10-09…10-23, 386 helper lines in 33 units re-rolled an existing helpe
 - Proof, forward (prose has no replay), the 7 days after landing: a scratch `code-doctor refresh`; its clone and
   reuse pairs with both units ≤ 60 lines, code only, `local-config/` out, the newer unit's def line `git blame` in
   the window; same-file pairs, argparse `main`, bin `resolve_root` and the ledger's kept copies (chat-load) out; per
-  1k code lines added (git numstat between the window's ends, the Metric's buckets): 11.2 → ≤ 5.6. Beside it,
-  exact-body copies (index digests, symlinks out): 46 lines in 9 units.
-- Must not get worse: `global/CLAUDE.md` ≤ 5,519 bytes; the preamble + ≤ 120 bytes; no hook or gate; a lift keeps
+  1k code lines added (git numstat between the window's ends, the Metric's buckets): 10.7 → ≤ 5.4, near-copies and
+  same-call re-rolls apart. Beside it, exact-body copies (index digests, symlinks out): 46 lines in 9 units.
+- Must not get worse: `global/CLAUDE.md` ≤ 5,519 bytes (its size now: the sentence needs an equal trim); the preamble + ≤ 120 bytes; no hook or gate; a lift keeps
   both files' suites green and lowers the pair's lines.
 
 ## Done
