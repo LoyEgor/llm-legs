@@ -49,8 +49,9 @@ SOURCE_APP = Path(os.environ.get("GEMINI_WEB_CHROME", "/Applications/Google Chro
 CLONE_ROOT = ROOT
 CLONE_APP = CLONE_ROOT / "Gemini Web Automation.app"
 CLONE_ID = "com.google.Chrome.gemini-web"
-# Egor's Show Chrome for the clone, written and removed by the Auto menu alone (docs/browser-runs.md): while it
-# exists park_window leaves every page on screen, and it outlives every clone; absent, every window is parked.
+# Egor's Show Chrome for the clone, written and removed by the Auto menu (docs/browser-runs.md): while it exists
+# park_window leaves every page on screen; absent, every window is parked. It holds for the clones running at the
+# click only: chrome_clone removes it when a clone starts with none running.
 CLONE_SHOWN = CLONE_ROOT / "windows-shown"
 MANIFEST = Path(__file__).resolve().parent / "image-caps" / "gemini.json"
 REPO = Path(__file__).resolve().parent.parent
@@ -514,6 +515,10 @@ def chrome_clone():
                 idle = True
             except BlockingIOError:
                 idle = False
+            # Show Chrome is never remembered past its Chromes (Egor 2026-10-24: «По умолчанию он должен быть
+            # выключен и не должен запоминаться»): the first clone of a new batch starts hidden.
+            if idle:
+                CLONE_SHOWN.unlink(missing_ok=True)
             # Running Chromes execute from the clone, so a Chrome update waits for the last of them.
             if idle and not clone_current(want):
                 build_clone()

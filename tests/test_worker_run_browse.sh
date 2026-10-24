@@ -25,7 +25,8 @@ EOF
   cat >"$bt/stub/osascript" <<EOF
 #!/bin/sh
 [ "\$#" -eq 0 ] || printf '%s\n' "\$*" >>"$bt/osa.log"
-case "\$*" in *frontmost*com.apple.Terminal*) echo com.apple.Terminal >"$bt/front" ;; *"get visible"*) cat "$bt/visible"; exit 0 ;; esac
+case "\$*" in *frontmost*com.apple.Terminal*) echo com.apple.Terminal >"$bt/front" ;; *"get visible"*) cat "$bt/visible"; exit 0 ;;
+  *"is running"*) [ -e "$bt/up/Google Chrome" ] && echo true || echo false; exit 0 ;; esac
 cat "$bt/tabs"
 EOF
   printf '#!/bin/sh\n[ "$1" = front ] && echo ASN:0x0-0x1: || printf "    bundleID=\\"%%s\\"\\n" "$(cat "%s/front")"\n' "$bt" >"$bt/stub/lsappinfo"
@@ -140,6 +141,15 @@ EOF
   echo true >"$bt/visible"
   assert grep -qx 'CHROME: hidden' <<<"$(browse --toggle)"
   assert test ! -e "$WORKER_RUN_DIR/browse/shown"
+  # 1d: Show Chrome holds for the Chrome it was clicked for: one launched here starts hidden (Egor 2026-10-24)
+  : >"$WORKER_RUN_DIR/browse/shown"
+  rm -f "$bt/up/Google Chrome"
+  : >"$bt/osa.log"
+  cp "$bt/tabs" "$bt/tabs.1"; cp "$bt/open.log" "$bt/open.1"
+  browse --window extra >/dev/null
+  mv -f "$bt/tabs.1" "$bt/tabs"; mv -f "$bt/open.1" "$bt/open.log"
+  assert test ! -e "$WORKER_RUN_DIR/browse/shown"
+  assert test "$(grep -c 'to false' "$bt/osa.log")" -gt 0
 
   # 2: --seen reads the target browser's own tab list
   printf 'https://example.com/?wr=tok-1\n' >>"$bt/tabs"
@@ -469,7 +479,7 @@ EOF
   : >"$bt/claudeb.log"
   assert grep -qx 'CANARY: skipped — a browser run is live' <<<"$(browse --canary)"
   assert test ! -s "$bt/claudeb.log"
-  # Egor's Show Chrome outlives every Chrome run, the last one and a dead one included
+  # a run's end, the last one and a dead one included, leaves Egor's Show Chrome to the Chrome still running
   : >"$WORKER_RUN_DIR/browse/shown"
   deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
   assert test -e "$WORKER_RUN_DIR/browse/shown"

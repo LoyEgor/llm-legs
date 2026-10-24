@@ -65,6 +65,10 @@ browse_chrome_unreadable() { # -> why Chrome's Local State cannot be read, or no
 }
 
 browse_chrome_running() { "${BROWSE_PGREP:-pgrep}" -x 'Google Chrome' >/dev/null 2>&1; }
+# By bundle id: the media clone's process is named Google Chrome too.
+browse_chrome_app_running() {
+  "${BROWSE_OSASCRIPT:-osascript}" -e 'application id "com.google.Chrome" is running' 2>/dev/null | grep -qx true
+}
 
 browse_chrome_age() { # seconds since Chrome started or this process opened a profile window, whichever is later
   local age now
@@ -103,7 +107,7 @@ browse_marker() { printf 'https://example.com/#worker-run=%s\n' "${1// /-}"; }
 browse_quit_idle() { # [run id that is ending]
   local urls
   [ -z "$(chrome_runs | grep -vxF -- "${1:-}")" ] || return 0
-  "${BROWSE_OSASCRIPT:-osascript}" -e 'application id "com.google.Chrome" is running' 2>/dev/null | grep -qx true || return 0
+  browse_chrome_app_running || return 0
   urls=$(browse_chrome_urls) && grep -q . <<<"$urls" || return 0
   ! grep -v -e '^$' -e '^https://example\.com/' -e '^http://127\.0\.0\.1:' -e '^chrome://newtab/' <<<"$urls" | grep -q . || return 0
   "${BROWSE_OSASCRIPT:-osascript}" -e 'tell application id "com.google.Chrome" to quit' >/dev/null 2>&1 || :
@@ -133,6 +137,9 @@ browse_window() { # profile-directory
   local marker i front keep_shown=''
   marker=$(browse_marker "$1")
   front=$(browse_front)
+  # Show Chrome holds for the Chrome it was clicked for, never past it (Egor 2026-10-24: «По умолчанию он должен
+  # быть выключен и не должен запоминаться»): a Chrome launched here starts hidden.
+  browse_chrome_app_running || rm -f "$(browse_dir)/shown"
   [ ! -e "$(browse_dir)/shown" ] && [ -z "$(chrome_runs '.computer == true')" ] || keep_shown=1
   for ((i = 0; i < ${BROWSE_WINDOW_WAIT:-40}; i++)); do
     [ "$i" -eq 0 ] || browse_refocus "$front"

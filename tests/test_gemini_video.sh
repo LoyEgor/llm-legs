@@ -760,12 +760,11 @@ with open(g.ROOT / ".clone-use.lock", "w") as other:
     fcntl.flock(other, fcntl.LOCK_SH)
     with g.chrome_clone() as clone:
         assert clone == g.CLONE_APP and built == []
-    assert g.CLONE_SHOWN.exists(), "windows-shown went with a clone while another still ran"
-assert g.CLONE_SHOWN.exists()
+        assert g.CLONE_SHOWN.exists(), "Show Chrome went at a clone's start while another still ran"
+assert g.CLONE_SHOWN.exists(), "windows-shown went with a clone while another still ran"
 with g.chrome_clone():
     assert built == [1]
-assert g.CLONE_SHOWN.exists(), "Egor's Show Chrome went with the last clone to close"
-g.CLONE_SHOWN.unlink()
+    assert not g.CLONE_SHOWN.exists(), "Show Chrome was remembered past its clones: one started with none running"
 (g.CLONE_APP / "Contents" / "Info.plist").write_text(plist % "2")
 with g.chrome_clone():
     assert built == [1, 1], "a clone of the current Chrome that still carries its GoogleUpdater was kept"

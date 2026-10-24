@@ -1996,8 +1996,9 @@ function M.chromeToggleItem()
   if not real and #clones == 0 then return nil end
   local shown = real ~= nil and not real:isHidden()
   for _, window in ipairs(windows) do shown = shown or windowOnScreen(window) end
-  -- A click is Egor's choice for every automation Chrome, running or launched later: it sets both records one
-  -- way, and nothing else ever shows one (Egor 2026-10-23: off unless he turned it on).
+  -- A click is Egor's choice for the automation Chromes running now: it sets both records one way, nothing else
+  -- ever shows one (Egor 2026-10-23: off unless he turned it on), and a Chrome launched with none of its kind
+  -- running clears its record (Egor 2026-10-24: not remembered).
   return { title = "Show Chrome", checked = shown, fn = function()
     if path then startDiagnosticsTask("harnessActionTask", path, { args[1], shown and "--hide" or "--show" }) end
     setCloneWindowsShown(not shown)
