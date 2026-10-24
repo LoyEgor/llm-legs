@@ -4,7 +4,7 @@
 # copy forever; every path renders from a stamped merged cache (statusline-cache-rl
 # for main, limits/<acct>.json for claudeb accounts — ~/.claude-profiles/README.md),
 # never from raw headers alone.
-# Runs every 5s even while idle: GIT_OPTIONAL_LOCKS=0 keeps renders off index.lock.
+# Runs every 3s even while idle: GIT_OPTIONAL_LOCKS=0 keeps renders off index.lock.
 # `env bash` resolves to macOS bash 3.2 when PATH lists /bin before Homebrew; this script needs bash 5.
 # The marker rides the exec instead of a probe bash per render; a re-exec that is still bash < 5 stops at the echo.
 if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
