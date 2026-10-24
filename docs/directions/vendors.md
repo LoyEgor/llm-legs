@@ -40,24 +40,23 @@ end, 7 days against the 7 before.
 | integration runs, launch → close, wall clock | 11, median 32 min | 2: 169, 384 min |
 | nights started | 6 | 3 (the last one 10-14 01:37Z) |
 
-- Lag, local days UTC+3. W1 `a=2026-10-05T21:00:00Z` `b=2026-10-12T21:00:00Z`; W2 `a=2026-10-12T21:00:00Z` `b=2026-10-19T21:00:00Z`. Raw W1 0.119, 0.630, 1.542; W2 4.325, 5.672, 47.574:
+- Lag, local days UTC+3. W1 `a=2026-10-05T21:00:00Z` `b=2026-10-12T21:00:00Z`; W2 `a=2026-10-12T21:00:00Z` `b=2026-10-19T21:00:00Z`.:
   `q='[.[] | select(.created_at >= $a and .created_at < $b and .status != "auto-closed" and .id != "grok-20261008T234948Z") | ((([.closed_at // $b, $b] | min) | fromdateiso8601) - (.created_at | fromdateiso8601)) / 86400] | {n: length, mean: (add / length), max: max, days: add}'`
   then `jq -s --arg a "$a" --arg b "$b" "$q" ~/.cache/vendor-cli-update/events/*.json` once per window.
-- Open at the window's end (created in the window, `closed_at` null or ≥ `$b`): W1 is 1 (`grok-20261012T191955Z`, closed 2026-10-13T02:45:07Z), W2 is 9.
+- Open at the window's end (created in the window, `closed_at` null or ≥ `$b`): W1 is 1, W2 is 9.
   `jq -s --arg a "$a" --arg b "$b" '[.[] | select(.created_at >= $a and .created_at < $b and .status != "auto-closed" and .id != "grok-20261008T234948Z" and (.closed_at == null or .closed_at >= $b))] | length' ~/.cache/vendor-cli-update/events/*.json`
 - Auto-closed, and vendor-watch among the lag set: `jq -s --arg a "$a" --arg b "$b" '{auto: [.[] | select(.created_at >= $a and .created_at < $b and .status == "auto-closed")] | length, watch: [.[] | select(.created_at >= $a and .created_at < $b and .status != "auto-closed" and (.reason | tostring | startswith("vendor-watch")))] | length}' ~/.cache/vendor-cli-update/events/*.json` → W1 8 and 0, W2 2 and 5.
 - Guard, on `closed_at` in the window (12 and 3 events closed; 09-28T21:00Z…10-05T21:00Z: 65 of 129, 50 %):
   `jq -s --arg a "$a" --arg b "$b" '[.[] | select(.closed_at != null and .closed_at >= $a and .closed_at < $b and .status != "auto-closed" and .id != "grok-20261008T234948Z") | .decisions[]?.decision] | {rows: length, not_integrated: map(select(. != "integrated")) | length}' ~/.cache/vendor-cli-update/events/*.json`
 - Spend (token-map; the orchestrator's own turns and the other vendors' pools are not counted). Raw 0.356 over 11 cwds, 0.128 over 3; W1 swaps the timestamps:
   `sqlite3 ~/.local/share/tokenmap/tokenmap.sqlite3 "SELECT round(100.0*sum(CASE WHEN (cwd LIKE '%/worktrees/vendor-%' OR cwd GLOB '*/worktrees/night-*Z-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[cgx][a-z]*') AND NOT cwd GLOB '*Z-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[cgx]*-*-*' THEN cost_in+cost_out END)/sum(cost_in+cost_out),3), count(DISTINCT CASE WHEN (cwd LIKE '%/worktrees/vendor-%' OR cwd GLOB '*/worktrees/night-*Z-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[cgx][a-z]*') AND NOT cwd GLOB '*Z-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[cgx]*-*-*' THEN cwd END) FROM requests WHERE vendor='claude' AND ts>='2026-10-12T21:00:00' AND ts<'2026-10-19T21:00:00'"`
-- Runs, same windows on `launched_at` (raw W1 median 31.9; W2 168.9, 383.6 min):
+- Runs, same windows on `launched_at`:
   `jq -s --arg a "$a" --arg b "$b" '[.[] | select(.launched_at >= $a and .launched_at < $b and .closed_at) | ((.closed_at | fromdateiso8601) - (.launched_at | fromdateiso8601)) / 60]' ~/.cache/doctors/runs/updater-release-*.json`
-- Nights started, `started_at` in the same windows: `jq -s --arg a "$a" --arg b "$b" '[.[] | select(.started_at >= $a and .started_at < $b)] | length' ~/.cache/doctors/nights/*.json` → 6 and 3; the last is `2026-10-14T01:37:50Z`.
+- Nights started, `started_at` in the same windows: `jq -s --arg a "$a" --arg b "$b" '[.[] | select(.started_at >= $a and .started_at < $b)] | length' ~/.cache/doctors/nights/*.json` → 6 and 3.
 - Changes noticed outside the fingerprint, by hand: Egor's messages 10-05…19 (new model or version, bought,
-  subscription, appeared, gone) against event times; a floor. 10-08 19:54Z «Updater doctor»: Claude Code 2.1.295
-  out, the native claude at 2.1.288 under `DISABLE_AUTOUPDATER`, checked once a day; its event 20:12Z, after the
-  fix. 10-19 14:13Z «Workers и review bench унификация отображения»: Gemini Pro bought on notcom, Argon there, no
-  event, no Updater row.
+  subscription, appeared, gone) against event times; a floor. 10-08 19:54Z: Claude Code 2.1.295
+  (native claude 2.1.288 under `DISABLE_AUTOUPDATER`), its event 20:12Z after the fix; 10-19 14:13Z: Gemini Pro
+  bought on notcom (Argon), no event.
 
 ## Sources
 
@@ -95,8 +94,7 @@ Why they come back:
 - **False events** came from packed string tables gluing ids (agy 1.3.0–1.3.2, a grok cargo hash); none from
   52ec96b0 (10-09) until a line undoing a ruled-out one reopened claude 10-22: goal decided-reversal.
 - **Missed surfaces.** A run decides each diff line, not each surface the change reaches; the resolver rule
-  (vendor-release §3 step 7, row `cr`) removed the static pin that broke 10-13 (3.8 h: `gemini-20261012T233139Z`
-  `closed_at` to the `13:10` +0300 line of log-audit `20261014T013750Z-8004/chunk-029.md`). A rename no diff line
+  (vendor-release §3 step 7, row `cr`) removed the static pin that broke 10-13. A rename no diff line
   carried broke 10-20: goal served-tools.
 
 ## Block 1 and this block
@@ -129,7 +127,7 @@ parser"; listens failed until e657e599 (19:26Z: gemini-listen, worker-run), and 
 - Proof, a replay at each full pass 10-13…23 (`update.log`), seeded 10-09…12. Old: no tool line in any diff
   (`grep -c 'read_file\|view_file' events/*.diff`: 0). New: 10-14 20:13Z `run_command.IsDaemon`,
   `.RequestedTerminalID` land in gemini-20261014T201301Z; 10-20 21:44Z `read_file`, `read_file.Path` open an event,
-  10-21's `.EndLine`, `.StartLine` join it: 2.3 h after the hand fix (10-20 still counts outside), so the gain is
+  `.EndLine`, `.StartLine` (first called 10-21T12:58Z) join at gemini-20261022T060140Z: 2.3 h after the hand fix (10-20 still counts outside), so the gain is
   its run finding every parser of the old name, and a version-only rename opening an event at all.
 - Target, 14 days: breakages from an agy tool rename 0 (10-06…19: 0; 10-20…23: 1). Not worse: events opened by
   `tools` alone ≤ 1 per 14 days (the replay's), else reverted; check time; the guard.
@@ -137,16 +135,20 @@ parser"; listens failed until e657e599 (19:26Z: gemini-listen, worker-run), and 
 ### goal decided-reversal: a line undoing one a run ruled not-applicable opens no event
 
 Class: false events. Open `claude-20261022T233722Z` holds one substantive line, `-claude-platform-on-aws-06w`,
-undoing the `+` line `claude-20261014T201317Z` ruled not-applicable 10-20; `ids_unserved` keeps it (no served stem).
+undoing the `+` line `claude-20261014T201317Z` ruled not-applicable 10-20; `ids_unserved` keeps it (no served stem)
+and the flap re-check reads only a pending event.
 - Change, `changes()` beside `ids_unserved`: an event whose every substantive line exactly reverses (`+`↔`-`, `*`
-  rows aside) one a closed event ruled `not-applicable` auto-closes, noting that event; a mixed event
-  keeps every line and its route.
-- Proof, a replay of old and new `changes()` over the 56 events since 09-23 not auto-closed, decisions as of each
-  creation. Old: 56 open. New: claude-20261002T021805Z (2.1.287 drops the `--client-data-url` block
-  claude-20260926T203455Z ruled out), claude-20261022T233722Z and our own grok-20261008T234948Z auto-close; of 12
-  reversal lines in closed events, 11 were ruled not-applicable again, the 12th that own event's.
-- Gain: ≈1 false event per 14 days with no run: ≈32 min and up to 0.14 % of a week's Claude spend (10-20's Opus
-  batch, 1.28 % for 9 events). Not worse: no integrated or blocked line pre-decided (replay 0); net lines.
+  rows aside) one that an event closed before its creation ruled `not-applicable` auto-closes, noting that event; a
+  mixed event keeps every line and its route.
+- Proof, a replay of old and new `changes()` over the 56 events since 09-23 not auto-closed (`events/*.json`,
+  `*.diff`), decisions as of each creation. Old: 56 open. New: claude-20261002T021805Z (2.1.287 drops the
+  `--client-data-url` block claude-20260926T203455Z ruled out) and claude-20261022T233722Z auto-close, not
+  grok-20261008T234948Z (created 23 s before grok-20261008T201239Z closed, its line ruled `integrated`). Of 13
+  reversal lines, the 10 in closed events were all ruled not-applicable again (6 only by `*` rows);
+  `codex-20261020T214448Z`'s 2 of 28 keep it open.
+- Gain: 2 false events in 30 days, ≈1 per 15 days with no run (run time unconfirmed: claude-1002's 3.1 h, 10-20's
+  batch 44 min each), up to 0.14 % of a week's Claude spend (10-20's Opus batch, 1.28 % for 9 events; the 1.28 %
+  unconfirmed). Not worse: no integrated or blocked line pre-decided (replay 0); net lines.
 
 Dropped 10-23:
 - Version-only releases close unread (claude 2.1.305–308, agy 1.4.4–5): no changelog entry names a setting, env or
