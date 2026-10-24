@@ -597,7 +597,7 @@ inflight_window() { # file name start agent
 # other mark older than an hour is a call that died and is swept without a word — unless this call
 # itself ran over an hour, when an equally old mark may be just as alive and stays a window.
 load_inflight() {
-  local f name m_start m_id m_agent m_end start own_name own_file='' own_count=0 k own_agent now_s
+  local f name m_start m_id m_agent m_end start own_name own_file='' own_count=0 k own_agent now_s oldest
   local aged_files=() aged_names=() aged_starts=() aged_agents=() own_stale=() own_stale_starts=()
   instruction_now now_s
   instruction_ns_to now_ns "$now_s" || { now_ns=''; return 0; }
@@ -620,15 +620,26 @@ load_inflight() {
     fi
     inflight_window "$f" "$name" "$start" "$m_agent"
   done
-  # A consumed mark stays a window for ten minutes: the writer's own check takes its mark away, and
-  # another chat's long call covering the same instant would then read the bytes as its own.
+  # A consumed mark stays a window while a call that started before it ended is still in flight: the
+  # writer's own check takes its mark away, and another chat's long call covering the same instant
+  # would then read the bytes as its own (a fixed ten minutes let a 17-minute call revert a commit).
+  oldest=$now_ns
+  [ -n "$own_start" ] && oldest=$own_start
+  for k in ${other_starts[@]+"${!other_starts[@]}"}; do
+    [ "${other_starts[$k]}" -lt "$oldest" ] && oldest=${other_starts[$k]}
+  done
+  if [ -n "$own_start" ] && [ $((now_ns - own_start)) -gt 3600000000000 ]; then
+    for k in ${aged_starts[@]+"${!aged_starts[@]}"}; do
+      [ "${aged_starts[$k]}" -lt "$oldest" ] && oldest=${aged_starts[$k]}
+    done
+  fi
   for f in "$CLOSED_DIR"/*; do
     [ -f "$f" ] || continue
     name=${f##*/}
     name=${name%%@*}
     read -r start m_end _ 2>/dev/null <"$f" || continue
     case "$start$m_end" in ''|*[!0-9]*) rm -f "$f" 2>/dev/null; continue ;; esac
-    if [ $((now_ns - m_end)) -gt 600000000000 ]; then rm -f "$f" 2>/dev/null; continue; fi
+    if [ "$m_end" -lt "$oldest" ]; then rm -f "$f" 2>/dev/null; continue; fi
     [ "$name" = "$own_name" ] && continue
     other_sids+=("$name"); other_starts+=("$start"); other_ends+=("$m_end")
   done

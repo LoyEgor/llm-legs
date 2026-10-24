@@ -334,6 +334,23 @@ a line chat A wrote" "$(cat "$DOC")"
 rm -rf "$INSTRUCTION_WATCH_STATE/closed"
 printf 'tier doc\n' > "$DOC"
 
+echo "== tripwire: a finished call's window outlives ten minutes while a call older than it still runs"
+span_base sid-cwa >/dev/null
+span_base sid-cwb >/dev/null
+pre_call sid-cwb Bash command "$ANY_CALL" "$SPAN_T"
+now=$(date +%s)
+sed -i '' "s/^[0-9.]* /$((now - 1200)).000000 /" "$INSTRUCTION_WATCH_STATE/inflight/sid-cwb@tu-sid-cwb"
+printf 'a line chat A wrote\n' >> "$DOC"
+touch -t "$(date -r $((now - 900)) +%Y%m%d%H%M.%S)" "$DOC"
+mkdir -p "$INSTRUCTION_WATCH_STATE/closed"
+printf '%s000000000 %s000000000\n' $((now - 905)) $((now - 895)) >"$INSTRUCTION_WATCH_STATE/closed/sid-cwa@tu-sid-cwa"
+out=$(span_check sid-cwb Bash command "$ANY_CALL" "$SPAN_T")
+case "$out" in *REVERTED*) fail "chat B's 20-minute call reverted chat A's line from 15 minutes ago: $out" ;; esac
+assert_eq "tier doc
+a line chat A wrote" "$(cat "$DOC")"
+rm -rf "$INSTRUCTION_WATCH_STATE/closed"
+printf 'tier doc\n' > "$DOC"
+
 echo "== tripwire: this agent's mark a minute older than its call is a denied call, swept"
 span_base sid-st >/dev/null
 pre_call sid-st Bash command "$ANY_CALL" "$NOSPAN_T"
