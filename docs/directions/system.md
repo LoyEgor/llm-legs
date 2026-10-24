@@ -45,8 +45,7 @@ Method, `python3 -I`, local days, each sum ÷ 60 ÷ (Σ `covered_s` / 86400):
 - Processes: `~/.cache/system-doctor/days.jsonl` `cpu_own` field 2 (every own tag, since 10-13), `cohort` field 3
   before, tags ending in Hammerspoon, memlogd, `tokenmap/__main__.py`, ssd-sampler, llm-refresh, llm-selfcheck or
   vendor-cli-update. `cohort` keeps a day's top 100 of each tick's top list. From 10-14 (7fcf0fc1) a tag carries
-  its dead children's CPU (Hammerspoon 55–64 %, memlogd 97 %; 1–3 % on 10-13), so those lines count different
-  things across that commit.
+  its dead children's CPU, so those lines count different things across that commit.
 - SSD and swap: Σ `ssd_w_b` ÷ 1e9 and Σ `swapout_b` ÷ 2^30. Present: minutes idle < 600 s in
   `~/.cache/speed-doctor/presence/<day>.tsv` (minute, idle seconds, front app).
 
@@ -77,10 +76,8 @@ instances fixed: distinct fixing commits or `cut` verdicts by date; one commit o
 
 1. Rows `cpu:statusline/{render,ports,unpushed,work,debt,autonomy}`, `cohort-statusline-renders`,
    `statusline-render-load`. 10-22: 109 CPU ms a changed render (23k), 89 an unchanged one (65k), 21 an away
-   replay (58k); 4 chats rendered ≈ 29k times each. No goal: a whole-render memo needs an exact key (payload, caches,
-   stores, `git status`, the ticking work line), saves ≤ 30 CPU-min/day (a hit pays ≈ 40 of 72 ms) and freezes a
-   segment on a missed input; the CPU audits cut sections.
-2. Rows `cpu:hook/*`. CPU a run fell 36.9 → 28.6 ms; runs follow tool calls. No goal: the dispatcher was declined
+   replay (58k). No goal: a whole-render memo needs an exact key, saves ≤ 30 CPU-min/day and freezes a segment on a missed input; the CPU audits cut sections.
+2. Rows `cpu:hook/*`; runs follow tool calls. No goal: the dispatcher was declined
    (2026-10-05) and no new hooks; the CPU audits cut them dearest first.
 3. Rows `cpu:doctor/{speed,system,harness}`; the 10-13…16 rise was load. Median CPU s a run, 7 days → 10-23 after
    doctor-run-flat (53 runs): Speed 7.75 → 2.51, Harness 3.28 → 2.73, System agent 3.79 → 1.08; 65 % of runs come
@@ -101,41 +98,43 @@ instances fixed: distinct fixing commits or `cut` verdicts by date; one commit o
 
 ## Goals
 
-By CPU-min/day (deep search 10-23): doctors-away ≈ 14, routing-once 10–16; each after its class's 10-30 read
+By CPU-min/day (fresh check 10-23): doctors-away ≈ 12, routing-once 11–16; each after its class's 10-30 read
 (doctor-run-flat, tab-tty), which it would skew. Classes 1, 2 and 6 have none.
 
 ### goal doctors-away: a background doctor run while he is away comes 30 min after the last
 
 Class 3. 164 of 251 Harness runs a day (each execs Speed) start while he is away (10-16…22, `collector-runs.jsonl`
-by `presence/<day>.tsv` idle ≥ 600 s, as are 65 % of minutes); nobody reads the menu then, and the night's prep
-runs `harness-doctor` itself.
-- First step: whatever a Harness or Speed run samples live, not from a journal, keeps its cadence, or the goal stops.
-- Change: llm-legs `launchd/harness-doctor` (launchd, 300 s) exits before python while `share/presence.sh`
-  `presence_away` holds and `latest.json` is under 30 min old; a direct call is never gated.
-- Proof, a replay: 10-16…22's away runs thinned to one per 30 min keep 114 of 251 a day, skipping 29.7
-  CPU-min/day at recorded CPU, 14.3 at 10-23's medians. Landed, 7 days: away runs ≤ 30 a day, their CPU ≤ 3.5
-  (≈ 17) CPU-min/day.
-- Must not get worse: a night's `doctor_problems_after` reads a run newer than its last job (no gate while a night
-  is open); present runs 5 min apart; a closed day's `budget-days` units.
+by `presence/<day>.tsv` idle ≥ 600 s, as are 64.5 % of minutes); nobody reads the menu then, and the night's prep
+runs `harness-doctor` itself. System's own agent (`com.llm-legs.system-doctor`) is untouched.
+- First step: a run's live sample alone (`samples.jsonl`, the ps census `speed_census` reads) costs far under a full
+  run's CPU, else stop.
+- Change: llm-legs `launchd/harness-doctor` (launchd, 300 s), while `share/presence.sh` `presence_away` holds (as for
+  `llm-refresh`'s Gemini), `latest.json` is under 30 min old and no night is open (`night-run` `doctor_snapshot`
+  reads `latest.json`), takes only the sample; a direct call is never gated.
+- Proof, a replay: 10-16…22's away runs thinned to one per 30 min keep 114 of 251 a day, skipping 29.5 CPU-min/day
+  at recorded CPU, 12.0 at Harness + Speed medians of 10-23's first 53 runs (2.73 + 2.51 s); since 10-23 12:00 each
+  costs 5.3–6.3 s (wall 4.4 → 14 s, load or regression unconfirmed), 24–26. Landed, 7 days: away runs ≤ 30 a day,
+  their CPU ≤ 30 × the week's median Harness + Speed CPU a run.
+- Must not get worse: a night's `doctor_problems_after` reads a run newer than its last job; present runs 5 min
+  apart; samples every 5 min; a closed day's `budget-days` units.
 
 ### goal routing-once: one store write runs worker-pick --menu once
 
 Class 4. A 3-min watch on 10-23: 3 store writes (a new inode each), 6 `routing-launch` lines, each second one 2–5 s
 later on the same inode, mtime and size (the 2 s throttle's trailing timer). 10-19…22: 3,158 of 5,462 launches
-within 5 s of the one before; 126 a present hour. A run: 0.83–0.95 CPU-s on a fixture store, 1.2 by class 4's
-join (reaped CPU-s a present tick, 2 launches vs 0: 5.21 vs 2.83).
-- First step: the writer's `~/.llm-limits.json.tmp.XXXXXX` shares the store's path prefix; reproduce both
-  launches in `tests/llm_limits_renderer_harness.lua` and whether the first reads the old store.
-- Change: llm-legs `hammerspoon/llm-limits.lua` `onStoreChanged` launches only when the store's `ino`, `size` or
-  `modification` (`hs.fs.attributes`) moved since the last launch; an unchanged store arms no timer.
+within 5 s of the one before; 126 an hour, all launches ÷ present hours (28 % fall in away minutes). A run:
+0.83–0.95 CPU-s on a fixture store, 1.2 by class 4's join (reaped CPU-s a present tick, 2 launches vs 0: 5.21 vs 2.83).
+- First step: `tests/llm_limits_renderer_harness.lua` (a fake `hs.pathwatcher`) fires two callbacks around a fake
+  rename: 2 launches on the old code; the key gate works whichever comes first.
+- Change: llm-legs `hammerspoon/llm-limits.lua` `onStoreChanged` launches only when `statCached`'s ino:mtime:size key
+  moved since the last launch; an unchanged store arms no timer.
 - Proof: harness, one write's two callbacks 2 → 1 launch. Live, 7 days: launches within 5 s 58 % → ≤ 5 %, a
   present hour 126 → ≤ 65.
 - Must not get worse: a new inode in the same second launches (a case red on an mtime-only key); the submenu's dim
   rule; class 4's join.
 
-Checked 10-23, not goals: an away-replay early exit (13.7–16.3 → 8.6–10.9 ms CPU on a fixture, ≈ 5 CPU-min/day);
-bash 5's start (7.3 ms CPU vs `/bin/bash`'s 2.5, CoreFoundation via libintl, ≈ 350k own runs a day: a custom
-build); the `env bash` hop (noise); a hidden-tab replay (a second freeze: his trade); a work-probe memo (class 1);
+Checked 10-23, not goals: an away-replay early exit (≈ 5 CPU-min/day); bash 5's start (CoreFoundation via libintl:
+a custom build); the `env bash` hop (noise); a hidden-tab replay (his trade); a work-probe memo (class 1);
 `worker-pick`'s catalog reads (0.43 CPU-s a run); System's away judge runs (1.7 CPU-min/day).
 
 ## Done
@@ -178,6 +177,6 @@ From «Передача system-doctor-ux» unless named.
 ## Open
 
 - Swap (0.3–384 GiB a day 10-16…22) is the owner chat's: footprint under pressure 10-09…15 was 48 % own (bench
-  pipelines), claude 11 %, Blender 11 % (`cohort` 8th field).
+  pipelines; `cohort` 8th field).
 - `hs-cli-dead-port` (system-ledger, open) is Breakages': a crash moves no System number.
 - `cohort`'s cuts undercount small own rows (Method), and `worker-run`'s CPU check is pending: the owner chat's.
