@@ -807,7 +807,13 @@ def park_window(account: str, context, page) -> None:
         return
     try:
         cdp = context.new_cdp_session(page)
-        window = cdp.send("Browser.getWindowForTarget")["windowId"]
+        found = cdp.send("Browser.getWindowForTarget")
+        window = found["windowId"]
+        # A window bigger than the screen opens maximized (--window-size 1440,1000 on the iPad's 1344x1008
+        # display), and a maximized window takes a move as un-maximize alone: whole ChatGPT runs sat on the
+        # iPad in plain sight (Egor 2026-10-24: «на iPad почему-то он постоянно появляется видимый»).
+        if found.get("bounds", {}).get("windowState", "normal") != "normal":
+            cdp.send("Browser.setWindowBounds", {"windowId": window, "bounds": {"windowState": "normal"}})
         cdp.send("Browser.setWindowBounds", {"windowId": window, "bounds": {"left": -30000, "top": -30000}})
         cdp.detach()
     except Exception as error:

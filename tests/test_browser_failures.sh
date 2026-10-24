@@ -219,12 +219,14 @@ assert gw.close_promos(promo, "egbogd") == 0 and promo.pressed == ["Escape", "No
 
 import subprocess, tempfile, time
 class CDP:
-    def __init__(self, fail=None): self.sent, self.fail, self.detached = [], fail, False
+    def __init__(self, fail=None, state="normal"):
+        self.sent, self.fail, self.detached, self.state = [], fail, False, state
     def send(self, method, params=None):
         if method == self.fail:
             raise RuntimeError("Target closed\n  details")
         self.sent.append((method, params))
-        return {"windowId": 7} if method == "Browser.getWindowForTarget" else {}
+        return {"windowId": 7, "bounds": {"left": 0, "top": 30, "windowState": self.state}} \
+            if method == "Browser.getWindowForTarget" else {}
     def detach(self): self.detached = True
 
 
@@ -242,6 +244,11 @@ gw.park_window("com", ParkContext(cdp), "page-1")
 assert cdp.sent == [("Browser.getWindowForTarget", None),
                     ("Browser.setWindowBounds", {"windowId": 7, "bounds": {"left": -30000, "top": -30000}})], cdp.sent
 assert cdp.detached and warned == [], warned
+# A window bigger than the screen opens maximized, and a maximized one takes a move as un-maximize alone.
+cdp = CDP(state="maximized")
+gw.park_window("com", ParkContext(cdp), "page-1")
+assert cdp.sent[1:] == [("Browser.setWindowBounds", {"windowId": 7, "bounds": {"windowState": "normal"}}),
+                        ("Browser.setWindowBounds", {"windowId": 7, "bounds": {"left": -30000, "top": -30000}})], cdp.sent
 gw.park_window("com", ParkContext(CDP(fail="Browser.setWindowBounds")), "page-2")
 assert warned == [("com", "could not move the automation Chrome off screen: Target closed details")], warned
 # Show Chrome has the clone's windows on screen: a page opened meanwhile stays there.
