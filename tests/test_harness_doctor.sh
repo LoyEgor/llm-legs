@@ -21,7 +21,7 @@ export CLAUDEB_DIR="$WORK/claudeb" HARNESS_WATCH_ROOTS="$HOME/hooks" HARNESS_DOC
 export HARNESS_LEDGER="$WORK/ledger.json" HARNESS_REPOS_DIR="$WORK" LIMIT_REPOS_DIR="$WORK/limit-repos"
 for repo in llm-legs claude-setup review-bench token-map; do mkdir -p "$LIMIT_REPOS_DIR/$repo"; echo '{}' >"$LIMIT_REPOS_DIR/$repo/limits.json"; done
 export DOCTORS_DIR="$WORK/doctors" HARNESS_DOCTOR_BOOTS= DOCTOR_TRIGGER=fixture
-export WORKER_RUN_DIR="$WORK/runs" HARNESS_BROWSE_CMD="$WORK/browse-stub"
+export WORKER_RUN_DIR="$WORK/runs" HARNESS_BROWSE_CMD="$WORK/browse-stub" GIT_AUTOPUSH_DIR="$WORK/autopush"
 cat >"$HARNESS_BROWSE_CMD" <<EOF
 #!/bin/sh
 echo "\$@" >"$WORK/browse-calls"
@@ -1512,6 +1512,52 @@ for _, copies in m.DEPLOYS[:2]:
     for where, name, _, _ in copies:
         os.remove(os.path.join(libexec if where == "libexec" else agents, name))
 import contextlib, io, subprocess
+def pushed_repo(name):
+    top = os.path.join(work, "push", name)
+    git = lambda *a: subprocess.run(["git", "-C", top, "-c", "user.name=t", "-c", "user.email=t@t"] + list(a),
+                                    check=True, capture_output=True, text=True).stdout.strip()
+    os.makedirs(top)
+    git("init", "-q", "-b", "main")
+    for n in range(3):
+        git("commit", "-q", "--allow-empty", "-m", str(n))
+    git("update-ref", "refs/remotes/origin/main", "HEAD~2")
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    return top, git
+def push_line(at, top, branch, sha, rc, out, zone=0):
+    return "%s%+03d00\t%s\t%s\t%s\t%d\t2\t%s \n" % (time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(at + zone * 3600)),
+                                                   zone, top, branch, sha, rc, out)
+ruled = "To https://github.com/x/y.git ! refs/heads/main:refs/heads/main [remote rejected] (push declined due to " \
+        "repository rule violations) Done"
+stalled, stalled_git = pushed_repo("stalled")
+retried, _ = pushed_repo("retried")
+deleted, _ = pushed_repo("deleted")
+sha = stalled_git("rev-parse", "HEAD")
+os.environ["GIT_AUTOPUSH_DIR"] = os.path.join(work, "autopush")
+put(os.path.join(work, "autopush", "journal.tsv"), "".join([
+    push_line(T - 9000, stalled, "main", sha, 0, "To x refs/heads/main:refs/heads/main a..b Done"),
+    push_line(T - 7200, stalled, "main", sha, 1, ruled, zone=3),
+    push_line(T - 600, stalled, "main", sha, 1, ruled),
+    push_line(T - 500, stalled, "side", sha, 1, ruled.replace("main", "side")),
+    push_line(T - 600, retried, "main", sha, 1, "error: RPC failed; HTTP 503 curl 22 fatal: the remote end hung up"),
+    push_line(T - 500, retried, "side", sha, 1, "! refs/heads/side:refs/heads/side [remote rejected] (cannot lock "
+              "ref 'refs/heads/side': is at a but expected b) Done"),
+    push_line(T - 600, deleted, "main", "deleted", 1, ruled),
+    push_line(T - 600, os.path.join(work, "push", "gone"), "main", sha, 1, ruled)]))
+P = m.push_section
+part = P(T)
+check(judged(part) == {("push-stalled", stalled): "red"} and part["state"] == "problem"
+      and [r["cells"] for r in part["rows"]] == [["stalled main", "2", "2 h 00 min",
+                                                  "push declined due to repository rule violations"]]
+      and part["rows"][0]["judge"][0]["evidence"][0]["excerpt"] == ruled
+      and quiet(part) == {("push-stalled", retried): 1, ("push-stalled", deleted): 1},
+      "Push: a default branch whose last push the hook did not retry, origin short of its tip, is one problem naming "
+      "the repo, the commits off origin, the time since its last good push and the rejection; a retried rejection, "
+      "a branch deletion, another branch and a gone repo raise nothing: %s" % part["rows"])
+stalled_git("update-ref", "refs/remotes/origin/main", "HEAD")
+check(judged(P(T)) == {} and P(T)["state"] == "ok" and quiet(P(T))[("push-stalled", stalled)] == 1,
+      "Push: the row clears once origin's tracking ref holds the local tip")
+os.environ["GIT_AUTOPUSH_DIR"] = os.path.join(work, "autopush-none")
+check(P(T)["state"] == "blind", "Push: no autopush journal is blind, not ok")
 up, installs = os.path.join(work, "deploy-src"), os.path.join(work, "installs")
 put(os.path.join(up, "bin", "tool"), "tool 2\n")
 put(os.path.join(up, "launchd", "hand"), "hand 2\n")

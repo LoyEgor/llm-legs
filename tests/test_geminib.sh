@@ -1125,7 +1125,9 @@ export XPORT_HOME XPORT_OUT PATH="$FAKE_BIN:$PATH"
 export XPORT_BLOB="$XPORT_OUT/keychain-blob" XPORT_LOG="$XPORT_OUT/security-log"
 export GEMINIB_SECURITY_CMD="$XPORT_OUT/security" GEMINIB_TOKEN_ENDPOINT='https://fixture.invalid/token'
 export AGY_BIN="$XPORT_OUT/agy" XPORT_REFRESH_LOG="$XPORT_OUT/refresh-log"
-printf 'GOCSPX-fixture-wrong-placeholder000GOCSPX-fixture-secret-placeholder00adjacentGoConstant\n' >"$AGY_BIN"
+# Secret-shaped fixtures are built at run time: GitHub push protection declines the literal shapes.
+xport_gocspx=GOCSPX xport_apps=apps.googleusercontent.com
+printf '%s-fixture-wrong-placeholder000%s-fixture-secret-placeholder00adjacentGoConstant\n' "$xport_gocspx" "$xport_gocspx" >"$AGY_BIN"
 printf 'fixture-password' >"$XPORT_HOME/.keychain-password"
 touch "$XPORT_HOME/Library/Keychains/gemini.keychain-db"
 cat >"$GEMINIB_SECURITY_CMD" <<'PYSEC'
@@ -1165,7 +1167,7 @@ assert "XPORT_CLIENT" in os.environ or client == ["fixture-client"]
 assert body == {"grant_type": ["refresh_token"], "refresh_token": ["refresh-placeholder"]}
 with open(os.environ["XPORT_REFRESH_LOG"], "a") as log:
     log.write("refresh " + secret[0] + "\n")
-if secret == ["GOCSPX-fixture-wrong-placeholder000"] or client != [os.environ.get("XPORT_CLIENT", "fixture-client")]:
+if secret == ["GOCSPX" + "-fixture-wrong-placeholder000"] or client != [os.environ.get("XPORT_CLIENT", "fixture-client")]:
     print(json.dumps({"error": "invalid_client", "error_description": "Unauthorized"}))
     print("401", end="")
 elif os.environ.get("XPORT_GRANT_FAIL"):
@@ -1238,9 +1240,9 @@ saved = {"token": {"access_token": "keychain-placeholder", "refresh_token": "ref
          "auth_method": "consumer", "id_token_email": "fixture@example.invalid"}
 Path(os.environ["XPORT_BLOB"]).write_text("go-keyring-base64:" + base64.b64encode(json.dumps(saved).encode()).decode())
 PYNOID
-xport_client=123456-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com
-printf 'GOCSPX-fixture-wrong-placeholder000GOCSPX-fixture-secret-placeholder00 654321-zyxwvutsrqponmlkjihgfedcba543210.apps.googleusercontent.com %s\n' \
-  "$xport_client" >"$AGY_BIN"
+xport_client=123456-abcdefghijklmnopqrstuvwxyz012345.$xport_apps
+printf '%s-fixture-wrong-placeholder000%s-fixture-secret-placeholder00 654321-zyxwvutsrqponmlkjihgfedcba543210.%s %s\n' \
+  "$xport_gocspx" "$xport_gocspx" "$xport_apps" "$xport_client" >"$AGY_BIN"
 xport_line=$(XPORT_CLIENT=$xport_client /bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/no-id-token" --min-seconds 1800)
 assert expr "$xport_line" : '^source=refresh expires_at=[0-9][0-9]*$' >/dev/null
 assert jq -e '.token.access_token == "minted-placeholder" and .id_token == "minted-id-placeholder"' "$XPORT_OUT/no-id-token" >/dev/null

@@ -4639,6 +4639,70 @@ def deploys_section(now):
     return out
 
 
+# The rejections claude-setup git-hooks/reference-transaction retries (its `case $out`); any other one stops it.
+AUTOPUSH_RETRIED = ("[remote rejected] (cannot lock ref", "[remote rejected] (failed)", "Could not resolve host",
+                    "Failed to connect to", "timed out", "Connection reset", "RPC failed; HTTP 5", "returned error: 5")
+AUTOPUSH_REASON = re.compile(r"\[(?:remote )?rejected\]\s*\(([^)]*)\)|(?:fatal|error): (.*)")
+
+
+def autopush_journal():
+    return os.path.join(os.environ.get("GIT_AUTOPUSH_DIR") or os.path.join(
+        env_dir("XDG_STATE_HOME", ".local", "state"), "autopush"), "journal.tsv")
+
+
+def push_section(now):
+    """A commit is a push: the autopush hook journals each attempt as time, repository, branch, sha or `deleted`, rc,
+    seconds and the output's last 3 lines. A default branch whose last attempt is a rejection the hook does not retry,
+    with origin's tracking ref short of the local tip, holds every later commit off origin until someone acts
+    (2026-10-23 17:14: push protection kept llm-legs main off origin 34 h, 21 commits, nobody saw it)."""
+    path, latest, since = autopush_journal(), {}, {}
+    try:
+        with open(path, errors="replace") as handle:
+            for text in handle:
+                f = text.rstrip("\n").split("\t")
+                if len(f) < 7:
+                    continue
+                key = (f[1], f[2])
+                if f[4] == "0":
+                    since.pop(key, None)
+                else:
+                    since.setdefault(key, f[0])
+                latest[key] = f
+    except OSError:
+        return section("Push", [], [""], [False], blind="no autopush journal at %s" % file_key(path))
+    rows, quiet, repos = [], [], sorted({repo for repo, _ in latest if os.path.isdir(repo)})
+    for repo in repos:
+        ident, ahead = file_key(repo), 0
+        if any(r == repo and f[4] != "0" and f[3] != "deleted" and not any(p in f[6] for p in AUTOPUSH_RETRIED)
+               for (r, _), f in latest.items()):
+            head = (git_out(repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD") or "").strip()
+            branch = (head[len("origin/"):] if head.startswith("origin/") else head) or "main"
+            f = latest.get((repo, branch))
+            if f and f[4] != "0" and f[3] != "deleted" and not any(p in f[6] for p in AUTOPUSH_RETRIED):
+                ahead = int((git_out(repo, "rev-list", "--count", "refs/remotes/origin/%s..refs/heads/%s" % (branch, branch))
+                             or git_out(repo, "rev-list", "--count", "refs/heads/" + branch) or "0").strip())
+        if not ahead:
+            quiet.append(verdict("push-stalled", ident, 0, 0, "commits", 0, 1, None, bad=0))
+            continue
+        try:
+            at = datetime.datetime.strptime(since[(repo, branch)], "%Y-%m-%dT%H:%M:%S%z").timestamp()
+        except (KeyError, ValueError):
+            at = now
+        found = AUTOPUSH_REASON.search(f[6])
+        reason = clip((found.group(1) or found.group(2)).strip() if found else f[6].strip() or "rc " + f[4], 60)
+        name = "%s %s" % (os.path.basename(repo), branch)
+        say = "%s: %d commit%s off origin for %s · %s" % (name, ahead, "" if ahead == 1 else "s", fmt_long(now - at),
+                                                          reason)
+        rows.append(row([name, fmt_count(ahead), fmt_long(now - at), reason], [0], key="push:" + ident, say=say,
+                        head="a default branch is not reaching origin",
+                        judge=verdict("push-stalled", ident, ahead, 0, "commits", 0, len(repos), "red", fact=say,
+                                      evidence=[evidence(at, "autopush:" + ident, f[6].strip())], bad=ahead)))
+    out = section("Push", rows, ["", "commits", "behind", "rejected"], [False, True, True, False],
+                  ok="%d repositor%s reach origin" % (len(repos), "y" if len(repos) == 1 else "ies"))
+    out["quiet"] = quiet
+    return out
+
+
 BROWSER_REPAIR = ("HARNESS_NEEDS_REPAIR", "missing")
 BROWSER_SKIPS = {"CANARY_OUT_OF_POOL": "out of the worker pool", "CANARY_WALLED": "walled",
                  "BROWSER_OWNER_LOGIN": "waits for Egor's sign-in", "CANARY_OWNER_GRANT": "waits for Egor's macOS grant"}
@@ -6467,6 +6531,7 @@ def collect(write, now):
                 stop_hooks_section(now),
                 guards_section(now),
                 deploys_section(now),
+                push_section(now),
                 browser_section(now, write),
                 waits_classes_section(now),
                 limits_section(now)]

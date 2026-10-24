@@ -562,9 +562,8 @@ the rework:
 
 ## 11. Stop hooks and Guards (moved from LLM doctor)
 
-The Hooks and Guards rows of `bin/llm-doctor` (`hooks_health`, `guards_health`) are ported here as
-two areas over 24 h, rule for rule and with the same limits; `bin/llm-doctor` keeps its rows until
-its owner chat removes them. Each (rule, ident) is one row and one problem `<rule>:<ident>`, with
+The former Hooks and Guards rows of `bin/llm-doctor` live here as two areas over 24 h, rule for rule
+and with the same limits. Each (rule, ident) is one row and one problem `<rule>:<ident>`, with
 up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `gates:<at>/<gate>`,
 `events:<at>/<file>`, `heartbeat:<mtime>`, `transcripts:<mtime>`).
 
@@ -592,22 +591,23 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   program, and a guarded directory literal joined through a variable (`C + n`, `Path(C) / n`) as a write
   into it. Unread, so only the tripwire reports them as `growth-ungated`: a name built at run time from
   no guarded literal (`'CLAU'+'DE.md'`), a prefixed literal (`r'…'`, `f'…'`), an annotated assignment (`p: str = '…'`) and perl's parenthesis-free `open my $f, ">>", $p`.
-- **Growth roots.** One change is one problem per root: the skill directory (the nearest one holding a
-  `SKILL.md`), else the `docs` tree it sits in, else the file. Its value is the bytes the change added
-  under that root, its count the files, and the files are listed in the evidence. Incident
-  2026-09-30 13:32: one install of third-party skills under `~/.claude/skills` read as 233 problems.
-  A plugin version dir (`~/.claude/plugins/cache/<market>/<plugin>/<version>`) is one root over every
-  event of the 24 h window: 2026-10-12 18:57 one vercel install, journaled as five events, read as 39 rows.
-- **On-demand skill files are out of scope.** The rule prices context that loads into every chat
-  with no audit. Only a skill's own `SKILL.md` loads that way. Its `references/` and other files load
-  when the skill runs and its `SKILL.md` points to them, and the rule still watches that `SKILL.md`.
-  Their growth is left out of the value and the count, and the evidence names how many were left out.
+- **Growth roots.** One change is one problem per root: the nearest skill directory (holding a `SKILL.md`),
+  else its `docs` tree, else the file; value = bytes added under the root, count = files, listed in the
+  evidence (2026-09-30: one third-party skills install read as 233 problems). A plugin version dir
+  (`~/.claude/plugins/cache/<market>/<plugin>/<version>`) is one root over the 24 h window (2026-10-12:
+  one vercel install, five events, read as 39 rows).
+- **On-demand skill files are out of scope.** The rule prices context every chat loads unaudited: only
+  a skill's `SKILL.md` (still watched). Growth of its `references/` and other files, loaded when the
+  skill runs, is left out of the value and count; the evidence names how many.
 - **Deploys** compares every copy in `DEPLOYS` (shared-invariants row ef) with its source in the main
   checkout (`HARNESS_DEPLOY_SOURCE`; deployed wrappers under `HARNESS_LIBEXEC_DIR`, default
   `~/.local/libexec`): a byte copy must match, a generated wrapper must exec the source script, a
   generated plist must run its wrapper. A group none of whose copies exists is not installed and not
   judged; a missing or differing copy of an installed one is `deploy-drift` keyed by the copy, its fix
   the installer command, which every write run (and `--redeploy`) reruns from main unless a source is uncommitted.
+- **Push** reads the autopush journal (`GIT_AUTOPUSH_DIR`): a default branch whose last attempt is a rejection
+  the hook does not retry, origin's tracking ref short of the tip, is `push-stalled` per repo (commits off origin,
+  time since its last good push, the rejection; 2026-10-23: 34 h unseen).
 - **Browser** reads only what the supervisor writes — `WORKER_RUN_DIR`'s `browse/accounts.json` (enrollment) and
   `browse/log.jsonl` (one line per browser run, 7 days) — plus Dia's process arguments; never a file a browser
   writes (Chrome and Dia rewrite theirs live: a compacted leveldb hid a device, 2026-10-06). One row per enrolled
