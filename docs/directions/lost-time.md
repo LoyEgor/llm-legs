@@ -12,7 +12,7 @@ Paasche index over chat orders, worker tasks and night jobs (`time_budget.paasch
 judges goals on test cost and waits; muting targeted runs lowers it and says nothing about how tests are written.
 
 Second number, proposed, Egor's word pending: test legacy lines standing in the four repositories by the helper-copy
-and dead-test-unit methods (Recurring classes), read 7 days after a goal lands: 514 at HEAD 10-20 (copies 403, dead
+and dead-test-unit methods, read 7 days after a goal lands: 514 at HEAD 10-20 (copies 403, dead
 units 111 at the 10-14 refresh). It judges goals on how tests are written; stale, covered and `uncaught:` checks
 join it once measured (Open). Watched only: suites the last full run left red, code commits' rewrite share (the contract-checks trade).
 
@@ -34,14 +34,13 @@ join it once measured (Open). Watched only: suites the last full run left red, c
 - Index and rows: `~/.cache/harness-doctor/budget-days/<day>.json` (`strata`, `rows`, `parts`, BUDGET_VERSION 5, all
   `settled`) summed per window over its days; index = Σ window overhead / Σ (window units × prior overhead per unit),
   per stratum, as `paasche`; rows are span unions, parts overlap. 10-19's worker rows sit in the account store this
-  baseline may not read: 1.09 is `latest.json` → `speed.budget.index_by_day["2026-10-19"]` (10-20 01:40).
+  baseline may not read: 1.09 is `latest.json` → `speed.budget.index_by_day["2026-10-19"]`.
 - The rise is workers' (night 3131 closing on 10-13: 9,930 overhead-min, 275 tasks; walls 110 min on 10-18) while
   tests halved; paused nights left 0–159 tasks a day from 10-15: mix, unclear.
 - Suites: `~/.cache/run-suites/runs.jsonl` by local day of `queued_at`, a run one entry of `suites`, CPU Σ `cpu_s`;
   decode with `json.JSONDecoder().raw_decode` (some lines hold two objects).
 - Git rows: legacy.md's window ends and buckets. Rewrites: `git log --no-merges <end>..<next-end> --numstat`,
-  each end `git rev-list -1 --first-parent --before='<day> 00:00' HEAD` (10-06, 10-13, 10-20 local). Not
-  `--since/--until`, and not `--first-parent` on the log (that makes the first window 363 of 614). `local-config/`
+  each end `git rev-list -1 --first-parent --before='<day> 00:00' HEAD` (10-06, 10-13, 10-20 local); `local-config/`
   out, binary `-` skipped: a commit changing a code-bucket file that also deletes tests-bucket lines.
 
 ## Sources
@@ -84,11 +83,9 @@ worker suite-seconds 10-16…22 (7.4 % 10-09…15).
   `hammerspoon/tests/test_claude_keys_bin.sh` 111 (legacy.md class 2's method).
 - Pinned checks (Egor's hypothesis 2026-10-19, measured 09-20…10-19): 60 % of code commits rewrite existing test
   lines (llm-legs 65 %, hammerspoon 30 %), 0.23 lines per code line changed.
-  Same rev-range, ends before 2026-09-20 and 2026-10-20. Seeded sample of 10 (the rewriting list in `git log` order,
-  repos llm-legs, claude-setup, review-bench, hammerspoon, `random.seed(20261020)`, `random.sample`, Python 3.11+):
-  implementation 4, narrative PASS line only 1, mixed 2, behavior 3. 143 of 779 rewrite a PASS line, 21 only that;
-  ten files hold 52 % of test-deletion lines, `tests/test_consistency.sh` 109 commits. Holds in part: 60 %, not 90 %; half the sample
-  changed no behavior.
+  Sample of 10 (`random.seed(20261020)`): implementation 4, PASS line only 1, mixed 2, behavior 3. 143 of 779 rewrite
+  a PASS line, 21 only that; ten files hold 52 % of test-deletion lines, `tests/test_consistency.sh` 109 commits. Holds
+  in part: 60 %, not 90 %; half the sample changed no behavior.
 
 ## Goals
 
@@ -99,36 +96,42 @@ after landing moves with the pilot's volume and tests-once.
 
 ### goal walled-resume: a walled worker's rescue continues its session
 
-Class: usage walls, 84 worker-min/day 10-09…22. `reroute_walled` (`bin/worker-run`, 10-05) restarts a walled
-claudeb run fresh, redoing the walled attempt; the 07-25 rotation cut's rescue was `RESUME <session>` on a
-worker-pick account, and all profiles share `~/.claude/projects`.
+Class: usage walls 10-09…22, claudeb 1,054 worker-min (75/day), codex 117. `reroute_walled` (`bin/worker-run`,
+10-05) restarts a walled claudeb run fresh, redoing the walled attempt; the 07-25 rotation cut's rescue was `RESUME
+<session>` on a worker-pick account; every profile's `projects` links `~/.claude/projects` (its "one profile"
+comment is wrong).
 - Change: a claudeb rescue resumes the walled session on the picked account (one reroute; `REROUTE:` and the
-  browser, `.resume`, explicit-account refusals stay; no stale-RESUME refusal); `run_split` counts its relaunch gap.
-- First step: the 10-19 rescues (walled at 9,504 s; 2,735, 8,352, 8,421 s) repeat the walled sessions' calls, and a
-  finished claudeb session resumed on another account answers; either fails, stop.
-- Proof, old → new: claudeb walled attempts of 10 min or more, 10-09…22: 13 runs on 4 days, 1,054 min, fresh rescues
-  733, redo ≤ Σ min(walled, rescue) 626 min (≈45 worker-min/day). New, 14 days after landing: each claudeb rescue
-  keeps the walled session id, its walled minutes only relaunch gaps.
-- Must not get worse: rescues succeed (33 of 33); rescue tokens a walled run at or under the fresh rescues' (tokenmap,
-  counted first); codex walls (117 min) untouched.
+  browser, `.resume`, explicit-account refusals stay); of the stale-RESUME refusal only `RESUME_CONTEXT_CAP` (150k)
+  stays, past it the rescue starts fresh; `run_split` counts its relaunch gap.
+- First step: the 10-19 rescues (walled 9,505–9,520 s; 2,740, 8,354, 8,424 s) repeat the walled sessions' calls, a
+  finished session resumed on another account answers, and the walled ones (≈2.6 h, cache missed there) resume under
+  the cap and the fresh rescues' 2.7–6.9M tokens; any fails, stop.
+- Proof, old → new: run dirs start 10-14; 10-14…22, 4 rerouted claudeb runs walled ≥ 10 min: 516 min, fresh rescues
+  338, redo ≤ 338 (≈38 worker-min/day); 10-09…13's 9 runs (288 min) have no recorded source. New, 14 days after
+  landing: each rescue under the cap keeps the walled session id, its walled minutes only relaunch gaps.
+- Must not get worse: rescues succeed (old rate unconfirmed); rescue tokens a walled run at or under the fresh
+  rescues' (tokenmap, counted first); codex walls untouched.
 
 ### goal chat-owned: the chat stratum counts only Egor's own turns
 
 Class: a caller the index does not own. Since 8bfaa17f (10-09) a day fix launch opens a chat on `Fix orchestrator:
-read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: on 10-20 chat 607 min / 87 orders, 315 min four
-orchestrators' suites. A forked transcript repeats its parent's entries (`forkedFrom`), read again as turns: 304
-duplicate turn rows 10-12…20 (10-15 recomputed: 151 orders, settled 106).
-- Change: `C1_MACHINE` takes `Fix orchestrator:` for its two dead forms; `read_transcript` skips `forkedFrom`
-  entries; `time_budget.night_agents` owns a doctor-fix run record's `session` (no `night`) as a night agent, units
-  its runs closed that day.
-- Proof, v6 → v7 on 10-09…22 (projected, a span dedupe for `forkedFrom`): chat 1.48 → 1.35 min an order, 10-20 7.0 →
-  3.6; night +332 min / 45 runs on 10-20; workers equal every day. Gain 0 minutes, a true compass.
+read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: 4 chats, 279 turn-span min on 10-20 (10-09…22: 10-09,
+10-14, 10-20 only). `read_transcript` never reads `forkedFrom`: 494 owner text-prompt rows repeated by uuid 10-12…20
+(a row broader than C1's, unconfirmed).
+- Change: `C1_MACHINE` takes `Fix orchestrator:`, drops `Doctor fixer run` (no emitter; `vendor-fingerprint` still
+  prints `Vendor release event` with no night); `read_transcript` skips `forkedFrom` entries;
+  `time_budget.night_agents` owns a doctor-fix run record's `session` (no `night`) as a night agent, units its runs
+  closed that day.
+- Proof: a settled day keeps its cached strata but `out_s` (`share/time_budget.py`), so v6 → v7 is an uncached
+  `budget()` replay of 10-09…22: 10-20 chat 7.0 → ≈3.8 min an order (607 − 279 min, 87 orders; fork rows
+  unconfirmed); night owns 10-20's 51 doctor-fix records (minutes unconfirmed); workers equal every day; live from
+  10-23. Gain 0 minutes, a true compass.
 - Must not get worse: no orchestrator span in `agents[None]` or `out_s`; a settled day keeps its strata.
 
-Dropped, 10-09…22: full-night slot queues (917 worker-min/day, `room` at 6–7 of 40 held), memory and load;
-run-suites `limit` waits (10-20 325 min), CPU busy 1.00 in all 88 samples; 10-20's 63 fixers (495 min queued),
-CPU-bound, fan-out's; chats testing while iterating, 13 min/day, a rule exists; chat compaction 19.6 min/day (74 s at
-≈267k), a spend trade; worker compaction 3.6 min/day; API retries 7; model-written scripts, beside the index.
+Dropped, 10-09…22: full-night slot queues (917 worker-min/day), memory and load; run-suites `limit` waits (CPU busy
+in all 88 samples); 10-20's 63 fixers, CPU-bound, fan-out's; chats testing while iterating (13 min/day, a rule
+exists); chat compaction 19.6 min/day, a spend trade; worker compaction 3.6 min/day; API retries 7; model-written
+scripts, beside the index.
 
 ## At night
 
@@ -163,14 +166,13 @@ CPU-bound, fan-out's; chats testing while iterating, 13 min/day, a rule exists; 
   a rewrite can launder a regression (2026-07-25), and it moves no number here (model work, 2026-10-10); its proof is
   the rewrite share of those suites (target half, net lines ≤ 0, mutations red). Recommendation: next after this
   file's goals, its rewrite share read beside the second number; `test_consistency.sh` stays (shared invariants).
-- Code's moved `tests/<repo>/<label>` rows (`bin/speed-doctor` `moved_opportunities`) are a third suite-cost queue,
-  0 live on 10-23.
+- Code's moved `tests/<repo>/<label>` rows (`moved_opportunities`): a third suite-cost queue, 0 live 10-23.
 - Index 0.10 (10-16…22) is mix: the prior window's slot queues (workers 19.7 → 1.3 min a task), 10-22's 631 judge
   calls of 0.3 min (0.17 without); a work-sized worker unit is open.
 - Covered and stale checks have no number: mutation runs, suite audits (65 due on 327 suite-min/day, none since 10-14
   but 10-20's 8) and the tests round run only in full nights. `uncaught:` first due 2027-01-01; 274 of 543 red→green episodes are `unread`, so silence can be a gap.
 - `out_s.unmeasured` (426 → 2 min/day) stays outside; fixed-sleep polls (`tool-idea-wait-until`, ≈121 min/day est.)
-  wait on `bash-cap`; gains are priced from journals (10-14 expected 3,493 min/day of a ≈550 row).
+  wait on `bash-cap`.
 
 ## Decisions
 
