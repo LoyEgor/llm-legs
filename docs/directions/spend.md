@@ -27,14 +27,13 @@ Windows are full local days. The journals reach back past 10-02, so the prior wi
 - The index values are consecutive weekly drops in fee per task, not levels; spend's +34 % is load (Reviewers ×2.4).
 - Not computed: Chat tasks before 10-09 (tokenmap shows "—").
 
-Method, ≈90 s a window on an idle machine (over 10 min at load 130+):
+Method, ≈90 s a window on an idle machine:
 - Fee index: `tokenmap tracking --since "2026-10-09 00:00" --until "2026-10-16 00:00" --json`. Read `harness_index`
   (`value`, `change`, `coverage`, the "Use (tasks)" section) and the `Claude spend` row.
 - Doctors' share: `tokenmap.tracking.compute_spend(db.connect(db.DEFAULT_DB), tracking.windows_for(since=…,
   until=…))`, node `Doctors` `value / total[0]`, then `prev / prev_total[0]` (`tokenmap spend` takes no `--since`).
 - Audit runs: run dirs whose `~/.cache/claude-worker-runs/*/brief` holds `# Fixer run harness-speed-spend-` and
-  whose `meta.json` `started_at` is in the window (a `spend:` key match also takes log-audit chunks, which quote
-  transcripts: 23 sessions, 7.15M plain); `started_at` is epoch seconds, read as a local day. Session: the run dir's
+  whose `meta.json` `started_at` is in the window; `started_at` is epoch seconds, read as a local day. Session: the run dir's
   `session` file, else its `worker-session` file; resumes share it. Sum
   `limits.request_sql('r')` × `tokenmap.pie.model_weight(model, day, speed, prompt)` over `requests.root_session`
   in `tokenmap.sqlite3` (`mode=ro`). 10-09…15: 39 dirs, 30 run tags, 28 of them (33 sessions) with requests.
@@ -52,8 +51,7 @@ Method, ≈90 s a window on an idle machine (over 10 min at load 130+):
   `<tag>.d/decisions.tsv` (its verdict and commit).
 - Harness doctor `~/.cache/harness-doctor/latest.json` → `speed.spend`: the Fee index by day, the audits due (14 on
   10-16) and their proofs.
-- `share/harness-ledger.json`, log-audit rows (classes 4–6). First-seen dates come from `git log -S` on the ledger.
-- `tokenmap.sqlite3`, tables `requests`, `parts` and `doctor_windows`: what each call starts with, night against day.
+- `share/harness-ledger.json`, log-audit rows (classes 4–6).- `tokenmap.sqlite3`, tables `requests`, `parts` and `doctor_windows`: what each call starts with, night against day.
 
 ## Recurring classes
 
@@ -66,10 +64,10 @@ tails + 7 load + 8 other key on 31 rows).
 | 1. a Spend audit comes due with nothing new to change: a cut whose tail still sits in the 7-day window, a rise that was load or a tokenmap measurement change, a part kept before under another key | 78 of 81 audited problems; 31 of 64 rows | 6.65M of the audits' 7.63M (25 of 28 runs) | 5 audit nights, 10-09…14 | 31 rows, each closed alone |
 | 2. a scripted one-request call carries the configuration it never uses | 173 worker calls | 6.94M; ≈0.05M a week left | 10-05…15 | 7 |
 | 3. a session re-writes its whole context cold: idle past the cache, or another org's account | 5 | 0.11M since 10-14 (0.04M plain) | 10-10…14 | 1, held |
-| 4. a run re-derives what a ledger holds: known reds, fixed rows re-proved, ledger ground re-profiled, a whole read redone | 5 | | 4 nights | 3 |
-| 5. a run sized past what settles it, then run again: a 289-panel judge grid for ≈22 votes, a cap that measured itself, a biased answer key, Haiku cells on Sonnet, 241 images to one worker | 5 | | 2+ nights | 1 |
-| 6. rework from an unsettled spec (Spend menu, Fee index rebuilt 3×, batch sizing, lens tuning): model behavior, no fixer | 6 | | 3 nights | 0 |
-| 7. a Claude review cell writes its cache at the hour's price (×2) where 5 minutes' (×1.25) serve | 2,084 cells | 47.4M of 198.9M (10-09…22) | daily | 0 |
+| 4. a run re-derives what a ledger holds: known reds, fixed rows re-proved, a whole read redone | 5 | | 4 nights | 3 |
+| 5. a run sized past what settles it, then run again: a 289-panel judge grid for ≈22 votes, a biased answer key, 241 images to one worker | 5 | | 2+ nights | 1 |
+| 6. rework from an unsettled spec (Fee index rebuilt 3×, batch sizing): model behavior, no fixer | 6 | | 3 nights | 0 |
+| 7. a Claude review cell writes its cache at the hour's price (×2) where 5 minutes' (×1.25) serve | 2,084 cells | 47.0M of 248.6M (10-09…22) | daily | 0 |
 
 Why they come back:
 1. `share/spend.py` `due()` reopens a component four ways: never audited, source changed (`moved()`), still
@@ -95,37 +93,40 @@ Why they come back:
 Goal scripted-bare was stopped on 10-23 by its first step (class 2 above). Bash-cap runs belong to Breakages'
 `bash-cap`. Deep search 10-23 put its goals before the blocked audit-due; dropped (10-16…22): media skill
 (2.66M), split 10-23 (claude-setup 9cc8c07); `wait-until` (0.90M), replacing `sleep` polls the Fee never counted;
-Project docs (9.7M), the docs briefs name, p50 2.5k characters a read; Workers' Unexplained (3.3M), 80 % logo
-image estimates; Chat·Delegation (2.9M), launcher text 0.6M, the rest turns kept 10-13; mattermost/jira MCP,
+Project docs (9.7M), p50 2.5k characters a read; Workers' Unexplained (3.3M), 80 % logo
+image estimates; Chat·Delegation (2.9M), turns kept 10-13; mattermost/jira MCP,
 Arbostar-scoped; test output (346 tokens).
 
 ### goal cell-cache-5m: a Claude review cell writes its cache at the 5-minute price
 
-Class 7: since 10-09 cells write at the hour (Opus 47 % → 93 %, Haiku 99–100 %), so Review startup went 12.3k →
-15.6k → 16.4k a cell (10-02…08, 09…15, 16…22), write price 1.6 → 2.0, over the 10-13 cut.
+Class 7: since 10-09 cells write at the hour (Opus 47 % → 93 %, Haiku 99–100 %), write price 1.6 → 2.0, over the
+10-13 cut; Review startup 12.3k → 15.6k → 16.4k a cell (10-02…08, 09…15, 16…22) is unconfirmed (`pie.startup`,
+`tracking.startup` define it otherwise).
 - Change, review-bench `share/rbench/launch.py`: `FORCE_PROMPT_CACHING_5M=1` beside `CLAUDE_CODE_DISABLE_AUTO_MEMORY`
-  in every Claude cell's env (Claude Code 2.1.309 reads it before any other TTL rule).
+  in every Claude cell's env (Claude Code 2.1.309 reads it before any other TTL rule; nothing sets it today).
 - First step: grep that every Claude command `launch.py` builds gets it; one fixture cell writes only
   `ephemeral_5m_input_tokens`.
-- Proof, a replay on `tokenmap.sqlite3` (`sessions.zone = 'review-bench'`, 10-09…22, `pie.model_weight`): each
-  `cache_1h` at ×1.25, plus a ×1.25 re-write of what was read after a 5–60 min gap (49 requests, 0.94M) or by a
-  cell's first request after a >5 min lull of its model (77 cells, 0.57M): 198.9M → 153.0M Opus = 1 (−23 %, 3.5 %
-  of Claude spend; 10-16…22 alone 5.5M). 7 days after landing: `cache_1h` share ≈ 0, Review startup ≤ 11k a cell.
-- Must not get worse: gap requests ≤ 0.2 %; model, prompt, tools and settings unchanged; workers' and chats'
-  `cache_1h` share unchanged.
+- Proof, a per-request replay on `tokenmap.sqlite3` (`sessions.zone = 'review-bench'`, 10-09…22, `pie.model_weight`,
+  deduped by request/msg id, sessions by `ts`): each `cache_1h` at ×1.25, plus a ×1.15 re-write (×1.25 less the
+  read's ×0.1) of what was read after a 5–60 min gap (49 requests, `gap_seconds` 300–3600) or by a cell's first
+  request after a >5 min lull of its model: 248.6M → 201.6M Opus = 1 (−47.0M, −19 %, ≈ 1.9 % of 2,526M Claude spend;
+  10-16…22 alone −5.4M). 7 days after landing: `cache_1h` share ≈ 0.
+- Must not get worse: gap requests ≤ 0.2 % (49 of 30,162); model, prompt, tools and settings unchanged; workers' and
+  chats' `cache_1h` share unchanged.
 
 ### goal preamble-journal: the Fee index prices a worker's preamble from worker-run's journal
 
 Metric fault, no class: `pie.preambles()` reads `brief.launch` − `brief` from run dirs, pruned after 7 days, so the
-previous window loses its preambles (run dirs for 0 of 748 worker sessions of 10-09…13, 625 of 636 in
-10-16…22); the menu's index (10-23) reads Workers·Delegation 3.5k against 1.8k a task, +2.0 of its −14 %.
+previous window is 31 % covered, 0 % before 10-14 (tokenmap `zone='worker'` sessions with a run dir: 0 of 921
+10-09…13, 573 of 1,842 10-09…15, 1,627 of 1,646 10-16…22); unconfirmed: the menu's index (10-23) reads
+Workers·Delegation 3.5k against 1.8k a task, +2.0 of its −14 %. A +15-day prune would double 582 MB of run dirs.
 - Change: worker-run `journal_worker_attempt` adds `brief_bytes` and `launch_bytes` (`file_bytes`) to its
   `worker-attempts.jsonl` line, which tokenmap reads already (`zones.ATTEMPTS`); `preambles()` sums them per
   session, a run dir only for a line without them.
 - First step: a fixture run (`CLAUDEB_DIR`, stub CLI) journals its run dir's two sizes.
 - Proof, a replay on a `--db` index copy (`tracking --since "2026-10-19 00:00" --until "2026-10-23 00:00"`, every
   run dir present) with run dirs mirrored by size: old 1.091 with all, 1.130 without those begun before 10-17
-  (Workers·Delegation previous price 3,002 → 509); new, its journal built from the mirror, equal both ways.
+  (Workers·Delegation previous price 3,002 → 509; values unconfirmed); new, its journal built from the mirror, equal both ways.
 - Must not get worse: the full-mirror value equal to old; Chat and Background Delegation cells unchanged.
 
 ### goal audit-due: a Spend audit comes due only on its own price per task
