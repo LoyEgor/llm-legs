@@ -724,6 +724,12 @@ revert_growth() {
   [ "${b_trust[$i]}" = 1 ] || return 1
   [ -n "$(instruction_write_class "$real")" ] || return 1
   [ "$attr" = this-call ] || return 1
+  # Bytes HEAD already holds are a commit someone answered for, never loose growth: putting them back
+  # only leaves the checkout dirty against it (a misattributed revert of claude-setup 21e7a74).
+  local dir head_blob
+  dir=$(cd "${real%/*}" 2>/dev/null && pwd -P) &&
+    head_blob=$(git -C "$dir" rev-parse -q --verify "HEAD:./${real##*/}" 2>/dev/null) &&
+    [ "$head_blob" = "$(git -C "$dir" hash-object -- "$real" 2>/dev/null)" ] && return 1
   # Asked of every rollback and not only of the ones the span did not already authorise: WHO wrote
   # decides the wording, and a worker inside a span told to leave the addition for Egor's next turn
   # is a worker handed a human's instruction instead of the MD-PROPOSAL protocol it answers by.

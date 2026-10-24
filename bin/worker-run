@@ -328,6 +328,7 @@ Drive Egor'"'"'s Mac apps through Codex Computer Use: the CUA REPL `js` tool, wh
 - First js call must be exactly: `await cua.getState()`
 - Attach to an app with `await cua.getApp("<App name>")` and read it (getAXState / getScreenshot) before acting.
 - Do only what the brief allows. Never log in, enter credentials, approve payments or answer admin password prompts; the surface refuses Terminal. Report such a step instead of working around it.
+- Text you type for people to read goes out as Egor: never ё (write е) and never a long dash (write -).
 - Close the windows and tabs you opened once the task is complete, unless the brief says to keep them; a stop for Egor'"'"'s input leaves them open.
 - Computer Use refuses some URLs (vendor policy, checked on the frontmost browser tab, even one Egor opened): when it stops the session for a disallowed URL, end with `OUTCOME: COMPUTER_UNAVAILABLE reason=disallowed-url url=<that tab'"'"'s URL>`.
 - Return the evidence the brief asks for and end with: `OUTCOME: COMPUTER_OK` or `OUTCOME: COMPUTER_UNAVAILABLE reason=<text>`'

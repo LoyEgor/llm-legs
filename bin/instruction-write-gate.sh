@@ -140,6 +140,12 @@ if [[ $command =~ $_INSTRUCTION_INTERP ]]; then
     script_seen+="$script_interp $script_path"$'\n'
     heredoc_text='' keep_disk=1
     [ -z "$heredocs" ] || heredoc_body "$script_path"
+    # A committed, unmodified suite under tests/ is the repository's own code, not a patch script:
+    # its fixtures name instruction files inside temp trees (test_instruction_watch_perf.py).
+    case "$keep_disk${heredoc_text:+x}:$script_path" in 1:*/tests/*)
+      git -C "${script_path%/*}" ls-files --error-unmatch -- "$script_path" >/dev/null 2>&1 &&
+        git -C "${script_path%/*}" diff --quiet HEAD -- "$script_path" 2>/dev/null && continue ;;
+    esac
     script_body=''
     script_tail=''
     if [ -n "$keep_disk" ] && [ -f "$script_path" ]; then

@@ -351,6 +351,21 @@ a line chat A wrote" "$(cat "$DOC")"
 rm -rf "$INSTRUCTION_WATCH_STATE/closed"
 printf 'tier doc\n' > "$DOC"
 
+echo "== tripwire: growth a commit already holds is reported, never put back"
+git -C "${DOC%/*}" init -q
+git -C "${DOC%/*}" add "${DOC##*/}"
+git -C "${DOC%/*}" -c user.name=t -c user.email=t@t commit -qm base
+span_base sid-hd >/dev/null
+pre_call sid-hd Bash command "$ANY_CALL" "$SPAN_T"
+printf 'a committed line\n' >> "$DOC"
+git -C "${DOC%/*}" -c user.name=t -c user.email=t@t commit -qam grow
+out=$(span_check sid-hd Bash command "$ANY_CALL" "$SPAN_T")
+case "$out" in *REVERTED*) fail "the span reverted a committed line: $out" ;; esac
+assert_eq "tier doc
+a committed line" "$(cat "$DOC")"
+rm -rf "${DOC%/*}/.git"
+printf 'tier doc\n' > "$DOC"
+
 echo "== tripwire: this agent's mark a minute older than its call is a denied call, swept"
 span_base sid-st >/dev/null
 pre_call sid-st Bash command "$ANY_CALL" "$NOSPAN_T"
