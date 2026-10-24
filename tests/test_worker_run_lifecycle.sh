@@ -352,6 +352,7 @@ BROWSE_CUA_SYNC="$WORK/bin/cua-sync-ok" BROWSE_SKIP_PROCESSES=1 start_ok codex -
 assert grep -qx -- '--account codex --role computer --claim' "$PICK_LOG"
 assert meta_account_is cu
 assert jq -e '.computer == true' "$RUN_DIR/meta.json" >/dev/null
+assert jq -e '.model | test("sol$")' "$RUN_DIR/meta.json" >/dev/null
 assert grep -q 'Computer Use Preamble' "$RUN_DIR/brief.launch"
 assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
 assert await_exit

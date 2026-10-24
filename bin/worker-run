@@ -2896,6 +2896,8 @@ start_run() {
     config_model=$(codex_config_model)
     [ "$model" != default ] || model=$config_model
     explicit_model=$model
+    # Computer Use runs on Sol unless the brief names a model (Egor, 2026-10-24).
+    [ -n "$model" ] || [ "$computer" = false ] || model=sol
     model=${model:-$config_model}
   else
     if [ -z "$model" ] && [ "$vendor" = claudeb ] && [ -z "$light" ] && [ -n "$review_round" ]; then

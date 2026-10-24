@@ -185,7 +185,8 @@ wall_reset() { printf '%b\n' "$1" >"$WORK/wall.out"; WORKER_WALLS_NOW=$wall_now 
 at() { date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s; }
 tomorrow=$(date -j -v+1d +%Y-%m-%d)
 kiev_2240=$(TZ=Europe/Kiev date -j -f '%Y-%m-%d %H:%M:%S' "$(TZ=Europe/Kiev date +%F) 22:40:00" +%s)
-[ "$kiev_2240" -gt "$((wall_now - 300))" ] || kiev_2240=$((kiev_2240 + 86400))
+[ "$kiev_2240" -gt "$((wall_now - 300))" ] ||
+  kiev_2240=$(TZ=Europe/Kiev date -j -v+1d -f '%Y-%m-%d %H:%M:%S' "$(TZ=Europe/Kiev date +%F) 22:40:00" +%s)
 check test "$(wall_reset '{"result":"You'\''ve hit your session limit · resets 10:40pm (Europe/Kiev)","is_error":true}')" = "$kiev_2240"
 check test "$(wall_reset "You've hit your weekly limit · resets $(date -j -v+1d '+%b %e' | tr -s ' '), 9am")" = "$(at "$tomorrow 09:00:00")"
 check test "$(wall_reset "\"result\":\"You've hit your weekly limit · resets $(date -j -v+1d '+%b %e' | tr -s ' ') at 10pm (Europe/Kiev)\"")" = \
