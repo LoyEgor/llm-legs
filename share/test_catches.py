@@ -3,7 +3,8 @@ same repository; it is a catch when the caller edited code between them, tests a
 a suite the caller wrote or edited earlier in its session (`own`), a green on the same tree (`same`: nothing changed,
 or flaky), test-only edits (`test`), no edit of the caller's own (`none`). Callers without a Claude transcript (other
 vendors) are `unread`. A full run with no caller (the night's Close) red at one run and green at a later one on other
-content is a catch; still red is nothing (the 90-day rule deletes a known-red suite). Settled days fold once into
+content is a catch; still red is nothing (the 90-day rule deletes a known-red suite); one without a tree on either run
+(a file changed mid-run) is not judged. Settled days fold once into
 test-catches.json, so the 90-day rule (Egor, 2026-10-14: a suite that caught nothing in UNCAUGHT_D days, counted from
 its first journaled day, is deleted whole) outlives the transcripts and the journal."""
 
@@ -197,8 +198,12 @@ def fold(now, journal, write=False):
     for caller, root, name, red, green in found:
         if caller not in wrote:
             wrote[caller] = edits(paths[caller]) if paths.get(caller) else None
-        cls, code = judge(name, red, green, wrote[caller]) if caller != CLOSE else \
-            ("same" if red.get("tree") == green.get("tree") else "caught", [])
+        if caller != CLOSE:
+            cls, code = judge(name, red, green, wrote[caller])
+        elif red.get("tree") and green.get("tree"):
+            cls, code = "same" if red["tree"] == green["tree"] else "caught", []
+        else:
+            continue
         d = held["days"].setdefault(time_budget.local_day(green["ended_at"]), {"catches": {}, "fixed": {}})
         d[cls] = d.get(cls, 0) + 1
         if cls == "caught":

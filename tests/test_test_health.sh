@@ -399,6 +399,23 @@ check(due.get("alpha/test_b", "").startswith("dead: names $ROOT/bin/gone-tool"),
       "suite audits: a dead suite is queued with its reason: %s" % due.get("alpha/test_b"))
 check(due.get("alpha/test_pinned", "").startswith("pins: 6 source-text pins"),
       "suite audits: a pinned suite is queued under its own kind: %s" % due.get("alpha/test_pinned"))
+
+import test_catches  # noqa: E402
+closes, CD = os.path.join(work, "closes.jsonl"), NOW - 2 * 86400
+with open(closes, "w") as handle:
+    for at, suite, rc, tree, head in [(0, "test_nn.sh", 1, None, "h1"), (100, "test_nn.sh", 0, None, "h2"),
+                                      (0, "test_nr.sh", 1, None, "h1"), (100, "test_nr.sh", 0, "g", "h2"),
+                                      (0, "test_k.sh", 1, "a", "h1"), (100, "test_k.sh", 0, "b", "h2"),
+                                      (0, "test_s.sh", 1, "c", "h1"), (100, "test_s.sh", 0, "c", "h2")]:
+        handle.write(json.dumps({"kind": "suites", "started_at": CD + at, "ended_at": CD + at + 50, "repo": repo,
+                                 "repo_root": repo, "head": head, "tree": tree, "scope": "full", "signal": None,
+                                 "suites": {suite: {"rc": rc, "secs": 50, "cpu_s": 25}}}) + "\n")
+os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "catches-harness")
+day = test_catches.fold(NOW, closes)["days"][test_catches.time_budget.local_day(CD)]
+check({c: day.get(c, 0) for c in ("caught", "same")} == {"caught": 1, "same": 1} and
+      day["catches"] == {"alpha/test_k": 1},
+      "catches: a Close journaling no tree on either run (a file changed mid-run) is neither same nor a catch; "
+      "trees on both judge it: %s" % day)
 print(count[0])
 EOF
 ) || exit 1
