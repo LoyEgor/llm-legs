@@ -32,85 +32,93 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
 | repeats | 8 | 6 |
 
 - Snapshots start 10-04, so the first window also holds what was open then; 9 of its 11 LLM ids are the image legs
-  after the 10-03 media launch. The second misses 10-11; its repeats: worker-run-backstop's hook-error and
-  hook-held rows, R1, W7, W8, W10.
-- The log audit gives exactly 15 findings a night, its merge cap; the raw count (224 → 541) grows with the
-  transcripts. Neither shows a trend, so the log audit is measured by classes.
+  after the 10-03 media launch. The second misses 10-11.
+- The log audit gives exactly 15 findings a night (its merge cap), so it is measured by classes.
 
 ## Sources
 
 - Harness doctor (`latest.json`) minus `suite_audit`, `test_*` (Lost time), `cpu_audit` (System), `spend_audit` (Spend).
 - LLM doctor (the legs); Updater doctor (`share/updater-ledger.json` is empty: its problems live in the snapshots).
 - Log audit (`bin/log-audit`, nightly since 10-07): Haiku reads the day's transcripts in chunks (55 on 10-14), Sonnet
-  merges them into 15 Harness problems; ≈0.8 % of worker-run spend (7 days to 10-15; unconfirmed, no method named).
+  merges them into 15 Harness problems.
   Kept: the only reader of the night's own waste.
 - Ledgers: `share/harness-ledger.json`, `share/doctor-ledger.json` (LLM).
 
 ## Recurring classes
 
 Each was fixed as an instance, then came back elsewhere. Ranked 10-15 by hand from the 105 log-audit rows of
-10-07…14 and the doctors' rows; "nights": the rows' distinct first commits (Stop hooks: hook-error rows 10-03…14).
+10-07…14 and the doctors' rows; "nights": the rows' distinct first commits.
 
 | class | rows | nights | instances fixed |
 |---|---:|---:|---:|
-| a gate refuses a legitimate command: text matching, launch-gate brief-format refusals, a commit gate reading the session's repository instead of the commit's, the headroom guard's unstated rule | 13 | 7/7 | 12 |
+| a gate refuses a legitimate command (text matching, brief-format refusals, a commit gate on the wrong repository) | 13 | 7/7 | 12 |
 | parallel night fixers collide: one ledger row or handoff, landing races, the same component fixed twice | 10 | 5/7 | 6 |
 | a suite run dies with its caller at the 10- or 25-min Bash cap and runs again (all calls: goal bash-cap) | 9 | 6/7 | 4 |
 | fan-out into a walled account, then the night idles (≈715 min est.) | 8 | 5/7 | 1 |
 | a Stop hook outruns its 5 s cap (Harness `hook-error`) | 7 | 6 days | 6 |
 | a reviewer's output takes a shape its reader did not expect (R1: empty findings, agy Markdown, the coverage floor) | 1 | | 7 fixes |
 | night load breaks timing tests | 5 | 3/7 | 4 |
-| a worker writes a repository its brief never granted (W3, W5, W7, W8, W9) | 5 | 3 days (W3, W5 filed before 10-03) | W3 5×, W5, W7 3×, W8, W9 |
+| a worker writes a repository its brief never granted (W3, W5, W7, W8, W9) | 5 | 3 days | 11 |
 | shell environment: bash 3.2, zsh word-splitting, a launchd PATH | 3 | 3/7 | 2 (1 open) |
-| the LLM doctor files one cause again as a new row each day (callers' argument errors refused before spend: I23, I35, I41, I48, all not-a-bug) | 4 | 4 days | 0 |
+| the LLM doctor files one cause again as a new row each day (callers' argument errors refused before spend, all not-a-bug) | 4 | 4 days | 0 |
 | model behavior: re-asked decisions, unverified claims, unrequested mechanisms (not mechanics, so no fixer) | ≈25 | 7/7 | |
 
 The collision, walled-account and timing-test rows (23) are the night's own fan-out, stopped only while PILOT is
-set, so they stay open; rows merge by id since 10-08 (`share/merge_ledger.py`): fixers collide on a row, a handoff
-or a component, not the file.
+set, so they stay open; fixers collide on a row, a handoff or a component, not the file.
 
-One fix per class, an existing tool before our own; a worker writes only where its brief
-grants, through its CLI's sandbox (workdir plus `--add-dir`, `codex exec --sandbox workspace-write`); a reviewer's
-output is held to a schema by its CLI (`claude --json-schema`, `codex exec --output-schema`); fixers spread over
-accounts by room.
+One fix per class, an existing tool before our own: CLI sandboxes for workers' writes, CLI schemas for reviewers'
+output, fixers spread over accounts by room.
 
 ## Why rows come back (2026-10-15 audit)
 
-- **Re-fixes.** 48 harness-ledger rows were fixed 2+ times: 22 Speed `opportunity` rows (optimised again), 8
-  measured under load (noise read as a regression), the rest real returns.
-- **Audits reopen on edits.** Suite, CPU and spend audits reopen on any source edit (`spend.moved`, read by
-  `share/{suite_audit,cpu_audit,spend}.py`): on 10-15, 139 of 252 suites audited 10-13/14 were due, none slower.
-- **Log-audit evidence carries the read's time.** `audit_verdicts` (`bin/harness-doctor`) stamps every quote with the
-  audit's `at`: a fix landed before the read reads regressed (blind spots `audit-fix-inside-window`,
-  `log-audit-evidence-read-time`).
-- **Doctors miss each other's verdicts.** The statusline render, settled 10-06
-  (`docs/handoffs/2026-10-05-hook-cuts-left.md`), was fixed again on the nights of 10-13 and 10-14.
-- **A repeat had no cheap exit** under 10-13's measured-evidence rule (997f1d1a), so a change was the fixer's
-  cheapest way out; the pilot's `repeat:` exit (Mechanics) answers it.
-- **The night makes its own.** Parallel fixers load the machine (load 100–240): tests flake, timings turn to noise.
+48 harness rows were fixed 2+ times: 22 Speed `opportunity`, 8 noise under load, the rest real returns. Audits
+reopened on any source edit (139 of 252 suites due 10-15, none slower); `audit_verdicts` stamps quotes with the
+read's time, so a fix landed before it reads regressed; doctors miss each other's verdicts; a repeat had no cheap
+exit until the pilot's `repeat:`; parallel fixers (load 100–240) make their own flakes.
 
 ## Goals
 
 Worked in order, one at a time (`bin/night-run` PILOT, carry); a landed goal moves to Done with its commit and
 proof, a failed one stays with one line on what blocked it. Reads after landing are journals the load also moves.
 
+### goal image-lease: image-fanout never launches a unit onto a locked account while another is idle
+
+Class: fan-out into a busy account. `bin/image-fanout` launches a unit onto a held account, waits 5 s on its lock
+(`lock_wait`), exits 5 and cools down 30 s. `~/.cache/image-legs/legs.jsonl` 10-10…23: 6,547 busy exits, 3,741 with
+another pool account idle (a ceiling: walled accounts may count as idle, unconfirmed); 798 attempt-min per 14 days
+(545 by the 5 s wait floor), and units waited 1,980 min to start.
+- Change: `bin/image-fanout` checks the account's lock before launch and takes an idle pool account instead.
+- First step: build the replay of `legs.jsonl` 10-10…23, walled accounts not idle; if few busy exits had an idle
+  account left, stop.
+- Proof, fixed in advance: that replay under the new pick, busy exits 6,547 → ≤ 2,806; a `test_image_fanout`
+  held-lock case, red on the old code.
+- Must not get worse: successful takes; the Flow daily budget.
+
+### goal metric-source: the Metric reads the doctors' own state, not night snapshots
+
+Metric fault, no class: the newest night snapshot is `20261014T013750Z-8004`, so 10-15…23 has no source and no
+goal here can be read.
+- Change: new problems and repeats come from the Harness, LLM and Updater doctors' own state, the same ids, days and
+  exclusions.
+- First step: from today's doctor state, 10-15…23 by hand: of the LLM doctor's 24 recent ids, 14 image-leg failures
+  (unconfirmed); 5 Harness ids count; 11 newer `limit_hit` ids on their own line. A state that cannot date an id's
+  first showing stops the goal.
+- Proof, fixed in advance: the new reader gives the Baseline's 2.69 and 0.31 (10-03…07, 10-08…14) exactly, then a
+  value for 10-16…22.
+- Must not get worse: the 10-02 rule set and the exclusions; the night report's snapshots.
+
 ## Done
 
-- gates (claude-setup 5e3cc12, llm-legs 0daf801d, review-bench 7f36bb6, 10-23): 9 gates decide on `hooks/lib/argv.sh`
-  (shfmt; both libs gone), 4 take its read-only pass, no deny rule fits; `test_gate_replay` 348 × 16. Refused old → new:
-  target 9/37 → 2 (others' rules), out 15/44 → 15, rightly 23/90 → 23, allowed 1 → 1, recent 200 +0; hook wall 280 →
-  149 ms/call. Rest b936d23 (+f0f308b): rj_segments, word/edit/eod. Left: instruction-files.sh, text
-  cases, worker-edit-guard 33 → 70 ms/call. Read: target 0.
-
-- stop-hooks (claude-setup a0fe49a, 10-23): stops waited on process starts (stall ≤≈1 s each), not work; builtin
-  payload read, first word ask in the asks' wave, kill hits and cleanup detached: 44 → 34 starts idle. Proof,
-  fixture stop, every start +0.2 s, interleaved: idle 6.9 → 4.4 s, busy 4.75 → 3.65 s, killed part 6.2–7.5 →
-  4.3–4.5 s. Read, 7 days: ≥5 s and kills per 1,000 under 13.2 and 3.7; not worse: asks, holds, notices, CPU p50 0.29 s.
+- gates (claude-setup 5e3cc12, llm-legs 0daf801d, review-bench 7f36bb6, b936d23, 10-23): 9 gates decide on
+  `hooks/lib/argv.sh`; `test_gate_replay` refused old → new: target 9/37 → 2, out 15 → 15, rightly 23 → 23; hook wall
+  280 → 149 ms/call. Left: instruction-files.sh, text cases, worker-edit-guard 33 → 70 ms/call. Read: target 0.
+- stop-hooks (claude-setup a0fe49a, 10-23): stops waited on process starts, not work: 44 → 34 starts idle; fixture
+  stop idle 6.9 → 4.4 s, busy 4.75 → 3.65 s. Read, 7 days: ≥5 s and kills per 1,000 under 13.2 and 3.7; not worse:
+  asks, holds, notices, CPU p50 0.29 s.
 - pilot-hold (llm-legs 04b8e272, 10-23): an unlanded goal holds its direction and those after;
   `test_night_carry`, first goal left: second starts 1 → 0, why on stderr; landed: 1 → 1.
 - bash-cap (llm-legs 35d604a3, 10-23): workers no longer export `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, so a
-  Bash call at its cap moves to the background. Proof at a 60 s cap, `test_night_run` as one plain call, old and new
-  interleaved: old 2 of 2 killed, no result; new 2 of 2 moved, PASS 529. Read: killed worker calls, `sleep` excluded,
+  Bash call at its cap moves to the background. Proof at a 60 s cap: old 2 of 2 killed, new 2 of 2 moved. Read: killed worker calls, `sleep` excluded,
   207 (10-09…23) → 0 per 14 days; not worse: final responses with a task unread, `worker_orphans`.
 
 ## Decisions
