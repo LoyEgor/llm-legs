@@ -95,16 +95,15 @@ Ranked by events in 10-06…19, each with the job minutes it cost.
 | C5. a night's branch is adopted again | 2 returns | 0 | 1,335 + 18 and 1,325 + 8 min spans |
 | C6. finish records landed or landing work as leftovers | 25 of 26 recorded | | none; the report and menu read them |
 | C7. a doc with no readable Status is never carried | 35 docs | | unknown |
-| C8. a handoff to a live chat waits for a night | 0 | 0 | both open docs (10-23); ≤ 9.4 min/day |
+| C8. a handoff to a live chat waits for a night | 0 | 0 | both open docs (10-23); ≈ 5 min/day |
 
 Why they come back:
 - C1: all six landed while a night ran, its fixers or audits appending an item to a settled doc of their topic
-  (aa48e898, 701f21d9 hook-floors; b3b2c3db load-unseen-census; bafd0768 image-night-triage; 51ee5aa5
-  speed-floor-measures; 9bac8bbb tokenmap-waste-detectors), though `docs/doctor-fix.md` names a new
+  (hook-floors ×2, load-unseen-census, image-night-triage, speed-floor-measures, tokenmap-waste-detectors), though `docs/doctor-fix.md` names a new
   `docs/handoffs/<date>-<topic>.md`. None from fixers since 10-10 (154 fixer jobs); two by day doctor chats on
   10-20 (Open).
 - C2: `job set` never read a closing handoff job's doc; settled by job-settles-its-doc (Done). hook-floors' f253
-  doc-night is C1's (settled 07:29, 6298ac54; fixer aa48e898 reopened it 07:39).
+  doc-night is C1's.
 - C3: answered trades stayed `trade for Egor` all day (7777); since 10-08 an answer settles one (`trade_settle`).
 - C4: a lone handoff to a live chat got no job and no batch; settled by live-owner-single (Done).
 - C5: 7777 closed both jobs merged while their branches could not land (a live chat's uncommitted work; superseded
@@ -127,23 +126,23 @@ C1, C6, C7: Open.
 Class C8: a doc to a live chat waits for a full night's `message` batch; nothing sends it in the day, and a pilot
 night carries none. Both open docs: `2026-10-14-logo-bench-own-tools` (To «Vector Magic macOS ARM
 migration», by a doctor chat 10-14 21:14), `2026-10-20-image-probe-arbostar-logo` (To «Логотип CRM для
-арбористов», a day fixer's verdict 10-20 16:18). `share/handoffs.py` reads both owners `live` (both spoke 10-23);
-no SendMessage of 112 after 10-14 21:00 carries either (one to «Vector Magic», another matter, was acted on in 6
-min), and neither owner read its doc.
+арбористов», a day fixer's verdict committed 10-20 15:07). `share/handoffs.py` reads both owners `live` (both spoke
+10-23); no SendMessage of 71 after 10-14 21:00 (deduped by tool_use id) names either, and neither owner read its
+doc.
 - Change, no code, in `docs/doctors-contract.md` §5 and `docs/fix-orchestrator.md`: the chat that writes a
   handoff, or closes a fixer's `handoff` verdict, sends its To chat, when `handoffs.py` reads it `live`, the doc's
   path by SendMessage the same turn, as the night sweep does a `message` batch (claude-setup night-sweep SKILL). Not live,
   or a name ListAgents lists twice: the night's. Workers never send.
-- First step: ListAgents in a main chat lists each owner once by that name, else stop; then send both.
+- First step: ListAgents in a main chat lists each owner once by that name, else stop (at risk: transcripts' send
+  targets are sockets, `local_` ids or `arbostar-logo-80`-style names, almost never titles); then send both.
 - Proof, in a day: each doc leaves `open` (settled or `trade`) within 24 h of its send, 0 of them at the next
   night's start (2 a pilot night now). Then 14 days by the Metric's commands: docs with a live To chat open at a
-  night's start 0; watched, days open → settled with a To chat, median 0.8 d (8 closed spells 10-09…22).
-- Gain: up to 9.4 min/day of writing the two levers remove in the owners' projects (tool mining `write_min`,
-  `logo-verdict` + `image-probe`, 10-16…22: 65.8 min, recomputed from chars at each day's write rate; no forked
-  duplicate among their calls on 10-19 or 10-21). Sure of the diagnosis, not the gain: `logo-verdict` fell from
-  40.9 (10-15) to about 2 min/day, and an owner may decline.
-- Must not get worse: night carry for owners not live (test_night_carry); the owner's spend a settled doc ≤
-  the night batches' $1.77 (Metric); no relay by Egor (a send held for his approval counts as one).
+  night's start 0; watched, days open → settled with a To chat, median 0.8 d (8 closed spells 10-09…22; by Status-line commits 5 spells, 0.97 d: method unconfirmed).
+- Gain: about 5 min/day (2.7–7.8) of writing the two levers remove in the owners' projects (tool mining `write_min`,
+  `logo-verdict` + `image-probe`, 24-h windows 10-19, 10-20, 10-22 and 10-23; the 7-day mean 9.4 rides on 10-17's
+  13.4). Sure of the diagnosis, not the gain: an owner may decline.
+- Must not get worse: night carry for owners not live (test_night_carry, unrechecked); the owner's spend a settled
+  doc ≤ the night batches' $1.77 (Metric, unconfirmed); no relay by Egor (a send held for his approval counts as one).
 
 ## How the block runs at night
 
