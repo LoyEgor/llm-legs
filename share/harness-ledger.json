@@ -606,7 +606,7 @@
             "claude-setup/hooks/lib/words_journal.py"
           ],
           "in": "claude-setup@89ddec5",
-          "regressed_at": null
+          "regressed_at": "2026-10-20T15:03:07+03:00"
         }
       ],
       "same_cause": [],
@@ -681,7 +681,7 @@
             "llm-legs/tests/test_worker_run_backstop.sh"
           ],
           "in": "llm-legs@d5cc8b63",
-          "regressed_at": null,
+          "regressed_at": "2026-10-20T15:03:07+03:00",
           "equivalence": {
             "compared": "whole hook output, base vs fix, under /bin/bash 3.2 and Homebrew bash 5",
             "data": "100 live runs of one chat, 90 held by a live starter and 10 with a dead one, at load ~50, 2026-10-14",
@@ -3209,7 +3209,7 @@
         "rule": "hook-held",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T06:54:29+03:00",
@@ -3250,7 +3250,7 @@
             "llm-legs/tests/test_worker_run_backstop.sh"
           ],
           "in": "llm-legs@b4b13f07",
-          "regressed_at": null
+          "regressed_at": "2026-10-14T18:38:19+03:00"
         },
         {
           "at": "2026-10-20T15:30:00+03:00",
@@ -3261,8 +3261,8 @@
             "llm-legs/share/processes.sh",
             "llm-legs/tests/test_worker_run_backstop.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@dd49a001",
+          "regressed_at": "2026-10-21T21:12:16+03:00"
         }
       ],
       "same_cause": [],
@@ -3369,7 +3369,7 @@
             "llm-legs/tests/test_report_bus.sh"
           ],
           "in": "llm-legs@816bb553",
-          "regressed_at": null
+          "regressed_at": "2026-10-20T01:59:54+03:00"
         }
       ],
       "same_cause": [
@@ -3669,7 +3669,7 @@
             "llm-legs/tests/test_worker_run_watchdog.sh"
           ],
           "in": "llm-legs@dcfb2f42",
-          "regressed_at": null
+          "regressed_at": "2026-10-14T22:57:22+03:00"
         }
       ],
       "same_cause": [],
@@ -4313,7 +4313,7 @@
             "llm-legs/tests/test_instruction_gate_bypasses.sh"
           ],
           "in": "llm-legs@6f01e217",
-          "regressed_at": null
+          "regressed_at": "2026-10-22T17:34:17+03:00"
         }
       ],
       "same_cause": [
@@ -5793,7 +5793,7 @@
         "rule": "opportunity",
         "ident": "background/hs lag"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:30:00+03:00",
@@ -5839,7 +5839,7 @@
             "llm-legs/tests/doctors_menu_harness.lua",
             "llm-legs/tests/test_instruction_gate_bypasses.sh"
           ],
-          "in": null,
+          "in": "llm-legs@702ac516",
           "regressed_at": null,
           "equivalence": {
             "compared": "doctors.lua: every row title through one memo per text and tone (the dim memo generalised), heldIds over a per-directory-key list of stamped names; the watcher's repo scan through instruction_visible_cached in repo-only mode (instruction_repo_files unfiltered, cached on the same stamps)",
@@ -6211,7 +6211,7 @@
         "rule": "opportunity",
         "ident": "hooks/commit-report\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T08:20:00+03:00",
@@ -6253,7 +6253,7 @@
             "claude-setup/hooks/commit-report.sh",
             "claude-setup/tests/test_commit_report.sh"
           ],
-          "in": null,
+          "in": "claude-setup@0c93716",
           "regressed_at": null,
           "equivalence": {
             "compared": "hooks/commit-report.sh at the base vs the fix: stdout and stderr per landing call",
@@ -8912,7 +8912,19 @@
         "ident": "test-health/fan-out/llm-legs/share/instruction-files\\.sh"
       },
       "status": "fixed",
-      "fixes": [{"at": "2026-10-23T06:02:41+03:00", "by": "goal fan-out", "files": ["llm-legs/share/suite_select.py", "llm-legs/share/affected-suites.sh", "llm-legs/share/test_health.py"], "in": "llm-legs@4e891fe3", "regressed_at": null}],
+      "fixes": [
+        {
+          "at": "2026-10-23T06:02:41+03:00",
+          "by": "goal fan-out",
+          "files": [
+            "llm-legs/share/suite_select.py",
+            "llm-legs/share/affected-suites.sh",
+            "llm-legs/share/test_health.py"
+          ],
+          "in": "llm-legs@4e891fe3",
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
@@ -8926,7 +8938,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/claude-setup/test_word_triggers"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T16:13:11+03:00",
@@ -8934,7 +8946,7 @@
           "files": [
             "claude-setup/tests/test_word_triggers.sh"
           ],
-          "in": null,
+          "in": "claude-setup@d3aa368",
           "regressed_at": null
         }
       ],
@@ -9499,7 +9511,7 @@
         "rule": "regression",
         "ident": "test-health/retests"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T15:42:16+03:00",
@@ -9508,7 +9520,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/bin/night-run"
           ],
-          "in": null,
+          "in": "llm-legs@dd49a001",
           "regressed_at": null
         }
       ],
@@ -9936,7 +9948,7 @@
         "rule": "opportunity",
         "ident": "time/wait_loop"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "expected_min_day": 121,
       "fixes": [
         {
@@ -9947,7 +9959,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_wait_until.sh"
           ],
-          "in": null,
+          "in": "llm-legs@7b06fd2d",
           "regressed_at": null,
           "equivalence": {
             "compared": "wait_call (bin/harness-doctor) on a bin/wait-until call against the sleep and loop shapes it replaces; the tool's verdict against the condition it polls (pid, pgrep pattern, glob count, log line)",
@@ -10529,7 +10541,7 @@
         "rule": "opportunity",
         "ident": "tool/skill/worker"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-20T15:10:00+03:00",
@@ -10537,7 +10549,7 @@
           "files": [
             "claude-setup/commands/worker.md"
           ],
-          "in": null,
+          "in": "claude-setup@65c4f5c",
           "regressed_at": null,
           "equivalence": {
             "compared": "who can start /worker before and after: model (Skill tool) and Egor (typed slash), and every script, hook or doc that names the command",
@@ -10559,7 +10571,7 @@
         "rule": "opportunity",
         "ident": "^tool/skill/impeccable$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-20T12:00:00+03:00",
@@ -10567,7 +10579,7 @@
           "files": [
             "claude-setup/commands/impeccable.md"
           ],
-          "in": null,
+          "in": "claude-setup@e1e4458",
           "regressed_at": null,
           "equivalence": {
             "compared": "the command's frontmatter before and after: description, argument-hint and body unchanged (the body of impeccable and 3d-review lose a repeated clause only); disable-model-invocation: true added",
@@ -10589,7 +10601,7 @@
         "rule": "opportunity",
         "ident": "^tool/skill/3d\\-review$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-20T12:00:00+03:00",
@@ -10597,7 +10609,7 @@
           "files": [
             "claude-setup/commands/3d-review.md"
           ],
-          "in": null,
+          "in": "claude-setup@e1e4458",
           "regressed_at": null,
           "equivalence": {
             "compared": "the command's frontmatter before and after: description, argument-hint and body unchanged (the body of impeccable and 3d-review lose a repeated clause only); disable-model-invocation: true added",
@@ -10619,7 +10631,7 @@
         "rule": "opportunity",
         "ident": "^tool/skill/trash$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-20T12:00:00+03:00",
@@ -10627,7 +10639,7 @@
           "files": [
             "claude-setup/commands/trash.md"
           ],
-          "in": null,
+          "in": "claude-setup@ba0eb2a",
           "regressed_at": null,
           "equivalence": {
             "compared": "the command's frontmatter before and after: description, argument-hint and body unchanged (the body of impeccable and 3d-review lose a repeated clause only); disable-model-invocation: true added",

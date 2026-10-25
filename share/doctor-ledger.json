@@ -2334,7 +2334,7 @@
     "until": "2026-10-20T03:37:29+03:00"
    },
    "title": "image-fanout's 5 s busy probe read as a final failed leg",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-20T15:05:00+03:00",
@@ -2342,7 +2342,7 @@
      "files": [
       "llm-legs/bin/llm-doctor"
      ],
-     "in": null,
+     "in": "llm-legs@1763236b",
      "regressed_at": null
     }
    ],
@@ -2364,7 +2364,7 @@
     "detail": "^delivered \\d+ of \\d+ · web · ChatGPT UI drift: no .Add photos & files. chooser"
    },
    "title": "ChatGPT's \"+\" menu opened nothing for an early click: no Add photos & files chooser",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-20T15:05:00+03:00",
@@ -2372,7 +2372,7 @@
      "files": [
       "llm-legs/share/chatgpt_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@1763236b",
      "regressed_at": null
     }
    ],
@@ -2394,7 +2394,7 @@
     "detail": "no 'Add photos & files' chooser in the composer"
    },
    "title": "A ChatGPT web leg failed whole on the missing Add photos & files chooser",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-20T15:05:00+03:00",
@@ -2402,7 +2402,7 @@
      "files": [
       "llm-legs/share/chatgpt_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@1763236b",
      "regressed_at": null
     }
    ],
@@ -2423,7 +2423,7 @@
     "detail": "^composite refused: no-local-change"
    },
    "title": "A fan-out whole-image enhance could not opt out of the composite",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-20T15:05:00+03:00",
@@ -2431,7 +2431,7 @@
      "files": [
       "llm-legs/bin/image-fanout"
      ],
-     "in": null,
+     "in": "llm-legs@1763236b",
      "regressed_at": null
     }
    ],
@@ -2449,7 +2449,7 @@
     "detail": "^read-only violation$"
    },
    "title": "a grok research run in a shared checkout failed READ_ONLY_VIOLATION because another chat edited that checkout during it",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-20T15:25:00+03:00",
@@ -2459,7 +2459,7 @@
       "llm-legs/share/light-research.sh",
       "llm-legs/tests/test_worker_run_websearch.sh"
      ],
-     "in": null,
+     "in": "llm-legs@7b06fd2d",
      "regressed_at": null
     }
    ],
