@@ -683,6 +683,9 @@ env.hs = {
     pasteboard = { setContents = function(value) W.pasteboard = value; return true end },
     inspect = tostring,
 }
+-- The module reads Terminal through the gate's bounded call; the stub answers
+-- through the same stubbed osascript, as claude_cmd_keys_harness.lua does.
+function ChatGateStub.terminalScript(_, script) return env.hs.osascript.applescript(script) end
 
 local function newWorld(opts)
     opts = opts or {}

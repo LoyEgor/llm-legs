@@ -2,7 +2,11 @@ local root = debug.getinfo(1, "S").source:match("^@(.+)/tests/[^/]+$")
 assert(root, "harness path is unavailable")
 -- This runs inside the live Hammerspoon: a module loaded with the real require registers its
 -- busy source on the live menu-style and the real Token tracking menu loses its ⟳.
-local menuStyle = dofile(root .. "/hammerspoon/menu-style.lua")
+-- Its theme is pinned to light: the live one switches to dark at night, where a red row's
+-- inactive look is 0.55 red and every isRed check reads the clock instead of the module.
+local menuStyle = assert(loadfile(root .. "/hammerspoon/menu-style.lua", "t", setmetatable({
+    hs = setmetatable({ host = { interfaceStyle = function() return nil end } }, { __index = hs }),
+}, { __index = _G })))()
 local function loadModule()
     return assert(loadfile(root .. "/hammerspoon/token-tracking.lua", "t", setmetatable({ require = function(name)
         if name == "menu-style" then return menuStyle end

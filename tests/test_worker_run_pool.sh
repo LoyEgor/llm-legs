@@ -131,12 +131,13 @@ refused_resume claudeb claude-cold 'its context is ~151k, near compaction'
 
 claude_small="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-small.jsonl"
 printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":90000,"cache_creation_input_tokens":500}}}' >"$claude_small"
-touch -t "$(date -v-50M +%Y%m%d%H%M)" "$claude_small"
+# UTC stamps: a local `touch -t` in the DST fall-back hour names its earlier instant, an hour off.
+touch -d "$(date -u -v-50M +%Y-%m-%dT%H:%M:%SZ)" "$claude_small"
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-small
 assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
 assert await_exit
-touch -t "$(date -v-60M +%Y%m%d%H%M)" "$claude_small"
+touch -d "$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ)" "$claude_small"
 refused_resume claudeb claude-small 'idle 1h[0-9]*m, past its ~1h cache'
 
 clear_stub
