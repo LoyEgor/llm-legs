@@ -66,7 +66,7 @@ tails + 7 load + 8 other key on 31 rows).
 |---|---:|---:|---:|---:|
 | 1. a Spend audit comes due with nothing new to change: a cut whose tail still sits in the 7-day window, a rise that was load or a tokenmap measurement change, a part kept before under another key | 78 of 81 audited problems; 31 of 64 rows | 6.65M of the audits' 7.63M (25 of 28 runs) | 5 audit nights, 10-09…14 | 31 rows, each closed alone |
 | 2. a scripted one-request call carries the configuration it never uses | 173 worker calls | 6.94M; ≈0.05M a week left | 10-05…15 | 7 |
-| 3. a session re-writes its whole context cold: idle past the cache, or another org's account | 5 | 0.11M since 10-14 (0.04M plain) | 10-10…14 | 1, held |
+| 3. a session re-writes its whole context cold: idle past the cache, or another org's account | 5 | 0.11M since 10-14 (0.04M plain) | 10-10…14 | 2, held |
 | 4. a run re-derives what a ledger holds: known reds, fixed rows re-proved, a whole read redone | 5 | | 4 nights | 3 |
 | 5. a run sized past what settles it, then run again: a 289-panel judge grid for ≈22 votes, a biased answer key, 241 images to one worker | 5 | | 2+ nights | 1 |
 | 6. rework from an unsettled spec (Fee index rebuilt 3×, batch sizing): model behavior, no fixer | 6 | | 3 nights | 0 |
@@ -83,7 +83,12 @@ Why they come back:
    (ffdf3b0d) and the 120 kB cap (6741fcf8); ≈0.05M a week left. Goal scripted-bare stopped: `worker-run` cannot
    tell a one-request run at launch.
 3. Fixed by the 10-14 resume refusal (9864be9d): cold worker re-writes 8.5M on 10-13, Workers' Cold cache 0 in
-   10-16…22 (`waste_cause` on `zone='worker'`).
+   10-16…22 (`waste_cause` on `zone='worker'`). Chats: Claude Code compacts an idle one once, 54 min after its last
+   request (≥200K, flag `tengu_sunny_locket`), refused on a keystroke in the last minute; 10-09…25 chats re-read 85
+   contexts ≥150K cold, 50 of them returns 58–360 min later. Since 10-25 claude-setup `hooks/cache-keepalive.py`
+   pings an idle chat ≥100K at 58 min, so a return within the next hour reads warm and the compactor re-arms. Its
+   worth is the `cache keepalive · 7 days` line (`share/keepalive.py`); a week whose pings cost more than they saved
+   opens a `keepalive` audit. tokenmap bills a ping's turn as a Stop re-answer (`keepalive`).
 4.–6. come from the night's fan-out, which Breakages' pilot removes, and from model behavior. Log-audit's whole
    reread is not fan-out: it runs in pilot prep (`bin/night-run` `PILOT_RULES`), and a stopped read restarts from
    its `since` (last 10-14). Class 5's one fix was review-bench's (909514f); the rest were the chat's choices.

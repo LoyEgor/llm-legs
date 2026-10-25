@@ -8,6 +8,7 @@ import subprocess
 import time
 
 from fix_commit import main_checkout, memo_get, memo_put
+import keepalive
 import limit_hit
 
 MENUS = "menus"
@@ -97,7 +98,7 @@ def delta(cur, prev):
 
 def components(payload, repos):
     """The menus check first, then each harness job whose latest run loaded Egor's configuration (tokenmap's
-    harness_index.loaded), then every Fee source of tokenmap's Fee index, largest first: its share of Claude spend as
+    harness_index.loaded), the cache keepalive while its pings cost more than they saved, then every Fee source of tokenmap's Fee index, largest first: its share of Claude spend as
     the menu shows it, the same as its basis for the due and proof rules, its plain Δ."""
     index = harness_index(payload) or {}
     sources = [s for s in index.get("sources") or () if isinstance(s, dict)]
@@ -113,6 +114,9 @@ def components(payload, repos):
     workers = worker_md_leak()
     if workers:
         out.append(workers)
+    pings = keepalive.component(time.time())
+    if pings:
+        out.append(pings)
     for s in sorted(sources, key=lambda s: -float(s["charged"])):
         out.append({"key": "fee:" + s["source"], "label": "%s (%s)" % (s["source"], s["group"]), "sources": [],
                     "share": round(100 * float(s["charged"]) / claude, 3) if claude else 0.0,
@@ -467,7 +471,8 @@ def collect(now, state, write, home, repos, root, local_day):
         else "Fee index: too little use",
         " · Fee %.1f %% of spend" % (100 * coverage) if isinstance(coverage, (int, float)) else "",
         len(out["problems"]), "" if len(out["problems"]) == 1 else "s")
-    out["menu"] = lines(found, rows, reasons, out["proofs"]) + [
+    pings = keepalive.menu_line(now)
+    out["menu"] = lines(found, rows, reasons, out["proofs"]) + [[0, "d", False, pings]] * bool(pings) + [
         [0, "d", False, "tracking.json %s · 7 days" % time.strftime("%d %b %H:%M", time.localtime(made))]]
     return out
 

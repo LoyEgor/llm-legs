@@ -16,6 +16,7 @@ import datetime, importlib.machinery, importlib.util, json, os, subprocess, sys,
 root, work = sys.argv[1], sys.argv[2]
 count = [0]
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "worker-stats")
+os.environ["CLAUDE_KEEPALIVE_DIR"] = os.path.join(work, "keepalive")
 
 
 def check(cond, what):
@@ -102,6 +103,84 @@ with open(os.path.join(os.environ["WORKER_STATS_DIR"], "runs.jsonl"), "a") as ha
 check("loaded:Workers" not in [c["key"] for c in spend.components(payload(), repos)],
       "a clean latest worker run clears the Workers component")
 os.remove(os.path.join(os.environ["WORKER_STATS_DIR"], "runs.jsonl"))
+
+import keepalive
+
+pings_dir = os.environ["CLAUDE_KEEPALIVE_DIR"]
+os.makedirs(pings_dir)
+
+
+def iso(t):
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def said(t, text, origin=None):
+    entry = {"type": "user", "timestamp": iso(t), "message": {"role": "user", "content": text}}
+    return {**entry, "origin": origin} if origin else entry
+
+
+def answered(t, mid, read, wrote, out=3):
+    return {"type": "assistant", "timestamp": iso(t), "message": {"id": mid, "usage": {
+        "input_tokens": 1, "cache_read_input_tokens": read, "cache_creation_input_tokens": wrote, "output_tokens": out}}}
+
+
+PING = said(0, "<task-notification>\n<summary>cache keepalive</summary>\n</task-notification>",
+            {"kind": "task-notification"})
+T0 = NOW - 3 * 86400
+returns = {"saved": [said(T0 + 1800, "next"), answered(T0 + 1801, "r", 200000, 500)],
+           "no return": [said(T0 + 3700, "next"), answered(T0 + 3701, "r", 0, 200000)],
+           "warm anyway": [said(T0 + 60, "next"), answered(T0 + 61, "r", 200000, 500)],
+           "cold": [said(T0 + 1800, "next"), answered(T0 + 1801, "r", 1000, 199000)],
+           "compacted": [{"type": "system", "subtype": "compact_boundary", "timestamp": iso(T0 + 3240)},
+                         said(T0 + 3500, "next"), answered(T0 + 3501, "r", 30000, 500)],
+           "unread": None}
+journal = []
+for kind, back in returns.items():
+    path = os.path.join(pings_dir, kind.replace(" ", "-") + ".jsonl")
+    with open(path, "w") as handle:
+        handle.write(json.dumps(dict(PING, timestamp=iso(T0 - 7200))) + "\n")  # an older ping, before the offset
+        offset = handle.tell()
+        if back is not None:
+            for entry in [dict(PING, timestamp=iso(T0 + 1)), answered(T0 + 2, "p", 200000, 100),
+                          answered(T0 + 2, "p", 200000, 100), *back]:
+                handle.write(json.dumps(entry) + "\n")
+    journal.append({"ts": iso(T0), "session": kind, "decision": "ping", "since": 3480, "transcript": path,
+                    "offset": offset})
+journal.append({"ts": iso(NOW - 8 * 86400), "session": "old", "decision": "ping", "since": 3480,
+                "transcript": os.path.join(pings_dir, "saved.jsonl"), "offset": 0})
+journal.append({"ts": iso(T0), "session": "x", "decision": "silent", "reason": "late"})
+ping_cost = 1 + 0.1 * 200000 + 2.0 * 100 + 5.0 * 3
+check([keepalive.outcome(r)["kind"] for r in journal[:6]] == list(returns)
+      and keepalive.outcome(journal[0]) == {"cost": ping_cost, "value": 1.9 * 200000, "kind": "saved"}
+      and keepalive.outcome(journal[5])["cost"] == 0.0,
+      "a ping's outcome reads the transcript from its offset: its own turn priced once per request id, then the next "
+      "real turn: warm past the hour saved, none within the hour, back before the hour, re-read cold, an idle "
+      "compaction first, no ping turn: %s" % [keepalive.outcome(r) for r in journal[:6]])
+
+
+def journaled(rows):
+    with open(keepalive.journal_path(), "w") as handle:
+        handle.writelines(json.dumps(r) + "\n" for r in rows)
+
+
+journaled(journal)
+week = keepalive.summary(NOW)
+check(week["pings"] == 6 and week["kinds"] == {k: 1 for k in returns} and week["ratio"] == round(
+          1.9 * 200000 / (5 * ping_cost), 1) and keepalive.component(NOW) is None
+      and keepalive.menu_line(NOW) == "cache keepalive · 7 days · 6 pings · 1 warm returns · 1 no return · saves "
+                                      "×%.1f its cost" % week["ratio"],
+      "the week's pings, the 8-day-old one and silent sleepers left out, saved more than they cost: a menu line, no "
+      "component: %s %s" % (week, keepalive.menu_line(NOW)))
+journaled([r for r in journal if r["session"] != "saved"])
+lost = keepalive.component(NOW)
+check(lost and lost["key"] == "keepalive" and lost["delta"].startswith("5 pings · 0 warm returns · 1 no return")
+      and lost["last"] == iso(T0) and spend.due(lost, None, {}) == "never audited"
+      and "keepalive" in [c["key"] for c in spend.components(payload(), repos)],
+      "5 pings that saved nothing make the keepalive a Spend component, due as never audited: %s" % lost)
+journaled([r for r in journal if r["session"] not in ("saved", "cold")])
+check(keepalive.component(NOW) is None, "under 5 pings settle nothing")
+os.remove(keepalive.journal_path())
+check(keepalive.menu_line(NOW) is None and keepalive.component(NOW) is None, "no journal, no line")
 
 ledger = os.path.join(work, "spend-ledger.json")
 os.environ["SPEND_LEDGER"] = ledger

@@ -10,6 +10,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+export CLAUDE_KEEPALIVE_DIR="$WORK/keepalive"  # share/keepalive.py: never the live ping journal
 
 asserts=$(python3 - "$ROOT" "$WORK" <<'EOF'
 import copy, fcntl, gzip, glob, importlib.machinery, importlib.util, json, os, resource, shutil, subprocess, sys
