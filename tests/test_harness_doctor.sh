@@ -2093,8 +2093,10 @@ assert_eq '[false,[]]' "$(dismiss_wait 'bash:alpha')" "a narrow not-a-bug row si
 assert_eq '[true,["ledger_fault","new",true,1]]' "$(dismiss_wait '.*')" \
   "a catch-all dismissal is dropped before judging and reported as ledger:<row id>"
 # Which dismissals are catch-alls is row_faults' alone: one module load judges every ident.
-assert_eq '[false, true, true, true]' "$(python3 -c 'import importlib.machinery as l, json, sys
-m = l.SourceFileLoader("hd", sys.argv[1]).load_module()
+assert_eq '[false, true, true, true]' "$(python3 -c 'import importlib.machinery as l, importlib.util, json, sys
+loader = l.SourceFileLoader("hd", sys.argv[1])
+m = sys.modules["hd"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("hd", loader))
+loader.exec_module(m)
 rows = json.load(open(sys.argv[2]))["rows"]
 def dropped(ident):
     row = {"id": "wait-dismissed", "title": "t", "match": {"rule": "wait", "ident": ident}, "status": "not-a-bug",
@@ -2172,13 +2174,17 @@ for pid in 1 999999; do
   jq -cn --argjson pid $pid --argjson since $((held_now - 90)) '{limiter: "mixed", pid: $pid, held: {what: "job"}, since: $since}' \
     > "$mixed/mixed-$pid.json"
 done
-assert_eq '[[1], [999999]]' "$(HARNESS_HOLDS_DIR="$mixed" python3 -c 'import importlib.machinery as l, json, sys
-m = l.SourceFileLoader("hd", sys.argv[1]).load_module()
+assert_eq '[[1], [999999]]' "$(HARNESS_HOLDS_DIR="$mixed" python3 -c 'import importlib.machinery as l, importlib.util, json, sys
+loader = l.SourceFileLoader("hd", sys.argv[1])
+m = sys.modules["hd"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("hd", loader))
+loader.exec_module(m)
 live, leaked = m.read_holds()
 print(json.dumps([[h["pid"] for h in live.get("mixed", [])], [h["pid"] for h in leaked.get("mixed", [])]]))' "$DOCTOR")" \
   "a ps that fails on one pid (too large) leaves each hold to its own liveness check instead of judging every live hold leaked"
-assert_eq '[]' "$(python3 -c 'import importlib.machinery as l, json, sys
-m = l.SourceFileLoader("hd", sys.argv[1]).load_module()
+assert_eq '[]' "$(python3 -c 'import importlib.machinery as l, importlib.util, json, sys
+loader = l.SourceFileLoader("hd", sys.argv[1])
+m = sys.modules["hd"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("hd", loader))
+loader.exec_module(m)
 print(json.dumps(m.ledger_faults(json.load(open(sys.argv[2])))))' "$DOCTOR" "$ROOT/share/harness-ledger.json")" \
   "the committed ledger has no faulty row"
 
@@ -2217,10 +2223,13 @@ assert_eq 1 "$(jq '.floors["event:UserPromptSubmit"][0]' "$catchup/days/$(date -
 
 ledger_guard() { # ledger... -> one line per ledger: ok, or the guard it breaks
 python3 - "$ROOT/share" "$ROOT/bin/speed-doctor" "$@" <<'LEDGER'
-import importlib.machinery, json, re, sys
+import importlib.machinery, importlib.util, json, re, sys
 sys.path.insert(0, sys.argv[1])
 from fix_commit import FIX_KEYS
-equivalent = importlib.machinery.SourceFileLoader("speed_doctor", sys.argv[2]).load_module().equivalent
+loader = importlib.machinery.SourceFileLoader("speed_doctor", sys.argv[2])
+speed_doctor = sys.modules["speed_doctor"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("speed_doctor", loader))
+loader.exec_module(speed_doctor)
+equivalent = speed_doctor.equivalent
 
 def guard(path):
     ledger = json.load(open(path))

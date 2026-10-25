@@ -437,9 +437,11 @@ git -C "$U/repo" init -q -b main && git -C "$U/repo" add -A && commit "$U/repo" 
 printf 'x\n' >"$U/repo/bin/gone.sh" && git -C "$U/repo" add -A && commit "$U/repo" gone
 git -C "$U/repo" rm -q bin/gone.sh && commit "$U/repo" "gone goes"
 CODE_DOCTOR_DIR="$U/state" python3 - "$CD" "$U/repo" >"$WORK/units.out" 2>&1 <<'PY'
-import importlib.machinery, os, sys
+import importlib.machinery, importlib.util, os, sys
 
-cd = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1]).load_module()
+loader = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1])
+cd = sys.modules["code_doctor"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("code_doctor", loader))
+loader.exec_module(cd)
 top = sys.argv[2]
 doc, _, _ = cd.index_repo(top, {})
 files = doc["files"]
@@ -914,9 +916,11 @@ CR_LIST_RC=2 CODE_DOCTOR_REVIEW_DEBT="$CR/review-debt" "$CD" critical --repo "$C
   fail "code-doctor critical passed though review-debt --list failed"
 assert grep -q '^critical: 0 judged · 0 waiting · 0 tokens · .* stop list-failed$' "$CR/out"
 CODE_DOCTOR_DIR="$WORK/critical-k" python3 - "$CD" <<'PY' || fail "critical spend shrank the fix queue"
-import importlib.machinery, sys
+import importlib.machinery, importlib.util, sys
 
-cd = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1]).load_module()
+loader = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1])
+cd = sys.modules["code_doctor"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("code_doctor", loader))
+loader.exec_module(cd)
 cd.os.makedirs(cd.state_dir(), exist_ok=True)
 cd.account("n1", "critical:repo", "critical", tokens=400000)
 assert cd.queue_k(cd.accounting_summary({})) == cd.TOP_K
@@ -924,9 +928,11 @@ cd.account("n1", "x", "fix", tokens=400000)
 assert cd.queue_k(cd.accounting_summary({})) == cd.TOP_K_LOW_YIELD
 PY
 CODE_DOCTOR_DIR="$WORK/record-fix" CODE_DOCTOR_LEDGER="$WORK/record-fix.json" python3 - "$CD" <<'PY' || fail "record-fix broke on a malformed ledger match"
-import importlib.machinery, sys
+import importlib.machinery, importlib.util, sys
 
-cd = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1]).load_module()
+loader = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1])
+cd = sys.modules["code_doctor"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("code_doctor", loader))
+loader.exec_module(cd)
 cd.os.makedirs(cd.state_dir(), exist_ok=True)
 cd.write_json(cd.ledger_path(), {"rows": [{"id": "odd", "match": "a string"}, {"id": "cause:x", "match": None}]})
 cd.load_candidates = lambda: [{"id": "cause:x", "units": []}]

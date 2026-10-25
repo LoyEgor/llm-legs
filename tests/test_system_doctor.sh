@@ -1101,7 +1101,9 @@ lines = "".join(line + "\n" for line in (
     "18:22:21.300000  WrData[A]  D=0x09  B=0x1000  /dev/disk3s1  kuku/zz  0.000100 W mds.2",
     "18:22:21.400000  WrData[A]  D=0x0a  B=0x1000  0.000100 W odd.1",
     "18:22:21.500000  WrData[AT1]  D=0x0b  B=0x1000  /dev/disk3s1  private/var/folders/hh/q3x/T/tmpa/render.png  0.000100 W resvg.5"))
-sampler = importlib.machinery.SourceFileLoader("ssd_sampler", os.path.join(root, "bin", "ssd-sampler")).load_module()
+loader = importlib.machinery.SourceFileLoader("ssd_sampler", os.path.join(root, "bin", "ssd-sampler"))
+sampler = sys.modules["ssd_sampler"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("ssd_sampler", loader))
+loader.exec_module(sampler)
 stats, sampled = sampler.aggregate(io.StringIO(lines))
 out = json.loads(json.dumps({**stats, "rows": sorted([*k, *v] for k, v in sampled.items())}))
 check(out["lines"] == 11 and out["rows"] == [
@@ -1130,8 +1132,10 @@ def sample_off(tag, script, **patch): # -> probe, sample, seconds taken, its sam
     shutil.rmtree(out, ignore_errors=True)
     began = time.time()
     probe = subprocess.run([sys.executable, "-I", "-c", """
-import importlib.machinery, json, os, sys, time
-s = importlib.machinery.SourceFileLoader("sampler", sys.argv[1]).load_module()
+import importlib.machinery, importlib.util, json, os, sys, time
+loader = importlib.machinery.SourceFileLoader("sampler", sys.argv[1])
+s = sys.modules["sampler"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("sampler", loader))
+loader.exec_module(s)
 s.FS_USAGE, s.TICK_S, s.CALIBRATION_B = sys.argv[2], 1, 2 << 20
 for name, value in json.loads(sys.argv[3]).items():
     setattr(s, name, value)

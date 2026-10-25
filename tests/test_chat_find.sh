@@ -405,8 +405,10 @@ assert has '2026-02-11 10:00'
 cache_sig() { stat -f '%i %Fm' "$1"; }
 cached_rows() {  # cached_rows <cache file> <row text as JSON> [<file> <text>]... — prints how many rows say it, one line a pair
   python3 -c '
-import importlib.machinery, json, sys
-tool = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1]).load_module()
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1])
+tool = sys.modules["chat_find"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_find", loader))
+loader.exec_module(tool)
 for cache, text in zip(sys.argv[2::2], sys.argv[3::2]):
     print(sum(1 for row in tool.load_cache(cache).values() if row.get("text") == json.loads(text)))
 ' "$SCRIPT" "$@"
@@ -508,8 +510,10 @@ assert has 'давний разговор'
 assert has 'правка на неделе'
 # A hot row that aged past the cutoff is demoted by the week run too, not only by a wide one.
 python3 -c '
-import importlib.machinery, sys
-tool = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1]).load_module()
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1])
+tool = sys.modules["chat_find"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_find", loader))
+loader.exec_module(tool)
 hot, cold = tool.load_cache(sys.argv[2]), tool.load_cache(sys.argv[3])
 path = next(path for path, row in cold.items() if row.get("text") == "давний разговор")
 hot[path] = cold.pop(path)
@@ -551,8 +555,10 @@ assert test "${found[1]}" = 1
 
 # --- every start of the tool stays off the gateway account chain it never calls ---
 assert test "$(python3 -c '
-import importlib.machinery, sys
-importlib.machinery.SourceFileLoader("chat_find", sys.argv[1]).load_module()
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1])
+tool = sys.modules["chat_find"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_find", loader))
+loader.exec_module(tool)
 print("gateway_auth" in sys.modules)
 ' "$SCRIPT")" = False
 
