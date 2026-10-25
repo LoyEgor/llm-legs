@@ -3272,6 +3272,7 @@ assert doc_has 'names `<vendor>b web <name>`'
 assert grep -Fq 'DOCTORS = ("llm", "harness", "updater", "code", "system")' "$ROOT/bin/doctor-fix"
 assert grep -Fq '(?<d>llm|harness|updater|code|system)' "$ROOT/bin/night-run"
 assert grep -Fq 'def doctor_lines: . as $n | ["llm", "harness", "updater", "code", "system"][] as $d' "$ROOT/bin/night-run"
+assert grep -Fq '  for doctor in llm harness updater code system; do' "$ROOT/bin/night-run"
 assert grep -Fq 'doctors = ("llm", "harness", "updater", "code", "system")' "$ROOT/share/time_budget.py"
 assert eq "$(awk '/^doctor_read\(\)/,/^}/' "$ROOT/bin/night-run" | grep -oE '[A-Z]+_DOCTOR_DIR' | tr '\n' ' ')" \
   "LLM_DOCTOR_DIR HARNESS_DOCTOR_DIR UPDATER_DOCTOR_DIR CODE_DOCTOR_DIR SYSTEM_DOCTOR_DIR "

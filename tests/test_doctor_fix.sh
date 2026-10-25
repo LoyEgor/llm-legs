@@ -1244,6 +1244,12 @@ jq --argjson s "$(now)" --arg g "$gate" --arg t "$L/tests/test_llm_limits.sh" '.
     {id: "spend:resumes", rule: "spend_audit", state: "watch", speed: true, group: "Spend",
       fact: "worker cold resumes · 1.2 % of spend · Δ +69% · audit due: never audited", spend: {component: "resumes", sources: []}}]
   | .speed.spend = {selection: ["spend:hook:gate.sh"]}' "$S/harness/latest.json" >"$S/spend.json" && mv "$S/spend.json" "$S/harness/latest.json"
+# A pilot night opens to fixers only once its carry brought block 7 back (.block7); --no-audits, while the audits'
+# owners have goals, leaves the audit rows out: nothing launches, stderr names them.
+night_ledger "$WORK/doctors" n13p '.pilot = "doctors legacy vendors" | .block7 = {at: "2026-10-25T01:00:00Z", launched: ["harness"]}'
+env "${speed_env[@]}" bash "$FIX" launch harness --night n13p --no-audits >"$WORK/out" 2>"$WORK/err" || fail "pilot night n13p: $(cat "$WORK/err")"
+assert [ ! -s "$WORK/out" ]
+assert grep -qF 'doctor-fix: audit rules held while their owners have goals (--no-audits): spend:hook:gate.sh, spend:resumes' "$WORK/err"
 git -C "$L" update-ref refs/night/n13/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n13 >"$WORK/out" 2>"$WORK/err" || fail "spend night n13: $(cat "$WORK/err")"
 assert jqe --arg g "$gate" --arg t "$L/tests/test_llm_limits.sh" '. == [["speed-spend-hook-gate-sh", ["spend:hook:gate.sh", [$g, $t]]]]' <(speed_runs)

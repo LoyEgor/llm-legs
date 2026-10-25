@@ -176,7 +176,7 @@ Dropped 10-23:
 | 10-07, 10-09 | ids facet holds only served ids; cheap events go to Sonnet | false events 4 → 0 per week | fe3841b9, 52ec96b0 |
 | 10-08 | releases seen within 2 h; the updater owns the native claude | | 64f8354e |
 | 10-19 | per-account catalogs and plans become events; Argon serves only on accounts that list it | Argon joined the gemini event 10-19 23:05Z | 56a766ed, 13707749 |
-| 10-23 | goal night-events: a pilot night past blocks 1–5's goals runs step 3's Vendors after its goals (`pilot_vendors`) | proof pending, the first such night: events open at its start → 0; then 7-day lag ≤ the gap between nights, guard 50–69 %, else reverted | 998dd4be, +35 net lines |
+| 10-23 | goal night-events: a pilot night past blocks 1–5's goals runs step 3's Vendors after its goals (`pilot_reached`) | proof pending, the first such night: events open at its start → 0; then 7-day lag ≤ the gap between nights, guard 50–69 %, else reverted | 998dd4be, +35 net lines |
 
 ## Decisions
 

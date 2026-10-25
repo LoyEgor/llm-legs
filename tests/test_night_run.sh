@@ -205,6 +205,13 @@ stop_chat "$(jq -r .session "$WORK/pv/reached/nights/$pvid.json")"
 pv reached start --resume "$pvid" >/dev/null || fail "resume a pilot night past vendors"
 assert grep -qF 'over resume: no `debt` job or debt pass; once the pending jobs land, `nr carry R` records the next goal' <<<"$(pv_prompt reached "$pvid")"
 assert grep -qF 'Then step 3'"'"'s Vendors: `vendor-fingerprint request --night R`' <<<"$(pv_prompt reached "$pvid")"
+# Once doctors.md has no goal left, the prompt brings back block 7: the System and Code doctors' prep, fixers by carry.
+assert_fails grep -qF 'system-doctor tidy' <<<"$pvp"
+printf '# D\n\n## Goals\n\n## Done\n' >"$WORK/pv/llm-legs/docs/directions/doctors.md"
+pv block7 start >"$WORK/out" || fail "pilot start, doctors reached"
+pvp=$(pv_prompt block7 "$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")")
+assert grep -qF '`updater-doctor --quiet`, `system-doctor tidy`, `system-doctor --quiet`, `system-doctor explain`, `code-doctor refresh`, `nr base R` and `code-doctor judge --night R`; no leftovers' <<<"$pvp"
+assert grep -qF 'until it prints nothing. Past the doctors goals carry launches the doctor fixers itself (`fixer` rows, jobs recorded) and adds a `deep-search` job: land each per branch, no `doctor-fix launch` of your own. Then step 3' <<<"$pvp"
 
 # Jobs: add before dispatch, one per ref, kinds checked.
 night job "$id" add fixer llm-20260930T010203Z --branch "night/$id/llm-20260930T010203Z" >/dev/null || fail "job add"

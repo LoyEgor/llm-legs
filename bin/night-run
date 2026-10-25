@@ -23,7 +23,7 @@ sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
 # a faked sweep list means a test: the real helpers would get its night refs
 helper_repos="${NIGHT_RUN_HELPER_REPOS-${NIGHT_RUN_SWEEP_REPOS:+/dev/null}}"
 helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
-KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal '
+KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal deep-search '
 # kind:days: carry adds the kind once no night ran it to an end in that many days
 PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30'
 # The directions in queue order (docs/directions/README.md): a new night is their pilot and works only the goals of
@@ -37,6 +37,9 @@ PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: 
 PILOT_RESUME_RULES='Pilot night (llm-legs docs/directions/README.md), over resume: no `debt` job or debt pass; once the pending jobs land, '"$PILOT_CARRY"
 # Once the pilot reaches vendors, its events are integrated after the goal lands, so a goal is judged alone.
 PILOT_VENDORS='Then step 3'"'"'s Vendors: `vendor-fingerprint request --night R`, a `vendor` job per printed run, each landed per branch.'
+# Once no goal is left in doctors.md, carry brings back block 7 (docs/directions/doctors.md): the prep its fixers read.
+PILOT_DOCTORS_PREP='`updater-doctor --quiet`, `system-doctor tidy`, `system-doctor --quiet`, `system-doctor explain`, `code-doctor refresh`, `nr base R` and `code-doctor judge --night R`'
+PILOT_DOCTORS='Past the doctors goals carry launches the doctor fixers itself (`fixer` rows, jobs recorded) and adds a `deep-search` job: land each per branch, no `doctor-fix launch` of your own.'
 # The cleanup button lands every leftover and nothing more while review debt waits (README block 10).
 CLEANUP_RULES='Review debt is paused (llm-legs docs/directions/README.md block 10): no `debt` job or debt pass; land every leftover, then Close, and step 6 with `--remainder '"'"'review debt paused'"'"'`.'
 STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
@@ -60,7 +63,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage|vendor-watch|tool-ideas|directions-refresh|goal> <ref> [--branch B] [--ready "<why>" [--repo R]...]
+       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage|vendor-watch|tool-ideas|directions-refresh|goal|deep-search> <ref> [--branch B] [--ready "<why>" [--repo R]...]
        night-run carry <id>
        night-run suites <id> [--wait]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed, suites, answer, done)
@@ -151,11 +154,15 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
-  A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt, plus PILOT_VENDORS once no direction before vendors has a goal) carries only Egor's
+  A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt, plus PILOT_DOCTORS once doctors.md has none left and PILOT_VENDORS once no direction before vendors has a goal) carries only Egor's
   answered trades and one goal job at a time: the first `### goal <slug>:` section under `## Goals` of
   docs/directions/<direction>.md with no job tonight, the directions in PILOT order, none while a goal job is
   pending or live; its worker
-  moves the goal out of that section once it lands. After the last goal, directions-refresh when it is due
+  moves the goal out of that section once it lands. Once doctors.md has none left, block 7 before the next direction's
+  goals, which wait while its jobs are pending or live: carry runs NIGHT_RUN_DOCTOR_FIX (bin/doctor-fix) launch <doctor>
+  --night once per doctor (.block7.launched; a failure in .block7.failed, never retried; --no-audits while a direction
+  file linked from the "Audit rules" sentence of doctors.md has a goal), a fixer job and line per printed run, then
+  one deep-search job. After the last goal, directions-refresh when it is due
 speed-gate, run by worker-run once a night worker takes its slot: exits 3 while a process stands in the
   job's night worktree (a resumed night's earlier worker), naming it, the job untouched — never the launching chat's own; a Speed fixer (a harness run of area
   speed-<first lever>, up to 5 levers of one repository) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
@@ -420,7 +427,9 @@ cmd_start() {
   [ "$scope" = all ] || marker=" $scope" pilot=''
   [ "$scope" != cleanup ] || marker=" cleanup. $CLEANUP_RULES"
   [ -z "$pilot" ] || marker=" pilot $pilot. $PILOT_RULES"
-  ! pilot_vendors "$pilot" || { marker=${marker/'no `vendor-fingerprint`, '/no }
+  ! block7_due "$pilot" || { marker=${marker/'`updater-doctor --quiet` and `nr base R`'/"$PILOT_DOCTORS_PREP"}
+    marker=${marker/' Then Close,'/" $PILOT_DOCTORS Then Close,"}; }
+  ! pilot_reached "$pilot" vendors || { marker=${marker/'no `vendor-fingerprint`, '/no }
     marker=${marker/' Then Close,'/" $PILOT_VENDORS Then Close,"}; }
   lock
   open=$(open_nights | head -1)
@@ -432,7 +441,8 @@ cmd_start() {
     if [ -z "$job" ]; then
       pilot=$(jq -r '.pilot // empty' "$(night_file "$id")")
       if [ -n "$pilot" ]; then marker=" resume pilot $pilot. $PILOT_RESUME_RULES"
-        ! pilot_vendors "$pilot" || marker=${marker/' Then Close,'/" $PILOT_VENDORS Then Close,"}
+        ! block7_due "$pilot" || marker=${marker/' Then Close,'/" $PILOT_DOCTORS Then Close,"}
+        ! pilot_reached "$pilot" vendors || marker=${marker/' Then Close,'/" $PILOT_VENDORS Then Close,"}
       elif jq -e '.cleanup' "$(night_file "$id")" >/dev/null; then marker=" resume cleanup. $CLEANUP_RULES"; fi
     fi
   else
@@ -892,8 +902,9 @@ goal_text() { # direction-file slug -> that goal's section
 
 pilot_goal() { # id directions -> the carry line of the next goal in queue order (the first with no job tonight), none
   # while one is at work or once one did not land tonight (the 10-16 queue: the next starts once the earlier ones
-  # landed); after the last goal the monthly directions-refresh when due, the direction files settled by then
-  local repo dir file slug slugs night state
+  # landed); once doctors.md has none left, block 7's lines before the next direction's goals, which wait while
+  # its jobs work; after the last goal the monthly directions-refresh when due, the direction files settled by then
+  local repo dir file slug slugs night state lines
   night=$(night_file "$1")
   ! jq -e 'any(.jobs[]; .kind == "goal" and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
   repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: pilot %s not carried\n' "$2" >&2; return 0; }
@@ -910,18 +921,55 @@ pilot_goal() { # id directions -> the carry line of the next goal in queue order
       break
     done
     [ -z "$slugs" ] || break # goals still in its file (failed or blocked tonight): the next direction waits
+    [ "$dir" = doctors ] || continue
+    lines=$(block7_lines "$night" "$repo")
+    [ -z "$lines" ] || { printf '%s\n' "$lines"; return 0; }
+    ! jq -e 'any(.jobs[]; (.kind | IN("fixer", "deep-search")) and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
   done
   ! periodic_due | grep -qx directions-refresh ||
     printf 'directions-refresh\t%s\t%s\tshare/briefs/directions-refresh.md\t-\n' "$(date -u +%Y-%m)" "$repo"
 }
 
-pilot_vendors() { # directions -> true when vendors is among them and none before it has a goal left (pilot_goal's test)
+pilot_reached() { # directions direction -> true when the direction is among them and none before it has a goal left
+  # (pilot_goal's test)
   local repo dir
-  case " $1 " in *' vendors '*) ;; *) return 1 ;; esac
+  case " $1 " in *" $2 "*) ;; *) return 1 ;; esac
   repo=$(repo_dir llm-legs) || return 1
-  for dir in ${1%%vendors*}; do
+  for dir in $1; do
+    [ "$dir" != "$2" ] || return 0
     [ ! -r "$repo/docs/directions/$dir.md" ] || [ -z "$(goal_slugs "$repo/docs/directions/$dir.md")" ] || return 1
   done
+}
+
+block7_due() { # directions -> true when pilot_goal prints block 7's lines: doctors reached, its file read and no goal left
+  local file
+  pilot_reached "$1" doctors && file="$(repo_dir llm-legs)/docs/directions/doctors.md" && [ -r "$file" ] &&
+    [ -z "$(goal_slugs "$file")" ]
+}
+
+audit_owners() { # repo -> the direction files the "Audit rules" sentence of doctors.md's night section links
+  awk '/^## /{p = ($0 ~ /^## How the block runs at night/)} p' "$1/docs/directions/doctors.md" 2>/dev/null | tr '\n' ' ' |
+    awk '{n = split($0, s, /\. /); for (i = 1; i <= n; i++) if (s[i] ~ /Audit rules/) print s[i]}' |
+    grep -oE '\]\([a-z0-9-]+\.md\)' | sed 's/^](//; s/)$//'
+}
+
+audits_held() { # repo -> true while a direction audit_owners names has a goal left: its audit rules are not launched
+  local owner
+  for owner in $(audit_owners "$1"); do
+    [ ! -r "$1/docs/directions/$owner" ] || [ -z "$(goal_slugs "$1/docs/directions/$owner")" ] || return 0
+  done
+  return 1
+}
+
+block7_lines() { # night-file repo -> a fixer line per doctor carry has not launched tonight, then the night's deep-search
+  local doctor flag=''
+  ! audits_held "$2" || flag=' --no-audits'
+  for doctor in llm harness updater code system; do
+    jq -e --arg d "$doctor" '.block7.launched // [] | index($d)' "$1" >/dev/null ||
+      printf 'fixer\t%s\t%s\tdoctor-fix launch %s%s\t-\n' "$doctor" "$2" "$doctor" "$flag"
+  done
+  ! jq -e 'any(.jobs[]; .kind == "deep-search")' "$1" >/dev/null || return 0
+  printf 'deep-search\t%s\t%s\tshare/briefs/deep-search.md\t-\n' "$(date -u +%Y-%m-%d)" "$2"
 }
 
 periodic_due() { # -> each PERIODIC kind no night ran to an end (merged, nothing-to-do, blocked-on-egor) within its days
@@ -952,7 +1000,7 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
     printf '%s\n' "$file"
     return 0
   fi
-  if [[ " $PERIODIC " == *" $kind:"* ]]; then
+  if [[ " $PERIODIC " == *" $kind:"* ]] || [ "$kind" = deep-search ]; then
     { printf 'ROUND: none\nSTRONG: yes\nWEB: on\nWorking directory: %s\n\n# Night %s job %s\n\n' "$wt" "$kind" "$ref"
       printf 'Night %s. Work in the worktree `%s` on branch `%s`; `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor; markdown is net zero against `refs/night/%s/base`. No commit is `nothing-to-do`.\n\n' \
         "$id" "$wt" "$branch" "$repo_root" "$id"
@@ -1082,6 +1130,28 @@ trade_brief() { # id ref repo worktree branch -> the brief file carrying out Ego
   printf '%s\n' "$file"
 }
 
+carry_fixer() { # id doctor flags -> the doctor's fixers launched once a night (.block7): a fixer job and its line per run
+  local id=$1 doctor=$2 err="$nights_dir/$1.fixer-$2.err" out rc run brief wt
+  ! jq -e --arg d "$doctor" '.block7.launched // [] | index($d)' "$(night_file "$id")" >/dev/null || return 0
+  lock
+  night_set "$id" '.block7.at //= $t | .block7.launched += [$d]' --arg d "$doctor" --arg t "$(stamp)" ||
+    die "cannot write night $id"
+  unlock
+  out=$("${NIGHT_RUN_DOCTOR_FIX:-$repo_root/bin/doctor-fix}" launch "$doctor" --night "$id" $3 </dev/null 2>"$err") # $3: --no-audits or none
+  rc=$?
+  cat "$err" >&2
+  if [ "$rc" -ne 0 ]; then
+    lock
+    night_set "$id" '.block7.failed[$d] = $e' --arg d "$doctor" --arg e "$(tail -1 "$err")" || die "cannot write night $id"
+    unlock
+  fi
+  while IFS=$'\t' read -r run brief wt; do
+    [ -n "$run" ] || continue
+    "$script_path" job "$id" add fixer "$run" --branch "night/$id/$run" >/dev/null </dev/null || continue
+    printf '%s\t%s\t%s\n' "$run" "$brief" "$wt"
+  done <<<"$out"
+}
+
 cmd_carry() {
   local id=${1:-} kind slug repo what log ref branch wt err brief path top root
   [ -n "$id" ] && [ $# -eq 1 ] || usage
@@ -1089,6 +1159,7 @@ cmd_carry() {
   jq -e '.pilot' "$(night_file "$id")" >/dev/null || carry_owner_chats "$id"
   while IFS=$'\t' read -r kind slug repo what log; do
     ref="$kind-$slug"
+    [ "$kind" != fixer ] || { carry_fixer "$id" "$slug" "${what#"doctor-fix launch $slug"}"; continue; }
     if [ "$kind" = handoff ]; then
       ! jq -e --arg p "$repo/$what" --arg r "$ref" 'any(.jobs[]; .kind == "handoff" and (.path == $p or (.path == null and .ref == $r)))' \
         "$(night_file "$id")" >/dev/null || continue

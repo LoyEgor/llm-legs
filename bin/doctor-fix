@@ -66,7 +66,7 @@ JQ_HAS_RULES='any(.problems[]; .rule as $r | $rules | split(" ") | index($r))'
 die() { printf 'doctor-fix: %s\n' "$*" >&2; exit 1; }
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-pending_id=''
+pending_id='' no_audits=''
 on_exit() {
   store_lock_release "$runs_dir/.lock"
   if [ -n "$pending_id" ]; then
@@ -153,6 +153,7 @@ from knobs import changed_lines, knob_site
 import limit_hit
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
+AUDIT_RULES = ("spend_audit", "suite_audit", "cpu_audit")
 LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
                "light": ("llm-legs/bin/light-research",), "image": ("llm-legs/share/image-leg.sh",),
                "debt": ("llm-legs/bin/llm-doctor",)}
@@ -341,11 +342,14 @@ def snapshot(doctor, doc_file, night=None):
                 problem[key] = row[key]
     kept, watched, opportunities, speed, held, ranks = [], [], {}, set(), set(), {}
     now = time.time()
-    skipped, holds, ruled = [], [], rulings(doctor, now)
+    skipped, holds, ruled, audits = [], [], rulings(doctor, now), []
     speed_doc = (doc.get("speed") or {}) if doctor == "harness" else {}
     for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
         if rule == "debt-handoff":
+            continue
+        if rule in AUDIT_RULES and os.environ.get("DF_NO_AUDITS"):
+            audits.append(str(pid))
             continue
         if pid in ruled and state != "regressed" and held_since(problem, ruled[pid], now):
             holds.append({"id": pid, "state": "held", "run": ruled[pid][1]})
@@ -512,7 +516,7 @@ def snapshot(doctor, doc_file, night=None):
                 held.add(str(problem.get("ident") or str(pid).partition(":")[2]))
         elif rule == "opportunity" and problem.get("speed") \
                 and (problem.get("opportunity") or {}).get("quality") == "equivalent" \
-                or rule in ("spend_audit", "suite_audit", "cpu_audit") and problem.get("speed"):
+                or rule in AUDIT_RULES and problem.get("speed"):
             opportunities[pid] = entry
         elif state == "watch" and doctor == "harness" and area in HOOK_AREAS:
             watched.append(((problem.get("value") or 0) * (problem.get("exposure") or 0), entry))
@@ -526,6 +530,8 @@ def snapshot(doctor, doc_file, night=None):
     entries = [entry for entry in kept if entry["id"] not in speed] + ranked + [entry for _, entry in watched[:8]]
     if skipped:
         print("speed-doctor: " + "; ".join(skipped), file=sys.stderr)
+    if audits:
+        print("doctor-fix: audit rules held while their owners have goals (--no-audits): " + ", ".join(audits), file=sys.stderr)
     if holds:
         print("doctor-fix: held, nothing new since the ruling: " + "; ".join("%s (%s)" % (h["id"], h["run"]) for h in holds),
               file=sys.stderr)
@@ -609,7 +615,7 @@ def batch_speed(entries, speed):
     entries = [entry for entry in entries if entry["id"] not in speed or entry["id"] not in held]
     groups = []
     for entry in (entry for entry in entries if entry["id"] in speed):
-        audit = entry["rule"] in ("spend_audit", "suite_audit", "cpu_audit")
+        audit = entry["rule"] in AUDIT_RULES
         files = set(entry["component"]["files"])
         hits = [] if audit else [group for group in groups if group["files"] & files and not group["audit"]]
         group = hits[0] if hits else {"files": set(), "entries": [], "audit": audit}
@@ -1121,7 +1127,7 @@ speed_held() { # -> "<problem id>\t<run id>" for each problem an open harness sp
 launch_runs() { # doctor night -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
   local doctor=$1 night=$2 snap area id top wt branch base err judge='' brief siblings repo repos failed=0 knobs='' own held
   check_doc "$doctor" || exit 1
-  snap=$(DF_HELD_SPEED=$(speed_held) py snapshot "$doctor" "$(doc_path "$doctor")" "$night") || die "cannot snapshot the $doctor doctor"
+  snap=$(DF_HELD_SPEED=$(speed_held) DF_NO_AUDITS=$no_audits py snapshot "$doctor" "$(doc_path "$doctor")" "$night") || die "cannot snapshot the $doctor doctor"
   # Rows a ruling holds ride on the first run this launch claims, as its held list (stderr names them too).
   held=$(jq -c 'map(select(.state == "held") | {id, run})' <<<"$snap") && snap=$(jq -c 'map(select(.state != "held"))' <<<"$snap")
   [ "$doctor" != harness ] || jq -r '.speed | select(. != null and (.selection // []) == [])
@@ -1183,18 +1189,21 @@ launch_runs() { # doctor night -> per area with problems a run, its worktrees an
   return "$failed"
 }
 
-full_night() { # id -> dies unless the night's ledger exists, is unfinished and no pilot: fixers launch only inside one
+full_night() { # id -> dies unless the night's ledger exists, is unfinished and no pilot, or a pilot whose carry
+  # brought back block 7 (.block7, docs/directions/doctors.md): fixers launch only inside one
   local file="${runs_dir%/*}/nights/$1.json" state
   [[ $1 =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$1' is not branch-safe"
-  state=$(jq -r 'if .finished_at != null then "finished" elif has("pilot") then "a pilot" else "open" end' "$file" 2>/dev/null) ||
+  state=$(jq -r 'if .finished_at != null then "finished" elif has("pilot") and (has("block7") | not) then "a pilot" else "open" end' \
+    "$file" 2>/dev/null) ||
     die "no night ledger $file: fixers launch only inside a full night"
   [ "$state" = open ] || die "night $1 is $state: fixers launch only inside a full night"
 }
 
-launch() { # llm|harness|updater|code|system|all --night <id>
+launch() { # llm|harness|updater|code|system|all --night <id> [--no-audits]
   local doctor=${1:-} reason
-  [ "${2:-}" = --night ] && [ -n "${3:-}" ] && [ $# -eq 3 ] ||
+  [ "${2:-}" = --night ] && [ -n "${3:-}" ] && { [ $# -eq 3 ] || { [ $# -eq 4 ] && [ "$4" = --no-audits ]; }; } ||
     { printf 'doctor-fix: fixers launch only inside a full night: launch <doctor> --night <night-id>, from its orchestrator\n' >&2; usage; }
+  [ $# -eq 3 ] || no_audits=1
   full_night "$3"
   mkdir -p "$runs_dir" || die "cannot make $runs_dir"
   if [ "$doctor" = code ]; then
@@ -1205,7 +1214,7 @@ launch() { # llm|harness|updater|code|system|all --night <id>
     llm | harness | updater | code | system) launch_runs "$doctor" "$3" ;;
     all)
       for doctor in llm harness updater code system; do
-        ( launch "$doctor" --night "$3" ) || printf 'doctor-fix: launch %s --night %s failed\n' "$doctor" "$3" >&2
+        ( launch "$doctor" --night "$3" ${4:-} ) || printf 'doctor-fix: launch %s --night %s failed\n' "$doctor" "$3" >&2
       done ;;
     *) usage ;;
   esac
@@ -1583,8 +1592,8 @@ list_runs() { # [doctor] [--open] [--json]
 
 usage_text() {
   cat <<'EOF'
-usage: doctor-fix launch llm|harness|updater|code|system --night <night-id>   (only inside an open full night, from its orchestrator)
-       doctor-fix launch all --night <night-id>   (every doctor in roster order; one that fails prints a line, the rest still launch)
+usage: doctor-fix launch llm|harness|updater|code|system --night <night-id> [--no-audits]   (only inside an open full night or a pilot one past block 7's goals, from its orchestrator; --no-audits leaves suite, CPU and spend audit rows out)
+       doctor-fix launch all --night <night-id> [--no-audits]   (every doctor in roster order; one that fails prints a line, the rest still launch)
        doctor-fix show <id>
        doctor-fix runs [llm|harness|updater|code|system] [--open] [--json]
        doctor-fix problems llm|harness|updater|code|system [<id regex>]   (its latest.json problems and blind spots, id and state each; with a regex its fact too, one match whole as JSON)

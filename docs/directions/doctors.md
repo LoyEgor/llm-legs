@@ -1,7 +1,7 @@
 # Doctors (direction 7)
 
 The doctors (LLM, Harness with Speed, Updater, Code, System) and the night's use of them. Two parts:
-- Doctor fixes: `doctor-fix launch --night` on a full night (`docs/doctor-fix.md`).
+- Doctor fixes: `doctor-fix launch --night` (`docs/doctor-fix.md`).
 - Deep search: the night looks for what no doctor shows and makes a doctor see it.
 
 ## Metric
@@ -131,11 +131,12 @@ Class 4. `log_audit`: 44 of 75 rows false (59 %, 0.29 % of spend, no repeats), 2
 ## How the block runs at night
 
 - It brings back README "The whole night" sections Doctor fixes and Deep search, both block 7. `bin/night-run`:
-  the `PILOT` default already holds `vendors` and `doctors`. Carry prints neither section today (`pilot_goal` gives goal and
-  directions-refresh lines; fixers are the sweep's `doctor-fix launch`, refused on a pilot). Once PILOT
-  reaches `doctors` with no goal left, `pilot_goal` adds one `fixer<TAB><doctor><TAB>llm-legs<TAB>doctor-fix launch
-  <doctor>` line per doctor, then `deep-search<TAB><date><TAB>llm-legs<TAB>share/briefs/deep-search.md` (new kind;
-  brief landed); `PILOT_RULES` and doctor-fix's pilot check except them. Audit rules launch once their owners' goals (blocks 2–4) landed.
+  `PILOT` (default `doctors legacy vendors`) starts here. Once no goal is left here, `pilot_goal` prints one
+  `fixer<TAB><doctor>` line per doctor, then `deep-search<TAB><date>`, before the next direction's goals, held
+  while those jobs work. Carry runs `doctor-fix launch <doctor>` once per doctor (`.block7`, which alone opens a
+  pilot night to doctor-fix; a failed launch is recorded, never retried); `PILOT_RULES` adds System and Code doctor
+  prep. Audit rules wait (`--no-audits`) while [Lost time](lost-time.md), [System](system.md) or [Spend](spend.md)
+  holds a goal.
 - First night: those lines once each. Judged by its false-alarm share of decided non-audit rows against 38.1 % and
   24.6 % (target below 24.6 %) with the guard at or under baseline, rows ruled out again within a window 0, fixer
   spend per decided row from the night header (c746800c), meter closes ≥ blind spots added. If it does not cope,

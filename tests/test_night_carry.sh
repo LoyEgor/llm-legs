@@ -579,4 +579,74 @@ assert grep -qF 'end with `ESCALATE: <reason>`' "$NIGHTS/N7.suite-suites-test_re
 assert [ ! -e "$NIGHTS/N7.suite-suites-test_ok.brief.md" ]
 fi
 
+if suite_shard_owns 3 nc-block7; then
+# Block 7 (docs/directions/doctors.md): once no goal is left in doctors.md, carry launches each doctor's fixers once a
+# night through doctor-fix (a stub here, every call logged) and adds one deep-search job, before the next direction's
+# goals; audit rules stay out (--no-audits) while a direction the doctors.md "Audit rules" sentence links has a goal.
+export DOCTORS_DIR="$WORK/b7/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
+B="$WORK/b7/llm-legs" calls="$WORK/b7/calls"
+night7='## How the block runs at night\n\n- Audit rules wait (`--no-audits`) while [Lost time](lost-time.md), [System](system.md)\n  or [Spend](spend.md) holds a goal.\n'
+git init -q -b main "$B" && mkdir -p "$B/docs/directions"
+printf "# D\n\n## Goals\n\n### goal heavy-tail: one class\n\n$night7" >"$B/docs/directions/doctors.md"
+printf '# T\n\n## Goals\n\n### goal walled-resume: rescue\n' >"$B/docs/directions/lost-time.md"
+printf '# L\n\n## Goals\n\n### goal dead-code: gone\n' >"$B/docs/directions/legacy.md"
+gt -C "$B" add -A && gt -C "$B" commit -qm init
+printf '%s\n' "$B" >"$WORK/sweep-b7"
+cat >"$WORK/b7/doctor-fix" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$B7_CALLS"
+[ "$2" != code ] || { printf 'doctor-fix: code is report-only\n' >&2; exit 1; }
+[ "$2" != harness ] || printf 'harness-r1\t/briefs/harness-r1.md\t/wt/harness-r1\n'
+EOF
+chmod +x "$WORK/b7/doctor-fix"
+b7night() { NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-b7" NIGHT_RUN_DOCTOR_FIX="$WORK/b7/doctor-fix" B7_CALLS="$calls" night "$@"; }
+b7new() { jq -n --arg id "$1" '{id: $id, started_at: "2026-10-25T01:00:00Z", finished_at: null, session: null,
+  pilot: "doctors legacy", jobs: []}' >"$NIGHTS/$1.json" && b7night base "$1" >/dev/null || fail "night base $1 failed"; }
+b7new D1
+# A goal left in doctors.md: that goal, no fixer launched.
+b7night carry D1 >"$WORK/d1.out" 2>/dev/null || fail "carry D1 failed"
+assert [ "$(cut -f1 "$WORK/d1.out")" = goal-heavy-tail ]
+assert [ ! -e "$calls" ]
+assert jqe 'has("block7") | not' "$NIGHTS/D1.json"
+# It lands tonight: the next carry launches every doctor's fixers in roster order, a fixer job and line per printed
+# run, then Deep search; a failed launch is passed on and recorded.
+b7night job D1 set goal-heavy-tail state=merged >/dev/null || fail "goal-heavy-tail not merged"
+printf "# D\n\n## Goals\n\n$night7" >"$B/docs/directions/doctors.md"
+gt -C "$B" commit -qam landed
+day=$(date -u +%Y-%m-%d)
+b7night carry D1 >"$WORK/d1b.out" 2>"$WORK/d1b.err" || fail "carry D1 past the doctors goals failed"
+assert [ "$(cut -f1 "$WORK/d1b.out")" = "harness-r1
+deep-search-$day" ]
+assert [ "$(cat "$calls")" = "launch llm --night D1 --no-audits
+launch harness --night D1 --no-audits
+launch updater --night D1 --no-audits
+launch code --night D1 --no-audits
+launch system --night D1 --no-audits" ]
+assert grep -qxF 'doctor-fix: code is report-only' "$WORK/d1b.err"
+assert jqe '.block7.launched == ["llm", "harness", "updater", "code", "system"] and (.block7.at | type) == "string"
+  and .block7.failed == {code: "doctor-fix: code is report-only"}' "$NIGHTS/D1.json"
+assert jqe --arg d "deep-search-$day" '[.jobs[] | [.kind, .ref, .state, .branch]] == [["goal", "goal-heavy-tail", "merged", "night/D1/goal-heavy-tail"],
+  ["fixer", "harness-r1", "pending", "night/D1/harness-r1"], ["deep-search", $d, "pending", "night/D1/\($d)"]]' "$NIGHTS/D1.json"
+assert [ "$(head -3 "$NIGHTS/D1.deep-search-$day.brief.md")" = "ROUND: none
+STRONG: yes
+WEB: on" ]
+assert grep -qxF '## Deep search — the doctors learn what they do not log' "$NIGHTS/D1.deep-search-$day.brief.md"
+# A second carry launches nothing again, the failed one included, and legacy's goal waits while block 7's jobs work.
+b7night carry D1 >"$WORK/d1c.out" 2>/dev/null || fail "a second carry D1 failed"
+assert [ ! -s "$WORK/d1c.out" ]
+assert [ "$(wc -l <"$calls" | tr -d ' ')" = 5 ]
+b7night job D1 set harness-r1 state=nothing-to-do >/dev/null && b7night job D1 set "deep-search-$day" state=nothing-to-do >/dev/null ||
+  fail "block 7 jobs not settled"
+b7night carry D1 >"$WORK/d1d.out" 2>/dev/null || fail "carry D1 after block 7 failed"
+assert [ "$(cut -f1 "$WORK/d1d.out")" = goal-dead-code ]
+assert [ "$(wc -l <"$calls" | tr -d ' ')" = 5 ]
+# Audit rules launch once no direction the "Audit rules" sentence links has a goal left.
+printf '# T\n\n## Goals\n\n## Done\n' >"$B/docs/directions/lost-time.md"
+gt -C "$B" commit -qam "lost-time landed"
+b7new D2
+b7night carry D2 >/dev/null 2>&1 || fail "carry D2 failed"
+assert [ "$(tail -5 "$calls" | tr '\n' ' ')" = "launch llm --night D2 launch harness --night D2 launch updater --night D2 launch code --night D2 launch system --night D2 " ]
+export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
+fi
+
 printf 'PASS: test_night_carry.sh (%s asserts)\n' "$asserts"
