@@ -628,6 +628,18 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   a skip shown and never judged.
   A running Dia without the flag adds a clickable `Restart Dia with AppleScript JS — unsaved input may be lost`
   row → `bin/dia-js --relaunch`: Egor's click, never the collector.
+- **Hook map** (goal hook-map, `docs/directions/breakages.md`; also `harness-doctor hooks [--json]`, read-only off
+  the last pass): one row per registration of `HARNESS_SETTINGS` with 30 days of allow/deny/rewrite/notice/error
+  read from the transcripts' hook attachments (`state.json` `hook_map`, per local day, 31 kept; the first pass
+  after a version change rereads 30 days once). An attachment names its hook by command or by its `statusMessage`;
+  a notice with neither (UserPromptSubmit, SessionStart) by a leading `[tag]` its script prints, else it counts
+  under `no hook named` (Claude Code's `hook_cancelled` carries no command). An exit-2 PreToolUse refusal leaves no
+  attachment: its tool result `[<gate>]` names it. Bypassed: one of the session's next 5 calls, not refused itself,
+  has the same tool and program (Bash: first word past env words and a leading `cd`) and token Jaccard ≥ 0.5.
+  Flags: `missing file`; `never fired 30 d` (a deciding PostToolUse/PreToolUse/Stop script with no deny, rewrite or
+  notice on any registration of that event); `bypassed n/m`, a deny → notice candidate. Drill: what it does (the
+  script's header comment), why (the oldest commit of its file). Outcomes of hooks the settings no longer register
+  show as `outside settings`. Not judged: it raises no problem.
 - Two differences from llm-doctor: a value between half the limit and the limit is a watch (deferral,
   silence, growth), and a growth value is the largest single change under one root, not the day's sum.
 
