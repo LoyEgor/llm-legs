@@ -72,19 +72,6 @@ output, fixers spread over accounts by room.
 Worked in order, one at a time (`bin/night-run` PILOT, carry); a landed goal moves to Done with its commit and
 proof, a failed one stays with one line on what blocked it. Reads after landing are journals the load also moves.
 
-### goal image-lease: image-fanout never launches a unit onto a locked account while another is idle
-
-Class: fan-out into a busy account. `bin/image-fanout` launches a unit onto a held account, waits 5 s on its lock
-(`lock_wait`), exits 5 and cools down 30 s. `~/.cache/image-legs/legs.jsonl` 10-10…23: 6,547 busy exits, 3,741 with
-another pool account idle (a ceiling: walled accounts may count as idle, unconfirmed); 798 attempt-min per 14 days
-(545 by the 5 s wait floor), and units waited 1,980 min to start.
-- Change: `bin/image-fanout` checks the account's lock before launch and takes an idle pool account instead.
-- First step: build the replay of `legs.jsonl` 10-10…23, walled accounts not idle; if few busy exits had an idle
-  account left, stop.
-- Proof, fixed in advance: that replay under the new pick, busy exits 6,547 → ≤ 2,806; a `test_image_fanout`
-  held-lock case, red on the old code.
-- Must not get worse: successful takes; the Flow daily budget.
-
 ### goal metric-source: the Metric reads the doctors' own state, not night snapshots
 
 Metric fault, no class: the newest night snapshot is `20261014T013750Z-8004`, so 10-15…23 has no source and no
@@ -126,6 +113,12 @@ marks a deny a rewrite could replace.
 - bash-cap (llm-legs 35d604a3, 10-23): a worker's Bash call at its cap moves to the background (old 2 of 2 killed,
   new 2 of 2 moved). Read: killed worker calls, `sleep` excluded, 207 (10-09…23) → 0 per 14 days; not worse: final
   responses with a task unread, `worker_orphans`.
+- image-lease (llm-legs d8cf1275, 10-25): `bin/image-fanout` probes the lock files the rosters name (one perl
+  flock per vendor) before a launch; a held pool pick goes to an idle account, a pinned one waits unlaunched.
+  Replay of `legs.jsonl` 10-10…23 (walls from `hits.jsonl`): of 6,569 busy exits 3,742 had a lock-free account,
+  1,578 one not walled; busy exits 6,569 → 289 left as probe races (316 counting holders the log lacks), target
+  ≤ 2,806; `test_image_fanout` held-lock cases red on old. Not worse: takes (giveup 15 min kept), Flow budget (a
+  probe sends nothing). Read: rc 5 legs with a `fanout-` job per 14 days.
 
 ## Decisions
 
