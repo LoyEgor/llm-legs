@@ -548,7 +548,8 @@ PY
 # Bug or weather, one rule per record shape: the module's own readers on fixtures of each shape.
 UNIT="$WORK/unit"
 mkdir -p "$UNIT"
-assert env LLM_LIMITS_ACTION_LOG="$UNIT/actions.log" WORKER_RUN_DIR="$UNIT/runs" IMAGE_LEG_LOG="$UNIT/legs.jsonl" \
+# TZ=UTC: the action log is local wall-clock text, ambiguous in the DST fall-back hour.
+assert env TZ=UTC LLM_LIMITS_ACTION_LOG="$UNIT/actions.log" WORKER_RUN_DIR="$UNIT/runs" IMAGE_LEG_LOG="$UNIT/legs.jsonl" \
   WORKER_STATS_DIR="$UNIT/stats" python3 - "$DOCTOR" "$NOW" "$UNIT" <<'PY'
 import contextlib, importlib.machinery, importlib.util, io, json, os, shutil, subprocess, sys, time
 loader = importlib.machinery.SourceFileLoader("llm_doctor", sys.argv[1])
