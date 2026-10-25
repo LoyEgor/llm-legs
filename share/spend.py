@@ -98,8 +98,9 @@ def delta(cur, prev):
 
 def components(payload, repos):
     """The menus check first, then each harness job whose latest run loaded Egor's configuration (tokenmap's
-    harness_index.loaded), the cache keepalive while its pings cost more than they saved, then every Fee source of tokenmap's Fee index, largest first: its share of Claude spend as
-    the menu shows it, the same as its basis for the due and proof rules, its plain Δ."""
+    harness_index.loaded), the cache keepalive while its pings cost more than they saved or it missed chats, then
+    every Fee source of tokenmap's Fee index, largest first: its share of Claude spend as the menu shows it, the same
+    as its basis for the due and proof rules, its plain Δ."""
     index = harness_index(payload) or {}
     sources = [s for s in index.get("sources") or () if isinstance(s, dict)]
     claude = float(index.get("claude") or 0)
@@ -114,9 +115,7 @@ def components(payload, repos):
     workers = worker_md_leak()
     if workers:
         out.append(workers)
-    pings = keepalive.component(time.time())
-    if pings:
-        out.append(pings)
+    out += keepalive.components(time.time())
     for s in sorted(sources, key=lambda s: -float(s["charged"])):
         out.append({"key": "fee:" + s["source"], "label": "%s (%s)" % (s["source"], s["group"]), "sources": [],
                     "share": round(100 * float(s["charged"]) / claude, 3) if claude else 0.0,

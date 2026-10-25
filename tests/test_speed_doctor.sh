@@ -10,7 +10,8 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-export CLAUDE_KEEPALIVE_DIR="$WORK/keepalive"  # share/keepalive.py: never the live ping journal
+# share/keepalive.py: never the live ping journal or tokenmap database
+export CLAUDE_KEEPALIVE_DIR="$WORK/keepalive" TOKENMAP_DB="$WORK/no-tokenmap.sqlite3"
 
 asserts=$(python3 - "$ROOT" "$WORK" <<'EOF'
 import copy, fcntl, gzip, glob, importlib.machinery, importlib.util, json, os, resource, shutil, subprocess, sys

@@ -17,6 +17,7 @@ root, work = sys.argv[1], sys.argv[2]
 count = [0]
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "worker-stats")
 os.environ["CLAUDE_KEEPALIVE_DIR"] = os.path.join(work, "keepalive")
+os.environ["TOKENMAP_DB"] = os.path.join(work, "no-tokenmap.sqlite3")
 
 
 def check(cond, what):
@@ -166,21 +167,64 @@ def journaled(rows):
 journaled(journal)
 week = keepalive.summary(NOW)
 check(week["pings"] == 6 and week["kinds"] == {k: 1 for k in returns} and week["ratio"] == round(
-          1.9 * 200000 / (5 * ping_cost), 1) and keepalive.component(NOW) is None
+          1.9 * 200000 / (5 * ping_cost), 1) and keepalive.components(NOW) == [] and week["missed"] == []
       and keepalive.menu_line(NOW) == "cache keepalive · 7 days · 6 pings · 1 warm returns · 1 no return · saves "
-                                      "×%.1f its cost" % week["ratio"],
+                                      "×%.1f its cost · 0 missed" % week["ratio"],
       "the week's pings, the 8-day-old one and silent sleepers left out, saved more than they cost: a menu line, no "
       "component: %s %s" % (week, keepalive.menu_line(NOW)))
 journaled([r for r in journal if r["session"] != "saved"])
-lost = keepalive.component(NOW)
-check(lost and lost["key"] == "keepalive" and lost["delta"].startswith("5 pings · 0 warm returns · 1 no return")
-      and lost["last"] == iso(T0) and spend.due(lost, None, {}) == "never audited"
+lost = keepalive.components(NOW)
+check(len(lost) == 1 and lost[0]["key"] == "keepalive"
+      and lost[0]["delta"].startswith("5 pings · 0 warm returns · 1 no return")
+      and lost[0]["last"] == iso(T0) and spend.due(lost[0], None, {}) == "never audited"
       and "keepalive" in [c["key"] for c in spend.components(payload(), repos)],
       "5 pings that saved nothing make the keepalive a Spend component, due as never audited: %s" % lost)
 journaled([r for r in journal if r["session"] not in ("saved", "cold")])
-check(keepalive.component(NOW) is None, "under 5 pings settle nothing")
+check(keepalive.components(NOW) == [], "under 5 pings settle nothing")
 os.remove(keepalive.journal_path())
-check(keepalive.menu_line(NOW) is None and keepalive.component(NOW) is None, "no journal, no line")
+check(keepalive.menu_line(NOW) is None and keepalive.components(NOW) == [], "no journal, no line")
+
+# Misses: tokenmap's cold re-reads of interactive chats the journal does not explain.
+import sqlite3
+os.environ["TOKENMAP_DB"] = os.path.join(work, "tokenmap.sqlite3")
+keepalive.ACTIVE_SINCE = iso(NOW - 6 * 86400)
+ka_db = sqlite3.connect(os.environ["TOKENMAP_DB"])
+ka_db.execute("CREATE TABLE sessions (session_id TEXT, kind TEXT, entrypoint TEXT)")
+ka_db.execute("CREATE TABLE requests (session_id TEXT, root_session TEXT, ts TEXT, day TEXT, gap_seconds REAL, "
+           "waste_cause TEXT, vendor TEXT, is_sidechain INT, agent_id TEXT, prev_ctx INT)")
+ka_colds = {"closed": ("chat", 200000, 7200, {"decision": "closed"}), "silent": ("chat", 200000, 7200, None),
+         "late": ("chat", 200000, 7200, {"decision": "silent", "reason": "late"}),
+         "capped": ("chat", 200000, 7200, {"decision": "skip", "reason": "cap"}),
+         "worker": ("worker", 200000, 7200, None), "small": ("chat", 90000, 7200, None),
+         "before": ("chat", 200000, 4 * 86400, None), "headless": ("chat", 200000, 7200, None)}
+ka_rows = []
+for n, (session, (kind, context, gap, line)) in enumerate(ka_colds.items()):
+    at = T0 + 600 * n
+    ka_db.execute("INSERT INTO sessions VALUES (?, ?, ?)", (session, kind, "sdk-cli" if session == "headless" else "cli"))
+    ka_db.execute("INSERT INTO requests VALUES (?, ?, ?, ?, ?, 'expired (1h+ idle)', 'claude', 0, NULL, ?)",
+               (session, session, iso(at), time.strftime("%Y-%m-%d", time.gmtime(at)), gap, context))
+    if line:
+        ka_rows.append({"ts": iso(at - gap / 2), "session": session, **line})
+ka_db.commit()
+ka_db.close()
+journaled(ka_rows)
+week = keepalive.summary(NOW)
+flagged = keepalive.components(NOW)
+check([m["session"] for m in week["missed"]] == ["silent", "late"]
+      and [m["why"] for m in week["missed"]] == ["no journal line", "silent:late"]
+      and keepalive.menu_line(NOW).endswith("0 pings · 0 warm returns · 0 no return · saves – its cost · 2 missed")
+      and [c["key"] for c in flagged] == ["keepalive:missed"]
+      and flagged[0]["delta"].startswith("2 missed: 1 no journal line, 1 silent:late · last late ")
+      and spend.due(flagged[0], None, {}) == "never audited",
+      "a cold re-read of a big interactive chat with no ping, skip, close or compaction journaled in its idle stretch "
+      "is a miss, two make a Spend component; workers, headless runs, small chats and stretches before the hook went "
+      "live are not misses: %s %s" % (week["missed"], flagged))
+journaled([r for r in ka_rows if r["session"] != "late"] + [{"ts": iso(T0 + 1200 - 3600), "session": "late",
+                                                          "decision": "ping"}])
+check(keepalive.components(NOW) == [] and len(keepalive.summary(NOW)["missed"]) == 1,
+      "a ping in the stretch explains its cold return; one miss alone is no component")
+os.remove(keepalive.journal_path())
+os.environ["TOKENMAP_DB"] = os.path.join(work, "no-tokenmap.sqlite3")
 
 ledger = os.path.join(work, "spend-ledger.json")
 os.environ["SPEND_LEDGER"] = ledger
