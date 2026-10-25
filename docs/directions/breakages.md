@@ -7,17 +7,20 @@ finds; every row fixed more than once.
 ## Metric
 
 New distinct problems per 100 units of work, 7 days against the 7 before.
-- Source: the doctor snapshots `bin/night-run` writes at every night's start and close, pilot or not
-  (`~/.cache/doctors/nights/<id>.json`, `doctor_problems_before`/`_after`: id → state; Harness, LLM, Updater). Not
-  ledger rows: only a fixer files one (`docs/doctor-fix.md`) and a pilot night launches none.
-- A new problem: an id first shown `new` (no ledger row yet), on its snapshot's local day, counted once.
+- Source: the doctors' own day journal, read by `python3 share/breakages.py [--ids] [FROM TO]...`: each Harness,
+  LLM and Updater persist adds the ids it shows `new` or `regressed` to `~/.cache/doctors/problem-ids/<day>.json`
+  (`share/collector_runs.py` `problem_ids`, 35 days). Not ledger rows: only a fixer files one (`docs/doctor-fix.md`)
+  and a pilot night launches none. 10-04…14 are seeded from the night snapshots, 10-15…24 backfilled from Harness
+  `seen`, LLM `daily/` and the latest documents (each file's `_source`; `limiter_hold*` left out, `seen` keeps no
+  state).
+- A new problem: an id first shown `new` (no ledger row yet), on its local day, counted once.
 - The sum keeps the rules the doctors had on 10-02 (`git log -S` of the rule's name in its doctor); later rules go
   on their own line. Out of it: log_audit (classes, below), test_*, suites_at_once, the audits, Speed's rules
-  (floor, hook_*, statusline, menu_build, collector, wait_*, worker_orphans, load, opportunity, regression),
+  (floor, hook_*, statusline, menu_build, collector, wait*, worker_orphans, load, opportunity, regression),
   time_floor, tool_idea, growth-* (installs), store_size, debt-*, ledger faults, Updater `event-waiting` (per event).
 - Units: `strata.chat.units + strata.workers.units` of `~/.cache/harness-doctor/budget-days/<day>.json`, as Lost
   time, from 10-03.
-- Repeats, the second number (target 0): ledger rows a snapshot shows `regressed`, distinct per window, with the
+- Repeats, the second number (target 0): ledger rows the journal shows `regressed`, distinct per window, with the
   sum's exclusions.
 
 ### Baseline (computed 2026-10-16)
@@ -33,6 +36,8 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
 
 - Snapshots start 10-04, so the first window holds what was open then (9 of 11 LLM ids: image legs). The second
   misses 10-11. The log audit gives 15 findings a night (its cap), so it is measured by classes.
+- Snapshots sampled twice a night, the journal every persist: Harness `seen` holds up to 4 and 2 more counted ids
+  in the two windows (state unknown), so a journal week reads a little higher than these.
 
 ## Sources
 

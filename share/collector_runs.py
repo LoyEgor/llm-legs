@@ -1,6 +1,7 @@
 """One row per doctor collector run in ${DOCTORS_DIR:-~/.cache/doctors}/collector-runs.jsonl
 (docs/shared-invariants.md row `ea`): {doctor, start, wall_s, cpu_s, trigger}; and one row per doctor per local
-day in problem-days.jsonl (row `ee`): {day, doctor, count, max, status, at}; and one row per model session a doctor
+day in problem-days.jsonl (row `ee`): {day, doctor, count, max, status, at}, with the ids it showed new or regressed
+that day in problem-ids/<day>.json: {doctor: {id: [rule, [states]]}}; and one row per model session a doctor
 or updater launched in launches.jsonl: {doctor, session, run, started_at, finished_at}, read by token-map, whose
 spend pie counts that session as Doctors inside [started_at, finished_at] (finished_at null: from started_at on)."""
 
@@ -67,8 +68,52 @@ def problem_day(doctor, document, own_env, now=None):
             with open(path + ".tmp", "w") as handle:
                 handle.write("".join(json.dumps(r) + "\n" for r in rows))
             os.replace(path + ".tmp", path)
+            problem_ids(doctor, document, now)
     except OSError:
         pass
+
+
+SHOWN_STATES = ("new", "regressed")
+
+
+def ids_path(day):
+    return os.path.join(folder(), "problem-ids", day + ".json")
+
+
+def ids_day(day):
+    """{doctor: {id: [rule, [states]]}} of the ids a doctor showed new or regressed on that local day; {} when none."""
+    try:
+        with open(ids_path(day)) as handle:
+            found = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def problem_ids(doctor, document, now):
+    """Adds the document's new and regressed ids to the day's problem-ids/<day>.json, the source of the Breakages
+    metric (share/breakages.py); rewritten only when an id or a state is added. Under problem-days.jsonl.lock."""
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    found = ids_day(day)
+    mine = found.setdefault(doctor, {})
+    changed = False
+    for p in document.get("problems") or ():
+        if not isinstance(p, dict) or not isinstance(p.get("id"), str) or p.get("state") not in SHOWN_STATES:
+            continue
+        rule, states = mine.get(p["id"], [p.get("rule"), []])
+        if p["state"] not in states:
+            mine[p["id"]] = [rule, sorted(states + [p["state"]])]
+            changed = True
+    if not changed:
+        return
+    os.makedirs(os.path.dirname(ids_path(day)), exist_ok=True)
+    with open(ids_path(day) + ".tmp", "w") as handle:
+        json.dump(found, handle, sort_keys=True)
+    os.replace(ids_path(day) + ".tmp", ids_path(day))
+    cutoff = time.strftime("%Y-%m-%d", time.localtime(now - KEEP_DAYS * 86400))
+    for name in os.listdir(os.path.dirname(ids_path(day))):
+        if name.endswith(".json") and name[:10] < cutoff:
+            os.unlink(os.path.join(os.path.dirname(ids_path(day)), name))
 
 
 def problem_days(since):
