@@ -79,7 +79,7 @@ proof, a failed one stays with one line on what blocked it. Reads after landing 
 
 ## Done
 
-- gates (claude-setup 5e3cc12, llm-legs 0daf801d, review-bench 7f36bb6, b936d23, 10-23): 9 gates decide on
+- gates (claude-setup 5e3cc12, b936d23, llm-legs 0daf801d, review-bench 7f36bb6, 10-23): 9 gates decide on
   `hooks/lib/argv.sh`; `test_gate_replay` refused old → new: target 9/37 → 2, out 15 → 15, rightly 23 → 23; hook wall
   280 → 149 ms/call. Left: instruction-files.sh, text cases, worker-edit-guard 33 → 70 ms/call. Read: target 0.
 - stop-hooks (claude-setup a0fe49a, 10-23): 44 → 34 process starts idle; fixture stop idle 6.9 → 4.4 s, busy 4.75
@@ -98,23 +98,20 @@ proof, a failed one stays with one line on what blocked it. Reads after landing 
   is an evidence span), so each persist now journals its `new`/`regressed` ids (`problem-ids/<day>.json`) and
   `share/breakages.py` reads them. Seeded snapshots: 2.69 and 0.31 exactly (later 3/4, repeats 8/6); backfill
   10-16…22: 0.35 (5 Harness, 2 LLM / 1,974 units; later 12, repeats 1). Not worse: rule set, exclusions, snapshots.
-- hook-map (llm-legs 91814d38, 10-25): Harness `Hook map` section and `harness-doctor hooks [--json]` (design §11):
-  per registration 30 days of allow/deny/rewrite/notice/error from hook attachments (by command or `statusMessage`,
-  no-command notices by `[tag]`, exit-2 refusals by `[gate]`), last fired, header comment, first commit; flags never
-  fired, bypassed (next 5 calls, same program, Jaccard ≥ 0.5), missing file. Fixture of the 10-25 journals (4,625
-  transcripts cut at 02:38:31, the goal's 55 registrations): no map → 55 hooks, 7 never fired (the goal's 7; in
-  `hooks/*.tsv` 10-22…25 four ran 4,128-20,855 times, all exit 0, three never matched), 202 of 636 bypassed on
-  `refusal-scan.json`'s files (id for id), 295 of 777 on all (160 files, mostly subagents, missing from it);
-  dia-not-chrome dropped from fixture settings → 54, its 973 outcomes under `outside settings`. Not worse: pass
-  4.07 → 4.06 s median (12 ABBA pairs, live clones; one-time 30-day reread 106 s); menu.txt parse 8.3 → 10.0 ms
-  once per document (+217 lines); no hook changed. Unnamed: `hook_cancelled` (no command), cd-guard notices.
+- hook-map (llm-legs 91814d38, 10-25): Harness `Hook map` and `harness-doctor hooks [--json]` (design §11): per
+  registration 30 days of allow/deny/rewrite/notice/error from hook attachments, last fired, header comment, first
+  commit; flags never fired, bypassed (next 5 calls, same program, Jaccard ≥ 0.5), missing file. Fixture of the 10-25
+  journals: 55 hooks, 7 never fired (4 ran, all exit 0; 3 never matched), 202 of 636 bypassed on
+  `refusal-scan.json`'s files (295 of 777 on all: it misses 160, mostly subagents); a hook dropped from fixture
+  settings → 54. Not worse: pass 4.07 → 4.06 s median; menu parse 8.3 → 10.0 ms once per document; no hook changed.
+  Unnamed: `hook_cancelled`, cd-guard notices.
 
 ## Decisions
 
-- 2026-10-16: the directions run in a queue: the next direction's goals start once these goals have landed, and
-  this metric is read 7 days after the last of them. Parallel directions collide and blur the proof. («Updater
-  doctor»)
-- 2026-10-15: goals run one at a time; Egor launches the night. `doctor-fix close` takes `ruled-out` with evidence
+- 2026-10-24: a hook or hint changes only once the pain it was built against is known; word hints inject their rules
+  once a chat on a mention, by design (pointers failed). Hooks' false fires and need are the night's to catch; ideas
+  left: `~/.claude/handoffs/hook-value-ideas.md`. («Updater doctor», «Word-triggers-unification модуль»)
+- 2026-10-15: `doctor-fix close` takes `ruled-out` with evidence
   `repeat: <what was fixed before>` on a row whose ledger row carries a fix, the one exception to 10-13's
   measured-evidence rule. («Updater doctor»)
 - 2026-10-15: no new hooks. Mechanics only where obvious, such as a tool replacing a script models keep rewriting.

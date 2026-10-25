@@ -75,8 +75,8 @@ night's local day (UTC+3), 7 days against the 7 before. Target 0: nothing outliv
 
 - The night records `~/.cache/doctors/nights/<id>.json`: `jobs` (kind, state, reason, `handoffs`, `adopted`),
   `events`, `leftovers` and `held` written by `finish`; 15 finished nights 09-30…10-14
-  (`…-6468`, a jobless stale start, not counted); none since.
-- Git history of `docs/handoffs/` on main of llm-legs (39 docs now), claude-setup (7), review-bench (25); hammerspoon
+  (`…-6468`, a jobless stale start, not counted); none finished since (cef6, a pilot, started 10-24).
+- Git history of `docs/handoffs/` on main of llm-legs (42 docs on 10-25), claude-setup (7), review-bench (25); hammerspoon
   has none, nor do the helper repositories (`share/night-helper-repos`).
 - `share/handoffs.py` (`open_handoffs`, `owner_batches`, `--status`, `--night` for the Doctors menu's
   `handoffRows`), `bin/night-run` (`carry_list`, `carry_owner_chats`, `branch_row`, `job set`).
@@ -167,7 +167,8 @@ doc.
 
 ## Decisions
 
-- 2026-10-19: he no longer sees handoffs anywhere («не вижу, где handoff»); he took leftover branches for Breakages'
+- 2026-10-19: he no longer sees handoffs anywhere («не вижу, где handoff»): the last night's block blinked out; 10-20
+  it always shows, handoff rows included (53d1a532). He took leftover branches for Breakages'
   general cleanup, then: leftovers are «просто handoff-ы». Block 8 holds both (README, 10-20). («Updater doctor»)
 - 2026-10-15: handoffs already worked keep coming back to be worked again: «у нас сломана механика». («Updater
   doctor»)
@@ -203,8 +204,6 @@ doc.
 - C6: the finish snapshot moves no number here (the metric reads the next start); its fix is the report's reading.
 - C7: 37 docs no carry reads, 5 saying unfinished (with `relay-free-worker-rows` "open until the done-when week
   passes", past 10-16). One triage job on block 8's first night sets each Status with evidence (one worker run).
-- Egor's 10-19 "no handoffs anywhere": handoff rows show only inside the last night's block
-  (`hammerspoon/doctors.lua` `handoffRows`), 10-14's; the live menu not checked (read-only `menuItems()` not run).
 - Checked: a night worker inside a night branch reads `live` (`branch_row`, `cwd_held`), 10-01's exception, not
   against 10-07. `~/.cache/chat-handoffs/` (3 docs, other projects') goes between chats by Egor's hand: out of scope.
 - Dropped 10-23: owner-chat batches ($1.77 a doc vs $2.86 lone) lose nothing; 5 landed doctor-fix

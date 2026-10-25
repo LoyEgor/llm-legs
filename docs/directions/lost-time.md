@@ -11,7 +11,7 @@ Paasche index over chat orders, worker tasks and night jobs (`time_budget.paasch
 [--json]` (`index`, `index_window`). Per unit, so it shows health, not volume; one suite's honest number is CPU. It
 judges goals on test cost and waits; muting targeted runs lowers it and says nothing about how tests are written.
 
-Second number, proposed, Egor's word pending: test legacy lines standing in the four repositories by the helper-copy
+Second number, watched, never a verdict (README's three layers, 10-20): test legacy lines standing in the four repositories by the helper-copy
 and dead-test-unit methods, read 7 days after a goal lands: 514 at HEAD 10-20 (copies 403, dead
 units 111 at the 10-14 refresh). It judges goals on how tests are written; stale, covered and `uncaught:` checks
 join it once measured (Open). Watched only: suites the last full run left red, code commits' rewrite share (the contract-checks trade).
@@ -167,8 +167,8 @@ scripts, beside the index.
   the rewrite share of those suites (target half, net lines ≤ 0, mutations red). Recommendation: next after this
   file's goals, its rewrite share read beside the second number; `test_consistency.sh` stays (shared invariants).
 - Code's moved `tests/<repo>/<label>` rows (`moved_opportunities`): a third suite-cost queue, 0 live 10-23.
-- Index 0.10 (10-16…22) is mix: the prior window's slot queues (workers 19.7 → 1.3 min a task), 10-22's 631 judge
-  calls of 0.3 min (0.17 without); a work-sized worker unit is open.
+- Index 0.12 (7 days to 10-25; 0.10 to 10-22, 0.17 without 10-22's 631 judge calls of 0.3 min) is mix: the prior
+  window's slot queues (workers 15.3 → 1.1 min a task); a work-sized worker unit is open.
 - Covered and stale checks have no number: mutation runs, suite audits (65 due on 327 suite-min/day, none since 10-14
   but 10-20's 8) and the tests round run only in full nights. `uncaught:` first due 2027-01-01; 274 of 543 red→green episodes are `unread`, so silence can be a gap.
 - `out_s.unmeasured` (426 → 2 min/day) stays outside; fixed-sleep polls (`tool-idea-wait-until`, ≈121 min/day est.)

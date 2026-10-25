@@ -16,7 +16,7 @@ end, 7 days against the 7 before.
   decided (`close --decisions`, vendor-release §4), but a not-applicable or blocked line closes as fast as an
   integrated one, so the lag alone would reward closing without integrating: the guard below reads that.
 - Health, not activity: per change, so more releases do not move it, nor more work unless every change closes
-  sooner. Its floor is the gap to the next night (Egor launches nights; fixer chats open only on his button,
+  sooner. Its floor is the gap to the next night (Egor launches nights; fixer chats open only on his own act,
   Decisions 09-29): with a night a day, ≈1 d or less, as the first window shows.
 - Second number, target 0: vendor changes noticed outside the fingerprint, where Egor, a chat or a breakage found
   the change before any event did.
@@ -83,8 +83,9 @@ Ranked 10-20 by what they cost, over 10-06…19.
 
 Why they come back:
 - **One trigger.** Only a full night's dispatch step 3 (`vendor-fingerprint request --night`, `docs/night-run.md`;
-  prep requests nothing) integrates an event by itself; else it waits for Egor's Fix button or «сделай апдейт». Pilot nights forbade it (6a5f1c46) until goal
-  night-events; no night has run since 10-14, and the Fix button (10-20) was the one path used. A waiting event
+  prep requests nothing) integrates an event by itself; else it waits for Egor's «сделай апдейт» (the Fix buttons went 10-20, 4f742b19). Pilot nights forbade it
+  (6a5f1c46) until goal night-events; no night ran 10-14…24 (cef6 a breakages pilot), and «сделай апдейт» (10-20)
+  was the one path used. A waiting event
   absorbs later releases (claude's 10-14 one covered 2.1.299–304).
 - **A facet per miss.** The fingerprint sees only what a facet reads, each added after Egor found a miss:
   ChatGPT.app's bundled codex (09-23), the native claude (10-08), per-account Gemini catalogs and plans (10-19).
@@ -179,11 +180,8 @@ Dropped 10-23:
 
 ## Decisions
 
-- 2026-10-19: block 0 notices and installs; block 6 studies and integrates (new model into routing, gone model out,
-  a plan change into limits, new flags used); a browser path that broke is block 1; vendor news no CLI shows is
-  block 9, postponed. («Updater doctor») The metric above was proposed there; Egor has not replied yet.
-- 2026-10-19: a pilot night is test mode, incomplete by design; its sections return one at a time, each tested.
-  (47eb5afc, «Updater doctor»)
+- 2026-10-19: the split above (0 installs, 6 integrates new models, plans and flags, 1 fixes a broken path, 9 vendor
+  news, postponed); the Metric was proposed there, Egor has not replied. («Updater doctor»)
 - 2026-10-19: Gemini 4 Argon is integrated fully (worker, its own weekly quota in the menu, Frontier in review) with
   the least hardcode, and the night must notice and integrate such changes by itself. Accounts differ (only notcom
   is Pro and serves Argon): the system knows which account serves what and never forces all of them alike.
@@ -210,7 +208,8 @@ Dropped 10-23:
     spend per event and a 32 min median per run, after the goal lands; against 10-19's "sections return in their turn".
   - Loss if they wait: about 10 events a week pile up, the lag grows a day per day, and new models and flags stay
     unused.
-  - Recommendation: keep the queue; the Fix button closed the 9 on 10-20 (11:18–13:33Z), 4 opened 10-20…22.
+  - Recommendation: keep the queue; «сделай апдейт» closed the 9 on 10-20 (11:18–13:33Z); the 4 opened 10-20…22
+    are still open 10-25.
 - Changes no facet reads: a goal only once a miss shows the field (agy's tool names did: served-tools). The grok
   plan, Claude `fable` and Gemini's plan name have none; a generic per-account projection stays a proposal.
 - Detection delay (change → event), outside the metric: ≤2 h a CLI release, ≤24 h a catalog or plan, weeks a

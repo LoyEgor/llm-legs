@@ -167,12 +167,14 @@ From «Передача system-doctor-ux» unless named.
 - 2026-10-14: other projects' background programs are shown by harm in Background, never worked or proposed for
   removal: he removes the harmful ones himself. transcriptions-gpt's overlay CPU and daemon writes are accepted,
   never a goal.
+- 2026-10-19/20: the memory guard fires at 2,048 MB available, never higher: a lagging Mac beats killed work
+  (fa698314); with no swap room it counts available RAM the swap way (1d977e6d). («Компьютер тормозит и зависает»)
 - 2026-10-13: Apple/macOS causes are detected and shown red, reported only.
 - 2026-10-13: obvious LLM garbage (off-menu profiles, idle unknown LLM dirs) is cleaned unasked by the night's
   `system-doctor tidy`, to the Trash only; any other disk cleanup is his. Retention: his chats 180 days, worker
   transcripts 15, Gemini listen audio 2 (`share/log-stores.json`).
-- 2026-10-06: caches are measured, never cleaned by the night; Spotlight is dropped; the bench pool is his, and
-  other chats' load is weather, never paused (2026-10-05). («Updater doctor»)
+- 2026-10-06: caches are measured, never cleaned by the night; Spotlight is dropped; the bench pool is his. («Updater
+  doctor»)
 
 ## Open
 

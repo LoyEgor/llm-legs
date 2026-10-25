@@ -155,19 +155,18 @@ Class 4. `log_audit`: 44 of 75 rows false (59 %, 0.29 % of spend, no repeats), 2
 
 ## Decisions
 
-- 2026-10-20: a block is judged by a metric that converges. A fix removes the root cause of its class, and the
-  proof shows the class stops coming back. Never code for code: the nights stopped because they spent a great
-  many tokens and problems grew. («Updater doctor»)
+- 2026-10-20: a fixer or night launches only on his own act (click, terminal, launchd, his word), never another
+  chat's: the five Fix buttons went, `doctor-fix launch` runs only in a full night (4f742b19). Menu red means act now
+  (3ea8810a), the night still reads every problem, the bars keep their history (93e9cd4b). («Компьютер тормозит и
+  зависает», «Updater doctor»)
+- 2026-10-20: a fix removes its class's root cause and its proof shows the class stops coming back; the nights
+  stopped because they spent a great many tokens while problems grew. («Updater doctor»)
 - 2026-10-19: Deep search means caring for the doctors: finding what no doctor covers and adding it to one. It
-  joins the Fix rows in block 7. The block list 0–10 was agreed on 10-20 (94466968). («Updater doctor»)
-- 2026-10-19: the night is a singularity: it digs deep for what the doctor does not show. «Доктор я сделал как
-  помощник, чтобы находить подсказки». A night section is dropped only by an explicit word. («Updater doctor»)
+  joins the Fix rows in block 7. «Доктор я сделал как помощник, чтобы находить подсказки». («Updater doctor»)
 - 2026-10-13: when the night finds what a doctor does not log (workers hitting limits), the doctor learns to log
   it: a self-developing system. An item reviewed and unchanged is not re-checked unless its number moves a lot,
   read as a 7- or 3-day trend, never a one-day spike. Fixing everything is a utopia: by priority, P1 first, the
   rest only when the limits allow. («Updater doctor»)
-- 2026-10-12: the Doctors share comes down to about 5 % of 7-day usage once the backlog plateaus; quality trades
-  are decided there. («Updater doctor»; memory doctors-share-goal)
 - 2026-10-04: what is not measured is not fixed; every wait is a doctor metric («make land for multiple workers
   in one repository»). Never a guard for a one-off, since a doctor catching it is enough («Updater doctor»).
 - 2026-09-29: the doctor shows everything as it is, for whole classes of blind spots, and what stays unmeasured

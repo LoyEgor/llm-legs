@@ -9,8 +9,8 @@ Blocks, in queue order (Egor 2026-10-20; the numbers are how he and the chats na
 | # | Block | Metric | State |
 |---|---|---|---|
 | 0 | Always on | none: the prep every night runs (vendor CLIs installed, log audit, doctors) and the monthly directions refresh | runs |
-| 1 | [Breakages](breakages.md) | new distinct problems (doctors' day journal) per 100 units of work, 7 days against the 7 before; repeats 0 | active |
-| 2 | [Tests and lost time](lost-time.md) | Lost time index; test legacy lines proposed as the second number (Egor's word pending) | queued |
+| 1 | [Breakages](breakages.md) | new distinct problems (doctors' day journal) per 100 units of work, 7 days against the 7 before; repeats 0 | goals landed 10-25, read 11-01 |
+| 2 | [Tests and lost time](lost-time.md) | Lost time index; test legacy lines watched | next |
 | 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | queued |
 | 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | queued |
 | 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, code only; net lines watched | queued |

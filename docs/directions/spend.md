@@ -25,6 +25,8 @@ Windows are full local days. The journals reach back past 10-02, so the prior wi
 | Spend-audit runs, Opus = 1 (plain) | — (they began 10-09) | 28: 7.63M (8.81M) |
 
 - The index values are consecutive weekly drops in fee per task, not levels; spend's +34 % is load (Reviewers ×2.4).
+- Since 10-21 (token-map fdc6172) a worker's startup is System, the chat's brief and the worker's report Work;
+  Delegation keeps worker-run's own text: Fee 10.1 → 7.0 % of Claude spend over 7 days. The table predates it.
 - Not computed: Chat tasks before 10-09 (tokenmap shows "—").
 
 Method, ≈90 s a window on an idle machine:
@@ -51,7 +53,8 @@ Method, ≈90 s a window on an idle machine:
   `<tag>.d/decisions.tsv` (its verdict and commit).
 - Harness doctor `~/.cache/harness-doctor/latest.json` → `speed.spend`: the Fee index by day, the audits due (14 on
   10-16) and their proofs.
-- `share/harness-ledger.json`, log-audit rows (classes 4–6).- `tokenmap.sqlite3`, tables `requests`, `parts` and `doctor_windows`: what each call starts with, night against day.
+- `share/harness-ledger.json`, log-audit rows (classes 4–6).
+- `tokenmap.sqlite3`, tables `requests`, `parts` and `doctor_windows`: what each call starts with, night against day.
 
 ## Recurring classes
 
@@ -176,8 +179,10 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
 
 ## Decisions
 
+- 2026-10-21: no 1M context window: quality falls as context grows, and a cold chat may re-read 600k; never
+  proposed again. 10-19: the Fee is only what bare Claude Code would not spend on the task, so a worker's brief,
+  report and startup are not Fee (above). («Token spending tracking and optimization»)
 - Model, effort and thinking are never the lever.
-- The hook dispatcher was declined (10-05).
 - Index doctrine (10-11): fee per unit of work against the previous 7 days; raw growth is load.
 - Doctors ≈5 % of 7-day usage: the night's natural cost once the backlog is gone, never a cap a night is squeezed
   to fit (10-12). The quality trade is decided only at the backlog plateau.
@@ -204,5 +209,5 @@ Class 1. Every due reason but a new component reads a ledger row or a share, whi
   worker there, configuration equal. Re-measure when the full night returns.
 - Worker self-compaction (System, outside the Fee): 118 auto-compactions, 84 sessions, 10-16…22, at ≈268k tokens
   (`autoCompactWindow` `auto`); summaries and their carry 9.3M Opus = 1, 1.9 % of Claude spend; 90 % logo work,
-  median 76.5 images a session against 20, 141 of 144 in a first run. Fewer images or a larger window are
-  context-quality trades, Egor's (`log_audit:one-worker-241-images` was one).
+  median 76.5 images a session against 20, 141 of 144 in a first run. Fewer images is Egor's context-quality trade
+  (`log_audit:one-worker-241-images` was one); a larger window he declined (10-21).
