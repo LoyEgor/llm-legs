@@ -142,8 +142,8 @@ class Response:
 
 
 class Locator:
-    def __init__(self, page, selector, index=None):
-        self.page, self.key, self.index = page, KEY.get(selector, selector), index
+    def __init__(self, page, selector, index=None, visible=False):
+        self.page, self.key, self.index, self.visible = page, KEY.get(selector, selector), index, visible
     @property
     def first(self): return self
     @property
@@ -151,7 +151,7 @@ class Locator:
     def nth(self, index): return Locator(self.page, self.key, index)
     def filter(self, has_text=None, visible=None):
         if has_text is None:
-            return self
+            return Locator(self.page, self.key, self.index, bool(visible))
         return Locator(self.page, self.key, next(i for i, text in enumerate(self.page.menu) if has_text in text))
     def inner_text(self): return self.page.menu[self.index]
     def wait_for(self, timeout=None, state=None):
@@ -181,7 +181,7 @@ class Locator:
         if self.key == "attachment":
             return len(self.page.files) + len(self.page.stale)
         if self.key == "remove":
-            return len(self.page.stale) + len(self.page.files)
+            return (len(self.page.stale) + len(self.page.files)) * (2 if self.page.ghost and not self.visible else 1)
         if self.key == "menu_item":
             return len(self.page.menu) if self.page.menu_open else 0
         if self.key == "comment_text":
@@ -205,6 +205,9 @@ class Locator:
     def set_input_files(self, path, timeout=None):
         self.page.events.append(("dead input", path))
     def click(self, timeout=None, force=False):
+        if self.page.ghost and not self.visible and self.key in GHOSTED:
+            self.page.events.append(("ghost click", self.key))
+            raise TimeoutError(f"{self.key}: the zero-size composer's copy takes no click")
         picked = self.index is not None and self.key == "menu_item"
         self.page.events.append(("pick", self.page.menu[self.index]) if picked else ("click", self.key))
         if self.key in ("preview", "attachment"):
@@ -235,6 +238,9 @@ class Locator:
             TIMELINE.append(("send", self.page.chat))
             if "/c/" not in self.page.url:
                 self.page.url = f"{cw.SITE}/c/{self.page.chat}"
+
+
+GHOSTED = ("composer", "remove", "send", "add_files", "upload")
 
 
 class Chooser:
@@ -296,7 +302,7 @@ class Page:
         self.commenting, self.comment_opens, self.comment_open, self.pins, self.typed = False, True, False, [], None
         self.remove_bg_starts = True
         self.send_ready, self.uploads_land, self.multiple, self.scrambles, self.waits = True, True, False, False, []
-        self.chat, self.closed, self.swallow = NEW_CHAT, False, 0
+        self.chat, self.closed, self.swallow, self.ghost = NEW_CHAT, False, 0, False
     def on(self, event, listener): self.listeners.append(listener)
     def bring_to_front(self): self.events.append(("front",))
     def close(self): self.closed = True
@@ -457,6 +463,12 @@ assert ledger()[-1]["refs"] == 3
 assert [e for e in page.events if e[0] == "dead input"] == [], page.events
 assert all(page.events[i - 2:i] == [("click", "add_files"), ("click", "upload")]
            for i, e in enumerate(page.events) if e[0] == "file"), page.events
+# A chat page can hold a zero-size copy of the composer form ahead of the real one (live 2026-10-25, resumed chats):
+# every composer control is taken from the visible form, so a stale draft goes and the prompt is typed and sent.
+page = Page()
+page.ghost, page.stale = True, ["left by a failed resume"]
+result, _ = render(page, ref=refs[:1], resume=OLD_CHAT)
+assert result["ok"] and not page.stale and not [e for e in page.events if e[0] == "ghost click"], page.events
 # A connector offer (Google Drive, Notion) popping over the composer is declined before each click it would swallow.
 page = Page()
 page.shown["decline"] = True
@@ -945,6 +957,21 @@ assert line["sent"] is False and list(line["phases"]) == ["page"] and line["job"
 gw.TIMED = False
 del os.environ["IMAGE_JOB_ID"]
 assert "job" not in emitted({"ok": True})
+EOF
+
+# --- the send button the page waits on: the visible one, past a zero-size composer copy ahead of it ---------
+assert python3 - "$ROOT/share" <<'EOF'
+import subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import chatgpt_web as cw
+js = """
+const box = (w, h) => ({getBoundingClientRect: () => ({width: w, height: h}), disabled: false, closest: () => null});
+globalThis.document = {querySelectorAll: () => [box(0, 0), box(36, 36)], querySelector: () => box(0, 0)};
+globalThis.getComputedStyle = () => ({visibility: 'visible'});
+console.log(JSON.stringify((%s)({send: 'button'})));
+""" % cw.SEND_READY
+ready = subprocess.run(["node", "-e", js], capture_output=True, text=True, check=True).stdout.strip()
+assert ready == "true", ready
 EOF
 
 # --- bounded teardown: Chrome's stdio off Playwright's pipes, a hung close killed, stacks on SIGTERM -----

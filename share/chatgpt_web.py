@@ -107,8 +107,8 @@ PAGE_PROBE = """(sel) => {
 }"""
 SEEN = """const seen = el => { const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
-  const ready = sel => { const b = document.querySelector(sel);
-    return !!b && seen(b) && !b.disabled && !b.closest('[aria-disabled=true]'); };"""
+  const ready = sel => { const b = [...document.querySelectorAll(sel)].find(seen);
+    return !!b && !b.disabled && !b.closest('[aria-disabled=true]'); };"""
 SEND_READY = "(sel) => { " + SEEN + " return ready(sel.send); }"
 # A send took when the prompt left the composer or a reply started streaming. A click the page swallows
 # leaves the prompt sitting in the composer while the job waits out the whole image timeout (live
@@ -393,8 +393,14 @@ def open_new(page, session: Session, account: str, home: str, navigate: bool = T
     open_chat(page, session, account, None)
 
 
+def live(page, name: str):
+    """The visible ones of a composer part: a chat page can hold a second, zero-size composer form ahead of the
+    real one, whose controls take no click (live 2026-10-25: a resumed chat's draft stuck, then 'no composer')."""
+    return page.locator(SELECTORS[name]).filter(visible=True)
+
+
 def clear_drafts(page) -> None:
-    attached, stale = page.locator(SELECTORS["attachment"]), page.locator(SELECTORS["remove"])
+    attached, stale = live(page, "attachment"), live(page, "remove")
     for _ in range(20):
         if not stale.count():
             return
@@ -415,7 +421,7 @@ def await_more(page, items, more_than: int, wait_s: float, what: str) -> None:
 def in_order(page, refs: list[str]) -> bool:
     """The composer's thumbnails name the refs in the caller's order."""
     with contextlib.suppress(Exception):
-        names = page.locator(SELECTORS["attachment"]).evaluate_all(
+        names = live(page, "attachment").evaluate_all(
             "els => els.map(e => e.getAttribute('alt') || e.getAttribute('aria-label') || e.innerText || '')")
         found = [next((i for i, name in enumerate(names) if Path(ref).name in name), -1) for ref in refs]
         return -1 not in found and found == sorted(found)
@@ -424,16 +430,16 @@ def in_order(page, refs: list[str]) -> bool:
 
 def upload(page, refs: list[str], index: int, batch: bool) -> tuple[int, list[str]]:
     decline_offers(page)
-    before, files = page.locator(SELECTORS["attachment"]).count(), [refs[index]]
+    before, files = live(page, "attachment").count(), [refs[index]]
     # The composer's image/* file inputs stay in the page but ignore a file set on them (live 2026-10-02):
     # only the chooser its own menu opens takes the upload. A "+" click on a page not yet live opens no menu
     # (14 legs 2026-10-15..19, their page ready 0.6 s sooner than the median): it is clicked again.
-    item = page.get_by_text(SELECTORS["upload"], exact=True).first
+    item = page.get_by_text(SELECTORS["upload"], exact=True).filter(visible=True).first
     try:
         for attempt in range(MENU_TRIES):
             if attempt:
                 decline_offers(page)
-            page.get_by_role("button", name=SELECTORS["add_files"], exact=True).first.click(timeout=10000)
+            page.get_by_role("button", name=SELECTORS["add_files"], exact=True).filter(visible=True).first.click(timeout=10000)
             try:
                 item.wait_for(state="visible", timeout=MENU_CHECK_S * 1000)
                 break
@@ -459,7 +465,7 @@ def begin_attach(page, refs: list[str]) -> tuple[int, list[str]] | None:
 def attach(page, refs: list[str], wait_s: float = 120, begun: tuple[int, list[str]] | None = None) -> None:
     """All refs in one chooser change when it takes several and the thumbnails then read in the caller's order,
     otherwise one file per change, each awaited."""
-    attached = page.locator(SELECTORS["attachment"])
+    attached = live(page, "attachment")
     if not begun:
         clear_drafts(page)
     batch, index = len(refs) > 1, 0
@@ -477,7 +483,7 @@ def attach(page, refs: list[str], wait_s: float = 120, begun: tuple[int, list[st
 
 
 def send(page, prompt: str, wait_s: float = 120) -> None:
-    composer = page.locator(SELECTORS["composer"]).first
+    composer = live(page, "composer").first
     decline_offers(page)
     try:
         composer.click(timeout=10000)
@@ -486,7 +492,7 @@ def send(page, prompt: str, wait_s: float = 120) -> None:
     page.keyboard.press("ControlOrMeta+A")
     page.keyboard.press("Backspace")
     page.keyboard.insert_text(prompt)
-    button = page.locator(SELECTORS["send"]).first
+    button = live(page, "send").first
     stuck = f"the send button stays disabled for {wait_s:.0f}s (an upload still running?)"
     try:
         page.wait_for_function(SEND_READY, arg=SELECTORS, timeout=wait_s * 1000, polling=100)
@@ -512,7 +518,7 @@ def editor_button(page, name: str):
 
 def open_editor(page, on_ref: bool) -> None:
     """The viewer of the image to edit: the attached ref's thumbnail, else the chat's last generated image."""
-    target = page.locator(SELECTORS["attachment"] if on_ref else SELECTORS["preview"])
+    target = live(page, "attachment") if on_ref else page.locator(SELECTORS["preview"])
     try:
         (target.first if on_ref else target.last).click(timeout=10000)
         editor_button(page, "close").wait_for(timeout=15000)
@@ -696,7 +702,7 @@ def resize_options(page) -> list[str]:
 def pick_resize(page, aspect: str, wait_s: float = 10) -> None:
     """Resize starts a generation; should it only stage one in the composer, the staged request is sent."""
     page.locator(SELECTORS["menu_item"]).filter(has_text=aspect).first.click(timeout=10000)
-    button = page.locator(SELECTORS["send"]).first
+    button = live(page, "send").first
     with contextlib.suppress(Exception):
         if page.wait_for_function(RESIZE_STARTED, arg=SELECTORS, timeout=wait_s * 1000,
                                   polling=100).json_value() == "send":
