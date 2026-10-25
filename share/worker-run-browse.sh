@@ -64,8 +64,8 @@ browse_chrome_unreadable() { # -> why Chrome's Local State cannot be read, or no
   why=$(head -c 1 "$(browse_chrome_data)/Local State" 2>&1 >/dev/null) || printf "Chrome's Local State is unreadable: %s\n" "${why##*: }"
 }
 
-browse_chrome_running() { "${BROWSE_PGREP:-pgrep}" -x 'Google Chrome' >/dev/null 2>&1; }
-# By bundle id: the media clone's process is named Google Chrome too.
+# By bundle id: the clones' processes (media, transcriptions) are named Google Chrome too, and AppleScript sent
+# to com.google.Chrome while only a clone runs launches the real one.
 browse_chrome_app_running() {
   "${BROWSE_OSASCRIPT:-osascript}" -e 'application id "com.google.Chrome" is running' 2>/dev/null | grep -qx true
 }
@@ -81,7 +81,7 @@ browse_chrome_age() { # seconds since Chrome started or this process opened a pr
 
 # AppleScript addressed to a closed app launches it.
 browse_chrome_urls() {
-  browse_chrome_running || return 0
+  browse_chrome_app_running || return 0
   "${BROWSE_OSASCRIPT:-osascript}" 2>/dev/null <<'APPLESCRIPT'
 set out to ""
 tell application id "com.google.Chrome"
@@ -195,7 +195,7 @@ Then:
 EOF
   fi
   cat <<EOF
-- Fill and submit forms through JavaScript (\`form.elements[...]\`), never a click, then read the effect back and check every value you set; an unconfirmed submit ends \`OUTCOME: BROWSER_CLICK_UNVERIFIED\`.
+- Fill and submit forms through JavaScript (\`form.elements[...]\`), then read the effect back and check every value you set. A control the page ignores from JavaScript (login, recovery and 2FA buttons often accept only real user events) gets one real click through your own click tool, read back the same way; an unconfirmed submit ends \`OUTCOME: BROWSER_CLICK_UNVERIFIED\`.
 - Never \`switch_browser\`, log in, or launch, quit or script a browser yourself. A site that needs Egor himself to sign in or authorize ends \`OUTCOME: BROWSER_OWNER_LOGIN site=<site>\` (leave its tab open; a consent button that stays disabled is his: never force or poll it); anything else the task needs that this forbids ends \`OUTCOME: HARNESS_NEEDS_REPAIR reason=<what>\`.
 - Close your tabs once the task is done (leave the work tab open when you stop for Egor) and end \`OUTCOME: BROWSER_OK\`.
 EOF
@@ -560,24 +560,35 @@ browse_run() {
       for account in "$@"; do browse_enroll "$account" "$pin" >"$(browse_dir)/enroll-$account.$$" & done
       for account in "$@"; do wait -n || rc=1; done
       for account in "$@"; do cat "$(browse_dir)/enroll-$account.$$"; rm -f "$(browse_dir)/enroll-$account.$$"; done
+      browse_quit_idle
       return "$rc" ;;
     canary) browse_canary ;;
     json) browse_registry | jq . ;;
     hide)
       [ -z "$(chrome_runs '.computer == true')" ] || fail 'a Computer Use run is live and needs Chrome on screen'
       rm -f "$(browse_dir)/shown"
-      ! browse_chrome_running || browse_chrome_visible false
+      ! browse_chrome_app_running || browse_chrome_visible false
       "${BROWSE_PS:-ps}" -Ao command= | awk '/\/MacOS\/Google Chrome( |$)/ { print; exit }' | grep -q -- "${CHROME_FLAGS[2]}" ||
         printf 'WARNING: this Chrome runs without the anti-throttling flags: hidden page timers slow to ~1/min\n'
       printf 'CHROME: hidden\n' ;;
     show)
       mkdir -p "$(browse_dir)" && : >"$(browse_dir)/shown" || return 1
-      ! browse_chrome_running || browse_chrome_visible true
+      ! browse_chrome_app_running || browse_chrome_visible true
       printf 'CHROME: shown\n' ;;
     *)
       for account in $(browse_pool); do
-        browse_registry | jq -r --arg a "$account" '.[$a] // {status:"not-enrolled"}
-          | "ACCOUNT: \($a) \(.status) \(.chrome_profile // "-") \(.device_id // "-") \(.proven_at // "-")"'
-      done ;;
+        browse_registry | jq -r --arg a "$account" --arg e "$(browse_email "$account")" '.[$a] // {status:"not-enrolled"}
+          | "ACCOUNT: \($a) \(.status) \(.chrome_profile // "-") \(.device_id // "-") \(.proven_at // "-") \($e)"'
+      done
+      local dia='not running' last
+      ! "${BROWSE_PGREP:-pgrep}" -x Dia >/dev/null 2>&1 || dia=running
+      last=$(jq -rs 'map(select(.target == "dia")) | last // empty | "\(.outcome) \(.ts[0:10])"' \
+        "$(browse_dir)/log.jsonl" 2>/dev/null)
+      case "$last" in
+        BROWSER_OK*) last="BROWSER: yes works ($last), real clicks" ;;
+        '') last='BROWSER: yes unproven' ;;
+        *) last="BROWSER: yes failed last ($last): a page needing real clicks goes to the Chrome profile of the same email" ;;
+      esac
+      printf "DIA: %s — Egor's browser; %s; dia-js only scripts it (synthetic clicks)\n" "$dia" "$last" ;;
   esac
 }

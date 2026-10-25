@@ -4552,8 +4552,6 @@ run_live() { # directory
     ! run_overdue "$1"
 }
 
-CHROME_BROWSER_RUN='.browser == true and (.browser_target // "chrome") != "dia" and .computer != true'
-
 chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
   find "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" -mindepth 2 -maxdepth 2 -name meta.json -mtime -2 -print0 2>/dev/null |
     xargs -0 jq -r "select(${1:-.chrome == true or .computer == true or (.browser == true and .browser_target != \"dia\")})
@@ -4563,12 +4561,16 @@ chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
     done
 }
 
-# The last Chrome browser run's end quits an idle Chrome; the menu's Show Chrome reads the running Chrome
-# itself, so nothing here tells it a run is live, and Egor's choice to show it outlives every run.
+# The last run that may drive Chrome quits it once idle, a Computer Use run's included (they left the canary's
+# windows on screen, 2026-10-25); the last Computer Use run hides what it kept on screen unless Egor shows Chrome.
+# The menu's Show Chrome reads the running Chrome itself, and Egor's choice to show it outlives every run.
 chrome_run_end() { # run-directory
-  jq -e "$CHROME_BROWSER_RUN" "$1/meta.json" >/dev/null 2>&1 || return 0
-  [ -z "$(chrome_runs "$CHROME_BROWSER_RUN" | grep -vxF -- "${1##*/}")" ] || return 0
-  browse_quit_idle "${1##*/}"
+  local run=${1##*/}
+  jq -e '.chrome == true or .computer == true or (.browser == true and .browser_target != "dia")' "$1/meta.json" >/dev/null 2>&1 ||
+    return 0
+  ! jq -e '.computer == true' "$1/meta.json" >/dev/null 2>&1 || [ -e "$(browse_dir)/shown" ] ||
+    [ -n "$(chrome_runs '.computer == true' | grep -vxF -- "$run")" ] || ! browse_chrome_app_running || browse_chrome_visible false
+  browse_quit_idle "$run"
 }
 
 say_run() {

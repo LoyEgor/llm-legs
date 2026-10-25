@@ -510,6 +510,20 @@ EOF
   assert test -e "$WORKER_RUN_DIR/browse/shown"
   rm -f "$WORKER_RUN_DIR/browse/shown"
   rm -rf "$WORKER_RUN_DIR/dead-browser"
+  # a Computer Use run's end hides the Chrome it kept on screen and quits it once only marker tabs are left
+  rm -rf "$fixture"
+  mkdir -p "$fixture"
+  printf '{"vendor":"codex","account":"com","workdir":"%s","started_at":0,"pid":0,"computer":true}\n' "$WORK/workdir" >"$fixture/meta.json"
+  : >"$fixture/err"
+  : >"$fixture/out"
+  cp "$bt/tabs" "$bt/tabs.1"
+  printf 'https://example.com/#worker-run=Profile-1\n\n' >"$bt/tabs"
+  : >"$bt/up/Google Chrome"
+  : >"$bt/osa.log"
+  "$RUNNER" _deliver "$fixture" 0 >/dev/null 2>&1 || :
+  assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to false' "$bt/osa.log"
+  assert grep -qxF -- '-e tell application id "com.google.Chrome" to quit' "$bt/osa.log"
+  mv -f "$bt/tabs.1" "$bt/tabs"
   fi
   unset -f browse deliver enrolled
 
