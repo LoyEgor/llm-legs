@@ -77,23 +77,6 @@ output, fixers spread over accounts by room.
 Worked in order, one at a time (`bin/night-run` PILOT, carry); a landed goal moves to Done with its commit and
 proof, a failed one stays with one line on what blocked it. Reads after landing are journals the load also moves.
 
-### goal hook-map: one place shows what every hook does and whether it still earns its keep
-
-Class: a gate refuses a legitimate command. 30 days to 10-25 (hook attachments by uuid, `refusal-scan.json`,
-`hooks/*.tsv`): settings register 55 hooks, one a deleted file; 7 gates or nudges never denied, rewrote or noticed
-(workflow-burn, jira-mention, demo-link, connections, slash-collision, pr-auto-reviewers, eod-sorted); of 636
-denials, 202 passed within 5 calls (same program, half the tokens; 9 after his message), 230 by similarity ≥ 0.7,
-184 both. On `gate-corpus` labels, flagged ones are false refusals at the base rate (12/39 vs 38/122): the flag
-marks a deny a rewrite could replace.
-- Change: `harness-doctor` section `hook_map` and `harness-doctor hooks`, from settings and journals, in the Doctors
-  menu. Per hook: event, matcher, what it does, why it exists (commit and incident, `git log`), last fired, 30-day
-  allow/deny/rewrite/notice/error; flags never fired in 30 days, denied then bypassed, missing file. A removal or
-  deny → notice candidate names its pain and shows it no longer occurs.
-- First step: attribute notices with no `command` (UserPromptSubmit, SessionStart); confirm the 7 in `hooks/*.tsv`.
-- Proof, fixed in advance: on a fixture copy of the 10-25 journals the map gives 55, 7, 202; a hook dropped from
-  fixture settings leaves the map.
-- Must not get worse: Harness doctor pass time, `menu_build`; no hook added or changed.
-
 ## Done
 
 - gates (claude-setup 5e3cc12, llm-legs 0daf801d, review-bench 7f36bb6, b936d23, 10-23): 9 gates decide on
@@ -115,6 +98,16 @@ marks a deny a rewrite could replace.
   is an evidence span), so each persist now journals its `new`/`regressed` ids (`problem-ids/<day>.json`) and
   `share/breakages.py` reads them. Seeded snapshots: 2.69 and 0.31 exactly (later 3/4, repeats 8/6); backfill
   10-16…22: 0.35 (5 Harness, 2 LLM / 1,974 units; later 12, repeats 1). Not worse: rule set, exclusions, snapshots.
+- hook-map (llm-legs 91814d38, 10-25): Harness `Hook map` section and `harness-doctor hooks [--json]` (design §11):
+  per registration 30 days of allow/deny/rewrite/notice/error from hook attachments (by command or `statusMessage`,
+  no-command notices by `[tag]`, exit-2 refusals by `[gate]`), last fired, header comment, first commit; flags never
+  fired, bypassed (next 5 calls, same program, Jaccard ≥ 0.5), missing file. Fixture of the 10-25 journals (4,625
+  transcripts cut at 02:38:31, the goal's 55 registrations): no map → 55 hooks, 7 never fired (the goal's 7; in
+  `hooks/*.tsv` 10-22…25 four ran 4,128-20,855 times, all exit 0, three never matched), 202 of 636 bypassed on
+  `refusal-scan.json`'s files (id for id), 295 of 777 on all (160 files, mostly subagents, missing from it);
+  dia-not-chrome dropped from fixture settings → 54, its 973 outcomes under `outside settings`. Not worse: pass
+  4.07 → 4.06 s median (12 ABBA pairs, live clones; one-time 30-day reread 106 s); menu.txt parse 8.3 → 10.0 ms
+  once per document (+217 lines); no hook changed. Unnamed: `hook_cancelled` (no command), cd-guard notices.
 
 ## Decisions
 
