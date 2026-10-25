@@ -534,6 +534,53 @@ env "${FANOUT_ENV[@]}" IMAGE_FANOUT_BUSY_GIVEUP_MS=500 bash "$SCRIPT" --dest-dir
   >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 1
 assert grep -Fq 'exit 5 (account busy)' "$DEST_WORK/fanout.tsv"
+# --- a lock another run holds (the roster names its file): never a launch onto it ------------------
+# The holder flocks the file as gemini_web's claim does. A pool take goes to the idle account at once.
+LOCKS="$WORK/locks"
+mkdir -p "$LOCKS"
+hold_lock() { # file -> holder, its pid
+  python3 -c 'import fcntl, sys, time
+h = open(sys.argv[1], "a"); fcntl.flock(h, fcntl.LOCK_EX); print("held", flush=True); time.sleep(300)' "$1" >"$1.held" &
+  holder=$!
+  wait_for 5 grep -q held "$1.held" || fail "the lock holder never took $1"
+}
+release_lock() { kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -f "$1.held"; }
+set_roster chatgpt-web "[ \"\${1:-}\" = accounts ] || exit 2
+printf '%s\n' '{\"ok\":true,\"accounts\":[{\"account\":\"heldp\",\"login\":true,\"lock\":\"$LOCKS/heldp.lock\"},{\"account\":\"freeq\",\"login\":true,\"lock\":\"$LOCKS/freeq.lock\"}]}'"
+hold_lock "$LOCKS/heldp.lock"
+: >"$CALLS"
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --vendors codex --takes 1 --spare 0 || rc=$?
+assert test "$rc" -eq 0
+assert test "$(grep -c '^START heldp ' "$CALLS")" -eq 0
+assert grep -Fq $'codex\tfreeq\tok' "$DEST_WORK/fanout.tsv"
+# A take pinned to the held account waits for the lock and launches once it frees.
+: >"$CALLS"
+rc=0
+fanout_bg IMAGE_FANOUT_LOCK_POLL_MS=100 -- --dest-dir "$DEST" --prompt 'badge' --vendors codex
+fanout_pid=$!
+wait_for 5 grep -q '^START freeq ' "$CALLS" || fail 'the idle account never launched'
+sleep 0.5
+released_at=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+release_lock "$LOCKS/heldp.lock"
+wait "$fanout_pid" || rc=$?
+assert test "$rc" -eq 0
+assert test "$(grep -c '^START heldp ' "$CALLS")" -eq 1
+assert awk -v r="$released_at" '$1 == "START" && $2 == "heldp" { exit !($3 >= r) }' "$CALLS"
+assert grep -Fq 'waited: account held by another run' <<<"$(tsv_col "$DEST_WORK/fanout.tsv" codex heldp 4)"
+# Held past the give-up window: a failure that never launched, the other account's take delivered.
+hold_lock "$LOCKS/heldp.lock"
+: >"$CALLS"
+rc=0
+env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LOCK_POLL_MS=100 IMAGE_FANOUT_BUSY_GIVEUP_MS=500 bash "$SCRIPT" --dest-dir "$DEST" \
+  --prompt 'badge' --vendors codex >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
+release_lock "$LOCKS/heldp.lock"
+assert test "$rc" -eq 0
+assert test "$(grep -c '^START heldp ' "$CALLS")" -eq 0
+assert grep -Fq 'exit 5 (account busy)' <<<"$(tsv_col "$DEST_WORK/fanout.tsv" codex heldp 4)"
+assert grep -Fq $'codex\tfreeq\tok' "$DEST_WORK/fanout.tsv"
+set_roster chatgpt-web '[ "${1:-}" = accounts ] || exit 2
+printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"alpha\",\"login\":true,\"walled_until\":null},{\"account\":\"beta\",\"login\":false,\"walled_until\":null}]}"'
 # A usage limit in the pool moves the take as well; the walled account is not tried again.
 grok_roster 'walled: Logged in\nfasta: Logged in\n'
 : >"$CALLS"

@@ -114,9 +114,12 @@ every new generation, picked or pinned, stamps its start, and a `--resume` stamp
 waiting job holds no slot. Primary takes launch before spares; a spare launches only when no primary
 can. Image and video jobs run with `--lock-wait 5` (video: gemini-video forwards it to the Flow
 engine, grok-video waits that long for its account lock; both exit 5 busy) and `IMAGE_LEG_SCHEDULER=1`, which turns off the wrappers'
-own busy/limit fallback to the CLI route on the same account (direct wrapper calls keep it): a busy
-account (exit 5) cools down 30 s and its take goes to another idle account of that vendor (a pinned
-account retries itself; busy for 15 min → `failed`, `exit 5 (account busy)`). In a `--takes` pool a
+own busy/limit fallback to the CLI route on the same account (direct wrapper calls keep it). Before a
+launch one `perl` flock probe reads the lock files the roster names (`lock`): an account another run
+holds is skipped for 2 s, its take goes to an idle account of that vendor, a pinned one waits
+(`waited: account held by another run`). A busy exit that still happens (another run took the lock
+first) cools the account 30 s and moves the take the same way (a pinned account retries itself; busy
+for 15 min → `failed`, `exit 5 (account busy)`). In a `--takes` pool a
 usage limit (3) or pool-disabled (4) retires the account for the run and moves the take (`moved from
 <acct> after a usage limit`, or `after an account flag (unusual activity)` when the wrapper printed
 `<VENDOR>_ACCOUNT_FLAGGED`; such a row's reason reads `account flagged (unusual activity)`, its

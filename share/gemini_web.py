@@ -2360,6 +2360,7 @@ def cmd_accounts(args) -> None:
             rows.append({"account": p.name, "roster": p.name in roster(), "login": has_login(p.name),
                          "email": meta.get("email"), "credits": meta.get("credits"),
                          "walled_until": walls().get(p.name), "last_used": meta.get("generation_started_at"),
+                         "lock": str(lock_path(p.name)),
                          "arm": trust_arm(p.name)})  # TEMP-FLOW-TRUST(gemini-web)
     emit({"ok": True, "accounts": rows})
 

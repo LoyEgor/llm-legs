@@ -554,6 +554,7 @@ with contextlib.redirect_stdout(listing):
     g.cmd_accounts(None)
 row = next(r for r in json.loads(listing.getvalue())["accounts"] if r["account"] == "totals")
 assert row["last_used"] == 1791000000, "the fan-out cannot order Flow accounts least recently used first: %r" % row
+assert row["lock"] == str(g.lock_path("totals")), "the fan-out cannot skip an account another run holds: %r" % row
 g.note_credits("totals", 1050)
 meta = g.read_meta("totals")
 assert meta["credits_total"] == 1050 and meta["credits_renews_at"] == g.month_after(meta["credits_refilled_at"]), meta

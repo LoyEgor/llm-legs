@@ -59,7 +59,8 @@ reads `GET /v1/models` at most once a day (cache `models-check.json` beside the 
 - `default_for`: kinds this vendor runs when several manifests name one and `media-run` gets no `--vendor`
   (gemini: `music`, `sfx`); two claiming one kind is a usage error.
 - `rosters`: per route, the argv (a `bin/` name and its arguments) that lists that route's accounts: the web
-  engines print `{"accounts": [{"account", "login", "walled_until", …}]}`, the CLI pools print `name: state` lines.
+  engines print `{"accounts": [{"account", "login", "walled_until", "lock", …}]}` (`lock`: the account's lock
+  file, which the fan-out probes before a launch), the CLI pools print `name: state` lines.
 - `spares`: per media kind, the extra takes a fan-out launches up front for N requested ones,
   `max(min, ceil(N * ratio))`; a kind without an entry gets none (video and audio spend credits per take).
 - `routes`: the vendor's image routes in priority order; the script runs `routes[0]` without `--route` and the

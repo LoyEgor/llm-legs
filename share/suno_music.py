@@ -1101,7 +1101,7 @@ def cmd_accounts(args) -> None:
         meta = gw.read_meta(name)
         rows.append({"account": name, "login": meta.get("suno_signed_in"), "credits": meta.get("suno_credits"),
                      "credits_limit": meta.get("suno_credits_limit"), "downloads": meta.get("suno_downloads"),
-                     "as_of": meta.get("suno_at"), "walled_until": walls().get(name)})
+                     "as_of": meta.get("suno_at"), "walled_until": walls().get(name), "lock": str(gw.lock_path(name))})
     gw.emit({"ok": True, "accounts": rows})
 
 

@@ -45,6 +45,7 @@ kill_wait_ms=${IMAGE_FANOUT_KILL_WAIT_MS:-5000}
 lazy_spare_ms=${IMAGE_FANOUT_LAZY_SPARE_MS:-90000}
 busy_retry_ms=${IMAGE_FANOUT_BUSY_RETRY_MS:-30000}
 busy_giveup_ms=${IMAGE_FANOUT_BUSY_GIVEUP_MS:-900000}
+lock_poll_ms=${IMAGE_FANOUT_LOCK_POLL_MS:-2000}
 mem_poll_ms=${IMAGE_FANOUT_MEM_POLL_MS:-1000}
 job_mb=${IMAGE_FANOUT_JOB_MB:-1200}
 lock_wait=5
@@ -334,7 +335,8 @@ kv_last() { # "key ..." files... -> the last value of each key, a line each in k
   ' "$@"
 }
 
-# Roster rows as `name<TAB>last used (ms, 0 unknown)<TAB>skip reason`; an empty reason is launchable.
+# Roster rows as `name<TAB>lock file (- none named)<TAB>last used (ms, 0 unknown)<TAB>skip reason`; an empty
+# reason is launchable. Only the last field may be empty: `read` with a tab IFS folds empty fields.
 # A --jobs file plans every request against the same roster: one lister launch per vendor, not per request
 # (each is a uv/Python start, ~1 s at load 300).
 roster_v=() roster_out=()
@@ -362,7 +364,8 @@ list_accounts() { # vendor
   last=$(printf '%s\n' "$out" | tail -n 1)
   if jq -e '.accounts | type == "array"' <<<"$last" >/dev/null 2>&1; then
     jq -r --argjson now "$(date +%s)" '.accounts[] | select((.account // "") != "")
-      | .account + "\t" + ((.last_used // 0 | tonumber? // 0) * 1000 | floor | tostring) + "\t"
+      | .account + "\t" + (.lock // "-" | if . == "" then "-" else . end) + "\t"
+        + ((.last_used // 0 | tonumber? // 0) * 1000 | floor | tostring) + "\t"
         + (if .login == false then "login needed"
           elif .roster == false then "out of pool"
           elif ((.walled_until // 0) | tonumber? // 0) > $now then "walled"
@@ -378,9 +381,9 @@ list_accounts() { # vendor
       gsub(/[[:space:]]+$/, "", name)
       gsub(/^[[:space:]]+/, "", rest)
       if (name == "") next
-      if (rest ~ /^(login needed|Not logged in)/) print name "\t0\tlogin needed"
-      else if (rest ~ /\(out of pool\)/) print name "\t0\tout of pool"
-      else print name "\t0"
+      if (rest ~ /^(login needed|Not logged in)/) print name "\t-\t0\tlogin needed"
+      else if (rest ~ /\(out of pool\)/) print name "\t-\t0\tout of pool"
+      else print name "\t-\t0"
     }
   '
 }
@@ -499,7 +502,7 @@ u_group=() u_take=() u_tid=() u_count=() u_mode=() u_pin=() u_state=() u_acct=()
 u_pid=() u_rc=() u_delivered=() u_notes=() u_not_before=() u_busy_since=() u_job=() u_spare=() u_row=()
 u_route=() u_started=() u_kill_at=() u_tree=() u_killed=()
 a_n=0
-a_vendor=() a_name=() a_live=() a_excl=() a_cool=() a_launches=() a_used=() a_why=()
+a_vendor=() a_name=() a_live=() a_excl=() a_cool=() a_launches=() a_used=() a_why=() a_lock=() a_held=()
 limited_why=''
 rq_tid=()
 
@@ -522,16 +525,19 @@ account_index() { # vendor name -> account_at, its index (a_n + 1 when unknown)
   return 0
 }
 
-register_account() { # vendor name [last used ms]
-  local i used=${3:-0}
+register_account() { # vendor name [last used ms] [lock file]
+  local i used=${3:-0} lock=${4:--}
   [[ "$used" =~ ^[0-9]+$ ]] || used=0
+  [ "$lock" != - ] || lock=''
   account_index "$1" "$2"
   i=$account_at
   if [ "$i" -gt "$a_n" ]; then
     a_n=$i
     a_vendor[i]=$1 a_name[i]=$2 a_live[i]=0 a_excl[i]='' a_cool[i]=0 a_launches[i]=0 a_used[i]=$used
-  elif [ "$used" -gt "${a_used[i]}" ]; then
-    a_used[i]=$used
+    a_lock[i]=$lock a_held[i]=0
+  else
+    [ "$used" -le "${a_used[i]}" ] || a_used[i]=$used
+    [ -z "$lock" ] || a_lock[i]=$lock
   fi
 }
 
@@ -776,7 +782,10 @@ plan_group() { # request vendor
       add_unit "$g" 1 1 pick pick 0
       ;;
     pinned)
-      register_account "$vendor" "${rq_account[r]}"
+      # The roster only names the account's lock here: a pinned take never moves off it.
+      roster_of "$vendor"
+      register_account "$vendor" "${rq_account[r]}" 0 \
+        "$(awk -F'\t' -v a="${rq_account[r]}" '$1 == a { print $2; exit }' <<<"$roster_rows")"
       g_target[g]=${rq_takes[r]}
       add_takes "$g" "${rq_takes[r]}" pinned "${rq_account[r]}" $((rq_takes[r] + 1))
       ;;
@@ -786,22 +795,22 @@ plan_group() { # request vendor
         add_static "$vendor" - skipped 'no accounts'
         return
       fi
-      while IFS=$'\t' read -r acct used skip; do
+      while IFS=$'\t' read -r acct lock used skip; do
         [ -n "$acct" ] || continue
         if [ -n "${skip:-}" ]; then
           add_static "$vendor" "$acct" skipped "$skip"
           continue
         fi
-        register_account "$vendor" "$acct" "$used"
+        register_account "$vendor" "$acct" "$used" "$lock"
         g_target[g]=$((g_target[g] + 1))
         add_unit "$g" 1 1 pinned "$acct" 0
       done <<<"$rows"
       ;;
     pool)
       roster_of "$vendor"; rows=$roster_rows
-      accounts=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $3 == "" { print $1 "\t" $2 }')
+      accounts=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $4 == "" { print $1 "\t" $3 "\t" $2 }')
       if [ -n "$every_n" ]; then
-        while IFS=$'\t' read -r acct used skip; do
+        while IFS=$'\t' read -r acct lock used skip; do
           [ -z "$acct" ] || [ -z "${skip:-}" ] || add_static "$vendor" "$acct" skipped "$skip"
         done <<<"$rows"
         [ -n "$accounts" ] || [ -z "$rows" ] || return
@@ -810,7 +819,7 @@ plan_group() { # request vendor
         add_static "$vendor" - skipped 'no accounts'
         return
       fi
-      while IFS=$'\t' read -r acct used; do register_account "$vendor" "$acct" "$used"; done <<<"$accounts"
+      while IFS=$'\t' read -r acct used lock; do register_account "$vendor" "$acct" "$used" "$lock"; done <<<"$accounts"
       n=${rq_takes[r]} spares_n=0
       if [ -n "$every_n" ]; then
         n=$(printf '%s\n' "$accounts" | wc -l | tr -d ' ')
@@ -1049,6 +1058,15 @@ next_route() { # unit cause -> 0 with the unit pending on its vendor's next rout
   [ "${u_mode[u]}" != pool ] || u_mode[u]=pick
 }
 
+busy_gave_up() { # unit now held-accounts -> 0 once the unit has waited busy_giveup_ms on held accounts, finalized
+  local u=$1 now=$2
+  [ -n "${u_busy_since[u]}" ] || u_busy_since[u]=$now
+  [ $((now - u_busy_since[u])) -ge "$busy_giveup_ms" ] || return 1
+  limit_hit image-fanout.busy-giveup "$((busy_giveup_ms / 1000))" s skip "image unit $u: never launched while $3 stayed busy" \
+    'bin/image-fanout:busy_giveup_ms=${' "$(((now - u_busy_since[u]) / 1000))"
+  finalize "$u" 5 0
+}
+
 handle_exit() { # unit rc
   local u=$1 rc=$2 a delivered now g
   a=${u_acct[u]} g=${u_group[u]}
@@ -1058,13 +1076,7 @@ handle_exit() { # unit rc
   state_dirty=1
   if [ "$rc" -eq 5 ] && [ "$delivered" -eq 0 ]; then
     [ "$a" -eq 0 ] || a_cool[a]=$((now + busy_retry_ms))
-    [ -n "${u_busy_since[u]}" ] || u_busy_since[u]=$now
-    if [ $((now - u_busy_since[u])) -ge "$busy_giveup_ms" ]; then
-      limit_hit image-fanout.busy-giveup "$((busy_giveup_ms / 1000))" s skip "image unit $u: never launched while ${u_account[u]} stayed busy" \
-        'bin/image-fanout:busy_giveup_ms=${' "$(((now - u_busy_since[u]) / 1000))"
-      finalize "$u" "$rc" 0
-      return
-    fi
+    ! busy_gave_up "$u" "$now" "${u_account[u]}" || return 0
     add_note "$u" "requeued: ${u_account[u]} busy"
     [ "${u_mode[u]}" = pool ] || u_not_before[u]=$((now + busy_retry_ms))
     u_state[u]=pending
@@ -1126,6 +1138,47 @@ pick_account() { # unit now -> picked, the account index (0 = the script picks);
   picked=$best
 }
 
+# Another run's job holds an account's lock file (the roster names it): a launch there only waits lock_wait and
+# exits 5 (6,547 busy exits 2026-10-10…23). One perl flock probe, not a Python start, covers every account of
+# the vendor free here; each held one is skipped for lock_poll_ms. Without perl or a named file nothing is held.
+probe_locks() { # vendor now
+  local a held=''
+  local -a files=()
+  for ((a = 1; a <= a_n; a++)); do
+    [ "${a_vendor[a]}" = "$1" ] && [ -n "${a_lock[a]}" ] && [ -z "${a_excl[a]}" ] && [ "${a_live[a]}" = 0 ] &&
+      [ "${a_cool[a]}" -le "$2" ] || continue
+    files+=("${a_lock[a]}")
+  done
+  [ ${#files[@]} -gt 0 ] || return 0
+  held=$(perl -MFcntl=:flock -e 'for (@ARGV) { open(my $h, "<", $_) or next; print "$_\n" unless flock($h, LOCK_EX | LOCK_NB) }' \
+    "${files[@]}" 2>/dev/null) || held=''
+  for ((a = 1; a <= a_n; a++)); do
+    [ "${a_vendor[a]}" = "$1" ] && [ -n "${a_lock[a]}" ] || continue
+    case $'\n'"$held"$'\n' in
+      *$'\n'"${a_lock[a]}"$'\n'*) a_held[a]=1 a_cool[a]=$(($2 + lock_poll_ms)) ;;
+      *) [ "${a_cool[a]}" -gt "$2" ] || a_held[a]=0 ;;
+    esac
+  done
+}
+
+# A pinned take waits on its own account's lock; a pool take only once no account of its vendor runs one of
+# this fan-out's units (then it waits on its own work, not on another run).
+lock_blocked() { # unit -> 0 when a held lock keeps it from launching, those accounts in held_names
+  local u=$1 a vendor=${g_vendor[${u_group[$1]}]}
+  held_names=''
+  for ((a = 1; a <= a_n; a++)); do
+    [ "${a_vendor[a]}" = "$vendor" ] && [ -z "${a_excl[a]}" ] || continue
+    if [ "${u_mode[u]}" = pinned ]; then
+      [ "${a_name[a]}" = "${u_pin[u]}" ] || continue
+    elif [ "${a_live[a]}" != 0 ]; then
+      held_names=''
+      return 1
+    fi
+    [ "${a_held[a]}" != 1 ] || held_names="${held_names:+$held_names, }${a_name[a]}"
+  done
+  [ -n "$held_names" ]
+}
+
 launch_unit() { # unit account-index
   local u=$1 a=$2 account dir
   dir="$jobs_dir/u$u"
@@ -1184,14 +1237,22 @@ spare_waits() { # unit now
 mem_checked_at=0
 mem_holding=0
 try_launch() { # -> 0 when a unit was launched; primary takes before spares
-  local u now a pick_rc candidate='' cand_a='' spare_pass
+  local u now a pick_rc candidate='' cand_a='' spare_pass probed=' ' mem_wait=0
   now_ms; now=$clock_ms
+  if [ "$mem_holding" = 1 ] && [ $((now - mem_checked_at)) -lt "$mem_poll_ms" ]; then mem_wait=1; fi
   for spare_pass in 0 1; do
     for ((u = 1; u <= u_n; u++)); do
       [ "${u_state[u]}" = pending ] && [ "${u_not_before[u]}" -le "$now" ] && [ "${u_spare[u]}" = "$spare_pass" ] || continue
       ! spare_waits "$u" "$now" || continue
       pick_rc=0
       pick_account "$u" "$now" || pick_rc=$?
+      # Probed once a call per vendor, every free account at once: a held pick is cooled and picked again.
+      if [ "$pick_rc" -eq 0 ] && [ "$mem_wait" = 0 ] && [ "$picked" -gt 0 ] && [ -n "${a_lock[picked]}" ] &&
+        [[ "$probed" != *" ${a_vendor[picked]} "* ]]; then
+        probed+="${a_vendor[picked]} "
+        probe_locks "${a_vendor[picked]}" "$now"
+        [ "${a_held[picked]}" = 0 ] || { pick_account "$u" "$now" || pick_rc=$?; }
+      fi
       a=$picked
       if [ "$pick_rc" -eq 2 ]; then
         if vendor_limited "${g_vendor[${u_group[u]}]}"; then
@@ -1202,13 +1263,18 @@ try_launch() { # -> 0 when a unit was launched; primary takes before spares
         fi
         continue
       fi
-      [ "$pick_rc" -eq 0 ] || continue
+      if [ "$pick_rc" -ne 0 ]; then
+        if lock_blocked "$u"; then
+          ! busy_gave_up "$u" "$now" "$held_names" || continue
+          add_note "$u" 'waited: account held by another run'
+        fi
+        continue
+      fi
       candidate=$u cand_a=$a
       break 2
     done
   done
-  [ -n "$candidate" ] || return 1
-  if [ "$mem_holding" = 1 ] && [ $((now - mem_checked_at)) -lt "$mem_poll_ms" ]; then return 1; fi
+  [ -n "$candidate" ] && [ "$mem_wait" = 0 ] || return 1
   mem_checked_at=$now
   if ! mem_admits; then
     if [ "$mem_holding" = 0 ]; then

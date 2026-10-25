@@ -1298,6 +1298,7 @@ assert test -d "$HOME/.codex"
 rm -f "$HOME/.llm-limits-codex.json.removed"
 assert test "$(engine_rc accounts)" = 0
 assert jq -e '[.accounts[].account] == ["main", "acct", "alpha", "beta", "gamma"]' "$WORK/engine.out" >/dev/null
+assert jq -e --arg d "$CHATGPT_WEB_DIR/locks" '.accounts[0].lock == $d + "/main.lock"' "$WORK/engine.out" >/dev/null
 assert_fails grep -q '@example.com' "$WORK/engine.out"
 # A pinned account whose lock another run holds past --lock-wait: exit 5 unsent, with the job and its phases.
 python3 -c 'import fcntl, sys, time; h = open(sys.argv[1], "w"); fcntl.flock(h, fcntl.LOCK_EX); print("held", flush=True); time.sleep(20)' \

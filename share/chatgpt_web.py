@@ -1143,7 +1143,8 @@ def cmd_accounts(args) -> None:
     for name in filter(gw.valid_account, gw.roster()):
         meta = gw.read_meta(name)
         rows.append({"account": name, "login": gw.has_login(name), "email": mask_email(meta.get("email")),
-                     "plan": meta.get("plan"), "walled_until": walled.get(name), "last_used": used.get(name)})
+                     "plan": meta.get("plan"), "walled_until": walled.get(name), "last_used": used.get(name),
+                     "lock": str(gw.lock_path(name))})
     gw.emit({"ok": True, "accounts": rows})
 
 
