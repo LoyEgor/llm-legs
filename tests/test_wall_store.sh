@@ -171,6 +171,8 @@ for text in 'try again at 11:41 PM.' '11:41PM' '23:41'; do
   check test "$(WORKER_WALLS_NOW=$wall_now worker_walls_parse_reset "$text")" = "$reset_2341"
 done
 passed=$(( (wall_now - 3600) / 60 * 60 ))
+# In the DST fall-back hour the clock text names the later instant; step back until it round-trips.
+while [ "$(date -j -f '%Y-%m-%d %H:%M:%S' "$(date -r "$passed" '+%F %H:%M'):00" +%s)" != "$passed" ]; do passed=$((passed - 3600)); done
 rolled=$(worker_walls_parse_reset "$(date -r "$passed" +%H:%M)")
 check test "$rolled" -gt "$wall_now"
 check test "$(( rolled - passed ))" -ge 82800
