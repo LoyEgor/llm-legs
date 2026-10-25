@@ -42,7 +42,7 @@ New distinct problems per 100 units of work, 7 days against the 7 before.
 ## Sources
 
 - Harness doctor minus `suite_audit`, `test_*` (Lost time), `cpu_audit` (System), `spend_audit` (Spend); LLM doctor
-  (the legs); Updater doctor (its problems live in the snapshots).
+  (the legs); Updater doctor (no ledger history: only the journal keeps its problems).
 - Log audit (`bin/log-audit`, nightly): Haiku reads the day's transcripts, Sonnet merges 15 Harness problems; the
   only reader of the night's own waste.
 - Ledgers: `share/harness-ledger.json`, `share/doctor-ledger.json` (LLM).
@@ -76,19 +76,6 @@ output, fixers spread over accounts by room.
 
 Worked in order, one at a time (`bin/night-run` PILOT, carry); a landed goal moves to Done with its commit and
 proof, a failed one stays with one line on what blocked it. Reads after landing are journals the load also moves.
-
-### goal metric-source: the Metric reads the doctors' own state, not night snapshots
-
-Metric fault, no class: the newest night snapshot is `20261014T013750Z-8004`, so 10-15…23 has no source and no
-goal here can be read.
-- Change: new problems and repeats come from the Harness, LLM and Updater doctors' own state, the same ids, days and
-  exclusions.
-- First step: from today's doctor state, 10-15…23 by hand: of the LLM doctor's 24 recent ids, 14 image-leg failures
-  (unconfirmed); 5 Harness ids count; 11 newer `limit_hit` ids on their own line. A state that cannot date an id's
-  first showing stops the goal.
-- Proof, fixed in advance: the new reader gives the Baseline's 2.69 and 0.31 (10-03…07, 10-08…14) exactly, then a
-  value for 10-16…22.
-- Must not get worse: the 10-02 rule set and the exclusions; the night report's snapshots.
 
 ### goal hook-map: one place shows what every hook does and whether it still earns its keep
 
@@ -124,6 +111,10 @@ marks a deny a rewrite could replace.
   1,578 one not walled; busy exits 6,569 → 289 left as probe races (316 counting holders the log lacks), target
   ≤ 2,806; `test_image_fanout` held-lock cases red on old. Not worse: takes (giveup 15 min kept), Flow budget (a
   probe sends nothing). Read: rc 5 legs with a `fanout-` job per 14 days.
+- metric-source (llm-legs b6d27f03, 10-25): the doctors keep no first showing (`seen` resets after 24 h, `first_seen`
+  is an evidence span), so each persist now journals its `new`/`regressed` ids (`problem-ids/<day>.json`) and
+  `share/breakages.py` reads them. Seeded snapshots: 2.69 and 0.31 exactly (later 3/4, repeats 8/6); backfill
+  10-16…22: 0.35 (5 Harness, 2 LLM / 1,974 units; later 12, repeats 1). Not worse: rule set, exclusions, snapshots.
 
 ## Decisions
 
