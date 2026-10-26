@@ -1224,7 +1224,7 @@ TM="$WORK/tm-wt"
 git init -q -b main "$TM/proj/main" && git -C "$TM/proj/main" -c user.email=t@e -c user.name=T commit -q --allow-empty -m x &&
   git -C "$TM/proj/main" worktree add -q -b tm-wt "$TM/elsewhere/wt" &&
   mkdir -p "$TM/elsewhere/wt/share" "$TM/proj/token-map/tokenmap" &&
-  cp "$ROOT"/share/{night_spend,chat_names,fix_commit,spend,limit_hit}.py "$TM/elsewhere/wt/share/" &&
+  cp "$ROOT"/share/{night_spend,chat_names,fix_commit,spend,keepalive,limit_hit}.py "$TM/elsewhere/wt/share/" &&
   printf 'PRICES = {"tm-wt": 1}\n' >"$TM/proj/token-map/tokenmap/pricing.py" || fail "token-map worktree fixture"
 assert env -u TOKENMAP_ROOT python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import night_spend
 assert night_spend.pricing().PRICES == {"tm-wt": 1}' "$TM/elsewhere/wt/share"
