@@ -4,6 +4,7 @@
 bin/codexb ^    gpt-[0-9][-0-9.a-z]* GPT-[-0-9.A-Za-z]+ [0-9]+ (list|hide) # frozen models_builtin fallback, invariant row cr
 bin/geminib ^    gemini-[0-9]+[.][0-9]+-(flash|pro) (flash[0-9]+|pro) gemini- # frozen families_builtin fallback, invariant row cr
 bin/grokb ^    grok-[0-9][-0-9.a-z]* (yes|no) grok- # frozen models_builtin fallback, invariant row cr
+bin/dia-mcp ^VERSION=[0-9.]+$ # chrome-devtools-mcp npm package pin, not a model
 bin/worker-pick gemini:flash3\[0-9\]\) # slug-shape pattern shortening any catalog Flash label
 bin/claudeb User-Agent: claude-cli/[0-9.]+ # server-gated claude-cli version in the usage User-Agent
 share/claude_resets.py ^USER_AGENT = "claude-cli/[0-9.]+ # server-gated claude-cli version, same string as bin/claudeb
