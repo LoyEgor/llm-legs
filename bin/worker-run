@@ -2655,18 +2655,7 @@ start_run() {
   [ -n "$effort" ] || [ "$vendor" = light ] || effort=$(brief_line_value "$brief" EFFORT)
   if [ "$role" = workers ]; then
     [ "$computer" = true ] || [ "$(brief_line_value "$brief" COMPUTER)" != yes ] || computer=true
-    value=$(brief_line_value "$brief" BROWSER)
-    case "$value" in
-      '') ;;
-      chrome | yes | dia)
-        header_value=chrome
-        [ "$value" = chrome ] || header_value=dia
-        [ -z "$browser_target" ] || [ "$browser_target" = "$header_value" ] ||
-          fail "--target $browser_target contradicts the brief header 'BROWSER: $value': drop the flag, worker-run reads the header itself. Nothing was launched and no account was spent."
-        browser=true browser_target=$header_value
-        ;;
-      *) fail "the brief header 'BROWSER: $value' names no target: chrome, or yes/dia for Egor's Dia. Nothing was launched and no account was spent." ;;
-    esac
+    browse_header "$brief"
     value=${model:-$(worker_model_gemini_stored_r "$(config_value gemini_model)"; printf '%s' "$WORKER_MODEL_R")}
     ! { [ "$(brief_line_value "$brief" STRONG)" = yes ] && { [ "$vendor" = light ] || { [ "$vendor" = gemini ] && ! worker_model_gemini_requested "$value"; }; }; } ||
       fail "the brief header 'STRONG: yes' takes no Light or Gemini Flash worker: start it on the next vendor worker-pick ranks. Nothing was launched and no account was spent."
@@ -2886,13 +2875,7 @@ start_run() {
     [ -z "$light" ] && [ "$role" = workers ] || fail 'a Light or research run does not drive the computer: launch --computer as a codex worker'
     export WORKER_RUN_ROLE=computer
   fi
-  if [ "$browser" = true ]; then
-    case "$vendor" in
-      claudeb) [ "${browser_target:-chrome}" = dia ] || chrome=true ;;
-      codex) ;;
-      *) printf 'REASON: %s does not support --browser\n' "$vendor"; return 2 ;;
-    esac
-  fi
+  [ "$browser" = false ] || browse_vendor "$vendor" || return 2
   refuse_unlisted_model "$vendor" "$model" "$resume" "$model_class"
   explicit_effort=$effort
   if [ "$vendor" = codex ]; then
@@ -3005,8 +2988,7 @@ start_run() {
   else
     PICKED_RC=1
     value=$(worker_claims_fresh "$vendor" 2>/dev/null) || value=''
-    [ "$browser:$vendor:${browser_target:-chrome}" != true:claudeb:chrome ] || pick_account_listing "$vendor" \
-      "$(browse_pool | jq -Rrn --argjson r "$(browse_registry)" '[inputs | select($r[.].status != "ok")] | join(",")')" "$model"
+    [ "$browser:$vendor:${browser_target:-chrome}" != true:claudeb:chrome ] || pick_account_listing "$vendor" "$(browse_unready)" "$model"
     [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || pick_account_listing "$vendor" '' "$model"
     if [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ]; then
       account="$PICKED_ACCOUNT"
@@ -4555,27 +4537,6 @@ run_live() { # directory
     ! run_overdue "$1"
 }
 
-chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
-  find "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" -mindepth 2 -maxdepth 2 -name meta.json -mtime -2 -print0 2>/dev/null |
-    xargs -0 jq -r "select(${1:-.chrome == true or .computer == true or (.browser == true and .browser_target != \"dia\")})
-      | input_filename" 2>/dev/null |
-    while IFS= read -r meta; do
-      ! run_live "${meta%/meta.json}" || printf '%s\n' "$(basename "${meta%/meta.json}")"
-    done
-}
-
-# The last run that may drive Chrome quits it once idle, a Computer Use run's included (they left the canary's
-# windows on screen, 2026-10-25); the last Computer Use run hides what it kept on screen unless Egor shows Chrome.
-# The menu's Show Chrome reads the running Chrome itself, and Egor's choice to show it outlives every run.
-chrome_run_end() { # run-directory
-  local run=${1##*/}
-  jq -e '.chrome == true or .computer == true or (.browser == true and .browser_target != "dia")' "$1/meta.json" >/dev/null 2>&1 ||
-    return 0
-  ! jq -e '.computer == true' "$1/meta.json" >/dev/null 2>&1 || [ -e "$(browse_dir)/shown" ] ||
-    [ -n "$(chrome_runs '.computer == true' | grep -vxF -- "$run")" ] || ! browse_chrome_app_running || browse_chrome_visible false
-  browse_quit_idle "$run"
-}
-
 say_run() {
   local directory vendor mode line end at waited=0 owner entry
   local -a live=()
@@ -5643,24 +5604,6 @@ claim_run() {
   head -n 20 "$directory/files" 2>/dev/null
 }
 
-browse_real_home() {
-  local home
-  home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')
-  [ -n "$home" ] || home="/Users/$(id -un)"
-  [ -d "$home" ] || home="$HOME"
-  printf '%s' "$home"
-}
-
-browse_codex_config() { # real-home
-  if [ -n "${BROWSE_CODEX_CONFIG:-}" ]; then
-    printf '%s' "$BROWSE_CODEX_CONFIG"
-  elif [ -f "$HOME/.codex/config.toml" ] || [ ! -f "$1/.codex/config.toml" ]; then
-    printf '%s' "$HOME/.codex/config.toml"
-  else
-    printf '%s' "$1/.codex/config.toml"
-  fi
-}
-
 # Sets CUA_REPL_STATUS (registered|repaired|broken) and, when broken, CUA_REPL_ERROR.
 cua_repl_sync() { # codex-config
   local sync_cmd="${BROWSE_CUA_SYNC:-$SCRIPT_DIRECTORY/codex-cua-repl-sync}" sync_rc=0 sync_stderr
@@ -5872,17 +5815,6 @@ complete_run() {
   write_run_state "$directory" "$run_status" "$code"
   journal_worker_run "$directory" "$run_status" "$code"
 }
-
-# Chrome is automation's browser: each pool account owns a Chrome profile whose Claude extension is signed
-# in as that account (accounts.json, written only by enrollment and live proofs). Dia is Egor's live
-# browser: nothing here launches, quits or relaunches it.
-BROWSE_UUID='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-# A restarted Chrome or a newly opened profile window lists no extension entry for up to ~10 min (live
-# 2026-10-07); no device that soon is no sign-in problem.
-BROWSE_RECONNECT_S=600 BROWSE_OPENED_AT=''
-# Hidden or occluded, a page's timers otherwise slow to one tick a minute by minute 3 (live 2026-10-07).
-CHROME_FLAGS=(--disable-renderer-backgrounding --disable-backgrounding-occluded-windows
-  --disable-background-timer-throttling --disable-features=IntensiveWakeUpThrottling)
 
 # Browse mode lives in its own file, sourced here in place, so an edit there runs only its own suites.
 . "$SCRIPT_DIRECTORY/../share/worker-run-browse.sh" || fail 'share/worker-run-browse.sh is missing'

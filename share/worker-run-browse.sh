@@ -1,6 +1,85 @@
 # worker-run's browse mode (`worker-run browse`: enrolment, windows, proof, canary), sourced by bin/worker-run in
 # place, so an edit here runs its own suites rather than every suite of worker-run (Egor 2026-10-23).
 
+# Chrome is automation's browser: each pool account owns a Chrome profile whose Claude extension is signed
+# in as that account (accounts.json, written only by enrollment and live proofs). Dia is Egor's live
+# browser: nothing here launches, quits or relaunches it.
+BROWSE_UUID='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+# A restarted Chrome or a newly opened profile window lists no extension entry for up to ~10 min (live
+# 2026-10-07); no device that soon is no sign-in problem.
+BROWSE_RECONNECT_S=600 BROWSE_OPENED_AT=''
+# Hidden or occluded, a page's timers otherwise slow to one tick a minute by minute 3 (live 2026-10-07).
+CHROME_FLAGS=(--disable-renderer-backgrounding --disable-backgrounding-occluded-windows
+  --disable-background-timer-throttling --disable-features=IntensiveWakeUpThrottling)
+
+browse_real_home() {
+  local home
+  home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')
+  [ -n "$home" ] || home="/Users/$(id -un)"
+  [ -d "$home" ] || home="$HOME"
+  printf '%s' "$home"
+}
+
+browse_codex_config() { # real-home
+  if [ -n "${BROWSE_CODEX_CONFIG:-}" ]; then
+    printf '%s' "$BROWSE_CODEX_CONFIG"
+  elif [ -f "$HOME/.codex/config.toml" ] || [ ! -f "$1/.codex/config.toml" ]; then
+    printf '%s' "$HOME/.codex/config.toml"
+  else
+    printf '%s' "$1/.codex/config.toml"
+  fi
+}
+
+chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
+  find "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" -mindepth 2 -maxdepth 2 -name meta.json -mtime -2 -print0 2>/dev/null |
+    xargs -0 jq -r "select(${1:-.chrome == true or .computer == true or (.browser == true and .browser_target != \"dia\")})
+      | input_filename" 2>/dev/null |
+    while IFS= read -r meta; do
+      ! run_live "${meta%/meta.json}" || printf '%s\n' "$(basename "${meta%/meta.json}")"
+    done
+}
+
+# The last run that may drive Chrome quits it once idle, a Computer Use run's included (they left the canary's
+# windows on screen, 2026-10-25); the last Computer Use run hides what it kept on screen unless Egor shows Chrome.
+# The menu's Show Chrome reads the running Chrome itself, and Egor's choice to show it outlives every run.
+chrome_run_end() { # run-directory
+  local run=${1##*/}
+  jq -e '.chrome == true or .computer == true or (.browser == true and .browser_target != "dia")' "$1/meta.json" >/dev/null 2>&1 ||
+    return 0
+  ! jq -e '.computer == true' "$1/meta.json" >/dev/null 2>&1 || [ -e "$(browse_dir)/shown" ] ||
+    [ -n "$(chrome_runs '.computer == true' | grep -vxF -- "$run")" ] || ! browse_chrome_app_running || browse_chrome_visible false
+  browse_quit_idle "$run"
+}
+
+# The brief header `BROWSER: chrome|yes|dia` sets the run's target as `ACCOUNT:` sets its account.
+browse_header() { # brief; sets the caller's browser and browser_target
+  local value target
+  value=$(brief_line_value "$1" BROWSER)
+  case "$value" in
+    '') ;;
+    chrome | yes | dia)
+      target=chrome
+      [ "$value" = chrome ] || target=dia
+      [ -z "$browser_target" ] || [ "$browser_target" = "$target" ] ||
+        fail "--target $browser_target contradicts the brief header 'BROWSER: $value': drop the flag, worker-run reads the header itself. Nothing was launched and no account was spent."
+      browser=true browser_target=$target
+      ;;
+    *) fail "the brief header 'BROWSER: $value' names no target: chrome, or yes/dia for Egor's Dia. Nothing was launched and no account was spent." ;;
+  esac
+}
+
+browse_vendor() { # vendor; sets the caller's chrome, or a REASON and 1
+  case "$1" in
+    claudeb) [ "${browser_target:-chrome}" = dia ] || chrome=true ;;
+    codex) ;;
+    *) printf 'REASON: %s does not support --browser\n' "$1"; return 1 ;;
+  esac
+}
+
+browse_unready() { # the pool accounts whose Chrome profile is not enrolled ok, comma-joined
+  browse_pool | jq -Rrn --argjson r "$(browse_registry)" '[inputs | select($r[.].status != "ok")] | join(",")'
+}
+
 browse_dir() { printf '%s/browse\n' "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"; }
 
 browse_chrome_data() { printf '%s\n' "${BROWSE_CHROME_USER_DATA:-$(browse_real_home)/Library/Application Support/Google/Chrome}"; }
@@ -186,7 +265,7 @@ browse_dia_preamble() {
   cat <<'EOF'
 # Browser preamble (Egor's Dia over DevTools)
 - Your browser is Egor's running Dia, both profiles, through the tools of the `dia` MCP server (`list_pages`, `select_page`, `take_snapshot`, `click`, `fill`, `type_text`, `take_screenshot`, network, console, performance): real input in his open tabs. Claude in Chrome, the Codex extension, Computer Use and `dia-js` are not yours here.
-- The first tool call makes Dia ask Egor "Allow debugging connection?" and waits for his click; a refused or timed-out connection ends `OUTCOME: BROWSER_OWNER_LOGIN site=dia-debugging`.
+- The first tool call makes Dia ask "Allow debugging connection?", which the server answers itself; a connection that still fails ends `OUTCOME: BROWSER_OWNER_LOGIN site=dia-debugging`.
 - `list_pages`, then `select_page` the tab the task names (title or URL); none or several match: end `OUTCOME: BROWSER_NO_TAB` naming the candidates. Act only in that tab and in tabs you open with `new_page`; never close, reload or navigate away a tab of Egor's unless the task says so.
 - After each submit read the effect back (`take_snapshot` or `evaluate_script`) and check every value you set; an unconfirmed submit ends `OUTCOME: BROWSER_CLICK_UNVERIFIED`.
 - Never log in, or launch, quit or script a browser yourself. A site that needs Egor himself to sign in or authorize ends `OUTCOME: BROWSER_OWNER_LOGIN site=<site>`; anything else the task needs that this forbids ends `OUTCOME: HARNESS_NEEDS_REPAIR reason=<what>`.
@@ -609,7 +688,7 @@ browse_run() {
       dia=$("$(browse_dia_mcp)" --check 2>&1) && dia='debugging on' || dia=${dia#REASON: }
       last=$(jq -rs 'map(select(.target == "dia")) | last // empty | "\(.outcome) \(.ts[0:10])"' \
         "$(browse_dir)/log.jsonl" 2>/dev/null)
-      printf "DIA: %s — BROWSER: yes runs the dia MCP (real input in Egor's open tabs, he allows each connection; last %s); dia-js is the lite path (read, quick fill, synthetic clicks)\n" \
+      printf "DIA: %s — BROWSER: yes runs the dia MCP (real input in Egor's open tabs, Dia's connection prompt answered by the server; last %s); dia-js is the lite path (read, quick fill, synthetic clicks)\n" \
         "$dia" "${last:-none}" ;;
   esac
 }
