@@ -157,6 +157,14 @@ check([keepalive.outcome(r)["kind"] for r in journal[:6]] == list(returns)
       "a ping's outcome reads the transcript from its offset: its own turn priced once per request id, then the next "
       "real turn: warm past the hour saved, none within the hour, back before the hour, re-read cold, an idle "
       "compaction first, no ping turn: %s" % [keepalive.outcome(r) for r in journal[:6]])
+pending = os.path.join(pings_dir, "pending.jsonl")
+with open(pending, "w") as handle:
+    handle.writelines(json.dumps(e) + "\n" for e in [dict(PING, timestamp=iso(NOW - 600)),
+                                                      answered(NOW - 599, "p", 200000, 100)])
+fresh = {"ts": iso(NOW - 600), "session": "pending", "decision": "ping", "since": 3480, "transcript": pending,
+         "offset": 0}
+check(keepalive.outcome(fresh, NOW)["kind"] == "pending" and keepalive.outcome(fresh, NOW + 3700)["kind"] == "no return",
+      "a ping whose hour still runs is pending, not a no return: %s" % keepalive.outcome(fresh, NOW))
 
 
 def journaled(rows):

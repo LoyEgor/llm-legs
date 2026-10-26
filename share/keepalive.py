@@ -75,11 +75,11 @@ def lines(path, offset):
         return
 
 
-def outcome(row):
+def outcome(row, now=None):
     """One ping: {"cost", "value", "kind"}; kind saved (a warm return the hour had expired for), cold (the return
     re-read anyway), compacted (an idle compaction came first), warm anyway (back within the hour of the last
-    request), no return (none within the hour, nothing compacted), unread (the ping's turn is not in the transcript:
-    it landed mid-task)."""
+    request), no return (none within the hour, nothing compacted), pending (no return yet, its hour still runs),
+    unread (the ping's turn is not in the transcript: it landed mid-task)."""
     at, last = epoch(row.get("ts")), epoch(row.get("ts"))
     if at is None:
         return {"cost": 0.0, "value": 0.0, "kind": "unread"}
@@ -117,6 +117,8 @@ def outcome(row):
         if read < wrote:
             return {"cost": cost, "value": 0.0, "kind": "cold"}
         return {"cost": cost, "value": (WRITE - READ) * read, "kind": "saved"}
+    if phase == "ping" and not compacted and (time.time() if now is None else now) - at <= TTL:
+        return {"cost": cost, "value": 0.0, "kind": "pending"}
     return {"cost": cost, "value": 0.0,
             "kind": "unread" if phase == "before" else "compacted" if compacted else "no return"}
 
@@ -180,7 +182,7 @@ def summary(now, path=None):
     out = {"pings": len(pings), "kinds": {}, "cost": 0.0, "value": 0.0, "missed": missed(rows, since),
            "last": max((r["ts"] for r in pings), default=None)}
     for row in pings:
-        found = outcome(row)
+        found = outcome(row, now)
         out["kinds"][found["kind"]] = out["kinds"].get(found["kind"], 0) + 1
         out["cost"] += found["cost"]
         out["value"] += found["value"]
