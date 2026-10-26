@@ -543,22 +543,26 @@ assert await_exit
 assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 0
 assert jq -e '.chrome == false' "$RUN_DIR/meta.json" >/dev/null
 
-export BROWSE_PGREP=true
+# Egor's Dia rides the dia MCP for that run alone, never --chrome.
+export WORKER_RUN_DIA_MCP="$STUB_DIR/dia-mcp"
+printf '#!/bin/sh\necho ws://127.0.0.1:1/devtools/browser/x\n' >"$WORKER_RUN_DIA_MCP"
+chmod +x "$WORKER_RUN_DIA_MCP"
 clear_stub
 start_ok claudeb --browser --target dia
 assert await_exit
-assert grep -qx 'ARG=--chrome' "$CALL_LOG"
-assert jq -e '.chrome == true' "$RUN_DIR/meta.json" >/dev/null
-assert jq -e '.cmd | index("--chrome") != null' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx 'ARG=--mcp-config' "$CALL_LOG"
+assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 0
+assert jq -e '.chrome == false' "$RUN_DIR/meta.json" >/dev/null
+assert jq -e '.cmd | index("--mcp-config") != null' "$RUN_DIR/meta.json" >/dev/null
 
 clear_stub
 : >"$STUB_DIR/claudeb_drop_effort"
 start_ok claudeb --browser --target dia
 assert await_exit
 assert test "$(grep -c '^CLAUDEB_CALL$' "$CALL_LOG")" -eq 2
-assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 2
+assert test "$(grep -c '^ARG=--mcp-config$' "$CALL_LOG")" -eq 2
 assert jq -e '.effort_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
-assert jq -e '.chrome == true' "$RUN_DIR/meta.json" >/dev/null
+assert jq -e '.chrome == false' "$RUN_DIR/meta.json" >/dev/null
 # Each CLI launch is stamped, the effort-flag retry inside one attempt included, with its own
 # duration and exit code; the run's end and its terminal reason beside them.
 assert jq -e '(.cli_starts | length) == 2 and (.attempt_secs | length) == 2 and .attempt_rcs[-1] == 0
@@ -567,7 +571,7 @@ assert jq -e '(.cli_starts | length) == 2 and (.attempt_secs | length) == 2 and 
   "$RUN_DIR/meta.json" >/dev/null
 # Every child of the run knows which run it belongs to.
 assert test "$(cat "$STUB_DIR/run_id_env")" = "$RUN_ID"
-unset BROWSE_PGREP
+unset WORKER_RUN_DIA_MCP
 
 # runs.jsonl: one row per finished run, the record's timings with it; never a second row for one run.
 RUNS_JOURNAL="$CLAUDEB_DIR/worker-stats/runs.jsonl"

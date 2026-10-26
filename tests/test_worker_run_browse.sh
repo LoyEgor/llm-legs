@@ -254,9 +254,14 @@ EOF
   assert grep -q -- '--exclude .*extra' "$PICK_LOG"
   assert test "$(jq -r '.account' "$RUN_DIR/meta.json")" = com
 
-  # 6: the Dia path never launches Dia
+  # 6: the Dia path never launches Dia: Egor's Dia over the dia MCP, one run at a time
   printf 'BROWSER: yes\nACCOUNT: com\nlook\n' >"$WORK/brief"
   : >"$bt/open.log"
+  local WORKER_RUN_DIA_MCP="$bt/stub/dia-mcp" dia_holder
+  export WORKER_RUN_DIA_MCP
+  printf '#!/bin/sh\n[ -e "%s/up/Dia" ] || { echo "REASON: Dia is not running (stub)"; exit 1; }\necho ws://127.0.0.1:1/devtools/browser/x\n' \
+    "$bt" >"$WORKER_RUN_DIA_MCP"
+  chmod +x "$WORKER_RUN_DIA_MCP"
   rc=0
   "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>&1 || rc=$?
   assert test "$rc" -eq 2
@@ -265,11 +270,25 @@ EOF
   clear_stub
   start_ok claudeb
   assert await_exit
-  assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Dia / com)'
-  assert grep -q -- '--target dia`' "$RUN_DIR/browser-preamble"
-  assert jq -e '.browser_target == "dia"' "$RUN_DIR/meta.json" >/dev/null
+  assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = "# Browser preamble (Egor's Dia over DevTools)"
+  assert grep -qx 'ARG=--mcp-config' "$CALL_LOG"
+  assert grep -qF 'stub/dia-mcp' "$CALL_LOG"
+  assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 0
+  assert jq -e '.browser_target == "dia" and .chrome == false' "$RUN_DIR/meta.json" >/dev/null
   assert test ! -s "$bt/open.log"
+  sleep 300 &
+  dia_holder=$!
+  mkdir -p "$WORKER_RUN_DIR/live-dia"
+  printf '{"pid":%s,"started_at":%s,"browser":true,"browser_target":"dia"}\n' "$dia_holder" "$(date +%s)" >"$WORKER_RUN_DIR/live-dia/meta.json"
+  rc=0
+  "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>&1 || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -q "^REASON: live-dia already works in Egor's Dia" "$WORK/start.out"
+  kill "$dia_holder" 2>/dev/null || true
+  wait "$dia_holder" 2>/dev/null || true
+  rm -rf "$WORKER_RUN_DIR/live-dia"
   rm -f "$bt/up/Dia"
+  unset WORKER_RUN_DIA_MCP
   fi
 
   if suite_shard_owns 3 browse-supervisor; then
@@ -324,7 +343,19 @@ EOF
   assert await_exit
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Codex / Google Chrome)'
   assert grep -q '"Work" (Profile 1), "Spare" (Profile 3)' "$RUN_DIR/browser-preamble"
-  unset BROWSE_CUA_SYNC BROWSE_SKIP_PROCESSES BT_SYNC_MODE
+  # a Dia run takes the dia MCP instead: no extension, so no cua_repl or Sky to fail on
+  BT_SYNC_MODE=broken
+  local WORKER_RUN_DIA_MCP="$bt/stub/dia-mcp"
+  export WORKER_RUN_DIA_MCP
+  printf '#!/bin/sh\necho ws://127.0.0.1:1/devtools/browser/x\n' >"$WORKER_RUN_DIA_MCP"
+  chmod +x "$WORKER_RUN_DIA_MCP"
+  printf 'BROWSER: yes\nACCOUNT: main\nlook\n' >"$WORK/brief"
+  clear_stub
+  start_ok codex
+  assert await_exit
+  assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = "# Browser preamble (Egor's Dia over DevTools)"
+  assert grep -q '^ARG=mcp_servers.dia.command=.*stub/dia-mcp' "$CALL_LOG"
+  unset BROWSE_CUA_SYNC BROWSE_SKIP_PROCESSES BT_SYNC_MODE WORKER_RUN_DIA_MCP
   fi
 
   if suite_shard_owns 1 browse-canary; then

@@ -171,23 +171,46 @@ browse_seen() { # token target [account]
   return 1
 }
 
+# A BROWSER: yes run drives Egor's Dia only through the `dia` MCP server (bin/dia-mcp): real input in his open
+# tabs, no extension, no Computer Use. Each vendor gets the server for that run alone, never from its config.
+browse_dia_mcp() { printf '%s\n' "${WORKER_RUN_DIA_MCP:-$SCRIPT_DIRECTORY/dia-mcp}"; }
+browse_dia_run() { jq -e '.browser == true and .browser_target == "dia"' "$1" >/dev/null 2>&1; } # meta-file
+browse_dia_claude_config() { jq -cn --arg c "$(browse_dia_mcp)" '{mcpServers: {dia: {type: "stdio", command: $c, args: []}}}'; }
+# The first tool call waits on Egor's "Allow debugging connection?", so the tool timeout outlasts his answer.
+browse_dia_codex_args() {
+  printf '%s\n' -c "mcp_servers.dia.command=\"$(browse_dia_mcp)\"" -c mcp_servers.dia.startup_timeout_sec=120 \
+    -c mcp_servers.dia.tool_timeout_sec=300
+}
+
+browse_dia_preamble() {
+  cat <<'EOF'
+# Browser preamble (Egor's Dia over DevTools)
+- Your browser is Egor's running Dia, both profiles, through the tools of the `dia` MCP server (`list_pages`, `select_page`, `take_snapshot`, `click`, `fill`, `type_text`, `take_screenshot`, network, console, performance): real input in his open tabs. Claude in Chrome, the Codex extension, Computer Use and `dia-js` are not yours here.
+- The first tool call makes Dia ask Egor "Allow debugging connection?" and waits for his click; a refused or timed-out connection ends `OUTCOME: BROWSER_OWNER_LOGIN site=dia-debugging`.
+- `list_pages`, then `select_page` the tab the task names (title or URL); none or several match: end `OUTCOME: BROWSER_NO_TAB` naming the candidates. Act only in that tab and in tabs you open with `new_page`; never close, reload or navigate away a tab of Egor's unless the task says so.
+- After each submit read the effect back (`take_snapshot` or `evaluate_script`) and check every value you set; an unconfirmed submit ends `OUTCOME: BROWSER_CLICK_UNVERIFIED`.
+- Never log in, or launch, quit or script a browser yourself. A site that needs Egor himself to sign in or authorize ends `OUTCOME: BROWSER_OWNER_LOGIN site=<site>`; anything else the task needs that this forbids ends `OUTCOME: HARNESS_NEEDS_REPAIR reason=<what>`.
+- Close the tabs you opened once the task is done (leave the work tab open when you stop for Egor) and end `OUTCOME: BROWSER_OK`.
+EOF
+}
+
 browse_preamble() { # vendor target account device-hint profiles token
-  local label='Google Chrome' run="$SCRIPT_DIRECTORY/worker-run browse" first='every' gone
+  local run="$SCRIPT_DIRECTORY/worker-run browse" first='every' gone
+  [ "$2" != dia ] || { browse_dia_preamble; return 0; }
   [ -z "$4" ] || first="\`$4\` first when listed, then every other"
   gone="run \`$run --window $3\`, repeat the proof for up to 60 s, and only then end \`OUTCOME: BROWSER_INTERRUPTED\`"
-  [ "$2" != dia ] || { label=Dia; gone='end `OUTCOME: BROWSER_INTERRUPTED` (Dia is never relaunched)'; }
   if [ "$1" = codex ]; then
     cat <<EOF
-# Browser preamble (Codex / $label)
+# Browser preamble (Codex / Google Chrome)
 - First js call: \`await cua.getState()\`, then \`await agent.browsers.list()\`; entry ids rotate, never reuse one.
-- Target: the \`extension\` entry $(if [ "$2" = dia ]; then printf 'WITHOUT a `profileName` (Dia)'; else printf 'with `family` `chrome` whose `profileName` is one of %s, first listed wins' "$5"; fi). Never drive any other entry or browser; never log in.
+- Target: the \`extension\` entry with \`family\` \`chrome\` whose \`profileName\` is one of $5, first listed wins. Never drive any other entry or browser; never log in.
 EOF
   else
     cat <<EOF
-# Browser preamble (Claude in Chrome / $label / $3)
+# Browser preamble (Claude in Chrome / Google Chrome / $3)
 Prove the device before the task:
 1. \`list_connected_browsers\`. Candidates: $first \`isLocal: true\` entry; no other id, ever.
-2. Per candidate: \`select_browser\`, \`navigate\` (no tabId) to \`https://example.com/?wr=$6-<candidate number>\`, then run \`$run --seen $6-<candidate number> $(if [ "$2" = dia ]; then printf -- '--target dia'; else printf -- '--account %s' "$3"; fi)\`. Only \`SEEN: $2\` proves it. An error, a timeout or \`SEEN: none\`: close any tab it opened, take the next candidate; never retry one, never call \`tabs_context_mcp\` on one.
+2. Per candidate: \`select_browser\`, \`navigate\` (no tabId) to \`https://example.com/?wr=$6-<candidate number>\`, then run \`$run --seen $6-<candidate number> --account $3\`. Only \`SEEN: $2\` proves it. An error, a timeout or \`SEEN: none\`: close any tab it opened, take the next candidate; never retry one, never call \`tabs_context_mcp\` on one.
 3. Proven: print \`BROWSER-PROVEN: <deviceId> $3\` and work in that tab; your final answer repeats that line. None: end \`OUTCOME: BROWSER_NO_DEVICE account=$3 profile=$5\`.
 Then:
 - After a reconnect or a tool error \`select_browser\` the proven device again. Browser or tab gone: $gone.
@@ -205,8 +228,10 @@ browse_prepare() { # vendor target account preamble-file; REASON lines and 2 whe
   local vendor=$1 target=$2 account=$3 dir='' names=''
   BROWSE_PROFILE='' BROWSE_DEVICE=''
   if [ "$target" = dia ]; then
-    "${BROWSE_PGREP:-pgrep}" -x Dia >/dev/null 2>&1 ||
-      { printf "REASON: Dia is not running — it is Egor's browser and no run launches it: use BROWSER: chrome\n"; return 2; }
+    names=$("$(browse_dia_mcp)" --check 2>&1) || { grep '^REASON: ' <<<"$names" || printf 'REASON: %s\n' "$names"; return 2; }
+    # Two runs clicking in Egor's tabs at once undo each other's work.
+    names=$(chrome_runs '.browser == true and .browser_target == "dia"' | head -n 1)
+    [ -z "$names" ] || { printf "REASON: %s already works in Egor's Dia, one run at a time: worker-run wait %s\n" "$names" "$names"; return 2; }
   elif [ "$vendor" = codex ]; then
     while IFS= read -r dir; do
       browse_window "$dir" && names+="${names:+, }$(browse_profile_label "$dir")"
@@ -580,15 +605,11 @@ browse_run() {
         browse_registry | jq -r --arg a "$account" --arg e "$(browse_email "$account")" '.[$a] // {status:"not-enrolled"}
           | "ACCOUNT: \($a) \(.status) \(.chrome_profile // "-") \(.device_id // "-") \(.proven_at // "-") \($e)"'
       done
-      local dia='not running' last
-      ! "${BROWSE_PGREP:-pgrep}" -x Dia >/dev/null 2>&1 || dia=running
+      local dia last
+      dia=$("$(browse_dia_mcp)" --check 2>&1) && dia='debugging on' || dia=${dia#REASON: }
       last=$(jq -rs 'map(select(.target == "dia")) | last // empty | "\(.outcome) \(.ts[0:10])"' \
         "$(browse_dir)/log.jsonl" 2>/dev/null)
-      case "$last" in
-        BROWSER_OK*) last="BROWSER: yes works ($last), real clicks" ;;
-        '') last='BROWSER: yes unproven' ;;
-        *) last="BROWSER: yes failed last ($last): a page needing real clicks goes to the Chrome profile of the same email" ;;
-      esac
-      printf "DIA: %s — Egor's browser; %s; dia-js only scripts it (synthetic clicks)\n" "$dia" "$last" ;;
+      printf "DIA: %s — BROWSER: yes runs the dia MCP (real input in Egor's open tabs, he allows each connection; last %s); dia-js is the lite path (read, quick fill, synthetic clicks)\n" \
+        "$dia" "${last:-none}" ;;
   esac
 }

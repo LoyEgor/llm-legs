@@ -1121,6 +1121,7 @@ supervise_claudeb() {
   while IFS= read -r value; do access+=("$value"); done < <(web_search_claudeb_args "$(web_search_meta_state "$meta")" "$CLAUDEB_DENIED_TOOLS")
   value=$(jq -r '.inbox_settings // empty' "$meta")
   [ -z "$value" ] || access+=(--settings "$value")
+  ! browse_dia_run "$meta" || access+=(--mcp-config "$(browse_dia_claude_config)")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json "${access[@]}")
   [ -z "$resume" ] || command+=(--resume "$resume")
   [ "$chrome" = false ] || command+=(--chrome)
@@ -1196,6 +1197,7 @@ supervise_codex() {
   else
     command=("$cli" exec -C "$(jq -r '.workdir' "$meta")" -m "$(jq -r '.model_id // .model' "$meta")" -c "model_reasoning_effort=$effort" --color never)
   fi
+  ! browse_dia_run "$meta" || while IFS= read -r value; do command+=("$value"); done < <(browse_dia_codex_args)
   [ "$(jq -r '.role // "workers"' "$meta")" != research ] || command+=(--sandbox read-only)
   for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
   for value in "${images[@]}"; do command+=(-i "$value"); done
@@ -2886,7 +2888,7 @@ start_run() {
   fi
   if [ "$browser" = true ]; then
     case "$vendor" in
-      claudeb) chrome=true ;;
+      claudeb) [ "${browser_target:-chrome}" = dia ] || chrome=true ;;
       codex) ;;
       *) printf 'REASON: %s does not support --browser\n' "$vendor"; return 2 ;;
     esac
@@ -2985,7 +2987,7 @@ start_run() {
     [[ "${add_dirs[$value]}" = /* ]] || add_dirs[$value]="$PWD/${add_dirs[$value]}"
   done
 
-  if [ "$computer" = true ] || [ "$browser:$vendor" = true:codex ]; then
+  if [ "$computer" = true ] || [ "$browser:$vendor:${browser_target:-chrome}" = true:codex:chrome ]; then
     computer_home=$(browse_real_home)
     cua_repl_sync "$(browse_codex_config "$computer_home")"
     if [ "$CUA_REPL_STATUS" = broken ]; then
@@ -3113,6 +3115,7 @@ start_run() {
       while IFS= read -r value; do command_meta+=("$value"); done < <(web_search_claudeb_args "$web_search_state" "$CLAUDEB_DENIED_TOOLS")
       [ -z "$resume" ] || command_meta+=(--resume "$resume")
       [ "$chrome" = false ] || command_meta+=(--chrome)
+      [ "$browser:${browser_target:-}" != true:dia ] || command_meta+=(--mcp-config "$(browse_dia_claude_config)")
       ;;
     codex)
       model_label=${model##*-}

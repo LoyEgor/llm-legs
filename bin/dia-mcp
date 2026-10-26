@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Egor's running Dia over the DevTools protocol, as the `dia` MCP server (chrome-devtools-mcp) of a
+# `BROWSER: yes` run: real input in his open tabs, both profiles, plus network, console and performance.
+# Dia's own switch (chrome://inspect/#remote-debugging) writes DevToolsActivePort, and every new connection
+# makes Dia ask Egor "Allow debugging connection?" (2026-10-26): --check reads only the file and the socket.
+{
+set -u
+
+VERSION=1.12.0
+DATA=${DIA_USER_DATA:-$HOME/Library/Application Support/Dia/User Data}
+OFF="REASON: Dia's remote debugging is off: Egor turns on 'Allow remote debugging for this browser instance' at chrome://inspect/#remote-debugging in Dia"
+
+endpoint() {
+  local pid port path
+  pid=$(pgrep -x Dia | head -n 1)
+  [ -n "$pid" ] || { printf "REASON: Dia is not running — it is Egor's browser and no run launches it: use BROWSER: chrome\n"; return 1; }
+  port='' path=''
+  # Dia writes the file without a final newline, so the second read reports EOF with the path set.
+  { read -r port; read -r path; } <"$DATA/DevToolsActivePort" 2>/dev/null
+  [[ "$port" =~ ^[0-9]+$ ]] && [ -n "$path" ] ||
+    { printf '%s\n' "$OFF"; return 1; }
+  lsof -nP -a -p "$pid" -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || { printf '%s\n' "$OFF"; return 1; }
+  printf 'ws://127.0.0.1:%s%s\n' "$port" "$path"
+}
+
+# The prompt is a sheet on a Dia window, and a run must never wait on Egor's click (2026-10-26: «точка
+# преткновения»): while this server lives, the first sheet with Allow and Deny is answered Allow over
+# Accessibility, so only this run's own connection rides on it. The server keeps that one connection.
+ALLOW='tell application "System Events"
+  tell process "Dia"
+    repeat with w in windows
+      try
+        set s to sheet 1 of w
+        if (exists button "Allow" of s) and (exists button "Deny" of s) then
+          click button "Allow" of s
+          return "allowed"
+        end if
+      end try
+    end repeat
+  end tell
+end tell
+return ""'
+
+allow_watch() { # server-pid log-file
+  while kill -0 "$1" 2>/dev/null; do
+    [ "$(osascript -e "$ALLOW" 2>/dev/null)" != allowed ] || { printf '%s allowed for pid %s\n' "$(date '+%F %T')" "$1" >>"$2"; return 0; }
+    sleep 1
+  done
+}
+
+case "${1:-}" in
+  --check) endpoint ;;
+  '')
+    ws=$(endpoint) || { printf '%s\n' "$ws" >&2; exit 1; }
+    log=${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/browse/dia-allow.log
+    mkdir -p "${log%/*}"
+    # stdout is the MCP channel: the watcher never writes to it.
+    allow_watch "$$" "$log" </dev/null >/dev/null 2>&1 &
+    # npm installs node under nvm, which a LaunchAgent's PATH lacks.
+    command -v npx >/dev/null 2>&1 ||
+      while IFS= read -r bin; do PATH="$PATH:$bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
+    exec npx -y "chrome-devtools-mcp@$VERSION" --wsEndpoint "$ws" --no-usage-statistics ;;
+  *) printf 'usage: dia-mcp [--check]\n' >&2; exit 2 ;;
+esac
+exit; }
