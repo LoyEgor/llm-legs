@@ -127,7 +127,7 @@ status stays `usage_limit`). Once a usage limit leaves a take no account on its 
 picked take: its own limit) the take relaunches with `--route <next>` from the manifest's `routes`,
 if that route's `counts` carry the take's count (`--route cli after a usage limit`; a pool take lets
 the wrapper pick there). Free pool accounts go least recently used first (the roster's `last_used`,
-else this run's launches), ties in roster order. Before every launch: memory pressure normal and
+else this run's launches), ties in roster order. Before every launch: memory pressure under critical and
 available memory ≥ the memory guard's kill line (`GUARD_AVAIL_MB` in `bin/chat-load`) + 1200 MB
 (memlogd's `available_mb` reader), else launches hold (`image-fanout: holding launches: <why>` on
 stderr) — nothing is ever killed for memory. A launch also waits until the previous job's Chrome is

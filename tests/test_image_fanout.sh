@@ -747,7 +747,7 @@ assert test "$rc" -eq 0
 assert test -n "$(plan_cmd zeta take2)"
 assert test -z "$(plan_cmd zeta take3)"
 
-# --- memory admission: launches wait for normal pressure and room above the guard ----------
+# --- memory admission: launches wait out critical pressure and want room above the guard ---
 GUARD=$(sed -n 's/^GUARD_AVAIL_MB = \([0-9]*\).*/\1/p' "$ROOT/bin/chat-load")
 assert test "$GUARD" -gt 0
 MEM_DEST="$WORK/mem dest"
@@ -777,6 +777,16 @@ for hold in "mem $((GUARD + JOB_MB - 1))" 'pressure 4'; do
   assert test ! -e "$WORK/harness/holds/image-fanout-$fanout_pid.json"
   assert grep -Fq '"class":"image-fanout"' "$WORK/harness/waits/"*.jsonl
 done
+# Warn (2) with room above the guard launches at once.
+printf '%s\n' "$((GUARD + JOB_MB))" >"$MEM_MB"
+printf '2\n' >"$PRESSURE"
+rm -f "$(fanout_work "$MEM_DEST")/fanout.state.json" "$(fanout_work "$MEM_DEST")/fanout.tsv"
+fanout_bg -- --dest-dir "$MEM_DEST" --prompt 'badge' --vendors grok
+fanout_pid=$!
+assert wait_for 5 grep -Fq $'grok\tdelta\tok' "$(fanout_work "$MEM_DEST")/fanout.tsv"
+kill "$fanout_pid" 2>/dev/null; wait "$fanout_pid" 2>/dev/null
+assert_fails grep -Fq 'holding launches' "$FANOUT_ERR"
+printf '1\n' >"$PRESSURE"
 printf '65536\n' >"$MEM_MB"
 
 # --- launch spacing: the next launch waits for the previous job's Chrome, or the gap -------------

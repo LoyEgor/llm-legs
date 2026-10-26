@@ -427,7 +427,8 @@ mem_hold=''
 mem_admits() {
   local level avail
   level=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null) || level=''
-  if [[ "$level" =~ ^[0-9]+$ ]] && [ "$level" -gt 1 ]; then
+  # Warn (2) is this machine's resting state: on 2026-10-26 it held six fanouts 17-24 min at 5-6 GB available.
+  if [[ "$level" =~ ^[0-9]+$ ]] && [ "$level" -ge 4 ]; then
     mem_why="memory pressure level $level"
     return 1
   fi
