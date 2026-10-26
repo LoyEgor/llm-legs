@@ -262,12 +262,13 @@ check(T.run_session(WS) == "ws000001" and "other" not in L(T.run_split(dict(run,
 
 day = T.budget(D0, D0 + 86400)
 check(day["seconds"] == dict(dict.fromkeys(T.LABEL, 0), suite_run=2100, suite_wait=1000, slot=601, retries=400,
-                             hooks=100, stop=20, locks=40, other=649)
+                             hooks=100, stop=20, locks=40, holds=45, other=649)
       and day["active_s"] == 9000 and day["runs"] == 2
       and {k: day["rows"][k] for k in ("tests", "waiting for workers", "hooks and gates", "unmeasured")}
       == {"tests": 3100, "waiting for workers": 1001, "hooks and gates": 160, "unmeasured": 649},
       "each class is the union of its spans: suites from every caller, a review round's slot queue too, hook rows and "
-      "a turn's Stop seconds at its end, locks a chat paid (a background job's never), a review round's unsplit rest "
+      "a turn's Stop seconds at its end, locks a chat paid (a background job's never), a review launch held whoever "
+      "paid it, a review round's unsplit rest "
       "and a turn's unexplained seconds unmeasured; a row is the union of its classes: %s %s"
       % (day["seconds"], day["rows"]))
 TWIN = "claudeb-%d-8-twin" % (D0 + 1000)
@@ -279,11 +280,12 @@ os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
 check(pair["runs"] == 3 and pair["rows"]["waiting for workers"] == day["rows"]["waiting for workers"]
       and pair["overhead_s"] == day["overhead_s"],
       "two runs queued and retried side by side count once: %s %s" % (pair["rows"], pair["overhead_s"]))
-check(day["overhead_s"] == 4290 and sum(day["seconds"].values()) == 4910,
+check(day["overhead_s"] == 4290 and sum(day["seconds"].values()) == 4955,
       "the overhead is the union of all classes, a second two classes share counted once, never their sum: %s"
       % day["overhead_s"])
-check(day["strata"] == {"chat": {"overhead_s": 60, "units": 0}, "workers": {"overhead_s": 4101, "units": 2},
-                        "night": {"overhead_s": 0, "units": 0}, "out_s": {"suites": 100, "unmeasured": 649}},
+check(day["strata"] == {"chat": {"overhead_s": 60, "holds_s": 0, "units": 0},
+                        "workers": {"overhead_s": 4101, "holds_s": 0, "units": 2},
+                        "night": {"overhead_s": 0, "holds_s": 0, "units": 0}, "out_s": {"suites": 100, "unmeasured": 649}},
       "a chat's stratum holds its turns' Stop seconds and the locks it paid, a notification turn adds no order; a "
       "worker's holds its own classes and the hook its call ran; a suite of no worker and no chat with turns and the "
       "unmeasured seconds stay out, reported: %s" % day["strata"])
@@ -308,7 +310,7 @@ check(doc["lost_min_day"] == 71.5 and doc["lines"][0] == "52 min/day tests · ru
           [16.7, "waiting for workers", [[10.0, "worker queue"], [0.0, "wrap-up"], [6.7, "retries"], [0.0, "dead, hung"]]],
           [10.8, "unmeasured", []],
           [2.7, "hooks and gates", [[2.0, "hooks"], [0.0, "gate refusals"], [0.7, "locks"], "-", [1.7, "gate"]]],
-          [0.0, "usage walls", []], [0.0, "compaction", []], "-", [150.0, "system active", []]],
+          [0.8, "limiter holds", [[0.8, "review-cells"]]], [0.0, "usage walls", []], [0.0, "compaction", []], "-", [150.0, "system active", []]],
       "the day document: each row with its parts, gates and the heaviest hooks under theirs, by size the first day "
       "seen, system active last: %s" % doc["rows"])
 check("tests" not in doc and not any(l.startswith("Tests:") for l in doc["lines"]),
@@ -683,19 +685,19 @@ apart = stats("seq-stats", [quick("claudeb-1-1-par1", D0 + 50000), quick("claude
 T.INDEX_MIN_UNITS = 1
 alike = T.paasche([apart["strata"]] * 7 + [both["strata"]] * 7)
 T.INDEX_MIN_UNITS = 20
-check(both["strata"]["workers"] == apart["strata"]["workers"] == {"overhead_s": 200, "units": 2}
+check(both["strata"]["workers"] == apart["strata"]["workers"] == {"overhead_s": 200, "holds_s": 0, "units": 2}
       and both["overhead_s"] != apart["overhead_s"] and alike["value"] == 1.0 and alike["left_out"] == ["chat"],
       "the same work in parallel or one after another is the same stratum overhead and index 1.00, while the union "
       "differs: %s %s" % (both["strata"], alike))
 DEAD2 = "claudeb-%d-5-dead" % (D0 + 30000)
 run_dir(DEAD2, dict({k: v for k, v in dead_files.items() if k != "brief"}, session="dead0002-a", **{"worker-session": "dead0002-a"}))
 gone = stats("dead2-stats", [dict(dead_row, run=DEAD2)])
-check(gone["dead_runs"] == [DEAD2] and gone["strata"]["workers"] == {"overhead_s": 610, "units": 0},
+check(gone["dead_runs"] == [DEAD2] and gone["strata"]["workers"] == {"overhead_s": 610, "holds_s": 0, "units": 0},
       "a dead run adds no unit; its minutes stay overhead: %s" % gone["strata"])
 run_dir("claudeb-1-1-cha1", {"session": "cafe0001-0000\n"})
 run_dir("claudeb-1-2-cha2", {"session": "cafe0002-0000\n", "brief": "EFFORT: low\n\nRESUME cafe0001-0000: go on\n"})
 chain = stats("chain-stats", [quick("claudeb-1-1-cha1", D0 + 50000), quick("claudeb-1-2-cha2", D0 + 52000)])
-check(chain["strata"]["workers"] == {"overhead_s": 200, "units": 1},
+check(chain["strata"]["workers"] == {"overhead_s": 200, "holds_s": 0, "units": 1},
       "a resume chain is one task, each run's overhead its own: %s" % chain["strata"])
 day1 = {"chat": {"overhead_s": 600, "units": 10}, "workers": {"overhead_s": 3000, "units": 5},
         "night": {"overhead_s": 0, "units": 0}, "out_s": {"suites": 0, "unmeasured": 0}}
@@ -732,6 +734,30 @@ del os.environ["HARNESS_WAITS_DIR"]
 check(ended["seconds"]["hooks"] == 100 and crossed["seconds"]["locks"] == 50,
       "a hook row is stamped at its end, so its span ends there; a wait begun before midnight keeps its tail in the "
       "next day: %s %s" % (ended["seconds"]["hooks"], crossed["seconds"]["locks"]))
+os.environ["HARNESS_WAITS_DIR"] = os.path.join(work, "hold-waits")
+HELD = "claudeb-1-1-held"
+lines(os.path.join(work, "hold-waits", "2026-01-10.jsonl"),
+      [{"class": "image-fanout", "source": "f", "started": D0 + 50050, "seconds": 200, "pid": 1, "caller": HELD},
+       {"class": "future-class", "source": "n", "started": D0 + 60000, "seconds": 60, "pid": 2},
+       {"class": "workers", "source": "j", "started": D0 + 61000, "seconds": 600, "pid": 3, "caller": HELD}])
+held = stats("held-stats", [quick(HELD, D0 + 50000)])
+check(held["seconds"]["holds"] == 260 and held["rows"]["limiter holds"] == 260
+      and held["holds_by_class"] == {"image-fanout": 200, "future-class": 60}
+      and held["strata"]["workers"] == {"overhead_s": 100, "holds_s": 150, "units": 1},
+      "every wait class but the split's own (worker queue, suites) is a limiter hold, a class never named before too, "
+      "its owner charged only past its other spans: %s %s" % (held["holds_by_class"], held["strata"]["workers"]))
+night_held = [{"class": "image-fanout", "source": "f", "started": D0 + 2000, "seconds": 300, "pid": 1, "caller": RUN},
+              {"class": "lock", "source": "l", "started": D0 + 2100, "seconds": 400, "pid": 2, "caller": "launcher-1"},
+              {"class": "blender", "source": "b", "started": D0 + 4000, "seconds": 100, "pid": 3, "caller": "elsewhere"},
+              {"class": "workers", "source": "j", "started": D0 + 5000, "seconds": 600, "pid": 4, "caller": RUN},
+              {"class": "poll", "source": "p", "started": D0 + 10900, "seconds": 300, "pid": 5, "caller": RUN}]
+lines(os.path.join(work, "hold-waits", "2026-01-10.jsonl"), night_held)
+check(T.night_waits(night) == 600,
+      "a night's other waits: its sessions' and worker runs' journaled waits but the worker queue and suites, "
+      "unioned and clipped to the night: %s" % T.night_waits(night))
+del os.environ["HARNESS_WAITS_DIR"]
+day2 = dict(day1, workers={"overhead_s": 3000, "holds_s": 3000, "units": 5})
+check(T.paasche([day1] * 7 + [day2] * 7)["value"] == 1.83, "the index prices a stratum's holds with its overhead")
 # The comparison table's goal rows: token-map's 7-day Doctors share (never recomputed) and the backlog (review
 # debt with its change against the night before, Speed's selection) of this night against the two previous
 # finished ones, and the nights to plateau at the burn of their P1+P2 rows (P3 never counts) in this night's column.

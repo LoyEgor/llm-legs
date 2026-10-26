@@ -115,7 +115,9 @@ the work, in min/day: each class is the union of its intervals, so parallel runs
 estimates; a class exists only where its intervals are already journaled. Suite seconds are blocking seconds: those
 their owner generated beside them (inside its turns or run, outside its calls) leave. Lost time's tree (Egor, 2026-10-14) shows the
 last 24 h for every row, no overhead subtotal: tests (running, queued, heaviest suites), waiting for workers, hooks and
-gates (hooks, gate refusals, locks), usage walls, compaction, wait overshoot, unmeasured, and two rows outside the
+gates (hooks, gate refusals, locks), usage walls, compaction, wait overshoot, limiter holds (every wait-journal class
+but locks, polls, the worker queue and suites, one never named before too, by class; a stratum's own `holds_s`, its
+marginal over its other spans), unmeasured, and two rows outside the
 index, DIM: `model-written scripts` (tool_mining's `menu_row`, every cluster but `file-edit`/`file-read`, summed over
 the last 24 whole hours `hours_of` keeps, sorted as the last scanned day decides) and `our tools` (Harness's `u` rows:
 the wall time of the bin commands and skills the adoption lists, top 5 then the rest, unioned and clipped as the

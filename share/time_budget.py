@@ -39,7 +39,8 @@ import suite_audit  # noqa: E402
 CLASSES = (("suite_run", "suites running"), ("suite_wait", "suite slot wait"), ("slot", "worker slot queue"),
            ("wrapup", "worker wrap-up"), ("retries", "retries and relaunches"), ("dead", "dead worker runs"),
            ("hung", "watchdog-killed idle tails"), ("hooks", "hooks"), ("stop", "stop hooks"),
-           ("refusal", "gate refusal recovery"), ("locks", "locks and polls"), ("walled", "usage-wall relaunches"),
+           ("refusal", "gate refusal recovery"), ("locks", "locks and polls"), ("holds", "limiter holds"),
+           ("walled", "usage-wall relaunches"),
            ("compaction", "compaction"), ("wait_loop", "wait overshoot"), ("other", "unmeasured"))
 WAITS = "wait_loop"
 LABEL = dict(CLASSES)
@@ -50,15 +51,19 @@ ROWS = (("tests", (("running", "suite_run"), ("queued", "suite_wait"))),
                                  ("dead, hung", "dead", "hung"))),
         ("hooks and gates", (("hooks", "hooks", "stop"), ("gate refusals", "refusal"), ("locks", "locks"))),
         ("usage walls", (("usage walls", "walled"),)), ("compaction", (("compaction", "compaction"),)),
-        ("wait overshoot", (("wait overshoot", WAITS),)), ("unmeasured", (("unmeasured", "other"),)))
+        ("wait overshoot", (("wait overshoot", WAITS),)), ("limiter holds", (("holds", "holds"),)),
+        ("unmeasured", (("unmeasured", "other"),)))
 WATCHDOG_KILLS = ("idle", "silent")
 WAIT_CLASSES = ("lock", "poll")
+# Wait classes read from their own journals (the suite journal, each worker run's split); every other class of the
+# wait journal, a new limiter's too, is a hold.
+SPLIT_WAITS = ("run-suites", "workers")
 GATE_REFUSALS = ("denied", "relay-refused")
 REFUSAL_CAP_S = 300
 HISTORY_DAYS = 6
 TREND_DAYS = 7
 TREND_RECENT = 3
-BUDGET_VERSION = 6
+BUDGET_VERSION = 7
 STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"), ("night", "min per job · night"))
 WORKER_OVERHEAD = ("slot", "retries", "walled", "wrapup", "dead", "hung", "suite_run", "suite_wait")
 INDEX_DAYS, INDEX_MIN_UNITS = 7, 20
@@ -604,7 +609,8 @@ def budget(lo, hi):
     Suites come from run-suites' journal for every caller, less the seconds their owner generated beside them (inside
     its turns or run, outside its calls, when its session has any: a background suite blocks nobody), hooks from Harness's hook rows and a turn's Stop seconds
     at its end, refusals from `refusal_cost`, locks and polls from the waits a chat or worker paid, and the rest from
-    each worker run's split. A turn's compaction and unexplained seconds have no position, so they add to the union.
+    each worker run's split; every other wait class is a limiter hold. A turn's compaction and unexplained seconds
+    have no position, so they add to the union.
     `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither. Wait loops (`waits`,
     beside the overhead, never in it) are `wait_overshoot`. `strata` is the
     index's per-day input: each stratum's overhead summed over its agents, every agent's own spans unioned, and its
@@ -674,10 +680,16 @@ def budget(lo, hi):
         spans[family].append(span)
         by_hook["%s/%s" % (family, hook_key(str(h[4])))].append(span)
         agents[owner.get(session_of.get(h[7]))].append(span)
+    held, holds = collections.defaultdict(list), collections.defaultdict(list)
     for w in wait_rows(lo, hi):
-        if w.get("class") in WAIT_CLASSES and w.get("caller"):
-            spans["locks"].append((w["started"], w["started"] + w["seconds"]))
-            agents[owner.get(w["caller"]) or owner.get(w["caller"][:8])].append(spans["locks"][-1])
+        span, by = (w["started"], w["started"] + w["seconds"]), str(w.get("caller") or "")
+        if w.get("class") in WAIT_CLASSES and by:
+            spans["locks"].append(span)
+            agents[owner.get(by) or owner.get(by[:8])].append(span)
+        elif w.get("class") not in WAIT_CLASSES + SPLIT_WAITS:
+            spans["holds"].append(span)
+            held[str(w.get("class"))].append(span)
+            holds[owner.get(by) or owner.get(by[:8]) if by else None].append(span)
     waits = wait_overshoot(events.get("w"), owner, suites, sessions, runs, lo, hi)
     for sid, own in waits.pop("spans").items():
         spans[WAITS] += own
@@ -695,12 +707,17 @@ def budget(lo, hi):
 
     strata = None
     if local_day(lo) >= (horizon() or "~"):
-        strata = {s: {"overhead_s": 0.0, "units": units[s]} for s, _ in STRATA}
+        strata = {s: {"overhead_s": 0.0, "holds_s": 0.0, "units": units[s]} for s, _ in STRATA}
         for agent, own in agents.items():
             if agent:
                 strata[agent[0]]["overhead_s"] += length(clip(own, lo, hi)) + compact[agent]
+        # Kept apart so a day settled before holds were counted takes them alone (day_budget).
+        for agent, own in holds.items():
+            if agent:
+                mine = agents.get(agent, [])
+                strata[agent[0]]["holds_s"] += length(clip(mine + own, lo, hi)) - length(clip(mine, lo, hi))
         for s, _ in STRATA:
-            strata[s]["overhead_s"] = round(strata[s]["overhead_s"], 1)
+            strata[s]["overhead_s"], strata[s]["holds_s"] = (round(strata[s][k], 1) for k in ("overhead_s", "holds_s"))
         strata["out_s"] = {"suites": round(length(clip(outside, lo, hi)), 1), "unmeasured": seconds(("other",))}
 
     hooks = sorted(((length(clip(v, lo, hi)), k) for k, v in by_hook.items()), key=lambda x: (-x[0], x[1]))
@@ -710,6 +727,7 @@ def budget(lo, hi):
             "rows": {row: seconds([k for part in parts for k in part[1:]]) for row, parts in ROWS},
             "parts": {part[0]: seconds(part[1:]) for _, parts in ROWS for part in parts},
             "hooks_by_hook": {k: round(v, 1) for v, k in hooks[:20] if v}, "runs": len(runs),
+            "holds_by_class": {k: round(length(clip(v, lo, hi)), 1) for k, v in held.items()},
             "dead_runs": sorted(dead), "refusals": recovery["count"], "refusal_cost": recovery, "strata": strata}
 
 
@@ -741,8 +759,11 @@ def day_budget(day, now, store):
         found = _BUDGETS[key] = budget(lo, min(hi, now))
         old = read_json(day_cache_path(day), None)
         if isinstance(old, dict) and old.get("settled") and isinstance(old.get("strata"), dict) and found["strata"]:
-            found = _BUDGETS[key] = dict(old, version=BUDGET_VERSION, strata=dict(found["strata"], **{
-                s: v for s, v in old["strata"].items() if s != "out_s"}))
+            kept = {s: v for s, v in old["strata"].items() if s != "out_s"}
+            for s, v in kept.items():
+                if isinstance(v, dict) and "holds_s" not in v:
+                    kept[s] = dict(v, holds_s=(found["strata"].get(s) or {}).get("holds_s", 0.0))
+            found = _BUDGETS[key] = dict(old, version=BUDGET_VERSION, strata=dict(found["strata"], **kept))
         found["settled"] = now >= hi + SETTLE_S
         if found["settled"] and store:
             write_json(day_cache_path(day), found)
@@ -791,7 +812,8 @@ def paasche(days):
     over its window units at the prior's price, strata with under INDEX_MIN_UNITS units on either side left out. None
     while a window day is unrecorded; no value while a prior day is."""
     sides = [None if any(d is None for d in part) else
-             {s: [sum(d[s][k] for d in part) for k in ("overhead_s", "units")] for s, _ in STRATA}
+             {s: [sum(d[s]["overhead_s"] + d[s].get("holds_s", 0) for d in part), sum(d[s]["units"] for d in part)]
+              for s, _ in STRATA}
              for part in (days[:INDEX_DAYS], days[INDEX_DAYS:])]
     prior, window = sides
     if window is None:
@@ -868,6 +890,8 @@ def document(now, hours=24.0, write=True):
         hooks = [[scale(s), key.split("/", 1)[1]] for key, s in list(b["hooks_by_hook"].items())[:5] if scale(s) >= 1]
         if row == "hooks and gates" and hooks:
             sub += ["-"] + hooks
+        if row == "limiter holds":
+            sub = [[scale(v), k] for k, v in sorted(b["holds_by_class"].items(), key=lambda kv: -kv[1]) if scale(v) >= 0.1]
         if row == "wait overshoot":
             if waits["seconds"] is None:
                 continue
@@ -964,6 +988,17 @@ def night_split(night):
         for key, spans in run_split(run, low, hi, suites, calls).items():
             split[key] += length(spans)
     return len(runs), split
+
+
+def night_waits(night):
+    """Seconds the night's sessions and worker runs spent in journaled waits its worker split does not hold: holds,
+    locks and polls, every class but the worker queue and the suites'."""
+    low, high, sessions = night_spend.window(night)
+    callers = {str(s)[:8] for s in sessions} | {run for run, _, _, _ in night_spend.night_runs(low, high, sessions)}
+    return round(length(clip([(w["started"], w["started"] + w["seconds"]) for w in wait_rows(low, high)
+                               if w.get("class") not in SPLIT_WAITS
+                               and (str(w.get("caller")) in callers or str(w.get("caller"))[:8] in callers)],
+                              low, high)))
 
 
 def lines_of(night):
@@ -1634,7 +1669,7 @@ def ledger_row(worker_run, path, night):
     spent = night_spend.spend(night, worker_run)
     return {"id": night.get("id"), "started": low, "directions": directions(night, path, spent), "ended": high, "hours": round((high - low) / 3600.0, 1),
             "finished": bool(night.get("finished_at")), "runs": n_runs, "wall_s": round(wall),
-            "split_s": {k: round(v) for k, v in split.items() if v},
+            "split_s": {k: round(v) for k, v in split.items() if v}, "waits_s": night_waits(night),
             "lines": lines_of(night),
             "rewrite": list(rewrite[:2]) if rewrite else None,
             "problems": [sum(v for v in (night.get("doctors_before") or {}).values() if isinstance(v, int)),
@@ -1820,6 +1855,7 @@ def table_column(worker_run, path, night, goals, was):
         ("model active", "%d %%" % pct(split.get("model", 0), wall) if wall else dash),
         ("slot queue", hours(split.get("slot", 0))),
         ("own tests", hours(split.get("suite_run", 0) + split.get("suite_wait", 0))),
+        ("other waits", show(row.get("waits_s") / 3600.0 if row.get("waits_s") is not None else None, "%.1f h")),
         ("problems", dash if problems == [None, None]
          else "%s \u2192 %s" % (show(problems[0]), show(problems[1]))),
     ] + [

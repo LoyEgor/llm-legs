@@ -1362,7 +1362,8 @@ tb_night 20260205T000000Z-abcd 2026-02-05T00:00:00Z 2026-02-05T03:30:00Z "$(tb_j
   '{"started_at": "2026-02-05T03:30:00Z", "finished_at": "2026-02-05T04:00:00Z", "repos": [{"repo": "/r1", "passed": 10,
     "failed": ["test_a.sh"]}, {"repo": "/r2", "passed": 5, "failed": []}]}'
 jq -n '{id: "20260202T000000Z-a0b1", finished: true, hours: 9.8, runs: 3, wall_s: 36000,
-  split_s: {model: 3600, slot: 7200, suite_run: 1800, suite_wait: 1800}, lines: {jobs: [10, 2, 4, 1], other: [0, 0, 0, 0]},
+  split_s: {model: 3600, slot: 7200, suite_run: 1800, suite_wait: 1800}, waits_s: 2700,
+  lines: {jobs: [10, 2, 4, 1], other: [0, 0, 0, 0]},
   rewrite: [7, 20], problems: [8, null], spend_m: 12.5, spend_kinds: {fixers: 8.0, reviews: 3.0, orchestrator: 1.5},
   spend_unit: "Opus-eq"}' \
   >"$TB/doctors/night-ledger/20260202T000000Z-a0b1.json"
@@ -1400,6 +1401,7 @@ worker wall    10.0 h       –   0.0 h
 model active     10 %       –       –
 slot queue      2.0 h       –   0.0 h
 own tests       1.0 h       –   0.0 h
+other waits     0.8 h       –   0.0 h
 problems        8 → –   7 → 6   3 → 4
   llm           5 → –   4 → 3   2 → 0
   harness       3 → –   2 → 2   1 → 4

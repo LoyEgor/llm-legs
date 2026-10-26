@@ -232,7 +232,8 @@ problems touched again without proof and regressions in `doctor_problems_after`;
 leaving every decided problem unproven; lines deleted tonight written in the prior 7 days.
 
 Last, `share/time_budget.py night`'s ledger: one line for the night (duration; worker wall from each run's
-`pid_started_at`, split into model, slot queue and own suites; code and test lines
+`pid_started_at`, split into model, slot queue and own suites; the table's `other waits`, `night_waits`: the union of
+its sessions' and runs' wait-journal rows outside that split; code and test lines
 of the job commits and of other commits on the sweep HEADs in the window; week-old rewrites; problems before → after,
 proved, regressed, touched again without proof; spend, what was deferred), then a trend line per night for the
 last 7 and their problem direction. A finished night's row is cached in
