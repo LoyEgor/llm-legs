@@ -1198,6 +1198,18 @@ assert (hd / "jitter-stub.args").read_text().split() == ["fix", str(hd / "u.mp4"
                                                          "--register"]
 # The fix rewrites the file, and Extend still knows it as its media's.
 assert g.extend_source(str(hd / "u.mp4"), {"sources": ["fast"]})["media_id"] == "m-1"
+# A pack's films are fixed at once while memory has room, else one after another.
+g.JITTER.write_text("#!/bin/sh\necho \"start $2\" >>\"$0.log\"; sleep 0.5; echo \"end $2\" >>\"$0.log\"; "
+                    "echo '{\"steadied\": \"none\"}'\n")
+room = g.fix_room
+for spare, order in ((True, ["start", "start", "end", "end"]), (False, ["start", "end", "start", "end"])):
+    (hd / "jitter-stub.log").unlink(missing_ok=True)
+    g.fix_room = lambda running, spare=spare: spare
+    pack = {"variants": [{"dest": str(hd / f"p{i}.mp4"), "ref720": str(hd / f"p{i}.720p.mp4")} for i in (1, 2)]}
+    g.fix_upscales(pack)
+    assert [line.split()[0] for line in (hd / "jitter-stub.log").read_text().splitlines()] == order, spare
+    assert [v["steady"] for v in pack["variants"]] == [{"steadied": "none"}] * 2, pack
+g.fix_room = room
 for media_id, said in (("m-none", "has no Flow project for clip m-none"), ("m-gone", "no tile in its grid"),
                        ("m-elsewhere", "Flow no longer lists clip m-elsewhere")):
     if media_id == "m-elsewhere":

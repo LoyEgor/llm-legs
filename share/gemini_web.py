@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import base64
 import calendar
+import concurrent.futures
 import contextlib
 import datetime
 import faulthandler
@@ -1609,33 +1610,58 @@ def save_ref720(page, account: str, project: str, upscale: dict) -> str | None:
 # (since Omni 1.1 Flash, 2026-08), and rings every contrast edge with a halo; the 720p of the same media has neither.
 # docs/video-jitter.md.
 JITTER = Path(__file__).resolve().parent.parent / "bin" / "video-jitter"
+# A fix holds one core and 0.9-1.2 GB (an 8 s 1080p clip, 2026-10-26): two at once took 176 s against 190 s for one
+# alone at load 40, byte-identical, so a pack's films go together while memory stays above the guard's kill line.
+FIX_MB = 1200
+
+
+def fix_room(running: int) -> bool:
+    """Room for one more fix beside `running`: available memory read as image-fanout's admission reads it (memlogd's
+    available_mb) over chat-load's GUARD_AVAIL_MB plus FIX_MB for each fix, the new one included."""
+    try:
+        guard = int(re.search(r"^GUARD_AVAIL_MB = (\d+)", (REPO / "bin" / "chat-load").read_text(), re.M)[1])
+        avail = int(subprocess.run(["bash", "-c", 'eval "$(sed -n "/^available_mb() {/,/^}/p" "$1")"; '
+                                                  'available_mb "$(vm_stat)"', "_", str(REPO / "bin" / "memlogd")],
+                                   capture_output=True, text=True, timeout=10).stdout)
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError):
+        return False
+    return avail >= guard + FIX_MB * (running + 1)
+
+
+def fix_upscale(result: dict, variant: dict) -> None:
+    started = time.monotonic()
+    # --register: video-jitter's own register, read by media-run's door.
+    run = subprocess.run([str(JITTER), "fix", variant["dest"], "--ref720", variant["ref720"], "--register"],
+                         capture_output=True, text=True)
+    try:
+        variant["steady"] = json.loads(run.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        variant["steady"] = {"error": (run.stderr.strip().splitlines() or [f"exit {run.returncode}"])[-1][:300]}
+    with contextlib.suppress(OSError):
+        variant["bytes"] = Path(variant["dest"]).stat().st_size
+    # Whether Flow still trembles and overshoots, and what the fix costs, read back over time; the bytes let
+    # --extend know the fixed file as its media's.
+    ledger({"event": "steady", "account": result.get("account"), "media_id": variant.get("media_id"),
+            "dest": variant["dest"], "secs": round(time.monotonic() - started, 1), "bytes": variant.get("bytes"),
+            **{k: variant["steady"][k] for k in ("raw", "ref", "fixed", "steadied", "cleaned", "clamped",
+                                                 "colour_shift", "sharpness", "error") if k in variant["steady"]}})
 
 
 def fix_upscales(result: dict) -> dict:
     """Each upscale fixed against its 720p (video-jitter fix: steadied when it trembles, its halos clamped), the
     download kept beside it; run after the account's lock is released, since it is minutes of CPU and no Flow."""
     variants = result.get("variants") or [result]
-    if not any(variant.get("ref720") for variant in variants):
+    todo = [variant for variant in variants if variant.get("ref720")]
+    if not todo:
         return result
-    for variant in variants:
-        if not variant.get("ref720"):
-            continue
-        started = time.monotonic()
-        # --register: video-jitter's own register, read by media-run's door.
-        run = subprocess.run([str(JITTER), "fix", variant["dest"], "--ref720", variant["ref720"], "--register"],
-                             capture_output=True, text=True)
-        try:
-            variant["steady"] = json.loads(run.stdout.strip().splitlines()[-1])
-        except (IndexError, ValueError):
-            variant["steady"] = {"error": (run.stderr.strip().splitlines() or [f"exit {run.returncode}"])[-1][:300]}
-        with contextlib.suppress(OSError):
-            variant["bytes"] = Path(variant["dest"]).stat().st_size
-        # Whether Flow still trembles and overshoots, and what the fix costs, read back over time; the bytes let
-        # --extend know the fixed file as its media's.
-        ledger({"event": "steady", "account": result.get("account"), "media_id": variant.get("media_id"),
-                "dest": variant["dest"], "secs": round(time.monotonic() - started, 1), "bytes": variant.get("bytes"),
-                **{k: variant["steady"][k] for k in ("raw", "ref", "fixed", "steadied", "cleaned", "clamped",
-                                                     "colour_shift", "sharpness", "error") if k in variant["steady"]}})
+    with concurrent.futures.ThreadPoolExecutor(len(todo)) as pool:
+        running: set = set()
+        for variant in todo:
+            while running and not fix_room(len(running)):
+                _, running = concurrent.futures.wait(running, return_when=concurrent.futures.FIRST_COMPLETED)
+            running.add(pool.submit(fix_upscale, result, variant))
+        for future in running:
+            future.result()
     result["steady"] = variants[0].get("steady")
     result["ref720"] = variants[0].get("ref720")
     result["bytes"] = variants[0].get("bytes")

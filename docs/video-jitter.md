@@ -14,7 +14,8 @@ Evidence and Egor's verdicts: `docs/handoffs/2026-10-21-flow-upscale-oversharp.m
 
 - `gemini-video --resolution 1080p` and `gemini-web fetch … --resolution 1080p` also save the 720p of the same media
   beside the file as `<stem>.720p.mp4` (`share/gemini_web.py` `save_ref720`). After the account's lock is released,
-  `fix_upscales` runs `video-jitter fix` on each upscale, one decode and one encode (crf 18, its sound and colour tags):
+  `fix_upscales` runs `video-jitter fix` on each upscale, one decode and one encode (crf 18, its sound and colour tags),
+  a pack's at once while available memory stays over the guard's kill line plus 1200 MB a fix (`fix_room`):
   - it trembles (its rise over the 720p passes the gate): anchored, settled, then clamped on the 720p;
   - it does not: clamped against the 720p warped onto it, so it keeps its own pixels;
   - the steadied film reads no steadier: clamped only;
@@ -92,7 +93,8 @@ to the next take. So:
 | `door <image>... [--clean] [--register <jsonl>] [--out <dir>]` | one JSON line per image cut from a registered upscale: `swap` or `edited`, `as` 720p or cleaned; the register defaults to `${VIDEO_JITTER_DIR:-~/.cache/video-jitter}/upscales.jsonl` |
 
 An 8 s 1080p clip on a quiet machine: 56 s when it does not tremble (the measure alone, all the steady did there, 11 s),
-75 s when it does; about half is dense flow. Three at once on a loaded machine took 2-4.5 minutes each.
+75 s when it does; about half is dense flow. Three at once on a loaded machine took 2-4.5 minutes each. A fix holds
+one core and 0.9-1.2 GB: at load 40 one alone took 190 s and two at once 176 s, byte-identical.
 
 ## The gate, set by Egor's eye
 

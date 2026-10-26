@@ -424,7 +424,7 @@ def refused(**over):
 
 
 plan = fi.make_plan(args(model="nb2", aspect="9:16", count=4, upscale="2k"))
-assert (plan["label"], plan["price"], plan["count"], plan["timeout_s"]) == ("Nano Banana 2.1", 0, 4, 300), plan
+assert (plan["label"], plan["price"], plan["count"], plan["timeout_s"]) == ("Nano Banana 2.1", 0, 4, 120), plan
 ref = os.path.join(work, "media", "ref.png")
 assert fi.make_plan(args(ref=[ref] * 10))["refs"] == [ref] * 10
 for over in [dict(model="ultra"), dict(aspect="2:3"), dict(count=5), dict(ref=[ref] * 11), dict(upscale="4k"),

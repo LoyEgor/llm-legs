@@ -17,7 +17,9 @@ not these pages. Re-verify a manifest when a run prints `caps=stale` or `model_c
 Flow is video-first: images use `media-run image` (codex/ChatGPT by default); Flow images require
 `--upscale 2k`, the only verified capability missing from ChatGPT web, whose prose `--size` cannot
 guarantee 2K (observed long side about 1672 px). Other Flow image requests exit 2 before sending;
-fan-out skips them per job, while video, music and sfx keep their routes.
+fan-out skips them per job, while video, music and sfx keep their routes. A Flow image send waits `timeout_s`
+(120 s) for its images: 542 Pro sends of 2026-10-15..26 came back within 28 s at p99 (one in 203 s), while 18
+waited out the former 300 s with nothing.
 
 ## Capability matrix
 
