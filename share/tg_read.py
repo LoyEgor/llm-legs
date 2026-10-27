@@ -11,13 +11,15 @@ types a code, ever.
     tg-read read <chat> [--limit N] [--since YYYY-MM-DD] [--json]
     tg-read voice <chat> [--last N] --dest-dir <abs> [--transcribe]   download voice messages as .ogg
     tg-read transcribe <abs audio> [--dest <abs .txt>] [--language ru] [--engine auto|elevenlabs|groq]
-    tg-read send <chat> (--text <text> | --file <abs>)   post ONE plain-text message as Egor
+    tg-read send <chat> (--text <text> | --file <abs>) [--as-written]   post ONE plain-text message as Egor
 
 <chat> is a dialog name (substring, case-insensitive), a @username, a numeric id or `me` (Saved
 Messages). Output is plain text, one message per line; a voice or media message prints a tag instead
 of text. chats/read/voice are read-only: they never send, mark read or delete. `send` posts exactly
 the given text (yo -> ye, em/en dash -> hyphen), once, never to a channel; nothing here edits or
-deletes.
+deletes. Egor greets a person once a day and rarely uses names: `send` drops an opening greeting when
+the chat (a group: his own messages) already talked today and the person's name used as an address,
+printing what went; --as-written keeps both, only when his own words for the message carry them.
 
 Transcription (auto): ElevenLabs through `media-run transcribe`, then Groq Whisper when ElevenLabs is
 out of usage/credits. Groq keys: transcriptions-gpt/settings/groq_keys.txt, never printed.
@@ -371,12 +373,26 @@ async def cmd_transcribe(args) -> int:
     return code
 
 
-def normalize(text: str) -> tuple[str, int, int]:
-    """Egor cannot type yo or long dashes: the shared owner_text normalizer (claude-setup hooks/lib) maps them. Returns (text, yo, dashes)."""
+def owner():
+    """The shared owner_text module (claude-setup hooks/lib): how a text sent as Egor must look."""
     sys.path.insert(0, os.path.expanduser("~/.claude/hooks/lib"))
-    from owner_text import owner_text
+    import owner_text
 
-    return owner_text(text)
+    return owner_text
+
+
+def normalize(text: str) -> tuple[str, int, int]:
+    """Egor cannot type yo or long dashes: the shared owner_text normalizer maps them. Returns (text, yo, dashes)."""
+    return owner().owner_text(text)
+
+
+async def as_egor(tg, entity, text: str) -> tuple[str, list[str]]:
+    """No greeting when the chat already talked today (a person: any message, a group: his own), no
+    person's name as an address (the name as Telegram gives it). Returns (text, what was dropped)."""
+    person = hasattr(entity, "first_name")
+    last = await tg.get_messages(entity, limit=1, from_user=None if person else "me")
+    talked = bool(last) and last[0].date.astimezone().date() == datetime.now().astimezone().date()
+    return owner().as_egor(text, talked, [entity.first_name] if person else [])
 
 
 def send_text(args) -> str:
@@ -401,6 +417,14 @@ async def cmd_send(args) -> int:
         await tg.disconnect()
         print(f"tg-read: {args.chat!r} is a channel; refusing to post", file=sys.stderr)
         return 2
+    if not args.as_written and not getattr(entity, "is_self", False):
+        text, dropped = await as_egor(tg, entity, text)
+        if not text.strip():
+            await tg.disconnect()
+            print(f"tg-read: nothing left to send after dropping the {', '.join(dropped)}", file=sys.stderr)
+            return 2
+        if dropped:
+            print(f"dropped: {', '.join(dropped)}")
     message = await tg.send_message(entity, text, parse_mode=None, link_preview=False)
     name = "Saved Messages" if args.chat == "me" else (getattr(entity, "title", None) or " ".join(
         p for p in (getattr(entity, "first_name", None), getattr(entity, "last_name", None)) if p) or str(entity.id))
@@ -441,6 +465,8 @@ def main(argv=None) -> int:
     body = send.add_mutually_exclusive_group(required=True)
     body.add_argument("--text")
     body.add_argument("--file", help="absolute path of a text file to post")
+    send.add_argument("--as-written", action="store_true",
+                      help="keep an opening greeting and the addressee's name: only when Egor's own words carry them")
     args = parser.parse_args(argv)
     if args.command == "send":
         send_text(args)  # refuse an empty or oversized text before connecting
