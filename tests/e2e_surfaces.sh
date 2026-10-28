@@ -29,8 +29,6 @@ command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH (needed to parse
 E2E_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$E2E_ROOT/share/test-scope.sh"
 E2E_PROJECTS=$(git_projects "$E2E_ROOT")
-cmp -s "$HOME/.claude/commands/worker.md" "$E2E_PROJECTS/claude-setup/commands/worker.md" \
-  || fail "installed ~/.claude/commands/worker.md differs from claude-setup/commands/worker.md"
 cmp -s "$HOME/.claude/hooks/worker-launch-gate.sh" "$E2E_ROOT/bin/worker-launch-gate.sh" \
   || fail "installed ~/.claude/hooks/worker-launch-gate.sh differs from bin/worker-launch-gate.sh"
 [ "$(cd "$HOME/.hammerspoon" && pwd -P)" = "$(cd "$E2E_PROJECTS/hammerspoon" && pwd -P)" ] \

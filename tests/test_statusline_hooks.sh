@@ -1647,7 +1647,7 @@ assert test "${pin_out#*codex}" = "$pin_out"
 assert test "${pin_out#*claude}" = "$pin_out"
 assert test "${pin_out#*⏸off}" = "$pin_out"
 
-printf 'claudeb_profile=globpin\nworker=claudeb\n' > "$worker_file"
+printf 'claudeb_profile=globpin\n' > "$worker_file"
 pin_out=$(run_statusline "$(statusline_payload status-pin-global)")
 assert test "${pin_out#*globpin}" = "$pin_out"
 assert test "${pin_out#*claude}" = "$pin_out"

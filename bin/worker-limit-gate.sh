@@ -8,7 +8,6 @@ DENY_AT=95
 [ -z "${WORKER_GATE_WARN_PCT:-}" ] || WARN_AT="$WORKER_GATE_WARN_PCT"
 [ -z "${WORKER_GATE_DENY_PCT:-}" ] || DENY_AT="$WORKER_GATE_DENY_PCT"
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
-TOGGLE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
 
 
@@ -26,13 +25,9 @@ if [ -z "${4:-}" ] || { [ "$worker" = codex ] && [ "$computer" = false ]; }; the
   prompt=$(head -c 65536 "$3" 2>/dev/null) || prompt=''
 fi
 
-# Carries $toggle_note, so a vendor that disagrees with the toggle is reported without
-# stealing the exit from a limit verdict that matters more. `warn ""` is the quiet path.
+# `warn ""` is the quiet path.
 warn() {
   local msg=${1:-}
-  if [ -n "${toggle_note:-}" ]; then
-    if [ -n "$msg" ]; then msg="${toggle_note} ${msg}"; else msg="$toggle_note"; fi
-  fi
   [ -n "$msg" ] || exit 0
   jq -cn --arg c "$msg" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null || true
   exit 0
@@ -89,29 +84,11 @@ if [ "$worker" = light ]; then
 fi
 [ -z "$pin_key" ] || _load_wm || true
 
-# The toggle names the implementation worker for every session, and reading it before each
-# delegation is the one step of that rule a hook can take over. A mismatch is reported, never
-# denied: Egor routes a single task to another vendor by voice, without touching the file.
-toggle_note=''
-toggle_worker=''
-[ -r "$TOGGLE" ] && toggle_worker=$(sed -n 's/^worker=//p' "$TOGGLE" | head -1 | tr -d '[:space:]')
-case "$toggle_worker" in
-  claudeb|codex|gemini|grok)
-    # The Light leg is selected by the `light_edit` row and never by `worker=`, so a mismatch here
-    # would advise a switch that changes nothing about where this start lands.
-    if [ "$worker" != light ] && [ "$toggle_worker" != "$vendor" ]; then
-      toggle_note="The worker toggle says worker=${toggle_worker}, this starts ${worker}. Fine if the task called for it; otherwise the toggle is the default and ${toggle_worker} is the one to use."
-    fi
-    ;;
-esac
-
 if [ "$worker" = codex ] && { [ "$computer" = true ] || grep -Eq '^COMPUTER:[[:space:]]*yes[[:space:]]*$' <<<"$prompt"; }; then
   role_arg=computer
-  toggle_note=''
 fi
 if [ "$browser" = true ]; then
   role_arg=browser
-  toggle_note=''
 fi
 
 # A gemini run's family (worker-run passes its slug) asks the pool for that family: its accounts and

@@ -207,15 +207,6 @@ if [ -n "$query_vendor" ] && vendor_paused "$query_vendor"; then
     "$query_vendor" "$query_vendor" >&2
   exit 3
 fi
-conf_get worker; worker_mode=${conf_val:-auto}
-# Silently: a pause is a decision Egor made after setting the toggle, and a warning on every run
-# would be noise.
-case "$worker_mode" in
-  claudeb) [ "$cb_paused" = false ] || worker_mode=auto ;;
-  codex) [ "$cx_paused" = false ] || worker_mode=auto ;;
-  gemini) [ "$gm_paused" = false ] || worker_mode=auto ;;
-  grok) [ "$gr_paused" = false ] || worker_mode=auto ;;
-esac
 # Before any $(worker_model_*): those run in subshells and would each rebuild the catalogs.
 worker_model_prime "$query_vendor"
 conf_get claudeb_model; cb_model=${conf_val:-opus}
@@ -443,22 +434,15 @@ fail_safe() {
     exit 3
   fi
   fs_next=""
-  case "$worker_mode" in
-    gemini) fs_next=$(printf 'gemini %s · %s · %s — unavailable (%s)' "${gm_pin:-?}" "$gm_model" "$gm_effort" "$1") ;;
-    grok) fs_next=$(printf 'grok %s · %s · %s — unavailable (%s)' "${gr_pin:-?}" "$gr_model" "$gr_effort" "$1") ;;
-    # No data means no ranking, so the lead is codex where the toggle chose it, else the first vendor of the fixed order still running:
-    # claudeb rotating where it is, and its successor where Egor parked it.
-    *) if [ "$worker_mode" = codex ] && [ "$cx_paused" = false ]; then
-         fs_next=$(printf 'codex %s · %s · %s — unavailable (%s)' "${cx_pin:-?}" "$cx_model" "$cx_effort" "$1")
-       elif [ "$cb_paused" = false ]; then
-         fs_next=$(printf 'claudeb (rotating) — %s' "$1")
-         [ "$worker_mode" != auto ] || [ "$gm_paused" = true ] ||
-           fs_next="$fs_next  |  gemini unavailable"
-       elif [ "$cx_paused" = false ]; then fs_next=$(printf 'codex unavailable (%s)' "$1")
-       elif [ "$gm_paused" = false ]; then fs_next=$(printf 'gemini unavailable (%s)' "$1")
-       elif [ "$gr_paused" = false ]; then fs_next=$(printf 'grok unavailable (%s)' "$1")
-       fi ;;
-  esac
+  # No data means no ranking, so the lead is the first vendor of the fixed order still running:
+  # claudeb rotating where it is, and its successor where Egor parked it.
+  if [ "$cb_paused" = false ]; then
+    fs_next=$(printf 'claudeb (rotating) — %s' "$1")
+    [ "$gm_paused" = true ] || fs_next="$fs_next  |  gemini unavailable"
+  elif [ "$cx_paused" = false ]; then fs_next=$(printf 'codex unavailable (%s)' "$1")
+  elif [ "$gm_paused" = false ]; then fs_next=$(printf 'gemini unavailable (%s)' "$1")
+  elif [ "$gr_paused" = false ]; then fs_next=$(printf 'grok unavailable (%s)' "$1")
+  fi
   [ -n "$fs_next" ] || [ "$all_paused" = false ] || fs_next=$NOTHING_ROUTABLE
   printf 'NEXT: %s\n' "$fs_next"
   [ "$cx_paused" = true ] || printf 'codex: unavailable\n'
@@ -1047,19 +1031,18 @@ if [ "$gm_role_off" = true ]; then gm_selected=no; gm_acct=""; gm_pin_lapse=""; 
 if [ "$gr_role_off" = true ]; then gr_selected=no; gr_acct=""; gr_pin_lapse=""; gr_nextrows=""; fi
 
 # A vendor the store carries no row for is not installed here, so the render leaves it out entirely
-# rather than reporting a wall or a failed lookup. The switch, the mode and the pin are statements
-# Egor made about the vendor, and each is worth an answer even with no data behind it — a PAUSE
-# overrides all three, and is read here as well as off the store because the collector only drops
-# the vendor on its next run.
+# rather than reporting a wall or a failed lookup. The switch and the pin are statements Egor made
+# about the vendor, and each is worth an answer even with no data behind it — a PAUSE overrides
+# both, and is read here as well as off the store because the collector only drops the vendor on
+# its next run.
 vendor_known() {
-  [ "$5" = false ] &&
-    { [ "$1" = yes ] || [ "$2" = true ] || [ "$worker_mode" = "$3" ] || [ -n "$4" ]; }
+  [ "$4" = false ] && { [ "$1" = yes ] || [ "$2" = true ] || [ -n "$3" ]; }
 }
 cb_known=false; cx_known=false; gm_known=false; gr_known=false
-! vendor_known "$cl_present" "$cb_role_off" claudeb "$cb_pin" "$cb_paused" || cb_known=true
-! vendor_known "$cx_present" "$cx_role_off" codex "$cx_pin" "$cx_paused" || cx_known=true
-! vendor_known "$gm_present" "$gm_role_off" gemini "$gm_pin" "$gm_paused" || gm_known=true
-! vendor_known "$gr_present" "$gr_role_off" grok "$gr_pin" "$gr_paused" || gr_known=true
+! vendor_known "$cl_present" "$cb_role_off" "$cb_pin" "$cb_paused" || cb_known=true
+! vendor_known "$cx_present" "$cx_role_off" "$cx_pin" "$cx_paused" || cx_known=true
+! vendor_known "$gm_present" "$gm_role_off" "$gm_pin" "$gm_paused" || gm_known=true
+! vendor_known "$gr_present" "$gr_role_off" "$gr_pin" "$gr_paused" || gr_known=true
 # Only claude (Claude in Chrome) and codex (its Chrome extension) drive a browser.
 [ "$query_role" != browser ] || { gm_known=false; gr_known=false; gm_list=''; gr_list=''; }
 # A vendor that is not here selected nothing, whatever a snapshot older than the pause still says;
@@ -1203,17 +1186,15 @@ vendor_reason() { # vendor var
   fi
 }
 print_next() {
-  local force_lead=$1
-  shift
-  local name blob acct text label row entry rank=0 pick="" reason="" lead="" stream="" prefixed="" merged=""
-  local k1 k2 k3 k4 k5 k6 k7 k8 k9 rest pick_vendor=""
+  local name blob text label entry rank=0 pick="" reason="" stream="" merged=""
+  local k1 k2 k3 k4 k5 k6 k7 k8 rest pick_vendor=""
   local -a ranked=()
   for name in "$@"; do
     case "$name" in
-      cb) blob=$cl_nextrows; acct=$cl_acct ;;
-      cx) blob=$cx_nextrows; acct=$cx_acct ;;
-      gm) blob=$gm_nextrows; acct=$gm_acct ;;
-      gr) blob=$gr_nextrows; acct=$gr_acct ;;
+      cb) blob=$cl_nextrows ;;
+      cx) blob=$cx_nextrows ;;
+      gm) blob=$gm_nextrows ;;
+      gr) blob=$gr_nextrows ;;
     esac
     vendor_label "$name" label
     if [ -z "$blob" ]; then
@@ -1221,30 +1202,18 @@ print_next() {
       [ -z "$text" ] || reason="${reason:+$reason  |  }$label $text"
       continue
     fi
-    # Row 1 belongs to the vendor the MODE named, whose sequence put it first: `worker=grok` is an
-    # order and not a budget, and `ACCOUNT:` under the table has to name what that vendor answered.
-    # In `auto` the sequence is itself the pin-then-budget ranking, so this key changes nothing.
-    if [ "$force_lead" = true ] && [ -z "$lead" ]; then
-      lead="$acct$NEXT_KEY_SEP$label"
-    fi
     stream="${stream:+$stream$NEXT_ROW_SEP}$blob"
   done
   if [ -n "$stream" ]; then
-    while IFS= read -r row; do
-      [ -n "$row" ] || continue
-      IFS=$NEXT_KEY_SEP read -r k1 k2 k3 k4 k5 k6 k7 rest <<<"$row"
-      if [ "$k6$NEXT_KEY_SEP$k7" = "$lead" ]; then prefixed+="0$NEXT_KEY_SEP$row$nl"
-      else prefixed+="1$NEXT_KEY_SEP$row$nl"; fi
-    done <<<"${stream//$NEXT_ROW_SEP/$nl}"
-    merged=$(LC_ALL=C sort -t "$NEXT_KEY_SEP" -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n -k6,6g -k7,7 -k8,8 \
-      <<<"${prefixed%"$nl"}")
-    while IFS=$NEXT_KEY_SEP read -r k1 k2 k3 k4 k5 k6 k7 k8 k9 rest; do
-      [ -n "$k7$k9" ] || continue
+    merged=$(LC_ALL=C sort -t "$NEXT_KEY_SEP" -k1,1n -k2,2n -k3,3n -k4,4n -k5,5g -k6,6 -k7,7 \
+      <<<"${stream//$NEXT_ROW_SEP/$nl}")
+    while IFS=$NEXT_KEY_SEP read -r k1 k2 k3 k4 k5 k6 k7 k8 rest; do
+      [ -n "$k6$k8" ] || continue
       [ "$rank" -lt "$NEXT_MAX_ROWS" ] || break
       rank=$((rank + 1))
-      printf -v entry '%-9s%s' " $rank" "$k9"
+      printf -v entry '%-9s%s' " $rank" "$k8"
       ranked+=("$entry")
-      [ "$rank" -ne 1 ] || { pick=$k7; pick_vendor=$k8; }
+      [ "$rank" -ne 1 ] || { pick=$k6; pick_vendor=$k7; }
     done <<<"$merged"
   fi
   if [ "${#ranked[@]}" -gt 0 ]; then
@@ -1262,23 +1231,12 @@ print_next() {
   printf 'NEXT: %s\n' "$reason"
 }
 
-# The worker toggle names the implementation leg, and a browser run is not one: no vendor leads.
 if [ "$query_role" = browser ]; then
-  print_next false cb cx
+  print_next cb cx
   printf 'DATA: %s\n' "$age"
   exit 0
 fi
-if [ "$worker_mode" = gemini ]; then
-  print_next true gm cb cx gr
-elif [ "$worker_mode" = grok ]; then
-  print_next true gr cb cx gm
-elif [ "$worker_mode" = codex ]; then
-  print_next true cx cb gm gr
-elif [ "$worker_mode" = auto ]; then
-  print_next false cb cx gm gr
-else
-  print_next true cb cx gm gr
-fi
+print_next cb cx gm gr
 if [ "$query_menu" = false ] && [ "$query_all" = false ]; then
   printf 'DATA: %s\n' "$age"
   exit 0

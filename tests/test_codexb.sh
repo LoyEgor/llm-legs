@@ -1129,7 +1129,7 @@ assert image_run --dest "$WORK/image-output/pin.jpg" --prompt portrait
 assert grep -qx 'account=pinacct' "$IMAGE_OUT"
 assert grep -q 'falling back to account pinacct' "$IMAGE_ERR"
 
-printf 'worker=codex\n' >"$HOME/.claude/worker-model"
+: >"$HOME/.claude/worker-model"
 : >"$IMAGE_CALLS"
 assert image_run --dest "$WORK/image-output/main.jpg" --prompt portrait
 assert grep -qx 'account=main home=<unset>' "$IMAGE_CALLS"

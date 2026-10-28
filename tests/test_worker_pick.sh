@@ -224,11 +224,10 @@ assert contains "$(vsection codex)" '48% 48% plain'
 
 
 # Unusable data has no fail-safe answer for a caller, and a human-facing run says why.
-printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=flash38' 'gemini_effort=high' 'gemini_profile=work' >"$CONFIG"
+write_config
 printf 'not-json\n' >"$STORE"
 run_store malformed
-assert contains "$(head -n1 <<<"$output")" 'NEXT: gemini work · flash38 · high — unavailable (limits parse failed)'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb (rotating) — limits parse failed'
 # The fable pick was a line of its own; `--fable` is the query that asks for it now.
 assert not_contains "$output" 'SESSION:'
 query --account claudeb
@@ -881,21 +880,6 @@ query --account claudeb --role chat
 assert test "$query_rc" -eq 0
 assert test "$query_out" = session
 write_config
-# `worker=grok` is a mode arm like `worker=gemini`: the vendor leads the line whatever the pool says.
-printf '%s\n' 'worker=grok' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
-grok_case "$GROK_PAIR"
-assert contains "$(nrow 1)" 'grok/spare grok·high'
-assert before "$(next_block)" 'grok/spare' 'claude/session'
-# Siblings of the armed vendor fall back into the vector: supergrok is not glued under spare.
-assert before "$(next_block)" 'claude/session' 'grok/supergrok'
-printf '%s\n' 'worker=codex' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
-run_case golden
-assert contains "$(nrow 1)" 'codex/main astra·high'
-assert test "$(acct_line)" = 'ACCOUNT: main'
-assert before "$(next_block)" 'codex/main' 'claude/session'
-write_config
 
 # The table lists ACCOUNTS, not one nominee per vendor: two usable claude accounts beside two
 # usable grok ones are four rows in budget order, interleaved, and a vendor may hold several of
@@ -1515,7 +1499,7 @@ browser_store='.vendors.claude.accounts = [
   | .vendors.codex = {available:true,accounts:[
     {account:"cx-free",enabled:true,five_hour:{used_pct:5},weekly:{used_pct:10}},
     {account:"cx-out",enabled:false,five_hour:{used_pct:0},weekly:{used_pct:0}}]}'
-write_config 'worker=claudeb' 'codex_workers=off' 'claudeb_workers=off' 'codex_profile=cx-out' 'claudeb_profile=cl-out'
+write_config 'codex_workers=off' 'claudeb_workers=off' 'codex_profile=cx-out' 'claudeb_profile=cl-out'
 load_case gemini_fresh "$browser_store"
 query --role browser
 assert test "$query_rc" -eq 0
@@ -1974,17 +1958,15 @@ run_case claude_pool
 assert contains "$(nrow 1)" 'claude/session* sonnet·med'
 run_case golden
 assert contains "$(vsection codex)" 'main astra·med'
-printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+printf '%s\n' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
   'gemini_model=flash' 'gemini_effort=medium' >"$CONFIG"
 run_case gemini_fresh
-assert contains "$(nrow 1)" 'gemini/main flash·med'
-assert test "$(acct_line)" = 'ACCOUNT: main'
+assert contains "$(vsection gemini)" 'main flash·med'
 # The one model the gemini worker runs is the one knob value the column shortens, and only in the
 # column: spelled out it costs the padded field four characters every vendor row pays for.
-printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
+write_config
 run_case gemini_fresh
-assert contains "$(nrow 1)" 'gemini/main f38·high'
+assert contains "$(vsection gemini)" 'main f38·high'
 assert not_contains "$output" flash38
 # `sonnet·xhigh` is twelve characters of legal toggle values, and the column it sits in is the
 # widest thing either row builder pads: with no gap left the reset and the flags glue onto it and
@@ -2079,18 +2061,6 @@ write_config 'grok_paused=on' 'grok_workers=off'
 grok_case "$GROK_PAIR"
 assert not_contains "$output" grok
 assert not_contains "$output" 'off for workers'
-# `worker=<paused vendor>` falls back to auto, silently: the pause is the later of the two
-# decisions, and a note on every run would be noise rather than news. Read off the whole line,
-# because a mode left standing would still order the remaining vendors its own fixed way.
-write_config 'grok_paused=on'
-grok_case "$GROK_PAIR"
-paused_auto_next=$(next_block)
-printf '%s\n' 'worker=grok' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=flash38' 'gemini_effort=high' 'grok_paused=on' >"$CONFIG"
-grok_case "$GROK_PAIR"
-assert not_contains "$output" grok
-assert test "$(next_block)" = "$paused_auto_next"
-assert test ! -s "$WORK/note.err"
 # Pause beats the pin — the one place in the ladder where the pin does not win. The pinned account
 # is dropped from the reckoning entirely, DATA age included: a pin normally keeps an out-of-pool
 # account routable, and a parked vendor's frozen timestamp would brand the whole reading STALE.
@@ -2154,14 +2124,6 @@ write_config 'claudeb_paused=on' 'gemini_paused=on' 'grok_paused=on'
 run_store paused-fail-safe
 assert test "$(next_fail)" = 'NEXT: codex unavailable (limits parse failed)'
 assert not_contains "$output" claudeb
-# worker=codex leads its fail-safe with codex, as its ranked NEXT does, and a parked codex falls through.
-printf '%s\n' 'worker=codex' 'codex_effort=high' 'codex_profile=main' >"$CONFIG"
-run_store codex-fail-safe
-assert contains "$(next_fail)" 'NEXT: codex main · '
-assert contains "$(next_fail)" ' · high — unavailable (limits parse failed)'
-printf '%s\n' 'worker=codex' 'codex_paused=on' >"$CONFIG"
-run_store codex-paused-fail-safe
-assert contains "$(next_fail)" 'NEXT: claudeb (rotating) — limits parse failed'
 write_config
 fi
 

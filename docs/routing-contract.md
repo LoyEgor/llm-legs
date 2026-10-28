@@ -337,8 +337,7 @@ pool exclusion and missing login still apply, unchanged.
 `<vendor>_workers=off` nor the pin reaches it, in `worker-pick` or in `worker-run`'s own role wall,
 an explicit `ACCOUNT:` included; pool, pause, login and walls still do. It is the one role with a
 cross-vendor answer of its own: `worker-pick --role browser` (no `--account`) is the NEXT table over
-claude and codex alone — gemini and grok drive no browser — ranked by the shared rule with no lead
-for the `worker=` toggle, so a walled, paused or emptied claude falls to codex and the other way
+claude and codex alone — gemini and grok drive no browser — ranked by the shared rule, so a walled, paused or emptied claude falls to codex and the other way
 round; `--list --role browser` lists those two vendors only, and `--account gemini|grok --role
 browser` is a usage error. A chat asks `worker-pick --role browser`, writes its `ACCOUNT:` into a
 brief headed `BROWSER: chrome` (or `yes` for Dia), and runs its `START:` line.
@@ -462,12 +461,9 @@ routing-math paragraph the rules above replace.
   machine has not installed is absent from the answer, never walled and never a failed
   lookup.
 - `worker-pick --account <vendor> [--exclude a,b] [--claim]` keeps its contract: bare account
-  name on stdout, exit 3 when no candidate remains. In `auto`, the ranking leads with every
+  name on stdout, exit 3 when no candidate remains. The ranking leads with every
   pinned account, then applies the rest of rule 2's vector to all rows — pins among themselves the
-  same way; a vendor with nothing selectable, or switched off for workers, holds no row at all. A
-  MODE (`worker=gemini`, `worker=grok`) is the one thing above the metric: the vendor it names
-  keeps row 1 with the account it selected, and every other account, its own siblings included,
-  falls back into the budget order below.
+  same way; a vendor with nothing selectable, or switched off for workers, holds no row at all.
 - `worker-pick --list [--role <role>]` is the same answer for a program that shows every
   account: one `<vendor>\t<account>\t<weekly % or ->\t<state>` line per account, state one of
   `ok`, `walled`, `login`, `paused`, `off` (the vendor closed for that role, or the account out

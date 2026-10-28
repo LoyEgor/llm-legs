@@ -84,7 +84,6 @@ WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
 FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
 CLAUDE_SETUP=$FAMILY_SETUP_ROOT
-WORKER_COMMAND="${WORKER_COMMAND_FILE:-$CLAUDE_SETUP/commands/worker.md}"
 GEMINI_ACCOUNTS="$ROOT/share/gemini-accounts.sh"
 GEMINIB="$ROOT/bin/geminib"
 OPENCODE_GO="$ROOT/bin/opencode-go"
@@ -468,7 +467,6 @@ assert test "$(sed -n '/^def run_agy(/,/^def /p' "$RB_LAUNCH" | grep -Fc '"--eff
 assert doc_has 'Antigravity review cell invocation mapping'
 
 # --- Row i: Gemini worker knobs ----------------------------------------------
-assert test -r "$WORKER_COMMAND"
 assert test -x "$WORKER_RUN"
 assert test "$(grep -Fc -- 'gemini_family=$(worker_model_gemini_prefix "$model" "$account")' "$WORKER_RUN")" -eq 1
 assert test "$(grep -Fc -- 'agy_model="$gemini_family-$effort"' "$WORKER_RUN")" -eq 1
@@ -483,10 +481,7 @@ assert test "$(grep -Ec 'flash3[0-9]:(medium|low)' "$WORKER_RUN")" -eq 0
 assert test "$(grep -Ec 'flash3[0-59]:(high|medium|low)' "$WORKER_RUN")" -eq 0
 assert grep -Fq 'printf '\''gemini effort forced to high\n'\'' >&2' "$WORKER_RUN"
 gemini_default_model=$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")
-assert grep -Fq "\`gemini_model=<slug>\` (a slug \`geminib families\` prints), and \`gemini_effort=high\`" "$WORKER_COMMAND"
 assert eq "$gemini_default_model" "$(awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }' <<<"$gemini_family_rows")"
-assert grep -Fq 'Gemini runs at `high` only' "$WORKER_COMMAND"
-assert test "$(grep -Ec 'flash3[0-9] low/medium/high|gemini_effort=low\|medium\|high' "$WORKER_COMMAND")" -eq 0
 assert grep -Fq 'conf_get gemini_model; worker_model_gemini_stored_r "$conf_val"; gm_model=$WORKER_MODEL_R' "$WORKERPICK"
 assert grep -Fq 'conf_get gemini_effort; gm_effort=${conf_val:-$(worker_model_default_effort gemini "$gm_model")}' "$WORKERPICK"
 assert eq "$(bash -c '. "$1"; worker_model_default_effort gemini "$(worker_model_default_model gemini)"' _ "$ROOT/share/worker-model.sh")" high
@@ -837,7 +832,7 @@ assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
 assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-59]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
 # Prose sites, each naming the same four allowed models and the refusal by name.
 for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
-  "$ROOT/docs/DIAGNOSTICS.md" "$WORKER_COMMAND"; do
+  "$ROOT/docs/DIAGNOSTICS.md"; do
   assert grep -Fq 'astra' "$site"
   assert grep -Fq 'MODEL_REFUSED' "$site"
 done
@@ -857,7 +852,6 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
 done
 assert doc_has 'Allowed worker models'
 
-assert grep -Fq '`gemini_profile=<name>`' "$WORKER_COMMAND"
 assert grep -Fq -- '--account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;' "$WORKER_RUN"
 assert grep -Fq 'local -a args=(--account "$vendor")' "$WORKER_RUN"
 assert grep -Fq '"$picker" "${args[@]}"' "$WORKER_RUN"
@@ -1054,14 +1048,11 @@ assert test "$(grep -c '"permissionDecision":"deny"' <<<"$pinned_wall_out")" = 0
 assert grep -Fq 'Claude account alpha is at 100% but pinned' <<<"$pinned_wall_out"
 printf 'worker=auto\nclaudeb_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"
 assert grep -Fq '"permissionDecision":"deny"' <<<"$(light_gate claudeb)"
-# The Light leg is placed by the `light_edit` row and never by `worker=`, so a toggle naming
-# another vendor is no advice about where this start lands and reaches none of its notes.
+# The Light leg is placed by the `light_edit` row, which `claudeb_workers=off` does not close.
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:90}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
-printf 'worker=codex\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
-light_toggle_out=$(light_gate light)
-assert grep -Fq 'Light on Claude account alpha is at 90%' <<<"$light_toggle_out"
-assert test "$(grep -c 'The worker toggle says' <<<"$light_toggle_out")" = 0
+printf 'light_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
+assert grep -Fq 'Light on Claude account alpha is at 90%' <<<"$(light_gate light)"
 # A start on worker-pick's own pick carries nothing back: the orchestrator ran worker-pick for it.
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:10}},
   {account:"beta", five_hour:{used_pct:20}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
@@ -1071,14 +1062,11 @@ light_mismatch_out=$(light_gate light $'ACCOUNT: beta\nx')
 assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$light_mismatch_out")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
 # worker-run's --account reaches the gate as an argument: judging the router's pick instead named another account.
 assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$(light_gate light x beta)")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
-# A vendor start under the same toggle still hears it.
-assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb)"
 # A Computer Use brief routes codex under `computer`, a role codex_workers=off does not close.
-printf 'worker=claudeb\ncodex_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
+printf 'codex_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
 : >"$LIGHT_GATE_WORK/picks"
-computer_gate_out=$(light_gate codex $'COMPUTER: yes\nx')
+light_gate codex $'COMPUTER: yes\nx' >/dev/null
 assert grep -qx -- '--account codex --role computer' "$LIGHT_GATE_WORK/picks"
-assert test "$(grep -c 'The worker toggle says' <<<"$computer_gate_out")" = 0
 : >"$LIGHT_GATE_WORK/picks"
 light_gate computer >/dev/null
 assert grep -qx -- '--account codex --role computer' "$LIGHT_GATE_WORK/picks"
@@ -1088,9 +1076,8 @@ assert grep -qx -- '--account codex' "$LIGHT_GATE_WORK/picks"
 # A browser run routes its vendor under `browser`, which no `<vendor>_workers=off` closes.
 for browser_vendor in claudeb codex; do
   : >"$LIGHT_GATE_WORK/picks"
-  browser_gate_out=$(light_gate "$browser_vendor-browser")
+  light_gate "$browser_vendor-browser" >/dev/null
   assert grep -qx -- "--account $browser_vendor --role browser" "$LIGHT_GATE_WORK/picks"
-  assert test "$(grep -c 'The worker toggle says' <<<"$browser_gate_out")" = 0
 done
 # A brief's ACCOUNT is judged by the worker pool itself, not the limits file's cached `enabled`:
 # an excluded account is refused even when that copy is stale, and a pinned one passes like
@@ -1099,7 +1086,7 @@ mkdir -p "$LIGHT_GATE_WORK/codex/.codexb"
 printf 'beta\n' >"$LIGHT_GATE_WORK/codex/.codexb/disabled"
 jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:true, five_hour:{used_pct:10}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
-printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
+: >"$LIGHT_GATE_WORK/worker-model"
 assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
   <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx')"
 assert grep -Fq "The brief's ACCOUNT: beta is switched off or removed" \
@@ -1111,13 +1098,13 @@ assert grep -Fq -- "--account beta is switched off or removed" <<<"$light_gate_f
 assert grep -Fq -- "to --account, or drop the flag" <<<"$light_gate_flag"
 jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:false, five_hour:{used_pct:10}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
-printf 'worker=codex\ncodex_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"
+printf 'codex_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"
 assert test "$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx' |
   grep -c '"permissionDecision":"deny"')" = 0
 rm -f "$LIGHT_GATE_WORK/codex/.codexb/disabled"
 jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", removed:true, five_hour:{used_pct:10}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
-printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
+: >"$LIGHT_GATE_WORK/worker-model"
 assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
   <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx')"
 # A single-account vendor states main's removal on the vendor object itself.
@@ -1177,7 +1164,7 @@ cp "$ROOT/share/worker-model.sh" "$ROOT/share/worker-pool.sh" "$ROOT/share/worke
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$LIGHT_PICK_LOG"\nprintf "beta\\n"\n' \
   >"$LIGHT_GATE_WORK/tree/bin/worker-pick"
 chmod +x "$LIGHT_GATE_WORK/tree/bin/worker-pick"
-printf 'worker=codex\ncodex_profile=*\n' >"$LIGHT_GATE_WORK/worker-model"
+printf 'codex_profile=*\n' >"$LIGHT_GATE_WORK/worker-model"
 jq -n '{schema:1, vendors:{codex:{accounts:[{account:"alpha", five_hour:{used_pct:10}},
   {account:"beta", five_hour:{used_pct:10}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
 : >"$LIGHT_GATE_WORK/picks"
@@ -2661,7 +2648,6 @@ assert grep -Fq 'effort=${effort:-$(worker_model_default_effort "$vendor" "$mode
 assert grep -Fq '[ "$model" = auto ] || command_meta+=(-m "$model")' "$WORKER_RUN"
 assert grep -Fq 'worker_model_effort_allowed "$vendor" "$model" "$effort"' "$WORKER_RUN"
 assert grep -Fq 'outcome_line EFFORT_REFUSED' "$WORKER_RUN"
-assert grep -Fq '`grok_model=auto|<slug>` (`auto` is the Grok CLI'"'"'s own default; a slug is one `grokb models` prints) and `grok_effort=high|xhigh`' "$WORKER_COMMAND"
 assert doc_has 'Grok worker knobs'
 assert doc_has '`grok_model=auto`, `grok_effort=high`'
 

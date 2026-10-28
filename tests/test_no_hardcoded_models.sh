@@ -128,7 +128,7 @@ STALE bin/* gpt # never matches'
 # --- The real trees ---
 assert test -r "$ALLOWLIST"
 assert test -d "$REVIEW_ROOT/share/rbench"
-assert test -r "$SETUP_ROOT/commands/worker.md"
+assert test -d "$SETUP_ROOT/commands"
 report=$({ list_files "$ROOT" '' "${LEGS_SPEC[@]}"
            list_files "$REVIEW_ROOT" 'review-bench/' share/rbench
            list_files "$SETUP_ROOT" 'claude-setup/' agents commands hooks; } |
