@@ -1,12 +1,12 @@
 # Pages contract (schema 1)
 
-The one interface between `bin/page` (server + CLI, `share/pages/store.py`) and the kit
-(`share/pages/kit/`). Plan and reasons: `docs/handoffs/2026-10-28-pages-plan.md`. A change here is a
-change to both sides; `schema` bumps only on an incompatible change.
+The one interface between `bin/page` (+ `share/pages/store.py`) and the kit (`share/pages/kit/`).
+Plan: `docs/handoffs/2026-10-28-pages-plan.md`. A change here changes both sides; `schema` bumps only
+on an incompatible change.
 
 ## Server
-- **Address:** `http://127.0.0.1:${PAGES_PORT:-4791}`. It binds loopback only (no LAN in phase 1),
-  and the store root is `${PAGES_DIR:-~/Pages}`.
+- **Address:** `http://127.0.0.1:${PAGES_PORT:-4791}`. Loopback only; store root
+  `${PAGES_DIR:-~/Pages}`.
 - **Host check:** the `Host` header must be `127.0.0.1:<port>` or `localhost:<port>`, else 403.
 - **POST** also requires `Content-Type: application/json` and, when an `Origin` header is present, an
   origin equal to the page's own; else 403.
@@ -15,6 +15,7 @@ change to both sides; `schema` bumps only on an incompatible change.
 | Route | Answer |
 |---|---|
 | `GET /` | HTML index: pages grouped by `meta.chat_name`, newest first, each linking `/p/<pid>/` |
+| `GET /healthz` | `{"pages": 1, "schema": 1, "pid", "dir"}`: proves the port is ours |
 | `GET /p/<pid>/` | `kit/loader.html` (same file for every page) |
 | `GET /kit/<file>` | a kit file, realpath-confined to the kit dir |
 | `GET /p/<pid>/spec` | the served spec (below), `Cache-Control: no-cache` |
@@ -28,8 +29,8 @@ change to both sides; `schema` bumps only on an incompatible change.
 This is `spec.json` with three changes:
 - every media path is replaced by its `/p/<pid>/m/<n>?v=…` URL;
 - every key starting with `_` is gone (those live in `key.json`, never served);
-- in a blind compare page, variants are served as slots `A`, `B`, … in a deterministic shuffle of
-  sha256(pid + item id), with `id` and `label` removed.
+- blind compare variants are served as `"slot": "A"`, `"B"`, … in a sha256(pid + item id) shuffle,
+  `id` and `label` removed.
 
 The page also gets `pid` and `rev` (the spec revision, an integer bumped by every `page new` update).
 
@@ -39,8 +40,7 @@ The page also gets `pid` and `rev` (the spec revision, an integer bumped by ever
  "items": {"p01": {"choice": {"v": "A", "at": "2026-10-28T15:01:02Z", "by": "egor"},
                    "note":   {"v": "halo on the left", "at": "…", "by": "egor"}}}}
 ```
-- `rev` is the number of applied log lines. It is the cheap "anything changed?" check that the page
-  polls (every ~4 s while visible).
+- `rev` = applied log lines: the page's cheap change check, polled every ~4 s while visible.
 - A field whose last value is `null` is absent.
 
 ## Patch
@@ -64,7 +64,8 @@ immutable `id`. Common optional spec keys:
 - `title`;
 - `intro` (one short line);
 - `sitting_cap` (stop asking after N answered this sitting);
-- `suggest` per item (a machine suggestion: shown apart, never counted as an answer).
+- `suggest` per item: a machine suggestion, shown apart, never an answer (compare: `{"choice": "A"}`
+  or `"A"`).
 
 ### compare
 ```json
@@ -101,7 +102,7 @@ immutable `id`. Common optional spec keys:
  "items": [{"id": "c11", "n": 11, "title": "track 3 wrap", "text": "optional context",
             "media": [{"kind": "audio", "src": "/abs/c11.m4a"}], "suggest": {"heard": "1"}}]}
 ```
-- **Field kinds:** `choice`, `multi`, `scale` and `text`. Every card also has a free `note` field.
+- **Field kinds:** `choice`, `multi`, `scale`, `text`; optional `label`. Every card has a `note`.
 - **Media:** `media[].kind` is `image`, `audio` or `video`, shown with the native element; only one
   clip plays at a time.
 - **Numbering:** `n` is the shown number. It is stable and never renumbered when items are added.

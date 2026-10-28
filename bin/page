@@ -1,0 +1,457 @@
+#!/usr/bin/env python3
+"""Local browser pages for Egor: the server and the chat's whole CLI over share/pages/store.py.
+
+The interface is share/pages/CONTRACT.md. launchd runs a deployed copy, ~/.local/libexec/pagesd/pagesd (with
+store.py beside it), because TCC refuses a LaunchAgent that execs off /Volumes/Work (as bin/memlogd);
+harness-doctor's DEPLOYS reruns `page install-agent` once an edit of either file lands in main.
+"""
+
+import argparse
+import errno
+import html
+import json
+import mimetypes
+import os
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path[:0] = [HERE, os.path.join(os.path.dirname(HERE), "share", "pages")]
+import store  # noqa: E402
+
+KIT = os.environ.get("PAGES_KIT_DIR") or os.path.join(os.path.dirname(HERE), "share", "pages", "kit")
+PORT = int(os.environ.get("PAGES_PORT") or 4791)
+LABEL = "com.llm-legs.pages"
+DEPLOY_DIR = os.path.expanduser("~/.local/libexec/pagesd")
+AGENT_PLIST = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LABEL)
+CHUNK = 1 << 20
+OPEN_RANGE_CAP = 8 << 20
+MAX_PATCH = 64 << 10
+BUILTIN_MODULES = {"compare": "N variants of an item side by side: synced loupes, blind vote, pairwise, view grid",
+                   "cards": "numbered cards with choice/multi/scale/text fields and native image/audio/video"}
+
+
+def url(pid, port=PORT):
+    return "http://127.0.0.1:%d/p/%s/" % (port, pid)
+
+
+def parse_range(header, size):
+    """(start, end) inclusive, None for the whole file, "bad" for an unsatisfiable range."""
+    m = re.fullmatch(r"bytes=(\d*)-(\d*)", (header or "").strip())
+    if not m or m.groups() == ("", ""):
+        return None
+    first, last = m.groups()
+    if not first:
+        n = min(int(last), size)
+        return (size - n, size - 1) if n else "bad"
+    start = int(first)
+    end = min(int(last), size - 1) if last else min(start + OPEN_RANGE_CAP, size) - 1
+    return (start, end) if start < size and end >= start else "bad"
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "pages/1"
+    timeout = 60
+
+    def log_message(self, *args):
+        pass
+
+    def reply(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=()):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        for name, value in headers:
+            self.send_header(name, value)
+        if code >= 400:
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_json(self, code, doc):
+        self.reply(code, json.dumps(doc, ensure_ascii=False).encode(), "application/json",
+                   [("Cache-Control", "no-cache")])
+
+    def host_ok(self):
+        port = self.server.server_address[1]
+        return self.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+    def do_GET(self):
+        if not self.host_ok():
+            return self.reply(403, b"host refused\n")
+        path = urllib.parse.unquote(self.path.partition("?")[0])
+        if path == "/":
+            return self.reply(200, index_html().encode(), "text/html; charset=utf-8", [("Cache-Control", "no-cache")])
+        if path == "/healthz":
+            return self.send_json(200, {"pages": 1, "schema": 1, "pid": os.getpid(), "dir": store.root()})
+        if path.startswith("/kit/"):
+            return self.kit_file(path[5:])
+        m = re.fullmatch(r"/p/([^/]+)/(spec|state|m/[^/]*|)", path)
+        if not m or not store.page_dir(m.group(1)):
+            return self.reply(404, b"not found\n")
+        pid, sub = m.groups()
+        if sub == "":
+            return self.kit_file("loader.html")
+        if sub == "spec":
+            return self.send_json(200, store.served_spec(pid))
+        if sub == "state":
+            return self.send_json(200, store.state(pid))
+        return self.media(pid, sub[2:])
+
+    def kit_file(self, name):
+        kit = os.path.realpath(KIT)
+        path = os.path.realpath(os.path.join(kit, name))
+        if not path.startswith(kit + os.sep) or not os.path.isfile(path):
+            return self.reply(404, b"not found\n")
+        with open(path, "rb") as handle:
+            body = handle.read()
+        ctype = "text/javascript" if path.endswith(".js") else mimetypes.guess_type(path)[0] or "text/plain"
+        self.reply(200, body, ctype + ("; charset=utf-8" if ctype.startswith("text/") else ""),
+                   [("Cache-Control", "no-cache")])
+
+    def media(self, pid, n):
+        entries = store.meta(pid).get("media", [])
+        if not n.isdigit() or int(n) >= len(entries):
+            return self.reply(404, b"not found\n")
+        try:
+            handle = open(entries[int(n)]["path"], "rb")
+        except OSError:
+            return self.reply(404, b"media gone\n")
+        with handle:
+            st = os.fstat(handle.fileno())
+            etag = '"%x-%x"' % (st.st_size, st.st_mtime_ns)
+            cache = [("ETag", etag), ("Cache-Control", "private, max-age=31536000, immutable")]
+            if self.headers.get("If-None-Match") == etag:
+                return self.reply(304, headers=cache)
+            span = parse_range(self.headers.get("Range"), st.st_size)
+            if span == "bad":
+                return self.reply(416, headers=[("Content-Range", "bytes */%d" % st.st_size)])
+            start, end = span or (0, st.st_size - 1)
+            self.send_response(206 if span else 200)
+            self.send_header("Content-Type", mimetypes.guess_type(handle.name)[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Accept-Ranges", "bytes")
+            if span:
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, st.st_size))
+            for name, value in cache:
+                self.send_header(name, value)
+            self.end_headers()
+            handle.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = handle.read(min(CHUNK, left))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                left -= len(chunk)
+
+    def do_POST(self):
+        if not self.host_ok():
+            return self.reply(403, b"host refused\n")
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+            return self.reply(403, b"content type refused\n")
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != "http://" + self.headers["Host"]:
+            return self.reply(403, b"origin refused\n")
+        m = re.fullmatch(r"/p/([^/]+)/patch", self.path)
+        if not m or not store.page_dir(m.group(1)):
+            return self.reply(404, b"not found\n")
+        pid = m.group(1)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            patch = json.loads(self.rfile.read(length)) if 0 < length <= MAX_PATCH else None
+            op, item, fields = patch["op"], patch["item"], patch["fields"]
+            assert isinstance(op, str) and 0 < len(op) <= 128 and isinstance(item, str)
+            assert isinstance(fields, dict) and fields and all(isinstance(k, str) for k in fields)
+        except (ValueError, TypeError, KeyError, AssertionError):
+            return self.reply(400, b"bad patch\n")
+        doc = store.spec(pid)
+        if item not in store.item_ids(doc):
+            return self.reply(409, b"item not in the current spec\n")
+        rev, dup = store.append(pid, item, fields, "egor", op, patch.get("spec_rev"))
+        self.send_json(200, {"rev": rev, "spec_rev": doc.get("rev", 1), "dup": dup})
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            super().handle_error(request, client_address)
+
+
+def index_html():
+    groups = {}
+    for pid in store.all_pages():
+        m = store.meta(pid)
+        groups.setdefault(m.get("chat_name") or "?", []).append((m.get("updated") or "", pid, m.get("title") or pid))
+    out = ["<!doctype html><meta charset=utf-8><title>Pages</title><body style='font:15px system-ui'>"]
+    for chat, pages in sorted(groups.items(), key=lambda g: max(g[1])[0], reverse=True):
+        out.append("<h3>%s</h3><ul>" % html.escape(chat))
+        out += ["<li><a href='/p/%s/'>%s</a> <small>%s</small>" % (pid, html.escape(title), html.escape(at))
+                for at, pid, title in sorted(pages, reverse=True)]
+        out.append("</ul>")
+    return "".join(out)
+
+
+def ours(port):
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open("http://127.0.0.1:%d/healthz" % port, timeout=2) as answer:
+            return json.load(answer).get("pages") == 1
+    except Exception:
+        return False
+
+
+def serve(port):
+    store.root()
+    said, delay = False, 1
+    while True:
+        try:
+            server = Server(("127.0.0.1", port), Handler)
+            break
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE:
+                raise
+        if ours(port):
+            print("page serve: port %d already served by pages" % port, file=sys.stderr)
+            return 0
+        if not said:
+            print("page serve: port %d held by another process, retrying the bind" % port, file=sys.stderr)
+            said = True
+        time.sleep(delay)
+        delay = min(delay * 2, 60)
+    server.timeout = None
+    print("page serve: http://127.0.0.1:%d %s" % (server.server_address[1], store.root()), flush=True)
+    while True:
+        server.handle_request()
+
+
+def owner(args, needed=True):
+    sid = os.environ.get("CLAUDE_LAUNCHER_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID") or args.chat
+    if not sid and needed:
+        raise store.Refused("no owner chat: CLAUDE_LAUNCHER_SESSION, CLAUDE_CODE_SESSION_ID and --chat are all unset")
+    if sid and not store.SID_RE.match(sid):
+        raise store.Refused("owner session %r is not a session id" % sid)
+    return sid
+
+
+def chat_name(sid):
+    tool = shutil.which("chat-name") or os.path.join(HERE, "chat-name")
+    try:
+        answer = subprocess.run([tool, "--json", sid], capture_output=True, text=True, timeout=3)
+        doc = json.loads(answer.stdout.splitlines()[0])
+        return doc.get("name") or doc.get("title") or sid[:8]
+    except Exception:
+        return sid[:8]
+
+
+def open_page(link):
+    if subprocess.run(["open", "-a", "Dia", link], capture_output=True).returncode:
+        subprocess.run(["open", link], capture_output=True)
+
+
+def lookup(args, needed=False):
+    sid = owner(args, needed)
+    pid = store.resolve(args.ref, sid)
+    if not pid:
+        raise store.Refused("no page %r%s" % (args.ref, "" if sid else " (a slug needs an owner chat; pass the pid)"))
+    return pid, sid
+
+
+def show(v):
+    text = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+    return text if text and not re.search(r"\s", text) else json.dumps(text, ensure_ascii=False)
+
+
+def answered(doc, items):
+    return sum(1 for i in store.item_ids(doc) if any(f != "note" for f in items.get(i, {})))
+
+
+def cmd_new(args):
+    sid = owner(args)
+    doc = json.load(sys.stdin)
+    pid, created = store.save(args.module, args.slug, args.title, doc, sid, chat_name(sid), os.getcwd(),
+                              args.replace, KIT)
+    print("%s %s %s" % ("created" if created else "updated", pid, url(pid)))
+    if not args.no_open:
+        open_page(url(pid))
+
+
+def cmd_state(args):
+    pid, sid = lookup(args, needed=not args.all)
+    doc, folded, key = store.spec(pid), store.fold(pid), store.key(pid)
+    since = 0 if args.all else store.cursor(pid, sid)
+    hidden = key.get("items", {})
+    for item in store.item_ids(doc):
+        if folded["touched"].get(item, -1) < since:
+            continue
+        fields = folded["items"].get(item, {})
+        blind = key.get("blind", {}).get(item, {})
+        suggest = next((i.get("suggest") or {} for i in doc["items"] if i["id"] == item), {})
+        expected = hidden.get(item, {}).get("_expected")
+        words = [item]
+        for field, entry in sorted(fields.items()):
+            v = entry["v"]
+            if field == "choice" and v in blind:
+                v = "%s(%s)" % (v, blind[v])
+            elif field == "tags" and isinstance(v, dict):
+                v = {("%s(%s)" % (k, blind[k]) if k in blind else k): t for k, t in v.items()}
+            words.append("%s=%s" % (field, show(v)))
+            if field in suggest:
+                words.append("suggest=%s" % show(suggest[field]))
+            want = expected.get(field) if isinstance(expected, dict) else expected if field == "choice" else None
+            if want is not None:
+                words.append("_expected=%s" % show(want))
+        last = max(fields.values(), key=lambda e: e["at"] or "", default=None)
+        print(" ".join(words + ["by=%s" % last["by"] if last else "cleared"]))
+    print("answered=%d/%d rev=%d spec_rev=%d" % (answered(doc, folded["items"]), len(store.item_ids(doc)),
+                                                folded["rev"], doc.get("rev", 1)))
+    if not args.all:
+        store.cursor(pid, sid, folded["rev"])
+
+
+def cmd_set(args):
+    pid, _ = lookup(args)
+    if args.item not in store.item_ids(store.spec(pid)):
+        raise store.Refused("item %r is not in the page" % args.item)
+    fields = {}
+    for pair in args.pairs:
+        field, sep, value = pair.partition("=")
+        if not sep or not field:
+            raise store.Refused("expected field=value, got %r" % pair)
+        fields[field] = None if value == "null" else json.loads(value) if value[:1] in "[{" else value
+    rev, _ = store.append(pid, args.item, fields, "chat")
+    print("rev=%d" % rev)
+
+
+def cmd_list(args):
+    pids = store.all_pages() if args.all else store.owner_pages(owner(args))
+    for pid in sorted(pids, key=lambda p: store.meta(p).get("updated") or "", reverse=True):
+        m, doc, folded = store.meta(pid), store.spec(pid), store.fold(pid)
+        words = [pid, m.get("module"), "%d/%d" % (answered(doc, folded["items"]), len(store.item_ids(doc))),
+                 "rev=%d" % folded["rev"], url(pid), show(m.get("title") or "")]
+        print(" ".join(words + (["chat=%s" % show(m.get("chat_name") or "?")] if args.all else [])))
+
+
+def cmd_open(args):
+    open_page(url(lookup(args)[0]))
+
+
+def cmd_help(args):
+    have = store.modules(KIT)
+    if args.module:
+        path = os.path.join(KIT, args.module + ".md")
+        if not os.path.isfile(path):
+            raise store.Refused("no kit/%s.md (modules: %s)" % (args.module, ", ".join(have)))
+        with open(path) as handle:
+            sys.stdout.write(handle.read())
+        return
+    for module in have:
+        path = os.path.join(KIT, module + ".md")
+        first = ""
+        if os.path.isfile(path):
+            with open(path) as handle:
+                first = next((l.strip().lstrip("# ") for l in handle if l.strip()), "")
+        print("%-8s %s" % (module, first or BUILTIN_MODULES.get(module, "")))
+    print("page new <module> --slug S --title T [--no-open] < spec.json; page state|set|list|open|doctor; "
+          "page help <module> for its spec")
+
+
+def cmd_doctor(args):
+    up = ours(PORT)
+    print("server: %s http://127.0.0.1:%d" % ("up" if up else "DOWN", PORT))
+    listen = subprocess.run(["lsof", "-nP", "-iTCP:%d" % PORT, "-sTCP:LISTEN", "-Fpc"], capture_output=True, text=True)
+    held = dict((l[0], l[1:]) for l in listen.stdout.splitlines() if l[:1] in "pc")
+    print("port owner: %s" % ("%s (pid %s)" % (held.get("c"), held.get("p")) if held else "nobody"))
+    sources = {"pagesd": os.path.realpath(__file__), "store.py": os.path.realpath(store.__file__)}
+    drift = []
+    for name, source in sources.items():
+        target = os.path.join(DEPLOY_DIR, name)
+        try:
+            with open(target, "rb") as a, open(source, "rb") as b:
+                drift += [] if a.read() == b.read() else ["%s differs" % name]
+        except OSError:
+            drift.append("%s missing" % name)
+    print("deployed copy: %s (%s)" % ("; ".join(drift) or "current", DEPLOY_DIR))
+    print("PAGES_DIR: %s (%d pages)" % (store.root(), len(store.all_pages())))
+    return 0 if up and not drift else 1
+
+
+def cmd_install_agent(args):
+    if os.path.realpath(HERE) == os.path.realpath(DEPLOY_DIR):
+        raise store.Refused("run install-agent from the repo checkout, not the deployed copy")
+    os.makedirs(DEPLOY_DIR, exist_ok=True)
+    for source, name in ((os.path.realpath(__file__), "pagesd"), (os.path.realpath(store.__file__), "store.py")):
+        shutil.copyfile(source, os.path.join(DEPLOY_DIR, name + ".tmp"))
+        os.chmod(os.path.join(DEPLOY_DIR, name + ".tmp"), 0o755)
+        os.replace(os.path.join(DEPLOY_DIR, name + ".tmp"), os.path.join(DEPLOY_DIR, name))
+    log = os.path.expanduser("~/Library/Logs/pagesd.log")
+    plist = {"Label": LABEL, "ProgramArguments": [os.path.join(DEPLOY_DIR, "pagesd"), "serve"],
+             "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "WorkingDirectory": os.path.expanduser("~"),
+             "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                                      "PAGES_KIT_DIR": os.path.realpath(KIT)},
+             "StandardErrorPath": log}
+    os.makedirs(os.path.dirname(AGENT_PLIST), exist_ok=True)
+    with open(AGENT_PLIST, "wb") as handle:
+        plistlib.dump(plist, handle)
+    domain = "gui/%d" % os.getuid()
+    subprocess.run(["launchctl", "bootout", domain, AGENT_PLIST], capture_output=True)
+    for wait in (0, 0.5, 1, 2):
+        time.sleep(wait)
+        loaded = subprocess.run(["launchctl", "bootstrap", domain, AGENT_PLIST], capture_output=True, text=True)
+        if loaded.returncode == 0:
+            print("Installed %s from %s; errors in %s." % (LABEL, DEPLOY_DIR, log))
+            return 0
+    raise store.Refused("launchctl bootstrap %s failed: %s" % (AGENT_PLIST, loaded.stderr.strip()))
+
+
+def main(argv):
+    chat = argparse.ArgumentParser(add_help=False)
+    chat.add_argument("--chat", help="owner session id when neither launcher nor session env is set")
+    parser = argparse.ArgumentParser(prog="page", description=__doc__.split("\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("help")
+    p.add_argument("module", nargs="?")
+    p = sub.add_parser("new", parents=[chat])
+    p.add_argument("module")
+    p.add_argument("--slug", required=True)
+    p.add_argument("--title", default="")
+    p.add_argument("--replace", action="append", default=[], metavar="ITEM")
+    p.add_argument("--no-open", action="store_true")
+    p = sub.add_parser("state", parents=[chat])
+    p.add_argument("ref")
+    p.add_argument("--all", action="store_true")
+    p = sub.add_parser("set", parents=[chat])
+    p.add_argument("ref")
+    p.add_argument("item")
+    p.add_argument("pairs", nargs="+", metavar="field=value")
+    p = sub.add_parser("list", parents=[chat])
+    p.add_argument("--all", action="store_true")
+    sub.add_parser("open", parents=[chat]).add_argument("ref")
+    sub.add_parser("doctor")
+    sub.add_parser("serve").add_argument("--port", type=int, default=PORT)
+    sub.add_parser("install-agent")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "serve":
+            return serve(args.port)
+        return globals()["cmd_" + args.command.replace("-", "_")](args) or 0
+    except store.Refused as refusal:
+        print("page: %s" % refusal, file=sys.stderr)
+        return 1
+    except (ValueError, OSError) as error:
+        print("page: %s" % error, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
