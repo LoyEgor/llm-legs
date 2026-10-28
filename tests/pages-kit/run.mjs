@@ -234,6 +234,8 @@ try {
   const whole = (r) => r.slice(1).every(([nw, nh, w, hh, t]) => w < nw || (w % nw === 0 && w / nw === hh / nh && /translate\(-?\d+px, ?-?\d+px\)/.test(t)));
   r0 = await sq();
   check("integer_zoom: fitted 4 px variant at whole pixels", whole(r0) && r0[1][2] > r0[1][0], JSON.stringify(r0));
+  const hsl = await page.waitForFunction(() => { const b = [...document.querySelectorAll(".tools .tools button[data-hs]")]; return b.length && b.map((x) => x.textContent); }, null, { timeout: 3000 }).then((x) => x.jsonValue()).catch(() => []);
+  check("zoom_levels: hotspot buttons carry no digit", hsl.length > 0 && hsl.every((t) => !/\d/.test(t)), JSON.stringify(hsl));
   await page.keyboard.press("Digit2");
   let r = await sq();
   check("Digit2 → original at 2x, 4 px variant at 8x", r[0][2] === 960 && r[1][2] === 960 && whole(r) && await page.$eval(".tools button.on", (b) => b.textContent) === "2×", JSON.stringify(r));

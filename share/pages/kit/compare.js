@@ -119,7 +119,9 @@ function show(id, keepView) {
     if (!L) L = fit();
     draw();
     E.spots = hotspots(it);
-    E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { onclick: () => jump(k) }, `${k + 1}`)));
+    // with zoom_levels the digits pick levels, so hotspot buttons carry no digit
+    E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { onclick: () => jump(k), "data-hs": k, title: `место ${k + 1}` },
+      S.zoom_levels ? "◎" : `${k + 1}`)));
   });
   const nx = item(ids[(i + 1) % ids.length]);
   if (nx !== it) frames(nx).forEach((f) => { new Image().src = f.src; });
