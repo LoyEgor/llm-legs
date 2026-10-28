@@ -32,6 +32,7 @@ const vote = () => ({ module: "compare", schema: 1, title: "Калибровка
 const srv = await serve({
   vote1: vote(), vote2: vote(), vote3: vote(), vote4: vote(),
   view1: { ...vote(), mode: "view", title: "Обзор" },
+  sq1: { ...vote(), integer_zoom: true, zoom_levels: [1, 2, 3] },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
     items: [{ id: "b01", variants: [{ id: "v77", label: "champ77", src: F.a, meta: "64 px" }, { id: "v78", label: "champ78", src: F.b }] }] },
   cards1: { module: "cards", schema: 1, title: "Швы", sitting_cap: 2,
@@ -222,6 +223,30 @@ try {
   await page.close();
 
   // 6. cards: choice/multi/scale/note save; one clip at a time
+  // integer_zoom + zoom_levels: variants at whole pixels on both axes, digits pick levels, 1 again fits
+  page = await open("sq1");
+  await ready(page);
+  await page.click(".strip i:nth-child(3)");
+  await ready(page);
+  let r0;
+  const sq = () => page.$$eval(".vp img", (ims) => ims.map((i) => [i.naturalWidth, i.naturalHeight, parseFloat(i.style.width), parseFloat(i.style.height), i.style.transform]));
+  // a variant larger than the loupe at fit is downscaled, so only magnified ones must be whole
+  const whole = (r) => r.slice(1).every(([nw, nh, w, hh, t]) => w < nw || (w % nw === 0 && w / nw === hh / nh && /translate\(-?\d+px, ?-?\d+px\)/.test(t)));
+  r0 = await sq();
+  check("integer_zoom: fitted 4 px variant at whole pixels", whole(r0) && r0[1][2] > r0[1][0], JSON.stringify(r0));
+  await page.keyboard.press("Digit2");
+  let r = await sq();
+  check("Digit2 → original at 2x, 4 px variant at 8x", r[0][2] === 960 && r[1][2] === 960 && whole(r) && await page.$eval(".tools button.on", (b) => b.textContent) === "2×", JSON.stringify(r));
+  await page.keyboard.press("Digit1");
+  check("Digit1 → original at 1x", (await sq())[0][2] === 480);
+  await page.keyboard.press("Digit1");
+  r = await sq();
+  check("Digit1 again fits", r[0][2] !== 480 && whole(r) && !(await page.$(".tools button.on")), JSON.stringify(r));
+  await page.mouse.move(700, 600); await page.mouse.wheel(0, -137); await page.waitForTimeout(200);
+  check("wheel zoom keeps whole pixels", whole(await sq()), JSON.stringify(await sq()));
+  await shot(page, "compare-integer.png");
+  await page.close();
+
   page = await open("cards1");
   await page.waitForSelector(".card");
   const c = '.card[data-id="c11"]';
@@ -264,4 +289,4 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 if (failed) process.exit(1);
-console.log(`PASS: ${checks} checks; compare vote/loupes/outbox/freshness/view/blind, cards; screenshots in ${path.relative(process.cwd(), OUT)}`);
+console.log(`PASS: ${checks} checks; compare vote/loupes/outbox/freshness/view/blind/integer, cards; screenshots in ${path.relative(process.cwd(), OUT)}`);

@@ -63,7 +63,7 @@ function frames(it) {
 function keymap() {
   const m = { ArrowLeft: () => go(-1), ArrowRight: () => go(1), Digit0: fitView,
     Equal: () => zoomBy(1.5), Minus: () => zoomBy(1 / 1.5), Escape: () => S.mode === "view" && grid() };
-  for (let k = 1; k <= 9; k++) m["Digit" + k] = () => jump(k - 1);
+  for (let k = 1; k <= 9; k++) m["Digit" + k] = (S.zoom_levels || [])[k - 1] != null ? () => level(k - 1) : () => jump(k - 1);
   if (S.mode !== "view") for (const o of (S.items.length ? opts() : [])) if (o.key) m[o.key] = () => vote(o.id);
   return m;
 }
@@ -87,7 +87,8 @@ function show(id, keepView) {
   const cells = fs.map(() => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i")));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     zv: h("span", { class: "mute num" }), hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }),
-    pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg", hidden: true }) };
+    pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg", hidden: true }),
+    lv: (S.zoom_levels || []).map((z, k) => h("button", { onclick: () => level(k), title: k < 9 ? `${k + 1}` : null }, `${z}×`)) };
   E.votes = voting ? h("div", { class: "votes" }, opts().map((o) =>
     h("button", { "data-v": o.id, onclick: () => vote_(o.id) }, o.label || o.id))) : null;
   E.tags = voting && S.tags ? fs.filter((f) => f.side).map((f) => h("div", { class: "trow", "data-side": f.side },
@@ -95,7 +96,7 @@ function show(id, keepView) {
   const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { onclick: grid, title: "Esc" }, "▦") : null,
     h("button", { onclick: () => go(-1) }, "←"), E.pos, h("button", { onclick: () => go(1) }, "→"));
   const tools = h("div", { class: "tools" }, h("button", { onclick: () => zoomBy(1 / 1.5) }, "−"),
-    h("button", { onclick: () => zoomBy(1.5) }, "+"), E.zv, E.hs,
+    h("button", { onclick: () => zoomBy(1.5) }, "+"), E.zv, E.lv, E.hs,
     h("button", { onclick: fitView, title: "0" }, "целиком"),
     voting ? h("button", { onclick: () => { skip(cur); const n = nextOpen(ids, ids.indexOf(cur)); if (n) show(n); } }, "пропустить") : null);
   app.replaceChildren(E.strip, h("div", { class: "upper" }, h("div", { class: "pv" }, cells),
@@ -171,6 +172,11 @@ function jump(k) {
   const hs = geo && E.spots;
   if (hs && hs[k]) setL({ cx: hs[k][0], cy: hs[k][1], z: clampZ(Math.max(fit().z * 2, size().W / 256)) });
 }
+// zoom_levels[k] as the original's magnification; the first level pressed again fits the view
+function level(k) {
+  const z = (S.zoom_levels || [])[k];
+  if (geo && L && z != null) setL(k === 0 && L.z === z ? fit() : { ...L, z });
+}
 
 function aim(e) {
   if (!geo) return;
@@ -215,26 +221,37 @@ addEventListener("resize", () => {
 
 function layout() {
   if (!E) return;
-  const row = E.vps[0].parentNode, top = row.getBoundingClientRect().top + scrollY;
-  document.documentElement.style.setProperty("--lh", Math.max(300, innerHeight - top - 16) + "px");
   if (geo) {
     const n = E.cells.length, room = Math.max(160, app.clientWidth - 32 - 356 - 6 * (n - 1));
     const ch = Math.min(innerHeight * 0.24, 180, room / n / (geo.w / geo.h));
     E.cells.forEach((c) => { c.style.height = ch + "px"; });
   }
+  // measured after the previews take their height, which moves the loupe row
+  const row = E.vps[0].parentNode, top = row.getBoundingClientRect().top + scrollY;
+  document.documentElement.style.setProperty("--lh", Math.max(300, innerHeight - top - 16) + "px");
   lastW = E.vps[0].clientWidth;
 }
 
 function draw() {
   if (!E || !geo || !L) return;
-  const { W, H } = size(), pix = String(S.pixelated ?? "auto");
-  E.imgs.forEach((im) => {
+  const { W, H } = size(), pix = String(S.pixelated ?? "auto"), first = item(cur).original ? 1 : 0, fz = fit().z;
+  E.imgs.forEach((im, i) => {
+    const nw = im.naturalWidth, nh = im.naturalHeight;
+    if (S.integer_zoom && i >= first && nw) {
+      // whole screen pixels per image pixel, one scale for both axes, centred on the same relative point;
+      // the fitted view rounds down so the whole picture stays in the loupe
+      const k = L.z * Math.sqrt(geo.w / nw * geo.h / nh), n = k < 1 ? k : L.z <= fz * 1.0001 ? Math.floor(k) : Math.round(k);
+      Object.assign(im.style, { width: nw * n + "px", height: nh * n + "px", imageRendering: n >= 1 ? "pixelated" : "auto",
+        transform: `translate(${Math.round(W / 2 - L.cx * nw / geo.w * n)}px,${Math.round(H / 2 - L.cy * nh / geo.h * n)}px)` });
+      return;
+    }
     Object.assign(im.style, { width: geo.w * L.z + "px", height: geo.h * L.z + "px",
       transform: `translate(${W / 2 - L.cx * L.z}px,${H / 2 - L.cy * L.z}px)` });
-    const k = L.z * geo.w / (im.naturalWidth || geo.w);
+    const k = L.z * geo.w / (nw || geo.w);
     im.style.imageRendering = pix === "true" || (pix !== "false" && k >= 3) ? "pixelated" : "auto";
   });
   E.zv.textContent = "×" + (L.z < 10 ? L.z.toFixed(1) : Math.round(L.z));
+  E.lv.forEach((b, k) => b.classList.toggle("on", L.z === S.zoom_levels[k]));
   const x0 = Math.max(0, L.cx - W / 2 / L.z), x1 = Math.min(geo.w, L.cx + W / 2 / L.z);
   const y0 = Math.max(0, L.cy - H / 2 / L.z), y1 = Math.min(geo.h, L.cy + H / 2 / L.z);
   E.boxes.forEach((b) => {

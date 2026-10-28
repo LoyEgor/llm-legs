@@ -1,6 +1,5 @@
 # compare: pictures side by side — an original + variants, or a pair; vote, tags, note, or a view grid
-Pictures side by side in synced loupes (drag pans all, wheel zooms at the pointer), an original plus
-variants or two variants pairwise; one vote, per-side tags and a note per item, or `mode: view` grid.
+Synced loupes: drag pans all, wheel zooms at the pointer; one vote, per-side tags, a note per item.
 
 ## Spec (CONTRACT.md, schema 1)
 - **mode:** `vote` (default) or `view`, a numbered grid with no vote widget.
@@ -8,10 +7,13 @@ variants or two variants pairwise; one vote, per-side tags and a note per item, 
 - **blind:** the server serves each variant with `"slot": "A"`, `"B"`, … and without `id` and
   `label`; a vote's `choice` is that slot letter.
 - **pixelated:** `true` (pixel art), `false`, or `auto` (pixelated at ≥3× zoom; the default).
+- **integer_zoom:** `true`: each variant at whole screen px per image px, one scale for both axes
+  (square pixels); default off: variants stretch over the original's box.
+- **zoom_levels:** e.g. `[1, 2, 4]`, the original's magnifications as buttons; digits pick them
+  instead of hotspots, the first one again fits. Default none.
 - **options:** default `A`, `B` (one per variant) and `tie` (`=`); `label` is what the button shows.
 - **Keys:**
-  - `options[].key` is an `event.code`; the defaults are A→`KeyA`, B→`KeyB`, tie→`KeyT`, the rest
-    unbound;
+  - `options[].key` is an `event.code`; defaults A→`KeyA`, B→`KeyB`, tie→`KeyT`;
   - ←/→ move between items, 0 fits, 1..9 jump to hotspots, +/− zoom.
 - **Computed by the page when absent:** `hotspots` (block-diff of the variants, `[x, y]` in the
   original's pixels) and the image geometry (natural sizes).
