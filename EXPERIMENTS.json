@@ -13,18 +13,5 @@
       "llm-limits --table banner once overdue"
     ],
     "how_to_remove": "Read the evidence per arm and ask the owner which change stays. Then delete every TEMP-FLOW-TRUST(gemini-web) block (share/gemini_web.py: trust, trust_arm, trust_hand_done and their call sites in cmd_login, cmd_accounts; the block in tests/test_flow_image.sh), delete ~/.gemini-web/flow-trust.json, set flow_day_takes in ~/.gemini-web/accounts/<a>.json to what the verdict says (or remove it), clear the arm walls the owner releases in ~/.gemini-web/walls.json, then this entry, and run tests/run-all $(tests/affected share/gemini_web.py)."
-  },
-  {
-    "id": "artifacts-on-until-pages",
-    "what": "The claude.ai Artifact tool stays ON (no enableArtifact key in ~/.claude/settings.json, shared by every claudeb profile) only so the pixel-forge chat can keep reading its claude.ai vote page until the local pages kit (docs/handoffs/2026-10-28-pages-plan.md) ships the compare module and pixel-forge votes through `page`; Egor turned artifacts off on 2026-10-28 and re-enabled them for this bridge alone («потом обязательно отключим»)",
-    "started": "2026-10-28",
-    "review_by": "2026-11-04",
-    "state_marker": "~/.claude/settings.json",
-    "evidence": "pixel-forge chat (claude-setup) voting through `page` instead of its artifact; `jq .enableArtifact ~/.claude/settings.json`",
-    "surfaces": [
-      "the Artifact tool itself in every chat",
-      "llm-limits --table banner once overdue"
-    ],
-    "how_to_remove": "Once pixel-forge votes through `page`: set \"enableArtifact\": false in ~/.claude/settings.json (jq into a temp file, then write it back over the real file — every profile symlinks it), confirm `jq .enableArtifact ~/.claude/settings.json` prints false, then delete this entry and run tests/run-all $(tests/affected EXPERIMENTS.json)."
   }
 ]
