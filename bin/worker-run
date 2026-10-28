@@ -131,7 +131,7 @@ brief_title() { # brief
 }
 
 md_guard_text() {
-  local files='CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude, even when one of them goes stale from your change' rule
+  local files='any markdown file (CLAUDE.md, SKILL.md, docs, READMEs, memory) / anything under ~/.claude, even when one of them goes stale from your change' rule
   rule=$(. "$SCRIPT_DIRECTORY/../share/instruction-files.sh" 2>/dev/null && instruction_relay_refusal "$files") ||
     rule="Do not write $files; put the exact proposed text under MD-PROPOSAL in your RETURN."
   printf '%s\n' "MD-GUARD (worker-run-injected): $rule The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your RETURN and leave it in place."
@@ -335,7 +335,7 @@ Drive Egor'"'"'s Mac apps through Codex Computer Use: the CUA REPL `js` tool, wh
 CLAUDEB_DENIED_TOOLS=ScheduleWakeup,CronCreate,Workflow,ListAgents,Agent
 # The harness's own prompt steers a bypass-mode model toward sed and heredocs, which worker-edit-guard
 # only records; said up front, a text edit stays an Edit call the transcript names.
-CLAUDEB_EDIT_FENCE='EDITS: change repository files only through the Edit and Write tools where an edit can do it; a cp, mv, rsync or redirect with no Edit form is recorded for the run, never refused.'
+CLAUDEB_EDIT_FENCE='EDITS: change repository files only through the Edit and Write tools where an edit can do it; a cp, mv, rsync or redirect with no Edit form is recorded for the run, never refused; `patch`, `git apply` and `git am` are refused: land a diff as Edit calls.'
 GROK_RESEARCH_FENCE='READ-ONLY TREE: this run may write nothing outside the system temp directories. Writing ANY other file — a fetched page, a scratch note, a saved quote — is denied, fails the finished run and throws your answer away. Quote web pages inline in the answer and write nothing, anywhere.'
 
 CYRILLIC_MAX=${WORKER_RUN_CYRILLIC_MAX:-}
