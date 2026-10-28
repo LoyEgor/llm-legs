@@ -133,6 +133,8 @@ returns = {"saved": [said(T0 + 1800, "next"), answered(T0 + 1801, "r", 200000, 5
            "warm anyway": [said(T0 + 60, "next"), answered(T0 + 61, "r", 200000, 500)],
            "cold": [said(T0 + 1800, "next"), answered(T0 + 1801, "r", 1000, 199000)],
            "compacted": [{"type": "system", "subtype": "compact_boundary", "timestamp": iso(T0 + 3240)},
+                         {"type": "user", "isCompactSummary": True, "timestamp": iso(T0 + 3240),
+                          "message": {"content": "x" * 90}},
                          said(T0 + 3500, "next"), answered(T0 + 3501, "r", 30000, 500)],
            "unread": None}
 journal = []
@@ -145,18 +147,35 @@ for kind, back in returns.items():
             for entry in [dict(PING, timestamp=iso(T0 + 1)), answered(T0 + 2, "p", 200000, 100),
                           answered(T0 + 2, "p", 200000, 100), *back]:
                 handle.write(json.dumps(entry) + "\n")
-    journal.append({"ts": iso(T0), "session": kind, "decision": "ping", "since": 3480, "transcript": path,
-                    "offset": offset})
+    journal.append({"ts": iso(T0), "session": kind, "decision": "ping", "since": 3480, "context": 200000,
+                    "transcript": path, "offset": offset})
 journal.append({"ts": iso(NOW - 8 * 86400), "session": "old", "decision": "ping", "since": 3480,
                 "transcript": os.path.join(pings_dir, "saved.jsonl"), "offset": 0})
 journal.append({"ts": iso(T0), "session": "x", "decision": "silent", "reason": "late"})
 ping_cost = 1 + 0.1 * 200000 + 2.0 * 100 + 5.0 * 3
+grown = 1 + 200000 + 100 + 3 - 200000  # the ping turn's tokens, left in the chat
+warm_growth, cold_growth = 0.1 * grown, 2.0 * grown
+compaction = 0.1 * 200000 + 5.0 * len(json.dumps("x" * 90)) / 3
+compacted_value = 2.0 * 200000 - (1 + 0.1 * 30000 + 2.0 * 500 + 5.0 * 3)
 check([keepalive.outcome(r)["kind"] for r in journal[:6]] == list(returns)
-      and keepalive.outcome(journal[0]) == {"cost": ping_cost, "value": 1.9 * 200000, "kind": "saved"}
-      and keepalive.outcome(journal[5])["cost"] == 0.0,
-      "a ping's outcome reads the transcript from its offset: its own turn priced once per request id, then the next "
-      "real turn: warm past the hour saved, none within the hour, back before the hour, re-read cold, an idle "
-      "compaction first, no ping turn: %s" % [keepalive.outcome(r) for r in journal[:6]])
+      and [round(keepalive.outcome(r)["cost"], 6) for r in journal[:6]] == [round(c, 6) for c in [
+          ping_cost + warm_growth, ping_cost + cold_growth, ping_cost + warm_growth, ping_cost + cold_growth,
+          ping_cost + compaction + warm_growth, 0.0]]
+      and [keepalive.outcome(r)["value"] for r in journal[:6]] == [1.9 * 200000, 0, 0, 0, compacted_value, 0],
+      "a ping's outcome reads the transcript from its offset: its own turn priced once per request id, its tokens "
+      "read by each later request (written by a cold one), then the next real turn: warm past the hour saved, none "
+      "within the hour, back before the hour, re-read cold, an idle compaction first (its read and summary a cost, "
+      "the full cold re-read it spared the value), no ping turn: %s" % [keepalive.outcome(r) for r in journal[:6]])
+recap = os.path.join(pings_dir, "recap.jsonl")
+with open(recap, "w") as handle:
+    handle.writelines(json.dumps(e) + "\n" for e in [
+        dict(PING, timestamp=iso(T0 + 1)), answered(T0 + 2, "p", 200000, 100),
+        {"type": "system", "subtype": "away_summary", "timestamp": iso(T0 + 200), "content": "y" * 30},
+        said(T0 + 7300, "next"), answered(T0 + 7301, "r", 0, 200300)])
+away = keepalive.outcome({"ts": iso(T0), "since": 3480, "context": 200000, "transcript": recap, "offset": 0}, NOW)
+check(dict(away, cost=round(away["cost"], 6)) == {
+          "cost": round(ping_cost + 0.1 * 200000 + 300 + 5.0 * 30 / 3 + cold_growth, 6), "value": 0.0, "kind": "no return"},
+      "the away recap a ping's turn set off is its cost: the whole context read, its prompt, its text: %s" % away)
 pending = os.path.join(pings_dir, "pending.jsonl")
 with open(pending, "w") as handle:
     handle.writelines(json.dumps(e) + "\n" for e in [dict(PING, timestamp=iso(NOW - 600)),
@@ -171,10 +190,12 @@ with open(chain, "w") as handle:
     second = handle.tell()
     handle.writelines(json.dumps(e) + "\n" for e in [dict(PING, timestamp=iso(T0 + 3481)), answered(T0 + 3482, "p2", 200000, 100),
                                                       said(T0 + 3500, "next"), answered(T0 + 3501, "r", 200000, 500)])
-links = [keepalive.outcome({"ts": iso(T0), "since": 3480, "transcript": chain, "offset": 0}, NOW),
-         keepalive.outcome({"ts": iso(T0 + 3480), "since": 6960, "transcript": chain, "offset": second}, NOW)]
-check(links == [{"cost": ping_cost, "value": 0.0, "kind": "no return"},
-                {"cost": ping_cost, "value": 1.9 * 200000, "kind": "saved"}],
+links = [keepalive.outcome({"ts": iso(T0), "since": 3480, "context": 200000, "transcript": chain, "offset": 0}, NOW),
+         keepalive.outcome({"ts": iso(T0 + 3480), "since": 6960, "context": 200000, "transcript": chain,
+                            "offset": second}, NOW)]
+check([dict(o, cost=round(o["cost"], 6)) for o in links] == [
+          {"cost": round(ping_cost + 2 * warm_growth, 6), "value": 0.0, "kind": "no return"},
+          {"cost": round(ping_cost + warm_growth, 6), "value": 1.9 * 200000, "kind": "saved"}],
       "a chain of pings prices each turn once: the first ends at the second, the return is the last one's: %s" % links)
 
 
@@ -186,15 +207,16 @@ def journaled(rows):
 journaled(journal)
 week = keepalive.summary(NOW)
 check(week["pings"] == 6 and week["kinds"] == {k: 1 for k in returns} and week["ratio"] == round(
-          1.9 * 200000 / (5 * ping_cost), 1) and keepalive.components(NOW) == [] and week["missed"] == []
+          (1.9 * 200000 + compacted_value) / (5 * ping_cost + 3 * warm_growth + 2 * cold_growth + compaction), 1)
+      and keepalive.components(NOW) == [] and week["missed"] == []
       and keepalive.menu_line(NOW) == "cache keepalive · 7 days · 6 pings · 1 warm returns · 1 no return · saves "
                                       "×%.1f its cost · 0 missed" % week["ratio"],
       "the week's pings, the 8-day-old one and silent sleepers left out, saved more than they cost: a menu line, no "
       "component: %s %s" % (week, keepalive.menu_line(NOW)))
-journaled([r for r in journal if r["session"] != "saved"])
+journaled([r for r in journal if r["session"] not in ("saved", "compacted")] + [dict(journal[1], session="again")])
 lost = keepalive.components(NOW)
 check(len(lost) == 1 and lost[0]["key"] == "keepalive"
-      and lost[0]["delta"].startswith("5 pings · 0 warm returns · 1 no return")
+      and lost[0]["delta"].startswith("5 pings · 0 warm returns · 2 no return")
       and lost[0]["last"] == iso(T0) and spend.due(lost[0], None, {}) == "never audited"
       and "keepalive" in [c["key"] for c in spend.components(payload(), repos)],
       "5 pings that saved nothing make the keepalive a Spend component, due as never audited: %s" % lost)

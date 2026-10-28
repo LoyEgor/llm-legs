@@ -87,8 +87,9 @@ Why they come back:
    request (≥200K, flag `tengu_sunny_locket`), refused on a keystroke in the last minute; 10-09…25 chats re-read 85
    contexts ≥150K cold, 50 of them returns 58–360 min later. Since 10-25 claude-setup `hooks/cache-keepalive.py`
    pings an idle chat ≥100K at 58 min, so a return within the next hour reads warm and the compactor re-arms. Its
-   worth is the `cache keepalive · 7 days` line (`share/keepalive.py`); a week whose pings cost more than they saved
-   opens a `keepalive` audit. tokenmap bills a ping's turn as a Stop re-answer (`keepalive`).
+   worth is the `cache keepalive · 7 days` line (`share/keepalive.py`), priced against no ping at all: a ping's
+   cost is its turn, the away recap its turn sets off (no transcript holds it), a compaction it re-armed and its
+   tokens read by every later request; a week whose pings cost more than they saved opens a `keepalive` audit. tokenmap bills a ping's turn as a Stop re-answer (`keepalive`).
 4.–6. come from the night's fan-out, which Breakages' pilot removes, and from model behavior. Log-audit's whole
    reread is not fan-out: it runs in pilot prep (`bin/night-run` `PILOT_RULES`), and a stopped read restarts from
    its `since` (last 10-14). Class 5's one fix was review-bench's (909514f); the rest were the chat's choices.

@@ -1,10 +1,10 @@
 """Cache keepalive pings (claude-setup hooks/cache-keepalive.py) against the cold re-reads they saved.
 
 The hook journals each ping with the chat's transcript and its size at that moment; this reads only what came
-after: the turn the ping opened (its cost) and the chat's next real turn. A return inside the hour after the ping
-that read its context warm, while the last real request was over an hour old, saved a 1-hour cache write of that
-context. Prices are fresh-input equivalents (1-hour write 2.0, read 0.1, output 5): both sides are the same chat's
-model, so the ratio needs no model weight.
+after, against the same chat with no ping at all (outcome() names every cost a ping sets off). A return inside the
+hour after the ping that read its context warm, while the last real request was over an hour old, saved a 1-hour
+cache write of that context. Prices are fresh-input equivalents (1-hour write 2.0, read 0.1, output 5): both sides
+are the same chat's model, so the ratio needs no model weight.
 
 A miss is the other way the hook can fail: an interactive chat re-read 110K or more cold after an hour idle (tokenmap's
 `expired (1h+ idle)`) with no journal line in that stretch that explains it (a ping, a skip, a closed window, a
@@ -22,6 +22,8 @@ WINDOW = 7 * 86400
 MIN_PINGS = 5  # fewer settle nothing
 READ_CAP = 64 << 20
 WRITE, READ, OUTPUT = 2.0, 0.1, 5.0
+RECAP_PROMPT = 300  # the away recap's own instruction, fresh input; the recap is in no transcript
+CHARS_PER_TOKEN = 3.0  # Russian and English prose mixed, for text whose usage is logged nowhere
 ACTIVE_SINCE = "2026-10-25T16:21:00+00:00"  # the hook's Stop entry went live (claude-setup 745c775)
 MISSED = 2  # one unexplained cold re-read may be a killed terminal; two are a pattern
 COLD_CONTEXT = 110_000  # the hook's 100K, read on tokenmap's slightly different count
@@ -76,51 +78,79 @@ def lines(path, offset):
 
 
 def outcome(row, now=None):
-    """One ping: {"cost", "value", "kind"}; kind saved (a warm return the hour had expired for), cold (the return
-    re-read anyway), compacted (an idle compaction came first), warm anyway (back within the hour of the last
-    request), no return (none within the hour or the next ping came first, nothing compacted), pending (no return yet, its hour still runs),
-    unread (the ping's turn is not in the transcript: it landed mid-task)."""
-    at, last = epoch(row.get("ts")), epoch(row.get("ts"))
+    """One ping: {"cost", "value", "kind"} against the same chat with no ping at all.
+
+    Cost is everything the ping set off: its own turn; the recap Claude Code writes when a turn ends while Egor is
+    away (a fork reading the whole context; it is in no transcript, so priced from the context and the recap's
+    length); an idle compaction it re-armed (the whole context read, the summary written); and its tokens staying
+    in the chat, read by every later request until the next compaction (written again by a cold one).
+    Kind saved (a warm return the hour had expired for: value the 1-hour write it spared), compacted (an idle
+    compaction came first: value the full cold re-read the return was spared, past what it did cost), cold (the
+    return re-read anyway), warm anyway (back within the hour of the last request), no return (none within the hour
+    or the next ping came first), pending (no return yet, its hour still runs), unread (the ping's turn is not in
+    the transcript: it landed mid-task)."""
+    at = epoch(row.get("ts"))
     if at is None:
         return {"cost": 0.0, "value": 0.0, "kind": "unread"}
-    last -= float(row.get("since") or 0)
-    cost, seen, phase, compacted, chained = 0.0, set(), "before", False, False
+    last, context = at - float(row.get("since") or 0), float(row.get("context") or 0)
+    cost, value, seen, phase, kind_found, compacted, added, back = 0.0, 0.0, set(), "before", None, False, 0.0, None
     for entry in lines(row.get("transcript") or "", int(row.get("offset") or 0)):
         kind, content = entry.get("type"), json.dumps((entry.get("message") or {}).get("content"))
-        if kind == "system" and entry.get("subtype") == "compact_boundary" and phase != "before":
-            compacted = True
-        if kind == "user" and not entry.get("isMeta") and '"tool_result"' not in content[:4000]:
-            if phase == "before" and SUMMARY in content:
+        if phase == "before":
+            if kind == "user" and not entry.get("isMeta") and SUMMARY in content:
                 phase = "ping"
-                continue
-            if phase == "ping" and SUMMARY in content:
-                chained = True
-                break  # the chain's next ping: its own row prices its turn
-            if phase == "ping":
-                back = epoch(entry.get("timestamp"))
-                if back is None or back - at > TTL:
-                    break
-                phase = "return"
-                continue
-        if kind != "assistant" or phase == "before":
+            continue
+        if kind == "system" and entry.get("subtype") == "compact_boundary":
+            if phase != "ping":
+                break  # the compaction drops the ping's tokens: no more growth
+            compacted, phase = True, "compacted"
+            cost += READ * context
+            continue
+        if kind == "system" and entry.get("subtype") == "away_summary" and phase == "ping":
+            cost += READ * context + RECAP_PROMPT + OUTPUT * len(str(entry.get("content") or "")) / CHARS_PER_TOKEN
+            continue
+        if kind == "user" and entry.get("isCompactSummary"):
+            cost += OUTPUT * len(content) / CHARS_PER_TOKEN
+            continue
+        if kind == "user" and not entry.get("isMeta") and '"tool_result"' not in content[:4000] and phase in (
+                "ping", "compacted"):
+            if SUMMARY in content and not compacted:
+                kind_found, phase = "no return", "after"  # the chain's next ping: its own row prices its turn
+            else:
+                back, phase = epoch(entry.get("timestamp")), "return"
+            continue
+        if kind != "assistant":
             continue
         usage = (entry.get("message") or {}).get("usage") or {}
         key = (entry.get("message") or {}).get("id") or entry.get("requestId")
         if not usage or key in seen:
             continue
         seen.add(key)
+        read, wrote = usage.get("cache_read_input_tokens") or 0, usage.get("cache_creation_input_tokens") or 0
         if phase == "ping":
+            if not added:
+                added = max(0.0, sum(usage.get(k) or 0 for k in (
+                    "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")) - context)
             cost += price(usage)
             continue
-        read, wrote = usage.get("cache_read_input_tokens") or 0, usage.get("cache_creation_input_tokens") or 0
+        cost += added * (READ if read >= wrote else WRITE)
+        if phase != "return":
+            continue
+        phase = "after"
         if compacted:
-            return {"cost": cost, "value": 0.0, "kind": "compacted"}
-        if back - last <= TTL:
-            return {"cost": cost, "value": 0.0, "kind": "warm anyway"}
-        if read < wrote:
-            return {"cost": cost, "value": 0.0, "kind": "cold"}
-        return {"cost": cost, "value": (WRITE - READ) * read, "kind": "saved"}
-    if phase == "ping" and not compacted and not chained and (time.time() if now is None else now) - at <= TTL:
+            kind_found, value = "compacted", max(0.0, WRITE * context - price(usage))
+            break
+        if back is None or back - at > TTL:
+            kind_found = "no return"
+        elif back - last <= TTL:
+            kind_found = "warm anyway"
+        elif read < wrote:
+            kind_found = "cold"
+        else:
+            kind_found, value = "saved", (WRITE - READ) * read
+    if kind_found:
+        return {"cost": cost, "value": value, "kind": kind_found}
+    if phase == "ping" and (time.time() if now is None else now) - at <= TTL:
         return {"cost": cost, "value": 0.0, "kind": "pending"}
     return {"cost": cost, "value": 0.0,
             "kind": "unread" if phase == "before" else "compacted" if compacted else "no return"}
