@@ -1,4 +1,4 @@
-# cards
+# cards: numbered cards with image/audio/video and choice/multi/scale/text answers
 Numbered cards, each with its pictures, clips or films and a few answers (choice, chips, scale, text)
 plus a note; one clip plays at a time, a card's number turns green once it is answered.
 
@@ -12,7 +12,8 @@ plus a note; one clip plays at a time, a card's number turns green once it is an
 - **Numbering:** `n` is the shown number. It is stable and never renumbered when items are added.
 - **Per item:** `id` (immutable), `n`, `title`, `text`, `media`, `suggest` (`{field: value}`, shown
   apart, never counted).
-- **Common:** `title`, `intro`, `sitting_cap`.
+- **Common:** `title`, `intro`, `sitting_cap`; any `_` key (e.g. an item's `_expected`) is never served
+  and shows in `page state`.
 - **Fields written:** each field's `key`, plus `note`.
 
 ## Example

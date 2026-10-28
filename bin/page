@@ -361,9 +361,11 @@ def cmd_help(args):
         if os.path.isfile(path):
             with open(path) as handle:
                 first = next((l.strip().lstrip("# ") for l in handle if l.strip()), "")
-        print("%-8s %s" % (module, first or BUILTIN_MODULES.get(module, "")))
+        if first.startswith(module + ":"):
+            first = first[len(module) + 1:].strip()
+        print("%-8s %s" % (module, first if first and first != module else BUILTIN_MODULES.get(module, "")))
     print("page new <module> --slug S --title T [--no-open] < spec.json; page state|set|list|open|doctor; "
-          "page help <module> for its spec")
+          "page help <module> for its spec; a module lacks something: %s" % os.path.join(os.path.dirname(KIT), "EXTEND.md"))
 
 
 def cmd_doctor(args):

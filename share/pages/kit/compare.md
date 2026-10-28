@@ -1,4 +1,4 @@
-# compare
+# compare: pictures side by side — an original + variants, or a pair; vote, tags, note, or a view grid
 Pictures side by side in synced loupes (drag pans all, wheel zooms at the pointer), an original plus
 variants or two variants pairwise; one vote, per-side tags and a note per item, or `mode: view` grid.
 
@@ -18,7 +18,8 @@ variants or two variants pairwise; one vote, per-side tags and a note per item, 
 - **Per item:** `id` (immutable), `title`, `q` (a context line), `original`, `variants[]` (`id`,
   `label`, `src`, `meta` badge such as `64 px`), `hotspots`, `n` (shown number), `suggest`
   (`{"choice": "A"}`, shown apart, never counted).
-- **Common:** `title`, `intro`, `sitting_cap`.
+- **Common:** `title`, `intro`, `sitting_cap`; any `_` key (e.g. an item's `_expected`) is never served
+  and shows in `page state`.
 - **Fields written:**
   - `choice`: an option id, or a slot letter on blind pages;
   - `tags`: `{"A": [...], "B": [...]}`;

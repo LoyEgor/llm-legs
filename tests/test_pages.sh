@@ -113,7 +113,7 @@ assert test "$(get "$base/p/$pid/")$(cat "$WORK/body")" = 200loader
 assert test "$(get "$base/healthz")$(jq -r .pages "$WORK/body")" = 2001
 
 "$PAGE" help >"$WORK/help.out"
-assert test "$(head -2 "$WORK/help.out" | paste -sd'|' -)" = "cards    cards: numbered cards|compare  compare: variants side by side"
+assert test "$(head -2 "$WORK/help.out" | paste -sd'|' -)" = "cards    numbered cards|compare  variants side by side"
 
 # Media: 206 Range, chunked full body, an open-ended range capped at 8 MB, out-of-bounds 416, ETag 304.
 size=9500000
