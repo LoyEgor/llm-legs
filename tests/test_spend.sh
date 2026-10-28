@@ -165,6 +165,17 @@ fresh = {"ts": iso(NOW - 600), "session": "pending", "decision": "ping", "since"
          "offset": 0}
 check(keepalive.outcome(fresh, NOW)["kind"] == "pending" and keepalive.outcome(fresh, NOW + 3700)["kind"] == "no return",
       "a ping whose hour still runs is pending, not a no return: %s" % keepalive.outcome(fresh, NOW))
+chain = os.path.join(pings_dir, "chain.jsonl")
+with open(chain, "w") as handle:
+    handle.writelines(json.dumps(e) + "\n" for e in [dict(PING, timestamp=iso(T0 + 1)), answered(T0 + 2, "p1", 200000, 100)])
+    second = handle.tell()
+    handle.writelines(json.dumps(e) + "\n" for e in [dict(PING, timestamp=iso(T0 + 3481)), answered(T0 + 3482, "p2", 200000, 100),
+                                                      said(T0 + 3500, "next"), answered(T0 + 3501, "r", 200000, 500)])
+links = [keepalive.outcome({"ts": iso(T0), "since": 3480, "transcript": chain, "offset": 0}, NOW),
+         keepalive.outcome({"ts": iso(T0 + 3480), "since": 6960, "transcript": chain, "offset": second}, NOW)]
+check(links == [{"cost": ping_cost, "value": 0.0, "kind": "no return"},
+                {"cost": ping_cost, "value": 1.9 * 200000, "kind": "saved"}],
+      "a chain of pings prices each turn once: the first ends at the second, the return is the last one's: %s" % links)
 
 
 def journaled(rows):

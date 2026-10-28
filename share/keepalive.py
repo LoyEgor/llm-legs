@@ -78,13 +78,13 @@ def lines(path, offset):
 def outcome(row, now=None):
     """One ping: {"cost", "value", "kind"}; kind saved (a warm return the hour had expired for), cold (the return
     re-read anyway), compacted (an idle compaction came first), warm anyway (back within the hour of the last
-    request), no return (none within the hour, nothing compacted), pending (no return yet, its hour still runs),
+    request), no return (none within the hour or the next ping came first, nothing compacted), pending (no return yet, its hour still runs),
     unread (the ping's turn is not in the transcript: it landed mid-task)."""
     at, last = epoch(row.get("ts")), epoch(row.get("ts"))
     if at is None:
         return {"cost": 0.0, "value": 0.0, "kind": "unread"}
     last -= float(row.get("since") or 0)
-    cost, seen, phase, compacted = 0.0, set(), "before", False
+    cost, seen, phase, compacted, chained = 0.0, set(), "before", False, False
     for entry in lines(row.get("transcript") or "", int(row.get("offset") or 0)):
         kind, content = entry.get("type"), json.dumps((entry.get("message") or {}).get("content"))
         if kind == "system" and entry.get("subtype") == "compact_boundary" and phase != "before":
@@ -93,7 +93,10 @@ def outcome(row, now=None):
             if phase == "before" and SUMMARY in content:
                 phase = "ping"
                 continue
-            if phase == "ping" and SUMMARY not in content:
+            if phase == "ping" and SUMMARY in content:
+                chained = True
+                break  # the chain's next ping: its own row prices its turn
+            if phase == "ping":
                 back = epoch(entry.get("timestamp"))
                 if back is None or back - at > TTL:
                     break
@@ -117,7 +120,7 @@ def outcome(row, now=None):
         if read < wrote:
             return {"cost": cost, "value": 0.0, "kind": "cold"}
         return {"cost": cost, "value": (WRITE - READ) * read, "kind": "saved"}
-    if phase == "ping" and not compacted and (time.time() if now is None else now) - at <= TTL:
+    if phase == "ping" and not compacted and not chained and (time.time() if now is None else now) - at <= TTL:
         return {"cost": cost, "value": 0.0, "kind": "pending"}
     return {"cost": cost, "value": 0.0,
             "kind": "unread" if phase == "before" else "compacted" if compacted else "no return"}
