@@ -1,0 +1,46 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>…</title>
+<!-- The one file served at /p/<pid>/ (share/pages/CONTRACT.md): tokens and base styles, then the
+     page's module. Module styles live in the module. -->
+<style>
+:root{--bg:#f6f6f4;--card:#fff;--ink:#1c1c1e;--mute:#6b6b70;--line:#dcdcd8;--accent:#2f5bd3;--on:#1f6f4a;--err:#b3412f;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#161617;--card:#232325;--ink:#f2f2f2;--mute:#a3a3aa;--line:#3d3d42;--accent:#8aa8ff;--on:#3fae78;--err:#e8826f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 16px;display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center}
+h1{font-size:15px;margin:0;white-space:nowrap}
+#intro:empty,#cap[hidden]{display:none}
+.mute,#intro{color:var(--mute)}.num,#count,#status{font-variant-numeric:tabular-nums;white-space:nowrap}
+#count{font-weight:600}#status{color:var(--mute);margin-left:auto}#status.err{color:var(--err)}
+#cap{color:var(--on);font-weight:600}
+main{padding:10px 16px 16px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer}
+button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+textarea,input[type=text]{font:inherit;width:100%;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+textarea{resize:vertical;min-height:40px}
+.sg{color:var(--mute);font-size:13px;border:1px dashed var(--line);border-radius:6px;padding:2px 8px}
+.sg::before{content:"машина: "}
+.err{color:var(--err)}
+</style></head><body>
+<header><h1 id="title"></h1><span id="intro"></span><span id="count"></span><span id="cap" hidden>на сегодня хватит</span><span id="status"></span></header>
+<main id="app"></main>
+<script type="module">
+import { start } from "/kit/shell.js";
+const pid = location.pathname.split("/")[2];
+async function load() {
+  let spec, mod;
+  try {
+    const r = await fetch(`/p/${pid}/spec`, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    spec = await r.json();
+    if (!/^[a-z][a-z0-9_-]*$/.test(spec.module || "")) throw new Error("module");
+    mod = await import(`/kit/${spec.module}.js`);
+  } catch (e) {
+    document.getElementById("status").textContent = "нет связи — повторю";
+    return setTimeout(load, 3000);
+  }
+  start({ pid, ...spec }, mod.render);
+}
+load();
+</script></body></html>
