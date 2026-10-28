@@ -1250,6 +1250,22 @@ local function copyChatCommand(row)
   end
 end
 
+-- A closed chat's leftovers, or an orphan nothing runs any more, end through bin/chat-load stop, which
+-- works the processes out again from the live table; its one line is the answer.
+local function stopChatRow(key)
+  local path = M.chatLoadCmd or (repoRoot and repoRoot .. "/bin/chat-load")
+  if not path then return end
+  local task
+  task = hs.task.new(path, function(_, stdout, stderr)
+    task = nil
+    hs.alert.show((stdout or ""):match("[^\r\n]+") or (stderr or ""):match("[^\r\n]+") or "stop: no answer", 3)
+  end, { "stop", key })
+  if not task or not task:start() then
+    task = nil
+    hs.alert.show("could not start chat-load", 3)
+  end
+end
+
 -- A live chat's Terminal tab comes to the front; a closed chat, or one with no terminal (a
 -- headless worker), copies its reopen command instead.
 local function focusChat(row)
@@ -2017,7 +2033,15 @@ local function appendChats(menu)
       items[#items + 1] = { title = "-" }
     elseif type(row) == "table" then
       local item = { title = infoTitle(tostring(row.text or ""), row.alarm == true, row.dim == true) }
-      if row.session then
+      if row.stop then
+        local key = tostring(row.stop)
+        item.menu = { { title = infoTitle(string.format("Stop · %.1f GB", tonumber(row.gb) or 0)),
+          fn = function() stopChatRow(key) end } }
+        if row.session then
+          table.insert(item.menu, { title = infoTitle("Copy reopen command"),
+            fn = function() copyChatCommand({ session = row.session }) end })
+        end
+      elseif row.session then
         item.fn = function() focusChat({ session = row.session, pid = row.pid }) end
       else
         item.disabled = true

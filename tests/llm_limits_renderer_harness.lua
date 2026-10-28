@@ -3858,6 +3858,37 @@ do
   chatsFake.snapshot = nil
 end
 
+-- A row chat-load hands a stop key (a closed chat still running something, an orphan) opens a submenu:
+-- Stop runs bin/chat-load stop with that key, and a closed chat keeps its reopen command beside it.
+do
+  local tasks = {}
+  chatsFake.snapshot = { as_of = os.time(), title = "Chats", rows = {
+    { text = "closed      Job profile", session = "old-2", stop = "chat:old-2", gb = 2.4 },
+    { text = "orphan      agy --print", stop = "orphan:4343:1793000000", gb = 0.1 },
+  } }
+  local mod = loadModule({ schema = 1, vendors = {} }, driveTasks(tasks))
+  mod.chatsCmd, mod.chatLoadCmd = "/fixture/bin/chats", "/fixture/bin/chat-load"
+  local chats
+  for _, item in ipairs(mod.menuItems()) do
+    if titleText(item):match("^Chats") then chats = item end
+  end
+  local closed, orphan = chats.menu[1], chats.menu[2]
+  assert(closed.menu and #closed.menu == 2 and titleText(closed.menu[1]) == "Stop · 2.4 GB"
+    and titleText(closed.menu[2]) == "Copy reopen command", "a closed chat's row did not open Stop and its reopen command")
+  assert(orphan.menu and #orphan.menu == 1 and titleText(orphan.menu[1]) == "Stop · 0.1 GB" and not orphan.disabled,
+    "an orphan's row did not open Stop")
+  closed.menu[1].fn()
+  assert(tasks[1] and tasks[1].path == "/fixture/bin/chat-load" and table.concat(tasks[1].args, " ") == "stop chat:old-2",
+    "a closed chat's Stop did not hand chat-load its key")
+  orphan.menu[1].fn()
+  assert(tasks[2] and table.concat(tasks[2].args, " ") == "stop orphan:4343:1793000000",
+    "an orphan's Stop did not hand chat-load its key")
+  closed.menu[2].fn()
+  assert(tasks[3] and tasks[3].path == "/fixture/bin/chats" and table.concat(tasks[3].args, " ") == "--open-command old-2",
+    "a closed chat's reopen command was lost behind Stop")
+  chatsFake.snapshot = nil
+end
+
 -- Light is one switch over both of its roles, written by the same locked writer as a vendor's Pause.
 do
   for _, case in ipairs({ { model = nil, checked = true, state = "on" },

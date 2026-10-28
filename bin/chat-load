@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # memlogd runs `sample` every tick: it attributes every process to the chat that launched it, keeps
 # the machine's load per chat for the llm-limits menu (chats.json) and, when RAM runs out, kills the
-# fattest chat job (`docs/memory-guard.md`). `show` prints the last snapshot.
+# fattest chat job (`docs/memory-guard.md`). `show` prints the last snapshot; `stop` ends what one of
+# its closed-chat or orphan rows counts, on Egor's click in the menu.
 import ctypes
 import glob
 import json
@@ -24,6 +25,12 @@ PID_SLACK_S = 30
 HOLD_START_SLACK_S = 2
 QUEUE_STUCK_S = 1800
 KILLED_GRACE_S = 30
+SHOWN_KB = 51200
+ORPHAN_AGE_S = 3600
+STOP_GRACE_S = 5
+# Apple's own processes and the extensions and XPC services macOS starts are never a leftover; an app is
+# a launchd job. Homebrew's python runs from a Python.app, so ".app/" itself would hide every python.
+SYSTEM_PARTS = (".xpc/", ".appex/")
 SPARK = "▁▂▃▄▅▆▇█"
 ENV_KEYS = (b"CLAUDE_LAUNCHER_SESSION=", b"CLAUDE_CODE_SESSION_ID=")
 OTHER_KINDS = (("screen", {"WindowServer"}), ("kernel", {"kernel_task"}), ("signing", {"syspolicyd", "trustd"}))
@@ -130,7 +137,7 @@ def process_table():
             continue
         table[pid] = {"ppid": ppid, "pgid": pgid, "uid": uid, "kb": rss, "cpu": clock(fields[5]),
                       "age": clock(fields[6]), "start": taken - clock(fields[6]), "zombie": fields[7].startswith("Z"),
-                      "comm": os.path.basename(fields[8].strip())}
+                      "comm": os.path.basename(fields[8].strip()), "path": fields[8].strip()}
     return table
 
 
@@ -298,6 +305,47 @@ def attribute(table, envs, sessions):
         if sid:
             tops[pid] = outermost(sid)
     return tops
+
+
+def tree_of(pid, table):
+    children = {}
+    for child, row in table.items():
+        children.setdefault(row["ppid"], []).append(child)
+    tree, todo = [], [pid]
+    while todo:
+        top = todo.pop()
+        tree.append(top)
+        todo += children.get(top, [])
+    return tree
+
+
+def launchd_jobs():
+    try:
+        out = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {int(line.split()[0]) for line in out.splitlines()[1:] if line.split() and line.split()[0].isdigit()}
+
+
+def orphans(table, tops, protected, weigh):
+    """What nothing runs any more and no chat claims: a process of Egor's whose parent died, which launchd adopted
+    but does not manage, an hour old or more, not Apple's, with no chat's work in its tree. A hung CLI
+    a dead pipeline left behind lands here (2026-10-28: three `agy --print` of a morning job, 5 days, 0.4 GB);
+    an app, launchd's own jobs and a detached bench waiting for its slot never do. `weigh(tree)` -> (cores, kb)."""
+    uid, found = os.getuid(), []
+    for pid, row in table.items():
+        if (row["ppid"] != 1 or row["uid"] != uid or row["zombie"] or row["age"] < ORPHAN_AGE_S or pid in tops
+                or pid in protected or row["path"].startswith("/System/")
+                or any(part in row["path"] for part in SYSTEM_PARTS)):
+            continue
+        tree = tree_of(pid, table)
+        if any(member in tops or member in protected for member in tree):
+            continue
+        cores, kb = weigh(tree)
+        if (cores or 0.0) >= 0.05 or kb >= SHOWN_KB:
+            found.append((pid, tree, cores, kb))
+    managed = launchd_jobs() if found else set()
+    return [] if managed is None else [entry for entry in found if entry[0] not in managed]
 
 
 def post_notices(sids, identity, body):
@@ -555,14 +603,15 @@ def spark(buckets, minute, top_cores):
     return "".join(cells)
 
 
-def render(now, avail, swap, table, tops, sessions, state, prev, holds):
+def render(now, avail, swap, table, tops, sessions, state, prev, holds, protected=frozenset()):
     ncpu = os.cpu_count() or 1
     top_cores = sysctl_int("hw.perflevel0.physicalcpu") or ncpu
     total_mb = (sysctl_int("hw.memsize") or 0) // 1048576
     dt = now - prev.get("at", 0)
     rated = 0 < dt <= 120
     before = prev.get("procs", {})
-    procs, chat_cpu, chat_kb, machine, other = {}, {}, {}, 0.0, dict.fromkeys([k for k, _ in OTHER_KINDS], 0.0)
+    procs, spent, chat_cpu, chat_kb, machine = {}, {}, {}, {}, 0.0
+    other = dict.fromkeys([k for k, _ in OTHER_KINDS], 0.0)
     other_kb = 0
     for pid, row in table.items():
         if row["cpu"] < 0 or row["age"] < 0:
@@ -576,6 +625,7 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
             used = row["cpu"]
         else:
             used = 0.0
+        spent[pid] = used
         machine += used
         top = tops.get(pid)
         if top:
@@ -646,7 +696,7 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
         live = sessions.get(sid)
         wait = held.get(sid)
         if not live:
-            if (now_cores or 0.0) < 0.05 and chat_kb.get(sid, 0) < 51200 and not wait:
+            if (now_cores or 0.0) < 0.05 and chat_kb.get(sid, 0) < SHOWN_KB and not wait:
                 continue
             word = "closed"
         elif now_cores is not None and now_cores >= BUSY_CORES:
@@ -660,8 +710,18 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
                     f"{gb(chat_kb.get(sid, 0) / 1024, 4)} GB  {spark(history.get(sid, {}), minute, top_cores)}"
                     + (f"  ⏳{wait['count']} {waited(wait['longest'])}" if wait else ""),
             "session": sid, "dim": word in ("idle", "wait model") and not (wait and wait["stuck"]),
-            **({"alarm": True} if wait and wait["stuck"] else {}), **({"pid": live["pid"]} if live else {})}))
+            **({"alarm": True} if wait and wait["stuck"] else {}), **({"pid": live["pid"]} if live else {}),
+            # A closed chat's row ends what it counts: `chat-load stop chat:<session>` from its submenu.
+            **({} if live else {"stop": f"chat:{sid}", "gb": round(chat_kb.get(sid, 0) / 1048576, 1)})}))
     rows += [row for _, _, row in sorted(listed, key=lambda item: (-item[0], -item[1]))]
+    weigh = lambda tree: (rate(sum(spent.get(pid, 0.0) for pid in tree)), sum(table[pid]["kb"] for pid in tree))
+    for pid, tree, now_cores, kb in sorted(orphans(table, tops, protected, weigh), key=lambda item: -item[3]):
+        parsed = procargs(pid)
+        name = " ".join([os.path.basename(parsed[0][0])] + parsed[0][1:]) if parsed and parsed[0] else table[pid]["comm"]
+        name = " ".join(name.split())
+        rows.append({"text": f"{'orphan':<10}  {short(name):<{TITLE_WIDTH}}  {cores(now_cores, 4)} cores  "
+                             f"{gb(kb / 1024, 4)} GB  {waited(table[pid]['age'])}",
+                     "stop": f"orphan:{pid}:{int(table[pid]['start'])}", "gb": round(kb / 1048576, 1)})
     for queue in queued:
         if not queue["session"]:
             rows.append({"text": f"{'queued':<10}  {short(queue['limiter']):<{TITLE_WIDTH}}  "
@@ -705,7 +765,7 @@ def sample(now, avail, swap, room, measure):
     except Exception as error:
         failure = f"guard: {error!r}"
     try:
-        snapshot = render(now, avail, swap, table, tops, sessions, state, prev, live_holds(now, table))
+        snapshot = render(now, avail, swap, table, tops, sessions, state, prev, live_holds(now, table), protected)
     except Exception as error:
         snapshot = {"as_of": now, "title": "Chats: error", "alarm": False, "rows": []}
         failure = failure or f"render: {error!r}"
@@ -716,6 +776,80 @@ def sample(now, avail, swap, room, measure):
         print(f"CHAT-LOAD-ERROR {now} {failure}", flush=True)
         return 1
     return 0
+
+
+def stop(key):
+    """Ends what one menu row counts, worked out again from the live table, so a pid reused since the row was
+    drawn is never touched: `chat:<session>` every process of a closed chat, `orphan:<pid>:<start>` an orphan's
+    tree. SIGTERM first; a child they spawn while shutting down goes too (2026-10-28: a stopped `nx serve` started
+    a fresh nx daemon on its way out); what still runs after STOP_GRACE_S is SIGKILLed."""
+    table = process_table()
+    uid, me = os.getuid(), {os.getpid(), *lineage(os.getpid(), table)}
+    registered = live_sessions(table)
+    sessions = {sid: entry for sid, entry in registered.items() if entry["own"]}
+    tops = attribute(table, environments(table, read_json(STATE_PATH, {}).get("env", {})), sessions)
+    kind, _, rest = key.partition(":")
+    if kind == "chat" and rest:
+        if rest in sessions:
+            print("that chat is open: close it in its tab")
+            return 1
+        members = {pid for pid, top in tops.items() if top == rest}
+    elif kind == "orphan" and re.fullmatch(r"\d+:\d+", rest):
+        pid, start = (int(part) for part in rest.split(":"))
+        row = table.get(pid)
+        if not row or row["ppid"] != 1 or abs(row["start"] - start) > 2:
+            print("already gone")
+            return 0
+        members = set(tree_of(pid, table))
+        if members & set(tops):
+            print("a chat's work runs under it now: left alone")
+            return 1
+    else:
+        print("usage: chat-load stop chat:<session> | orphan:<pid>:<start>", file=sys.stderr)
+        return 2
+    members = {pid for pid in members if table[pid]["uid"] == uid and not table[pid]["zombie"] and pid not in me}
+    if not members:
+        print("nothing left to stop")
+        return 0
+    footprints(table, members)
+    mb = sum(table[pid]["kb"] for pid in members) / 1024
+
+    def send(pids, sig):
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+
+    def running():
+        live = process_table()
+        return live, {pid for pid in members if pid in live and not live[pid]["zombie"]
+                      and abs(live[pid]["start"] - table[pid]["start"]) <= 2}
+
+    send(members, signal.SIGTERM)
+    deadline = time.monotonic() + STOP_GRACE_S
+    while True:
+        live, alive = running()
+        born = {pid for pid, row in live.items() if row["ppid"] in alive and pid not in members
+                and row["uid"] == uid and not row["zombie"] and pid not in me}
+        for pid in born:
+            table[pid] = live[pid]
+        members |= born
+        send(born, signal.SIGTERM)
+        if not (alive or born) or time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    if alive or born:
+        send(alive | born, signal.SIGKILL)
+        for _ in range(20):
+            alive = running()[1]
+            if not alive:
+                break
+            time.sleep(0.1)
+    count = len(members) - len(alive)
+    print(f"stopped {count} process{'es' if count != 1 else ''} · {mb / 1024:.1f} GB"
+          + (f" · {len(alive)} would not stop: pid {', '.join(map(str, sorted(alive)))}" if alive else ""))
+    return 1 if alive else 0
 
 
 def show():
@@ -732,6 +866,8 @@ def show():
 def main(argv):
     if argv[:1] == ["show"] and len(argv) == 1:
         return show()
+    if argv[:1] == ["stop"] and len(argv) == 2:
+        return stop(argv[1])
     if (argv[:1] == ["sample"] and len(argv) == 11
             and argv[1::2] == ["--now", "--avail", "--swap", "--room", "--measure"] and argv[10] in ("ram", "swap")):
         try:
@@ -744,7 +880,8 @@ def main(argv):
             except Exception as error:
                 print(f"CHAT-LOAD-ERROR {now} sample: {error!r}", flush=True)
                 return 1
-    print("usage: chat-load sample --now EPOCH --avail MB --swap MB --room MB --measure ram|swap | chat-load show", file=sys.stderr)
+    print("usage: chat-load sample --now EPOCH --avail MB --swap MB --room MB --measure ram|swap | chat-load show"
+          " | chat-load stop chat:<session>|orphan:<pid>:<start>", file=sys.stderr)
     return 2
 
 

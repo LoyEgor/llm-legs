@@ -177,8 +177,29 @@ line per chat — state, title shortened to 22 columns keeping a trailing PR/pha
 a 15-minute CPU spark scaled to the performance cores — and what inside "other" chats may cause
 indirectly (screen = WindowServer, kernel = kernel_task, signing = syspolicyd + trustd). States:
 `needs CPU` (using ≥ 0.3 cores on a machine ≥ 90 % busy — the only state more CPU would speed up),
-`full speed`, `wait model` (turn running, CPU near zero), `idle`, `closed` (chat gone, jobs alive).
-A click copies the chat's resume command. A chat appears only by its title from
+`full speed`, `wait model` (turn running, CPU near zero), `idle`, `closed` (chat gone, jobs alive),
+`orphan` (below). A live chat's click raises its tab or copies its resume command. A `closed` or
+`orphan` row opens a submenu instead: `Stop · <GB>` runs `chat-load stop <key>` (a closed chat also
+keeps `Copy reopen command`).
+
+**orphan** is what nothing runs any more and no chat claims: a process of Egor's adopted by launchd
+(ppid 1) but not one of its jobs (`launchctl list`, asked only when a candidate exists, so apps never
+qualify), an hour old or more, not under `/System/` nor an XPC service or extension, with no attributed
+process in its tree (a detached bench waiting for its slot is a chat's work). It is shown by the same
+50 MB / 0.05-core floor as a closed chat. First case, 2026-10-28: three `agy --print` runs of
+find-truth's morning advice, hung for 3-5 days, 0.4 GB, invisible inside "other". A chat-launched
+daemon that scrubs the session variables off its own environment (the nx daemon drops `CLAUDE_CODE_*`)
+lands here an hour after the command that started it exits.
+
+`chat-load stop chat:<session>|orphan:<pid>:<start>` works the members out again from the live table,
+so a pid reused since the row was drawn is never touched: every process attributed to a chat that is
+not open (an open one is refused), or the orphan's tree when its start still matches. SIGTERM; a child
+born to a member while they shut down is added (a stopped `nx serve` started a fresh nx daemon on its
+way out); SIGKILL whatever still runs after 5 s. It prints one line, which the menu shows as an alert.
+Only Egor's click runs it; the guard never does. A chat's own worker runs and benches go with it:
+the row counts them, and a closed chat cannot read their results.
+
+A chat appears only by its title from
 `share/chat_names.py` (`chat_title`: the name, else `untitled chat · <project> · <when>`), never an
 id or a derived session name. Older than 120 s the title reads `· stale` in red: the guard is not
 running.

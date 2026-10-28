@@ -119,7 +119,8 @@ case "$*" in
     # is dictated, for the pids a case names — allocating 1.5 GB for real in a suite is not a test
     # of the guard, it is the bug the guard is for.
     [ -n "${GUARD_SCOPE:-}" ] || exit 0
-    /bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" -v foreign="${FOREIGN_PIDS:-}" '
+    /bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" -v foreign="${FOREIGN_PIDS:-}" \
+      -v aged="${AGED_PIDS:-}" '
       BEGIN {
         n = split(scope, groups, " ")
         for (i = 1; i <= n; i++) keep[groups[i] + 0] = 1
@@ -128,8 +129,14 @@ case "$*" in
         for (i = 1; i <= n; i++) heavy[list[i] + 0] = (split(list[i], part, "=") == 2) ? part[2] + 0 : 900000
         n = split(foreign, list, " ")
         for (i = 1; i <= n; i++) root[list[i] + 0] = 1
+        # An orphan counts from an hour old: these pids are shown two hours old instead of waited for.
+        n = split(aged, list, " ")
+        for (i = 1; i <= n; i++) old[list[i] + 0] = 1
       }
-      (($3 + 0) in keep) { if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; if (($1 + 0) in root) $4 = 0; print }'
+      (($3 + 0) in keep) {
+        if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; if (($1 + 0) in root) $4 = 0; if (($1 + 0) in old) $7 = "02:00:00"
+        print
+      }'
     ;;
   *pid,ppid,pgid,rss,etime,command*)
     printf '  PID  PPID  PGID    RSS  ELAPSED COMMAND\n'
@@ -1284,6 +1291,89 @@ assert jq -e '.rows[-1].text | test("^Other incl\\.: screen [0-9.]+ · kernel [0
 assert test "$(jq -r .alarm "$menu")" = false
 assert test "$(jq -r .error "$menu")" = ''
 
+# A closed chat's row carries its stop key; `chat-load stop` ends every process the row counts, a child
+# that ignores SIGTERM included (SIGKILL after the grace), and refuses while the chat is open.
+chat_load_stop() { # key
+  env MEMLOGD_DIR="$WORK/stop-state" WORKER_RUN_DIR="$GUARD_ROOT/runs" WORKER_STATS_DIR="$GUARD_ROOT/stats" \
+    CHAT_LOAD_SESSIONS="$SESSIONS_DIR" GUARD_SCOPE="$GUARD_SCOPE" AGED_PIDS="${AGED_PIDS:-}" HEAVY_PIDS="${HEAVY_PIDS:-}" \
+    python3 "$ROOT/bin/chat-load" stop "$1"
+}
+clear_registry
+spawn_leaf
+register_session chat-open "$LEAF_ROOT" idle
+OPEN_CLI=$LEAF_ROOT
+spawn_tree chat-open
+OPEN_KIDS=$TREE_KIDS
+session_env chat-shut ''
+"${GROUP_ENV[@]}" "$FIXTURE_PY" -c 'import os, signal, subprocess, sys, time
+os.setpgrp()
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+kid = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+open(sys.argv[1] + ".tmp", "w").write(f"{os.getpid()} {kid.pid}\n"); os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(300)' "$WORK/shut.pids" >/dev/null 2>&1 &
+disown
+waited=0
+while [ ! -s "$WORK/shut.pids" ] && [ "$waited" -lt 200 ]; do sleep 0.05; waited=$((waited + 1)); done
+read -r SHUT_ROOT SHUT_KID <"$WORK/shut.pids"
+TREE_PIDS+=("$SHUT_ROOT" "$SHUT_KID")
+GUARD_SCOPE="$GUARD_SCOPE $SHUT_ROOT"
+STOP_DIR="$WORK/guard-stop"
+probes 8192 1024
+assert guard_run "$STOP_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$SHUT_ROOT=1048576"
+stop_menu=$(chats_json "$STOP_DIR")
+assert jq -e '.rows[] | objects | select(.stop == "chat:chat-shut") | (.text | startswith("closed  ")) and .gb == 1' "$stop_menu"
+assert jq -e '[.rows[] | objects | select(.session == "chat-open") | has("stop")] == [false]' "$stop_menu"
+assert test "$(chat_load_stop chat:chat-open)" = 'that chat is open: close it in its tab'
+for pid in $OPEN_CLI $OPEN_KIDS; do assert alive "$pid"; done
+stop_out=$(chat_load_stop chat:chat-shut)
+assert test "$stop_out" = 'stopped 2 processes · 0.0 GB'
+for pid in $SHUT_ROOT $SHUT_KID; do assert gone "$pid"; done
+for pid in $OPEN_CLI $OPEN_KIDS; do assert alive "$pid"; done
+assert test "$(chat_load_stop chat:chat-shut)" = 'nothing left to stop'
+
+# An orphan: no chat claims it, its parent died and launchd does not manage it, an hour old. Its row
+# carries `orphan:<pid>:<start>`; stop ends its tree, and a key whose start no longer matches is a
+# stranger's pid. One with a chat's work in its tree (a detached bench waiting for its slot) is no orphan.
+spawn_orphan() { # [session of its child] -> sets ORPHAN_ROOT / ORPHAN_KID
+  rm -f "$WORK/orphan.pids"
+  session_env '' ''
+  "${GROUP_ENV[@]}" "$FIXTURE_PY" -c 'import os, subprocess, sys, time
+if os.fork():
+    sys.exit(0)
+os.setpgrp()
+env = dict(os.environ, **({"CLAUDE_CODE_SESSION_ID": sys.argv[2]} if sys.argv[2] else {}))
+kid = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"], env=env)
+open(sys.argv[1] + ".tmp", "w").write(f"{os.getpid()} {kid.pid}\n"); os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(300)' "$WORK/orphan.pids" "${1:-}" >/dev/null 2>&1
+  local waited=0
+  while [ ! -s "$WORK/orphan.pids" ] && [ "$waited" -lt 200 ]; do sleep 0.05; waited=$((waited + 1)); done
+  read -r ORPHAN_ROOT ORPHAN_KID <"$WORK/orphan.pids"
+  TREE_PIDS+=("$ORPHAN_ROOT" "$ORPHAN_KID")
+  GUARD_SCOPE="${GUARD_SCOPE:+$GUARD_SCOPE }$ORPHAN_ROOT"
+}
+orphan_rows() { jq -c '[.rows[] | objects | select(.stop | strings | startswith("orphan:"))]' "$(chats_json "$1")"; }
+clear_registry
+spawn_orphan chat-under
+UNDER_ROOT=$ORPHAN_ROOT UNDER_KID=$ORPHAN_KID
+spawn_orphan
+assert test "$(/bin/ps -o ppid= -p "$ORPHAN_ROOT" | tr -d ' ')" = 1
+ORPHAN_DIR="$WORK/guard-orphan"
+probes 8192 1024
+assert guard_run "$ORPHAN_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$ORPHAN_KID=102400 $UNDER_KID=102400" \
+  AGED_PIDS="$ORPHAN_ROOT $UNDER_ROOT"
+assert jq -e --arg root "$ORPHAN_ROOT" 'length == 1 and (.[0].stop | startswith("orphan:" + $root + ":")) and .[0].gb == 0.1
+  and (.[0].text | test("^orphan      \\S.{21}  +\\S+ cores   0\\.1 GB  2h00$"))' <<<"$(orphan_rows "$ORPHAN_DIR")"
+orphan_key=$(jq -r '.[0].stop' <<<"$(orphan_rows "$ORPHAN_DIR")")
+# Under an hour old it is not listed yet: a detached job that just lost its shell is not a leftover.
+assert guard_run "$WORK/guard-orphan-young" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$ORPHAN_KID=102400"
+assert test "$(orphan_rows "$WORK/guard-orphan-young")" = '[]'
+assert test "$(AGED_PIDS="$ORPHAN_ROOT" chat_load_stop "orphan:$ORPHAN_ROOT:1")" = 'already gone'
+assert alive "$ORPHAN_ROOT"
+assert test "$(AGED_PIDS="$ORPHAN_ROOT" HEAVY_PIDS="$ORPHAN_KID=102400" chat_load_stop "$orphan_key")" = \
+  'stopped 2 processes · 0.1 GB'
+for pid in $ORPHAN_ROOT $ORPHAN_KID; do assert gone "$pid"; done
+assert alive "$UNDER_ROOT"
+
 # A limiter hold rides on the row of the chat whose process waits, as ⏳<jobs> <longest>; one no chat
 # launched gets its own `queued` row; a queue no job left for QUEUE_STUCK_S turns its row and the title red.
 clear_registry
@@ -1463,4 +1553,4 @@ assert test "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.memlogd.p
 
 reap_trees
 
-echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, available RAM counted the swap way once swap has under 4096 MB of room to grow into (the kernel's count of 2026-10-20 02:32 replayed: 3748 MB read as 1373 MB and its fattest job cut at the one 2048 MB threshold) but never with a roomy disk, an unknown room or a full disk with RAM free, a worker's notice landing in its run inbox and rendered by its hook instead of a bus it never flushes, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, weighed by footprint not RSS, no kill from any run but the LaunchAgent's (WOULD KILL instead), a memory row whose parts add up past RAM used, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, and the MEMGUARD: line the run report renders from the record in every shape"
+echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, available RAM counted the swap way once swap has under 4096 MB of room to grow into (the kernel's count of 2026-10-20 02:32 replayed: 3748 MB read as 1373 MB and its fattest job cut at the one 2048 MB threshold) but never with a roomy disk, an unknown room or a full disk with RAM free, a worker's notice landing in its run inbox and rendered by its hook instead of a bus it never flushes, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, weighed by footprint not RSS, no kill from any run but the LaunchAgent's (WOULD KILL instead), a memory row whose parts add up past RAM used, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, the MEMGUARD: line the run report renders from the record in every shape, a closed chat's Stop ending its every process (a SIGTERM-deaf one by SIGKILL) and refusing an open chat, and orphan rows (an hour old, unmanaged by launchd, no chat's work under them) whose Stop checks the start against a reused pid"
