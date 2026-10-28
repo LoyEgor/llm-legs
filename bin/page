@@ -411,8 +411,10 @@ def cmd_install_agent(args):
         time.sleep(wait)
         loaded = subprocess.run(["launchctl", "bootstrap", domain, AGENT_PLIST], capture_output=True, text=True)
         if loaded.returncode == 0:
-            print("Installed %s from %s; errors in %s." % (LABEL, DEPLOY_DIR, log))
-            return 0
+            up = any(ours(PORT) or time.sleep(0.25) for _ in range(20))
+            print("Installed %s from %s, %s; errors in %s." % (LABEL, DEPLOY_DIR, "up on %d" % PORT if up
+                                                                else "NOT answering on %d after 5 s" % PORT, log))
+            return 0 if up else 1
     raise store.Refused("launchctl bootstrap %s failed: %s" % (AGENT_PLIST, loaded.stderr.strip()))
 
 
