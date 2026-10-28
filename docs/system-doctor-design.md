@@ -183,6 +183,12 @@ New rules (fixer routing and proof as phase 2; an own cause with a sweep-repo fi
 |---|---|---|
 | `job-loop` | a job launchd relaunches (KeepAlive or an interval) ≥ 60 runs/h and over twice its schedule, or ≥ 3 abnormal exits (non-zero exit, crash signal) a day from dumpstate or the log | ≥ 360/h or ≥ 24/day |
 | `cohort` | B ≥ 1; non-own items read `watch`, never remove (at most 6 rows) | B ≥ 5 |
+| `window-leak` | a process holds ≥ 1,000 WindowServer windows (hidden ones included) in the day's latest hourly snapshot; the snapshot keeps processes with ≥ 300 | ≥ 5,000 |
+
+ScreenCaptureKit walks every window, so a window leak makes all screen capture wait. On 2026-10-28, 5,556 leaked
+Hammerspoon canvases made a shareable-content fetch take 2.8 s, and Jump connects stuck for minutes. A `window-leak` fix
+is proven after 7 days of snapshots under the limit; any snapshot over it since landing refuses it, the not yet
+restarted process included.
 
 A `job-loop` fix is proven after 7 quiet days of snapshots; a looping snapshot since landing refuses it. A `cohort`
 fix is proven on its CPU and written bytes, never its births, so an item dominated by M, R or L is not measured by its

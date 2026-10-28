@@ -433,7 +433,7 @@ Code doctor (design `docs/code-doctor-design.md`):
 
 System doctor (design `docs/system-doctor-design.md`):
 - Machine rules `spawn`, `kernel`, `compressor`, `swap`, `swap-writes`, `ssd-writes`, `free-space`,
-  `hammerspoon-crash`, `job-crash`, `unclean-reboot`, the job rule `job-loop`, the standing-cost
+  `hammerspoon-crash`, `job-crash`, `unclean-reboot`, the job rule `job-loop`, `window-leak`, the standing-cost
   rule `cohort`, the log rules `log-store`, `log-growth`, `unregistered-store`, `log-unread` (registry
   `share/log-stores.json`), `dir-growth` (a giant folder crossing 20 GB or growing 10 GB a week), `orphan-profile` and
   `profile-size`; ids `<rule>:<key>` (`machine`, a volume, a job name, a cohort

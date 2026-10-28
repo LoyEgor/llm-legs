@@ -255,6 +255,41 @@ def proc_path(pid):
     return path.value.decode(errors="replace") if lib.proc_pidpath(pid, path, 4096) > 0 else None
 
 
+def window_counts():
+    """{pid: windows} WindowServer holds per owner, hidden ones included (CGWindowListCopyWindowInfo, no titles)."""
+    fixture = _fixture("SYSTEM_DOCTOR_WINDOWS")
+    if fixture is not None:
+        return {int(pid): n for pid, n in fixture.items()}
+    try:
+        cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    except OSError:
+        return {}
+    cg.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
+    cg.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    cf.CFArrayGetCount.restype = ctypes.c_long
+    cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+    cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+    cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+    cf.CFDictionaryGetValue.restype = ctypes.c_void_p
+    cf.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    cf.CFNumberGetValue.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    key = ctypes.c_void_p.in_dll(cg, "kCGWindowOwnerPID")
+    windows = cg.CGWindowListCopyWindowInfo(0, 0)
+    if not windows:
+        return {}
+    counts, pid = {}, ctypes.c_int32()
+    try:
+        for index in range(cf.CFArrayGetCount(windows)):
+            number = cf.CFDictionaryGetValue(cf.CFArrayGetValueAtIndex(windows, index), key)
+            if number and cf.CFNumberGetValue(number, 3, ctypes.byref(pid)):
+                counts[pid.value] = counts.get(pid.value, 0) + 1
+    finally:
+        cf.CFRelease(windows)
+    return counts
+
+
 def _argv(pid):
     libc = ctypes.CDLL(None, use_errno=True)
     mib = (ctypes.c_int * 3)(1, 49, pid)

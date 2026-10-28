@@ -996,7 +996,8 @@ end
 
 local SECTIONS = {
   { name = "Processor", rules = { "spawn", "kernel" }, blind = { "ticks", "census" } },
-  { name = "Memory", rules = { "compressor", "swap", "swap-writes" }, blind = { "ticks", "footprints" } },
+  { name = "Memory", rules = { "compressor", "swap", "swap-writes", "window-leak" },
+    blind = { "ticks", "footprints", "dumpstate" } },
   { name = "Disk writes", rules = { "ssd-writes" }, blind = { "ticks", "footprints", "ssd-sampler" } },
   { name = "Disk space", rules = { "free-space", "dir-growth", "orphan-profile", "profile-size" }, blind = { "ticks", "nightly" } },
   { name = "Logs", rules = { "log-store", "log-growth", "unregistered-store", "log-unread" }, blind = { "logstores" } },

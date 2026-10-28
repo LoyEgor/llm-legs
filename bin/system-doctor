@@ -64,7 +64,7 @@ RATE_RULES = ("spawn", "kernel")
 COLLECT = {"storm_s": 2000, "storm_min": 2, "storm_kernel": 0.50, "census_s": 60, "census_poll_s": 0.02,
            "census_every_s": 30 * 60, "dumpstate_every_s": 3600, "harvest_every_s": 6 * 3600, "harvest_back_s": 11 * 3600,
            "loop_runs_h": 60, "loop_heavy_runs_h": 360, "loop_dt_s": 1800, "job_exits_day": 3, "job_exits_heavy_day": 24,
-           "freespace_every_s": 3600}
+           "freespace_every_s": 3600, "windows_row": 300, "windows_limit": 1000, "windows_heavy": 5000}
 LOGS = {"sweep_timeout_s": 1800, "compare_min_s": 20 * 3600, "keep_scan_days": 14, "growth_min_days": 5,
         "stale_s": 36 * 3600}
 HARVEST = (("launchd", 'processID == 1 AND eventMessage CONTAINS "ran for"', 300, 100000),
@@ -92,7 +92,7 @@ RULE_LABELS = {"spawn": "new processes", "job-loop": "job relaunch loop", "cohor
                "free-space": "low disk space", "log-store": "log cleaner broken", "log-growth": "LLM logs growing",
                "unregistered-store": "unregistered log store", "log-unread": "log read by nobody",
                "orphan-profile": "LLM profile off the menu", "profile-size": "LLM profile too big",
-               "dir-growth": "folder grew fast"}
+               "dir-growth": "folder grew fast", "window-leak": "window leak"}
 COUNTED = ("new", "open", "regressed")
 DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
@@ -248,13 +248,16 @@ def source_path(rel):
 RULE_LEVERS = {"job-loop": "find why it exits (its own log, not launchd's), back off before exiting non-zero, keep its "
                            "KeepAlive and interval no tighter than its work needs",
                "cohort": "cut its dominant term (the fact names it) without changing what it outputs",
+               "window-leak": "group its windows by layer and size (CGWindowListCopyWindowInfo) to find the object "
+                              "created again and again but never freed (an hs.canvas deleted while its callback still "
+                              "holds it stays alive), free it; a restart only resets the count",
                "ssd-writes": "write fewer bytes for the same output: SQLite temp_store=MEMORY and no VACUUM or full-table "
                              "rewrite per run, rewrite only changed rows or files, append instead of rewriting a whole file, "
                              "no copy of a database or tree to read it once"}
 
 
 def levers(name, rule):
-    if rule == "ssd-writes":
+    if rule in ("ssd-writes", "window-leak"):
         return [RULE_LEVERS[rule]]
     found = [text for names, text in LEVERS if name in names or os.path.basename(name) in names]
     return found or ([SPAWN_LEVER] if rule in RATE_RULES else [RULE_LEVERS[rule]] if rule in RULE_LEVERS else [])
@@ -1480,6 +1483,17 @@ def orphan_census(job_pids, now):
     return {"count": sum(r[1] for r in rows), "supervisors": sum(r[3] for r in rows), "top": top_rows(rows)}
 
 
+def window_rows():
+    """[[name, owner, windows]] of every process WindowServer holds at least windows_row windows for, most first."""
+    rows = []
+    for pid, count in machine_probe.window_counts().items():
+        if count >= COLLECT["windows_row"]:
+            path = machine_probe.proc_path(pid) or ""
+            name = os.path.basename(path) or str(pid)
+            rows.append([name, owner_of(name, None, path, {}), count])
+    return sorted(rows, key=lambda r: (-r[2], r[0]))[:TOP]
+
+
 def dumpstate(now=None):
     """Hourly: launchd's per-service run counters and last exits (`launchctl dumpstate`, parsed in memory) as deltas
     against the previous snapshot, and the orphan census; one row in launchd/<day>.jsonl."""
@@ -1513,9 +1527,10 @@ def dumpstate(now=None):
         slot["bad"] = max(slot["bad"], int(bad))
         slot["exit"] = entry["exit"] if bad or slot["exit"] is None else slot["exit"]
     orphans = steps("orphans", orphan_census, {e["pid"] for e in services.values() if e["pid"]}, now)
+    windows = steps("windows", window_rows)
     moved = sorted(jobs.values(), key=lambda j: (-j["bad"], -j["runs"], j["label"]))
     row = {"t": round(now, 1), "dt": round(now - previous["t"], 1) if isinstance(previous.get("t"), (int, float)) else None,
-           "services": len(services), "reloaded": reloaded, "jobs": moved[:80], "orphans": orphans,
+           "services": len(services), "reloaded": reloaded, "jobs": moved[:80], "orphans": orphans, "windows": windows,
            "self": {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
                     "steps": steps.out}}
     if services:
@@ -2692,6 +2707,18 @@ def proof(name, rule, since, now, night=None, memo=None):
             return dict(out, verdict="pending", why="%s quiet for %.1f of %d days" % (name, covered / DAY_S,
                                                                                        PROOF["reports_s"] // DAY_S))
         return dict(out, verdict="proven", why="%s quiet for %d days" % (name, PROOF["reports_s"] // DAY_S))
+    if rule == "window-leak":
+        rows = tick_rows(since, now, "launchd")
+        after = window_hours(rows, name)
+        covered = max(0, round((rows[-1]["t"] if rows else since) - since))
+        out = {"after": {"over": len(after), "covered_s": covered}, "need_s": PROOF["reports_s"]}
+        if after:
+            return dict(out, verdict="refused", why="%s held %d windows in %d hourly snapshots since the fix" % (
+                name, after[-1][1], len(after)))
+        if covered < PROOF["reports_s"]:
+            return dict(out, verdict="pending", why="%s under the limit for %.1f of %d days" % (
+                name, covered / DAY_S, PROOF["reports_s"] // DAY_S))
+        return dict(out, verdict="proven", why="%s under the limit for %d days" % (name, PROOF["reports_s"] // DAY_S))
     if rule in REPORT_KINDS and rule != "ssd-writes":
         night = night if night is not None else read_json(os.path.join(state_dir(), "nightly.json"), {}) or {}
         after = sorted({str(r.get("ref") or r.get("at")) for r in night.get("reports") or () if r.get("at", 0) >= since
@@ -2990,6 +3017,30 @@ def loop_rate(job, row):
 def loops(job, row):
     """True when one hourly snapshot shows the job relaunching in a loop or dying abnormally."""
     return job.get("bad", 0) > 0 or loop_rate(job, row) >= COLLECT["loop_runs_h"]
+
+
+def window_hours(rows, name):
+    """[(row, windows)] of the hourly snapshots in which `name` held windows_limit windows or more."""
+    return [(r, n) for r in rows for found, _owner, n in r.get("windows") or ()
+            if found == name and n >= COLLECT["windows_limit"]]
+
+
+def judge_windows(judge, rows):
+    """window-leak: a process WindowServer holds >= windows_limit windows for, hidden ones included, in the day's latest
+    hourly snapshot. ScreenCaptureKit walks every window, so screen capture waits on them (2026-10-28: 5,556 leaked
+    Hammerspoon canvases, a 2.8 s shareable-content fetch, Jump connects stuck for minutes)."""
+    day = [r for r in rows if r["t"] >= judge.now - DAY_S and r.get("windows") is not None]
+    for name, owner, count in (day[-1]["windows"] if day else ()):
+        if count < COLLECT["windows_limit"]:
+            continue
+        seen = window_hours(day, name)
+        judge.add("window-leak", name, "%s holds %d windows, limit %d: screen capture (Jump, screen sharing, screenshots) "
+                  "walks every one" % (name, count, COLLECT["windows_limit"]), count, COLLECT["windows_limit"], "windows",
+                  24, len(day), len(seen), seen[0][0]["t"], seen[-1][0]["t"],
+                  [{"at": iso_time(r["t"]), "ref": "launchd:%d" % r["t"], "account": None,
+                    "excerpt": "%s · %d windows" % (name, n)} for r, n in seen[::-1]],
+                  heavy=count >= COLLECT["windows_heavy"],
+                  found={"name": name, "share": None, "owner": owner, "fix_target": owner == "own"})
 
 
 def judge_launchd(judge, rows, harvests):
@@ -3376,6 +3427,7 @@ def document(now, started, persist=True):
     judge_ticks(judge, rows, days)
     judge_nightly(judge, night)
     judge_launchd(judge, launches, harvests)
+    judge_windows(judge, launches)
     score = cohort_score(days, launches, now)
     judge_cohort(judge, score)
     logs = tick_rows(now - 9 * DAY_S, now, "logstores")
