@@ -6,8 +6,8 @@ Multi-account, multi-vendor LLM orchestration on subscriptions.
 
 **Any statusline work is bound by `docs/statusline-contract.md`.**
 
-**Experiments are registered, announced, and removed whole** — `EXPERIMENTS.json`; procedure: the
-`experiment` skill.
+**Experiments: registered, announced, removed whole**; `EXPERIMENTS.json`,
+`claude-setup/skills-on-demand/experiment`.
 
 Cardinal rules:
 - Never point a test or ad-hoc check at the real `~/.claude-profiles/.claudeb` store — `CLAUDEB_DIR`
