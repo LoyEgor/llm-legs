@@ -28,7 +28,7 @@ usage() {
   printf '  merges or splits fills; leave a hint out when unsure. A JPEG of 128 px or less can get jagged edges under\n' >&2
   printf '  --gradient no. Compare a hinted rerun with the input and keep whichever output is closer\n' >&2
   printf '  A colcheck: line after svg= names input colours the output lost, recoloured or mixed, and the hints to rerun\n' >&2
-  printf '  with (on AI logos 6 of 7 such lines were right; it misses about 2 losses in 3, so still look)\n' >&2
+  printf '  with (on AI logos 15 of 18 such lines were right; it misses about 1 loss in 3, so still look)\n' >&2
   exit 2
 }
 
@@ -101,7 +101,7 @@ new = re.sub(r'\s(width|height)="[^"]*"', '', head)[:-1] + f' width="{w}" height
 open(dest, 'w').write(svg.replace(head, new, 1))
 EOF
 printf 'svg=%s champion=%s source=%sx%s traced=%sx%s seconds=%s%s\n' "$dest" "$champion" "$w" "$h" "$tw" "$th" "$((SECONDS - start))" "$hints"
-cc="$BENCH/tracers/colcheck-a1/check.py" ccpy="$BENCH/tracers/champ47-soft/.venv/bin/python"
+cc="$BENCH/tracers/colcheck-a2/check.py" ccpy="$BENCH/tracers/champ47-soft/.venv/bin/python"
 [ -f "$cc" ] && [ -x "$ccpy" ] && "$ccpy" -I "$cc" "$src" "$work/out.svg" 2>/dev/null | "$PY" -I -c '
 import json, sys
 r = json.loads(sys.stdin.read().strip().splitlines()[-1])
