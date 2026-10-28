@@ -286,6 +286,7 @@ gemini_facets() {
     fail catalog remote
   fi
   put_divergence gemini
+  LC_ALL=C grep $'^auth\t' "$work/divergence" | cut -f2- | put_lines auth
   put_plans gemini
 }
 
@@ -412,6 +413,11 @@ changes() { # vendor previous current -> changed-json<TAB>substantive-json
       | [.[1].facets.installs // {} | to_entries[] | select(.key as $k | $p | any(. == $k) | not)
          | select((.value | ver) as $v | $v == null or $primary == null or $v < $primary)] == []' "$2" "$3" >/dev/null; then
     substantive=$(jq -c 'map(select(. != "installs"))' <<<"$substantive")
+  fi
+  # Only a newly failing refresh is news; one that works again is the fix landing.
+  if jq -e 'index("auth")' <<<"$substantive" >/dev/null &&
+    jq -e -s '(.[1].facets.auth // []) - (.[0].facets.auth // []) == []' "$2" "$3" >/dev/null; then
+    substantive=$(jq -c 'map(select(. != "auth"))' <<<"$substantive")
   fi
   printf '%s\t%s\n' "$changed" "$substantive"
 }

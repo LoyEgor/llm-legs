@@ -218,6 +218,20 @@ catalog_gaps() { # vendor installed-version
     [ -z "$missing" ] || printf 'catalog\t%s\tmissing %s\n' "$account" "$missing"
   done
 }
+# A fresh sign-in hides the refresh path: agy 1.4 saved its sign-in without the id_token the refresh
+# read its client id from, and every Gemini review cell refused for a week before one showed it. So
+# each signed-in account refreshes once a full pass; a network or server failure is weather, no finding.
+auth_gaps() {
+  local dir account reason
+  dir=$(mktemp -d) || return 0
+  timeout_command 60 "$geminib" list 2>/dev/null | sed -n 's/^\([^:]*\): Logged in$/\1/p' | while IFS= read -r account; do
+    reason=$(timeout_command 60 "$geminib" export-token "$account" --min-seconds 3500 --to "$dir/$account" 2>&1 >/dev/null) &&
+      continue
+    reason=${reason##*$'\n'}
+    printf 'auth\t%s\t%s (geminib export-token %s --min-seconds 3500 --to <new file>)\n' "$account" "${reason#geminib: }" "$account"
+  done | grep -vE 'transport_error|temporarily_unavailable|server_error|HTTP (429|5[0-9][0-9])'
+  rm -rf "$dir"
+}
 record_divergence() { # vendor findings
   local before
   before=$(jq -r --arg v "$1" '.[$v].divergence // [] | .[]' "$state_file" 2>/dev/null)
@@ -382,7 +396,7 @@ run_all() { # [--if-due]
     [ "$vendor" != grok ] || record_divergence grok "$(catalog_gaps grok "$installed")"
   done
   refresh_models gemini
-  record_divergence gemini "$(catalog_gaps gemini)"
+  record_divergence gemini "$(printf '%s\n%s\n' "$(catalog_gaps gemini)" "$(auth_gaps)" | sed '/^$/d')"
   [ "$due" = all ] && mark_passed
   # Appended, not prepended: the native claude in ~/.local/bin must stay the one found first.
   PATH="$PATH$bin_dirs" timeout_command 900 "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" check \

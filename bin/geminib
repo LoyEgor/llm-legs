@@ -939,6 +939,7 @@ export_token() {
 import base64
 import datetime as dt
 import json
+import mmap
 import os
 from pathlib import Path
 import re
@@ -1033,23 +1034,27 @@ def export():
                 refuse(4, "refresh_unavailable: invalid ID token audience")
         # Go packs adjacent strings together: the binary carries one 35-byte secret per embedded
         # client id, back to back, and nothing says which secret pairs with the ID token's audience,
-        # so a wrong pairing (invalid_client) moves on to the next candidate.
+        # so a wrong pairing (invalid_client) moves on to the next candidate. grep took 30 s over the
+        # 190 MB agy 1.4 for both lookups, its client-id pattern starting at every digit; a map read
+        # anchored on the literal parts takes under a second.
+        suffix = b".apps.googleusercontent.com"
         try:
-            found = subprocess.run(["grep", "-a", "-o", "-E", "GOCSPX-[A-Za-z0-9_-]{28}", binary],
-                                   env=dict(os.environ, LC_ALL="C"), capture_output=True)
-        except OSError:
+            with open(binary, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as image:
+                secrets = list(dict.fromkeys(m.group().decode("ascii")
+                                             for m in re.finditer(rb"GOCSPX-[A-Za-z0-9_-]{28}", image)))
+                ids, at = [], image.find(suffix)
+                while at >= 0:
+                    found = re.search(rb"[0-9]+-[a-z0-9]{32}$", image[max(0, at - 64):at])
+                    if found:
+                        ids.append((found.group() + suffix).decode("ascii"))
+                    at = image.find(suffix, at + 1)
+        except (OSError, ValueError):
             refuse(4, "refresh_unavailable: client secret lookup failed")
-        secrets = list(dict.fromkeys(found.stdout.decode("ascii").splitlines()))
-        if found.returncode or not 1 <= len(secrets) <= 4:
+        if not 1 <= len(secrets) <= 4:
             refuse(4, "refresh_unavailable: client secret lookup failed")
         if not clients:
-            try:
-                found = subprocess.run(["grep", "-a", "-o", "-E", r"[0-9]+-[a-z0-9]{32}\.apps\.googleusercontent\.com",
-                                        binary], env=dict(os.environ, LC_ALL="C"), capture_output=True)
-            except OSError:
-                refuse(4, "refresh_unavailable: client id lookup failed")
-            clients = list(dict.fromkeys(found.stdout.decode("ascii").splitlines()))
-            if found.returncode or not 1 <= len(clients) <= 4:
+            clients = list(dict.fromkeys(ids))
+            if not 1 <= len(clients) <= 4:
                 refuse(4, "refresh_unavailable: client id lookup failed")
         pairs = [(client_id, secret) for client_id in clients for secret in secrets]
         # Both the grant and its response stay off argv and disk; only the projection leaves here.

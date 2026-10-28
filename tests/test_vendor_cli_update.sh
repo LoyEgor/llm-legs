@@ -323,6 +323,29 @@ run
 assert [ "$(result codex)" = "updated 0.158.0" ]
 assert [ "$(jq -r '.codex.divergence | length' "$STATE")" = 0 ]
 
+# Every signed-in Gemini account refreshes its sign-in once a pass; a refusal is a finding, network
+# weather and accounts out of the pool or signed out are not, and no token outlives the pass.
+cat >"$FAKE_BIN/geminib" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+  list) printf 'ok: Logged in\nbroken: Logged in\nslow: Logged in\nidle: Logged in (out of pool)\nout: Not logged in\n' ;;
+  export-token)
+    printf 'export %s %s %s %s\n' "$2" "$3" "$4" "${6%/*}" >>"$CALLS"
+    case $2 in
+      ok) printf token >"$6" ;;
+      broken) printf 'geminib: refresh_unavailable: invalid ID token audience\n' >&2; exit 4 ;;
+      *) printf 'geminib: refresh_failed: transport_error\n' >&2; exit 4 ;;
+    esac ;;
+esac
+EOF
+run
+assert [ "$(jq -r '.gemini.divergence | join("|")' "$STATE")" = "auth	broken	refresh_unavailable: invalid ID token audience (geminib export-token broken --min-seconds 3500 --to <new file>)" ]
+assert [ "$(grep -c '^export .* --min-seconds 3500 ' "$CALLS")" = 3 ]
+token_dir=$(sed -n 's/^export ok .* //p' "$CALLS")
+assert [ -n "$token_dir" ]
+assert test ! -e "$token_dir"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/geminib"
+
 # «выполни обновление»: the same pass with the fingerprint's own launch held, then one chat for every
 # vendor; from a chat it returns at once and runs detached.
 : >"$CALLS"
@@ -514,4 +537,4 @@ bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$WRAPPER"
 assert test ! -e "$PLIST"
 
-echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone and retried within half an hour, every version checked every 2 h with no network on a tick not due while the full pass stays daily, the native claude installed natively to the npm claude's target, agy's lag read off its updater manifest, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"
+echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps, a refused Gemini sign-in refresh) recorded once per change, no reinstall or downgrade, busy clients left alone and retried within half an hour, every version checked every 2 h with no network on a tick not due while the full pass stays daily, the native claude installed natively to the npm claude's target, agy's lag read off its updater manifest, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"

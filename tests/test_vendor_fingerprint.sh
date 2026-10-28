@@ -370,6 +370,17 @@ count=$(events)
 printf '{"codex":{"divergence":["catalog\\tb\\tmissing gpt-6-sol"]}}\n' >"$STATE/state.json"
 check codex
 assert [ "$(events)" = "$count" ]
+# A Gemini sign-in refresh that starts failing is substantive; one that works again is not.
+cp "$STATE/state.json" "$WORK/state.before"
+jq '.gemini.divergence = ["auth\tacct-a\trefresh_unavailable: invalid ID token audience"]' "$WORK/state.before" >"$STATE/state.json"
+check gemini
+assert [ "$(events)" = $((count + 1)) ]
+assert [ "$(field '.substantive | join(",")')" = auth ]
+taken
+cp "$WORK/state.before" "$STATE/state.json"
+check gemini
+assert [ "$(field '.changed | join(",")')" = auth ]
+assert [ "$(field .status)" = auto-closed ]
 
 # A second, older install of a CLI is found on any PATH or nvm.
 mkdir -p "$HOME/.nvm/versions/node/v24.0.0/bin"

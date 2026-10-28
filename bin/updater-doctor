@@ -41,7 +41,7 @@ EXCERPT_MAX = 300
 NEW_MODELS_SHOWN = 3
 FACET_WORDS = {"catalog": "model catalog", "catalog_order": "model catalog", "catalog_text": "model catalog",
                "ids": "model ids", "divergence": "accounts differ", "plans": "account plans", "foreign_clients": "other installs",
-               "installs": "other installs", "probe_failures": "probes"}
+               "installs": "other installs", "probe_failures": "probes", "auth": "sign-in refresh"}
 LOG_TAIL_BYTES = 1 << 20
 
 LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (\S+) (\S+)(?: (.*))?$")
