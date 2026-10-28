@@ -123,7 +123,7 @@ if printf '%s' "$MODEL" | grep -qiE "$BLOCKED_RE"; then
 fi
 
 # A fresh private empty cwd per call: a shared predictable one could carry a planted .claude/settings.json.
-ERRF="$(mktemp)"; STUB_DIR="$(mktemp -d)"; trap 'rm -f "$ERRF"; rm -rf "$STUB_DIR"' EXIT
+ERRF="$(mktemp)"; OUTF="$(mktemp)"; STUB_DIR="$(mktemp -d)"; trap 'rm -f "$ERRF" "$OUTF"; rm -rf "$STUB_DIR"' EXIT
 # The ${ARR[@]+...} expansion is the set -u-safe form (bare "${ARR[@]}" on an empty array aborts
 # under nounset in bash < 4.4, e.g. /bin/bash 3.2 in a bare cron PATH).
 TOOLS=""
@@ -133,13 +133,17 @@ if [ "${CLAUDE_ALLOW_WEB:-0}" = "1" ]; then TOOLS="$ALLOWED_TOOLS"; ARGS=(--allo
 LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$STUB_DIR" || exit 1
 set +e
+# A copy without share/ beside it still answers, only without the SIGKILL its CLI gets on a caller's TERM.
+. "$LEGS_DIR/share/leg-call.sh" 2>/dev/null ||
+  leg_call() { local out=$1 err=$2; shift 2; "$@" >"$out" 2>"$err" </dev/null; }
 # --safe-mode still reads settings files: --setting-sources project keeps the account's user settings out.
-OUT="$("${CLAUDE_CMD[@]}" -p "$PROMPT" --output-format json --model "$MODEL" \
+leg_call "$OUTF" "$ERRF" "${CLAUDE_CMD[@]}" -p "$PROMPT" --output-format json --model "$MODEL" \
         --safe-mode --disable-slash-commands --tools "$TOOLS" \
         --strict-mcp-config --setting-sources project \
         --disallowedTools "$DISALLOWED_TOOLS" \
-        ${ARGS[@]+"${ARGS[@]}"} </dev/null 2>"$ERRF")"
+        ${ARGS[@]+"${ARGS[@]}"}
 RC=$?
+OUT="$(cat "$OUTF")"
 set -e
 
 served="$(printf '%s' "$OUT" | extract_served_model "$MODEL" || true)"

@@ -33,6 +33,7 @@ esac
 EOF
 
 cat >"$STUB_BIN/codexb" <<'EOF'
+[ -z "${STUB_DEAF:-}" ] || { printf '%s\n' "$$" >"$STUB_DEAF"; trap '' TERM; exec sleep 30; }
 #!/usr/bin/env bash
 printf 'codexb' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
@@ -50,11 +51,13 @@ printf '\n' >>"$CALL_LOG"
 case " $* " in
   *" models "*) printf 'Gemini 3.1 Pro (High)\nGemini 3.1 Pro (Low)\n' ;;
   *" --version "*) printf 'agy fixture 1.0\n' ;;
-  *) printf 'gemini answer\n' ;;
+  *) [ -z "${STUB_DEAF:-}" ] || { printf '%s\n' "$$" >"$STUB_DEAF"; trap '' TERM; exec sleep 30; }
+    printf 'gemini answer\n' ;;
 esac
 EOF
 
 cat >"$STUB_BIN/claudeb" <<'EOF'
+[ -z "${STUB_DEAF:-}" ] || { printf '%s\n' "$$" >"$STUB_DEAF"; trap '' TERM; exec sleep 30; }
 #!/usr/bin/env bash
 printf '%s\n' "$PWD" >"$CALL_LOG.cwd"
 printf 'claudeb' >>"$CALL_LOG"
@@ -167,6 +170,34 @@ for spec in \
       assert jq -e --arg slug "$ROSTER_CODEX" '.requested == $slug' "$data/served-models.jsonl" >/dev/null ;;
   esac
 done
+
+: >"$CALL_LOG"
+# A caller's timeout SIGTERMs the leg's whole process group, and a hung vendor CLI can ignore it: the
+# wrapper died and the CLI ran on under launchd for days (2026-10-23..25, three `agy --print`). Each
+# wrapper SIGKILLs its CLI on its way out, so nothing outlives the call.
+for spec in "codex:codex-worker:$ROOT/ask_codex.sh" "gemini:gemini-worker:$ROOT/ask_gemini.sh" \
+  "claude:claude-worker:$ROOT/ask_claude.sh"; do
+  IFS=: read -r leg account script <<<"$spec"
+  rm -f "$WORK/deaf.pid"
+  STUB_PICK_ACCOUNT="$account" STUB_PICK_RC=0
+  LEG_ENV=(STUB_DEAF="$WORK/deaf.pid")
+  set -m
+  run_leg "$ROUTED_PATH" "$WORK/deaf-$leg" "$script" "deaf $leg" >/dev/null 2>&1 &
+  leg_group=$!
+  set +m
+  waited=0
+  while [ ! -s "$WORK/deaf.pid" ] && [ "$waited" -lt 100 ]; do sleep 0.05; waited=$((waited + 1)); done
+  read -r deaf <"$WORK/deaf.pid"
+  kill -TERM -- "-$leg_group"
+  wait "$leg_group" 2>/dev/null
+  waited=0
+  while [ -n "$(/bin/ps -o state= -p "$deaf" 2>/dev/null | tr -d 'Z[:space:]')" ] && [ "$waited" -lt 40 ]; do
+    sleep 0.05; waited=$((waited + 1))
+  done
+  assert test -z "$(/bin/ps -o state= -p "$deaf" 2>/dev/null | tr -d 'Z[:space:]')"
+  kill -KILL "$deaf" 2>/dev/null
+done
+LEG_ENV=()
 
 : >"$CALL_LOG"
 LEG_ENV=(CLAUDE_ALLOW_WEB=1 CLAUDE_EFFORT=medium)

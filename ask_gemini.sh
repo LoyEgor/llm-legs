@@ -123,8 +123,12 @@ if [ "${GEMINI_CMD[0]}" = agy ] && ! command -v agy >/dev/null 2>&1; then
 fi
 
 # A fresh private empty cwd per call: a shared predictable one could carry planted project config.
-ERRF="$(mktemp)"; LOGF="$(mktemp)"; STUB_DIR="$(mktemp -d)"; trap 'rm -f "$ERRF" "$LOGF"; rm -rf "$STUB_DIR"' EXIT
+ERRF="$(mktemp)"; OUTF="$(mktemp)"; LOGF="$(mktemp)"; STUB_DIR="$(mktemp -d)"
+trap 'rm -f "$ERRF" "$OUTF" "$LOGF"; rm -rf "$STUB_DIR"' EXIT
 LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# A copy without share/ beside it still answers, only without the SIGKILL its CLI gets on a caller's TERM.
+. "$LEGS_DIR/share/leg-call.sh" 2>/dev/null ||
+  leg_call() { local out=$1 err=$2; shift 2; "$@" >"$out" 2>"$err" </dev/null; }
 cd "$STUB_DIR" || exit 1
 quota_hit=0
 served_other=0
@@ -142,7 +146,9 @@ for MODEL in "$AGY_MODEL" ${AGY_MODEL_FALLBACK:+"$AGY_MODEL_FALLBACK"}; do
   # RESOURCE_EXHAUSTED/429 in agy's internal log, so route it to a temp file we can grep.
   : > "$LOGF"  # agy appends — truncate so we inspect only THIS model's log
   rc=0
-  out="$("${GEMINI_CMD[@]}" --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --disable-slash-commands --log-file "$LOGF" </dev/null 2>"$ERRF")" || rc=$?
+  leg_call "$OUTF" "$ERRF" "${GEMINI_CMD[@]}" --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" \
+    --sandbox --disable-slash-commands --log-file "$LOGF" || rc=$?
+  out="$(cat "$OUTF")"
   if grep -q 'print timeout after' "$ERRF" 2>/dev/null && . "$LEGS_DIR/share/limit-hit.sh"; then
     limit_hit ask-gemini.print-timeout 300 s kill "an ask_gemini answer from $MODEL, cut at --print-timeout $AGY_PRINT_TIMEOUT" \
       'ask_gemini.sh:AGY_PRINT_TIMEOUT="${'

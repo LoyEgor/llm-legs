@@ -86,8 +86,11 @@ MODEL_ARGS=()
 [ -n "$REQUESTED" ] && MODEL_ARGS=(-m "$REQUESTED")
 
 # A fresh private empty cwd per call: a shared predictable one could carry planted project config.
-ERRF="$(mktemp)"; STUB_DIR="$(mktemp -d)"; trap 'rm -f "$ERRF"; rm -rf "$STUB_DIR"' EXIT
+ERRF="$(mktemp)"; OUTF="$(mktemp)"; STUB_DIR="$(mktemp -d)"; trap 'rm -f "$ERRF" "$OUTF"; rm -rf "$STUB_DIR"' EXIT
 LEGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# A copy without share/ beside it still answers, only without the SIGKILL its CLI gets on a caller's TERM.
+. "$LEGS_DIR/share/leg-call.sh" 2>/dev/null ||
+  leg_call() { local out=$1 err=$2; shift 2; "$@" >"$out" 2>"$err" </dev/null; }
 cd "$STUB_DIR" || exit 1
 STRIP_ARGS=(--ignore-user-config)
 for feature in shell_tool unified_exec apps browser_use browser_use_external computer_use goals hooks \
@@ -95,11 +98,12 @@ for feature in shell_tool unified_exec apps browser_use browser_use_external com
   STRIP_ARGS+=(--disable "$feature")
 done
 set +e
-# </dev/null: codex reads stdin IN ADDITION to the argv prompt ("Reading additional input
+# leg_call's </dev/null: codex reads stdin IN ADDITION to the argv prompt ("Reading additional input
 # from stdin..."): an open pipe without EOF hangs the call, stray input pollutes the prompt.
-OUT="$("${CODEX_CMD[@]}" exec --skip-git-repo-check --sandbox read-only "${STRIP_ARGS[@]}" \
-        ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -c model_reasoning_effort="$EFFORT" "$PROMPT" </dev/null 2>"$ERRF")"
+leg_call "$OUTF" "$ERRF" "${CODEX_CMD[@]}" exec --skip-git-repo-check --sandbox read-only "${STRIP_ARGS[@]}" \
+        ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -c model_reasoning_effort="$EFFORT" "$PROMPT"
 RC=$?
+OUT="$(cat "$OUTF")"
 set -e
 
 # Best-effort served-model extraction from the startup banner (stderr first, then stdout).
