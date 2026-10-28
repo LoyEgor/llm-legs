@@ -10,7 +10,8 @@ page registry surviving compaction; near-zero context cost for chats that make n
 
 ## Constraints
 - ~0 CPU idle, ~20 MB RAM, survives reboots, never "dead when he comes back".
-- Dia on the Mac, Safari on the iPad (home network).
+- Dia on the Mac only. Egor reaches the Mac from the iPad through Jump Desktop (remote desktop), so
+  the server binds loopback and the kit is mouse-only; LAN access is a possible later addition.
 - Every chat: three Claude accounts, codex and grok workers.
 - Small and boring: stdlib Python, plain ES modules, no build step, no frameworks.
 
@@ -60,11 +61,10 @@ Server and CLI are one program over one store module, so locking, folding and va
   - Media is served as immutable with an ETag. `no-cache` applies to spec and state only.
   - Broken pipes are ignored.
 - Security:
-  - a `Host` allowlist (loopback names plus the Mac's `.local` name);
+  - a `Host` allowlist (loopback names);
   - POST requires `Content-Type: application/json` and a same-origin `Origin`.
-  - LAN mode: a per-install secret exchanged from `?k=` for an HttpOnly SameSite cookie, then
-    stripped with `history.replaceState`. Every route off loopback requires it. Plain HTTP on the
-    home network is the documented limit.
+  - LAN mode, if ever added: a per-install secret exchanged from `?k=` for an HttpOnly SameSite
+    cookie, then stripped with `history.replaceState`; every route off loopback requires it.
 
 ## 4. Kit: `share/pages/kit/` (plain ES modules)
 - `shell.js` — the module API, fixed before a second module copies the first:
@@ -81,8 +81,8 @@ Server and CLI are one program over one store module, so locking, folding and va
     open on the first unvoted item, stable numbers, lazy load and unload of off-screen media.
 - `compare.js` — ported from logo-vectorizer-bench `results/lanes/coord/tools/vote.tpl.html`, which
   is gitignored and is rescued into the kit first.
-  - **View:** N synced loupes, pointer-anchored zoom, iPad pinch/pan (touch-action, pinch tracking,
-    pointercancel cleanup), a preview with clipped view boxes, fit/1:1, always-pixelated option.
+  - **View:** N synced loupes, pointer-anchored zoom, a preview with clipped view boxes, fit/1:1,
+    always-pixelated option. Mouse only (see Constraints).
   - **Computed by the page:** geometry comes from the images; hotspots (block-diff) and the preview
     are computed in the browser. The spec holds paths and ids only; overrides are optional.
   - **Vote:** options and per-side tags (A/B/tie/both_bad/unsure), blind via the server.
@@ -140,6 +140,10 @@ Server and CLI are one program over one store module, so locking, folding and va
 ## 8. Migration
 - pixel-forge's calibration page goes first: a claude.ai artifact with 0 votes, nothing to import. Its
   composite sheet becomes separate images, which it already has.
+- Artifacts and pages are never both on (Egor 2026-10-28, decided): artifacts were turned off, then
+  switched back on (the `enableArtifact` key removed from `~/.claude/settings.json`) only so
+  pixel-forge keeps its vote page until `compare` lands. Closing step of this migration: set
+  `"enableArtifact": false` in `~/.claude/settings.json` the moment pixel-forge votes through `page`.
 - listen-bench, video_glitch and oversharp keep their own servers. A page moves only when its chat
   next changes it, with an explicit import of the items' stable ids.
 
