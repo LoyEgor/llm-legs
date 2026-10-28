@@ -3,7 +3,8 @@ SYSTEM_DOCTOR_<NAME> first, so a test replaces it with a fixture; SYSTEM_DOCTOR_
 holding the four host CPU tick counters (user system idle nice) in place of host_statistics, SYSTEM_DOCTOR_PROCS
 a JSON {frames: [[pid...]...], procs: {pid: [ppid, uid, start, args]}} in place of libproc's process table and
 SYSTEM_DOCTOR_RUSAGE a JSON {pid: [footprint, read, written, idle wakeups[, reaped children's CPU s]]} in place of
-proc_pid_rusage."""
+proc_pid_rusage and SYSTEM_DOCTOR_COALITIONS a JSON {id: [cpu s, tasks started, bytes written]} in place of
+coalition_info_resource_usage."""
 
 import ctypes
 import json
@@ -288,6 +289,28 @@ def window_counts():
     finally:
         cf.CFRelease(windows)
     return counts
+
+
+def coalition_usage(ids):
+    """{id: [cpu s, tasks started, bytes written]} of resource coalitions since each began: the kernel's totals over
+    every process that ever ran in it, short-lived ones included (launchd gives each job its own). A gone id is left
+    out. The CPU counter is in mach time units."""
+    fixture = _fixture("SYSTEM_DOCTOR_COALITIONS")
+    if fixture is not None:
+        return {int(cid): usage for cid, usage in fixture.items() if int(cid) in set(ids)}
+    try:
+        lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        base = (ctypes.c_uint32 * 2)()
+        lib.mach_timebase_info(base)
+    except (OSError, AttributeError):
+        return {}
+    usage, out = (ctypes.c_uint64 * 128)(), {}
+    for cid in ids:
+        # struct coalition_resource_usage opens with tasks_started, tasks_exited, time_nonempty, cpu_time,
+        # interrupt_wakeups, platform_idle_wakeups, bytesread, byteswritten
+        if lib.coalition_info_resource_usage(ctypes.c_uint64(cid), usage, ctypes.c_size_t(ctypes.sizeof(usage))) == 0:
+            out[cid] = [round(usage[3] * base[0] / base[1] / 1e9, 3), usage[0], usage[7]]
+    return out
 
 
 def _argv(pid):

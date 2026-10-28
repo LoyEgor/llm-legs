@@ -873,7 +873,7 @@ check(sorted(services) == ["gui/%d/com.llm-legs.memlogd" % uid, "gui/%d/com.llm-
       "services with a run counter only: %s" % sorted(services))
 memlogd = services["gui/%d/com.llm-legs.memlogd" % uid]
 check(memlogd == {"label": "com.llm-legs.memlogd", "name": "memlogd", "owner": "own", "runs": 10, "exit": "exit 1",
-                  "pid": 777, "every": None, "relaunched": True}, "an own KeepAlive job: %s" % memlogd)
+                  "pid": 777, "every": None, "relaunched": True, "coalition": None}, "an own KeepAlive job: %s" % memlogd)
 vsync = services["gui/%d/com.vendor.sync" % uid]
 check(vsync["exit"] == "signal 11" and vsync["owner"] == "third-party" and vsync["every"] == 300 and vsync["name"] == "com.vendor.sync",
       "a third-party job's crash signal and schedule: %s" % vsync)

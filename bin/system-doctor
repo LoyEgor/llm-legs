@@ -64,7 +64,8 @@ RATE_RULES = ("spawn", "kernel")
 COLLECT = {"storm_s": 2000, "storm_min": 2, "storm_kernel": 0.50, "census_s": 60, "census_poll_s": 0.02,
            "census_every_s": 30 * 60, "dumpstate_every_s": 3600, "harvest_every_s": 6 * 3600, "harvest_back_s": 11 * 3600,
            "loop_runs_h": 60, "loop_heavy_runs_h": 360, "loop_dt_s": 1800, "job_exits_day": 3, "job_exits_heavy_day": 24,
-           "freespace_every_s": 3600, "windows_row": 300, "windows_limit": 1000, "windows_heavy": 5000}
+           "freespace_every_s": 3600, "windows_row": 300, "windows_limit": 1000, "windows_heavy": 5000,
+           "job_cpu_day": 864, "job_writes_day": 1 << 30, "job_heavy": 5, "job_covered_s": 12 * 3600}
 LOGS = {"sweep_timeout_s": 1800, "compare_min_s": 20 * 3600, "keep_scan_days": 14, "growth_min_days": 5,
         "stale_s": 36 * 3600}
 HARVEST = (("launchd", 'processID == 1 AND eventMessage CONTAINS "ran for"', 300, 100000),
@@ -92,7 +93,8 @@ RULE_LABELS = {"spawn": "new processes", "job-loop": "job relaunch loop", "cohor
                "free-space": "low disk space", "log-store": "log cleaner broken", "log-growth": "LLM logs growing",
                "unregistered-store": "unregistered log store", "log-unread": "log read by nobody",
                "orphan-profile": "LLM profile off the menu", "profile-size": "LLM profile too big",
-               "dir-growth": "folder grew fast", "window-leak": "window leak"}
+               "dir-growth": "folder grew fast", "window-leak": "window leak",
+               "job-cost": "background job cost"}
 COUNTED = ("new", "open", "regressed")
 DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
@@ -251,13 +253,16 @@ RULE_LEVERS = {"job-loop": "find why it exits (its own log, not launchd's), back
                "window-leak": "group its windows by layer and size (CGWindowListCopyWindowInfo) to find the object "
                               "created again and again but never freed (an hs.canvas deleted while its callback still "
                               "holds it stays alive), free it; a restart only resets the count",
+               "job-cost": "time one run (CPU, processes started, bytes written) to find what each run repeats, run on "
+                           "change or less often, read in-process instead of forking a tool per value, append instead of "
+                           "rewriting; the same output at a fraction of the cost",
                "ssd-writes": "write fewer bytes for the same output: SQLite temp_store=MEMORY and no VACUUM or full-table "
                              "rewrite per run, rewrite only changed rows or files, append instead of rewriting a whole file, "
                              "no copy of a database or tree to read it once"}
 
 
 def levers(name, rule):
-    if rule in ("ssd-writes", "window-leak"):
+    if rule in ("ssd-writes", "window-leak", "job-cost"):
         return [RULE_LEVERS[rule]]
     found = [text for names, text in LEVERS if name in names or os.path.basename(name) in names]
     return found or ([SPAWN_LEVER] if rule in RATE_RULES else [RULE_LEVERS[rule]] if rule in RULE_LEVERS else [])
@@ -1403,9 +1408,9 @@ DUMP_KEYS = ("runs", "last exit code", "last terminating signal", "program", "pi
 
 
 def parse_dumpstate(text):
-    """{service: {label, name, owner, runs, exit, pid, every, relaunched}} of every service with a run counter. The text carries
+    """{service: {label, name, owner, runs, exit, pid, every, relaunched, coalition}} of every service with a run counter. The text carries
     argv and environment: nothing but the label, the program's basename and counters leaves this function."""
-    services, block, listing = {}, None, None
+    services, block, listing, coalition = {}, None, None, False
     for line in text.split("\n"):
         if not line.startswith("\t"):
             if line.endswith(" = {") and not line.startswith(" "):
@@ -1416,9 +1421,12 @@ def parse_dumpstate(text):
         if line.startswith("\t\t"):
             if listing is not None and len(listing) < ARGV_WORDS + 1:
                 listing.append(line.strip())
+            elif coalition and line.startswith("\t\tID = ") and "coalition" not in block:
+                block["coalition"] = line.strip()[5:]
             continue
         key, _, value = line[1:].partition(" = ")
         listing = block.setdefault("arguments", []) if key == "arguments" and "arguments" not in block else None
+        coalition = key == "resource coalition"
         if key in DUMP_KEYS and key not in block:
             block[key] = value.strip()
     out = {}
@@ -1434,7 +1442,8 @@ def parse_dumpstate(text):
                         "exit": exit_text(block.get("last exit code"), block.get("last terminating signal")),
                         "pid": int(block["pid"]) if block.get("pid", "").isdigit() else None,
                         "every": int(every.group(1)) if every else None,
-                        "relaunched": bool(every) or "keepalive" in (block.get("properties") or "").split(" | ")}
+                        "relaunched": bool(every) or "keepalive" in (block.get("properties") or "").split(" | "),
+                        "coalition": int(block["coalition"]) if block.get("coalition", "").isdigit() else None}
     return out
 
 
@@ -1495,7 +1504,8 @@ def window_rows():
 
 
 def dumpstate(now=None):
-    """Hourly: launchd's per-service run counters and last exits (`launchctl dumpstate`, parsed in memory) as deltas
+    """Hourly: launchd's per-service run counters and last exits (`launchctl dumpstate`, parsed in memory) and each
+    service's resource coalition totals (CPU, processes started, bytes written: every run, children included) as deltas
     against the previous snapshot, and the orphan census; one row in launchd/<day>.jsonl."""
     began = time.time()
     now = began if now is None else now
@@ -1528,13 +1538,24 @@ def dumpstate(now=None):
         slot["exit"] = entry["exit"] if bad or slot["exit"] is None else slot["exit"]
     orphans = steps("orphans", orphan_census, {e["pid"] for e in services.values() if e["pid"]}, now)
     windows = steps("windows", window_rows)
+    usage = steps("coalitions", machine_probe.coalition_usage, [e["coalition"] for e in services.values() if e["coalition"]])
+    costs = []
+    for service, entry in services.items():
+        now_used, before = usage.get(entry["coalition"]), old.get(service) or ()
+        if now_used and len(before) > 3 and before[2] == entry["coalition"] and before[3] and all(
+                a >= b for a, b in zip(now_used, before[3])):
+            spent = [round(a - b, 3) for a, b in zip(now_used, before[3])]
+            if spent[0] >= 1 or spent[2] >= 10 << 20:
+                costs.append([entry["label"], entry["name"], entry["owner"]] + spent)
     moved = sorted(jobs.values(), key=lambda j: (-j["bad"], -j["runs"], j["label"]))
     row = {"t": round(now, 1), "dt": round(now - previous["t"], 1) if isinstance(previous.get("t"), (int, float)) else None,
            "services": len(services), "reloaded": reloaded, "jobs": moved[:80], "orphans": orphans, "windows": windows,
+           "costs": sorted(costs, key=lambda c: (-c[3], c[0]))[:80],
            "self": {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
                     "steps": steps.out}}
     if services:
-        write_json(path, {"t": now, "services": {k: [e["runs"], e["exit"]] for k, e in services.items()}})
+        write_json(path, {"t": now, "services": {k: [e["runs"], e["exit"], e["coalition"], usage.get(e["coalition"])]
+                                                 for k, e in services.items()}})
     append_row("launchd", row)
     return row
 
@@ -2719,6 +2740,18 @@ def proof(name, rule, since, now, night=None, memo=None):
             return dict(out, verdict="pending", why="%s under the limit for %.1f of %d days" % (
                 name, covered / DAY_S, PROOF["reports_s"] // DAY_S))
         return dict(out, verdict="proven", why="%s under the limit for %d days" % (name, PROOF["reports_s"] // DAY_S))
+    if rule == "job-cost":
+        rows = tick_rows(since, now, "launchd")
+        covered, (cpu, _started, written), _seen = job_costs(rows, name)
+        out = {"after": {"cpu_s": round(cpu), "written_b": written, "covered_s": covered}, "need_s": PROOF["reports_s"]}
+        if covered >= COLLECT["job_covered_s"] and max(cpu / COLLECT["job_cpu_day"], written / COLLECT["job_writes_day"]) \
+                * DAY_S / covered >= 1:
+            return dict(out, verdict="refused", why="%s still spends %.0f cpu-s a day since the fix" % (
+                name, cpu * DAY_S / covered))
+        if covered < PROOF["reports_s"]:
+            return dict(out, verdict="pending", why="%s under the limit for %.1f of %d days" % (
+                name, covered / DAY_S, PROOF["reports_s"] // DAY_S))
+        return dict(out, verdict="proven", why="%s under the limit for %d days" % (name, PROOF["reports_s"] // DAY_S))
     if rule in REPORT_KINDS and rule != "ssd-writes":
         night = night if night is not None else read_json(os.path.join(state_dir(), "nightly.json"), {}) or {}
         after = sorted({str(r.get("ref") or r.get("at")) for r in night.get("reports") or () if r.get("at", 0) >= since
@@ -3041,6 +3074,41 @@ def judge_windows(judge, rows):
                     "excerpt": "%s · %d windows" % (name, n)} for r, n in seen[::-1]],
                   heavy=count >= COLLECT["windows_heavy"],
                   found={"name": name, "share": None, "owner": owner, "fix_target": owner == "own"})
+
+
+def job_costs(rows, job):
+    """(covered s, [cpu s, processes started, bytes written], [(row, cost)]) of one job, by label or name, over hourly
+    rows."""
+    covered = sum(r.get("dt") or 0 for r in rows if "costs" in r)
+    seen = [(r, c) for r in rows for c in r.get("costs") or () if job in (c[0], c[1])]
+    return covered, [sum(c[3 + i] for _r, c in seen) for i in range(3)], seen
+
+
+def judge_job_cost(judge, rows):
+    """job-cost: an own launchd job spending >= 864 cpu-s (1% of a core) or writing >= 1 GiB a day by its resource
+    coalition, the kernel's count over every run and child. The minute ticks miss a job that runs shorter than their
+    gap and exits under launchd (2026-10-28: harness-doctor 4,172 cpu-s a day, ticks 0), so this is what a doctor or
+    any other background job costs, whether or not it reports itself. A name the cohort already reports is left to it."""
+    day = [r for r in rows if r["t"] >= judge.now - DAY_S]
+    reported = {p["cause"]["name"] for p in judge.problems if p.get("rule") == "cohort" and p.get("cause")}
+    labels = {(c[0], c[1], c[2]) for r in day for c in r.get("costs") or () if c[2] == "own"}
+    for label, name, owner in sorted(labels):
+        covered, (cpu, started, written), seen = job_costs(day, label)
+        if covered < COLLECT["job_covered_s"] or name in reported:
+            continue
+        cpu, started, written = (x * DAY_S / covered for x in (cpu, started, written))
+        ratio = max(cpu / COLLECT["job_cpu_day"], written / COLLECT["job_writes_day"])
+        if ratio < 1:
+            continue
+        judge.add("job-cost", label, "%s spends %.0f cpu-s, starts %.0f processes and writes %.1f GB a day, limit %d "
+                  "cpu-s or %.0f GB" % (label, cpu, started, written / 1e9, COLLECT["job_cpu_day"],
+                                        COLLECT["job_writes_day"] / 1e9),
+                  round(cpu), COLLECT["job_cpu_day"], "cpu-s/day", 24, len(day), len(seen), seen[0][0]["t"],
+                  seen[-1][0]["t"], [{"at": iso_time(r["t"]), "ref": "launchd:%d" % r["t"], "account": None,
+                                      "excerpt": "%s · %.0f cpu-s · %d processes · %.0f MB" % (
+                                          label, c[3], c[4], c[5] / 1e6)} for r, c in seen[::-1][:12]],
+                  heavy=ratio >= COLLECT["job_heavy"],
+                  found={"name": name, "share": None, "owner": owner, "fix_target": True, "label": label})
 
 
 def judge_launchd(judge, rows, harvests):
@@ -3430,6 +3498,7 @@ def document(now, started, persist=True):
     judge_windows(judge, launches)
     score = cohort_score(days, launches, now)
     judge_cohort(judge, score)
+    judge_job_cost(judge, launches)
     logs = tick_rows(now - 9 * DAY_S, now, "logstores")
     judge_logstores(judge, logs)
     judge_collectors(judge, rows, launches, harvests, censuses, logs)

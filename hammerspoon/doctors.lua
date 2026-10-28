@@ -1003,7 +1003,7 @@ local SECTIONS = {
   { name = "Logs", rules = { "log-store", "log-growth", "unregistered-store", "log-unread" }, blind = { "logstores" } },
   { name = "Crashes", rules = { "hammerspoon-crash", "job-crash", "job-loop", "unclean-reboot" },
     blind = { "nightly", "dumpstate", "harvest" } },
-  { name = "Background", rules = { "cohort" }, blind = { "ticks", "dumpstate" } },
+  { name = "Background", rules = { "cohort", "job-cost" }, blind = { "ticks", "dumpstate" } },
 }
 -- A cohort term per day in the unit a row shows it: key, word, unit, factor.
 local TERMS = { { "C", "cpu", "min/d", 1 / 60 }, { "S", "starts", "/s", 1 / 86400 }, { "D", "writes", "GB/d", 1e-9 },

@@ -152,6 +152,9 @@ collector-runs row (`trigger background:<name>`) and keeps its own `self` wall/C
   first snapshot counts none), last exit as `exit N`/`signal N`, summed per label with unique parts (UUIDs, hex,
   long numbers) stripped; owner `own` (program under an own root), `apple`, `third-party`. Plus the orphan census:
   own-uid processes with ppid 1 that are no job and no own app, worker supervisors (open `worker-run` pids) apart.
+  And `costs`: each service's resource coalition (launchd gives every job one; `machine_probe.coalition_usage`,
+  unprivileged) as deltas of CPU s, processes started and bytes written, every run and child included; rows with
+  ≥ 1 cpu-s or ≥ 10 MB, a changed coalition id counting none.
 - **6-hourly unified-log harvest** (`harvest`, `harvest/<day>.jsonl`). One `log show --style compact` per source from
   its cursor, at most 11 h back (`lost_s` counts what retention already dropped), each killed past its budget
   (launchd 300 s/100k lines, DAS 150 s/1.2M — it logs ~88k lines/h — hangs 60 s/20k); a cut source resumes after its last line. Kept: launchd
@@ -184,11 +187,18 @@ New rules (fixer routing and proof as phase 2; an own cause with a sweep-repo fi
 | `job-loop` | a job launchd relaunches (KeepAlive or an interval) ≥ 60 runs/h and over twice its schedule, or ≥ 3 abnormal exits (non-zero exit, crash signal) a day from dumpstate or the log | ≥ 360/h or ≥ 24/day |
 | `cohort` | B ≥ 1; non-own items read `watch`, never remove (at most 6 rows) | B ≥ 5 |
 | `window-leak` | a process holds ≥ 1,000 WindowServer windows (hidden ones included) in the day's latest hourly snapshot; the snapshot keeps processes with ≥ 300 | ≥ 5,000 |
+| `job-cost` | an own launchd job spends ≥ 864 cpu-s (1% of a core) or writes ≥ 1 GiB a day by its coalition, over ≥ 12 h of hourly costs scaled to a day; a name `cohort` reports is left to it | 5× |
 
 ScreenCaptureKit walks every window, so a window leak makes all screen capture wait. On 2026-10-28, 5,556 leaked
 Hammerspoon canvases made a shareable-content fetch take 2.8 s, and Jump connects stuck for minutes. A `window-leak` fix
 is proven after 7 days of snapshots under the limit; any snapshot over it since landing refuses it, the not yet
 restarted process included.
+
+`job-cost` is the doctors' own check, and every other background job's: the kernel counts each run and child, so a
+job is priced whether or not it reports itself. The minute ticks price a process only across two ticks, and a run
+shorter than their gap that exits under launchd (whose reaped CPU no own rusage holds) costs nothing there: on
+2026-10-28 the ticks gave harness-doctor 0 cpu-s against its coalition's 4,172 a day. A fix is proven after 7 days
+under the limit; a day over it since landing refuses it.
 
 A `job-loop` fix is proven after 7 quiet days of snapshots; a looping snapshot since landing refuses it. A `cohort`
 fix is proven on its CPU and written bytes, never its births, so an item dominated by M, R or L is not measured by its
