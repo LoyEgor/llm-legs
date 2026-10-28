@@ -37,7 +37,7 @@ body.drag,body.drag .vp{cursor:grabbing}
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)";
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false;
-const hot = new Map();
+const hot = new Map(), inked = new WeakSet();
 
 export function render(spec) {
   S = spec;
@@ -259,25 +259,29 @@ function draw() {
 }
 
 // «Сетка»: the item's `grid` (cell bounds in the original's pixels) over the original, and each variant's own
-// pixel grid in its loupe; a grid whose cells are under 5 screen px is left out
+// pixel grid in its loupe; a grid whose cells are under 5 screen px is left out. A canvas is resized only when the
+// loupe is (resizing reallocates it) and cleared only when it holds lines, since draw() runs on every drag move.
 function paintLines(W, H, at, first) {
-  const d = devicePixelRatio || 1, it = item(cur);
+  const d = devicePixelRatio || 1, it = item(cur), cw = Math.round(W * d), chh = Math.round(H * d);
   E.gb.classList.toggle("on", lines);
   E.cvs.forEach((c, i) => {
-    Object.assign(c, { width: Math.round(W * d), height: Math.round(H * d) });
-    Object.assign(c.style, { width: W + "px", height: H + "px" });
-    const a = at[i];
+    if (c.width !== cw || c.height !== chh) {
+      Object.assign(c, { width: cw, height: chh });
+      Object.assign(c.style, { width: W + "px", height: H + "px" });
+    } else if (inked.has(c)) c.getContext("2d").clearRect(0, 0, cw, chh);
+    inked.delete(c);
+    const a = at[i], step = (b) => (b.at(-1) - b[0]) / (b.length - 1) * L.z;
     let xs, ys;
     if (!lines) return;
     if (i < first) {
-      if (!it.grid) return;
+      if (!it.grid || Math.min(step(it.grid.x), step(it.grid.y)) < 5) return;
       xs = it.grid.x.map((v) => W / 2 + (v - L.cx) * L.z);
       ys = it.grid.y.map((v) => H / 2 + (v - L.cy) * L.z);
-    } else if (a) {
+    } else if (a && Math.min(a.sx, a.sy) >= 5) {
       xs = Array.from({ length: a.nw + 1 }, (_, k) => a.x + k * a.sx);
       ys = Array.from({ length: a.nh + 1 }, (_, k) => a.y + k * a.sy);
     } else return;
-    if (Math.min((xs.at(-1) - xs[0]) / (xs.length - 1), (ys.at(-1) - ys[0]) / (ys.length - 1)) < 5) return;
+    inked.add(c);
     const g = c.getContext("2d"), px = (v) => Math.round(v * d) + 0.5;
     const [x0, x1, y0, y1] = [Math.max(0, px(xs[0])), Math.min(c.width, px(xs.at(-1))), Math.max(0, px(ys[0])), Math.min(c.height, px(ys.at(-1)))];
     g.strokeStyle = LINE; g.lineWidth = 1; g.beginPath();
