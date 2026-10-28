@@ -81,6 +81,14 @@ RB_REPORT="$RB_PKG/report.py"
 RB_CLI="$RB_PKG/cli.py"
 RB_ANCHORS="$REVIEW_ROOT/bin/review-anchors"
 WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
+# worker-run is bin/worker-run plus the modules it sources, read here as one text; an edit of any of
+# them runs this suite:
+#   share/worker-run-brief.sh share/worker-run-browse.sh share/worker-run-claims.sh share/worker-run-files.sh
+#   share/worker-run-grok.sh share/worker-run-inbox.sh share/worker-run-lifecycle.sh share/worker-run-outcomes.sh
+#   share/worker-run-pool.sh share/worker-run-report.sh share/worker-run-rounds.sh share/worker-run-snapshot.sh
+#   share/worker-run-texts.sh share/worker-run-vendors.sh share/worker-run-wait.sh share/worker-run-watchdog.sh
+WORKER_RUN_TEXT="$CONSISTENCY_CACHE/worker-run"
+cat "$WORKER_RUN" "${WORKER_RUN%/bin/*}/share/"worker-run-*.sh >"$WORKER_RUN_TEXT"
 WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
 FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
 CLAUDE_SETUP=$FAMILY_SETUP_ROOT
@@ -468,18 +476,18 @@ assert doc_has 'Antigravity review cell invocation mapping'
 
 # --- Row i: Gemini worker knobs ----------------------------------------------
 assert test -x "$WORKER_RUN"
-assert test "$(grep -Fc -- 'gemini_family=$(worker_model_gemini_prefix "$model" "$account")' "$WORKER_RUN")" -eq 1
-assert test "$(grep -Fc -- 'agy_model="$gemini_family-$effort"' "$WORKER_RUN")" -eq 1
+assert test "$(grep -Fc -- 'gemini_family=$(worker_model_gemini_prefix "$model" "$account")' "$WORKER_RUN_TEXT")" -eq 1
+assert test "$(grep -Fc -- 'agy_model="$gemini_family-$effort"' "$WORKER_RUN_TEXT")" -eq 1
 # Every family reaches the worker leg at `high` and at nothing else, under the prefix the
 # account's own list carries (row `h`), never a label.
-assert test "$(grep -Fc -- '[ "$effort" = high ] ||' "$WORKER_RUN")" -eq 1
-assert test "$(grep -Fc -- ' (High)"' "$WORKER_RUN")" -eq 0
-assert test "$(grep -Ec 'pro:(medium|low)' "$WORKER_RUN")" -eq 0
+assert test "$(grep -Fc -- '[ "$effort" = high ] ||' "$WORKER_RUN_TEXT")" -eq 1
+assert test "$(grep -Fc -- ' (High)"' "$WORKER_RUN_TEXT")" -eq 0
+assert test "$(grep -Ec 'pro:(medium|low)' "$WORKER_RUN_TEXT")" -eq 0
 # No arm below `high` for any Gemini model, and none for a family outside the table: the effort
 # is RAISED before this case is read, so a lower arm is an arm nothing can reach.
-assert test "$(grep -Ec 'flash3[0-9]:(medium|low)' "$WORKER_RUN")" -eq 0
-assert test "$(grep -Ec 'flash3[0-59]:(high|medium|low)' "$WORKER_RUN")" -eq 0
-assert grep -Fq 'printf '\''gemini effort forced to high\n'\'' >&2' "$WORKER_RUN"
+assert test "$(grep -Ec 'flash3[0-9]:(medium|low)' "$WORKER_RUN_TEXT")" -eq 0
+assert test "$(grep -Ec 'flash3[0-59]:(high|medium|low)' "$WORKER_RUN_TEXT")" -eq 0
+assert grep -Fq 'printf '\''gemini effort forced to high\n'\'' >&2' "$WORKER_RUN_TEXT"
 gemini_default_model=$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")
 assert eq "$gemini_default_model" "$(awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }' <<<"$gemini_family_rows")"
 assert grep -Fq 'conf_get gemini_model; worker_model_gemini_stored_r "$conf_val"; gm_model=$WORKER_MODEL_R' "$WORKERPICK"
@@ -587,7 +595,7 @@ assert grep -Fq "printf 'geminib: capacity %s after %s steps, not relaunched" "$
 assert grep -Fq "capacity_step_mark='streamGenerateContent'" "$GEMINIB_BIN"
 assert grep -Fq 'STEP_MARK = "streamGenerateContent"' "$ROOT/bin/gemini-weather"
 assert doc_has 'geminib: capacity <family> after N steps, not relaunched'
-for consumer in "$WORKER_RUN" "$ROOT/share/light-research.sh" "$ROOT/bin/gemini-image" "$ROOT/bin/gemini-probe"; do
+for consumer in "$WORKER_RUN_TEXT" "$ROOT/share/light-research.sh" "$ROOT/bin/gemini-image" "$ROOT/bin/gemini-probe"; do
   assert test "$(grep -Fc 'No capacity available for model' "$consumer")" -eq 0
 done
 assert doc_has 'Gemini capacity fallback'
@@ -656,7 +664,7 @@ assert doc_has '`GROKB_MODELS_NO_FETCH=1`'
 # One resolution of the slug a `chat-pin grok-fast` chat launches, or a task row names a model the
 # run does not use.
 assert grep -Fq 'worker_model_grok_launch_model() { # model role [chat-pin-file]' "$ROOT/share/worker-model.sh"
-for fast_site in "$ROOT/bin/worker-run"; do
+for fast_site in "$WORKER_RUN_TEXT"; do
   assert grep -Fq 'worker_model_grok_launch_model' "$fast_site"
 done
 assert doc_has '`worker_model_grok_launch_model`'
@@ -683,10 +691,10 @@ for family in astra sol; do
   assert eq "$(bash -c '. "$1"; worker_model_codex_slug "$2"' _ "$WORKER_MODEL_SH" "$family")" \
     "$("$CODEXB_BIN" models --family "$family")"
 done
-assert grep -Fq 'worker_model_codex_slug "$model"' "$ROOT/bin/worker-run"
+assert grep -Fq 'worker_model_codex_slug "$model"' "$WORKER_RUN_TEXT"
 assert grep -Fq 'worker_model_codex_slug "$(worker_model_default_model codex)"' "$CODEXB_BIN"
 assert grep -Fq 'models_builtin() { # slug<TAB>label<TAB>priority<TAB>visibility<TAB>efforts' "$CODEXB_BIN"
-assert test "$(grep -Ec 'gpt-[0-9.]+-(astra|sol)' "$WORKER_MODEL_SH" "$ROOT/bin/claudegpt" "$ROOT/bin/worker-run" | awk -F: '{ n += $2 } END { print n }')" -eq 0
+assert test "$(grep -Ec 'gpt-[0-9.]+-(astra|sol)' "$WORKER_MODEL_SH" "$ROOT/bin/claudegpt" "$WORKER_RUN_TEXT" | awk -F: '{ n += $2 } END { print n }')" -eq 0
 assert doc_has 'Codex model list'
 assert doc_has '`codexb models [--json] [--all] [--family <word>]`'
 assert doc_has '`worker_model_codex_slug`'
@@ -814,17 +822,17 @@ assert eq "$(grok_launch grok-4.7 reviewers "$grok_fast_pin")" grok-4.7
 assert eq "$(grok_launch_acct grok-4.6 workers "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" grok-4.6
 assert eq "$(grok_launch auto light "$grok_fast_pin")" auto
 assert eq "$(grok_launch auto workers "$CONSISTENCY_CACHE/no-such-pin")" auto
-for label_site in "$WORKER_RUN"; do
+for label_site in "$WORKER_RUN_TEXT"; do
   assert grep -Fq 'worker_model_grok_label' "$label_site"
   assert test "$(grep -Fc 'grok-4.6' "$label_site")" -eq 0
 done
 # Neither refusal spells a model of its own: both read the list through these functions.
-assert grep -Fq 'worker_model_allows "$vendor" "$effective"' "$WORKER_RUN"
-assert grep -Fq 'worker_model_allowed_list "$vendor"' "$WORKER_RUN"
+assert grep -Fq 'worker_model_allows "$vendor" "$effective"' "$WORKER_RUN_TEXT"
+assert grep -Fq 'worker_model_allowed_list "$vendor"' "$WORKER_RUN_TEXT"
 # One printer for every outcome (`outcome_line`), so the
 # literal is its format string and each site names only the outcome.
-assert grep -Fq "printf 'OUTCOME: %s\\n' \"\$outcome\"" "$WORKER_RUN"
-assert grep -Fq 'outcome_line MODEL_REFUSED' "$WORKER_RUN"
+assert grep -Fq "printf 'OUTCOME: %s\\n' \"\$outcome\"" "$WORKER_RUN_TEXT"
+assert grep -Fq 'outcome_line MODEL_REFUSED' "$WORKER_RUN_TEXT"
 assert grep -Fq 'worker_model_allows "$vendor" "$value"' "$PIN_GATE"
 assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
 # `flash3[0-59]` and not `flash3[0-9]`: 3.6, 3.7 and 3.8 are the flash families a worker may run,
@@ -852,30 +860,30 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
 done
 assert doc_has 'Allowed worker models'
 
-assert grep -Fq -- '--account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;' "$WORKER_RUN"
-assert grep -Fq 'local -a args=(--account "$vendor")' "$WORKER_RUN"
-assert grep -Fq '"$picker" "${args[@]}"' "$WORKER_RUN"
-assert grep -Fq 'outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT"' "$WORKER_RUN"
-assert grep -Fq 'pin=$(worker_model_pin_first "$vendor")' "$WORKER_RUN"
-assert grep -Fq 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable' "$WORKER_RUN"
-assert grep -Fq 'account=main' "$WORKER_RUN"
-assert grep -Fq 'contradicts the brief header' "$WORKER_RUN"
+assert grep -Fq -- '--account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;' "$WORKER_RUN_TEXT"
+assert grep -Fq 'local -a args=(--account "$vendor")' "$WORKER_RUN_TEXT"
+assert grep -Fq '"$picker" "${args[@]}"' "$WORKER_RUN_TEXT"
+assert grep -Fq 'outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT"' "$WORKER_RUN_TEXT"
+assert grep -Fq 'pin=$(worker_model_pin_first "$vendor")' "$WORKER_RUN_TEXT"
+assert grep -Fq 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable' "$WORKER_RUN_TEXT"
+assert grep -Fq 'account=main' "$WORKER_RUN_TEXT"
+assert grep -Fq 'contradicts the brief header' "$WORKER_RUN_TEXT"
 # worker-run reads a RESUME first line and refuses a --resume flag that disagrees with it; a relay told to
 # pass the flag launched a RESUME brief as a fresh session (2026-10-02).
-assert grep -Fq "drop the flag, worker-run reads the line itself" "$WORKER_RUN"
+assert grep -Fq "drop the flag, worker-run reads the line itself" "$WORKER_RUN_TEXT"
 assert doc_has 'Worker account resolution'
 # A hit turn cap is the vendor serving, so it may never share a name with the outcomes the routers
 # read as "no capacity here": folded back into GROK_UNAVAILABLE the relay hunts a pool problem that
 # does not exist and reroutes a brief that outruns the same cap wherever it lands.
-assert grep -Fq 'outcome_line GROK_MAX_TURNS' "$WORKER_RUN"
-assert grep -Fq 'grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-}' "$WORKER_RUN"
-assert grep -Fq -- '[ -z "$grok_turns" ] || command_meta+=(--max-turns "$grok_turns")' "$WORKER_RUN"
-assert grep -Fq -- '[ -z "$turns" ] || command+=(--max-turns "$turns")' "$WORKER_RUN"
+assert grep -Fq 'outcome_line GROK_MAX_TURNS' "$WORKER_RUN_TEXT"
+assert grep -Fq 'grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-}' "$WORKER_RUN_TEXT"
+assert grep -Fq -- '[ -z "$grok_turns" ] || command_meta+=(--max-turns "$grok_turns")' "$WORKER_RUN_TEXT"
+assert grep -Fq -- '[ -z "$turns" ] || command+=(--max-turns "$turns")' "$WORKER_RUN_TEXT"
 assert doc_has '`OUTCOME: GROK_MAX_TURNS`, never `_UNAVAILABLE` and never `_USAGE_LIMIT`'
 assert doc_has 'only when `WORKER_RUN_GROK_MAX_TURNS` sets one'
 # A session cancelled before its first turn is not a finished run: exit 0 alone said `done`.
-assert grep -Fq 'outcome_line "GROK_CANCELLED ${directory##*/}"' "$WORKER_RUN"
-assert grep -Fq 'grok_cancelled_start "$1"' "$WORKER_RUN"
+assert grep -Fq 'outcome_line "GROK_CANCELLED ${directory##*/}"' "$WORKER_RUN_TEXT"
+assert grep -Fq 'grok_cancelled_start "$1"' "$WORKER_RUN_TEXT"
 assert doc_has '`OUTCOME: GROK_CANCELLED <run-id>` with `STATUS: failed`'
 assert grep -Fq 'OUTCOME: GROK_CANCELLED <run-id>' "$ROOT/docs/DIAGNOSTICS.md"
 
@@ -1214,30 +1222,30 @@ assert doc_has 'Native agent types'
 
 # --- Rows bu/bv: worker-run deadlines and the launched brief -----------------
 WORKER_RUN="$ROOT/bin/worker-run"
-assert eq "$(sed -nE 's/^IDLE=\$\{WORKER_RUN_IDLE_S:-([0-9]+)\}$/\1/p' "$WORKER_RUN")" 1800
-assert eq "$(sed -nE 's/^DEADLINE=\$\{WORKER_RUN_DEADLINE:-([0-9]+)\}$/\1/p' "$WORKER_RUN")" 21600
+assert eq "$(sed -nE 's/^IDLE=\$\{WORKER_RUN_IDLE_S:-([0-9]+)\}$/\1/p' "$WORKER_RUN_TEXT")" 1800
+assert eq "$(sed -nE 's/^DEADLINE=\$\{WORKER_RUN_DEADLINE:-([0-9]+)\}$/\1/p' "$WORKER_RUN_TEXT")" 21600
 row_bu=$(grep '^| bu |' "$ROOT/$DOC")
 assert grep -Fq '`WORKER_RUN_IDLE_S` (default `1800`s)' <<<"$row_bu"
 assert grep -Fq '`WORKER_RUN_DEADLINE` (default `21600`s)' <<<"$row_bu"
 # gemini's own timeout follows the ceiling instead of standing on a number of its own.
-assert eq "$(grep -c -- '--print-timeout 360m' "$WORKER_RUN")" 2
+assert eq "$(grep -c -- '--print-timeout 360m' "$WORKER_RUN_TEXT")" 2
 assert grep -Fq -- '--print-timeout 360m' "$ROOT/$DOC"
 # The liveness reading is ONE definition: the status row and the watchdog disagreeing about whether
 # a run has touched anything is a healthy worker killed while its own LAST-EDIT reads seconds.
-assert eq "$(grep -c 'workdir_activity_stamp' "$WORKER_RUN")" 3
+assert eq "$(grep -c 'workdir_activity_stamp' "$WORKER_RUN_TEXT")" 3
 assert grep -Fq 'workdir_activity_stamp' "$ROOT/$DOC"
 # An idle kill needs positive evidence, and either watchdog names itself.
-assert grep -Fq '= y ] && [ $((wd_clock - idle_since))' "$WORKER_RUN"
-assert grep -Fq 'KILLED: idle watchdog' "$WORKER_RUN"
-assert grep -Fq 'KILLED: deadline' "$WORKER_RUN"
+assert grep -Fq '= y ] && [ $((wd_clock - idle_since))' "$WORKER_RUN_TEXT"
+assert grep -Fq 'KILLED: idle watchdog' "$WORKER_RUN_TEXT"
+assert grep -Fq 'KILLED: deadline' "$WORKER_RUN_TEXT"
 assert grep -Fq 'KILLED: idle watchdog' "$ROOT/$DOC"
 assert doc_has 'Worker run deadlines'
 # The launched brief is a second file; the record stays the input.
-assert eq "$(grep -c "^BRIEF_PREAMBLE='" "$WORKER_RUN")" 1
+assert eq "$(grep -c "^BRIEF_PREAMBLE='" "$WORKER_RUN_TEXT")" 1
 # The return contract names the account line in the shape `worker-run report` prints it.
-assert grep -Fq '`ACCOUNT: <account> (<vendor>)` line second' "$WORKER_RUN"
-assert grep -Fq "printf 'ACCOUNT: %s (%s)\n' \"\$account\" \"\$vendor\"" "$WORKER_RUN"
-assert eq "$(grep -c '"\$directory/brief" >/dev/null 2>"\$directory/err"' "$WORKER_RUN")" 0
+assert grep -Fq '`ACCOUNT: <account> (<vendor>)` line second' "$WORKER_RUN_TEXT"
+assert grep -Fq "printf 'ACCOUNT: %s (%s)\n' \"\$account\" \"\$vendor\"" "$WORKER_RUN_TEXT"
+assert eq "$(grep -c '"\$directory/brief" >/dev/null 2>"\$directory/err"' "$WORKER_RUN_TEXT")" 0
 assert grep -Fq 'brief.launch' "$ROOT/$DOC"
 assert doc_has 'Launched brief vs recorded brief'
 
@@ -1276,8 +1284,8 @@ for pool_tool in claudeb codexb geminib grokb; do
 done
 # worker-run is the fourth consumer: codex workers never pass through codexb, so the wall has to
 # be reachable from the launcher itself.
-assert grep -Fq 'share/worker-pool.sh"' "$ROOT/bin/worker-run"
-assert grep -Fq 'worker_pool_refuse_headless "$vendor"' "$ROOT/bin/worker-run"
+assert grep -Fq 'share/worker-pool.sh"' "$WORKER_RUN_TEXT"
+assert grep -Fq 'worker_pool_refuse_headless "$vendor"' "$WORKER_RUN_TEXT"
 assert grep -Fq 'out of the worker pool' "$ROOT/bin/worker-pick"
 # codex-image launches codex directly, past codexb and past worker-run, so it is a launcher of
 # its own and needs the same wall.
@@ -1315,7 +1323,7 @@ assert eq "$(grep -lF worker_model_pin_wall_until "$ROOT/bin/claudeb" "$ROOT/bin
 assert eq "$(grep -c 'profile_wall' "$WORKERPICK")" 0
 assert grep -Fq 'worker_model_clear_walled_pin' "$ROOT/share/worker-model.sh"
 assert grep -Fq 'worker_model_clear_walled_pin' "$WORKERPICK"
-assert grep -Fq 'worker_model_clear_walled_pin' "$WORKER_RUN"
+assert grep -Fq 'worker_model_clear_walled_pin' "$WORKER_RUN_TEXT"
 # The session account is no longer a reserve of any kind (docs/routing-contract.md rule 1): it is
 # ranked by its budget like every other account, so neither the gate may regain an `.own` test nor
 # any surface the marker that used to announce the reserve.
@@ -1351,13 +1359,13 @@ assert grep -Fq 'deactivated_workspace' "$LLMLIMITS"
 assert grep -Fq '"workspace deactivated"' "$LLMLIMITS"
 assert doc_has 'workspace deactivated'
 for codex_wall_wording in 'Payment Required' 'deactivated_workspace'; do
-  assert grep -Fq "$codex_wall_wording" "$WORKER_RUN"
+  assert grep -Fq "$codex_wall_wording" "$WORKER_RUN_TEXT"
   assert grep -Fq "$codex_wall_wording" "$LLMLIMITS"
   assert doc_has "$codex_wall_wording"
 done
 
 # --- Rows bx/by: grok persistent wall and Codex out-of-credits agree with the bench
-assert grep -Fq "you['’]ve reached your free Grok Build usage limit for now" "$WORKER_RUN"
+assert grep -Fq "you['’]ve reached your free Grok Build usage limit for now" "$WORKER_RUN_TEXT"
 assert grep -Fq "you['’]ve reached your free Grok Build usage limit for now" "$RB_ACCOUNTS"
 assert doc_has "you['’]ve reached your free Grok Build usage limit for now"
 for grok_wall_wording in \
@@ -1365,11 +1373,11 @@ for grok_wall_wording in \
   'hit the credit limit for your plan' \
   'subscription:free-usage-exhausted' \
   'run out of credits'; do
-  assert grep -Fq "$grok_wall_wording" "$WORKER_RUN"
+  assert grep -Fq "$grok_wall_wording" "$WORKER_RUN_TEXT"
   assert grep -Fq "$grok_wall_wording" "$RB_ACCOUNTS"
   assert doc_has "$grok_wall_wording"
 done
-assert grep -qE 'codex\) pattern=.*out of credits' "$WORKER_RUN"
+assert grep -qE 'codex\) pattern=.*out of credits' "$WORKER_RUN_TEXT"
 assert grep -Fqi 'out of credits' <<<"$(sed -n '/^def codex_usage_wall(/,/^def is_429_error(/p' "$RB_ACCOUNTS")"
 assert doc_has 'out of credits'
 assert doc_has 'A spent SuperGrok plan is one wording in both repositories'
@@ -1382,13 +1390,13 @@ assert test -r "$WALLS_SH"
 assert grep -Fq '.worker_wall = {resets_at:$w.reset,recorded_at:$at}' "$WALLS_SH"
 assert grep -Fq 'store_lock_acquire "$store.lock"' "$WALLS_SH"
 assert test -z "$(command grep -rlF 'claude-worker-runs/walls' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS")"
-for writer in "$WORKER_RUN" "$ROOT/ask_claude.sh" "$ROOT/ask_codex.sh" "$ROOT/ask_gemini.sh" \
+for writer in "$WORKER_RUN_TEXT" "$ROOT/ask_claude.sh" "$ROOT/ask_codex.sh" "$ROOT/ask_gemini.sh" \
   "$ROOT/bin/grok-image" "$ROOT/bin/grok-video"; do
   assert grep -Fq 'worker_walls_record' "$writer"
 done
 assert test "$(grep -rlE 'worker_wall *= *\{' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS" "$ROOT"/ask_*.sh | wc -l)" -eq 1
-assert grep -Fq 'record_run_wall' "$WORKER_RUN"
-assert grep -Fq 'worker_model_clear_walled_pin' "$WORKER_RUN"
+assert grep -Fq 'record_run_wall' "$WORKER_RUN_TEXT"
+assert grep -Fq 'worker_model_clear_walled_pin' "$WORKER_RUN_TEXT"
 assert grep -Fq 'limits_observed_wall(' "$ROOT/share/worker-walls.sh"
 for reader in "$WORKERPICK" "$STATUSLINE" "$LLMLIMITS"; do
   assert grep -Fq 'limits_wall_view(' "$reader"
@@ -1401,15 +1409,15 @@ assert test -z "$(command grep -F 'rowTitle("", "wall"' "$HAMMER")"
 assert test -z "$(command grep -F 'walled→' "$STATUSLINE")"
 assert test -z "$(command grep -F 'now + 3600' "$WALLS_SH")"
 assert grep -Fq '{guessed:true}' "$WALLS_SH"
-assert test -z "$(command grep -F 'date +%s) + 3600' "$WORKER_RUN")"
+assert test -z "$(command grep -F 'date +%s) + 3600' "$WORKER_RUN_TEXT")"
 assert doc_has 'limits_wall_view'
 assert grep -Fq 'limits_clean_wall($now)' "$LLMLIMITS"
 assert grep -Fq 'IN($cx_walls[])' "$WORKERPICK"
 assert grep -Fq 'IN($cb_walls[])' "$WORKERPICK"
 assert grep -Fq 'observed:(limits_observed_wall(.; $now) != null)}' "$WORKERPICK"
 assert grep -Fq 'IN($gr_walls[])' "$WORKERPICK"
-assert grep -Fq 'WALL: resumed session stays on' "$WORKER_RUN"
-assert test "$(grep -c 'pool not consulted' "$WORKER_RUN")" -eq 0
+assert grep -Fq 'WALL: resumed session stays on' "$WORKER_RUN_TEXT"
+assert test "$(grep -c 'pool not consulted' "$WORKER_RUN_TEXT")" -eq 0
 assert doc_has 'Run-observed worker wall records'
 assert doc_has 'Written only by `worker_walls_record`'
 
@@ -1566,25 +1574,25 @@ assert grep -Fq 'review-autonomy-$sid' "$STATUSLINE"
 # One id shape on both sides: a launch that stores an id the bench cannot read closes nothing, and
 # the fix the chat paid a worker for stays debt.
 assert doc_has 'A worker run carries the review round it fixes'
-assert test "$(grep -c "^REVIEW_ROUND_RE='^\[0-9\]{8}T\[0-9\]{6}Z-\[0-9a-f\]{7}(-\[0-9\]+)?\$'$" "$ROOT/bin/worker-run")" = 1
-assert grep -Fq '+ if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end' "$ROOT/bin/worker-run"
+assert test "$(grep -c "^REVIEW_ROUND_RE='^\[0-9\]{8}T\[0-9\]{6}Z-\[0-9a-f\]{7}(-\[0-9\]+)?\$'$" "$WORKER_RUN_TEXT")" = 1
+assert grep -Fq '+ if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end' "$WORKER_RUN_TEXT"
 assert grep -Fq 'ROUND_BRIEF_PREFIX = "ROUND:"' "$RB_ROUND"
-assert grep -Fq '    ROUND:*) ;;' "$ROOT/bin/worker-run"
-assert grep -Fq 'review_round=$(brief_review_round "$brief") || exit 4' "$ROOT/bin/worker-run"
+assert grep -Fq '    ROUND:*) ;;' "$WORKER_RUN_TEXT"
+assert grep -Fq 'review_round=$(brief_review_round "$brief") || exit 4' "$WORKER_RUN_TEXT"
 # Neither door named one, so the prose is read: an open round there refuses the launch, which is
 # what keeps a hand-written fix brief from landing as debt without binding a brief that only cites it.
-assert grep -Fq 'local shape=${REVIEW_ROUND_RE#^}' "$ROOT/bin/worker-run"
-assert grep -Fq 'grep -xE "${shape%'"'"'$'"'"'}"' "$ROOT/bin/worker-run"
+assert grep -Fq 'local shape=${REVIEW_ROUND_RE#^}' "$WORKER_RUN_TEXT"
+assert grep -Fq 'grep -xE "${shape%'"'"'$'"'"'}"' "$WORKER_RUN_TEXT"
 # One shape, one place: a second copy of the id pattern is how the scan lost the `-<n>` member
 # suffix the validator accepts.
-assert test "$(grep -c '\[0-9a-f\]{7}' "$ROOT/bin/worker-run")" = 1
-assert grep -Fq 'done < <(brief_text_rounds "$brief")' "$ROOT/bin/worker-run"
+assert test "$(grep -c '\[0-9a-f\]{7}' "$WORKER_RUN_TEXT")" = 1
+assert grep -Fq 'done < <(brief_text_rounds "$brief")' "$WORKER_RUN_TEXT"
 # The flag and the header name one round through one validator, and the id reaches the store that
 # closes the round: a launch that carries it no further leaves the fix unattributed.
-assert grep -Fq -e '--round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;' "$ROOT/bin/worker-run"
-assert grep -Fq -e '--session "$5" --round "$6" --owned)' "$ROOT/bin/worker-run"
+assert grep -Fq -e '--round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;' "$WORKER_RUN_TEXT"
+assert grep -Fq -e '--session "$5" --round "$6" --owned)' "$WORKER_RUN_TEXT"
 assert grep -Fq 'p.add_argument("--owned"' "$RB_ANCHORS"
-assert grep -Fq 'fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round"' "$ROOT/bin/worker-run"
+assert grep -Fq 'fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round"' "$WORKER_RUN_TEXT"
 assert grep -Fq 'f"fix:{a.round}:{a.run}"' "$RB_ANCHORS"
 
 # --- Row ar: worker run liveness identity --------------------------------------
@@ -1592,12 +1600,12 @@ assert grep -Fq 'f"fix:{a.round}:{a.run}"' "$RB_ANCHORS"
 # started_at (walled reroute) must never be the clock a live run is judged dead by.
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 assert doc_has 'Worker run liveness identity'
-assert grep -Fq '.pid_started_at = $began' "$ROOT/bin/worker-run"
-assert eq "$(grep -c '\.pid_started_at = ' "$ROOT/bin/worker-run")" 1
+assert grep -Fq '.pid_started_at = $began' "$WORKER_RUN_TEXT"
+assert eq "$(grep -c '\.pid_started_at = ' "$WORKER_RUN_TEXT")" 1
 # Wait, report, both launch guards and the Stop backstop share the supervisor
 # identity check.
 RUN_LIVENESS="$ROOT/share/run-liveness.sh"
-assert grep -Fq '. "$SCRIPT_DIRECTORY/../share/run-liveness.sh"' "$ROOT/bin/worker-run"
+assert grep -Fq '. "$SCRIPT_DIRECTORY/../share/run-liveness.sh"' "$WORKER_RUN_TEXT"
 assert grep -Fq '} | pids_alive_since)' "$ROOT/bin/worker-run-backstop.sh"
 assert grep -Fq 'pid_start_fits "$elapsed" "$began" "$now"' "$RUN_LIVENESS"
 assert eq "$(grep -c 'PID_START_SLACK' "$RUN_LIVENESS")" 3
@@ -1618,7 +1626,7 @@ assert grep -Fq '[ "$2" -gt 0 ] || return 1' "$RUN_LIVENESS"
 # before they believe the silence — pid 1, because a sandbox hiding every process but our own still
 # lists `$$` and a foreign supervisor then still reads gone.
 assert grep -Fq 'ps -p 1 -o etime=' "$RUN_LIVENESS"
-assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 5
+assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$WORKER_RUN_TEXT")" 5
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
   assert grep -Fq '[ "$pid" -gt 0 ] || { printf '"'"'unknown\n'"'"'; return 0; }' "$JOURNAL_LIB"
@@ -1862,7 +1870,7 @@ grep -Fq 'switched off' <<<"$(role_pick claudeb reviewers)" &&
 
 # The stderr contract: bin/worker-run reroutes on a line bin/worker-pick prints, so the consumer's
 # own grep pattern is run against the producer's live output.
-role_run_grep=$(sed -n "s/.*grep -q '\([^']*switched off[^']*\)'.*/\1/p" "$WORKER_RUN" | head -n1)
+role_run_grep=$(sed -n "s/.*grep -q '\([^']*switched off[^']*\)'.*/\1/p" "$WORKER_RUN_TEXT" | head -n1)
 [ -n "$role_run_grep" ] ||
   fail "row aj: bin/worker-run no longer greps a 'switched off' line out of bin/worker-pick's stderr: the workers wall it reroutes on became unreadable"
 printf 'claudeb_workers=off\n' >"$ROLE_MODEL"
@@ -2235,37 +2243,37 @@ rm -rf "$OC_ROSTER"
 # fall silently out of its review coverage — the failure looks like a chat that only ever edited one
 # file by hand.
 WORKER_RUN="$ROOT/bin/worker-run"
-assert grep -Fq '>"$directory/launcher"' "$WORKER_RUN"
-assert grep -Fq "printf 'WORKDIR: %s\\n' \"\$workdir\"" "$WORKER_RUN"
-assert grep -Fq "printf 'UNKNOWN: %s\\n' \"\$RUN_FILES_REASON\"" "$WORKER_RUN"
+assert grep -Fq '>"$directory/launcher"' "$WORKER_RUN_TEXT"
+assert grep -Fq "printf 'WORKDIR: %s\\n' \"\$workdir\"" "$WORKER_RUN_TEXT"
+assert grep -Fq "printf 'UNKNOWN: %s\\n' \"\$RUN_FILES_REASON\"" "$WORKER_RUN_TEXT"
 # The candidate set is the before/after content diff of the workdir and never a vendor transcript;
 # the transcript answers the other question, WHOSE those paths are, and the listing is the two
 # agreeing. Both PARTIAL rows say the narrowing did not happen, so a reader never mistakes a whole
 # repository's dirt for one run's work.
-assert grep -Fq 'snapshot_workdir "$directory" "$workdir" after' "$WORKER_RUN"
-assert grep -Fq 'compute_snapshot_files "$directory" "$workdir"' "$WORKER_RUN"
-assert eq "$(grep -c "printf 'PARTIAL: " "$WORKER_RUN")" 2
-assert grep -Fq "printf 'PARTIAL: %s\\n' \"\${RUN_LISTING_REASON:-\$RUN_LISTING_PARTIAL}\"" "$WORKER_RUN"
-assert grep -Fq 'PARTIAL: transcript names writes outside the snapshotted repository; see files-note' "$WORKER_RUN"
+assert grep -Fq 'snapshot_workdir "$directory" "$workdir" after' "$WORKER_RUN_TEXT"
+assert grep -Fq 'compute_snapshot_files "$directory" "$workdir"' "$WORKER_RUN_TEXT"
+assert eq "$(grep -c "printf 'PARTIAL: " "$WORKER_RUN_TEXT")" 2
+assert grep -Fq "printf 'PARTIAL: %s\\n' \"\${RUN_LISTING_REASON:-\$RUN_LISTING_PARTIAL}\"" "$WORKER_RUN_TEXT"
+assert grep -Fq 'PARTIAL: transcript names writes outside the snapshotted repository; see files-note' "$WORKER_RUN_TEXT"
 assert doc_has 'the candidates its own transcript also names'
 assert doc_has 'can never add a path the snapshot does not hold'
-assert grep -Fq 'mv -f "$directory/files.tmp.$$" "$directory/files"' "$WORKER_RUN"
+assert grep -Fq 'mv -f "$directory/files.tmp.$$" "$directory/files"' "$WORKER_RUN_TEXT"
 # The other half of the record, and the one that answers for a run which edited through the shell
 # alone: the worker's own session, whose hooks journaled those edits under an id no chat in the
 # repository answers for. One spelling across the writer and both readers, or the launching chat
 # commits its worker's work with no debt on it — which is exactly how it went in live (2026-08-20).
-assert grep -Fq '>>"$directory/worker-session"' "$WORKER_RUN"
+assert grep -Fq '>>"$directory/worker-session"' "$WORKER_RUN_TEXT"
 # EVERY vendor's session, not claudeb's alone: grok loads this machine's hooks out of
 # `~/.claude/settings.json` for Claude compatibility and journals under its own id, and gated on
 # claudeb those rows read as a chat nothing here answers for (live 2026-09-03).
-assert eq "$(sed -n '/^record_worker_session()/,/^}/p' "$WORKER_RUN" |
+assert eq "$(sed -n '/^record_worker_session()/,/^}/p' "$WORKER_RUN_TEXT" |
   grep -c '= claudeb \] || return 0')" 0
-assert grep -Fq 'session=$(session_id "$directory")' "$WORKER_RUN"
+assert grep -Fq 'session=$(session_id "$directory")' "$WORKER_RUN_TEXT"
 # The third reader: a waiver naming no path must drop the files a co-tenant's worker run claims,
 # which it can only do by looking in the same directory the other two sweep.
 rb_run_root=$(sed -n '/^def worker_run_root():/,/^$/p' "$CHATNAMES" |
   sed -n 's|.*Path.home() / "\(.*\)" / "\(.*\)")$|\1/\2|p' | head -1)
-worker_run_root=$(grep -oE 'WORKER_RUN_DIR:-\$HOME/[^}]*' "$WORKER_RUN" | head -1 | sed 's|.*\$HOME/||')
+worker_run_root=$(grep -oE 'WORKER_RUN_DIR:-\$HOME/[^}]*' "$WORKER_RUN_TEXT" | head -1 | sed 's|.*\$HOME/||')
 assert eq "$rb_run_root" '.cache/claude-worker-runs'
 assert eq "$worker_run_root" "$rb_run_root"
 assert grep -Fq 'os.environ.get("WORKER_RUN_DIR")' "$CHATNAMES"
@@ -2281,26 +2289,26 @@ assert doc_has '`<run-dir>/worker-session`'
 # what was already uncommitted at launch and by what the listing already names. One spelling across
 # the writer and its reader, and one rule about what it may claim — evidence of content, never of
 # authorship — or a snapshot of a shared checkout is read as one chat's work.
-assert grep -Fq 'mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before"' "$WORKER_RUN"
+assert grep -Fq 'mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before"' "$WORKER_RUN_TEXT"
 # The floor exists or nothing is claimed: an empty file is what a clean tree at launch looks like,
 # so a git that could not answer must leave none at all.
-assert grep -Fq '[ -f "$directory/dirty-before" ] || return 0' "$WORKER_RUN"
-assert grep -Fq 'mv -f "$directory/dirty.tmp.$$" "$directory/dirty"' "$WORKER_RUN"
+assert grep -Fq '[ -f "$directory/dirty-before" ] || return 0' "$WORKER_RUN_TEXT"
+assert grep -Fq 'mv -f "$directory/dirty.tmp.$$" "$directory/dirty"' "$WORKER_RUN_TEXT"
 # The reader of those two listings is the run's OWN fold, and no second walk of the records: the
 # changed set is their difference, each path carrying the blob it stood on, and the store takes both
 # through the flags it documents. Read anywhere else, a shared checkout's dirt is one chat's work.
-assert grep -Fq 'pairs=$(snapshot_changed_paths "$snap" "$4" changed-rows 2>/dev/null)' "$WORKER_RUN"
-assert grep -Fq 'fold+=("./$entry")' "$WORKER_RUN"
-assert grep -Fq 'fold+=("--base=./$entry=$base" "--after=./$entry=$after")' "$WORKER_RUN"
+assert grep -Fq 'pairs=$(snapshot_changed_paths "$snap" "$4" changed-rows 2>/dev/null)' "$WORKER_RUN_TEXT"
+assert grep -Fq 'fold+=("./$entry")' "$WORKER_RUN_TEXT"
+assert grep -Fq 'fold+=("--base=./$entry=$base" "--after=./$entry=$after")' "$WORKER_RUN_TEXT"
 assert grep -Fq "p.add_argument(\"--changed\", nargs=\"*\", default=[])" "$RB_ANCHORS"
 assert grep -Fq 'raise Fail(f"{flag} wants PATH=SHA: {pair}")' "$RB_ANCHORS"
 assert test -z "$(grep -rl 'worker-runs' --include='*.py' "$RB_PKG")"
 assert doc_has '`<run-dir>/dirty`'
 assert doc_has '`<run-dir>/dirty-before`'
 # The commit the tree stood on at launch, and the commit window the foreign split reads off it.
-assert grep -Fq 'mv -f "$directory/head-before.tmp.$$" "$directory/head-before"' "$WORKER_RUN"
+assert grep -Fq 'mv -f "$directory/head-before.tmp.$$" "$directory/head-before"' "$WORKER_RUN_TEXT"
 assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format='"'"'%H %ct'"'"' "$head..$after"' \
-  "$WORKER_RUN"
+  "$WORKER_RUN_TEXT"
 # Writer and reader must refuse the same path shapes, or a `-foo` row is dropped by the
 # sweep and the run is still stamped journaled.
 _shape_lib="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/review-journal.sh"
@@ -2311,17 +2319,17 @@ for _name in ok '-dash' '~tilde' $'tab\there' $'c1\xc2\x85name' 'with space' '..
 done
 _shape_split=$(bash -c 'eval "$(sed -n "/^path_shape_split()/,/^}/p; /^workdir_dirty_paths()/,/^}/p" "$1")"
   : >"$2.unshaped"; workdir_dirty_paths "$2" "$2.unshaped"; echo ---; tr "\0" "\n" <"$2.unshaped" | sort' \
-  _ "$WORKER_RUN" "$_shape_repo")
+  _ "$WORKER_RUN_TEXT" "$_shape_repo")
 _shape_want=$(bash -c 'eval "$(sed -n "/^rj_path_shape_ok()/,/^}/p" "$1")"; cd "$2" || exit 1; shopt -s dotglob
   for p in *; do [ "$p" = .git ] || ! rj_path_shape_ok "$p" || printf "%s\n" "$p"; done | sort -u; echo ---
   for p in *; do [ "$p" = .git ] || rj_path_shape_ok "$p" || printf "%s\n" "$p"; done | sort' _ "$_shape_lib" "$_shape_repo")
 assert eq "$_shape_split" "$_shape_want"
 assert test "$(printf 'ok\0' | bash -c 'eval "$(sed -n "/^path_shape_split()/,/^}/p" "$1")"; path_shape_split 0 ""' \
-  _ "$WORKER_RUN")" = ok
+  _ "$WORKER_RUN_TEXT")" = ok
 assert test "$(bash -c 'eval "$(sed -n "/^path_shape_split()/,/^}/p" "$1")"
-  printf "ok\0-dash\0" | path_shape_split 0 "" || echo refused' _ "$WORKER_RUN")" = refused
+  printf "ok\0-dash\0" | path_shape_split 0 "" || echo refused' _ "$WORKER_RUN_TEXT")" = refused
 # The foreign split runs only for a run some chat answers for.
-assert grep -Fq '[ -s "$directory/launcher" ] || return 0' "$WORKER_RUN"
+assert grep -Fq '[ -s "$directory/launcher" ] || return 0' "$WORKER_RUN_TEXT"
 assert doc_has '`<run-dir>/head-before`'
 REVIEW_GATE="$CLAUDE_SETUP/hooks/review-flow-gate.sh"
 if [ -r "$REVIEW_GATE" ]; then
@@ -2539,9 +2547,9 @@ assert test "$codex_named_rc" -ne 0
 assert grep -Fq 'codex_legacy_removed=$(codex_removal_marker main)' "$LLMLIMITS"
 assert grep -Fq 'codex_main_removed() { [ -e "$(codex_removal_marker main)" ]; }' "$CODEX_ACCOUNTS"
 assert grep -Fq 'marker=$(codex_removal_marker main)' "$CODEXB"
-assert grep -Fq 'share/codex-accounts.sh' "$WORKER_RUN"
+assert grep -Fq 'share/codex-accounts.sh' "$WORKER_RUN_TEXT"
 assert grep -Fq 'share/codex-accounts.sh' "$STATUSLINE"
-for codex_marker_reader in "$LLMLIMITS" "$CODEXB" "$WORKER_RUN" "$STATUSLINE" "$ROOT/hammerspoon/llm-limits.lua"; do
+for codex_marker_reader in "$LLMLIMITS" "$CODEXB" "$WORKER_RUN_TEXT" "$STATUSLINE" "$ROOT/hammerspoon/llm-limits.lua"; do
   if grep -Fq '.llm-limits-codex.json.removed' "$codex_marker_reader"; then
     fail "row cd: $(basename "$codex_marker_reader") spells main's marker instead of resolving it"
   fi
@@ -2643,11 +2651,11 @@ assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)"
 # substitutes one, answers for a choice nobody made.
 assert grep -Fq 'conf_get grok_model; gr_model=${conf_val:-auto}' "$WORKERPICK"
 assert grep -Fq 'conf_get grok_effort; gr_effort=${conf_val:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
-assert grep -Fq 'model=${model:-$(worker_model_default_model "$vendor")}' "$WORKER_RUN"
-assert grep -Fq 'effort=${effort:-$(worker_model_default_effort "$vendor" "$model" "$model_class")}' "$WORKER_RUN"
-assert grep -Fq '[ "$model" = auto ] || command_meta+=(-m "$model")' "$WORKER_RUN"
-assert grep -Fq 'worker_model_effort_allowed "$vendor" "$model" "$effort"' "$WORKER_RUN"
-assert grep -Fq 'outcome_line EFFORT_REFUSED' "$WORKER_RUN"
+assert grep -Fq 'model=${model:-$(worker_model_default_model "$vendor")}' "$WORKER_RUN_TEXT"
+assert grep -Fq 'effort=${effort:-$(worker_model_default_effort "$vendor" "$model" "$model_class")}' "$WORKER_RUN_TEXT"
+assert grep -Fq '[ "$model" = auto ] || command_meta+=(-m "$model")' "$WORKER_RUN_TEXT"
+assert grep -Fq 'worker_model_effort_allowed "$vendor" "$model" "$effort"' "$WORKER_RUN_TEXT"
+assert grep -Fq 'outcome_line EFFORT_REFUSED' "$WORKER_RUN_TEXT"
 assert doc_has 'Grok worker knobs'
 assert doc_has '`grok_model=auto`, `grok_effort=high`'
 
@@ -2725,17 +2733,17 @@ assert grep -Fq 'worker_claims_record "$query_vendor" "$query_answer"' "$WORKERP
 assert grep -Fq 'worker_claims_fresh' "$WORKERPICK"
 # Launchers with a ready-to-run profile claim through the picker's flag. Image launchers pick
 # without --claim, validate the profile, then call the same recorder so a ghost account does not burn the TTL.
-assert grep -Fq -- '--claim' "$ROOT/bin/worker-run"
+assert grep -Fq -- '--claim' "$WORKER_RUN_TEXT"
 # worker-run records a claim itself only for an account the brief named, which no pick claimed.
-assert eq "$(grep -c 'worker_claims_record' "$ROOT/bin/worker-run")" 1
-assert grep -Fq '[ -z "$explicit_account" ] || worker_claims_record "$vendor" "$account"' "$ROOT/bin/worker-run"
-assert grep -Fq 'worker_claims_release "$1" "$PICKED_ACCOUNT"' "$ROOT/bin/worker-run"
+assert eq "$(grep -c 'worker_claims_record' "$WORKER_RUN_TEXT")" 1
+assert grep -Fq '[ -z "$explicit_account" ] || worker_claims_record "$vendor" "$account"' "$WORKER_RUN_TEXT"
+assert grep -Fq 'worker_claims_release "$1" "$PICKED_ACCOUNT"' "$WORKER_RUN_TEXT"
 # Research picks for itself nowhere any more: the compatibility entrypoint submits a tracked
 # worker-run, and that run claims through the same picker flag every other relay uses.
 assert grep -Fq -- 'args=(start "$vendor" --role research' "$ROOT/bin/light-research"
 assert eq "$(grep -c 'worker-pick' "$ROOT/bin/light-research")" 0
-assert grep -Fq 'local role_arg=${WORKER_RUN_ROLE:-workers}' "$ROOT/bin/worker-run"
-assert grep -Fq 'export WORKER_RUN_ROLE=research' "$ROOT/bin/worker-run"
+assert grep -Fq 'local role_arg=${WORKER_RUN_ROLE:-workers}' "$WORKER_RUN_TEXT"
+assert grep -Fq 'export WORKER_RUN_ROLE=research' "$WORKER_RUN_TEXT"
 assert grep -Fq 'worker-claims.sh' "$ROOT/bin/grok-image"
 assert grep -Fq 'worker-claims.sh' "$ROOT/bin/grok-video"
 # Both grok media wrappers route through one selector, so the claim and the pick are asserted
@@ -2818,10 +2826,10 @@ assert grep -Fq 'local RESET_REDEEM_VENDORS = { grok = true, codex = true, claud
 assert grep -Fq 'M.resetRedeemCmd or "llm-reset-redeem"' "$HAMMER"
 assert grep -Fq 'hs.dialog.blockAlert' "$HAMMER"
 # Beyond the menu, only the two armed-only triggers reach it, each gated on an arm file existing.
-assert eq "$(grep -rlI 'llm-reset-redeem' "$ROOT/bin" "$ROOT/hammerspoon" "$LLMLIMITS" |
+assert eq "$(grep -rlI 'llm-reset-redeem' "$ROOT/bin" "$ROOT/share/"worker-run-*.sh "$ROOT/hammerspoon" "$LLMLIMITS" |
   grep -v '/bin/llm-reset-redeem$' | sort | tr '\n' ' ')" \
-  "$ROOT/bin/worker-run $ROOT/hammerspoon/llm-limits.lua $LLMLIMITS "
-for armed_trigger in "$ROOT/bin/worker-run" "$LLMLIMITS"; do
+  "$(printf '%s\n' "$ROOT/share/worker-run-pool.sh" "$ROOT/hammerspoon/llm-limits.lua" "$LLMLIMITS" | sort | tr '\n' ' ')"
+for armed_trigger in "$WORKER_RUN_TEXT" "$LLMLIMITS"; do
   assert eq "$(grep -c 'llm-reset-redeem' "$armed_trigger")" 1
   assert grep -Fq 'reset-arm/' "$armed_trigger"
   assert grep -Fq -- '--fire-armed' "$armed_trigger"
@@ -2968,7 +2976,7 @@ for vendor in $WEB_SEARCH_VENDORS; do
   assert grep -qE "^$vendor	" "$WEB_SEARCH"
   # Every vendor worker-run can launch has a row: without one web_search_args fails inside
   # `< <(...)`, where nothing reads its rc, and the run launches with no search argument at all.
-  assert grep -qE "^ *case \"\\\$vendor\" in .*$vendor" "$ROOT/bin/worker-run"
+  assert grep -qE "^ *case \"\\\$vendor\" in .*$vendor" "$WORKER_RUN_TEXT"
   for state in on off; do
     cell=$(web_search_column "$vendor" "$state")
     case "$cell" in
@@ -3000,13 +3008,13 @@ assert doc_has 'ONE table, `share/web-search.sh` `web_search_table`'
 # --- Rows cx, cy: the runtime doors ------------------------------------------------
 # worker-run's own door and the text gate refuse the same pair; the review nonce is the only token left.
 WORKER_RUN_BIN="$ROOT/bin/worker-run"
-assert grep -Fq 'worker_door "${1:-}"' "$WORKER_RUN_BIN"
-assert grep -Fq 'case "$1" in start | wait | run) ;;' "$WORKER_RUN_BIN"
+assert grep -Fq 'worker_door "${1:-}"' "$WORKER_RUN_TEXT"
+assert grep -Fq 'case "$1" in start | wait | run) ;;' "$WORKER_RUN_TEXT"
 assert grep -Fq '($owned or $p == "light-research"' "$ROOT/bin/worker-launch-gate.sh"
 assert grep -Fq '(if ((.env + .assigns) | any(.name == "REVIEW_BENCH_DOOR"))' "$ROOT/bin/worker-launch-gate.sh"
-assert grep -Fq 'local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh}' "$WORKER_RUN_BIN"
+assert grep -Fq 'local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh}' "$WORKER_RUN_TEXT"
 assert test -z "$(git -C "$ROOT" grep -l 'WORKER_RUN_RELAY' -- bin share 2>/dev/null)"
-assert grep -Fq '[ "${CLAUDEB_WORKER:-}" != 1 ] && [ "${GROK_WORKER:-}" != 1 ] && [ -z "${WORKER_RUN_ID:-}" ] ||' "$WORKER_RUN_BIN"
+assert grep -Fq '[ "${CLAUDEB_WORKER:-}" != 1 ] && [ "${GROK_WORKER:-}" != 1 ] && [ -z "${WORKER_RUN_ID:-}" ] ||' "$WORKER_RUN_TEXT"
 assert doc_has '`worker-run` refuses them inside any worker run (`CLAUDEB_WORKER`/`GROK_WORKER`=1 or `WORKER_RUN_ID` set, `worker_door`)'
 # The review nonce: one directory, one TTL, one variable name on both sides of the door.
 REVIEW_DOOR_HOOK="$FAMILY_SETUP_ROOT/hooks/review-flow-gate.sh"
@@ -3196,7 +3204,7 @@ assert doc_has '`account_roster <vendor>` in `share/account-roster.sh` is the on
 # against the roster (gemini_web cmd_accounts, the menu's gemini-web media rows) — never accounts.
 store_walk_re='(profiles_dir|PROFILES_DIR|PROFILES_ROOT|_profiles|-profiles)[}"]*/\*|(profiles|accounts)[^#]*\.(iterdir|glob|listdir|scandir)\(|(listdir|scandir|glob\.glob)\([^)]*(profiles|accounts|PROFILES)|hs\.fs\.dir\([^)]*(profiles|accounts)'
 assert eq "$(cd "$ROOT" && grep -rlIE "$store_walk_re" bin share hammerspoon llm-limits.sh | LC_ALL=C sort | tr '\n' ' ')" \
-  "bin/chat-load bin/chats bin/claude-chat-switch bin/claude-resume-timer bin/codexb bin/gemini-weather bin/llm-selfcheck bin/report-bus bin/updater-doctor bin/vendor-cli-update bin/vendor-fingerprint bin/worker-run hammerspoon/config/env_guard.lua hammerspoon/llm-limits.lua share/account-roster.sh share/chat_names.py share/gemini-accounts.sh share/gemini_web.py share/log-stores.json share/worker-run-browse.sh "
+  "bin/chat-load bin/chats bin/claude-chat-switch bin/claude-resume-timer bin/codexb bin/gemini-weather bin/llm-selfcheck bin/report-bus bin/updater-doctor bin/vendor-cli-update bin/vendor-fingerprint hammerspoon/config/env_guard.lua hammerspoon/llm-limits.lua share/account-roster.sh share/chat_names.py share/gemini-accounts.sh share/gemini_web.py share/log-stores.json share/worker-run-browse.sh share/worker-run-lifecycle.sh "
 for roster_site in bin/codexb bin/grokb; do
   assert grep -Eq '^account_names\(\) \{ [A-Z_]+="\$profiles_dir" account_roster (codex|grok); \}$' "$ROOT/$roster_site"
 done
@@ -3309,7 +3317,7 @@ assert eq "unlinked: $unlinked_run_names" "unlinked: "
 
 # Row ec: the worker-run journal's horizon and the suite journal's key order, as both writers spell them.
 assert doc_has 'WORKER_RUNS_KEEP_DAYS=35'
-assert grep -qx 'WORKER_RUNS_KEEP_DAYS=35' "$ROOT/bin/worker-run"
+assert grep -qx 'WORKER_RUNS_KEEP_DAYS=35' "$WORKER_RUN_TEXT"
 dk_keys=$(grep -o "'{\"kind\":\"%s\".*}}'" "$ROOT/tests/lib/suite-journal.sh" | grep -o '"[a-z_]*":' | tr -d '":' | paste -sd' ' -)
 assert eq "$dk_keys" 'kind pid queued_at started_at ended_at repo repo_root head tree scope suite_set worker_run session j slot signal complete suites'
 assert doc_has "key order \`${dk_keys// /, }\`"
@@ -3425,7 +3433,7 @@ assert grep -Fq 'local flag = geminiWebDir() .. "/windows-shown"' "$ROOT/hammers
 # browse/shown: read by browse_window and by the last Computer Use run's end, removed by --hide and by a window
 # that launches Chrome, written by --show
 assert eq "$(grep -c '(browse_dir)/shown"' "$ROOT/share/worker-run-browse.sh")" 5
-assert eq "$(cat "$ROOT/bin/worker-run" "$ROOT/share/worker-run-browse.sh" | grep -c 'browse_dir)/hidden')" 0
+assert eq "$(cat "$WORKER_RUN_TEXT" "$ROOT/share/worker-run-browse.sh" | grep -c 'browse_dir)/hidden')" 0
 assert grep -Fq 'local chrome = (hs.application.applicationsForBundleID("com.google.Chrome") or {})[1]' "$ROOT/hammerspoon/llm-limits.lua"
 assert doc_has '| en | Automation Chrome |'
 

@@ -692,3 +692,45 @@ browse_run() {
         "$dia" "${last:-none}" ;;
   esac
 }
+
+# Sets CUA_REPL_STATUS (registered|repaired|broken) and, when broken, CUA_REPL_ERROR.
+cua_repl_sync() { # codex-config
+  local sync_cmd="${BROWSE_CUA_SYNC:-$SCRIPT_DIRECTORY/codex-cua-repl-sync}" sync_rc=0 sync_stderr
+  CUA_REPL_STATUS=broken CUA_REPL_ERROR=''
+  sync_stderr=$(mktemp "${TMPDIR:-/tmp}/worker-run-cua.XXXXXX") || fail 'could not capture cua_repl diagnostics'
+  BROWSE_CODEX_CONFIG="$1" "$sync_cmd" --check >/dev/null 2>"$sync_stderr" || sync_rc=$?
+  if [ "$sync_rc" -eq 0 ]; then
+    CUA_REPL_STATUS=registered
+  elif [ "$sync_rc" -eq 1 ] && BROWSE_CODEX_CONFIG="$1" "$sync_cmd" >/dev/null 2>"$sync_stderr"; then
+    CUA_REPL_STATUS=repaired
+  fi
+  if [ "$CUA_REPL_STATUS" = broken ]; then
+    IFS= read -r CUA_REPL_ERROR <"$sync_stderr" || :
+    CUA_REPL_ERROR=${CUA_REPL_ERROR:-sync exited without diagnostics}
+  fi
+  rm -f "$sync_stderr"
+}
+
+sky_running() {
+  local pgrep_cmd="${BROWSE_PGREP:-pgrep}"
+  [ "${BROWSE_SKIP_PROCESSES:-0}" = 1 ] ||
+    $pgrep_cmd -x SkyComputerUseService >/dev/null 2>&1 || $pgrep_cmd -f SkyComputerUseService >/dev/null 2>&1
+}
+
+sky_ensure() { # real-home -> running|started|absent
+  local sky_app="${BROWSE_SKY_APP:-}" deadline
+  if sky_running; then printf running; return 0; fi
+  if [ -z "$sky_app" ]; then
+    sky_app="$HOME/.codex/computer-use/Codex Computer Use.app"
+    [ -d "$sky_app" ] || sky_app="$1/.codex/computer-use/Codex Computer Use.app"
+  fi
+  if [ -d "$sky_app" ]; then
+    ${BROWSE_OPEN:-open} "$sky_app" >/dev/null 2>&1 || true
+    deadline=$(( $(date +%s) + 15 ))
+    while [ "$(date +%s)" -le "$deadline" ]; do
+      if sky_running; then printf started; return 0; fi
+      sleep 0.25
+    done
+  fi
+  printf absent
+}

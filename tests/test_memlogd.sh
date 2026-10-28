@@ -121,6 +121,16 @@ case "$*" in
     [ -n "${GUARD_SCOPE:-}" ] || exit 0
     /bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" -v foreign="${FOREIGN_PIDS:-}" \
       -v aged="${AGED_PIDS:-}" '
+      # Two hours added to the real etime, not a fixed one: the start chat-load derives (now - etime) has to
+      # hold still between the row a guard draws and the stop that names it, however slow the machine is.
+      function older(e,   d, p, n, i, s) {
+        d = 0
+        if (index(e, "-")) { d = substr(e, 1, index(e, "-") - 1) + 0; e = substr(e, index(e, "-") + 1) }
+        n = split(e, p, ":"); s = 0
+        for (i = 1; i <= n; i++) s = s * 60 + p[i]
+        s += d * 86400 + 7200
+        return (s >= 86400 ? int(s / 86400) "-" : "") sprintf("%02d:%02d:%02d", int(s % 86400 / 3600), int(s % 3600 / 60), s % 60)
+      }
       BEGIN {
         n = split(scope, groups, " ")
         for (i = 1; i <= n; i++) keep[groups[i] + 0] = 1
@@ -134,7 +144,7 @@ case "$*" in
         for (i = 1; i <= n; i++) old[list[i] + 0] = 1
       }
       (($3 + 0) in keep) {
-        if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; if (($1 + 0) in root) $4 = 0; if (($1 + 0) in old) $7 = "02:00:00"
+        if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; if (($1 + 0) in root) $4 = 0; if (($1 + 0) in old) $7 = older($7)
         print
       }'
     ;;
@@ -1513,7 +1523,7 @@ assert jq -e --slurpfile a "$WORK/skew-before.json" '
 # one another here rather than each against its own idea of the format.
 WORKER_RUN="$ROOT/bin/worker-run"
 assert test -s "$SURFACE_RUN/memguard"
-surface=$(sed -n '/^memguard_lines() {/,/^}/p' "$WORKER_RUN")
+surface=$(sed -n '/^memguard_lines() {/,/^}/p' "$ROOT/share/worker-run-report.sh")
 assert test -n "$surface"
 printf '%s\nmemguard_lines "%s"\n' "$surface" "$SURFACE_RUN" >"$WORK/surface.sh"
 surface_out=$(bash "$WORK/surface.sh")
@@ -1528,9 +1538,9 @@ assert test -z "$(bash "$WORK/surface-quiet.sh")"
 # And every shape `report`/`wait` can print carries the line, the RUNNING one included: a run can be
 # cut while it is still going, and the cause must not wait for an exit code a torn run may never write.
 for shape in terminal_report unknown_report running_report; do
-  assert grep -q "memguard_lines" <(sed -n "/^$shape() {/,/^}/p" "$WORKER_RUN")
+  assert grep -q "memguard_lines" <(sed -n "/^$shape() {/,/^}/p" "$ROOT/share/worker-run-report.sh" "$ROOT/share/worker-run-wait.sh")
 done
-assert test "$(grep -c 'memguard_lines "\$directory"' "$WORKER_RUN")" -eq 5
+assert test "$(cat "$WORKER_RUN" "$ROOT/share/"worker-run-*.sh | grep -c 'memguard_lines "\$directory"')" -eq 5
 # The guard's own thresholds are stated once, in chat-load, and the decision record quotes them;
 # install-agent deploys chat-load beside the daemon copy launchd runs, which is where it is looked up.
 assert grep -q '^GUARD_AVAIL_MB = 2048$' "$ROOT/bin/chat-load"
@@ -1544,7 +1554,7 @@ assert grep -q '2048' "$ROOT/docs/memory-guard.md"
 assert grep -q '1536' "$ROOT/docs/memory-guard.md"
 assert grep -q '4096' "$ROOT/docs/memory-guard.md"
 # The agent process env is scoped to the run's own tree and set nowhere wider.
-assert grep -q 'export NX_PARALLEL=1 NX_DAEMON=false' "$WORKER_RUN"
+assert grep -q 'export NX_PARALLEL=1 NX_DAEMON=false' "$ROOT/share/worker-run-lifecycle.sh"
 
 # A Background agent gets no CPU once a runaway fan-out saturates the cores — on 2026-09-28 memlogd
 # went silent 13 s before swap started and never woke to log or guard the freeze.

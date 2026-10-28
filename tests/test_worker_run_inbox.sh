@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 2
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-lifecycle.sh
+# share/worker-run-wait.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 HOOK="$ROOT/bin/worker-inbox-hook.sh"

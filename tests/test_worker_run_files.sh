@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-claims.sh
+# share/worker-run-grok.sh share/worker-run-snapshot.sh share/worker-run-vendors.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 if suite_shard_owns 1 files-served-model; then
 
@@ -160,7 +162,7 @@ assert test "$(grep -c '^MD-GUARD' "$RUN_DIR/brief.launch")" = 1
 assert await_exit
 mv "$WORK/brief.plain" "$WORK/brief"
 # A resumed brief is titled by the task on its RESUME line, the context below only when that is bare.
-brief_title_of() ( eval "$(sed -n '/^brief_title() {/,/^}/p' "$RUNNER")"; brief_title "$1" )
+brief_title_of() ( eval "$(sed -n '/^brief_title() {/,/^}/p' "$ROOT/share/worker-run-brief.sh")"; brief_title "$1" )
 printf 'ACCOUNT: com\n\nRESUME claudeb-1-1-abcd: Map the hooks\nContext paragraph\n' >"$WORK/brief.resume"
 assert test "$(brief_title_of "$WORK/brief.resume")" = 'Map the hooks'
 printf 'RESUME claudeb-1-1-abcd:\nContext paragraph\n' >"$WORK/brief.resume"
@@ -169,7 +171,7 @@ assert test "$(brief_title_of "$WORK/brief.resume")" = 'Context paragraph'
 # holder left more than a minute ago is cleared on the way in, without first sitting out the wait.
 LOCK_RUN="$WORK/lock-run"
 mkdir -p "$LOCK_RUN"
-sed -n -e '/^with_lock() {/,/^}/p' "$RUNNER" >"$WORK/with-lock.fns"
+sed -n -e '/^with_lock() {/,/^}/p' "$ROOT/share/worker-run-lifecycle.sh" >"$WORK/with-lock.fns"
 locked_write() (
   . "$WORK/with-lock.fns"
   sleep() { printf .\\n >>"$WORK/claim-sleeps"; }

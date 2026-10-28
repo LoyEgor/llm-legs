@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-files.sh
+# share/worker-run-grok.sh share/worker-run-snapshot.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 mkdir -p "$WORK/shim"
 CALLS="$WORK/tool-calls"

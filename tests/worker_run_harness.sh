@@ -549,8 +549,11 @@ transcript_report() (
         listing_spelling transcript_wrote_through_shell workdir_escape_line file_lstat meta_unchanged; do
       ranges+=(-e "/^$name() {/,/^}/p")
     done
-    sed -n "${ranges[@]}" -e '/^SHELL_FLOOR_PARTIAL=/p; /^GEMINI_WRITE_TOOLS=/p; /^STAT_BUILTIN=/p; /^enable -f .*\/stat" stat/p' \
-      "$RUNNER" >"$WORK/transcript-report.fns"
+    # worker-run and the modules it sources, globbed: a module named here would make every suite sourcing this
+    # harness one of that module's own.
+    cat "$RUNNER" "$ROOT/share/"worker-run-*.sh |
+      sed -n "${ranges[@]}" -e '/^SHELL_FLOOR_PARTIAL=/p; /^GEMINI_WRITE_TOOLS=/p; /^STAT_BUILTIN=/p; /^enable -f .*\/stat" stat/p' \
+        >"$WORK/transcript-report.fns"
   fi
   . "$WORK/transcript-report.fns"
   compute_transcript_files "$directory"

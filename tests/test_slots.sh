@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3 wait
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-pool.sh
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
@@ -60,7 +61,7 @@ sysctl() { echo 32; }
 assert [ "$(run_suites_slots)" = 4-4 ]
 assert [ "$(worker_slots)" = 8-40 ]
 assert grep -qF '${RUN_SUITES_SLOTS:-$(run_suites_slots)}' "$ROOT/share/run-suites.sh"
-assert grep -qF '${WORKER_SLOTS:-$(worker_slots)}' "$ROOT/bin/worker-run"
+assert grep -qF '${WORKER_SLOTS:-$(worker_slots)}' "$ROOT/share/worker-run-lifecycle.sh"
 unset -f sysctl
 
 # Room: pressure level, load1, load15 and free MB, read by stubs from one file a background waiter sees too.

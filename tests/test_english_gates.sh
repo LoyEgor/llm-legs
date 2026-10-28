@@ -69,7 +69,7 @@ eq "$("$SHARE" --max)" "15"
 # --- 2. the brief worker-run is handed --------------------------------------
 # The preamble tells the worker who reads it, and it is the FIRST thing said: the rule the reports
 # were failing is the one a model must not have to infer from the task.
-has "$(sed -n 's/^BRIEF_PREAMBLE=.//p' "$RUNNER")" 'AUDIENCE: your reader is another model'
+has "$(sed -n 's/^BRIEF_PREAMBLE=.//p' "$ROOT/share/worker-run-texts.sh")" 'AUDIENCE: your reader is another model'
 
 # Every road to a vendor is closed: an English brief must reach the refusal AFTER this gate without
 # any chance of spending a real account on the suite.

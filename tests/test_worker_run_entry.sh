@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 4
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-lifecycle.sh
+# share/worker-run-pool.sh share/worker-run-watchdog.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 effort_refused() {
@@ -379,7 +381,7 @@ for tool in head grep sed; do
 done
 chmod +x "$WORK/fork-shim"/*
 printf 'RESUME x:\nACCOUNT:\tcom\r\nEFFORT: high\n' >"$WORK/header-brief"
-eval "$(sed -n '/^brief_line_value() {/,/^}/p' "$RUNNER")"
+eval "$(sed -n '/^brief_line_value() {/,/^}/p' "$ROOT/share/worker-run-brief.sh")"
 assert test "$(PATH="$WORK/fork-shim:$PATH" brief_line_value "$WORK/header-brief" ACCOUNT)" = com
 assert test "$(PATH="$WORK/fork-shim:$PATH" brief_line_value "$WORK/header-brief" EFFORT)" = high
 assert test ! -e "$WORK/forks.log"

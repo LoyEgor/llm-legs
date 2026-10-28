@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3 wait
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-brief.sh
+# share/worker-run-grok.sh share/worker-run-outcomes.sh share/worker-run-watchdog.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 # `wait` wakes on the exit through its kqueue: the harness's one-second poll only adds a meta read and
 # a python spawn per second these watchdog and wall windows are waited out.
@@ -61,7 +63,7 @@ reliability_tests() {
 
   if suite_shard_owns 1 R2; then
     (
-      eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$RUNNER")"
+      eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$ROOT/share/worker-run-pool.sh")"
       . "$ROOT/share/worker-walls.sh"
       worker_model_clear_walled_pin() { :; }
       date() { printf '%s\n' "$(cat "$WORK/wall-clock")"; }
@@ -95,7 +97,7 @@ reliability_tests() {
   # moment the CLI exits; reroute_walled's second record then reads no reset text.
   if suite_shard_owns 1 R2-redeem; then
     (
-      eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$RUNNER")"
+      eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$ROOT/share/worker-run-pool.sh")"
       . "$ROOT/share/worker-walls.sh"
       . "$ROOT/share/processes.sh"
       worker_model_clear_walled_pin() { sleep 2; }
@@ -167,7 +169,7 @@ reliability_tests() {
 
   if suite_shard_owns 1 A-mtime; then
     (
-      eval "$(sed -n '/^file_lstat() {/,/^}/p; /^newest_mtime() {/,/^}/p' "$RUNNER")"
+      eval "$(sed -n '/^file_lstat() {/,/^}/p; /^newest_mtime() {/,/^}/p' "$ROOT/share/worker-run-lifecycle.sh")"
       STAT_BUILTIN=''
       stat() {
         [ "$1" != -f ] || { printf 'filesystem info\n'; return 1; }

@@ -149,7 +149,7 @@ assert test "$(pyq 'import night_spend as n; print(n.ended_on_wall("claudeb-1-1-
 assert test "$(pyq 'import night_spend as n, collections as c; print(n.walled_share({"kinds": {"fixers": c.Counter(a=300)}, "walled": 63}))')" = 21.0
 
 # worker-run: a deferred job ends the run before its slot; a long wait re-picks a picked account, never a named one.
-eval "$(sed -n '/^night_admit() {/,/^}/p' "$ROOT/bin/worker-run")"
+eval "$(sed -n '/^night_admit() {/,/^}/p' "$ROOT/share/worker-run-pool.sh")"
 declare -F night_admit >/dev/null || fail "worker-run has no night_admit"
 run="$WORK/run" && mkdir -p "$run"
 printf '{"account": "old", "explicit_account": "", "resume": "", "model": "opus"}' >"$run/meta.json"

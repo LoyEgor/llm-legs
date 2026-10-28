@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3 wait
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-brief.sh
+# share/worker-run-files.sh share/worker-run-snapshot.sh share/worker-run-watchdog.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc

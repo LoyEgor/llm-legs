@@ -21,7 +21,7 @@ printf '1\n' >"$RUN/attempt"
 printf 'chat-session\n' >"$RUN/launcher"
 
 . "$ROOT/share/store-lock.sh"
-source <(sed -n "/^record_worker_session() {/,/^}/p;/^file_bytes() {/,/^}/p;/^journal_worker_attempt() {/,/^}/p" "$ROOT/bin/worker-run")
+source <(sed -n "/^record_worker_session() {/,/^}/p;/^file_bytes() {/,/^}/p;/^journal_worker_attempt() {/,/^}/p" "$ROOT/share/worker-run-lifecycle.sh")
 record() { # session
   (
     set +u

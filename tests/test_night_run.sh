@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 4
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-report.sh
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -44,7 +44,7 @@ assert grep -q -- '--role research' "$WORK/picks"; assert grep -q '^profile=rese
 assert grep -qxF "(allow file-write* (subpath \"$(readlink -f "$HOME/.cache/geminib")\"))" "$RUNS/$run_id/sandbox.sb"
 FAKE_EDIT="$REPO/blocked" run; rc=$?; assert test "$rc" -eq 5; assert grep -q 'OUTCOME: READ_ONLY_VIOLATION' "$WORK/out"; assert test ! -e "$REPO/blocked"
 assert jq -e --arg fake "$ROOT/bin/light-research" '.cli != $fake' "$RUNS/$run_id/meta.json"
-assert grep -q 'supervise_gemini_research' "$ROOT/bin/worker-run"
+assert grep -q 'supervise_gemini_research' "$ROOT/share/worker-run-lifecycle.sh"
 # run_with_deadline installs the supervisor's TERM/INT traps in its CALLER's shell, so a subshell
 # around the call orphans the sandboxed CLI when the run is signalled.
 assert test "$(grep -cE '\(cd .*run_with_deadline' "$ROOT/share/light-research.sh")" = 0

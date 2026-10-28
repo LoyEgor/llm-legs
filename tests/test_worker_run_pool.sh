@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-files.sh
+# share/worker-run-lifecycle.sh share/worker-run-outcomes.sh share/worker-run-rounds.sh
+# share/worker-run-vendors.sh share/worker-run-watchdog.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 service_tier_is() { assert grep -qxF "ARG=service_tier=\\\"$1\\\"" "$CALL_LOG"; } # tier
 

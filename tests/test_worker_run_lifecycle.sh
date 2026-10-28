@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-pool.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 if suite_shard_owns 1 lifecycle-detached; then

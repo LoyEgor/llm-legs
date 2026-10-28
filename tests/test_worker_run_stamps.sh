@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 3
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-browse.sh
+# share/worker-run-claims.sh share/worker-run-files.sh share/worker-run-rounds.sh share/worker-run-snapshot.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # A model outside the table is refused before the account is resolved: an explicit --model, the

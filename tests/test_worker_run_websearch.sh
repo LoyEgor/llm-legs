@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 4
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-grok.sh
+# share/worker-run-snapshot.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # Web search, every vendor against every entry point, driven from the one table the launcher reads:

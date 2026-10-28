@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-rounds.sh
 . "$(dirname "$0")/light_research_harness.sh" || exit 1
 
 # Batching: several --prompt-file run side by side and land under ONE citation header.

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 2
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-claims.sh
+# share/worker-run-files.sh share/worker-run-lifecycle.sh share/worker-run-pool.sh share/worker-run-rounds.sh
+# share/worker-run-snapshot.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # --- the anchors store ---------------------------------------------------------------------------
@@ -263,7 +266,7 @@ attribution_fixture() { # sets the caller's repo and outside
 }
 attribution_repair_tests() {
   local repo outside command variant report note
-  eval "$(sed -n '/^writes_through_shell() {/,/^}/p' "$RUNNER")"
+  eval "$(sed -n '/^writes_through_shell() {/,/^}/p' "$ROOT/share/worker-run-files.sh")"
   shell_writes() { # command -> 0 unless the classifier answers "no write" (1); a parser failure counts as a write
     local rc=0
     writes_through_shell 3<<<"$(jq -Rn --arg c "$1" '$c')" || rc=$?
@@ -271,8 +274,8 @@ attribution_repair_tests() {
   }
   # A window's shell commands are classified by one python3, and the first reason still wins: a write
   # before an unnamed-target call is the shell's, one after it is not.
-  eval "$(sed -n '/^classify_tool_rows() {/,/^}/p' "$RUNNER")"
-  eval "$(grep '^SHELL_FLOOR_PARTIAL=' "$RUNNER")"
+  eval "$(sed -n '/^classify_tool_rows() {/,/^}/p' "$ROOT/share/worker-run-files.sh")"
+  eval "$(grep '^SHELL_FLOOR_PARTIAL=' "$ROOT/share/worker-run-files.sh")"
   mkdir -p "$WORK/py-shim"
   printf '#!/bin/sh\necho python3 >>"%s"\nexec "%s" "$@"\n' "$WORK/py-runs" "$(command -v python3)" >"$WORK/py-shim/python3"
   chmod +x "$WORK/py-shim/python3"
@@ -508,7 +511,8 @@ fold_pairs_tests() {
   done >"$run/dirty-after-shas"
   (
     eval "$(sed -n '/^path_shape_split() {/,/^}/p;/^snapshot_pairs() {/,/^}/p
-      /^snapshot_changed_paths() {/,/^}/p;/^fold_family_anchors() {/,/^}/p' "$RUNNER")"
+      /^snapshot_changed_paths() {/,/^}/p;/^fold_family_anchors() {/,/^}/p' \
+      "$ROOT/share/worker-run-snapshot.sh" "$ROOT/share/worker-run-rounds.sh")"
     eval "$(declare -f snapshot_pairs | sed '1s/snapshot_pairs/counted_snapshot_pairs/')"
     snapshot_pairs() { echo >>"$shim/pairs"; counted_snapshot_pairs "$@"; }
     review_anchors() { printf '%s\n' "$@" >"$shim/fold"; }

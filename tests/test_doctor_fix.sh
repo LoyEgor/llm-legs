@@ -412,7 +412,7 @@ mkdir -p "$L/docs" && printf '%0199d\n' 0 >"$L/docs/stale.md"
 git -C "$L" add docs && git -C "$L" -c user.name=t -c user.email=t@t commit -qm stale
 for n in n1 n3 n4; do git -C "$L" update-ref "refs/night/$n/base" HEAD; done
 git -C "$WORK/projects/proj" update-ref refs/night/n1/base HEAD
-eval "$(sed -n '/^brief_add_dirs() {/,/^}/p' "$ROOT/bin/worker-run")"
+eval "$(sed -n '/^brief_add_dirs() {/,/^}/p' "$ROOT/share/worker-run-brief.sh")"
 
 if suite_shard_owns 2 df-night-launch-close; then
 # A night launch opens no chat: one run per area, each with its worktree on its own branch and a brief.

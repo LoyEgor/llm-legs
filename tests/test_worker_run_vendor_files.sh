@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-files.sh
+# share/worker-run-grok.sh share/worker-run-outcomes.sh share/worker-run-report.sh share/worker-run-rounds.sh
+# share/worker-run-snapshot.sh
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # --- Per-file lists from the gemini and codex transcripts ----------------------------------------
@@ -87,7 +90,7 @@ assert test "$(grep -c 'agy-write-failed' <<<"$report")" -eq 0
 
 # `transcript.jsonl` sits beside the one that was read and carries the same rows with the tool_call
 # ARGUMENTS stripped: read instead of `transcript_full.jsonl` it can name no file ever again.
-assert grep -q 'transcript_full.jsonl' "$ROOT/bin/worker-run"
+assert grep -q 'transcript_full.jsonl' "$ROOT/share/worker-run-vendors.sh"
 
 # A shell command that WRITES leaves the run exactly as unanswerable as it was before any extractor
 # existed: the transcript names the editor calls and nothing names the redirect beside them.
