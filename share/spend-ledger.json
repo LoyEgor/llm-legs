@@ -3697,7 +3697,7 @@
    },
    "verdict": "kept",
    "zero": "removal saves ~0.3 s a run (0.0 min/day); loses the haiku trial line pins (family folding, landed/reverted/unlanded fixes) and the night-run wiring grep",
-   "note": "one fixture build + one haiku_trial.py spawn; TEMP-HAIKU-TRIAL removed whole by the haiku-review-cells experiment, not by speed work"
+   "note": "one fixture build + one spawn of the Haiku trial report; the Haiku trial report removed whole by the haiku-review-cells experiment, not by speed work"
   },
   {
    "id": "suite:llm-legs/test_py39_annotations",

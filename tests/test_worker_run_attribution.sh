@@ -348,24 +348,20 @@ attribution_repair_tests() {
     rm -f "$STUB_DIR/relay_hook"
     if [ "$variant" = unreadable ] || [ "$variant" = missing ]; then
       assert_fails grep -qx bin/named "$RUN_DIR/files"
-      assert_fails grep -q bin/named "$RUN_DIR/produced"
       assert grep -qx bin/named "$RUN_DIR/dirty"
       assert grep -qx bin/restored "$RUN_DIR/dirty"
       assert_fails grep -q 'snapshot stands\|another writer' "$RUN_DIR/files-note"
       assert "$RUNNER" claim "$RUN_ID" --paths bin/named bin/restored >/dev/null
       assert grep -qx bin/restored "$RUN_DIR/files"
-      assert grep -q bin/restored "$RUN_DIR/produced"
       continue
     elif [ "$variant" = shellonly ]; then
       assert grep -qx base "$repo/bin/restored"
       assert_fails grep -qx bin/named "$RUN_DIR/files"
     else
       assert grep -qx bin/named "$RUN_DIR/files"
-      assert grep -q bin/named "$RUN_DIR/produced"
     fi
     assert bash -c '! grep -qx "$1" "$2"' \
       'rule change: restoring a co-tenant path does not establish ownership' bin/restored "$RUN_DIR/files"
-    assert_fails grep -q bin/restored "$RUN_DIR/produced"
     if [ "$variant" = namedonly ]; then
       assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
       assert test ! -e "$RUN_DIR/dirty"
@@ -389,7 +385,6 @@ attribution_repair_tests() {
       assert grep -q "^UNNAMED: .*worker-run claim $RUN_ID" <<<"$report"
       assert "$RUNNER" claim "$RUN_ID" --paths bin/restored >/dev/null
       assert grep -qx bin/restored "$RUN_DIR/files"
-      assert grep -q bin/restored "$RUN_DIR/produced"
     fi
   done
 }
@@ -428,10 +423,8 @@ outside_worktree_tests() {
     assert await_exit
     if [ "$variant" = outside_only ]; then
       assert_fails grep -qx bin/named "$RUN_DIR/files"
-      assert test ! -s "$RUN_DIR/produced"
     else
       assert grep -qx bin/named "$RUN_DIR/files"
-      assert grep -q bin/named "$RUN_DIR/produced"
     fi
     report=$("$RUNNER" report "$RUN_ID")
     for written in edited second; do
@@ -441,9 +434,7 @@ outside_worktree_tests() {
     done
     assert grep -q '^PARTIAL: .*outside the snapshotted repository' "$RUN_DIR/files"
     assert_fails grep -q '^UNKNOWN: ' "$RUN_DIR/files"
-    assert_fails grep -q "$outside/edited" "$RUN_DIR/produced"
     assert test ! -e "$RUN_DIR/dirty"
-    assert_fails grep -q bin/outside-cotenant "$RUN_DIR/produced"
   done
   [ -n "${WORKER_RUN_TEST_ATTRIBUTION_CASE:-}" ] && [ "$WORKER_RUN_TEST_ATTRIBUTION_CASE" != made_worktree ] && return 0
   trees="$repo/.claude/worktrees"
@@ -498,17 +489,16 @@ outside_worktree_tests() {
   git -C "$repo" worktree remove --force "$trees/task"
 }
 
-# produced_edit_rows reads every path's floor and end in one pass, whatever the path count: a
-# per-path awk/cat/git start was thousands of processes on a wide fix. A name is matched as bytes,
-# so `1` and `01` are two files, never one numeric value.
-produced_rows_tests() {
-  local repo="$WORK/produced-rows" run="$WORK/produced-rows-run" head path rows
+# A family fold reads its changed set and that set's bases off one snapshot_pairs pass. A name is
+# matched as bytes, so `1` and `01` are two files, never one numeric value.
+fold_pairs_tests() {
+  local repo="$WORK/fold-pairs" run="$WORK/fold-pairs-run" shim="$WORK/fold-pairs-shim" head path
   git init -q "$repo"
   for path in a b c d e 1 01; do printf '%s\n' "$path" >"$repo/$path"; done
   git -C "$repo" add -A
   git -C "$repo" -c user.email=t@t -c user.name=t commit -qm base
   head=$(git -C "$repo" rev-parse HEAD)
-  mkdir -p "$run" "$WORK/produced-rows-shim"
+  mkdir -p "$run" "$shim"
   for path in a b c d e 1; do printf 'x\n' >>"$repo/$path"; done
   printf '%s\n' "$head" >"$run/head-before"
   printf '%s\n' "$head" >"$run/head-after"
@@ -516,45 +506,29 @@ produced_rows_tests() {
   for path in a b c d e 1; do
     printf '%s\t%s\n' "$(git -C "$repo" hash-object "$path")" "$path"
   done >"$run/dirty-after-shas"
-  for path in git awk cat; do
-    printf '#!/usr/bin/env bash\necho %s >>"%s/starts"\nexec %s "$@"\n' "$path" "$WORK/produced-rows-shim" \
-      "$(command -v "$path")" >"$WORK/produced-rows-shim/$path"
-    chmod +x "$WORK/produced-rows-shim/$path"
-  done
-  : >"$WORK/produced-rows-shim/starts"
-  rows=$(
-    eval "$(sed -n '/^hash_workdir_paths() {/,/^}/p;/^hash_workdir_path() {/,/^}/p;/^snapshot_blob() {/,/^}/p
-      /^produced_spelling() {/,/^}/p;/^produced_edit_rows() {/,/^}/p' "$RUNNER")"
-    printf '%s\n' a b c d e 1 01 | PATH="$WORK/produced-rows-shim:$PATH" produced_edit_rows "$run" "$repo" '' "$head"
-  )
-  assert test "$(wc -l <"$WORK/produced-rows-shim/starts" | tr -d ' ')" -le 1
-  assert test "$(grep -c '' <<<"$rows")" = 6
-  assert grep -qxF "$(git -C "$repo" rev-parse "$head:1")	$(git -C "$repo" hash-object "$repo/1")	1" <<<"$rows"
-  assert_fails grep -q '	01$' <<<"$rows"
-  # A family fold reads its changed set and that set's bases off one snapshot_pairs pass.
   (
     eval "$(sed -n '/^path_shape_split() {/,/^}/p;/^snapshot_pairs() {/,/^}/p
       /^snapshot_changed_paths() {/,/^}/p;/^fold_family_anchors() {/,/^}/p' "$RUNNER")"
     eval "$(declare -f snapshot_pairs | sed '1s/snapshot_pairs/counted_snapshot_pairs/')"
-    snapshot_pairs() { echo >>"$WORK/produced-rows-shim/pairs"; counted_snapshot_pairs "$@"; }
-    review_anchors() { printf '%s\n' "$@" >"$WORK/produced-rows-shim/fold"; }
-    : >"$WORK/produced-rows-shim/pairs"
+    snapshot_pairs() { echo >>"$shim/pairs"; counted_snapshot_pairs "$@"; }
+    review_anchors() { printf '%s\n' "$@" >"$shim/fold"; }
+    : >"$shim/pairs"
     fold_family_anchors "$run" "$run" "$repo" "$repo" launcher round 1 01
-    assert test "$(grep -c '' "$WORK/produced-rows-shim/pairs")" = 1
-    assert test "$(grep -c '^--changed$' "$WORK/produced-rows-shim/fold")" = 1
-    assert grep -qxF -- "--base=./1=$(git -C "$repo" rev-parse "$head:1")" "$WORK/produced-rows-shim/fold"
-    assert grep -qxF -- "--after=./1=$(git -C "$repo" hash-object "$repo/1")" "$WORK/produced-rows-shim/fold"
-    assert_fails grep -q -- '^--base=./01=' "$WORK/produced-rows-shim/fold"
-    printf '%s\n' "$asserts" >"$WORK/produced-rows-shim/asserts"
+    assert test "$(grep -c '' "$shim/pairs")" = 1
+    assert test "$(grep -c '^--changed$' "$shim/fold")" = 1
+    assert grep -qxF -- "--base=./1=$(git -C "$repo" rev-parse "$head:1")" "$shim/fold"
+    assert grep -qxF -- "--after=./1=$(git -C "$repo" hash-object "$repo/1")" "$shim/fold"
+    assert_fails grep -q -- '^--base=./01=' "$shim/fold"
+    printf '%s\n' "$asserts" >"$shim/asserts"
   )
   assert test "$?" -eq 0
   # The subshell's asserts count toward the PASS line too.
-  asserts=$(($(cat "$WORK/produced-rows-shim/asserts") + 1))
+  asserts=$(($(cat "$shim/asserts") + 1))
 }
 
 if suite_shard_owns 1 attr-anchors-store; then anchors_store_tests; fi
 if suite_shard_owns 2 attr-repair; then attribution_repair_tests; fi
 if suite_shard_owns 1 attr-outside-worktrees; then outside_worktree_tests; fi
-if suite_shard_owns 2 attr-produced-rows; then produced_rows_tests; fi
+if suite_shard_owns 2 attr-fold-pairs; then fold_pairs_tests; fi
 
 echo "PASS: $asserts asserts; the review-anchors store and attribution repair"

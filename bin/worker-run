@@ -1669,7 +1669,7 @@ persist_run_files() {
     rm -f "$directory/files.tmp.$$" 2>/dev/null
   printf '%s' "$RUN_FILES_EXTERNAL$nonrepo_named" >"$directory/files-external" 2>/dev/null || :
   record_workdir_dirt "$directory" "$workdir"
-  [ -n "$RUN_FILES_REASON" ] || record_produced "$directory" "$workdir"
+  [ -n "$RUN_FILES_REASON" ] || split_foreign_commits "$directory" "$workdir"
   transcript_crosscheck "$directory"
   return 0
 }
@@ -1691,7 +1691,7 @@ run_commit_paths() { # directory workdir
     needle=${needle:1:${#needle}-2}
     grep -qF -- "$needle" <<<"$RUN_SHELL_COMMANDS" || continue
     git -C "$top" diff-tree --no-commit-id --no-renames --name-only -r "$sha" -- 2>/dev/null |
-      while IFS= read -r path; do produced_spelling "$top" "$rel" "$path"; printf '\n'; done
+      while IFS= read -r path; do top_rel_spelling "$top" "$rel" "$path"; printf '\n'; done
   done < <(git -C "$top" log --format='%H%x09%s' "$before..$after" -- 2>/dev/null)
 }
 
@@ -1760,7 +1760,7 @@ workdir_escape_line() { # directory
 }
 
 # Same arms as ../claude-setup/hooks/lib/review-journal.sh `rj_path_shape_ok`: a path the reader
-# would skip must never land in `produced` and then vanish from the ledger. It stays out of the
+# would skip must never land in `files` and then vanish from the ledger. It stays out of the
 # listing and goes into the snapshot's `unshaped` digest instead: a run that changed one fails the
 # snapshot closed, and one stray `-` file no longer blinds every run in its tree (logo-vectorizer-bench
 # 2026-10-01: 47 runs a day folded as `snapshots unreadable`). NUL-terminated entries in, `skip`
@@ -1928,7 +1928,7 @@ snapshot_workdir() { # directory workdir side
       [ "$(cat "$directory/unshaped-before" 2>/dev/null)" = "$(cat "$directory/unshaped-$side.tmp.$$")" ]; } &&
     mv -f "$directory/unshaped-$side.tmp.$$" "$directory/unshaped-$side" || {
     rm -f "$directory/unshaped-$side.tmp.$$"
-    [ "$side" = after ] && rm -f "$directory/produced" "$directory/dirty"
+    [ "$side" = after ] && rm -f "$directory/dirty"
     return 1
   }
   head=$(git -C "$workdir" rev-parse --verify --quiet HEAD 2>/dev/null) || head=''
@@ -2052,7 +2052,7 @@ compute_snapshot_files() { # directory workdir
   case "$rel" in "$top"/*) rel=${rel#"$top"/} ;; *) rel='' ;; esac
   RUN_FILES_LIST=$(while IFS= read -r path; do
     [ -n "$path" ] || continue
-    produced_spelling "$top" "$rel" "$path"
+    top_rel_spelling "$top" "$rel" "$path"
     printf '\n'
   done <<<"$paths" | sort -u)
 }
@@ -2103,126 +2103,13 @@ listing_top_paths() { # directory top workdir
       { print (rel == "" ? $0 : rel "/" $0) }' | sort -u
 }
 
-# Spelled the way the LISTING spells its rows — relative to the workdir, absolute outside it — so
-# one reader resolves both records against the same anchor.
-produced_spelling() { # top rel path
+# Spelled the way the LISTING spells its rows — relative to the workdir, absolute outside it.
+top_rel_spelling() { # top rel path
   [ -n "$2" ] || { printf '%s' "$3"; return 0; }
   case "$3" in
     "$2"/*) printf '%s' "${3#"$2"/}" ;;
     *) printf '%s' "$1/$3" ;;
   esac
-}
-
-# `<prev>\t<cur>\t<path>` for each top-relative path on stdin whose content moved while the run ran.
-# `prev` is what stood there when the run was LAUNCHED — the floor's sha where the path was already
-# dirty, HEAD's blob then otherwise — never what stands there now: the reader joins these rows to a
-# tree by SHA alone, and a prev read off the current HEAD names a link nothing produced. Both sides
-# are hashed with `-w`: the reader prices a link by diffing the two blobs out of the object store,
-# and one never written there prices the whole file.
-produced_edit_rows() { # directory top rel head-before
-  local path row i mode=hash
-  local -a paths=() curs=()
-  while IFS= read -r path; do
-    [ -z "$path" ] || paths+=("$path")
-  done
-  [ "${#paths[@]}" -ne 0 ] || return 0
-  if [ -f "$1/head-after" ]; then
-    mode=after
-  elif row=$(printf '%s\0' "${paths[@]}" | hash_workdir_paths "$2" 2>/dev/null); then
-    while IFS= read -r row; do curs+=("${row%%$'\t'*}"); done <<<"$row"
-  fi
-  for i in "${!paths[@]}"; do
-    printf '%s\0%s\0' "${paths[$i]}" "${curs[$i]:--}"
-  done | python3 -c '
-import os, re, subprocess, sys
-
-directory, top, rel, head = (os.fsencode(arg) for arg in sys.argv[1:5])
-after_mode = sys.argv[5] == "after"
-records = sys.stdin.buffer.read().split(b"\0")
-pairs = list(zip(records[0::2], records[1::2]))
-
-
-def read(path):
-    try:
-        with open(path, "rb") as fh:
-            return fh.read()
-    except OSError:
-        return None
-
-
-def listing(name):
-    first, member = {}, set()
-    for line in (read(directory + b"/" + name) or b"").split(b"\n"):
-        cells = line.split(b"\t")
-        if len(cells) >= 2:
-            member.add(cells[1])
-        if len(cells) == 2:
-            first.setdefault(cells[1], cells[0])
-    return first, member
-
-
-# The ls-tree index answers only where `rev-parse <rev>:<path>` walks the tree exactly: rev-parse
-# reads `..`, `^`, `@`, `~` and `:` as revision syntax, and a non-ASCII name may be precomposed.
-SAFE = re.compile(rb"\A[A-Za-z0-9_+,=. -]+(?:/[A-Za-z0-9_+,=. -]+)*\Z")
-trees = {}
-
-
-def rev_parse(rev, path):
-    if rev not in trees:
-        listed = subprocess.run(["git", "-C", top, "ls-tree", "-r", "-t", "-z", "--full-tree", rev],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        entries = None
-        if listed.returncode == 0:
-            entries = {}
-            for entry in listed.stdout.split(b"\0"):
-                meta, tab, name = entry.partition(b"\t")
-                if tab:
-                    entries[name] = meta.split(b" ")[2]
-        trees[rev] = entries
-    entries = trees[rev]
-    if entries is not None and SAFE.match(path) and b".." not in path and b"/./" not in b"/" + path + b"/":
-        return entries.get(path, b"")
-    return subprocess.run(["git", "-C", top, "rev-parse", "--verify", "--quiet", rev + b":" + path],
-                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.rstrip(b"\n")
-
-
-def stripped(name):
-    return b"".join((read(directory + b"/" + name) or b"").split())
-
-
-def snapshot_blob(side, path):
-    sha = listings[side][0].get(path, b"")
-    if not sha:
-        rev = stripped(b"head-" + side)
-        if rev:
-            sha = rev_parse(rev, path)
-    return sha or b"-"
-
-
-def spelling(path):
-    if not rel:
-        return path
-    return path[len(rel) + 1:] if path.startswith(rel + b"/") else top + b"/" + path
-
-
-listings = {side: listing(b"dirty-" + side + b"-shas") for side in (b"before", b"after")}
-after_head = (read(directory + b"/head-after") or b"").replace(b"\0", b"").rstrip(b"\n")
-out = []
-for path, cur in pairs:
-    if after_mode:
-        cur = snapshot_blob(b"after", path)
-        if after_head and after_head != head and path not in listings[b"after"][1]:
-            head_blob = rev_parse(head, path) if head else b""
-            if snapshot_blob(b"before", path) == (head_blob or b"-"):
-                continue
-    prev = listings[b"before"][0].get(path, b"")
-    if not prev and head:
-        prev = rev_parse(head, path)
-    prev = prev or b"-"
-    if prev != cur:
-        out.append(prev + b"\t" + cur + b"\t" + spelling(path) + b"\n")
-sys.stdout.buffer.write(b"".join(out))
-' "$1" "$2" "$3" "$4" "$mode"
 }
 
 record_workdir_dirt() { # directory workdir
@@ -5191,38 +5078,23 @@ last_messages() { # directory
     awk 'NR == 1 { print "(no final answer; the worker'"'"'s last messages:)" } { print }'
 }
 
-produced_commit_rows() { # top rel head-before [after]
-  local top="$1" rel="$2" head="$3" after directory="${RUN_DIRECTORY:-}" since until dirty foreign
-  after=${4-}
-  [ "$#" -ge 4 ] || after=$(git -C "$top" rev-parse --verify --quiet HEAD 2>/dev/null) || return 0
+# The paths, spelled as the listing spells them, that commits landed outside the run's own window
+# touched in head-before..head-after: another chat's work the snapshot pair cannot tell from this run's.
+foreign_commit_paths() { # directory top rel head-before after
+  local directory="$1" top="$2" rel="$3" head="$4" after="$5" since until dirty=/dev/null
   [ -n "$after" ] && [ "$after" != "$head" ] || return 0
-  foreign=/dev/null
-  dirty=/dev/null
-  if [ -n "$directory" ]; then
-    [ -f "$directory/dirty-before-shas" ] && dirty=$directory/dirty-before-shas
-    foreign=${RUN_FOREIGN_FILE:-/dev/null}
-    since=$(jq -r '.pid_started_at // .started_at // empty' "$directory/meta.json" 2>/dev/null)
-  fi
+  [ -f "$directory/dirty-before-shas" ] && dirty=$directory/dirty-before-shas
+  since=$(jq -r '.pid_started_at // .started_at // empty' "$directory/meta.json" 2>/dev/null)
+  [[ "$since" =~ ^[0-9]+$ ]] || return 0
   until=$(date +%s)
-  export AWK_TOP=$top AWK_REL=$rel AWK_DIRTY=$dirty AWK_FOREIGN=$foreign
-  if [ -n "${since:-}" ] && [[ "$since" =~ ^[0-9]+$ ]]; then
-    export AWK_WINDOW=1 AWK_SINCE=$since AWK_UNTIL=$until
-  else
-    export AWK_WINDOW=0 AWK_SINCE=0 AWK_UNTIL=0
-  fi
-  {
-    if [ -n "$head" ] && git -C "$top" merge-base --is-ancestor "$head" "$after" 2>/dev/null; then
-      git -C "$top" log --raw -m --no-renames --no-abbrev --reverse -z --format='%H %ct' "$head..$after"
-    else
-      [ -n "$head" ] || head=$(git -C "$top" hash-object -w -t tree --stdin </dev/null)
-      git -C "$top" diff --raw --no-renames --no-abbrev -z "$head" "$after" --
-    fi
-  } 2>/dev/null | tr '\0' '\n' |
-    awk '
+  # A HEAD that is no descendant of head-before has no commit window to read, so nothing is foreign.
+  [ -n "$head" ] && git -C "$top" merge-base --is-ancestor "$head" "$after" 2>/dev/null || return 0
+  git -C "$top" log --raw -m --no-renames --no-abbrev --reverse -z --format='%H %ct' "$head..$after" 2>/dev/null |
+    tr '\0' '\n' |
+    AWK_TOP=$top AWK_REL=$rel AWK_DIRTY=$dirty AWK_SINCE=$since AWK_UNTIL=$until awk '
       BEGIN {
         top = ENVIRON["AWK_TOP"]; rel = ENVIRON["AWK_REL"]
         since = ENVIRON["AWK_SINCE"]+0; until = ENVIRON["AWK_UNTIL"]+0
-        window = ENVIRON["AWK_WINDOW"]+0; foreign = ENVIRON["AWK_FOREIGN"]
         in_window = 1
         while ((getline line < ENVIRON["AWK_DIRTY"]) > 0) {
           split(line, d, "\t")
@@ -5231,40 +5103,28 @@ produced_commit_rows() { # top rel head-before [after]
       }
       !NF { next }
       pending != "" {
-        top_path = $0
-        if (top_path in predirty) { pending = ""; next }
-        path = top_path
+        pending = ""
+        if (in_window || $0 in predirty) next
+        path = $0
         if (rel != "") {
           if (index(path, rel "/") == 1) path = substr(path, length(rel) + 2)
           else path = top "/" path
         }
-        if (window && !in_window) {
-          if (foreign != "" && foreign != "/dev/null") print path >> foreign
-          pending = ""
-          next
-        }
-        split(pending, f, " ")
-        prev = f[3]; cur = f[4]
-        if (prev ~ /^0+$/) prev = "-"
-        if (cur ~ /^0+$/) cur = "-"
-        printf "%s\t%s\t%s\tcommit\n", prev, cur, path
-        pending = ""
+        print path
         next
       }
       /^:/ { pending = $0; next }
       {
-        if (window) {
-          split($0, h, " ")
-          ct = h[2]+0
-          in_window = (ct >= since && ct <= until) ? 1 : 0
-        }
+        split($0, h, " ")
+        ct = h[2]+0
+        in_window = (ct >= since && ct <= until) ? 1 : 0
       }'
 }
 
-# TEMP-HAIKU-TRIAL(report): `produced` is read only by share/haiku_trial.py and time_budget's dead_runs (which
-# files/HEAD already decide); its write here and claim's append go with that experiment, the foreign split stays.
-record_produced() { # directory workdir
-  local directory="$1" workdir="$2" top rel head after foreign commits
+# Paths that commits outside the run window touched leave the listing: the snapshot pair cannot tell
+# them from the run's own, and a listed one goes to the dirt record for the launching chat to claim.
+split_foreign_commits() { # directory workdir
+  local directory="$1" workdir="$2" top rel head after foreign
   RUN_FOREIGN_NOTE=''
   [ -s "$directory/launcher" ] || return 0
   top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
@@ -5277,22 +5137,7 @@ record_produced() { # directory workdir
   head=$(tr -d '[:space:]' <"$directory/head-before" 2>/dev/null)
   after=$(cat "$directory/head-after" 2>/dev/null)
   foreign="$directory/foreign.tmp.$$"
-  commits="$directory/commit-rows.tmp.$$"
-  : >"$foreign"
-  RUN_DIRECTORY=$directory
-  RUN_FOREIGN_FILE=$foreign
-  produced_commit_rows "$top" "$rel" "$head" "$after" >"$commits"
-  unset RUN_FOREIGN_FILE
-  {
-    produced_edit_rows "$directory" "$top" "$rel" "$head" \
-      < <(listing_top_paths "$directory" "$top" "$workdir")
-    AWK_LIST="$RUN_FILES_LIST" awk -F'\t' 'BEGIN { n=split(ENVIRON["AWK_LIST"], p, "\n"); for (i=1;i<=n;i++) named[p[i]]=1 } $3 in named' "$commits"
-  } | AWK_FOREIGN=$foreign awk -F'\t' '
-      BEGIN { while ((getline p < ENVIRON["AWK_FOREIGN"]) > 0) if (p != "") skip[p]=1 }
-      NF >= 3 && !($3 in skip)
-    ' >"$directory/produced.tmp.$$" 2>/dev/null &&
-    mv -f "$directory/produced.tmp.$$" "$directory/produced" 2>/dev/null ||
-    rm -f "$directory/produced.tmp.$$" 2>/dev/null
+  foreign_commit_paths "$directory" "$top" "$rel" "$head" "$after" >"$foreign"
   if [ -s "$foreign" ]; then
     RUN_FOREIGN_NOTE='commits outside the run window landed in head-before..head-after; those paths are unattributed'
     sort -u "$foreign" | sed '/^$/d' >"$foreign.sorted"
@@ -5315,7 +5160,7 @@ record_produced() { # directory workdir
       RUN_FOREIGN_NOTE+="; $(grep -c '' <<<"$stripped") of them this run's listing named are in the dirt record to claim"
     fi
   fi
-  rm -f "$foreign" "$commits"
+  rm -f "$foreign"
   return 0
 }
 
@@ -5554,26 +5399,6 @@ claim_run() {
       rm -f "$directory/dirty" 2>/dev/null
     fi
   fi
-  # A claimed path is content this run produced too, and `produced` was written when the run ended:
-  # left out of it, the very paths a claim exists to name are invisible to every reader that takes
-  # this record over the listing. APPENDED and never recomputed — the rows already standing were
-  # measured at the run's end, and a fresh pass now would date a co-tenant's later edit to this run.
-  if [ -n "$top" ] && [ -f "$directory/produced" ]; then
-    local head rel row
-    head=$(tr -d '[:space:]' <"$directory/head-before" 2>/dev/null)
-    rel=${workdir%/}
-    case "$rel" in
-      "$top"/*) rel=${rel#"$top"/} ;;
-      *) rel='' ;;
-    esac
-    while IFS= read -r row; do
-      grep -qxF -- "$row" "$directory/produced" 2>/dev/null ||
-        printf '%s\n' "$row" >>"$directory/produced"
-    done < <(produced_edit_rows "$directory" "$top" "$rel" "$head" \
-      < <(for absolute in ${resolved[@]+"${resolved[@]}"}; do
-            case "$absolute" in ("$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
-          done))
-  fi
   if [ -n "$top" ]; then
     local -a touched=()
     for absolute in ${resolved[@]+"${resolved[@]}"}; do
@@ -5753,7 +5578,7 @@ fold_family_anchors() { # directory snap repo top launcher round [path...]
 
 # What a round fixer changed, told to the anchors store from the one path that runs whatever the run's
 # end was — a clean exit, a nonzero one, an operator's kill, the launch timeout. The changed set is
-# the run's OWN before/after listings and never the transcript's `files`/`produced`: a heredoc no
+# the run's OWN before/after listings and never the transcript's `files`: a heredoc no
 # tool call names still moved content.
 # A round run's record in a family whose checkout is gone is dropped in its main checkout: left
 # open, `review-anchors check` reads it as a dead run forever.

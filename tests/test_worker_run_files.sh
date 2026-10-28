@@ -264,7 +264,6 @@ assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: tests/edited-by-the-run' <<<"$report"
 assert test "$(grep -c '^RUN-FILE: ' <<<"$report")" -eq 1
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
-assert_fails grep -q 'written-by-a-co-tenant' "$RUN_DIR/produced"
 assert grep -qx "1 path(s) .* by another writer .*: bin/written-by-a-co-tenant" "$RUN_DIR/files-note"
 
 # A Task subagent's edits are in its own transcript beside the session's, and they are the run's.
@@ -317,18 +316,15 @@ gate_open
 assert await_exit
 assert grep -qx 'tests/edited-by-the-run' "$RUN_DIR/files"
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
-assert_fails grep -q 'written-by-a-co-tenant' "$RUN_DIR/produced"
 assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
 assert grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/dirty"
 assert_fails grep -qx 'tests/edited-by-the-run' "$RUN_DIR/dirty"
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -q "^UNNAMED: .*worker-run claim $RUN_ID" <<<"$report"
 assert grep -q 'written-by-a-co-tenant' <<<"$report"
-# And the launching chat says which of them were its worker's: a claim names the path and the
-# record answers for its content again.
+# And the launching chat says which of them were its worker's: a claim names the path.
 assert "$RUNNER" claim "$RUN_ID" --paths bin/written-by-a-co-tenant >/dev/null
 assert grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
-assert grep -q 'written-by-a-co-tenant' "$RUN_DIR/produced"
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/dirty"
 
 # An unreadable listing cannot turn the snapshot into evidence of ownership.
@@ -428,18 +424,13 @@ EOF
     assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
     assert "$RUNNER" claim "$RUN_ID" --paths "$path" "bin/shell-deleted-$vendor" >/dev/null
     assert grep -qx "$path" "$RUN_DIR/files"
-    assert grep -q "$path" "$RUN_DIR/produced"
     assert grep -qx "bin/shell-deleted-$vendor" "$RUN_DIR/files"
-    assert grep -q $'\t-\t'"bin/shell-deleted-$vendor"'$' "$RUN_DIR/produced"
     assert_fails grep -q "bin/shell-touched-$vendor" "$RUN_DIR/files"
-    assert_fails grep -q "bin/shell-touched-$vendor" "$RUN_DIR/produced"
     assert_fails grep -q '^UNKNOWN: ' "$RUN_DIR/files"
     assert test ! -e "$RUN_DIR/dirty"
-    frozen=$(cat "$RUN_DIR/produced")
     printf 'later content\n' >"$SNAPSHOT_TARGET"
     assert grep -qx "RUN-FILE: $path" <<<"$("$RUNNER" report "$RUN_ID")"
     assert "$RUNNER" claim "$RUN_ID" --paths "$path" >/dev/null
-    assert test "$(cat "$RUN_DIR/produced")" = "$frozen"
     assert_fails "$RUNNER" claim "$RUN_ID" --paths "bin/shell-touched-$vendor" >"$WORK/snapshot-claim.out" 2>&1
     assert grep -q "not in this run's snapshot diff" "$WORK/snapshot-claim.out"
     rm -f "$STUB_DIR/relay_hook"
@@ -465,7 +456,6 @@ EOF
     assert bash -c '! grep -qx "$1" "$2"' \
       'rule change: restoring a co-tenant path does not establish ownership' \
       'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/files"
-    assert_fails grep -q 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/produced"
     if [ "$variant" = cotenant ]; then
       note="1 path(s) .* by another writer .*: bin/the-co-tenant-was-already-editing-this"
       assert test ! -e "$RUN_DIR/dirty"
@@ -512,7 +502,6 @@ EOF
   assert_fails grep -qx 'bin/guard-unrecorded' "$RUN_DIR/files"
   assert grep -qx 'bin/guard-unrecorded' "$RUN_DIR/dirty"
   assert_fails grep -q 'bin/guard-recorded\|bin/guard-tree' "$RUN_DIR/dirty"
-  assert grep -q 'bin/guard-recorded' "$RUN_DIR/produced"
   assert grep -qx 'RUN-FILE: bin/guard-recorded' <<<"$("$RUNNER" report "$RUN_ID")"
   rm -f "$STUB_DIR/relay_hook"
   rm -rf "$DIRT_REPO/bin/guard-tree" "$DIRT_REPO/bin/guard-recorded" "$DIRT_REPO/bin/guard-unrecorded"

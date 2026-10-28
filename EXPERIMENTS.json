@@ -13,17 +13,5 @@
       "llm-limits --table banner once overdue"
     ],
     "how_to_remove": "Read the evidence per arm and ask the owner which change stays. Then delete every TEMP-FLOW-TRUST(gemini-web) block (share/gemini_web.py: trust, trust_arm, trust_hand_done and their call sites in cmd_login, cmd_accounts; the block in tests/test_flow_image.sh), delete ~/.gemini-web/flow-trust.json, set flow_day_takes in ~/.gemini-web/accounts/<a>.json to what the verdict says (or remove it), clear the arm walls the owner releases in ~/.gemini-web/walls.json, then this entry, and run tests/run-all $(tests/affected share/gemini_web.py)."
-  },
-  {
-    "id": "haiku-review-cells",
-    "tag": "TEMP-HAIKU-TRIAL(report)",
-    "what": "Haiku 5.5 review cells in production, chunked and judged by the Opus blind judge (Egor, 2026-10-10; review-bench 16dcb55 legacy lens staffs haiku-high, 22c0acd speed lens haiku-high x2, fit since b7b7dd2): hypothesis: Haiku cells reach judge-confirmed findings comparable to the other cells per round, and fixes of their findings are no more often reverted or left unlanded",
-    "started": "2026-10-12",
-    "review_by": "2026-10-26",
-    "evidence": "review rounds under ~/.claude-profiles/.claudeb/worker-stats/benches/ (meta.json lens, panel_raters, judge.state; findings-<cell>.jsonl; verdicts.jsonl) and their fixer runs (~/.cache/claude-worker-runs/*/meta.json review_round, verdicts.jsonl, produced); read one night with `python3 -B share/haiku_trial.py <~/.cache/doctors/nights/<id>.json>`",
-    "surfaces": [
-      "night-run report: one `haiku trial · <lens> · <round>` line per fit, legacy and speed round staffing a Haiku cell"
-    ],
-    "how_to_remove": "The Updater doctor reads the lines and decides with its owner whether review-bench keeps or reverts 16dcb55 and 22c0acd. Removal: delete share/haiku_trial.py, the haiku_trial.py call tagged TEMP-HAIKU-TRIAL(report) in bin/night-run cmd_report and tests/test_night_report_haiku.sh; `grep -rn 'TEMP-HAIKU-TRIAL' .` must print nothing; delete this entry last and run tests/run-all $(tests/affected <the changed files>)."
   }
 ]

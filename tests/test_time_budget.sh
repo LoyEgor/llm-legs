@@ -320,7 +320,7 @@ DEAD = "claudeb-%d-5-dddd" % (D0 + 30000)
 dead_row = {"run": DEAD, "status": "failed", "round": None, "pid_started_at": D0 + 30000, "started_at": D0 + 30000,
             "cli_starts": [D0 + 30010], "ended_at": D0 + 30610, "workdir": "/w/feat"}
 dead_files = {"session": "dead0001-aaaa", "worker-session": "dead0001-aaaa", "files": "WORKDIR: /w/feat\n",
-              "head-before": "abc\n", "head-after": "abc\n", "produced": "", "files-external": "",
+              "head-before": "abc\n", "head-after": "abc\n", "files-external": "",
               "result": "Failed to authenticate: OAuth session expired and could not be refreshed\n",
               "brief": "EFFORT: low\n\nRESUME dead0001-aaaa: its own resume is no continuation\n"}
 run_dir(DEAD, dead_files)
@@ -334,7 +334,6 @@ alive = {"files names a path": dict(dead_files, files="WORKDIR: /w/feat\nsrc/a.p
          "no files record": {k: v for k, v in dead_files.items() if k != "files"},
          "head moved": dict(dead_files, **{"head-after": "def\n"}),
          "no head after": {k: v for k, v in dead_files.items() if k != "head-after"},
-         "produced": dict(dead_files, produced="-\tabc\tsrc/a.py\tedit\n"),
          "wrote outside": dict(dead_files, **{"files-external": "/tmp/x\n"}),
          "a report": dict(dead_files, result="Failed to authenticate.\nDone: the fixture passes, 3 files read\n"),
          "a long error": dict(dead_files, result="API Error: " + "x" * 400 + "\n")}
@@ -342,7 +341,7 @@ kept = [why for why, files in alive.items() if run_dir(DEAD, files) or T.dead_ru
 run_dir(DEAD, dead_files)
 check(kept == [] and T.dead_runs([dict(dead_row, status="done")]) == T.dead_runs([dict(dead_row, round=2)])
       == T.dead_runs([dict(dead_row, workdir="/w/logo-vectorizer-bench")]) == set(),
-      "a changed file, an unknown or partial listing, a missing record, a moved HEAD, produced content, a write "
+      "a changed file, an unknown or partial listing, a missing record, a moved HEAD, a write "
       "outside, a report or a done, review or bench run is never dead: %s" % kept)
 run_dir("claudeb-%d-6-eeee" % (D0 + 20000), {"brief": "RESUME dead0001-aaaa: an earlier resume\n",
                                              "meta.json": json.dumps({"pid_started_at": D0 + 20000})})

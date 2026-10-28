@@ -280,44 +280,23 @@ git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
 ATTR_TOP=$(cd "$ATTR_REPO" && pwd -P)
 tab=$'\t'
 blob_of() { printf '%s\n' "$1" | git -C "${1:-$ATTR_REPO}" hash-object --stdin; }
-attr_blob() { printf '%s\n' "$1" | git -C "$ATTR_REPO" hash-object --stdin; }
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$ATTR_TOP/bin/keep" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 
 start_gated claudeb --workdir "$ATTR_REPO"
-printf 'stale-produced\n' >"$RUN_DIR/produced"
 printf 'WORKDIR: %s\nstale-dirty\n' "$ATTR_TOP" >"$RUN_DIR/dirty"
 mv "$ATTR_REPO/.git" "$ATTR_REPO/.git.hidden"
 gate_open
 assert await_done
 mv "$ATTR_REPO/.git.hidden" "$ATTR_REPO/.git"
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
-assert test ! -e "$RUN_DIR/produced"
 assert test ! -e "$RUN_DIR/dirty"
 assert grep -q '^UNNAMED: ' "$WORK/wait.out"
 assert grep -q "claim $RUN_ID" "$WORK/wait.out"
 assert grep -q '^UNNAMED: ' <<<"$("$RUNNER" report "$RUN_ID")"
 assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/keep >"$WORK/claim-unknown.out" 2>&1
 assert grep -q 'no after-snapshot' "$WORK/claim-unknown.out"
-
-clear_stub
-printf 'B\n' >"$ATTR_REPO/bin/rewritten-open"
-git -C "$ATTR_REPO" add bin/rewritten-open
-git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'head blob B' >/dev/null
-printf 'D\n' >"$ATTR_REPO/bin/rewritten-open"
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Edit file_path "$ATTR_TOP/bin/rewritten-open" \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-start_gated claudeb --workdir "$ATTR_REPO"
-printf 'C\n' >"$ATTR_REPO/bin/rewritten-open"
-git -C "$ATTR_REPO" add bin/rewritten-open
-git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'the run committed C' >/dev/null
-gate_open
-assert await_exit
-assert grep -qxF -- "$(attr_blob D)$tab$(attr_blob C)${tab}bin/rewritten-open" "$RUN_DIR/produced"
-assert_fails grep -q $'\tbin/rewritten-open\tcommit$' "$RUN_DIR/produced"
-assert_fails grep -qxF -- "$(attr_blob B)$tab$(attr_blob C)${tab}bin/rewritten-open${tab}commit" "$RUN_DIR/produced"
 
 clear_stub
 UP_REPO="$WORK/upstream-repo"
@@ -340,8 +319,6 @@ git -C "$WORK/run-clone" fetch -q origin && git -C "$WORK/run-clone" merge --ff-
 printf 'ours\n' >"$WORK/run-clone/bin/ours"
 gate_open
 assert await_exit
-assert grep -q 'bin/ours' "$RUN_DIR/produced"
-assert_fails grep -q 'from-upstream' "$RUN_DIR/produced"
 assert_fails grep -qx 'bin/from-upstream' "$RUN_DIR/files"
 assert grep -q 'outside the run window' "$RUN_DIR/files-note"
 # A path such a commit touched that the run also edited loses its row, and the claim offer names it.
@@ -371,7 +348,6 @@ gate_open
 assert await_exit
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert_fails grep -q -- '-odd-name' "$RUN_DIR/files"
-assert test ! -e "$RUN_DIR/produced"
 
 # Present before the run and untouched by it, the same file leaves the rest of the snapshot standing.
 clear_stub
@@ -384,8 +360,7 @@ gate_open
 assert await_exit
 assert_fails grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert grep -qx 'bin/keep' "$RUN_DIR/files"
-assert_fails grep -q -- '-odd-name' "$RUN_DIR/files" "$RUN_DIR/produced"
-assert grep -q $'\tbin/keep$' "$RUN_DIR/produced"
+assert_fails grep -q -- '-odd-name' "$RUN_DIR/files"
 
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
@@ -396,7 +371,6 @@ printf 'rewritten\n' >"$ATTR_REPO/-odd-name"
 gate_open
 assert await_exit
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
-assert test ! -e "$RUN_DIR/produced"
 # The launching chat can still name what the unknown snapshot could not.
 assert test ! -e "$RUN_DIR/head-after"
 assert "$RUNNER" claim "$RUN_ID" --paths bin/keep --complete >/dev/null
@@ -425,20 +399,9 @@ ln -s missing "$ATTR_REPO/dangling"
 ln -s target-dir "$ATTR_REPO/new-link-dir"
 gate_open
 assert await_exit
-link_prev=$(printf '%s' old-file | git -C "$ATTR_REPO" hash-object --stdin)
-link_cur=$(printf '%s' new-file | git -C "$ATTR_REPO" hash-object --stdin)
-dang_cur=$(printf '%s' missing | git -C "$ATTR_REPO" hash-object --stdin)
-dir_cur=$(printf '%s' target-dir | git -C "$ATTR_REPO" hash-object --stdin)
-assert grep -qxF -- "$link_prev$tab$link_cur${tab}link-file" "$RUN_DIR/produced"
-assert_fails grep -q 'dangling\|new-link-dir' "$RUN_DIR/produced"
 assert grep -qx dangling "$RUN_DIR/dirty"
 assert grep -qx new-link-dir "$RUN_DIR/dirty"
 assert "$RUNNER" claim "$RUN_ID" --paths dangling new-link-dir >/dev/null
-assert grep -qxF -- "-$tab$dang_cur${tab}dangling" "$RUN_DIR/produced"
-assert grep -qxF -- "-$tab$dir_cur${tab}new-link-dir" "$RUN_DIR/produced"
-assert_fails grep -q $'\t-\tdangling$' "$RUN_DIR/produced"
-assert_fails grep -q $'\t-\tnew-link-dir$' "$RUN_DIR/produced"
-assert_fails grep -q $'\t-\tlink-dir$' "$RUN_DIR/produced"
 
 # snapshot_tab_or_newline_path_unknown
 clear_stub
@@ -456,7 +419,6 @@ assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
 assert test "$(grep -cv '^WORKDIR: \|^UNKNOWN: ' "$RUN_DIR/files")" -eq 0
 assert_fails grep -qx 'bin/keep' "$RUN_DIR/files"
-assert test ! -s "$RUN_DIR/produced"
 rm -f "$ATTR_REPO/bin/has${tab}tab" "$ATTR_REPO/bin/has"$'\n'"nl"
 
 # snapshot_linked_worktree_attribution
@@ -468,7 +430,6 @@ printf 'wt-head\n' >"$WT_DIR/bin/in-wt"
 git -C "$WT_DIR" add bin/in-wt
 git -C "$WT_DIR" -c user.email=t@t -c user.name=t commit -qm 'worktree head' >/dev/null
 WT_HEAD=$(git -C "$WT_DIR" rev-parse HEAD)
-WT_PREV=$(git -C "$WT_DIR" rev-parse HEAD:bin/in-wt)
 MAIN_HEAD=$(git -C "$ATTR_REPO" rev-parse HEAD)
 assert test "$WT_HEAD" != "$MAIN_HEAD"
 printf 'main-only\n' >"$ATTR_REPO/bin/main-dirt"
@@ -481,9 +442,7 @@ gate_open
 assert await_exit
 assert test "$(cat "$RUN_DIR/head-before")" = "$WT_HEAD"
 assert grep -qx 'bin/in-wt' "$RUN_DIR/files"
-assert grep -qxF -- "$WT_PREV$tab$(attr_blob run-edit)${tab}bin/in-wt" "$RUN_DIR/produced"
 assert_fails grep -q 'main-dirt' "$RUN_DIR/files"
-assert_fails grep -q 'main-dirt' "$RUN_DIR/produced"
 assert_fails grep -q '^UNKNOWN: \|^PARTIAL: ' "$RUN_DIR/files"
 
 # snapshot_rename_delete_and_birth
@@ -502,13 +461,8 @@ git -C "$ATTR_REPO" mv bin/renamed-from bin/renamed-to
 git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'rename inside the run' >/dev/null
 gate_open
 assert await_exit
-rename_blob=$(attr_blob same-blob)
 assert grep -qx 'bin/renamed-from' "$RUN_DIR/files"
 assert grep -qx 'bin/renamed-to' "$RUN_DIR/files"
-assert grep -qxF -- "$rename_blob$tab-${tab}bin/renamed-from${tab}commit" "$RUN_DIR/produced"
-assert grep -qxF -- "-$tab$rename_blob${tab}bin/renamed-to${tab}commit" "$RUN_DIR/produced"
-assert_fails grep -q 'renamed-from.*renamed-to' "$RUN_DIR/produced"
-assert_fails grep -q 'renamed-to.*renamed-from' "$RUN_DIR/produced"
 
 # snapshot_missing_after_killed_supervisor
 clear_stub
@@ -521,7 +475,7 @@ gate_open
 assert await_exit
 assert test -f "$RUN_DIR/dirty-before-shas"
 assert test -f "$RUN_DIR/head-before"
-rm -f "$RUN_DIR/head-after" "$RUN_DIR/dirty-after-shas" "$RUN_DIR/files" "$RUN_DIR/produced"
+rm -f "$RUN_DIR/head-after" "$RUN_DIR/dirty-after-shas" "$RUN_DIR/files"
 killed_report=$("$RUNNER" report "$RUN_ID")
 assert grep -qi 'UNKNOWN\|unknown' <<<"$killed_report"
 assert grep -q "claim $RUN_ID" <<<"$killed_report"

@@ -452,7 +452,7 @@ def resumers(since):
 
 def dead_runs(runs):
     """Failed runs whose wall left nothing: no later run resumed their session, their files record names no path
-    and no unknown or partial listing, nothing written outside it or produced, HEAD unmoved, and their result empty
+    and no unknown or partial listing, nothing written outside it, HEAD unmoved, and their result empty
     or only error and limit lines. A missing record is no proof."""
     failed = [r for r in runs if r.get("status") not in (None, "done") and not r.get("round")
               and not BENCH_WORKDIR.search(str(r.get("workdir") or ""))]
@@ -468,7 +468,7 @@ def dead_runs(runs):
         files = run_file(run, "files")
         if not os.path.exists(os.path.join(night_spend.RUNS, run, "files")) or any(not line.startswith("WORKDIR: ") for line in files.splitlines() if line):
             continue
-        if run_file(run, "files-external") or run_file(run, "produced"):
+        if run_file(run, "files-external"):
             continue
         if run_file(run, "head-before") != run_file(run, "head-after"):
             continue

@@ -2310,13 +2310,8 @@ assert grep -Fq 'raise Fail(f"{flag} wants PATH=SHA: {pair}")' "$RB_ANCHORS"
 assert test -z "$(grep -rl 'worker-runs' --include='*.py' "$RB_PKG")"
 assert doc_has '`<run-dir>/dirty`'
 assert doc_has '`<run-dir>/dirty-before`'
-# The CONTENT half of the record: the commit the tree stood on at launch, and one row per link the
-# run produced against it. Both grammars are pinned — the edit row and the commit row with its
-# fourth field — because a sweep reading a field it did not expect writes a path where a blob goes.
+# The commit the tree stood on at launch, and the commit window the foreign split reads off it.
 assert grep -Fq 'mv -f "$directory/head-before.tmp.$$" "$directory/head-before"' "$WORKER_RUN"
-assert grep -Fq 'mv -f "$directory/produced.tmp.$$" "$directory/produced"' "$WORKER_RUN"
-assert grep -Fq 'out.append(prev + b"\t" + cur + b"\t" + spelling(path) + b"\n")' "$WORKER_RUN"
-assert grep -Fq 'printf "%s\t%s\t%s\tcommit\n", prev, cur, path' "$WORKER_RUN"
 assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format='"'"'%H %ct'"'"' "$head..$after"' \
   "$WORKER_RUN"
 # Writer and reader must refuse the same path shapes, or a `-foo` row is dropped by the
@@ -2338,11 +2333,9 @@ assert test "$(printf 'ok\0' | bash -c 'eval "$(sed -n "/^path_shape_split()/,/^
   _ "$WORKER_RUN")" = ok
 assert test "$(bash -c 'eval "$(sed -n "/^path_shape_split()/,/^}/p" "$1")"
   printf "ok\0-dash\0" | path_shape_split 0 "" || echo refused' _ "$WORKER_RUN")" = refused
-# Only for a run some chat answers for, and never rewritten once it stands: a claim APPENDS.
+# The foreign split runs only for a run some chat answers for.
 assert grep -Fq '[ -s "$directory/launcher" ] || return 0' "$WORKER_RUN"
-assert grep -Fq '>>"$directory/produced"' "$WORKER_RUN"
 assert doc_has '`<run-dir>/head-before`'
-assert doc_has '`<run-dir>/produced`'
 REVIEW_GATE="$CLAUDE_SETUP/hooks/review-flow-gate.sh"
 if [ -r "$REVIEW_GATE" ]; then
   # The gate walks no run records of its own: it prices no debt, so the bench's reading of them is

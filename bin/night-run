@@ -1807,7 +1807,6 @@ cmd_report() {
         count($t.unpushed; "not pushed")]
         | if length == 0 then "no jobs" else join(" · ") end))' "$file" || return
   repo_debt
-  python3 -B "$repo_root/share/haiku_trial.py" "$file" || true # TEMP-HAIKU-TRIAL(report)
   python3 -B "$repo_root/share/time_budget.py" night "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
 }
 
