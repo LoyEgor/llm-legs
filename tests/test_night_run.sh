@@ -65,7 +65,9 @@ stop_chat() { # session: an empty id would match every live chat's --session-id
   [ -n "$1" ] || fail "stop_chat without a session id"
   pkill -f -- "--session-id $1( |$)"; while pgrep -f -- "--session-id $1( |$)" >/dev/null; do sleep 0.1; done
 }
-wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 night wall; }
+# The StopFailure hook runs inside the walled orchestrator, with its chat id in the env.
+wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | env -u CLAUDE_LAUNCHER_SESSION CLAUDE_CODE_SESSION_ID="$1" \
+  NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 bash "$ROOT/bin/night-run" wall; }
 old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
 # A `(cd dir && exec sleep 600) &` process stands in dir once ps shows it as sleep 600.
 settled() { local pid; for pid; do for _ in {1..250}; do [ "$(ps -o command= -p "$pid" 2>/dev/null)" != "sleep 600" ] || break; sleep 0.02; done; done; }

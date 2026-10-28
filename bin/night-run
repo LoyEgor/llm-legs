@@ -1909,7 +1909,9 @@ cmd_failover() { # id walled-session
   night_events "$id" "$(jq -cn --argjson w $(($(date +%s) - start)) --arg a "$account" \
     '[{phase: "wall-moved", waited: $w, room: $a, pred: "last"}]')" || die "cannot write night $id"
   unlock
-  cmd_start --resume "$id"
+  # The hook carries the walled chat's id, which the launch guard reads as a chat starting a night; this only carries
+  # on the night Egor started.
+  (unset CLAUDE_CODE_SESSION_ID CLAUDE_LAUNCHER_SESSION; cmd_start --resume "$id")
 }
 
 case "${1:-}" in
