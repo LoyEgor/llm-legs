@@ -78,6 +78,7 @@ before the launch). Classes 2–5 (*): a hand keyword partition of the 79 and 82
 | 4.* a log-audit reading of model or chat conduct sent to a fixer | 23 / 7 | 0.18 / 0.10 % | 98 / 138 | conduct-gate |
 | 5.* a landed fix's pre-fix tail still in a 7-day window | 9 / 12 | 0.11 / 0.10 % | 122 / 227 | heavy-tail |
 | 6. a cause no doctor shows: blind spots added and never built | 27 / 26 added, 5 / 0 closed | | | here |
+| 7. a landed fix that was not needed goes unseen (retro sample, 10-28) | 11 of 40 | | | fix-audit, worth-bar |
 
 Why they come back:
 1. Only the Harness doctor remembered a ruling; other rows came back and were ruled out again (LLM M2, M4, `I48`,
@@ -135,6 +136,46 @@ the measurer 1 / 8 (0.04 / 0.12 %, 38 / 265), in code 1 / 4, only 05eb by its fi
 - Must not get worse: proven gains and Speed yield equal HEAD's; hooks and stop as HEAD; a suite whose fastest run
   doubled is raised.
 
+### goal fix-audit: every landed fix is read again, blind, a week later
+
+Class 7. Retro audit 10-28: 40 judge-confirmed fixes of fit, legacy and speed rounds 09-30…10-14. Two blind Opus
+readers judged them, and the key and packets are in `~/.cache/fix-audit/retro-2026-10-28*`. Results, as needed /
+useless / false / harmful:
+- found by Haiku: 13 / 6 / 0 / 1;
+- found by Opus: 16 / 1 / 3 / 0 (speed 1 / 1 / 3 / 0 of 5; fit 15 of 15);
+- not-fixed: 0;
+- Sonnet fixers: 9 of 12 needed.
+
+Git caught 1 of the 11 (the reverted `DIM_GREEN`), and kept-or-changed lines split no verdict. Run records before
+10-19 are pruned, so 363 of 784 fixed findings map to no hunk.
+- Change: a fixer commit names its round and finding positions. `share/fix-ledger.json` records the commit, lens,
+  cell model, fixer model and the audit's verdict. A weekly `fix-audit` job reads 20 fixes ≥ 7 days old per lens
+  × finder model, blind. The reader is outside the judge's family when the toggles allow, else Opus.
+  - False and harmful fixes become Harness rows whose fixer reverts them.
+  - A useless fix is reverted only if it added code.
+  - Per kind: cost per needed fix (Opus = 1) and the share not needed.
+- First step: the retro audit (done).
+- Proof, fixed in advance:
+  - the 40 retro items through `fix-audit` give the same verdict for ≥ 36;
+  - a fixture night's fixer commits all map to their findings;
+  - a fixture `false` verdict raises a row.
+- Must not get worse: night spend + ≤ 1 % for the audit; fixer wall unchanged.
+
+### goal worth-bar: the judge confirms a finding only for a gain that matters
+
+Class 7. Of the retro 40, the judge confirmed 10 that were not needed:
+- 5 speed savings under a second a day, or on a path that never blocks;
+- 2 comment and line-number touch-ups;
+- 3 claimed costs the pre-fix code did not have, all from Opus speed cells.
+- Change: the judge, and doctor-fix for its own rows, rejects a finding that does not meet the bar:
+  - speed: ≥ 1 s a day, or on a path that blocks a chat or the night, with its frequency;
+  - fit and legacy: the code shrinks or one owner replaces copies.
+  The judge also re-reads the pre-fix code for the claimed cost.
+- First step: the 10 claims state no frequency or name no blocking path, or the code lacks the cost; else stop.
+- Proof, fixed in advance: the judge, replayed blind over the 40 claims, rejects ≥ 7 of the 10 and keeps ≥ 28 of
+  the 29 needed.
+- Must not get worse: confirmed P1 and P2 kept; judge wall.
+
 ## How the block runs at night
 
 - It brings back README "The whole night" sections Doctor fixes and Deep search, both block 7. `bin/night-run`:
@@ -162,6 +203,11 @@ the measurer 1 / 8 (0.04 / 0.12 %, 38 / 265), in code 1 / 4, only 05eb by its fi
   14 days reverts; not worse: false-alarm share, CPU a run.
 
 ## Decisions
+
+- 2026-10-28: a job kind moves to a cheaper model (Sonnet, Haiku) only through `fix-audit`. The move is one routing
+  line, run as an experiment with rounds interleaved. It holds when the needed share stays within the sample's noise
+  of the incumbent and the cost per needed fix falls. Haiku stays in fit, legacy and speed cells
+  (`haiku-review-cells` retired). («Updater doctor»)
 
 - 2026-10-20: a fixer or night launches only on his own act (click, terminal, launchd, his word), never another
   chat's: the five Fix buttons went, `doctor-fix launch` runs only in a night (4f742b19). Menu red means act now
