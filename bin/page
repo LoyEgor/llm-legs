@@ -161,10 +161,12 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin is not None and origin != "http://" + self.headers["Host"]:
             return self.reply(403, b"origin refused\n")
-        m = re.fullmatch(r"/p/([^/]+)/patch", self.path)
+        m = re.fullmatch(r"/p/([^/]+)/(patch|error)", self.path)
         if not m or not store.page_dir(m.group(1)):
             return self.reply(404, b"not found\n")
         pid = m.group(1)
+        if m.group(2) == "error":
+            return self.browser_error(pid)
         try:
             length = int(self.headers.get("Content-Length") or 0)
             patch = json.loads(self.rfile.read(length)) if 0 < length <= MAX_PATCH else None
@@ -179,12 +181,25 @@ class Handler(BaseHTTPRequestHandler):
         rev, dup = store.append(pid, item, fields, "egor", op, patch.get("spec_rev"))
         self.send_json(200, {"rev": rev, "spec_rev": doc.get("rev", 1), "dup": dup})
 
+    def browser_error(self, pid):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            report = json.loads(self.rfile.read(length)) if 0 < length <= MAX_PATCH else None
+            assert isinstance(report, dict)
+        except (ValueError, AssertionError):
+            return self.reply(400, b"bad report\n")
+        store.event("browser", pid=pid, msg=str(report.get("msg", ""))[:500], src=str(report.get("src", ""))[:200],
+                    line=report.get("line") if isinstance(report.get("line"), int) else None)
+        self.reply(204)
+
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def handle_error(self, request, client_address):
-        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, TimeoutError)):
+        error = sys.exc_info()[1]
+        if not isinstance(error, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            store.event("server", msg="%s: %s" % (type(error).__name__, str(error)[:300]))
             super().handle_error(request, client_address)
 
 
@@ -364,7 +379,7 @@ def cmd_help(args):
         if first.startswith(module + ":"):
             first = first[len(module) + 1:].strip()
         print("%-8s %s" % (module, first if first and first != module else BUILTIN_MODULES.get(module, "")))
-    print("page new <module> --slug S --title T [--no-open] < spec.json; page state|set|list|open|doctor; "
+    print("page new <module> --slug S --title T [--no-open] < spec.json; page state|set|list|open|doctor|report; "
           "page help <module> for its spec; a module lacks something: %s" % os.path.join(os.path.dirname(KIT), "EXTEND.md"))
 
 
@@ -386,6 +401,34 @@ def cmd_doctor(args):
     print("deployed copy: %s (%s)" % ("; ".join(drift) or "current", DEPLOY_DIR))
     print("PAGES_DIR: %s (%d pages)" % (store.root(), len(store.all_pages())))
     return 0 if up and not drift else 1
+
+
+def cmd_report(args):
+    """What to improve: pages made per chat and module, then every logged problem and hint, then kit commits."""
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - args.days * 86400))
+    made = {}
+    for pid in store.all_pages():
+        m = store.meta(pid)
+        if (m.get("created") or "") >= since:
+            made.setdefault((m.get("chat_name") or "?", m.get("module") or "?"), []).append(pid)
+    print("pages made in %d days: %d" % (args.days, sum(len(v) for v in made.values())))
+    for (chat, module), pids in sorted(made.items()):
+        print("  %s · %s: %s" % (chat, module, " ".join(sorted(pids))))
+    seen = {}
+    for e in store.events(since):
+        what = " ".join(str(e.get(k)) for k in ("cmd", "module", "pid", "tool", "src", "line") if e.get(k) is not None)
+        group = seen.setdefault((e.get("where"), what, e.get("msg") or e.get("path") or ""), [0, ""])
+        group[0], group[1] = group[0] + 1, max(group[1], e.get("at", ""))
+    print("events (problems and hand-made-page hints): %d" % sum(n for n, _ in seen.values()))
+    for (where, what, msg), (n, last) in sorted(seen.items(), key=lambda kv: kv[1][1], reverse=True):
+        print("  %s %s %s%s: %s" % (last, where, what, " ×%d" % n if n > 1 else "", msg))
+    repo = os.path.dirname(os.path.dirname(os.path.realpath(KIT)))
+    log = subprocess.run(["git", "-C", repo, "log", "--since=%d.days" % args.days, "--format=%h %s", "--",
+                          os.path.realpath(KIT)], capture_output=True, text=True)
+    commits = log.stdout.splitlines()
+    print("kit commits: %d" % len(commits))
+    for line in commits:
+        print("  " + line[:110])
 
 
 def cmd_install_agent(args):
@@ -442,6 +485,7 @@ def main(argv):
     p.add_argument("--all", action="store_true")
     sub.add_parser("open", parents=[chat]).add_argument("ref")
     sub.add_parser("doctor")
+    sub.add_parser("report").add_argument("--days", type=int, default=7)
     sub.add_parser("serve").add_argument("--port", type=int, default=PORT)
     sub.add_parser("install-agent")
     args = parser.parse_args(argv)
@@ -449,12 +493,21 @@ def main(argv):
         if args.command == "serve":
             return serve(args.port)
         return globals()["cmd_" + args.command.replace("-", "_")](args) or 0
-    except store.Refused as refusal:
-        print("page: %s" % refusal, file=sys.stderr)
-        return 1
-    except (ValueError, OSError) as error:
+    except (store.Refused, ValueError, OSError) as error:
         print("page: %s" % error, file=sys.stderr)
+        failed(args, error)
         return 1
+    except Exception as error:
+        failed(args, error)
+        raise
+
+
+def failed(args, error):
+    if args.command not in ("help", "doctor", "report", "serve"):
+        store.event("cli", cmd=args.command, module=getattr(args, "module", None), slug=getattr(args, "slug", None),
+                    sid=os.environ.get("CLAUDE_LAUNCHER_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+                    or getattr(args, "chat", None), msg=("" if isinstance(error, store.Refused) else
+                                                         type(error).__name__ + ": ") + str(error)[:300])
 
 
 if __name__ == "__main__":

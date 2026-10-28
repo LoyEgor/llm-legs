@@ -55,6 +55,8 @@ assert like "$out" "page: no owner chat*"
 assert_fails sh -c "printf '{\"items\": [{\"id\": \"bad id\"}]}' | '$PAGE' new compare --slug x --no-open 2>/dev/null"
 assert_fails sh -c "printf '{\"items\": [{\"id\": \"a\", \"src\": \"/nope.png\"}]}' | '$PAGE' new compare --slug x --no-open 2>/dev/null"
 assert_fails sh -c "printf '{\"items\": [{\"id\": \"a\"}]}' | '$PAGE' new gallery --slug x --no-open 2>/dev/null"
+# A refusal is the one CLI call that writes .events.jsonl, with what was refused and why.
+assert test "$(jq -r 'select(.where == "cli" and .module == "gallery") | [.cmd, .sid, .msg] | join("|")' "$PAGES_DIR/.events.jsonl")" = "new|chat-own|unknown module 'gallery' (have: cards, compare)"
 
 # Server on port 0; a second server on that port sees it is ours and exits 0.
 "$PAGE" serve --port 0 >"$WORK/serve.out" 2>&1 &

@@ -5186,6 +5186,37 @@ def push_section(now):
     return out
 
 
+def pages_section(now):
+    """Local pages (bin/page) append to <PAGES_DIR>/.events.jsonl only when something went wrong or a chat was about
+    to hand-make a page. A kit error in the browser or a server exception in the last 24 h is red: the server reads
+    the kit from the main checkout, so one bad commit breaks every page silently. CLI refusals and hints stay in
+    `page report`. A suite with no PAGES_DIR of its own never reads the real store."""
+    root = os.environ.get("PAGES_DIR") or ("" if os.environ.get("SUITE_JOURNAL_PID") else os.path.expanduser("~/Pages"))
+    path, found = os.path.join(root, ".events.jsonl"), {}
+    cut = datetime.datetime.fromtimestamp(now - 86400, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        with open(path, errors="replace") as handle:
+            for text in handle:
+                try:
+                    e = json.loads(text)
+                except ValueError:
+                    continue
+                if isinstance(e, dict) and e.get("where") in ("browser", "server") and str(e.get("at", "")) >= cut:
+                    key = (e["where"], str(e.get("pid") or ""), str(e.get("msg") or "")[:120])
+                    found.setdefault(key, []).append(str(e.get("at")))
+    except OSError:
+        pass
+    rows = []
+    for (where, pid, msg), ats in sorted(found.items()):
+        ident = "%s %s" % (where, pid or "-")
+        say = "%s: %d× in 24 h · %s · `page report`" % (ident, len(ats), clip(msg, 80))
+        rows.append(row([ident, fmt_count(len(ats)), clip(msg, 60)], [0], key="pages:" + ident, say=say,
+                        head="a local page hit a kit or server error",
+                        judge=verdict("pages-error", ident, len(ats), 0, "errors", 24, len(found), "red", fact=say,
+                                      evidence=[evidence(now, "pages:" + ident, msg)], bad=len(ats))))
+    return section("Pages", rows, ["", "errors", "last"], [False, True, False], ok="no page errors in 24 h")
+
+
 BROWSER_REPAIR = ("HARNESS_NEEDS_REPAIR", "missing")
 BROWSER_SKIPS = {"CANARY_OUT_OF_POOL": "out of the worker pool", "CANARY_WALLED": "walled",
                  "BROWSER_OWNER_LOGIN": "waits for Egor's sign-in", "CANARY_OWNER_GRANT": "waits for Egor's macOS grant"}
@@ -7018,6 +7049,7 @@ def collect(write, now):
                 hook_map_section(hooks, state["hook_map"], now, timed24),
                 deploys_section(now),
                 push_section(now),
+                pages_section(now),
                 browser_section(now, write),
                 waits_classes_section(now),
                 limits_section(now)]

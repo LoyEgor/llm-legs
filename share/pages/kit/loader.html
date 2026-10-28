@@ -28,16 +28,29 @@ textarea{resize:vertical;min-height:40px}
 <script type="module">
 import { start } from "/kit/shell.js";
 const pid = location.pathname.split("/")[2];
+// A kit error reaches the server's .events.jsonl (`page report`), at most 3 per page load.
+let told = 0;
+const tell = (msg, src, line) => told++ < 3 && fetch(`/p/${pid}/error`, { method: "POST", keepalive: true,
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ msg: String(msg).slice(0, 500), src: String(src || "").slice(0, 200), line: line || 0 }) }).catch(() => {});
+addEventListener("error", (e) => tell(e.message, e.filename, e.lineno));
+addEventListener("unhandledrejection", (e) => tell((e.reason && e.reason.stack) || e.reason, "", 0));
 async function load() {
   let spec, mod;
   try {
     const r = await fetch(`/p/${pid}/spec`, { cache: "no-store" });
     if (!r.ok) throw new Error(r.status);
     spec = await r.json();
-    if (!/^[a-z][a-z0-9_-]*$/.test(spec.module || "")) throw new Error("module");
-    mod = await import(`/kit/${spec.module}.js`);
   } catch (e) {
     document.getElementById("status").textContent = "нет связи — повторю";
+    return setTimeout(load, 3000);
+  }
+  try {
+    if (!/^[a-z][a-z0-9_-]*$/.test(spec.module || "")) throw new Error("module " + spec.module);
+    mod = await import(`/kit/${spec.module}.js`);
+  } catch (e) {
+    tell(e.stack || e, `/kit/${spec.module}.js`, 0);
+    document.getElementById("status").textContent = "модуль не загрузился — ошибка записана, повторю";
     return setTimeout(load, 3000);
   }
   start({ pid, ...spec }, mod.render);

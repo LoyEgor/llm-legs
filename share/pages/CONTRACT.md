@@ -21,6 +21,7 @@ on an incompatible change.
 | `GET /p/<pid>/spec` | the served spec (below), `Cache-Control: no-cache` |
 | `GET /p/<pid>/state` | the state (below), `Cache-Control: no-cache` |
 | `POST /p/<pid>/patch` | applies one patch (below) |
+| `POST /p/<pid>/error` | `{msg, src, line}`, a kit error the loader reports (≤ 3 per load) → `.events.jsonl`; 204 |
 | `GET /p/<pid>/m/<n>?v=<mtime_ns>` | media `n` from `meta.media`; Range/206 streamed in 1 MB chunks, an open-ended range capped at 8 MB; `ETag`, `Cache-Control: private, max-age=31536000, immutable` |
 
 `pid` matches `^[a-z0-9][a-z0-9-]{0,63}$`; anything else is 404 before any path join.
@@ -58,55 +59,16 @@ POST /p/<pid>/patch
 `{"op","at","by":"egor"|"chat","item","fields","spec_rev"}`. State is the last value per
 (item, field) in file order; a torn trailing line is skipped.
 
+`<root>/.events.jsonl` gets a line only when something went wrong (`where`: cli, browser, server) or a
+chat was about to hand-make a page (hint); capped at 1 MB.
+
 ## Modules
-Every item has an immutable `id` (`^[A-Za-z0-9_-]{1,64}$`), and every compare variant has an
-immutable `id`. Common optional spec keys:
-- `title`;
-- `intro` (one short line);
-- `sitting_cap` (stop asking after N answered this sitting);
-- `suggest` per item: a machine suggestion, shown apart, never an answer (compare: `{"choice": "A"}`
-  or `"A"`).
-
-### compare
-```json
-{"module": "compare", "schema": 1, "title": "Pixel judges calibration",
- "mode": "vote", "blind": true, "pixelated": "auto",
- "options": [{"id": "A"}, {"id": "B"}, {"id": "tie", "label": "="},
-             {"id": "both_bad", "label": "оба плохи"}, {"id": "unsure", "label": "не понять"}],
- "tags": ["halo", "jaggies", "lost detail"],
- "items": [{"id": "p01", "title": "frog", "q": "optional context line",
-            "original": "/abs/frog.png",
-            "variants": [{"id": "v77", "label": "champ77", "src": "/abs/77/frog.png", "meta": "64 px"},
-                         {"id": "v78", "label": "champ78", "src": "/abs/78/frog.png"}],
-            "hotspots": [[120, 40]]}]}
-```
-- **mode:** `vote` (default) or `view`, a numbered grid with no vote widget.
-- **Without `original`:** two variants form a plain pairwise page.
-- **Keys:**
-  - `options[].key` is an `event.code`; the defaults are A→`KeyA`, B→`KeyB`, tie→`KeyT`, the rest
-    unbound;
-  - ←/→ move between items, 0 fits, 1..9 jump to hotspots.
-- **Computed by the page when absent:** `hotspots` (block-diff) and the image geometry.
-- **Fields written:**
-  - `choice`: an option id, or a slot letter on blind pages;
-  - `tags`: `{"A": [...], "B": [...]}`;
-  - `note`: a string.
-
-### cards
-```json
-{"module": "cards", "schema": 1, "title": "Loop seams, round 3",
- "fields": [{"key": "heard", "kind": "choice",
-             "options": [{"id": "0", "label": "не слышу", "key": "Digit1"}, {"id": "1", "label": "слышу"}]},
-            {"key": "kind", "kind": "multi", "options": [{"id": "click"}, {"id": "gap"}]},
-            {"key": "score", "kind": "scale", "min": 1, "max": 10}],
- "items": [{"id": "c11", "n": 11, "title": "track 3 wrap", "text": "optional context",
-            "media": [{"kind": "audio", "src": "/abs/c11.m4a"}], "suggest": {"heard": "1"}}]}
-```
-- **Field kinds:** `choice`, `multi`, `scale`, `text`; optional `label`. Every card has a `note`.
-- **Media:** `media[].kind` is `image`, `audio` or `video`, shown with the native element; only one
-  clip plays at a time.
-- **Numbering:** `n` is the shown number. It is stable and never renumbered when items are added.
-- **Fields written:** each field's `key`, plus `note`.
+A module's spec keys, fields written and example live in `kit/<module>.md` (`page help <module>`);
+extending one: `EXTEND.md`. The server knows only:
+- every item has an immutable `id` (`^[A-Za-z0-9_-]{1,64}$`), and so does every compare variant;
+- media paths, `_` keys and blind variants, as in "Served spec" above;
+- common optional keys: `title`, `intro` (one short line), `sitting_cap` (stop asking after N answered
+  this sitting), and `suggest` per item (a machine suggestion: shown apart, never an answer).
 
 ## CLI (the chat's whole interface)
 | Command | Does |
@@ -118,5 +80,6 @@ immutable `id`. Common optional spec keys:
 | `page list [--all]` | this chat's pages, or every page |
 | `page open <slug\|pid>` | opens the page in Dia |
 | `page doctor` | server up? port owner, deployed copy current, PAGES_DIR |
+| `page report [--days N]` | pages made per chat and module, the `.events.jsonl` problems and hints, kit commits |
 | `page serve` | the daemon (launchd runs `~/.local/libexec/pagesd`) |
 | `page install-agent` | deploys the copy and loads the LaunchAgent |

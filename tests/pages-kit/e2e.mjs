@@ -77,6 +77,12 @@ try {
   check("cards vote reaches the store", await until(() => page(["state", "seams", "--all"]).includes("c11 heard=1 by=egor"), 4000));
   const index = await (await fetch(`http://127.0.0.1:${port}/`)).text();
   check("index lists both pages under the chat name", index.includes("e2e chat") && index.includes(cmp) && index.includes(crd));
+  const events = path.join(env.PAGES_DIR, ".events.jsonl");
+  check("normal use writes no event line", !fs.existsSync(events));
+  tab.removeAllListeners("pageerror");
+  await tab.evaluate(() => setTimeout(() => { throw new Error("kit probe"); }));
+  const logged = await until(() => fs.existsSync(events) && fs.readFileSync(events, "utf8"), 3000);
+  check("a kit error in the page reaches .events.jsonl", logged && JSON.parse(logged).pid === crd && JSON.parse(logged).msg.includes("kit probe"), String(logged));
 } catch (e) {
   check("run", false, e.stack);
 } finally {

@@ -43,6 +43,44 @@ def now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+EVENTS_CAP = 1 << 20
+
+
+def event(where, **fields):
+    """One line in <root>/.events.jsonl, for `page report` and the harness doctor. Written only when something went
+    wrong (where: cli, browser, server) or a chat was about to hand-make a page (hint), never on a normal call;
+    one O_APPEND write, and nothing past 1 MB."""
+    try:
+        path = os.path.join(root(), ".events.jsonl")
+        if os.path.exists(path) and os.path.getsize(path) > EVENTS_CAP:
+            return
+        line = json.dumps(dict({"at": now(), "where": where}, **fields), ensure_ascii=False)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, (line + "\n").encode())
+        finally:
+            os.close(fd)
+    except (OSError, Refused):
+        pass
+
+
+def events(since=""):
+    try:
+        with open(os.path.join(root(), ".events.jsonl"), errors="replace") as handle:
+            lines = [read_line(text) for text in handle]
+    except OSError:
+        return []
+    return [e for e in lines if e and e.get("at", "") >= since]
+
+
+def read_line(text):
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def write_json(path, doc):
     temporary = "%s.tmp.%d" % (path, os.getpid())
     with open(temporary, "w") as handle:
