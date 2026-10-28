@@ -1,6 +1,9 @@
 # Local pages: implementation plan v2 (2026-10-28)
 
-Status: PLAN, nothing built. v1 went through a frontier critique (20261028T144144Z-68d13d8) and a T2
+Status: phase 1 BUILT 2026-10-28 (backend 3ae7b86c, kit c702a0fd, end-to-end check 59ef9dcd);
+LaunchAgent com.llm-legs.pages up on 4791; compact/resume hook claude-setup 37b6eb2. Open: the
+discovery line (§6) waits for Egor's OK; its AGENTS.md/grok mirrors are dropped (a worker makes a
+page only when its brief says so); §8 migration. v1 went through a frontier critique (20261028T144144Z-68d13d8) and a T2
 robustness review (20261028T144200Z-68d13d8); v2 folds both in — "Changed from v1" at the end.
 Research and evidence: `docs/handoffs/2026-10-28-pages-research.md`.
 
