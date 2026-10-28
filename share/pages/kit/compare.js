@@ -3,7 +3,8 @@
 // is in compare.md. Ported from logo-vectorizer-bench vote.tpl.html: one shared view state L for
 // every loupe, zoom anchored at the pointer, and drags that end whichever way the pointer leaves.
 // Geometry is the reference image's natural size (the original, else the largest variant); every
-// image is drawn over that box, so a smaller pixel-art variant lands on the same coordinates.
+// image is drawn over that box (or a variant's `box` in it), so a smaller pixel-art variant lands on
+// the same coordinates at the same scale.
 import { h, get, save, textBox, onState, doneWhen, nextOpen, firstOpen, capped, keys, lazy, num } from "/kit/shell.js";
 
 const CSS = `
@@ -57,7 +58,7 @@ const opts = () => (S.options || [...((item(cur) || S.items[0]).variants || []).
 
 function frames(it) {
   const vs = (it.variants || []).map((v, i) => ({ src: v.src, side: v.slot || LETTERS[i],
-    name: S.blind ? "" : v.label || "", meta: v.meta || "" }));
+    name: S.blind ? "" : v.label || "", meta: v.meta || "", box: v.box }));
   return it.original ? [{ src: it.original, side: "", name: "оригинал", meta: "" }, ...vs] : vs;
 }
 
@@ -236,24 +237,15 @@ function layout() {
 
 function draw() {
   if (!E || !geo || !L) return;
-  const { W, H } = size(), pix = String(S.pixelated ?? "auto"), first = item(cur).original ? 1 : 0, fz = fit().z;
+  const { W, H } = size(), pix = String(S.pixelated ?? "auto"), first = item(cur).original ? 1 : 0, fs = frames(item(cur));
   // where each image's pixel grid lands in its loupe: origin and screen px per image px on each axis
   const at = E.imgs.map((im, i) => {
-    const nw = im.naturalWidth, nh = im.naturalHeight;
-    if (S.integer_zoom && i >= first && nw) {
-      // whole screen pixels per image pixel, one scale for both axes, centred on the same relative point;
-      // the fitted view fills the loupe instead, smooth unless that scale is whole or >= 3
-      const k = L.z * Math.sqrt(geo.w / nw * geo.h / nh), n = L.z <= fz * 1.0001 ? Math.min(W / nw, H / nh) : k < 1 ? k : Math.round(k);
-      const x = Math.round(W / 2 - L.cx * nw / geo.w * n), y = Math.round(H / 2 - L.cy * nh / geo.h * n);
-      Object.assign(im.style, { width: nw * n + "px", height: nh * n + "px", imageRendering: Number.isInteger(n) || n >= 3 ? "pixelated" : "auto",
-        transform: `translate(${x}px,${y}px)` });
-      return { x, y, sx: n, sy: n, nw, nh };
-    }
-    const x = W / 2 - L.cx * L.z, y = H / 2 - L.cy * L.z;
-    Object.assign(im.style, { width: geo.w * L.z + "px", height: geo.h * L.z + "px", transform: `translate(${x}px,${y}px)` });
-    const k = L.z * geo.w / (nw || geo.w);
+    const nw = im.naturalWidth, nh = im.naturalHeight, [bx, by, bx1, by1] = fs[i].box || [0, 0, geo.w, geo.h];
+    const x = W / 2 + (bx - L.cx) * L.z, y = H / 2 + (by - L.cy) * L.z, w = (bx1 - bx) * L.z, hh = (by1 - by) * L.z;
+    Object.assign(im.style, { width: w + "px", height: hh + "px", transform: `translate(${x}px,${y}px)` });
+    const k = w / (nw || geo.w);
     im.style.imageRendering = pix === "true" || (pix !== "false" && k >= 3) ? "pixelated" : "auto";
-    return nw ? { x, y, sx: geo.w * L.z / nw, sy: geo.h * L.z / nh, nw, nh } : null;
+    return nw ? { x, y, sx: w / nw, sy: hh / nh, nw, nh } : null;
   });
   E.lv.forEach((b, k) => b.classList.toggle("on", L.z === S.zoom_levels[k]));
   if (E.gb) paintLines(W, H, at, first);

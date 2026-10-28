@@ -6,8 +6,6 @@ Synced loupes: drag pans all, wheel zooms at the pointer.
 - **Without `original`:** two variants form a plain pairwise page.
 - **blind:** variants are served as slots `A`, `B`, … without `id`/`label`; `choice` is the slot.
 - **pixelated:** `true` (pixel art), `false`, or `auto` (pixelated at ≥3× zoom; the default).
-- **integer_zoom:** `true`: whole screen px per image px, the fitted view fills the loupe. Default
-  off: variants stretch over the original's box.
 - **zoom_levels:** e.g. `[1, 2, 4]`, the original's magnifications as buttons; digits pick them, the
   first one again fits; no hotspot row or fit button then. Default none.
 - **options:** default `A`, `B` (one per variant) and `tie` (`=`); `label` is what the button shows.
@@ -16,7 +14,8 @@ Synced loupes: drag pans all, wheel zooms at the pointer.
   - ←/→ move between items, 0 fits, 1..9 jump to hotspots, +/− zoom.
 - **Computed when absent:** `hotspots` (block-diff, `[x, y]` in the original's pixels), image sizes.
 - **Per item:** `id` (immutable), `title`, `q` (a context line), `original`, `variants[]` (`id`,
-  `label`, `src`, `meta` badge), `grid`, `hotspots`, `n` (shown number), `suggest`
+  `label`, `src`, `meta` badge, `box`: `[x0, y0, x1, y1]` where it lies over the original, in its px;
+  default the whole original), `grid`, `hotspots`, `n` (shown number), `suggest`
   (`{"choice": "A"}`, shown apart, never counted).
 - **pixel_grid:** `true` adds «Сетка» (G): each variant's own pixel grid in its loupe. An item's
   `grid` (`{"x": [...], "y": [...]}`, cell bounds in the original's px, e.g. a detected lattice)
