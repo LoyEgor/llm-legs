@@ -23,8 +23,10 @@ usage() {
   printf '                  the palette gates, so an input they reject gets the default output\n' >&2
   printf '  --palette L     seed colours (background included), implies --colors; for a colour so close to another\n' >&2
   printf '                  (#f2f2f2 on white) that the search treats it as noise. Fills are refined, not copied exactly\n' >&2
-  printf '  A wrong --colors merges (too few) or splits (too many) fills; leave a hint out when unsure. A JPEG of\n' >&2
-  printf '  128 px or less can get jagged edges under --gradient no\n' >&2
+  printf '  Prefer --palette with every visible colour (thin lines included) over --colors: with a count alone, a thin\n' >&2
+  printf '  line can take its neighbour'\''s colour or vanish (eye-worse on 15 of 38 AI logos, better on 4). A wrong count\n' >&2
+  printf '  merges or splits fills; leave a hint out when unsure. A JPEG of 128 px or less can get jagged edges under\n' >&2
+  printf '  --gradient no. Compare a hinted rerun with the input and keep whichever output is closer\n' >&2
   exit 2
 }
 
