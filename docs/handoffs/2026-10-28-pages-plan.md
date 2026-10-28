@@ -1,94 +1,183 @@
-# Local pages: implementation plan v1 (2026-10-28)
+# Local pages: implementation plan v2 (2026-10-28)
 
-Status: PLAN under review, nothing built. Research, requirements and the evidence behind every choice:
-`docs/handoffs/2026-10-28-pages-research.md` (same directory). Settled with Egor and NOT up for
-re-deciding: local HTML pages replace claude.ai artifacts; reusable modules a chat fills with data;
-live per-click state the chat pulls any time (no Submit); per-chat page registry surviving compaction;
-zero context cost for chats that make no pages.
+Status: PLAN, nothing built. v1 went through a frontier critique (20261028T144144Z-68d13d8) and a T2
+robustness review (20261028T144200Z-68d13d8); v2 folds both in — "Changed from v1" at the end.
+Research and evidence: `docs/handoffs/2026-10-28-pages-research.md`.
+
+Settled with Egor, not up for re-deciding: local HTML pages replace claude.ai artifacts; reusable
+modules a chat fills with data; live per-click state the chat pulls any time (no Submit); a per-chat
+page registry surviving compaction; near-zero context cost for chats that make no pages.
 
 ## Constraints
-- Egor's Mac runs many Claude Code chats at once; the service must cost ~0 CPU idle and little RAM,
-  survive reboots, and never be "dead when he comes back".
-- Pages are opened in Dia on the Mac and in Safari on his iPad (same home network).
-- Every chat (three Claude accounts, plus codex/grok workers) must use the same system.
-- Code stays small and boring: stdlib Python, plain ES modules, no build step, no frameworks.
+- ~0 CPU idle, ~20 MB RAM, survives reboots, never "dead when he comes back".
+- Dia on the Mac, Safari on the iPad (home network).
+- Every chat: three Claude accounts, codex and grok workers.
+- Small and boring: stdlib Python, plain ES modules, no build step, no frameworks.
 
-## Components
+## 1. One program: `bin/page` (+ `share/pages/store.py`)
+Server and CLI are one program over one store module, so locking, folding and validation exist once.
+- `page serve` — the daemon. launchd runs a deployed copy, `~/.local/libexec/pagesd`, because TCC
+  refuses a LaunchAgent that execs off /Volumes/Work (as `bin/memlogd`). The copy is registered in
+  `bin/harness-doctor` DEPLOYS so an edit redeploys, with WorkingDirectory=$HOME.
+- `KeepAlive` with one fixed, unusual port. If the port is held by our own server, exit 0. If anyone
+  else holds it, retry the bind in-process with backoff and log once: no launchd restart storm, and
+  the URL never changes. Socket activation (0 MB idle) is deferred until the ~20 MB is measured as a
+  problem.
 
-### 1. Server — `share/pages/server.py` (~200 lines)
-- `ThreadingHTTPServer`, HTTP/1.1, one fixed port, launchd agent with `KeepAlive` and `RunAtLoad`.
-- Stateless: everything lives on disk, so a restart loses nothing.
-- Routes:
-  - `/` — index of all pages grouped by chat name (resolved through `chat-name`), newest first.
-  - `/p/<id>/` — the fixed loader page; `/kit/*` — module files; `/p/<id>/spec.json`.
-  - `/p/<id>/m/<n>` — media by index from the page's allowlist (absolute paths recorded at
-    `page new`), with Range/206 support, `Cache-Control: no-cache`, connection resets ignored.
-  - `GET /p/<id>/state` — current state (fold of the log) + revision.
-  - `POST /p/<id>/patch` — one item's change `{item, field values, client_rev}`; appended to the log
-    under `flock`; the response carries the new revision and the spec revision.
-- Binding: loopback by default; LAN for the iPad behind a per-install secret (cookie set from a
-  `?k=` link) if Egor picks LAN.
+## 2. Store: `~/Pages/<pid>/`, root from `PAGES_DIR`
+- `pid` = `<slug>-<6 random chars>`, globally unique. The slug is unique only within its owner chat.
+  `page new` with the same slug in the same chat updates that page; another chat's slug never
+  touches it. Ids match `^[a-z0-9][a-z0-9-]{0,63}$` before any path join.
+- `meta.json` — owner session, chat name (resolved in the chat's shell at creation, refreshed by the
+  hook), project cwd, module, title, created, media allowlist.
+- `spec.json` — the served part. It carries `module`, `schema` (contract version) and `rev`. Every
+  item and every variant has an immutable id.
+- `key.json` — never served: the blind mapping, the chat's expected or LLM verdicts, hidden notes.
+  `page new` moves any `_`-prefixed spec field here. The server shuffles blind variants
+  deterministically per (pid, item).
+- `log.jsonl` — append-only and authoritative. Each line is
+  `{op, at, by: egor|chat, item, fields, spec_rev}`. State is the last value per (item, field),
+  folded with an mtime-keyed cache in the server.
+- Write rules:
+  - meta and spec are written to a temp file and renamed;
+  - a log line is one `write()` under `flock`, deduplicated by op id;
+  - a torn trailing line is skipped on read.
+- `~/Pages/.by-session/<sid>/<pid>` symlinks hold ownership, so the hook and `page list` never scan.
+- Replacing a judged item's media under the same id is refused without `--replace`, which marks its
+  old votes stale. A vote can never silently move to a different picture.
 
-### 2. Store — per page folder under `~/Pages/<id>/`
-- `meta.json` — id, title, module, chat session id, project cwd, created, media allowlist.
-- `spec.json` — what the page shows and asks (module-specific), with a `rev`.
-- `log.jsonl` — append-only, one line per change `{at, rev, by: egor|chat, item, values}`.
-  State = last value per (item, field). Per-item patches, never whole-object POSTs, so a stale tab
-  cannot overwrite the chat's or another tab's marks.
-- No separate registry file: the registry is a scan of `~/Pages/*/meta.json`.
+## 3. Server routes
+- `/` — index grouped by the chat names stored in meta. A directory read, no subprocess.
+- `/p/<pid>/` — the fixed loader. `/kit/*` is resolved with realpath and confined to the kit.
+- `GET /p/<pid>/spec` — spec.json with media paths rewritten to `/p/<pid>/m/<n>?v=<mtime>`. The
+  browser never sees a Mac path or a key field.
+- `GET /p/<pid>/state` — the folded state plus `rev`, for the page's poll.
+- `POST /p/<pid>/patch` — the fields this gesture changed, merged per field, with no client_rev
+  rejection. Returns the new rev.
+- `/p/<pid>/m/<n>` — media from the allowlist, which is rebuilt on every spec update; `n` is
+  bounds-checked.
+  - Range is streamed in 1 MB chunks, and an open-ended range is capped at 8 MB.
+  - Media is served as immutable with an ETag. `no-cache` applies to spec and state only.
+  - Broken pipes are ignored.
+- Security:
+  - a `Host` allowlist (loopback names plus the Mac's `.local` name);
+  - POST requires `Content-Type: application/json` and a same-origin `Origin`.
+  - LAN mode: a per-install secret exchanged from `?k=` for an HttpOnly SameSite cookie, then
+    stripped with `history.replaceState`. Every route off loopback requires it. Plain HTTP on the
+    home network is the documented limit.
 
-### 3. Kit — `share/pages/kit/` (plain ES modules)
-- `shell.js` (~200): loads spec + state, `save(item, values)` debounced per item, "saved hh:mm ·
-  N of M" status, stable ids, keyboard dispatcher on `event.code` (layout-independent, so A works as
-  ф without alias maps), keys ignored in text fields, re-fetch on `visibilitychange`/focus and when a
-  save response shows a newer spec/state revision (no SSE, no polling).
-- `compare.js` (~350): port of logo-vectorizer-bench `results/lanes/coord/tools/vote.tpl.html`
-  (116 lines, gitignored — rescue it into the kit): N synced loupes (original + variants), pointer-
-  anchored zoom, preview with clipped view boxes, hotspots, fit/1:1, pointer-capture fixes; options
-  and tags from spec (A/B/tie/both_bad/unsure + per-side tags), always-pixelated flag, blind mode.
-- Phase 2, ported when a chat needs them: `cards.js` (listen-bench `defects.py` page: numbered cards,
-  fields choice/multi/scale/text/time), `media.js` (audio minute excerpts, A/B same position, sample-
-  exact Web Audio loop, video frame-step/timeline marks — listen-bench + `share/video_glitch.py`),
-  `pairs.js` (likeness `rate`).
-- A module declares its spec contract in `kit/<module>.md` (fields, example) — what `page help` prints.
+## 4. Kit: `share/pages/kit/` (plain ES modules)
+- `shell.js` — the module API, fixed before a second module copies the first:
+  - **Saving:**
+    - a choice is sent at once, text is debounced;
+    - every gesture first goes to a localStorage outbox and leaves it only on ack, with retries on
+      reconnect and reopen;
+    - `pagehide`/`visibilitychange` flush with a keepalive fetch;
+    - status is pending / saved hh:mm / failed, plus "N of M".
+  - **Freshness:** a state/rev poll every ~4 s while visible, suspended when hidden. A newer spec
+    re-renders and keeps pending edits.
+  - **Keys:** dispatched on `event.code`, so A works as ф with no alias maps; ignored in text fields.
+  - **Simplicity rules built in:** a note on every item, skip/can't-tell, an optional sitting cap,
+    open on the first unvoted item, stable numbers, lazy load and unload of off-screen media.
+- `compare.js` — ported from logo-vectorizer-bench `results/lanes/coord/tools/vote.tpl.html`, which
+  is gitignored and is rescued into the kit first.
+  - **View:** N synced loupes, pointer-anchored zoom, iPad pinch/pan (touch-action, pinch tracking,
+    pointercancel cleanup), a preview with clipped view boxes, fit/1:1, always-pixelated option.
+  - **Computed by the page:** geometry comes from the images; hotspots (block-diff) and the preview
+    are computed in the browser. The spec holds paths and ids only; overrides are optional.
+  - **Vote:** options and per-side tags (A/B/tie/both_bad/unsure), blind via the server.
+  - **Modes:** two variants with loupes off is pairwise voting (no separate `pairs` module), and
+    `view` mode is a numbered grid with no vote (the overview the Vector Magic chat hand-wrote).
+- `cards.js` — the most-used proven pattern (listen-bench, video flags, verdict review): numbered
+  cards with fields choice/multi/scale/text and native img/audio/video. One clip plays at a time. A
+  machine suggestion is shown apart from his answer and is never counted as a vote.
+- Phase 2, ported when a chat needs it:
+  - **Media:** minute excerpts, A/B from the same position, sample-exact Web Audio loop, video
+    frame-step and timeline marks.
+  - **Module state from spec + log:** question queue, daily cap, pre-seek.
+  - **Later still:** region masks, the transcription diff review.
+- A module declares its contract in `kit/<module>.md`. `page help` prints one line per module, and
+  `page help <module>` prints one example.
 
-### 4. CLI — `bin/page` (~250 lines, stdlib Python)
-- `page new <module> --id <slug> --title T --spec FILE` — validates required spec keys and that every
-  media path exists, writes the folder, prints the URL. Same id in the same chat = update the spec
-  (bumps spec rev, keeps the log) — the reuse path.
-- `page list [--all]` — this chat's pages (session from `CLAUDE_CODE_SESSION_ID`, as `chat-pin` does).
-- `page state <id> [--since REV]` — a compact per-item summary; `--since` = only what changed since the
-  chat last read (the chat sees changed choices).
-- `page set <id> <item> k=v` — the chat marks something for Egor (logged as `by: chat`).
-- `page open <id>` — opens it in Dia; `page help [module]` — the modules and their spec contracts.
-- Reads go straight to disk (work with the server down); writes append under the same `flock`.
+## 5. CLI
+- `page new <module> --slug S --title T` reads the spec from stdin, so one Bash call creates,
+  validates and opens it.
+  - It checks ids and media existence, and copies media under /tmp or a scratchpad into the page.
+  - It prints the loopback and LAN URLs and opens the page in Dia (`--no-open`).
+- `page state <slug>` prints one line per item changed since this session last read
+  (`id choice tags note by`), plus totals and the rev. The cursor is stored per session, so nothing
+  is remembered across compaction. `--all` prints the full state.
+- `page set <slug> <item> k=v` — logged `by: chat`.
+- `page list [--all]` and `page doctor` (server up, port owner, deploy copy current).
+- Owner resolution: `CLAUDE_LAUNCHER_SESSION` (a worker's page belongs to the chat that launched it),
+  else `CLAUDE_CODE_SESSION_ID`, else `--chat`. Without any of them it is refused.
 
-### 5. Discovery (no context cost for page-less chats)
-- Artifacts off: `CLAUDE_CODE_DISABLE_ARTIFACT=1` exported by the claudeb launcher (one place, every
-  profile and worker) or `enableArtifact: false` per profile settings — the Artifact tool and its long
-  description leave the context.
-- One global CLAUDE.md line: "A page for Egor to vote/compare/review → `page help`; never hand-written
-  HTML or artifacts."
-- SessionStart hook on `compact`/`resume`: if this chat owns pages, one line listing them.
-- Optional backstop: a PreToolUse notice when a Write creates an `*.html` with vote-like code outside
-  the kit (risk: false positives on real websites Egor builds).
+## 6. Discovery
+- Artifacts off: `enableArtifact: false` in `~/.claude/settings.json`, which every profile symlinks.
+  The tool and its long description leave every chat.
+- One instruction, phrased by medium, not intent: "Any local browser page for Egor (vote, compare,
+  review, overview, gallery, player) → `page help`; never hand-written HTML, `http.server` or
+  artifacts."
+  - It is folded into an existing global line if the instruction-bloat gate prices a new one.
+  - It is mirrored into `~/.codex/AGENTS.md` and the grok worker brief preamble.
+  - Its cost is honestly one line per session, not zero.
+- SessionStart hook on compact/resume: `[ -d ~/Pages/.by-session/$sid ] || exit 0`, then one line per
+  page (slug, module, answered/total, rev).
+- No HTML-write backstop: it fires after the work is done, misses generator scripts, and false-positives
+  on real sites.
 
-### 6. Migration
-- pixel-forge's calibration page (claude.ai artifact, 0 votes) moves to `compare` first.
-- Existing project pages (listen-bench, video_glitch, oversharp) keep working; they move only when
-  their chat next needs a change.
+## 7. Tests (`PAGES_DIR` is mandatory)
+- Tests set a temp `PAGES_DIR` and use port 0. The CLI refuses a test run whose `PAGES_DIR` is unset
+  or is `~/Pages` (a past test POST erased real votes).
+- Covered:
+  - per-field merge, so a stale tab cannot clobber a field;
+  - op-id dedup, and a torn line skipped;
+  - the key not served and blind shuffle stable;
+  - Range chunking and caps, and path traversal refused;
+  - owner resolution with and without the launcher;
+  - the media allowlist rebuilt on update.
+
+## 8. Migration
+- pixel-forge's calibration page goes first: a claude.ai artifact with 0 votes, nothing to import. Its
+  composite sheet becomes separate images, which it already has.
+- listen-bench, video_glitch and oversharp keep their own servers. A page moves only when its chat
+  next changes it, with an explicit import of the items' stable ids.
 
 ## Budget
-Phase 1 (server, store, shell, compare, CLI, hooks, launchd, tests): ~1000–1200 lines, ~10 files.
-Phase 2 (cards, media, pairs): ~600 lines.
+- Phase 1 is ~1250 lines without tests and ~250 of tests, in ~9 files:
+  - `bin/page` + `store.py`, ~450;
+  - `shell.js`, ~250; `compare.js`, ~350; `cards.js`, ~150;
+  - hook, plist and deploy, ~50.
+- Phase 2 is ~400 lines, when needed.
 
-## Alternatives considered
-- Pushing pages to Egor's site (loyegor.com = GitHub Pages, static): reachable anywhere, but no
-  backend for votes, a push + Pages build per iteration, media made public. Rejected for votes; maybe
-  later for sharing a read-only snapshot.
-- Server started on demand by `page`: zero RAM idle, but dead when Egor opens a bookmark first.
-- Reading votes from the browser's localStorage files (what the Vector Magic chat did): no server,
-  but Mac-only, Dia-profile-specific, and its reader script got lost.
+## Alternatives decided
+- **loyegor.com (GitHub Pages):** it has no vote backend, needs a push plus a Pages build per
+  iteration, and makes media public. Out; maybe later as a read-only `page export --static` for
+  sharing.
+- **Server started on demand:** dead when a bookmark is opened first. Out.
+- **launchd socket activation:** deferred (see 1).
+- **sqlite store:** considered. JSONL + flock stays: inspectable by hand, one writer function.
+- **SSE / long-poll:** a visible-only short poll is stateless and holds no server threads.
 
-## Open with Egor
-LAN access for the iPad (secret link) vs Mac only; artifacts fully off.
+## Changed from v1
+- **Fixed holes:**
+  - the blind key leaked through the served spec;
+  - the last clicks were lost on tab close or Wi-Fi drop (now an outbox and a flush);
+  - a stale tab could overwrite marks (now changed fields only);
+  - a vote could reattach to a different picture (now immutable ids, `--replace`).
+- **Server:**
+  - deployed copy (TCC), no restart storm on a port clash;
+  - streamed Range instead of whole-range reads (RAM), media cacheable;
+  - Host/Origin/content-type checks against cross-site writes, path confinement.
+- **Ownership:** a worker's page now belongs to the launching chat, slugs are namespaced, and chat
+  names are stored so the index is instant.
+- **Scope:** `cards` moved into phase 1 (otherwise audio, video and verdict pages have nowhere to
+  go); `pairs` became a compare preset; compare gained `view` mode and iPad touch zoom.
+- **Less model work:** the spec comes from stdin, the page computes hotspots and preview, `page state`
+  prints only what changed, and the read cursor is stored, not remembered.
+- **Dropped:**
+  - the HTML-write hook;
+  - the per-request chat-name lookup;
+  - SSE;
+  - client_rev negotiation;
+  - the separate server/CLI duplicates.
