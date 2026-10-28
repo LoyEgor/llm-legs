@@ -1961,7 +1961,8 @@ local function compute()
   return style.mono(entries, infoTitle)
 end
 
--- Contract row `ea`: one `start_us<TAB>end_us<TAB>name` line per background build or main-thread lag;
+-- Contract row `ea`: one `start_us<TAB>end_us<TAB>name` line per background build, main-thread lag or
+-- slow Better Terminal callback (hammerspoon's init.lua hands it this as bt's span sink);
 -- bin/speed-doctor prunes the days.
 local journalDay = nil
 local function hsJournal(name, startedAt, endedAt)
@@ -1977,6 +1978,7 @@ local function hsJournal(name, startedAt, endedAt)
     limits.journalLine(folder, name, startedAt, endedAt)
   end)
 end
+M.hsJournal = hsJournal
 
 local function entries()
   local now = clock()

@@ -86,6 +86,10 @@ LEVERS = [
     {"component": "background/hs lag", "lever": "Hammerspoon main-thread work off its timers: async tasks, cached builds",
      "effort": "M", "confidence": "measured", "saving": 0.5, "night_cost_h": 0.0, "proof": "tail",
      "quality": "equivalent"},
+    {"component": "background/better-terminal",
+     "lever": "Better Terminal callbacks off Hammerspoon's main thread: the slowest bt:<callback> spans in the hs journal",
+     "effort": "M", "confidence": "measured", "saving": 0.5, "night_cost_h": 0.0, "proof": "tail",
+     "quality": "equivalent"},
 ]
 SLICE_LEVER = {"effort": "M", "confidence": "unmeasured", "saving": 0.3, "night_cost_h": 0.0, "proof": "tail",
                "quality": "equivalent"}
@@ -628,6 +632,10 @@ def background_view(days, lo, now, collector_rows, covered_days):
     hs = [f for f in tsv_days(os.path.join(state_dir(), "hs"), lo) if len(f) >= 3 and f[0].isdigit() and f[1].isdigit()]
     lag = [(int(f[1]) - int(f[0])) / 1e6 for f in hs if f[2] == "hs-lag" and int(f[0]) / 1e6 >= lo]
     builds = [(int(f[1]) - int(f[0])) / 1e6 for f in hs if f[2] == "doctors:bg" and int(f[0]) / 1e6 >= lo]
+    bt = collections.Counter()
+    for f in hs:
+        if f[2].startswith("bt:") and int(f[0]) / 1e6 >= lo:
+            bt[f[2][3:]] += (int(f[1]) - int(f[0])) / 1e6
     collectors = {}
     for row in collector_rows:
         if (row.get("start") or 0) >= lo and isinstance(row.get("doctor"), str):
@@ -649,7 +657,9 @@ def background_view(days, lo, now, collector_rows, covered_days):
         "merge_kick": {"runs_day": per_day(len(kicks)), "cpu_min_day": per_day(kick_cpu / 60000.0)},
         "probes": {k: {"runs_day": per_day(v[0]), "cpu_min_day": per_day(v[1] / 60000.0)} for k, v in sorted(probes.items())},
         "hs": {"lag_events_day": per_day(len(lag)), "lag_min_day": per_day(sum(lag) / 60.0),
-               "bg_builds_day": per_day(len(builds)), "bg_build_p50_ms": round(H.median(builds) * 1000) if builds else None},
+               "bg_builds_day": per_day(len(builds)), "bg_build_p50_ms": round(H.median(builds) * 1000) if builds else None,
+               "bt_min_day": per_day(sum(bt.values()) / 60.0),
+               "bt_slowest": [[label, per_day(secs / 60.0)] for label, secs in bt.most_common(3)]},
         "collectors": {k: {"runs_day": per_day(v["runs"]), "wall_p50_s": round(H.median(v["walls"]), 2),
                            "cpu_min_day": per_day(v["cpu_s"] / 60.0)} for k, v in sorted(collectors.items())},
     }
@@ -1276,11 +1286,28 @@ def collect(write, now):
         credit[(day, "chat", "start")] = secs
     days = speed_days(lo, now)
     background = background_view(days, lo, now, collector_rows, covered)
-    if background["hs"]["lag_min_day"]:
-        for f in tsv_days(os.path.join(state_dir(), "hs"), lo):
-            if len(f) >= 3 and f[2] == "hs-lag" and f[0].isdigit() and int(f[0]) / 1e6 >= lo:
-                key = (H.local_day(int(f[0]) / 1e6), "background", "hs lag")
-                credit[key] = credit.get(key, 0.0) + (int(f[1]) - int(f[0])) / 1e6
+    if background["hs"]["lag_min_day"] or background["hs"]["bt_min_day"]:
+        spans = [(int(f[0]) / 1e6, int(f[1]) / 1e6, f[2]) for f in tsv_days(os.path.join(state_dir(), "hs"), lo)
+                 if len(f) >= 3 and f[0].isdigit() and f[1].isdigit() and int(f[0]) / 1e6 >= lo]
+        bt = []
+        for a, b in sorted((a, b) for a, b, name in spans if name.startswith("bt:")):
+            if bt and a <= bt[-1][1]:
+                bt[-1][1] = max(bt[-1][1], b)
+            else:
+                bt.append([a, b])
+        for a, b in bt:
+            key = (H.local_day(a), "background", "better-terminal")
+            credit[key] = credit.get(key, 0.0) + b - a
+        # A lag inside a Better Terminal callback is that callback's; the rest stays unattributed hs lag.
+        starts = [a for a, _ in bt]
+        for a, b, name in spans:
+            if name == "hs-lag":
+                i, inside = max(bisect.bisect_right(starts, a) - 1, 0), 0.0
+                while i < len(bt) and bt[i][0] < b:
+                    inside += max(0.0, min(b, bt[i][1]) - max(a, bt[i][0]))
+                    i += 1
+                key = (H.local_day(a), "background", "hs lag")
+                credit[key] = credit.get(key, 0.0) + max(0.0, b - a - inside)
     tree = {}
     for (day, area, leaf), secs in credit.items():
         tree.setdefault(area, {})[leaf] = tree.get(area, {}).get(leaf, 0.0) + secs / 60.0 / covered

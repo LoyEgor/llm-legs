@@ -68,7 +68,7 @@ Quality rule (Egor): the speed of the current setup at the same intelligence. No
 | tests · moved | `test_*`, `suites_at_once` (standalone runs counted) | C5 | |
 | machine · P | P per attended local minute; probe slowdown; consumer shares; memory; swap MB + swap-in rate (never a share: macOS swap is dynamic); reboots charged (restart + cold cache) | C6, C7 | process-min ≠ CPU-min |
 | machine · git | loose objects per repo, git-op p50 inside hooks | Harness Growth | |
-| background | statusline renders and CPU per session-hour, idle share; `worker-pick --menu` and merge-kick runs/CPU; menu click wait, `doctors:bg` builds, hs lag; CPU per launchd label; doctor collectors wall/CPU × runs | statusline fold, C7, C10 | idle = no transcript line, no running tool or background task, no work-probe child; a menu with no lines reads "not measured" |
+| background | statusline renders and CPU per session-hour, idle share; `worker-pick --menu` and merge-kick runs/CPU; menu click wait, `doctors:bg` builds, hs lag; Better Terminal callbacks over 50 ms (`bt:<callback>`, the hs lag inside them moves to their leaf); CPU per launchd label; doctor collectors wall/CPU × runs | statusline fold, C7, C10 | idle = no transcript line, no running tool or background task, no work-probe child; a menu with no lines reads "not measured" |
 | night | wall, first landing, slot queue, debt round, branch review, adjudication, suite passes, landing wait | C4 | |
 
 **Clocks.** Durations come from monotonic or elapsed counters where the writer has them; wall jumps and `secs < 0` are flagged, never summed; a span crossing a boot or sleep boundary loses only that slice.
