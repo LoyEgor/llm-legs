@@ -16,10 +16,11 @@ Synced loupes: drag pans all, wheel zooms at the pointer.
   - ←/→ move between items, 0 fits, 1..9 jump to hotspots, +/− zoom.
 - **Computed when absent:** `hotspots` (block-diff, `[x, y]` in the original's pixels), image sizes.
 - **Per item:** `id` (immutable), `title`, `q` (a context line), `original`, `variants[]` (`id`,
-  `label`, `src`, `meta` badge, `grid`), `hotspots`, `n` (shown number), `suggest`
+  `label`, `src`, `meta` badge), `grid`, `hotspots`, `n` (shown number), `suggest`
   (`{"choice": "A"}`, shown apart, never counted).
-- **variants[].grid:** `{"x": [...], "y": [...]}`, cell bounds in the original's pixels; «Сетка» (G)
-  draws them over the original, one colour per variant, where cells are ≥ 5 screen px.
+- **pixel_grid:** `true` adds «Сетка» (G): each variant's own pixel grid in its loupe. An item's
+  `grid` (`{"x": [...], "y": [...]}`, cell bounds in the original's px, e.g. a detected lattice)
+  adds it too, drawn over the original. Cells under 5 screen px stay undrawn.
 - **Common:** `title`, `intro`, `sitting_cap`; any `_` key is hidden, shown in `page state`.
 - **Fields written:** `choice` (an option id; the slot when blind), `tags` (`{"A": [...]}`), `note`.
 

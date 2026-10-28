@@ -32,8 +32,8 @@ const vote = () => ({ module: "compare", schema: 1, title: "Калибровка
 const srv = await serve({
   vote1: vote(), vote2: vote(), vote3: vote(), vote4: vote(),
   view1: { ...vote(), mode: "view", title: "Обзор" },
-  sq1: { ...vote(), integer_zoom: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
-    : { ...it, variants: [{ ...it.variants[0], grid: { x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) } }, it.variants[1]] }) },
+  sq1: { ...vote(), integer_zoom: true, pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
+    : { ...it, grid: { x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) } }) },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
     items: [{ id: "b01", variants: [{ id: "v77", label: "champ77", src: F.a, meta: "64 px" }, { id: "v78", label: "champ78", src: F.b }] }] },
   cards1: { module: "cards", schema: 1, title: "Швы", sitting_cap: 2,
@@ -223,8 +223,8 @@ try {
   await shot(page, "blind.png");
   await page.close();
 
-  // 6. integer_zoom + zoom_levels + variants[].grid: magnified variants at whole pixels on both axes, the fitted
-  // view fills the loupe, digits pick levels and 1 again fits, no hotspot row or fit button, G toggles the lattices
+  // 6. integer_zoom + zoom_levels + pixel_grid + grid: magnified variants at whole pixels on both axes, the fitted
+  // view fills the loupe, digits pick levels and 1 again fits, no hotspot row or fit button, G toggles the grids
   page = await open("sq1");
   await ready(page);
   await page.click(".strip i:nth-child(3)");
@@ -239,12 +239,14 @@ try {
   await page.keyboard.press("Digit2");
   r = await sq();
   check("Digit2 → original at 2x, 4 px variant at 8x", r[0][2] === 960 && r[1][2] === 960 && whole(r) && await page.$eval(".tools button.on", (b) => b.textContent) === "2×", JSON.stringify(r));
-  const inked = () => page.$eval(".vp canvas", (c) => c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, k) => k % 4 === 3 && v));
-  check("grid off by default", !(await inked()));
+  const inked = () => page.$$eval(".vp canvas", (cs) => cs.map((c) => c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, k) => k % 4 === 3 && v)));
+  check("grid off by default", (await inked()).every((v) => !v));
   await page.keyboard.press("KeyG");
-  check("G draws the variant's lattice over the original", await inked() && await page.$eval(".tools button.on:last-child", (b) => b.textContent) === "Сетка");
+  const ink = await inked();
+  check("G draws the item's lattice over the original and the 4 px variant's own pixel grid", ink[0] && ink[1]
+    && await page.$eval(".tools button.on:last-child", (b) => b.textContent) === "Сетка", JSON.stringify(ink));
   await page.keyboard.press("KeyG");
-  check("G again clears it", !(await inked()));
+  check("G again clears them", (await inked()).every((v) => !v));
   await page.keyboard.press("Digit1");
   check("Digit1 → original at 1x", (await sq())[0][2] === 480);
   await page.keyboard.press("Digit1");

@@ -33,7 +33,7 @@ body.drag,body.drag .vp{cursor:grabbing}
 .gi img{width:100%;max-height:240px;object-fit:contain;background:#fff;border-radius:4px;display:block}
 .gi figcaption{font-size:12px;color:var(--mute);text-align:center}
 @media (max-width:900px){.upper{flex-direction:column}}`;
-const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINES = ["#00e5ff", "#ff3df2", "#ffd400", "#7cfc00"];
+const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)";
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false;
 const hot = new Map();
@@ -57,7 +57,7 @@ const opts = () => (S.options || [...((item(cur) || S.items[0]).variants || []).
 
 function frames(it) {
   const vs = (it.variants || []).map((v, i) => ({ src: v.src, side: v.slot || LETTERS[i],
-    name: S.blind ? "" : v.label || "", meta: v.meta || "", grid: v.grid || null, color: LINES[i % LINES.length] }));
+    name: S.blind ? "" : v.label || "", meta: v.meta || "" }));
   return it.original ? [{ src: it.original, side: "", name: "оригинал", meta: "" }, ...vs] : vs;
 }
 
@@ -85,11 +85,11 @@ function show(id, keepView) {
   const vps = fs.map((f) => h("div", { class: "vp", ondblclick: fitView },
     h("div", { class: "bd" }, h("span", {}, f.side || f.name), f.side && f.name ? h("span", {}, f.name) : null,
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
-    h("img", { src: f.src, alt: "", draggable: false }), f.side ? null : h("canvas")));
+    h("img", { src: f.src, alt: "", draggable: false }), h("canvas")));
   const cells = fs.map(() => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i")));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
-    hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), fs, gl: vps.map((v) => v.querySelector("canvas")).find(Boolean),
-    gb: it.original && fs.some((f) => f.grid) ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
+    hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
+    gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
     pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg", hidden: true }),
     lv: (S.zoom_levels || []).map((z, k) => h("button", { onclick: () => level(k), title: k < 9 ? `${k + 1}` : null }, `${z}×`)) };
   E.votes = voting ? h("div", { class: "votes" }, opts().map((o) =>
@@ -237,50 +237,61 @@ function layout() {
 function draw() {
   if (!E || !geo || !L) return;
   const { W, H } = size(), pix = String(S.pixelated ?? "auto"), first = item(cur).original ? 1 : 0, fz = fit().z;
-  E.imgs.forEach((im, i) => {
+  // where each image's pixel grid lands in its loupe: origin and screen px per image px on each axis
+  const at = E.imgs.map((im, i) => {
     const nw = im.naturalWidth, nh = im.naturalHeight;
     if (S.integer_zoom && i >= first && nw) {
       // whole screen pixels per image pixel, one scale for both axes, centred on the same relative point;
       // the fitted view fills the loupe instead, smooth unless that scale is whole or >= 3
       const k = L.z * Math.sqrt(geo.w / nw * geo.h / nh), n = L.z <= fz * 1.0001 ? Math.min(W / nw, H / nh) : k < 1 ? k : Math.round(k);
+      const x = Math.round(W / 2 - L.cx * nw / geo.w * n), y = Math.round(H / 2 - L.cy * nh / geo.h * n);
       Object.assign(im.style, { width: nw * n + "px", height: nh * n + "px", imageRendering: Number.isInteger(n) || n >= 3 ? "pixelated" : "auto",
-        transform: `translate(${Math.round(W / 2 - L.cx * nw / geo.w * n)}px,${Math.round(H / 2 - L.cy * nh / geo.h * n)}px)` });
-      return;
+        transform: `translate(${x}px,${y}px)` });
+      return { x, y, sx: n, sy: n, nw, nh };
     }
-    Object.assign(im.style, { width: geo.w * L.z + "px", height: geo.h * L.z + "px",
-      transform: `translate(${W / 2 - L.cx * L.z}px,${H / 2 - L.cy * L.z}px)` });
+    const x = W / 2 - L.cx * L.z, y = H / 2 - L.cy * L.z;
+    Object.assign(im.style, { width: geo.w * L.z + "px", height: geo.h * L.z + "px", transform: `translate(${x}px,${y}px)` });
     const k = L.z * geo.w / (nw || geo.w);
     im.style.imageRendering = pix === "true" || (pix !== "false" && k >= 3) ? "pixelated" : "auto";
+    return nw ? { x, y, sx: geo.w * L.z / nw, sy: geo.h * L.z / nh, nw, nh } : null;
   });
   E.lv.forEach((b, k) => b.classList.toggle("on", L.z === S.zoom_levels[k]));
-  if (E.gb) paintLines(W, H);
-}
-
-// Each variant's cell bounds (variants[].grid, in the original's pixels) over the original, one colour per
-// variant, the first on top; a lattice whose cells are under 5 screen px is left out
-function paintLines(W, H) {
-  const c = E.gl, d = devicePixelRatio || 1, g = c.getContext("2d");
-  Object.assign(c, { width: Math.round(W * d), height: Math.round(H * d) });
-  Object.assign(c.style, { width: W + "px", height: H + "px" });
-  E.gb.classList.toggle("on", lines);
-  E.fs.forEach((f, k) => { E.vps[k].querySelector(".bd span").style.boxShadow = lines && f.grid ? `inset 0 -3px 0 ${f.color}` : ""; });
-  if (!lines) return;
-  const sx = (x) => Math.round((W / 2 + (x - L.cx) * L.z) * d) + 0.5, sy = (y) => Math.round((H / 2 + (y - L.cy) * L.z) * d) + 0.5;
-  for (const f of E.fs.filter((f) => f.grid).reverse()) {
-    const { x: xs, y: ys } = f.grid, cell = Math.min((xs.at(-1) - xs[0]) / (xs.length - 1), (ys.at(-1) - ys[0]) / (ys.length - 1));
-    if (cell * L.z < 5) continue;
-    const [x0, x1, y0, y1] = [sx(xs[0]), sx(xs.at(-1)), sy(ys[0]), sy(ys.at(-1))];
-    g.strokeStyle = f.color; g.lineWidth = 1; g.beginPath();
-    for (const x of xs) { const v = sx(x); if (v >= 0 && v <= c.width) { g.moveTo(v, Math.max(0, y0)); g.lineTo(v, Math.min(c.height, y1)); } }
-    for (const y of ys) { const v = sy(y); if (v >= 0 && v <= c.height) { g.moveTo(Math.max(0, x0), v); g.lineTo(Math.min(c.width, x1), v); } }
-    g.stroke();
-  }
+  if (E.gb) paintLines(W, H, at, first);
   const x0 = Math.max(0, L.cx - W / 2 / L.z), x1 = Math.min(geo.w, L.cx + W / 2 / L.z);
   const y0 = Math.max(0, L.cy - H / 2 / L.z), y1 = Math.min(geo.h, L.cy + H / 2 / L.z);
   E.boxes.forEach((b) => {
     const k = b.parentNode.clientWidth / geo.w;
     Object.assign(b.style, { display: x1 > x0 && y1 > y0 ? "block" : "none", left: x0 * k + "px", top: y0 * k + "px",
       width: (x1 - x0) * k + "px", height: (y1 - y0) * k + "px" });
+  });
+}
+
+// «Сетка»: the item's `grid` (cell bounds in the original's pixels) over the original, and each variant's own
+// pixel grid in its loupe; a grid whose cells are under 5 screen px is left out
+function paintLines(W, H, at, first) {
+  const d = devicePixelRatio || 1, it = item(cur);
+  E.gb.classList.toggle("on", lines);
+  E.cvs.forEach((c, i) => {
+    Object.assign(c, { width: Math.round(W * d), height: Math.round(H * d) });
+    Object.assign(c.style, { width: W + "px", height: H + "px" });
+    const a = at[i];
+    let xs, ys;
+    if (!lines) return;
+    if (i < first) {
+      if (!it.grid) return;
+      xs = it.grid.x.map((v) => W / 2 + (v - L.cx) * L.z);
+      ys = it.grid.y.map((v) => H / 2 + (v - L.cy) * L.z);
+    } else if (a) {
+      xs = Array.from({ length: a.nw + 1 }, (_, k) => a.x + k * a.sx);
+      ys = Array.from({ length: a.nh + 1 }, (_, k) => a.y + k * a.sy);
+    } else return;
+    if (Math.min((xs.at(-1) - xs[0]) / (xs.length - 1), (ys.at(-1) - ys[0]) / (ys.length - 1)) < 5) return;
+    const g = c.getContext("2d"), px = (v) => Math.round(v * d) + 0.5;
+    const [x0, x1, y0, y1] = [Math.max(0, px(xs[0])), Math.min(c.width, px(xs.at(-1))), Math.max(0, px(ys[0])), Math.min(c.height, px(ys.at(-1)))];
+    g.strokeStyle = LINE; g.lineWidth = 1; g.beginPath();
+    for (const x of xs) { const v = px(x); if (v >= 0 && v <= c.width) { g.moveTo(v, y0); g.lineTo(v, y1); } }
+    for (const y of ys) { const v = px(y); if (v >= 0 && v <= c.height) { g.moveTo(x0, v); g.lineTo(x1, v); } }
+    g.stroke();
   });
 }
 
