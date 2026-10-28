@@ -39,7 +39,6 @@ LIMITS = {
     "silent_days": 14,
     "heavy_test_s": 120,
     "token_day": 500000,
-    "complex_lines": 300,
     "clone_min_lines": 8,
     "clone_jaccard": 0.6,
     "clone_shared": 4,
@@ -59,6 +58,11 @@ LIMITS = {
     "layout_score": 2,
     "promise_binds": 4,
 }
+# Largest files (Egor 2026-10-28): every tracked text file's lines, data files and fixtures aside; a split candidate is
+# big and edited often, ranked by lines x commits in `days` (each edit re-reads and re-tests the whole file). The floors
+# sit at the 10-28 score curve's widest step past its top two (300k -> 222k): about a week of candidates at one a night.
+BIG_FILES = {"top": 10, "days": 30, "min_lines": 2000, "min_score": 300000}
+SPLIT_FILE_RE = re.compile(r"^File: (\S+) `([^`]+)`$", re.M)
 TOP_K = 3
 TOP_K_LOW_YIELD = 1
 LOW_YIELD_PER_KTOK = 0.2
@@ -2167,14 +2171,6 @@ def build_candidates():
         signals.append({"group": "heavy", "rule": "tokens", "units": [unit_span(fid, graph.files[fid])],
                         "detail": "%s is ~%d tokens, ~%d a day, %s" % (fid, tokens, per_day, how),
                         "value": round(per_day / 100000.0)})
-    for fid, record in graph.files.items():
-        if record.get("kind") != "code":
-            continue
-        for symbol in record.get("symbols") or ():
-            if symbol["lines"] >= LIMITS["complex_lines"]:
-                signals.append({"group": "heavy", "rule": "complex", "units": [unit_span(fid, record, symbol)],
-                                "detail": "%s is %d lines with %d branches" % (unit_id(fid, symbol), symbol["lines"], symbol["branches"]),
-                                "value": 0})
 
     rows = shared_invariant_rows(indexes)
     for a, b, rule, score in clone_pairs(graph) + touch_pairs(graph):
@@ -3087,6 +3083,102 @@ def apply_ledger(problems, candidates, ledger, indexes):
     return kept
 
 
+def split_handoffs():
+    """{fid: [(path, status)]} of every split handoff (`docs/handoffs/<date>-split-<stem>.md`) of the repositories."""
+    import handoffs
+    out = {}
+    for top in repo_paths():
+        for path in sorted(glob.glob(os.path.join(top, "docs", "handoffs", "*-split-*.md"))):
+            try:
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    found = SPLIT_FILE_RE.search(handle.read())
+            except OSError:
+                continue
+            if found:
+                out.setdefault(found.group(1) + "/" + found.group(2), []).append(
+                    (path, handoffs.status_of(handoffs.head(path)).strip()))
+    return out
+
+
+def split_state(handed):
+    """kept (settled `keep: <reason>`: listed, never handed off again), open, or None."""
+    statuses = [status.lower() for _, status in handed]
+    if any(s.startswith("settled") and re.search(r"\bkeep:\s*\S", s) for s in statuses):
+        return "kept"
+    return "open" if any(s.startswith("open") for s in statuses) else None
+
+
+def big_files(indexes, handed=None):
+    """The Largest files block: the BIG_FILES top by lines and the split candidates by lines x commits."""
+    import test_health
+    handed = split_handoffs() if handed is None else handed
+    lo = now_s() - BIG_FILES["days"] * 86400
+    rows = []
+    for name, doc in indexes.items():
+        top = doc["top"]
+        tracked = set((git(top, "ls-files", "-z") or "").split("\0"))
+        commits = test_health.changes(top, lo)[1]
+        for rel, record in (doc.get("files") or {}).items():
+            if rel not in tracked or record.get("link") or record.get("kind") in ("data", "fixture"):
+                continue
+            fid = name + "/" + rel
+            lines = max(0, (record.get("lines") or 0) - 1)  # the index counts newlines + 1; this is wc -l
+            rows.append({"file": fid, "lines": lines, "commits": commits.get(rel, 0), "score": lines * commits.get(rel, 0),
+                         "state": split_state(handed.get(fid, ()))})
+    split = sorted((r for r in rows if r["lines"] >= BIG_FILES["min_lines"] and r["score"] >= BIG_FILES["min_score"]),
+                   key=lambda r: (-r["score"], r["file"]))
+    for row in split:
+        row["candidate"] = True
+    return {"rule": BIG_FILES, "largest": sorted(rows, key=lambda r: (-r["lines"], r["file"]))[:BIG_FILES["top"]],
+            "split": split}
+
+
+def split_handoff(night):
+    """The night's one split handoff (night-run base, before its snapshot, so the press-time commit carries it): the top
+    split candidate not kept gets `docs/handoffs/<date>-split-<stem>.md` in its repository, whose decision section sends
+    it to the chat holding the file's context (share/handoffs.py's evidence rule, through night-run carry). None while
+    an earlier one is open or once one was opened today; the night never splits a file itself. -> (path, why)"""
+    if report_only():
+        return None, report_only()
+    today = datetime.date.fromtimestamp(now_s()).isoformat()
+    handed = split_handoffs()
+    for docs in handed.values():
+        for path, status in docs:
+            if status.lower().startswith("open") or os.path.basename(path).startswith(today + "-"):
+                return None, "%s is %s" % (path, "open" if status.lower().startswith("open") else "today's")
+    indexes = load_indexes()
+    files = big_files(indexes, handed)
+    pick = next((row for row in files["split"] if row["state"] is None), None)
+    if pick is None:
+        return None, "no split candidate (%d kept)" % sum(1 for row in files["split"] if row["state"] == "kept")
+    repo, rel = pick["file"].split("/", 1)
+    top = indexes[repo]["top"]
+    stem = re.sub(r"[^a-z0-9]+", "-", os.path.splitext(os.path.basename(rel))[0].lower()).strip("-") or "file"
+    path = os.path.join(top, "docs", "handoffs", "%s-split-%s.md" % (today, stem))
+    if os.path.exists(path):
+        return None, "%s exists" % path
+    values = dict(pick, **BIG_FILES, rel=rel, repo=repo, night=night, today=today, rank=files["split"].index(pick) + 1,
+                  count=len(files["split"]))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "# Split or remove `%(rel)s`\n\nStatus: open\nFile: %(repo)s `%(rel)s`\n\n"
+            "Night %(night)s took it from the Code doctor's Largest files: it is big and edited often, so every edit "
+            "re-reads it whole and re-runs its long suites.\n\n"
+            "## Measured %(today)s\n\n"
+            "- %(lines)d lines, %(commits)d commits in the last %(days)d days: score %(score)d (lines x commits).\n"
+            "- A split candidate has %(min_lines)d lines or more and a score of %(min_score)d or more; this one ranks "
+            "%(rank)d of %(count)d.\n\n"
+            "## Decision: split, remove or keep\n\n"
+            "It goes to the chat holding the file's context (most edits and mentions); the night never splits it.\n"
+            "- Split: parts of one responsibility each, its tests split with them so each part has its own suites and "
+            "an edit of one part runs only those. Settle: `Status: settled <night>: split into <parts>`.\n"
+            "- Remove: what of it is dead or a copy goes. Settle the same way.\n"
+            "- Keep, when it is big for a reason: `Status: settled <night>: keep: <the reason>`. A kept file stays in "
+            "Largest files and is never handed off again.\n" % values)
+    return path, None
+
+
 def document(started):
     now = now_s()
     ledger = load_ledger()
@@ -3165,7 +3257,7 @@ def document(started):
                        "top": [{"id": c["id"], "group": c["group"], "detail": clip(c["detail"], 160), "value": c["value"]}
                                for c in waiting[:5]]},
         "cost": summary["totals"], "cost_per_cause": summary["per_cause"], "yield": summary["yield"],
-        "queue_k": queue_k(summary), "last_judge": last_judge,
+        "queue_k": queue_k(summary), "last_judge": last_judge, "files": big_files(indexes),
         "coverage": {"rollup": cover, "deep_pass": {"slices": len(all_slices), "covered": sum(1 for s in all_slices if s in slices)},
                      "judge": {"per_night": per_night, "nights_to_cover": -(-len(waiting) // per_night),
                                "promise": {"total": sum(1 for c in candidates if c["group"] == "promise"),
@@ -3723,6 +3815,9 @@ def main(argv=None):
     fix.add_argument("--mechanism")
     fix.add_argument("--canonical")
     fix.add_argument("--replaced", nargs="*", default=[])
+    split = sub.add_parser("split", parents=[scoped],
+                           help="the night's one split handoff: the top split candidate to its owner chat (night-run base)")
+    split.add_argument("--night", required=True)
     acct = sub.add_parser("account", help="record a cost the doctor did not see (fix, review, tests, retries)")
     acct.add_argument("--cause", required=True)
     acct.add_argument("--stage", required=True, choices=("fix", "review", "tests", "retries"))
@@ -3791,6 +3886,10 @@ def main(argv=None):
         row = record_fix(args.cause, args.by, args.files, args.lines_removed, args.suite_s_saved, args.tokens_cut,
                          args.mechanism, args.canonical, args.replaced)
         print("%s: fixed-pending" % row["id"])
+        return 0
+    if args.command == "split":
+        path, why = split_handoff(args.night)
+        print("split: %s" % (path or "none, " + why))
         return 0
     if args.command == "account":
         account(args.night, args.cause, args.stage, tokens=args.tokens, wall_s=args.wall)

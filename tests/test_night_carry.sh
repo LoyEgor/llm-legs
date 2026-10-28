@@ -14,6 +14,8 @@ assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexp
 jqe() { jq -e "$@" >/dev/null; }
 
 export HOME="$WORK/home" RUN_SUITES_JOURNAL="$WORK/runs.jsonl" DOCTORS_DIR="$WORK/doctors" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" CHAT_NAMES_CACHE="$WORK/names.json"
+# base's split handoff is bin/code-doctor's (tests/test_code_doctor.sh); here it writes none.
+export NIGHT_RUN_CODE_DOCTOR=true
 NIGHTS="$DOCTORS_DIR/nights"
 night() { bash "$ROOT/bin/night-run" "$@"; }
 mkdir -p "$NIGHTS" "$HOME/.claude/sessions" "$HOME/.claude/projects/p"
@@ -239,6 +241,13 @@ NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" new_night N3s
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" night carry N3s >"$WORK/n3s.out" 2>/dev/null || fail "carry of a lone live handoff failed"
 assert [ "$(cut -f1,3 "$WORK/n3s.out")" = "owner-chat-beta-chat	message Beta Chat" ]
 assert jqe --arg p "$S/docs/handoffs/2026-10-09-single.md" '[.jobs[] | [.kind, .via, .handoffs]] == [["owner-chat", "message", [$p]]]' "$NIGHTS/N3s.json"
+# A split handoff waits for its owner chat: with none found it never becomes a night job (the night never splits a file).
+printf '# Split or remove `tests/big.sh`\n\nStatus: open\nFile: repo `tests/big.sh`\n\n## Decision: split, remove or keep\n' \
+  >"$S/docs/handoffs/2026-10-10-split-big.md"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" new_night N3t
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" night carry N3t >"$WORK/n3t.out" 2>/dev/null || fail "carry beside a split handoff failed"
+assert [ "$(cut -f1 "$WORK/n3t.out")" = "owner-chat-beta-chat" ]
+assert [ "$(handoff_refs N3t)" = '[]' ]
 export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi
 

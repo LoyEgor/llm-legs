@@ -44,6 +44,9 @@ printf '%s\n' "$!" >>"$DATA/orchestrators"
 EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/pick-args"\nprintf "acct-n\\n"\n' >"$FAKE_BIN/worker-pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/code-doctor-args"\n[ -z "${SPLIT_WRITES:-}" ] || printf "Status: open\\n" >"$SPLIT_WRITES"\n' \
+  >"$FAKE_BIN/code-doctor"
+export NIGHT_RUN_CODE_DOCTOR="$FAKE_BIN/code-doctor"
 cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" != review ] || { printf '%s\n' "$*" >>"$DATA/price-args"
@@ -533,6 +536,17 @@ assert [ "$(git -C "$WORK/clean" rev-parse "refs/night/$id6/base")" = "$(git -C 
 assert jqe --arg c "$(git -C "$WORK/snap" rev-parse "refs/night/$id6/base")" '.bases.snap == $c' "$(record "$id6")"
 assert jqe '.events[-1] | .phase == "base" and .repos == 2 and .pred == [] and .job == null and (.secs | type) == "number"' \
   "$(record "$id6")"
+# The night's one split handoff (code-doctor split) is written before the snapshot, so the base carries it; a pilot
+# night writes none (its carry hands no handoff to an owner chat).
+assert jqe '.pilot != null' "$(record "$id6")"
+assert [ ! -e "$DATA/code-doctor-args" ]
+pilot6=$(jq -c .pilot "$(record "$id6")")
+jq 'del(.pilot)' "$(record "$id6")" >"$WORK/r6" && mv "$WORK/r6" "$(record "$id6")"
+mkdir -p "$WORK/snap/docs/handoffs"
+SPLIT_WRITES="$WORK/snap/docs/handoffs/2026-10-28-split-a.md" night base "$id6" >/dev/null 2>&1 || fail "a full night's base failed"
+assert [ "$(cat "$DATA/code-doctor-args")" = "split --night $id6" ]
+assert [ "$(git -C "$WORK/snap" show "refs/night/$id6/base:docs/handoffs/2026-10-28-split-a.md")" = "Status: open" ]
+jq --argjson p "$pilot6" '.pilot = $p' "$(record "$id6")" >"$WORK/r6" && mv "$WORK/r6" "$(record "$id6")"
 CLAUDE_CODE_SESSION_ID=$(jq -r .session "$(record "$id6")") night finish "$id6" >/dev/null
 
 # Resume: the SAME night reopens under a new orchestrator for its unfinished jobs, the old session kept

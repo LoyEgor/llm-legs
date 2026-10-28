@@ -779,6 +779,19 @@ local function codeEntry()
           menu = listed[group.key], disabled = not listed[group.key] or nil }
       end
     end
+    -- Largest files: lines, then repo/path; a split candidate (big and edited often, not kept) reads plain, the rest dim.
+    local files, largest, splitting = type(document.files) == "table" and document.files or {}, {}, false
+    for _, file in ipairs(type(files.largest) == "table" and files.largest or {}) do
+      if type(file) == "table" then
+        local tone = not (file.candidate == true and file.state ~= "kept") and style.DIM or nil
+        splitting = splitting or tone == nil
+        largest[#largest + 1] = fitRow({ title = styled({ { string.format("%5d", tonumber(file.lines) or 0), tone },
+          { "  " .. tostring(file.file or "?"), tone } }), disabled = true })
+      end
+    end
+    if #largest > 0 then
+      items[#items + 1] = { title = infoTitle("Largest files", false, not splitting), menu = largest }
+    end
     local candidates = type(document.candidates) == "table" and document.candidates or {}
     local waiting = {}
     for _, candidate in ipairs(type(candidates.top) == "table" and candidates.top or {}) do

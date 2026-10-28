@@ -907,6 +907,10 @@ local codeDoc = { contract = 1, doctor = "code", as_of_s = now, status = "proble
     { id = "R9", group = "heavy", state = "fixed-pending", fact = "a slow test, fixed" } },
   candidates = { waiting = 4, top = { { id = "cause:x", group = "heavy", detail = "tests/test_slow.sh takes 300s" } } },
   cost = { tokens = 123456, wall_s = 600 }, yield = { lines_removed = 40, causes_closed = 1 },
+  files = { largest = {
+    { file = "review-bench/tests/test_review_bench.sh", lines = 9336, commits = 39, candidate = true },
+    { file = "llm-legs/bin/harness-doctor", lines = 7191, commits = 118, candidate = true, state = "kept" },
+    { file = "llm-legs/bin/statusline.sh", lines = 812, commits = 2 } } },
   blind_spots = { { id = "language:swift", what = "swift: 3 files no detector reads", reason = "only five languages" } } }
 local before = tonumber(text(loadDoctors().title()):match("(%d+) problem") or 0)
 write("/code-doctor/latest.json", codeDoc)
@@ -929,6 +933,14 @@ check(waitingRow and text(waitingRow.title) == "candidates waiting: 4" and dimme
   "candidates waiting is dim with its top candidates one level down")
 check(costRow and text(costRow.title) == "cost 123k tokens · 10 min · yield 40 lines, 1 causes closed" and dimmed(costRow.title),
   "cost and yield are one dim row")
+-- Largest files: lines right-aligned, then repo/path; a split candidate plain, a kept or small-churn file dim.
+local largestRow = find(details(codeItem.menu), "Largest files")
+local largestText = {}
+for _, item in ipairs(largestRow and largestRow.menu or {}) do largestText[#largestText + 1] = text(item.title) end
+check(table.concat(largestText, "|") == " 9336  review-bench/tests/test_review_bench.sh| 7191  llm-legs/bin/harness-doctor"
+  .. "|  812  llm-legs/bin/statusline.sh", "largest files rows: " .. table.concat(largestText, "|"))
+check(largestRow and not dimmed(largestRow.title) and not dimmed(largestRow.menu[1].title) and dimmed(largestRow.menu[2].title)
+  and dimmed(largestRow.menu[3].title) and largestRow.menu[1].disabled, "a split candidate reads plain, a kept or small one dim")
 check(find(details(codeItem.menu), "not measured") and refreshRow(details(codeItem.menu)) and text(refreshRow(details(codeItem.menu)).title) == "Refresh",
   "blind spots, then Refresh above the fixer row")
 tasks = {}

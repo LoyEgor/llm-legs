@@ -947,4 +947,69 @@ assert cd.file_lang("bin/tool", "#!/usr/bin/env -S perl -w\n") == "undeclared:pe
 PY
 fi
 
-echo "PASS: $asserts asserts; the calibration cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base and main, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first)"
+if suite_shard_owns 2 cd-big-files; then
+# Largest files: tracked text files by lines (data, fixtures, untracked files and links out); a split candidate is big
+# and edited often; the night's one split handoff goes to the file's owner chat, never twice, never a kept file.
+B="$WORK/big"
+R="$B/repos/one"
+mkdir -p "$R/bin" "$R/docs" "$R/tests/fixtures" "$B/home" "$B/state"
+seq 1 120 | sed 's/^/echo /' >"$R/bin/churn"
+seq 1 90 | sed 's/^/echo /' >"$R/bin/still"
+seq 1 10 >"$R/docs/guide.md"
+seq 1 900 >"$R/notes.txt"
+seq 1 900 | sed 's/^/echo /' >"$R/tests/fixtures/golden.sh"
+ln -s churn "$R/bin/churn-link"
+git -C "$R" init -q -b main && git -C "$R" add -A && commit "$R" base
+for n in 1 2 3; do echo "echo $n" >>"$R/bin/churn" && git -C "$R" add bin/churn && commit "$R" "churn $n"; done
+seq 1 900 | sed 's/^/echo /' >"$R/bin/untracked"
+HOME="$B/home" CODE_DOCTOR_DIR="$B/state" CODE_DOCTOR_LEDGER="$B/ledger.json" CODE_DOCTOR_REPOS="$R" \
+  "$CD" index >/dev/null || fail "index of the big-files repository failed"
+HOME="$B/home" CODE_DOCTOR_DIR="$B/state" CODE_DOCTOR_LEDGER="$B/ledger.json" CODE_DOCTOR_REPOS="$R" \
+  python3 - "$CD" "$R" "$ROOT/share" <<'PY' || fail "largest files or the split handoff broke"
+import importlib.machinery, importlib.util, os, sys, time
+
+loader = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1])
+cd = sys.modules["code_doctor"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("code_doctor", loader))
+loader.exec_module(cd)
+repo, share = sys.argv[2], sys.argv[3]
+sys.path.insert(0, share)
+import handoffs
+
+cd.BIG_FILES.update(top=3, min_lines=100, min_score=400)
+files = cd.document(time.time())["files"]
+rows = [(r["file"], r["lines"], r["commits"], r["score"], r.get("candidate", False), r["state"]) for r in files["largest"]]
+assert rows == [("one/bin/churn", 123, 4, 492, True, None), ("one/bin/still", 90, 1, 90, False, None),
+                ("one/docs/guide.md", 10, 1, 10, False, None)], rows
+assert [r["file"] for r in files["split"]] == ["one/bin/churn"], files["split"]
+
+path, why = cd.split_handoff("N1")
+today = time.strftime("%Y-%m-%d")
+assert path == os.path.join(repo, "docs", "handoffs", today + "-split-churn.md") and why is None, (path, why)
+text = open(path).read()
+for line in ("# Split or remove `bin/churn`", "Status: open", "File: one `bin/churn`", "Night N1 took it",
+             "- 123 lines, 4 commits in the last 30 days: score 492 (lines x commits).",
+             "## Decision: split, remove or keep", "its tests split with them so each part has its own suites",
+             "`Status: settled <night>: keep: <the reason>`"):
+    assert line in text, line
+# share/handoffs.py routes it: a decision section (an owner chat even alone) and the one file whose edits pick the owner.
+assert handoffs.decides(path) and handoffs.named_files(path, [repo]) == {os.path.join(repo, "bin", "churn")}
+assert handoffs.status_of(handoffs.head(path)) == "open"
+assert cd.big_files(cd.load_indexes())["largest"][0]["state"] == "open"
+assert cd.split_handoff("N1") == (None, "%s is open" % path)
+
+# Kept: still listed, never handed off again; a split handoff opened today blocks a second one.
+open(path, "w").write(text.replace("Status: open", "Status: settled N1: keep: one generated table"))
+assert cd.big_files(cd.load_indexes())["largest"][0]["state"] == "kept"
+assert cd.split_handoff("N2") == (None, "%s is today's" % path)
+os.environ["CODE_DOCTOR_NOW"] = str(time.time() + 86400)
+assert cd.split_handoff("N2") == (None, "no split candidate (1 kept)")
+# A settlement other than keep leaves the file a candidate for a later night.
+open(path, "w").write(text.replace("Status: open", "Status: settled N1: split into two"))
+path2, _ = cd.split_handoff("N2")
+assert path2 and path2.endswith("-split-churn.md") and path2 != path, path2
+PY
+# It writes its handoff and nothing else.
+assert [ "$(git -C "$R" status --porcelain | tr '\n' ' ')" = "?? bin/untracked ?? docs/handoffs/ " ]
+fi
+
+echo "PASS: $asserts asserts; the calibration cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base and main, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first), largest files with the one split handoff a night (owner-routed, kept never again)"

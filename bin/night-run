@@ -145,7 +145,8 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   handoff, else its first addressee) with a decision section or two or more open handoffs: its night
   worktree, and its chat resumed with the batch (live: the sweep SendMessages it); at most
   NIGHT_RUN_OWNER_CHATS (3) pending at once and none while share/slots.sh slot_room finds no room,
-  a deferred owner's handoffs staying night jobs; prints
+  a deferred owner's handoffs staying night jobs, but a <date>-split-<stem> one, which waits for its owner (base on a
+  night neither pilot nor cleanup first runs `code-doctor split`: the one split handoff of the night); prints
   <ref>\t<prompt>\topened <account> <session>|message <owner>. Then one handoff job per other open
   docs/handoffs/*.md of the sweep repositories not addressed to a chat live now, and one suite job per
   suite the newest earlier night's full run failed, nothing-to-do with no worker when it is green in the
@@ -546,6 +547,9 @@ cmd_base() {
   local id=$1 line commit bases='{}' at=$(stamp) began=$SECONDS
   known_night "$id" || die "no night $id"
   [ -r "$sweep_repos" ] || die "cannot read $sweep_repos"
+  # The night's one split handoff, before the snapshot: the press-time commit carries it, carry hands it to its owner.
+  jq -e '.pilot or .cleanup' "$(night_file "$id")" >/dev/null ||
+    "${NIGHT_RUN_CODE_DOCTOR:-$repo_root/bin/code-doctor}" split --night "$id" >&2 || true
   while IFS= read -r line; do
     [ -n "$line" ] && [ -d "$line" ] || continue
     commit=$(snapshot "$line" "$id") || die "cannot snapshot $line"
@@ -883,7 +887,8 @@ carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carr
   [ -z "$pilot" ] || { pilot_goal "$1" "$pilot"; return 0; }
   python3 -B "$repo_root/share/handoffs.py" | jq -r --slurpfile n "$(night_file "$1")" '
     [$n[0].jobs[] | select(.kind == "owner-chat" and .state != "failed-launch") | .handoffs[]?] as $owned
-    | select(.live == [] and (.path | IN($owned[]) | not)) | ["handoff", .slug, .repo, .rel, ""] | @tsv'
+    | select(.live == [] and (.path | IN($owned[]) | not) and (.slug | test("^[0-9-]{10}-split-") | not))
+    | ["handoff", .slug, .repo, .rel, ""] | @tsv'
   all_nights | jq -r --arg id "$1" '[.[] | select(.id != $id and .suites != null)] | first // empty | .suites.repos[]?
     | .repo as $r | .log as $l | .failed[]? | ["suite", "\($r | split("/") | last)-\(sub("\\.[a-z]+$"; ""))", $r, ., $l] | @tsv'
   periodic_due | while IFS= read -r kind; do

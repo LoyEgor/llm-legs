@@ -71,8 +71,11 @@ night fix it, its cost falling to near zero once the repos are in order.
   and docs read every session (DIAGNOSTICS.md), sized and weighed by how often they are read;
   mechanisms whose purpose costs more than it saves (a gate forcing rewrites that cost more tokens
   than they save);
-- complexity: size/branch outliers, pass-through layers, flags no caller sets, one-user abstractions
-  are candidates only; a problem needs a demonstrated simpler version with the same responsibilities;
+- largest files: tracked text files by lines, top 10 in the menu; big and edited often (2000+ lines,
+  lines x 30-day commits >= 300k) gets one `<date>-split-<stem>` handoff a full night for its owner
+  chat, never while one is open nor for a settled `keep: <reason>`; the night never splits a file;
+- complexity: pass-through layers, flags no caller sets, one-user abstractions are candidates only;
+  a problem needs a demonstrated simpler version with the same responsibilities;
 - superseded machinery: custom code a platform or vendor capability now covers (Updater capability
   changes re-open it).
 
