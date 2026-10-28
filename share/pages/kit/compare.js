@@ -4,7 +4,7 @@
 // every loupe, zoom anchored at the pointer, and drags that end whichever way the pointer leaves.
 // Geometry is the reference image's natural size (the original, else the largest variant); every
 // image is drawn over that box, so a smaller pixel-art variant lands on the same coordinates.
-import { h, get, save, textBox, onState, doneWhen, nextOpen, firstOpen, skip, capped, keys, lazy, num } from "/kit/shell.js";
+import { h, get, save, textBox, onState, doneWhen, nextOpen, firstOpen, capped, keys, lazy, num } from "/kit/shell.js";
 
 const CSS = `
 .strip{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:8px}
@@ -26,15 +26,16 @@ body.drag,body.drag .vp{cursor:grabbing}
 .vp img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;pointer-events:none;-webkit-user-drag:none}
 .bd{position:absolute;left:6px;top:4px;display:flex;gap:4px;z-index:1;pointer-events:none;font:600 12px/1.4 system-ui}
 .bd span{background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:4px}.bd span:first-child{font-size:14px}
+.vp canvas{position:absolute;left:0;top:0;pointer-events:none}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
 .gc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer}
 .gi{display:flex;gap:4px;margin-top:4px}.gi figure{margin:0;flex:1;min-width:0}
 .gi img{width:100%;max-height:240px;object-fit:contain;background:#fff;border-radius:4px;display:block}
 .gi figcaption{font-size:12px;color:var(--mute);text-align:center}
 @media (max-width:900px){.upper{flex-direction:column}}`;
-const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" };
+const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINES = ["#00e5ff", "#ff3df2", "#ffd400", "#7cfc00"];
 const app = document.getElementById("app");
-let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0;
+let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false;
 const hot = new Map();
 
 export function render(spec) {
@@ -56,13 +57,14 @@ const opts = () => (S.options || [...((item(cur) || S.items[0]).variants || []).
 
 function frames(it) {
   const vs = (it.variants || []).map((v, i) => ({ src: v.src, side: v.slot || LETTERS[i],
-    name: S.blind ? "" : v.label || "", meta: v.meta || "" }));
+    name: S.blind ? "" : v.label || "", meta: v.meta || "", grid: v.grid || null, color: LINES[i % LINES.length] }));
   return it.original ? [{ src: it.original, side: "", name: "оригинал", meta: "" }, ...vs] : vs;
 }
 
 function keymap() {
   const m = { ArrowLeft: () => go(-1), ArrowRight: () => go(1), Digit0: fitView,
-    Equal: () => zoomBy(1.5), Minus: () => zoomBy(1 / 1.5), Escape: () => S.mode === "view" && grid() };
+    Equal: () => zoomBy(1.5), Minus: () => zoomBy(1 / 1.5), Escape: () => S.mode === "view" && grid(),
+    KeyG: () => E && E.gb && toggleLines() };
   for (let k = 1; k <= 9; k++) m["Digit" + k] = (S.zoom_levels || [])[k - 1] != null ? () => level(k - 1) : () => jump(k - 1);
   if (S.mode !== "view") for (const o of (S.items.length ? opts() : [])) if (o.key) m[o.key] = () => vote(o.id);
   return m;
@@ -83,10 +85,11 @@ function show(id, keepView) {
   const vps = fs.map((f) => h("div", { class: "vp", ondblclick: fitView },
     h("div", { class: "bd" }, h("span", {}, f.side || f.name), f.side && f.name ? h("span", {}, f.name) : null,
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
-    h("img", { src: f.src, alt: "", draggable: false })));
+    h("img", { src: f.src, alt: "", draggable: false }), f.side ? null : h("canvas")));
   const cells = fs.map(() => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i")));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
-    zv: h("span", { class: "mute num" }), hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }),
+    hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), fs, gl: vps.map((v) => v.querySelector("canvas")).find(Boolean),
+    gb: it.original && fs.some((f) => f.grid) ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
     pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg", hidden: true }),
     lv: (S.zoom_levels || []).map((z, k) => h("button", { onclick: () => level(k), title: k < 9 ? `${k + 1}` : null }, `${z}×`)) };
   E.votes = voting ? h("div", { class: "votes" }, opts().map((o) =>
@@ -95,10 +98,8 @@ function show(id, keepView) {
     h("b", {}, f.side), S.tags.map((t) => h("button", { "data-t": t, onclick: () => tag(f.side, t) }, t)))) : [];
   const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { onclick: grid, title: "Esc" }, "▦") : null,
     h("button", { onclick: () => go(-1) }, "←"), E.pos, h("button", { onclick: () => go(1) }, "→"));
-  const tools = h("div", { class: "tools" }, h("button", { onclick: () => zoomBy(1 / 1.5) }, "−"),
-    h("button", { onclick: () => zoomBy(1.5) }, "+"), E.zv, E.lv, E.hs,
-    h("button", { onclick: fitView, title: "0" }, "целиком"),
-    voting ? h("button", { onclick: () => { skip(cur); const n = nextOpen(ids, ids.indexOf(cur)); if (n) show(n); } }, "пропустить") : null);
+  // with zoom_levels the first level fits and the digits are taken, so no fit button and no hotspots
+  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.gb);
   app.replaceChildren(E.strip, h("div", { class: "upper" }, h("div", { class: "pv" }, cells),
     h("div", { class: "side" }, h("div", { class: "ttl" }, h("strong", {}, `${num(it, i)}${it.title ? " · " + it.title : ""}`), nav),
       it.q ? h("div", { class: "q" }, it.q) : null, E.votes, E.sg, E.tags, tools,
@@ -119,9 +120,7 @@ function show(id, keepView) {
     if (!L) L = fit();
     draw();
     E.spots = hotspots(it);
-    // with zoom_levels the digits pick levels, so hotspot buttons carry no digit
-    E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { onclick: () => jump(k), "data-hs": k, title: `место ${k + 1}` },
-      S.zoom_levels ? "◎" : `${k + 1}`)));
+    E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { onclick: () => jump(k) }, `${k + 1}`)));
   });
   const nx = item(ids[(i + 1) % ids.length]);
   if (nx !== it) frames(nx).forEach((f) => { new Image().src = f.src; });
@@ -175,6 +174,7 @@ function jump(k) {
   if (hs && hs[k]) setL({ cx: hs[k][0], cy: hs[k][1], z: clampZ(Math.max(fit().z * 2, size().W / 256)) });
 }
 // zoom_levels[k] as the original's magnification; the first level pressed again fits the view
+function toggleLines() { lines = !lines; draw(); }
 function level(k) {
   const z = (S.zoom_levels || [])[k];
   if (geo && L && z != null) setL(k === 0 && L.z === z ? fit() : { ...L, z });
@@ -241,9 +241,9 @@ function draw() {
     const nw = im.naturalWidth, nh = im.naturalHeight;
     if (S.integer_zoom && i >= first && nw) {
       // whole screen pixels per image pixel, one scale for both axes, centred on the same relative point;
-      // the fitted view rounds down so the whole picture stays in the loupe
-      const k = L.z * Math.sqrt(geo.w / nw * geo.h / nh), n = k < 1 ? k : L.z <= fz * 1.0001 ? Math.floor(k) : Math.round(k);
-      Object.assign(im.style, { width: nw * n + "px", height: nh * n + "px", imageRendering: n >= 1 ? "pixelated" : "auto",
+      // the fitted view fills the loupe instead, smooth unless that scale is whole or >= 3
+      const k = L.z * Math.sqrt(geo.w / nw * geo.h / nh), n = L.z <= fz * 1.0001 ? Math.min(W / nw, H / nh) : k < 1 ? k : Math.round(k);
+      Object.assign(im.style, { width: nw * n + "px", height: nh * n + "px", imageRendering: Number.isInteger(n) || n >= 3 ? "pixelated" : "auto",
         transform: `translate(${Math.round(W / 2 - L.cx * nw / geo.w * n)}px,${Math.round(H / 2 - L.cy * nh / geo.h * n)}px)` });
       return;
     }
@@ -252,8 +252,29 @@ function draw() {
     const k = L.z * geo.w / (nw || geo.w);
     im.style.imageRendering = pix === "true" || (pix !== "false" && k >= 3) ? "pixelated" : "auto";
   });
-  E.zv.textContent = "×" + (L.z < 10 ? L.z.toFixed(1) : Math.round(L.z));
   E.lv.forEach((b, k) => b.classList.toggle("on", L.z === S.zoom_levels[k]));
+  if (E.gb) paintLines(W, H);
+}
+
+// Each variant's cell bounds (variants[].grid, in the original's pixels) over the original, one colour per
+// variant, the first on top; a lattice whose cells are under 5 screen px is left out
+function paintLines(W, H) {
+  const c = E.gl, d = devicePixelRatio || 1, g = c.getContext("2d");
+  Object.assign(c, { width: Math.round(W * d), height: Math.round(H * d) });
+  Object.assign(c.style, { width: W + "px", height: H + "px" });
+  E.gb.classList.toggle("on", lines);
+  E.fs.forEach((f, k) => { E.vps[k].querySelector(".bd span").style.boxShadow = lines && f.grid ? `inset 0 -3px 0 ${f.color}` : ""; });
+  if (!lines) return;
+  const sx = (x) => Math.round((W / 2 + (x - L.cx) * L.z) * d) + 0.5, sy = (y) => Math.round((H / 2 + (y - L.cy) * L.z) * d) + 0.5;
+  for (const f of E.fs.filter((f) => f.grid).reverse()) {
+    const { x: xs, y: ys } = f.grid, cell = Math.min((xs.at(-1) - xs[0]) / (xs.length - 1), (ys.at(-1) - ys[0]) / (ys.length - 1));
+    if (cell * L.z < 5) continue;
+    const [x0, x1, y0, y1] = [sx(xs[0]), sx(xs.at(-1)), sy(ys[0]), sy(ys.at(-1))];
+    g.strokeStyle = f.color; g.lineWidth = 1; g.beginPath();
+    for (const x of xs) { const v = sx(x); if (v >= 0 && v <= c.width) { g.moveTo(v, Math.max(0, y0)); g.lineTo(v, Math.min(c.height, y1)); } }
+    for (const y of ys) { const v = sy(y); if (v >= 0 && v <= c.height) { g.moveTo(Math.max(0, x0), v); g.lineTo(Math.min(c.width, x1), v); } }
+    g.stroke();
+  }
   const x0 = Math.max(0, L.cx - W / 2 / L.z), x1 = Math.min(geo.w, L.cx + W / 2 / L.z);
   const y0 = Math.max(0, L.cy - H / 2 / L.z), y1 = Math.min(geo.h, L.cy + H / 2 / L.z);
   E.boxes.forEach((b) => {

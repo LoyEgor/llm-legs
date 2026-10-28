@@ -32,7 +32,8 @@ const vote = () => ({ module: "compare", schema: 1, title: "Калибровка
 const srv = await serve({
   vote1: vote(), vote2: vote(), vote3: vote(), vote4: vote(),
   view1: { ...vote(), mode: "view", title: "Обзор" },
-  sq1: { ...vote(), integer_zoom: true, zoom_levels: [1, 2, 3] },
+  sq1: { ...vote(), integer_zoom: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
+    : { ...it, variants: [{ ...it.variants[0], grid: { x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) } }, it.variants[1]] }) },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
     items: [{ id: "b01", variants: [{ id: "v77", label: "champ77", src: F.a, meta: "64 px" }, { id: "v78", label: "champ78", src: F.b }] }] },
   cards1: { module: "cards", schema: 1, title: "Швы", sitting_cap: 2,
@@ -222,32 +223,39 @@ try {
   await shot(page, "blind.png");
   await page.close();
 
-  // 6. cards: choice/multi/scale/note save; one clip at a time
-  // integer_zoom + zoom_levels: variants at whole pixels on both axes, digits pick levels, 1 again fits
+  // 6. integer_zoom + zoom_levels + variants[].grid: magnified variants at whole pixels on both axes, the fitted
+  // view fills the loupe, digits pick levels and 1 again fits, no hotspot row or fit button, G toggles the lattices
   page = await open("sq1");
   await ready(page);
   await page.click(".strip i:nth-child(3)");
   await ready(page);
-  let r0;
   const sq = () => page.$$eval(".vp img", (ims) => ims.map((i) => [i.naturalWidth, i.naturalHeight, parseFloat(i.style.width), parseFloat(i.style.height), i.style.transform]));
-  // a variant larger than the loupe at fit is downscaled, so only magnified ones must be whole
+  // a variant larger than the loupe stays downscaled, so only magnified ones must be whole
   const whole = (r) => r.slice(1).every(([nw, nh, w, hh, t]) => w < nw || (w % nw === 0 && w / nw === hh / nh && /translate\(-?\d+px, ?-?\d+px\)/.test(t)));
-  r0 = await sq();
-  check("integer_zoom: fitted 4 px variant at whole pixels", whole(r0) && r0[1][2] > r0[1][0], JSON.stringify(r0));
-  const hsl = await page.waitForFunction(() => { const b = [...document.querySelectorAll(".tools .tools button[data-hs]")]; return b.length && b.map((x) => x.textContent); }, null, { timeout: 3000 }).then((x) => x.jsonValue()).catch(() => []);
-  check("zoom_levels: hotspot buttons carry no digit", hsl.length > 0 && hsl.every((t) => !/\d/.test(t)), JSON.stringify(hsl));
-  await page.keyboard.press("Digit2");
   let r = await sq();
+  check("integer_zoom: the fitted view fills the loupe like the original", r[1][2] === r[0][2] && r[2][2] === r[0][2], JSON.stringify(r));
+  check("zoom_levels: no hotspot row, no fit button, no +/−/skip", await page.evaluate(() => !document.querySelector(".tools .tools")
+    && ![...document.querySelectorAll("button")].some((b) => ["целиком", "пропустить", "+", "−"].includes(b.textContent))));
+  await page.keyboard.press("Digit2");
+  r = await sq();
   check("Digit2 → original at 2x, 4 px variant at 8x", r[0][2] === 960 && r[1][2] === 960 && whole(r) && await page.$eval(".tools button.on", (b) => b.textContent) === "2×", JSON.stringify(r));
+  const inked = () => page.$eval(".vp canvas", (c) => c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, k) => k % 4 === 3 && v));
+  check("grid off by default", !(await inked()));
+  await page.keyboard.press("KeyG");
+  check("G draws the variant's lattice over the original", await inked() && await page.$eval(".tools button.on:last-child", (b) => b.textContent) === "Сетка");
+  await page.keyboard.press("KeyG");
+  check("G again clears it", !(await inked()));
   await page.keyboard.press("Digit1");
   check("Digit1 → original at 1x", (await sq())[0][2] === 480);
   await page.keyboard.press("Digit1");
   r = await sq();
-  check("Digit1 again fits", r[0][2] !== 480 && whole(r) && !(await page.$(".tools button.on")), JSON.stringify(r));
+  check("Digit1 again fits", r[0][2] !== 480 && r[1][2] === r[0][2] && !(await page.$(".tools button.on")), JSON.stringify(r));
   await page.mouse.move(700, 600); await page.mouse.wheel(0, -137); await page.waitForTimeout(200);
   check("wheel zoom keeps whole pixels", whole(await sq()), JSON.stringify(await sq()));
   await shot(page, "compare-integer.png");
   await page.close();
+
+  // 7. cards: choice/multi/scale/note save; one clip at a time
 
   page = await open("cards1");
   await page.waitForSelector(".card");
