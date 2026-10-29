@@ -175,7 +175,7 @@ rm -rf "$WORKER_RUN_DIR/r3"; forget
 
 # An orchestrator's dozen live runs cost one process-table read per stop, and an owned run is settled
 # before its liveness probe: a jq and a ps each per run were 2.2-2.7 s of the dispatcher's critical
-# path at load 220.
+# path at load 220. Command lines are read for the chat's own processes only.
 mkdir -p "$WORK/shim"
 printf '#!/bin/sh\necho "$*" >>"%s/ps-calls"\nexec %s "$@"\n' "$WORK" "$(command -v ps)" >"$WORK/shim/ps"
 chmod +x "$WORK/shim/ps"
@@ -183,7 +183,7 @@ WORKER_RUN_DIR="$WORK/runs-owned"
 for i in $(seq 4 15); do run "r$i" s1 codex; "$WORK/bin/worker-run" wait "r$i" & WAIT_PIDS="${WAIT_PIDS:-} $!"; done
 for i in $(seq 4 15); do ready "worker-run-r$i"; done
 assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
-assert_eq 1 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
+assert_eq "-Ao pid=,ppid=,etime= -o command= -p" "$(sed 's/ -p .*/ -p/' "$WORK/ps-calls" | tr '\n' ' ' | sed 's/ $//')"
 end_waits
 # Finding the chat's `claude` ancestor costs one more table read, however deep the hook sits below it.
 rm -f "$WORK/ps-calls"
@@ -195,7 +195,7 @@ assert_eq "" "$(unset WORKER_RUN_BACKSTOP_CHAT_PID; PATH="$WORK/shim:$PATH" HOOK
   until [ -e "$WORK/ready/worker-run-r16" ]; do sleep 0.01; done
   bash -c "jq -cn \"{hook_event_name:\\\"Stop\\\",session_id:\\\"s1\\\"}\" | bash \"\$HOOK\""
   kill $w')"
-assert_eq 2 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
+assert_eq 2 "$(grep -c '^-A' "$WORK/ps-calls")"
 # Runs no wait owns cost one more table read and one jq for all of them, held by a live starter or not: a ps
 # and a jq per run took a night orchestrator's hundred live runs past the stop's 5 s cap (2026-10-13). Runs
 # whose starters all live read neither the chat's process tree nor their supervisors (a stall took that read

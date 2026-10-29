@@ -37,19 +37,24 @@ chat_pid() {
   [ -z "${WORKER_RUN_BACKSTOP_CHAT_PID:-}" ] || { printf '%s' "$WORKER_RUN_BACKSTOP_CHAT_PID"; return 0; }
   claude_ancestor "$PPID"
 }
-# One process table read per stop, and only once a run needs it.
+# One process table read per stop, and only once a run needs it: the starters, the chat's tree and the
+# supervisors are all answered off it. Command lines are read for the chat's own processes only: every
+# process's took ps ~25 ms more CPU than the table itself.
+procs=''
+listed=''
+list_processes() { [ -n "$listed" ] || { procs=$(ps -Ao pid=,ppid=,etime= 2>/dev/null); listed=1; }; }
 waiting=''
 owned() {
   if [ -z "$waiting" ]; then
-    local root listing
+    local root below
     root=$(chat_pid) || exit 0
-    listing=$(ps -Ao pid=,ppid=,command= 2>/dev/null)
+    list_processes
     waiting=no
-    (process_listing() { printf '%s\n' "$listing"; }
-      process_tree "$root" | awk -v root="$root" '
-      FNR == NR { if ($1 != root) below[$1] = 1; next }
-      ($1 in below) && $0 ~ /(^|[^A-Za-z0-9._-])(worker-run|review-bench)[ ]+wait[ ]/ { found = 1; exit }
-      END { exit !found }' - <(printf '%s\n' "$listing")) && waiting=yes
+    below=$(process_listing() { printf '%s\n' "$procs"; }; process_tree "$root")
+    case "$below" in *$'\n'*) below=${below#*$'\n'} ;; *) below='' ;; esac
+    [ -n "$below" ] &&
+      [[ $'\n'$(ps -o command= -p "${below//$'\n'/,}" 2>/dev/null) =~ [^A-Za-z0-9._-](worker-run|review-bench)\ +wait\  ]] &&
+      waiting=yes
   fi
   [ "$waiting" = yes ]
 }
@@ -101,7 +106,8 @@ done
 # with no starter to ask settles its wait first, as an owned run never needs the listing below.
 held=''
 if [ -n "$starters" ] && [ -z "$bare" ]; then
-  held=$'\n'$(printf '%s' "$starters" | pids_alive_since)$'\n'
+  list_processes
+  held=$'\n'$(printf '%s' "$starters" | pids_alive_since "$procs")$'\n'
   for id in "${ids[@]}"; do case "$held" in *$'\n'"s/$id"$'\n'*) ;; *) held=''; break ;; esac; done
 fi
 # A run is held by a starter still alive and needs a
@@ -113,7 +119,7 @@ if [ "${#ids[@]}" -gt 0 ] && [ -z "$held" ] && ! owned; then
     printf '%s' "$starters"
     jq -r 'select((.pid | numbers) > 1) | "r/\(input_filename | split("/") | .[-2]) \(.pid) \(.pid_started_at | numbers // 0)"' \
       "${metas[@]}" 2>/dev/null
-  } | pids_alive_since)$'\n'
+  } | pids_alive_since "$procs")$'\n'
   for id in "${ids[@]}"; do
     case "$live" in *$'\n'"s/$id"$'\n'*) continue ;; *$'\n'"r/$id"$'\n'*) ;; *) continue ;; esac
     tag=$(head -n1 "$run_root/$id/tag" 2>/dev/null)

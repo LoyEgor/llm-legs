@@ -1606,7 +1606,7 @@ assert eq "$(grep -c '\.pid_started_at = ' "$WORKER_RUN_TEXT")" 1
 # identity check.
 RUN_LIVENESS="$ROOT/share/run-liveness.sh"
 assert grep -Fq '. "$SCRIPT_DIRECTORY/../share/run-liveness.sh"' "$WORKER_RUN_TEXT"
-assert grep -Fq '} | pids_alive_since)' "$ROOT/bin/worker-run-backstop.sh"
+assert grep -Fq '} | pids_alive_since "$procs")' "$ROOT/bin/worker-run-backstop.sh"
 assert grep -Fq 'pid_start_fits "$elapsed" "$began" "$now"' "$RUN_LIVENESS"
 assert eq "$(grep -c 'PID_START_SLACK' "$RUN_LIVENESS")" 3
 assert grep -Fq 'pid_alive_since "$pid" "$began" && printf' "$RUN_LIVENESS"

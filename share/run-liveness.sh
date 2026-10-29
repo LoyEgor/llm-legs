@@ -67,16 +67,17 @@ supervisor_running() { # directory pid [pid_started_at, read from meta.json when
 
 # pid_alive_since for many pids off one process listing: a ps per pid is a fork each, and a night
 # orchestrator's hundred live runs took the run backstop past the stop's 5 s cap on a saturated machine.
-pids_alive_since() { # "key pid start-epoch" lines on stdin -> the key of each live one
-  local listing key pid began
-  listing=$(ps -Ao pid=,etime= 2>/dev/null)
+# A caller that lists the processes anyway hands its `ps -Ao pid=,ppid=,etime=[,…]` lines in, read once.
+pids_alive_since() { # "key pid start-epoch" lines on stdin [listing] -> the key of each live one
+  local listing key pid began column=2
+  if [ "$#" -gt 0 ]; then listing=$1 column=3; else listing=$(ps -Ao pid=,etime= 2>/dev/null); fi
   if ! [[ "$listing" =~ (^|$'\n')\ *1\ + ]]; then
     while read -r key pid began; do pid_alive_since "$pid" "$began" && printf '%s\n' "$key"; done
     return 0
   fi
   # awk only joins each wanted pid to its etime; the parse and the drift rule are bash's, above.
-  awk '
-    FNR == NR { etime[$1] = $2; next }
+  awk -v column="$column" '
+    FNR == NR { etime[$1] = $column; next }
     $2 ~ /^[0-9]+$/ && $2 > 0 && ($2 in etime) { print $1, $2, ($3 == "" ? "-" : $3), etime[$2] }' \
     <(printf '%s\n' "$listing") - | {
     local now=${EPOCHSECONDS:-$(date +%s)}
