@@ -172,7 +172,14 @@ case "${1:-}" in
   _chrome-runs) chrome_runs; exit 0 ;;
   _chrome-flags) printf '%s\n' "${CHROME_FLAGS[@]}"; exit 0 ;;
   _chrome-data) browse_chrome_data; exit 0 ;;
-  _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$RUN_SLOT"; exit "$rc" ;;
+  # Forked before the run, the deliverer holds the state a fresh `worker-run _deliver` parses, without the parse;
+  # its .delivering mark tells the supervisor body it took over, else the body delivers itself.
+  _supervise) shift
+    coproc DELIVER { IFS= read -r rc || exit; exec </dev/null; : >"$1/.delivering"; complete_run "$1" "$rc"; chrome_run_end "$1"; } >/dev/null 2>&1
+    supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$RUN_SLOT"
+    trap '' TERM INT PIPE
+    [ -z "${DELIVER_PID:-}" ] || { printf '%s\n' "$rc" >&"${DELIVER[1]:-}" && wait "$DELIVER_PID"; } 2>/dev/null
+    exit "$rc" ;;
   *) usage ;;
 esac
 exit; }

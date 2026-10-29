@@ -1156,7 +1156,8 @@ if [ "$rc" -gt 128 ]; then
   reaped=$?
   [ "$reaped" -eq 127 ] || rc=$reaped
 fi
-"$1" _deliver "$2" "$rc" >/dev/null 2>&1
+# _supervise delivers in its own forked deliverer; one that never took over leaves it to a fresh parse.
+if [ -e "$2/.delivering" ]; then rm -f "$2/.delivering"; else "$1" _deliver "$2" "$rc" >/dev/null 2>&1; fi
 # A suite that started this run counts its CPU: detached, it is no child the suite reaps.
 [ -z "${RUN_SUITES_DETACHED_CPU:-}" ] || times >>"$RUN_SUITES_DETACHED_CPU" 2>/dev/null
 printf "%s\n" "$rc" >"$2/exit_code.tmp.$$"
