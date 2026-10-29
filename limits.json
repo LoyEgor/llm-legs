@@ -674,7 +674,7 @@
   "night-run.refusal-lock": {
     "value": 1,
     "unit": "count",
-    "where": "bin/night-run:609",
+    "where": "bin/night-run:710",
     "set_by": "chat e5bd8fd1",
     "why": "A refusal never waits on a held nights lock: one try, else its event is dropped.",
     "normal": "Rare."
@@ -682,7 +682,7 @@
   "night-run.snapshot-drop": {
     "value": 5242880,
     "unit": "bytes",
-    "where": "bin/night-run:424",
+    "where": "bin/night-run:499",
     "set_by": "night e961a078",
     "why": "Night snapshots skip blobs over 5 MiB and secret-named files.",
     "normal": "Rare."
