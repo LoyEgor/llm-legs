@@ -11572,6 +11572,98 @@
       "last_reviewed": "2026-10-29",
       "reviewed_by": "night 20261029T012849Z-5e69 harness-speed-refusal-english-gate-sh-20261029T053212Z-225c",
       "note": "2026-10-29: hook-time rows, 3 whole days: 82-219 of 960-2450 runs a day take over 300 ms and are 1.45-3.31 of the day's 1.5-7.7 hook minutes, p50 78-114 ms. The tail is the dirty-file path: with a foreign owner in the writes journal, same_owner loads run_sessions, a grep -Hx over 3000 worker-session/session files (0.3-1 s, 0.74 s in a bash -x trace of one call), the same cause as hook_grows_repos:edit-conflict-notice.sh (a chat in 5+ repositories meets more foreign rows). Fix: the finished runs' lines are an index beside unswept-runs (same stamp, extended with the directories touched since it, rebuilt whole after a day), only unswept runs are grepped; a worker-session or session file of a finished run is never written after exit_code (0 of 2987). Left: the clean path (git status 12 ms, the written blob's jq and hash-object 14 ms, rj_writes_note's git rev-parse 14 ms, dirname/date/wc forks, 3-5 ms each) is 70-110 ms of which an estimated 15 ms is a plain-checkout fast path for rj_writes_note's rev-parse; not built, it re-derives git's output (dubious-ownership and GIT_DIR cases differ) for about 0.2 min/day. Bash 3.2 `read -d ''` of a 360 KB file takes 1.1 s, which is why the index is grepped from its file and never read into a variable."
+    },
+    {
+      "id": "speed-test-health-idle-llm-legs-test-pages-kit",
+      "title": "test_pages_kit sat 4.5 s on a fixed sleep to cover one 4 s freshness poll",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/idle/llm-legs/test_pages_kit$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:50:00+03:00",
+          "by": "night fixer harness-speed-test-health-idle-llm-legs-test-pages-kit-20261029T053338Z-77e4",
+          "files": [
+            "llm-legs/tests/pages-kit/run.mjs",
+            "llm-legs/tests/pages-kit/server.mjs"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the freshness leg's checks before and after: 'pending edit wins over a newer server value' still runs after the server value is merged",
+            "data": "tests/test_pages_kit.sh on the changed tree",
+            "result": "PASS 56 checks and 11 end-to-end checks, plus one added check that a poll fetched the newer value; the wait ends when server.mjs has handled a /state request after srv.set (stateHits), never on one already in flight"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "the rest of the idle is the kit's own 3 s pump and 4 s poll timers; cutting them would change the product",
+      "handoff": null,
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-pages-kit-20261029T053338Z-77e4"
+    },
+    {
+      "id": "speed-background-statusline",
+      "title": "statusline changed-transcript renders: a second untracked walk, a byte-by-byte first-line read plus a cat fork, MiB-block sidecar reads",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^background/statusline$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:50:00+03:00",
+          "by": "night fixer harness-speed-test-health-idle-llm-legs-test-pages-kit-20261029T053338Z-77e4",
+          "files": [
+            "llm-legs/bin/statusline.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the render's output: untracked names from status vs ls-files, scan input with its cut first line dropped in jq vs read+cat, sidecar boundary dd block size",
+            "data": "tests/test_statusline_hooks.sh; a 200 KB cut first line scanned 5 times",
+            "result": "PASS 1641 asserts; the scan drops 341 -> 13 ms a run on that line; a quoted untracked path or a failed status still takes the ls-files listing"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "whole-script parse is 3.6 ms cpu of ~92 per render and stays: a split into lazily sourced branches would save about 1 ms",
+      "handoff": null,
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-pages-kit-20261029T053338Z-77e4"
+    },
+    {
+      "id": "regression-statusline-cpu-ms-per-sh",
+      "title": "statusline cpu per session-hour 133706 over 118560: changed renders rose from 20% to 60% of renders and cost 135 ms against 92",
+      "match": {
+        "rule": "regression",
+        "ident": "^background\\.statusline_cpu_ms_per_sh\\|all\\|-$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:50:00+03:00",
+          "by": "night fixer harness-speed-test-health-idle-llm-legs-test-pages-kit-20261029T053338Z-77e4",
+          "files": [
+            "llm-legs/bin/statusline.sh",
+            "llm-legs/bin/speed-doctor"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the changed-render path of bin/statusline.sh (see speed-background-statusline) and speed-doctor's night and day-row reads",
+            "data": "harness-doctor statusline day files 2026-10-26..29: avg cpu per render 79.9, 126.6, 118.4, 133.0 ms; changed share 20, 36, 60, 67%",
+            "result": "the per-render cuts land on the changed path; the share of changed renders is set by what the chats run (work-row elapsed counters), not by the script, so the next days' figure decides"
+          }
+        }
+      ],
+      "same_cause": [],
+      "note": "cause of the rise is the changed share plus the changed render's price; not proven by a replay of the same days",
+      "handoff": null,
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-pages-kit-20261029T053338Z-77e4"
     }
   ],
   "blind_spots": [
