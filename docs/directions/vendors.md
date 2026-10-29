@@ -67,7 +67,7 @@ end, 7 days against the 7 before.
   `plan-changed`, `family-partial`, `family-gone`. `share/updater-ledger.json` is empty.
 - `docs/vendor-release-open.md`: 21 claims (10-23) a closed event left unproven or blocked, the oldest from 09-23.
 - agy's live tool calls: `~/.gemini-profiles/*/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl`
-  (720 files from 10-09), `tool_calls[].name` and `.args`.
+  (a rolling set agy prunes: 722 files on 10-29, all but one from 10-19), `tool_calls[].name` and `.args`.
 
 ## Recurring classes
 
@@ -96,7 +96,7 @@ Why they come back:
   52ec96b0 (10-09) until a line undoing a ruled-out one reopened claude 10-22: goal decided-reversal.
 - **Missed surfaces.** A run decides each diff line, not each surface the change reaches; the resolver rule
   (vendor-release §3 step 7, row `cr`) removed the static pin that broke 10-13. A rename no diff line
-  carried broke 10-20: goal served-tools.
+  carried broke 10-20; the `tools` facet carries one now (d5c1dd01).
 
 ## Block 1 and this block
 
@@ -112,26 +112,6 @@ The rule: a breakage goes to block 1, and an unintegrated change goes to block 6
 ## Goals
 
 10-23 deep search, by harm.
-
-### goal served-tools: a tool or argument agy's live sessions start calling reaches a vendor event
-
-Class: missed surfaces. agy 1.4.3 renamed `view_file {AbsolutePath}` to `read_file {Path}` silently (no changelog
-line; 1.4.6's strings still hold `view_file`). The 10-20 run closed it 11:52Z on "tool names match the stream
-parser"; listens failed until e657e599 (19:26Z: gemini-listen, worker-run), and review-bench
-`agy_stream_evidence` still dedupes only `view_file`. agy ships near daily, version-only releases auto-close.
-- First step: the agy files (Sources) end `view_file` 10-19T19Z and start `read_file` 10-20T18:15Z on all 10
-  accounts; then one agy cell stream after 10-20 via review-bench's own commands (never `.claudeb` by hand):
-  does `read_file` still answer `N lines, M bytes`, a re-opened file counted twice? If not, drop review-bench.
-- Change: a gemini `tools` facet in `vendor-fingerprint`: the stored value plus `name` and `name.<arg key>` called
-  in those files since the last check (nothing leaves: only additions diff). vendor-release §3 step 6: a parser's
-  tool names are checked on a live session of the new version (this facet or one Flash probe), never strings.
-- Proof, a replay at each full pass 10-13…23 (`update.log`), seeded 10-09…12. Old: no tool line in any diff
-  (`grep -c 'read_file\|view_file' events/*.diff`: 0). New: 10-14 20:13Z `run_command.IsDaemon`,
-  `.RequestedTerminalID` land in gemini-20261014T201301Z; 10-20 21:44Z `read_file`, `read_file.Path` open an event,
-  `.EndLine`, `.StartLine` (first called 10-21T12:58Z) join at gemini-20261022T060140Z: 2.3 h after the hand fix (10-20 still counts outside), so the gain is
-  its run finding every parser of the old name, and a version-only rename opening an event at all.
-- Target, 14 days: breakages from an agy tool rename 0 (10-06…19: 0; 10-20…23: 1). Not worse: events opened by
-  `tools` alone ≤ 1 per 14 days (the replay's), else reverted; check time; the guard.
 
 ### goal decided-reversal: a line undoing one a run ruled not-applicable opens no event
 
@@ -177,6 +157,7 @@ Dropped 10-23:
 | 10-08 | releases seen within 2 h; the updater owns the native claude | | 64f8354e |
 | 10-19 | per-account catalogs and plans become events; Argon serves only on accounts that list it | Argon joined the gemini event 10-19 23:05Z | 56a766ed, 13707749 |
 | 10-23 | goal night-events: a pilot night past blocks 1–5's goals runs step 3's Vendors after its goals (`pilot_reached`) | proof pending, the first such night: events open at its start → 0; then 7-day lag ≤ the gap between nights, guard 50–69 %, else reverted | 998dd4be, +35 net lines |
+| 10-29 | goal served-tools: a gemini `tools` facet, every tool and argument key agy sessions call; lines only join | replay of 43 passes 10-13…23: tool lines in diffs 0 → `read_file`, `.Path` open an event at the 10-20 21:45Z pass, `.EndLine`, `.StartLine` join 10-21 17:23Z; tools-only events 1 in 11 days; facet 0.07–0.09 s a check; 14 d: rename breakages 0 and tools-only events ≤ 1, else reverted; review-bench half unconfirmed (an agent may not run a cell) | d5c1dd01, +49 net lines |
 
 ## Decisions
 

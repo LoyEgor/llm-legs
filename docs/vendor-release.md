@@ -83,7 +83,9 @@ only with a stated reason), and every new capability is supported, per account, 
 6. Tool schemas (image, video, LLM tools): diff strings/help/docs against
    `share/image-caps/<vendor>.json` and the wrapper's flags. Every field is wired, `unsupported`, or
    `api_only`; the vendor's default is sent unless a reason is stated; no wrapper suppresses a
-   native feature; the output parser handles every result tag the tool can emit (negative test).
+   native feature; the output parser handles every result tag the tool can emit (negative test). A
+   parser's tool names and arguments are checked on a live session of the new version (the `tools`
+   facet, or one Flash probe), never on strings.
 7. Models — resolve, never type. First learn how resolution works (`docs/DIAGNOSTICS.md` system map,
    `docs/routing-contract.md`, invariant rows `cr`, `cu`): family words and aliases resolve to the
    newest (`codexb models --family`, `geminib families`, `grokb models`, Claude aliases). A version
@@ -100,8 +102,7 @@ only with a stated reason), and every new capability is supported, per account, 
    review-bench transport (`share/rbench/launch.py` `run_<side>`, its stream-evidence parser): a
    changed event shape, tool name or parameter, output truncation or sandbox flag silently breaks what
    a cell reads or the report counts; where the release touches one, run one real cell and compare
-   its stream with its `rater_runs` row. On every surface, remove an older workaround around what you
-   touch that the vendor now does natively or whose reason is gone.
+   its stream with its `rater_runs` row.
 9. Per account: resolve and check each account the pool holds today (`codexb models --account`,
    per-account catalogs, entitlements); an entitlement refusal is typed apart from a usage limit.
 10. Live proof. LLM models: your RETURN asks the orchestrator for one `worker-run` per new model
