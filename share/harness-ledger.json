@@ -11664,6 +11664,139 @@
       "handoff": null,
       "last_reviewed": "2026-10-29",
       "reviewed_by": "night fixer harness-speed-test-health-idle-llm-legs-test-pages-kit-20261029T053338Z-77e4"
+    },
+    {
+      "id": "limit_hit:claude-setup:context-nudge.tail",
+      "title": "context-nudge.tail reads as unregistered: 373 hits of a limit retired with the focus mechanism",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^claude\\-setup:context\\-nudge\\.tail$"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T053134Z-0aaf",
+      "note": "Not a fault of ours: claude-setup@1c3839f5 (2026-10-22, focus mechanism removed) deleted the hook's limit_hit call and its limits.json entry together (test_limits_registry holds both ways); the last hit is 2026-10-22T15:15Z, before the live hook changed (16:00Z), none since. Red only because the doctor's unregistered rule reads a retired limit's old hits for 7 d; it ages out at 2026-10-29T15:15Z. A recurrence after a future retirement is the same over-catch, a judge change for the owner, not a fixer's.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T06:00:00Z"
+    },
+    {
+      "id": "limit_hit:llm-legs:claudeb.lock-stale",
+      "title": "claudeb broke 7 account-store locks by age (41-91 s) in 24 h, holders possibly alive",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:claudeb\\.lock\\-stale$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T06:00:00Z",
+          "by": "harness-limits-20261029T053134Z-0aaf",
+          "files": [
+            "llm-legs/bin/claudeb",
+            "llm-legs/tests/test_claudeb.sh",
+            "llm-legs/limits.json"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T053134Z-0aaf",
+      "note": "All 7 breaks (2026-10-28 18:07Z-10-29 02:55Z, com/notcom/locomthebest .json.lock) sit in swap-bound stretches: system ticks busy 1.0, swap 86-93 %, pagein 1500-7700/s, 60 s ticks taking 67-478 s; no claudeb or llm-refresh change since 10-20. The lock's premise (no live writer holds 30 s) fails on such a machine, and an age break let a second writer race the holder (lost merge; on the rlock/glock a double POST of a single-use refresh token). Fix: claudeb's lock_acquire/lock_release and oauth_attempt_update's own loop use share/store-lock.sh's pid-owned lock, which never breaks a live holder before its 3600 s ceiling and breaks a dead one at once; the rlock re-touch loop and the 10 s token-spacing clamp, both there only for the 30 s age break, are gone. claudeb.lock-stale and claudeb.lock-retries leave limits.json (store-lock.retries/ceiling/ownerless-stale journal instead). test_claudeb's live-holder case is red on the old code (breaks a 120 s lock of a live pid, never takes a dead pid's). Load itself is weather (logo-vectorizer-bench, JumpConnect, a hidden Chrome).",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "limit_hit:llm-legs:gate-journal.trim",
+      "title": "gate-journal.trim fired once (4088 rows, 2088 dropped): its monthly trim",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:gate\\-journal\\.trim$"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T053134Z-0aaf",
+      "note": "Not a fault: the registry's normal is about monthly, and this trim (2026-10-28T12:43Z) dropped rows from 2026-09-28 on, a month. The 2000 kept rows span 20 days (oldest 2026-10-08); the readers look back less: harness-doctor 48 h (bin/harness-doctor gates read, cutoff - LANDING_S), time_budget refusal_rows its 7 d + day windows. The quiet-week rule makes every monthly limit red once a month; changing that is the owner's judge.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T06:00:00Z"
+    },
+    {
+      "id": "limit_hit:llm-legs:image-matte.redrawn",
+      "title": "image-matte.redrawn skipped one composite (border mean 51.7 over 45): ChatGPT redrew the car",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:image\\-matte\\.redrawn$"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T053134Z-0aaf",
+      "note": "The limit did its job: the first hit ever, in worker run claudeb-1793237085-11774-50c4 (Rentiva hero cut-outs), whose own report says ChatGPT Remove BG was rejected because it redrew the car; the worker delivered image-cutout --edge hard instead. A composite over a redrawn subject would show the seam the limit exists to prevent.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T06:00:00Z"
+    },
+    {
+      "id": "limit_hit:llm-legs:instruction-watch.scan-timeout",
+      "title": "instruction watcher's repo listing killed at 20 s 38 times in 24 h (2026-10-29 01:30-02:35Z)",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:instruction\\-watch\\.scan\\-timeout$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T06:00:00Z",
+          "by": "harness-limits-20261029T053134Z-0aaf",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua",
+            "llm-legs/limits.json"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T053134Z-0aaf",
+      "note": "Every 120 s tick's repo task scan died at 20 s from 01:30Z to 02:35Z, the night's worst stall (60 s system ticks took 69-478 s, busy 1.0, swap 0.87-0.92, pagein 2000-4000/s; restore-all.sh's hidden Chrome, JumpConnect and the bench on top). Measured now at load 45 with 33 worktrees: a cold repo scan of each of the 6 roots takes 0.25-0.9 s, the pre-de41ad85 code too (the .claude/projects backup that landed in claude-setup at 01:29:49Z adds 449 paths, not seconds; ruled out as the cause), so the kills were the stall. The 20 s cap exists because a synchronous scan blocks Hammerspoon's main thread; the listing has run as an hs.task since llm-legs@ae761633b and W.busy keeps ticks from overlapping, so killing it bought nothing and threw away each scan's work. Fix: task scans get TASK_LIMIT_S = WATCH_TICK - 10 (110 s, own limit instruction-watch.task-timeout); synchronous ones keep 20 s. Same-cause stalls: 10-13 and 10-19 clusters (blind spot hook-off-cpu-wait).",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "limit_hit:llm-legs:worker-run.idle",
+      "title": "claudeb worker idle-killed 30 min after its final answer, held by a run_in_background dev server (2026-10-29 03:48Z)",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:worker\\-run\\.idle$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T06:40:00Z",
+          "by": "harness-limits-20261029T053134Z-0aaf",
+          "files": [
+            "llm-legs/share/worker-run-watchdog.sh",
+            "llm-legs/share/worker-run-report.sh",
+            "llm-legs/share/worker-run-outcomes.sh",
+            "llm-legs/tests/worker_run_harness.sh",
+            "llm-legs/tests/test_worker_run_watchdog.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T053134Z-0aaf",
+      "note": "Run claudeb-1793241723-31255-3e8c (Rentiva-design, notcom) wrote its final answer at 03:18:19Z; claude -p (CLI 2.1.312) then wrote stop_hook_summary, last-prompt and cost-state and kept waiting on the pnpm dev it had started with run_in_background, so the idle watchdog killed it at 03:48:35: rc 143, empty out/result, CLAUDEB_FAILED, the answer lost to the caller. Background tasks are on for claudeb workers since llm-legs@35d604a3c (2026-10-23). Of the claudeb runs since 10-21 that used run_in_background, 12 exited 1-2 s after their answer, 2 were stopped by their callers 29 and 43 s after it, only this one lingered (1814 s). Fix: a claudeb run whose transcript ends in cost-state with an assistant entry since launch ends WORKER_RUN_WALL_SETTLE_S after going idle as KILLED: finished, DONE, its answer taken from the transcript. Checked against cutting live turns: of 940 claudeb transcripts in 8 days, 50 have assistant entries after a cost-state, and every one sampled (26) is a later RESUME launch appending to the same session file, which transcript_answered since WD_STARTED tells apart. tests/test_worker_run_watchdog.sh wd-closed is red on the old code (STATUS not done), green on the new (shard 1/4, 11 asserts).",
+      "handoff": null,
+      "ruled_at": null
     }
   ],
   "blind_spots": [
