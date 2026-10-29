@@ -156,6 +156,35 @@ assert await_exit && assert terminal_state
 assert grep -qx 'bin/claimed-content' "$RUN_DIR/dirty"
 assert "$RUNNER" claim "$RUN_ID" --paths bin/claimed-content >/dev/null
 
+# A path another run's own listing names in this run's window is that run's: neither the note nor the
+# dirt record nor the UNNAMED line offers it to this run's chat (live 2026-10-29: a grok run offered a
+# codex run's edit). An UNKNOWN listing is the raw snapshot and names nothing.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ bin/unowned-shell' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_gated claudeb --workdir "$PROD_REPO"
+RUN_EPOCH=${RUN_ID#*-} RUN_EPOCH=${RUN_EPOCH%%-*}
+sibling() { # name row...
+  mkdir -p "$WORKER_RUN_DIR/$1"
+  printf 'WORKDIR: %s\n' "$PROD_REPO" >"$WORKER_RUN_DIR/$1/files"
+  printf '%s\n' "${@:2}" >>"$WORKER_RUN_DIR/$1/files"
+}
+for path in unowned-shell sibling-named sibling-raw; do printf '%s\n' "$path" >"$PROD_REPO/bin/$path"; done
+sibling "codex-$RUN_EPOCH-1-named" bin/sibling-named
+sibling "codex-$RUN_EPOCH-1-raw" 'UNKNOWN: fixture' bin/sibling-raw
+gate_open
+assert await_done && assert terminal_state
+assert grep -qx 'bin/unowned-shell' "$RUN_DIR/dirty"
+assert grep -qx 'bin/sibling-raw' "$RUN_DIR/dirty"
+assert test "$(cat "$RUN_DIR/dirty" "$RUN_DIR/files-note" "$WORK/wait.out" | grep -c 'sibling-named')" -eq 0
+assert grep -q '^UNNAMED: 2 path(s) ' "$WORK/wait.out"
+# One that ends after this run wrote its record answers for its paths from then on.
+sibling "codex-$RUN_EPOCH-1-late" bin/unowned-shell bin/sibling-raw
+assert test "$(grep -c '^UNNAMED: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+rm -r "$WORKER_RUN_DIR/codex-$RUN_EPOCH-1-named" "$WORKER_RUN_DIR/codex-$RUN_EPOCH-1-raw" \
+  "$WORKER_RUN_DIR/codex-$RUN_EPOCH-1-late"
+
 
 # --- Naming what the run could not name -----------------------------------------------------------
 # A run that worked through the shell lists nothing and its work is owned by nobody. The launching

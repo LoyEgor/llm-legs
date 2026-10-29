@@ -60,6 +60,7 @@ persist_run_files() {
   RUN_FILES_REASON=$reason
   RUN_FILES_COTENANT=''
   RUN_FILES_UNNAMED=''
+  RUN_OTHERS_NAMED=''
   if [ -z "$reason" ]; then
     RUN_FILES_LIST=$(comm -12 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
                               <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
@@ -67,8 +68,10 @@ persist_run_files() {
       RUN_FILES_COTENANT=$(comm -23 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
                                     <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
     else
+      RUN_OTHERS_NAMED=$(others_named_paths "$directory" "$top" "${EPOCHSECONDS:-$(date +%s)}")
       RUN_FILES_UNNAMED=$(comm -23 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
-                                   <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
+                                   <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u) |
+                          unowned_rows "$workdir" "$RUN_OTHERS_NAMED")
     fi
   fi
   {
@@ -519,6 +522,39 @@ listing_top_paths() { # directory top workdir
       { print (rel == "" ? $0 : rel "/" $0) }' | sort -u
 }
 
+# The paths under top, absolute, that another run's own listing names in this run's window: that run
+# was born before this one's listing was written and wrote its own since this one's floor. They are
+# that run's, never this one's UNNAMED to claim (live 2026-10-29: a grok run offered a codex run's edit
+# to its chat, and 289 of the 551 runs with dirt in the 30 days before held such a path). An UNKNOWN
+# listing names nothing: its rows are the raw snapshot.
+others_named_paths() { # directory top [end: the listing's own mtime, read where it is already written]
+  local directory="$1" top="${2%/}" floor="$1/dirty-before-shas" end="${3:-}" other born
+  local -a listings=()
+  [ -n "$top" ] && [ -f "$floor" ] || return 0
+  [ -n "$end" ] || { file_lstat "$directory/files" && end=$FILE_MTIME; } || end=${EPOCHSECONDS:-$(date +%s)}
+  for other in "${directory%/*}"/*-*; do
+    born=${other##*/} born=${born#*-} born=${born%%-*}
+    [[ $born =~ ^[0-9]+$ ]] && [ "$born" -le "$end" ] && [ "$other" != "$directory" ] &&
+      [ "$other/files" -nt "$floor" ] && listings+=("$other/files")
+  done
+  [ "${#listings[@]}" -gt 0 ] || return 0
+  AWK_TOP=$top/ awk '
+    FNR == 1 { base = ""; unknown = 0 }
+    /^WORKDIR: / { base = substr($0, 10); sub(/\/+$/, "", base); next }
+    /^UNKNOWN: / { unknown = 1; next }
+    /^PARTIAL: / || !NF || unknown { next }
+    { path = substr($0, 1, 1) == "/" ? $0 : (base == "" ? "" : base "/" $0) }
+    path != "" && index(path, ENVIRON["AWK_TOP"]) == 1 { print path }' "${listings[@]}" 2>/dev/null | sort -u
+}
+
+# The rows on stdin, spelled relative to base or absolute, that no absolute path in owned names.
+unowned_rows() { # base owned
+  AWK_BASE=${1%/}/ AWK_OWNED=<(printf '%s\n' "$2") awk '
+    BEGIN { while ((getline line < ENVIRON["AWK_OWNED"]) > 0) if (line != "") owned[line] = 1 }
+    !NF { next }
+    !((substr($0, 1, 1) == "/" ? $0 : ENVIRON["AWK_BASE"] $0) in owned)'
+}
+
 # Spelled the way the LISTING spells its rows — relative to the workdir, absolute outside it.
 top_rel_spelling() { # top rel path
   [ -n "$2" ] || { printf '%s' "$3"; return 0; }
@@ -531,9 +567,9 @@ top_rel_spelling() { # top rel path
 record_workdir_dirt() { # directory workdir
   local directory="$1" workdir="$2" top gained
   [ -z "$RUN_FILES_REASON" ] || return 0
-  # A run answering to a chat records dirt for exactly what its own listing could not answer for:
-  # the rest of its window is already that chat's by the listing, and a run whose listing is whole
-  # leaves nothing here at all.
+  # A run answering to a chat records dirt for exactly what neither its own listing nor another run's
+  # could answer for: the rest of its window is already that chat's by the listing, or that run's by
+  # its own, and a run whose listing is whole leaves nothing here at all.
   if [ -s "$directory/launcher" ] && [ -z "${RUN_FILES_UNNAMED:-}" ]; then
     return 0
   fi
@@ -541,7 +577,8 @@ record_workdir_dirt() { # directory workdir
   gained=$(snapshot_changed_paths "$directory" "$top") || return 0
   if [ -s "$directory/launcher" ]; then
     gained=$(comm -23 <(sed '/^$/d' <<<"$gained" | sort -u) \
-                      <(listing_top_paths "$directory" "$top" "$workdir"))
+                      <(listing_top_paths "$directory" "$top" "$workdir") |
+             unowned_rows "$top" "${RUN_OTHERS_NAMED:-}")
   fi
   [ -n "$gained" ] || [ -f "$directory/dirty" ] || return 0
   { printf 'WORKDIR: %s\n' "$top"; [ -z "$gained" ] || printf '%s\n' "$gained"; } \
@@ -655,6 +692,9 @@ unnamed_line() { # directory
   fi
   top=$(sed -n 's/^WORKDIR: //p' "$directory/dirty" 2>/dev/null | head -n1)
   paths=$(grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null | sed '/^$/d')
+  # A run that ended after this one wrote its record may name some of them by now.
+  [ -z "$top" ] || [ -z "$paths" ] ||
+    paths=$(unowned_rows "$top" "$(others_named_paths "$directory" "$top")" <<<"$paths")
   if [ -z "$top" ] || [ -z "$paths" ]; then
     grep -q '^UNKNOWN: ' "$directory/files" 2>/dev/null || [ "$missing_after" = true ] || return 0
     workdir=$(sed -n 's/^WORKDIR: //p' "$directory/files" 2>/dev/null | head -n1)

@@ -10,6 +10,7 @@ types a code, ever.
     tg-read chats [--limit N]                  dialogs: id, unread, name
     tg-read read <chat> [--limit N] [--since YYYY-MM-DD] [--json]
     tg-read voice <chat> [--last N] --dest-dir <abs> [--transcribe]   download voice messages as .ogg
+    tg-read photo <chat> [--last N] --dest-dir <abs>                   download photos as .jpg
     tg-read transcribe <abs audio> [--dest <abs .txt>] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send <chat> (--text <text> | --file <abs>) [--as-written]   post ONE plain-text message as Egor
 
@@ -296,6 +297,33 @@ async def cmd_voice(args) -> int:
     return 0
 
 
+async def cmd_photo(args) -> int:
+    tg = client()
+    await ensure_authorized(tg)
+    entity = await resolve(tg, args.chat)
+    dest_dir = Path(args.dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    found = 0
+    async for message in tg.iter_messages(entity, limit=args.scan):
+        if not message.photo:
+            continue
+        stamp = message.date.astimezone().strftime("%Y%m%d-%H%M")
+        dest = dest_dir / f"photo-{stamp}-{message.id}.jpg"
+        if not dest.exists():
+            await message.download_media(file=str(dest))
+        caption = (message.text or "").replace("\n", " ")
+        print(f"{dest}\t{sender_name(message)}\t{local_time(message.date)}\t{caption}", flush=True)
+        found += 1
+        if found >= args.last:
+            break
+    if not found:
+        print("no photos in the last", args.scan, "messages", file=sys.stderr)
+        await tg.disconnect()
+        return 1
+    await tg.disconnect()
+    return 0
+
+
 def should_fall_back(exit_code: int, output: str) -> bool:
     """ElevenLabs failed for lack of usage/credits (exit 3 or a limit word in its output): try Groq."""
     return exit_code != 0 and (exit_code == 3 or bool(FALL_BACK.search(output or "")))
@@ -455,6 +483,11 @@ def main(argv=None) -> int:
     voice.add_argument("--scan", type=int, default=200, help="how many recent messages to look through")
     voice.add_argument("--dest-dir", required=True)
     voice.add_argument("--transcribe", action="store_true", help="transcribe each download (engine auto) next to it")
+    photo = sub.add_parser("photo", help="download the last photos of a chat as .jpg")
+    photo.add_argument("chat")
+    photo.add_argument("--last", type=int, default=1)
+    photo.add_argument("--scan", type=int, default=200, help="how many recent messages to look through")
+    photo.add_argument("--dest-dir", required=True)
     transcribe_ = sub.add_parser("transcribe", help="audio file to text: ElevenLabs, then Groq Whisper")
     transcribe_.add_argument("audio")
     transcribe_.add_argument("--dest", help="the .txt to write (default: <audio>.txt)")
@@ -470,7 +503,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.command == "send":
         send_text(args)  # refuse an empty or oversized text before connecting
-    handler = {"login": cmd_login, "chats": cmd_chats, "read": cmd_read, "voice": cmd_voice,
+    handler = {"login": cmd_login, "chats": cmd_chats, "read": cmd_read, "voice": cmd_voice, "photo": cmd_photo,
                "transcribe": cmd_transcribe, "send": cmd_send}[args.command]
     return asyncio.run(handler(args))
 

@@ -78,6 +78,8 @@ supervise_grok() {
   [ -z "$served" ] || meta_update "$directory" '.served_model = $model' --arg model "$served" || :
   # A tool the permission policy refused is neither a wall nor a failed run — 1.0.13 ends such a run
   # normally with exit 0 — but it is the one thing a reader of a thin result needs to know about.
+  # A command the CLI could not check against the rules (a loop, a substitution) is refused the same
+  # way under --always-approve, in other words: 8 of the 9 grok runs to 2026-10-29 met one.
   # Counted off the denial EVENT, never the phrase: the CLI states a policy denial once, in the
   # failed tool_call_update, and the agent then quotes that same sentence back in its own answer
   # (live-caught) — so a grep over the stream double-counts a real denial, and reports one for a
@@ -85,7 +87,7 @@ supervise_grok() {
   denied=$(jq -rR 'fromjson?
                    | select(type == "object" and .type == "tool_call_update" and .status == "failed")
                    | select([.content[]? | .. | strings]
-                            | any(test("was not executed: Denied by permission policy")))
+                            | any(test("was not executed: (Denied by permission policy|No user is available to approve)")))
                    | .toolCallId' "$directory/out" 2>/dev/null | wc -l | tr -d '[:space:]')
   [[ "$denied" =~ ^[0-9]+$ ]] || denied=0
   [ "$denied" -eq 0 ] || meta_update "$directory" '.denied_tools = $n' --argjson n "$denied" || :

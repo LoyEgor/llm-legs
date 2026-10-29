@@ -17,10 +17,11 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
     tg-read chats --limit 20
     tg-read read "Гапоненко" --limit 5 [--since 2026-10-01] [--json]
     tg-read voice "Гапоненко" --last 1 --dest-dir /tmp/voice [--transcribe]
+    tg-read photo "Гапоненко" --last 2 --dest-dir /tmp/photos
     tg-read transcribe /tmp/voice/voice-20261022-1200-123.ogg [--dest /tmp/t.txt] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send me --text "test"            # or --file /abs/message.txt
 
-- `chats`, `read` and `voice` are read-only: they never send, mark read or delete.
+- `chats`, `read`, `voice` and `photo` are read-only: they never send, mark read or delete.
 - `send` posts exactly the given text as Egor, once, plain text (no Markdown), and prints
   `sent #<id> to <name> at <time>`. Before sending, `ё`/`Ё` become `е`/`Е` and em/en dashes a plain
   `-` (Egor cannot type those); `normalized: yo=<n> dashes=<n>` is printed when anything changed.
