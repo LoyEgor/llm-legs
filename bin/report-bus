@@ -128,6 +128,9 @@ duplicate() {
     [ ! -f "$entry" ] || return 0
   done
   [ -f "$ROOT/history.log" ] || return 1
+  # history_row writes kind and id side by side, and both are valid_name text (no JSON escape): a
+  # log with no such pair holds no duplicate, and a new report reads none of it into jq.
+  grep -qF -- "\"kind\":\"$kind\",\"id\":\"$id\"" "$ROOT/history.log" 2>/dev/null || return 1
   jq -se --arg s "$session" --arg k "$kind" --arg i "$id" \
     'any(.[]; (.session == $s or .source_session == $s or .source_session == "_orphan" or $s == "_orphan") and .kind == $k and .id == $i)' \
     "$ROOT/history.log" >/dev/null 2>&1

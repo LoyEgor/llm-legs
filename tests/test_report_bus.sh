@@ -379,6 +379,20 @@ repeat=$(doc push | "$BUS" emit --kind push --id 'abc@origin/main') || rc=$?
 assert test "$rc" = 3
 assert test -z "$repeat"
 assert test "$(jq -s length "$STORE/history.log")" = "$lines"
+# The history only grows (4 MB a month), and a new report asks it nothing: jq reads it for an id the log
+# already carries and for no other.
+mkdir "$WORK/shim"
+printf '#!/bin/bash\nfor a in "$@"; do case $a in */history.log) echo read >>"$HISTORY_READS" ;; esac; done\nexec %s "$@"\n' \
+  "$(command -v jq)" >"$WORK/shim/jq"
+chmod +x "$WORK/shim/jq"
+export HISTORY_READS="$WORK/history-reads"
+: >"$HISTORY_READS"
+doc fresh | PATH="$WORK/shim:$PATH" "$BUS" emit --kind push --id 'fresh@origin/main' >/dev/null
+assert test ! -s "$HISTORY_READS"
+rc=0
+doc fresh | PATH="$WORK/shim:$PATH" "$BUS" emit --kind push --id 'fresh@origin/main' >/dev/null || rc=$?
+assert test "$rc" = 3
+assert test "$(wc -l <"$HISTORY_READS" | tr -d ' ')" = 1
 post safe 'post@origin/main'
 assert test -f "$(find "$STORE/safe/pending" -name '*__post-origin-main.txt')"
 

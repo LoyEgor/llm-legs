@@ -2810,7 +2810,7 @@
         }
       ],
       "same_cause": [],
-      "note": "2026-10-13 (night fixer harness-speed-chat-hooks-20261012T235027Z-2d8d): not a third fast path for the same cost. folded hooks/20739.tsv put review-flow-gate at mean 1357 ms (p50 365, p99 30 s) at night; the commit-call HEAD snapshot forked one rev-parse per worktree of every journal-home family (212 snapshots, 12.9k tops in 24 h, max 171), ~5 ms each, so ~1 min/day of Pre-Bash wait. Ruled out: reading HEAD and loose refs off the files (an earlier attempt of this run) saves nothing, since the night branches sit in packed-refs and fell back to git; a bash glob over one growing string for the lookup is quadratic in bash 3.2 (34 s). Found, not this component: commit-report.sh (Post) may still read HEAD per snapshot top. The lever row stays static (blind spot speed-lever-hook-static). 2026-10-09: the 10-05 fix (rf_door_idle) skipped the door's parse but still loaded the 2.1k-line library, computed the owner and ran rj_command_paths' awk on every idle write call. Now a pre-library screen (rf_door_idle plus rf_writes_none, a superset of rj_command_paths' targets: a `>` other than `>&`/a lone `2>`, cp/mv/rm/tee/touch/ln, sed beside -i) exits before the library; RJ_LIB is found without dirname/cd forks and jq reads the payload itself (tojson hands `input` back), so every call, read-only included, saves 4 forks and 2 execs. RJ_LANDING_SUBCOMMANDS/RJ_GATED_SUBCOMMANDS moved to hooks/lib/splice.sh for the screen. Pre-Bash floor setters on 2026-10-08 (first-order gain if zero, hooks/*.tsv): instruction-write-gate.sh 400 s, statusline-workdir-hook.sh 144 s, review-flow-gate.sh 130 s, worker-launch-gate.sh 91 s; the next lever is instruction-write-gate (blind spot speed-lever-hook-static). Found, not fixed (not this component): commit-report.sh and commit-push-gate.sh still find RJ_LIB with the dirname/cd forks. 2026-10-05: fixed with rf_door_idle (claude-setup@a9f0773). Found then, still so: the review family is read off the raw text, so re\"\"view-bench re\"\"view passes this door; review-bench's nonce check still refuses it.",
+      "note": "2026-10-29 (fixer 1b40): ruled out again, measured. hooks/folded 20752-20755: 28736 runs, wall 4452 s (mean 155 ms), cpu 2264 s (79 ms), the other 2188 s is waiting for a CPU at load 66-108; 7582 runs over 150 ms hold 61 % of the wall. The floor path of a read-only call is ~50 ms CPU: jq payload parse 6, shfmt 12, argv.jq under jq 28 (module parse 4, compile of walk 11 and readonly 4, run 5; jq 1.7.1 compiles per process). Tried: stripping argv.jq of comments and blank lines (-22 % bytes): 25.8 -> 25.7 ms CPU per run. A bash screen before the parse reaches only the commands made of plain word characters, 5.5 % of 70518 real Bash calls of the last 2 days (3915), so at most 0.055 x 12.4k x 28 ms = 19 s/day of the 3.9 min. No second parse shares the call: worker-edit-guard.sh leaves before any parse outside workers, the other Pre-Bash gates leave at 8 ms. The next lever would be the compile cost of argv.jq walk (a rewrite of the gate's parser, 500+ replayed calls), not a screen. 2026-10-13 (night fixer harness-speed-chat-hooks-20261012T235027Z-2d8d): not a third fast path for the same cost. folded hooks/20739.tsv put review-flow-gate at mean 1357 ms (p50 365, p99 30 s) at night; the commit-call HEAD snapshot forked one rev-parse per worktree of every journal-home family (212 snapshots, 12.9k tops in 24 h, max 171), ~5 ms each, so ~1 min/day of Pre-Bash wait. Ruled out: reading HEAD and loose refs off the files (an earlier attempt of this run) saves nothing, since the night branches sit in packed-refs and fell back to git; a bash glob over one growing string for the lookup is quadratic in bash 3.2 (34 s). Found, not this component: commit-report.sh (Post) may still read HEAD per snapshot top. The lever row stays static (blind spot speed-lever-hook-static). 2026-10-09: the 10-05 fix (rf_door_idle) skipped the door's parse but still loaded the 2.1k-line library, computed the owner and ran rj_command_paths' awk on every idle write call. Now a pre-library screen (rf_door_idle plus rf_writes_none, a superset of rj_command_paths' targets: a `>` other than `>&`/a lone `2>`, cp/mv/rm/tee/touch/ln, sed beside -i) exits before the library; RJ_LIB is found without dirname/cd forks and jq reads the payload itself (tojson hands `input` back), so every call, read-only included, saves 4 forks and 2 execs. RJ_LANDING_SUBCOMMANDS/RJ_GATED_SUBCOMMANDS moved to hooks/lib/splice.sh for the screen. Pre-Bash floor setters on 2026-10-08 (first-order gain if zero, hooks/*.tsv): instruction-write-gate.sh 400 s, statusline-workdir-hook.sh 144 s, review-flow-gate.sh 130 s, worker-launch-gate.sh 91 s; the next lever is instruction-write-gate (blind spot speed-lever-hook-static). Found, not fixed (not this component): commit-report.sh and commit-push-gate.sh still find RJ_LIB with the dirname/cd forks. 2026-10-05: fixed with rf_door_idle (claude-setup@a9f0773). Found then, still so: the review family is read off the raw text, so re\"\"view-bench re\"\"view passes this door; review-bench's nonce check still refuses it.",
       "handoff": null,
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night fixer harness-speed-chat-hooks-20261012T235027Z-2d8d"
@@ -6221,7 +6221,7 @@
         "rule": "opportunity",
         "ident": "hooks/commit-report\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-10T08:20:00+03:00",
@@ -6270,12 +6270,27 @@
             "data": "23 fixture scenarios of a commit landing in 1, 2 and 3 journaled repositories x 5 review-debt answers (zero, owed, owed with due, WHY=err, garbage), a probe killed at RJ_DEBT_BOUND, review-debt absent, the row budget spent by a clock moving 3 s a read (budget 4 and 60), an unwritable TMPDIR; scratch HOME, review-debt stubbed",
             "result": "23/23 identical; two probes that each wait for the other's marker overlap (red on the old code, where the second starts after the first gave up); 4 repositories x 1 s stub probes at load ~150: 6.3-7.5 s -> 3.3-6.4 s wall, 3 pairs"
           }
+        },
+        {
+          "at": "2026-10-29T08:30:00+03:00",
+          "by": "fixer harness-speed-hooks-commit-report-sh-20261029T053204Z-1b40",
+          "files": [
+            "llm-legs/bin/report-bus",
+            "llm-legs/tests/test_report_bus.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "report-bus duplicate() at HEAD (jq -se over the whole history.log) vs the fix (grep -F of the kind/id pair, then the same jq): the verdict per (session, kind, id)",
+            "data": "a copy of the live ~/.cache/claude-reports/history.log (6359 rows, 3.98 MB): 700 queries, 330 (session, kind, id) triples drawn from its rows, 150 absent ids, 220 of those rows' ids under another session or kind; every row carries the literal kind/id pair history_row writes (6359/6359)",
+            "result": "700/700 identical (352 duplicates); a fresh id reads history.log 1 -> 0 times through a jq shim (red on the old code), a repeated id still 1 and exits 3; history scan 38 -> 18 ms CPU per emit"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-20",
-      "reviewed_by": "fixer harness-speed-hooks-commit-report-sh-20261020T114011Z-699d",
-      "note": "2026-10-20 (fixer 699d): hooks/folded 20745 (2026-10-19): 8556 runs under 1 s at 15 ms CPU, 100 landings over 1 s = 6.2 of 7.9 wall-min (mean 3.7 s wall, 2.1 s CPU), 51 of them at the 4 s row budget; a landing with no probe costs 0.6 s CPU (python identity, report-bus, ~60 forks). Fixed: uncommitted_lines starts every repository probe at once (wait, rows in order) and keeps status files and answers in one scratch dir; the sum of the probes (claude-setup 1.0, llm-legs 4-5, review-bench 1.7, hammerspoon 3 s wall at load ~90) was waited serially. Left, handed off (review-bench): llm-legs review-debt --repo --split reprices 8 of 48 checkouts per call (cProfile: price_family 21 of 27 s, 227 git calls) because night worktrees move their stamps between calls, so the probe alone runs 4-5 s at load ~90 and is killed at the budget; the hook cannot shorten that. Seen, not changed: report-bus and report_frame.py identity are two python starts per landing (0.9 s wall of 2.8 at load 150, ~40 ms CPU each). 2026-10-13: 4.7 min/day back (hooks/folded 20738, 2026-10-12: 8155 runs, 11.0 wall-min; 6986 under 50 ms, 157 over 1 s = 6.8 min, the landings). Fixed: a payload spelling no git anywhere (SPLICE_JSON over the raw bytes, comment-gate's screen) whose raw tool_use_id has no write stash leaves before jq: 76 % of 58 866 rebuilt Bash payloads. Left: the landing tail (157 runs/day at ~2.6 s), not traced this run. Before: 15.58 min/day recoverable (latest.json 2026-10-10). hooks/folded 20735 (2026-10-09): 11 249 runs, 33.7 wall-min; by CPU, 7963 under 25 ms (4.1 min: no git or the old screen), 2931 at 25-150 ms (9.6 min: a git call that loaded the 2k-line library to find no landing), 295 over 500 ms (19 min: landings). Fixed: a named call with no write stash, no armed HEAD snapshot and no spliced whole word of push or RJ_LANDING_SUBCOMMANDS leaves before the library; anonymous calls (nocall.* snapshots) and stashed ones keep the full path. RJ_LIB found by expansion (the 10-09 note's dirname/cd forks). Test: test_commit_report no grep/sed/awk on such a call (red on old code) and an armed snapshot with no landing word still reports (red with the snapshot check removed). Left, handed off: the landing tail is the debt probe, review-debt --split missing its cache after every commit (76-82 s llm-legs at load ~39) and killed at the 4 s row budget as `debt unknown`, 197 runs over 4.5 s in 2026-10-08..09, about 10 min/day. Found, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base too (2026-10-10, load ~90). Seen, not changed: the libdown note now waits for a landing call, as it already did for a call naming no git.",
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-speed-hooks-commit-report-sh-20261029T053204Z-1b40",
+      "note": "2026-10-29 (fixer 1b40): hooks/folded 20752-20755: 27066 runs, 287 landings over 1 s (mean 2.5 s wall) are 52 % of the wall, the 30-150 ms runs of the busiest day (2955) 3.3 of its 11 min, the no-git leaves 1.2 min. A landing costs 0.65 CPU s in the fixture (user 0.27, sys 0.39): report-bus emit 0.28 of it, the hook's ~100 forks 0.37. Inside emit: resolve_session's grep -lxF over 2055 worker-session files 0.11 CPU s (0.2-0.8 s wall at load 66-108, once per emit, twice for a worker), the history slurp 38 ms (fixed above), python block 40 ms, five jq starts. Left: (1) that grep, exact only with a session -> run index written beside worker-run-lifecycle.sh:203 and backfilled, a new layer; skipping it for a call with no CLAUDEB_WORKER changes who gets the report of a worker session resumed by hand, so not done; (2) report_frame.py identity, a python start (~40 ms CPU) for the name the hook already has the git facts for; a bash port is a second copy of an llm-legs/review-bench rule (shared-invariants row), not done. 2026-10-20 (fixer 699d):hooks/folded 20745 (2026-10-19): 8556 runs under 1 s at 15 ms CPU, 100 landings over 1 s = 6.2 of 7.9 wall-min (mean 3.7 s wall, 2.1 s CPU), 51 of them at the 4 s row budget; a landing with no probe costs 0.6 s CPU (python identity, report-bus, ~60 forks). Fixed: uncommitted_lines starts every repository probe at once (wait, rows in order) and keeps status files and answers in one scratch dir; the sum of the probes (claude-setup 1.0, llm-legs 4-5, review-bench 1.7, hammerspoon 3 s wall at load ~90) was waited serially. Left, handed off (review-bench): llm-legs review-debt --repo --split reprices 8 of 48 checkouts per call (cProfile: price_family 21 of 27 s, 227 git calls) because night worktrees move their stamps between calls, so the probe alone runs 4-5 s at load ~90 and is killed at the budget; the hook cannot shorten that. Seen, not changed: report-bus and report_frame.py identity are two python starts per landing (0.9 s wall of 2.8 at load 150, ~40 ms CPU each). 2026-10-13: 4.7 min/day back (hooks/folded 20738, 2026-10-12: 8155 runs, 11.0 wall-min; 6986 under 50 ms, 157 over 1 s = 6.8 min, the landings). Fixed: a payload spelling no git anywhere (SPLICE_JSON over the raw bytes, comment-gate's screen) whose raw tool_use_id has no write stash leaves before jq: 76 % of 58 866 rebuilt Bash payloads. Left: the landing tail (157 runs/day at ~2.6 s), not traced this run. Before: 15.58 min/day recoverable (latest.json 2026-10-10). hooks/folded 20735 (2026-10-09): 11 249 runs, 33.7 wall-min; by CPU, 7963 under 25 ms (4.1 min: no git or the old screen), 2931 at 25-150 ms (9.6 min: a git call that loaded the 2k-line library to find no landing), 295 over 500 ms (19 min: landings). Fixed: a named call with no write stash, no armed HEAD snapshot and no spliced whole word of push or RJ_LANDING_SUBCOMMANDS leaves before the library; anonymous calls (nocall.* snapshots) and stashed ones keep the full path. RJ_LIB found by expansion (the 10-09 note's dirname/cd forks). Test: test_commit_report no grep/sed/awk on such a call (red on old code) and an armed snapshot with no landing word still reports (red with the snapshot check removed). Left, handed off: the landing tail is the debt probe, review-debt --split missing its cache after every commit (76-82 s llm-legs at load ~39) and killed at the 4 s row budget as `debt unknown`, 197 runs over 4.5 s in 2026-10-08..09, about 10 min/day. Found, not this area's: claude-setup tests/test_stop_dispatch.sh fails `a live run held only by an agent task did not ask` on the night base too (2026-10-10, load ~90). Seen, not changed: the libdown note now waits for a landing call, as it already did for a call naming no git.",
       "handoff": "docs/handoffs/2026-10-10-commit-report-debt-probe.md"
     },
     {
@@ -11400,6 +11415,36 @@
       "last_reviewed": "2026-10-29",
       "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
       "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): load, not repositories. hooks/edit-conflict-notice.sh reads no .repos registry (its registry is ~/.claude/sessions, its work per edited file), and takes no lock and no sleep. 24 h of hook-time rows of the live sessions, split by their .repos count: up to 2 n 10 wall p50 160 ms, CPU 140; 3-4 n 22 wall 112, CPU 77; 5+ n 38 wall 429, CPU 105. CPU is lower in the 5+ chats, so the wall gap is waiting. Class: blind spot grows-split-under-load.",
+      "handoff": null
+    },
+    {
+      "id": "speed-flaky-test-review-flow-gate-claude-setup",
+      "title": "test_review_flow_gate went red once and green on the same tree: the 4000-line directory-walk assert bounded WALL seconds (10) and a machine at load ~200 took longer",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/flaky/claude-setup/test_review_flow_gate"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:30:00+03:00",
+          "by": "fixer harness-speed-hooks-commit-report-sh-20261029T053204Z-1b40",
+          "files": [
+            "claude-setup/tests/test_review_flow_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the walk assert's verdict on the real walk and on a walk forking once per heredoc line, wall bound vs CPU bound",
+            "data": "rj_command_dirs over a 4000-line heredoc command, bash `time` user+sys; the same assert on the same code at load 66-108",
+            "result": "the real walk 411 CPU ms (bound 10000), a per-line-fork walk 14889 CPU ms (fails, as the wall bound did); the walk's wall at load ~66 was 3.5 s, so the 10 s bound sat 3x above it and load 200 crossed it; no assert added or removed"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-speed-hooks-commit-report-sh-20261029T053204Z-1b40",
+      "note": "The red: run-suites 2026-10-29 04:25 (4d37990e, rc 1, 1547 s wall), green 04:52 on the same tree; the worker's report names 'a 10 s timing check under load ~200'. The suite's only wall-clock bound is tests/test_review_flow_gate.sh walk_cpu_ms; the +N future offsets on span-arm marks are distinct labels, not boundary reads.",
       "handoff": null
     }
   ],
