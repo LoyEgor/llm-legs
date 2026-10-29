@@ -95,22 +95,6 @@
     "why": "A revive session's log keeps its last 256 KiB; the login and exit markers sit at the end.",
     "normal": "Rare; a long chatty revive trims its start."
   },
-  "claudeb.lock-retries": {
-    "value": 10,
-    "unit": "count",
-    "where": "bin/claudeb:157",
-    "set_by": "chat 456e2c7e",
-    "why": "claudeb's store locks are held for milliseconds; 10 tries x 0.2 s bounds a writer behind a stuck holder.",
-    "normal": "0 hits; a hit drops one store write."
-  },
-  "claudeb.lock-stale": {
-    "value": 30,
-    "unit": "s",
-    "where": "bin/claudeb:153",
-    "set_by": "chat 523d1cb2",
-    "why": "No claudeb lock is held 30 s by a live writer, so an older lock is a crashed holder's.",
-    "normal": "Rare: only after a crash or kill mid-write."
-  },
   "claudeb.refresh-converge": {
     "value": 240,
     "unit": "s",
@@ -474,9 +458,9 @@
   "instruction-watch.scan-timeout": {
     "value": 20,
     "unit": "s",
-    "where": "hammerspoon/instruction-watch.lua:566",
+    "where": "hammerspoon/instruction-watch.lua:593",
     "set_by": "chat 0593dde6",
-    "why": "The scan blocks Hammerspoon's main thread; past 20 s its process group dies so the menubar does not freeze.",
+    "why": "A synchronous scan blocks Hammerspoon's main thread; past 20 s its process group dies so the menubar does not freeze.",
     "normal": "0 hits; a hit leaves files unwatched for that tick."
   },
   "instruction-watch.snapshot-size": {
@@ -486,6 +470,14 @@
     "set_by": "chat d967d0e7",
     "why": "Restore points are kept for instruction files up to 1 MiB; the set is ~150 KB.",
     "normal": "0 hits."
+  },
+  "instruction-watch.task-timeout": {
+    "value": 110,
+    "unit": "s",
+    "where": "hammerspoon/instruction-watch.lua:594",
+    "set_by": "night",
+    "why": "A task scan blocks no thread and W.busy holds the next tick off; it dies 10 s before the 120 s tick so a hung scan never outlives it.",
+    "normal": "0 hits; a cold scan takes under 1 s, so a hit is a machine stalled for minutes."
   },
   "instruction-write-gate.script-read": {
     "value": 262144,

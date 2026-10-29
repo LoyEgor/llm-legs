@@ -586,24 +586,30 @@ function limit_hit.hit(name, value, unit, action, lost, where, observed)
 end
 
 -- A synchronous read blocks Hammerspoon's main thread, so the scan's whole process group dies past SCAN_LIMIT_S.
+-- A task scan blocks nothing and W.busy holds the next tick off, so it dies only before that tick: at 20 s
+-- every task listing of a swapping machine died for 65 minutes, each redone from scratch (2026-10-29).
 -- LC_ALL=C: with no locale in a launchd app's environment, bash's setlocale asks CoreFoundation, which
 -- deadlocks in a forked pipeline subshell (2026-10-01: the menubar froze 35 minutes).
 local SCAN_LIMIT_S = 20
+local TASK_LIMIT_S = WATCH_TICK - 10
 local SCAN_GUARD = [[my $limit = shift; my $pid = fork() // exit 125;
 if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
 $SIG{ALRM} = sub { kill 'TERM', -$pid; select(undef, undef, undef, 0.5); kill 'KILL', -$pid };
 alarm $limit; waitpid($pid, 0); exit($? & 127 ? 124 : $? >> 8)]]
 
-local function scanCommand(mode, args)
+local function scanCommand(mode, args, task)
     local parts = { "PATH=" .. WATCH_PATH .. ":$PATH; export PATH; LC_ALL=C; export LC_ALL; exec /usr/bin/perl -e",
-        shellQuote(SCAN_GUARD), tostring(SCAN_LIMIT_S), "bash -c", shellQuote(WATCH_SCRIPT),
+        shellQuote(SCAN_GUARD), tostring(task and TASK_LIMIT_S or SCAN_LIMIT_S), "bash -c", shellQuote(WATCH_SCRIPT),
         "instruction-watcher", shellQuote(ROOT), shellQuote(homeDir()), shellQuote(stateDir), mode }
     for _, arg in ipairs(args or {}) do parts[#parts + 1] = shellQuote(arg) end
     return table.concat(parts, " ") .. " 2>/dev/null"
 end
 
-local function scanResult(mode, out, ok, code)
-    if code == 124 then
+local function scanResult(mode, out, ok, code, task)
+    if code == 124 and task then
+        limit_hit.hit("instruction-watch.task-timeout", TASK_LIMIT_S, "s", "kill",
+            "the instruction watcher's " .. mode .. " task scan: this tick's view of the watched files", "hammerspoon/instruction-watch.lua:local TASK_LIMIT_S")
+    elseif code == 124 then
         limit_hit.hit("instruction-watch.scan-timeout", SCAN_LIMIT_S, "s", "kill",
             "the instruction watcher's " .. mode .. " scan: this tick's view of the watched files", "hammerspoon/instruction-watch.lua:local SCAN_LIMIT_S")
     end
@@ -641,8 +647,8 @@ local function runScanAsync(mode, args, done)
         return done(runScan(mode, args))
     end
     if not ROOT then return done(nil, "repository root unresolved") end
-    local launched = (scanLauncher or launchTask)(scanCommand(mode, args), function(stdout, code)
-        done(scanResult(mode, stdout, code == 0, code))
+    local launched = (scanLauncher or launchTask)(scanCommand(mode, args, true), function(stdout, code)
+        done(scanResult(mode, stdout, code == 0, code, true))
     end)
     if not launched then return done(nil, "cannot start bash") end
 end
