@@ -5,7 +5,8 @@ suite; a suite whose name holds the file's stem; a suite, or a tests/ helper it 
 imports its module or requires it; for a file with none of those, the same for a repo file that imports, sources,
 requires or runs it on a line of code, one level: a comment naming it (a doc pointer) loads nothing. A module its package's __init__ names counts as imported by a suite importing the
 package. A file with no own suite and no catch keeps the name rule: a suite, or a helper it names, naming its basename
-as a word. A suite with no catch in CATCH_D days, journaled JOURNALED_D days or more, leaves every file's selection
+as a word. A file of a sibling repository beside this one's main checkout (absolute, or <repository>/<path>) is held
+by a line naming its path under that repository's root: <REPOSITORY>_ROOT or its directory name. A suite with no catch in CATCH_D days, journaled JOURNALED_D days or more, leaves every file's selection
 but its own (the file is the suite, or named() after the file): the night's full run keeps it.
 
   suite_select.py <top> <paths-file>   suite paths on stdin, the ones covering the paths on stdout
@@ -52,6 +53,31 @@ def relative(top, path):
         if rel:
             return rel
     return path
+
+
+def sibling(top, path):
+    """<repository>/<its path> for a file of a sibling repository beside top's main checkout, None otherwise."""
+    own = os.path.realpath(top).split(WORKTREES)[0].rstrip("/")
+    projects = os.path.dirname(own)
+    if os.path.isabs(path):
+        real = os.path.realpath(path)
+        name = real[len(projects) + 1:].split("/")[0] if real.startswith(projects + "/") else ""
+        rel = test_catches.in_repo(os.path.join(projects, name), real) if name else None
+    else:
+        name, _, rel = os.path.normpath(path).partition("/")
+        if os.path.lexists(os.path.join(top, name)):
+            return None
+    if not rel or name == os.path.basename(own) or not os.path.exists(os.path.join(projects, name, ".git")):
+        return None
+    return "%s/%s" % (name, rel)
+
+
+@functools.lru_cache(maxsize=None)
+def through(key):
+    """A line naming a sibling's file under that repository's root, its variable or its directory name."""
+    name, rel = key.split("/", 1)
+    return re.compile(r"(?:\b%s_ROOT\b|(?<![\w.@+-])%s(?![\w.@+-]))[^\n]*/%s(?![\w.@+-])"
+                      % (re.escape(name.upper().replace("-", "_")), re.escape(name), re.escape(rel)))
 
 
 def read(path):
@@ -144,8 +170,9 @@ def named(names, rel):
     return {n for n in names if "_%s_" % key in "_%s_" % re.sub(r"^(?:test|e2e)_", "", os.path.splitext(n)[0])}
 
 
-def select(top, rels, names, now=None, held=None):
-    """{rel: {"own", "evidence", "fallback"}} (suite basenames) for repo-relative rels among the suite basenames."""
+def select(top, rels, names, now=None, held=None, siblings=()):
+    """{rel: {"own", "evidence", "fallback"}} (suite basenames) for repo-relative rels among the suite basenames;
+    siblings, the rels that are sibling() keys, are held by through() alone."""
     now = time_budget.now_s() if now is None else now
     held = time_budget.read_json(test_catches.ledger_path(), {}) if held is None else held
     folder = os.path.join(top, "tests")
@@ -169,19 +196,23 @@ def select(top, rels, names, now=None, held=None):
 
     def holding(pool, rel):
         key = os.path.basename(rel).split(".")[0]
-        return {n for n, t in pool.items() if (tokens is None or not key or key in tokens[n]) and match(t, rel, 0)}
+        hit = (lambda t: any(through(rel).search(line) for line in lines(t, os.path.basename(rel)))) \
+            if rel in siblings else (lambda t: match(t, rel, 0))
+        return {n for n, t in pool.items() if (tokens is None or not key or key in tokens[n]) and hit(t)}
 
     def direct(rel):
         users = holding(helpers, rel)
+        if rel in siblings:
+            return holding(texts, rel) | {n for n in names if users.intersection(via[n])}
         found = holding(texts, rel) | {n for n in names if users.intersection(via[n])} | named(names, rel)
         if rel.startswith("tests/") and rel.count("/") == 1 and os.path.basename(rel) in helpers:
             found |= {n for n in names if os.path.basename(rel) in via[n]}
         pkg = package(top, rel)
         return found | direct(pkg) if pkg else found
 
-    owns = {rel: direct(rel) | ({os.path.basename(rel)} & set(names)) for rel in rels}
+    owns = {rel: direct(rel) | (set() if rel in siblings else {os.path.basename(rel)} & set(names)) for rel in rels}
     out = {}
-    for rel, users in importers(top, [rel for rel in rels if not owns[rel]]).items():
+    for rel, users in importers(top, [rel for rel in rels if not owns[rel] and rel not in siblings]).items():
         for user in users:
             owns[rel] |= direct(user)
     for rel in rels:
@@ -194,7 +225,7 @@ def select(top, rels, names, now=None, held=None):
             users = {h for h, t in helpers.items() if match(t, rel, 2)}
             naming = {n for n, t in texts.items() if match(t, rel, 2) or users.intersection(via[n])}
             proven |= given.keys() & naming
-        keep = {os.path.basename(rel)} | named(names, rel)
+        keep = set() if rel in siblings else {os.path.basename(rel)} | named(names, rel)
         out[rel] = {k: {n for n in v if n not in zero or n in keep} for k, v in
                     (("own", own), ("evidence", proven), ("fallback", naming if not own and not proven else set()))}
     return out
@@ -204,9 +235,11 @@ def main(argv):
     top, listed = os.path.realpath(argv[0]), argv[1]
     paths = [p.strip() for p in sys.stdin.read().split("\n") if p.strip()]
     names = {os.path.basename(p): p for p in paths}
-    rels = sorted({relative(top, p) for p in read(listed).split("\n") if p.strip()})
+    found = {rel: sibling(top, rel) for rel in {relative(top, p) for p in read(listed).split("\n") if p.strip()}}
+    siblings = {key for key in found.values() if key}
+    rels = sorted({key or rel for rel, key in found.items()})
     chosen = set()
-    for got in select(top, rels, sorted(names)).values():
+    for got in select(top, rels, sorted(names), siblings=siblings).values():
         chosen |= got["own"] | got["evidence"] | got["fallback"]
     sys.stdout.write("".join(names[n] + "\n" for n in sorted(chosen)))
     return 0

@@ -9,12 +9,13 @@
 # test_consistency.sh too when docs/shared-invariants.md names one. Sourced by
 # run-suites.sh (--changed); run, it is tests/affected:
 #   affected-suites.sh --repo <dir> [file...]   (no file: every file changed against HEAD, untracked or
-#                                                committed on this branch since main)
+#                                                committed on this branch since main, and in its sibling worktrees)
 #   affected-suites.sh --repo <dir> --slow-refresh   the slow layer recomputed from the run-suites journal
 
+{
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/worktree-branch.sh"
 # Suites that read live machine state (the real limits store, the real instruction-file export) and so
 # answer about this Mac rather than the code: out of every run unless asked for by name or --all.
-{
 live_suite() {
   case "$1" in
     e2e_surfaces.sh|test_instruction_rates_live.sh) return 0 ;;
@@ -29,10 +30,29 @@ affected_names() { # repo [file...] -> paths, one a line
     { git -C "$repo" diff --name-only HEAD 2>/dev/null
       git -C "$repo" ls-files --others --exclude-standard 2>/dev/null
       base=$(git -C "$repo" merge-base main HEAD 2>/dev/null) && git -C "$repo" diff --name-only "$base" HEAD 2>/dev/null
+      sibling_names "$repo"
     } | sort -u | grep -v '^$'
     return
   fi
   for file in "$@"; do [ -n "$file" ] && printf '%s\n' "$file"; done
+}
+
+# The branch's worktrees in the other sweep repositories: absolute paths of the files it changed there (its commits
+# past main and every night's base, uncommitted, untracked), or with main, of those main changed since it forked.
+sibling_names() { # repo [main]
+  local branch sweep wt file
+  branch=$(linked_worktree_branch "$1")
+  [ -n "$branch" ] || return 0
+  while IFS= read -r sweep; do
+    [ -n "$sweep" ] && wt=$(same_branch_worktree "$sweep" "$branch") && [ "$wt" != "$1" ] || continue
+    if [ "${2:-}" = main ]; then
+      git -C "$wt" log --format= --name-only --no-renames main --not HEAD
+    else
+      git -C "$wt" log --format= --name-only --no-renames HEAD --not main --glob='refs/night/*/base'
+      git -C "$wt" diff --name-only HEAD
+      git -C "$wt" ls-files --others --exclude-standard
+    fi 2>/dev/null | while IFS= read -r file; do [ -z "$file" ] || printf '%s/%s\n' "$wt" "$file"; done
+  done < <(cat "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null)
 }
 
 affected_filter() { # repo paths-file <suite paths -> the suites covering one of the paths
@@ -91,8 +111,8 @@ affected_suites() { # repo [file...] -> suite paths covering the files, sorted a
 affected_overlap() {
   local repo=$1 base=$2 branch_files main_files branch_suites main_suites file
   local -a branch=() upstream=()
-  branch_files=$(git -C "$repo" diff --no-renames --name-only "$base...HEAD") || return 4
-  main_files=$(git -C "$repo" diff --no-renames --name-only "$base..main") || return 4
+  branch_files=$(git -C "$repo" diff --no-renames --name-only "$base...HEAD" && sibling_names "$repo") || return 4
+  main_files=$(git -C "$repo" diff --no-renames --name-only "$base..main" && sibling_names "$repo" main) || return 4
   [ -n "$branch_files" ] && [ -n "$main_files" ] || return 0
   while IFS= read -r file; do branch+=("$file"); done <<<"$branch_files"
   while IFS= read -r file; do upstream+=("$file"); done <<<"$main_files"

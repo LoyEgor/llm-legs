@@ -508,6 +508,39 @@ git -C "$R8" switch -q worker
 assert test "$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap "$base")" = "$R8/tests/test_pair.sh"
 assert_fails bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap missing-ref
 assert_fails bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap
+# A sibling sweep repository's file (absolute or <repo>/<path>) selects the suites naming it under that repo's
+# root, and the branch's worktree there feeds its files to the bare and --overlap forms (2026-10-29: a claude-setup
+# argv.sh change landed without llm-legs' launch-gate suites, and test_statusline_hooks went red on main).
+SIB="$WORK/sib" git_c=(-c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null)
+new_repo "$SIB/legs"
+new_repo "$SIB/claude-setup"
+mkdir -p "$SIB/claude-setup/hooks/lib"
+printf 'parse() { :; }\n' >"$SIB/claude-setup/hooks/lib/parse.sh"
+suite "$SIB/legs" test_gate.sh 'export ARGV_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/parse.sh"'
+printf '. "${CLAUDE_SETUP_ROOT:-$P/x}/hooks/lib/parse.sh"\n' >"$SIB/legs/tests/pin_harness.sh"
+suite "$SIB/legs" test_pin.sh '. "$(dirname "$0")/pin_harness.sh"'
+suite "$SIB/legs" test_plain.sh '. "$HOME/.claude/hooks/lib/parse.sh"'
+for r in legs claude-setup; do
+  git -C "$SIB/$r" add -A && git -C "$SIB/$r" "${git_c[@]}" commit -qm files && git -C "$SIB/$r" branch -M main
+  git -C "$SIB/$r" worktree add -q -b night/sib "$SIB/$r/.claude/worktrees/sib"
+done
+pair="$SIB/legs/tests/test_gate.sh"$'\n'"$SIB/legs/tests/test_pin.sh"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$SIB/legs" "$SIB/claude-setup/hooks/lib/parse.sh")" = "$pair"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$SIB/legs" claude-setup/hooks/lib/parse.sh)" = "$pair"
+LWT="$SIB/legs/.claude/worktrees/sib" CWT="$SIB/claude-setup/.claude/worktrees/sib"
+printf '%s\n' "$SIB/legs" "$SIB/claude-setup" >"$WORK/sweep-repos"
+export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos"
+assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$LWT")"
+printf 'parse() { return 1; }\n' >"$CWT/hooks/lib/parse.sh"
+git -C "$CWT" "${git_c[@]}" commit -qam branch
+pair="$LWT/tests/test_gate.sh"$'\n'"$LWT/tests/test_pin.sh"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$LWT")" = "$pair"
+base=$(git -C "$LWT" rev-parse HEAD)
+assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$LWT" -- --overlap "$base")"
+printf 'parse() { return 2; }\n' >"$SIB/claude-setup/hooks/lib/parse.sh"
+git -C "$SIB/claude-setup" "${git_c[@]}" commit -qam main
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$LWT" -- --overlap "$base")" = "$pair"
+unset NIGHT_RUN_SWEEP_REPOS
 
 # --profile: each suite's shimmed calls land in its entry; without it no shim and no execs key. sleep_s is
 # the time slept: a `sleep 30` killed once it runs (still the sleep at $!) adds nothing near 30, and
