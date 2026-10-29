@@ -74,7 +74,7 @@ before the launch). Classes 2–5 (*): a hand keyword partition of the 79 and 82
 | 0. an audit comes due with nothing to change (suite, CPU, spend) | 18 / 166 | 0.45 / 2.25 % | 959 / 12,850 | its audit's block (10-16) |
 | 1. a ruled-out row raised and ruled out again, nothing new | 16 / 12 | 0.34 / 0.11 % | 309 / 690 | here |
 | 2.* a priced lever measured absent (Speed `opportunity`, `test_hang` lock waits) | 9 / 23 | 0.29 / 0.48 % | 300 / 2,053 | here, Open |
-| 3.* load or noise read as a rise (`regression`, `opportunity`, `floor`) | 4 / 14 | 0.13 / 0.31 % | 57 / 632 | rise-beyond-noise |
+| 3.* load or noise read as a rise (`regression`, `opportunity`, `floor`) | 4 / 14 | 0.13 / 0.31 % | 57 / 632 | closed (86b8a265) |
 | 4.* a log-audit reading of model or chat conduct sent to a fixer | 23 / 7 | 0.18 / 0.10 % | 98 / 138 | open (conduct-gate stopped) |
 | 5.* a landed fix's pre-fix tail still in a 7-day window | 9 / 12 | 0.11 / 0.10 % | 122 / 227 | closed (cf193646, ebf5bde1) |
 | 6. a cause no doctor shows: blind spots added and never built | 27 / 26 added, 5 / 0 closed | | | here |
@@ -97,25 +97,6 @@ Why they come back:
 Reads need section 7 back (How the block runs at night).
 Deep search 10-23, window 10-09…23 (no fixer run after 10-20): non-audit false-alarm share 33.5 % (150 of 448),
 103 of the 150 from `opportunity` and `log_audit`.
-
-### goal rise-beyond-noise: a fix reads slower only past the noise band
-
-Class 3, rule `regression`, decided A / B: 2 / 19; ruled out 0 / 7 (B 0.12 % of spend, 152 wall-min), fixed only in
-the measurer 1 / 8 (0.04 / 0.12 %, 38 / 265), in code 1 / 4, only 05eb by its fix (`test_wait_journal` 4.5 → 19 s).
-10-25: 27 rows `new` (26 `measured slower`, `machine.probe_ms`).
-- Cause, `time_budget.unit_proof`: the median of the first n runs after the night over 1.3 × the n before × load,
-  n ≥ 2, where a median's p95 noise rise is 3.2 (suite_audit); load under 1 (23 of 26) on controls the night's
-  audits sped up; since tests-once the after runs span days (25 of 26); a batch job's ids share its files (8 name
-  suites it never changed). cef6's Close raised none: HEAD raises the 26 before it.
-- Change: slower only when the fastest of the first PROOF_RUNS runs after is ≥ WALL_RISE × the median of the
-  RECENT_RUNS before, after `suite_audit.slowdown` (load on suites the night never names, ≥ 1, else wall beyond CPU);
-  `machine.probe_ms`, load itself, leaves `judge_regressions`.
-- First step: 10-02…09, unchanged suites' fastest-of-5 / median-of-20 under 2 in 95 % of windows; 04e0
-  (`test_worker_run_grok_outcomes` 51 → 100 s) flat at fix^ vs fix on one machine; else stop.
-- Proof, fixed in advance: HEAD's `slower_fixes` vs the new rule, nights e2f7…cef6, at 10-13 12Z, 10-14 08Z / 20Z,
-  10-20 21Z, 10-25 09Z: 2 / 16 / 23 / 33 / 38 → 0 / 1 / 1 / 1 / 1 fixes; the 27 of 10-25 go; 05eb (real) stays.
-- Must not get worse: proven gains and Speed yield equal HEAD's; hooks and stop as HEAD; a suite whose fastest run
-  doubled is raised.
 
 ### goal fix-audit: every landed fix is read again, blind, a week later
 
@@ -192,6 +173,14 @@ Class 7. Of the retro 40, the judge confirmed 10 that were not needed:
   component file (`audit_verdicts` drops the finding's `fix`), so the gate would take all 31 real rows off a fixer;
   by the merge input's `fix`, 19 of the 44 false name no file (not mostly) and 3 real ones none either; `kind` does
   not split them either.
+- rise-beyond-noise (86b8a265): a suite fix reads slower only when the fastest of its first 5 runs after is ≥ 2 × the
+  median of the 20 before, after `suite_audit.slowdown` (load on suites the night never names, ≥ 1, else wall beyond
+  CPU); `machine.probe_ms` left `judge_regressions`. First step: fastest-of-5 / median-of-20 under 2 in 95.1 % of
+  10-02…09 windows (the method that reproduces suite_audit's 0.65 / 0.27 / 3.2); 04e0 flat at fix^ vs fix,
+  interleaved: fastest 34.4 / 34.7 s. Replay of `slower_fixes`, last 7 nights, at 10-13 12Z, 10-14 08Z / 20Z, 10-20
+  21Z, 10-25 09Z: 2 / 16 / 23 / 33 / 38 → 0 / 1 / 1 / 2 / 1: 05eb stays, the 26 `measured slower` of 10-25 and the
+  probe rows of 10-25…26 go; the second at 10-20 is 174d's hook unit (`commit-report.sh` 1424 → 3224 ms/call), kept on
+  HEAD's rule. Gains and hook and stop proofs equal HEAD's at all six instants.
 
 ## Decisions
 
