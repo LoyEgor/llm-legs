@@ -2756,7 +2756,7 @@
           "regressed_at": null,
           "equivalence": {
             "compared": "night_spend.codex_usage's last total_token_usage, the forward whole-file read (refs/night/20261029T163046Z-74c1/base) vs rows_backward",
-            "data": "every local codex rollout (~/.codex-profiles/*/sessions, ~/.codex/sessions): 1779 files, 25036 MB, 10 with no total; run_tokens on codex-1793251697-89381-077c's 368 MB rollout",
+            "data": "every local codex rollout (~/.codex-profiles/<account>/sessions, ~/.codex/sessions): 1779 files, 25036 MB, 10 with no total; run_tokens on codex-1793251697-89381-077c's 368 MB rollout",
             "result": "1779/1779 identical; cpu 53.0 s -> 3.66 s over all; that run: 3133822 both ways, wall 5.5-7.2 s -> 0.7-1.3 s, cpu 0.75 s -> 0.08 s"
           }
         }
@@ -12051,7 +12051,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-29",
       "reviewed_by": "harness-speed-time-slot-20261029T112129Z-6bc8",
-      "note": "2026-10-29 (run 3dc7): the 37 min/day at 16:50Z is the 24 h window: of the journal's run-suites waits, 29 (3510 s, 15 limit) came before llm-legs@1a633c79 landed (13:37Z) and 9 (1002 s) since. Since: 0 direct waits on the count; 8 room waits (888 s), 6 named load at the night's fan-out 17:02-17:11Z (memlogd incident, avail 3880-5967 MB vs the 3548 MB guard, swap 10168 -> 14309 MB): the guard working. Found, not fixed: one fan-out waited 114 s at 4/4 (17:27Z) with room (avail 5.4-5.9 GB, load1 108 < load15 142); fan-out limit waits are 254 s/24 h (22:14Z, 04:40Z, 17:27Z) behind run_suites_slots' ceiling 4, which share/run-suites.sh calls the count measured freeze-safe, so raising it needs a measured trial, not a fix. Machinery: Speed's time/* rows carry ledger null (speed-doctor with_time), so doctor-fix's fixed_before never finds their fixed rows and `repeat:` is refused on every one. The 14 room-limited run-suites waits (1325 s) are the roomguard working and stay. Direct runs (tests/lib/suite-journal.sh) each held a whole fan-out slot for one suite, e.g. wr-split's 10 parallel bash tests/test_worker_run_*.sh at 10-28 05:15Z.",
+      "note": "2026-10-29 (run 3dc7): the 37 min/day at 16:50Z is the 24 h window: of the journal's run-suites waits, 29 (3510 s, 15 limit) came before llm-legs@1a633c79 landed (13:37Z) and 9 (1002 s) since. Since: 0 direct waits on the count; 8 room waits (888 s), 6 named load at the night's fan-out 17:02-17:11Z (memlogd incident, avail 3880-5967 MB vs the 3548 MB guard, swap 10168 -> 14309 MB): the guard working. Found, not fixed: one fan-out waited 114 s at 4/4 (17:27Z) with room (avail 5.4-5.9 GB, load1 108 < load15 142); fan-out limit waits are 254 s/24 h (22:14Z, 04:40Z, 17:27Z) behind run_suites_slots' ceiling 4, which share/run-suites.sh calls the count measured freeze-safe, so raising it needs a measured trial, not a fix. Machinery, fixed: Speed's time/* rows (and every other opportunity row) carried ledger null (speed-doctor with_time), so doctor-fix's fixed_before never found their fixed rows and `repeat:` was refused on every one; the commit after llm-legs@c2ccbaf1 on this branch ('speed-doctor collect gives every opportunity row the id of the ledger row its ident matches') sets it, test_speed_doctor red on the old null. The 14 room-limited run-suites waits (1325 s) are the roomguard working and stay. Direct runs (tests/lib/suite-journal.sh) each held a whole fan-out slot for one suite, e.g. wr-split's 10 parallel bash tests/test_worker_run_*.sh at 10-28 05:15Z.",
       "handoff": null
     },
     {

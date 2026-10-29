@@ -311,8 +311,14 @@ check(floored["selection"] == [] and floored["why_none"].startswith("111 min/day
 refused = dict(copy.deepcopy(gaps), classes_min_day={"locks": 0.3, "refusal": 12.0, "hooks": 40.0},
     refusal_cost={"by_gate_min_day": {"review-flow-gate.sh": 9.0, "write": 0.4}},
     hooks_by_hook_min_day={"hooks/cd-guard.sh": 18.5, "stop/stop-dispatch.sh": 6.0, "hooks/quick.sh": 0.1})
+time_ledger = os.path.join(work, "time-ledger.json")
+with open(time_ledger, "w") as handle:
+    json.dump({"owner": "Harness Doctor", "blind_spots": [], "rows": [
+        {"id": "opportunity:time/gaps", "match": {"rule": "opportunity", "ident": "time/(refusal|locks)"},
+         "status": "open", "fixes": []}]}, handle)
 saved_env, saved = dict(os.environ), module.time_budget.section
-os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-refusal"))
+os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-refusal"),
+                  HARNESS_LEDGER=time_ledger)
 module.time_budget.section = lambda now, write: copy.deepcopy(refused)
 gated = module.collect(False, HI)
 module.time_budget.section = saved
@@ -330,6 +336,10 @@ check(gated.get("status") != "error" and rows["opportunity:refusal/review-flow-g
       "a refusal gap over the worth line ranks through the collector; each gate and hook over it is its own row at "
       "its own minutes, and only the rest of its class stays a time row: %s" % sorted(
           (k, v["opportunity"]["recoverable_min_day"]) for k, v in rows.items() if "time/" in k or "/" in k[12:]))
+check(rows["opportunity:time/refusal"]["ledger"] == "opportunity:time/gaps"
+      and rows["opportunity:hooks/cd-guard.sh"]["ledger"] is None,
+      "an opportunity row carries the id of the ledger row its ident matches, so bin/doctor-fix's fixed_before finds "
+      "a time row's earlier fixes and takes a repeat: exit: %s" % sorted((k, v["ledger"]) for k, v in rows.items()))
 check(all(p["opportunity"]["quality"] == "equivalent" and module.OUTPUT_PROOF in p["opportunity"]["proof"]
           for p in backlog), "every ranked lever is equivalent and its proof demands output equivalence on the replay")
 for bad in ({"component": "chat/x", "lever": "switch Opus to Sonnet", "quality": "equivalent"},

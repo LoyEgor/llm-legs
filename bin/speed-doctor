@@ -1486,6 +1486,10 @@ def collect(write, now):
     problems += adhoc_regressions(adhoc, ledger, now)
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
+    # bin/doctor-fix's fixed_before reads a row's earlier fixes off its ledger id, so an opportunity carries it as a
+    # regression does.
+    for o in opportunities:
+        o["ledger"] = (H.ledger_row(ledger, "opportunity", o["id"][len("opportunity:"):]) or {}).get("id")
     why = {}
     selection = select(opportunities, why)
     coverage = {"days": round(covered, 2), "window_days": WINDOW_D, "backfill_files_done": job["files"] - len(job["todo"]),
