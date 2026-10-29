@@ -11,6 +11,8 @@ asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/out" "$WORK/err" >&2 2>/dev/null; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 export ELEVENLABS_KEYS="$WORK/keys.txt" ELEVENLABS_API_BASE="http://127.0.0.1:9" IMAGE_LEG_LOG="$WORK/legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
+# The shared key state (transcriptions-gpt's keystate) the daemon reads: never the live one.
+export KEY_STATE="$WORK/key-state.json" LIMIT_HITS_LOG="$WORK/hits.jsonl"
 printf 'fixture-key trimmed\n' >"$ELEVENLABS_KEYS"
 el() { python3 "$ROOT/share/elevenlabs_media.py" "$@" >"$WORK/out" 2>"$WORK/err"; }
 python3 -c 'import sys, wave
@@ -156,18 +158,20 @@ pkill -TERM -P $!
 wait $!
 assert jq -e 'select(.tool == "elevenlabs-sfx" and .rc == 143)' "$IMAGE_LEG_LOG" >/dev/null
 
-# The balance skips only a key without the read permission; a revoked or unpaid key exits 1 so the menubar keeps
-# its last reading.
+# The balance skips only a key without the read permission; any other failure is that key's row alone, its last
+# reading plus `error`, never a failed section. A key read less than 300 s ago or held with a known end is not
+# asked again; a read lands in the shared key state.
 assert python3 - "$ROOT/share" "$WORK" <<'PY'
-import contextlib, io, json, sys, threading
+import contextlib, io, json, os, sys, threading, time
 sys.path.insert(0, sys.argv[1])
 import elevenlabs_balance as b
 import elevenlabs_media as m
+from key_state import keystate
 
 b.accounts, b.reserves, b.labels = lambda: {"one": "k1", "two": "k2"}, lambda: {}, lambda: {}
-sub = {"character_count": 5, "character_limit": 10}
-for refused, code, rc in (("missing_permissions", 401, 0), ("invalid_api_key", 401, 1), ("api_key_disabled", 401, 1),
-                          ("paid_plan_required", 402, 1), ("", 401, 1)):
+sub = {"character_count": 5, "character_limit": 10, "next_character_count_reset_unix": int(time.time()) + 86400}
+for refused, code in (("missing_permissions", 401), ("invalid_api_key", 401), ("api_key_disabled", 401),
+                      ("paid_plan_required", 402), ("", 401)):
     def answer(self, method, path, **kwargs):
         if self.account == "two":
             raise self.classify(code, refused, "no")
@@ -175,8 +179,39 @@ for refused, code, rc in (("missing_permissions", 401, 0), ("invalid_api_key", 4
     m.Client.json = b.Client.json = answer
     out = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        assert b.main() == rc, refused
-    assert rc or '"account": "one"' in out.getvalue(), out.getvalue()
+        assert b.main() == 0, refused
+    rows = {r["account"]: r for r in json.loads(out.getvalue())["accounts"]}
+    assert rows["one"]["used"] == 5 and rows["one"]["limit"] == 10 and "error" not in rows["one"], rows
+    assert ("two" not in rows) if refused == "missing_permissions" else (
+        rows["two"]["used"] is None and refused in rows["two"]["error"]), (refused, rows)
+
+asked = []
+def answer(self, method, path, **kwargs):
+    asked.append(self.account)
+    if self.account == "two":
+        raise m.Fail(1, "network: refused")
+    return {"character_count": 7, "character_limit": 10, "next_character_count_reset_unix": int(time.time()) + 86400}
+m.Client.json = b.Client.json = answer
+b.accounts = lambda: {"fresh": "kf", "spent": "ks", "stale": "kt", "two": "k2", "unread": "ku"}
+now = time.time()
+keystate.observe("elevenlabs", "kf", 9, 10, now + 86400, now - 10)
+keystate.observe("elevenlabs", "ks", 0, 10, now + 5 * 86400, now - 1000)
+keystate.observe("elevenlabs", "kt", 9, 10, now + 86400, now - 400)
+keystate.observe("elevenlabs", "k2", 4, 10, now + 86400, now - 400)
+keystate.hold("elevenlabs", "ku", "quota", now + 86400)
+out = io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+    assert b.main() == 0
+rows = {r["account"]: r for r in json.loads(out.getvalue())["accounts"]}
+assert sorted(asked) == ["stale", "two", "unread"], asked
+assert rows["fresh"]["used"] == 1 and "held_until" not in rows["fresh"], rows["fresh"]
+assert rows["spent"]["used"] == 10 and rows["spent"]["why"] == "quota" and rows["spent"]["held_until"] == int(now + 5 * 86400), rows
+assert rows["stale"]["used"] == 7 and keystate.entry("elevenlabs", "kt")["left"] == 3 and rows["stale"]["as_of"] >= int(now), rows
+assert rows["two"]["used"] == 6 and rows["two"]["error"] == "network: refused", rows["two"]
+# A quota hold with no reading behind it is read for its reset; credits left lift it.
+assert rows["unread"]["used"] == 7 and "held_until" not in rows["unread"], rows["unread"]
+os.remove(os.environ["KEY_STATE"])
+b.accounts = lambda: {"one": "k1", "two": "k2"}
 
 both = threading.Barrier(2, timeout=10)
 def answer(self, method, path, **kwargs):
@@ -293,6 +328,114 @@ for first, second, fails, reached in ((m.Fail(4, "plan", "paid_plan_required"), 
         except m.Fail:
             assert fails
     assert seen == reached, seen
+PY
+
+# The shared key state decides the pool with the dictation daemon: a held key is skipped (a pinned one fails at once
+# with the hold's why and end), a busy 429 holds the key for its stated wait and moves on with no sleep on it, a
+# spent quota holds it until the subscription's reset. Only when every key answered busy does the run wait the
+# shortest stated wait (at most 10 s) and try the pool once more; a POST that timed out is never sent again.
+assert python3 - "$ROOT/share" "$WORK" <<'PY'
+import contextlib, http.server, io, json, os, sys, threading, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import elevenlabs_media as m
+from key_state import keystate
+
+m.KEYS = Path(sys.argv[2]) / "shared.txt"
+m.KEYS.write_text("ka alpha\nkb beta reserve=5\n")
+answers, posts, gets = {}, [], []
+
+
+class Fake(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        gets.append(self.headers["xi-api-key"])
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'{"character_count": 1, "character_limit": 100}')
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"] or 0))
+        key = self.headers["xi-api-key"]
+        posts.append(key)
+        status, body, headers = answers.get(key, (200, b"ID3", {}))
+        if status == "slow":
+            time.sleep(1.5)
+            status = 200
+        self.send_response(status)
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+m.API = f"http://127.0.0.1:{server.server_port}"
+sleeps, real_sleep = [], m.time.sleep
+m.time.sleep = sleeps.append
+busy = json.dumps({"detail": {"status": "system_busy", "message": "busy"}}).encode()
+spent = json.dumps({"detail": {"status": "quota_exceeded", "message": "no credits"}}).encode()
+
+
+def run(pin=None, timeout=900):
+    def work(client):
+        client.call("POST", "/v1/sound-generation", body={}, timeout=timeout)
+        return client.account
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            return m.Run("sfx", pin).attempt(work)
+        except m.Fail as error:
+            return error
+
+
+def fresh(**case):
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.environ["KEY_STATE"])
+    answers.clear()
+    answers.update(case)
+    posts.clear()
+    gets.clear()
+    sleeps.clear()
+
+
+now = time.time()
+fresh()
+keystate.hold("elevenlabs", "ka", "quota", now + 3600)
+keystate.observe("elevenlabs", "kb", 50, 100, now + 86400, now - 10)
+assert run() == "beta" and posts == ["kb"] and gets == [], (posts, gets)
+got = run("alpha")
+assert isinstance(got, m.Fail) and got.rc == 3 and "held for quota until" in got.message and posts == ["kb"], got
+
+fresh(ka=(429, busy, {"Retry-After": "7"}))
+assert run() == "beta" and posts == ["ka", "kb"] and sleeps == [], (posts, sleeps)
+held = keystate.held("elevenlabs", "ka")
+assert held["why"] == "rate" and now + 6 < held["until"] < time.time() + 8 and gets == ["kb"], (held, gets)
+
+fresh(ka=(429, spent, {}))
+keystate.observe("elevenlabs", "ka", 10, 100, now + 5 * 86400, now - 1000)
+assert run() == "beta" and posts == ["ka", "kb"] and sleeps == [], posts
+held = keystate.held("elevenlabs", "ka")
+assert held["why"] == "quota" and held["until"] == now + 5 * 86400, held
+
+fresh(ka=(429, busy, {"Retry-After": "30"}), kb=(429, busy, {"Retry-After": "4"}))
+got = run()
+assert isinstance(got, m.Fail) and got.rc == 1 and "busy" in got.message, got
+assert posts == ["ka", "kb", "ka", "kb"] and sleeps == [4.0], (posts, sleeps)
+hits = [json.loads(line) for line in open(os.environ["LIMIT_HITS_LOG"])]
+assert hits[-1]["limit"].endswith("elevenlabs.busy-retries") and hits[-1]["action"] == "retry-exhausted", hits[-1]
+fresh(ka=(429, busy, {"Retry-After": "30"}), kb=(429, busy, {"Retry-After": "30"}))
+run()
+assert sleeps == [10.0], sleeps
+fresh(ka=(429, busy, {}))
+assert run("alpha").rc == 1 and posts == ["ka", "ka"] and sleeps == [10.0], (posts, sleeps)
+
+fresh(ka=("slow", b"ID3", {}))
+m.time.sleep = real_sleep
+got = run(timeout=0.5)
+assert isinstance(got, m.Fail) and got.rc == 1 and posts == ["ka"] and keystate.held("elevenlabs", "ka") is None, (got, posts)
 PY
 
 # The key sync copies the master over each mirror: a key the master dropped leaves, a key added only in the mirror

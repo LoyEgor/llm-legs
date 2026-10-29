@@ -32,6 +32,8 @@ the same order while reading only its own file. A key added by hand to a mirror 
 
 A spent quota exits 3 (`ELEVENLABS_USAGE_LIMIT account=…`) after every line is tried; a key without the
 needed permission, a plan refusal or an invalid key on the last line exits 4 (an owner's step in ElevenLabs → Developers → API keys).
+Holds and balance readings are shared with the dictation daemon (`share/key_state.py`): a held key is skipped, a
+refused one held and passed over at once; only an all-busy pool waits, once, at most 10 s.
 
 ## Kinds
 

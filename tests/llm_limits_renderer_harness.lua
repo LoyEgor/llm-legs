@@ -4883,6 +4883,87 @@ end)()
   end
 end)()
 
+-- API keys in the shared key state: an ElevenLabs key held there is red to the hold's end (a spent quota full), a
+-- refused one "mo  key refused" under an "!", one whose last read failed keeps that reading aged with ⧖. An OpenAI
+-- API key is an `ap` row under its Codex account: a quota hold full red to its end, else an unmeasured scale to the
+-- grant's renewal; a refused key "ap  key refused" under an "!" with no ChatGPT login offered. Each refused key is
+-- one owner action on the menubar; an expired hold is no hold.
+;(function()
+  local now = os.time()
+  local fixture = { schema = 1, vendors = {
+    claude = { available = false },
+    codex = { available = true, accounts = {
+      { account = "apquota", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "apfree", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "apdead", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "apnone", five_hour = bucket(10), weekly = bucket(20) },
+    } },
+    gemini = { available = true, accounts = {} },
+  }, openai_api = { as_of = now - 60, accounts = {
+    { account = "apquota", held_until = now + 12 * 86400, why = "quota", renews_at = now + 12 * 86400 },
+    { account = "apfree", renews_at = now + 20 * 86400 },
+    { account = "apfree", held_until = now - 5, why = "quota" },
+    { account = "apdead", held_until = now + 3600, why = "auth", renews_at = now + 20 * 86400 },
+  } }, elevenlabs = { as_of = now - 60, accounts = {
+    { account = "q", name = "elquota", used = 10, limit = 100, reserve = 0, resets_at = now + 9 * 86400,
+      held_until = now + 9 * 86400, why = "quota" },
+    { account = "e", name = "elerror", used = 50, limit = 100, reserve = 0, resets_at = now + 9 * 86400,
+      as_of = now - 1020, error = "account e: network: refused" },
+    { account = "p", name = "elplan", used = 1, limit = 100, reserve = 0, held_until = now + 3600, why = "plan" },
+    { account = "n", name = "elnever", error = "account n: network: refused" },
+  } } }
+  local day = require("menu-style").day
+  local module = loadModule(fixture, nil, now)
+  local menu = module.menuItems()
+  local function under(account, label)
+    local found = {}
+    for index = accountIndex(menu, account) + 1, #menu do
+      local text = titleText(menu[index])
+      if not text:match("^%s") then break end
+      if text:match("^%s+" .. label .. "  ") then found[#found + 1] = menu[index] end
+    end
+    return found
+  end
+  local function only(rows) return #rows == 1 and rows[1] or { title = "<" .. #rows .. " rows>" } end
+  local function red(item) return redRuns(item.title)[1] == titleText(item) end
+  local quota = only(under("apquota", "ap"))
+  assert(titleText(quota) == string.format("        ap  ▓▓▓▓▓  %4s  %9s", "100%", day(now + 12 * 86400)) and red(quota)
+      and quota.disabled == true,
+    "an OpenAI key held for quota is not a full red ap row to the hold's end: " .. titleText(quota))
+  local plain = under("apfree", "ap")
+  assert(#plain == 2 and #redRuns(plain[1].title) == 0 and #redRuns(plain[2].title) == 0
+      and titleText(plain[1]) == "        ap  ░░░░░     ·  " .. string.format("%9s", day(now + 20 * 86400))
+      and titleText(plain[2]) == "        ap  ░░░░░     ·  " .. string.rep(" ", 9),
+    "a key with no standing hold is not an unmeasured ap row to its renewal (blank without a reset day): "
+      .. (plain[1] and titleText(plain[1]) or "none") .. " | " .. (plain[2] and titleText(plain[2]) or "none"))
+  local dead = under("apdead", "ap")
+  assert(#dead == 1 and titleText(dead[1]) == "        ap  key refused" and red(dead[1])
+      and titleText(accountItem(menu, "apdead")):find("  !", 1, true)
+      and not submenuItem(accountItem(menu, "apdead"), "Log in to ChatGPT web…"),
+    "an OpenAI key refused for auth is not a red \"ap  key refused\" under an \"!\" without a ChatGPT login: "
+      .. (dead[1] and titleText(dead[1]) or "none"))
+  assert(#under("apnone", "ap") == 0 and not titleText(accountItem(menu, "apnone")):find("!"),
+    "a Codex account without an OpenAI key drew an ap row")
+  local function el(name) local index = accountIndex(menu, name); return menu[index], menu[index + 1] end
+  local heldTitle, heldRow = el("elquota")
+  assert(titleText(heldRow) == string.format("        mo  ▓▓▓▓▓  %4s  %9s", "100%", day(now + 9 * 86400)) and red(heldRow)
+      and redRuns(heldTitle.title)[1] == "elquota",
+    "an ElevenLabs key held for quota is not full red to its reset: " .. titleText(heldRow))
+  local errTitle, errRow = el("elerror")
+  assert(titleText(errTitle) == "elerror  17m ago ⧖"
+      and titleText(errRow) == string.format("        mo  ▓▓▓░░  %4s  %9s", "50%", day(now + 9 * 86400))
+      and #redRuns(errRow.title) == 0,
+    "an ElevenLabs key whose read failed lost its last reading or its ⧖: " .. titleText(errTitle) .. " | " .. titleText(errRow))
+  local planTitle, planRow = el("elplan")
+  assert(titleText(planTitle):find("^elplan.*  !$") and titleText(planRow) == "        mo  key refused" and red(planRow),
+    "an ElevenLabs key refused for its plan is not \"mo  key refused\" under an \"!\": " .. titleText(planRow))
+  local _, neverRow = el("elnever")
+  assert(titleText(neverRow) == "        mo  ░░░░░        " .. string.rep(" ", 9),
+    "an ElevenLabs key never read shows a reading: " .. titleText(neverRow))
+  assert(module.ownerActionCount() == 2,
+    "the menubar count is not one per refused API key: " .. tostring(module.ownerActionCount()))
+end)()
+
 -- Suno: right after ElevenLabs, one 1d row per account suno-music saw signed in, read from the gemini-web
 -- account files, and one seen signed out keeps its row with "!" and a red "su  login needed"; the reset column holds the credits left and no unlock count shows (a song with no unlock is
 -- recorded); red when the account cannot make a song (credits under one generation, a standing wall).

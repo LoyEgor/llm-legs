@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import caps_checks  # noqa: E402
 import limit_hit  # noqa: E402
+from key_state import keystate  # noqa: E402
 from spend import read_json  # noqa: E402
 
 API = os.environ.get("ELEVENLABS_API_BASE", "https://api.elevenlabs.io")
@@ -38,6 +39,11 @@ CAPS_PATH = Path(os.environ.get("ELEVENLABS_CAPS", ROOT / "share/image-caps/elev
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{20}$")
 # A voice lives on the account that made it: a miss on one account is not a miss on the next.
 NEXT_ACCOUNT = {"voice_not_found", "voice_missing"}
+VENDOR = "elevenlabs"
+# A balance read this young stands in for a new one (the collector polls every minute).
+READING_FRESH_S = 300
+# When every key answered busy, the run waits the shortest stated wait, at most this, and tries the pool once more.
+BUSY_WAIT_CAP_S = 10.0
 
 
 class Fail(Exception):
@@ -46,6 +52,7 @@ class Fail(Exception):
         self.rc = rc
         self.message = message
         self.status = status
+        self.hold: tuple[str, float] | None = None  # (why, seconds) when the refusal is the key's own
 
 
 class Usage(argparse.ArgumentParser):
@@ -78,6 +85,16 @@ def reserves() -> dict[str, int]:
         match = re.search(r"\breserve=(\d+)\b", line)
         if len(parts) >= 2 and not parts[0].startswith("#") and match:
             found[parts[1]] = int(match.group(1))
+    return found
+
+
+def labels() -> dict[str, str]:
+    found = {}
+    for line in KEYS.read_text().splitlines():
+        parts = line.split()
+        match = re.search(r"\blabel=(\S+)", line)
+        if len(parts) >= 2 and not parts[0].startswith("#") and match:
+            found[parts[1]] = match.group(1)
     return found
 
 
@@ -123,9 +140,11 @@ def error_of(body: bytes) -> tuple[str, str]:
 
 
 class Client:
-    def __init__(self, account: str, key: str):
+    def __init__(self, account: str, key: str, label: str | None = None):
         self.account = account
         self.key = key
+        self.label = label or account
+        self.paid = False  # a POST was answered: moving to another key now would pay twice
 
     def call(self, method: str, path: str, *, query=None, body=None, fields=None, files=None, timeout=900, once=False):
         url = API + path + ("?" + urllib.parse.urlencode(query) if query else "")
@@ -135,21 +154,17 @@ class Client:
             data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
         elif fields is not None or files:
             data, headers["Content-Type"] = multipart(fields or [], files or [])
-        for attempt in range(4):
+        for attempt in range(3):
             request = urllib.request.Request(url, data=data, headers=headers, method=method)
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
-                    return response.read(), {k.lower(): v for k, v in response.headers.items()}
+                    answer = response.read(), {k.lower(): v for k, v in response.headers.items()}
+                self.paid = self.paid or method == "POST"
+                return answer
             except urllib.error.HTTPError as error:
-                status, message = error_of(error.read())
-                if error.code == 429 and attempt < 3 and not once:
-                    time.sleep(3 * (attempt + 1))
-                    continue
-                if error.code == 429 and not once:
-                    limit_hit.hit("elevenlabs.busy-retries", 4, "count", "retry-exhausted",
-                                  f"ElevenLabs {method} {path} on {self.account}: still busy after 4 tries",
-                                  "share/elevenlabs_media.py:for attempt in range(4)")
-                raise self.classify(error.code, status, message) from None
+                raw = error.read()
+                status, message = error_of(raw)
+                raise self.classify(error.code, status, message, raw, dict(error.headers.items())) from None
             except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
                 # A POST that timed out may still be billed and delivered server-side; resending it pays twice.
                 if method == "GET" and attempt < 2 and not once:
@@ -161,29 +176,55 @@ class Client:
                 raise Fail(1, f"network: {error}") from None
         raise Fail(1, "unreachable")
 
-    def classify(self, code: int, status: str, message: str) -> Fail:
+    def classify(self, code: int, status: str, message: str, raw: bytes = b"", headers: dict | None = None) -> Fail:
+        """A refusal of the key itself carries the shared key state's (why, seconds) in `hold`; a missing permission
+        refuses one endpoint, not the key, and any other failure says nothing about it."""
         text = f"HTTP {code} {status}: {message}".strip()
         if status in ("quota_exceeded", "insufficient_credits") or "quota" in status:
-            return Fail(3, f"ELEVENLABS_USAGE_LIMIT account={self.account} ({message})")
-        if status == "paid_plan_required" or code == 402:
-            return Fail(4, f"account {self.account}: {text} — its plan does not allow this", status)
-        if status in ("missing_permissions", "invalid_api_key", "api_key_disabled") or code == 401:
-            return Fail(4, f"account {self.account}: {text} — the owner fixes this key in ElevenLabs → Developers → API keys",
+            fail = Fail(3, f"ELEVENLABS_USAGE_LIMIT account={self.account} ({message})")
+        elif status == "paid_plan_required" or code == 402:
+            fail = Fail(4, f"account {self.account}: {text} — its plan does not allow this", status)
+        elif status in ("missing_permissions", "invalid_api_key", "api_key_disabled") or code == 401:
+            fail = Fail(4, f"account {self.account}: {text} — the owner fixes this key in ElevenLabs → Developers → API keys",
                         status)
-        if code == 429:
-            return Fail(1, f"account {self.account} busy after retries: {text}")
-        return Fail(1, f"account {self.account}: {text}")
+            if status == "missing_permissions":
+                return fail
+        elif code == 429:
+            fail = Fail(1, f"account {self.account} busy: {text}")
+        else:
+            return Fail(1, f"account {self.account}: {text}")
+        why, seconds = keystate.classify(code, raw, headers)
+        fail.hold = (why, seconds) if why else None
+        return fail
 
     def json(self, method: str, path: str, **kwargs):
         raw, _ = self.call(method, path, **kwargs)
         return json.loads(raw)
 
+    def subscription(self, timeout=20) -> tuple[int, int]:
+        """(used, limit) from a subscription read, written to the shared key state."""
+        started = time.time()
+        sub = self.json("GET", "/v1/user/subscription", timeout=timeout)
+        try:
+            used, limit = int(sub["character_count"]), int(sub["character_limit"])
+        except (KeyError, ValueError, TypeError) as error:
+            raise Fail(1, f"account {self.account}: unreadable subscription ({error!r})") from None
+        keystate.observe(VENDOR, self.key, limit - used, limit, sub.get("next_character_count_reset_unix"), started,
+                         label=self.label)
+        return used, limit
+
     def balance(self) -> tuple[int, int] | None:
         try:
-            sub = self.json("GET", "/v1/user/subscription", timeout=20)
-            return int(sub["character_count"]), int(sub["character_limit"])
-        except (Fail, KeyError, ValueError):
+            return self.subscription()
+        except (Fail, ValueError):
             return None
+
+    def reading(self) -> tuple[int, int] | None:
+        """(used, limit): the shared key state's reading while it is younger than READING_FRESH_S, else a new one."""
+        found = keystate.entry(VENDOR, self.key)
+        if time.time() - found.get("as_of", 0) < READING_FRESH_S and found.get("left") is not None and found.get("limit"):
+            return found["limit"] - found["left"], found["limit"]
+        return self.balance()
 
 
 # ---------------------------------------------------------------- files
@@ -269,6 +310,14 @@ def text_arg(args) -> str:
 # ---------------------------------------------------------------- run frame
 
 
+def held_fail(account: str, found: dict) -> Fail:
+    why = found.get("why") or "?"
+    text = f"account={account} is held for {why} until {time.strftime('%Y-%m-%d %H:%M', time.localtime(found['until']))}"
+    if why == keystate.QUOTA:
+        return Fail(3, f"ELEVENLABS_USAGE_LIMIT {text}")
+    return Fail(4 if why in (keystate.AUTH, keystate.PLAN) else 1, text)
+
+
 class Run:
     def __init__(self, kind: str, account_pin: str | None):
         self.kind = kind
@@ -282,27 +331,61 @@ class Run:
         self.lines: list[str] = []
 
     def attempt(self, work):
-        last: Fail | None = None
-        floors = reserves()
-        for account in self.pool:
-            self.client = Client(account, accounts()[account])
-            if account in floors and not self.dry:
-                balance = self.client.balance()
-                left = balance[1] - balance[0] if balance else None
-                if left is None or left <= floors[account]:
-                    last = Fail(3, f"ELEVENLABS_USAGE_LIMIT account={account} is at the key owner's floor: "
-                                   f"{left if left is not None else 'unknown'} credits left, reserve {floors[account]}")
-                    if account != self.pool[-1]:
-                        print(f"elevenlabs-{self.kind}: {last.message}; next account", file=sys.stderr)
+        """Spends the pool in key-file order, skipping a key the shared key state holds. A refused key is held there
+        (a spent quota until the subscription's reset when a reading knows it, else for the wait classify reads)
+        and the next key is tried at once; only when every key answered busy does the run wait, once."""
+        keys, floors, names = accounts(), reserves(), labels()
+        busy: dict[str, float] = {}
+        for again in (False, True):
+            last: Fail | None = None
+            refused_busy: dict[str, float] = {}
+            for account in self.pool:
+                key = keys[account]
+                found = keystate.held(VENDOR, key)
+                if found and not (again and account in busy and found.get("why") == keystate.RATE):
+                    last = held_fail(account, found)
+                    self.next_account(last, account)
                     continue
-            try:
-                return work(self.client)
-            except Fail as error:
-                if error.rc not in (3, 4) and error.status not in NEXT_ACCOUNT:
-                    raise
-                last = error
-                print(f"elevenlabs-{self.kind}: {error.message}; next account", file=sys.stderr)
+                self.client = Client(account, key, names.get(account))
+                if account in floors and not self.dry:
+                    balance = self.client.reading()
+                    left = balance[1] - balance[0] if balance else None
+                    if left is None or left <= floors[account]:
+                        last = Fail(3, f"ELEVENLABS_USAGE_LIMIT account={account} is at the key owner's floor: "
+                                       f"{left if left is not None else 'unknown'} credits left, reserve {floors[account]}")
+                        self.next_account(last, account)
+                        continue
+                try:
+                    return work(self.client)
+                except Fail as error:
+                    if error.hold:
+                        why, seconds = error.hold
+                        reset = keystate.entry(VENDOR, key).get("reset_at") or 0
+                        until = reset if why == keystate.QUOTA and reset > time.time() else time.time() + seconds
+                        keystate.hold(VENDOR, key, why, until, label=self.client.label)
+                        if why == keystate.RATE:
+                            refused_busy[account] = seconds
+                    # A POST already answered was billed: another key would pay for the same work again.
+                    if self.client.paid or (error.rc not in (3, 4) and error.status not in NEXT_ACCOUNT and not error.hold):
+                        raise
+                    last = error
+                    self.next_account(error, account)
+            if len(refused_busy) < len(self.pool):
+                break
+            if again:
+                limit_hit.hit("elevenlabs.busy-retries", 2, "count", "retry-exhausted",
+                              f"ElevenLabs {self.kind}: every key still busy after a wait",
+                              "share/elevenlabs_media.py:for again in (False, True)")
+                break
+            busy = refused_busy
+            wait = min(BUSY_WAIT_CAP_S, *busy.values())
+            print(f"elevenlabs-{self.kind}: every key is busy; trying them again in {wait:.0f} s", file=sys.stderr)
+            time.sleep(wait)
         raise last or Fail(3, "ELEVENLABS_USAGE_LIMIT")
+
+    def next_account(self, error: Fail, account: str) -> None:
+        if account != self.pool[-1]:
+            print(f"elevenlabs-{self.kind}: {error.message}; next account", file=sys.stderr)
 
     def cost(self, headers: dict) -> None:
         for name in ("character-cost", "x-character-count"):
@@ -327,7 +410,7 @@ class Run:
 
     def finish(self) -> None:
         assert self.client is not None
-        after = self.client.balance()
+        after = self.client.reading()
         if self.cost_seen:
             credits = str(self.cost_header)
         else:
@@ -844,7 +927,13 @@ def k_dub(args, run: Run) -> None:
         print(f"elevenlabs-dub: started {dubbing}, expected {job.get('expected_duration_sec')} s", file=sys.stderr)
         deadline = time.time() + c["timeout_s"]
         while True:
-            state = client.json("GET", f"/v1/dubbing/{dubbing}", timeout=30)
+            try:
+                state = client.json("GET", f"/v1/dubbing/{dubbing}", timeout=30)
+            except Fail as error:
+                # The job is paid and lives on this key: a busy poll waits for the next one, within the deadline.
+                if not error.hold or error.hold[0] != keystate.RATE or time.time() > deadline:
+                    raise
+                state = {}
             if state.get("status") == "dubbed":
                 break
             if state.get("status") == "failed":

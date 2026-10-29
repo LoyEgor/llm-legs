@@ -176,17 +176,17 @@
     "normal": "Rare; a crashed fixer chat."
   },
   "elevenlabs.busy-retries": {
-    "value": 4,
+    "value": 2,
     "unit": "count",
-    "where": "share/elevenlabs_media.py:138",
+    "where": "share/elevenlabs_media.py:339",
     "set_by": "chat fa460994",
-    "why": "An ElevenLabs 429 busy clears in seconds; 4 tries with growing sleeps bound the wait.",
+    "why": "A busy key is held for its stated wait and the next key tried; only when every key answered busy does the run wait the shortest stated wait (at most 10 s) and try the pool once more.",
     "normal": "Rare; clusters mean the plan's concurrency is full."
   },
   "elevenlabs.timeout": {
     "value": 900,
     "unit": "s",
-    "where": "share/elevenlabs_media.py:130",
+    "where": "share/elevenlabs_media.py:149",
     "set_by": "night a9e29da0",
     "why": "The longest generation answers within minutes; balance reads pass 10 s.",
     "normal": "Rare; a timed-out POST may still be billed server-side."
@@ -538,7 +538,7 @@
   "llm-limits.elevenlabs-timeout": {
     "value": 30,
     "unit": "s",
-    "where": "llm-limits.sh:1877",
+    "where": "llm-limits.sh:1866",
     "set_by": "chat 5203b2b7",
     "why": "The ElevenLabs balance read is one GET per key in parallel; 30 s bounds the whole section.",
     "normal": "Rare."
@@ -558,6 +558,14 @@
     "set_by": "worker 0bb99a68",
     "why": "Rotating a grok token is one CLI call; 30 s means it hung.",
     "normal": "Rare."
+  },
+  "llm-limits.openai-api-timeout": {
+    "value": 30,
+    "unit": "s",
+    "where": "llm-limits.sh:1874",
+    "set_by": "worker",
+    "why": "The OpenAI API key rows read two local files; the ElevenLabs section's bound, never expected to bind.",
+    "normal": "Never."
   },
   "llm-refresh.collector-timeout": {
     "value": 1800,

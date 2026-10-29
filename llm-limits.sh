@@ -1867,6 +1867,14 @@ elevenlabs=''
   { [ "$?" -ne 124 ] || limit_hit llm-limits.elevenlabs-timeout 30 s kill "the ElevenLabs balance read: its section is missing this pass" \
       'llm-limits.sh:run_bounded 30 python3 "$script_dir/share/elevenlabs_balance.py"'
     elevenlabs=''; }
+# OpenAI API keys: the key file and the shared key state only (no network), shown under their Codex accounts.
+openai_api=''
+openai_keys=${OPENAI_KEYS:-$HOME/.config/openai/keys.txt}
+[ ! -e "${openai_keys/#\~/$HOME}" ] ||
+  openai_api=$(run_bounded 30 python3 "$script_dir/share/openai_api_keys.py" 2>/dev/null) ||
+  { [ "$?" -ne 124 ] || limit_hit llm-limits.openai-api-timeout 30 s kill "the OpenAI API key read: its rows are missing this pass" \
+      'llm-limits.sh:run_bounded 30 python3 "$script_dir/share/openai_api_keys.py"'
+    openai_api=''; }
 
 if [ "$write_cache" -eq 1 ]; then
   if ! mkdir -p "$(dirname "$cache")"; then
@@ -1983,6 +1991,7 @@ fi
 
 # A failed read keeps the previous reading: its as_of ages on the menubar instead of the rows vanishing.
 [ -n "$elevenlabs" ] || elevenlabs=$(jq -c '.elevenlabs // null' < <(printf '%s\n' "$previous_cache"))
+[ -n "$openai_api" ] || openai_api=$(jq -c '.openai_api // null' < <(printf '%s\n' "$previous_cache"))
 
 # OpenCode Go publishes no usage endpoint, so there is no percentage to collect and never will be:
 # an account has exactly two knowable states, a refusal the gateway stated and the last completion
@@ -2093,7 +2102,8 @@ refresh_heartbeat=$(jq -cn --arg tick "$refresh_last_tick" --arg awake "$refresh
 
 if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$experiments_json" --argjson claude "$claude" \
   --argjson codex "$codex" --argjson gemini "$gemini" --argjson grok "$grok" \
-  --argjson opencode "$opencode" --argjson elevenlabs "$elevenlabs" --argjson now "$now_epoch" \
+  --argjson opencode "$opencode" --argjson elevenlabs "$elevenlabs" --argjson openai_api "$openai_api" \
+  --argjson now "$now_epoch" \
   --argjson previous "$previous_cache" --argjson refresh "$refresh" --arg refresh_account "$refresh_account" \
   --argjson claude_attempted "$claude_refresh_attempted" --argjson codex_attempted "$codex_refresh_attempted" \
   --argjson gemini_attempted "$gemini_refresh_attempted" --argjson grok_attempted "$grok_refresh_attempted" \
@@ -2451,6 +2461,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   # anything to say about it, and a pass that touched it would be inventing a reading.
   | .vendors.opencode = $opencode
   | .elevenlabs = $elevenlabs
+  | .openai_api = $openai_api
   # Last of all, and after the merge above: a parked vendor collected nothing this run, so any
   # entry left here came from the previous snapshot, and every surface would read it as a live
   # measurement of a vendor nobody is polling. Absence is the whole interface — the same one a leg

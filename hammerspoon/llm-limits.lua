@@ -403,27 +403,6 @@ local function appendOpenCode(menu, limits, paused)
   end
 end
 
--- The reserve is the key owner's floor: only limit - reserve is ours, so the bar fills over that share.
-local function appendElevenLabs(menu, limits)
-  local block = limits and type(limits.elevenlabs) == "table" and limits.elevenlabs
-  local accounts = block and type(block.accounts) == "table" and block.accounts or {}
-  if #accounts == 0 then return end
-  table.insert(menu, { title = infoTitle("ElevenLabs") })
-  local age = formatAccountAge(block.as_of)
-  for _, account in ipairs(accounts) do
-    local used, limit = tonumber(account.used), tonumber(account.limit)
-    local share = limit and limit - (tonumber(account.reserve) or 0)
-    local pct = used and share and (share > 0 and math.min(100, used / share * 100) or 100)
-    local atLimit = pct ~= nil and pct >= 100
-    table.insert(menu, { title = accountTitle(account.name or account.account, age, atLimit) })
-    table.insert(menu, {
-      title = rowTitle("", "mo", { effective_pct = pct, resets_at = account.resets_at }, false, atLimit),
-      disabled = true,
-    })
-  end
-  table.insert(menu, { title = "-" })
-end
-
 local function windowAbsent(bucket)
   return bucket == nil or (type(bucket) == "table"
     and bucket.used_pct == nil and bucket.used_percentage == nil and bucket.resets_at == nil
@@ -1201,17 +1180,102 @@ local function geminiMediaState(roster, now)
   return state
 end
 
+-- API keys in the shared key state (transcriptions-gpt's keystate, read by the collector): a hold is the store row's
+-- held_until/why while it lasts; an auth or plan hold is a refused key, an owner action.
+function owner.heldWhy(row, now)
+  local untilEpoch = tonumber(row.held_until)
+  return untilEpoch and untilEpoch > now and row.why or nil, untilEpoch
+end
+
+function owner.keyRefused(row, now)
+  local why = owner.heldWhy(row, now)
+  return why == "auth" or why == "plan"
+end
+
+-- The store's openai_api rows (share/openai_api_keys.py) whose key line names this Codex account.
+function owner.openaiKeys(limits, acct)
+  local block = type(limits) == "table" and type(limits.openai_api) == "table" and limits.openai_api
+  local found = {}
+  for _, row in ipairs(block and type(block.accounts) == "table" and block.accounts or {}) do
+    if type(row) == "table" and row.account == acct then found[#found + 1] = row end
+  end
+  return found
+end
+
+-- An `ap` row per OpenAI API key, in the weekly row's columns. No spend reading exists: a quota hold is a full red bar
+-- to its end, any other state an unmeasured scale to the credit grant's renewal; a refused key is its owner row.
+function owner.apRows(limits, acct, now)
+  local rows = {}
+  for _, key in ipairs(owner.openaiKeys(limits, acct)) do
+    local why, untilEpoch = owner.heldWhy(key, now)
+    local renews = tonumber(key.renews_at)
+    if why == "quota" then
+      rows[#rows + 1] = { disabled = true,
+        title = rowTitle("", "ap", { effective_pct = 100, resets_at = untilEpoch }, false, true) }
+    elseif not owner.keyRefused(key, now) then
+      -- %4s pads bytes and the dot is two: three spaces keep it under the percent column's last cell.
+      rows[#rows + 1] = { disabled = true,
+        title = rowTitle("", "ap", { resets_at = renews }, false, false, false, { pct = "   ·", reset = not renews and "" or nil }) }
+    end
+  end
+  return rows
+end
+
+-- A ChatGPT web login is what the account's submenu offers; a refused API key is fixed on the OpenAI platform.
+function owner.loginNeeded(needs)
+  for _, need in ipairs(needs) do
+    if need.label ~= "ap" then return true end
+  end
+  return false
+end
+
 -- Only an account with a file in the web store: none means Egor declined the web route at `add`.
-function owner.accountNeeds(vendorKey, acct, geminiMedia)
+function owner.accountNeeds(vendorKey, acct, geminiMedia, limits)
   if vendorKey == "claude" then return owner.browseNeeds(acct) end
   if vendorKey == "codex" then
     local dir = owner.chatgptWebDir()
     local meta = readJsonTable(dir .. "/accounts/" .. acct .. ".json")
-    return meta and owner.webNeeds(meta, owner.fileExists(dir .. "/profiles/" .. acct .. "/Default/Cookies"), "im")
+    local needs = meta and owner.webNeeds(meta, owner.fileExists(dir .. "/profiles/" .. acct .. "/Default/Cookies"), "im")
       or {}
+    for _, key in ipairs(owner.openaiKeys(limits, acct)) do
+      if owner.keyRefused(key, os.time()) then
+        needs[#needs + 1] = { label = "ap", text = "key refused" }
+        break
+      end
+    end
+    return needs
   end
   local media = vendorKey == "gemini" and geminiMedia[acct]
   return media and media.needs or {}
+end
+
+-- The reserve is the key owner's floor: only limit - reserve is ours, so the bar fills over that share. A key the
+-- shared key state holds is red to the hold's end (a spent quota full), a refused one is "mo  key refused" under an
+-- "!"; a key whose last read failed keeps its last reading, aged with ⧖.
+local function appendElevenLabs(menu, limits)
+  local block = limits and type(limits.elevenlabs) == "table" and limits.elevenlabs
+  local accounts = block and type(block.accounts) == "table" and block.accounts or {}
+  if #accounts == 0 then return end
+  table.insert(menu, { title = infoTitle("ElevenLabs") })
+  local now = os.time()
+  for _, account in ipairs(accounts) do
+    local used, limit = tonumber(account.used), tonumber(account.limit)
+    local share = limit and limit - (tonumber(account.reserve) or 0)
+    local pct = used and share and (share > 0 and math.min(100, used / share * 100) or 100)
+    local why, heldUntil = owner.heldWhy(account, now)
+    local refused = owner.keyRefused(account, now)
+    local atLimit = why ~= nil or (pct ~= nil and pct >= 100)
+    local age = lateAge(formatAccountAge(account.as_of or block.as_of), account.error ~= nil)
+    table.insert(menu, { title = accountTitle(account.name or account.account, age, atLimit, refused) })
+    if refused then
+      for _, row in ipairs(owner.needRows({{ label = "mo", text = "key refused" }})) do table.insert(menu, row) end
+    else
+      local bucket = { effective_pct = why == "quota" and 100 or pct, resets_at = why and heldUntil or account.resets_at }
+      local columns = (used == nil and not why) and { pct = "", reset = "" } or nil
+      table.insert(menu, { title = rowTitle("", "mo", bucket, false, atLimit, false, columns), disabled = true })
+    end
+  end
+  table.insert(menu, { title = "-" })
 end
 
 -- Suno, after ElevenLabs: one 1d row per account suno-music has seen signed in, read from the same
@@ -1282,7 +1346,7 @@ function M.ownerActionCount()
         local media = entry.key == "gemini" and geminiMediaState(roster, now) or {}
         for _, block in ipairs(blocks) do
           if (entry.key ~= "gemini" and (blockAuthNeeded(entry.key, block) or block.needs_user_entry == true))
-              or #owner.accountNeeds(entry.key, block.account, media) > 0 then
+              or #owner.accountNeeds(entry.key, block.account, media, limits) > 0 then
             count = count + 1
           end
         end
@@ -1295,6 +1359,10 @@ function M.ownerActionCount()
     if meta.suno_signed_in ~= nil and #owner.webNeeds(meta, meta.suno_signed_in ~= false, "su", "suno") > 0 then
       count = count + 1
     end
+  end
+  local eleven = type(limits) == "table" and type(limits.elevenlabs) == "table" and limits.elevenlabs.accounts
+  for _, account in ipairs(type(eleven) == "table" and eleven or {}) do
+    if type(account) == "table" and owner.keyRefused(account, now) then count = count + 1 end
   end
   if owner.telegramLoginNeeded() then count = count + 1 end
   owner.countCache = { at = now, count = count }
@@ -3343,7 +3411,7 @@ local function buildMenuItems()
           local enabled = poolStateFor(entry.key, acct, block.enabled ~= false)
           local authStatus = type(block.auth) == "table" and block.auth.status or nil
           local authNeeded = blockAuthNeeded(entry.key, block)
-          local ownerNeeds = isAccountRows and owner.accountNeeds(entry.key, acct, geminiMedia) or {}
+          local ownerNeeds = isAccountRows and owner.accountNeeds(entry.key, acct, geminiMedia, limits) or {}
           local userEntry = block.needs_user_entry == true or #ownerNeeds > 0
           local accountAge, accountAgeAlarm, untrusted = accountAgeText(block.as_of,
             isAccountRows and late[acct], not authNeeded and staleAfter or nil,
@@ -3465,7 +3533,7 @@ local function buildMenuItems()
                 })
               end
               -- First, as the step the "!" asks for; Gemini's Log in to Flow… already stands in its menu.
-              local ownerLogin = #ownerNeeds > 0 and accountRow.menu
+              local ownerLogin = owner.loginNeeded(ownerNeeds) and accountRow.menu
                 and ({ codex = { title = "Log in to ChatGPT web…", fn = function() M.loginChatgptWeb(acct) end },
                   claude = { title = "Enroll browser…", fn = function() M.enrollBrowser(acct) end } })[entry.key]
               if ownerLogin then table.insert(accountRow.menu, 1, ownerLogin) end
@@ -3557,6 +3625,9 @@ local function buildMenuItems()
             for _, mediaRow in ipairs(geminiMediaRows(geminiMedia[acct])) do
               table.insert(menu, mediaRow)
             end
+          end
+          if isCodexAccounts then
+            for _, apRow in ipairs(owner.apRows(limits, acct, mediaNow)) do table.insert(menu, apRow) end
           end
           for _, needRow in ipairs(owner.needRows(ownerNeeds)) do table.insert(menu, needRow) end
           if isAccountRows then

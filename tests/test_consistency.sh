@@ -3448,6 +3448,17 @@ assert grep -Fq 'doc["index_by_day"], current = index_history(now, write)' "$ROO
 assert grep -Fq '"index_by_day", "levels") if k in speed' "$ROOT/bin/harness-doctor"
 assert grep -Fq 'metrics.index_by_day or {}' "$ROOT/hammerspoon/doctors.lua"
 assert doc_has 'an unmeasured date is a blank cell, never an invented bar'
+
+# API-key rows in the store: share/elevenlabs_balance.py and share/openai_api_keys.py write held_until/why (and
+# error) from transcriptions-gpt's keystate, imported at one site; the menu reads the same names.
+assert grep -Fq 'out.update(held_until=int(hold["until"]), why=hold.get("why"))' "$ROOT/share/elevenlabs_balance.py"
+assert grep -Fq '"held_until": int(hold["until"]) if hold else None,' "$ROOT/share/openai_api_keys.py"
+assert grep -Fq 'local untilEpoch = tonumber(row.held_until)' "$HAMMER"
+assert grep -Fq 'return untilEpoch and untilEpoch > now and row.why or nil, untilEpoch' "$HAMMER"
+assert grep -Fq 'type(limits.openai_api) == "table"' "$HAMMER"
+assert grep -Fq '| .openai_api = $openai_api' "$LLMLIMITS"
+assert eq "$(grep -rl 'from transcriber import keystate' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" | sed "s|$ROOT/||")" share/key_state.py
+assert doc_has '| eo | API-key state |'
 fi
 
 suite_shard_pass "$asserts"

@@ -820,6 +820,21 @@ el_collect() { # balance [keys-file]
   || fail "the ElevenLabs balance was read under the store lock, holding every other writer behind its network calls"
 [ "$(grep -c elevenlabs "$WORK/python-runs")" = 2 ] \
   || fail "a poll started more than one Python for ElevenLabs: $(tr '\n' ' ' <"$WORK/python-runs")"
+# OpenAI API keys: rows from the key file and the shared key state (no network); a failed read keeps the last rows,
+# and no key file starts no Python for them.
+printf 'sk-fixture-held acct1 label=main reset_day=11\n# sk-fixture-note acct3\nsk-fixture-free acct2\n' >"$WORK/openai-keys"
+KEY_STATE="$WORK/openai-key-state.json" python3 -c 'import sys, time; sys.path.insert(0, sys.argv[1])
+from key_state import keystate; keystate.hold("openai", "sk-fixture-held", "quota", time.time() + 3600)' "$ROOT/share"
+oa_collect() { # keys-file
+  PATH="$EL_BIN:$PATH" HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" KEY_STATE="$WORK/openai-key-state.json" \
+    OPENAI_KEYS="$1" ELEVENLABS_KEYS="$WORK/no-elevenlabs-keys" bash "$SCRIPT" --json \
+    | jq -c '[.openai_api.accounts[] | [.account, .label, .why, (.held_until | type), (.renews_at | type)]]'
+}
+oa_rows='[["acct1","main","quota","number","number"],["acct2",null,null,"null","null"]]'
+[ "$(oa_collect "$WORK/openai-keys")" = "$oa_rows" ] || fail "the OpenAI API key rows are wrong: $(oa_collect "$WORK/openai-keys")"
+: >"$WORK/python-runs"
+[ "$(oa_collect "$WORK/no-openai-keys")" = "$oa_rows" ] || fail "a missing OpenAI key file dropped the previous rows"
+! grep -q openai "$WORK/python-runs" || fail "the collector started Python for OpenAI keys with no key file"
 [ ! -s "$WORK/discarded-dates" ] || fail "a date ran only to be discarded: $(head -3 "$WORK/discarded-dates")"
 grep -qF '[+-][0-9]{2})([0-9]{2})$' "$WORK/sed-runs" 2>/dev/null && fail "a timestamp forked sed for its zone colon"
 echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract including vendor pin (*_profile=*) vs account pin, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, the same for a removed Codex main (menubar flag, passive collects, table and plain, the vendor stating its removal when nothing named is left, undone by deleting the marker), a paused vendor absent from the store and every render path with its collector never run, the ElevenLabs balance read outside the store lock, missing exit 3"
