@@ -177,4 +177,73 @@ assert test -z "$(harness_rows)"
 printf 'claudeb\tmain\t50\tok\ncodex\tmain\t20\toff\n' >"$WORK/picks"
 assert test "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import fix_audit; print(fix_audit.reader("claude"))' "$ROOT/share")" = "('claudeb', 'opus')"
 
-printf 'PASS: %s asserts; fixer commits map to their findings by round and position (a round-only commit to all its fixed findings), the weekly read is blind, outside the judge family or Opus, and once a week, apply records verdicts, a false fix raises a Harness row until its revert lands\n' "$asserts"
+# Two batches: two readers at once, each in its own workdir off the repo (worker-run refuses a second worker in a
+# held workdir), a reader that left items unread is no read for read or apply, and a rerun reads only that batch.
+cat >"$WORK/worker-run-held" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+  start)
+    printf '%s\n' "$*" >>"$FIX_AUDIT_DIR/../starts-held"
+    while [ $# -gt 0 ]; do case $1 in --brief) brief=$2 ;; --workdir) workdir=$2 ;; esac; shift; done
+    if grep -qxF "$workdir" "$FIX_AUDIT_DIR/../held" 2>/dev/null; then
+      printf 'run x still works in %s; a second worker there would edit under it\n' "$workdir" >&2; exit 4
+    fi
+    printf '%s\n' "$workdir" >>"$FIX_AUDIT_DIR/../held"
+    out=$(sed -n 's/^Write \(.*\), tab-separated.*/\1/p' "$brief")
+    printf 'item\tverdict\tconfidence\treason\tevidence\n' >"$out"
+    if ! grep -qxF "$brief" "$FIX_AUDIT_DIR/../fail-briefs"; then
+      for item in $(sed -n 's/^Your items are .* for NN in \(.*\)\. Each packet gives:$/\1/p' "$brief"); do
+        printf '%s\tneeded\thigh\tr\tapp.py:1\n' "$item" >>"$out"
+      done
+    fi
+    printf 'RUN: reader-%s\n' "$RANDOM" ;;
+  wait) printf 'STATUS: done\n' ;;
+esac
+EOF
+chmod +x "$WORK/worker-run-held"
+k="$FIX_AUDIT_DIR/2026-01-05-key"
+python3 - "$ROOT/share" "$k" <<'EOF'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import fix_audit
+key_dir, folder = sys.argv[2], sys.argv[2][:-4]
+os.makedirs(key_dir)
+chunks = []
+for n, items in ((1, ["01"]), (2, ["02"])):
+    out, path = os.path.join(folder, "verdicts-%d.tsv" % n), os.path.join(key_dir, "brief-%d" % n)
+    with open(path, "w") as handle:
+        handle.write(fix_audit.brief(items, os.path.join(folder, "packets", "items"), out))
+    chunks.append({"judge": "claude", "items": items, "brief": path, "out": out})
+fix_audit.write_json(os.path.join(key_dir, "key.json"), {"items": {"01": {"id": "r/F0", "net_lines": 0},
+                                                                  "02": {"id": "r/F1", "net_lines": 0}}, "chunks": chunks})
+fix_audit.write_json(os.path.join(os.path.dirname(key_dir), "ledger-held.json"), {"rows": [{"id": "r/F0"}, {"id": "r/F1"}]})
+EOF
+applied() { # -> "<recorded> <unread> <read days>" of an apply of $k on the fixture ledger
+  python3 - "$ROOT/share" "$k" <<'EOF'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import fix_audit
+path = os.path.join(os.path.dirname(sys.argv[2]), "ledger-held.json")
+ledger = fix_audit.read_json(path, {})
+count, unread = fix_audit.apply(ledger, sys.argv[2])
+fix_audit.write_json(path, ledger)
+print(count, unread, ",".join(ledger.get("read") or ["-"]))
+EOF
+}
+printf '%s\n' "$k/brief-2" >"$WORK/fail-briefs"
+out=$(FIX_AUDIT_WORKER_RUN="$WORK/worker-run-held" fa read "$k") || fail "held read: $out"
+workdirs=$(sed -n 's/.* --workdir \([^ ]*\).*/\1/p' "$WORK/starts-held")
+assert test "$(wc -l <<<"$workdirs" | tr -d ' ')" = 2
+assert test "$(sort -u <<<"$workdirs" | wc -l | tr -d ' ')" = 2
+assert_not grep -qE "^$ROOT(/|$)" <<<"$workdirs"
+assert grep -q "^${k%-key}/verdicts-1.tsv: read$" <<<"$out"
+assert grep -q "^${k%-key}/verdicts-2.tsv: run reader-[0-9]* left items unread$" <<<"$out"
+assert test "$(applied)" = "1 1 -"
+: >"$WORK/fail-briefs"; : >"$WORK/held"
+out=$(FIX_AUDIT_WORKER_RUN="$WORK/worker-run-held" fa read "$k") || fail "held rerun: $out"
+assert test "$(wc -l <"$WORK/starts-held" | tr -d ' ')" = 3
+assert grep -q -- "--brief $k/brief-2 " <<<"$(tail -n1 "$WORK/starts-held")"
+assert test "$(grep -c ': read$' <<<"$out")" = 2
+assert test "$(applied)" = "1 0 2026-01-05"
+
+printf 'PASS: %s asserts; fixer commits map to their findings by round and position (a round-only commit to all its fixed findings), the weekly read is blind, outside the judge family or Opus, and once a week, apply records verdicts, a false fix raises a Harness row until its revert lands, readers run in workdirs of their own and a rerun reads only the unread batches\n' "$asserts"

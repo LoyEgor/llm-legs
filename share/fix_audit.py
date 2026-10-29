@@ -8,9 +8,10 @@ again, blind, a week later.
   run records in FIXERS; weekly by itself, up to PER_KIND unread fixes
   >= DUE_DAYS old per lens x finder model become blind packets (no model, round or fixer named) under
   FIX_AUDIT_DIR/<date>, their key beside them; one reader per READER_ITEMS, outside the judge's family when
-  `worker-pick --list --role reviewers` has such a vendor on, else Opus.
+  `worker-pick --list --role reviewers` has such a vendor on, else Opus, each in its own workdir (worker-run runs
+  one worker per workdir); a batch already read is never relaunched, so a rerun reads only the missing ones.
 - apply (the night's fix-audit job, in its worktree): collect, then the pending reads' verdicts, into
-  share/fix-ledger.json.
+  share/fix-ledger.json; a batch counts once its verdicts cover every item, a read once all its batches do.
 - A false or harmful fix, or a useless one that added code, is a Harness row (rule fix_audit) until a commit naming
   `revert <round> F<n>` lands on main.
 """
@@ -533,18 +534,30 @@ def reader(judge):
     return "claudeb", "opus"
 
 
+def chunk_read(chunk):
+    """The chunk's verdicts when they cover every one of its items, else None (a refused, failed or partial read)."""
+    rows = verdict_rows(chunk["out"])
+    return rows if set(chunk["items"]) <= set(rows) else None
+
+
 def read(key_dir, deadline=None):
-    """Runs one reader a chunk, all at once; returns {chunk out: error or None}."""
+    """Runs one reader a chunk not read yet, all at once, each in its own workdir; returns {chunk out: error or None}."""
     import collector_runs
     key = read_json(os.path.join(key_dir, "key.json"), {})
     deadline = deadline or time.time() + 3 * 3600
     started, errors = {}, {}
-    for chunk in key.get("chunks") or ():
+    for number, chunk in enumerate(key.get("chunks") or (), 1):
+        if chunk_read(chunk):
+            errors[chunk["out"]] = None
+            continue
+        chunk.pop("run", None)
         vendor, model = reader(chunk["judge"])
         chunk["reader"] = "%s:%s" % (vendor, model or "default")
         flags = ["--model", model, "--effort", "high"] if model else []
+        workdir = os.path.join(os.path.dirname(chunk["out"]), "reader-%d" % number)
+        os.makedirs(workdir, exist_ok=True)
         done = subprocess.run([worker_bin("worker-run"), "start", vendor, *flags, "--brief", chunk["brief"],
-                               "--workdir", ROOT], capture_output=True, text=True)
+                               "--workdir", workdir], capture_output=True, text=True)
         run = next((l[5:].strip() for l in done.stdout.splitlines() if l.startswith("RUN: ")), None)
         if done.returncode or not run:
             errors[chunk["out"]] = "worker-run start rc %d: %s" % (done.returncode, (done.stderr or done.stdout)[-300:])
@@ -556,7 +569,7 @@ def read(key_dir, deadline=None):
             waited = subprocess.run([worker_bin("worker-run"), "wait", chunk["run"], "--max",
                                      str(int(max(1, deadline - time.time())))], capture_output=True, text=True).stdout
             collector_runs.worker_launched("fix-audit", started[chunk["run"]], "FIX_AUDIT_DIR", chunk["run"], waited)
-            errors.setdefault(chunk["out"], None if os.path.isfile(chunk["out"]) else "run %s wrote no verdicts" % chunk["run"])
+            errors.setdefault(chunk["out"], None if chunk_read(chunk) else "run %s left items unread" % chunk["run"])
     write_json(os.path.join(key_dir, "key.json"), key)
     return errors
 
@@ -575,23 +588,29 @@ def verdict_rows(path):
 
 
 def apply(ledger, key_dir, now=None):
-    """Records a read's verdicts in the ledger and the read as done; returns how many."""
+    """Records the verdicts of a read's batches read in full, and the read as done once all are; returns
+    (verdicts recorded, batches still unread)."""
     now = now or time.time()
     key = read_json(os.path.join(key_dir, "key.json"), {})
     by_id = {row["id"]: row for row in ledger["rows"]}
-    count = 0
+    count = unread = 0
     for chunk in key.get("chunks") or ():
-        for item, cells in verdict_rows(chunk["out"]).items():
+        rows = chunk_read(chunk)
+        if rows is None:
+            unread += 1
+            continue
+        for item, cells in rows.items():
             entry = (key.get("items") or {}).get(item)
             row = entry and by_id.get(entry["id"])
-            if not row or item not in chunk["items"]:
+            if not row or item not in chunk["items"] or row.get("verdict"):
                 continue
             row.update(verdict=cells[1].strip(), confidence=cells[2].strip() or None, reason=cells[3].strip() or None,
                        evidence=cells[4].strip() or None, reader=chunk.get("reader"), audited_at=iso(now),
                        net_lines=entry["net_lines"])
             count += 1
-    ledger["read"] = sorted(set(ledger.get("read") or ()) | {os.path.basename(key_dir)[:-4]})
-    return count
+    if not unread:
+        ledger["read"] = sorted(set(ledger.get("read") or ()) | {os.path.basename(key_dir)[:-4]})
+    return count, unread
 
 
 def report(ledger=None):
@@ -621,12 +640,17 @@ def main(argv):
     if command == "read":
         if not key_dir:
             ledger = collect(write=False)[0]
-            last = max(key_dirs() or [""])
+            found = key_dirs()
+            last = max(found or [""])
             if last and datetime.date.fromisoformat(last) > datetime.date.today() - datetime.timedelta(days=DUE_DAYS):
-                print("read %s; the next read is due %s" % (last, datetime.date.fromisoformat(last)
-                                                              + datetime.timedelta(days=DUE_DAYS)))
-                return 0
-            key_dir = sample(ledger)
+                key = read_json(os.path.join(found[last], "key.json"), {})
+                if all(chunk_read(chunk) for chunk in key.get("chunks") or ()):
+                    print("read %s; the next read is due %s" % (last, datetime.date.fromisoformat(last)
+                                                                  + datetime.timedelta(days=DUE_DAYS)))
+                    return 0
+                key_dir = found[last]
+            else:
+                key_dir = sample(ledger)
             if not key_dir:
                 print("no landed fix is due a read")
                 return 0
@@ -642,7 +666,9 @@ def main(argv):
         print("collected %d fixed finding(s)%s" % (len(added), "; unmapped: " + ", ".join(
             "%d %s" % (n, why) for why, n in sorted(unmapped.items())) if unmapped else ""))
         for path in pending(ledger):
-            print("recorded %d verdict(s) of %s" % (apply(ledger, path), path))
+            count, unread = apply(ledger, path)
+            print("recorded %d verdict(s) of %s%s" % (count, path, "; %d batch(es) unread, pending `fix-audit read %s`"
+                                                      % (unread, path) if unread else ""))
         write_json(LEDGER, ledger)
         print(report(ledger))
         return 0
