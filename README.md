@@ -301,10 +301,11 @@ this list):
 - `bin/audiokit` → `~/.local/bin/audiokit` — music loops picked and checked by Egor's ear, and join checks (local, no account; `docs/audiokit.md`).
 - `bin/gemini-web` → `~/.local/bin/gemini-web` — the hidden Chrome behind the Gemini media scripts (`login <profile>`, which `geminib web <profile>` runs for a roster account).
 - `bin/chatgpt-web` → `~/.local/bin/chatgpt-web` — the same hidden Chrome on chatgpt.com, behind `codex-image --route web` (`login <codex profile>`, which `codexb web <codex profile>` runs for a roster account).
-- `bin/llm-doctor` → `~/.local/bin/llm-doctor` — LLM doctor; claude-setup's night-sweep skill runs it and the six below by name.
+- `bin/llm-doctor` → `~/.local/bin/llm-doctor` — LLM doctor; claude-setup's night-sweep skill runs it and the seven below by name.
 - `bin/harness-doctor` → `~/.local/bin/harness-doctor` — Harness doctor.
 - `bin/updater-doctor` → `~/.local/bin/updater-doctor` — Updater doctor.
 - `bin/code-doctor` → `~/.local/bin/code-doctor` — Code doctor.
+- `bin/system-doctor` → `~/.local/bin/system-doctor` — System doctor.
 - `bin/log-audit` → `~/.local/bin/log-audit` — Haiku reads the day's transcripts; findings go to the Harness doctor.
 - `bin/doctor-fix` → `~/.local/bin/doctor-fix` — doctor fixer briefs and their close gate.
 - `bin/vendor-fingerprint` → `~/.local/bin/vendor-fingerprint` — vendor CLI fingerprint requests.
