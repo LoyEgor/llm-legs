@@ -355,21 +355,24 @@
       "what": "which short-lived or other users' process writes the internal SSD",
       "reason": "Each tick reads the disk counters of this uid's live processes (proc_pid_rusage), but a process that dies between ticks takes its counters along, and other users' counters need root; the 2026-10-04 privileged sample put ~76% of writes on our own short-lived processes. Since 2026-10-13 the root bin/ssd-sampler (owner-consented, installed by `sudo bin/ssd-sampler install`) traces up to 2 min every 3.5 h (cut at 20 s lag, past which fs_usage drops events) and Disk writes lists its shares; between samples the gap stays",
       "since": "2026-10-06",
-      "would_catch_if": "a continuous privileged trace (fs_usage or endpoint security) instead of 10-min samples"
+      "would_catch_if": "a continuous privileged trace (fs_usage or endpoint security) instead of 10-min samples",
+      "unmeasurable": "Endpoint Security needs the Apple-granted com.apple.developer.endpoint-security.client entitlement, which no script of ours can hold, and fs_usage drops events past 20 s of lag, which is why the consented root ssd-sampler is cut at 2 min; an unprivileged rule sees only this uid's live processes, so the gap between samples has no meter (2026-10-29)"
     },
     {
       "id": "short-lived-births",
       "what": "the parents of processes that live less than the 2 s window outside storms",
       "reason": "Births are attributed from the newborns still alive at the window's end; a storm (2,000 births/s for 2 min or kernel share 0.5) adds a 60 s census polling every 20 ms, at most every 30 min, so calm hours still lean toward longer-lived children",
       "since": "2026-10-06",
-      "would_catch_if": "an exec event stream (endpoint security, root)"
+      "would_catch_if": "an exec event stream (endpoint security, root)",
+      "unmeasurable": "the only exec event stream on macOS is Endpoint Security, which needs root and the Apple-granted endpoint-security.client entitlement no script of ours can hold; dtrace is blocked under SIP and polling cannot see a process that lives under its interval (2026-10-29)"
     },
     {
       "id": "foreign-cohort-terms",
       "what": "idle wakeups, disk bytes and footprints of items running under another uid (root and _-user Apple daemons, privileged helpers)",
       "reason": "proc_pid_rusage of another uid's processes needs root, so those items' cohort score counts CPU and launches only and lists W, D, R and M as unknown; every process of this uid (Chrome, claude, Dia, Figma) is read since 2026-10-13",
       "since": "2026-10-06",
-      "would_catch_if": "a consented privileged sample"
+      "would_catch_if": "a consented privileged sample",
+      "unmeasurable": "proc_pid_rusage of another uid's process fails without root, and the doctors run as Egor's user; a new root sample needs his consent and his sudo install, as bin/ssd-sampler did, so no unprivileged rule can read these terms (2026-10-29)"
     },
     {
       "id": "hs-client-of-crash",
@@ -383,7 +386,8 @@
       "what": "login items and background helpers macOS registers outside launchd plists (Background Task Management)",
       "reason": "Background lists every launchd plist in the agent dirs and every process the ticks saw; the BTM store and `sfltool dumpbtm` need root, so an app's SMAppService helper or login item shows only once it runs",
       "since": "2026-10-14",
-      "would_catch_if": "a consented privileged `sfltool dumpbtm` in the nightly pass"
+      "would_catch_if": "a consented privileged `sfltool dumpbtm` in the nightly pass",
+      "unmeasurable": "the Background Task Management store and `sfltool dumpbtm` need root, and the doctors run as Egor's user; a root pass needs his consent and his sudo install, as bin/ssd-sampler did, so no unprivileged rule can list a helper before it runs (2026-10-29)"
     },
     {
       "id": "suite-orphans",
