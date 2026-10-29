@@ -345,11 +345,11 @@ fi
 
 if suite_shard_owns 3 nc-owner-deferred; then
 new_night N4
-printf '2 1.00 1.00 100000\n' >"$WORK/room"
+printf '4 1.00 1.00 100000\n' >"$WORK/room"
 night carry N4 >"$WORK/n4.out" 2>"$WORK/n4.err" || fail "loaded carry failed"
 printf '1 1.00 1.00 100000\n' >"$WORK/room"
 assert [ "$(grep -c '^owner-chat-' "$WORK/n4.out")" = 0 ]
-assert grep -qxF 'night-run: owner chat «Alpha Doctor» deferred (memory pressure level 2): its handoffs are night jobs' "$WORK/n4.err"
+assert grep -qxF 'night-run: owner chat «Alpha Doctor» deferred (memory pressure level 4): its handoffs are night jobs' "$WORK/n4.err"
 assert [ "$(handoff_refs N4)" = '["handoff-2026-09-20-a1","handoff-2026-09-25-b1","handoff-2026-09-26-c1","handoff-2026-09-27-d1","handoff-2026-09-28-d2","handoff-2026-09-28-old","handoff-2026-10-01-a2"]' ]
 night carry N4 >"$WORK/n4b.out" 2>/dev/null || fail "a carry once the load fell failed"
 assert [ ! -s "$WORK/n4b.out" ]

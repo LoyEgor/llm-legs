@@ -10812,6 +10812,34 @@
       "reviewed_by": "night fixer harness-hook-health-20261029T053115Z-76a6",
       "note": "Created in 37b6eb23 without the hook-time source line; claude-setup tests/test_hook_time.sh (every hooks/*.sh sources it) was red on it since. It now sources the lib first; key pages-session.sh = hook_key. Checked under /bin/bash 3.2: one spool row, exit 0.",
       "handoff": null
+    },
+    {
+      "id": "wait-growth-workers-pressure-warn",
+      "title": "Worker slot waits grew: slot_room refused room above the floor at memory pressure warn (2), this machine's resting state",
+      "match": {
+        "rule": "wait_growth",
+        "ident": "workers"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:10:00+02:00",
+          "by": "night fixer harness-wait-classes-20261029T053353Z-2e51",
+          "files": [
+            "llm-legs/share/slots.sh",
+            "llm-legs/tests/test_slots.sh",
+            "llm-legs/tests/test_night_carry.sh",
+            "llm-legs/tests/test_run_suites_shards.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-wait-classes-20261029T053353Z-2e51",
+      "note": "2026-10-29: 5563 s against a 3015 s limit (usual 1507 s), every row reason room, no MB refusal (available 4.0-7.4 GB against the 3548 MB line throughout). Each room wait replayed in 5 s steps against memlogd's load1 (load15 rebuilt as its 900 s EMA) and avail_mb: workers 10-29 load clause 5473 s, neither MB nor load 767 s; 10-28 3976 / 1121 s; 10-26 0 / 1357 s (one wait of 1371 s at 4.8-7.3 GB, load clear: the level-2 veto); run-suites 10-28/29 655 / 516 s. Fixed by doctrine (image-fanout 39e352a8, same line): only critical pressure (4) refuses room; the MB and load clauses still decide. Ruled out as a bug: the load clause, 88 % of 10-29's room time. It held above-floor admission from +90 s to +540 s after 01:56:41Z while load1 climbed 85 -> 254 over a 144-190 base, under logo-vectorizer-bench (8 runset.py lanes) plus the night's own 13 fixer launches in 66 s; the waits ended within 6 s of the clause clearing. That is the owner's settled pacing (log_audit:night-worker-queue-wait), so this row stays red on such nights until that pacing is changed. Polling CPU: 7 ms a floor scan every 2 s and 12 ms a room check every 15 s, about 25 s over the day's waits. The hold's why never reaches the wait row (blind spot slot-room-clause-unseen), so the split is a replay, not a reading.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -11269,6 +11297,13 @@
       "reason": "settings_hooks reads only `async`; asyncRewake runs in the background under the cli and in the foreground headless, so the entry is sync in one mode only. cache-keepalive.py, the one such entry, journals only its headless runs, so nothing is misjudged today",
       "since": "2026-10-29",
       "would_catch_if": "the hook-time line carried the entrypoint, or the doctor split an asyncRewake key's runs by CLAUDE_CODE_ENTRYPOINT"
+    },
+    {
+      "id": "slot-room-clause-unseen",
+      "what": "which slot_room clause held a room wait (pressure level above 1, available MB under the guard, load1 over load15 + cores), so the level-2 veto's cost is read, not reconstructed",
+      "reason": "hold_raise keeps SLOT_WHY only in the hold file, hold_clear drops it, and neither memlogd nor the wait row logs the pressure level or load15",
+      "since": "2026-10-29",
+      "would_catch_if": "slot_wait_end passed the last SLOT_WHY clause (level, mb or load) into the wait row beside reason room"
     }
   ]
 }

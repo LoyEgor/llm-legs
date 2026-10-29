@@ -124,7 +124,7 @@ assert test "$(sections)" = 'a b c d '
 : >"$WORK/concurrent"; rm -f "$WORK/peak"
 PATH="$WORK/bin:$PATH" AT_ONCE=3 bash "$REPO/tests/test_sharded.sh" >/dev/null 2>&1
 assert test "$(sort -n "$WORK/concurrent" | tail -1)" = 3
-printf '2 50.00 1.00 100000\n' >"$WORK/room"
+printf '4 50.00 1.00 100000\n' >"$WORK/room"
 run PATH="$WORK/bin:$PATH" -- -j 3
 assert grep -q '1 suites, 1 jobs' "$WORK/out"
 sed -i '' 's/^# shards: 3 wait$/# shards: 3/' "$REPO/tests/test_sharded.sh"

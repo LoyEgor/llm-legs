@@ -71,23 +71,24 @@ room() { printf '%s\n' "$*" >"$WORK/room"; }
 guard=$(( $(sed -n 's/^GUARD_AVAIL_MB = \([0-9]*\).*/\1/p' "$ROOT/bin/chat-load") + 1500 ))
 room 1 150 140 $((guard + 1)); assert slot_room
 assert [ -z "$(slot_room)" ]
-room 2 150 140 $((guard + 1)); assert_fails slot_room >/dev/null
-assert [ "$(slot_room)" = 'memory pressure level 2' ]
+room 2 150 140 $((guard + 1)); assert slot_room
+room 4 150 140 $((guard + 1)); assert_fails slot_room >/dev/null
+assert [ "$(slot_room)" = 'memory pressure level 4' ]
 room 1 150 140 $((guard - 1)); assert [ "$(slot_room)" = "available $((guard - 1)) MB < $guard MB" ]
 room 1 160.5 150 $((guard + 1)); assert [ "$(slot_room)" = 'load 160.5 over its 15-minute base 150 + 10 cores' ]
 room 1 160 150 $((guard + 1)); assert slot_room
 # A range takes its floor whatever the room, the rest only with room.
 mkdir -p "$WORK/r"
-room 2 150 140 $((guard + 1))
+room 4 150 140 $((guard + 1))
 r1=$(slot_take "$WORK/r" 1-2 3600) || fail "a floor slot waited for room"
 assert [ "$r1" = "$WORK/r/1" ]
 assert_fails slot_take "$WORK/r" 1-2 3600
 slot_take "$WORK/r" 1-2 3600 >/dev/null
-assert [ "$SLOT_WHY" = 'memory pressure level 2' ] && assert [ ! -e "$WORK/r/2" ]
+assert [ "$SLOT_WHY" = 'memory pressure level 4' ] && assert [ ! -e "$WORK/r/2" ]
 (SLOTS_ROOM_POLL_S=0.2 slot_wait "$WORK/r" 1-2 3600 room-limiter "a roomy job" >"$WORK/room-waited") &
 waiter=$!
 for i in $(seq 1 50); do [ "$(holds_of room-limiter)" = 1 ] && break; sleep 0.1; done
-assert jqe '.why == "memory pressure level 2"' "$HARNESS_HOLDS_DIR"/room-limiter-*.json
+assert jqe '.why == "memory pressure level 4"' "$HARNESS_HOLDS_DIR"/room-limiter-*.json
 room 1 150 140 $((guard + 1))
 wait "$waiter" || fail "slot_wait never took the room it was given"
 assert [ "$(cat "$WORK/room-waited")" = "$WORK/r/2" ]
@@ -98,7 +99,7 @@ assert [ -z "$SLOT_WHY" ]
 slot_release "$r1"; rm -rf "$WORK/r"
 # The last refusal names the wait: refused for room, then every slot held, then admitted.
 mkdir -p "$WORK/lr"
-room 2 150 140 $((guard + 1))
+room 4 150 140 $((guard + 1))
 l1=$(holder "$WORK/lr" 1)
 lr_tick() { printf '%s\n' "${SLOT_WHY:-limit}" >>"$WORK/lr-ticks"; }
 (HARNESS_WAITS_DIR="$WORK/lr-waits" SLOTS_ROOM_POLL_S=0.2 slot_wait "$WORK/lr" 1-2 3600 workers "last refusal" lr_tick \
@@ -117,7 +118,7 @@ assert jqe -s 'length == 1 and .[0].class == "workers" and .[0].allowed == 2 and
 slot_release "$WORK/lr/2"; kill "$l1"; until_gone "$l1"; rm -rf "$WORK/lr"
 # A waiter refused for room takes a floor slot freed under it on the next floor poll, not the next room poll.
 mkdir -p "$WORK/fl"
-room 2 150 140 $((guard + 1))
+room 4 150 140 $((guard + 1))
 f1=$(holder "$WORK/fl" 1)
 (SLOTS_ROOM_POLL_S=60 slot_wait "$WORK/fl" 1-2 3600 floor-limiter "a floor job" >"$WORK/fl-waited") &
 waiter=$!
@@ -132,11 +133,11 @@ slot_release "$WORK/fl/1"; rm -rf "$WORK/fl"
 # room-filled ceiling is 8, not the pool's 40: the cap is asserted through worker_slots above, and every
 # taken slot costs a lock attempt on each slot below it.
 mkdir -p "$WORK/f"
-room 2 150 140 $((guard + 1))
+room 4 150 140 $((guard + 1))
 pool_slots=${pool_slots%-*}-8
 for i in 1 2 3 4 5; do assert [ "$(slot_take "$WORK/f" "$pool_slots" 3600)" = "$WORK/f/$i" ]; done
 slot_take "$WORK/f" "$pool_slots" 3600 >/dev/null
-assert [ "$SLOT_WHY" = 'memory pressure level 2' ] && assert [ ! -e "$WORK/f/6" ]
+assert [ "$SLOT_WHY" = 'memory pressure level 4' ] && assert [ ! -e "$WORK/f/6" ]
 # With room it fills to its ceiling, and the next waits for a held slot, not for room.
 room 1 150 140 $((guard + 1))
 for i in $(seq 6 9); do slot_take "$WORK/f" "$pool_slots" 3600 >/dev/null || break; done
