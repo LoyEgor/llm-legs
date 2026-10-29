@@ -12,6 +12,8 @@ again, blind, a week later.
   one worker per workdir); a batch already read is never relaunched, so a rerun reads only the missing ones.
 - apply (the night's fix-audit job, in its worktree): collect, then the pending reads' verdicts, into
   share/fix-ledger.json; a batch counts once its verdicts cover every item, a read once all its batches do.
+- A hunk is a finding's only on evidence (its commit names the finding, or it overlaps the finding's cited line in
+  the reviewed snapshot), never by nearness; a finding with none is not packed and has nothing to revert.
 - A false or harmful fix, or a useless one that added code, is a Harness row (rule fix_audit) until a commit naming
   `revert <round> F<n>` lands on main.
 """
@@ -50,7 +52,6 @@ DUE_DAYS = 7
 PER_KIND = 20
 READER_ITEMS = 20
 CONTEXT = 12
-NEAR = 20
 LENS = re.compile(r"^(fit|legacy(-.*)?|speed)$")
 RID = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{7}")
 NAMED = re.compile(r"\s*\)?[,;]?\s*\(?\s*(?:findings?|F)\s*((?:\d+(?:\s*-\s*\d+)?(?:\s*(?:,|and|&)\s*F?)?)+)")
@@ -138,9 +139,10 @@ def finder(cell):
 
 
 def to_revert(ledger):
-    """Rows a Harness fixer reverts: false or harmful, or useless with code added; none once a revert landed."""
+    """Rows a Harness fixer reverts: false or harmful, or useless with code added; none once a revert landed, and
+    none for a finding no hunk is attributable to (its fix changed nothing of its own to revert)."""
     return [row for row in ledger.get("rows") or () if isinstance(row, dict) and not row.get("reverted")
-            and (row.get("verdict") in ("false", "harmful")
+            and row.get("hunks") and (row.get("verdict") in ("false", "harmful")
                  or row.get("verdict") == "useless" and (row.get("net_lines") or 0) > 0)]
 
 
@@ -162,18 +164,23 @@ def round_commits(repo, since):
     for block in log.split("\x01")[1:]:
         head, _, body = block.partition("\n")
         commit, stamp = head.split()
-        seen = {}
-        for found in RID.finditer(body):
-            named = NAMED.match(body[found.end():found.end() + 80])
-            nums = seen.get(found.group(0))
-            if named:
-                nums = nums or set()
-                for low, high in re.findall(r"(\d+)(?:\s*-\s*(\d+))?", named.group(1)):
-                    nums.update(range(int(low), int(high) + 1) if high else [int(low)])
-            seen[found.group(0)] = nums
-        for rnd, nums in seen.items():
+        for rnd, nums in named_in(body).items():
             out[rnd].append((commit, int(stamp), nums, body))
     return out
+
+
+def named_in(body):
+    """{round: the positions a commit message names after it, or None where it names the round alone}."""
+    seen = {}
+    for found in RID.finditer(body):
+        named = NAMED.match(body[found.end():found.end() + 80])
+        nums = seen.get(found.group(0))
+        if named:
+            nums = nums or set()
+            for low, high in re.findall(r"(\d+)(?:\s*-\s*(\d+))?", named.group(1)):
+                nums.update(range(int(low), int(high) + 1) if high else [int(low)])
+        seen[found.group(0)] = nums
+    return seen
 
 
 def merged_commits(repo, branch, since):
@@ -343,55 +350,102 @@ def collect(write=True, since=SINCE):
 
 
 def parse_diff(text):
+    """The hunks of a diff, each with its changes: [old line, lines removed, lines added] per run of -/+ lines (a pure
+    insertion lands before its old line)."""
     hunks, current = [], None
     for line in (text or "").splitlines():
         head = HUNK.match(line)
         if head:
-            current = {"os": int(head.group(1)), "on": int(head.group(2) if head.group(2) is not None else 1),
-                       "lines": [line]}
+            count = int(head.group(2) if head.group(2) is not None else 1)
+            current = {"lines": [line], "changes": []}
+            old, change = int(head.group(1)) + (0 if count else 1), None
             hunks.append(current)
         elif line.startswith("diff --git"):
             current = None
         elif current is not None:
             current["lines"].append(line)
+            if line[:1] in "-+":
+                if change is None:
+                    change = [old, 0, 0]
+                    current["changes"].append(change)
+                change[1 if line[0] == "-" else 2] += 1
+                old += line[0] == "-"
+            elif not line.startswith("\\"):
+                old, change = old + 1, None
     return hunks
 
 
+def touches(change, line):
+    """Whether a change overlaps the pre-fix line: removes it, or inserts right beside it."""
+    start, removed, _ = change
+    return start <= line < start + removed if removed else start - 1 <= line <= start
+
+
 def mapped_line(repo, reviewed, commit, path, line):
-    """The finding's reviewed line in the pre-fix file, the code having moved between review and fix."""
-    old = (git(repo, "cat-file", "-p", reviewed) or "").splitlines() if reviewed else None
-    new = (git(repo, "show", "%s^:%s" % (commit, path)) or "").splitlines()
-    if not old or not new or not line:
+    """The finding's line of the reviewed snapshot in the pre-fix file, the code having moved between review and fix;
+    None where no snapshot is known or the line itself changed in between: then no change is the finding's by place."""
+    old = git(repo, "cat-file", "-p", reviewed) if reviewed and line else None
+    new = git(repo, "show", "%s^:%s" % (commit, path)) if old is not None else None
+    if new is None:
+        return None
+    if old == new:
         return line
-    for tag, i1, i2, j1, _ in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+    for tag, i1, i2, j1, _ in difflib.SequenceMatcher(None, old.splitlines(), new.splitlines(),
+                                                      autojunk=False).get_opcodes():
         if i1 <= line - 1 < i2:
-            return j1 + (line - 1 - i1) + 1 if tag == "equal" else j1 + 1
-    return line
+            return j1 + (line - 1 - i1) + 1 if tag == "equal" else None
+    return None
 
 
-def packet(row, number):
-    """(text, net added lines) of a blind packet, None where no hunk of its commits touches the finding's file."""
+def peers(row, ledger):
+    """The other fixed findings of the row's round citing its file: a commit naming one of them too is no evidence on
+    its own whose each hunk is."""
+    return {other.get("finding") for other in (ledger or {}).get("rows") or () if other.get("id") != row.get("id")
+            and (other.get("round"), other.get("repo"), other.get("file")) == (row["round"], row["repo"], row["file"])}
+
+
+def own_hunks(row, others=()):
+    """[(commit, its hunks in the finding's file holding a change of the finding's, their net added lines)]. A change
+    is the finding's only on evidence: its commit names the finding and no other of `others`, or the change overlaps
+    the finding's cited line in the reviewed snapshot; never by nearness to it."""
     repo = os.path.join(repos_dir(), row["repo"])
-    body, net, shown = [], 0, []
-    for commit in row["commits"]:
+    out = []
+    for commit in row.get("commits") or ():
         hunks = parse_diff(git(repo, "show", "--format=", "--no-color", "-U%d" % CONTEXT, commit, "--", row["file"]))
         if not hunks:
             continue
-        line = mapped_line(repo, row.get("reviewed"), commit, row["file"], row.get("line"))
-        near = [h for h in hunks if line and h["os"] - NEAR - CONTEXT <= line <= h["os"] + max(h["on"], 1) + NEAR]
-        body += ["Commit %s: its hunks in `%s`%s." % (commit[:12], row["file"], " near the finding's line" if near else ""),
+        named = named_in(git(repo, "log", "-1", "--format=%B", commit) or "").get(row["round"]) or set()
+        solo = row["finding"] in named and not named & set(others)
+        line = None if solo else mapped_line(repo, row.get("reviewed"), commit, row["file"], row.get("line"))
+        mine = [(hunk, [c for c in hunk["changes"] if solo or line and touches(c, line)]) for hunk in hunks]
+        mine = [(hunk, changes) for hunk, changes in mine if changes]
+        if mine:
+            out.append((commit, [hunk for hunk, _ in mine], sum(c[2] - c[1] for _, changes in mine for c in changes)))
+    return out
+
+
+def fix_size(row, ledger):
+    """(hunks attributable to the finding, their net added lines or None with none)."""
+    found = own_hunks(row, peers(row, ledger))
+    return sum(len(hunks) for _, hunks, _ in found), sum(net for _, _, net in found) if found else None
+
+
+def packet(row, number, others=()):
+    """(text, net added lines, hunks) of a blind packet, None where no hunk of its commits is the finding's."""
+    body, net, count, shown = [], 0, 0, []
+    for commit, hunks, added in own_hunks(row, others):
+        body += ["Commit %s: its hunks in `%s` for this finding." % (commit[:12], row["file"]),
                  "", "```diff", "--- a/%s" % row["file"], "+++ b/%s" % row["file"]]
-        for hunk in near or hunks:
+        for hunk in hunks:
             body += hunk["lines"]
-            net += sum(1 for l in hunk["lines"][1:] if l.startswith("+")) - sum(
-                1 for l in hunk["lines"][1:] if l.startswith("-"))
         body += ["```", ""]
+        net, count = net + added, count + len(hunks)
         shown.append(commit)
     head = ["# Item %02d" % number, "", "- Lens: %s" % row["lens"], "- Repo: %s" % row["repo"],
             "- Commit: %s" % ", ".join(shown), "", "## Finding", "",
             "Reviewed file: `%s`%s" % (row["file"], ", line %d" % row["line"] if row.get("line") else ""), "",
             "> " + str(row.get("claim") or "").replace("\n", "\n> "), "", "## Fix hunks", ""]
-    return ("\n".join(head + body) + "\n", net) if shown else None
+    return ("\n".join(head + body) + "\n", net, count) if shown else None
 
 
 def brief(items, items_dir, out):
@@ -471,7 +525,7 @@ def sample(ledger, now=None):
         rng.shuffle(rows)
         took = 0
         for row in rows:
-            made = packet(row, 0)
+            made = packet(row, 0, peers(row, ledger))
             if made and not BLIND.search(made[0]):
                 picked.append(row)
                 took += 1
@@ -486,10 +540,10 @@ def sample(ledger, now=None):
     os.makedirs(key_dir, exist_ok=True)
     key, by_judge = {}, collections.defaultdict(list)
     for number, row in enumerate(picked, 1):
-        text, net = packet(row, number)
+        text, net, hunks = packet(row, number, peers(row, ledger))
         with open(os.path.join(items_dir, "%02d.md" % number), "w") as handle:
             handle.write(text)
-        key["%02d" % number] = {"id": row["id"], "net_lines": net}
+        key["%02d" % number] = {"id": row["id"], "net_lines": net, "hunks": hunks}
         by_judge[family(row.get("judge") or "opus")].append("%02d" % number)
     chunks = []
     for judge, items in sorted(by_judge.items()):
@@ -604,9 +658,11 @@ def apply(ledger, key_dir, now=None):
             row = entry and by_id.get(entry["id"])
             if not row or item not in chunk["items"] or row.get("verdict"):
                 continue
+            # A read packed before attribution took evidence carries no hunk count: its size is derived again.
+            hunks, net = (entry["hunks"], entry["net_lines"]) if "hunks" in entry else fix_size(row, ledger)
             row.update(verdict=cells[1].strip(), confidence=cells[2].strip() or None, reason=cells[3].strip() or None,
                        evidence=cells[4].strip() or None, reader=chunk.get("reader"), audited_at=iso(now),
-                       net_lines=entry["net_lines"])
+                       net_lines=net, hunks=hunks)
             count += 1
     if not unread:
         ledger["read"] = sorted(set(ledger.get("read") or ()) | {os.path.basename(key_dir)[:-4]})

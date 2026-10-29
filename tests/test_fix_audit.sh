@@ -68,10 +68,11 @@ c3=$(commit "legacy cut, review round $R2")
 printf 'other = 1\n' >"$repo/other.py"
 commit "unrelated work" >/dev/null
 
-bench() { # round lens -> its bench directory
+reviewed=$(git -C "$repo" rev-parse "$base:app.py")
+bench() { # round lens [reviewed blob of app.py] -> its bench directory
   mkdir -p "$WORKER_STATS_DIR/benches/$1"
-  printf '{"lens": "%s", "judge": {"model": "opus"}, "workdir": "/Volumes/Work/Projects/llm-legs"}\n' "$2" \
-    >"$WORKER_STATS_DIR/benches/$1/meta.json"
+  printf '{"lens": "%s", "judge": {"model": "opus"}, "workdir": "/Volumes/Work/Projects/llm-legs", "reviewed": {"llm-legs/app.py": "%s"}}\n' \
+    "$2" "${3:-$reviewed}" >"$WORKER_STATS_DIR/benches/$1/meta.json"
   printf '%s\n' "$WORKER_STATS_DIR/benches/$1"
 }
 b1=$(bench "$R1" fit)
@@ -131,7 +132,7 @@ for packet in "$FIX_AUDIT_DIR/$day/packets/items/"*.md; do
   assert assert_blind "$packet"
   assert grep -q '^@@ ' "$packet"
 done
-assert grep -q "^Commit $(cut -c1-12 <<<"$c1"): its hunks in \`app.py\` near the finding's line.$" \
+assert grep -q "^Commit $(cut -c1-12 <<<"$c1"): its hunks in \`app.py\` for this finding.$" \
   "$FIX_AUDIT_DIR/$day/packets/items/$(jq -r --arg id "$R1/F0" '.items | to_entries[] | select(.value.id == $id) | .key' "$key").md"
 # Read once a week: a second read the same week launches nothing.
 out=$(fa read) || fail "second read: $out"
@@ -214,8 +215,8 @@ for n, items in ((1, ["01"]), (2, ["02"])):
     with open(path, "w") as handle:
         handle.write(fix_audit.brief(items, os.path.join(folder, "packets", "items"), out))
     chunks.append({"judge": "claude", "items": items, "brief": path, "out": out})
-fix_audit.write_json(os.path.join(key_dir, "key.json"), {"items": {"01": {"id": "r/F0", "net_lines": 0},
-                                                                  "02": {"id": "r/F1", "net_lines": 0}}, "chunks": chunks})
+fix_audit.write_json(os.path.join(key_dir, "key.json"), {"items": {"01": {"id": "r/F0", "net_lines": 0, "hunks": 1},
+                                                                  "02": {"id": "r/F1", "net_lines": 0, "hunks": 1}}, "chunks": chunks})
 fix_audit.write_json(os.path.join(os.path.dirname(key_dir), "ledger-held.json"), {"rows": [{"id": "r/F0"}, {"id": "r/F1"}]})
 EOF
 applied() { # -> "<recorded> <unread> <read days>" of an apply of $k on the fixture ledger
@@ -246,4 +247,40 @@ assert grep -q -- "--brief $k/brief-2 " <<<"$(tail -n1 "$WORK/starts-held")"
 assert test "$(grep -c ': read$' <<<"$out")" = 2
 assert test "$(applied)" = "1 0 2026-01-05"
 
-printf 'PASS: %s asserts; fixer commits map to their findings by round and position (a round-only commit to all its fixed findings), the weekly read is blind, outside the judge family or Opus, and once a week, apply records verdicts, a false fix raises a Harness row until its revert lands, readers run in workdirs of their own and a rerun reads only the unread batches\n' "$asserts"
+# A hunk is a finding's only on evidence, never by nearness: a commit naming two findings of one file gives each only
+# the change at its own reviewed line, and a round-only commit's change two lines off a finding whose fix changed
+# nothing is not that finding's: it is not packed, and read false (by a packet of before) it has nothing to revert.
+R3=20261022T100000Z-0123abc
+sed -i '' -e 's/^line_50 = 50$/line_50 = 5/' "$repo/app.py"
+commit "speed: one pass, review round $R3" >/dev/null
+b3=$(bench "$R3" speed "$(git -C "$repo" rev-parse HEAD^:app.py)")
+printf '{"rater": "opus-high", "idx": %d, "verdict": "confirmed", "by": "judge"}\n' 0 1 >"$b3/verdicts.jsonl"
+printf '{"kind": "fixer", "finding": %d, "outcome": "fixed"}\n' 0 1 >>"$b3/verdicts.jsonl"
+printf '{"file": "llm-legs/app.py", "line": %d, "summary": "s"}\n' 50 52 >"$b3/findings-opus-high.jsonl"
+fa apply >/dev/null || fail "apply R3"
+sizes() {
+  python3 - "$ROOT/share" "$@" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import fix_audit
+ledger = fix_audit.load()
+for ident in sys.argv[2:]:
+    row = fix_audit.ledger_row(ident, ledger)
+    made = fix_audit.packet(row, 1, fix_audit.peers(row, ledger))
+    print(ident, fix_audit.fix_size(row, ledger), made and "+line_10 = 1" in made[0], made and "+line_40 = 4" in made[0])
+EOF
+}
+out=$(sizes "$R1/F0" "$R3/F0" "$R3/F1") || fail "sizes: $out"
+assert grep -qxF "$R1/F0 (1, 0) True False" <<<"$out"
+assert grep -qxF "$R3/F0 (1, 0) False False" <<<"$out"
+assert grep -qxF "$R3/F1 (0, None) None None" <<<"$out"
+k3="$FIX_AUDIT_DIR/2026-01-12-key"
+mkdir -p "$k3"
+printf 'item\tverdict\tconfidence\treason\tevidence\n01\tfalse\thigh\tno such problem\tapp.py:52\n' >"$k3/v.tsv"
+jq -n --arg id "$R3/F1" --arg out "$k3/v.tsv" \
+  '{items: {"01": {id: $id, net_lines: 0}}, chunks: [{judge: "claude", items: ["01"], out: $out}]}' >"$k3/key.json"
+fa apply >/dev/null || fail "apply the read of before"
+assert test "$(row "$R3/F1" '[.verdict, .hunks, .net_lines]')" = '["false",0,null]'
+assert test -z "$(harness_rows)"
+
+printf 'PASS: %s asserts; fixer commits map to their findings by round and position (a round-only commit to all its fixed findings), the weekly read is blind, outside the judge family or Opus, and once a week, apply records verdicts, a false fix raises a Harness row until its revert lands, a hunk counts for a finding only on evidence (never nearness) and one with none raises no revert, readers run in workdirs of their own and a rerun reads only the unread batches\n' "$asserts"
