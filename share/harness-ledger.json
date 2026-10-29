@@ -9569,7 +9569,8 @@
         "rule": "regression",
         "ident": "test-health/retests"
       },
-      "status": "fixed",
+      "status": "ruled-out",
+      "ruled_at": "2026-10-29T12:10:00Z",
       "fixes": [
         {
           "at": "2026-10-14T15:42:16+03:00",
@@ -9583,9 +9584,9 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-20",
-      "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): fixed by llm-legs@8e6961df (tests once, when the work is done; none on a night branch): retests 540 -> 26 min/day (share/test_health.py, 24 h to 2026-10-20 14:52, usual 10.2). 24 h to 2026-10-14 05:20: 540 min/day over 2.5, 653 repeats; 467 min the night's workers (night 3131), 52 chats at night, 18 by day. Two measurement faults fixed in llm-legs/share/test_health.py by this run: the usual took 10-06..10-08 as 0 though no row journaled a tree before 2026-10-09 (now unmeasured), and a --profile run, which the suite-audit brief orders, read as a repeat of a plain green run (112 min; now only a profiled green). Still red: 466 against 78 at today's runs. By worktree: suite audits 333 min, test-health and regression fixers 104, other night jobs 42, main 37. By shape: same caller rerunning green content directly 204 min (median 17 s after its green: flake hunts as `for i in 1..8; bash tests/x.sh` and env variants like PATH=/usr/bin, e.g. 1983b0bf on test_harness_doctor, claudeb-1791857509-61134-1111 30 runs of test_agy_quota under load), another caller's green first 151 (14 fixers on night base tree d7a0644b, 79 min), multi-suite reruns 94, named single reruns 37. Open questions for the owner: design §1 counts unattended work 0, yet this line counts the night's worker runs; and a deliberate flake or timing rerun is indistinguishable from a wasted one (blind spot test-health-retests-intent). Not tried: a cached-verdict skip in run-suites (would break flake hunts and timing runs).",
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-speed-time-slot-20261029T112129Z-6bc8",
+      "note": "2026-10-29 (run 6bc8, share/test_health.py label/allocate replayed on runs.jsonl, 24 h to 13:50 local): 47.2 min = 2832 s retest wall over 136 execs, 3881 CPU-s; not the night's workers (the 10-20 fix holds: 2 worker min): chats 2661 s of the 7 d's 4158. One chat (session 6d7a9b58, night 5e69 Deep search worktree) reran all 98 named suites at 08:05 on tree 82720a9b after its 07:44 run had 1 red: 930 s, the green rerun red_first's design asks for; test_consistency direct reruns in the main checkout (chat 8adc8834, 7 runs) and wr-split ~1150 s, a cross-repo suite (claude-setup, installed hooks) whose other inputs the llm-legs tree does not key, so part of it is no retest at all (blind spot test-health-retests-intent); goal-fix-audit one named rerun 252 s; terminal full runs 303 s. Every remaining lever is pass reuse on the same tree, Egor's 2026-10-07 no-rebuild (row speed-test-health-retests): ruled out. 2026-10-20 (run 2c2a): fixed by llm-legs@8e6961df (tests once, when the work is done; none on a night branch): retests 540 -> 26 min/day (share/test_health.py, 24 h to 2026-10-20 14:52, usual 10.2). 24 h to 2026-10-14 05:20: 540 min/day over 2.5, 653 repeats; 467 min the night's workers (night 3131), 52 chats at night, 18 by day. Two measurement faults fixed in llm-legs/share/test_health.py by this run: the usual took 10-06..10-08 as 0 though no row journaled a tree before 2026-10-09 (now unmeasured), and a --profile run, which the suite-audit brief orders, read as a repeat of a plain green run (112 min; now only a profiled green). Still red: 466 against 78 at today's runs. By worktree: suite audits 333 min, test-health and regression fixers 104, other night jobs 42, main 37. By shape: same caller rerunning green content directly 204 min (median 17 s after its green: flake hunts as `for i in 1..8; bash tests/x.sh` and env variants like PATH=/usr/bin, e.g. 1983b0bf on test_harness_doctor, claudeb-1791857509-61134-1111 30 runs of test_agy_quota under load), another caller's green first 151 (14 fixers on night base tree d7a0644b, 79 min), multi-suite reruns 94, named single reruns 37. Open questions for the owner: design §1 counts unattended work 0, yet this line counts the night's worker runs; and a deliberate flake or timing rerun is indistinguishable from a wasted one (blind spot test-health-retests-intent). Not tried: a cached-verdict skip in run-suites (would break flake hunts and timing runs).",
       "handoff": null
     },
     {
@@ -11962,6 +11963,70 @@
       "last_reviewed": "2026-10-29",
       "reviewed_by": "harness-limits-20261029T112052Z-12f6",
       "note": "One event, two readers: the orchestrator's report --post (6d7a9b58) and the supervising chat's plain report (233cceb1), started 8 s apart at 10:09Z, each waited 1200 s. The suites ran 09:59-10:45Z: llm-legs 2381 s wall, 7564 s serial at -j 5, against 546-1580 s wall (1912-5074 serial) on 10-12..10-24, in the swap-bound night of claudeb.lock-stale; claude-setup 218 s, review-bench 117 s after it. Nothing lost: .suites.repos holds every verdict, the next night's carry makes the red ones suite jobs, and the red test_hook_deny_names was fixed within the hour (llm-legs@1357abfa). Ruled out as causes: a hung suite (all ended), a missed finish write (finished_at 10:45:14Z). Suite wall under load is the tests audit's (speed-suite-audit runs); a reader not waiting on the suites is a design choice for the night-run owner, not taken here.",
+      "handoff": null
+    },
+    {
+      "id": "opportunity:time/suite_wait",
+      "title": "Speed's suite slot wait: a direct one-suite run queued behind 4 held run-suites slots while the machine had room",
+      "match": {
+        "rule": "opportunity",
+        "ident": "time/suite_wait"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T12:05:00Z",
+          "by": "night 20261029T103222Z-1c68 harness-speed-time-slot-20261029T112129Z-6bc8",
+          "files": [
+            "llm-legs/share/slots.sh",
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/tests/test_slots.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "a direct suite run's admission: run_suites_slots (floor-4, 3-4 on 10 cores) before, run_suites_direct_slots (floor-8) after; fan-out runs keep run_suites_slots",
+            "data": "harness-doctor waits 24 h to 2026-10-29 11:50: 29 run-suites waits, 15 count-limited (2156 s), 13 of them direct runs (2017 s), 1572 s of those with load1 under memlogd's 15-min estimate + 10 cores at their start",
+            "result": "same suites, same verdicts; a direct run above the floor still passes slot_room (pressure 4, available MB, load burst), so only the count-alone queue goes"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-speed-time-slot-20261029T112129Z-6bc8",
+      "note": "The 14 room-limited run-suites waits (1325 s) are the room guard working and stay. Direct runs (tests/lib/suite-journal.sh) each held a whole fan-out slot for one suite, e.g. wr-split's 10 parallel bash tests/test_worker_run_*.sh at 10-28 05:15Z.",
+      "handoff": null
+    },
+    {
+      "id": "opportunity:time/slot",
+      "title": "Speed's worker slot queue: the lever lends a slot's count, every wait was for room",
+      "match": {
+        "rule": "opportunity",
+        "ident": "time/slot"
+      },
+      "status": "ruled-out",
+      "ruled_at": "2026-10-29T12:10:00Z",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-speed-time-slot-20261029T112129Z-6bc8",
+      "note": "24 h to 2026-10-29 11:52 (harness-doctor waits): 73 workers waits, 11108 s, every one reason=room with held at or above the floor 5; 48 (6405 s) began in a load burst (load1 over memlogd's 15-min estimate + 10 cores, night peaks 194-232), 25 (4703 s) otherwise, so available MB. A slot lent from a holder in its own suites adds count, not room: 0 s recoverable. The 8 night-admission waits (6067 s, 5h-room budget in night-run admit) are no slot count either. Left, unmeasured: admission lag after room returns, up to SLOTS_ROOM_POLL_S 15 s a room wait (~9 min/day at 7.5 s mean over 73) and NIGHT_RUN_ADMIT_POLL_S 60 s an admission wait; a shorter poll costs room judgments (~10 ms each, F9 of round 20261029T112507Z-fe318bf cut 2 forks of each).",
+      "handoff": null
+    },
+    {
+      "id": "opportunity:test-health/retests",
+      "title": "Speed's retests lever: a suite green on the same tree run again",
+      "match": {
+        "rule": "opportunity",
+        "ident": "^test-health/retests$"
+      },
+      "status": "ruled-out",
+      "ruled_at": "2026-10-29T12:10:00Z",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-speed-time-slot-20261029T112129Z-6bc8",
+      "note": "7 d to 2026-10-29 13:50: 196 repeat execs, 4158 s retest wall, 5768 CPU-s; chats 2661 s, workers 1193 s, terminal 303 s; 0 after the worker's own green run (post). The lever is pass reuse on the same tree, built and dropped by Egor 2026-10-07 (row speed-test-health-retests, not-a-bug); the measured causes are in row regression-test-health-retests-night-reruns.",
       "handoff": null
     }
   ],
