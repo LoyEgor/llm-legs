@@ -118,17 +118,29 @@ run_commit_paths() { # directory workdir
 # own `worktree add` names it and it did not exist at launch: absent from the floor's listing of the
 # workdir's repository, or, in a repository the floor never listed, its git admin directory born
 # after the run started. One another chat made meanwhile has no such command, so a write there still
-# reads as escaped.
+# reads as escaped. A linked worktree placed anywhere else (`worktree add /Volumes/Work/tmp/<name>`)
+# needs the same command and birth; a main checkout never qualifies.
 record_made_worktrees() { # directory
-  local directory="$1" path root name tree admin born started made=''
+  local directory="$1" path root name tree admin born started made='' dir needle
   started=$(jq -r '.pid_started_at // .started_at // 0' "$directory/meta.json" 2>/dev/null)
   [[ "$started" =~ ^[0-9]+$ ]] || return 0
   while IFS= read -r path; do
-    [[ "$path" =~ ^(/.+)/\.claude/worktrees/([A-Za-z0-9._-]+)/ ]] || continue
-    root=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]} tree=${BASH_REMATCH[1]}/.claude/worktrees/${BASH_REMATCH[2]}
+    if [[ "$path" =~ ^(/.+)/\.claude/worktrees/([A-Za-z0-9._-]+)/ ]]; then
+      root=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]} tree=${BASH_REMATCH[1]}/.claude/worktrees/${BASH_REMATCH[2]}
+      needle="\\.claude/worktrees/${name//./\\.}"
+    else
+      [[ "$path" == /* ]] || continue
+      while IFS= read -r tree; do [ -z "$tree" ] || [[ "$path" != "$tree"/* ]] || continue 2; done <<<"$made"
+      dir=${path%/*}
+      while [ -n "$dir" ] && [ ! -d "$dir" ]; do dir=${dir%/*}; done
+      [ -n "$dir" ] && tree=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) && [ -f "$tree/.git" ] || continue
+      root='' name=${tree##*/}
+      [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+      needle=${name//./\\.}
+    fi
     printf '%s\n' "${RUN_SHELL_COMMANDS:-}" | grep -F 'worktree add' |
-      grep -qE "(^|[^A-Za-z0-9._-])\.claude/worktrees/${name//./\\.}([^A-Za-z0-9._-]|\$)" || continue
-    if grep -qxF -- "$root" "$directory/worktrees-before" 2>/dev/null; then
+      grep -qE "(^|[^A-Za-z0-9._-])$needle([^A-Za-z0-9._-]|\$)" || continue
+    if [ -n "$root" ] && grep -qxF -- "$root" "$directory/worktrees-before" 2>/dev/null; then
       ! grep -qxF -- "$tree" "$directory/worktrees-before" || continue
     elif [ -e "$tree/.git" ]; then
       admin=$(git -C "$tree" rev-parse --absolute-git-dir 2>/dev/null) &&

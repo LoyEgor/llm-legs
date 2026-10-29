@@ -408,7 +408,7 @@ attribution_repair_tests() {
   done
 }
 outside_worktree_tests() {
-  local repo outside variant note trees made_meta elsewhere="$WORK/made-elsewhere" before
+  local repo outside variant note trees made_meta flat elsewhere="$WORK/made-elsewhere" before
   attribution_fixture
   # Born early so the launches below usually carry the clock past its second before the wait.
   mkdir -p "$elsewhere"
@@ -457,6 +457,7 @@ outside_worktree_tests() {
   done
   [ -n "${WORKER_RUN_TEST_ATTRIBUTION_CASE:-}" ] && [ "$WORKER_RUN_TEST_ATTRIBUTION_CASE" != made_worktree ] && return 0
   trees="$repo/.claude/worktrees"
+  flat=$(cd "$WORK" && pwd -P)/made-flat
   while [ "$(date +%s)" -le "$before" ]; do sleep 0.1; done
   git -C "$repo" worktree add -q "$trees/task" 2>/dev/null
   git -C "$repo" worktree add -q "$trees/foreign" 2>/dev/null
@@ -474,10 +475,15 @@ outside_worktree_tests() {
     tool_call Edit file_path "$trees/late/bin/restored"
     tool_call Bash command "git worktree add .claude/worktrees/late-2"
     tool_call Bash command "git worktree add .claude/worktrees/foreign"
+    tool_call Bash command "git worktree add $flat -b flat"
+    tool_call Edit file_path "$flat/bin/restored"
+    tool_call Edit file_path "$flat-nocmd/bin/restored"
   } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
   WORKER_TEST_WORKDIR=$trees/task start_gated claudeb
   git -C "$repo" worktree add -q "$trees/scratch.x" 2>/dev/null
   git -C "$repo" worktree add -q "$trees/late" 2>/dev/null
+  git -C "$repo" worktree add -q "$flat" 2>/dev/null
+  git -C "$repo" worktree add -q "$flat-nocmd" 2>/dev/null
   printf 'scratch\n' >"$trees/scratch.x/bin/restored"
   git -C "$repo" worktree remove --force "$trees/scratch.x"
   for before in side gone nocmd; do git -C "$elsewhere" worktree add -q "$elsewhere/.claude/worktrees/$before" 2>/dev/null; done
@@ -486,7 +492,7 @@ outside_worktree_tests() {
   assert await_exit
   made_meta=$(jq -c '.worktrees_made' "$RUN_DIR/meta.json")
   assert test "$made_meta" = "$(jq -cn --args '$ARGS.positional | sort' -- "$trees/scratch.x" \
-    "$elsewhere/.claude/worktrees/side" "$elsewhere/.claude/worktrees/gone")"
+    "$elsewhere/.claude/worktrees/side" "$elsewhere/.claude/worktrees/gone" "$flat")"
   # GNU stat: `-f` is the filesystem, so the birth time comes from `-c %W` alone.
   mkdir -p "$WORK/gnu-stat"
   printf '#!/bin/bash\ncase "$1 $2" in\n  "-f %%B") printf "  File: \\"%%s\\"\\n" "$3"; exit 1 ;;\n  "-c %%W") exec /usr/bin/stat -f %%B "$3" ;;\nesac\nexec /usr/bin/stat "$@"\n' \
@@ -504,6 +510,8 @@ outside_worktree_tests() {
   assert await_exit
   assert jq -e --arg t "$elsewhere/.claude/worktrees/gnu" '.worktrees_made == [$t]' "$RUN_DIR/meta.json"
   git -C "$repo" worktree remove --force "$trees/late"
+  git -C "$repo" worktree remove --force "$flat"
+  git -C "$repo" worktree remove --force "$flat-nocmd"
   git -C "$repo" worktree remove --force "$trees/foreign"
   git -C "$repo" worktree remove --force "$trees/task"
 }
