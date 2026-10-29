@@ -130,11 +130,16 @@ assert grep -qxF 'suites · repo · 0 PASS · 1 FAIL: run-all' <(night report N1
 # The report waits out a live full run, so its FAIL reaches the morning message, and journals the wait.
 jq -n '{id: "N1y", started_at: "2026-10-03T13:00:00Z", finished_at: null, jobs: []}' >"$NIGHTS/N1y.json"
 mv "$WORK/repo/tests/run-all" "$WORK/run-all.kept"
-printf '#!/usr/bin/env bash\nsleep 3\nexec "%s" "$@"\n' "$WORK/run-all.kept" >"$WORK/repo/tests/run-all"
+printf '#!/usr/bin/env bash\nwhile [ ! -e "%s/go-y" ]; do sleep 0.05; done\nexec "%s" "$@"\n' "$WORK" "$WORK/run-all.kept" >"$WORK/repo/tests/run-all"
 chmod +x "$WORK/repo/tests/run-all"
 night suites N1y >/dev/null || fail "suites did not detach"
 for i in $(seq 1 50); do jqe '.suites.pid' "$NIGHTS/N1y.json" 2>/dev/null && break; sleep 0.1; done
-HARNESS_WAITS_DIR="$WORK/waits" night report N1y >"$WORK/report-y" 2>/dev/null
+# The run is held until the report sits in its first wait tick, then released: the wait is one tick, not a guess.
+HARNESS_WAITS_DIR="$WORK/waits" bash "$ROOT/bin/night-run" report N1y >"$WORK/report-y" 2>/dev/null &
+report_y=$!
+for i in $(seq 1 100); do pgrep -P "$report_y" -x sleep >/dev/null && break; sleep 0.05; done
+touch "$WORK/go-y"
+wait "$report_y"
 mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
 assert grep -qxF 'suites · repo · 1 PASS · 1 FAIL: test_b.sh' "$WORK/report-y"
 assert jqe -s 'length == 1 and .[0].class == "night-suites" and .[0].source == "night-run report N1y" and .[0].seconds > 1' \
