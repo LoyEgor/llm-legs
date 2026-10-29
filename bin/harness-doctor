@@ -1364,7 +1364,8 @@ def c1_entry(c, out, entry, t, session, boots):
             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
                 name, args = str(block.get("name") or ""), block.get("input") or {}
                 command = str(args.get("command") or "") if name == "Bash" else ""
-                layer = "ask" if name in C1_ASK else "test" if C1_SUITE.search(command) else "media" if (
+                layer = "ask" if name in C1_ASK else "test" if ("test" in command or "run-" in command) and \
+                    C1_SUITE.search(command) else "media" if (
                     media_tool(command)) else "tool"
                 what = name + (":" + str(args["subagent_type"]) if args.get("subagent_type") else ":media" if layer == "media"
                                else ":worker" if WORKER_WAIT.search(command) else ":review" if REVIEW_WAIT.search(command) else "")
