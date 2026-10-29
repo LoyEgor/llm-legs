@@ -917,18 +917,26 @@ def wire_models(post_data: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-CATCH_LISTING = """(() => {
+def catch_bodies(rpcids) -> str:
+    """An init script keeping the page's own replies of these rpcids for drain(): Flow can cancel its stream after
+    parsing the payload, leaving CDP no response body (its listing 2026-10-19, an image reply 2026-10-29)."""
+    return """(() => {
+  const wanted = window.__gwWanted = window.__gwWanted || new Set();
+  %s.forEach(id => wanted.add(id));
   if (window.__gwListing) return;
   const bodies = window.__gwListing = [];
   const fetch = window.fetch;
   window.fetch = async function (...args) {
     const response = await fetch.apply(this, args);
-    if (response.url && (new URL(response.url).searchParams.get('rpcids') || '').split(',').includes(%s)) {
+    if (response.url && (new URL(response.url).searchParams.get('rpcids') || '').split(',').some(id => wanted.has(id))) {
       response.clone().text().then(body => bodies.push(body)).catch(() => {});
     }
     return response;
   };
-})();""" % json.dumps(LISTING_RPC)
+})();""" % json.dumps(sorted(rpcids))
+
+
+CATCH_LISTING = catch_bodies([LISTING_RPC])
 
 
 class Watcher:
@@ -949,9 +957,11 @@ class Watcher:
                 page.add_init_script(CATCH_LISTING)
             page.on("response", self._on_response)
 
-    def listing_ready(self, media_id: str | None = None) -> bool:
-        # Flow can cancel its stream after parsing the payload, leaving CDP no response body.
+    def drain(self) -> None:
         self.feed(self.page.evaluate("() => (window.__gwListing || []).splice(0).join('\\n')"))
+
+    def listing_ready(self, media_id: str | None = None) -> bool:
+        self.drain()
         return media_id in self.thumbs if media_id is not None else self.listed
 
     def _on_response(self, response) -> None:

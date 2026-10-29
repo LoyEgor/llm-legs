@@ -112,13 +112,17 @@ SEEN = """const seen = el => { const r = el.getBoundingClientRect();
 SEND_READY = "(sel) => { " + SEEN + " return ready(sel.send); }"
 # A send took when the prompt left the composer or a reply started streaming. A click the page swallows
 # leaves the prompt sitting in the composer while the job waits out the whole image timeout (live
-# 2026-10-15: two takes idled 600 s each with the send button lit).
+# 2026-10-15: two takes idled 600 s each with the send button lit). A posted turn counts too: ChatGPT puts the
+# prompt back in the composer when it fails the turn (Unknown error, live 2026-10-29: re-clicks posted it 3 times).
 SENT = "(arg) => { " + SEEN + """
   const norm = t => (t || '').replace(/\\s+/g, ' ').trim();
   const box = [...document.querySelectorAll(arg.sel.composer)].find(seen);
+  const turns = [...document.querySelectorAll(arg.sel.user)];
   return !box || !norm(box.innerText).includes(arg.head)
-    || [...document.querySelectorAll(arg.sel.stop)].some(seen);
+    || [...document.querySelectorAll(arg.sel.stop)].some(seen)
+    || turns.length > arg.turns && norm(turns[turns.length - 1].innerText).includes(arg.head);
 }"""
+TURN_FAILED = re.compile(r"^Unknown error\b")
 SEND_TRIES, SEND_CHECK_S = 3, 8
 MENU_TRIES, MENU_CHECK_S = 3, 5
 RESIZE_STARTED = "(sel) => { " + SEEN + """
@@ -502,13 +506,14 @@ def send(page, prompt: str, wait_s: float = 120) -> None:
     button = live(page, "send").first
     await_send_ready(page, wait_s)
     head = " ".join(prompt.split())[:40]
+    turns = page.locator(SELECTORS["user"]).count()
     for attempt in range(SEND_TRIES):
         if attempt:
             decline_offers(page)
         button.click(timeout=10000)
         try:
-            page.wait_for_function(SENT, arg={"sel": SELECTORS, "head": head}, timeout=SEND_CHECK_S * 1000,
-                                   polling=200)
+            page.wait_for_function(SENT, arg={"sel": SELECTORS, "head": head, "turns": turns},
+                                   timeout=SEND_CHECK_S * 1000, polling=200)
             return
         except Exception:  # noqa: BLE001
             continue
@@ -732,6 +737,7 @@ class Watch:
         self.page, self.account = page, account
         self.known = {image["src"] for image in before["images"]}
         self.replies = len(before["replies"])
+        self.failed_turns = sum(map(bool, map(TURN_FAILED.match, before["alerts"])))
         self.started = self.quiet_since = self.reloaded = time.time()
         self.chat, self.settled, self.reload_s, self.reloads, self.nudged = None, 0, reload_s, 0, False
 
@@ -760,6 +766,9 @@ class Watch:
                              until=int(until), chat=self.chat)
         if state["streaming"]:
             self.quiet_since, self.settled = time.time(), 0
+        elif not fresh and sum(map(bool, map(TURN_FAILED.match, state["alerts"]))) > self.failed_turns:
+            raise gw.Failure(1, f"ChatGPT failed the turn on {self.account}: {' '.join(said.split())[:200]}",
+                             chat=self.chat)
         elif fresh:
             self.settled += 1
             if self.settled >= 2:

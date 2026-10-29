@@ -674,6 +674,11 @@ page.swallow = 9
 failure, _ = render(page)
 assert failure.code == 1 and "left the prompt in the composer (3 clicks" in failure.reason, failure.reason
 assert [e for e in page.events if e == ("click", "send")] == [("click", "send")] * 3 and not page.sent
+# ChatGPT's own Unknown error under the posted turn ends the job at once; a history toast does not.
+started = time.time()
+failure, _ = render(Page(after=[{"alerts": ["Unable to load history\nRetry"]}, {"alerts": ["Unknown error\nRetry"]}]))
+assert failure.code == 1 and failure.reason.startswith("ChatGPT failed the turn on alpha: Unknown error"), failure.reason
+assert time.time() - started < 10, time.time() - started
 page = Page()
 page.uploads_land = False
 failure, _ = render(page, ref=refs[:2])
@@ -990,6 +995,18 @@ console.log(JSON.stringify((%s)({send: 'button'})));
 """ % cw.SEND_READY
 ready = subprocess.run(["node", "-e", js], capture_output=True, text=True, check=True).stdout.strip()
 assert ready == "true", ready
+# A turn ChatGPT posted and then failed puts the prompt back in the composer: that send took, never click again.
+js = """
+const el = text => ({getBoundingClientRect: () => ({width: 9, height: 9}), innerText: text});
+const sel = {composer: 'c', stop: 's', user: 'u'};
+globalThis.getComputedStyle = () => ({visibility: 'visible'});
+const sent = turns => { globalThis.document = {querySelectorAll: s => s === 'c' ? [el('a red  car on a hill')]
+  : s === 'u' ? Array.from({length: turns}, () => el('a red car on a hill')) : []};
+  return (%s)({sel, head: 'a red car on a hill', turns: 1}); };
+console.log(JSON.stringify([sent(1), sent(2)]));
+""" % cw.SENT
+sent = subprocess.run(["node", "-e", js], capture_output=True, text=True, check=True).stdout.strip()
+assert sent == "[false,true]", sent
 EOF
 
 # --- bounded teardown: Chrome's stdio off Playwright's pipes, a hung close killed, stacks on SIGTERM -----

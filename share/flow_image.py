@@ -79,6 +79,8 @@ class Images(gw.Watcher):
         self.images: dict[str, dict] = {}
         self.models: list[str] = []
         super().__init__(page)
+        if page is not None:
+            page.add_init_script(gw.catch_bodies(IMAGE_RPCS))
 
     def _on_response(self, response) -> None:
         if "rpcids=" not in response.url:
@@ -116,6 +118,9 @@ class Images(gw.Watcher):
             record["error"] = error.group(0)
 
     def new_images(self, known: set[str]) -> list[dict]:
+        if self.page is not None:
+            with contextlib.suppress(Exception):
+                self.drain()
         return [record for key, record in self.images.items() if key not in known]
 
 

@@ -1549,8 +1549,8 @@
     "model": "^gemini-image$",
     "detail": "\\d+ of \\d+ images came back within \\d+s"
    },
-   "title": "Flow image route waited out its 300 s after Flow had failed the generation",
-   "status": "fixed",
+   "title": "Flow image route waited out its timeout on takes Flow had failed or delivered unread",
+   "status": "fixed-pending",
    "fixes": [
     {
      "at": "2026-10-03T01:28:50+03:00",
@@ -1559,13 +1559,23 @@
       "llm-legs/share/flow_image.py"
      ],
      "in": "llm-legs@1cda77fd",
+     "regressed_at": "2026-10-29T17:11:48+02:00"
+    },
+    {
+     "at": "2026-10-29T18:59:51+02:00",
+     "by": "Fixer llm-image-20261029T164952Z-3a31",
+     "files": [
+      "llm-legs/share/flow_image.py",
+      "llm-legs/share/gemini_web.py"
+     ],
+     "in": null,
      "regressed_at": null
     }
    ],
    "same_cause": [],
-   "last_reviewed": "2026-10-04",
-   "reviewed_by": "LLM Doctor меню refactoring",
-   "note": "2026-10-04: BROWSER_REASONS reads `came back within` as browser no output, so the row matches by that word. com 22:15Z 2026-10-02 (322 s): jobs.jsonl has Flow's toast 'Failed to generate image' 11 s before the give-up, so the wait could not end well. await_takes now finds Flow's Failed card, presses its own Retry once and fails by name after it (tests/test_flow_image.sh card finder). The word is 'browser other' because no BROWSER_REASONS pattern reads 'came back within': the judge's change, the owner's.",
+   "last_reviewed": "2026-10-29",
+   "reviewed_by": "Fixer llm-image-20261029T164952Z-3a31",
+   "note": "2026-10-04 cause: Flow's Failed card (com 2026-10-02), Retry pressed once since 1cda77fd. 2026-10-29 cause: notcom 15:11Z and tronjhon 15:14Z (fanout 20261029T150548Z-27015, 2 of 15 Flow takes under load 130-250) failed '0 of 2 images came back within 120s' while both takes sat on top of the project grid (notcom shot shows the two Bloom Studio grids, tronjhon's .txt lists 'Fox Run Trail logo grid' first), no Failed card, no envelope error; successes read their ogiZ0b reply 20-41 s after send. Images read ogiZ0b only through CDP response.text(), which raises once Flow cancels its stream after parsing (60da7f67 met it on the listing RPC) and was swallowed. Now the page keeps ogiZ0b replies in the fetch catcher (gw.catch_bodies) and new_images drains it (tests/test_flow_image.sh CancelledPage, red on the old code). Not confirmed live: a take spends credits; a recurrence with the catcher in place means Flow sent ogiZ0b by XHR, not fetch.",
    "handoff": null
   },
   {
@@ -2330,7 +2340,7 @@
     "I48"
    ],
    "last_reviewed": "2026-10-29",
-   "reviewed_by": "Fixer llm-image-20261029T111952Z-5473",
+   "reviewed_by": "Fixer llm-image-20261029T164952Z-3a31",
    "note": "5 legs 19:48-20:34Z 2026-10-19, all from arbostar-logo chat bd2c928e (transcript): 3 codex-image calls combining --count with --region (r17/bin/run_a.sh, then two parallel tag edits), 2 a --region edit with --edit plus a --ref. Each refused before any request with its reason named above the usage (bin/codex-image:351, :386 as of 2026-10-29, still before any spend; no such refusal since), and the caller's next turn reran without the combination. The wrapper working as designed, like I35/I41/I48: proposed not-a-bug; `until` bounds it to this window. Not changed: --count with --region (N Markup chats of one edit) is a feature no caller has asked for; image-fanout refuses --region too.",
    "handoff": null
   },
@@ -2521,7 +2531,34 @@
    "same_cause": [],
    "last_reviewed": "2026-10-29",
    "reviewed_by": "Fixer llm-image-20261029T111952Z-5473",
-   "note": "egbogd 03:01Z 2026-10-29, the retry of I63's request: image_matte's edge band read 51.7 mean abs RGB over REDRAWN_LIMIT 45 (harness-ledger limit_hit:llm-legs:image-matte.redrawn, its first hit), so the cutout came back as is, as docs/image-vendors.md 'Background removal' specifies; the caller looked, rejected it and used image-cutout --edge hard. The guard working: a composite over a redrawn car shows the seam. Proposed not-a-bug; `until` bounds it to this event. Not changed: the limit (a judge-side threshold of the harness doctor, not this fixer's).",
+   "note": "egbogd 03:01Z 2026-10-29, the retry of I63's request: image_matte's edge band read 51.7 mean abs RGB over REDRAWN_LIMIT 45 (harness-ledger limit_hit:llm-legs:image-matte.redrawn, its first hit), so the cutout came back as is, as docs/image-vendors.md 'Background removal' specifies; the caller looked, rejected it and used image-cutout --edge hard. The guard working: a composite over a redrawn car shows the seam. Proposed not-a-bug; `until` bounds it to this event. Not changed: the limit (a judge-side threshold of the harness doctor, not this fixer's). Re-read by llm-image-20261029T164952Z-3a31: the same event, image_matte.py:108 unchanged; ruled out.",
+   "handoff": null
+  },
+  {
+   "id": "I65",
+   "block": "image",
+   "match": {
+    "word": "browser drift",
+    "model": "^codex-image$",
+    "detail": "the send click left the prompt in the composer"
+   },
+   "title": "ChatGPT failed the posted turn and send() re-posted it as a swallowed click",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-29T18:59:51+02:00",
+     "by": "Fixer llm-image-20261029T164952Z-3a31",
+     "files": [
+      "llm-legs/share/chatgpt_web.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-29",
+   "reviewed_by": "Fixer llm-image-20261029T164952Z-3a31",
+   "note": "egbogd 15:32Z and com 15:35Z 2026-10-29: each shot holds 3 and 2 identical user turns, an 'Unknown error / Retry' alert under the last and the prompt back in the composer; SENT read only the composer, so every click posted the turn again and the job ended as UI drift. 'Unable to load history' toasts also ride successful jobs, never a cause. Now SENT also accepts a new last user turn holding the prompt, and Watch fails at once on a new 'Unknown error' alert (tests/test_chatgpt_web.sh, red on the old code). Its recurrence now reads 'ChatGPT failed the turn on <account>: Unknown error' (browser other): ChatGPT's own error, the owner's to class.",
    "handoff": null
   }
  ],

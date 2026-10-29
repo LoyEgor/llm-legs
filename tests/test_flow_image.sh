@@ -593,6 +593,36 @@ denied.feed(")]}'\n" + json.dumps([["wrb.fr", "ogiZ0b", None, None, None, [3, No
                                      "generic"]]))
 assert denied.errors == {"PUBLIC_ERROR_QUOTA"} and denied.images == {}
 
+
+class CancelledPage:
+    """Flow cancelled its reply stream (live 2026-10-29: both takes on the page, none read): CDP has no body."""
+
+    def __init__(self):
+        self.scripts, self.listeners = [], []
+
+    def add_init_script(self, script):
+        self.scripts.append(script)
+
+    def on(self, event, listener):
+        self.listeners.append(listener)
+
+    def reply(self):
+        def lost():
+            raise RuntimeError("Network.getResponseBody: No data found for resource with given identifier")
+        for listener in self.listeners:
+            listener(types.SimpleNamespace(url=f"{gw.FLOW}/_/x/data/batchexecute?rpcids=ogiZ0b", text=lost,
+                                           request=types.SimpleNamespace(post_data="")))
+
+    def evaluate(self, script):
+        assert "__gwListing" in script, script
+        return body if any('"ogiZ0b"' in s for s in self.scripts) else ""
+
+
+cancelled = CancelledPage()
+caught = fi.Images(cancelled)
+cancelled.reply()
+assert [i["media_id"] for i in caught.new_images(set())] == ["m1", "m2"], caught.images
+
 inner = json.dumps([{"ctx": 1}, [[0, 1, 2, 3, 4, "GEM_PIX_2"], [0, 1, 2, 3, 4, "GEM_PIX_2"], "x"]])
 post = urllib.parse.urlencode({"f.req": json.dumps([[["ogiZ0b", inner, None, "generic"]]]), "at": "t"})
 assert fi.wire_models(post) == ["GEM_PIX_2"]
