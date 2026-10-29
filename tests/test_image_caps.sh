@@ -21,6 +21,13 @@ assert test "$(image_caps_model_check "$ROOT" grok video '')" = 'model=unknown m
 assert test "$(image_caps_model_check "$ROOT" grok video 'other-model')" = "model=other-model model_caps=stale verified=$video_model"
 assert test "$(jq -c 'select(.vendor == "grok" and .section == "model.video") | [.state, .what]' "$checks" | paste -sd' ' -)" = \
   "[\"fresh\",\"model=$video_model verified=$video_model\"] [\"stale\",\"model=other-model verified=$video_model\"]"
+wire=flow_image.models.pro.wire
+assert test "$(image_caps_wire_check "$ROOT" gemini "$wire" GEM_PIX_2)" = 'model=GEM_PIX_2 model_caps=fresh'
+assert test "$(image_caps_wire_check "$ROOT" gemini "$wire" '')" = 'model=unknown model_caps=unknown'
+assert test "$(image_caps_wire_check "$ROOT" gemini "$wire" BELUGA)" = 'model=BELUGA model_caps=stale verified=^GEM_PIX_2$'
+assert test "$(image_caps_wire_check "$ROOT" gemini video.models.lite.wire abra_x)" = 'model=abra_x model_caps=stale verified=none'
+assert test "$(jq -c 'select(.vendor == "gemini") | [.section, .state, .what]' "$checks" | paste -sd' ' -)" = \
+  "[\"$wire\",\"fresh\",\"model=GEM_PIX_2\"] [\"$wire\",\"stale\",\"model=BELUGA verified=^GEM_PIX_2\$\"] [\"video.models.lite.wire\",\"stale\",\"model=abra_x verified=none\"]"
 cli_version=$(jq -r '.cli.version' "$ROOT/share/image-caps/grok.json")
 printf '#!/bin/sh\necho "grok %s"\n' "$cli_version" >"$WORK/grok-current"
 printf '#!/bin/sh\necho "grok 9.9.9"\n' >"$WORK/grok-newer"

@@ -48,6 +48,22 @@ image_caps_model_check() { # root vendor kind observed -> "model=<observed> mode
   fi
 }
 
+# Flow names a wire key per mode, length and resolution, so the manifest keeps regexes; an unmatched key is a silent model swap.
+image_caps_wire_check() { # root vendor section observed -> "model=<observed> model_caps=fresh|stale|unknown"; section: dotted manifest path of the regex list
+  local root=$1 vendor=$2 section=$3 observed=$4 file verified
+  file=$(image_caps_file "$root" "$vendor")
+  if [ -z "$observed" ]; then
+    printf 'model=unknown model_caps=unknown\n'
+  elif jq -e --arg o "$observed" --arg s "$section" 'getpath($s | split(".")) | any(. as $p | $o | test($p))' "$file" >/dev/null; then
+    printf 'model=%s model_caps=fresh\n' "$observed"
+    image_caps_record "$vendor" "$section" fresh "model=$observed"
+  else
+    verified=$(jq -r --arg s "$section" 'getpath($s | split(".")) // [] | join(",")' "$file")
+    printf 'model=%s model_caps=stale verified=%s\n' "$observed" "${verified:-none}"
+    image_caps_record "$vendor" "$section" stale "model=$observed verified=${verified:-none}"
+  fi
+}
+
 image_caps_page_check() { # engine-result-json -> "caps=fresh" | "caps=stale what=<diff>" | nothing when it compared nothing
   jq -r 'select(.caps != null) | if (.caps | length) == 0 then "caps=fresh" else "caps=stale what=" + (.caps | join("; ")) end' <<<"$1"
 }

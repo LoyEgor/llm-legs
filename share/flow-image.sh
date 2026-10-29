@@ -281,13 +281,8 @@ flow_image_footer() {
   [ -z "$aspect" ] || image_leg_aspect_fit "$aspect" "$width" "$height" "${aspect_asked:+ asked=$aspect_asked}" || true
   if [ "$tool_op" = cutout ]; then
     printf 'tool=cutout bg_model=%s on_device=true\n' "$bg_model"
-  elif [ -z "$observed_model" ]; then
-    printf 'model=unknown model_caps=unknown\n'
-  elif jq -e --arg o "$observed_model" --arg m "$model" '.flow_image.models[$m].wire | any(. as $p | $o | test($p))' \
-      "$(image_caps_file "$root" gemini)" >/dev/null; then
-    printf 'model=%s model_caps=fresh\n' "$observed_model"
   else
-    printf 'model=%s model_caps=stale verified=%s\n' "$observed_model" "$(flow_image_caps ".models[\"$model\"].wire | join(\",\") | if . == \"\" then \"none\" else . end")"
+    image_caps_wire_check "$root" gemini "flow_image.models.$model.wire" "$observed_model"
   fi
   page_caps=$(image_caps_page_check "$flow_result")
   printf '%s surface=%s\n' "${page_caps:-caps=fresh}" "$(jq -r '.build // "unknown"' <<<"$flow_result")"
