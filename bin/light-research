@@ -93,11 +93,9 @@ part_dir=''
 persist=false
 units=0
 question_count=0
-fanout=false
 worst=0
 run_ids=()
 run_dirs=()
-unit_repos=()
 unit_questions=()
 resolved_repos=()
 
@@ -108,26 +106,26 @@ units_persist() {
   mkdir -p "$units_dir" || return 1
   : >"$units_dir/table" || return 1
   for ((u=0; u<units; u++)); do
-    printf '%s\t%s\t%s\t%s\n' "${run_ids[$u]}" "${run_dirs[$u]}" "${unit_questions[$u]}" "${unit_repos[$u]}" \
+    printf '%s\t%s\t%s\n' "${run_ids[$u]}" "${run_dirs[$u]}" "${unit_questions[$u]}" \
       >>"$units_dir/table" || return 1
   done
   printf '%s\n' "${resolved_repos[@]}" >"$units_dir/repos" || return 1
-  printf '%s\n%s\n%s\n' "$question_count" "$fanout" "$worst" >"$units_dir/shape" || return 1
+  printf '%s\n%s\n' "$question_count" "$worst" >"$units_dir/shape" || return 1
   sed -n '/^OUTCOME:/p' <<<"$failed_launch" >"$units_dir/launch" || return 1
 }
 
 units_load() { # run-id — true when the table holds that run
-  local id dir question repo line
+  local id dir question line
   [ -f "$units_dir/table" ] && [ -f "$units_dir/repos" ] && [ -f "$units_dir/shape" ] || return 1
   cut -f1 "$units_dir/table" | grep -qxF -- "$1" || return 1
-  run_ids=(); run_dirs=(); unit_questions=(); unit_repos=(); resolved_repos=()
-  while IFS=$'\t' read -r id dir question repo; do
+  run_ids=(); run_dirs=(); unit_questions=(); resolved_repos=()
+  while IFS=$'\t' read -r id dir question; do
     [ -n "$id" ] || continue
-    run_ids+=("$id"); run_dirs+=("$dir"); unit_questions+=("$question"); unit_repos+=("$repo")
+    run_ids+=("$id"); run_dirs+=("$dir"); unit_questions+=("$question")
   done <"$units_dir/table"
   while IFS= read -r line; do [ -n "$line" ] || continue; resolved_repos+=("$line"); done <"$units_dir/repos"
   units=${#run_ids[@]}
-  { read -r question_count; read -r fanout; read -r worst; } <"$units_dir/shape"
+  { read -r question_count; read -r worst; } <"$units_dir/shape"
   [[ "$question_count" =~ ^[0-9]+$ ]] && [[ "$worst" =~ ^[0-9]+$ ]] && [ "$units" -gt 0 ] || return 1
   part_dir=$units_dir
   persist=true
@@ -136,7 +134,7 @@ units_load() { # run-id — true when the table holds that run
 # Collect every unit, then assemble — the exit code is the worst rc of the batch, because a usage
 # limit one unit hit is what the caller routes on.
 units_finish() {
-  local u rc unit_failed=false combined repo_heading counts total=0 verified=0 links=0 checked
+  local u rc unit_failed=false combined counts total=0 verified=0 links=0 checked
   local unit_verified unit_total unit_links
   for ((u=0; u<units; u++)); do
     if [ "$persist" = true ] && [ -f "$units_dir/rc.$u" ]; then
@@ -152,33 +150,26 @@ units_finish() {
     [ "$rc" -eq 0 ] || unit_failed=true
     [ "$(code_rank "$rc")" -le "$(code_rank "$worst")" ] || worst=$rc
   done
-  [ "$persist" = false ] || printf '%s\n%s\n%s\n' "$question_count" "$fanout" "$worst" >"$units_dir/shape"
+  [ "$persist" = false ] || printf '%s\n%s\n' "$question_count" "$worst" >"$units_dir/shape"
   # A worst that no unit brought back is a later launch's failure: the launched units still land.
   [ "$unit_failed" = false ] || return "$worst"
   for ((u=0; u<units; u++)); do
     checked="$part_dir/checked.$u"
-    if [ "$fanout" = true ]; then
-      counts=$(research_citation_check "$part_dir/part.$u" "$checked" "${unit_repos[$u]}") || return 4
-    else
-      counts=$(research_citation_check "$part_dir/part.$u" "$checked" "${resolved_repos[@]}") || return 4
-    fi
+    counts=$(research_citation_check "$part_dir/part.$u" "$checked" "${resolved_repos[@]}") || return 4
     read -r unit_verified unit_total unit_links <<<"$counts"
     verified=$((verified + unit_verified))
     total=$((total + unit_total))
     links=$((links + unit_links))
   done
   combined="$part_dir/combined"
-  if [ "$units" -eq 1 ] && [ "$question_count" -eq 1 ] && [ "$fanout" = false ]; then
+  if [ "$units" -eq 1 ] && [ "$question_count" -eq 1 ]; then
     research_citation_body "$part_dir/checked.0" >"$combined" || return 4
   else
-    repo_heading='##'
-    [ "$question_count" -eq 1 ] || repo_heading='###'
     : >"$combined"
     for ((u=0; u<units; u++)); do
       if [ "$question_count" -gt 1 ] && { [ "$u" -eq 0 ] || [ "${unit_questions[$u]}" != "${unit_questions[$((u - 1))]}" ]; }; then
         printf '## Q%s\n\n' "$((${unit_questions[$u]} + 1))" >>"$combined"
       fi
-      [ "$fanout" = false ] || printf '%s %s\n\n' "$repo_heading" "${unit_repos[$u]}" >>"$combined"
       research_citation_body "$part_dir/checked.$u" >>"$combined" || return 4
       printf '\n' >>"$combined"
     done
@@ -249,7 +240,6 @@ timeout_seconds=$(research_duration_seconds "$timeout_value") && [ "$timeout_sec
 work=$(mktemp -d "${TMPDIR:-/tmp}/light-research.XXXXXX") || exit 4
 trap 'rm -rf "$work"' EXIT
 
-if research_fans_out_per_repo "$vendor" && [ "${#resolved_repos[@]}" -gt 1 ]; then fanout=true; fi
 geminib_bin=''
 if [ "$vendor" = gemini ]; then
   geminib_bin=$(command -v geminib 2>/dev/null) || unavailable gemini 'geminib is missing'
@@ -257,43 +247,36 @@ fi
 
 launch_failed=0 failed_launch=''
 for ((question=0; question<${#prompt_files[@]}; question++)); do
-  if [ "$fanout" = true ]; then targets=("${resolved_repos[@]}"); else targets=("${resolved_repos[0]}"); fi
-  for target in "${targets[@]}"; do
-    brief="$work/brief.$units"
-    # The state is resolved from the caller's prompt here and travels as a flag: the composed brief
-    # carries a REPOSITORY: prefix and a contract, so a WEB: header copied into it would sit where
-    # worker-run's header block no longer reaches and be refused.
-    { [ "$fanout" = false ] || printf 'REPOSITORY: %s\n\n' "$target"
-      web_search_brief_body "${prompt_files[$question]}"
-      printf '\n%s\n' "$LIGHT_RESEARCH_CONTRACT"; } >"$brief" || exit 4
-    args=(start "$vendor" --role research --model "$model" --brief "$brief" --workdir "$target" --research-timeout "$timeout_value")
-    case "${prompt_web[$question]}" in
-      on) args+=(--web-search) ;;
-      off) args+=(--no-web-search) ;;
-    esac
-    [ -z "$account" ] || args+=(--account "$account")
-    if [ "$fanout" = false ]; then
-      for ((i=1; i<${#resolved_repos[@]}; i++)); do args+=(--add-dir "${resolved_repos[$i]}"); done
-    fi
-    start_rc=0
-    if [ "$vendor" = gemini ]; then
-      launch=$(WORKER_RUN_GEMINIB="$geminib_bin" "$worker_run" "${args[@]}") || start_rc=$?
-    else
-      launch=$("$worker_run" "${args[@]}") || start_rc=$?
-    fi
-    printf '%s\n' "$launch"
-    # The units already launched are spending accounts of their own: abandoned here, they run to
-    # the end with nothing waiting on them and no answer anybody reads.
-    [ "$start_rc" -eq 0 ] || { launch_failed=$start_rc; failed_launch=$launch; break 2; }
-    run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
-    run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
-    [ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || { launch_failed=4; break 2; }
-    run_ids+=("$run_id")
-    run_dirs+=("$run_dir")
-    unit_repos+=("$target")
-    unit_questions+=("$question")
-    units=$((units + 1))
-  done
+  brief="$work/brief.$units"
+  # The state is resolved from the caller's prompt here and travels as a flag: the composed brief
+  # carries a contract, so a WEB: header copied into it would sit where worker-run's header block
+  # no longer reaches and be refused.
+  { web_search_brief_body "${prompt_files[$question]}"
+    printf '\n%s\n' "$LIGHT_RESEARCH_CONTRACT"; } >"$brief" || exit 4
+  args=(start "$vendor" --role research --model "$model" --brief "$brief" --workdir "${resolved_repos[0]}" --research-timeout "$timeout_value")
+  case "${prompt_web[$question]}" in
+    on) args+=(--web-search) ;;
+    off) args+=(--no-web-search) ;;
+  esac
+  [ -z "$account" ] || args+=(--account "$account")
+  for ((i=1; i<${#resolved_repos[@]}; i++)); do args+=(--add-dir "${resolved_repos[$i]}"); done
+  start_rc=0
+  if [ "$vendor" = gemini ]; then
+    launch=$(WORKER_RUN_GEMINIB="$geminib_bin" "$worker_run" "${args[@]}") || start_rc=$?
+  else
+    launch=$("$worker_run" "${args[@]}") || start_rc=$?
+  fi
+  printf '%s\n' "$launch"
+  # The units already launched are spending accounts of their own: abandoned here, they run to
+  # the end with nothing waiting on them and no answer anybody reads.
+  [ "$start_rc" -eq 0 ] || { launch_failed=$start_rc; failed_launch=$launch; break; }
+  run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
+  run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
+  [ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || { launch_failed=4; break; }
+  run_ids+=("$run_id")
+  run_dirs+=("$run_dir")
+  unit_questions+=("$question")
+  units=$((units + 1))
 done
 
 [ "$units" -gt 0 ] || exit "$launch_failed"

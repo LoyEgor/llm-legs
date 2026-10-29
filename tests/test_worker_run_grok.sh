@@ -188,30 +188,44 @@ start_ok grok --web-search
 assert await_exit
 assert test "$(grep -c '^ARG=--disable-web-search$' "$CALL_LOG")" -eq 0
 
-# 1.0.13 grants directories through --cwd alone and attaches no images, so those flags are refused
-# where a caller can still read the refusal instead of in a CLI error nobody sees.
-for grok_flag in "--add-dir $WORK/extra" "--image $WORK/image.png"; do
+# 1.0.70 grants a directory beside --cwd with --add-dir (repeatable): each grant rides the launch,
+# as on claudeb, codex and gemini.
+clear_stub
+start_ok grok --add-dir "$WORK/extra"
+assert await_exit
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$WORK/extra" '[$d]')"
+assert grep -qx 'ARG=--add-dir' "$CALL_LOG"
+assert grep -qxF "ARG=$(printf '%q' "$WORK/extra")" "$CALL_LOG"
+
+# No image attaches, and a resumed session keeps the folders it was created with (1.0.70 --add-dir
+# "Can't be combined with -r/-c"): both are refused where a caller can still read the refusal
+# instead of in a CLI error nobody sees.
+for grok_flag in "--image $WORK/image.png|grok does not support --image" \
+  "--resume grok-resumed-1 --add-dir $WORK/extra|grok resume does not support --add-dir"; do
   clear_stub
   rc=0
   # shellcheck disable=SC2086
-  "$RUNNER" start grok --brief "$WORK/brief" $grok_flag >"$WORK/grok-flag.out" 2>"$WORK/grok-flag.err" || rc=$?
+  "$RUNNER" start grok --brief "$WORK/brief" ${grok_flag%%|*} >"$WORK/grok-flag.out" 2>"$WORK/grok-flag.err" || rc=$?
   assert test "$rc" -eq 4
-  assert grep -q 'grok does not support --add-dir or --image' "$WORK/grok-flag.err"
+  assert grep -qF "${grok_flag#*|}" "$WORK/grok-flag.err"
   assert test ! -s "$CALL_LOG"
 done
 fi
 
 if suite_shard_owns 3 grok-research-resume-accounts; then
 set_config 'grok_effort=high'
-# A research run is refused with them: grok reads the one tree `--cwd` names, so a brief over
-# several repositories would be answered from the only one the run could open.
+# A research run over several repositories reads them all through --add-dir, inside the write-deny
+# sandbox that holds every one of them.
 clear_stub
-rc=0
-"$RUNNER" start grok --brief "$WORK/brief" --role research --add-dir "$WORK/extra" \
-  >"$WORK/grok-research.out" 2>"$WORK/grok-research.err" || rc=$?
-assert test "$rc" -eq 4
-assert grep -q 'grok does not support --add-dir or --image' "$WORK/grok-research.err"
-assert test ! -s "$CALL_LOG"
+printf '#!/usr/bin/env bash\nshift 2\nexec "$@"\n' >"$WORK/bin/sandbox-exec"
+chmod +x "$WORK/bin/sandbox-exec"
+set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok'
+RESEARCH_SANDBOX_EXEC="$WORK/bin/sandbox-exec" start_ok grok --role research --add-dir "$WORK/extra"
+assert await_exit
+assert grep -qx 'ARG=--add-dir' "$CALL_LOG"
+assert grep -qxF "ARG=$(printf '%q' "$WORK/extra")" "$CALL_LOG"
+assert grep -qF "(deny file-write* (subpath \"$(readlink -f "$WORK/extra")\"))" "$RUN_DIR/sandbox.sb"
+set_config 'grok_effort=high'
 
 # A continued session rides `-r`: `-s` only ever CREATES and rejects an id that already exists, so
 # handing it the session to continue ends the run before the brief is read.

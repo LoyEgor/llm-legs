@@ -33,7 +33,7 @@ grok_session_dir_matches() { # session-dir workdir
 
 # Grok has no read-only mode, so a research run gets the gemini research leg's write-deny sandbox.
 supervise_grok() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied search_arg
+  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied search_arg value
   local research=false sandbox_exec profile
   local -a command
   if [ "$(jq -r '.role // "workers"' "$meta")" = research ]; then
@@ -56,6 +56,9 @@ supervise_grok() {
   [ "$model" = auto ] || command+=(-m "$model")
   # `-r` resumes; `-s` only ever CREATES and rejects an id that already exists (live 1.0.13).
   [ -z "$resume" ] || command+=(-r "$resume")
+  REPLY_ARRAY=()
+  read_json_array '.add_dirs[]' "$meta"
+  for value in "${REPLY_ARRAY[@]}"; do command+=(--add-dir "$value"); done
   while IFS= read -r search_arg; do command+=("$search_arg"); done < <(web_search_args grok "$(web_search_meta_state "$meta")")
   [ "$research" = false ] || command=("$sandbox_exec" -p "$profile" "${command[@]}")
   run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"

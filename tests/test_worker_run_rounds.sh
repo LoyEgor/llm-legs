@@ -439,15 +439,18 @@ done
 clear_stub
 set_config 'grok_model=auto' 'grok_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=grokacct
-# grok takes no --add-dir, so a round over several repositories grants it none: one run per repository.
+# grok takes --add-dir since 1.0.70, so a round over several repositories grants it every one of
+# them like the other vendors: its writes there have a baseline instead of reading as escaped.
 clear_stub
 printf 'ROUND: 20260801T160000Z-1b2c3d4\nFix the confirmed findings.\n' >"$WORK/round-brief"
 "$RUNNER" start grok --brief "$WORK/round-brief" --workdir "$round_repos/alpha" \
   >"$WORK/start.out" 2>"$WORK/start.err" || fail "grok multi-repository round start failed: $(<"$WORK/start.err")"
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
-assert test "$(jq -c '.add_dirs // []' "$RUN_DIR/meta.json")" = '[]'
+assert test "$(jq -c '.add_dirs // []' "$RUN_DIR/meta.json")" \
+  = "$(jq -cn --arg root "$round_repos" '[$root + "/beta", $root + "/gamma"]')"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
 assert await_exit
+assert grep -qx "ARG=$(printf '%q' "$round_repos/gamma")" "$CALL_LOG"
 
 fi
 

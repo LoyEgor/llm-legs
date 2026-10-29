@@ -642,16 +642,16 @@ start_run() {
   [ "$role" != workers ] || [ "$workdir" != "$(cd "$HOME" && pwd -P)" ] ||
     fail "workdir is the home directory, where no run's files can be tracked: launch with --workdir <the repository the brief works in>, plus one 'ADD-DIR: <dir>' header line per other repository it writes; a run that writes no repository launches in a scratch directory. Nothing was launched and no account was spent."
   # Every repository of the round is the fixer's to write, and a write outside workdir and
-  # --add-dir has no content baseline: the run's changes there read as escaped. A codex resume and
-  # grok take no --add-dir, so they are granted none and fix one repository a run.
-  if [ -n "$review_round" ] && [ "$vendor" != grok ] &&
-    { [ "$vendor" != codex ] || [ -z "$resume" ]; }; then
+  # --add-dir has no content baseline: the run's changes there read as escaped. A codex or grok
+  # resume takes no --add-dir, so it is granted none and fixes one repository a run.
+  if [ -n "$review_round" ] &&
+    { { [ "$vendor" != codex ] && [ "$vendor" != grok ]; } || [ -z "$resume" ]; }; then
     while IFS= read -r value; do
       [ -d "$value" ] && ! same_repository "$value" "$workdir" ${add_dirs[@]+"${add_dirs[@]}"} &&
         add_dirs+=("$value")
     done < <(jq -r '.repos[]? | objects | .repo // empty' "$(review_bench_dir "$review_round")/meta.json" 2>/dev/null)
   fi
-  if [ "$light" != research ] && [ "$vendor" != grok ] && { [ "$vendor" != codex ] || [ -z "$resume" ]; }; then
+  if [ "$light" != research ] && { { [ "$vendor" != codex ] && [ "$vendor" != grok ]; } || [ -z "$resume" ]; }; then
     resolved_add_dirs='' resolved_read=''
     while IFS= read -r value; do
       [ -d "$value" ] && value=$(cd "$value" && pwd -P) && [ "$value" != "$workdir" ] || continue
@@ -719,10 +719,10 @@ start_run() {
       [ "$(($(wc -c <"$brief" | tr -d '[:space:]') + ${#fix_rule} + ${#BRIEF_PREAMBLE} + 128))" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
       ;;
     grok)
-      # `--cwd` is the whole of grok's directory grant (1.0.13 has no --add-dir), so research gets no
-      # exemption here the way claudeb's read-only mode does: the extra trees would reach neither the
-      # CLI nor the run, and the answer would be about repositories nobody read. No image either.
-      [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image; a run over several repositories needs another vendor, or one run per repository'
+      # 1.0.70 --add-dir "Can't be combined with -r/-c: a resumed session keeps the folders it was
+      # created with".
+      [ -z "$resume" ] || [ "${#add_dirs[@]}" -eq 0 ] || fail 'grok resume does not support --add-dir'
+      [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --image'
       ;;
   esac
   if [ "$light_offrow" = true ]; then
@@ -1022,6 +1022,7 @@ start_run() {
       [ -z "$grok_turns" ] || command_meta+=(--max-turns "$grok_turns")
       [ "$model" = auto ] || command_meta+=(-m "$model")
       [ -z "$resume" ] || command_meta+=(-r "$resume")
+      for value in "${add_dirs[@]}"; do command_meta+=(--add-dir "$value"); done
       while IFS= read -r value; do command_meta+=("$value"); done < <(web_search_args grok "$web_search_state")
       ;;
   esac

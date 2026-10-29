@@ -10,10 +10,6 @@ resolve_path() {
   if [ -e "$1" ]; then readlink -f "$1"; else printf '%s\n' "$1"; fi
 }
 
-# `--cwd` is the whole of grok's directory grant (worker-run refuses --add-dir there), so a
-# question over several repositories becomes one run per repository instead of one run over all.
-research_fans_out_per_repo() { [ "$1" = grok ]; }
-
 LIGHT_RESEARCH_CONTRACT='ANSWER CONTRACT (appended by light-research; the answer is checked mechanically):
 Write every factual claim as ONE line of its own, in this shape:
   <path>:<line> | "exact quoted text" | <the claim>
