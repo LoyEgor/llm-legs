@@ -71,7 +71,7 @@ persist_run_files() {
       RUN_OTHERS_NAMED=$(others_named_paths "$directory" "$top" "${EPOCHSECONDS:-$(date +%s)}")
       RUN_FILES_UNNAMED=$(comm -23 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
                                    <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u) |
-                          unowned_rows "$workdir" "$RUN_OTHERS_NAMED")
+                          unowned_rows "$(cd "$workdir" 2>/dev/null && pwd -P || printf '%s' "$workdir")" "$RUN_OTHERS_NAMED")
     fi
   fi
   {
@@ -528,23 +528,29 @@ listing_top_paths() { # directory top workdir
 # to its chat, and 289 of the 551 runs with dirt in the 30 days before held such a path). An UNKNOWN
 # listing names nothing: its rows are the raw snapshot.
 others_named_paths() { # directory top [end: the listing's own mtime, read where it is already written]
-  local directory="$1" top="${2%/}" floor="$1/dirty-before-shas" end="${3:-}" other born
-  local -a listings=()
+  local directory="$1" top="${2%/}" floor="$1/dirty-before-shas" end="${3:-}" other born line base
+  local -a operands=()
+  local -A physical=()
   [ -n "$top" ] && [ -f "$floor" ] || return 0
   [ -n "$end" ] || { file_lstat "$directory/files" && end=$FILE_MTIME; } || end=${EPOCHSECONDS:-$(date +%s)}
   for other in "${directory%/*}"/*-*; do
     born=${other##*/} born=${born#*-} born=${born%%-*}
     [[ $born =~ ^[0-9]+$ ]] && [ "$born" -le "$end" ] && [ "$other" != "$directory" ] &&
-      [ "$other/files" -nt "$floor" ] && listings+=("$other/files")
+      [ "$other/files" -nt "$floor" ] || continue
+    { IFS= read -r line <"$other/files"; } 2>/dev/null && [[ $line == 'WORKDIR: '?* ]] || continue
+    # Rows are spelled against the workdir as launched, top as git resolves it (/var → /private/var).
+    base=${line#WORKDIR: } base=${base%/}
+    [ -n "${physical[$base]+x}" ] || physical[$base]=$(cd "$base" 2>/dev/null && pwd -P) || physical[$base]=$base
+    operands+=("base=${physical[$base]}" "$other/files")
   done
-  [ "${#listings[@]}" -gt 0 ] || return 0
+  [ "${#operands[@]}" -gt 0 ] || return 0
   AWK_TOP=$top/ awk '
-    FNR == 1 { base = ""; unknown = 0 }
-    /^WORKDIR: / { base = substr($0, 10); sub(/\/+$/, "", base); next }
+    FNR == 1 { unknown = 0 }
+    /^WORKDIR: / { next }
     /^UNKNOWN: / { unknown = 1; next }
     /^PARTIAL: / || !NF || unknown { next }
-    { path = substr($0, 1, 1) == "/" ? $0 : (base == "" ? "" : base "/" $0) }
-    path != "" && index(path, ENVIRON["AWK_TOP"]) == 1 { print path }' "${listings[@]}" 2>/dev/null | sort -u
+    { path = substr($0, 1, 1) == "/" ? $0 : base "/" $0 }
+    index(path, ENVIRON["AWK_TOP"]) == 1 { print path }' "${operands[@]}" 2>/dev/null | sort -u
 }
 
 # The rows on stdin, spelled relative to base or absolute, that no absolute path in owned names.
