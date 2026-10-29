@@ -327,6 +327,8 @@ def class_mentions(word):
 
     def walk(node, path):
         if isinstance(node, dict):
+            if "surface" in node:
+                return
             for key, value in node.items():
                 if named.match(key):
                     places.append((CAPS_GEMINI, "%s.%s" % (path, key)))

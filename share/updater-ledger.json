@@ -1,6 +1,47 @@
 {
   "owner": "Updater doctor",
-  "rows": [],
+  "rows": [
+    {
+      "id": "family-gone:gemini/pro",
+      "title": "family-gone named Flow's own image model key pro (Nano Banana Pro) as the gone agy class gemini pro",
+      "match": {"rule": "family-gone", "key": "gemini/pro"},
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:20:00+02:00",
+          "by": "updater-doctor-20261029T053428Z-33f1",
+          "files": ["llm-legs/bin/updater-doctor"],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "updater-doctor-20261029T053428Z-33f1",
+      "note": "2026-10-29: the agy union (fingerprints/gemini.json, 01:49Z) lists only argon and flash38, so pro really left every account; but all 3 hits were .flow_image (models.pro, default_model, tools.models), Flow's own catalog keyed by wire ids (GEM_PIX_2), not an agy class. class_mentions now skips every manifest section carrying a surface (video, music, flow_music, flow_image, speech: each its own page catalog); listen, the one section bound to agy families, still counts. Worker conf and bin/gemini* usage lines named no pro. Not checked: whether Flow still serves Nano Banana Pro (flow_image verified 2026-10-02), the Flow route's own check owns that.",
+      "handoff": null
+    },
+    {
+      "id": "caps-stale:grok/cli",
+      "title": "grok image manifest pinned cli 1.0.62 while 1.0.67 then 1.0.70 ran, 127 stale checks from 2026-10-22",
+      "match": {"rule": "caps-stale", "key": "grok/cli"},
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:20:00+02:00",
+          "by": "updater-doctor-20261029T053428Z-33f1",
+          "files": ["llm-legs/share/image-caps/grok.json"],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "updater-doctor-20261029T053428Z-33f1",
+      "note": "2026-10-29: one media-run image take on 1.0.70 delivered (rawilimo, 1024x1024) with caps=stale; grok-native 1.0.70 strings match the manifest (ImageGenInput 2, ImageEditInput 3, ImageToVideoInput 4, ReferenceToVideoInput 9, VideoKeyframeInput 2 fields, generate and edit aspect lists, 14 video refs, 3 voices, 4 keyframes, 480p/720p, 1-15 s, video model 1.5, both image overrides, no video override); cli.version 1.0.70, verified 2026-10-29; the next take read caps=fresh model_caps=fresh. Main keeps recording stale until this branch lands. The open release event grok-20261022T015953Z is vendor-fingerprint's (event-waiting), not touched.",
+      "handoff": null
+    }
+  ],
   "blind_spots": [
     {
       "id": "announced-not-served",
