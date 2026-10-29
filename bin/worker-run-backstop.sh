@@ -77,7 +77,8 @@ lines=''
 run_dirs() { local LC_COLLATE=C; runs=("$run_root"/*/); }
 run_dirs
 ids=()
-unheld=''
+starters=''
+bare=''
 for run in "${runs[@]}"; do
   run=${run%/}
   [ ! -e "$run/exit_code" ] && [ -f "$run/state.json" ] || continue
@@ -87,33 +88,34 @@ for run in "${runs[@]}"; do
   id=${run##*/}
   case "$id" in *[!A-Za-z0-9._-]*) continue ;; esac
   ids+=("$id")
-  [ -n "$unheld" ] && continue
-  unheld=1
-  while read -r pid _; do
-    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && kill -0 "$pid" 2>/dev/null && { unheld=''; break; }
+  held=''
+  while read -r pid began; do
+    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] || continue
+    starters=$starters"s/$id $pid $began"$'\n'
+    held=1
   done 2>/dev/null <"$run/starter"
+  [ -n "$held" ] || bare=1
 done
+# While every run's starter lives (a `worker-run run` Bash is its run's starter) nothing needs the chat's
+# process tree: a stall stretching each process start took that read past the 5 s cap (2026-10-29). A run
+# with no starter to ask settles its wait first, as an owned run never needs the listing below.
+held=''
+if [ -n "$starters" ] && [ -z "$bare" ]; then
+  held=$'\n'$(printf '%s' "$starters" | pids_alive_since)$'\n'
+  for id in "${ids[@]}"; do case "$held" in *$'\n'"s/$id"$'\n'*) ;; *) held=''; break ;; esac; done
+fi
 # A run is held by a starter still alive and needs a
-# wait only while its supervisor lives: every run's two answers come off one listing. While every run's
-# starter pid exists (a `worker-run run` Bash is its run's starter) the chat's process tree is read only for
-# a run that listing finds unheld: a stall stretching each process start took both reads past the 5 s cap
-# (2026-10-29).
-if [ "${#ids[@]}" -gt 0 ] && { [ -z "$unheld" ] || ! owned; }; then
+# wait only while its supervisor lives: every run's two answers come off one listing.
+if [ "${#ids[@]}" -gt 0 ] && [ -z "$held" ] && ! owned; then
   live=$'\n'$({
     metas=()
-    for id in "${ids[@]}"; do
-      metas+=("$run_root/$id/meta.json")
-      while read -r pid began; do
-        [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] &&
-          printf 's/%s %s %s\n' "$id" "$pid" "$began"
-      done 2>/dev/null <"$run_root/$id/starter"
-    done
+    for id in "${ids[@]}"; do metas+=("$run_root/$id/meta.json"); done
+    printf '%s' "$starters"
     jq -r 'select((.pid | numbers) > 1) | "r/\(input_filename | split("/") | .[-2]) \(.pid) \(.pid_started_at | numbers // 0)"' \
       "${metas[@]}" 2>/dev/null
   } | pids_alive_since)$'\n'
   for id in "${ids[@]}"; do
     case "$live" in *$'\n'"s/$id"$'\n'*) continue ;; *$'\n'"r/$id"$'\n'*) ;; *) continue ;; esac
-    ! owned || break
     tag=$(head -n1 "$run_root/$id/tag" 2>/dev/null)
     lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — \`$(resume_of run "$id")\`"
   done

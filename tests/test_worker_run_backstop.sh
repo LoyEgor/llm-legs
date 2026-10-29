@@ -198,7 +198,8 @@ assert_eq "" "$(unset WORKER_RUN_BACKSTOP_CHAT_PID; PATH="$WORK/shim:$PATH" HOOK
 assert_eq 2 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
 # Runs no wait owns cost one more table read and one jq for all of them, held by a live starter or not: a ps
 # and a jq per run took a night orchestrator's hundred live runs past the stop's 5 s cap (2026-10-13). Runs
-# whose starters all live never read the chat's process tree (a stall took that read past the cap, 2026-10-29).
+# whose starters all live read neither the chat's process tree nor their supervisors (a stall took that read
+# past the cap, 2026-10-29).
 mkdir -p "$WORK/tally"
 for tool in ps jq; do
   printf '#!/bin/sh\necho %s >>"%s/tally-calls"\nexec %s "$@"\n' "$tool" "$WORK" "$(command -v "$tool")" >"$WORK/tally/$tool"
@@ -207,7 +208,7 @@ done
 WORKER_RUN_DIR="$WORK/runs-started"
 for i in $(seq 4 15); do run "r$i" s1 codex; printf '%s %s\n' "$LIVE_PID" "$live_began" >"$WORKER_RUN_DIR/r$i/starter"; done
 assert_eq "" "$(PATH="$WORK/tally:$PATH" stop)"
-assert_eq "2 jq 1 ps" "$(sort "$WORK/tally-calls" | uniq -c | xargs)"
+assert_eq "1 jq 1 ps" "$(sort "$WORK/tally-calls" | uniq -c | xargs)"
 for i in $(seq 4 9); do printf '999999 %s\n' "$live_began" >"$WORKER_RUN_DIR/r$i/starter"; done
 assert_eq "r4 r5 r6 r7 r8 r9" "$(stop | reason | sed -n 's/^- worker run \([^ ]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
 forget
