@@ -509,12 +509,17 @@ assert test "$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/affected-suites.sh" --repo "
 assert_fails bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap missing-ref
 assert_fails bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap
 
-# --profile: each suite's shimmed calls land in its entry; without it no shim and no execs key.
+# --profile: each suite's shimmed calls land in its entry; without it no shim and no execs key. sleep_s is
+# the time slept: a `sleep 30` killed once it runs (still the sleep at $!) adds nothing near 30, and
+# Python's time.sleep adds its seconds, named by call site.
 R7="$WORK/r7"
 new_repo "$R7"
-suite "$R7" test_prof.sh 'for i in 1 2 3; do jq -n 1 >/dev/null; done; sleep 0.1; sleep 0.1'
+suite "$R7" test_prof.sh 'for i in 1 2 3; do jq -n 1 >/dev/null; done; sleep 0.1; sleep 0.1
+sleep 30 & p=$! n=0; while [ "$(ps -o comm= -p $p)" != sleep ] && [ $((n += 1)) -lt 300 ]; do :; done; kill $p; wait $p || :
+python3 -c "import time; time.sleep(0.3)"'
 bash "$ROOT/share/run-suites.sh" --repo "$R7" --profile >/dev/null 2>&1
-assert jqe '.suites["test_prof.sh"] | .rc == 0 and .execs.jq == 3 and .execs.sleep == 2 and (.sleep_s - 0.2 | fabs) < 0.001' <(tail -1 "$JOURNAL")
+assert jqe '.suites["test_prof.sh"] | .rc == 0 and .execs.jq == 3 and .execs.sleep == 3 and .sleep_s > 0.5 and .sleep_s < 3
+  and (.sleep_sites | keys == ["<string>:1"]) and (.sleep_sites["<string>:1"] - 0.3 | fabs) < 0.05' <(tail -1 "$JOURNAL")
 bash "$ROOT/share/run-suites.sh" --repo "$R7" >/dev/null 2>&1
 assert jqe '.suites["test_prof.sh"] | .rc == 0 and (has("execs") or has("sleep_s") | not)' <(tail -1 "$JOURNAL")
 

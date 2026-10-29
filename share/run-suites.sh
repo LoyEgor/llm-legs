@@ -50,9 +50,10 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
   --all         also run the suites skipped by default because they read live machine state
                 (llm-legs e2e_surfaces.sh, test_instruction_rates_live.sh)
   --profile     each suite's calls of jq python3 lua git sleep date sed grep awk mktemp bash go through
-                PATH shims into its journal entry: `execs` {binary: count} and `sleep_s`, the seconds
-                its sleeps asked for. A fork per call, so never on by default; a suite that sets its
-                own PATH or calls absolute binaries shows fewer counts
+                PATH shims into its journal entry: `execs` {binary: count}, `sleep_s`, the seconds
+                its sleeps and Python's time.sleep ran (killed ones up to the kill), and
+                `sleep_sites`, the top three time.sleep call sites. A fork per call, so never on by
+                default; a suite that sets its own PATH or calls absolute binaries shows fewer counts
   suite ...     explicit suite names or paths; skips discovery
 
 Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3 clamped 2 to 4 always, up to 4
@@ -325,6 +326,42 @@ fi
 run_slot=${RUN_SUITES_SLOT:-}
 
 logdir=$(mktemp -d "${TMPDIR:-/tmp}/run-suites.XXXXXX") || fail 'could not create a log directory'
+# --profile journals the seconds a sleep ran, not asked: a fixture's `sleep 600` killed at once slept
+# nothing. The sleep shim execs, so $! stays the sleep; its watcher waits on that pid off the suite's
+# signals and pipes. Python's time.sleep is timed by call site through a sitecustomize that chains on.
+if $profile && mkdir -p "$logdir/prof"; then
+  cat >"$logdir/prof/watch" <<'EOF'
+trap '' TERM INT HUP
+caffeinate -w "$W_PID" 2>/dev/null || while kill -0 "$W_PID" 2>/dev/null; do "$W_REAL" 0.05; done
+us=$(( 10#${EPOCHREALTIME//[!0-9]/} - 10#${W_T//[!0-9]/} ))
+printf 'slept %d.%06d\n' $((us / 1000000)) $((us % 1000000)) >>"$W_LOG"
+EOF
+  cat >"$logdir/prof/sitecustomize.py" <<'EOF'
+import os, sys, time
+_log, _sleep, _clock = os.environ.get("RUN_SUITES_PYSLEEP_LOG"), time.sleep, time.monotonic
+def _timed(seconds):
+    start = _clock()
+    try:
+        _sleep(seconds)
+    finally:
+        try:
+            frame = sys._getframe(1)
+            site = "".join(c if c.isalnum() or c in "._-<>" else "_" for c in os.path.basename(frame.f_code.co_filename))
+            with open(_log, "a") as handle:
+                handle.write("pysleep %.6f %s:%d\n" % (_clock() - start, site, frame.f_lineno))
+        except Exception:
+            pass
+if _log:
+    time.sleep = _timed
+_here = os.path.dirname(os.path.abspath(__file__))
+for _dir in sys.path:
+    _next = os.path.join(_dir or ".", "sitecustomize.py")
+    if os.path.abspath(_dir or ".") != _here and os.path.isfile(_next):
+        with open(_next) as _handle:
+            exec(compile(_handle.read(), _next, "exec"), {"__name__": "sitecustomize", "__file__": _next})
+        break
+EOF
+fi
 # The statusline's work probe finds this run by its pid, counts its .status files for `n/m` and
 # names the repository from here: this process never leaves the caller's directory.
 progress_file="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/suites-$$"
@@ -344,9 +381,11 @@ journal_run() {
     [ -r "$logdir/$name.status" ] && IFS=$'\t' read -r rc secs real bound cpu <"$logdir/$name.status"
     [ "$real" != - ] || real=''
     execs=''
-    [ ! -e "$logdir/$name.execs" ] || execs=$(LC_ALL=C awk '{ n[$1]++ }
-      $1 == "sleep" { for (i = 2; i <= NF; i++) { u = substr($i, length($i)); s += $i * (u == "m" ? 60 : u == "h" ? 3600 : u == "d" ? 86400 : 1) } }
-      END { printf "\"execs\":{"; for (b in n) printf "%s\"%s\":%d", c++ ? "," : "", b, n[b]; printf "},\"sleep_s\":%.3f", s }' "$logdir/$name.execs")
+    [ ! -e "$logdir/$name.execs" ] || execs=$(LC_ALL=C awk '$1 == "slept" { s += $2; next }
+      $1 == "pysleep" { s += $2; if (!($3 in p)) k++; p[$3] += $2; next } { n[$1]++ }
+      END { printf "\"execs\":{"; for (b in n) printf "%s\"%s\":%d", c++ ? "," : "", b, n[b]; printf "},\"sleep_s\":%.3f", s
+        if (k) { printf ",\"sleep_sites\":{"; for (i = 0; i < 3 && i < k; i++) { m = ""; for (x in p) if (m == "" || p[x] > p[m]) m = x
+          printf "%s\"%s\":%.3f", i ? "," : "", m, p[m]; delete p[m] } printf "}" } }' "$logdir/$name.execs")
     [ -z "${shards[$name]:-}" ] || execs="\"shards\":${shards[$name]}${execs:+,$execs}"
     if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu" "$bound" "$execs"
     else complete=false stopped+=" $name"; fi
@@ -478,12 +517,17 @@ run_one() { # suite-path [shard i/N]
     if $profile && mkdir -p "$logdir/$job.shims" && : >>"$logdir/$name.execs"; then
       for bin in jq python3 lua git sleep date sed grep awk mktemp bash; do
         real=$(type -P "$bin") || continue
-        args=''; [ "$bin" != sleep ] || args=' $*'
-        printf '%s\n' '#!/bin/sh' "printf '%s\\n' \"$bin$args\" >>\"$logdir/$name.execs\"" "exec \"$real\" \"\$@\"" \
-          >"$logdir/$job.shims/$bin"
+        if [ "$bin" = sleep ]; then
+          printf '%s\n' "#!$BASH" "printf 'sleep\\n' >>\"$logdir/$name.execs\"" \
+            "W_PID=\$\$ W_T=\$EPOCHREALTIME W_LOG=\"$logdir/$name.execs\" W_REAL=\"$real\" \"$BASH\" \"$logdir/prof/watch\" </dev/null >/dev/null 2>&1 &" \
+            "exec -a sleep \"$real\" \"\$@\""
+        else
+          printf '%s\n' '#!/bin/sh' "printf '%s\\n' \"$bin\" >>\"$logdir/$name.execs\"" "exec \"$real\" \"\$@\""
+        fi >"$logdir/$job.shims/$bin"
       done
       chmod +x "$logdir/$job.shims"/*
       PATH="$logdir/$job.shims:$PATH"
+      export RUN_SUITES_PYSLEEP_LOG="$logdir/$name.execs" PYTHONPATH="$logdir/prof${PYTHONPATH:+:$PYTHONPATH}"
     fi
     cd "$repo" || exit 4
     # Absolute, not -n: a nested run must stay at 10, not sink further. $BASHPID, not $$:
