@@ -11,4 +11,7 @@ Speed row `opportunity:adhoc/logo-bench` (ledger `speed-adhoc-logo-bench`), 24 h
 `pixforge` subcommand or a `bench/` script, named in the worker briefs where the probe would start; if the probes are
 each a new question, say so here and close it.
 
+Also (row `log_audit:worker-env-pitfalls-python-zsh`): workers keep trying bare `python3` (no PIL/numpy) before
+`.venv/bin/python`; no file a worker reads here names it. Name it in the README or a CLAUDE.md, or in the brief templates.
+
 Done when `share/tool_mining.py --calls` shows the command in place of the scripts, or this file says none serves.

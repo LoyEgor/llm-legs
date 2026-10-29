@@ -20,5 +20,8 @@ Egor (2026-10-14): a job concentrated in one project is that project's; its comm
   so a candidate re-traces champ46..60 per input while `out/champ60` holds the 96 parent SVGs. Lever: take the parent's SVG
   from `out/<parent>/` when present (PYTHONHASHSEED=0, 1 thread: deterministic; prove byte-equal `out/champ61`).
 
+Also (row `log_audit:worker-env-pitfalls-python-zsh`): lane and judge workers keep trying bare `python3` (no PIL)
+before `tracers/champ47-soft/.venv/bin/python`; name the lane interpreter in the brief templates or the README.
+
 Done when the next rounds' calls show the commands instead of the scripts; the Speed doctor reads it as each cluster's
 residual falling (`share/tool_mining.py --calls`).

@@ -4049,7 +4049,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-29 (run 387d): quiet; cause still gone (relays retired, ee185fa8). 2026-10-20 (run 2c2a): ruled out, cause gone: the relays and their 540 s rounds retired (ee185fa8, 92a22609); a model's own fixed-sleep polls are row tool-idea-wait-until's. Night e2f7: quiet; cause gone (ee185fa8, 92a22609), dismissal proposed in the handoff. Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held. Night 817e: the relay rounds are gone (ee185fa8): a chat waits with a background worker-run wait, light-research waits its run out (92a22609). Night 4c4e: quiet; relay rounds are gone with the relays (ee185fa8), waits are background Bash. Night 3131: quiet; cause still gone. A worker's own 46x30 s grep poll on run-all (row worker-suite-run-waits) is its command, not a relay round.",
+      "note": "2026-10-29 (run 2dc2): quiet; cause still gone (relays retired). Seen: Rentiva workers spell a 4-6 s sleep as `wait-until --max 4 gone nonexistent-pattern-xyz`, which returns at once (row log_audit:wait-until-misleading-results). 2026-10-29 (run 387d): quiet; cause still gone (relays retired, ee185fa8). 2026-10-20 (run 2c2a): ruled out, cause gone: the relays and their 540 s rounds retired (ee185fa8, 92a22609); a model's own fixed-sleep polls are row tool-idea-wait-until's. Night e2f7: quiet; cause gone (ee185fa8, 92a22609), dismissal proposed in the handoff. Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held. Night 817e: the relay rounds are gone (ee185fa8): a chat waits with a background worker-run wait, light-research waits its run out (92a22609). Night 4c4e: quiet; relay rounds are gone with the relays (ee185fa8), waits are background Bash. Night 3131: quiet; cause still gone. A worker's own 46x30 s grep poll on run-all (row worker-suite-run-waits) is its command, not a relay round.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -9899,7 +9899,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-29 (run 387d): quiet; the deny rule is Egor's; red-on-old still not built (block 9 postponed). 2026-10-20 (run 2c2a): ruled out: the deny rule is Egor's and works; the recipe that meets it is row tool-idea-red-on-old's. Blind spot: 19 rm -rf denials and 22 sh -c rm prompts in 24 h are Egor's own deny rule (Bash(rm -rf *)) working as set; most targets were hand-rolled red-on-old-code checks (rm -rf a scratch copy, git archive HEAD, copy the new test in, run), and share/tool_mining.py scans only inline scripts, so that plain-shell recipe never becomes an adhoc opportunity (blind spot tool-mining-plain-shell-recipes). find -delete on the run's own scratch or sed on its own file bypasses nothing the rules guard; the tm-measure retry until Egor removed it was one worker's conduct.",
+      "note": "2026-10-29 (run 2dc2): quiet; the split rm -rf retry of log_audit:worker-rules-edit-md-rm-ignored is this row's; the deny rule is Egor's. 2026-10-29 (run 387d): quiet; the deny rule is Egor's; red-on-old still not built (block 9 postponed). 2026-10-20 (run 2c2a): ruled out: the deny rule is Egor's and works; the recipe that meets it is row tool-idea-red-on-old's. Blind spot: 19 rm -rf denials and 22 sh -c rm prompts in 24 h are Egor's own deny rule (Bash(rm -rf *)) working as set; most targets were hand-rolled red-on-old-code checks (rm -rf a scratch copy, git archive HEAD, copy the new test in, run), and share/tool_mining.py scans only inline scripts, so that plain-shell recipe never becomes an adhoc opportunity (blind spot tool-mining-plain-shell-recipes). find -delete on the run's own scratch or sed on its own file bypasses nothing the rules guard; the tm-measure retry until Egor removed it was one worker's conduct.",
       "handoff": null
     },
     {
@@ -9914,7 +9914,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-29 (run 387d): quiet; blind spot worker-bash-env-unrecorded stands. 2026-10-20 (run 2c2a): quiet; blind spot worker-bash-env-unrecorded stands. The 3.9 failures a Homebrew-less PATH causes now surface as test-health/flaky rows (speed-flaky-test-harness-doctor and the two review-bench ones). Blind spot: two workers in the 05:44-06:34 load window on 10-13 got a login-only PATH (~/.zprofile's; /opt/homebrew/bin comes only from ~/.zshrc, so python3 was /usr/bin's 3.9), most likely a Claude Code shell snapshot that failed under load; nothing records a worker Bash's environment (blind spot worker-bash-env-unrecorded). One of them found and fixed a real 3.9 fromisoformat bug in the production /usr/bin/python3 fallback. The zsh-isms (==, unsplit lists) each cost one failed call, self-corrected (conduct).",
+      "note": "2026-10-29 (run 2dc2): quiet; blind spot worker-bash-env-unrecorded stands; the lane interpreters' naming went to the pixel-forge and logo-vectorizer-bench handoffs (row log_audit:worker-env-pitfalls-python-zsh). 2026-10-29 (run 387d): quiet; blind spot worker-bash-env-unrecorded stands. 2026-10-20 (run 2c2a): quiet; blind spot worker-bash-env-unrecorded stands. The 3.9 failures a Homebrew-less PATH causes now surface as test-health/flaky rows (speed-flaky-test-harness-doctor and the two review-bench ones). Blind spot: two workers in the 05:44-06:34 load window on 10-13 got a login-only PATH (~/.zprofile's; /opt/homebrew/bin comes only from ~/.zshrc, so python3 was /usr/bin's 3.9), most likely a Claude Code shell snapshot that failed under load; nothing records a worker Bash's environment (blind spot worker-bash-env-unrecorded). One of them found and fixed a real 3.9 fromisoformat bug in the production /usr/bin/python3 fallback. The zsh-isms (==, unsplit lists) each cost one failed call, self-corrected (conduct).",
       "handoff": null
     },
     {
@@ -11323,7 +11323,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-29",
       "reviewed_by": "night fixer harness-speed-adhoc-logo-bench-20261029T112057Z-2a66",
-      "note": "2026-10-29 (run 2a66) undecided again for the same reason, no claude-setup worktree: a Speed opportunity row carries no ledger row (only regressions are restated), so its packet named no component file and no ADD-DIR; bin/doctor-fix SPEED_FILES now names claude-setup/hooks/worker-edit-guard.sh for adhoc/file-edit, which batches it with the claude-setup hook rows and their worktree. 24 h to 11:30: 814 calls, pixel-forge 220, logo-vectorizer-bench 167, llm-legs 121, claude-setup cwd 106 (1 by a worker), Rentiva 100, Rentiva-design 65. 2026-10-29 undecided, left to rank again: 24 h to 07:30, 850 calls in 101 sessions, 666 by Claude workers (no codex session among them): pixel-forge 366, logo-vectorizer-bench 191, Rentiva sites 157, llm-legs 109, claude-setup 23; the top session (88) is the pixel-art chat's own. The md hint already exists and misses: every worker brief carries worker-run's EDITS line (Edit and Write tools where an edit can do it), while Claude Code's bypass-mode system prompt tells the model to prefer sed, heredocs or short scripts over Read/Edit/Write. Where the script starts is claude-setup hooks/worker-edit-guard.sh, the PreToolUse/Bash door that already parses every worker shell write (python sources included) and records it to $WORKER_RUN_RECORD/shell-writes before letting it through (line 466); the lever is an additionalContext nudge toward Edit on its allow path for a python read-replace-write of a tracked file. This run had no claude-setup worktree, so it did not land; the next run needs claude-setup as ADD-DIR, the hook's adversarial edge-case pass and the bench (a multi-replace script is one call where Edit needs a Read plus one call per replace, so the bench decides).",
+      "note": "2026-10-29 (run 2dc2): quiet; the graft.py and layers.py corruptions of log_audit:worker-rules-edit-md-rm-ignored are this row's python string-replace edits. 2026-10-29 (run 2a66) undecided again for the same reason, no claude-setup worktree: a Speed opportunity row carries no ledger row (only regressions are restated), so its packet named no component file and no ADD-DIR; bin/doctor-fix SPEED_FILES now names claude-setup/hooks/worker-edit-guard.sh for adhoc/file-edit, which batches it with the claude-setup hook rows and their worktree. 24 h to 11:30: 814 calls, pixel-forge 220, logo-vectorizer-bench 167, llm-legs 121, claude-setup cwd 106 (1 by a worker), Rentiva 100, Rentiva-design 65. 2026-10-29 undecided, left to rank again: 24 h to 07:30, 850 calls in 101 sessions, 666 by Claude workers (no codex session among them): pixel-forge 366, logo-vectorizer-bench 191, Rentiva sites 157, llm-legs 109, claude-setup 23; the top session (88) is the pixel-art chat's own. The md hint already exists and misses: every worker brief carries worker-run's EDITS line (Edit and Write tools where an edit can do it), while Claude Code's bypass-mode system prompt tells the model to prefer sed, heredocs or short scripts over Read/Edit/Write. Where the script starts is claude-setup hooks/worker-edit-guard.sh, the PreToolUse/Bash door that already parses every worker shell write (python sources included) and records it to $WORKER_RUN_RECORD/shell-writes before letting it through (line 466); the lever is an additionalContext nudge toward Edit on its allow path for a python read-replace-write of a tracked file. This run had no claude-setup worktree, so it did not land; the next run needs claude-setup as ADD-DIR, the hook's adversarial edge-case pass and the bench (a multi-replace script is one call where Edit needs a Read plus one call per replace, so the bench decides).",
       "handoff": null
     },
     {
@@ -12044,6 +12044,257 @@
       "reviewed_by": "harness-speed-time-slot-20261029T112129Z-6bc8",
       "note": "7 d to 2026-10-29 13:50: 196 repeat execs, 4158 s retest wall, 5768 CPU-s; chats 2661 s, workers 1193 s, terminal 303 s; 0 after the worker's own green run (post). The lever is pass reuse on the same tree, built and dropped by Egor 2026-10-07 (row speed-test-health-retests, not-a-bug); the measured causes are in row regression-test-health-retests-night-reruns.",
       "handoff": null
+    },
+    {
+      "id": "log_audit:affected-suites-over-select",
+      "title": "tests/affected pulled 31-48 suites for prose or small edits, and suites ran on moving trees",
+      "match": {
+        "rule": "log_audit",
+        "ident": "affected-suites-over-select"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, cause gone for the quoted case: the 42-suite run (10-28 21:46) was a two-line string edit in bin/worker-run, which selected every worker suite; e5d5a655 (10-28 23:18) split worker-run into share/worker-run-*.sh, and tests/affected share/worker-run-texts.sh (BRIEF_PREAMBLE, MD-GUARD) now selects 2 suites, share/worker-run-vendors.sh 4; bin/worker-run itself still selects 39 (7-d green medians 1818 s wall, 1530 s cpu). The 31- and 33-suite runs were code changes over six vendor files (bin/geminib alone 20, evidence-selected by share/suite_select.py); suites run on a tree the chat kept editing are conduct. Not built: hunk-level selection (a string-only hunk selecting only the suites that read the string); no measured case left once the texts moved out.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:bench-runs-on-moving-code",
+      "title": "Full bench and census runs launched on code still being edited, then killed or discarded",
+      "match": {
+        "rule": "log_audit",
+        "ident": "bench-runs-on-moving-code"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, lane conduct outside the sweep repositories: pixel-forge's bench/runset.py and logo-vectorizer-bench's census runs, started by their own chats before the last edit; the fix the reading names (a pinned snapshot per wave, the set name in the run folder) is pixel-forge's own runner. No hook, gate or launcher of ours starts them.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:bench-slot-throttle-starvation",
+      "title": "Bench slot throttle held lane jobs 30-100 min while its own status showed free slots and memory",
+      "match": {
+        "rule": "log_audit",
+        "ident": "bench-slot-throttle-starvation"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, the same cause as log_audit:slot-gate-waits-while-its-own-message-shows-3-4-of-8-slots-o (run 387d): logo-vectorizer-bench's own bench/throttle.py working as designed, 'all busy, 4 of 8 slots open' is 4 allowed under QUIET_JOBS and all 4 held; its message and wait journal are the owner's open handoff.",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md",
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:hook-gate-false-positives-and-bypasses",
+      "title": "Gates blocked benign calls on text matches, or were routed around after a block",
+      "match": {
+        "rule": "log_audit",
+        "ident": "hook-gate-false-positives-and-bypasses"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T14:10:00+02:00",
+          "by": "night fixer harness-doctor-20261029T112030Z-2dc2",
+          "files": [
+            "claude-setup/hooks/lib/argv.sh",
+            "claude-setup/hooks/lib/argv.jq"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): fixed (claude-setup hooks/lib/argv.sh, argv.jq): worker-launch-gate's two quoted false catches reproduced and gone: (1) `cd d && P=/x && $P/.venv/bin/pixelbench run` read $P as unknown (plain_names trusted top-level assignments only), so `run` after an unknown program was a worker run; a NAME=literal operand of a top-level && chain now resolves in the chain's later operands and is unknown after it; (2) `$P - <<'EOF'` whose python replaced a string spelling `at = lambda t: cv2.remap` read as an at job when shfmt failed to parse the call (an unterminated or indented terminator, a zsh-only line): the crude reading took every quoted string of the raw text as a body; it now drops a heredoc body fed to no shell, to its terminator or the text's end (an unquoted delimiter's body still feeds its substitutions). Probes: 3 false catches allow; after-chain use, || mix, double write, bash heredoc, crude bash heredoc and crude unquoted \"$(at now)\" still deny; `C=/usr/bin/claude && $C -p` now denies as a launch (it passed before). Not fixed: instruction-write-gate refuses `$T/cfg/CLAUDE.md` under T=$(mktemp -d) (3 calls by night fixers building gate fixtures: an unknown dir is refused by design); worker-git-guard refusing a scratch restore is the house rule, the worker used Edit; the `env -u WORKER_RUN_ID ...` call ran a test, no guard was passed; english-gate's same-call brief was fixed by claude-setup@3da0376; test_night_run check 27 not reproduced. Known gap left: in the crude reading a quoted heredoc fed to `$S` holding a shell is dropped (allowed) as before.",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "log_audit:judge-panels-blind-broken-or-shallow",
+      "title": "Judge setups leaked the answer key and many verdicts were near-instant ties without the required crops",
+      "match": {
+        "rule": "log_audit",
+        "ident": "judge-panels-blind-broken-or-shallow"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, lane conduct outside the sweep repositories: key.json and briefs sit in the judged folders pixel-forge's judge setup and logo-vectorizer-bench's lane briefs create; tie-heavy fast verdicts are the judges' conduct. No harness component builds those folders.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:night-run-serial-waits",
+      "title": "Night start, fixers and close waited serially on log-audit, stalled fixers and full-suite runs",
+      "match": {
+        "rule": "log_audit",
+        "ident": "night-run-serial-waits"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): handoff: confirmed for the start: PILOT_RULES (bin/night-run) make prep serial and log-audit run --night is its longest step, wall_s 1029-2417 s over the last four nights (1986 s at 1c68) while no goal runs, though only harness-doctor --quiet and the doctor fixers read its findings. Restructuring the night's prep is a night-run change with its test_night_run pins: handed to the next night. The report (~18 min) and Close (~31 min on serial suites) waits are unmeasured here; the stalled pages-kit fixer quote shows only a launch.",
+      "handoff": "docs/handoffs/2026-10-29-log-audit-off-night-start.md",
+      "ruled_at": null
+    },
+    {
+      "id": "log_audit:pixel-forge-direction-and-requirement-misses",
+      "title": "Long rounds optimised the wrong design or default; the owner's stated requirement was restated only afterwards",
+      "match": {
+        "rule": "log_audit",
+        "ident": "pixel-forge-direction-and-requirement-misses"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, chat conduct in the pixel-art chat: requirements Egor stated in conversation (complete layers, no captions, even pixels by default); no hook, gate or launcher to change.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:rentiva-stand-and-e2e-waste",
+      "title": "Rentiva review stand and e2e: stale dev servers, shared tree edits, 6-min boots, repeated full reruns",
+      "match": {
+        "rule": "log_audit",
+        "ident": "rentiva-stand-and-e2e-waste"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, Rentiva's own stand and e2e setup (playwright config, design-local.sh, its dev servers), not a sweep repository; the 25-minute background cap that ends a dev server is Claude Code's own, start_new_session is the documented way out.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:report-claims-not-backed-by-run",
+      "title": "Reports claimed done, green, identical or improved from results made before the last edit or from a metric alone",
+      "match": {
+        "rule": "log_audit",
+        "ident": "report-claims-not-backed-by-run"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, worker and chat conduct in pixel-forge and logo-vectorizer-bench lanes: the claims are the models' own text; worker-run report relays the RETURN and cannot judge an image or a run's age; the visual-check rule is already the brief's.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:trace-work-not-sized-to-budget",
+      "title": "Trace and build targets queued without sizing to measured throughput or the remaining budget, then killed or paused",
+      "match": {
+        "rule": "log_audit",
+        "ident": "trace-work-not-sized-to-budget"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, logo-vectorizer-bench's own lane and coordinator briefs (results/lanes/coord) and bench/slotrun.py, not a sweep repository; slot contention is the throttle row's (handoff 2026-10-05-logo-bench-throttle-hold.md).",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:unbounded-commands-hang-workers",
+      "title": "Unbounded greps, probes, scans and REPLs stalled workers for 20-30 min each",
+      "match": {
+        "rule": "log_audit",
+        "ident": "unbounded-commands-hang-workers"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, model conduct: each stall is the call's own command (a bounded-quantifier grep over a 275 MB CLI binary, a full-transcript scan, a bare REPL) and ends at the Bash tool's own 25-minute cap, which then moves it to the background; a refusal hook for bare interpreters or `until` loops is a ban for single incidents (process before guards). This fixer met the same cost: an unwindowed grep -r over four transcript roots ran into the cap.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:wait-until-misleading-results",
+      "title": "bin/wait-until returned early, exited 0 on timeout or never failed on a missing target",
+      "match": {
+        "rule": "log_audit",
+        "ident": "wait-until-misleading-results"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, bin/wait-until works as specified (its header, tests/test_wait_until.sh): a timeout exits 1 ('Exit code 1 timeout after 1400s', logo-vectorizer-bench 10:36); the exit-0 readings were `wait-until ...; tail` or `| tail -3` calls whose status is tail's; files counts every match by design (old outputs matched where the caller's glob held them), a log or glob not there yet is waited for (a job writes it later), and gone on no match is met. The 25-min idle was a wrong glob the caller wrote. Seen: Rentiva workers call `wait-until --max 4 gone nonexistent-pattern-xyz` as a sleep, which returns at once.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "log_audit:worker-env-pitfalls-python-zsh",
+      "title": "Workers rediscovered that system python3 lacks PIL/numpy and that the shell is zsh",
+      "match": {
+        "rule": "log_audit",
+        "ident": "worker-env-pitfalls-python-zsh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): handoff, same class as log_audit:zsh-and-python3-env-repeats: pixel-forge and logo-vectorizer-bench name their interpreters (.venv/bin/python, tracers/champ47-soft/.venv/bin/python) in no file a worker reads (neither has a CLAUDE.md, the READMEs do not say), so judge and lane workers try bare python3 first; the line went to both owner handoffs (this one and docs/handoffs/2026-10-14-logo-bench-own-tools.md). zsh word-splitting and unmatched globs are conduct the Bash tool's shell (zsh) states.",
+      "handoff": "docs/handoffs/2026-10-29-pixel-forge-own-tools.md",
+      "ruled_at": null
+    },
+    {
+      "id": "log_audit:worker-resume-refused-cold-restart",
+      "title": "Worker resume refused (context full or session cold) so work restarted from scratch",
+      "match": {
+        "rule": "log_audit",
+        "ident": "worker-resume-refused-cold-restart"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): blind spot resume-refusal-rework-unpriced: refuse_stale_resume (share/worker-run-vendors.sh) refuses a claudeb resume idle past 55 min or at 150k+ by Egor's word (9864be9d: cold resumes were 2.2 % of Claude spend, a median 199k re-written); it works as specified. What it costs in rework (a fresh worker re-deriving state: ~2h50m and ~2h in the pixel-art chat, quoted) was never priced against that saving, and nothing pairs a RESUME_REFUSED with the run that replaced it.",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "log_audit:worker-rules-edit-md-rm-ignored",
+      "title": "Workers broke the EDITS, MD-GUARD and no-rm-rf rules, which are prompt text only",
+      "match": {
+        "rule": "log_audit",
+        "ident": "worker-rules-edit-md-rm-ignored"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
+      "note": "2026-10-29 (run 2dc2): ruled out, each part has its row: python/sed in-place edits that corrupted graft.py and layers.py are row speed-adhoc-file-edit (open; the bypass-mode system prompt prefers sed); the split rm -rf retry after a denial is row log_audit:workers-route-around-denials (Egor's deny rule); the pixel-forge docs/DESIGN.md Edits met no refusal: instruction-write-gate guards instruction files (share/instruction-files.sh), the brief's 'any markdown file' (MD-GUARD, 9b400d5c) is wider than the gate.",
+      "handoff": null,
+      "ruled_at": "2026-10-29T12:25:00Z"
     }
   ],
   "blind_spots": [
@@ -12487,6 +12738,13 @@
       "reason": "2026-10-29: the lines judge wall minutes a suite run against the usual days' (volume normalized since 2026-10-14) with no load control, so the night's own fanout (samples busy 0.92-1.0, load1 57 on 10 cores) read as three P1 regressions: the same suites ran at CPU x1.05-1.07 and wall/CPU 1.68 vs 1.14 (night), 2.13 vs 1.12 (chats); speed-doctor-design §1 tags self-load shown, never a regression, and suite_audit.slowdown/time_budget.load_factor already divide suite rises by it",
       "since": "2026-10-29",
       "would_catch_if": "test_health.usual scaled each minutes line by the window's median per-suite wall/CPU rise over the usual days (robust to one suite's own sleeps), and test_test_health pinned a saturated window inside the band and a single-suite slowdown still red"
+    },
+    {
+      "id": "resume-refusal-rework-unpriced",
+      "what": "the rework a refused cold resume causes: the fresh worker's tokens and wall re-deriving what the refused session knew",
+      "reason": "2026-10-29: refuse_stale_resume's saving was priced (9864be9d: 2.2 % of Claude spend, 199k re-written per cold resume), its cost never was; the log audit quotes ~2h50m and ~2h of re-derivation in the pixel-art chat, and no record links a RESUME_REFUSED to the run started in its place",
+      "since": "2026-10-29",
+      "would_catch_if": "worker-run recorded the refused session id in the meta of the next run started from the same launcher and workdir, and llm-doctor priced that run's tokens and wall against the refused resume's cache write"
     }
   ]
 }
