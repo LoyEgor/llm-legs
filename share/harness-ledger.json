@@ -12719,13 +12719,6 @@
       "would_catch_if": "the hook-time line carried the entrypoint, or the doctor split an asyncRewake key's runs by CLAUDE_CODE_ENTRYPOINT"
     },
     {
-      "id": "slot-room-clause-unseen",
-      "what": "which slot_room clause held a room wait (pressure level above 1, available MB under the guard, load1 over load15 + cores), so the level-2 veto's cost is read, not reconstructed",
-      "reason": "hold_raise keeps SLOT_WHY only in the hold file, hold_clear drops it, and neither memlogd nor the wait row logs the pressure level or load15",
-      "since": "2026-10-29",
-      "would_catch_if": "slot_wait_end passed the last SLOT_WHY clause (level, mb or load) into the wait row beside reason room"
-    },
-    {
       "id": "contention-swap-matched",
       "what": "test-health's contention line (suite wall per CPU second) against machine memory thrash and Apple daemon step changes",
       "reason": "2026-10-29 regression:test-health/contention: 2.34 against 1.33 read as a harness regression, yet at matched swap-in (under 20/s) the window equals its usual (1.40 vs 1.38); the line divides wall by CPU with no machine state beside it, so every swap storm under the owner's benchmark launches a fixer. The same window hid fseventsd at one core and 2.9 GB since 10-28 01:00: the System doctor averages a cohort over 7 days, so an Apple daemon's 30x step shows no row for days",

@@ -99,7 +99,8 @@ room 1 150 140 $((guard + 1))
 wait "$waiter" || fail "slot_wait never took the room it was given"
 assert [ "$(cat "$WORK/room-waited")" = "$WORK/r/2" ]
 # Its row: refused for room, re-judged on a later poll, admitted at the count room allows.
-assert jqe 'length == 1 and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "room"' <(waits_of room-limiter)
+assert jqe 'length == 1 and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "room" and .[0].room == "level"' \
+  <(waits_of room-limiter)
 assert_fails slot_take "$WORK/r" 1-2 3600
 assert [ -z "$SLOT_WHY" ]
 slot_release "$r1"; rm -rf "$WORK/r"
@@ -119,8 +120,8 @@ assert [ "$(tail -n 1 "$WORK/lr-ticks")" = limit ]
 kill "$l2"; until_gone "$l2"
 wait "$waiter" || fail "slot_wait never took the slot freed under it"
 assert [ "$(cat "$WORK/lr-waited")" = "$WORK/lr/2" ]
-assert jqe -s 'length == 1 and .[0].class == "workers" and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "limit"' \
-  "$WORK/lr-waits"/*.jsonl
+assert jqe -s 'length == 1 and .[0].class == "workers" and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "limit"
+  and (.[0] | has("room") | not)' "$WORK/lr-waits"/*.jsonl
 slot_release "$WORK/lr/2"; kill "$l1"; until_gone "$l1"; rm -rf "$WORK/lr"
 # A waiter refused for room takes a floor slot freed under it on the next floor poll, not the next room poll.
 mkdir -p "$WORK/fl"

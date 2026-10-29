@@ -108,11 +108,11 @@ assert test "$(grep -cx '0.2' "$WORK/sleeps")" = 0
 rm -rf "$W"
 mkdir -p "$W"
 day() { date -u -r "$1" +%Y-%m-%d; }
-note() { # class source started seconds [reason]
-  printf '{"class":"%s","source":"%s","started":%s,"seconds":%s,"pid":1%s}\n' "$1" "$2" "$3" "$4" "${5:+,\"reason\":\"$5\"}" \
-    >>"$W/$(day "$3").jsonl"
+note() { # class source started seconds [reason [room]]
+  printf '{"class":"%s","source":"%s","started":%s,"seconds":%s,"pid":1%s%s}\n' "$1" "$2" "$3" "$4" "${5:+,\"reason\":\"$5\"}" \
+    "${6:+,\"room\":\"$6\"}" >>"$W/$(day "$3").jsonl"
 }
-note run-suites "suites of r" $((T + 30)) 30 room
+note run-suites "suites of r" $((T + 30)) 30 room mb
 for s in 60 90; do note run-suites "suites of r" $((T + s)) "$s"; done
 note lock /store.lock $((T + 100)) 120.5
 note lock /store.lock $((T + 200)) 1
@@ -164,7 +164,9 @@ assert jqe '.dim and .cells[1] == "0" and .cells[5] == "–" and .menu.rows[0].c
 # The two slot classes drill into today's waits by the reason they were refused.
 assert jqe '[.menu.rows[:3][].cells] == [["today: limit", "2", "16m 40s", "500 s"], ["today: room", "1", "500 s", "500 s"],
   ["2026-01-10", "3", "25m 00s", "500 s"]]' <(cls workers)
-assert jqe '[.menu.rows[:2][].cells] == [["today: limit", "0", "–", "–"], ["today: room", "1", "30 s", "30 s"]]' <(cls run-suites)
+# A room wait drills further by the slot_room clause that refused it.
+assert jqe '[.menu.rows[:3][].cells] == [["today: limit", "0", "–", "–"], ["today: room", "1", "30 s", "30 s"],
+  ["today: room · mb", "1", "30 s", "30 s"]]' <(cls run-suites)
 assert jqe '[.menu.rows[].cells[0] | select(startswith("today"))] == []' <(cls lock)
 read_section prune >/dev/null || fail "the reader failed after a prune"
 assert [ ! -e "$W/$(day $((T - 20 * 86400))).jsonl" ]

@@ -92,12 +92,18 @@ slot_take() { # dir count ceiling-seconds -> the slot taken; fails while all are
 
 slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the slot, once one is free;
   # fails once the command $SLOT_OWNER_ENDED succeeds
-  local dir=$1 count=$2 ceiling=$3 limiter=$4 what=$5 hold='' reason=''
+  local dir=$1 count=$2 ceiling=$3 limiter=$4 what=$5 hold='' reason='' room=''
   shift 5
   [[ "$count" =~ ^[1-9][0-9]*(-[1-9][0-9]*)?$ ]] || count=1
   mkdir -p "$dir" || return 1
   until slot_take "$dir" "$count" "$ceiling" >/dev/null; do
-    if [ -n "$SLOT_WHY" ]; then reason=room; else reason=limit; fi
+    # The row names the slot_room clause of the last room refusal: level, mb or load.
+    case $SLOT_WHY in
+      '') reason=limit room='' ;;
+      'memory pressure'*) reason=room room=level ;;
+      available*) reason=room room=mb ;;
+      *) reason=room room=load ;;
+    esac
     if [ -z "$hold" ]; then
       hold=$(hold_raise "$limiter" "$what" "${SLOT_WHY:-all ${count#*-} $limiter slots are busy}")
       printf '%s: waiting for one of %s slots under %s\n' "$limiter" "$count" "$dir" >&2
@@ -105,12 +111,12 @@ slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the 
     [ $# -eq 0 ] || "$@"
     if [ "$reason" = room ]; then slot_floor_wait "$dir" "${count%-*}" "$ceiling" && break; else sleep "${SLOTS_POLL_S:-2}"; fi
     # Run as $(slot_wait …), this loop outlives a killed caller and would take a slot for nobody.
-    kill -0 "$$" 2>/dev/null || { slot_wait_end "$dir" "$count" "$hold" "$reason"; return 1; }
+    kill -0 "$$" 2>/dev/null || { slot_wait_end "$dir" "$count" "$hold" "$reason" "$room"; return 1; }
     [ -z "${SLOT_OWNER_ENDED:-}" ] || ! $SLOT_OWNER_ENDED || { slot_wait_end "$dir" "$count" "$hold" owner-ended; return 1; }
   done
   # The caller can also die inside the take, after the check above passed.
-  kill -0 "$$" 2>/dev/null || { slot_release "$SLOT_TAKEN"; slot_wait_end "$dir" "$count" "$hold" "$reason"; return 1; }
-  slot_wait_end "$dir" "$count" "$hold" "$reason"
+  kill -0 "$$" 2>/dev/null || { slot_release "$SLOT_TAKEN"; slot_wait_end "$dir" "$count" "$hold" "$reason" "$room"; return 1; }
+  slot_wait_end "$dir" "$count" "$hold" "$reason" "$room"
   printf '%s\n' "$SLOT_TAKEN"
 }
 
@@ -127,13 +133,13 @@ slot_floor_wait() { # dir floor ceiling-seconds -> succeeds once a floor slot wa
   return 1
 }
 
-slot_wait_end() { # dir count hold reason -> journals the hold's wait with the count allowed and held at its end
+slot_wait_end() { # dir count hold reason [room] -> journals the hold's wait with the count allowed and held at its end
   local allowed=${2#*-} held taken=${SLOT_TAKEN##*/}
   [ -n "$3" ] || return 0
   if [ "${2%-*}" != "$allowed" ] && ! { [[ "$taken" =~ ^[0-9]+$ ]] && [ "$taken" -gt "${2%-*}" ]; } &&
     ! slot_room >/dev/null; then allowed=${2%-*}; fi
   held=$(slots_held "$1")
-  hold_clear "$3" "$allowed" "$held" "$4"
+  hold_clear "$3" "$allowed" "$held" "$4" "${5:-}"
 }
 
 slots_held() { # dir -> the slots a live process holds
