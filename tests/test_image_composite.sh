@@ -61,9 +61,11 @@ assert compose --base "$base" --edited "$WORK/shift.png" --out "$WORK/shift-out.
 assert grep -qx 'composite=refused reason=no-local-change changed=0.0% kind=auto' "$WORK/out"
 assert cmp "$WORK/shift.png" "$WORK/shift-out.png"
 
-magick -size 640x640 xc:'#828c96' -font Helvetica -pointsize 16 -fill '#46505a' \
+# A font by file path: ImageMagick resolves a font name only through its type.xml, which a fresh install lacks.
+font=/System/Library/Fonts/Helvetica.ttc
+magick -size 640x640 xc:'#828c96' -font "$font" -pointsize 16 -fill '#46505a' \
   -annotate +310+325 '25' "$WORK/date-base.png"
-magick -size 640x640 xc:'#828c96' -font Helvetica -pointsize 16 -fill '#46505a' \
+magick -size 640x640 xc:'#828c96' -font "$font" -pointsize 16 -fill '#46505a' \
   -annotate +310+325 '26' "$WORK/date-intended.png"
 magick "$WORK/date-intended.png" -evaluate add 0.8% "$WORK/date-edited.png"
 assert compose --base "$WORK/date-base.png" --edited "$WORK/date-edited.png" --out "$WORK/date-out.png"
