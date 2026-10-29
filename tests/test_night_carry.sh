@@ -131,7 +131,8 @@ assert grep -qxF 'suites · repo · 0 PASS · 1 FAIL: run-all' <(night report N1
 # a run ending after the night finished posts its own verdict block.
 jq -n '{id: "N1y", started_at: "2026-10-03T13:00:00Z", finished_at: "2026-10-03T13:30:00Z", jobs: []}' >"$NIGHTS/N1y.json"
 mv "$WORK/repo/tests/run-all" "$WORK/run-all.kept"
-printf '#!/usr/bin/env bash\nwhile [ ! -e "%s/go-y" ]; do sleep 0.05; done\nexec "%s" "$@"\n' "$WORK" "$WORK/run-all.kept" >"$WORK/repo/tests/run-all"
+mkfifo "$WORK/go-y"
+printf '#!/usr/bin/env bash\nread -r _ <"%s/go-y"\nexec "%s" "$@"\n' "$WORK" "$WORK/run-all.kept" >"$WORK/repo/tests/run-all"
 chmod +x "$WORK/repo/tests/run-all"
 printf '#!/usr/bin/env bash\ncat >>"%s"\n' "$WORK/posted" >"$WORK/bus"
 chmod +x "$WORK/bus"
@@ -141,7 +142,7 @@ for i in $(seq 1 1200); do jqe '.suites.pid' "$NIGHTS/N1y.json" 2>/dev/null && b
 HARNESS_WAITS_DIR="$WORK/waits" night report N1y >"$WORK/report-y" 2>/dev/null
 assert grep -qE '^suites · running since [0-9]{2}:[0-9]{2}$' "$WORK/report-y"
 assert test ! -e "$WORK/waits"
-touch "$WORK/go-y"
+echo go >"$WORK/go-y"
 for i in $(seq 1 1200); do [ -s "$WORK/posted" ] && break; sleep 0.1; done
 mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
 assert jqe '.word == "night · suites" and .rows[0] == ["repo", "1 PASS · 1 FAIL: test_b.sh"]' "$WORK/posted"
