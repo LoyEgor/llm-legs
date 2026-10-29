@@ -128,6 +128,30 @@ read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: 4 chats, 279 turn-s
   10-23. Gain 0 minutes, a true compass.
 - Must not get worse: no orchestrator span in `agents[None]` or `out_s`; a settled day keeps its strata.
 
+### goal fixture-path: a suite that only names a file as a fixture path never covers it
+
+Class (dig 10-29, row `dig-fixture-path-selection`): `share/suite_select.py`'s own rule counts a fixture write
+(`: >"$L/hammerspoon/llm-limits.lua"`) as holding the repo path, so the edit waits on that suite; test_doctor_fix
+(its doctors stubs, long pole 7.2 runs/day, 195 s mean): 159 commits 10-15…29 selected it, 80 by fixture paths alone.
+- Change: the path-holding rule counts a line only when the path is the repo's own (`$ROOT/<path>`, a bare
+  relative path), never under a fixture root; evidence credits and imports stay.
+- First step: per pair the replay drops (87 over 57 files), the suite green with the real file truncated in a
+  scratch worktree; a red keeps that pair, and under 5 min/day left stops the goal.
+- Proof, old → new: the 575 commits of 10-15…29 through old and new `select()`, waited min/day at one run per commit
+  and 14-day median walls, 47.6 → ≤ 40.4; no pair with a catch credit dropped.
+- Must not get worse: a defect a dropped suite caught in 90 days of `test_catches` (none expected); night full runs.
+
+### goal warm-chrome: back-to-back image calls on one account reuse its browser
+
+Class (dig 10-29, row `dig-chrome-per-image-call`): `share/gemini_web.py` starts and kills a Chrome per call;
+legs.jsonl 10-22…29: 79.6 calls/day start within 120 s of the same account's last, each 10–14 s to page ready, 15.3
+leg-min/day.
+- Change: a finished call's Chrome stays up to 120 s for the same account's next call, then is reaped as now.
+- First step: the fan-out logs' critical path share of those reopens; under 5 waited min/day stops the goal.
+- Proof, old → new: legs.jsonl `phases.page` of a call within 120 s of its account's last, ~10 s → ≤ 2 s,
+  interleaved on the same machine; delivered/requested equal.
+- Must not get worse: memlogd available MB during image runs; never held below the slot gate.
+
 Dropped, 10-09…22: full-night slot queues (917 worker-min/day), memory and load; run-suites `limit` waits (CPU busy
 in all 88 samples); 10-20's 63 fixers, CPU-bound, fan-out's; chats testing while iterating (13 min/day, a rule
 exists); chat compaction 19.6 min/day, a spend trade; worker compaction 3.6 min/day; API retries 7; model-written

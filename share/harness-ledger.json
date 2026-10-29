@@ -13120,6 +13120,38 @@
       "note": "2026-10-29 (run 7550): fixed (bin/doctor-fix log_audit component text): the packet asked a fixer to 'find the quoted lines in them' with only a chat title as the ref, so fixers grepped every profile's transcripts (a 25 min gap, three 100-240 s timeouts). It now names the read's own skeletons, `grep -F` over ~/.cache/doctors/log-audit/runs/*/chunk-*.md (60 MB; this run's quotes found in under 1 s each), the why/fix in findings.json, and chat-find --agents for a transcript. Meter: blind spot transcript-grep-unmetered.",
       "handoff": null,
       "ruled_at": null
+    },
+    {
+      "id": "dig-fixture-path-selection",
+      "title": "tests/affected selects a suite for a file the suite only names as a fixture path, so the edit waits on a suite that never reads it",
+      "match": {
+        "rule": "dig",
+        "ident": "dig/fixture-path-selection"
+      },
+      "status": "open",
+      "expected_min_day": 7.2,
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night dig 2026-W44",
+      "note": "2026-10-29 dig (lens: hot module in a large file). share/suite_select.py's own rule takes a suite that holds a file's repo path, and a fixture write holds it too: test_doctor_fix.sh (the 14-d long pole, 7.2 runs/day, 119 s median, 195 s mean, its doctors stubs in $L/bin) holds hammerspoon/llm-limits.lua as `: >\"$L/hammerspoon/llm-limits.lua\"`, docs/shared-invariants.md as `>\"$WORK/docs/shared-invariants.md\"`, share/worker-policy.md, share/image-caps/gemini.json, bin/llm-doctor the same way. Source: suite_select.select() over the 423 llm-legs files main changed 10-15..29, a .sh suite counted fixture-only when every line naming the path lacks $ROOT/<path>, a bare path and an evidence credit: 87 pairs over 57 files; replaying the 575 commits, 144 select a slower set, waited 47.6 -> 40.4 min/day at one run per commit and 14-d median walls (journal: 1.2 named runs per commit, 260 s mean against the medians' 70 s, so up to ~30). 80 of 159 commits selecting test_doctor_fix did so through fixture paths alone (bin/harness-doctor counted real: doctor-fix greps its rule lines). Proof: each dropped (file, suite) pair, the suite green with the real file truncated in a scratch worktree; the same 575-commit replay through old and new select(), waited min/day by median walls, new <= 40.4; no pair with a catch credit dropped.",
+      "handoff": null
+    },
+    {
+      "id": "dig-chrome-per-image-call",
+      "title": "codex-image and gemini-image start and kill a Chrome per call, so back-to-back calls on one account each wait for a cold browser and page",
+      "match": {
+        "rule": "dig",
+        "ident": "dig/chrome-per-image-call"
+      },
+      "status": "open",
+      "expected_min_day": 15.3,
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night dig 2026-W44",
+      "note": "2026-10-29 dig (lens: closed and reopened mid-job). share/gemini_web.py launches each call's Chrome from a fresh chrome_clone() under sync_playwright and reap_after_flush kills it; chatgpt_web rides it. Source: ~/.cache/image-legs/legs.jsonl 10-22..29, `phases.page` (launch to page ready): codex-image 139 calls/day, 10.0 s a call (browser 4.9), 73.3/day start within 120 s of the same account's previous call ending = 11.5 min/day; gemini-image 29.1 calls/day, 14.3 s (browser 11.0), 6.3/day = 3.8 min/day; gemini-video none. 15.3 is leg wall, an upper bound: the waited share depends on the fan-out's critical path, unconfirmed. Proof: First step, the fan-out logs' critical path share of those reopens; then legs.jsonl `phases.page` of a call within 120 s of the same account's last, old ~10 s against new, interleaved, delivered/requested equal, and memlogd's available MB during image runs no lower (a warm Chrome holds memory; never kept below the slot gate).",
+      "handoff": null
     }
   ],
   "blind_spots": [
