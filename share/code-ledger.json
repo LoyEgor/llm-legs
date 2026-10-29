@@ -822,10 +822,10 @@
      "at": "2026-10-29T08:01:51+02:00",
      "by": "code-code-20261029T054726Z-4d3a",
      "files": [
-      "share/image-caps.sh",
-      "share/flow-image.sh",
-      "bin/gemini-video",
-      "tests/test_image_caps.sh"
+      "llm-legs/share/image-caps.sh",
+      "llm-legs/share/flow-image.sh",
+      "llm-legs/bin/gemini-video",
+      "llm-legs/tests/test_image_caps.sh"
      ],
      "in": null,
      "regressed_at": null,
