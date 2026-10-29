@@ -6239,7 +6239,7 @@
         "rule": "opportunity",
         "ident": "hooks/commit-report\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T08:20:00+03:00",
@@ -6311,7 +6311,7 @@
             "claude-setup/hooks/lib/review-journal.sh",
             "claude-setup/tests/test_review_journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@881bb9db",
           "regressed_at": null,
           "equivalence": {
             "compared": "rj_owned_paths of the library at the night base vs the fix: RJ_OWNED and exit status per (repository, session, checkout key); rj_anchor_rows output cold and warm vs jq on the store",
@@ -7150,7 +7150,7 @@
         "rule": "opportunity",
         "ident": "time/wrapup"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T09:35:00+03:00",
@@ -7190,7 +7190,7 @@
             "llm-legs/share/worker-run-pool.sh",
             "llm-legs/share/worker-run-report.sh"
           ],
-          "in": null,
+          "in": "llm-legs@21be5295",
           "regressed_at": null,
           "equivalence": {
             "compared": "workdir_dirty_shas after side at the night base vs the fix (the fix fed the stat cache its before pass wrote): full stdout <sha>\\t<path> and the unshaped digest",
@@ -9481,7 +9481,7 @@
             "claude-setup/tests/test_connections.sh"
           ],
           "in": null,
-          "regressed_at": null
+          "regressed_at": "2026-10-29T13:28:21+02:00"
         }
       ],
       "same_cause": [],
@@ -9586,7 +9586,7 @@
         "ident": "test-health/retests"
       },
       "status": "ruled-out",
-      "ruled_at": "2026-10-29T12:10:00Z",
+      "ruled_at": "2026-10-29T12:15:33Z",
       "fixes": [
         {
           "at": "2026-10-14T15:42:16+03:00",
@@ -11488,7 +11488,7 @@
       "reviewed_by": "fixer harness-hooks-20261029T112048Z-00f0",
       "note": "2026-10-29 11:20Z (fixer harness-hooks-20261029T112048Z-00f0): relaunched 5 h after its ruling on the same 24 h split because hook_grows_* verdicts said window_h 1, so a ruling held one hour; bin/harness-doctor now gives them 24. Reading stands: up to 2 n 28 wall 137 ms, CPU 115; 3-4 n 77 wall 164, CPU 86; 5+ n 55 wall 227, CPU 96 (2 sessions a band). Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): load, not repositories. hooks/edit-conflict-notice.sh reads no .repos registry (its registry is ~/.claude/sessions, its work per edited file), and takes no lock and no sleep. 24 h of hook-time rows of the live sessions, split by their .repos count: up to 2 n 10 wall p50 160 ms, CPU 140; 3-4 n 22 wall 112, CPU 77; 5+ n 38 wall 429, CPU 105. CPU is lower in the 5+ chats, so the wall gap is waiting. Class: blind spot grows-split-under-load.",
       "handoff": null,
-      "ruled_at": "2026-10-29T06:18:12Z"
+      "ruled_at": "2026-10-29T11:54:05Z"
     },
     {
       "id": "speed-flaky-test-review-flow-gate-claude-setup",
@@ -11604,7 +11604,7 @@
         "rule": "opportunity",
         "ident": "hooks/edit-conflict-notice\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T09:00:00+02:00",
@@ -11628,7 +11628,7 @@
             "claude-setup/hooks/lib/review-journal.sh",
             "claude-setup/tests/test_review_journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@881bb9db",
           "regressed_at": null,
           "equivalence": {
             "compared": "edit-conflict-notice at the night base vs the fix: exit code, stdout and stderr per Edit of a dirty file with a foreign journal entry (the age in `Ns old` normalised); the library's rj_anchor_rows and rj_owned_paths as in speed-hook-commit-report",
@@ -11906,7 +11906,7 @@
         "rule": "limit_hit",
         "ident": "^llm\\-legs:claudeb\\.lock\\-retries$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T08:45:00Z",
@@ -11914,7 +11914,7 @@
           "files": [
             "llm-legs/bin/claudeb"
           ],
-          "in": null,
+          "in": "llm-legs@bfb86732",
           "regressed_at": null
         }
       ],
@@ -11931,7 +11931,7 @@
         "rule": "limit_hit",
         "ident": "^llm\\-legs:doctor\\-fix\\.doc\\-age$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T11:45:00Z",
@@ -11941,7 +11941,7 @@
             "llm-legs/tests/test_doctor_fix.sh",
             "llm-legs/limits.json"
           ],
-          "in": null,
+          "in": "llm-legs@0aa55084",
           "regressed_at": null
         }
       ],
@@ -11964,7 +11964,8 @@
       "last_reviewed": "2026-10-29",
       "reviewed_by": "harness-limits-20261029T112052Z-12f6",
       "note": "The limit did its job: harness-speed-test-health-idle-llm-legs-test-image-fanout-20261020T114211Z-1ab1 has night null, one of the ~35 day launches of 2026-10-20 that made launch full-night only (test_doctor_fix df-day-launch); its worktree is gone, and claim_run expired it at the area's next claim, 8.7 days on. The open run held nothing meanwhile (speed_held reads runs under 12 h). Five sibling day runs of 10-20 11:41Z and one never-launched run of night 20261014T013750Z-8004 (job left, P3 weekly room) were still open with their worktrees gone; abandoned now with a reason, so none fires this limit later. Seen, not built: cmd_finish marks pending/live jobs left but leaves their doctor-fix run open (1 such run in 15 nights).",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-29T11:51:45Z"
     },
     {
       "id": "limit_hit:llm-legs:night-run.suites-wait",
@@ -11979,7 +11980,8 @@
       "last_reviewed": "2026-10-29",
       "reviewed_by": "harness-limits-20261029T112052Z-12f6",
       "note": "One event, two readers: the orchestrator's report --post (6d7a9b58) and the supervising chat's plain report (233cceb1), started 8 s apart at 10:09Z, each waited 1200 s. The suites ran 09:59-10:45Z: llm-legs 2381 s wall, 7564 s serial at -j 5, against 546-1580 s wall (1912-5074 serial) on 10-12..10-24, in the swap-bound night of claudeb.lock-stale; claude-setup 218 s, review-bench 117 s after it. Nothing lost: .suites.repos holds every verdict, the next night's carry makes the red ones suite jobs, and the red test_hook_deny_names was fixed within the hour (llm-legs@1357abfa). Ruled out as causes: a hung suite (all ended), a missed finish write (finished_at 10:45:14Z). Suite wall under load is the tests audit's (speed-suite-audit runs); a reader not waiting on the suites is a design choice for the night-run owner, not taken here.",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-29T11:51:45Z"
     },
     {
       "id": "opportunity:time/suite_wait",
@@ -11988,7 +11990,7 @@
         "rule": "opportunity",
         "ident": "time/suite_wait"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T12:05:00Z",
@@ -11998,7 +12000,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/tests/test_slots.sh"
           ],
-          "in": null,
+          "in": "llm-legs@1a633c79",
           "regressed_at": null,
           "equivalence": {
             "compared": "a direct suite run's admission: run_suites_slots (floor-4, 3-4 on 10 cores) before, run_suites_direct_slots (floor-8) after; fan-out runs keep run_suites_slots",
@@ -12021,7 +12023,7 @@
         "ident": "time/slot"
       },
       "status": "ruled-out",
-      "ruled_at": "2026-10-29T12:10:00Z",
+      "ruled_at": "2026-10-29T12:15:33Z",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-29",
@@ -12037,7 +12039,7 @@
         "ident": "^test-health/retests$"
       },
       "status": "ruled-out",
-      "ruled_at": "2026-10-29T12:10:00Z",
+      "ruled_at": "2026-10-29T12:15:33Z",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-29",
@@ -12059,7 +12061,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, cause gone for the quoted case: the 42-suite run (10-28 21:46) was a two-line string edit in bin/worker-run, which selected every worker suite; e5d5a655 (10-28 23:18) split worker-run into share/worker-run-*.sh, and tests/affected share/worker-run-texts.sh (BRIEF_PREAMBLE, MD-GUARD) now selects 2 suites, share/worker-run-vendors.sh 4; bin/worker-run itself still selects 39 (7-d green medians 1818 s wall, 1530 s cpu). The 31- and 33-suite runs were code changes over six vendor files (bin/geminib alone 20, evidence-selected by share/suite_select.py); suites run on a tree the chat kept editing are conduct. Not built: hunk-level selection (a string-only hunk selecting only the suites that read the string); no measured case left once the texts moved out.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:bench-runs-on-moving-code",
@@ -12075,7 +12077,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, lane conduct outside the sweep repositories: pixel-forge's bench/runset.py and logo-vectorizer-bench's census runs, started by their own chats before the last edit; the fix the reading names (a pinned snapshot per wave, the set name in the run folder) is pixel-forge's own runner. No hook, gate or launcher of ours starts them.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:bench-slot-throttle-starvation",
@@ -12091,7 +12093,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, the same cause as log_audit:slot-gate-waits-while-its-own-message-shows-3-4-of-8-slots-o (run 387d): logo-vectorizer-bench's own bench/throttle.py working as designed, 'all busy, 4 of 8 slots open' is 4 allowed under QUIET_JOBS and all 4 held; its message and wait journal are the owner's open handoff.",
       "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md",
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:hook-gate-false-positives-and-bypasses",
@@ -12100,7 +12102,7 @@
         "rule": "log_audit",
         "ident": "hook-gate-false-positives-and-bypasses"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T14:10:00+02:00",
@@ -12109,7 +12111,7 @@
             "claude-setup/hooks/lib/argv.sh",
             "claude-setup/hooks/lib/argv.jq"
           ],
-          "in": null,
+          "in": "claude-setup@5013436",
           "regressed_at": null
         }
       ],
@@ -12134,7 +12136,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, lane conduct outside the sweep repositories: key.json and briefs sit in the judged folders pixel-forge's judge setup and logo-vectorizer-bench's lane briefs create; tie-heavy fast verdicts are the judges' conduct. No harness component builds those folders.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:night-run-serial-waits",
@@ -12166,7 +12168,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, chat conduct in the pixel-art chat: requirements Egor stated in conversation (complete layers, no captions, even pixels by default); no hook, gate or launcher to change.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:rentiva-stand-and-e2e-waste",
@@ -12182,7 +12184,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, Rentiva's own stand and e2e setup (playwright config, design-local.sh, its dev servers), not a sweep repository; the 25-minute background cap that ends a dev server is Claude Code's own, start_new_session is the documented way out.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:report-claims-not-backed-by-run",
@@ -12198,7 +12200,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, worker and chat conduct in pixel-forge and logo-vectorizer-bench lanes: the claims are the models' own text; worker-run report relays the RETURN and cannot judge an image or a run's age; the visual-check rule is already the brief's.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:trace-work-not-sized-to-budget",
@@ -12214,7 +12216,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, logo-vectorizer-bench's own lane and coordinator briefs (results/lanes/coord) and bench/slotrun.py, not a sweep repository; slot contention is the throttle row's (handoff 2026-10-05-logo-bench-throttle-hold.md).",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:unbounded-commands-hang-workers",
@@ -12230,7 +12232,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, model conduct: each stall is the call's own command (a bounded-quantifier grep over a 275 MB CLI binary, a full-transcript scan, a bare REPL) and ends at the Bash tool's own 25-minute cap, which then moves it to the background; a refusal hook for bare interpreters or `until` loops is a ban for single incidents (process before guards). This fixer met the same cost: an unwindowed grep -r over four transcript roots ran into the cap.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:wait-until-misleading-results",
@@ -12246,7 +12248,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, bin/wait-until works as specified (its header, tests/test_wait_until.sh): a timeout exits 1 ('Exit code 1 timeout after 1400s', logo-vectorizer-bench 10:36); the exit-0 readings were `wait-until ...; tail` or `| tail -3` calls whose status is tail's; files counts every match by design (old outputs matched where the caller's glob held them), a log or glob not there yet is waited for (a job writes it later), and gone on no match is met. The 25-min idle was a wrong glob the caller wrote. Seen: Rentiva workers call `wait-until --max 4 gone nonexistent-pattern-xyz` as a sleep, which returns at once.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "log_audit:worker-env-pitfalls-python-zsh",
@@ -12294,7 +12296,7 @@
       "reviewed_by": "harness-doctor-20261029T112030Z-2dc2",
       "note": "2026-10-29 (run 2dc2): ruled out, each part has its row: python/sed in-place edits that corrupted graft.py and layers.py are row speed-adhoc-file-edit (open; the bypass-mode system prompt prefers sed); the split rm -rf retry after a denial is row log_audit:workers-route-around-denials (Egor's deny rule); the pixel-forge docs/DESIGN.md Edits met no refusal: instruction-write-gate guards instruction files (share/instruction-files.sh), the brief's 'any markdown file' (MD-GUARD, 9b400d5c) is wider than the gate.",
       "handoff": null,
-      "ruled_at": "2026-10-29T12:25:00Z"
+      "ruled_at": "2026-10-29T12:25:13Z"
     },
     {
       "id": "hook_grows_size:context-nudge.sh",
@@ -12303,7 +12305,7 @@
         "rule": "hook_grows_size",
         "ident": "context-nudge\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T14:20:00+02:00",
@@ -12311,7 +12313,7 @@
           "files": [
             "claude-setup/hooks/context-nudge.sh"
           ],
-          "in": null,
+          "in": "claude-setup@e9dd582",
           "regressed_at": null
         }
       ],
@@ -12330,7 +12332,7 @@
         "rule": "wait_class",
         "ident": "^night\\-admission$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T14:10:00+02:00",
@@ -12341,7 +12343,7 @@
             "llm-legs/share/worker-run-pool.sh",
             "llm-legs/tests/test_night_admission.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6e4722b7",
           "regressed_at": null
         }
       ],
@@ -12359,7 +12361,7 @@
         "rule": "wait_class",
         "ident": "^night\\-suites$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T14:10:00+02:00",
@@ -12369,7 +12371,7 @@
             "llm-legs/limits.json",
             "llm-legs/tests/test_night_carry.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6e4722b7",
           "regressed_at": null
         }
       ],

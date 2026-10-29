@@ -437,7 +437,7 @@
     "detail": "^wrote [^/]+/night-[0-9]{8}T[0-9]{6}Z-"
    },
    "title": "a night job wrote a night worktree it made itself in a repository its brief granted none: carry_brief grants ADD-DIR only in sweep repositories, yet asks for a verdict on a carried handoff about another one",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-06T21:54:46+03:00",
@@ -456,7 +456,7 @@
       "llm-legs/bin/night-run",
       "llm-legs/tests/test_night_carry.sh"
      ],
-     "in": null,
+     "in": "llm-legs@835edbbb",
      "regressed_at": null
     }
    ],
@@ -2488,7 +2488,7 @@
     "detail": "Remove BG started nothing"
    },
    "title": "ChatGPT's Remove BG clicked once on a fresh upload started nothing",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-29T13:36:48+02:00",
@@ -2496,7 +2496,7 @@
      "files": [
       "llm-legs/share/chatgpt_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@38a7759b",
      "regressed_at": null
     }
    ],
