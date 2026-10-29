@@ -347,6 +347,45 @@ class InstructionPerformance(unittest.TestCase):
             self.assertIn(new, context)
             self.assertEqual('', check())
 
+    def test_an_index_rewrite_reuses_the_enumeration_until_the_tracked_list_moves(self):
+        self.git('init', '-q')
+        self.put(self.repo / '.gitignore', 'output/\n')
+        for name in ('pkg/CLAUDE.md', 'pkg/notes.md', 'top.txt', 'output/CLAUDE.md', 'output/keep.txt'):
+            self.put(self.repo / name)
+        self.git('add', '.gitignore')
+        self.git('-c', 'user.name=a', '-c', 'user.email=a@b', 'commit', '-q', '-m', 'first')
+        self.assertEqual(0, self.hook('baseline').returncode)
+        self.assertEqual('', self.hook('check').stdout)
+        log = self.work / 'exec.log'
+        path = self.shim('git', 'case " $* " in *" ls-files -o "*) echo walk >> "$PROBE_LOG" ;; esac\nexec @REAL@ "$@"\n')
+
+        def check():
+            return self.context(self.hook('check', PATH=path, PROBE_LOG=str(log)))
+
+        for name in ('pkg/notes.md', 'top.txt'):
+            self.git('add', name)
+            self.assertEqual('', check())
+        self.git('-c', 'user.name=a', '-c', 'user.email=a@b', 'commit', '-q', '-m', 'x')
+        self.assertEqual('', check())
+        self.put(self.repo / 'top.txt', 'edited\n')
+        self.git('add', 'top.txt')
+        self.assertEqual('', check())
+        self.assertFalse(log.exists(), 'an index rewrite that tracked no instruction file re-ran the git enumeration')
+        self.git('add', '-f', 'output/CLAUDE.md')
+        context = check()
+        self.assertIn('ADDED ', context)
+        self.assertIn('output/CLAUDE.md', context)
+        self.assertTrue(log.exists(), 'a newly tracked ignored instruction file was served from the stale enumeration')
+        log.unlink()
+        self.git('rm', '-q', '--cached', 'output/CLAUDE.md')
+        self.assertEqual('', check())
+        self.assertTrue(log.exists(), 'a file leaving the tracked list was served from the stale enumeration')
+        log.unlink()
+        self.put(self.repo / 'top.txt', 'edited again\n')
+        self.git('add', 'top.txt')
+        self.assertEqual('', check())
+        self.assertFalse(log.exists(), 'the rebuilt cache did not record its tracked signature')
+
     def test_a_plugin_sync_rename_reuses_the_enumeration(self):
         self.git('init', '-q')
         self.put(self.repo / 'CLAUDE.md')

@@ -174,6 +174,15 @@ _instruction_find_files() { # dir [repo-root] [dirs]
 _instruction_candidate_pl='$base =~ /^(?:claude|claude\.local|skill)\.md$/i
   || ($rel =~ m{/\.claude/} && $rel !~ m{/\.claude/(?:local|projects)/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i))'
 
+# What of the tracked list the set depends on: a tracked candidate or a path under `.claude` (every name
+# the candidate rule reads holds `claude` or `skill`) and a gitlink. Any other file git starts tracking
+# leaves the enumeration as it was.
+_instruction_tracked_signature() { # root
+  local raw
+  raw=$(git -C "$1" ls-files -c --format='%(objectmode) %(path)' 2>/dev/null) || return 1
+  grep -iE '^160000 |claude|skill' <<<"$raw" || true
+}
+
 # git instead of a walk: a walk descends every ignored tree (570k files, 20 s a call). The set is
 # the walk's minus files under an ignored directory, save under `.claude` — a gitignored `.claude/`
 # or CLAUDE.local.md is kept on purpose. All-or-nothing: a git failing midway falls back to the
@@ -291,15 +300,23 @@ instruction_visible_paths() {
 # input stamped after the marker taken before the walk may have moved mid-walk: nothing is kept. One
 # read and array slices: a pattern expansion over the file's 60 KB costs bash a second.
 _instruction_stamp_lines() { local IFS=$_instruction_nl; stamps="${lines[*]:1:$1}"; }
+_instruction_cache_store() { # cache-file header n current-stamps; keeps the set lines of lines[]
+  { printf '%s%s%s\n%s\n' "$2" "$_instruction_tab" "$3" "$4"
+    [ "${#lines[@]}" -le $(($3 + 1)) ] || printf '%s\n' "${lines[@]:$3+1}"; } >"$1.$$" 2>/dev/null &&
+    mv -f "$1.$$" "$1" 2>/dev/null || rm -f "$1.$$" 2>/dev/null
+}
 # Claude Code's Edit and Write rename a new file over the old one, moving the directory's mtime: that
 # cost every edit the whole enumeration (~240 ms). A moved repository directory keeps the set when its
 # subdirectories are all stamped and its candidates (_instruction_candidate_pl) are exactly the set's. The
 # stamps kept predate the listing, so a directory moving during it is compared again next call.
 # A moved directory under ~/.claude (its plugin sync renames files every few minutes) is judged by the
 # walk's own rule instead: followed links, the unloaded trees and projects/ skipped, any markdown counted.
+# The repository's own index, rewritten by every git add, commit and status that refreshes stat data, keeps
+# the set when the tracked signature (`$file.idx`, written beside the cache with the index stamp it was read at)
+# is the one the cache was built from: untracked and ignored files, the rest of the set, move with the stamps.
 # Reads n, lines[] and paths[] of instruction_visible_cached.
 _instruction_moved_dirs_kept() { # home root cache-file header current-stamps
-  local home=$1 root=$2 file=$3 want=$4 i p listing
+  local home=$1 root=$2 file=$3 want=$4 i p listing idx_i='' list side side_want
   local -a now=() moved=() moved_home=()
   [ -n "$root" ] || return 1
   set -f
@@ -310,10 +327,26 @@ _instruction_moved_dirs_kept() { # home root cache-file header current-stamps
   for ((i = 0; i < n; i++)); do
     [ "${now[i]}" = "${lines[i + 1]}" ] && continue
     p=${paths[i]}
+    if [ -z "$idx_i" ] && [ "${p##*/}" = index ] && [ -f "$p" ] && [ "${now[i]#*"$_instruction_tab"}" = "$p" ] &&
+       [ "$p" = "$(git -C "$root" rev-parse --path-format=absolute --git-path index 2>/dev/null)" ]; then
+      idx_i=$i
+      continue
+    fi
     [ "${now[i]#*"$_instruction_tab"}" = "$p" ] && [ -d "$p" ] && [ ! -L "$p" ] || return 1
     case $p/ in "$root"/*) moved+=("$p") ;; "$home"/.claude/*) moved_home+=("$p") ;; *) return 1 ;; esac
   done
-  [ $((${#moved[@]} + ${#moved_home[@]})) -gt 0 ] && [ $((${#moved[@]} + ${#moved_home[@]})) -le 8 ] || return 1
+  [ $((${#moved[@]} + ${#moved_home[@]})) -le 8 ] || return 1
+  if [ -n "$idx_i" ]; then
+    [ -r "$file.idx" ] || return 1
+    side=$(<"$file.idx")
+    list=$(_instruction_tracked_signature "$root") || return 1
+    side_want=${lines[idx_i + 1]%%"$_instruction_tab"*}$_instruction_nl$list
+    [ "$side" = "${side_want%"$_instruction_nl"}" ] || return 1
+    printf '%s\n%s\n' "${now[idx_i]%%"$_instruction_tab"*}" "$list" >"$file.idx.$$" 2>/dev/null &&
+      mv -f "$file.idx.$$" "$file.idx" 2>/dev/null || rm -f "$file.idx.$$" 2>/dev/null
+    [ $((${#moved[@]} + ${#moved_home[@]})) -gt 0 ] || { _instruction_cache_store "$file" "$want" "$n" "$5"; return 0; }
+  fi
+  [ $((${#moved[@]} + ${#moved_home[@]})) -gt 0 ] || return 1
   listing=$({ { [ "${#moved[@]}" -eq 0 ] ||
                 find "${moved[@]}" -mindepth 1 -maxdepth 1 \( "${_instruction_pruned[@]}" \) -prune -o -type d -print0; } &&
               { [ "${#moved_home[@]}" -eq 0 ] ||
@@ -342,15 +375,13 @@ _instruction_moved_dirs_kept() { # home root cache-file header current-stamps
       $seen{$_} = 1;
       END { $? ||= ($part != 5 || grep { !$seen{$_} } keys %want) ? 1 : 0 }' \
       "$root" "$INSTRUCTION_MD_EXTENSIONS" "$home" "$INSTRUCTION_HOME_UNLOADED_ERE" || return 1
-  { printf '%s%s%s\n%s\n' "$want" "$_instruction_tab" "$n" "$5"
-    [ "${#lines[@]}" -le $((n + 1)) ] || printf '%s\n' "${lines[@]:n+1}"; } >"$file.$$" 2>/dev/null &&
-    mv -f "$file.$$" "$file" 2>/dev/null || rm -f "$file.$$" 2>/dev/null
+  _instruction_cache_store "$file" "$want" "$n" "$5"
   return 0
 }
 # _INSTRUCTION_REPO_ONLY=1 caches one repository's own files (instruction_repo_files, unfiltered) under the
 # same stamps, for the watcher's repo scan; its file and header differ from the full set's.
 instruction_visible_cached() { # home ranked-cache root state-dir
-  local home=${1:-$HOME} cache=${2:-} root=${3:-} dir=${4:-} file key want n p stamps='' set cur
+  local home=${1:-$HOME} cache=${2:-} root=${3:-} dir=${4:-} file key want n p stamps='' set cur idx='' list='' tracked=''
   local only=${_INSTRUCTION_REPO_ONLY:-} kind=visible
   local -a lines=() paths=()
   key=${root:-none}
@@ -389,18 +420,28 @@ instruction_visible_cached() { # home ranked-cache root state-dir
         printf '%s\n' "${p:-/}"
       done
     fi; } >>"$file.$$.s"
+  if [ -n "$root" ] && [ ! -L "$root" ] && [ -e "$root/.git" ]; then
+    idx=$(git -C "$root" rev-parse --path-format=absolute --git-path index 2>/dev/null) &&
+      list=$(_instruction_tracked_signature "$root") && tracked=1
+  fi
   set=$(_INSTRUCTION_STAMPS=$file.$$.s instruction_visible_paths "$home" "$cache" "$root")
   if stamps=$(awk '/\?/ { exit 1 } !seen[$0]++' "$file.$$.s") && [ -n "$stamps" ]; then
     IFS=$_instruction_nl read -r -d '' -a paths <<<"$stamps"
     if stamps=$(stat -L -f '%.9Fm%t%N' -- "$file.$$" "${paths[@]}" 2>/dev/null |
         awk -F'\t' 'NR == 1 { t = $1; next } $1 >= t { exit 1 } 1') && [ -n "$stamps" ]; then
       IFS=$_instruction_nl read -r -d '' -a lines <<<"$stamps"
+      if [ -n "$tracked" ]; then
+        for p in "${lines[@]}"; do
+          case $p in *"$_instruction_tab$idx") printf '%s\n%s\n' "${p%%"$_instruction_tab"*}" "$list" >"$file.idx.$$" 2>/dev/null &&
+            mv -f "$file.idx.$$" "$file.idx" 2>/dev/null; break ;; esac
+        done
+      fi
       { printf '%s%s%s\n%s\n' "$want" "$_instruction_tab" "${#lines[@]}" "$stamps"
         [ -z "$set" ] || printf '%s\n' "$set"; } >"$file.$$" 2>/dev/null &&
         mv -f "$file.$$" "$file" 2>/dev/null
     fi
   fi
-  rm -f "$file.$$" "$file.$$.s" 2>/dev/null
+  rm -f "$file.$$" "$file.$$.s" "$file.idx.$$" 2>/dev/null
   [ -z "$set" ] || printf '%s\n' "$set"
 }
 
@@ -449,35 +490,49 @@ instruction_ranked_paths() { # cache
   done < <(instruction_ranked_names "$1")
 }
 
+# One realpath for a whole list, one resolved line per argument. A name it cannot resolve, or a
+# newline in a target, falls back to one call per name, the unresolved name standing for itself.
+_instruction_realpaths() { # paths...
+  local resolved nl p
+  [ "$#" -gt 0 ] || return 0
+  if resolved=$(realpath -q "$@" 2>/dev/null); then
+    nl=${resolved//[!$'\n']/}
+    [ $((${#nl} + 1)) -ne "$#" ] || { printf '%s\n' "$resolved"; return 0; }
+  fi
+  for p in "$@"; do realpath "$p" 2>/dev/null || printf '%s\n' "$p"; done
+}
+
 # Rebuilt at session start alone, never on the hot path: this is a jq over a 200 KB index plus a
 # realpath per candidate, against the three milliseconds the whole quiet check is allowed.
 # A path the enumeration already reaches is dropped HERE, by resolved target rather than by name:
 # `~/.claude/CLAUDE.md` is a symlink onto the config repository's copy, which is also the ranking's
 # first row, and watching one file under two names reports every change to it twice.
 instruction_ranked_rebuild() { # home cache
-  local home=${1:-$HOME} cache=$2 rates tmp p real known='' ranked=0
+  local home=${1:-$HOME} cache=$2 rates tmp p real known='' ranked=0 i
+  local -a vis=() cand=() cand_real=()
   rates=$(instruction_ranked_rates "$home")
   [ -f "$rates" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
-  while IFS= read -r p; do
-    real=$(realpath "$p" 2>/dev/null) || real=$p
-    known="$known$real$_instruction_nl"
-  done < <(instruction_visible_paths "$home")
+  while IFS= read -r p; do vis+=("$p"); done < <(instruction_visible_paths "$home")
+  while IFS= read -r real; do known="$known$real$_instruction_nl"; done < <(_instruction_realpaths ${vis[@]+"${vis[@]}"})
   tmp="$cache.$$"
   mkdir -p "$(dirname "$cache")" 2>/dev/null || return 1
   printf '#%s\n' "$INSTRUCTION_RANKED_VERSION" >"$tmp" || return 1
   while IFS= read -r p; do
     case $p in '#'*) ranked=${p#\#}; continue ;; esac
-    [ -n "$p" ] && [ -f "$p" ] || continue
-    real=$(realpath "$p" 2>/dev/null) || real=$p
-    case "$_instruction_nl$known" in *"$_instruction_nl$real$_instruction_nl"*) continue ;; esac
-    known="$known$real$_instruction_nl"
-    _instruction_emit "$p" >>"$tmp"
+    if [ -n "$p" ] && [ -f "$p" ]; then cand+=("$p"); fi
   done < <(jq -r --argjson n "$INSTRUCTION_RANKED_MAX" '
       (.paths.entries // {}) | to_entries
       | map(select(.key | test("/(CLAUDE\\.md|CLAUDE\\.local\\.md)$")))
       | map(select(.key | test("/\\.claude/worktrees/") | not))
       | "#\(length)", (sort_by(-(.value.monthly.reads // 0)) | .[:$n] | .[].key)' "$rates" 2>/dev/null)
+  while IFS= read -r real; do cand_real+=("$real"); done < <(_instruction_realpaths ${cand[@]+"${cand[@]}"})
+  for ((i = 0; i < ${#cand[@]}; i++)); do
+    real=${cand_real[i]}
+    case "$_instruction_nl$known" in *"$_instruction_nl$real$_instruction_nl"*) continue ;; esac
+    known="$known$real$_instruction_nl"
+    _instruction_emit "${cand[i]}" >>"$tmp"
+  done
   mv "$tmp" "$cache" 2>/dev/null || { rm -f "$tmp"; return 1; }
   [ "$ranked" -le "$INSTRUCTION_RANKED_MAX" ] 2>/dev/null || ! _instruction_limit_hit ||
     limit_hit instruction-files.ranked-max "$INSTRUCTION_RANKED_MAX" count skip \
