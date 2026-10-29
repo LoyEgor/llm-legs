@@ -2910,6 +2910,53 @@ def loose_objects(top):
         return None, None
 
 
+def loose_writers(tops, now):
+    """{top: {packed, day, worker_run}} for repositories over loose_note: the newest pack's mtime (whether anything
+    still packs), the loose objects written in the last 24 h, and how many of those are the hash-object -w blobs a
+    worker run in that repository listed in its dirty-before/after-shas; the rest came from another writer
+    (claude-setup's review-journal snapshots, a manual hash-object)."""
+    if not tops:
+        return {}
+    out, shas = {}, {top: set() for top in tops}
+    runs = env_dir("WORKER_RUN_DIR", ".cache", "claude-worker-runs")
+    try:
+        entries = list(os.scandir(runs))
+    except OSError:
+        entries = []
+    for entry in entries:
+        try:
+            if now - os.stat(os.path.join(entry.path, "meta.json")).st_mtime > 2 * 86400:
+                continue
+        except OSError:
+            continue
+        workdir = str((read_json(os.path.join(entry.path, "meta.json"), {}) or {}).get("workdir") or "")
+        top = next((t for t in tops if workdir == t or workdir.startswith(t + "/")), None)
+        for side in ("before", "after") if top else ():
+            try:
+                with open(os.path.join(entry.path, "dirty-%s-shas" % side), errors="replace") as handle:
+                    shas[top].update(line.split("\t", 1)[0] for line in handle)
+            except OSError:
+                pass
+    for top in tops:
+        objects = os.path.join(top, ".git", "objects")
+        packs = glob.glob(os.path.join(objects, "pack", "*.pack"))
+        day = set()
+        for folder in glob.glob(os.path.join(objects, "[0-9a-f][0-9a-f]")):
+            try:
+                day.update(os.path.basename(folder) + e.name for e in os.scandir(folder)
+                           if now - e.stat(follow_symlinks=False).st_mtime <= 86400)
+            except OSError:
+                pass
+        packed = None
+        for pack in packs:
+            try:
+                packed = max(packed or 0, os.path.getmtime(pack))
+            except OSError:
+                pass
+        out[top] = {"packed": packed, "day": len(day), "worker_run": len(day & shas[top])}
+    return out
+
+
 def count_matching(path, pattern):
     count = size = 0
     try:
@@ -2950,13 +2997,19 @@ def growth_sample(now, tops):
             stores[name] = found
     if os.path.isdir(projects_dir()):
         stores["transcripts"] = [len(transcript_files()), du_bytes(projects_dir())]
+    over = set()
     for top in sorted(tops):
         if not os.path.isdir(os.path.join(top, ".git")):
             continue
         count, size = loose_objects(top)
         if count is not None:
             stores["loose git objects · " + os.path.basename(top)] = [count, size]
-    return {"day": local_day(now), "t": now, "stores": stores}
+            if count > LIMITS["loose_note"]:
+                over.add(top)
+    sample = {"day": local_day(now), "t": now, "stores": stores}
+    if over:
+        sample["loose"] = {os.path.basename(top): found for top, found in loose_writers(over, now).items()}
+    return sample
 
 
 def load_growth():
@@ -5523,8 +5576,13 @@ def growth_section(growth, now, spool=None):
                 red.append(1)
             elif count is not None and count > LIMITS["loose_note"]:
                 note = True
+            writers = (latest.get("loose") or {}).get(name.split(" · ", 1)[-1])
             say = "%s: %s loose git objects slow its git, limit %s" % (
-                name.split(" · ", 1)[-1], fmt_count(count or 0), fmt_count(LIMITS["loose_red"]))
+                name.split(" · ", 1)[-1], fmt_count(count or 0), fmt_count(LIMITS["loose_red"])) + (
+                "; %s, %s written in 24 h, %s of them worker-run snapshot blobs" % (
+                    "last pack %s ago" % fmt_long(latest["t"] - writers["packed"]) if writers.get("packed") else "no pack",
+                    fmt_count(writers.get("day") or 0), fmt_count(writers.get("worker_run") or 0))
+                if isinstance(writers, dict) else "")
         else:
             big = (count or 0) > LIMITS["store_entries"] or (size or 0) > LIMITS["store_bytes"]
             grew = old and count and count > LIMITS["store_growth"] * old

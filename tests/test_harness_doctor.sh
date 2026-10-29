@@ -798,6 +798,27 @@ check(state_of(m.tests_section(runs_slow, T + 7 * 3600)) == "ok", "J Tests: a sl
 loose = lambda n: [{"t": T, "day": m.local_day(T), "stores": {"loose git objects · r": [n, 1]}}]
 check(state_of(m.growth_section(loose(20000), T)) == "problem", "Growth: loose objects over the limit are red")
 check(state_of(m.growth_section(loose(100), T)) == "ok", "J Growth: a repacked repository clears")
+lw_repo, lw_runs = os.path.join(work, "lw-repo"), os.path.join(work, "lw-runs")
+for sha, age in (("aa" + "1" * 38, 600), ("bb" + "2" * 38, 3600), ("cc" + "3" * 38, 3 * 86400)):
+    put(os.path.join(lw_repo, ".git", "objects", sha[:2], sha[2:]), "x")
+    os.utime(os.path.join(lw_repo, ".git", "objects", sha[:2], sha[2:]), (T - age, T - age))
+put(os.path.join(lw_repo, ".git", "objects", "pack", "pack-1.pack"), "p")
+os.utime(os.path.join(lw_repo, ".git", "objects", "pack", "pack-1.pack"), (T - 5 * 86400, T - 5 * 86400))
+for run, workdir, shas in (("r1", lw_repo + "/.claude/worktrees/w", "aa" + "1" * 38), ("r2", "/elsewhere", "bb" + "2" * 38)):
+    put(os.path.join(lw_runs, run, "meta.json"), json.dumps({"workdir": workdir}))
+    os.utime(os.path.join(lw_runs, run, "meta.json"), (T - 300, T - 300))
+    put(os.path.join(lw_runs, run, "dirty-after-shas"), shas + "\tf.png\n")
+saved_runs = os.environ.get("WORKER_RUN_DIR")
+os.environ["WORKER_RUN_DIR"] = lw_runs
+writers = m.loose_writers({lw_repo}, T)
+os.environ["WORKER_RUN_DIR"] = saved_runs
+lw_fact = [j["fact"] for r in m.growth_section([dict(loose(7000)[0], loose={"r": writers[lw_repo]})], T)["rows"]
+           for j in r.get("judge", []) if j["rule"] == "loose_objects"]
+check(writers == {lw_repo: {"packed": T - 5 * 86400, "day": 2, "worker_run": 1}}
+      and lw_fact == ["r: %s loose git objects slow its git, limit %s; last pack %s ago, 2 written in 24 h, 1 of them "
+                      "worker-run snapshot blobs" % (m.fmt_count(7000), m.fmt_count(13400), m.fmt_long(5 * 86400))],
+      "Growth: a repository over loose_note names its newest pack's age and how many of the day's loose objects a "
+      "worker run in it wrote (a worktree's run counts, another repository's never): %s %s" % (writers, lw_fact))
 big = lambda n: [{"t": T - 7 * 86400, "day": "w", "stores": {"s": [30000, 1]}},
                  {"t": T, "day": m.local_day(T), "stores": {"s": [n, 1]}}]
 check(state_of(m.growth_section(big(70000), T)) == "problem", "Growth: a big store that doubled is red")

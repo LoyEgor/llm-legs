@@ -12749,13 +12749,6 @@
       "would_catch_if": "each floor sample carried the sampler's load average at its call time and the floor drill split its median by load band"
     },
     {
-      "id": "loose-object-writer",
-      "what": "which hook or worker wrote a repository's loose objects, and whether anything ever packs them",
-      "reason": "growth samples carry the count and size only; the 2026-10-02 fixer attributed the writer by blob mtimes and content against review-journal .repos mtimes and worker-run workdirs",
-      "since": "2026-10-02",
-      "would_catch_if": "the snapshot writers journaled blobs written per repository per call, and the growth sample recorded each repository's last gc (newest pack mtime)"
-    },
-    {
       "id": "watcher-off-history",
       "what": "why and for how long the instruction watcher was off",
       "reason": "watcher/heartbeat is overwritten every tick, so a changed-while-watcher-off record (2026-10-01T12:51:14Z, claude-setup review-floor merge 6413519 at 12:40:33Z) cannot name the off interval or its cause; again 2026-10-08T05:44:09Z (a Hammerspoon reload after the 05:43:44Z llm-legs landing is the likely cause, unprovable)",
