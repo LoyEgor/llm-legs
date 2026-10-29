@@ -687,14 +687,6 @@
     "why": "Night snapshots skip blobs over 5 MiB and secret-named files.",
     "normal": "Rare."
   },
-  "night-run.suites-wait": {
-    "value": 1200,
-    "unit": "s",
-    "where": "bin/night-run:1741",
-    "set_by": "chat 7b5fdfa5",
-    "why": "The night report waits up to 20 min for its suites run.",
-    "normal": "Rare; a hit reports without suite verdicts."
-  },
   "opencode-go.max-wait": {
     "value": 900,
     "unit": "s",

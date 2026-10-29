@@ -127,23 +127,24 @@ night suites N1x --wait || fail "suites of a crashed run-all failed"
 mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
 assert jqe '.suites.repos[0] | .exit == 3 and .passed == 0 and .failed == ["run-all"]' "$NIGHTS/N1x.json"
 assert grep -qxF 'suites · repo · 0 PASS · 1 FAIL: run-all' <(night report N1x 2>/dev/null)
-# The report waits out a live full run, so its FAIL reaches the morning message, and journals the wait.
-jq -n '{id: "N1y", started_at: "2026-10-03T13:00:00Z", finished_at: null, jobs: []}' >"$NIGHTS/N1y.json"
+# The report never waits on a live full run (night 20261029T012849Z-5e69 sat 20 min and still got no verdict);
+# a run ending after the night finished posts its own verdict block.
+jq -n '{id: "N1y", started_at: "2026-10-03T13:00:00Z", finished_at: "2026-10-03T13:30:00Z", jobs: []}' >"$NIGHTS/N1y.json"
 mv "$WORK/repo/tests/run-all" "$WORK/run-all.kept"
 printf '#!/usr/bin/env bash\nwhile [ ! -e "%s/go-y" ]; do sleep 0.05; done\nexec "%s" "$@"\n' "$WORK" "$WORK/run-all.kept" >"$WORK/repo/tests/run-all"
 chmod +x "$WORK/repo/tests/run-all"
-night suites N1y >/dev/null || fail "suites did not detach"
+printf '#!/usr/bin/env bash\ncat >>"%s"\n' "$WORK/posted" >"$WORK/bus"
+chmod +x "$WORK/bus"
+NIGHT_RUN_REPORT_BUS="$WORK/bus" night suites N1y >/dev/null || fail "suites did not detach"
 for i in $(seq 1 1200); do jqe '.suites.pid' "$NIGHTS/N1y.json" 2>/dev/null && break; sleep 0.1; done
-# The run is held until the report sits in its first wait tick, then released: the wait is one tick, not a guess.
-HARNESS_WAITS_DIR="$WORK/waits" bash "$ROOT/bin/night-run" report N1y >"$WORK/report-y" 2>/dev/null &
-report_y=$!
-for i in $(seq 1 1200); do pgrep -P "$report_y" -x sleep >/dev/null && break; sleep 0.05; done
+# The run is held on the go file, so the report surely sees it live; released after, it posts its own verdict.
+HARNESS_WAITS_DIR="$WORK/waits" night report N1y >"$WORK/report-y" 2>/dev/null
+assert grep -qE '^suites · running since [0-9]{2}:[0-9]{2}$' "$WORK/report-y"
+assert test ! -e "$WORK/waits"
 touch "$WORK/go-y"
-wait "$report_y"
+for i in $(seq 1 1200); do [ -s "$WORK/posted" ] && break; sleep 0.1; done
 mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
-assert grep -qxF 'suites · repo · 1 PASS · 1 FAIL: test_b.sh' "$WORK/report-y"
-assert jqe -s 'length == 1 and .[0].class == "night-suites" and .[0].source == "night-run report N1y" and .[0].seconds > 1' \
-  "$WORK"/waits/*.jsonl
+assert jqe '.word == "night · suites" and .rows[0] == ["repo", "1 PASS · 1 FAIL: test_b.sh"]' "$WORK/posted"
 jq -n '{id: "N1z", started_at: "2026-10-03T14:00:00Z", finished_at: null, jobs: [],
   suites: {started_at: "2026-10-03T14:00:00Z", finished_at: null, pid: 99999999, repos: []}}' >"$NIGHTS/N1z.json"
 assert grep -qE '^suites · stopped unfinished since [0-9]{2}:[0-9]{2}$' <(night report N1z 2>/dev/null)

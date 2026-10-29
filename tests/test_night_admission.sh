@@ -141,6 +141,24 @@ night admit "$id" f-small claudeb "$LIVE" >/dev/null || fail "a P3 with expiring
 assert jqe '.admission.state == "admitted"' <<<"$(job f-small)"
 night admit "$id" coverage-legacy-1 claudeb "$LIVE" >/dev/null || fail "a coverage slice with expiring weekly room was not admitted"
 
+# Cost by model: a Sonnet run holds token-map's Sonnet price share of an Opus run (2 of 4 per MTok), so 11 % of
+# room carries an Opus run and a Sonnet one (night 20261029T012849Z-5e69: a Sonnet P3 waited 26 min at the Opus price).
+id2=20261013T000000Z-model
+jq -n --arg id "$id2" '{id: $id, started_at: "2026-10-13T00:00:00Z", finished_at: null, session: null, jobs: [], events: []}' \
+  >"$NIGHTS/$id2.json"
+for ref in f-mid f-mid2; do night job "$id2" add fixer "$ref" >/dev/null || fail "job add $ref"; done
+limits 69 10 1
+live_pid
+night admit "$id2" f-mid claudeb "$LIVE" opus >/dev/null || fail "the Opus run was not admitted"
+live_pid
+night admit "$id2" f-mid2 claudeb "$LIVE" sonnet >/dev/null &
+son_gate=$!
+for i in $(seq 1 30); do kill -0 "$son_gate" 2>/dev/null || break; sleep 0.1; done
+kill "$son_gate" 2>/dev/null
+assert jqe '.admission.state == "admitted" and .admission.cost == 3.5' \
+  <<<"$(jq -c '.jobs[] | select(.ref == "f-mid2")' "$NIGHTS/$id2.json")"
+assert jqe '.admission.cost == 7' <<<"$(jq -c '.jobs[] | select(.ref == "f-mid")' "$NIGHTS/$id2.json")"
+
 # The night's spend on walls: a run whose last attempt walled counts, one rescued after a wall does not.
 mkdir -p "$WORKER_RUN_DIR/claudeb-1-1-a" "$WORKER_RUN_DIR/claudeb-1-1-b"
 printf '2\n' >"$WORKER_RUN_DIR/claudeb-1-1-a/attempt"; : >"$WORKER_RUN_DIR/claudeb-1-1-a/wall-reset.2"
@@ -160,7 +178,7 @@ printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s"\nprintf "night %%s job 
 chmod +x "$FAKE_BIN/gate"
 rc=0; WORKER_RUN_NIGHT_RUN="$FAKE_BIN/gate" night_admit "$run" claudeb night/n1/job-a || rc=$?
 assert test "$rc" -eq 1
-assert grep -q "^admit n1 job-a claudeb $$\$" "$WORK/gate-args"
+assert grep -q "^admit n1 job-a claudeb $$ opus\$" "$WORK/gate-args"
 assert grep -q 'deferred: P3' "$run/err"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/gate"
 WORKER_RUN_NIGHT_RUN="$FAKE_BIN/gate" WORKER_RUN_ADMIT_REPICK_S=0 night_admit "$run" claudeb night/n1/job-a || fail "an admitted run was stopped"

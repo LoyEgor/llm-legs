@@ -46,6 +46,8 @@ STATES=' pending live merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
 JQ_DONE_JOB='def done_job: .state == "nothing-to-do" or .state == "settled"; def job_branch($n): .branch // "night/\($n)/\(.ref)";'
+JQ_SUITE='def suite_verdict: "\(.passed) PASS · \(.failed | length) FAIL" + (if .failed == [] then "" else ": \(.failed | join(", "))" end)
+  + (if (.flaky // []) == [] then "" else " · \(.flaky | length) FLAKY: \(.flaky | join(", "))" end);'
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/limit-hit.sh"
@@ -72,7 +74,7 @@ usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run survey [--post] [<repo>...]
        night-run hold
        night-run speed-gate <id> <ref> [<launcher-claude-pid>]
-       night-run admit <id> <ref> <vendor> <worker-pid>
+       night-run admit <id> <ref> <vendor> <worker-pid> [<model>]
        night-run report [<id>] [--post]
        night-run latest --menu
        night-run wall                 (StopFailure hook: JSON on stdin)
@@ -171,13 +173,13 @@ speed-gate, run by worker-run once a night worker takes its slot: exits 3 while 
   recorded as a speed-start event, after which a resumed worker of that fixer always passes
 admit, run by worker-run before a night worker takes its machine slot: returns once the job may start. Jobs carry
   direction and priority (P1|P2|P3) from share/night_priority.py, stamped by job add; waiters start P1, then P2, by
-  value per expected cost, while the Claude fixers admitted and still running hold no more than the pool accounts' 5h
+  value per expected cost (scaled by the run's model price against Opus), while the Claude fixers admitted and still running hold no more than the pool accounts' 5h
   room (min(worker-pick's 5h deferral - 5h, 100 - week) each); a P3 only out of weekly room its burn leaves unused at the
   reset, else exit 3 with the job pending and admission.deferred; the wait is a night-admission hold
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
   night's suites {started_at, finished_at, pid, repos: [{repo, exit, passed, failed[], flaky[]?, log}]}, each red
-  suite then rerun once, serially: red twice stays failed, red then green is flaky; report waits
-  for a live one up to NIGHT_RUN_SUITES_WAIT_S (1200) and journals the wait (class night-suites)
+  suite then rerun once, serially: red twice stays failed, red then green is flaky; report never waits
+  for a live one: a run ending after the night finished posts its own verdict block (night-suites)
 pushed=true is refused unless every commit of the job, its integration ones included, is on its
   repository's origin main and not in the night's refs/night/<id>/base
 EOF
@@ -1268,6 +1270,10 @@ cmd_suites() {
   done <"$sweep_repos"
   lock
   night_set "$id" '.suites.finished_at = $t | .suites.repos = $r' --arg t "$(stamp)" --argjson r "$rows" || die "cannot write night $id"
+  unlock
+  jq -e '.finished_at != null' "$(night_file "$id")" >/dev/null 2>&1 || return 0
+  jq -c "$JQ_SUITE"' {word: "night · suites", rows: [.suites.repos[] | [(.repo | split("/") | last), suite_verdict]]}' \
+    "$(night_file "$id")" | post_block night-suites
 }
 
 cmd_finish() {
@@ -1431,15 +1437,15 @@ admit_readings() { # -> [{account, h5, wk, days_left, ceiling}] of each Claude a
     "${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}" 2>/dev/null || printf '[]\n'
 }
 
-cmd_admit() { # id ref vendor pid -> returns once the job may start; exit 3 when it is deferred (a P3 without expiring room)
-  local id=$1 ref=$2 vendor=$3 pid=$4 file verdict why hold='' readings
+cmd_admit() { # id ref vendor pid [model] -> returns once the job may start; exit 3 when it is deferred (a P3 without expiring room)
+  local id=$1 ref=$2 vendor=$3 pid=$4 model=${5:-} file verdict why hold='' readings
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || usage
   file=$(night_file "$id")
   while :; do
     readings=$(admit_readings)
     lock
     IFS=$'\t' read -r verdict why < <(printf '%s' "$readings" |
-      python3 -B "$repo_root/share/night_priority.py" admit "$file" "$ref" "$vendor" "$pid" 2>/dev/null)
+      python3 -B "$repo_root/share/night_priority.py" admit "$file" "$ref" "$vendor" "$pid" "$model" 2>/dev/null)
     unlock
     case ${verdict:-} in
       wait) [ -n "$hold" ] || hold=$(hold_raise night-admission "night $id job $ref" "$why") ;;
@@ -1738,16 +1744,6 @@ suites_live() { # night file -> status 0 while its unfinished suites run's proce
   pid_alive_since "${pid:-}" "${began:-}"
 }
 
-suites_wait() { # night file -> once its suites run finished, died or NIGHT_RUN_SUITES_WAIT_S passed; the wait journaled
-  local since
-  suites_live "$1" || return 0
-  since=$(date +%s)
-  while suites_live "$1" && [ "$(date +%s)" -lt $((since + ${NIGHT_RUN_SUITES_WAIT_S:-1200})) ]; do sleep 2; done
-  ! suites_live "$1" || limit_hit night-run.suites-wait "${NIGHT_RUN_SUITES_WAIT_S:-1200}" s skip \
-    "the suites verdict in night report $(basename "$1" .json): the run was still going" 'bin/night-run:NIGHT_RUN_SUITES_WAIT_S:-1200' "$(($(date +%s) - since))"
-  wait_note night-suites "night-run report $(basename "$1" .json)" "$since"
-}
-
 cmd_report() {
   local file unverified speed run post=false id='' table ways pool live=false
   while [ $# -gt 0 ]; do
@@ -1759,7 +1755,6 @@ cmd_report() {
     shift
   done
   file=$(pick_night "$id")
-  suites_wait "$file"
   ! suites_live "$file" || live=true
   unverified=$(jq -r '.jobs[].ref' "$file" | while IFS= read -r ref; do
     run="${nights_dir%/*}/runs/$ref.json"
@@ -1785,7 +1780,7 @@ cmd_report() {
   python3 -B "$repo_root/share/night_spend.py" "$repo_root/bin/worker-run" "$file" || die "no spend header for $file"
   python3 -B "$repo_root/share/night_churn.py" "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
   jq -r --argjson u "$unverified" --argjson lines "$(code_lines "$file")" --arg status "$(night_status "$file")" \
-    --argjson speed "$speed" --argjson h "$SPEED_WINDOW_H" --argjson live "$live" "$JQ_TOTALS"' totals as $t
+    --argjson speed "$speed" --argjson h "$SPEED_WINDOW_H" --argjson live "$live" "$JQ_TOTALS$JQ_SUITE"' totals as $t
     | "night \(.id) · \(.started_at | hm)–\(.finished_at | hm)"
       + (if $t.running then " · running" elif $t.unfinished then " · UNFINISHED" else "" end),
       (if .note then "note · \(.note)" else empty end),
@@ -1814,9 +1809,7 @@ cmd_report() {
       (.held[]? | "held · \(.repo) · \(.branch) · \(.why)"),
       (.suites // null | if . == null then empty elif .finished_at == null then
          "suites · \(if $live then "running" else "stopped unfinished" end) since \(.started_at | hm)"
-       else .repos[] | "suites · \(.repo | split("/") | last) · \(.passed) PASS · \(.failed | length) FAIL"
-         + (if .failed == [] then "" else ": \(.failed | join(", "))" end)
-         + (if (.flaky // []) == [] then "" else " · \(.flaky | length) FLAKY: \(.flaky | join(", "))" end) end),
+       else .repos[] | "suites · \(.repo | split("/") | last) · \(suite_verdict)" end),
       ($u | to_entries[] | select(.value | length > 0) | "unverified component · \(.key) · \(.value | join(", "))"),
       ("total · " + ([count($t.merged; "landed"), count($t.left; "left"), count($t.failed; "failed-launch"),
         count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.settled; "settled"), count($t.pending; "pending"), count($t.live; "live"),
@@ -1944,7 +1937,7 @@ case "${1:-}" in
   suites) shift; cmd_suites "$@" ;;
   hold) shift; cmd_hold "$@" ;;
   speed-gate) shift; [ $# -eq 2 ] || [ $# -eq 3 ] || usage; known_night "$1"; cmd_speed_gate "$@" ;;
-  admit) shift; [ $# -eq 4 ] || usage; known_night "$1"; cmd_admit "$@" ;;
+  admit) shift; [ $# -eq 4 ] || [ $# -eq 5 ] || usage; known_night "$1"; cmd_admit "$@" ;;
   *) usage ;;
 esac
 exit; }

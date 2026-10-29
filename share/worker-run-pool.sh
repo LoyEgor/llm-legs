@@ -186,9 +186,10 @@ take_floor() { # directory workdir
 }
 
 night_admit() { # directory vendor branch -> fails only when the night defers the job; a long wait re-picks the account
-  local night=${3#night/} out rc began=$SECONDS tag
+  local night=${3#night/} out rc began=$SECONDS tag model
   night=${night%%/*}
-  out=$("${WORKER_RUN_NIGHT_RUN:-$SCRIPT_DIRECTORY/night-run}" admit "$night" "${3#"night/$night/"}" "$2" $$ 2>/dev/null)
+  model=$(jq -r '.model // empty' "$1/meta.json" 2>/dev/null)
+  out=$("${WORKER_RUN_NIGHT_RUN:-$SCRIPT_DIRECTORY/night-run}" admit "$night" "${3#"night/$night/"}" "$2" $$ "$model" 2>/dev/null)
   rc=$?
   if [ "$rc" -eq 3 ]; then
     printf 'worker-run: %s\n' "$out" >>"$1/err"
@@ -196,7 +197,7 @@ night_admit() { # directory vendor branch -> fails only when the night defers th
   fi
   [ "$rc" -eq 0 ] && [ $((SECONDS - began)) -ge "${WORKER_RUN_ADMIT_REPICK_S:-60}" ] && [ "$2" = claudeb ] || return 0
   jq -e '(.explicit_account // "") == "" and (.resume // "") == ""' "$1/meta.json" >/dev/null 2>&1 || return 0
-  pick_account_listing claudeb '' "$(jq -r '.model' "$1/meta.json")"
+  pick_account_listing claudeb '' "$model"
   [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 0
   meta_update "$1" '.account = $next' --arg next "$PICKED_ACCOUNT" || return 0
   if IFS= read -r tag 2>/dev/null <"$1/tag"; then

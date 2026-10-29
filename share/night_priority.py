@@ -2,7 +2,7 @@
 accounts' room (docs/night-run.md, Priority and admission).
 
   night_priority.py job <kind> <ref>                       {direction, priority, value} of a night job, as JSON
-  night_priority.py admit <night.json> <ref> <vendor> <pid>  one admission decision, the night file rewritten:
+  night_priority.py admit <night.json> <ref> <vendor> <pid> [<model>]  one admission decision, the night file rewritten:
                                                            prints `admit|wait|defer<TAB>why`; the accounts' readings on stdin
   night_priority.py backlog                                {"p12": open P1+P2 rows, "by": {direction: n}} over the doctors
 """
@@ -257,6 +257,22 @@ def costs(now):
     return out
 
 
+def model_weight(model):
+    """A run's share of the 5h room against an Opus run of the same tokens: token-map's input price over Opus's;
+    1 for no model or one token-map does not list."""
+    if not model:
+        return 1.0
+    try:
+        table, day = night_spend.pricing(), time.strftime("%Y-%m-%d")
+        name = table.canonical_model(night_spend.claude_model(model))
+        if name not in table.PRICES:
+            return 1.0
+        own, base = table.price_for(name, day)[0], table.price_for(night_spend.opus_anchor(), day)[0]
+    except (Exception, SystemExit):
+        return 1.0
+    return own / base if own > 0 and base > 0 else 1.0
+
+
 def room(readings, now):
     """(5h room, the part of it P3 may spend): per account min(5h ceiling - 5h, 100 - week), and the weekly % its
     burn so far leaves unused at its reset."""
@@ -292,9 +308,10 @@ def rank(j, cost):
             (j.get("admission") or {}).get("since") or 0)
 
 
-def decide(night, ref, vendor, pid, readings, now, prices, live=alive):
+def decide(night, ref, vendor, pid, readings, now, prices, live=alive, model=""):
     """The verdict for job `ref` and the night with its admission recorded. Strict order: a waiter that does not fit
-    holds back every one behind it; nothing running and some room always lets the head in."""
+    holds back every one behind it; nothing running and some room always lets the head in. A waiter's cost is its
+    direction's price scaled by its model's (model_weight)."""
     jobs = night.get("jobs") or []
     me = next((j for j in jobs if j.get("ref") == ref), None)
     if me is None:
@@ -302,12 +319,13 @@ def decide(night, ref, vendor, pid, readings, now, prices, live=alive):
     if vendor != "claudeb" or not readings:
         me["admission"] = {"state": "admitted", "pid": pid, "at": now, "cost": 0.0, "vendor": vendor}
         return "admit", "no Claude room to pace" if vendor == "claudeb" else "not a Claude run", night
-    cost = lambda j: prices.get(j.get("direction") or "", prices["*"])
+    cost = lambda j: round(prices.get(j.get("direction") or "", prices["*"])
+                           * model_weight((j.get("admission") or {}).get("model")), 2)
     seat = me.get("admission") or {}
     if seat.get("state") == "admitted" and seat.get("pid") == pid:
         return "admit", "already admitted", night
     me["admission"] = {"state": "waiting", "pid": pid, "since": seat.get("since") if seat.get("pid") == pid and
-                       seat.get("state") == "waiting" else now, "vendor": vendor}
+                       seat.get("state") == "waiting" else now, "vendor": vendor, "model": model}
     running = [j for j in jobs if (j.get("admission") or {}).get("state") == "admitted" and j.get("state") == "pending"
                and (j["admission"].get("cost") or 0) > 0 and live(j["admission"].get("pid"))]
     waiting = sorted((j for j in jobs if j is me or (j.get("admission") or {}).get("state") == "waiting"
@@ -337,7 +355,7 @@ def decide(night, ref, vendor, pid, readings, now, prices, live=alive):
         waiting.index(me), sum(j["admission"]["cost"] for j in running), five, len(running)), night
 
 
-def admit(path, ref, vendor, pid):
+def admit(path, ref, vendor, pid, model=""):
     night = read_json(path, None)
     if not isinstance(night, dict):
         print("admit\tno night file")
@@ -350,7 +368,7 @@ def admit(path, ref, vendor, pid):
     store = night.setdefault("admission", {})
     if not isinstance(store.get("cost"), dict) or now - (store.get("cost_at") or 0) > 3600:
         store["cost"], store["cost_at"] = costs(now), now
-    verdict, why, night = decide(night, ref, vendor, int(pid), readings, now, store["cost"])
+    verdict, why, night = decide(night, ref, vendor, int(pid), readings, now, store["cost"], model=model)
     tmp = path + ".admit.%d" % os.getpid()
     with open(tmp, "w") as handle:
         json.dump(night, handle, indent=1)
@@ -361,7 +379,7 @@ def admit(path, ref, vendor, pid):
 def main(argv):
     if argv[:1] == ["job"] and len(argv) == 3:
         print(json.dumps(job(argv[1], argv[2])))
-    elif argv[:1] == ["admit"] and len(argv) == 5:
+    elif argv[:1] == ["admit"] and len(argv) in (5, 6):
         admit(*argv[1:])
     elif argv == ["backlog"]:
         print(json.dumps(backlog()))
