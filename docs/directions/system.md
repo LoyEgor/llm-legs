@@ -127,7 +127,7 @@ within 5 s of the one before; 126 an hour, all launches ÷ present hours (28 % f
 - First step: `tests/llm_limits_renderer_harness.lua` (a fake `hs.pathwatcher`) fires two callbacks around a fake
   rename: 2 launches on the old code; the key gate works whichever comes first.
 - Change: llm-legs `hammerspoon/llm-limits.lua` `onStoreChanged` launches only when `statCached`'s ino:mtime:size key
-  moved since the last launch; an unchanged store arms no timer.
+  moved since the last launch; the trailing timer still arms and re-renders.
 - Proof: harness, one write's two callbacks 2 → 1 launch. Live, 7 days: launches within 5 s 58 % → ≤ 5 %, a
   present hour 126 → ≤ 65.
 - Must not get worse: a new inode in the same second launches (a case red on an mtime-only key); the submenu's dim
