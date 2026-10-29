@@ -306,6 +306,13 @@ operand=$(starts_of 'mkdir -p d && echo codex > d/note.txt')
 plain_scan=$(starts_of 'cd /w && claude --version')
 asserts=$((asserts + 1))
 [ "$(wc -w <<<"$plain_scan")" -le 6 ] || fail "a full scan with no heredoc and no assignment started: $plain_scan"
+# A 4 KB+ call with a $ and an = that reads no name it assigns is screened in one awk, never parsed
+# (jq, shfmt, argv_select started on 2026-10-29); one that reads an assigned name still takes the full path.
+big_pad=$(printf 'x=1 echo $y\n%.0s' $(seq 1 400))
+big_plain=$(starts_of "$big_pad")
+asserts=$((asserts + 1))
+[ "$(wc -w <<<"$big_plain")" -le 4 ] || fail "a 4 KB+ call with a \$ and an = but no program word started: $big_plain"
+expect deny '' "$big_pad"$'\nP=claude; $P -p hi'
 # The raw-payload screen reads the JSON as the shell would see the command: a vendor at the string's edge,
 # one spelled with a \u escape, one after a newline escape and one split by an escaped backslash.
 for payload in '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi | claude"},"cwd":"/w"}' \

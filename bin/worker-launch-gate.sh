@@ -49,7 +49,7 @@ span_live() {
 SCREEN_RE="(${VENDOR_BINS})([[:space:]]|\$)|worker-run|review-bench|light-research|REVIEW_BENCH_DOOR|${OWNED_LEGS}|${OWNED_IMAGE}|chatgpt-web|gemini-web|(^|[[:space:]])(at|batch|crontab)([[:space:]]|\$)|[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|run|wait)([[:space:]]|\$)"
 # Quotes and backslashes go, and separators become blanks (in the payload, `\\` pairs first, an escaped
 # quote goes, a bare one is a string's edge and the whitespace escapes are blanks). Bash 3.2's ${x//…/}
-# is cubic — a 7 KB payload took 128 s — so past 256 bytes one sed or tr does it.
+# is cubic — a 7 KB payload took 128 s — so past 256 bytes one sed does it.
 unquote() { # text [json] -> UNQUOTED
   if [ "${#1}" -lt 256 ]; then
     UNQUOTED=$1
@@ -60,17 +60,35 @@ unquote() { # text [json] -> UNQUOTED
     UNQUOTED=${UNQUOTED//[\'\"\\]/} UNQUOTED=${UNQUOTED//[;|&()\`]/ }
   elif [ -n "${2:-}" ]; then
     UNQUOTED=$(LC_ALL=C sed -e 's/\\\\//g' -e 's/\\"//g' -e 's/"/ /g' -e 's/\\[ntrbf]/ /g' -e "s/['\\\\]//g" -e 's/[;|&()`]/ /g' <<<"$1")
-  else UNQUOTED=$(LC_ALL=C tr -d "'\"\\\\" <<<"$1" | LC_ALL=C tr ';|&()`' '      '); fi
+  else UNQUOTED=$(LC_ALL=C sed -e "s/['\"\\\\]//g" -e 's/[;|&()`]/ /g' <<<"$1"); fi
+}
+# Whether the text reads a `$NAME` (or `${NAME`) that starts with a NAME it assigns — the same pairing the
+# loop in may_launch makes, in one pass over blank-split words for a text too long for that loop.
+reads_assigned_name() { # stdin: UNQUOTED
+  LC_ALL=C awk '
+    { n = split($0, t, /[^A-Za-z0-9_${}=]+/)
+      for (i = 1; i <= n; i++) {
+        s = t[i]
+        while (match(s, /[A-Za-z_][A-Za-z0-9_]*=/)) { a[substr(s, RSTART, RLENGTH - 1)] = 1; s = substr(s, RSTART + RLENGTH) }
+        s = t[i]
+        while (match(s, /[$][{]?[A-Za-z_][A-Za-z0-9_]*/)) {
+          r = substr(s, RSTART + 1, RLENGTH - 1); sub(/^[{]/, "", r); refs[r] = 1; s = substr(s, RSTART + RLENGTH)
+        }
+      } }
+    END { for (r in refs) for (k = 1; k <= length(r); k++) if (substr(r, 1, k) in a) exit 0; exit 1 }'
 }
 may_launch() { # text [json]
   unquote "$@"
   if [[ $UNQUOTED == *'$'* && $UNQUOTED == *=* ]]; then
-    [ "${#UNQUOTED}" -lt 4096 ] || return 0
-    local rest=$UNQUOTED re='([A-Za-z_][A-Za-z0-9_]*)='
-    while [[ $rest =~ $re ]]; do
-      [[ $UNQUOTED == *'$'"${BASH_REMATCH[1]}"* || $UNQUOTED == *'${'"${BASH_REMATCH[1]}"* ]] && return 0
-      rest=${rest#*"${BASH_REMATCH[0]}"}
-    done
+    if [ "${#UNQUOTED}" -ge 4096 ]; then
+      reads_assigned_name <<<"$UNQUOTED" && return 0
+    else
+      local rest=$UNQUOTED re='([A-Za-z_][A-Za-z0-9_]*)='
+      while [[ $rest =~ $re ]]; do
+        [[ $UNQUOTED == *'$'"${BASH_REMATCH[1]}"* || $UNQUOTED == *'${'"${BASH_REMATCH[1]}"* ]] && return 0
+        rest=${rest#*"${BASH_REMATCH[0]}"}
+      done
+    fi
   fi
   [[ $UNQUOTED =~ $SCREEN_RE ]]
 }
