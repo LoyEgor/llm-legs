@@ -61,13 +61,14 @@ for flags in '' '--model default'; do
   assert await_exit
   assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
 done
-# A resume is not that run: `exec resume` keeps the session's own model and nothing sends the
-# config's, so the file cannot refuse a resumed session — only a model the caller names can.
+# A resume is not that run: it sends the session's own model (the resolved one when no rollout
+# names it), never the config's, so the file cannot refuse a resumed session — only a named model can.
 assert model_refused codex gpt-5.6-nova --account resumeacct --resume codex-resume --model gpt-5.6-nova
 clear_stub
 start_ok codex --account resumeacct --resume codex-resume
 assert await_exit
-assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
+assert grep -qx 'ARG=-m' "$CALL_LOG"
+assert test "$(grep -cx 'ARG=gpt-5.6-terra' "$CALL_LOG")" -eq 0
 printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 
 # The allowed model of every vendor still launches, from the brief and from the file alike.

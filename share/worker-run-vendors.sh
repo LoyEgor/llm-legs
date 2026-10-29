@@ -198,6 +198,16 @@ session_transcript() {
   printf '%s' "$transcript"
 }
 
+# The model the session's last turn asked for, which a resume must ask for again.
+codex_session_model() { # account session
+  local transcript model
+  transcript=$(session_transcript codex "$1" "$2") || return 1
+  model=$(jq -rR 'fromjson? | select(type == "object" and .type == "turn_context") | .payload.model? | strings' \
+    "$transcript" 2>/dev/null | tail -n 1)
+  [ -n "$model" ] || return 1
+  printf '%s' "$model"
+}
+
 refuse_stale_resume() {
   local vendor="$1" account="$2" resume="$3" transcript threshold ttl now mtime idle tokens token_k idle_text why='' usage
   [ -n "$resume" ] || return 0
@@ -328,8 +338,10 @@ supervise_codex() {
     { meta_update "$directory" '.model_id = $id' --arg id "$value" || :; }
   if [ -n "$resume" ]; then
     command=("$cli" exec resume "$resume")
+    # Without -m codex falls to config.toml's model (see start_run), so the session's own travels.
     value=$(jq -r 'if (.explicit_model // "") != "" then .model_id // .explicit_model else empty end' "$meta")
-    [ -z "$value" ] || command+=(-m "$value")
+    [ -n "$value" ] || value=$(codex_session_model "$account" "$resume") || value=$(jq -r '.model_id // .model' "$meta")
+    command+=(-m "$value")
     value=$(jq -r '.explicit_effort // empty' "$meta")
     [ -z "$value" ] || command+=(-c "model_reasoning_effort=$value")
   else

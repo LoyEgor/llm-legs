@@ -155,12 +155,14 @@ assert await_exit
 assert grep -q '^CODEX_HOME=.*/\.codex-profiles/resumeacct$' "$CALL_LOG"
 assert grep -q '^ARG=resume$' "$CALL_LOG"
 assert grep -q '^ARG=codex-resume$' "$CALL_LOG"
-assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
+# No readable rollout: the run's resolved model travels, never config.toml's default.
+assert test "$(grep -A1 -x 'ARG=-m' "$CALL_LOG" | grep -cx 'ARG=gpt-6.1-astra')" -ge 1
 assert test "$(grep -c '^ARG=--color$' "$CALL_LOG")" -eq 0
 
 mkdir -p "$CODEX_PROFILES_DIR/resumeacct/sessions/fixture"
 codex_transcript="$CODEX_PROFILES_DIR/resumeacct/sessions/fixture/rollout-codex-cold.jsonl"
-printf '%04000d\n' 0 >"$codex_transcript"
+printf '%04000d\n%s\n%s\n' 0 '{"type":"turn_context","payload":{"model":"gpt-6.1-luna"}}' \
+  '{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}' >"$codex_transcript"
 touch -t 202001010000 "$codex_transcript"
 refused_resume codex codex-cold 'idle .*past its ~30m cache'
 
@@ -168,8 +170,9 @@ touch "$codex_transcript"
 clear_stub
 start_ok codex --account resumeacct --resume codex-cold
 assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
-# A resume with no explicit model keeps the session's own: the config default must not travel.
-assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
+# A resume with no explicit model asks for the session's own, its rollout's last turn: `exec resume`
+# without -m falls to config.toml's (run codex-1793280617-19169-4d59 went sol -> luna).
+assert test "$(grep -A1 -x 'ARG=-m' "$CALL_LOG" | grep -cx 'ARG=gpt-6.1-sol')" -ge 1
 assert await_exit
 
 # Explicit --model/--effort override a resumed session; config defaults never do.

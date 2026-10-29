@@ -965,10 +965,12 @@ start_run() {
       [[ "$model_label" =~ ^[A-Za-z0-9]+$ ]] || model_label=astra
       cli="${WORKER_RUN_CODEX:-codex}"
       if [ -n "$resume" ]; then
-        # `exec resume` keeps the session's own model unless told otherwise, so
-        # only an explicit request overrides it — config defaults must not.
+        # `exec resume` without -m falls to config.toml's model, not the session's (codex-cli 0.165.0,
+        # run codex-1793280617-19169-4d59 went sol -> luna mid-session), so the session's own rollout
+        # model always travels; an explicit request overrides it, the resolved model stands in for none.
         command=("$cli" exec resume "$resume")
-        [ -z "$explicit_model" ] || command+=(-m "$model_id")
+        if [ -n "$explicit_model" ]; then command+=(-m "$model_id")
+        else command+=(-m "$(codex_session_model "$account" "$resume" || printf '%s' "$model_id")"); fi
         [ -z "$explicit_effort" ] || command+=(-c "model_reasoning_effort=$explicit_effort")
       else
         command=("$cli" exec -C "$workdir" -m "$model_id" -c "model_reasoning_effort=$effort" --color never)
