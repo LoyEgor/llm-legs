@@ -207,6 +207,9 @@ C1_BG_KEEP_S = 2 * 86400
 C1_BOOTS_KEPT = 64
 C1_QUEUE_KEPT = 20
 C1_NOTE_IDS = re.compile(r"<(tool-use-id|task-id)>([^<]+)</")
+C1_NOTE_STATUS = re.compile(r"<status>(\w+)</status>")
+BG_SERVER = re.compile(r"\bhttp\.server\b|\b(?:nx|npm|pnpm|yarn|bun|npx)\s+(?:run\s+)?(?:serve|dev|start|watch)\b"
+                       r"|(?:^|[\s;&|(])(?:vite|uvicorn|next\s+dev|flask\s+run)\b|\s--watch\b|\bserve\s")
 C1_SUITE = re.compile(r"(?:^|[;&|(\n]|\bdo\b|\bthen\b)\s*(?:\w+=\S*\s+)*"
                       r"(?:(?:(?:\S*/)?(?:bash|sh|python3?(?:\.\d+)?)|exec|time|uv\s+run|env(?:\s+-u\s*\S+|\s+-i|\s+\w+=\S*)*"
                       r"|nice(?:\s+-n\s*-?\d+)?|timeout\s+\S+|perl\s+-e\s*(?:'[^']*'|\"[^\"]*\")(?:\s+\d+)?)\s+)*"
@@ -753,6 +756,17 @@ def wait_call(command):
             None if loop or follow else sum(sleeps)]
 
 
+def bash_class(command, layer):
+    """What a Bash call's wait is made of, should it go to the background: a suite, a poll (fixed sleeps or a followed
+    log, whose overshoot is at most one interval), a server (ended by a kill, so its notification is no wait) or a
+    script (its own runtime)."""
+    if layer == "test":
+        return "suite"
+    if WAIT_SLEEP.search(command) or WAIT_FOLLOW.search(command):
+        return "poll"
+    return "server" if BG_SERVER.search(command) else "script"
+
+
 @functools.lru_cache(maxsize=4096)
 def media_tool(command):
     """The media script a Bash call runs: a command word or a $VAR assigned its path. A media path that is only an
@@ -1283,26 +1297,31 @@ def c1_close(c, out, end, session):
     c["wait"].append(["t", round(start, 3), session, round(end, 3), turn["o"], None, 0, turn["ty"],
                       [[round(a, 3), round(b, 3)] for a, b in holes],
                       {k: round(v, 1) for k, v in part.items() if v >= 0.05}, use, turn.get("calls", [])])
-    for launch, what, notified, tid, opened in turn["dl"]:
+    for launch, what, notified, tid, opened, *more in turn["dl"]:
         c["wait"].append(["d", round(launch, 3), session, round(end, 3), what, None, 0, round(notified, 3),
-                          tid[-10:], opened])
+                          tid[-10:], opened] + (more + [None, None])[:2])
 
 
-def c1_note(c, ids, t):
-    found = []
-    for ident in ids:
+def c1_note(c, text, t):
+    """The background calls a notification names, each noted done at its first notification with the command class
+    its launch carried and the notification's status (completed, failed, killed, stopped)."""
+    found, status = [], C1_NOTE_STATUS.search(text)
+    for ident in (v for _, v in C1_NOTE_IDS.findall(text)):
         tid = ident if ident in c["bg"] or ident in c["dn"] else c["task"].get(ident)
         if tid in c["bg"]:
-            launch, what = c["bg"].pop(tid)[:2]
-            c["dn"][tid] = [launch, what, t]
+            launch, what, *cls = c["bg"].pop(tid)
+            c["dn"][tid] = [launch, what, t, (cls or [None])[0], None]
         if tid in c["dn"] and tid not in found:
+            if status and len(c["dn"][tid]) == 5 and not c["dn"][tid][4]:
+                c["dn"][tid][4] = status.group(1)
             found.append(tid)
     return found
 
 
 def c1_take(c, tids, opened):
     if c["turn"]:
-        c["turn"]["dl"] += [c["dn"].pop(tid) + [tid, opened] for tid in tids if tid in c["dn"]]
+        c["turn"]["dl"] += [dn[:3] + [tid, opened] + dn[3:5] for tid in tids if tid in c["dn"]
+                            for dn in [c["dn"].pop(tid)]]
 
 
 def c1_entry(c, out, entry, t, session, boots):
@@ -1322,7 +1341,7 @@ def c1_entry(c, out, entry, t, session, boots):
         text = str(entry.get("content") or "")
         if entry.get("operation") == "enqueue":
             if text.startswith("<task-notification"):
-                c1_note(c, [v for _, v in C1_NOTE_IDS.findall(text)], t)
+                c1_note(c, text, t)
             elif not text.startswith("<cross-session-message"):
                 c["q"] = (c["q"] + [t])[-C1_QUEUE_KEPT:]
                 c1_typed(c, out, t)
@@ -1346,7 +1365,7 @@ def c1_entry(c, out, entry, t, session, boots):
             else:
                 c1_typed(c, out, iso_epoch(attachment.get("timestamp")) or t)
         elif origin == "task-notification":
-            c1_take(c, c1_note(c, [v for _, v in C1_NOTE_IDS.findall(str(attachment.get("prompt") or ""))], t), 0)
+            c1_take(c, c1_note(c, str(attachment.get("prompt") or ""), t), 0)
         return
     prev, c["prev"] = c["prev"], t
     if kind == "assistant":
@@ -1369,7 +1388,7 @@ def c1_entry(c, out, entry, t, session, boots):
                     media_tool(command)) else "tool"
                 what = name + (":" + str(args["subagent_type"]) if args.get("subagent_type") else ":media" if layer == "media"
                                else ":worker" if WORKER_WAIT.search(command) else ":review" if REVIEW_WAIT.search(command) else "")
-                turn["open"][block["id"]] = [t, layer, what]
+                turn["open"][block["id"]] = [t, layer, what] + ([bash_class(command, layer)] if what == "Bash" else [])
         return
     if kind == "system":
         sub = entry.get("subtype")
@@ -1400,7 +1419,7 @@ def c1_entry(c, out, entry, t, session, boots):
                 c1_typed(c, out, t)
             result = entry.get("toolUseResult")
             if isinstance(result, dict) and (result.get("backgroundTaskId") or result.get("isAsync")):
-                c["bg"][tid] = [started[0], started[2]]
+                c["bg"][tid] = [started[0], started[2]] + started[3:4]
                 task = result.get("backgroundTaskId") or result.get("agentId")
                 if task:
                     c["task"][str(task)] = tid
@@ -1429,7 +1448,7 @@ def c1_entry(c, out, entry, t, session, boots):
             c1_typed(c, out, t)
         c1_open(c, out, t, "h", session)
     else:
-        tids = c1_note(c, [v for _, v in C1_NOTE_IDS.findall(text)], t)
+        tids = c1_note(c, text, t)
         c1_open(c, out, t, "n" if origin == "task-notification" else "p", session)
         c1_take(c, tids, 1)
 

@@ -531,6 +531,20 @@ def delegation_leaf(what):
     return "other"
 
 
+def bash_split(extra, lo, hi):
+    """{class: [seconds, calls]} of the attended background Bash delegations inside [lo, hi): a killed call apart (a
+    poll or server ended at the 30 min cap, a wait nobody had), else the class its d row carries (H.bash_class);
+    rows journaled before the class are unclassified."""
+    out = {}
+    for a, b, row in extra:
+        if row[4] == "Bash" and min(b, hi) > max(a, lo):
+            key = "killed" if row[11:12] == ["killed"] else row[10] if len(row) > 10 and row[10] else "unclassified"
+            entry = out.setdefault(key, [0.0, 0])
+            entry[0] += min(b, hi) - max(a, lo)
+            entry[1] += 1
+    return out
+
+
 def partition(spans, extra, lo, hi):
     """Each blocked second once: A before B, parallel spans sharing it equally; credit per (day, area, leaf)."""
     items = [(max(a, lo), min(b, hi), "chat", row) for a, b, row in spans if min(b, hi) > max(a, lo)]
@@ -1418,10 +1432,14 @@ def collect(write, now):
             continue
         ranked = sorted((opportunity_fields(om, l) for l in levers), key=lambda f: (f["needs_egor"], -f["score"]))
         best = seen_fields(dict(ranked[0], levers=[f["levers"][0] for f in ranked]), seen)
+        split = bash_split(extra, lo, now) if component == "delegation/background Bash" else {}
         opportunities.append({"id": "opportunity:%s" % component, "rule": "opportunity", "state": "watch",
                               "fact": "%s · %s min/day → saves %s · %s" % (component, fmt(om), fmt(best["saving"]), best["levers"][0]),
                               "value": best["om_day"], "limit": LIMITS["worth_om_day"], "unit": "OM/d", "window_h": WINDOW_D * 24,
-                              "exposure": seen, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
+                              "exposure": seen, "count": None, "first_seen": None, "last_seen": None, "evidence": [
+                                  H.evidence(now, "events d rows · " + key, "%s of %s min/day · %d calls" % (
+                                      fmt(om * secs / sum(v[0] for v in split.values())), fmt(om), n))
+                                  for key, (secs, n) in sorted(split.items(), key=lambda kv: -kv[1][0])],
                               "ledger": None, "group": area, "opportunity": best})
     opportunities += moved_opportunities(component_om, days, now, covered)
     try:

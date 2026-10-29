@@ -2514,7 +2514,7 @@ notes_lines = [human(N), say(N + 5, tools=[agent, ("toolu_bg2", "Bash", {"comman
                say(N + 10), done(N + 20),
                rec(N + 100, type="user", origin={"kind": "peer"}, promptSource="system", message={"content": "hi"}),
                say(N + 110),
-               queue(N + 150, "enqueue", "<task-notification><task-id>bt2</task-id></task-notification>"),
+               queue(N + 150, "enqueue", "<task-notification><task-id>bt2</task-id><status>killed</status></task-notification>"),
                rec(N + 151, type="attachment", attachment={
                    "type": "queued_command", "origin": {"kind": "task-notification"},
                    "prompt": "<task-notification><task-id>bt2</task-id></task-notification>"}),
@@ -2527,6 +2527,8 @@ mid, cont = by(notes, "d", N + 5), [r for r in notes if r[0] == "d" and r[4] == 
 bash = [r for r in notes if r[0] == "d" and r[4] == "Bash"][0]
 check(bash[3] == N + 200 and bash[7] == N + 150 and bash[9] == 0,
       "C1 notification mid-turn: consumed by the running turn, its delegation row is not an opened follow-up: %s" % bash)
+check(bash[10:] == ["poll", "killed"] and cont[0][10:] == [None, None],
+      "C1 a background Bash row carries its command class and its notification's status, an Agent row neither: %s" % bash)
 check(len(cont) == 1 and cont[0][3] == N + 1100 and cont[0][7] == N + 1000 and cont[0][9] == 1 and cont[0][5] == [0, 1, 1],
       "C1 continuation: the notification opens its follow-up turn, answered after 3 min: %s" % cont)
 check(by(notes, "t", N + 1000.5)[4] == "n", "C1 continuation: the turn a notification opens has origin n")

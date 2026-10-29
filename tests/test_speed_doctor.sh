@@ -266,6 +266,13 @@ check({o["id"] for o in every_time} == {"opportunity:time/" + k for k in module.
       and [o["id"] for o in every_unit] == ["opportunity:refusal/gate-x"],
       "every Lost time class ranks through its lever or not at all, and every gate's refusal row has its lever, so a "
       "new class never ends the Speed collector (exec'd by com.egor.harness-doctor) in KeyError: %r" % (every_unit,))
+d_row = lambda *more: ["d", 0, "s", 0, "Bash", None, 0, 0, "x", 1] + list(more)
+split = module.bash_split([(0, 100, d_row("poll", "completed")), (50, 80, d_row("server", "killed")),
+                           (0, 10, d_row()), (900, 1100, d_row("script", "completed")),
+                           (0, 50, d_row("suite", "completed")[:4] + ["Bash:worker"] + d_row()[5:])], 0, 1000)
+check(split == {"poll": [100.0, 1], "killed": [30.0, 1], "unclassified": [10.0, 1], "script": [100.0, 1]},
+      "background Bash splits by the d row's class, a kill at the cap apart, rows journaled before the class "
+      "unclassified, clipped to the window, worker waits out: %s" % split)
 heavy = {"heavy": [{"label": "test_%d" % i, "min_day": 100.0 - i} for i in range(10)]}
 rows_header = json.loads(next(l for l in h.menu_text({
     "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
