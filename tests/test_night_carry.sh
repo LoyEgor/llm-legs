@@ -4,7 +4,7 @@
 # night-run carry and suites: open handoffs and the previous night's failed suites become night jobs;
 # the full run at Close records its result for the report.
 set -u
-# The polls below tick every 0.1 s: a forked sleep each, the builtin none.
+# The polls below tick every 0.1 s: a forked sleep each, the builtin none. Caps of 1-2 min end early on success; the 10-23 red run was 212 s wall on 24 s CPU, past the old 5-10 s caps.
 enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(cd -P "$(mktemp -d)" && pwd)"
@@ -116,7 +116,7 @@ assert grep -qF 'has no tests/run-all' "$NIGHTS/N1.suites.other.log"
 assert grep -qxF 'suites · repo · 1 PASS · 1 FAIL: test_b.sh' <(night report N1 2>/dev/null)
 rm "$NIGHTS/N1.suites.repo.log"
 night suites N1 | grep -q '^night N1: full suites run in the background, pid [0-9]*$' || fail "suites did not detach"
-for i in $(seq 1 100); do [ -s "$NIGHTS/N1.suites.repo.log" ] && jqe '.suites.finished_at != null' "$NIGHTS/N1.json" && break; sleep 0.1; done
+for i in $(seq 1 1200); do [ -s "$NIGHTS/N1.suites.repo.log" ] && jqe '.suites.finished_at != null' "$NIGHTS/N1.json" && break; sleep 0.1; done
 assert jqe '.suites.repos[0].failed == ["test_b.sh"]' "$NIGHTS/N1.json"
 # A run-all that dies before journaling still reads as failed, so the next night carries it.
 jq -n '{id: "N1x", started_at: "2026-10-03T12:00:00Z", finished_at: null, jobs: []}' >"$NIGHTS/N1x.json"
@@ -133,11 +133,11 @@ mv "$WORK/repo/tests/run-all" "$WORK/run-all.kept"
 printf '#!/usr/bin/env bash\nwhile [ ! -e "%s/go-y" ]; do sleep 0.05; done\nexec "%s" "$@"\n' "$WORK" "$WORK/run-all.kept" >"$WORK/repo/tests/run-all"
 chmod +x "$WORK/repo/tests/run-all"
 night suites N1y >/dev/null || fail "suites did not detach"
-for i in $(seq 1 50); do jqe '.suites.pid' "$NIGHTS/N1y.json" 2>/dev/null && break; sleep 0.1; done
+for i in $(seq 1 1200); do jqe '.suites.pid' "$NIGHTS/N1y.json" 2>/dev/null && break; sleep 0.1; done
 # The run is held until the report sits in its first wait tick, then released: the wait is one tick, not a guess.
 HARNESS_WAITS_DIR="$WORK/waits" bash "$ROOT/bin/night-run" report N1y >"$WORK/report-y" 2>/dev/null &
 report_y=$!
-for i in $(seq 1 100); do pgrep -P "$report_y" -x sleep >/dev/null && break; sleep 0.05; done
+for i in $(seq 1 1200); do pgrep -P "$report_y" -x sleep >/dev/null && break; sleep 0.05; done
 touch "$WORK/go-y"
 wait "$report_y"
 mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
