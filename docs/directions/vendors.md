@@ -93,7 +93,7 @@ Why they come back:
   and `families`). A new facet only baselines. Argon joined the open gemini event at the first pass after 56a766ed
   (`update.log` 10-19T23:05:44Z), 9 h after Egor's notice, so 10-19 still counts outside.
 - **False events** came from packed string tables gluing ids (agy 1.3.0–1.3.2, a grok cargo hash); none from
-  52ec96b0 (10-09) until a line undoing a ruled-out one reopened claude 10-22: goal decided-reversal.
+  52ec96b0 (10-09) until a line undoing a ruled-out one reopened claude 10-22; such a line closes itself since cd327c56.
 - **Missed surfaces.** A run decides each diff line, not each surface the change reaches; the resolver rule
   (vendor-release §3 step 7, row `cr`) removed the static pin that broke 10-13. A rename no diff line
   carried broke 10-20; the `tools` facet carries one now (d5c1dd01).
@@ -112,24 +112,6 @@ The rule: a breakage goes to block 1, and an unintegrated change goes to block 6
 ## Goals
 
 10-23 deep search, by harm.
-
-### goal decided-reversal: a line undoing one a run ruled not-applicable opens no event
-
-Class: false events. Open `claude-20261022T233722Z` holds one substantive line, `-claude-platform-on-aws-06w`,
-undoing the `+` line `claude-20261014T201317Z` ruled not-applicable 10-20; `ids_unserved` keeps it (no served stem)
-and the flap re-check reads only a pending event.
-- Change, `changes()` beside `ids_unserved`: an event whose every substantive line exactly reverses (`+`↔`-`, `*`
-  rows aside) one that an event closed before its creation ruled `not-applicable` auto-closes, noting that event; a
-  mixed event keeps every line and its route.
-- Proof, a replay of old and new `changes()` over the 56 events since 09-23 not auto-closed (`events/*.json`,
-  `*.diff`), decisions as of each creation. Old: 56 open. New: claude-20261002T021805Z (2.1.287 drops the
-  `--client-data-url` block claude-20260926T203455Z ruled out) and claude-20261022T233722Z auto-close, not
-  grok-20261008T234948Z (created 23 s before grok-20261008T201239Z closed, its line ruled `integrated`). Of 13
-  reversal lines, the 10 in closed events were all ruled not-applicable again (6 only by `*` rows);
-  `codex-20261020T214448Z`'s 2 of 28 keep it open.
-- Gain: 2 false events in 30 days, ≈1 per 15 days with no run (run time unconfirmed: claude-1002's 3.1 h, 10-20's
-  batch 44 min each), up to 0.14 % of a week's Claude spend (10-20's Opus batch, 1.28 % for 9 events; the 1.28 %
-  unconfirmed). Not worse: no integrated or blocked line pre-decided (replay 0); net lines.
 
 Dropped 10-23:
 - Version-only releases close unread (claude 2.1.305–308, agy 1.4.4–5): no changelog entry names a setting, env or
@@ -158,6 +140,7 @@ Dropped 10-23:
 | 10-19 | per-account catalogs and plans become events; Argon serves only on accounts that list it | Argon joined the gemini event 10-19 23:05Z | 56a766ed, 13707749 |
 | 10-23 | goal night-events: a pilot night past blocks 1–5's goals runs step 3's Vendors after its goals (`pilot_reached`) | proof pending, the first such night: events open at its start → 0; then 7-day lag ≤ the gap between nights, guard 50–69 %, else reverted | 998dd4be, +35 net lines |
 | 10-29 | goal served-tools: a gemini `tools` facet, every tool and argument key agy sessions call; lines only join | replay of 43 passes 10-13…23: tool lines in diffs 0 → `read_file`, `.Path` open an event at the 10-20 21:45Z pass, `.EndLine`, `.StartLine` join 10-21 17:23Z; tools-only events 1 in 11 days; facet 0.07–0.09 s a check; 14 d: rename breakages 0 and tools-only events ≤ 1, else reverted; review-bench half unconfirmed (an agent may not run a cell) | d5c1dd01, +49 net lines |
+| 10-29 | goal decided-reversal: a line undoing one a closed event ruled not-applicable (an exact row, its latest ruling) opens no event; a mixed event keeps every line | replay of 56 events since 09-23: open 56 → 54 (claude-20261002T021805Z on its diff, claude-20261022T233722Z as created), grok-20261008T234948Z stays open; integrated or blocked closed early 0; 30 d: such false events 0, else reverted | cd327c56, +39 net lines |
 
 ## Decisions
 
