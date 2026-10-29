@@ -21,7 +21,7 @@ suite_journal_secs() { printf -v "$1" '%d.%03d' "$(( $2 / 1000 ))" "$(( $2 % 100
 
 suite_journal_cpu_ms() { # var scratch-file [children] -> CPU ms of this shell and its children, or children only;
   # empty when unmeasured, and always under bash < 5.3 with no scratch file
-  local shell_user shell_sys user sys t s ms=0
+  local shell_user shell_sys user sys t
   printf -v "$1" ''
   # bash 5.3 captures without a fork; eval keeps the syntax from older parsers.
   if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3) )); then
@@ -34,12 +34,19 @@ suite_journal_cpu_ms() { # var scratch-file [children] -> CPU ms of this shell a
     rm -f "$2"
   fi
   [ -z "${3:-}" ] || shell_user='' shell_sys=''
-  for t in $shell_user $shell_sys $user $sys; do
-    t=${t/,/.} t=${t%s} s=${t#*m}
-    [[ $t =~ ^[0-9]+m[0-9]+\.[0-9]{3}$ ]] || return 0
-    ms=$(( ms + 10#${t%m*} * 60000 + 10#${s%.*} * 1000 + 10#${s#*.} ))
+  suite_journal_times_ms "$1" $shell_user $shell_sys $user $sys
+}
+
+suite_journal_times_ms() { # var <`times` field>... -> their sum in ms; empty when one does not parse
+  local times_var=$1 times_t times_s times_ms=0
+  shift
+  printf -v "$times_var" ''
+  for times_t; do
+    times_t=${times_t/,/.} times_t=${times_t%s} times_s=${times_t#*m}
+    [[ $times_t =~ ^[0-9]+m[0-9]+\.[0-9]{3}$ ]] || return 0
+    times_ms=$(( times_ms + 10#${times_t%m*} * 60000 + 10#${times_s%.*} * 1000 + 10#${times_s#*.} ))
   done
-  printf -v "$1" '%s' "$ms"
+  printf -v "$times_var" '%s' "$times_ms"
 }
 
 suite_journal_cpu() { # var scratch-file [children] -> CPU seconds of this shell and its children, or children only

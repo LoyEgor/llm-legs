@@ -522,6 +522,11 @@ assert jqe '.suites["test_prof.sh"] | .rc == 0 and .execs.jq == 3 and .execs.sle
   and (.sleep_sites | keys == ["<string>:1"]) and (.sleep_sites["<string>:1"] - 0.3 | fabs) < 0.05' <(tail -1 "$JOURNAL")
 bash "$ROOT/share/run-suites.sh" --repo "$R7" >/dev/null 2>&1
 assert jqe '.suites["test_prof.sh"] | .rc == 0 and (has("execs") or has("sleep_s") | not)' <(tail -1 "$JOURNAL")
+# A detached worker-run supervisor is no child the suite reaps: the `times` it appends to
+# RUN_SUITES_DETACHED_CPU at delivery adds to the suite's cpu_s.
+suite "$R7" test_prof.sh 'printf "0m0.010s 0m0.020s\n0m5.000s 0m2,000s\n" >>"$RUN_SUITES_DETACHED_CPU"'
+bash "$ROOT/share/run-suites.sh" --repo "$R7" >/dev/null 2>&1
+assert jqe '.suites["test_prof.sh"] | .rc == 0 and .cpu_s >= 7.03 and .cpu_s < 8' <(tail -1 "$JOURNAL")
 
 # Red first: a day run starts the suites red in this checkout's last covering run first and, once they
 # are red again, stops the rest unrun; the summary says FAIL and the row is complete:false repeat-red.

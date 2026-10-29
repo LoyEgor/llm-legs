@@ -371,7 +371,7 @@ find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>
 suite_journal_git "$repo"
 suite_journal_content "$repo"
 journal_run() {
-  local entry name rc secs real cpu bound execs complete=true queued began ended reason='' stopped=''
+  local entry name rc secs real cpu detached bound execs complete=true queued began ended reason='' stopped=''
   local -a names=()
   suite_journal_suites=''
   for entry in ${suites[@]+"${suites[@]}"}; do
@@ -380,6 +380,12 @@ journal_run() {
     rc='' real='' cpu='' bound=''
     [ -r "$logdir/$name.status" ] && IFS=$'\t' read -r rc secs real bound cpu <"$logdir/$name.status"
     [ "$real" != - ] || real=''
+    # The detached worker-run supervisors it started, each `times` at its delivery.
+    if [ -n "$cpu" ] && [ -s "$logdir/$name.detached" ]; then
+      read -r -d '' detached <"$logdir/$name.detached" || :
+      suite_journal_times_ms detached $detached
+      [ -z "$detached" ] || suite_journal_secs cpu $(( ${cpu%.*} * 1000 + 10#${cpu#*.} + detached ))
+    fi
     execs=''
     [ ! -e "$logdir/$name.execs" ] || execs=$(LC_ALL=C awk '$1 == "slept" { s += $2; next }
       $1 == "pysleep" { s += $2; if (!($3 in p)) k++; p[$3] += $2; next } { n[$1]++ }
@@ -500,7 +506,7 @@ run_one() { # suite-path [shard i/N]
   # (test_consistency prices the INSTALLED hooks), and a fabricated HOME would make them pass
   # against nothing. TMPDIR is what mktemp fixtures collide on, and it is safe to move.
   (
-    export TMPDIR="$logdir/tmp-$job" SUITE_JOURNAL_PID=$$
+    export TMPDIR="$logdir/tmp-$job" SUITE_JOURNAL_PID=$$ RUN_SUITES_DETACHED_CPU="$logdir/$name.detached"
     export REPORT_BUS_LIVE_ROOT=$live_reports REPORT_BUS_LEAK_LOG="$logdir/$job.bus-leak"
     [ -z "$shard" ] || export SUITE_SHARD=$shard
     # A suite judges hooks the way a chat meets them; run from inside a worker it would inherit the

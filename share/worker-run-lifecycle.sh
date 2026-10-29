@@ -1157,6 +1157,8 @@ if [ "$rc" -gt 128 ]; then
   [ "$reaped" -eq 127 ] || rc=$reaped
 fi
 "$1" _deliver "$2" "$rc" >/dev/null 2>&1
+# A suite that started this run counts its CPU: detached, it is no child the suite reaps.
+[ -z "${RUN_SUITES_DETACHED_CPU:-}" ] || times >>"$RUN_SUITES_DETACHED_CPU" 2>/dev/null
 printf "%s\n" "$rc" >"$2/exit_code.tmp.$$"
 mv -f "$2/exit_code.tmp.$$" "$2/exit_code"
 exit "$rc"'

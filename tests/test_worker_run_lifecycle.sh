@@ -12,7 +12,10 @@ export PICK_ACCOUNT=fast PICK_RC=0 STUB_GATE="$WORK/start-gate"
 # below fail.
 (sleep 60; : >"$STUB_GATE") &
 gate_timer=$!
+detached_sink=${RUN_SUITES_DETACHED_CPU-}
+export RUN_SUITES_DETACHED_CPU="$WORK/detached-cpu"
 start_ok codex
+if [ -n "$detached_sink" ]; then export RUN_SUITES_DETACHED_CPU=$detached_sink; else unset RUN_SUITES_DETACHED_CPU; fi
 assert test "$(wc -l <"$WORK/start.out" | tr -d ' ')" -eq 5
 assert grep -Eq '^RUN: codex-[0-9]+-[0-9]+-[0-9a-f]{4}$' "$WORK/start.out"
 assert grep -qx 'TAG: fast · astra · high' "$WORK/start.out"
@@ -30,6 +33,8 @@ kill "$gate_timer"
 second_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
 assert grep -q '^STATUS: done$' <<<"$second_wait"
 assert grep -q '^SESSION: codex-session$' <<<"$second_wait"
+# The detached supervisor's `times` (its own CPU, then its reaped children's) reach the suite that started it.
+assert test "$(grep -cE '^[0-9]+m[0-9]+[.,][0-9]{3}s [0-9]+m[0-9]+[.,][0-9]{3}s$' "$WORK/detached-cpu")" -eq 2
 # A terminal wait names the answer and never quotes it: the relay reads `report` next in any case,
 # and a tail here handed the orchestrator the same result twice.
 assert grep -qxF "RESULT: run \`worker-run report $RUN_ID\`" <<<"$second_wait"
