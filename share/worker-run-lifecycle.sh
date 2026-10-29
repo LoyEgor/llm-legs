@@ -446,7 +446,7 @@ start_run() {
   local round_source='' candidate='' rule='' image=''
   local -a text_rounds=() brief_images=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
-  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
+  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' commit_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
   local light_offrow=false inbox_settings='' resolved_add_dirs resolved_read
   local fit_round=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session launcher_pid entry
@@ -627,7 +627,11 @@ start_run() {
       fail "review-bench fix $review_round --print failed: a round-tagged brief without the verdicts.jsonl rule cannot launch"
     # Only a brief holding every line of it (a `review-bench fix --brief` file) goes without it; a brief
     # merely naming verdicts.jsonl used to launch its fixer without the round's findings.
+    # bin/fix-audit maps each landed fix to its finding by this name a week later.
+    commit_rule="Each commit message names this round and the findings it fixes: \`$review_round F<index>[,<index>...]\`."
+    [ -n "$fix_rule" ] && ! grep -Fqx -- "$commit_rule" "$brief" || commit_rule=''
     [ -n "$(grep . <<<"$fix_rule" | grep -Fxv -f "$brief")" ] || fix_rule=''
+    [ -z "$commit_rule" ] || fix_rule+=${fix_rule:+$'\n'}$commit_rule
   fi
   brief_cyrillic=$(cyrillic_share <"$brief") ||
     fail "the brief's language could not be measured ($CYRILLIC_SHARE): nothing was launched; fix the tool rather than skipping the check"

@@ -23,7 +23,7 @@ sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
 # a faked sweep list means a test: the real helpers would get its night refs
 helper_repos="${NIGHT_RUN_HELPER_REPOS-${NIGHT_RUN_SWEEP_REPOS:+/dev/null}}"
 helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
-KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal deep-search '
+KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal deep-search fix-audit '
 # kind:days: carry adds the kind once no night ran it to an end in that many days
 PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30'
 # The directions in queue order (docs/directions/README.md): a new night is their pilot and works only the goals of
@@ -32,7 +32,7 @@ PILOT=${NIGHT_RUN_PILOT-doctors legacy vendors}
 # What a pilot night does instead of night-sweep's Night mode prep, launches and debt pass: said in its prompt, so
 # the skill every night reads stays as it is.
 PILOT_CARRY='`nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
-PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. '"$PILOT_CARRY"
+PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `fix-audit read`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. '"$PILOT_CARRY"
 # A resumed pilot night keeps its pilot (resume_night adds no debt job): only its pending jobs, then the carry loop.
 PILOT_RESUME_RULES='Pilot night (llm-legs docs/directions/README.md), over resume: no `debt` job or debt pass; once the pending jobs land, '"$PILOT_CARRY"
 # Once the pilot reaches vendors, its events are integrated after the goal lands, so a goal is judged alone.
@@ -63,7 +63,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage|vendor-watch|tool-ideas|directions-refresh|goal|deep-search> <ref> [--branch B] [--ready "<why>" [--repo R]...]
+       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage|vendor-watch|tool-ideas|directions-refresh|goal|deep-search|fix-audit> <ref> [--branch B] [--ready "<why>" [--repo R]...]
        night-run carry <id>
        night-run suites <id> [--wait]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed, suites, answer, done)
@@ -895,6 +895,12 @@ carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carr
     repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: %s not carried\n' "$kind" >&2; continue; }
     printf '%s\t%s\t%s\tshare/briefs/%s.md\t-\n' "$kind" "$(date -u +%Y-%m)" "$repo" "$kind"
   done
+  repo=$(repo_dir llm-legs) && fix_audit_line "$repo"
+}
+
+fix_audit_line() { # repo -> the fix-audit job's line while a blind read's verdicts (`fix-audit read`, prep) wait for the ledger
+  "$repo_root/bin/fix-audit" pending >/dev/null 2>&1 || return 0
+  printf 'fix-audit\t%s\t%s\tbin/fix-audit\t-\n' "$(date -u +%Y-%m-%d)" "$1"
 }
 
 goal_slugs() { # direction-file -> the slug of each `### goal <slug>:` section under `## Goals`, in order
@@ -931,6 +937,7 @@ pilot_goal() { # id directions -> the carry line of the next goal in queue order
     [ -z "$lines" ] || { printf '%s\n' "$lines"; return 0; }
     ! jq -e 'any(.jobs[]; (.kind | IN("fixer", "deep-search")) and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
   done
+  fix_audit_line "$repo"
   ! periodic_due | grep -qx directions-refresh ||
     printf 'directions-refresh\t%s\t%s\tshare/briefs/directions-refresh.md\t-\n' "$(date -u +%Y-%m)" "$repo"
 }
@@ -1005,11 +1012,11 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
     printf '%s\n' "$file"
     return 0
   fi
-  if [[ " $PERIODIC " == *" $kind:"* ]] || [ "$kind" = deep-search ]; then
+  if [[ " $PERIODIC " == *" $kind:"* ]] || [ "$kind" = deep-search ] || [ "$kind" = fix-audit ]; then
     { printf 'ROUND: none\nSTRONG: yes\nWEB: on\nWorking directory: %s\n\n# Night %s job %s\n\n' "$wt" "$kind" "$ref"
       printf 'Night %s. Work in the worktree `%s` on branch `%s`; `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor; markdown is net zero against `refs/night/%s/base`. No commit is `nothing-to-do`.\n\n' \
         "$id" "$wt" "$branch" "$repo_root" "$id"
-      cat "$repo_root/$what"; } >"$file" || return 1
+      if [ "$kind" = fix-audit ]; then "$repo_root/$what" brief; else cat "$repo_root/$what"; fi; } >"$file" || return 1
     printf '%s\n' "$file"
     return 0
   fi

@@ -417,6 +417,11 @@ def snapshot(doctor, doc_file, night=None):
                 where = ((read_json(registry) or {}).get(name) or {}).get("where") if name else None
                 if isinstance(where, str) and os.path.isfile(os.path.join(repos_dir(doctor), repo, where.split(":")[0])):
                     files.append(os.path.join(repos_dir(doctor), repo, where.split(":")[0]))
+            if rule == "fix_audit":
+                import fix_audit
+                fix = fix_audit.ledger_row(problem.get("ident") or pid.partition(":")[2]) or {}
+                files += [os.path.join(repos_dir(doctor), fix["repo"], fix["file"])] if fix.get("file") else []
+                what = fix_audit.revert_what(fix) if fix else what
             if problem.get("speed") and rule == "spend_audit":
                 files += strings((problem.get("spend") or {}).get("sources"))
                 what = "Spend component %s · %s" % ((problem.get("spend") or {}).get("component"), problem.get("fact"))

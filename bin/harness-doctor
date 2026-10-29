@@ -32,6 +32,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
+import fix_audit
 import limit_hit
 from fix_commit import LANDED_FILE, NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, memo_flush, merge_settled, read_settled, record_settled, siblings_dir, use_memo
 from limiter_hold import hold_dir, wait_dir
@@ -5902,6 +5903,7 @@ def load_changes(now):
 
 HOLDS_GROUP = "Limiter holds"
 AUDIT_GROUP = "Log audit"
+FIX_AUDIT_GROUP = "Fix audit"
 AUDIT_STALE_S = 48 * 3600
 SPEED_GROUP = "Speed"
 SPEED_LABEL = "Lost time"
@@ -6645,6 +6647,19 @@ def audit_verdicts(now):
     return out, at, until
 
 
+def fix_audit_verdicts():
+    """A landed fix bin/fix-audit's blind read found false or harmful, or useless with code added: one problem each
+    until its revert lands (goal fix-audit, docs/directions/doctors.md)."""
+    out = []
+    for row in fix_audit.to_revert(fix_audit.load()):
+        ref = "%s@%s" % (row.get("repo"), ",".join(c[:8] for c in row.get("commits") or ()))
+        out.append(dict(verdict("fix_audit", row["id"], 1, 0, "fixes", 0, 1, "red",
+                                fact="%s fix %s %s · %s" % (row.get("verdict"), ref, row.get("file"), row.get("reason")),
+                                evidence=[evidence(at_epoch(row.get("audited_at")) or 0, ref, row.get("reason") or "")],
+                                bad=1), group=FIX_AUDIT_GROUP))
+    return out
+
+
 def hold_verdicts(now, held):
     live, leaked = read_holds()
     stuck, stuck_s = stuck_queues(now)
@@ -7094,7 +7109,8 @@ def collect(write, now):
     for v in holds:
         v["group"] = HOLDS_GROUP
     speed = read_json(os.path.join(folder, "latest.json"), {}).get("speed")
-    problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds + audit,
+    fixes = fix_audit_verdicts()
+    problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds + audit + fixes,
                              covered={"log_audit": audit_until or now}, speed=speed)
     settled = settle_fixes(judging) if write else []
     for problem in problems:
@@ -7111,6 +7127,8 @@ def collect(write, now):
     if audit:
         sections.append(section(AUDIT_GROUP, [row([v["fact"]], red=[0], say=" · ".join(e["excerpt"] for e in v["evidence"]))
                                               for v in audit], [""], [False]))
+    if fixes:
+        sections.append(section(FIX_AUDIT_GROUP, [row([v["fact"]], red=[0], say=v["fact"]) for v in fixes], [""], [False]))
     shown_holds = [v for v in holds if v["level"]]
     if shown_holds:
         sections.append(section(HOLDS_GROUP, [row([v["fact"]], red=[0] if v["level"] == "red" else (),

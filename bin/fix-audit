@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""fix-audit: every landed round fix read again, blind, a week later (share/fix_audit.py)."""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
+from fix_audit import main  # noqa: E402
+
+sys.exit(main(sys.argv[1:]))

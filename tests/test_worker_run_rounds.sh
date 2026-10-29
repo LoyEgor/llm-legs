@@ -241,13 +241,15 @@ round_start || fail "round start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
-# A round brief a chat wrote by hand carries no fixer-row rule; the launch gets review-bench's.
+# A round brief a chat wrote by hand carries no fixer-row rule; the launch gets review-bench's, and the commit
+# naming rule bin/fix-audit maps a landed fix to its finding by.
 assert test "$(sed '/^MD-GUARD (worker-run-injected): /,$d' "$RUN_DIR/brief.launch")" = "ROUND: 20260801T140000Z-0a1b2c3
 Fix the confirmed findings.
 
 STUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print
-write verdicts.jsonl rows"
-assert test "$(sed -n '9p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
+write verdicts.jsonl rows
+Each commit message names this round and the findings it fixes: \`20260801T140000Z-0a1b2c3 F<index>[,<index>...]\`."
+assert test "$(sed -n '10p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
 assert cmp -s "$WORK/round-brief" "$RUN_DIR/brief"
 await_exit || fail "the round run never finished"
 clear_stub
