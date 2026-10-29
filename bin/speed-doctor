@@ -59,7 +59,7 @@ PROOF = {"latency": "paired replay, >= 200 pairs, then 3 band-matched days", "fr
                 "the hint once a session), load-matched, both below before"}
 OUTPUT_PROOF = "identical decisions or results on the replay, recorded as the fix's equivalence {compared, data, result}"
 LEVERS = [
-    {"component": "chat/hooks", "lever": "provable-absence fast path for the hook setting the Pre-Bash floor",
+    {"component": "chat/hooks", "lever": "provable-absence fast path for the hook setting the Bash floor",
      "effort": "S", "confidence": "measured", "saving": 0.77, "night_cost_h": 0.0, "proof": "latency",
      "hook": "review-flow-gate.sh", "quality": "equivalent"},
     {"component": "machine/contention", "lever": "background QoS for unattended work, attended suite priority",
@@ -529,6 +529,19 @@ def delegation_leaf(what):
     if what == "Bash:worker" or what.startswith("Agent:") and what.endswith("-worker"):
         return "workers"
     return "other"
+
+
+def floor_setter(days):
+    """The hook whose removal shortens the Bash calls' hook floors most over the days (the sum of each floor less the
+    floor without it, Harness's floor_hooks), named on the chat/hooks lever; None with no gain."""
+    gain = collections.Counter()
+    for acc in days.values():
+        for key, parts in (acc.get("floor_hooks") or {}).items():
+            cls, _, _, hook = (key.split("|", 3) + ["", "", ""])[:4]
+            if cls.startswith("bash:") and hook and len(parts) == 3:
+                gain[hook] += parts[2][1] - parts[1][1]
+    best = max(sorted(gain), key=gain.get, default=None)
+    return best if best and gain[best] > 0 else None
 
 
 def bash_split(extra, lo, hi):
@@ -1405,7 +1418,10 @@ def collect(write, now):
     problems += fix_regressions(roi_read(state, now)["slower"], ledger)
     opportunities = []
     components = {}
+    setter = floor_setter(days)
     for lever in shown_levers(LEVERS) + slice_levers(tree):
+        if setter and lever.get("hook") and lever["component"] == "chat/hooks":
+            lever = dict(lever, hook=setter)
         components.setdefault(lever["component"], []).append(lever)
     for component, levers in components.items():
         om = component_om(component)

@@ -273,6 +273,14 @@ split = module.bash_split([(0, 100, d_row("poll", "completed")), (50, 80, d_row(
 check(split == {"poll": [100.0, 1], "killed": [30.0, 1], "unclassified": [10.0, 1], "script": [100.0, 1]},
       "background Bash splits by the d row's class, a kill at the cap apart, rows journaled before the class "
       "unclassified, clipped to the window, worker waits out: %s" % split)
+hist = lambda total: [1, total, total, total, 0, 0, []]
+floor_days = {"d1": {"floor_hooks": {"bash:other|1-2|1-10|slow.sh": [hist(400), hist(600), hist(1000)],
+                                     "bash:trivial|1-2|1-10|fast.sh": [hist(10), hist(990), hist(1000)],
+                                     "edit|1-2|1-10|edit-gate.sh": [hist(5000), hist(0), hist(5000)]}},
+              "d2": {"floor_hooks": {"bash:other|<1|1-10|fast.sh": [hist(300), hist(700), hist(1000)]}}}
+check(module.floor_setter(floor_days) == "slow.sh" and module.floor_setter({}) is None,
+      "the chat/hooks lever names the hook whose removal shortens the Bash floors most over the days, never an "
+      "edit-floor hook: %s" % module.floor_setter(floor_days))
 heavy = {"heavy": [{"label": "test_%d" % i, "min_day": 100.0 - i} for i in range(10)]}
 rows_header = json.loads(next(l for l in h.menu_text({
     "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
@@ -427,7 +435,7 @@ check(len(skipped_lines) == 1 and not any(name in skipped_lines[0] for name in
 check(lines[0] == "T\t0\t%d\tHarness doctor: ok" % HI and lines[2] == "0\t\t\tLost time: ok · 20 min/day overhead · 3.9 of 7 days covered"
       and "1\t\t\tChat turns: 103 min/day · model 64 · tools 30 · tests 5.4" in lines
       and "1\t\t\tDelegation: +76 min/day · workers 54 · background Bash 17 · media 2.7" in lines
-      and "2\td\t\t3 · chat/hooks · saves 3.4 min/day · S · provable-absence fast path for the hook setting the Pre-Bash floor"
+      and "2\td\t\t3 · chat/hooks · saves 3.4 min/day · S · provable-absence fast path for the hook setting the Bash floor"
       in lines and "1\td\t\tNeeds Egor: nothing" in lines,
       "the Harness menu opens on the Speed line with the area lines and the ranked backlog under it: %s" % lines[:3])
 check([l["component"] for l in module.slice_levers({"background": {"hs lag": 18.0}, "delegation": {
