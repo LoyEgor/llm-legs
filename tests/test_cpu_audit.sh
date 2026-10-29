@@ -45,7 +45,8 @@ def write(path, lines):
 
 
 for rel in ("llm-legs/bin/statusline.sh", "llm-legs/bin/statusline-work-probe.sh", "llm-legs/share/statusline-probe.sh",
-            "llm-legs/bin/harness-doctor", "hammerspoon/init.lua", "claude-setup/hooks/gate.sh"):
+            "llm-legs/bin/harness-doctor", "hammerspoon/init.lua", "claude-setup/hooks/gate.sh",
+            "llm-legs/bin/worker-inbox-hook.sh"):
     write(os.path.join(repos, rel), ["v1"])
 render = lambda back, sames: write(os.path.join(harness, "statusline", D(back) + ".tsv"),
                                    ["1\t2\tsid\t60000\t" + s for s in sames])
@@ -97,6 +98,8 @@ check([os.path.relpath(s, repos) for s in first["problems"][1]["cpu"]["sources"]
       and [os.path.relpath(s, repos) for s in first["problems"][3]["cpu"]["sources"]]
       == ["llm-legs/bin/statusline-work-probe.sh", "llm-legs/share/statusline-probe.sh"]
       and [os.path.relpath(s, repos) for s in cpu_audit.sources("hook/gate.sh", repos)] == ["claude-setup/hooks/gate.sh"]
+      and [os.path.relpath(s, repos) for s in cpu_audit.sources("hook/worker-inbox-hook.sh", repos)]
+      == ["llm-legs/bin/worker-inbox-hook.sh"]
       and [os.path.relpath(s, repos) for s in first["problems"][0]["cpu"]["sources"]] == ["hammerspoon/init.lua"],
       "a component names the sources a fixer opens: %s" % [p["cpu"]["sources"] for p in first["problems"]])
 check(first["head"] == "4 due · 3 under 1 CPU-min/day skipped · 18 CPU-min/day over 7 components · next: "

@@ -11835,13 +11835,6 @@
       "would_catch_if": "the doctor timed its own fix-landing resolution, or cached landings across runs keyed by commit"
     },
     {
-      "id": "cpu-audit-llm-legs-hook-sources",
-      "what": "a CPU audit of a hook that lives in llm-legs/bin (worker-inbox-hook.sh, worker-spawn-hook.sh)",
-      "reason": "share/cpu_audit.py sources() maps every hook to claude-setup/hooks/<name>, so these audits record sources {} (2026-10-13) and never turn due when the script changes; a hook with fewer than a day of journal runs (worker-spawn-hook, 2 runs a day) also drops out of the window and cannot be recorded",
-      "since": "2026-10-13",
-      "would_catch_if": "sources() tried llm-legs/bin/<name> after claude-setup/hooks/<name>"
-    },
-    {
       "id": "plugin-enable-scope",
       "what": "a plugin's every-chat context cost follows its enabledPlugins scope, not its cache bytes",
       "reason": "2026-10-13: Guards price ~/.claude/plugins/cache growth whether the plugin is enabled at user scope (every chat) or only in one project's local settings; enabling an already-installed plugin user-wide adds every-chat context with no file growth, so nothing fires (vercel 0.50.0, scoped to Rentiva on 2026-10-12)",
@@ -11987,13 +11980,6 @@
       "reason": "2026-10-20 menus audit (7 days to 10-20 against prev 7): Hidden calls 15.5M limit tokens (+29 %, 1.8 % of Claude spend), of it worker compaction summaries 8.7M against 4.8M (+82 %) while worker units grew 572 -> 665 (+16 %); chat 6.7M flat, review-bench -67 %. A compaction summary is written by the worker's own model, so it is not Fee Egor can switch off, and tokenmap prices it from marks, not from a transcript. The other worse rows (Cold restarts 2.2M, Repeated reads 0.1M, Delegation that retells 7k) sit under 0.3 % of spend and belong to tokenmap's waste detectors.",
       "since": "2026-10-20",
       "would_catch_if": "the Spend block read harness_index.sections' worker compaction rows per worker unit and opened a watch when the per-unit summary tokens rose 50 % week on week, naming the worker contexts that compacted most (their brief size and tool-output load), so the night could shrink briefs or outputs at the source"
-    },
-    {
-      "id": "opportunity-tool-component-files",
-      "what": "component files of an opportunity:tool/<kind>/<name> row",
-      "reason": "2026-10-20 skill/worker: the Speed row carries the tool's file only in opportunity.path (claude-setup/commands/worker.md), problem.component.files stays empty, so doctor-fix component_repos opens no ADD-DIR worktree in the repository that holds the file, and a skill row outside llm-legs cannot be fixed or handed off (claude-setup is a sweep repository, so close refuses a handoff)",
-      "since": "2026-10-20",
-      "would_catch_if": "the packet's component.files held opportunity.path for tool rows, so launch_runs made the sibling worktree"
     },
     {
       "id": "async-rewake-as-sync",
