@@ -4,15 +4,24 @@ The harness is improved one direction at a time (Egor, 2026-10-15). Each directi
 here. Directions run in a queue, one goal at a time, each proven on its own number (2026-10-16), no block building
 on one whose number has not passed its read (2026-10-25); the night works them all together once each metric moved.
 
+Egor's order (2026-10-29) ranks every queue, the night's jobs, goals and fixers included:
+1. Speed: every minute he or a worker waits, end to end, inside tools too (media, browser, tests, memory stalls).
+   A per-call gain that adds up to no waited minutes is not speed.
+2. Spend: what is spent blind or for nothing is cut; a cut that risks quality becomes his trade, its decision
+   written with what it depends on and when it is re-read (Rules, Decisions).
+3. Bugs and growth: the night cleans and fixes so he never has to; secondary to 1 and 2.
+Correct numbers come first and stay first (Doctors, Breakages): a number that measures the wrong thing steers every
+fix wrong, so a new number is checked like any other before it judges.
+
 Blocks (the numbers are names, 2026-10-20; the order is State):
 
 | # | Block | Metric | State |
 |---|---|---|---|
 | 0 | Always on | none: nightly prep (vendor CLIs, log audit, doctors), monthly directions refresh | runs |
 | 1 | [Breakages](breakages.md) | new distinct problems (doctors' day journal) per 100 units of work, 7 days against the 7 before; repeats 0 | landed 10-25; read 11-05, 7 d after Doctors lands |
-| 2 | [Tests and lost time](lost-time.md) | Lost time index; test legacy lines watched | after 1's read |
-| 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | after 1's read |
-| 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | after 1's read |
+| 2 | [Tests and lost time](lost-time.md) | Lost time index; test legacy lines watched | first after 1's read |
+| 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | after 4 |
+| 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | after 2 |
 | 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, code only; net lines watched | independent |
 | 6 | [Vendors](vendors.md) | integration lag: mean days from a vendor event to its close; changes found outside the fingerprint 0 | independent |
 | 7 | [Doctors](doctors.md) | false-alarm share of decided Fix rows; outside-found share (what no doctor shows) | landed 10-29; read 11-05 (1–4 read through it) |
@@ -36,6 +45,14 @@ Every block, upkeep ones too, is judged in three layers (Egor 2026-10-20), never
   on another metric from the same change is a bonus, never the goal: one change is proven on one metric.
 - Workers, hub chats and the night read these files instead of the chats; briefs are built from them. A chat that
   settles something with Egor writes it into that file's Decisions before it stops.
+- Decisions: a cut not made, a trade he answered or a ruled-out row is written with what it depends on and a
+  re-read date; on that date the night re-checks the dependency and either renews the date or brings him the
+  changed trade (Egor 2026-10-29).
+- Dig (Egor 2026-10-29): numbers show what is already measured; the night also looks where no number points. A
+  weekly dig reads the harness for structural waste (a large file whose one hot module drags every suite run, work
+  done serially that could run at once, a browser closed and reopened mid-job, memory the harness could free) and
+  writes candidates with their estimated waited minutes or spend. Finding is free-form; each candidate kept becomes
+  a goal or fixer with its proof fixed before the work, and is judged after like any other.
 - Done, kept and open live in the ledgers each file names. The file holds what the ledgers cannot: classes, the
   metric's baseline, why rows come back, Egor's decisions.
 - Proof: the check is fixed before the work; old against new, interleaved, on the same machine; verdict better,
@@ -71,6 +88,7 @@ cope, if not why, can it do the same for fewer tokens. Dropping a section takes 
 | 6 | Vendor events | a new CLI version, model or plan studied and integrated (`vendor-fingerprint`) | after the goals, once none is left before block 6 |
 | 7 | Doctor fixes | `doctor-fix launch --night` on a full night | waits |
 | 7 | Deep search | after its goals the night looks for what no doctor shows, the next goal's candidates | waits |
+| 7 | Dig | weekly: structural waste no number points to (Rules, Dig), candidates with waited minutes or spend | runs weekly |
 | 8 | Handoffs, owner chats | each open handoff done, or handed to its owner chat | waits |
 | 8 | Leftovers | unlanded branches landed | waits |
 | 9 | Monthly research | vendor news (`vendor-watch`), repeated ad-hoc scripts become tools (`tool-ideas`) | waits |
